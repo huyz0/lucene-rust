@@ -81,25 +81,26 @@ impl HHMMSegmenter {
                     let mut j = i + 1;
                     word_buf.clear();
                     word_buf.push(sentence[i]);
-                    let mut char_array: Vec<u16> = vec![sentence[i]];
-                    let frequency = wd.get_frequency(&char_array);
+                    // Java's `charArray` is always a copy of `wordBuf`:
+                    // the buffer itself serves.
+                    let frequency = wd.get_frequency(&word_buf);
                     seg_graph.add_token(SegToken::new(
-                        &char_array,
+                        &word_buf,
                         off(i),
                         off(j),
                         word_type::CHINESE_WORD,
                         frequency,
                     ));
-                    let mut found_index = wd.get_prefix_match(&char_array, 0);
+                    let mut found_index = wd.get_prefix_match(&word_buf, 0);
                     while j <= length && found_index != -1 {
-                        if wd.is_equal(&char_array, found_index) && char_array.len() > 1 {
+                        if wd.is_equal(&word_buf, found_index) && word_buf.len() > 1 {
                             // It is the phrase we are looking for; In other
                             // words, we have found a phrase SegToken from i
                             // to j. It is not a monosyllabic word (single
                             // word).
-                            let frequency = wd.get_frequency(&char_array);
+                            let frequency = wd.get_frequency(&word_buf);
                             seg_graph.add_token(SegToken::new(
-                                &char_array,
+                                &word_buf,
                                 off(i),
                                 off(j),
                                 word_type::CHINESE_WORD,
@@ -111,13 +112,12 @@ impl HHMMSegmenter {
                         }
                         if j < length && char_type_array[j] == char_type::HANZI {
                             word_buf.push(sentence[j]);
-                            char_array.clone_from(&word_buf);
                             // idArray has been found (foundWordIndex!=-1) as a
                             // prefix before. Therefore, idArray after it has
                             // been lengthened can only appear after
                             // foundWordIndex. So start searching after
                             // foundWordIndex.
-                            found_index = wd.get_prefix_match(&char_array, found_index);
+                            found_index = wd.get_prefix_match(&word_buf, found_index);
                             j += 1;
                         } else {
                             break;

@@ -53,6 +53,9 @@ pub struct JapaneseTokenizer {
     lang: JaViterbi,
     /// Position of the last token returned (posInc 0 or 1).
     last_token_pos: i32,
+    /// The last token handed to the attributes, kept to reuse its
+    /// allocation for the next one.
+    last_token: Option<Arc<Token>>,
 }
 
 impl JapaneseTokenizer {
@@ -128,6 +131,7 @@ impl JapaneseTokenizer {
             viterbi,
             lang,
             last_token_pos: -1,
+            last_token: None,
         }
     }
 
@@ -229,7 +233,20 @@ impl JapaneseTokenizer {
             self.atts.set_position_length(1)?;
         }
         self.last_token_pos = start;
-        let token = Arc::new(token);
+        // `clear_attributes` above dropped the attributes' references to the
+        // last token, so unless a downstream stage kept one, its allocation
+        // is ours to overwrite.
+        let token = match self.last_token.as_mut().and_then(Arc::get_mut) {
+            Some(slot) => {
+                *slot = token;
+                self.last_token.clone().expect("matched above")
+            }
+            None => {
+                let t = Arc::new(token);
+                self.last_token = Some(Arc::clone(&t));
+                t
+            }
+        };
         self.atts.add_custom::<BaseFormAttribute>().token = Some(Arc::clone(&token));
         self.atts.add_custom::<PartOfSpeechAttribute>().token = Some(Arc::clone(&token));
         self.atts.add_custom::<ReadingAttribute>().token = Some(Arc::clone(&token));
@@ -292,6 +309,7 @@ impl TokenStream for JapaneseTokenizer {
         self.input.reset();
         self.viterbi.reset_buffer();
         self.viterbi.reset_state();
+        self.lang.reset_document();
         self.last_token_pos = -1;
         Ok(())
     }

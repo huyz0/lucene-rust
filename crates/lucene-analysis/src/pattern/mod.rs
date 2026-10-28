@@ -5,12 +5,13 @@
 
 use lucene_util::automaton::{operations, Automaton, CharacterRunAutomaton, RegExp};
 
-use crate::attributes::{AttributeSource, State};
+use crate::attributes::AttributeSource;
 use crate::charfilter::OffsetCorrections;
 use crate::reader::{read_to_string, CharFilter, CharReader};
 use crate::token_stream::{TokenFilter, TokenStream, Tokenizer, TokenizerInput};
 use crate::util::java_regex::{JavaMatcher, JavaPattern};
 use crate::AnalysisError;
+use crate::StateSlot;
 
 fn illegal(e: impl std::fmt::Display) -> AnalysisError {
     AnalysisError::IllegalArgument(e.to_string())
@@ -120,8 +121,15 @@ impl TokenStream for PatternTokenizer {
     // Java: PatternTokenizer.reset (fillBuffer)
     fn reset(&mut self) -> Result<(), AnalysisError> {
         self.input.reset();
-        let text = read_to_string(self.input.reader()?)?;
-        self.matcher.reset(&text);
+        // A string reader's text is the matcher's input as is; any other
+        // reader is drained (Java's fillBuffer).
+        match self.input.whole_text() {
+            Some(text) => self.matcher.reset(text),
+            None => {
+                let text = read_to_string(self.input.reader()?)?;
+                self.matcher.reset(&text);
+            }
+        }
         self.str_len = self.matcher.len_utf16();
         self.index = 0;
         Ok(())
@@ -187,7 +195,7 @@ impl<I: TokenStream> TokenFilter for PatternReplaceFilter<I> {
 /// position.
 pub struct PatternCaptureGroupTokenFilter<I> {
     input: I,
-    state: Option<State>,
+    state: StateSlot,
     matchers: Vec<JavaMatcher>,
     group_counts: Vec<i32>,
     preserve_original: bool,
@@ -202,7 +210,7 @@ impl<I: TokenStream> PatternCaptureGroupTokenFilter<I> {
         let matchers: Vec<JavaMatcher> = patterns.iter().map(|p| JavaMatcher::new(p, "")).collect();
         PatternCaptureGroupTokenFilter {
             input,
-            state: None,
+            state: StateSlot::new(),
             group_counts: matchers.iter().map(|m| m.group_count() as i32).collect(),
             current_group: vec![-1; matchers.len()],
             matchers,
@@ -266,7 +274,7 @@ impl<I: TokenStream> TokenFilter for PatternCaptureGroupTokenFilter<I> {
             let m = self.current_matcher as usize;
             let a = self.input.attributes_mut();
             a.clear_attributes();
-            a.restore_state(self.state.as_ref().expect("a token was read"));
+            a.restore_state(self.state.get().expect("a token was read"));
             a.set_position_increment(0)?;
             self.set_current_text();
             self.current_group[m] += 1;
@@ -276,7 +284,7 @@ impl<I: TokenStream> TokenFilter for PatternCaptureGroupTokenFilter<I> {
             return Ok(false);
         }
         let a = self.input.attributes();
-        self.state = Some(a.capture_state());
+        self.state.save(a);
         for (m, g) in self.matchers.iter_mut().zip(self.current_group.iter_mut()) {
             m.reset(a.term());
             *g = -1;
@@ -295,7 +303,7 @@ impl<I: TokenStream> TokenFilter for PatternCaptureGroupTokenFilter<I> {
 
     fn reset_filter(&mut self) -> Result<(), AnalysisError> {
         self.input.reset()?;
-        self.state = None;
+        self.state.clear();
         self.current_matcher = -1;
         Ok(())
     }

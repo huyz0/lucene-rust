@@ -18,6 +18,7 @@ use std::sync::Arc;
 
 use crate::attributes::{AttributeSource, State};
 use crate::token_stream::{TokenFilter, TokenStream, Tokenizer};
+use crate::StateSlot;
 use crate::{AnalysisError, CharArraySet};
 
 /// `ConditionalTokenFilter.TokenState`.
@@ -46,7 +47,7 @@ pub struct OneTimeWrapper<I, C> {
     input: I,
     cond: C,
     state: TokenState,
-    buffered_state: Option<State>,
+    buffered_state: StateSlot,
     exhausted: bool,
     adjust_position: bool,
     end_state: Option<State>,
@@ -78,7 +79,7 @@ impl<I: TokenStream + 'static, C: ShouldFilter + 'static> TokenStream for OneTim
                 return Ok(true);
             }
             self.end_offset = self.input.attributes().end_offset();
-            self.buffered_state = Some(self.input.attributes().capture_state());
+            self.buffered_state.save(self.input.attributes());
         } else {
             self.exhausted = true;
         }
@@ -163,7 +164,7 @@ where
             input,
             cond,
             state: TokenState::Reading,
-            buffered_state: None,
+            buffered_state: StateSlot::new(),
             exhausted: false,
             adjust_position: false,
             end_state: None,
@@ -187,7 +188,7 @@ where
         let pos_inc = w.input.attributes().position_increment();
         let buffered = w.buffered_state.take().expect("checked above");
         let a = w.input.attributes_mut();
-        a.restore_state(&buffered);
+        a.restore_state(buffered);
         a.set_position_increment(a.position_increment() + pos_inc)?;
         if w.adjust_position {
             let a = w.input.attributes_mut();
@@ -223,7 +224,7 @@ where
         if state == TokenState::Reading {
             let w = self.delegate.root();
             if let Some(buffered) = w.buffered_state.take() {
-                w.input.attributes_mut().restore_state(&buffered);
+                w.input.attributes_mut().restore_state(buffered);
                 self.last_token_filtered = false;
                 return Ok(true);
             }
@@ -269,7 +270,7 @@ where
         let w = self.delegate.root();
         w.state = TokenState::Reading;
         self.last_token_filtered = false;
-        w.buffered_state = None;
+        w.buffered_state.clear();
         w.exhausted = false;
         w.adjust_position = false;
         w.end_offset = -1;

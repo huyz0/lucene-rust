@@ -24,7 +24,7 @@ pub mod registry;
 pub mod rules;
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::icu4j::normalizer2::Normalizer2;
 use crate::icu4j::translit::rules::{handle_rule_based, Data};
@@ -522,18 +522,19 @@ fn is_wide(script: i32) -> bool {
 }
 
 /// `AnyTransliterator.WidthFix.INSTANCE`.
+///
+/// Built once; read without a lock (every token of an Any-X filter whose
+/// script is the target's reaches it, from every thread).
 fn width_fix() -> Result<Arc<Transliterator>, IcuError> {
-    static W: Mutex<Option<Arc<Transliterator>>> = Mutex::new(None);
-    let mut guard = W.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(t) = guard.as_ref() {
-        return Ok(t.clone());
+    static W: OnceLock<Arc<Transliterator>> = OnceLock::new();
+    if let Some(t) = W.get() {
+        return Ok(Arc::clone(t));
     }
     let t = Arc::new(Transliterator::get_instance(
         "[[:dt=Nar:][:dt=Wide:]] nfkd",
         FORWARD,
     )?);
-    *guard = Some(t.clone());
-    Ok(t)
+    Ok(Arc::clone(W.get_or_init(|| t)))
 }
 
 /// `AnyTransliterator.getTransliterator(source)`.
@@ -583,7 +584,9 @@ fn get_any_transliterator(
             };
             Some(Arc::new(t))
         }
-        None if !is_wide(state.target_script) => return Ok(Some(width_fix()?)),
+        // Java returns `widthFix` uncached; the registry is static, so the
+        // answer for this script never changes and is cached here.
+        None if !is_wide(state.target_script) => Some(width_fix()?),
         None => None,
     };
     state

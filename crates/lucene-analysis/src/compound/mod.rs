@@ -14,8 +14,8 @@ pub mod hyphenation;
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-use crate::attributes::State;
 use crate::token_stream::{TokenFilter, TokenStream};
+use crate::StateSlot;
 use crate::{AnalysisError, CharArraySet};
 
 pub use hyphenation::{HyphenationTree, PatternParser};
@@ -201,7 +201,7 @@ pub struct CompoundWordTokenFilter<I, D> {
     decomposer: D,
     sizes: CompoundSizes,
     tokens: VecDeque<CompoundToken>,
-    current: Option<State>,
+    current: StateSlot,
     buf: Vec<u16>,
     parts: Vec<(usize, usize)>,
 }
@@ -275,7 +275,7 @@ impl<I: TokenStream, D: Decompose> CompoundWordTokenFilter<I, D> {
             decomposer,
             sizes,
             tokens: VecDeque::new(),
-            current: None,
+            current: StateSlot::new(),
             buf: Vec::new(),
             parts: Vec::new(),
         }
@@ -289,13 +289,13 @@ impl<I: TokenStream, D: Decompose> TokenFilter for CompoundWordTokenFilter<I, D>
     fn increment(&mut self) -> Result<bool, AnalysisError> {
         if let Some(token) = self.tokens.pop_front() {
             let a = self.input.attributes_mut();
-            a.restore_state(self.current.as_ref().expect("a decomposed token"));
+            a.restore_state(self.current.get().expect("a decomposed token"));
             a.set_term_utf16(&self.buf[token.txt]);
             a.set_offset(token.start_offset, token.end_offset)?;
             a.set_position_increment(0)?;
             return Ok(true);
         }
-        self.current = None;
+        self.current.clear();
         if !self.input.increment_token()? {
             return Ok(false);
         }
@@ -315,7 +315,7 @@ impl<I: TokenStream, D: Decompose> TokenFilter for CompoundWordTokenFilter<I, D>
                 });
             }
             if !self.tokens.is_empty() {
-                self.current = Some(a.capture_state());
+                self.current.save(a);
             }
         }
         Ok(true)
@@ -324,7 +324,7 @@ impl<I: TokenStream, D: Decompose> TokenFilter for CompoundWordTokenFilter<I, D>
     fn reset_filter(&mut self) -> Result<(), AnalysisError> {
         self.input.reset()?;
         self.tokens.clear();
-        self.current = None;
+        self.current.clear();
         Ok(())
     }
 }

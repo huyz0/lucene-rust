@@ -4,13 +4,12 @@
 use std::sync::Arc;
 
 use crate::analyzer::{AnalyzerDefinition, TokenStreamComponents};
-use crate::attributes::State;
 use crate::charfilter::OffsetCorrections;
-use crate::java_character::{char_count, code_point_at, push_utf16};
 use crate::reader::{CharFilter, CharReader};
 use crate::standard::{HANGUL, HIRAGANA, IDEOGRAPHIC, KATAKANA, TOKEN_TYPES};
 use crate::token_stream::{TokenFilter, TokenStream};
 use crate::util::with_utf16_term;
+use crate::StateSlot;
 use crate::{
     AnalysisError, CharArraySet, LowerCaseFilter, StandardTokenizer, StopFilter,
     StopwordAnalyzerBase,
@@ -43,8 +42,7 @@ pub struct CJKBigramFilter<I> {
     index: usize,
     last_end_offset: i32,
     exhausted: bool,
-    lone_state: Option<State>,
-    scratch: Vec<u16>,
+    lone_state: StateSlot,
 }
 
 impl<I: TokenStream> CJKBigramFilter<I> {
@@ -72,8 +70,7 @@ impl<I: TokenStream> CJKBigramFilter<I> {
             index: 0,
             last_end_offset: 0,
             exhausted: false,
-            lone_state: None,
-            scratch: Vec::new(),
+            lone_state: StateSlot::new(),
         }
     }
 
@@ -101,7 +98,7 @@ impl<I: TokenStream> CJKBigramFilter<I> {
     // Java: CJKBigramFilter.doNext
     fn do_next(&mut self) -> Result<bool, AnalysisError> {
         if let Some(s) = self.lone_state.take() {
-            self.input.attributes_mut().restore_state(&s);
+            self.input.attributes_mut().restore_state(s);
             return Ok(true);
         }
         if self.exhausted {
@@ -127,37 +124,35 @@ impl<I: TokenStream> CJKBigramFilter<I> {
             self.index -= last;
         }
         let a = self.input.attributes();
-        self.scratch.clear();
-        self.scratch.extend(a.term().encode_utf16());
-        let len = self.scratch.len();
+        let term = a.term();
+        let len = crate::utf16_len(term);
         let mut start = a.start_offset();
         let end = a.end_offset();
         self.last_end_offset = end;
         // Java: offsets are spread per code point only when the token's
-        // offsets span exactly its length.
+        // offsets span exactly its length. A `String` term holds no unpaired
+        // surrogate, so its chars are exactly `codePointAt`'s code points.
         let spread = end - start == len as i32;
-        let mut i = 0;
-        while i < len {
-            let cp = code_point_at(&self.scratch, i, len);
-            let cp_len = char_count(cp);
-            self.buffer.push(cp);
+        for c in term.chars() {
+            self.buffer.push(u32::from(c));
             self.start_offset.push(start);
             if spread {
-                start += cp_len as i32;
+                start += c.len_utf16() as i32;
                 self.end_offset.push(start);
             } else {
                 self.end_offset.push(end);
             }
-            i += cp_len;
         }
     }
 
+    /// The term of `cps`, every one a scalar value (see [`Self::refill`]).
     fn set_term(&mut self, cps: &[u32]) {
-        self.scratch.clear();
-        for &cp in cps {
-            push_utf16(&mut self.scratch, cp);
-        }
-        self.input.attributes_mut().set_term_utf16(&self.scratch);
+        let term = self.input.attributes_mut().term_mut();
+        term.clear();
+        term.extend(
+            cps.iter()
+                .map(|&cp| char::from_u32(cp).unwrap_or(char::REPLACEMENT_CHARACTER)),
+        );
     }
 
     // Java: CJKBigramFilter.flushBigram
@@ -222,7 +217,7 @@ impl<I: TokenStream> TokenFilter for CJKBigramFilter<I> {
                 if self.types.contains(&a.token_type()) {
                     if a.start_offset() != self.last_end_offset {
                         if self.has_buffered_unigram() {
-                            self.lone_state = Some(a.capture_state());
+                            self.lone_state.save(a);
                             self.flush_unigram()?;
                             return Ok(true);
                         }
@@ -231,7 +226,7 @@ impl<I: TokenStream> TokenFilter for CJKBigramFilter<I> {
                     self.refill();
                 } else {
                     if self.has_buffered_unigram() {
-                        self.lone_state = Some(a.capture_state());
+                        self.lone_state.save(a);
                         self.flush_unigram()?;
                         return Ok(true);
                     }
@@ -251,7 +246,7 @@ impl<I: TokenStream> TokenFilter for CJKBigramFilter<I> {
         self.input.reset()?;
         self.clear_buffer();
         self.last_end_offset = 0;
-        self.lone_state = None;
+        self.lone_state.clear();
         self.exhausted = false;
         self.ngram_state = false;
         Ok(())
@@ -327,6 +322,11 @@ impl<I: TokenStream> TokenFilter for CJKWidthFilter<I> {
     fn increment(&mut self) -> Result<bool, AnalysisError> {
         if !self.input.increment_token()? {
             return Ok(false);
+        }
+        // Every unit the filter maps (U+FF01..U+FF5E, U+FF65..U+FF9F) is
+        // encoded with a 0xEF lead byte: a term without one is unchanged.
+        if !self.input.attributes().term().as_bytes().contains(&0xEF) {
+            return Ok(true);
         }
         with_utf16_term(self.input.attributes_mut(), &mut self.buf, |text| {
             let mut changed = false;

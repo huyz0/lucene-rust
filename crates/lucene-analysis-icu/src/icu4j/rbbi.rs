@@ -240,7 +240,7 @@ impl RuleBasedBreakIterator {
     fn handle_next(&mut self) -> i32 {
         self.rule_status_index = 0;
         self.dictionary_char_count = 0;
-        let data = Arc::clone(&self.data);
+        let data = &*self.data;
         let table = &data.ftable;
         let trie = &data.trie;
         let mut text = CharIter::new(&self.text);
@@ -440,7 +440,7 @@ impl RuleBasedBreakIterator {
         let range_start = start_pos;
         let range_end = end_pos;
         let mut found_break_count = 0;
-        let data = Arc::clone(&self.data);
+        let data = &*self.data;
         let mut text = CharIter::new(&self.text);
         text.set_index(usize::try_from(range_start).unwrap_or(0));
         let mut c = text.current32();

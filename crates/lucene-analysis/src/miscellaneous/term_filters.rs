@@ -38,6 +38,14 @@ impl<I: TokenStream> TokenFilter for TrimFilter<I> {
         if !self.input.increment_token()? {
             return Ok(false);
         }
+        // Only a term that starts or ends with whitespace changes (every
+        // Java whitespace character is in the BMP, so a char is its unit).
+        let term = self.input.attributes().term();
+        let ws_char =
+            |c: Option<char>| c.is_some_and(|c| java_character::is_whitespace(u32::from(c)));
+        if !ws_char(term.chars().next()) && !ws_char(term.chars().next_back()) {
+            return Ok(true);
+        }
         with_utf16_term(self.input.attributes_mut(), &mut self.buf, |b| {
             let len = b.len();
             if len == 0 {
@@ -109,6 +117,10 @@ impl<I: TokenStream> TokenFilter for TruncateTokenFilter<I> {
             return Ok(true);
         }
         let (after, code_points) = (self.truncate_after, self.use_code_points);
+        // A term of at most `after` bytes has at most `after` units.
+        if self.input.attributes().term().len() <= after {
+            return Ok(true);
+        }
         with_utf16_term(self.input.attributes_mut(), &mut self.buf, |arr| {
             let len = arr.len();
             if len <= after {

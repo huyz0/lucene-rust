@@ -112,6 +112,42 @@ pub(crate) fn push_utf16(s: &str, buf: &mut Vec<u16>) {
     }
 }
 
+/// Appends UTF-16 `units` to `out`, an unpaired surrogate as U+FFFD (what
+/// Java's `getBytesRef()` writes for one): the inverse of [`push_utf16`],
+/// decoded by hand with an ASCII fast path (`char::decode_utf16`'s iterator
+/// was a stemmer filter's largest cost on non-Latin text).
+pub(crate) fn push_str_utf16(out: &mut String, units: &[u16]) {
+    if units.iter().all(|&u| u < 0x80) {
+        out.reserve(units.len());
+        out.extend(units.iter().map(|&u| char::from(u as u8)));
+        return;
+    }
+    // At most 3 UTF-8 bytes per unit (a pair is 4 bytes for 2 units).
+    out.reserve(units.len() * 3);
+    let mut i = 0;
+    while i < units.len() {
+        let u = units[i];
+        i += 1;
+        let c = if u < 0x80 {
+            char::from(u as u8)
+        } else if !(0xD800..=0xDFFF).contains(&u) {
+            char::from_u32(u32::from(u)).unwrap_or(char::REPLACEMENT_CHARACTER)
+        } else if u <= 0xDBFF
+            && units
+                .get(i)
+                .is_some_and(|lo| (0xDC00..=0xDFFF).contains(lo))
+        {
+            let lo = units[i];
+            i += 1;
+            let cp = 0x10000 + ((u32::from(u) - 0xD800) << 10) + (u32::from(lo) - 0xDC00);
+            char::from_u32(cp).unwrap_or(char::REPLACEMENT_CHARACTER)
+        } else {
+            char::REPLACEMENT_CHARACTER
+        };
+        out.push(c);
+    }
+}
+
 /// `s` holds exactly the UTF-16 units `units`.
 pub(crate) fn utf16_eq(s: &str, units: &[u16]) -> bool {
     if s.len() == units.len() && s.is_ascii() {

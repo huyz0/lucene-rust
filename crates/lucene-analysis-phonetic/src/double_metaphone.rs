@@ -117,6 +117,14 @@ impl DoubleMetaphone {
     /// `NegativeArraySizeException` (both make `PhoneticFilter` keep the
     /// token).
     pub fn double_metaphone(&self, value: &[u16], alternate: bool) -> Option<Vec<u16>> {
+        self.double_metaphone_both(value)
+            .map(|(primary, alt)| if alternate { alt } else { primary })
+    }
+
+    /// [`Self::double_metaphone`]'s primary and alternate codes from one
+    /// run: the encoder builds both together whichever is asked for, so a
+    /// caller that wants both (`DoubleMetaphoneFilter`) runs it once.
+    pub fn double_metaphone_both(&self, value: &[u16]) -> Option<(Vec<u16>, Vec<u16>)> {
         // Java: cleanInput
         let value = trim(value);
         if value.is_empty() {
@@ -201,11 +209,7 @@ impl DoubleMetaphone {
                 },
             };
         }
-        Some(if alternate {
-            result.alternate
-        } else {
-            result.primary
-        })
+        Some((result.primary, result.alternate))
     }
 
     /// `index + 2` when the next letter repeats `c`, else `index + 1`.

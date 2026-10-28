@@ -3,8 +3,8 @@
 
 use std::sync::Arc;
 
-use crate::attributes::State;
 use crate::token_stream::{TokenFilter, TokenStream};
+use crate::StateSlot;
 use crate::{AnalysisError, CharArraySet};
 
 /// `CommonGramsFilter.GRAM_TYPE`.
@@ -19,7 +19,7 @@ pub struct CommonGramsFilter<I> {
     buffer: String,
     last_start_offset: i32,
     last_was_common: bool,
-    saved_state: Option<State>,
+    saved_state: StateSlot,
 }
 
 impl<I: TokenStream> CommonGramsFilter<I> {
@@ -31,7 +31,7 @@ impl<I: TokenStream> CommonGramsFilter<I> {
             buffer: String::new(),
             last_start_offset: 0,
             last_was_common: false,
-            saved_state: None,
+            saved_state: StateSlot::new(),
         }
     }
 
@@ -72,14 +72,14 @@ impl<I: TokenStream> TokenFilter for CommonGramsFilter<I> {
     // Java: CommonGramsFilter.incrementToken
     fn increment(&mut self) -> Result<bool, AnalysisError> {
         if let Some(saved) = self.saved_state.take() {
-            self.input.attributes_mut().restore_state(&saved);
+            self.input.attributes_mut().restore_state(saved);
             self.save_term_buffer();
             return Ok(true);
         } else if !self.input.increment_token()? {
             return Ok(false);
         }
         if self.last_was_common || (self.is_common() && !self.buffer.is_empty()) {
-            self.saved_state = Some(self.input.attributes().capture_state());
+            self.saved_state.save(self.input.attributes());
             self.gram_token()?;
             return Ok(true);
         }
@@ -90,7 +90,7 @@ impl<I: TokenStream> TokenFilter for CommonGramsFilter<I> {
     fn reset_filter(&mut self) -> Result<(), AnalysisError> {
         self.input.reset()?;
         self.last_was_common = false;
-        self.saved_state = None;
+        self.saved_state.clear();
         self.buffer.clear();
         Ok(())
     }
@@ -100,8 +100,13 @@ impl<I: TokenStream> TokenFilter for CommonGramsFilter<I> {
 /// grams, and the unigrams no gram covers.
 pub struct CommonGramsQueryFilter<I> {
     input: CommonGramsFilter<I>,
-    previous: Option<State>,
-    previous_type: Option<String>,
+    previous: StateSlot,
+    /// The token just read; swapped with `previous` so neither capture
+    /// allocates once warm.
+    current: StateSlot,
+    /// `GRAM_TYPE.equals(previousType)` (Java's `previousType` is only ever
+    /// compared with it).
+    previous_was_gram: bool,
     exhausted: bool,
 }
 
@@ -110,8 +115,9 @@ impl<I: TokenStream> CommonGramsQueryFilter<I> {
     pub fn new(input: CommonGramsFilter<I>) -> Self {
         CommonGramsQueryFilter {
             input,
-            previous: None,
-            previous_type: None,
+            previous: StateSlot::new(),
+            current: StateSlot::new(),
+            previous_was_gram: false,
             exhausted: false,
         }
     }
@@ -144,30 +150,32 @@ impl<I: TokenStream> TokenFilter for CommonGramsQueryFilter<I> {
     // Java: CommonGramsQueryFilter.incrementToken
     fn increment(&mut self) -> Result<bool, AnalysisError> {
         while !self.exhausted && self.input.increment_token()? {
-            let current = self.input.attributes().capture_state();
-            if self.previous.is_some() && !self.is_gram_type() {
-                let prev = self.previous.replace(current).expect("checked");
-                self.input.attributes_mut().restore_state(&prev);
-                self.previous_type = Some(self.input.attributes().token_type().to_string());
+            self.current.save(self.input.attributes());
+            let restore = self.previous.is_some() && !self.is_gram_type();
+            // `previous = current`, keeping the old previous in `current`.
+            std::mem::swap(&mut self.previous, &mut self.current);
+            if restore {
+                let prev = self.current.get().expect("checked");
+                self.input.attributes_mut().restore_state(prev);
+                self.previous_was_gram = self.is_gram_type();
                 self.unstack_gram()?;
                 return Ok(true);
             }
-            self.previous = Some(current);
         }
         self.exhausted = true;
-        if self.previous.is_none() || self.previous_type.as_deref() == Some(GRAM_TYPE) {
+        if self.previous.is_none() || self.previous_was_gram {
             return Ok(false);
         }
         let prev = self.previous.take().expect("checked");
-        self.input.attributes_mut().restore_state(&prev);
+        self.input.attributes_mut().restore_state(prev);
         self.unstack_gram()?;
         Ok(true)
     }
 
     fn reset_filter(&mut self) -> Result<(), AnalysisError> {
         self.input.reset()?;
-        self.previous = None;
-        self.previous_type = None;
+        self.previous.clear();
+        self.previous_was_gram = false;
         self.exhausted = false;
         Ok(())
     }

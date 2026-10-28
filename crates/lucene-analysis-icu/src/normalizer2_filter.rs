@@ -49,23 +49,29 @@ impl<I: TokenStream> TokenFilter for ICUNormalizer2Filter<I> {
             return Ok(false);
         }
         let atts = self.input.attributes_mut();
-        // Two shortcuts the UTF-16 path would agree with (see
-        // `Normalizer2::quick_yes_utf8` and `ascii_map`): a term the quick
-        // check passes unit by unit, and a term of ASCII alone.
-        if self.normalizer.quick_yes_utf8(atts.term()) {
-            return Ok(true);
-        }
+        // Two shortcuts the UTF-16 path would agree with (see `ascii_map`
+        // and `Normalizer2::quick_yes_utf8`): a term of ASCII alone, mapped
+        // unit by unit -- checked first, as the quick check's per-character
+        // trie probe is what an ASCII term would cost -- and a term the quick
+        // check passes unit by unit.
         if atts.term().is_ascii() {
             if let Some(map) = self.normalizer.ascii_map() {
                 let term = atts.term_mut();
-                if term.bytes().any(|b| map[usize::from(b)] != b) {
+                if let Some(first) = term.bytes().position(|b| map[usize::from(b)] != b) {
                     self.scratch.clear();
-                    self.scratch
-                        .extend(term.bytes().map(|b| char::from(map[usize::from(b)])));
+                    self.scratch.push_str(&term[..first]);
+                    self.scratch.extend(
+                        term[first..]
+                            .bytes()
+                            .map(|b| char::from(map[usize::from(b)])),
+                    );
                     std::mem::swap(term, &mut self.scratch);
                 }
                 return Ok(true);
             }
+        }
+        if self.normalizer.quick_yes_utf8(atts.term()) {
+            return Ok(true);
         }
         self.units.clear();
         crate::icu4j::utf16::extend_from_str(&mut self.units, atts.term());

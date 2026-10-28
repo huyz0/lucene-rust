@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use lucene_analysis::attributes::State;
+use lucene_analysis::attributes::StateSlot;
 use lucene_analysis::java_character;
 use lucene_analysis::token_stream::{TokenFilter, TokenStream};
 use lucene_analysis::{AnalysisError, CustomAttribute};
@@ -90,7 +90,7 @@ pub struct MorfologikFilter<I> {
     lookup: DictionaryLookup,
     lemmas: usize,
     lemma_index: usize,
-    current: Option<State>,
+    current: StateSlot,
     lower: String,
 }
 
@@ -102,7 +102,7 @@ impl<I: TokenStream> MorfologikFilter<I> {
             lookup: DictionaryLookup::new(dictionary),
             lemmas: 0,
             lemma_index: 0,
-            current: None,
+            current: StateSlot::new(),
             lower: String::new(),
         };
         f.input
@@ -141,7 +141,7 @@ impl<I: TokenStream> TokenFilter for MorfologikFilter<I> {
     // Java: MorfologikFilter.incrementToken
     fn increment(&mut self) -> Result<bool, AnalysisError> {
         if self.lemma_index < self.lemmas {
-            if let Some(state) = &self.current {
+            if let Some(state) = self.current.get() {
                 self.input.attributes_mut().restore_state(state);
             }
             self.input.attributes_mut().set_position_increment(0)?;
@@ -169,7 +169,7 @@ impl<I: TokenStream> TokenFilter for MorfologikFilter<I> {
             }
         }
         if self.lemmas > 0 {
-            self.current = Some(self.input.attributes().capture_state());
+            self.current.save(self.input.attributes());
             self.pop_next_lemma();
         } else {
             self.input
