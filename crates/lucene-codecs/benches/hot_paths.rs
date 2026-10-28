@@ -1067,6 +1067,14 @@ fn bench_postings_write(c: &mut Criterion) {
         });
     }
     group.finish();
+
+    // The whole-dictionary dump the alternate postings formats re-encode from.
+    let mut group = c.benchmark_group("blocktree_dump");
+    group.sample_size(20);
+    group.bench_function("dictionary_fields_30k_terms", |b| {
+        b.iter(|| black_box(fields.dictionary_fields(&fis).unwrap().len()))
+    });
+    group.finish();
 }
 
 /// Compiling a 200k-key FST with suffix sharing (`NodeHash`), as a
