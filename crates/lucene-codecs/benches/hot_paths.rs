@@ -924,8 +924,39 @@ fn bench_postings_write(c: &mut Criterion) {
     group.finish();
 }
 
+/// Compiling a 200k-key FST with suffix sharing (`NodeHash`), as a
+/// suggester or a memory/FST terms codec does at flush.
+fn bench_fst_compile(c: &mut Criterion) {
+    use lucene_codecs::fst::{InputType, PositiveIntOutputs};
+    use lucene_codecs::fst_compiler::{FstCompiler, FstCompilerBuilder};
+    let mut keys: Vec<Vec<i32>> = (0..200_000u32)
+        .map(|i| {
+            format!("{:x}-suffix{}", i.wrapping_mul(2_654_435_761), i % 97)
+                .bytes()
+                .map(i32::from)
+                .collect()
+        })
+        .collect();
+    keys.sort();
+    keys.dedup();
+    let mut group = c.benchmark_group("fst");
+    group.sample_size(10);
+    group.bench_function("compile_200k", |b| {
+        b.iter(|| {
+            let mut fc: FstCompiler<PositiveIntOutputs> =
+                FstCompilerBuilder::new(InputType::Byte1).build();
+            for (i, k) in keys.iter().enumerate() {
+                fc.add(k, i as i64 % 1000).unwrap();
+            }
+            black_box(fc.compile())
+        })
+    });
+    group.finish();
+}
+
 criterion_group!(
     benches,
+    bench_fst_compile,
     bench_postings_write,
     bench_numeric_write_gcd,
     bench_sorted_numeric_varying_bpv,

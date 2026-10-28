@@ -8,6 +8,7 @@ pub mod bytes_ref_hash;
 pub mod doc_id_sort;
 pub mod fixed_bit_set;
 pub mod float_heap;
+pub mod fx_hash;
 pub mod geo;
 pub mod java_random;
 pub mod live_docs;
