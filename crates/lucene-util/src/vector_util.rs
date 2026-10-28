@@ -19,6 +19,35 @@
 
 use crate::simd;
 
+/// `bytes` read as the little-endian `f32`s a `.vec` file stores, without
+/// copying -- or `None` when that cannot be done in place: on a big-endian
+/// target, when `bytes` is not 4-byte aligned, or when its length is not a
+/// multiple of 4. The caller decodes into a scratch buffer then.
+///
+/// Lucene aligns every field's vector data to 64 bytes in the `.vec` file,
+/// and a mapped or heap-read file starts at least 8-byte aligned, so on the
+/// platforms this port ships for a stored float vector is scored straight
+/// out of the file: one pass over its bytes instead of a decode pass into a
+/// scratch buffer followed by the similarity's pass over that.
+#[inline]
+pub fn le_f32s(bytes: &[u8]) -> Option<&[f32]> {
+    #[cfg(target_endian = "little")]
+    {
+        // SAFETY: every 4-byte pattern is a valid `f32` (NaNs included), so
+        // reinterpreting initialised bytes as `f32` is sound; `align_to`
+        // itself only places an `f32` at a properly aligned address, and
+        // requiring empty prefix and suffix means the middle covers exactly
+        // `bytes`. On a little-endian target that middle is, value for
+        // value, what `f32::from_le_bytes` on each 4-byte chunk would give.
+        let (prefix, floats, suffix) = unsafe { bytes.align_to::<f32>() };
+        if prefix.is_empty() && suffix.is_empty() {
+            return Some(floats);
+        }
+    }
+    let _ = bytes;
+    None
+}
+
 /// `VectorUtil.EPSILON`.
 const EPSILON: f32 = 1e-4;
 
@@ -520,6 +549,25 @@ mod tests {
                 (s >> 24) as u8 & mask
             })
             .collect()
+    }
+
+    #[test]
+    fn le_f32s_views_aligned_bytes_and_refuses_the_rest() {
+        let floats = [1.5f32, -0.0, f32::MAX, 3.25];
+        let mut storage = [0u8; 16 + 4];
+        // The first 4-byte-aligned offset into the buffer.
+        let at = storage.as_ptr().align_offset(4);
+        for (i, f) in floats.iter().enumerate() {
+            storage[at + 4 * i..at + 4 * i + 4].copy_from_slice(&f.to_le_bytes());
+        }
+        let aligned = &storage[at..at + 16];
+        if cfg!(target_endian = "little") {
+            assert_eq!(le_f32s(aligned), Some(&floats[..]));
+        } else {
+            assert_eq!(le_f32s(aligned), None);
+        }
+        assert_eq!(le_f32s(&aligned[1..5]), None, "misaligned");
+        assert_eq!(le_f32s(&aligned[..6]), None, "partial float");
     }
 
     #[test]

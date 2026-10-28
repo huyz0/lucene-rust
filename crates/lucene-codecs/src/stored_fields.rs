@@ -2220,8 +2220,16 @@ fn visit_field<'a>(
             visitor.binary_field(field_number, bytes)
         }
         TYPE_STRING => {
-            let value = input.read_string()?;
-            visitor.string_field(field_number, &value)
+            // Borrowed out of the decompressed chunk: the visitor takes
+            // `&str`, so validating in place spares a `String` per field.
+            // Same length check and UTF-8 error as `read_string`.
+            let length = input.read_length("string")?;
+            let start = input.position();
+            input.skip(length)?;
+            let bytes: &'a [u8] = input.slice(start, input.position())?;
+            let value = std::str::from_utf8(bytes)
+                .map_err(|_| lucene_store::Error::Corrupted("invalid UTF-8 string".into()))?;
+            visitor.string_field(field_number, value)
         }
         TYPE_NUMERIC_INT => visitor.int_field(field_number, read_zint(input)?),
         TYPE_NUMERIC_FLOAT => visitor.float_field(field_number, read_zfloat(input)?),

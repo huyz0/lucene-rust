@@ -155,13 +155,7 @@ pub fn decompress_slice(
             if end > dest.len() {
                 return Err(Error::Eof { offset: end });
             }
-            // See [`decompress`] for why the copy is cut at `dec`.
-            let mut written = 0usize;
-            while written < match_len {
-                let n = dec.min(match_len - written);
-                dest.copy_within(from + written..from + written + n, d + written);
-                written += n;
-            }
+            copy_match(dest, from, d, match_len);
             d = end;
         }
 
@@ -171,6 +165,47 @@ pub fn decompress_slice(
     }
     input.skip(s)?;
     Ok(d)
+}
+
+/// Copies an LZ4 match: `len` bytes to `dest[to..]` from `dest[from..]`,
+/// `from < to`, where the ranges may overlap (`to - from < len`: the way
+/// LZ4 encodes a run, each output byte may repeat one just written).
+///
+/// Bulk `copy_within` rather than Java's `System.arraycopy`-or-byte-loop
+/// split. Without overlap that is one copy. With it, the bytes from `from`
+/// up to the write position are periodic with period `to - from`, so the
+/// copy can take as source everything already written that keeps the phase
+/// -- a whole number of periods -- and double the run each step: `log2(len /
+/// period)` memmoves instead of `len / period` (one per *byte* for a period
+/// of 1, which is a plain `fill`).
+///
+/// The caller has checked `to + len <= dest.len()` and `from < to`.
+// ARITH: `from < to` (so `period >= 1`) and `to + len <= dest.len()` are the
+// caller's preconditions. `written < len` guards each step, so `len -
+// written` cannot underflow; `n <= period + written` keeps the source range
+// `from..from + n` inside the bytes already final (`from + period + written
+// == to + written`), and `to + written + n <= to + len`.
+#[allow(clippy::arithmetic_side_effects)]
+#[inline(always)]
+fn copy_match(dest: &mut [u8], from: usize, to: usize, len: usize) {
+    let period = to - from;
+    if period >= len {
+        dest.copy_within(from..from + len, to);
+        return;
+    }
+    if period == 1 {
+        let b = dest[from];
+        dest[to..to + len].fill(b);
+        return;
+    }
+    let mut written = 0usize;
+    while written < len {
+        // `period + written` is a whole number of periods whenever
+        // `written` is, which every step but the last keeps.
+        let n = (period + written).min(len - written);
+        dest.copy_within(from..from + n, to + written);
+        written += n;
+    }
 }
 
 /// [`read_length_extension`] over a slice cursor.
@@ -259,34 +294,7 @@ pub fn decompress(
         if end > dest.len() {
             return Err(Error::Eof { offset: end });
         }
-        // Bulk `copy_within` in runs of at most `match_dec` bytes rather than
-        // Java's `System.arraycopy`-or-byte-loop split. One run is the
-        // non-overlapping case (Java's `arraycopy` branch); when
-        // `match_dec < match_len` the ranges overlap and each output byte can
-        // depend on one just written (this is how LZ4 encodes short runs), so
-        // the copy is cut at `match_dec` and repeated -- every run's source is
-        // then wholly inside already-written bytes, which keeps the memmove
-        // semantics correct while still moving whole words at a time instead
-        // of one bounds-checked byte at a time.
-        let mut written = 0usize;
-        // ARITH: `written < match_len` is the loop condition, so
-        // `match_len - written` cannot underflow and `n` is in
-        // `1..=match_len - written`, which makes `written += n` terminate at
-        // exactly `match_len`. `src_start + written + n <= src_start +
-        // match_len = d_off - match_dec + match_len <= end <= dest.len()`, and
-        // `d_off + written < end` likewise -- both were established by the
-        // `checked_add`/`end > dest.len()` pair above. No per-byte check is
-        // added here: this is the inner copy loop of the hottest decode path
-        // in the crate.
-        #[allow(clippy::arithmetic_side_effects)]
-        while written < match_len {
-            let n = match_dec.min(match_len - written);
-            dest.copy_within(
-                src_start + written..src_start + written + n,
-                d_off + written,
-            );
-            written += n;
-        }
+        copy_match(dest, src_start, d_off, match_len);
         d_off = end;
 
         if d_off >= dest_end {
@@ -1083,6 +1091,25 @@ mod tests {
         let mut input = SliceInput::new(&compressed);
         let mut dest = [0u8; 2];
         assert!(decompress(&mut input, 3, &mut dest, 0).is_err());
+    }
+
+    /// The doubling overlap copy against the byte-at-a-time definition of
+    /// an LZ4 match, for every period up to past the length.
+    #[test]
+    fn copy_match_matches_the_byte_loop_for_every_period() {
+        for len in [1usize, 2, 3, 4, 7, 8, 15, 16, 17, 33, 100, 300] {
+            for period in 1..=len + 2 {
+                let mut base: Vec<u8> =
+                    (0..period + len + 4).map(|i| (i * 37 + 11) as u8).collect();
+                let mut want = base.clone();
+                let (from, to) = (2, 2 + period);
+                for i in 0..len {
+                    want[to + i] = want[from + i];
+                }
+                copy_match(&mut base, from, to, len);
+                assert_eq!(base, want, "len {len} period {period}");
+            }
+        }
     }
 
     fn assert_compress_round_trips(payload: &[u8]) {
