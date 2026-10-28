@@ -229,7 +229,11 @@ impl<'n> FieldSchema<'n> {
         }
         if let Some(attrs) = ft.attributes() {
             for (k, v) in attrs {
-                self.attributes.insert(k.clone(), v.clone());
+                // Clone only what changes: the same field type repeats on
+                // every document.
+                if self.attributes.get(k) != Some(v) {
+                    self.attributes.insert(k.clone(), v.clone());
+                }
             }
         }
         Ok(())

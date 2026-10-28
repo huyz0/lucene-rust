@@ -797,6 +797,31 @@ impl FlushDeletes<'_> {
 /// several threads at once, each from its own buffer, without the writer's
 /// lock (`DocumentsWriterPerThread.flush`, which likewise reads only its
 /// `FieldInfos.Builder` and `LiveIndexWriterConfig`).
+/// Positions in [`IndexingConfig`]'s field list by name and by number. The
+/// first field with a given name or number wins, as the `iter().find` scans
+/// these replace did: they ran per document and per value, so a wide schema
+/// paid O(fields) for every one.
+#[derive(Clone, Default)]
+pub(crate) struct FieldLookup {
+    by_name: std::collections::HashMap<String, usize>,
+    by_number: std::collections::HashMap<i32, usize>,
+}
+
+impl FieldLookup {
+    fn build(fields: &[FieldInfo]) -> Self {
+        let mut lookup = FieldLookup::default();
+        for (at, info) in fields.iter().enumerate() {
+            lookup.insert(at, info);
+        }
+        lookup
+    }
+
+    fn insert(&mut self, at: usize, info: &FieldInfo) {
+        self.by_name.entry(info.name.clone()).or_insert(at);
+        self.by_number.entry(info.number).or_insert(at);
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct IndexingConfig {
     /// `LiveIndexWriterConfig.getMergedSegmentWarmer()`; see
@@ -807,6 +832,9 @@ pub(crate) struct IndexingConfig {
     /// when the configuration is.
     reader_pool: std::sync::Arc<crate::reader_pool::ReaderPool>,
     fields: Vec<FieldInfo>,
+    /// Name and number lookups into `fields`, kept in step by
+    /// [`IndexingConfig::push_field`] (the only way `fields` grows).
+    field_lookup: FieldLookup,
     /// Writer-lifetime reservations, including fields in opened segments that
     /// explicit documents have not registered yet.
     explicit_field_numbers: explicit::FieldNumbers,
@@ -1217,6 +1245,28 @@ impl DocValueFields for &[lucene_codecs::stored_fields::StoredField] {
 }
 
 impl IndexingConfig {
+    /// The configured field named `name`.
+    pub(crate) fn field_by_name(&self, name: &str) -> Option<&FieldInfo> {
+        self.field_lookup
+            .by_name
+            .get(name)
+            .and_then(|&at| self.fields.get(at))
+    }
+
+    /// The configured field numbered `number`.
+    pub(crate) fn field_by_number(&self, number: i32) -> Option<&FieldInfo> {
+        self.field_lookup
+            .by_number
+            .get(&number)
+            .and_then(|&at| self.fields.get(at))
+    }
+
+    /// Adds a field to the schema, keeping the lookups in step.
+    pub(crate) fn push_field(&mut self, info: FieldInfo) {
+        self.field_lookup.insert(self.fields.len(), &info);
+        self.fields.push(info);
+    }
+
     /// `DocumentsWriterPerThread.updateDocuments`' refusal: a block of `docs`
     /// documents cannot be added to a writer with an index sort and no
     /// parent field. Every entry point that adds a block checks this before
@@ -1280,7 +1330,7 @@ impl IndexingConfig {
     /// [`IndexWriter::open`], see the module doc), so an unknown field is an
     /// error rather than an implicit schema change.
     pub(crate) fn verify_doc_values_update_field(&self, update: &DocValuesUpdate) -> Result<()> {
-        let Some(info) = self.fields.iter().find(|f| f.name == update.field()) else {
+        let Some(info) = self.field_by_name(update.field()) else {
             return Err(Error::UnknownDocValuesUpdateField(
                 update.field().to_string(),
             ));
@@ -3454,21 +3504,30 @@ impl IndexingConfig {
             // general pass's `InMemoryInvertedIndex` (term vectors, payloads).
             // Stored fields' compression shares nothing with inversion, so
             // it runs alongside it; only the file writes stay in order below.
-            let (inverters, stored) = rayon::join(
+            // Vector graphs (HNSW building is often a flush's largest single
+            // cost) are a pure function of the buffer too; their result is
+            // only looked at where it always was, so errors surface in the
+            // same order.
+            let ((inverters, stored), vectors) = rayon::join(
                 || {
-                    IndexWriter::invert_pending_fields_fast(
-                        buf.docs,
-                        &self.postings_fields,
-                        &self.analyzer(),
+                    rayon::join(
+                        || {
+                            IndexWriter::invert_pending_fields_fast(
+                                buf.docs,
+                                &self.postings_fields,
+                                &self.analyzer(),
+                            )
+                        },
+                        || {
+                            segment_writer::build_native_stored_fields(
+                                buf.docs,
+                                &segment_id,
+                                self.codec.as_deref(),
+                            )
+                        },
                     )
                 },
-                || {
-                    segment_writer::build_native_stored_fields(
-                        buf.docs,
-                        &segment_id,
-                        self.codec.as_deref(),
-                    )
-                },
+                build_vectors,
             );
             stored_fields_bytes = stored;
             norms_output = if norms_configs.is_empty() {
@@ -3487,7 +3546,7 @@ impl IndexingConfig {
                 doc_values_output = build_doc_values()?;
             }
             points_output = build_points()?;
-            vectors_output = build_vectors()?;
+            vectors_output = vectors?;
 
             term_vectors_output = None;
             let impact_norms: &[(i32, Vec<i64>)] = norms_output
@@ -3503,25 +3562,30 @@ impl IndexingConfig {
                 flush_deletes,
             )?;
         } else {
-            let (inverted, stored) = rayon::join(
+            let ((inverted, stored), vectors) = rayon::join(
                 || {
-                    IndexWriter::invert_pending_fields(
-                        buf.docs,
-                        &self.postings_fields,
-                        &self.term_vector_fields,
-                        &norms_configs,
-                        &self.payload_field_names(),
-                        self.payload_source.as_deref(),
-                        &self.analyzer(),
+                    rayon::join(
+                        || {
+                            IndexWriter::invert_pending_fields(
+                                buf.docs,
+                                &self.postings_fields,
+                                &self.term_vector_fields,
+                                &norms_configs,
+                                &self.payload_field_names(),
+                                self.payload_source.as_deref(),
+                                &self.analyzer(),
+                            )
+                        },
+                        || {
+                            segment_writer::build_native_stored_fields(
+                                buf.docs,
+                                &segment_id,
+                                self.codec.as_deref(),
+                            )
+                        },
                     )
                 },
-                || {
-                    segment_writer::build_native_stored_fields(
-                        buf.docs,
-                        &segment_id,
-                        self.codec.as_deref(),
-                    )
-                },
+                build_vectors,
             );
             stored_fields_bytes = stored;
             // Norms and term vectors only *read* the shared invert pass;
@@ -3549,7 +3613,7 @@ impl IndexingConfig {
                 doc_values_output = build_doc_values()?;
             }
             points_output = build_points()?;
-            vectors_output = build_vectors()?;
+            vectors_output = vectors?;
 
             // Borrowed out of `norms_output` before the postings consume
             // `inverted`, because the postings writer needs them for its
@@ -5515,6 +5579,7 @@ impl<'d> IndexWriter<'d> {
             dir,
             default_analyzer: None,
             cfg: std::sync::Arc::new(IndexingConfig {
+                field_lookup: FieldLookup::build(&fields),
                 fields,
                 explicit_field_numbers: Default::default(),
                 codec_name: codec_name.into(),
@@ -6155,7 +6220,7 @@ impl<'d> IndexWriter<'d> {
         }
         for sf in sort {
             let wanted = sort_doc_values_type(sf);
-            let registered = self.cfg.fields.iter().find(|f| f.name == sf.field);
+            let registered = self.cfg.field_by_name(&sf.field);
             if self.cfg.explicit {
                 // Explicit documents register their fields as they arrive, as
                 // Java's `IndexWriterConfig.setIndexSort` names fields no
@@ -8398,7 +8463,11 @@ impl IndexWriter<'_> {
     ) -> Result<Option<PostingsGroups>> {
         struct FieldData {
             config: PostingsFieldConfig,
-            doc_ids: std::collections::BTreeSet<i32>,
+            /// Which docs carry the field, as bits, and how many: a
+            /// `BTreeSet` insert per posting only to count them was
+            /// O(postings log docs) with a node allocation each.
+            doc_bits: Vec<u64>,
+            doc_count: usize,
             terms: Vec<TermPostings>,
         }
 
@@ -8406,7 +8475,8 @@ impl IndexWriter<'_> {
             .iter()
             .map(|config| FieldData {
                 config: config.clone(),
-                doc_ids: std::collections::BTreeSet::new(),
+                doc_bits: Vec::new(),
+                doc_count: 0,
                 terms: Vec::new(),
             })
             .collect();
@@ -8461,7 +8531,18 @@ impl IndexWriter<'_> {
                 offsets.reserve_exact(entries.len());
             }
             for entry in entries {
-                data.doc_ids.insert(entry.doc_id);
+                // A doc id is an index into this flush's buffer: never
+                // negative.
+                let doc = usize::try_from(entry.doc_id).unwrap_or(0);
+                let word = doc >> 6;
+                if word >= data.doc_bits.len() {
+                    data.doc_bits.resize(word.saturating_add(1), 0);
+                }
+                let bit = 1u64 << (doc & 63);
+                if data.doc_bits[word] & bit == 0 {
+                    data.doc_bits[word] |= bit;
+                    data.doc_count = data.doc_count.saturating_add(1);
+                }
                 term_docs.push((entry.doc_id, entry.term_freq()));
                 if has_positions {
                     positions.push(entry.occurrences.iter().map(|o| o.position).collect());
@@ -8536,7 +8617,7 @@ impl IndexWriter<'_> {
             .map(|f| FieldPostingsInput {
                 field_number: f.config.field_number,
                 index_options: f.config.index_options,
-                doc_count: f.doc_ids.len() as i32,
+                doc_count: f.doc_count as i32,
                 // Must match the `.fnm`'s `STORE_PAYLOADS` bit for this field:
                 // it is what makes `postings_writer` emit `.pay` at all and
                 // write a payload-length run per block, and it is what real
@@ -8888,11 +8969,14 @@ impl IndexWriter<'_> {
                             })
                     })
                     .collect();
-                for ((field, _term), list) in &inverted.terms {
+                // Only this field's keys: `(field, term)` sorts by field
+                // first, so they are one contiguous range.
+                for ((_field, _term), list) in inverted
+                    .terms
+                    .range((config.name.clone(), String::new())..)
+                    .take_while(|((field, _), _)| field == &config.name)
+                {
                     let entries = &list.entries;
-                    if field != &config.name {
-                        continue;
-                    }
                     for (i, entry) in entries.iter().enumerate() {
                         // `entry.doc_id` is an index into `docs` that this
                         // writer's own inversion produced, so it addresses
@@ -9042,10 +9126,11 @@ impl IndexWriter<'_> {
             let has_payloads = config.store_payloads;
 
             let mut field_terms_per_doc: Vec<Vec<TermVectorTerm>> = vec![Vec::new(); docs.len()];
-            for ((field, term), list) in &inverted.terms {
-                if field != &config.name {
-                    continue;
-                }
+            for ((_field, term), list) in inverted
+                .terms
+                .range((config.name.clone(), String::new())..)
+                .take_while(|((field, _), _)| field == &config.name)
+            {
                 // Running cursors into this term's flat payload run: term
                 // vectors want the per-occurrence view, and the run stores
                 // lengths rather than offsets, so the only way to it is the
@@ -9735,13 +9820,21 @@ impl IndexWriter<'_> {
             groups: Vec::with_capacity(groups.len()),
             written: Vec::with_capacity(names.len()),
         };
+        // Each field is in exactly one group, so the groups take their
+        // fields by move: a clone copied every vector a second time.
+        let mut flat_fields: Vec<Option<FlatVectorsField>> =
+            flat_fields.into_iter().map(Some).collect();
         for group in &groups {
             let suffix = group.codec_suffix();
             let fields: Vec<FlatVectorsField> = group
                 .field_numbers
                 .iter()
-                .filter_map(|n| flat_fields.iter().find(|f| f.field_number == *n))
-                .cloned()
+                .filter_map(|n| {
+                    flat_fields
+                        .iter_mut()
+                        .find(|f| f.as_ref().is_some_and(|f| f.field_number == *n))
+                        .and_then(Option::take)
+                })
                 .collect();
             let files =
                 Self::build_vector_group(&fields, group.format, max_doc, segment_id, &suffix)?;
@@ -9804,18 +9897,21 @@ impl IndexWriter<'_> {
         if let Some((m, beam_width)) = format.graph() {
             // Reopen exactly the bytes just written, and build every graph
             // over *those* -- see this method's doc comment.
+            //
+            // One graph per field, built in parallel: each depends only on
+            // its own vectors and the fixed `DEFAULT_RAND_SEED`, so the bytes
+            // do not change. The first error in field order is returned.
             let graphs: Vec<Option<hnsw::OnHeapHnswGraph>> = {
+                use rayon::prelude::*;
                 let flat =
                     vectors::FlatVectorsReader::open(&vemf_bytes, &vec_bytes, segment_id, suffix)?;
-                let mut graphs = Vec::with_capacity(flat_fields.len());
-                for field in flat_fields {
+                let build = |field: &FlatVectorsField| -> Result<Option<hnsw::OnHeapHnswGraph>> {
                     let count = field.docs.len() as i32;
                     // `Lucene99HnswVectorsWriter.shouldCreateGraph`: a segment
                     // too small for a graph to beat an exhaustive scan gets
                     // none, and its `.vem` records `numLevels = 0`.
                     if !hnsw::should_create_graph(hnsw::HNSW_GRAPH_THRESHOLD, count) {
-                        graphs.push(None);
-                        continue;
+                        return Ok(None);
                     }
                     let graph = match field.values.encoding() {
                         VectorEncoding::Float32 => {
@@ -9839,9 +9935,11 @@ impl IndexWriter<'_> {
                             .build(count)?
                         }
                     };
-                    graphs.push(Some(graph));
-                }
-                graphs
+                    Ok(Some(graph))
+                };
+                let built: Vec<Result<Option<hnsw::OnHeapHnswGraph>>> =
+                    flat_fields.par_iter().map(build).collect();
+                built.into_iter().collect::<Result<_>>()?
             };
             let hnsw_fields: Vec<HnswVectorsField<'_>> = flat_fields
                 .iter()
@@ -11667,7 +11765,7 @@ impl IndexingConfig {
                 }
             }
             for (field, buffer) in &packet.field_updates {
-                let Some(info) = self.fields.iter().find(|f| &f.name == field) else {
+                let Some(info) = self.field_by_name(field) else {
                     // Java's `verifyOrCreateDvOnlyField` already rejected an
                     // unknown field at buffer time; reaching here means the
                     // update was buffered before this writer's field list was
