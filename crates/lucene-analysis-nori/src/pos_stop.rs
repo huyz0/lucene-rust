@@ -51,8 +51,19 @@ pub fn default_stop_tags() -> Arc<HashSet<Tag>> {
     Arc::clone(&TAGS)
 }
 
-/// The predicate of [`KoreanPartOfSpeechStopFilter`].
-pub struct StopTags(Arc<HashSet<Tag>>);
+/// The predicate of [`KoreanPartOfSpeechStopFilter`]: the stop tags as a
+/// bit per `Tag` ordinal (48 of them), so the per-token test is a shift
+/// rather than a hash of the tag.
+pub struct StopTags(u64);
+
+// `Vsv` is the last tag: every ordinal fits the mask.
+const _: () = assert!((Tag::Vsv as u32) < 64);
+
+impl StopTags {
+    fn new(tags: &HashSet<Tag>) -> Self {
+        StopTags(tags.iter().fold(0, |bits, &t| bits | (1u64 << t as u32)))
+    }
+}
 
 impl lucene_analysis::token_stream::Accept for StopTags {
     // Java: KoreanPartOfSpeechStopFilter.accept
@@ -60,7 +71,7 @@ impl lucene_analysis::token_stream::Accept for StopTags {
         let left = atts
             .custom::<PartOfSpeechAttribute>()
             .and_then(PartOfSpeechAttribute::left_pos);
-        Ok(left.is_none_or(|t| !self.0.contains(&t)))
+        Ok(left.is_none_or(|t| self.0 & (1u64 << t as u32) == 0))
     }
 }
 
@@ -73,5 +84,5 @@ pub fn korean_part_of_speech_stop_filter<I: TokenStream>(
     stop_tags: Arc<HashSet<Tag>>,
 ) -> KoreanPartOfSpeechStopFilter<I> {
     input.attributes_mut().add_custom::<PartOfSpeechAttribute>();
-    FilteringTokenFilter::new(input, StopTags(stop_tags))
+    FilteringTokenFilter::new(input, StopTags::new(&stop_tags))
 }

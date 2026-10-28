@@ -4824,7 +4824,11 @@ fn write_terms_dict<T: AsRef<[u8]>>(meta: &mut Vec<u8>, data: &mut Vec<u8>, term
     let mut max_length = 0i32;
     let mut max_block_length = 0i32;
     let mut block_addresses: Vec<i64> = Vec::new();
-    let mut block_body: Vec<u8> = Vec::new();
+    // `termsDictBuffer`: the block's first term (the preset dictionary)
+    // followed by the rest of the block, prefix-compressed. One hash table
+    // for the whole field, as Java's `addTermsDict` keeps.
+    let mut block_buf: Vec<u8> = Vec::new();
+    let mut ht = lz4::FastCompressionHashTable::new();
 
     let mut ord = 0usize;
     while ord < terms.len() {
@@ -4835,9 +4839,10 @@ fn write_terms_dict<T: AsRef<[u8]>>(meta: &mut Vec<u8>, data: &mut Vec<u8>, term
         max_length = max_length.max(term.len() as i32);
 
         // The rest of this 64-term block, prefix-compressed against its
-        // immediate predecessor (first term included as the implicit
-        // dictionary).
-        block_body.clear();
+        // immediate predecessor.
+        block_buf.clear();
+        block_buf.extend_from_slice(term);
+        let dict_len = term.len();
         let block_end = terms
             .len()
             .min(ord + (TERMS_DICT_BLOCK_LZ4_MASK as usize) + 1);
@@ -4849,29 +4854,27 @@ fn write_terms_dict<T: AsRef<[u8]>>(meta: &mut Vec<u8>, data: &mut Vec<u8>, term
                 "write_terms_dict requires strictly ascending, deduplicated terms"
             );
             let suffix_len = later.len() - prefix_len;
-            block_body.push((prefix_len.min(15) as u8) | (((suffix_len - 1).min(15) as u8) << 4));
+            block_buf.push((prefix_len.min(15) as u8) | (((suffix_len - 1).min(15) as u8) << 4));
             if prefix_len >= 15 {
-                block_body.write_vint((prefix_len - 15) as i32);
+                block_buf.write_vint((prefix_len - 15) as i32);
             }
             if suffix_len >= 16 {
-                block_body.write_vint((suffix_len - 16) as i32);
+                block_buf.write_vint((suffix_len - 16) as i32);
             }
-            block_body.extend_from_slice(&later[prefix_len..]);
+            block_buf.extend_from_slice(&later[prefix_len..]);
             max_length = max_length.max(later.len() as i32);
             prev = later;
         }
 
-        if !block_body.is_empty() {
-            // See [`write_single_dense_sorted_field`]'s doc comment: this
-            // port's `lz4::compress` has no preset-dictionary variant, but
-            // the decompressor tolerates that (it only ever *allows* matches
-            // into the dictionary region, never requires them), so
-            // compressing `block_body` on its own still round-trips.
-            let compressed = lz4::compress(&block_body);
-            data.write_vint(block_body.len() as i32);
-            data.extend_from_slice(&compressed);
+        let body_len = block_buf.len() - dict_len;
+        if body_len > 0 {
+            // `compressAndGetTermsDictBlockLength`: the first term is LZ4's
+            // preset dictionary, so a suffix repeating bytes of it compresses
+            // to a back-reference exactly where Java's does.
+            data.write_vint(body_len as i32);
+            lz4::compress_with_dictionary(&block_buf, 0, dict_len, body_len, data, &mut ht);
         }
-        max_block_length = max_block_length.max(block_body.len() as i32);
+        max_block_length = max_block_length.max(body_len as i32);
         ord = block_end;
     }
 

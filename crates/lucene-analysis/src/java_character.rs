@@ -93,11 +93,28 @@ pub const FINAL_QUOTE_PUNCTUATION: u8 = 30;
 /// `Character.MAX_CODE_POINT`.
 pub const MAX_CODE_POINT: u32 = 0x10FFFF;
 
-/// Latin-1's categories, the hot range, read once from the runs.
+/// Latin-1's categories, the hot range: an inline array, so the char
+/// tokenizers' per-character test is one load with no pointer chase.
 static LATIN1: std::sync::LazyLock<[u8; 256]> = std::sync::LazyLock::new(|| {
     let mut t = [0u8; 256];
-    for (cp, slot) in t.iter_mut().enumerate() {
-        *slot = lookup(cp as u32);
+    t.copy_from_slice(&BMP[..256]);
+    t
+});
+
+/// The BMP's categories, one byte per code point, expanded once from the
+/// runs: the per-character lookup the tokenizers make (Kuromoji's and
+/// Nori's unknown-word scans, the char tokenizers) is then one load, as
+/// Java's `CharacterData` table is, where the run search took a dozen
+/// dependent steps.
+static BMP: std::sync::LazyLock<Box<[u8]>> = std::sync::LazyLock::new(|| {
+    let mut t = vec![0u8; 0x10000].into_boxed_slice();
+    for (i, &(start, gc)) in GENERAL_CATEGORY_RUNS.iter().enumerate() {
+        let end = GENERAL_CATEGORY_RUNS
+            .get(i + 1)
+            .map_or(0x10000, |&(next, _)| next.min(0x10000));
+        if let Some(run) = t.get_mut(start as usize..end as usize) {
+            run.fill(gc);
+        }
     }
     t
 });
@@ -109,13 +126,15 @@ fn lookup(cp: u32) -> u8 {
 }
 
 /// `Character.getType(int)`; `UNASSIGNED` past [`MAX_CODE_POINT`].
+#[inline]
 pub fn get_type(cp: u32) -> u8 {
-    if cp < 256 {
-        LATIN1[cp as usize]
-    } else if cp > MAX_CODE_POINT {
-        UNASSIGNED
-    } else {
-        lookup(cp)
+    if let Some(&gc) = LATIN1.get(cp as usize) {
+        return gc;
+    }
+    match BMP.get(cp as usize) {
+        Some(&gc) => gc,
+        None if cp > MAX_CODE_POINT => UNASSIGNED,
+        None => lookup(cp),
     }
 }
 
@@ -415,6 +434,16 @@ mod tests {
                 assert_ne!(get_type(cp), UNASSIGNED, "{cp:#x}");
             }
         }
+    }
+
+    /// The BMP table is the runs, code point for code point.
+    #[test]
+    fn bmp_table_is_the_runs() {
+        for cp in 0..0x10000 {
+            assert_eq!(get_type(cp), lookup(cp), "{cp:#x}");
+        }
+        assert_eq!(get_type(0x1F600), OTHER_SYMBOL);
+        assert_eq!(get_type(MAX_CODE_POINT + 1), UNASSIGNED);
     }
 
     #[test]

@@ -114,3 +114,9 @@ harness = false
 [[bench]]
 name = "string_val_sort"
 harness = false
+
+# The percolator hot paths (MemoryIndex, Monitor match/register) and the
+# spell checker string distances -- see the bench module doc.
+[[bench]]
+name = "monitor_memory_spell"
+harness = false

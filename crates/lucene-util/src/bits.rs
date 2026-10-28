@@ -64,20 +64,33 @@ impl Bits for MatchNoBits {
 }
 
 impl Bits for FixedBitSet {
+    #[inline]
     fn get(&self, index: usize) -> bool {
         // FBS: the trait's contract is Java's -- `index < length()` -- and
         // `FixedBitSet::get` enforces it (`self.len()` is `length()`).
         FixedBitSet::get(self, index)
     }
+    #[inline]
     fn length(&self) -> usize {
         self.len()
+    }
+    /// Java's `FixedBitSet.applyMask` override: one word-wise `andRange`
+    /// instead of a `get` per set bit. A set bit of `bit_set` past this
+    /// bitset's end panics, as the default's out-of-range `get` would (Java
+    /// throws `IllegalArgumentException`).
+    fn apply_mask(&self, bit_set: &mut FixedBitSet, offset: usize) {
+        if let Err(e) = FixedBitSet::apply_mask(self, bit_set, offset) {
+            panic!("{e}");
+        }
     }
 }
 
 impl Bits for SparseFixedBitSet {
+    #[inline]
     fn get(&self, index: usize) -> bool {
         SparseFixedBitSet::get(self, index)
     }
+    #[inline]
     fn length(&self) -> usize {
         self.len()
     }
@@ -132,60 +145,78 @@ pub trait BitSet: Bits {
 impl BitSet for FixedBitSet {
     // FBS (every method below): delegations to `FixedBitSet`'s own methods,
     // which check `index < self.len()` themselves.
+    #[inline]
     fn set(&mut self, i: usize) {
         FixedBitSet::set(self, i);
     }
+    #[inline]
     fn get_and_set(&mut self, i: usize) -> bool {
         FixedBitSet::get_and_set(self, i)
     }
+    #[inline]
     fn clear(&mut self, i: usize) {
         FixedBitSet::clear(self, i);
     }
+    #[inline]
     fn clear_range(&mut self, start: usize, end: usize) {
         FixedBitSet::clear_range(self, start, end);
     }
+    #[inline]
     fn cardinality(&self) -> usize {
         FixedBitSet::cardinality(self)
     }
+    #[inline]
     fn approximate_cardinality(&self) -> usize {
         FixedBitSet::approximate_cardinality(self)
     }
+    #[inline]
     fn prev_set_bit(&self, index: usize) -> Option<usize> {
         FixedBitSet::prev_set_bit(self, index)
     }
+    #[inline]
     fn next_set_bit_in_range(&self, start: usize, end: usize) -> Option<usize> {
         FixedBitSet::next_set_bit_in_range(self, start, end)
     }
+    #[inline]
     fn next_clear_bit_in_range(&self, start: usize, upper_bound: usize) -> Option<usize> {
         FixedBitSet::next_clear_bit_in_range(self, start, upper_bound)
     }
 }
 
 impl BitSet for SparseFixedBitSet {
+    #[inline]
     fn set(&mut self, i: usize) {
         SparseFixedBitSet::set(self, i);
     }
+    #[inline]
     fn get_and_set(&mut self, i: usize) -> bool {
         SparseFixedBitSet::get_and_set(self, i)
     }
+    #[inline]
     fn clear(&mut self, i: usize) {
         SparseFixedBitSet::clear(self, i);
     }
+    #[inline]
     fn clear_range(&mut self, start: usize, end: usize) {
         SparseFixedBitSet::clear_range(self, start, end);
     }
+    #[inline]
     fn cardinality(&self) -> usize {
         SparseFixedBitSet::cardinality(self)
     }
+    #[inline]
     fn approximate_cardinality(&self) -> usize {
         SparseFixedBitSet::approximate_cardinality(self)
     }
+    #[inline]
     fn prev_set_bit(&self, index: usize) -> Option<usize> {
         SparseFixedBitSet::prev_set_bit(self, index)
     }
+    #[inline]
     fn next_set_bit_in_range(&self, start: usize, end: usize) -> Option<usize> {
         SparseFixedBitSet::next_set_bit_in_range(self, start, end)
     }
+    #[inline]
     fn next_clear_bit_in_range(&self, start: usize, upper_bound: usize) -> Option<usize> {
         SparseFixedBitSet::next_clear_bit_in_range(self, start, upper_bound)
     }
@@ -210,7 +241,29 @@ impl AnyBitSet {
         } else {
             AnyBitSet::Dense(FixedBitSet::new(max_doc))
         };
-        set.as_bit_set_mut().or_iter(docs);
+        // Direct, inlinable `set` calls rather than one virtual call per doc
+        // through `&mut dyn BitSet`.
+        match &mut set {
+            AnyBitSet::Dense(b) => {
+                for d in docs {
+                    if d == NO_MORE_DOCS {
+                        break;
+                    }
+                    // FBS: Java's `BitSet.of` contract is docs in `0..maxDoc`,
+                    // and `b` was sized `max_doc`; `set` panics past it, as
+                    // the `or_iter` this replaces did.
+                    b.set(d as usize);
+                }
+            }
+            AnyBitSet::Sparse(b) => {
+                for d in docs {
+                    if d == NO_MORE_DOCS {
+                        break;
+                    }
+                    b.set(d as usize);
+                }
+            }
+        }
         set
     }
 
@@ -360,6 +413,37 @@ mod tests {
         let not = NotBits(MatchNoBits(4));
         assert!(not.get(2));
         assert_eq!(not.length(), 4);
+        // The word-wise override agrees with the per-bit default on a
+        // misaligned offset.
+        let mut live = FixedBitSet::new(300);
+        live.set_range(0, 300);
+        for i in (0..300).step_by(7) {
+            live.clear(i);
+        }
+        let mut a = FixedBitSet::new(200);
+        a.set_range(0, 200);
+        let mut b = a.clone();
+        Bits::apply_mask(&live, &mut a, 37);
+        struct PerBit<'a>(&'a FixedBitSet);
+        impl Bits for PerBit<'_> {
+            fn get(&self, index: usize) -> bool {
+                self.0.get(index)
+            }
+            fn length(&self) -> usize {
+                self.0.len()
+            }
+        }
+        Bits::apply_mask(&PerBit(&live), &mut b, 37);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    #[should_panic(expected = "beyond the end")]
+    fn fixed_apply_mask_rejects_bits_past_the_end() {
+        let live = FixedBitSet::new(100);
+        let mut m = FixedBitSet::new(64);
+        m.set(63);
+        Bits::apply_mask(&live, &mut m, 50);
     }
 
     fn exercise(set: &mut dyn BitSet) {

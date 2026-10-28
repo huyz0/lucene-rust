@@ -45,6 +45,7 @@ impl DistanceStyle {
     }
 
     /// `computeDistance(point1, x2, y2, z2)`.
+    #[inline]
     pub fn compute_distance(self, point1: &GeoPoint, x2: f64, y2: f64, z2: f64) -> f64 {
         match self {
             DistanceStyle::Arc => point1.arc_distance_xyz(x2, y2, z2),
@@ -76,6 +77,7 @@ impl DistanceStyle {
     }
 
     /// `toAggregationForm(distance)`: the squared styles sum square roots.
+    #[inline]
     pub fn to_aggregation_form(self, distance: f64) -> f64 {
         match self {
             DistanceStyle::LinearSquared | DistanceStyle::NormalSquared => sqrt(distance),
@@ -84,6 +86,7 @@ impl DistanceStyle {
     }
 
     /// `aggregateDistances(distances...)`: their sum.
+    #[inline]
     pub fn aggregate_distances(self, distances: &[f64]) -> f64 {
         let mut rval = 0.0;
         for d in distances {
@@ -93,6 +96,7 @@ impl DistanceStyle {
     }
 
     /// `fromAggregationForm(aggregateDistance)`.
+    #[inline]
     pub fn from_aggregation_form(self, aggregate_distance: f64) -> f64 {
         match self {
             DistanceStyle::LinearSquared | DistanceStyle::NormalSquared => {

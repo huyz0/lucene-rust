@@ -384,23 +384,13 @@ impl FieldInverter {
     /// The `FieldInvertState` `Similarity.computeNorm` reads for document
     /// `doc`, or `None` when it has no value in this field.
     pub fn invert_state(&self, doc: usize) -> Option<crate::similarity::FieldInvertState> {
-        let length = self.lengths.get(doc).copied().flatten()?;
-        let (num_overlap, unique) = self.overlaps_and_unique.get(doc).copied()?;
-        let end = self.ends.get(doc).copied()?;
-        let clamp = |n: u32| i32::try_from(n).unwrap_or(i32::MAX);
-        Some(crate::similarity::FieldInvertState {
-            docs_only: self.index_options == IndexOptions::Docs,
-            position: end.position,
-            length: clamp(length),
-            num_overlap: clamp(num_overlap),
-            offset: end.offset,
-            max_term_frequency: clamp(end.max_term_frequency),
-            unique_term_count: clamp(unique),
-            attribute_source: Some(crate::similarity::end_attributes(
-                end.final_increment,
-                end.final_offset,
-            )),
-        })
+        invert_state(
+            self.index_options,
+            &self.lengths,
+            &self.overlaps_and_unique,
+            &self.ends,
+            doc,
+        )
     }
 
     /// Number of distinct terms buffered.
@@ -431,21 +421,20 @@ impl FieldInverter {
     }
 
     /// Inverts `num_docs` documents, splitting them into contiguous runs that
-    /// are inverted on rayon's pool, each into its own term hash, and then
-    /// appended in document order ([`Self::append`]). `values_of(doc, out)`
-    /// fills `out` with document `doc`'s values of this field.
+    /// are inverted on rayon's pool, each into its own term hash, then merged
+    /// in term order -- also on the pool ([`merge_runs`]). `values_of(doc,
+    /// out)` fills `out` with document `doc`'s values of this field.
     ///
     /// Tokenizing and hashing are most of a flush, and nothing in them
     /// depends on another document, so a single-threaded writer's flush uses
-    /// every core. The result is the one serial inversion builds, term ids
-    /// aside: those are hash-order internals that [`Self::into_term_postings`]
-    /// sorts away -- asserted in this module's tests.
+    /// every core. The result is the one serial inversion builds -- asserted
+    /// in this module's tests.
     pub fn invert_parallel<'a, F>(
         index_options: IndexOptions,
         num_docs: usize,
         values_of: F,
         analyzer: &Analyzer,
-    ) -> Self
+    ) -> InvertedField
     where
         F: Fn(usize, &mut Vec<&'a str>) + Sync,
     {
@@ -461,11 +450,11 @@ impl FieldInverter {
             inverter
         };
         let threads = rayon::current_num_threads();
-        // Below this a run's own term hash (and the append that folds it in)
+        // Below this a run's own term hash (and the merge that folds it in)
         // costs more than the parallelism saves.
         const MIN_RUN_DOCS: usize = 512;
         if threads <= 1 || num_docs < MIN_RUN_DOCS.saturating_mul(2) {
-            return invert_run(0..num_docs);
+            return invert_run(0..num_docs).finish();
         }
         // Two runs per thread, so a run of long documents does not leave the
         // other threads idle at the end.
@@ -474,73 +463,25 @@ impl FieldInverter {
             .min(num_docs / MIN_RUN_DOCS)
             .max(1);
         let run_len = num_docs.div_ceil(runs);
-        let mut parts: Vec<FieldInverter> = (0..runs)
+        let parts: Vec<FieldInverter> = (0..runs)
             .into_par_iter()
             .map(|r| {
                 let start = r.saturating_mul(run_len).min(num_docs);
                 invert_run(start..start.saturating_add(run_len).min(num_docs))
             })
             .collect();
-        let mut parts = parts.drain(..);
-        let mut out = parts
-            .next()
-            .unwrap_or_else(|| FieldInverter::new(index_options));
-        for part in parts {
-            out.append(part);
-        }
-        out
+        merge_runs(index_options, parts)
     }
 
-    /// Appends `other`, whose document `i` becomes document
-    /// `self.lengths.len() + i` -- the two runs inverted as one.
-    ///
-    /// Each term of `other` moves to `self`'s table once (keeping its hash),
-    /// and its postings are appended whole: `other`'s documents all follow
-    /// `self`'s, so each term's doc list stays ascending. The only state that
-    /// depends on what came *before* a document is `DOCS`' "a term new to the
-    /// segment" flag (its `maxTermFrequency`), recomputed here against
-    /// `self`'s terms.
-    pub(crate) fn append(&mut self, other: FieldInverter) {
-        debug_assert_eq!(self.index_options, other.index_options);
-        let base = self.lengths.len();
-        let doc_base = i32::try_from(base).unwrap_or(i32::MAX);
-        let docs_only = self.index_options == IndexOptions::Docs;
-        self.lengths.extend_from_slice(&other.lengths);
-        self.overlaps_and_unique
-            .extend_from_slice(&other.overlaps_and_unique);
-        self.ends.extend_from_slice(&other.ends);
-        if docs_only {
-            for end in &mut self.ends[base..] {
-                end.max_term_frequency = 0;
-            }
-        }
-        self.doc_count = self.doc_count.saturating_add(other.doc_count);
-        let FieldInverter {
-            terms, postings, ..
-        } = other;
-        for (local, mut buf) in postings.into_iter().enumerate() {
-            let local = local as u32;
-            for entry in &mut buf.docs {
-                entry.0 = entry.0.saturating_add(doc_base);
-            }
-            let (id, is_new) = self
-                .terms
-                .add_hashed(terms.term(local), terms.hashes[local as usize]);
-            if is_new {
-                if docs_only {
-                    if let Some(&(first, _)) = buf.docs.first() {
-                        if let Some(end) = self.ends.get_mut(first as usize) {
-                            end.max_term_frequency = 1;
-                        }
-                    }
-                }
-                self.postings.push(buf);
-            } else {
-                let p = &mut self.postings[id as usize];
-                p.docs.extend_from_slice(&buf.docs);
-                p.positions.extend_from_slice(&buf.positions);
-                p.offsets.extend_from_slice(&buf.offsets);
-            }
+    /// This inversion, finished: terms sorted, positions split per document.
+    pub fn finish(mut self) -> InvertedField {
+        InvertedField {
+            index_options: self.index_options,
+            doc_count: self.doc_count,
+            lengths: std::mem::take(&mut self.lengths),
+            overlaps_and_unique: std::mem::take(&mut self.overlaps_and_unique),
+            ends: std::mem::take(&mut self.ends),
+            terms: self.into_term_postings(),
         }
     }
 
@@ -593,6 +534,236 @@ impl FieldInverter {
             // Nothing to split: a move per term, cheaper than the pool.
             sorted.into_iter().map(convert).collect()
         }
+    }
+}
+
+/// One field's finished inversion: its postings in term order, ready for
+/// the postings writer, and every document's `FieldInvertState` for norms.
+#[derive(Debug)]
+pub struct InvertedField {
+    index_options: IndexOptions,
+    doc_count: i32,
+    lengths: Vec<Option<u32>>,
+    overlaps_and_unique: Vec<(u32, u32)>,
+    ends: Vec<DocEnd>,
+    terms: Vec<TermPostings>,
+}
+
+impl InvertedField {
+    /// Documents with at least one token in this field.
+    pub fn doc_count(&self) -> i32 {
+        self.doc_count
+    }
+
+    /// Per-document token counts (`None`: no value), for norms.
+    pub fn lengths(&self) -> &[Option<u32>] {
+        &self.lengths
+    }
+
+    /// [`FieldInverter::invert_state`], for the finished field.
+    pub fn invert_state(&self, doc: usize) -> Option<crate::similarity::FieldInvertState> {
+        invert_state(
+            self.index_options,
+            &self.lengths,
+            &self.overlaps_and_unique,
+            &self.ends,
+            doc,
+        )
+    }
+
+    /// The postings, sorted by term bytes.
+    pub fn into_term_postings(self) -> Vec<TermPostings> {
+        self.terms
+    }
+}
+
+/// `FieldInvertState` for document `doc` out of the per-document arrays.
+fn invert_state(
+    index_options: IndexOptions,
+    lengths: &[Option<u32>],
+    overlaps_and_unique: &[(u32, u32)],
+    ends: &[DocEnd],
+    doc: usize,
+) -> Option<crate::similarity::FieldInvertState> {
+    let length = lengths.get(doc).copied().flatten()?;
+    let (num_overlap, unique) = overlaps_and_unique.get(doc).copied()?;
+    let end = ends.get(doc).copied()?;
+    let clamp = |n: u32| i32::try_from(n).unwrap_or(i32::MAX);
+    Some(crate::similarity::FieldInvertState {
+        docs_only: index_options == IndexOptions::Docs,
+        position: end.position,
+        length: clamp(length),
+        num_overlap: clamp(num_overlap),
+        offset: end.offset,
+        max_term_frequency: clamp(end.max_term_frequency),
+        unique_term_count: clamp(unique),
+        attribute_source: Some(crate::similarity::end_attributes(
+            end.final_increment,
+            end.final_offset,
+        )),
+    })
+}
+
+/// Runs inverted independently (run `r`'s document `i` is document
+/// `starts[r] + i` of the field), merged into one [`InvertedField`].
+///
+/// Each run's terms are sorted on its own thread; then the term space is
+/// split at evenly spaced terms of the run with the most terms, and each
+/// range is merged on the pool -- a k-way merge over the runs' sorted terms,
+/// concatenating each term's postings in run order, so doc ids stay
+/// ascending. Nothing is re-hashed and no range waits on another.
+///
+/// The only per-document state that depends on earlier runs is `DOCS`'
+/// "a term new to the segment" flag (its `maxTermFrequency`): it is set
+/// again here, on the first document of each term's first run.
+fn merge_runs(index_options: IndexOptions, runs: Vec<FieldInverter>) -> InvertedField {
+    use rayon::prelude::*;
+    let with_positions = matches!(
+        index_options,
+        IndexOptions::DocsAndFreqsAndPositions | IndexOptions::DocsAndFreqsAndPositionsAndOffsets
+    );
+    let with_offsets = index_options == IndexOptions::DocsAndFreqsAndPositionsAndOffsets;
+    let docs_only = index_options == IndexOptions::Docs;
+
+    let sorted: Vec<Vec<u32>> = runs.par_iter().map(|run| run.terms.sorted_ids()).collect();
+    let mut starts = Vec::with_capacity(runs.len());
+    let mut next = 0usize;
+    for run in &runs {
+        starts.push(i32::try_from(next).unwrap_or(i32::MAX));
+        next = next.saturating_add(run.lengths.len());
+    }
+
+    // Split terms: evenly spaced terms of the largest run.
+    let largest = (0..runs.len())
+        .max_by_key(|&r| sorted[r].len())
+        .unwrap_or(0);
+    let pieces = rayon::current_num_threads().saturating_mul(4).max(1);
+    let step = sorted
+        .get(largest)
+        .map_or(0, |ids| ids.len().div_ceil(pieces))
+        .max(1);
+    let mut bounds: Vec<&[u8]> = sorted
+        .get(largest)
+        .map(|ids| {
+            ids.iter()
+                .skip(step)
+                .step_by(step)
+                .map(|&id| runs[largest].terms.term(id))
+                .collect()
+        })
+        .unwrap_or_default();
+    bounds.dedup();
+
+    let merge_range = |lower: Option<&[u8]>, upper: Option<&[u8]>| {
+        // Each run's slice of sorted ids inside `lower..upper`.
+        let mut cursors: Vec<(usize, usize)> = runs
+            .iter()
+            .zip(&sorted)
+            .map(|(run, ids)| {
+                let at = |bound: Option<&[u8]>, default: usize| {
+                    bound.map_or(default, |b| {
+                        ids.partition_point(|&id| run.terms.term(id) < b)
+                    })
+                };
+                (at(lower, 0), at(upper, ids.len()))
+            })
+            .collect();
+        let mut out = Vec::new();
+        let mut new_term_docs = Vec::new();
+        loop {
+            let mut smallest: Option<&[u8]> = None;
+            for (r, &(at, end)) in cursors.iter().enumerate() {
+                if at < end {
+                    let term = runs[r].terms.term(sorted[r][at]);
+                    if smallest.is_none_or(|s| term < s) {
+                        smallest = Some(term);
+                    }
+                }
+            }
+            let Some(term) = smallest else { break };
+            let mut merged = TermPostings {
+                term: term.to_vec(),
+                ..TermPostings::default()
+            };
+            let mut first_run = true;
+            for (r, cursor) in cursors.iter_mut().enumerate() {
+                let (at, end) = *cursor;
+                if at >= end {
+                    continue;
+                }
+                let id = sorted[r][at];
+                if runs[r].terms.term(id) != term {
+                    continue;
+                }
+                *cursor = (at.saturating_add(1), end);
+                let buf = &runs[r].postings[id as usize];
+                let base = starts[r];
+                if first_run && docs_only {
+                    if let Some(&(doc, _)) = buf.docs.first() {
+                        new_term_docs.push(doc.saturating_add(base));
+                    }
+                }
+                first_run = false;
+                merged
+                    .docs
+                    .extend(buf.docs.iter().map(|&(d, f)| (d.saturating_add(base), f)));
+                if with_positions {
+                    let mut at = 0usize;
+                    for &(_, freq) in &buf.docs {
+                        let end = at.saturating_add(freq as usize);
+                        merged.positions.push(buf.positions[at..end].to_vec());
+                        if with_offsets {
+                            merged.offsets.push(buf.offsets[at..end].to_vec());
+                        }
+                        at = end;
+                    }
+                }
+            }
+            out.push(merged);
+        }
+        (out, new_term_docs)
+    };
+    let pieces: Vec<(Vec<TermPostings>, Vec<i32>)> = (0..=bounds.len())
+        .into_par_iter()
+        .map(|i| {
+            let lower = i.checked_sub(1).map(|j| bounds[j]);
+            merge_range(lower, bounds.get(i).copied())
+        })
+        .collect();
+
+    let mut doc_count = 0i32;
+    let mut lengths = Vec::with_capacity(next);
+    let mut overlaps_and_unique = Vec::with_capacity(next);
+    let mut ends = Vec::with_capacity(next);
+    for run in &runs {
+        doc_count = doc_count.saturating_add(run.doc_count);
+        lengths.extend_from_slice(&run.lengths);
+        overlaps_and_unique.extend_from_slice(&run.overlaps_and_unique);
+        ends.extend_from_slice(&run.ends);
+    }
+    drop(sorted);
+    drop(runs);
+    if docs_only {
+        for end in &mut ends {
+            end.max_term_frequency = 0;
+        }
+    }
+    let mut terms = Vec::with_capacity(pieces.iter().map(|(t, _)| t.len()).sum());
+    for (piece, new_term_docs) in pieces {
+        terms.extend(piece);
+        for doc in new_term_docs {
+            if let Some(end) = ends.get_mut(doc as usize) {
+                end.max_term_frequency = 1;
+            }
+        }
+    }
+    InvertedField {
+        index_options,
+        doc_count,
+        lengths,
+        overlaps_and_unique,
+        ends,
+        terms,
     }
 }
 
@@ -859,7 +1030,7 @@ mod tests {
             .collect()
     }
 
-    fn assert_same_inversion(got: FieldInverter, want: FieldInverter, docs: usize) {
+    fn assert_same_inversion(got: InvertedField, want: InvertedField, docs: usize) {
         assert_eq!(got.doc_count(), want.doc_count());
         assert_eq!(got.lengths(), want.lengths());
         for doc in 0..docs {
@@ -876,7 +1047,7 @@ mod tests {
     }
 
     /// `invert_parallel` (on a four-thread pool, so it really splits) and
-    /// `append` over hand-made runs both build exactly the serial
+    /// `merge_runs` over hand-made runs both build exactly the serial
     /// inversion, `DOCS`' new-term flag included.
     #[test]
     fn parallel_and_appended_runs_match_the_serial_inversion() {
@@ -908,19 +1079,20 @@ mod tests {
                     &analyzer,
                 )
             });
-            assert_same_inversion(parallel, serial(), corpus.len());
+            assert_same_inversion(parallel, serial().finish(), corpus.len());
 
-            // Uneven runs, one of them empty, appended by hand.
-            let mut appended = FieldInverter::new(options);
+            // Uneven runs, one of them empty, merged by hand.
+            let mut runs = Vec::new();
             for run in [0..1, 1..1, 1..700, 700..2900, 2900..3001] {
                 let mut part = FieldInverter::new(options);
                 for (local, doc) in run.enumerate() {
                     let values: Vec<&str> = corpus[doc].iter().map(String::as_str).collect();
                     part.add_document(local as i32, &values, &analyzer);
                 }
-                appended.append(part);
+                runs.push(part);
             }
-            assert_same_inversion(appended, serial(), corpus.len());
+            let merged = pool.install(|| merge_runs(options, runs));
+            assert_same_inversion(merged, serial().finish(), corpus.len());
         }
         // Too few documents to split: the serial path, same answer.
         let small = FieldInverter::invert_parallel(

@@ -278,54 +278,52 @@ impl Automaton {
     /// `(dest, min, max)`, merge touching/overlapping ranges to the same
     /// destination, re-sort by `(min, max, dest)`, and clear `deterministic`
     /// if any two now overlap.
+    ///
+    /// Done in place on the state's `[dest, min, max]` triples, which are
+    /// always the tail of `transitions` (the current state's are appended
+    /// last): no allocation per state.
     fn finish_current_state(&mut self) {
         let cur = idx(self.cur_state);
         let num = idx(self.states[2 * cur + 1]);
         let offset = idx(self.states[2 * cur]);
-        let mut ts: Vec<(i32, i32, i32)> = self.transitions[offset..offset + 3 * num]
-            .chunks_exact(3)
-            .map(|c| (c[0], c[1], c[2]))
-            .collect();
+        debug_assert_eq!(offset + 3 * num, self.transitions.len());
+        if num <= 1 {
+            // Nothing to merge or reorder, and one edge cannot overlap.
+            return;
+        }
+        let (ts, rest) = self.transitions[offset..offset + 3 * num].as_chunks_mut::<3>();
+        debug_assert!(rest.is_empty());
+        // `[dest, min, max]` arrays compare as `(dest, min, max)`.
         ts.sort_unstable();
-        let mut merged: Vec<(i32, i32, i32)> = Vec::with_capacity(num);
+        // Merge with a write cursor `upto` (Java's shape).
+        let mut upto = 0usize;
         let (mut dest, mut min, mut max) = (-1i32, -1i32, -1i32);
-        for &(t_dest, t_min, t_max) in &ts {
-            if dest == t_dest {
-                if t_min <= max.saturating_add(1) {
-                    if t_max > max {
-                        max = t_max;
-                    }
-                } else {
-                    if dest != -1 {
-                        merged.push((dest, min, max));
-                    }
-                    min = t_min;
+        for i in 0..num {
+            let [t_dest, t_min, t_max] = ts[i];
+            if dest == t_dest && t_min <= max.saturating_add(1) {
+                // Touches or overlaps the run being merged: extend it.
+                if t_max > max {
                     max = t_max;
                 }
-            } else {
-                if dest != -1 {
-                    merged.push((dest, min, max));
-                }
-                dest = t_dest;
-                min = t_min;
-                max = t_max;
+                continue;
             }
+            if dest != -1 {
+                ts[upto] = [dest, min, max];
+                upto += 1;
+            }
+            dest = t_dest;
+            min = t_min;
+            max = t_max;
         }
         if dest != -1 {
-            merged.push((dest, min, max));
+            ts[upto] = [dest, min, max];
+            upto += 1;
         }
-        merged.sort_unstable_by_key(|&(d, lo, hi)| (lo, hi, d));
-        let upto = merged.len();
-        self.transitions.truncate(offset);
-        for &(d, lo, hi) in &merged {
-            self.transitions.push(d);
-            self.transitions.push(lo);
-            self.transitions.push(hi);
-        }
-        self.states[2 * cur + 1] = upto as i32;
+        let merged = &mut ts[..upto];
+        merged.sort_unstable_by_key(|&[d, lo, hi]| (lo, hi, d));
         if self.deterministic && upto > 1 {
-            let mut last_max = merged[0].2;
-            for &(_, lo, hi) in &merged[1..] {
+            let mut last_max = merged[0][2];
+            for &[_, lo, hi] in &merged[1..] {
                 if lo <= last_max {
                     self.deterministic = false;
                     break;
@@ -333,6 +331,8 @@ impl Automaton {
                 last_max = hi;
             }
         }
+        self.transitions.truncate(offset + 3 * upto);
+        self.states[2 * cur + 1] = upto as i32;
     }
 
     /// `isDeterministic()`: no state has overlapping transitions. Like

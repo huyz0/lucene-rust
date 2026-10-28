@@ -5,7 +5,7 @@
 
 use std::collections::HashSet;
 
-use crate::attributes::State;
+use crate::attributes::{State, StateSlot};
 use crate::token_stream::{TokenFilter, TokenStream};
 use crate::AnalysisError;
 
@@ -16,7 +16,7 @@ pub struct TypeAsSynonymFilter<I> {
     prefix: Option<String>,
     ignore: Option<HashSet<String>>,
     syn_flags_mask: i32,
-    saved_token: Option<State>,
+    saved_token: StateSlot,
 }
 
 impl<I: TokenStream> TypeAsSynonymFilter<I> {
@@ -34,7 +34,7 @@ impl<I: TokenStream> TypeAsSynonymFilter<I> {
             prefix: prefix.map(str::to_string),
             ignore,
             syn_flags_mask,
-            saved_token: None,
+            saved_token: StateSlot::new(),
         }
     }
 }
@@ -45,10 +45,14 @@ impl<I: TokenStream> TokenFilter for TypeAsSynonymFilter<I> {
     fn increment(&mut self) -> Result<bool, AnalysisError> {
         if let Some(saved) = self.saved_token.take() {
             let a = self.input.attributes_mut();
-            a.restore_state(&saved);
-            let mut term = self.prefix.clone().unwrap_or_default();
-            term.push_str(a.token_type());
-            a.set_term(&term);
+            a.restore_state(saved);
+            // The type is a `Cow` (a clone of a borrowed one is free); the
+            // term is built in place.
+            let ty = a.token_type_cow().clone();
+            let term = a.term_mut();
+            term.clear();
+            term.push_str(self.prefix.as_deref().unwrap_or(""));
+            term.push_str(&ty);
             a.set_position_increment(0)?;
             a.set_flags(a.flags() & self.syn_flags_mask);
             return Ok(true);
@@ -60,7 +64,7 @@ impl<I: TokenStream> TokenFilter for TypeAsSynonymFilter<I> {
                 .as_ref()
                 .is_none_or(|i| !i.contains(a.token_type()))
             {
-                self.saved_token = Some(a.capture_state());
+                self.saved_token.save(a);
             }
             return Ok(true);
         }
@@ -69,7 +73,7 @@ impl<I: TokenStream> TokenFilter for TypeAsSynonymFilter<I> {
 
     fn reset_filter(&mut self) -> Result<(), AnalysisError> {
         self.input.reset()?;
-        self.saved_token = None;
+        self.saved_token.clear();
         Ok(())
     }
 }
@@ -79,7 +83,7 @@ impl<I: TokenStream> TokenFilter for TypeAsSynonymFilter<I> {
 pub struct HyphenatedWordsFilter<I> {
     input: I,
     hyphenated: String,
-    saved_state: Option<State>,
+    saved_state: StateSlot,
     exhausted: bool,
     last_end_offset: i32,
 }
@@ -90,7 +94,7 @@ impl<I: TokenStream> HyphenatedWordsFilter<I> {
         HyphenatedWordsFilter {
             input,
             hyphenated: String::new(),
-            saved_state: None,
+            saved_state: StateSlot::new(),
             exhausted: false,
             last_end_offset: 0,
         }
@@ -103,7 +107,7 @@ impl<I: TokenStream> HyphenatedWordsFilter<I> {
             .take()
             .expect("unhyphenate after a saved state");
         let a = self.input.attributes_mut();
-        a.restore_state(&saved);
+        a.restore_state(saved);
         a.set_term(&self.hyphenated);
         let start = a.start_offset();
         a.set_offset(start, self.last_end_offset)?;
@@ -122,7 +126,7 @@ impl<I: TokenStream> TokenFilter for HyphenatedWordsFilter<I> {
             let term = a.term();
             if let Some(stem) = term.strip_suffix('-') {
                 if self.saved_state.is_none() {
-                    self.saved_state = Some(a.capture_state());
+                    self.saved_state.save(a);
                 }
                 self.hyphenated.push_str(stem);
             } else if self.saved_state.is_none() {
@@ -145,7 +149,7 @@ impl<I: TokenStream> TokenFilter for HyphenatedWordsFilter<I> {
     fn reset_filter(&mut self) -> Result<(), AnalysisError> {
         self.input.reset()?;
         self.hyphenated.clear();
-        self.saved_state = None;
+        self.saved_state.clear();
         self.exhausted = false;
         self.last_end_offset = 0;
         Ok(())
@@ -320,7 +324,9 @@ impl<I: TokenStream> TokenFilter for FingerprintFilter<I> {
 pub struct AsciiFoldingTokenFilter<I> {
     input: I,
     preserve_original: bool,
-    state: Option<State>,
+    state: StateSlot,
+    /// Where a term is folded.
+    folded: String,
 }
 
 impl<I: TokenStream> AsciiFoldingTokenFilter<I> {
@@ -329,7 +335,8 @@ impl<I: TokenStream> AsciiFoldingTokenFilter<I> {
         AsciiFoldingTokenFilter {
             input,
             preserve_original,
-            state: None,
+            state: StateSlot::new(),
+            folded: String::new(),
         }
     }
 
@@ -345,7 +352,7 @@ impl<I: TokenStream> TokenFilter for AsciiFoldingTokenFilter<I> {
     fn increment(&mut self) -> Result<bool, AnalysisError> {
         if let Some(state) = self.state.take() {
             let a = self.input.attributes_mut();
-            a.restore_state(&state);
+            a.restore_state(state);
             a.set_position_increment(0)?;
             return Ok(true);
         }
@@ -354,18 +361,22 @@ impl<I: TokenStream> TokenFilter for AsciiFoldingTokenFilter<I> {
         }
         // Java folds only a term holding a char >= U+0080, and preserves
         // the original only when folding changed it.
-        if let Some(folded) = crate::AsciiFoldingFilter::fold_term(self.input.attributes().term()) {
+        if crate::AsciiFoldingFilter::fold_term_into(
+            self.input.attributes().term(),
+            &mut self.folded,
+        ) {
             if self.preserve_original {
-                self.state = Some(self.input.attributes().capture_state());
+                self.state.save(self.input.attributes());
             }
-            self.input.attributes_mut().set_term(&folded);
+            // The folded term is swapped in; the old buffer is next token's.
+            std::mem::swap(self.input.attributes_mut().term_mut(), &mut self.folded);
         }
         Ok(true)
     }
 
     fn reset_filter(&mut self) -> Result<(), AnalysisError> {
         self.input.reset()?;
-        self.state = None;
+        self.state.clear();
         Ok(())
     }
 }

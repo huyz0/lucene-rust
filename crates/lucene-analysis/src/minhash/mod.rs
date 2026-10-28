@@ -260,12 +260,16 @@ impl<I: TokenStream> TokenFilter for MinHashFilter<I> {
         if self.requires_initialisation {
             self.requires_initialisation = false;
             let mut found = false;
+            let mut bytes = Vec::new();
             while self.input.increment_token()? {
                 found = true;
                 let a = self.input.attributes();
-                let bytes: Vec<u8> = a.term().encode_utf16().flat_map(u16::to_le_bytes).collect();
+                bytes.clear();
+                bytes.extend(a.term().encode_utf16().flat_map(u16::to_le_bytes));
+                // The term's hash does not depend on `i` (Java recomputes it
+                // per hash function; the value is the same).
+                let hash = murmurhash3_x64_128(&bytes, 0);
                 for i in 0..self.hash_count {
-                    let hash = murmurhash3_x64_128(&bytes, 0);
                     let rehashed = combine_ordered(&[hash, int_hash(i)]);
                     let bucket = ((rehashed.val2 as u64 >> 32) as i64 / self.bucket_size) as usize;
                     bounded_add(
