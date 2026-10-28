@@ -1515,8 +1515,76 @@ fn bench_binary_update_generation(c: &mut Criterion) {
     group.finish();
 }
 
+/// The UniformSplit terms writer over 100,000 single-doc terms: its block
+/// lines, splits and dictionary, with the postings writer's work as small
+/// as a term allows.
+fn bench_uniformsplit_write(c: &mut Criterion) {
+    use field_infos::{
+        DocValuesSkipIndexType, DocValuesType, FieldInfo, FieldInfos, IndexOptions, VectorEncoding,
+        VectorSimilarityFunction,
+    };
+    use lucene_codecs::segment_state::SegmentWriteState;
+    use lucene_codecs::uniformsplit::UniformSplitPostingsFormat;
+    let terms: Vec<postings_writer::TermPostings> = (0..100_000u32)
+        .map(|t| {
+            let term = format!("k{:07}", t.wrapping_mul(2_654_435_761) % 10_000_000).into_bytes();
+            let postings = postings_writer::TermPostings {
+                term: term.clone(),
+                docs: vec![((t % 1000) as i32, 1)],
+                ..Default::default()
+            };
+            (term, postings)
+        })
+        .collect::<std::collections::BTreeMap<_, _>>()
+        .into_values()
+        .collect();
+    let fis = FieldInfos {
+        fields: vec![FieldInfo {
+            name: "f".to_string(),
+            number: 0,
+            store_term_vectors: false,
+            omit_norms: true,
+            store_payloads: false,
+            soft_deletes_field: false,
+            parent_field: false,
+            index_options: IndexOptions::Docs,
+            doc_values_type: DocValuesType::None,
+            doc_values_skip_index_type: DocValuesSkipIndexType::None,
+            doc_values_gen: -1,
+            attributes: Vec::new(),
+            point_dimension_count: 0,
+            point_index_dimension_count: 0,
+            point_num_bytes: 0,
+            vector_dimension: 0,
+            vector_encoding: VectorEncoding::Float32,
+            vector_similarity_function: VectorSimilarityFunction::Euclidean,
+        }],
+    };
+    let inputs = [postings_writer::FieldPostingsInput {
+        field_number: 0,
+        index_options: IndexOptions::Docs,
+        doc_count: 1000,
+        has_payloads: false,
+        terms: &terms,
+    }];
+    let format = UniformSplitPostingsFormat::new(32, 3, None, None, false).unwrap();
+    let state = SegmentWriteState {
+        max_doc: 1000,
+        segment_id: &[4u8; 16],
+        segment_suffix: "",
+        field_infos: &fis,
+    };
+    let mut group = c.benchmark_group("uniformsplit");
+    group.sample_size(20);
+    group.bench_function("write_100k_terms", |b| {
+        b.iter(|| black_box(format.write(&inputs, &[], &state).is_ok()))
+    });
+    group.finish();
+}
+
 criterion_group!(
     benches,
+    bench_uniformsplit_write,
     bench_binary_update_generation,
     bench_lucene90_terms_index_seek,
     bench_postings_write_full_blocks,
