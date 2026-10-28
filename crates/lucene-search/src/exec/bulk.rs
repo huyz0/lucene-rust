@@ -67,6 +67,10 @@ pub(crate) enum Bulk<'a> {
     ScorerConjunction(Vec<BoxScorer<'a>>, ConjunctionBulk),
     /// `MaxScoreBulkScorer`, with `filteredOptionalBulkScorer`'s filter.
     Disjunction(Vec<TermLeg<'a>>, Option<BoxScorer<'a>>, MaxScore),
+    /// [`Bulk::Disjunction`] whose filter is one term: the same
+    /// `MaxScoreBulkScorer`, with the filter's `TermScorer` called directly
+    /// rather than through `dyn Scorer`, so its leapfrog `advance` inlines.
+    TermFilteredDisjunction(Vec<TermLeg<'a>>, Box<super::leaf::TermScorer<'a>>, MaxScore),
     /// Terms of which at least `minimum_should_match > 1` must match, scored,
     /// a window at a time. See [`crate::bulk_scorer::MsmBulk`].
     MinShouldMatch(Vec<TermLeg<'a>>, Box<crate::bulk_scorer::MsmBulk>),
@@ -168,9 +172,10 @@ impl<'a> Bulk<'a> {
             }
             Bulk::Filtered(bulk, filter) => bulk.cost().min(filter.cost()),
             Bulk::ScorerConjunction(scorers, _) => min(scorers.iter().map(|s| s.cost())),
-            Bulk::Disjunction(legs, _, _) | Bulk::DisMax(legs, _) | Bulk::Union(legs) => {
-                sum(legs.iter().map(|l| l.cost))
-            }
+            Bulk::Disjunction(legs, _, _)
+            | Bulk::TermFilteredDisjunction(legs, _, _)
+            | Bulk::DisMax(legs, _)
+            | Bulk::Union(legs) => sum(legs.iter().map(|l| l.cost)),
             Bulk::MinShouldMatch(legs, msm) => crate::bulk_scorer::cost_with_min_should_match(
                 legs.iter().map(|l| l.cost),
                 msm.msm(),
@@ -202,7 +207,9 @@ impl<'a> Bulk<'a> {
             Bulk::ScorerConjunction(..) => "scorer_conjunction",
             Bulk::Disjunction(_, None, _) => "disjunction",
             Bulk::MinShouldMatch(..) => "min_should_match",
-            Bulk::Disjunction(_, Some(_), _) => "filtered_disjunction",
+            Bulk::Disjunction(_, Some(_), _) | Bulk::TermFilteredDisjunction(..) => {
+                "filtered_disjunction"
+            }
             Bulk::ScorerDisjunction(..) => "scorer_disjunction",
             Bulk::ReqOpt(..) => "req_opt",
             Bulk::ReqBitsOpt(..) => "req_bits_opt",
@@ -263,6 +270,9 @@ impl<'a> Bulk<'a> {
             Bulk::Disjunction(legs, filter, state) => {
                 let filter = filter.as_deref_mut().map(|f| f as &mut dyn super::Scorer);
                 state.score(legs, filter, live_docs, collector, min, max)
+            }
+            Bulk::TermFilteredDisjunction(legs, filter, state) => {
+                state.score(legs, Some(&mut **filter), live_docs, collector, min, max)
             }
             Bulk::ScorerDisjunction(legs, filter, state) => {
                 let filter = filter.as_deref_mut().map(|f| f as &mut dyn super::Scorer);
@@ -1055,17 +1065,37 @@ pub(crate) fn bulk_boolean_own<'a>(
         }
     } else if must.is_empty() && should.len() > 1 && msm >= 1 {
         if mode == Mode::TopScores && msm == 1 && all_legs(&should) {
-            let filter_scorer = filter_of(std::mem::take(&mut filter));
             let mut legs: Vec<TermLeg<'a>> = std::mem::take(&mut should)
                 .into_iter()
                 .map(|(c, _)| c.into_leg())
                 .collect();
             let state = MaxScore::new(&mut legs);
-            Some(Bulk::Disjunction(legs, Some(filter_scorer), state))
+            if filter.len() == 1 && all_legs(&filter) {
+                // `filter_of`'s scorer for a lone term, unboxed.
+                let (c, _) = filter.pop().expect("one filter clause");
+                let term = super::leaf::TermScorer::at_level(c.into_leg(), false, true);
+                let cost = super::Scorer::cost(&term);
+                let state = state.with_filter(&legs, cost, false, ctx.max_doc);
+                Some(Bulk::TermFilteredDisjunction(legs, Box::new(term), state))
+            } else {
+                let filter_scorer = filter_of(std::mem::take(&mut filter));
+                let state = state.with_filter(
+                    &legs,
+                    filter_scorer.cost(),
+                    filter_scorer.two_phase(),
+                    ctx.max_doc,
+                );
+                Some(Bulk::Disjunction(legs, Some(filter_scorer), state))
+            }
         } else if mode == Mode::TopScores && msm == 1 {
             let filter_scorer = filter_of(std::mem::take(&mut filter));
             let mut legs = scorer_legs(std::mem::take(&mut should), mode)?;
-            let state = MaxScore::new(&mut legs);
+            let state = MaxScore::new(&mut legs).with_filter(
+                &legs,
+                filter_scorer.cost(),
+                filter_scorer.two_phase(),
+                ctx.max_doc,
+            );
             Some(Bulk::ScorerDisjunction(legs, Some(filter_scorer), state))
         } else {
             None

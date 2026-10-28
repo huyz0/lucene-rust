@@ -242,6 +242,16 @@ fn mixed_boolean_queries_match_real_lucene_pruned_and_exact() {
         let query = root(parse(&mut Tokens::new(&text)).rewrite());
         (format!("present.{i}"), text, query)
     }));
+    // `AppendFilteredMaxScoreManifest`: filtered disjunctions whose filter is
+    // sparse, so `MaxScoreBulkScorer` collects the filter into a bit set per
+    // window (`fillScoreBufferViaBitSet`) instead of leap-frogging.
+    let filtered: usize = m.get("filtered_ms_count").parse().unwrap();
+    assert!(filtered > 0, "the fixture has filtered MaxScore queries");
+    runs.extend((0..filtered).map(|i| {
+        let text = m.get(&format!("filtered_ms.{i}")).to_string();
+        let query = root(parse(&mut Tokens::new(&text)).rewrite());
+        (format!("filtered_ms.{i}"), text, query)
+    }));
     for (key, text, query) in &runs {
         let text = text.as_str();
         for (mode, limit) in [
