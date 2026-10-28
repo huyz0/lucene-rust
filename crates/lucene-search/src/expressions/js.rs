@@ -1697,7 +1697,7 @@ impl<'c> SharedValues<'c> {
         }
     }
 
-    /// [`DoubleValues::fill_batch`] of the values, once per batch: the same
+    /// [`DoubleValues::fill_batch`](crate::values_source::DoubleValues::fill_batch) of the values, once per batch: the same
     /// documents and scores as the last batch are its values again.
     pub(crate) fn fill_batch(
         &mut self,
@@ -1779,7 +1779,7 @@ impl<'c> VarSlot<'c> {
     }
 
     /// Whether the wrapped values can be read a batch at a time
-    /// ([`DoubleValues::batch_capable`]).
+    /// ([`DoubleValues::batch_capable`](crate::values_source::DoubleValues::batch_capable)).
     pub(crate) fn batch_capable(&self) -> bool {
         match &self.values {
             VarValues::Owned(v) => v.batch_capable(),
