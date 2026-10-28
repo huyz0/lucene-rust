@@ -582,19 +582,18 @@ pub fn write_numeric_generation_with_skip_index(
 }
 
 /// [`write_numeric_generation`] for BINARY doc values --
-/// `Lucene90DocValuesConsumer.addBinaryField` over the merged column.
+/// `Lucene90DocValuesConsumer.addBinaryField` over the merged column. The
+/// column is consumed: its values move into the writer's input rather than
+/// being copied one allocation per document.
 pub fn write_binary_generation(
     field_number: i32,
-    column: &[Option<Vec<u8>>],
+    column: Vec<Option<Vec<u8>>>,
     segment_id: &[u8; ID_LENGTH],
     segment_suffix: &str,
 ) -> doc_values::WriteResult<(Vec<u8>, Vec<u8>, Vec<u8>)> {
     let max_doc = column.len() as i32;
     if column.iter().all(Option::is_some) {
-        let dense: Vec<Vec<u8>> = column
-            .iter()
-            .map(|v| v.clone().expect("checked all-some"))
-            .collect();
+        let dense: Vec<Vec<u8>> = column.into_iter().flatten().collect();
         doc_values::write_single_dense_binary_field(
             field_number,
             &dense,
@@ -604,9 +603,9 @@ pub fn write_binary_generation(
         )
     } else {
         let sparse: Vec<(i32, Vec<u8>)> = column
-            .iter()
+            .into_iter()
             .enumerate()
-            .filter_map(|(doc, v)| v.clone().map(|v| (doc as i32, v)))
+            .filter_map(|(doc, v)| v.map(|v| (doc as i32, v)))
             .collect();
         doc_values::write_single_sparse_binary_field(
             field_number,
@@ -1327,7 +1326,7 @@ mod tests {
     fn a_merged_binary_column_distinguishes_an_empty_value_from_a_removed_one() {
         let (meta, data, _) = write_binary_generation(
             0,
-            &[Some(Vec::new()), None, Some(b"x".to_vec())],
+            vec![Some(Vec::new()), None, Some(b"x".to_vec())],
             &SEG_ID,
             "",
         )
@@ -1345,7 +1344,7 @@ mod tests {
             Some(b"bb".to_vec()),
             Some(b"cc".to_vec()),
         ];
-        let (meta, data, _) = write_binary_generation(0, &base_values, &SEG_ID, "").unwrap();
+        let (meta, data, _) = write_binary_generation(0, base_values.clone(), &SEG_ID, "").unwrap();
         let fis = binary_field_infos();
         let (_, parsed) = doc_values::parse_meta(&meta, &SEG_ID, "", &fis).unwrap();
         let entry = parsed.binary_entry(0).unwrap();

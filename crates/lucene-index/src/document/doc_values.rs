@@ -211,10 +211,18 @@ impl BinaryDocValuesField {
 pub struct KeywordField {
     name: String,
     field_type: FieldType,
-    /// `fieldsData`: a `String` or a `BytesRef`.
-    string: Option<String>,
-    binary: Vec<u8>,
-    stored: Option<StoredValue>,
+    /// `fieldsData`: a `String` or a `BytesRef`, held once. The term and
+    /// doc-value bytes (Java's separate `binaryValue`) are borrowed from it,
+    /// and the stored value is built from it when asked.
+    value: KeywordValue,
+}
+
+/// A [`KeywordField`]'s value: which of Java's two constructors made it
+/// decides the stored type and which setter applies.
+#[derive(Debug, Clone, PartialEq)]
+enum KeywordValue {
+    String(String),
+    Bytes(Vec<u8>),
 }
 
 impl KeywordField {
@@ -234,56 +242,46 @@ impl KeywordField {
 
     /// `new KeywordField(name, String value, store)`: stored as a string.
     pub fn new(name: impl Into<String>, value: impl Into<String>, store: Store) -> Self {
-        let value = value.into();
         KeywordField {
             name: name.into(),
             field_type: Self::field_type_of(store),
-            binary: value.as_bytes().to_vec(),
-            stored: (store == Store::Yes).then(|| StoredValue::String(value.clone())),
-            string: Some(value),
+            value: KeywordValue::String(value.into()),
         }
     }
 
     /// `new KeywordField(name, BytesRef value, store)`: stored as bytes.
     pub fn from_bytes(name: impl Into<String>, value: impl Into<Vec<u8>>, store: Store) -> Self {
-        let value = value.into();
         KeywordField {
             name: name.into(),
             field_type: Self::field_type_of(store),
-            stored: (store == Store::Yes).then(|| StoredValue::Binary(value.clone())),
-            binary: value,
-            string: None,
+            value: KeywordValue::Bytes(value.into()),
         }
     }
 
     /// `setStringValue`.
     pub fn set_string_value(&mut self, value: impl Into<String>) -> Result<()> {
-        if self.string.is_none() {
-            return Err(super::illegal(
+        match &mut self.value {
+            KeywordValue::String(s) => {
+                *s = value.into();
+                Ok(())
+            }
+            KeywordValue::Bytes(_) => Err(super::illegal(
                 "cannot change value type from BytesRef to String",
-            ));
+            )),
         }
-        let value = value.into();
-        self.binary = value.as_bytes().to_vec();
-        if self.stored.is_some() {
-            self.stored = Some(StoredValue::String(value.clone()));
-        }
-        self.string = Some(value);
-        Ok(())
     }
 
     /// `setBytesValue`.
     pub fn set_bytes_value(&mut self, value: impl Into<Vec<u8>>) -> Result<()> {
-        if self.string.is_some() {
-            return Err(super::illegal(
+        match &mut self.value {
+            KeywordValue::Bytes(b) => {
+                *b = value.into();
+                Ok(())
+            }
+            KeywordValue::String(_) => Err(super::illegal(
                 "cannot change value type from String to BytesRef",
-            ));
+            )),
         }
-        self.binary = value.into();
-        if self.stored.is_some() {
-            self.stored = Some(StoredValue::Binary(self.binary.clone()));
-        }
-        Ok(())
     }
 }
 
@@ -295,13 +293,27 @@ impl IndexableField for KeywordField {
         &self.field_type
     }
     fn string_value(&self) -> Option<Cow<'_, str>> {
-        self.string.as_deref().map(Cow::Borrowed)
+        match &self.value {
+            KeywordValue::String(s) => Some(Cow::Borrowed(s)),
+            KeywordValue::Bytes(_) => None,
+        }
     }
     fn binary_value(&self) -> Option<Cow<'_, [u8]>> {
-        Some(Cow::Borrowed(&self.binary))
+        Some(Cow::Borrowed(match &self.value {
+            KeywordValue::String(s) => s.as_bytes(),
+            KeywordValue::Bytes(b) => b,
+        }))
     }
+    /// `KeywordField.storedValue()`: `null` unless stored. The trait hands
+    /// back an owned value, so this is the one copy, made only when asked.
     fn stored_value(&self) -> Option<StoredValue> {
-        self.stored.clone()
+        if !self.field_type.stored() {
+            return None;
+        }
+        Some(match &self.value {
+            KeywordValue::String(s) => StoredValue::String(s.clone()),
+            KeywordValue::Bytes(b) => StoredValue::Binary(b.clone()),
+        })
     }
     /// `KeywordField.invertableType()`: the bytes are the term.
     fn invertable_type(&self) -> InvertableType {

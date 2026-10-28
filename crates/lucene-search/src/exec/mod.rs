@@ -157,6 +157,15 @@ pub(crate) trait Scorer {
     fn doc_id_run_end(&self) -> i32 {
         self.doc_id().saturating_add(1)
     }
+    /// Whether the approximation holds `target` (`> doc_id()`), when that is
+    /// cheap to tell without moving past it: `Some(true)` positions on
+    /// `target`, as [`Self::advance`] would; `Some(false)` leaves the
+    /// scorer where it was, which a caller testing membership only (a
+    /// prohibited clause) treats like an advance that overshot. `None`: use
+    /// [`Self::advance`].
+    fn advance_exact_cheap(&mut self, _target: i32) -> Option<bool> {
+        None
+    }
     /// A constant-scored iterator over a cached bit set: the set and the
     /// score every document gets, for a bulk scorer to walk the set's words
     /// itself instead of stepping the iterator document by document (Lucene

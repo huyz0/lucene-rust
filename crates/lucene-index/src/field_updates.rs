@@ -422,7 +422,8 @@ fn write_field_updates_inner(
     sci.advance_field_infos_gen();
     sci.field_infos_files = vec![fnm_name];
 
-    dir.sync(created)?;
+    // Not synced: the commit that names these generation files syncs them
+    // (`IndexWriter.startCommit`).
     Ok(())
 }
 
@@ -582,7 +583,7 @@ fn write_binary_round(
     let (dvm, dvd, dvs) = crate::index_writer::with_doc_values_faults(codec, 1, || {
         doc_values_updates::write_binary_generation(
             infos.fields[index].number,
-            &column,
+            column,
             &sci.segment_id,
             &suffix,
         )

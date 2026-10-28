@@ -67,6 +67,9 @@ impl IndexWriter<'_> {
         self.prune_segment_versions();
         let live = self.live_infos();
         self.deleter.checkpoint(&live, false)?;
+        // `addIndexes` ends in `checkpoint()`, which counts as a change even
+        // when the sources held no segment.
+        self.changed();
         Ok(self.delete_queue.next_sequence_number())
     }
 
@@ -144,7 +147,10 @@ impl IndexWriter<'_> {
         let merged = self.execute_merge_planned(&names, None, remap, true);
         self.merges_by_caller = by_caller;
         match merged {
-            Ok(true) => Ok(self.delete_queue.next_sequence_number()),
+            Ok(true) => {
+                self.changed();
+                Ok(self.delete_queue.next_sequence_number())
+            }
             // Abandoned: Java's `addIndexes(CodecReader...)` returns without
             // adding anything when its merge is aborted.
             Ok(false) => {
@@ -351,20 +357,18 @@ impl IndexWriter<'_> {
         let from = sci.segment_name.clone();
         let to = self.new_segment_name();
         let si_name = format!("{from}.si");
-        let mut copied = Vec::new();
         for file in sci.files(&si.files) {
             if file == si_name {
                 continue;
             }
             let dest = rename(&file, &from, &to);
             self.dir.copy_from(src, &file, &dest)?;
-            copied.push(dest);
         }
         si.files = si.files.iter().map(|f| rename(f, &from, &to)).collect();
         let new_si = format!("{to}.si");
         super::write_file(self.dir, &new_si, &segment_info::write(&si, ""))?;
-        copied.push(new_si);
-        self.dir.sync(&copied)?;
+        // Not synced: the next commit syncs every file it names that this
+        // writer wrote (`IndexWriter.startCommit`).
         let mut added = sci.clone();
         added.segment_name = to.clone();
         added.field_infos_files = sci

@@ -76,7 +76,13 @@ impl<R: Scorer + ?Sized, E: Scorer + ?Sized> Scorer for ReqExclScorer<R, E> {
         let doc = self.req.doc_id();
         let mut excl_doc = self.excl.doc_id();
         if excl_doc < doc {
-            excl_doc = self.excl.advance(doc)?;
+            // A miss leaves the clause behind `doc`; the required documents
+            // only grow, so the next check moves it on from there.
+            excl_doc = match self.excl.advance_exact_cheap(doc) {
+                Some(true) => doc,
+                Some(false) => return self.req.matches(),
+                None => self.excl.advance(doc)?,
+            };
         }
         if excl_doc != doc {
             return self.req.matches();

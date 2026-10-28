@@ -3623,7 +3623,9 @@ impl BlockTreeFields {
             let mut it = terms.iter();
             while let Some(bytes) = it.try_next_term()? {
                 let bytes = bytes.to_vec();
-                let Some((stats, meta)) = terms.term_state(&bytes)? else {
+                // The iterator is on this term already: its block holds the
+                // term's state, so no second walk from the root.
+                let Some(SeekedTerm { stats, meta }) = it.try_seeked_term()? else {
                     continue;
                 };
                 field.terms.push(crate::postings_writer::DictionaryTerm {

@@ -133,5 +133,32 @@ fn bench_for_encode(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_for_decode, bench_for_encode);
+/// `PForUtil.encode` on a block with exceptions: 5-bit values plus three
+/// outliers that become patches, as a doc-delta block with a few gaps does.
+fn bench_pfor_encode(c: &mut Criterion) {
+    let mut group = c.benchmark_group("for_util/pfor_encode");
+    group.throughput(Throughput::Elements(BLOCK_SIZE as u64));
+    let mut values = block_for(5);
+    values[17] = 1_000;
+    values[101] = 2_000;
+    values[200] = 4_000;
+    group.bench_function("bits05_3_exceptions", |b| {
+        let mut buf = Vec::with_capacity(4 * BLOCK_SIZE);
+        let mut scratch = values;
+        b.iter(|| {
+            buf.clear();
+            scratch = values;
+            for_util::pfor_encode(black_box(&mut scratch), &mut buf);
+            black_box(buf.len());
+        });
+    });
+    group.finish();
+}
+
+criterion_group!(
+    benches,
+    bench_for_decode,
+    bench_for_encode,
+    bench_pfor_encode
+);
 criterion_main!(benches);

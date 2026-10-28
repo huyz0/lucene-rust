@@ -36,6 +36,7 @@
 //!   (`create_line_fields`, `create_point_doc_value_field`, ...).
 
 use std::borrow::Cow;
+use std::sync::Arc;
 
 use lucene_analysis::Analyzer;
 use lucene_util::geo::tessellator::{self, Triangle as TessellatedTriangle};
@@ -508,7 +509,9 @@ impl std::fmt::Display for DecodedTriangle {
 /// dimension point value.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ShapeTriangle {
-    name: String,
+    /// Shared by every triangle a factory call makes (Java's triangles share
+    /// one `String` reference too).
+    name: Arc<str>,
     field_type: FieldType,
     packed: [u8; TRIANGLE_BYTES],
 }
@@ -521,7 +524,7 @@ impl ShapeTriangle {
     /// As [`ShapeField::encode_triangle`].
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        name: impl Into<String>,
+        name: impl Into<Arc<str>>,
         a_x: i32,
         a_y: i32,
         b_x: i32,
@@ -541,7 +544,7 @@ impl ShapeTriangle {
     ///
     /// # Errors
     /// As [`ShapeField::encode_triangle`].
-    pub fn from_tessellated(name: impl Into<String>, t: &TessellatedTriangle) -> Result<Self> {
+    pub fn from_tessellated(name: impl Into<Arc<str>>, t: &TessellatedTriangle) -> Result<Self> {
         Ok(ShapeTriangle {
             name: name.into(),
             field_type: ShapeField::field_type_of(),
@@ -654,11 +657,12 @@ fn line_doc_value_triangles(points: &[(i32, i32)]) -> Vec<DecodedTriangle> {
 
 /// A line's "flat" triangle fields `(i, i + 1, i)`.
 fn line_fields(name: &str, points: &[(i32, i32)]) -> Result<Vec<ShapeTriangle>> {
+    let name: Arc<str> = Arc::from(name);
     points
         .windows(2)
         .map(|w| {
             let ((ax, ay), (bx, by)) = (w[0], w[1]);
-            ShapeTriangle::new(name, ax, ay, bx, by, ax, ay)
+            ShapeTriangle::new(Arc::clone(&name), ax, ay, bx, by, ax, ay)
         })
         .collect()
 }
@@ -701,9 +705,10 @@ impl LatLonShape {
         // the lionshare of the indexing is done by the tessellator
         let tessellation =
             tessellator::tessellate(polygon, check_self_intersections).map_err(geo)?;
+        let name: Arc<str> = Arc::from(field_name);
         tessellation
             .iter()
-            .map(|t| ShapeTriangle::from_tessellated(field_name, t))
+            .map(|t| ShapeTriangle::from_tessellated(Arc::clone(&name), t))
             .collect()
     }
 
@@ -863,9 +868,10 @@ impl XYShape {
     ) -> Result<Vec<ShapeTriangle>> {
         let tessellation =
             tessellator::tessellate_xy(polygon, check_self_intersections).map_err(geo)?;
+        let name: Arc<str> = Arc::from(field_name);
         tessellation
             .iter()
-            .map(|t| ShapeTriangle::from_tessellated(field_name, t))
+            .map(|t| ShapeTriangle::from_tessellated(Arc::clone(&name), t))
             .collect()
     }
 

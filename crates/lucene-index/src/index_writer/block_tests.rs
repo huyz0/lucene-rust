@@ -102,7 +102,7 @@ fn parent_docs(dir: &FsDirectory, sci: &SegmentCommitInfo) -> (String, Vec<i32>)
     let infos = segment_field_infos(dir, sci).unwrap();
     let parent = infos.fields.iter().find(|f| f.parent_field).unwrap();
     assert_eq!(parent.doc_values_type, DocValuesType::Numeric);
-    let (meta, dvd) = crate::check_index::open_doc_values(dir, sci, &si, &infos)
+    let (meta, dvd) = crate::check_index::open_base_column(dir, sci, &si, &infos, parent)
         .unwrap()
         .unwrap();
     let mut reader =
