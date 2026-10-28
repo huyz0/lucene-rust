@@ -407,7 +407,23 @@ impl<'a> LegConjunctionScorer<'a> {
                 // lead stops.
                 let mut at = self.legs[i].doc_id();
                 if at < doc {
-                    at = self.advance_leg(i, doc)?;
+                    // A bit-set block answers whether the leg holds `doc`
+                    // with one bit test; on a miss the lead steps on and the
+                    // leg stays behind, to be asked again -- the same
+                    // matches as leap-frogging to the leg's next document.
+                    let cheap = if self.impacts && self.scoring[0] == i {
+                        None
+                    } else {
+                        crate::bulk_scorer::BulkLeg::advance_exact_cheap(&mut self.legs[i], doc)
+                    };
+                    at = match cheap {
+                        Some(true) => doc,
+                        Some(false) => {
+                            doc = self.advance_leg(0, doc.saturating_add(1))?;
+                            continue 'head;
+                        }
+                        None => self.advance_leg(i, doc)?,
+                    };
                 }
                 if at > doc {
                     doc = self.advance_leg(0, at)?;
