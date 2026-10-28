@@ -176,7 +176,17 @@ pub(crate) struct Parser<'p> {
     /// A phrase met in the second pass (Java adds it to the list it is
     /// iterating).
     nested_phrase: std::cell::Cell<bool>,
+    /// How many `(` groups the parse is inside. Bounded by
+    /// [`MAX_GROUP_DEPTH`] so a hostile `((((...` cannot overflow the stack.
+    depth: usize,
 }
+
+/// The deepest `(` nesting a parse accepts. Java has no such limit and
+/// throws `StackOverflowError` past a few thousand levels; a Rust stack
+/// overflow aborts the process instead, so the parse fails cleanly here.
+/// An unoptimised build overflows a 2 MiB thread stack at about 250 levels,
+/// hence the margin.
+pub(crate) const MAX_GROUP_DEPTH: usize = 128;
 
 impl<'p> Parser<'p> {
     pub(crate) fn new(cfg: &'p QueryParser, query: &str) -> Self {
@@ -185,6 +195,7 @@ impl<'p> Parser<'p> {
             rt: Runtime::new(&GRAMMAR, TokenManager::new(CharStream::new(query))),
             phrase_field: None,
             nested_phrase: std::cell::Cell::new(false),
+            depth: 0,
         }
     }
 
@@ -386,7 +397,15 @@ impl<'p> Parser<'p> {
             | RANGEIN_START | RANGEEX_START | NUMBER => self.term(field.as_deref())?,
             LPAREN => {
                 self.consume(LPAREN)?;
-                let q = self.query(field.as_deref())?;
+                if self.depth >= MAX_GROUP_DEPTH {
+                    return Err(parse_error(format!(
+                        "Cannot parse query: more than {MAX_GROUP_DEPTH} nested groups"
+                    )));
+                }
+                self.depth += 1;
+                let q = self.query(field.as_deref());
+                self.depth -= 1;
+                let q = q?;
                 self.consume(RPAREN)?;
                 match self.ntk()? {
                     CARAT => {

@@ -371,14 +371,6 @@ impl<'a> PhraseScorer<'a> {
         self
     }
 
-    /// Slot `slot`'s offset in the phrase.
-    fn offset(&self, slot: usize) -> i32 {
-        match &self.offsets {
-            Some(o) => o[slot],
-            None => slot as i32,
-        }
-    }
-
     /// Scores through `scorer` instead of BM25's weight: a phrase under a
     /// similarity other than the default.
     pub(crate) fn with_sim_scorer(mut self, scorer: Arc<dyn SimScorer>) -> Self {
@@ -402,23 +394,29 @@ impl<'a> PhraseScorer<'a> {
     /// the phrase occurs at all, reading each term's positions only as far as
     /// the search needs. The rest are left for the cursor to skip.
     fn exact_occurs(&mut self) -> Result<bool> {
-        let offsets: Vec<i32> = (0..self.terms.len()).map(|s| self.offset(s)).collect();
+        // Split borrows rather than a `Vec` of `self.offset(slot)` per
+        // candidate document: this runs once per document a phrase filter
+        // checks.
+        // Slot `slot`'s offset in the phrase.
+        let offsets = self.offsets.as_deref();
+        let offset = |slot: usize| offsets.map_or(slot as i32, |o| o[slot]);
+        let lazy = &mut self.lazy;
         for t in self.terms.iter_mut() {
             let first = t.cursor.next_position()?;
-            self.lazy[t.slot] = (first - offsets[t.slot], t.cursor.freq() - 1);
+            lazy[t.slot] = (first - offset(t.slot), t.cursor.freq() - 1);
         }
         loop {
             // Every term must sit at the same phrase start.
-            let target = self.lazy.iter().map(|&(rel, _)| rel).max().unwrap_or(0);
+            let target = lazy.iter().map(|&(rel, _)| rel).max().unwrap_or(0);
             let mut aligned = true;
             for t in self.terms.iter_mut() {
-                let (rel, left) = &mut self.lazy[t.slot];
+                let (rel, left) = &mut lazy[t.slot];
                 while *rel < target {
                     if *left == 0 {
                         return Ok(false);
                     }
                     *left -= 1;
-                    *rel = t.cursor.next_position()? - offsets[t.slot];
+                    *rel = t.cursor.next_position()? - offset(t.slot);
                 }
                 aligned &= *rel == target;
             }

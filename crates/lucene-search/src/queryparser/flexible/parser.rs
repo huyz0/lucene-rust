@@ -125,12 +125,23 @@ fn unquote(image: &[u16]) -> Vec<u16> {
 /// One parse of one query string.
 pub(crate) struct Parser {
     rt: Runtime<TokenManager>,
+    /// How many `(` groups the parse is inside, bounded by
+    /// [`MAX_GROUP_DEPTH`].
+    depth: usize,
 }
+
+/// The deepest `(` nesting a parse accepts: a Rust stack overflow aborts the
+/// process where Java's `StackOverflowError` can be caught, so a hostile
+/// `((((...` fails to parse instead. Lower than the classic parser's 128:
+/// this grammar's productions keep larger frames, and an unoptimised build
+/// overflows a 2 MiB thread stack at about 125 levels.
+pub(crate) const MAX_GROUP_DEPTH: usize = 64;
 
 impl Parser {
     pub(crate) fn new(query: &str) -> Self {
         Parser {
             rt: Runtime::new(&GRAMMAR, TokenManager::new(CharStream::new(query))),
+            depth: 0,
         }
     }
 
@@ -327,7 +338,15 @@ impl Parser {
     /// `GroupingExpr(field)`.
     fn grouping_expr(&mut self, field: Option<&str>) -> PResult<Node> {
         self.consume(LPAREN)?;
-        let mut q = self.query(field)?;
+        if self.depth >= MAX_GROUP_DEPTH {
+            return Err(Fail::Syntax(format!(
+                "Cannot parse query: more than {MAX_GROUP_DEPTH} nested groups"
+            )));
+        }
+        self.depth += 1;
+        let q = self.query(field);
+        self.depth -= 1;
+        let mut q = q?;
         self.consume(RPAREN)?;
         if self.ntk()? == CARAT {
             q = self.boost(q)?;

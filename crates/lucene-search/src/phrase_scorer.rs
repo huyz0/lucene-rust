@@ -376,8 +376,8 @@ mod tests {
             score_phrase(open(), weight, slop, &repeats, None, None, &mut all).unwrap();
             assert_eq!(all.0, want, "phrase {phrase:?} slop {slop}");
 
-            // A threshold of one hit, so pruning (and the `maxFreq` check)
-            // starts as soon as five hits are held.
+            // A threshold of one hit (clamped to the five kept), so pruning
+            // (and the `maxFreq` check) starts once five hits are held.
             let mut top = TopDocsCollector::with_total_hits_threshold(5, 1);
             score_phrase(open(), weight, slop, &repeats, None, None, &mut top).unwrap();
             let mut ranked = want.clone();

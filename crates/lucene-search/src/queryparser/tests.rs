@@ -395,3 +395,26 @@ fn the_parsers_hold_their_date_settings() {
     let q = f.parse("d:[1.2.20 TO 3.4.21]", Some("f")).unwrap();
     assert_eq!(q.to_string("f"), "d:[20200131 TO 20210402]");
 }
+
+/// Every recursive-descent parser refuses a hostile nesting depth with an
+/// error rather than overflowing the stack (which aborts the process), and
+/// still parses nesting up to its limit.
+#[test]
+fn deep_nesting_is_an_error_in_every_parser() {
+    use lucene_analysis::{Analyzer, StandardAnalyzer};
+    let nested = |open: &str, depth: usize| format!("{}a{}", open.repeat(depth), ")".repeat(depth));
+
+    let flexible = flexible::StandardQueryParser::new();
+    assert!(flexible.parse(&nested("(", 64), Some("f")).is_ok());
+    assert!(flexible.parse(&nested("(", 65), Some("f")).is_err());
+    assert!(flexible.parse(&nested("(", 200_000), Some("f")).is_err());
+
+    let simple = simple::SimpleQueryParser::new(Analyzer::new(StandardAnalyzer::new()), "f");
+    assert!(simple.parse(&nested("(", 128)).is_ok());
+    assert!(simple.parse(&nested("(", 129)).is_err());
+    assert!(simple.parse(&nested("(", 200_000)).is_err());
+
+    assert!(surround::parser::parse(&nested("(", 127)).is_ok());
+    assert!(surround::parser::parse(&nested("(", 200_000)).is_err());
+    assert!(surround::parser::parse(&nested("OR(", 200_000)).is_err());
+}

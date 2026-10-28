@@ -150,3 +150,14 @@ fn errors_convert_from_the_search_and_analysis_errors() {
     let e: &dyn std::error::Error = &QueryParserError::parse("p");
     assert_eq!(e.to_string(), "ParseException: p");
 }
+
+#[test]
+fn deeply_nested_groups_fail_to_parse_instead_of_overflowing_the_stack() {
+    let p = QueryParser::new("f", standard());
+    let nested = |depth: usize| format!("{}a{}", "(".repeat(depth), ")".repeat(depth));
+    assert_eq!(parse(&p, &nested(parser::MAX_GROUP_DEPTH)), "a");
+    let err = parse(&p, &nested(parser::MAX_GROUP_DEPTH + 1));
+    assert!(err.contains("nested groups"), "{err}");
+    let err = parse(&p, &nested(200_000));
+    assert!(err.contains("nested groups"), "{err}");
+}

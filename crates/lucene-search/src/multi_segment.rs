@@ -1063,11 +1063,13 @@ pub fn search_term_query_multi_segment_after(
 }
 
 /// Concurrent sibling of [`search_term_query_multi_segment`], built on
-/// [`merge_multi_segment_scored_concurrent`] instead of
+/// [`merge_multi_segment_scored_concurrent_shared_max_score`] instead of
 /// [`merge_multi_segment_scored`] -- searches every segment in parallel via
-/// `rayon` and merges the results with the identical merge logic. See
-/// [`merge_multi_segment_scored_concurrent`]'s doc comment for why this
-/// produces byte-for-byte identical output to the sequential path.
+/// `rayon`, every leaf pruning against the best bar any leaf has proved (as
+/// Java's concurrent `TopScoreDocCollectorManager` does), and merges the
+/// results with the identical merge logic. See that function's doc comment
+/// for why this produces byte-for-byte identical output to the sequential
+/// path.
 pub fn search_term_query_multi_segment_concurrent(
     segments: &[OpenSegment<'_>],
     query: &TermQuery,
@@ -1089,7 +1091,7 @@ pub fn search_term_query_multi_segment_concurrent(
     // disagreeing with Java).
     let global = global_term_stats(segments, &query.field, &query.term)?;
     let doc_bases: Vec<i32> = segments.iter().map(|s| s.doc_base).collect();
-    merge_multi_segment_scored_concurrent(&doc_bases, top_n, |i, local| {
+    merge_multi_segment_scored_concurrent_shared_max_score(&doc_bases, top_n, 0, |i, local| {
         let seg = &segments[i];
         let seg_norms = norms.get(i).copied().flatten();
         crate::search_term_query_scored_maxscore_with_stats(
@@ -1150,7 +1152,7 @@ pub fn search_boolean_query_multi_segment_concurrent(
     );
     let global = global_boolean_stats(segments, query)?;
     let doc_bases: Vec<i32> = segments.iter().map(|s| s.doc_base).collect();
-    merge_multi_segment_scored_concurrent(&doc_bases, top_n, |i, local| {
+    merge_multi_segment_scored_concurrent_shared_max_score(&doc_bases, top_n, 0, |i, local| {
         let seg = &segments[i];
         let seg_norms = norms.get(i).copied().flatten();
         crate::search_boolean_query_scored_segment(seg, query, seg_norms, Some(&global), local)
@@ -1963,7 +1965,9 @@ mod tests {
         // own queue is nowhere near it.
         let mut leaf1 = TopDocsCollector::with_total_hits_threshold(2, 0)
             .with_shared_max_score(Arc::clone(&acc), 100);
-        for (doc, score) in [(0i32, 3.0f32), (1, 2.0)] {
+        // Three hits: a threshold is published only past `top_n`, the floor
+        // Java's `Math.max(totalHitsThreshold, numHits)` puts under it.
+        for (doc, score) in [(0i32, 3.0f32), (1, 2.0), (2, 1.0)] {
             leaf1.collect(doc, score);
         }
         assert_eq!(
@@ -1975,7 +1979,7 @@ mod tests {
         // The negative control: the same leaf without the accumulator can only
         // ever see its own queue's bottom.
         let mut alone = TopDocsCollector::with_total_hits_threshold(2, 0);
-        for (doc, score) in [(0i32, 3.0f32), (1, 2.0)] {
+        for (doc, score) in [(0i32, 3.0f32), (1, 2.0), (2, 1.0)] {
             alone.collect(doc, score);
         }
         assert_eq!(alone.min_competitive_score(), Some(2.0));
