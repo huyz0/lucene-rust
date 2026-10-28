@@ -259,6 +259,7 @@ pub fn write_stored_only_segment_files(
         use_compound_file,
         has_blocks,
         None,
+        None,
     )
 }
 
@@ -275,6 +276,7 @@ pub(crate) fn write_stored_only_segment_files_with_codec(
     docs: &[Document],
     has_blocks: bool,
     codec: Option<&dyn lucene_codecs::codec::Lucene104Codec>,
+    prebuilt: Option<StoredFieldsBytes>,
 ) -> Result<FlushedSegment> {
     write_stored_only_segment_files_inner(
         dir,
@@ -287,7 +289,37 @@ pub(crate) fn write_stored_only_segment_files_with_codec(
         false,
         has_blocks,
         codec,
+        prebuilt,
     )
+}
+
+/// The native stored-fields writer's `(.fdt, .fdx, .fdm)` bytes.
+pub(crate) type StoredFieldsBytes = (Vec<u8>, Vec<u8>, Vec<u8>);
+
+/// The bytes [`write_stored_only_segment_files_with_codec`] would build with
+/// the native writer for `docs`, or `None` when `codec` installs its own
+/// stored-fields writer (which writes through the directory itself).
+///
+/// Pure computation -- compressing every document -- with no directory
+/// access, so a flush runs it on another thread alongside inversion and
+/// hands the result back as `prebuilt`.
+pub(crate) fn build_native_stored_fields(
+    docs: &[Document],
+    segment_id: &[u8; ID_LENGTH],
+    codec: Option<&dyn lucene_codecs::codec::Lucene104Codec>,
+) -> Option<StoredFieldsBytes> {
+    if codec.is_some_and(|codec| codec.stored_fields_writer_factory().is_some()) {
+        return None;
+    }
+    let mode = codec.map_or(stored_fields::Mode::BestSpeed, |codec| {
+        codec.stored_fields_mode()
+    });
+    let mut writer =
+        stored_fields::StoredFieldsWriter::new(mode, segment_id, mode.segment_suffix());
+    for doc in docs {
+        writer.add_document(doc);
+    }
+    Some(writer.finish())
 }
 
 /// `Lucene90StoredFieldsFormat.fieldsWriter`'s `.si` attribute naming its
@@ -316,6 +348,7 @@ fn write_stored_only_segment_files_inner(
     use_compound_file: bool,
     has_blocks: bool,
     codec: Option<&dyn lucene_codecs::codec::Lucene104Codec>,
+    prebuilt: Option<StoredFieldsBytes>,
 ) -> Result<FlushedSegment> {
     let doc_count = docs.len() as i32;
     let factory = codec.and_then(|codec| codec.stored_fields_writer_factory());
@@ -350,11 +383,7 @@ fn write_stored_only_segment_files_inner(
         )?;
         None
     } else {
-        let mut writer = stored_fields::StoredFieldsWriter::new(mode, &segment_id, suffix);
-        for doc in docs {
-            writer.add_document(doc);
-        }
-        Some(writer.finish())
+        prebuilt.or_else(|| build_native_stored_fields(docs, &segment_id, codec))
     };
     let fnm = field_infos::write(fields, &segment_id, "");
 

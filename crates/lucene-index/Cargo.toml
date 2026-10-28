@@ -26,3 +26,8 @@ lucene-util = { path = "../lucene-util", features = ["test-support"] }
 lucene-store = { path = "../lucene-store", features = ["test-util"] }
 crc32fast.workspace = true
 proptest.workspace = true
+criterion.workspace = true
+
+[[bench]]
+name = "indexing"
+harness = false
