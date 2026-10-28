@@ -146,7 +146,8 @@ pub fn decode_doc_ids(data: &[u8], dense_rank_power: u8) -> Result<Vec<i32>> {
 // ARITH: `read_u16` yields a `u16`, so `1u32 + it` is at most 65 536.
 // `block` is a `u16` widened to `i64`, so `block << 16` is at most 2^32 and
 // every `base + ...` below adds at most 65 535 to it -- all far inside `i64`.
-// `word_idx` runs over `0..1024` and `bit` over `0..64`. Every `as i32` is of
+// `word_idx` runs over `0..1024`, `w - 1` runs only while `w != 0`, and a
+// trailing-zero count is below 64. Every `as i32` is of
 // a document already checked below `max_doc`.
 #[allow(clippy::arithmetic_side_effects)]
 pub fn decode_doc_ids_below(data: &[u8], dense_rank_power: u8, max_doc: i32) -> Result<Vec<i32>> {
@@ -197,6 +198,9 @@ pub fn decode_doc_ids_below(data: &[u8], dense_rank_power: u8, max_doc: i32) -> 
             // DENSE: a 65536-bit array, optionally preceded by rank bytes we skip.
             input.skip(dense_rank_bytes(dense_rank_power)?)?;
             let base = block << 16;
+            // `num_values` is below `BLOCK_SIZE` here, so this reserves at
+            // most one block's worth whatever the header says.
+            docs.reserve(num_values as usize);
             for word_idx in 0..DENSE_BLOCK_LONGS as i64 {
                 let word = input.read_i64()? as u64;
                 if word == 0 {
@@ -205,10 +209,11 @@ pub fn decode_doc_ids_below(data: &[u8], dense_rank_power: u8, max_doc: i32) -> 
                 let at = base + word_idx * 64;
                 let end = at + 63 - i64::from(word.leading_zeros());
                 check(at + i64::from(word.trailing_zeros()), end, last)?;
-                for bit in 0..64u32 {
-                    if (word >> bit) & 1 != 0 {
-                        docs.push((at + bit as i64) as i32);
-                    }
+                // One step per set bit: the lowest one, then clear it.
+                let mut w = word;
+                while w != 0 {
+                    docs.push((at + i64::from(w.trailing_zeros())) as i32);
+                    w &= w - 1;
                 }
                 last = end;
             }

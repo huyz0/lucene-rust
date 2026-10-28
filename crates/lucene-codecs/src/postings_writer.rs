@@ -1482,6 +1482,7 @@ impl<'a> PostingsWriter<'a> {
         // (never read for singletons, see `postings::singleton_postings`).
         // The incremental shared-terms merge supplies one term per call.
         // Keep that pointer on the stack rather than allocating per term.
+        let mut block_scratch = BlockScratch::default();
         let mut one_doc_start_fp = [0u64; 1];
         let mut many_doc_start_fp = Vec::new();
         let doc_start_fp: &mut [u64] = if input.terms.len() == 1 {
@@ -1512,7 +1513,16 @@ impl<'a> PostingsWriter<'a> {
             // The running `.pos`/`.pay` pointers this term's skip records
             // carry (`Lucene104PostingsWriter`'s `level0LastPosFP` and
             // friends, reset per term at `startTerm`).
-            let mut skip = PosSkipWriter::new(layouts.get(i), index_has_offsets_or_payloads);
+            let payload_lengths = if index_has_payloads {
+                t.payload_lengths()
+            } else {
+                &[]
+            };
+            let mut skip = PosSkipWriter::new(
+                layouts.get(i),
+                payload_lengths,
+                index_has_offsets_or_payloads,
+            );
             // `docFreq >= LEVEL1_NUM_DOCS` (8192): emit a level-1 skip entry
             // before every complete span of `LEVEL1_FACTOR` (32) full
             // level-0 blocks, mirroring `DocInput::read_postings`'s own
@@ -1534,6 +1544,7 @@ impl<'a> PostingsWriter<'a> {
                         norms: field_norms,
                         maxima,
                         skip: &mut skip,
+                        scratch: &mut block_scratch,
                     },
                 );
                 start += LEVEL1_NUM_DOCS as usize;
@@ -1551,6 +1562,7 @@ impl<'a> PostingsWriter<'a> {
                         norms: field_norms,
                         maxima,
                         skip: &mut skip,
+                        scratch: &mut block_scratch,
                     },
                 );
                 start += BLOCK_SIZE as usize;
@@ -1936,6 +1948,16 @@ struct BlockWriteCtx<'n, 'p> {
     norms: Option<&'n [i64]>,
     maxima: &'n mut PostingsMaxima,
     skip: &'n mut PosSkipWriter<'p>,
+    scratch: &'n mut BlockScratch,
+}
+
+/// [`write_full_block`]'s buffers, cleared and refilled per block rather
+/// than allocated per block.
+#[derive(Default)]
+struct BlockScratch {
+    rest: Vec<u8>,
+    impacts: Vec<u8>,
+    header: Vec<u8>,
 }
 
 /// Writes one full 256-doc `.doc` block — a level-0 skip header
@@ -1984,7 +2006,16 @@ fn write_full_block(
         norms,
         maxima,
         skip,
+        scratch,
     } = ctx;
+    let BlockScratch {
+        rest,
+        impacts,
+        header,
+    } = &mut **scratch;
+    rest.clear();
+    impacts.clear();
+    header.clear();
     let (index_has_freq, norms) = (*index_has_freq, *norms);
     debug_assert_eq!(block.len(), BLOCK_SIZE as usize);
     // `addPosition` has run for every occurrence of this block's documents by
@@ -1996,7 +2027,6 @@ fn write_full_block(
     // immediately after `blockLength` itself) -- build it in a scratch
     // buffer first so `blockLength`'s value is known before the header is
     // written.
-    let mut rest = Vec::new();
     if index_has_freq {
         // `flushDocBlock`'s level-0 impacts: the block's competitive
         // `(freq, norm)` frontier, from `CompetitiveImpactAccumulator`. With
@@ -2023,14 +2053,13 @@ fn write_full_block(
         // prevents it is no longer local to this expression (it used to be a
         // `.max(1)` on the line this replaced).
         debug_assert!(!block_impacts.is_empty());
-        let mut impacts = Vec::new();
-        write_impacts(&block_impacts, &mut impacts);
+        write_impacts(&block_impacts, impacts);
         maxima.observe_level0(block_impacts.len() as i32, impacts.len());
         rest.write_vint(impacts.len() as i32);
-        rest.write_bytes(&impacts);
+        rest.write_bytes(impacts);
         // `.pos`/`.pay` skip pointers, immediately after the impacts run and
         // still inside `writeFreqs` -- `Lucene104PostingsWriter.java:413-422`.
-        skip.write_level0(&mut rest);
+        skip.write_level0(rest);
     }
     // Java's `numSkipBytes = level0Output.size()` is sampled exactly here --
     // after the impacts region *and* the pos/pay skip fields, before the doc
@@ -2100,13 +2129,15 @@ fn write_full_block(
     // which asserts the chosen token, can.
     } else if num_bits_next_bits_per_value <= doc_range {
         rest.write_byte(bits_per_value as u8);
-        for_util::for_encode(&mut deltas, bits_per_value, &mut rest);
+        for_util::for_encode(&mut deltas, bits_per_value, rest);
     } else {
         // Dense unary bit-set encoding: doc IDs are the set-bit positions
         // (ascending) in a `num_bit_set_longs`-word bitset based at
         // `prev_doc_id + 1`, matching `FixedBitSet`'s word/bit layout
         // (word = bit_index / 64, bit = bit_index % 64).
-        let mut words = vec![0u64; num_bit_set_longs as usize];
+        // At most 128 words: this branch needs `doc_range < 32 * 256`.
+        let mut all_words = [0u64; 128];
+        let words = &mut all_words[..num_bit_set_longs as usize];
         let mut s: i64 = -1;
         // ARITH: `s` accumulates 256 deltas, each below 2^32, so it stays
         // under 2^41. It ends at `doc_range - 1` (the deltas telescope), and
@@ -2126,7 +2157,7 @@ fn write_full_block(
         #[allow(clippy::arithmetic_side_effects)]
         let token = (-(num_bit_set_longs as i32)) as u8;
         rest.write_byte(token);
-        for word in &words {
+        for word in words.iter() {
             rest.write_i64(*word as i64);
         }
     }
@@ -2136,7 +2167,7 @@ fn write_full_block(
         for (i, &(_, freq)) in block.iter().enumerate() {
             freqs[i] = freq as u32;
         }
-        for_util::pfor_encode(&mut freqs, &mut rest);
+        for_util::pfor_encode(&mut freqs, rest);
     }
 
     // `numSkipBytes` spans the two header fields below plus the impacts
@@ -2146,18 +2177,17 @@ fn write_full_block(
     // seeks by it, and a zero here sends it *backwards* to re-read the header
     // as block data and then off the end of the file. Measure the fields by
     // building them first, as Java does with its `scratchOutput`.
-    let mut header = Vec::new();
     // Java writes `docBuffer[BLOCK_SIZE - 1] - level0LastDocID` as an `int`;
     // see the per-doc delta above.
-    write_vint15(&mut header, last_doc_id.wrapping_sub(prev_doc_id));
-    write_vlong15(&mut header, rest.len() as i64);
+    write_vint15(header, last_doc_id.wrapping_sub(prev_doc_id));
+    write_vlong15(header, rest.len() as i64);
     // ARITH: both terms are lengths of in-memory scratch buffers this call
     // just built -- a few KiB each, and both bounded by `isize::MAX`.
     #[allow(clippy::arithmetic_side_effects)]
     let num_skip_bytes = impacts_region_len + header.len() as i64;
     out.write_vlong(num_skip_bytes);
-    out.write_bytes(&header);
-    out.write_bytes(&rest);
+    out.write_bytes(header);
+    out.write_bytes(rest);
 
     last_doc_id
 }
@@ -2536,50 +2566,11 @@ fn write_position_tail<T: TermSource>(
         }
     }
 
-    // `payloadByteUpto`'s running value, per occurrence: entry `i` is the
-    // number of payload bytes written by the occurrences before `i` *since
-    // the last full-block flush*. Only the doc-block boundaries are ever
-    // sampled from it, but it is the only place the per-occurrence lengths
-    // are still in hand. Empty when the field has no payloads, in which case
-    // `Lucene104PostingsWriter` leaves `payloadByteUpto` at `0` and writes
-    // that (`addPosition` only touches it under `writePayloads`).
-    let payload_prefix = if has_payloads {
-        // ARITH: one more entry than there are occurrences, and
-        // `payload_lengths` is an in-memory `Vec` whose length is bounded by
-        // `isize::MAX`.
-        #[allow(clippy::arithmetic_side_effects)]
-        let mut prefix = Vec::with_capacity(payload_lengths.len() + 1);
-        let mut acc = 0u64;
-        prefix.push(0u64);
-        for (i, &l) in payload_lengths.iter().enumerate() {
-            // ARITH: `l` is a `payload.len() as i32`, so it is non-negative
-            // and `acc` is bounded by the total payload bytes this term
-            // holds -- an in-memory length, far below 2^64. `i + 1` cannot
-            // overflow for the same reason, and `BLOCK_SIZE` is a non-zero
-            // constant.
-            #[allow(clippy::arithmetic_side_effects)]
-            {
-                acc += l as u64;
-                // `addPosition`'s flush resets `payloadByteUpto` to `0` the moment
-                // the 256th occurrence of a block has been buffered, so the
-                // boundary entry is `0`, not the block's total.
-                if (i + 1) % BLOCK_SIZE as usize == 0 {
-                    acc = 0;
-                }
-            }
-            prefix.push(acc);
-        }
-        prefix
-    } else {
-        Vec::new()
-    };
-
     PositionLayout {
         pos_start: pos_out_start as u64,
         pay_start: has_offsets_or_payloads.then_some(pay_out_start as u64),
         pos_block_fp,
         pay_block_fp,
-        payload_prefix,
         last_pos_block_offset,
     }
 }
@@ -2615,9 +2606,6 @@ struct PositionLayout {
     pos_block_fp: Vec<u64>,
     /// The same for `.pay`, empty when `pay_start` is `None`.
     pay_block_fp: Vec<u64>,
-    /// `payloadByteUpto` before occurrence `i`, reset at every full-block
-    /// boundary. Empty when the field has no payloads.
-    payload_prefix: Vec<u64>,
     /// See [`write_position_tail`]'s return doc.
     last_pos_block_offset: usize,
 }
@@ -2644,7 +2632,10 @@ impl PositionLayout {
     /// two checked ones -- if that invariant is ever broken the failure should
     /// be a wrong pointer a differential test catches, not a panic inside a
     /// writer.
-    fn sample(&self, occ: u64) -> PosSkipSample {
+    ///
+    /// `payload_lengths` is the term's per-occurrence payload lengths, empty
+    /// when the field has no payloads (`payloadByteUpto` then stays `0`).
+    fn sample(&self, occ: u64, payload_lengths: &[u32]) -> PosSkipSample {
         // ARITH: `BLOCK_SIZE` is the non-zero constant 256, so neither the
         // division nor the remainder can trap.
         #[allow(clippy::arithmetic_side_effects)]
@@ -2663,9 +2654,24 @@ impl PositionLayout {
             pay_fp: self
                 .pay_start
                 .map_or(0, |start| after(start, &self.pay_block_fp)),
-            pay_upto: self.payload_prefix.get(occ as usize).copied().unwrap_or(0) as i32,
+            pay_upto: payload_byte_upto(payload_lengths, occ),
         }
     }
+}
+
+/// `payloadByteUpto` once `occ` occurrences are buffered: the payload bytes
+/// of the occurrences since the last full 256-occurrence block, since
+/// `addPosition`'s flush resets it to `0` the moment a block fills. Summed
+/// at each (rare) skip sample instead of kept per occurrence for every term
+/// of the field until its `.doc` pass.
+// ARITH: `occ % BLOCK_SIZE <= occ`, so the subtraction cannot underflow, and
+// the at most 255 summed `u32` lengths fit a `u64`.
+#[allow(clippy::arithmetic_side_effects)]
+fn payload_byte_upto(payload_lengths: &[u32], occ: u64) -> i32 {
+    let block_start = (occ - occ % BLOCK_SIZE as u64) as usize;
+    payload_lengths
+        .get(block_start..occ as usize)
+        .map_or(0, |run| run.iter().map(|&l| u64::from(l)).sum::<u64>()) as i32
 }
 
 /// The running `level0LastPosFP`/`level1LastPosFP` (and their `.pay` twins)
@@ -2678,6 +2684,8 @@ struct PosSkipWriter<'a> {
     /// `None` for a field that does not index positions: no pos/pay skip
     /// sub-fields exist on the wire at all, and every method here is a no-op.
     layout: Option<&'a PositionLayout>,
+    /// The term's payload lengths, empty when the field has no payloads.
+    payload_lengths: &'a [u32],
     has_offsets_or_payloads: bool,
     /// Occurrences of the documents written so far — `flushDocBlock`'s
     /// implicit "everything `addPosition` has seen" watermark.
@@ -2689,11 +2697,16 @@ struct PosSkipWriter<'a> {
 }
 
 impl<'a> PosSkipWriter<'a> {
-    fn new(layout: Option<&'a PositionLayout>, has_offsets_or_payloads: bool) -> Self {
+    fn new(
+        layout: Option<&'a PositionLayout>,
+        payload_lengths: &'a [u32],
+        has_offsets_or_payloads: bool,
+    ) -> Self {
         let pos_start = layout.map_or(0, |l| l.pos_start);
         let pay_start = layout.and_then(|l| l.pay_start).unwrap_or(0);
         PosSkipWriter {
             layout,
+            payload_lengths,
             has_offsets_or_payloads,
             occ: 0,
             level0_last_pos_fp: pos_start,
@@ -2723,7 +2736,7 @@ impl<'a> PosSkipWriter<'a> {
     /// record right after the impacts run.
     fn write_level0(&mut self, out: &mut Vec<u8>) {
         let Some(layout) = self.layout else { return };
-        let s = layout.sample(self.occ);
+        let s = layout.sample(self.occ, self.payload_lengths);
         // `sample` falls back to 0 for an out-of-range block index rather
         // than panicking (see its doc comment), and a 0 there would make this
         // delta underflow. Java's is a `long` subtraction that wraps, and a
@@ -2746,7 +2759,7 @@ impl<'a> PosSkipWriter<'a> {
     /// *inside* the `skip1EndFP` extent but *outside* `numImpactBytes`.
     fn write_level1(&mut self, out: &mut Vec<u8>) {
         let Some(layout) = self.layout else { return };
-        let s = layout.sample(self.occ);
+        let s = layout.sample(self.occ, self.payload_lengths);
         // `sample` falls back to 0 for an out-of-range block index rather
         // than panicking (see its doc comment), and a 0 there would make this
         // delta underflow. Java's is a `long` subtraction that wraps, and a
@@ -5014,7 +5027,8 @@ mod tests {
                 index_has_freq: false,
                 norms: None,
                 maxima: &mut PostingsMaxima::default(),
-                skip: &mut PosSkipWriter::new(None, false),
+                skip: &mut PosSkipWriter::new(None, &[], false),
+                scratch: &mut BlockScratch::default(),
             },
         );
         let mut r = SliceInput::new(&out);
@@ -6464,5 +6478,28 @@ mod tests {
                 total_term_freq: 2,
             })
         ));
+    }
+
+    /// `payloadByteUpto` as `addPosition` keeps it, one occurrence at a
+    /// time with the reset when a 256-occurrence block fills, against the
+    /// on-demand sum the skip writer samples.
+    #[test]
+    fn payload_byte_upto_matches_addpositions_running_counter() {
+        let lengths: Vec<u32> = (0..1_000u32).map(|i| (i * 37) % 11).collect();
+        let mut upto = 0u64;
+        for occ in 0..=lengths.len() {
+            assert_eq!(
+                payload_byte_upto(&lengths, occ as u64),
+                upto as i32,
+                "occ {occ}"
+            );
+            if let Some(&l) = lengths.get(occ) {
+                upto += u64::from(l);
+                if (occ + 1) % BLOCK_SIZE as usize == 0 {
+                    upto = 0;
+                }
+            }
+        }
+        assert_eq!(payload_byte_upto(&[], 300), 0);
     }
 }

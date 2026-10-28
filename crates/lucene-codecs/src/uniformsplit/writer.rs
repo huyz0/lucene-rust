@@ -140,7 +140,15 @@ impl<S> BlockWriter<S> {
         sink: &mut K,
         dictionary: &mut FstDictionaryBuilder,
     ) -> Result<()> {
-        self.last_term = Some(line.term.clone());
+        // Refill the remembered term in place: one copy per term, not an
+        // allocation per term.
+        match &mut self.last_term {
+            Some(last) => {
+                last.clear();
+                last.extend_from_slice(&line.term);
+            }
+            None => self.last_term = Some(line.term.clone()),
+        }
         self.block_lines.push(line);
         if self.block_lines.len() >= self.target_num_block_lines + self.delta_num_lines {
             self.split_and_write_block(block_output, sink, dictionary)?;
@@ -214,9 +222,13 @@ impl<S> BlockWriter<S> {
                 self.delta_num_lines
             )));
         }
-        let rest = self.block_lines.split_off(min_mdp_end_index);
-        let lines = std::mem::replace(&mut self.block_lines, rest);
-        self.write_block(&lines, block_output, sink, dictionary)
+        // Write the head, then shift the rest down in place (Java's
+        // `subList(0, end).clear()`), keeping the buffer's capacity.
+        let mut lines = std::mem::take(&mut self.block_lines);
+        let written = self.write_block(&lines[..min_mdp_end_index], block_output, sink, dictionary);
+        lines.drain(..min_mdp_end_index);
+        self.block_lines = lines;
+        written
     }
 
     /// `writeBlock(blockLines, dictionaryBuilder)`.

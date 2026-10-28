@@ -136,6 +136,37 @@ pub struct NativeTermVectorsWriter<'a> {
     index: Option<FsIndexOutput>,
     finished: bool,
     closed: bool,
+    /// The last document's fields and terms, emptied after the encoder has
+    /// copied them: the next document refills their vectors in place
+    /// instead of allocating five per term.
+    spare: Spare,
+}
+
+#[derive(Default)]
+struct Spare {
+    document: Vec<TermVectorField>,
+    fields: Vec<TermVectorField>,
+    terms: Vec<TermVectorTerm>,
+}
+
+impl Spare {
+    /// Empties `document` into the pools, keeping every allocation.
+    fn recycle(&mut self, mut document: TermVectorsDocument) {
+        for mut field in document.fields.drain(..) {
+            self.terms.append(&mut field.terms);
+            self.fields.push(field);
+        }
+        self.document = document.fields;
+    }
+}
+
+/// `slot` holding an empty vector when `on`, reusing the one it has.
+fn reset<T>(slot: &mut Option<Vec<T>>, on: bool) {
+    if on {
+        slot.get_or_insert_with(Vec::new).clear();
+    } else {
+        *slot = None;
+    }
 }
 
 impl<'a> NativeTermVectorsWriter<'a> {
@@ -169,6 +200,7 @@ impl<'a> NativeTermVectorsWriter<'a> {
             index: None,
             finished: false,
             closed: false,
+            spare: Spare::default(),
         };
         let stem = if state.suffix.is_empty() {
             state.segment.to_owned()
@@ -215,7 +247,9 @@ impl TermVectorsWriteSink for NativeTermVectorsWriter<'_> {
             return Err(invalid("too many term-vector documents"));
         }
         self.document = Some(PendingDocument {
-            value: TermVectorsDocument::default(),
+            value: TermVectorsDocument {
+                fields: mem::take(&mut self.spare.document),
+            },
             fields: fields as usize,
         });
         Ok(())
@@ -235,6 +269,7 @@ impl TermVectorsWriteSink for NativeTermVectorsWriter<'_> {
             .as_mut()
             .expect("unfinished encoder")
             .add_document(&document.value);
+        self.spare.recycle(document.value);
         Ok(())
     }
 
@@ -259,14 +294,19 @@ impl TermVectorsWriteSink for NativeTermVectorsWriter<'_> {
         {
             return Err(invalid("invalid term-vector field scope/count/flags"));
         }
+        let mut value = self.spare.fields.pop().unwrap_or_else(|| TermVectorField {
+            field_number: 0,
+            has_positions: false,
+            has_offsets: false,
+            has_payloads: false,
+            terms: Vec::new(),
+        });
+        value.field_number = info.number;
+        value.has_positions = positions;
+        value.has_offsets = offsets;
+        value.has_payloads = payloads;
         self.field = Some(PendingField {
-            value: TermVectorField {
-                field_number: info.number,
-                has_positions: positions,
-                has_offsets: offsets,
-                has_payloads: payloads,
-                terms: Vec::new(),
-            },
+            value,
             terms: terms as usize,
         });
         Ok(())
@@ -304,15 +344,23 @@ impl TermVectorsWriteSink for NativeTermVectorsWriter<'_> {
         {
             return Err(invalid("invalid term-vector term scope/frequency/length"));
         }
+        let mut value = self.spare.terms.pop().unwrap_or_else(|| TermVectorTerm {
+            term: Vec::new(),
+            freq: 0,
+            positions: None,
+            start_offsets: None,
+            end_offsets: None,
+            payloads: None,
+        });
+        value.term.clear();
+        value.term.extend_from_slice(term);
+        value.freq = frequency;
+        reset(&mut value.positions, field.value.has_positions);
+        reset(&mut value.start_offsets, field.value.has_offsets);
+        reset(&mut value.end_offsets, field.value.has_offsets);
+        reset(&mut value.payloads, field.value.has_payloads);
         self.term = Some(PendingTerm {
-            value: TermVectorTerm {
-                term: term.to_vec(),
-                freq: frequency,
-                positions: field.value.has_positions.then(Vec::new),
-                start_offsets: field.value.has_offsets.then(Vec::new),
-                end_offsets: field.value.has_offsets.then(Vec::new),
-                payloads: field.value.has_payloads.then(Vec::new),
-            },
+            value,
             occurrences: 0,
         });
         Ok(())
