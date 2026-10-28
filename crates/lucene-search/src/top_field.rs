@@ -2408,13 +2408,14 @@ enum LeafKey<'a> {
     Custom(Box<dyn LeafFieldComparator + 'a>),
 }
 
-/// `TermValComparator.getValueForDoc`.
-fn binary_value(
-    column: &mut Option<lucene_codecs::doc_values::BinaryReader<'_>>,
+/// `TermValComparator.getValueForDoc`: borrowed from the column's bytes, so
+/// a comparison against the bottom or top allocates nothing.
+fn binary_value<'a>(
+    column: &mut Option<lucene_codecs::doc_values::BinaryReader<'a>>,
     doc: i32,
-) -> Result<Option<Vec<u8>>> {
+) -> Result<Option<&'a [u8]>> {
     Ok(match column {
-        Some(r) => r.value(doc)?.map(<[u8]>::to_vec),
+        Some(r) => r.value(doc)?,
         None => None,
     })
 }
@@ -3461,7 +3462,7 @@ impl<'a> Leaf<'a> {
                 LeafKey::Bytes(col) => {
                     let v = binary_value(col, doc)?;
                     let vals = c.vals.as_ref().ok_or(SortError::NoKeys)?;
-                    c.mul * vals.compare_values(vals.bottom.as_deref(), v.as_deref())
+                    c.mul * vals.compare_values(vals.bottom.as_deref(), v)
                 }
                 LeafKey::Custom(_) => {
                     let cs = c.custom.as_ref().ok_or(SortError::NoKeys)?;
@@ -3494,7 +3495,7 @@ impl<'a> Leaf<'a> {
                 LeafKey::Bytes(col) => {
                     let v = binary_value(col, doc)?;
                     let vals = c.vals.as_ref().ok_or(SortError::NoKeys)?;
-                    c.mul * vals.compare_values(vals.top.as_deref(), v.as_deref())
+                    c.mul * vals.compare_values(vals.top.as_deref(), v)
                 }
                 LeafKey::Custom(_) => {
                     let v = self.custom_value(i, doc, scorer)?;
@@ -3526,7 +3527,14 @@ impl<'a> Leaf<'a> {
                 continue;
             }
             if let (LeafKey::Bytes(col), Some(v)) = (&mut self.keys[i], tf.comps[i].vals.as_mut()) {
-                v.values[slot] = binary_value(col, doc)?;
+                // Into the slot's own buffer, kept across copies.
+                match (binary_value(col, doc)?, &mut v.values[slot]) {
+                    (Some(b), Some(buf)) => {
+                        buf.clear();
+                        buf.extend_from_slice(b);
+                    }
+                    (b, slot) => *slot = b.map(<[u8]>::to_vec),
+                }
                 continue;
             }
             if matches!(self.keys[i], LeafKey::Custom(_)) {
