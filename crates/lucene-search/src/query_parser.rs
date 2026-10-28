@@ -1339,19 +1339,28 @@ mod tests {
 
     #[test]
     fn deeply_nested_groups_are_refused_instead_of_overflowing_the_stack() {
-        let nested = |depth: usize| format!("{}a{}", "(".repeat(depth), ")".repeat(depth));
-        assert!(matches!(
-            parse_query(&nested(MAX_GROUP_DEPTH), Some("f")),
-            Ok(Clause::Term(_))
-        ));
-        assert_eq!(
-            parse_query(&nested(MAX_GROUP_DEPTH + 1), Some("f")),
-            Err(ParseError::TooDeep(MAX_GROUP_DEPTH))
-        );
-        assert_eq!(
-            parse_query(&nested(200_000), Some("f")),
-            Err(ParseError::TooDeep(MAX_GROUP_DEPTH))
-        );
+        // The limits fit an unoptimised build on a 2 MiB thread; a coverage-
+        // instrumented build's frames are larger, so run on a big stack.
+        std::thread::Builder::new()
+            .stack_size(64 << 20)
+            .spawn(|| {
+                let nested = |depth: usize| format!("{}a{}", "(".repeat(depth), ")".repeat(depth));
+                assert!(matches!(
+                    parse_query(&nested(MAX_GROUP_DEPTH), Some("f")),
+                    Ok(Clause::Term(_))
+                ));
+                assert_eq!(
+                    parse_query(&nested(MAX_GROUP_DEPTH + 1), Some("f")),
+                    Err(ParseError::TooDeep(MAX_GROUP_DEPTH))
+                );
+                assert_eq!(
+                    parse_query(&nested(200_000), Some("f")),
+                    Err(ParseError::TooDeep(MAX_GROUP_DEPTH))
+                );
+            })
+            .expect("spawn")
+            .join()
+            .expect("no panic");
     }
 
     // --- `AND`/`OR`/`NOT` operators (`QueryParserBase.addClause`) ---
