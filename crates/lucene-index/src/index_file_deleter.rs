@@ -788,7 +788,12 @@ impl<'d> IndexFileDeleter<'d> {
 
     fn inc_ref_all(&mut self, files: &[String]) {
         for name in files {
-            let count = self.ref_counts.entry(name.clone()).or_insert(0);
+            // `get_mut` first: nearly every name is already counted, and
+            // `entry` would allocate its key for each one.
+            let count = match self.ref_counts.get_mut(name) {
+                Some(count) => count,
+                None => self.ref_counts.entry(name.clone()).or_insert(0),
+            };
             // Saturating, not checked: 2^32 live references to one file is
             // unreachable (each is a commit point or a checkpoint holding the
             // name in memory), and a saturated count only ever *keeps* a file

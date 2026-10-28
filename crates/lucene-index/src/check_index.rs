@@ -852,8 +852,17 @@ fn check_segment_vs_commit_header(
 pub fn check_directory(dir: &dyn Directory) -> segment_infos::Result<Vec<CheckResult>> {
     let infos = segment_infos::read_latest(dir)?;
     let mut results = vec![check_commit(&infos)];
-    for commit in &infos.segments {
-        results.push(check_segment_in_commit(dir, Some(&infos), commit));
+    // Segments are checked in parallel, as Java's CheckIndex does with
+    // `-threadCount`; each check reads only its own segment's files, and the
+    // results keep commit order.
+    {
+        use rayon::prelude::*;
+        let segments: Vec<CheckResult> = infos
+            .segments
+            .par_iter()
+            .map(|commit| check_segment_in_commit(dir, Some(&infos), commit))
+            .collect();
+        results.extend(segments);
     }
     // `SegmentInfos.readCommit`'s LUCENE-6299 total-doc bound needs every
     // segment's maxDoc, which only becomes available once the `.si` files

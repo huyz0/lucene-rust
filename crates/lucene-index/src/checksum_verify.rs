@@ -95,8 +95,15 @@ impl VerifyReport {
 /// recorded as a failed [`FileCheck`] in the returned report so callers see
 /// every failure, not just the first one.
 pub fn verify_directory(dir: &dyn Directory) -> segment_infos::Result<VerifyReport> {
+    use rayon::prelude::*;
     let infos = segment_infos::read_latest(dir)?;
-    let mut files = Vec::new();
+    // Collected first and verified in parallel below: every file's CRC is
+    // independent, and a report in the same order as before.
+    enum Entry {
+        Done(FileCheck),
+        Verify(String, String),
+    }
+    let mut files: Vec<Entry> = Vec::new();
     for commit in &infos.segments {
         // A `.si` that won't even parse means we don't know which files
         // belong to this segment; that's still worth surfacing as a single
@@ -105,12 +112,12 @@ pub fn verify_directory(dir: &dyn Directory) -> segment_infos::Result<VerifyRepo
             &match dir.open(&format!("{}.si", commit.segment_name)) {
                 Ok(b) => b,
                 Err(e) => {
-                    files.push(FileCheck {
+                    files.push(Entry::Done(FileCheck {
                         segment_name: commit.segment_name.clone(),
                         file_name: format!("{}.si", commit.segment_name),
                         passed: false,
                         message: e.to_string(),
-                    });
+                    }));
                     continue;
                 }
             },
@@ -119,12 +126,12 @@ pub fn verify_directory(dir: &dyn Directory) -> segment_infos::Result<VerifyRepo
         ) {
             Ok(si) => si,
             Err(e) => {
-                files.push(FileCheck {
+                files.push(Entry::Done(FileCheck {
                     segment_name: commit.segment_name.clone(),
                     file_name: format!("{}.si", commit.segment_name),
                     passed: false,
                     message: e.to_string(),
-                });
+                }));
                 continue;
             }
         };
@@ -134,8 +141,8 @@ pub fn verify_directory(dir: &dyn Directory) -> segment_infos::Result<VerifyRepo
         // DV-update round produced are recorded on the *commit*, never in the
         // already-written `.si`. Verifying only `si.files` silently skipped
         // exactly the files most likely to have been written last.
-        for file_name in &commit.files(&si.files) {
-            files.push(verify_file(dir, &commit.segment_name, file_name));
+        for file_name in commit.files(&si.files) {
+            files.push(Entry::Verify(commit.segment_name.clone(), file_name));
         }
     }
 
@@ -145,9 +152,16 @@ pub fn verify_directory(dir: &dyn Directory) -> segment_infos::Result<VerifyRepo
     // failure here is unreachable in practice -- it is recorded anyway so the
     // report's file list is the commit's real file list.
     if let Some(name) = lucene_store::directory::segments_file_name(infos.generation) {
-        files.push(verify_file(dir, "", &name));
+        files.push(Entry::Verify(String::new(), name));
     }
 
+    let files = files
+        .into_par_iter()
+        .map(|entry| match entry {
+            Entry::Done(check) => check,
+            Entry::Verify(segment, file) => verify_file(dir, &segment, &file),
+        })
+        .collect();
     Ok(VerifyReport { files })
 }
 
