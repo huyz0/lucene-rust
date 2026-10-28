@@ -93,6 +93,14 @@ pub const FINAL_QUOTE_PUNCTUATION: u8 = 30;
 /// `Character.MAX_CODE_POINT`.
 pub const MAX_CODE_POINT: u32 = 0x10FFFF;
 
+/// Latin-1's categories, the hot range: an inline array, so the char
+/// tokenizers' per-character test is one load with no pointer chase.
+static LATIN1: std::sync::LazyLock<[u8; 256]> = std::sync::LazyLock::new(|| {
+    let mut t = [0u8; 256];
+    t.copy_from_slice(&BMP[..256]);
+    t
+});
+
 /// The BMP's categories, one byte per code point, expanded once from the
 /// runs: the per-character lookup the tokenizers make (Kuromoji's and
 /// Nori's unknown-word scans, the char tokenizers) is then one load, as
@@ -120,6 +128,9 @@ fn lookup(cp: u32) -> u8 {
 /// `Character.getType(int)`; `UNASSIGNED` past [`MAX_CODE_POINT`].
 #[inline]
 pub fn get_type(cp: u32) -> u8 {
+    if let Some(&gc) = LATIN1.get(cp as usize) {
+        return gc;
+    }
     match BMP.get(cp as usize) {
         Some(&gc) => gc,
         None if cp > MAX_CODE_POINT => UNASSIGNED,
