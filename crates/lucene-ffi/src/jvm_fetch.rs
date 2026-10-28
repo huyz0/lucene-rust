@@ -100,6 +100,20 @@ impl StoredFieldVisitor for Blob {
         Ok(VisitStatus::Yes)
     }
 
+    /// One allocation for the whole blob: a field is at most 12 bytes longer
+    /// here than serialized (5 bytes of number and type against a 1-byte
+    /// vlong header, and an 8-byte long or double against a 1-byte
+    /// encoding, or a 4-byte length against a 1-byte vint). A count above
+    /// the length is corrupt (every field takes a byte), so it is clamped
+    /// rather than trusted.
+    fn document_size(&mut self, serialized_len: usize, num_stored_fields: i64) {
+        let fields = usize::try_from(num_stored_fields)
+            .unwrap_or(0)
+            .min(serialized_len);
+        self.out
+            .reserve(serialized_len.saturating_add(fields.saturating_mul(12)));
+    }
+
     fn string_field(&mut self, number: i32, value: &str) -> stored_fields::Result<()> {
         self.bytes(number, STRING, value.as_bytes())
     }
