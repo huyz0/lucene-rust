@@ -78,13 +78,18 @@ impl FileDeleter {
 
     /// `incRef(fileName)`.
     pub fn inc_ref(&mut self, file_name: &str) {
-        let rc = self.ref_counts.entry(file_name.to_string()).or_default();
+        let rc = match self.ref_counts.get_mut(file_name) {
+            Some(rc) => rc,
+            None => self.ref_counts.entry(file_name.to_string()).or_default(),
+        };
         let pre = rc.count;
         rc.inc_ref();
-        self.message(
-            MsgType::Ref,
-            &format!("IncRef \"{file_name}\": pre-incr count is {pre}"),
-        );
+        if self.messenger.is_some() {
+            self.message(
+                MsgType::Ref,
+                &format!("IncRef \"{file_name}\": pre-incr count is {pre}"),
+            );
+        }
     }
 
     /// `decRef(Collection)`: every file whose count reaches zero is deleted,
@@ -95,8 +100,9 @@ impl FileDeleter {
     /// The first deletion that failed.
     pub fn dec_ref_all<'a>(&mut self, file_names: impl IntoIterator<Item = &'a str>) -> Result<()> {
         let mut to_delete: Vec<String> = Vec::new();
+        let mut seen: HashSet<&str> = HashSet::new();
         for file in file_names {
-            if self.dec_ref(file) && !to_delete.iter().any(|f| f == file) {
+            if self.dec_ref(file) && seen.insert(file) {
                 to_delete.push(file.to_string());
             }
         }
@@ -104,13 +110,18 @@ impl FileDeleter {
     }
 
     fn dec_ref(&mut self, file_name: &str) -> bool {
-        let rc = self.ref_counts.entry(file_name.to_string()).or_default();
+        let rc = match self.ref_counts.get_mut(file_name) {
+            Some(rc) => rc,
+            None => self.ref_counts.entry(file_name.to_string()).or_default(),
+        };
         let pre = rc.count;
         let now = rc.dec_ref();
-        self.message(
-            MsgType::Ref,
-            &format!("DecRef \"{file_name}\": pre-decr count is {pre}"),
-        );
+        if self.messenger.is_some() {
+            self.message(
+                MsgType::Ref,
+                &format!("DecRef \"{file_name}\": pre-decr count is {pre}"),
+            );
+        }
         if now == 0 {
             self.ref_counts.remove(file_name);
             true
@@ -165,10 +176,11 @@ impl FileDeleter {
         files: impl IntoIterator<Item = &'a str>,
     ) -> Result<()> {
         let mut to_delete: Vec<String> = Vec::new();
+        let mut seen: HashSet<&str> = HashSet::new();
         for file in files {
             if !self.exists(file) {
                 self.message(MsgType::File, &format!("will delete new file \"{file}\""));
-                if !to_delete.iter().any(|f| f == file) {
+                if seen.insert(file) {
                     to_delete.push(file.to_string());
                 }
             }
@@ -200,8 +212,8 @@ impl FileDeleter {
         Ok(())
     }
 
-    /// `delete(Collection)`: `segments*` files first, then the rest, trying
-    /// all and returning the first error.
+    /// `delete(Collection)`: `segments*` files first, then, only if those all
+    /// went, the rest, trying all and returning the first error.
     fn delete_all(&self, to_delete: &[String]) -> Result<()> {
         self.message(
             MsgType::File,
@@ -210,7 +222,17 @@ impl FileDeleter {
         let mut first: Option<Error> = None;
         let (segments, others): (Vec<&String>, Vec<&String>) =
             to_delete.iter().partition(|f| f.starts_with("segments"));
-        for file in segments.into_iter().chain(others) {
+        for file in segments {
+            if let Err(e) = self.delete(file) {
+                first.get_or_insert(e);
+            }
+        }
+        // Only delete the other files once every `segments_N` is gone, so a
+        // failure never leaves a commit naming files that were deleted.
+        if let Some(e) = first {
+            return Err(e);
+        }
+        for file in others {
             if let Err(e) = self.delete(file) {
                 first.get_or_insert(e);
             }
@@ -311,5 +333,18 @@ mod tests {
         // Everything that could be deleted was, whatever the ghost did.
         assert!(dir.list_all().unwrap().is_empty());
         assert_eq!(r.is_err(), !cfg!(windows));
+    }
+
+    #[test]
+    fn a_failed_segments_delete_keeps_the_files_it_names() {
+        if cfg!(windows) {
+            return;
+        }
+        let dir = dir_with(&["_0.cfs"]);
+        let mut d = FileDeleter::new(dir.clone(), None);
+        // `segments_2` was never written, so deleting it fails.
+        d.inc_ref_all(["segments_2", "_0.cfs"]);
+        assert!(d.dec_ref_all(["_0.cfs", "segments_2"]).is_err());
+        assert_eq!(dir.list_all().unwrap(), vec!["_0.cfs".to_string()]);
     }
 }

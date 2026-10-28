@@ -327,16 +327,21 @@ impl<'d> IndexFileDeleter<'d> {
         }
         deleter.delete_files(&unrefed)?;
 
-        // `policy.onInit(commits)` then `deleteCommits()`.
-        deleter.apply_policy(true)?;
-
         // "Always protect the incoming segmentInfos since sometimes it may not
         // be the most recent commit."
         // Note this is deliberately *not* asserted to have referenced a
         // `segments_N`: a never-committed index's `SegmentInfos` carries
         // generation 0 in this port (Java models it as -1 / a null
         // `getSegmentsFileName()`), and there is no commit file for it yet.
+        //
+        // Before the policy's deletions, as in Java (`onInit`, `checkpoint`,
+        // then `deleteCommits`): a policy that drops the very commit this
+        // writer opened on must not take the files the writer is about to
+        // use with it.
         deleter.checkpoint(current, false)?;
+
+        // `policy.onInit(commits)` then `deleteCommits()`.
+        deleter.apply_policy(true)?;
 
         Ok(deleter)
     }
@@ -783,7 +788,12 @@ impl<'d> IndexFileDeleter<'d> {
 
     fn inc_ref_all(&mut self, files: &[String]) {
         for name in files {
-            let count = self.ref_counts.entry(name.clone()).or_insert(0);
+            // `get_mut` first: nearly every name is already counted, and
+            // `entry` would allocate its key for each one.
+            let count = match self.ref_counts.get_mut(name) {
+                Some(count) => count,
+                None => self.ref_counts.entry(name.clone()).or_insert(0),
+            };
             // Saturating, not checked: 2^32 live references to one file is
             // unreachable (each is a commit point or a checkpoint holding the
             // name in memory), and a saturated count only ever *keeps* a file
@@ -812,10 +822,10 @@ impl<'d> IndexFileDeleter<'d> {
                 // what catches that in tests).
                 *count = count.saturating_sub(1);
                 if *count == 0 {
+                    // Removed from `ref_counts`, so a repeat of `name` later
+                    // in `files` finds no entry: no duplicate check needed.
                     self.ref_counts.remove(name);
-                    if !to_delete.contains(name) {
-                        to_delete.push(name.clone());
-                    }
+                    to_delete.push(name.clone());
                 }
             }
         }
@@ -882,17 +892,24 @@ impl<'d> IndexFileDeleter<'d> {
     /// leave a commit file whose segments are already gone -- that is a corrupt
     /// index. Removing the commit file first makes the worst case an index with
     /// orphaned segment files, which is exactly the safe direction.
+    ///
+    /// Within a pass every file is tried and the first failure is returned
+    /// at the end, so one undeletable file does not leave the rest of the
+    /// list on disk untracked; the second pass only runs once every
+    /// `segments_N` is gone.
     fn delete_files(&mut self, names: &[String]) -> Result<()> {
-        for name in names {
-            if is_segments_file_name(name) {
-                self.ref_counts.remove(name);
-                self.dir.delete_file(name)?;
+        for segments_pass in [true, false] {
+            let mut first: Option<Error> = None;
+            for name in names {
+                if is_segments_file_name(name) == segments_pass {
+                    self.ref_counts.remove(name);
+                    if let Err(e) = self.dir.delete_file(name) {
+                        first.get_or_insert(e.into());
+                    }
+                }
             }
-        }
-        for name in names {
-            if !is_segments_file_name(name) {
-                self.ref_counts.remove(name);
-                self.dir.delete_file(name)?;
+            if let Some(e) = first {
+                return Err(e);
             }
         }
         Ok(())
@@ -1024,12 +1041,16 @@ pub(crate) fn parse_segment_name(file_name: &str) -> &str {
     // ARITH: `i` is a byte offset *within* `file_name[1..]`, so `i + 1` is at
     // most `file_name.len()` -- an in-memory length, hence at most
     // `isize::MAX`.
+    //
+    // `get`, not slicing: a `.si` names its own files, so a corrupt one can
+    // put an empty or non-ASCII-led name here, which must not panic.
     #[allow(clippy::arithmetic_side_effects)]
-    let idx = file_name[1..]
-        .find(['_', '.'])
+    let idx = file_name
+        .get(1..)
+        .and_then(|rest| rest.find(['_', '.']))
         .map(|i| i + 1)
         .unwrap_or(file_name.len());
-    &file_name[..idx]
+    file_name.get(..idx).unwrap_or(file_name)
 }
 
 /// `SegmentInfos.files(true)` read off disk: the commit's `segments_N`, then
@@ -1037,12 +1058,15 @@ pub(crate) fn parse_segment_name(file_name: &str) -> &str {
 /// `.liv`, field-infos and doc-values-update files.
 fn commit_file_names(dir: &dyn Directory, infos: &SegmentInfos) -> Result<Vec<String>> {
     let mut out: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
     if let Some(name) = lucene_store::directory::segments_file_name(infos.generation) {
+        seen.insert(name.clone());
         out.push(name);
     }
     for sci in &infos.segments {
         for f in segment_files(dir, sci)? {
-            if !out.contains(&f) {
+            if !seen.contains(&f) {
+                seen.insert(f.clone());
                 out.push(f);
             }
         }
@@ -1670,6 +1694,40 @@ mod tests {
         // The commit holds one reference and the in-memory view another.
         assert_eq!(deleter.ref_count("_0.si"), 2);
         assert_eq!(deleter.ref_count("segments_1"), 1);
+    }
+
+    #[test]
+    fn a_policy_dropping_the_opened_commit_keeps_the_files_the_writer_holds() {
+        #[derive(Debug)]
+        struct DropAll;
+        impl crate::deletion_policy::IndexDeletionPolicy for DropAll {
+            fn on_init(
+                &self,
+                commits: &mut [crate::deletion_policy::IndexCommit],
+            ) -> crate::deletion_policy::Result<()> {
+                commits.iter_mut().for_each(|c| c.delete());
+                Ok(())
+            }
+            fn on_commit(
+                &self,
+                _commits: &mut [crate::deletion_policy::IndexCommit],
+            ) -> crate::deletion_policy::Result<()> {
+                Ok(())
+            }
+        }
+        let tmp = tempdir("policy-drops-opened");
+        let dir = FsDirectory::open(&tmp);
+        let a = seed_segment(&dir, "_0", 1, &["_0.fdt"]);
+        let committed = infos(1, vec![a]);
+        segment_infos::write(&committed, &dir).unwrap();
+
+        let deleter =
+            IndexFileDeleter::open_with_policy(&dir, &committed, Arc::new(DropAll)).unwrap();
+
+        assert_eq!(deleter.commit_count(), 0);
+        // The commit file went; the segment the writer opened on did not.
+        assert_eq!(listing(&dir), vec!["_0.fdt", "_0.si"]);
+        assert_eq!(deleter.ref_count("_0.si"), 1);
     }
 
     #[test]

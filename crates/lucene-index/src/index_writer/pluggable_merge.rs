@@ -66,8 +66,7 @@ impl IndexWriter<'_> {
         let mut infos = Vec::with_capacity(self.segment_infos.segments.len());
         let mut deletes_to_merge = HashMap::new();
         for sci in &self.segment_infos.segments {
-            let si_bytes = self.dir.open(&format!("{}.si", sci.segment_name))?.to_vec();
-            let si = segment_info::parse_for_codec(&si_bytes, &sci.segment_id, &sci.codec_name)?;
+            let si = self.cfg.reader_pool.segment_info(self.dir, sci)?;
             // `SegmentCommitInfo.sizeInBytes`: the live-docs and generational
             // files count too.
             let size = merge_policy::commit_byte_size(self.dir, sci, &si);

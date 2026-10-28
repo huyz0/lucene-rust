@@ -51,6 +51,8 @@
 //! term*. Confirmed against a real fixture with multi-term, multi-occurrence
 //! fields (see `tests/term_vectors_fixtures.rs`).
 
+use std::sync::Arc;
+
 use lucene_store::codec_util::{self, ID_LENGTH};
 use lucene_store::data_input::{DataInput, SliceInput};
 use lucene_store::data_output::DataOutput;
@@ -179,10 +181,10 @@ pub struct TermVectorsReader<'d> {
     num_dirty_docs: i64,
     docs_start_pointer: i64,
     docs_end_pointer: i64,
-    docs_meta: direct_monotonic::Meta,
+    docs_meta: Arc<direct_monotonic::Meta>,
     start_pointers_start_pointer: i64,
     start_pointers_end_pointer: i64,
-    start_pointers_meta: direct_monotonic::Meta,
+    start_pointers_meta: Arc<direct_monotonic::Meta>,
 }
 
 /// Parses `.tvd`+`.tvm`+`.tvx` (already read into memory) and returns a
@@ -351,14 +353,42 @@ pub fn open<'d>(
         num_dirty_docs,
         docs_start_pointer,
         docs_end_pointer,
-        docs_meta,
+        docs_meta: Arc::new(docs_meta),
         start_pointers_start_pointer,
         start_pointers_end_pointer,
-        start_pointers_meta,
+        start_pointers_meta: Arc::new(start_pointers_meta),
     })
 }
 
 impl<'d> TermVectorsReader<'d> {
+    /// This reader's parsed metadata over `tvd`/`tvx` instead of the bytes it
+    /// was opened on, as [`crate::stored_fields::StoredFieldsReader::rebind`]
+    /// does for stored fields: a caller holding the files parses `.tvm` once
+    /// rather than per document. `open` validated the metadata against the
+    /// files it was given, so `tvd` and `tvx` must be those same files' bytes
+    /// (reading through other bytes fails or answers garbage, never undefined
+    /// behaviour: every read is bounds-checked).
+    pub fn rebind<'e>(&self, tvd: &'e [u8], tvx: &'e [u8]) -> TermVectorsReader<'e> {
+        TermVectorsReader {
+            tvd,
+            tvx,
+            data_codec: self.data_codec,
+            compression: self.compression,
+            max_doc: self.max_doc,
+            chunk_size: self.chunk_size,
+            max_pointer: self.max_pointer,
+            num_chunks: self.num_chunks,
+            num_dirty_chunks: self.num_dirty_chunks,
+            num_dirty_docs: self.num_dirty_docs,
+            docs_start_pointer: self.docs_start_pointer,
+            docs_end_pointer: self.docs_end_pointer,
+            docs_meta: Arc::clone(&self.docs_meta),
+            start_pointers_start_pointer: self.start_pointers_start_pointer,
+            start_pointers_end_pointer: self.start_pointers_end_pointer,
+            start_pointers_meta: Arc::clone(&self.start_pointers_meta),
+        }
+    }
+
     pub fn max_doc(&self) -> i32 {
         self.max_doc
     }

@@ -1061,21 +1061,31 @@ pub fn num_docs_of(max_doc: i32, live_docs: Option<&FixedBitSet>) -> i32 {
 }
 
 /// Implements [`IndexReader`] for a leaf type: one leaf at doc base 0,
-/// `numDocs` from its live docs.
+/// `numDocs` from its live docs (or from `num_docs`, for a leaf that keeps
+/// the count rather than recounting its live docs per call).
 #[macro_export]
 #[doc(hidden)]
 macro_rules! impl_leaf_index_reader {
     ($ty:ty, |$s:ident| max_doc: $max:expr, reader_cache_helper: $helper:expr) => {
+        $crate::impl_leaf_index_reader!(
+            $ty,
+            |$s| max_doc: $max,
+            num_docs: $crate::reader::num_docs_of(
+                $crate::reader::IndexReader::max_doc($s),
+                $crate::reader::LeafReader::live_docs($s),
+            ),
+            reader_cache_helper: $helper
+        );
+    };
+    ($ty:ty, |$s:ident| max_doc: $max:expr, num_docs: $num:expr, reader_cache_helper: $helper:expr) => {
         impl $crate::reader::IndexReader for $ty {
             fn max_doc(&self) -> i32 {
                 let $s = self;
                 $max
             }
             fn num_docs(&self) -> i32 {
-                $crate::reader::num_docs_of(
-                    $crate::reader::IndexReader::max_doc(self),
-                    $crate::reader::LeafReader::live_docs(self),
-                )
+                let $s = self;
+                $num
             }
             fn leaves(&self) -> Vec<$crate::reader::LeafReaderContext<'_>> {
                 vec![$crate::reader::LeafReaderContext {

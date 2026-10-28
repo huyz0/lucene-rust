@@ -105,8 +105,10 @@ impl NumericKind {
 /// `Column`: the name, type and density every column has.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Column {
-    name: String,
-    field_type: FieldType,
+    // Shared, so each cell's adapter takes a reference count rather than a
+    // copy of the name and a deep clone of the type.
+    name: Arc<str>,
+    field_type: Arc<FieldType>,
     density: Density,
 }
 
@@ -114,8 +116,8 @@ impl Column {
     /// `Column(name, fieldType, density)`.
     pub fn new(name: impl Into<String>, field_type: FieldType, density: Density) -> Self {
         Column {
-            name: name.into(),
-            field_type,
+            name: Arc::from(name.into()),
+            field_type: Arc::new(field_type),
             density,
         }
     }
@@ -536,8 +538,8 @@ pub struct LongColumnAdapter {
 impl LongColumnAdapter {
     pub fn new(column: &Column, kind: NumericKind, value: i64) -> Self {
         LongColumnAdapter {
-            name: column.name().into(),
-            field_type: Arc::new(column.field_type().clone()),
+            name: Arc::clone(&column.name),
+            field_type: Arc::clone(&column.field_type),
             kind,
             value,
         }
@@ -594,8 +596,8 @@ impl BinaryColumnAdapter {
     /// A bytes value, stored as `stored_type` when the type is stored.
     pub fn new(column: &Column, stored_type: StoredType, value: Arc<[u8]>) -> Self {
         BinaryColumnAdapter {
-            name: column.name().into(),
-            field_type: Arc::new(column.field_type().clone()),
+            name: Arc::clone(&column.name),
+            field_type: Arc::clone(&column.field_type),
             stored_type: column.field_type().stored().then_some(stored_type),
             value: CellValue::Bytes(value),
         }
@@ -604,8 +606,8 @@ impl BinaryColumnAdapter {
     /// A caller-supplied token stream (`TokenStreamColumn`).
     pub fn from_tokens(column: &Column, tokens: FieldTokens) -> Self {
         BinaryColumnAdapter {
-            name: column.name().into(),
-            field_type: Arc::new(column.field_type().clone()),
+            name: Arc::clone(&column.name),
+            field_type: Arc::clone(&column.field_type),
             stored_type: None,
             value: CellValue::Tokens(tokens),
         }

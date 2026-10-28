@@ -584,7 +584,7 @@ impl<'a> FlatVectorsReader<'a> {
         // A file shorter than its own footer is corruption, not a subtraction:
         // `len - FOOTER_LENGTH` on a truncated `.vemf` underflows to a huge
         // offset (release) or panics (debug).
-        let (Some(meta_footer), Some(data_footer)) = (
+        let (Some(meta_footer), Some(_)) = (
             meta_buf.len().checked_sub(codec_util::FOOTER_LENGTH),
             data_buf.len().checked_sub(codec_util::FOOTER_LENGTH),
         ) else {
@@ -595,7 +595,11 @@ impl<'a> FlatVectorsReader<'a> {
             ));
         };
         codec_util::check_whole_file_footer(meta_buf, meta_footer)?;
-        codec_util::check_whole_file_footer(data_buf, data_footer)?;
+        // `Lucene99FlatVectorsReader` checksums the small `.vemf` as it reads
+        // it but only `CodecUtil.retrieveChecksum`s the `.vec`: re-reading
+        // the whole data file belongs to `checkIntegrity`
+        // ([`Self::check_integrity`]), not to every open.
+        codec_util::retrieve_checksum(data_buf)?;
 
         let mut fields = Vec::new();
         loop {
@@ -622,6 +626,17 @@ impl<'a> FlatVectorsReader<'a> {
     /// [`check_vector_region`] against `data`.
     pub(crate) fn from_entries(data: &'a [u8], fields: Vec<FlatFieldEntry>) -> Self {
         FlatVectorsReader { data, fields }
+    }
+
+    /// `Lucene99FlatVectorsReader.checkIntegrity()`:
+    /// `CodecUtil.checksumEntireFile` over the `.vec` this reader serves.
+    ///
+    /// # Errors
+    /// A footer or checksum that does not verify.
+    pub fn check_integrity(&self) -> Result<()> {
+        let end = self.data.len().saturating_sub(codec_util::FOOTER_LENGTH);
+        codec_util::check_whole_file_footer(self.data, end)?;
+        Ok(())
     }
 
     pub fn fields(&self) -> &[FlatFieldEntry] {

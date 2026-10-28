@@ -1673,19 +1673,30 @@ fn write_merged_stored_fields(
         .map(|_| stored_fields::ChunkCursor::new())
         .collect();
     let matching = matching_readers(sources, per_source_maps);
-    let mut strategies: Vec<StoredFieldsMergeStrategy> = Vec::with_capacity(sources.len());
-    for (source, &m) in sources.iter().zip(&matching) {
-        // Java runs `reader.checkIntegrity(mergeState.oneMerge)` on every
-        // source before it picks a strategy, and it matters most for the one
-        // this batch added: BULK copies a source's compressed bytes verbatim
-        // and then writes a freshly computed, valid footer over them, so a bit
-        // flip in the source would be laundered into a merged segment that
-        // passes every checksum from then on. `stored_fields::open` only
-        // validates the footer's shape (`retrieve_checksum`), which is the
-        // right trade for a random-access reader and not enough here.
-        source.reader.check_integrity()?;
-        strategies.push(stored_fields_merge_strategy(&writer, source, m));
+    // Java runs `reader.checkIntegrity(mergeState.oneMerge)` on every
+    // source before it picks a strategy, and it matters most for the one
+    // this batch added: BULK copies a source's compressed bytes verbatim
+    // and then writes a freshly computed, valid footer over them, so a bit
+    // flip in the source would be laundered into a merged segment that
+    // passes every checksum from then on. `stored_fields::open` only
+    // validates the footer's shape (`retrieve_checksum`), which is the
+    // right trade for a random-access reader and not enough here.
+    //
+    // Each check hashes a whole source file, so the sources are checked in
+    // parallel, reporting the first corrupt one in source order.
+    {
+        use rayon::prelude::*;
+        in_source_order(
+            sources
+                .par_iter()
+                .map(|source| Ok(source.reader.check_integrity()?)),
+        )?;
     }
+    let strategies: Vec<StoredFieldsMergeStrategy> = sources
+        .iter()
+        .zip(&matching)
+        .map(|(source, &m)| stored_fields_merge_strategy(&writer, source, m))
+        .collect();
 
     let mut i = 0usize;
     while i < doc_order.len() {
@@ -1853,8 +1864,13 @@ fn write_merged_stored_fields_with_factory(
     lucene_codecs::stored_fields_writer::with_writer(factory, state, |writer| -> Result<()> {
         // Java opens the writer before its merge checks source integrity.
         // Keep that error order and close the opened writer on corruption.
-        for source in sources {
-            source.reader.check_integrity()?;
+        {
+            use rayon::prelude::*;
+            in_source_order(
+                sources
+                    .par_iter()
+                    .map(|source| Ok(source.reader.check_integrity()?)),
+            )?;
         }
         for &(source_index, doc_id) in doc_order {
             let source = &sources[source_index];
@@ -2246,21 +2262,28 @@ fn merge_segments_mapped_inner(
     // Several fields borrow one file: pointer and length identify that borrowed
     // file without hashing its contents once per field. No semantic DISI scan is
     // implied by a valid checksum, just as in Java's checkIntegrity.
-    for (source, live_ids) in sources.iter().zip(&per_source_live_ids) {
-        if live_ids.is_empty() {
-            continue;
-        }
-        let mut checked = HashSet::new();
-        for norms in source.norms {
-            if checked.insert((norms.data.as_ptr(), norms.data.len())) {
-                let footer = norms
-                    .data
-                    .len()
-                    .saturating_sub(lucene_store::codec_util::FOOTER_LENGTH);
-                lucene_store::codec_util::check_whole_file_footer(norms.data, footer)?;
+    //
+    // Sources are checked in parallel; the first failure in source order is
+    // the one reported, as the serial loop did.
+    use rayon::prelude::*;
+    in_source_order(sources.par_iter().zip(&per_source_live_ids).map(
+        |(source, live_ids)| -> Result<()> {
+            if live_ids.is_empty() {
+                return Ok(());
             }
-        }
-    }
+            let mut checked = HashSet::new();
+            for norms in source.norms {
+                if checked.insert((norms.data.as_ptr(), norms.data.len())) {
+                    let footer = norms
+                        .data
+                        .len()
+                        .saturating_sub(lucene_store::codec_util::FOOTER_LENGTH);
+                    lucene_store::codec_util::check_whole_file_footer(norms.data, footer)?;
+                }
+            }
+            Ok(())
+        },
+    ))?;
 
     let per_source_max_doc: Vec<i32> = sources.iter().map(|s| s.reader.max_doc()).collect();
     let doc_order = match (sort_fields, &options.reorder) {
@@ -2279,34 +2302,105 @@ fn merge_segments_mapped_inner(
     // Doc values, norms and term vectors, all resolved through the one
     // `doc_order` -- the merged segment's physical order, whichever way it
     // was produced.
-    let mut merged_doc_values =
-        merge_numeric_doc_values(sources, &per_source_maps, &per_source_live_ids, &doc_order)?;
-    merged_doc_values.extend(merge_binary_doc_values(
-        sources,
-        &per_source_maps,
-        &per_source_live_ids,
-        &doc_order,
-    )?);
-    merged_doc_values.extend(merge_sorted_doc_values(
-        sources,
-        &per_source_maps,
-        &per_source_live_ids,
-        &doc_order,
-    )?);
-    merged_doc_values.extend(merge_sorted_numeric_doc_values(
-        sources,
-        &per_source_maps,
-        &per_source_live_ids,
-        &doc_order,
-        &merged_fields,
-        options.sorted_numeric_remap.as_deref(),
-    )?);
-    merged_doc_values.extend(merge_sorted_set_doc_values(
-        sources,
-        &per_source_maps,
-        &per_source_live_ids,
-        &doc_order,
-    )?);
+    //
+    // The five doc-values merges, the norms merge and the points merge read
+    // only the sources and write nothing, so they run in parallel up front.
+    // Each result is unwrapped where its stage used to run, so the files
+    // written before a failing stage, and which error wins, are unchanged.
+    let reverse_maps = invert_field_number_maps(&per_source_maps);
+    let sorted_numeric_remap = options.sorted_numeric_remap.as_deref();
+    let (doc_values_results, (norms_result, points_result)) = rayon::join(
+        || {
+            let (numeric, (binary, (sorted, (sorted_numeric, sorted_set)))) = rayon::join(
+                || {
+                    merge_numeric_doc_values(
+                        sources,
+                        &per_source_maps,
+                        &reverse_maps,
+                        &per_source_live_ids,
+                        &doc_order,
+                    )
+                },
+                || {
+                    rayon::join(
+                        || {
+                            merge_binary_doc_values(
+                                sources,
+                                &per_source_maps,
+                                &reverse_maps,
+                                &per_source_live_ids,
+                                &doc_order,
+                            )
+                        },
+                        || {
+                            rayon::join(
+                                || {
+                                    merge_sorted_doc_values(
+                                        sources,
+                                        &per_source_maps,
+                                        &reverse_maps,
+                                        &per_source_live_ids,
+                                        &doc_order,
+                                    )
+                                },
+                                || {
+                                    rayon::join(
+                                        || {
+                                            merge_sorted_numeric_doc_values(
+                                                sources,
+                                                &per_source_maps,
+                                                &reverse_maps,
+                                                &per_source_live_ids,
+                                                &doc_order,
+                                                &merged_fields,
+                                                sorted_numeric_remap,
+                                            )
+                                        },
+                                        || {
+                                            merge_sorted_set_doc_values(
+                                                sources,
+                                                &per_source_maps,
+                                                &reverse_maps,
+                                                &per_source_live_ids,
+                                                &doc_order,
+                                            )
+                                        },
+                                    )
+                                },
+                            )
+                        },
+                    )
+                },
+            );
+            [numeric, binary, sorted, sorted_numeric, sorted_set]
+        },
+        || {
+            rayon::join(
+                || {
+                    merge_norms(
+                        sources,
+                        &merged_fields,
+                        &reverse_maps,
+                        &per_source_live_ids,
+                        &doc_order,
+                    )
+                },
+                || {
+                    merge_points(
+                        sources,
+                        &per_source_maps,
+                        &per_source_live_ids,
+                        &doc_id_maps,
+                        &merged_fields,
+                    )
+                },
+            )
+        },
+    );
+    let mut merged_doc_values = Vec::new();
+    for result in doc_values_results {
+        merged_doc_values.extend(result?);
+    }
     merged_doc_values.sort_by_key(|f| f.field_number());
 
     let mut files: Vec<String> = Vec::new();
@@ -2389,40 +2483,12 @@ fn merge_segments_mapped_inner(
         write_stored(&mut files)?;
     }
 
-    let merged_norms = merge_norms(
-        sources,
-        &merged_fields,
-        &per_source_maps,
-        &per_source_live_ids,
-        &doc_order,
-    )?;
+    let merged_norms = norms_result?;
     // Missing values use one only for postings impacts. Sparse wire columns
-    // omit them, and a present zero remains zero.
-    let impact_norms: Vec<Vec<i64>> = merged_norms
-        .iter()
-        .map(|(_, values)| values.iter().map(|v| v.unwrap_or(1)).collect())
-        .collect();
-    let sparse_columns: Vec<Vec<(i32, i64)>> = merged_norms
-        .iter()
-        .map(|(_, values)| {
-            values
-                .iter()
-                .enumerate()
-                .filter_map(|(doc, v)| v.map(|v| (doc as i32, v)))
-                .collect()
-        })
-        .collect();
+    // omit them, and a present zero remains zero (see `MergedNorms`).
     let norms_fields: Vec<norms::NormsField<'_>> = merged_norms
         .iter()
-        .zip(&impact_norms)
-        .zip(&sparse_columns)
-        .map(|(((number, values), dense), sparse)| {
-            if values.iter().all(|v| v.is_some()) {
-                norms::NormsField::Dense(*number, dense)
-            } else {
-                norms::NormsField::Sparse(*number, sparse)
-            }
-        })
+        .map(MergedNorms::as_norms_field)
         .collect();
     if let Some(factory) = norms_factory {
         if !norms_fields.is_empty() {
@@ -2469,24 +2535,19 @@ fn merge_segments_mapped_inner(
         &doc_id_maps,
         &merged_fields,
     )?;
-    let merged_points_fields = merge_points(
-        sources,
-        &per_source_maps,
-        &per_source_live_ids,
-        &doc_id_maps,
-        &merged_fields,
-    )?;
+    let merged_points_fields = points_result?;
     // What the merged `.fnm` is allowed to claim, captured before the values
     // below are consumed by their writers (see `describe_written_files`).
+    let merged_field_by_number: HashMap<i32, &FieldInfo> =
+        merged_fields.iter().map(|f| (f.number, f)).collect();
+    let field_name = |number: i32| {
+        merged_field_by_number
+            .get(&number)
+            .map_or_else(|| number.to_string(), |m| m.name.clone())
+    };
     let postings_field_names: Vec<(i32, String)> = merged_postings_fields
         .iter()
-        .map(|f| {
-            let name = merged_fields
-                .iter()
-                .find(|m| m.number == f.field_number)
-                .map_or_else(|| f.field_number.to_string(), |m| m.name.clone());
-            (f.field_number, name)
-        })
+        .map(|f| (f.field_number, field_name(f.field_number)))
         .collect();
     let format_for = |name: &str| options.postings_format_for(name);
     let postings_suffixes = per_field_postings::field_suffixes(&postings_field_names, &format_for);
@@ -2496,14 +2557,7 @@ fn merge_segments_mapped_inner(
     let doc_values_groups = {
         let mut fields: Vec<(i32, String)> = merged_doc_values
             .iter()
-            .map(|f| {
-                let number = f.field_number();
-                let name = merged_fields
-                    .iter()
-                    .find(|m| m.number == number)
-                    .map_or_else(|| number.to_string(), |m| m.name.clone());
-                (number, name)
-            })
+            .map(|f| (f.field_number(), field_name(f.field_number())))
             .collect();
         fields.sort_by_key(|(number, _)| *number);
         let fields: Vec<(i32, &str)> = fields.iter().map(|(n, s)| (*n, s.as_str())).collect();
@@ -2539,21 +2593,19 @@ fn merge_segments_mapped_inner(
             // `(freq, norm)` pairs rather than `(maxFreq, 1)` -- item 18.
             // `Lucene104PostingsWriter` gets them the same way, from the
             // `NormsProducer` its `FieldsConsumer.write` call is given. Borrowed,
-            // not rebuilt: see `impact_norms`' own comment above.
+            // not rebuilt: `MergedNorms::values`, missing norms as one.
             let norms_for_impacts: Vec<postings_writer::FieldNorms<'_>> = merged_norms
                 .iter()
-                .zip(&impact_norms)
-                .map(|((number, _), values)| postings_writer::FieldNorms {
-                    field_number: *number,
-                    values,
+                .map(|norms| postings_writer::FieldNorms {
+                    field_number: norms.field_number,
+                    values: &norms.values,
                 })
                 .collect();
-            let name_of = |n: i32| {
-                postings_field_names
-                    .iter()
-                    .find(|(number, _)| *number == n)
-                    .map(|(_, name)| name.clone())
-            };
+            let names: HashMap<i32, &String> = postings_field_names
+                .iter()
+                .map(|(number, name)| (*number, name))
+                .collect();
+            let name_of = |n: i32| names.get(&n).map(|name| (*name).clone());
             let groups = if let Some(factory) = postings_factory {
                 crate::postings_writer::write_installed(
                     factory,
@@ -2603,19 +2655,26 @@ fn merge_segments_mapped_inner(
     // Every doc-values field of the merged segment shares one
     // `.dvm`/`.dvd`/`.dvs` triple, which is what a real multi-field
     // `Lucene90DocValuesFormat` segment looks like.
+    // `merged_doc_values` is (stably) sorted by field number above, so the
+    // first entry at or after `n` is what a linear `find` would return.
+    let merged_doc_values_of = |n: i32| {
+        let at = merged_doc_values.partition_point(|f| f.field_number() < n);
+        merged_doc_values.get(at).filter(|f| f.field_number() == n)
+    };
     for group in &doc_values_groups {
         let dense_fields: Vec<doc_values::DenseField<'_>> = group
             .field_numbers
             .iter()
-            .filter_map(|&n| merged_doc_values.iter().find(|f| f.field_number() == n))
+            .filter_map(|&n| merged_doc_values_of(n))
             .map(|f| f.as_dense_field())
             .collect();
+        let in_group: HashSet<i32> = group.field_numbers.iter().copied().collect();
         // `addNumericField` & co. write a skip index for every field whose
         // merged `FieldInfo` asks for one.
         let skip_indexes: Vec<i32> = merged_fields
             .iter()
             .filter(|f| {
-                group.field_numbers.contains(&f.number)
+                in_group.contains(&f.number)
                     && f.doc_values_skip_index_type
                         != lucene_codecs::field_infos::DocValuesSkipIndexType::None
             })
@@ -2637,7 +2696,7 @@ fn merge_segments_mapped_inner(
                 let field_infos = field_infos::FieldInfos {
                     fields: merged_fields
                         .iter()
-                        .filter(|f| group.field_numbers.contains(&f.number))
+                        .filter(|f| in_group.contains(&f.number))
                         .cloned()
                         .collect(),
                 };
@@ -3046,23 +3105,39 @@ fn doc_values_candidates<'a, T: 'a>(
         }
         for field in per_source_fields(source) {
             if let Some(&merged_number) = map.get(&field_number(field)) {
-                if !candidates.contains(&merged_number) {
-                    candidates.push(merged_number);
-                }
+                candidates.push(merged_number);
             }
         }
     }
     candidates.sort_unstable();
+    candidates.dedup();
     candidates
 }
 
-/// The field number `source` used for the field the merge numbers
-/// `merged_field_number`, or `None` if that source never saw the field --
-/// the reverse of `reconcile_field_numbers`' per-source forward map.
-fn original_field_number(map: &HashMap<i32, i32>, merged_field_number: i32) -> Option<i32> {
-    map.iter()
-        .find(|&(_, &merged)| merged == merged_field_number)
-        .map(|(&orig, _)| orig)
+/// Each source's `fields`, keyed by the source's own field number (the first
+/// entry wins, as the linear `find` this replaces did), and empty for a
+/// source with no live documents -- built once per merge stage so resolving
+/// a candidate field in every source is a hash lookup rather than a scan of
+/// the source's whole field list per (field, source) pair.
+fn index_source_fields<'a, T>(
+    sources: &'a [MergeSource<'a>],
+    per_source_live_ids: &[Vec<i32>],
+    fields: impl Fn(&'a MergeSource<'a>) -> &'a [T],
+    field_number: impl Fn(&T) -> i32,
+) -> Vec<HashMap<i32, &'a T>> {
+    sources
+        .iter()
+        .zip(per_source_live_ids)
+        .map(|(source, live_ids)| {
+            let mut by_number = HashMap::new();
+            if !live_ids.is_empty() {
+                for field in fields(source) {
+                    by_number.entry(field_number(field)).or_insert(field);
+                }
+            }
+            by_number
+        })
+        .collect()
 }
 
 /// Merges numeric doc-values data across `sources`, one
@@ -3091,6 +3166,7 @@ fn original_field_number(map: &HashMap<i32, i32>, merged_field_number: i32) -> O
 fn merge_numeric_doc_values(
     sources: &[MergeSource],
     per_source_maps: &[HashMap<i32, i32>],
+    reverse_maps: &[HashMap<i32, i32>],
     per_source_live_ids: &[Vec<i32>],
     doc_order: &[(usize, i32)],
 ) -> Result<Vec<MergedDocValuesField>> {
@@ -3100,6 +3176,12 @@ fn merge_numeric_doc_values(
         per_source_live_ids,
         |s| s.numeric_doc_values,
         |f| f.entry.field_number,
+    );
+    let by_number = index_source_fields(
+        sources,
+        per_source_live_ids,
+        |s| s.numeric_doc_values,
+        |f: &SourceNumericDocValues| f.entry.field_number,
     );
     let mut merged = Vec::with_capacity(candidates.len());
     for merged_field_number in candidates {
@@ -3138,24 +3220,8 @@ fn merge_numeric_doc_values(
         // `IndexWriter::execute_merge` pins that every entry an opened `.dvm`
         // declares reaches the merge. A silently-dropped column can no longer
         // hide behind this branch, so the branch can have Java's meaning.
-        let mut per_source_entry: Vec<Option<&SourceNumericDocValues>> = vec![None; sources.len()];
-        for (idx, ((source, map), live_ids)) in sources
-            .iter()
-            .zip(per_source_maps)
-            .zip(per_source_live_ids)
-            .enumerate()
-        {
-            if live_ids.is_empty() {
-                continue;
-            }
-            per_source_entry[idx] =
-                original_field_number(map, merged_field_number).and_then(|original_number| {
-                    source
-                        .numeric_doc_values
-                        .iter()
-                        .find(|nf| nf.entry.field_number == original_number)
-                });
-        }
+        let per_source_entry: Vec<Option<&SourceNumericDocValues>> =
+            per_source_entries(&by_number, reverse_maps, merged_field_number);
 
         // One `NumericReader` per source, not a `numeric_value` call per
         // document: that free function allocates a fresh `DisiCursor` and
@@ -3168,9 +3234,11 @@ fn merge_numeric_doc_values(
             .iter()
             .map(|entry| entry.map(|e| doc_values::NumericReader::new(e.data, &e.entry)))
             .collect();
+        // Dense until the first document without a value; that document
+        // converts what is there once (every earlier document has a value,
+        // so `dense[d]` is merged doc `d`'s) and the rest goes sparse only.
         let mut dense: Vec<i64> = Vec::with_capacity(doc_order.len());
-        let mut sparse: Vec<(i32, i64)> = Vec::new();
-        let mut every_doc_has_one = true;
+        let mut sparse: Option<Vec<(i32, i64)>> = None;
         for (merged_doc_id, &(src_idx, doc_id)) in doc_order.iter().enumerate() {
             // No reader for this source means the source has no column for
             // this field at all: every one of its documents is missing a
@@ -3184,17 +3252,22 @@ fn merge_numeric_doc_values(
                 .zip(per_source_entry[src_idx])
                 .is_some_and(|(pruned, entry)| pruned.drops(entry.entry.field_number, doc_id));
             let value = value.filter(|_| !pruned);
-            match value {
-                Some(value) => {
-                    dense.push(value);
-                    sparse.push((merged_doc_id as i32, value));
+            match (value, sparse.as_mut()) {
+                (Some(value), None) => dense.push(value),
+                (Some(value), Some(sparse)) => sparse.push((merged_doc_id as i32, value)),
+                (None, None) => {
+                    sparse = Some(
+                        std::mem::take(&mut dense)
+                            .into_iter()
+                            .enumerate()
+                            .map(|(doc, value)| (doc as i32, value))
+                            .collect(),
+                    );
                 }
-                None => every_doc_has_one = false,
+                (None, Some(_)) => {}
             }
         }
-        if every_doc_has_one {
-            merged.push(MergedDocValuesField::Numeric(merged_field_number, dense));
-        } else {
+        if let Some(sparse) = sparse {
             // Including when `sparse` is empty. `Lucene90DocValuesConsumer`
             // is called for every field the merged `FieldInfos` gives a
             // `DocValuesType`, and `writeValues` records an all-missing
@@ -3212,6 +3285,8 @@ fn merge_numeric_doc_values(
                 merged_field_number,
                 sparse,
             ));
+        } else {
+            merged.push(MergedDocValuesField::Numeric(merged_field_number, dense));
         }
     }
     Ok(merged)
@@ -3223,24 +3298,21 @@ fn merge_numeric_doc_values(
 /// `FieldInfo` lacks the column is simply **not a sub**, so every one of its
 /// documents comes out of the merge with no value (see
 /// [`merge_numeric_doc_values`] for why that is safe to rely on here).
+///
+/// `by_number` is [`index_source_fields`]' per-source index and
+/// `reverse_maps` [`invert_field_number_maps`]' merged -> original maps, so
+/// this is two hash lookups per source.
 fn per_source_entries<'a, T>(
-    sources: &'a [MergeSource<'a>],
-    per_source_maps: &[HashMap<i32, i32>],
-    per_source_live_ids: &[Vec<i32>],
+    by_number: &[HashMap<i32, &'a T>],
+    reverse_maps: &[HashMap<i32, i32>],
     merged_field_number: i32,
-    fields: impl Fn(&'a MergeSource<'a>) -> &'a [T],
-    field_number: impl Fn(&T) -> i32,
 ) -> Vec<Option<&'a T>> {
-    sources
+    by_number
         .iter()
-        .zip(per_source_maps)
-        .zip(per_source_live_ids)
-        .map(|((source, map), live_ids)| {
-            if live_ids.is_empty() {
-                return None;
-            }
-            let original = original_field_number(map, merged_field_number)?;
-            fields(source).iter().find(|f| field_number(f) == original)
+        .zip(reverse_maps)
+        .map(|(fields, reverse)| {
+            let original = reverse.get(&merged_field_number)?;
+            fields.get(original).copied()
         })
         .collect()
 }
@@ -3253,6 +3325,7 @@ fn per_source_entries<'a, T>(
 fn merge_binary_doc_values(
     sources: &[MergeSource],
     per_source_maps: &[HashMap<i32, i32>],
+    reverse_maps: &[HashMap<i32, i32>],
     per_source_live_ids: &[Vec<i32>],
     doc_order: &[(usize, i32)],
 ) -> Result<Vec<MergedDocValuesField>> {
@@ -3263,16 +3336,15 @@ fn merge_binary_doc_values(
         |s| s.binary_doc_values,
         |f| f.entry.field_number,
     );
+    let by_number = index_source_fields(
+        sources,
+        per_source_live_ids,
+        |s| s.binary_doc_values,
+        |f: &SourceBinaryDocValues| f.entry.field_number,
+    );
     let mut merged = Vec::with_capacity(candidates.len());
     for merged_field_number in candidates {
-        let per_source_entry = per_source_entries(
-            sources,
-            per_source_maps,
-            per_source_live_ids,
-            merged_field_number,
-            |s| s.binary_doc_values,
-            |f: &SourceBinaryDocValues| f.entry.field_number,
-        );
+        let per_source_entry = per_source_entries(&by_number, reverse_maps, merged_field_number);
         // One forward cursor per source (`doc_order` visits each source's
         // documents in ascending order), as `getMergedBinaryDocValues`
         // iterates each sub.
@@ -3415,6 +3487,7 @@ fn live_ords(
 fn merge_sorted_doc_values(
     sources: &[MergeSource],
     per_source_maps: &[HashMap<i32, i32>],
+    reverse_maps: &[HashMap<i32, i32>],
     per_source_live_ids: &[Vec<i32>],
     doc_order: &[(usize, i32)],
 ) -> Result<Vec<MergedDocValuesField>> {
@@ -3425,16 +3498,15 @@ fn merge_sorted_doc_values(
         |s| s.sorted_doc_values,
         |f| f.entry.field_number,
     );
+    let by_number = index_source_fields(
+        sources,
+        per_source_live_ids,
+        |s| s.sorted_doc_values,
+        |f: &SourceSortedDocValues| f.entry.field_number,
+    );
     let mut merged = Vec::with_capacity(candidates.len());
     for merged_field_number in candidates {
-        let per_source_entry = per_source_entries(
-            sources,
-            per_source_maps,
-            per_source_live_ids,
-            merged_field_number,
-            |s| s.sorted_doc_values,
-            |f: &SourceSortedDocValues| f.entry.field_number,
-        );
+        let per_source_entry = per_source_entries(&by_number, reverse_maps, merged_field_number);
         let dicts: Vec<Option<Vec<Vec<u8>>>> = per_source_entry
             .iter()
             .map(|e| {
@@ -3500,6 +3572,7 @@ fn merge_sorted_doc_values(
 fn merge_sorted_numeric_doc_values(
     sources: &[MergeSource],
     per_source_maps: &[HashMap<i32, i32>],
+    reverse_maps: &[HashMap<i32, i32>],
     per_source_live_ids: &[Vec<i32>],
     doc_order: &[(usize, i32)],
     merged_fields: &[FieldInfo],
@@ -3512,16 +3585,15 @@ fn merge_sorted_numeric_doc_values(
         |s| s.sorted_numeric_doc_values,
         |f| f.entry.field_number,
     );
+    let by_number = index_source_fields(
+        sources,
+        per_source_live_ids,
+        |s| s.sorted_numeric_doc_values,
+        |f: &SourceSortedNumericDocValues| f.entry.field_number,
+    );
     let mut merged = Vec::with_capacity(candidates.len());
     for merged_field_number in candidates {
-        let per_source_entry = per_source_entries(
-            sources,
-            per_source_maps,
-            per_source_live_ids,
-            merged_field_number,
-            |s| s.sorted_numeric_doc_values,
-            |f: &SourceSortedNumericDocValues| f.entry.field_number,
-        );
+        let per_source_entry = per_source_entries(&by_number, reverse_maps, merged_field_number);
         let mut readers: Vec<Option<doc_values::SortedNumericReader>> = per_source_entry
             .iter()
             .map(|e| e.map(|e| doc_values::SortedNumericReader::new(e.data, &e.entry)))
@@ -3625,6 +3697,7 @@ fn sorted_set_source_dict(data: &[u8], entry: &SortedSetEntry) -> Result<Vec<Vec
 fn merge_sorted_set_doc_values(
     sources: &[MergeSource],
     per_source_maps: &[HashMap<i32, i32>],
+    reverse_maps: &[HashMap<i32, i32>],
     per_source_live_ids: &[Vec<i32>],
     doc_order: &[(usize, i32)],
 ) -> Result<Vec<MergedDocValuesField>> {
@@ -3635,16 +3708,15 @@ fn merge_sorted_set_doc_values(
         |s| s.sorted_set_doc_values,
         |f| f.entry.field_number,
     );
+    let by_number = index_source_fields(
+        sources,
+        per_source_live_ids,
+        |s| s.sorted_set_doc_values,
+        |f: &SourceSortedSetDocValues| f.entry.field_number,
+    );
     let mut merged = Vec::with_capacity(candidates.len());
     for merged_field_number in candidates {
-        let per_source_entry = per_source_entries(
-            sources,
-            per_source_maps,
-            per_source_live_ids,
-            merged_field_number,
-            |s| s.sorted_set_doc_values,
-            |f: &SourceSortedSetDocValues| f.entry.field_number,
-        );
+        let per_source_entry = per_source_entries(&by_number, reverse_maps, merged_field_number);
         let dicts: Vec<Option<Vec<Vec<u8>>>> = per_source_entry
             .iter()
             .map(|e| {
@@ -3746,61 +3818,111 @@ fn merge_sorted_set_doc_values(
 fn merge_norms(
     sources: &[MergeSource],
     merged_fields: &[FieldInfo],
-    per_source_maps: &[HashMap<i32, i32>],
+    reverse_maps: &[HashMap<i32, i32>],
     per_source_live_ids: &[Vec<i32>],
     doc_order: &[(usize, i32)],
-) -> Result<Vec<(i32, Vec<Option<i64>>)>> {
+) -> Result<Vec<MergedNorms>> {
     let candidates: Vec<i32> = merged_fields
         .iter()
         .filter(|f| !f.omit_norms && f.index_options != IndexOptions::None)
         .map(|f| f.number)
         .collect();
+    // Same "fully-deleted source can't affect the merged output" exemption
+    // as merge_numeric_doc_values: such a source indexes no fields.
+    let by_number = index_source_fields(
+        sources,
+        per_source_live_ids,
+        |s| s.norms,
+        |f: &SourceNorms| f.entry.field_number,
+    );
 
-    let mut merged: Vec<(i32, Vec<Option<i64>>)> = Vec::with_capacity(candidates.len());
+    let mut merged: Vec<MergedNorms> = Vec::with_capacity(candidates.len());
     for merged_field_number in candidates {
         // Java: NormsConsumer.mergeNormsField retains one NumericDocValues
         // iterator per source. Reuse sparse cursors instead of rescanning each
-        // source's document prefix for every merged document.
+        // source's document prefix for every merged document. A source whose
+        // reverse map has no entry is `readerFieldInfo == null` in
+        // `mergeNormsField`: it never declared the field, so it adds no sub.
         let mut per_source_readers: Vec<Option<norms::NormsReader<'_>>> =
-            (0..sources.len()).map(|_| None).collect();
-        for (idx, ((source, map), live_ids)) in sources
-            .iter()
-            .zip(per_source_maps)
-            .zip(per_source_live_ids)
-            .enumerate()
-        {
-            if live_ids.is_empty() {
-                // Same "fully-deleted source can't affect the merged output"
-                // exemption as merge_numeric_doc_values.
-                continue;
-            }
-            let Some(original_number) = map
-                .iter()
-                .find(|&(_, &merged)| merged == merged_field_number)
-                .map(|(&orig, _)| orig)
-            else {
-                // `readerFieldInfo == null` in `mergeNormsField`: this source
-                // never declared the field, so it adds no sub.
-                continue;
-            };
-            per_source_readers[idx] = source
-                .norms
-                .iter()
-                .find(|nf| nf.entry.field_number == original_number)
-                .map(|entry| norms::NormsReader::new(entry.data, &entry.entry));
-        }
+            per_source_entries(&by_number, reverse_maps, merged_field_number)
+                .into_iter()
+                .map(|entry| entry.map(|entry| norms::NormsReader::new(entry.data, &entry.entry)))
+                .collect();
 
-        let mut values: Vec<Option<i64>> = Vec::with_capacity(doc_order.len());
-        for &(src_idx, doc_id) in doc_order {
+        // Dense (missing = 1) for every field, since the postings impacts
+        // read it; the sparse wire column only once a document turns out to
+        // have no norm, seeded from the all-present prefix.
+        let mut values: Vec<i64> = Vec::with_capacity(doc_order.len());
+        let mut sparse: Option<Vec<(i32, i64)>> = None;
+        for (merged_doc_id, &(src_idx, doc_id)) in doc_order.iter().enumerate() {
             let value = match per_source_readers[src_idx].as_mut() {
                 Some(reader) => reader.value(doc_id)?,
                 None => None,
             };
-            values.push(value);
+            match (value, sparse.as_mut()) {
+                (Some(value), None) => values.push(value),
+                (Some(value), Some(sparse)) => {
+                    values.push(value);
+                    sparse.push((merged_doc_id as i32, value));
+                }
+                (None, sparse_so_far) => {
+                    if sparse_so_far.is_none() {
+                        sparse = Some(
+                            values
+                                .iter()
+                                .enumerate()
+                                .map(|(doc, &value)| (doc as i32, value))
+                                .collect(),
+                        );
+                    }
+                    values.push(1);
+                }
+            }
         }
-        merged.push((merged_field_number, values));
+        merged.push(MergedNorms {
+            field_number: merged_field_number,
+            values,
+            sparse,
+        });
     }
     Ok(merged)
+}
+
+/// One merged norms field, as [`merge_norms`] returns it.
+#[derive(Debug, PartialEq)]
+struct MergedNorms {
+    field_number: i32,
+    /// One value per merged document, a missing norm as `1` -- what the
+    /// postings writer's impacts read, and the `.nvd` column itself when
+    /// `sparse` is `None`. A present zero stays zero.
+    values: Vec<i64>,
+    /// `(merged doc id, norm)` for the documents that have one, or `None`
+    /// when every document does.
+    sparse: Option<Vec<(i32, i64)>>,
+}
+
+impl MergedNorms {
+    fn as_norms_field(&self) -> norms::NormsField<'_> {
+        match &self.sparse {
+            None => norms::NormsField::Dense(self.field_number, &self.values),
+            Some(sparse) => norms::NormsField::Sparse(self.field_number, sparse),
+        }
+    }
+
+    /// Back to one `Option` per merged document.
+    #[cfg(test)]
+    fn options(&self) -> Vec<Option<i64>> {
+        match &self.sparse {
+            None => self.values.iter().copied().map(Some).collect(),
+            Some(sparse) => {
+                let mut out = vec![None; self.values.len()];
+                for &(doc, value) in sparse {
+                    out[doc as usize] = Some(value);
+                }
+                out
+            }
+        }
+    }
 }
 
 /// One written term-vectors segment: `.tvd`, `.tvx`, `.tvm`.
@@ -3846,10 +3968,12 @@ fn write_installed_term_vectors(
     infos: &[FieldInfo],
 ) -> Result<Vec<String>> {
     // Java checks every supplied reader, including a fully deleted source.
-    for source in sources {
-        if let Some(reader) = source.term_vectors {
-            reader.check_integrity()?;
-        }
+    {
+        use rayon::prelude::*;
+        in_source_order(sources.par_iter().map(|source| match source.term_vectors {
+            Some(reader) => Ok(reader.check_integrity()?),
+            None => Ok(()),
+        }))?;
     }
     let mut cursors: Vec<_> = sources
         .iter()
@@ -3915,20 +4039,26 @@ fn write_merged_term_vectors(
         Some(format) => term_vectors::TermVectorsWriter::with_format(merged_segment_id, format),
     };
     let matching = matching_readers(sources, per_source_maps);
-    let mut strategies: Vec<TermVectorsMergeStrategy> = Vec::with_capacity(sources.len());
-    for (source, &m) in sources.iter().zip(&matching) {
-        // Java's `reader.checkIntegrity(mergeState.oneMerge)`, run on every
-        // source *before* a strategy is picked. It matters most for the bulk
-        // path: that path copies a source's compressed bytes verbatim and
-        // then writes a freshly computed, valid footer over them, so a bit
-        // flip in the source would be laundered into a merged segment that
-        // passes every checksum from then on. `term_vectors::open` only
-        // validates the footer's shape (`retrieve_checksum`).
-        if let Some(reader) = source.term_vectors {
-            reader.check_integrity()?;
-        }
-        strategies.push(term_vectors_merge_strategy(&writer, source, m));
+    // Java's `reader.checkIntegrity(mergeState.oneMerge)`, run on every
+    // source *before* a strategy is picked. It matters most for the bulk
+    // path: that path copies a source's compressed bytes verbatim and
+    // then writes a freshly computed, valid footer over them, so a bit
+    // flip in the source would be laundered into a merged segment that
+    // passes every checksum from then on. `term_vectors::open` only
+    // validates the footer's shape (`retrieve_checksum`). In parallel, the
+    // first corrupt source in source order reported.
+    {
+        use rayon::prelude::*;
+        in_source_order(sources.par_iter().map(|source| match source.term_vectors {
+            Some(reader) => Ok(reader.check_integrity()?),
+            None => Ok(()),
+        }))?;
     }
+    let strategies: Vec<TermVectorsMergeStrategy> = sources
+        .iter()
+        .zip(&matching)
+        .map(|(source, &m)| term_vectors_merge_strategy(&writer, source, m))
+        .collect();
     // Java re-reads a chunk's metadata arrays on every `get(doc)`; this port
     // keeps the decoded chunk, so a run of documents from one source costs
     // one decode per chunk instead of one per document.
@@ -4349,6 +4479,8 @@ fn merge_vectors(
         .iter()
         .map(|(f, _)| (f.number, f.name.as_str()))
         .collect();
+    let plan_by_number: HashMap<i32, &(&FieldInfo, Vec<FieldSource>)> =
+        plan.iter().map(|entry| (entry.0.number, entry)).collect();
     let format_for = |name: &str| options.knn_vectors_format_for(name);
     let groups = match names.first() {
         Some(&(_, first)) if options.knn_vectors_direct() => {
@@ -4365,7 +4497,7 @@ fn merge_vectors(
         let group_plan: Vec<&(&FieldInfo, Vec<FieldSource>)> = group
             .field_numbers
             .iter()
-            .filter_map(|n| plan.iter().find(|(f, _)| f.number == *n))
+            .filter_map(|n| plan_by_number.get(n).copied())
             .collect();
         let files = merge_vector_group(
             sources,
@@ -4554,7 +4686,12 @@ fn merge_vector_group(
         let mut hnsw_fields: Vec<hnsw_vectors::HnswVectorsField<'_>> = Vec::new();
         let mut graphs: Vec<Option<hnsw::OnHeapHnswGraph>> = Vec::with_capacity(plan.len());
         let mut counts: Vec<i32> = Vec::with_capacity(plan.len());
-        for (merged_field, field_sources) in plan.iter().map(|p| (&p.0, &p.1)) {
+        // Each field's graph is merged on its own (a fixed seed, no shared
+        // state), so the fields run in parallel; collected in field order,
+        // the first failing field is the one reported, as the serial loop did.
+        let merge_field_graph = |merged_field: &&FieldInfo,
+                                 field_sources: &Vec<FieldSource>|
+         -> Result<(i32, Option<hnsw::OnHeapHnswGraph>)> {
             // Every source's own graph for this field, in the same order the
             // flat merge consumed them. A source with the flat pair and no
             // graph still contributes vectors -- they are simply inserted.
@@ -4646,6 +4783,16 @@ fn merge_vector_group(
                     (values.size(), graph)
                 }
             };
+            Ok((count, graph))
+        };
+        let merged_graphs: Vec<Result<(i32, Option<hnsw::OnHeapHnswGraph>)>> = {
+            use rayon::prelude::*;
+            plan.par_iter()
+                .map(|p| merge_field_graph(&p.0, &p.1))
+                .collect()
+        };
+        for merged in merged_graphs {
+            let (count, graph) = merged?;
             counts.push(count);
             graphs.push(graph);
         }
@@ -4769,6 +4916,16 @@ fn mapped_doc_id(doc_id_map: &[i32], doc_id: i32) -> Option<i32> {
         Some(&merged) if merged >= 0 => Some(merged),
         _ => None,
     }
+}
+
+/// Collects per-source results computed in parallel, in source order, and
+/// returns the first error in that order -- the error a serial loop over the
+/// sources would have stopped at.
+fn in_source_order(
+    results: impl rayon::iter::IndexedParallelIterator<Item = Result<()>>,
+) -> Result<()> {
+    let results: Vec<Result<()>> = results.collect();
+    results.into_iter().collect()
 }
 
 /// Inverts the `original field number -> merged field number` maps
@@ -5609,6 +5766,16 @@ pub(crate) fn merge_points(
             };
             max_point_count =
                 max_point_count.saturating_add(u64::try_from(field_meta.point_count).unwrap_or(0));
+            // Sized up front from the source's own point count (deleted
+            // documents' points included, so at least what survives). The
+            // count is file-derived, so a reservation the allocator refuses
+            // is skipped rather than aborting: the vectors then simply grow.
+            let expected = usize::try_from(field_meta.point_count).unwrap_or(0);
+            let _ = collect.stream.docs.try_reserve_exact(expected);
+            let _ = collect
+                .stream
+                .values
+                .try_reserve_exact(expected.saturating_mul(stride));
             sp.reader.intersect(original_number, &mut collect)?;
             if let Some(actual) = collect.bad_length {
                 return Err(Error::PointValueLength {
@@ -8842,10 +9009,16 @@ mod tests {
             (2, 1),
         ];
         for order in [sequential, interleaved, backward] {
-            let merged = merge_norms(&sources, &merged_fields, &maps, &live_ids, &order).unwrap();
+            let reverse = invert_field_number_maps(&maps);
+            let merged =
+                merge_norms(&sources, &merged_fields, &reverse, &live_ids, &order).unwrap();
             let expected: Vec<_> = order
                 .iter()
                 .map(|&(source, doc)| expected_by_source[source][doc as usize])
+                .collect();
+            let merged: Vec<_> = merged
+                .iter()
+                .map(|m| (m.field_number, m.options()))
                 .collect();
             assert_eq!(merged, [(9, expected)], "order={order:?}");
         }

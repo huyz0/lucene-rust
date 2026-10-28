@@ -313,7 +313,7 @@ impl IndexWriter<'_> {
                     return Err(Error::AddIndexes(message));
                 }
             }
-            let ours = match self.cfg.fields.iter().find(|f| f.name == theirs.name) {
+            let ours = match self.cfg.field_by_name(&theirs.name) {
                 Some(ours) => Some(ours.clone()),
                 None => self
                     .cfg
