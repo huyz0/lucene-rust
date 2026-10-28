@@ -553,13 +553,24 @@ fn decompress_preset(
     match preset {
         Preset::Lz4 => {
             let dict_compressed_length = read_compressed_length(input)?;
-            // Not `with_capacity(num_blocks)`: `num_blocks` is derived from
+            // On the stack for every unit a Lucene writer emits (it always
+            // cuts `NUM_SUB_BLOCKS` = 10 blocks). Otherwise not
+            // `with_capacity(num_blocks)`: `num_blocks` is derived from
             // on-disk lengths, and a corrupt one would reserve gigabytes
             // before the first `read_vint` had a chance to hit EOF.
-            let mut block_compressed_lengths = Vec::new();
-            for _ in 0..num_blocks {
-                block_compressed_lengths.push(read_compressed_length(input)?);
-            }
+            let mut inline = [0usize; 16];
+            let mut spilled = Vec::new();
+            let block_compressed_lengths: &[usize] = if num_blocks <= inline.len() {
+                for slot in &mut inline[..num_blocks] {
+                    *slot = read_compressed_length(input)?;
+                }
+                &inline[..num_blocks]
+            } else {
+                for _ in 0..num_blocks {
+                    spilled.push(read_compressed_length(input)?);
+                }
+                &spilled
+            };
             if length == 0 {
                 // `checked_add`, folded over the run: these are byte counts
                 // off disk, and even with each one bounded to `i32::MAX` a
@@ -568,7 +579,7 @@ fn decompress_preset(
                 // parse compressed bytes as a framing header and decode
                 // plausible garbage.
                 let mut total = dict_compressed_length;
-                for &l in &block_compressed_lengths {
+                for &l in block_compressed_lengths {
                     total = total.checked_add(l).ok_or_else(|| {
                         lucene_store::Error::Corrupted(
                             "compression unit's sub-block lengths overflow".into(),
@@ -608,7 +619,7 @@ fn decompress_preset(
             // `0..=this_len <= block_length`, keeping every `dict_length + ..`
             // index inside `buffer`.
             #[allow(clippy::arithmetic_side_effects)]
-            for &compressed_length in &block_compressed_lengths {
+            for &compressed_length in block_compressed_lengths {
                 let this_len = block_length.min(original_length - plain);
                 let lo = offset.max(plain);
                 let hi = want_end.min(plain + this_len);

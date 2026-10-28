@@ -550,12 +550,12 @@ pub struct ExplainResultsHandle {
 /// `ffi_writer_rollback`/`ffi_writer_set_merge_policy`, released via
 /// `ffi_close_writer`.
 ///
-/// **Why this owns a boxed `FsDirectory` alongside the writer, and why that
+/// **Why this owns a boxed directory alongside the writer, and why that
 /// is sound**: [`lucene_index::index_writer::IndexWriter`] is generic over a
 /// borrowed `&'d dyn Directory` -- there is no owned, 'static-lifetime
 /// `IndexWriter` type this crate could otherwise put behind a plain handle
 /// the way [`SegmentHandle`] holds owned bytes. This struct instead owns the
-/// `FsDirectory` on the heap (`Box<FsDirectory>`, a stable address that does
+/// directory on the heap (`Box<dyn Directory>`, a stable address that does
 /// not move even if this whole `WriterHandle` value is moved -- only the
 /// `Box` pointer itself would move, not its heap allocation) and constructs
 /// the writer against a reference into that same allocation, lifetime-erased
@@ -573,7 +573,7 @@ pub struct WriterHandle {
     // heap allocation `writer`'s borrow points into alive -- see this
     // struct's own doc comment), hence the `allow`.
     #[allow(dead_code)]
-    pub dir: Box<FsDirectory>,
+    pub dir: Box<dyn lucene_store::directory::Directory>,
 }
 
 // SAFETY: `WriterHandle` is `!Send`/`!Sync` only because it holds a bare
@@ -587,9 +587,10 @@ pub struct WriterHandle {
 //   `UnsafeCell`/raw pointer and has **no interior mutability at all**: every
 //   mutation needs `&mut self`, which only the write guard can hand out.
 //   Concurrent shared `&IndexWriter` reads are therefore data-race-free.
-// - The `dyn Directory` it borrows is always the `Box<FsDirectory>` in this
-//   same struct (see `open_writer_handle`), and `FsDirectory` is
-//   file-path/file-handle state with no thread affinity -- nothing here
+// - The `dyn Directory` it borrows is always the boxed directory in this
+//   same struct (an `FsDirectory` from `open_writer_handle` or an
+//   `MmapDirectory` from `ffi_engine_writer_open`); `Directory` is
+//   `Send + Sync`, and both are file-path/file-handle state with no thread affinity -- nothing here
 //   depends on thread-local state or a non-thread-safe primitive.
 // - Aliasing/lifetime safety of the erased borrow is a separate argument,
 //   given in full in this struct's own doc comment (stable `Box` address +

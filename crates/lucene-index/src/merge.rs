@@ -176,7 +176,7 @@
 //!
 //! # Postings
 //!
-//! [`merge_postings`] walks each source's term dictionary with [`TermCursor`]
+//! [`merge_term_range`] walks each source's term dictionary with [`TermCursor`]
 //! and selects the smallest current term across sources. It maps each source's
 //! doc/frequency pairs through [`build_doc_id_maps`], drops deleted documents,
 //! and sorts mapped documents when the merged index sort interleaves sources.
@@ -222,7 +222,7 @@
 //! `lucene_search`'s points range query already uses -- no new BKD decode
 //! logic was written for this merge), drops non-live docs and remaps
 //! surviving doc ids to the merged id space (reusing
-//! [`build_doc_id_maps`], the same mechanism [`merge_postings`] uses), and
+//! [`build_doc_id_maps`], the same mechanism [`merge_term_range`] uses), and
 //! hands the per-source streams to [`lucene_codecs::points::write_merged_with_mode`]:
 //! a one-dimensional field is k-way merged by value when every source has a
 //! native points reader, as `BKDWriter.merge` does. A point-free source selects
@@ -668,7 +668,7 @@ pub struct SourceSortedSetDocValues<'a> {
 ///
 /// `pos_in`/`pay_in` are this source's already-opened `.pos`/`.pay` file
 /// readers (via [`lucene_codecs::postings::PosInput::open`]/
-/// [`lucene_codecs::postings::PayInput::open`]), needed by [`merge_postings`]
+/// [`lucene_codecs::postings::PayInput::open`]), needed by [`merge_term_range`]
 /// whenever the merged field's `index_options` indexes positions
 /// ([`IndexOptions::DocsAndFreqsAndPositions`] or
 /// [`IndexOptions::DocsAndFreqsAndPositionsAndOffsets`]) -- both are `None`
@@ -2532,12 +2532,11 @@ fn merge_segments_mapped_inner(
         None
     };
     let wrote_term_vectors = sources.iter().any(|source| source.term_vectors.is_some());
-    let merged_postings_fields = merge_postings(
+    let postings_plans = plan_postings(
         sources,
         &per_source_maps,
         &per_source_live_ids,
         &doc_order,
-        &doc_id_maps,
         &merged_fields,
     )?;
     let merged_points_fields = points_result?;
@@ -2550,7 +2549,7 @@ fn merge_segments_mapped_inner(
             .get(&number)
             .map_or_else(|| number.to_string(), |m| m.name.clone())
     };
-    let postings_field_names: Vec<(i32, String)> = merged_postings_fields
+    let postings_field_names: Vec<(i32, String)> = postings_plans
         .iter()
         .map(|f| (f.field_number, field_name(f.field_number)))
         .collect();
@@ -2582,7 +2581,71 @@ fn merge_segments_mapped_inner(
     }
 
     let write_postings = |files: &mut Vec<String>| -> Result<()> {
-        if !merged_postings_fields.is_empty() {
+        if postings_plans.is_empty() {
+            return Ok(());
+        }
+        let names: HashMap<i32, &String> = postings_field_names
+            .iter()
+            .map(|(number, name)| (*number, name))
+            .collect();
+        let name_of = |n: i32| names.get(&n).map(|name| (*name).clone());
+        let norms_for_impacts: Vec<postings_writer::FieldNorms<'_>> = merged_norms
+            .iter()
+            .map(|norms| postings_writer::FieldNorms {
+                field_number: norms.field_number,
+                values: &norms.values,
+            })
+            .collect();
+        // The very columns the `.nvd` above was written from, handed to the
+        // postings writer so its level-0/level-1 impacts are real
+        // `(freq, norm)` pairs rather than `(maxFreq, 1)` -- item 18.
+        // `Lucene104PostingsWriter` gets them the same way, from the
+        // `NormsProducer` its `FieldsConsumer.write` call is given. Borrowed,
+        // not rebuilt: `MergedNorms::values`, missing norms as one.
+        //
+        // The block-tree format streams: each window of merged term ranges
+        // is encoded and dropped before the next is decoded, so the merge
+        // never holds the merged segment's decoded postings.
+        let streamed = if postings_factory.is_none() {
+            let specs: Vec<per_field_postings::StreamedFieldSpec> = postings_plans
+                .iter()
+                .map(|plan| per_field_postings::StreamedFieldSpec {
+                    field_number: plan.field_number,
+                    index_options: plan.index_options,
+                    has_payloads: plan.shape.has_payloads,
+                })
+                .collect();
+            per_field_postings::write_streaming::<Error>(
+                &specs,
+                &merged_fields,
+                &name_of,
+                &format_for,
+                &merged_segment_id,
+                &mut |i, writer| {
+                    merge_field_runs(&postings_plans[i], &doc_id_maps, &mut |run| {
+                        let views: Vec<MergedTermView<'_>> = run.views().collect();
+                        writer.add_terms(&views, &norms_for_impacts)?;
+                        Ok(())
+                    })
+                },
+            )?
+        } else {
+            None
+        };
+        let merged_postings_fields = if streamed.is_some() {
+            Vec::new()
+        } else {
+            materialize_postings(&postings_plans, &doc_id_maps)?
+        };
+        if let Some(groups) = streamed {
+            for group in &groups {
+                for (ext, bytes) in group.files() {
+                    let name = group.file_name(merged_segment_name, ext);
+                    write_file(dir, &name, bytes)?;
+                    files.push(name);
+                }
+            }
+        } else {
             // One small view per term over its range's shared buffers.
             let views: Vec<Vec<MergedTermView<'_>>> = merged_postings_fields
                 .iter()
@@ -2599,24 +2662,6 @@ fn merge_segments_mapped_inner(
                     terms,
                 })
                 .collect();
-            // The very columns the `.nvd` above was written from, handed to the
-            // postings writer so its level-0/level-1 impacts are real
-            // `(freq, norm)` pairs rather than `(maxFreq, 1)` -- item 18.
-            // `Lucene104PostingsWriter` gets them the same way, from the
-            // `NormsProducer` its `FieldsConsumer.write` call is given. Borrowed,
-            // not rebuilt: `MergedNorms::values`, missing norms as one.
-            let norms_for_impacts: Vec<postings_writer::FieldNorms<'_>> = merged_norms
-                .iter()
-                .map(|norms| postings_writer::FieldNorms {
-                    field_number: norms.field_number,
-                    values: &norms.values,
-                })
-                .collect();
-            let names: HashMap<i32, &String> = postings_field_names
-                .iter()
-                .map(|(number, name)| (*number, name))
-                .collect();
-            let name_of = |n: i32| names.get(&n).map(|name| (*name).clone());
             let groups = if let Some(factory) = postings_factory {
                 crate::postings_writer::write_installed(
                     factory,
@@ -4877,7 +4922,7 @@ fn source_ord_to_doc(
 /// entry points -- concatenation visits a source's live docs in ascending
 /// order, and the k-way sorted merge preserves each source's internal order
 /// because every source is already sorted by the same key. That is what lets
-/// [`merge_postings`] treat one source's contribution to a term as already
+/// [`merge_term_range`] treat one source's contribution to a term as already
 /// ascending and only interleave across sources.
 ///
 /// # Representation
@@ -4956,7 +5001,7 @@ fn in_source_order(
 
 /// Inverts the `original field number -> merged field number` maps
 /// [`reconcile_field_numbers`] returns, once per merge, so
-/// [`merge_postings`]/[`merge_points`] can answer "what did *this* source
+/// [`plan_postings`]/[`merge_points`] can answer "what did *this* source
 /// call the field the merged segment numbers `n`?" with a single hash lookup
 /// instead of a linear scan of the whole forward map per (candidate field,
 /// source) pair -- which is `O(fields^2 * sources)` on a wide schema.
@@ -5377,14 +5422,52 @@ struct MergedPostingsField {
 /// `index_options` indexes positions has every contributing source's
 /// per-term positions (and offsets/payloads, when applicable) read back and
 /// concatenated in the same source order as docs/freqs.
-fn merge_postings(
-    sources: &[MergeSource],
+///
+/// This gathers every field whole, for the formats that need it (see
+/// [`per_field_postings::write_streaming`]); the block-tree format streams
+/// [`merge_field_runs`] straight into its writer instead.
+fn materialize_postings(
+    plans: &[PostingsFieldPlan<'_, '_>],
+    doc_id_maps: &[Vec<i32>],
+) -> Result<Vec<MergedPostingsField>> {
+    let mut result = Vec::with_capacity(plans.len());
+    for plan in plans {
+        let mut runs = Vec::new();
+        let doc_count = merge_field_runs(plan, doc_id_maps, &mut |run| {
+            runs.push(run);
+            Ok(())
+        })?;
+        result.push(MergedPostingsField {
+            field_number: plan.field_number,
+            index_options: plan.index_options,
+            doc_count,
+            has_payloads: plan.shape.has_payloads,
+            runs,
+        });
+    }
+    Ok(result)
+}
+
+/// One merged postings field as [`plan_postings`] resolves it: what
+/// [`merge_field_runs`] needs to merge its terms.
+struct PostingsFieldPlan<'a, 'b> {
+    field_number: i32,
+    index_options: IndexOptions,
+    /// Per source, in source order, the field's postings there, or `None`
+    /// when that source contributes nothing to it.
+    per_source_field: Vec<Option<&'a SourcePostings<'b>>>,
+    shape: FieldShape,
+}
+
+/// The fields the merge writes postings for, in field-number order, each with its
+/// contributing sources resolved: every check that needs no term decoded.
+fn plan_postings<'a, 'b>(
+    sources: &'a [MergeSource<'b>],
     per_source_maps: &[HashMap<i32, i32>],
     per_source_live_ids: &[Vec<i32>],
     doc_order: &[(usize, i32)],
-    doc_id_maps: &[Vec<i32>],
     merged_fields: &[FieldInfo],
-) -> Result<Vec<MergedPostingsField>> {
+) -> Result<Vec<PostingsFieldPlan<'a, 'b>>> {
     let mut candidates: Vec<i32> = Vec::new();
     for ((source, map), live_ids) in sources.iter().zip(per_source_maps).zip(per_source_live_ids) {
         if live_ids.is_empty() {
@@ -5499,59 +5582,69 @@ fn merge_postings(
             per_source_field.push(Some(pf));
         }
 
-        let shape = FieldShape {
-            has_positions,
-            has_offsets,
-            has_payloads,
-            merged_doc_count,
-        };
-        let ranges = term_ranges(&per_source_field)?;
-        let parts: Vec<(MergedRun, FixedBitSet)> = if ranges.len() == 1 {
-            vec![merge_term_range(
-                &per_source_field,
-                doc_id_maps,
-                shape,
-                None,
-                None,
-            )?]
-        } else {
-            use rayon::prelude::*;
-            (0..ranges.len())
-                .into_par_iter()
-                .map(|i| {
-                    let lower = (i > 0).then(|| ranges[i].as_slice());
-                    let upper = ranges.get(i.saturating_add(1)).map(Vec::as_slice);
-                    merge_term_range(&per_source_field, doc_id_maps, shape, lower, upper)
-                })
-                .collect::<Result<_>>()?
-        };
-        let mut parts = parts.into_iter();
-        let (first, mut docs_seen) = parts
-            .next()
-            .expect("term_ranges returns at least one range");
-        let mut runs = Vec::with_capacity(ranges.len());
-        runs.push(first);
-        for (run, seen) in parts {
-            runs.push(run);
-            docs_seen.or(&seen);
-        }
-
-        // Candidates come from live source dictionaries or routed FieldInfos,
-        // including a prior merge's termless field with no SourcePostings.
-        // Keep its group even when every source Terms is null or every posting
-        // was pruned. The encoder omits only the empty field's `.tmd` record.
-        let doc_count = docs_seen.cardinality() as i32;
-
-        result.push(MergedPostingsField {
+        result.push(PostingsFieldPlan {
             field_number: merged_field_number,
             index_options,
-            doc_count,
-            has_payloads,
-            runs,
+            per_source_field,
+            shape: FieldShape {
+                has_positions,
+                has_offsets,
+                has_payloads,
+                merged_doc_count,
+            },
         });
     }
 
     Ok(result)
+}
+
+/// Merges `plan`'s terms, handing each term range's [`MergedRun`] to `sink`
+/// in term order, and returns the field's `docsSeen` count.
+///
+/// Ranges are merged in parallel a window of one per thread at a time, and
+/// each window's runs are handed over (and so can be written and dropped)
+/// before the next is decoded: a streaming writer holds at most one window
+/// of the field's decoded postings, where Java's `FieldsConsumer.merge`
+/// holds one term's.
+fn merge_field_runs(
+    plan: &PostingsFieldPlan<'_, '_>,
+    doc_id_maps: &[Vec<i32>],
+    sink: &mut dyn FnMut(MergedRun) -> Result<()>,
+) -> Result<i32> {
+    let per_source_field = &plan.per_source_field;
+    let shape = plan.shape;
+    let ranges = term_ranges(per_source_field)?;
+    let mut docs_seen = FixedBitSet::new(shape.merged_doc_count.max(1));
+    if ranges.len() == 1 {
+        let (run, seen) = merge_term_range(per_source_field, doc_id_maps, shape, None, None)?;
+        docs_seen.or(&seen);
+        sink(run)?;
+    } else {
+        use rayon::prelude::*;
+        let window = rayon::current_num_threads().max(1);
+        let mut first = 0usize;
+        while first < ranges.len() {
+            let last = first.saturating_add(window).min(ranges.len());
+            let parts: Vec<(MergedRun, FixedBitSet)> = (first..last)
+                .into_par_iter()
+                .map(|i| {
+                    let lower = (i > 0).then(|| ranges[i].as_slice());
+                    let upper = ranges.get(i.saturating_add(1)).map(Vec::as_slice);
+                    merge_term_range(per_source_field, doc_id_maps, shape, lower, upper)
+                })
+                .collect::<Result<_>>()?;
+            for (run, seen) in parts {
+                docs_seen.or(&seen);
+                sink(run)?;
+            }
+            first = last;
+        }
+    }
+    // Candidates come from live source dictionaries or routed FieldInfos,
+    // including a prior merge's termless field with no SourcePostings.
+    // Keep its group even when every source Terms is null or every posting
+    // was pruned. The encoder omits only the empty field's `.tmd` record.
+    Ok(docs_seen.cardinality() as i32)
 }
 
 /// What [`merge_term_range`] needs to know about the merged field.
@@ -5566,6 +5659,10 @@ struct FieldShape {
 /// Fewer terms than this across a field's sources merge on one thread: the
 /// split walk and the per-range cursors would cost more than they save.
 const PARALLEL_MERGE_MIN_TERMS: i64 = 8192;
+
+/// Roughly how many terms (summed over the sources) one merge range of a
+/// large field covers.
+const TERMS_PER_MERGE_RANGE: i64 = 16384;
 
 /// Where to split a field's term space for a parallel merge: `ranges[0]` is
 /// an unused placeholder for "from the first term", and range `i` covers the
@@ -5590,8 +5687,10 @@ fn term_ranges(per_source_field: &[Option<&SourcePostings<'_>>]) -> Result<Vec<V
         return Ok(vec![Vec::new()]);
     };
     // Four ranges per thread: ranges differ in how many sources and
-    // postings they hold, so finer ranges balance better.
-    let ranges = threads.saturating_mul(4) as i64;
+    // postings they hold, so finer ranges balance better. A large field gets
+    // more, so that the window `merge_field_runs` decodes at a time (one
+    // range per thread) stays a small part of it.
+    let ranges = (threads.saturating_mul(4) as i64).max(total / TERMS_PER_MERGE_RANGE);
     let step = largest
         .field_terms
         .num_terms
@@ -5799,7 +5898,7 @@ impl points::IntersectVisitor for CollectPoints<'_> {
 /// query uses, walked by [`CollectPoints`] into a flat [`PointStream`]),
 /// drops non-live docs and remaps surviving doc ids to the
 /// merged id space via [`build_doc_id_maps`] (same mechanism
-/// [`merge_postings`] uses), and combines the sources' streams
+/// [`merge_term_range`] uses), and combines the sources' streams
 /// ([`points::write_merged`]). The BKD writer rebuilds the merged BKD
 /// tree (leaf plan, packed index, bounding boxes) from this flat list
 /// itself, so there is no tree-merging logic to get wrong here, and -- like
