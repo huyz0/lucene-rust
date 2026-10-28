@@ -288,9 +288,11 @@ impl Concatenation {
 }
 
 /// One buffered part: `bufferedParts[4*i..4*i+4]` and `bufferedTermParts[i]`.
-#[derive(Debug, Clone)]
+/// A concatenation's term is a range of the filter's `term_pool` (Java
+/// keeps a `char[]` per part).
+#[derive(Debug, Clone, Copy)]
 struct Part {
-    term: Option<Vec<u16>>,
+    term: Option<(usize, usize)>,
     start_pos: i32,
     end_pos: i32,
     start_part: i32,
@@ -303,6 +305,8 @@ pub struct WordDelimiterGraphFilter<I> {
     prot_words: Option<Arc<CharArraySet>>,
     flags: i32,
     parts: Vec<Part>,
+    /// The concatenated parts' terms, back to back.
+    term_pool: Vec<u16>,
     buffered_pos: usize,
     iterator: WordDelimiterIterator,
     concat: Concatenation,
@@ -361,6 +365,7 @@ impl<I: TokenStream> WordDelimiterGraphFilter<I> {
             prot_words,
             flags,
             parts: Vec::new(),
+            term_pool: Vec::new(),
             buffered_pos: 0,
             iterator: WordDelimiterIterator::new(
                 char_type_table,
@@ -391,7 +396,7 @@ impl<I: TokenStream> WordDelimiterGraphFilter<I> {
     // Java: WordDelimiterGraphFilter.buffer
     fn buffer(
         &mut self,
-        term: Option<Vec<u16>>,
+        term: Option<(usize, usize)>,
         start_pos: i32,
         end_pos: i32,
         start_part: i32,
@@ -413,8 +418,8 @@ impl<I: TokenStream> WordDelimiterGraphFilter<I> {
         self.saved_start_offset = a.start_offset();
         self.saved_end_offset = a.end_offset();
         self.saved_state.save(a);
-        self.saved_term.clear();
-        self.saved_term.extend(a.term().encode_utf16());
+        // `scratch` holds the term's units already (the iterator's text).
+        std::mem::swap(&mut self.saved_term, &mut self.scratch);
     }
 
     fn should_concatenate(&self, t: i32) -> bool {
@@ -429,8 +434,10 @@ impl<I: TokenStream> WordDelimiterGraphFilter<I> {
     // Java: WordDelimiterConcatenation.write
     fn write(&mut self, all: bool) {
         let c = if all { &self.concat_all } else { &self.concat };
-        let (term, start_pos, start_part, end_part) =
-            (c.buffer.clone(), c.start_pos, c.start_part, c.end_part);
+        let from = self.term_pool.len();
+        self.term_pool.extend_from_slice(&c.buffer);
+        let (start_pos, start_part, end_part) = (c.start_pos, c.start_part, c.end_part);
+        let term = (from, self.term_pool.len());
         let word_pos = self.word_pos;
         self.buffer(Some(term), start_pos, word_pos, start_part, end_part);
     }
@@ -478,6 +485,7 @@ impl<I: TokenStream> WordDelimiterGraphFilter<I> {
         self.adjusting_offsets = self.adjust_internal_offsets
             && self.saved_end_offset - self.saved_start_offset == saved_len;
         self.parts.clear();
+        self.term_pool.clear();
         self.last_concat_count = 0;
         self.word_pos = 0;
         if self.has(PRESERVE_ORIGINAL) {
@@ -585,7 +593,7 @@ impl<I: TokenStream> TokenFilter for WordDelimiterGraphFilter<I> {
                 self.buffer_word_parts();
             }
             if self.buffered_pos < self.parts.len() {
-                let part = self.parts[self.buffered_pos].clone();
+                let part = self.parts[self.buffered_pos];
                 self.buffered_pos += 1;
                 let (mut start_offset, mut end_offset) = if self.adjusting_offsets {
                     (
@@ -606,11 +614,11 @@ impl<I: TokenStream> TokenFilter for WordDelimiterGraphFilter<I> {
                 );
                 a.set_offset(start_offset, end_offset)?;
                 self.last_start_offset = start_offset;
-                match &part.term {
+                match part.term {
                     None => a.set_term_utf16(
                         &self.saved_term[part.start_part as usize..part.end_part as usize],
                     ),
-                    Some(t) => a.set_term_utf16(t),
+                    Some((from, to)) => a.set_term_utf16(&self.term_pool[from..to]),
                 }
                 a.set_position_increment(self.accum_pos_inc + part.start_pos - self.word_pos)?;
                 self.accum_pos_inc = 0;

@@ -14,7 +14,7 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-use crate::attributes::State;
+use crate::attributes::{State, StateSlot};
 use crate::java_character::to_lower_case;
 use crate::token_stream::{TokenFilter, TokenStream};
 use crate::util::rolling_buffer::{Resettable, RollingBuffer};
@@ -29,26 +29,34 @@ pub const TYPE_SYNONYM: &str = "SYNONYM";
 #[derive(Debug, Default)]
 struct BufferedInputToken {
     term: String,
-    state: Option<State>,
+    /// Refilled in place (no allocation per captured token once warm).
+    state: StateSlot,
     start_offset: i32,
     end_offset: i32,
 }
 
 impl Resettable for BufferedInputToken {
     fn reset(&mut self) {
-        self.state = None;
+        self.state.clear();
         self.term.clear();
         self.start_offset = -1;
         self.end_offset = -1;
     }
 }
 
-/// `SynonymGraphFilter.BufferedOutputToken`: `state` is set for an input
-/// token, `term` for a synonym.
+/// What a [`BufferedOutputToken`] emits.
+#[derive(Debug)]
+enum OutputText {
+    /// An input token's state (Java's `state != null`).
+    State(State),
+    /// A synonym word: `map.word(ord)[from..to]` (Java copies it out).
+    Word { ord: u32, from: usize, to: usize },
+}
+
+/// `SynonymGraphFilter.BufferedOutputToken`.
 #[derive(Debug)]
 struct BufferedOutputToken {
-    state: Option<State>,
-    term: String,
+    text: OutputText,
     start_node: i32,
     end_node: i32,
 }
@@ -87,6 +95,9 @@ pub struct SynonymGraphFilter<I> {
     lookahead_next_read: i32,
     lookahead_next_write: i32,
     lookahead: RollingBuffer<BufferedInputToken>,
+    /// `buffer_output_tokens`' scratch: word ranges, and paths over them.
+    ranges: Vec<(usize, usize)>,
+    paths: Vec<(u32, usize, usize)>,
 }
 
 impl<I: TokenStream> SynonymGraphFilter<I> {
@@ -114,6 +125,8 @@ impl<I: TokenStream> SynonymGraphFilter<I> {
             lookahead_next_read: 0,
             lookahead_next_write: 0,
             lookahead: RollingBuffer::new(),
+            ranges: Vec::new(),
+            paths: Vec::new(),
         }
     }
 
@@ -135,14 +148,18 @@ impl<I: TokenStream> SynonymGraphFilter<I> {
             .expect("output buffer is non-empty");
         let (start, end) = (self.match_start_offset, self.match_end_offset);
         let a = self.input.attributes_mut();
-        match &token.state {
-            Some(state) => a.restore_state(state),
-            None => {
-                a.clear_attributes();
-                a.set_term(&token.term);
-                a.set_offset(start, end)?;
-                a.set_token_type(TYPE_SYNONYM);
+        let term = match &token.text {
+            OutputText::State(state) => {
+                a.restore_state(state);
+                None
             }
+            OutputText::Word { ord, from, to } => Some(&self.synonyms.word(*ord)[*from..*to]),
+        };
+        if let Some(term) = term {
+            a.clear_attributes();
+            a.set_term(term);
+            a.set_offset(start, end)?;
+            a.set_token_type(TYPE_SYNONYM);
         }
         a.set_position_increment(token.start_node - self.last_node_out)?;
         self.last_node_out = token.start_node;
@@ -234,27 +251,39 @@ impl<I: TokenStream> SynonymGraphFilter<I> {
         let keep_orig = entry.keep_orig;
         let mut total_path_nodes = if keep_orig { match_input_length - 1 } else { 0 };
 
-        let mut paths: Vec<Vec<&str>> = Vec::with_capacity(entry.ords.len());
+        // Each output phrase's words, as byte ranges of its `map.word(ord)`
+        // (Java splits into fresh `CharsRef`s): `paths` holds `(ord, first
+        // range, word count)` over `ranges`, both reused.
+        let mut ranges = std::mem::take(&mut self.ranges);
+        let mut paths = std::mem::take(&mut self.paths);
+        ranges.clear();
+        paths.clear();
         for &ord in &entry.ords {
-            let path: Vec<&str> = map.word(ord).split(WORD_SEPARATOR).collect();
-            total_path_nodes += path.len() as i32 - 1;
-            paths.push(path);
+            let first = ranges.len();
+            let mut from = 0;
+            for word in map.word(ord).split(WORD_SEPARATOR) {
+                ranges.push((from, from + word.len()));
+                from += word.len() + WORD_SEPARATOR.len_utf8();
+            }
+            let count = ranges.len() - first;
+            total_path_nodes += count as i32 - 1;
+            paths.push((ord, first, count));
         }
+        let word = |ord: u32, (from, to): (usize, usize)| OutputText::Word { ord, from, to };
 
         let start_node = self.next_node_out;
         let end_node = start_node + total_path_nodes + 1;
         let mut new_node_count = 0;
-        for path in &paths {
-            let path_end_node = if path.len() == 1 {
+        for &(ord, first, count) in &paths {
+            let path_end_node = if count == 1 {
                 end_node
             } else {
                 let n = self.next_node_out + new_node_count + 1;
-                new_node_count += path.len() as i32 - 1;
+                new_node_count += count as i32 - 1;
                 n
             };
             self.output_buffer.push_back(BufferedOutputToken {
-                state: None,
-                term: path[0].to_string(),
+                text: word(ord, ranges[first]),
                 start_node,
                 end_node: path_end_node,
             });
@@ -266,10 +295,9 @@ impl<I: TokenStream> SynonymGraphFilter<I> {
             } else {
                 self.next_node_out + new_node_count + 1
             };
-            let token = self.lookahead.get(self.lookahead_next_read);
+            let text = Self::input_text(self.lookahead.get(self.lookahead_next_read));
             self.output_buffer.push_back(BufferedOutputToken {
-                state: token.state.clone(),
-                term: token.term.clone(),
+                text,
                 start_node,
                 end_node: input_end_node,
             });
@@ -277,21 +305,19 @@ impl<I: TokenStream> SynonymGraphFilter<I> {
 
         self.next_node_out = end_node;
 
-        for (path_id, path) in paths.iter().enumerate() {
-            if path.len() > 1 {
+        for (path_id, &(ord, first, count)) in paths.iter().enumerate() {
+            if count > 1 {
                 let mut last_node = self.output_buffer[path_id].end_node;
-                for word in &path[1..path.len() - 1] {
+                for &r in &ranges[first + 1..first + count - 1] {
                     self.output_buffer.push_back(BufferedOutputToken {
-                        state: None,
-                        term: word.to_string(),
+                        text: word(ord, r),
                         start_node: last_node,
                         end_node: last_node + 1,
                     });
                     last_node += 1;
                 }
                 self.output_buffer.push_back(BufferedOutputToken {
-                    state: None,
-                    term: path[path.len() - 1].to_string(),
+                    text: word(ord, ranges[first + count - 1]),
                     start_node: last_node,
                     end_node,
                 });
@@ -302,20 +328,33 @@ impl<I: TokenStream> SynonymGraphFilter<I> {
             let first = self.output_buffer[paths.len()].end_node;
             for i in 1..match_input_length {
                 let last_node = first + i - 1;
-                let token = self.lookahead.get(self.lookahead_next_read + i);
+                let text = Self::input_text(self.lookahead.get(self.lookahead_next_read + i));
                 let end = if i == match_input_length - 1 {
                     end_node
                 } else {
                     last_node + 1
                 };
                 self.output_buffer.push_back(BufferedOutputToken {
-                    state: token.state.clone(),
-                    term: token.term.clone(),
+                    text,
                     start_node: last_node,
                     end_node: end,
                 });
             }
         }
+        self.ranges = ranges;
+        self.paths = paths;
+    }
+
+    /// A kept input token's output: its state (every token from
+    /// `lookahead_next_read` on was captured).
+    fn input_text(token: &BufferedInputToken) -> OutputText {
+        OutputText::State(
+            token
+                .state
+                .get()
+                .expect("a matched input token was captured")
+                .clone(),
+        )
     }
 
     // Java: capture
@@ -325,7 +364,7 @@ impl<I: TokenStream> SynonymGraphFilter<I> {
         let a = self.input.attributes();
         let token = self.lookahead.get(self.lookahead_next_write);
         self.lookahead_next_write += 1;
-        token.state = Some(a.capture_state());
+        token.state.save(a);
         token.start_offset = a.start_offset();
         token.end_offset = a.end_offset();
         debug_assert!(token.term.is_empty());
@@ -354,10 +393,10 @@ impl<I: TokenStream> TokenFilter for SynonymGraphFilter<I> {
             }
             self.live_token = false;
         } else {
-            let state = self.lookahead.get(self.lookahead_next_read).state.take();
+            let token = self.lookahead.get(self.lookahead_next_read);
             self.lookahead_next_read += 1;
-            if let Some(state) = state {
-                self.input.attributes_mut().restore_state(&state);
+            if let Some(state) = token.state.take() {
+                self.input.attributes_mut().restore_state(state);
             }
             self.lookahead.free_before(self.lookahead_next_read);
         }

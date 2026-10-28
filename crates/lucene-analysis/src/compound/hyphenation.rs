@@ -5,9 +5,10 @@
 //! Differs:
 //! - `HyphenationTree` keeps its patterns, character classes and exceptions
 //!   in hash maps where Java uses `TernaryTree`s (with `ByteVector`/
-//!   `CharVector` storage). `searchPatterns` visits every pattern that is a
-//!   prefix of the word from a position, which is exactly what a lookup of
-//!   each such prefix in a map visits, and merges values the same way; the
+//!   `CharVector` storage), plus a plain trie of the patterns.
+//!   `searchPatterns` visits every pattern that is a prefix of the word from
+//!   a position, which is exactly what a walk of that trie along the word
+//!   visits, and merges values the same way; the
 //!   packed nibble encoding of values is not needed. So a grammar Java
 //!   cannot load is loaded here: building Java's `TernaryTree`s throws
 //!   `ArrayIndexOutOfBoundsException` or `StackOverflowError` on files of
@@ -90,12 +91,34 @@ pub struct HyphenationTree {
     /// nibble ending them; kept as `getValues` unpacks them, so a lookup
     /// decodes nothing).
     patterns: HashMap<Vec<u16>, Vec<i8>, WordHash>,
-    /// The longest pattern, bounding the prefixes `search_patterns` probes.
-    max_pattern_len: usize,
+    /// The same patterns as a trie over their letters, which
+    /// `search_patterns` walks along the word (one step per letter, stopping
+    /// where no pattern continues) instead of hashing every prefix.
+    trie: Vec<TrieNode>,
+    /// The values of each trie node that ends a pattern.
+    trie_values: Vec<Vec<i8>>,
     /// `classmap`: a letter -> its class's first char.
     classmap: HashMap<u16, u16, WordHash>,
     /// `stoplist`: exception word -> its parts.
     stoplist: HashMap<Vec<u16>, Vec<ExceptionPart>, WordHash>,
+}
+
+/// One node of [`HyphenationTree`]'s pattern trie.
+#[derive(Debug, Default, Clone)]
+struct TrieNode {
+    /// `(letter, node)`, sorted by letter.
+    children: Vec<(u16, u32)>,
+    /// `trie_values` index + 1 of the pattern ending here (0: none).
+    values: u32,
+}
+
+impl TrieNode {
+    #[inline]
+    fn child(&self, c: u16) -> Result<u32, usize> {
+        self.children
+            .binary_search_by_key(&c, |&(l, _)| l)
+            .map(|i| self.children[i].1)
+    }
 }
 
 fn units(s: &str) -> Vec<u16> {
@@ -135,9 +158,25 @@ impl HyphenationTree {
     /// is digits, one per inter-letter position.
     pub fn add_pattern(&mut self, pattern: &str, ivalue: &str) {
         let key = units(pattern);
-        self.max_pattern_len = self.max_pattern_len.max(key.len());
-        self.patterns
-            .insert(key, Self::get_values(&Self::pack_values(ivalue)));
+        let values = Self::get_values(&Self::pack_values(ivalue));
+        if self.trie.is_empty() {
+            self.trie.push(TrieNode::default());
+        }
+        let mut n = 0usize;
+        for &c in &key {
+            n = match self.trie[n].child(c) {
+                Ok(next) => next as usize,
+                Err(at) => {
+                    let next = self.trie.len();
+                    self.trie[n].children.insert(at, (c, next as u32));
+                    self.trie.push(TrieNode::default());
+                    next
+                }
+            };
+        }
+        self.trie_values.push(values.clone());
+        self.trie[n].values = self.trie_values.len() as u32;
+        self.patterns.insert(key, values);
     }
 
     // Java: HyphenationTree.packValues
@@ -211,9 +250,15 @@ impl HyphenationTree {
             .iter()
             .position(|&c| c == 0)
             .map_or(word.len(), |p| index + p);
-        let longest = (end - index).min(self.max_pattern_len);
-        for l in 1..=longest {
-            if let Some(values) = self.patterns.get(&word[index..index + l]) {
+        let mut n = 0usize;
+        for &c in &word[index..end] {
+            let Some(Ok(next)) = self.trie.get(n).map(|node| node.child(c)) else {
+                return;
+            };
+            n = next as usize;
+            let v = self.trie[n].values;
+            if v != 0 {
+                let values = &self.trie_values[v as usize - 1];
                 for (slot, &v) in il[index..].iter_mut().zip(values) {
                     if v > *slot {
                         *slot = v;
