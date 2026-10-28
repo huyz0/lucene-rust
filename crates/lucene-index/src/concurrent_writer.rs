@@ -628,6 +628,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
         doc: Document,
         terms: Vec<(String, i32)>,
     ) -> Result<SeqNo> {
+        crate::index_writer::summed_custom_freq_terms(&terms)?;
         self.add_entries(
             None,
             vec![Entry {

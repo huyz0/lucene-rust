@@ -4559,14 +4559,18 @@ fn custom_freq_invert_state(terms: &[(String, i32)]) -> Option<FieldInvertState>
         return None;
     }
     let count = i32::try_from(terms.len()).unwrap_or(i32::MAX);
+    // Each token adds 1 to the length; a repeated term counts once in
+    // `uniqueTermCount` and its summed freq in `maxTermFrequency`. The terms
+    // were validated when the document was buffered.
+    let summed = summed_custom_freq_terms(terms).unwrap_or_default();
     Some(FieldInvertState {
         docs_only: false,
         position: count.saturating_sub(1),
         length: count,
         num_overlap: 0,
         offset: 0,
-        max_term_frequency: terms.iter().map(|(_, f)| *f).max().unwrap_or(0),
-        unique_term_count: count,
+        max_term_frequency: summed.iter().map(|(_, f)| *f).max().unwrap_or(0),
+        unique_term_count: i32::try_from(summed.len()).unwrap_or(i32::MAX),
         attribute_source: Some(crate::similarity::end_attributes(0, 0)),
     })
 }
@@ -7226,16 +7230,13 @@ impl IndexWriter<'_> {
     /// integer a similarity implementation interprets however it likes,
     /// **not** a literal term-occurrence count (see
     /// `crate::postings_writer`'s module doc comment's
-    /// `IndexOptions::DocsAndCustomFreqs` section). It must be `>= 1`: the
-    /// underlying codec layer ([`postings_writer::write_fields`]) rejects
-    /// `freq < 1` for every `IndexOptions` variant that carries a freq at
-    /// all, `DocsAndCustomFreqs` included, since the wire encoding has no
-    /// representation for a zero-or-negative freq. A `term` repeated more
-    /// than once in `terms` for the same doc contributes one postings entry
-    /// per occurrence in this list (i.e. the *last* one wins for that
-    /// `(doc, term)` pair's freq, since the codec's per-term-per-doc map
-    /// only ever keeps one freq value per doc) -- callers should supply each
-    /// distinct term at most once per doc to avoid relying on that.
+    /// `IndexOptions::DocsAndCustomFreqs` section). It must be `>= 1`
+    /// (Java's "Term frequency must be 1 or greater"), checked here before
+    /// anything is buffered: the wire encoding has no representation for a
+    /// zero-or-negative freq, and a value the codec refused at flush would
+    /// leave the buffer unflushable. A `term` repeated in `terms` sums its
+    /// freqs, as `FreqProxTermsWriterPerField` does with `Math.addExact`; a
+    /// sum past `i32::MAX` is refused the same way.
     ///
     /// A plain [`IndexWriter::add_document`] call is equivalent to calling
     /// this with an empty `terms` list -- both keep
@@ -7246,6 +7247,7 @@ impl IndexWriter<'_> {
         doc: Document,
         terms: Vec<(String, i32)>,
     ) -> Result<SeqNo> {
+        summed_custom_freq_terms(&terms)?;
         let seq_no = self.delete_queue.next_sequence_number();
         // ARITH: see [`VectorValue::ram_bytes`].
         #[allow(clippy::arithmetic_side_effects)]
@@ -8832,11 +8834,11 @@ impl IndexWriter<'_> {
             let Some(terms) = custom_freq_terms.get(doc_id) else {
                 continue;
             };
-            for (term, custom_freq) in terms {
+            for (term, custom_freq) in summed_custom_freq_terms(terms)? {
                 per_term
                     .entry(term.as_bytes().to_vec())
                     .or_default()
-                    .push((doc_id as i32, *custom_freq));
+                    .push((doc_id as i32, custom_freq));
             }
         }
 
@@ -12255,6 +12257,36 @@ fn accumulate_field_length(so_far: u32, term_freq: i32) -> u32 {
 /// [`IndexWriter::add_document_with_custom_freq_terms`] term list.
 /// ARITH: as [`VectorValue::ram_bytes`] -- a sum of live allocation sizes.
 #[allow(clippy::arithmetic_side_effects)]
+/// A document's custom-freq terms with each term once, in first-seen order:
+/// repeated terms sum their freqs (`Math.addExact`), and a freq below 1 is
+/// refused. Checked before a document is buffered, so the flush (which sums
+/// the same way) cannot fail on them.
+pub(crate) fn summed_custom_freq_terms(terms: &[(String, i32)]) -> Result<Vec<(&str, i32)>> {
+    let illegal = |m: String| Error::Document(crate::document::Error::IllegalArgument(m));
+    let mut index: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    let mut summed: Vec<(&str, i32)> = Vec::with_capacity(terms.len());
+    for (term, freq) in terms {
+        let freq = *freq;
+        if freq < 1 {
+            return Err(illegal(format!(
+                "Term frequency must be 1 or greater; got {freq} for term \"{term}\""
+            )));
+        }
+        match index.get(term.as_str()).and_then(|&i| summed.get_mut(i)) {
+            Some((_, slot)) => {
+                *slot = slot.checked_add(freq).ok_or_else(|| {
+                    illegal(format!("custom term frequency of \"{term}\" overflows an int"))
+                })?;
+            }
+            None => {
+                index.insert(term, summed.len());
+                summed.push((term, freq));
+            }
+        }
+    }
+    Ok(summed)
+}
+
 pub(crate) fn custom_freq_terms_ram_bytes(terms: &[(String, i32)]) -> usize {
     std::mem::size_of::<Vec<(String, i32)>>()
         + std::mem::size_of_val(terms)
@@ -15825,11 +15857,9 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn commit_rejects_a_custom_freq_below_one_and_leaves_the_writer_unchanged() {
-        // The codec layer's own "freq < 1" validation
-        // (`postings_writer::write_fields`) applies unchanged to
-        // `DocsAndCustomFreqs` -- a caller-supplied `custom_freq` of `0` (or
-        // negative) surfaces as an `Err`, not a silently-clamped value.
+    fn custom_freqs_below_one_are_refused_and_repeats_sum() {
+        // Java refuses a term frequency below 1 when the document is added
+        // (the wire encoding has none), so the buffer never holds one.
         let tmp = tempdir("custom-freq-below-one");
         let dir = FsDirectory::open(&tmp);
         let fields = vec![stored_only_field("id", 0), custom_freq_field(1)];
@@ -15838,14 +15868,29 @@ pub(crate) mod tests {
             .set_custom_freq_postings_field(Some("score"))
             .unwrap();
 
-        writer
+        let err = writer
             .add_document_with_custom_freq_terms(doc("a"), vec![("alpha".to_string(), 0)])
+            .unwrap_err();
+        assert!(matches!(err, Error::Document(_)));
+        // Refused before buffering: the writer still commits.
+        assert_eq!(writer.pending_doc_count(), 0);
+        writer.commit().unwrap();
+
+        // A repeated term sums its freqs (Java's `Math.addExact`) rather
+        // than leaving a flush that can never succeed.
+        writer
+            .add_document_with_custom_freq_terms(
+                doc("b"),
+                vec![("alpha".to_string(), 2), ("alpha".to_string(), 3)],
+            )
             .unwrap();
-        let err = writer.commit().unwrap_err();
-        assert!(matches!(err, Error::PostingsWriter(_)));
-        // Atomic failure: nothing committed, pending state untouched.
-        assert!(writer.segment_infos.segments.is_empty());
-        assert_eq!(writer.pending_doc_count(), 1);
+        writer.commit().unwrap();
+        assert!(writer
+            .add_document_with_custom_freq_terms(
+                doc("c"),
+                vec![("alpha".to_string(), i32::MAX), ("alpha".to_string(), 1)],
+            )
+            .is_err());
     }
 
     /// `IndexingChain.invert` counts a `DOCS_AND_CUSTOM_FREQS` field's tokens
