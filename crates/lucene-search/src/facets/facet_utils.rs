@@ -176,25 +176,22 @@ where
             }
         }
         DocIdSet::Bits { bits, cost } if *cost >= b.cost() => {
+            let words = bits.words();
             let mut doc = b.next_doc()?;
             while doc != NO_MORE_DOCS {
-                if bits.get_doc(doc) {
+                if word_bit(words, doc) {
                     f(b)?;
                 }
                 doc = b.next_doc()?;
             }
         }
         DocIdSet::Bits { bits, .. } => {
-            let mut next = bits.next_set_bit(0);
-            while let Some(i) = next {
-                let Ok(doc) = i32::try_from(i) else {
-                    break;
-                };
+            try_for_each_set_bit(bits, |doc| {
                 if b.advance_exact(doc)? {
                     f(b)?;
                 }
-                next = bits.next_set_bit(i.saturating_add(1));
-            }
+                Ok(())
+            })?;
         }
     }
     Ok(())
@@ -239,15 +236,37 @@ pub(crate) fn for_each_doc(set: &DocIdSet, mut f: impl FnMut(i32) -> Result<()>)
                 f(doc)?;
             }
         }
-        DocIdSet::Bits { bits, .. } => {
-            let mut next = bits.next_set_bit(0);
-            while let Some(i) = next {
-                let Ok(doc) = i32::try_from(i) else {
-                    break;
-                };
-                f(doc)?;
-                next = bits.next_set_bit(i.saturating_add(1));
-            }
+        DocIdSet::Bits { bits, .. } => try_for_each_set_bit(bits, f)?,
+    }
+    Ok(())
+}
+
+/// Bit `doc` of a bit set's words: a document outside them (negative, or
+/// past the last word) is not set. The words past `len()` hold no set bit.
+#[inline(always)]
+pub(crate) fn word_bit(words: &[u64], doc: i32) -> bool {
+    let Ok(i) = usize::try_from(doc) else {
+        return false;
+    };
+    words.get(i >> 6).is_some_and(|&w| (w >> (i & 63)) & 1 != 0)
+}
+
+/// `f(doc)` for every set bit of `bits`, ascending, stopping at the first
+/// error: the bits popped word by word (each word loaded once, the lowest
+/// set bit taken and cleared) rather than a `next_set_bit` search per hit.
+#[inline]
+pub(crate) fn try_for_each_set_bit(
+    bits: &FixedBitSet,
+    mut f: impl FnMut(i32) -> Result<()>,
+) -> Result<()> {
+    for (wi, &word) in bits.words().iter().enumerate() {
+        let mut w = word;
+        while w != 0 {
+            let Ok(doc) = i32::try_from((wi << 6) | w.trailing_zeros() as usize) else {
+                return Ok(());
+            };
+            f(doc)?;
+            w &= w.wrapping_sub(1);
         }
     }
     Ok(())

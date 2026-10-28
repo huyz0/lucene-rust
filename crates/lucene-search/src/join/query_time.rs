@@ -56,6 +56,7 @@ use crate::collector::ScoreMode as CollectorScoreMode;
 use crate::extended_query::{
     ExtendedQuery, MultiTermQuery, MultiTermSource, PointInSetQuery, RewriteMethod,
 };
+use crate::grouping::FxHashMap;
 use crate::index_searcher::IndexSearcher;
 use crate::leaf_collector::{search_segments, SegmentCollector};
 use crate::multi_segment::OpenSegment;
@@ -405,20 +406,21 @@ impl<'a> SegmentCollector<'a> for TermsCollector<'a> {
 
     /// The segment's ordinals as terms, in ordinal order.
     fn finish(&mut self) -> Result<()> {
-        let mut ord = 0usize;
-        while ord < self.seen.len() {
-            let Some(o) = self.seen.next_set_bit(ord) else {
-                break;
-            };
-            let term = if let Some(values) = self.mv.as_mut() {
-                values.lookup_ord(i64::try_from(o).unwrap_or(i64::MAX))?
-            } else if let Some(values) = self.sv.as_mut() {
-                values.lookup_ord(i32::try_from(o).unwrap_or(i32::MAX))?
-            } else {
-                break;
-            };
-            add_term(&mut self.terms, &term)?;
-            ord = o.saturating_add(1);
+        // The set bits popped word by word, ascending (each word loaded once).
+        for (wi, &word) in self.seen.words().iter().enumerate() {
+            let mut w = word;
+            while w != 0 {
+                let o = (wi << 6) | w.trailing_zeros() as usize;
+                w &= w.wrapping_sub(1);
+                let term = if let Some(values) = self.mv.as_mut() {
+                    values.lookup_ord(i64::try_from(o).unwrap_or(i64::MAX))?
+                } else if let Some(values) = self.sv.as_mut() {
+                    values.lookup_ord(i32::try_from(o).unwrap_or(i32::MAX))?
+                } else {
+                    return Ok(());
+                };
+                add_term(&mut self.terms, &term)?;
+            }
         }
         Ok(())
     }
@@ -1061,9 +1063,9 @@ pub struct NumericJoinCollector<'a> {
     score_mode: ScoreMode,
     sv: Option<Box<dyn NumericDocValues + 'a>>,
     mv: Option<Box<dyn SortedNumericDocValues + 'a>>,
-    values: std::collections::HashSet<i64>,
-    scores: HashMap<i64, f32>,
-    occurrences: HashMap<i64, i32>,
+    /// Every join value, with its combined score and (for `Avg`) how many
+    /// documents had it: one probe per value. `(0.0, 0)` without scores.
+    values: FxHashMap<i64, (f32, i32)>,
 }
 
 impl<'a> NumericJoinCollector<'a> {
@@ -1074,59 +1076,63 @@ impl<'a> NumericJoinCollector<'a> {
             score_mode,
             sv: None,
             mv: None,
-            values: Default::default(),
-            scores: HashMap::new(),
-            occurrences: HashMap::new(),
+            values: FxHashMap::default(),
         }
     }
 
+    #[inline]
     fn add(&mut self, value: i64, score: f32) {
-        self.values.insert(value);
-        match self.score_mode {
-            ScoreMode::None => {}
-            ScoreMode::Max => {
-                let e = self.scores.entry(value).or_insert(score);
-                *e = java_max_f32(*e, score);
+        Self::add_to(&mut self.values, self.score_mode, value, score);
+    }
+
+    /// [`Self::add`] on the map alone, so a caller holding the doc values
+    /// borrowed can add.
+    #[inline]
+    fn add_to(values: &mut FxHashMap<i64, (f32, i32)>, mode: ScoreMode, value: i64, score: f32) {
+        use std::collections::hash_map::Entry;
+        match values.entry(value) {
+            Entry::Vacant(v) => {
+                // The first score is stored as is (a `-0.0` stays `-0.0`,
+                // `LongFloatHashMap.addTo`'s and `Math.max`/`min`'s first
+                // value alike).
+                v.insert(match mode {
+                    ScoreMode::None => (0.0, 0),
+                    _ => (score, 1),
+                });
             }
-            ScoreMode::Min => {
-                let e = self.scores.entry(value).or_insert(score);
-                *e = java_min_f32(*e, score);
-            }
-            // `LongFloatHashMap.addTo`: the first score is stored as is (a
-            // `-0.0` stays `-0.0`), later ones added to it.
-            ScoreMode::Total => {
-                self.scores
-                    .entry(value)
-                    .and_modify(|s| *s += score)
-                    .or_insert(score);
-            }
-            ScoreMode::Avg => {
-                self.scores
-                    .entry(value)
-                    .and_modify(|s| *s += score)
-                    .or_insert(score);
-                let o = self.occurrences.entry(value).or_insert(0);
-                *o = o.wrapping_add(1);
+            Entry::Occupied(mut o) => {
+                let (s, n) = o.get_mut();
+                match mode {
+                    ScoreMode::None => {}
+                    ScoreMode::Max => *s = java_max_f32(*s, score),
+                    ScoreMode::Min => *s = java_min_f32(*s, score),
+                    ScoreMode::Total => *s += score,
+                    ScoreMode::Avg => {
+                        *s += score;
+                        *n = n.wrapping_add(1);
+                    }
+                }
             }
         }
     }
 
     /// The join values, ascending, each with its score (`joinScorer`).
     pub fn into_sorted(self) -> Vec<(i64, f32)> {
-        let mut values: Vec<i64> = self.values.into_iter().collect();
-        values.sort_unstable();
-        values
+        let mode = self.score_mode;
+        let mut values: Vec<(i64, f32)> = self
+            .values
             .into_iter()
-            .map(|v| {
-                let s = self.scores.get(&v).copied().unwrap_or(0.0);
-                let s = if self.score_mode == ScoreMode::Avg {
-                    s / self.occurrences.get(&v).copied().unwrap_or(0) as f32
+            .map(|(v, (s, n))| {
+                let s = if mode == ScoreMode::Avg {
+                    s / n as f32
                 } else {
                     s
                 };
                 (v, s)
             })
-            .collect()
+            .collect();
+        values.sort_unstable_by_key(|&(v, _)| v);
+        values
     }
 }
 
@@ -1150,18 +1156,14 @@ impl<'a> SegmentCollector<'a> for NumericJoinCollector<'a> {
     }
 
     fn collect(&mut self, doc: i32, score: f32) -> Result<()> {
-        if let Some(mut values) = self.mv.take() {
-            let r = (|| -> Result<()> {
-                if values.advance_exact(doc)? {
-                    for _ in 0..values.doc_value_count() {
-                        let v = values.next_value()?;
-                        self.add(v, score);
-                    }
+        if let Some(values) = self.mv.as_mut() {
+            if values.advance_exact(doc)? {
+                for _ in 0..values.doc_value_count() {
+                    let v = values.next_value()?;
+                    Self::add_to(&mut self.values, self.score_mode, v, score);
                 }
-                Ok(())
-            })();
-            self.mv = Some(values);
-            return r;
+            }
+            return Ok(());
         }
         let Some(values) = self.sv.as_mut() else {
             return Ok(());
@@ -1434,6 +1436,13 @@ pub(crate) fn segment_map(map: Option<&OrdinalMap>, ord: usize) -> Result<Option
     }
 }
 
+/// The table [`segment_map`] answered for leaf `seg` when the collector
+/// moved to it (`None` without a map).
+#[inline]
+fn leaf_map(map: Option<&OrdinalMap>, seg: Option<usize>) -> Option<&[i64]> {
+    map.zip(seg).and_then(|(m, s)| m.segment_ords(s))
+}
+
 /// `segmentOrdToGlobalOrdLookup.get(segmentOrd)`, or the segment ordinal
 /// itself without a map.
 pub(crate) fn global_ord(map: Option<&[i64]>, segment_ord: i32) -> Result<i64> {
@@ -1469,7 +1478,10 @@ pub struct GlobalOrdinalsCollector<'a> {
     field: String,
     ordinal_map: Option<Arc<OrdinalMap>>,
     values: Option<Box<dyn SortedDocValues + 'a>>,
-    map: Option<Vec<i64>>,
+    /// The current leaf's position in `ordinal_map` (`None` without a map):
+    /// its segment-to-global table is borrowed from the map per document
+    /// rather than copied per segment.
+    seg: Option<usize>,
     collected: FixedBitSet,
 }
 
@@ -1480,7 +1492,7 @@ impl<'a> GlobalOrdinalsCollector<'a> {
             field: field.to_string(),
             ordinal_map,
             values: None,
-            map: None,
+            seg: None,
             collected: FixedBitSet::new(value_count),
         }
     }
@@ -1498,14 +1510,15 @@ impl<'a> SegmentCollector<'a> for GlobalOrdinalsCollector<'a> {
 
     fn set_next_reader(&mut self, ord: usize, leaf: &OpenSegment<'a>) -> Result<()> {
         self.values = Some(dv::get_sorted(leaf_reader(leaf)?, &self.field)?);
-        self.map = segment_map(self.ordinal_map.as_deref(), ord)?.map(<[i64]>::to_vec);
+        self.seg = segment_map(self.ordinal_map.as_deref(), ord)?.map(|_| ord);
         Ok(())
     }
 
     fn collect(&mut self, doc: i32, _score: f32) -> Result<()> {
         if let Some(values) = self.values.as_mut() {
             if values.advance_exact(doc)? {
-                let g = global_ord(self.map.as_deref(), values.ord_value())?;
+                let map = leaf_map(self.ordinal_map.as_deref(), self.seg);
+                let g = global_ord(map, values.ord_value())?;
                 set_bit(&mut self.collected, g);
             }
         }
@@ -1562,7 +1575,8 @@ pub struct GlobalOrdinalsWithScoreCollector<'a> {
     field: String,
     ordinal_map: Option<Arc<OrdinalMap>>,
     values: Option<Box<dyn SortedDocValues + 'a>>,
-    map: Option<Vec<i64>>,
+    /// As [`GlobalOrdinalsCollector`]'s.
+    seg: Option<usize>,
     state: CollectedOrdinals,
 }
 
@@ -1608,7 +1622,7 @@ impl<'a> GlobalOrdinalsWithScoreCollector<'a> {
             field: field.to_string(),
             ordinal_map,
             values: None,
-            map: None,
+            seg: None,
             state: CollectedOrdinals {
                 score_mode,
                 collected: FixedBitSet::new(value_count),
@@ -1638,7 +1652,7 @@ impl<'a> SegmentCollector<'a> for GlobalOrdinalsWithScoreCollector<'a> {
 
     fn set_next_reader(&mut self, ord: usize, leaf: &OpenSegment<'a>) -> Result<()> {
         self.values = Some(dv::get_sorted(leaf_reader(leaf)?, &self.field)?);
-        self.map = segment_map(self.ordinal_map.as_deref(), ord)?.map(<[i64]>::to_vec);
+        self.seg = segment_map(self.ordinal_map.as_deref(), ord)?.map(|_| ord);
         Ok(())
     }
 
@@ -1649,7 +1663,8 @@ impl<'a> SegmentCollector<'a> for GlobalOrdinalsWithScoreCollector<'a> {
         if !values.advance_exact(doc)? {
             return Ok(());
         }
-        let g = global_ord(self.map.as_deref(), values.ord_value())?;
+        let map = leaf_map(self.ordinal_map.as_deref(), self.seg);
+        let g = global_ord(map, values.ord_value())?;
         let s = &mut self.state;
         set_bit(&mut s.collected, g);
         let Ok(o) = usize::try_from(g) else {
