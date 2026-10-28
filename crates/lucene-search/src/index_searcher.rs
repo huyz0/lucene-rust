@@ -655,14 +655,23 @@ impl<'s, 'a> IndexSearcher<'s, 'a> {
         }
         // `TotalHitCountCollector`: each leaf asks `Weight.count` first, so a
         // lone term is its `docFreq` and an `exists` its field statistics,
-        // without iterating postings or gathering scoring statistics.
+        // without iterating postings or gathering scoring statistics. Any
+        // leaf without that answer counts through the search as before.
         if self.timeout.is_none() && !self.scorer_only_enabled() {
             let rewritten = self.rewrite(query)?;
-            let mut total = 0u64;
+            let mut total = Some(0u64);
             for seg in self.segments {
-                total = total.saturating_add(crate::count_boolean_query_segment(seg, &rewritten)?);
+                total = match (total, crate::count_boolean_query_shortcut(seg, &rewritten)?) {
+                    (Some(t), Some(n)) => Some(t.saturating_add(n)),
+                    _ => None,
+                };
+                if total.is_none() {
+                    break;
+                }
             }
-            return Ok(total);
+            if let Some(total) = total {
+                return Ok(total);
+            }
         }
         let mut c = Count(0);
         self.search_collector(query, &mut c)?;

@@ -704,7 +704,7 @@ fn identity_accept_ords(
     let mut words: Vec<u64> = (0..num_words)
         .map(|i| word(live, i) & word(filter, i))
         .collect();
-    if size % 64 != 0 {
+    if !size.is_multiple_of(64) {
         if let Some(last) = words.last_mut() {
             *last &= (1u64 << (size % 64)) - 1;
         }
