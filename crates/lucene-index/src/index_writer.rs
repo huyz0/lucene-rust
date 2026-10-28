@@ -7167,6 +7167,10 @@ impl IndexWriter<'_> {
                 return self.flush();
             }
         }
+        // `hardMaxBytesPerDWPT`, whatever the RAM setting.
+        if self.ram_bytes_used > crate::concurrent_writer::HARD_MAX_BYTES_PER_SLOT {
+            return self.flush();
+        }
         Ok(())
     }
 
@@ -7487,24 +7491,24 @@ impl IndexWriter<'_> {
     }
 
     /// The atomic delete-by-term + add-document real Lucene calls
-    /// `updateDocument`: delegates directly to
-    /// [`update_document::update_document`], flushing `doc` as a brand-new
-    /// segment and applying the term delete to every segment `delete_sources`
-    /// supplies an opened source for, all in one commit. Unlike
-    /// [`IndexWriter::add_document`], this is **not** buffered -- it commits
-    /// immediately (matching [`update_document::update_document`]'s own
-    /// all-or-nothing atomicity, which only makes sense as an immediate
-    /// commit; buffering it would let a later `commit()` observe a
-    /// half-applied update if that call somehow failed in between).
+    /// `updateDocument`, committed at once: the term delete is resolved
+    /// against every segment `delete_sources` supplies an opened source for
+    /// and `doc` is flushed as a brand-new segment
+    /// ([`update_document::update_segments`]), then both publish in one
+    /// `segments_N` through the same commit tail as
+    /// [`IndexWriter::delete_documents_with_sources`] (version above every NRT
+    /// snapshot, minimum segment version and soft-delete counts stamped).
+    /// Unlike [`IndexWriter::add_document`], this is **not** buffered.
     ///
-    /// Bumps this writer's in-memory [`IndexWriter::segment_infos`] to the
-    /// new commit on success and returns it; on `Err`, nothing was written
-    /// (see [`update_document::update_document`]'s own atomicity guarantee)
-    /// and every observable part of this writer's state -- its segment list,
-    /// generation, version and commit id -- is unchanged. The one thing that
-    /// does advance is `segment_infos.counter`: the segment name this attempt
-    /// claimed is burned, exactly as real `IndexWriter.newSegmentName()` burns
-    /// it, so a retry never writes over files the failed attempt may have left.
+    /// Live docs in `delete_sources` must be current: a source whose live
+    /// docs disagree with the commit's delete count is refused
+    /// ([`term_delete::Error::StaleLiveDocs`]).
+    ///
+    /// On `Err` nothing is published: the segment list, version and commit id
+    /// are unchanged. The segment name this attempt claimed is burned, as
+    /// `IndexWriter.newSegmentName()` burns it, and a failed `segments_N`
+    /// write still advances the generation (`startCommit`), so a retry never
+    /// writes over files the failed attempt may have left.
     #[allow(clippy::too_many_arguments)]
     pub fn update_document_with_sources(
         &mut self,
@@ -7519,46 +7523,26 @@ impl IndexWriter<'_> {
         let new_segment_name = self.new_segment_name();
         let new_segment_id = generate_segment_id(self.segment_infos.counter);
 
-        // Real `IndexWriter.newSegmentName()` increments `segmentInfos.counter`
-        // *at the moment it hands out a name*, so the counter that gets written
-        // into the very next commit already accounts for the segment being
-        // flushed. Bumping it only on `self` afterwards (as this method used
-        // to) left the on-disk `segments_N` carrying the pre-flush counter, so
-        // a fresh `IndexWriter::open` on the same directory handed out the
-        // *same* `_N` name again and the next flush overwrote a live segment's
-        // files. The bump therefore has to be on the `SegmentInfos` that is
-        // about to be written, not on a copy that never reaches disk.
-        let mut base = self.segment_infos.clone();
-        base.id = generate_segment_id(base.counter);
-
-        // Known difference: a failure here keeps the generation (most never
-        // reach `segments_N`). One whose `segments_N` write *and* cleanup
-        // both failed leaves a name the next commit asks for again, where
-        // Java's `startCommit` would have moved past it.
-        let updated = update_document::update_document(
+        // `new_segment_name` bumped `segment_infos.counter`, so the commit
+        // below carries a counter past the new segment and a fresh writer
+        // never hands out its name again.
+        let updated_segments = update_document::update_segments(
             self.dir,
-            &base,
+            &self.segment_infos,
             delete_sources,
             field,
             term,
-            &new_segment_name,
-            new_segment_id,
-            &self.cfg.codec_name,
-            self.cfg.lucene_version,
-            &self.cfg.fields,
-            std::slice::from_ref(&new_doc),
+            update_document::NewSegment {
+                name: &new_segment_name,
+                id: new_segment_id,
+                codec_name: &self.cfg.codec_name,
+                lucene_version: self.cfg.lucene_version,
+                fields: &self.cfg.fields,
+                docs: std::slice::from_ref(&new_doc),
+                use_compound_file: self.cfg.use_compound_file,
+            },
         )?;
-        // This wrote its own `segments_N`, so the deleter sees it as a commit:
-        // the superseded generation's commit point dies here, taking the `.liv`
-        // generation this update replaced with it.
-        self.segment_infos = updated;
-        // `finishCommit`: `rollbackSegments =
-        // pendingCommit.createBackupSegmentInfos()`. This is the one place a
-        // commit becomes durable, so it is the one place the rollback snapshot
-        // moves forward.
-        self.rollback_segments = self.segment_infos.segments.clone();
-        self.checkpoint_committed()?;
-        Ok(&self.segment_infos)
+        self.commit_updated_segments(updated_segments)
     }
 
     /// Deletes every live doc matching `(field, term)` in whichever of this
@@ -7606,6 +7590,17 @@ impl IndexWriter<'_> {
             }
         }
 
+        self.commit_updated_segments(updated_segments)
+    }
+
+    /// The commit tail of the with-sources update and delete: publishes
+    /// `updated_segments` as the next generation, with the version kept above
+    /// every NRT snapshot's, the minimum segment version and soft-delete
+    /// counts stamped, and the generation advanced on error as on success.
+    fn commit_updated_segments(
+        &mut self,
+        updated_segments: Vec<SegmentCommitInfo>,
+    ) -> Result<&SegmentInfos> {
         let mut new_segment_infos = self.segment_infos.clone();
         // ARITH: `segment_infos::parse` rejects any generation, version or
         // counter outside `-1..=MAX_GENERATION` (`i64::MAX / 2`), and
@@ -12176,18 +12171,6 @@ fn to_segment_infos_version(v: LuceneVersion) -> segment_infos::LuceneVersion {
     }
 }
 
-/// Generates a 16-byte segment/commit id from `salt` (this writer's current
-/// segment-name counter) plus the current time -- **not** a
-/// cryptographically random id the way real Lucene's
-/// `StringHelper.randomId()` (backed by a `SecureRandom`) is. This
-/// workspace has no `rand`-family dependency (see `Cargo.toml`'s
-/// `[workspace.dependencies]`), and the only property this port's readers
-/// actually rely on (verified: `.si`/`segments_N` parsing checks a
-/// referenced id *matches*, never that it looks statistically random) is
-/// "distinct segments get distinct ids" -- which salting a hash with a
-/// monotonically increasing counter already guarantees deterministically,
-/// without pulling in a new dependency for a property this scope doesn't
-/// need.
 /// Same minimal `create_output`/`write_bytes`/`close` sequence
 /// `crate::segment_writer`'s own private `write_file` helper uses -- kept as
 /// a separate copy here rather than made `pub(crate)` there, since this is
@@ -12253,10 +12236,6 @@ fn accumulate_field_length(so_far: u32, term_freq: i32) -> u32 {
     so_far.saturating_add(freq).min(i32::MAX as u32)
 }
 
-/// The buffered-side heap cost of one document's explicit
-/// [`IndexWriter::add_document_with_custom_freq_terms`] term list.
-/// ARITH: as [`VectorValue::ram_bytes`] -- a sum of live allocation sizes.
-#[allow(clippy::arithmetic_side_effects)]
 /// A document's custom-freq terms with each term once, in first-seen order:
 /// repeated terms sum their freqs (`Math.addExact`), and a freq below 1 is
 /// refused. Checked before a document is buffered, so the flush (which sums
@@ -12275,7 +12254,9 @@ pub(crate) fn summed_custom_freq_terms(terms: &[(String, i32)]) -> Result<Vec<(&
         match index.get(term.as_str()).and_then(|&i| summed.get_mut(i)) {
             Some((_, slot)) => {
                 *slot = slot.checked_add(freq).ok_or_else(|| {
-                    illegal(format!("custom term frequency of \"{term}\" overflows an int"))
+                    illegal(format!(
+                        "custom term frequency of \"{term}\" overflows an int"
+                    ))
                 })?;
             }
             None => {
@@ -12287,6 +12268,10 @@ pub(crate) fn summed_custom_freq_terms(terms: &[(String, i32)]) -> Result<Vec<(&
     Ok(summed)
 }
 
+/// The buffered-side heap cost of one document's explicit
+/// [`IndexWriter::add_document_with_custom_freq_terms`] term list.
+/// ARITH: as [`VectorValue::ram_bytes`] -- a sum of live allocation sizes.
+#[allow(clippy::arithmetic_side_effects)]
 pub(crate) fn custom_freq_terms_ram_bytes(terms: &[(String, i32)]) -> usize {
     std::mem::size_of::<Vec<(String, i32)>>()
         + std::mem::size_of_val(terms)
@@ -12313,24 +12298,33 @@ fn field_value_kind(value: &FieldValue) -> &'static str {
     }
 }
 
+/// Generates a 16-byte segment/commit id, the role of Java's
+/// `StringHelper.randomId()`. This workspace has no `rand`-family
+/// dependency, so the bytes come from SipHash under per-process random keys
+/// (`RandomState`) over the time, `salt` (a writer counter) and a
+/// process-wide sequence number. The sequence number makes every id this
+/// process draws distinct -- two ids drawn with the same salt in the same
+/// clock tick included -- and the random keys keep ids from separate
+/// processes (and so separate indexes) from coinciding, which a fixed-key
+/// hash of a small counter and the time did not.
 pub(crate) fn generate_segment_id(salt: i64) -> [u8; ID_LENGTH] {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
+    use std::hash::{BuildHasher, RandomState};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::OnceLock;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    static KEYS: OnceLock<RandomState> = OnceLock::new();
+    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+    let keys = KEYS.get_or_init(RandomState::new);
+    let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
 
-    let mut h1 = DefaultHasher::new();
-    (nanos, salt, 1u8).hash(&mut h1);
-    let mut h2 = DefaultHasher::new();
-    (nanos, salt, 2u8).hash(&mut h2);
-
     let mut id = [0u8; ID_LENGTH];
-    id[0..8].copy_from_slice(&h1.finish().to_le_bytes());
-    id[8..16].copy_from_slice(&h2.finish().to_le_bytes());
+    id[0..8].copy_from_slice(&keys.hash_one((sequence, nanos, salt, 1u8)).to_le_bytes());
+    id[8..16].copy_from_slice(&keys.hash_one((sequence, nanos, salt, 2u8)).to_le_bytes());
     id
 }
 
@@ -15933,6 +15927,14 @@ pub(crate) mod tests {
         assert_eq!(norms::norm_value(&nvd, entry, 0).unwrap(), Some(encoded(3)));
         assert_eq!(norms::norm_value(&nvd, entry, 1).unwrap(), Some(encoded(1)));
         assert_eq!(norms::norm_value(&nvd, entry, 2).unwrap(), None);
+    }
+
+    #[test]
+    fn ids_drawn_with_the_same_salt_differ() {
+        // The update-with-sources path draws a segment id and a commit id
+        // from the same counter, possibly in the same clock tick.
+        let ids: std::collections::HashSet<_> = (0..1000).map(|_| generate_segment_id(7)).collect();
+        assert_eq!(ids.len(), 1000);
     }
 
     #[test]

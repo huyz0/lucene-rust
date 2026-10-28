@@ -135,6 +135,70 @@ pub fn update_document(
     new_fields: &[FieldInfo],
     new_docs: &[Document],
 ) -> Result<SegmentInfos> {
+    let updated_segments = update_segments(
+        dir,
+        segment_infos,
+        delete_sources,
+        field,
+        term,
+        NewSegment {
+            name: new_segment_name,
+            id: new_segment_id,
+            codec_name,
+            lucene_version,
+            fields: new_fields,
+            docs: new_docs,
+            use_compound_file: false,
+        },
+    )?;
+
+    // Step 3: the single atomic commit point. Everything above has already
+    // succeeded, so this is the only write that can make the update visible
+    // -- and it makes both halves visible together, in one fsync'd file.
+    let mut new_segment_infos = segment_infos.clone();
+    // ARITH: both counters are capped at `segment_infos::MAX_GENERATION`
+    // (`i64::MAX / 2`) on the way in (`segment_infos::parse`) and on the way
+    // out (`check_writable_generations`), precisely so this one-per-commit
+    // step cannot overflow -- see that constant. Without the cap a flipped
+    // byte in the 8-byte `version` field turns the *next* commit into a panic
+    // (debug) or a negative commit version (release), which a reader would
+    // then rank below every older commit.
+    #[allow(clippy::arithmetic_side_effects)]
+    {
+        new_segment_infos.generation += 1;
+        new_segment_infos.version += 1;
+    }
+    new_segment_infos.segments = updated_segments;
+
+    segment_infos::write(&new_segment_infos, dir)?;
+
+    Ok(new_segment_infos)
+}
+
+/// The replacement segment [`update_segments`] flushes.
+pub struct NewSegment<'a> {
+    pub name: &'a str,
+    pub id: [u8; ID_LENGTH],
+    pub codec_name: &'a str,
+    pub lucene_version: LuceneVersion,
+    pub fields: &'a [FieldInfo],
+    pub docs: &'a [Document],
+    pub use_compound_file: bool,
+}
+
+/// Steps 1 and 2 of [`update_document`]: the term delete resolved against
+/// every segment with a source, then the replacement document flushed as a
+/// new segment. Returns the segment list the commit should publish; nothing
+/// is committed, so a caller with its own commit path (the writer's, which
+/// also keeps versions and soft-delete counts) publishes it.
+pub fn update_segments(
+    dir: &dyn Directory,
+    segment_infos: &SegmentInfos,
+    delete_sources: &[SegmentDeleteSource],
+    field: &str,
+    term: &[u8],
+    new_segment: NewSegment<'_>,
+) -> Result<Vec<crate::segment_infos::SegmentCommitInfo>> {
     // Step 1: resolve-and-apply the term delete against every segment we
     // have an opened source for. Fallible; nothing has been committed yet if
     // this returns `Err` partway through (the `.liv` files already written
@@ -171,44 +235,21 @@ pub fn update_document(
     // still nothing committed if this fails (the delete's `.liv` files from
     // step 1 remain orphaned, harmlessly, since the previous `segments_N`
     // never referenced them).
-    // Compound-file packing is a caller decision this port has no
-    // size-based heuristic for yet (see
-    // `segment_writer::flush_stored_only_segment`'s doc comment);
-    // `update_document` keeps the pre-existing loose-file layout rather
-    // than opting this call site into compound files.
+    // Compound-file packing is the caller's decision
+    // (`NewSegment::use_compound_file`); `update_document` itself keeps the
+    // loose-file layout.
     let new_sci = flush_stored_only_segment(
         dir,
-        new_segment_name,
-        new_segment_id,
-        codec_name,
-        lucene_version,
-        new_fields,
-        new_docs,
-        false,
+        new_segment.name,
+        new_segment.id,
+        new_segment.codec_name,
+        new_segment.lucene_version,
+        new_segment.fields,
+        new_segment.docs,
+        new_segment.use_compound_file,
     )?;
     updated_segments.push(new_sci);
-
-    // Step 3: the single atomic commit point. Everything above has already
-    // succeeded, so this is the only write that can make the update visible
-    // -- and it makes both halves visible together, in one fsync'd file.
-    let mut new_segment_infos = segment_infos.clone();
-    // ARITH: both counters are capped at `segment_infos::MAX_GENERATION`
-    // (`i64::MAX / 2`) on the way in (`segment_infos::parse`) and on the way
-    // out (`check_writable_generations`), precisely so this one-per-commit
-    // step cannot overflow -- see that constant. Without the cap a flipped
-    // byte in the 8-byte `version` field turns the *next* commit into a panic
-    // (debug) or a negative commit version (release), which a reader would
-    // then rank below every older commit.
-    #[allow(clippy::arithmetic_side_effects)]
-    {
-        new_segment_infos.generation += 1;
-        new_segment_infos.version += 1;
-    }
-    new_segment_infos.segments = updated_segments;
-
-    segment_infos::write(&new_segment_infos, dir)?;
-
-    Ok(new_segment_infos)
+    Ok(updated_segments)
 }
 
 #[cfg(test)]

@@ -2384,7 +2384,7 @@ fn next_postings_batches_sixteen_docs_below_up_to() {
 struct TvLeaf(FieldInfos, TermVectorsDocument);
 
 impl TvLeaf {
-    fn new(names: &[&str], positions: bool) -> Arc<dyn LeafReader> {
+    fn leaf(names: &[&str], positions: bool) -> Arc<dyn LeafReader> {
         let mut fields = Vec::new();
         let mut vectors = Vec::new();
         for (n, name) in (0..).zip(names) {
@@ -2482,8 +2482,8 @@ impl LeafReader for TvLeaf {
 #[test]
 fn parallel_term_vectors_come_from_each_fields_first_reader() {
     // "b" is in both readers; Java's tvFieldToReader reads it from the first.
-    let first = TvLeaf::new(&["a", "b"], true);
-    let second = TvLeaf::new(&["b", "c"], false);
+    let first = TvLeaf::leaf(&["a", "b"], true);
+    let second = TvLeaf::leaf(&["b", "c"], false);
     let p = ParallelLeafReader::new(vec![first, second]).unwrap();
     let tv = p.term_vectors(0).unwrap().unwrap();
     let got: Vec<(String, bool)> = tv

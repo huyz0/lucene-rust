@@ -226,7 +226,7 @@ struct Built {
 /// `IndexWriterConfig.getRAMPerThreadHardLimitMB()`'s default (1945 MB) in
 /// bytes: a slot holding more is marked for flushing whatever the policy
 /// says (`DocumentsWriterFlushControl.hardMaxBytesPerDWPT`).
-const HARD_MAX_BYTES_PER_SLOT: usize = 1945 * 1024 * 1024;
+pub(crate) const HARD_MAX_BYTES_PER_SLOT: usize = 1945 * 1024 * 1024;
 
 /// A slot's advertised slice while it holds no document: it has nothing a
 /// log entry could reach, so it holds back no trimming, and its next add
@@ -912,8 +912,9 @@ impl<'d> ConcurrentIndexWriter<'d> {
             // `DocumentsWriterFlushControl.doAfterDocument`: the policy runs
             // unless the slot is already marked (its growth then counts as
             // flushing), then a marked slot is flushed by this thread. Without
-            // a RAM buffer only the document count can mark it, so it is
-            // checked here without the accounting lock.
+            // a RAM buffer only the document count and the hard per-slot cap
+            // can mark it, so they are checked here without the accounting
+            // lock.
             let full = if self.ram_buffer_bytes.is_some() {
                 let (num_docs, ram_bytes) = (dwpt.docs.len(), dwpt.ram_bytes);
                 self.update_ram(|c| {
@@ -928,7 +929,9 @@ impl<'d> ConcurrentIndexWriter<'d> {
                     c.is_flush_pending(i)
                 })
             } else {
+                // `hardMaxBytesPerDWPT` applies whatever the RAM setting.
                 self.max_buffered_docs.is_some_and(|m| dwpt.docs.len() >= m)
+                    || dwpt.ram_bytes > HARD_MAX_BYTES_PER_SLOT
             };
             let batch = if full {
                 self.begin_flush(i, &mut dwpt)
