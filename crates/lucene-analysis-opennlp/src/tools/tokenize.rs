@@ -53,6 +53,10 @@ impl TokenizerModel {
 pub struct Tokenizer {
     model: TokenizerModel,
     alphanumeric: JavaPattern,
+    /// The pattern is [`DEFAULT_ALPHANUMERIC`]: a match is then a token of
+    /// ASCII letters and digits, tested without the regex (and without
+    /// the token copied into a `String` for it).
+    default_alphanumeric: bool,
     /// Per outcome, whether its name is `TokenizerME.SPLIT` (Java compares the best
     /// outcome's *name*: a model without the outcome never splits, and a
     /// repeated name splits on either index).
@@ -71,6 +75,7 @@ impl Tokenizer {
             .collect();
         let probs = vec![0.0; model.model.num_outcomes()];
         Ok(Tokenizer {
+            default_alphanumeric: model.alphanumeric == DEFAULT_ALPHANUMERIC,
             model,
             alphanumeric,
             split,
@@ -86,9 +91,7 @@ impl Tokenizer {
         let mut tokens = Vec::new();
         for ws in whitespace_tokens(d) {
             let tok = &d[ws.start..ws.end];
-            if tok.len() < 2
-                || (self.model.use_alphanumeric && self.alphanumeric.matches(&text::to_string(tok)))
-            {
+            if tok.len() < 2 || (self.model.use_alphanumeric && self.is_alphanumeric(tok)) {
                 tokens.push(ws);
                 continue;
             }
@@ -122,6 +125,18 @@ impl Tokenizer {
             }
         }
         tokens
+    }
+
+    /// `alphanumeric.matcher(tok).matches()`.
+    fn is_alphanumeric(&self, tok: &[u16]) -> bool {
+        if self.default_alphanumeric {
+            !tok.is_empty()
+                && tok
+                    .iter()
+                    .all(|&c| u8::try_from(c).is_ok_and(|b| b.is_ascii_alphanumeric()))
+        } else {
+            self.alphanumeric.matches(&text::to_string(tok))
+        }
     }
 
     /// `isAcceptableAbbreviation(s)`.
@@ -172,7 +187,7 @@ fn context(
     abbreviations: Option<&Dictionary>,
     preds: &mut Vec<JString>,
 ) {
-    let cat = |key: &str, rest: &[u16]| text::concat(&[&text::units(key), rest]);
+    let cat = text::keyed;
     preds.push(cat("p=", &sentence[..index]));
     preds.push(cat("s=", &sentence[index..]));
     if index > 0 {
@@ -207,7 +222,7 @@ fn add_char_preds(key: &str, c: u16, preds: &mut Vec<JString>) {
     let mut value = text::units(key);
     value.extend_from_slice(&[u16::from(b'='), c]);
     preds.push(value);
-    let mut with = |suffix: &str| preds.push(text::units(&format!("{key}{suffix}")));
+    let mut with = |suffix: &str| preds.push(text::units2(key, suffix));
     if text::is_letter(c) {
         with("_alpha");
         if text::is_upper_case(c) {

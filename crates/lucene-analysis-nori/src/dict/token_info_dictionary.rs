@@ -169,15 +169,19 @@ impl TokenInfoMorphData {
     /// `readString(offset)`: a signed length byte, then that many UTF-16
     /// units.
     fn read_string(&self, offset: usize) -> String {
+        String::from_utf16_lossy(&self.read_units(offset))
+    }
+
+    /// [`Self::read_string`]'s units.
+    fn read_units(&self, offset: usize) -> Vec<u16> {
         let len = usize::try_from(self.byte(Some(offset)) as i8).unwrap_or(0);
         let start = offset.saturating_add(1);
-        let units: Vec<u16> = (0..len)
+        (0..len)
             .map(|i| {
                 let o = start.saturating_add(i.saturating_mul(2));
                 u16::from_be_bytes([self.byte(Some(o)), self.byte(o.checked_add(1))])
             })
-            .collect();
-        String::from_utf16_lossy(&units)
+            .collect()
     }
 
     /// `getReading(morphId)`.
@@ -195,6 +199,27 @@ impl TokenInfoMorphData {
         off: i32,
         _len: i32,
     ) -> Option<Vec<Morpheme>> {
+        let parts = self.morphemes_with(id, surface, off, String::from_utf16_lossy)?;
+        Some(
+            parts
+                .into_iter()
+                .map(|(pos_tag, surface_form)| Morpheme {
+                    pos_tag,
+                    surface_form,
+                })
+                .collect(),
+        )
+    }
+
+    /// [`Self::morphemes`] with each surface form made by `form` from its
+    /// UTF-16 units (the decompounder keeps them as units).
+    pub fn morphemes_with<T>(
+        &self,
+        id: i32,
+        surface: &[u16],
+        off: i32,
+        mut form: impl FnMut(&[u16]) -> T,
+    ) -> Option<Vec<(Tag, T)>> {
         let pos_type = self.pos_type(id);
         if pos_type == Type::Morpheme {
             return None;
@@ -221,23 +246,19 @@ impl TokenInfoMorphData {
                 offset = offset.checked_add(1)?;
                 t
             };
-            let form = if pos_type == Type::Inflect {
-                let s = self.read_string(offset);
-                offset = offset
-                    .checked_add(s.encode_utf16().count().saturating_mul(2).saturating_add(1))?;
-                s
+            let made = if pos_type == Type::Inflect {
+                let units = self.read_units(offset);
+                offset = offset.checked_add(units.len().saturating_mul(2).saturating_add(1))?;
+                form(&units)
             } else {
                 let form_len = usize::try_from(self.byte(Some(offset)) as i8).unwrap_or(0);
                 offset = offset.checked_add(1)?;
                 let end = surface_offset.checked_add(form_len)?;
-                let s = String::from_utf16_lossy(surface.get(surface_offset..end)?);
+                let made = form(surface.get(surface_offset..end)?);
                 surface_offset = end;
-                s
+                made
             };
-            out.push(Morpheme {
-                pos_tag: tag,
-                surface_form: form,
-            });
+            out.push((tag, made));
         }
         Some(out)
     }

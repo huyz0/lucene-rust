@@ -80,6 +80,12 @@ impl SegmentingBase {
     pub fn attributes(&self) -> &AttributeSource {
         &self.atts
     }
+
+    /// [`Self::buffer`] and [`Self::attributes_mut`] together, so a word
+    /// can be set from the window without copying it out first.
+    pub fn buffer_and_attributes_mut(&mut self) -> (&[u16], &mut AttributeSource) {
+        (&self.buffer, &mut self.atts)
+    }
 }
 
 /// The subclass of `SegmentingTokenizerBase`: its two abstract methods,
@@ -293,10 +299,9 @@ mod tests {
                 base.correct_offset(base.offset() + start as i32),
                 base.correct_offset(base.offset() + end as i32),
             );
-            let term = base.buffer()[start..end].to_vec();
-            let a = base.attributes_mut();
+            let (buffer, a) = base.buffer_and_attributes_mut();
             a.clear_attributes();
-            a.set_term_utf16(&term);
+            a.set_term_utf16(&buffer[start..end]);
             a.set_offset(s, e)?;
             Ok(true)
         }

@@ -14,6 +14,9 @@ pub struct StempelFilter<I> {
     input: I,
     stemmer: StempelStemmer,
     min_length: usize,
+    /// The term as UTF-16 and its stem, reused per token.
+    word: Vec<u16>,
+    stem: Vec<u16>,
 }
 
 impl<I: TokenStream> StempelFilter<I> {
@@ -23,6 +26,8 @@ impl<I: TokenStream> StempelFilter<I> {
             input,
             stemmer,
             min_length: DEFAULT_MIN_LENGTH,
+            word: Vec::new(),
+            stem: Vec::new(),
         }
     }
 
@@ -38,9 +43,8 @@ impl<I: TokenStream> StempelFilter<I> {
             .filter(|&m| m >= 1)
             .ok_or_else(|| AnalysisError::IllegalArgument("minLength must be >=1".into()))?;
         Ok(StempelFilter {
-            input,
-            stemmer,
             min_length,
+            ..Self::new(input, stemmer)
         })
     }
 }
@@ -61,11 +65,12 @@ impl<I: TokenStream> TokenFilter for StempelFilter<I> {
         }
         let attrs = self.input.attributes_mut();
         if !attrs.is_keyword() && attrs.term_utf16_len() >= self.min_length {
-            let word: Vec<u16> = attrs.term().encode_utf16().collect();
+            self.word.clear();
+            self.word.extend(attrs.term().encode_utf16());
             // A term of at least one unit is never the empty key a plain
             // trie throws on.
-            if let Ok(Some(stem)) = self.stemmer.stem(&word) {
-                attrs.set_term_utf16(&stem);
+            if let Ok(true) = self.stemmer.stem_into(&self.word, &mut self.stem) {
+                attrs.set_term_utf16(&self.stem);
             }
         }
         Ok(true)

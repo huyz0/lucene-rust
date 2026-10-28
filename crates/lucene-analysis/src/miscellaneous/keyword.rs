@@ -13,16 +13,17 @@ use crate::{simple_to_lowercase, AnalysisError, CharArraySet};
 
 /// `KeywordMarkerFilter.isKeyword()`.
 pub trait KeywordTest: Send {
-    /// Whether the current token is a keyword.
-    fn is_keyword(&mut self, attributes: &AttributeSource) -> bool;
+    /// Whether the current token is a keyword; `Err` where Java's test
+    /// throws (a pattern whose backtracking overflows the stack).
+    fn is_keyword(&mut self, attributes: &AttributeSource) -> Result<bool, AnalysisError>;
 }
 
 /// `SetKeywordMarkerFilter`'s test: the term is in the set.
 pub struct InSet(Arc<CharArraySet>);
 
 impl KeywordTest for InSet {
-    fn is_keyword(&mut self, a: &AttributeSource) -> bool {
-        self.0.contains(a.term())
+    fn is_keyword(&mut self, a: &AttributeSource) -> Result<bool, AnalysisError> {
+        Ok(self.0.contains(a.term()))
     }
 }
 
@@ -30,8 +31,10 @@ impl KeywordTest for InSet {
 pub struct MatchesPattern(JavaPattern);
 
 impl KeywordTest for MatchesPattern {
-    fn is_keyword(&mut self, a: &AttributeSource) -> bool {
-        self.0.matches(a.term())
+    fn is_keyword(&mut self, a: &AttributeSource) -> Result<bool, AnalysisError> {
+        // Java's `matcher.matches()` throws `StackOverflowError` there:
+        // reported, never read as "not a keyword".
+        self.0.try_matches(a.term())
     }
 }
 
@@ -75,7 +78,7 @@ impl<I: TokenStream, K: KeywordTest> TokenFilter for KeywordMarkerFilter<I, K> {
         if !self.input.increment_token()? {
             return Ok(false);
         }
-        if self.test.is_keyword(self.input.attributes()) {
+        if self.test.is_keyword(self.input.attributes())? {
             self.input.attributes_mut().set_keyword(true);
         }
         Ok(true)
@@ -308,6 +311,16 @@ mod tests {
             keyed(&mut f),
             vec![("sing".into(), true, 1), ("singer".into(), false, 1)]
         );
+        // Java's `StackOverflowError` (here past the backtracking budget) is
+        // an error, not "not a keyword".
+        let p = JavaPattern::compile("(a|b)*\\1c").unwrap();
+        assert!(p.is_backtracking());
+        let long = "a".repeat(300_000);
+        let mut f =
+            PatternKeywordMarkerFilter::with_pattern(Canned::parse(&format!("{long}:0:1:1:1")), p);
+        f.reset().unwrap();
+        let e = f.increment_token().unwrap_err();
+        assert!(e.to_string().contains("StackOverflowError"), "{e}");
         let mut f = KeywordRepeatFilter::new(Canned::parse("a:0:1:1:1"));
         assert_eq!(
             keyed(&mut f),

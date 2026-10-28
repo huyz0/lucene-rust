@@ -11,7 +11,7 @@ use lucene_analysis::AnalysisError;
 
 use super::ml::{BeamSearch, MaxentModel, SequenceContext};
 use super::model::{BaseModel, Component};
-use super::text::{self, JString};
+use super::text::JString;
 
 /// A loaded `ChunkerModel`.
 #[derive(Debug, Clone)]
@@ -79,17 +79,25 @@ impl SequenceContext for ChunkContext<'_> {
     // ARITH: positions are below the sentence length (`i + 2` of a token index).
     #[allow(clippy::arithmetic_side_effects)]
     fn context(&mut self, i: usize, prior: &[u32], outcomes: &[JString], f: &mut Vec<JString>) {
+        // `key + value`, or `key + edge` past the sentence: one allocation.
+        let keyed = |key: &str, value: &[u16]| {
+            let mut out = Vec::with_capacity(key.len() + value.len());
+            out.extend(key.encode_utf16());
+            out.extend_from_slice(value);
+            out
+        };
+        let edged = |key: &str, edge: &str| key.encode_utf16().chain(edge.encode_utf16()).collect();
         let feature = |key: &str, at: Option<usize>, values: &[JString], edge: &str| match at
             .and_then(|a| values.get(a))
         {
-            Some(v) => text::concat(&[&text::units(key), v]),
-            None => text::units(&format!("{key}{edge}")),
+            Some(v) => keyed(key, v),
+            None => edged(key, edge),
         };
         // The prior outcomes by id: only `p_2`/`p_1` are read, so they are
         // not copied out per call.
         let pred = |key: &str, at: Option<usize>| match at.and_then(|a| prior.get(a)) {
-            Some(&o) => text::concat(&[&text::units(key), &outcomes[o as usize]]),
-            None => text::units(&format!("{key}bos")),
+            Some(&o) => keyed(key, &outcomes[o as usize]),
+            None => edged(key, "bos"),
         };
         let w_2 = feature("w_2=", i.checked_sub(2), self.toks, "bos");
         let t_2 = feature("t_2=", i.checked_sub(2), self.tags, "bos");
@@ -110,19 +118,10 @@ impl SequenceContext for ChunkContext<'_> {
             }
             out
         };
-        f.extend([
-            w_2.clone(),
-            w_1.clone(),
-            w0.clone(),
-            w1.clone(),
-            w2.clone(),
-            c(&[&w_1, &w0]),
-            c(&[&w0, &w1]),
-            t_2.clone(),
-            t_1.clone(),
-            t0.clone(),
-            t1.clone(),
-            t2.clone(),
+        // The combinations first, over the parts; then the parts are moved
+        // into place rather than cloned (the features' order is Java's).
+        let [w_1w0, w0w1] = [c(&[&w_1, &w0]), c(&[&w0, &w1])];
+        let t_combos = [
             c(&[&t_2, &t_1]),
             c(&[&t_1, &t0]),
             c(&[&t0, &t1]),
@@ -130,8 +129,8 @@ impl SequenceContext for ChunkContext<'_> {
             c(&[&t_2, &t_1, &t0]),
             c(&[&t_1, &t0, &t1]),
             c(&[&t0, &t1, &t2]),
-            p_2.clone(),
-            p_1.clone(),
+        ];
+        let p_combos = [
             c(&[&p_2, &p_1]),
             c(&[&p_1, &t_2]),
             c(&[&p_1, &t_1]),
@@ -152,7 +151,12 @@ impl SequenceContext for ChunkContext<'_> {
             c(&[&p_1, &w2]),
             c(&[&p_1, &w_1, &w0]),
             c(&[&p_1, &w0, &w1]),
-        ]);
+        ];
+        f.reserve(41);
+        f.extend([w_2, w_1, w0, w1, w2, w_1w0, w0w1, t_2, t_1, t0, t1, t2]);
+        f.extend(t_combos);
+        f.extend([p_2, p_1]);
+        f.extend(p_combos);
     }
 
     fn valid(&self, _i: usize, prior: &[u32], outcome: u32, outcomes: &[JString]) -> bool {

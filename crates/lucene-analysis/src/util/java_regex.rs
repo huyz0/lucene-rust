@@ -1364,16 +1364,24 @@ impl JavaPattern {
         })
     }
 
-    /// `matcher(s).find()` from the start.
+    /// `matcher(s).find()` from the start; `false` also where Java's
+    /// backtracking would overflow its stack ([`Self::try_find_in`] reports
+    /// that).
     pub fn find_in(&self, s: &str) -> bool {
+        self.try_find_in(s).unwrap_or(false)
+    }
+
+    /// `matcher(s).find()` from the start; `Err` where Java's backtracking
+    /// overflows its stack.
+    pub fn try_find_in(&self, s: &str) -> Result<bool, AnalysisError> {
         let inner = match &self.engine {
             Engine::Shim(c) => c,
-            Engine::Backtrack(p) => return Self::backtrack(p, s, false).unwrap_or(false),
+            Engine::Backtrack(p) => return Self::backtrack(p, s, false),
         };
-        match (&inner.dollar, final_terminator(s)) {
+        Ok(match (&inner.dollar, final_terminator(s)) {
             (Some((re, _)), Some(at)) => re.is_match(&with_sentinel(s, at)),
             _ => inner.plain.is_match(s.as_bytes()),
-        }
+        })
     }
 
     /// `Matcher.replaceAll`/`replaceFirst` with Java's replacement syntax.
@@ -1819,60 +1827,73 @@ impl JavaMatcher {
         out: &mut dyn ReplacementSink,
     ) -> Result<(), AnalysisError> {
         let bad = |m: &str| AnalysisError::IllegalArgument(m.to_string());
-        let rep: Vec<char> = replacement.chars().collect();
+        // Walked by byte: `\`, `$`, `{`, `}` and the digits are ASCII, so
+        // every index taken is a char boundary, and the text between them
+        // goes out in runs.
+        let rep = replacement.as_bytes();
+        let digit = |b: Option<&u8>| {
+            b.filter(|b| b.is_ascii_digit())
+                .map(|&b| usize::from(b - b'0'))
+        };
         let groups = self.pattern.group_total();
         let mut i = 0;
         while i < rep.len() {
-            let c = rep[i];
-            if c == '\\' {
-                i += 1;
-                let Some(&n) = rep.get(i) else {
-                    return Err(bad("character to be escaped is missing"));
-                };
-                out.push_char(n);
-                i += 1;
-            } else if c == '$' {
-                i += 1;
-                let Some(&n) = rep.get(i) else {
-                    return Err(bad("Illegal group reference: group index is missing"));
-                };
-                let group = if n == '{' {
-                    let close = rep[i..].iter().position(|&x| x == '}').map(|p| p + i);
-                    let Some(close) = close else {
-                        return Err(bad("named capturing group is missing trailing '}'"));
-                    };
-                    let name: String = rep[i + 1..close].iter().collect();
-                    i = close + 1;
-                    match self.pattern.group_named(&name) {
-                        Some(g) => g,
-                        None => return Err(bad(&format!("No group with name {{{name}}}"))),
-                    }
-                } else {
-                    let Some(first) = n.to_digit(10) else {
-                        return Err(bad("Illegal group reference"));
-                    };
-                    let mut group = first as usize;
+            match rep[i] {
+                b'\\' => {
                     i += 1;
-                    // Java: take further digits while the group number stays valid.
-                    while let Some(d) = rep.get(i).and_then(|c| c.to_digit(10)) {
-                        let next = group * 10 + d as usize;
-                        if next >= groups {
-                            break;
-                        }
-                        group = next;
-                        i += 1;
-                    }
-                    if group >= groups {
-                        return Err(bad(&format!("No group {group}")));
-                    }
-                    group
-                };
-                if let Some(&(s, e)) = self.groups.get(group).filter(|g| g.0 >= 0) {
-                    out.push_slice(self, s, e);
+                    let Some(n) = replacement[i..].chars().next() else {
+                        return Err(bad("character to be escaped is missing"));
+                    };
+                    out.push_char(n);
+                    i += n.len_utf8();
                 }
-            } else {
-                out.push_char(c);
-                i += 1;
+                b'$' => {
+                    i += 1;
+                    let Some(&n) = rep.get(i) else {
+                        return Err(bad("Illegal group reference: group index is missing"));
+                    };
+                    let group = if n == b'{' {
+                        let close = rep[i..].iter().position(|&x| x == b'}').map(|p| p + i);
+                        let Some(close) = close else {
+                            return Err(bad("named capturing group is missing trailing '}'"));
+                        };
+                        let name = &replacement[i + 1..close];
+                        i = close + 1;
+                        match self.pattern.group_named(name) {
+                            Some(g) => g,
+                            None => return Err(bad(&format!("No group with name {{{name}}}"))),
+                        }
+                    } else {
+                        let Some(mut group) = digit(Some(&n)) else {
+                            return Err(bad("Illegal group reference"));
+                        };
+                        i += 1;
+                        // Java: take further digits while the group number stays valid.
+                        while let Some(d) = digit(rep.get(i)) {
+                            let next = group * 10 + d;
+                            if next >= groups {
+                                break;
+                            }
+                            group = next;
+                            i += 1;
+                        }
+                        if group >= groups {
+                            return Err(bad(&format!("No group {group}")));
+                        }
+                        group
+                    };
+                    if let Some(&(s, e)) = self.groups.get(group).filter(|g| g.0 >= 0) {
+                        out.push_slice(self, s, e);
+                    }
+                }
+                _ => {
+                    let from = i;
+                    i += rep[i..]
+                        .iter()
+                        .position(|&b| b == b'\\' || b == b'$')
+                        .unwrap_or(rep.len() - i);
+                    out.push_str(&replacement[from..i]);
+                }
             }
         }
         Ok(())
@@ -1905,6 +1926,8 @@ static EMPTY_LOCS: LazyLock<Regex> = LazyLock::new(|| Regex::new("").expect("an 
 pub trait ReplacementSink {
     /// Appends one character.
     fn push_char(&mut self, c: char);
+    /// Appends a run of literal text.
+    fn push_str(&mut self, s: &str);
     /// Appends the matcher's text between UTF-16 offsets `a..b`.
     fn push_slice(&mut self, m: &JavaMatcher, a: i32, b: i32);
 }
@@ -1912,6 +1935,10 @@ pub trait ReplacementSink {
 impl ReplacementSink for String {
     fn push_char(&mut self, c: char) {
         self.push(c);
+    }
+
+    fn push_str(&mut self, s: &str) {
+        String::push_str(self, s);
     }
 
     fn push_slice(&mut self, m: &JavaMatcher, a: i32, b: i32) {
@@ -1923,6 +1950,10 @@ impl ReplacementSink for Vec<u16> {
     fn push_char(&mut self, c: char) {
         let mut buf = [0u16; 2];
         self.extend_from_slice(c.encode_utf16(&mut buf));
+    }
+
+    fn push_str(&mut self, s: &str) {
+        self.extend(s.encode_utf16());
     }
 
     fn push_slice(&mut self, m: &JavaMatcher, a: i32, b: i32) {
@@ -2353,5 +2384,33 @@ mod tests {
         assert_eq!(prepass("abc"), "abc");
         assert_eq!(prepass("\\uD83D"), "\\uD83D");
         assert_eq!(prepass("a\\"), "a\\");
+    }
+
+    /// Replacement text past ASCII: literal runs, an escaped character and
+    /// a group reference between them.
+    #[test]
+    fn replacement_with_non_ascii() {
+        let p = JavaPattern::compile("(b)").unwrap();
+        assert_eq!(p.replace("abc", "é\\ü$1ñ", true).unwrap(), "aéübñc");
+        assert!(p.replace("abc", "$é", true).is_err());
+        let mut m = JavaMatcher::new(&p, "abc");
+        assert!(m.find());
+        let mut units = Vec::new();
+        m.expand_replacement("é\\ü$1ñ", &mut units).unwrap();
+        assert_eq!(String::from_utf16(&units).unwrap(), "éübñ");
+    }
+
+    /// `find()` from the start: Java's `StackOverflowError` is `Err` from
+    /// the `try_` form, `false` from the plain one.
+    #[test]
+    fn find_in_reports_overflow() {
+        let p = JavaPattern::compile("(a|b)*\\1c").unwrap();
+        let long = "a".repeat(300_000);
+        assert!(p.try_find_in(&long).is_err());
+        assert!(!p.find_in(&long));
+        assert!(p.try_find_in("abbc").unwrap());
+        let s = JavaPattern::compile("b$").unwrap();
+        assert!(s.try_find_in("ab\n").unwrap());
+        assert!(!s.try_find_in("ba").unwrap());
     }
 }

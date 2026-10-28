@@ -120,11 +120,10 @@ impl Segmenter for OpenNlpSegmenter {
             base.correct_offset(base.offset() + start as i32),
             base.correct_offset(base.offset() + end as i32),
         );
-        let units = base.buffer()[start..end].to_vec();
         let index = self.sentence_index;
-        let a = base.attributes_mut();
+        let (buffer, a) = base.buffer_and_attributes_mut();
         a.clear_attributes();
-        a.set_term_utf16(&units);
+        a.set_term_utf16(&buffer[start..end]);
         a.set_offset(s, e)?;
         a.set_sentence_index(index);
         self.term_num += 1;

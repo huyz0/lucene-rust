@@ -23,8 +23,7 @@ pub mod parser;
 pub mod registry;
 pub mod rules;
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 
 use crate::icu4j::normalizer2::Normalizer2;
 use crate::icu4j::translit::rules::{handle_rule_based, Data};
@@ -95,13 +94,29 @@ pub(crate) fn replace_text(text: &mut Vec<u16>, start: i32, limit: i32, with: &[
 }
 
 /// `Replaceable.copy(start, limit, dest)`.
+// ARITH: s < l <= text.len() after clamping, and the source shifted past
+// the gap ends at most at the grown text's length.
+#[allow(clippy::arithmetic_side_effects)]
 pub(crate) fn copy_text(text: &mut Vec<u16>, start: i32, limit: i32, dest: i32) {
     let (s, l) = clamp_range(text, start, limit);
     if s == l {
         return;
     }
-    let copy: Vec<u16> = text[s..l].to_vec();
-    replace_text(text, dest, dest, &copy);
+    let (d, _) = clamp_range(text, dest, dest);
+    if d == text.len() {
+        // The temporary area past the end, where rule replacement copies.
+        text.extend_from_within(s..l);
+    } else if d <= s || d >= l {
+        // Open a gap at `dest`, then copy the source (shifted past the gap
+        // when it lay after it) into it: no temporary vector.
+        let n = l - s;
+        text.splice(d..d, std::iter::repeat_n(0, n));
+        let src = if d <= s { s + n } else { s };
+        text.copy_within(src..src + n, d);
+    } else {
+        let copy: Vec<u16> = text[s..l].to_vec();
+        replace_text(text, dest, dest, &copy);
+    }
 }
 
 /// Which case transliterator.
@@ -119,8 +134,14 @@ pub enum CaseKind {
 pub struct AnyState {
     target: String,
     target_script: i32,
-    cache: Mutex<HashMap<i32, Option<Arc<Transliterator>>>>,
+    /// Per script code: built once, then read without a lock (every
+    /// script run of every token asks).
+    cache: Box<[OnceLock<Option<Arc<Transliterator>>>]>,
 }
+
+/// Script codes the any-transliterator caches (ICU's `UScript` codes stay
+/// well below this); a code past it is built afresh each time.
+const ANY_CACHE_SCRIPTS: usize = 256;
 
 /// The kinds of transliterator (Java's subclasses).
 #[derive(Debug, Clone)]
@@ -549,12 +570,10 @@ fn get_any_transliterator(
             Ok(Some(width_fix()?))
         };
     }
-    if let Some(t) = state
-        .cache
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get(&source)
-    {
+    let slot = usize::try_from(source)
+        .ok()
+        .and_then(|i| state.cache.get(i));
+    if let Some(t) = slot.and_then(OnceLock::get) {
         return Ok(t.clone());
     }
     let source_name = uprops::uprops()
@@ -589,13 +608,11 @@ fn get_any_transliterator(
         None if !is_wide(state.target_script) => Some(width_fix()?),
         None => None,
     };
-    state
-        .cache
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .entry(source)
-        .or_insert(result.clone());
-    Ok(result)
+    match slot {
+        // A racing builder's equal answer wins; either is the same.
+        Some(slot) => Ok(slot.get_or_init(|| result).clone()),
+        None => Ok(result),
+    }
 }
 
 /// A new `AnyTransliterator`.
@@ -615,7 +632,7 @@ pub(crate) fn any_transliterator(
         Kind::Any(Arc::new(AnyState {
             target,
             target_script,
-            cache: Mutex::new(HashMap::new()),
+            cache: (0..ANY_CACHE_SCRIPTS).map(|_| OnceLock::new()).collect(),
         })),
     )
 }
@@ -770,15 +787,21 @@ fn handle_case(kind: CaseKind, text: &mut Vec<u16>, offsets: &mut Position) {
         if result < 0 {
             continue;
         }
-        let replacement: Vec<u16> = if result <= ucase::MAX_STRING_LENGTH {
-            out.clone()
+        let mut single = [0u16; 2];
+        let replacement: &[u16] = if result <= ucase::MAX_STRING_LENGTH {
+            &out
         } else {
-            let mut v = Vec::new();
-            utf16::push_code_point(&mut v, result);
-            v
+            if result <= 0xffff {
+                single[0] = result as u16;
+                &single[..1]
+            } else {
+                let (lead, trail) = utf16::surrogates(result);
+                single = [lead, trail];
+                &single[..]
+            }
         };
         let delta = replacement.len() as i32 - (cp_limit - cp_start);
-        replace_text(text, cp_start, cp_limit, &replacement);
+        replace_text(text, cp_start, cp_limit, replacement);
         cp_limit += delta;
         limit += delta;
         context_limit += delta;
@@ -833,6 +856,20 @@ fn handle_break(text: &mut Vec<u16>, pos: &mut Position) -> Result<(), IcuError>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn copy_text_every_placement() {
+        let run = |dest: i32, start: i32, limit: i32| {
+            let mut t: Vec<u16> = "abcdef".encode_utf16().collect();
+            copy_text(&mut t, start, limit, dest);
+            String::from_utf16_lossy(&t)
+        };
+        assert_eq!(run(6, 1, 3), "abcdefbc"); // past the end
+        assert_eq!(run(0, 2, 4), "cdabcdef"); // before the source
+        assert_eq!(run(5, 1, 3), "abcdebcf"); // after the source
+        assert_eq!(run(2, 1, 4), "abbcdcdef"); // inside the source
+        assert_eq!(run(2, 3, 3), "abcdef"); // empty
+    }
 
     fn tr(id: &str) -> Transliterator {
         Transliterator::get_instance(id, FORWARD).unwrap()

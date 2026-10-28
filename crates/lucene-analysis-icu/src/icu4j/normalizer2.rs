@@ -164,7 +164,9 @@ impl Normalizer2 {
                 Mode::Fcd => false,
             },
             Kind::Noop => true,
-            Kind::Filtered { .. } => false,
+            // The fast loop judges each character alone, so passing it over
+            // the whole string passes it over every filtered span.
+            Kind::Filtered { norm2, .. } => norm2.quick_yes_utf8(s),
         }
     }
 
@@ -615,6 +617,16 @@ fn filtered_second_and_append(
 mod tests {
     use super::*;
     use crate::icu4j::utf16::units;
+
+    #[test]
+    fn filtered_quick_yes_follows_the_inner_check() {
+        let set = UnicodeSet::from_pattern("[^\\u00e9]").unwrap();
+        let f = Normalizer2::filtered(Normalizer2::nfc(), set).unwrap();
+        assert!(f.quick_yes_utf8("abc"));
+        // A combining mark fails the per-character loop: not known.
+        assert!(!f.quick_yes_utf8("e\u{301}"));
+        assert_eq!(f.quick_check(&units("abc")), QuickCheck::Yes);
+    }
 
     fn s(v: &[u16]) -> String {
         String::from_utf16(v).unwrap()

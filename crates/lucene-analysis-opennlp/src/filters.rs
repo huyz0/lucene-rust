@@ -17,6 +17,9 @@ use crate::tools::text::{self, JString};
 struct SentenceAttributeExtractor {
     sentence_token_attrs: Vec<AttributeSource>,
     prev: Option<AttributeSource>,
+    /// The last sentence's attribute copies, refilled for the next one
+    /// (`clone_from` into their buffers rather than a new clone a token).
+    spare: Vec<AttributeSource>,
     curr_sentence: i32,
     has_next_token: bool,
 }
@@ -32,7 +35,7 @@ impl SentenceAttributeExtractor {
     /// `extractSentenceAttributes()`: the next sentence's tokens (each the
     /// input's attributes cloned after it).
     fn extract<T: TokenStream>(&mut self, input: &mut T) -> Result<(), AnalysisError> {
-        self.sentence_token_attrs.clear();
+        self.spare.append(&mut self.sentence_token_attrs);
         loop {
             self.has_next_token = input.increment_token()?;
             let sentence = input.attributes().sentence_index();
@@ -41,7 +44,9 @@ impl SentenceAttributeExtractor {
             if let Some(prev) = self.prev.take() {
                 self.sentence_token_attrs.push(prev);
             }
-            self.prev = Some(input.attributes().clone());
+            let mut copy = self.spare.pop().unwrap_or_default();
+            copy.clone_from(input.attributes());
+            self.prev = Some(copy);
             if !has_next {
                 return Ok(());
             }
@@ -252,8 +257,7 @@ impl<T: TokenStream> TokenFilter for OpenNlpLemmatizerFilter<T> {
         let atts = self.input.attributes_mut();
         atts.clone_from(saved);
         if !atts.is_keyword() {
-            let lemma = text::to_string(&self.lemmas[self.lemma_num]);
-            atts.set_term(&lemma);
+            atts.set_term_utf16(&self.lemmas[self.lemma_num]);
             self.lemma_num += 1;
         }
         Ok(true)

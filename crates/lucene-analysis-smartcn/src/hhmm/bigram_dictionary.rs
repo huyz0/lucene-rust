@@ -15,7 +15,7 @@
 
 use std::sync::{Arc, LazyLock};
 
-use super::abstract_dictionary::{hash1, hash2, probe};
+use super::abstract_dictionary::{hash1, hash1_from, hash2, hash2_from, probe};
 use crate::serialized::{ArrayData, ObjectStream};
 use crate::SmartcnError;
 
@@ -75,10 +75,14 @@ impl BigramDictionary {
 
     /// `getBigramItemIndex(carray)`: the slot of the pair's hash, if present.
     fn get_bigram_item_index(&self, carray: &[u16]) -> Option<usize> {
+        self.item_index_of_hashes(hash1(carray), hash2(carray))
+    }
+
+    /// [`Self::get_bigram_item_index`] of a key's two hashes.
+    fn item_index_of_hashes(&self, hash_id: i64, hash_2: i32) -> Option<usize> {
         // PRIME_BIGRAM_LENGTH fits an i32.
         const PRIME: i32 = PRIME_BIGRAM_LENGTH as i32;
-        let hash_id = hash1(carray);
-        let (h1, h2) = probe(hash_id, hash2(carray), PRIME);
+        let (h1, h2) = probe(hash_id, hash_2, PRIME);
         let mut index = h1;
         let mut i = 1;
         let at = |index: i32| {
@@ -106,6 +110,14 @@ impl BigramDictionary {
     /// absent.
     pub fn get_frequency(&self, carray: &[u16]) -> i32 {
         self.get_bigram_item_index(carray)
+            .map_or(0, |i| self.frequency_table[i])
+    }
+
+    /// [`Self::get_frequency`] of `prefix ++ suffix`, given the prefix's
+    /// two hashes (`hash1(prefix)`, `hash2(prefix)`): a word pair's left
+    /// word and separator hashed once for every right word.
+    pub fn get_frequency_continued(&self, prefix: (i64, i32), suffix: &[u16]) -> i32 {
+        self.item_index_of_hashes(hash1_from(prefix.0, suffix), hash2_from(prefix.1, suffix))
             .map_or(0, |i| self.frequency_table[i])
     }
 }

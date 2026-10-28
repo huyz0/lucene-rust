@@ -98,7 +98,27 @@ pub struct Property {
     /// Every BMP code point's value, built on the first lookup of one (the
     /// role of ICU's property tries: a per-character lookup without the
     /// binary search over the runs).
-    bmp: OnceLock<Vec<i32>>,
+    bmp: OnceLock<BmpTable>,
+}
+
+/// A property's BMP values in the narrowest width that holds them all
+/// (most properties fit a byte: 64 KiB in cache instead of 256 KiB).
+#[derive(Debug, Clone)]
+enum BmpTable {
+    U8(Box<[u8]>),
+    U16(Box<[u16]>),
+    I32(Box<[i32]>),
+}
+
+impl BmpTable {
+    #[inline]
+    fn get(&self, c: usize) -> i32 {
+        match self {
+            BmpTable::U8(t) => t.get(c).map_or(0, |&v| i32::from(v)),
+            BmpTable::U16(t) => t.get(c).map_or(0, |&v| i32::from(v)),
+            BmpTable::I32(t) => t.get(c).copied().unwrap_or(0),
+        }
+    }
 }
 
 impl Property {
@@ -108,7 +128,7 @@ impl Property {
         let Ok(c) = u32::try_from(c) else { return 0 };
         if c < 0x10000 {
             let table = self.bmp.get_or_init(|| self.bmp_table());
-            return table.get(c as usize).copied().unwrap_or(0);
+            return table.get(c as usize);
         }
         self.search(c)
     }
@@ -122,7 +142,7 @@ impl Property {
     }
 
     /// The BMP's values, run by run.
-    fn bmp_table(&self) -> Vec<i32> {
+    fn bmp_table(&self) -> BmpTable {
         // ALLOC: one value per BMP code point (a constant 65,536).
         let mut table = vec![0; 0x10000];
         for (first, last, value) in self.runs() {
@@ -134,7 +154,13 @@ impl Property {
                 slots.fill(value);
             }
         }
-        table
+        if table.iter().all(|&v| u8::try_from(v).is_ok()) {
+            BmpTable::U8(table.iter().map(|&v| v as u8).collect())
+        } else if table.iter().all(|&v| u16::try_from(v).is_ok()) {
+            BmpTable::U16(table.iter().map(|&v| v as u16).collect())
+        } else {
+            BmpTable::I32(table.into_boxed_slice())
+        }
     }
 
     /// The runs: `(first, last, value)` for every run.
@@ -380,6 +406,16 @@ pub fn is_whitespace(c: i32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bmp_table_widths() {
+        assert_eq!(BmpTable::U8(vec![7u8].into()).get(0), 7);
+        assert_eq!(BmpTable::U16(vec![300u16].into()).get(0), 300);
+        assert_eq!(BmpTable::I32(vec![-2].into()).get(0), -2);
+        assert_eq!(BmpTable::U8(vec![].into()).get(3), 0);
+        assert_eq!(BmpTable::U16(vec![].into()).get(3), 0);
+        assert_eq!(BmpTable::I32(vec![].into()).get(3), 0);
+    }
 
     #[test]
     fn known_values() {

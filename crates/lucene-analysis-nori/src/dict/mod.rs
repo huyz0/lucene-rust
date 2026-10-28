@@ -155,4 +155,19 @@ impl KoDict {
             KoDict::User(d) => d.morph_attributes().morphemes(id, surface, off),
         }
     }
+
+    /// [`Self::morphemes`] with each surface form as its UTF-16 units.
+    pub fn morpheme_units(
+        &self,
+        id: i32,
+        surface: &[u16],
+        off: i32,
+    ) -> Option<Vec<(Tag, Arc<[u16]>)>> {
+        let units = |u: &[u16]| Arc::<[u16]>::from(u);
+        match self {
+            KoDict::Known(d) => d.morph_attributes().morphemes_with(id, surface, off, units),
+            KoDict::Unknown(_) => None,
+            KoDict::User(d) => d.morph_attributes().morphemes_with(id, surface, off, units),
+        }
+    }
 }

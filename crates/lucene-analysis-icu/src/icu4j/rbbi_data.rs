@@ -244,14 +244,14 @@ impl RbbiData {
         })
     }
 
-    /// `getRowIndex(state)`.
+    /// The units of one state-table row (`getRowIndex(1)`; a state's row
+    /// starts at `state * row_width`): hoisted out of the per-character
+    /// loop, which then multiplies alone.
     #[inline]
-    pub fn row_index(&self, state: u16) -> usize {
-        usize::from(state).saturating_mul(
-            usize::try_from(self.cat_count)
-                .unwrap_or(0)
-                .saturating_add(NEXTSTATES),
-        )
+    pub fn row_width(&self) -> usize {
+        usize::try_from(self.cat_count)
+            .unwrap_or(0)
+            .saturating_add(NEXTSTATES)
     }
 
     /// A status table entry (0 past the end).
