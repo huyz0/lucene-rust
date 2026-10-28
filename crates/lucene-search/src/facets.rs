@@ -190,10 +190,15 @@ pub fn facet_counts(
     matching_docs: &[i32],
 ) -> Result<Vec<u64>> {
     let mut counts = vec![0u64; terms.terms_dict_size as usize];
+    // One forward cursor for the whole (ascending) candidate list and one
+    // reused buffer: the free `sorted_numeric_values` re-walks the
+    // docs-with-field blocks from the start and allocates, per document.
+    let mut reader = doc_values::SortedNumericReader::new(doc_values_data, entry);
+    let mut ords = Vec::new();
     for &doc_id in matching_docs {
-        let ords = doc_values::sorted_numeric_values(doc_values_data, entry, doc_id)?;
-        for ord in ords {
-            if let Some(slot) = counts.get_mut(ord as usize) {
+        reader.values(doc_id, &mut ords)?;
+        for &ord in &ords {
+            if let Some(slot) = usize::try_from(ord).ok().and_then(|o| counts.get_mut(o)) {
                 *slot += 1;
             }
         }
@@ -447,8 +452,26 @@ impl NumericRange {
         })
     }
 
+    /// The range as inclusive `[min, max]` (an exclusive bound stepped one
+    /// toward the other end, as [`Self::new_long`] normalises it), `None`
+    /// when that leaves nothing to match.
+    fn inclusive_bounds(&self) -> Option<(i64, i64)> {
+        let min = if self.min_inclusive {
+            self.min
+        } else {
+            self.min.checked_add(1)?
+        };
+        let max = if self.max_inclusive {
+            self.max
+        } else {
+            self.max.checked_sub(1)?
+        };
+        (min <= max).then_some((min, max))
+    }
+
     /// Whether `value` falls inside this range, honoring each bound's own
     /// inclusive/exclusive flag independently.
+    #[cfg(test)]
     fn contains(&self, value: i64) -> bool {
         let above_min = if self.min_inclusive {
             value >= self.min
@@ -1905,6 +1928,44 @@ pub fn double_range_facet_counts_with_total(
     )
 }
 
+/// The ranges as the inclusive [`range::LongRange`]s a
+/// [`range::LongRangeCounter`] counts into, with each counter slot's index
+/// in `ranges`. A range that can match nothing once its exclusive bounds are
+/// stepped inward (a hand-built [`NumericRange`]; the constructors refuse
+/// those) is left out: it counts zero, as testing every value against it did.
+fn counter_ranges(ranges: &[NumericRange]) -> (Vec<range::LongRange>, Vec<usize>) {
+    let mut long_ranges = Vec::with_capacity(ranges.len());
+    let mut slots = Vec::with_capacity(ranges.len());
+    for (i, r) in ranges.iter().enumerate() {
+        if let Some((min, max)) = r.inclusive_bounds() {
+            long_ranges.push(range::LongRange {
+                label: String::new(),
+                min,
+                max,
+            });
+            slots.push(i);
+        }
+    }
+    (long_ranges, slots)
+}
+
+/// The counter's per-range counts back in `ranges`' order.
+fn spread_counts(n: usize, slots: &[usize], counted: Vec<i32>) -> Vec<u64> {
+    let mut counts = vec![0u64; n];
+    for (&slot, c) in slots.iter().zip(counted) {
+        if let Some(out) = counts.get_mut(slot) {
+            // A count is of documents of one segment: never negative.
+            *out = u64::try_from(c).unwrap_or(0);
+        }
+    }
+    counts
+}
+
+/// `RangeFacetCounts.count`'s single-valued branch over a NUMERIC column:
+/// one forward [`NumericReader`](doc_values::NumericReader) for the whole
+/// candidate list, and each value placed with `LongRangeCounter`'s binary
+/// search over the elementary intervals (a segment tree when ranges
+/// overlap) rather than tested against every range.
 fn count_single_valued(
     doc_values_data: &[u8],
     entry: &NumericEntry,
@@ -1912,23 +1973,20 @@ fn count_single_valued(
     matching_docs: &[i32],
     map_doc_value: fn(i64) -> i64,
 ) -> Result<RangeCounts> {
-    let mut counts = vec![0u64; ranges.len()];
-    let mut total_count = 0u64;
+    let (long_ranges, slots) = counter_ranges(ranges);
+    let mut counter = range::LongRangeCounter::create(&long_ranges);
+    let mut reader = doc_values::NumericReader::new(doc_values_data, entry);
+    let mut with_value = 0u64;
     for &doc_id in matching_docs {
-        if let Some(raw) = doc_values::numeric_value(doc_values_data, entry, doc_id)? {
-            let value = map_doc_value(raw);
-            let mut matched = false;
-            for (range, count) in ranges.iter().zip(counts.iter_mut()) {
-                if range.contains(value) {
-                    *count += 1;
-                    matched = true;
-                }
-            }
-            if matched {
-                total_count += 1;
-            }
+        if let Some(raw) = reader.value(doc_id)? {
+            counter.add_single_valued(map_doc_value(raw));
+            with_value += 1;
         }
     }
+    // `totCount`: the documents with a value, minus those in no range.
+    let missing = u64::try_from(counter.finish()).unwrap_or(0);
+    let total_count = with_value.saturating_sub(missing);
+    let counts = spread_counts(ranges.len(), &slots, counter.into_counts());
     Ok(RangeCounts {
         counts: label_counts(ranges, counts),
         total_count,
@@ -1992,35 +2050,40 @@ fn count_multi_valued(
     matching_docs: &[i32],
     map_doc_value: fn(i64) -> i64,
 ) -> Result<RangeCounts> {
-    let mut counts = vec![0u64; ranges.len()];
+    let (long_ranges, slots) = counter_ranges(ranges);
+    let mut counter = range::LongRangeCounter::create(&long_ranges);
+    let mut reader = doc_values::SortedNumericReader::new(doc_values_data, entry);
+    let mut values = Vec::new();
     let mut total_count = 0u64;
-    // Reused across documents: one flag per range, "this doc already counted
-    // here". Java's per-elementary-interval bit set, at range granularity.
-    let mut hit = vec![false; ranges.len()];
     for &doc_id in matching_docs {
-        let values = doc_values::sorted_numeric_values(doc_values_data, entry, doc_id)?;
+        reader.values(doc_id, &mut values)?;
         if values.is_empty() {
             continue;
         }
-        hit.iter_mut().for_each(|h| *h = false);
+        for v in values.iter_mut() {
+            *v = map_doc_value(*v);
+        }
+        // `addMultiValued` walks the intervals forward and needs ascending
+        // values. Stored values are ascending; a mapping that reorders them
+        // (`sortable_double_bits` over raw negative doubles) is sorted back,
+        // which leaves the set of ranges each document hits unchanged.
+        if !values.windows(2).all(|w| w[0] <= w[1]) {
+            values.sort_unstable();
+        }
+        counter.start_multi_valued_doc();
         let mut previous = 0i64;
-        for (j, raw) in values.into_iter().enumerate() {
-            let value = map_doc_value(raw);
+        for (j, &value) in values.iter().enumerate() {
             if j != 0 && value == previous {
                 continue;
             }
             previous = value;
-            for (i, range) in ranges.iter().enumerate() {
-                if !hit[i] && range.contains(value) {
-                    hit[i] = true;
-                    counts[i] += 1;
-                }
-            }
+            counter.add_multi_valued(value);
         }
-        if hit.iter().any(|&h| h) {
+        if counter.end_multi_valued_doc() {
             total_count += 1;
         }
     }
+    let counts = spread_counts(ranges.len(), &slots, counter.into_counts());
     Ok(RangeCounts {
         counts: label_counts(ranges, counts),
         total_count,
@@ -3588,5 +3651,134 @@ mod tests {
         }];
         let err = range_facet_counts(&[], &entry, &ranges, &[0]).unwrap_err();
         assert!(matches!(err, crate::Error::DocValues(_)));
+    }
+
+    /// The per-range-per-value scan the `LongRangeCounter` path replaced:
+    /// `(counts, totCount)` for single-valued (`values[doc]` one value) and
+    /// multi-valued documents alike.
+    fn brute_force(ranges: &[NumericRange], docs: &[Vec<i64>]) -> (Vec<u64>, u64) {
+        let mut counts = vec![0u64; ranges.len()];
+        let mut total = 0;
+        for values in docs {
+            let mut any = false;
+            for (r, c) in ranges.iter().zip(counts.iter_mut()) {
+                if values.iter().any(|&v| r.contains(v)) {
+                    *c += 1;
+                    any = true;
+                }
+            }
+            total += u64::from(any);
+        }
+        (counts, total)
+    }
+
+    /// Random ranges, hand-built with every inclusive/exclusive mix (some
+    /// overlapping, some empty, some at the `i64` extremes).
+    fn random_ranges(seed: &mut u64, n: usize, lo: i64, hi: i64) -> Vec<NumericRange> {
+        let mut next = || {
+            *seed ^= *seed << 13;
+            *seed ^= *seed >> 7;
+            *seed ^= *seed << 17;
+            *seed
+        };
+        (0..n)
+            .map(|i| {
+                let span = (hi - lo) as u64;
+                let a = lo + (next() % span) as i64;
+                let b = lo + (next() % span) as i64;
+                let (min, max) = match next() % 8 {
+                    0 => (i64::MIN, a.max(b)),
+                    1 => (a.min(b), i64::MAX),
+                    2 => (a, a),
+                    3 => (a.max(b), a.min(b)), // empty
+                    _ => (a.min(b), a.max(b)),
+                };
+                NumericRange {
+                    label: format!("r{i}"),
+                    min,
+                    min_inclusive: next() % 2 == 0,
+                    max,
+                    max_inclusive: next() % 2 == 0,
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_counter_paths_count_what_testing_every_range_counts() {
+        let (manifest, data, meta) = dv_meta_and_data(&dv_dir());
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        for field in ["varying", "sparse"] {
+            let entry = meta.numeric_entry(field_num(&manifest, field)).unwrap();
+            let mut reader = doc_values::NumericReader::new(&data, entry);
+            let docs: Vec<i32> = (0..5).collect();
+            let raw: Vec<Option<i64>> = docs.iter().map(|&d| reader.value(d).unwrap()).collect();
+            for n in [0usize, 1, 3, 8, 40] {
+                let ranges = random_ranges(&mut seed, n, -200, 1100);
+                let values: Vec<Vec<i64>> = raw.iter().flatten().map(|&v| vec![v]).collect();
+                let (want, want_total) = brute_force(&ranges, &values);
+                let got = range_facet_counts_with_total(&data, entry, &ranges, &docs).unwrap();
+                assert_eq!(
+                    got.counts.iter().map(|(_, c)| *c).collect::<Vec<_>>(),
+                    want,
+                    "{field} {ranges:?}"
+                );
+                assert_eq!(got.total_count, want_total, "{field} {ranges:?}");
+                // The double variant compares the mapped values.
+                let mapped: Vec<Vec<i64>> = raw
+                    .iter()
+                    .flatten()
+                    .map(|&v| vec![sortable_double_bits(v)])
+                    .collect();
+                let (want, want_total) = brute_force(&ranges, &mapped);
+                let got =
+                    double_range_facet_counts_with_total(&data, entry, &ranges, &docs).unwrap();
+                assert_eq!(got.counts.iter().map(|(_, c)| *c).collect::<Vec<_>>(), want);
+                assert_eq!(got.total_count, want_total);
+            }
+        }
+        let (manifest, data, meta) = load_dv_meta(&multi_dv_dir());
+        let entry = nums_entry(&meta, field_number(&manifest, "nums"));
+        let mut reader = doc_values::SortedNumericReader::new(&data, entry);
+        let docs: Vec<i32> = (0..5).collect();
+        let mut raw = Vec::new();
+        for &d in &docs {
+            let mut v = Vec::new();
+            reader.values(d, &mut v).unwrap();
+            raw.push(v);
+        }
+        for n in [0usize, 1, 3, 8, 40] {
+            let ranges = random_ranges(&mut seed, n, -2, 14);
+            let (want, want_total) = brute_force(&ranges, &raw);
+            let got = multi_valued_range_facet_counts(&data, entry, &ranges, &docs).unwrap();
+            assert_eq!(
+                got.counts.iter().map(|(_, c)| *c).collect::<Vec<_>>(),
+                want,
+                "{ranges:?}"
+            );
+            assert_eq!(got.total_count, want_total, "{ranges:?}");
+            // Mapped values that no longer come ascending are sorted back.
+            let mapped: Vec<Vec<i64>> = raw
+                .iter()
+                .map(|v| v.iter().map(|&x| sortable_double_bits(x)).collect())
+                .collect();
+            let (want, want_total) = brute_force(&ranges, &mapped);
+            let got = multi_valued_double_range_facet_counts(&data, entry, &ranges, &docs).unwrap();
+            assert_eq!(got.counts.iter().map(|(_, c)| *c).collect::<Vec<_>>(), want);
+            assert_eq!(got.total_count, want_total);
+        }
+    }
+
+    #[test]
+    fn a_reordering_map_still_counts_each_document_once_per_range() {
+        // `-1` and `1` as raw bits map through `sortable_double_bits` to
+        // `i64::MIN + 1`-ish and `1`'s own image: out of the stored order.
+        let (manifest, data, meta) = load_dv_meta(&multi_dv_dir());
+        let entry = nums_entry(&meta, field_number(&manifest, "nums"));
+        let all = vec![NumericRange::new_long("all", i64::MIN, true, i64::MAX, true).unwrap()];
+        let got =
+            multi_valued_double_range_facet_counts(&data, entry, &all, &[0, 1, 2, 3, 4]).unwrap();
+        assert_eq!(got.counts[0].1, 3);
+        assert_eq!(got.total_count, 3);
     }
 }

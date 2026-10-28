@@ -403,6 +403,13 @@ impl Ords for dyn SortedSetDocValues + '_ {
     #[inline]
     fn each_ord(&mut self, mut f: impl FnMut(i64) -> Result<()>) -> Result<i32> {
         let n = self.doc_value_count();
+        // In bulk when the doc values hold the document's ordinals decoded.
+        if let Some(ords) = self.take_ords() {
+            for &ord in ords {
+                f(ord)?;
+            }
+            return Ok(n);
+        }
         for _ in 0..n {
             f(self.next_ord()?)?;
         }

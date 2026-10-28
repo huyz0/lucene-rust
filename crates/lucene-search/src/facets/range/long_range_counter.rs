@@ -43,6 +43,11 @@ struct Overlapping {
     single_valued_counts: Option<Vec<i32>>,
     interval_hits: Vec<bool>,
     range_hits: Vec<bool>,
+    /// The intervals set in `interval_hits` by the current document, so the
+    /// next one clears only those rather than every interval.
+    touched_intervals: Vec<usize>,
+    /// The ranges `rollup_multi_valued` set in `range_hits`.
+    touched_ranges: Vec<usize>,
     upto: usize,
     missing_count: i32,
 }
@@ -133,6 +138,8 @@ impl LongRangeCounter {
                 single_valued_counts: None,
                 interval_hits: Vec::new(),
                 range_hits: Vec::new(),
+                touched_intervals: Vec::new(),
+                touched_ranges: Vec::new(),
                 upto: 0,
                 missing_count: 0,
             })),
@@ -158,8 +165,17 @@ impl LongRangeCounter {
                 ..
             } => *multi_valued_doc_matched_range = false,
             Kind::Overlapping(o) => {
-                o.interval_hits.clear();
-                o.interval_hits.resize(n, false);
+                if o.interval_hits.len() == n {
+                    for i in o.touched_intervals.drain(..) {
+                        if let Some(h) = o.interval_hits.get_mut(i) {
+                            *h = false;
+                        }
+                    }
+                } else {
+                    o.interval_hits.clear();
+                    o.interval_hits.resize(n, false);
+                    o.touched_intervals.clear();
+                }
             }
         }
     }
@@ -177,19 +193,21 @@ impl LongRangeCounter {
                 if range_count == 0 {
                     return false;
                 }
-                o.range_hits.clear();
-                o.range_hits.resize(range_count, false);
+                if o.range_hits.len() != range_count {
+                    o.range_hits.clear();
+                    o.range_hits.resize(range_count, false);
+                }
+                o.touched_ranges.clear();
                 o.upto = 0;
                 let root = o.root;
                 o.rollup_multi_valued(root);
-                let mut contributed = false;
-                for (i, &hit) in o.range_hits.iter().enumerate() {
-                    if hit {
-                        self.counts[i] = self.counts[i].wrapping_add(1);
-                        contributed = true;
-                    }
+                // Only the ranges the roll-up set, each reset for the next
+                // document as it is counted.
+                for &r in &o.touched_ranges {
+                    self.counts[r] = self.counts[r].wrapping_add(1);
+                    o.range_hits[r] = false;
                 }
-                contributed
+                !o.touched_ranges.is_empty()
             }
         }
     }
@@ -300,7 +318,12 @@ impl LongRangeCounter {
                     *multi_valued_doc_matched_range = true;
                 }
             }
-            Kind::Overlapping(o) => o.interval_hits[interval] = true,
+            Kind::Overlapping(o) => {
+                if !o.interval_hits[interval] {
+                    o.interval_hits[interval] = true;
+                    o.touched_intervals.push(interval);
+                }
+            }
         }
     }
 }
@@ -345,7 +368,10 @@ impl Overlapping {
         };
         if contained_hit {
             for &r in &self.nodes[node].outputs {
-                self.range_hits[r] = true;
+                if !self.range_hits[r] {
+                    self.range_hits[r] = true;
+                    self.touched_ranges.push(r);
+                }
             }
         }
         contained_hit

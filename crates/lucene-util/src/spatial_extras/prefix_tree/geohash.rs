@@ -73,7 +73,8 @@ impl LegacyGrid for GhGrid {
     }
 
     fn sub_cells(self: Arc<Self>, cell: &LegacyCell) -> Result<Vec<LegacyCell>> {
-        let base = String::from_utf8_lossy(&cell.bytes).into_owned();
+        // `getGeohash()` is `utf8ToString()`: invalid UTF-8 becomes U+FFFD.
+        let base = String::from_utf8_lossy(&cell.bytes);
         let grid: Arc<dyn LegacyGrid> = self;
         Ok(geohash::sub_geohashes(&base)
             .into_iter()
@@ -81,12 +82,21 @@ impl LegacyGrid for GhGrid {
             .collect())
     }
 
+    /// `getSubGeohashes` appends each `BASE_32` character in order -- to
+    /// the cell's own bytes when they are UTF-8 (a geohash always is; a
+    /// hostile term goes through [`Self::sub_cells`]'s lossy conversion).
+    fn child_labels(&self, cell: &LegacyCell) -> Option<&'static [u8]> {
+        std::str::from_utf8(&cell.bytes)
+            .is_ok()
+            .then_some(&geohash::BASE_32[..])
+    }
+
     fn sub_cells_size(&self) -> i32 {
         32 // 8x4
     }
 
     fn make_shape(&self, cell: &LegacyCell) -> Result<Arc<dyn Shape>> {
-        let hash = String::from_utf8_lossy(&cell.bytes).into_owned();
+        let hash = String::from_utf8_lossy(&cell.bytes);
         Ok(geohash::decode_boundary(&hash, &self.ctx)?)
     }
 }

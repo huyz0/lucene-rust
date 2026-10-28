@@ -23,6 +23,11 @@ pub struct Line {
 impl Line {
     /// `new Line(lats, lons)`.
     pub fn new(lats: &[f64], lons: &[f64]) -> Result<Line, GeoError> {
+        Self::from_vecs(lats.to_vec(), lons.to_vec())
+    }
+
+    /// [`Line::new`] taking ownership of the vertex arrays.
+    pub fn from_vecs(lats: Vec<f64>, lons: Vec<f64>) -> Result<Line, GeoError> {
         if lats.len() != lons.len() {
             return Err(GeoError::illegal("lats and lons must be equal length"));
         }
@@ -42,8 +47,8 @@ impl Line {
             max_lon = java_max(lons[i], max_lon);
         }
         Ok(Line {
-            lats: lats.to_vec(),
-            lons: lons.to_vec(),
+            lats,
+            lons,
             min_lat,
             max_lat,
             min_lon,

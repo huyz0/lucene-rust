@@ -28,6 +28,17 @@ impl Polygon {
         poly_lons: &[f64],
         holes: Vec<Polygon>,
     ) -> Result<Polygon, GeoError> {
+        Self::from_vecs(poly_lats.to_vec(), poly_lons.to_vec(), holes)
+    }
+
+    /// [`Polygon::new`] taking ownership of the vertex arrays (Java's
+    /// constructor clones them; a caller that built them, such as a
+    /// parser, need not pay for a second copy).
+    pub fn from_vecs(
+        poly_lats: Vec<f64>,
+        poly_lons: Vec<f64>,
+        holes: Vec<Polygon>,
+    ) -> Result<Polygon, GeoError> {
         if poly_lats.len() != poly_lons.len() {
             return Err(GeoError::illegal(
                 "polyLats and polyLons must be equal length",
@@ -81,8 +92,8 @@ impl Polygon {
             j = i;
         }
         Ok(Polygon {
-            poly_lats: poly_lats.to_vec(),
-            poly_lons: poly_lons.to_vec(),
+            poly_lats,
+            poly_lons,
             holes,
             min_lat,
             max_lat,

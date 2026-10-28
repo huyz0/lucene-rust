@@ -170,3 +170,32 @@ fn for_each_hit_is_the_conjunction_whichever_side_leads() {
     });
     assert!(r.is_err());
 }
+
+#[test]
+fn set_bits_pop_word_by_word_in_order_and_stop_at_an_error() {
+    let mut bits = FixedBitSet::new(200);
+    for d in [0, 1, 63, 64, 65, 127, 128, 199] {
+        // FBS: constant indexes below the bitset's length of 200.
+        bits.set(d);
+    }
+    let mut seen = Vec::new();
+    try_for_each_set_bit(&bits, |d| {
+        seen.push(d);
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(seen, vec![0, 1, 63, 64, 65, 127, 128, 199]);
+    let mut seen = Vec::new();
+    let err = try_for_each_set_bit(&bits, |d| {
+        seen.push(d);
+        if d == 64 {
+            return Err(Error::IllegalState("stop".into()));
+        }
+        Ok(())
+    });
+    assert!(err.is_err());
+    assert_eq!(seen, vec![0, 1, 63, 64]);
+    let words = bits.words();
+    assert!(word_bit(words, 63) && word_bit(words, 199));
+    assert!(!word_bit(words, 2) && !word_bit(words, -1) && !word_bit(words, 1 << 20));
+}
