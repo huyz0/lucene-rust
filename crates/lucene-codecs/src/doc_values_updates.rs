@@ -177,7 +177,10 @@ pub fn read_numeric_updates(
     )?;
 
     let count = input.read_vint()?;
-    let mut map = HashMap::with_capacity(count.max(0) as usize);
+    // Sized by the count only as far as the bytes left could back it (each
+    // entry takes at least 5): a corrupt count fails on a short read, not in
+    // the allocator.
+    let mut map = HashMap::with_capacity((count.max(0) as usize).min(input.remaining() / 5));
     let mut prev: Option<i32> = None;
     for _ in 0..count {
         let doc = input.read_i32()?;
@@ -347,7 +350,10 @@ pub fn read_binary_updates(
     )?;
 
     let count = input.read_vint()?;
-    let mut map = HashMap::with_capacity(count.max(0) as usize);
+    // Sized by the count only as far as the bytes left could back it (each
+    // entry takes at least 5): a corrupt count fails on a short read, not in
+    // the allocator.
+    let mut map = HashMap::with_capacity((count.max(0) as usize).min(input.remaining() / 5));
     let mut prev: Option<i32> = None;
     for _ in 0..count {
         let doc = input.read_i32()?;
@@ -357,6 +363,12 @@ pub fn read_binary_updates(
                 let len = input.read_vint()?;
                 if len < 0 {
                     return Err(Error::NegativeLength(len));
+                }
+                if len as usize > input.remaining() {
+                    return Err(lucene_store::Error::Eof {
+                        offset: input.position(),
+                    }
+                    .into());
                 }
                 let mut buf = vec![0u8; len as usize];
                 input.read_bytes(&mut buf)?;
@@ -1048,6 +1060,27 @@ mod tests {
         assert!(matches!(
             read_binary_updates(&out, &SEG_ID, ""),
             Err(Error::NegativeLength(-1))
+        ));
+    }
+
+    #[test]
+    fn binary_overlay_rejects_counts_and_lengths_past_the_file() {
+        let mut out: Vec<u8> = Vec::new();
+        codec_util::write_index_header(
+            &mut out,
+            BINARY_UPDATES_CODEC,
+            VERSION_CURRENT,
+            &SEG_ID,
+            "",
+        );
+        out.write_vint(i32::MAX);
+        out.write_i32(0);
+        out.push(1);
+        out.write_vint(i32::MAX);
+        codec_util::write_footer(&mut out);
+        assert!(matches!(
+            read_binary_updates(&out, &SEG_ID, ""),
+            Err(Error::Store(lucene_store::Error::Eof { .. }))
         ));
     }
 
