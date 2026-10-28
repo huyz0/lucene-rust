@@ -182,6 +182,39 @@ impl RunAutomaton {
         self.transitions[state as usize * self.stride + self.classmap[b as usize] as usize]
     }
 
+    /// The largest byte with a transition out of `state`, or `None`: one
+    /// probe per character class rather than per byte. Class `i` covers the
+    /// labels `points[i]..points[i + 1]`, so a live class's last byte is the
+    /// smaller of its end and 255.
+    pub fn last_live_byte(&self, state: i32) -> Option<u8> {
+        let row = &self.transitions[state as usize * self.stride..][..self.stride];
+        // Only classes that start below 256 hold a byte.
+        let byte_classes = self.points.iter().take_while(|&&p| p < 256).count();
+        (0..byte_classes).rev().find(|&i| row[i] != -1).map(|i| {
+            let end = self
+                .points
+                .get(i + 1)
+                .map_or(255, |&next| (next - 1).min(255));
+            end as u8
+        })
+    }
+
+    /// The smallest byte at or after `from` with a transition out of
+    /// `state`, or `None` (also for `from > 255`): `from` itself if its
+    /// class is live, else the first byte of the next live class.
+    pub fn first_live_byte_from(&self, state: i32, from: u32) -> Option<u8> {
+        let from = u8::try_from(from).ok()?;
+        let row = &self.transitions[state as usize * self.stride..][..self.stride];
+        let class = self.classmap[from as usize] as usize;
+        if row[class] != -1 {
+            return Some(from);
+        }
+        (class + 1..self.stride)
+            .take_while(|&i| self.points[i] < 256)
+            .find(|&i| row[i] != -1)
+            .map(|i| self.points[i] as u8)
+    }
+
     /// Whether the label sequence is accepted: the loop behind
     /// [`CharacterRunAutomaton::run`], with the transition read unchecked
     /// for the reason given in [`Self::run_bytes`].

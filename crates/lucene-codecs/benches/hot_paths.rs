@@ -1068,6 +1068,31 @@ fn bench_postings_write(c: &mut Criterion) {
     }
     group.finish();
 
+    // `CompiledAutomaton.getTermsEnum` (NORMAL) over the same dictionary:
+    // the block-tree walk stepping the compiled byte automaton.
+    let compile = |pattern: &str| {
+        use lucene_util::automaton::{operations, CompiledAutomaton, RegExp};
+        let a = RegExp::with_flags(pattern, RegExp::ALL, 0)
+            .unwrap()
+            .to_automaton()
+            .unwrap();
+        let a = operations::determinize(&a, operations::DEFAULT_DETERMINIZE_WORK_LIMIT).unwrap();
+        let finite = operations::is_finite(&a).unwrap();
+        CompiledAutomaton::with_options(&a, finite, true, false).unwrap()
+    };
+    let mut group = c.benchmark_group("blocktree_compiled_terms");
+    group.sample_size(20);
+    for (name, pattern) in [
+        ("prefix_digit", "term0[0-3][0-9]*"),
+        ("wildcard_mid", "term.*7.*"),
+    ] {
+        let compiled = compile(pattern);
+        group.bench_function(name, |b| {
+            b.iter(|| black_box(field.compiled_terms(&compiled).count()))
+        });
+    }
+    group.finish();
+
     // The whole-dictionary dump the alternate postings formats re-encode from.
     let mut group = c.benchmark_group("blocktree_dump");
     group.sample_size(20);
