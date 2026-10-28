@@ -166,7 +166,7 @@ use lucene_codecs::term_vectors::{self, TermVectorField, TermVectorTerm, TermVec
 use lucene_codecs::vectors::{self, FieldVectorData, FlatVectorsField};
 use lucene_store::codec_util::ID_LENGTH;
 use lucene_store::data_output::DataOutput;
-use lucene_store::directory::Directory;
+use lucene_store::directory::{Directory, Input};
 use lucene_util::fixed_bit_set::FixedBitSet;
 
 mod add_indexes;
@@ -1519,11 +1519,11 @@ impl IndexingConfig {
             /// The terms dictionary's files, in
             /// `per_field_postings::dictionary_extensions` order for the
             /// suffix's format (`.tim`/`.tip`/`.tmd` for a block tree).
-            dictionary: Vec<Vec<u8>>,
+            dictionary: Vec<Input>,
             /// `None` for a format keeping its own postings (`RAMOnly`).
-            doc: Option<Vec<u8>>,
-            pos: Option<Vec<u8>>,
-            pay: Option<Vec<u8>>,
+            doc: Option<Input>,
+            pos: Option<Input>,
+            pay: Option<Input>,
             /// The codec suffix the files were written under -- the
             /// segment's own postings format, which for a segment an older
             /// Lucene wrote is not this writer's (`Lucene90_0`, ...).
@@ -1536,9 +1536,9 @@ impl IndexingConfig {
         /// Raw `.tvd`/`.tvx`/`.tvm` bytes for a source that has term vectors
         /// -- `None` when that source's `.si` lists no `.tvd` file.
         // `.tvd`, `.tvx`, `.tvm` and their segment suffix.
-        type RawTermVectorFiles = Option<(Vec<u8>, Vec<u8>, Vec<u8>, String)>;
+        type RawTermVectorFiles = Option<(Input, Input, Input, String)>;
         /// Raw `.nvm`/`.nvd` bytes for a source that has norms.
-        type RawNormsFiles = Option<(Vec<u8>, Vec<u8>)>;
+        type RawNormsFiles = Option<(Input, Input)>;
         /// One current-format `PerFieldKnnVectorsFormat` instance of a
         /// source: its raw `.vec`/`.vemf`, its `.vem`/`.vex` graph when it
         /// has one, and its `.vemq`/`.veq` codes when it is a
@@ -1548,15 +1548,15 @@ impl IndexingConfig {
             /// `Lucene104ScalarQuantizedVectorsFormat`: the one format whose
             /// centroid a merge sees (`getCentroid`).
             flat_quantized: bool,
-            vec: Vec<u8>,
-            vemf: Vec<u8>,
-            graph: Option<(Vec<u8>, Vec<u8>)>,
-            quantized: Option<(Vec<u8>, Vec<u8>)>,
+            vec: Input,
+            vemf: Input,
+            graph: Option<(Input, Input)>,
+            quantized: Option<(Input, Input)>,
         }
         type RawVectorFiles = Vec<RawVectorGroup>;
         /// A retired (9.0-9.8) HNSW format's `.vem`/`.vec`/`.vex` triple,
         /// with the format and codec suffix it was written under.
-        type RawRetiredVectorFiles = Option<(RetiredHnswFormat, String, Vec<u8>, Vec<u8>, Vec<u8>)>;
+        type RawRetiredVectorFiles = Option<(RetiredHnswFormat, String, Input, Input, Input)>;
         /// One retired quantized per-field group (Lucene 9.9-10.3's
         /// `Lucene99(Hnsw)ScalarQuantizedVectorsFormat`,
         /// `Lucene102(Hnsw)BinaryQuantizedVectorsFormat`): format, codec
@@ -1565,18 +1565,18 @@ impl IndexingConfig {
         struct RawQuantizedVectorFiles {
             format: QuantizedFormat,
             suffix: String,
-            vemf: Vec<u8>,
-            vec: Vec<u8>,
-            quantized_meta: Vec<u8>,
-            quantized_data: Vec<u8>,
-            graph: Option<(Vec<u8>, Vec<u8>)>,
+            vemf: Input,
+            vec: Input,
+            quantized_meta: Input,
+            quantized_data: Input,
+            graph: Option<(Input, Input)>,
         }
 
         struct OpenedSegment {
             sci: SegmentCommitInfo,
-            fdt: Vec<u8>,
-            fdx: Vec<u8>,
-            fdm: Vec<u8>,
+            fdt: Input,
+            fdx: Input,
+            fdm: Input,
             /// The stored-fields files' segment suffix (a `CompressingCodec`
             /// format's, or empty).
             stored_suffix: String,
@@ -1595,7 +1595,7 @@ impl IndexingConfig {
             retired_vectors: RawRetiredVectorFiles,
             quantized_vectors: Vec<RawQuantizedVectorFiles>,
             /// Raw `.kdm`/`.kdi`/`.kdd`, when the segment has points.
-            points: Option<(Vec<u8>, Vec<u8>, Vec<u8>)>,
+            points: Option<(Input, Input, Input)>,
             /// This source's fields under **its own numbers** -- see where it
             /// is built.
             field_infos: Vec<FieldInfo>,
@@ -1621,7 +1621,7 @@ impl IndexingConfig {
             // `SegmentMerger` works from `SegmentReader.maxDoc()`, which is
             // `SegmentInfo.maxDoc()`, never from the stored-fields file. It is
             // also what says whether the segment is compound.
-            let si_bytes = dir.open(&format!("{name}.si"))?.to_vec();
+            let si_bytes = dir.open(&format!("{name}.si"))?;
             let si = segment_info::parse_for_codec(&si_bytes, &sci.segment_id, &sci.codec_name)?;
 
             // `SegmentCoreReaders`: a compound segment -- every segment real
@@ -1654,9 +1654,9 @@ impl IndexingConfig {
 
             let stored_suffix = format_suffix(&seg_files, name, "fdt").unwrap_or_default();
             let stored_file = |ext: &str| segment_file_name(name, &stored_suffix, ext);
-            let fdt = seg_dir.open(&stored_file("fdt"))?.to_vec();
-            let fdx = seg_dir.open(&stored_file("fdx"))?.to_vec();
-            let fdm = seg_dir.open(&stored_file("fdm"))?.to_vec();
+            let fdt = seg_dir.open(&stored_file("fdt"))?;
+            let fdx = seg_dir.open(&stored_file("fdx"))?;
+            let fdm = seg_dir.open(&stored_file("fdm"))?;
 
             // `stored_fields::open` checks only that its own `maxDoc` is
             // non-negative, and `merge_segments` sizes this source's live-id
@@ -1691,10 +1691,10 @@ impl IndexingConfig {
             };
             let postings = if per_field_postings::has_postings_files(&seg_files) {
                 let read_group = |seg: &str, suffix: String| -> Result<RawPostings> {
-                    let read_optional = |ext: &str| -> Result<Option<Vec<u8>>> {
+                    let read_optional = |ext: &str| -> Result<Option<Input>> {
                         let file = format!("{seg}.{ext}");
                         Ok(if seg_files.contains(&file) {
-                            Some(seg_dir.open(&file)?.to_vec())
+                            Some(seg_dir.open(&file)?)
                         } else {
                             None
                         })
@@ -1710,9 +1710,9 @@ impl IndexingConfig {
                             if !seg_files.contains(&name)
                                 && !per_field_postings::dictionary_file_required(format, ext)
                             {
-                                return Ok(Vec::new());
+                                return Ok(Input::Owned(Vec::new()));
                             }
-                            Ok(seg_dir.open(&name)?.to_vec())
+                            Ok(seg_dir.open(&name)?)
                         })
                         .collect::<Result<Vec<_>>>()?;
                     let raw = RawPostings {
@@ -1735,7 +1735,7 @@ impl IndexingConfig {
                         .dictionary
                         .iter()
                         .filter(|d| !d.is_empty() && checksummed);
-                    for bytes in written.map(Vec::as_slice).chain(
+                    for bytes in written.map(|d| &**d).chain(
                         [
                             raw.doc.as_deref(),
                             raw.pos.as_deref(),
@@ -1772,9 +1772,9 @@ impl IndexingConfig {
             let term_vectors = match format_suffix(&seg_files, name, "tvd") {
                 Some(suffix) => {
                     let file = |ext: &str| segment_file_name(name, &suffix, ext);
-                    let tvd = seg_dir.open(&file("tvd"))?.to_vec();
-                    let tvx = seg_dir.open(&file("tvx"))?.to_vec();
-                    let tvm = seg_dir.open(&file("tvm"))?.to_vec();
+                    let tvd = seg_dir.open(&file("tvd"))?;
+                    let tvx = seg_dir.open(&file("tvx"))?;
+                    let tvm = seg_dir.open(&file("tvm"))?;
                     Some((tvd, tvx, tvm, suffix))
                 }
                 None => None,
@@ -1881,8 +1881,8 @@ impl IndexingConfig {
             let doc_values = SourceDocValueColumns { columns, per_field };
 
             let norms = if seg_files.iter().any(|f| f.ends_with(".nvd")) {
-                let nvm = seg_dir.open(&format!("{name}.nvm"))?.to_vec();
-                let nvd = seg_dir.open(&format!("{name}.nvd"))?.to_vec();
+                let nvm = seg_dir.open(&format!("{name}.nvm"))?;
+                let nvd = seg_dir.open(&format!("{name}.nvd"))?;
                 Some((nvm, nvd))
             } else {
                 None
@@ -1896,9 +1896,9 @@ impl IndexingConfig {
                     Some((
                         format,
                         suffix,
-                        seg_dir.open(&format!("{seg}.vem"))?.to_vec(),
-                        seg_dir.open(&format!("{seg}.vec"))?.to_vec(),
-                        seg_dir.open(&format!("{seg}.vex"))?.to_vec(),
+                        seg_dir.open(&format!("{seg}.vem"))?,
+                        seg_dir.open(&format!("{seg}.vec"))?,
+                        seg_dir.open(&format!("{seg}.vex"))?,
                     ))
                 }
                 None => None,
@@ -1912,8 +1912,8 @@ impl IndexingConfig {
                 let (meta_ext, data_ext) = format.quantized_extensions();
                 let graph = if format.has_graph() {
                     Some((
-                        seg_dir.open(&format!("{seg}.vem"))?.to_vec(),
-                        seg_dir.open(&format!("{seg}.vex"))?.to_vec(),
+                        seg_dir.open(&format!("{seg}.vem"))?,
+                        seg_dir.open(&format!("{seg}.vex"))?,
                     ))
                 } else {
                     None
@@ -1921,10 +1921,10 @@ impl IndexingConfig {
                 quantized_vectors.push(RawQuantizedVectorFiles {
                     format,
                     suffix,
-                    vemf: seg_dir.open(&format!("{seg}.vemf"))?.to_vec(),
-                    vec: seg_dir.open(&format!("{seg}.vec"))?.to_vec(),
-                    quantized_meta: seg_dir.open(&format!("{seg}.{meta_ext}"))?.to_vec(),
-                    quantized_data: seg_dir.open(&format!("{seg}.{data_ext}"))?.to_vec(),
+                    vemf: seg_dir.open(&format!("{seg}.vemf"))?,
+                    vec: seg_dir.open(&format!("{seg}.vec"))?,
+                    quantized_meta: seg_dir.open(&format!("{seg}.{meta_ext}"))?,
+                    quantized_data: seg_dir.open(&format!("{seg}.{data_ext}"))?,
                     graph,
                 });
             }
@@ -1939,11 +1939,11 @@ impl IndexingConfig {
                         format!("{name}_{suffix}")
                     };
                     let listed = |ext: &str| seg_files.contains(&format!("{seg}.{ext}"));
-                    let pair = |a: &str, b: &str| -> Result<Option<(Vec<u8>, Vec<u8>)>> {
+                    let pair = |a: &str, b: &str| -> Result<Option<(Input, Input)>> {
                         Ok(if listed(a) {
                             Some((
-                                seg_dir.open(&format!("{seg}.{a}"))?.to_vec(),
-                                seg_dir.open(&format!("{seg}.{b}"))?.to_vec(),
+                                seg_dir.open(&format!("{seg}.{a}"))?,
+                                seg_dir.open(&format!("{seg}.{b}"))?,
                             ))
                         } else {
                             None
@@ -1956,8 +1956,8 @@ impl IndexingConfig {
                     vectors.push(RawVectorGroup {
                         flat_quantized: suffix.rsplit_once('_').map(|(f, _)| f)
                             == Some(lucene_codecs::scalar_quantized_vectors::NAME),
-                        vec: seg_dir.open(&format!("{seg}.vec"))?.to_vec(),
-                        vemf: seg_dir.open(&format!("{seg}.vemf"))?.to_vec(),
+                        vec: seg_dir.open(&format!("{seg}.vec"))?,
+                        vemf: seg_dir.open(&format!("{seg}.vemf"))?,
                         graph: pair("vem", "vex")?,
                         quantized: pair("vemq", "veq")?,
                         suffix,
@@ -1967,9 +1967,9 @@ impl IndexingConfig {
 
             let points = if seg_files.iter().any(|f| f.ends_with(".kdd")) {
                 Some((
-                    seg_dir.open(&format!("{name}.kdm"))?.to_vec(),
-                    seg_dir.open(&format!("{name}.kdi"))?.to_vec(),
-                    seg_dir.open(&format!("{name}.kdd"))?.to_vec(),
+                    seg_dir.open(&format!("{name}.kdm"))?,
+                    seg_dir.open(&format!("{name}.kdi"))?,
+                    seg_dir.open(&format!("{name}.kdd"))?,
                 ))
             } else {
                 None
@@ -2174,7 +2174,7 @@ impl IndexingConfig {
                         .chain(&raw.other_groups)
                         .map(|g| per_field_postings::GroupFiles {
                             suffix: &g.suffix,
-                            dictionary: g.dictionary.iter().map(Vec::as_slice).collect(),
+                            dictionary: g.dictionary.iter().map(|d| &**d).collect(),
                             doc: g.doc.as_deref(),
                             pos: g.pos.as_deref(),
                             pay: g.pay.as_deref(),
