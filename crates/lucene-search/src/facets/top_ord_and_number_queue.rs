@@ -9,16 +9,33 @@
 
 use super::facet_result::FacetValue;
 
+/// A queue's `lessThan`: a closure, or a zero-sized ordering such as
+/// [`OrdLess`] that a queue type can name (so the comparison inlines rather
+/// than going through a function pointer).
+pub(crate) trait LessThan<T> {
+    fn less_than(&self, a: &T, b: &T) -> bool;
+}
+
+impl<T, F: Fn(&T, &T) -> bool> LessThan<T> for F {
+    #[inline(always)]
+    fn less_than(&self, a: &T, b: &T) -> bool {
+        self(a, b)
+    }
+}
+
 /// Lucene's `PriorityQueue`: a binary min-heap of at most `max_size`
 /// elements under `less_than`, whose top is the least element.
-pub(crate) struct PriorityQueue<T, F: Fn(&T, &T) -> bool> {
-    /// `heap[1..=size]`, stored from index 0.
+///
+/// Java's 1-based position `p` is index `p - 1` here (children `2i + 1` and
+/// `2i + 2`, parent `(i - 1) / 2`): the same tree, so the same comparisons in
+/// the same order and every element ends where Java's does.
+pub(crate) struct PriorityQueue<T, F: LessThan<T>> {
     heap: Vec<T>,
     max_size: usize,
     less_than: F,
 }
 
-impl<T, F: Fn(&T, &T) -> bool> PriorityQueue<T, F> {
+impl<T, F: LessThan<T>> PriorityQueue<T, F> {
     /// `new PriorityQueue(maxSize)`.
     pub(crate) fn new(max_size: usize, less_than: F) -> Self {
         PriorityQueue {
@@ -46,23 +63,25 @@ impl<T, F: Fn(&T, &T) -> bool> PriorityQueue<T, F> {
     /// `add(element)`.
     pub(crate) fn add(&mut self, element: T) {
         self.heap.push(element);
-        let last = self.heap.len();
-        self.up_heap(last);
+        self.up_heap(self.heap.len().wrapping_sub(1));
     }
 
     /// `insertWithOverflow(element)`: adds `element` while there is room;
     /// otherwise replaces the top when the top is less than it. Returns what
     /// fell out (`element` itself when it did not get in).
+    #[inline]
     pub(crate) fn insert_with_overflow(&mut self, element: T) -> Option<T> {
         if self.heap.len() < self.max_size {
             self.add(element);
-            None
-        } else if !self.heap.is_empty() && (self.less_than)(&self.heap[0], &element) {
-            let old = std::mem::replace(&mut self.heap[0], element);
-            self.down_heap(1);
-            Some(old)
-        } else {
-            Some(element)
+            return None;
+        }
+        match self.heap.first_mut() {
+            Some(top) if self.less_than.less_than(top, &element) => {
+                let old = std::mem::replace(top, element);
+                self.down_heap();
+                Some(old)
+            }
+            _ => Some(element),
         }
     }
 
@@ -72,60 +91,50 @@ impl<T, F: Fn(&T, &T) -> bool> PriorityQueue<T, F> {
             return None;
         }
         let result = self.heap.swap_remove(0);
-        if !self.heap.is_empty() {
-            self.down_heap(1);
-        }
+        self.down_heap();
         Some(result)
     }
 
     /// `updateTop()`: restores the heap after the top changed.
     pub(crate) fn update_top(&mut self) {
-        if !self.heap.is_empty() {
-            self.down_heap(1);
-        }
+        self.down_heap();
     }
 
-    /// `lessThan(heap[a], heap[b])`, positions 1-based.
-    fn less(&self, a: usize, b: usize) -> bool {
-        (self.less_than)(
-            &self.heap[a.saturating_sub(1)],
-            &self.heap[b.saturating_sub(1)],
-        )
-    }
-
-    /// Swaps 1-based positions `a` and `b`.
-    fn swap(&mut self, a: usize, b: usize) {
-        self.heap.swap(a.saturating_sub(1), b.saturating_sub(1));
-    }
-
-    /// `upHeap(origPos)`, positions 1-based: the hole Java moves up is a
-    /// chain of swaps here, which ends with every element where Java's does.
-    fn up_heap(&mut self, orig_pos: usize) {
-        let mut i = orig_pos;
-        let mut j = i >> 1;
-        while j > 0 && self.less(i, j) {
-            self.swap(i, j);
+    /// `upHeap(origPos)`: the hole Java moves up is a chain of swaps here,
+    /// which ends with every element where Java's does.
+    fn up_heap(&mut self, mut i: usize) {
+        let heap = self.heap.as_mut_slice();
+        while i > 0 {
+            let j = i.wrapping_sub(1) / 2;
+            if !self.less_than.less_than(&heap[i], &heap[j]) {
+                break;
+            }
+            heap.swap(i, j);
             i = j;
-            j >>= 1;
         }
     }
 
-    /// `downHeap(i)`, positions 1-based.
-    fn down_heap(&mut self, mut i: usize) {
-        let size = self.heap.len();
-        let mut j = i.saturating_mul(2);
-        let mut k = j.saturating_add(1);
-        if k <= size && self.less(k, j) {
-            j = k;
-        }
-        while j <= size && self.less(j, i) {
-            self.swap(i, j);
-            i = j;
-            j = i.saturating_mul(2);
-            k = j.saturating_add(1);
-            if k <= size && self.less(k, j) {
+    /// `downHeap(1)`: the top sifted down, the lesser child (the right one
+    /// only when strictly less, as Java's) taking its place while it is less.
+    fn down_heap(&mut self) {
+        let heap = self.heap.as_mut_slice();
+        let size = heap.len();
+        let mut i = 0usize;
+        loop {
+            // No overflow: `i < size`, and a `Vec` holds under `isize::MAX`.
+            let mut j = i.wrapping_mul(2).wrapping_add(1);
+            if j >= size {
+                break;
+            }
+            let k = j.wrapping_add(1);
+            if k < size && self.less_than.less_than(&heap[k], &heap[j]) {
                 j = k;
             }
+            if !self.less_than.less_than(&heap[j], &heap[i]) {
+                break;
+            }
+            heap.swap(i, j);
+            i = j;
         }
     }
 }
@@ -139,6 +148,7 @@ pub struct OrdAndValue {
 
 /// `OrdAndInt.lessThan` / `OrdAndFloat.lessThan`: the lesser value, then the
 /// greater ordinal.
+#[inline(always)]
 fn ord_and_value_less_than(a: &OrdAndValue, b: &OrdAndValue) -> bool {
     let (lt, gt) = match (a.value, b.value) {
         (FacetValue::Int(x), FacetValue::Int(y)) => (x < y, x > y),
@@ -156,14 +166,23 @@ fn ord_and_value_less_than(a: &OrdAndValue, b: &OrdAndValue) -> bool {
     a.ord > b.ord
 }
 
-type LessThan = fn(&OrdAndValue, &OrdAndValue) -> bool;
+/// [`ord_and_value_less_than`] as a type a queue can name.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct OrdLess;
+
+impl LessThan<OrdAndValue> for OrdLess {
+    #[inline(always)]
+    fn less_than(&self, a: &OrdAndValue, b: &OrdAndValue) -> bool {
+        ord_and_value_less_than(a, b)
+    }
+}
 
 /// `TopOrdAndNumberQueue`: the `top_n` best [`OrdAndValue`]s -- greatest
 /// value first, the lesser ordinal winning a tie. [`Self::int`] is
 /// `TopOrdAndIntQueue`, [`Self::float`] `TopOrdAndFloatQueue`; they differ
 /// only in the values they hold.
 pub struct TopOrdAndNumberQueue {
-    queue: PriorityQueue<OrdAndValue, LessThan>,
+    queue: PriorityQueue<OrdAndValue, OrdLess>,
 }
 
 impl TopOrdAndNumberQueue {
@@ -179,11 +198,12 @@ impl TopOrdAndNumberQueue {
 
     fn new(top_n: usize) -> Self {
         TopOrdAndNumberQueue {
-            queue: PriorityQueue::new(top_n, ord_and_value_less_than as LessThan),
+            queue: PriorityQueue::new(top_n, OrdLess),
         }
     }
 
     /// `insertWithOverflow(ordAndValue)`.
+    #[inline]
     pub fn insert_with_overflow(&mut self, element: OrdAndValue) -> Option<OrdAndValue> {
         self.queue.insert_with_overflow(element)
     }

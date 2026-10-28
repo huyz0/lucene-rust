@@ -171,6 +171,63 @@ fn for_each_hit_is_the_conjunction_whichever_side_leads() {
     assert!(r.is_err());
 }
 
+/// A chunk's walk is the whole walk cut to the chunk, whichever side leads,
+/// at word edges and inside words, for every kind of hit set.
+#[test]
+fn for_each_hit_in_is_for_each_hit_cut_to_the_range() {
+    let dv: Vec<i32> = (0..250).filter(|d| d % 3 != 1).collect();
+    let set: Vec<usize> = (0..250).filter(|d| d % 5 != 2).collect();
+    let mut wide = FixedBitSet::new(250);
+    for &d in &set {
+        // FBS: every document of `set` is below the bitset's length of 250.
+        wide.set(d);
+    }
+    let array = DocIdSet::Array(set.iter().map(|&d| d as i32).collect());
+    let led_by_dv = DocIdSet::Bits {
+        bits: wide.clone(),
+        cost: 1000,
+    };
+    let led_by_bits = DocIdSet::Bits {
+        bits: wide,
+        cost: 1,
+    };
+    let ends = [-5, 0, 1, 63, 64, 65, 100, 127, 128, 200, 249, 250, 400];
+    for hits in [&array, &led_by_dv, &led_by_bits, &DocIdSet::Empty] {
+        let whole = hits_of(hits, &dv);
+        for &lo in &ends {
+            for &hi in &ends {
+                let mut d = Dv {
+                    docs: dv.clone(),
+                    doc: -1,
+                };
+                let mut got = Vec::new();
+                for_each_hit_in(hits, &mut d, lo, hi, |d| {
+                    got.push(d.doc_id());
+                    Ok(())
+                })
+                .unwrap();
+                let want: Vec<i32> = whole
+                    .iter()
+                    .copied()
+                    .filter(|&x| x >= lo && x < hi)
+                    .collect();
+                assert_eq!(got, want, "{lo}..{hi}");
+            }
+        }
+        // An error stops the walk.
+        if !matches!(hits, DocIdSet::Empty) {
+            let mut d = Dv {
+                docs: dv.clone(),
+                doc: -1,
+            };
+            let r = for_each_hit_in(hits, &mut d, 10, 200, |_| {
+                Err(crate::Error::IllegalState("stop".into()))
+            });
+            assert!(r.is_err());
+        }
+    }
+}
+
 #[test]
 fn set_bits_pop_word_by_word_in_order_and_stop_at_an_error() {
     let mut bits = FixedBitSet::new(200);

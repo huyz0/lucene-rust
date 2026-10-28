@@ -91,9 +91,11 @@ impl SpatialOperation {
     /// `evaluate(indexedShape, queryShape)`.
     pub fn evaluate(self, indexed: &dyn Shape, query: &dyn Shape) -> Result<bool> {
         Ok(match self {
-            SpatialOperation::BBoxIntersects => indexed.bounding_box()?.relate(query)?.intersects(),
+            SpatialOperation::BBoxIntersects => {
+                indexed.bounding_box_ref()?.relate(query)?.intersects()
+            }
             SpatialOperation::BBoxWithin => {
-                let bbox = indexed.bounding_box()?;
+                let bbox = indexed.bounding_box_ref()?;
                 bbox.relate(query)? == SpatialRelation::Within || bbox.equals(query)
             }
             SpatialOperation::Contains => {
@@ -164,7 +166,7 @@ impl SpatialArgs {
         if dist_err_pct == 0.0 || shape.as_point().is_some() {
             return Ok(0.0);
         }
-        let bbox = shape.bounding_box()?;
+        let bbox = shape.bounding_box_ref()?;
         let ctr = bbox.center()?;
         let y = if ctr.y() >= 0.0 {
             bbox.max_y()

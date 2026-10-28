@@ -356,3 +356,115 @@ fn expressions_match_java_over_an_index() {
     }
     assert_eq!(checked, [150, 5, 5, 15]);
 }
+
+/// An expression scoring a `FunctionScoreQuery` (read a batch at a time,
+/// `DoubleValues::fill_batch`): each hit scores the expression over the
+/// wrapped query's score and the fields, as computed here per document;
+/// and a batch of an expression's values is its per-document values.
+#[test]
+fn an_expression_scores_a_function_score_query() {
+    use lucene_search::function::FunctionScoreQuery;
+    let dir = fixture("values_rescore_index");
+    let reader = DirectoryReader::open(&FsDirectory::open(&dir)).expect("open reader");
+    let mut opened = reader.open_segments().expect("open postings");
+    opened.open_points().expect("open points");
+    let segments = opened.as_open_segments();
+    let owned: Vec<HashMap<String, FieldNorms<'_>>> = reader
+        .field_norms("body")
+        .unwrap()
+        .into_iter()
+        .map(|n| n.into_iter().map(|n| ("body".to_string(), n)).collect())
+        .collect();
+    let norms: Vec<Option<&HashMap<String, FieldNorms<'_>>>> = owned.iter().map(Some).collect();
+    let searcher = IndexSearcher::new(&segments, &norms).unwrap();
+    let max_docs: Vec<i32> = reader.segment_readers().iter().map(|r| r.max_doc).collect();
+    let ctx = ValuesContext::new(&searcher);
+    let n = read(&ctx, vs::from_long_field("n").as_ref(), &max_docs);
+    let d = read(&ctx, vs::from_double_field("d").as_ref(), &max_docs);
+
+    let mut bindings = SimpleBindings::new();
+    bindings.add_source("n", vs::from_long_field("n"));
+    bindings.add_source("d", vs::from_double_field("d"));
+    bindings.add_source("_score", vs::scores());
+    bindings.add_expression("inner", Arc::new(compile("n + _score").unwrap()));
+    let text = "sqrt(_score) + abs(n) * 2 + (d > 0 ? d : inner) * 0.5";
+    let term = || BooleanQuery {
+        must: vec![Clause::Term(TermQuery::new("body", b"w1".to_vec()))],
+        ..BooleanQuery::default()
+    };
+    let plain = searcher.search(&term(), 10_000).unwrap();
+    assert!(plain.score_docs.len() > 1);
+    let want = |doc: i32, s: f32| {
+        let (n, d) = (
+            n[doc as usize].unwrap_or(0.0),
+            d[doc as usize].unwrap_or(0.0),
+        );
+        let s = f64::from(s);
+        let v = s.sqrt() + n.abs() * 2.0 + (if d > 0.0 { d } else { n + s }) * 0.5;
+        if v >= 0.0 {
+            v as f32
+        } else {
+            0.0
+        }
+    };
+    let mut expected: Vec<(i32, u32)> = plain
+        .score_docs
+        .iter()
+        .map(|h| (h.doc, want(h.doc, h.score)))
+        .map(|(doc, s)| (doc, s.to_bits()))
+        .collect();
+    expected.sort_by(|a, b| {
+        f32::from_bits(b.1)
+            .total_cmp(&f32::from_bits(a.1))
+            .then(a.0.cmp(&b.0))
+    });
+    for caching in [false, true] {
+        let e = Arc::new(compile(text).unwrap());
+        let source: Arc<dyn DoubleValuesSource> = if caching {
+            Arc::new(ExpressionValueSource::caching(&bindings, e).unwrap())
+        } else {
+            Arc::new(ExpressionValueSource::new(&bindings, e).unwrap())
+        };
+        let q = BooleanQuery {
+            must: vec![Clause::from(FunctionScoreQuery::new(term(), source))],
+            ..BooleanQuery::default()
+        };
+        let got = searcher.search(&q, 10_000).unwrap();
+        let got: Vec<(i32, u32)> = got
+            .score_docs
+            .iter()
+            .map(|h| (h.doc, h.score.to_bits()))
+            .collect();
+        assert_eq!(got, expected, "caching={caching}");
+    }
+
+    // A batch of values (no scores read) is the per-document values.
+    bindings.add_expression("inner2", Arc::new(compile("n * 2 + d").unwrap()));
+    let outer = Arc::new(compile("inner2 - n + sqrt(abs(d)) + (n ? d : 1)").unwrap());
+    for caching in [false, true] {
+        let source = if caching {
+            ExpressionValueSource::caching(&bindings, outer.clone()).unwrap()
+        } else {
+            ExpressionValueSource::new(&bindings, outer.clone()).unwrap()
+        };
+        let per_doc = read(&ctx, &source, &max_docs);
+        let mut batched = Vec::new();
+        for (leaf, &max_doc) in max_docs.iter().enumerate() {
+            let mut v = source.get_values(&ctx, leaf, None).unwrap();
+            assert!(v.batch_capable());
+            let docs: Vec<i32> = (0..max_doc).collect();
+            // uneven batches, an empty one after each
+            for chunk in docs.chunks(7).flat_map(|c| [c, &c[..0]]) {
+                let k = chunk.len();
+                let (mut out, mut has) = (vec![0.0; k], vec![false; k]);
+                v.fill_batch(chunk, &vec![0.0; k], &mut out, &mut has)
+                    .unwrap();
+                assert!(has.iter().all(|&h| h));
+                batched.extend(out.into_iter().map(Some));
+            }
+        }
+        let bits =
+            |v: &[Option<f64>]| -> Vec<u64> { v.iter().map(|x| x.unwrap().to_bits()).collect() };
+        assert_eq!(bits(&batched), bits(&per_doc), "caching={caching}");
+    }
+}

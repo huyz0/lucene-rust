@@ -28,6 +28,97 @@ pub enum AutomatonType {
     NORMAL,
 }
 
+/// `getByteRunnable()` with its concrete type: the determinized table or
+/// the lazily determinized NFA. A walk that steps through this instead of
+/// `&dyn ByteRunnable` makes a predictable two-way branch per byte rather
+/// than an indirect call, and inlines the table read of the common
+/// [`ByteRunnableRef::Dfa`] case.
+#[derive(Clone, Copy)]
+pub enum ByteRunnableRef<'a> {
+    /// `runAutomaton`.
+    Dfa(&'a ByteRunAutomaton),
+    /// `nfaRunAutomaton`.
+    Nfa(&'a NfaRunAutomaton),
+}
+
+impl<'a> ByteRunnableRef<'a> {
+    /// `step(state, c)`.
+    // SENTINEL: -1 means `c` leads nowhere, as `ByteRunnable::step`.
+    #[inline]
+    pub fn step(self, state: i32, c: i32) -> i32 {
+        match self {
+            ByteRunnableRef::Dfa(r) => r.0.step(state, c),
+            ByteRunnableRef::Nfa(n) => ByteRunnable::step(n, state, c),
+        }
+    }
+
+    /// `step(state, b)` for a byte: the table's class lookup needs no range
+    /// check.
+    // SENTINEL: -1 means `b` leads nowhere, as `ByteRunnable::step`.
+    #[inline]
+    pub fn step_byte(self, state: i32, b: u8) -> i32 {
+        match self {
+            ByteRunnableRef::Dfa(r) => r.0.step_byte(state, b),
+            ByteRunnableRef::Nfa(n) => ByteRunnable::step(n, state, i32::from(b)),
+        }
+    }
+
+    /// `isAccept(state)`.
+    #[inline]
+    pub fn is_accept(self, state: i32) -> bool {
+        match self {
+            ByteRunnableRef::Dfa(r) => r.0.is_accept(state),
+            ByteRunnableRef::Nfa(n) => ByteRunnable::is_accept(n, state),
+        }
+    }
+
+    /// `getSize()`.
+    #[inline]
+    pub fn get_size(self) -> i32 {
+        match self {
+            ByteRunnableRef::Dfa(r) => r.0.get_size(),
+            ByteRunnableRef::Nfa(n) => ByteRunnable::get_size(n),
+        }
+    }
+
+    /// `run(bytes)`.
+    #[inline]
+    pub fn run(self, s: &[u8]) -> bool {
+        match self {
+            ByteRunnableRef::Dfa(r) => ByteRunnable::run(r, s),
+            ByteRunnableRef::Nfa(n) => ByteRunnable::run(n, s),
+        }
+    }
+
+    /// The same automaton as the `dyn` [`CompiledAutomaton::get_byte_runnable`]
+    /// hands out.
+    pub fn as_dyn(self) -> &'a dyn ByteRunnable {
+        match self {
+            ByteRunnableRef::Dfa(r) => r,
+            ByteRunnableRef::Nfa(n) => n,
+        }
+    }
+}
+
+impl ByteRunnable for ByteRunnableRef<'_> {
+    #[inline]
+    fn step(&self, state: i32, c: i32) -> i32 {
+        ByteRunnableRef::step(*self, state, c)
+    }
+    #[inline]
+    fn is_accept(&self, state: i32) -> bool {
+        ByteRunnableRef::is_accept(*self, state)
+    }
+    #[inline]
+    fn get_size(&self) -> i32 {
+        ByteRunnableRef::get_size(*self)
+    }
+    #[inline]
+    fn run(&self, s: &[u8]) -> bool {
+        ByteRunnableRef::run(*self, s)
+    }
+}
+
 /// `CompiledAutomaton`.
 pub struct CompiledAutomaton {
     /// `type`.
@@ -158,9 +249,16 @@ impl CompiledAutomaton {
 
     /// `getByteRunnable()`.
     pub fn get_byte_runnable(&self) -> Option<&dyn ByteRunnable> {
+        self.byte_runnable().map(ByteRunnableRef::as_dyn)
+    }
+
+    /// `getByteRunnable()` with its concrete type, for walks that step it
+    /// per byte (see [`ByteRunnableRef`]).
+    #[inline]
+    pub fn byte_runnable(&self) -> Option<ByteRunnableRef<'_>> {
         match (&self.nfa_run_automaton, &self.run_automaton) {
-            (Some(n), _) => Some(n),
-            (None, Some(r)) => Some(r),
+            (Some(n), _) => Some(ByteRunnableRef::Nfa(n)),
+            (None, Some(r)) => Some(ByteRunnableRef::Dfa(r)),
             (None, None) => None,
         }
     }
@@ -361,6 +459,40 @@ mod tests {
         assert!(c.automaton().is_none());
         let none = compile("#");
         assert!(none.get_byte_runnable().is_none() && none.get_transition_accessor().is_none());
+        assert!(none.byte_runnable().is_none());
+    }
+
+    /// The concrete hand-out steps exactly as the `dyn` one, on both
+    /// branches, through its own methods and through the trait.
+    #[test]
+    fn byte_runnable_ref_matches_dyn() {
+        let dfa = compile("(ab|c)*[d-f]?");
+        let nfa = CompiledAutomaton::new(&RegExp::new("(a|ab)*c").unwrap().to_automaton().unwrap())
+            .unwrap();
+        for c in [&dfa, &nfa] {
+            let r = c.byte_runnable().unwrap();
+            let d = c.get_byte_runnable().unwrap();
+            assert_eq!(
+                matches!(r, ByteRunnableRef::Nfa(_)),
+                c.nfa_run_automaton.is_some()
+            );
+            for s in 0..d.get_size() {
+                assert_eq!(r.is_accept(s), d.is_accept(s));
+                for b in 0..=255u8 {
+                    let want = d.step(s, i32::from(b));
+                    assert_eq!(r.step(s, i32::from(b)), want);
+                    assert_eq!(r.step_byte(s, b), want);
+                    assert_eq!(ByteRunnable::step(&r, s, i32::from(b)), want);
+                }
+                assert_eq!(ByteRunnable::is_accept(&r, s), d.is_accept(s));
+            }
+            assert_eq!(r.get_size(), d.get_size());
+            assert_eq!(ByteRunnable::get_size(&r), d.get_size());
+            for t in [&b""[..], b"c", b"abc", b"ababcd", b"aac", b"x"] {
+                assert_eq!(r.run(t), d.run(t), "{t:?}");
+                assert_eq!(ByteRunnable::run(&r, t), d.run(t));
+            }
+        }
     }
 
     #[test]

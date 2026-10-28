@@ -13,7 +13,9 @@
 //! chain (where the real allocation savings would materialize) is future
 //! work tracked in `PLAN.md`.
 
+use std::collections::hash_map::RandomState;
 use std::collections::HashMap;
+use std::hash::{BuildHasher, BuildHasherDefault, Hasher};
 
 /// A stable, cheap-to-copy handle for a byte sequence previously interned by
 /// a [`TermInterner`]. Two calls to [`TermInterner::intern`] with
@@ -44,12 +46,48 @@ impl TermId {
 /// is the core win over passing owned `Vec<u8>`/`String` around every time
 /// the same term recurs (e.g. across postings for a high-frequency term, or
 /// repeated query terms).
+///
+/// Each distinct term's bytes are stored once, end to end in one buffer;
+/// the lookup table holds only each term's (randomly keyed, so
+/// input-controlled terms cannot force collisions) hash, hashed once per
+/// call and never again on growth.
 #[derive(Debug, Default, Clone)]
 pub struct TermInterner {
-    /// Owned storage for each distinct term, indexed by `TermId::index()`.
-    terms: Vec<Box<[u8]>>,
-    /// Reverse lookup from bytes to the ID already assigned to them.
-    ids: HashMap<Box<[u8]>, TermId>,
+    /// Every distinct term's bytes, in `TermId` order.
+    bytes: Vec<u8>,
+    /// `ends[i]`: where term `i` ends in `bytes` (it starts at `ends[i-1]`,
+    /// or 0).
+    ends: Vec<usize>,
+    /// `next[i]`: the term interned before `i` with the same hash, or
+    /// [`NO_TERM`].
+    next: Vec<u32>,
+    /// Term hash -> the latest term with that hash (the head of its chain).
+    heads: HashMap<u64, u32, BuildHasherDefault<HashIsKey>>,
+    hasher: RandomState,
+}
+
+/// The end of a [`TermInterner`] hash chain.
+const NO_TERM: u32 = u32::MAX;
+
+/// The hasher of a table keyed by a hash: it passes the key through.
+#[derive(Debug, Default, Clone, Copy)]
+struct HashIsKey(u64);
+
+impl Hasher for HashIsKey {
+    fn write(&mut self, bytes: &[u8]) {
+        // Only `u64` keys reach this hasher; fold anything else in anyway.
+        for &b in bytes {
+            self.0 = self.0.rotate_left(8) ^ u64::from(b);
+        }
+    }
+    #[inline]
+    fn write_u64(&mut self, i: u64) {
+        self.0 = i;
+    }
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0
+    }
 }
 
 impl TermInterner {
@@ -62,25 +100,46 @@ impl TermInterner {
     /// distinct terms.
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
-            terms: Vec::with_capacity(capacity),
-            ids: HashMap::with_capacity(capacity),
+            bytes: Vec::new(),
+            ends: Vec::with_capacity(capacity),
+            next: Vec::with_capacity(capacity),
+            heads: HashMap::with_capacity_and_hasher(capacity, Default::default()),
+            hasher: RandomState::new(),
         }
+    }
+
+    fn term(&self, i: usize) -> &[u8] {
+        let start = if i == 0 { 0 } else { self.ends[i - 1] };
+        &self.bytes[start..self.ends[i]]
     }
 
     /// Interns `term`, returning the existing [`TermId`] if these exact bytes
     /// were interned before, or allocating and returning a new one otherwise.
     ///
     /// The empty byte string is a valid term and interns like any other.
+    ///
+    /// # Panics
+    /// When more than `u32::MAX - 1` distinct terms are interned.
     pub fn intern(&mut self, term: &[u8]) -> TermId {
-        if let Some(&id) = self.ids.get(term) {
-            return id;
+        let hash = self.hasher.hash_one(term);
+        let head = self.heads.get(&hash).copied().unwrap_or(NO_TERM);
+        let mut at = head;
+        while at != NO_TERM {
+            if self.term(at as usize) == term {
+                return TermId(at);
+            }
+            at = self.next[at as usize];
         }
         // New distinct term: assign the next sequential ID.
-        let id = TermId(self.terms.len() as u32);
-        let boxed: Box<[u8]> = term.into();
-        self.terms.push(boxed.clone());
-        self.ids.insert(boxed, id);
-        id
+        let id = u32::try_from(self.ends.len())
+            .ok()
+            .filter(|&id| id != NO_TERM)
+            .expect("fewer than u32::MAX terms");
+        self.bytes.extend_from_slice(term);
+        self.ends.push(self.bytes.len());
+        self.next.push(head);
+        self.heads.insert(hash, id);
+        TermId(id)
     }
 
     /// Convenience wrapper over [`Self::intern`] for UTF-8 input.
@@ -92,19 +151,20 @@ impl TermInterner {
     /// Returns `None` if `id` was not produced by this interner (e.g. from a
     /// different `TermInterner` instance, or a stale/out-of-range value).
     pub fn get(&self, id: TermId) -> Option<&[u8]> {
-        self.terms.get(id.0 as usize).map(|b| b.as_ref())
+        let i = id.0 as usize;
+        (i < self.ends.len()).then(|| self.term(i))
     }
 
     /// The number of *distinct* terms interned so far -- the whole point of
     /// interning is that this stays far below the number of [`Self::intern`]
     /// calls when input has repeats.
     pub fn len(&self) -> usize {
-        self.terms.len()
+        self.ends.len()
     }
 
     /// Whether no terms have been interned yet.
     pub fn is_empty(&self) -> bool {
-        self.terms.is_empty()
+        self.ends.is_empty()
     }
 }
 
@@ -220,6 +280,26 @@ mod tests {
             );
             assert_eq!(ids[i], ids[i % vocab.len()], "call {i}");
         }
+    }
+
+    /// Terms sharing a hash chain: every one is still found, and only by
+    /// its own bytes (the chain walk compares them).
+    #[test]
+    fn colliding_hashes_chain() {
+        let mut pool = TermInterner::new();
+        let a = pool.intern(b"a");
+        let b = pool.intern(b"b");
+        // Force a collision: hang `b` under `a`'s hash too.
+        let ha = pool.hasher.hash_one(&b"a"[..]);
+        pool.next[b.0 as usize] = a.0;
+        pool.heads.insert(ha, b.0);
+        assert_eq!(pool.intern(b"a"), a);
+        assert_eq!(pool.intern(b"b"), b);
+        let c = pool.intern(b"c");
+        assert_eq!((pool.len(), c.index()), (3, 2));
+        let mut h = HashIsKey::default();
+        h.write(&[1, 2]);
+        assert_eq!(h.finish(), 0x102);
     }
 
     #[test]

@@ -166,7 +166,7 @@ fn kept_scores_feed_the_scores_source() {
 #[test]
 fn kept_scores_past_the_last_are_zero() {
     let mut s = KeptScores {
-        scores: vec![0.5],
+        scores: &[0.5],
         index: -1,
     };
     assert!(s.advance_exact(0).unwrap());

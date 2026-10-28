@@ -75,7 +75,7 @@ pub use context::{SpatialContext, SpatialContextFactory};
 pub use distance::{CartesianDistCalc, DistanceCalculator, DistanceUtils, GeodesicSphereDistCalc};
 pub use point::PointImpl;
 pub use rectangle::RectangleImpl;
-pub use shape::{Circle, Point, Rectangle, Shape, SpatialRelation};
+pub use shape::{BoundingBox, Circle, Point, Rectangle, Shape, SpatialRelation};
 pub use shape_factory::{
     LineStringBuilder, MultiLineStringBuilder, MultiPointBuilder, MultiPolygonBuilder,
     MultiShapeBuilder, PolygonBuilder, ShapeFactory, ShapeFactoryImpl,
