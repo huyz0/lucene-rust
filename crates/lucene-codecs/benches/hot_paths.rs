@@ -790,8 +790,71 @@ fn bench_sparse_numeric_reader(c: &mut Criterion) {
     group.finish();
 }
 
+/// `SortedNumericReader::values` over a dense multi-valued field whose values
+/// are split into varying-bits-per-value blocks (block magnitudes differ by
+/// orders, so the writer picks per-block bit widths): each document's
+/// values are read forward, as a sort or facet walks them.
+fn bench_sorted_numeric_varying_bpv(c: &mut Criterion) {
+    use lucene_codecs::field_infos::{
+        DocValuesSkipIndexType, DocValuesType, FieldInfo, FieldInfos, IndexOptions, VectorEncoding,
+        VectorSimilarityFunction,
+    };
+    const DOCS: usize = 60_000;
+    let values: Vec<Vec<i64>> = (0..DOCS)
+        .map(|d| {
+            let block = (2 * d) >> 14;
+            let span = 1i64 << (2 + (block * 9) % 40);
+            let v = (d as i64 * 7919) % span;
+            vec![v, v + 1]
+        })
+        .collect();
+    let id = [3u8; 16];
+    let (dvm, dvd, _) = ndv::write_single_dense_sorted_numeric_field(0, &values, &id, "").unwrap();
+    let fis = FieldInfos {
+        fields: vec![FieldInfo {
+            name: "f".into(),
+            number: 0,
+            store_term_vectors: false,
+            omit_norms: false,
+            store_payloads: false,
+            soft_deletes_field: false,
+            parent_field: false,
+            index_options: IndexOptions::None,
+            doc_values_type: DocValuesType::SortedNumeric,
+            doc_values_skip_index_type: DocValuesSkipIndexType::None,
+            doc_values_gen: -1,
+            attributes: Vec::new(),
+            point_dimension_count: 0,
+            point_index_dimension_count: 0,
+            point_num_bytes: 0,
+            vector_dimension: 0,
+            vector_encoding: VectorEncoding::Float32,
+            vector_similarity_function: VectorSimilarityFunction::Euclidean,
+        }],
+    };
+    let (_, meta) = ndv::parse_meta(&dvm, &id, "", &fis).unwrap();
+    let entry = meta.sorted_numeric_entry(0).unwrap();
+    assert!(
+        entry.numeric.block_shift.is_some(),
+        "values did not split into varying-bits-per-value blocks"
+    );
+    c.bench_function("doc_values/sorted_numeric_varying_bpv_forward", |b| {
+        let mut out = Vec::new();
+        b.iter(|| {
+            let mut r = ndv::SortedNumericReader::new(&dvd, entry);
+            let mut sum = 0i64;
+            for d in 0..DOCS as i32 {
+                r.values(d, &mut out).unwrap();
+                sum = sum.wrapping_add(out[0]);
+            }
+            black_box(sum)
+        })
+    });
+}
+
 criterion_group!(
     benches,
+    bench_sorted_numeric_varying_bpv,
     bench_direct_monotonic_get,
     bench_stored_fields_document,
     bench_points_decode_all,

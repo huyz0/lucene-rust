@@ -1678,27 +1678,7 @@ impl<'a> NumericReader<'a> {
     /// [`decode_value_varying_bpv`] with the block header kept between calls --
     /// `VaryingBPVReader.getLongValue`'s `if (this.block != block)`.
     fn decode_varying(&mut self, shift: u32, ordinal: i64) -> Result<i64> {
-        let index = ordinal >> shift;
-        let block = match self.block {
-            Some(b) if b.index == index => b,
-            _ => {
-                let b = read_varying_block(self.data, self.entry, index)?;
-                self.block = Some(b);
-                b
-            }
-        };
-        if block.bits_per_value == 0 {
-            return Ok(block.delta);
-        }
-        // `let ... else`, not `ok_or`: the error is built only when it is
-        // raised, not on every value (it was, per document, in an
-        // aggregation's profile).
-        let Some(values) = self.data.get(block.values_start..block.values_end) else {
-            return Err(lucene_store::Error::Eof { offset: 0 }.into());
-        };
-        let mask = low_bits_mask(shift);
-        let raw = direct_reader::get(values, block.bits_per_value, ordinal & mask)?;
-        Ok(self.entry.gcd.wrapping_mul(raw).wrapping_add(block.delta))
+        decode_varying_cached(self.data, self.entry, shift, ordinal, &mut self.block)
     }
 
     /// The values at ordinals `first..first + out.len()` of a
@@ -1754,6 +1734,54 @@ impl<'a> NumericReader<'a> {
             done += n;
         }
         Ok(())
+    }
+}
+
+/// [`decode_value_varying_bpv`] with the block header kept in `cache`
+/// between calls -- `VaryingBPVReader.getLongValue`'s
+/// `if (this.block != block)`.
+fn decode_varying_cached(
+    data: &[u8],
+    entry: &NumericEntry,
+    shift: u32,
+    ordinal: i64,
+    cache: &mut Option<VaryingBlock>,
+) -> Result<i64> {
+    let index = ordinal >> shift;
+    let block = match *cache {
+        Some(b) if b.index == index => b,
+        _ => {
+            let b = read_varying_block(data, entry, index)?;
+            *cache = Some(b);
+            b
+        }
+    };
+    if block.bits_per_value == 0 {
+        return Ok(block.delta);
+    }
+    // `let ... else`, not `ok_or`: the error is built only when it is
+    // raised, not on every value (it was, per document, in an
+    // aggregation's profile).
+    let Some(values) = data.get(block.values_start..block.values_end) else {
+        return Err(lucene_store::Error::Eof { offset: 0 }.into());
+    };
+    let mask = low_bits_mask(shift);
+    let raw = direct_reader::get(values, block.bits_per_value, ordinal & mask)?;
+    Ok(entry.gcd.wrapping_mul(raw).wrapping_add(block.delta))
+}
+
+/// [`decode_value`], with a varying-bits-per-value field's block header kept
+/// in `cache` so consecutive ordinals in one block skip the jump-table read.
+#[inline]
+fn decode_value_cached(
+    data: &[u8],
+    entry: &NumericEntry,
+    ordinal: i64,
+    cache: &mut Option<VaryingBlock>,
+) -> Result<i64> {
+    match entry.block_shift {
+        Some(shift) => decode_varying_cached(data, entry, shift, ordinal, cache),
+        None => decode_value(data, entry, ordinal),
     }
 }
 
@@ -2218,6 +2246,10 @@ pub struct SortedNumericReader<'a> {
     /// The address at a rank already read (the last document's end), so a
     /// forward scan reads one address per document.
     next_address: Option<(i64, i64)>,
+    /// The last varying-bits-per-value block header read, as
+    /// [`NumericReader`] keeps it: a document's values, and the next
+    /// document's, sit in one block.
+    block: Option<VaryingBlock>,
 }
 
 impl<'a> SortedNumericReader<'a> {
@@ -2255,6 +2287,7 @@ impl<'a> SortedNumericReader<'a> {
             fast,
             addresses,
             next_address: None,
+            block: None,
         }
     }
 
@@ -2301,7 +2334,7 @@ impl<'a> SortedNumericReader<'a> {
                     .and_then(|i| self.fast.as_ref()?.get(i));
                 out.push(match fast {
                     Some(v) => v,
-                    None => decode_value(self.data, numeric, rank)?,
+                    None => decode_value_cached(self.data, numeric, rank, &mut self.block)?,
                 });
             }
             Some(addrs) => {
@@ -2348,13 +2381,15 @@ impl<'a> SortedNumericReader<'a> {
                         for i in start..end {
                             out.push(match fast.get(i as i32) {
                                 Some(v) => v,
-                                None => decode_value(self.data, numeric, i)?,
+                                None => {
+                                    decode_value_cached(self.data, numeric, i, &mut self.block)?
+                                }
                             });
                         }
                     }
                     _ => {
                         for i in start..end {
-                            out.push(decode_value(self.data, numeric, i)?);
+                            out.push(decode_value_cached(self.data, numeric, i, &mut self.block)?);
                         }
                     }
                 }
@@ -2485,7 +2520,7 @@ impl<'a> SortedNumericReader<'a> {
                 let at = first + done as i64;
                 let got = i32::try_from(at).map_or(0, |a| fast.fill(a, &mut values[done..]));
                 if got == 0 {
-                    values[done] = decode_value(self.data, numeric, at)?;
+                    values[done] = decode_value_cached(self.data, numeric, at, &mut self.block)?;
                     done += 1;
                 } else {
                     done += got;
@@ -2625,6 +2660,7 @@ impl<'a> SortedNumericReader<'a> {
         // `buf[..buf_n]` holds the values at ordinals `buf_lo..buf_lo + buf_n`.
         let (mut buf_lo, mut buf_n) = (0i64, 0usize);
         let mut long = Vec::new();
+        let mut block = None;
         for doc in docs {
             let at = rank;
             // ARITH: a rank is below the field's document count, an `i32`.
@@ -2668,7 +2704,7 @@ impl<'a> SortedNumericReader<'a> {
                     // cannot answer: decode them one by one.
                     long.clear();
                     for i in lo..hi {
-                        long.push(decode_value(self.data, numeric, i)?);
+                        long.push(decode_value_cached(self.data, numeric, i, &mut block)?);
                     }
                     f(doc, &long);
                 }
@@ -7660,6 +7696,34 @@ mod tests {
         let mut fis = field_infos_with(&[0]);
         fis.fields[0].doc_values_type = DocValuesType::Binary;
         fis
+    }
+
+    #[test]
+    fn sorted_numeric_reader_caches_varying_bpv_blocks_exactly() {
+        let id = [4u8; ID_LENGTH];
+        let values: Vec<Vec<i64>> = (0..40_000usize)
+            .map(|d| {
+                let block = (2 * d) >> 14;
+                let span = 1i64 << (2 + (block * 9) % 40);
+                let v = (d as i64 * 7919) % span;
+                vec![v, v + 3]
+            })
+            .collect();
+        let (dvm, dvd, _) = write_single_dense_sorted_numeric_field(0, &values, &id, "").unwrap();
+        let (_, meta) = parse_meta(&dvm, &id, "", &sorted_numeric_field_infos()).unwrap();
+        let entry = meta.sorted_numeric_entry(0).unwrap();
+        assert!(entry.numeric.block_shift.is_some());
+        let mut r = SortedNumericReader::new(&dvd, entry);
+        let mut out = Vec::new();
+        // Forward, then jumping back across blocks: the cached header must
+        // follow every block change.
+        let order = (0..40_000)
+            .step_by(1)
+            .chain([39_999, 5, 20_000, 8_191, 8_192, 0]);
+        for d in order {
+            r.values(d, &mut out).unwrap();
+            assert_eq!(out, values[d as usize], "doc {d}");
+        }
     }
 
     fn sorted_numeric_field_infos() -> FieldInfos {
