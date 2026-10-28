@@ -939,10 +939,13 @@ fn vector_fields_index_through_the_explicit_path() {
             .unwrap()
             .field_type()
             .clone(),
-    );
+    )
+    .unwrap();
     let mut d = Document::new();
     d.add(bad);
     assert!(w.add_fields_document(&d).is_err());
+    // A byte vector over a FLOAT32 field type is refused by the field's
+    // constructor, as Java's is.
     let wrong = KnnByteVectorField::with_type(
         "v",
         vec![1, 2],
@@ -951,9 +954,7 @@ fn vector_fields_index_through_the_explicit_path() {
             .field_type()
             .clone(),
     );
-    let mut d = Document::new();
-    d.add(wrong);
-    assert!(w.add_fields_document(&d).is_err());
+    assert!(wrong.is_err());
     let _ = VectorValue::Byte(vec![]);
 }
 

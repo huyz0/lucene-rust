@@ -152,15 +152,18 @@ fn calendar_date(day: i64) -> (i64, i64, i64) {
 }
 
 /// `GregorianCalendar`'s epoch day for a date whose day of month may be out
-/// of range (lenient): the Gregorian reading when it falls on or after the
-/// cutover, the Julian one otherwise.
+/// of range (lenient). As `GregorianCalendar.computeTime` does, the calendar
+/// is chosen by `year_set`, the year as set before an out-of-range month
+/// rolled into it: before 1582 always the Julian reading; from 1582 on the
+/// Gregorian reading unless that falls before the cutover, then the Julian.
+/// This is the rule of [`DateTools::lenient_epoch_day`].
 // ARITH: day counts stay below 2^40 and milliseconds within
 // `i64` for every input Java accepts (see the note above `gregorian_days`).
 #[allow(clippy::arithmetic_side_effects)]
-fn calendar_days(y: i64, m: i64, d: i64) -> i64 {
+fn calendar_days(year_set: i64, y: i64, m: i64, d: i64) -> i64 {
     // ARITH: see the note above `gregorian_days`.
     let g = gregorian_days(y, m, 1) + d - 1;
-    if g >= GREGORIAN_CUTOVER_DAY {
+    if year_set >= 1582 && g >= GREGORIAN_CUTOVER_DAY {
         g
     } else {
         julian_days(y, m, 1) + d - 1
@@ -194,7 +197,7 @@ fn time_of(f: Fields) -> i64 {
     let month0 = f.month - 1;
     let year = f.year + month0.div_euclid(12);
     let month = month0.rem_euclid(12) + 1;
-    let day = calendar_days(year, month, f.day);
+    let day = calendar_days(f.year, year, month, f.day);
     // A time near the ends of `long` rounds past them and wraps, as Java's
     // `long` arithmetic does.
     day.wrapping_mul(MS_PER_DAY)
@@ -391,6 +394,28 @@ mod tests {
         assert!(DateTools::string_to_time("abcd").is_err());
         assert!(DateTools::string_to_time("").is_err());
         assert_eq!(DateTools::string_to_time("1970").unwrap(), 0);
+    }
+
+    /// A pre-1582 year whose month rolls past the October 1582 cutover stays
+    /// Julian, as `GregorianCalendar` picks the calendar by the year as set.
+    #[test]
+    fn rolled_pre_cutover_year_stays_julian() {
+        // 1581, month 23 is November 1582: Julian 1582-11-01, which is
+        // Gregorian 1582-11-11.
+        let t = DateTools::string_to_time("15812301").unwrap();
+        assert_eq!(t, julian_days(1582, 11, 1) * MS_PER_DAY);
+        assert_eq!(t, gregorian_days(1582, 11, 11) * MS_PER_DAY);
+        assert_eq!(t, DateTools::lenient_epoch_day(1581, 22, 1) * MS_PER_DAY);
+        // Set as 1582 it is the Gregorian reading.
+        assert_eq!(
+            DateTools::string_to_time("15821101").unwrap(),
+            gregorian_days(1582, 11, 1) * MS_PER_DAY
+        );
+        // A day rolling a pre-1582 year past the cutover stays Julian too.
+        assert_eq!(
+            DateTools::string_to_time("15811299").unwrap(),
+            (julian_days(1581, 12, 1) + 98) * MS_PER_DAY
+        );
     }
 
     /// `GregorianCalendar`'s lenient reading. The JDK's own answers for
