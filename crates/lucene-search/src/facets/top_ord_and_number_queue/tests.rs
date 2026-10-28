@@ -146,3 +146,130 @@ fn skipping_under_a_full_queues_bottom_keeps_the_same_queue() {
     f.insert_with_overflow(fv(1, 2.0));
     assert_eq!(f.full_int_bottom(), None);
 }
+
+/// The queue as it was ported first (1-based positions over a `fn`
+/// pointer), kept as the reference the 0-based heap must match element for
+/// element -- ties and `NaN`s included, where only the sift steps decide
+/// what stays.
+struct ReferenceQueue {
+    heap: Vec<OrdAndValue>,
+    max_size: usize,
+}
+
+impl ReferenceQueue {
+    fn less(&self, a: usize, b: usize) -> bool {
+        ord_and_value_less_than(&self.heap[a - 1], &self.heap[b - 1])
+    }
+
+    fn up_heap(&mut self, mut i: usize) {
+        let mut j = i >> 1;
+        while j > 0 && self.less(i, j) {
+            self.heap.swap(i - 1, j - 1);
+            i = j;
+            j >>= 1;
+        }
+    }
+
+    fn down_heap(&mut self, mut i: usize) {
+        let size = self.heap.len();
+        let mut j = i * 2;
+        let mut k = j + 1;
+        if k <= size && self.less(k, j) {
+            j = k;
+        }
+        while j <= size && self.less(j, i) {
+            self.heap.swap(i - 1, j - 1);
+            i = j;
+            j = i * 2;
+            k = j + 1;
+            if k <= size && self.less(k, j) {
+                j = k;
+            }
+        }
+    }
+
+    fn insert_with_overflow(&mut self, e: OrdAndValue) -> Option<OrdAndValue> {
+        if self.heap.len() < self.max_size {
+            self.heap.push(e);
+            let last = self.heap.len();
+            self.up_heap(last);
+            None
+        } else if !self.heap.is_empty() && ord_and_value_less_than(&self.heap[0], &e) {
+            let old = std::mem::replace(&mut self.heap[0], e);
+            self.down_heap(1);
+            Some(old)
+        } else {
+            Some(e)
+        }
+    }
+
+    fn pop(&mut self) -> Option<OrdAndValue> {
+        if self.heap.is_empty() {
+            return None;
+        }
+        let r = self.heap.swap_remove(0);
+        if !self.heap.is_empty() {
+            self.down_heap(1);
+        }
+        Some(r)
+    }
+}
+
+#[test]
+fn the_heap_matches_the_one_based_reference_on_ties_and_nans() {
+    let mut x: u64 = 0x2545_f491;
+    let mut next = move || {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        x
+    };
+    for size in [1usize, 2, 3, 7, 10, 64, 1000] {
+        for float in [false, true] {
+            let mut q = if float {
+                TopOrdAndNumberQueue::float(size)
+            } else {
+                TopOrdAndNumberQueue::int(size)
+            };
+            let mut r = ReferenceQueue {
+                heap: Vec::new(),
+                max_size: size,
+            };
+            for step in 0..20_000 {
+                // Few distinct values (many ties), the same ordinal now and
+                // then, a `NaN` in the float queue.
+                let ord = (next() % 5000) as i32;
+                let v = (next() % 8) as i32;
+                let e = if !float {
+                    iv(ord, v)
+                } else if v == 7 {
+                    fv(ord, f32::NAN)
+                } else {
+                    fv(ord, v as f32 * 0.5)
+                };
+                let (a, b) = (q.insert_with_overflow(e), r.insert_with_overflow(e));
+                // `NaN != NaN`: compare the bits.
+                assert_eq!(bits(a), bits(b), "size {size} step {step}");
+                if step % 997 == 0 {
+                    assert_eq!(bits(q.pop()), bits(r.pop()));
+                }
+                assert_eq!(bits(q.top().copied()), bits(r.heap.first().copied()));
+            }
+            loop {
+                let (a, b) = (q.pop(), r.pop());
+                assert_eq!(bits(a), bits(b), "size {size}");
+                if a.is_none() {
+                    break;
+                }
+            }
+        }
+    }
+}
+
+/// An element as comparable bits (a `NaN` equal to itself).
+fn bits(e: Option<OrdAndValue>) -> Option<(i32, u32, bool)> {
+    e.map(|e| match e.value {
+        FacetValue::Int(v) => (e.ord, v as u32, false),
+        FacetValue::Float(v) => (e.ord, v.to_bits(), true),
+    })
+}

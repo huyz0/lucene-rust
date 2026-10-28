@@ -262,6 +262,25 @@ fn points_and_rectangles() {
         let c = r.center().unwrap();
         assert_eq!(r.center_xy().unwrap(), (c.x(), c.y()));
     }
+    // `bounding_box_ref`: a rectangle borrows itself; anything else gets
+    // its `bounding_box`.
+    let rect = RectangleImpl::new(170.0, -170.0, -5.0, 5.0, ctx.clone());
+    match rect.bounding_box_ref().unwrap() {
+        BoundingBox::Borrowed(r) => assert!(std::ptr::addr_eq(r, &rect)),
+        BoundingBox::Owned(_) => panic!("a rectangle is its own bounding box"),
+    }
+    let want = rect.bounding_box().unwrap();
+    let got = rect.bounding_box_ref().unwrap();
+    assert_eq!(
+        (got.min_x(), got.max_x(), got.min_y(), got.max_y()),
+        (want.min_x(), want.max_x(), want.min_y(), want.max_y())
+    );
+    let circle = ctx.circle(10.0, 20.0, 3.0).unwrap();
+    let got = circle.bounding_box_ref().unwrap();
+    assert!(matches!(got, BoundingBox::Owned(_)));
+    let want = circle.bounding_box().unwrap();
+    assert!(got.equals(&*want as &dyn Shape));
+    assert!(p.bounding_box_ref().is_err());
     assert_eq!(empty.relate(&q).unwrap(), SpatialRelation::Disjoint);
     assert!(a.context().is_some());
     let c = cart();

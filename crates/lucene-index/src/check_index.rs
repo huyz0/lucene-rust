@@ -1596,7 +1596,9 @@ fn check_term_vectors(
             docs_with_vectors,
             "docs with vectors",
         ));
-        if postings.is_none() {
+        // No vectors means nothing to cross-check, postings or not: a
+        // segment whose term-vector field produced no tokens has neither.
+        if postings.is_none() && docs_with_vectors > 0 {
             // A cross-check with one side missing is not a cross-check.
             // (`postings.open` already reported the reason; if the segment
             // simply has no term dictionary, `fnm.postings_vs_files` did.)
@@ -6851,6 +6853,45 @@ mod tests {
             .expect("the intersect check ran on the field");
         assert!(check.passed(), "{check:?}");
         assert!(results.iter().all(CheckResult::all_passed));
+    }
+
+    /// A segment whose only indexed field has term vectors enabled but no
+    /// tokens has neither postings nor any vectors: the cross-check has
+    /// nothing to compare and passes, as in Java. It used to report
+    /// `term_vectors.match_postings` as skipped ("the postings side"),
+    /// which failed `test_random_regexps` for regexps matching no text.
+    #[test]
+    fn term_vectors_without_any_terms_pass_the_postings_cross_check() {
+        use crate::document::{Document, Field, FieldType, IndexOptions};
+        use crate::index_writer::IndexWriter;
+        let dst = tempdir();
+        let dir = FsDirectory::open(&dst);
+        let version = segment_info::LuceneVersion {
+            major: 10,
+            minor: 5,
+            bugfix: 0,
+        };
+        let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", version).unwrap();
+        let mut ft = FieldType::new();
+        ft.set_tokenized(true).unwrap();
+        ft.set_index_options(IndexOptions::DocsAndFreqsAndPositions)
+            .unwrap();
+        ft.set_store_term_vectors(true).unwrap();
+        let ft = ft.frozen();
+        let mut d = Document::new();
+        d.add(Field::from_string("body", "", ft).unwrap());
+        w.add_fields_document(&d).unwrap();
+        w.commit().unwrap();
+        drop(w);
+        let results = check_directory(&dir).unwrap();
+        assert!(
+            results.iter().all(CheckResult::all_passed),
+            "{:?}",
+            results
+                .iter()
+                .flat_map(|r| r.failures())
+                .collect::<Vec<_>>()
+        );
     }
 
     /// `-exorcise`: a segment whose `.fdt` fails its checksum is dropped

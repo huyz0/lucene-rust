@@ -408,14 +408,33 @@ pub(crate) fn non_nan_max(a: f32, b: f32) -> f32 {
 /// `remove` takes out the element comparing equal (as Java's does) -- both
 /// faithful to `TreeSet`, including where a comparator that is not a total
 /// order makes it drop elements.
+///
+/// The items sit in a ring buffer, so taking the first (a merge's queue
+/// drained best first) is O(1), and an insertion moves the shorter side.
 #[derive(Debug, Default, Clone)]
 pub(crate) struct TreeSet<T> {
-    items: Vec<T>,
+    items: std::collections::VecDeque<T>,
 }
 
 impl<T: Copy + PartialEq> TreeSet<T> {
     pub(crate) fn new() -> Self {
-        Self { items: Vec::new() }
+        Self {
+            items: std::collections::VecDeque::new(),
+        }
+    }
+
+    /// `items` added one by one in order -- each comparing equal to an
+    /// earlier one dropped, as `add` drops it -- built by one stable sort
+    /// rather than an insertion each: the same set for any `cmp` that is a
+    /// total preorder.
+    pub(crate) fn from_items(mut items: Vec<T>, cmp: &mut dyn FnMut(&T, &T) -> Ordering) -> Self {
+        // Stable: of the items comparing equal the earliest comes first, and
+        // is the one `add` would have kept.
+        items.sort_by(|a, b| cmp(a, b));
+        items.dedup_by(|later, kept| cmp(kept, later) == Ordering::Equal);
+        Self {
+            items: items.into(),
+        }
     }
 
     fn search(
@@ -449,23 +468,19 @@ impl<T: Copy + PartialEq> TreeSet<T> {
     }
 
     pub(crate) fn first(&self) -> Option<T> {
-        self.items.first().copied()
+        self.items.front().copied()
     }
 
     pub(crate) fn last(&self) -> Option<T> {
-        self.items.last().copied()
+        self.items.back().copied()
     }
 
     pub(crate) fn poll_first(&mut self) -> Option<T> {
-        if self.items.is_empty() {
-            None
-        } else {
-            Some(self.items.remove(0))
-        }
+        self.items.pop_front()
     }
 
     pub(crate) fn poll_last(&mut self) -> Option<T> {
-        self.items.pop()
+        self.items.pop_back()
     }
 
     pub(crate) fn len(&self) -> usize {

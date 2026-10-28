@@ -445,7 +445,8 @@ impl SpatialPrefixTree for PackedQuadPrefixTree {
         let ctx = self.spatial_context().clone();
         let center = ctx.world_bounds().center_point();
         let cell = self.inner.clone().get_cell(&center, level);
-        let bbox = cell.shape()?.bounding_box()?;
+        let shape = cell.shape()?;
+        let bbox = shape.bounding_box_ref()?;
         let width = bbox.width();
         let height = bbox.height();
         Ok((width * width + height * height).sqrt())

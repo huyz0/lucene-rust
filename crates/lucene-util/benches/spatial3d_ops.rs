@@ -203,6 +203,23 @@ fn bench_spatial4j(c: &mut Criterion) {
             black_box(n)
         })
     });
+    // `ShapeValuesPredicate`'s per-doc `op.evaluate(docShape, queryShape)`
+    // with a bounding-box operation on rectangle doc shapes.
+    c.bench_function("spatial4j/bbox_intersects_evaluate_1k", |b| {
+        use lucene_util::spatial_extras::query::SpatialOperation;
+        b.iter(|| {
+            let mut n = 0u32;
+            for r in &rects {
+                for op in [
+                    SpatialOperation::BBoxIntersects,
+                    SpatialOperation::BBoxWithin,
+                ] {
+                    n += u32::from(op.evaluate(black_box(&**r), &*circle).unwrap());
+                }
+            }
+            black_box(n)
+        })
+    });
     let line_pts: Vec<_> = (0..20)
         .map(|i| {
             ctx.point_xy(10.0 + 2.0 * i as f64, 10.0 + (i % 3) as f64)

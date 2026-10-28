@@ -368,7 +368,7 @@ impl OrdsFieldReader {
     ) -> Result<OrdsIntersectTermsEnum<'a>> {
         let (AutomatonType::NORMAL, Some(runnable), Some(accessor)) = (
             compiled.automaton_type,
-            compiled.get_byte_runnable(),
+            compiled.byte_runnable(),
             compiled.get_transition_accessor(),
         ) else {
             return Err(Error::Unsupported(
