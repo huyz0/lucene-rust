@@ -1458,8 +1458,40 @@ fn bench_postings_write_full_blocks(c: &mut Criterion) {
     group.finish();
 }
 
+/// `seek_exact` of every term through a 9.0 segment's retired FST terms
+/// index (`Lucene90` postings): the per-arc walk older indexes take.
+fn bench_lucene90_terms_index_seek(c: &mut Criterion) {
+    let dir = format!("{}bwc/9.0.0/", fixtures_dir());
+    let read = |n: &str| std::fs::read(format!("{dir}{n}")).unwrap();
+    let tim = read("_0_Lucene90_0.tim");
+    let name_len = tim[4] as usize;
+    let mut id = [0u8; 16];
+    id.copy_from_slice(&tim[9 + name_len..25 + name_len]);
+    let fnm = field_infos::parse(&read("_0.fnm"), &id, "").unwrap();
+    let (tip, tmd) = (read("_0_Lucene90_0.tip"), read("_0_Lucene90_0.tmd"));
+    let fields = blocktree::open(&tim, &tip, &tmd, &fnm, &id, "Lucene90_0", 3000).unwrap();
+    let mut probes = Vec::new();
+    for (name, field) in fields.iter_fields() {
+        let mut it = field.iter();
+        while let Some(t) = it.try_next_term().unwrap() {
+            probes.push((name.to_string(), t.to_vec()));
+        }
+    }
+    c.bench_function("blocktree_seek/lucene90_fst_all_terms", |b| {
+        b.iter(|| {
+            let mut found = 0usize;
+            for (name, t) in &probes {
+                let field = fields.field(name).unwrap();
+                found += usize::from(field.try_seek_exact(black_box(t)).unwrap().is_some());
+            }
+            black_box(found)
+        })
+    });
+}
+
 criterion_group!(
     benches,
+    bench_lucene90_terms_index_seek,
     bench_postings_write_full_blocks,
     bench_completion_flush,
     bench_term_vectors_flush,
