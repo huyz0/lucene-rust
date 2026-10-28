@@ -742,11 +742,15 @@ fn parse_iso_zone(t: &[u16], pos: usize, count: usize) -> Option<usize> {
 }
 
 /// `DateRecognizerFilter.accept()`: the term parses with the format.
-pub struct DateAccept(SimpleDateFormat);
+pub struct DateAccept(SimpleDateFormat, Vec<u16>);
 
 impl Accept for DateAccept {
     fn accept(&mut self, a: &AttributeSource) -> Result<bool, AnalysisError> {
-        Ok(self.0.parses(a.term()))
+        // The term's units into a reused buffer ([`SimpleDateFormat::parses`]
+        // would collect them afresh per token).
+        self.1.clear();
+        self.1.extend(a.term().encode_utf16());
+        Ok(self.0.run(&self.1, None).is_some_and(|end| end > 0))
     }
 }
 
@@ -766,7 +770,7 @@ impl<I: TokenStream> DateRecognizerFilter<I> {
     /// `new DateRecognizerFilter(TokenStream, DateFormat)`.
     pub fn with_format(input: I, format: SimpleDateFormat) -> Self {
         DateRecognizerFilter {
-            inner: FilteringTokenFilter::new(input, DateAccept(format)),
+            inner: FilteringTokenFilter::new(input, DateAccept(format, Vec::new())),
         }
     }
 }

@@ -77,12 +77,34 @@ pub struct MatchState {
 /// of overflowing the stack.
 const MAX_NESTING: u32 = 64;
 
+thread_local! {
+    /// The match vector of the last finished [`handle_rule_based`] call on
+    /// this thread, reused by the next (one per term per rule-based step).
+    /// A nested call (a function variable's transliterator) finds it taken
+    /// and allocates its own.
+    static SPARE_MATCHES: std::cell::Cell<Vec<(i32, i32)>> =
+        const { std::cell::Cell::new(Vec::new()) };
+}
+
 impl MatchState {
     pub fn new(n: usize) -> Self {
         MatchState {
             matches: vec![(-1, -1); n],
             depth: 0,
         }
+    }
+
+    /// [`Self::new`] over this thread's spare vector.
+    fn take(n: usize) -> Self {
+        let mut matches = SPARE_MATCHES.with(std::cell::Cell::take);
+        matches.clear();
+        matches.resize(n, (-1, -1));
+        MatchState { matches, depth: 0 }
+    }
+
+    /// Returns the vector for the next [`Self::take`].
+    fn give_back(self) {
+        SPARE_MATCHES.with(|s| s.set(self.matches));
     }
 
     fn get(&self, i: Option<usize>) -> (i32, i32) {
@@ -902,16 +924,21 @@ pub fn handle_rule_based(
     text: &mut Vec<u16>,
     index: &mut Position,
 ) -> Result<(), IcuError> {
-    let mut state = MatchState::new(data.variables.len());
+    let mut state = MatchState::take(data.variables.len());
     let mut loop_count = 0i32;
     // Java: (limit - start) << 4 in int arithmetic.
     let mut loop_limit = (index.limit - index.start).wrapping_shl(4);
     if loop_limit < 0 {
         loop_limit = i32::MAX;
     }
+    let mut result = Ok(());
     while index.start < index.limit && loop_count <= loop_limit {
-        data.rule_set.transliterate(data, text, index, &mut state)?;
+        if let Err(e) = data.rule_set.transliterate(data, text, index, &mut state) {
+            result = Err(e);
+            break;
+        }
         loop_count = loop_count.saturating_add(1);
     }
-    Ok(())
+    state.give_back();
+    result
 }

@@ -139,12 +139,14 @@ static RULES: LazyLock<Rules> = LazyLock::new(|| parse_rules(RULES_TEXT));
 #[derive(Debug, Clone)]
 struct Branch {
     builder: Vec<u16>,
-    last_replacement: Option<Vec<u16>>,
+    /// A replacement of [`RULES`], borrowed rather than copied per
+    /// character.
+    last_replacement: Option<&'static [u16]>,
 }
 
 impl Branch {
     // Java: Branch.processNextReplacement
-    fn process_next_replacement(&mut self, replacement: &[u16], force_append: bool) {
+    fn process_next_replacement(&mut self, replacement: &'static [u16], force_append: bool) {
         let append = match &self.last_replacement {
             None => true,
             Some(last) => !last.ends_with(replacement) || force_append,
@@ -153,7 +155,7 @@ impl Branch {
             self.builder.extend_from_slice(replacement);
             self.builder.truncate(MAX_LENGTH);
         }
-        self.last_replacement = Some(replacement.to_vec());
+        self.last_replacement = Some(replacement);
     }
 
     // Java: Branch.finish
@@ -250,7 +252,7 @@ impl DaitchMokotoffSoundex {
                         if branching_required {
                             let mut nb = Branch {
                                 builder: branch.builder.clone(),
-                                last_replacement: branch.last_replacement.clone(),
+                                last_replacement: branch.last_replacement,
                             };
                             nb.process_next_replacement(replacement, force);
                             next.push(nb);

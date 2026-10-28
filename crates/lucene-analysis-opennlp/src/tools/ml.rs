@@ -259,8 +259,13 @@ pub struct MaxentModel {
     model_type: ModelType,
     outcomes: Vec<JString>,
     outcome_names: Vec<String>,
-    pmap: FxHashMap<JString, u32>,
-    contexts: Vec<Context>,
+    /// Each predicate's `Context`, as the range of its parameters in
+    /// `params` and of their outcomes in `context_outcomes` (the contexts
+    /// flattened: two allocations for the model, where a `Context` per
+    /// predicate was two each).
+    pmap: FxHashMap<JString, (u32, u32)>,
+    context_outcomes: Vec<u32>,
+    params: Vec<f64>,
     /// `UniformPrior.r`: `StrictMath.log(1.0 / numOutcomes)`.
     log_prior: f64,
 }
@@ -367,12 +372,24 @@ impl MaxentModel {
             }
         }
         let mut pmap = FxHashMap::default();
-        let mut kept = Vec::new();
+        let mut context_outcomes = Vec::new();
+        let mut params = Vec::new();
         for (label, context) in preds.into_iter().zip(contexts) {
             match context {
                 Some(c) => {
-                    pmap.insert(label, kept.len() as u32);
-                    kept.push(c);
+                    let start = params.len();
+                    context_outcomes.extend_from_slice(&c.outcomes);
+                    params.extend_from_slice(&c.params);
+                    let range = match (u32::try_from(start), u32::try_from(params.len())) {
+                        (Ok(s), Ok(e)) => (s, e),
+                        _ => {
+                            return Err(FactoryError::new(
+                                JavaException::Runtime,
+                                "too many model parameters",
+                            ))
+                        }
+                    };
+                    pmap.insert(label, range);
                 }
                 // `pmap.put(label, null)`: the label evaluates as unknown
                 None => {
@@ -387,7 +404,8 @@ impl MaxentModel {
             outcomes,
             outcome_names,
             pmap,
-            contexts: kept,
+            context_outcomes,
+            params,
             log_prior,
         })
     }
@@ -432,9 +450,12 @@ impl MaxentModel {
         }
         // ArrayMath.sumFeatures (values == null: each weight times 1)
         for feature in context {
-            if let Some(&ci) = self.pmap.get(feature.as_ref()) {
-                let c = &self.contexts[ci as usize];
-                for (&oid, &p) in c.outcomes.iter().zip(&c.params) {
+            if let Some(&(start, end)) = self.pmap.get(feature.as_ref()) {
+                let range = start as usize..end as usize;
+                for (&oid, &p) in self.context_outcomes[range.clone()]
+                    .iter()
+                    .zip(&self.params[range])
+                {
                     probs[oid as usize] += p;
                 }
             }

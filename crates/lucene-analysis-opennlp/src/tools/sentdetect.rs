@@ -91,6 +91,13 @@ pub struct SentenceDetector {
     split: Vec<bool>,
     probs: Vec<f64>,
     features: Vec<JString>,
+    /// Per abbreviation (in `first_tokens` order), the last search of the
+    /// current text: the `from` it searched from and the first occurrence
+    /// found at or after it. A later search from a `from` at or past that
+    /// one, and at or before the occurrence, finds the same one -- so the
+    /// scan of each candidate break is not a search of the whole text per
+    /// abbreviation.
+    abbreviation_hits: Vec<(usize, Option<usize>)>,
 }
 
 impl SentenceDetector {
@@ -105,6 +112,7 @@ impl SentenceDetector {
             split,
             probs,
             features: Vec::new(),
+            abbreviation_hits: Vec::new(),
         }
     }
 
@@ -128,6 +136,7 @@ impl SentenceDetector {
             }
             pos
         };
+        self.abbreviation_hits.clear();
         let enders: Vec<usize> = (0..s.len()).filter(|&i| self.is_eos(s[i])).collect();
         let mut positions: Vec<usize> = Vec::with_capacity(enders.len());
         let mut index = 0;
@@ -193,13 +202,21 @@ impl SentenceDetector {
     /// length of the start is refused, as in Java.
     // ARITH: positions and lengths of the in-memory text, far below `isize::MAX`.
     #[allow(clippy::arithmetic_side_effects)]
-    fn is_acceptable_break(&self, s: &[u16], from: usize, candidate: usize) -> bool {
+    fn is_acceptable_break(&mut self, s: &[u16], from: usize, candidate: usize) -> bool {
         let Some(dict) = &self.model.abbreviations else {
             return true;
         };
         let candidate = candidate as isize;
-        for token in dict.first_tokens() {
-            let position = text::index_of(s, token, from).map_or(-1, |p| p as isize);
+        for (i, token) in dict.first_tokens().enumerate() {
+            if i == self.abbreviation_hits.len() {
+                self.abbreviation_hits.push((usize::MAX, None));
+            }
+            let hit = &mut self.abbreviation_hits[i];
+            let still = hit.0 <= from && hit.1.is_none_or(|p| p >= from);
+            if !still {
+                *hit = (from, text::index_of(s, token, from));
+            }
+            let position = hit.1.map_or(-1, |p| p as isize);
             if position + (token.len() as isize) < candidate || position > candidate {
                 continue;
             }
@@ -225,7 +242,7 @@ impl SentenceDetector {
         feats.push(match eos_char {
             0x0A => text::units("eos=<LF>"),
             0x0D => text::units("eos=<CR>"),
-            c => text::concat(&[&text::units("eos="), &[c]]),
+            c => text::keyed("eos=", &[c]),
         });
         let mut prefix_start = previous_space_index(sb, position);
         let mut c = position;
@@ -265,7 +282,7 @@ impl SentenceDetector {
         };
         let feats = &mut self.features;
         // collectFeatures
-        feats.push(text::concat(&[&text::units("x="), prefix]));
+        feats.push(text::keyed("x=", prefix));
         if !prefix.is_empty() {
             feats.push(text::int_units(prefix.len()));
             if text::is_upper_case(prefix[0]) {
@@ -280,7 +297,7 @@ impl SentenceDetector {
             ("s=", suffix, "scap", "sabbrev"),
             ("n=", next, "ncap", "nabbrev"),
         ] {
-            feats.push(text::concat(&[&text::units(key), value]));
+            feats.push(text::keyed(key, value));
             if !value.is_empty() {
                 if text::is_upper_case(value[0]) {
                     feats.push(text::units(cap));

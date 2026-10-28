@@ -70,15 +70,43 @@ const OPTIONS_VALUE_BITS_MASK: u16 = 7;
 pub struct CodePointTrie {
     trie_type: TrieType,
     index: Vec<u16>,
-    /// The values, whatever their serialized width (8- and 16-bit values
-    /// are unsigned).
-    data: Vec<i32>,
+    /// The values at their serialized width (8- and 16-bit values are
+    /// unsigned): a 16-bit trie stays half the size of a widened one in
+    /// cache.
+    data: TrieData,
     high_start: u32,
     /// `dataLength - ERROR_VALUE_NEG_DATA_OFFSET`, saturated at 0.
     error_index: usize,
     /// `dataLength - HIGH_VALUE_NEG_DATA_OFFSET`, saturated at 0.
     high_index: usize,
     error_value: i32,
+}
+
+/// A trie's value array at its serialized width.
+#[derive(Debug, Clone)]
+enum TrieData {
+    Bits8(Box<[u8]>),
+    Bits16(Box<[u16]>),
+    Bits32(Box<[i32]>),
+}
+
+impl TrieData {
+    fn len(&self) -> usize {
+        match self {
+            TrieData::Bits8(d) => d.len(),
+            TrieData::Bits16(d) => d.len(),
+            TrieData::Bits32(d) => d.len(),
+        }
+    }
+
+    #[inline(always)]
+    fn get(&self, i: usize) -> Option<i32> {
+        match self {
+            TrieData::Bits8(d) => d.get(i).map(|&v| i32::from(v)),
+            TrieData::Bits16(d) => d.get(i).map(|&v| i32::from(v)),
+            TrieData::Bits32(d) => d.get(i).copied(),
+        }
+    }
 }
 
 impl CodePointTrie {
@@ -158,14 +186,14 @@ impl CodePointTrie {
         let high_start = shifted_high_start << SHIFT_2;
         let data_length = data_length as usize;
         let index = r.u16s(index_length)?;
-        let data: Vec<i32> = match actual_width {
-            ValueWidth::Bits16 => r.u16s(data_length)?.into_iter().map(i32::from).collect(),
-            ValueWidth::Bits32 => r.i32s(data_length)?,
-            ValueWidth::Bits8 => r.take(data_length)?.iter().map(|&b| i32::from(b)).collect(),
+        let data = match actual_width {
+            ValueWidth::Bits16 => TrieData::Bits16(r.u16s(data_length)?.into_boxed_slice()),
+            ValueWidth::Bits32 => TrieData::Bits32(r.i32s(data_length)?.into_boxed_slice()),
+            ValueWidth::Bits8 => TrieData::Bits8(r.take(data_length)?.into()),
         };
         let error_index = data.len().saturating_sub(ERROR_VALUE_NEG_DATA_OFFSET);
         let high_index = data.len().saturating_sub(HIGH_VALUE_NEG_DATA_OFFSET);
-        let error_value = data.get(error_index).copied().unwrap_or(0);
+        let error_value = data.get(error_index).unwrap_or(0);
         Ok(CodePointTrie {
             trie_type: actual_type,
             index,
@@ -251,7 +279,7 @@ impl CodePointTrie {
 
     #[inline]
     fn value(&self, i: usize) -> i32 {
-        self.data.get(i).copied().unwrap_or(self.error_value)
+        self.data.get(i).unwrap_or(self.error_value)
     }
 
     /// `get(c)`: the value of code point `c` (the error value for a
