@@ -1385,8 +1385,49 @@ fn bench_term_vectors_flush(c: &mut Criterion) {
     });
 }
 
+/// A completion field's flush: 20,000 suggestions over 10,000 analyzed
+/// forms, each payload carrying its surface form, weight and type byte.
+fn bench_completion_flush(c: &mut Criterion) {
+    use lucene_codecs::completion::{CompletionFieldWriter, TermDoc};
+    let mut terms: Vec<(Vec<u8>, Vec<TermDoc>)> = (0..10_000u32)
+        .map(|t| {
+            let term = format!("sugg{:05}", t).into_bytes();
+            let docs = (0..2)
+                .map(|d| {
+                    let surface = format!("Suggestion {t} v{d}").into_bytes();
+                    let mut p = vec![surface.len() as u8];
+                    p.extend_from_slice(&surface);
+                    p.push(((t * 7 + d) % 100 + 1) as u8);
+                    p.push(0);
+                    TermDoc {
+                        doc_id: (t * 2 + d) as i32,
+                        payloads: vec![p],
+                    }
+                })
+                .collect();
+            (term, docs)
+        })
+        .collect();
+    terms.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut group = c.benchmark_group("completion");
+    group.sample_size(20);
+    group.bench_function("flush_10k_terms_20k_suggestions", |b| {
+        b.iter(|| {
+            let mut w = CompletionFieldWriter::new();
+            for (term, docs) in &terms {
+                w.write_term(term, docs).unwrap();
+            }
+            let mut out = Vec::new();
+            black_box(w.finish(&mut out).unwrap());
+            black_box(out.len())
+        })
+    });
+    group.finish();
+}
+
 criterion_group!(
     benches,
+    bench_completion_flush,
     bench_term_vectors_flush,
     bench_scalar_quantized_flush,
     bench_indexed_disi_decode,
