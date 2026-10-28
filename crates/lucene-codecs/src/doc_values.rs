@@ -4183,16 +4183,17 @@ fn write_sparse_numeric_entry_body(
 }
 
 /// Euclidean GCD of two `i64`s (matches `MathUtil.gcd`'s contract: always
-/// non-negative, `gcd(0, x) == |x|`). Computed in `i128` so the intermediate
-/// `unsigned_abs()` can never overflow even for `i64::MIN`; the result
-/// itself always fits back in `i64` since a GCD never exceeds the smaller
-/// of its two (absolute) inputs.
+/// non-negative, `gcd(0, x) == |x|`, and `i64::MIN` read as `2^63`, which the
+/// `as i64` turns back into `i64::MIN` exactly as Java's does). In `u64`:
+/// `unsigned_abs` of every `i64` fits, and a 64-bit remainder is several
+/// times cheaper than the `u128` one this once used. Euclid rather than
+/// `MathUtil.gcd`'s binary loop: once the running GCD is small, as in any
+/// field worth GCD-encoding, each value costs one remainder.
 // ARITH: `b != 0` is the loop condition, so the remainder never divides by
-// zero; both operands are `u128`, so there is no `i64::MIN / -1` case either.
+// zero; both operands are unsigned.
 #[allow(clippy::arithmetic_side_effects)]
 fn gcd_i64(a: i64, b: i64) -> i64 {
-    let mut a = (a as i128).unsigned_abs();
-    let mut b = (b as i128).unsigned_abs();
+    let (mut a, mut b) = (a.unsigned_abs(), b.unsigned_abs());
     while b != 0 {
         (a, b) = (b, a % b);
     }
@@ -7723,6 +7724,44 @@ mod tests {
         for d in order {
             r.values(d, &mut out).unwrap();
             assert_eq!(out, values[d as usize], "doc {d}");
+        }
+    }
+
+    /// `gcd_i64` runs Euclid in `u64` where it once did in `u128`; it agrees
+    /// with that and with `MathUtil.gcd` on every input, `i64::MIN` included.
+    #[test]
+    fn gcd_i64_matches_u128_euclid_and_math_util() {
+        fn euclid(a: i64, b: i64) -> i64 {
+            let (mut a, mut b) = ((a as i128).unsigned_abs(), (b as i128).unsigned_abs());
+            while b != 0 {
+                (a, b) = (b, a % b);
+            }
+            a as i64
+        }
+        let mut x = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x as i64
+        };
+        for i in 0..20_000u32 {
+            let common = next() >> (i % 63);
+            let (a, b) = (
+                next().wrapping_rem(1 << (i % 20)).wrapping_mul(common),
+                next().wrapping_rem(1 << (i % 23)).wrapping_mul(common),
+            );
+            for (p, q) in [
+                (a, b),
+                (0, b),
+                (a, 0),
+                (i64::MIN, b),
+                (a, i64::MIN),
+                (i64::MIN, 0),
+            ] {
+                assert_eq!(gcd_i64(p, q), euclid(p, q), "{p} {q}");
+                assert_eq!(lucene_util::math_util::gcd(p, q), euclid(p, q), "{p} {q}");
+            }
         }
     }
 

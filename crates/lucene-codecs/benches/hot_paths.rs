@@ -852,8 +852,32 @@ fn bench_sorted_numeric_varying_bpv(c: &mut Criterion) {
     });
 }
 
+/// Flushing a dense NUMERIC field whose values share a large GCD (timestamps
+/// rounded to the second, in millis): the GCD pass touches every value.
+fn bench_numeric_write_gcd(c: &mut Criterion) {
+    let mut x = 0x2545_F491_4F6C_DD1Du64;
+    let values: Vec<i64> = (0..200_000)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            1_700_000_000_000 + (x % 86_400_000) as i64 / 1000 * 1000
+        })
+        .collect();
+    let id = [5u8; 16];
+    c.bench_function("doc_values/write_dense_numeric_gcd_200k", |b| {
+        b.iter(|| {
+            black_box(
+                ndv::write_single_dense_numeric_field(0, &values, values.len() as i32, &id, "")
+                    .unwrap(),
+            )
+        })
+    });
+}
+
 criterion_group!(
     benches,
+    bench_numeric_write_gcd,
     bench_sorted_numeric_varying_bpv,
     bench_direct_monotonic_get,
     bench_stored_fields_document,
