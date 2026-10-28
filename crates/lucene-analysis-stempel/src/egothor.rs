@@ -300,11 +300,12 @@ impl Trie {
         let mut now = &self.rows[self.root];
         let mut last = None;
         for i in 0..last_index {
-            let ch = at(i);
-            if let Some(c) = cmd(now.cmd(ch)) {
+            // One cell search for both of Java's `getCmd` and `getRef`.
+            let cell = now.at(at(i));
+            if let Some(c) = cmd(cell.map_or(-1, |c| c.cmd)) {
                 last = Some(c);
             }
-            match usize::try_from(now.ref_(ch)) {
+            match usize::try_from(cell.map_or(-1, |c| c.ref_)) {
                 Ok(r) => now = &self.rows[r],
                 Err(_) => return Ok(last),
             }

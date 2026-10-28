@@ -15,6 +15,8 @@ pub struct ICUTransformFilter<I = Box<dyn TokenStream>> {
     input: I,
     transform: Transliterator,
     units: Vec<u16>,
+    /// The term before the transform, kept for its capacity.
+    before: Vec<u16>,
 }
 
 impl<I: TokenStream> ICUTransformFilter<I> {
@@ -32,6 +34,7 @@ impl<I: TokenStream> ICUTransformFilter<I> {
             input,
             transform,
             units: Vec::new(),
+            before: Vec::new(),
         }
     }
 
@@ -66,10 +69,10 @@ impl<I: TokenStream> TokenFilter for ICUTransformFilter<I> {
             start: 0,
             limit: length,
         };
-        let before = self.units.clone();
+        self.before.clone_from(&self.units);
         self.transform
             .filtered_transliterate(&mut self.units, &mut position)?;
-        if self.units != before {
+        if self.units != self.before {
             atts.set_term_utf16(&self.units);
         }
         Ok(true)

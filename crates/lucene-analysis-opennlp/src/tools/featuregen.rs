@@ -799,18 +799,73 @@ fn character_ngrams(token: &[u16], min: i32, max: i32) -> Result<Vec<JString>, A
     Ok(grams)
 }
 
+/// The previous outcomes a generator reads (`previousOutcomes`): as strings,
+/// or as a beam sequence's outcome ids over the model's outcome names --
+/// read by id, so a beam step need not copy every earlier outcome out.
+#[derive(Debug, Clone, Copy)]
+pub enum Prior<'a> {
+    /// The outcomes themselves.
+    Strings(&'a [JString]),
+    /// Outcome ids into `outcomes`.
+    Ids {
+        /// The sequence's outcome ids.
+        ids: &'a [u32],
+        /// The model's outcome names.
+        outcomes: &'a [JString],
+    },
+}
+
+impl<'a> Prior<'a> {
+    /// `previousOutcomes[i]`, if there is one.
+    pub fn get(self, i: usize) -> Option<&'a [u16]> {
+        match self {
+            Prior::Strings(s) => s.get(i).map(Vec::as_slice),
+            Prior::Ids { ids, outcomes } => ids
+                .get(i)
+                .and_then(|&o| outcomes.get(o as usize))
+                .map(Vec::as_slice),
+        }
+    }
+
+    /// `previousOutcomes.length`.
+    pub fn len(self) -> usize {
+        match self {
+            Prior::Strings(s) => s.len(),
+            Prior::Ids { ids, .. } => ids.len(),
+        }
+    }
+
+    /// No previous outcome.
+    pub fn is_empty(self) -> bool {
+        self.len() == 0
+    }
+}
+
 impl Generator {
-    /// `createFeatures(features, tokens, index, previousOutcomes)`;
-    /// `sentence` identifies `tokens` (Java compares the array by
-    /// identity). Fails where Java indexes past the previous outcomes.
-    // ARITH: token indices and lengths of in-memory strings; window offsets are checked against the sentence.
-    #[allow(clippy::arithmetic_side_effects)]
+    /// [`Self::create_features_with`] over the previous outcomes as
+    /// strings.
     pub fn create_features(
         &mut self,
         features: &mut Vec<JString>,
         tokens: &[JString],
         index: usize,
         prior: &[JString],
+        sentence: u64,
+    ) -> Result<(), AnalysisError> {
+        self.create_features_with(features, tokens, index, Prior::Strings(prior), sentence)
+    }
+
+    /// `createFeatures(features, tokens, index, previousOutcomes)`;
+    /// `sentence` identifies `tokens` (Java compares the array by
+    /// identity). Fails where Java indexes past the previous outcomes.
+    // ARITH: token indices and lengths of in-memory strings; window offsets are checked against the sentence.
+    #[allow(clippy::arithmetic_side_effects)]
+    pub fn create_features_with(
+        &mut self,
+        features: &mut Vec<JString>,
+        tokens: &[JString],
+        index: usize,
+        prior: Prior<'_>,
         sentence: u64,
     ) -> Result<(), AnalysisError> {
         match self {
@@ -828,21 +883,21 @@ impl Generator {
                 }
             }
             Generator::Window { inner, prev, next } => {
-                inner.create_features(features, tokens, index, prior, sentence)?;
+                inner.create_features_with(features, tokens, index, prior, sentence)?;
                 let mut window = Vec::new();
                 // Java tries every offset of the window; past the
                 // sentence's ends none adds a feature, so the loops stop
                 // there (a window of `Integer.MAX_VALUE` costs nothing)
                 for i in 1..=((*prev).max(0) as usize).min(index) {
                     window.clear();
-                    inner.create_features(&mut window, tokens, index - i, prior, sentence)?;
+                    inner.create_features_with(&mut window, tokens, index - i, prior, sentence)?;
                     let p = format!("p{i}");
                     features.extend(window.iter().map(|f| cat(&p, f)));
                 }
                 let ahead = tokens.len().saturating_sub(index + 1);
                 for i in 1..=((*next).max(0) as usize).min(ahead) {
                     window.clear();
-                    inner.create_features(&mut window, tokens, index + i, prior, sentence)?;
+                    inner.create_features_with(&mut window, tokens, index + i, prior, sentence)?;
                     let n = format!("n{i}");
                     features.extend(window.iter().map(|f| cat(&n, f)));
                 }
@@ -1045,7 +1100,7 @@ impl Generator {
             }
             Generator::Aggregated(gens) => {
                 for g in gens {
-                    g.create_features(features, tokens, index, prior, sentence)?;
+                    g.create_features_with(features, tokens, index, prior, sentence)?;
                 }
             }
             Generator::Cached(inner, cache) => {
@@ -1060,7 +1115,7 @@ impl Generator {
                     cache.sentence = Some(sentence);
                 }
                 let mut computed = Vec::new();
-                inner.create_features(&mut computed, tokens, index, prior, sentence)?;
+                inner.create_features_with(&mut computed, tokens, index, prior, sentence)?;
                 features.extend_from_slice(&computed);
                 cache.map.insert(index, computed);
                 cache.order.push_back(index);
@@ -1290,5 +1345,29 @@ pub fn token_feature(token: &[u16]) -> &'static str {
         "ic"
     } else {
         "other"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prior_views_agree() {
+        let outcomes = vec![text::units("O"), text::units("B-x")];
+        let strings = vec![text::units("B-x"), text::units("O")];
+        let ids = Prior::Ids {
+            ids: &[1, 0],
+            outcomes: &outcomes,
+        };
+        let by_string = Prior::Strings(&strings);
+        for p in [ids, by_string] {
+            assert_eq!(p.len(), 2);
+            assert!(!p.is_empty());
+            assert_eq!(p.get(0), Some(&strings[0][..]));
+            assert_eq!(p.get(1), Some(&strings[1][..]));
+            assert_eq!(p.get(2), None);
+        }
+        assert!(Prior::Strings(&[]).is_empty());
     }
 }

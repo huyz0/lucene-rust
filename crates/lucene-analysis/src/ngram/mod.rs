@@ -4,7 +4,7 @@
 //! `Vec<Token>` API).
 
 use crate::attributes::{AttributeSource, State};
-use crate::java_character::{char_count, code_point_at, push_utf16};
+use crate::java_character::{char_count, code_point_at};
 use crate::reader::CharReader;
 use crate::token_stream::{TokenFilter, TokenStream, Tokenizer, TokenizerInput};
 use crate::util::char_tokenizer::{CharacterBuffer, TokenChar};
@@ -28,6 +28,36 @@ fn check_grams(min_gram: i32, max_gram: i32) -> Result<(), AnalysisError> {
         ));
     }
     Ok(())
+}
+
+/// Appends the code points to `term` as [`AttributeSource::set_term_utf16`]
+/// would decode their UTF-16 (a surrogate pair split across two entries
+/// joins, any other surrogate is U+FFFD) and returns their length in UTF-16
+/// units -- without the round trip through a `u16` buffer.
+fn push_code_points(term: &mut String, cps: &[u32]) -> i32 {
+    term.clear();
+    let mut units = 0usize;
+    let mut i = 0;
+    while i < cps.len() {
+        let cp = cps[i];
+        i += 1;
+        units += char_count(cp);
+        let c = match char::from_u32(cp) {
+            Some(c) => c,
+            None if (0xD800..0xDC00).contains(&cp)
+                && cps.get(i).is_some_and(|&lo| (0xDC00..0xE000).contains(&lo)) =>
+            {
+                let lo = cps[i];
+                i += 1;
+                units += 1;
+                char::from_u32(0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00))
+                    .unwrap_or(char::REPLACEMENT_CHARACTER)
+            }
+            None => char::REPLACEMENT_CHARACTER,
+        };
+        term.push(c);
+    }
+    units as i32
 }
 
 /// `NGramTokenizer.isTokenChar`'s default: every code point.
@@ -58,7 +88,6 @@ pub struct NGramTokenizer<P = AnyChar> {
     last_checked_char: i32,
     last_non_token_char: i32,
     edges_only: bool,
-    term: Vec<u16>,
 }
 
 /// `org.apache.lucene.analysis.ngram.EdgeNGramTokenizer`.
@@ -111,7 +140,6 @@ impl<P: TokenChar> NGramTokenizer<P> {
             last_checked_char: 0,
             last_non_token_char: 0,
             edges_only,
-            term: Vec::new(),
         })
     }
 
@@ -197,13 +225,11 @@ impl<P: TokenChar> TokenStream for NGramTokenizer<P> {
                 self.gram_size = self.min_gram;
                 continue;
             }
-            self.term.clear();
             let s = self.buffer_start as usize;
-            for &cp in &self.buffer[s..s + self.gram_size as usize] {
-                push_utf16(&mut self.term, cp);
-            }
-            let length = self.term.len() as i32;
-            self.atts.set_term_utf16(&self.term);
+            let length = push_code_points(
+                self.atts.term_mut(),
+                &self.buffer[s..s + self.gram_size as usize],
+            );
             self.atts.set_position_increment(1)?;
             self.atts.set_position_length(1)?;
             let start = self.input.correct_offset(self.offset);
@@ -259,12 +285,17 @@ struct GramState {
     min_gram: i32,
     max_gram: i32,
     preserve_original: bool,
-    /// `curTermBuffer`, as code points (`None` between input tokens).
-    cur_term: Option<Vec<char>>,
+    /// The byte offset of each code point of `curTermBuffer` -- the term of
+    /// [`Self::state`] -- and its length, so a gram is a slice of it.
+    bounds: Vec<usize>,
+    /// `curTermBuffer != null`.
+    has_term: bool,
     cur_gram_size: i32,
     cur_pos: i32,
     cur_pos_incr: i32,
-    state: Option<State>,
+    /// The input token's captured state (with `curTermBuffer` as its term),
+    /// overwritten in place per token.
+    state: State,
 }
 
 impl GramState {
@@ -274,47 +305,58 @@ impl GramState {
             min_gram,
             max_gram,
             preserve_original,
-            cur_term: None,
+            bounds: Vec::new(),
+            has_term: false,
             cur_gram_size: 0,
             cur_pos: 0,
             cur_pos_incr: 0,
-            state: None,
+            state: State::new(),
         })
     }
 
+    /// The current term's length in code points (`curCodePointCount`).
+    fn count(&self) -> i32 {
+        self.bounds.len().saturating_sub(1) as i32
+    }
+
     /// The shared head of both `incrementToken`s: reads the next input token
-    /// into `cur_term`. `Ok(Some(true))` when a too-short token is passed
+    /// into `state` and `bounds`. `Ok(Some(true))` when a too-short token is passed
     /// through as is, `Ok(None)` at the end of the input.
     fn next_input<I: TokenStream>(&mut self, input: &mut I) -> Result<Option<bool>, AnalysisError> {
         if !input.increment_token()? {
             return Ok(None);
         }
         let a = input.attributes();
-        self.state = Some(a.capture_state());
-        let chars: Vec<char> = a.term().chars().collect();
+        self.state.clone_from(a);
+        let term = self.state.term();
+        self.bounds.clear();
+        self.bounds.extend(term.char_indices().map(|(i, _)| i));
+        self.bounds.push(term.len());
         self.cur_pos_incr += a.position_increment();
         self.cur_pos = 0;
-        if self.preserve_original && (chars.len() as i32) < self.min_gram {
+        if self.preserve_original && self.count() < self.min_gram {
             let inc = self.cur_pos_incr;
             input.attributes_mut().set_position_increment(inc)?;
             self.cur_pos_incr = 0;
             return Ok(Some(true));
         }
-        self.cur_term = Some(chars);
+        self.has_term = true;
         self.cur_gram_size = self.min_gram;
         Ok(Some(false))
     }
 
-    /// Restores the input token and writes `chars` with `inc`.
+    /// Restores the input token and writes its code points `from..from + n`
+    /// with `inc`.
     fn emit(
-        &mut self,
+        &self,
         a: &mut AttributeSource,
-        chars: &[char],
+        from: usize,
+        n: usize,
         inc: i32,
     ) -> Result<(), AnalysisError> {
-        a.restore_state(self.state.as_ref().expect("a token was read"));
-        let s: String = chars.iter().collect();
-        a.set_term(&s);
+        a.restore_state(&self.state);
+        let gram = &self.state.term()[self.bounds[from]..self.bounds[from + n]];
+        a.set_term(gram);
         a.set_position_increment(inc)
     }
 }
@@ -345,7 +387,7 @@ impl<I: TokenStream> TokenFilter for NGramTokenFilter<I> {
     // Java: NGramTokenFilter.incrementToken
     fn increment(&mut self) -> Result<bool, AnalysisError> {
         loop {
-            if self.g.cur_term.is_none() {
+            if !self.g.has_term {
                 match self.g.next_input(&mut self.input)? {
                     None => return Ok(false),
                     Some(true) => return Ok(true),
@@ -353,8 +395,8 @@ impl<I: TokenStream> TokenFilter for NGramTokenFilter<I> {
                 }
             }
             let g = &mut self.g;
-            let term = g.cur_term.take().expect("set above");
-            let count = term.len() as i32;
+            g.has_term = false;
+            let count = g.count();
             if g.cur_gram_size > g.max_gram || g.cur_pos + g.cur_gram_size > count {
                 g.cur_pos += 1;
                 g.cur_gram_size = g.min_gram;
@@ -362,13 +404,13 @@ impl<I: TokenStream> TokenFilter for NGramTokenFilter<I> {
             if g.cur_pos + g.cur_gram_size <= count {
                 let (s, n) = (g.cur_pos as usize, g.cur_gram_size as usize);
                 let inc = g.cur_pos_incr;
-                g.emit(self.input.attributes_mut(), &term[s..s + n], inc)?;
+                g.emit(self.input.attributes_mut(), s, n, inc)?;
                 g.cur_pos_incr = 0;
                 g.cur_gram_size += 1;
-                g.cur_term = Some(term);
+                g.has_term = true;
                 return Ok(true);
             } else if g.preserve_original && count > g.max_gram {
-                g.emit(self.input.attributes_mut(), &term, 0)?;
+                g.emit(self.input.attributes_mut(), 0, count as usize, 0)?;
                 return Ok(true);
             }
         }
@@ -376,7 +418,7 @@ impl<I: TokenStream> TokenFilter for NGramTokenFilter<I> {
 
     fn reset_filter(&mut self) -> Result<(), AnalysisError> {
         self.input.reset()?;
-        self.g.cur_term = None;
+        self.g.has_term = false;
         self.g.cur_pos_incr = 0;
         Ok(())
     }
@@ -414,7 +456,7 @@ impl<I: TokenStream> TokenFilter for EdgeNGramTokenFilter<I> {
     // Java: EdgeNGramTokenFilter.incrementToken
     fn increment(&mut self) -> Result<bool, AnalysisError> {
         loop {
-            if self.g.cur_term.is_none() {
+            if !self.g.has_term {
                 match self.g.next_input(&mut self.input)? {
                     None => return Ok(false),
                     Some(true) => return Ok(true),
@@ -422,22 +464,23 @@ impl<I: TokenStream> TokenFilter for EdgeNGramTokenFilter<I> {
                 }
             }
             let g = &mut self.g;
-            let term = g.cur_term.take().expect("set above");
-            let count = term.len() as i32;
+            g.has_term = false;
+            let count = g.count();
             if g.cur_gram_size <= count {
                 if g.cur_gram_size <= g.max_gram {
                     let inc = g.cur_pos_incr;
                     g.emit(
                         self.input.attributes_mut(),
-                        &term[..g.cur_gram_size as usize],
+                        0,
+                        g.cur_gram_size as usize,
                         inc,
                     )?;
                     g.cur_pos_incr = 0;
                     g.cur_gram_size += 1;
-                    g.cur_term = Some(term);
+                    g.has_term = true;
                     return Ok(true);
                 } else if g.preserve_original {
-                    g.emit(self.input.attributes_mut(), &term, 0)?;
+                    g.emit(self.input.attributes_mut(), 0, count as usize, 0)?;
                     return Ok(true);
                 }
             }
@@ -446,7 +489,7 @@ impl<I: TokenStream> TokenFilter for EdgeNGramTokenFilter<I> {
 
     fn reset_filter(&mut self) -> Result<(), AnalysisError> {
         self.input.reset()?;
-        self.g.cur_term = None;
+        self.g.has_term = false;
         self.g.cur_pos_incr = 0;
         Ok(())
     }

@@ -85,7 +85,10 @@ impl SentenceModel {
 #[derive(Debug, Clone)]
 pub struct SentenceDetector {
     model: SentenceModel,
-    split: usize,
+    /// Per outcome, whether its name is `SentenceDetectorME.SPLIT` (Java compares the best
+    /// outcome's *name*: a model without the outcome never splits, and a
+    /// repeated name splits on either index).
+    split: Vec<bool>,
     probs: Vec<f64>,
     features: Vec<JString>,
 }
@@ -93,7 +96,9 @@ pub struct SentenceDetector {
 impl SentenceDetector {
     /// `new SentenceDetectorME(model)`.
     pub fn new(model: SentenceModel) -> Self {
-        let split = model.model.index("s").unwrap_or(0);
+        let split = (0..model.model.num_outcomes())
+            .map(|i| model.model.outcome_name(i) == "s")
+            .collect();
         let probs = vec![0.0; model.model.num_outcomes()];
         SentenceDetector {
             model,
@@ -138,7 +143,7 @@ impl SentenceDetector {
             self.context(s, cint);
             self.model.model.eval(&self.features, &mut self.probs);
             let best = MaxentModel::best_outcome(&self.probs);
-            if best == self.split && self.is_acceptable_break(s, index, cint) {
+            if self.split[best] && self.is_acceptable_break(s, index, cint) {
                 if index != cint {
                     positions.push(if self.model.use_token_end {
                         first_non_ws(first_ws(cint + 1))

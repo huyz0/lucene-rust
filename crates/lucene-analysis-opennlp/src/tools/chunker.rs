@@ -85,16 +85,18 @@ impl SequenceContext for ChunkContext<'_> {
             Some(v) => text::concat(&[&text::units(key), v]),
             None => text::units(&format!("{key}{edge}")),
         };
-        let preds: Vec<JString> = prior
-            .iter()
-            .map(|&o| outcomes[o as usize].clone())
-            .collect();
+        // The prior outcomes by id: only `p_2`/`p_1` are read, so they are
+        // not copied out per call.
+        let pred = |key: &str, at: Option<usize>| match at.and_then(|a| prior.get(a)) {
+            Some(&o) => text::concat(&[&text::units(key), &outcomes[o as usize]]),
+            None => text::units(&format!("{key}bos")),
+        };
         let w_2 = feature("w_2=", i.checked_sub(2), self.toks, "bos");
         let t_2 = feature("t_2=", i.checked_sub(2), self.tags, "bos");
-        let p_2 = feature("p_2=", i.checked_sub(2), &preds, "bos");
+        let p_2 = pred("p_2=", i.checked_sub(2));
         let w_1 = feature("w_1=", i.checked_sub(1), self.toks, "bos");
         let t_1 = feature("t_1=", i.checked_sub(1), self.tags, "bos");
-        let p_1 = feature("p_1=", i.checked_sub(1), &preds, "bos");
+        let p_1 = pred("p_1=", i.checked_sub(1));
         let w0 = feature("w0=", Some(i), self.toks, "");
         let t0 = feature("t0=", Some(i), self.tags, "");
         let w1 = feature("w1=", Some(i + 1), self.toks, "eos");
@@ -102,8 +104,11 @@ impl SequenceContext for ChunkContext<'_> {
         let w2 = feature("w2=", Some(i + 2), self.toks, "eos");
         let t2 = feature("t2=", Some(i + 2), self.tags, "eos");
         let c = |parts: &[&JString]| {
-            let refs: Vec<&[u16]> = parts.iter().map(|p| p.as_slice()).collect();
-            text::concat(&refs)
+            let mut out = Vec::with_capacity(parts.iter().map(|p| p.len()).sum());
+            for p in parts {
+                out.extend_from_slice(p);
+            }
+            out
         };
         f.extend([
             w_2.clone(),
@@ -151,15 +156,17 @@ impl SequenceContext for ChunkContext<'_> {
     }
 
     fn valid(&self, _i: usize, prior: &[u32], outcome: u32, outcomes: &[JString]) -> bool {
+        const I_DASH: [u16; 2] = [b'I' as u16, b'-' as u16];
+        const O: [u16; 1] = [b'O' as u16];
         let outcome = &outcomes[outcome as usize];
-        let Some(rest) = outcome.strip_prefix(&text::units("I-")[..]) else {
+        let Some(rest) = outcome.strip_prefix(&I_DASH[..]) else {
             return true;
         };
         let Some(&prev) = prior.last() else {
             return false;
         };
         let prev = &outcomes[prev as usize];
-        if *prev == text::units("O") {
+        if prev[..] == O {
             return false;
         }
         match prev.get(2..) {

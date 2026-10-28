@@ -103,7 +103,7 @@ pub use analyzer::{
     collect_tokens, Analyzer, AnalyzerDefinition, AnalyzerTokenStream, AnalyzerWrapper,
     DelegatingAnalyzerWrapper, ReuseStrategy, SourceFn, TokenStreamComponents,
 };
-pub use attributes::{AttrValue, AttributeSource, CustomAttribute, State, DEFAULT_TYPE};
+pub use attributes::{AttrValue, AttributeSource, CustomAttribute, State, StateSlot, DEFAULT_TYPE};
 pub use automaton::{
     automaton_to_token_stream, token_stream_to_automaton, Automaton, AutomatonBuilder,
     TokenStreamToAutomaton, Transition, HOLE, POS_SEP,
@@ -1983,10 +1983,18 @@ impl AsciiFoldingFilter {
     /// The folded form of `term`, or `None` when folding leaves it as is
     /// (the streaming filter's per-token step).
     pub(crate) fn fold_term(term: &str) -> Option<String> {
+        let mut folded = String::new();
+        Self::fold_term_into(term, &mut folded).then_some(folded)
+    }
+
+    /// [`Self::fold_term`] into `folded` (cleared first): `true` when the
+    /// term changed, `folded` then holding the folded term.
+    pub(crate) fn fold_term_into(term: &str, folded: &mut String) -> bool {
         if term.is_ascii() {
-            return None;
+            return false;
         }
-        let mut folded = String::with_capacity(term.len());
+        folded.clear();
+        folded.reserve(term.len());
         let mut changed = false;
         for c in term.chars() {
             match Self::fold_char(c) {
@@ -1997,7 +2005,7 @@ impl AsciiFoldingFilter {
                 None => folded.push(c),
             }
         }
-        changed.then_some(folded)
+        changed
     }
 
     pub fn apply_with(tokens: Vec<Token>, preserve_original: bool) -> Vec<Token> {

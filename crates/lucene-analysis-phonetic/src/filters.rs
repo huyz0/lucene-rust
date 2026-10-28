@@ -4,7 +4,7 @@
 
 use std::collections::VecDeque;
 
-use lucene_analysis::attributes::State;
+use lucene_analysis::attributes::{State, StateSlot};
 use lucene_analysis::token_stream::{TokenFilter, TokenStream};
 use lucene_analysis::AnalysisError;
 
@@ -149,8 +149,10 @@ impl<I: TokenStream> TokenFilter for DoubleMetaphoneFilter<I> {
                 attrs.position_increment()
             };
             let v = units(attrs.term());
-            let primary = self.encoder.double_metaphone(&v, false);
-            let alternate = self.encoder.double_metaphone(&v, true);
+            let (primary, alternate) = match self.encoder.double_metaphone_both(&v) {
+                Some((p, a)) => (Some(p), Some(a)),
+                None => (None, None),
+            };
             let mut save_state = self.inject;
             let primary_differs = primary.as_ref().is_some_and(|p| !p.is_empty() && *p != v);
             if let (true, Some(p)) = (primary_differs, &primary) {
@@ -210,7 +212,7 @@ pub struct BeiderMorseFilter<I> {
     languages: Option<CallerLanguages>,
     encoded: Vec<u16>,
     pos: usize,
-    state: Option<State>,
+    state: StateSlot,
 }
 
 /// `BeiderMorseFilter`'s matcher pattern `([^()|-]+)`.
@@ -232,7 +234,7 @@ impl<I: TokenStream> BeiderMorseFilter<I> {
             languages,
             encoded: Vec::new(),
             pos: 0,
-            state: None,
+            state: StateSlot::new(),
         }
     }
 }
@@ -244,7 +246,7 @@ impl<I: TokenStream> TokenFilter for BeiderMorseFilter<I> {
     fn increment(&mut self) -> Result<bool, AnalysisError> {
         if let Some((s, e)) = next_run(&self.encoded, &mut self.pos, BM_STOPS) {
             let attrs = self.input.attributes_mut();
-            if let Some(state) = &self.state {
+            if let Some(state) = self.state.get() {
                 attrs.restore_state(state);
             }
             attrs.set_term_utf16(&self.encoded[s..e]);
@@ -260,7 +262,7 @@ impl<I: TokenStream> TokenFilter for BeiderMorseFilter<I> {
             None => self.engine.encode(&term)?,
             Some(l) => self.engine.encode_with(&term, l)?,
         };
-        self.state = Some(attrs.capture_state());
+        self.state.save(attrs);
         self.pos = 0;
         if let Some((s, e)) = next_run(&self.encoded, &mut self.pos, BM_STOPS) {
             attrs.set_term_utf16(&self.encoded[s..e]);
@@ -285,7 +287,7 @@ pub struct DaitchMokotoffSoundexFilter<I> {
     encoder: DaitchMokotoffSoundex,
     encoded: Vec<u16>,
     pos: usize,
-    state: Option<State>,
+    state: StateSlot,
 }
 
 impl<I: TokenStream> DaitchMokotoffSoundexFilter<I> {
@@ -297,7 +299,7 @@ impl<I: TokenStream> DaitchMokotoffSoundexFilter<I> {
             encoder: DaitchMokotoffSoundex::default(),
             encoded: Vec::new(),
             pos: 0,
-            state: None,
+            state: StateSlot::new(),
         }
     }
 }
@@ -309,7 +311,7 @@ impl<I: TokenStream> TokenFilter for DaitchMokotoffSoundexFilter<I> {
     fn increment(&mut self) -> Result<bool, AnalysisError> {
         if let Some((s, e)) = next_run(&self.encoded, &mut self.pos, b"|") {
             let attrs = self.input.attributes_mut();
-            if let Some(state) = &self.state {
+            if let Some(state) = self.state.get() {
                 attrs.restore_state(state);
             }
             attrs.set_term_utf16(&self.encoded[s..e]);
@@ -324,7 +326,7 @@ impl<I: TokenStream> TokenFilter for DaitchMokotoffSoundexFilter<I> {
             return Ok(true);
         }
         self.encoded = self.encoder.soundex(&units(attrs.term()));
-        self.state = Some(attrs.capture_state());
+        self.state.save(attrs);
         self.pos = 0;
         if !self.inject {
             if let Some((s, e)) = next_run(&self.encoded, &mut self.pos, b"|") {
@@ -338,7 +340,7 @@ impl<I: TokenStream> TokenFilter for DaitchMokotoffSoundexFilter<I> {
         self.input.reset()?;
         self.encoded.clear();
         self.pos = 0;
-        self.state = None;
+        self.state.clear();
         Ok(())
     }
 }

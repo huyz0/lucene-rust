@@ -293,11 +293,15 @@ impl<I: TokenStream> TokenFilter for WordDelimiterFilter<I> {
                 let pos_inc = a.position_increment();
                 self.iterator.set_text(&self.scratch);
                 self.iterator.next();
-                let protected = self
-                    .prot_words
-                    .as_ref()
-                    .is_some_and(|p| p.contains(a.term()));
-                if (self.iterator.current == 0 && self.iterator.end == term_length) || protected {
+                // Java's `||` probes the protected words only for a term
+                // that is more than one part.
+                let single_part = self.iterator.current == 0 && self.iterator.end == term_length;
+                if single_part
+                    || self
+                        .prot_words
+                        .as_ref()
+                        .is_some_and(|p| p.contains(a.term()))
+                {
                     let inc = self.accum_pos_inc;
                     self.input.attributes_mut().set_position_increment(inc)?;
                     self.accum_pos_inc = 0;

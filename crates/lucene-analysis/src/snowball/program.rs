@@ -69,27 +69,13 @@ fn at(i: i32) -> usize {
     i as usize
 }
 
-/// UTF-16 units as a string, an unpaired surrogate (a stemmer can cut a pair)
-/// as U+FFFD.
-fn push_utf16(out: &mut String, units: &[u16]) {
-    if units.iter().all(|&u| u < 0x80) {
-        out.extend(units.iter().map(|&u| char::from(u as u8)));
-    } else {
-        out.extend(char::decode_utf16(units.iter().copied()).map(|c| c.unwrap_or('\u{FFFD}')));
-    }
-}
-
 impl SnowballEnv {
     /// Java: `SnowballProgram.setCurrent(String)`. A string longer than
     /// Java's `int` length can hold is refused (`false`, the program left
     /// empty).
     pub fn set_current(&mut self, value: &str) -> bool {
         self.current.clear();
-        if value.is_ascii() {
-            self.current.extend(value.bytes().map(u16::from));
-        } else {
-            self.current.extend(value.encode_utf16());
-        }
+        crate::util::push_utf16(value, &mut self.current);
         self.edited = false;
         let fits = i32::try_from(self.current.len()).is_ok();
         if !fits {
@@ -118,7 +104,7 @@ impl SnowballEnv {
     /// Java: `SnowballProgram.getCurrent()`, into `out`.
     pub fn get_current_into(&self, out: &mut String) {
         out.clear();
-        push_utf16(out, self.current_units());
+        crate::util::push_str_utf16(out, self.current_units());
     }
 
     /// Whether unit `ch` is in the grouping bitmap `s` over `min..=max`.

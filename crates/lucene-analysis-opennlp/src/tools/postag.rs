@@ -267,12 +267,10 @@ impl SequenceContext for PosContext<'_> {
         outcomes: &[JString],
         features: &mut Vec<JString>,
     ) {
-        let tags: Vec<JString> = prior
-            .iter()
-            .map(|&o| outcomes[o as usize].clone())
-            .collect();
-        let tagprev = index.checked_sub(1).and_then(|i| tags.get(i));
-        let tagprevprev = index.checked_sub(2).and_then(|i| tags.get(i));
+        let tag_at =
+            |i: Option<usize>| i.and_then(|i| prior.get(i)).map(|&o| &outcomes[o as usize]);
+        let tagprev = tag_at(index.checked_sub(1));
+        let tagprevprev = tag_at(index.checked_sub(2));
         // `index + tagprev + tagprevprev`, Java's string concatenation
         let null = text::units("null");
         let key = text::concat(&[
@@ -289,6 +287,12 @@ impl SequenceContext for PosContext<'_> {
         }
         match &mut self.tagger.generator {
             ContextGenerator::Configurable(g) => {
+                // The prior tags as strings only on a cache miss, for the
+                // generator's API.
+                let tags: Vec<JString> = prior
+                    .iter()
+                    .map(|&o| outcomes[o as usize].clone())
+                    .collect();
                 if let Err(e) = g.create_features(features, self.words, index, &tags, sentence) {
                     self.error.get_or_insert(e);
                 }
