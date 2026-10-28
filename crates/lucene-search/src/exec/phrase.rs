@@ -121,7 +121,7 @@ const DUMMY_IMPACT: Impact = Impact {
 /// stopping as soon as any one list runs out. Lists that are empty or
 /// dummy were left out by the caller; with none left the result is the
 /// dummy impact.
-fn merge_impacts(lists: &[&[Impact]], out: &mut Vec<Impact>) {
+fn merge_impacts<L: AsRef<[Impact]>>(lists: &[L], out: &mut Vec<Impact>) {
     out.clear();
     match lists {
         [] => {
@@ -129,21 +129,29 @@ fn merge_impacts(lists: &[&[Impact]], out: &mut Vec<Impact>) {
             return;
         }
         [only] => {
-            out.extend_from_slice(only);
+            out.extend_from_slice(only.as_ref());
             return;
         }
         _ => {}
     }
     // Every list's next index: an iterator's `freq`/`norm` are
     // `lists[i][at[i] - 1]`, as `SubIterator` reads them after `next()`.
-    let mut at: Vec<usize> = vec![1; lists.len()];
-    let impact_at = |at: &[usize], i: usize| lists[i][at[i] - 1];
+    // On the stack for an ordinary phrase; a `Vec` only past eight terms.
+    let mut inline = [1usize; 8];
+    let mut spilled: Vec<usize>;
+    let at: &mut [usize] = if lists.len() <= inline.len() {
+        &mut inline[..lists.len()]
+    } else {
+        spilled = vec![1; lists.len()];
+        &mut spilled
+    };
+    let impact_at = |at: &[usize], i: usize| lists[i].as_ref()[at[i] - 1];
     let mut current_freq = (0..lists.len())
-        .map(|i| impact_at(&at, i).freq)
+        .map(|i| impact_at(at, i).freq)
         .min()
         .unwrap_or(i32::MAX);
     let mut current_norm = (0..lists.len())
-        .map(|i| impact_at(&at, i).norm as u64)
+        .map(|i| impact_at(at, i).norm as u64)
         .max()
         .unwrap_or(0);
     loop {
@@ -157,18 +165,18 @@ fn merge_impacts(lists: &[&[Impact]], out: &mut Vec<Impact>) {
         // Each list on the current frequency steps once: frequencies are
         // strictly increasing within a list, so none is stepped twice.
         for i in 0..lists.len() {
-            if impact_at(&at, i).freq != current_freq {
+            if impact_at(at, i).freq != current_freq {
                 continue;
             }
-            if at[i] >= lists[i].len() {
+            if at[i] >= lists[i].as_ref().len() {
                 // One clause has no documents left at or below this norm.
                 return;
             }
             at[i] += 1;
-            current_norm = current_norm.max(impact_at(&at, i).norm as u64);
+            current_norm = current_norm.max(impact_at(at, i).norm as u64);
         }
         current_freq = (0..lists.len())
-            .map(|i| impact_at(&at, i).freq)
+            .map(|i| impact_at(at, i).freq)
             .min()
             .unwrap_or(i32::MAX);
     }
@@ -293,12 +301,8 @@ impl<'a> PhraseScorer<'a> {
             }
             used += 1;
         }
-        let lists: Vec<&[Impact]> = self.term_impacts[..used]
-            .iter()
-            .map(Vec::as_slice)
-            .collect();
         let mut merged = std::mem::take(&mut self.merged);
-        merge_impacts(&lists, &mut merged);
+        merge_impacts(&self.term_impacts[..used], &mut merged);
         let max = self.impacts_max(&merged);
         self.merged = merged;
         max
@@ -630,5 +634,35 @@ impl Scorer for PhraseScorer<'_> {
         }
         self.min_competitive = min;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn imp(freq: i32, norm: i64) -> Impact {
+        Impact { freq, norm }
+    }
+
+    #[test]
+    fn merged_impacts_take_the_lowest_freq_and_highest_norm_at_any_width() {
+        let a = vec![imp(1, 5), imp(3, 9)];
+        let b = vec![imp(2, 4), imp(4, 12)];
+        let mut out = Vec::new();
+        merge_impacts(&[a.clone(), b.clone()], &mut out);
+        let two = out.clone();
+        assert_eq!(two, vec![imp(1, 5), imp(2, 9), imp(3, 12)]);
+        // Nine lists spill the per-list cursors to the heap; repeating the
+        // two lists changes nothing.
+        let nine: Vec<Vec<Impact>> = (0..9)
+            .map(|i| if i % 2 == 0 { a.clone() } else { b.clone() })
+            .collect();
+        merge_impacts(&nine, &mut out);
+        assert_eq!(out, two);
+        merge_impacts::<Vec<Impact>>(&[], &mut out);
+        assert_eq!(out, vec![DUMMY_IMPACT]);
+        merge_impacts(std::slice::from_ref(&a), &mut out);
+        assert_eq!(out, a);
     }
 }
