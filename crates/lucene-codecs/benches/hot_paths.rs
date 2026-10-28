@@ -671,6 +671,10 @@ fn bench_vectors_search(c: &mut Criterion) {
     .build(count)
     .unwrap();
 
+    // The merge's first step on each source graph: the join set.
+    c.bench_function("vectors/hnsw_join_set_50k", |b| {
+        b.iter(|| black_box(hnsw::compute_join_set(&graph).unwrap().len()))
+    });
     let mut group = c.benchmark_group("vectors");
     // Both arms run all 25 queries per iteration, so per-query cost is the
     // reported time / 25 and the two are directly comparable.
