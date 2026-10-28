@@ -500,7 +500,9 @@ pub fn invert_documents_with_payloads(
     // deliberately avoids too: `TermsHashPerField` accumulates through a
     // `BytesRefHash` (open-addressed, hash-keyed) and only sorts the term
     // dictionary when the segment is flushed.
-    let mut acc: HashMap<TermKey, TermPostingList> = HashMap::new();
+    // Per field, then per term: a flat `(field, term)` key allocated the
+    // field's name again for every (document, term) pair.
+    let mut acc: HashMap<String, HashMap<String, TermPostingList>> = HashMap::new();
     // Reused across documents so the per-document grouping map is allocated
     // once for the whole batch rather than once per (document, field).
     let mut per_term: HashMap<String, TermGroup> = HashMap::new();
@@ -616,9 +618,12 @@ pub fn invert_documents_with_payloads(
             }
         }
 
+        let field_acc = match acc.get_mut(field) {
+            Some(terms) => terms,
+            None => acc.entry(field.to_string()).or_default(),
+        };
         for (term, (occurrences, payload_bytes, payload_lengths)) in per_term.drain() {
-            let key = (field.to_string(), term);
-            let list = acc.entry(key).or_default();
+            let list = field_acc.entry(term).or_default();
             // Appended to the term's own run, so the group's two vectors are
             // freed here rather than staying live until the flush -- the
             // difference between a payload costing bytes in a shared run and
@@ -637,7 +642,14 @@ pub fn invert_documents_with_payloads(
     // above already gives each `(field, term)` at most one entry per document,
     // so this only reorders; the sort is stable anyway, which keeps it
     // insensitive to the hash map's arbitrary per-document iteration order.
-    let mut entries: Vec<(TermKey, TermPostingList)> = acc.into_iter().collect();
+    let mut entries: Vec<(TermKey, TermPostingList)> = acc
+        .into_iter()
+        .flat_map(|(field, terms)| {
+            terms
+                .into_iter()
+                .map(move |(term, list)| ((field.clone(), term), list))
+        })
+        .collect();
     for (_, postings) in entries.iter_mut() {
         postings.sort_by_doc_id();
     }

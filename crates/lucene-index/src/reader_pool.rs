@@ -25,6 +25,10 @@
 //!   ([`ReaderPool::drop_segments`]) and, as a backstop, whenever deletes are
 //!   applied to the index ([`ReaderPool::retain`]) -- Java's `ReaderPool.drop`
 //!   and `dropAll`.
+//! - **Segment infos.** Each segment's parsed `.si` is kept too (it never
+//!   changes for a given name and id), so merge-policy sizing, doc counts and
+//!   delete rounds stop re-reading it -- Java holds it on the in-memory
+//!   `SegmentCommitInfo`.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -34,7 +38,10 @@ use lucene_codecs::blocktree::BlockTreeFields;
 use lucene_store::codec_util::ID_LENGTH;
 use lucene_store::directory::Input;
 
+use lucene_store::directory::Directory;
+
 use crate::index_writer::Result;
+use crate::segment_info::{self, SegmentInfo};
 use crate::segment_infos::SegmentCommitInfo;
 
 /// One segment's postings, opened once for delete resolution.
@@ -51,12 +58,17 @@ pub(crate) struct PooledPostings {
     pub(crate) combined: bool,
 }
 
-/// Which segment state an entry was opened from.
+/// Which segment an entry was opened from.
+///
+/// Not keyed by `field_infos_gen`: the pooled dictionary uses only the
+/// segment's indexed fields, and a doc-values update (the only thing that
+/// advances that generation) never changes those -- it adds doc-values-only
+/// fields or moves a doc-values generation. Keying on it threw the postings
+/// away after every update round, `soft_update_document` flushes included.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct PoolKey {
     name: String,
     id: [u8; ID_LENGTH],
-    field_infos_gen: i64,
 }
 
 impl PoolKey {
@@ -64,7 +76,6 @@ impl PoolKey {
         PoolKey {
             name: sci.segment_name.clone(),
             id: sci.segment_id,
-            field_infos_gen: sci.field_infos_gen,
         }
     }
 }
@@ -73,6 +84,8 @@ impl PoolKey {
 /// resolves deletes for one writer.
 pub struct ReaderPool {
     entries: Mutex<HashMap<PoolKey, Arc<PooledPostings>>>,
+    /// Parsed `.si` files, by segment; kept whether or not pooling is on.
+    infos: Mutex<HashMap<PoolKey, Arc<SegmentInfo>>>,
     /// `IndexWriterConfig.getReaderPooling()`; on by default.
     enabled: AtomicBool,
     /// How many times a segment's postings were opened, for tests and
@@ -93,6 +106,7 @@ impl Default for ReaderPool {
     fn default() -> Self {
         ReaderPool {
             entries: Mutex::new(HashMap::new()),
+            infos: Mutex::new(HashMap::new()),
             enabled: AtomicBool::new(true),
             opens: AtomicU64::new(0),
         }
@@ -125,24 +139,52 @@ impl ReaderPool {
         self.opens.fetch_add(1, Ordering::Relaxed);
         let opened = Arc::new(open()?);
         let mut entries = self.entries();
-        // An older field-infos generation of the same segment is superseded.
+        // A segment of the same name with another id is superseded.
         entries.retain(|k, _| k.name != key.name || k == &key);
         Ok(Arc::clone(entries.entry(key).or_insert(opened)))
+    }
+
+    fn infos(&self) -> MutexGuard<'_, HashMap<PoolKey, Arc<SegmentInfo>>> {
+        self.infos.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// `sci`'s parsed `.si`, read from `dir` on first use.
+    pub(crate) fn segment_info(
+        &self,
+        dir: &dyn Directory,
+        sci: &SegmentCommitInfo,
+    ) -> Result<Arc<SegmentInfo>> {
+        let key = PoolKey::of(sci);
+        if let Some(hit) = self.infos().get(&key) {
+            return Ok(Arc::clone(hit));
+        }
+        let bytes = dir.open(&format!("{}.si", sci.segment_name))?;
+        let si = Arc::new(segment_info::parse_for_codec(
+            &bytes,
+            &sci.segment_id,
+            &sci.codec_name,
+        )?);
+        let mut infos = self.infos();
+        infos.retain(|k, _| k.name != key.name || k == &key);
+        Ok(Arc::clone(infos.entry(key).or_insert(si)))
     }
 
     /// `ReaderPool.drop(info)` for every segment named: a merge retired them.
     pub(crate) fn drop_segments(&self, names: &[String]) {
         self.entries().retain(|k, _| !names.contains(&k.name));
+        self.infos().retain(|k, _| !names.contains(&k.name));
     }
 
     /// Keeps only the segments still in the index.
     pub(crate) fn retain(&self, live: &HashSet<&str>) {
         self.entries().retain(|k, _| live.contains(k.name.as_str()));
+        self.infos().retain(|k, _| live.contains(k.name.as_str()));
     }
 
     /// `ReaderPool.dropAll()`.
     pub(crate) fn clear(&self) {
         self.entries().clear();
+        self.infos().clear();
     }
 
     /// `IndexWriterConfig.setReaderPooling(on)`. Turning it off drops what

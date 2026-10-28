@@ -852,8 +852,17 @@ fn check_segment_vs_commit_header(
 pub fn check_directory(dir: &dyn Directory) -> segment_infos::Result<Vec<CheckResult>> {
     let infos = segment_infos::read_latest(dir)?;
     let mut results = vec![check_commit(&infos)];
-    for commit in &infos.segments {
-        results.push(check_segment_in_commit(dir, Some(&infos), commit));
+    // Segments are checked in parallel, as Java's CheckIndex does with
+    // `-threadCount`; each check reads only its own segment's files, and the
+    // results keep commit order.
+    {
+        use rayon::prelude::*;
+        let segments: Vec<CheckResult> = infos
+            .segments
+            .par_iter()
+            .map(|commit| check_segment_in_commit(dir, Some(&infos), commit))
+            .collect();
+        results.extend(segments);
     }
     // `SegmentInfos.readCommit`'s LUCENE-6299 total-doc bound needs every
     // segment's maxDoc, which only becomes available once the `.si` files
@@ -4605,7 +4614,6 @@ fn check_soft_deletes(
             )
             .map_err(|e| e.to_string())
             .transpose()
-            .map(|r| r.map(|(meta, dvd)| (meta, lucene_store::directory::Input::Owned(dvd))))
         }
         _ => open_doc_values(dir, commit, si, field_infos),
     };
@@ -5415,7 +5423,12 @@ fn check_current_vector_group(
             return;
         }
     };
-    let flat = match vectors::FlatVectorsReader::open(&vemf, &vec, &commit.segment_id, suffix) {
+    // `open` only retrieves the `.vec` checksum, as Java's reader does;
+    // `checkIntegrity` is what re-reads the whole file, and a damaged `.vec`
+    // is this subsystem's own failure to report.
+    let flat = match vectors::FlatVectorsReader::open(&vemf, &vec, &commit.segment_id, suffix)
+        .and_then(|r| r.check_integrity().map(|()| r))
+    {
         Ok(r) => r,
         Err(e) => {
             checks.push(Check::fail("vectors.open", e.to_string()));

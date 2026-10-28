@@ -274,6 +274,14 @@ pub struct ConcurrentIndexWriter<'d> {
     /// `IndexWriterConfig.getMergeScheduler()`, when one was given
     /// ([`ConcurrentIndexWriter::with_merge_scheduler`]).
     scheduler: Option<SchedulerHook>,
+    /// `IndexWriter.pendingNumDocs`, in two parts: documents in the slots or
+    /// in a flush not yet published, and every segment's `maxDoc` as of the
+    /// last change to the segment lists. A published flush's documents are
+    /// briefly in both, which can only over-count.
+    buffered_docs: AtomicUsize,
+    segment_docs: AtomicUsize,
+    /// [`IndexWriter::set_max_docs`]' limit, frozen with the configuration.
+    max_docs: usize,
 }
 
 /// The scheduler this writer hands its pending merges to, and the writer
@@ -331,6 +339,8 @@ impl<'d> ConcurrentIndexWriter<'d> {
             next_seq: writer.next_sequence_number_peek(),
             ..DeleteLog::default()
         };
+        let segment_docs = writer.segment_doc_total()?;
+        let max_docs = writer.max_docs_limit();
         Ok(ConcurrentIndexWriter {
             dir: writer.dir(),
             cfg: writer.shared_config(),
@@ -360,6 +370,9 @@ impl<'d> ConcurrentIndexWriter<'d> {
             stall: DocumentsWriterStallControl::new(),
             pending_merges: PendingMerges::new(),
             scheduler: None,
+            buffered_docs: AtomicUsize::new(0),
+            segment_docs: AtomicUsize::new(segment_docs),
+            max_docs,
         })
     }
 
@@ -413,6 +426,9 @@ impl<'d> ConcurrentIndexWriter<'d> {
                 Ok(plan) => plan,
                 Err(e) => {
                     release(&mut core);
+                    drop(core);
+                    // `delete_all` waits for `merging` to empty.
+                    self.changed.notify_all();
                     return Err(e);
                 }
             }
@@ -424,10 +440,11 @@ impl<'d> ConcurrentIndexWriter<'d> {
         let mut core = lock(&self.core);
         release(&mut core);
         let result = match outcome {
-            Ok(Ok(outcome)) => core
-                .writer
-                .finish_merge(plan, outcome)
-                .and_then(|_| self.register_merges(&mut core)),
+            Ok(Ok(outcome)) => {
+                let finished = core.writer.finish_merge(plan, outcome);
+                self.refresh_segment_docs(&mut core);
+                finished.and_then(|_| self.register_merges(&mut core))
+            }
             Ok(Err(e)) => {
                 let _ = core.writer.abort_merge(plan);
                 let _ = core.writer.delete_new_files(&tracking.created());
@@ -688,7 +705,11 @@ impl<'d> ConcurrentIndexWriter<'d> {
             log.take_seq()
         };
         self.update_ram(|c| c.set_delete_bytes_used(0));
-        core.writer.delete_all()?;
+        let deleted = core.writer.delete_all();
+        // Every slot was emptied above and no flush is in flight.
+        self.buffered_docs.store(0, Ordering::Release);
+        self.refresh_segment_docs(&mut core);
+        deleted?;
         drop(core);
         drop(slots);
         self.changed.notify_all();
@@ -841,6 +862,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
                 self.cfg
                     .validate_document_vectors(before.saturating_add(k), &entry.vectors)?;
             }
+            self.reserve_docs(docs.len())?;
             if docs.len() > 1 {
                 dwpt.has_blocks = true;
             }
@@ -984,8 +1006,33 @@ impl<'d> ConcurrentIndexWriter<'d> {
         core
     }
 
+    /// Re-reads the segments' `maxDoc` total after the segment lists
+    /// changed. A failure to read it leaves the old total in place.
+    fn refresh_segment_docs(&self, core: &mut Core<'_>) {
+        if let Ok(total) = core.writer.segment_doc_total() {
+            self.segment_docs.store(total, Ordering::Release);
+        }
+    }
+
+    /// `IndexWriter.reserveDocs`: claims room for `added` documents under
+    /// the max-docs limit, or refuses them before anything is buffered.
+    fn reserve_docs(&self, added: usize) -> Result<()> {
+        let before = self.buffered_docs.fetch_add(added, Ordering::AcqRel);
+        let total = self
+            .segment_docs
+            .load(Ordering::Acquire)
+            .saturating_add(before)
+            .saturating_add(added);
+        if total > self.max_docs {
+            self.buffered_docs.fetch_sub(added, Ordering::AcqRel);
+            return Err(crate::index_writer::Error::TooManyDocs(self.max_docs));
+        }
+        Ok(())
+    }
+
     /// Marks the ticket whose turn it was as done and wakes the waiters.
     fn retire(&self, mut core: MutexGuard<'_, Core<'d>>) {
+        self.refresh_segment_docs(&mut core);
         core.next_publish = core.next_publish.saturating_add(1);
         drop(core);
         self.changed.notify_all();
@@ -1097,6 +1144,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
             private,
             ram_bytes,
         } = batch;
+        let doc_count = docs.len();
         let tracking = TrackingDirectory::new(self.dir);
         let built = catch_unwind(AssertUnwindSafe(|| {
             self.build(
@@ -1134,8 +1182,14 @@ impl<'d> ConcurrentIndexWriter<'d> {
         }));
         self.retire(core);
         // Published or abandoned, its buffer is gone either way
-        // (`doAfterFlush`), panics included.
+        // (`doAfterFlush`), panics included. Published documents are now in
+        // the segment total `retire` just read.
         self.update_ram(|c| c.flush_done(ram_bytes));
+        let _ = self
+            .buffered_docs
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                Some(n.saturating_sub(doc_count))
+            });
         match outcome {
             Ok(Ok(result)) => result,
             Ok(Err(panic)) | Err(panic) => resume_unwind(panic),
@@ -1291,22 +1345,31 @@ impl<'d> ConcurrentIndexWriter<'d> {
             for name in &plan.names {
                 core.merging.remove(name);
             }
+            // Every way out notifies: `delete_all` waits for `merging` to
+            // empty.
             let published = match outcome {
-                Ok(Ok(outcome)) => core.writer.finish_merge(plan, outcome)?,
+                Ok(Ok(outcome)) => {
+                    let published = core.writer.finish_merge(plan, outcome);
+                    self.refresh_segment_docs(&mut core);
+                    drop(core);
+                    self.changed.notify_all();
+                    published?
+                }
                 Ok(Err(e)) => {
                     let _ = core.writer.abort_merge(plan);
                     let _ = core.writer.delete_new_files(&tracking.created());
+                    drop(core);
+                    self.changed.notify_all();
                     return Err(e);
                 }
                 Err(panic) => {
                     let _ = core.writer.abort_merge(plan);
                     let _ = core.writer.delete_new_files(&tracking.created());
                     drop(core);
+                    self.changed.notify_all();
                     resume_unwind(panic);
                 }
             };
-            drop(core);
-            self.changed.notify_all();
             if !published {
                 break;
             }
@@ -1499,6 +1562,9 @@ impl MergeSource for ConcurrentIndexWriter<'static> {
         for name in &merge.segments {
             core.merging.remove(name);
         }
+        drop(core);
+        // `delete_all` waits for `merging` to empty.
+        self.changed.notify_all();
     }
 
     fn has_pending_merges(&self) -> bool {
@@ -2613,6 +2679,34 @@ mod tests {
     /// flushed and buffered documents all go, deletes buffered before it
     /// reach nothing added after it, a `MatchAllDocsQuery` delete is the
     /// same operation, and a merge the scheduler had not started is dropped.
+    #[test]
+    fn the_max_docs_limit_holds_across_slots_flushes_and_delete_all() {
+        let tmp = TempDir::new("concurrent-max-docs");
+        let dir = FsDirectory::open(&tmp);
+        let mut inner = writer(&dir, 3);
+        inner.set_max_docs(7);
+        inner.add_document(doc("a0", 0)).unwrap();
+        let w = ConcurrentIndexWriter::new(inner, 2).unwrap();
+        for k in 1..7 {
+            w.add_document(doc(&format!("a{k}"), 0)).unwrap();
+        }
+        assert!(matches!(
+            w.add_document(doc("a7", 0)),
+            Err(crate::index_writer::Error::TooManyDocs(7))
+        ));
+        assert!(matches!(
+            w.add_documents(vec![doc("b0", 0), doc("b1", 0)]),
+            Err(crate::index_writer::Error::TooManyDocs(7))
+        ));
+        w.commit().unwrap();
+        assert!(w.add_document(doc("a7", 0)).is_err());
+        w.delete_all().unwrap();
+        for k in 0..7 {
+            w.add_document(doc(&format!("c{k}"), 0)).unwrap();
+        }
+        assert!(w.add_document(doc("c7", 0)).is_err());
+    }
+
     #[test]
     fn delete_all_drops_every_segment_buffer_and_delete() {
         let tmp = TempDir::new("concurrent-delete-all");

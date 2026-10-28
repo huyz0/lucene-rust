@@ -480,6 +480,7 @@ impl SegmentReader {
             index_sort: (!core.info.index_sort.is_empty())
                 .then(|| Arc::new(core.info.index_sort.clone())),
             max_doc: core.info.doc_count,
+            num_docs: crate::reader::num_docs_of(core.info.doc_count, live_docs.as_deref()),
             field_infos: core.field_infos.clone(),
             simpletext: Some(core),
             segment_name: commit.segment_name.clone(),
@@ -512,6 +513,7 @@ impl SegmentReader {
             norms_meta: None,
             norms_data: None,
             term_vectors: None,
+            term_vectors_meta: Arc::default(),
             vectors: Vec::new(),
             completion: Vec::new(),
             postings_validated: Arc::new(std::sync::atomic::AtomicBool::new(true)),
