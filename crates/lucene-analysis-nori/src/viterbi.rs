@@ -358,28 +358,26 @@ impl ViterbiLang<Token> for KoViterbi {
                         v.pending.push(token);
                     }
                 } else {
-                    match token.morphemes() {
+                    match token.morpheme_units() {
                         None => v.pending.push(token),
                         Some(morphemes) => {
                             let mut end_offset = back_word_pos.wrapping_add(length);
                             let mut pos_len: i32 = 0;
                             // decompose the compound
-                            for (i, morpheme) in morphemes.iter().enumerate().rev() {
-                                let m_len =
-                                    i32::try_from(morpheme.surface_form.encode_utf16().count())
-                                        .unwrap_or(i32::MAX);
+                            for (i, (pos_tag, units)) in morphemes.into_iter().enumerate().rev() {
+                                let m_len = i32::try_from(units.len()).unwrap_or(i32::MAX);
                                 let mut compound_token = if token.pos_type() == Type::Compound {
-                                    Token::decompound(
-                                        morpheme.pos_tag,
-                                        &morpheme.surface_form,
+                                    Token::decompound_units(
+                                        pos_tag,
+                                        units,
                                         end_offset.wrapping_sub(m_len),
                                         end_offset,
                                         back_type,
                                     )
                                 } else {
-                                    Token::decompound(
-                                        morpheme.pos_tag,
-                                        &morpheme.surface_form,
+                                    Token::decompound_units(
+                                        pos_tag,
+                                        units,
                                         token.base().start_offset,
                                         token.base().end_offset,
                                         back_type,

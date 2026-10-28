@@ -424,11 +424,21 @@ impl Normalizer2Impl {
     /// surrogate's value first, as the UTF-16 loop judges it. `false` means
     /// "not known": the caller runs the UTF-16 check.
     pub fn quick_yes_utf8(&self, s: &str, decompose: bool) -> bool {
-        let (min, yes): (i32, fn(&Self, i32) -> bool) = if decompose {
-            (self.min_decomp_no_cp, Self::is_most_decomp_yes_and_zero_cc)
+        // Two monomorphized loops, so the per-character test inlines
+        // rather than going through a function pointer.
+        if decompose {
+            self.quick_yes_utf8_with(
+                s,
+                self.min_decomp_no_cp,
+                Self::is_most_decomp_yes_and_zero_cc,
+            )
         } else {
-            (self.min_comp_no_maybe_cp, Self::is_comp_yes_and_zero_cc)
-        };
+            self.quick_yes_utf8_with(s, self.min_comp_no_maybe_cp, Self::is_comp_yes_and_zero_cc)
+        }
+    }
+
+    #[inline(always)]
+    fn quick_yes_utf8_with(&self, s: &str, min: i32, yes: impl Fn(&Self, i32) -> bool) -> bool {
         for ch in s.chars() {
             let c = ch as i32;
             if c < min {

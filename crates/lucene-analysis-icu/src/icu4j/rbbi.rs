@@ -256,7 +256,8 @@ impl RuleBasedBreakIterator {
             }
         }
         let mut state = START_STATE;
-        let mut row = data.row_index(state);
+        let row_width = data.row_width();
+        let mut row = usize::from(state).saturating_mul(row_width);
         let mut category: u16 = 3;
         let flags = table.flags;
         let dict_start = table.dict_categories_start;
@@ -286,7 +287,7 @@ impl RuleBasedBreakIterator {
                 mode = 1;
             }
             state = table.at(row + NEXTSTATES + usize::from(category));
-            row = data.row_index(state);
+            row = usize::from(state).saturating_mul(row_width);
             let accepting = table.at(row + ACCEPTING);
             if accepting == ACCEPTING_UNCONDITIONAL {
                 result = text.index() as i32;

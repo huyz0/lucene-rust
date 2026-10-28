@@ -328,6 +328,29 @@ static ENTITY_VALUES: LazyLock<HashMap<&'static str, u16>> = LazyLock::new(|| {
     m
 });
 
+/// [`ENTITY_VALUES`] of a matched name, read off its units with no
+/// allocation (every name is ASCII and at most 8 long).
+fn entity_value(name: &[u16]) -> Option<u16> {
+    let mut buf = [0u8; 8];
+    let bytes = buf.get_mut(..name.len())?;
+    for (b, &u) in bytes.iter_mut().zip(name) {
+        *b = u8::try_from(u).ok().filter(u8::is_ascii)?;
+    }
+    ENTITY_VALUES.get(std::str::from_utf8(bytes).ok()?).copied()
+}
+
+/// `Integer.parseInt` of a matched run of digits in `radix` (`None` where
+/// Java would throw: empty, a non-digit, or past `u32`).
+fn parse_digits(units: &[u16], radix: u32) -> Option<u32> {
+    if units.is_empty() {
+        return None;
+    }
+    units.iter().try_fold(0u32, |acc, &u| {
+        let d = char::from_u32(u32::from(u))?.to_digit(radix)?;
+        acc.checked_mul(radix)?.checked_add(d)
+    })
+}
+
 /// `HTMLStripCharFilter.TextSegment` (an `OpenStringBuilder` plus a read
 /// position).
 #[derive(Debug, Clone)]
@@ -464,8 +487,14 @@ impl<R: CharReader> HTMLStripCharFilter<R> {
         self.scanner.yylength() as i32
     }
 
-    fn yytext(&self) -> Vec<u16> {
-        self.scanner.text().to_vec()
+    /// `output().write(zzBuffer, zzStartRead, yylength())`, with no copy of
+    /// the match.
+    fn write_match_to_output(&mut self) {
+        let t = self.scanner.text();
+        match self.out {
+            Out::Input => self.input_segment.buf.extend_from_slice(t),
+            Out::Entity => self.entity_segment.buf.extend_from_slice(t),
+        }
     }
 
     fn yybegin(&mut self, state: usize) {
@@ -483,8 +512,9 @@ impl<R: CharReader> HTMLStripCharFilter<R> {
     }
 
     fn is_escaped_tag(&self) -> bool {
-        let tag = String::from_utf16_lossy(self.scanner.text());
-        self.escaped_tags.as_ref().is_some_and(|s| s.contains(&tag))
+        self.escaped_tags
+            .as_ref()
+            .is_some_and(|s| s.contains_utf16(self.scanner.text()))
     }
 
     /// `entitySegment` holds `cp` (`Character.toChars`), or U+FFFD for a
@@ -553,8 +583,7 @@ impl<R: CharReader> HTMLStripCharFilter<R> {
     /// The decimal or hexadecimal digits of a surrogate-pair reference, as a
     /// `char` (Java's `(char) Integer.parseInt(..)`).
     fn parse_unit(text: &[u16], from: usize, to: usize, radix: u32) -> u16 {
-        let s = String::from_utf16_lossy(&text[from..to]);
-        u32::from_str_radix(&s, radix).map_or(0, |v| v as u16)
+        parse_digits(&text[from..to], radix).map_or(0, |v| v as u16)
     }
 
     // Java: nextChar (getNextToken): the scanner loop and its actions.
@@ -573,8 +602,7 @@ impl<R: CharReader> HTMLStripCharFilter<R> {
                     if self.yylength() == 1 {
                         return Ok(Some(self.scanner.yycharat(0)));
                     }
-                    let t = self.yytext();
-                    self.output().buf.extend_from_slice(&t);
+                    self.write_match_to_output();
                     return Ok(Some(self.output().next_char()));
                 }
                 2 => {
@@ -607,8 +635,7 @@ impl<R: CharReader> HTMLStripCharFilter<R> {
                     self.write_match_to_input();
                     let (max_len, skip, radix) = if action == 6 { (7, 0, 10) } else { (6, 1, 16) };
                     if match_length <= max_len {
-                        let t = self.yytext();
-                        let cp = Self::parse_unit_u32(&t, skip, radix);
+                        let cp = Self::parse_unit_u32(self.scanner.text(), skip, radix);
                         if cp <= 0x10FFFF {
                             self.set_entity_code_point(cp);
                             self.yybegin(CHARACTER_REFERENCE_TAIL);
@@ -659,10 +686,7 @@ impl<R: CharReader> HTMLStripCharFilter<R> {
                     };
                     self.yybegin(state);
                 }
-                13 => {
-                    let t = self.yytext();
-                    self.input_segment.buf.extend_from_slice(&t);
-                }
+                13 => self.write_match_to_input(),
                 14 => {
                     self.cumulative_diff += self.input_segment.len() + self.yylength();
                     self.add_off_correct_map(self.output_char_count, self.cumulative_diff);
@@ -727,9 +751,11 @@ impl<R: CharReader> HTMLStripCharFilter<R> {
                 31 => {
                     self.write_match_to_input();
                     self.entity_segment.clear();
-                    let name = String::from_utf16_lossy(self.scanner.text());
-                    let ch = *ENTITY_VALUES.get(name.as_str()).ok_or_else(|| {
-                        AnalysisError::IllegalState(format!("unknown entity {name}"))
+                    let ch = entity_value(self.scanner.text()).ok_or_else(|| {
+                        AnalysisError::IllegalState(format!(
+                            "unknown entity {}",
+                            String::from_utf16_lossy(self.scanner.text())
+                        ))
                     })?;
                     self.entity_segment.buf.push(ch);
                     self.out = Out::Entity;
@@ -738,8 +764,7 @@ impl<R: CharReader> HTMLStripCharFilter<R> {
                 33 => {
                     if self.input_segment.len() > 2 {
                         // Chars between "<!" and "--" - this is not a comment.
-                        let t = self.yytext();
-                        self.input_segment.buf.extend_from_slice(&t);
+                        self.write_match_to_input();
                     } else {
                         self.yybegin(COMMENT);
                     }
@@ -803,8 +828,7 @@ impl<R: CharReader> HTMLStripCharFilter<R> {
                 48 => {
                     if self.input_segment.len() > 2 {
                         // Chars between "<!" and "[CDATA[" - this is not a CDATA section.
-                        let t = self.yytext();
-                        self.input_segment.buf.extend_from_slice(&t);
+                        self.write_match_to_input();
                     } else {
                         self.cumulative_diff += self.input_segment.len() + self.yylength();
                         self.add_off_correct_map(self.output_char_count, self.cumulative_diff);
@@ -837,17 +861,18 @@ impl<R: CharReader> HTMLStripCharFilter<R> {
                 51..=54 => {
                     // Paired UTF-16 surrogates as references: 51 `#D;#D`,
                     // 52 `#D;#xH`, 53 `#xH;#D`, 54 `#xH;#xH` (D decimal, H hex).
-                    let t = self.yytext();
+                    let t = self.scanner.text();
                     let high = if action <= 52 {
-                        Self::parse_unit(&t, 1, 6, 10)
+                        Self::parse_unit(t, 1, 6, 10)
                     } else {
-                        Self::parse_unit(&t, 2, 6, 16)
+                        Self::parse_unit(t, 2, 6, 16)
                     };
                     let low = if action == 51 || action == 53 {
-                        Self::parse_unit(&t, 9, 14, 10)
+                        Self::parse_unit(t, 9, 14, 10)
                     } else {
-                        Self::parse_unit(&t, 10, 14, 16)
+                        Self::parse_unit(t, 10, 14, 16)
                     };
+                    let matched = t.len();
                     let paired = match action {
                         51 => {
                             crate::java_character::is_high_surrogate(high)
@@ -868,7 +893,7 @@ impl<R: CharReader> HTMLStripCharFilter<R> {
                         return Ok(Some(high));
                     }
                     // Consume only '#'.
-                    self.scanner.yypushback(t.len() - 1)?;
+                    self.scanner.yypushback(matched - 1)?;
                     self.input_segment.buf.push(u16::from(b'#'));
                     self.yybegin(NUMERIC_CHARACTER);
                 }
@@ -883,8 +908,7 @@ impl<R: CharReader> HTMLStripCharFilter<R> {
 
     /// `Integer.parseInt(text[skip..], radix)` of a matched reference.
     fn parse_unit_u32(text: &[u16], skip: usize, radix: u32) -> u32 {
-        let s = String::from_utf16_lossy(&text[skip..]);
-        u32::from_str_radix(&s, radix).unwrap_or(0)
+        parse_digits(&text[skip..], radix).unwrap_or(0)
     }
 
     // Java: HTMLStripCharFilter.read()
@@ -1073,6 +1097,20 @@ mod tests {
             assert_eq!(&s, out, "{html}");
             assert_eq!(&c, corr, "{html}");
         }
+    }
+
+    #[test]
+    fn entity_and_digit_parsing() {
+        let u = |s: &str| s.encode_utf16().collect::<Vec<u16>>();
+        assert_eq!(entity_value(&u("amp")), Some(u16::from(b'&')));
+        assert_eq!(entity_value(&u("thetasym")), Some(0x03D1));
+        assert_eq!(entity_value(&u("nosuchentity")), None);
+        assert_eq!(entity_value(&u("é")), None);
+        assert_eq!(parse_digits(&u("65"), 10), Some(65));
+        assert_eq!(parse_digits(&u("fF"), 16), Some(255));
+        assert_eq!(parse_digits(&[], 10), None);
+        assert_eq!(parse_digits(&u("1x"), 10), None);
+        assert_eq!(parse_digits(&u("99999999999"), 10), None);
     }
 
     #[test]

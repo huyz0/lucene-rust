@@ -68,16 +68,34 @@ impl UserMorphData {
     /// `getMorphemes(morphId, surfaceForm, off, len)`: the segments, each an
     /// `NNG`.
     pub fn morphemes(&self, id: i32, surface: &[u16], off: i32) -> Option<Vec<Morpheme>> {
+        let parts = self.morphemes_with(id, surface, off, String::from_utf16_lossy)?;
+        Some(
+            parts
+                .into_iter()
+                .map(|(pos_tag, surface_form)| Morpheme {
+                    pos_tag,
+                    surface_form,
+                })
+                .collect(),
+        )
+    }
+
+    /// [`Self::morphemes`] with each surface form made by `form` from its
+    /// UTF-16 units.
+    pub fn morphemes_with<T>(
+        &self,
+        id: i32,
+        surface: &[u16],
+        off: i32,
+        mut form: impl FnMut(&[u16]) -> T,
+    ) -> Option<Vec<(Tag, T)>> {
         let segs = self.segmentation(id)?;
         let mut offset = usize::try_from(off).ok()?;
         // ALLOC: `segs` is already in memory (a parsed user entry).
         let mut out = Vec::with_capacity(segs.len());
         for &len in segs {
             let end = offset.checked_add(usize::try_from(len).ok()?)?;
-            out.push(Morpheme {
-                pos_tag: Tag::Nng,
-                surface_form: String::from_utf16_lossy(surface.get(offset..end)?),
-            });
+            out.push((Tag::Nng, form(surface.get(offset..end)?)));
             offset = end;
         }
         Some(out)

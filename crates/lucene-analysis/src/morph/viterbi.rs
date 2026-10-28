@@ -301,6 +301,14 @@ impl WrappedPositionArray {
         // `nextPos`, so one wrap suffices: no division on this hot path.
         let len = self.positions.len();
         let back = usize::try_from(self.next_pos.wrapping_sub(pos)).unwrap_or(0);
+        // Java's `assert pos < nextPos; assert pos >= nextPos - count`: a
+        // freed or future position would read another position's slot.
+        debug_assert!(
+            pos < self.next_pos && back <= self.count,
+            "position {pos} is not live (next {}, count {})",
+            self.next_pos,
+            self.count
+        );
         match self.next_write.checked_sub(back) {
             Some(i) => i,
             None => len

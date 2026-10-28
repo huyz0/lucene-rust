@@ -20,9 +20,15 @@ fn c(b: u8) -> u16 {
 /// `MatchRatingApproachEncoder.cleanName`: upper case, `-&'.,` removed,
 /// accents removed, whitespace (`\s`) removed.
 fn clean_name(name: &[u16]) -> Vec<u16> {
+    // The two tables as UTF-16, built once.
+    static TABLES: std::sync::LazyLock<(Vec<u16>, Vec<u16>)> = std::sync::LazyLock::new(|| {
+        (
+            PLAIN_ASCII.encode_utf16().collect(),
+            UNICODE.encode_utf16().collect(),
+        )
+    });
+    let (plain, accented) = &*TABLES;
     let upper = to_upper(name);
-    let plain: Vec<u16> = PLAIN_ASCII.encode_utf16().collect();
-    let accented: Vec<u16> = UNICODE.encode_utf16().collect();
     upper
         .into_iter()
         .filter(|&ch| !b"-&'.,".iter().any(|&b| ch == c(b)))
