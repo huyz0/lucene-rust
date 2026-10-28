@@ -202,8 +202,20 @@ impl<R: ?Sized + LeafReader + AsDynLeaf> IndexReader for FilterLeafReader<R> {
         self.in_.max_doc()
     }
     fn num_docs(&self) -> i32 {
-        // The live docs as the filter presents them.
-        super::num_docs_of(self.in_.max_doc(), LeafReader::live_docs(self))
+        // The live docs as the filter presents them; the inner reader's own
+        // (possibly cached) count when the filter keeps its live docs.
+        let inner = self.in_.live_docs();
+        let live = self.filter.live_docs(inner);
+        let same = match (inner, live) {
+            (None, None) => true,
+            (Some(a), Some(b)) => std::ptr::eq(a, b),
+            _ => false,
+        };
+        if same {
+            self.in_.num_docs()
+        } else {
+            super::num_docs_of(self.in_.max_doc(), live)
+        }
     }
     fn leaves(&self) -> Vec<LeafReaderContext<'_>> {
         vec![LeafReaderContext {
@@ -360,6 +372,13 @@ impl AsDynLeaf for dyn CodecReader {
 pub trait SubReaderWrapper: Send + Sync {
     /// `wrap(reader)`.
     fn wrap(&self, reader: Arc<dyn LeafReader>) -> Result<Arc<dyn LeafReader>>;
+    /// Whether the wrapped reader may share the inner reader's cache helper
+    /// (a subclass's `getReaderCacheHelper` returning `in`'s, as
+    /// `ExitableDirectoryReader` does): only a wrapper that changes no
+    /// content may say yes.
+    fn caches_like_inner(&self) -> bool {
+        false
+    }
 }
 
 /// `FilterDirectoryReader`: a [`DirectoryReader`] whose leaves are wrapped by
@@ -371,6 +390,10 @@ pub struct FilterDirectoryReader {
     wrapper: Arc<dyn SubReaderWrapper>,
     /// `DelegatingCacheHelper`: its own key.
     reader_cache: CacheHelper,
+    /// `maxDoc`, summed once as `BaseCompositeReader` does.
+    max_doc: i32,
+    /// `numDocs`, summed on first use as `BaseCompositeReader` does.
+    num_docs: std::sync::OnceLock<i32>,
 }
 
 impl FilterDirectoryReader {
@@ -384,11 +407,16 @@ impl FilterDirectoryReader {
             .iter()
             .map(|s| wrapper.wrap(Arc::new(s.clone())))
             .collect::<Result<Vec<_>>>()?;
+        let max_doc = leaves
+            .iter()
+            .fold(0i32, |a, l| a.saturating_add(l.max_doc()));
         Ok(Self {
             in_,
             leaves,
             wrapper,
             reader_cache: CacheHelper::new(),
+            max_doc,
+            num_docs: std::sync::OnceLock::new(),
         })
     }
 
@@ -427,20 +455,24 @@ impl FilterDirectoryReader {
 
 impl IndexReader for FilterDirectoryReader {
     fn max_doc(&self) -> i32 {
-        self.leaves
-            .iter()
-            .fold(0i32, |a, l| a.saturating_add(l.max_doc()))
+        self.max_doc
     }
     fn num_docs(&self) -> i32 {
-        self.leaves
-            .iter()
-            .fold(0i32, |a, l| a.saturating_add(l.num_docs()))
+        *self.num_docs.get_or_init(|| {
+            self.leaves
+                .iter()
+                .fold(0i32, |a, l| a.saturating_add(l.num_docs()))
+        })
     }
     fn leaves(&self) -> Vec<LeafReaderContext<'_>> {
         super::composite_leaves(&self.sequential_sub_readers())
     }
     fn reader_cache_helper(&self) -> Option<&CacheHelper> {
-        Some(&self.reader_cache)
+        if self.wrapper.caches_like_inner() {
+            Some(self.in_.reader_cache_helper())
+        } else {
+            Some(&self.reader_cache)
+        }
     }
 }
 
@@ -674,6 +706,9 @@ impl SortedNumericDocValues for FilterSortedNumericDocValues<'_> {
     fn next_value(&mut self) -> Result<i64> {
         self.in_.next_value()
     }
+    fn take_values(&mut self) -> Option<&[i64]> {
+        self.in_.take_values()
+    }
 }
 
 /// `FilterSortedSetDocValues`.
@@ -688,6 +723,9 @@ impl SortedSetDocValues for FilterSortedSetDocValues<'_> {
     }
     fn next_ord(&mut self) -> Result<i64> {
         self.in_.next_ord()
+    }
+    fn take_ords(&mut self) -> Option<&[i64]> {
+        self.in_.take_ords()
     }
     fn lookup_ord(&mut self, ord: i64) -> Result<Vec<u8>> {
         self.in_.lookup_ord(ord)

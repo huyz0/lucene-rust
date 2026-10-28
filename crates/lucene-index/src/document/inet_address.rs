@@ -116,8 +116,12 @@ impl InetAddressPoint {
     }
 
     /// `newPrefixQuery`'s bounds: `value` with every bit past `prefix_length`
-    /// cleared (lower) and set (upper), in the address's own family.
+    /// cleared (lower) and set (upper), in the address's own family. An
+    /// IPv4-mapped IPv6 address (`::ffff:a.b.c.d`) is IPv4, as Java's
+    /// `InetAddress` always is an `Inet4Address` for one: its prefix length
+    /// is checked against 32 and its mask is the IPv4 one.
     pub fn prefix_bounds(value: IpAddr, prefix_length: u32) -> Result<(IpAddr, IpAddr)> {
+        let value = Self::canonical(value);
         let bits = match value {
             IpAddr::V4(_) => 32,
             IpAddr::V6(_) => 128,
@@ -146,6 +150,15 @@ impl InetAddressPoint {
                 )
             }
         })
+    }
+
+    /// The family Java's `InetAddress` gives `value`: an IPv4-mapped IPv6
+    /// address is the IPv4 address it maps.
+    fn canonical(value: IpAddr) -> IpAddr {
+        match value {
+            IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(value, IpAddr::V4),
+            IpAddr::V4(_) => value,
+        }
     }
 
     /// `binaryValue()`.
@@ -224,5 +237,27 @@ mod tests {
         assert_eq!(lo, ip("2001:db8::"));
         assert_eq!(hi, ip("2001:db8:ffff:ffff:ffff:ffff:ffff:ffff"));
         assert!(InetAddressPoint::prefix_bounds(ip("1.1.1.1"), 33).is_err());
+    }
+
+    #[test]
+    fn mapped_v6_addresses_are_ipv4() {
+        // `::ffff:192.168.7.9` is an `Inet4Address` in Java: prefix 16 masks
+        // the IPv4 bits, and a prefix past 32 is rejected.
+        let (lo, hi) = InetAddressPoint::prefix_bounds(ip("::ffff:192.168.7.9"), 16).unwrap();
+        assert_eq!((lo, hi), (ip("192.168.0.0"), ip("192.168.255.255")));
+        assert!(InetAddressPoint::prefix_bounds(ip("::ffff:1.1.1.1"), 33).is_err());
+        assert!(InetAddressPoint::prefix_bounds(ip("::ffff:1.1.1.1"), 128).is_err());
+        // The other helpers already agree: the mapped and the plain address
+        // share one encoding.
+        assert_eq!(
+            InetAddressPoint::encode(ip("::ffff:1.2.3.4")),
+            InetAddressPoint::encode(ip("1.2.3.4"))
+        );
+        assert_eq!(
+            InetAddressPoint::next_up(ip("::ffff:1.2.3.4")).unwrap(),
+            ip("1.2.3.5")
+        );
+        // A non-mapped IPv6 address keeps the 128-bit check.
+        assert!(InetAddressPoint::prefix_bounds(ip("::1"), 128).is_ok());
     }
 }

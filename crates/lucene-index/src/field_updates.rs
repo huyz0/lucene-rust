@@ -422,7 +422,8 @@ fn write_field_updates_inner(
     sci.advance_field_infos_gen();
     sci.field_infos_files = vec![fnm_name];
 
-    dir.sync(created)?;
+    // Not synced: the commit that names these generation files syncs them
+    // (`IndexWriter.startCommit`).
     Ok(())
 }
 

@@ -124,6 +124,10 @@ impl SubReaderWrapper for ExitableSubReaderWrapper {
             Arc::clone(&self.timeout),
         )))
     }
+    /// `ExitableDirectoryReader.getReaderCacheHelper()`: `in`'s.
+    fn caches_like_inner(&self) -> bool {
+        true
+    }
 }
 
 /// `ExitableFilterAtomicReader`.
@@ -449,6 +453,9 @@ impl<'a> SortedDocValues for ExitableDv<'a, dyn SortedDocValues + 'a> {
     fn value_count(&self) -> i32 {
         self.in_.value_count()
     }
+    fn lookup_term(&mut self, key: &[u8]) -> Result<i32> {
+        self.in_.lookup_term(key)
+    }
 }
 
 impl<'a> SortedNumericDocValues for ExitableDv<'a, dyn SortedNumericDocValues + 'a> {
@@ -457,6 +464,9 @@ impl<'a> SortedNumericDocValues for ExitableDv<'a, dyn SortedNumericDocValues + 
     }
     fn next_value(&mut self) -> Result<i64> {
         self.in_.next_value()
+    }
+    fn take_values(&mut self) -> Option<&[i64]> {
+        self.in_.take_values()
     }
 }
 
@@ -467,11 +477,17 @@ impl<'a> SortedSetDocValues for ExitableDv<'a, dyn SortedSetDocValues + 'a> {
     fn next_ord(&mut self) -> Result<i64> {
         self.in_.next_ord()
     }
+    fn take_ords(&mut self) -> Option<&[i64]> {
+        self.in_.take_ords()
+    }
     fn lookup_ord(&mut self, ord: i64) -> Result<Vec<u8>> {
         self.in_.lookup_ord(ord)
     }
     fn value_count(&self) -> i64 {
         self.in_.value_count()
+    }
+    fn lookup_term(&mut self, key: &[u8]) -> Result<i64> {
+        self.in_.lookup_term(key)
     }
 }
 

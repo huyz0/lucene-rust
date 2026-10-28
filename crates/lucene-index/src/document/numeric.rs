@@ -249,15 +249,18 @@ macro_rules! typed_point {
 }
 
 typed_point!(
-    /// `IntPoint`: an `int` point in 1..=16 dimensions.
+    /// `IntPoint`: an `int` point in 1..=8 dimensions (`set_dimensions` makes every
+    /// dimension an index dimension, capped at `MAX_INDEX_DIMENSIONS`).
     IntPoint, i32, 4, int_to_sortable_bytes, sortable_bytes_to_int, Int
 );
 typed_point!(
-    /// `LongPoint`: a `long` point in 1..=16 dimensions.
+    /// `LongPoint`: a `long` point in 1..=8 dimensions (`set_dimensions` makes every
+    /// dimension an index dimension, capped at `MAX_INDEX_DIMENSIONS`).
     LongPoint, i64, 8, long_to_sortable_bytes, sortable_bytes_to_long, Long
 );
 typed_point!(
-    /// `FloatPoint`: a `float` point in 1..=16 dimensions.
+    /// `FloatPoint`: a `float` point in 1..=8 dimensions (`set_dimensions` makes every
+    /// dimension an index dimension, capped at `MAX_INDEX_DIMENSIONS`).
     FloatPoint,
     f32,
     4,
@@ -266,7 +269,8 @@ typed_point!(
     Float
 );
 typed_point!(
-    /// `DoublePoint`: a `double` point in 1..=16 dimensions.
+    /// `DoublePoint`: a `double` point in 1..=8 dimensions (`set_dimensions` makes every
+    /// dimension an index dimension, capped at `MAX_INDEX_DIMENSIONS`).
     DoublePoint,
     f64,
     8,
@@ -442,7 +446,8 @@ impl IndexableField for BinaryPoint {
 macro_rules! numeric_field {
     (
         $(#[$m:meta])*
-        $ty:ident, $prim:ty, $bytes:expr, $point:ident, $to_dv:expr, $stored:ident, $num:ident
+        $ty:ident, $prim:ty, $bytes:expr, $point:ident, $to_dv:expr, $from_dv:expr,
+        $stored:ident, $num:ident
     ) => {
         $(#[$m])*
         #[derive(Debug, Clone, PartialEq)]
@@ -494,10 +499,18 @@ macro_rules! numeric_field {
             fn numeric_value(&self) -> Option<Number> {
                 Some(Number::$num(($to_dv)(self.value) as _))
             }
+            /// `stringValue()`: `fieldsData.toString()`, and `fieldsData` is
+            /// the doc value as a `Long` (for a float or double field its
+            /// sortable bits), so this is that `long`'s decimal form.
+            fn string_value(&self) -> Option<Cow<'_, str>> {
+                Some(Cow::Owned(self.doc_value().to_string()))
+            }
+            /// `storedValue()`: read back from `fieldsData`, the doc value, so
+            /// a float or double NaN is stored as the canonical NaN.
             fn stored_value(&self) -> Option<StoredValue> {
                 self.field_type
                     .stored()
-                    .then(|| StoredValue::$stored(self.value))
+                    .then(|| StoredValue::$stored(($from_dv)(self.doc_value())))
             }
             fn token_stream(&self, _analyzer: &Analyzer) -> Result<Option<FieldTokens>> {
                 Ok(None)
@@ -509,12 +522,20 @@ macro_rules! numeric_field {
 numeric_field!(
     /// `IntField`: an `IntPoint` and a `SORTED_NUMERIC` doc value of the
     /// value.
-    IntField, i32, 4, IntPoint, i64::from, Int, Int
+    IntField,
+    i32,
+    4,
+    IntPoint,
+    i64::from,
+    // the doc value is `i64::from` of the `i32` value
+    |v: i64| v as i32,
+    Int,
+    Int
 );
 numeric_field!(
     /// `LongField`: a `LongPoint` and a `SORTED_NUMERIC` doc value of the
     /// value.
-    LongField, i64, 8, LongPoint, |v: i64| v, Long, Long
+    LongField, i64, 8, LongPoint, |v: i64| v, |v: i64| v, Long, Long
 );
 numeric_field!(
     /// `FloatField`: a `FloatPoint` and a `SORTED_NUMERIC` doc value of
@@ -524,6 +545,8 @@ numeric_field!(
     4,
     FloatPoint,
     |v: f32| i64::from(float_to_sortable_int(v)),
+    // the doc value is `i64::from` of a sortable `int`
+    |v: i64| sortable_int_to_float(v as i32),
     Float,
     Long
 );
@@ -535,6 +558,7 @@ numeric_field!(
     8,
     DoublePoint,
     double_to_sortable_long,
+    sortable_long_to_double,
     Double,
     Long
 );
@@ -691,5 +715,54 @@ mod tests {
         assert_eq!(l.binary_value().unwrap().len(), 8);
         assert_eq!(l.name(), "l");
         assert!(l.token_stream(&Analyzer::keyword()).unwrap().is_none());
+    }
+
+    /// `storedValue()` reads back from the sortable doc value, so a NaN
+    /// payload is stored as Java's canonical NaN; `-0.0` stays `-0.0`.
+    #[test]
+    fn numeric_fields_store_canonical_nans() {
+        let odd_nan = f32::from_bits(0x7fc0_0001);
+        match FloatField::new("f", odd_nan, Store::Yes).stored_value() {
+            Some(StoredValue::Float(v)) => assert_eq!(v.to_bits(), 0x7fc0_0000),
+            other => panic!("{other:?}"),
+        }
+        match FloatField::new("f", -0.0, Store::Yes).stored_value() {
+            Some(StoredValue::Float(v)) => assert_eq!(v.to_bits(), (-0.0f32).to_bits()),
+            other => panic!("{other:?}"),
+        }
+        let odd_nan = f64::from_bits(0xfff8_0000_0000_0001);
+        match DoubleField::new("d", odd_nan, Store::Yes).stored_value() {
+            Some(StoredValue::Double(v)) => assert_eq!(v.to_bits(), 0x7ff8_0000_0000_0000),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(
+            LongField::new("l", i64::MIN, Store::Yes).stored_value(),
+            Some(StoredValue::Long(i64::MIN))
+        );
+        assert_eq!(
+            IntField::new("i", i32::MIN, Store::Yes).stored_value(),
+            Some(StoredValue::Int(i32::MIN))
+        );
+    }
+
+    /// `stringValue()` is `fieldsData.toString()`: the doc value as a
+    /// `Long`, the sortable bits for a float or double field.
+    #[test]
+    fn numeric_fields_string_value_is_the_long_doc_value() {
+        let s = |f: &dyn IndexableField| f.string_value().map(Cow::into_owned);
+        assert_eq!(s(&IntField::new("i", -3, Store::No)).as_deref(), Some("-3"));
+        assert_eq!(
+            s(&LongField::new("l", i64::MIN, Store::No)).as_deref(),
+            Some("-9223372036854775808")
+        );
+        // `(long) floatToSortableInt(1.25f)` is 1067450368.
+        assert_eq!(
+            s(&FloatField::new("f", 1.25, Store::No)).as_deref(),
+            Some("1067450368")
+        );
+        assert_eq!(
+            s(&DoubleField::new("d", -0.5, Store::No)),
+            Some(double_to_sortable_long(-0.5).to_string())
+        );
     }
 }

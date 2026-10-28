@@ -755,6 +755,11 @@ pub fn read_latest(dir: &dyn Directory) -> Result<SegmentInfos> {
 /// reimplemented) so the base-36 suffix in the index header and the file's
 /// own name can never drift apart.
 ///
+/// Like Java's `SegmentInfos.commit`, this syncs only the `segments_N` and
+/// the directory, not the segment files the commit names: a caller that
+/// writes its own commit syncs those first (`IndexWriter` does, through
+/// [`crate::index_file_deleter::IndexFileDeleter::sync_commit_files`]).
+///
 /// Returns the written file's name (`segments_N`) on success.
 pub fn write(segment_infos: &SegmentInfos, dir: &dyn Directory) -> Result<String> {
     write_pending(segment_infos, dir)?;

@@ -593,7 +593,8 @@ pub unsafe extern "C" fn ffi_writer_add_document(
 }
 
 /// Flushes any buffered documents and writes the next `segments_N`
-/// generation -- see [`IndexWriter::commit`].
+/// generation, or nothing when nothing changed since the last commit -- see
+/// [`IndexWriter::commit`].
 #[no_mangle]
 pub extern "C" fn ffi_writer_commit(writer_handle: u64) -> i32 {
     guard(|| {

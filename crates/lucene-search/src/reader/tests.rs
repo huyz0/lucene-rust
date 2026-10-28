@@ -866,6 +866,10 @@ fn filter_directory_reader() {
     assert_eq!(f.leaves().len(), 3);
     assert_eq!(f.leaf_handles().len(), 3);
     assert!(f.reader_cache_helper().is_some());
+    assert!(!std::ptr::eq(
+        f.reader_cache_helper().unwrap(),
+        r.reader_cache_helper()
+    ));
     assert_eq!(f.version(), r.segment_infos.version);
     assert!(f.open_if_changed(&dir).unwrap().is_none());
 }
@@ -1025,6 +1029,12 @@ fn exitable_points_vectors_and_terms() {
     // The directory-level wrapper.
     let d = ExitableDirectoryReader::wrap(r.clone(), Countdown::new(1000)).unwrap();
     assert_eq!(d.leaves().len(), 3);
+    // Java's ExitableDirectoryReader hands out its inner reader's key.
+    assert!(std::ptr::eq(
+        d.reader_cache_helper().unwrap(),
+        r.reader_cache_helper()
+    ));
+    assert_eq!((d.max_doc(), d.num_docs()), (r.max_doc(), r.num_docs()));
     let w = ExitableSubReaderWrapper::new(Countdown::new(1));
     let leaf = w.wrap(seg(&r, 1)).unwrap();
     assert!(leaf.terms("body").unwrap().unwrap().iterator().is_err());
@@ -2368,4 +2378,124 @@ fn next_postings_batches_sixteen_docs_below_up_to() {
     pe.next_postings(38, &mut buffer).unwrap();
     assert!(buffer.docs.is_empty() && buffer.features.is_empty());
     assert_eq!(pe.doc_id(), 38);
+}
+
+/// One document whose term vectors are canned; every field stores vectors.
+struct TvLeaf(FieldInfos, TermVectorsDocument);
+
+impl TvLeaf {
+    fn leaf(names: &[&str], positions: bool) -> Arc<dyn LeafReader> {
+        let mut fields = Vec::new();
+        let mut vectors = Vec::new();
+        for (n, name) in (0..).zip(names) {
+            let mut fi = FieldInfo::new(*name, n);
+            fi.store_term_vectors = true;
+            fields.push(fi);
+            vectors.push(lucene_codecs::term_vectors::TermVectorField {
+                field_number: n,
+                has_positions: positions,
+                has_offsets: false,
+                has_payloads: false,
+                terms: vec![],
+            });
+        }
+        Arc::new(TvLeaf(
+            FieldInfos { fields },
+            TermVectorsDocument { fields: vectors },
+        ))
+    }
+}
+
+impl IndexReader for TvLeaf {
+    fn max_doc(&self) -> i32 {
+        1
+    }
+    fn num_docs(&self) -> i32 {
+        1
+    }
+    fn leaves(&self) -> Vec<LeafReaderContext<'_>> {
+        vec![LeafReaderContext {
+            reader: self,
+            ord: 0,
+            doc_base: 0,
+        }]
+    }
+    fn reader_cache_helper(&self) -> Option<&CacheHelper> {
+        None
+    }
+}
+
+impl LeafReader for TvLeaf {
+    fn field_infos(&self) -> &FieldInfos {
+        &self.0
+    }
+    fn live_docs(&self) -> Option<&FixedBitSet> {
+        None
+    }
+    fn terms(&self, _: &str) -> Result<Option<Box<dyn Terms + '_>>> {
+        Ok(None)
+    }
+    fn numeric_doc_values(&self, _: &str) -> Result<Option<Box<dyn NumericDocValues + '_>>> {
+        Ok(None)
+    }
+    fn binary_doc_values(&self, _: &str) -> Result<Option<Box<dyn BinaryDocValues + '_>>> {
+        Ok(None)
+    }
+    fn sorted_doc_values(&self, _: &str) -> Result<Option<Box<dyn SortedDocValues + '_>>> {
+        Ok(None)
+    }
+    fn sorted_numeric_doc_values(
+        &self,
+        _: &str,
+    ) -> Result<Option<Box<dyn SortedNumericDocValues + '_>>> {
+        Ok(None)
+    }
+    fn sorted_set_doc_values(&self, _: &str) -> Result<Option<Box<dyn SortedSetDocValues + '_>>> {
+        Ok(None)
+    }
+    fn norm_values(&self, _: &str) -> Result<Option<Box<dyn NumericDocValues + '_>>> {
+        Ok(None)
+    }
+    fn point_values(&self, _: &str) -> Result<Option<Box<dyn PointValues + '_>>> {
+        Ok(None)
+    }
+    fn float_vector_values(&self, _: &str) -> Result<Option<Box<dyn FloatVectorValues + '_>>> {
+        Ok(None)
+    }
+    fn byte_vector_values(&self, _: &str) -> Result<Option<Box<dyn ByteVectorValues + '_>>> {
+        Ok(None)
+    }
+    fn document(&self, _: i32, _: &mut dyn StoredFieldVisitor) -> Result<()> {
+        Ok(())
+    }
+    fn term_vectors(&self, _: i32) -> Result<Option<TermVectorsDocument>> {
+        Ok(Some(self.1.clone()))
+    }
+    fn index_sort(&self) -> Option<&[IndexSortField]> {
+        None
+    }
+    fn core_cache_helper(&self) -> Option<&CacheHelper> {
+        None
+    }
+}
+
+#[test]
+fn parallel_term_vectors_come_from_each_fields_first_reader() {
+    // "b" is in both readers; Java's tvFieldToReader reads it from the first.
+    let first = TvLeaf::leaf(&["a", "b"], true);
+    let second = TvLeaf::leaf(&["b", "c"], false);
+    let p = ParallelLeafReader::new(vec![first, second]).unwrap();
+    let tv = p.term_vectors(0).unwrap().unwrap();
+    let got: Vec<(String, bool)> = tv
+        .fields
+        .iter()
+        .map(|f| {
+            let fi = p.field_infos().field_by_number(f.field_number).unwrap();
+            (fi.name.clone(), f.has_positions)
+        })
+        .collect();
+    assert_eq!(
+        got,
+        [("a".into(), true), ("b".into(), true), ("c".into(), false)]
+    );
 }

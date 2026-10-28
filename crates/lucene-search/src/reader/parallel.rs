@@ -40,6 +40,9 @@ pub struct ParallelLeafReader {
     field_to_reader: HashMap<String, usize>,
     /// `termsFieldToReader`: the indexed fields' readers.
     terms_field_to_reader: HashMap<String, usize>,
+    /// `tvFieldToReader`: the term-vector fields' readers (each field's
+    /// first reader only), in field-name order.
+    tv_field_to_reader: BTreeMap<String, usize>,
 }
 
 impl ParallelLeafReader {
@@ -84,6 +87,7 @@ impl ParallelLeafReader {
         let mut index_sort: Option<Vec<IndexSortField>> = None;
         let mut field_to_reader = HashMap::new();
         let mut terms_field_to_reader = HashMap::new();
+        let mut tv_field_to_reader = BTreeMap::new();
         for (i, reader) in readers.iter().enumerate() {
             if let Some(sort) = reader.index_sort() {
                 match &index_sort {
@@ -106,6 +110,9 @@ impl ParallelLeafReader {
                 if fi.index_options != IndexOptions::None {
                     terms_field_to_reader.insert(fi.name.clone(), i);
                 }
+                if fi.store_term_vectors {
+                    tv_field_to_reader.insert(fi.name.clone(), i);
+                }
             }
         }
         Ok(Self {
@@ -118,6 +125,7 @@ impl ParallelLeafReader {
             index_sort,
             field_to_reader,
             terms_field_to_reader,
+            tv_field_to_reader,
         })
     }
 
@@ -240,30 +248,33 @@ impl LeafReader for ParallelLeafReader {
         }
         Ok(())
     }
-    /// The term vectors of every main reader that has any, joined by field
-    /// name (a later reader's field replaces an earlier one's, as Java's
-    /// `TreeMap.put` does), in field-name order.
+    /// The term vectors of each term-vector field, read from the field's
+    /// own reader (`tvFieldToReader`), in field-name order; `None` when no
+    /// field has a vector for `doc`.
     fn term_vectors(&self, doc: i32) -> Result<Option<TermVectorsDocument>> {
-        let mut fields = BTreeMap::new();
-        let mut any = false;
-        for r in &self.parallel_readers {
-            if !r.field_infos().fields.iter().any(|f| f.store_term_vectors) {
-                continue;
+        let mut per_reader: BTreeMap<usize, Option<TermVectorsDocument>> = BTreeMap::new();
+        for &i in self.tv_field_to_reader.values() {
+            if let std::collections::btree_map::Entry::Vacant(e) = per_reader.entry(i) {
+                let r = &self.parallel_readers[i];
+                e.insert(
+                    r.term_vectors(doc)?
+                        .map(|d| remap_term_vectors(d, r.field_infos(), &self.field_infos)),
+                );
             }
-            if let Some(d) = r.term_vectors(doc)? {
-                any = true;
-                let d = remap_term_vectors(d, r.field_infos(), &self.field_infos);
-                for f in d.fields {
-                    let name = self
-                        .field_infos
-                        .field_by_number(f.field_number)
-                        .map(|fi| fi.name.clone())
-                        .unwrap_or_default();
-                    fields.insert(name, f);
+        }
+        let mut fields = BTreeMap::new();
+        for (i, d) in per_reader {
+            let Some(d) = d else { continue };
+            for f in d.fields {
+                let Some(fi) = self.field_infos.field_by_number(f.field_number) else {
+                    continue;
+                };
+                if self.tv_field_to_reader.get(&fi.name) == Some(&i) {
+                    fields.insert(fi.name.clone(), f);
                 }
             }
         }
-        Ok(any.then(|| TermVectorsDocument {
+        Ok((!fields.is_empty()).then(|| TermVectorsDocument {
             fields: fields.into_values().collect(),
         }))
     }

@@ -22,6 +22,8 @@ pub struct MultiReader {
     /// `starts`: each child's first document, then `maxDoc`.
     starts: Vec<i32>,
     max_doc: i32,
+    /// `numDocs`, summed on first use as `BaseCompositeReader` does.
+    num_docs: std::sync::OnceLock<i32>,
 }
 
 impl MultiReader {
@@ -49,6 +51,7 @@ impl MultiReader {
             subs,
             starts,
             max_doc,
+            num_docs: std::sync::OnceLock::new(),
         })
     }
 
@@ -97,9 +100,11 @@ impl IndexReader for MultiReader {
         self.max_doc
     }
     fn num_docs(&self) -> i32 {
-        self.subs
-            .iter()
-            .fold(0i32, |a, s| a.saturating_add(s.num_docs()))
+        *self.num_docs.get_or_init(|| {
+            self.subs
+                .iter()
+                .fold(0i32, |a, s| a.saturating_add(s.num_docs()))
+        })
     }
     fn leaves(&self) -> Vec<LeafReaderContext<'_>> {
         composite_leaves(&self.sequential_sub_readers())

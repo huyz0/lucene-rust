@@ -49,6 +49,19 @@ pub enum Error {
     BlockTree(#[from] lucene_codecs::blocktree::Error),
     #[error(transparent)]
     Deletes(#[from] deletes::Error),
+    /// The live docs a caller passed in disagree with the commit's
+    /// `delCount` (a reader opened before a later delete): writing them as the
+    /// next `.liv` would bring deleted documents back.
+    #[error(
+        "live docs of segment {segment} have {live} live of {max_doc} documents, but the \
+         commit records {del_count} deleted"
+    )]
+    StaleLiveDocs {
+        segment: String,
+        live: usize,
+        max_doc: usize,
+        del_count: i32,
+    },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -143,6 +156,18 @@ pub fn resolve_and_apply_term_delete(
     field: &str,
     term: &[u8],
 ) -> Result<SegmentCommitInfo> {
+    let live = current_live_docs.map_or(max_doc, FixedBitSet::cardinality);
+    let expected = usize::try_from(sci.del_count)
+        .ok()
+        .and_then(|d| max_doc.checked_sub(d));
+    if current_live_docs.is_some_and(|bits| bits.len() != max_doc) || expected != Some(live) {
+        return Err(Error::StaleLiveDocs {
+            segment: sci.segment_name.clone(),
+            live,
+            max_doc,
+            del_count: sci.del_count,
+        });
+    }
     let doc_ids = resolve_term_doc_ids(fields, doc_in, current_live_docs, field, term)?;
     Ok(deletes::apply_deletes(
         dir,
@@ -464,6 +489,52 @@ mod tests {
         .unwrap();
         assert_eq!(after_third.del_gen, 3);
         assert_eq!(after_third.del_count, 3); // only doc 2 newly deleted
+    }
+
+    #[test]
+    fn live_docs_older_than_the_commit_are_refused() {
+        let fx = open_fixture();
+        let doc_in = fx.doc_in();
+        let tmp = tempdir();
+        let dir = FsDirectory::open(&tmp);
+        let after_first = resolve_and_apply_term_delete(
+            &dir,
+            &sci("_0", -1, 0),
+            &fx.fields,
+            Some(&doc_in),
+            None,
+            fx.max_doc,
+            "body",
+            b"dog",
+        )
+        .unwrap();
+        // A reader opened before that delete still says every doc is live;
+        // writing its bits as the next `.liv` would resurrect docs 0 and 1.
+        let err = resolve_and_apply_term_delete(
+            &dir,
+            &after_first,
+            &fx.fields,
+            Some(&doc_in),
+            None,
+            fx.max_doc,
+            "body",
+            b"cat",
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::StaleLiveDocs { del_count: 2, .. }));
+        let mut all_live = FixedBitSet::new(fx.max_doc);
+        all_live.set_range(0, fx.max_doc);
+        assert!(resolve_and_apply_term_delete(
+            &dir,
+            &after_first,
+            &fx.fields,
+            Some(&doc_in),
+            Some(&all_live),
+            fx.max_doc,
+            "body",
+            b"cat",
+        )
+        .is_err());
     }
 
     #[test]
