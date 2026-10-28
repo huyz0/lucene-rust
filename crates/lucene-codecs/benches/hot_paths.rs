@@ -1274,8 +1274,52 @@ fn bench_indexed_disi_decode(c: &mut Criterion) {
     });
 }
 
+/// Flushing a 20k x 256 COSINE field through the 7-bit scalar quantizer.
+fn bench_scalar_quantized_flush(c: &mut Criterion) {
+    use lucene_codecs::field_infos::VectorSimilarityFunction;
+    use lucene_codecs::scalar_quantized_vectors::{
+        QuantizedVectorsField, ScalarQuantizedVectorsWriter,
+    };
+    use lucene_util::quantization::ScalarEncoding;
+    const N: usize = 20_000;
+    const DIM: usize = 256;
+    let mut x = 0x9E37_79B9u32;
+    let vectors: Vec<f32> = (0..N * DIM)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            (x % 2001) as f32 / 1000.0 - 1.0
+        })
+        .collect();
+    let docs: Vec<i32> = (0..N as i32).collect();
+    let mut group = c.benchmark_group("scalar_quantized");
+    group.sample_size(10);
+    group.bench_function("flush_cosine_20k_x256", |b| {
+        b.iter(|| {
+            let mut w = ScalarQuantizedVectorsWriter::new(
+                ScalarEncoding::SevenBit,
+                N as i32,
+                &[7u8; 16],
+                "",
+            );
+            w.write_field(&QuantizedVectorsField {
+                field_number: 0,
+                similarity: VectorSimilarityFunction::Cosine,
+                dimension: DIM as i32,
+                docs: &docs,
+                vectors: &vectors,
+            })
+            .unwrap();
+            black_box(w.finish().1.len())
+        })
+    });
+    group.finish();
+}
+
 criterion_group!(
     benches,
+    bench_scalar_quantized_flush,
     bench_indexed_disi_decode,
     bench_bkd_offline_2d,
     bench_byte_similarity,
