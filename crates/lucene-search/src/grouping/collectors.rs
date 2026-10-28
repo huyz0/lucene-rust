@@ -140,14 +140,13 @@ impl<'a, S: GroupSelector<'a>> FirstPassGroupingCollector<'a, S> {
     /// `buildSortedSet()`: the groups by their slots' values, ties to the
     /// earlier top document.
     fn build_sorted_set(&mut self) {
-        let mut set = TreeSet::new();
         let (sort, reversed, slots, groups) =
             (&self.sort, &self.reversed, &self.slots, &self.groups);
-        for g in 0..groups.len() {
-            set.add(g, &mut |a: &usize, b: &usize| {
-                group_order(sort, reversed, slots, groups, *a, *b)
-            });
-        }
+        // The groups added in order, as one sort (no two share a top
+        // document, so none compare equal).
+        let set = TreeSet::from_items((0..groups.len()).collect(), &mut |a: &usize, b: &usize| {
+            group_order(sort, reversed, slots, groups, *a, *b)
+        });
         self.ordered = Some(set);
     }
 

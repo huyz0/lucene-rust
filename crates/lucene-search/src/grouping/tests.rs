@@ -570,6 +570,186 @@ fn all_groups_and_heads_over_a_walked_dictionary() {
     });
 }
 
+/// The ordered set built by one sort holds what adding each item in turn
+/// leaves: the same order, an item comparing equal to an earlier one
+/// dropped.
+#[test]
+fn a_tree_set_built_at_once_is_the_one_built_by_adds() {
+    // Ordered by the tens only: many ties, the first added of each kept.
+    let mut cmp = |a: &i32, b: &i32| (a / 10).cmp(&(b / 10));
+    let items: Vec<i32> = (0..200).map(|i| (i * 37) % 101).collect();
+    let mut added: TreeSet<i32> = TreeSet::new();
+    for &x in &items {
+        added.add(x, &mut cmp);
+    }
+    let built = TreeSet::from_items(items, &mut cmp);
+    assert_eq!(
+        built.iter().copied().collect::<Vec<_>>(),
+        added.iter().copied().collect::<Vec<_>>()
+    );
+    assert_eq!(built.len(), 11);
+    let empty = TreeSet::from_items(Vec::new(), &mut cmp);
+    assert_eq!(empty.first(), None);
+}
+
+/// The first pass by a keyword key with many ties (5 values and a missing
+/// one over 50 groups, two segments): every group's value is its least,
+/// a tie going to the group whose least came first -- the order of a plain
+/// sort of the groups, for any number of top groups.
+#[test]
+fn a_string_sorted_first_pass_breaks_ties_by_the_top_document() {
+    use crate::facets::test_index::{id_doc, match_all, plain_index};
+    use crate::leaf_collector::search_segments;
+    use crate::top_field::SortField;
+    use lucene_index::document::SortedDocValuesField;
+    let group_of = |i: usize| format!("g{:02}", (i * 37) % 50).into_bytes();
+    let value_of = |i: usize| {
+        (!i.is_multiple_of(11)).then(|| format!("s{}", (i * 7 + i / 13) % 5).into_bytes())
+    };
+    let docs: Vec<_> = (0..600)
+        .map(|i| {
+            let mut d = id_doc(&i.to_string());
+            d.add(SortedDocValuesField::new("g", group_of(i)));
+            if let Some(v) = value_of(i) {
+                d.add(SortedDocValuesField::new("s", v));
+            }
+            d
+        })
+        .collect();
+    plain_index(docs, &[299]).with(|searcher, reader, _| {
+        assert_eq!(reader.segment_readers().len(), 2);
+        for (reverse, missing_last) in [(false, false), (true, false), (false, true)] {
+            let mut field = SortField::string("s", reverse);
+            field.missing = i64::from(missing_last);
+            // Each group's best value and the first document holding it.
+            let mut best: Vec<(Vec<u8>, Option<Vec<u8>>, usize)> = Vec::new();
+            let better = |a: &Option<Vec<u8>>, b: &Option<Vec<u8>>| {
+                let c = sort::compare_values(&field, &V::Bytes(a.clone()), &V::Bytes(b.clone()));
+                (if reverse { c.reverse() } else { c }) == Ordering::Less
+            };
+            for i in 0..600 {
+                let (g, v) = (group_of(i), value_of(i));
+                match best.iter_mut().find(|b| b.0 == g) {
+                    None => best.push((g, v, i)),
+                    Some(b) => {
+                        if better(&v, &b.1) {
+                            b.1 = v;
+                            b.2 = i;
+                        }
+                    }
+                }
+            }
+            best.sort_by(|a, b| {
+                if better(&a.1, &b.1) {
+                    Ordering::Less
+                } else if better(&b.1, &a.1) {
+                    Ordering::Greater
+                } else {
+                    a.2.cmp(&b.2)
+                }
+            });
+            for top_n in [1usize, 3, 10, 49, 50, 80] {
+                let sort = Sort::new(vec![field.clone()]);
+                let mut fp = FirstPassGroupingCollector::new(
+                    TermGroupSelector::new("g"),
+                    sort,
+                    top_n,
+                    false,
+                )
+                .unwrap();
+                search_segments(searcher, &match_all(reader), &mut fp).unwrap();
+                let got: Vec<(Option<Vec<u8>>, Vec<GroupSortValue>)> = fp
+                    .top_groups(0)
+                    .unwrap()
+                    .into_iter()
+                    .map(|g| (g.group_value, g.sort_values))
+                    .collect();
+                let want: Vec<(Option<Vec<u8>>, Vec<GroupSortValue>)> = best
+                    .iter()
+                    .take(top_n)
+                    .map(|b| (Some(b.0.clone()), vec![V::Bytes(b.1.clone())]))
+                    .collect();
+                assert_eq!(
+                    got, want,
+                    "top {top_n} reverse {reverse} last {missing_last}"
+                );
+            }
+        }
+    });
+}
+
+/// Blocks with many ties (5 prices over 200 blocks of 3, two segments):
+/// the queue keeps the blocks a plain sort ranks first -- the best price,
+/// a tie going to the block whose best came first -- for any queue size.
+#[test]
+fn block_groups_keep_the_sorted_order_on_ties() {
+    use crate::facets::test_index::{id_doc, match_all, plain_index};
+    use crate::query::{Clause, TermQuery};
+    use crate::top_field::SortField;
+    use lucene_index::document::{NumericDocValuesField, Store, StringField};
+    let price = |i: usize| ((i * 7 + i / 11) % 5) as i64;
+    let docs: Vec<_> = (0..600)
+        .map(|i| {
+            let mut d = id_doc(&i.to_string());
+            d.add(NumericDocValuesField::new("price", price(i)));
+            if i % 3 == 2 {
+                d.add(StringField::new("end", "x", Store::No));
+            }
+            d
+        })
+        .collect();
+    plain_index(docs, &[299]).with(|searcher, reader, _| {
+        let end = BooleanQuery {
+            must: vec![Clause::Term(TermQuery::new("end", "x"))],
+            ..Default::default()
+        };
+        for reverse in [true, false] {
+            // (best price, its first document, the block's first document).
+            let mut blocks: Vec<(i64, usize, usize)> = (0..200)
+                .map(|b| {
+                    let docs = 3 * b..3 * b + 3;
+                    let best = if reverse {
+                        docs.clone().map(price).max()
+                    } else {
+                        docs.clone().map(price).min()
+                    }
+                    .unwrap();
+                    let at = docs.clone().find(|&d| price(d) == best).unwrap();
+                    (best, at, 3 * b)
+                })
+                .collect();
+            blocks.sort_by(|a, b| {
+                let c = a.0.cmp(&b.0);
+                (if reverse { c.reverse() } else { c }).then(a.1.cmp(&b.1))
+            });
+            for top_n in [1usize, 2, 7, 50, 199, 200, 300] {
+                let gs = GroupingSearch::by_blocks(end.clone())
+                    .set_group_sort(Sort::new(vec![SortField::numeric(
+                        "price",
+                        SortType::Long,
+                        reverse,
+                    )]))
+                    .set_sort_within_group(Sort::index_order());
+                let tg = gs
+                    .search_blocks(searcher, &match_all(reader), 0, top_n)
+                    .unwrap();
+                let got: Vec<(Vec<GroupSortValue>, i32)> = tg
+                    .groups
+                    .iter()
+                    .map(|g| (g.group_sort_values.clone(), g.score_docs[0].doc))
+                    .collect();
+                let want: Vec<(Vec<GroupSortValue>, i32)> = blocks
+                    .iter()
+                    .take(top_n)
+                    .map(|b| (vec![V::Long(b.0)], b.2 as i32))
+                    .collect();
+                assert_eq!(got, want, "top {top_n} reverse {reverse}");
+                assert_eq!(tg.total_group_count, Some(200));
+            }
+        }
+    });
+}
+
 /// `FxHasher::finish` mixes the high bits down: keys differing only in the
 /// high bytes of their last word (ASCII digits, little-endian) still spread
 /// over the low bits a hash table takes its bucket from.
