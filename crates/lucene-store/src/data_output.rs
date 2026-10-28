@@ -16,15 +16,13 @@ pub trait DataOutput {
     /// keep shifting out), matching `readVInt`'s wrapping-shift decode.
     #[inline]
     fn write_vint(&mut self, v: i32) {
-        let mut v = v as u32;
-        loop {
-            if v & !0x7f == 0 {
-                self.write_byte(v as u8);
-                return;
-            }
-            self.write_byte((v & 0x7f) as u8 | 0x80);
-            v >>= 7;
+        if v as u32 <= 0x7f {
+            self.write_byte(v as u8);
+            return;
         }
+        let mut buf = [0u8; 10];
+        let n = encode_varint(v as u32 as u64, &mut buf);
+        self.write_bytes(&buf[..n]);
     }
 
     /// Lucene `writeVLong` (up to 9 bytes).
@@ -38,15 +36,7 @@ pub trait DataOutput {
     #[inline]
     fn write_vlong(&mut self, v: i64) {
         debug_assert!(v >= 0, "cannot write negative vLong (got: {v})");
-        let mut v = v as u64;
-        loop {
-            if v & !0x7f == 0 {
-                self.write_byte(v as u8);
-                return;
-            }
-            self.write_byte((v & 0x7f) as u8 | 0x80);
-            v >>= 7;
-        }
+        self.write_vlong_raw_u64(v as u64);
     }
 
     /// Lucene `writeZLong`: zigzag-encoded vlong; full i64 range.
@@ -59,15 +49,14 @@ pub trait DataOutput {
     /// `write_zlong`, which needs to write the zigzag-encoded bit pattern
     /// without reinterpreting it as a signed magnitude again).
     #[inline]
-    fn write_vlong_raw_u64(&mut self, mut v: u64) {
-        loop {
-            if v & !0x7f == 0 {
-                self.write_byte(v as u8);
-                return;
-            }
-            self.write_byte((v & 0x7f) as u8 | 0x80);
-            v >>= 7;
+    fn write_vlong_raw_u64(&mut self, v: u64) {
+        if v <= 0x7f {
+            self.write_byte(v as u8);
+            return;
         }
+        let mut buf = [0u8; 10];
+        let n = encode_varint(v, &mut buf);
+        self.write_bytes(&buf[..n]);
     }
 
     /// Lucene `writeZInt`: zigzag-encoded vint, the 32-bit counterpart of
@@ -109,10 +98,16 @@ pub trait DataOutput {
             ];
             let flag =
                 ((lens[0] - 1) << 6) | ((lens[1] - 1) << 4) | ((lens[2] - 1) << 2) | (lens[3] - 1);
-            self.write_byte(flag as u8);
+            // One write per group rather than five: the flag byte, then each
+            // value's low `len` bytes, assembled on the stack.
+            let mut group = [0u8; 17];
+            group[0] = flag as u8;
+            let mut n = 1;
             for (v, len) in chunk.iter().zip(lens) {
-                self.write_bytes(&v.to_le_bytes()[..len as usize]);
+                group[n..n + 4].copy_from_slice(&v.to_le_bytes());
+                n += len as usize;
             }
+            self.write_bytes(&group[..n]);
             i += 4;
         }
         for &v in &values[i..] {
@@ -180,6 +175,26 @@ pub trait DataOutput {
     }
 }
 
+/// Lucene's varint byte layout: 7 bits per byte, least significant group
+/// first, continuation bit `0x80` on every byte but the last. Writes into
+/// `buf` and returns the encoded length, so the callers above hand a whole
+/// varint to `write_bytes` in one call (one capacity check, one copy) rather
+/// than one `write_byte` per byte.
+// ARITH: `n` counts the bytes written; a u64 has at most ten 7-bit groups,
+// which is `buf`'s length, so `n` never exceeds 9 when used as an index.
+#[allow(clippy::arithmetic_side_effects)]
+#[inline(always)]
+pub(crate) fn encode_varint(mut v: u64, buf: &mut [u8; 10]) -> usize {
+    let mut n = 0;
+    while v & !0x7f != 0 {
+        buf[n] = (v & 0x7f) as u8 | 0x80;
+        v >>= 7;
+        n += 1;
+    }
+    buf[n] = v as u8;
+    n + 1
+}
+
 /// A `DataOutput` backed by an owned, growable byte buffer -- the only sink
 /// this port has today; see the module doc for why there's no on-disk
 /// `IndexOutput` yet.
@@ -216,6 +231,80 @@ impl DataOutput for VecDataOutput {
     fn write_bytes(&mut self, b: &[u8]) {
         self.buf.extend_from_slice(b);
     }
+
+    #[inline]
+    fn write_vint(&mut self, v: i32) {
+        push_varint(&mut self.buf, v as u32 as u64);
+    }
+
+    #[inline]
+    fn write_vlong_raw_u64(&mut self, v: u64) {
+        push_varint(&mut self.buf, v);
+    }
+}
+
+/// Appends `v`'s varint encoding to `out` straight into its spare capacity,
+/// branch-free: the 7-bit groups are spread into byte lanes (`pdep` where the
+/// target has BMI2), continuation bits are OR-ed onto every byte but the
+/// last, and all 16 lanes are stored at once with only the encoded length
+/// claimed. One capacity check and no per-byte loop, so the encoded length's
+/// unpredictability costs no branch mispredictions. Byte-for-byte the same as
+/// [`encode_varint`] (a property test below holds the two together).
+// ARITH: `bits` is 1..=64 (`v | 1` is never zero), so `n = ceil(bits / 7)`
+// is 1..=10 and the shift `8 * (n - 1)` is 0..=72 < 128; `len + n` is at
+// most `len + 10`, inside the reserved 16.
+#[allow(clippy::arithmetic_side_effects)]
+#[inline(always)]
+pub(crate) fn push_varint(out: &mut Vec<u8>, v: u64) {
+    let bits = 64 - (v | 1).leading_zeros();
+    let n = bits.div_ceil(7);
+    let lanes = spread7(v) as u128 | (((v >> 56) & 0x7f) as u128) << 64 | ((v >> 63) as u128) << 72;
+    const CONT: u128 = 0x8080_8080_8080_8080_8080;
+    let encoded = lanes | (CONT & ((1u128 << (8 * (n - 1))) - 1));
+    out.reserve(16);
+    let len = out.len();
+    let spare = &mut out.spare_capacity_mut()[..16];
+    for (dst, b) in spare.iter_mut().zip(encoded.to_le_bytes()) {
+        dst.write(b);
+    }
+    // SAFETY: `reserve(16)` guarantees capacity for `len + 16` bytes, all 16
+    // of which the loop above initialised; only the first `n <= 10` are
+    // claimed, the rest stay spare capacity.
+    unsafe { out.set_len(len + n as usize) };
+}
+
+/// The low 56 bits of `v` as eight 7-bit groups, one per byte lane, least
+/// significant first: `pdep(v, 0x7f7f..7f)`.
+#[inline(always)]
+fn spread7(v: u64) -> u64 {
+    #[cfg(all(target_arch = "x86_64", target_feature = "bmi2"))]
+    {
+        // SAFETY: `bmi2` is enabled for this compilation target (checked by
+        // the `cfg` above), so the instruction exists on every CPU this
+        // binary may run on.
+        unsafe { std::arch::x86_64::_pdep_u64(v, 0x7f7f_7f7f_7f7f_7f7f) }
+    }
+    #[cfg(not(all(target_arch = "x86_64", target_feature = "bmi2")))]
+    {
+        spread7_portable(v)
+    }
+}
+
+/// [`spread7`] without BMI2: one shift and mask per lane.
+#[cfg_attr(
+    all(target_arch = "x86_64", target_feature = "bmi2", not(test)),
+    allow(dead_code)
+)]
+#[inline(always)]
+fn spread7_portable(v: u64) -> u64 {
+    (v & 0x7f)
+        | (v << 1) & 0x7f00
+        | (v << 2) & 0x7f_0000
+        | (v << 3) & 0x7f00_0000
+        | (v << 4) & 0x7f_0000_0000
+        | (v << 5) & 0x7f00_0000_0000
+        | (v << 6) & 0x7f_0000_0000_0000
+        | (v << 7) & 0x7f00_0000_0000_0000
 }
 
 impl DataOutput for Vec<u8> {
@@ -228,12 +317,87 @@ impl DataOutput for Vec<u8> {
     fn write_bytes(&mut self, b: &[u8]) {
         self.extend_from_slice(b);
     }
+
+    #[inline]
+    fn write_vint(&mut self, v: i32) {
+        push_varint(self, v as u32 as u64);
+    }
+
+    #[inline]
+    fn write_vlong_raw_u64(&mut self, v: u64) {
+        push_varint(self, v);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::data_input::{DataInput, SliceInput};
+    use proptest::prelude::*;
+
+    /// The branch-free spare-capacity encoder against the plain loop, at
+    /// every length boundary (each power of 128 and one below) and over the
+    /// whole range.
+    #[test]
+    fn push_varint_matches_the_byte_loop_at_every_length_boundary() {
+        let mut cases = vec![0u64, 1, u64::MAX];
+        for k in 1..=9u32 {
+            let p = 1u64 << (7 * k);
+            cases.extend([p - 1, p, p + 1]);
+        }
+        cases.extend([1 << 63, (1 << 63) - 1]);
+        for v in cases {
+            let mut want = [0u8; 10];
+            let n = encode_varint(v, &mut want);
+            let mut got = vec![0xAA];
+            push_varint(&mut got, v);
+            assert_eq!(&got[1..], &want[..n], "value {v:#x}");
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn push_varint_matches_the_byte_loop(v: u64, shift in 0u32..64) {
+            let v = v >> shift;
+            let mut want = [0u8; 10];
+            let n = encode_varint(v, &mut want);
+            let mut got = Vec::new();
+            push_varint(&mut got, v);
+            prop_assert_eq!(&got[..], &want[..n]);
+        }
+
+        #[test]
+        fn spread7_matches_the_portable_lanes(v: u64) {
+            prop_assert_eq!(spread7(v), spread7_portable(v));
+        }
+
+        #[test]
+        fn default_and_vec_encoders_agree(v: i32, l in 0i64..=i64::MAX, z: i64, g in proptest::collection::vec(any::<u32>(), 0..11)) {
+            // `HeaderCursor`-like sink: only the two required methods, so
+            // every provided encoder takes the trait's default path.
+            struct Plain(Vec<u8>);
+            impl DataOutput for Plain {
+                fn write_byte(&mut self, b: u8) { self.0.push(b); }
+                fn write_bytes(&mut self, b: &[u8]) { self.0.extend_from_slice(b); }
+            }
+            let mut plain = Plain(Vec::new());
+            let mut vec: Vec<u8> = Vec::new();
+            let mut vdo = VecDataOutput::new();
+            plain.write_vint(v); vec.write_vint(v); vdo.write_vint(v);
+            plain.write_vlong(l); vec.write_vlong(l); vdo.write_vlong(l);
+            plain.write_zlong(z); vec.write_zlong(z); vdo.write_zlong(z);
+            plain.write_group_vints(&g); vec.write_group_vints(&g); vdo.write_group_vints(&g);
+            prop_assert_eq!(&plain.0, &vec);
+            prop_assert_eq!(&plain.0, &vdo.buf);
+            let mut input = SliceInput::new(&vec);
+            prop_assert_eq!(input.read_vint().unwrap(), v);
+            prop_assert_eq!(input.read_vlong().unwrap(), l);
+            prop_assert_eq!(input.read_zlong().unwrap(), z);
+            let mut back = vec![0u64; g.len()];
+            input.read_group_vints(&mut back).unwrap();
+            prop_assert_eq!(back, g.iter().map(|&x| x as u64).collect::<Vec<_>>());
+        }
+    }
 
     #[test]
     fn vint_round_trips_including_negative_and_boundary_values() {

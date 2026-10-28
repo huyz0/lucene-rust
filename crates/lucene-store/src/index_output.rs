@@ -106,6 +106,12 @@ pub struct FsIndexOutput {
     name: String,
     sink: Sink,
     buf: Vec<u8>,
+    /// How much of `buf` `crc` already covers. The CRC is computed lazily, a
+    /// buffer at a time (as Java's `CheckedOutputStream` under a
+    /// `BufferedOutputStream` does), not per write call: a file sink hashes
+    /// `buf` just before flushing it (so this stays 0), an in-memory sink
+    /// whenever `CHUNK_SIZE` unhashed bytes have piled up.
+    crc_pos: usize,
     bytes_written: u64,
     crc: crc32fast::Hasher,
     pending_err: Option<std::io::Error>,
@@ -196,6 +202,7 @@ impl FsIndexOutput {
             name: name.to_string(),
             sink: Sink::File { file, path },
             buf: Vec::with_capacity(CHUNK_SIZE),
+            crc_pos: 0,
             bytes_written: 0,
             crc: crc32fast::Hasher::new(),
             pending_err: None,
@@ -216,6 +223,7 @@ impl FsIndexOutput {
                 publish: Some(publish),
             },
             buf: Vec::new(),
+            crc_pos: 0,
             bytes_written: 0,
             crc: crc32fast::Hasher::new(),
             pending_err: None,
@@ -300,13 +308,19 @@ impl FsIndexOutput {
     }
 
     /// Hands `b` to the sink, latching the first error. `false` when the
-    /// write failed.
+    /// write failed. Every byte handed over is either hashed into `crc` here
+    /// or left in `buf` past `crc_pos` for [`Self::checksum`] to cover.
     fn write_through(&mut self, b: &[u8]) -> bool {
         let Sink::File { file, .. } = &mut self.sink else {
             self.buf.extend_from_slice(b);
+            if self.buf.len().saturating_sub(self.crc_pos) >= CHUNK_SIZE {
+                self.crc.update(&self.buf[self.crc_pos..]);
+                self.crc_pos = self.buf.len();
+            }
             return true;
         };
         if self.buf.len().saturating_add(b.len()) > CHUNK_SIZE && !self.buf.is_empty() {
+            self.crc.update(&self.buf);
             if let Err(e) = file.write_all(&self.buf) {
                 self.pending_err = Some(e);
                 return false;
@@ -314,28 +328,91 @@ impl FsIndexOutput {
             self.buf.clear();
         }
         if b.len() >= CHUNK_SIZE {
-            // `FSIndexOutput`'s `FilterOutputStream.write` loop: never more
-            // than `CHUNK_SIZE` bytes per underlying write.
-            for chunk in b.chunks(CHUNK_SIZE) {
-                if let Err(e) = file.write_all(chunk) {
-                    self.pending_err = Some(e);
-                    return false;
-                }
+            // Straight through in one `write_all`: Java's `FSIndexOutput`
+            // caps each underlying write at `CHUNK_SIZE` only to bound a
+            // direct `ByteBuffer`'s size, which a slice write here never
+            // allocates. The bytes on disk are the same; a whole-file
+            // `write_bytes` is one syscall instead of one per 8 KiB.
+            self.crc.update(b);
+            if let Err(e) = file.write_all(b) {
+                self.pending_err = Some(e);
+                return false;
             }
         } else {
             self.buf.extend_from_slice(b);
         }
         true
     }
+
+    /// No rate limiter, no latched error and (in test builds) no fault hook:
+    /// a write may go straight into `buf`.
+    #[inline(always)]
+    fn is_plain(&self) -> bool {
+        #[cfg(any(test, feature = "test-util"))]
+        if self.faults.is_some() || self.fault_err.is_some() {
+            return false;
+        }
+        self.rate_limit.is_none() && self.pending_err.is_none()
+    }
+
+    /// Whether `n` more bytes fit in `buf` without a flush (file sink) or a
+    /// CRC catch-up (in-memory sink): `buf` past `crc_pos` stays within
+    /// `CHUNK_SIZE`, the invariant `write_through` keeps.
+    #[inline(always)]
+    fn has_room(&self, n: usize) -> bool {
+        match CHUNK_SIZE.checked_sub(n) {
+            Some(limit) => self.buf.len().saturating_sub(self.crc_pos) <= limit,
+            None => false,
+        }
+    }
 }
 
 impl DataOutput for FsIndexOutput {
     #[inline]
     fn write_byte(&mut self, b: u8) {
+        if self.is_plain() && self.has_room(1) {
+            self.buf.push(b);
+            self.bytes_written = self.bytes_written.saturating_add(1);
+            return;
+        }
         self.write_bytes(std::slice::from_ref(&b));
     }
 
+    #[inline]
+    fn write_vint(&mut self, v: i32) {
+        self.write_vlong_raw_u64(v as u32 as u64);
+    }
+
+    #[inline]
+    fn write_vlong_raw_u64(&mut self, v: u64) {
+        if self.is_plain() && self.has_room(10) {
+            let before = self.buf.len();
+            crate::data_output::push_varint(&mut self.buf, v);
+            // ARITH: `push_varint` only appends, so `len >= before`.
+            #[allow(clippy::arithmetic_side_effects)]
+            let n = self.buf.len() - before;
+            self.bytes_written = self.bytes_written.saturating_add(n as u64);
+            return;
+        }
+        let mut buf = [0u8; 10];
+        let n = crate::data_output::encode_varint(v, &mut buf);
+        self.write_bytes(&buf[..n]);
+    }
+
+    #[inline]
     fn write_bytes(&mut self, b: &[u8]) {
+        if self.is_plain() && self.has_room(b.len()) {
+            self.buf.extend_from_slice(b);
+            self.bytes_written = self.bytes_written.saturating_add(b.len() as u64);
+            return;
+        }
+        self.write_bytes_slow(b);
+    }
+}
+
+impl FsIndexOutput {
+    #[inline(never)]
+    fn write_bytes_slow(&mut self, b: &[u8]) {
         if self.rate_limit.is_none() {
             self.write_unlimited(b);
             return;
@@ -353,9 +430,7 @@ impl DataOutput for FsIndexOutput {
             self.write_unlimited(chunk);
         }
     }
-}
 
-impl FsIndexOutput {
     fn write_unlimited(&mut self, b: &[u8]) {
         if self.pending_err.is_some() {
             return;
@@ -387,7 +462,6 @@ impl FsIndexOutput {
         if !self.write_through(b) {
             return;
         }
-        self.crc.update(b);
         // A file longer than 2^64 bytes is not representable by the OS, let
         // alone writable; saturating keeps the counter monotone rather than
         // panicking if one somehow were.
@@ -415,7 +489,9 @@ impl IndexOutput for FsIndexOutput {
     }
 
     fn checksum(&self) -> u64 {
-        self.crc.clone().finalize() as u64
+        let mut crc = self.crc.clone();
+        crc.update(&self.buf[self.crc_pos..]);
+        crc.finalize() as u64
     }
 }
 
@@ -482,6 +558,85 @@ mod tests {
 
     /// A scratch directory that removes itself when the test ends -- unless
     /// the test is panicking, in which case its bytes stay for inspection.
+    /// One write op of the mixed-write property below.
+    #[derive(Debug, Clone)]
+    enum Op {
+        Byte(u8),
+        Bytes(Vec<u8>),
+        VInt(i32),
+        VLong(i64),
+    }
+
+    fn op() -> impl proptest::strategy::Strategy<Value = Op> {
+        use proptest::prelude::*;
+        prop_oneof![
+            any::<u8>().prop_map(Op::Byte),
+            proptest::collection::vec(any::<u8>(), 0..64).prop_map(Op::Bytes),
+            // Writes around and past `CHUNK_SIZE`, which take the direct path.
+            (CHUNK_SIZE - 3..CHUNK_SIZE * 2 + 5).prop_map(|n| Op::Bytes(vec![n as u8; n])),
+            any::<i32>().prop_map(Op::VInt),
+            (0i64..=i64::MAX).prop_map(Op::VLong),
+        ]
+    }
+
+    fn apply(out: &mut FsIndexOutput, ops: &[Op], expect: &mut Vec<u8>) {
+        for op in ops {
+            match op {
+                Op::Byte(b) => {
+                    out.write_byte(*b);
+                    expect.push(*b);
+                }
+                Op::Bytes(b) => {
+                    out.write_bytes(b);
+                    expect.extend_from_slice(b);
+                }
+                Op::VInt(v) => {
+                    out.write_vint(*v);
+                    expect.write_vint(*v);
+                }
+                Op::VLong(v) => {
+                    out.write_vlong(*v);
+                    expect.write_vlong(*v);
+                }
+            }
+            assert_eq!(out.file_pointer(), expect.len() as u64);
+        }
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(48))]
+        /// The lazy CRC and the in-buffer fast paths against the bytes
+        /// written: for both sinks, any mix of single bytes, small and
+        /// over-`CHUNK_SIZE` writes and varints yields the exact byte stream,
+        /// file pointer and `crc32` of it, mid-stream and at close.
+        #[test]
+        fn mixed_writes_keep_bytes_pointer_and_checksum_exact(
+            ops in proptest::collection::vec(op(), 0..80),
+        ) {
+            let dir = tempdir();
+            let mut file_out = FsIndexOutput::create(&dir, "_0.bin").unwrap();
+            let published = Arc::new(std::sync::Mutex::new(None));
+            let sink = Arc::clone(&published);
+            let mut mem_out = FsIndexOutput::in_memory(
+                "_0.mem",
+                Box::new(move |bytes| *sink.lock().unwrap() = Some(bytes)),
+            );
+            let mut expect = Vec::new();
+            let half = ops.len() / 2;
+            apply(&mut file_out, &ops[..half], &mut expect);
+            let mut expect_mem = Vec::new();
+            apply(&mut mem_out, &ops[..half], &mut expect_mem);
+            proptest::prop_assert_eq!(file_out.checksum(), crc32fast::hash(&expect) as u64);
+            proptest::prop_assert_eq!(mem_out.checksum(), crc32fast::hash(&expect_mem) as u64);
+            apply(&mut file_out, &ops[half..], &mut expect);
+            apply(&mut mem_out, &ops[half..], &mut expect_mem);
+            proptest::prop_assert_eq!(file_out.close().unwrap(), crc32fast::hash(&expect) as u64);
+            proptest::prop_assert_eq!(mem_out.close().unwrap(), crc32fast::hash(&expect_mem) as u64);
+            proptest::prop_assert_eq!(std::fs::read(dir.join("_0.bin")).unwrap(), expect);
+            proptest::prop_assert_eq!(published.lock().unwrap().take().unwrap(), expect_mem);
+        }
+    }
+
     fn tempdir() -> TempDir {
         TempDir::new("index-output")
     }

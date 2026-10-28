@@ -269,6 +269,47 @@ impl DataOutput for HeaderCursor<'_> {
     }
 }
 
+/// Below this many bytes [`crc32`] hashes on the calling thread: a thread
+/// spawn costs more than hashing a few MiB at crc32fast's PCLMULQDQ speed.
+const PARALLEL_CRC_MIN: usize = 8 << 20;
+
+/// CRC-32 of `buf`, bit-identical to `crc32fast::hash` (and to Java's
+/// `java.util.zip.CRC32`), split across the available cores for a large
+/// buffer: each thread hashes one contiguous piece and the partial CRCs are
+/// folded together in order with [`crc32fast::Hasher::combine`]. A footer
+/// check over a multi-GiB `.fdt`/`.vec` file (every `checkIntegrity` before a
+/// merge, and every [`write_footer`]) otherwise runs on one core.
+pub fn crc32(buf: &[u8]) -> u32 {
+    let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
+    let pieces = threads.min(buf.len() / (PARALLEL_CRC_MIN / 2)).max(1);
+    if buf.len() < PARALLEL_CRC_MIN || pieces == 1 {
+        return crc32fast::hash(buf);
+    }
+    let piece = buf.len().div_ceil(pieces);
+    let partials: Vec<crc32fast::Hasher> = std::thread::scope(|scope| {
+        let handles: Vec<_> = buf
+            .chunks(piece)
+            .map(|chunk| {
+                scope.spawn(move || {
+                    let mut h = crc32fast::Hasher::new();
+                    h.update(chunk);
+                    h
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().expect("crc32 worker panicked"))
+            .collect()
+    });
+    let mut iter = partials.into_iter();
+    let mut acc = iter.next().unwrap_or_default();
+    for h in iter {
+        acc.combine(&h);
+    }
+    acc.finalize()
+}
+
 /// Port of `CodecUtil.writeFooter`: `Magic(BEi32=~CODEC_MAGIC), AlgorithmID(BEi32=0),
 /// Checksum(BEu64=CRC32)`. Operates directly on the accumulated output buffer
 /// (rather than being generic over [`DataOutput`]) since the checksum must
@@ -280,7 +321,7 @@ impl DataOutput for HeaderCursor<'_> {
 pub fn write_footer(buf: &mut Vec<u8>) {
     buf.write_be_u32(FOOTER_MAGIC);
     buf.write_be_u32(0); // algorithm id
-    let checksum = crc32fast::hash(buf) as u64;
+    let checksum = crc32(buf) as u64;
     buf.write_be_u64(checksum);
 }
 
@@ -324,7 +365,7 @@ pub fn check_footer(input: &mut SliceInput, total_len: usize) -> Result<u64> {
     // `FOOTER_LENGTH == 16`, so `+ 8` cannot reach `usize::MAX`.
     #[allow(clippy::arithmetic_side_effects)]
     let covered = input.slice(0, footer_start + 8)?;
-    let actual_checksum = crc32fast::hash(covered) as u64;
+    let actual_checksum = crc32(covered) as u64;
 
     let expected_checksum = input.read_be_u64()?;
     if (expected_checksum & 0xFFFF_FFFF_0000_0000) != 0 {
@@ -499,6 +540,35 @@ mod tests {
             check_header(&mut input, "Test", 1, 1),
             Err(Error::Corrupted(_))
         ));
+    }
+
+    /// The threaded CRC folds its pieces back to exactly the one-pass CRC,
+    /// at sizes that split unevenly and at the threshold itself.
+    #[test]
+    fn crc32_parallel_matches_the_single_pass_crc() {
+        let mut x: u64 = 0x2545_F491_4F6C_DD1D;
+        let big: Vec<u8> = (0..(PARALLEL_CRC_MIN * 3 + 12_345))
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                x as u8
+            })
+            .collect();
+        for len in [
+            0,
+            1,
+            PARALLEL_CRC_MIN - 1,
+            PARALLEL_CRC_MIN,
+            PARALLEL_CRC_MIN * 2 + 7,
+            big.len(),
+        ] {
+            assert_eq!(
+                crc32(&big[..len]),
+                crc32fast::hash(&big[..len]),
+                "len {len}"
+            );
+        }
     }
 
     #[test]

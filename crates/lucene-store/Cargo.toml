@@ -37,3 +37,7 @@ criterion.workspace = true
 [[bench]]
 name = "varint_decode"
 harness = false
+
+[[bench]]
+name = "output_write"
+harness = false

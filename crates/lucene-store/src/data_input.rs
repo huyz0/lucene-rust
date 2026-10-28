@@ -65,6 +65,37 @@ fn slice_vlong_slow(r: &mut SliceInput<'_>) -> Result<i64> {
     read_vlong_loop(r)
 }
 
+/// See [`slice_vint_slow`].
+#[cold]
+#[inline(never)]
+fn slice_zlong_slow(r: &mut SliceInput<'_>) -> Result<i64> {
+    read_zlong_loop(r)
+}
+
+/// [`DataInput::read_zlong`]'s byte loop, shared by the trait default and
+/// the slice fast path's fallback.
+// ARITH: `shift` is compared against 70 after every increment.
+#[allow(clippy::arithmetic_side_effects)]
+#[inline]
+fn read_zlong_loop<R: DataInput + ?Sized>(r: &mut R) -> Result<i64> {
+    // Same varint framing as vlong but must accept the 10-byte encoding of
+    // values with the top bit set.
+    let mut v: u64 = 0;
+    let mut shift = 0u32;
+    loop {
+        let b = r.read_byte()?;
+        v |= ((b & 0x7f) as u64).wrapping_shl(shift);
+        if b & 0x80 == 0 {
+            break;
+        }
+        shift += 7;
+        if shift >= 70 {
+            return Err(Error::MalformedVarint);
+        }
+    }
+    Ok(lucene_util::zigzag::decode(v))
+}
+
 /// Sequential reader over Lucene-encoded bytes.
 ///
 /// Implementors provide raw byte access; all wire-format decoding lives in the
@@ -138,26 +169,9 @@ pub trait DataInput {
     }
 
     /// Lucene `readZLong`: zigzag-decoded vlong; full i64 range.
-    // ARITH: `shift` is compared against 70 after every increment.
-    #[allow(clippy::arithmetic_side_effects)]
     #[inline]
     fn read_zlong(&mut self) -> Result<i64> {
-        // Same varint framing as vlong but must accept the 10-byte encoding of
-        // values with the top bit set.
-        let mut v: u64 = 0;
-        let mut shift = 0u32;
-        loop {
-            let b = self.read_byte()?;
-            v |= ((b & 0x7f) as u64).wrapping_shl(shift);
-            if b & 0x80 == 0 {
-                break;
-            }
-            shift += 7;
-            if shift >= 70 {
-                return Err(Error::MalformedVarint);
-            }
-        }
-        Ok(lucene_util::zigzag::decode(v))
+        read_zlong_loop(self)
     }
 
     /// Lucene group-varint (`GroupVIntUtil.readGroupVInts`): full groups of 4
@@ -321,10 +335,12 @@ pub struct SliceInput<'a> {
 }
 
 impl<'a> SliceInput<'a> {
+    #[inline]
     pub fn new(buf: &'a [u8]) -> Self {
         Self { buf, pos: 0 }
     }
 
+    #[inline]
     pub fn position(&self) -> usize {
         self.pos
     }
@@ -412,14 +428,17 @@ impl<'a> SliceInput<'a> {
         Ok(())
     }
 
+    #[inline]
     pub fn len(&self) -> usize {
         self.buf.len()
     }
 
+    #[inline]
     pub fn is_empty(&self) -> bool {
         self.buf.is_empty()
     }
 
+    #[inline]
     pub fn seek(&mut self, pos: usize) -> Result<()> {
         if pos > self.buf.len() {
             return Err(self.eof());
@@ -456,6 +475,7 @@ impl<'a> SliceInput<'a> {
     /// Zero-copy view of `[from..to)` of the underlying buffer, independent of the
     /// cursor position. Used by `codec_util` to compute the footer's CRC-32 over
     /// the exact byte range Lucene checksummed.
+    #[inline]
     pub fn slice(&self, from: usize, to: usize) -> Result<&'a [u8]> {
         self.buf.get(from..to).ok_or_else(|| self.eof())
     }
@@ -479,6 +499,7 @@ impl<'a> SliceInput<'a> {
     /// Bounds are enforced up front: an out-of-range `offset`/`length` is
     /// rejected here rather than silently granting access to bytes outside
     /// the intended range (e.g. a neighboring sub-file's data).
+    #[inline]
     pub fn slice_input(
         &self,
         description: &str,
@@ -496,6 +517,7 @@ impl<'a> SliceInput<'a> {
     /// Remaining unread bytes `[pos, len())`, independent of `pos`'s effect on
     /// `read_bytes`/etc. Mostly a test/debug convenience (e.g. asserting a
     /// slice's full contents at once).
+    #[inline]
     pub fn as_slice(&self) -> &'a [u8] {
         &self.buf[self.pos..]
     }
@@ -560,6 +582,51 @@ impl DataInput for SliceInput<'_> {
             }
         }
         slice_vlong_slow(self)
+    }
+
+    /// See [`Self::read_vlong`], over the full ten-byte range a zigzag
+    /// value can occupy; the default's byte loop for the rest.
+    #[inline(always)]
+    fn read_zlong(&mut self) -> Result<i64> {
+        if let Some(b) = self.buf.get(self.pos..self.pos + 10) {
+            let mut v = 0u64;
+            for (i, &x) in b.iter().enumerate() {
+                v |= ((x & 0x7f) as u64).wrapping_shl(7 * i as u32);
+                if x < 0x80 {
+                    self.pos += i + 1;
+                    return Ok(lucene_util::zigzag::decode(v));
+                }
+            }
+        }
+        slice_zlong_slow(self)
+    }
+
+    #[inline]
+    fn read_u32_le(&mut self) -> Result<u32> {
+        let b = self
+            .buf
+            .get(self.pos..self.pos + 4)
+            .ok_or_else(|| self.eof())?;
+        let v = u32::from_le_bytes(b.try_into().unwrap());
+        self.pos += 4;
+        Ok(v)
+    }
+
+    #[inline]
+    fn read_i32(&mut self) -> Result<i32> {
+        Ok(self.read_u32_le()? as i32)
+    }
+
+    /// Validates the borrowed bytes in place instead of zero-filling a
+    /// buffer and copying into it first.
+    fn read_string(&mut self) -> Result<String> {
+        let len = self.read_length("string")?;
+        let bytes = &self.buf[self.pos..self.pos + len];
+        // Consumed even when invalid, as the default's `read_bytes` does.
+        self.pos += len;
+        let s = std::str::from_utf8(bytes)
+            .map_err(|_| Error::Corrupted("invalid UTF-8 string".into()))?;
+        Ok(s.to_owned())
     }
 
     #[inline]
@@ -785,6 +852,54 @@ mod tests {
             }
             self.pos += n;
             Ok(())
+        }
+    }
+
+    fn error_kind(r: &Result<impl std::fmt::Debug>) -> String {
+        format!("{r:?}")
+    }
+
+    proptest! {
+        /// The in-slice varint fast paths against the trait's byte
+        /// loops on arbitrary bytes (biased toward continuation bits, so
+        /// every length, the over-long malformed runs and the near-end
+        /// fallbacks all occur): same value or same error, same position, for
+        /// a whole stream decoded as vint, vlong, zlong and zint in turn.
+        #[test]
+        fn varint_fast_paths_match_the_byte_loops(
+            raw in proptest::collection::vec((any::<u8>(), 0u8..4), 0..64),
+        ) {
+            // Three in four bytes get the continuation bit forced on.
+            let bytes: Vec<u8> = raw.iter().map(|&(b, k)| if k == 0 { b & 0x7f } else { b | 0x80 }).collect();
+            for which in 0..4 {
+                let mut fast = SliceInput::new(&bytes);
+                let mut plain = PlainInput { buf: &bytes, pos: 0 };
+                loop {
+                    let (f, p) = match which {
+                        0 => (error_kind(&fast.read_vint()), error_kind(&plain.read_vint())),
+                        1 => (error_kind(&fast.read_vlong()), error_kind(&plain.read_vlong())),
+                        2 => (error_kind(&fast.read_zlong()), error_kind(&plain.read_zlong())),
+                        _ => (error_kind(&fast.read_zint()), error_kind(&plain.read_zint())),
+                    };
+                    prop_assert_eq!(&f, &p, "decoder {} at {}", which, plain.pos);
+                    prop_assert_eq!(fast.position(), plain.pos);
+                    if f.starts_with("Err") {
+                        break;
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn u32_i32_and_string_overrides_match_the_defaults(
+            bytes in proptest::collection::vec(any::<u8>(), 0..24),
+        ) {
+            let mut fast = SliceInput::new(&bytes);
+            let mut plain = PlainInput { buf: &bytes, pos: 0 };
+            prop_assert_eq!(error_kind(&fast.read_u32_le()), error_kind(&plain.read_u32_le()));
+            prop_assert_eq!(error_kind(&fast.read_i32()), error_kind(&plain.read_i32()));
+            prop_assert_eq!(error_kind(&fast.read_string()), error_kind(&plain.read_string()));
+            prop_assert_eq!(fast.position(), plain.pos);
         }
     }
 
