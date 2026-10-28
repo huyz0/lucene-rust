@@ -477,6 +477,9 @@ pub trait HashTable {
 pub struct FastCompressionHashTable {
     table: Vec<u32>,
     hash_log: u32,
+    /// The offset width (16 or 32) Java's packed table would have been
+    /// allocated with; see [`HashTable::reset`].
+    bits_per_offset: u32,
     base: usize,
 }
 
@@ -493,14 +496,24 @@ impl HashTable for FastCompressionHashTable {
     fn reset(&mut self, _bytes: &[u8], off: usize, len: usize) {
         // Java: bitsPerOffset = 16 below 64kB else 32; bitsPerOffsetLog =
         // ceil(log2(bitsPerOffset)) = 4 or 5; hashLog = MEMORY_USAGE + 3 - that.
-        let bits_per_offset_log = if len.saturating_sub(LAST_LITERALS) < (1 << 16) {
-            4
-        } else {
-            5
-        };
+        let (bits_per_offset, bits_per_offset_log) =
+            if len.saturating_sub(LAST_LITERALS) < (1 << 16) {
+                (16, 4)
+            } else {
+                (32, 5)
+            };
         self.hash_log = MEMORY_USAGE + 3 - bits_per_offset_log;
-        if self.table.len() < 1usize << self.hash_log {
+        // Java reallocates -- zeroed -- whenever its packed table is too
+        // small *or too narrow*: `hashTable.size() < 1 << hashLog ||
+        // hashTable.getBitsPerValue() < bitsPerOffset`. A switch from 16- to
+        // 32-bit offsets therefore drops every stale entry even though the
+        // smaller hash log would fit. Reallocating at the same points keeps
+        // the table's contents Java's at every step rather than relying on
+        // verification to reject whatever stale entry the wider `u32` slots
+        // would otherwise have kept.
+        if self.table.len() < 1usize << self.hash_log || self.bits_per_offset < bits_per_offset {
             self.table = vec![0u32; 1usize << self.hash_log];
+            self.bits_per_offset = bits_per_offset;
         }
         self.base = off;
     }
