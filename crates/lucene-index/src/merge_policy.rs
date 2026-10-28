@@ -195,14 +195,16 @@ pub fn commit_byte_size(
 fn files_byte_size(dir: &dyn Directory, files: &[String]) -> u64 {
     let mut total = 0u64;
     for file in files {
-        if let Ok(input) = dir.open(file) {
+        // `file_length`, not `open(..).len()`: `FsDirectory::open` reads the
+        // whole file, and this runs over every segment on every merge pass.
+        if let Ok(len) = dir.file_length(file) {
             // Saturating rather than a bare `+`: `info.files` is parsed off
             // the `.si`, so the *number* of terms is file-controlled even
             // though each term is the real byte length of a file that opened.
             // Saturation is the honest failure here -- it can only make a
             // segment look larger, and a larger segment is one this policy
             // excludes from merging, never one it merges wrongly.
-            total = total.saturating_add(input.len() as u64);
+            total = total.saturating_add(len);
         }
     }
     total
@@ -943,19 +945,20 @@ pub fn find_forced_merges(
 ) -> Vec<Vec<String>> {
     let all_original: std::collections::HashMap<String, bool> =
         segments.iter().map(|s| (s.name.clone(), true)).collect();
-    let merged: HashSet<String> = segments
-        .iter()
-        .filter(|s| s.del_count == 0)
-        .map(|s| s.name.clone())
-        .collect();
-    forced_merges_full(
+    let is_merged = |name: &str| -> std::result::Result<bool, std::convert::Infallible> {
+        Ok(segments.iter().any(|s| s.name == name && s.del_count == 0))
+    };
+    match forced_merges_full(
         segments,
         max_segment_count,
         &all_original,
         &HashSet::new(),
-        &merged,
+        is_merged,
         config,
-    )
+    ) {
+        Ok(groups) => groups,
+        Err(never) => match never {},
+    }
 }
 
 /// The whole of `TieredMergePolicy.findForcedMerges`, which
@@ -964,15 +967,22 @@ pub fn find_forced_merges(
 /// original"; a segment absent from it is not merged), `merging` is
 /// `getMergingSegments()` (any of them among the segments to merge means a
 /// forced merge is already running, and nothing new is proposed), and
-/// `merged` names the segments `isMerged(infos, info, ctx)` holds for.
-pub(crate) fn forced_merges_full(
+/// `is_merged` answers `isMerged(infos, info, ctx)` for a segment name.
+///
+/// `is_merged` is asked lazily, at most once, exactly where Java's
+/// short-circuiting condition asks it: for the single remaining segment of a
+/// delete-free merge down to one segment that `segments_to_merge` does not
+/// already name. Answering it for every segment up front costs a
+/// `useCompoundFile` sizing per segment and can surface errors Java never
+/// would.
+pub(crate) fn forced_merges_full<E>(
     segments: &[SegmentStat],
     max_segment_count: usize,
     segments_to_merge: &std::collections::HashMap<String, bool>,
     merging: &HashSet<String>,
-    merged: &HashSet<String>,
+    is_merged: impl FnOnce(&str) -> std::result::Result<bool, E>,
     config: &MergePolicyConfig,
-) -> Vec<Vec<String>> {
+) -> std::result::Result<Vec<Vec<String>>, E> {
     let max_segment_count = max_segment_count.max(1);
     let mut sorted = sorted_by_segment_size(segments);
     let mut force_merge_running = false;
@@ -987,7 +997,7 @@ pub(crate) fn forced_merges_full(
         true
     });
     if sorted.is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     // `sum()` panics on overflow in a debug build. Saturating here is the
     // same call `segment_byte_size` makes: an index whose segments really do
@@ -1039,7 +1049,7 @@ pub(crate) fn forced_merges_full(
     });
 
     if sorted.is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
 
     // We only bail if there are no deletions.
@@ -1050,21 +1060,21 @@ pub(crate) fn forced_merges_full(
             && sorted.len() <= max_segment_count)
             || (max_segment_count == 1
                 && sorted.len() == 1
-                && (segments_to_merge.contains_key(info_zero) || merged.contains(info_zero)));
+                && (segments_to_merge.contains_key(info_zero) || is_merged(info_zero)?));
         if already_merged {
-            return Vec::new();
+            return Ok(Vec::new());
         }
     }
 
     if force_merge_running {
-        return Vec::new();
+        return Ok(Vec::new());
     }
 
     let starting_segment_count = sorted.len();
 
     // Special case: merging down to a single segment that fits.
     if max_segment_count == 1 && total_merge_bytes < max_merge_bytes {
-        return vec![sorted.iter().map(|e| e.name().to_string()).collect()];
+        return Ok(vec![sorted.iter().map(|e| e.name().to_string()).collect()]);
     }
 
     let mut spec: Vec<Vec<String>> = Vec::new();
@@ -1121,7 +1131,7 @@ pub(crate) fn forced_merges_full(
         if candidate.len() > 1 {
             spec.push(candidate.into_iter().map(str::to_string).collect());
         } else {
-            return spec;
+            return Ok(spec);
         }
     }
 }

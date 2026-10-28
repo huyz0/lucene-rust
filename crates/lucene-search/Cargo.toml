@@ -121,6 +121,12 @@ harness = false
 name = "monitor_memory_spell"
 harness = false
 
+# Reader open/poll over a 30-segment index with deletes, plus the per-call
+# `num_docs` and per-document `term_vectors` paths -- see the bench module doc.
+[[bench]]
+name = "reader_open"
+harness = false
+
 # The facets/grouping/join perf pass: FFI facet and range counting, sorted-set
 # counting, `FacetsCollectorManager::search_sorted` -- see the bench's module doc.
 [[bench]]
@@ -137,4 +143,11 @@ harness = false
 # layer's per-document evaluation -- see the bench's module doc.
 [[bench]]
 name = "suggest_expressions"
+harness = false
+
+# `DirectoryReader::open` of a compound, multi-format segment (the `.cfs`
+# members and per-field dictionaries opened without copies) -- see the
+# bench's own module doc.
+[[bench]]
+name = "segment_open_compound"
 harness = false

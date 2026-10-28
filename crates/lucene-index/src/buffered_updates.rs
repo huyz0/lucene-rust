@@ -437,17 +437,46 @@ pub struct FrozenBufferedUpdates {
 impl FrozenBufferedUpdates {
     /// `new FrozenBufferedUpdates(infoStream, updates, privateSegment)`.
     pub fn new(updates: &BufferedUpdates, private_segment: Option<String>) -> Self {
-        let mut delete_terms: Vec<(Arc<Term>, i32)> = updates
-            .delete_terms
-            .iter()
-            .map(|(t, &d)| (Arc::clone(t), d))
-            .collect();
+        Self::sorted(
+            updates
+                .delete_terms
+                .iter()
+                .map(|(t, &d)| (Arc::clone(t), d))
+                .collect(),
+            updates
+                .delete_queries
+                .iter()
+                .map(|(q, &d)| (q.clone(), d))
+                .collect(),
+            updates
+                .field_updates
+                .iter()
+                .map(|(f, b)| (f.clone(), b.clone()))
+                .collect(),
+            private_segment,
+        )
+    }
+
+    /// [`Self::new`] followed by `updates.clear()`, moving the entries out
+    /// instead of cloning every query and every update value first. The
+    /// maps keep their capacity for the next round of buffering.
+    pub fn take(updates: &mut BufferedUpdates, private_segment: Option<String>) -> Self {
+        updates.num_field_updates = 0;
+        Self::sorted(
+            updates.delete_terms.drain().collect(),
+            updates.delete_queries.drain().collect(),
+            updates.field_updates.drain().collect(),
+            private_segment,
+        )
+    }
+
+    fn sorted(
+        mut delete_terms: Vec<(Arc<Term>, i32)>,
+        mut delete_queries: Vec<(DeleteQuery, i32)>,
+        mut field_updates: Vec<(String, FieldUpdatesBuffer)>,
+        private_segment: Option<String>,
+    ) -> Self {
         delete_terms.sort();
-        let mut delete_queries: Vec<(DeleteQuery, i32)> = updates
-            .delete_queries
-            .iter()
-            .map(|(q, &d)| (q.clone(), d))
-            .collect();
         // `HashMap` iteration order is arbitrary; the apply order of
         // independent query deletes cannot change the outcome (each clears
         // bits in the same bitset), but a deterministic order keeps the
@@ -455,11 +484,6 @@ impl FrozenBufferedUpdates {
         // by a `Debug` rendering: no allocation per comparison, and the order
         // cannot drift when someone edits a `Debug` impl.
         delete_queries.sort_by(|a, b| a.0.cmp(&b.0));
-        let mut field_updates: Vec<(String, FieldUpdatesBuffer)> = updates
-            .field_updates
-            .iter()
-            .map(|(f, b)| (f.clone(), b.clone()))
-            .collect();
         field_updates.sort_by(|a, b| a.0.cmp(&b.0));
 
         FrozenBufferedUpdates {
@@ -799,9 +823,7 @@ impl DeleteQueue {
         if !self.global.any() {
             return None;
         }
-        let packet = FrozenBufferedUpdates::new(&self.global, None);
-        self.global.clear();
-        Some(packet)
+        Some(FrozenBufferedUpdates::take(&mut self.global, None))
     }
 
     /// `DocumentsWriterPerThread.flush`'s handling of `pendingUpdates`: freeze
@@ -828,16 +850,15 @@ impl DeleteQueue {
     /// freshly flushed segment where Java writes none, recorded in
     /// `docs/sweep/m2/c7-delete-queue.md`.
     pub fn freeze_private_buffer(&mut self, segment_name: &str) -> Option<FrozenBufferedUpdates> {
-        let packet = if self.private.any() {
-            Some(FrozenBufferedUpdates::new(
-                &self.private,
+        if self.private.any() {
+            Some(FrozenBufferedUpdates::take(
+                &mut self.private,
                 Some(segment_name.to_string()),
             ))
         } else {
+            self.private.clear();
             None
-        };
-        self.private.clear();
-        packet
+        }
     }
 
     /// `DocumentsWriterDeleteQueue.clear()` — `IndexWriter.rollback`'s

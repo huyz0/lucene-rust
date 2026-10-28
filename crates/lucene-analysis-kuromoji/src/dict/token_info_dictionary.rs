@@ -191,15 +191,19 @@ impl TokenInfoMorphData {
         let prefix = usize::from(data >> 4);
         let suffix = usize::from(data & 0xF);
         let start = usize::try_from(off).unwrap_or(0);
-        let mut text: Vec<u16> = surface.iter().skip(start).take(prefix).copied().collect();
-        for i in 0..suffix {
-            let o = offset.checked_add(1)?.checked_add(i.checked_mul(2)?)?;
-            text.push(u16::from_be_bytes([
-                self.byte(Some(o)),
-                self.byte(o.checked_add(1)),
-            ]));
-        }
-        Some(String::from_utf16_lossy(&text))
+        let first = offset.checked_add(1)?;
+        let stored = (0..suffix).map(|i| {
+            let o = first.saturating_add(i.saturating_mul(2));
+            u16::from_be_bytes([self.byte(Some(o)), self.byte(o.checked_add(1))])
+        });
+        Some(lossy(
+            surface
+                .iter()
+                .skip(start)
+                .take(prefix)
+                .copied()
+                .chain(stored),
+        ))
     }
 
     /// `readingOffset(wordId)`.
@@ -235,19 +239,18 @@ impl TokenInfoMorphData {
         let data = self.byte(Some(offset));
         let length = usize::from(data >> 1);
         let start = offset.saturating_add(1);
-        let units: Vec<u16> = if data & 1 == 1 {
+        if data & 1 == 1 {
+            // Kana: one byte a unit, all in U+30A0..U+319F, so no surrogate
             (0..length)
                 .map(|i| 0x30A0u16.wrapping_add(u16::from(self.byte(start.checked_add(i)))))
+                .map(|u| char::from_u32(u32::from(u)).unwrap_or(char::REPLACEMENT_CHARACTER))
                 .collect()
         } else {
-            (0..length)
-                .map(|i| {
-                    let o = start.saturating_add(i.saturating_mul(2));
-                    u16::from_be_bytes([self.byte(Some(o)), self.byte(o.checked_add(1))])
-                })
-                .collect()
-        };
-        String::from_utf16_lossy(&units)
+            lossy((0..length).map(|i| {
+                let o = start.saturating_add(i.saturating_mul(2));
+                u16::from_be_bytes([self.byte(Some(o)), self.byte(o.checked_add(1))])
+            }))
+        }
     }
 
     /// `getReading(morphId, surface, off, len)`: the stored reading, else
@@ -260,19 +263,13 @@ impl TokenInfoMorphData {
         }
         let start = usize::try_from(off).unwrap_or(0);
         let len = usize::try_from(len).unwrap_or(0);
-        let text: Vec<u16> = surface
-            .iter()
-            .skip(start)
-            .take(len)
-            .map(|&ch| {
-                if ch > 0x3040 && ch < 0x3097 {
-                    ch.wrapping_add(0x60)
-                } else {
-                    ch
-                }
-            })
-            .collect();
-        String::from_utf16_lossy(&text)
+        lossy(surface.iter().skip(start).take(len).map(|&ch| {
+            if ch > 0x3040 && ch < 0x3097 {
+                ch.wrapping_add(0x60)
+            } else {
+                ch
+            }
+        }))
     }
 
     /// `getPronunciation(morphId, surface, off, len)`: the stored
@@ -404,4 +401,12 @@ impl TokenInfoDictionary {
     pub fn lookup_word_ids(&self, source_id: i32) -> &[i32] {
         self.morph_atts.dict.lookup_word_ids(source_id)
     }
+}
+
+/// `String::from_utf16_lossy` of the units, decoded straight into the
+/// string (no intermediate `Vec<u16>`).
+fn lossy(units: impl Iterator<Item = u16>) -> String {
+    char::decode_utf16(units)
+        .map(|c| c.unwrap_or(char::REPLACEMENT_CHARACTER))
+        .collect()
 }

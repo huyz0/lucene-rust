@@ -1465,13 +1465,38 @@ impl Drop for TermsEnum<'_> {
     /// Returns the state to the field's pool, unless the pool meanwhile
     /// holds a state with more frames.
     fn drop(&mut self) {
-        if let Ok(mut pooled) = self.field.scratch.try_lock() {
+        if let Ok(mut pooled) = self.field.scratch.slot().try_lock() {
             if pooled.stack.len() <= self.st.stack.len() {
                 let mut st = std::mem::take(&mut self.st);
                 st.unposition();
                 *pooled = st;
             }
         }
+    }
+}
+
+/// How many [`EnumState`]s a field pools: enough that a search pool's
+/// threads (slots are handed out in thread-creation order) each find their
+/// own, few enough that an idle field holds well under a kilobyte.
+const SCRATCH_SHARDS: usize = 8;
+
+/// A field's pooled lookup states, one per thread slot (modulo
+/// [`SCRATCH_SHARDS`]). A single shared state made every thread but one
+/// fall back to a cold state per lookup under concurrent search: four
+/// threads seeking one field took 3.5x as long as one.
+#[derive(Debug, Default)]
+struct ScratchPool([Mutex<EnumState>; SCRATCH_SHARDS]);
+
+impl ScratchPool {
+    /// The calling thread's state. Callers still `try_lock`: two threads
+    /// can share a slot, and the loser runs on a fresh state, as before.
+    fn slot(&self) -> &Mutex<EnumState> {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        thread_local! {
+            static SLOT: usize = NEXT.fetch_add(1, Ordering::Relaxed) % SCRATCH_SHARDS;
+        }
+        &self.0[SLOT.with(|s| *s)]
     }
 }
 
@@ -2178,7 +2203,7 @@ impl<'a> TermsEnum<'a> {
     /// rewrite) does not allocate and grow a dozen of them again each
     /// time, the cost Java's TLAB hides -- and hands it back on drop.
     fn new(field: &'a FieldTerms) -> Self {
-        let mut st = match field.scratch.try_lock() {
+        let mut st = match field.scratch.slot().try_lock() {
             Ok(mut pooled) => std::mem::take(&mut *pooled),
             Err(_) => EnumState::default(),
         };
@@ -2563,12 +2588,13 @@ pub struct FieldTerms {
     /// The field's terms index, read in place from `.tip`: a trie, or a
     /// retired format's FST.
     index: TermsIndex,
-    /// One pooled [`EnumState`] so the `&self` lookups
+    /// Pooled [`EnumState`]s so the `&self` lookups
     /// ([`Self::seek_exact`], [`Self::postings`], ...) keep the last-loaded
     /// blocks warm across calls instead of re-decoding them. Java gets the
     /// same effect from the caller holding a `TermsEnum`; this port's API
-    /// takes a term per call, so the reuse has to live here.
-    scratch: Mutex<EnumState>,
+    /// takes a term per call, so the reuse has to live here -- one per
+    /// thread slot, so concurrent searches each keep their own warm state.
+    scratch: ScratchPool,
     /// The field's term n-gram index ([`crate::term_ngram`]), built the
     /// first time it is worth it: [`NGRAM_BUILD_AFTER`] regexp walks that
     /// had to cover the whole dictionary. A field never asked such a query
@@ -2619,10 +2645,7 @@ impl Clone for FieldTerms {
             postings_format: self.postings_format,
             tim: Arc::clone(&self.tim),
             index: self.index.clone(),
-            scratch: Mutex::new(EnumState {
-                current: -1,
-                ..EnumState::default()
-            }),
+            scratch: ScratchPool::default(),
             ngram: self.ngram.clone(),
             wide_walks: std::sync::atomic::AtomicU32::new(
                 self.wide_walks.load(std::sync::atomic::Ordering::Relaxed),
@@ -2653,7 +2676,7 @@ impl FieldTerms {
         // race just runs on its own fresh state -- same answers, only without
         // the warm blocks -- which is exactly what Java's callers get, since
         // there each thread holds its own `TermsEnum`.
-        match self.scratch.try_lock() {
+        match self.scratch.slot().try_lock() {
             Ok(mut guard) => f(&mut SegmentTermsEnum {
                 field: self,
                 st: &mut guard,
@@ -3462,10 +3485,7 @@ impl FieldTerms {
             postings_format,
             tim,
             index: TermsIndex::Fst(Arc::new(index)),
-            scratch: Mutex::new(EnumState {
-                current: -1,
-                ..EnumState::default()
-            }),
+            scratch: ScratchPool::default(),
             ngram: std::sync::OnceLock::new(),
             wide_walks: std::sync::atomic::AtomicU32::new(0),
             postings_base: [0; 3],
@@ -5383,10 +5403,7 @@ pub fn open_shared(
                     root_fp,
                     end: index_end,
                 }),
-                scratch: Mutex::new(EnumState {
-                    current: -1,
-                    ..EnumState::default()
-                }),
+                scratch: ScratchPool::default(),
                 ngram: std::sync::OnceLock::new(),
                 wide_walks: std::sync::atomic::AtomicU32::new(0),
                 postings_base: [0; 3],
@@ -8045,7 +8062,7 @@ mod tests {
         assert!(many.seek_exact(&landed).is_some());
         let frames = it.st.stack.len();
         drop(it);
-        assert!(many.scratch.lock().unwrap().stack.len() >= frames);
+        assert!(many.scratch.slot().lock().unwrap().stack.len() >= frames);
         let mut again = many.iter();
         assert_eq!(again.term(), None, "unpositioned");
         assert_eq!(again.st.current, -1);

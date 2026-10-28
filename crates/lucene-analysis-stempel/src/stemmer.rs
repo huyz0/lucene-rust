@@ -50,12 +50,19 @@ impl StempelStemmer {
     /// for an empty word over a plain `Trie`, where Java throws
     /// `StringIndexOutOfBoundsException` (a `MultiTrie2` catches it).
     pub fn stem(&self, word: &[u16]) -> Result<Option<Vec<u16>>, OutOfBounds> {
+        let mut buffer = Vec::new();
+        Ok(self.stem_into(word, &mut buffer)?.then_some(buffer))
+    }
+
+    /// [`Self::stem`] into `out` (cleared first): `true` for a stem.
+    pub fn stem_into(&self, word: &[u16], out: &mut Vec<u16>) -> Result<bool, OutOfBounds> {
+        out.clear();
         let Some(cmd) = self.table.get_last_on_path(word)? else {
-            return Ok(None);
+            return Ok(false);
         };
-        let mut buffer = word.to_vec();
-        diff::apply(&mut buffer, &cmd);
-        Ok((!buffer.is_empty()).then_some(buffer))
+        out.extend_from_slice(word);
+        diff::apply(out, &cmd);
+        Ok(!out.is_empty())
     }
 }
 

@@ -820,8 +820,12 @@ pub fn finish_pending(segment_infos: &SegmentInfos, dir: &dyn Directory) -> Resu
     if let Err(e) = dir.sync_meta_data() {
         // The rename landed but the directory entry is not durable; Java
         // deletes the renamed file rather than leave a commit that might
-        // vanish under a crash.
-        let _ = dir.delete_file(&file_name);
+        // vanish under a crash. This port's writer keeps the prepared commit
+        // for a retry, which renames `pending_segments_N` again, so the file
+        // goes back under that name; only if that fails is it deleted.
+        if dir.rename(&file_name, &pending_name).is_err() {
+            let _ = dir.delete_file(&file_name);
+        }
         return Err(e.into());
     }
 
@@ -1627,7 +1631,7 @@ mod tests {
     }
 
     #[test]
-    fn a_renamed_commit_file_whose_directory_cannot_be_synced_is_deleted() {
+    fn a_renamed_commit_file_whose_directory_cannot_be_synced_goes_back_to_pending() {
         let dir_path = tempdir();
         let write_dir = FailingDir {
             inner: lucene_store::FsDirectory::open(&dir_path),
@@ -1648,6 +1652,10 @@ mod tests {
             !listed.iter().any(|f| f == "segments_3"),
             "a commit whose directory entry is not durable must not stay visible: {listed:?}"
         );
+        // ...but it stays pending, so the writer's retry can publish it.
+        assert!(listed.iter().any(|f| f == "pending_segments_3"));
+        finish_pending(&sis, &write_dir).unwrap();
+        assert_eq!(read_latest(&write_dir).unwrap().generation, 3);
         std::fs::remove_dir_all(&dir_path).ok();
     }
 

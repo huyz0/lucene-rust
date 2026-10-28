@@ -95,7 +95,7 @@ pub fn resolve_term_doc_ids(
         // No `.liv` yet: every doc is live, and an out-of-range doc ID is
         // `deletes::mark_deleted`'s to reject (it has `max_doc`; this function
         // does not).
-        return Ok(postings.docs.clone());
+        return Ok(postings.docs);
     };
     // `FixedBitSet::get` indexes `words[index >> 6]`, so a doc ID the postings
     // decoder produced out of range -- negative, or past this segment's

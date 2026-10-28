@@ -8,15 +8,15 @@
 //! to Penn Treebank tags when the model's look like Universal Dependencies
 //! ones (`POSTagFormatMapper`).
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::sync::Arc;
 
 use lucene_analysis::factory::FactoryError;
 use lucene_analysis::AnalysisError;
 
 use super::dictionary::{Dictionary, PosDictionary};
-use super::featuregen::{self, Generator};
-use super::ml::{BeamSearch, MaxentModel, SequenceContext};
+use super::featuregen::{self, Generator, Prior};
+use super::ml::{BeamSearch, FxHashMap, MaxentModel, SequenceContext};
 use super::model::{BaseModel, Component, Version};
 use super::text::{self, JString};
 
@@ -54,7 +54,7 @@ impl PosModel {
 struct ContextCache {
     capacity: usize,
     sentence: Option<u64>,
-    map: HashMap<JString, Vec<JString>>,
+    map: FxHashMap<JString, Vec<JString>>,
     order: VecDeque<JString>,
 }
 
@@ -64,7 +64,7 @@ impl ContextCache {
         (capacity > 0).then(|| ContextCache {
             capacity,
             sentence: None,
-            map: HashMap::new(),
+            map: FxHashMap::default(),
             order: VecDeque::new(),
         })
     }
@@ -119,6 +119,9 @@ pub struct PosTagger {
     /// The Penn tag of each outcome (`convertTags`), or the outcome itself.
     penn: Vec<JString>,
     sentence: u64,
+    /// The cache key under construction, reused (`index + tagprev +
+    /// tagprevprev`; owned only when an entry is put).
+    key: JString,
 }
 
 /// `POSTagFormatMapper.CONVERSION_TABLE_PENN_TO_UD`'s keys.
@@ -220,6 +223,7 @@ impl PosTagger {
             tag_dictionary: model.tag_dictionary.clone(),
             beam: BeamSearch::new(beam_size),
             sentence: 0,
+            key: Vec::new(),
         })
     }
 
@@ -227,10 +231,16 @@ impl PosTagger {
     pub fn tag(&mut self, words: &[JString]) -> Result<Vec<JString>, AnalysisError> {
         self.sentence = self.sentence.wrapping_add(1);
         let model = Arc::clone(&self.model);
+        let dict = self.tag_dictionary.clone();
+        let word_tags: Vec<Option<&[JString]>> = words
+            .iter()
+            .map(|w| dict.as_deref().and_then(|d| d.tags(w)))
+            .collect();
         let mut ctx = PosContext {
             tagger: self,
             words,
             error: None,
+            word_tags: &word_tags,
         };
         let outcomes = model_best(&model, words.len(), &mut ctx)?;
         if let Some(e) = ctx.error {
@@ -257,6 +267,10 @@ struct PosContext<'a> {
     tagger: &'a mut PosTagger,
     words: &'a [JString],
     error: Option<AnalysisError>,
+    /// Each word's tags in the tag dictionary (`None` without a
+    /// dictionary or an entry), looked up once per word: `valid` asks for
+    /// every candidate outcome of a position, and the answer is the same.
+    word_tags: &'a [Option<&'a [JString]>],
 }
 
 impl SequenceContext for PosContext<'_> {
@@ -271,29 +285,33 @@ impl SequenceContext for PosContext<'_> {
             |i: Option<usize>| i.and_then(|i| prior.get(i)).map(|&o| &outcomes[o as usize]);
         let tagprev = tag_at(index.checked_sub(1));
         let tagprevprev = tag_at(index.checked_sub(2));
-        // `index + tagprev + tagprevprev`, Java's string concatenation
-        let null = text::units("null");
-        let key = text::concat(&[
-            &text::int_units(index),
-            tagprev.unwrap_or(&null),
-            tagprevprev.unwrap_or(&null),
-        ]);
         let sentence = self.tagger.sentence;
-        if let Some(cache) = &mut self.tagger.cache {
-            if let Some(cached) = cache.get(sentence, &key) {
-                features.extend_from_slice(cached);
-                return;
+        if self.tagger.cache.is_some() {
+            // `index + tagprev + tagprevprev`, Java's string concatenation
+            let key = &mut self.tagger.key;
+            key.clear();
+            key.extend(index.to_string().encode_utf16());
+            for tag in [tagprev, tagprevprev] {
+                match tag {
+                    Some(t) => key.extend_from_slice(t),
+                    None => key.extend("null".encode_utf16()),
+                }
+            }
+            if let Some(cache) = &mut self.tagger.cache {
+                if let Some(cached) = cache.get(sentence, &self.tagger.key) {
+                    features.extend_from_slice(cached);
+                    return;
+                }
             }
         }
         match &mut self.tagger.generator {
             ContextGenerator::Configurable(g) => {
-                // The prior tags as strings only on a cache miss, for the
-                // generator's API.
-                let tags: Vec<JString> = prior
-                    .iter()
-                    .map(|&o| outcomes[o as usize].clone())
-                    .collect();
-                if let Err(e) = g.create_features(features, self.words, index, &tags, sentence) {
+                let prior = Prior::Ids {
+                    ids: prior,
+                    outcomes,
+                };
+                if let Err(e) = g.create_features_with(features, self.words, index, prior, sentence)
+                {
                     self.error.get_or_insert(e);
                 }
             }
@@ -309,17 +327,14 @@ impl SequenceContext for PosContext<'_> {
             }
         }
         if let Some(cache) = &mut self.tagger.cache {
-            cache.put(key, features.clone());
+            cache.put(self.tagger.key.clone(), features.clone());
         }
     }
 
     fn valid(&self, i: usize, _prior: &[u32], outcome: u32, outcomes: &[JString]) -> bool {
-        match &self.tagger.tag_dictionary {
+        match self.word_tags[i] {
             None => true,
-            Some(d) => match d.tags(&self.words[i]) {
-                None => true,
-                Some(tags) => tags.contains(&outcomes[outcome as usize]),
-            },
+            Some(tags) => tags.contains(&outcomes[outcome as usize]),
         }
     }
 }
@@ -337,7 +352,7 @@ fn default_context(
 ) {
     const SE: &str = "*SE*";
     const SB: &str = "*SB*";
-    let cat = |k: &str, v: &[u16]| text::concat(&[&text::units(k), v]);
+    let cat = |k: &str, v: &[u16]| text::keyed(k, v);
     let lex = &tokens[index];
     let (next, nextnext) = if tokens.len() > index + 1 {
         let nn = tokens

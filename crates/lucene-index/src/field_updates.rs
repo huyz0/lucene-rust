@@ -57,7 +57,7 @@ use lucene_codecs::doc_values::{self, DocValuesMeta};
 use lucene_codecs::doc_values_updates;
 use lucene_codecs::field_infos::{DocValuesSkipIndexType, DocValuesType, FieldInfo, FieldInfos};
 use lucene_store::data_output::DataOutput;
-use lucene_store::directory::Directory;
+use lucene_store::directory::{Directory, Input};
 
 use crate::compound_reader::CompoundReader;
 use crate::segment_info;
@@ -371,7 +371,7 @@ fn write_field_updates_inner(
         let per_field = per_field_component(&infos.fields[index], per_field_suffix);
         let base = read_base_numeric(read_dir, sci, &files, &infos, index, &per_field)?;
         let column = doc_values_updates::merge_numeric_column(
-            base.as_ref().map(|(e, d)| (e, d.as_slice())),
+            base.as_ref().map(|(e, d)| (e, &d[..])),
             updates,
             max_doc,
         )?;
@@ -573,7 +573,7 @@ fn write_binary_round(
     let per_field = per_field_component(&infos.fields[index], per_field_suffix);
     let base = read_base_binary(read_dir, sci, files, infos, index, &per_field)?;
     let column = doc_values_updates::merge_binary_column(
-        base.as_ref().map(|(e, d)| (e, d.as_slice())),
+        base.as_ref().map(|(e, d)| (e, &d[..])),
         updates,
         max_doc,
     )?;
@@ -751,7 +751,7 @@ pub(crate) fn read_current_column(
     infos: &FieldInfos,
     index: usize,
     per_field: &str,
-) -> Result<Option<(DocValuesMeta, Vec<u8>)>> {
+) -> Result<Option<(DocValuesMeta, Input)>> {
     let field = &infos.fields[index];
     let field_number = field.number;
 
@@ -784,7 +784,7 @@ pub(crate) fn read_current_column(
                 ext: "dvd",
             })?;
         let (_, meta) = doc_values::parse_meta(&meta_bytes, &sci.segment_id, &suffix, &only)?;
-        return Ok(Some((meta, data_bytes.to_vec())));
+        return Ok(Some((meta, data_bytes)));
     }
 
     // No format attributes means the segment never wrote a column for this
@@ -822,7 +822,10 @@ pub(crate) fn read_current_column(
     let meta_bytes = dir.open(meta_name)?;
     let data_bytes = dir.open(data_name)?;
     let (_, meta) = doc_values::parse_meta(&meta_bytes, &sci.segment_id, per_field, infos)?;
-    Ok(Some((meta, data_bytes.to_vec())))
+    // The `Input` itself, not a copy: the base `.dvd` holds every
+    // doc-values field of the segment, and under `MmapDirectory` it is a
+    // mapping a copy would read in full once per updated field.
+    Ok(Some((meta, data_bytes)))
 }
 
 fn read_base_numeric(
@@ -832,7 +835,7 @@ fn read_base_numeric(
     infos: &FieldInfos,
     index: usize,
     per_field: &str,
-) -> Result<Option<(doc_values::NumericEntry, Vec<u8>)>> {
+) -> Result<Option<(doc_values::NumericEntry, Input)>> {
     let field_number = infos.fields[index].number;
     let Some((meta, data)) = read_current_column(dir, sci, si_files, infos, index, per_field)?
     else {
@@ -858,7 +861,7 @@ fn read_base_binary(
     infos: &FieldInfos,
     index: usize,
     per_field: &str,
-) -> Result<Option<(doc_values::BinaryEntry, Vec<u8>)>> {
+) -> Result<Option<(doc_values::BinaryEntry, Input)>> {
     let field_number = infos.fields[index].number;
     let Some((meta, data)) = read_current_column(dir, sci, si_files, infos, index, per_field)?
     else {

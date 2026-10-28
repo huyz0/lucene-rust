@@ -18,7 +18,7 @@
 //! uncommitted change.
 
 use super::{DocValuesUpdate, Error, IndexWriter, Result, SegmentInfos, SeqNo};
-use crate::{deletes, segment_info};
+use crate::deletes;
 
 /// Where a doc id of a reader landed in the writer.
 struct Target {
@@ -192,11 +192,7 @@ impl IndexWriter<'_> {
         }
         let mut base = 0i32;
         for s in &reader_infos.segments {
-            let si = segment_info::parse_for_codec(
-                &self.dir.open(&format!("{}.si", s.segment_name))?,
-                &s.segment_id,
-                &s.codec_name,
-            )?;
+            let si = self.cfg.reader_pool.segment_info(self.dir, s)?;
             let end = base.saturating_add(si.doc_count);
             if doc_id < end {
                 let leaf_doc = doc_id.saturating_sub(base);
@@ -244,7 +240,7 @@ mod tests {
     use super::*;
     use crate::buffered_updates::Term;
     use crate::index_writer::DISABLE_AUTO_FLUSH_MB;
-    use crate::segment_info::LuceneVersion;
+    use crate::segment_info::{self, LuceneVersion};
     use lucene_codecs::field_infos::{
         DocValuesSkipIndexType, DocValuesType, FieldInfo, IndexOptions,
     };

@@ -106,7 +106,11 @@ impl Decompose for DictionaryDecomposer {
             if let Some(m) = longest {
                 out.push(m);
                 if self.only_longest_match_no_subwords {
-                    i += m.1 - 1;
+                    // An empty match (min_subword_size 0 over a dictionary
+                    // holding "") would step back one here: Java loops
+                    // forever, and the subtraction would underflow. It
+                    // moves on instead.
+                    i += m.1.saturating_sub(1);
                 }
             }
             i += 1;
@@ -381,5 +385,23 @@ mod tests {
             run(DictionaryCompoundWordTokenFilter::dictionary(c("ball"), d)),
             "ball:0:13:1:1|13|0"
         );
+    }
+
+    /// `min_subword_size` 0 with "" in the dictionary: the empty longest
+    /// match moves on rather than underflowing (Java never terminates).
+    #[test]
+    fn empty_longest_match_moves_on() {
+        let d = DictionaryDecomposer {
+            dictionary: dict(&["", "ab"]),
+            only_longest_match_no_subwords: true,
+        };
+        let sizes = CompoundSizes {
+            min_subword_size: 0,
+            ..CompoundSizes::default()
+        };
+        let term: Vec<u16> = "xab".encode_utf16().collect();
+        let mut out = Vec::new();
+        d.decompose(&term, &sizes, &mut out);
+        assert_eq!(out, vec![(0, 0), (1, 2), (3, 0)]);
     }
 }

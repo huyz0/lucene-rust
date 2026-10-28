@@ -242,7 +242,19 @@ fn corpus_is_java_shaped() {
     assert!(s.num_docs() >= 100);
     let stop = s.stopword().to_string();
     s.with_searcher(|searcher| {
-        assert_eq!(searcher.max_doc(), s.num_docs());
+        // A segment whose every document was deleted is dropped, as Lucene
+        // drops fully deleted segments, so `maxDoc` can fall below the
+        // documents written -- by at most the documents deleted.
+        let mut deleted = s.deleted().to_vec();
+        deleted.sort_unstable();
+        deleted.dedup();
+        let deleted = i32::try_from(deleted.len()).expect("a handful of deletes");
+        let max_doc = searcher.max_doc();
+        assert!(
+            max_doc <= s.num_docs() && max_doc >= s.num_docs() - deleted,
+            "maxDoc {max_doc}, {} written, {deleted} deleted",
+            s.num_docs()
+        );
         let q = BooleanQuery {
             must: vec![tq(stop.as_bytes())],
             ..BooleanQuery::default()
