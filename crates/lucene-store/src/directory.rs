@@ -50,6 +50,15 @@ pub enum Input {
     /// ([`crate::ByteBuffersDirectory`]): opening costs a reference count,
     /// not a copy -- Java's `IndexInput.clone()` of the stored content.
     Shared(Arc<[u8]>),
+    /// `bytes[start..start + len]` of another input, sharing it: a compound
+    /// file's member (`Lucene90CompoundReader.openInput`'s `slice`), which
+    /// costs a reference count on the archive rather than a copy of the
+    /// member. Built by [`Input::slice_of`], which checks the bounds.
+    Slice {
+        base: Arc<Input>,
+        start: usize,
+        len: usize,
+    },
     /// Another input held open by a test harness (feature `test-util`): the
     /// guard is dropped with the bytes, which is how the test framework's
     /// `MockDirectoryWrapper` sees an input "closed".
@@ -91,6 +100,7 @@ impl std::fmt::Debug for Input {
             Input::Owned(_) => "Owned",
             Input::Mapped(_) => "Mapped",
             Input::Shared(_) => "Shared",
+            Input::Slice { .. } => "Slice",
             #[cfg(any(test, feature = "test-util"))]
             Input::Tracked(_) => "Tracked",
         };
@@ -106,8 +116,39 @@ impl Deref for Input {
             Input::Owned(v) => v,
             Input::Mapped(m) => m,
             Input::Shared(s) => s,
+            // In bounds: `slice_of` checked `start + len <= base.len()`, and
+            // `base` cannot change length behind the `Arc`.
+            Input::Slice { base, start, len } => &base[*start..][..*len],
             #[cfg(any(test, feature = "test-util"))]
             Input::Tracked(t) => &t.input,
+        }
+    }
+}
+
+impl Input {
+    /// `len` bytes of `base` from `start`, sharing `base` rather than copying
+    /// them ([`Input::Slice`]). Out of bounds is corruption, as Java's
+    /// `IndexInput.slice` reports it.
+    ///
+    /// A test harness's tracked input ([`Input::Tracked`]) is copied out
+    /// instead: its guard models Java's `close()`, which closes a compound
+    /// file's slices with it, and a window sharing it would keep the file
+    /// "open" past its owner.
+    pub fn slice_of(base: &Arc<Input>, start: usize, len: usize) -> Result<Input> {
+        match start.checked_add(len) {
+            #[cfg(any(test, feature = "test-util"))]
+            Some(end) if end <= base.len() && matches!(**base, Input::Tracked(_)) => {
+                Ok(Input::Owned(base[start..end].to_vec()))
+            }
+            Some(end) if end <= base.len() => Ok(Input::Slice {
+                base: Arc::clone(base),
+                start,
+                len,
+            }),
+            _ => Err(Error::Corrupted(format!(
+                "slice(offset={start}, length={len}) is out of bounds of a {}-byte input",
+                base.len()
+            ))),
         }
     }
 }
@@ -1136,6 +1177,30 @@ mod tests {
         let input = dir.open("f").unwrap();
         assert_eq!(&input[..], b"abc");
         dir.close_input("f", input).unwrap();
+    }
+
+    #[test]
+    fn slice_of_shares_the_base_and_checks_bounds() {
+        let base = Arc::new(Input::Owned(b"0123456789".to_vec()));
+        let mid = Input::slice_of(&base, 3, 4).unwrap();
+        assert_eq!(&mid[..], b"3456");
+        assert_eq!(format!("{mid:?}"), "Input::Slice(4 bytes)");
+        assert_eq!(Arc::strong_count(&base), 2);
+        // A slice of a slice reads through both windows.
+        let inner = Input::slice_of(&Arc::new(mid), 1, 2).unwrap();
+        assert_eq!(inner.as_ref(), b"45");
+        assert_eq!(&Input::slice_of(&base, 10, 0).unwrap()[..], b"");
+        let tracked = Arc::new(Input::Tracked(TrackedInput::new(
+            Input::Owned(b"abc".to_vec()),
+            (),
+        )));
+        let copy = Input::slice_of(&tracked, 1, 2).unwrap();
+        assert!(matches!(copy, Input::Owned(_)), "{copy:?}");
+        assert_eq!((&copy[..], Arc::strong_count(&tracked)), (&b"bc"[..], 1));
+        for (start, len) in [(0, 11), (11, 0), (usize::MAX, 2)] {
+            let err = Input::slice_of(&base, start, len).unwrap_err();
+            assert!(matches!(err, Error::Corrupted(_)), "{err:?}");
+        }
     }
 
     #[test]
