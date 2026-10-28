@@ -582,7 +582,7 @@ fn write_binary_round(
     let (dvm, dvd, dvs) = crate::index_writer::with_doc_values_faults(codec, 1, || {
         doc_values_updates::write_binary_generation(
             infos.fields[index].number,
-            &column,
+            column,
             &sci.segment_id,
             &suffix,
         )

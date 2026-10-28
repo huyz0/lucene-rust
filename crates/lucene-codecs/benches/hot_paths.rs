@@ -1489,8 +1489,35 @@ fn bench_lucene90_terms_index_seek(c: &mut Criterion) {
     });
 }
 
+/// A BINARY doc-values update generation over 100,000 documents of 24
+/// bytes each, as `IndexWriter.updateBinaryDocValue` flushes it.
+fn bench_binary_update_generation(c: &mut Criterion) {
+    use lucene_codecs::doc_values_updates::write_binary_generation;
+    let column: Vec<Option<Vec<u8>>> = (0..100_000u32)
+        .map(|d| Some(format!("value-{d:018}").into_bytes()))
+        .collect();
+    let mut group = c.benchmark_group("doc_values_updates");
+    group.sample_size(20);
+    group.bench_function("binary_generation_100k", |b| {
+        b.iter_batched(
+            || column.clone(),
+            |column| {
+                black_box(
+                    write_binary_generation(0, column, &[3u8; 16], "1")
+                        .unwrap()
+                        .1
+                        .len(),
+                )
+            },
+            criterion::BatchSize::LargeInput,
+        )
+    });
+    group.finish();
+}
+
 criterion_group!(
     benches,
+    bench_binary_update_generation,
     bench_lucene90_terms_index_seek,
     bench_postings_write_full_blocks,
     bench_completion_flush,
