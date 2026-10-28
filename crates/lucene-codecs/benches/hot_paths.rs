@@ -1196,8 +1196,29 @@ fn bench_bkd_merge_1d(c: &mut Criterion) {
     });
 }
 
+/// BYTE-encoded vector similarity over 384 dims, the per-candidate call of
+/// `ByteVectorScorer` during an HNSW search or graph build.
+fn bench_byte_similarity(c: &mut Criterion) {
+    let a: Vec<u8> = (0..384u32)
+        .map(|i| (i.wrapping_mul(37) % 256) as u8)
+        .collect();
+    let b: Vec<u8> = (0..384u32)
+        .map(|i| (i.wrapping_mul(91) % 256) as u8)
+        .collect();
+    c.bench_function("vectors/byte_dot_384", |bch| {
+        bch.iter(|| lucene_codecs::vectors::dot_product_bytes(black_box(&a), black_box(&b)))
+    });
+    c.bench_function("vectors/byte_square_384", |bch| {
+        bch.iter(|| lucene_codecs::vectors::square_distance_bytes(black_box(&a), black_box(&b)))
+    });
+    c.bench_function("vectors/byte_cosine_384", |bch| {
+        bch.iter(|| lucene_codecs::vectors::cosine_bytes(black_box(&a), black_box(&b)))
+    });
+}
+
 criterion_group!(
     benches,
+    bench_byte_similarity,
     bench_fst_compile,
     bench_term_ngram,
     bench_fuzzy_edits,
