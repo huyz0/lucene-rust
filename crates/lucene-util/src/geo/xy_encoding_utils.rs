@@ -8,6 +8,18 @@ use crate::numeric_utils;
 #[derive(Debug, Clone, Copy)]
 pub struct XYEncodingUtils;
 
+/// `checkVal`'s message, kept out of line so the finiteness test inlines.
+#[cold]
+#[inline(never)]
+fn invalid_value(x: f32) -> GeoError {
+    GeoError::illegal(format!(
+        "invalid value {}; must be between {} and {}",
+        java_float_string(x),
+        java_double_string(XYEncodingUtils::MIN_VAL_INCL),
+        java_double_string(XYEncodingUtils::MAX_VAL_INCL)
+    ))
+}
+
 impl XYEncodingUtils {
     /// `MIN_VAL_INCL`: `-Float.MAX_VALUE` as a double.
     pub const MIN_VAL_INCL: f64 = -(f32::MAX as f64);
@@ -15,29 +27,28 @@ impl XYEncodingUtils {
     pub const MAX_VAL_INCL: f64 = f32::MAX as f64;
 
     /// `checkVal`: finite.
+    #[inline]
     pub fn check_val(x: f32) -> Result<f32, GeoError> {
         if !x.is_finite() {
-            return Err(GeoError::illegal(format!(
-                "invalid value {}; must be between {} and {}",
-                java_float_string(x),
-                java_double_string(Self::MIN_VAL_INCL),
-                java_double_string(Self::MAX_VAL_INCL)
-            )));
+            return Err(invalid_value(x));
         }
         Ok(x)
     }
 
     /// `encode(float)`.
+    #[inline]
     pub fn encode(x: f32) -> Result<i32, GeoError> {
         Ok(numeric_utils::float_to_sortable_int(Self::check_val(x)?))
     }
 
     /// `decode(int)`.
+    #[inline]
     pub fn decode(encoded: i32) -> f32 {
         numeric_utils::sortable_int_to_float(encoded)
     }
 
     /// `decode(byte[], int)`.
+    #[inline]
     pub fn decode_bytes(src: &[u8], offset: usize) -> f32 {
         Self::decode(numeric_utils::sortable_bytes_to_int(src, offset))
     }
