@@ -797,6 +797,31 @@ impl FlushDeletes<'_> {
 /// several threads at once, each from its own buffer, without the writer's
 /// lock (`DocumentsWriterPerThread.flush`, which likewise reads only its
 /// `FieldInfos.Builder` and `LiveIndexWriterConfig`).
+/// Positions in [`IndexingConfig`]'s field list by name and by number. The
+/// first field with a given name or number wins, as the `iter().find` scans
+/// these replace did: they ran per document and per value, so a wide schema
+/// paid O(fields) for every one.
+#[derive(Clone, Default)]
+pub(crate) struct FieldLookup {
+    by_name: std::collections::HashMap<String, usize>,
+    by_number: std::collections::HashMap<i32, usize>,
+}
+
+impl FieldLookup {
+    fn build(fields: &[FieldInfo]) -> Self {
+        let mut lookup = FieldLookup::default();
+        for (at, info) in fields.iter().enumerate() {
+            lookup.insert(at, info);
+        }
+        lookup
+    }
+
+    fn insert(&mut self, at: usize, info: &FieldInfo) {
+        self.by_name.entry(info.name.clone()).or_insert(at);
+        self.by_number.entry(info.number).or_insert(at);
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct IndexingConfig {
     /// `LiveIndexWriterConfig.getMergedSegmentWarmer()`; see
@@ -807,6 +832,9 @@ pub(crate) struct IndexingConfig {
     /// when the configuration is.
     reader_pool: std::sync::Arc<crate::reader_pool::ReaderPool>,
     fields: Vec<FieldInfo>,
+    /// Name and number lookups into `fields`, kept in step by
+    /// [`IndexingConfig::push_field`] (the only way `fields` grows).
+    field_lookup: FieldLookup,
     /// Writer-lifetime reservations, including fields in opened segments that
     /// explicit documents have not registered yet.
     explicit_field_numbers: explicit::FieldNumbers,
@@ -1217,6 +1245,28 @@ impl DocValueFields for &[lucene_codecs::stored_fields::StoredField] {
 }
 
 impl IndexingConfig {
+    /// The configured field named `name`.
+    pub(crate) fn field_by_name(&self, name: &str) -> Option<&FieldInfo> {
+        self.field_lookup
+            .by_name
+            .get(name)
+            .and_then(|&at| self.fields.get(at))
+    }
+
+    /// The configured field numbered `number`.
+    pub(crate) fn field_by_number(&self, number: i32) -> Option<&FieldInfo> {
+        self.field_lookup
+            .by_number
+            .get(&number)
+            .and_then(|&at| self.fields.get(at))
+    }
+
+    /// Adds a field to the schema, keeping the lookups in step.
+    pub(crate) fn push_field(&mut self, info: FieldInfo) {
+        self.field_lookup.insert(self.fields.len(), &info);
+        self.fields.push(info);
+    }
+
     /// `DocumentsWriterPerThread.updateDocuments`' refusal: a block of `docs`
     /// documents cannot be added to a writer with an index sort and no
     /// parent field. Every entry point that adds a block checks this before
@@ -1280,7 +1330,7 @@ impl IndexingConfig {
     /// [`IndexWriter::open`], see the module doc), so an unknown field is an
     /// error rather than an implicit schema change.
     pub(crate) fn verify_doc_values_update_field(&self, update: &DocValuesUpdate) -> Result<()> {
-        let Some(info) = self.fields.iter().find(|f| f.name == update.field()) else {
+        let Some(info) = self.field_by_name(update.field()) else {
             return Err(Error::UnknownDocValuesUpdateField(
                 update.field().to_string(),
             ));
@@ -1441,9 +1491,14 @@ impl IndexingConfig {
         let Some(limiter) = limiter else {
             return self.run_merge(dir, plan);
         };
+        // The same `IOContext(merge.getStoreMergeInfo())` as `run_merge`.
+        let estimate = Self::estimated_merge_bytes(dir, plan);
         let progress = std::sync::Arc::clone(limiter.merge_progress());
         let merge_dir = crate::merge_rate_limiter::MergeDirectory::new(dir, limiter);
-        let outcome = self.run_merge_unthrottled(&merge_dir, plan)?;
+        let outcome = self.run_merge_unthrottled(
+            &lucene_store::EstimatedWrites::new(&merge_dir, estimate),
+            plan,
+        )?;
         if progress.is_aborted() {
             return Err(Error::MergeAborted);
         }
@@ -1818,7 +1873,7 @@ impl IndexingConfig {
                     // `Lucene90DocValuesConsumer.writeValues` does.
                     continue;
                 };
-                columns.push((meta, data));
+                columns.push((meta, data.to_vec()));
                 let at = columns.len().saturating_sub(1);
                 seen.push((key.0, key.1, at));
                 per_field.push((field.number, at));
@@ -3430,6 +3485,23 @@ impl IndexingConfig {
                 )
             }
         };
+        // `PerFieldKnnVectorsFormat` picks a field's format when the field
+        // is first added (Java: during indexing, before any flush), so the
+        // codec is asked once per field here, in first-seen order, before the
+        // graphs build alongside inversion -- never from a worker thread, in
+        // whatever order the stages happen to run.
+        let mut vector_formats: Vec<(&str, per_field_knn_vectors::KnnVectorsFormat)> = Vec::new();
+        for v in buf.vectors.iter().flatten() {
+            if !vector_formats.iter().any(|(n, _)| *n == v.field_name) {
+                vector_formats.push((&v.field_name, self.knn_vectors_format_for(&v.field_name)));
+            }
+        }
+        let vector_format_for = |name: &str| {
+            vector_formats
+                .iter()
+                .find(|(n, _)| *n == name)
+                .map_or_else(|| self.knn_vectors_format_for(name), |(_, f)| *f)
+        };
         let build_vectors = || -> Result<_> {
             Ok(if self.vector_fields.is_empty() {
                 None
@@ -3438,7 +3510,7 @@ impl IndexingConfig {
                     buf.vectors,
                     &self.vector_fields,
                     buf.docs.len() as i32,
-                    &|name: &str| self.knn_vectors_format_for(name),
+                    &vector_format_for,
                     self.knn_vectors_direct(),
                     &segment_id,
                 )?
@@ -3454,21 +3526,30 @@ impl IndexingConfig {
             // general pass's `InMemoryInvertedIndex` (term vectors, payloads).
             // Stored fields' compression shares nothing with inversion, so
             // it runs alongside it; only the file writes stay in order below.
-            let (inverters, stored) = rayon::join(
+            // Vector graphs (HNSW building is often a flush's largest single
+            // cost) are a pure function of the buffer too; their result is
+            // only looked at where it always was, so errors surface in the
+            // same order.
+            let ((inverters, stored), vectors) = rayon::join(
                 || {
-                    IndexWriter::invert_pending_fields_fast(
-                        buf.docs,
-                        &self.postings_fields,
-                        &self.analyzer(),
+                    rayon::join(
+                        || {
+                            IndexWriter::invert_pending_fields_fast(
+                                buf.docs,
+                                &self.postings_fields,
+                                &self.analyzer(),
+                            )
+                        },
+                        || {
+                            segment_writer::build_native_stored_fields(
+                                buf.docs,
+                                &segment_id,
+                                self.codec.as_deref(),
+                            )
+                        },
                     )
                 },
-                || {
-                    segment_writer::build_native_stored_fields(
-                        buf.docs,
-                        &segment_id,
-                        self.codec.as_deref(),
-                    )
-                },
+                build_vectors,
             );
             stored_fields_bytes = stored;
             norms_output = if norms_configs.is_empty() {
@@ -3487,7 +3568,7 @@ impl IndexingConfig {
                 doc_values_output = build_doc_values()?;
             }
             points_output = build_points()?;
-            vectors_output = build_vectors()?;
+            vectors_output = vectors?;
 
             term_vectors_output = None;
             let impact_norms: &[(i32, Vec<i64>)] = norms_output
@@ -3503,25 +3584,30 @@ impl IndexingConfig {
                 flush_deletes,
             )?;
         } else {
-            let (inverted, stored) = rayon::join(
+            let ((inverted, stored), vectors) = rayon::join(
                 || {
-                    IndexWriter::invert_pending_fields(
-                        buf.docs,
-                        &self.postings_fields,
-                        &self.term_vector_fields,
-                        &norms_configs,
-                        &self.payload_field_names(),
-                        self.payload_source.as_deref(),
-                        &self.analyzer(),
+                    rayon::join(
+                        || {
+                            IndexWriter::invert_pending_fields(
+                                buf.docs,
+                                &self.postings_fields,
+                                &self.term_vector_fields,
+                                &norms_configs,
+                                &self.payload_field_names(),
+                                self.payload_source.as_deref(),
+                                &self.analyzer(),
+                            )
+                        },
+                        || {
+                            segment_writer::build_native_stored_fields(
+                                buf.docs,
+                                &segment_id,
+                                self.codec.as_deref(),
+                            )
+                        },
                     )
                 },
-                || {
-                    segment_writer::build_native_stored_fields(
-                        buf.docs,
-                        &segment_id,
-                        self.codec.as_deref(),
-                    )
-                },
+                build_vectors,
             );
             stored_fields_bytes = stored;
             // Norms and term vectors only *read* the shared invert pass;
@@ -3549,7 +3635,7 @@ impl IndexingConfig {
                 doc_values_output = build_doc_values()?;
             }
             points_output = build_points()?;
-            vectors_output = build_vectors()?;
+            vectors_output = vectors?;
 
             // Borrowed out of `norms_output` before the postings consume
             // `inverted`, because the postings writer needs them for its
@@ -3980,7 +4066,13 @@ fn count_soft_deletes(
         None => (dir, si.files.clone()),
     };
     let infos = crate::field_updates::read_current_field_infos(dir, sci, &files)?;
-    let column = |name: &str| -> Result<Option<(doc_values::DocValuesMeta, Vec<u8>, i32)>> {
+    let column = |name: &str| -> Result<
+        Option<(
+            doc_values::DocValuesMeta,
+            lucene_store::directory::Input,
+            i32,
+        )>,
+    > {
         let Some(index) = infos
             .fields
             .iter()
@@ -4144,7 +4236,12 @@ pub struct IndexWriter<'d> {
     /// `MAX_DOC_ID_UPTO`, and that packet is applied inside the very
     /// `flush()` that created the segment, so this port can scope the map to
     /// that call instead of pooling a reader for the writer's lifetime.
-    pending_sort_map: Option<(String, Vec<usize>)>,
+    ///
+    /// A list, keyed by segment name, rather than one slot: when that apply
+    /// fails, the private packet goes back into the stream with its
+    /// pre-sort limits, and a later flush must not overwrite the map the
+    /// retry still needs. Cleared once an apply drains the stream.
+    pending_sort_map: Vec<(String, Vec<usize>)>,
     /// Set by [`IndexWriter::prepare_commit`], consumed by
     /// [`IndexWriter::finish_commit`] -- see [`IndexWriter::prepare_commit`]'s
     /// doc comment for exactly what "prepared" does and does not mean on
@@ -5504,6 +5601,7 @@ impl<'d> IndexWriter<'d> {
             dir,
             default_analyzer: None,
             cfg: std::sync::Arc::new(IndexingConfig {
+                field_lookup: FieldLookup::build(&fields),
                 fields,
                 explicit_field_numbers: Default::default(),
                 codec_name: codec_name.into(),
@@ -5547,7 +5645,7 @@ impl<'d> IndexWriter<'d> {
             max_full_flush_merge_wait_millis: DEFAULT_MAX_FULL_FLUSH_MERGE_WAIT_MILLIS,
             commit_on_close: true,
             pending_custom_freq_terms: Vec::new(),
-            pending_sort_map: None,
+            pending_sort_map: Vec::new(),
             prepared_commit: None,
             delete_queue: DeleteQueue::new(),
             updates_stream: BufferedUpdatesStream::new(),
@@ -6144,7 +6242,7 @@ impl<'d> IndexWriter<'d> {
         }
         for sf in sort {
             let wanted = sort_doc_values_type(sf);
-            let registered = self.cfg.fields.iter().find(|f| f.name == sf.field);
+            let registered = self.cfg.field_by_name(&sf.field);
             if self.cfg.explicit {
                 // Explicit documents register their fields as they arrive, as
                 // Java's `IndexWriterConfig.setIndexSort` names fields no
@@ -6529,6 +6627,22 @@ impl<'d> IndexWriter<'d> {
     /// `pendingNumDocs`, every document of every segment plus the buffered
     /// ones; deleted documents count until a merge drops them.
     pub(crate) fn reserve_docs(&mut self, added: usize) -> Result<()> {
+        let segments = self.segment_doc_total()?;
+        let total = segments.saturating_add(self.pending_docs.len());
+        if total.saturating_add(added) > self.max_docs {
+            return Err(Error::TooManyDocs(self.max_docs));
+        }
+        Ok(())
+    }
+
+    /// [`IndexWriter::set_max_docs`]' limit.
+    pub(crate) fn max_docs_limit(&self) -> usize {
+        self.max_docs
+    }
+
+    /// Every committed and flushed segment's `maxDoc`, summed -- cached
+    /// until the segment lists change.
+    pub(crate) fn segment_doc_total(&mut self) -> Result<usize> {
         let generation = self.segment_infos.generation;
         let flushed = self.flushed_segments.len();
         let last = self
@@ -6550,11 +6664,7 @@ impl<'d> IndexWriter<'d> {
                 total
             }
         };
-        let total = segments.saturating_add(self.pending_docs.len());
-        if total.saturating_add(added) > self.max_docs {
-            return Err(Error::TooManyDocs(self.max_docs));
-        }
-        Ok(())
+        Ok(segments)
     }
 
     /// Every committed and flushed segment's `maxDoc`, summed.
@@ -7267,10 +7377,20 @@ impl IndexWriter<'_> {
         // Java's `buildDocValuesUpdate(term, softDeletes)`: every supplied
         // field becomes an update *keyed by the same term*, so the marking hits
         // exactly the documents a hard `updateDocument` would have deleted.
-        let updates: Vec<DocValuesUpdate> = soft_deletes
-            .iter()
-            .map(|u| retarget_update(u, &term))
-            .collect();
+        // `buildDocValuesUpdate` also runs `verifyOrCreateDvOnlyField` on each
+        // one: an index-sort or wrong-typed field is refused here rather than
+        // at apply time, where the failure would be restored and fail every
+        // later flush. A field a fixed field list does not name stays
+        // accepted, as it always was here -- the soft-deletes field of a
+        // caller that never declared it (the FFI's soft updates do this).
+        self.create_doc_values_only_fields(soft_deletes)?;
+        let mut updates: Vec<DocValuesUpdate> = Vec::with_capacity(soft_deletes.len());
+        for u in soft_deletes {
+            if self.cfg.field_by_name(u.field()).is_some() {
+                self.cfg.verify_doc_values_update_field(u)?;
+            }
+            updates.push(retarget_update(u, &term));
+        }
         self.add_documents_with_delete(Some(DeleteNode::DocValuesUpdates(updates)), docs)
     }
 
@@ -8065,7 +8185,11 @@ impl IndexWriter<'_> {
         // `IndexWriter.publishFlushedSegment`: `rld.sortMap = sortMap`. See
         // [`Self::pending_sort_map`] for why this port scopes it to this call
         // rather than pooling a reader for the writer's lifetime.
-        self.pending_sort_map = sort_map.map(|m| (segment_name.clone(), m));
+        if let Some(m) = sort_map {
+            self.pending_sort_map
+                .retain(|(name, _)| name != &segment_name);
+            self.pending_sort_map.push((segment_name.clone(), m));
+        }
 
         // `IndexWriter.publishFlushedSegment`: the segment-private packet
         // (this segment's own deletes, each still carrying the buffer position
@@ -8109,7 +8233,7 @@ impl IndexWriter<'_> {
         // Every packet with a limit below `MAX_DOC_ID_UPTO` for this segment
         // was applied above (`apply_all_deletes_and_updates` drains the whole
         // stream), so the map has no further reader.
-        self.pending_sort_map = None;
+        self.pending_sort_map.clear();
 
         let live = self.live_infos();
         self.deleter.checkpoint(&live, false)?;
@@ -8365,7 +8489,11 @@ impl IndexWriter<'_> {
     ) -> Result<Option<PostingsGroups>> {
         struct FieldData {
             config: PostingsFieldConfig,
-            doc_ids: std::collections::BTreeSet<i32>,
+            /// Which docs carry the field, as bits, and how many: a
+            /// `BTreeSet` insert per posting only to count them was
+            /// O(postings log docs) with a node allocation each.
+            doc_bits: Vec<u64>,
+            doc_count: usize,
             terms: Vec<TermPostings>,
         }
 
@@ -8373,7 +8501,8 @@ impl IndexWriter<'_> {
             .iter()
             .map(|config| FieldData {
                 config: config.clone(),
-                doc_ids: std::collections::BTreeSet::new(),
+                doc_bits: Vec::new(),
+                doc_count: 0,
                 terms: Vec::new(),
             })
             .collect();
@@ -8428,7 +8557,18 @@ impl IndexWriter<'_> {
                 offsets.reserve_exact(entries.len());
             }
             for entry in entries {
-                data.doc_ids.insert(entry.doc_id);
+                // A doc id is an index into this flush's buffer: never
+                // negative.
+                let doc = usize::try_from(entry.doc_id).unwrap_or(0);
+                let word = doc >> 6;
+                if word >= data.doc_bits.len() {
+                    data.doc_bits.resize(word.saturating_add(1), 0);
+                }
+                let bit = 1u64 << (doc & 63);
+                if data.doc_bits[word] & bit == 0 {
+                    data.doc_bits[word] |= bit;
+                    data.doc_count = data.doc_count.saturating_add(1);
+                }
                 term_docs.push((entry.doc_id, entry.term_freq()));
                 if has_positions {
                     positions.push(entry.occurrences.iter().map(|o| o.position).collect());
@@ -8503,7 +8643,7 @@ impl IndexWriter<'_> {
             .map(|f| FieldPostingsInput {
                 field_number: f.config.field_number,
                 index_options: f.config.index_options,
-                doc_count: f.doc_ids.len() as i32,
+                doc_count: f.doc_count as i32,
                 // Must match the `.fnm`'s `STORE_PAYLOADS` bit for this field:
                 // it is what makes `postings_writer` emit `.pay` at all and
                 // write a payload-length run per block, and it is what real
@@ -8855,11 +8995,14 @@ impl IndexWriter<'_> {
                             })
                     })
                     .collect();
-                for ((field, _term), list) in &inverted.terms {
+                // Only this field's keys: `(field, term)` sorts by field
+                // first, so they are one contiguous range.
+                for ((_field, _term), list) in inverted
+                    .terms
+                    .range((config.name.clone(), String::new())..)
+                    .take_while(|((field, _), _)| field == &config.name)
+                {
                     let entries = &list.entries;
-                    if field != &config.name {
-                        continue;
-                    }
                     for (i, entry) in entries.iter().enumerate() {
                         // `entry.doc_id` is an index into `docs` that this
                         // writer's own inversion produced, so it addresses
@@ -9009,10 +9152,11 @@ impl IndexWriter<'_> {
             let has_payloads = config.store_payloads;
 
             let mut field_terms_per_doc: Vec<Vec<TermVectorTerm>> = vec![Vec::new(); docs.len()];
-            for ((field, term), list) in &inverted.terms {
-                if field != &config.name {
-                    continue;
-                }
+            for ((_field, term), list) in inverted
+                .terms
+                .range((config.name.clone(), String::new())..)
+                .take_while(|((field, _), _)| field == &config.name)
+            {
                 // Running cursors into this term's flat payload run: term
                 // vectors want the per-occurrence view, and the run stores
                 // lengths rather than offsets, so the only way to it is the
@@ -9702,13 +9846,21 @@ impl IndexWriter<'_> {
             groups: Vec::with_capacity(groups.len()),
             written: Vec::with_capacity(names.len()),
         };
+        // Each field is in exactly one group, so the groups take their
+        // fields by move: a clone copied every vector a second time.
+        let mut flat_fields: Vec<Option<FlatVectorsField>> =
+            flat_fields.into_iter().map(Some).collect();
         for group in &groups {
             let suffix = group.codec_suffix();
             let fields: Vec<FlatVectorsField> = group
                 .field_numbers
                 .iter()
-                .filter_map(|n| flat_fields.iter().find(|f| f.field_number == *n))
-                .cloned()
+                .filter_map(|n| {
+                    flat_fields
+                        .iter_mut()
+                        .find(|f| f.as_ref().is_some_and(|f| f.field_number == *n))
+                        .and_then(Option::take)
+                })
                 .collect();
             let files =
                 Self::build_vector_group(&fields, group.format, max_doc, segment_id, &suffix)?;
@@ -9771,18 +9923,21 @@ impl IndexWriter<'_> {
         if let Some((m, beam_width)) = format.graph() {
             // Reopen exactly the bytes just written, and build every graph
             // over *those* -- see this method's doc comment.
+            //
+            // One graph per field, built in parallel: each depends only on
+            // its own vectors and the fixed `DEFAULT_RAND_SEED`, so the bytes
+            // do not change. The first error in field order is returned.
             let graphs: Vec<Option<hnsw::OnHeapHnswGraph>> = {
+                use rayon::prelude::*;
                 let flat =
                     vectors::FlatVectorsReader::open(&vemf_bytes, &vec_bytes, segment_id, suffix)?;
-                let mut graphs = Vec::with_capacity(flat_fields.len());
-                for field in flat_fields {
+                let build = |field: &FlatVectorsField| -> Result<Option<hnsw::OnHeapHnswGraph>> {
                     let count = field.docs.len() as i32;
                     // `Lucene99HnswVectorsWriter.shouldCreateGraph`: a segment
                     // too small for a graph to beat an exhaustive scan gets
                     // none, and its `.vem` records `numLevels = 0`.
                     if !hnsw::should_create_graph(hnsw::HNSW_GRAPH_THRESHOLD, count) {
-                        graphs.push(None);
-                        continue;
+                        return Ok(None);
                     }
                     let graph = match field.values.encoding() {
                         VectorEncoding::Float32 => {
@@ -9806,9 +9961,11 @@ impl IndexWriter<'_> {
                             .build(count)?
                         }
                     };
-                    graphs.push(Some(graph));
-                }
-                graphs
+                    Ok(Some(graph))
+                };
+                let built: Vec<Result<Option<hnsw::OnHeapHnswGraph>>> =
+                    flat_fields.par_iter().map(build).collect();
+                built.into_iter().collect::<Result<_>>()?
             };
             let hnsw_fields: Vec<HnswVectorsField<'_>> = flat_fields
                 .iter()
@@ -10144,8 +10301,7 @@ impl IndexWriter<'_> {
     fn segment_stats(&self) -> Result<Vec<merge_policy::SegmentStat>> {
         let mut stats = Vec::with_capacity(self.segment_infos.segments.len());
         for sci in &self.segment_infos.segments {
-            let si_bytes = self.dir.open(&format!("{}.si", sci.segment_name))?.to_vec();
-            let si = segment_info::parse_for_codec(&si_bytes, &sci.segment_id, &sci.codec_name)?;
+            let si = self.cfg.reader_pool.segment_info(self.dir, sci)?;
             let size_bytes = merge_policy::commit_byte_size(self.dir, sci, &si);
             stats.push(merge_policy::SegmentStat {
                 name: sci.segment_name.clone(),
@@ -10702,9 +10858,10 @@ impl IndexWriter<'_> {
         // the merged segment carries their live documents forward, so applying
         // it to the merged segment reaches exactly the same documents.
 
-        // `std::mem::take` rather than an index loop: the apply below needs
-        // `&mut self` for the `.liv`/doc-values-generation writes, and the segment lists are
-        // put back verbatim (plus their new generations) once it is done.
+        // `std::mem::take` rather than an index loop: the apply below mutates
+        // each segment while borrowing the writer's config, and the segment
+        // lists are put back verbatim (plus their new generations) once it is
+        // done.
         //
         // On a failed apply the lists still go back, and so do the packets:
         // returning early used to drop both, so the next commit published a
@@ -10714,38 +10871,39 @@ impl IndexWriter<'_> {
         // (`onTragicEvent(t, "applyUpdatesPacket")`); this writer stays
         // usable, so a retry re-applies the packets, which is idempotent for
         // the segments the failed round already reached.
-        let mut failure = None;
+        //
+        // Segments are applied in parallel: each one reads only its own
+        // files and writes only its own `.liv`/doc-values generations, the
+        // directory is `Sync`, and the reader pool is behind a lock. The
+        // results come back in segment order, and the first error in that
+        // order is the one returned.
+        use rayon::prelude::*;
+        let cfg = std::sync::Arc::clone(&self.cfg);
+        let dir = self.dir;
+        let sort_maps = &self.pending_sort_map;
+        let apply = |sci: &mut SegmentCommitInfo| {
+            let sort_map = sort_maps.iter().find(|(name, _)| name == &sci.segment_name);
+            cfg.apply_packets_to_segment(dir, &packets, sci, sort_map)
+        };
         let mut committed = std::mem::take(&mut self.segment_infos.segments);
-        let mut committed_fully_deleted = Vec::with_capacity(committed.len());
-        for sci in committed.iter_mut() {
-            match self.apply_packets_to_segment(&packets, sci) {
-                Ok(fully_deleted) => committed_fully_deleted.push(fully_deleted),
-                Err(e) => {
-                    failure = Some(e);
-                    break;
-                }
-            }
-        }
-        self.segment_infos.segments = committed;
-
         let mut flushed = std::mem::take(&mut self.flushed_segments);
-        let mut flushed_fully_deleted = Vec::with_capacity(flushed.len());
-        if failure.is_none() {
-            for sci in flushed.iter_mut() {
-                match self.apply_packets_to_segment(&packets, sci) {
-                    Ok(fully_deleted) => flushed_fully_deleted.push(fully_deleted),
-                    Err(e) => {
-                        failure = Some(e);
-                        break;
-                    }
-                }
-            }
-        }
+        let (committed_results, flushed_results): (Vec<Result<bool>>, Vec<Result<bool>>) =
+            rayon::join(
+                || committed.par_iter_mut().map(apply).collect(),
+                || flushed.par_iter_mut().map(apply).collect(),
+            );
+        self.segment_infos.segments = committed;
         self.flushed_segments = flushed;
-        if let Some(e) = failure {
-            self.updates_stream.restore_pending(packets);
-            return Err(e);
-        }
+        let committed_fully_deleted: Result<Vec<bool>> = committed_results.into_iter().collect();
+        let flushed_fully_deleted: Result<Vec<bool>> = flushed_results.into_iter().collect();
+        let (committed_fully_deleted, flushed_fully_deleted) =
+            match (committed_fully_deleted, flushed_fully_deleted) {
+                (Ok(c), Ok(f)) => (c, f),
+                (Err(e), _) | (_, Err(e)) => {
+                    self.updates_stream.restore_pending(packets);
+                    return Err(e);
+                }
+            };
 
         self.drop_fully_deleted_segments(&committed_fully_deleted, &flushed_fully_deleted);
         // `ReaderPool.drop` for what this round (or anything since the last
@@ -10830,17 +10988,6 @@ impl IndexWriter<'_> {
         self.flushed_segments
             .retain(|_| !keep.next().copied().unwrap_or(false));
         self.prune_segment_versions();
-    }
-
-    /// [`IndexingConfig::apply_packets_to_segment`] with this writer's
-    /// directory and pending sort map.
-    fn apply_packets_to_segment(
-        &mut self,
-        packets: &[FrozenBufferedUpdates],
-        sci: &mut SegmentCommitInfo,
-    ) -> Result<bool> {
-        let cfg = std::sync::Arc::clone(&self.cfg);
-        cfg.apply_packets_to_segment(self.dir, packets, sci, self.pending_sort_map.as_ref())
     }
 
     /// `FrozenBufferedUpdates.applyQueryDeletes`' inner
@@ -11087,8 +11234,7 @@ impl IndexWriter<'_> {
     pub fn committed_doc_count(&self) -> Result<usize> {
         let mut total = 0usize;
         for sci in &self.segment_infos.segments {
-            let si_bytes = self.dir.open(&format!("{}.si", sci.segment_name))?.to_vec();
-            let si = segment_info::parse_for_codec(&si_bytes, &sci.segment_id, &sci.codec_name)?;
+            let si = self.cfg.reader_pool.segment_info(self.dir, sci)?;
             // ARITH: `segment_info::parse` rejects a negative `doc_count`, so
             // each term is in `0..=i32::MAX`, and `segments_N`'s own parse
             // rejects a segment count above the number of bytes left in that
@@ -11194,11 +11340,11 @@ impl IndexWriter<'_> {
         self.pending_explicit.clear();
         self.pending_postings.clear();
         self.ram_bytes_used = 0;
-        // Only ever `Some` inside `flush()`, and cleared at its end -- but a
+        // Only ever non-empty inside `flush()`, and cleared at its end -- but a
         // `flush()` that fails *after* publishing the segment (in
         // `apply_all_deletes_and_updates`) leaves it set, and `rollback` is
         // the caller's answer to that.
-        self.pending_sort_map = None;
+        self.pending_sort_map.clear();
         self.pending_has_blocks = false;
         // `IndexWriter.rollbackInternal`: `docWriter.close()` (which discards
         // the delete queue's buffers) and `bufferedUpdatesStream.clear()`.
@@ -11565,15 +11711,27 @@ impl IndexingConfig {
         // "Is this doc id below the packet's pre-sort limit?" -- the one
         // predicate every filter below uses, so the mapping cannot be applied
         // in one place and forgotten in another.
-        let below_limit = |doc: i32, limit: i32| -> bool {
-            match &sort_map {
-                None => doc < limit,
-                Some(map) => (map[doc as usize] as i32) < limit,
-            }
-        };
-
         let owned = self.open_segment_for_deletes(dir, sci)?;
         let opened = owned.view()?;
+        let max_doc = opened.max_doc;
+        // A doc id the postings decoder produced out of range is the
+        // `DocOutOfRange` corruption `deletes::mark_deleted` reports; checking
+        // it here, before `below_limit` indexes the sort map or `deleted` sets
+        // a bit, keeps it an error rather than an index panic.
+        let in_range = |doc_id: i32| -> std::result::Result<usize, deletes::Error> {
+            usize::try_from(doc_id)
+                .ok()
+                .filter(|idx| *idx < max_doc)
+                .ok_or(deletes::Error::DocOutOfRange { doc_id, max_doc })
+        };
+        let below_limit = |doc: usize, limit: i32| -> bool {
+            match &sort_map {
+                None => i64::try_from(doc).is_ok_and(|d| d < i64::from(limit)),
+                Some(map) => map
+                    .get(doc)
+                    .is_some_and(|&old| i64::try_from(old).is_ok_and(|o| o < i64::from(limit))),
+            }
+        };
         // `below_limit` indexes the map by doc id. The invariant is
         // maintained by construction (the map is the permutation of the
         // buffer that became this segment, and the name filter above picks
@@ -11585,7 +11743,10 @@ impl IndexingConfig {
         );
         // A set, not a list: `applyDocValuesUpdates` has to ask whether a doc
         // is already dead, and the same doc can be named by several packets.
-        let mut deleted: std::collections::HashSet<i32> = std::collections::HashSet::new();
+        // A bitset over the segment's docs: one bit test per lookup, and it
+        // comes out in doc id order for `apply_deletes`.
+        let mut deleted = FixedBitSet::new(max_doc);
+        let mut any_deleted = false;
         // field number -> updates in ascending packet-generation order, so the
         // last write for a doc wins (`DocValuesFieldUpdates.mergedIterator`).
         let mut numeric_updates: Vec<PerFieldNumericUpdates> = Vec::new();
@@ -11601,7 +11762,14 @@ impl IndexingConfig {
                     &term.field,
                     &term.bytes,
                 )?;
-                deleted.extend(docs.into_iter().filter(|&d| below_limit(d, limit)));
+                for d in docs {
+                    let d = in_range(d)?;
+                    if below_limit(d, limit) {
+                        // FBS: `deleted` is `FixedBitSet::new(max_doc)` and `in_range` returned `d < max_doc`.
+                        deleted.set(d);
+                        any_deleted = true;
+                    }
+                }
             }
             for (query, entry_limit) in &packet.delete_queries {
                 let limit = packet.limit_for(seg_gen, *entry_limit);
@@ -11615,10 +11783,17 @@ impl IndexingConfig {
                     query_bound(limit)
                 };
                 let docs = IndexWriter::resolve_delete_query(query, &opened, bound)?;
-                deleted.extend(docs.into_iter().filter(|&d| below_limit(d, limit)));
+                for d in docs {
+                    let d = in_range(d)?;
+                    if below_limit(d, limit) {
+                        // FBS: `deleted` is `FixedBitSet::new(max_doc)` and `in_range` returned `d < max_doc`.
+                        deleted.set(d);
+                        any_deleted = true;
+                    }
+                }
             }
             for (field, buffer) in &packet.field_updates {
-                let Some(info) = self.fields.iter().find(|f| &f.name == field) else {
+                let Some(info) = self.field_by_name(field) else {
                     // Java's `verifyOrCreateDvOnlyField` already rejected an
                     // unknown field at buffer time; reaching here means the
                     // update was buffered before this writer's field list was
@@ -11642,10 +11817,15 @@ impl IndexingConfig {
                     // just killed takes no update. `resolve_term_doc_ids` has
                     // already filtered by the segment's pre-pass live docs;
                     // `deleted` is the rest of the answer.
-                    let matched: Vec<i32> = docs
-                        .into_iter()
-                        .filter(|&d| below_limit(d, limit) && !deleted.contains(&d))
-                        .collect();
+                    let mut matched: Vec<i32> = Vec::with_capacity(docs.len());
+                    for d in docs {
+                        let idx = in_range(d)?;
+                        // FBS: `deleted` is `FixedBitSet::new(max_doc)` and
+                        // `in_range` returned `idx < max_doc`.
+                        if below_limit(idx, limit) && !deleted.get(idx) {
+                            matched.push(d);
+                        }
+                    }
                     if matched.is_empty() {
                         continue;
                     }
@@ -11669,17 +11849,19 @@ impl IndexingConfig {
             }
         }
 
-        if !deleted.is_empty() {
-            // Deterministic order so a `.liv` is byte-identical run to run --
-            // `apply_deletes` itself is order-insensitive (it clears bits).
-            let mut deleted: Vec<i32> = deleted.into_iter().collect();
-            deleted.sort_unstable();
+        if any_deleted {
+            // Ascending doc id order, straight off the bitset; every set bit
+            // is below `max_doc`, which fits an `i32` (it is a `.si` count).
+            let deleted_ids = std::iter::successors(deleted.next_set_bit(0), |&d| {
+                d.checked_add(1).and_then(|n| deleted.next_set_bit(n))
+            })
+            .filter_map(|d| i32::try_from(d).ok());
             let updated = deletes::apply_deletes_with_codec(
                 dir,
                 sci,
                 opened.live_docs,
                 opened.max_doc,
-                deleted,
+                deleted_ids,
                 self.codec.as_deref(),
             );
             if updated.is_err() {
@@ -11752,8 +11934,7 @@ impl IndexingConfig {
         dir: &dyn Directory,
         sci: &SegmentCommitInfo,
     ) -> Result<OpenedDeleteSegment> {
-        let si_bytes = dir.open(&format!("{}.si", sci.segment_name))?;
-        let si = segment_info::parse_for_codec(&si_bytes, &sci.segment_id, &sci.codec_name)?;
+        let si = self.reader_pool.segment_info(dir, sci)?;
         let max_doc = si.doc_count as usize;
 
         let live_docs = if sci.del_gen >= 0 {

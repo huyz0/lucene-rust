@@ -324,8 +324,14 @@ impl TemporalMergePolicy {
         }
         let mut bucket = self.base_time_seconds;
         let min = i64::from(self.min_threshold);
-        while age >= bucket.wrapping_mul(min) && bucket < self.max_window_size_seconds {
-            bucket = bucket.wrapping_mul(min);
+        // Java's `bucket * minThreshold` wraps; with a base near `2^63` it
+        // wraps to zero and the loop never ends. A product past `i64::MAX`
+        // is larger than any age, so the window has stopped growing.
+        while bucket < self.max_window_size_seconds {
+            match bucket.checked_mul(min) {
+                Some(next) if age >= next => bucket = next,
+                _ => break,
+            }
         }
         if bucket > self.max_window_size_seconds {
             bucket = self.max_window_size_seconds;
@@ -903,6 +909,19 @@ mod tests {
         p.set_max_window_size_seconds(5_000).unwrap();
         assert_eq!(p.bucket_for_timestamp(0, 1_000_000_000), 0);
         assert_eq!(p.bucket_for_timestamp(12_000, 1_000_000_000), 10_000);
+    }
+
+    /// A base window whose growth overflows `i64`: `2^61 * 8` wraps to
+    /// zero, and the old `wrapping_mul` loop then spun forever.
+    #[test]
+    fn exponential_bucket_growth_stops_at_i64_overflow() {
+        let mut p = TemporalMergePolicy::new();
+        p.set_base_time_in_seconds(1 << 61).unwrap();
+        p.set_min_threshold(8).unwrap();
+        p.set_max_window_size_seconds(i64::MAX).unwrap();
+        p.set_max_age_seconds(i64::MAX).unwrap();
+        assert_eq!(p.bucket_for_timestamp(0, i64::MAX), 0);
+        assert_eq!(p.bucket_for_timestamp((1 << 62) + 5, i64::MAX), 1 << 62);
     }
 
     #[test]

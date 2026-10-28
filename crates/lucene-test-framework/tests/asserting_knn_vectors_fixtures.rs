@@ -301,8 +301,9 @@ fn native_rejects_wrong_headers_lengths_metadata_and_integrity_corruption() {
         metadata,
         include_str!("../../../fixtures/testframework/data/asserting_knn_vectors_metadata.tsv")
     );
-    // Both production native readers verify data CRCs on open. Java checks
-    // data footer structure on open and computes those CRCs in checkIntegrity.
+    // As Java, the flat `.vec` data's CRC is computed in checkIntegrity, not
+    // on open (open checks its footer structure); the metadata and graph
+    // files are still verified on open.
     for slot in 0..4 {
         let mut buffers = [VEC.to_vec(), VEMF.to_vec(), VEX.to_vec(), VEM.to_vec()];
         let position = buffers[slot].len() - 17;
@@ -313,11 +314,15 @@ fn native_rejects_wrong_headers_lengths_metadata_and_integrity_corruption() {
             vex: &buffers[2],
             vem: &buffers[3],
         };
-        assert!(Lucene99KnnVectorsReader::open(state(&fields, f))
-            .err()
-            .unwrap()
-            .to_string()
-            .contains("checksum"));
+        let error = match Lucene99KnnVectorsReader::open(state(&fields, f)) {
+            Ok(reader) if slot == 0 => reader.check_integrity().unwrap_err(),
+            Ok(_) => panic!("slot {slot} opened despite a corrupt checksum"),
+            Err(e) => e,
+        };
+        assert!(
+            error.to_string().contains("checksum"),
+            "slot {slot}: {error}"
+        );
     }
 }
 

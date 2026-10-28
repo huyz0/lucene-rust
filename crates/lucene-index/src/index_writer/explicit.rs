@@ -375,9 +375,8 @@ impl IndexingConfig {
     /// registered it.
     pub(crate) fn parent_field_number(&self) -> Option<i32> {
         let name = self.parent_field.as_deref()?;
-        self.fields
-            .iter()
-            .find(|f| f.parent_field && f.name == name)
+        self.field_by_name(name)
+            .filter(|f| f.parent_field)
             .map(|f| f.number)
     }
 
@@ -428,9 +427,7 @@ impl IndexingConfig {
 
     /// The registered field with number `n`.
     fn explicit_field(&self, n: i32) -> Result<&FieldInfo> {
-        self.fields
-            .iter()
-            .find(|f| f.number == n)
+        self.field_by_number(n)
             .ok_or_else(|| explicit_error(format!("field number {n} is not registered")))
     }
 
@@ -1363,7 +1360,7 @@ impl<'d> IndexWriter<'d> {
                 )));
             }
         }
-        if let Some(existing) = self.cfg.fields.iter().find(|f| f.name == info.name) {
+        if let Some(existing) = self.cfg.field_by_name(&info.name) {
             if let Some(message) = schema_change(existing, &info) {
                 return Err(explicit_error(message));
             }
@@ -1384,7 +1381,7 @@ impl<'d> IndexWriter<'d> {
         info.number = number;
         info.doc_values_gen = -1;
         info.attributes.clear();
-        self.cfg_mut().fields.push(info);
+        self.cfg_mut().push_field(info);
         Ok(number)
     }
 
@@ -1411,7 +1408,7 @@ impl<'d> IndexWriter<'d> {
 
     /// The registered field named `name`, if any.
     pub(crate) fn registered_field(&self, name: &str) -> Option<&FieldInfo> {
-        self.cfg.fields.iter().find(|f| f.name == name)
+        self.cfg.field_by_name(name)
     }
 
     /// `IndexWriterConfig.setParentField(name)`: from here on the last
@@ -1523,6 +1520,12 @@ impl<'d> IndexWriter<'d> {
     /// time a segment sees a last-in-block document. `None` without a parent
     /// field.
     pub(crate) fn register_parent_field(&mut self) -> Result<Option<i32>> {
+        // Already registered as the parent field: nothing to check again.
+        // This runs once per added document, and `register_field` builds a
+        // whole `FieldInfo` and scans the index sort each time.
+        if let Some(number) = self.cfg.parent_field_number() {
+            return Ok(Some(number));
+        }
         let Some(name) = self.cfg.parent_field.clone() else {
             return Ok(None);
         };

@@ -229,7 +229,11 @@ impl<'n> FieldSchema<'n> {
         }
         if let Some(attrs) = ft.attributes() {
             for (k, v) in attrs {
-                self.attributes.insert(k.clone(), v.clone());
+                // Clone only what changes: the same field type repeats on
+                // every document.
+                if self.attributes.get(k) != Some(v) {
+                    self.attributes.insert(k.clone(), v.clone());
+                }
             }
         }
         Ok(())
@@ -1139,8 +1143,13 @@ impl IndexWriter<'_> {
                 let value = field
                     .stored_value()
                     .ok_or_else(|| doc_error(illegal("Cannot store a null value")))?;
+                // UTF-16 never needs more units than UTF-8 needs bytes, so
+                // only a string whose byte length is over the limit can be
+                // over it in UTF-16 units: skip the O(len) count otherwise.
                 if let StoredValue::String(s) = &value {
-                    check_stored_string(name, s.encode_utf16().count()).map_err(doc_error)?;
+                    if s.len() > MAX_STORED_STRING_LENGTH {
+                        check_stored_string(name, s.encode_utf16().count()).map_err(doc_error)?;
+                    }
                 }
                 out.stored.push(StoredField {
                     field_number: number,

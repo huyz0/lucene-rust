@@ -573,12 +573,15 @@ fn java_wrong_id_error_and_native_crc_truncation_suffix_checks() {
                     vex: &buffers[2],
                     vem: &buffers[3],
                 };
-                assert!(
-                    format
-                        .fields_reader(read_state(&infos, max_doc, files))
-                        .is_err(),
-                    "slot={slot},truncate={truncate}"
-                );
+                // As Java, a flipped `.vec` data byte is caught by
+                // checkIntegrity, not on open.
+                let opened = format.fields_reader(read_state(&infos, max_doc, files));
+                let failed = match opened {
+                    Ok(reader) if slot == 0 && !truncate => reader.check_integrity().is_err(),
+                    Ok(_) => false,
+                    Err(_) => true,
+                };
+                assert!(failed, "slot={slot},truncate={truncate}");
             }
         }
     }
