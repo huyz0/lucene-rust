@@ -887,6 +887,28 @@ impl<'a> DocInput<'a> {
         has_payloads: bool,
         flags: PostingsFlags,
     ) -> Result<Postings> {
+        let mut out = Postings::default();
+        self.read_postings_into(meta, doc_freq, index_options, has_payloads, flags, &mut out)?;
+        Ok(out)
+    }
+
+    /// [`Self::read_postings_with_flags`] into `out`, reusing its buffers: a
+    /// caller decoding term after term (a merge) allocates once, not twice
+    /// per term. Under [`PostingsFlags::FreqsNoImpacts`] the impacts are
+    /// stepped over, as `postings(FREQS)` steps over them in Java. On error
+    /// `out` holds whatever was decoded so far.
+    ///
+    /// # Errors
+    /// As [`Self::read_postings_with_flags`].
+    pub fn read_postings_into(
+        &self,
+        meta: TermMetadata,
+        doc_freq: i32,
+        index_options: IndexOptions,
+        has_payloads: bool,
+        flags: PostingsFlags,
+        out: &mut Postings,
+    ) -> Result<()> {
         let needs_freq = flags.needs_freq();
         if self.format != PostingsFormat::Lucene104 {
             let mut p = crate::backward_codecs::postings::read_postings(
@@ -899,7 +921,8 @@ impl<'a> DocInput<'a> {
             if !needs_freq {
                 p.freqs.fill(1);
             }
-            return Ok(p);
+            *out = p;
+            return Ok(());
         }
         if doc_freq <= 1 {
             return Err(Error::Unsupported(
@@ -921,6 +944,7 @@ impl<'a> DocInput<'a> {
         let index_has_freq = index_options != IndexOptions::Docs;
         let index_has_pos = index_options.subsumes_positions();
         let index_has_offsets_or_payloads = index_options.subsumes_offsets() || has_payloads;
+        let wants_impacts = index_has_freq && flags != PostingsFlags::FreqsNoImpacts;
 
         let mut r = SliceInput::new(self.buf);
         r.seek(meta.doc_start_fp as usize)?;
@@ -934,10 +958,18 @@ impl<'a> DocInput<'a> {
         // -- a document never costs less than a byte outside a packed block
         // -- and a dense block simply grows the `Vec` once.
         let n = (doc_freq as usize).min(self.buf.len());
-        let mut docs = Vec::with_capacity(n);
-        let mut freqs = Vec::with_capacity(n);
-        let mut level0_impacts: Vec<(i32, Impacts)> = Vec::new();
-        let mut level1_impacts: Vec<(i32, Impacts)> = Vec::new();
+        let Postings {
+            docs,
+            freqs,
+            level0_impacts,
+            level1_impacts,
+        } = out;
+        docs.clear();
+        freqs.clear();
+        level0_impacts.clear();
+        level1_impacts.clear();
+        docs.reserve(n);
+        freqs.reserve(n);
 
         let mut prev_doc_id: i32 = -1;
         let mut doc_count_left = doc_freq;
@@ -972,7 +1004,7 @@ impl<'a> DocInput<'a> {
             )?;
             // Off disk; see `read_full_block_header`'s `doc_delta`.
             level1_last_doc_id = level1_last_doc_id.wrapping_add(entry.doc_delta);
-            if index_has_freq {
+            if wants_impacts {
                 level1_impacts.push((level1_last_doc_id, decode_impacts(entry.impact_bytes)?));
             }
             for _ in 0..LEVEL1_FACTOR {
@@ -998,7 +1030,7 @@ impl<'a> DocInput<'a> {
                 )?;
                 check_wire_position(r.position(), header.body_end, "full block body")?;
                 prev_doc_id = header.last_doc_id;
-                if index_has_freq {
+                if wants_impacts {
                     level0_impacts.push((header.last_doc_id, decode_impacts(header.impact_bytes)?));
                 }
                 docs.extend_from_slice(&block_docs);
@@ -1038,7 +1070,7 @@ impl<'a> DocInput<'a> {
             )?;
             check_wire_position(r.position(), header.body_end, "full block body")?;
             prev_doc_id = header.last_doc_id;
-            if index_has_freq {
+            if wants_impacts {
                 level0_impacts.push((header.last_doc_id, decode_impacts(header.impact_bytes)?));
             }
             docs.extend_from_slice(&block_docs);
@@ -1072,12 +1104,7 @@ impl<'a> DocInput<'a> {
             )?;
         }
 
-        Ok(Postings {
-            docs,
-            freqs,
-            level0_impacts,
-            level1_impacts,
-        })
+        Ok(())
     }
 
     /// Opens a [`LazyDocsCursor`] over this term's `(docID, freq)` pairs:
@@ -1534,6 +1561,7 @@ impl<'a> PayInput<'a> {
 /// Split out so a caller wanting only positions -- phrase matching, which is
 /// the caller that matters for speed -- can assemble them without building a
 /// `Vec<Position>` per document. See [`read_positions_flat`].
+#[derive(Default)]
 struct PositionStreams {
     pos_deltas: Vec<i32>,
     payload_lengths: Vec<i32>,
@@ -1554,6 +1582,29 @@ fn decode_position_streams(
     index_options: IndexOptions,
     has_payloads: bool,
 ) -> Result<PositionStreams> {
+    let mut streams = PositionStreams::default();
+    decode_position_streams_into(
+        pos,
+        pay,
+        meta,
+        total_term_freq,
+        index_options,
+        has_payloads,
+        &mut streams,
+    )?;
+    Ok(streams)
+}
+
+/// [`decode_position_streams`] into `streams`, reusing its buffers.
+fn decode_position_streams_into(
+    pos: &PosInput<'_>,
+    pay: Option<&PayInput<'_>>,
+    meta: TermMetadata,
+    total_term_freq: i64,
+    index_options: IndexOptions,
+    has_payloads: bool,
+    streams: &mut PositionStreams,
+) -> Result<()> {
     if !index_options.subsumes_positions() {
         return Err(Error::Unsupported(
             "read_positions needs a field with IndexOptions::DocsAndFreqsAndPositions or higher",
@@ -1578,12 +1629,26 @@ fn decode_position_streams(
     // tail) and the corrupt case bounded by a file that actually exists; a
     // genuinely denser packed block just grows the `Vec` once more.
     let reserve = n.min(pos.buf.len());
-    let mut pos_deltas: Vec<i32> = Vec::with_capacity(reserve);
-    let mut payload_lengths: Vec<i32> = Vec::with_capacity(if has_payloads { reserve } else { 0 });
-    let mut payload_bytes: Vec<u8> = Vec::new();
-    let mut offset_start_deltas: Vec<i32> =
-        Vec::with_capacity(if has_offsets { reserve } else { 0 });
-    let mut offset_lengths: Vec<i32> = Vec::with_capacity(if has_offsets { reserve } else { 0 });
+    let PositionStreams {
+        pos_deltas,
+        payload_lengths,
+        payload_bytes,
+        offset_start_deltas,
+        offset_lengths,
+    } = streams;
+    pos_deltas.clear();
+    payload_lengths.clear();
+    payload_bytes.clear();
+    offset_start_deltas.clear();
+    offset_lengths.clear();
+    pos_deltas.reserve(reserve);
+    if has_payloads {
+        payload_lengths.reserve(reserve);
+    }
+    if has_offsets {
+        offset_start_deltas.reserve(reserve);
+        offset_lengths.reserve(reserve);
+    }
 
     // `meta.last_pos_block_offset` (already decoded by `decode_term_metadata`)
     // tells us exactly where the vint tail block begins on the wire, which is
@@ -1691,13 +1756,7 @@ fn decode_position_streams(
         }
     }
 
-    Ok(PositionStreams {
-        pos_deltas,
-        payload_lengths,
-        payload_bytes,
-        offset_start_deltas,
-        offset_lengths,
-    })
+    Ok(())
 }
 
 /// One full `.pos`/`.pay` `PForUtil` block of `format`, each value handed to
@@ -3131,7 +3190,7 @@ pub fn read_positions(
 /// Document boundaries are private and validated before exposing borrowed slices.
 /// This representation targets measured merge decode/materialization cost; it
 /// does not skip validation of occurrences belonging to deleted documents.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct FlatOccurrences {
     positions: Vec<i32>,
     start_offsets: Vec<i32>,
@@ -3210,21 +3269,80 @@ pub fn read_occurrences_flat(
     index_options: IndexOptions,
     has_payloads: bool,
 ) -> Result<FlatOccurrences> {
+    let mut out = FlatOccurrences::default();
+    read_occurrences_flat_into(
+        pos,
+        pay,
+        meta,
+        freqs,
+        total_term_freq,
+        index_options,
+        has_payloads,
+        &mut out,
+    )?;
+    Ok(out)
+}
+
+/// [`read_occurrences_flat`] into `out`, reusing its buffers: a merge reads
+/// every term of every source through one. On error `out` is left empty or
+/// partly filled, never with stale boundaries over fresh streams.
+///
+/// # Errors
+/// As [`read_occurrences_flat`].
+#[allow(clippy::too_many_arguments)]
+pub fn read_occurrences_flat_into(
+    pos: &PosInput<'_>,
+    pay: Option<&PayInput<'_>>,
+    meta: TermMetadata,
+    freqs: &[i32],
+    total_term_freq: i64,
+    index_options: IndexOptions,
+    has_payloads: bool,
+    out: &mut FlatOccurrences,
+) -> Result<()> {
     let has_offsets = index_options.subsumes_offsets();
     let n = wire_count(total_term_freq, "total_term_freq")?;
+    // The previous term's buffers become this one's streams; the payload
+    // lengths change type in place (same layout, so the collect reuses the
+    // allocation).
+    let mut streams = PositionStreams {
+        pos_deltas: std::mem::take(&mut out.positions),
+        payload_lengths: std::mem::take(&mut out.payload_lengths)
+            .into_iter()
+            .map(|len| len as i32)
+            .collect(),
+        payload_bytes: std::mem::take(&mut out.payload_bytes),
+        offset_start_deltas: std::mem::take(&mut out.start_offsets),
+        offset_lengths: std::mem::take(&mut out.end_offsets),
+    };
+    let mut doc_starts = std::mem::take(&mut out.doc_starts);
+    let mut payload_starts = std::mem::take(&mut out.payload_starts);
+    decode_position_streams_into(
+        pos,
+        pay,
+        meta,
+        total_term_freq,
+        index_options,
+        has_payloads,
+        &mut streams,
+    )?;
     let PositionStreams {
         mut pos_deltas,
         payload_lengths,
         payload_bytes,
         mut offset_start_deltas,
         mut offset_lengths,
-    } = decode_position_streams(pos, pay, meta, total_term_freq, index_options, has_payloads)?;
+    } = streams;
     // ARITH: `freqs` is a live slice of i32, so its length is at most
     // isize::MAX / 4; adding the terminal boundary cannot overflow usize.
     #[allow(clippy::arithmetic_side_effects)]
     let boundaries = freqs.len() + 1;
-    let mut doc_starts = Vec::with_capacity(boundaries);
-    let mut payload_starts = Vec::with_capacity(if has_payloads { boundaries } else { 0 });
+    doc_starts.clear();
+    payload_starts.clear();
+    doc_starts.reserve(boundaries);
+    if has_payloads {
+        payload_starts.reserve(boundaries);
+    }
     let mut payload_upto = 0usize;
     let mut idx = 0usize;
     for &freq in freqs {
@@ -3280,7 +3398,7 @@ pub fn read_occurrences_flat(
     // Every retained length was checked non-negative and within payload_bytes
     // above. Converting the stream does not allocate one buffer per occurrence.
     let payload_lengths = payload_lengths.into_iter().map(|len| len as u32).collect();
-    Ok(FlatOccurrences {
+    *out = FlatOccurrences {
         positions: pos_deltas,
         start_offsets: offset_start_deltas,
         end_offsets: offset_lengths,
@@ -3290,7 +3408,8 @@ pub fn read_occurrences_flat(
         payload_starts,
         has_offsets,
         has_payloads,
-    })
+    };
+    Ok(())
 }
 
 /// `writeVInt15`'s companion reader
