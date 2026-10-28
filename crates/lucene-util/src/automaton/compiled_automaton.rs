@@ -63,6 +63,25 @@ impl<'a> ByteRunnableRef<'a> {
         }
     }
 
+    /// The largest byte leading anywhere from `state`: a probe per
+    /// character class for the DFA, a scan of all 256 bytes for the NFA.
+    pub fn last_live_byte(self, state: i32) -> Option<u8> {
+        match self {
+            ByteRunnableRef::Dfa(r) => r.0.last_live_byte(state),
+            ByteRunnableRef::Nfa(_) => (0..=255u8).rev().find(|&b| self.step_byte(state, b) != -1),
+        }
+    }
+
+    /// The smallest byte at or after `from` leading anywhere from `state`.
+    pub fn first_live_byte_from(self, state: i32, from: u32) -> Option<u8> {
+        match self {
+            ByteRunnableRef::Dfa(r) => r.0.first_live_byte_from(state, from),
+            ByteRunnableRef::Nfa(_) => (from..=255)
+                .map(|b| b as u8)
+                .find(|&b| self.step_byte(state, b) != -1),
+        }
+    }
+
     /// `isAccept(state)`.
     #[inline]
     pub fn is_accept(self, state: i32) -> bool {
@@ -420,6 +439,35 @@ mod tests {
         let a = RegExp::new(re).unwrap().to_automaton().unwrap();
         let a = operations::determinize(&a, 10_000).unwrap();
         CompiledAutomaton::new(&a).unwrap()
+    }
+
+    /// The per-class live-byte lookups agree with probing every byte, in
+    /// every state, from every starting byte.
+    #[test]
+    fn live_byte_lookups_match_a_byte_scan() {
+        for re in [
+            "a.*ing",
+            "[b-dx]{2,3}",
+            "ab|abc|\u{e9}t+",
+            "[^a]*z",
+            "t[0-3][0-9]*",
+        ] {
+            let c = compile(re);
+            let run = c.byte_runnable().unwrap();
+            for state in 0..run.get_size() {
+                let live = |b: u32| run.step_byte(state, b as u8) != -1;
+                let last = (0..=255u32).rev().find(|&b| live(b)).map(|b| b as u8);
+                assert_eq!(run.last_live_byte(state), last, "{re} state {state}");
+                for from in 0..=256u32 {
+                    let first = (from..=255).find(|&b| live(b)).map(|b| b as u8);
+                    assert_eq!(
+                        run.first_live_byte_from(state, from),
+                        first,
+                        "{re} {state} {from}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

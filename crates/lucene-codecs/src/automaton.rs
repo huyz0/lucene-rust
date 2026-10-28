@@ -572,18 +572,16 @@ impl TermAutomaton for RunnableTermAutomaton<'_> {
         state != DEAD && self.0.is_accept(state as i32)
     }
     fn last_live_byte(&mut self, state: u32) -> Option<Option<u8>> {
-        Some(
-            (0..=255u8)
-                .rev()
-                .find(|&b| self.step_byte(state, u32::from(b)) != DEAD),
-        )
+        if state == DEAD {
+            return Some(None);
+        }
+        Some(self.0.last_live_byte(state as i32))
     }
     fn first_live_from(&mut self, state: u32, from: u32) -> Option<Option<u8>> {
-        Some(
-            (from..=255)
-                .find(|&b| self.step_byte(state, b) != DEAD)
-                .map(|b| b as u8),
-        )
+        if state == DEAD {
+            return Some(None);
+        }
+        Some(self.0.first_live_byte_from(state as i32, from))
     }
     fn utf8_total(&self, _state: u32) -> bool {
         false
