@@ -3,7 +3,7 @@
 //! prefixes the automaton can still accept, skipping floor blocks below the
 //! first transition's label and a block's entries past its last.
 
-use lucene_util::automaton::{ByteRunnable, Transition, TransitionAccessor};
+use lucene_util::automaton::{ByteRunnableRef, Transition, TransitionAccessor};
 
 use super::outputs::{FstOrdsOutputs, Output};
 use super::segment_enum::{decode_block_meta, OrdsTermState, TermBuf};
@@ -147,7 +147,7 @@ impl Frame {
         &mut self,
         output: Option<&Output>,
         tio: &[u8],
-        runnable: Option<&dyn ByteRunnable>,
+        runnable: Option<ByteRunnableRef<'_>>,
     ) -> Result<()> {
         if let (Some(output), Some(runnable)) = (output, runnable) {
             if self.transition_count != 0 {
@@ -262,7 +262,7 @@ impl Frame {
 /// Java's `UnsupportedOperationException`.
 pub struct OrdsIntersectTermsEnum<'a> {
     fr: &'a OrdsFieldReader,
-    runnable: &'a dyn ByteRunnable,
+    runnable: ByteRunnableRef<'a>,
     accessor: &'a dyn TransitionAccessor,
     common_suffix: Option<&'a [u8]>,
     stack: Vec<Frame>,
@@ -285,7 +285,7 @@ impl<'a> OrdsIntersectTermsEnum<'a> {
     /// already taken apart by [`OrdsFieldReader::intersect`].
     pub(super) fn new(
         fr: &'a OrdsFieldReader,
-        runnable: &'a dyn ByteRunnable,
+        runnable: ByteRunnableRef<'a>,
         accessor: &'a dyn TransitionAccessor,
         common_suffix: Option<&'a [u8]>,
         start_term: Option<&[u8]>,

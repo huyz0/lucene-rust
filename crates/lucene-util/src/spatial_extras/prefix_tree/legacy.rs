@@ -358,7 +358,8 @@ pub(crate) fn distance_for_level(grid: Arc<dyn LegacyGrid>, level: i32) -> Resul
     let ctx = grid.ctx().clone();
     let center = ctx.world_bounds().center_point();
     let cell = grid.get_cell(&center, level)?;
-    let bbox = cell.shape()?.bounding_box()?;
+    let shape = cell.shape()?;
+    let bbox = shape.bounding_box_ref()?;
     let width = bbox.width();
     let height = bbox.height();
     Ok((width * width + height * height).sqrt())

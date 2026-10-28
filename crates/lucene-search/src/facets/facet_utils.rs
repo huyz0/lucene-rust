@@ -197,6 +197,79 @@ where
     Ok(())
 }
 
+/// [`for_each_hit`] over the hits in `lo..hi` only (one chunk of a segment
+/// counted on its own task), `b` a fresh iterator: the same calls, in the
+/// same order, that [`for_each_hit`] makes for those documents.
+pub(crate) fn for_each_hit_in<B>(
+    hits: &DocIdSet,
+    b: &mut B,
+    lo: i32,
+    hi: i32,
+    mut f: impl FnMut(&mut B) -> Result<()>,
+) -> Result<()>
+where
+    B: DocValuesIterator + ?Sized,
+{
+    let lo = lo.max(0);
+    if lo >= hi {
+        return Ok(());
+    }
+    match hits {
+        DocIdSet::Empty => {}
+        DocIdSet::Array(docs) => {
+            let start = docs.partition_point(|&d| d < lo);
+            for &doc in docs.get(start..).unwrap_or_default() {
+                if doc >= hi {
+                    break;
+                }
+                if b.advance_exact(doc)? {
+                    f(b)?;
+                }
+            }
+        }
+        DocIdSet::Bits { bits, cost } if *cost >= b.cost() => {
+            let words = bits.words();
+            let mut doc = b.advance(lo)?;
+            while doc < hi {
+                if word_bit(words, doc) {
+                    f(b)?;
+                }
+                doc = b.next_doc()?;
+            }
+        }
+        DocIdSet::Bits { bits, .. } => {
+            let words = bits.words();
+            // Both ends are non-negative here.
+            let (lo, hi) = (lo as usize, hi as usize);
+            let last = hi.div_ceil(64).min(words.len());
+            let first = lo / 64;
+            for (wi, &word) in (first..).zip(words.get(first..last).unwrap_or_default()) {
+                let base = wi.wrapping_mul(64);
+                let mut w = word;
+                // Only the first word starts under `lo` (by under 64), and
+                // only the last ends past `hi` (by under 64).
+                if base < lo {
+                    w &= u64::MAX.wrapping_shl(lo.wrapping_sub(base) as u32);
+                }
+                let below_hi = hi.wrapping_sub(base);
+                if below_hi < 64 {
+                    w &= 1u64.wrapping_shl(below_hi as u32).wrapping_sub(1);
+                }
+                while w != 0 {
+                    let Ok(doc) = i32::try_from(base | w.trailing_zeros() as usize) else {
+                        return Ok(());
+                    };
+                    if b.advance_exact(doc)? {
+                        f(b)?;
+                    }
+                    w &= w.wrapping_sub(1);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// `DocValues.unwrapSingleton(DocValues.getSortedNumeric(reader, field)) !=
 /// null`: a field the leaf lacks (`emptySortedNumeric()` is a singleton), a
 /// `NUMERIC` field, or a `SORTED_NUMERIC` field in the codec's

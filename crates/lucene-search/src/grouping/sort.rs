@@ -219,7 +219,54 @@ enum LeafKey<'a> {
     /// ordinals: a term copied from this segment's document keeps its
     /// ordinal, any other is resolved once by `lookupTerm`
     /// (`TermOrdValComparator`'s `bottomOrd`/`bottomSameReader`).
-    Str(StrValues<'a>, FxHashMap<Vec<u8>, i64>),
+    Str(StrValues<'a>, Placed),
+}
+
+/// The slot terms a keyword key placed in one segment, with their positions
+/// (an ordinal, or `lookupTerm`'s `-insertionPoint - 1`).
+///
+/// The last term asked about is kept apart, compared by its bytes: a full
+/// queue compares every document against the same bottom slot
+/// (`compareBottom` against `bottomOrd`), which then costs one `memcmp`
+/// rather than a hash of the term and a probe.
+#[derive(Default)]
+struct Placed {
+    by_term: FxHashMap<Vec<u8>, i64>,
+    last: Vec<u8>,
+    last_at: Option<i64>,
+}
+
+impl Placed {
+    /// The position of `term`, `resolve`d (and remembered) the first time.
+    #[inline]
+    fn position(&mut self, term: &[u8], resolve: impl FnOnce(&[u8]) -> Result<i64>) -> Result<i64> {
+        if let Some(at) = self.last_at {
+            if self.last.as_slice() == term {
+                return Ok(at);
+            }
+        }
+        let at = match self.by_term.get(term) {
+            Some(&at) => at,
+            None => {
+                let at = resolve(term)?;
+                self.by_term.insert(term.to_vec(), at);
+                at
+            }
+        };
+        self.last.clear();
+        self.last.extend_from_slice(term);
+        self.last_at = Some(at);
+        Ok(at)
+    }
+
+    /// Records that `term` is ordinal `ord` of this segment (a slot copied
+    /// from one of its documents), without a copy when it is known already.
+    #[inline]
+    fn place(&mut self, term: &[u8], ord: i64) {
+        if !self.by_term.contains_key(term) {
+            self.by_term.insert(term.to_vec(), ord);
+        }
+    }
 }
 
 /// A keyword key's values: a `SORTED_SET` field through its selector, or a
@@ -309,7 +356,7 @@ impl<'a> LeafKeys<'a> {
                     } else {
                         StrValues::Set(dv::get_sorted_set(reader, &f.field)?, Vec::new())
                     };
-                    LeafKey::Str(values, FxHashMap::default())
+                    LeafKey::Str(values, Placed::default())
                 }
                 SortType::StringVal | SortType::Custom(_) => {
                     return Err(Error::Unsupported(format!(
@@ -357,7 +404,7 @@ impl<'a> LeafKeys<'a> {
             LeafKey::Str(values, placed) => match values.doc_ord(doc, f.selector)? {
                 Some(ord) => {
                     let term = values.lookup_ord(ord)?;
-                    placed.insert(term.clone(), ord);
+                    placed.place(&term, ord);
                     GroupSortValue::Bytes(Some(term))
                 }
                 None => GroupSortValue::Bytes(None),
@@ -425,14 +472,7 @@ impl<'a> LeafKeys<'a> {
                         }
                     }
                     (Some(term), Some(ord)) => {
-                        let at = match placed.get(term.as_slice()) {
-                            Some(&at) => at,
-                            None => {
-                                let at = values.lookup_term(term)?;
-                                placed.insert(term.clone(), at);
-                                at
-                            }
-                        };
+                        let at = placed.position(term, |t| values.lookup_term(t))?;
                         // SENTINEL: a negative answer is `-insertionPoint - 1`:
                         // the slot term sorts between that point's
                         // neighbours, after every ordinal below it.

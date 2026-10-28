@@ -208,6 +208,42 @@ fn bench_automaton(c: &mut Criterion) {
     c.bench_function("run_automaton/lev2_dyn_run_terms", |b| {
         b.iter(|| black_box(terms.iter().filter(|t| dynr.run(t)).count()))
     });
+    // How an intersect walk steps a `CompiledAutomaton`: byte by byte
+    // through what `get_byte_runnable` hands out.
+    c.bench_function("run_automaton/lev2_dyn_step_terms", |b| {
+        b.iter(|| {
+            let mut acc = 0usize;
+            for t in &terms {
+                let mut s = 0;
+                for &x in t.iter() {
+                    s = dynr.step(s, i32::from(x));
+                    if s == -1 {
+                        break;
+                    }
+                }
+                acc += (s != -1 && dynr.is_accept(s)) as usize;
+            }
+            black_box(acc)
+        })
+    });
+    // The same walk through the concrete hand-out.
+    let refr = compiled.byte_runnable().unwrap();
+    c.bench_function("run_automaton/lev2_ref_step_terms", |b| {
+        b.iter(|| {
+            let mut acc = 0usize;
+            for t in &terms {
+                let mut s = 0;
+                for &x in t.iter() {
+                    s = refr.step_byte(s, x);
+                    if s == -1 {
+                        break;
+                    }
+                }
+                acc += (s != -1 && refr.is_accept(s)) as usize;
+            }
+            black_box(acc)
+        })
+    });
     c.bench_function("run_automaton/lev2_step_terms", |b| {
         let r = compiled.run_automaton.as_ref().unwrap();
         b.iter(|| {
@@ -349,6 +385,17 @@ fn bench_bytes_ref_hash(c: &mut Criterion) {
                 s += i64::from(h.find(t).unwrap());
             }
             black_box(s)
+        })
+    });
+    // `TermInterner` over the same stream: 1M interns, mostly repeats.
+    c.bench_function("term_interner/intern_1m", |b| {
+        b.iter(|| {
+            let mut pool = lucene_util::TermInterner::new();
+            let mut s = 0u64;
+            for t in &terms {
+                s += u64::from(pool.intern(t).index());
+            }
+            black_box((s, pool.len()))
         })
     });
     c.bench_function("bytes_ref_hash/sort_1m", |b| {

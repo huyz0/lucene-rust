@@ -52,9 +52,11 @@ pub struct BlockGroupingCollector<'a> {
     doc_base: i32,
     group_end_doc_id: i32,
     last_doc_per_group_bits: Option<FixedBitSet>,
-    /// `groupQueue`, and which of its groups is its top (least competitive).
+    /// `groupQueue`'s groups, and the queue itself: a binary min-heap of
+    /// indices into them under [`Self::less_than`] (Lucene's
+    /// `PriorityQueue`), whose top is the least competitive group.
     queue: Vec<OneGroup<'a>>,
-    queue_top: usize,
+    heap: Vec<usize>,
     group_competes: bool,
     keys: Option<LeafKeys<'a>>,
     scratch: Vec<GroupSortValue>,
@@ -96,7 +98,7 @@ impl<'a> BlockGroupingCollector<'a> {
             group_end_doc_id: -1,
             last_doc_per_group_bits: None,
             queue: Vec::new(),
-            queue_top: 0,
+            heap: Vec::new(),
             group_competes: false,
             keys: None,
             scratch: Vec::new(),
@@ -117,16 +119,53 @@ impl<'a> BlockGroupingCollector<'a> {
         }
     }
 
-    /// The queue's top: its least competitive group (`PriorityQueue.top()`
-    /// after an `add` or `updateTop`).
-    fn find_top(&mut self) {
-        let mut top = 0;
-        for i in 1..self.queue.len() {
-            if self.less_than(&self.queue[i], &self.queue[top]) {
-                top = i;
+    /// `lessThan` of the groups at heap positions `a` and `b`.
+    #[inline]
+    fn heap_less(&self, a: usize, b: usize) -> bool {
+        self.less_than(&self.queue[self.heap[a]], &self.queue[self.heap[b]])
+    }
+
+    /// The queue's top: its least competitive group (`PriorityQueue.top()`).
+    fn queue_top(&self) -> usize {
+        self.heap.first().copied().unwrap_or(0)
+    }
+
+    /// `upHeap` of the last heap position (`PriorityQueue.add`).
+    fn up_heap(&mut self) {
+        let mut i = self.heap.len().saturating_sub(1);
+        while i > 0 {
+            let j = i.wrapping_sub(1) / 2;
+            if !self.heap_less(i, j) {
+                break;
             }
+            self.heap.swap(i, j);
+            i = j;
         }
-        self.queue_top = top;
+    }
+
+    /// `downHeap` of the top (`PriorityQueue.updateTop`). `lessThan` is a
+    /// total order (ties go to the earlier top document, and no two groups
+    /// share one), so the top is the one least group whatever the heap's
+    /// shape: the same group a scan of the queue finds.
+    fn down_heap(&mut self) {
+        let size = self.heap.len();
+        let mut i = 0usize;
+        loop {
+            // No overflow: `i < size`, and a `Vec` holds under `isize::MAX`.
+            let mut j = i.wrapping_mul(2).wrapping_add(1);
+            if j >= size {
+                break;
+            }
+            let k = j.wrapping_add(1);
+            if k < size && self.heap_less(k, j) {
+                j = k;
+            }
+            if !self.heap_less(j, i) {
+                break;
+            }
+            self.heap.swap(i, j);
+            i = j;
+        }
     }
 
     /// `processGroup()`: the block just finished enters the queue if it
@@ -138,10 +177,11 @@ impl<'a> BlockGroupingCollector<'a> {
                 return;
             };
             let leaf = OpenSegment { ..*current };
-            let docs = std::mem::take(&mut self.pending_sub_docs);
-            let scores = std::mem::take(&mut self.pending_sub_scores);
             let top_group_doc = self.doc_base.saturating_add(self.top_group_doc);
             if !self.queue_full {
+                let docs = std::mem::take(&mut self.pending_sub_docs);
+                let scores = std::mem::take(&mut self.pending_sub_scores);
+                self.heap.push(self.queue.len());
                 self.queue.push(OneGroup {
                     leaf,
                     ord,
@@ -150,22 +190,25 @@ impl<'a> BlockGroupingCollector<'a> {
                     scores,
                     comparator_slot: self.bottom_slot,
                 });
-                self.find_top();
+                self.up_heap();
                 self.queue_full = self.queue.len() == self.top_n_groups;
                 if self.queue_full {
-                    self.bottom_slot = self.queue[self.queue_top].comparator_slot;
+                    self.bottom_slot = self.queue[self.queue_top()].comparator_slot;
                 } else {
                     self.bottom_slot = self.queue.len();
                 }
             } else {
-                let top = &mut self.queue[self.queue_top];
+                let at = self.queue_top();
+                let top = &mut self.queue[at];
                 top.leaf = leaf;
                 top.ord = ord;
                 top.top_group_doc = top_group_doc;
-                top.docs = docs;
-                top.scores = scores;
-                self.find_top();
-                self.bottom_slot = self.queue[self.queue_top].comparator_slot;
+                // The evicted group's buffers become the next pending ones
+                // (cleared below), so a full queue stops reallocating.
+                std::mem::swap(&mut top.docs, &mut self.pending_sub_docs);
+                std::mem::swap(&mut top.scores, &mut self.pending_sub_scores);
+                self.down_heap();
+                self.bottom_slot = self.queue[self.queue_top()].comparator_slot;
             }
         }
         self.pending_sub_docs.clear();

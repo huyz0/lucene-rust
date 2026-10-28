@@ -8,6 +8,26 @@ use std::sync::Arc;
 use super::context::SpatialContext;
 use super::Result;
 
+/// What [`Shape::bounding_box_ref`] returns: the shape itself when it is a
+/// rectangle, else its computed bounding box.
+pub enum BoundingBox<'a> {
+    /// The shape, a rectangle.
+    Borrowed(&'a dyn Rectangle),
+    /// A computed (or cached) bounding box.
+    Owned(Arc<dyn Rectangle>),
+}
+
+impl std::ops::Deref for BoundingBox<'_> {
+    type Target = dyn Rectangle;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            BoundingBox::Borrowed(r) => *r,
+            BoundingBox::Owned(r) => &**r,
+        }
+    }
+}
+
 /// `SpatialRelation`: how one shape relates to another. `WITHIN` and
 /// `CONTAINS` include their boundaries ("covered by"/"covers").
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -85,6 +105,16 @@ pub trait Shape: fmt::Debug + fmt::Display + Send + Sync + Any {
 
     /// `getBoundingBox()`.
     fn bounding_box(&self) -> Result<Arc<dyn Rectangle>>;
+
+    /// `getBoundingBox()` without the allocation where Java returns `this`:
+    /// a rectangle is its own bounding box (every `Rectangle`'s
+    /// [`Self::bounding_box`] is a copy of itself), so it is borrowed.
+    fn bounding_box_ref(&self) -> Result<BoundingBox<'_>> {
+        match self.as_rectangle() {
+            Some(r) => Ok(BoundingBox::Borrowed(r)),
+            None => self.bounding_box().map(BoundingBox::Owned),
+        }
+    }
 
     /// `hasArea()`.
     fn has_area(&self) -> bool;

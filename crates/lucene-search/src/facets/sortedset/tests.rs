@@ -271,6 +271,7 @@ fn a_leaf_outside_the_ordinal_map_is_refused() {
             Some(&map),
             &leaves[1],
             None,
+            None,
             counts.as_mut_slice(),
         )
         .unwrap_err();
@@ -281,13 +282,122 @@ fn a_leaf_outside_the_ordinal_map_is_refused() {
             Some(&map),
             &leaves[0],
             None,
+            None,
             counts.as_mut_slice(),
         )
         .unwrap_err();
         assert!(matches!(e, Error::IllegalState(_)));
         // Counts too small for the leaf's ordinals.
-        let e =
-            count_one_segment("$facets", None, &leaves[0], None, &mut [0i32; 1][..]).unwrap_err();
+        let e = count_one_segment("$facets", None, &leaves[0], None, None, &mut [0i32; 1][..])
+            .unwrap_err();
         assert!(matches!(e, Error::IllegalState(_)));
+    });
+}
+
+/// 1,000 documents (`Author` of 7, two `Tag`s of 300), one with an id of
+/// its own every 9th.
+fn many_docs() -> Vec<Doc> {
+    (0..1000usize)
+        .map(|i| {
+            let id = if i % 9 == 4 { "ninth" } else { "rest" };
+            doc(
+                id,
+                vec![
+                    ss("Author", &[&format!("a{}", i % 7)]),
+                    ss("Tag", &[&format!("t{:03}", (i * 31) % 300)]),
+                    ss("Tag", &[&format!("t{:03}", (i * 17 + 5) % 300)]),
+                ],
+            )
+        })
+        .collect()
+}
+
+/// A segment cut into chunks counted on their own tasks counts as the whole
+/// segment does: one segment (no ordinal map), two (through the map, both
+/// the remapping and the migrating path), with deletions (the live-docs
+/// walk), and hits given as bits or as few.
+#[test]
+fn chunks_of_a_segment_count_as_the_whole_segment() {
+    let c = config();
+    let one = build(&c, many_docs(), &[], &[]);
+    let two = build(&c, many_docs(), &[599], &[]);
+    let deleted = build(&c, many_docs(), &[], &["ninth"]);
+    for idx in [&one, &two, &deleted] {
+        idx.with(|searcher, reader, _| {
+            let state = DefaultSortedSetDocValuesReaderState::new(reader, &c).unwrap();
+            let leaves = reader.leaves();
+            let every: Vec<_> = leaves.iter().map(|l| (*l, None)).collect();
+            let plain_all = SortedSetDocValuesFacetCounts::new(&state).unwrap();
+            for (threads, min_chunk) in [(4, 64), (3, 100), (8, 64), (1, 64), (2, 4096)] {
+                let chunked = ConcurrentSortedSetDocValuesFacetCounts::run_chunked(
+                    &state,
+                    state.ordinal_map(),
+                    &every,
+                    threads,
+                    min_chunk,
+                )
+                .unwrap();
+                for dim in ["Author", "Tag"] {
+                    assert_eq!(top(&plain_all, dim, &[]), top(&chunked, dim, &[]));
+                }
+            }
+            for q in [match_all(reader), term("id", "ninth")] {
+                let hits = collect(searcher, &q, false);
+                let plain = SortedSetDocValuesFacetCounts::with_hits(&state, &hits).unwrap();
+                let matching = hits.matching_docs();
+                let tasks: Vec<_> = matching.iter().map(|m| (m.context, Some(m))).collect();
+                for (threads, min_chunk) in [(4, 64), (3, 100), (8, 64)] {
+                    let chunked = ConcurrentSortedSetDocValuesFacetCounts::run_chunked(
+                        &state,
+                        hits_map(&state, matching),
+                        &tasks,
+                        threads,
+                        min_chunk,
+                    )
+                    .unwrap();
+                    for dim in ["Author", "Tag"] {
+                        assert_eq!(top(&plain, dim, &[]), top(&chunked, dim, &[]));
+                    }
+                }
+            }
+        });
+    }
+}
+
+#[test]
+fn segments_split_into_word_aligned_chunks_only_when_threads_idle() {
+    let c = config();
+    let idx = build(&c, many_docs(), &[599], &[]);
+    idx.with(|_, reader, _| {
+        let leaves = reader.leaves();
+        let tasks: Vec<_> = leaves.iter().map(|l| (*l, None)).collect();
+        let todo: Vec<_> = tasks.iter().collect();
+        // As many segments as threads: whole segments.
+        let whole = split_into_chunks(&todo, 2, 64);
+        assert!(whole.iter().all(|c| c.2.is_none()));
+        assert_eq!(whole.len(), 2);
+        // Four threads over 1,000 documents: chunks of 256, the last of each
+        // segment short.
+        let cut = split_into_chunks(&todo, 4, 64);
+        let ranges: Vec<_> = cut.iter().map(|c| (c.0.ord, c.2)).collect();
+        assert_eq!(
+            ranges,
+            vec![
+                (0, Some((0, 256))),
+                (0, Some((256, 512))),
+                (0, Some((512, 600))),
+                (1, Some((0, 256))),
+                (1, Some((256, 400))),
+            ]
+        );
+        // Chunks of at least the minimum (300, rounded up to whole words);
+        // a segment under two minimum chunks stays whole.
+        let big_min = split_into_chunks(&todo, 4, 300);
+        let ranges: Vec<_> = big_min.iter().map(|c| (c.0.ord, c.2)).collect();
+        assert_eq!(
+            ranges,
+            vec![(0, Some((0, 320))), (0, Some((320, 600))), (1, None)]
+        );
+        assert_eq!(split_into_chunks(&todo, 1, 64).len(), 2);
     });
 }

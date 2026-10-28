@@ -923,7 +923,7 @@ fn term_matcher(source: &MultiTermSource) -> Result<TermPredicate> {
                 AutomatonType::NONE => false,
                 AutomatonType::ALL => true,
                 AutomatonType::SINGLE => compiled.term.as_deref() == Some(t),
-                AutomatonType::NORMAL => compiled.get_byte_runnable().is_some_and(|r| r.run(t)),
+                AutomatonType::NORMAL => compiled.byte_runnable().is_some_and(|r| r.run(t)),
             })
         }
         MultiTermSource::TermSet(q) => {

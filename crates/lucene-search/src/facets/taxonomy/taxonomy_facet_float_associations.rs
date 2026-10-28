@@ -12,6 +12,7 @@ use crate::facets::facet_utils::{for_each_hit, for_each_in_both};
 use crate::facets::facets_collector::FacetsCollector;
 use crate::facets::{FacetsConfig, DEFAULT_INDEX_FIELD_NAME};
 use crate::reader::doc_values::{get_binary, get_sorted_numeric};
+use crate::reader::SortedNumericDocValues;
 use crate::values_source::{BoxDoubleValues, DoubleValues, DoubleValuesSource, ValuesContext};
 use crate::Result;
 
@@ -142,9 +143,10 @@ impl<'t> TaxonomyFacetFloatAssociations<'t> {
             }
             inner.initialize_value_counters();
             let mut ordinal_values = get_sorted_numeric(hits.context.reader, index_field_name)?;
+            // The kept scores are borrowed, not copied, for the segment.
             let scores: Option<BoxDoubleValues<'_>> = if keep_scores {
                 Some(Box::new(KeptScores {
-                    scores: hits.scores.clone().unwrap_or_default(),
+                    scores: hits.scores.as_deref().unwrap_or_default(),
                     index: -1,
                 }))
             } else {
@@ -152,19 +154,31 @@ impl<'t> TaxonomyFacetFloatAssociations<'t> {
             };
             let mut function_values = values_source.get_values(ctx, hits.context.ord, scores)?;
             let mut it = hits.bits.iterator();
+            let float_values = &mut inner.float_values;
+            let counts = &mut inner.counts;
             for_each_in_both(&mut it, &mut *ordinal_values, |dv| {
                 if !function_values.advance_exact(dv.doc_id())? {
                     return Ok(());
                 }
                 let value = function_values.double_value()? as f32;
-                for _ in 0..dv.doc_value_count() {
-                    let ord = dv.next_value()? as i32;
-                    inner.float_values.update(ord, |current| {
+                // Dense arrays (the usual case) matched once per document,
+                // not twice per ordinal; the same updates either way.
+                if let (OrdValues::Dense(values), OrdValues::Dense(counts)) =
+                    (&mut *float_values, &mut *counts)
+                {
+                    return for_each_ordinal(dv, |ord| {
+                        let (slot, count) = dense_slots(values, counts, ord)?;
+                        *slot = aggregation_function.aggregate_float(*slot, value);
+                        *count = count.wrapping_add(1);
+                        Ok(())
+                    });
+                }
+                for_each_ordinal(dv, |ord| {
+                    float_values.update(ord, |current| {
                         aggregation_function.aggregate_float(current, value)
                     })?;
-                    inner.counts.update(ord, |count| count.wrapping_add(1))?;
-                }
-                Ok(())
+                    counts.update(ord, |count| count.wrapping_add(1))
+                })
             })?;
         }
         // A values source can weigh hierarchical dims, so they roll up.
@@ -176,12 +190,12 @@ impl<'t> TaxonomyFacetFloatAssociations<'t> {
 
 /// `TaxonomyFacetFloatAssociations.scores(hits)`: the kept score of the
 /// document advanced to (`0` past the last kept one).
-struct KeptScores {
-    scores: Vec<f32>,
+struct KeptScores<'s> {
+    scores: &'s [f32],
     index: i32,
 }
 
-impl DoubleValues for KeptScores {
+impl DoubleValues for KeptScores<'_> {
     fn advance_exact(&mut self, doc: i32) -> Result<bool> {
         self.index = doc;
         Ok(true)
@@ -195,6 +209,25 @@ impl DoubleValues for KeptScores {
             .unwrap_or(0.0);
         Ok(f64::from(score))
     }
+}
+
+/// `f((int) value)` for each value of the current document, in bulk when
+/// `dv` holds them decoded.
+#[inline]
+fn for_each_ordinal(
+    dv: &mut (dyn SortedNumericDocValues + '_),
+    mut f: impl FnMut(i32) -> Result<()>,
+) -> Result<()> {
+    if let Some(values) = dv.take_values() {
+        for &value in values {
+            f(value as i32)?;
+        }
+        return Ok(());
+    }
+    for _ in 0..dv.doc_value_count() {
+        f(dv.next_value()? as i32)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

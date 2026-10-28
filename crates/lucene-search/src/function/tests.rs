@@ -1828,7 +1828,44 @@ mod batches {
         let int_i = || -> Arc<dyn ValueSource> { Arc::new(IntFieldSource::new("i")) };
         let float_f = || -> Arc<dyn ValueSource> { Arc::new(FloatFieldSource::new("f")) };
         let mut out = Vec::new();
+        // expressions over the fields and the scores, plain and caching
+        let mut bindings = crate::expressions::SimpleBindings::new();
+        bindings.add_source("i", dvs::from_int_field("i"));
+        bindings.add_source("g", dvs::from_float_field("g"));
+        bindings.add_source("_score", dvs::scores());
+        bindings.add_expression(
+            "nested",
+            Arc::new(crate::expressions::compile("i * _score + g").unwrap()),
+        );
+        let expr =
+            |text: &str, caching: bool| -> Arc<dyn crate::values_source::DoubleValuesSource> {
+                let e = Arc::new(crate::expressions::compile(text).unwrap());
+                Arc::new(if caching {
+                    crate::expressions::ExpressionValueSource::caching(&bindings, e).unwrap()
+                } else {
+                    crate::expressions::ExpressionValueSource::new(&bindings, e).unwrap()
+                })
+            };
         for w in ["a", "b", "c"] {
+            for caching in [false, true] {
+                out.push(one(FunctionScoreQuery::new(
+                    term(w),
+                    expr(
+                        "sqrt(_score) + ln(1 + abs(i)) * g + (g > 5 ? nested : i)",
+                        caching,
+                    ),
+                )
+                .into()));
+                out.push(one(FunctionScoreQuery::boost_by_value(
+                    term(w),
+                    expr("abs(i) * 0.5 + g", caching),
+                )
+                .into()));
+                out.push(filtered(
+                    w,
+                    FunctionMatchQuery::new(expr("i + g", caching), Arc::new(|v| v > 300.0)).into(),
+                ));
+            }
             out.push(one(FunctionScoreQuery::new(
                 term(w),
                 dvs::from_float_field("f"),
