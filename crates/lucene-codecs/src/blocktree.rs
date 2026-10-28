@@ -2431,6 +2431,56 @@ impl<'a> TermsEnum<'a> {
         )?;
         Ok(Some((docs, occurrences)))
     }
+
+    /// [`Self::try_current_postings`] into `out`, reusing its buffers, with
+    /// `postings(FREQS)`'s flags: no impacts. What a merge reads term after
+    /// term. `false` (and `out` untouched) when not standing on a term.
+    ///
+    /// # Errors
+    /// As [`Self::try_current_postings`].
+    pub fn try_current_postings_into(
+        &mut self,
+        doc_in: Option<&DocInput<'_>>,
+        out: &mut Postings,
+    ) -> Result<bool> {
+        if !self.st.on_term {
+            return Ok(false);
+        }
+        let (stats, meta) = self.ste().stats_and_meta()?;
+        self.field.postings_into(stats, meta, doc_in, out)?;
+        Ok(true)
+    }
+
+    /// [`Self::try_current_postings_and_occurrences_flat`] into `docs` and
+    /// `occurrences`, reusing their buffers; impacts are not read.
+    ///
+    /// # Errors
+    /// As [`Self::try_current_postings_and_occurrences_flat`].
+    pub fn try_current_postings_and_occurrences_flat_into(
+        &mut self,
+        doc_in: Option<&DocInput<'_>>,
+        pos_in: &postings::PosInput<'_>,
+        pay_in: Option<&postings::PayInput<'_>>,
+        docs: &mut Postings,
+        occurrences: &mut postings::FlatOccurrences,
+    ) -> Result<bool> {
+        if !self.st.on_term {
+            return Ok(false);
+        }
+        let (stats, meta) = self.ste().stats_and_meta()?;
+        self.field.postings_into(stats, meta, doc_in, docs)?;
+        postings::read_occurrences_flat_into(
+            pos_in,
+            pay_in,
+            meta,
+            &docs.freqs,
+            stats.total_term_freq,
+            self.field.index_options,
+            self.field.has_payloads,
+            occurrences,
+        )?;
+        Ok(true)
+    }
 }
 
 /// One field's term dictionary: the `.tmd` record plus the `.tim`/`.tip`
@@ -3259,6 +3309,40 @@ impl FieldTerms {
             "postings() needs an opened .doc file for docFreq > 1 terms",
         ))?;
         Ok(doc_in.read_postings(meta, stats.doc_freq, self.index_options, self.has_payloads)?)
+    }
+
+    /// [`Self::postings_from`] into `out`, reusing its buffers, without
+    /// impacts ([`postings::PostingsFlags::FreqsNoImpacts`]).
+    fn postings_into(
+        &self,
+        stats: TermStats,
+        meta: TermMetadata,
+        doc_in: Option<&DocInput<'_>>,
+        out: &mut Postings,
+    ) -> Result<()> {
+        if stats.doc_freq == 1 {
+            if meta.singleton_doc_id < 0 {
+                return Err(postings::Error::NoPreviousSingleton.into());
+            }
+            out.docs.clear();
+            out.freqs.clear();
+            out.level0_impacts.clear();
+            out.level1_impacts.clear();
+            out.docs.push(meta.singleton_doc_id);
+            out.freqs.push(stats.total_term_freq as i32);
+            return Ok(());
+        }
+        let doc_in = doc_in.ok_or(Error::Unsupported(
+            "postings() needs an opened .doc file for docFreq > 1 terms",
+        ))?;
+        Ok(doc_in.read_postings_into(
+            meta,
+            stats.doc_freq,
+            self.index_options,
+            self.has_payloads,
+            postings::PostingsFlags::FreqsNoImpacts,
+            out,
+        )?)
     }
 
     /// Positions for just the documents `wanted` names, as indices into this

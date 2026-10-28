@@ -50,14 +50,37 @@ pub(crate) fn score_phrase<C: ScoringCollector>(
     collector: &mut C,
 ) -> Result<()> {
     let n = cursors.len();
-    let mut legs: Vec<(PhraseLeg<'_>, i64)> = cursors
+    // `ConjunctionDISI` leads with the cheapest iterator. A cursor holds its
+    // block buffers inline (kilobytes), so the order is found on the costs
+    // alone (a stable sort, ties in term order) and the cursors are swapped
+    // into it in place; the legs then reuse the cursors' own allocation.
+    let mut cursors = cursors;
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by_key(|&i| cursors[i].1);
+    // `at[slot]`: where the cursor of term `slot` stands now.
+    let mut at: Vec<usize> = (0..n).collect();
+    let mut slot_at: Vec<usize> = (0..n).collect();
+    for (pos, &slot) in order.iter().enumerate() {
+        let from = at[slot];
+        if from != pos {
+            cursors.swap(pos, from);
+            let displaced = slot_at[pos];
+            at[displaced] = from;
+            slot_at[from] = displaced;
+            at[slot] = pos;
+            slot_at[pos] = slot;
+        }
+    }
+    for (entry, &slot) in cursors.iter_mut().zip(&order) {
+        entry.1 = slot as i64;
+    }
+    let mut legs: Vec<PhraseLeg<'_>> = cursors
         .into_iter()
-        .enumerate()
-        .map(|(slot, (cursor, cost))| (PhraseLeg { cursor, slot }, cost))
+        .map(|(cursor, slot)| PhraseLeg {
+            cursor,
+            slot: slot as usize,
+        })
         .collect();
-    // `ConjunctionDISI` leads with the cheapest iterator.
-    legs.sort_by_key(|(_, cost)| *cost);
-    let mut legs: Vec<PhraseLeg<'_>> = legs.into_iter().map(|(l, _)| l).collect();
 
     let mut positions: Vec<Vec<i32>> = vec![Vec::new(); n];
     // The sloppy matcher's buffers, reused across documents.
