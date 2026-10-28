@@ -743,6 +743,26 @@ impl<'s, 'a> IndexSearcher<'s, 'a> {
         leaf: usize,
         include_deleted: bool,
     ) -> Result<Vec<(i32, f32)>> {
+        let (rewritten, global) = self.prepare(query)?;
+        self.leaf_scores_prepared(
+            rewritten.as_ref().unwrap_or(query),
+            &global,
+            leaf,
+            include_deleted,
+        )
+    }
+
+    /// [`Self::leaf_scores`] for a query already [`Self::prepare`]d (its
+    /// rewritten form and reader-wide statistics): for a caller scoring
+    /// several leaves, which would otherwise rewrite the query and gather
+    /// every segment's statistics again for each one.
+    pub(crate) fn leaf_scores_prepared(
+        &self,
+        query: &BooleanQuery,
+        global: &crate::GlobalStats,
+        leaf: usize,
+        include_deleted: bool,
+    ) -> Result<Vec<(i32, f32)>> {
         struct All(Vec<(i32, f32)>);
         impl ScoringCollector for All {
             fn collect(&mut self, doc: i32, score: f32) {
@@ -753,8 +773,6 @@ impl<'s, 'a> IndexSearcher<'s, 'a> {
             segment: leaf,
             segments: self.segments.len(),
         })?;
-        let (rewritten, global) = self.prepare(query)?;
-        let query = rewritten.as_ref().unwrap_or(query);
         let sim = self.similarity.filter(|s| !s.is_default_bm25());
         let one = OpenSegment {
             live_docs: if include_deleted { None } else { seg.live_docs },
@@ -766,7 +784,7 @@ impl<'s, 'a> IndexSearcher<'s, 'a> {
                 &one,
                 query,
                 self.norms(leaf),
-                &global,
+                global,
                 sim,
                 &mut all,
             )?,
@@ -774,7 +792,7 @@ impl<'s, 'a> IndexSearcher<'s, 'a> {
                 &one,
                 query,
                 self.norms(leaf),
-                Some(&global),
+                Some(global),
                 &mut all,
             )?,
         }

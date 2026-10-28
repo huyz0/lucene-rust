@@ -156,12 +156,22 @@ impl Rescorer for QueryRescorer {
         let searcher = ctx.searcher()?;
         let mut hits = first_pass.score_docs.clone();
         hits.sort_by_key(|h| h.doc);
-        // One scorer per leaf, advanced through the leaf's hits in order.
+        // One scorer per leaf, advanced through the leaf's hits in order;
+        // the query rewritten and its statistics gathered once, not per leaf.
+        let mut prepared = None;
         let mut current: Option<(usize, Vec<(i32, f32)>)> = None;
         for hit in &mut hits {
             let (leaf, local) = leaf_of(searcher, hit.doc)?;
             if current.as_ref().is_none_or(|(l, _)| *l != leaf) {
-                current = Some((leaf, searcher.leaf_scores(&self.query, leaf, true)?));
+                if prepared.is_none() {
+                    prepared = Some(searcher.prepare(&self.query)?);
+                }
+                let (rewritten, global) = prepared.as_ref().expect("prepared above");
+                let query = rewritten.as_ref().unwrap_or(&self.query);
+                current = Some((
+                    leaf,
+                    searcher.leaf_scores_prepared(query, global, leaf, true)?,
+                ));
             }
             let scores = current.as_ref().map(|(_, s)| s.as_slice()).unwrap_or(&[]);
             hit.score = match scores.binary_search_by_key(&local, |&(d, _)| d) {
