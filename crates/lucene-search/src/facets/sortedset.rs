@@ -27,7 +27,7 @@
 //!   summed at the end rather than into one shared `AtomicIntegerArray` (the
 //!   same sums: the additions wrap either way).
 
-use super::facet_utils::for_each_hit;
+use super::facet_utils::{for_each_hit, for_each_hit_in};
 use super::facets_collector::{FacetsCollector, MatchingDocs};
 use super::{
     DimTree, FacetResult, FacetValue, Facets, FacetsConfig, FacetsState, FacetsStateError,
@@ -304,22 +304,30 @@ impl CountSink for [i32] {
     }
 }
 
-/// The documents to count of a segment, each handed to `f` with `values`
-/// positioned on it: the hits that have values, or (`hits` `None`) every
-/// live document that has (`countOneSegmentNHLD` without deletions).
+/// The documents to count of a segment (of its documents in `range` only,
+/// when given), each handed to `f` with `values` positioned on it: the hits
+/// that have values, or (`hits` `None`) every live document that has
+/// (`countOneSegmentNHLD` without deletions).
 #[inline]
 fn for_each_counted(
     hits: Option<&MatchingDocs<'_>>,
     context: &LeafReaderContext<'_>,
+    range: Option<(i32, i32)>,
     values: &mut (dyn SortedSetDocValues + '_),
     mut f: impl FnMut(&mut (dyn SortedSetDocValues + '_)) -> Result<()>,
 ) -> Result<()> {
     if let Some(hits) = hits {
-        return for_each_hit(&hits.bits, values, f);
+        return match range {
+            None => for_each_hit(&hits.bits, values, f),
+            Some((lo, hi)) => for_each_hit_in(&hits.bits, values, lo, hi, f),
+        };
     }
     let live = context.reader.live_docs();
-    let mut doc = values.next_doc()?;
-    while doc != NO_MORE_DOCS {
+    let (mut doc, hi) = match range {
+        None => (values.next_doc()?, NO_MORE_DOCS),
+        Some((lo, hi)) => (values.advance(lo.max(0))?, hi),
+    };
+    while doc < hi && doc != NO_MORE_DOCS {
         if live.is_none_or(|l| l.get_doc(doc)) {
             f(values)?;
         }
@@ -351,19 +359,20 @@ fn for_each_ord(
 /// segment's hits (or live documents) into `counts`, through the ordinal map
 /// when one is in use -- remapping each ordinal as it comes when the hits
 /// are few against the segment's terms, else counting in segment ordinals
-/// first.
+/// first. With a `range`, only the segment's documents in it.
 fn count_one_segment<S: CountSink + ?Sized>(
     field: &str,
     ordinal_map: Option<&OrdinalMap>,
     context: &LeafReaderContext<'_>,
     hits: Option<&MatchingDocs<'_>>,
+    range: Option<(i32, i32)>,
     counts: &mut S,
 ) -> Result<()> {
     let mut values = get_sorted_set(context.reader, field)?;
     let values = values.as_mut();
     let Some(map) = ordinal_map else {
         // No ordinal map (one segment): segment ordinals are global.
-        return for_each_counted(hits, context, values, |dv| {
+        return for_each_counted(hits, context, range, values, |dv| {
             for_each_ord(dv, |ord| counts.add(ord, 1))
         });
     };
@@ -380,13 +389,13 @@ fn count_one_segment<S: CountSink + ?Sized>(
     };
     if hits.is_some_and(|h| h.total_hits < num_seg_ords / 10) {
         // Remap every ordinal to its global one as it comes.
-        return for_each_counted(hits, context, values, |dv| {
+        return for_each_counted(hits, context, range, values, |dv| {
             for_each_ord(dv, |ord| counts.add(global(ord)?, 1))
         });
     }
     // Count in segment ordinals first, then migrate to global ones.
     let mut seg_counts = vec![0i32; usize::try_from(num_seg_ords).unwrap_or(0)];
-    for_each_counted(hits, context, values, |dv| {
+    for_each_counted(hits, context, range, values, |dv| {
         for_each_ord(dv, |ord| seg_counts.as_mut_slice().add(ord, 1))
     })?;
     for (ord, &count) in (0i64..).zip(&seg_counts) {
@@ -395,6 +404,62 @@ fn count_one_segment<S: CountSink + ?Sized>(
         }
     }
     Ok(())
+}
+
+/// The fewest documents a chunk of a segment counted on its own task holds:
+/// below it a task's own count array and start-up cost more than the
+/// documents.
+const MIN_CHUNK_DOCS: i32 = 1 << 16;
+
+/// One counting task: a segment, its hits, and the documents of it to count
+/// (`None`: all of them).
+type Chunk<'t, 'c, 'h> = (
+    &'t LeafReaderContext<'c>,
+    Option<&'t MatchingDocs<'h>>,
+    Option<(i32, i32)>,
+);
+
+/// The segments to count as tasks for `threads` threads: each segment whole
+/// while there are as many segments as threads, else every segment of at
+/// least two `min_chunk`s ([`MIN_CHUNK_DOCS`]) cut into document ranges
+/// (whole 64-document words of the hits) of about `total / threads`
+/// documents each, so that a single large segment is counted on every
+/// thread too.
+fn split_into_chunks<'t, 'c, 'h>(
+    todo: &[&'t (LeafReaderContext<'c>, Option<&'t MatchingDocs<'h>>)],
+    threads: usize,
+    min_chunk: i32,
+) -> Vec<Chunk<'t, 'c, 'h>> {
+    let whole = || todo.iter().map(|(c, h)| (c, *h, None)).collect::<Vec<_>>();
+    if threads <= 1 || todo.len() >= threads {
+        return whole();
+    }
+    let total: i64 = todo
+        .iter()
+        .map(|(c, _)| i64::from(c.reader.max_doc()))
+        .sum();
+    let per_thread = total / i64::try_from(threads).unwrap_or(1).max(1);
+    // Rounded up to whole words of the hits' bits.
+    let size = i32::try_from(per_thread)
+        .unwrap_or(i32::MAX)
+        .max(min_chunk)
+        .saturating_add(63)
+        & !63;
+    let mut out = Vec::new();
+    for (context, hits) in todo.iter().map(|t| (&t.0, t.1)) {
+        let max_doc = context.reader.max_doc();
+        if max_doc < min_chunk.saturating_mul(2) {
+            out.push((context, hits, None));
+            continue;
+        }
+        let mut lo = 0i32;
+        while lo < max_doc {
+            let hi = lo.saturating_add(size).min(max_doc);
+            out.push((context, hits, Some((lo, hi))));
+            lo = hi;
+        }
+    }
+    out
 }
 
 /// `a[i] += b[i]`, wrapping as Java's `int` sums.
@@ -439,6 +504,7 @@ impl<'s> SortedSetDocValuesFacetCounts<'s> {
                 state.ordinal_map(),
                 &leaf,
                 None,
+                None,
                 c.as_mut_slice(),
             )?;
         }
@@ -463,7 +529,14 @@ impl<'s> SortedSetDocValuesFacetCounts<'s> {
                 continue;
             }
             let c = counts.get_or_insert_with(|| new_counts(state));
-            count_one_segment(state.field(), map, &m.context, Some(m), c.as_mut_slice())?;
+            count_one_segment(
+                state.field(),
+                map,
+                &m.context,
+                Some(m),
+                None,
+                c.as_mut_slice(),
+            )?;
         }
         Ok(Self::over(state, counts))
     }
@@ -567,30 +640,59 @@ impl<'s> ConcurrentSortedSetDocValuesFacetCounts<'s> {
         map: Option<&OrdinalMap>,
         tasks: &[(LeafReaderContext<'_>, Option<&MatchingDocs<'_>>)],
     ) -> Result<Self> {
+        Self::run_chunked(
+            state,
+            map,
+            tasks,
+            rayon::current_num_threads(),
+            MIN_CHUNK_DOCS,
+        )
+    }
+
+    /// [`Self::run`] for `threads` threads, a chunk holding at least
+    /// `min_chunk` documents.
+    fn run_chunked(
+        state: &'s DefaultSortedSetDocValuesReaderState<'_>,
+        map: Option<&OrdinalMap>,
+        tasks: &[(LeafReaderContext<'_>, Option<&MatchingDocs<'_>>)],
+        threads: usize,
+        min_chunk: i32,
+    ) -> Result<Self> {
         use rayon::prelude::*;
         let n = state.facets_state().size();
         let todo: Vec<&(LeafReaderContext<'_>, Option<&MatchingDocs<'_>>)> = tasks
             .iter()
             .filter(|(_, hits)| !hits.is_some_and(|h| h.total_hits == 0))
             .collect();
+        let chunks = split_into_chunks(&todo, threads, min_chunk);
         // Each task counts into an array of its own (no atomic per ordinal),
-        // the arrays summed at the end; one task runs on this thread.
-        let counts = if todo.len() <= 1 {
+        // the arrays summed at the end (wrapping, so in any order); one task
+        // runs on this thread.
+        let counts = if chunks.len() <= 1 {
             let mut counts = vec![0i32; n];
-            for (context, hits) in todo {
-                count_one_segment(state.field(), map, context, *hits, counts.as_mut_slice())?;
+            for &(context, hits, range) in &chunks {
+                count_one_segment(
+                    state.field(),
+                    map,
+                    context,
+                    hits,
+                    range,
+                    counts.as_mut_slice(),
+                )?;
             }
             counts
         } else {
-            todo.par_iter()
+            chunks
+                .par_iter()
                 .try_fold(
                     || vec![0i32; n],
-                    |mut counts, (context, hits)| {
+                    |mut counts, &(context, hits, range)| {
                         count_one_segment(
                             state.field(),
                             map,
                             context,
-                            *hits,
+                            hits,
+                            range,
                             counts.as_mut_slice(),
                         )?;
                         Ok::<_, Error>(counts)
