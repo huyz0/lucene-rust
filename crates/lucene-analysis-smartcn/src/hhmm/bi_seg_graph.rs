@@ -12,6 +12,7 @@
 
 use lucene_analysis::AnalysisError;
 
+use super::abstract_dictionary::{hash1, hash1_from, hash2, hash2_from};
 use super::bigram_dictionary::{BigramDictionary, WORD_SEGMENT_CHAR};
 use super::seg_graph::SegGraph;
 use super::seg_token::SegToken;
@@ -70,7 +71,6 @@ impl BiSegGraph {
         let smooth = 0.1;
         let tiny_double = 1.0 / f64::from(MAX_FREQUENCE);
         let max_start = seg_graph.get_max_start();
-        let mut id_buffer = Vec::new();
         let mut key = -1;
         // ARITH: key and next run from -1 up to max_start, a sentence offset.
         #[allow(clippy::arithmetic_side_effects)]
@@ -90,12 +90,15 @@ impl BiSegGraph {
                     let Some(next_tokens) = next_tokens else {
                         break;
                     };
+                    // `t1 + '@'` hashed once; each `t2` continues it.
+                    let sep = [WORD_SEGMENT_CHAR];
+                    let prefix = (
+                        hash1_from(hash1(&t1.char_array), &sep),
+                        hash2_from(hash2(&t1.char_array), &sep),
+                    );
                     for t2 in next_tokens {
-                        id_buffer.clear();
-                        id_buffer.extend_from_slice(&t1.char_array);
-                        id_buffer.push(WORD_SEGMENT_CHAR);
-                        id_buffer.extend_from_slice(&t2.char_array);
-                        let word_pair_freq = f64::from(bigram_dict.get_frequency(&id_buffer));
+                        let word_pair_freq =
+                            f64::from(bigram_dict.get_frequency_continued(prefix, &t2.char_array));
                         // Java's operation order. `f64::ln` is the platform
                         // libm, not HotSpot's `Math.log` intrinsic (which
                         // itself differs between x86-64 and arm64): the two

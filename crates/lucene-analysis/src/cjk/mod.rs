@@ -363,7 +363,11 @@ pub struct CJKWidthCharFilter<R> {
     prev_char: Option<u16>,
     input_off: i32,
     corrections: OffsetCorrections,
-    one: [u16; 1],
+    /// Input read ahead (Java reads one `char` per call; the output and
+    /// its offsets are the same), `inbuf[in_pos..in_len]` still unread.
+    inbuf: Vec<u16>,
+    in_pos: usize,
+    in_len: usize,
 }
 
 impl<R: CharReader> CJKWidthCharFilter<R> {
@@ -374,13 +378,27 @@ impl<R: CharReader> CJKWidthCharFilter<R> {
             prev_char: None,
             input_off: 0,
             corrections: OffsetCorrections::default(),
-            one: [0],
+            inbuf: Vec::new(),
+            in_pos: 0,
+            in_len: 0,
         }
     }
 
+    #[inline]
     fn input_read(&mut self) -> Result<Option<u16>, AnalysisError> {
-        let n = self.input.read(&mut self.one)?;
-        Ok((n == 1).then_some(self.one[0]))
+        if self.in_pos == self.in_len {
+            if self.inbuf.is_empty() {
+                self.inbuf = vec![0; 1024];
+            }
+            self.in_len = self.input.read(&mut self.inbuf)?;
+            self.in_pos = 0;
+            if self.in_len == 0 {
+                return Ok(None);
+            }
+        }
+        let c = self.inbuf[self.in_pos];
+        self.in_pos += 1;
+        Ok(Some(c))
     }
 
     // Java: CJKWidthCharFilter.read()

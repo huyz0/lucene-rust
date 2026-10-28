@@ -121,7 +121,14 @@ impl RollingCharBuffer {
             }
             self.window.extend_from_slice(&self.chunk[..n]);
         }
-        debug_assert!(pos >= self.first_pos, "pos {pos} was freed");
+        // Java asserts this (and, unasserted, reads a stale slot of its
+        // ring); here a freed position is an error, never "end of input".
+        if pos < self.first_pos {
+            return Err(AnalysisError::IllegalState(format!(
+                "position {pos} was already freed (first buffered {})",
+                self.first_pos
+            )));
+        }
         Ok(self.peek(pos))
     }
 
@@ -167,8 +174,19 @@ impl RollingCharBuffer {
 /// One node of [`NormalizeCharMap`]'s trie.
 #[derive(Debug, Clone, Default)]
 struct Node {
-    children: BTreeMap<u16, usize>,
+    /// Sorted by unit (searched, not hashed: most nodes have a few).
+    children: Vec<(u16, usize)>,
     output: Option<Vec<u16>>,
+}
+
+impl Node {
+    #[inline]
+    fn child(&self, u: u16) -> Option<usize> {
+        self.children
+            .binary_search_by_key(&u, |&(c, _)| c)
+            .ok()
+            .map(|i| self.children[i].1)
+    }
 }
 
 /// `org.apache.lucene.analysis.charfilter.NormalizeCharMap`.
@@ -179,6 +197,21 @@ struct Node {
 #[derive(Debug, Clone, Default)]
 pub struct NormalizeCharMap {
     nodes: Vec<Node>,
+    /// The root's child for each Latin-1 unit (0: none; the root is never a
+    /// child): the per-character first step, one load.
+    root_latin1: Vec<u32>,
+}
+
+impl NormalizeCharMap {
+    /// The root's child for `u`.
+    #[inline]
+    fn root_child(&self, u: u16) -> Option<usize> {
+        match self.root_latin1.get(usize::from(u)) {
+            Some(0) => None,
+            Some(&n) => Some(n as usize),
+            None => self.nodes.first()?.child(u),
+        }
+    }
 }
 
 /// `NormalizeCharMap.Builder`.
@@ -211,21 +244,35 @@ impl NormalizeCharMapBuilder {
 
     /// `build()`.
     pub fn build(self) -> NormalizeCharMap {
-        let mut map = NormalizeCharMap {
-            nodes: vec![Node::default()],
-        };
+        let mut children: Vec<BTreeMap<u16, usize>> = vec![BTreeMap::new()];
+        let mut outputs: Vec<Option<Vec<u16>>> = vec![None];
         for (k, v) in self.pending {
             let mut n = 0;
             for u in k.encode_utf16() {
-                let next = map.nodes.len();
-                n = *map.nodes[n].children.entry(u).or_insert(next);
+                let next = children.len();
+                n = *children[n].entry(u).or_insert(next);
                 if n == next {
-                    map.nodes.push(Node::default());
+                    children.push(BTreeMap::new());
+                    outputs.push(None);
                 }
             }
-            map.nodes[n].output = Some(v.encode_utf16().collect());
+            outputs[n] = Some(v.encode_utf16().collect());
         }
-        map
+        let nodes: Vec<Node> = children
+            .into_iter()
+            .zip(outputs)
+            .map(|(c, output)| Node {
+                children: c.into_iter().collect(),
+                output,
+            })
+            .collect();
+        let mut root_latin1 = vec![0u32; 256];
+        for &(u, n) in &nodes[0].children {
+            if let Some(slot) = root_latin1.get_mut(usize::from(u)) {
+                *slot = n as u32;
+            }
+        }
+        NormalizeCharMap { nodes, root_latin1 }
     }
 }
 
@@ -266,9 +313,7 @@ impl<R: CharReader> MappingCharFilter<R> {
             }
             let mut last_match: Option<(i32, usize)> = None; // (len, node)
             if let Some(first) = self.buffer.get(&mut self.input, self.input_off)? {
-                if let Some(&root_child) =
-                    self.map.nodes.first().and_then(|r| r.children.get(&first))
-                {
+                if let Some(root_child) = self.map.root_child(first) {
                     let mut node = root_child;
                     let mut lookahead = 0;
                     loop {
@@ -285,8 +330,8 @@ impl<R: CharReader> MappingCharFilter<R> {
                         else {
                             break;
                         };
-                        match self.map.nodes[node].children.get(&ch) {
-                            Some(&next) => node = next,
+                        match self.map.nodes[node].child(ch) {
+                            Some(next) => node = next,
                             None => break,
                         }
                     }
@@ -294,7 +339,10 @@ impl<R: CharReader> MappingCharFilter<R> {
             }
             if let Some((len, node)) = last_match {
                 self.input_off += len;
-                let out = self.map.nodes[node].output.clone().expect("a final node");
+                let out = self.map.nodes[node]
+                    .output
+                    .as_deref()
+                    .expect("a final node");
                 let diff = len - out.len() as i32;
                 if diff != 0 {
                     let prev = self.corrections.last_cumulative_diff();
@@ -308,7 +356,8 @@ impl<R: CharReader> MappingCharFilter<R> {
                         }
                     }
                 }
-                self.replacement = out;
+                self.replacement.clear();
+                self.replacement.extend_from_slice(out);
                 self.replacement_pointer = 0;
             } else {
                 let ret = self.buffer.get(&mut self.input, self.input_off)?;
@@ -394,6 +443,13 @@ mod tests {
         assert_eq!(corr, vec![3, 4]);
         let empty = std::sync::Arc::new(NormalizeCharMapBuilder::new().build());
         assert_eq!(run(&empty, "x").0, "x");
+        assert_eq!(run(&std::sync::Arc::default(), "x\u{100}").0, "x\u{100}");
+        // Keys past Latin-1 are found off the root's sorted children.
+        let mut b = NormalizeCharMapBuilder::new();
+        b.add("\u{101}", "a").unwrap();
+        b.add("\u{100}\u{100}", "A").unwrap();
+        let map = std::sync::Arc::new(b.build());
+        assert_eq!(run(&map, "\u{101}\u{100}\u{100}\u{100}x").0, "aA\u{100}x");
     }
 
     #[test]
@@ -428,6 +484,11 @@ mod tests {
         assert_eq!(r.get(&mut input, 1500).unwrap(), Some(text[1500]));
         r.free_before(1400);
         assert_eq!((r.peek(1399), r.peek(1400)), (None, Some(text[1400])));
+        // A freed position is an error, not the end of the input.
+        assert!(matches!(
+            r.get(&mut input, 1399),
+            Err(AnalysisError::IllegalState(_))
+        ));
         assert_eq!(r.get(&mut input, 2999).unwrap(), Some(text[2999]));
         assert_eq!(r.slice(1400, 3), &text[1400..1403]);
         r.free_before(5000);

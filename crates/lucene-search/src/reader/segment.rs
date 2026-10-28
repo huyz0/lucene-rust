@@ -882,7 +882,7 @@ impl SegmentReader {
     }
 }
 
-crate::impl_leaf_index_reader!(SegmentReader, |s| max_doc: s.max_doc, reader_cache_helper: Some(s.reader_cache_helper()));
+crate::impl_leaf_index_reader!(SegmentReader, |s| max_doc: s.max_doc, num_docs: SegmentReader::num_docs(s), reader_cache_helper: Some(s.reader_cache_helper()));
 
 impl LeafReader for SegmentReader {
     fn field_infos(&self) -> &FieldInfos {
@@ -953,12 +953,12 @@ impl LeafReader for SegmentReader {
         else {
             return Ok(None);
         };
-        let docs = DocSet::read(
+        let docs = DocSet::cached(
+            self,
             data,
             e.docs_with_field_offset,
             e.docs_with_field_length,
             e.dense_rank_power,
-            self.max_doc,
         )?;
         Ok(Some(Box::new(SegBinary {
             cur: DvCursor::new(docs),
@@ -1075,13 +1075,15 @@ impl LeafReader for SegmentReader {
         let (Some(e), Some(data)) = (self.norms_entry(fi.number), self.norms_data()) else {
             return Ok(None);
         };
-        // Norms record their documents exactly as doc values do.
-        let docs = DocSet::read(
+        // Norms record their documents exactly as doc values do, and share
+        // their cache: `.nvd` is a buffer of its own, so its sets cannot
+        // collide with `.dvd`'s.
+        let docs = DocSet::cached(
+            self,
             data,
             e.docs_with_field_offset,
             e.docs_with_field_length,
             e.dense_rank_power,
-            self.max_doc,
         )?;
         Ok(Some(Box::new(SegNorms {
             cur: DvCursor::new(docs),

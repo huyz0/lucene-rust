@@ -22,7 +22,7 @@
 //! mark before any Han or kana was ever segmented) makes the unhandled
 //! engine claim that whole script from then on, process-wide.
 
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock, RwLock};
 
 use crate::icu4j::binary::read_header;
 use crate::icu4j::char_iter::{CharIter, DONE32};
@@ -976,10 +976,12 @@ struct Registry {
     unhandled: UnicodeSet,
 }
 
-fn registry() -> &'static Mutex<Registry> {
-    static R: OnceLock<Mutex<Registry>> = OnceLock::new();
+/// Read-mostly: every dictionary run looks its engine up, and only the
+/// first run of a script adds one.
+fn registry() -> &'static RwLock<Registry> {
+    static R: OnceLock<RwLock<Registry>> = OnceLock::new();
     R.get_or_init(|| {
-        Mutex::new(Registry {
+        RwLock::new(Registry {
             engines: vec![Engine::Unhandled],
             unhandled: UnicodeSet::new(),
         })
@@ -998,8 +1000,15 @@ impl Engine {
 
 /// `RuleBasedBreakIterator.getLanguageBreakEngine(c)`.
 pub fn language_break_engine(c: i32) -> Engine {
-    let mut r = registry().lock().unwrap_or_else(|e| e.into_inner());
+    {
+        let r = registry().read().unwrap_or_else(|e| e.into_inner());
+        if let Some(e) = r.engines.iter().find(|e| e.handles(c, &r.unhandled)) {
+            return e.clone();
+        }
+    }
+    let mut r = registry().write().unwrap_or_else(|e| e.into_inner());
     let Registry { engines, unhandled } = &mut *r;
+    // Another thread may have added it between the two locks.
     if let Some(e) = engines.iter().find(|e| e.handles(c, unhandled)) {
         return e.clone();
     }
@@ -1047,9 +1056,9 @@ impl Engine {
     ) -> i32 {
         let set = match self {
             Engine::Unhandled => {
-                let r = registry().lock().unwrap_or_else(|e| e.into_inner());
-                let uniset = r.unhandled.clone();
-                drop(r);
+                // Scanned under the read lock rather than cloning the set.
+                let r = registry().read().unwrap_or_else(|e| e.into_inner());
+                let uniset = &r.unhandled;
                 let mut c = text.current32();
                 while (text.index() as i32) < end_pos && uniset.contains(c) {
                     text.next32();

@@ -78,7 +78,7 @@ impl SequenceContext for LemmaContext<'_> {
     // ARITH: suffix and prefix lengths below 8, subtracted with saturation.
     #[allow(clippy::arithmetic_side_effects)]
     fn context(&mut self, index: usize, prior: &[u32], outcomes: &[JString], f: &mut Vec<JString>) {
-        let cat = |k: &str, v: &[u16]| text::concat(&[&text::units(k), v]);
+        let cat = |k: &str, v: &[u16]| text::keyed(k, v);
         let lex = &self.toks[index];
         let p_1 = match index.checked_sub(1).and_then(|i| prior.get(i)) {
             Some(&o) => cat("p_1=", &outcomes[o as usize]),
@@ -86,11 +86,8 @@ impl SequenceContext for LemmaContext<'_> {
         };
         let w0 = cat("w0=", lex);
         let t0 = cat("t0=", self.tags.get(index).map_or(&[][..], Vec::as_slice));
-        f.push(w0.clone());
-        f.push(t0.clone());
-        f.push(p_1.clone());
-        f.push(text::concat(&[&p_1, &t0]));
-        f.push(text::concat(&[&p_1, &w0]));
+        let (p_1t0, p_1w0) = (text::concat(&[&p_1, &t0]), text::concat(&[&p_1, &w0]));
+        f.extend([w0, t0, p_1, p_1t0, p_1w0]);
         // getSuffixes/getPrefixes leave index 0 unset: "suf=null", "pre=null"
         f.push(text::units("suf=null"));
         for li in 1..7 {

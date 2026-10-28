@@ -167,6 +167,70 @@ fn bench_points_decode_all(c: &mut Criterion) {
     )
     .unwrap();
     let big = points::open(&big_kdm, &big_kdi, &big_kdd, &id, "").unwrap();
+    {
+        let mut group = c.benchmark_group("points");
+        group.sample_size(20);
+        // `write_packed`, the flat layout a flush hands the BKD writer.
+        let field = points::PackedPointsField {
+            field_number: 0,
+            num_dims: 1,
+            num_index_dims: 1,
+            bytes_per_dim: 8,
+            docs: (0..200_000i32).collect(),
+            values: (0..200_000i64)
+                .flat_map(|i| {
+                    let v = i.wrapping_mul(2_654_435_761) % 1_000_000_007;
+                    ((v as u64) ^ 0x8000_0000_0000_0000).to_be_bytes()
+                })
+                .collect(),
+        };
+        group.bench_function("write_packed_200k_1d", |b| {
+            b.iter(|| {
+                black_box(
+                    points::write_packed(
+                        vec![field.clone()],
+                        points::DEFAULT_MAX_POINTS_IN_LEAF_NODE,
+                        200_000,
+                        &id,
+                        "",
+                    )
+                    .unwrap(),
+                )
+            })
+        });
+        let field2 = points::PackedPointsField {
+            field_number: 0,
+            num_dims: 2,
+            num_index_dims: 2,
+            bytes_per_dim: 4,
+            docs: (0..200_000i32).collect(),
+            values: (0..200_000u32)
+                .flat_map(|i| {
+                    let x = i.wrapping_mul(2_654_435_761);
+                    let y = i.wrapping_mul(40_503).rotate_left(7);
+                    let mut v = [0u8; 8];
+                    v[..4].copy_from_slice(&x.to_be_bytes());
+                    v[4..].copy_from_slice(&y.to_be_bytes());
+                    v
+                })
+                .collect(),
+        };
+        group.bench_function("write_packed_200k_2d", |b| {
+            b.iter(|| {
+                black_box(
+                    points::write_packed(
+                        vec![field2.clone()],
+                        points::DEFAULT_MAX_POINTS_IN_LEAF_NODE,
+                        200_000,
+                        &id,
+                        "",
+                    )
+                    .unwrap(),
+                )
+            })
+        });
+        group.finish();
+    }
     let mut big_values: Vec<Vec<u8>> = big
         .decode_all_points(0)
         .unwrap()
@@ -607,6 +671,10 @@ fn bench_vectors_search(c: &mut Criterion) {
     .build(count)
     .unwrap();
 
+    // The merge's first step on each source graph: the join set.
+    c.bench_function("vectors/hnsw_join_set_50k", |b| {
+        b.iter(|| black_box(hnsw::compute_join_set(&graph).unwrap().len()))
+    });
     let mut group = c.benchmark_group("vectors");
     // Both arms run all 25 queries per iteration, so per-query cost is the
     // reported time / 25 and the two are directly comparable.
@@ -790,8 +858,231 @@ fn bench_sparse_numeric_reader(c: &mut Criterion) {
     group.finish();
 }
 
+/// `SortedNumericReader::values` over a dense multi-valued field whose values
+/// are split into varying-bits-per-value blocks (block magnitudes differ by
+/// orders, so the writer picks per-block bit widths): each document's
+/// values are read forward, as a sort or facet walks them.
+fn bench_sorted_numeric_varying_bpv(c: &mut Criterion) {
+    use lucene_codecs::field_infos::{
+        DocValuesSkipIndexType, DocValuesType, FieldInfo, FieldInfos, IndexOptions, VectorEncoding,
+        VectorSimilarityFunction,
+    };
+    const DOCS: usize = 60_000;
+    let values: Vec<Vec<i64>> = (0..DOCS)
+        .map(|d| {
+            let block = (2 * d) >> 14;
+            let span = 1i64 << (2 + (block * 9) % 40);
+            let v = (d as i64 * 7919) % span;
+            vec![v, v + 1]
+        })
+        .collect();
+    let id = [3u8; 16];
+    let (dvm, dvd, _) = ndv::write_single_dense_sorted_numeric_field(0, &values, &id, "").unwrap();
+    let fis = FieldInfos {
+        fields: vec![FieldInfo {
+            name: "f".into(),
+            number: 0,
+            store_term_vectors: false,
+            omit_norms: false,
+            store_payloads: false,
+            soft_deletes_field: false,
+            parent_field: false,
+            index_options: IndexOptions::None,
+            doc_values_type: DocValuesType::SortedNumeric,
+            doc_values_skip_index_type: DocValuesSkipIndexType::None,
+            doc_values_gen: -1,
+            attributes: Vec::new(),
+            point_dimension_count: 0,
+            point_index_dimension_count: 0,
+            point_num_bytes: 0,
+            vector_dimension: 0,
+            vector_encoding: VectorEncoding::Float32,
+            vector_similarity_function: VectorSimilarityFunction::Euclidean,
+        }],
+    };
+    let (_, meta) = ndv::parse_meta(&dvm, &id, "", &fis).unwrap();
+    let entry = meta.sorted_numeric_entry(0).unwrap();
+    assert!(
+        entry.numeric.block_shift.is_some(),
+        "values did not split into varying-bits-per-value blocks"
+    );
+    c.bench_function("doc_values/sorted_numeric_varying_bpv_forward", |b| {
+        let mut out = Vec::new();
+        b.iter(|| {
+            let mut r = ndv::SortedNumericReader::new(&dvd, entry);
+            let mut sum = 0i64;
+            for d in 0..DOCS as i32 {
+                r.values(d, &mut out).unwrap();
+                sum = sum.wrapping_add(out[0]);
+            }
+            black_box(sum)
+        })
+    });
+}
+
+/// Flushing a dense NUMERIC field whose values share a large GCD (timestamps
+/// rounded to the second, in millis): the GCD pass touches every value.
+fn bench_numeric_write_gcd(c: &mut Criterion) {
+    let mut x = 0x2545_F491_4F6C_DD1Du64;
+    let values: Vec<i64> = (0..200_000)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            1_700_000_000_000 + (x % 86_400_000) as i64 / 1000 * 1000
+        })
+        .collect();
+    let id = [5u8; 16];
+    c.bench_function("doc_values/write_dense_numeric_gcd_200k", |b| {
+        b.iter(|| {
+            black_box(
+                ndv::write_single_dense_numeric_field(0, &values, values.len() as i32, &id, "")
+                    .unwrap(),
+            )
+        })
+    });
+}
+
+/// Writing one positions-indexed field's postings and terms dictionary:
+/// 30k terms with Zipf-like document frequencies (most terms in a handful
+/// of documents, a few in thousands), as a text field's flush produces.
+fn bench_postings_write(c: &mut Criterion) {
+    use field_infos::IndexOptions;
+    const DOCS: i32 = 20_000;
+    let mut x = 0x9E37_79B9_7F4A_7C15u64;
+    let mut rnd = move || {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        x
+    };
+    let mut terms: Vec<postings_writer::TermPostings> = (0..30_000u32)
+        .map(|t| {
+            let df = (DOCS as u32 / (t + 1)).max(1 + (t % 3)) as usize;
+            let step = (DOCS as usize / df).max(1);
+            let docs: Vec<(i32, i32)> = (0..df)
+                .map(|k| ((k * step) as i32, 1 + (rnd() % 3) as i32))
+                .collect();
+            let positions = docs
+                .iter()
+                .map(|&(_, f)| (0..f).map(|p| p * 5 + (rnd() % 5) as i32).collect())
+                .collect();
+            postings_writer::TermPostings {
+                term: format!("term{:06}{}", rnd() % 1_000_000, t).into_bytes(),
+                docs,
+                positions,
+                ..Default::default()
+            }
+        })
+        .collect();
+    terms.sort_by(|a, b| a.term.cmp(&b.term));
+    let input = postings_writer::FieldPostingsInput {
+        field_number: 0,
+        index_options: IndexOptions::DocsAndFreqsAndPositions,
+        doc_count: DOCS,
+        has_payloads: false,
+        terms: &terms,
+    };
+    let id = [9u8; 16];
+    let mut group = c.benchmark_group("postings_write");
+    group.sample_size(20);
+    group.bench_function("text_field_30k_terms", |b| {
+        b.iter(|| black_box(postings_writer::write_single_field(&input, &id, "").unwrap()))
+    });
+    group.finish();
+
+    // The same dictionary, read: exact seeks of every 7th term from 1 and
+    // from 4 threads at once on one shared field, as concurrent searches
+    // over one segment do.
+    use field_infos::{
+        DocValuesSkipIndexType, DocValuesType, FieldInfo, FieldInfos, VectorEncoding,
+        VectorSimilarityFunction,
+    };
+    let out = postings_writer::write_single_field(&input, &id, "").unwrap();
+    let fis = FieldInfos {
+        fields: vec![FieldInfo {
+            name: "f".to_string(),
+            number: 0,
+            store_term_vectors: false,
+            omit_norms: false,
+            store_payloads: false,
+            soft_deletes_field: false,
+            parent_field: false,
+            index_options: IndexOptions::DocsAndFreqsAndPositions,
+            doc_values_type: DocValuesType::None,
+            doc_values_skip_index_type: DocValuesSkipIndexType::None,
+            doc_values_gen: -1,
+            attributes: Vec::new(),
+            point_dimension_count: 0,
+            point_index_dimension_count: 0,
+            point_num_bytes: 0,
+            vector_dimension: 0,
+            vector_encoding: VectorEncoding::Float32,
+            vector_similarity_function: VectorSimilarityFunction::Euclidean,
+        }],
+    };
+    let fields = blocktree::open(&out.tim, &out.tip, &out.tmd, &fis, &id, "", DOCS).unwrap();
+    let field = fields.field("f").unwrap();
+    let probes: Vec<&[u8]> = terms.iter().step_by(7).map(|t| t.term.as_slice()).collect();
+    let mut group = c.benchmark_group("blocktree_seek");
+    group.sample_size(20);
+    for threads in [1usize, 4] {
+        group.bench_function(format!("seek_exact_4k_terms_x{threads}_threads"), |b| {
+            b.iter(|| {
+                std::thread::scope(|s| {
+                    for t in 0..threads {
+                        let probes = &probes;
+                        s.spawn(move || {
+                            let mut found = 0usize;
+                            for p in probes.iter().skip(t % 3) {
+                                found += usize::from(field.try_seek_exact(p).unwrap().is_some());
+                            }
+                            black_box(found)
+                        });
+                    }
+                })
+            })
+        });
+    }
+    group.finish();
+}
+
+/// Compiling a 200k-key FST with suffix sharing (`NodeHash`), as a
+/// suggester or a memory/FST terms codec does at flush.
+fn bench_fst_compile(c: &mut Criterion) {
+    use lucene_codecs::fst::{InputType, PositiveIntOutputs};
+    use lucene_codecs::fst_compiler::{FstCompiler, FstCompilerBuilder};
+    let mut keys: Vec<Vec<i32>> = (0..200_000u32)
+        .map(|i| {
+            format!("{:x}-suffix{}", i.wrapping_mul(2_654_435_761), i % 97)
+                .bytes()
+                .map(i32::from)
+                .collect()
+        })
+        .collect();
+    keys.sort();
+    keys.dedup();
+    let mut group = c.benchmark_group("fst");
+    group.sample_size(10);
+    group.bench_function("compile_200k", |b| {
+        b.iter(|| {
+            let mut fc: FstCompiler<PositiveIntOutputs> =
+                FstCompilerBuilder::new(InputType::Byte1).build();
+            for (i, k) in keys.iter().enumerate() {
+                fc.add(k, i as i64 % 1000).unwrap();
+            }
+            black_box(fc.compile())
+        })
+    });
+    group.finish();
+}
+
 criterion_group!(
     benches,
+    bench_fst_compile,
+    bench_postings_write,
+    bench_numeric_write_gcd,
+    bench_sorted_numeric_varying_bpv,
     bench_direct_monotonic_get,
     bench_stored_fields_document,
     bench_points_decode_all,

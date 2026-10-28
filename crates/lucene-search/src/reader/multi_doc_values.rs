@@ -291,20 +291,72 @@ pub fn sorted_numeric_values<'a, R: IndexReader + ?Sized>(
     Ok(Some(Box::new(MultiIter::new(&leaves, r.max_doc(), subs))))
 }
 
-/// Every term of a leaf's sorted values, by ordinal: what the ordinal map is
-/// built from.
-fn sorted_terms(v: Option<&mut Box<dyn SortedDocValues + '_>>) -> Result<Vec<Vec<u8>>> {
-    match v {
-        None => Ok(Vec::new()),
-        Some(v) => (0..v.value_count()).map(|o| v.lookup_ord(o)).collect(),
+/// A leaf's `lookupOrd`, over the leaf's ordinals widened to `i64`.
+type OrdLookup<'v> = Box<dyn FnMut(i64) -> Result<Vec<u8>> + 'v>;
+
+/// A leaf's sorted dictionary read in ordinal order, one term at a time:
+/// what [`OrdinalMap::build_streaming`] merges, so the leaves' dictionaries
+/// are never all held at once. A leaf without values is an empty cursor, as
+/// Java's `DocValues.emptySorted()` sub is.
+struct LookupCursor<'v> {
+    lookup: Option<OrdLookup<'v>>,
+    next: i64,
+    count: i64,
+    term: Vec<u8>,
+    /// The leaf's own error, handed back by [`ordinal_map`] in place of the
+    /// placeholder the cursor trait's error type has to carry.
+    error: Option<Error>,
+}
+
+impl<'v> LookupCursor<'v> {
+    fn new(count: i64, lookup: Option<OrdLookup<'v>>) -> Self {
+        Self {
+            lookup,
+            next: 0,
+            count,
+            term: Vec::new(),
+            error: None,
+        }
     }
 }
 
-fn sorted_set_terms(v: Option<&mut Box<dyn SortedSetDocValues + '_>>) -> Result<Vec<Vec<u8>>> {
-    match v {
-        None => Ok(Vec::new()),
-        Some(v) => (0..v.value_count()).map(|o| v.lookup_ord(o)).collect(),
+impl crate::ordinal_map::TermCursor for LookupCursor<'_> {
+    fn next_term(&mut self) -> lucene_store::Result<Option<&[u8]>> {
+        let Some(lookup) = self.lookup.as_mut() else {
+            return Ok(None);
+        };
+        if self.next >= self.count {
+            return Ok(None);
+        }
+        match lookup(self.next) {
+            Ok(term) => {
+                self.term = term;
+                self.next = self.next.saturating_add(1);
+                Ok(Some(&self.term))
+            }
+            Err(e) => {
+                self.error = Some(e);
+                Err(lucene_store::Error::Corrupted(
+                    "a leaf's sorted terms failed to read".into(),
+                ))
+            }
+        }
     }
+}
+
+/// The ordinal map over `cursors`, built by streaming each leaf's terms; a
+/// leaf's read error is reported as the leaf raised it.
+fn ordinal_map(cursors: &mut [LookupCursor<'_>]) -> Result<OrdinalMap> {
+    let mut refs: Vec<&mut dyn crate::ordinal_map::TermCursor> = cursors
+        .iter_mut()
+        .map(|c| c as &mut dyn crate::ordinal_map::TermCursor)
+        .collect();
+    OrdinalMap::build_streaming(&mut refs).map_err(|e| {
+        cursors
+            .iter_mut()
+            .find_map(|c| c.error.take())
+            .unwrap_or_else(|| e.into())
+    })
 }
 
 /// `MultiDocValues.MultiSortedDocValues`.
@@ -332,12 +384,23 @@ pub fn sorted_values<'a, R: IndexReader + ?Sized>(
     if subs.iter().all(Option::is_none) {
         return Ok(None);
     }
-    let terms = subs
-        .iter_mut()
-        .map(|s| sorted_terms(s.as_mut()))
-        .collect::<Result<Vec<_>>>()?;
+    let mapping = {
+        let mut cursors: Vec<LookupCursor<'_>> = subs
+            .iter_mut()
+            .map(|s| match s {
+                None => LookupCursor::new(0, None),
+                Some(v) => LookupCursor::new(
+                    i64::from(v.value_count()),
+                    Some(Box::new(move |o| {
+                        v.lookup_ord(i32::try_from(o).unwrap_or(i32::MAX))
+                    })),
+                ),
+            })
+            .collect();
+        ordinal_map(&mut cursors)?
+    };
     Ok(Some(Box::new(MultiSortedDocValues {
-        mapping: OrdinalMap::build(&terms),
+        mapping,
         iter: MultiIter::new(&leaves, r.max_doc(), subs),
     })))
 }
@@ -414,12 +477,20 @@ pub fn sorted_set_values<'a, R: IndexReader + ?Sized>(
     if subs.iter().all(Option::is_none) {
         return Ok(None);
     }
-    let terms = subs
-        .iter_mut()
-        .map(|s| sorted_set_terms(s.as_mut()))
-        .collect::<Result<Vec<_>>>()?;
+    let mapping = {
+        let mut cursors: Vec<LookupCursor<'_>> = subs
+            .iter_mut()
+            .map(|s| match s {
+                None => LookupCursor::new(0, None),
+                Some(v) => {
+                    LookupCursor::new(v.value_count(), Some(Box::new(move |o| v.lookup_ord(o))))
+                }
+            })
+            .collect();
+        ordinal_map(&mut cursors)?
+    };
     Ok(Some(Box::new(MultiSortedSetDocValues {
-        mapping: OrdinalMap::build(&terms),
+        mapping,
         iter: MultiIter::new(&leaves, r.max_doc(), subs),
     })))
 }

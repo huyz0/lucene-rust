@@ -28,6 +28,19 @@ pub fn concat(parts: &[&[u16]]) -> JString {
     out
 }
 
+/// `key + rest` (a string literal and a string) in one allocation.
+pub fn keyed(key: &str, rest: &[u16]) -> JString {
+    let mut out = Vec::with_capacity(key.len().saturating_add(rest.len()));
+    out.extend(key.encode_utf16());
+    out.extend_from_slice(rest);
+    out
+}
+
+/// `a + b` of two string literals.
+pub fn units2(a: &str, b: &str) -> JString {
+    a.encode_utf16().chain(b.encode_utf16()).collect()
+}
+
 /// `StringUtil.isWhitespace(char)`: `Character.isWhitespace` or a space
 /// separator (which takes in the no-break spaces Java's `isWhitespace`
 /// leaves out).

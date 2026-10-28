@@ -213,7 +213,7 @@ pub enum Generator {
 #[derive(Debug, Clone, Default)]
 pub struct FeatureCache {
     sentence: Option<u64>,
-    map: HashMap<usize, Vec<JString>>,
+    map: super::ml::FxHashMap<usize, Vec<JString>>,
     order: VecDeque<usize>,
 }
 
@@ -634,7 +634,7 @@ pub fn create_with(
 }
 
 fn cat(prefix: &str, rest: &[u16]) -> JString {
-    text::concat(&[&text::units(prefix), rest])
+    text::keyed(prefix, rest)
 }
 
 /// `a + "," + b`.
@@ -919,7 +919,7 @@ impl Generator {
             }
             Generator::TokenClass { word_and_class } => {
                 let class = token_feature(&tokens[index]);
-                features.push(cat("wc=", &text::units(class)));
+                features.push(text::units2("wc=", class));
                 if *word_and_class {
                     let mut f = cat("w&c=", &text::to_lower_case(&tokens[index]));
                     f.push(u16::from(b','));

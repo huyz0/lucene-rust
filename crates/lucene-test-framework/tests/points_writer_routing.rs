@@ -879,9 +879,15 @@ mod configured {
             assert!(index("points-open") < index("points-field"), "{events:?}");
             assert!(index("points-field") < index("points-finish"), "{events:?}");
             assert!(index("points-finish") < index("points-close"), "{events:?}");
-            for next in ["postings", "vectors", "stored-open"] {
+            for next in ["postings", "stored-open"] {
                 assert!(index("points-close") < index(next), "{general}: {events:?}");
             }
+            // The vectors format is chosen per field before the flush writes
+            // anything (Java chooses it when the field is first added).
+            assert!(
+                index("vectors") < index("norms-close"),
+                "{general}: {events:?}"
+            );
             for event in [
                 "points-open",
                 "points-field",

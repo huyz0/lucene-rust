@@ -1773,16 +1773,39 @@ struct TreeDimCompare<'a> {
     index_len: usize,
     packed_len: usize,
     pivot: Vec<u8>,
+    /// The pivot's sorted-dimension bytes as a big-endian integer
+    /// ([`dim_key`]), compared in one instruction instead of a `memcmp`.
+    pivot_key: u128,
     pivot_doc: i32,
+}
+
+/// `bytes` (at most 16, `MAX_NUM_BYTES`) as a big-endian unsigned integer:
+/// two such keys of one length order exactly as the byte strings do, which
+/// is all `sortByDim`'s comparator asks of them.
+#[inline]
+fn dim_key(bytes: &[u8]) -> u128 {
+    match bytes.len() {
+        4 => u128::from(u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])),
+        8 => {
+            let mut b = [0u8; 8];
+            b.copy_from_slice(bytes);
+            u128::from(u64::from_be_bytes(b))
+        }
+        _ => bytes.iter().fold(0u128, |k, &b| (k << 8) | u128::from(b)),
+    }
 }
 
 impl IntroTarget for TreeDimCompare<'_> {
     fn swap(&mut self, i: usize, j: usize) {
         self.tree.swap(i, j);
     }
+    // ARITH: offsets inside a value.
+    #[allow(clippy::arithmetic_side_effects)]
     fn set_pivot(&mut self, i: usize) {
         self.pivot.clear();
         self.pivot.extend_from_slice(self.tree.value(i));
+        let s = self.start;
+        self.pivot_key = dim_key(&self.pivot[s..s + self.bytes_per_dim]);
         self.pivot_doc = self.tree.docs[i];
     }
     // ARITH: offsets inside a value.
@@ -1790,13 +1813,13 @@ impl IntroTarget for TreeDimCompare<'_> {
     fn compare_pivot(&mut self, j: usize) -> i32 {
         let v = self.tree.value(j);
         let s = self.start;
-        let mut c = self.pivot[s..s + self.bytes_per_dim].cmp(&v[s..s + self.bytes_per_dim]);
-        if c == Ordering::Equal {
+        let mut c = self.pivot_key.cmp(&dim_key(&v[s..s + self.bytes_per_dim]));
+        if c == Ordering::Equal && self.index_len < self.packed_len {
             c = self.pivot[self.index_len..self.packed_len]
                 .cmp(&v[self.index_len..self.packed_len]);
-            if c == Ordering::Equal {
-                return self.pivot_doc.wrapping_sub(self.tree.docs[j]);
-            }
+        }
+        if c == Ordering::Equal {
+            return self.pivot_doc.wrapping_sub(self.tree.docs[j]);
         }
         c as i32
     }
@@ -1992,6 +2015,7 @@ impl<'d> BkdWriter<'d> {
                     index_len: c.packed_index_bytes_length(),
                     packed_len: c.packed_bytes_length(),
                     pivot: Vec::new(),
+                    pivot_key: 0,
                     pivot_doc: -1,
                 };
                 intro_sort(&mut cmp, from, to);
