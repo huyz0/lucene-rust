@@ -20,7 +20,9 @@
 //! * A function is a closure over `f64`s ([`ExprFunction`]) instead of a
 //!   `MethodHandle`; "static, takes and returns only `double`" holds by type.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use lucene_util::{sloppy_math, strict_math};
@@ -1594,8 +1596,32 @@ impl Expression {
                 self.source_text
             )));
         }
+        self.run(Values::Boxed(values), 0)
+    }
+
+    /// The value at `doc` over `slots` (one per variable): each variable
+    /// read is its slot's, positioned on `doc` at its first read (Java's
+    /// `ZeroWhenUnpositioned` under `ExpressionFunctionValues`).
+    ///
+    /// # Errors
+    /// As [`Self::evaluate`].
+    pub(crate) fn evaluate_at(&self, slots: &mut [VarSlot<'_>], doc: i32) -> crate::Result<f64> {
+        if slots.len() < self.variables.len() {
+            return Err(crate::Error::IllegalArgument(format!(
+                "{} values for the {} variables of {}",
+                slots.len(),
+                self.variables.len(),
+                self.source_text
+            )));
+        }
+        self.run(Values::Slots(slots), doc)
+    }
+
+    #[inline]
+    fn run(&self, values: Values<'_, '_>, doc: i32) -> crate::Result<f64> {
         let mut reads = Reads {
             values,
+            doc,
             error: None,
         };
         let v = (self.root)(&mut reads);
@@ -1606,6 +1632,72 @@ impl Expression {
     }
 }
 
+/// What a variable's slot reads: its own values, or values it shares with
+/// other slots (a caching source's variable that nested expressions name
+/// too).
+pub(crate) enum VarValues<'c> {
+    /// Read by this slot alone.
+    Owned(BoxDoubleValues<'c>),
+    /// Shared with other slots.
+    Shared(Rc<RefCell<BoxDoubleValues<'c>>>),
+}
+
+/// One variable of an evaluation: `ExpressionValueSource.zeroWhenUnpositioned`
+/// -- always a value, `0` where the wrapped values have none, read at most
+/// once per document.
+pub(crate) struct VarSlot<'c> {
+    values: VarValues<'c>,
+    /// The document `value` is for; `-1` before the first read.
+    doc: i32,
+    value: f64,
+}
+
+impl<'c> VarSlot<'c> {
+    pub(crate) fn new(values: VarValues<'c>) -> Self {
+        Self {
+            values,
+            doc: -1,
+            value: 0.0,
+        }
+    }
+
+    /// The value at `doc`, read from the wrapped values only at the first
+    /// read for `doc` (a failed read is tried again at the next one, as
+    /// Java's `computed` stays `false` when the read throws).
+    #[inline]
+    fn value_at(&mut self, doc: i32) -> crate::Result<f64> {
+        if self.doc != doc {
+            self.value = match &mut self.values {
+                VarValues::Owned(v) => {
+                    if v.advance_exact(doc)? {
+                        v.double_value()?
+                    } else {
+                        0.0
+                    }
+                }
+                VarValues::Shared(v) => {
+                    let mut v = v.borrow_mut();
+                    if v.advance_exact(doc)? {
+                        v.double_value()?
+                    } else {
+                        0.0
+                    }
+                }
+            };
+            self.doc = doc;
+        }
+        Ok(self.value)
+    }
+}
+
+/// The values an evaluation reads its variables from.
+enum Values<'a, 'c> {
+    /// [`Expression::evaluate`]'s, each already positioned.
+    Boxed(&'a mut [BoxDoubleValues<'c>]),
+    /// [`Expression::evaluate_at`]'s, positioned on [`Reads::doc`] as read.
+    Slots(&'a mut [VarSlot<'c>]),
+}
+
 /// The variables' values as an evaluation reads them. A failed read parks
 /// its error and reads `0`: the evaluation runs to its end and then reports
 /// the first error (Java's generated code throws at the read; the result is
@@ -1613,7 +1705,9 @@ impl Expression {
 /// return `0` without reading, but the rest of the tree still runs: a
 /// custom function may be called with that `0`.
 struct Reads<'a, 'c> {
-    values: &'a mut [BoxDoubleValues<'c>],
+    values: Values<'a, 'c>,
+    /// The document [`Values::Slots`] are read at.
+    doc: i32,
     error: Option<crate::Error>,
 }
 
@@ -1623,7 +1717,11 @@ impl Reads<'_, '_> {
         if self.error.is_some() {
             return 0.0;
         }
-        match self.values[i].double_value() {
+        let read = match &mut self.values {
+            Values::Slots(slots) => slots[i].value_at(self.doc),
+            Values::Boxed(values) => values[i].double_value(),
+        };
+        match read {
             Ok(v) => v,
             Err(e) => self.park(e),
         }
