@@ -7,6 +7,13 @@ Rust-only. This page is the index; the rows live in one file per area under
 `scripts/check-parity.py` (every Rust path and `::item` exists, every
 `crates/*/src/*.rs` has a row, the index links every area file, budgets).
 
+**Status (2026-10-28): the port is complete** by the roadmap's definition
+(M14's last criterion): every class of every 10.5.0 module is `ported` or
+`not-needed` with a reason in `docs/inventory/*.tsv`, and
+`scripts/check-port-inventory.py` passes with nothing allowlisted. The
+52 rows below still marked **partial** name narrower behaviour inside
+ported classes (each under its **Gap:**), not missing classes.
+
 ## Reading a row
 
 Every area file is one table, `| Java | Rust | Status |`:
@@ -62,7 +69,7 @@ Milestones (M1-M12, task ids such as T9.4) are [`docs/roadmap.md`](roadmap.md)'s
 | [classification.md](parity/classification.md) | `lucene-classification`: naive Bayes, k-NN and perceptron classifiers, their evaluation and dataset splitting (M14 T14.3) | 5 |
 | [replicator.md](parity/replicator.md) | `lucene-replicator`: near-real-time replication -- primary and replica nodes, copy jobs, file ref-counting (M14 T14.3) | 9 |
 | [sandbox.md](parity/sandbox.md) | `lucene-sandbox` (M14.f): half-float, big-integer and bounding-box points, nearest neighbours, multi-range point and doc-values queries, combined-field, covering, term-automaton and phrase-wildcard queries, the large-hits collector and the collector profilers, `PayloadSpanUtil`, `MergeOnFlushMergePolicy`, the `IDVersion` postings format, k-means clustering, the facet package (collectors, cutters, recorders, builders, orchestrators, histograms) | 19 |
-| [codecs-extra.md](parity/codecs-extra.md) | `lucene-codecs` (M14.g): the non-default postings formats -- bloom, memory, bitvectors, blocktreeords, uniformsplit (with sharedterms), blockterms and simpletext so far | 33 |
+| [codecs-extra.md](parity/codecs-extra.md) | `lucene-codecs` (M14.g): the non-default postings formats -- bloom, memory, bitvectors, blocktreeords, uniformsplit (with sharedterms), blockterms and simpletext | 33 |
 | [test-framework.md](parity/test-framework.md) | `lucene-test-framework` (M14.h): randomized generators, mock analysis/directories, index/format suites, readers and writers | 31 |
 | [test-framework-codecs.md](parity/test-framework-codecs.md) | `lucene-test-framework` (M14.h): asserting/cranky/compressing and other test codecs, installed writer seams | 33 |
 | [test-framework-search.md](parity/test-framework-search.md) | `lucene-test-framework` (M14.h): query/scoring assertions, search bases, scorer wrappers | 11 |
