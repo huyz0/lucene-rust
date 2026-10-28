@@ -21,7 +21,7 @@
 //! field that keeps being asked such queries -- and costs, per term, its
 //! bytes plus a byte or two for each gram it contains.
 
-use std::collections::HashMap;
+use lucene_util::fx_hash::FxHashMap;
 
 /// The start/end-of-term symbol: one past every byte.
 pub const BOUNDARY: u32 = 256;
@@ -66,7 +66,7 @@ pub struct TermNgramIndex {
     offsets: Vec<u32>,
     /// Gram key -> `(start, byte length, term count)` of its posting list in
     /// `postings`.
-    grams: HashMap<u32, (u32, u32, u32)>,
+    grams: FxHashMap<u32, (u32, u32, u32)>,
     postings: Vec<u8>,
 }
 
@@ -181,7 +181,7 @@ pub struct TermNgramBuilder {
     offsets: Vec<u32>,
     /// Per gram: the last ordinal written, the term count, and the
     /// delta-varint postings so far.
-    lists: HashMap<u32, (u32, u32, Vec<u8>)>,
+    lists: FxHashMap<u32, (u32, u32, Vec<u8>)>,
     sym: Vec<u32>,
     keys: Vec<u32>,
 }
@@ -220,7 +220,7 @@ impl TermNgramBuilder {
         }
         let total: usize = self.lists.values().map(|(_, _, b)| b.len()).sum();
         let mut postings = Vec::with_capacity(total);
-        let mut grams = HashMap::with_capacity(self.lists.len());
+        let mut grams = FxHashMap::with_capacity_and_hasher(self.lists.len(), Default::default());
         for (k, (_, count, buf)) in self.lists {
             let start = u32::try_from(postings.len()).ok()?;
             postings.extend_from_slice(&buf);

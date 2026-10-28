@@ -95,7 +95,9 @@ pub fn parse_entries(buf: &[u8], segment_id: &[u8; ID_LENGTH]) -> Result<Compoun
     )?;
 
     let num_entries = input.read_vint()?;
-    let mut entries = Vec::with_capacity(num_entries.max(0) as usize);
+    // An entry is at least 17 bytes (a 1-byte string length, two longs), so
+    // a corrupt count cannot reserve more than the file could hold.
+    let mut entries = Vec::with_capacity((num_entries.max(0) as usize).min(input.remaining() / 17));
     for _ in 0..num_entries {
         let id = input.read_string()?;
         if entries
@@ -486,6 +488,17 @@ mod tests {
             check_data_header_footer(&cfs, &id, &entries),
             Err(Error::WrongLength { .. })
         ));
+    }
+
+    /// A corrupt entry count reads past the file instead of reserving
+    /// `i32::MAX` entries.
+    #[test]
+    fn huge_entry_count_is_an_error_not_an_allocation() {
+        let id = [5u8; ID_LENGTH];
+        let mut cfe = build_cfe(&id, &[("f", 0, 0)]);
+        let at = codec_util::index_header_length(ENTRY_CODEC, "");
+        cfe.splice(at..at + 1, [0xff, 0xff, 0xff, 0xff, 0x07]);
+        assert!(parse_entries(&cfe, &id).is_err());
     }
 
     /// The mirror case: a negative offset (only reachable from a corrupt
