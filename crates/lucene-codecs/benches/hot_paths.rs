@@ -167,6 +167,70 @@ fn bench_points_decode_all(c: &mut Criterion) {
     )
     .unwrap();
     let big = points::open(&big_kdm, &big_kdi, &big_kdd, &id, "").unwrap();
+    {
+        let mut group = c.benchmark_group("points");
+        group.sample_size(20);
+        // `write_packed`, the flat layout a flush hands the BKD writer.
+        let field = points::PackedPointsField {
+            field_number: 0,
+            num_dims: 1,
+            num_index_dims: 1,
+            bytes_per_dim: 8,
+            docs: (0..200_000i32).collect(),
+            values: (0..200_000i64)
+                .flat_map(|i| {
+                    let v = i.wrapping_mul(2_654_435_761) % 1_000_000_007;
+                    ((v as u64) ^ 0x8000_0000_0000_0000).to_be_bytes()
+                })
+                .collect(),
+        };
+        group.bench_function("write_packed_200k_1d", |b| {
+            b.iter(|| {
+                black_box(
+                    points::write_packed(
+                        vec![field.clone()],
+                        points::DEFAULT_MAX_POINTS_IN_LEAF_NODE,
+                        200_000,
+                        &id,
+                        "",
+                    )
+                    .unwrap(),
+                )
+            })
+        });
+        let field2 = points::PackedPointsField {
+            field_number: 0,
+            num_dims: 2,
+            num_index_dims: 2,
+            bytes_per_dim: 4,
+            docs: (0..200_000i32).collect(),
+            values: (0..200_000u32)
+                .flat_map(|i| {
+                    let x = i.wrapping_mul(2_654_435_761);
+                    let y = i.wrapping_mul(40_503).rotate_left(7);
+                    let mut v = [0u8; 8];
+                    v[..4].copy_from_slice(&x.to_be_bytes());
+                    v[4..].copy_from_slice(&y.to_be_bytes());
+                    v
+                })
+                .collect(),
+        };
+        group.bench_function("write_packed_200k_2d", |b| {
+            b.iter(|| {
+                black_box(
+                    points::write_packed(
+                        vec![field2.clone()],
+                        points::DEFAULT_MAX_POINTS_IN_LEAF_NODE,
+                        200_000,
+                        &id,
+                        "",
+                    )
+                    .unwrap(),
+                )
+            })
+        });
+        group.finish();
+    }
     let mut big_values: Vec<Vec<u8>> = big
         .decode_all_points(0)
         .unwrap()
