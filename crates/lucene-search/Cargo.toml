@@ -132,3 +132,10 @@ harness = false
 [[bench]]
 name = "grouping_join"
 harness = false
+
+# `DirectoryReader::open` of a compound, multi-format segment (the `.cfs`
+# members and per-field dictionaries opened without copies) -- see the
+# bench's own module doc.
+[[bench]]
+name = "segment_open_compound"
+harness = false
