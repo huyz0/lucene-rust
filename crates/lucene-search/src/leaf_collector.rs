@@ -228,8 +228,9 @@ pub fn search_slice<'a, C: SegmentCollector<'a> + ?Sized>(
 }
 
 /// Every slice of the searcher in turn, a fresh collector from `new` for
-/// each: what a `CollectorManager` search hands `reduce` (Java may run the
-/// slices concurrently; the collectors are the same either way).
+/// each: what a `CollectorManager` search hands `reduce`. For collectors that
+/// are `Send`, [`search_slices_concurrent`] runs the slices as Java's
+/// executor does; the collectors are the same either way.
 ///
 /// # Errors
 /// As [`search_segments`], and what `new` reports.
@@ -248,4 +249,33 @@ pub fn search_slices<'a, C: SegmentCollector<'a>>(
         out.push(new()?);
     }
     Ok(out)
+}
+
+/// [`search_slices`] with the slices run concurrently on rayon's pool, the
+/// first on the calling thread -- unless there is one slice, or the query is
+/// estimated to match too few documents to repay waking a pool thread
+/// ([`crate::slices::SEQUENTIAL_BELOW`]). The collectors come back in slice
+/// order, as [`search_slices`] returns them.
+///
+/// # Errors
+/// As [`search_slices`]; the first slice's error in slice order.
+pub fn search_slices_concurrent<'a, C: SegmentCollector<'a> + Send>(
+    searcher: &IndexSearcher<'_, 'a>,
+    query: &BooleanQuery,
+    new: impl Fn() -> Result<C> + Sync,
+) -> Result<Vec<C>> {
+    let slices = searcher.slices();
+    if slices.is_empty() {
+        return Ok(vec![new()?]);
+    }
+    let parallel = slices.len() > 1
+        && crate::slices::estimated_matches(searcher.segments(), query)
+            >= crate::slices::SEQUENTIAL_BELOW;
+    crate::slices::run_slices_if(parallel, slices, |slice| {
+        let mut c = new()?;
+        search_slice(searcher, query, slice, &mut c)?;
+        Ok(c)
+    })
+    .into_iter()
+    .collect()
 }
