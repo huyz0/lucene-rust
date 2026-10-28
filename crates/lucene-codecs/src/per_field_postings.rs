@@ -35,7 +35,7 @@
 
 use lucene_store::codec_util::ID_LENGTH;
 
-use crate::blocktree::{self, BlockTreeFields};
+use crate::blocktree::{self, BlockTreeFields, SharedBytes};
 use crate::completion::{CompletionFieldWriter, CompletionFilesWriter, TermDoc};
 use crate::field_infos::{FieldInfo, FieldInfos};
 use crate::postings::{DocInput, PayInput, PosInput};
@@ -43,6 +43,8 @@ use crate::postings_writer::{
     self, FieldNorms, FieldPostingsInput, Output, TermSource, WriteOptions,
 };
 use crate::terms_dictionary::TermsDictionaryFormat;
+use std::borrow::Cow;
+use std::sync::Arc;
 
 /// `PerFieldPostingsFormat.PER_FIELD_FORMAT_KEY`.
 pub const PER_FIELD_FORMAT_KEY: &str = "PerFieldPostingsFormat.format";
@@ -968,15 +970,33 @@ pub struct CombinedPostings {
 }
 
 /// `FieldsReader`: opens and validates every group, then combines them.
+///
+/// Copies each group's `.tim`/`.tip` into the dictionary it returns; use
+/// [`open_groups_shared`] when the caller already holds them shared.
 pub fn open_groups(
     groups: &[GroupFiles<'_>],
     field_infos: &FieldInfos,
     segment_id: &[u8; ID_LENGTH],
     max_doc: i32,
 ) -> blocktree::Result<CombinedPostings> {
+    open_groups_shared(groups, &[], field_infos, segment_id, max_doc)
+}
+
+/// [`open_groups`] over `.tim`/`.tip` the caller holds shared:
+/// `shared[i]`, when present, is `groups[i]`'s first two dictionary files,
+/// which the combined dictionary then navigates in place
+/// ([`blocktree::open_shared`]) instead of copying. A group read through a
+/// rewrite ignores it: its dictionary is the rewrite's own.
+pub fn open_groups_shared(
+    groups: &[GroupFiles<'_>],
+    shared: &[Option<[SharedBytes; 2]>],
+    field_infos: &FieldInfos,
+    segment_id: &[u8; ID_LENGTH],
+    max_doc: i32,
+) -> blocktree::Result<CombinedPostings> {
     let mut combined = Vec::with_capacity(groups.len());
     let (mut doc, mut pos, mut pay) = (Vec::new(), Vec::new(), Vec::new());
-    for g in groups {
+    for (i, g) in groups.iter().enumerate() {
         let format = format_of_suffix(g.suffix);
         let expected = dictionary_extensions(format).len();
         if g.dictionary.len() != expected {
@@ -988,17 +1008,31 @@ pub fn open_groups(
                 ),
             )));
         }
-        let rewritten;
-        let reencoded = reencode_group(g, field_infos, segment_id, max_doc).transpose()?;
-        let (tim, tip, tmd) = if let Some(out) = &reencoded {
-            (&out.tim[..], &out.tip[..], &out.tmd[..])
+        // Each branch hands `open_shared` its `.tim`/`.tip` without a copy
+        // where it can: a rewrite's own buffers move in, a caller's shared
+        // ones are cloned by reference count.
+        let (tim, tip, tmd): (SharedBytes, SharedBytes, Cow<'_, [u8]>);
+        let mut reencoded = reencode_group(g, field_infos, segment_id, max_doc).transpose()?;
+        if let Some(out) = &mut reencoded {
+            tim = Arc::new(std::mem::take(&mut out.tim));
+            tip = Arc::new(std::mem::take(&mut out.tip));
+            tmd = Cow::Owned(std::mem::take(&mut out.tmd));
         } else if is_foreign_format(format) {
-            rewritten = rewrite_group_as_block_tree(g, field_infos, segment_id, max_doc)?;
-            (&rewritten.0[..], &rewritten.1[..], &rewritten.2[..])
+            let rewritten = rewrite_group_as_block_tree(g, field_infos, segment_id, max_doc)?;
+            tim = Arc::new(rewritten.0);
+            tip = Arc::new(rewritten.1);
+            tmd = Cow::Owned(rewritten.2);
+        } else if let Some(Some([shared_tim, shared_tip])) = shared.get(i) {
+            tim = Arc::clone(shared_tim);
+            tip = Arc::clone(shared_tip);
+            tmd = Cow::Borrowed(g.dictionary[2]);
         } else {
-            (g.dictionary[0], g.dictionary[1], g.dictionary[2])
-        };
-        let fields = blocktree::open(tim, tip, tmd, field_infos, segment_id, g.suffix, max_doc)?;
+            tim = Arc::new(g.dictionary[0].to_vec());
+            tip = Arc::new(g.dictionary[1].to_vec());
+            tmd = Cow::Borrowed(g.dictionary[2]);
+        }
+        let fields =
+            blocktree::open_shared(tim, tip, &tmd, field_infos, segment_id, g.suffix, max_doc)?;
         let base = [doc.len() as u64, pos.len() as u64, pay.len() as u64];
         if let Some(out) = &reencoded {
             // Its own encoding, already consistent: no header to re-check.
@@ -1487,6 +1521,23 @@ mod tests {
             })
             .collect();
         let combined = open_groups(&files, &infos, &[1; ID_LENGTH], 6).unwrap();
+        let doc_in = DocInput::validated(&combined.doc);
+        for (n, name) in names.iter().enumerate() {
+            let field = combined.fields.field(name).unwrap();
+            let p = field.postings(b"t0003", Some(&doc_in)).unwrap().unwrap();
+            let doc = [0, 2, 4][n];
+            assert_eq!(p.docs, [doc, doc + 1], "{name}");
+        }
+        // The same groups with the first one's `.tim`/`.tip` handed over
+        // shared: the dictionary keeps that buffer rather than a copy.
+        let tim0 = Arc::new(groups[0].output.tim.clone());
+        let tip0 = Arc::new(groups[0].output.tip.clone());
+        let shared = [Some([
+            tim0.clone() as SharedBytes,
+            tip0.clone() as SharedBytes,
+        ])];
+        let combined = open_groups_shared(&files, &shared, &infos, &[1; ID_LENGTH], 6).unwrap();
+        assert!(Arc::strong_count(&tim0) > 1 && Arc::strong_count(&tip0) > 1);
         let doc_in = DocInput::validated(&combined.doc);
         for (n, name) in names.iter().enumerate() {
             let field = combined.fields.field(name).unwrap();

@@ -540,12 +540,15 @@ fn new_ord_mapping<G: HnswGraphView>(
     mut initialized: Option<&mut FixedBitSet>,
 ) -> Result<Vec<Vec<i32>>> {
     // Per graph: merged doc id -> that graph's own ordinal.
-    let mut new_doc_to_old_ord: Vec<std::collections::HashMap<i32, i32>> =
+    let mut new_doc_to_old_ord: Vec<lucene_util::fx_hash::FxHashMap<i32, i32>> =
         Vec::with_capacity(order.len());
     let mut old_to_new: Vec<Vec<i32>> = Vec::with_capacity(order.len());
     for i in order {
         let source = &sources[*i];
-        let mut map = std::collections::HashMap::with_capacity(source.ord_to_doc.len());
+        let mut map = lucene_util::fx_hash::FxHashMap::with_capacity_and_hasher(
+            source.ord_to_doc.len(),
+            Default::default(),
+        );
         for (ord, doc) in source.ord_to_doc.iter().enumerate() {
             let new_doc = match source.doc_map.get(*doc as usize) {
                 Some(&d) => d,
