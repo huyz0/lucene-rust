@@ -7,7 +7,8 @@
 //! interfaces like the other automata.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+
+use crate::fx_hash::FxHashMap;
 
 use super::automaton::{Automaton, Transition, TransitionAccessor};
 use super::operations::PointTransitionSet;
@@ -28,7 +29,10 @@ struct DState {
 
 struct Cache {
     dstates: Vec<DState>,
-    ord: HashMap<Vec<i32>, i32>,
+    ord: FxHashMap<Vec<i32>, i32>,
+    /// The sweep's state set, reused across `determinize_state` calls (its
+    /// per-state counts are sized to the NFA once, not per call).
+    scratch: StateSet,
 }
 
 /// `NFARunAutomaton`.
@@ -70,7 +74,8 @@ impl NfaRunAutomaton {
             classmap,
             cache: RefCell::new(Cache {
                 dstates: Vec::new(),
-                ord: HashMap::new(),
+                ord: FxHashMap::default(),
+                scratch: StateSet::new(5),
             }),
         };
         {
@@ -156,7 +161,9 @@ impl NfaRunAutomaton {
     /// Java's `DState.step(c)`: the NFA successor set on `c` and the widest
     /// label range around `c` on which it is the same.
     fn nfa_step(&self, nfa_states: &[i32], c: i32) -> Option<(Vec<i32>, i32, i32)> {
-        let mut set = StateSet::new(5);
+        // The distinct destinations, sorted: what a `StateSet`'s members
+        // would be, without sizing its per-state counts to the NFA per call.
+        let mut set: Vec<i32> = Vec::new();
         let (mut left, mut right) = (-1i32, self.alphabet_size);
         let mut t = Transition::new();
         for &s in nfa_states {
@@ -164,7 +171,7 @@ impl NfaRunAutomaton {
             for _ in 0..n {
                 self.automaton.get_next_transition(&mut t);
                 if t.min <= c && t.max >= c {
-                    set.incr(t.dest);
+                    set.push(t.dest);
                     left = left.max(t.min);
                     right = right.min(t.max);
                 }
@@ -180,12 +187,31 @@ impl NfaRunAutomaton {
         if set.is_empty() {
             return None;
         }
-        Some((set.members().to_vec(), left, right))
+        set.sort_unstable();
+        set.dedup();
+        Some((set, left, right))
     }
 
+    #[inline]
     fn next_state(&self, state: i32, cls: usize) -> i32 {
-        let mut cache = self.cache.borrow_mut();
         let si = state as usize;
+        // The common case, a transition already computed: a shared borrow
+        // and one read, no `borrow_mut` and no initialisation check.
+        {
+            let cache = self.cache.borrow();
+            if let Some(tr) = &cache.dstates[si].transitions {
+                let cur = tr[cls];
+                if cur != NOT_COMPUTED {
+                    return cur;
+                }
+            }
+        }
+        self.compute_next_state(si, cls)
+    }
+
+    #[cold]
+    fn compute_next_state(&self, si: usize, cls: usize) -> i32 {
+        let mut cache = self.cache.borrow_mut();
         self.init_transitions(&mut cache.dstates[si]);
         let cur = cache.dstates[si].transitions.as_ref().expect("initialized")[cls];
         if cur != NOT_COMPUTED {
@@ -241,11 +267,12 @@ impl NfaRunAutomaton {
             d.computed_transitions = np;
             return;
         }
-        let pts = set.take_sorted();
-        let mut states = StateSet::new(5);
+        set.sort();
+        let mut states = std::mem::take(&mut cache.scratch);
+        states.reset();
         let mut last_point = -1;
         let mut char_class = 0usize;
-        for pt in &pts {
+        for pt in set.sorted() {
             let point = pt.point;
             if !states.is_empty() {
                 let members = states.members().to_vec();
@@ -268,6 +295,7 @@ impl NfaRunAutomaton {
             }
             last_point = point;
         }
+        cache.scratch = states;
         let d = &mut cache.dstates[si];
         let tr = d.transitions.as_mut().expect("initialized");
         for slot in tr.iter_mut().skip(char_class) {
@@ -296,10 +324,12 @@ impl NfaRunAutomaton {
 }
 
 impl ByteRunnable for NfaRunAutomaton {
+    #[inline]
     fn step(&self, state: i32, c: i32) -> i32 {
         self.next_state(state, self.char_class(c))
     }
 
+    #[inline]
     fn is_accept(&self, state: i32) -> bool {
         self.cache.borrow().dstates[state as usize].is_accept
     }

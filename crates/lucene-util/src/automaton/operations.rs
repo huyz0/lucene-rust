@@ -5,13 +5,14 @@
 //! automata it returns have Lucene's state numbering and transition layout,
 //! not merely the same language.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashSet, VecDeque};
 
 use super::automata;
 use super::automaton::{Automaton, Builder, StatePair, Transition, TransitionAccessor};
 use super::error::{AutomatonError, TooComplexToDeterminize};
-use super::state_set::{FrozenIntSet, StateSet};
+use super::state_set::{set_hash, SetInterner, StateSet};
 use super::{MAX_CODE_POINT, MIN_CODE_POINT};
+use crate::fx_hash::FxHashMap;
 
 /// `Operations.DEFAULT_DETERMINIZE_WORK_LIMIT`.
 pub const DEFAULT_DETERMINIZE_WORK_LIMIT: i32 = 10_000;
@@ -264,7 +265,7 @@ pub fn intersection(a1: &Automaton, a2: &Automaton) -> Automaton {
     let mut c = Automaton::new();
     c.create_state();
     let mut worklist: VecDeque<StatePair> = VecDeque::new();
-    let mut newstates: HashMap<(i32, i32), i32> = HashMap::new();
+    let mut newstates: FxHashMap<(i32, i32), i32> = FxHashMap::default();
     worklist.push_back(StatePair { s: 0, s1: 0, s2: 0 });
     newstates.insert((0, 0), 0);
     while let Some(p) = worklist.pop_front() {
@@ -362,20 +363,44 @@ pub fn determinize(a: &Automaton, work_limit: i32) -> Result<Automaton, TooCompl
     if a.is_deterministic() || a.get_num_states() <= 1 {
         return Ok(a.clone());
     }
+    determinize_nfa(a, work_limit)
+}
+
+/// [`determinize`] taking the automaton by value: an input that is already
+/// deterministic is returned as is instead of copied.
+///
+/// # Errors
+/// As [`determinize`].
+pub fn determinize_owned(
+    a: Automaton,
+    work_limit: i32,
+) -> Result<Automaton, TooComplexToDeterminize> {
+    if a.is_deterministic() || a.get_num_states() <= 1 {
+        return Ok(a);
+    }
+    determinize_nfa(&a, work_limit)
+}
+
+fn determinize_nfa(a: &Automaton, work_limit: i32) -> Result<Automaton, TooComplexToDeterminize> {
     let mut b = Builder::new();
     b.create_state();
     b.set_accept(0, a.is_accept(0));
-    let mut worklist: VecDeque<FrozenIntSet> = VecDeque::new();
-    let mut newstate: HashMap<Vec<i32>, i32> = HashMap::new();
-    worklist.push_back(FrozenIntSet::singleton(0, 0));
-    newstate.insert(vec![0], 0);
+    // Java's `newstate` map and FIFO worklist. DFA state `q` is created
+    // exactly when its NFA set is first interned, so interner ids are DFA
+    // state numbers and the worklist is simply the ids in order.
+    let mut sets = SetInterner::new();
+    sets.intern(&[0], set_hash(&[0]));
     let mut points = PointTransitionSet::default();
     let mut states_set = StateSet::new(5);
     let mut t = Transition::new();
+    let mut cur: Vec<i32> = Vec::new();
     let mut effort_spent: i64 = 0;
     let effort_limit = i64::from(work_limit) * 10;
-    while let Some(s) = worklist.pop_front() {
-        effort_spent += s.values.len() as i64;
+    let mut r = 0usize;
+    while r < sets.len() {
+        cur.clear();
+        cur.extend_from_slice(sets.get(r));
+        effort_spent += cur.len() as i64;
         if effort_spent >= effort_limit {
             return Err(TooComplexToDeterminize {
                 num_states: a.get_num_states(),
@@ -384,7 +409,7 @@ pub fn determinize(a: &Automaton, work_limit: i32) -> Result<Automaton, TooCompl
                 regexp: None,
             });
         }
-        for &s0 in &s.values {
+        for &s0 in &cur {
             let n = a.init_transition(s0, &mut t);
             for _ in 0..n {
                 a.get_next_transition(&mut t);
@@ -392,28 +417,23 @@ pub fn determinize(a: &Automaton, work_limit: i32) -> Result<Automaton, TooCompl
             }
         }
         if points.is_empty() {
+            r += 1;
             continue;
         }
-        let pts = points.take_sorted();
+        points.sort();
         let mut last_point = -1;
         let mut acc_count = 0i32;
-        let r = s.state;
-        for pt in &pts {
+        for pt in points.sorted() {
             let point = pt.point;
             if !states_set.is_empty() {
-                let key = states_set.members();
-                let q = match newstate.get(key) {
-                    Some(&q) => q,
-                    None => {
-                        let q = b.create_state();
-                        let frozen = states_set.freeze(q);
-                        b.set_accept(q, acc_count > 0);
-                        newstate.insert(frozen.values.clone(), q);
-                        worklist.push_back(frozen);
-                        q
-                    }
-                };
-                b.add_transition(r, q, last_point, point - 1);
+                let hash = states_set.long_hash_code();
+                let (q, new) = sets.intern(states_set.members(), hash);
+                if new {
+                    let created = b.create_state();
+                    debug_assert_eq!(created as usize, q);
+                    b.set_accept(created, acc_count > 0);
+                }
+                b.add_transition(r as i32, q as i32, last_point, point - 1);
             }
             for &dest in &pt.ends {
                 states_set.decr(dest);
@@ -425,7 +445,9 @@ pub fn determinize(a: &Automaton, work_limit: i32) -> Result<Automaton, TooCompl
             }
             last_point = point;
         }
+        points.reset();
         debug_assert!(states_set.is_empty());
+        r += 1;
     }
     Ok(b.finish())
 }
@@ -440,22 +462,53 @@ pub(crate) struct PointTransitions {
 }
 
 /// Java's `PointTransitionSet`: transitions bucketed by boundary label.
+///
+/// As in Java, the buckets are reused from one DFA state to the next (their
+/// `Vec`s keep their capacity), points are found by a linear scan while
+/// there are at most [`Self::LINEAR_LIMIT`] of them, and through a map only
+/// past that.
 #[derive(Default)]
 pub(crate) struct PointTransitionSet {
+    /// `points[..used]` are live; the rest are spare, empty buckets.
     points: Vec<PointTransitions>,
-    index: HashMap<i32, usize>,
+    used: usize,
+    /// Point -> bucket, kept only once `used > LINEAR_LIMIT`.
+    index: FxHashMap<i32, usize>,
 }
 
 impl PointTransitionSet {
+    /// Java's `HASHMAP_CUTOVER`.
+    const LINEAR_LIMIT: usize = 30;
+
     fn find(&mut self, point: i32) -> &mut PointTransitions {
-        let len = self.points.len();
-        let i = *self.index.entry(point).or_insert(len);
-        if i == len {
-            self.points.push(PointTransitions {
-                point,
-                ..PointTransitions::default()
-            });
-        }
+        let found = if self.used <= Self::LINEAR_LIMIT {
+            self.points[..self.used]
+                .iter()
+                .position(|p| p.point == point)
+        } else {
+            self.index.get(&point).copied()
+        };
+        let i = match found {
+            Some(i) => i,
+            None => {
+                let i = self.used;
+                if i == self.points.len() {
+                    self.points.push(PointTransitions::default());
+                }
+                self.points[i].point = point;
+                self.used += 1;
+                if self.used > Self::LINEAR_LIMIT {
+                    if self.index.is_empty() {
+                        for (j, p) in self.points[..self.used].iter().enumerate() {
+                            self.index.insert(p.point, j);
+                        }
+                    } else {
+                        self.index.insert(point, i);
+                    }
+                }
+                i
+            }
+        };
         &mut self.points[i]
     }
 
@@ -466,16 +519,29 @@ impl PointTransitionSet {
     }
 
     pub(crate) fn is_empty(&self) -> bool {
-        self.points.is_empty()
+        self.used == 0
     }
 
-    /// The boundaries in ascending order, leaving the set empty (Java's
-    /// `sort()` followed by the sweep's per-point resets and `reset()`).
-    pub(crate) fn take_sorted(&mut self) -> Vec<PointTransitions> {
+    /// `sort()`: order the live buckets by point. No `add` may follow until
+    /// [`Self::reset`].
+    pub(crate) fn sort(&mut self) {
+        self.points[..self.used].sort_unstable_by_key(|p| p.point);
         self.index.clear();
-        let mut pts = std::mem::take(&mut self.points);
-        pts.sort_unstable_by_key(|p| p.point);
-        pts
+    }
+
+    /// The live buckets (ascending after [`Self::sort`]).
+    pub(crate) fn sorted(&self) -> &[PointTransitions] {
+        &self.points[..self.used]
+    }
+
+    /// `reset()`: empty every bucket, keeping the allocations.
+    pub(crate) fn reset(&mut self) {
+        for p in &mut self.points[..self.used] {
+            p.starts.clear();
+            p.ends.clear();
+        }
+        self.used = 0;
+        self.index.clear();
     }
 }
 
@@ -1091,7 +1157,7 @@ pub fn determinize_simple_from(a: &Automaton, initial: &[i32]) -> Automaton {
     let mut init: Vec<i32> = initial.to_vec();
     init.sort_unstable();
     init.dedup();
-    let mut newstate: HashMap<Vec<i32>, i32> = HashMap::new();
+    let mut newstate: FxHashMap<Vec<i32>, i32> = FxHashMap::default();
     let mut worklist: VecDeque<Vec<i32>> = VecDeque::new();
     let mut result = Builder::new();
     result.create_state();
