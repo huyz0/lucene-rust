@@ -252,6 +252,16 @@ fn points_and_rectangles() {
     assert_eq!(b.relate(&a).unwrap(), SpatialRelation::Within);
     let empty = RectangleImpl::new(f64::NAN, f64::NAN, f64::NAN, f64::NAN, ctx.clone());
     assert!(empty.center_point().is_empty());
+    let (ex, ey) = empty.center_xy().unwrap();
+    assert!(ex.is_nan() && ey.is_nan());
+    // `center_xy` is `center()`'s coordinates, across the dateline too.
+    for r in [
+        RectangleImpl::new(170.0, -170.0, -5.0, 5.0, ctx.clone()),
+        RectangleImpl::new(-10.0, 30.0, 2.0, 7.0, ctx.clone()),
+    ] {
+        let c = r.center().unwrap();
+        assert_eq!(r.center_xy().unwrap(), (c.x(), c.y()));
+    }
     assert_eq!(empty.relate(&q).unwrap(), SpatialRelation::Disjoint);
     assert!(a.context().is_some());
     let c = cart();
@@ -330,6 +340,12 @@ fn buffered_lines() {
     let v = InfBufLine::new(f64::INFINITY, 2.0, 0.0, 1.0);
     assert_eq!(v.quadrant(3.0, 0.0), 1);
     assert_eq!(v.quadrant(1.0, 0.0), 2);
+    // Spatial4j 0.8's `quadrant` tests `Double.isInfinite(slope)`, so a
+    // downward vertical (or a rightward perpendicular, both -inf) takes the
+    // same branch.
+    let down = InfBufLine::new(f64::NEG_INFINITY, 2.0, 0.0, 1.0);
+    assert_eq!(down.quadrant(3.0, -5.0), 1);
+    assert_eq!(down.quadrant(-1.0, 5.0), 2);
     assert_eq!(v.distance_unbuffered(4.0, 7.0), 2.0);
     assert!(v.dist_denom_inv().is_nan() && v.buf() == 1.0);
     let ls = BufferedLineString::new(&[p(0.0, 0.0), p(1.0, 1.0)], 0.5, false, c.clone()).unwrap();
@@ -524,7 +540,28 @@ fn binary_codec_edges() {
 
 #[test]
 fn geohash_edges() {
-    assert!(geohash::decode_boundary_values("a").is_err());
+    // Java's unchecked `BASE_32_IDX[c - '0']`: a character in '0'..='z'
+    // outside the alphabet reads -500, whose low five bits are 'd''s (12).
+    let d = geohash::decode_boundary_values("ud").unwrap();
+    for odd in ["ua", "uA", "u:", "ui", "uo", "u@", "u_"] {
+        assert_eq!(geohash::decode_boundary_values(odd).unwrap(), d, "{odd}");
+    }
+    // Outside that range: ArrayIndexOutOfBoundsException, Java's message.
+    for (bad, index) in [("u/", -1), ("u{", 75), ("u\u{e9}", 185), ("u ", -16)] {
+        let e = geohash::decode_boundary_values(bad).unwrap_err();
+        assert_eq!(e.java_class(), "java.lang.ArrayIndexOutOfBoundsException");
+        assert_eq!(
+            e.to_string(),
+            format!("Index {index} out of bounds for length 75")
+        );
+    }
+    // A supplementary character is walked as Java's UTF-16 units.
+    let e = geohash::decode_boundary_values("\u{1F600}").unwrap_err();
+    assert_eq!(e.to_string(), "Index 55309 out of bounds for length 75");
+    assert_eq!(
+        geohash::decode_boundary_values("U9").unwrap(),
+        geohash::decode_boundary_values("u9").unwrap()
+    );
     assert_eq!(
         geohash::lookup_hash_len_for_width_height(0.0, 0.0),
         geohash::MAX_PRECISION

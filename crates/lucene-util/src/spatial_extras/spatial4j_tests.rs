@@ -54,6 +54,9 @@ fn shapes_of_each_kind() {
         SpatialRelation::Intersects
     );
     assert!(r.center().unwrap().x().abs() < 1e-12);
+    // The trait's default `center_xy` reads `center()`.
+    let c = r.center().unwrap();
+    assert_eq!(r.center_xy().unwrap(), (c.x(), c.y()));
     assert!(
         Arc::ptr_eq(&r.center().unwrap(), &r.center().unwrap()),
         "cached"
