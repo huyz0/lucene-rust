@@ -85,14 +85,14 @@ tests/index/BaseCompressingDocValuesFormatTestCase	ported	crates/lucene-test-fra
 tests/index/BaseDocValuesFormatTestCase	ported	crates/lucene-test-framework/src/index/base_doc_values_format.rs::TESTS
 tests/index/BaseFieldInfoFormatTestCase	ported	crates/lucene-test-framework/src/index/base_field_info_format.rs::FieldInfoSuite
 tests/index/BaseIndexFileFormatTestCase	ported	crates/lucene-test-framework/src/index/base_index_file_format.rs::IndexFileFormatSuite -- M14: differs: testMultiClose has no codec-level writer/reader objects to close twice; checkIntegrity is checked by damaging bytes, not by tracking reads
-tests/index/BaseKnnVectorsFormatTestCase	partial	crates/lucene-test-framework/src/index/base_knn_vectors_format.rs::KnnVectorsSuite -- M14: testDifferentCodecs1/2 need a SimpleText writer (lead codec track); differs: no off-heap accounting API (testMergeOffHeapByteSizeMaps), vector fields are immutable (testFieldSetValue); graph searches and visited limits ported
+tests/index/BaseKnnVectorsFormatTestCase	ported	crates/lucene-test-framework/src/index/base_knn_vectors_format.rs::KnnVectorsSuite -- M14: differs: testDifferentCodecs1/2 open each writer through SimpleTextDirectory; no off-heap accounting API (testMergeOffHeapByteSizeMaps), vector fields are immutable (testFieldSetValue); graph searches and visited limits ported
 tests/index/BaseLiveDocsFormatTestCase	ported	crates/lucene-test-framework/src/index/base_live_docs_format.rs::TESTS
 tests/index/BaseMergePolicyTestCase	ported	crates/lucene-test-framework/src/index/base_merge_policy.rs::BaseMergePolicyTestCase
 tests/index/BaseNormsFormatTestCase	ported	crates/lucene-test-framework/src/index/base_norms_format.rs::NormsSuite
 tests/index/BasePointsFormatTestCase	ported	crates/lucene-test-framework/src/index/base_points_format.rs::PointsSuite
-tests/index/BasePostingsFormatTestCase	partial	crates/lucene-test-framework/src/index/base_postings_format.rs::TESTS -- M14: testInvertedWrite needs a codec plug-in point (lead codec track); differs: no enum reuse
+tests/index/BasePostingsFormatTestCase	ported	crates/lucene-test-framework/src/index/base_postings_format.rs::TESTS -- M14: differs: no enum reuse; testInvertedWrite (index/inverted_write.rs) walks terms as a sorted slice through a PostingsWriterFactory
 tests/index/BaseSegmentInfoFormatTestCase	ported	crates/lucene-test-framework/src/index/base_segment_info_format.rs::SegmentInfoSuite
-tests/index/BaseStoredFieldsFormatTestCase	partial	crates/lucene-test-framework/src/index/base_stored_fields_format.rs::TESTS -- M14: SimpleText switch (lead codec track); differs: no merging reader wrappers (the merge reads files, not readers)
+tests/index/BaseStoredFieldsFormatTestCase	ported	crates/lucene-test-framework/src/index/base_stored_fields_format.rs::TESTS -- M14: differs: testWriteReadMerge switches codecs through SimpleTextDirectory; no merging reader wrappers (the merge reads files, not readers)
 tests/index/BaseTermVectorsFormatTestCase	ported	crates/lucene-test-framework/src/index/base_term_vectors_format.rs::TESTS
 tests/index/BaseTestCheckIndex	ported	crates/lucene-test-framework/src/index/base_test_check_index.rs::test_deleted_docs
 tests/index/DocHelper	ported	crates/lucene-test-framework/src/index/doc_helper.rs::setup_doc
