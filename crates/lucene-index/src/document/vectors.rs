@@ -2,6 +2,11 @@
 //! one vector per field and document, indexed by the writer's flat and HNSW
 //! vector writers (the same path as
 //! [`crate::index_writer::IndexWriter::add_document_with_vectors`]).
+//!
+//! [`IndexableField::vector_value`] hands the writer an owned copy of the
+//! vector: the field is borrowed for the call while the writer buffers the
+//! vector until flush, so one copy per document is needed, the copy Java's
+//! `FlatFieldVectorsWriter.addValue` makes too (`copyValue`).
 
 use lucene_analysis::Analyzer;
 
@@ -25,6 +30,43 @@ fn vector_type(
     Ok(ft.frozen())
 }
 
+/// `VectorUtil.checkFinite(vector)`: `non-finite value at vector[i]=v`, `v`
+/// as Java's `Float.toString` prints a non-finite float.
+fn check_finite(vector: &[f32]) -> Result<()> {
+    let Some((i, v)) = vector.iter().enumerate().find(|(_, v)| !v.is_finite()) else {
+        return Ok(());
+    };
+    let v = if v.is_nan() {
+        "NaN"
+    } else if *v > 0.0 {
+        "Infinity"
+    } else {
+        "-Infinity"
+    };
+    Err(illegal(format!("non-finite value at vector[{i}]={v}")))
+}
+
+/// The `(name, vector, fieldType)` constructors' encoding check.
+fn check_encoding(
+    name: &str,
+    kind: &str,
+    field_type: &FieldType,
+    expected: VectorEncoding,
+) -> Result<()> {
+    let encoding = field_type.vector_encoding();
+    if encoding == expected {
+        return Ok(());
+    }
+    let encoding = match encoding {
+        VectorEncoding::Byte => "BYTE",
+        VectorEncoding::Float32 => "FLOAT32",
+    };
+    Err(illegal(format!(
+        "Attempt to create a vector for field {name} using {kind} but the field encoding is \
+         {encoding}"
+    )))
+}
+
 /// `KnnFloatVectorField`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct KnnFloatVectorField {
@@ -41,12 +83,7 @@ impl KnnFloatVectorField {
         vector: Vec<f32>,
         similarity: VectorSimilarityFunction,
     ) -> Result<Self> {
-        if let Some(bad) = vector.iter().find(|v| !v.is_finite()) {
-            return Err(illegal(format!(
-                "non-finite value at vector[{}]={bad}",
-                vector.iter().position(|v| !v.is_finite()).unwrap_or(0)
-            )));
-        }
+        check_finite(&vector)?;
         Ok(KnnFloatVectorField {
             name: name.into(),
             field_type: vector_type(vector.len(), VectorEncoding::Float32, similarity)?,
@@ -55,12 +92,24 @@ impl KnnFloatVectorField {
     }
 
     /// Over a given field type (`KnnFloatVectorField(name, vector, fieldType)`).
-    pub fn with_type(name: impl Into<String>, vector: Vec<f32>, field_type: FieldType) -> Self {
-        KnnFloatVectorField {
-            name: name.into(),
+    ///
+    /// # Errors
+    /// A field type whose vector encoding is not `FLOAT32`, or a non-finite
+    /// component (`VectorUtil.checkFinite`), as Java's constructor refuses
+    /// them. The dimension is the writer's check, as in Java.
+    pub fn with_type(
+        name: impl Into<String>,
+        vector: Vec<f32>,
+        field_type: FieldType,
+    ) -> Result<Self> {
+        let name = name.into();
+        check_encoding(&name, "float[]", &field_type, VectorEncoding::Float32)?;
+        check_finite(&vector)?;
+        Ok(KnnFloatVectorField {
+            name,
             field_type,
             vector,
-        }
+        })
     }
 
     pub fn vector(&self) -> &[f32] {
@@ -105,13 +154,23 @@ impl KnnByteVectorField {
         })
     }
 
-    /// Over a given field type.
-    pub fn with_type(name: impl Into<String>, vector: Vec<u8>, field_type: FieldType) -> Self {
-        KnnByteVectorField {
-            name: name.into(),
+    /// Over a given field type (`KnnByteVectorField(name, vector, fieldType)`).
+    ///
+    /// # Errors
+    /// A field type whose vector encoding is not `BYTE`, as Java's
+    /// constructor refuses it.
+    pub fn with_type(
+        name: impl Into<String>,
+        vector: Vec<u8>,
+        field_type: FieldType,
+    ) -> Result<Self> {
+        let name = name.into();
+        check_encoding(&name, "byte[]", &field_type, VectorEncoding::Byte)?;
+        Ok(KnnByteVectorField {
+            name,
             field_type,
             vector,
-        }
+        })
     }
 
     pub fn vector(&self) -> &[u8] {
@@ -159,9 +218,50 @@ mod tests {
         assert_eq!(b.vector_value(), Some(VectorValue::Byte(vec![1, 255])));
         assert_eq!(b.name(), "b");
         assert!(b.token_stream(&Analyzer::keyword()).unwrap().is_none());
-        let t = KnnByteVectorField::with_type("b", vec![1], b.field_type().clone());
+        let t = KnnByteVectorField::with_type("b", vec![1], b.field_type().clone()).unwrap();
         assert_eq!(t.vector(), &[1]);
-        let t = KnnFloatVectorField::with_type("v", vec![1.0], f.field_type().clone());
+        let t = KnnFloatVectorField::with_type("v", vec![1.0], f.field_type().clone()).unwrap();
         assert_eq!(t.vector(), &[1.0]);
+    }
+
+    /// The `(name, vector, fieldType)` constructors refuse what Java's do.
+    #[test]
+    fn typed_constructors_check_encoding_and_finiteness() {
+        let float_type = KnnFloatVectorField::new("v", vec![1.0], VectorSimilarityFunction::Cosine)
+            .unwrap()
+            .field_type()
+            .clone();
+        let byte_type = KnnByteVectorField::new("b", vec![1], VectorSimilarityFunction::Cosine)
+            .unwrap()
+            .field_type()
+            .clone();
+        let e = KnnByteVectorField::with_type("b", vec![1], float_type.clone()).unwrap_err();
+        assert!(
+            e.to_string().contains(
+                "Attempt to create a vector for field b using byte[] but the field encoding is \
+                 FLOAT32"
+            ),
+            "{e}"
+        );
+        let e = KnnFloatVectorField::with_type("v", vec![1.0], byte_type).unwrap_err();
+        assert!(
+            e.to_string().contains(
+                "Attempt to create a vector for field v using float[] but the field encoding is \
+                 BYTE"
+            ),
+            "{e}"
+        );
+        let e = KnnFloatVectorField::with_type("v", vec![1.0, f32::INFINITY], float_type.clone())
+            .unwrap_err();
+        assert!(
+            e.to_string()
+                .contains("non-finite value at vector[1]=Infinity"),
+            "{e}"
+        );
+        let e = KnnFloatVectorField::with_type("v", vec![f32::NAN], float_type).unwrap_err();
+        assert!(
+            e.to_string().contains("non-finite value at vector[0]=NaN"),
+            "{e}"
+        );
     }
 }

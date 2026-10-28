@@ -189,6 +189,9 @@ mod tests {
         w.commit().unwrap();
         assert!(committed_segments(&dir) < 6);
 
+        // A change, so the prepare has a commit to hold open (one with
+        // nothing to commit prepares nothing).
+        w.set_live_commit_data(vec![("k".into(), "v".into())]);
         w.prepare_commit().unwrap();
         assert!(matches!(
             w.maybe_merge(),

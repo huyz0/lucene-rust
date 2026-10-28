@@ -1086,8 +1086,7 @@ impl IndexingConfig {
             None,
         )?;
         let mut record = |names: Vec<String>| {
-            flushed.info.files.extend(names.iter().cloned());
-            flushed.pending_sync.extend(names);
+            flushed.info.files.extend(names);
         };
         if let Some(output) = postings_output {
             record(IndexWriter::write_postings_files(
@@ -1143,8 +1142,7 @@ impl IndexingConfig {
                 self.codec.as_deref(),
                 lucene_codecs::codec::WritePoint::Compound,
             )?;
-            flushed.pending_sync =
-                segment_writer::create_compound_file(dir, segment_name, &mut flushed.info)?;
+            segment_writer::create_compound_file(dir, segment_name, &mut flushed.info)?;
         }
         super::before_write(
             self.codec.as_deref(),
@@ -1375,12 +1373,9 @@ impl<'d> IndexWriter<'d> {
             return Ok(existing.number);
         }
         // `FieldNumbers` starts from every segment of the index the writer
-        // opened, so a field another writer indexed keeps its schema.
-        if let Some(existing) = self.segments_schema(&info.name)? {
-            if let Some(message) = schema_change(&existing, &info) {
-                return Err(explicit_error(message));
-            }
-        }
+        // opened (`enable_explicit_documents`), so `register` checks a field
+        // another writer indexed against its schema without re-reading every
+        // segment's `.fnm` per new field.
         let number = self
             .cfg_mut()
             .explicit_field_numbers
@@ -1694,6 +1689,27 @@ impl<'d> IndexWriter<'d> {
         // `DocumentsWriterPerThread.updateDocuments`: a block in a sorted
         // index needs a parent field to keep it together.
         self.cfg.check_block(docs.len())?;
+        // Every fallible lookup runs before anything is buffered, so a
+        // refused document cannot leave part of its block (or the block's
+        // delete) behind.
+        let options = docs
+            .iter()
+            .map(|doc| {
+                doc.fields
+                    .inverted
+                    .iter()
+                    .map(|inv| {
+                        if inv.terms.is_empty() {
+                            Ok(None)
+                        } else {
+                            self.cfg
+                                .explicit_field(inv.field_number)
+                                .map(|f| Some(f.index_options))
+                        }
+                    })
+                    .collect::<Result<Vec<_>>>()
+            })
+            .collect::<Result<Vec<_>>>()?;
         self.reserve_docs(docs.len())?;
         let mut docs = docs;
         // `IndexingChain.processDocument(docId, doc, lastDocInBlock)`: the
@@ -1713,19 +1729,18 @@ impl<'d> IndexWriter<'d> {
             self.pending_has_blocks = true;
         }
         let mut vectors = vectors.map(Vec::into_iter);
-        for mut doc in docs {
+        for (mut doc, options) in docs.into_iter().zip(options) {
             let mut extra = doc.fields.ram_bytes();
             self.buffer_document(Document { fields: doc.stored });
             // `IndexingChain.processDocument` inverts into the segment's
             // term hash as the document arrives: see `pending_postings`.
             let doc_id = i32::try_from(self.pending_docs.len().saturating_sub(1))
                 .map_err(|_| explicit_error("too many buffered documents"))?;
-            for inv in &mut doc.fields.inverted {
-                if inv.terms.is_empty() {
-                    // the document API's are in the postings already
+            for (inv, options) in doc.fields.inverted.iter_mut().zip(options) {
+                // the document API's are in the postings already
+                let Some(options) = options else {
                     continue;
-                }
-                let options = self.cfg.explicit_field(inv.field_number)?.index_options;
+                };
                 self.pending_postings.add_field(doc_id, inv, options)?;
                 // the hash holds them now; the document keeps its norm
                 inv.terms = Vec::new();

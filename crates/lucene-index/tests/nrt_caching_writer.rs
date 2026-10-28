@@ -38,8 +38,8 @@ fn open<'d>(dir: &'d dyn Directory) -> IndexWriter<'d> {
 }
 
 /// A small flushed segment is written to the cache and reaches the disk by
-/// the cache's `unCache` copy when the segment is synced (this port's flush
-/// fsyncs its segment, where Java's waits for the commit); over the cache's
+/// the cache's `unCache` copy when the segment is synced -- which, as in
+/// Java, is at the commit that names it, not at the flush; over the cache's
 /// `maxMergeSizeMB` it is written to the disk directly.
 #[test]
 fn a_small_flush_is_written_to_the_cache() {
@@ -54,12 +54,15 @@ fn a_small_flush_is_written_to_the_cache() {
         }
         w.flush().unwrap();
         let fdt = "_0.fdt".to_string();
+        // The flush syncs nothing: a cached segment stays in the cache.
+        assert_eq!(tmp.path().join(&fdt).exists(), !cached);
+        assert_eq!(nrt.list_cached_files().contains(&fdt), cached);
+        w.commit().unwrap();
         assert!(tmp.path().join(&fdt).exists(), "synced to disk");
         assert!(nrt.list_cached_files().is_empty());
         let copied = disk.copied.lock().unwrap().contains(&fdt);
         let created = disk.seen.lock().unwrap().iter().any(|(f, _)| *f == fdt);
         assert_eq!((copied, created), (cached, !cached));
-        w.commit().unwrap();
     }
 }
 

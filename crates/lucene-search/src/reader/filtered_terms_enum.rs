@@ -86,6 +86,19 @@ impl<'a, F: TermFilter> FilteredTermsEnum<'a, F> {
     }
 }
 
+/// `actual.copyBytes(term)`: reuses the buffer rather than allocating one
+/// per term.
+fn set_actual(actual: &mut Option<Vec<u8>>, term: Option<&[u8]>) {
+    match (actual.as_mut(), term) {
+        (Some(buf), Some(t)) => {
+            buf.clear();
+            buf.extend_from_slice(t);
+        }
+        (None, Some(t)) => *actual = Some(t.to_vec()),
+        (_, None) => *actual = None,
+    }
+}
+
 impl<F: TermFilter> TermsEnum for FilteredTermsEnum<'_, F> {
     fn next(&mut self) -> Result<Option<&[u8]>> {
         loop {
@@ -101,9 +114,9 @@ impl<F: TermFilter> TermsEnum for FilteredTermsEnum<'_, F> {
                 if self.tenum.try_seek_ceil(&t)? == SeekStatus::End {
                     return Ok(None);
                 }
-                self.actual = self.tenum.term().map(<[u8]>::to_vec);
+                set_actual(&mut self.actual, self.tenum.term());
             } else {
-                self.actual = self.tenum.next()?.map(<[u8]>::to_vec);
+                set_actual(&mut self.actual, self.tenum.next()?);
             }
             let Some(term) = self.actual.as_deref() else {
                 return Ok(None);
@@ -246,6 +259,9 @@ impl TermsEnum for AutomatonTermsEnum<'_> {
     }
     fn postings(&mut self, flags: PostingsFlags) -> Result<Box<dyn PostingsEnum>> {
         self.0.postings(flags)
+    }
+    fn impacts(&mut self, flags: PostingsFlags) -> Result<Box<dyn ImpactsEnum>> {
+        self.0.impacts(flags)
     }
     fn ord(&self) -> Result<i64> {
         self.0.ord()

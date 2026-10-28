@@ -554,7 +554,14 @@ fn compute_binary_value(
         dfs: Vec::with_capacity(tessellation.len()),
     };
     let root = b.build_tree(tessellation)?;
-    let mut out = Vec::new();
+    // The root's `byteSize` counts its header and every subtree; the value
+    // adds the fixed preamble (version, count, bounding box, centroid, type:
+    // at most 1 + 5 + 6 * 5 + 5 bytes) and the root's own component (at most
+    // 6 vlongs of 5 bytes each), so the value fits without regrowing.
+    let capacity = usize::try_from(b.nodes[root].byte_size)
+        .unwrap_or(0)
+        .saturating_add(80);
+    let mut out = Vec::with_capacity(capacity);
     // write encoding version
     out.push(VERSION);
     // write number of terms (triangles); Java's `List.size()`
