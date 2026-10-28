@@ -4811,6 +4811,26 @@ impl<'a> TermCursor<'a> {
         Ok((!cursor.done).then_some(cursor))
     }
 
+    /// [`Self::open`], positioned on the first term `>= lower` instead.
+    fn open_at(pf: &'a SourcePostings<'a>, lower: Option<&[u8]>) -> Result<Option<Self>> {
+        let Some(lower) = lower else {
+            return Self::open(pf);
+        };
+        let mut terms = pf.field_terms.iter();
+        if terms.try_seek_ceil(lower)? == blocktree::SeekStatus::End {
+            return Ok(None);
+        }
+        let term = match terms.try_current()? {
+            Some((term, _)) => term.to_vec(),
+            None => return Ok(None),
+        };
+        Ok(Some(TermCursor {
+            terms,
+            term,
+            done: false,
+        }))
+    }
+
     fn advance(&mut self) -> Result<()> {
         match self.terms.try_next()? {
             Some((term, _stats)) => {
@@ -5161,116 +5181,39 @@ fn merge_postings(
             per_source_field.push(Some(pf));
         }
 
-        // A streaming k-way merge of the contributing sources' term
-        // dictionaries -- the port of `FieldsConsumer.merge`'s
-        // `MultiTerms`/`MappedMultiPostingsEnum` pipeline. One forward cursor
-        // per source, advanced together; at each step the smallest current
-        // term is the next merged term, and only the sources actually
-        // standing on it contribute postings, decoded straight off their own
-        // cursor position (no dictionary seek at all -- see
-        // `TermsEnum::try_current_postings`).
-        //
-        // What this replaces: a `BTreeSet<Vec<u8>>` holding every distinct
-        // term of the merged field in memory at once, built by one full
-        // traversal per source, followed by *another* seek per (term, source)
-        // -- including for the sources that did not have the term -- and, for
-        // a positional field, a second seek and a second docs/freqs decode on
-        // top of that.
-        let mut cursors: Vec<Option<TermCursor<'_>>> = Vec::with_capacity(per_source_field.len());
-        for pf in &per_source_field {
-            cursors.push(match pf {
-                Some(pf) => TermCursor::open(pf)?,
-                None => None,
-            });
-        }
-
-        let mut terms_out: Vec<MergedTermPostings> = Vec::new();
-        let mut docs_seen = FixedBitSet::new(merged_doc_count.max(1));
-        loop {
-            // Smallest term across the live cursors.
-            let mut smallest: Option<&[u8]> = None;
-            for cursor in cursors.iter().flatten() {
-                if smallest.is_none_or(|current| cursor.term.as_slice() < current) {
-                    smallest = Some(&cursor.term);
-                }
-            }
-            let Some(smallest) = smallest else { break };
-            let mut term = MergedTermPostings::new(
-                smallest.to_vec(),
-                has_positions,
-                has_offsets,
-                has_payloads,
-            );
-            for src_idx in 0..cursors.len() {
-                let Some(cursor) = cursors[src_idx].as_mut() else {
-                    continue;
-                };
-                if cursor.term != term.term {
-                    continue;
-                }
-                let pf = per_source_field[src_idx]
-                    .expect("a cursor only exists for a source that contributes this field");
-                let (source_postings, source_positions) = if has_positions {
-                    let (docs, positions) = cursor
-                        .terms
-                        .try_current_postings_and_occurrences_flat(
-                            pf.doc_in,
-                            pf.pos_in.expect(
-                                "checked as Error::PostingsPositionsInputMissingInSource above",
-                            ),
-                            pf.pay_in,
-                        )?
-                        .expect("the cursor is standing on this term");
-                    (docs, Some(positions))
-                } else {
-                    (
-                        cursor
-                            .terms
-                            .try_current_postings(pf.doc_in)?
-                            .expect("the cursor is standing on this term"),
-                        None,
-                    )
-                };
-
-                let doc_id_map = &doc_id_maps[src_idx];
-                for (doc_idx, (&doc_id, &freq)) in source_postings
-                    .docs
-                    .iter()
-                    .zip(source_postings.freqs.iter())
-                    .enumerate()
-                {
-                    if pf.live.is_some_and(|live| !live.get_doc(doc_id)) {
-                        continue;
-                    }
-                    if let Some(merged_doc_id) = mapped_doc_id(doc_id_map, doc_id) {
-                        // Java's `docsSeen` bitset, not a `HashSet<i32>`: the
-                        // merged doc id space is dense and known up front.
-                        //
-                        // FBS: `docs_seen` is
-                        // `FixedBitSet::new(merged_doc_count.max(1))` where
-                        // `merged_doc_count == doc_order.len()`, and
-                        // `build_doc_id_maps` writes only `doc_order`'s own
-                        // enumeration indices into every map -- so every
-                        // `mapped_doc_id` result is in `0..doc_order.len()`,
-                        // which is this bitset's `len()`.
-                        docs_seen.set(merged_doc_id as usize);
-                        let occurrences = source_positions.as_ref().map(|positions| {
-                            positions
-                                .document(doc_idx)
-                                .expect("occurrence boundaries came from these same decoded freqs")
-                        });
-                        term.push_document(merged_doc_id, freq, occurrences);
-                    }
-                }
-                cursor.advance()?;
-                if cursor.exhausted() {
-                    cursors[src_idx] = None;
-                }
-            }
-            if !term.docs.is_empty() {
-                term.sort_documents();
-                terms_out.push(term);
-            }
+        let shape = FieldShape {
+            has_positions,
+            has_offsets,
+            has_payloads,
+            merged_doc_count,
+        };
+        let ranges = term_ranges(&per_source_field)?;
+        let parts: Vec<(Vec<MergedTermPostings>, FixedBitSet)> = if ranges.len() == 1 {
+            vec![merge_term_range(
+                &per_source_field,
+                doc_id_maps,
+                shape,
+                None,
+                None,
+            )?]
+        } else {
+            use rayon::prelude::*;
+            (0..ranges.len())
+                .into_par_iter()
+                .map(|i| {
+                    let lower = (i > 0).then(|| ranges[i].as_slice());
+                    let upper = ranges.get(i.saturating_add(1)).map(Vec::as_slice);
+                    merge_term_range(&per_source_field, doc_id_maps, shape, lower, upper)
+                })
+                .collect::<Result<_>>()?
+        };
+        let mut parts = parts.into_iter();
+        let (mut terms_out, mut docs_seen) = parts
+            .next()
+            .expect("term_ranges returns at least one range");
+        for (terms, seen) in parts {
+            terms_out.extend(terms);
+            docs_seen.or(&seen);
         }
 
         // Candidates come from live source dictionaries or routed FieldInfos,
@@ -5289,6 +5232,191 @@ fn merge_postings(
     }
 
     Ok(result)
+}
+
+/// What [`merge_term_range`] needs to know about the merged field.
+#[derive(Clone, Copy)]
+struct FieldShape {
+    has_positions: bool,
+    has_offsets: bool,
+    has_payloads: bool,
+    merged_doc_count: usize,
+}
+
+/// Fewer terms than this across a field's sources merge on one thread: the
+/// split walk and the per-range cursors would cost more than they save.
+const PARALLEL_MERGE_MIN_TERMS: i64 = 8192;
+
+/// Where to split a field's term space for a parallel merge: `ranges[0]` is
+/// an unused placeholder for "from the first term", and range `i` covers the
+/// terms in `ranges[i]..ranges[i + 1]` (the last one to the end).
+///
+/// The split terms are evenly spaced terms of the source with the most
+/// terms, taken in one walk of its dictionary. Ranges are disjoint and
+/// cover every term of every source, so merging them independently and
+/// concatenating the results in order is the single merge.
+fn term_ranges(per_source_field: &[Option<&SourcePostings<'_>>]) -> Result<Vec<Vec<u8>>> {
+    let total: i64 = per_source_field
+        .iter()
+        .flatten()
+        .map(|pf| pf.field_terms.num_terms.max(0))
+        .sum();
+    let threads = rayon::current_num_threads();
+    let largest = per_source_field
+        .iter()
+        .flatten()
+        .max_by_key(|pf| pf.field_terms.num_terms);
+    let (Some(largest), true) = (largest, threads > 1 && total >= PARALLEL_MERGE_MIN_TERMS) else {
+        return Ok(vec![Vec::new()]);
+    };
+    // Four ranges per thread: ranges differ in how many sources and
+    // postings they hold, so finer ranges balance better.
+    let ranges = threads.saturating_mul(4) as i64;
+    let step = largest
+        .field_terms
+        .num_terms
+        .checked_div(ranges)
+        .unwrap_or(0)
+        .max(1);
+    let mut out = vec![Vec::new()];
+    let mut terms = largest.field_terms.iter();
+    let mut ord = 0i64;
+    while let Some((term, _)) = terms.try_next()? {
+        if ord > 0 && ord.checked_rem(step) == Some(0) && (out.len() as i64) < ranges {
+            out.push(term.to_vec());
+        }
+        ord = ord.saturating_add(1);
+    }
+    Ok(out)
+}
+
+/// Merges the terms in `lower..upper` (`None`: unbounded) of one field
+/// across its sources, returning them in order with the merged documents
+/// they reached.
+fn merge_term_range(
+    per_source_field: &[Option<&SourcePostings<'_>>],
+    doc_id_maps: &[Vec<i32>],
+    shape: FieldShape,
+    lower: Option<&[u8]>,
+    upper: Option<&[u8]>,
+) -> Result<(Vec<MergedTermPostings>, FixedBitSet)> {
+    let FieldShape {
+        has_positions,
+        has_offsets,
+        has_payloads,
+        merged_doc_count,
+    } = shape;
+    // A streaming k-way merge of the contributing sources' term
+    // dictionaries -- the port of `FieldsConsumer.merge`'s
+    // `MultiTerms`/`MappedMultiPostingsEnum` pipeline. One forward cursor
+    // per source, advanced together; at each step the smallest current
+    // term is the next merged term, and only the sources actually
+    // standing on it contribute postings, decoded straight off their own
+    // cursor position (no dictionary seek at all -- see
+    // `TermsEnum::try_current_postings`).
+    //
+    // What this replaces: a `BTreeSet<Vec<u8>>` holding every distinct
+    // term of the merged field in memory at once, built by one full
+    // traversal per source, followed by *another* seek per (term, source)
+    // -- including for the sources that did not have the term -- and, for
+    // a positional field, a second seek and a second docs/freqs decode on
+    // top of that.
+    let mut cursors: Vec<Option<TermCursor<'_>>> = Vec::with_capacity(per_source_field.len());
+    for pf in per_source_field {
+        cursors.push(match pf {
+            Some(pf) => TermCursor::open_at(pf, lower)?,
+            None => None,
+        });
+    }
+
+    let mut terms_out: Vec<MergedTermPostings> = Vec::new();
+    let mut docs_seen = FixedBitSet::new(merged_doc_count.max(1));
+    loop {
+        // Smallest term across the live cursors.
+        let mut smallest: Option<&[u8]> = None;
+        for cursor in cursors.iter().flatten() {
+            if smallest.is_none_or(|current| cursor.term.as_slice() < current) {
+                smallest = Some(&cursor.term);
+            }
+        }
+        let Some(smallest) = smallest else { break };
+        if upper.is_some_and(|upper| smallest >= upper) {
+            break;
+        }
+        let mut term =
+            MergedTermPostings::new(smallest.to_vec(), has_positions, has_offsets, has_payloads);
+        for src_idx in 0..cursors.len() {
+            let Some(cursor) = cursors[src_idx].as_mut() else {
+                continue;
+            };
+            if cursor.term != term.term {
+                continue;
+            }
+            let pf = per_source_field[src_idx]
+                .expect("a cursor only exists for a source that contributes this field");
+            let (source_postings, source_positions) = if has_positions {
+                let (docs, positions) = cursor
+                    .terms
+                    .try_current_postings_and_occurrences_flat(
+                        pf.doc_in,
+                        pf.pos_in.expect(
+                            "checked as Error::PostingsPositionsInputMissingInSource above",
+                        ),
+                        pf.pay_in,
+                    )?
+                    .expect("the cursor is standing on this term");
+                (docs, Some(positions))
+            } else {
+                (
+                    cursor
+                        .terms
+                        .try_current_postings(pf.doc_in)?
+                        .expect("the cursor is standing on this term"),
+                    None,
+                )
+            };
+
+            let doc_id_map = &doc_id_maps[src_idx];
+            for (doc_idx, (&doc_id, &freq)) in source_postings
+                .docs
+                .iter()
+                .zip(source_postings.freqs.iter())
+                .enumerate()
+            {
+                if pf.live.is_some_and(|live| !live.get_doc(doc_id)) {
+                    continue;
+                }
+                if let Some(merged_doc_id) = mapped_doc_id(doc_id_map, doc_id) {
+                    // Java's `docsSeen` bitset, not a `HashSet<i32>`: the
+                    // merged doc id space is dense and known up front.
+                    //
+                    // FBS: `docs_seen` is
+                    // `FixedBitSet::new(merged_doc_count.max(1))` where
+                    // `merged_doc_count == doc_order.len()`, and
+                    // `build_doc_id_maps` writes only `doc_order`'s own
+                    // enumeration indices into every map -- so every
+                    // `mapped_doc_id` result is in `0..doc_order.len()`,
+                    // which is this bitset's `len()`.
+                    docs_seen.set(merged_doc_id as usize);
+                    let occurrences = source_positions.as_ref().map(|positions| {
+                        positions
+                            .document(doc_idx)
+                            .expect("occurrence boundaries came from these same decoded freqs")
+                    });
+                    term.push_document(merged_doc_id, freq, occurrences);
+                }
+            }
+            cursor.advance()?;
+            if cursor.exhausted() {
+                cursors[src_idx] = None;
+            }
+        }
+        if !term.docs.is_empty() {
+            term.sort_documents();
+            terms_out.push(term);
+        }
+    }
+    Ok((terms_out, docs_seen))
 }
 
 /// One source's (or the merged) points for one field, laid out flat: point
@@ -16240,5 +16368,139 @@ mod tests {
         )));
         // A non-indexed field never gains an `omit_norms` rewrite.
         assert!(!fields[0].omit_norms);
+    }
+
+    /// A field big enough to split (`PARALLEL_MERGE_MIN_TERMS`), merged as
+    /// `term_ranges`' ranges on a four-thread pool, gives exactly the
+    /// single-range merge: same terms in the same order, same postings and
+    /// positions, same documents seen -- across overlapping dictionaries, an
+    /// empty source and a deleted document.
+    #[test]
+    fn parallel_term_ranges_merge_like_one_range() {
+        let suffix = per_field_codec_suffix(POSTINGS_FORMAT_NAME);
+        let options = IndexOptions::DocsAndFreqsAndPositionsAndOffsets;
+        let mut info = postings_field("body", 0);
+        info.index_options = options;
+        let infos = field_infos::FieldInfos { fields: vec![info] };
+        let outputs: Vec<_> = (0..3u8)
+            .map(|s| {
+                let terms: Vec<TermPostings> = (0..6000usize)
+                    .map(|i| {
+                        let t = i * 3 / 2 + usize::from(s) * 1777;
+                        let docs: Vec<(i32, i32)> = (0..1 + t % 4)
+                            .map(|d| (((t + d * 7) % 40) as i32, 1 + (d % 2) as i32))
+                            .collect::<std::collections::BTreeMap<_, _>>()
+                            .into_iter()
+                            .collect();
+                        let positions = docs
+                            .iter()
+                            .map(|&(doc, f)| (0..f).map(|p| doc + p * 3).collect())
+                            .collect();
+                        let offsets = docs
+                            .iter()
+                            .map(|&(_, f)| (0..f).map(|p| (p * 4, p * 4 + 2)).collect())
+                            .collect();
+                        TermPostings {
+                            term: format!("t{t:06}").into_bytes(),
+                            docs,
+                            positions,
+                            offsets,
+                            ..Default::default()
+                        }
+                    })
+                    .collect();
+                let input = FieldPostingsInput {
+                    field_number: 0,
+                    index_options: options,
+                    doc_count: 40,
+                    has_payloads: false,
+                    terms: &terms,
+                };
+                let id = [s + 1; ID_LENGTH];
+                (
+                    id,
+                    postings_writer::write_single_field(&input, &id, &suffix).unwrap(),
+                )
+            })
+            .collect();
+        let fields: Vec<_> = outputs
+            .iter()
+            .map(|(id, o)| {
+                blocktree::open(&o.tim, &o.tip, &o.tmd, &infos, id, &suffix, 40).unwrap()
+            })
+            .collect();
+        let doc_ins: Vec<_> = outputs
+            .iter()
+            .map(|(id, o)| DocInput::open(&o.doc, id, &suffix).unwrap())
+            .collect();
+        let pos_ins: Vec<_> = outputs
+            .iter()
+            .map(|(id, o)| lucene_codecs::postings::PosInput::open(&o.pos, id, &suffix).unwrap())
+            .collect();
+        let pay_ins: Vec<_> = outputs
+            .iter()
+            .map(|(id, o)| lucene_codecs::postings::PayInput::open(&o.pay, id, &suffix).unwrap())
+            .collect();
+        let sources: Vec<SourcePostings<'_>> = (0..3)
+            .map(|s| SourcePostings {
+                field_number: 0,
+                field_terms: fields[s].field("body").unwrap(),
+                doc_in: Some(&doc_ins[s]),
+                pos_in: Some(&pos_ins[s]),
+                pay_in: Some(&pay_ins[s]),
+                live: None,
+            })
+            .collect();
+        // Source 1 sits out (a source without the field); source 2's doc 5
+        // is deleted.
+        let per_source_field = vec![
+            Some(&sources[0]),
+            None,
+            Some(&sources[1]),
+            Some(&sources[2]),
+        ];
+        let doc_id_maps: Vec<Vec<i32>> = (0..4)
+            .map(|s| {
+                (0..40)
+                    .map(|d| if s == 3 && d == 5 { -1 } else { s * 40 + d })
+                    .collect()
+            })
+            .collect();
+        let shape = FieldShape {
+            has_positions: true,
+            has_offsets: true,
+            has_payloads: false,
+            merged_doc_count: 160,
+        };
+        let (serial, serial_seen) =
+            merge_term_range(&per_source_field, &doc_id_maps, shape, None, None).unwrap();
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .unwrap();
+        let ranges = pool.install(|| term_ranges(&per_source_field)).unwrap();
+        assert!(ranges.len() > 1, "{} ranges", ranges.len());
+        let mut parallel = Vec::new();
+        let mut parallel_seen = FixedBitSet::new(160);
+        for i in 0..ranges.len() {
+            let lower = (i > 0).then(|| ranges[i].as_slice());
+            let upper = ranges.get(i + 1).map(Vec::as_slice);
+            let (terms, seen) =
+                merge_term_range(&per_source_field, &doc_id_maps, shape, lower, upper).unwrap();
+            parallel.extend(terms);
+            parallel_seen.or(&seen);
+        }
+        assert_eq!(parallel.len(), serial.len());
+        for (p, s) in parallel.iter().zip(&serial) {
+            assert_eq!(
+                (&p.term, &p.docs, &p.positions, &p.offsets, &p.doc_starts),
+                (&s.term, &s.docs, &s.positions, &s.offsets, &s.doc_starts)
+            );
+        }
+        assert_eq!(parallel_seen.cardinality(), serial_seen.cardinality());
+        // A lower bound past every term: nothing.
+        let (none, _) =
+            merge_term_range(&per_source_field, &doc_id_maps, shape, Some(b"u"), None).unwrap();
+        assert!(none.is_empty());
     }
 }

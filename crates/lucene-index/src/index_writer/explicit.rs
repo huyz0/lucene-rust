@@ -1078,6 +1078,7 @@ impl IndexingConfig {
             buf.docs,
             buf.has_blocks,
             self.codec.as_deref(),
+            None,
         )?;
         let mut record = |names: Vec<String>| {
             flushed.info.files.extend(names.iter().cloned());

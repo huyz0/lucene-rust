@@ -127,7 +127,13 @@ impl TermHash {
     /// The id of `bytes`, adding it if new; `true` when it was added.
     #[inline]
     pub(crate) fn add(&mut self, bytes: &[u8]) -> (u32, bool) {
-        let h = hash_bytes(bytes);
+        self.add_hashed(bytes, hash_bytes(bytes))
+    }
+
+    /// [`Self::add`] for bytes whose [`hash_bytes`] is already known -- a
+    /// term moving from one table to another keeps its hash.
+    #[inline]
+    fn add_hashed(&mut self, bytes: &[u8], h: u64) -> (u32, bool) {
         // `table.len()` is a power of two, at least 1024.
         let mask = self.table.len().wrapping_sub(1);
         let mut slot = home_slot(h, self.table.len());
@@ -424,19 +430,144 @@ impl FieldInverter {
             + self.ends.capacity() * std::mem::size_of::<DocEnd>()
     }
 
+    /// Inverts `num_docs` documents, splitting them into contiguous runs that
+    /// are inverted on rayon's pool, each into its own term hash, and then
+    /// appended in document order ([`Self::append`]). `values_of(doc, out)`
+    /// fills `out` with document `doc`'s values of this field.
+    ///
+    /// Tokenizing and hashing are most of a flush, and nothing in them
+    /// depends on another document, so a single-threaded writer's flush uses
+    /// every core. The result is the one serial inversion builds, term ids
+    /// aside: those are hash-order internals that [`Self::into_term_postings`]
+    /// sorts away -- asserted in this module's tests.
+    pub fn invert_parallel<'a, F>(
+        index_options: IndexOptions,
+        num_docs: usize,
+        values_of: F,
+        analyzer: &Analyzer,
+    ) -> Self
+    where
+        F: Fn(usize, &mut Vec<&'a str>) + Sync,
+    {
+        use rayon::prelude::*;
+        let invert_run = |run: std::ops::Range<usize>| {
+            let mut inverter = FieldInverter::new(index_options);
+            let mut values = Vec::new();
+            for (local, doc) in run.enumerate() {
+                values.clear();
+                values_of(doc, &mut values);
+                inverter.add_document(local as i32, &values, analyzer);
+            }
+            inverter
+        };
+        let threads = rayon::current_num_threads();
+        // Below this a run's own term hash (and the append that folds it in)
+        // costs more than the parallelism saves.
+        const MIN_RUN_DOCS: usize = 512;
+        if threads <= 1 || num_docs < MIN_RUN_DOCS.saturating_mul(2) {
+            return invert_run(0..num_docs);
+        }
+        // Two runs per thread, so a run of long documents does not leave the
+        // other threads idle at the end.
+        let runs = threads
+            .saturating_mul(2)
+            .min(num_docs / MIN_RUN_DOCS)
+            .max(1);
+        let run_len = num_docs.div_ceil(runs);
+        let mut parts: Vec<FieldInverter> = (0..runs)
+            .into_par_iter()
+            .map(|r| {
+                let start = r.saturating_mul(run_len).min(num_docs);
+                invert_run(start..start.saturating_add(run_len).min(num_docs))
+            })
+            .collect();
+        let mut parts = parts.drain(..);
+        let mut out = parts
+            .next()
+            .unwrap_or_else(|| FieldInverter::new(index_options));
+        for part in parts {
+            out.append(part);
+        }
+        out
+    }
+
+    /// Appends `other`, whose document `i` becomes document
+    /// `self.lengths.len() + i` -- the two runs inverted as one.
+    ///
+    /// Each term of `other` moves to `self`'s table once (keeping its hash),
+    /// and its postings are appended whole: `other`'s documents all follow
+    /// `self`'s, so each term's doc list stays ascending. The only state that
+    /// depends on what came *before* a document is `DOCS`' "a term new to the
+    /// segment" flag (its `maxTermFrequency`), recomputed here against
+    /// `self`'s terms.
+    pub(crate) fn append(&mut self, other: FieldInverter) {
+        debug_assert_eq!(self.index_options, other.index_options);
+        let base = self.lengths.len();
+        let doc_base = i32::try_from(base).unwrap_or(i32::MAX);
+        let docs_only = self.index_options == IndexOptions::Docs;
+        self.lengths.extend_from_slice(&other.lengths);
+        self.overlaps_and_unique
+            .extend_from_slice(&other.overlaps_and_unique);
+        self.ends.extend_from_slice(&other.ends);
+        if docs_only {
+            for end in &mut self.ends[base..] {
+                end.max_term_frequency = 0;
+            }
+        }
+        self.doc_count = self.doc_count.saturating_add(other.doc_count);
+        let FieldInverter {
+            terms, postings, ..
+        } = other;
+        for (local, mut buf) in postings.into_iter().enumerate() {
+            let local = local as u32;
+            for entry in &mut buf.docs {
+                entry.0 = entry.0.saturating_add(doc_base);
+            }
+            let (id, is_new) = self
+                .terms
+                .add_hashed(terms.term(local), terms.hashes[local as usize]);
+            if is_new {
+                if docs_only {
+                    if let Some(&(first, _)) = buf.docs.first() {
+                        if let Some(end) = self.ends.get_mut(first as usize) {
+                            end.max_term_frequency = 1;
+                        }
+                    }
+                }
+                self.postings.push(buf);
+            } else {
+                let p = &mut self.postings[id as usize];
+                p.docs.extend_from_slice(&buf.docs);
+                p.positions.extend_from_slice(&buf.positions);
+                p.offsets.extend_from_slice(&buf.offsets);
+            }
+        }
+    }
+
     /// The buffered terms as the postings writer takes them, sorted by term
     /// bytes, with positions and offsets split per document.
+    ///
+    /// Splitting a positions field's runs allocates per term and document,
+    /// independently for every term, so the terms are converted on rayon's
+    /// pool; the result keeps the sorted order.
     pub fn into_term_postings(mut self) -> Vec<TermPostings> {
+        use rayon::prelude::*;
         let with_positions = self.has_positions();
         let with_offsets = self.has_offsets();
         let ids = self.terms.sorted_ids();
-        let mut out = Vec::with_capacity(ids.len());
-        for id in ids {
-            let buf = std::mem::take(&mut self.postings[id as usize]);
+        let sorted: Vec<(u32, TermPostingsBuf)> = ids
+            .into_iter()
+            .map(|id| (id, std::mem::take(&mut self.postings[id as usize])))
+            .collect();
+        let terms = &self.terms;
+        let convert = |(id, buf): (u32, TermPostingsBuf)| {
             let mut positions = Vec::new();
             let mut offsets = Vec::new();
             if with_positions {
                 positions.reserve_exact(buf.docs.len());
+                if with_offsets {
+                    offsets.reserve_exact(buf.docs.len());
+                }
                 let mut at = 0usize;
                 for &(_, freq) in &buf.docs {
                     let end = at.saturating_add(freq as usize);
@@ -447,16 +578,21 @@ impl FieldInverter {
                     at = end;
                 }
             }
-            out.push(TermPostings {
-                term: self.terms.term(id).to_vec(),
+            TermPostings {
+                term: terms.term(id).to_vec(),
                 docs: buf.docs,
                 positions,
                 offsets,
                 payload_bytes: Vec::new(),
                 payload_lengths: Vec::new(),
-            });
+            }
+        };
+        if with_positions {
+            sorted.into_par_iter().map(convert).collect()
+        } else {
+            // Nothing to split: a move per term, cheaper than the pool.
+            sorted.into_iter().map(convert).collect()
         }
-        out
     }
 }
 
@@ -693,6 +829,107 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A corpus big enough for `invert_parallel` to split: repeated and
+    /// unique terms, empty and missing values, multi-valued documents.
+    fn big_corpus() -> Vec<Vec<String>> {
+        let mut state = 0x9E37_79B9u32;
+        (0..3001)
+            .map(|doc| {
+                let mut values = Vec::new();
+                if doc % 97 == 0 {
+                    return values;
+                }
+                for _ in 0..1 + doc % 3 {
+                    let mut text = String::new();
+                    for _ in 0..doc % 23 {
+                        state ^= state << 13;
+                        state ^= state >> 17;
+                        state ^= state << 5;
+                        text.push_str(&format!("w{} ", state % 700));
+                    }
+                    if doc % 11 == 0 {
+                        text.push_str(&format!("only{doc}"));
+                    }
+                    values.push(text);
+                }
+                values
+            })
+            .collect()
+    }
+
+    fn assert_same_inversion(got: FieldInverter, want: FieldInverter, docs: usize) {
+        assert_eq!(got.doc_count(), want.doc_count());
+        assert_eq!(got.lengths(), want.lengths());
+        for doc in 0..docs {
+            assert_eq!(got.invert_state(doc), want.invert_state(doc), "doc {doc}");
+        }
+        let (got, want) = (got.into_term_postings(), want.into_term_postings());
+        assert_eq!(got.len(), want.len());
+        for (g, w) in got.iter().zip(&want) {
+            assert_eq!(
+                (&g.term, &g.docs, &g.positions, &g.offsets),
+                (&w.term, &w.docs, &w.positions, &w.offsets)
+            );
+        }
+    }
+
+    /// `invert_parallel` (on a four-thread pool, so it really splits) and
+    /// `append` over hand-made runs both build exactly the serial
+    /// inversion, `DOCS`' new-term flag included.
+    #[test]
+    fn parallel_and_appended_runs_match_the_serial_inversion() {
+        let corpus = big_corpus();
+        let analyzer = Analyzer::standard(None);
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .unwrap();
+        for options in [
+            IndexOptions::Docs,
+            IndexOptions::DocsAndFreqs,
+            IndexOptions::DocsAndFreqsAndPositions,
+            IndexOptions::DocsAndFreqsAndPositionsAndOffsets,
+        ] {
+            let serial = || {
+                let mut inv = FieldInverter::new(options);
+                for (doc, values) in corpus.iter().enumerate() {
+                    let values: Vec<&str> = values.iter().map(String::as_str).collect();
+                    inv.add_document(doc as i32, &values, &analyzer);
+                }
+                inv
+            };
+            let parallel = pool.install(|| {
+                FieldInverter::invert_parallel(
+                    options,
+                    corpus.len(),
+                    |doc, out: &mut Vec<&str>| out.extend(corpus[doc].iter().map(String::as_str)),
+                    &analyzer,
+                )
+            });
+            assert_same_inversion(parallel, serial(), corpus.len());
+
+            // Uneven runs, one of them empty, appended by hand.
+            let mut appended = FieldInverter::new(options);
+            for run in [0..1, 1..1, 1..700, 700..2900, 2900..3001] {
+                let mut part = FieldInverter::new(options);
+                for (local, doc) in run.enumerate() {
+                    let values: Vec<&str> = corpus[doc].iter().map(String::as_str).collect();
+                    part.add_document(local as i32, &values, &analyzer);
+                }
+                appended.append(part);
+            }
+            assert_same_inversion(appended, serial(), corpus.len());
+        }
+        // Too few documents to split: the serial path, same answer.
+        let small = FieldInverter::invert_parallel(
+            IndexOptions::DocsAndFreqs,
+            10,
+            |doc, out: &mut Vec<&str>| out.extend(corpus[doc].iter().map(String::as_str)),
+            &analyzer,
+        );
+        assert_eq!(small.lengths().len(), 10);
     }
 
     #[test]
