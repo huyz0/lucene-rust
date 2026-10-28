@@ -225,9 +225,9 @@ pub fn read_to_string(reader: &mut dyn CharReader) -> Result<String, AnalysisErr
         }
         units.extend_from_slice(&buf[..n]);
     }
-    Ok(char::decode_utf16(units)
-        .map(|r| r.unwrap_or(char::REPLACEMENT_CHARACTER))
-        .collect())
+    let mut text = String::new();
+    crate::util::push_str_utf16(&mut text, &units);
+    Ok(text)
 }
 
 #[cfg(test)]

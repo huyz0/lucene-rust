@@ -4,9 +4,9 @@
 
 use std::sync::{Arc, LazyLock};
 
-use crate::attributes::State;
 use crate::java_character;
 use crate::token_stream::{TokenFilter, TokenStream};
+use crate::StateSlot;
 use crate::{AnalysisError, CharArraySet};
 
 const LOWER: i32 = 0x01;
@@ -313,7 +313,7 @@ pub struct WordDelimiterGraphFilter<I> {
     saved_term: Vec<u16>,
     saved_start_offset: i32,
     saved_end_offset: i32,
-    saved_state: Option<State>,
+    saved_state: StateSlot,
     last_start_offset: i32,
     adjusting_offsets: bool,
     word_pos: i32,
@@ -376,7 +376,7 @@ impl<I: TokenStream> WordDelimiterGraphFilter<I> {
             saved_term: Vec::new(),
             saved_start_offset: 0,
             saved_end_offset: 0,
-            saved_state: None,
+            saved_state: StateSlot::new(),
             last_start_offset: 0,
             adjusting_offsets: false,
             word_pos: 0,
@@ -412,7 +412,7 @@ impl<I: TokenStream> WordDelimiterGraphFilter<I> {
         let a = self.input.attributes();
         self.saved_start_offset = a.start_offset();
         self.saved_end_offset = a.end_offset();
-        self.saved_state = Some(a.capture_state());
+        self.saved_state.save(a);
         self.saved_term.clear();
         self.saved_term.extend(a.term().encode_utf16());
     }
@@ -561,11 +561,15 @@ impl<I: TokenStream> TokenFilter for WordDelimiterGraphFilter<I> {
                 self.iterator.set_text(&scratch);
                 self.scratch = scratch;
                 self.iterator.next();
-                let protected = self
-                    .prot_words
-                    .as_ref()
-                    .is_some_and(|p| p.contains(a.term()));
-                if (self.iterator.current == 0 && self.iterator.end == term_length) || protected {
+                // Java's `||` probes the protected words only for a term
+                // that is more than one part.
+                let single_part = self.iterator.current == 0 && self.iterator.end == term_length;
+                if single_part
+                    || self
+                        .prot_words
+                        .as_ref()
+                        .is_some_and(|p| p.contains(a.term()))
+                {
                     let inc = self.accum_pos_inc;
                     self.input.attributes_mut().set_position_increment(inc)?;
                     self.accum_pos_inc = 0;
@@ -597,7 +601,7 @@ impl<I: TokenStream> TokenFilter for WordDelimiterGraphFilter<I> {
                 a.clear_attributes();
                 a.restore_state(
                     self.saved_state
-                        .as_ref()
+                        .get()
                         .expect("buffered parts imply a state"),
                 );
                 a.set_offset(start_offset, end_offset)?;
@@ -614,7 +618,7 @@ impl<I: TokenStream> TokenFilter for WordDelimiterGraphFilter<I> {
                 self.word_pos = part.start_pos;
                 return Ok(true);
             }
-            self.saved_state = None;
+            self.saved_state.clear();
         }
     }
 
@@ -622,7 +626,7 @@ impl<I: TokenStream> TokenFilter for WordDelimiterGraphFilter<I> {
     fn reset_filter(&mut self) -> Result<(), AnalysisError> {
         self.input.reset()?;
         self.accum_pos_inc = 0;
-        self.saved_state = None;
+        self.saved_state.clear();
         self.last_start_offset = 0;
         self.concat.clear();
         self.concat_all.clear();

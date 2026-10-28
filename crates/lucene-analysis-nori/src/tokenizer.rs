@@ -22,6 +22,9 @@ pub struct KoreanTokenizer {
     input: TokenizerInput,
     viterbi: Viterbi<Token>,
     lang: KoViterbi,
+    /// The last token handed to the attributes, kept to reuse its
+    /// allocation for the next one.
+    last_token: Option<Arc<Token>>,
 }
 
 impl Default for KoreanTokenizer {
@@ -89,6 +92,7 @@ impl KoreanTokenizer {
             input: TokenizerInput::new(),
             viterbi,
             lang,
+            last_token: None,
         }
     }
 
@@ -143,7 +147,20 @@ impl TokenStream for KoreanTokenizer {
             self.input.correct_offset(end),
         );
         self.atts.set_offset(cs, ce)?;
-        let token = Arc::new(token);
+        // `clear_attributes` above dropped the attributes' references to the
+        // last token, so unless a downstream stage kept one, its allocation
+        // is ours to overwrite.
+        let token = match self.last_token.as_mut().and_then(Arc::get_mut) {
+            Some(slot) => {
+                *slot = token;
+                self.last_token.clone().expect("matched above")
+            }
+            None => {
+                let t = Arc::new(token);
+                self.last_token = Some(Arc::clone(&t));
+                t
+            }
+        };
         self.atts.add_custom::<PartOfSpeechAttribute>().token = Some(Arc::clone(&token));
         self.atts.add_custom::<ReadingAttribute>().token = Some(token);
         self.atts.set_position_increment(pos_incr)?;

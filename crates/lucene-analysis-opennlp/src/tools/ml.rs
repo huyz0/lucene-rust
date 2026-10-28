@@ -675,8 +675,13 @@ impl BeamSearch {
                 cg.context(i, &top.outcomes, outcomes, &mut features);
                 model.eval(&features, &mut probs);
                 sorted.copy_from_slice(&probs);
-                sorted.sort_by(|a, b| java_double_compare(*a, *b));
-                let min = sorted[sorted.len().saturating_sub(size)];
+                // The `size`-th largest probability: a selection, not a
+                // full sort (`java_double_compare` is a total order, so the
+                // value is the sorted array's at that index).
+                let k = sorted.len().saturating_sub(size);
+                let min = *sorted
+                    .select_nth_unstable_by(k, |a, b| java_double_compare(*a, *b))
+                    .1;
                 let extend = |p: usize, next: &mut JavaPriorityQueue| {
                     if cg.valid(i, &top.outcomes, p as u32, outcomes) {
                         let score = top.score + strict_math::log(probs[p]);

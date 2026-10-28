@@ -4,10 +4,9 @@
 //! `RemoveDuplicatesTokenFilter`, `StemmerOverrideFilter`.
 
 use std::collections::HashMap;
-use std::collections::HashSet;
 use std::sync::Arc;
 
-use crate::attributes::{AttributeSource, State};
+use crate::attributes::{AttributeSource, StateSlot};
 use crate::token_stream::{TokenFilter, TokenStream};
 use crate::util::java_regex::JavaPattern;
 use crate::{simple_to_lowercase, AnalysisError, CharArraySet};
@@ -87,13 +86,16 @@ impl<I: TokenStream, K: KeywordTest> TokenFilter for KeywordMarkerFilter<I, K> {
 /// token twice, first marked keyword, then (same position) not.
 pub struct KeywordRepeatFilter<I> {
     input: I,
-    state: Option<State>,
+    state: StateSlot,
 }
 
 impl<I: TokenStream> KeywordRepeatFilter<I> {
     /// `new KeywordRepeatFilter(TokenStream)`.
     pub fn new(input: I) -> Self {
-        KeywordRepeatFilter { input, state: None }
+        KeywordRepeatFilter {
+            input,
+            state: StateSlot::new(),
+        }
     }
 }
 
@@ -103,13 +105,13 @@ impl<I: TokenStream> TokenFilter for KeywordRepeatFilter<I> {
     fn increment(&mut self) -> Result<bool, AnalysisError> {
         if let Some(state) = self.state.take() {
             let a = self.input.attributes_mut();
-            a.restore_state(&state);
+            a.restore_state(state);
             a.set_position_increment(0)?;
             a.set_keyword(false);
             return Ok(true);
         }
         if self.input.increment_token()? {
-            self.state = Some(self.input.attributes().capture_state());
+            self.state.save(self.input.attributes());
             self.input.attributes_mut().set_keyword(true);
             return Ok(true);
         }
@@ -118,7 +120,7 @@ impl<I: TokenStream> TokenFilter for KeywordRepeatFilter<I> {
 
     fn reset_filter(&mut self) -> Result<(), AnalysisError> {
         self.input.reset()?;
-        self.state = None;
+        self.state.clear();
         Ok(())
     }
 }
@@ -127,7 +129,12 @@ impl<I: TokenStream> TokenFilter for KeywordRepeatFilter<I> {
 /// drops a token whose term already occurred at the same position.
 pub struct RemoveDuplicatesTokenFilter<I> {
     input: I,
-    previous: HashSet<String>,
+    /// The terms seen at the current position: the first `live` entries
+    /// (Java's `CharArraySet previous`). A position holds a handful of
+    /// stacked terms, so a scan beats hashing, and the entries keep their
+    /// buffers from position to position.
+    previous: Vec<String>,
+    live: usize,
 }
 
 impl<I: TokenStream> RemoveDuplicatesTokenFilter<I> {
@@ -135,7 +142,8 @@ impl<I: TokenStream> RemoveDuplicatesTokenFilter<I> {
     pub fn new(input: I) -> Self {
         RemoveDuplicatesTokenFilter {
             input,
-            previous: HashSet::new(),
+            previous: Vec::new(),
+            live: 0,
         }
     }
 }
@@ -147,11 +155,21 @@ impl<I: TokenStream> TokenFilter for RemoveDuplicatesTokenFilter<I> {
         while self.input.increment_token()? {
             let a = self.input.attributes();
             if a.position_increment() > 0 {
-                self.previous.clear();
+                self.live = 0;
             }
-            let duplicate = a.position_increment() == 0 && self.previous.contains(a.term());
-            self.previous.insert(a.term().to_string());
-            if !duplicate {
+            let term = a.term();
+            let seen = self.previous[..self.live].iter().any(|t| t == term);
+            if !seen {
+                match self.previous.get_mut(self.live) {
+                    Some(slot) => {
+                        slot.clear();
+                        slot.push_str(term);
+                    }
+                    None => self.previous.push(term.to_string()),
+                }
+                self.live += 1;
+            }
+            if !(a.position_increment() == 0 && seen) {
                 return Ok(true);
             }
         }
@@ -160,7 +178,7 @@ impl<I: TokenStream> TokenFilter for RemoveDuplicatesTokenFilter<I> {
 
     fn reset_filter(&mut self) -> Result<(), AnalysisError> {
         self.input.reset()?;
-        self.previous.clear();
+        self.live = 0;
         Ok(())
     }
 }
@@ -180,7 +198,7 @@ pub struct StemmerOverrideMap {
 impl StemmerOverrideMap {
     /// `get(char[], int, ...)`: the stem for `term`, if any.
     pub fn get(&self, term: &str) -> Option<&str> {
-        if self.ignore_case {
+        if self.ignore_case && crate::first_to_lowercase(term.as_bytes()).is_some() {
             let lower: String = term.chars().map(simple_to_lowercase).collect();
             self.map.get(&lower).map(String::as_str)
         } else {
@@ -251,8 +269,7 @@ impl<I: TokenStream> TokenFilter for StemmerOverrideFilter<I> {
         let a = self.input.attributes_mut();
         if !a.is_keyword() {
             if let Some(stem) = self.map.get(a.term()) {
-                let stem = stem.to_string();
-                a.set_term(&stem);
+                a.set_term(stem);
                 a.set_keyword(true);
             }
         }
