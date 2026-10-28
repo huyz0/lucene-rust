@@ -230,28 +230,25 @@ impl UnicodeSet {
             return;
         }
         let end = end.min(MAX_VALUE);
-        let mut out = Vec::with_capacity(self.ranges.len().saturating_add(1));
-        let (mut s, mut e) = (start, end);
-        let mut placed = false;
-        for &(a, b) in &self.ranges {
-            if b.saturating_add(1) < s {
-                out.push((a, b));
-            } else if e.saturating_add(1) < a {
-                if !placed {
-                    out.push((s, e));
-                    placed = true;
-                }
-                out.push((a, b));
-            } else {
-                s = s.min(a);
-                e = e.max(b);
-            }
+        // The ranges overlapping or adjacent to [start, end] are a window
+        // of the sorted list: merge them into its first slot in place
+        // (building a whole new list per added code point made building a
+        // set from many single code points quadratic).
+        let lo = self
+            .ranges
+            .partition_point(|&(_, b)| b.saturating_add(1) < start);
+        let hi = self
+            .ranges
+            .partition_point(|&(a, _)| a <= end.saturating_add(1));
+        if lo >= hi {
+            self.ranges.insert(lo, (start, end));
+            return;
         }
-        if !placed {
-            out.push((s, e));
+        let last = self.ranges.get(hi.saturating_sub(1)).map_or(end, |r| r.1);
+        if let Some(first) = self.ranges.get_mut(lo) {
+            *first = (start.min(first.0), end.max(last));
         }
-        out.sort_unstable();
-        self.ranges = out;
+        self.ranges.drain(lo.saturating_add(1)..hi);
     }
 
     /// `add(c)`.
@@ -1356,6 +1353,37 @@ pub fn unescape_at(s: &[u16], offset: usize) -> Option<(i32, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `add_range` against a plain membership model, over many small and
+    /// overlapping, adjacent and disjoint additions.
+    #[test]
+    fn add_range_matches_a_model() {
+        let mut set = UnicodeSet::new();
+        let mut model = vec![false; 400];
+        let mut x: u32 = 12345;
+        for _ in 0..2000 {
+            x = x.wrapping_mul(1_103_515_245).wrapping_add(12345);
+            let a = (x >> 8) % 390;
+            let len = (x >> 20) % 7;
+            let b = a + len;
+            set.add_range(a, b);
+            for m in &mut model[a as usize..=b as usize] {
+                *m = true;
+            }
+            let ranges = set.ranges();
+            assert!(ranges.windows(2).all(|w| w[0].1 + 1 < w[1].0), "{ranges:?}");
+            for (c, &m) in model.iter().enumerate() {
+                assert_eq!(set.contains(c as i32), m, "{c}");
+            }
+            if set.ranges().len() == 1 {
+                break;
+            }
+        }
+        set.add_range(5, 3);
+        set.add_range(MAX_VALUE + 1, MAX_VALUE + 2);
+        set.add_range(MAX_VALUE - 1, u32::MAX);
+        assert_eq!(set.ranges().last(), Some(&(MAX_VALUE - 1, MAX_VALUE)));
+    }
 
     fn set(p: &str) -> UnicodeSet {
         UnicodeSet::from_pattern(p).unwrap_or_else(|e| panic!("{p}: {e}"))
