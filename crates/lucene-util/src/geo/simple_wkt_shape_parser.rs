@@ -14,6 +14,10 @@
 //!
 //! Java returns `Object`; here the result is a [`WktGeometry`], and an
 //! `EMPTY` geometry (Java's `null`) is `None`.
+//!
+//! `GEOMETRYCOLLECTION`s nest at most [`MAX_NESTING`] deep: Java recurses
+//! until `StackOverflowError`, a Rust stack overflow aborts the process, so
+//! deeper input is a `ParseException` naming it.
 
 use super::line::Line;
 use super::polygon::Polygon;
@@ -32,6 +36,10 @@ pub const RPAREN: &str = ")";
 pub const COMMA: &str = ",";
 /// `NAN`.
 pub const NAN: &str = "NaN";
+
+/// How deep `GEOMETRYCOLLECTION`s may nest (about 20 bytes of WKT a
+/// level; no real geometry comes near it).
+pub const MAX_NESTING: u32 = 256;
 
 const NUMBER: &str = "<NUMBER>";
 const EOF: &str = "END-OF-STREAM";
@@ -150,7 +158,7 @@ pub fn parse_expected_type(
     shape_type: Option<ShapeType>,
 ) -> Result<Option<WktGeometry>, GeoError> {
     let mut stream = StreamTokenizer::new(wkt);
-    let geometry = parse_geometry(&mut stream, shape_type)?;
+    let geometry = parse_geometry(&mut stream, shape_type, 0)?;
     check_eof(&mut stream)?;
     Ok(geometry)
 }
@@ -165,6 +173,7 @@ fn parse_error(stream: &StreamTokenizer, message: String) -> GeoError {
 fn parse_geometry(
     stream: &mut StreamTokenizer,
     shape_type: Option<ShapeType>,
+    depth: u32,
 ) -> Result<Option<WktGeometry>, GeoError> {
     let word = next_word(stream)?;
     let ty = ShapeType::for_name(&word)?;
@@ -189,7 +198,15 @@ fn parse_geometry(
         ShapeType::MultiPolygon => Ok(parse_multi_polygon(stream)?.map(WktGeometry::MultiPolygon)),
         ShapeType::Envelope => Ok(parse_bbox(stream)?.map(WktGeometry::Envelope)),
         ShapeType::GeometryCollection => {
-            Ok(parse_geometry_collection(stream)?.map(WktGeometry::GeometryCollection))
+            if depth >= MAX_NESTING {
+                return Err(parse_error(
+                    stream,
+                    format!(
+                        "java.lang.StackOverflowError: geometry collections nested deeper than {MAX_NESTING}"
+                    ),
+                ));
+            }
+            Ok(parse_geometry_collection(stream, depth + 1)?.map(WktGeometry::GeometryCollection))
         }
     }
 }
@@ -280,7 +297,7 @@ fn parse_line(stream: &mut StreamTokenizer) -> Result<Option<Line>, GeoError> {
     let mut lats = Vec::new();
     let mut lons = Vec::new();
     parse_coordinates(stream, &mut lats, &mut lons)?;
-    Ok(Some(Line::new(&lats, &lons)?))
+    Ok(Some(Line::from_vecs(lats, lons)?))
 }
 
 fn parse_multi_line(stream: &mut StreamTokenizer) -> Result<Option<Vec<Option<Line>>>, GeoError> {
@@ -298,7 +315,7 @@ fn parse_polygon_hole(stream: &mut StreamTokenizer) -> Result<Polygon, GeoError>
     let mut lats = Vec::new();
     let mut lons = Vec::new();
     parse_coordinates(stream, &mut lats, &mut lons)?;
-    Polygon::new(&lats, &lons, vec![])
+    Polygon::from_vecs(lats, lons, vec![])
 }
 
 fn parse_polygon(stream: &mut StreamTokenizer) -> Result<Option<Polygon>, GeoError> {
@@ -313,7 +330,7 @@ fn parse_polygon(stream: &mut StreamTokenizer) -> Result<Option<Polygon>, GeoErr
     while next_closer_or_comma(stream)? == COMMA {
         holes.push(parse_polygon_hole(stream)?);
     }
-    Ok(Some(Polygon::new(&lats, &lons, holes)?))
+    Ok(Some(Polygon::from_vecs(lats, lons, holes)?))
 }
 
 fn parse_multi_polygon(
@@ -346,13 +363,18 @@ fn parse_bbox(stream: &mut StreamTokenizer) -> Result<Option<Rectangle>, GeoErro
 
 fn parse_geometry_collection(
     stream: &mut StreamTokenizer,
+    depth: u32,
 ) -> Result<Option<Vec<Option<WktGeometry>>>, GeoError> {
     if next_empty_or_open(stream)? == EMPTY {
         return Ok(None);
     }
-    let mut geometries = vec![parse_geometry(stream, Some(ShapeType::GeometryCollection))?];
+    let mut geometries = vec![parse_geometry(
+        stream,
+        Some(ShapeType::GeometryCollection),
+        depth,
+    )?];
     while next_closer_or_comma(stream)? == COMMA {
-        geometries.push(parse_geometry(stream, None)?);
+        geometries.push(parse_geometry(stream, None, depth)?);
     }
     Ok(Some(geometries))
 }
@@ -709,5 +731,43 @@ mod tests {
             ShapeType::for_name("Envelope").unwrap(),
             ShapeType::Envelope
         );
+    }
+
+    /// Collections nested past `MAX_NESTING` are a parse error, not a
+    /// stack overflow (which would abort the process); a collection just
+    /// under the cap parses, and drops, without one.
+    #[test]
+    fn deep_nesting_is_an_error() {
+        let deep = "GEOMETRYCOLLECTION(".repeat(100_000);
+        let e = parse(&deep).unwrap_err();
+        let GeoError::Parse { message, offset } = e else {
+            panic!("{e:?}")
+        };
+        assert!(
+            message.starts_with("java.lang.StackOverflowError"),
+            "{message}"
+        );
+        assert_eq!(offset, 1);
+        let n = MAX_NESTING as usize;
+        let ok = format!(
+            "{}POINT (1 2){}",
+            "GEOMETRYCOLLECTION (".repeat(n),
+            ")".repeat(n)
+        );
+        let mut g = parse(&ok).unwrap().unwrap();
+        for _ in 0..n {
+            let WktGeometry::GeometryCollection(mut v) = g else {
+                panic!("collection")
+            };
+            g = v.pop().unwrap().unwrap();
+        }
+        assert_eq!(g, WktGeometry::Point([1.0, 2.0]));
+        let over = format!("{}POINT (1 2)", "GEOMETRYCOLLECTION (".repeat(n + 1));
+        assert!(parse(&over)
+            .unwrap_err()
+            .to_string()
+            .contains("StackOverflowError"));
+        // a deep collection parsed whole is dropped without overflowing
+        drop(parse(&ok).unwrap());
     }
 }

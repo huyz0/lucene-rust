@@ -11,13 +11,21 @@
 //! polygon's `IndexOutOfBoundsException` and `o.getClass()` on a `null`
 //! value (`NullPointerException`) escape as Java's runtime exceptions do.
 //!
-//! One narrowing: `Integer.parseInt` accepts any Unicode decimal digit
+//! Two narrowings: `Integer.parseInt` accepts any Unicode decimal digit
 //! (`Character.digit`); this port accepts ASCII and fullwidth digits and
 //! letters, so a `\u` escape spelled in, say, Devanagari digits is a
-//! `NumberFormatException` here where Java parses it.
+//! `NumberFormatException` here where Java parses it. And arrays and
+//! objects nest at most [`MAX_NESTING`] deep: Java recurses until
+//! `StackOverflowError`, which a Rust stack overflow cannot imitate (it
+//! aborts the process), so deeper input is a `ParseException` naming it.
 
 use super::polygon::Polygon;
 use super::{java_double_string, java_parse_double, GeoError};
+
+/// How deep arrays and objects may nest. A polygon's coordinates nest four
+/// deep and a `FeatureCollection` adds two levels; anything near this is
+/// hostile input that would overflow Java's stack.
+pub const MAX_NESTING: u32 = 256;
 
 /// A parsed JSON value, as the Java parser keeps it (`Object`).
 #[derive(Debug, Clone, PartialEq)]
@@ -68,6 +76,10 @@ pub struct SimpleGeoJSONPolygonParser {
     upto: usize,
     poly_type: Option<&'static str>,
     coordinates: Option<Vec<Value>>,
+    /// Arrays and objects being parsed.
+    depth: u32,
+    /// `parseNumber`'s `StringBuilder`, reused across numbers.
+    num_buf: String,
 }
 
 #[inline]
@@ -128,6 +140,8 @@ impl SimpleGeoJSONPolygonParser {
             upto: 0,
             poly_type: None,
             coordinates: None,
+            depth: 0,
+            num_buf: String::new(),
         }
     }
 
@@ -168,6 +182,34 @@ impl SimpleGeoJSONPolygonParser {
     /// `parseObject(path)`; `path` is the "address" by keys of where we
     /// are, e.g. `geometry.coordinates`.
     fn parse_object(&mut self, path: &str) -> Result<(), GeoError> {
+        self.enter()?;
+        let r = self.parse_object_body(path);
+        self.depth -= 1;
+        r
+    }
+
+    /// One more level of nesting, or Java's `StackOverflowError` (as a
+    /// `ParseException` at the opening bracket) past [`MAX_NESTING`].
+    fn enter(&mut self) -> Result<(), GeoError> {
+        if self.depth >= MAX_NESTING {
+            return Err(self.stack_overflow());
+        }
+        self.depth += 1;
+        Ok(())
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn stack_overflow(&self) -> GeoError {
+        GeoError::Parse {
+            message: format!(
+                "java.lang.StackOverflowError: arrays and objects nested deeper than {MAX_NESTING}"
+            ),
+            offset: self.upto as i32,
+        }
+    }
+
+    fn parse_object_body(&mut self, path: &str) -> Result<(), GeoError> {
         self.scan(b'{')?;
         let mut first = true;
         loop {
@@ -323,7 +365,7 @@ impl SimpleGeoJSONPolygonParser {
             match o {
                 Value::List(l) => {
                     let (lats, lons) = self.parse_points(l)?;
-                    holes.push(Polygon::new(&lats, &lons, vec![])?);
+                    holes.push(Polygon::from_vecs(lats, lons, vec![])?);
                 }
                 other => {
                     return Err(self.new_parse_exception(&format!(
@@ -333,7 +375,7 @@ impl SimpleGeoJSONPolygonParser {
                 }
             }
         }
-        Polygon::new(&poly_points.0, &poly_points.1, holes)
+        Polygon::from_vecs(poly_points.0, poly_points.1, holes)
     }
 
     /// `parsePoints`: `[[lon, lat], ...]` into (lats, lons).
@@ -382,7 +424,17 @@ impl SimpleGeoJSONPolygonParser {
     }
 
     fn parse_array(&mut self, path: &str) -> Result<Vec<Value>, GeoError> {
+        self.enter()?;
+        let r = self.parse_array_body(path);
+        self.depth -= 1;
+        r
+    }
+
+    fn parse_array_body(&mut self, path: &str) -> Result<Vec<Value>, GeoError> {
         let mut result = Vec::new();
+        // `path + ".[]"`, built once per array (and only if an element
+        // nests), not once per element.
+        let mut child_path: Option<String> = None;
         self.scan(b'[')?;
         while self.upto < self.input.len() {
             let mut ch = self.peek()?;
@@ -405,10 +457,12 @@ impl SimpleGeoJSONPolygonParser {
                 ch = self.peek()?;
             }
             let o = if ch == u16::from(b'[') {
-                Value::List(self.parse_array(&format!("{path}.[]"))?)
+                let child = child_path.get_or_insert_with(|| format!("{path}.[]"));
+                Value::List(self.parse_array(child)?)
             } else if ch == u16::from(b'{') {
                 // This is only used when parsing the "features" in type: FeatureCollection
-                self.parse_object(&format!("{path}.[]"))?;
+                let child = child_path.get_or_insert_with(|| format!("{path}.[]"));
+                self.parse_object(child)?;
                 Value::Null
             } else if ch == u16::from(b'-')
                 || ch == u16::from(b'.')
@@ -429,7 +483,8 @@ impl SimpleGeoJSONPolygonParser {
     }
 
     fn parse_number(&mut self) -> Result<f64, GeoError> {
-        let mut b = String::new();
+        let mut b = std::mem::take(&mut self.num_buf);
+        b.clear();
         let upto_start = self.upto;
         while self.upto < self.input.len() {
             let ch = self.input[self.upto];
@@ -446,7 +501,9 @@ impl SimpleGeoJSONPolygonParser {
             }
         }
         // we only handle doubles
-        match java_parse_double(&b) {
+        let parsed = java_parse_double(&b);
+        self.num_buf = b;
+        match parsed {
             Some(d) => Ok(d),
             None => {
                 self.upto = upto_start;
@@ -758,5 +815,40 @@ mod tests {
             Value::List(vec![Value::Null, Value::Bool(false)]).java_string(),
             "[null, false]"
         );
+    }
+
+    /// Nesting past `MAX_NESTING` is a parse error, not a stack overflow
+    /// (which would abort the process).
+    #[test]
+    fn deep_nesting_is_an_error() {
+        let deep = "[".repeat(1_000_000);
+        let e = parse(&format!(r#"{{"type": "Polygon", "coordinates": {deep}"#)).unwrap_err();
+        let GeoError::Parse { message, offset } = e else {
+            panic!("{e:?}")
+        };
+        assert!(
+            message.starts_with("java.lang.StackOverflowError"),
+            "{message}"
+        );
+        // at the array opening level MAX_NESTING + 1 (the object is level 1)
+        assert_eq!(offset as usize, 35 + MAX_NESTING as usize - 1);
+        let objects = r#"{"a":"#.repeat(100_000);
+        let e = parse(&objects).unwrap_err();
+        assert!(e.to_string().starts_with("java.lang.StackOverflowError"));
+        // just under the cap, the parser gets through and fails on content
+        let ok_depth = MAX_NESTING as usize - 1;
+        let s = format!(
+            r#"{{"type": "Polygon", "coordinates": {}{}}}"#,
+            "[".repeat(ok_depth),
+            "]".repeat(ok_depth)
+        );
+        let e = parse(&s).unwrap_err();
+        assert!(!e.to_string().contains("StackOverflow"), "{e}");
+        // a parse that fails deep inside drops its partial values
+        let s = format!(
+            r#"{{"type": "Polygon", "coordinates": {}1.0,x"#,
+            "[".repeat(ok_depth)
+        );
+        assert!(parse(&s).is_err());
     }
 }
