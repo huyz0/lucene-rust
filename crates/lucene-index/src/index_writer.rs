@@ -8527,13 +8527,13 @@ impl IndexWriter<'_> {
         Ok(Some(output))
     }
 
-    /// One [`crate::inverter::FieldInverter`] per postings field, fed every
+    /// One finished [`crate::inverter::InvertedField`] per postings field, fed every
     /// buffered document in doc-id order.
     fn invert_pending_fields_fast(
         docs: &[Document],
         postings: &[PostingsFieldConfig],
         analyzer: &Analyzer,
-    ) -> Vec<(i32, crate::inverter::FieldInverter)> {
+    ) -> Vec<(i32, crate::inverter::InvertedField)> {
         use rayon::prelude::*;
         // Fields are independent, and each one's documents are split across
         // the pool again inside `invert_parallel`.
@@ -8567,7 +8567,7 @@ impl IndexWriter<'_> {
     fn build_norms_output_from_lengths(
         docs: &[Document],
         configs: &[NormsFieldConfig],
-        inverters: &[(i32, crate::inverter::FieldInverter)],
+        inverters: &[(i32, crate::inverter::InvertedField)],
         similarity: &dyn NormSimilarity,
         routing: &IndexingConfig,
         state: lucene_codecs::norms_writer::NormsWriteState<'_>,
@@ -8614,7 +8614,7 @@ impl IndexWriter<'_> {
     fn build_postings_output_fast(
         routing: &IndexingConfig,
         configs: &[PostingsFieldConfig],
-        inverters: Vec<(i32, crate::inverter::FieldInverter)>,
+        inverters: Vec<(i32, crate::inverter::InvertedField)>,
         norms: &[(i32, Vec<i64>)],
         state: lucene_codecs::postings_consumer::PostingsWriteState<'_>,
         mut flush_deletes: Option<&mut FlushDeletes<'_>>,
