@@ -5423,7 +5423,12 @@ fn check_current_vector_group(
             return;
         }
     };
-    let flat = match vectors::FlatVectorsReader::open(&vemf, &vec, &commit.segment_id, suffix) {
+    // `open` only retrieves the `.vec` checksum, as Java's reader does;
+    // `checkIntegrity` is what re-reads the whole file, and a damaged `.vec`
+    // is this subsystem's own failure to report.
+    let flat = match vectors::FlatVectorsReader::open(&vemf, &vec, &commit.segment_id, suffix)
+        .and_then(|r| r.check_integrity().map(|()| r))
+    {
         Ok(r) => r,
         Err(e) => {
             checks.push(Check::fail("vectors.open", e.to_string()));

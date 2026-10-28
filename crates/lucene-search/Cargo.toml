@@ -114,3 +114,9 @@ harness = false
 [[bench]]
 name = "monitor_memory_spell"
 harness = false
+
+# Reader open/poll over a 30-segment index with deletes, plus the per-call
+# `num_docs` and per-document `term_vectors` paths -- see the bench module doc.
+[[bench]]
+name = "reader_open"
+harness = false

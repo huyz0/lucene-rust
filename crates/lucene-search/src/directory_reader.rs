@@ -153,6 +153,9 @@ pub struct SegmentReader {
     pub segment_name: String,
     pub max_doc: i32,
     pub doc_base: i32,
+    /// `numDocs()`: `max_doc` less the deletions in [`Self::live_docs`],
+    /// counted once when the live docs are set rather than on every call.
+    num_docs: i32,
     /// `SegmentInfo.getIndexSort()`: the sort this segment's documents are
     /// in, `None` for an unsorted segment.
     index_sort: Option<Arc<Vec<lucene_index::segment_info::IndexSortField>>>,
@@ -278,6 +281,11 @@ pub struct SegmentReader {
     /// The segment's term vectors (`.tvd`/`.tvx`/`.tvm`) and their codec
     /// suffix, when it has any -- `SegmentCoreReaders.termVectorsReaderOrig`.
     term_vectors: Option<Arc<CodecFiles>>,
+    /// [`Self::term_vectors`]' parsed `.tvm`, read on first use and shared by
+    /// every reader over this core, as [`StoredFiles::meta`] is for stored
+    /// fields: `LeafReader::term_vectors(doc)` used to re-open (header checks,
+    /// `.tvm` decode) on every document.
+    term_vectors_meta: Arc<TermVectorsMeta>,
     /// The segment's flat KNN vectors (`.vec` data, `.vemf` metadata), one
     /// per `PerFieldKnnVectorsFormat` instance with its codec suffix, sorted
     /// by suffix -- the flat half of `SegmentCoreReaders.knnVectorsReader`.
@@ -347,6 +355,7 @@ impl SegmentReader {
     /// of its own key).
     pub(crate) fn with_live_docs(&self, live_docs: FixedBitSet) -> Self {
         let mut reader = self.clone_reader();
+        reader.num_docs = crate::reader::num_docs_of(self.max_doc, Some(&live_docs));
         reader.live_docs = Some(Arc::new(live_docs));
         reader.reader_cache = crate::reader::CacheHelper::new();
         reader
@@ -870,7 +879,9 @@ impl SegmentReader {
 
         Ok(SegmentReader {
             simpletext: None,
+            num_docs: crate::reader::num_docs_of(si.doc_count, live_docs.as_deref()),
             term_vectors,
+            term_vectors_meta: Arc::default(),
             vectors,
             completion,
             core_cache: crate::reader::CacheHelper::new(),
@@ -942,6 +953,7 @@ impl SegmentReader {
         };
         let mut reader = self.clone_reader();
         reader.del_gen = commit.del_gen;
+        reader.num_docs = crate::reader::num_docs_of(self.max_doc, live_docs.as_deref());
         reader.live_docs = live_docs;
         // Same core, new reader: `SegmentReader(commitInfo, oldReader, ...)`.
         reader.reader_cache = crate::reader::CacheHelper::new();
@@ -980,13 +992,22 @@ impl SegmentReader {
             return Ok(None);
         };
         let index = f.index.as_deref().map_or(&[][..], |i| &**i);
-        Ok(Some(lucene_codecs::term_vectors::open(
-            &f.data,
-            index,
-            &f.meta,
-            &self.segment_id,
-            &f.suffix,
-        )?))
+        let meta = match self.term_vectors_meta.0.get() {
+            Some(m) => m,
+            None => {
+                let opened = lucene_codecs::term_vectors::open(
+                    &f.data,
+                    index,
+                    &f.meta,
+                    &self.segment_id,
+                    &f.suffix,
+                )?;
+                self.term_vectors_meta
+                    .0
+                    .get_or_init(|| opened.rebind(&[], &[]))
+            }
+        };
+        Ok(Some(meta.rebind(&f.data, index)))
     }
 
     /// `SegmentReader.getVectorReader()`'s flat half: a reader over this
@@ -1580,9 +1601,9 @@ impl SegmentReader {
 
     /// `SegmentReader.numDocs()`: `maxDoc()` minus this segment's deletions.
     pub fn num_docs(&self) -> i32 {
-        match self.live_docs.as_deref() {
+        match self.live_docs {
             None => self.max_doc,
-            Some(bits) => bits.cardinality() as i32,
+            Some(_) => self.num_docs,
         }
     }
 
@@ -2130,6 +2151,20 @@ impl std::fmt::Debug for StoredFiles {
     }
 }
 
+/// A segment's parsed term-vectors metadata, once read, bound to no bytes:
+/// each read rebinds it to the segment's `.tvd`/`.tvx` (see
+/// [`SegmentReader::term_vectors_reader`]).
+#[derive(Default)]
+struct TermVectorsMeta(OnceLock<lucene_codecs::term_vectors::TermVectorsReader<'static>>);
+
+impl std::fmt::Debug for TermVectorsMeta {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TermVectorsMeta")
+            .field("meta_read", &self.0.get().is_some())
+            .finish()
+    }
+}
+
 /// `DirectoryReader.open(Directory)`-equivalent: reads the latest
 /// `segments_N`, opens every listed segment (whichever files it actually
 /// has), and computes each segment's `doc_base` automatically as the running
@@ -2266,15 +2301,22 @@ impl DirectoryReader {
         segment_infos: SegmentInfos,
         reusable: &[SegmentReader],
     ) -> Result<Self> {
-        let mut segments = Vec::with_capacity(segment_infos.segments.len());
-        let mut doc_base = 0i32;
-        for commit in &segment_infos.segments {
-            // Java's `mapPreviousReaders` + `getOldSegmentReader`: a candidate
-            // is the same *segment*, matched on name and id.
-            let candidate = reusable.iter().find(|r| {
-                r.segment_name == commit.segment_name && r.segment_id == commit.segment_id
-            });
-            let mut reader = match candidate {
+        use rayon::prelude::*;
+        // Java's `mapPreviousReaders` + `getOldSegmentReader`: a candidate is
+        // the same *segment*, matched on name and id (the first one listed,
+        // should two share both).
+        let mut candidates: HashMap<(&str, [u8; ID_LENGTH]), &SegmentReader> =
+            HashMap::with_capacity(reusable.len());
+        for r in reusable {
+            candidates
+                .entry((r.segment_name.as_str(), r.segment_id))
+                .or_insert(r);
+        }
+        let open_one = |commit: &segment_infos::SegmentCommitInfo| -> Result<SegmentReader> {
+            let candidate = candidates
+                .get(&(commit.segment_name.as_str(), commit.segment_id))
+                .copied();
+            match candidate {
                 // `createOrReuseSegmentReader`'s "no change" branch: same
                 // deletions *and* same generational field-infos/doc-values, so
                 // the whole reader is shared.
@@ -2283,7 +2325,7 @@ impl DirectoryReader {
                         && r.field_infos_gen == commit.field_infos_gen
                         && r.doc_values_gen == commit.doc_values_gen =>
                 {
-                    r.clone_reader()
+                    Ok(r.clone_reader())
                 }
                 // "both DV and liveDocs have changed" reduces here to "only
                 // liveDocs changed", since a doc-values generation bump means
@@ -2293,12 +2335,36 @@ impl DirectoryReader {
                     if r.field_infos_gen == commit.field_infos_gen
                         && r.doc_values_gen == commit.doc_values_gen =>
                 {
-                    r.reopen_with_new_live_docs(dir, commit)?
+                    r.reopen_with_new_live_docs(dir, commit)
                 }
-                _ => SegmentReader::open(dir, commit, doc_base)?,
-            };
-            reader.doc_base = doc_base;
-            doc_base += reader.max_doc;
+                _ => SegmentReader::open(dir, commit, 0),
+            }
+        };
+        // Each segment's files are independent, so the opens (and `.liv`
+        // re-reads) run in parallel, as `SegmentReader`s Java opens on an
+        // executor would. Collected per segment, then unwrapped in commit
+        // order, so the error reported is the first segment's that failed,
+        // as the serial loop reported it.
+        let opened: Vec<Result<SegmentReader>> =
+            segment_infos.segments.par_iter().map(open_one).collect();
+        let mut segments = Vec::with_capacity(opened.len());
+        // `SegmentInfos.readCommit`'s `totalDocs > IndexWriter.getActualMaxDocs()`
+        // check: every `maxDoc` comes off a `.si`, and a total past
+        // `MAX_DOCS` would overflow the `i32` doc bases.
+        let mut doc_base = 0i64;
+        for reader in opened {
+            let mut reader = reader?;
+            let limit = crate::reader::multi_reader::MAX_DOCS;
+            // `doc_base <= MAX_DOCS < i32::MAX` here (checked below on the
+            // previous segment), so the narrowing cannot fail.
+            reader.doc_base = i32::try_from(doc_base).unwrap_or(i32::MAX);
+            doc_base = doc_base.saturating_add(i64::from(reader.max_doc));
+            if doc_base > limit {
+                return Err(Error::Store(lucene_store::Error::Corrupted(format!(
+                    "Too many documents: an index cannot exceed {limit} but readers have \
+                     total maxDoc={doc_base}"
+                ))));
+            }
             segments.push(reader);
         }
         Ok(DirectoryReader {
@@ -2375,6 +2441,15 @@ impl DirectoryReader {
     /// before they're handed back. Neither exists here; each
     /// `open_if_changed` call only reuses its own receiver's readers.
     pub fn open_if_changed(&self, dir: &dyn Directory) -> Result<Option<Self>> {
+        // The latest generation off the listing first, as `open` takes it: a
+        // poll that finds nothing new reads no `segments_N`. A listing that
+        // fails falls through to `read_latest`, which reports it.
+        let listed = dir
+            .list_all()
+            .and_then(|files| lucene_store::directory::last_commit_generation(&files));
+        if listed.is_ok_and(|gen| gen == self.segment_infos.generation) {
+            return Ok(None);
+        }
         let latest = segment_infos::read_latest(dir)?;
         if latest.generation == self.segment_infos.generation {
             return Ok(None);
@@ -2620,7 +2695,6 @@ impl DirectoryReader {
         let mut doc_ins = Vec::with_capacity(self.segments.len());
         let mut pos_ins = Vec::with_capacity(self.segments.len());
         let mut pay_ins = Vec::with_capacity(self.segments.len());
-        use std::sync::atomic::Ordering;
         for seg in &self.segments {
             if let Some(core) = &seg.simpletext {
                 core.search_doc_values(&seg.segment_id)?;
@@ -2633,23 +2707,7 @@ impl DirectoryReader {
             // Validated the first time; each search after touches neither end
             // of the files (six cache lines a segment a search, all misses on
             // a busy node).
-            let validated = seg.postings_validated.load(Ordering::Acquire);
-            let doc_in = match &seg.doc_buf {
-                Some(buf) if validated => Some(DocInput::validated(buf)),
-                Some(buf) => Some(DocInput::open(buf, &seg.segment_id, &seg.segment_suffix)?),
-                None => None,
-            };
-            let pos_in = match &seg.pos_buf {
-                Some(buf) if validated => Some(PosInput::validated(buf)),
-                Some(buf) => Some(PosInput::open(buf, &seg.segment_id, &seg.segment_suffix)?),
-                None => None,
-            };
-            let pay_in = match &seg.pay_buf {
-                Some(buf) if validated => Some(PayInput::validated(buf)),
-                Some(buf) => Some(PayInput::open(buf, &seg.segment_id, &seg.segment_suffix)?),
-                None => None,
-            };
-            seg.postings_validated.store(true, Ordering::Release);
+            let (doc_in, pos_in, pay_in) = seg.postings_inputs()?;
             doc_ins.push(doc_in);
             pos_ins.push(pos_in);
             pay_ins.push(pay_in);
@@ -2689,35 +2747,9 @@ impl SegmentReader {
                 forms.pos.as_deref().map(PosInput::validated),
                 forms.pay.as_deref().map(PayInput::validated),
             ),
-            None => {
-                use std::sync::atomic::Ordering;
-                let validated = self.postings_validated.load(Ordering::Acquire);
-                let doc_in = match &self.doc_buf {
-                    Some(buf) if validated => Some(DocInput::validated(buf)),
-                    Some(buf) => Some(
-                        DocInput::open(buf, &self.segment_id, &self.segment_suffix)
-                            .map_err(|e| open(e.into()))?,
-                    ),
-                    None => None,
-                };
-                let pos_in = match &self.pos_buf {
-                    Some(buf) if validated => Some(PosInput::validated(buf)),
-                    Some(buf) => Some(
-                        PosInput::open(buf, &self.segment_id, &self.segment_suffix)
-                            .map_err(|e| open(e.into()))?,
-                    ),
-                    None => None,
-                };
-                let pay_in = match &self.pay_buf {
-                    Some(buf) if validated => Some(PayInput::validated(buf)),
-                    Some(buf) => Some(
-                        PayInput::open(buf, &self.segment_id, &self.segment_suffix)
-                            .map_err(|e| open(e.into()))?,
-                    ),
-                    None => None,
-                };
-                (doc_in, pos_in, pay_in)
-            }
+            // Validated once, as `open_segments` and `postings_inputs` do:
+            // later calls touch neither end of the files.
+            None => self.postings_inputs().map_err(open)?,
         };
         let points = match self.search_points_files().map_err(open)? {
             Some((kdm, kdi, kdd)) => {
@@ -3278,6 +3310,53 @@ mod tests {
         let first_max_doc = reader.segment_readers()[0].max_doc;
         assert_eq!(reader.segment_readers()[0].doc_base, 0);
         assert_eq!(reader.segment_readers()[1].doc_base, first_max_doc);
+    }
+
+    /// Segments whose `.si` `maxDoc`s sum past `IndexWriter.MAX_DOCS` are a
+    /// corrupt index (`SegmentInfos.readCommit`'s "Too many documents"), not
+    /// an `i32` doc base that overflows. The two segments here are reused
+    /// readers whose `max_doc` is set as a damaged `.si` would set it.
+    #[test]
+    fn segments_summing_past_max_docs_are_a_corruption_error() {
+        let dir = FsDirectory::open(fixture_dir());
+        let mut segment_infos = read_commit(&dir);
+        segment_infos.segments.push(read_commit_info(&dir));
+        let reader = DirectoryReader::open_at(&dir, segment_infos.clone()).unwrap();
+        let mut reusable = reader.segments.clone();
+        for seg in &mut reusable {
+            seg.max_doc = i32::MAX - 200;
+        }
+        let err = DirectoryReader::open_at_reusing(&dir, segment_infos.clone(), &reusable)
+            .expect_err("a total past MAX_DOCS must be refused");
+        assert!(
+            matches!(&err, Error::Store(lucene_store::Error::Corrupted(m))
+                if m.contains("Too many documents")),
+            "{err:?}"
+        );
+
+        // Up to the limit is still an index. Both entries name the same
+        // segment, so both reuse the first candidate.
+        let limit = crate::reader::multi_reader::MAX_DOCS;
+        reusable[0].max_doc = i32::try_from(limit / 2).unwrap();
+        let reader = DirectoryReader::open_at_reusing(&dir, segment_infos, &reusable).unwrap();
+        assert_eq!(reader.segment_readers()[1].doc_base, reusable[0].max_doc);
+        assert_eq!(i64::from(reader.max_doc()), limit / 2 * 2);
+    }
+
+    /// `num_docs` is counted once, when the live docs are set, and follows
+    /// every path that sets them.
+    #[test]
+    fn num_docs_is_kept_in_step_with_the_live_docs() {
+        let dir = FsDirectory::open(fixture_dir());
+        let reader = DirectoryReader::open(&dir).unwrap();
+        let seg = &reader.segment_readers()[0];
+        assert_eq!(seg.num_docs(), seg.max_doc);
+        let mut live = FixedBitSet::new(seg.max_doc as usize);
+        live.set(0);
+        let filtered = seg.with_live_docs(live);
+        assert_eq!(filtered.num_docs(), 1);
+        assert_eq!(crate::reader::IndexReader::num_docs(&filtered), 1);
+        assert_eq!(seg.num_docs(), seg.max_doc);
     }
 
     fn read_commit(dir: &FsDirectory) -> SegmentInfos {
