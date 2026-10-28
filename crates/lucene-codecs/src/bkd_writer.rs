@@ -23,10 +23,11 @@
 //! reproducible; this port seeds it.
 
 use std::cmp::Ordering;
+use std::sync::Arc;
 
 use lucene_store::codec_util::{self, FOOTER_LENGTH, FOOTER_MAGIC};
 use lucene_store::data_output::DataOutput;
-use lucene_store::directory::Directory;
+use lucene_store::directory::{Directory, Input};
 use lucene_store::index_output::{FsIndexOutput, IndexOutput};
 use lucene_util::fixed_bit_set::FixedBitSet;
 use lucene_util::numeric_utils;
@@ -742,11 +743,15 @@ impl<'d> BkdWriter<'d> {
         }
     }
 
-    /// The records `start..start + count` of an offline store (read back
-    /// whole; the footer is verified).
+    /// The records `start..start + count` of an offline store, as a window
+    /// onto the opened file rather than a copy. As in Java's
+    /// `OfflinePointReader`, the footer's checksum is verified only when the
+    /// read covers the whole file: the partition passes read sub-ranges of
+    /// one spill many times, and a CRC over the whole file each time made
+    /// every recursion level a full pass over it.
     // ARITH: record offsets.
     #[allow(clippy::arithmetic_side_effects)]
-    fn read_offline(&self, name: &str, start: u64, count: u64) -> Result<Vec<u8>> {
+    fn read_offline(&self, name: &str, start: u64, count: u64) -> Result<Input> {
         let dir = self.temp_dir.ok_or_else(|| illegal("no temp directory"))?;
         let input = dir.open(name)?;
         let bpd = self.config.bytes_per_doc() as u64;
@@ -756,10 +761,16 @@ impl<'d> BkdWriter<'d> {
                 "requested slice is beyond the length of this file: start={start} length={count} tempFileName={name}"
             )));
         }
-        let mut footer = lucene_store::data_input::SliceInput::new(&input);
-        footer.seek(input.len() - FOOTER_LENGTH)?;
-        codec_util::check_footer(&mut footer, input.len())?;
-        Ok(input[(start * bpd) as usize..((start + count) * bpd) as usize].to_vec())
+        if start == 0 && count * bpd == body {
+            let mut footer = lucene_store::data_input::SliceInput::new(&input);
+            footer.seek(input.len() - FOOTER_LENGTH)?;
+            codec_util::check_footer(&mut footer, input.len())?;
+        }
+        Ok(Input::slice_of(
+            &Arc::new(input),
+            (start * bpd) as usize,
+            (count * bpd) as usize,
+        )?)
     }
 
     /// `getPointWriter(count, desc)`: on heap when at most half the heap
@@ -1143,7 +1154,9 @@ impl<'d> BkdWriter<'d> {
                         .to_vec(),
                 )
             }
-            PointStore::Offline(o) => self.read_offline(&o.name, slice.start, slice.count),
+            PointStore::Offline(o) => Ok(self
+                .read_offline(&o.name, slice.start, slice.count)?
+                .to_vec()),
         }
     }
 }

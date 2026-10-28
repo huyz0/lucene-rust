@@ -255,18 +255,19 @@ impl ScalarQuantizedVectorsWriter {
         // FieldWriter.addValue: the running per-dimension sums (of the
         // normalized vector for COSINE) and each COSINE vector's magnitude.
         let mut dimension_sums = vec![0f32; dim];
-        let mut vectors: Vec<f32> = field.vectors.to_vec();
-        for v in vectors.chunks_exact_mut(dim) {
+        // Only each COSINE vector's divisor is kept, not a normalized copy of
+        // the field: the quantize pass below divides one vector at a time
+        // into a `dim`-sized scratch, the same `x / divisor` Java's
+        // `normalizeVectors` applies, so every float is bit-identical.
+        let mut divisors = Vec::with_capacity(if cosine { count } else { 0 });
+        for v in field.vectors.chunks_exact(dim) {
             if cosine {
                 let dp = vector_util_dot(v, v);
                 let divisor = (dp as f64).sqrt() as f32;
                 for (s, &x) in dimension_sums.iter_mut().zip(v.iter()) {
                     *s += x / divisor;
                 }
-                // FieldWriter.normalizeVectors, applied at flush.
-                for x in v.iter_mut() {
-                    *x /= divisor;
-                }
+                divisors.push(divisor);
             } else {
                 for (s, &x) in dimension_sums.iter_mut().zip(v.iter()) {
                     *s += x;
@@ -288,9 +289,20 @@ impl ScalarQuantizedVectorsWriter {
         let offset = align(&mut self.data, 4);
         let mut scratch = vec![0u8; self.encoding.discrete_dimensions(dim)];
         let mut packed = Vec::new();
-        for v in vectors.chunks_exact_mut(dim) {
-            let corrections =
-                quantizer.scalar_quantize(v, &mut scratch, self.encoding.bits(), &centroid);
+        let mut vector = vec![0f32; dim];
+        for (i, v) in field.vectors.chunks_exact(dim).enumerate() {
+            vector.copy_from_slice(v);
+            if let Some(&divisor) = divisors.get(i) {
+                for x in vector.iter_mut() {
+                    *x /= divisor;
+                }
+            }
+            let corrections = quantizer.scalar_quantize(
+                &mut vector,
+                &mut scratch,
+                self.encoding.bits(),
+                &centroid,
+            );
             pack_codes(self.encoding, &scratch, &mut packed);
             self.data.extend_from_slice(&packed);
             write_corrections(&mut self.data, &corrections);

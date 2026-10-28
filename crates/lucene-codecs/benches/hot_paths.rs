@@ -1067,6 +1067,14 @@ fn bench_postings_write(c: &mut Criterion) {
         });
     }
     group.finish();
+
+    // The whole-dictionary dump the alternate postings formats re-encode from.
+    let mut group = c.benchmark_group("blocktree_dump");
+    group.sample_size(20);
+    group.bench_function("dictionary_fields_30k_terms", |b| {
+        b.iter(|| black_box(fields.dictionary_fields(&fis).unwrap().len()))
+    });
+    group.finish();
 }
 
 /// Compiling a 200k-key FST with suffix sharing (`NodeHash`), as a
@@ -1216,8 +1224,375 @@ fn bench_byte_similarity(c: &mut Criterion) {
     });
 }
 
+/// A 2-D BKD build that spills: 300k points against a 0.05 MB heap budget, so
+/// the radix partitions read their ranges back from the offline temp file.
+fn bench_bkd_offline_2d(c: &mut Criterion) {
+    use lucene_codecs::bkd_writer::{BkdConfig, BkdWriter, VERSION_CURRENT};
+    const N: usize = 300_000;
+    let points: Vec<[u8; 8]> = (0..N as u64)
+        .map(|i| {
+            let x = i.wrapping_mul(2_654_435_761) as u32;
+            let y = i.wrapping_mul(40_503).rotate_left(7) as u32;
+            let mut p = [0u8; 8];
+            p[..4].copy_from_slice(&x.to_be_bytes());
+            p[4..].copy_from_slice(&y.to_be_bytes());
+            p
+        })
+        .collect();
+    let config = BkdConfig::new(2, 2, 4, 512).unwrap();
+    c.bench_function("points/offline_2d_300k", |b| {
+        b.iter(|| {
+            let temp = lucene_store::ByteBuffersDirectory::new();
+            let mut w = BkdWriter::new(
+                N,
+                Some(&temp),
+                "_t",
+                config,
+                0.05,
+                N as u64,
+                VERSION_CURRENT,
+            )
+            .unwrap();
+            for (doc, p) in points.iter().enumerate() {
+                w.add(p, doc as i32).unwrap();
+            }
+            let mut data = Vec::new();
+            black_box(w.finish(&mut data).unwrap());
+            black_box(data.len())
+        })
+    });
+}
+
+/// `decode_doc_ids` over 16 DENSE blocks (a third of each block's docs), the
+/// segment-open decode of a sparse norms or soft-deletes field.
+fn bench_indexed_disi_decode(c: &mut Criterion) {
+    use lucene_codecs::indexed_disi::{decode_doc_ids, write, NO_RANK};
+    let docs: Vec<i32> = (0..16 * 65_536).filter(|d| d % 3 == 0).collect();
+    let (region, _) = write(&docs);
+    c.bench_function("indexed_disi/decode_dense_16_blocks", |b| {
+        b.iter(|| black_box(decode_doc_ids(black_box(&region), NO_RANK).unwrap().len()))
+    });
+}
+
+/// Flushing a 20k x 256 COSINE field through the 7-bit scalar quantizer.
+fn bench_scalar_quantized_flush(c: &mut Criterion) {
+    use lucene_codecs::field_infos::VectorSimilarityFunction;
+    use lucene_codecs::scalar_quantized_vectors::{
+        QuantizedVectorsField, ScalarQuantizedVectorsWriter,
+    };
+    use lucene_util::quantization::ScalarEncoding;
+    const N: usize = 20_000;
+    const DIM: usize = 256;
+    let mut x = 0x9E37_79B9u32;
+    let vectors: Vec<f32> = (0..N * DIM)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            (x % 2001) as f32 / 1000.0 - 1.0
+        })
+        .collect();
+    let docs: Vec<i32> = (0..N as i32).collect();
+    let mut group = c.benchmark_group("scalar_quantized");
+    group.sample_size(10);
+    group.bench_function("flush_cosine_20k_x256", |b| {
+        b.iter(|| {
+            let mut w = ScalarQuantizedVectorsWriter::new(
+                ScalarEncoding::SevenBit,
+                N as i32,
+                &[7u8; 16],
+                "",
+            );
+            w.write_field(&QuantizedVectorsField {
+                field_number: 0,
+                similarity: VectorSimilarityFunction::Cosine,
+                dimension: DIM as i32,
+                docs: &docs,
+                vectors: &vectors,
+            })
+            .unwrap();
+            black_box(w.finish().1.len())
+        })
+    });
+    group.finish();
+}
+
+/// Term-vector flush through the callback writer: 2,000 documents, one field
+/// with positions and offsets, 60 terms of frequency 2 each.
+fn bench_term_vectors_flush(c: &mut Criterion) {
+    use lucene_codecs::field_infos::{
+        DocValuesSkipIndexType, DocValuesType, FieldInfo, IndexOptions, VectorEncoding,
+        VectorSimilarityFunction,
+    };
+    use lucene_codecs::term_vectors_writer::{
+        NativeTermVectorsWriter, TermVectorsWriteSink, TermVectorsWriteState,
+    };
+    const DOCS: i32 = 2_000;
+    let info = FieldInfo {
+        name: "body".to_string(),
+        number: 0,
+        store_term_vectors: true,
+        omit_norms: false,
+        store_payloads: false,
+        soft_deletes_field: false,
+        parent_field: false,
+        index_options: IndexOptions::DocsAndFreqsAndPositionsAndOffsets,
+        doc_values_type: DocValuesType::None,
+        doc_values_skip_index_type: DocValuesSkipIndexType::None,
+        doc_values_gen: -1,
+        attributes: Vec::new(),
+        point_dimension_count: 0,
+        point_index_dimension_count: 0,
+        point_num_bytes: 0,
+        vector_dimension: 0,
+        vector_encoding: VectorEncoding::Float32,
+        vector_similarity_function: VectorSimilarityFunction::Euclidean,
+    };
+    let terms: Vec<Vec<u8>> = (0..60)
+        .map(|t| format!("term{t:03}").into_bytes())
+        .collect();
+    let id = [5u8; 16];
+    c.bench_function("term_vectors/flush_2k_docs_60_terms", |b| {
+        b.iter(|| {
+            let dir = lucene_store::ByteBuffersDirectory::new();
+            let mut w = NativeTermVectorsWriter::new(TermVectorsWriteState {
+                directory: &dir,
+                segment: "_0",
+                id: &id,
+                suffix: "",
+                max_doc: DOCS,
+                format: None,
+            })
+            .unwrap();
+            for doc in 0..DOCS {
+                w.start_document(1).unwrap();
+                w.start_field(&info, terms.len() as i32, true, true, false)
+                    .unwrap();
+                for (t, term) in terms.iter().enumerate() {
+                    w.start_term(term, 2).unwrap();
+                    for k in 0..2 {
+                        let pos = (t as i32) * 2 + k + doc % 3;
+                        w.add_position(pos, pos * 6, pos * 6 + 5, None).unwrap();
+                    }
+                    w.finish_term().unwrap();
+                }
+                w.finish_field().unwrap();
+                w.finish_document().unwrap();
+            }
+            w.finish(DOCS).unwrap();
+            w.close().unwrap();
+        })
+    });
+}
+
+/// A completion field's flush: 20,000 suggestions over 10,000 analyzed
+/// forms, each payload carrying its surface form, weight and type byte.
+fn bench_completion_flush(c: &mut Criterion) {
+    use lucene_codecs::completion::{CompletionFieldWriter, TermDoc};
+    let mut terms: Vec<(Vec<u8>, Vec<TermDoc>)> = (0..10_000u32)
+        .map(|t| {
+            let term = format!("sugg{:05}", t).into_bytes();
+            let docs = (0..2)
+                .map(|d| {
+                    let surface = format!("Suggestion {t} v{d}").into_bytes();
+                    let mut p = vec![surface.len() as u8];
+                    p.extend_from_slice(&surface);
+                    p.push(((t * 7 + d) % 100 + 1) as u8);
+                    p.push(0);
+                    TermDoc {
+                        doc_id: (t * 2 + d) as i32,
+                        payloads: vec![p],
+                    }
+                })
+                .collect();
+            (term, docs)
+        })
+        .collect();
+    terms.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut group = c.benchmark_group("completion");
+    group.sample_size(20);
+    group.bench_function("flush_10k_terms_20k_suggestions", |b| {
+        b.iter(|| {
+            let mut w = CompletionFieldWriter::new();
+            for (term, docs) in &terms {
+                w.write_term(term, docs).unwrap();
+            }
+            let mut out = Vec::new();
+            black_box(w.finish(&mut out).unwrap());
+            black_box(out.len())
+        })
+    });
+    group.finish();
+}
+
+/// A field of 200 high-frequency terms over 20,000 docs (no positions):
+/// almost all of its `.doc` bytes are full 256-doc blocks.
+fn bench_postings_write_full_blocks(c: &mut Criterion) {
+    use field_infos::IndexOptions;
+    const DOCS: i32 = 20_000;
+    let terms: Vec<postings_writer::TermPostings> = (0..200u32)
+        .map(|t| {
+            let step = 1 + (t % 3) as i32;
+            postings_writer::TermPostings {
+                term: format!("hot{t:04}").into_bytes(),
+                docs: (0..DOCS / step)
+                    .map(|k| (k * step, 1 + (k + t as i32) % 4))
+                    .collect(),
+                ..Default::default()
+            }
+        })
+        .collect();
+    let input = postings_writer::FieldPostingsInput {
+        field_number: 0,
+        index_options: IndexOptions::DocsAndFreqs,
+        doc_count: DOCS,
+        has_payloads: false,
+        terms: &terms,
+    };
+    let id = [9u8; 16];
+    let mut group = c.benchmark_group("postings_write");
+    group.sample_size(20);
+    group.bench_function("full_blocks_200_terms", |b| {
+        b.iter(|| black_box(postings_writer::write_single_field(&input, &id, "").unwrap()))
+    });
+    group.finish();
+}
+
+/// `seek_exact` of every term through a 9.0 segment's retired FST terms
+/// index (`Lucene90` postings): the per-arc walk older indexes take.
+fn bench_lucene90_terms_index_seek(c: &mut Criterion) {
+    let dir = format!("{}bwc/9.0.0/", fixtures_dir());
+    let read = |n: &str| std::fs::read(format!("{dir}{n}")).unwrap();
+    let tim = read("_0_Lucene90_0.tim");
+    let name_len = tim[4] as usize;
+    let mut id = [0u8; 16];
+    id.copy_from_slice(&tim[9 + name_len..25 + name_len]);
+    let fnm = field_infos::parse(&read("_0.fnm"), &id, "").unwrap();
+    let (tip, tmd) = (read("_0_Lucene90_0.tip"), read("_0_Lucene90_0.tmd"));
+    let fields = blocktree::open(&tim, &tip, &tmd, &fnm, &id, "Lucene90_0", 3000).unwrap();
+    let mut probes = Vec::new();
+    for (name, field) in fields.iter_fields() {
+        let mut it = field.iter();
+        while let Some(t) = it.try_next_term().unwrap() {
+            probes.push((name.to_string(), t.to_vec()));
+        }
+    }
+    c.bench_function("blocktree_seek/lucene90_fst_all_terms", |b| {
+        b.iter(|| {
+            let mut found = 0usize;
+            for (name, t) in &probes {
+                let field = fields.field(name).unwrap();
+                found += usize::from(field.try_seek_exact(black_box(t)).unwrap().is_some());
+            }
+            black_box(found)
+        })
+    });
+}
+
+/// A BINARY doc-values update generation over 100,000 documents of 24
+/// bytes each, as `IndexWriter.updateBinaryDocValue` flushes it.
+fn bench_binary_update_generation(c: &mut Criterion) {
+    use lucene_codecs::doc_values_updates::write_binary_generation;
+    let column: Vec<Option<Vec<u8>>> = (0..100_000u32)
+        .map(|d| Some(format!("value-{d:018}").into_bytes()))
+        .collect();
+    let mut group = c.benchmark_group("doc_values_updates");
+    group.sample_size(20);
+    group.bench_function("binary_generation_100k", |b| {
+        b.iter_batched(
+            || column.clone(),
+            |column| {
+                black_box(
+                    write_binary_generation(0, column, &[3u8; 16], "1")
+                        .unwrap()
+                        .1
+                        .len(),
+                )
+            },
+            criterion::BatchSize::LargeInput,
+        )
+    });
+    group.finish();
+}
+
+/// The UniformSplit terms writer over 100,000 single-doc terms: its block
+/// lines, splits and dictionary, with the postings writer's work as small
+/// as a term allows.
+fn bench_uniformsplit_write(c: &mut Criterion) {
+    use field_infos::{
+        DocValuesSkipIndexType, DocValuesType, FieldInfo, FieldInfos, IndexOptions, VectorEncoding,
+        VectorSimilarityFunction,
+    };
+    use lucene_codecs::segment_state::SegmentWriteState;
+    use lucene_codecs::uniformsplit::UniformSplitPostingsFormat;
+    let terms: Vec<postings_writer::TermPostings> = (0..100_000u32)
+        .map(|t| {
+            let term = format!("k{:07}", t.wrapping_mul(2_654_435_761) % 10_000_000).into_bytes();
+            let postings = postings_writer::TermPostings {
+                term: term.clone(),
+                docs: vec![((t % 1000) as i32, 1)],
+                ..Default::default()
+            };
+            (term, postings)
+        })
+        .collect::<std::collections::BTreeMap<_, _>>()
+        .into_values()
+        .collect();
+    let fis = FieldInfos {
+        fields: vec![FieldInfo {
+            name: "f".to_string(),
+            number: 0,
+            store_term_vectors: false,
+            omit_norms: true,
+            store_payloads: false,
+            soft_deletes_field: false,
+            parent_field: false,
+            index_options: IndexOptions::Docs,
+            doc_values_type: DocValuesType::None,
+            doc_values_skip_index_type: DocValuesSkipIndexType::None,
+            doc_values_gen: -1,
+            attributes: Vec::new(),
+            point_dimension_count: 0,
+            point_index_dimension_count: 0,
+            point_num_bytes: 0,
+            vector_dimension: 0,
+            vector_encoding: VectorEncoding::Float32,
+            vector_similarity_function: VectorSimilarityFunction::Euclidean,
+        }],
+    };
+    let inputs = [postings_writer::FieldPostingsInput {
+        field_number: 0,
+        index_options: IndexOptions::Docs,
+        doc_count: 1000,
+        has_payloads: false,
+        terms: &terms,
+    }];
+    let format = UniformSplitPostingsFormat::new(32, 3, None, None, false).unwrap();
+    let state = SegmentWriteState {
+        max_doc: 1000,
+        segment_id: &[4u8; 16],
+        segment_suffix: "",
+        field_infos: &fis,
+    };
+    let mut group = c.benchmark_group("uniformsplit");
+    group.sample_size(20);
+    group.bench_function("write_100k_terms", |b| {
+        b.iter(|| black_box(format.write(&inputs, &[], &state).is_ok()))
+    });
+    group.finish();
+}
+
 criterion_group!(
     benches,
+    bench_uniformsplit_write,
+    bench_binary_update_generation,
+    bench_lucene90_terms_index_seek,
+    bench_postings_write_full_blocks,
+    bench_completion_flush,
+    bench_term_vectors_flush,
+    bench_scalar_quantized_flush,
+    bench_indexed_disi_decode,
+    bench_bkd_offline_2d,
     bench_byte_similarity,
     bench_fst_compile,
     bench_term_ngram,
