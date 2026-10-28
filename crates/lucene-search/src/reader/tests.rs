@@ -866,6 +866,10 @@ fn filter_directory_reader() {
     assert_eq!(f.leaves().len(), 3);
     assert_eq!(f.leaf_handles().len(), 3);
     assert!(f.reader_cache_helper().is_some());
+    assert!(!std::ptr::eq(
+        f.reader_cache_helper().unwrap(),
+        r.reader_cache_helper()
+    ));
     assert_eq!(f.version(), r.segment_infos.version);
     assert!(f.open_if_changed(&dir).unwrap().is_none());
 }
@@ -1025,6 +1029,12 @@ fn exitable_points_vectors_and_terms() {
     // The directory-level wrapper.
     let d = ExitableDirectoryReader::wrap(r.clone(), Countdown::new(1000)).unwrap();
     assert_eq!(d.leaves().len(), 3);
+    // Java's ExitableDirectoryReader hands out its inner reader's key.
+    assert!(std::ptr::eq(
+        d.reader_cache_helper().unwrap(),
+        r.reader_cache_helper()
+    ));
+    assert_eq!((d.max_doc(), d.num_docs()), (r.max_doc(), r.num_docs()));
     let w = ExitableSubReaderWrapper::new(Countdown::new(1));
     let leaf = w.wrap(seg(&r, 1)).unwrap();
     assert!(leaf.terms("body").unwrap().unwrap().iterator().is_err());
