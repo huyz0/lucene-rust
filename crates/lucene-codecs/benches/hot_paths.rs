@@ -1110,7 +1110,9 @@ fn bench_term_ngram(c: &mut Criterion) {
             s ^= s >> 7;
             s ^= s << 17;
             let len = 4 + (s % 9) as usize;
-            (0..len).map(|i| b'a' + ((s >> (i * 5)) % 26) as u8).collect()
+            (0..len)
+                .map(|i| b'a' + ((s >> (i * 5)) % 26) as u8)
+                .collect()
         })
         .collect();
     terms.sort();
@@ -1138,7 +1140,9 @@ fn bench_fuzzy_edits(c: &mut Criterion) {
             s ^= s >> 7;
             s ^= s << 17;
             let len = 5 + (s % 6) as usize;
-            (0..len).map(|i| b'a' + ((s >> (i * 5)) % 6) as u8).collect()
+            (0..len)
+                .map(|i| b'a' + ((s >> (i * 5)) % 6) as u8)
+                .collect()
         })
         .collect();
     let m = FuzzyMatch::new(b"abcdef", 2, 1, true);

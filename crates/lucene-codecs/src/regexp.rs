@@ -2185,7 +2185,10 @@ mod tests {
     fn inverted_class_range_is_an_error_as_in_java() {
         let e = err("[z-a]");
         assert_eq!(e, RegexpError::InvalidRange { from: 122, to: 97 });
-        assert_eq!(e.to_string(), "invalid range: from (122) cannot be > to (97)");
+        assert_eq!(
+            e.to_string(),
+            "invalid range: from (122) cannot be > to (97)"
+        );
         assert_eq!(err("[^z-a]"), e);
         assert!(RegexpPattern::parse("[a-a]").is_ok());
     }

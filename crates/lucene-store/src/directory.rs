@@ -1213,7 +1213,10 @@ mod tests {
         assert_eq!(generation_from_segments_file_name("segments_1").unwrap(), 1);
         assert_eq!(generation_from_segments_file_name("segments_2").unwrap(), 2);
         // Java skips any one character after `segments`, not only `_`.
-        assert_eq!(generation_from_segments_file_name("segments.bak").unwrap(), 14_636);
+        assert_eq!(
+            generation_from_segments_file_name("segments.bak").unwrap(),
+            14_636
+        );
         assert_eq!(generation_from_segments_file_name("segments-7").unwrap(), 7);
         assert!(generation_from_segments_file_name("segmentsX").is_err());
         // base-36: "segments_a" -> 10

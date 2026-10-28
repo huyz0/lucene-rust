@@ -388,17 +388,23 @@ mod tests {
         out.write_bytes(b"x");
         out.close().unwrap();
         let sleeping = SleepingLockWrapper::new(&base, 0).unwrap();
-        sleeping.close_input("a", sleeping.open("f.dat").unwrap()).unwrap();
+        sleeping
+            .close_input("a", sleeping.open("f.dat").unwrap())
+            .unwrap();
         let lock: Arc<dyn Lock> = Arc::from(base.obtain_lock("write.lock").unwrap());
         let validating = LockValidatingDirectoryWrapper::new(&base, lock);
-        validating.close_input("b", validating.open("f.dat").unwrap()).unwrap();
+        validating
+            .close_input("b", validating.open("f.dat").unwrap())
+            .unwrap();
         let switch = crate::FileSwitchDirectory::new(
             ["dat".to_string()].into_iter().collect(),
             &base,
             ByteBuffersDirectory::new(),
         )
         .unwrap();
-        switch.close_input("c.dat", switch.open("f.dat").unwrap()).unwrap();
+        switch
+            .close_input("c.dat", switch.open("f.dat").unwrap())
+            .unwrap();
         assert_eq!(*base.closed.lock().unwrap(), ["a", "b", "c.dat"]);
     }
 
