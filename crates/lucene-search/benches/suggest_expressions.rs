@@ -11,7 +11,8 @@
 //!   prefix (`"ap pr"`) and a long prefix (`"apple con"`), unhighlighted.
 //! - `expr/*`: an expression's values read for every document of a 1M-doc
 //!   leaf, its variables bound to in-memory columns (one sparse) and the
-//!   scores, as a sort's comparator or a function query reads them.
+//!   scores, as a sort's comparator reads them; `expr/*_batch` the same
+//!   values 64 documents at a time, as a function query's scorer reads them.
 //!
 //! Run with `cargo bench -p lucene-search --bench suggest_expressions`.
 
@@ -179,6 +180,9 @@ impl DoubleValues for ColumnValues {
     fn double_value(&mut self) -> lucene_search::Result<f64> {
         Ok(self.values[self.doc])
     }
+    fn batch_capable(&self) -> bool {
+        true
+    }
 }
 
 impl DoubleValuesSource for Column {
@@ -206,6 +210,8 @@ impl DoubleValuesSource for Column {
 }
 
 const DOCS: usize = 1_000_000;
+/// A function query's batch (a multiple of which `DOCS` is).
+const BATCH: usize = 64;
 
 fn column(seed: u64, every: usize, name: &'static str) -> Arc<dyn DoubleValuesSource> {
     let mut rng = Rng(seed);
@@ -251,6 +257,33 @@ fn expressions(c: &mut Criterion) {
                 for doc in 0..DOCS as i32 {
                     if v.advance_exact(doc).unwrap() {
                         sum += v.double_value().unwrap();
+                    }
+                }
+                black_box(sum)
+            })
+        });
+        // the same values a batch at a time, as a function query's
+        // scorer reads them (`DoubleValues::fill_batch`)
+        g.bench_function(format!("{name}_batch"), |b| {
+            let docs: Vec<i32> = (0..BATCH as i32).collect();
+            let batch_scores = vec![0f32; BATCH];
+            let mut out = vec![0f64; BATCH];
+            let mut has = vec![false; BATCH];
+            b.iter(|| {
+                let score_values = scores.get_values(&ctx, 0, None).unwrap();
+                let mut v = source.get_values(&ctx, 0, Some(score_values)).unwrap();
+                let mut sum = 0.0;
+                let mut ids = docs.clone();
+                for start in (0..DOCS).step_by(BATCH) {
+                    for (k, d) in ids.iter_mut().enumerate() {
+                        *d = (start + k) as i32;
+                    }
+                    v.fill_batch(&ids, &batch_scores, &mut out, &mut has)
+                        .unwrap();
+                    for (&o, &h) in out.iter().zip(&has) {
+                        if h {
+                            sum += o;
+                        }
                     }
                 }
                 black_box(sum)

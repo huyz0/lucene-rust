@@ -1617,6 +1617,37 @@ impl Expression {
         self.run(Values::Slots(slots), doc)
     }
 
+    /// The value at each of a batch's `out.len()` documents, `cols[i * n +
+    /// j]` the value (`0` for none) of variable `i` at the batch's `j`th:
+    /// what [`Self::evaluate_at`] gives over the same variable values.
+    ///
+    /// # Errors
+    /// `IllegalArgument` when `cols` has fewer values than the variables
+    /// over the batch, or the batch is past an `i32`.
+    pub(crate) fn evaluate_batch(&self, cols: &[f64], out: &mut [f64]) -> crate::Result<()> {
+        let n = out.len();
+        if cols.len() < self.variables.len() * n || i32::try_from(n).is_err() {
+            return Err(crate::Error::IllegalArgument(format!(
+                "{} values for the {} variables of {} over {n} documents",
+                cols.len(),
+                self.variables.len(),
+                self.source_text
+            )));
+        }
+        let mut reads = Reads {
+            values: Values::Columns { cols, n },
+            doc: 0,
+            error: None,
+        };
+        for (j, o) in (0i32..).zip(out.iter_mut()) {
+            reads.doc = j;
+            *o = (self.root)(&mut reads);
+        }
+        // a column read cannot fail
+        debug_assert!(reads.error.is_none());
+        Ok(())
+    }
+
     #[inline]
     fn run(&self, values: Values<'_, '_>, doc: i32) -> crate::Result<f64> {
         let mut reads = Reads {
@@ -1639,7 +1670,65 @@ pub(crate) enum VarValues<'c> {
     /// Read by this slot alone.
     Owned(BoxDoubleValues<'c>),
     /// Shared with other slots.
-    Shared(Rc<RefCell<BoxDoubleValues<'c>>>),
+    Shared(Rc<RefCell<SharedValues<'c>>>),
+}
+
+/// Values several readers share (the variables naming one source under a
+/// caching expression, the scores every variable reads): the values, and
+/// the last batch they filled, which a second reader of the same batch is
+/// handed rather than reading the values again (they read forward only).
+pub(crate) struct SharedValues<'c> {
+    pub(crate) values: BoxDoubleValues<'c>,
+    /// The last batch's documents and scores, and its values.
+    docs: Vec<i32>,
+    scores: Vec<f32>,
+    out: Vec<f64>,
+    has: Vec<bool>,
+}
+
+impl<'c> SharedValues<'c> {
+    pub(crate) fn new(values: BoxDoubleValues<'c>) -> Self {
+        Self {
+            values,
+            docs: Vec::new(),
+            scores: Vec::new(),
+            out: Vec::new(),
+            has: Vec::new(),
+        }
+    }
+
+    /// [`DoubleValues::fill_batch`] of the values, once per batch: the same
+    /// documents and scores as the last batch are its values again.
+    pub(crate) fn fill_batch(
+        &mut self,
+        docs: &[i32],
+        scores: &[f32],
+        out: &mut [f64],
+        has: &mut [bool],
+    ) -> crate::Result<()> {
+        let n = docs.len();
+        let scores = &scores[..n];
+        let same = self.docs == docs
+            && self
+                .scores
+                .iter()
+                .map(|s| s.to_bits())
+                .eq(scores.iter().map(|s| s.to_bits()));
+        if !same {
+            // a failed batch leaves nothing to hand on
+            self.docs.clear();
+            self.out.resize(n, 0.0);
+            self.has.resize(n, false);
+            self.values
+                .fill_batch(docs, scores, &mut self.out, &mut self.has)?;
+            self.docs.extend_from_slice(docs);
+            self.scores.clear();
+            self.scores.extend_from_slice(scores);
+        }
+        out[..n].copy_from_slice(&self.out[..n]);
+        has[..n].copy_from_slice(&self.has[..n]);
+        Ok(())
+    }
 }
 
 /// One variable of an evaluation: `ExpressionValueSource.zeroWhenUnpositioned`
@@ -1676,7 +1765,7 @@ impl<'c> VarSlot<'c> {
                     }
                 }
                 VarValues::Shared(v) => {
-                    let mut v = v.borrow_mut();
+                    let v = &mut v.borrow_mut().values;
                     if v.advance_exact(doc)? {
                         v.double_value()?
                     } else {
@@ -1688,6 +1777,43 @@ impl<'c> VarSlot<'c> {
         }
         Ok(self.value)
     }
+
+    /// Whether the wrapped values can be read a batch at a time
+    /// ([`DoubleValues::batch_capable`]).
+    pub(crate) fn batch_capable(&self) -> bool {
+        match &self.values {
+            VarValues::Owned(v) => v.batch_capable(),
+            VarValues::Shared(v) => v.borrow().values.batch_capable(),
+        }
+    }
+
+    /// The values at each of `docs` into `out` (`0` where there is none),
+    /// `has` scratch, both as long as `docs`; the slot is left on the last
+    /// document, with its value.
+    pub(crate) fn fill_batch(
+        &mut self,
+        docs: &[i32],
+        scores: &[f32],
+        out: &mut [f64],
+        has: &mut [bool],
+    ) -> crate::Result<()> {
+        let n = docs.len();
+        let (out, has) = (&mut out[..n], &mut has[..n]);
+        match &mut self.values {
+            VarValues::Owned(v) => v.fill_batch(docs, scores, out, has)?,
+            VarValues::Shared(v) => v.borrow_mut().fill_batch(docs, scores, out, has)?,
+        }
+        for (o, &h) in out.iter_mut().zip(has.iter()) {
+            if !h {
+                *o = 0.0;
+            }
+        }
+        if let (Some(&doc), Some(&value)) = (docs.last(), out.last()) {
+            self.doc = doc;
+            self.value = value;
+        }
+        Ok(())
+    }
 }
 
 /// The values an evaluation reads its variables from.
@@ -1696,6 +1822,9 @@ enum Values<'a, 'c> {
     Boxed(&'a mut [BoxDoubleValues<'c>]),
     /// [`Expression::evaluate_at`]'s, positioned on [`Reads::doc`] as read.
     Slots(&'a mut [VarSlot<'c>]),
+    /// [`Expression::evaluate_batch`]'s: variable `i`'s values for the
+    /// batch at `cols[i * n..]`, read at the batch index [`Reads::doc`].
+    Columns { cols: &'a [f64], n: usize },
 }
 
 /// The variables' values as an evaluation reads them. A failed read parks
@@ -1706,7 +1835,8 @@ enum Values<'a, 'c> {
 /// custom function may be called with that `0`.
 struct Reads<'a, 'c> {
     values: Values<'a, 'c>,
-    /// The document [`Values::Slots`] are read at.
+    /// The document [`Values::Slots`] are read at (the batch index
+    /// [`Values::Columns`] are).
     doc: i32,
     error: Option<crate::Error>,
 }
@@ -1720,6 +1850,7 @@ impl Reads<'_, '_> {
         let read = match &mut self.values {
             Values::Slots(slots) => slots[i].value_at(self.doc),
             Values::Boxed(values) => values[i].double_value(),
+            Values::Columns { cols, n } => Ok(cols[i * *n + self.doc as usize]),
         };
         match read {
             Ok(v) => v,
