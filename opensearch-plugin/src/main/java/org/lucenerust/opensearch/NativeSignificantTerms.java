@@ -4,15 +4,18 @@
 package org.lucenerust.opensearch;
 
 import org.opensearch.common.util.BigArrays;
+import org.opensearch.common.lease.Releasable;
 import org.opensearch.common.util.LongArray;
 import org.opensearch.index.mapper.KeywordFieldMapper;
 import org.opensearch.index.mapper.MappedFieldType;
 import org.opensearch.search.aggregations.AggregatorBase;
+import org.opensearch.search.aggregations.CardinalityUpperBound;
 import org.opensearch.search.aggregations.InternalAggregation;
 import org.opensearch.search.aggregations.bucket.BucketsAggregator;
 import org.opensearch.search.aggregations.bucket.terms.LongKeyedBucketOrds;
 
 import java.io.ByteArrayOutputStream;
+import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
@@ -61,8 +64,15 @@ final class NativeSignificantTerms {
         if (dense == false && collection.getClass().getName().equals(AGG + "$RemapGlobalOrds") == false) {
             return null;
         }
-        LongKeyedBucketOrds bucketOrds = dense ? null : (LongKeyedBucketOrds) get(collection, "bucketOrds");
-        return new Node(buckets, field, results, subsetSizes, bucketOrds);
+        Field strategy = Reflect.inHierarchy(agg.getClass(), "collectionStrategy");
+        Constructor<?> remap = dense ? null : collection.getClass().getDeclaredConstructor(agg.getClass(), CardinalityUpperBound.class);
+        if (strategy == null) {
+            return null;
+        }
+        if (remap != null) {
+            remap.setAccessible(true);
+        }
+        return new Node(buckets, field, results, subsetSizes, strategy, remap, (CardinalityUpperBound) get(agg, "cardinalityUpperBound"));
     }
 
     static final class Node extends NativeAggregationTree.Node {
@@ -70,21 +80,32 @@ final class NativeSignificantTerms {
         final String field;
         final Object results;
         final Field subsetSizes;
-        /** {@code RemapGlobalOrds}' bucket ordinals; null for {@code DenseGlobalOrds}. */
-        final LongKeyedBucketOrds bucketOrds;
+        /** The aggregator's {@code collectionStrategy}. */
+        final Field strategy;
         /**
-         * The next owning bucket ordinal the remapping aggregator has not seen: each read (a slice, or
-         * the owning buckets of a parent) gets fresh ones, so its buckets start empty.
+         * {@code RemapGlobalOrds(cardinality)}, made afresh for each read (a slice, or the owning
+         * buckets of a parent) so its buckets start empty; null for {@code DenseGlobalOrds}.
          */
-        long nextOwner;
+        final Constructor<?> remap;
+        final CardinalityUpperBound cardinality;
 
-        Node(BucketsAggregator buckets, String field, Object results, Field subsetSizes, LongKeyedBucketOrds bucketOrds) {
+        Node(
+            BucketsAggregator buckets,
+            String field,
+            Object results,
+            Field subsetSizes,
+            Field strategy,
+            Constructor<?> remap,
+            CardinalityUpperBound cardinality
+        ) {
             super(buckets, List.of());
             this.buckets = buckets;
             this.field = field;
             this.results = results;
             this.subsetSizes = subsetSizes;
-            this.bucketOrds = bucketOrds;
+            this.strategy = strategy;
+            this.remap = remap;
+            this.cardinality = cardinality;
         }
 
         @Override
@@ -98,17 +119,22 @@ final class NativeSignificantTerms {
             count(in, n);
             BigArrays bigArrays = buckets.context().bigArrays();
             long[] owners = new long[n];
-            if (bucketOrds == null) {
+            for (int i = 0; i < n; i++) {
+                owners[i] = i;
+            }
+            LongArray docCounts = (LongArray) get(buckets, "docCounts");
+            docCounts.fill(0, docCounts.size(), 0);
+            LongKeyedBucketOrds bucketOrds = null;
+            if (remap == null) {
                 // DenseGlobalOrds: one owning bucket, its buckets the global ordinals themselves.
                 if (n != 1) {
                     throw new IllegalStateException("lucene-rust: dense significant_terms for " + n + " owning buckets");
                 }
-                LongArray docCounts = (LongArray) get(buckets, "docCounts");
-                docCounts.fill(0, docCounts.size(), 0);
             } else {
-                for (int i = 0; i < n; i++) {
-                    owners[i] = nextOwner++;
-                }
+                Object fresh = remap.newInstance(buckets, n > 1 ? CardinalityUpperBound.MANY : cardinality);
+                ((Releasable) strategy.get(buckets)).close();
+                strategy.set(buckets, fresh);
+                bucketOrds = (LongKeyedBucketOrds) get(fresh, "bucketOrds");
             }
             LongArray sizes = (LongArray) subsetSizes.get(results);
             for (int i = 0; i < n; i++) {
