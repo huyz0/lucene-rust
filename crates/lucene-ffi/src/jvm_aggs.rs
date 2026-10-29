@@ -808,6 +808,58 @@ pub(crate) mod tests {
         assert!(t.slices.is_empty());
     }
 
+    /// `NUMERIC_TERMS field kind shard_size subs`, decoded and run: the
+    /// result is `n other count (docs key)*`, keys ascending, docs summing to
+    /// the matches with a value.
+    #[test]
+    fn numeric_terms_decode_and_run() {
+        let tree = |kind: u8, shard_size: i32| {
+            let mut b = vec![1u8, AGG_NUMERIC_TERMS];
+            string(&mut b, "n");
+            b.push(kind);
+            b.extend_from_slice(&shard_size.to_le_bytes());
+            b.push(1);
+            metric(&mut b, 0, 0, "n");
+            b.push(0);
+            b.extend_from_slice(&0i32.to_le_bytes());
+            b
+        };
+        let t = decode_tree(&tree(0, 2)).unwrap();
+        let AggNode::NumericTerms {
+            kind,
+            shard_size,
+            subs,
+            ..
+        } = &t.nodes[0]
+        else {
+            panic!()
+        };
+        assert_eq!((*kind, *shard_size, subs.len()), (ValueKind::Long, 2, 1));
+        assert!(decode_tree(&tree(9, 2)).is_err(), "value kind 9");
+        assert!(decode_tree(&tree(0, 0)).is_err(), "shard_size 0");
+        let full = tree(0, 2);
+        for n in 1..full.len() {
+            assert!(decode_tree(&full[..n]).is_err(), "truncated at {n}");
+        }
+
+        let h = open();
+        let fox = term_blob("body", "fox");
+        let out = aggregate_tree_blobs(h, &fox, &tree(0, 2)).unwrap();
+        let mut at = 0;
+        assert_eq!(i32_at(&out, &mut at), 1, "one owning bucket");
+        let other = i64_at(&out, &mut at);
+        let m = i32_at(&out, &mut at);
+        assert!((0..=2).contains(&m));
+        let mut keys = Vec::new();
+        for _ in 0..m {
+            assert!(i64_at(&out, &mut at) >= 1);
+            keys.push(i64_at(&out, &mut at));
+        }
+        assert!(other >= 0);
+        assert!(keys.windows(2).all(|w| w[0] < w[1]), "{keys:?}");
+        crate::jvm_reader::ffi_close_jvm_reader(h);
+    }
+
     #[test]
     fn malformed_trees_are_refused() {
         let bad = |b: &[u8]| decode_tree(b).err();

@@ -112,8 +112,9 @@ use std::sync::Arc;
 /// 33, the block-join, span, interval, combined-field and function-score
 /// nodes ([`crate::jvm_nodes`], M10 T10.7); 34, the term-range node and
 /// segments with completion postings formats (M13 T13.6); 35, the point-set
-/// node, and points boxes of any width (`integer`, `float`, `ip`, ...).
-pub const JVM_ABI_VERSION: u32 = 35;
+/// node, and points boxes of any width (`integer`, `float`, `ip`, ...); 36,
+/// numeric `terms` in aggregation trees (`NUMERIC_TERMS`).
+pub const JVM_ABI_VERSION: u32 = 36;
 
 /// Blob tag for a single `TermQuery`.
 pub const QUERY_TERM: u8 = 0;
