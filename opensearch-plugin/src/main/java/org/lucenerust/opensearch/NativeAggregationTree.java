@@ -83,6 +83,7 @@ public final class NativeAggregationTree {
     static final byte NUMERIC_TERMS = 8;
     /** A prefix: the next node's {@code missing} value ({@code AGG_MISSING}). */
     static final byte MISSING = 9;
+    static final byte COMPOSITE = 10;
     /** {@code date_histogram} unit codes, in the order {@code jvm_aggs.rs} lists them. */
     private static final Rounding.DateTimeUnit[] UNITS = {
         Rounding.DateTimeUnit.WEEK_OF_WEEKYEAR,
@@ -941,6 +942,8 @@ public final class NativeAggregationTree {
         switch (factory) {
             case AGGS + "bucket.global.GlobalAggregatorFactory":
                 return top ? new GlobalNode(agg, subs) : null;
+            case AGGS + "bucket.composite.CompositeAggregationFactory":
+                return top ? NativeComposite.node(ctx, agg, subs) : null;
             case AGGS + "bucket.filter.FilterAggregatorFactory": {
                 byte[] q = filterBlob(ctx, (Query) declared(f, "filter"), fieldOk);
                 return q == null ? null : new FiltersNode(agg, subs, new byte[][] { q }, false);
@@ -1182,6 +1185,15 @@ public final class NativeAggregationTree {
     /** A {@code date_histogram} whose rounding is a unit or an interval in a fixed-offset zone. */
     private static Node dateHistogram(AggregatorBase agg, List<Node> subs, String field, Rounding rounding, LongBounds hard)
         throws ReflectiveOperationException {
+        long[] r = roundingCode(rounding);
+        return r == null ? null : new DateHistogramNode(agg, subs, field, (byte) r[0], r[1], r[2], r[3], hard);
+    }
+
+    /**
+     * A rounding the native side takes, a unit or an interval in a fixed-offset zone, as {unit code,
+     * interval, zone offset millis, offset}; or null.
+     */
+    static long[] roundingCode(Rounding rounding) throws ReflectiveOperationException {
         long offset = rounding.offset();
         Rounding inner = rounding.withoutOffset();
         ZoneId zone = (ZoneId) get(inner, "timeZone");
@@ -1193,12 +1205,22 @@ public final class NativeAggregationTree {
         if (kind.equals("TimeUnitRounding")) {
             Rounding.DateTimeUnit unit = (Rounding.DateTimeUnit) get(inner, "unit");
             byte code = (byte) Arrays.asList(UNITS).indexOf(unit);
-            return code < 0 ? null : new DateHistogramNode(agg, subs, field, code, 0, zoneMillis, offset, hard);
+            return code < 0 ? null : new long[] { code, 0, zoneMillis, offset };
         }
         if (kind.equals("TimeIntervalRounding")) {
-            return new DateHistogramNode(agg, subs, field, UNIT_INTERVAL, (long) get(inner, "interval"), zoneMillis, offset, hard);
+            return new long[] { UNIT_INTERVAL, (long) get(inner, "interval"), zoneMillis, offset };
         }
         return null;
+    }
+
+    /** A rounding's blob, as {@link #roundingCode} gave it. */
+    static void writeRounding(ByteArrayOutputStream out, long[] r) {
+        out.write((int) r[0]);
+        if (r[0] == UNIT_INTERVAL) {
+            writeLong(out, r[1]);
+        }
+        writeLong(out, r[2]);
+        writeLong(out, r[3]);
     }
 
     /** A filter's query blob, rewritten as the filter aggregators rewrite it, or null. */

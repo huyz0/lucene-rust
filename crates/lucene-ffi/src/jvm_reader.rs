@@ -117,8 +117,9 @@ use std::sync::Arc;
 /// `terms` node's order byte; 37, the tree's `MISSING` prefix (a numeric
 /// node's `missing` value); 38, a tree `terms` node's `min_doc_count: 0`
 /// flag; 39, its `missing` term (the flag byte's bit 2); 40, its
-/// `include`/`exclude` as accepted ordinals (bit 4).
-pub const JVM_ABI_VERSION: u32 = 40;
+/// `include`/`exclude` as accepted ordinals (bit 4); 41, the tree's
+/// top-level `COMPOSITE` node.
+pub const JVM_ABI_VERSION: u32 = 41;
 
 /// Blob tag for a single `TermQuery`.
 pub const QUERY_TERM: u8 = 0;

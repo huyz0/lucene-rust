@@ -95,7 +95,8 @@ parameters, falls back (`field_similarity`), as does
 | `range`, `date_range` | ✅ | `missing` as for the metrics |
 | `filter`, `filters`, `global` | ✅ | |
 | any nesting of the above | ✅ | |
-| everything else (`top_hits`, `percentiles`, `significant_terms`, `composite`, `nested`, pipeline aggregations, ...) | ↩ | `aggregations` |
+| `composite` (top level) over `terms`, `histogram` and `date_histogram` sources, with `after`, `missing_bucket`, `missing_order` and sub-aggregations | ✅ | nested under another aggregation; a `script`; an `ip`, `geotile_grid` or other source type, or `terms` on a field type the numeric `terms` refuse; a `date_histogram` time zone with daylight saving; documents with `_doc_count`; an index sort led by the first source's field; a range query on the first source's field over its points; and, unless `native_shapes: all`, the shapes OpenSearch answers faster: a lone `date_histogram` source its filter rewrite counts from the points, and a first source read sorted under a match-all or `exists` query with more than `size` values (any points field, a keyword with more terms) |
+| everything else (`top_hits`, `percentiles`, `significant_terms`, `nested`, pipeline aggregations, ...) | ↩ | `aggregations` |
 
 ## Indexing: the Rust engine
 
