@@ -1067,6 +1067,9 @@ public final class NativeAggregationTree {
                 NativeAggregations.Terms t = NativeAggregations.termsSpec(ctx, f, config);
                 return t == null || t.thresholds().getMinDocCount() == 0 ? null : new NumericTermsNode(agg, subs, t, valueKind);
             }
+            case AGGS + "metrics.PercentilesAggregatorFactory":
+            case AGGS + "metrics.PercentileRanksAggregatorFactory":
+                return NativePercentiles.node(agg, field, valueKind);
             case AGGS + "metrics.CardinalityAggregatorFactory": {
                 if (missing || aggClass.equals(AGGS + "metrics.CardinalityAggregator") == false) {
                     return null;
