@@ -228,7 +228,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: fixtures/.jars
-          key: lucene-jars-10.5.0
+          key: lucene-jars-10.5.2
       - name: Regenerate and verify
         run: ./scripts/gen-fixtures.sh --check
       # Hunspell's charset tables are read off the JDK; a hand edit, or a JDK
@@ -318,7 +318,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: fixtures/.jars
-          key: lucene-jars-10.5.0
+          key: lucene-jars-10.5.2
       - name: Verify write path
         run: ./scripts/verify-write-path.sh
       # M4's T4.6: one index written, appended to, merged and deleted from by
