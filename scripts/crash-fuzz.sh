@@ -50,16 +50,32 @@ if [ -n "$DURATION" ]; then
   exit "${PIPESTATUS[0]}"
 fi
 
-run() {
-  local out
-  if ! out=$("$BIN" "$@"); then
-    echo "$out" | tail -3
-    exit 1
-  fi
-  echo "$out" | tail -1
+# The four runs are independent, so they run at once (wall time: the longest,
+# the power-loss run). Each stays one process over its whole seed range:
+# crash_fuzz only demands its every-window evidence of a power-loss run of 100
+# rounds or more and a kill run of 20 or more, so slicing them would drop it.
+WORK=$(mktemp -d)
+pids=()
+names=()
+start() {
+  local name="$1"
+  shift
+  "$BIN" "$@" >"$WORK/$name.log" 2>&1 &
+  pids+=($!); names+=("$name")
 }
-run --seeds 0..150
-run --seeds 1000..1025 --java-cp "$CP"
-run --kill --seeds 0..40
-run --concurrent --seeds 0..40 --ops 600
+start power-loss --seeds 0..150
+start java --seeds 1000..1025 --java-cp "$CP"
+start kill --kill --seeds 0..40
+start concurrent --concurrent --seeds 0..40 --ops 600
+rc=0
+for i in "${!pids[@]}"; do
+  if wait "${pids[$i]}"; then
+    tail -1 "$WORK/${names[$i]}.log"
+  else
+    tail -3 "$WORK/${names[$i]}.log"
+    rc=1
+  fi
+done
+rm -rf "$WORK"
+[ "$rc" -eq 0 ] || exit 1
 echo "crash-fuzz: ok"
