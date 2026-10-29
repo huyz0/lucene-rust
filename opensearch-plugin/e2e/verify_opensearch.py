@@ -460,6 +460,18 @@ def matrix():
     add("agg date_histogram > percentiles", {"size": 0, "query": {"match": {"body": "delta"}}, "aggs": {"h": {"date_histogram": {"field": "ts", "fixed_interval": "1d"}, "aggs": {"p": {"percentiles": {"field": "price"}}}}}}, "native")
     add("agg global and filter > percentiles", {"size": 0, "query": {"match": {"body": "omega"}}, "aggs": {"g": {"global": {}, "aggs": {"p": {"percentiles": {"field": "md"}}}}, "f": {"filter": {"term": {"tag": "alpha"}}, "aggs": {"p": {"percentiles": {"field": "md"}}}}}}, "native")
     add("agg percentiles empty", {"size": 0, "query": {"term": {"tag": "no-such-tag"}}, "aggs": {"p": {"percentiles": {"field": "price"}}}}, "either")
+    add("agg top_hits", {"size": 0, "query": {"match": {"body": "alpha beta"}}, "aggs": {"h": {"top_hits": {"size": 5}}}}, "native")
+    add("agg top_hits from and source", {"size": 0, "query": {"match": {"body": "gamma"}}, "aggs": {"h": {"top_hits": {"from": 2, "size": 4, "_source": {"includes": ["tag", "price"]}}}}}, "native")
+    add("agg terms > top_hits", {"size": 0, "query": {"match": {"body": "delta eta"}}, "aggs": {"t": {"terms": {"field": "tag", "size": 5}, "aggs": {"h": {"top_hits": {"size": 3, "_source": False, "docvalue_fields": ["price"], "version": True, "seq_no_primary_term": True}}}}}}, "native")
+    # Not under a match-all: OpenSearch's date_histogram filter rewrite then hands top_hits no
+    # scorer on a single-segment shard (a NullPointerException in the stock engine).
+    add("agg date_histogram > top_hits", {"size": 0, "query": {"match": {"body": "delta"}}, "aggs": {"d": {"date_histogram": {"field": "ts", "fixed_interval": "1d"}, "aggs": {"h": {"top_hits": {"size": 2, "stored_fields": ["_none_"]}}}}}}, "native")
+    add("agg terms > top_hits match_all", {"size": 0, "aggs": {"t": {"terms": {"field": "tag", "size": 4}, "aggs": {"h": {"top_hits": {"size": 2}}}}}}, "native")
+    add("agg top_hits min_score", {"size": 0, "min_score": 1.5, "query": {"match": {"body": "omega pi"}}, "aggs": {"h": {"top_hits": {"size": 3}}, "t": {"terms": {"field": "mtag", "size": 3}, "aggs": {"h": {"top_hits": {"size": 1}}}}}}, "native")
+    add("agg global and filters > top_hits", {"size": 0, "query": {"bool": {"must": [{"match": {"body": "beta"}}], "filter": [{"range": {"n": {"gte": 3}}}]}}, "aggs": {"g": {"global": {}, "aggs": {"h": {"top_hits": {"size": 2}}}}, "f": {"filters": {"filters": {"a": {"term": {"tag": "alpha"}}, "b": {"term": {"tag": "gamma"}}}, "other_bucket": True}, "aggs": {"h": {"top_hits": {"size": 2, "explain": True}}}}}}, "native")
+    add("agg top_hits with hits", {"size": 3, "query": {"match": {"body": "zeta"}}, "aggs": {"t": {"terms": {"field": "tag", "size": 2}, "aggs": {"h": {"top_hits": {"size": 2, "highlight": {"fields": {"body": {}}}}}}}}}, "native")
+    add("agg top_hits empty", {"size": 0, "query": {"term": {"tag": "no-such-tag"}}, "aggs": {"h": {"top_hits": {"size": 2}}}}, "either")
+    add("agg top_hits sorted", {"size": 0, "aggs": {"h": {"top_hits": {"size": 3, "sort": [{"price": "desc"}]}}}}, "aggregations")
     add("agg percentiles hdr", {"size": 0, "aggs": {"p": {"percentiles": {"field": "qty", "hdr": {"number_of_significant_value_digits": 3}}}}}, "aggregations")
     add("agg terms include", {"size": 0, "aggs": {"t": {"terms": {"field": "tag", "include": "a.*"}}}}, "native")
     add("agg terms include regex", {"size": 0, "query": {"match": {"body": "beta"}}, "aggs": {"t": {"terms": {"field": "mtag", "size": 5, "include": "[a-g].*[0-4]"}}}}, "native")

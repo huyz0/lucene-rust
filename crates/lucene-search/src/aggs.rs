@@ -1151,6 +1151,40 @@ pub(crate) fn segment_matches_scoring<'b>(
     Ok(Some(Some(&buf[..])))
 }
 
+/// [`segment_matches_scoring`] keeping each match's score too: the matches
+/// in `docs`, by document, their scores in `scores`.
+pub(crate) fn segment_matches_scored(
+    ctx: &exec::LeafContext<'_>,
+    query: &BooleanQuery,
+    live: Option<&FixedBitSet>,
+    min: f32,
+    docs: &mut Vec<i32>,
+    scores: &mut Vec<f32>,
+) -> Result<()> {
+    struct Hits<'v>(&'v mut Vec<(i32, f32)>);
+    impl crate::collector::ScoringCollector for Hits<'_> {
+        fn collect(&mut self, doc_id: i32, score: f32) {
+            self.0.push((doc_id, score));
+        }
+    }
+    docs.clear();
+    scores.clear();
+    let Some(mut bulk) = exec::bulk_boolean(ctx, query, 1.0, Mode::Complete)? else {
+        return Ok(());
+    };
+    let mut hits = Vec::new();
+    let mut sink = Hits(&mut hits);
+    let mut passing = crate::collector::MinScoreCollector::new(&mut sink, min);
+    exec::score_segment(&mut bulk, Mode::Complete, live, &mut passing, ctx.max_doc)?;
+    if !hits.windows(2).all(|w| w[0].0 < w[1].0) {
+        hits.sort_by_key(|h| h.0);
+        hits.dedup_by_key(|h| h.0);
+    }
+    docs.extend(hits.iter().map(|h| h.0));
+    scores.extend(hits.iter().map(|h| h.1));
+    Ok(())
+}
+
 /// How a segment's matches meet a column.
 pub(crate) enum ColumnRead<'b> {
     /// Stream the column; a document counts when `accept` says so: every

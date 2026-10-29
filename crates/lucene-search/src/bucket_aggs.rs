@@ -424,6 +424,10 @@ pub enum AggNode {
         kind: ValueKind,
         compression: f64,
     },
+    /// `top_hits` by score (`TopHitsAggregator` without a sort): each
+    /// owning bucket's `TopScoreDocCollector` of `top_n` hits, fed every
+    /// document with its score in visit order, by global document.
+    TopHits { top_n: usize },
     Cardinality {
         field: String,
         kind: CardinalityKind,
@@ -673,9 +677,10 @@ impl AggNode {
 
     fn subs(&self) -> &[AggNode] {
         match self {
-            AggNode::Metric { .. } | AggNode::Percentiles { .. } | AggNode::Cardinality { .. } => {
-                &[]
-            }
+            AggNode::Metric { .. }
+            | AggNode::Percentiles { .. }
+            | AggNode::TopHits { .. }
+            | AggNode::Cardinality { .. } => &[],
             AggNode::Terms { subs, .. }
             | AggNode::NumericTerms { subs, .. }
             | AggNode::Histogram { subs, .. }
@@ -685,6 +690,12 @@ impl AggNode {
             | AggNode::Composite { subs, .. }
             | AggNode::Global { subs } => subs,
         }
+    }
+
+    /// Whether the node or one below it reads each document's score (a
+    /// `top_hits`): the pass then scores the query (`ScoreMode.COMPLETE`).
+    pub fn needs_scores(&self) -> bool {
+        matches!(self, AggNode::TopHits { .. }) || self.subs().iter().any(AggNode::needs_scores)
     }
 
     /// The keyword fields whose global ordinals the tree reads.
@@ -750,6 +761,9 @@ pub enum AggResult {
         digests: Vec<Option<crate::tdigest::MergingDigest>>,
         nan: bool,
     },
+    /// Per owning bucket, `None` when it collected nothing, else its hit
+    /// count and top hits by score (`TopDocs`), global documents.
+    TopHits(Vec<Option<(u64, Vec<crate::collector::ScoreDoc>)>>),
     Cardinality(Vec<Vec<CardinalityValue>>),
     /// Per owning bucket, its `HyperLogLogPlusPlus` as `writeTo` writes it
     /// (`crate::cardinality_sketch`); empty for a bucket that saw nothing.
@@ -955,6 +969,9 @@ enum State {
         digests: Vec<Option<Box<crate::tdigest::MergingDigest>>>,
         nan: bool,
     },
+    /// Each owning bucket's top hits, made when it collects its first
+    /// document (`TopHitsAggregator.collect`).
+    TopHits(Vec<Option<Box<crate::collector::TopDocsCollector>>>),
     /// Distinct values per owning bucket: global ordinals for a keyword, raw
     /// longs otherwise.
     Cardinality(Vec<FastSet<i64>>),
@@ -996,6 +1013,7 @@ impl State {
                 digests: Vec::new(),
                 nan: false,
             },
+            AggNode::TopHits { .. } => State::TopHits(Vec::new()),
             AggNode::Cardinality {
                 kind: CardinalityKind::Numeric(_),
                 precision: Some(p),
@@ -1210,6 +1228,9 @@ enum Col<'a> {
     Ords(Ords<'a>, &'a [i64]),
     /// Each filter's matching documents (`None`: all of them), as bits.
     Filters(Vec<Option<Vec<u64>>>),
+    /// The segment's matches and their scores, by document, and its first
+    /// document's global number (`docBase`).
+    Scores(&'a [i32], &'a [f32], i32),
     None,
 }
 
@@ -1336,7 +1357,7 @@ impl Leaf<'_> {
                 }
             }
             Col::Ords(Ords::Multi(r), _) => r.values(doc, &mut self.buf)?,
-            Col::Filters(_) | Col::None => {}
+            Col::Filters(_) | Col::Scores(..) | Col::None => {}
         }
         if self.buf.is_empty() {
             self.buf.extend(self.missing);
@@ -1356,6 +1377,9 @@ struct SegmentView<'s, 'a> {
     reader: &'a SegmentReader,
     index: usize,
     top: bool,
+    /// The scored matches, when the tree reads scores, and `docBase`.
+    scores: Option<(&'a [i32], &'a [f32])>,
+    doc_base: i32,
 }
 
 fn open_leaf<'a>(
@@ -1417,6 +1441,14 @@ fn open_leaf<'a>(
             }
             Col::Filters(bits)
         }
+        AggNode::TopHits { .. } => match view.scores {
+            Some((docs, scores)) => Col::Scores(docs, scores, view.doc_base),
+            None => {
+                return Err(crate::Error::TermsAggType(
+                    "top_hits without scores".to_string(),
+                ))
+            }
+        },
         AggNode::Global { .. } | AggNode::Composite { .. } => Col::None,
     };
     let mut subs = Vec::with_capacity(node.subs().len());
@@ -2274,6 +2306,31 @@ fn collect(
                 }
             }
         }
+        (AggNode::TopHits { top_n }, State::TopHits(collectors)) => {
+            use crate::collector::ScoringCollector;
+            let Col::Scores(docs, scores, base) = leaf.col else {
+                return Err(crate::Error::TermsAggType(
+                    "top_hits without scores".to_string(),
+                ));
+            };
+            let (Ok(i), Some(global)) = (docs.binary_search(&doc), base.checked_add(doc)) else {
+                return Err(crate::Error::TermsAggType(format!(
+                    "top_hits: document {doc} was not scored"
+                )));
+            };
+            // FBS: `scores` is parallel to `docs`, and `get` is bounds-checked.
+            let score = scores.get(i).copied().unwrap_or(0.0);
+            slot(collectors, owning as usize)
+                .get_or_insert_with(|| {
+                    Box::new(
+                        crate::collector::TopDocsCollector::with_total_hits_threshold(
+                            *top_n,
+                            u64::MAX,
+                        ),
+                    )
+                })
+                .collect(global, score);
+        }
         (AggNode::Cardinality { .. }, State::OrdBits(bits)) => {
             if !leaf.read(doc)? {
                 return Ok(());
@@ -2937,9 +2994,25 @@ pub fn aggregate_tree(
     // the function queries' reader-wide preparation alone.
     let global = crate::multi_segment::leaf_stats(segments, query, min_score.is_some(), None)?;
     let scoring = min_score.zip(global.as_ref());
+    // A `top_hits` reads each match's score: the pass scores the query,
+    // behind `min_score` or none (`-inf`), the caller's norms with it.
+    let needs_scores = nodes.iter().any(AggNode::needs_scores);
+    if needs_scores && scoring.is_none() {
+        return Err(crate::Error::TermsAggType(
+            "top_hits without scoring".to_string(),
+        ));
+    }
+    // Each segment's `docBase`.
+    let mut bases = Vec::with_capacity(readers.len());
+    let mut next = 0i32;
+    for r in readers {
+        bases.push(next);
+        next = next.saturating_add(r.max_doc);
+    }
     let one = |slice: &[usize]| -> Result<Vec<AggResult>> {
         let mut states: Vec<State> = nodes.iter().map(State::new).collect();
         let mut docs_buf = Vec::new();
+        let (mut scored_docs, mut scored) = (Vec::new(), Vec::new());
         for &i in slice {
             let (Some(seg), Some(reader)) = (segments.get(i), readers.get(i)) else {
                 return Err(crate::Error::SliceOutOfRange {
@@ -2947,22 +3020,40 @@ pub fn aggregate_tree(
                     segments: segments.len().min(readers.len()),
                 });
             };
-            let view = SegmentView {
-                seg,
-                reader,
-                index: i,
-                top: true,
-            };
-            let mut leaves = Vec::with_capacity(nodes.len());
-            for (n, s) in nodes.iter().zip(&mut states) {
-                leaves.push(open_leaf(n, &view, globals, s)?);
-            }
             let ctx = exec::LeafContext {
                 global: global.as_ref(),
                 ..aggs::plain_context(seg)
             };
             let live: Option<&FixedBitSet> = seg.live_docs;
+            if let (true, Some((m, g))) = (needs_scores, scoring) {
+                let ctx = exec::LeafContext {
+                    norms: m.norms.get(i).copied().flatten(),
+                    global: Some(g),
+                    ..ctx
+                };
+                aggs::segment_matches_scored(
+                    &ctx,
+                    query,
+                    live,
+                    m.min,
+                    &mut scored_docs,
+                    &mut scored,
+                )?;
+            }
+            let view = SegmentView {
+                seg,
+                reader,
+                index: i,
+                top: true,
+                scores: needs_scores.then_some((&scored_docs[..], &scored[..])),
+                doc_base: bases.get(i).copied().unwrap_or(0),
+            };
+            let mut leaves = Vec::with_capacity(nodes.len());
+            for (n, s) in nodes.iter().zip(&mut states) {
+                leaves.push(open_leaf(n, &view, globals, s)?);
+            }
             let matched = match scoring {
+                Some(_) if needs_scores => Some(Some(&scored_docs[..])),
                 Some((m, g)) => {
                     let scored = exec::LeafContext {
                         norms: m.norms.get(i).copied().flatten(),
@@ -3251,6 +3342,17 @@ fn finish(
                 .collect(),
             nan,
         }),
+        (AggNode::TopHits { .. }, State::TopHits(mut collectors)) => Ok(AggResult::TopHits(
+            owners
+                .iter()
+                .map(|&o| {
+                    collectors
+                        .get_mut(o as usize)
+                        .and_then(Option::take)
+                        .map(|c| (c.total_hits().value, c.top_docs().to_vec()))
+                })
+                .collect(),
+        )),
         (AggNode::Metric { .. }, State::Metric(states)) => Ok(AggResult::Metric(
             owners
                 .iter()
@@ -5679,5 +5781,121 @@ mod tests {
             };
             assert_eq!(none[0].count, 0);
         }
+    }
+
+    /// `top_hits` by score keeps what one `TopScoreDocCollector` over the
+    /// same matches keeps: the searcher's top hits, by global document, at
+    /// the top level, under `global` and per slice -- and behind `min_score`
+    /// only the hits that pass it.
+    #[test]
+    fn top_hits_are_the_searchers_top_docs() {
+        let reader = fixture("metric_aggs_index");
+        let mut opened = reader.open_segments().unwrap();
+        opened.open_points().unwrap();
+        let segments = opened.as_open_segments();
+        let owned = reader.field_norms_by_field(&["body".to_string()]).unwrap();
+        let norms: Vec<Option<&HashMap<String, crate::field_norms::FieldNorms<'_>>>> =
+            owned.iter().map(Some).collect();
+        let searcher = crate::index_searcher::IndexSearcher::new(&segments, &norms).unwrap();
+        let readers = reader.segment_readers();
+        assert!(readers.len() > 1, "a multi-segment fixture");
+        let bases: Vec<i32> = readers
+            .iter()
+            .scan(0, |next, r| {
+                let b = *next;
+                *next += r.max_doc;
+                Some(b)
+            })
+            .collect();
+        let run_scored = |q: &BooleanQuery, nodes: &[AggNode], slices: &[Vec<usize>], min: f32| {
+            let m = crate::aggs::MinScore { min, norms: &norms };
+            aggregate_tree(
+                &segments,
+                readers,
+                q,
+                nodes,
+                &Globals::new(&HashMap::new()),
+                slices,
+                Some(&m),
+            )
+            .unwrap()
+        };
+        let hits = |r: &AggResult| -> Option<(u64, Vec<(i32, u32)>)> {
+            let AggResult::TopHits(per) = r else {
+                panic!("{r:?}")
+            };
+            per[0].as_ref().map(|(total, h)| {
+                (
+                    *total,
+                    h.iter().map(|d| (d.doc_id, d.score.to_bits())).collect(),
+                )
+            })
+        };
+        for (q, top_n) in [(body("w1"), 3), (body("w3"), 50), (all(), 5)] {
+            let every = searcher.search(&q, 100_000).unwrap();
+            let oracle: Vec<(i32, u32)> = every
+                .score_docs
+                .iter()
+                .map(|d| (d.doc, d.score.to_bits()))
+                .collect();
+            assert!(!oracle.is_empty());
+            let want = (
+                oracle.len() as u64,
+                oracle.iter().copied().take(top_n).collect::<Vec<_>>(),
+            );
+            let top = [AggNode::TopHits { top_n }];
+            let got = run_scored(&q, &top, &whole(&reader), f32::NEG_INFINITY);
+            assert_eq!(hits(&got[0][0]), Some(want.clone()), "{q:?}");
+            let global = [AggNode::Global {
+                subs: vec![AggNode::TopHits { top_n }],
+            }];
+            let got = run_scored(&q, &global, &whole(&reader), f32::NEG_INFINITY);
+            let AggResult::Fixed { subs, .. } = &got[0][0] else {
+                panic!("{got:?}")
+            };
+            assert_eq!(hits(&subs[0]), Some(want.clone()));
+            // A slice per segment, last first: each keeps its own segment's.
+            let slices: Vec<Vec<usize>> = (0..readers.len()).rev().map(|i| vec![i]).collect();
+            let got = run_scored(&q, &top, &slices, f32::NEG_INFINITY);
+            for (slice, results) in slices.iter().zip(&got) {
+                let i = slice[0];
+                let end = bases[i] + readers[i].max_doc;
+                let mine: Vec<(i32, u32)> = oracle
+                    .iter()
+                    .copied()
+                    .filter(|&(d, _)| d >= bases[i] && d < end)
+                    .collect();
+                let want = (!mine.is_empty()).then(|| {
+                    (
+                        mine.len() as u64,
+                        mine.iter().copied().take(top_n).collect(),
+                    )
+                });
+                assert_eq!(hits(&results[0]), want, "segment {i}");
+            }
+            // Behind `min_score`: the hits at or above the median score.
+            let median = f32::from_bits(oracle[oracle.len() / 2].1);
+            let passing: Vec<(i32, u32)> = oracle
+                .iter()
+                .copied()
+                .filter(|&(_, s)| f32::from_bits(s) >= median)
+                .collect();
+            let got = run_scored(&q, &top, &whole(&reader), median);
+            assert_eq!(
+                hits(&got[0][0]),
+                Some((
+                    passing.len() as u64,
+                    passing.into_iter().take(top_n).collect()
+                ))
+            );
+        }
+        // Scores are the caller's to supply.
+        assert!(run(
+            &reader,
+            &all(),
+            &[AggNode::TopHits { top_n: 1 }],
+            &whole(&reader)
+        )
+        .is_err());
     }
 }
