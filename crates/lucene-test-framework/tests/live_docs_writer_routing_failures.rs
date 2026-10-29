@@ -204,6 +204,9 @@ fn term_query_and_reader_deletes_supply_incremental_counts_and_existing_generati
         .try_delete_document(&snapshot.segment_infos, 2)
         .unwrap()
         .is_some());
+    // Buffered until the writer's next operation, as Java's are.
+    assert!(probe.take().is_empty());
+    writer.flush().unwrap();
     let third = probe.take();
     assert_eq!(third.len(), 1);
     assert_transition(&third[0], 2, 1, &[3, 4, 5]);
@@ -247,9 +250,12 @@ fn failures_before_write_and_after_native_close_keep_commit_and_advance_retry_ge
         assert_eq!(first.len(), 1);
         let committed = segment_infos::read_latest(&directory).unwrap();
         probe.failure.store(failure, Ordering::SeqCst);
-        let error = writer
+        writer
             .try_delete_document(&snapshot.segment_infos, 1)
-            .unwrap_err();
+            .unwrap()
+            .unwrap();
+        // The buffered delete is written, and fails, at the next operation.
+        let error = writer.flush().unwrap_err();
         assert_eq!(
             error.to_string(),
             if failure == 1 {
@@ -277,6 +283,7 @@ fn failures_before_write_and_after_native_close_keep_commit_and_advance_retry_ge
             .try_delete_document(&snapshot.segment_infos, 1)
             .unwrap()
             .unwrap();
+        writer.flush().unwrap();
         let retried = probe.take();
         assert_eq!(retried.len(), 1);
         assert_transition(&retried[0], 1, 1, &[2, 3, 4, 5]);
@@ -318,9 +325,12 @@ fn preexisting_candidate_survives_precreate_and_already_exists_failures() {
         output.write_bytes(original);
         output.close().unwrap();
         probe.failure.store(failure, Ordering::SeqCst);
-        let error = writer
+        writer
             .try_delete_document(&snapshot.segment_infos, 1)
-            .unwrap_err();
+            .unwrap()
+            .unwrap();
+        // The buffered delete is written, and fails, at the next operation.
+        let error = writer.flush().unwrap_err();
         if failure == 1 {
             assert_eq!(error.to_string(), "before live-docs output");
         } else {
@@ -339,6 +349,7 @@ fn preexisting_candidate_survives_precreate_and_already_exists_failures() {
             .try_delete_document(&snapshot.segment_infos, 1)
             .unwrap()
             .unwrap();
+        writer.flush().unwrap();
         let retry = probe.take();
         assert_eq!(retry.len(), 1);
         assert_eq!(retry[0].next_del_gen, 3);
@@ -374,9 +385,12 @@ fn close_failure_and_cleanup_failure_preserve_primary_error_and_skip_abandoned_g
             fail_cleanup && context.op == FailureOp::DeleteFile && context.name.ends_with("_2.liv")
         });
         directory.fail_on(cleanup.clone());
-        let error = writer
+        writer
             .try_delete_document(&snapshot.segment_infos, 1)
-            .unwrap_err();
+            .unwrap()
+            .unwrap();
+        // The buffered delete is written, and fails, at the next operation.
+        let error = writer.flush().unwrap_err();
         assert!(error.to_string().contains("CloseOutput"), "{error}");
         assert_eq!(close.fired(), 1);
         assert_eq!(cleanup.fired(), usize::from(fail_cleanup));
@@ -393,6 +407,7 @@ fn close_failure_and_cleanup_failure_preserve_primary_error_and_skip_abandoned_g
             .try_delete_document(&snapshot.segment_infos, 1)
             .unwrap()
             .unwrap();
+        writer.flush().unwrap();
         let retried = probe.take();
         assert_eq!(retried.len(), 1);
         assert_eq!((retried[0].del_gen, retried[0].next_del_gen), (1, 3));
@@ -560,6 +575,7 @@ fn deletes_issued_while_merge_is_warmed_route_the_carried_generation_before_publ
                 .unwrap()
                 .unwrap();
         }
+        writer.flush().unwrap();
         let source_calls = probe.take();
         assert_eq!(source_calls.len(), 3);
         for call in source_calls {

@@ -1158,16 +1158,26 @@ pub type ReconciledFieldNumbers = (Vec<FieldInfo>, Vec<HashMap<i32, i32>>);
 
 /// Reconciles field numbering across `sources_fields` (one source's
 /// [`FieldInfos`](field_infos::FieldInfos)-equivalent field list per entry):
-/// assigns every distinct field *name* a single, contiguous merged field
-/// number, in first-seen order across sources (source 0's fields first, then
-/// any new names introduced by source 1, etc.) -- mirrors real Lucene's
-/// `FieldInfos.FieldNumbers.addOrGet`, which hands out a process-wide number
-/// per name and reuses it for every segment that has that field, regardless
-/// of what number that segment originally used.
+/// assigns every distinct field *name* a single merged field number --
+/// mirrors real Lucene's `FieldInfos.FieldNumbers.addOrGet`, which hands out
+/// a writer-wide number per name and reuses it for every segment that has
+/// that field.
+///
+/// A name keeps the number its first-seen source gave it, as long as no
+/// earlier-seen name already holds that number. The sources of one index
+/// share their writer's global numbering, so a segment holding only some of
+/// the fields (`_0` with just field 3, as Lucene writes it) keeps its numbers
+/// instead of being packed down to 0..n. That keeps the merged `.fnm` the
+/// one Java writes, and it keeps every such source's map the identity, which
+/// is what lets [`matching_readers`] pick the bulk stored-fields and
+/// term-vectors copy. A name whose number is taken (two sources numbering
+/// different fields alike) gets a fresh number past every kept one, in
+/// first-seen order.
 ///
 /// Returns the merged field list (one [`FieldInfo`] per distinct name, seeded
-/// from the *first* source's metadata for that name) and, per source, a map
-/// from that source's original field number to the merged number.
+/// from the *first* source's metadata for that name, ordered by number as
+/// `FieldInfos` iterates) and, per source, a map from that source's original
+/// field number to the merged number.
 ///
 /// # Cross-source schema reconciliation
 ///
@@ -1201,8 +1211,10 @@ pub type ReconciledFieldNumbers = (Vec<FieldInfo>, Vec<HashMap<i32, i32>>);
 /// e.g. claiming a field has no term vectors while `write_merged_term_vectors`
 /// happily wrote them, or dropping a later source's real payload bytes.
 pub fn reconcile_field_numbers(sources_fields: &[&[FieldInfo]]) -> Result<ReconciledFieldNumbers> {
+    let numbers = assign_merged_field_numbers(sources_fields);
     let mut merged_fields: Vec<FieldInfo> = Vec::new();
-    let mut name_to_merged_number: HashMap<String, i32> = HashMap::new();
+    // Name -> (merged number, position in `merged_fields`).
+    let mut name_to_merged: HashMap<String, (i32, usize)> = HashMap::new();
     let mut per_source_maps: Vec<HashMap<i32, i32>> = Vec::with_capacity(sources_fields.len());
 
     for (source_index, fields) in sources_fields.iter().enumerate() {
@@ -1221,9 +1233,9 @@ pub fn reconcile_field_numbers(sources_fields: &[&[FieldInfo]]) -> Result<Reconc
                     source_index,
                 });
             }
-            match name_to_merged_number.get(&f.name) {
-                Some(&merged_number) => {
-                    let merged = &mut merged_fields[merged_number as usize];
+            match name_to_merged.get(&f.name) {
+                Some(&(merged_number, position)) => {
+                    let merged = &mut merged_fields[position];
                     verify_same_schema(merged, f)?;
                     // FieldInfos.Builder.add: payloads are ORed in, not
                     // verified -- but through `FieldInfo.setStorePayloads`,
@@ -1250,11 +1262,11 @@ pub fn reconcile_field_numbers(sources_fields: &[&[FieldInfo]]) -> Result<Reconc
                     map.insert(f.number, merged_number);
                 }
                 None => {
-                    let number = merged_fields.len() as i32;
+                    let number = numbers.get(f.name.as_str()).copied().unwrap_or(f.number);
                     let mut renumbered = f.clone();
                     renumbered.number = number;
+                    name_to_merged.insert(f.name.clone(), (number, merged_fields.len()));
                     merged_fields.push(renumbered);
-                    name_to_merged_number.insert(f.name.clone(), number);
                     map.insert(f.number, number);
                 }
             }
@@ -1262,7 +1274,36 @@ pub fn reconcile_field_numbers(sources_fields: &[&[FieldInfo]]) -> Result<Reconc
         per_source_maps.push(map);
     }
 
+    merged_fields.sort_by_key(|f| f.number);
     Ok((merged_fields, per_source_maps))
+}
+
+/// [`reconcile_field_numbers`]' numbering: each name's first-seen number
+/// when no earlier name holds it, otherwise a fresh one past every number
+/// kept. A source naming one field twice is left to the caller's check.
+fn assign_merged_field_numbers<'a>(sources_fields: &[&'a [FieldInfo]]) -> HashMap<&'a str, i32> {
+    let mut numbers: HashMap<&str, i32> = HashMap::new();
+    let mut taken: HashSet<i32> = HashSet::new();
+    let mut displaced: Vec<&str> = Vec::new();
+    for f in sources_fields.iter().flat_map(|fields| fields.iter()) {
+        if numbers.contains_key(f.name.as_str()) || displaced.contains(&f.name.as_str()) {
+            continue;
+        }
+        if f.number >= 0 && taken.insert(f.number) {
+            numbers.insert(f.name.as_str(), f.number);
+        } else {
+            displaced.push(f.name.as_str());
+        }
+    }
+    let mut next = taken.iter().max().map_or(0, |&max| max.saturating_add(1));
+    for name in displaced {
+        while taken.contains(&next) {
+            next = next.saturating_add(1);
+        }
+        taken.insert(next);
+        numbers.insert(name, next);
+    }
+    numbers
 }
 
 /// Port of `IndexOptions.subsumes(DOCS_AND_FREQS_AND_POSITIONS)`: does this
@@ -6176,6 +6217,33 @@ mod tests {
     }
 
     #[test]
+    fn a_source_holding_only_some_fields_keeps_its_numbers() {
+        // Lucene writes only the fields a segment has, under the writer's
+        // global numbers: the larger segment first here has only field 3.
+        let fields0 = vec![field("x3", 3)];
+        let fields1 = vec![field("x0", 0), field("x1", 1), field("x3", 3)];
+        let sources: Vec<&[FieldInfo]> = vec![&fields0, &fields1];
+        let (merged, maps) = reconcile_field_numbers(&sources).unwrap();
+        let numbered: Vec<(&str, i32)> =
+            merged.iter().map(|f| (f.name.as_str(), f.number)).collect();
+        assert_eq!(numbered, [("x0", 0), ("x1", 1), ("x3", 3)]);
+        assert!(maps.iter().all(|m| m.iter().all(|(from, to)| from == to)));
+    }
+
+    #[test]
+    fn a_number_two_sources_give_different_fields_is_reassigned() {
+        let fields0 = vec![field("a", 0), field("b", 2)];
+        let fields1 = vec![field("c", 0), field("b", 2), field("d", 3)];
+        let sources: Vec<&[FieldInfo]> = vec![&fields0, &fields1];
+        let (merged, maps) = reconcile_field_numbers(&sources).unwrap();
+        let numbered: Vec<(&str, i32)> =
+            merged.iter().map(|f| (f.name.as_str(), f.number)).collect();
+        assert_eq!(numbered, [("a", 0), ("b", 2), ("d", 3), ("c", 4)]);
+        assert_eq!(maps[1][&0], 4);
+        assert_eq!(maps[1][&3], 3);
+    }
+
+    #[test]
     fn empty_sources_produce_empty_merged_fields() {
         let sources: Vec<&[FieldInfo]> = vec![];
         let (merged, maps) = reconcile_field_numbers(&sources).unwrap();
@@ -7170,8 +7238,9 @@ mod tests {
         // trusting a caller-supplied invariant with an `unwrap`/`expect` when
         // an `Err` is easy to return instead.
         //
-        // The source declares "id" as field number 1, so the merge renumbers
-        // it to 0 and the source is *not* a matching reader -- which is what
+        // An earlier source already holds field number 1 under another name,
+        // so the merge renumbers "id" and the malformed source is *not* a
+        // matching reader -- which is what
         // puts it on the VISITOR path, the only one of
         // `Lucene90CompressingStoredFieldsWriter.merge`'s three that parses
         // field numbers at all. A matching reader's chunk bytes are copied
@@ -7181,17 +7250,26 @@ mod tests {
         // `a_matching_deletion_free_source_is_bulk_copied_verbatim`.
         let tmp = tempdir();
         let dir = FsDirectory::open(&tmp);
+        let first_fields = vec![field("first", 1)];
+        let first_docs = vec![doc_with(1, "fine")];
+        let first = flush(
+            &dir,
+            &tmp,
+            "_0",
+            [2u8; ID_LENGTH],
+            &first_fields,
+            &first_docs,
+        );
+        let first_reader = open_reader(&first);
         let fields = vec![field("id", 1)];
         let docs = vec![doc_with(7, "orphaned")];
-        let seg = flush(&dir, &tmp, "_0", [1u8; ID_LENGTH], &fields, &docs);
+        let seg = flush(&dir, &tmp, "_1", [1u8; ID_LENGTH], &fields, &docs);
         let reader = open_reader(&seg);
 
-        let sources = vec![MergeSource::stored_only(
-            &seg.fields,
-            &reader,
-            None,
-            Some(version()),
-        )];
+        let sources = vec![
+            MergeSource::stored_only(&first.fields, &first_reader, None, Some(version())),
+            MergeSource::stored_only(&seg.fields, &reader, None, Some(version())),
+        ];
         let result = merge_stored_only_segments(
             &dir,
             &sources,
