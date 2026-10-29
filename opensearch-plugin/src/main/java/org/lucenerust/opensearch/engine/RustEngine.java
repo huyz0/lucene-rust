@@ -1,5 +1,5 @@
 /*
- * Derived from OpenSearch 3.8.0 by opensearch-plugin/tools/derive_engine.py -- do not edit;
+ * Derived from OpenSearch 3.9.0 by opensearch-plugin/tools/derive_engine.py -- do not edit;
  * change the script and re-run it. The original notice follows.
  */
 /*
@@ -43,6 +43,7 @@ import org.apache.lucene.document.LongPoint;
 import org.apache.lucene.document.NumericDocValuesField;
 import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.IndexCommit;
+import org.apache.lucene.index.IndexFileNames;
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexWriterConfig;
 import org.apache.lucene.index.LeafReaderContext;
@@ -124,6 +125,7 @@ import java.io.Closeable;
 import java.io.IOException;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -167,6 +169,26 @@ public class RustEngine extends Engine {
     protected final SoftDeletesPolicy softDeletesPolicy;
     protected final AtomicBoolean shouldPeriodicallyFlushAfterBigMerge = new AtomicBoolean(false);
     protected final NumericDocValuesField softDeletesField = Lucene.newSoftDeletesField();
+
+    /**
+     * Size of segment bytes not yet referenced by the last commit point on a remote-store shard, published by the
+     * remote segment upload path after every successful segments sync (see RemoteStoreRefreshListener). Stamped with
+     * the commit generation it was computed against: a value whose generation does not match the current last commit
+     * is stale (e.g. right after a flush) and is ignored until the next sync republishes.
+     */
+    private volatile UncommittedSegmentBytes uncommittedSegmentBytes;
+
+    private static final class UncommittedSegmentBytes {
+        private final long bytes;
+        private final long committedInfosGeneration;
+        private final long flushThresholdBytes;
+
+        private UncommittedSegmentBytes(long bytes, long committedInfosGeneration, long flushThresholdBytes) {
+            this.bytes = bytes;
+            this.committedInfosGeneration = committedInfosGeneration;
+            this.flushThresholdBytes = flushThresholdBytes;
+        }
+    }
 
     // A uid (in the form of BytesRef) to the version map
     // we use the hashed variant since we iterate over it and check removal and additions on existing keys
@@ -214,6 +236,7 @@ public class RustEngine extends Engine {
 
     private final IndexingStrategyPlanner indexingStrategyPlanner;
     private final DeletionStrategyPlanner deletionStrategyPlanner;
+    private final PrimaryOperationPolicy primaryOperationPolicy;
     private final DocumentCountTracker documentCountTracker;
 
     public RustEngine(EngineConfig engineConfig) {
@@ -368,6 +391,7 @@ public class RustEngine extends Engine {
                 documentCountTracker::tryAcquireInFlightDocs,
                 this::incrementVersionLookup
             );
+            this.primaryOperationPolicy = engineConfig.getPrimaryOperationPolicy();
             success = true;
         } finally {
             if (success == false) {
@@ -526,6 +550,12 @@ public class RustEngine extends Engine {
     public int fillSeqNoGaps(long primaryTerm) throws IOException {
         try (ReleasableLock ignored = writeLock.acquire()) {
             ensureOpen();
+            if (primaryOperationPolicy.acceptsPreAssignedSeqNos()) {
+                // This shard's sequence numbers are assigned by an upstream authority, which owns the
+                // sequence-number space; recording no-ops here could collide with operations the
+                // authority has not replicated yet.
+                return 0;
+            }
             return SeqNoGapFiller.fillGaps(localCheckpointTracker, translogManager, primaryTerm, noOp -> innerNoOp(noOp));
         }
     }
@@ -821,15 +851,28 @@ public class RustEngine extends Engine {
     }
 
     protected boolean assertPrimaryIncomingSequenceNumber(final Engine.Operation.Origin origin, final long seqNo) {
-        // sequence number should not be set when operation origin is primary
-        assert seqNo == SequenceNumbers.UNASSIGNED_SEQ_NO : "primary operations must never have an assigned sequence number but was ["
-            + seqNo
-            + "]";
+        if (primaryOperationPolicy.acceptsPreAssignedSeqNos()) {
+            // this primary's sequence numbers are assigned upstream, so an assigned seq no. is expected
+            assert seqNo != SequenceNumbers.UNASSIGNED_SEQ_NO : "primary operations must have a pre-assigned sequence number under policy ["
+                + primaryOperationPolicy
+                + "] but was unassigned";
+        } else {
+            // sequence number should not be set when operation origin is primary
+            assert seqNo == SequenceNumbers.UNASSIGNED_SEQ_NO : "primary operations must never have an assigned sequence number but was ["
+                + seqNo
+                + "]";
+        }
         return true;
     }
 
     protected long generateSeqNoForOperationOnPrimary(final Operation operation) {
         assert operation.origin() == Operation.Origin.PRIMARY;
+        if (primaryOperationPolicy.acceptsPreAssignedSeqNos()) {
+            if (operation.seqNo() < 0) {
+                throw new IllegalStateException("expected a pre-assigned sequence number but got [" + operation.seqNo() + "]");
+            }
+            return operation.seqNo();
+        }
         assert operation.seqNo() == SequenceNumbers.UNASSIGNED_SEQ_NO : "ops should not have an assigned seq no. but was: "
             + operation.seqNo();
         return doGenerateSeqNoForOperation(operation);
@@ -1160,7 +1203,8 @@ public class RustEngine extends Engine {
                         delete.origin(),
                         delete.startTime(),
                         delete.getIfSeqNo(),
-                        delete.getIfPrimaryTerm()
+                        delete.getIfPrimaryTerm(),
+                        delete.routing()
                     );
 
                     advanceMaxSeqNoOfUpdatesOrDeletesOnPrimary(delete.seqNo());
@@ -1244,7 +1288,7 @@ public class RustEngine extends Engine {
     private DeleteResult deleteInLucene(Delete delete, DeletionStrategy plan) throws IOException {
         assert assertMaxSeqNoOfUpdatesIsAdvanced(delete.uid(), delete.seqNo(), false, false);
         try {
-            final ParsedDocument tombstone = engineConfig.getTombstoneDocSupplier().newDeleteTombstoneDoc(delete.id());
+            final ParsedDocument tombstone = engineConfig.getTombstoneDocSupplier().newDeleteTombstoneDoc(delete.id(), delete.routing());
             assert tombstone.docs().size() == 1 : "Tombstone doc should have single doc [" + tombstone + "]";
             tombstone.updateSeqID(delete.seqNo(), delete.primaryTerm());
             tombstone.version().setLongValue(plan.version);
@@ -1481,6 +1525,9 @@ public class RustEngine extends Engine {
         if (shouldPeriodicallyFlushAfterBigMerge.get()) {
             return true;
         }
+        if (shouldFlushOnUncommittedSegmentBytes()) {
+            return true;
+        }
         final long localCheckpointOfLastCommit = Long.parseLong(
             lastCommittedSegmentInfos.userData.get(SequenceNumbers.LOCAL_CHECKPOINT_KEY)
         );
@@ -1488,6 +1535,92 @@ public class RustEngine extends Engine {
             localCheckpointOfLastCommit,
             config().getIndexSettings().getFlushThresholdSize().getBytes()
         );
+    }
+
+    /**
+     * Updates the uncommitted segment bytes accounting for this (remote-store) shard. Invoked by the remote segment
+     * upload path after a successful segments sync, passing the post-refresh local segment file sizes. The uncommitted
+     * bytes are computed as the total size of local segment files that are not referenced by the last commit point,
+     * which includes newly written segments as well as updated per-segment files (e.g. live docs and doc-values
+     * updates) of already committed segments. The value is stamped with the generation of the commit point it was
+     * computed against, so a commit implicitly invalidates it.
+     *
+     * The flush threshold is stamped in alongside the bytes rather than read from settings on the flush poll, so that
+     * the engine holds no opinion about how the index setting and its cluster fallback are resolved. A threshold change
+     * therefore takes effect from the next successful segments sync, which on an actively written shard is the next
+     * refresh; turning the condition off instead discards the accounting on that sync, see
+     * {@link #clearUncommittedSegmentBytes()}.
+     *
+     * @param localSegmentsSizeMap post-refresh local segment file names mapped to their sizes in bytes
+     * @param flushThresholdBytes  uncommitted segment bytes at or above which to flush, resolved by the publisher
+     */
+    @Override
+    public void updateUncommittedSegmentBytes(Map<String, Long> localSegmentsSizeMap, long flushThresholdBytes) {
+        // the file set and the generation stamp are both taken from this single snapshot, so the published value is
+        // always internally consistent. If a flush lands between this snapshot and the publish below, the stamp no
+        // longer matches the new last commit and shouldFlushOnUncommittedSegmentBytes() rejects the value -- the
+        // race can only suppress a flush trigger until the next successful segments sync republishes, never cause
+        // a spurious flush.
+        final SegmentInfos committedInfos = this.lastCommittedSegmentInfos;
+        if (committedInfos == null) {
+            return;
+        }
+        final Set<String> committedFiles;
+        try {
+            committedFiles = new HashSet<>(committedInfos.files(false));
+        } catch (IOException e) {
+            // best-effort accounting, a failed computation must never affect the segment upload path
+            logger.debug("failed to compute uncommitted segment bytes", e);
+            return;
+        }
+        long bytes = 0;
+        for (Map.Entry<String, Long> file : localSegmentsSizeMap.entrySet()) {
+            if (committedFiles.contains(file.getKey()) == false && file.getKey().startsWith(IndexFileNames.SEGMENTS) == false) {
+                bytes += file.getValue();
+            }
+        }
+        uncommittedSegmentBytes = new UncommittedSegmentBytes(bytes, committedInfos.getGeneration(), flushThresholdBytes);
+    }
+
+    /**
+     * Discards the published accounting, disarming the uncommitted-segment-bytes flush condition until the next
+     * publication. {@link #shouldFlushOnUncommittedSegmentBytes()} already treats an absent value as "do not flush", so
+     * nulling the field is all that is needed.
+     * <p>
+     * The publisher calls this on every segments sync while the condition is disabled, so the write is guarded: only the
+     * first such sync dirties the field, the rest are a single volatile read and nothing else. A plain guarded write
+     * rather than a compare-and-set is sufficient because the field is only ever written from the segments sync path,
+     * which is serialized per shard by the refresh listener's permit; and even a lost race here could only suppress a
+     * flush trigger until the next sync, never cause a spurious flush.
+     */
+    @Override
+    public void clearUncommittedSegmentBytes() {
+        // snapshot the volatile once, as shouldFlushOnUncommittedSegmentBytes() does
+        final UncommittedSegmentBytes current = this.uncommittedSegmentBytes;
+        if (current != null) {
+            uncommittedSegmentBytes = null;
+        }
+    }
+
+    /**
+     * Checks whether the uncommitted segment bytes published by the remote segment upload path breach the threshold
+     * that was published with them. Only ever effective on remote-store shards, since the accounting is only published
+     * there and only while the condition is enabled cluster-wide by
+     * {@code cluster.remote_store.flush_on_uncommitted_segments.enabled}; the stamped commit generation must match the
+     * current last commit so that stale values (e.g. right after a flush, before the next successful segments sync)
+     * can never re-trigger a flush.
+     */
+    private boolean shouldFlushOnUncommittedSegmentBytes() {
+        final UncommittedSegmentBytes current = this.uncommittedSegmentBytes;
+        if (current == null) {
+            return false;
+        }
+        // snapshot the volatile once so the null check and the generation comparison observe the same commit point
+        final SegmentInfos committedInfos = this.lastCommittedSegmentInfos;
+        // the threshold setting has a hard 1-byte minimum, so current.bytes >= threshold already implies bytes > 0
+        return committedInfos != null
+            && current.bytes >= current.flushThresholdBytes
+            && current.committedInfosGeneration == committedInfos.getGeneration();
     }
 
     @Override

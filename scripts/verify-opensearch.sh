@@ -24,7 +24,7 @@
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-VERSION=3.8.0
+VERSION=3.9.0
 IMAGE="lucene-rust-opensearch:${VERSION}"
 NAME="${OS_CONTAINER:-lucene-rust-verify}"
 PORT="${OS_PORT:-9200}"

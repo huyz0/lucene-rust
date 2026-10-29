@@ -77,6 +77,26 @@ public final class NativeSelfTest {
     private static int terminateChecks;
     private static int minScoreChecks;
     private static int termRangesCompared;
+    /** Queries holding a points range of another width than 8 bytes, or a point set. */
+    private static int pointsCompared;
+
+    /** Whether a non-8-byte {@link PointRangeQuery} or a {@link PointInSetQuery} is among {@code q}'s leaves. */
+    private static boolean holdsPoints(Query q) {
+        boolean[] found = new boolean[1];
+        q.visit(new org.apache.lucene.search.QueryVisitor() {
+            @Override
+            public void visitLeaf(Query query) {
+                found[0] |= query instanceof org.apache.lucene.search.PointRangeQuery pr && pr.getBytesPerDim() != Long.BYTES;
+                found[0] |= query instanceof org.apache.lucene.search.PointInSetQuery;
+            }
+
+            @Override
+            public org.apache.lucene.search.QueryVisitor getSubVisitor(Occur occur, Query parent) {
+                return this;
+            }
+        });
+        return found[0];
+    }
 
     /** Whether a {@link TermRangeQuery} is among {@code q}'s leaves (inside its rewrite's wrapper). */
     private static boolean holdsTermRange(Query q) {
@@ -167,6 +187,7 @@ public final class NativeSelfTest {
         check(terminateChecks >= 100, "terminate_after searches compared: " + terminateChecks);
         check(minScoreChecks >= 100, "min_score searches compared: " + minScoreChecks);
         check(termRangesCompared >= 50, "queries holding a term range compared: " + termRangesCompared);
+        check(pointsCompared >= 50, "queries holding an int, float or ip range or a point set compared: " + pointsCompared);
         check(geoEncoded >= 600, "geo queries encoded and compared: " + geoEncoded);
         check(geoSortPages >= 300, "sorted pages with a _geo_distance key compared: " + geoSortPages);
         check(geoAfterFallbacks >= 10, "Lucene geo-distance pages after a hit, left to Lucene: " + geoAfterFallbacks);
@@ -294,10 +315,9 @@ public final class NativeSelfTest {
             ),
             "an escaped wildcard falls back"
         );
-        check(
-            "points_width".equals(QueryEncoder.encode(IntPoint.newRangeQuery("i", 1, 5), f -> true).fallbackReason()),
-            "a 4-byte points range falls back"
-        );
+        check(QueryEncoder.encode(IntPoint.newRangeQuery("i", 1, 5), f -> true).blob() != null, "a 4-byte points range encodes");
+        check(QueryEncoder.encode(IntPoint.newSetQuery("i", 1, 5, 9), f -> true).blob() != null, "an int point set encodes");
+        check(QueryEncoder.encode(LongPoint.newSetQuery("n"), f -> true).blob() != null, "an empty point set encodes");
         check(QueryEncoder.encode(LongPoint.newRangeQuery("n", 1, 5), f -> true).blob() != null, "a long range encodes");
         // M13 T13.6: query_string's [a TO b] and a keyword range, under the searcher's rewrite.
         IndexSearcher empty = new IndexSearcher(new MultiReader());
@@ -368,7 +388,7 @@ public final class NativeSelfTest {
         String field = fields.get(r.nextInt(fields.size()));
         if (depth > 1 || r.nextInt(4) == 0) {
             Query t = new TermQuery(new Term(field, word(r)));
-            return switch (r.nextInt(10)) {
+            return switch (r.nextInt(12)) {
                 case 0 -> new ConstantScoreQuery(t);
                 case 1 -> new BoostQuery(t, r.nextInt(4) * 0.75f);
                 case 2 -> new DisjunctionMaxQuery(
@@ -388,6 +408,28 @@ public final class NativeSelfTest {
                 case 7 -> r.nextInt(2) == 0
                     ? new WildcardQuery(new Term(field, word(r).charAt(0) + "?" + "*"))
                     : new TermInSetQuery(field, List.of(new BytesRef(word(r)), new BytesRef(word(r)), new BytesRef(word(r))));
+                // `range`, `term` and `terms` on the other numeric widths and `ip`: points boxes and
+                // point sets (OpenSearch 3.9.0 upgrade).
+                case 10 -> switch (r.nextInt(6)) {
+                    case 0 -> IntPoint.newRangeQuery("si", r.nextInt(50) - 5, r.nextInt(60));
+                    case 1 -> org.apache.lucene.document.FloatPoint.newRangeQuery("sf", (float) r.nextGaussian(), (float) r.nextGaussian() + 1f);
+                    case 2 -> {
+                        int a = r.nextInt(256), b = a + r.nextInt(64);
+                        yield org.apache.lucene.document.InetAddressPoint.newRangeQuery("ip", ip(a), ip(b));
+                    }
+                    case 3 -> IntPoint.newExactQuery("si", r.nextInt(50));
+                    case 4 -> {
+                        // A range on an index-sorted shard's sort field: encoded as its fallback.
+                        long a = r.nextInt(200) - 100, b = a + r.nextInt(80);
+                        yield new org.apache.lucene.search.IndexSortSortedNumericDocValuesRangeQuery("sl", a, b, LongPoint.newRangeQuery("sl", a, b));
+                    }
+                    default -> new BoostQuery(IntPoint.newRangeQuery("si", 10, 20), 2f);
+                };
+                case 11 -> switch (r.nextInt(3)) {
+                    case 0 -> IntPoint.newSetQuery("si", r.nextInt(50), r.nextInt(50), r.nextInt(50));
+                    case 1 -> LongPoint.newSetQuery("n", r.nextInt(400), r.nextInt(400), r.nextInt(400), r.nextInt(400));
+                    default -> org.apache.lucene.document.InetAddressPoint.newSetQuery("ip", ip(r.nextInt(300)), ip(r.nextInt(300)));
+                };
                 // M13 T13.6: a term range, either end open or exclusive (query_string's {a TO *]).
                 case 9 -> {
                     String a = r.nextInt(5) == 0 ? null : word(r), b = r.nextInt(5) == 0 ? null : word(r);
@@ -411,6 +453,15 @@ public final class NativeSelfTest {
         return r.nextInt(8) == 0 ? new BoostQuery(new ConstantScoreQuery(q), r.nextInt(3)) : q;
     }
 
+    /** 10.0.{@code v / 256}.{@code v % 256}, for the {@code ip} field. */
+    private static java.net.InetAddress ip(int v) {
+        try {
+            return java.net.InetAddress.getByAddress(new byte[] { 10, 0, (byte) (v >> 8), (byte) v });
+        } catch (java.net.UnknownHostException e) {
+            throw new AssertionError(e);
+        }
+    }
+
     /** Compares the native path with Lucene for {@code queries} on {@code reader}. */
     private static void compare(String where, DirectoryReader reader, NativeReaders readers, List<Query> queries) throws Exception {
         IndexSearcher searcher = new IndexSearcher(reader);
@@ -426,6 +477,7 @@ public final class NativeSelfTest {
                 continue;
             }
             termRangesCompared += holdsTermRange(rewritten) ? 1 : 0;
+            pointsCompared += holdsPoints(rewritten) ? 1 : 0;
             // size: 0 -- no collector, so the count takes its own path (bounds, then counting).
             long[] zero = new long[3];
             long exactCount = searcher.count(rewritten);
@@ -1785,6 +1837,9 @@ public final class NativeSelfTest {
         float fv = (float) r.nextGaussian();
         d.add(new org.apache.lucene.document.SortedNumericDocValuesField("sf", org.apache.lucene.util.NumericUtils.floatToSortableInt(fv)));
         d.add(new org.apache.lucene.document.FloatPoint("sf", fv));
+        if (r.nextInt(5) != 0) {
+            d.add(new org.apache.lucene.document.InetAddressPoint("ip", ip(r.nextInt(300))));
+        }
         return d;
     }
 

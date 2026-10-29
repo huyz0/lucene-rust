@@ -6,17 +6,17 @@
 #      text, keyword, numerics, knn_vector, nested documents, a k-NN index --
 #      snapshots it to an fs repository and flushes
 #      (opensearch-plugin/e2e/verify_upgrade.py load).
-#   2. The node stops and its data directory is copied. OpenSearch 3.8.0 with
+#   2. The node stops and its data directory is copied. OpenSearch 3.9.0 with
 #      this plugin opens the original in place (the in-place node upgrade); a
-#      stock 3.8.0 node, the same image without the plugin, opens the copy.
+#      stock 3.9.0 node, the same image without the plugin, opens the copy.
 #   3. verify_upgrade.py verify: every index opens with its Lucene 9.12
 #      segments, the plugin node answers every request of the matrix
 #      (verify_opensearch.py's, plus aggregations and vector requests) as the
 #      stock node does, natively where the plugin says it runs; the same over
 #      the 2.x snapshot restored into both nodes; and after a force merge has
-#      rewritten every segment as Lucene 10.5.0.
+#      rewritten every segment as Lucene 10.5.x.
 #
-# Both 3.8.0 nodes keep the bundled k-NN plugin (the knn_vector mapping needs
+# Both 3.9.0 nodes keep the bundled k-NN plugin (the knn_vector mapping needs
 # it) and drop the rest, as the 2.19 node does; see opensearch-plugin/docker/.
 #
 #   scripts/verify-opensearch-upgrade.sh [--docs N] [--keep] [--no-build]
@@ -27,7 +27,7 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 OLD_VERSION="${OLD_OPENSEARCH_VERSION:-2.19.6}"
-VERSION=3.8.0
+VERSION=3.9.0
 PORT="${OS_PORT:-9240}"
 PREFIX="${OS_CONTAINER:-lucene-rust-upgrade}"
 KEEP=0
@@ -69,7 +69,7 @@ docker image inspect "opensearchproject/opensearch:${OLD_VERSION}" >/dev/null 2>
     || docker pull -q "opensearchproject/opensearch:${OLD_VERSION}" >/dev/null
 docker image inspect alpine:3 >/dev/null 2>&1 || docker pull -q alpine:3 >/dev/null
 # Every node keeps opensearch-knn and nothing else bundled, so the 2.x
-# cluster state holds nothing a 3.8.0 node lacks a plugin for.
+# cluster state holds nothing a 3.9.0 node lacks a plugin for.
 keep_knn() { # base-image tag
     printf 'FROM %s\nRUN cd /usr/share/opensearch/plugins && for p in *; do [ "$p" = opensearch-knn ] || rm -rf "$p"; done\n' "$1" \
         | docker build -q -t "$2" - >/dev/null

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Checks that the derived engine tests under opensearch-plugin/src/engineTest
 # are exactly what opensearch-plugin/tools/derive_engine_tests.py produces from
-# OpenSearch 3.8.0's sources -- InternalEngineTests.java and its three server
+# OpenSearch 3.9.0's sources -- InternalEngineTests.java and its three server
 # test helpers (pinned by tag), and the test framework's sources jar -- so a
 # hand edit of a derived file, or a script change nobody re-ran, fails here.
 #
@@ -14,16 +14,16 @@
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-VERSION=3.8.0
+VERSION=3.9.0
 SERVER="https://raw.githubusercontent.com/opensearch-project/OpenSearch/${VERSION}/server/src/test/java/org/opensearch/index"
 FRAMEWORK="https://repo1.maven.org/maven2/org/opensearch/test/framework/${VERSION}/framework-${VERSION}-sources.jar"
 # name  sha256  url
 INPUTS=(
-    "InternalEngineTests.java df84a9f83a1dc8d402bf6e62da162b9d53c3337e5b0a28ce4dea6bf458024657 $SERVER/engine/InternalEngineTests.java"
+    "InternalEngineTests.java 44b0081c2ea7f5c35ad0f97e3ba59032cff5897f4898be1b12b7319417c5197e $SERVER/engine/InternalEngineTests.java"
     "EngineSearcherTotalHitsMatcher.java f8c7c12ccef11d83748a4d88bae3ca4d11d555d60d3d81ee94406f90e33a601e $SERVER/engine/EngineSearcherTotalHitsMatcher.java"
     "TestTranslog.java 5a422aa0085eec939215075298e1791bd9cafd6d1a4538203fd0fc42f2085e02 $SERVER/translog/TestTranslog.java"
     "SnapshotMatchers.java a86936154897809f0c1c88d5142e0d643b52fca9d595a751693a00c733ba0722 $SERVER/translog/SnapshotMatchers.java"
-    "framework-${VERSION}-sources.jar 883588bde6c80075eb34e3ed2ee5f8620ec6759503ebad435bac089d9c7aec89 $FRAMEWORK"
+    "framework-${VERSION}-sources.jar 6717909b84106a323b41bbb890e641902064883e6e8ec8daea2faa9db3b56c15 $FRAMEWORK"
 )
 # The files the script writes, relative to src/engineTest/java. The others
 # there (RustIndexerFactoryTests, EngineTestAccess) are written by hand.

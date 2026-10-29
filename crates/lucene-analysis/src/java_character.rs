@@ -17,7 +17,7 @@
 //! [`to_upper_case`]/[`to_lower_case`] read `lucene-util`'s table of JDK
 //! 25's simple case mappings, the same Unicode 16.0; every case map in this
 //! crate goes through them, never through `char`'s (the toolchain's Unicode
-//! version). JDK 25 is the target because it is what OpenSearch 3.8.0
+//! version). JDK 25 is the target because it is what OpenSearch 3.9.0
 //! bundles. CI's fixture JDK is 21 (Unicode 15.0): the analysis-common
 //! corpus holds no character whose properties differ between the two, and
 //! `codepoints.words` (every code point) leaves those out, so the fixtures

@@ -1,6 +1,6 @@
 # The Rust engine in OpenSearch (M5)
 
-An OpenSearch 3.8.0 shard whose `IndexWriter` is the Rust one. Searches still
+An OpenSearch 3.9.0 shard whose `IndexWriter` is the Rust one. Searches still
 go through M2's path (see [`opensearch-native-queries.md`](opensearch-native-queries.md)):
 native per query where it can be, Lucene otherwise. This page covers what the
 engine is, how to turn it on, what it refuses and where it behaves differently
