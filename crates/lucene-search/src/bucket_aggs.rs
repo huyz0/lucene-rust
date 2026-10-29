@@ -360,6 +360,39 @@ pub enum CardinalityKind {
     Numeric(ValueKind),
 }
 
+/// The `order` of a `terms` aggregation the native side runs: by `_count`
+/// (`BucketOrder.compound`'s tie-breaker, the key ascending, after it) or by
+/// `_key` (a keyword's global ordinal, which sorts as its term).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TermsOrder {
+    CountDesc,
+    CountAsc,
+    KeyAsc,
+    KeyDesc,
+}
+
+impl TermsOrder {
+    /// `partiallyBuiltBucketComparator` over `(key, count)`: the first is
+    /// the better bucket when `Less`.
+    fn compare(self, a: (i64, u64), b: (i64, u64)) -> std::cmp::Ordering {
+        match self {
+            TermsOrder::CountDesc => b.1.cmp(&a.1).then(a.0.cmp(&b.0)),
+            TermsOrder::CountAsc => a.1.cmp(&b.1).then(a.0.cmp(&b.0)),
+            TermsOrder::KeyAsc => a.0.cmp(&b.0),
+            TermsOrder::KeyDesc => b.0.cmp(&a.0),
+        }
+    }
+
+    /// The kept buckets' order in a shard result: the order itself when it
+    /// is by key, otherwise the key ascending `buildResult` sorts to.
+    fn listed(self, a: i64, b: i64) -> std::cmp::Ordering {
+        match self {
+            TermsOrder::KeyDesc => b.cmp(&a),
+            _ => a.cmp(&b),
+        }
+    }
+}
+
 /// One aggregation of a request, with its sub-aggregations.
 #[derive(Debug, Clone)]
 pub enum AggNode {
@@ -384,6 +417,7 @@ pub enum AggNode {
     Terms {
         field: String,
         shard_size: usize,
+        order: TermsOrder,
         subs: Vec<AggNode>,
     },
     /// Numeric `terms` (`NumericTermsAggregator`'s `LongTerms` and
@@ -394,6 +428,7 @@ pub enum AggNode {
         field: String,
         kind: ValueKind,
         shard_size: usize,
+        order: TermsOrder,
         subs: Vec<AggNode>,
     },
     Histogram {
@@ -2395,6 +2430,7 @@ fn finish(
             AggNode::Terms {
                 field,
                 shard_size,
+                order,
                 subs,
             },
             State::Keyed {
@@ -2418,10 +2454,10 @@ fn finish(
                     })
                     .unwrap_or_default();
                 let total: u64 = kept.iter().map(|k| k.1).sum();
-                kept.sort_unstable_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+                kept.sort_unstable_by(|a, b| order.compare((a.0, a.1), (b.0, b.1)));
                 kept.truncate(*shard_size);
                 let kept_docs: u64 = kept.iter().map(|k| k.1).sum();
-                kept.sort_unstable_by_key(|k| k.0);
+                kept.sort_unstable_by(|a, b| order.listed(a.0, b.0));
                 let mut list = Vec::with_capacity(kept.len());
                 for (term, n, b) in kept {
                     list.push((terms.term(g, field, term)?, n));
@@ -2434,7 +2470,10 @@ fn finish(
         }
         (
             AggNode::NumericTerms {
-                shard_size, subs, ..
+                shard_size,
+                order,
+                subs,
+                ..
             },
             State::Keyed {
                 keys,
@@ -2443,9 +2482,9 @@ fn finish(
                 ..
             },
         ) => {
-            // `BucketSelectionStrategy`: the `shard_size` buckets first by
-            // count descending, then key ascending; the rest `otherDocCount`;
-            // the kept ones by key, the reduce order `buildResult` sorts to.
+            // `BucketSelectionStrategy`: the `shard_size` buckets first in the
+            // order; the rest `otherDocCount`; the kept ones as `buildResult`
+            // lists them.
             let by_owner = group(&keys);
             let mut buckets = Vec::with_capacity(owners.len());
             let mut child = Vec::new();
@@ -2459,10 +2498,10 @@ fn finish(
                     })
                     .unwrap_or_default();
                 let total: u64 = kept.iter().map(|k| k.1).sum();
-                kept.sort_unstable_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+                kept.sort_unstable_by(|a, b| order.compare((a.0, a.1), (b.0, b.1)));
                 kept.truncate(*shard_size);
                 let kept_docs: u64 = kept.iter().map(|k| k.1).sum();
-                kept.sort_unstable_by_key(|k| k.0);
+                kept.sort_unstable_by(|a, b| order.listed(a.0, b.0));
                 child.extend(kept.iter().map(|k| k.2));
                 buckets.push((
                     total - kept_docs,
@@ -2685,6 +2724,7 @@ mod tests {
         let terms = |sub| AggNode::Terms {
             field: "k".into(),
             shard_size: 10,
+            order: TermsOrder::CountDesc,
             subs: vec![sub],
         };
         assert!(terms(metric(Source::PointsMax)).reads_points());
@@ -3068,17 +3108,41 @@ mod tests {
                     *counts.entry(k).or_default() += 1;
                 }
             }
-            for shard_size in [1, 3, 10_000] {
+            let orders = [
+                TermsOrder::CountDesc,
+                TermsOrder::CountAsc,
+                TermsOrder::KeyAsc,
+                TermsOrder::KeyDesc,
+            ];
+            for (shard_size, order) in [1, 3, 10_000]
+                .into_iter()
+                .flat_map(|s| orders.map(|o| (s, o)))
+            {
                 let mut ranked: Vec<(i64, u64)> = counts.iter().map(|(&k, &n)| (k, n)).collect();
-                ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+                match order {
+                    TermsOrder::CountDesc => {
+                        ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)))
+                    }
+                    TermsOrder::CountAsc => {
+                        ranked.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)))
+                    }
+                    TermsOrder::KeyAsc => ranked.sort_by_key(|k| k.0),
+                    TermsOrder::KeyDesc => ranked.sort_by_key(|k| std::cmp::Reverse(k.0)),
+                }
                 let total: u64 = ranked.iter().map(|k| k.1).sum();
                 ranked.truncate(shard_size);
                 let other = total - ranked.iter().map(|k| k.1).sum::<u64>();
-                ranked.sort_by_key(|k| k.0);
+                // Listed by key, or in the order when it is the key's.
+                if order == TermsOrder::KeyDesc {
+                    ranked.sort_by_key(|k| std::cmp::Reverse(k.0));
+                } else {
+                    ranked.sort_by_key(|k| k.0);
+                }
                 let node = AggNode::NumericTerms {
                     field: field.to_string(),
                     kind,
                     shard_size,
+                    order,
                     subs: vec![AggNode::Filters {
                         filters: vec![all()],
                         other: false,
@@ -3095,7 +3159,7 @@ mod tests {
                 assert_eq!(
                     buckets,
                     vec![(other, ranked.clone())],
-                    "{field} shard_size {shard_size}"
+                    "{field} shard_size {shard_size} {order:?}"
                 );
                 let AggResult::Fixed { docs, .. } = &subs[0] else {
                     panic!()
@@ -3111,6 +3175,7 @@ mod tests {
                     field: field.to_string(),
                     kind,
                     shard_size,
+                    order,
                     subs: Vec::new(),
                 };
                 let got = run(&reader, &q, std::slice::from_ref(&bare), &whole(&reader))
@@ -3160,6 +3225,7 @@ mod tests {
         let terms = AggNode::Terms {
             field: "d".to_string(),
             shard_size: 1,
+            order: TermsOrder::CountDesc,
             subs: vec![],
         };
         let declined = [
@@ -3570,6 +3636,7 @@ mod tests {
             let tree = AggNode::Terms {
                 field: field.to_string(),
                 shard_size: 5,
+                order: TermsOrder::CountDesc,
                 subs: vec![
                     AggNode::Cardinality {
                         field: other.to_string(),
@@ -3592,6 +3659,7 @@ mod tests {
         let keyword = |field: &str, subs| AggNode::Terms {
             field: field.to_string(),
             shard_size: 5,
+            order: TermsOrder::CountDesc,
             subs,
         };
         let nested = keyword("sk", vec![keyword("kw", vec![]), keyword("hk", vec![])]);
@@ -3780,6 +3848,76 @@ mod tests {
         assert!(run(&reader, &all(), &[bad], &whole(&reader)).is_err());
     }
 
+    /// A keyword `terms` in each order keeps the `shard_size` best buckets
+    /// of that order -- by count with the term ascending as tie-breaker, or
+    /// by term -- listed by term (descending for `_key` descending).
+    #[test]
+    fn keyword_terms_keep_the_best_buckets_of_their_order() {
+        let reader = fixture("terms_aggs_index");
+        let mut opened = reader.open_segments().unwrap();
+        opened.open_points().unwrap();
+        let segments = opened.as_open_segments();
+        for q in [all(), body("w1")] {
+            for field in ["kw", "mkw"] {
+                let every = crate::terms_agg::terms(
+                    &segments,
+                    reader.segment_readers(),
+                    &q,
+                    field,
+                    1 << 20,
+                )
+                .unwrap();
+                assert_eq!(every.other_doc_count, 0);
+                let total: u64 = every.buckets.iter().map(|b| b.1).sum();
+                for order in [
+                    TermsOrder::CountDesc,
+                    TermsOrder::CountAsc,
+                    TermsOrder::KeyAsc,
+                    TermsOrder::KeyDesc,
+                ] {
+                    for shard_size in [1, 3, 1000] {
+                        let mut want = every.buckets.clone();
+                        match order {
+                            TermsOrder::CountDesc => {
+                                want.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)))
+                            }
+                            TermsOrder::CountAsc => {
+                                want.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)))
+                            }
+                            TermsOrder::KeyAsc => want.sort_by(|a, b| a.0.cmp(&b.0)),
+                            TermsOrder::KeyDesc => want.sort_by(|a, b| b.0.cmp(&a.0)),
+                        }
+                        want.truncate(shard_size);
+                        if order == TermsOrder::KeyDesc {
+                            want.sort_by(|a, b| b.0.cmp(&a.0));
+                        } else {
+                            want.sort_by(|a, b| a.0.cmp(&b.0));
+                        }
+                        let node = AggNode::Terms {
+                            field: field.to_string(),
+                            shard_size,
+                            order,
+                            subs: Vec::new(),
+                        };
+                        let got = run(&reader, &q, &[node], &whole(&reader))
+                            .unwrap()
+                            .remove(0)
+                            .remove(0);
+                        let AggResult::Terms { buckets, .. } = got else {
+                            panic!("{got:?}")
+                        };
+                        let kept: u64 = want.iter().map(|b| b.1).sum();
+                        assert_eq!(
+                            buckets,
+                            vec![(total - kept, want)],
+                            "{field} {order:?} shard_size {shard_size}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn terms_under_a_bucket_are_the_top_level_terms_of_its_documents() {
         let reader = fixture("terms_aggs_index");
@@ -3800,6 +3938,7 @@ mod tests {
                 let terms = AggNode::Terms {
                     field: field.to_string(),
                     shard_size,
+                    order: TermsOrder::CountDesc,
                     subs: vec![AggNode::Cardinality {
                         field: field.to_string(),
                         kind: CardinalityKind::Keyword,
@@ -3851,6 +3990,7 @@ mod tests {
             let node = AggNode::Terms {
                 field: "kw".to_string(),
                 shard_size: 10_000,
+                order: TermsOrder::CountDesc,
                 subs: vec![],
             };
             let slices: Vec<Vec<usize>> = (0..n).rev().map(|i| vec![i]).collect();
@@ -3881,6 +4021,7 @@ mod tests {
         let nodes = [AggNode::Terms {
             field: "kw".to_string(),
             shard_size: 1,
+            order: TermsOrder::CountDesc,
             subs: vec![],
         }];
         assert!(
@@ -3905,6 +4046,7 @@ mod tests {
         let numeric = [AggNode::Terms {
             field: "r".to_string(),
             shard_size: 1,
+            order: TermsOrder::CountDesc,
             subs: vec![],
         }];
         let _ = run(&reader, &all(), &numeric, &whole(&reader));

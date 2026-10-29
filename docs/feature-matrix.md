@@ -90,7 +90,7 @@ parameters, falls back (`field_similarity`), as does
 |---|---|---|
 | `min`, `max`, `sum`, `avg`, `value_count`, `stats` | ✅ | a `script`, `missing` |
 | `cardinality` | ✅ | a `script`, `missing` |
-| `terms` on `keyword`, numeric fields and dates | ✅ | `unsigned_long`/`half_float`/`scaled_float` `terms`, `include`/`exclude`, an order other than the default (count desc), `min_doc_count: 0` |
+| `terms` on `keyword`, numeric fields and dates | ✅ | `unsigned_long`/`half_float`/`scaled_float` `terms`, `include`/`exclude`, an order other than `_count` or `_key` alone, ascending or descending (by a sub-aggregation, or compound), `min_doc_count: 0` |
 | `histogram`, `date_histogram` | ✅ | a time zone with daylight saving |
 | `range`, `date_range` | ✅ | |
 | `filter`, `filters`, `global` | ✅ | |

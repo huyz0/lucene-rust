@@ -14,8 +14,8 @@
 //! global   := 0 | 1 query:bytes nodes         (the global pass: its query and nodes)
 //! node     := METRIC value_kind:u8 source:u8 needs:u8 field
 //!           | CARDINALITY card_kind:u8 precision:u8 field
-//!           | TERMS field shard_size:i32 nodes
-//!           | NUMERIC_TERMS field value_kind:u8 shard_size:i32 nodes
+//!           | TERMS field shard_size:i32 order:u8 nodes
+//!           | NUMERIC_TERMS field value_kind:u8 shard_size:i32 order:u8 nodes
 //!           | HISTOGRAM field value_kind:u8 interval:f64 offset:f64 bounds_f64 nodes
 //!           | DATE_HISTOGRAM field unit:u8 [interval:i64 when unit = UNIT_INTERVAL]
 //!                            zone_ms:i64 offset:i64 bounds_i64 nodes
@@ -56,6 +56,7 @@ use std::sync::Arc;
 use lucene_search::aggs::{MinScore, Source, ValueKind};
 use lucene_search::bucket_aggs::{
     self, AggNode, AggResult, CardinalityKind, DateRounding, DateUnit, Globals, RoundingKind,
+    TermsOrder,
 };
 use lucene_search::field_norms::FieldNorms;
 use lucene_search::multi_segment::OpenSegment;
@@ -132,6 +133,18 @@ fn shard_size(c: &mut Cursor<'_>) -> Result<usize, FfiStatus> {
         .ok()
         .filter(|&n| n >= 1)
         .ok_or_else(|| bad(format!("aggregation tree: shard_size {n}")))
+}
+
+/// A `terms` order: 0 `_count` descending, 1 `_count` ascending, 2 `_key`
+/// ascending, 3 `_key` descending.
+fn terms_order(c: &mut Cursor<'_>) -> Result<TermsOrder, FfiStatus> {
+    Ok(match c.u8()? {
+        0 => TermsOrder::CountDesc,
+        1 => TermsOrder::CountAsc,
+        2 => TermsOrder::KeyAsc,
+        3 => TermsOrder::KeyDesc,
+        other => return Err(bad(format!("aggregation tree: terms order {other}"))),
+    })
 }
 
 fn width(c: &mut Cursor<'_>) -> Result<usize, FfiStatus> {
@@ -220,6 +233,7 @@ fn node(c: &mut Cursor<'_>, depth: usize, count: &mut usize) -> Result<AggNode, 
             AggNode::Terms {
                 field,
                 shard_size,
+                order: terms_order(c)?,
                 subs: nodes(c, depth + 1, count)?,
             }
         }
@@ -231,6 +245,7 @@ fn node(c: &mut Cursor<'_>, depth: usize, count: &mut usize) -> Result<AggNode, 
                 field,
                 kind,
                 shard_size,
+                order: terms_order(c)?,
                 subs: nodes(c, depth + 1, count)?,
             }
         }
@@ -698,6 +713,7 @@ pub(crate) mod tests {
         string(&mut b, "body");
         b.extend_from_slice(&5i32.to_le_bytes());
         b.push(0);
+        b.push(0);
         // date_histogram(n, unit day, then interval) > []
         for unit in [4u8, UNIT_INTERVAL] {
             b.push(AGG_DATE_HISTOGRAM);
@@ -818,6 +834,7 @@ pub(crate) mod tests {
             string(&mut b, "n");
             b.push(kind);
             b.extend_from_slice(&shard_size.to_le_bytes());
+            b.push(2);
             b.push(1);
             metric(&mut b, 0, 0, "n");
             b.push(0);
@@ -828,13 +845,17 @@ pub(crate) mod tests {
         let AggNode::NumericTerms {
             kind,
             shard_size,
+            order,
             subs,
             ..
         } = &t.nodes[0]
         else {
             panic!()
         };
-        assert_eq!((*kind, *shard_size, subs.len()), (ValueKind::Long, 2, 1));
+        assert_eq!(
+            (*kind, *shard_size, *order, subs.len()),
+            (ValueKind::Long, 2, TermsOrder::KeyAsc, 1)
+        );
         assert!(decode_tree(&tree(9, 2)).is_err(), "value kind 9");
         assert!(decode_tree(&tree(0, 0)).is_err(), "shard_size 0");
         let full = tree(0, 2);
@@ -932,6 +953,12 @@ pub(crate) mod tests {
         let mut t = vec![AGG_TERMS];
         string(&mut t, "k");
         t.extend_from_slice(&0i32.to_le_bytes());
+        assert_eq!(bad(&with(&t)), invalid);
+        // An order past `_key` descending.
+        let mut t = vec![AGG_TERMS];
+        string(&mut t, "k");
+        t.extend_from_slice(&1i32.to_le_bytes());
+        t.push(4);
         assert_eq!(bad(&with(&t)), invalid);
         let mut f = vec![AGG_FILTERS];
         f.extend_from_slice(&1i32.to_le_bytes());

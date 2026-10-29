@@ -257,6 +257,7 @@ public final class NativeAggregationTree {
         void write(ByteArrayOutputStream out) {
             out.write(TERMS);
             terms.write(out);
+            out.write(NativeAggregations.orderCode(terms.order()));
             writeSubs(out);
         }
 
@@ -299,7 +300,7 @@ public final class NativeAggregationTree {
                 out.add(
                     new StringTerms(
                         terms.name(),
-                        BucketOrder.key(true),
+                        reduceOrder(terms.order()),
                         terms.order(),
                         terms.metadata(),
                         terms.format(),
@@ -314,6 +315,14 @@ public final class NativeAggregationTree {
             }
             return out;
         }
+    }
+
+    /**
+     * A terms aggregator's {@code buildResult} reduce order: a key order itself, otherwise key
+     * ascending (the order the native side lists the buckets in).
+     */
+    static BucketOrder reduceOrder(BucketOrder order) {
+        return org.opensearch.search.aggregations.InternalOrder.isKeyOrder(order) ? order : BucketOrder.key(true);
     }
 
     /**
@@ -338,6 +347,7 @@ public final class NativeAggregationTree {
             out.writeBytes(f);
             out.write(valueKind);
             NativeAggregations.writeInt(out, terms.thresholds().getShardSize());
+            out.write(NativeAggregations.orderCode(terms.order()));
             writeSubs(out);
         }
 
@@ -365,8 +375,8 @@ public final class NativeAggregationTree {
             List<InternalAggregation> out = new ArrayList<>(n);
             int child = 0;
             for (int i = 0; i < n; i++) {
-                // NumericTermsAggregator's buildResult: reduce order KEY_ASC, the buckets by key
-                // (as the native side lists them), no error.
+                // NumericTermsAggregator's buildResult: the reduce order (the buckets as the
+                // native side lists them), no error.
                 if (longs) {
                     List<LongTerms.Bucket> buckets = new ArrayList<>(keys[i].length);
                     for (int b = 0; b < keys[i].length; b++) {
@@ -375,7 +385,7 @@ public final class NativeAggregationTree {
                     out.add(
                         new LongTerms(
                             terms.name(),
-                            BucketOrder.key(true),
+                            reduceOrder(terms.order()),
                             terms.order(),
                             terms.metadata(),
                             terms.format(),
@@ -396,7 +406,7 @@ public final class NativeAggregationTree {
                     out.add(
                         new DoubleTerms(
                             terms.name(),
-                            BucketOrder.key(true),
+                            reduceOrder(terms.order()),
                             terms.order(),
                             terms.metadata(),
                             terms.format(),
@@ -931,7 +941,7 @@ public final class NativeAggregationTree {
         switch (factory) {
             case TERMS_FACTORY: {
                 if (type instanceof KeywordFieldMapper.KeywordFieldType) {
-                    NativeAggregations.Terms t = NativeAggregations.terms(ctx, f, config);
+                    NativeAggregations.Terms t = NativeAggregations.termsSpec(ctx, f, config);
                     return t == null ? null : new TermsNode(agg, subs, t);
                 }
                 // Numeric: integers, longs, floats, doubles and millisecond dates, collected by

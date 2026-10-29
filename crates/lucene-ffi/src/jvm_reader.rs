@@ -113,7 +113,8 @@ use std::sync::Arc;
 /// nodes ([`crate::jvm_nodes`], M10 T10.7); 34, the term-range node and
 /// segments with completion postings formats (M13 T13.6); 35, the point-set
 /// node, and points boxes of any width (`integer`, `float`, `ip`, ...); 36,
-/// numeric `terms` in aggregation trees (`NUMERIC_TERMS`).
+/// numeric `terms` in aggregation trees (`NUMERIC_TERMS`), and each tree
+/// `terms` node's order byte.
 pub const JVM_ABI_VERSION: u32 = 36;
 
 /// Blob tag for a single `TermQuery`.
