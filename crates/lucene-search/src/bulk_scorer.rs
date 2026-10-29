@@ -57,16 +57,18 @@ const INNER_WINDOW_SIZE: i32 = 1 << 12;
 const MAX_WINDOW_SIZE: i32 = 65536;
 
 /// A window's inclusive end: the lead's block boundary `shallow`, capped at
-/// [`MAX_WINDOW_SIZE`] documents -- except in the lead's last block
-/// (`advanceShallow` gives `NO_MORE_DOCS`), which is one window to `max`.
-/// Capped there, the windows would march 64K ids at a time through the whole
-/// `int` range once a skipped window left the lead behind, each paying for its
-/// block maxima: 32K empty windows a segment. The window size decides only
-/// how finely the maxima prune, never what matches.
+/// `max - 1` and at [`MAX_WINDOW_SIZE`] documents
+/// (`BlockMaxConjunctionBulkScorer.score`'s `unsignedMin`). `max` is clamped
+/// to `maxDoc` first when the segment's is known (Lucene 10.6, branch_10_6,
+/// #16855), so the windows stop there. When it is not, the lead's last block
+/// (`advanceShallow` gives `NO_MORE_DOCS`) is one window to `max`: capped,
+/// the windows would march 64K ids at a time through the whole `int` range
+/// once a skipped window left the lead behind -- the bug #16855 fixes. The
+/// window size decides only how finely the maxima prune, never what matches.
 fn last_window_or_capped(shallow: i32, window_min: i32, max: i32) -> i32 {
     // ARITH: max > window_min >= 0 in every caller's loop.
     let end = shallow.min(max - 1);
-    if shallow == NO_MORE_DOCS {
+    if shallow == NO_MORE_DOCS && max == NO_MORE_DOCS {
         end
     } else {
         end.min(window_min.saturating_add(MAX_WINDOW_SIZE))
@@ -1583,20 +1585,25 @@ pub(crate) struct ConjunctionBulk {
     sum_of_others: Vec<f64>,
     single: DocScores,
     acc: DocScoreAcc,
+    /// `maxDoc`, or `NO_MORE_DOCS` when the segment's is not known.
+    max_doc: i32,
 }
 
 impl ConjunctionBulk {
-    pub(crate) fn new(n: usize) -> Self {
+    /// `new BlockMaxConjunctionBulkScorer(maxDoc, scorers)`'s state for `n`
+    /// clauses; `max_doc` is `NO_MORE_DOCS` when unknown.
+    pub(crate) fn new(n: usize, max_doc: i32) -> Self {
         Self {
             sum_of_others: vec![f64::INFINITY; n],
             single: DocScores::default(),
             acc: DocScoreAcc::default(),
+            max_doc,
         }
     }
 
     /// `BlockMaxConjunctionBulkScorer.score(collector, acceptDocs, min, max)`
     /// over `legs`, which must be at least two, cheapest first. Returns the
-    /// next document to score.
+    /// next document to score, `NO_MORE_DOCS` once past `maxDoc`.
     pub(crate) fn score<L: BulkLeg, C: ScoringCollector + ?Sized>(
         &mut self,
         legs: &mut [L],
@@ -1605,6 +1612,9 @@ impl ConjunctionBulk {
         min: i32,
         max: i32,
     ) -> Result<i32> {
+        // Lucene 10.6 (branch_10_6, #16855): scoring stops at `maxDoc`
+        // rather than iterating windows up to the given `max`.
+        let max = max.min(self.max_doc);
         let n = legs.len();
         let (sum_of_others, single, acc) =
             (&mut self.sum_of_others, &mut self.single, &mut self.acc);
@@ -1672,7 +1682,11 @@ impl ConjunctionBulk {
             }
             window_min = legs[0].doc_id().max(window_end);
         }
-        Ok(window_min)
+        Ok(if window_min >= self.max_doc {
+            NO_MORE_DOCS
+        } else {
+            window_min
+        })
     }
 }
 

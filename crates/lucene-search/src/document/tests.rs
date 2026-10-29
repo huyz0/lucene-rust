@@ -406,6 +406,13 @@ fn the_range_bulk_scorer_collects_its_window() {
     let mut none = TopDocsCollector::new(10);
     RangeBulkScorer::score_range((4, 4), None, 1.0, &mut none);
     assert!(none.top_docs().is_empty());
+    // Lucene 10.6's `testEmptyScoringWindowInsideRange` (branch_10_6,
+    // #16547): an empty window inside the range collects nothing and
+    // returns where it stands.
+    let s = RangeBulkScorer::new(20, 80, 1.0).unwrap();
+    let mut none = TopDocsCollector::new(10);
+    assert_eq!(s.score(&mut none, None, 40, 40), 40);
+    assert!(none.top_docs().is_empty());
 }
 
 const NO_MORE: i32 = i32::MAX;
@@ -937,6 +944,125 @@ fn doc_values_range_ignores_points_of_the_same_field() {
         for field in ["plain", "skip"] {
             let q = numeric_doc_values_field::new_slow_range_query(field, bits, bits);
             assert_eq!(docs(&leaves, &q), vec![doc as i32], "{field} {v}");
+        }
+    }
+}
+
+/// Lucene 10.6's `TestDocValuesQueries.testRangeQueryDenseSkipperPrimarySortWithBlocks*`
+/// (branch_10_6, #16893): with a parent field only the blocks are sorted, by
+/// their parent's key, so the dense-skipper primary-sort shortcut must not
+/// derive a contiguous doc-ID range, though every document has a value.
+#[test]
+fn a_dense_skipper_primary_sort_with_blocks_is_not_a_doc_id_range() {
+    use lucene_index::segment_info::{
+        IndexSortField, IndexSortKind, NumericSortKey, SortedNumericSelector, SortedSetSelector,
+        StringMissingValue,
+    };
+    type Field = fn(i64) -> Box<dyn IndexableField>;
+    type Query = fn(i64, i64) -> Box<dyn DocumentQuery>;
+    fn ords(lo: i64, hi: i64, sorted_set: bool) -> Box<dyn DocumentQuery> {
+        let (lo, hi) = ([lo as u8], [hi as u8]);
+        Box::new(if sorted_set {
+            sorted_set_doc_values_field::new_slow_range_query(
+                "field",
+                Some(&lo),
+                Some(&hi),
+                true,
+                true,
+            )
+        } else {
+            sorted_doc_values_field::new_slow_range_query("field", Some(&lo), Some(&hi), true, true)
+        })
+    }
+    let shapes: [(&str, IndexSortKind, Field, Query); 4] = [
+        (
+            "sorted-numeric",
+            IndexSortKind::SortedNumeric {
+                key: NumericSortKey::Long(None),
+                selector: SortedNumericSelector::Min,
+            },
+            |v| b(d::SortedNumericDocValuesField::indexed_field("field", v)),
+            |lo, hi| {
+                Box::new(sorted_numeric_doc_values_field::new_slow_range_query(
+                    "field", lo, hi,
+                ))
+            },
+        ),
+        (
+            "numeric",
+            IndexSortKind::Numeric(NumericSortKey::Long(None)),
+            |v| b(d::NumericDocValuesField::indexed_field("field", v)),
+            |lo, hi| {
+                Box::new(numeric_doc_values_field::new_slow_range_query(
+                    "field", lo, hi,
+                ))
+            },
+        ),
+        (
+            "sorted-set",
+            IndexSortKind::SortedSet {
+                selector: SortedSetSelector::Min,
+                missing: StringMissingValue::None,
+            },
+            |v| {
+                b(d::SortedSetDocValuesField::indexed_field(
+                    "field",
+                    vec![v as u8],
+                ))
+            },
+            |lo, hi| ords(lo, hi, true),
+        ),
+        (
+            "sorted",
+            IndexSortKind::String(StringMissingValue::None),
+            |v| {
+                b(d::SortedDocValuesField::indexed_field(
+                    "field",
+                    vec![v as u8],
+                ))
+            },
+            |lo, hi| ords(lo, hi, false),
+        ),
+    ];
+    for (name, kind, field, query) in shapes {
+        for reverse in [false, true] {
+            let tmp = TempDir::new(&format!("doc-blocks-{name}-{reverse}"));
+            let dir = FsDirectory::open(tmp.path());
+            {
+                let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", VERSION).unwrap();
+                w.set_parent_field(Some("parent")).unwrap();
+                w.set_index_sort(Some(&[IndexSortField {
+                    field: "field".to_string(),
+                    reverse,
+                    kind: kind.clone(),
+                }]))
+                .unwrap();
+                // Blocks [child 2, parent 1] and [child 0, parent 0].
+                for (child, parent) in [(2, 1), (0, 0)] {
+                    let mut c = Document::new();
+                    c.add_boxed(field(child));
+                    let mut p = Document::new();
+                    p.add_boxed(field(parent));
+                    w.add_fields_documents(&[c, p]).unwrap();
+                }
+                w.commit().unwrap();
+            }
+            let r = DirectoryReader::open(&dir).unwrap();
+            assert!(r.segment_readers()[0].has_blocks());
+            let opened = r.open_segments().unwrap();
+            let leaves = opened.as_open_segments();
+            // The blocks in parent order: the values by doc ID.
+            let values: [i64; 4] = if reverse { [2, 1, 0, 0] } else { [0, 0, 2, 1] };
+            for lo in 0..=2 {
+                for hi in lo..=2 {
+                    let want: Vec<i32> = (0..4)
+                        .filter(|&d| (lo..=hi).contains(&values[d as usize]))
+                        .collect();
+                    let mut got = docs(&leaves, query(lo, hi).as_ref());
+                    got.sort_unstable();
+                    assert_eq!(got, want, "{name} reverse={reverse} [{lo}, {hi}]");
+                }
+            }
         }
     }
 }

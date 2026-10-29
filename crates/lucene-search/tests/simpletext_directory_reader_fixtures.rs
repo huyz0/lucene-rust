@@ -630,6 +630,12 @@ fn simpletext_all_doc_values_generations_and_norms_match_java_leaf_reader() {
                         _ => panic!("unknown doc-values type {ty}"),
                     }
                 }
+                // Lucene 10.6 (#16714): a SimpleText SORTED_NUMERIC column
+                // with at most one value per document is a singleton.
+                if ty == "SORTED_NUMERIC" {
+                    let single = expected.values().all(|v| !v.contains(','));
+                    assert_eq!(segment.sorted_numeric_is_singleton(&field), single);
+                }
                 macro_rules! check_dictionary {
                     ($getter:ident, $ord:ty) => {{
                         let mut cursor = segment.$getter(&field).unwrap().unwrap();

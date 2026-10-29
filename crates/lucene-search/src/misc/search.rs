@@ -1008,6 +1008,9 @@ fn bitset_ram_bytes(bits: &FixedBitSet) -> i64 {
 pub struct MemoryAccountingBitsetCollector {
     tracker: Arc<dyn MemoryTracker + Send + Sync>,
     bit_set: FixedBitSet,
+    /// `highestSetBit` (Lucene 10.6, branch_10_6, #16452): the highest
+    /// document collected, `-1` before any.
+    highest_set_bit: i64,
     error: Option<Error>,
 }
 
@@ -1022,6 +1025,7 @@ impl MemoryAccountingBitsetCollector {
         Ok(Self {
             tracker,
             bit_set,
+            highest_set_bit: -1,
             error: None,
         })
     }
@@ -1051,6 +1055,7 @@ impl ScoringCollector for MemoryAccountingBitsetCollector {
             }
         }
         self.bit_set.set(doc);
+        self.highest_set_bit = self.highest_set_bit.max(i64::from(doc_id));
     }
 
     fn score_mode(&self) -> ScoreMode {
@@ -1067,18 +1072,17 @@ pub struct MemoryAccountingBitsetResult {
     pub total_bytes_used: i64,
 }
 
-/// `MemoryAccountingBitsetCollectorManager`.
+/// `MemoryAccountingBitsetCollectorManager`: its result is sized to the
+/// highest matched document plus one, at least one bit (Lucene 10.6,
+/// branch_10_6, #16452; 10.5 sized it to the last visited leaf's end).
 pub struct MemoryAccountingBitsetCollectorManager {
     tracker: Arc<dyn MemoryTracker + Send + Sync>,
-    max_doc: usize,
 }
 
 impl MemoryAccountingBitsetCollectorManager {
-    /// `new MemoryAccountingBitsetCollectorManager(tracker)` for an index of
-    /// `max_doc` documents (Java learns it from the leaves each collector
-    /// visited).
-    pub fn new(tracker: Arc<dyn MemoryTracker + Send + Sync>, max_doc: usize) -> Self {
-        Self { tracker, max_doc }
+    /// `new MemoryAccountingBitsetCollectorManager(tracker)`.
+    pub fn new(tracker: Arc<dyn MemoryTracker + Send + Sync>) -> Self {
+        Self { tracker }
     }
 }
 
@@ -1090,17 +1094,25 @@ impl CollectorManager for MemoryAccountingBitsetCollectorManager {
         MemoryAccountingBitsetCollector::new(Arc::clone(&self.tracker))
     }
 
-    fn reduce(&self, collectors: Vec<Self::Collector>) -> Result<Self::Output> {
-        let mut result = FixedBitSet::new(self.max_doc);
-        self.tracker.update_bytes(bitset_ram_bytes(&result))?;
-        for collector in collectors {
-            if let Some(e) = collector.error {
+    fn reduce(&self, mut collectors: Vec<Self::Collector>) -> Result<Self::Output> {
+        // Sized to just cover the highest matched document across all
+        // collectors, and at least one bit so that iterating an empty result
+        // from 0 stays safe.
+        let mut result_size = 0usize;
+        for collector in &mut collectors {
+            if let Some(e) = collector.error.take() {
                 return Err(e);
             }
-            let source = &collector.bit_set;
-            if !source.is_empty() {
-                let length = source.len().min(result.len());
-                FixedBitSet::or_range(source, 0, &mut result, 0, length);
+            if let Ok(last) = usize::try_from(collector.highest_set_bit) {
+                result_size = result_size.max(last.saturating_add(1));
+            }
+        }
+        let mut result = FixedBitSet::new(result_size.max(1));
+        self.tracker.update_bytes(bitset_ram_bytes(&result))?;
+        for collector in &collectors {
+            if let Ok(last) = usize::try_from(collector.highest_set_bit) {
+                let length = last.saturating_add(1);
+                FixedBitSet::or_range(&collector.bit_set, 0, &mut result, 0, length);
             }
         }
         Ok(MemoryAccountingBitsetResult {

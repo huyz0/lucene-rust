@@ -1204,6 +1204,15 @@ impl LeafReader for SegmentReader {
     }
 
     fn sorted_numeric_is_singleton(&self, field: &str) -> bool {
+        if let Some(core) = &self.simpletext {
+            // `SimpleTextDocValuesReader.getSortedNumeric` (Lucene 10.6, #16714).
+            return core
+                .doc_values(field, DocValuesType::SortedNumeric)
+                .ok()
+                .flatten()
+                .and_then(|(reader, _)| reader.field(field))
+                .is_some_and(|f| f.is_single_valued());
+        }
         self.dv_field(field, DocValuesType::SortedNumeric, |m, n| {
             m.sorted_numeric_entry(n)
         })

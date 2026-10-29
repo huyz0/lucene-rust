@@ -132,7 +132,13 @@ pub(crate) fn skip_index<'a>(
 }
 
 /// `densePrimarySort(reader, skipper)`: the segment's primary sort, when it is
-/// on `field` and every document has a value.
+/// on `field`, every document has a value and the segment has no document
+/// blocks.
+///
+/// The `hasBlocks` check is Lucene 10.6's (branch_10_6, #16893, fixing
+/// #16886): with blocks only the blocks are sorted, by their parent's key,
+/// so a child's value says nothing about its position and the matches are
+/// no contiguous doc-ID range.
 fn dense_primary_sort<'a>(
     leaf: &OpenSegment<'a>,
     field: &str,
@@ -142,9 +148,21 @@ fn dense_primary_sort<'a>(
     if skip.doc_count != r.max_doc {
         return Ok(None);
     }
-    Ok(r.index_sort()
+    let sort = r
+        .index_sort()
         .and_then(|s| s.first())
-        .filter(|s| s.field == field))
+        .filter(|s| s.field == field);
+    if sort.is_none() {
+        return Ok(None);
+    }
+    if r.has_blocks() {
+        // Only the blocks are sorted, by the sort key of their parent. The
+        // values of the documents inside a block say nothing about their
+        // position, so the matching documents are not a contiguous doc-ID
+        // range.
+        return Ok(None);
+    }
+    Ok(sort)
 }
 
 /// `SortedNumericDocValuesRangeQuery` (`NumericDocValuesField` /

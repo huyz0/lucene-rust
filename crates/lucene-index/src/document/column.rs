@@ -43,7 +43,7 @@ use super::numeric::{
 use super::vectors::{KnnByteVectorField, KnnFloatVectorField};
 use super::{
     illegal, DocValuesType, Document, FieldTokens, FieldType, IndexOptions, IndexableField,
-    InvertableType, Number, Result, StoredValue,
+    InvertableType, Number, Result, StoredValue, VectorSimilarityFunction,
 };
 use crate::buffered_updates::{SeqNo, Term};
 use crate::index_writer::{IndexWriter, VectorValue};
@@ -502,6 +502,51 @@ impl ColumnValidation {
         }
     }
 
+    /// `checkFloatVectorValue(column, vector, similarityFunction,
+    /// batchDocID)` (Lucene 10.6, branch_10_6, #16732): a non-finite
+    /// component, or a zero vector under `COSINE`, as `KnnFloatVectorField`
+    /// refuses them.
+    pub fn check_float_vector_value(
+        c: &Column,
+        vector: &[f32],
+        similarity: VectorSimilarityFunction,
+        batch_doc_id: i32,
+    ) -> Result<()> {
+        let mut is_zero = true;
+        for (i, &v) in vector.iter().enumerate() {
+            if !v.is_finite() {
+                return Err(illegal(format!(
+                    "VectorColumn \"{}\" has non-finite value at vector[{i}]={} at batch doc \
+                     {batch_doc_id}",
+                    c.name(),
+                    java_non_finite(v)
+                )));
+            }
+            is_zero &= v == 0.0;
+        }
+        if is_zero && similarity == VectorSimilarityFunction::Cosine {
+            return Err(zero_cosine_vector(c, batch_doc_id));
+        }
+        Ok(())
+    }
+
+    /// `checkByteVectorValue(column, vector, similarityFunction,
+    /// batchDocID)` (Lucene 10.6, branch_10_6, #16732): a zero vector under
+    /// `COSINE`.
+    pub fn check_byte_vector_value(
+        c: &Column,
+        vector: &[u8],
+        similarity: VectorSimilarityFunction,
+        batch_doc_id: i32,
+    ) -> Result<()> {
+        if similarity == VectorSimilarityFunction::Cosine
+            && lucene_util::vector_util::is_zero_vector_bytes(vector)
+        {
+            return Err(zero_cosine_vector(c, batch_doc_id));
+        }
+        Ok(())
+    }
+
     /// `checkDenseCount(column, consumed, numDocs)`.
     pub fn check_dense_count(c: &Column, consumed: usize, num_docs: usize) -> Result<()> {
         if consumed != num_docs {
@@ -512,6 +557,26 @@ impl ColumnValidation {
             )));
         }
         Ok(())
+    }
+}
+
+/// `ColumnValidation.zeroCosineVector(column, batchDocID)`.
+fn zero_cosine_vector(c: &Column, batch_doc_id: i32) -> super::Error {
+    illegal(format!(
+        "VectorColumn \"{}\" has a zero vector at batch doc {batch_doc_id}, which is not allowed \
+         with cosine similarity function",
+        c.name()
+    ))
+}
+
+/// Java's `Float.toString` of a non-finite float.
+fn java_non_finite(v: f32) -> &'static str {
+    if v.is_nan() {
+        "NaN"
+    } else if v > 0.0 {
+        "Infinity"
+    } else {
+        "-Infinity"
     }
 }
 
@@ -901,7 +966,9 @@ fn check_order(c: &Column, doc: i32, last: &mut i32, num_docs: usize) -> Result<
 }
 
 /// `processVectorColumn`'s checks: in range, strictly increasing, the
-/// field's dimension.
+/// field's dimension, then the value itself
+/// ([`ColumnValidation::check_float_vector_value`]/
+/// [`ColumnValidation::check_byte_vector_value`], Lucene 10.6, #16732).
 fn collect_vectors(
     c: &Column,
     num_docs: usize,
@@ -909,6 +976,7 @@ fn collect_vectors(
     mut on_vector: impl FnMut(usize, VectorValue) -> Result<()>,
 ) -> Result<()> {
     let dim = c.field_type().vector_dimension();
+    let similarity = c.field_type().vector_similarity_function();
     let mut prev = -1;
     loop {
         let (doc, value) = next();
@@ -933,6 +1001,14 @@ fn collect_vectors(
                  batch doc {doc}",
                 c.name()
             )));
+        }
+        match &value {
+            VectorValue::Float32(v) => {
+                ColumnValidation::check_float_vector_value(c, v, similarity, doc)?
+            }
+            VectorValue::Byte(v) => {
+                ColumnValidation::check_byte_vector_value(c, v, similarity, doc)?
+            }
         }
         prev = doc;
         on_vector(d, value)?;
@@ -1244,6 +1320,107 @@ mod tests {
 
     fn err(batch: &dyn ColumnBatch) -> String {
         batch_documents(batch).unwrap_err().to_string()
+    }
+
+    struct FV {
+        c: Column,
+        tuples: Vec<(i32, Vec<f32>)>,
+    }
+    impl VectorColumn<Vec<f32>> for FV {
+        fn column(&self) -> &Column {
+            &self.c
+        }
+        fn tuples(&self) -> Box<dyn ObjectTupleCursor<Vec<f32>> + '_> {
+            Box::new(VecObjectTupleCursor::new(&self.tuples))
+        }
+    }
+
+    fn vector_type(encoding: VectorEncoding, sim: VectorSimilarityFunction) -> FieldType {
+        ft(|t| t.set_vector_attributes(2, encoding, sim).unwrap())
+    }
+
+    /// Lucene 10.6's `TestColumnBatchVectorColumn.testFloatVectorValueValidation`
+    /// (#16732): a column refuses what `KnnFloatVectorField` refuses.
+    #[test]
+    fn float_vector_values_are_validated() {
+        let euclidean = vector_type(VectorEncoding::Float32, VectorSimilarityFunction::Euclidean);
+        let cosine = vector_type(VectorEncoding::Float32, VectorSimilarityFunction::Cosine);
+        for (density, n, ty, tuples, want) in [
+            (
+                Density::Dense,
+                2,
+                &euclidean,
+                vec![(0, vec![1.0, 2.0]), (1, vec![3.0, f32::NAN])],
+                "VectorColumn \"v\" has non-finite value at vector[1]=NaN at batch doc 1",
+            ),
+            (
+                Density::Dense,
+                2,
+                &euclidean,
+                vec![(0, vec![1.0, 2.0]), (1, vec![3.0, f32::INFINITY])],
+                "non-finite value at vector[1]=Infinity at batch doc 1",
+            ),
+            (
+                Density::Sparse,
+                3,
+                &euclidean,
+                vec![(0, vec![1.0, 2.0]), (2, vec![f32::NEG_INFINITY, 4.0])],
+                "non-finite value at vector[0]=-Infinity at batch doc 2",
+            ),
+            (
+                Density::Dense,
+                2,
+                &cosine,
+                vec![(0, vec![1.0, 2.0]), (1, vec![0.0, -0.0])],
+                "VectorColumn \"v\" has a zero vector at batch doc 1, which is not allowed with \
+                 cosine similarity function",
+            ),
+        ] {
+            let v = FV {
+                c: Column::new("v", ty.clone(), density),
+                tuples,
+            };
+            let e = err(&Batch {
+                n,
+                cols: vec![BatchColumn::FloatVector(&v)],
+            });
+            assert!(e.contains(want), "{e}");
+        }
+        // A zero vector is fine without cosine.
+        let v = FV {
+            c: Column::new("v", euclidean, Density::Dense),
+            tuples: vec![(0, vec![0.0, 0.0])],
+        };
+        assert!(batch_documents(&Batch {
+            n: 1,
+            cols: vec![BatchColumn::FloatVector(&v)],
+        })
+        .is_ok());
+    }
+
+    /// Lucene 10.6's `TestColumnBatchVectorColumn.testByteVectorValueValidation`
+    /// (#16732).
+    #[test]
+    fn byte_vector_values_are_validated() {
+        let cosine = vector_type(VectorEncoding::Byte, VectorSimilarityFunction::Cosine);
+        let v = V {
+            c: Column::new("v", cosine.clone(), Density::Dense),
+            tuples: vec![(0, vec![0, 0]), (1, vec![1, 2])],
+        };
+        let e = err(&Batch {
+            n: 2,
+            cols: vec![BatchColumn::ByteVector(&v)],
+        });
+        assert!(e.contains("zero vector at batch doc 0"), "{e}");
+        let v = V {
+            c: Column::new("v", cosine, Density::Dense),
+            tuples: vec![(0, vec![1, 0])],
+        };
+        assert!(batch_documents(&Batch {
+            n: 1,
+            cols: vec![BatchColumn::ByteVector(&v)],
+        })
+        .is_ok());
     }
 
     #[test]

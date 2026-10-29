@@ -273,9 +273,8 @@ fn memory_accounting_bitset_equals_lucenes() {
     let tsv = std::fs::read_to_string(data().join("search.tsv")).unwrap();
     let dir = FsDirectory::open(data().join("search_src"));
     let reader = DirectoryReader::open(&dir).unwrap();
-    let max_doc: i32 = reader.segment_readers().iter().map(|s| s.max_doc).sum();
     let tracker = Arc::new(CollectorMemoryTracker::new("t", i64::MAX));
-    let manager = MemoryAccountingBitsetCollectorManager::new(tracker.clone(), max_doc as usize);
+    let manager = MemoryAccountingBitsetCollectorManager::new(tracker.clone());
     let q = query("b");
     let result = with_searcher!(reader, searcher, {
         let mut collectors = Vec::new();
@@ -313,15 +312,44 @@ fn memory_accounting_bitset_equals_lucenes() {
 #[test]
 fn memory_accounting_bitset_reports_a_refusing_tracker() {
     let tracker = Arc::new(CollectorMemoryTracker::new("t", 1));
-    assert!(MemoryAccountingBitsetCollectorManager::new(tracker, 10)
+    assert!(MemoryAccountingBitsetCollectorManager::new(tracker)
         .new_collector()
         .is_err());
     // room for the empty set only: growing it is refused when reduced
     let tracker = Arc::new(CollectorMemoryTracker::new("t", 40));
-    let manager = MemoryAccountingBitsetCollectorManager::new(tracker, 10);
+    let manager = MemoryAccountingBitsetCollectorManager::new(tracker);
     let mut c = manager.new_collector().unwrap();
     c.collect(5, 0.0);
     assert!(manager.reduce(vec![c]).is_err());
+}
+
+/// Lucene 10.6's `testResultBitSetSizedToHighestMatchedDoc*` and
+/// `testResultBitSetEmptyOnNoMatches` (branch_10_6, #16452): the union is
+/// sized to the highest matched document plus one, however many documents
+/// the collectors' slices spanned, and to one empty bit when nothing matched.
+#[test]
+fn memory_accounting_bitset_is_sized_to_the_highest_match() {
+    let tracker = Arc::new(CollectorMemoryTracker::new("t", i64::MAX));
+    let manager = MemoryAccountingBitsetCollectorManager::new(tracker.clone());
+    // Two slices of an index of 1,000 documents, one match in each.
+    let mut low = manager.new_collector().unwrap();
+    low.collect(5, 0.0);
+    let mut high = manager.new_collector().unwrap();
+    high.collect(500, 0.0);
+    let empty = manager.new_collector().unwrap();
+    let result = manager.reduce(vec![low, high, empty]).unwrap();
+    assert_eq!(result.bit_set.len(), 501);
+    assert_eq!(result.bit_set.cardinality(), 2);
+    assert!(result.bit_set.get(5) && result.bit_set.get(500));
+    assert_eq!(result.total_bytes_used, tracker.bytes());
+
+    let manager = MemoryAccountingBitsetCollectorManager::new(tracker);
+    let result = manager
+        .reduce(vec![manager.new_collector().unwrap()])
+        .unwrap();
+    assert_eq!(result.bit_set.len(), 1);
+    assert_eq!(result.bit_set.next_set_bit(0), None);
+    assert!(!result.bit_set.get(0));
 }
 
 #[test]
