@@ -6,12 +6,24 @@
 #
 # Step order matches AGENTS.md's command table, so a CI failure maps onto a
 # local command the developer already knows.
+#
+# How the run is shaped (measurements and reasons: docs/ci.md):
+# - `changes` decides which jobs a change can affect. A docs-only change runs
+#   `checks` (the parity ledger, inventory and the other docs-reading gates)
+#   and nothing that builds Rust or starts OpenSearch.
+# - `ci-ok` is the one check to require: it passes when every job either
+#   passed or was skipped as unaffected, and fails otherwise.
+# - Every job has a timeout sized to about twice its normal run, and every
+#   test runs under nextest's 10-minute per-test limit, so a hang costs
+#   minutes rather than the six hours GitHub allows a job.
 name: ci
 
 on:
   push:
     branches: [main]
   pull_request:
+  # A full run on demand, every job regardless of what changed.
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -19,81 +31,94 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # A CI build is never rebuilt incrementally: the incremental state costs
+  # build time and disk, and nothing reuses it.
+  CARGO_INCREMENTAL: '0'
+  # Line tables keep a test failure's backtrace readable at a fraction of full
+  # debug info's size and link time. The coverage step turns debug info off
+  # altogether (see there).
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  CARGO_PROFILE_TEST_DEBUG: line-tables-only
+  NEXTEST_PROFILE: ci
 
 jobs:
   # ---------------------------------------------------------------------------
-  # The Rust gate: fmt, clippy, tests + coverage. Both architectures we target.
+  # What the change touches. Each output is true when a file the job reads
+  # changed; a change to this workflow, the toolchain pin or the root manifest
+  # turns everything on, and so does a manual run.
   # ---------------------------------------------------------------------------
-  gate:
-    name: gate (${{ matrix.arch }})
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: x64
-            runner: ubuntu-24.04
-          - arch: arm64
-            runner: ubuntu-24.04-arm
+  changes:
+    name: changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      rust: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.rust == 'true' }}
+      plugin: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.plugin == 'true' }}
+      fixtures: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.fixtures == 'true' }}
+      snowball: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.snowball == 'true' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            everything: &everything
+              - '.github/workflows/ci.yml'
+              - '.config/nextest.toml'
+              - 'Cargo.toml'
+              - 'rust-toolchain.toml'
+              - '.cargo/**'
+            # The Rust build and its tests read the crates, the committed
+            # fixtures, and the scripts the gate and the seeded runs call.
+            rust:
+              - *everything
+              - 'crates/**'
+              - 'fixtures/**'
+              - 'benchmarks/rust-runner/**'
+              - 'scripts/**'
+            # The plugin links lucene-ffi, so every crate it builds counts.
+            plugin:
+              - *everything
+              - 'crates/**'
+              - 'fixtures/**'
+              - 'opensearch-plugin/**'
+              - 'docker/**'
+              - 'scripts/**'
+            # Java regenerates the fixtures; the Rust tables it diffs against
+            # live in lucene-analysis, the test-framework generators beside
+            # lucene-test-framework.
+            fixtures:
+              - '.github/workflows/ci.yml'
+              - 'fixtures/**'
+              - 'scripts/**'
+              - 'crates/lucene-analysis/**'
+              - 'crates/lucene-test-framework/**'
+            snowball:
+              - *everything
+              - 'crates/lucene-util/**'
+              - 'crates/lucene-analysis/**'
+              - 'scripts/**'
 
-      # The coverage build's test binaries (lucene-test-framework alone has
-      # dozens, each with full debug info) outgrew the runner's free disk:
-      # rustc died with "No space left on device". Drop the preinstalled
-      # toolsets this job never uses (~30 GB on the x64 image).
-      - name: Free runner disk space
-        run: |
-          df -h / | tail -1
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
-            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/local/share/boost \
-            /usr/share/swift /usr/local/julia* /opt/microsoft || true
-          sudo docker image prune --all --force >/dev/null 2>&1 || true
-          df -h / | tail -1
-
-      # No toolchain action: rust-toolchain.toml pins the version and its
-      # components, and rustup installs it on the first cargo invocation. That
-      # keeps CI honest -- if the pin is wrong, this is where it shows up.
-      - name: Show toolchain
-        run: |
-          rustup show active-toolchain
-          rustc --version
-          cargo clippy --version
-          cargo fmt --version
-
-      # Cargo.lock is gitignored in this repo, so key the cache on the manifests
-      # and the toolchain pin instead.
+  # ---------------------------------------------------------------------------
+  # The gates that read the tree, not a build: they run on every change,
+  # docs-only ones included (the parity ledger and its size budget, the port
+  # inventory and the licence table are all docs/).
+  # ---------------------------------------------------------------------------
+  checks:
+    name: checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      # The fixture-selection test compiles and runs small generators.
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
       - uses: actions/cache@v4
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: cargo-${{ matrix.arch }}-${{ hashFiles('**/Cargo.toml', 'rust-toolchain.toml') }}
-          restore-keys: cargo-${{ matrix.arch }}-
-
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-llvm-cov@0.8.7
-
-      - name: Format
-        run: cargo fmt --all --check
-
-      - name: Lint
-        run: cargo clippy --workspace --all-targets -- -D warnings
-
-      # The two gates the M2 sweep added. Both lived only in
-      # .githooks/pre-commit (check-parity.py in neither), so they ran only on
-      # machines that had run scripts/setup-hooks.sh and only when nobody
-      # passed --no-verify -- which is how batch c25 found check-arith-allows.py
-      # failing for everyone on a stale table without CI noticing.
-      # `benchmarks/rust-runner` is outside the workspace, so `clippy
-      # --workspace` above never compiles it. It has been left broken for
-      # several batches twice, while a stale release binary kept producing
-      # plausible numbers from pre-change code. In scripts/gate.sh since c36;
-      # here since c41, because CI is the copy that actually runs everywhere.
-      - name: Type-check the out-of-workspace benchmarks
-        run: cargo check --manifest-path benchmarks/rust-runner/Cargo.toml --all-targets
+          path: fixtures/.jars
+          key: lucene-jars-10.5.0
 
       - name: "Arithmetic-gate #[allow] rule"
         run: python3 scripts/check-arith-allows.py
@@ -106,35 +131,11 @@ jobs:
       - name: Port invariants clippy cannot express
         run: python3 scripts/check-port-invariants.py
 
-      # M6's licence audit, kept true: a dependency the shipped library links
-      # must be under a licence recorded in docs/licences.md.
-      # `cargo metadata` resolves every target's packages, but the build steps
-      # above only download this host's: without a full fetch, a cache miss
-      # leaves wasm-only crates (criterion's plotters) missing and the check's
-      # `--offline` metadata call fails.
-      - name: Dependency licences
-        run: cargo fetch --locked && python3 scripts/check-licences.py
+      - name: The benchmark report rejects malformed or incomplete results
+        run: python3 scripts/test-bench-micro-report.py
 
-      # Every class of the Lucene 10.5.0 jar has a status in docs/inventory/
-      # and every "ported" row names Rust code that exists. The jar is fetched
-      # from Maven Central here; see docs/mechanical-gates.md#port-inventory.
-      - name: Port inventory
-        run: |
-          python3 scripts/check-port-inventory.py --require-jar
-          python3 scripts/check-port-inventory.py --module backward-codecs --require-jar
-          python3 scripts/check-port-inventory.py --module spatial3d --require-jar
-          python3 scripts/check-port-inventory.py --module spatial-extras --require-jar
-          python3 scripts/check-port-inventory.py --module join --require-jar
-          python3 scripts/check-port-inventory.py --module grouping --require-jar
-          python3 scripts/check-port-inventory.py --module queries --require-jar
-          python3 scripts/check-port-inventory.py --module queryparser --require-jar
-          for m in highlighter suggest facet monitor memory expressions classification misc replicator sandbox codecs test-framework; do
-            python3 scripts/check-port-inventory.py --module "$m" --require-jar
-          done
-          python3 scripts/check-port-inventory.py --module analysis-common --require-jar
-          for m in icu kuromoji nori smartcn stempel morfologik phonetic opennlp; do
-            python3 scripts/check-port-inventory.py --module "analysis-$m" --require-jar
-          done
+      - name: Test-framework fixture source selection
+        run: python3 scripts/test-test-framework-fixture-selection.py
 
       - name: parity ledger consistency (docs/parity.md + docs/parity/)
         run: python3 scripts/check-parity.py
@@ -146,6 +147,104 @@ jobs:
       - name: Java citations resolve against the pinned tree
         run: python3 scripts/check-java-refs.py
 
+      # M6's licence audit, kept true: a dependency the shipped library links
+      # must be under a licence recorded in docs/licences.md. `cargo metadata`
+      # resolves every target's packages, so fetch them all first (wasm-only
+      # crates like criterion's plotters included), or the check's `--offline`
+      # metadata call fails. rustup installs the pinned toolchain here.
+      - name: Dependency licences
+        run: cargo fetch && python3 scripts/check-licences.py
+
+      - name: Vendored files' licences ship in LICENSE
+        run: python3 scripts/check-vendored-licences.py
+
+      # Every class of the Lucene 10.5.0 jar has a status in docs/inventory/
+      # and every "ported" row names Rust code that exists. The jar is fetched
+      # from Maven Central here; see docs/mechanical-gates.md#port-inventory.
+      - name: Port inventory
+        run: |
+          python3 scripts/check-port-inventory.py --require-jar
+          for m in backward-codecs spatial3d spatial-extras join grouping queries queryparser \
+                   highlighter suggest facet monitor memory expressions classification misc \
+                   replicator sandbox codecs demo luke benchmark test-framework analysis-common; do
+            python3 scripts/check-port-inventory.py --module "$m" --require-jar
+          done
+          for m in icu kuromoji nori smartcn stempel morfologik phonetic opennlp; do
+            python3 scripts/check-port-inventory.py --module "analysis-$m" --require-jar
+          done
+
+  # ---------------------------------------------------------------------------
+  # The Rust gate on x64: fmt, clippy, rustdoc, then every test under coverage.
+  # ---------------------------------------------------------------------------
+  gate-x64:
+    name: gate (x64)
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v5
+
+      # The coverage build's test binaries outgrew the runner's free disk
+      # (rustc "No space left on device"). Drop the preinstalled toolsets this
+      # job never uses (~30 GB). In the background: it takes a minute, and
+      # nothing needs the room before the coverage build, several steps on.
+      - name: Free runner disk space (in the background)
+        run: |
+          df -h / | tail -1
+          nohup sudo sh -c 'rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/local/share/boost \
+            /usr/share/swift /usr/local/julia* /opt/microsoft; docker image prune --all --force' \
+            >/dev/null 2>&1 &
+
+      # No toolchain action: rust-toolchain.toml pins the version and its
+      # components, and rustup installs it on the first cargo invocation. That
+      # keeps CI honest -- if the pin is wrong, this is where it shows up.
+      - name: Show toolchain
+        run: |
+          rustup show active-toolchain
+          rustc --version
+          cargo clippy --version
+          cargo fmt --version
+
+      # Dependencies only: rust-cache drops the workspace's own crates, which
+      # a fresh checkout's mtimes would make cargo rebuild anyway. Saved from
+      # main only, so pull requests share one entry instead of each filling
+      # the repository's cache quota with its own.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: gate
+          workspaces: |
+            . -> target
+            benchmarks/rust-runner -> target
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov@0.8.7,cargo-nextest
+
+      - name: Format
+        run: |
+          cargo fmt --all --check
+          cargo fmt --manifest-path benchmarks/rust-runner/Cargo.toml --check
+
+      - name: Lint
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      # lucene-test-framework turns lucene-store's `test-util` seams on in
+      # every `--workspace` build; the shipped `-p lucene-ffi` build has them
+      # off. Lint that configuration too (scripts/gate.sh does).
+      - name: Lint lucene-store without test-util (the shipped seams)
+        run: cargo clippy -p lucene-store --lib -- -D warnings
+
+      # `benchmarks/rust-runner` is outside the workspace, so `clippy
+      # --workspace` above never compiles it. It has been left broken for
+      # several batches twice, while a stale release binary kept producing
+      # plausible numbers from pre-change code. In scripts/gate.sh since c36;
+      # here since c41, because CI is the copy that actually runs everywhere.
+      - name: Type-check the out-of-workspace benchmarks
+        run: cargo check --manifest-path benchmarks/rust-runner/Cargo.toml --all-targets
+
       # rustdoc's link lints are warn-by-default and reported by none of the
       # steps above, so a broken doc link ships through a fully green gate --
       # c4 did exactly that, and c22 recorded the pass as "blocked on
@@ -156,12 +255,13 @@ jobs:
           RUSTDOCFLAGS: -D warnings -A rustdoc::private_intra_doc_links
         run: cargo doc --workspace --no-deps --document-private-items
 
-      # llvm-cov runs the tests, so there is no separate `cargo test` step.
-      # Output is captured so the per-file report below reuses this run rather
-      # than executing the whole suite a second time. scripts/coverage.sh drops
-      # lucene-ffi's never-loaded cdylib from the report (its phantom copies of
-      # the `#[no_mangle]` entry points hid the executed ones); see
-      # docs/mechanical-gates.md#coverage-objects.
+      # llvm-cov runs the tests, so there is no separate test step on x64.
+      # Through nextest (COVERAGE_RUNNER, see scripts/coverage.sh): every test
+      # its own process, all cores busy, the 10-minute per-test limit. Output
+      # is captured so the per-file report below reuses this run.
+      # scripts/coverage.sh drops lucene-ffi's never-loaded cdylib from the
+      # report (its phantom copies of the `#[no_mangle]` entry points hid the
+      # executed ones); see docs/mechanical-gates.md#coverage-objects.
       # Coverage maps come from the instrumentation, not DWARF: without debug
       # info the test binaries are a fraction of the size, which is what kept
       # running the runner's disk out (rustc "No space left on device", ld
@@ -170,19 +270,11 @@ jobs:
         env:
           CARGO_PROFILE_DEV_DEBUG: '0'
           CARGO_PROFILE_TEST_DEBUG: '0'
+          COVERAGE_RUNNER: nextest
         run: |
           set -o pipefail
+          df -h / | tail -1
           scripts/coverage.sh --workspace -- --summary-only --fail-under-lines 95 | tee coverage.txt
-
-      # The plugin ships the release build, and the optimiser may change what
-      # debug arithmetic promised: a NaN's bits, for one (`inf + -inf` is
-      # 0xfff8... or 0x7ff8... depending on operand order and target), which
-      # once made the native metric aggregations differ from Lucene's only
-      # under --release. So lucene-search's tests, whose fixtures compare
-      # doubles bit for bit, run in release too, on both targets. The same step
-      # ends scripts/gate.sh; see docs/mechanical-gates.md#release-profile.
-      - name: lucene-search tests in release
-        run: cargo test --release -p lucene-search
 
       # AGENTS.md invariant #8 asks for >=95% line coverage *per file*, but the
       # gate command above only enforces the workspace total. Report the
@@ -205,15 +297,103 @@ jobs:
             echo "All files at or above 95% line coverage." >> "$GITHUB_STEP_SUMMARY"
           fi
 
+      - name: Slowest tests (non-blocking)
+        if: always()
+        run: python3 scripts/ci-slowest-tests.py target/llvm-cov-target/nextest/ci/junit.xml >> "$GITHUB_STEP_SUMMARY" || true
+
+  # ---------------------------------------------------------------------------
+  # The Rust gate on arm64: clippy (SIMD and `c_char` differ by target) and
+  # every test, uninstrumented -- the coverage number is x64's, and running
+  # the suite plain is what lets this job take half the time it did under
+  # llvm-cov. The doctests run here, beside the libraries this build already
+  # made (neither llvm-cov nor nextest runs them).
+  # ---------------------------------------------------------------------------
+  gate-arm64:
+    name: gate (arm64)
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v5
+      - name: Free runner disk space (in the background)
+        run: |
+          df -h / | tail -1
+          nohup sudo sh -c 'rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/local/share/boost \
+            /usr/share/swift /usr/local/julia* /opt/microsoft; docker image prune --all --force' \
+            >/dev/null 2>&1 &
+      - name: Show toolchain
+        run: |
+          rustup show active-toolchain
+          rustc --version
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: gate
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: Lint
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Tests
+        run: cargo nextest run --workspace
+      - name: Doctests
+        run: cargo test --workspace --doc
+      - name: Slowest tests (non-blocking)
+        if: always()
+        run: python3 scripts/ci-slowest-tests.py target/nextest/ci/junit.xml >> "$GITHUB_STEP_SUMMARY" || true
+
+  # ---------------------------------------------------------------------------
+  # The plugin ships the release build, and the optimiser may change what
+  # debug arithmetic promised: a NaN's bits, for one (`inf + -inf` is
+  # 0xfff8... or 0x7ff8... depending on operand order and target), which once
+  # made the native metric aggregations differ from Lucene's only under
+  # --release. So lucene-search's tests, whose fixtures compare doubles bit
+  # for bit, run in release too, on both targets. The same step ends
+  # scripts/gate.sh; see docs/mechanical-gates.md#release-profile. Its own job
+  # so its ten-minute release build runs beside the gate, not after it.
+  # ---------------------------------------------------------------------------
+  release-tests:
+    name: lucene-search in release (${{ matrix.arch }})
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v5
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: lucene-search tests in release
+        run: cargo nextest run --release -p lucene-search
+      - name: lucene-search doctests in release
+        run: cargo test --release -p lucene-search --doc
+
   # ---------------------------------------------------------------------------
   # The committed fixtures must still be what Lucene 10.5.0 actually produces.
   # fixtures/data is load-bearing for every differential test in the repo.
   # ---------------------------------------------------------------------------
   fixtures:
     name: fixtures are Java-produced
+    needs: changes
+    if: needs.changes.outputs.fixtures == 'true'
     runs-on: ubuntu-24.04
+    timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       # JDK 21, matching docker/Dockerfile (`eclipse-temurin:21-jdk`) and
       # AGENTS.md. Not cosmetic: `break_iterator/manifest.properties` records
       # `java_version`, is byte-identical across runs, and is therefore
@@ -221,7 +401,7 @@ jobs:
       # fixture that is perfectly correct -- which is how a check goes red for
       # a reason nobody reads, and then gets ignored. c36 fixed the fixture;
       # this pins the runner that verifies it.
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '21'
@@ -241,14 +421,12 @@ jobs:
         run: ./scripts/gen-bwc-fixtures.sh --check
       # lucene-test-framework's generators (M14.h) run on their own classpath
       # (the test-framework jar plus JUnit, Hamcrest, randomizedtesting).
-      - name: Test-framework fixture source selection
-        run: python3 scripts/test-test-framework-fixture-selection.py
       - name: Test-framework fixtures
         run: ./scripts/gen-test-framework-fixtures.sh --check
       # Nori's UnicodeScript table is read off JDK 25 (Unicode 16.0; JDK 21
       # answers differently in a few ranges, and the generator refuses it).
       # Last, so the steps above keep JDK 21.
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '25'
@@ -267,17 +445,16 @@ jobs:
   # ---------------------------------------------------------------------------
   snowball:
     name: snowball vocabularies
+    needs: changes
+    if: needs.changes.outputs.snowball == 'true'
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/cache@v4
+      - uses: actions/checkout@v5
+      - uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: cargo-x64-${{ hashFiles('**/Cargo.toml', 'rust-toolchain.toml') }}
-          restore-keys: cargo-x64-
+          shared-key: release
+          save-if: false
       - name: Every stemmer reproduces snowball-data's output.txt
         run: ./scripts/check-snowball-vocabulary.sh
       # The generated stemmers are exactly gen_snowball.sh's output over the
@@ -293,28 +470,21 @@ jobs:
   # ---------------------------------------------------------------------------
   write-path:
     name: Lucene reads Rust-written bytes
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
-      # JDK 21, matching docker/Dockerfile (`eclipse-temurin:21-jdk`) and
-      # AGENTS.md. Not cosmetic: `break_iterator/manifest.properties` records
-      # `java_version`, is byte-identical across runs, and is therefore
-      # byte-compared by `--check`. Under any other JDK this job fails on a
-      # fixture that is perfectly correct -- which is how a check goes red for
-      # a reason nobody reads, and then gets ignored. c36 fixed the fixture;
-      # this pins the runner that verifies it.
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@v5
+      # JDK 21, as the fixtures job (see there for why it is not cosmetic).
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '21'
-      - uses: actions/cache@v4
+      - uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: cargo-x64-${{ hashFiles('**/Cargo.toml', 'rust-toolchain.toml') }}
-          restore-keys: cargo-x64-
+          shared-key: write-path
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: actions/cache@v4
         with:
           path: fixtures/.jars
@@ -343,7 +513,6 @@ jobs:
       # seeds; real Lucene's CheckIndex on 50 of them.
       - name: Test-framework index run
         run: ./scripts/test-framework-index.sh
-
       # M14.h h5/h6: every format suite's random documents (postings to KNN
       # vectors), 30 seeds each, through this port's
       # CheckIndex and real Lucene's.
@@ -364,7 +533,10 @@ jobs:
   # ---------------------------------------------------------------------------
   opensearch:
     name: opensearch plugin (${{ matrix.arch }})
+    needs: changes
+    if: needs.changes.outputs.plugin == 'true'
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
@@ -374,12 +546,12 @@ jobs:
           - arch: arm64
             runner: ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       # JDK 25 for the plugin (the Foreign Function & Memory API, and the
       # JDK OpenSearch 3.9.0 bundles), found through
       # opensearch-plugin/gradle.properties; JDK 21, listed last and so
       # JAVA_HOME, runs Gradle 8.14.3, which predates JDK 25.
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: |
@@ -388,14 +560,10 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.14.3'
-      - uses: actions/cache@v4
+      - uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: cargo-${{ matrix.arch }}-${{ hashFiles('**/Cargo.toml', 'rust-toolchain.toml') }}
-          restore-keys: cargo-${{ matrix.arch }}-
+          shared-key: release
+          save-if: false
       - name: Verify the plugin on a real OpenSearch node
         run: ./scripts/verify-opensearch.sh --docs 20000 --yaml
 
@@ -406,14 +574,15 @@ jobs:
   # ---------------------------------------------------------------------------
   opensearch-engine:
     name: opensearch engine
+    needs: changes
+    if: needs.changes.outputs.plugin == 'true'
     runs-on: ubuntu-24.04
+    timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v4
-      # JDK 25 for the plugin (the Foreign Function & Memory API, and the
-      # JDK OpenSearch 3.9.0 bundles), found through
-      # opensearch-plugin/gradle.properties; JDK 21, listed last and so
-      # JAVA_HOME, runs Gradle 8.14.3, which predates JDK 25.
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@v5
+      # As the opensearch jobs: JDK 25 for the plugin, JDK 21 (listed last,
+      # so JAVA_HOME) for Gradle 8.14.3.
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: |
@@ -422,14 +591,10 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.14.3'
-      - uses: actions/cache@v4
+      - uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: cargo-x64-${{ hashFiles('**/Cargo.toml', 'rust-toolchain.toml') }}
-          restore-keys: cargo-x64-
+          shared-key: release
+          save-if: false
       # The derived tests must be exactly derive_engine_tests.py's output from
       # OpenSearch 3.9.0's own sources (pinned by SHA-256): no hand edits, no
       # script change left un-run.
@@ -450,12 +615,15 @@ jobs:
   # ---------------------------------------------------------------------------
   opensearch-upgrade:
     name: opensearch 2.x upgrade
+    needs: changes
+    if: needs.changes.outputs.plugin == 'true'
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       # As the opensearch jobs: JDK 25 for the plugin, JDK 21 (listed last,
       # so JAVA_HOME) for Gradle 8.14.3.
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: |
@@ -464,14 +632,10 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.14.3'
-      - uses: actions/cache@v4
+      - uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: cargo-x64-${{ hashFiles('**/Cargo.toml', 'rust-toolchain.toml') }}
-          restore-keys: cargo-x64-
+          shared-key: release
+          save-if: false
       - name: An OpenSearch 2.19 index upgraded in place to 3.9.0, served natively
         run: ./scripts/verify-opensearch-upgrade.sh
 
@@ -481,17 +645,81 @@ jobs:
   # ---------------------------------------------------------------------------
   fuzz:
     name: ffi fuzzing (60s per target)
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      # A dated nightly, so the fuzz build's cache stays valid between runs
+      # (a moving `nightly` invalidates every artifact daily) and a nightly
+      # regression cannot turn this job red on its own. Bump deliberately.
+      FUZZ_TOOLCHAIN: nightly-2026-10-15
     steps:
-      - uses: actions/checkout@v4
-      - name: Nightly toolchain and cargo-fuzz
-        run: |
-          rustup toolchain install nightly --profile minimal
-          cargo +nightly install cargo-fuzz --locked
+      - uses: actions/checkout@v5
+      - name: Nightly toolchain
+        run: rustup toolchain install "$FUZZ_TOOLCHAIN" --profile minimal
+      # A prebuilt cargo-fuzz instead of `cargo install` from source.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: fuzz-${{ env.FUZZ_TOOLCHAIN }}
+          workspaces: crates/lucene-ffi/fuzz -> target
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # Every target built in one cargo invocation (shared dependencies built
+      # once), then run three at a time: libFuzzer is single-threaded, and
+      # three ~600 MB fuzzers fit the runner's cores and memory with room.
+      - name: Build the fuzz targets
+        working-directory: crates/lucene-ffi/fuzz
+        run: cargo "+$FUZZ_TOOLCHAIN" fuzz build
       - name: Fuzz
         working-directory: crates/lucene-ffi/fuzz
         run: |
-          for t in jvm_search jvm_search_sorted jvm_open_reader jvm_live_docs boolean_clause_arrays read_planet_object; do
-            mkdir -p "corpus/$t"
-            cargo +nightly fuzz run "$t" "corpus/$t" "seeds/$t" -- -max_total_time=60 -rss_limit_mb=4096
+          set -u
+          targets=(jvm_search jvm_search_sorted jvm_open_reader jvm_live_docs boolean_clause_arrays read_planet_object)
+          rc=0
+          for (( i = 0; i < ${#targets[@]}; i += 3 )); do
+            pids=()
+            for t in "${targets[@]:i:3}"; do
+              mkdir -p "corpus/$t"
+              cargo "+$FUZZ_TOOLCHAIN" fuzz run "$t" "corpus/$t" "seeds/$t" -- \
+                -max_total_time=60 -rss_limit_mb=4096 > "fuzz-$t.log" 2>&1 &
+              pids+=($!)
+            done
+            for p in "${pids[@]}"; do wait "$p" || rc=1; done
           done
+          for t in "${targets[@]}"; do
+            echo "::group::$t"; tail -25 "fuzz-$t.log"; echo "::endgroup::"
+          done
+          exit "$rc"
+
+  # ---------------------------------------------------------------------------
+  # The one check to require. Passes when every job passed or was skipped as
+  # unaffected by the change; fails on any failure or cancellation.
+  # ---------------------------------------------------------------------------
+  ci-ok:
+    name: ci-ok
+    if: always()
+    needs:
+      - changes
+      - checks
+      - gate-x64
+      - gate-arm64
+      - release-tests
+      - fixtures
+      - snowball
+      - write-path
+      - opensearch
+      - opensearch-engine
+      - opensearch-upgrade
+      - fuzz
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Every job passed or was skipped
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "$RESULTS" | jq -r 'to_entries[] | "\(.key)\t\(.value.result)"'
+          echo "$RESULTS" | jq -e 'all(.[]; .result == "success" or .result == "skipped")' >/dev/null

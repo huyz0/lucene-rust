@@ -5281,11 +5281,21 @@ mod tests {
                             last_value: -77,
                             buf: Vec::new(),
                         };
+                        // Doc ids ascend, so the oracle walks the children
+                        // with one cursor rather than rescanning all of them
+                        // per root (that rescan made this the suite's
+                        // second-slowest test, ~1 minute).
+                        assert!(child_docs.windows(2).all(|w| w[0] < w[1]));
+                        let mut next_child = 0;
                         let mut prev = -1;
                         for &p in &parents[s] {
                             // The oracle: the children strictly between the
                             // previous root and this one, in order.
-                            let kids: Vec<&Vec<i64>> = child_docs
+                            let from = next_child;
+                            while next_child < child_docs.len() && child_docs[next_child] < p {
+                                next_child += 1;
+                            }
+                            let kids: Vec<&Vec<i64>> = child_docs[from..next_child]
                                 .iter()
                                 .filter(|&&c| c > prev && c < p)
                                 .map(|&c| &values[s][c as usize])

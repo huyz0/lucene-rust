@@ -28,11 +28,10 @@ done
 cargo build --quiet --release -p lucene-test-framework --example threaded_stress
 BIN="$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')/release/examples/threaded_stress"
 
-if ! out=$("$BIN" --seeds "$SEEDS" --multiplier "$MULTIPLIER"); then
-  echo "$out" | tail -3
-  exit 1
-fi
-echo "$out" | tail -1
+# The seeds run as parallel slices: see scripts/lib-seed-shards.sh.
+source "$(dirname "$0")/lib-seed-shards.sh"
+out=$(run_seed_shards "${SEEDS%..*}" "${SEEDS#*..}" -- "$BIN" --multiplier "$MULTIPLIER") || { echo "$out"; exit 1; }
+echo "$out"
 # Gate rule #10: every seed ran, and the runs deleted, searched, merged and
 # warmed what they merged.
 want=$(( ${SEEDS#*..} - ${SEEDS%..*} ))
