@@ -4059,6 +4059,108 @@ mod tests {
         assert_eq!(HnswGraphView::max_node_id(&copied), total - 1);
     }
 
+    /// Euclidean scorer over random multi-dimensional points: unlike [`Line`],
+    /// diversity pruning leaves a node many neighbours, so a degree can be
+    /// compared against the level's budget.
+    #[derive(Debug, Clone)]
+    struct Points {
+        values: Vec<Vec<f32>>,
+        query: usize,
+    }
+
+    impl VectorScorer for Points {
+        fn score(&mut self, node: i32) -> Result<f32> {
+            let a = &self.values[self.query];
+            let b = &self.values[node as usize];
+            let d: f32 = a.iter().zip(b).map(|(x, y)| (x - y) * (x - y)).sum();
+            Ok(1.0 / (1.0 + d))
+        }
+
+        fn max_ord(&self) -> i32 {
+            self.values.len() as i32
+        }
+    }
+
+    impl UpdateableVectorScorer for Points {
+        fn set_scoring_ordinal(&mut self, ord: i32) -> Result<()> {
+            self.query = ord as usize;
+            Ok(())
+        }
+    }
+
+    /// Modelled on Java's `TestHnswFloatVectorGraph
+    /// .testReconnectsNodeDecayedBelowFloorDuringMerge` (GITHUB#16552): a node
+    /// whose degree has already decayed below `CUMULATIVE_DEGREE_FLOOR_FACTOR`
+    /// of the level budget and loses one more neighbour is too small a loss
+    /// for the per-merge `DISCONNECTED_NODE_FACTOR` check, but the cumulative
+    /// check must still flag and reconnect it.
+    #[test]
+    fn a_node_decayed_below_the_degree_floor_is_reconnected_on_merge() {
+        let (m, beam, size, dim) = (16, 100, 128usize, 16usize);
+        let mut state = 42u64;
+        let mut next = || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (state >> 40) as f32 / (1u64 << 24) as f32
+        };
+        let values: Vec<Vec<f32>> = (0..size)
+            .map(|_| (0..dim).map(|_| next()).collect())
+            .collect();
+        let scorer = Points { values, query: 0 };
+        let mut graph = HnswGraphBuilder::new(scorer.clone(), m, beam, 42)
+            .unwrap()
+            .build(size as i32)
+            .unwrap();
+        let entry = graph.entry_node();
+        let target = if entry == 0 { 1 } else { 0 };
+
+        // Degree 10, below the floor (0.5 * 2M = 16); dropping one neighbour
+        // leaves 9, which 9 >= 10 * 0.85 lets past the per-merge check.
+        let degree_before = 10usize;
+        let neighbors = graph.neighbors_mut(0, target);
+        neighbors.clear();
+        let mut added = 0;
+        let mut node = 0;
+        while added < degree_before {
+            if node != target && node != entry {
+                neighbors.add_out_of_order(node, f32::NAN);
+                added += 1;
+            }
+            node += 1;
+        }
+        let deleted = neighbors.nodes()[0];
+        let mut new_ord_map: Vec<i32> = (0..size as i32).collect();
+        new_ord_map[deleted as usize] = -1;
+
+        // The copy phase itself must flag the target: the end-to-end check
+        // below can also pass through back-links other repaired nodes add.
+        let mut copier = HnswGraphBuilder::with_graph(
+            scorer.clone(),
+            beam,
+            42,
+            OnHeapHnswGraph::with_size(m, size as i32),
+        )
+        .unwrap();
+        let (disconnected, _, has_deletes) =
+            copier.copy_graph_structure(&graph, &new_ord_map).unwrap();
+        assert!(has_deletes);
+        assert_eq!(copier.hnsw.neighbors(0, target).size(), degree_before - 1);
+        assert!(
+            disconnected[0].contains(&target),
+            "the cumulative floor check should flag the target"
+        );
+
+        let merged =
+            HnswGraphBuilder::init_graph(scorer, beam, 42, &graph, &new_ord_map, size as i32)
+                .unwrap();
+        assert!(
+            merged.neighbors(0, target).size() >= degree_before,
+            "target below the cumulative floor should be reconnected during merge, has {}",
+            merged.neighbors(0, target).size()
+        );
+    }
+
     /// Deletions that fall disproportionately on the upper levels leave the
     /// hierarchy thinner than the HNSW model expects, and `rebalanceGraph`
     /// promotes nodes back up. Constructed deliberately -- a uniform deletion
