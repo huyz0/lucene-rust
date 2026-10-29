@@ -1,4 +1,4 @@
-    version 10.5.0
+    version 10.5.2
     min version null
     number of documents 7
     uses compound file false
@@ -18,4 +18,4 @@ break\\
       name SortedSetSortField
       type <sortedset: "set"> selector=MIN
       bytes [3 73 65 74 0 0 0 0 0 0 0 0 0 0 0 0]
-checksum 00000000004054670405
+checksum 00000000004207754258

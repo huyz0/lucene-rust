@@ -8,7 +8,7 @@
 # Callers set JARS to the cache directory before sourcing, then call
 # `lucene_classpath <module>...` to get a ready `:`-joined classpath.
 
-LUCENE_VERSION="${LUCENE_VERSION:-10.5.0}"
+LUCENE_VERSION="${LUCENE_VERSION:-10.5.2}"
 MAVEN_BASE="https://repo1.maven.org/maven2/org/apache/lucene"
 
 # JVM flags every fixture-writing `java` passes. Lucene's scalar float kernels

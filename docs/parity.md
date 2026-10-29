@@ -1,6 +1,6 @@
 # Parity ledger
 
-What of Apache Lucene **10.5.0** (OpenSearch 3.8.0's pin, `gradle/libs.versions.toml`)
+What of Apache Lucene **10.5.2** (OpenSearch `main`'s pin, `gradle/libs.versions.toml`)
 this port has, file by file: ported, partial, deliberately not ported, or
 Rust-only. This page is the index; the rows live in one file per area under
 [`docs/parity/`](parity/). Process: the `parity-tracking` skill. Checked by
@@ -8,7 +8,7 @@ Rust-only. This page is the index; the rows live in one file per area under
 `crates/*/src/*.rs` has a row, the index links every area file, budgets).
 
 **Status (2026-10-28): the port is complete** by the roadmap's definition
-(M14's last criterion): every class of every 10.5.0 module is `ported` or
+(M14's last criterion): every class of every 10.5.2 module is `ported` or
 `not-needed` with a reason in `docs/inventory/*.tsv`, and
 `scripts/check-port-inventory.py` passes with nothing allowlisted. The
 52 rows below still marked **partial** name narrower behaviour inside
@@ -20,7 +20,7 @@ Every area file is one table, `| Java | Rust | Status |`:
 
 - **Java** -- the Lucene class(es), relative to `org/apache/lucene/`
   (`codecs/lucene90/Lucene90NormsFormat`), or `--` for Rust-only machinery.
-  `scripts/check-java-refs.py` checks them against the 10.5.0 sources.
+  `scripts/check-java-refs.py` checks them against the 10.5.2 sources.
 - **Rust** -- `crate/src/file.rs::{items}`, without the `crates/` prefix.
   Every path and item must exist.
 - **Status** -- a status word and milestone, then only current facts:

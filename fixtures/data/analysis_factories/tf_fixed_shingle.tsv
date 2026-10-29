@@ -13,7 +13,7 @@ T	0	2024-06-01 and	54	68	1	1	shingle	0	-	0	1
 T	0	and Jan	65	72	1	1	shingle	0	-	0	1
 T	0	Jan 12,	69	76	1	1	shingle	0	-	0	1
 T	0	12, 2023.	73	82	1	1	shingle	0	-	0	1
-E	0	82	82	0
+E	0	82	82	1
 T	1	Hello, World!	0	13	1	1	shingle	0	-	0	1
 T	1	World! foo-bar	7	21	1	1	shingle	0	-	0	1
 T	1	foo-bar baz_qux	14	29	1	1	shingle	0	-	0	1
@@ -23,20 +23,20 @@ T	1	PowerShot500 O'Neil's	35	56	1	1	shingle	0	-	0	1
 T	1	O'Neil's SD500	48	62	1	1	shingle	0	-	0	1
 T	1	SD500 wi-fi	57	68	1	1	shingle	0	-	0	1
 T	1	wi-fi TV	63	71	1	1	shingle	0	-	0	1
-E	1	71	71	0
+E	1	71	71	1
 T	2	<p>Some <b>HTML</b>	0	19	1	1	shingle	0	-	0	1
 T	2	<b>HTML</b> &amp;	8	25	1	1	shingle	0	-	0	1
 T	2	&amp; text	20	30	1	1	shingle	0	-	0	1
 T	2	text &lt;here&gt;	26	43	1	1	shingle	0	-	0	1
 T	2	&lt;here&gt; <script>x()</script>	31	64	1	1	shingle	0	-	0	1
 T	2	<script>x()</script> caf&eacute;</p>	44	80	1	1	shingle	0	-	0	1
-E	2	80	80	0
+E	2	80	80	1
 T	3	email: john.doe@example.com	0	27	1	1	shingle	0	-	0	1
 T	3	john.doe@example.com url:	7	32	1	1	shingle	0	-	0	1
 T	3	url: https://lucene.apache.org/core/	28	64	1	1	shingle	0	-	0	1
 T	3	https://lucene.apache.org/core/ path	33	69	1	1	shingle	0	-	0	1
 T	3	path /usr/local/bin	65	84	1	1	shingle	0	-	0	1
-E	3	84	84	0
+E	3	84	84	1
 T	4	Ünïcödé façade	0	14	1	1	shingle	0	-	0	1
 T	4	façade résumé	8	21	1	1	shingle	0	-	0	1
 T	4	résumé naïve	15	27	1	1	shingle	0	-	0	1
@@ -45,37 +45,37 @@ T	4	Æsir Øresund	28	40	1	1	shingle	0	-	0	1
 T	4	Øresund Åland	33	46	1	1	shingle	0	-	0	1
 T	4	Åland straße	41	53	1	1	shingle	0	-	0	1
 T	4	straße ﬁne	47	57	1	1	shingle	0	-	0	1
-E	4	57	57	0
+E	4	57	57	1
 T	5	東京都に住んでいます 서울특별시	0	16	1	1	shingle	0	-	0	1
 T	5	서울특별시 ｶﾀｶﾅ	11	21	1	1	shingle	0	-	0	1
 T	5	ｶﾀｶﾅ ﾃｽﾄ	17	25	1	1	shingle	0	-	0	1
 T	5	ﾃｽﾄ ＦＵＬＬＷＩＤＴＨ	22	35	1	1	shingle	0	-	0	1
 T	5	ＦＵＬＬＷＩＤＴＨ ひらがな	26	40	1	1	shingle	0	-	0	1
 T	5	ひらがな カタカナ	36	45	1	1	shingle	0	-	0	1
-E	5	45	45	0
+E	5	45	45	1
 T	6	مرحبا بالعالم	0	13	1	1	shingle	0	-	0	1
 T	6	بالعالم الكتابة	6	21	1	1	shingle	0	-	0	1
 T	6	الكتابة العربية	14	29	1	1	shingle	0	-	0	1
 T	6	العربية والكتب	22	36	1	1	shingle	0	-	0	1
 T	6	والكتب ١٢٣	30	40	1	1	shingle	0	-	0	1
 T	6	١٢٣ ٤٥٦	37	44	1	1	shingle	0	-	0	1
-E	6	44	44	0
+E	6	44	44	1
 T	7	Привет мир,	0	11	1	1	shingle	0	-	0	1
 T	7	мир, бегущие	7	19	1	1	shingle	0	-	0	1
 T	7	бегущие собаки	12	26	1	1	shingle	0	-	0	1
 T	7	собаки и	20	28	1	1	shingle	0	-	0	1
 T	7	и кошки	27	34	1	1	shingle	0	-	0	1
-E	7	34	34	0
+E	7	34	34	1
 T	8	Ελληνικά γράμματα	0	17	1	1	shingle	0	-	0	1
 T	8	γράμματα ΣΊΣΥΦΟΣ	9	25	1	1	shingle	0	-	0	1
 T	8	ΣΊΣΥΦΟΣ οδός	18	30	1	1	shingle	0	-	0	1
-E	8	30	30	0
+E	8	30	30	1
 T	9	हिन्दी भाषा	0	11	1	1	shingle	0	-	0	1
 T	9	भाषा বাংলা	7	17	1	1	shingle	0	-	0	1
 T	9	বাংলা ভাষা	12	22	1	1	shingle	0	-	0	1
 T	9	ভাষা తెలుగు	18	29	1	1	shingle	0	-	0	1
 T	9	తెలుగు భాష	23	33	1	1	shingle	0	-	0	1
-E	9	33	33	0
+E	9	33	33	1
 T	10	Die Häuser	0	10	1	1	shingle	0	-	0	1
 T	10	Häuser waren	4	16	1	1	shingle	0	-	0	1
 T	10	waren größer	11	23	1	1	shingle	0	-	0	1
@@ -85,14 +85,14 @@ T	10	die Bäume	28	37	1	1	shingle	0	-	0	1
 T	10	Bäume Donaudampfschifffahrt	32	59	1	1	shingle	0	-	0	1
 T	10	Donaudampfschifffahrt Rindfleischetikettierung	38	84	1	1	shingle	0	-	0	1
 T	10	Rindfleischetikettierung Fussball	60	93	1	1	shingle	0	-	0	1
-E	10	93	93	0
+E	10	93	93	1
 T	11	les enfants	0	11	1	1	shingle	0	-	0	1
 T	11	enfants l'arbre	4	19	1	1	shingle	0	-	0	1
 T	11	l'arbre d'une	12	25	1	1	shingle	0	-	0	1
 T	11	d'une maison	20	32	1	1	shingle	0	-	0	1
 T	11	maison aujourd'hui	26	44	1	1	shingle	0	-	0	1
 T	11	aujourd'hui qu'il	33	50	1	1	shingle	0	-	0	1
-E	11	50	50	0
+E	11	50	50	1
 T	12	boost|2.5 term|0.5	0	18	1	1	shingle	0	-	0	1
 T	12	term|0.5 freq|3	10	25	1	1	shingle	0	-	0	1
 T	12	freq|3 payload|1.0	19	37	1	1	shingle	0	-	0	1
@@ -100,18 +100,18 @@ T	12	payload|1.0 couch	26	43	1	1	shingle	0	-	0	1
 T	12	couch sofa	38	48	1	1	shingle	0	-	0	1
 T	12	sofa tv	44	51	1	1	shingle	0	-	0	1
 T	12	tv wifi	49	56	1	1	shingle	0	-	0	1
-E	12	56	56	0
+E	12	56	56	1
 T	13	leading and	2	13	1	1	shingle	0	-	0	1
 T	13	and trailing	10	22	1	1	shingle	0	-	0	1
 T	13	trailing spaces	14	31	1	1	shingle	0	-	0	1
 T	13	spaces and	25	35	1	1	shingle	0	-	0	1
 T	13	and tabs	32	40	1	1	shingle	0	-	0	1
-E	13	42	42	0
+E	13	42	42	1
 T	14	İstanbul'da ıIiİ	0	16	1	1	shingle	0	-	0	1
 T	14	ıIiİ Türkçe	12	23	1	1	shingle	0	-	0	1
 T	14	Türkçe ÇOK	17	27	1	1	shingle	0	-	0	1
 T	14	ÇOK güzel	24	33	1	1	shingle	0	-	0	1
-E	14	33	33	0
+E	14	33	33	1
 T	15	hyphen- ated	0	12	1	1	shingle	0	-	0	1
 T	15	ated rain-bow	8	21	1	1	shingle	0	-	0	1
 T	15	rain-bow numbers	13	29	1	1	shingle	0	-	0	1
@@ -120,13 +120,13 @@ T	15	1,234.56 3.14	30	43	1	1	shingle	0	-	0	1
 T	15	3.14 e=mc²	39	49	1	1	shingle	0	-	0	1
 T	15	e=mc² ½	44	51	1	1	shingle	0	-	0	1
 T	15	½ 42	50	54	1	1	shingle	0	-	0	1
-E	15	54	54	0
+E	15	54	54	1
 T	16	[[Category:Test]] '''bold'''	0	28	1	1	shingle	0	-	0	1
 T	16	'''bold''' ''italic''	18	39	1	1	shingle	0	-	0	1
 T	16	''italic'' [http://x.org	29	53	1	1	shingle	0	-	0	1
 T	16	[http://x.org link]	40	59	1	1	shingle	0	-	0	1
 T	16	link] {{cite}}	54	68	1	1	shingle	0	-	0	1
-E	16	68	68	0
+E	16	68	68	1
 T	17	running runs	0	12	1	1	shingle	0	-	0	1
 T	17	runs ran	8	16	1	1	shingle	0	-	0	1
 T	17	ran easily	13	23	1	1	shingle	0	-	0	1
@@ -135,7 +135,7 @@ T	17	fairly cats	24	35	1	1	shingle	0	-	0	1
 T	17	cats ponies	31	42	1	1	shingle	0	-	0	1
 T	17	ponies generously	36	53	1	1	shingle	0	-	0	1
 T	17	generously happiness	43	63	1	1	shingle	0	-	0	1
-E	17	63	63	0
+E	17	63	63	1
 E	18	0	0	0
 T	19	los niños	0	9	1	1	shingle	0	-	0	1
 T	19	niños cantaban	4	18	1	1	shingle	0	-	0	1
@@ -143,7 +143,7 @@ T	19	cantaban canciones	10	28	1	1	shingle	0	-	0	1
 T	19	canciones alegres	19	36	1	1	shingle	0	-	0	1
 T	19	alegres português	29	46	1	1	shingle	0	-	0	1
 T	19	português ações	37	52	1	1	shingle	0	-	0	1
-E	19	52	52	0
+E	19	52	52	1
 N	0	54686520517569636b2042726f776e20466f782773206a756d706564206f76657220746865206c617a7920646f67733b206974277320323032342d30362d303120616e64204a616e2031322c20323032332e
 N	1	48656c6c6f2c20576f726c642120666f6f2d6261722062617a5f717578205769466920506f77657253686f74353030204f274e65696c27732053443530302077692d6669205456
 N	2	3c703e536f6d65203c623e48544d4c3c2f623e2026616d703b207465787420266c743b686572652667743b203c7363726970743e7828293c2f7363726970743e20636166266561637574653b3c2f703e

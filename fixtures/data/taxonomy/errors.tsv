@@ -15,8 +15,8 @@ build_no_taxo_writer	java.lang.IllegalStateException	a non-null TaxonomyWriter m
 build_ssdv_only_no_taxo_writer	none	
 writer_parent_out_of_range	java.lang.IndexOutOfBoundsException	Index 1 out of bounds for length 1
 writer_parent_negative	java.lang.IndexOutOfBoundsException	Index -1 out of bounds for length 1
-reader_path_out_of_range	java.lang.IllegalArgumentException	ordinal 1 is out of the range of the indexReader StandardDirectoryReader(segments_1:5 _0(10.5.0):c1). The maximum possible ordinal number is 0
-reader_path_negative	java.lang.IllegalArgumentException	ordinal -1 is out of the range of the indexReader StandardDirectoryReader(segments_1:5 _0(10.5.0):c1). The maximum possible ordinal number is 0
-reader_bulk_path_out_of_range	java.lang.IllegalArgumentException	ordinal 99 is out of the range of the indexReader StandardDirectoryReader(segments_1:5 _0(10.5.0):c1). The maximum possible ordinal number is 0
+reader_path_out_of_range	java.lang.IllegalArgumentException	ordinal 1 is out of the range of the indexReader StandardDirectoryReader(segments_1:5 _0(10.5.2):c1). The maximum possible ordinal number is 0
+reader_path_negative	java.lang.IllegalArgumentException	ordinal -1 is out of the range of the indexReader StandardDirectoryReader(segments_1:5 _0(10.5.2):c1). The maximum possible ordinal number is 0
+reader_bulk_path_out_of_range	java.lang.IllegalArgumentException	ordinal 99 is out of the range of the indexReader StandardDirectoryReader(segments_1:5 _0(10.5.2):c1). The maximum possible ordinal number is 0
 writer_closed	org.apache.lucene.store.AlreadyClosedException	The taxonomy writer has already been closed
 writer_closed_size	org.apache.lucene.store.AlreadyClosedException	The taxonomy writer has already been closed

@@ -883,6 +883,66 @@ fn a_zero_norm_for_a_non_empty_field_is_refused() {
     ));
 }
 
+/// `TestIndexWriterExceptions.testPerFieldFinishExceptionDoesNotCorruptStoredFields`
+/// (GITHUB#16553: Java left the stored-fields frame open when
+/// `PerField.finish` threw). The port buffers a document's stored values
+/// only once it is fully inverted, so a refused document leaves no stored
+/// frame behind: the segment's stored fields are the neighbours', in order,
+/// and the commit checks clean.
+#[test]
+fn a_zero_norm_refusal_leaves_the_stored_fields_whole() {
+    use lucene_codecs::stored_fields::{self, FieldValue};
+    #[derive(Debug)]
+    struct ZeroForBad;
+    impl NormSimilarity for ZeroForBad {
+        fn compute_norm(&self, field: &str, state: &FieldInvertState) -> i64 {
+            if field == "bad" {
+                0
+            } else {
+                crate::similarity::default_compute_norm(true, state)
+            }
+        }
+    }
+    let tmp = TempDir::new("document-zero-norm-stored");
+    let dir = FsDirectory::open(tmp.path());
+    let mut w = writer(&dir);
+    w.set_similarity(Some(std::sync::Arc::new(ZeroForBad)));
+    let with_id = |id: &str, bad: bool| {
+        let mut d = doc(vec![Box::new(StringField::new("id", id, Store::Yes))]);
+        d.add(TextField::new(
+            if bad { "bad" } else { "text" },
+            "hello world",
+            Store::No,
+        ));
+        d
+    };
+    w.add_fields_document(&with_id("a", false)).unwrap();
+    assert!(matches!(
+        w.add_fields_document(&with_id("b", true)),
+        Err(crate::index_writer::Error::ZeroNorm(_))
+    ));
+    w.add_fields_document(&with_id("c", false)).unwrap();
+    let infos = w.commit().unwrap().clone();
+    w.close().unwrap();
+    for r in crate::check_index::check_directory(&dir).unwrap() {
+        assert!(r.all_passed(), "{:?}", r.failures());
+    }
+    let sci = &infos.segments[0];
+    let read = |ext: &str| dir.open(&format!("{}.{ext}", sci.segment_name)).unwrap();
+    let (fdt, fdx, fdm) = (read("fdt"), read("fdx"), read("fdm"));
+    let reader = stored_fields::open(&fdt, &fdx, &fdm, &sci.segment_id, "").unwrap();
+    let ids: Vec<FieldValue> = (0..reader.max_doc())
+        .map(|d| reader.document(d).unwrap().fields[0].value.clone())
+        .collect();
+    assert_eq!(
+        ids,
+        [
+            FieldValue::String("a".into()),
+            FieldValue::String("c".into())
+        ]
+    );
+}
+
 #[test]
 fn over_long_stored_strings_are_refused() {
     // Checked by length, so the test needs no 700 MB string.
@@ -1509,4 +1569,96 @@ fn a_merge_keeps_a_vector_field_whose_every_vector_was_deleted() {
     }
     let segment = &results[1].stats;
     assert_eq!((segment.vector_fields, segment.vector_values), (1, 0));
+}
+
+/// `TestIndexSorting.testFlushAfterInconsistentSchema` (GITHUB#15125:
+/// Java's flush-time sort comparators hit a `PerField` whose `fieldInfo` a
+/// refused document had left `null`). The port registers a document's
+/// fields only once its whole schema is consistent and buffers nothing of a
+/// refused one, so the sort field has no half-made entry to trip over:
+/// every flush, sorted or not, keeps exactly the accepted documents.
+#[test]
+fn a_flush_after_an_inconsistent_schema_keeps_the_accepted_documents() {
+    use crate::segment_info::{IndexSortField, IndexSortKind, StringMissingValue};
+    use lucene_codecs::stored_fields::{self, FieldValue};
+    // Java draws the sort and the extra fields at random; walk the corners.
+    for (sorted, extra) in [(false, 0), (true, 0), (false, 40), (true, 40)] {
+        let tmp = TempDir::new("document-inconsistent-schema-sort");
+        let dir = FsDirectory::open(tmp.path());
+        let mut w = writer(&dir);
+        w.enable_explicit_documents().unwrap();
+        if sorted {
+            w.set_index_sort(Some(&[IndexSortField {
+                field: "host.name".to_string(),
+                reverse: false,
+                kind: IndexSortKind::String(StringMissingValue::Last),
+            }]))
+            .unwrap();
+        }
+        let add_extra_fields = |d: &mut Document| {
+            for i in 0..extra {
+                if i % 2 == 0 {
+                    d.add(NumericDocValuesField::new(format!("extra-dv-{i}"), i));
+                }
+                if i % 3 != 0 {
+                    d.add(LongField::new(format!("extra-point-{i}"), i, Store::No));
+                }
+                if i % 5 != 1 {
+                    d.add(KeywordField::new(
+                        format!("extra-posting-{i}"),
+                        i.to_string(),
+                        Store::No,
+                    ));
+                }
+            }
+        };
+        let id = |v: &str| StringField::new("id", v, Store::Yes);
+        // first segment
+        let mut d = doc(vec![Box::new(id("1"))]);
+        d.add(SortedDocValuesField::new("host.name", b"h2".to_vec()));
+        d.add(LongField::new("@timestamp", 1, Store::No));
+        add_extra_fields(&mut d);
+        w.add_fields_document(&d).unwrap();
+        w.commit().unwrap();
+        // second segment: "@timestamp" as NUMERIC against SORTED_NUMERIC
+        let mut d = doc(vec![Box::new(id("2"))]);
+        d.add(NumericDocValuesField::new("@timestamp", 2));
+        add_extra_fields(&mut d);
+        d.add(SortedDocValuesField::new("host.name", b"h1".to_vec()));
+        let e = w.add_fields_document(&d).unwrap_err().to_string();
+        assert!(e.contains("@timestamp"), "{e}");
+        w.commit().unwrap();
+        // third segment
+        let mut d = doc(vec![Box::new(id("3"))]);
+        add_extra_fields(&mut d);
+        d.add(LongField::new("@timestamp", 3, Store::No));
+        d.add(SortedDocValuesField::new("host.name", b"h1".to_vec()));
+        w.add_fields_document(&d).unwrap();
+        let infos = w.commit().unwrap().clone();
+        w.close().unwrap();
+        for r in crate::check_index::check_directory(&dir).unwrap() {
+            assert!(r.all_passed(), "{:?}", r.failures());
+        }
+        let mut ids = Vec::new();
+        for sci in &infos.segments {
+            assert_eq!(
+                sci.del_count, 0,
+                "a refused document leaves no deleted slot"
+            );
+            let read = |ext: &str| dir.open(&format!("{}.{ext}", sci.segment_name)).unwrap();
+            let (fdt, fdx, fdm) = (read("fdt"), read("fdx"), read("fdm"));
+            let reader = stored_fields::open(&fdt, &fdx, &fdm, &sci.segment_id, "").unwrap();
+            for doc in 0..reader.max_doc() {
+                ids.push(reader.document(doc).unwrap().fields[0].value.clone());
+            }
+        }
+        assert_eq!(
+            ids,
+            [
+                FieldValue::String("1".into()),
+                FieldValue::String("3".into())
+            ],
+            "sorted: {sorted}, extra fields: {extra}"
+        );
+    }
 }

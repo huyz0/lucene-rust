@@ -1,4 +1,4 @@
-    version 10.5.0
+    version 10.5.2
     min version 10.0.0
     number of documents 7
     uses compound file true
@@ -18,4 +18,4 @@ break\\
       name SortedNumericSortField
       type <sortednumeric: "multi"> missingValue=9223372036854775807 selector=MAX type=LONG
       bytes [5 6d 75 6c 74 69 4 4c 4f 4e 47 0 0 0 0 1 0 0 0 1 0 0 0 ff ff ff ff ff ff ff 7f]
-checksum 00000000001058478873
+checksum 00000000000128652597

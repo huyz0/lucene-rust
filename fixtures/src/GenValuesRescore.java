@@ -35,7 +35,6 @@ import org.apache.lucene.search.LateInteractionFloatValuesSource;
 import org.apache.lucene.search.LateInteractionRescorer;
 import org.apache.lucene.search.LongValues;
 import org.apache.lucene.search.LongValuesSource;
-import org.apache.lucene.search.NumericFieldStats;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.QueryRescorer;
 import org.apache.lucene.search.RescoreTopNQuery;
@@ -73,7 +72,6 @@ import java.util.stream.Stream;
  * <ul>
  *   <li>{@code vs.NAME} / {@code ls.NAME}: every document's value (deleted ones too) under each
  *       double / long values source, as {@code doc:bits} (a double's raw bits, a long as is);
- *   <li>{@code stats.FIELD}: {@code NumericFieldStats.getStats};
  *   <li>{@code fp.N}: a first-pass top 40, then {@code qr.*}, {@code dvr.*}, {@code late.*},
  *       {@code sort.*} and {@code rtn.*}: QueryRescorer, DoubleValuesSourceRescorer,
  *       LateInteractionRescorer, SortRescorer and RescoreTopNQuery results over it, as {@code
@@ -221,18 +219,6 @@ public class GenValuesRescore {
             }
           }
           m.append("ls.").append(lnames[s]).append('=').append(b).append('\n');
-        }
-
-        // NumericFieldStats.
-        for (String f : new String[] {"r", "ip", "rs", "n", "missing"}) {
-          NumericFieldStats.Stats st = NumericFieldStats.getStats(reader, f);
-          m.append("stats.").append(f).append('=');
-          if (st == null) {
-            m.append("null");
-          } else {
-            m.append(st.min()).append(':').append(st.max()).append(':').append(st.docCount());
-          }
-          m.append('\n');
         }
 
         // Sorting by a values source (`getSortField`).

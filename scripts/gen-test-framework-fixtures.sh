@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Test-framework fixtures (M14.h): the Java twins in fixtures/src/testframework/
-# run against Lucene 10.5.0's lucene-test-framework jar (with lucene-misc,
+# run against Lucene 10.5.2's lucene-test-framework jar (with lucene-misc,
 # whose SweetSpotSimilarity GenTestFrameworkSearch explains; plus the JUnit,
 # Hamcrest and randomizedtesting jars it needs on the classpath -- generator
 # only, never shipped; docs/licences.md) and record what Lucene's test
@@ -17,7 +17,7 @@
 # --check regenerates every generator into a scratch directory and diffs it
 # against the committed data: the generators are deterministic (fixed seeds,
 # no segment ids), so any difference means the committed fixture is not what
-# Lucene 10.5.0 produces.
+# Lucene 10.5.2 produces.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -93,7 +93,7 @@ if [ "$CHECK" = 1 ]; then
     run "$n" "$WORK/check/data"
   done
   if ! diff -r "$WORK/check/data" "$DATA" > "$WORK/diff.txt"; then
-    echo "gen-test-framework-fixtures: $DATA differs from what Lucene 10.5.0 generates:"
+    echo "gen-test-framework-fixtures: $DATA differs from what Lucene 10.5.2 generates:"
     head -40 "$WORK/diff.txt"
     status=1
   fi

@@ -1,4 +1,4 @@
-    version 10.5.0
+    version 10.5.2
     min version 10.0.0
     number of documents 7
     uses compound file true
@@ -18,4 +18,4 @@ break\\
       name SortedNumericSortField
       type <sortednumeric: "multi"> missingValue=17 selector=MIN type=INT
       bytes [5 6d 75 6c 74 69 3 49 4e 54 0 0 0 0 0 0 0 0 1 0 0 0 11 0 0 0]
-checksum 00000000000245710574
+checksum 00000000002846950608

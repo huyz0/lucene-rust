@@ -1,4 +1,4 @@
-    version 10.5.0
+    version 10.5.2
     min version null
     number of documents 7
     uses compound file false
@@ -19,4 +19,4 @@ break\\
       type <float: "plain\\\
 é">! missingValue=Infinity
       bytes [9 70 6c 61 69 6e 5c a c3 a9 5 46 4c 4f 41 54 1 0 0 0 1 0 0 0 0 0 80 7f]
-checksum 00000000002402666593
+checksum 00000000002571258137

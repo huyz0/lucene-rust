@@ -1960,12 +1960,19 @@ fn retain_with_ordinal(
 /// target is at least `result_similarity`, found by a graph walk whose
 /// traversal bound decays by `decay` (`VectorSimilarityCollector`), or
 /// exhaustively at `decay == 1` or when a filtered walk runs out of visits.
+///
+/// Lucene 10.5.2 (#16654) split the Java class into `.Adaptive` (10.5's
+/// decaying walk, [`Self::new`]) and the deprecated `.Explicit` (10.4's fixed
+/// traversal bound, [`Self::explicit`], `ExplicitVectorSimilarityCollector`);
+/// here one struct carries both, `traversal_similarity` telling them apart.
 #[derive(Debug, Clone, PartialEq)]
 pub struct VectorSimilarityQuery<T> {
     pub field: String,
     pub target: Vec<T>,
     pub result_similarity: f32,
     pub decay: f32,
+    /// `Explicit.traversalSimilarity`; `None` for `Adaptive`.
+    pub traversal_similarity: Option<f32>,
 }
 
 /// `FloatVectorSimilarityQuery`.
@@ -1977,7 +1984,29 @@ impl<T> VectorSimilarityQuery<T> {
     /// `AbstractVectorSimilarityQuery.DEFAULT_DECAY`.
     pub const DEFAULT_DECAY: f32 = 0.5;
 
-    /// The constructor's checks: a similarity that is a number, a decay in
+    /// `Explicit(field, target, traversalSimilarity, resultSimilarity)`
+    /// (deprecated in Java): Lucene 10.4's query, collecting with
+    /// `ExplicitVectorSimilarityCollector`; decay `0`. Java's
+    /// `Explicit(field, target, resultSimilarity)` is
+    /// `explicit(field, target, r, r)`.
+    pub fn explicit(
+        field: impl Into<String>,
+        target: Vec<T>,
+        traversal_similarity: f32,
+        result_similarity: f32,
+    ) -> Result<Self> {
+        let mut q = Self::new(field, target, result_similarity, 0.0)?;
+        if traversal_similarity > result_similarity {
+            return Err(Error::InvalidKnnQuery(
+                "traversalSimilarity should be <= resultSimilarity".to_string(),
+            ));
+        }
+        q.traversal_similarity = Some(traversal_similarity);
+        Ok(q)
+    }
+
+    /// `Adaptive(field, target, resultSimilarity, decay)`, the private
+    /// constructor's checks: a similarity that is a number, a decay in
     /// `[0, 1]`.
     pub fn new(
         field: impl Into<String>,
@@ -2000,6 +2029,7 @@ impl<T> VectorSimilarityQuery<T> {
             target,
             result_similarity,
             decay,
+            traversal_similarity: None,
         })
     }
 }
@@ -2138,6 +2168,7 @@ fn similarity_leaf<T>(
         resolved: &resolved,
         result_similarity: query.result_similarity,
         decay: query.decay,
+        traversal_similarity: query.traversal_similarity,
         cardinality,
     };
     match target {
@@ -2183,6 +2214,9 @@ struct SimilarityLeaf<'q, 'd> {
     resolved: &'q ResolvedField,
     result_similarity: f32,
     decay: f32,
+    /// `Explicit.traversalSimilarity`: collect with
+    /// `ExplicitVectorSimilarityCollector` (its `getKnnCollectorManager`).
+    traversal_similarity: Option<f32>,
     /// `acceptDocs.cost()`.
     cardinality: usize,
 }
@@ -2195,7 +2229,9 @@ impl SimilarityLeaf<'_, '_> {
         ord_to_doc: &impl Fn(i32) -> Result<i32>,
         ord_to_docs: &OrdDocMaps<'_, '_>,
     ) -> Result<Vec<(i32, f32)>> {
-        use crate::knn_collectors::{VectorSimilarityCollector, DECAY_MAX_QUALITY};
+        use crate::knn_collectors::{
+            ExplicitVectorSimilarityCollector, VectorSimilarityCollector, DECAY_MAX_QUALITY,
+        };
         let accept = accept_ords(self.input, self.resolved, ord_to_docs)?;
         let accept_bits = accept.as_ref().map(|a| a.bits());
         let filtered = self.input.filter.is_some();
@@ -2213,20 +2249,30 @@ impl SimilarityLeaf<'_, '_> {
             } else {
                 i32::MAX as u64
             };
-            let mut collector =
-                VectorSimilarityCollector::new(self.result_similarity, self.decay, limit);
-            graph.search_with(
-                scorer,
-                &mut collector,
-                SearchOptions {
-                    accept_ords: accept_bits,
-                    filtered_doc_count: Some(i32::try_from(self.cardinality).unwrap_or(i32::MAX)),
-                    seed_ords: None,
-                    // `AbstractVectorSimilarityQuery.DEFAULT_STRATEGY`: `Hnsw(0)`.
-                    filtered_search_threshold: 0,
-                },
-            )?;
-            let (hits, early) = collector.into_hits();
+            let options = SearchOptions {
+                accept_ords: accept_bits,
+                filtered_doc_count: Some(i32::try_from(self.cardinality).unwrap_or(i32::MAX)),
+                seed_ords: None,
+                // `AbstractVectorSimilarityQuery.DEFAULT_STRATEGY`: `Hnsw(0)`.
+                filtered_search_threshold: 0,
+            };
+            let (hits, early) = match self.traversal_similarity {
+                Some(traversal) => {
+                    let mut collector = ExplicitVectorSimilarityCollector::new(
+                        traversal,
+                        self.result_similarity,
+                        limit,
+                    )?;
+                    graph.search_with(scorer, &mut collector, options)?;
+                    collector.into_hits()
+                }
+                None => {
+                    let mut collector =
+                        VectorSimilarityCollector::new(self.result_similarity, self.decay, limit);
+                    graph.search_with(scorer, &mut collector, options)?;
+                    collector.into_hits()
+                }
+            };
             if filtered && early {
                 // The walk ran out of visits: `fromAcceptDocs`, exhaustive.
                 self.exact(scorer, accept_bits)?

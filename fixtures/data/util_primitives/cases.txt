@@ -8356,11 +8356,11 @@ vlenient 1..2 ERR failed to parse lenient version string "1..2": Failed to parse
 vparse LUCENE_10_5_0 ERR Failed to parse major version from "LUCENE_10_5_0" (got: LUCENE_10_5_0)
 vlenient LUCENE_10_5_0 10 5 0 0 10.5.0
 vparse latest ERR Failed to parse major version from "latest" (got: latest)
-vlenient latest 10 5 0 0 10.5.0
+vlenient latest 10 5 2 0 10.5.2
 vparse LATEST ERR Failed to parse major version from "LATEST" (got: LATEST)
-vlenient LATEST 10 5 0 0 10.5.0
+vlenient LATEST 10 5 2 0 10.5.2
 vparse lucene_current ERR Failed to parse major version from "lucene_current" (got: lucene_current)
-vlenient lucene_current 10 5 0 0 10.5.0
+vlenient lucene_current 10 5 2 0 10.5.2
 vparse LUCENE_9_12 ERR Failed to parse major version from "LUCENE_9_12" (got: LUCENE_9_12)
 vlenient LUCENE_9_12 9 12 0 0 9.12.0
 vparse LUCENE_95 ERR Failed to parse major version from "LUCENE_95" (got: LUCENE_95)
@@ -8409,8 +8409,10 @@ vconst LUCENE_10_3_1 10.3.1 2624516 true
 vconst LUCENE_10_3_2 10.3.2 2624520 true
 vconst LUCENE_10_4_0 10.4.0 2625536 true
 vconst LUCENE_10_5_0 10.5.0 2626560 true
-vconst LATEST 10.5.0 2626560 true
-vconst LUCENE_CURRENT 10.5.0 2626560 true
+vconst LUCENE_10_5_1 10.5.1 2626564 true
+vconst LUCENE_10_5_2 10.5.2 2626568 true
+vconst LATEST 10.5.2 2626568 true
+vconst LUCENE_CURRENT 10.5.2 2626568 true
 vmin 9
 fbs 39
 xor

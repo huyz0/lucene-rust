@@ -178,8 +178,8 @@ public class BwcDump {
     for (boolean filtered : new boolean[] {false, true}) {
       Query filter = filtered ? new ModQuery(3) : null;
       Query vsim = isFloat
-          ? new FloatVectorSimilarityQuery(field, (float[]) q, thr, filter)
-          : new ByteVectorSimilarityQuery(field, (byte[]) q, thr, filter);
+          ? new FloatVectorSimilarityQuery.Adaptive(field, (float[]) q, thr, filter)
+          : new ByteVectorSimilarityQuery.Adaptive(field, (byte[]) q, thr, filter);
       out.append(filtered ? "vsimf " : "vsim ").append(seg).append(' ').append(field)
           .append(" thr=").append(Integer.toHexString(Float.floatToRawIntBits(thr))).append(' ')
           .append(byDoc(s.search(vsim, n))).append('\n');
