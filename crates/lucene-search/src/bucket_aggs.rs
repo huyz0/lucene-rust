@@ -423,6 +423,8 @@ pub enum AggNode {
         /// (`MissingValues.replaceMissingOrdinals`: an ordinal of the global
         /// ones, or one inserted in term order).
         missing: Option<Vec<u8>>,
+        /// `include`/`exclude`: the global ordinals it accepts.
+        accepted: Option<AcceptedOrds>,
         shard_size: usize,
         order: TermsOrder,
         /// `min_doc_count: 0`: every term of the shard's global ordinals is
@@ -599,6 +601,49 @@ pub enum AggResult {
     },
 }
 
+/// A keyword `terms`' `include`/`exclude`: the global ordinals
+/// `IncludeExclude.OrdinalsFilter.acceptedGlobalOrdinals` accepts, as bits.
+/// They number the field's ordinals with `missing`'s term among them (where
+/// it is inserted, when no segment holds it), as OpenSearch's
+/// missing-replaced values do.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AcceptedOrds {
+    /// The ordinals the bits number (`getValueCount`).
+    pub count: u64,
+    pub bits: Arc<[u64]>,
+}
+
+impl AcceptedOrds {
+    fn get(&self, ord: i64) -> bool {
+        u64::try_from(ord).is_ok_and(|o| {
+            o < self.count
+                && usize::try_from(o >> 6)
+                    .ok()
+                    .and_then(|w| self.bits.get(w))
+                    .is_some_and(|w| w >> (o & 63) & 1 == 1)
+        })
+    }
+}
+
+/// A leaf's view of [`AcceptedOrds`]: a collected key (a global ordinal, or
+/// the inserted `missing` term's one past the last) to the bit numbering it.
+struct LeafFilter {
+    accepted: AcceptedOrds,
+    /// The inserted `missing` term: where, and its collected key.
+    inserted: Option<(i64, i64)>,
+}
+
+impl LeafFilter {
+    fn accepts(&self, key: i64) -> bool {
+        let ord = match self.inserted {
+            Some((at, past_last)) if key == past_last => at,
+            Some((at, _)) if key >= at => key + 1,
+            _ => key,
+        };
+        self.accepted.get(ord)
+    }
+}
+
 /// What a collection pass reads besides the tree: each keyword field's
 /// global ordinals.
 pub struct Globals<'g> {
@@ -633,8 +678,54 @@ impl<'g> Globals<'g> {
             .ok_or_else(|| crate::Error::TermsAggType(format!("{field}: missing term unresolved")))
     }
 
+    /// A keyword `terms`' inserted `missing` term: where among the
+    /// ordinals, and the key its documents are collected under.
+    fn inserted(&self, node: &AggNode) -> Result<Option<(i64, i64)>> {
+        let AggNode::Terms {
+            field,
+            missing: Some(m),
+            ..
+        } = node
+        else {
+            return Ok(None);
+        };
+        Ok(match self.missing(field, m)? {
+            MissingTerm::Insert(at) => Some((
+                at,
+                i64::try_from(self.get(field)?.value_count()).unwrap_or(i64::MAX),
+            )),
+            MissingTerm::Ord(_) => None,
+        })
+    }
+
+    /// A keyword `terms`' `include`/`exclude` as its leaves test it.
+    fn leaf_filter(&self, node: &AggNode) -> Result<Option<LeafFilter>> {
+        let AggNode::Terms {
+            accepted: Some(a), ..
+        } = node
+        else {
+            return Ok(None);
+        };
+        let inserted = self.inserted(node)?;
+        let AggNode::Terms { field, .. } = node else {
+            return Ok(None);
+        };
+        let count = u64::try_from(self.get(field)?.value_count()).unwrap_or(u64::MAX)
+            + u64::from(inserted.is_some());
+        if a.count != count {
+            return Err(crate::Error::TermsAggType(format!(
+                "{field}: include/exclude over {} ordinals, not {count}",
+                a.count
+            )));
+        }
+        Ok(Some(LeafFilter {
+            accepted: a.clone(),
+            inserted,
+        }))
+    }
+
     /// The key a keyword `terms`' documents without a value are collected
-    /// under, when it has a `missing` term.
+    /// under, when it has a `missing` term its filter accepts.
     fn missing_key(&self, node: &AggNode) -> Result<Option<i64>> {
         let AggNode::Terms {
             field,
@@ -644,13 +735,16 @@ impl<'g> Globals<'g> {
         else {
             return Ok(None);
         };
-        Ok(Some(match self.missing(field, m)? {
+        let key = match self.missing(field, m)? {
             MissingTerm::Ord(o) => o,
             MissingTerm::Insert(_) => {
                 i64::try_from(self.get(field)?.value_count()).unwrap_or(i64::MAX)
             }
-        }))
+        };
+        let accepted = self.leaf_filter(node)?.is_none_or(|f| f.accepts(key));
+        Ok(accepted.then_some(key))
     }
+
     fn get(&self, field: &str) -> Result<&'g GlobalOrds> {
         self.ords
             .get(field)
@@ -803,6 +897,8 @@ struct Leaf<'a> {
     /// A keyword `terms`' `missing` term: the global key its documents
     /// without a value are collected under ([`Globals::missing_key`]).
     missing_key: Option<i64>,
+    /// A keyword `terms`' `include`/`exclude`.
+    filter: Option<LeafFilter>,
     subs: Vec<Leaf<'a>>,
 }
 
@@ -1049,6 +1145,7 @@ fn open_leaf<'a>(
         term_buckets: Vec::new(),
         missing: node.missing(),
         missing_key: globals.missing_key(node)?,
+        filter: globals.leaf_filter(node)?,
         subs,
     })
 }
@@ -1282,7 +1379,11 @@ fn collect_window(
                 docs: counts,
                 ..
             },
-        ) if prefetched && matches!(leaf.col, Col::Ords(..)) && leaf.missing_key.is_none() => {
+        ) if prefetched
+            && matches!(leaf.col, Col::Ords(..))
+            && leaf.missing_key.is_none()
+            && (leaf.filter.is_none() || node.subs().is_empty()) =>
+        {
             // As `collect`'s case for one value: the segment ordinal's global
             // one, its bucket for the owner, counted, then the window to the
             // sub-aggregations. A bucket per segment ordinal is kept while
@@ -1675,6 +1776,8 @@ fn collect(
             let mut out = Ok(());
             for &o in &values {
                 let ord = match global_ord(map, o) {
+                    // `include`/`exclude`: a rejected term is not collected.
+                    Ok(g) if leaf.filter.as_ref().is_some_and(|f| !f.accepts(g)) => continue,
                     Ok(g) => keyed_ord(ords, keys, owning, g),
                     Err(e) => {
                         out = Err(e);
@@ -2599,6 +2702,7 @@ fn finish(
             AggNode::Terms {
                 field,
                 missing,
+                accepted,
                 shard_size,
                 order,
                 zero_buckets,
@@ -2647,9 +2751,15 @@ fn finish(
                         };
                     }
                 }
+                // `include`/`exclude`, in the ordinals now numbered with the
+                // inserted term among them: what the window read ahead
+                // counted for a rejected term is dropped.
+                if let Some(a) = accepted {
+                    kept.retain(|k| a.get(k.0));
+                }
                 if *zero_buckets {
-                    // Every other global ordinal as an empty bucket (the
-                    // plan has no sub-aggregations under it).
+                    // Every other accepted global ordinal as an empty bucket
+                    // (the plan has no sub-aggregations under it).
                     seen.clear();
                     seen.resize(g.value_count() + usize::from(inserted.is_some()), false);
                     for k in &kept {
@@ -2658,7 +2768,10 @@ fn finish(
                         }
                     }
                     for (ord, _) in seen.iter().enumerate().filter(|(_, s)| !**s) {
-                        kept.push((ord as i64, 0, u32::MAX));
+                        let ord = ord as i64;
+                        if accepted.as_ref().is_none_or(|a| a.get(ord)) {
+                            kept.push((ord, 0, u32::MAX));
+                        }
                     }
                 }
                 let total: u64 = kept.iter().map(|k| k.1).sum();
@@ -2861,6 +2974,7 @@ mod tests {
             term_buckets: Vec::new(),
             missing: None,
             missing_key: None,
+            filter: None,
             subs: Vec::new(),
         }
     }
@@ -2938,6 +3052,7 @@ mod tests {
         assert!(metric(Source::PointsMin).reads_points());
         assert!(!metric(Source::DocValues).reads_points());
         let terms = |sub| AggNode::Terms {
+            accepted: None,
             missing: None,
             zero_buckets: false,
             field: "k".into(),
@@ -3445,6 +3560,7 @@ mod tests {
         let segments = plain.as_open_segments();
         let seg = &segments[0];
         let terms = AggNode::Terms {
+            accepted: None,
             missing: None,
             zero_buckets: false,
             field: "d".to_string(),
@@ -3866,6 +3982,7 @@ mod tests {
         let reader = fixture("terms_aggs_index");
         for (field, other) in [("kw", "mkw"), ("mkw", "kw")] {
             let tree = AggNode::Terms {
+                accepted: None,
                 missing: None,
                 zero_buckets: false,
                 field: field.to_string(),
@@ -3891,6 +4008,7 @@ mod tests {
         // Single-valued terms under single-valued terms: each window's owner
         // changes from document to document.
         let keyword = |field: &str, subs| AggNode::Terms {
+            accepted: None,
             missing: None,
             zero_buckets: false,
             field: field.to_string(),
@@ -4197,6 +4315,7 @@ mod tests {
                     .buckets;
             assert!(counted.len() < terms_count, "{field}: some terms uncounted");
             let node = |order, shard_size| AggNode::Terms {
+                accepted: None,
                 missing: None,
                 field: field.to_string(),
                 shard_size,
@@ -4252,6 +4371,7 @@ mod tests {
             ..Default::default()
         };
         let node = |missing: Option<&[u8]>, order, zero_buckets| AggNode::Terms {
+            accepted: None,
             field: "mkw".to_string(),
             missing: missing.map(<[u8]>::to_vec),
             shard_size: 1 << 20,
@@ -4302,6 +4422,95 @@ mod tests {
         assert!(every.windows(2).all(|w| w[0].0 < w[1].0));
     }
 
+    /// A keyword `terms` with `include`/`exclude` keeps the accepted terms'
+    /// buckets alone, in the ordinals numbered with an inserted `missing`
+    /// term among them, empty ones too under `min_doc_count: 0`.
+    #[test]
+    fn keyword_terms_keep_the_accepted_terms() {
+        let reader = fixture("terms_aggs_index");
+        let terms_count = crate::terms_agg::GlobalOrds::build(reader.segment_readers(), "mkw")
+            .unwrap()
+            .value_count();
+        let every_third = |count: usize| {
+            let mut bits = vec![0u64; count.div_ceil(64)];
+            for o in (0..count).step_by(3) {
+                bits[o >> 6] |= 1 << (o & 63);
+            }
+            AcceptedOrds {
+                count: count as u64,
+                bits: bits.into(),
+            }
+        };
+        let node = |missing: Option<&[u8]>, accepted, zero_buckets, subs| AggNode::Terms {
+            field: "mkw".to_string(),
+            missing: missing.map(<[u8]>::to_vec),
+            accepted,
+            shard_size: 1 << 20,
+            order: TermsOrder::KeyAsc,
+            zero_buckets,
+            subs,
+        };
+        let list = |n: AggNode| {
+            let got = run(&reader, &all(), &[n], &whole(&reader))
+                .unwrap()
+                .remove(0)
+                .remove(0);
+            let AggResult::Terms { mut buckets, .. } = got else {
+                panic!("{got:?}")
+            };
+            buckets.remove(0)
+        };
+        let sub = || vec![metric("d", ValueKind::Double)];
+        // Every term, empty ones included: the third ones kept.
+        let (_, every) = list(node(None, None, true, Vec::new()));
+        assert_eq!(every.len(), terms_count);
+        let want: Vec<_> = every
+            .iter()
+            .step_by(3)
+            .filter(|b| b.1 > 0)
+            .cloned()
+            .collect();
+        for subs in [Vec::new(), sub()] {
+            let (other, got) = list(node(None, Some(every_third(terms_count)), false, subs));
+            assert_eq!(other, 0);
+            assert_eq!(got, want);
+        }
+        let (_, got) = list(node(None, Some(every_third(terms_count)), true, Vec::new()));
+        assert_eq!(got, every.iter().step_by(3).cloned().collect::<Vec<_>>());
+        // An inserted `missing` term, first: ordinal 0, accepted; the rest
+        // one up.
+        let (_, with_missing) = list(node(Some(b""), None, true, Vec::new()));
+        assert_eq!(with_missing.len(), terms_count + 1);
+        let want: Vec<_> = with_missing.iter().step_by(3).cloned().collect();
+        for subs in [Vec::new(), sub()] {
+            let (_, got) = list(node(
+                Some(b""),
+                Some(every_third(terms_count + 1)),
+                subs.is_empty(),
+                subs.clone(),
+            ));
+            let want: Vec<_> = if subs.is_empty() {
+                want.clone()
+            } else {
+                want.iter().filter(|b| b.1 > 0).cloned().collect()
+            };
+            assert_eq!(got, want);
+        }
+        // Bits over the wrong number of ordinals are refused.
+        assert!(run(
+            &reader,
+            &all(),
+            &[node(
+                Some(b""),
+                Some(every_third(terms_count)),
+                false,
+                Vec::new()
+            )],
+            &whole(&reader)
+        )
+        .is_err());
+    }
+
     /// A keyword `terms` in each order keeps the `shard_size` best buckets
     /// of that order -- by count with the term ascending as tie-breaker, or
     /// by term -- listed by term (descending for `_key` descending).
@@ -4348,6 +4557,7 @@ mod tests {
                             want.sort_by(|a, b| a.0.cmp(&b.0));
                         }
                         let node = AggNode::Terms {
+                            accepted: None,
                             missing: None,
                             zero_buckets: false,
                             field: field.to_string(),
@@ -4392,6 +4602,7 @@ mod tests {
                 )
                 .unwrap();
                 let terms = AggNode::Terms {
+                    accepted: None,
                     missing: None,
                     zero_buckets: false,
                     field: field.to_string(),
@@ -4446,6 +4657,7 @@ mod tests {
             }
             // Sliced: every slice from scratch; the counts add up.
             let node = AggNode::Terms {
+                accepted: None,
                 missing: None,
                 zero_buckets: false,
                 field: "kw".to_string(),
@@ -4479,6 +4691,7 @@ mod tests {
     fn a_bad_tree_or_slice_is_an_error() {
         let reader = fixture("terms_aggs_index");
         let nodes = [AggNode::Terms {
+            accepted: None,
             missing: None,
             zero_buckets: false,
             field: "kw".to_string(),
@@ -4506,6 +4719,7 @@ mod tests {
         assert!(missing.is_err(), "no global ordinals for the field");
         // A numeric field under terms is a mapping error.
         let numeric = [AggNode::Terms {
+            accepted: None,
             missing: None,
             zero_buckets: false,
             field: "r".to_string(),
