@@ -264,6 +264,14 @@ fn unknown_source_field_closes_the_writer_and_preserves_mapping_error_over_close
         );
         let reader = stored_fields::open(&bytes.0, &bytes.1, &bytes.2, &SOURCE_0, "").unwrap();
         let source = MergeSource::stored_only(&fields, &reader, None, Some(version()));
+        // An empty source merged first holds number 3 under another name, so
+        // "known" is renumbered and its source takes the parsing path (a
+        // source keeping its numbers is copied without being parsed).
+        let first_fields = [field("other", 3)];
+        let empty = stored_fields::write_best_speed(&[], &SOURCE_1, "");
+        let empty_reader =
+            stored_fields::open(&empty.0, &empty.1, &empty.2, &SOURCE_1, "").unwrap();
+        let first = MergeSource::stored_only(&first_fields, &empty_reader, None, Some(version()));
         let probe = Arc::new(Probe {
             fail_close,
             ..Probe::default()
@@ -275,7 +283,7 @@ fn unknown_source_field_closes_the_writer_and_preserves_mapping_error_over_close
         let directory = ByteBuffersDirectory::new();
         let result = merge::merge_segments_mapped(
             &directory,
-            &[source],
+            &[first, source],
             None,
             &options,
             "_candidate",
@@ -289,7 +297,7 @@ fn unknown_source_field_closes_the_writer_and_preserves_mapping_error_over_close
         ));
         assert_eq!(
             *probe.events.lock().unwrap(),
-            ["open", "start", "field:0", "close"]
+            ["open", "start", "field:4", "close"]
         );
         // Returned merge errors close the writer and remove every output owned
         // by this attempt, while preserving the primary mapping error.

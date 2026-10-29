@@ -199,6 +199,7 @@ impl IndexWriter<'_> {
         trigger: MergeTrigger,
         merging: &HashSet<String>,
     ) -> Result<usize> {
+        self.write_pending_try_deletes()?;
         let wait = self.max_full_flush_merge_wait_millis;
         if wait <= 0 {
             return Ok(0);
