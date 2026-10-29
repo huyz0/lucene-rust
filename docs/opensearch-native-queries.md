@@ -116,6 +116,9 @@ frequency when nothing is deleted, without counting.
 | `bool` with a `must_not` `terms` | `BooleanQuery` with a `MUST_NOT` `TermInSetQuery` | 1.13× |
 | `range` on a `long` | `PointRangeQuery` (via `IndexOrDocValuesQuery`) | 1.21× |
 | `bool` `must` + `range` `filter` | `BooleanQuery` with a `PointRangeQuery` `FILTER` | 1.01× |
+| `range` / `term` on `integer`, `float`, `half_float`, `unsigned_long`, `ip` (2026-10-29, OpenSearch 3.9.0; query phase, `e2e/phase_bench.py`) | `PointRangeQuery` of 4, 2, 8 or 16 bytes | 1.39×-1.81× (query phase) |
+| `terms` on `integer` or `ip` | `PointInSetQuery` | 1.30×-1.49× (query phase) |
+| `bool` `must` + an `ip` CIDR or `integer` `filter` | `BooleanQuery` with a `PointRangeQuery` `FILTER` | 1.01×-1.28× (query phase) |
 | `bool` with a `must_not` `range` | `BooleanQuery` with a `MUST_NOT` `PointRangeQuery` | 1.07× |
 | any of the above with `size: 0`, `from`/`size` paging, or any `track_total_hits` | — | 0.97–1.24× |
 | `geo_bounding_box` on a `geo_point` (across the dateline too) | `LatLonPoint.newBoxQuery` (a two-dimension `PointRangeQuery`; two under a `ConstantScoreQuery` across the dateline) in an `IndexOrDocValuesQuery` | 1.06× (0.99–1.12) |
@@ -124,6 +127,15 @@ frequency when nothing is deleted, without counting.
 | `geo_shape` (any relation), `geo_bounding_box`, `geo_distance` on a `geo_shape` | `LatLonShapeQuery`, `LatLonShapeBoundingBoxQuery` (a `BooleanQuery` of them for a `CONTAINS` of several geometries) | 1.02× (0.85–1.70) |
 | `_geo_distance` sort, one origin, metres, ascending, `min` (any `distance_type`) | `LatLonPointSortField` (Lucene's comparator; no `search_after`) | 1.07× (0.98–1.27) |
 | `_geo_distance` sort, any other origins, `unit`, `order` or `mode`, `distance_type: arc`, `search_after` too | OpenSearch's `GeoDistanceSortBuilder` comparator (`DoubleComparator` over `MultiValueMode` of the distances) | 1.20× (1.05–1.66) |
+
+The rows marked "query phase" (2026-10-29) are the plugin's own
+`query_phase_nanos` per request, native against Lucene on one node, from
+`e2e/phase_bench.py 60 clean` on the e2e matrix's 20,000-document index. On
+the same index the `terms` aggregations measure 0.97×-1.77× over REST
+(`REST=1`; median 1.34× over the 19 `agg terms` rows, keyword and numeric).
+The weakest, a multi-valued `long` with a small `shard_size` (0.97×), was
+measured before such a window was counted straight from the values read
+ahead, which cut its native time by 19% (`bucket_aggs.rs`, in process).
 
 "Measured" is the median REST round trip over 40 requests per engine on one
 node, both engines on the same 100k-document, two-segment index
