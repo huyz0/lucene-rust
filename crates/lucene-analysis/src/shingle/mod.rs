@@ -413,6 +413,10 @@ pub struct FixedShingleFilter<I> {
     shingle_size: i32,
     token_separator: String,
     filler_token: String,
+    /// `pendingPosInc`: position increments of base tokens accumulated until
+    /// a shingle is emitted, for a base token that cannot start a shingle
+    /// while a later one (possibly stacked at the same position) can.
+    pending_pos_inc: i32,
 }
 
 impl<I: TokenStream> FixedShingleFilter<I> {
@@ -438,6 +442,7 @@ impl<I: TokenStream> FixedShingleFilter<I> {
             shingle_size,
             token_separator: sep.to_string(),
             filler_token: filler.to_string(),
+            pending_pos_inc: 0,
         })
     }
 }
@@ -455,16 +460,21 @@ impl<I: TokenStream> TokenFilter for FixedShingleFilter<I> {
 
     // Java: FixedShingleFilter.incrementToken
     fn increment(&mut self) -> Result<bool, AnalysisError> {
-        let (mut shingle_pos_inc, mut start_offset, mut end_offset);
+        let (mut start_offset, mut end_offset);
         let mut buffer = String::new();
+        // any pending increments went into the previous shingle
+        self.pending_pos_inc = 0;
         'outer: loop {
             if !self.graph.increment_graph()? {
+                // no more routes from the base token: move to the next one
                 if !self.graph.increment_base_token()? {
                     return Ok(false);
                 }
-                shingle_pos_inc = self.graph.attributes().position_increment();
-            } else {
-                shingle_pos_inc = 0;
+                // non-zero already when the previous base token emitted
+                // nothing (the `continue 'outer` path)
+                self.pending_pos_inc = self
+                    .pending_pos_inc
+                    .saturating_add(self.graph.attributes().position_increment());
             }
             let a = self.graph.attributes();
             start_offset = a.start_offset();
@@ -513,10 +523,25 @@ impl<I: TokenStream> TokenFilter for FixedShingleFilter<I> {
         let a = self.graph.attributes_mut();
         a.clear_attributes();
         a.set_offset(start_offset, end_offset)?;
-        a.set_position_increment(shingle_pos_inc)?;
+        a.set_position_increment(self.pending_pos_inc)?;
         a.set_term(&buffer);
         a.set_token_type("shingle");
         Ok(true)
+    }
+
+    // Java: FixedShingleFilter.end
+    fn end_filter(&mut self) -> Result<(), AnalysisError> {
+        self.graph.end()?;
+        let a = self.graph.attributes_mut();
+        let inc = a.position_increment().saturating_add(self.pending_pos_inc);
+        a.set_position_increment(inc)
+    }
+
+    // Java: FixedShingleFilter.reset
+    fn reset_filter(&mut self) -> Result<(), AnalysisError> {
+        self.graph.reset()?;
+        self.pending_pos_inc = 0;
+        Ok(())
     }
 }
 
@@ -681,11 +706,35 @@ mod tests {
     fn fixed_shingles() {
         let mut f =
             FixedShingleFilter::new(Canned::parse("a:0:1:1:1 b:2:3:1:1 c:4:5:1:1|5|0"), 2).unwrap();
-        assert_eq!(render(&mut f), "a b:0:3:1:1 b c:2:5:1:1|5|0");
+        assert_eq!(render(&mut f), "a b:0:3:1:1 b c:2:5:1:1|5|1");
         let mut f =
             FixedShingleFilter::new(Canned::parse("a:0:1:1:1 c:4:5:3:1 d:6:7:1:1|9|1"), 3).unwrap();
-        assert_eq!(render(&mut f), "a _ _:0:1:1:1 c d _:4:7:3:1|9|1");
+        assert_eq!(render(&mut f), "a _ _:0:1:1:1 c d _:4:7:3:1|9|2");
         assert!(FixedShingleFilter::new(Canned::parse(""), 5).is_err());
+    }
+
+    /// `TestFixedShingleFilter.testPositionIncrementAfterSkippedGraphToken`
+    /// and `testFirstShinglePositionIncrementAfterSkippedGraphToken`
+    /// (GITHUB#16577): a base token that starts no shingle hands its
+    /// position increment to the next shingle, and to `end()` when none
+    /// follows.
+    #[test]
+    fn fixed_shingle_position_increment_after_skipped_graph_token() {
+        let mut f = FixedShingleFilter::new(
+            Canned::parse("Secure:0:6:1:1 Wi-Fi:7:12:1:2 Wi:7:9:0:1 Fi:10:12:1:1|12|0"),
+            2,
+        )
+        .unwrap();
+        assert_eq!(
+            render(&mut f),
+            "Secure Wi-Fi:0:12:1:1 Secure Wi:0:9:0:1 Wi Fi:7:12:1:1|12|1"
+        );
+        let mut f =
+            FixedShingleFilter::new(Canned::parse("Wi-Fi:0:5:1:2 Wi:0:2:0:1 Fi:3:5:1:1"), 2)
+                .unwrap();
+        assert_eq!(render(&mut f), "Wi Fi:0:5:1:1|0|1");
+        // reset() clears what end() added
+        assert_eq!(render(&mut f), "Wi Fi:0:5:1:1|0|1");
     }
 
     #[test]
