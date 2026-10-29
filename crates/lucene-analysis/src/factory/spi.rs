@@ -28,6 +28,17 @@ use super::{
 };
 use crate::Analyzer;
 
+/// The token filter SPI names Lucene 10.6 (branch_10_6) registers that the
+/// pinned 10.5.2 jars do not: `CaseFoldingFilterFactory` (#16371),
+/// `ThaiNormalizationFilterFactory` (#16717), `ThaiRepeatFilterFactory`
+/// (#16720). They are registered like every other name; a comparison with
+/// the names a 10.5.2 jar lists leaves them out.
+pub const LUCENE_10_6_TOKEN_FILTERS: [&str; 3] = ["caseFolding", "thaiNormalization", "thaiRepeat"];
+
+/// The char filter SPI names Lucene 10.6 adds over 10.5.2:
+/// `ThaiCharFilterFactory` (#16717).
+pub const LUCENE_10_6_CHAR_FILTERS: [&str; 1] = ["thai"];
+
 /// A `Map` constructor of a tokenizer factory.
 pub type TokenizerCtor = fn(&mut JavaArgs) -> Result<Box<dyn TokenizerFactory>, FactoryError>;
 /// A `Map` constructor of a token filter factory.
@@ -136,6 +147,7 @@ static REGISTRY: LazyLock<RwLock<Registry>> = LazyLock::new(|| {
         char_filter_entry::<CJKWidthCharFilterFactory>(),
         char_filter_entry::<PersianCharFilterFactory>(),
         char_filter_entry::<PatternReplaceCharFilterFactory>(),
+        char_filter_entry::<ThaiCharFilterFactory>(),
     ];
     let mut token_filters = vec![
         token_filter_entry::<ApostropheFilterFactory>(),
@@ -155,6 +167,7 @@ static REGISTRY: LazyLock<RwLock<Registry>> = LazyLock::new(|| {
         token_filter_entry::<CommonGramsQueryFilterFactory>(),
         token_filter_entry::<DictionaryCompoundWordTokenFilterFactory>(),
         token_filter_entry::<HyphenationCompoundWordTokenFilterFactory>(),
+        token_filter_entry::<CaseFoldingFilterFactory>(),
         token_filter_entry::<DecimalDigitFilterFactory>(),
         token_filter_entry::<LowerCaseFilterFactory>(),
         token_filter_entry::<StopFilterFactory>(),
@@ -254,6 +267,8 @@ static REGISTRY: LazyLock<RwLock<Registry>> = LazyLock::new(|| {
         token_filter_entry::<FlattenGraphFilterFactory>(),
         token_filter_entry::<TeluguNormalizationFilterFactory>(),
         token_filter_entry::<TeluguStemFilterFactory>(),
+        token_filter_entry::<ThaiNormalizationFilterFactory>(),
+        token_filter_entry::<ThaiRepeatFilterFactory>(),
         token_filter_entry::<TurkishLowerCaseFilterFactory>(),
         token_filter_entry::<ElisionFilterFactory>(),
     ]);
@@ -577,8 +592,14 @@ mod tests {
     #[test]
     fn registry_counts_and_lookup() {
         assert_eq!(available_tokenizers().len(), 14);
-        assert_eq!(available_char_filters().len(), 5);
-        assert_eq!(available_token_filters().len(), 111);
+        assert_eq!(available_char_filters().len(), 6);
+        assert_eq!(available_token_filters().len(), 114);
+        for n in LUCENE_10_6_TOKEN_FILTERS {
+            assert!(lookup_token_filter(n).is_ok(), "{n}");
+        }
+        for n in LUCENE_10_6_CHAR_FILTERS {
+            assert!(lookup_char_filter(n).is_ok(), "{n}");
+        }
         let f = token_filter_for_name("LOWERCASE", &mut JavaArgs::new()).unwrap();
         assert_eq!(
             f.base().class_name(),

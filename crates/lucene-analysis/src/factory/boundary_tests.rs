@@ -496,3 +496,65 @@ fn hostile_sizes_are_errors_not_aborts() {
     let f = build::<MinHashFilterFactory>(&[("hashCount", "2"), ("bucketCount", "3")]).unwrap();
     assert!(f.create(input("a")).is_ok());
 }
+
+/// Lucene 10.6's `TestThaiCharFilterFactory`, `TestThaiNormalizationFilterFactory`,
+/// `TestThaiRepeatFilterFactory`, and the same two checks for
+/// `CaseFoldingFilterFactory`: built by SPI name, case-insensitively.
+#[test]
+fn lucene_10_6_factories_by_name() {
+    // testCharFilter
+    let f = spi::char_filter_for_name("Thai", &mut JavaArgs::new()).unwrap();
+    let r = f.create(Box::new(StrReader::new("เเมว")));
+    let mut t = crate::util::WhitespaceTokenizer::new();
+    crate::token_stream::Tokenizer::set_reader(&mut t, r).unwrap();
+    assert_eq!(terms(Box::new(t)).unwrap(), ["แมว"]);
+    let mut r = f.normalize(Box::new(StrReader::new("เเ")));
+    assert_eq!(crate::reader::read_to_string(&mut *r).unwrap(), "แ");
+
+    // testNormalization
+    let f = spi::token_filter_for_name("ThaiNormalization", &mut JavaArgs::new()).unwrap();
+    let text =
+        "\u{0E40}\u{0E40}\u{0E1B}\u{0E25}\u{0E01} \u{0E17}\u{0E4D}\u{0E32}\u{0E07}\u{0E32}\u{0E19}";
+    let want = [
+        "\u{0E41}\u{0E1B}\u{0E25}\u{0E01}",
+        "\u{0E17}\u{0E33}\u{0E07}\u{0E32}\u{0E19}",
+    ];
+    assert_eq!(terms(f.create(input(text)).unwrap()).unwrap(), want);
+    assert_eq!(terms(f.normalize(input(text))).unwrap(), want);
+
+    // testRepeat; no `normalize` override, so normalizing leaves the mark
+    let f = spi::token_filter_for_name("ThaiRepeat", &mut JavaArgs::new()).unwrap();
+    assert_eq!(
+        terms(f.create(input("เร็ว ๆ")).unwrap()).unwrap(),
+        ["เร็ว", "เร็ว"]
+    );
+    assert_eq!(terms(f.normalize(input("เร็ว ๆ"))).unwrap(), ["เร็ว", "ๆ"]);
+
+    let f = spi::token_filter_for_name("caseFolding", &mut JavaArgs::new()).unwrap();
+    assert_eq!(
+        terms(f.create(input("ΣΑΣ ﬅ")).unwrap()).unwrap(),
+        ["σασ", "ﬆ"]
+    );
+    assert_eq!(terms(f.normalize(input("Ꭰꭰ"))).unwrap(), ["ᎠᎠ"]);
+    assert_eq!(
+        spi::find_spi_name("org.apache.lucene.analysis.core.CaseFoldingFilterFactory"),
+        Some("caseFolding")
+    );
+
+    // testBogusArguments
+    let bogus = || JavaArgs::from_pairs(&[("bogusArg", "bogusValue")]);
+    let e = spi::char_filter_for_name("Thai", &mut bogus())
+        .err()
+        .unwrap();
+    assert!(e.message.contains("Unknown parameters"), "{}", e.message);
+    for name in ["ThaiNormalization", "ThaiRepeat", "caseFolding"] {
+        let e = spi::token_filter_for_name(name, &mut bogus())
+            .err()
+            .unwrap();
+        assert!(
+            e.message.contains("Unknown parameters"),
+            "{name}: {}",
+            e.message
+        );
+    }
+}

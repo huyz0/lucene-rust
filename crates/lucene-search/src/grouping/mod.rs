@@ -720,7 +720,9 @@ impl<V: Clone + PartialEq> TopGroups<V> {
 
     /// `TopGroups.merge(shardGroups, groupSort, docSort, docOffset, docTopN,
     /// scoreMergeMode)`: the second passes of several shards (or slices)
-    /// over the same groups, merged group by group; `None` for no shards.
+    /// over the same groups, merged group by group. No shards merge to no
+    /// groups (Lucene 10.6, `branch_10_6`, #16305; 10.5 returns `null`), as
+    /// [`Self::merge_block_groups`] has them.
     ///
     /// # Errors
     /// Java's `IllegalArgumentException`s when the shards disagree on the
@@ -732,9 +734,19 @@ impl<V: Clone + PartialEq> TopGroups<V> {
         doc_offset: usize,
         doc_top_n: usize,
         score_merge_mode: ScoreMergeMode,
-    ) -> Result<Option<TopGroups<V>>> {
+    ) -> Result<TopGroups<V>> {
         let Some(first) = shard_groups.first() else {
-            return Ok(None);
+            // `new TopGroups<>(groupSort.getSort(), docSort.getSort(), 0, 0,
+            // new GroupDocs[0], Float.NaN)`.
+            return Ok(TopGroups {
+                total_hit_count: 0,
+                total_grouped_hit_count: 0,
+                total_group_count: None,
+                groups: Vec::new(),
+                group_sort: group_sort.fields.clone(),
+                within_group_sort: doc_sort.fields.clone(),
+                max_score: f32::NAN,
+            });
         };
         let mut total_hit_count = 0i32;
         let mut total_grouped_hit_count = 0i32;
@@ -812,7 +824,7 @@ impl<V: Clone + PartialEq> TopGroups<V> {
             });
             total_max_score = non_nan_max(total_max_score, max_score);
         }
-        Ok(Some(TopGroups {
+        Ok(TopGroups {
             total_hit_count,
             total_grouped_hit_count,
             total_group_count,
@@ -820,7 +832,7 @@ impl<V: Clone + PartialEq> TopGroups<V> {
             group_sort: group_sort.fields.clone(),
             within_group_sort: doc_sort.fields.clone(),
             max_score: total_max_score,
-        }))
+        })
     }
 
     /// `TopGroups.mergeBlockGroups(shardGroups, groupSort, groupOffset,

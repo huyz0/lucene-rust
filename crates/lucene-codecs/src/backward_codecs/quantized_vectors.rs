@@ -291,7 +291,21 @@ impl<'a> QuantizedVectorsReader<'a> {
         &self.quantized
     }
 
-    /// The HNSW graph reader, for an HNSW wrapper.
+    /// `getVectorCount(fieldInfo)` (Lucene 10.6, `branch_10_6`, #16647): the
+    /// HNSW wrapper's is `Lucene99HnswVectorsReader`'s (the graph entry's
+    /// size), the flat one's its quantized reader's.
+    ///
+    /// # Errors
+    /// [`Error::UnknownField`] for a field this reader does not hold.
+    pub fn vector_count(&self, field_number: i32) -> Result<i32> {
+        match (&self.graph, &self.quantized) {
+            (Some(graph), _) => graph.vector_count(field_number),
+            (None, QuantizedReader::Scalar(r)) => r.vector_count(field_number, &self.flat),
+            (None, QuantizedReader::Binary(r)) => r.vector_count(field_number, &self.flat),
+        }
+    }
+
+    /// The HNSW reader, for a graph format.
     pub fn graph(&self) -> Option<&HnswVectorsReader<'a>> {
         self.graph.as_ref()
     }
@@ -490,6 +504,23 @@ mod tests {
                 let r =
                     QuantizedVectorsReader::open(format, files, &infos, &g.id, &g.suffix).unwrap();
                 assert_eq!(r.format(), format);
+                // `getVectorCount` (Lucene 10.6, #16647): the metadata's
+                // count, through the graph or the quantized reader; a field
+                // the quantized reader lacks falls to the raw one.
+                for e in flat.fields() {
+                    let quantized = match r.quantized() {
+                        QuantizedReader::Scalar(q) => q.vector_count(e.field_number, &flat),
+                        QuantizedReader::Binary(q) => q.vector_count(e.field_number, &flat),
+                    };
+                    assert_eq!(quantized.unwrap(), e.size);
+                    assert_eq!(r.vector_count(e.field_number).unwrap(), e.size);
+                }
+                let raw_only = match r.quantized() {
+                    QuantizedReader::Scalar(q) => q.vector_count(999, &flat),
+                    QuantizedReader::Binary(q) => q.vector_count(999, &flat),
+                };
+                assert!(matches!(raw_only, Err(Error::UnknownField(999))));
+                assert!(matches!(r.vector_count(999), Err(Error::UnknownField(999))));
                 // A quantized entry must name a field of the segment.
                 let entries = match r.quantized() {
                     QuantizedReader::Scalar(q) => q.fields().len(),

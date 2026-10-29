@@ -40,7 +40,7 @@ fn sim_inputs(ctx: &LeafContext<'_>, q: &SpanNode) -> Result<Option<SimInputs>> 
     for (f, t) in &keys {
         if let Some(entry) = super::extended::term_entry(ctx, f, t)? {
             if entry.doc_freq > 0 {
-                terms.push(entry.term_statistics());
+                terms.push(entry.term_statistics(t));
             }
         }
     }

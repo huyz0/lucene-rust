@@ -70,7 +70,7 @@ pub(super) fn phrase<'a>(
                 sum_doc_freq: terms.sum_doc_freq(),
             });
         collection.get_or_insert_with(|| stats.collection_statistics());
-        statistics.push(stats.term_statistics());
+        statistics.push(stats.term_statistics(term));
         match_cost += term_positions_cost(cost, cursor.total_term_freq());
         let cursor = if mode == Mode::TopScores {
             cursor.impacts(text::POSITIONS).map_err(convert)?
@@ -179,7 +179,7 @@ pub(super) fn term<'a>(
             &t.field,
             boost,
             &stats.collection_statistics(),
-            &[stats.term_statistics()],
+            &[stats.term_statistics(&t.term)],
         );
         TermLeg::scoring_sim(postings, scorer, norms, cost)
     } else {

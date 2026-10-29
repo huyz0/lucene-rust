@@ -74,6 +74,8 @@ similarity_tests! {
     basic_model_ine: "BasicModelIne";
     distribution_ll: "DistributionLL";
     distribution_spl: "DistributionSPL";
+    // Lucene 10.6 (`branch_10_6`, #16243).
+    stable_tfl: "StableTfl";
 }
 
 fn panics(f: impl FnOnce()) -> String {
@@ -335,7 +337,16 @@ fn do_test_scoring_fires() {
     let t = term();
     let check = |sim: &dyn Similarity, freq: f32, norm: i32| {
         panics(|| {
-            do_test_scoring(&mut JavaRandom::new(1), knobs, sim, c, t, 1.0, freq, norm);
+            do_test_scoring(
+                &mut JavaRandom::new(1),
+                knobs,
+                sim,
+                c,
+                t.clone(),
+                1.0,
+                freq,
+                norm,
+            );
         })
     };
     assert!(check(&Broken(f32::NAN), 2.0, 5).contains("infinite/NaN"));

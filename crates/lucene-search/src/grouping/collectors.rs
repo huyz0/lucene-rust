@@ -1006,7 +1006,7 @@ where
 {
     type Collector = TopGroupsCollector<'a, S>;
     /// `null` (`None`) only for no collectors.
-    type Output = Option<TopGroups<S::Value>>;
+    type Output = TopGroups<S::Value>;
 
     fn new_collector(&self) -> Result<Self::Collector> {
         TopGroupsCollector::new(

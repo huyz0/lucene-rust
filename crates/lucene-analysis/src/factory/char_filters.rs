@@ -259,6 +259,33 @@ impl CharFilterFactory for PersianCharFilterFactory {
     }
 }
 
+/// `org.apache.lucene.analysis.th.ThaiCharFilterFactory` (`thai`; Lucene
+/// 10.6, #16717, not in the 10.5.2 jars).
+pub struct ThaiCharFilterFactory {
+    base: FactoryBase,
+}
+analysis_factory!(ThaiCharFilterFactory);
+
+impl FactoryClass for ThaiCharFilterFactory {
+    const NAME: &'static str = "thai";
+    const CLASS_NAME: &'static str = "org.apache.lucene.analysis.th.ThaiCharFilterFactory";
+    fn from_args(args: &mut JavaArgs) -> Result<Self, FactoryError> {
+        let base = FactoryBase::new(Self::CLASS_NAME, args)?;
+        args::reject_unknown(args)?;
+        Ok(ThaiCharFilterFactory { base })
+    }
+}
+
+impl CharFilterFactory for ThaiCharFilterFactory {
+    fn create(&self, input: Box<dyn CharReader>) -> Box<dyn CharReader> {
+        Box::new(crate::lang::th::ThaiCharFilter::new(input))
+    }
+
+    fn normalize(&self, input: Box<dyn CharReader>) -> Box<dyn CharReader> {
+        self.create(input)
+    }
+}
+
 /// `org.apache.lucene.analysis.pattern.PatternReplaceCharFilterFactory` (`patternReplace`).
 pub struct PatternReplaceCharFilterFactory {
     base: FactoryBase,

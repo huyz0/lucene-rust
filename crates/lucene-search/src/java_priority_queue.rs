@@ -78,6 +78,30 @@ impl<T, F: Fn(&T, &T) -> bool> JavaPriorityQueue<T, F> {
         old
     }
 
+    /// Lucene 10.5.2's (and 10.6's) `insertWithOverflow(element)`, with its
+    /// strict test: once full, `element` replaces the least element only when
+    /// that is less than it (`lessThan(heap[1], element)`), so an incoming
+    /// tie is handed back. [`Self::insert_with_overflow_dropped`] replaces on
+    /// a tie (`!lessThan(element, heap[1])`), which its callers keep.
+    pub(crate) fn insert_with_overflow_strict(&mut self, element: T) -> Option<T> {
+        if self.size < self.max_size {
+            self.add(element);
+            return None;
+        }
+        let replaces = self.size > 0
+            && match &self.heap[1] {
+                Some(top) => (self.less_than)(top, &element),
+                None => false,
+            };
+        if !replaces {
+            return Some(element);
+        }
+        let old = self.heap[1].replace(element);
+        // `updateTop()`.
+        self.down_heap(1);
+        old
+    }
+
     /// The elements in heap order, as Java's `iterator()` walks them.
     pub(crate) fn into_heap_order(self) -> Vec<T> {
         self.heap
