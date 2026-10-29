@@ -1,8 +1,8 @@
 //! `SpanMultiTermQueryWrapper.FrequentTermsSpanBooleanQueryRewrite` (Lucene
 //! 10.6, `branch_10_6`, #16484 with #16532's `PriorityQueue`): a span rewrite
 //! that keeps only the `maxSize` most frequent terms a multi-term query
-//! matches, ranked by reader-wide document frequency ([`Self::DF_ORDER`]),
-//! by that then total term frequency ([`Self::DF_THEN_TTF_ORDER`]), or by a
+//! matches, ranked by reader-wide document frequency ([`FrequentTermsSpanBooleanQueryRewrite::DF_ORDER`]),
+//! by that then total term frequency ([`FrequentTermsSpanBooleanQueryRewrite::DF_THEN_TTF_ORDER`]), or by a
 //! caller's order.
 //!
 //! Java builds it on `ScoringRewrite`: every matching term of every segment
