@@ -125,11 +125,19 @@ fn search_groups_merge_by_their_best_shard() {
 #[test]
 fn top_groups_merge_checks_its_shards_and_combines_scores() {
     let sort = Sort::relevance();
-    assert!(
-        TopGroups::<Vec<u8>>::merge(&[], &sort, &sort, 0, 5, ScoreMergeMode::None)
-            .unwrap()
-            .is_none()
+    // No shards: no groups (Lucene 10.6, `branch_10_6`, #16305).
+    let empty = TopGroups::<Vec<u8>>::merge(&[], &sort, &sort, 0, 5, ScoreMergeMode::None).unwrap();
+    assert!(empty.groups.is_empty() && empty.max_score.is_nan());
+    assert_eq!(
+        (
+            empty.total_hit_count,
+            empty.total_grouped_hit_count,
+            empty.total_group_count
+        ),
+        (0, 0, None)
     );
+    assert_eq!(empty.group_sort, sort.fields);
+    assert_eq!(empty.within_group_sort, sort.fields);
     let a = tg(
         vec![docs(Some("g"), vec![hit(1, 3.0), hit(4, 1.0)], 2.0)],
         Some(2),
@@ -143,7 +151,6 @@ fn top_groups_merge_checks_its_shards_and_combines_scores() {
         5,
         ScoreMergeMode::Total,
     )
-    .unwrap()
     .unwrap();
     assert_eq!(total.total_hit_count, 20);
     assert_eq!(total.total_group_count, Some(2));
@@ -166,7 +173,6 @@ fn top_groups_merge_checks_its_shards_and_combines_scores() {
         1,
         ScoreMergeMode::Avg,
     )
-    .unwrap()
     .unwrap();
     assert_eq!(avg.groups[0].score, 1.0);
     assert_eq!(avg.groups[0].score_docs.len(), 1);
@@ -179,14 +185,11 @@ fn top_groups_merge_checks_its_shards_and_combines_scores() {
         5,
         ScoreMergeMode::None,
     )
-    .unwrap()
     .unwrap();
     assert!(none.groups[0].score.is_nan());
     // An empty group under `Avg` has no score.
     let empty = tg(vec![docs(Some("g"), vec![], 0.0)], None);
-    let r = TopGroups::merge(&[empty], &sort, &sort, 0, 5, ScoreMergeMode::Avg)
-        .unwrap()
-        .unwrap();
+    let r = TopGroups::merge(&[empty], &sort, &sort, 0, 5, ScoreMergeMode::Avg).unwrap();
     assert!(r.groups[0].score.is_nan());
     // By a field: each hit's sort values; the max scores combined.
     let by_doc = Sort::index_order();
@@ -196,9 +199,7 @@ fn top_groups_merge_checks_its_shards_and_combines_scores() {
     }
     let mut fb = b.clone();
     fb.groups[0].score_docs[0].fields = Some(vec![V::Int(9)]);
-    let r = TopGroups::merge(&[fb, fa], &sort, &by_doc, 0, 2, ScoreMergeMode::None)
-        .unwrap()
-        .unwrap();
+    let r = TopGroups::merge(&[fb, fa], &sort, &by_doc, 0, 2, ScoreMergeMode::None).unwrap();
     assert_eq!(
         r.groups[0]
             .score_docs

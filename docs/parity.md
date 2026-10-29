@@ -82,7 +82,7 @@ Milestones (M1-M12, task ids such as T9.4) are [`docs/roadmap.md`](roadmap.md)'s
 | [spatial3d.md](parity/spatial3d.md) | `lucene-spatial3d` (M9 T9.4) | 16 |
 | [spatial-extras.md](parity/spatial-extras.md) | `lucene-spatial-extras` (M9 T9.5) | 25 |
 | [joins.md](parity/joins.md) | Document blocks and block joins, `lucene-join` (M10) | 11 |
-| [grouping.md](parity/grouping.md) | `lucene-grouping` (M10 T10.4) | 11 |
+| [grouping.md](parity/grouping.md) | `lucene-grouping` (M10 T10.4) | 12 |
 | [facet.md](parity/facet.md) | `lucene-facet`'s taxonomy index (T13.4a), counting (T13.4b), drill-down (T13.4c), value, range and facet-set counting (T13.4d1), and sorted-set counts, sampling and taxonomy utilities (T13.4d2) | 40 |
 | [functions.md](parity/functions.md) | `lucene-queries` function queries (M10 T10.5) | 11 |
 | [queries.md](parity/queries.md) | `lucene-queries` intervals, payloads, more-like-this, common terms, spans (M10 T10.6); sandbox fuzzy-like-this (M13) | 14 |
