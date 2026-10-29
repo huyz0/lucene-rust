@@ -39,7 +39,10 @@ public final class RustEngineFactory implements EngineFactory {
             NRT_REPLICA.incrementAndGet();
             return new NRTReplicationEngine(config);
         }
-        if (nodeEnabled) {
+        // Another engine plugin's PrimaryOperationPolicy: an index that only inherits the node
+        // default gets OpenSearch's engine, one that asked for the Rust engine its refusal.
+        boolean asked = RustEngineSupport.ENGINE_ENABLED.exists(config.getIndexSettings().getSettings());
+        if (nodeEnabled && (asked || RustEngineSupport.unsupportedPolicy(config) == null)) {
             RUST.incrementAndGet();
             return new RustEngine(config);
         }

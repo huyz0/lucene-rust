@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """M8 acceptance criterion 3: an index an OpenSearch 2.x node wrote, served
-natively after the upgrade to OpenSearch 3.8.0 with the lucene-rust plugin.
+natively after the upgrade to OpenSearch 3.9.0 with the lucene-rust plugin.
 
 Driven by scripts/verify-opensearch-upgrade.sh, in two phases:
 
@@ -15,7 +15,7 @@ Driven by scripts/verify-opensearch-upgrade.sh, in two phases:
       open holds every document in a Lucene 9.12 segment.
 
   verify <plugin-base> <stock-base>
-      Two 3.8.0 nodes opened the 2.19 data directory in place (the plugin node
+      Two 3.9.0 nodes opened the 2.19 data directory in place (the plugin node
       the original, the stock node a copy of it). Checks, per index:
 
         * every index opens (green) and every segment is still a Lucene 9.12
@@ -25,7 +25,7 @@ Driven by scripts/verify-opensearch-upgrade.sh, in two phases:
           scores (1e-5), totals and aggregations, and the plugin's stats show
           it ran natively on every shard (or fell back for the stated reason);
         * the same after restoring the 2.19 snapshot into both nodes;
-        * a force merge rewrites every segment as Lucene 10.5.0 on both nodes,
+        * a force merge rewrites every segment as Lucene 10.5.x on both nodes,
           and the answers still agree, still natively.
 
 Standard library only; reuses verify_opensearch.py's matrix and comparison.
@@ -39,7 +39,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import verify_opensearch as vo  # noqa: E402
 
 OLD_LUCENE = "9.12."
-NEW_LUCENE = "10.5.0"
+NEW_LUCENE = "10.5."
 REPO = "upgrade_repo"
 SNAPSHOT = "from-2x"
 DIM = 8
@@ -251,7 +251,7 @@ def verify(plugin, stock):
     check_versions("restored", (plugin, stock), OLD_LUCENE, [f"restored_{i}" for i in INDICES])
     total += serve_all("snapshot restore", plugin, stock, "restored_")
 
-    # A force merge on both nodes: Lucene 10.5.0 rewrites every segment.
+    # A force merge on both nodes: Lucene 10.5.x rewrites every segment.
     for base in (plugin, stock):
         on(base)
         for index in INDICES:

@@ -12,6 +12,7 @@ import org.apache.lucene.index.IndexOptions;
 import org.opensearch.common.settings.Setting;
 import org.opensearch.core.common.breaker.CircuitBreaker;
 import org.opensearch.index.IndexSettings;
+import org.opensearch.index.engine.DefaultPrimaryOperationPolicy;
 import org.opensearch.index.engine.EngineConfig;
 import org.opensearch.index.store.Store;
 
@@ -78,6 +79,10 @@ public final class RustEngineSupport {
         if (reason != null) {
             throw new IllegalArgumentException(reason);
         }
+        reason = unsupportedPolicy(config);
+        if (reason != null) {
+            throw new IllegalArgumentException(reason);
+        }
         // A segment-replication primary needs RustIndexerFactory in its shard (see there).
         if (config.getIndexSettings().isSegRepLocalEnabled() && RustIndexerFactory.building() == false) {
             throw new IllegalArgumentException(
@@ -87,6 +92,23 @@ public final class RustEngineSupport {
                     + "use index.replication.type: DOCUMENT"
             );
         }
+    }
+
+    /**
+     * Why the Rust engine cannot run under this engine config's {@code PrimaryOperationPolicy}, or
+     * {@code null} when it can. A policy other than the default one comes from an engine plugin (one
+     * per index) and plans primary operations with OpenSearch's own strategy classes, whose
+     * factories the engine's copies cannot reach, so the derived engine plans as primary directly.
+     */
+    static String unsupportedPolicy(EngineConfig config) {
+        if (config.getPrimaryOperationPolicy() instanceof DefaultPrimaryOperationPolicy) {
+            return null;
+        }
+        return "the Rust engine supports the default primary operation policy only, and "
+            + config.getShardId()
+            + " has ["
+            + config.getPrimaryOperationPolicy()
+            + "]";
     }
 
     /**

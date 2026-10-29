@@ -1,5 +1,5 @@
 /*
- * Derived from OpenSearch 3.8.0 by opensearch-plugin/tools/derive_engine.py -- do not edit;
+ * Derived from OpenSearch 3.9.0 by opensearch-plugin/tools/derive_engine.py -- do not edit;
  * change the script and re-run it. The original notice follows.
  */
 /*
@@ -14,6 +14,8 @@ package org.lucenerust.opensearch.engine;
 
 import org.opensearch.index.engine.*;
 
+import org.opensearch.common.annotation.ExperimentalApi;
+
 import java.io.IOException;
 
 /**
@@ -21,8 +23,9 @@ import java.io.IOException;
  * This interface defines how operations (indexing, deletion) should be processed
  * differently depending on whether the shard is acting as a primary or replica.
  *
- * @opensearch.internal
+ * @opensearch.experimental
  */
+@ExperimentalApi
 @SuppressWarnings({ "deprecation", "try", "unchecked", "rawtypes", "cast", "static", "fallthrough", "this-escape", "removal" }) // derived code, linted upstream
 public interface OperationStrategyPlanner<T extends Engine.Operation, V extends OperationStrategy> {
 

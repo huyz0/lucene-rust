@@ -14,8 +14,8 @@ configurations it refuses (index sorting, compound files) -- are marked @Ignore 
 listed in SKIPPED below: that list is the unsupported matrix, and nothing else is skipped.
 
 Usage: derive_engine_tests.py <dir holding InternalEngineTests.java> <test framework sources> <out dir>
-  curl -O https://raw.githubusercontent.com/opensearch-project/OpenSearch/3.8.0/server/src/test/java/org/opensearch/index/engine/InternalEngineTests.java
-  curl -O https://repo1.maven.org/maven2/org/opensearch/test/framework/3.8.0/framework-3.8.0-sources.jar
+  curl -O https://raw.githubusercontent.com/opensearch-project/OpenSearch/3.9.0/server/src/test/java/org/opensearch/index/engine/InternalEngineTests.java
+  curl -O https://repo1.maven.org/maven2/org/opensearch/test/framework/3.9.0/framework-3.9.0-sources.jar
 """
 
 import re
@@ -26,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from derive_engine import PACKAGE, Patcher, relocate  # noqa: E402
 
 NOTICE = """/*
- * Derived from OpenSearch 3.8.0 by opensearch-plugin/tools/derive_engine_tests.py -- do not edit;
+ * Derived from OpenSearch 3.9.0 by opensearch-plugin/tools/derive_engine_tests.py -- do not edit;
  * change the script and re-run it. The original notice follows.
  */
 """

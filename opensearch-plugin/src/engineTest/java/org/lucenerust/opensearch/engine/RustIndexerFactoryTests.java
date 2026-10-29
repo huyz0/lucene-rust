@@ -10,7 +10,12 @@ import org.opensearch.core.common.bytes.BytesArray;
 import org.opensearch.index.IndexSettings;
 import org.opensearch.index.engine.Engine;
 import org.opensearch.index.engine.EngineBackedIndexer;
+import org.opensearch.index.engine.DeletionStrategy;
 import org.opensearch.index.engine.EngineConfig;
+import org.opensearch.index.engine.IndexingStrategy;
+import org.opensearch.index.engine.InternalEngine;
+import org.opensearch.index.engine.OperationStrategyPlanner;
+import org.opensearch.index.engine.PrimaryOperationPolicy;
 import org.opensearch.index.engine.exec.Indexer;
 import org.opensearch.index.mapper.ParsedDocument;
 import org.opensearch.index.seqno.SequenceNumbers;
@@ -27,7 +32,9 @@ import static org.hamcrest.Matchers.instanceOf;
 /**
  * {@link RustIndexerFactory}: a segment-replication primary's {@code Indexer} answers the refresh
  * checkpoint {@code CopyState} asks for, and a {@link RustEngine} built any other way refuses to
- * be one. Hand-written, beside the derived {@code RustEngineTests}.
+ * be one; and an engine plugin's {@link PrimaryOperationPolicy} is refused by the Rust engine, or
+ * handed to OpenSearch's where the index only inherits the node default. Hand-written, beside the
+ * derived {@code RustEngineTests}.
  */
 public class RustIndexerFactoryTests extends RustEngineTestCase {
 
@@ -77,6 +84,67 @@ public class RustIndexerFactoryTests extends RustEngineTestCase {
                 assertEquals(rust.currentOngoingRefreshCheckpoint(), indexer.currentOngoingRefreshCheckpoint());
             } finally {
                 indexer.close();
+            }
+        }
+    }
+
+    /** Another engine plugin's policy: planning as primary, like the default, but not the default. */
+    private static final PrimaryOperationPolicy FOREIGN_POLICY = new PrimaryOperationPolicy() {
+        @Override
+        public boolean acceptsPreAssignedSeqNos() {
+            return false;
+        }
+
+        @Override
+        public IndexingStrategy planIndex(OperationStrategyPlanner<Engine.Index, IndexingStrategy> planner, Engine.Index index)
+            throws IOException {
+            return planner.planOperationAsPrimary(index);
+        }
+
+        @Override
+        public DeletionStrategy planDelete(OperationStrategyPlanner<Engine.Delete, DeletionStrategy> planner, Engine.Delete delete)
+            throws IOException {
+            return planner.planOperationAsPrimary(delete);
+        }
+
+        @Override
+        public String toString() {
+            return "foreign";
+        }
+    };
+
+    private EngineConfig policyConfig(Store store, Settings extra) throws IOException {
+        IndexSettings settings = IndexSettingsModule.newIndexSettings(
+            "test",
+            Settings.builder().put(defaultSettings.getSettings()).put(extra).build()
+        );
+        EngineConfig config = config(settings, store, createTempDir(), NoMergePolicy.INSTANCE, null);
+        store.createEmpty(settings.getIndexVersionCreated().luceneVersion);
+        String translogUuid = Translog.createEmptyTranslog(
+            config.getTranslogConfig().getTranslogPath(),
+            SequenceNumbers.NO_OPS_PERFORMED,
+            shardId,
+            primaryTerm.get()
+        );
+        store.associateIndexWithNewTranslog(translogUuid);
+        return config.toBuilder().primaryOperationPolicy(FOREIGN_POLICY).build();
+    }
+
+    public void testAnotherPluginsPrimaryOperationPolicyIsRefusedOrHandedToOpenSearch() throws IOException {
+        // The index asked for the Rust engine: the engine refuses, naming the policy.
+        try (Store store = createStore(newFSDirectory(createTempDir()))) {
+            EngineConfig asked = policyConfig(store, Settings.builder().put(RustEngineSupport.ENGINE_ENABLED.getKey(), true).build());
+            IllegalArgumentException refused = expectThrows(IllegalArgumentException.class, () -> new RustEngine(asked));
+            assertThat(refused.getMessage(), containsString("default primary operation policy only"));
+            assertThat(refused.getMessage(), containsString("[foreign]"));
+            expectThrows(IllegalArgumentException.class, () -> new RustEngineFactory(true).newReadWriteEngine(asked));
+        }
+        // The index only inherits the node default: OpenSearch's engine serves it.
+        try (Store store = createStore(newFSDirectory(createTempDir()))) {
+            EngineConfig inherited = policyConfig(store, Settings.EMPTY);
+            try (Engine engine = new RustEngineFactory(true).newReadWriteEngine(inherited)) {
+                assertThat(engine, instanceOf(InternalEngine.class));
+                assertFalse(engine instanceof RustEngine);
             }
         }
     }

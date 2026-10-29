@@ -1,8 +1,8 @@
 # opensearch-plugin
 
-The lucene-rust plugin for **OpenSearch 3.8.0** (Lucene 10.5.0): it runs the
+The lucene-rust plugin for **OpenSearch 3.9.0** (Lucene 10.5.1): it runs the
 query phase of supported searches in Rust, through `liblucene_ffi.so` called
-with Java's Foreign Function & Memory API (JDK 25, the JDK OpenSearch 3.8.0 bundles),
+with Java's Foreign Function & Memory API (JDK 25, the JDK OpenSearch 3.9.0 bundles),
 and leaves everything else — unsupported searches, fetch, indexing, refresh —
 to OpenSearch and Lucene. Milestone:
 [`docs/milestones/m2-opensearch-read-path.md`](../docs/milestones/m2-opensearch-read-path.md).
@@ -17,7 +17,7 @@ gradle -p opensearch-plugin check          # JVM-side differential self test
 ```
 
 The plugin compiles against the jars of the distribution it installs into,
-extracted from the `opensearchproject/opensearch:3.8.0` image — a plugin must
+extracted from the `opensearchproject/opensearch:3.9.0` image — a plugin must
 match its node exactly, and the build then needs no Maven repository.
 `bundlePlugin` runs `cargo build --release -p lucene-ffi` and puts the library
 under `native/<os>-<arch>/` in the zip; `-PextraNative=linux-aarch64=PATH`
@@ -87,7 +87,7 @@ decode it, and is freed with the segment).
 | `src/test/…/NativeBench` | `gradle nativeBench`: the downcall's crossing cost and in-process latency |
 | `src/yamlRestTest/…/LuceneRustYamlIT` | OpenSearch's REST YAML suites, for `verify-opensearch.sh --yaml` |
 | `e2e/verify_opensearch.py` | the node-level harness `scripts/verify-opensearch.sh` runs |
-| `e2e/verify_upgrade.py` | `scripts/verify-opensearch-upgrade.sh` (M8): an index OpenSearch 2.19 wrote, opened in place and restored from its snapshot by 3.8.0 with this plugin, answered as a stock 3.8.0 node answers it, natively, before and after a force merge |
+| `e2e/verify_upgrade.py` | `scripts/verify-opensearch-upgrade.sh` (M8): an index OpenSearch 2.19 wrote, opened in place and restored from its snapshot by 3.9.0 with this plugin, answered as a stock 3.9.0 node answers it, natively, before and after a force merge |
 | `docker/Dockerfile` | the test node: the pinned image, bundled plugins removed, this one installed |
 
 The Rust side is plain C ABI, unit-tested without a JVM:

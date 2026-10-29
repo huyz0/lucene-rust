@@ -1,5 +1,5 @@
 /*
- * Derived from OpenSearch 3.8.0 by opensearch-plugin/tools/derive_engine.py -- do not edit;
+ * Derived from OpenSearch 3.9.0 by opensearch-plugin/tools/derive_engine.py -- do not edit;
  * change the script and re-run it. The original notice follows.
  */
 /*
@@ -14,14 +14,17 @@ package org.lucenerust.opensearch.engine;
 
 import org.opensearch.index.engine.*;
 
+import org.opensearch.common.annotation.ExperimentalApi;
+
 import java.util.Objects;
 import java.util.Optional;
 
 /**
  * Encapsulates the execution strategy for an engine operation (e.g. indexing or deletion).
  *
- * @opensearch.internal
+ * @opensearch.experimental
  */
+@ExperimentalApi
 @SuppressWarnings({ "deprecation", "try", "unchecked", "rawtypes", "cast", "static", "fallthrough", "this-escape", "removal" }) // derived code, linted upstream
 public class OperationStrategy {
 

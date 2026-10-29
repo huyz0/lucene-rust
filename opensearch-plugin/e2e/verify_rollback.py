@@ -47,8 +47,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import verify_opensearch as v  # noqa: E402
 
 NODES = [("os1", 9201, 9301), ("os2", 9202, 9302), ("os3", 9203, 9303)]
-PLUGIN_IMAGE = os.environ.get("PLUGIN_IMAGE", "lucene-rust-opensearch:3.8.0")
-STOCK_IMAGE = os.environ.get("STOCK_IMAGE", "lucene-rust-stock:3.8.0")
+PLUGIN_IMAGE = os.environ.get("PLUGIN_IMAGE", "lucene-rust-opensearch:3.9.0")
+STOCK_IMAGE = os.environ.get("STOCK_IMAGE", "lucene-rust-stock:3.9.0")
 DATA = os.environ["ROLLBACK_DATA"]
 DOCS = int(os.environ.get("ROLLBACK_DOCS", "200000"))
 FAILURES = []
