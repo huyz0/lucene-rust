@@ -3064,6 +3064,52 @@ fn a_scoring_block_join_beside_an_optional_term_scores_like_lucene() {
     assert_eq!(top[..], all[..top.len()]);
 }
 
+/// Lucene 10.6's `TestDenseConjunctionBulkScorer.testTwoPhaseDefaultRunEndIsPartitionInvariant`
+/// (branch_10_6, d1e035949f): a two-phase clause's current document is only
+/// a candidate until `matches()`, so no window may collect it as part of a
+/// run; scored in one pass or as adjacent width-1 windows, it collects the
+/// same documents.
+#[test]
+fn a_two_phase_clause_is_partition_invariant() {
+    struct Docs(Vec<i32>);
+    impl ScoringCollector for Docs {
+        fn collect(&mut self, doc: i32, _score: f32) {
+            self.0.push(doc);
+        }
+        fn collect_range(&mut self, min: i32, max: i32, _score: f32) {
+            self.0.extend(min..max);
+        }
+    }
+    let max_doc = 5_000;
+    let hits: Vec<(i32, f32)> = (0..max_doc)
+        .filter(|d| d % 3 != 0)
+        .map(|d| (d, 1.0))
+        .collect();
+    let expected: Vec<i32> = hits.iter().map(|h| h.0).collect();
+    let leaf = Leaf {
+        hits,
+        approx: (0..max_doc).collect(),
+        two_phase: true,
+        block_max: Vec::new(),
+    };
+    for mode in [Mode::NoScores, Mode::Complete] {
+        let mut whole = Bulk::scorer(Box::new(Fake::new(leaf.clone())));
+        let mut single = Docs(Vec::new());
+        whole
+            .score(mode, None, &mut single, 0, NO_MORE_DOCS)
+            .unwrap();
+        assert_eq!(single.0, expected);
+        let mut windows = Bulk::scorer(Box::new(Fake::new(leaf.clone())));
+        let mut per_doc = Docs(Vec::new());
+        for doc in 0..max_doc {
+            windows
+                .score(mode, None, &mut per_doc, doc, doc + 1)
+                .unwrap();
+        }
+        assert_eq!(per_doc.0, expected);
+    }
+}
+
 /// Lucene 10.6's `TestBlockMaxConjunctionBulkScorer.testDoesNotIterateWindowsBeyondMaxDoc`
 /// (branch_10_6, #16855): when the windows at the end of a segment are not
 /// competitive the lead is not advanced, and scoring must still stop at
