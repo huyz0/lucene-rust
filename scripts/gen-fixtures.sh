@@ -332,8 +332,26 @@ fi
 # --- check mode --------------------------------------------------------------
 TMP_A=$(mktemp -d); TMP_B=$(mktemp -d)
 echo "gen-fixtures: generating twice to derive the deterministic subset"
-generate_into "$TMP_A" "${GENERATORS[@]}" "${APPENDERS[@]}"
-generate_into "$TMP_B" "${GENERATORS[@]}" "${APPENDERS[@]}"
+# The two generations write disjoint directories and only read the tree, so
+# they run at once: each is a sequence of single-threaded JVMs, and on a
+# 4-core runner doing them one after the other left half of it idle (~15 min
+# of a 17-minute job). Run them serially with GEN_FIXTURES_SERIAL=1.
+if [ "${GEN_FIXTURES_SERIAL:-0}" = 1 ]; then
+  generate_into "$TMP_A" "${GENERATORS[@]}" "${APPENDERS[@]}"
+  generate_into "$TMP_B" "${GENERATORS[@]}" "${APPENDERS[@]}"
+else
+  generate_into "$TMP_A" "${GENERATORS[@]}" "${APPENDERS[@]}" &
+  pid_a=$!
+  generate_into "$TMP_B" "${GENERATORS[@]}" "${APPENDERS[@]}" &
+  pid_b=$!
+  gen_rc=0
+  wait "$pid_a" || gen_rc=1
+  wait "$pid_b" || gen_rc=1
+  if [ "$gen_rc" -ne 0 ]; then
+    echo "gen-fixtures: a generator failed" >&2
+    exit 1
+  fi
+fi
 
 status=0
 deterministic=0; nondeterministic=0; machine_dependent=0; missing=0; mismatched=0; extra=0

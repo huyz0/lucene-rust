@@ -146,7 +146,11 @@ same commands natively.
 
 The same gate runs in CI on every push and pull request
 ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)), on Linux x64 and
-arm64, plus the two Java jobs (`fixtures`, `write-path`), both pinned to JDK 21 to match the container. The arm64 lint is worth running locally before
+arm64, plus the two Java jobs (`fixtures`, `write-path`), both pinned to JDK 21 to match the container.
+CI skips the jobs a change cannot affect (a docs-only change runs only the
+docs-reading gates), runs tests through `cargo nextest` with a 10-minute
+per-test limit, and reports one required check, `ci-ok`; see
+[`docs/ci.md`](docs/ci.md). The arm64 lint is worth running locally before
 touching `lucene-ffi`: `c_char` signedness differs by target, so a whole class of
 defect is invisible on x86_64 alone (see the **ffi-safety** skill). It is a
 check-only build, so it needs no cross C compiler and no linker. The toolchain is pinned in

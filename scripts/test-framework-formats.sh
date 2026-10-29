@@ -32,11 +32,10 @@ CP=$(lucene_classpath lucene-core)
 cargo build --quiet --release -p lucene-test-framework --example format_suites
 BIN="$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')/release/examples/format_suites"
 
-if ! out=$("$BIN" --seeds 0..30 --java-cp "$CP"); then
-  echo "$out" | tail -3
-  exit 1
-fi
-echo "$out" | tail -1
+# The 30 seeds run as parallel slices: see scripts/lib-seed-shards.sh.
+source "$(dirname "$0")/lib-seed-shards.sh"
+out=$(run_seed_shards 0 30 -- "$BIN" --java-cp "$CP") || { echo "$out"; exit 1; }
+echo "$out"
 # Gate rule #10: 11 suites x 30 seeds, every one checked by Lucene.
 echo "$out" | grep -q '^format_suites: 330 index(es), .* checked by Lucene too' || {
   echo "test-framework-formats: the run did not check all 330 indexes with Lucene" >&2
