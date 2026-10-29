@@ -53,6 +53,7 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+import java.util.function.LongPredicate;
 import java.util.function.Predicate;
 
 /**
@@ -260,6 +261,10 @@ public final class NativeAggregationTree {
 
     static final class TermsNode extends Node {
         final NativeAggregations.Terms terms;
+        /** The {@code missing} term, or null. */
+        BytesRef missingTerm;
+        /** {@code include}/{@code exclude}: the ordinal count and the accepted ones' bits, or null. */
+        long[][] accepted;
 
         TermsNode(AggregatorBase agg, List<Node> subs, NativeAggregations.Terms terms) {
             super(agg, subs);
@@ -271,6 +276,20 @@ public final class NativeAggregationTree {
             out.write(TERMS);
             terms.write(out);
             out.write(NativeAggregations.orderCode(terms.order()));
+            // Flags: 1, min_doc_count 0; 2, a missing term follows; 4, the accepted ordinals.
+            out.write(
+                (terms.thresholds().getMinDocCount() == 0 ? 1 : 0) | (missingTerm != null ? 2 : 0) | (accepted != null ? 4 : 0)
+            );
+            if (missingTerm != null) {
+                writeBytes(out, missingTerm);
+            }
+            if (accepted != null) {
+                writeLong(out, accepted[0][0]);
+                NativeAggregations.writeInt(out, accepted[1].length);
+                for (long w : accepted[1]) {
+                    writeLong(out, w);
+                }
+            }
             writeSubs(out);
         }
 
@@ -952,8 +971,19 @@ public final class NativeAggregationTree {
         String field = config.fieldContext().field();
         byte valueKind = NativeAggregations.valueKind(type);
         Long missing = null;
+        if (config.missing() != null && type instanceof KeywordFieldMapper.KeywordFieldType) {
+            // A keyword's missing term (CoreValuesSourceType.BYTES.replaceMissing): keyword terms only.
+            if (factory.equals(TERMS_FACTORY) == false) {
+                return null;
+            }
+            BytesRef term = config.format().parseBytesRef(config.missing().toString());
+            Node n = valuesSourceNode(ctx, f, agg, top, subs, config, factory, aggClass, type, field, valueKind, false);
+            if (n instanceof TermsNode t) {
+                t.missingTerm = BytesRef.deepCopyOf(term);
+            }
+            return n;
+        }
         if (config.missing() != null) {
-            // Numeric nodes only; a keyword's missing term is not one of its ordinals.
             missing = missing(ctx, config, valueKind);
             if (missing == null) {
                 return null;
@@ -964,6 +994,31 @@ public final class NativeAggregationTree {
             n.missing = missing;
         }
         return n;
+    }
+
+    /**
+     * A keyword {@code terms} aggregator's {@code include}/{@code exclude} as the bits of the global
+     * ordinals it accepts: GlobalOrdinalsStringTermsAggregator's {@code acceptedGlobalOrdinals} (built
+     * by {@code IncludeExclude.OrdinalsFilter} over its missing-replaced values) asked of each of its
+     * {@code valueCount} ordinals. Null for another aggregator (an {@code execution_hint: map} one).
+     */
+    static long[][] acceptedOrdinals(AggregatorBase agg) throws ReflectiveOperationException {
+        if (Reflect.inHierarchy(agg.getClass(), "acceptedGlobalOrdinals") == null
+            || Reflect.inHierarchy(agg.getClass(), "valueCount") == null) {
+            return null;
+        }
+        LongPredicate accepted = (LongPredicate) get(agg, "acceptedGlobalOrdinals");
+        long count = (long) get(agg, "valueCount");
+        if (count < 0 || (count + 63) / 64 > Integer.MAX_VALUE) {
+            return null;
+        }
+        long[] words = new long[(int) ((count + 63) / 64)];
+        for (long ord = 0; ord < count; ord++) {
+            if (accepted.test(ord)) {
+                words[(int) (ord >>> 6)] |= 1L << (ord & 63);
+            }
+        }
+        return new long[][] { { count }, words };
     }
 
     /** {@link #node} for a values-source aggregation; {@code missing}: it has a {@code missing} value. */
@@ -984,19 +1039,30 @@ public final class NativeAggregationTree {
         switch (factory) {
             case TERMS_FACTORY: {
                 if (type instanceof KeywordFieldMapper.KeywordFieldType) {
-                    if (missing) {
+                    NativeAggregations.Terms t = NativeAggregations.termsSpec(ctx, f, config);
+                    // min_doc_count 0: every term an empty bucket, none of which has sub-aggregations.
+                    if (t == null || (t.thresholds().getMinDocCount() == 0 && subs.isEmpty() == false)) {
                         return null;
                     }
-                    NativeAggregations.Terms t = NativeAggregations.termsSpec(ctx, f, config);
-                    return t == null ? null : new TermsNode(agg, subs, t);
+                    TermsNode node = new TermsNode(agg, subs, t);
+                    if (NativeAggregations.hasIncludeExclude(f)) {
+                        node.accepted = acceptedOrdinals(agg);
+                        if (node.accepted == null) {
+                            return null;
+                        }
+                    }
+                    return node;
                 }
                 // Numeric: integers, longs, floats, doubles and millisecond dates, collected by
                 // NumericTermsAggregator (not a significant-terms or star-tree variant).
                 if (valueKind < 0 || aggClass.equals(AGGS + "bucket.terms.NumericTermsAggregator") == false) {
                     return null;
                 }
+                if (NativeAggregations.hasIncludeExclude(f)) {
+                    return null;
+                }
                 NativeAggregations.Terms t = NativeAggregations.termsSpec(ctx, f, config);
-                return t == null ? null : new NumericTermsNode(agg, subs, t, valueKind);
+                return t == null || t.thresholds().getMinDocCount() == 0 ? null : new NumericTermsNode(agg, subs, t, valueKind);
             }
             case AGGS + "metrics.CardinalityAggregatorFactory": {
                 if (missing || aggClass.equals(AGGS + "metrics.CardinalityAggregator") == false) {
@@ -1245,6 +1311,11 @@ public final class NativeAggregationTree {
         byte[] b = s.getBytes(java.nio.charset.StandardCharsets.UTF_8);
         NativeAggregations.writeInt(out, b.length);
         out.writeBytes(b);
+    }
+
+    static void writeBytes(ByteArrayOutputStream out, BytesRef b) {
+        NativeAggregations.writeInt(out, b.length);
+        out.write(b.bytes, b.offset, b.length);
     }
 
     static void writeLong(ByteArrayOutputStream out, long v) {

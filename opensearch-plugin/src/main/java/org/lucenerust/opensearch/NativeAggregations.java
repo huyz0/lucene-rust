@@ -408,9 +408,9 @@ public final class NativeAggregations {
         if (config.fieldContext().fieldType() instanceof KeywordFieldMapper.KeywordFieldType == false) {
             return null;
         }
-        Terms terms = termsSpec(ctx, f, config);
-        // The flat pass ranks by count only; another order takes the tree.
-        return terms != null && DEFAULT_TERMS_ORDER.equals(terms.order()) ? terms : null;
+        Terms terms = hasIncludeExclude(f) ? null : termsSpec(ctx, f, config);
+        // The flat pass ranks by count and counts matches only; the rest takes the tree.
+        return terms != null && DEFAULT_TERMS_ORDER.equals(terms.order()) && terms.thresholds().getMinDocCount() > 0 ? terms : null;
     }
 
     /**
@@ -431,20 +431,25 @@ public final class NativeAggregations {
         return BucketOrder.key(false).equals(order) ? 3 : -1;
     }
 
+    /** Whether a {@code terms} factory has an {@code include}/{@code exclude}. */
+    static boolean hasIncludeExclude(AggregatorFactory f) throws IllegalAccessException {
+        return declared(f, "includeExclude") != null;
+    }
+
     /**
      * A {@code terms} on any field, keyword or numeric, with the parameters the native side
-     * takes: an order {@link #orderCode} names, no {@code include}/{@code exclude}, {@code min_doc_count} at least
-     * one, and no {@code _doc_count} field in the shard; or null.
+     * takes: an order {@link #orderCode} names, any {@code min_doc_count} (0 only where the caller
+     * takes it), and no {@code _doc_count} field in the shard; or null. Its {@code include}/{@code
+     * exclude} is the caller's ({@link #hasIncludeExclude}).
      */
     static Terms termsSpec(SearchContext ctx, AggregatorFactory f, ValuesSourceConfig config) throws IllegalAccessException {
-        Object include = declared(f, "includeExclude");
         BucketOrder order = (BucketOrder) declared(f, "order");
         TermsAggregator.BucketCountThresholds declaredThresholds = (TermsAggregator.BucketCountThresholds) declared(
             f,
             "bucketCountThresholds"
         );
         Boolean showError = (Boolean) declared(f, "showTermDocCountError");
-        if (include != null || orderCode(order) < 0 || declaredThresholds == null || showError == null) {
+        if (orderCode(order) < 0 || declaredThresholds == null || showError == null) {
             return null;
         }
         // TermsAggregatorFactory.doCreateInternal: the shard_size heuristic (not for a key order,
@@ -454,7 +459,9 @@ public final class NativeAggregations {
             thresholds.setShardSize(BucketUtils.suggestShardSideQueueSize(thresholds.getRequiredSize()));
         }
         thresholds.ensureValidity();
-        if (thresholds.getMinDocCount() < 1 || thresholds.getShardMinDocCount() != 0) {
+        // min_doc_count 0 only where the caller takes it (a keyword tree node without
+        // sub-aggregations).
+        if (thresholds.getMinDocCount() < 0 || thresholds.getShardMinDocCount() != 0) {
             return null;
         }
         for (LeafReaderContext leaf : ctx.searcher().getIndexReader().leaves()) {

@@ -14,7 +14,10 @@
 //! global   := 0 | 1 query:bytes nodes         (the global pass: its query and nodes)
 //! node     := METRIC value_kind:u8 source:u8 needs:u8 field
 //!           | CARDINALITY card_kind:u8 precision:u8 field
-//!           | TERMS field shard_size:i32 order:u8 nodes
+//!           | TERMS field shard_size:i32 order:u8 flags:u8 [missing:bytes]
+//!                   [ords:i64 words:i32 word:i64*] nodes
+//!                  (flag 1: `min_doc_count: 0`; 2: a `missing` term follows;
+//!                   4: `include`/`exclude`, the accepted ordinals' bits)
 //!           | NUMERIC_TERMS field value_kind:u8 shard_size:i32 order:u8 nodes
 //!           | HISTOGRAM field value_kind:u8 interval:f64 offset:f64 bounds_f64 nodes
 //!           | DATE_HISTOGRAM field unit:u8 [interval:i64 when unit = UNIT_INTERVAL]
@@ -57,8 +60,8 @@ use std::sync::Arc;
 
 use lucene_search::aggs::{MinScore, Source, ValueKind};
 use lucene_search::bucket_aggs::{
-    self, AggNode, AggResult, CardinalityKind, DateRounding, DateUnit, Globals, RoundingKind,
-    TermsOrder,
+    self, AcceptedOrds, AggNode, AggResult, CardinalityKind, DateRounding, DateUnit, Globals,
+    RoundingKind, TermsOrder,
 };
 use lucene_search::field_norms::FieldNorms;
 use lucene_search::multi_segment::OpenSegment;
@@ -268,11 +271,54 @@ fn node_of(
         AGG_TERMS => {
             let field = field(c)?;
             let shard_size = shard_size(c)?;
+            let order = terms_order(c)?;
+            // `min_doc_count: 0`, which the plan sends without sub-aggregations,
+            // and the `missing` term.
+            let flags = c.u8()?;
+            if flags > 7 {
+                return Err(bad(format!("aggregation tree: terms flags {flags}")));
+            }
+            let zero_buckets = flags & 1 != 0;
+            let missing = if flags & 2 != 0 {
+                Some(c.bytes()?.to_vec())
+            } else {
+                None
+            };
+            let accepted = if flags & 4 != 0 {
+                let count = u64::try_from(c.i64()?)
+                    .map_err(|_| bad("aggregation tree: negative ordinal count".to_string()))?;
+                let words = c.len()?;
+                if u64::try_from(words).ok() != Some(count.div_ceil(64)) {
+                    return Err(bad(format!(
+                        "aggregation tree: {words} words for {count} ordinals"
+                    )));
+                }
+                // Grown as read: a length past the blob fails at its end.
+                let mut bits = Vec::new();
+                for _ in 0..words {
+                    bits.push(u64::from_le_bytes(c.i64()?.to_le_bytes()));
+                }
+                Some(AcceptedOrds {
+                    count,
+                    bits: bits.into(),
+                })
+            } else {
+                None
+            };
+            let subs = nodes(c, depth + 1, count)?;
+            if zero_buckets && !subs.is_empty() {
+                return Err(bad(
+                    "aggregation tree: min_doc_count 0 with sub-aggregations".to_string(),
+                ));
+            }
             AggNode::Terms {
                 field,
+                missing,
+                accepted,
                 shard_size,
-                order: terms_order(c)?,
-                subs: nodes(c, depth + 1, count)?,
+                order,
+                zero_buckets,
+                subs,
             }
         }
         AGG_NUMERIC_TERMS => {
@@ -617,7 +663,7 @@ pub(crate) fn aggregate_tree_blobs(
             .map_err(crate::query::map_search_error)?;
         ords.insert(f.to_string(), g);
     }
-    let globals = Globals { ords: &ords };
+    let globals = Globals::new(&ords);
     let norm_fields: Vec<String> = if min_score.is_some() {
         crate::query::clause_field_names(&q)
             .into_iter()
@@ -754,6 +800,7 @@ pub(crate) mod tests {
         b.push(AGG_TERMS);
         string(&mut b, "body");
         b.extend_from_slice(&5i32.to_le_bytes());
+        b.push(0);
         b.push(0);
         b.push(0);
         // date_histogram(n, unit day, then interval) > []
@@ -1028,6 +1075,49 @@ pub(crate) mod tests {
         assert_eq!(bad(&with(&points)), invalid);
         let doc_values = [m, vec![AGG_METRIC, 0, 0, 1, 1, 0, 0, 0, b'n']].concat();
         assert!(decode_tree(&with(&doc_values)).is_ok());
+        // Terms flags past 3, and min_doc_count 0 over a sub-aggregation.
+        let mut t = vec![AGG_TERMS];
+        string(&mut t, "k");
+        t.extend_from_slice(&1i32.to_le_bytes());
+        t.extend_from_slice(&[0, 8, 0]);
+        assert_eq!(bad(&with(&t)), invalid);
+        // A missing term: decoded with min_doc_count 0.
+        let mut t = vec![AGG_TERMS];
+        string(&mut t, "k");
+        t.extend_from_slice(&1i32.to_le_bytes());
+        t.extend_from_slice(&[0, 3]);
+        string(&mut t, "none");
+        t.push(0);
+        let tree = decode_tree(&with(&t)).unwrap();
+        assert!(matches!(
+            &tree.nodes[0],
+            AggNode::Terms { missing: Some(m), zero_buckets: true, .. } if m == b"none"
+        ));
+        // Accepted ordinals: 65 of them in two words; one word too few.
+        let accepted = |words: i32| {
+            let mut t = vec![AGG_TERMS];
+            string(&mut t, "k");
+            t.extend_from_slice(&1i32.to_le_bytes());
+            t.extend_from_slice(&[0, 4]);
+            t.extend_from_slice(&65i64.to_le_bytes());
+            t.extend_from_slice(&words.to_le_bytes());
+            for w in 0..words {
+                t.extend_from_slice(&i64::from(w + 5).to_le_bytes());
+            }
+            t.push(0);
+            t
+        };
+        let tree = decode_tree(&with(&accepted(2))).unwrap();
+        assert!(matches!(
+            &tree.nodes[0],
+            AggNode::Terms { accepted: Some(a), .. } if a.count == 65 && a.bits[..] == [5, 6]
+        ));
+        assert_eq!(bad(&with(&accepted(1))), invalid);
+        let mut t = vec![AGG_TERMS];
+        string(&mut t, "k");
+        t.extend_from_slice(&1i32.to_le_bytes());
+        t.extend_from_slice(&[0, 1, 1, AGG_METRIC, 0, 0, 1, 1, 0, 0, 0, b'n']);
+        assert_eq!(bad(&with(&t)), invalid);
         // An order past `_key` descending.
         let mut t = vec![AGG_TERMS];
         string(&mut t, "k");
