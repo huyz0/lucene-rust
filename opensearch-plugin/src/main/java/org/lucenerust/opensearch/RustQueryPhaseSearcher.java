@@ -463,6 +463,11 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         return f;
     }
 
+    /** Whether {@code ctx}'s index runs every shape native ({@code native_shapes: all}). */
+    static boolean allShapes(SearchContext ctx) {
+        return flags(ctx).allShapes();
+    }
+
     /** True when {@code field} scores with a default-parameter {@link BM25Similarity}. */
     static boolean defaultBm25(ContextIndexSearcher searcher, String field) {
         Similarity sim = searcher.getSimilarity();
@@ -1104,6 +1109,32 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
                 throw new IOException("native docFreq failed (" + rc + "): " + NativeBridge.lastError());
             }
             return Math.toIntExact(out[0]);
+        }
+        if (query.getClass() == org.apache.lucene.search.FieldExistsQuery.class && reader.hasDeletions() == false) {
+            // The documents with an indexed value: the points' or terms' doc count.
+            String field = ((org.apache.lucene.search.FieldExistsQuery) query).getField();
+            int count = 0;
+            for (LeafReaderContext leaf : reader.leaves()) {
+                org.apache.lucene.index.FieldInfo info = leaf.reader().getFieldInfos().fieldInfo(field);
+                if (info == null) {
+                    continue;
+                }
+                if (info.getPointIndexDimensionCount() > 0) {
+                    org.apache.lucene.index.PointValues points = leaf.reader().getPointValues(field);
+                    if (points != null) {
+                        count += points.getDocCount();
+                    }
+                } else if (info.getIndexOptions() != org.apache.lucene.index.IndexOptions.NONE) {
+                    org.apache.lucene.index.Terms terms = leaf.reader().terms(field);
+                    if (terms != null) {
+                        count += terms.getDocCount();
+                    }
+                } else {
+                    // Not indexed: no shortcut.
+                    return -1;
+                }
+            }
+            return count;
         }
         return -1;
     }

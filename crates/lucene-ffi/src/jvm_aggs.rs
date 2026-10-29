@@ -27,6 +27,17 @@
 //!           | GLOBAL nodes
 //!           | MISSING value:i64 node        (a numeric node's `missing`, in its
 //!                                            column's encoding; doc-values metrics)
+//!           | COMPOSITE size:i32 count:u8 source* after:u8 [part*] segments:i32 u8*
+//!                       nodes                 (top level only; `after` 1: one part
+//!                                              per source; a flag per segment: its
+//!                                              first source read sorted)
+//! source   := field values flags:u8 missing_order:u8
+//!             (flag 1: descending, 2: `missing_bucket`; order 0 default, 1 first,
+//!              2 last)
+//! values   := 0 (keyword) | 1 (long) | 2 value_kind:u8 (double)
+//!           | 3 value_kind:u8 interval:f64 (histogram)
+//!           | 4 unit:u8 [interval:i64] zone_ms:i64 offset:i64 (date_histogram)
+//! part     := 0 (missing) | 1 key:i64 | 2 term:bytes
 //! bounds_*  := flags:u8 [min] [max]           (flag 1: a minimum, 2: a maximum)
 //! ```
 //!
@@ -50,6 +61,9 @@
 //! HISTOGRAM    n:i32 (count:i32 (key:f64 docs:i64)*)*n  subs
 //! DATE_HIST.   n:i32 (count:i32 (key:i64 docs:i64)*)*n  subs
 //! RANGE/FILTERS/GLOBAL  n:i32 width:i32 docs:i64*(n*width)  subs
+//! COMPOSITE    count:i32 (docs:i64 value*)*  subs   (one owning bucket; a value
+//!                                              per source: 0 missing, 1 long:i64,
+//!                                              2 double:f64, 3 term:bytes)
 //! ```
 //!
 //! and `subs` is each sub-node's result, its owning buckets being the
@@ -60,8 +74,9 @@ use std::sync::Arc;
 
 use lucene_search::aggs::{MinScore, Source, ValueKind};
 use lucene_search::bucket_aggs::{
-    self, AcceptedOrds, AggNode, AggResult, CardinalityKind, DateRounding, DateUnit, Globals,
-    RoundingKind, TermsOrder,
+    self, AcceptedOrds, AggNode, AggResult, CardinalityKind, CompositeAfter, CompositeKeyValue,
+    CompositeSource, CompositeValues, DateRounding, DateUnit, Globals, MissingOrder, RoundingKind,
+    TermsOrder,
 };
 use lucene_search::field_norms::FieldNorms;
 use lucene_search::multi_segment::OpenSegment;
@@ -82,6 +97,9 @@ const AGG_GLOBAL: u8 = 7;
 const AGG_NUMERIC_TERMS: u8 = 8;
 /// A prefix, not a node: the next node's `missing` value.
 const AGG_MISSING: u8 = 9;
+const AGG_COMPOSITE: u8 = 10;
+/// The most `composite` sources a tree may name.
+const MAX_COMPOSITE_SOURCES: usize = 16;
 
 /// `date_histogram` units; [`UNIT_INTERVAL`] is a fixed interval.
 const UNITS: [DateUnit; 8] = [
@@ -131,6 +149,32 @@ fn field(c: &mut Cursor<'_>) -> Result<String, FfiStatus> {
 
 fn f64_of(c: &mut Cursor<'_>) -> Result<f64, FfiStatus> {
     Ok(f64::from_bits(c.i64()? as u64))
+}
+
+/// A `date_histogram`'s rounding: `unit [interval] zone_ms offset`.
+fn date_rounding(c: &mut Cursor<'_>) -> Result<DateRounding, FfiStatus> {
+    let unit = c.u8()?;
+    let kind = match unit {
+        UNIT_INTERVAL => {
+            let interval = c.i64()?;
+            if interval < 1 {
+                return Err(bad(format!("aggregation tree: interval {interval}")));
+            }
+            RoundingKind::Interval(interval)
+        }
+        u => RoundingKind::Unit(
+            *UNITS
+                .get(usize::from(u))
+                .ok_or_else(|| bad(format!("aggregation tree: date unit {u}")))?,
+        ),
+    };
+    let zone_ms = c.i64()?;
+    let offset = c.i64()?;
+    Ok(DateRounding {
+        kind,
+        zone_ms,
+        offset,
+    })
 }
 
 /// A `terms`' effective `shard_size`: at least one.
@@ -366,35 +410,102 @@ fn node_of(
         }
         AGG_DATE_HISTOGRAM => {
             let field = field(c)?;
-            let unit = c.u8()?;
-            let kind = match unit {
-                UNIT_INTERVAL => {
-                    let interval = c.i64()?;
-                    if interval < 1 {
-                        return Err(bad(format!("aggregation tree: interval {interval}")));
-                    }
-                    RoundingKind::Interval(interval)
-                }
-                u => RoundingKind::Unit(
-                    *UNITS
-                        .get(usize::from(u))
-                        .ok_or_else(|| bad(format!("aggregation tree: date unit {u}")))?,
-                ),
-            };
-            let zone_ms = c.i64()?;
-            let offset = c.i64()?;
+            let rounding = date_rounding(c)?;
             let flags = c.u8()?;
             let min = if flags & 1 != 0 { Some(c.i64()?) } else { None };
             let max = if flags & 2 != 0 { Some(c.i64()?) } else { None };
             AggNode::DateHistogram {
                 missing: None,
                 field,
-                rounding: DateRounding {
-                    kind,
-                    zone_ms,
-                    offset,
-                },
+                rounding,
                 hard_bounds: (min, max),
+                subs: nodes(c, depth + 1, count)?,
+            }
+        }
+        AGG_COMPOSITE if depth == 0 => {
+            let size = usize::try_from(c.i32()?)
+                .map_err(|_| bad("aggregation tree: negative composite size".to_string()))?;
+            let n = usize::from(c.u8()?);
+            if n == 0 || n > MAX_COMPOSITE_SOURCES {
+                return Err(bad(format!("aggregation tree: {n} composite sources")));
+            }
+            let mut sources = Vec::new();
+            for _ in 0..n {
+                let field = field(c)?;
+                let values = match c.u8()? {
+                    0 => CompositeValues::Keyword,
+                    1 => CompositeValues::Long,
+                    2 => CompositeValues::Double(value_kind(c.u8()?)?),
+                    3 => {
+                        let kind = value_kind(c.u8()?)?;
+                        let interval = f64_of(c)?;
+                        if !(interval > 0.0 && interval.is_finite()) {
+                            return Err(bad(format!(
+                                "aggregation tree: histogram interval {interval}"
+                            )));
+                        }
+                        CompositeValues::Histogram { kind, interval }
+                    }
+                    4 => CompositeValues::Date(date_rounding(c)?),
+                    v => return Err(bad(format!("aggregation tree: composite values {v}"))),
+                };
+                let flags = c.u8()?;
+                if flags > 3 {
+                    return Err(bad(format!("aggregation tree: composite flags {flags}")));
+                }
+                let missing_order = match c.u8()? {
+                    0 => MissingOrder::Default,
+                    1 => MissingOrder::First,
+                    2 => MissingOrder::Last,
+                    o => return Err(bad(format!("aggregation tree: missing order {o}"))),
+                };
+                sources.push(CompositeSource {
+                    field,
+                    values,
+                    reverse: flags & 1 != 0,
+                    missing_bucket: flags & 2 != 0,
+                    missing_order,
+                });
+            }
+            let after = match c.u8()? {
+                0 => None,
+                1 => {
+                    let mut parts = Vec::new();
+                    for s in &sources {
+                        parts.push(match (c.u8()?, &s.values) {
+                            (0, _) if s.missing_bucket => CompositeAfter::Missing,
+                            (2, CompositeValues::Keyword) => {
+                                CompositeAfter::Term(c.bytes()?.to_vec())
+                            }
+                            (1, v) if *v != CompositeValues::Keyword => {
+                                CompositeAfter::Value(c.i64()?)
+                            }
+                            (t, _) => {
+                                return Err(bad(format!(
+                                    "aggregation tree: after part {t} for {}",
+                                    s.field
+                                )))
+                            }
+                        });
+                    }
+                    Some(parts)
+                }
+                f => return Err(bad(format!("aggregation tree: after flag {f}"))),
+            };
+            let segments = c.len()?;
+            let mut sorted_lead = Vec::new();
+            for _ in 0..segments {
+                sorted_lead.push(match c.u8()? {
+                    0 => false,
+                    1 => true,
+                    f => return Err(bad(format!("aggregation tree: sorted lead flag {f}"))),
+                });
+            }
+            AggNode::Composite {
+                sources,
+                size,
+                after,
+                sorted_lead,
                 subs: nodes(c, depth + 1, count)?,
             }
         }
@@ -561,6 +672,30 @@ pub(crate) fn encode_result(r: &AggResult, out: &mut Vec<u8>) -> Result<(), FfiS
                 for (key, docs) in list {
                     out.extend_from_slice(&key.to_le_bytes());
                     put_u64(out, *docs);
+                }
+            }
+            encode_subs(subs, out)?;
+        }
+        AggResult::Composite { buckets, subs } => {
+            put_i32(out, buckets.len())?;
+            for (key, docs) in buckets {
+                put_u64(out, *docs);
+                for v in key {
+                    match v {
+                        CompositeKeyValue::Missing => out.push(0),
+                        CompositeKeyValue::Long(l) => {
+                            out.push(1);
+                            out.extend_from_slice(&l.to_le_bytes());
+                        }
+                        CompositeKeyValue::Double(d) => {
+                            out.push(2);
+                            out.extend_from_slice(&d.to_bits().to_le_bytes());
+                        }
+                        CompositeKeyValue::Term(t) => {
+                            out.push(3);
+                            put_bytes(out, t)?;
+                        }
+                    }
                 }
             }
             encode_subs(subs, out)?;
@@ -1169,6 +1304,81 @@ pub(crate) mod tests {
         }
         wide.extend_from_slice(&tail);
         assert_eq!(bad(&wide), invalid);
+    }
+
+    #[test]
+    fn composite_trees_decode() {
+        let tail = [0u8, 0, 0, 0, 0];
+        let with = |node: &[u8]| {
+            let mut b = vec![1u8];
+            b.extend_from_slice(node);
+            b.extend_from_slice(&tail);
+            b
+        };
+        let invalid = Some(FfiStatus::InvalidArgument);
+        // composite(size 10, [terms k desc missing_bucket first, histogram n
+        // 5.0]) after [missing, 15] over two segments > [metric(n)].
+        let composite = |sources: u8, after: &[u8], flags: u8| {
+            let mut t = vec![AGG_COMPOSITE];
+            t.extend_from_slice(&10i32.to_le_bytes());
+            t.push(sources);
+            string(&mut t, "k");
+            t.extend_from_slice(&[0, flags, 1]);
+            string(&mut t, "n");
+            t.extend_from_slice(&[3, 0]);
+            f64s(&mut t, &[5.0]);
+            t.extend_from_slice(&[0, 0]);
+            t.extend_from_slice(after);
+            t.extend_from_slice(&2i32.to_le_bytes());
+            t.extend_from_slice(&[1, 0, 1]);
+            metric(&mut t, 0, 0, "n");
+            t
+        };
+        let mut after = vec![1u8, 0, 1];
+        after.extend_from_slice(&15i64.to_le_bytes());
+        let tree = decode_tree(&with(&composite(2, &after, 3))).unwrap();
+        let AggNode::Composite {
+            sources,
+            size,
+            after: Some(after_parts),
+            sorted_lead,
+            subs,
+        } = &tree.nodes[0]
+        else {
+            panic!("{:?}", tree.nodes[0])
+        };
+        assert_eq!(*size, 10);
+        assert_eq!(sources.len(), 2);
+        assert!(sources[0].reverse && sources[0].missing_bucket);
+        assert_eq!(sources[0].missing_order, MissingOrder::First);
+        assert!(matches!(
+            sources[1].values,
+            CompositeValues::Histogram { interval, .. } if interval == 5.0
+        ));
+        assert_eq!(
+            after_parts[..],
+            [CompositeAfter::Missing, CompositeAfter::Value(15)]
+        );
+        assert_eq!(sorted_lead[..], [true, false]);
+        assert_eq!(subs.len(), 1);
+        // No `after`.
+        assert!(decode_tree(&with(&composite(2, &[0], 0))).is_ok());
+        // A missing `after` part without `missing_bucket`, a term for a
+        // numeric source, unknown flags, no sources, a source count past the
+        // ones written.
+        assert_eq!(decode_tree(&with(&composite(2, &after, 1))).err(), invalid);
+        let mut term = vec![1u8, 2];
+        string(&mut term, "a");
+        term.push(2);
+        string(&mut term, "b");
+        assert_eq!(decode_tree(&with(&composite(2, &term, 0))).err(), invalid);
+        assert_eq!(decode_tree(&with(&composite(2, &[0], 4))).err(), invalid);
+        assert_eq!(decode_tree(&with(&composite(0, &[0], 0))).err(), invalid);
+        assert_eq!(decode_tree(&with(&composite(3, &[0], 0))).err(), invalid);
+        // Only at the top level.
+        let mut nested = vec![AGG_GLOBAL, 1];
+        nested.extend_from_slice(&composite(2, &[0], 0));
+        assert_eq!(decode_tree(&with(&nested)).err(), invalid);
     }
 
     fn i32_at(b: &[u8], at: &mut usize) -> i32 {
