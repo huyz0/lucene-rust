@@ -168,6 +168,11 @@ def run_rows(index, rows, label, plugin, stock, shards, expect_override=None):
         expect = expect_override or expect
         if expect == "dfs_multi":
             expect = "dfs" if shards > 1 else "native"
+        # The plugin node runs the default native_shapes: fast.
+        if expect == "slow":
+            expect = "slower_shape"
+        if expect == "slow_agg":
+            expect = "aggregations"
         before = vo.stats()
         url, b = vo.search_url(index, body)
         got = vo.shape(vo.req("POST", url, b), b)
@@ -178,7 +183,10 @@ def run_rows(index, rows, label, plugin, stock, shards, expect_override=None):
         errors = after["native_errors"] - before["native_errors"]
         delta = vo.fallback_delta(before, after)
         vo.check(errors == 0, f"{label} {index} [{name}]: {errors} native errors")
-        if expect == "native":
+        if expect == "either":
+            # The two nodes' answers agree (checked above); where it ran is not pinned.
+            native += ran
+        elif expect == "native":
             vo.check(ran == shards, f"{label} {index} [{name}]: ran native on {ran} of {shards} shards; fallbacks {delta}")
             native += ran
         elif expect.startswith("native|"):
