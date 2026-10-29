@@ -259,6 +259,12 @@ a dependency the shipped library links is not under a licence listed here.
   extracted from the JDK (GPL-2.0 with the Classpath Exception): Java's
   `Character.getType` is specified as the UCD's `General_Category`, and the
   generated tables equal JDK 25's code point for code point.
+  `crates/lucene-analysis/src/core_analysis/case_folding_filter.rs`'s
+  `SIMPLE_CASE_FOLDING` (Lucene 10.6's `CaseFoldingFilter`) is the 225
+  simple case folds of Unicode 16.0's `CaseFolding.txt` that differ from
+  `Character.toLowerCase`, transcribed from Lucene's generated
+  `SimpleCaseFolding.java` (Apache-2.0; Lucene derived it with ICU4J 77.1):
+  Unicode data under Unicode-3.0, as above.
 - **Hunspell charset tables** (M11),
   `crates/lucene-analysis/src/hunspell/charsets.rs`: the byte-to-character
   mapping of seven single-byte charsets (ISO/IEC 8859-2, -7, -13, -15, KOI8-R

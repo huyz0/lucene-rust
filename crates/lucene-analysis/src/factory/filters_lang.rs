@@ -126,6 +126,13 @@ simple_filter_factory!(
     |input| crate::classic::ClassicFilter::new(input), normalize = false
 );
 simple_filter_factory!(
+    /// `org.apache.lucene.analysis.core.CaseFoldingFilterFactory` (Lucene
+    /// 10.6, #16371; not in the 10.5.2 jars).
+    CaseFoldingFilterFactory, "caseFolding",
+    "org.apache.lucene.analysis.core.CaseFoldingFilterFactory",
+    |input| crate::core_analysis::CaseFoldingFilter::new(input), normalize = true
+);
+simple_filter_factory!(
     /// `org.apache.lucene.analysis.core.DecimalDigitFilterFactory`.
     DecimalDigitFilterFactory, "decimalDigit",
     "org.apache.lucene.analysis.core.DecimalDigitFilterFactory",
@@ -438,6 +445,20 @@ simple_filter_factory!(
     TeluguStemFilterFactory, "teluguStem",
     "org.apache.lucene.analysis.te.TeluguStemFilterFactory",
     |input| te::TeluguStemFilter::new(input), normalize = false
+);
+simple_filter_factory!(
+    /// `org.apache.lucene.analysis.th.ThaiNormalizationFilterFactory`
+    /// (Lucene 10.6, #16717; not in the 10.5.2 jars).
+    ThaiNormalizationFilterFactory, "thaiNormalization",
+    "org.apache.lucene.analysis.th.ThaiNormalizationFilterFactory",
+    |input| th::ThaiNormalizationFilter::new(input), normalize = true
+);
+simple_filter_factory!(
+    /// `org.apache.lucene.analysis.th.ThaiRepeatFilterFactory` (Lucene
+    /// 10.6, #16720; not in the 10.5.2 jars).
+    ThaiRepeatFilterFactory, "thaiRepeat",
+    "org.apache.lucene.analysis.th.ThaiRepeatFilterFactory",
+    |input| th::ThaiRepeatFilter::new(input), normalize = false
 );
 simple_filter_factory!(
     /// `org.apache.lucene.analysis.tr.ApostropheFilterFactory`.

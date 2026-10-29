@@ -78,8 +78,26 @@ fn the_registry_then_holds_lucenes_names() {
             .map(str::to_string)
             .collect()
     };
-    let set = |v: Vec<&str>| -> BTreeSet<String> { v.into_iter().map(str::to_string).collect() };
-    assert_eq!(set(spi::available_token_filters()), names("F"));
-    assert_eq!(set(spi::available_tokenizers()), names("T"));
-    assert_eq!(set(spi::available_char_filters()), names("C"));
+    // less the names Lucene 10.6 adds, which the 10.5.2 jars cannot list
+    let set = |v: Vec<&str>, added: &[&str]| -> BTreeSet<String> {
+        v.into_iter()
+            .filter(|n| !added.contains(n))
+            .map(str::to_string)
+            .collect()
+    };
+    assert_eq!(
+        set(
+            spi::available_token_filters(),
+            &spi::LUCENE_10_6_TOKEN_FILTERS
+        ),
+        names("F")
+    );
+    assert_eq!(set(spi::available_tokenizers(), &[]), names("T"));
+    assert_eq!(
+        set(
+            spi::available_char_filters(),
+            &spi::LUCENE_10_6_CHAR_FILTERS
+        ),
+        names("C")
+    );
 }
