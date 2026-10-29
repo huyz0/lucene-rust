@@ -112,6 +112,10 @@ def create(index, shards, index_sort=None):
             "md": {"type": "double"},
             "mi": {"type": "integer"},
             "sp": {"type": "long"},
+            # Points of other widths than 8 bytes: points boxes and point sets.
+            "addr": {"type": "ip"},
+            "hf": {"type": "half_float"},
+            "ul": {"type": "unsigned_long"},
         }},
     })
 
@@ -144,6 +148,10 @@ def load(index, docs, seed, deletes=True):
             }
             if r.random() < 0.7:
                 doc["sp"] = r.randint(-100, 100)
+            # From the id alone, so the random stream above is unchanged.
+            doc["addr"] = f"10.0.{i % 7}.{(i * 13) % 256}"
+            doc["hf"] = (i % 41) / 4
+            doc["ul"] = 18_000_000_000_000_000_000 + i * 7
             lines.append(json.dumps(doc))
         res = req("POST", "/_bulk", "\n".join(lines) + "\n", ndjson=True)
         check(not res["errors"], f"{index}: bulk batch at {start} has no errors")
@@ -231,6 +239,22 @@ def matrix():
     add("range, exact total", {"track_total_hits": True, "query": {"range": {"n": {"gte": 10, "lte": 500}}}}, "native")
     add("bool must + range filter", {"query": {"bool": {"must": [{"match": {"body": "alpha"}}], "filter": [{"range": {"n": {"gte": 1000, "lt": 30000}}}]}}}, "native")
     add("bool must_not range", {"query": {"bool": {"must": [{"match": {"body": "beta"}}], "must_not": [{"range": {"n": {"lte": 5000}}}]}}}, "native")
+    # Every numeric width and `ip`: points boxes (`range`, `term`) and point sets (`terms`).
+    add("range integer, exact total", {"track_total_hits": True, "query": {"range": {"qty": {"gte": 5, "lt": 20}}}}, "native")
+    add("bool must + integer range filter", {"query": {"bool": {"must": [{"match": {"body": "alpha"}}], "filter": [{"range": {"qty": {"gt": 30}}}]}}}, "native")
+    add("term integer", {"query": {"term": {"qty": 7}}}, "native")
+    add("bool must + term integer filter", {"query": {"bool": {"must": [{"match": {"body": "gamma"}}], "filter": [{"term": {"qty": 12}}]}}}, "native")
+    add("terms integer", {"query": {"terms": {"qty": [1, 4, 9, 16]}}}, "native")
+    add("terms multi-valued integer", {"query": {"bool": {"must": [{"match": {"body": "delta"}}], "filter": [{"terms": {"mi": [-3, 0, 42]}}]}}}, "native")
+    add("terms long", {"query": {"terms": {"n": [3, 30, 300, 3000]}}}, "native")
+    add("bool must_not terms long", {"query": {"bool": {"must": [{"match": {"body": "beta"}}], "must_not": [{"terms": {"n": list(range(0, 2000, 3))}}]}}}, "native")
+    add("range float, exact total", {"track_total_hits": True, "query": {"range": {"ratio": {"gte": 0.25, "lte": 0.5}}}}, "native")
+    add("range half_float, exact total", {"track_total_hits": True, "query": {"range": {"hf": {"gte": 2.5, "lt": 7}}}}, "native")
+    add("range unsigned_long, exact total", {"track_total_hits": True, "query": {"range": {"ul": {"gte": 18_000_000_000_000_000_700}}}}, "native")
+    add("term ip", {"query": {"term": {"addr": "10.0.3.39"}}}, "native")
+    add("term ip CIDR", {"query": {"bool": {"must": [{"match": {"body": "alpha"}}], "filter": [{"term": {"addr": "10.0.2.0/24"}}]}}}, "native")
+    add("range ip, exact total", {"track_total_hits": True, "query": {"range": {"addr": {"gte": "10.0.1.0", "lt": "10.0.4.128"}}}}, "native")
+    add("terms ip", {"query": {"terms": {"addr": ["10.0.0.0", "10.0.1.13", "10.0.6.200"]}}}, "native")
     add("prefix", {"query": {"prefix": {"tag": "al"}}}, "native")
     add("match_all", {"query": {"match_all": {}}}, "native")
     add("boosted match", {"query": {"match": {"body": {"query": "alpha", "boost": 2}}}}, "native")

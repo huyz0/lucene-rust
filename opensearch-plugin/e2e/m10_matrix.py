@@ -112,7 +112,7 @@ def nested_rows():
     add("nested boosted", {"query": {"nested": {"path": "props", "query": {"range": {"props.v": {"gte": 0}}}, "score_mode": "avg", "boost": 2}}}, "native")
     # A range on a 4-byte field (`integer`) is a points range the native side does not take, in a
     # nested query as anywhere.
-    add("nested integer range", {"query": {"nested": {"path": "props", "query": {"range": {"props.i": {"gte": 0}}}, "score_mode": "avg"}}}, "points_width")
+    add("nested integer range", {"query": {"nested": {"path": "props", "query": {"range": {"props.i": {"gte": 0}}}, "score_mode": "avg"}}}, "native")
     add("nested function_score", nested({"function_score": {"query": {"term": {"props.k": "alpha"}}, "functions": [{"field_value_factor": {"field": "props.i", "missing": 1, "modifier": "square"}}]}}, "sum"), "native")
     return q
 

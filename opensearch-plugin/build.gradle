@@ -17,7 +17,7 @@ plugins {
 group = 'org.lucenerust'
 version = '0.1.0'
 
-def opensearchVersion = '3.8.0'
+def opensearchVersion = '3.9.0'
 def repoRoot = projectDir.parentFile
 def opensearchLib = file(findProperty('opensearchLib') ?: "${repoRoot}/target/opensearch-dist/${opensearchVersion}/lib")
 def cargoTarget = file(System.getenv('CARGO_TARGET_DIR') ?: "${repoRoot}/target")
@@ -31,7 +31,7 @@ def hostPlatform = {
     return "linux-${arch}"
 }()
 
-// JDK 25, the one OpenSearch 3.8.0 bundles: the native bridge is the Foreign
+// JDK 25, the one OpenSearch 3.9.0 bundles: the native bridge is the Foreign
 // Function & Memory API (final since JDK 22). A toolchain, so Gradle itself
 // may run on an older JDK; every JavaExec and Test task launches on it.
 java {

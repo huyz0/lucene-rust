@@ -7,11 +7,11 @@
 # image's own jars means the build and the node cannot disagree, and the build
 # needs no Maven repository.
 #
-#   scripts/opensearch-dist.sh            # -> target/opensearch-dist/3.8.0/lib
+#   scripts/opensearch-dist.sh            # -> target/opensearch-dist/3.9.0/lib
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-VERSION="${OPENSEARCH_VERSION:-3.8.0}"
+VERSION="${OPENSEARCH_VERSION:-3.9.0}"
 IMAGE="opensearchproject/opensearch:${VERSION}"
 OUT="target/opensearch-dist/${VERSION}"
 

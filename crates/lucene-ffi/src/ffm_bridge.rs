@@ -1,6 +1,6 @@
 //! The C-ABI functions the OpenSearch plugin's `NativeBridge` reaches through
 //! Java's Foreign Function & Memory API (`java.lang.foreign`, JDK 22+; the
-//! plugin targets JDK 25, which OpenSearch 3.8.0 bundles).
+//! plugin targets JDK 25, which OpenSearch 3.9.0 bundles).
 //!
 //! **Most of the plugin's calls need nothing here.** A downcall reaches any
 //! `extern "C"` function, so `NativeBridge` calls

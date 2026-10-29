@@ -1,5 +1,5 @@
 /*
- * Derived from OpenSearch 3.8.0 by opensearch-plugin/tools/derive_engine_tests.py -- do not edit;
+ * Derived from OpenSearch 3.9.0 by opensearch-plugin/tools/derive_engine_tests.py -- do not edit;
  * change the script and re-run it. The original notice follows.
  */
 /*
@@ -111,6 +111,7 @@ import org.opensearch.index.mapper.MapperService;
 import org.opensearch.index.mapper.Mapping;
 import org.opensearch.index.mapper.ParseContext;
 import org.opensearch.index.mapper.ParsedDocument;
+import org.opensearch.index.mapper.RoutingFieldMapper;
 import org.opensearch.index.mapper.SeqNoFieldMapper;
 import org.opensearch.index.mapper.SourceFieldMapper;
 import org.opensearch.index.mapper.SourceToParse;
@@ -497,6 +498,11 @@ public abstract class RustEngineTestCase extends OpenSearchTestCase {
         return new EngineConfig.TombstoneDocSupplier() {
             @Override
             public ParsedDocument newDeleteTombstoneDoc(String id) {
+                return newDeleteTombstoneDoc(id, null);
+            }
+
+            @Override
+            public ParsedDocument newDeleteTombstoneDoc(String id, String routing) {
                 final ParseContext.Document doc = new ParseContext.Document();
                 Field uidField = new Field(IdFieldMapper.NAME, Uid.encodeId(id), IdFieldMapper.Defaults.FIELD_TYPE);
                 doc.add(uidField);
@@ -508,11 +514,14 @@ public abstract class RustEngineTestCase extends OpenSearchTestCase {
                 doc.add(seqID.primaryTerm);
                 seqID.tombstoneField.setLongValue(1);
                 doc.add(seqID.tombstoneField);
+                if (routing != null) {
+                    doc.add(new StoredField(RoutingFieldMapper.NAME, routing));
+                }
                 return new ParsedDocument(
                     versionField,
                     seqID,
                     id,
-                    null,
+                    routing,
                     Collections.singletonList(doc),
                     new BytesArray("{}"),
                     MediaTypeRegistry.JSON,

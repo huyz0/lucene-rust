@@ -1,5 +1,5 @@
 /*
- * Derived from OpenSearch 3.8.0 by opensearch-plugin/tools/derive_engine.py -- do not edit;
+ * Derived from OpenSearch 3.9.0 by opensearch-plugin/tools/derive_engine.py -- do not edit;
  * change the script and re-run it. The original notice follows.
  */
 /*
@@ -39,9 +39,11 @@ package org.lucenerust.opensearch.engine;
 import org.opensearch.index.engine.*;
 
 import org.apache.lucene.document.LongPoint;
+import org.apache.lucene.index.FilterLeafReader;
 import org.apache.lucene.index.LeafReader;
 import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.index.NumericDocValues;
+import org.apache.lucene.index.StoredFields;
 import org.apache.lucene.search.BooleanClause;
 import org.apache.lucene.search.BooleanQuery;
 import org.apache.lucene.search.FieldDoc;
@@ -55,6 +57,7 @@ import org.apache.lucene.search.TopFieldCollector;
 import org.apache.lucene.search.TopFieldCollectorManager;
 import org.apache.lucene.util.ArrayUtil;
 import org.opensearch.common.lucene.Lucene;
+import org.opensearch.common.lucene.index.SequentialStoredFieldsLeafReader;
 import org.opensearch.common.lucene.search.Queries;
 import org.opensearch.common.util.io.IOUtils;
 import org.opensearch.core.common.bytes.BytesReference;
@@ -78,6 +81,12 @@ import java.util.concurrent.atomic.AtomicBoolean;
 final class LuceneChangesSnapshot implements Translog.Snapshot {
     static final int DEFAULT_BATCH_SIZE = 1024;
 
+    /**
+     * Batches smaller than this are read with the default stored fields reader: acquiring a sequential reader costs a
+     * reader clone plus the decompression of a whole block, which only pays for itself over enough documents.
+     */
+    static final int MIN_SEQUENTIAL_ACCESS_BATCH_SIZE = 10;
+
     private final int searchBatchSize;
     private final long fromSeqNo, toSeqNo;
     private long lastSeenSeqNo;
@@ -90,6 +99,18 @@ final class LuceneChangesSnapshot implements Translog.Snapshot {
     private ScoreDoc[] scoreDocs;
     private final ParallelArray parallelArray;
     private final Closeable onClose;
+
+    /**
+     * Whether to use a sequential stored fields reader. Only used when there is a gapless run of docIDs
+     * matching sequence number order. This allows for an optimization to decompress a block once and
+     * read multiple stored fields from it, as opposed to the default path that does a decompression on
+     * every stored fields read.
+     */
+    private boolean useSequentialStoredFieldsReader;
+
+    private StoredFields sequentialStoredFields;
+    private int sequentialStoredFieldsLeafOrd = -1;
+    private Thread sequentialStoredFieldsOwner;
 
     /**
      * Creates a new "translog" snapshot from Lucene for reading operations whose seq# in the specified range.
@@ -137,6 +158,7 @@ final class LuceneChangesSnapshot implements Translog.Snapshot {
 
     @Override
     public void close() throws IOException {
+        releaseSequentialStoredFieldsReader();
         onClose.close();
     }
 
@@ -222,9 +244,13 @@ final class LuceneChangesSnapshot implements Translog.Snapshot {
             for (int i = 0; i < scoreDocs.length; i++) {
                 scoreDocs[i].shardIndex = i;
             }
-            // for better loading performance we sort the array by docID and
-            // then visit all leaves in order.
-            ArrayUtil.introSort(scoreDocs, Comparator.comparingInt(i -> i.doc));
+            useSequentialStoredFieldsReader = scoreDocs.length >= MIN_SEQUENTIAL_ACCESS_BATCH_SIZE && hasSequentialAccess(scoreDocs);
+            if (useSequentialStoredFieldsReader == false) {
+                releaseSequentialStoredFieldsReader();
+                // for better loading performance we sort the array by docID and
+                // then visit all leaves in order.
+                ArrayUtil.introSort(scoreDocs, Comparator.comparingInt(i -> i.doc));
+            }
             int docBase = -1;
             int maxDoc = 0;
             List<LeafReaderContext> leaves = indexSearcher.getIndexReader().leaves();
@@ -249,9 +275,23 @@ final class LuceneChangesSnapshot implements Translog.Snapshot {
                 parallelArray.isTombStone[index] = combinedDocValues.isTombstone(segmentDocID);
                 parallelArray.hasRecoverySource[index] = combinedDocValues.hasRecoverySource(segmentDocID);
             }
-            // now sort back based on the shardIndex. we use this to store the previous index
-            ArrayUtil.introSort(scoreDocs, Comparator.comparingInt(i -> i.shardIndex));
+            if (useSequentialStoredFieldsReader == false) {
+                // now sort back based on the shardIndex. we use this to store the previous index
+                ArrayUtil.introSort(scoreDocs, Comparator.comparingInt(i -> i.shardIndex));
+            }
         }
+    }
+
+    /**
+     * Returns whether the batch, in the order it will be read, is a strictly increasing and gapless run of docIDs
+     */
+    private static boolean hasSequentialAccess(ScoreDoc[] scoreDocs) {
+        for (int i = 0; i < scoreDocs.length - 1; i++) {
+            if (scoreDocs[i].doc + 1 != scoreDocs[i + 1].doc) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static Query operationsRangeQuery(long fromSeqNo, long toSeqNo) {
@@ -298,7 +338,7 @@ final class LuceneChangesSnapshot implements Translog.Snapshot {
             ? SourceFieldMapper.RECOVERY_SOURCE_NAME
             : SourceFieldMapper.NAME;
         final FieldsVisitor fields = new FieldsVisitor(true, sourceField);
-        leaf.reader().storedFields().document(segmentDocID, fields);
+        storedFieldsFor(leaf).document(segmentDocID, fields);
 
         final Translog.Operation op;
         final boolean isTombstone = parallelArray.isTombStone[docIndex];
@@ -309,7 +349,7 @@ final class LuceneChangesSnapshot implements Translog.Snapshot {
         } else {
             final String id = fields.id();
             if (isTombstone) {
-                op = new Translog.Delete(id, seqNo, primaryTerm, version);
+                op = new Translog.Delete(id, seqNo, primaryTerm, version, fields.routing());
                 assert assertDocSoftDeleted(leaf.reader(), segmentDocID) : "Delete op but soft_deletes field is not set [" + op + "]";
             } else {
                 final BytesReference source = fields.source();
@@ -349,6 +389,53 @@ final class LuceneChangesSnapshot implements Translog.Snapshot {
             + op
             + "]";
         return op;
+    }
+
+    private StoredFields storedFieldsFor(LeafReaderContext leaf) throws IOException {
+        if (useSequentialStoredFieldsReader) {
+            // A StoredFields instance may only be consumed in the thread that acquired it,
+            // so track the owning thread and recreate it if consumed by another thread.
+            final Thread currentThread = Thread.currentThread();
+            if (sequentialStoredFields == null
+                || sequentialStoredFieldsLeafOrd != leaf.ord
+                || sequentialStoredFieldsOwner != currentThread) {
+                sequentialStoredFields = sequentialStoredFields(leaf.reader());
+                sequentialStoredFieldsLeafOrd = leaf.ord;
+                sequentialStoredFieldsOwner = currentThread;
+            }
+            return sequentialStoredFields;
+        }
+        return leaf.reader().storedFields();
+    }
+
+    /**
+     * Returns a merge-optimized (sequential) stored fields reader for the leaf
+     */
+    private static StoredFields sequentialStoredFields(LeafReader leaf) throws IOException {
+        LeafReader reader = leaf;
+        while (true) {
+            if (reader instanceof SequentialStoredFieldsLeafReader) {
+                return ((SequentialStoredFieldsLeafReader) reader).getSequentialStoredFieldsReader();
+            }
+            if (reader instanceof FilterLeafReader == false) {
+                return leaf.storedFields();
+            }
+            reader = ((FilterLeafReader) reader).getDelegate();
+        }
+    }
+
+    /**
+     * Drops the cached reader, if any
+     */
+    private void releaseSequentialStoredFieldsReader() {
+        sequentialStoredFields = null;
+        sequentialStoredFieldsLeafOrd = -1;
+        sequentialStoredFieldsOwner = null;
+    }
+
+    // for testing
+    boolean useSequentialStoredFieldsReader() {
+        return useSequentialStoredFieldsReader;
     }
 
     private boolean assertDocSoftDeleted(LeafReader leafReader, int segmentDocId) throws IOException {

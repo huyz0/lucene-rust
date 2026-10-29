@@ -10,7 +10,7 @@ index reader wrapper (read path R6; `index.lucene_rust.fetch.enabled`, default
 on). `docvalue_fields`, indexing, refresh and every other API are OpenSearch's
 own code, unchanged.
 
-Pinned versions: **OpenSearch 3.8.0**, **Lucene 10.5.0**.
+Pinned versions: **OpenSearch 3.9.0**, **Lucene 10.5.1**.
 
 Everything here is enforced by `scripts/verify-opensearch.sh`: each row below
 is backed by requests it sends (the `size: 0`/paging/`track_total_hits` row by
@@ -47,8 +47,9 @@ A request runs native when **all** of these hold:
   flags, `TermInSetQuery` under Lucene's default
   constant-score rewrite, also as the index side of an
   `IndexOrDocValuesQuery`), `TermRangeQuery` the same way (M13 T13.6: a
-  `range` on a `keyword`, `query_string`'s `[a TO b]`/`{a TO *]`), `range` on `long`, `date` and `double`
-  fields (`PointRangeQuery` of 8-byte values), and `exists`
+  `range` on a `keyword`, `query_string`'s `[a TO b]`/`{a TO *]`), `range`
+  and `term` on every numeric type, `date` and `ip` (`PointRangeQuery` of
+  any width) and `terms` on them (`PointInSetQuery`), and `exists`
   (`FieldExistsQuery` over norms or doc values; a vector field is answered
   by Lucene), and the geo queries on `geo_point` and `geo_shape` fields
   (`geo_bounding_box`, `geo_distance`, `geo_polygon`, `geo_shape` with every
@@ -64,7 +65,7 @@ A request runs native when **all** of these hold:
   `Lucene103`, `Lucene104`; M8 T8.5) or a completion format
   (`Completion90`-`Completion104`, a `completion` field's; M13 T13.6) -- so
   an index an OpenSearch 2.x node wrote is served natively after the upgrade
-  to 3.8.0 (`scripts/verify-opensearch-upgrade.sh`), and so is one with
+  to 3.9.0 (`scripts/verify-opensearch-upgrade.sh`), and so is one with
   `completion` fields: its searches run native, while the suggesters
   OpenSearch runs after the query phase stay OpenSearch's own, on Lucene's
   reader (see "Suggesters and highlighters" below). An index the k-NN plugin wrote with
@@ -183,7 +184,7 @@ Each fallback is counted by reason at `GET /_plugins/lucene_rust/stats`.
 | `clause_<Class>` | the same, for a clause anywhere below the root (inside a `bool`, `constant_score`, `dis_max`, a boost) |
 | `query_too_deep`, `query_too_large` | more than 32 levels, or more than 1,024 nodes counting wrappers (Lucene counts only leaves, and `indices.query.bool.max_clause_count` can raise its limit) |
 | `boolean_msm_negative` | a `BooleanQuery` with a negative `minimumNumberShouldMatch` |
-| `points_width` | a `range` on a 4-byte field (`integer`, `float`), which the native points range does not take (`geo_point`'s own two-dimension box is taken) |
+| `points_width` | a points range beyond Lucene's own limits (16 dimensions, 16 bytes each); every numeric, `ip` and `geo_point` range is taken |
 | `search_after_geo` | `search_after` (or a sorted scroll's later page) on Lucene's own `_geo_distance` key: its `compareTop` compares metres where the native side holds the haversine sort keys, which no conversion maps back exactly |
 | `sort_geo_plane`, `sort_geo_nested`, `sort_geo_field_data`, `sort_geo_origins`, `sort_geo_reflect` | OpenSearch's `_geo_distance` comparator with `distance_type: plane` (`Math.cos`'s HotSpot intrinsic, which no portable code reproduces bit for bit), a nested sort, field data other than a `geo_point`'s doc values, non-finite or more than 1,024 origins, or fields the plugin cannot read |
 | `geo_geometry`, `geo_reflect` | a geo query holding a geometry class Lucene's factories do not build, or one whose fields the plugin cannot read (a Lucene whose geo classes changed) |
@@ -271,4 +272,4 @@ nodes.
   16 MB), outside `indices.queries.cache.size` and its stats; a shard with
   many large segments can hold more than that setting would allow.
 - **Linux only**, x86_64 and aarch64; the library needs glibc ≥ 2.34 (the
-  OpenSearch 3.8.0 image has 2.34, and `verify-opensearch.sh` checks it).
+  OpenSearch 3.9.0 image has 2.34, and `verify-opensearch.sh` checks it).

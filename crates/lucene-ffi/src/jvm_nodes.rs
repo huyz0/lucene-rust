@@ -1490,7 +1490,7 @@ pub(crate) mod tests {
         // An unknown score mode, and kinds past the last.
         let (_, msg) = fails(h, &Blob::tree().u8(NODE_TO_PARENT).u8(9));
         assert!(msg.contains("score mode 9"), "{msg}");
-        let (_, msg) = fails(h, &Blob::tree().u8(crate::jvm_reader::NODE_TERM_RANGE + 1));
+        let (_, msg) = fails(h, &Blob::tree().u8(crate::jvm_reader::NODE_POINT_SET + 1));
         assert!(msg.contains("unknown node kind"), "{msg}");
         // The decode on its own: the nodes are extended clauses.
         assert!(matches!(decode(&spans(st("a"))), Ok(Clause::Extended(_))));

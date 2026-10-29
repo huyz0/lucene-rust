@@ -15,6 +15,8 @@ import org.apache.lucene.search.MatchAllDocsQuery;
 import org.apache.lucene.search.MatchNoDocsQuery;
 import org.apache.lucene.search.PhraseQuery;
 import org.apache.lucene.search.IndexOrDocValuesQuery;
+import org.apache.lucene.search.IndexSortSortedNumericDocValuesRangeQuery;
+import org.apache.lucene.search.PointInSetQuery;
 import org.apache.lucene.search.PointRangeQuery;
 import org.apache.lucene.search.PrefixQuery;
 import org.apache.lucene.util.NumericUtils;
@@ -62,8 +64,9 @@ import java.util.function.Predicate;
  *   <li>the leaves: {@link PhraseQuery} without position gaps, {@link TermInSetQuery}, {@link
  *       PrefixQuery}, {@link WildcardQuery} without escapes, {@link RegexpQuery} with its default
  *       flags and {@link TermRangeQuery} ({@code query_string}'s {@code [a TO b]}, a {@code range}
- *       on a {@code keyword}) -- these five under a constant-score rewrite -- a one-dimension
- *       8-byte {@code PointRangeQuery}, and {@link FieldExistsQuery};
+ *       on a {@code keyword}) -- these five under a constant-score rewrite -- {@code
+ *       PointRangeQuery} and {@link PointInSetQuery} of any width ({@code range}, {@code term} and
+ *       {@code terms} on every numeric type and {@code ip}), and {@link FieldExistsQuery};
  *   <li>the geo queries {@code geo_bounding_box}, {@code geo_distance}, {@code geo_polygon} and
  *       {@code geo_shape} build on {@code geo_point} and {@code geo_shape} fields ({@link GeoEncoder});
  *   <li>{@code nested}, the span queries, {@code intervals}, {@code combined_fields} and OpenSearch's
@@ -199,6 +202,7 @@ public final class QueryEncoder {
     private static final byte NODE_TERM_STATS = 14;
     /** After the geo (15-19) and M10 (20-24) kinds: {@code NODE_TERM_RANGE} in {@code jvm_reader.rs}. */
     private static final byte NODE_TERM_RANGE = 25;
+    private static final byte NODE_POINT_SET = 26;
 
     /** Appends one node (and its children); returns a fallback reason, or null. */
     private static String node(Query q, ByteArrayOutputStream out, Predicate<String> fieldOk, int depth, int[] nodes) {
@@ -331,17 +335,38 @@ public final class QueryEncoder {
             nodes[0]--;
             return node(iodv.getIndexQuery(), out, fieldOk, depth, nodes);
         }
+        if (q instanceof IndexSortSortedNumericDocValuesRangeQuery is) {
+            // A `range` on an index-sorted shard's primary sort field: Lucene binary-searches the
+            // sorted doc values where it can and otherwise runs its fallback query, which matches
+            // the same documents with the same constant score. A wrapper, not a level.
+            nodes[0]--;
+            return node(is.getFallbackQuery(), out, fieldOk, depth, nodes);
+        }
         if (q instanceof PointRangeQuery pr) {
             // `LongPoint`/`DoublePoint`/date ranges: one dimension of 8 bytes, sent as the sortable
-            // longs their packed bytes encode. A 4-byte point (`integer`, `float`) falls back.
+            // longs their packed bytes encode. Any other width or dimension count (`integer`,
+            // `float`, `half_float`, `ip`, `unsigned_long`, `LatLonPoint.newBoxQuery`) is a points
+            // box: its packed corners as they are.
             if (pr.getNumDims() != 1 || pr.getBytesPerDim() != Long.BYTES) {
-                // `LatLonPoint.newBoxQuery`'s two 4-byte dimensions, or points_width.
                 return GeoEncoder.node(pr, out);
             }
             out.write(NODE_POINT_RANGE);
             writeBytes(out, pr.getField().getBytes(StandardCharsets.UTF_8));
             writeLong(out, NumericUtils.sortableBytesToLong(pr.getLowerPoint(), 0));
             writeLong(out, NumericUtils.sortableBytesToLong(pr.getUpperPoint(), 0));
+            return null;
+        }
+        if (q instanceof PointInSetQuery ps) {
+            // `terms` (and `IntPoint.newSetQuery` and the like): one leaf, its packed points.
+            out.write(NODE_POINT_SET);
+            writeBytes(out, ps.getField().getBytes(StandardCharsets.UTF_8));
+            writeInt(out, ps.getNumDims());
+            writeInt(out, ps.getBytesPerDim());
+            java.util.Collection<byte[]> points = ps.getPackedPoints();
+            writeInt(out, points.size());
+            for (byte[] p : points) {
+                writeBytes(out, p);
+            }
             return null;
         }
         String wrapper = q.getClass().getSimpleName();

@@ -14,8 +14,8 @@ Every patch below must apply exactly once, so a new OpenSearch release that move
 here rather than producing an engine that silently differs.
 
 Usage: derive_engine.py <extracted opensearch-X-sources.jar> <output dir>
-  curl -O https://repo1.maven.org/maven2/org/opensearch/opensearch/3.8.0/opensearch-3.8.0-sources.jar
-  unzip -d os-src opensearch-3.8.0-sources.jar
+  curl -O https://repo1.maven.org/maven2/org/opensearch/opensearch/3.9.0/opensearch-3.9.0-sources.jar
+  unzip -d os-src opensearch-3.9.0-sources.jar
   opensearch-plugin/tools/derive_engine.py os-src \\
       opensearch-plugin/src/main/java/org/lucenerust/opensearch/engine
 """
@@ -50,7 +50,7 @@ HELPERS = [
 ]
 
 NOTICE = """/*
- * Derived from OpenSearch 3.8.0 by opensearch-plugin/tools/derive_engine.py -- do not edit;
+ * Derived from OpenSearch 3.9.0 by opensearch-plugin/tools/derive_engine.py -- do not edit;
  * change the script and re-run it. The original notice follows.
  */
 """
@@ -261,6 +261,15 @@ def derive_engine(src: str) -> str:
     p.sub("getSegmentInfo(lastCommittedSegmentInfos, verbose)", "EngineAccess.segmentInfo(this, lastCommittedSegmentInfos, verbose)")
     p.sub("        stats.updateMaxUnsafeAutoIdTimestamp(maxUnsafeAutoIdTimestamp.get());",
           "        EngineAccess.updateMaxUnsafeAutoIdTimestamp(stats, maxUnsafeAutoIdTimestamp.get());")
+
+    # PrimaryOperationPolicy (3.9.0) plans with OpenSearch's own IndexingStrategy and
+    # DeletionStrategy, whose factories are package-private, so the copies here cannot be handed to
+    # it. RustEngineSupport.checkSupported refuses any policy but the default one, which plans as
+    # primary; the engine does that directly.
+    p.sub("        return primaryOperationPolicy.planIndex(indexingStrategyPlanner, index);",
+          "        return indexingStrategyPlanner.planOperationAsPrimary(index);")
+    p.sub("        return primaryOperationPolicy.planDelete(deletionStrategyPlanner, delete);",
+          "        return deletionStrategyPlanner.planOperationAsPrimary(delete);")
 
     # Package-private in Engine: not overridable from this package.
     p.drop_block("    final boolean assertSearcherIsWarmedUp(String source, SearcherScope scope) {")
