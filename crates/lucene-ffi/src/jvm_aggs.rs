@@ -1359,6 +1359,69 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn percentiles_decode_and_encode() {
+        let with = |node: &[u8]| {
+            let mut b = vec![1u8];
+            b.extend_from_slice(node);
+            b.extend_from_slice(&[0u8, 0, 0, 0, 0]);
+            b
+        };
+        let percentiles = |compression: f64| {
+            let mut t = vec![AGG_PERCENTILES, 1];
+            f64s(&mut t, &[compression]);
+            string(&mut t, "d");
+            t
+        };
+        let tree = decode_tree(&with(&percentiles(100.0))).unwrap();
+        assert!(matches!(
+            &tree.nodes[0],
+            AggNode::Percentiles { field, kind: ValueKind::Double, compression, missing: None }
+                if field == "d" && *compression == 100.0
+        ));
+        // `missing` in front of it.
+        let mut m = vec![AGG_MISSING];
+        m.extend_from_slice(&7i64.to_le_bytes());
+        m.extend_from_slice(&percentiles(50.0));
+        let tree = decode_tree(&with(&m)).unwrap();
+        assert!(matches!(
+            &tree.nodes[0],
+            AggNode::Percentiles {
+                missing: Some(7),
+                ..
+            }
+        ));
+        for bad in [0.0, -1.0, f64::NAN, f64::INFINITY, MAX_COMPRESSION * 2.0] {
+            assert_eq!(
+                decode_tree(&with(&percentiles(bad))).err(),
+                Some(FfiStatus::InvalidArgument),
+                "{bad}"
+            );
+        }
+        // The result: a bucket that collected nothing, then a digest.
+        let mut d = lucene_search::tdigest::MergingDigest::new(100.0);
+        for x in [3.0, 1.0, 2.0] {
+            d.add(x).unwrap();
+        }
+        let mut out = Vec::new();
+        encode_result(
+            &AggResult::Digests {
+                digests: vec![None, Some(d)],
+                nan: false,
+            },
+            &mut out,
+        )
+        .unwrap();
+        let mut want = 2i32.to_le_bytes().to_vec();
+        want.extend_from_slice(&[0, 0, 1]);
+        want.extend_from_slice(&0i32.to_le_bytes());
+        want.extend_from_slice(&0i32.to_le_bytes());
+        f64s(&mut want, &[0.0, 3.0]);
+        want.extend_from_slice(&3i32.to_le_bytes());
+        f64s(&mut want, &[1.0, 3.0, 3.0, 1.0, 1.0, 1.0, 2.0, 1.0]);
+        assert_eq!(out, want);
+    }
+
+    #[test]
     fn composite_trees_decode() {
         let tail = [0u8, 0, 0, 0, 0];
         let with = |node: &[u8]| {

@@ -46,7 +46,11 @@ pub struct NanValue;
 impl MergingDigest {
     /// `new MergingDigest(compression)`: `MergingDigest(compression, -1, -1)`.
     pub fn new(compression: f64) -> Self {
-        let compression = if compression < 10.0 { 10.0 } else { compression };
+        let compression = if compression < 10.0 {
+            10.0
+        } else {
+            compression
+        };
         // useWeightLimit: the weight limit needs a little extra room.
         let mut size_fudge = 10.0;
         if compression < 30.0 {
@@ -384,7 +388,11 @@ mod tests {
                 };
                 d.add(x).unwrap();
             }
-            assert_eq!(state_hash(&d), want, "compression {compression}, kind {kind}, n {n}");
+            assert_eq!(
+                state_hash(&d),
+                want,
+                "compression {compression}, kind {kind}, n {n}"
+            );
         }
     }
 

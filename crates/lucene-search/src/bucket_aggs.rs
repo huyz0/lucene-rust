@@ -3234,15 +3234,23 @@ fn finish(
             let subs = finish_subs(subs, st.subs, &kept, globals, terms)?;
             Ok(AggResult::Composite { buckets, subs })
         }
-        (AggNode::Percentiles { .. }, State::Digests { mut digests, nan, .. }) => {
-            Ok(AggResult::Digests {
-                digests: owners
-                    .iter()
-                    .map(|&o| digests.get_mut(o as usize).and_then(Option::take).map(|d| *d))
-                    .collect(),
-                nan,
-            })
-        }
+        (
+            AggNode::Percentiles { .. },
+            State::Digests {
+                mut digests, nan, ..
+            },
+        ) => Ok(AggResult::Digests {
+            digests: owners
+                .iter()
+                .map(|&o| {
+                    digests
+                        .get_mut(o as usize)
+                        .and_then(Option::take)
+                        .map(|d| *d)
+                })
+                .collect(),
+            nan,
+        }),
         (AggNode::Metric { .. }, State::Metric(states)) => Ok(AggResult::Metric(
             owners
                 .iter()
