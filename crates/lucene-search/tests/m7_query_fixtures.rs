@@ -444,6 +444,152 @@ fn the_index_sort_range_search_equals_its_fallback_on_every_sort_shape() {
     }
 }
 
+/// Lucene 10.6's `TestIndexSortSortedNumericDocValuesRangeQuery`
+/// `testBlocksChildrenWithoutValue`/`testBlocksChildrenWithValue`
+/// (branch_10_6, #16893 fixing #16886) and `testCountWithMultiValuedField`
+/// (#16884): with a parent field only the blocks follow the index sort, so
+/// the binary search must give way to the fallback; and a multi-valued field
+/// matches through any of its values, not the one the sort reduced it to.
+#[test]
+fn the_index_sort_range_falls_back_on_blocks_and_multi_valued_fields() {
+    use lucene_index::document::{
+        Document, LongPoint, SortedNumericDocValuesField, Store, StringField,
+    };
+    use lucene_index::index_writer::IndexWriter;
+    use lucene_index::segment_info::{
+        IndexSortField, IndexSortKind, LuceneVersion, NumericSortKey, SortedNumericSelector,
+    };
+    use lucene_search::extended_query::{
+        IndexSortSortedNumericDocValuesRangeQuery, NumericDocValuesRangeQuery,
+    };
+    use lucene_search::index_searcher::IndexSearcher;
+    use lucene_search::query::BooleanQuery;
+    use lucene_util::test_support::TempDir;
+
+    let version = LuceneVersion {
+        major: 10,
+        minor: 5,
+        bugfix: 0,
+    };
+    let sort = [IndexSortField {
+        field: "field".to_string(),
+        reverse: false,
+        kind: IndexSortKind::SortedNumeric {
+            key: NumericSortKey::Long(None),
+            selector: SortedNumericSelector::Min,
+        },
+    }];
+    let create_query = |lo: i64, hi: i64| -> BooleanQuery {
+        let fallback = NumericDocValuesRangeQuery::new("field", lo, hi);
+        let mut q = BooleanQuery::new();
+        q.filter
+            .push(IndexSortSortedNumericDocValuesRangeQuery::new("field", lo, hi, fallback).into());
+        q
+    };
+    // Each block is {child value, parent value}, a negative value meaning
+    // none; `by_doc` is the value of each document once sorted.
+    let cases: [(&[[i64; 2]], &[i64], i64, i64); 2] = [
+        (
+            &[[-1, 20], [-1, 10], [-1, 30]],
+            &[-1, 10, -1, 20, -1, 30],
+            10,
+            30,
+        ),
+        (&[[2, 1], [0, 0]], &[0, 0, 2, 1], 0, 2),
+    ];
+    for (blocks, by_doc, min, max) in cases {
+        for with_points in [false, true] {
+            let tmp = TempDir::new("index-sort-range-blocks");
+            let dir = FsDirectory::open(tmp.path());
+            {
+                let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", version).unwrap();
+                w.set_parent_field(Some("parent")).unwrap();
+                w.set_index_sort(Some(&sort)).unwrap();
+                let doc = |v: i64| {
+                    let mut d = Document::new();
+                    d.add(StringField::new("id", v.to_string(), Store::No));
+                    if v >= 0 {
+                        d.add(SortedNumericDocValuesField::new("field", v));
+                        if with_points {
+                            d.add(LongPoint::new("field", &[v]).unwrap());
+                        }
+                    }
+                    d
+                };
+                for [child, parent] in blocks {
+                    w.add_fields_documents(&[doc(*child), doc(*parent)])
+                        .unwrap();
+                }
+                w.commit().unwrap();
+            }
+            let reader = DirectoryReader::open(&dir).unwrap();
+            assert!(reader.segment_readers()[0].has_blocks());
+            let opened = reader.open_segments().unwrap();
+            let segments = opened.as_open_segments();
+            let norms: Vec<Option<&HashMap<String, FieldNorms<'_>>>> = vec![None; segments.len()];
+            let searcher = IndexSearcher::new(&segments, &norms).unwrap();
+            for lo in min - 1..=max + 1 {
+                for hi in lo..=max + 1 {
+                    let want: Vec<i32> = (0..by_doc.len() as i32)
+                        .filter(|&d| {
+                            let v = by_doc[d as usize];
+                            v >= 0 && (lo..=hi).contains(&v)
+                        })
+                        .collect();
+                    let q = create_query(lo, hi);
+                    let mut got: Vec<i32> = searcher
+                        .search(&q, 10)
+                        .unwrap()
+                        .score_docs
+                        .iter()
+                        .map(|h| h.doc)
+                        .collect();
+                    got.sort_unstable();
+                    let msg = format!("withPoints={with_points} [{lo},{hi}]");
+                    assert_eq!(got, want, "{msg}");
+                    assert_eq!(searcher.count(&q).unwrap(), want.len() as u64, "{msg}");
+                }
+            }
+        }
+    }
+
+    // `testCountWithMultiValuedField`: these sort by their minimum (1, 2 and
+    // 60) but two match [50, 200] through their maximum.
+    for with_missing_doc in [false, true] {
+        let tmp = TempDir::new("index-sort-range-multi-valued");
+        let dir = FsDirectory::open(tmp.path());
+        {
+            let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", version).unwrap();
+            w.enable_explicit_documents().unwrap();
+            w.set_index_sort(Some(&sort)).unwrap();
+            if with_missing_doc {
+                // Sorts as the missing value 0, outside the query range.
+                let mut d = Document::new();
+                d.add(StringField::new("id", "missing", Store::No));
+                w.add_fields_document(&d).unwrap();
+            }
+            for values in [[1, 100], [2, 3], [60, 70]] {
+                let mut d = Document::new();
+                for v in values {
+                    d.add(SortedNumericDocValuesField::new("field", v));
+                }
+                w.add_fields_document(&d).unwrap();
+            }
+            w.commit().unwrap();
+        }
+        let reader = DirectoryReader::open(&dir).unwrap();
+        let opened = reader.open_segments().unwrap();
+        let segments = opened.as_open_segments();
+        let norms: Vec<Option<&HashMap<String, FieldNorms<'_>>>> = vec![None; segments.len()];
+        let searcher = IndexSearcher::new(&segments, &norms).unwrap();
+        let mut slow = BooleanQuery::new();
+        slow.filter
+            .push(NumericDocValuesRangeQuery::new("field", 50, 200).into());
+        assert_eq!(searcher.count(&slow).unwrap(), 2);
+        assert_eq!(searcher.count(&create_query(50, 200)).unwrap(), 2);
+    }
+}
+
 /// A sorted flush moves each document's positions with it: every document
 /// shares the terms `a` and `b`, in one order or the other at a varying
 /// position, so a phrase finds a document only if its own positions came
