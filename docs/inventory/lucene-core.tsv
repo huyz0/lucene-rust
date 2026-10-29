@@ -130,6 +130,7 @@ codecs/lucene104/Lucene104ScalarQuantizedVectorScorer	ported	crates/lucene-codec
 codecs/lucene104/Lucene104ScalarQuantizedVectorsFormat	ported	crates/lucene-codecs/src/scalar_quantized_vectors.rs::NAME
 codecs/lucene104/Lucene104ScalarQuantizedVectorsReader	ported	crates/lucene-codecs/src/scalar_quantized_vectors.rs::ScalarQuantizedVectorsReader
 codecs/lucene104/Lucene104ScalarQuantizedVectorsWriter	ported	crates/lucene-codecs/src/scalar_quantized_vectors.rs::ScalarQuantizedVectorsWriter
+codecs/lucene104/NormalizedFloatVectorValues	ported	crates/lucene-codecs/src/scalar_quantized_vectors.rs::binarized_query_data
 codecs/lucene104/OffHeapScalarQuantizedFloatVectorValues	ported	crates/lucene-codecs/src/scalar_quantized_vectors.rs::dequantized
 codecs/lucene104/OffHeapScalarQuantizedVectorValues	ported	crates/lucene-codecs/src/scalar_quantized_vectors.rs::QuantizedVectorValues
 codecs/lucene104/PForUtil	ported	crates/lucene-codecs/src/for_util.rs::pfor_decode
