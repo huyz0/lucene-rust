@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# OpenSearch's own engine tests (InternalEngineTests, 3.8.0), run on the Rust
+# OpenSearch's own engine tests (InternalEngineTests, 3.9.0), run on the Rust
 # engine: opensearch-plugin/tools/derive_engine_tests.py rewrote them to build
 # RustEngine, and every test not listed in its SKIPPED map must pass.
 #

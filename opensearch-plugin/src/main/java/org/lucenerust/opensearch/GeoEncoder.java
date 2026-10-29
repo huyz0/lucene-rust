@@ -48,7 +48,11 @@ import java.nio.charset.StandardCharsets;
  * around a {@code geo_point} query is unwrapped by {@link QueryEncoder} to its index side, as for
  * ranges: the two sides match the same documents.
  *
- * <p>Not encoded (each falls back under a named reason): a points range of another width
+ * <p>A {@code PointRangeQuery} other than the one-dimension 8-byte one {@link QueryEncoder} sends as
+ * longs -- {@code LatLonPoint.newBoxQuery}'s, and every numeric and {@code ip} range of another width
+ * -- is a points box: its packed corners, compared bytewise per dimension as Lucene does.
+ *
+ * <p>Not encoded (each falls back under a named reason): a points range beyond Lucene's own limits
  * ({@code points_width}), a geometry class Lucene's factories do not build ({@code geo_geometry}),
  * and fields the reflection cannot read ({@code geo_reflect}) -- a Lucene whose classes changed.
  */
@@ -98,9 +102,10 @@ final class GeoEncoder {
         }
     }
 
-    /** {@code LatLonPoint.newBoxQuery}'s range; any other multi-dimension or 4-byte range is not. */
+    /** A {@code PointRangeQuery} of any width: {@code LatLonPoint.newBoxQuery}'s, an {@code integer} or {@code ip} range. */
     private static String pointsBox(PointRangeQuery pr, ByteArrayOutputStream out) {
-        if (pr.getClass().getEnclosingClass() != LatLonPoint.class || pr.getNumDims() != 2 || pr.getBytesPerDim() != Integer.BYTES) {
+        // PointValues.MAX_DIMENSIONS and MAX_NUM_BYTES; the native decoder takes no more.
+        if (pr.getNumDims() < 1 || pr.getNumDims() > 16 || pr.getBytesPerDim() < 1 || pr.getBytesPerDim() > 16) {
             return "points_width";
         }
         out.write(NODE_POINTS_BOX);

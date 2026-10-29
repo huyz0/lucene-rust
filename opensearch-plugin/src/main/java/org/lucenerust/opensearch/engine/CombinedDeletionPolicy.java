@@ -1,5 +1,5 @@
 /*
- * Derived from OpenSearch 3.8.0 by opensearch-plugin/tools/derive_engine.py -- do not edit;
+ * Derived from OpenSearch 3.9.0 by opensearch-plugin/tools/derive_engine.py -- do not edit;
  * change the script and re-run it. The original notice follows.
  */
 /*

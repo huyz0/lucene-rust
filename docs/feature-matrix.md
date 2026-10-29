@@ -1,12 +1,12 @@
 # Feature matrix (operators)
 
-What the lucene-rust plugin does for an OpenSearch 3.8.0 cluster, in
+What the lucene-rust plugin does for an OpenSearch 3.9.0 cluster, in
 OpenSearch's terms: what runs in Rust, what OpenSearch still does itself, and
 what is not supported. Read this to decide whether the plugin fits a workload;
 [`operations.md`](operations.md) covers installing and running it, and
 [`parity.md`](parity.md) is the per-Lucene-file ledger for contributors.
 
-Pinned versions: **OpenSearch 3.8.0** (Lucene 10.5.0), Linux x86_64 and
+Pinned versions: **OpenSearch 3.9.0** (Lucene 10.5.1), Linux x86_64 and
 aarch64.
 
 ## The short version
@@ -54,12 +54,12 @@ OpenSearch's answer on the same shard:
 | `match` (any `operator`, `minimum_should_match`, `boost`) | ✅ | |
 | `multi_match` (`best_fields`, `cross_fields`), `query_string` | ✅ | |
 | `term`, `terms` on `keyword` | ✅ | |
+| `term`, `terms` on every numeric type and `ip` | ✅ | point ranges and point sets of any width |
 | `bool` (`must`, `should`, `filter`, `must_not`, nesting, `minimum_should_match`) | ✅ | a negative `minimum_should_match` falls back |
 | `constant_score`, `dis_max`, `match_all` | ✅ | |
 | `match_phrase` | ✅ | exact and sloppy; a phrase with a gap (a removed stopword) falls back |
 | `prefix`, `wildcard`, `regexp`, `fuzzy` | ✅ | `regexp` with non-default flags (e.g. `case_insensitive`) and `wildcard` with a `\` escape fall back |
-| `range` on `long`, `date`, `double` | ✅ | OpenSearch's approximate range (an early-terminating range that `track_total_hits` allows) falls back |
-| `range` on `integer`, `float`, `short`, `byte`, `half_float`, `scaled_float` | ↩ | falls back (`points_width`) |
+| `range` on every numeric type, `date` and `ip` | ✅ | OpenSearch's approximate range (an early-terminating range that `track_total_hits` allows) falls back |
 | `exists` | ✅ | on a vector field it falls back |
 | any other query | ? | runs native when OpenSearch rewrites it into the Lucene queries the rows above produce (term, boolean, constant-score, boost, disjunction-max, match-all/none, phrase, prefix/wildcard/regexp/fuzzy/terms, 8-byte point range, exists) -- e.g. `simple_query_string`, `match_bool_prefix` -- and falls back otherwise, counted as `query_<Class>`/`clause_<Class>` (`nested`, `geo_*`, `knn`, `script_score`, `function_score`, `span_*`, `intervals`, ...). Not verified per query type: measure with the stats below |
 
@@ -125,7 +125,7 @@ Each is a counter under `fallbacks` in `GET /_plugins/lucene_rust/stats`.
 | `disabled` | is on an index with `index.lucene_rust.search.enabled: false` |
 | `query_<Class>`, `clause_<Class>` | contains a Lucene query the native side does not run (the class names it) |
 | `approximate` | uses OpenSearch's approximate `range` |
-| `points_width` | is a `range` on a 4-byte (or narrower) numeric field |
+| `points_width` | is a points range beyond Lucene's limits (more than 16 dimensions or 16 bytes per dimension) |
 | `regexp_flags`, `wildcard_escape`, `phrase_positions`, `boolean_msm_negative`, `boost_invalid` | uses a variant of a supported query the native side does not take |
 | `query_too_deep`, `query_too_large` | nests deeper than 32 or has more than 1,024 query nodes |
 | `field_similarity` | scores a field with a non-default similarity |
