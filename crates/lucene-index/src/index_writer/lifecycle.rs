@@ -27,7 +27,7 @@ impl IndexWriter<'_> {
     /// them, and become durable with the next commit. A no-op without a
     /// merge policy.
     pub fn maybe_merge(&mut self) -> Result<()> {
-        self.write_pending_try_deletes()?;
+        self.write_pending_try_changes()?;
         if self.merge_policy.is_none() && self.pluggable_merge_policy.is_none() {
             return Ok(());
         }
@@ -45,7 +45,7 @@ impl IndexWriter<'_> {
     /// writer has one buffer; a [`crate::concurrent_writer::ConcurrentIndexWriter`]
     /// flushes its largest.
     pub fn flush_next_buffer(&mut self) -> Result<bool> {
-        self.write_pending_try_deletes()?;
+        self.write_pending_try_changes()?;
         if self.pending_docs.is_empty() {
             return Ok(false);
         }

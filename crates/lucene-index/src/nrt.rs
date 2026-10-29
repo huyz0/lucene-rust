@@ -158,7 +158,7 @@ impl IndexWriter<'_> {
         _apply_all_deletes: bool,
         _write_all_deletes: bool,
     ) -> Result<NrtSnapshot> {
-        self.write_pending_try_deletes()?;
+        self.write_pending_try_changes()?;
         self.release_nrt_holds()?;
         self.flush()?;
         // `getReader`'s point-in-time merges (`GET_READER`).
@@ -172,7 +172,7 @@ impl IndexWriter<'_> {
     /// The snapshot of what is already flushed and applied -- the part a
     /// concurrent writer takes under its control lock after its own flush.
     pub(crate) fn nrt_snapshot_of_live_view(&mut self) -> Result<NrtSnapshot> {
-        self.write_pending_try_deletes()?;
+        self.write_pending_try_changes()?;
         self.release_nrt_holds()?;
         let mut infos = self.live_infos();
         let keys = segment_keys(&infos.segments);
@@ -229,7 +229,7 @@ impl IndexWriter<'_> {
     /// Releases every pin a dropped NRT reader handed back
     /// (`StandardDirectoryReader.doClose`'s `decRefDeleter`).
     pub(crate) fn release_nrt_holds(&mut self) -> Result<()> {
-        self.write_pending_try_deletes()?;
+        self.write_pending_try_changes()?;
         let returned: Vec<Vec<String>> =
             std::mem::take(&mut *self.nrt.returned.lock().unwrap_or_else(|p| p.into_inner()));
         for files in returned {
