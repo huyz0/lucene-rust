@@ -53,6 +53,7 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+import java.util.function.LongPredicate;
 import java.util.function.Predicate;
 
 /**
@@ -262,6 +263,8 @@ public final class NativeAggregationTree {
         final NativeAggregations.Terms terms;
         /** The {@code missing} term, or null. */
         BytesRef missingTerm;
+        /** {@code include}/{@code exclude}: the ordinal count and the accepted ones' bits, or null. */
+        long[][] accepted;
 
         TermsNode(AggregatorBase agg, List<Node> subs, NativeAggregations.Terms terms) {
             super(agg, subs);
@@ -273,10 +276,19 @@ public final class NativeAggregationTree {
             out.write(TERMS);
             terms.write(out);
             out.write(NativeAggregations.orderCode(terms.order()));
-            // Flags: 1, min_doc_count 0; 2, a missing term follows.
-            out.write((terms.thresholds().getMinDocCount() == 0 ? 1 : 0) | (missingTerm != null ? 2 : 0));
+            // Flags: 1, min_doc_count 0; 2, a missing term follows; 4, the accepted ordinals.
+            out.write(
+                (terms.thresholds().getMinDocCount() == 0 ? 1 : 0) | (missingTerm != null ? 2 : 0) | (accepted != null ? 4 : 0)
+            );
             if (missingTerm != null) {
                 writeBytes(out, missingTerm);
+            }
+            if (accepted != null) {
+                writeLong(out, accepted[0][0]);
+                NativeAggregations.writeInt(out, accepted[1].length);
+                for (long w : accepted[1]) {
+                    writeLong(out, w);
+                }
             }
             writeSubs(out);
         }
@@ -984,6 +996,31 @@ public final class NativeAggregationTree {
         return n;
     }
 
+    /**
+     * A keyword {@code terms} aggregator's {@code include}/{@code exclude} as the bits of the global
+     * ordinals it accepts: GlobalOrdinalsStringTermsAggregator's {@code acceptedGlobalOrdinals} (built
+     * by {@code IncludeExclude.OrdinalsFilter} over its missing-replaced values) asked of each of its
+     * {@code valueCount} ordinals. Null for another aggregator (an {@code execution_hint: map} one).
+     */
+    static long[][] acceptedOrdinals(AggregatorBase agg) throws ReflectiveOperationException {
+        if (Reflect.inHierarchy(agg.getClass(), "acceptedGlobalOrdinals") == null
+            || Reflect.inHierarchy(agg.getClass(), "valueCount") == null) {
+            return null;
+        }
+        LongPredicate accepted = (LongPredicate) get(agg, "acceptedGlobalOrdinals");
+        long count = (long) get(agg, "valueCount");
+        if (count < 0 || (count + 63) / 64 > Integer.MAX_VALUE) {
+            return null;
+        }
+        long[] words = new long[(int) ((count + 63) / 64)];
+        for (long ord = 0; ord < count; ord++) {
+            if (accepted.test(ord)) {
+                words[(int) (ord >>> 6)] |= 1L << (ord & 63);
+            }
+        }
+        return new long[][] { { count }, words };
+    }
+
     /** {@link #node} for a values-source aggregation; {@code missing}: it has a {@code missing} value. */
     private static Node valuesSourceNode(
         SearchContext ctx,
@@ -1007,11 +1044,21 @@ public final class NativeAggregationTree {
                     if (t == null || (t.thresholds().getMinDocCount() == 0 && subs.isEmpty() == false)) {
                         return null;
                     }
-                    return new TermsNode(agg, subs, t);
+                    TermsNode node = new TermsNode(agg, subs, t);
+                    if (NativeAggregations.hasIncludeExclude(f)) {
+                        node.accepted = acceptedOrdinals(agg);
+                        if (node.accepted == null) {
+                            return null;
+                        }
+                    }
+                    return node;
                 }
                 // Numeric: integers, longs, floats, doubles and millisecond dates, collected by
                 // NumericTermsAggregator (not a significant-terms or star-tree variant).
                 if (valueKind < 0 || aggClass.equals(AGGS + "bucket.terms.NumericTermsAggregator") == false) {
+                    return null;
+                }
+                if (NativeAggregations.hasIncludeExclude(f)) {
                     return null;
                 }
                 NativeAggregations.Terms t = NativeAggregations.termsSpec(ctx, f, config);
