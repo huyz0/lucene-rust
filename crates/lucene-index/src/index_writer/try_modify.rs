@@ -11,23 +11,31 @@
 //! with the same name and id is. Java answers `-1` when it is not; this
 //! returns `None`.
 //!
-//! A delete is buffered in memory, as Java keeps it in the pooled
+//! Both are buffered in memory, as Java keeps them in the pooled
 //! `ReadersAndUpdates`: consecutive deletes of a segment become one new
-//! `.liv` generation instead of one each. The writer writes them before any
-//! other operation touches its segments ([`IndexWriter::write_pending_try_deletes`],
+//! `.liv` generation, and consecutive doc-values updates one doc-values
+//! generation, instead of one each. The writer writes them before any other
+//! operation touches its segments ([`IndexWriter::write_pending_try_changes`],
 //! called at the top of every writer operation), so a flush, commit, merge,
-//! near-real-time reader or delete by term sees them exactly as if each had
-//! been written at once. A delete that would leave its segment with no live
-//! document is written at once, so the segment is dropped as Java drops it.
-//! A rollback discards them like any other uncommitted change.
-//!
-//! A doc-values update is written at once, as a new doc-values generation
-//! referenced by the writer's in-memory view and made durable by the next
-//! commit.
+//! near-real-time reader, delete or update by term sees them exactly as if
+//! each had been written at once. A delete that would leave its segment with
+//! no live document is written at once, so the segment is dropped as Java
+//! drops it. A failed write stays buffered for the next operation to retry;
+//! a rollback or `delete_all` discards them like any other uncommitted
+//! change.
 
 use super::{DocValuesUpdate, Error, IndexWriter, Result, SegmentInfos, SeqNo};
 use crate::deletes;
 use lucene_util::fixed_bit_set::FixedBitSet;
+
+/// One segment's buffered [`IndexWriter::try_update_doc_value`]s, applied in
+/// order (a later update of a document's field wins).
+pub(crate) struct PendingTryUpdates {
+    segment_name: String,
+    segment_id: [u8; lucene_store::codec_util::ID_LENGTH],
+    numeric: Vec<super::PerFieldNumericUpdates>,
+    binary: Vec<super::PerFieldBinaryUpdates>,
+}
 
 /// One segment's buffered [`IndexWriter::try_delete_document`]s.
 pub(crate) struct PendingTryDeletes {
@@ -135,8 +143,8 @@ impl IndexWriter<'_> {
     /// Writes every buffered [`Self::try_delete_document`], one `.liv`
     /// generation per segment. Every writer operation calls this first, so
     /// nothing else ever sees a segment with deletes still in memory.
-    pub(crate) fn write_pending_try_deletes(&mut self) -> Result<()> {
-        if self.pending_try_deletes.is_empty() {
+    pub(crate) fn write_pending_try_changes(&mut self) -> Result<()> {
+        if self.pending_try_deletes.is_empty() && self.pending_try_updates.is_empty() {
             return Ok(());
         }
         let mut pending = std::mem::take(&mut self.pending_try_deletes);
@@ -151,14 +159,29 @@ impl IndexWriter<'_> {
                 break;
             }
         }
+        if result.is_ok() {
+            let mut pending = std::mem::take(&mut self.pending_try_updates);
+            // Oldest segment first; each segment's updates in call order.
+            pending.reverse();
+            while let Some(p) = pending.pop() {
+                if let Err(e) = self.write_try_updates(&p) {
+                    pending.push(p);
+                    pending.reverse();
+                    self.pending_try_updates = pending;
+                    result = Err(e);
+                    break;
+                }
+            }
+        }
         let live_infos = self.live_infos();
         self.deleter.checkpoint(&live_infos, false)?;
         result
     }
 
     /// Drops the buffered deletes: a rollback or `deleteAll` discards them.
-    pub(crate) fn discard_pending_try_deletes(&mut self) {
+    pub(crate) fn discard_pending_try_changes(&mut self) {
         self.pending_try_deletes.clear();
+        self.pending_try_updates.clear();
     }
 
     fn read_live_docs(
@@ -269,7 +292,6 @@ impl IndexWriter<'_> {
         doc_id: i32,
         updates: &[DocValuesUpdate],
     ) -> Result<Option<SeqNo>> {
-        self.write_pending_try_deletes()?;
         Ok(self
             .try_update_resolved(reader_infos, doc_id, updates)?
             .then(|| self.delete_queue.next_sequence_number()))
@@ -282,7 +304,6 @@ impl IndexWriter<'_> {
         doc_id: i32,
         updates: &[DocValuesUpdate],
     ) -> Result<bool> {
-        self.write_pending_try_deletes()?;
         if updates.is_empty() {
             return Err(Error::NoDocValuesUpdatesSupplied);
         }
@@ -308,27 +329,68 @@ impl IndexWriter<'_> {
         let Some(target) = self.locate(reader_infos, doc_id)? else {
             return Ok(false);
         };
-        for (_, docs) in &mut numeric {
+        let sci = self.target_mut(&target);
+        let (name, id) = (sci.segment_name.clone(), sci.segment_id);
+        let position = match self
+            .pending_try_updates
+            .iter()
+            .position(|p| p.segment_name == name && p.segment_id == id)
+        {
+            Some(position) => position,
+            None => {
+                self.pending_try_updates.push(PendingTryUpdates {
+                    segment_name: name,
+                    segment_id: id,
+                    numeric: Vec::new(),
+                    binary: Vec::new(),
+                });
+                self.pending_try_updates.len().saturating_sub(1)
+            }
+        };
+        let pending = &mut self.pending_try_updates[position];
+        for (number, mut docs) in numeric {
             docs[0].0 = target.leaf_doc;
+            match pending.numeric.iter_mut().find(|(n, _)| *n == number) {
+                Some((_, buffered)) => buffered.append(&mut docs),
+                None => pending.numeric.push((number, docs)),
+            }
         }
-        for (_, docs) in &mut binary {
+        for (number, mut docs) in binary {
             docs[0].0 = target.leaf_doc;
+            match pending.binary.iter_mut().find(|(n, _)| *n == number) {
+                Some((_, buffered)) => buffered.append(&mut docs),
+                None => pending.binary.push((number, docs)),
+            }
         }
-        let dir = self.dir;
-        let schema = self.cfg.fields.clone();
-        let mut sci = self.target_mut(&target).clone();
-        super::IndexingConfig::write_doc_values_update_generation(
-            dir,
-            &mut sci,
-            &numeric,
-            &binary,
-            &schema,
-            self.cfg.codec.as_deref(),
-        )?;
-        *self.target_mut(&target) = sci;
-        let live_infos = self.live_infos();
-        self.deleter.checkpoint(&live_infos, false)?;
         Ok(true)
+    }
+
+    /// One segment's buffered doc-values updates as one generation; a
+    /// segment merged away or dropped since has nothing to write.
+    fn write_try_updates(&mut self, pending: &PendingTryUpdates) -> Result<()> {
+        let same = |c: &super::SegmentCommitInfo| {
+            c.segment_name == pending.segment_name && c.segment_id == pending.segment_id
+        };
+        let target = if let Some(index) = self.segment_infos.segments.iter().position(same) {
+            &mut self.segment_infos.segments[index]
+        } else if let Some(index) = self.flushed_segments.iter().position(same) {
+            &mut self.flushed_segments[index]
+        } else {
+            return Ok(());
+        };
+        let mut sci = target.clone();
+        let written = super::IndexingConfig::write_doc_values_update_generation(
+            self.dir,
+            &mut sci,
+            &pending.numeric,
+            &pending.binary,
+            &self.cfg.fields,
+            self.cfg.codec.as_deref(),
+        );
+        // On failure `sci` describes only files that exist, with its
+        // next-write generations advanced past the failed attempt's.
+        *target = sci;
+        written
     }
 
     /// `ReaderUtil.subIndex` over the reader's segments, then the writer's
@@ -477,7 +539,7 @@ mod tests {
 
     /// Each segment's deletion count, buffered deletes written first.
     fn live(w: &mut IndexWriter<'_>) -> Vec<i32> {
-        w.write_pending_try_deletes().unwrap();
+        w.write_pending_try_changes().unwrap();
         w.live_infos()
             .segments
             .iter()
@@ -606,8 +668,26 @@ mod tests {
             )
             .unwrap();
         assert!(seq.is_some());
-        assert!(w.live_infos().segments[0].doc_values_gen > 0);
+        // Buffered: no generation yet, but the writer has changes.
+        assert_eq!(w.live_infos().segments[0].doc_values_gen, -1);
+        assert!(w.has_uncommitted_changes());
+        // A later update of the same document and field wins, and a second
+        // document joins the same generation.
+        for (doc, value) in [(2, 41), (2, 42), (3, 3)] {
+            w.try_update_doc_value(
+                &snap.segment_infos,
+                doc,
+                &[DocValuesUpdate::Numeric {
+                    term: any.clone(),
+                    field: "n".into(),
+                    value: Some(value),
+                }],
+            )
+            .unwrap()
+            .unwrap();
+        }
         w.commit().unwrap();
+        assert_eq!(w.segment_infos().segments[0].doc_values_gen, 2);
         for r in crate::check_index::check_directory(&dir).unwrap() {
             assert!(r.all_passed(), "{:?}", r.failures());
         }
