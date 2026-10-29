@@ -116,8 +116,8 @@ use std::sync::Arc;
 /// numeric `terms` in aggregation trees (`NUMERIC_TERMS`), and each tree
 /// `terms` node's order byte; 37, the tree's `MISSING` prefix (a numeric
 /// node's `missing` value); 38, a tree `terms` node's `min_doc_count: 0`
-/// flag.
-pub const JVM_ABI_VERSION: u32 = 38;
+/// flag; 39, its `missing` term (the flag byte's bit 2).
+pub const JVM_ABI_VERSION: u32 = 39;
 
 /// Blob tag for a single `TermQuery`.
 pub const QUERY_TERM: u8 = 0;

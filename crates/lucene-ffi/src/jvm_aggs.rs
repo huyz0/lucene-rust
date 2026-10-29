@@ -14,7 +14,8 @@
 //! global   := 0 | 1 query:bytes nodes         (the global pass: its query and nodes)
 //! node     := METRIC value_kind:u8 source:u8 needs:u8 field
 //!           | CARDINALITY card_kind:u8 precision:u8 field
-//!           | TERMS field shard_size:i32 order:u8 zero_buckets:u8 nodes
+//!           | TERMS field shard_size:i32 order:u8 flags:u8 [missing:bytes] nodes
+//!                  (flag 1: `min_doc_count: 0`; 2: a `missing` term follows)
 //!           | NUMERIC_TERMS field value_kind:u8 shard_size:i32 order:u8 nodes
 //!           | HISTOGRAM field value_kind:u8 interval:f64 offset:f64 bounds_f64 nodes
 //!           | DATE_HISTOGRAM field unit:u8 [interval:i64 when unit = UNIT_INTERVAL]
@@ -269,11 +270,17 @@ fn node_of(
             let field = field(c)?;
             let shard_size = shard_size(c)?;
             let order = terms_order(c)?;
-            // `min_doc_count: 0`, which the plan sends without sub-aggregations.
-            let zero_buckets = match c.u8()? {
-                0 => false,
-                1 => true,
-                other => return Err(bad(format!("aggregation tree: min_doc_count flag {other}"))),
+            // `min_doc_count: 0`, which the plan sends without sub-aggregations,
+            // and the `missing` term.
+            let flags = c.u8()?;
+            if flags > 3 {
+                return Err(bad(format!("aggregation tree: terms flags {flags}")));
+            }
+            let zero_buckets = flags & 1 != 0;
+            let missing = if flags & 2 != 0 {
+                Some(c.bytes()?.to_vec())
+            } else {
+                None
             };
             let subs = nodes(c, depth + 1, count)?;
             if zero_buckets && !subs.is_empty() {
@@ -283,6 +290,7 @@ fn node_of(
             }
             AggNode::Terms {
                 field,
+                missing,
                 shard_size,
                 order,
                 zero_buckets,
@@ -631,7 +639,7 @@ pub(crate) fn aggregate_tree_blobs(
             .map_err(crate::query::map_search_error)?;
         ords.insert(f.to_string(), g);
     }
-    let globals = Globals { ords: &ords };
+    let globals = Globals::new(&ords);
     let norm_fields: Vec<String> = if min_score.is_some() {
         crate::query::clause_field_names(&q)
             .into_iter()
@@ -1043,12 +1051,24 @@ pub(crate) mod tests {
         assert_eq!(bad(&with(&points)), invalid);
         let doc_values = [m, vec![AGG_METRIC, 0, 0, 1, 1, 0, 0, 0, b'n']].concat();
         assert!(decode_tree(&with(&doc_values)).is_ok());
-        // A min_doc_count flag past 1, and min_doc_count 0 over a sub-aggregation.
+        // Terms flags past 3, and min_doc_count 0 over a sub-aggregation.
         let mut t = vec![AGG_TERMS];
         string(&mut t, "k");
         t.extend_from_slice(&1i32.to_le_bytes());
-        t.extend_from_slice(&[0, 2, 0]);
+        t.extend_from_slice(&[0, 4, 0]);
         assert_eq!(bad(&with(&t)), invalid);
+        // A missing term: decoded with min_doc_count 0.
+        let mut t = vec![AGG_TERMS];
+        string(&mut t, "k");
+        t.extend_from_slice(&1i32.to_le_bytes());
+        t.extend_from_slice(&[0, 3]);
+        string(&mut t, "none");
+        t.push(0);
+        let tree = decode_tree(&with(&t)).unwrap();
+        assert!(matches!(
+            &tree.nodes[0],
+            AggNode::Terms { missing: Some(m), zero_buckets: true, .. } if m == b"none"
+        ));
         let mut t = vec![AGG_TERMS];
         string(&mut t, "k");
         t.extend_from_slice(&1i32.to_le_bytes());

@@ -419,6 +419,10 @@ pub enum AggNode {
     /// Keyword `terms`.
     Terms {
         field: String,
+        /// `missing`: the term a document without one reads
+        /// (`MissingValues.replaceMissingOrdinals`: an ordinal of the global
+        /// ones, or one inserted in term order).
+        missing: Option<Vec<u8>>,
         shard_size: usize,
         order: TermsOrder,
         /// `min_doc_count: 0`: every term of the shard's global ordinals is
@@ -599,9 +603,54 @@ pub enum AggResult {
 /// global ordinals.
 pub struct Globals<'g> {
     pub ords: &'g HashMap<String, Arc<GlobalOrds>>,
+    /// Each keyword `missing` term's place among its field's global
+    /// ordinals ([`resolve_missing`]).
+    missing: HashMap<(String, Vec<u8>), MissingTerm>,
+}
+
+/// A keyword `missing` term among the global ordinals.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MissingTerm {
+    /// One of them.
+    Ord(i64),
+    /// None of them: inserted before the ordinal given, its documents
+    /// collected under the key one past the last ordinal.
+    Insert(i64),
 }
 
 impl<'g> Globals<'g> {
+    pub fn new(ords: &'g HashMap<String, Arc<GlobalOrds>>) -> Self {
+        Globals {
+            ords,
+            missing: HashMap::new(),
+        }
+    }
+
+    fn missing(&self, field: &str, term: &[u8]) -> Result<MissingTerm> {
+        self.missing
+            .get(&(field.to_string(), term.to_vec()))
+            .copied()
+            .ok_or_else(|| crate::Error::TermsAggType(format!("{field}: missing term unresolved")))
+    }
+
+    /// The key a keyword `terms`' documents without a value are collected
+    /// under, when it has a `missing` term.
+    fn missing_key(&self, node: &AggNode) -> Result<Option<i64>> {
+        let AggNode::Terms {
+            field,
+            missing: Some(m),
+            ..
+        } = node
+        else {
+            return Ok(None);
+        };
+        Ok(Some(match self.missing(field, m)? {
+            MissingTerm::Ord(o) => o,
+            MissingTerm::Insert(_) => {
+                i64::try_from(self.get(field)?.value_count()).unwrap_or(i64::MAX)
+            }
+        }))
+    }
     fn get(&self, field: &str) -> Result<&'g GlobalOrds> {
         self.ords
             .get(field)
@@ -751,6 +800,9 @@ struct Leaf<'a> {
     term_buckets: Vec<(u32, u32)>,
     /// The node's `missing`: what a document without a value reads.
     missing: Option<i64>,
+    /// A keyword `terms`' `missing` term: the global key its documents
+    /// without a value are collected under ([`Globals::missing_key`]).
+    missing_key: Option<i64>,
     subs: Vec<Leaf<'a>>,
 }
 
@@ -996,6 +1048,7 @@ fn open_leaf<'a>(
         win_ords: Vec::new(),
         term_buckets: Vec::new(),
         missing: node.missing(),
+        missing_key: globals.missing_key(node)?,
         subs,
     })
 }
@@ -1229,7 +1282,7 @@ fn collect_window(
                 docs: counts,
                 ..
             },
-        ) if prefetched && matches!(leaf.col, Col::Ords(..)) => {
+        ) if prefetched && matches!(leaf.col, Col::Ords(..)) && leaf.missing_key.is_none() => {
             // As `collect`'s case for one value: the segment ordinal's global
             // one, its bucket for the owner, counted, then the window to the
             // sub-aggregations. A bucket per segment ordinal is kept while
@@ -1607,6 +1660,11 @@ fn collect(
             },
         ) => {
             if !leaf.read(doc)? {
+                // `missing`: the document reads the term.
+                if let Some(key) = leaf.missing_key {
+                    let ord = keyed_ord(ords, keys, owning, key);
+                    collect_bucket(node, docs, subs, &mut leaf.subs, doc, ord)?;
+                }
                 return Ok(());
             }
             let values = std::mem::take(&mut leaf.buf);
@@ -2184,6 +2242,11 @@ pub fn aggregate_tree(
     slices: &[Vec<usize>],
     min_score: Option<&aggs::MinScore<'_, '_>>,
 ) -> Result<Vec<Vec<AggResult>>> {
+    let resolved = Globals {
+        ords: globals.ords,
+        missing: resolve_missing(nodes, globals, readers)?,
+    };
+    let globals = &resolved;
     let rewritten = crate::multi_segment::rewrite_points_ranges(query, segments);
     let query = rewritten.as_ref().unwrap_or(query);
     let clause = aggs::lone_clause(query);
@@ -2378,6 +2441,57 @@ impl<'r> TermLookup<'r> {
     }
 }
 
+/// Each keyword `terms`' `missing` term looked up in its field's global
+/// ordinals (`SortedSetDocValues.lookupTerm`, a binary search of the terms).
+fn resolve_missing(
+    nodes: &[AggNode],
+    globals: &Globals<'_>,
+    readers: &[SegmentReader],
+) -> Result<HashMap<(String, Vec<u8>), MissingTerm>> {
+    fn walk<'n>(nodes: &'n [AggNode], out: &mut Vec<(&'n str, &'n [u8])>) {
+        for n in nodes {
+            if let AggNode::Terms {
+                field,
+                missing: Some(m),
+                ..
+            } = n
+            {
+                out.push((field, m));
+            }
+            walk(n.subs(), out);
+        }
+    }
+    let mut wanted = Vec::new();
+    walk(nodes, &mut wanted);
+    let mut out = HashMap::new();
+    let mut lookup = TermLookup::new(readers);
+    for (field, term) in wanted {
+        let key = (field.to_string(), term.to_vec());
+        if out.contains_key(&key) {
+            continue;
+        }
+        let g = globals.get(field)?;
+        let (mut low, mut high) = (0i64, i64::try_from(g.value_count()).unwrap_or(i64::MAX));
+        let mut found = None;
+        while low < high {
+            let mid = low + (high - low) / 2;
+            match lookup.term(g, field, mid)?.as_slice().cmp(term) {
+                std::cmp::Ordering::Less => low = mid + 1,
+                std::cmp::Ordering::Greater => high = mid,
+                std::cmp::Ordering::Equal => {
+                    found = Some(mid);
+                    break;
+                }
+            }
+        }
+        out.insert(
+            key,
+            found.map_or(MissingTerm::Insert(low), MissingTerm::Ord),
+        );
+    }
+    Ok(out)
+}
+
 /// `buildAggregations(owningBucketOrds)`: the results for the owning buckets
 /// `owners` (in the parent's listed order).
 fn finish(
@@ -2484,6 +2598,7 @@ fn finish(
         (
             AggNode::Terms {
                 field,
+                missing,
                 shard_size,
                 order,
                 zero_buckets,
@@ -2497,6 +2612,17 @@ fn finish(
             },
         ) => {
             let g = globals.get(field)?;
+            // A `missing` term none of the ordinals holds, inserted in term
+            // order: the keys from here on move up one, its own (one past the
+            // last ordinal) taking its place.
+            let inserted = match missing {
+                Some(m) => match globals.missing(field, m)? {
+                    MissingTerm::Insert(at) => Some((at, m)),
+                    MissingTerm::Ord(_) => None,
+                },
+                None => None,
+            };
+            let past_last = i64::try_from(g.value_count()).unwrap_or(i64::MAX);
             let by_owner = group(&keys);
             let mut buckets = Vec::with_capacity(owners.len());
             let mut child = Vec::new();
@@ -2510,11 +2636,22 @@ fn finish(
                             .collect()
                     })
                     .unwrap_or_default();
+                if let Some((at, _)) = inserted {
+                    for k in &mut kept {
+                        k.0 = if k.0 == past_last {
+                            at
+                        } else if k.0 >= at {
+                            k.0 + 1
+                        } else {
+                            k.0
+                        };
+                    }
+                }
                 if *zero_buckets {
                     // Every other global ordinal as an empty bucket (the
                     // plan has no sub-aggregations under it).
                     seen.clear();
-                    seen.resize(g.value_count(), false);
+                    seen.resize(g.value_count() + usize::from(inserted.is_some()), false);
                     for k in &kept {
                         if let Some(s) = usize::try_from(k.0).ok().and_then(|i| seen.get_mut(i)) {
                             *s = true;
@@ -2531,7 +2668,12 @@ fn finish(
                 kept.sort_unstable_by(|a, b| order.listed(a.0, b.0));
                 let mut list = Vec::with_capacity(kept.len());
                 for (term, n, b) in kept {
-                    list.push((terms.term(g, field, term)?, n));
+                    let bytes = match inserted {
+                        Some((at, m)) if term == at => m.clone(),
+                        Some((at, _)) if term > at => terms.term(g, field, term - 1)?,
+                        _ => terms.term(g, field, term)?,
+                    };
+                    list.push((bytes, n));
                     child.push(b);
                 }
                 buckets.push((total - kept_docs, list));
@@ -2718,6 +2860,7 @@ mod tests {
             win_ords: Vec::new(),
             term_buckets: Vec::new(),
             missing: None,
+            missing_key: None,
             subs: Vec::new(),
         }
     }
@@ -2795,6 +2938,7 @@ mod tests {
         assert!(metric(Source::PointsMin).reads_points());
         assert!(!metric(Source::DocValues).reads_points());
         let terms = |sub| AggNode::Terms {
+            missing: None,
             zero_buckets: false,
             field: "k".into(),
             shard_size: 10,
@@ -3150,7 +3294,7 @@ mod tests {
             reader.segment_readers(),
             query,
             nodes,
-            &Globals { ords: &ords },
+            &Globals::new(&ords),
             slices,
             None,
         )
@@ -3301,6 +3445,7 @@ mod tests {
         let segments = plain.as_open_segments();
         let seg = &segments[0];
         let terms = AggNode::Terms {
+            missing: None,
             zero_buckets: false,
             field: "d".to_string(),
             shard_size: 1,
@@ -3721,6 +3866,7 @@ mod tests {
         let reader = fixture("terms_aggs_index");
         for (field, other) in [("kw", "mkw"), ("mkw", "kw")] {
             let tree = AggNode::Terms {
+                missing: None,
                 zero_buckets: false,
                 field: field.to_string(),
                 shard_size: 5,
@@ -3745,6 +3891,7 @@ mod tests {
         // Single-valued terms under single-valued terms: each window's owner
         // changes from document to document.
         let keyword = |field: &str, subs| AggNode::Terms {
+            missing: None,
             zero_buckets: false,
             field: field.to_string(),
             shard_size: 5,
@@ -4050,6 +4197,7 @@ mod tests {
                     .buckets;
             assert!(counted.len() < terms_count, "{field}: some terms uncounted");
             let node = |order, shard_size| AggNode::Terms {
+                missing: None,
                 field: field.to_string(),
                 shard_size,
                 order,
@@ -4091,6 +4239,67 @@ mod tests {
             let total: u64 = counted.iter().map(|b| b.1).sum();
             assert_eq!(buckets, vec![(total, zero)], "{field}");
         }
+    }
+
+    /// A keyword `terms` with a `missing` term counts the documents without
+    /// a value under it: into its bucket when a segment holds it, otherwise
+    /// a bucket of its own in term order (`replaceMissingOrdinals`).
+    #[test]
+    fn keyword_missing_term_stands_in_for_documents_without_one() {
+        let reader = fixture("terms_aggs_index");
+        let q = BooleanQuery {
+            must: vec![Clause::PointsRange(PointsRangeQuery::new("r", 0, 2))],
+            ..Default::default()
+        };
+        let node = |missing: Option<&[u8]>, order, zero_buckets| AggNode::Terms {
+            field: "mkw".to_string(),
+            missing: missing.map(<[u8]>::to_vec),
+            shard_size: 1 << 20,
+            order,
+            zero_buckets,
+            subs: Vec::new(),
+        };
+        let list = |n: AggNode| {
+            let got = run(&reader, &q, &[n], &whole(&reader))
+                .unwrap()
+                .remove(0)
+                .remove(0);
+            let AggResult::Terms { mut buckets, .. } = got else {
+                panic!("{got:?}")
+            };
+            buckets.remove(0).1
+        };
+        let base = list(node(None, TermsOrder::KeyAsc, false));
+        let (first, first_count) = base[0].clone();
+        let merged = list(node(Some(&first), TermsOrder::KeyAsc, false));
+        assert_eq!(merged.len(), base.len());
+        assert_eq!(merged[1..], base[1..]);
+        let absent = merged[0].1 - first_count;
+        assert!(absent > 0, "some matched documents lack mkw");
+        // Just after the first term: its own bucket, second.
+        let mut after = first.clone();
+        after.push(0);
+        let inserted = list(node(Some(&after), TermsOrder::KeyAsc, false));
+        let mut want = base.clone();
+        want.insert(1, (after.clone(), absent));
+        assert_eq!(inserted, want);
+        // Before every term, and past every term.
+        let got = list(node(Some(b""), TermsOrder::KeyAsc, false));
+        assert_eq!(got[0], (Vec::new(), absent));
+        assert_eq!(got[1..], base[..]);
+        let got = list(node(Some(b"\xff"), TermsOrder::KeyDesc, false));
+        assert_eq!(got[0], (b"\xff".to_vec(), absent));
+        // Every bucket kept by count, listed by term.
+        let got = list(node(Some(&after), TermsOrder::CountDesc, false));
+        assert_eq!(got, inserted);
+        // `min_doc_count: 0`: the inserted term is one of the empty buckets'.
+        let every = list(node(Some(&after), TermsOrder::KeyAsc, true));
+        let terms_count = crate::terms_agg::GlobalOrds::build(reader.segment_readers(), "mkw")
+            .unwrap()
+            .value_count();
+        assert_eq!(every.len(), terms_count + 1);
+        assert!(every.contains(&(after, absent)));
+        assert!(every.windows(2).all(|w| w[0].0 < w[1].0));
     }
 
     /// A keyword `terms` in each order keeps the `shard_size` best buckets
@@ -4139,6 +4348,7 @@ mod tests {
                             want.sort_by(|a, b| a.0.cmp(&b.0));
                         }
                         let node = AggNode::Terms {
+                            missing: None,
                             zero_buckets: false,
                             field: field.to_string(),
                             shard_size,
@@ -4182,6 +4392,7 @@ mod tests {
                 )
                 .unwrap();
                 let terms = AggNode::Terms {
+                    missing: None,
                     zero_buckets: false,
                     field: field.to_string(),
                     shard_size,
@@ -4235,6 +4446,7 @@ mod tests {
             }
             // Sliced: every slice from scratch; the counts add up.
             let node = AggNode::Terms {
+                missing: None,
                 zero_buckets: false,
                 field: "kw".to_string(),
                 shard_size: 10_000,
@@ -4267,6 +4479,7 @@ mod tests {
     fn a_bad_tree_or_slice_is_an_error() {
         let reader = fixture("terms_aggs_index");
         let nodes = [AggNode::Terms {
+            missing: None,
             zero_buckets: false,
             field: "kw".to_string(),
             shard_size: 1,
@@ -4286,13 +4499,14 @@ mod tests {
             reader.segment_readers(),
             &all(),
             &nodes,
-            &Globals { ords: &empty },
+            &Globals::new(&empty),
             &whole(&reader),
             None,
         );
         assert!(missing.is_err(), "no global ordinals for the field");
         // A numeric field under terms is a mapping error.
         let numeric = [AggNode::Terms {
+            missing: None,
             zero_buckets: false,
             field: "r".to_string(),
             shard_size: 1,
@@ -4376,9 +4590,7 @@ mod tests {
                 reader.segment_readers(),
                 q,
                 &[metric("d", ValueKind::Double)],
-                &Globals {
-                    ords: &HashMap::new(),
-                },
+                &Globals::new(&HashMap::new()),
                 &whole(&reader),
                 Some(&m),
             )
