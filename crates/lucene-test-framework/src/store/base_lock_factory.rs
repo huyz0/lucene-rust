@@ -20,6 +20,7 @@ use std::sync::{Barrier, Mutex};
 use lucene_codecs::field_infos::{FieldInfo, IndexOptions};
 use lucene_codecs::stored_fields::{Document, FieldValue, StoredField};
 use lucene_index::index_writer::IndexWriter;
+use lucene_index::merge_policy::upgrade::LATEST;
 use lucene_index::segment_info::LuceneVersion;
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_store::{Directory, Error};
@@ -184,16 +185,7 @@ pub fn open_writer(dir: &dyn Directory) -> lucene_index::index_writer::Result<In
         index_options: IndexOptions::DocsAndFreqsAndPositions,
         ..FieldInfo::new("content", 0)
     };
-    let mut writer = IndexWriter::open(
-        dir,
-        vec![content],
-        "Lucene104",
-        LuceneVersion {
-            major: 10,
-            minor: 5,
-            bugfix: 0,
-        },
-    )?;
+    let mut writer = IndexWriter::open(dir, vec![content], "Lucene104", LATEST)?;
     writer.set_postings_field(Some("content"))?;
     Ok(writer)
 }
