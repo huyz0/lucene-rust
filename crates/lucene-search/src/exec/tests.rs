@@ -3185,3 +3185,104 @@ fn a_block_max_conjunction_stops_at_max_doc() {
     // windows, nowhere near the ~32K it takes to reach `Integer.MAX_VALUE`.
     assert!(calls.get() < 100, "{} advanceShallow calls", calls.get());
 }
+
+/// `ReqExclBulkScorer` over a written segment with deletions: a two-phase
+/// excluded clause whose skip blocks are `YES` runs (Lucene 10.6, #16307:
+/// the run skipped at once) and a dense and a sparse excluded disjunction,
+/// each counted through the scorer and searched for the top ten -- the
+/// matches a brute-force pass over the same documents finds.
+#[test]
+fn must_not_bulk_scoring_matches_brute_force() {
+    use crate::collector::ScoreMode;
+    use crate::directory_reader::DirectoryReader;
+    use crate::extended_query::NumericDocValuesRangeQuery;
+    use crate::index_searcher::IndexSearcher;
+    use crate::query::{BooleanQuery, Clause, TermQuery};
+    use lucene_index::buffered_updates::Term;
+    use lucene_index::document::{Document, NumericDocValuesField, Store, StringField};
+    use lucene_index::index_writer::IndexWriter;
+    use lucene_index::segment_info::LuceneVersion;
+
+    const DOCS: usize = 40_000;
+    let tmp = lucene_util::test_support::TempDir::new("must-not-bulk");
+    let dir = lucene_store::FsDirectory::open(tmp.path());
+    let version = LuceneVersion {
+        major: 10,
+        minor: 5,
+        bugfix: 0,
+    };
+    let deleted = |i: usize| i % 97 == 3 || (5_000..5_300).contains(&i);
+    {
+        let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", version).unwrap();
+        for i in 0..DOCS {
+            let mut d = Document::new();
+            d.add(StringField::new("id", i.to_string(), Store::No));
+            d.add(StringField::new("body", "all", Store::No));
+            d.add(NumericDocValuesField::indexed_field("ts", (i / 100) as i64));
+            let field = if i % 128 != 0 { "dense" } else { "sparse" };
+            d.add(StringField::new(field, format!("t{}", i % 7), Store::No));
+            w.add_fields_document(&d).unwrap();
+        }
+        let terms: Vec<Term> = (0..DOCS)
+            .filter(|&i| deleted(i))
+            .map(|i| Term::new("id", i.to_string()))
+            .collect();
+        w.delete_documents_by_term(&terms).unwrap();
+        w.commit().unwrap();
+    }
+    let reader = DirectoryReader::open(&dir).unwrap();
+    let opened = reader.open_segments().unwrap();
+    let segs = opened.as_open_segments();
+    assert_eq!(segs.len(), 1);
+    assert!(segs[0].live_docs.is_some());
+    let owned = reader.field_norms_by_field(&["body".to_string()]).unwrap();
+    let norms: Vec<_> = owned.iter().map(Some).collect();
+    let searcher = IndexSearcher::new(&segs, &norms).unwrap();
+
+    let terms = |field: &str| {
+        let mut q = BooleanQuery::new();
+        for t in 0..7 {
+            q.should
+                .push(Clause::Term(TermQuery::new(field, format!("t{t}"))));
+        }
+        Clause::Boolean(Box::new(q))
+    };
+    type Excluded = Box<dyn Fn(usize) -> bool>;
+    let cases: Vec<(&str, Clause, Excluded)> = vec![
+        (
+            "dv",
+            Clause::from(NumericDocValuesRangeQuery::new("ts", 10, 300)),
+            Box::new(|i| (10..=300).contains(&(i / 100))),
+        ),
+        ("dense", terms("dense"), Box::new(|i| i % 128 != 0)),
+        ("sparse", terms("sparse"), Box::new(|i| i % 128 == 0)),
+    ];
+    struct Count(u64);
+    impl ScoringCollector for Count {
+        fn collect(&mut self, _doc: i32, _score: f32) {
+            self.0 += 1;
+        }
+        fn score_mode(&self) -> ScoreMode {
+            ScoreMode::CompleteNoScores
+        }
+        fn add_hits(&mut self, n: u64) -> bool {
+            self.0 += n;
+            true
+        }
+    }
+    for (name, excl, excluded) in cases {
+        let mut q = BooleanQuery::new();
+        q.must.push(Clause::Term(TermQuery::new("body", "all")));
+        q.must_not.push(excl);
+        let want: Vec<i32> = (0..DOCS)
+            .filter(|&i| !deleted(i) && !excluded(i))
+            .map(|i| i as i32)
+            .collect();
+        let mut c = Count(0);
+        searcher.search_collector(&q, &mut c).unwrap();
+        assert_eq!(c.0, want.len() as u64, "{name}: count");
+        let top = searcher.search(&q, 10).unwrap();
+        let got: Vec<i32> = top.score_docs.iter().map(|d| d.doc).collect();
+        assert_eq!(got, want[..10], "{name}: top 10");
+    }
+}

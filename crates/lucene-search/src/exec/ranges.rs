@@ -230,6 +230,28 @@ impl<F: FnMut(i32, bool) -> Result<bool>> Scorer for SkipBlockRange<'_, F> {
     fn match_cost(&self) -> f32 {
         2.0
     }
+    /// `DocValuesBlockRangeIterator.docIDRunEnd()` (Lucene 10.6,
+    /// branch_10_6, #16307): only a `YES` block proves a run of matches --
+    /// `SkipBlockRangeIterator.docIDRunEnd()`, the block extended to every
+    /// coarser enclosing `YES` interval; any other block reports none.
+    fn two_phase_run_end(&self) -> i32 {
+        if self.matched != BlockMatch::Yes {
+            return self.doc;
+        }
+        let s = &self.skipper;
+        let mut max_doc = s.max_doc_id(0);
+        let mut level = 1;
+        while level < s.num_levels()
+            && s.min_value(level) >= self.min
+            && s.max_value(level) <= self.max
+            && i64::from(s.max_doc_id(level)) - i64::from(s.min_doc_id(level))
+                == i64::from(s.doc_count(level)) - 1
+        {
+            max_doc = s.max_doc_id(level);
+            level = level.saturating_add(1);
+        }
+        max_doc.saturating_add(1)
+    }
     fn score(&mut self) -> Result<f32> {
         Ok(0.0)
     }
