@@ -52,9 +52,9 @@ a dependency the shipped library links is not under a licence listed here.
   - The whole file is kept anyway, so the notices stay those of the upstream
     the port follows.
 - **[`NOTICE`](../NOTICE)** is this project's notice, then Lucene 10.5.0's
-  `NOTICE.txt` in full, then OpenSearch 3.8.0's `NOTICE.txt`.
+  `NOTICE.txt` in full, then OpenSearch 3.9.0's `NOTICE.txt`.
   - OpenSearch's notice is there because files in `opensearch-plugin/.../engine/`
-    are derived from OpenSearch 3.8.0 by
+    are derived from OpenSearch 3.9.0 by
     `opensearch-plugin/tools/derive_engine.py`, each keeping OpenSearch's SPDX
     header under a line saying so.
 - **Distribution:** the plugin zip (`gradle -p opensearch-plugin bundlePlugin`)
@@ -384,7 +384,7 @@ The list M6's work order named has drifted since it was written:
     MIT and Apache-2.0; MIT is the one taken.
 - **The Java fixture generators and verifiers** (`fixtures/src`, `scripts/verify-*.sh`)
   run against Lucene 10.5.0's jars, Spatial4j 0.8 and s2-geometry-library-java
-  1.0.0 (for spatial-extras) and OpenSearch 3.8.0's distribution, all
+  1.0.0 (for spatial-extras) and OpenSearch 3.9.0's distribution, all
   Apache-2.0. None of them is redistributed; the scripts fetch them.
 
 ## Prior art

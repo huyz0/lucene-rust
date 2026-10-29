@@ -358,7 +358,7 @@ jobs:
   # ---------------------------------------------------------------------------
   # M2: the OpenSearch plugin, on the architectures it ships for. Builds the
   # plugin against the pinned OpenSearch image's own jars, runs the JVM-side
-  # differential self test, installs it into a real 3.8.0 node, and runs the
+  # differential self test, installs it into a real 3.9.0 node, and runs the
   # query matrix (native vs Lucene), force-merge reader release, SIGKILL
   # recovery, and OpenSearch's own REST YAML suites against a stock node.
   # ---------------------------------------------------------------------------
@@ -376,7 +376,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       # JDK 25 for the plugin (the Foreign Function & Memory API, and the
-      # JDK OpenSearch 3.8.0 bundles), found through
+      # JDK OpenSearch 3.9.0 bundles), found through
       # opensearch-plugin/gradle.properties; JDK 21, listed last and so
       # JAVA_HOME, runs Gradle 8.14.3, which predates JDK 25.
       - uses: actions/setup-java@v4
@@ -410,7 +410,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       # JDK 25 for the plugin (the Foreign Function & Memory API, and the
-      # JDK OpenSearch 3.8.0 bundles), found through
+      # JDK OpenSearch 3.9.0 bundles), found through
       # opensearch-plugin/gradle.properties; JDK 21, listed last and so
       # JAVA_HOME, runs Gradle 8.14.3, which predates JDK 25.
       - uses: actions/setup-java@v4
@@ -431,7 +431,7 @@ jobs:
           key: cargo-x64-${{ hashFiles('**/Cargo.toml', 'rust-toolchain.toml') }}
           restore-keys: cargo-x64-
       # The derived tests must be exactly derive_engine_tests.py's output from
-      # OpenSearch 3.8.0's own sources (pinned by SHA-256): no hand edits, no
+      # OpenSearch 3.9.0's own sources (pinned by SHA-256): no hand edits, no
       # script change left un-run.
       - name: The derived engine tests match their generator
         run: ./scripts/check-derived-engine-tests.sh
@@ -444,9 +444,9 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # M8 acceptance criterion 3: an index written by OpenSearch 2.19 (Lucene
-  # 9.12 segments) opened in place by 3.8.0 with the plugin, served natively
-  # and compared with a stock 3.8.0 node -- before and after a snapshot
-  # restore, and after a force merge rewrites it as Lucene 10.5.0.
+  # 9.12 segments) opened in place by 3.9.0 with the plugin, served natively
+  # and compared with a stock 3.9.0 node -- before and after a snapshot
+  # restore, and after a force merge rewrites it as Lucene 10.5.x.
   # ---------------------------------------------------------------------------
   opensearch-upgrade:
     name: opensearch 2.x upgrade
@@ -472,7 +472,7 @@ jobs:
             target
           key: cargo-x64-${{ hashFiles('**/Cargo.toml', 'rust-toolchain.toml') }}
           restore-keys: cargo-x64-
-      - name: An OpenSearch 2.19 index upgraded in place to 3.8.0, served natively
+      - name: An OpenSearch 2.19 index upgraded in place to 3.9.0, served natively
         run: ./scripts/verify-opensearch-upgrade.sh
 
   # ---------------------------------------------------------------------------

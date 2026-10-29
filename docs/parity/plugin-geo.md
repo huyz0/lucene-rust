@@ -2,7 +2,7 @@
 
 [Index](../parity.md). Rows: OpenSearch query shapes, not ports; **native** (engine) or **falls back** (named reason, to Lucene).
 
-OpenSearch 3.8.0's `geo_bounding_box`, `geo_distance`, `geo_polygon`,
+OpenSearch 3.9.0's `geo_bounding_box`, `geo_distance`, `geo_polygon`,
 `geo_shape` and `_geo_distance` sort: read by `opensearch-plugin/.../GeoEncoder.java`,
 decoded by `lucene-ffi/src/jvm_reader.rs`, run as `DocumentClause`s, cached by
 node bytes. Tests: `opensearch-plugin/e2e/geo_matrix.py` and

@@ -10,7 +10,7 @@ import org.opensearch.test.rest.yaml.ClientYamlTestCandidate;
 import org.opensearch.test.rest.yaml.OpenSearchClientYamlSuiteTestCase;
 
 /**
- * OpenSearch's own REST YAML test suites ({@code rest-api-spec}, 3.8.0), run against a node with
+ * OpenSearch's own REST YAML test suites ({@code rest-api-spec}, 3.9.0), run against a node with
  * this plugin installed -- {@code scripts/verify-opensearch.sh --yaml}. Which suites run is {@code
  * tests.rest.suite}; the node is {@code tests.rest.cluster}.
  *

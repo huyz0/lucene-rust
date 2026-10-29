@@ -327,7 +327,7 @@ pub struct LowerCaseFilter<I = Box<dyn TokenStream>> {
 /// `"οδοσ"`, no final sigma).
 ///
 /// The mapping is [`java_character::to_lower_case`]: JDK 25's
-/// `Character.toLowerCase` (Unicode 16.0), the JDK OpenSearch 3.8.0 bundles,
+/// `Character.toLowerCase` (Unicode 16.0), the JDK OpenSearch 3.9.0 bundles,
 /// read from the same table `lucene-util`'s `CaseFolding` uses. Rust's
 /// `char::to_lowercase` follows the toolchain's Unicode version (17.0 on
 /// Rust 1.97) and lowercased 28 code points Unicode 16 leaves unassigned.

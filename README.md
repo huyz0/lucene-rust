@@ -8,7 +8,7 @@ native search engine inside OpenSearch.
 - `opensearch-plugin/` — Java-side OpenSearch engine plugin + its Panama FFM bindings (Phase 4+).
 - `docs/` — porting conventions and the Java→Rust parity matrix.
 
-Status: M0-M8 and M5.6 delivered -- OpenSearch 3.8.0 serves search and
+Status: M0-M8 and M5.6 delivered -- OpenSearch 3.9.0 serves search and
 indexes from Rust, real Lucene reads a Rust-written index, older segments are
 read and merged (M1's performance gate closed with a FAIL verdict; see the
 roadmap); M7 has every `lucene-core` class ported or recorded as not

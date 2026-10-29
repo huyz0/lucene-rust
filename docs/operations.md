@@ -1,6 +1,6 @@
 # Operating the lucene-rust plugin
 
-For whoever installs and runs the plugin on an OpenSearch 3.8.0 cluster:
+For whoever installs and runs the plugin on an OpenSearch 3.9.0 cluster:
 install, configure, watch, upgrade and roll back. What the plugin does and does
 not handle is [`feature-matrix.md`](feature-matrix.md); how the two halves work
 inside is [`opensearch-native-queries.md`](opensearch-native-queries.md) (native
@@ -10,9 +10,9 @@ search) and [`opensearch-engine.md`](opensearch-engine.md) (the Rust engine).
 
 | | |
 |---|---|
-| OpenSearch | **3.8.0** exactly (a plugin must match its node's version). Lucene 10.5.0, as that release bundles |
-| JDK | the one OpenSearch 3.8.0 bundles (25); the plugin uses the Foreign Function & Memory API |
-| Platform | Linux x86_64 or aarch64, glibc ≥ 2.34 (the `opensearchproject/opensearch:3.8.0` image has 2.34). No Windows or macOS |
+| OpenSearch | **3.9.0** exactly (a plugin must match its node's version). Lucene 10.5.1, as that release bundles |
+| JDK | the one OpenSearch 3.9.0 bundles (25); the plugin uses the Foreign Function & Memory API |
+| Platform | Linux x86_64 or aarch64, glibc ≥ 2.34 (the `opensearchproject/opensearch:3.9.0` image has 2.34). No Windows or macOS |
 | Other plugins | none that registers a `QueryPhaseSearcher` (`neural-search` does; OpenSearch accepts one per node). The security plugin works, with native stored-field reads off (below) |
 | Storage | a local file system. Remote-backed storage and searchable snapshots are not supported: native search falls back and the Rust engine refuses them |
 
@@ -284,7 +284,7 @@ Before rolling a new build out, run the proofs a release is held to:
 | | |
 |---|---|
 | `scripts/docker-test.sh gate` | the workspace gate: lint, tests, coverage, fixtures, licences |
-| `scripts/verify-opensearch.sh --yaml` | a real 3.8.0 node: native against OpenSearch's answer, SIGKILL, force merge, OpenSearch's REST YAML suites |
+| `scripts/verify-opensearch.sh --yaml` | a real 3.9.0 node: native against OpenSearch's answer, SIGKILL, force merge, OpenSearch's REST YAML suites |
 | `scripts/verify-opensearch.sh --engine --yaml` | the same with every index on the Rust engine |
 | `scripts/verify-opensearch-cluster.sh` | three nodes: replication, recovery, failover, relocation between the engines |
 | `scripts/verify-rollback.sh` | this page's upgrade and rollback |

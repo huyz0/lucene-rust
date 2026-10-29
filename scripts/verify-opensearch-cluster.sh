@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# M5's cluster proof: three OpenSearch 3.8.0 nodes with the lucene-rust plugin,
+# M5's cluster proof: three OpenSearch 3.9.0 nodes with the lucene-rust plugin,
 # two serving Rust-engine indices with the Rust writer and one
 # (lucene_rust.engine.node_enabled: false) with OpenSearch's own engine, then
 # opensearch-plugin/e2e/verify_cluster.py: document replication, peer recovery,
@@ -15,7 +15,7 @@
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-VERSION=3.8.0
+VERSION=3.9.0
 IMAGE="lucene-rust-opensearch:${VERSION}"
 # OS_IMAGE runs the nodes from another image built on that one -- e.g. an
 # OpenSearch patched with an overridable Engine#lastRefreshedCheckpoint, under

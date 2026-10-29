@@ -111,8 +111,9 @@ use std::sync::Arc;
 /// ([`crate::ffm_bridge::ffi_jvm_reader_aggregate_alloc`]'s `out_seg_counts`);
 /// 33, the block-join, span, interval, combined-field and function-score
 /// nodes ([`crate::jvm_nodes`], M10 T10.7); 34, the term-range node and
-/// segments with completion postings formats (M13 T13.6).
-pub const JVM_ABI_VERSION: u32 = 34;
+/// segments with completion postings formats (M13 T13.6); 35, the point-set
+/// node, and points boxes of any width (`integer`, `float`, `ip`, ...).
+pub const JVM_ABI_VERSION: u32 = 35;
 
 /// Blob tag for a single `TermQuery`.
 pub const QUERY_TERM: u8 = 0;
@@ -149,6 +150,9 @@ const NODE_GEO_SHAPE_BOX: u8 = 19;
 /// under its constant-score rewrite (M13 T13.6).
 pub(crate) const NODE_TERM_RANGE: u8 = 25;
 const _: () = assert!(NODE_TERM_RANGE == crate::jvm_nodes::NODE_LAST + 1);
+/// `PointInSetQuery` (`terms` on a numeric or `ip` field, `IntPoint.newSetQuery`
+/// and the like): the field, its dimensions and width, then the packed points.
+pub(crate) const NODE_POINT_SET: u8 = 26;
 /// [`NODE_TERM_RANGE`]'s flags: which bounds follow, and which are inclusive.
 const RANGE_HAS_LOWER: u8 = 1;
 const RANGE_HAS_UPPER: u8 = 2;
@@ -1899,13 +1903,14 @@ pub(crate) fn boolean_uses_points(b: &BooleanQuery) -> bool {
             Clause::ConstantScore(c) => clause(&c.inner),
             Clause::Boost(b) => clause(&b.inner),
             Clause::DisjunctionMax(d) => d.disjuncts.iter().any(clause),
-            // A points box reads the opened points (`exec::ranges`); a geo
-            // node reads them through the segment's reader, unopened. A
+            // A points box or set reads the opened points (`exec::ranges`); a
+            // geo node reads them through the segment's reader, unopened. A
             // join's or a function score's clauses may hold a range.
             Clause::Extended(e) => {
                 matches!(
                     e.as_ref(),
                     lucene_search::extended_query::ExtendedQuery::PointRange(_)
+                        | lucene_search::extended_query::ExtendedQuery::PointInSet(_)
                 ) || e.children().into_iter().any(clause)
                     || crate::jvm_function_score::queries(e)
                         .into_iter()
@@ -2494,6 +2499,27 @@ pub(crate) fn decode_node(
                 .map_err(|e| invalid(format!("query tree: {e}")))?
                 .into()
         }
+        NODE_POINT_SET => {
+            // One node, as `PointInSetQuery.visit` is one leaf to Lucene's
+            // clause visitor; the points are checked and sorted by the
+            // constructor.
+            let field = std::str::from_utf8(c.bytes()?).map_err(|_| FfiStatus::InvalidUtf8)?;
+            let num_dims = c.len()?;
+            let bytes_per_dim = c.len()?;
+            let count = c.len()?;
+            let mut points = Vec::new();
+            for _ in 0..count {
+                points.push(c.bytes()?.to_vec());
+            }
+            lucene_search::extended_query::PointInSetQuery::new(
+                field,
+                num_dims,
+                bytes_per_dim,
+                points,
+            )
+            .map_err(|e| invalid(format!("query tree: {e}")))?
+            .into()
+        }
         NODE_GEO_DISTANCE | NODE_GEO_POINT | NODE_GEO_SHAPE | NODE_GEO_SHAPE_BOX => {
             return decode_geo(c, kind, start);
         }
@@ -2502,7 +2528,7 @@ pub(crate) fn decode_node(
         }
         other => {
             set_last_error(format!(
-                "query tree: unknown node kind {other} (expected 0..={NODE_TERM_RANGE})"
+                "query tree: unknown node kind {other} (expected 0..={NODE_POINT_SET})"
             ));
             return Err(FfiStatus::InvalidArgument);
         }
@@ -5035,6 +5061,53 @@ pub(crate) mod tests {
             invalid,
             "corners not a multiple of the dimensions"
         );
+        // A points box of one 16-byte dimension (`ip`), and a point set.
+        let mut ip = Geo::new(NODE_POINTS_BOX, "ip");
+        ip.int(1).bytes(&[0; 16]).bytes(&[0xff; 16]);
+        assert!(query_uses_points(&decode_query(&ip.blob()).unwrap()));
+        let set = |dims: i32, width: i32, points: &[&[u8]]| {
+            let mut g = Geo::new(NODE_POINT_SET, "si");
+            g.int(dims).int(width).int(points.len() as i32);
+            for p in points {
+                g.bytes(p);
+            }
+            g
+        };
+        let ints = set(
+            1,
+            4,
+            &[&[0x80, 0, 0, 7], &[0x80, 0, 0, 3], &[0x80, 0, 0, 7]],
+        );
+        match single(&ints.blob()).unwrap() {
+            Clause::Extended(e) => match *e {
+                ExtendedQuery::PointInSet(p) => {
+                    assert_eq!(
+                        (p.field.as_str(), p.num_dims, p.bytes_per_dim),
+                        ("si", 1, 4)
+                    );
+                    assert_eq!(p.points, vec![vec![0x80, 0, 0, 3], vec![0x80, 0, 0, 7]]);
+                }
+                other => panic!("{other:?}"),
+            },
+            other => panic!("{other:?}"),
+        }
+        assert!(query_uses_points(&decode_query(&ints.blob()).unwrap()));
+        assert!(decode_query(&set(1, 4, &[]).blob()).is_ok(), "an empty set");
+        assert_eq!(
+            status(&set(1, 4, &[&[0; 3]]).blob()),
+            invalid,
+            "a point of the wrong width"
+        );
+        assert_eq!(
+            status(&set(1, 17, &[&[0; 17]]).blob()),
+            invalid,
+            "17 bytes per dimension"
+        );
+        assert_eq!(status(&set(0, 4, &[]).blob()), invalid, "no dimensions");
+        let full = set(1, 4, &[&[0x80, 0, 0, 7]]).blob();
+        for n in 1..full.len() {
+            assert!(decode_query(&full[..n]).is_err(), "truncated at {n}");
+        }
 
         // Distance, and its key.
         let distance = |radius: f64| {

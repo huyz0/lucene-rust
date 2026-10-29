@@ -3,7 +3,7 @@
 //! whitespace) -- `fixtures/data/analysis_common/codepoints.words`, written
 //! by `fixtures/src/GenAnalysisCommon.java`.
 //!
-//! The port follows JDK 25 (Unicode 16.0), the JDK OpenSearch 3.8.0 bundles
+//! The port follows JDK 25 (Unicode 16.0), the JDK OpenSearch 3.9.0 bundles
 //! and the oldest one with the FFM API the plugin needs on Unicode 16. CI's
 //! fixture job runs JDK 21 (Unicode 15.0), so the generator leaves out the
 //! code points whose `Character` properties differ between the two (its

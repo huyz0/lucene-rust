@@ -3,7 +3,7 @@ Copyright 2026 The lucene-rust contributors
 
 This product is a Rust port of Apache Lucene 10.5.0 -- a derivative work of it,
 under the Apache License, Version 2.0 -- together with an OpenSearch plugin,
-parts of whose engine code are derived from OpenSearch 3.8.0 (each such file
+parts of whose engine code are derived from OpenSearch 3.9.0 (each such file
 says so in its header). The notices of both follow.
 
 It also contains Rust ports of parts of two Java libraries Lucene's
