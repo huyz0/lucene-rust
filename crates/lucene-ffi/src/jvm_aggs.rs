@@ -15,6 +15,7 @@
 //! node     := METRIC value_kind:u8 source:u8 needs:u8 field
 //!           | CARDINALITY card_kind:u8 precision:u8 field
 //!           | TERMS field shard_size:i32 nodes
+//!           | NUMERIC_TERMS field value_kind:u8 shard_size:i32 nodes
 //!           | HISTOGRAM field value_kind:u8 interval:f64 offset:f64 bounds_f64 nodes
 //!           | DATE_HISTOGRAM field unit:u8 [interval:i64 when unit = UNIT_INTERVAL]
 //!                            zone_ms:i64 offset:i64 bounds_i64 nodes
@@ -39,6 +40,8 @@
 //!                                              as `writeTo` writes it (`len` 0:
 //!                                              the bucket saw nothing)
 //! TERMS        n:i32 (other:i64 count:i32 (docs:i64 term:bytes)*)*n  subs
+//! NUMERIC_TERMS n:i32 (other:i64 count:i32 (docs:i64 key:i64)*)*n  subs
+//!                                              (a double's key its sortable long)
 //! HISTOGRAM    n:i32 (count:i32 (key:f64 docs:i64)*)*n  subs
 //! DATE_HIST.   n:i32 (count:i32 (key:i64 docs:i64)*)*n  subs
 //! RANGE/FILTERS/GLOBAL  n:i32 width:i32 docs:i64*(n*width)  subs
@@ -70,6 +73,7 @@ const AGG_DATE_HISTOGRAM: u8 = 4;
 const AGG_RANGE: u8 = 5;
 const AGG_FILTERS: u8 = 6;
 const AGG_GLOBAL: u8 = 7;
+const AGG_NUMERIC_TERMS: u8 = 8;
 
 /// `date_histogram` units; [`UNIT_INTERVAL`] is a fixed interval.
 const UNITS: [DateUnit; 8] = [
@@ -119,6 +123,15 @@ fn field(c: &mut Cursor<'_>) -> Result<String, FfiStatus> {
 
 fn f64_of(c: &mut Cursor<'_>) -> Result<f64, FfiStatus> {
     Ok(f64::from_bits(c.i64()? as u64))
+}
+
+/// A `terms`' effective `shard_size`: at least one.
+fn shard_size(c: &mut Cursor<'_>) -> Result<usize, FfiStatus> {
+    let n = c.i32()?;
+    usize::try_from(n)
+        .ok()
+        .filter(|&n| n >= 1)
+        .ok_or_else(|| bad(format!("aggregation tree: shard_size {n}")))
 }
 
 fn width(c: &mut Cursor<'_>) -> Result<usize, FfiStatus> {
@@ -203,13 +216,20 @@ fn node(c: &mut Cursor<'_>, depth: usize, count: &mut usize) -> Result<AggNode, 
         }
         AGG_TERMS => {
             let field = field(c)?;
-            let shard_size = c.i32()?;
-            let shard_size = usize::try_from(shard_size)
-                .ok()
-                .filter(|&n| n >= 1)
-                .ok_or_else(|| bad(format!("aggregation tree: shard_size {shard_size}")))?;
+            let shard_size = shard_size(c)?;
             AggNode::Terms {
                 field,
+                shard_size,
+                subs: nodes(c, depth + 1, count)?,
+            }
+        }
+        AGG_NUMERIC_TERMS => {
+            let field = field(c)?;
+            let kind = value_kind(c.u8()?)?;
+            let shard_size = shard_size(c)?;
+            AggNode::NumericTerms {
+                field,
+                kind,
                 shard_size,
                 subs: nodes(c, depth + 1, count)?,
             }
@@ -404,6 +424,18 @@ pub(crate) fn encode_result(r: &AggResult, out: &mut Vec<u8>) -> Result<(), FfiS
                 for (term, docs) in list {
                     put_u64(out, *docs);
                     put_bytes(out, term)?;
+                }
+            }
+            encode_subs(subs, out)?;
+        }
+        AggResult::NumericTerms { buckets, subs } => {
+            put_i32(out, buckets.len())?;
+            for (other, list) in buckets {
+                put_u64(out, *other);
+                put_i32(out, list.len())?;
+                for (key, docs) in list {
+                    put_u64(out, *docs);
+                    out.extend_from_slice(&key.to_le_bytes());
                 }
             }
             encode_subs(subs, out)?;

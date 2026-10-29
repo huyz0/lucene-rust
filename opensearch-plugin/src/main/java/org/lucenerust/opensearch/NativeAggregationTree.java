@@ -31,6 +31,8 @@ import org.opensearch.search.aggregations.bucket.histogram.InternalHistogram;
 import org.opensearch.search.aggregations.bucket.histogram.LongBounds;
 import org.opensearch.search.aggregations.bucket.range.InternalRange;
 import org.opensearch.search.aggregations.bucket.range.RangeAggregator;
+import org.opensearch.search.aggregations.bucket.terms.DoubleTerms;
+import org.opensearch.search.aggregations.bucket.terms.LongTerms;
 import org.opensearch.search.aggregations.bucket.terms.StringTerms;
 import org.opensearch.search.aggregations.metrics.AbstractHyperLogLogPlusPlus;
 import org.opensearch.search.aggregations.support.ValuesSourceConfig;
@@ -56,7 +58,7 @@ import java.util.function.Predicate;
 /**
  * Aggregation trees that run natively (read path R5): {@code histogram}, {@code date_histogram},
  * {@code range}/{@code date_range}, {@code filter}, {@code filters}, {@code global}, keyword
- * {@code terms}, {@code cardinality} and the metrics of {@link NativeAggregations}, nested in any
+ * and numeric {@code terms}, {@code cardinality} and the metrics of {@link NativeAggregations}, nested in any
  * combination -- what {@link NativeAggregations#plan} (flat metrics and {@code terms} only) does
  * not take.
  *
@@ -77,6 +79,7 @@ public final class NativeAggregationTree {
     static final byte RANGE = 5;
     static final byte FILTERS = 6;
     static final byte GLOBAL = 7;
+    static final byte NUMERIC_TERMS = 8;
     /** {@code date_histogram} unit codes, in the order {@code jvm_aggs.rs} lists them. */
     private static final Rounding.DateTimeUnit[] UNITS = {
         Rounding.DateTimeUnit.WEEK_OF_WEEKYEAR,
@@ -308,6 +311,104 @@ public final class NativeAggregationTree {
                         terms.thresholds()
                     )
                 );
+            }
+            return out;
+        }
+    }
+
+    /**
+     * Numeric {@code terms}: {@code NumericTermsAggregator}'s {@code LongTerms} (whole numbers and
+     * dates) or {@code DoubleTerms} (floating point), keyed as it keys them.
+     */
+    static final class NumericTermsNode extends Node {
+        final NativeAggregations.Terms terms;
+        final byte valueKind;
+
+        NumericTermsNode(AggregatorBase agg, List<Node> subs, NativeAggregations.Terms terms, byte valueKind) {
+            super(agg, subs);
+            this.terms = terms;
+            this.valueKind = valueKind;
+        }
+
+        @Override
+        void write(ByteArrayOutputStream out) {
+            out.write(NUMERIC_TERMS);
+            byte[] f = terms.field().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            NativeAggregations.writeInt(out, f.length);
+            out.writeBytes(f);
+            out.write(valueKind);
+            NativeAggregations.writeInt(out, terms.thresholds().getShardSize());
+            writeSubs(out);
+        }
+
+        @Override
+        List<InternalAggregation> read(ByteBuffer in, int n) throws ReflectiveOperationException {
+            count(in, n);
+            long[] other = new long[n];
+            long[][] docs = new long[n][];
+            long[][] keys = new long[n][];
+            int total = 0;
+            for (int i = 0; i < n; i++) {
+                other[i] = in.getLong();
+                int m = in.getInt();
+                docs[i] = new long[m];
+                keys[i] = new long[m];
+                for (int b = 0; b < m; b++) {
+                    docs[i][b] = in.getLong();
+                    keys[i][b] = in.getLong();
+                }
+                total += m;
+            }
+            List<InternalAggregations> subAggs = readSubs(in, total);
+            boolean longs = valueKind == NativeAggregations.LONG;
+            boolean error = terms.showTermDocCountError();
+            List<InternalAggregation> out = new ArrayList<>(n);
+            int child = 0;
+            for (int i = 0; i < n; i++) {
+                // NumericTermsAggregator's buildResult: reduce order KEY_ASC, the buckets by key
+                // (as the native side lists them), no error.
+                if (longs) {
+                    List<LongTerms.Bucket> buckets = new ArrayList<>(keys[i].length);
+                    for (int b = 0; b < keys[i].length; b++) {
+                        buckets.add(new LongTerms.Bucket(keys[i][b], docs[i][b], subAggs.get(child++), error, 0, terms.format()));
+                    }
+                    out.add(
+                        new LongTerms(
+                            terms.name(),
+                            BucketOrder.key(true),
+                            terms.order(),
+                            terms.metadata(),
+                            terms.format(),
+                            terms.thresholds().getShardSize(),
+                            error,
+                            other[i],
+                            buckets,
+                            0,
+                            terms.thresholds()
+                        )
+                    );
+                } else {
+                    List<DoubleTerms.Bucket> buckets = new ArrayList<>(keys[i].length);
+                    for (int b = 0; b < keys[i].length; b++) {
+                        double key = org.apache.lucene.util.NumericUtils.sortableLongToDouble(keys[i][b]);
+                        buckets.add(new DoubleTerms.Bucket(key, docs[i][b], subAggs.get(child++), error, 0, terms.format()));
+                    }
+                    out.add(
+                        new DoubleTerms(
+                            terms.name(),
+                            BucketOrder.key(true),
+                            terms.order(),
+                            terms.metadata(),
+                            terms.format(),
+                            terms.thresholds().getShardSize(),
+                            error,
+                            other[i],
+                            buckets,
+                            0,
+                            terms.thresholds()
+                        )
+                    );
+                }
             }
             return out;
         }
@@ -829,8 +930,17 @@ public final class NativeAggregationTree {
         byte valueKind = NativeAggregations.valueKind(type);
         switch (factory) {
             case TERMS_FACTORY: {
-                NativeAggregations.Terms t = NativeAggregations.terms(ctx, f, config);
-                return t == null ? null : new TermsNode(agg, subs, t);
+                if (type instanceof KeywordFieldMapper.KeywordFieldType) {
+                    NativeAggregations.Terms t = NativeAggregations.terms(ctx, f, config);
+                    return t == null ? null : new TermsNode(agg, subs, t);
+                }
+                // Numeric: integers, longs, floats, doubles and millisecond dates, collected by
+                // NumericTermsAggregator (not a significant-terms or star-tree variant).
+                if (valueKind < 0 || aggClass.equals(AGGS + "bucket.terms.NumericTermsAggregator") == false) {
+                    return null;
+                }
+                NativeAggregations.Terms t = NativeAggregations.termsSpec(ctx, f, config);
+                return t == null ? null : new NumericTermsNode(agg, subs, t, valueKind);
             }
             case AGGS + "metrics.CardinalityAggregatorFactory": {
                 if (aggClass.equals(AGGS + "metrics.CardinalityAggregator") == false) {

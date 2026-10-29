@@ -394,7 +394,22 @@ def matrix():
     add("agg terms order _key", {"size": 0, "aggs": {"t": {"terms": {"field": "tag", "order": {"_key": "asc"}}}}}, "aggregations")
     add("agg terms min_doc_count 0", {"size": 0, "query": {"match": {"body": "omega"}}, "aggs": {"t": {"terms": {"field": "tag", "min_doc_count": 0}}}}, "aggregations")
     add("agg terms include", {"size": 0, "aggs": {"t": {"terms": {"field": "tag", "include": "a.*"}}}}, "aggregations")
-    add("agg terms numeric", {"size": 0, "aggs": {"t": {"terms": {"field": "qty"}}}}, "aggregations")
+    # terms on numeric fields (LongTerms, DoubleTerms): the same order and thresholds.
+    add("agg terms integer", {"size": 0, "aggs": {"t": {"terms": {"field": "qty"}}}}, "native")
+    add("agg terms long, high cardinality", {"size": 0, "query": {"match": {"body": "alpha"}}, "aggs": {"t": {"terms": {"field": "n", "size": 7}}}}, "native")
+    add("agg terms multi-valued integer + avg", {"size": 0, "aggs": {"t": {"terms": {"field": "mi", "size": 15}, "aggs": {"a": {"avg": {"field": "price"}}}}}}, "native")
+    add("agg terms multi-valued long shard_size", {"size": 0, "query": {"match": {"body": "gamma delta"}}, "aggs": {"t": {"terms": {"field": "m", "size": 3, "shard_size": 5}}}}, "native")
+    add("agg terms double", {"size": 0, "query": {"match": {"body": "beta"}}, "aggs": {"t": {"terms": {"field": "price", "size": 4}}}}, "native")
+    add("agg terms multi-valued double", {"size": 0, "aggs": {"t": {"terms": {"field": "md", "size": 6}}}}, "native")
+    add("agg terms float + min_doc_count 2", {"size": 0, "aggs": {"t": {"terms": {"field": "ratio", "min_doc_count": 2}}}}, "native")
+    add("agg terms date", {"size": 0, "query": {"match": {"body": "eta"}}, "aggs": {"t": {"terms": {"field": "@timestamp", "size": 5}}}}, "native")
+    add("agg terms integer + hits + sort", {"size": 5, "query": {"match": {"body": "delta"}}, "sort": [{"n": "asc"}], "aggs": {"t": {"terms": {"field": "qty", "size": 3}}}}, "native")
+    add("agg date_histogram > terms integer", {"size": 0, "aggs": {"d": {"date_histogram": {"field": "ts", "calendar_interval": "week"}, "aggs": {"t": {"terms": {"field": "qty", "size": 2}}}}}}, "native")
+    add("agg terms keyword > terms integer > max", {"size": 0, "query": {"match": {"body": "pi"}}, "aggs": {"t": {"terms": {"field": "tag", "size": 3}, "aggs": {"q": {"terms": {"field": "qty", "size": 2}, "aggs": {"m": {"max": {"field": "price"}}}}}}}}, "native")
+    add("agg terms integer > cardinality", {"size": 0, "aggs": {"t": {"terms": {"field": "qty", "size": 4}, "aggs": {"k": {"cardinality": {"field": "tag"}}}}}}, "native")
+    add("agg terms integer order _key", {"size": 0, "aggs": {"t": {"terms": {"field": "qty", "order": {"_key": "desc"}}}}}, "aggregations")
+    add("agg terms integer missing", {"size": 0, "aggs": {"t": {"terms": {"field": "sp", "missing": 0}}}}, "aggregations")
+    add("agg terms unsigned_long", {"size": 0, "aggs": {"t": {"terms": {"field": "ul", "size": 3}}}}, "aggregations")
     # post_filter (read path R7): the hits are "query AND filter", scored by the query alone;
     # aggregations see every match of the query.
     add("post_filter", {"query": {"match": {"body": "alpha"}}, "post_filter": {"term": {"tag": "beta"}}}, "native")

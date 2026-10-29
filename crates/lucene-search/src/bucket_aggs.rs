@@ -386,6 +386,16 @@ pub enum AggNode {
         shard_size: usize,
         subs: Vec<AggNode>,
     },
+    /// Numeric `terms` (`NumericTermsAggregator`'s `LongTerms` and
+    /// `DoubleTerms`): the same order and thresholds as [`AggNode::Terms`],
+    /// each value its own bucket -- a long as it is, a double (or float) as
+    /// `NumericUtils.doubleToSortableLong` of its value.
+    NumericTerms {
+        field: String,
+        kind: ValueKind,
+        shard_size: usize,
+        subs: Vec<AggNode>,
+    },
     Histogram {
         field: String,
         kind: ValueKind,
@@ -424,6 +434,7 @@ impl AggNode {
         match self {
             AggNode::Metric { .. } | AggNode::Cardinality { .. } => &[],
             AggNode::Terms { subs, .. }
+            | AggNode::NumericTerms { subs, .. }
             | AggNode::Histogram { subs, .. }
             | AggNode::DateHistogram { subs, .. }
             | AggNode::Range { subs, .. }
@@ -490,6 +501,13 @@ pub enum AggResult {
     /// `subs[i]`'s owning buckets are the kept buckets in that order.
     Terms {
         buckets: Vec<TermsBuckets>,
+        subs: Vec<AggResult>,
+    },
+    /// Per owning bucket: `otherDocCount` and the kept buckets' `(key, doc
+    /// count)` by key ascending, the key as [`AggNode::NumericTerms`] keeps it;
+    /// `subs[i]`'s owning buckets are the kept buckets in that order.
+    NumericTerms {
+        buckets: Vec<(u64, Vec<(i64, u64)>)>,
         subs: Vec<AggResult>,
     },
     /// Per owning bucket: `(floor((v - offset) / interval), doc count)`, by
@@ -576,14 +594,15 @@ impl State {
                 ..
             } => State::OrdBits(Vec::new()),
             AggNode::Cardinality { .. } => State::Cardinality(Vec::new()),
-            AggNode::Terms { .. } | AggNode::Histogram { .. } | AggNode::DateHistogram { .. } => {
-                State::Keyed {
-                    ords: FastMap::default(),
-                    keys: Vec::new(),
-                    docs: Vec::new(),
-                    subs: subs(),
-                }
-            }
+            AggNode::Terms { .. }
+            | AggNode::NumericTerms { .. }
+            | AggNode::Histogram { .. }
+            | AggNode::DateHistogram { .. } => State::Keyed {
+                ords: FastMap::default(),
+                keys: Vec::new(),
+                docs: Vec::new(),
+                subs: subs(),
+            },
             AggNode::Range { ranges, .. } => State::Fixed {
                 width: ranges.len(),
                 docs: Vec::new(),
@@ -850,6 +869,7 @@ fn open_leaf<'a>(
             Col::Ords(crate::terms_agg::open_ords(reader, field)?.0, map)
         }
         AggNode::Cardinality { field, .. }
+        | AggNode::NumericTerms { field, .. }
         | AggNode::Histogram { field, .. }
         | AggNode::DateHistogram { field, .. }
         | AggNode::Range { field, .. } => Col::Values(aggs::open_values(reader, field)?, false),
@@ -963,6 +983,20 @@ fn numeric_hash(kind: ValueKind, v: i64) -> i64 {
         ValueKind::Long => v,
         k => java_double_bits(aggs::to_double(k, v)),
     })
+}
+
+/// The bucket key of a numeric `terms` value: a long as it is; a double or
+/// float as `NumericUtils.doubleToSortableLong` of its double, as
+/// `FieldData.toSortableLongBits` hands `NumericTermsAggregator` its values.
+#[inline]
+fn numeric_terms_key(kind: ValueKind, v: i64) -> i64 {
+    match kind {
+        ValueKind::Long => v,
+        k => {
+            let bits = java_double_bits(aggs::to_double(k, v));
+            bits ^ ((bits >> 63) & i64::MAX)
+        }
+    }
 }
 
 /// An owning bucket's sketch, created at its first value.
@@ -1256,6 +1290,36 @@ fn collect_window(
             return out;
         }
         (
+            AggNode::NumericTerms { kind, .. },
+            State::Keyed {
+                ords,
+                keys,
+                docs: counts,
+                ..
+            },
+        ) if prefetched => {
+            // As `collect`'s case for one value.
+            let (mut win_docs, mut win_ords) = (
+                std::mem::take(&mut leaf.win_docs),
+                std::mem::take(&mut leaf.win_ords),
+            );
+            win_docs.clear();
+            win_ords.clear();
+            for (&doc, &owning) in docs.iter().zip(owners) {
+                let Some(Some(v)) = leaf.prefetched(doc) else {
+                    continue;
+                };
+                let ord = keyed_ord(ords, keys, owning, numeric_terms_key(*kind, v));
+                *slot(counts, ord as usize) += 1;
+                win_docs.push(doc);
+                win_ords.push(ord);
+            }
+            let out = collect_subs_window(node, state, leaf, &win_docs, &win_ords);
+            leaf.win_docs = win_docs;
+            leaf.win_ords = win_ords;
+            return out;
+        }
+        (
             AggNode::Histogram {
                 kind,
                 interval,
@@ -1434,6 +1498,39 @@ fn collect(
                         break;
                     }
                 };
+                if let Err(e) = collect_bucket(node, docs, subs, &mut leaf.subs, doc, ord) {
+                    out = Err(e);
+                    break;
+                }
+            }
+            leaf.buf = values;
+            out?;
+        }
+        (
+            AggNode::NumericTerms { kind, .. },
+            State::Keyed {
+                ords,
+                keys,
+                docs,
+                subs,
+                ..
+            },
+        ) => {
+            if !leaf.read(doc)? {
+                return Ok(());
+            }
+            // `NumericTermsAggregator`'s leaf collector: a document's values
+            // ascending, each run of equal keys one bucket.
+            let values = std::mem::take(&mut leaf.buf);
+            let mut previous = None;
+            let mut out = Ok(());
+            for &v in &values {
+                let key = numeric_terms_key(*kind, v);
+                if previous == Some(key) {
+                    continue;
+                }
+                previous = Some(key);
+                let ord = keyed_ord(ords, keys, owning, key);
                 if let Err(e) = collect_bucket(node, docs, subs, &mut leaf.subs, doc, ord) {
                     out = Err(e);
                     break;
@@ -2294,6 +2391,46 @@ fn finish(
             Ok(AggResult::Terms { buckets, subs })
         }
         (
+            AggNode::NumericTerms {
+                shard_size, subs, ..
+            },
+            State::Keyed {
+                keys,
+                docs,
+                subs: sub_states,
+                ..
+            },
+        ) => {
+            // `BucketSelectionStrategy`: the `shard_size` buckets first by
+            // count descending, then key ascending; the rest `otherDocCount`;
+            // the kept ones by key, the reduce order `buildResult` sorts to.
+            let by_owner = group(&keys);
+            let mut buckets = Vec::with_capacity(owners.len());
+            let mut child = Vec::new();
+            for &o in owners {
+                let mut kept: Vec<(i64, u64, u32)> = by_owner
+                    .get(&o)
+                    .map(|ords| {
+                        ords.iter()
+                            .map(|&b| (keys[b as usize].1, at(&docs, b as usize), b))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let total: u64 = kept.iter().map(|k| k.1).sum();
+                kept.sort_unstable_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+                kept.truncate(*shard_size);
+                let kept_docs: u64 = kept.iter().map(|k| k.1).sum();
+                kept.sort_unstable_by_key(|k| k.0);
+                child.extend(kept.iter().map(|k| k.2));
+                buckets.push((
+                    total - kept_docs,
+                    kept.into_iter().map(|(k, n, _)| (k, n)).collect(),
+                ));
+            }
+            let subs = finish_subs(subs, sub_states, &child, globals, terms)?;
+            Ok(AggResult::NumericTerms { buckets, subs })
+        }
+        (
             AggNode::Histogram { subs, .. },
             State::Keyed {
                 keys,
@@ -2864,6 +3001,79 @@ mod tests {
 
     fn whole(reader: &DirectoryReader) -> Vec<Vec<usize>> {
         vec![(0..reader.segment_readers().len()).collect()]
+    }
+
+    /// Numeric `terms` keeps what `NumericTermsAggregator` keeps: each
+    /// document's distinct keys counted once, the `shard_size` best by count
+    /// then key, the rest as `otherDocCount`, listed by key -- and each kept
+    /// bucket's sub-aggregation sees exactly its documents.
+    #[test]
+    fn numeric_terms_keep_the_top_keys_of_a_scan() {
+        let reader = fixture("metric_aggs_index");
+        for (q, field, kind) in [
+            (all(), "d", ValueKind::Double),
+            (body("w1"), "md", ValueKind::Double),
+            (all(), "ml", ValueKind::Long),
+            (body("w4"), "f", ValueKind::Float),
+            (all(), "i", ValueKind::Long),
+        ] {
+            let rows = scan(&reader, &q, field);
+            let mut counts: HashMap<i64, u64> = HashMap::new();
+            for (_, _, values) in &rows {
+                let keys: HashSet<i64> =
+                    values.iter().map(|&v| numeric_terms_key(kind, v)).collect();
+                for k in keys {
+                    *counts.entry(k).or_default() += 1;
+                }
+            }
+            for shard_size in [1, 3, 10_000] {
+                let mut ranked: Vec<(i64, u64)> = counts.iter().map(|(&k, &n)| (k, n)).collect();
+                ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+                let total: u64 = ranked.iter().map(|k| k.1).sum();
+                ranked.truncate(shard_size);
+                let other = total - ranked.iter().map(|k| k.1).sum::<u64>();
+                ranked.sort_by_key(|k| k.0);
+                let node = AggNode::NumericTerms {
+                    field: field.to_string(),
+                    kind,
+                    shard_size,
+                    subs: vec![AggNode::Filters {
+                        filters: vec![all()],
+                        other: false,
+                        subs: Vec::new(),
+                    }],
+                };
+                let got = run(&reader, &q, std::slice::from_ref(&node), &whole(&reader))
+                    .unwrap()
+                    .remove(0)
+                    .remove(0);
+                let AggResult::NumericTerms { buckets, subs } = got else {
+                    panic!("{got:?}")
+                };
+                assert_eq!(
+                    buckets,
+                    vec![(other, ranked.clone())],
+                    "{field} shard_size {shard_size}"
+                );
+                let AggResult::Fixed { docs, .. } = &subs[0] else {
+                    panic!()
+                };
+                let want: Vec<u64> = ranked.iter().map(|k| k.1).collect();
+                assert_eq!(
+                    docs, &want,
+                    "{field}: each bucket's sub-aggregation sees its documents"
+                );
+            }
+        }
+        // A double's key is its sortable long: -0.0 below 0.0, both below 1.0.
+        let keys = [-0.0f64, 0.0, 1.0].map(|d| {
+            numeric_terms_key(
+                ValueKind::Double,
+                lucene_util::numeric_utils::double_to_sortable_long(d),
+            )
+        });
+        assert!(keys[0] < keys[1] && keys[1] < keys[2], "{keys:?}");
+        assert_eq!(numeric_terms_key(ValueKind::Long, -7), -7);
     }
 
     /// The filter rewrite counts from points only what it can count

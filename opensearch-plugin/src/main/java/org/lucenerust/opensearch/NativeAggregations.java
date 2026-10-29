@@ -406,6 +406,15 @@ public final class NativeAggregations {
         if (config.fieldContext().fieldType() instanceof KeywordFieldMapper.KeywordFieldType == false) {
             return null;
         }
+        return termsSpec(ctx, f, config);
+    }
+
+    /**
+     * A {@code terms} on any field, keyword or numeric, with the parameters the native side
+     * takes: the default order, no {@code include}/{@code exclude}, {@code min_doc_count} at least
+     * one, and no {@code _doc_count} field in the shard; or null.
+     */
+    static Terms termsSpec(SearchContext ctx, AggregatorFactory f, ValuesSourceConfig config) throws IllegalAccessException {
         Object include = declared(f, "includeExclude");
         BucketOrder order = (BucketOrder) declared(f, "order");
         TermsAggregator.BucketCountThresholds declaredThresholds = (TermsAggregator.BucketCountThresholds) declared(
