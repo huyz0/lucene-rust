@@ -413,6 +413,17 @@ pub enum AggNode {
         /// The parts of [`MetricState`] the caller reads (`aggs::NEED_*`).
         needs: u8,
     },
+    /// `percentiles` and `percentile_ranks` over a t-digest
+    /// (`TDigestPercentilesAggregator`): each owning bucket's
+    /// [`crate::tdigest::MergingDigest`], fed every value in document order.
+    Percentiles {
+        field: String,
+        /// `missing`: the value, in the column's encoding, a document
+        /// without one reads (`MissingValues.replaceMissing`).
+        missing: Option<i64>,
+        kind: ValueKind,
+        compression: f64,
+    },
     Cardinality {
         field: String,
         kind: CardinalityKind,
@@ -651,6 +662,7 @@ impl AggNode {
     fn missing(&self) -> Option<i64> {
         match self {
             AggNode::Metric { missing, .. }
+            | AggNode::Percentiles { missing, .. }
             | AggNode::NumericTerms { missing, .. }
             | AggNode::Histogram { missing, .. }
             | AggNode::DateHistogram { missing, .. }
@@ -661,7 +673,9 @@ impl AggNode {
 
     fn subs(&self) -> &[AggNode] {
         match self {
-            AggNode::Metric { .. } | AggNode::Cardinality { .. } => &[],
+            AggNode::Metric { .. } | AggNode::Percentiles { .. } | AggNode::Cardinality { .. } => {
+                &[]
+            }
             AggNode::Terms { subs, .. }
             | AggNode::NumericTerms { subs, .. }
             | AggNode::Histogram { subs, .. }
@@ -730,6 +744,12 @@ pub type TermsBuckets = (u64, Vec<(Vec<u8>, u64)>);
 #[derive(Debug, Clone, PartialEq)]
 pub enum AggResult {
     Metric(Vec<MetricState>),
+    /// Per owning bucket, its t-digest (`None` for a bucket that collected
+    /// nothing); `nan` when some value was NaN, which Java refuses.
+    Digests {
+        digests: Vec<Option<crate::tdigest::MergingDigest>>,
+        nan: bool,
+    },
     Cardinality(Vec<Vec<CardinalityValue>>),
     /// Per owning bucket, its `HyperLogLogPlusPlus` as `writeTo` writes it
     /// (`crate::cardinality_sketch`); empty for a bucket that saw nothing.
@@ -927,6 +947,14 @@ impl<'g> Globals<'g> {
 /// The collected state of one aggregation (`BucketsAggregator` and kin).
 enum State {
     Metric(Vec<MetricState>),
+    /// Each owning bucket's t-digest, made when the bucket collects its
+    /// first document (`getExistingOrNewHistogram`), whether or not it has
+    /// a value; `nan` once a value was NaN, which Java refuses.
+    Digests {
+        compression: f64,
+        digests: Vec<Option<Box<crate::tdigest::MergingDigest>>>,
+        nan: bool,
+    },
     /// Distinct values per owning bucket: global ordinals for a keyword, raw
     /// longs otherwise.
     Cardinality(Vec<FastSet<i64>>),
@@ -963,6 +991,11 @@ impl State {
         let subs = || node.subs().iter().map(State::new).collect();
         match node {
             AggNode::Metric { .. } => State::Metric(Vec::new()),
+            AggNode::Percentiles { compression, .. } => State::Digests {
+                compression: *compression,
+                digests: Vec::new(),
+                nan: false,
+            },
             AggNode::Cardinality {
                 kind: CardinalityKind::Numeric(_),
                 precision: Some(p),
@@ -1372,6 +1405,7 @@ fn open_leaf<'a>(
             Col::Ords(crate::terms_agg::open_ords(reader, field)?.0, map)
         }
         AggNode::Cardinality { field, .. }
+        | AggNode::Percentiles { field, .. }
         | AggNode::NumericTerms { field, .. }
         | AggNode::Histogram { field, .. }
         | AggNode::DateHistogram { field, .. }
@@ -2219,6 +2253,26 @@ fn collect(
                 return Ok(());
             }
             slot(states, owning as usize).collect_needs(*needs, *kind, &leaf.buf);
+        }
+        (
+            AggNode::Percentiles { kind, .. },
+            State::Digests {
+                compression,
+                digests,
+                nan,
+            },
+        ) => {
+            let compression = *compression;
+            let digest = slot(digests, owning as usize)
+                .get_or_insert_with(|| Box::new(crate::tdigest::MergingDigest::new(compression)));
+            if !leaf.read(doc)? {
+                return Ok(());
+            }
+            for &v in &leaf.buf {
+                if digest.add(aggs::to_double(*kind, v)).is_err() {
+                    *nan = true;
+                }
+            }
         }
         (AggNode::Cardinality { .. }, State::OrdBits(bits)) => {
             if !leaf.read(doc)? {
@@ -3180,6 +3234,23 @@ fn finish(
             let subs = finish_subs(subs, st.subs, &kept, globals, terms)?;
             Ok(AggResult::Composite { buckets, subs })
         }
+        (
+            AggNode::Percentiles { .. },
+            State::Digests {
+                mut digests, nan, ..
+            },
+        ) => Ok(AggResult::Digests {
+            digests: owners
+                .iter()
+                .map(|&o| {
+                    digests
+                        .get_mut(o as usize)
+                        .and_then(Option::take)
+                        .map(|d| *d)
+                })
+                .collect(),
+            nan,
+        }),
         (AggNode::Metric { .. }, State::Metric(states)) => Ok(AggResult::Metric(
             owners
                 .iter()
