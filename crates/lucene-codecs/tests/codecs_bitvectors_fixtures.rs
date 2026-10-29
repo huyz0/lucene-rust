@@ -138,6 +138,8 @@ fn check_reader(which: &str) {
             let values = reader.byte_vector_values(number).unwrap();
             let expected = seg.vectors(field);
             assert_eq!(values.size() as usize, expected.len(), "{which} {field}");
+            // `getVectorCount` (Lucene 10.6, #16647).
+            assert_eq!(reader.vector_count(number).unwrap(), values.size());
             for (ord, doc, vector) in &expected {
                 assert_eq!(values.ord_to_doc(*ord).unwrap(), *doc);
                 assert_eq!(values.vector(*ord).unwrap(), &vector[..], "{field} {ord}");

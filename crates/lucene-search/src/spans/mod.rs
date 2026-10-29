@@ -26,7 +26,10 @@
 //! confirmation does, before its own -- the same documents, the same
 //! positions.
 
+mod frequent_terms;
 pub mod payloads;
+
+pub use frequent_terms::{FrequentTermsSpanBooleanQueryRewrite, ScoreTerm, ScoreTermOrder};
 
 use lucene_codecs::blocktree::FieldTerms;
 use lucene_codecs::postings::Position;

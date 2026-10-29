@@ -38,7 +38,10 @@ use crate::values_source::{
 pub mod js;
 pub mod variable_context;
 
-pub use js::{compile, compile_with, default_functions, ExprFunction, Expression, ParseException};
+pub use js::{
+    compile, compile_with, compile_with_max_nesting_depth, default_functions, ExprFunction,
+    Expression, ParseException, DEFAULT_MAX_NESTING_DEPTH,
+};
 use js::{SharedValues, VarSlot, VarValues};
 
 /// What compiling an expression can fail with.

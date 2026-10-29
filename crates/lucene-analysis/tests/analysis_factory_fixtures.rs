@@ -114,11 +114,26 @@ fn set(names: Vec<&str>) -> BTreeSet<String> {
     names.into_iter().map(str::to_string).collect()
 }
 
+/// `names` without the names Lucene 10.6 adds (`spi::LUCENE_10_6_*`),
+/// which `names.txt`, read off the 10.5.2 jars, cannot list.
+fn without_10_6(names: Vec<&str>, added: &[&str]) -> BTreeSet<String> {
+    set(names.into_iter().filter(|n| !added.contains(n)).collect())
+}
+
 #[test]
 fn the_registered_names_are_lucenes() {
     assert_eq!(set(spi::available_tokenizers()), lucene_names("T"));
-    assert_eq!(set(spi::available_char_filters()), lucene_names("C"));
-    let mut filters = set(spi::available_token_filters());
+    assert_eq!(
+        without_10_6(
+            spi::available_char_filters(),
+            &spi::LUCENE_10_6_CHAR_FILTERS
+        ),
+        lucene_names("C")
+    );
+    let mut filters = without_10_6(
+        spi::available_token_filters(),
+        &spi::LUCENE_10_6_TOKEN_FILTERS,
+    );
     filters.insert(SEARCH_ONLY.to_string());
     // lucene-suggest's `SuggestStopFilterFactory`, which `lucene-search`
     // registers (the generator has lucene-suggest on its classpath)

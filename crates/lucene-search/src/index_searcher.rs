@@ -225,6 +225,7 @@ impl<'s, 'a> IndexSearcher<'s, 'a> {
         let local = TermStatistics {
             doc_freq: stats.doc_freq,
             total_term_freq: stats.total_term_freq,
+            term: Some(std::sync::Arc::from(term)),
         };
         match self.statistics {
             Some(source) => source.term_statistics(field, term, local).map(Some),

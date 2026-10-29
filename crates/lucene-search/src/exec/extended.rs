@@ -514,7 +514,7 @@ pub(crate) fn positional_phrase<'a>(
             return Ok(None);
         };
         collection.get_or_insert(entry.collection_statistics());
-        stats.push(entry.term_statistics());
+        stats.push(entry.term_statistics(term));
     }
     let Some(collection) = collection else {
         return Ok(None);
@@ -743,7 +743,7 @@ pub(crate) fn multi_phrase<'a>(
             if let Some(entry) = term_entry(ctx, &q.field, t)? {
                 if entry.doc_freq > 0 {
                     collection.get_or_insert(entry.collection_statistics());
-                    all.push(entry.term_statistics());
+                    all.push(entry.term_statistics(t));
                 }
             }
         }
@@ -844,9 +844,11 @@ fn synonym<'a>(
     if doc_freq == 0 {
         return Ok(None);
     }
+    // `SynonymQuery`: `new TermStatistics(new BytesRef("synonym pseudo-term"), ...)`.
     let pseudo = TermStatistics {
         doc_freq,
         total_term_freq,
+        term: Some(Arc::from(&b"synonym pseudo-term"[..])),
     };
     let scorer = sim_scorer(ctx, &q.field, boost, &collection, &[pseudo]);
     let mut members = Vec::new();
@@ -1363,9 +1365,11 @@ fn combined_parts<'a>(
         sum_total_term_freq: sum_ttf,
         sum_doc_freq: sum_df,
     };
+    // `CombinedFieldQuery`: `new TermStatistics(new BytesRef("pseudo_term"), ...)`.
     let pseudo = TermStatistics {
         doc_freq,
         total_term_freq: total_term_freq.max(1),
+        term: Some(Arc::from(&b"pseudo_term"[..])),
     };
     let scorer = sim_scorer(ctx, "pseudo_field", boost, &collection, &[pseudo]);
     let mut members = Vec::new();
@@ -1704,6 +1708,7 @@ fn blended_children<'a>(
         let stats = TermStatistics {
             doc_freq: df,
             total_term_freq: ttf,
+            term: Some(Arc::from(term.as_slice())),
         };
         // `new BoostQuery(termQuery, boost)` when the boost is not 1.
         let b = if *term_boost != 1.0 {
