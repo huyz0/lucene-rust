@@ -4270,6 +4270,8 @@ pub struct IndexWriter<'d> {
     /// [`IndexWriter::try_delete_document`]s not yet written; see
     /// `try_modify`'s module documentation.
     pending_try_deletes: Vec<try_modify::PendingTryDeletes>,
+    /// [`IndexWriter::try_update_doc_value`]s not yet written.
+    pending_try_updates: Vec<try_modify::PendingTryUpdates>,
     /// The last [`IndexWriter::prepare_commit`] found nothing to commit and
     /// wrote nothing (Java's "skip startCommit(): no changes pending"), so
     /// [`IndexWriter::finish_commit`] has nothing to publish and succeeds
@@ -5400,7 +5402,7 @@ impl<'d> IndexWriter<'d> {
         &mut self,
         packet: Option<crate::buffered_updates::FrozenBufferedUpdates>,
     ) -> Result<()> {
-        self.write_pending_try_deletes()?;
+        self.write_pending_try_changes()?;
         if let Some(packet) = packet {
             self.updates_stream.push(packet);
         }
@@ -5412,7 +5414,7 @@ impl<'d> IndexWriter<'d> {
     /// segment could not be built still owes, after
     /// [`Self::abandon_segment`].
     pub(crate) fn apply_pending_packets(&mut self) -> Result<()> {
-        self.write_pending_try_deletes()?;
+        self.write_pending_try_changes()?;
         self.apply_stream_packets()?;
         let live = self.live_infos();
         self.deleter.checkpoint(&live, false)?;
@@ -5439,7 +5441,7 @@ impl<'d> IndexWriter<'d> {
     /// `IndexFileDeleter.deleteNewFiles`: drop files an abandoned build or
     /// merge wrote and nothing references.
     pub(crate) fn delete_new_files(&mut self, files: &[String]) -> Result<()> {
-        self.write_pending_try_deletes()?;
+        self.write_pending_try_changes()?;
         self.deleter.delete_new_files(files)?;
         Ok(())
     }
@@ -5684,6 +5686,7 @@ impl<'d> IndexWriter<'d> {
             last_commit_change_count: 0,
             pending_commit_change_count: 0,
             pending_try_deletes: Vec::new(),
+            pending_try_updates: Vec::new(),
             prepared_nothing: false,
             delete_queue: DeleteQueue::new(),
             updates_stream: BufferedUpdatesStream::new(),
@@ -5822,7 +5825,7 @@ impl<'d> IndexWriter<'d> {
     /// in the list, since [`postings_writer::write_fields`] itself has no
     /// defined behavior for two inputs sharing one `field_number`).
     pub fn add_postings_field(&mut self, field_name: &str) -> Result<()> {
-        self.write_pending_try_deletes()?;
+        self.write_pending_try_changes()?;
         if self.cfg.custom_freq_postings_field.is_some() {
             return Err(Error::PostingsAndCustomFreqPostingsMutuallyExclusive(
                 "add_postings_field",
@@ -6050,7 +6053,7 @@ impl<'d> IndexWriter<'d> {
     /// [`Error::DuplicateTermVectorField`] instead of silently duplicating it
     /// in the list.
     pub fn add_term_vector_field(&mut self, field_name: &str) -> Result<()> {
-        self.write_pending_try_deletes()?;
+        self.write_pending_try_changes()?;
         let config = Self::resolve_term_vector_field(&self.cfg.fields, field_name)?;
         if self
             .cfg
@@ -6161,7 +6164,7 @@ impl<'d> IndexWriter<'d> {
     /// sort's second tier is a second doc-values column, and before this the
     /// writer could only write one.
     pub fn add_doc_values_field(&mut self, field_name: &str) -> Result<()> {
-        self.write_pending_try_deletes()?;
+        self.write_pending_try_changes()?;
         let info = self
             .cfg
             .fields
@@ -6391,7 +6394,7 @@ impl<'d> IndexWriter<'d> {
     /// thing entirely and needs no configuration: the norm column is
     /// per-document sparse -- see [`Self::build_norms_output`].)
     pub fn omit_norms_field(&mut self, field_name: &str) -> Result<()> {
-        self.write_pending_try_deletes()?;
+        self.write_pending_try_changes()?;
         let info = self
             .cfg_mut()
             .fields
@@ -6459,7 +6462,7 @@ impl<'d> IndexWriter<'d> {
     /// quadruple, which is what `Lucene99HnswVectorsFormat` does for all the
     /// vector fields routed to it.
     pub fn add_vector_field(&mut self, field_name: &str) -> Result<()> {
-        self.write_pending_try_deletes()?;
+        self.write_pending_try_changes()?;
         let info = self
             .cfg
             .fields
@@ -6510,7 +6513,7 @@ impl<'d> IndexWriter<'d> {
     /// `LongPoint` is not stored, so the Java document this one equals is
     /// `LongPoint` plus a `StoredField` of the same name.
     pub fn add_points_field(&mut self, field_name: &str) -> Result<()> {
-        self.write_pending_try_deletes()?;
+        self.write_pending_try_changes()?;
         let info = self
             .cfg
             .fields
@@ -6651,7 +6654,7 @@ impl<'d> IndexWriter<'d> {
     /// used to return `()`; `addDocument` throws `IOException` in Java for the
     /// same reason.
     pub fn add_document(&mut self, doc: Document) -> Result<SeqNo> {
-        self.write_pending_try_deletes()?;
+        self.write_pending_try_changes()?;
         // Not `add_documents(vec![doc])`: the single-document add is the hot
         // path of the whole write side, and wrapping every document in a
         // one-element `Vec` puts a heap allocation and a move in front of it
@@ -6672,7 +6675,7 @@ impl<'d> IndexWriter<'d> {
     /// `pendingNumDocs`, every document of every segment plus the buffered
     /// ones; deleted documents count until a merge drops them.
     pub(crate) fn reserve_docs(&mut self, added: usize) -> Result<()> {
-        self.write_pending_try_deletes()?;
+        self.write_pending_try_changes()?;
         let segments = self.segment_doc_total()?;
         let total = segments.saturating_add(self.pending_docs.len());
         if total.saturating_add(added) > self.max_docs {
@@ -6689,7 +6692,7 @@ impl<'d> IndexWriter<'d> {
     /// Every committed and flushed segment's `maxDoc`, summed -- cached
     /// until the segment lists change.
     pub(crate) fn segment_doc_total(&mut self) -> Result<usize> {
-        self.write_pending_try_deletes()?;
+        self.write_pending_try_changes()?;
         let generation = self.segment_infos.generation;
         let flushed = self.flushed_segments.len();
         let last = self
@@ -6814,7 +6817,7 @@ impl<'d> IndexWriter<'d> {
         doc: Document,
         vectors: Vec<DocumentVector>,
     ) -> Result<SeqNo> {
-        self.write_pending_try_deletes()?;
+        self.write_pending_try_changes()?;
         self.cfg
             .validate_document_vectors(self.pending_docs.len(), &vectors)?;
         let seq_no = self.delete_queue.next_sequence_number();
@@ -6898,7 +6901,7 @@ impl IndexWriter<'_> {
     /// buffered, exactly as Java's `doAfterDocument` runs once per
     /// `updateDocuments` call rather than once per document.
     pub fn add_documents(&mut self, docs: Vec<Document>) -> Result<SeqNo> {
-        self.write_pending_try_deletes()?;
+        self.write_pending_try_changes()?;
         self.add_documents_with_delete(None, docs)
     }
 
@@ -6907,7 +6910,7 @@ impl IndexWriter<'_> {
     /// block. One sequence number for the pair, so the delete and the add can
     /// never be observed apart.
     pub fn update_documents(&mut self, term: Term, docs: Vec<Document>) -> Result<SeqNo> {
-        self.write_pending_try_deletes()?;
+        self.write_pending_try_changes()?;
         self.add_documents_with_delete(Some(DeleteNode::terms(vec![term])), docs)
     }
 
@@ -7110,7 +7113,7 @@ impl IndexWriter<'_> {
     /// by the writer's uncommitted view or by a [`IndexWriter::hold_commit`]
     /// stay on disk.
     pub fn delete_commits(&mut self, generations: &[i64]) -> Result<()> {
-        self.write_pending_try_deletes()?;
+        self.write_pending_try_changes()?;
         self.deleter.drop_commits(generations)?;
         Ok(())
     }
@@ -7124,7 +7127,7 @@ impl IndexWriter<'_> {
     /// Returns the pinned files; hand them back to
     /// [`IndexWriter::release_files`] exactly once.
     pub fn hold_commit(&mut self, generation: i64) -> Result<Vec<String>> {
-        self.write_pending_try_deletes()?;
+        self.write_pending_try_changes()?;
         let name = lucene_store::directory::segments_file_name(generation).ok_or(
             Error::Explicit(format!("no commit has generation {generation}")),
         )?;
@@ -7135,7 +7138,7 @@ impl IndexWriter<'_> {
     /// Releases a [`IndexWriter::hold_commit`] pin, deleting whatever nothing
     /// else still names.
     pub fn release_files(&mut self, files: &[String]) -> Result<()> {
-        self.write_pending_try_deletes()?;
+        self.write_pending_try_changes()?;
         self.deleter.release_files(files)?;
         Ok(())
     }
@@ -7149,7 +7152,7 @@ impl IndexWriter<'_> {
     /// silently -- use it when you want a failure to reclaim disk space to
     /// surface as an error rather than be ignored.
     pub fn delete_unused_files(&mut self) -> Result<()> {
-        self.write_pending_try_deletes()?;
+        self.write_pending_try_changes()?;
         self.release_nrt_holds()?;
         self.deleter.revisit_policy()?;
         let live = self.live_infos();
@@ -7318,7 +7321,7 @@ impl IndexWriter<'_> {
         doc: Document,
         terms: Vec<(String, i32)>,
     ) -> Result<SeqNo> {
-        self.write_pending_try_deletes()?;
+        self.write_pending_try_changes()?;
         summed_custom_freq_terms(&terms)?;
         let seq_no = self.delete_queue.next_sequence_number();
         // ARITH: see [`VectorValue::ram_bytes`].
@@ -7352,7 +7355,7 @@ impl IndexWriter<'_> {
     /// [`IndexWriter::update_document_with_sources`], for a caller that holds
     /// an opened reader over a segment this writer cannot open itself.
     pub fn update_document(&mut self, term: Term, doc: Document) -> Result<SeqNo> {
-        self.write_pending_try_deletes()?;
+        self.write_pending_try_changes()?;
         self.add_documents_with_delete(Some(DeleteNode::terms(vec![term])), vec![doc])
     }
 
@@ -7366,7 +7369,7 @@ impl IndexWriter<'_> {
     /// that (`docIDUpto` within the in-progress segment, the frozen packet's
     /// generation across segments).
     pub fn delete_documents_by_term(&mut self, terms: &[Term]) -> Result<SeqNo> {
-        self.write_pending_try_deletes()?;
+        self.write_pending_try_changes()?;
         let doc_id_upto = self.pending_doc_id_upto();
         let seq_no = self.buffer_delete_node(DeleteNode::terms(terms.to_vec()), doc_id_upto);
         self.maybe_apply_deletes()?;
@@ -7384,7 +7387,7 @@ impl IndexWriter<'_> {
     /// See [`DeleteQuery`] for why this port's query type is a closed enum
     /// rather than `lucene_search::Query`.
     pub fn delete_documents_by_query(&mut self, queries: &[DeleteQuery]) -> Result<SeqNo> {
-        self.write_pending_try_deletes()?;
+        self.write_pending_try_changes()?;
         if queries.iter().any(|q| matches!(q, DeleteQuery::MatchAll)) {
             let seq_no = self.delete_queue.next_sequence_number();
             self.delete_all()?;
@@ -7420,7 +7423,7 @@ impl IndexWriter<'_> {
         doc: Document,
         soft_deletes: &[DocValuesUpdate],
     ) -> Result<SeqNo> {
-        self.write_pending_try_deletes()?;
+        self.write_pending_try_changes()?;
         self.soft_update_documents(term, vec![doc], soft_deletes)
     }
 
@@ -7432,7 +7435,7 @@ impl IndexWriter<'_> {
         docs: Vec<Document>,
         soft_deletes: &[DocValuesUpdate],
     ) -> Result<SeqNo> {
-        self.write_pending_try_deletes()?;
+        self.write_pending_try_changes()?;
         if soft_deletes.is_empty() {
             return Err(Error::NoSoftDeletesSupplied);
         }
@@ -7477,7 +7480,7 @@ impl IndexWriter<'_> {
     /// [`Self::update_numeric_doc_value`] and [`Self::update_binary_doc_value`]
     /// never create one (Java passes `fieldMustExist`).
     pub fn update_doc_values(&mut self, term: Term, updates: &[DocValuesUpdate]) -> Result<SeqNo> {
-        self.write_pending_try_deletes()?;
+        self.write_pending_try_changes()?;
         if updates.is_empty() {
             return Err(Error::NoDocValuesUpdatesSupplied);
         }
@@ -7510,7 +7513,6 @@ impl IndexWriter<'_> {
         &mut self,
         updates: &[DocValuesUpdate],
     ) -> Result<()> {
-        self.write_pending_try_deletes()?;
         if !self.cfg.explicit {
             return Ok(());
         }
@@ -7538,7 +7540,7 @@ impl IndexWriter<'_> {
         field: &str,
         value: i64,
     ) -> Result<SeqNo> {
-        self.write_pending_try_deletes()?;
+        self.write_pending_try_changes()?;
         let update = DocValuesUpdate::Numeric {
             term: term.clone(),
             field: field.to_string(),
@@ -7558,7 +7560,7 @@ impl IndexWriter<'_> {
         field: &str,
         value: &[u8],
     ) -> Result<SeqNo> {
-        self.write_pending_try_deletes()?;
+        self.write_pending_try_changes()?;
         let update = DocValuesUpdate::Binary {
             term: term.clone(),
             field: field.to_string(),
@@ -7594,7 +7596,7 @@ impl IndexWriter<'_> {
         term: &[u8],
         new_doc: Document,
     ) -> Result<&SegmentInfos> {
-        self.write_pending_try_deletes()?;
+        self.write_pending_try_changes()?;
         if self.prepared_commit.is_some() {
             return Err(Error::PreparedCommitPending("update_document"));
         }
@@ -7642,7 +7644,7 @@ impl IndexWriter<'_> {
         field: &str,
         term: &[u8],
     ) -> Result<&SegmentInfos> {
-        self.write_pending_try_deletes()?;
+        self.write_pending_try_changes()?;
         if self.prepared_commit.is_some() {
             return Err(Error::PreparedCommitPending("delete_documents"));
         }
@@ -7770,7 +7772,7 @@ impl IndexWriter<'_> {
     /// doc comments for what "two-phase" honestly means on this port's
     /// on-disk format).
     pub fn commit(&mut self) -> Result<&SegmentInfos> {
-        self.write_pending_try_deletes()?;
+        self.write_pending_try_changes()?;
         self.prepare_commit()?;
         self.finish_commit()
     }
@@ -7953,7 +7955,7 @@ impl IndexWriter<'_> {
     /// `finish_commit()` to activate it or [`IndexWriter::rollback`] to
     /// discard it (which also deletes the pending file) first.
     pub fn prepare_commit(&mut self) -> Result<()> {
-        self.write_pending_try_deletes()?;
+        self.write_pending_try_changes()?;
         self.prepare_commit_excluding(&std::collections::HashSet::new())
     }
 
@@ -7964,7 +7966,7 @@ impl IndexWriter<'_> {
         &mut self,
         merging: &std::collections::HashSet<String>,
     ) -> Result<()> {
-        self.write_pending_try_deletes()?;
+        self.write_pending_try_changes()?;
         // Real `prepareCommitInternal` refuses re-entry outright
         // (`IllegalStateException("prepareCommit was already called with no
         // corresponding call to commit")`). This used to *replace* the pending
@@ -8079,7 +8081,7 @@ impl IndexWriter<'_> {
     /// before the error is returned (Java's `DocumentsWriterPerThread.abort()` +
     /// `IndexFileDeleter.deleteNewFiles`), so a failed flush does not leak.
     pub fn flush(&mut self) -> Result<()> {
-        self.write_pending_try_deletes()?;
+        self.write_pending_try_changes()?;
         // See `maybe_flush`: a flush between `prepare_commit` and
         // `finish_commit` would have its segment and its resolved deletes
         // discarded by the publish. The automatic trigger defers; an explicit
@@ -8259,7 +8261,7 @@ impl IndexWriter<'_> {
         private: Option<crate::buffered_updates::FrozenBufferedUpdates>,
         sort_map: Option<Vec<usize>>,
     ) -> Result<()> {
-        self.write_pending_try_deletes()?;
+        self.write_pending_try_changes()?;
         self.publish_segment_with(ticket, sci, si_files, private, sort_map, true)
     }
 
@@ -8282,7 +8284,7 @@ impl IndexWriter<'_> {
         sort_map: Option<Vec<usize>>,
         freeze_global: bool,
     ) -> Result<()> {
-        self.write_pending_try_deletes()?;
+        self.write_pending_try_changes()?;
         let segment_name = sci.segment_name.clone();
         debug_assert_eq!(segment_name, ticket.segment_name);
         // `publishFrozenUpdates` before `publishFlushedSegment`: the packet the
@@ -8366,7 +8368,7 @@ impl IndexWriter<'_> {
     /// no-op, since silently succeeding here could hide a caller bug (calling
     /// `finish_commit()` twice, or before ever calling `prepare_commit()`).
     pub fn finish_commit(&mut self) -> Result<&SegmentInfos> {
-        self.write_pending_try_deletes()?;
+        self.write_pending_try_changes()?;
         if self.prepared_commit.is_none() {
             // `finishCommit` with `pendingCommit == null`: the prepare found
             // nothing to commit, so there is nothing to publish.
@@ -10488,7 +10490,7 @@ impl IndexWriter<'_> {
         names: &[String],
         hooks: Option<std::sync::Arc<dyn crate::merge_policy::MergeHooks>>,
     ) -> Result<()> {
-        self.write_pending_try_deletes()?;
+        self.write_pending_try_changes()?;
         self.execute_merge_planned(names, hooks, None, false)
             .map(|_| ())
     }
@@ -10503,7 +10505,7 @@ impl IndexWriter<'_> {
         remap: Option<std::sync::Arc<merge::SortedNumericRemap>>,
         add_indexes: bool,
     ) -> Result<bool> {
-        self.write_pending_try_deletes()?;
+        self.write_pending_try_changes()?;
         let mut plan = self.begin_merge(names)?;
         plan.sorted_numeric_remap = remap;
         if add_indexes {
@@ -10536,7 +10538,7 @@ impl IndexWriter<'_> {
     /// flushed-but-uncommitted documents are not part of it -- commit
     /// first, as OpenSearch's engine does before a force merge.
     pub fn force_merge(&mut self, max_num_segments: usize) -> Result<()> {
-        self.write_pending_try_deletes()?;
+        self.write_pending_try_changes()?;
         if max_num_segments == 0 {
             return Err(Error::InvalidMaxNumSegments(max_num_segments));
         }
@@ -10618,7 +10620,7 @@ impl IndexWriter<'_> {
     /// documents is merged, in one merge. A no-op, writing no commit, when no
     /// segment qualifies.
     pub fn force_merge_deletes(&mut self) -> Result<()> {
-        self.write_pending_try_deletes()?;
+        self.write_pending_try_changes()?;
         if let Some(policy) = self.pluggable_merge_policy.clone() {
             return self.force_merge_deletes_pluggable(&policy);
         }
@@ -10643,7 +10645,7 @@ impl IndexWriter<'_> {
     /// segment's name and id, and snapshot each source's commit info -- its
     /// deletion and doc-values generations as the merge will read them.
     pub(crate) fn begin_merge(&mut self, names: &[String]) -> Result<MergePlan> {
-        self.write_pending_try_deletes()?;
+        self.write_pending_try_changes()?;
         // A merged segment is published with `buffered_deletes_gen == -1`,
         // i.e. open to every packet, where Java uses `min(sources)`
         // (`IndexWriter.mergeMiddle`). That is only safe while the stream is
@@ -10692,7 +10694,7 @@ impl IndexWriter<'_> {
     /// A later `delete_unused_files` or reopen reclaims any leftovers, including
     /// files from a completed merge that failed before publication.
     pub(crate) fn abort_merge(&mut self, plan: MergePlan) -> Result<()> {
-        self.write_pending_try_deletes()?;
+        self.write_pending_try_changes()?;
         self.deleter.release_files(&plan.held)?;
         Ok(())
     }
@@ -10714,7 +10716,7 @@ impl IndexWriter<'_> {
     ///
     /// Returns whether the merge was published (`false`: abandoned).
     pub(crate) fn finish_merge(&mut self, plan: MergePlan, outcome: MergeOutcome) -> Result<bool> {
-        self.write_pending_try_deletes()?;
+        self.write_pending_try_changes()?;
         let held = plan.held.clone();
         let retired = plan.names.clone();
         let result = self.finish_merge_holding(plan, outcome);
@@ -11047,7 +11049,7 @@ impl IndexWriter<'_> {
     /// -- as [`Self::drop_fully_deleted_segments`] does when those deletes are
     /// applied at publish instead, and under the same policy.
     pub(crate) fn drop_fully_deleted_flushed(&mut self, name: &str) -> Result<()> {
-        self.write_pending_try_deletes()?;
+        self.write_pending_try_changes()?;
         let flushed: Vec<bool> = self
             .flushed_segments
             .iter()
@@ -11308,6 +11310,7 @@ impl IndexWriter<'_> {
     pub(crate) fn has_buffered_changes(&self) -> bool {
         !self.pending_docs.is_empty()
             || !self.pending_try_deletes.is_empty()
+            || !self.pending_try_updates.is_empty()
             || self.delete_queue.any_changes()
             || self.updates_stream.any()
     }
@@ -11318,7 +11321,7 @@ impl IndexWriter<'_> {
         &mut self,
         segments: &[SegmentCommitInfo],
     ) -> Result<Vec<String>> {
-        self.write_pending_try_deletes()?;
+        self.write_pending_try_changes()?;
         Ok(self.deleter.hold_segment_files(segments)?)
     }
 
@@ -11329,6 +11332,7 @@ impl IndexWriter<'_> {
     pub fn has_uncommitted_changes(&self) -> bool {
         !self.pending_docs.is_empty()
             || !self.pending_try_deletes.is_empty()
+            || !self.pending_try_updates.is_empty()
             || self.delete_queue.any_changes()
             || self.updates_stream.any()
             || !self.flushed_segments.is_empty()
@@ -11459,7 +11463,7 @@ impl IndexWriter<'_> {
         // Retained configuration may conflict with fields from the restored
         // commit after deleteAll. Reject before changing any document state.
         let field_numbers = self.prepare_rollback_field_numbers()?;
-        self.discard_pending_try_deletes();
+        self.discard_pending_try_changes();
         // `ReaderPool.dropAll()`: nothing opened for the discarded changes
         // survives the rollback.
         self.cfg.reader_pool.clear();
@@ -11533,7 +11537,7 @@ impl IndexWriter<'_> {
         if self.prepared_commit.is_some() {
             return Err(Error::PreparedCommitPending("delete_all"));
         }
-        self.discard_pending_try_deletes();
+        self.discard_pending_try_changes();
         self.pending_docs.clear();
         self.pending_custom_freq_terms.clear();
         self.pending_vectors.clear();
@@ -11616,7 +11620,7 @@ impl IndexWriter<'_> {
         source_segment_names: &[&str],
         merged: SegmentCommitInfo,
     ) -> Result<&SegmentInfos> {
-        self.write_pending_try_deletes()?;
+        self.write_pending_try_changes()?;
         self.commit_merge("apply_merge", source_segment_names, Some(merged))
     }
 
@@ -11638,7 +11642,7 @@ impl IndexWriter<'_> {
     /// writes a single file -- the same order `mergeMiddle` uses when it
     /// skips `merger.merge()`.
     pub fn drop_merge(&mut self, source_segment_names: &[&str]) -> Result<&SegmentInfos> {
-        self.write_pending_try_deletes()?;
+        self.write_pending_try_changes()?;
         self.commit_merge("drop_merge", source_segment_names, None)
     }
 

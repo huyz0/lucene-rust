@@ -18,7 +18,7 @@ use lucene_codecs::field_infos::{
     VectorSimilarityFunction,
 };
 use lucene_codecs::stored_fields::{Document, FieldValue, StoredField};
-use lucene_index::buffered_updates::Term;
+use lucene_index::buffered_updates::{DocValuesUpdate, Term};
 use lucene_index::index_writer::IndexWriter;
 use lucene_index::segment_info::LuceneVersion;
 use lucene_store::ByteBuffersDirectory;
@@ -462,6 +462,48 @@ fn bench_try_delete(c: &mut Criterion) {
     group.finish();
 }
 
+/// `tryUpdateDocValue` by doc id of a near-real-time snapshot: 1 000
+/// NUMERIC updates of `n0` over the [`fields_corpus`] index, then a commit.
+fn bench_try_update_doc_value(c: &mut Criterion) {
+    let docs = fields_corpus();
+    let mut group = c.benchmark_group("try_update_doc_value");
+    group.sample_size(10);
+    group.throughput(Throughput::Elements(1_000));
+    group.bench_function("1000_numeric", |b| {
+        b.iter_batched(
+            || {
+                let dir = ByteBuffersDirectory::new();
+                {
+                    let mut w = fields_writer(&dir);
+                    for d in docs.clone() {
+                        w.add_document(d).unwrap();
+                    }
+                    w.commit().unwrap();
+                }
+                dir
+            },
+            |dir| {
+                let mut w = fields_writer(&dir);
+                let snapshot = w.nrt_snapshot(true, false).unwrap();
+                for k in 0..1_000 {
+                    let doc = ((k * 7_919) % DOCS) as i32;
+                    let update = DocValuesUpdate::Numeric {
+                        term: Term::new("", ""),
+                        field: "n0".into(),
+                        value: Some(k as i64),
+                    };
+                    w.try_update_doc_value(&snapshot.segment_infos, doc, &[update])
+                        .unwrap()
+                        .unwrap();
+                }
+                w.commit().unwrap();
+            },
+            BatchSize::LargeInput,
+        )
+    });
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_flush,
@@ -470,6 +512,7 @@ criterion_group!(
     bench_force_merge_sparse_fields,
     bench_update,
     bench_delete,
-    bench_try_delete
+    bench_try_delete,
+    bench_try_update_doc_value
 );
 criterion_main!(benches);
