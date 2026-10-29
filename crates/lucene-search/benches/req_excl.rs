@@ -13,7 +13,8 @@
 //! - `dv_rewrite/*`: `+body:t1 #kw:k0001*` with `DOC_VALUES_REWRITE` over a
 //!   SORTED field of 500,000 distinct keys -- a selective conjunction where
 //!   building the matching-ordinal set is a large share of the work
-//!   (#16297).
+//!   (#16297); `dv_rewrite_wildcard/*` the same with `kw:k00*5`, whose
+//!   matching ordinals are not contiguous.
 //!
 //! Each case is run under a counting collector (`COMPLETE_NO_SCORES`,
 //! through the scorer -- not `count`'s `Weight.count` shortcut) and a
@@ -33,7 +34,7 @@ use lucene_search::collector::{ScoreMode, ScoringCollector};
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::extended_query::{MultiTermQuery, MultiTermSource, RewriteMethod};
 use lucene_search::index_searcher::IndexSearcher;
-use lucene_search::query::{BooleanQuery, Clause, PrefixQuery, TermQuery};
+use lucene_search::query::{BooleanQuery, Clause, PrefixQuery, TermQuery, WildcardQuery};
 use lucene_store::ByteBuffersDirectory;
 
 const DOCS: usize = 500_000;
@@ -145,6 +146,16 @@ fn bench(c: &mut Criterion) {
         rewrite: RewriteMethod::DocValues,
     }));
     cases.push(("dv_rewrite", q));
+    let mut q = BooleanQuery::new();
+    q.must.push(Clause::Term(TermQuery::new("body", "t1")));
+    q.filter.push(Clause::from(MultiTermQuery {
+        source: MultiTermSource::Wildcard(WildcardQuery {
+            field: "kw".to_string(),
+            pattern: b"k00*5".to_vec(),
+        }),
+        rewrite: RewriteMethod::DocValues,
+    }));
+    cases.push(("dv_rewrite_wildcard", q));
 
     for (name, q) in &cases {
         let mut g = c.benchmark_group(*name);
