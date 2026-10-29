@@ -1290,6 +1290,48 @@ fn collect_window(
             return out;
         }
         (
+            AggNode::NumericTerms {
+                kind, subs: none, ..
+            },
+            State::Keyed {
+                ords,
+                keys,
+                docs: counts,
+                ..
+            },
+        ) if leaf.pre_len > 0 && leaf.pre_multi && none.is_empty() => {
+            // `collect`'s multi-valued case without the per-document dispatch:
+            // each document's values straight from the window read ahead.
+            for (&doc, &owning) in docs.iter().zip(owners) {
+                let i = doc.wrapping_sub(leaf.pre_base) as u32 as usize;
+                let values = if i < leaf.pre_len {
+                    let range = leaf.pre_offsets.get(i).zip(leaf.pre_offsets.get(i + 1));
+                    match range
+                        .and_then(|(&from, &to)| leaf.pre_vals.get(from as usize..to as usize))
+                    {
+                        Some(v) => v,
+                        None => continue,
+                    }
+                } else {
+                    if !leaf.read(doc)? {
+                        continue;
+                    }
+                    &leaf.buf[..]
+                };
+                let mut previous = None;
+                for &v in values {
+                    let key = numeric_terms_key(*kind, v);
+                    if previous == Some(key) {
+                        continue;
+                    }
+                    previous = Some(key);
+                    let ord = keyed_ord(ords, keys, owning, key);
+                    *slot(counts, ord as usize) += 1;
+                }
+            }
+            return Ok(());
+        }
+        (
             AggNode::NumericTerms { kind, .. },
             State::Keyed {
                 ords,
@@ -3062,6 +3104,22 @@ mod tests {
                 assert_eq!(
                     docs, &want,
                     "{field}: each bucket's sub-aggregation sees its documents"
+                );
+                // Without sub-aggregations a multi-valued window counts
+                // straight from the values read ahead: the same buckets.
+                let bare = AggNode::NumericTerms {
+                    field: field.to_string(),
+                    kind,
+                    shard_size,
+                    subs: Vec::new(),
+                };
+                let got = run(&reader, &q, std::slice::from_ref(&bare), &whole(&reader))
+                    .unwrap()
+                    .remove(0)
+                    .remove(0);
+                assert!(
+                    matches!(&got, AggResult::NumericTerms { buckets: b, .. } if *b == vec![(other, ranked.clone())]),
+                    "{field} shard_size {shard_size} without subs: {got:?}"
                 );
             }
         }
