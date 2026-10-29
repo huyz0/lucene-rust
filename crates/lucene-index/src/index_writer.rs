@@ -1345,18 +1345,22 @@ impl IndexingConfig {
                 declared: format!("{:?}", info.doc_values_type),
             });
         }
-        // `IndexWriter.updateNumericDocValue`/`updateDocValues`:
-        //   if (config.getIndexSortFields().contains(field)) throw new
-        //     IllegalArgumentException("cannot update docvalues field involved
-        //       in the index sort, field=" + field + ", sort=" + ...);
-        // The segment's *physical* order is defined by this column, and a
-        // doc-values update rewrites the column without moving any document,
-        // so the segment would keep claiming a sort it no longer satisfies --
-        // silently, since nothing re-checks the order after an update.
+        self.verify_not_index_sort_field(update.field())
+    }
+
+    /// `IndexWriter.updateNumericDocValue`/`updateBinaryDocValue`/
+    /// `buildDocValuesUpdate`: `if (config.getIndexSortFields().contains(field))
+    /// throw new IllegalArgumentException("cannot update docvalues field
+    /// involved in the index sort, ...")`. The segment's *physical* order is
+    /// defined by this column, and a doc-values update rewrites the column
+    /// without moving any document, so the segment would keep claiming a sort
+    /// it no longer satisfies -- silently, since nothing re-checks the order
+    /// after an update.
+    pub(crate) fn verify_not_index_sort_field(&self, field: &str) -> Result<()> {
         if let Some(sort) = &self.index_sort {
-            if sort.iter().any(|sf| sf.field == update.field()) {
+            if sort.iter().any(|sf| sf.field == field) {
                 return Err(Error::DocValuesUpdateOnIndexSortField {
-                    field: update.field().to_string(),
+                    field: field.to_string(),
                     sort: segment_info::describe_index_sort(Some(sort)),
                 });
             }
@@ -7554,6 +7558,11 @@ impl IndexWriter<'_> {
     /// treats null as a removal), so this takes a `&[u8]` and has no
     /// "remove" spelling -- use [`IndexWriter::update_doc_values`] with a
     /// `None` value for that.
+    ///
+    /// An index-sort field is refused before the field's existence and
+    /// doc-values type are checked, so it surfaces as
+    /// [`Error::DocValuesUpdateOnIndexSortField`], not as a type mismatch
+    /// (Lucene 10.6, branch_10_6, #16565).
     pub fn update_binary_doc_value(
         &mut self,
         term: Term,
@@ -7561,6 +7570,7 @@ impl IndexWriter<'_> {
         value: &[u8],
     ) -> Result<SeqNo> {
         self.write_pending_try_changes()?;
+        self.cfg.verify_not_index_sort_field(field)?;
         let update = DocValuesUpdate::Binary {
             term: term.clone(),
             field: field.to_string(),
@@ -24370,6 +24380,16 @@ pub(crate) mod tests {
         };
         let err = writer
             .update_numeric_doc_value(term.clone(), "rank", 7)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            Error::DocValuesUpdateOnIndexSortField { field, .. } if field == "rank"
+        ));
+        // `updateBinaryDocValue` checks the sort before the doc-values type
+        // (Lucene 10.6, #16565): the numeric sort field is reported as a sort
+        // field, not as a type mismatch.
+        let err = writer
+            .update_binary_doc_value(term.clone(), "rank", b"bar")
             .unwrap_err();
         assert!(matches!(
             err,
