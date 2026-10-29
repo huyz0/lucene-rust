@@ -339,7 +339,7 @@ where
                 smm,
             ),
         )?;
-        b.push_str(&format!(" #top={}", top_groups(top.as_ref())));
+        b.push_str(&format!(" #top={}", top_groups(Some(&top))));
         let distinct = search_manager(
             searcher,
             &q,

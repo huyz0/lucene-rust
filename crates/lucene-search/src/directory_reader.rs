@@ -1090,6 +1090,29 @@ impl SegmentReader {
         Ok(None)
     }
 
+    /// `getVectorReader().getVectorCount(fieldInfo)` (Lucene 10.6,
+    /// `branch_10_6`, #16647): `PerFieldKnnVectorsFormat.FieldsReader`'s,
+    /// the count the metadata of the instance `field` was written with
+    /// holds, without opening its vector values (the flat reader's entry,
+    /// which `Lucene99HnswVectorsReader`'s and the quantized readers' equal).
+    ///
+    /// # Errors
+    /// `IllegalArgument` (`field="name" not found`) for a field this segment
+    /// has no vectors for, as Java's; vector files that do not decode.
+    pub fn vector_count(&self, field: &str) -> crate::Result<i32> {
+        let not_found = || crate::Error::IllegalArgument(format!("field=\"{field}\" not found"));
+        let info = self
+            .field_infos
+            .fields
+            .iter()
+            .find(|f| f.name == field)
+            .ok_or_else(not_found)?;
+        let reader = self
+            .flat_vectors_reader_for(info.number)?
+            .ok_or_else(not_found)?;
+        Ok(reader.vector_count(info.number)?)
+    }
+
     /// `getCoreCacheHelper()`: this segment core's cache key and
     /// closed listeners.
     pub fn core_cache_helper(&self) -> &crate::reader::CacheHelper {

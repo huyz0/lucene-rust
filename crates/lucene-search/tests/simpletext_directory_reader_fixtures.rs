@@ -748,9 +748,18 @@ fn simpletext_reader_wide_norms_score_like_java_bm25_and_classic() {
                         reader.doc_freq(&field, &unhex(row[1])).unwrap(),
                         stats.doc_freq
                     );
-                    let bm25 = Bm25Similarity::default().scorer(&field, 1.0, &collection, &[stats]);
-                    let classic =
-                        ClassicSimilarity::default().scorer(&field, 1.0, &collection, &[stats]);
+                    let bm25 = Bm25Similarity::default().scorer(
+                        &field,
+                        1.0,
+                        &collection,
+                        std::slice::from_ref(&stats),
+                    );
+                    let classic = ClassicSimilarity::default().scorer(
+                        &field,
+                        1.0,
+                        &collection,
+                        std::slice::from_ref(&stats),
+                    );
                     let weight =
                         lucene_search::similarity::idf(stats.doc_freq, collection.doc_count);
                     at += 1;

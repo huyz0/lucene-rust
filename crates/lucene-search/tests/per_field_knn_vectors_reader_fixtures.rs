@@ -67,6 +67,9 @@ fn every_field_reads_from_its_own_format_instance() {
                 .filter(|d| expected(field, s * PER_SEGMENT + d).is_some())
                 .count();
             assert_eq!(seen, indexed, "{field}");
+            // `getVectorCount` (Lucene 10.6, `branch_10_6`, #16647): the
+            // metadata's count equals the opened values' size.
+            assert_eq!(seg.vector_count(field).unwrap(), values.size(), "{field}");
             checked += seen;
         }
         let values = seg.byte_vector_values("v_bytes").unwrap().unwrap();
@@ -77,6 +80,24 @@ fn every_field_reads_from_its_own_format_instance() {
                 values.vector_value(ord).unwrap(),
                 bytes(s * PER_SEGMENT + doc)
             );
+        }
+        assert_eq!(seg.vector_count("v_bytes").unwrap(), values.size());
+        // `testGetVectorCountInvalidField`: a field without vectors throws
+        // `IllegalArgumentException`.
+        let plain = seg
+            .field_infos()
+            .fields
+            .iter()
+            .filter(|f| f.vector_dimension == 0)
+            .map(|f| f.name.clone())
+            .chain(["no_such_field".to_string()]);
+        for name in plain {
+            match seg.vector_count(&name) {
+                Err(lucene_search::Error::IllegalArgument(m)) => {
+                    assert_eq!(m, format!("field=\"{name}\" not found"));
+                }
+                other => panic!("{name}: {other:?}"),
+            }
         }
         assert!(seg.byte_vector_values("v_small").unwrap().is_none());
         assert!(seg.float_vector_values("v_bytes").unwrap().is_none());

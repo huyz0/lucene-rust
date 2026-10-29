@@ -246,7 +246,7 @@ impl PhraseWildcardQuery {
             all_terms[p].push(term.clone());
             if let Some(g) = crate::multi_segment::global_term_stats(segments, field, term)? {
                 if g.doc_freq > 0 {
-                    stats.push(g.term_statistics());
+                    stats.push(g.term_statistics(term));
                 }
             }
             let mut matches = 0usize;
@@ -317,13 +317,14 @@ impl PhraseWildcardQuery {
             }
             order = kept;
             for (t, (df, ttf)) in term_stats {
-                all_terms[p].push(t);
                 if df > 0 {
                     stats.push(TermStatistics {
                         doc_freq: df,
                         total_term_freq: ttf.max(df),
+                        term: Some(std::sync::Arc::from(t.as_slice())),
                     });
                 }
+                all_terms[p].push(t);
             }
             if expansions == 0 {
                 return Ok(no_match());

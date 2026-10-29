@@ -3192,12 +3192,13 @@ impl CollectionStats {
     }
 
     /// `IndexSearcher.termStatistics(term, docFreq, totalTermFreq)`, clamped
-    /// like [`Self::collection_statistics`].
-    pub fn term_statistics(&self) -> similarities::TermStatistics {
+    /// like [`Self::collection_statistics`]; `term` is `term.bytes()`.
+    pub fn term_statistics(&self, term: &[u8]) -> similarities::TermStatistics {
         let doc_freq = self.doc_freq.max(1);
         similarities::TermStatistics {
             doc_freq,
             total_term_freq: self.total_term_freq.max(doc_freq),
+            term: Some(std::sync::Arc::from(term)),
         }
     }
 }
@@ -3356,6 +3357,7 @@ impl GlobalStats {
                     similarities::TermStatistics {
                         doc_freq: stats.doc_freq,
                         total_term_freq: stats.total_term_freq,
+                        term: Some(std::sync::Arc::from(term.as_slice())),
                     },
                 )?;
                 *stats = CollectionStats {

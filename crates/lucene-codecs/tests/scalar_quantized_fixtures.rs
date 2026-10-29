@@ -493,6 +493,15 @@ fn flushed_segment_bytes_and_search_match_lucene() {
             read(&dir, &seg.name, &suffix, "vemq"),
             "{suffix} .vemq ({encoding:?})"
         );
+        // `getVectorCount` (Lucene 10.6, #16647): the quantized entry's
+        // count, equal to the raw vectors'; an unknown field falls to the
+        // raw reader, which refuses it.
+        let quantized = ScalarQuantizedVectorsReader::open(&vemq, &veq, &seg.id, &suffix).unwrap();
+        for (f, (docs, _)) in fields.iter().zip(&raw) {
+            let count = quantized.vector_count(f.number, &flat).unwrap();
+            assert_eq!(count as usize, docs.len(), "{suffix} {}", f.number);
+        }
+        assert!(quantized.vector_count(9999, &flat).is_err());
         assert_eq!(
             veq,
             read(&dir, &seg.name, &suffix, "veq"),
