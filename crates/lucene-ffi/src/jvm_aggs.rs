@@ -22,6 +22,8 @@
 //!           | RANGE field value_kind:u8 count:i32 (from:f64 to:f64)* nodes
 //!           | FILTERS count:i32 query:bytes* other:u8 nodes
 //!           | GLOBAL nodes
+//!           | MISSING value:i64 node        (a numeric node's `missing`, in its
+//!                                            column's encoding; doc-values metrics)
 //! bounds_*  := flags:u8 [min] [max]           (flag 1: a minimum, 2: a maximum)
 //! ```
 //!
@@ -75,6 +77,8 @@ const AGG_RANGE: u8 = 5;
 const AGG_FILTERS: u8 = 6;
 const AGG_GLOBAL: u8 = 7;
 const AGG_NUMERIC_TERMS: u8 = 8;
+/// A prefix, not a node: the next node's `missing` value.
+const AGG_MISSING: u8 = 9;
 
 /// `date_histogram` units; [`UNIT_INTERVAL`] is a fixed interval.
 const UNITS: [DateUnit; 8] = [
@@ -181,6 +185,39 @@ fn nodes(c: &mut Cursor<'_>, depth: usize, count: &mut usize) -> Result<Vec<AggN
 
 fn node(c: &mut Cursor<'_>, depth: usize, count: &mut usize) -> Result<AggNode, FfiStatus> {
     let kind = c.u8()?;
+    if kind != AGG_MISSING {
+        return node_of(kind, c, depth, count);
+    }
+    let value = c.i64()?;
+    let mut n = match c.u8()? {
+        AGG_MISSING => return Err(bad("aggregation tree: missing twice".to_string())),
+        k => node_of(k, c, depth, count)?,
+    };
+    match &mut n {
+        AggNode::Metric {
+            missing,
+            source: Source::DocValues,
+            ..
+        }
+        | AggNode::NumericTerms { missing, .. }
+        | AggNode::Histogram { missing, .. }
+        | AggNode::DateHistogram { missing, .. }
+        | AggNode::Range { missing, .. } => *missing = Some(value),
+        _ => {
+            return Err(bad(
+                "aggregation tree: missing before a node without one".to_string()
+            ))
+        }
+    }
+    Ok(n)
+}
+
+fn node_of(
+    kind: u8,
+    c: &mut Cursor<'_>,
+    depth: usize,
+    count: &mut usize,
+) -> Result<AggNode, FfiStatus> {
     Ok(match kind {
         AGG_METRIC => {
             let kind = value_kind(c.u8()?)?;
@@ -199,6 +236,7 @@ fn node(c: &mut Cursor<'_>, depth: usize, count: &mut usize) -> Result<AggNode, 
                 return Err(bad(format!("aggregation tree: metric needs {needs:#x}")));
             }
             AggNode::Metric {
+                missing: None,
                 field: field(c)?,
                 kind,
                 source,
@@ -242,6 +280,7 @@ fn node(c: &mut Cursor<'_>, depth: usize, count: &mut usize) -> Result<AggNode, 
             let kind = value_kind(c.u8()?)?;
             let shard_size = shard_size(c)?;
             AggNode::NumericTerms {
+                missing: None,
                 field,
                 kind,
                 shard_size,
@@ -270,6 +309,7 @@ fn node(c: &mut Cursor<'_>, depth: usize, count: &mut usize) -> Result<AggNode, 
                 None
             };
             AggNode::Histogram {
+                missing: None,
                 field,
                 kind,
                 interval,
@@ -301,6 +341,7 @@ fn node(c: &mut Cursor<'_>, depth: usize, count: &mut usize) -> Result<AggNode, 
             let min = if flags & 1 != 0 { Some(c.i64()?) } else { None };
             let max = if flags & 2 != 0 { Some(c.i64()?) } else { None };
             AggNode::DateHistogram {
+                missing: None,
                 field,
                 rounding: DateRounding {
                     kind,
@@ -320,6 +361,7 @@ fn node(c: &mut Cursor<'_>, depth: usize, count: &mut usize) -> Result<AggNode, 
                 ranges.push((f64_of(c)?, f64_of(c)?));
             }
             AggNode::Range {
+                missing: None,
                 field,
                 kind,
                 ranges,
@@ -841,6 +883,18 @@ pub(crate) mod tests {
             b.extend_from_slice(&0i32.to_le_bytes());
             b
         };
+        // A `missing` prefix sets the node's value.
+        let mut with_missing = vec![1u8, AGG_MISSING];
+        with_missing.extend_from_slice(&(-9i64).to_le_bytes());
+        with_missing.extend_from_slice(&tree(0, 2)[1..]);
+        let t = decode_tree(&with_missing).unwrap();
+        assert!(matches!(
+            &t.nodes[0],
+            AggNode::NumericTerms {
+                missing: Some(-9),
+                ..
+            }
+        ));
         let t = decode_tree(&tree(0, 2)).unwrap();
         let AggNode::NumericTerms {
             kind,
@@ -954,6 +1008,26 @@ pub(crate) mod tests {
         string(&mut t, "k");
         t.extend_from_slice(&0i32.to_le_bytes());
         assert_eq!(bad(&with(&t)), invalid);
+        // `missing` twice, before a keyword `terms`, before a points metric.
+        let mut m = vec![AGG_MISSING];
+        m.extend_from_slice(&1i64.to_le_bytes());
+        let twice = [
+            m.clone(),
+            m.clone(),
+            vec![AGG_METRIC, 0, 0, 1, 1, 0, 0, 0, b'n'],
+        ]
+        .concat();
+        assert_eq!(bad(&with(&twice)), invalid);
+        let mut kw = m.clone();
+        kw.push(AGG_TERMS);
+        string(&mut kw, "k");
+        kw.extend_from_slice(&1i32.to_le_bytes());
+        kw.extend_from_slice(&[0, 0]);
+        assert_eq!(bad(&with(&kw)), invalid);
+        let points = [m.clone(), vec![AGG_METRIC, 0, 1, 1, 1, 0, 0, 0, b'n']].concat();
+        assert_eq!(bad(&with(&points)), invalid);
+        let doc_values = [m, vec![AGG_METRIC, 0, 0, 1, 1, 0, 0, 0, b'n']].concat();
+        assert!(decode_tree(&with(&doc_values)).is_ok());
         // An order past `_key` descending.
         let mut t = vec![AGG_TERMS];
         string(&mut t, "k");
