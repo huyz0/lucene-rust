@@ -558,16 +558,34 @@ pub fn check_segment_in_commit(
     infos: Option<&SegmentInfos>,
     commit: &SegmentCommitInfo,
 ) -> CheckResult {
+    check_segment_with_si(dir, infos, commit, read_si(dir, commit))
+}
+
+/// [`check_segment_in_commit`] over the outcome of reading the segment's
+/// `.si`. A failure is reported as `CorruptSegmentInfoException`'s message,
+/// with the root cause (which names the file) appended.
+fn check_segment_with_si(
+    dir: &dyn Directory,
+    infos: Option<&SegmentInfos>,
+    commit: &SegmentCommitInfo,
+    si: segment_info::Result<SegmentInfo>,
+) -> CheckResult {
     let segment_name = commit.segment_name.clone();
     let mut checks = Vec::new();
 
-    let si = match open_si(dir, commit) {
+    let si = match si {
         Ok(si) => {
             checks.push(Check::pass("si.open"));
             si
         }
         Err(e) => {
-            checks.push(Check::fail("si.open", e));
+            checks.push(Check::fail(
+                "si.open",
+                format!(
+                    "segment info file: {segment_name}.si cannot be read - it may be missing or \
+                     corrupt: {e}"
+                ),
+            ));
             // Everything below needs the `.si`'s file list. Naming what did
             // not run is the whole point: without it the result is one
             // failure and sixteen families of silence that read, to any
@@ -849,6 +867,13 @@ fn check_segment_vs_commit_header(
 /// `segment_name` is the `segments_N` file name, which is not a segment
 /// name and so can never collide with one); the rest are the segments, in
 /// commit order.
+///
+/// # Errors
+/// The commit cannot be read: `segments_N` fails, or a segment's `.si`
+/// fails with an I/O error that is not evidence of corruption (Java's
+/// `readCommit` propagates it as-is, so `CheckIndex` blames no segment for
+/// it; Lucene 10.6, #16788). A missing, truncated or corrupt `.si` is that
+/// segment's `si.open` failure instead.
 pub fn check_directory(dir: &dyn Directory) -> segment_infos::Result<Vec<CheckResult>> {
     let infos = segment_infos::read_latest(dir)?;
     let mut results = vec![check_commit(&infos)];
@@ -857,11 +882,14 @@ pub fn check_directory(dir: &dyn Directory) -> segment_infos::Result<Vec<CheckRe
     // results keep commit order.
     {
         use rayon::prelude::*;
-        let segments: Vec<CheckResult> = infos
+        let segments = infos
             .segments
             .par_iter()
-            .map(|commit| check_segment_in_commit(dir, Some(&infos), commit))
-            .collect();
+            .map(|commit| match read_si(dir, commit) {
+                Err(segment_info::Error::Store(e)) if !is_segment_info_corruption(&e) => Err(e),
+                si => Ok(check_segment_with_si(dir, Some(&infos), commit, si)),
+            })
+            .collect::<Result<Vec<CheckResult>, lucene_store::Error>>()?;
         results.extend(segments);
     }
     // `SegmentInfos.readCommit`'s LUCENE-6299 total-doc bound needs every
@@ -1028,12 +1056,32 @@ pub fn check_commit(infos: &SegmentInfos) -> CheckResult {
     }
 }
 
+#[cfg(test)]
 fn open_si(dir: &dyn Directory, commit: &SegmentCommitInfo) -> Result<SegmentInfo, String> {
-    let bytes = dir
-        .open(&format!("{}.si", commit.segment_name))
-        .map_err(|e| e.to_string())?;
+    read_si(dir, commit).map_err(|e| e.to_string())
+}
+
+/// `codec.segmentInfoFormat().read(directory, segName, segmentID, ...)`.
+fn read_si(dir: &dyn Directory, commit: &SegmentCommitInfo) -> segment_info::Result<SegmentInfo> {
+    let bytes = dir.open(&format!("{}.si", commit.segment_name))?;
     segment_info::parse_for_codec(&bytes, &commit.segment_id, &commit.codec_name)
-        .map_err(|e| e.to_string())
+}
+
+/// The `.si` failures `SegmentInfos.readCommit` wraps in a
+/// `CorruptSegmentInfoException` (Lucene 10.6, branch_10_6, #16476 + #16788):
+/// `CorruptIndexException | EOFException | NoSuchFileException |
+/// FileNotFoundException`. Every other [`segment_info::Error`] is a decode
+/// error (`CorruptIndexException`); a store error of any other kind (a
+/// transient I/O failure, a closed directory, ...) "is no evidence of
+/// corruption and must propagate as-is".
+fn is_segment_info_corruption(e: &lucene_store::Error) -> bool {
+    match e {
+        lucene_store::Error::Eof { .. }
+        | lucene_store::Error::MalformedVarint
+        | lucene_store::Error::Corrupted(_) => true,
+        lucene_store::Error::Io(_) => e.is_no_such_file(),
+        _ => false,
+    }
 }
 
 fn open_fnm(
@@ -15021,5 +15069,112 @@ mod tests {
             assert!(results.iter().all(CheckResult::all_passed));
         }
         eprintln!("check_directory over {n} docs: best of 3 = {best:?}");
+    }
+
+    /// Two one-document segments, as Lucene 10.6's `TestCheckIndex` builds
+    /// them; returns the second segment's name.
+    fn two_segments(dir: &FsDirectory) -> String {
+        use crate::document::{Document, IntPoint};
+        use crate::index_writer::IndexWriter;
+        let mut w = IndexWriter::open(dir, Vec::new(), "Lucene104", writer_version()).unwrap();
+        for i in 0..2 {
+            let mut d = Document::new();
+            d.add(IntPoint::new("id", &[i]).unwrap());
+            w.add_fields_document(&d).unwrap();
+            w.commit().unwrap();
+        }
+        drop(w);
+        let infos = segment_infos::read_latest(dir).unwrap();
+        assert_eq!(infos.segments.len(), 2);
+        infos.segments[1].segment_name.clone()
+    }
+
+    /// Lucene 10.6's `TestCheckIndex.testCorruptSegmentInfoNamesTheSegment`
+    /// (#16476): a deleted or truncated `.si` is reported against the
+    /// segment it belongs to, with a cause naming the file.
+    #[test]
+    fn corrupt_segment_info_names_the_segment() {
+        for corruption in ["delete-si", "truncate-si"] {
+            let dst = tempdir();
+            let dir = FsDirectory::open(&dst);
+            let seg = two_segments(&dir);
+            let si = dst.join(format!("{seg}.si"));
+            if corruption == "delete-si" {
+                std::fs::remove_file(&si).unwrap();
+            } else {
+                let bytes = std::fs::read(&si).unwrap();
+                std::fs::write(&si, &bytes[..bytes.len() * 7 / 10]).unwrap();
+            }
+            let results = check_directory(&dir).unwrap();
+            assert!(results[1].all_passed(), "{corruption}");
+            let broken = &results[2];
+            assert_eq!(broken.segment_name, seg);
+            let c = &broken.checks[0];
+            assert_eq!((c.name.as_str(), c.passed()), ("si.open", false));
+            assert!(
+                format!("{c:?}").contains(&format!(
+                    "segment info file: {seg}.si cannot be read - it may be missing or corrupt"
+                )),
+                "{corruption}: {c:?}"
+            );
+        }
+    }
+
+    /// Lucene 10.6's
+    /// `TestCheckIndex.testSegmentInfoIOExceptionDoesNotThrowCorruptionException`
+    /// (#16788): an I/O failure opening a `.si` is not blamed on the segment;
+    /// the check fails as a whole with the I/O error. (Java's "fail-read"
+    /// case has no twin: [`Directory::open`] hands back the whole file.)
+    #[test]
+    fn segment_info_io_error_is_not_reported_as_corruption() {
+        struct FailingSi<'a>(&'a FsDirectory, String);
+        impl Directory for FailingSi<'_> {
+            fn list_all(&self) -> lucene_store::Result<Vec<String>> {
+                self.0.list_all()
+            }
+            fn open(&self, name: &str) -> lucene_store::Result<lucene_store::Input> {
+                if name == self.1 {
+                    return Err(lucene_store::Error::Io(std::io::Error::other(format!(
+                        "simulated I/O failure opening {name}"
+                    ))));
+                }
+                self.0.open(name)
+            }
+            fn create_output(
+                &self,
+                name: &str,
+            ) -> lucene_store::Result<lucene_store::FsIndexOutput> {
+                self.0.create_output(name)
+            }
+            fn sync(&self, names: &[String]) -> lucene_store::Result<()> {
+                self.0.sync(names)
+            }
+            fn rename(&self, source: &str, dest: &str) -> lucene_store::Result<()> {
+                self.0.rename(source, dest)
+            }
+            fn delete_file(&self, name: &str) -> lucene_store::Result<()> {
+                self.0.delete_file(name)
+            }
+            fn sync_meta_data(&self) -> lucene_store::Result<()> {
+                self.0.sync_meta_data()
+            }
+            fn obtain_lock(&self, name: &str) -> lucene_store::Result<Box<dyn lucene_store::Lock>> {
+                self.0.obtain_lock(name)
+            }
+        }
+        let dst = tempdir();
+        let dir = FsDirectory::open(&dst);
+        let seg = two_segments(&dir);
+        let failing = FailingSi(&dir, format!("{seg}.si"));
+        let err = check_directory(&failing).unwrap_err();
+        assert!(
+            matches!(&err, segment_infos::Error::Store(lucene_store::Error::Io(e))
+                if e.kind() == std::io::ErrorKind::Other),
+            "{err:?}"
+        );
+        assert!(
+            err.to_string().starts_with("simulated I/O failure"),
+            "{err}"
+        );
     }
 }

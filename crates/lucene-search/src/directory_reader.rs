@@ -159,6 +159,10 @@ pub struct SegmentReader {
     /// `SegmentInfo.getIndexSort()`: the sort this segment's documents are
     /// in, `None` for an unsorted segment.
     index_sort: Option<Arc<Vec<lucene_index::segment_info::IndexSortField>>>,
+    /// `LeafMetaData.hasBlocks()`: the segment holds document blocks
+    /// (`SegmentInfo.getHasBlocks`), so an index sort orders whole blocks by
+    /// their parent and not each document.
+    has_blocks: bool,
     /// Each doc-values format instance's `.dvs`, with its codec suffix and
     /// the `.dvm` that locates its fields' skip indexes in it: every field's
     /// doc-values skip index, parsed on first use into
@@ -889,6 +893,7 @@ impl SegmentReader {
             query_cache: Arc::default(),
             segment_name,
             index_sort: si.index_sort.clone().map(Arc::new),
+            has_blocks: si.has_blocks,
             dvs,
             skip_indexes: Arc::default(),
             docs_with_field: Arc::default(),
@@ -1425,6 +1430,12 @@ impl SegmentReader {
     /// first, or `None` when the segment is not sorted.
     pub fn index_sort(&self) -> Option<&[lucene_index::segment_info::IndexSortField]> {
         self.index_sort.as_deref().map(Vec::as_slice)
+    }
+
+    /// `LeafReader.getMetaData().hasBlocks()`: whether the segment holds
+    /// document blocks.
+    pub fn has_blocks(&self) -> bool {
+        self.has_blocks
     }
 
     /// This segment's hard-deletions bitset (`.liv`), or `None` when it has no

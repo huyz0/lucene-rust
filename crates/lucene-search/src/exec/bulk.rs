@@ -1134,7 +1134,7 @@ pub(crate) fn bulk_boolean_own<'a>(
                 .map(|(c, _)| c.into_leg())
                 .collect();
             legs.sort_by_key(|l| l.cost);
-            let state = ConjunctionBulk::new(legs.len());
+            let state = ConjunctionBulk::new(legs.len(), segment_max_doc(ctx));
             Some(Bulk::Conjunction(legs, state))
         } else if mode.needs_scores()
             && must.len() == 1
@@ -1201,7 +1201,7 @@ pub(crate) fn bulk_boolean_own<'a>(
             }
             scorers.sort_by_key(|(c, _)| *c);
             let scorers: Vec<BoxScorer<'a>> = scorers.into_iter().map(|(_, s)| s).collect();
-            let state = ConjunctionBulk::new(scorers.len());
+            let state = ConjunctionBulk::new(scorers.len(), segment_max_doc(ctx));
             Some(Bulk::ScorerConjunction(scorers, state))
         } else {
             None
@@ -1419,6 +1419,14 @@ pub(crate) fn bulk_boolean_own<'a>(
 
 /// Whether `clause` gets a bulk scorer of its own (a boolean or a dismax,
 /// behind any boosts) rather than `DefaultBulkScorer` over its scorer.
+/// The segment's `maxDoc` a bulk scorer is built with, `NO_MORE_DOCS` when
+/// the context knows none.
+fn segment_max_doc(ctx: &LeafContext<'_>) -> i32 {
+    ctx.max_doc
+        .or(ctx.reader.map(|r| r.max_doc))
+        .unwrap_or(NO_MORE_DOCS)
+}
+
 fn has_own_bulk(clause: &Clause) -> bool {
     match clause {
         Clause::Boolean(_) | Clause::DisjunctionMax(_) => true,
