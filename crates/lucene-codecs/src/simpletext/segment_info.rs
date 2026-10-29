@@ -440,9 +440,9 @@ mod tests {
         );
         let b = body(&full);
         for (from, to) in [
-            ("    version 10.5.0", "    version 10.x"),
+            ("    version 10.5.2", "    version 10.x"),
             ("    min version 9.12.1", "    min version 9"),
-            ("    version 10.5.0", "    version 256.0.0"),
+            ("    version 10.5.2", "    version 256.0.0"),
         ] {
             let err = read(&reseal(&b.replacen(from, to, 1)), "_4", &ID).unwrap_err();
             assert!(
