@@ -35,7 +35,6 @@ import org.apache.lucene.search.LateInteractionFloatValuesSource;
 import org.apache.lucene.search.LateInteractionRescorer;
 import org.apache.lucene.search.LongValues;
 import org.apache.lucene.search.LongValuesSource;
-import org.apache.lucene.search.NumericFieldStats;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.QueryRescorer;
 import org.apache.lucene.search.RescoreTopNQuery;
@@ -221,18 +220,6 @@ public class GenValuesRescore {
             }
           }
           m.append("ls.").append(lnames[s]).append('=').append(b).append('\n');
-        }
-
-        // NumericFieldStats.
-        for (String f : new String[] {"r", "ip", "rs", "n", "missing"}) {
-          NumericFieldStats.Stats st = NumericFieldStats.getStats(reader, f);
-          m.append("stats.").append(f).append('=');
-          if (st == null) {
-            m.append("null");
-          } else {
-            m.append(st.min()).append(':').append(st.max()).append(':').append(st.docCount());
-          }
-          m.append('\n');
         }
 
         // Sorting by a values source (`getSortField`).

@@ -1,4 +1,4 @@
-    version 10.5.0
+    version 10.5.2
     min version null
     number of documents 7
     uses compound file false
@@ -19,4 +19,4 @@ break\\
       type <long: "plain\\\
 é">! missingValue=42
       bytes [9 70 6c 61 69 6e 5c a c3 a9 4 4c 4f 4e 47 1 0 0 0 1 0 0 0 2a 0 0 0 0 0 0 0]
-checksum 00000000003417215416
+checksum 00000000002365101595
