@@ -4,6 +4,12 @@
 #   scripts/coverage.sh <selection/test args...> [-- <report args...>]
 #   scripts/coverage.sh --workspace -- --summary-only --fail-under-lines 95
 #   scripts/coverage.sh -p lucene-index --no-fail-fast -- --summary-only
+#   COVERAGE_RUNNER=nextest scripts/coverage.sh --workspace -- --summary-only
+#
+# COVERAGE_RUNNER=nextest runs the tests through `cargo llvm-cov nextest`
+# (cargo-nextest: one process per test, all cores busy across binaries, a
+# per-test timeout from .config/nextest.toml) instead of `cargo test`. CI uses
+# it; the line counts are the same, since doctests count under neither.
 #
 # Why not plain `cargo llvm-cov`: lucene-ffi is built as an `rlib` *and* a
 # `cdylib`, and cargo-llvm-cov hands every executable file under its target
@@ -55,7 +61,11 @@ while [ $i -lt ${#run_args[@]} ]; do
   i=$((i + 1))
 done
 
-cargo llvm-cov --no-report "${run_args[@]}"
+if [ "${COVERAGE_RUNNER:-test}" = nextest ]; then
+  cargo llvm-cov nextest --no-report "${run_args[@]}"
+else
+  cargo llvm-cov --no-report "${run_args[@]}"
+fi
 
 target_dir="$(cargo metadata --format-version 1 --no-deps \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"

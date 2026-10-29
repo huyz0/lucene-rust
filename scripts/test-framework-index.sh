@@ -29,14 +29,13 @@ CP=$(lucene_classpath lucene-core)
 cargo build --quiet --release -p lucene-test-framework --example random_index
 BIN="$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')/release/examples/random_index"
 
+# Seed ranges run as parallel slices: see scripts/lib-seed-shards.sh.
+source "$(dirname "$0")/lib-seed-shards.sh"
 run() {
-  local out
-  if ! out=$("$BIN" "$@"); then
-    echo "$out" | tail -3
-    exit 1
-  fi
-  echo "$out" | tail -1
+  local first="$1" end="$2"
+  shift 2
+  run_seed_shards "$first" "$end" -- "$BIN" "$@" || exit 1
 }
-run --seeds 0..250
-run --seeds 250..300 --java-cp "$CP"
+run 0 250
+run 250 300 --java-cp "$CP"
 echo "test-framework-index: ok"

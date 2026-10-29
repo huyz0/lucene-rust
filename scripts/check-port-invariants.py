@@ -47,7 +47,19 @@ def src_files():
     return sorted(out)
 
 
+_BLANKED = {}
+
+
 def blank_cfg_test(lines):
+    """`_blank_cfg_test(lines)`, computed once per file: every rule asks."""
+    hit = _BLANKED.get(id(lines))
+    if hit is None or hit[0] is not lines:
+        hit = (lines, _blank_cfg_test(lines))
+        _BLANKED[id(lines)] = hit
+    return hit[1]
+
+
+def _blank_cfg_test(lines):
     """Replace every `#[cfg(test)]` item's lines with empty strings.
 
     Line numbers are preserved so every diagnostic still points at the real
@@ -381,6 +393,10 @@ def rule_sentinel_callers(files, problems, stats):
             f"sentinel means, so every call site can be checked. "
             f"(docs/mechanical-gates.md#sentinel-callers)"
         )
+    # Blank each file's test code once, not once per declared sentinel: the
+    # rule is (sentinels x lines), and redoing this per sentinel made it 85%
+    # of the script's runtime (~75s of ~90s on a CI runner).
+    blanked = [(rel, blank_cfg_test(raw)) for rel, raw in files]
     for name, (decl_rel, decl_line) in sorted(declared.items()):
         decl_mod = os.path.basename(decl_rel)[: -len(".rs")]
         # A bare `name(` or one qualified with the *declaring* module. A call
@@ -391,9 +407,12 @@ def rule_sentinel_callers(files, problems, stats):
             + re.escape(name)
             + r"\s*\("
         )
-        for rel, raw in files:
-            lines = blank_cfg_test(raw)
+        for rel, lines in blanked:
             for k, line in enumerate(lines):
+                # Every match of `call_re` contains `name`; the substring test
+                # skips the regex on the lines that cannot match.
+                if name not in line:
+                    continue
                 if rel == decl_rel and k + 1 == decl_line:
                     continue
                 code = strip_comment(line)

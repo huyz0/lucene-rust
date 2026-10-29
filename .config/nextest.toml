@@ -1,0 +1,25 @@
+# cargo-nextest configuration (https://nexte.st/docs/configuration/).
+#
+# CI runs the suite through nextest rather than `cargo test`: every test is its
+# own process, scheduled across all cores regardless of which binary it lives
+# in (`cargo test` runs the ~400 test binaries one after another, so one slow
+# test leaves the other cores idle), and a test that hangs is killed instead of
+# holding the runner until the job's own timeout. See docs/ci.md.
+
+[profile.default]
+# A test running past 60s is reported as SLOW; one still running after 10
+# periods (10 minutes) is killed and fails. The slowest test in the tree takes
+# well under a minute on a CI runner; 10 minutes means a hang, not a slow test.
+slow-timeout = { period = "60s", terminate-after = 10 }
+
+[profile.ci]
+slow-timeout = { period = "60s", terminate-after = 10 }
+# Print every failure at the end rather than only as it happens, so the log's
+# tail names what broke.
+failure-output = "immediate-final"
+# Keep going after a failure: the whole list of failures is worth more than
+# the minutes saved by stopping at the first.
+fail-fast = false
+
+[profile.ci.junit]
+path = "junit.xml"
