@@ -114,8 +114,9 @@ use std::sync::Arc;
 /// segments with completion postings formats (M13 T13.6); 35, the point-set
 /// node, and points boxes of any width (`integer`, `float`, `ip`, ...); 36,
 /// numeric `terms` in aggregation trees (`NUMERIC_TERMS`), and each tree
-/// `terms` node's order byte.
-pub const JVM_ABI_VERSION: u32 = 36;
+/// `terms` node's order byte; 37, the tree's `MISSING` prefix (a numeric
+/// node's `missing` value).
+pub const JVM_ABI_VERSION: u32 = 37;
 
 /// Blob tag for a single `TermQuery`.
 pub const QUERY_TERM: u8 = 0;
