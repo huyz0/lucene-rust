@@ -654,6 +654,10 @@ jobs:
       # (a moving `nightly` invalidates every artifact daily) and a nightly
       # regression cannot turn this job red on its own. Bump deliberately.
       FUZZ_TOOLCHAIN: nightly-2026-10-15
+      # The prebuilt cargo-fuzz is a static musl binary and defaults
+      # `--target` to its own triple, which ASan cannot build for; name the
+      # runner's.
+      FUZZ_TARGET: x86_64-unknown-linux-gnu
     steps:
       - uses: actions/checkout@v5
       - name: Nightly toolchain
@@ -672,7 +676,7 @@ jobs:
       # three ~600 MB fuzzers fit the runner's cores and memory with room.
       - name: Build the fuzz targets
         working-directory: crates/lucene-ffi/fuzz
-        run: cargo "+$FUZZ_TOOLCHAIN" fuzz build
+        run: cargo "+$FUZZ_TOOLCHAIN" fuzz build --target "$FUZZ_TARGET"
       - name: Fuzz
         working-directory: crates/lucene-ffi/fuzz
         run: |
@@ -683,7 +687,7 @@ jobs:
             pids=()
             for t in "${targets[@]:i:3}"; do
               mkdir -p "corpus/$t"
-              cargo "+$FUZZ_TOOLCHAIN" fuzz run "$t" "corpus/$t" "seeds/$t" -- \
+              cargo "+$FUZZ_TOOLCHAIN" fuzz run --target "$FUZZ_TARGET" "$t" "corpus/$t" "seeds/$t" -- \
                 -max_total_time=60 -rss_limit_mb=4096 > "fuzz-$t.log" 2>&1 &
               pids+=($!)
             done
