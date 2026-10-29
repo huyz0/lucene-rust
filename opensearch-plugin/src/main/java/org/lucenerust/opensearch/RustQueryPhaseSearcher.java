@@ -740,6 +740,27 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         TotalHits total,
         long[] segCounts
     ) {
+        boolean[] used = new boolean[1];
+        Boolean terminated = countTerminatedEarly(ctx, handle, blob, shortcut, total, segCounts, used);
+        if (terminated != null && used[0] == false) {
+            try {
+                useQueryCache(ctx);
+            } catch (IOException e) {
+                return null;
+            }
+        }
+        return terminated;
+    }
+
+    private Boolean countTerminatedEarly(
+        SearchContext ctx,
+        long handle,
+        byte[] blob,
+        int shortcut,
+        TotalHits total,
+        long[] segCounts,
+        boolean[] used
+    ) {
         int trackUpTo = ctx.trackTotalHitsUpTo();
         List<LeafReaderContext> leaves = ctx.searcher().getIndexReader().leaves();
         if (trackUpTo == SearchContext.TRACK_TOTAL_HITS_DISABLED || shortcut >= 0) {
@@ -782,6 +803,12 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
                 iterate[i] = weight == null || weight.count(leaves.get(i)) == -1;
                 spec.write(iterate[i] ? 1 : 0);
             }
+            if (weight != null) {
+                // Weight.count recorded the use (on a segment without deletions; on one with
+                // them the cache never answers a count): cache what Lucene's search would.
+                used[0] = true;
+                fillQueryCache(ctx, weight, leaves, iterate);
+            }
         } catch (IOException e) {
             return null;
         }
@@ -799,6 +826,61 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             return null;
         }
         return out[0] != 0;
+    }
+
+    /**
+     * What Lucene's search of a {@code size: 0} query leaves in the query cache, for a native one:
+     * the policy records the use, and a query it now caches is cached on the segments without
+     * deletions -- the only ones whose {@code Weight.count} the cache answers, which is how a later
+     * search's {@code terminated_early} (above) sees it.
+     */
+    private static void useQueryCache(SearchContext ctx) throws IOException {
+        ContextIndexSearcher searcher = ctx.searcher();
+        org.apache.lucene.search.QueryCache cache = searcher.getQueryCache();
+        List<LeafReaderContext> leaves = searcher.getIndexReader().leaves();
+        if (cache == null || leaves.isEmpty()) {
+            return;
+        }
+        Query query = ctx.query();
+        org.apache.lucene.search.QueryCachingPolicy policy = searcher.getQueryCachingPolicy();
+        policy.onUse(query);
+        if (policy.shouldCache(query) == false || leaves.stream().allMatch(l -> l.reader().hasDeletions())) {
+            return;
+        }
+        // The use is recorded: a weight whose policy does not record it again.
+        Weight weight = cache.doCache(
+            query.createWeight(searcher, org.apache.lucene.search.ScoreMode.COMPLETE_NO_SCORES, 1f),
+            new org.apache.lucene.search.QueryCachingPolicy() {
+                @Override
+                public void onUse(Query q) {}
+
+                @Override
+                public boolean shouldCache(Query q) throws IOException {
+                    return policy.shouldCache(q);
+                }
+            }
+        );
+        boolean[] every = new boolean[leaves.size()];
+        java.util.Arrays.fill(every, true);
+        fillQueryCache(ctx, weight, leaves, every);
+    }
+
+    /** Caches {@code weight}'s query on the iterated segments without deletions, when the policy says to. */
+    private static void fillQueryCache(SearchContext ctx, Weight weight, List<LeafReaderContext> leaves, boolean[] iterate)
+        throws IOException {
+        if (ctx.searcher().getQueryCache() == null || ctx.searcher().getQueryCachingPolicy().shouldCache(ctx.query()) == false) {
+            return;
+        }
+        for (int i = 0; i < leaves.size(); i++) {
+            if (iterate[i] && leaves.get(i).reader().hasDeletions() == false) {
+                // The caching supplier fills the cache when its iterator is asked for, under the
+                // top-level lead cost of a search.
+                org.apache.lucene.search.ScorerSupplier supplier = weight.scorerSupplier(leaves.get(i));
+                if (supplier != null) {
+                    supplier.get(Long.MAX_VALUE);
+                }
+            }
+        }
     }
 
     /**

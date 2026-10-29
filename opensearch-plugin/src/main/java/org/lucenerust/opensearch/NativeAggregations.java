@@ -11,6 +11,7 @@ import org.opensearch.index.mapper.DateFieldMapper;
 import org.opensearch.index.mapper.DocCountFieldMapper;
 import org.opensearch.index.mapper.KeywordFieldMapper;
 import org.opensearch.search.aggregations.BucketOrder;
+import org.opensearch.search.aggregations.InternalOrder;
 import org.opensearch.search.aggregations.bucket.BucketUtils;
 import org.opensearch.search.aggregations.bucket.terms.StringTerms;
 import org.opensearch.search.aggregations.bucket.terms.TermsAggregator;
@@ -395,6 +396,7 @@ public final class NativeAggregations {
 
     private static final String TERMS_FACTORY = "org.opensearch.search.aggregations.bucket.terms.TermsAggregatorFactory";
     private static final BucketOrder DEFAULT_TERMS_ORDER = BucketOrder.compound(BucketOrder.count(false), BucketOrder.key(true));
+    private static final BucketOrder COUNT_ASC_TERMS_ORDER = BucketOrder.compound(BucketOrder.count(true), BucketOrder.key(true));
 
     /**
      * The native plan of a {@code terms} factory, or null: a keyword field, no include/exclude, the
@@ -406,6 +408,35 @@ public final class NativeAggregations {
         if (config.fieldContext().fieldType() instanceof KeywordFieldMapper.KeywordFieldType == false) {
             return null;
         }
+        Terms terms = termsSpec(ctx, f, config);
+        // The flat pass ranks by count only; another order takes the tree.
+        return terms != null && DEFAULT_TERMS_ORDER.equals(terms.order()) ? terms : null;
+    }
+
+    /**
+     * The native code of a {@code terms} order (the tree's {@code terms_order}): 0 {@code _count}
+     * descending, 1 ascending (each with {@code BucketOrder.compound}'s key-ascending tie-breaker),
+     * 2 {@code _key} ascending, 3 descending; -1 for any other.
+     */
+    static int orderCode(BucketOrder order) {
+        if (DEFAULT_TERMS_ORDER.equals(order)) {
+            return 0;
+        }
+        if (COUNT_ASC_TERMS_ORDER.equals(order)) {
+            return 1;
+        }
+        if (BucketOrder.key(true).equals(order)) {
+            return 2;
+        }
+        return BucketOrder.key(false).equals(order) ? 3 : -1;
+    }
+
+    /**
+     * A {@code terms} on any field, keyword or numeric, with the parameters the native side
+     * takes: an order {@link #orderCode} names, no {@code include}/{@code exclude}, {@code min_doc_count} at least
+     * one, and no {@code _doc_count} field in the shard; or null.
+     */
+    static Terms termsSpec(SearchContext ctx, AggregatorFactory f, ValuesSourceConfig config) throws IllegalAccessException {
         Object include = declared(f, "includeExclude");
         BucketOrder order = (BucketOrder) declared(f, "order");
         TermsAggregator.BucketCountThresholds declaredThresholds = (TermsAggregator.BucketCountThresholds) declared(
@@ -413,12 +444,13 @@ public final class NativeAggregations {
             "bucketCountThresholds"
         );
         Boolean showError = (Boolean) declared(f, "showTermDocCountError");
-        if (include != null || DEFAULT_TERMS_ORDER.equals(order) == false || declaredThresholds == null || showError == null) {
+        if (include != null || orderCode(order) < 0 || declaredThresholds == null || showError == null) {
             return null;
         }
-        // TermsAggregatorFactory.doCreateInternal: the shard_size heuristic, then ensureValidity.
+        // TermsAggregatorFactory.doCreateInternal: the shard_size heuristic (not for a key order,
+        // which ranks the same on every shard), then ensureValidity.
         TermsAggregator.BucketCountThresholds thresholds = new TermsAggregator.BucketCountThresholds(declaredThresholds);
-        if (thresholds.getShardSize() == -1) {
+        if (thresholds.getShardSize() == -1 && InternalOrder.isKeyOrder(order) == false) {
             thresholds.setShardSize(BucketUtils.suggestShardSideQueueSize(thresholds.getRequiredSize()));
         }
         thresholds.ensureValidity();

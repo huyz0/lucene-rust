@@ -14,7 +14,8 @@
 //! global   := 0 | 1 query:bytes nodes         (the global pass: its query and nodes)
 //! node     := METRIC value_kind:u8 source:u8 needs:u8 field
 //!           | CARDINALITY card_kind:u8 precision:u8 field
-//!           | TERMS field shard_size:i32 nodes
+//!           | TERMS field shard_size:i32 order:u8 nodes
+//!           | NUMERIC_TERMS field value_kind:u8 shard_size:i32 order:u8 nodes
 //!           | HISTOGRAM field value_kind:u8 interval:f64 offset:f64 bounds_f64 nodes
 //!           | DATE_HISTOGRAM field unit:u8 [interval:i64 when unit = UNIT_INTERVAL]
 //!                            zone_ms:i64 offset:i64 bounds_i64 nodes
@@ -39,6 +40,8 @@
 //!                                              as `writeTo` writes it (`len` 0:
 //!                                              the bucket saw nothing)
 //! TERMS        n:i32 (other:i64 count:i32 (docs:i64 term:bytes)*)*n  subs
+//! NUMERIC_TERMS n:i32 (other:i64 count:i32 (docs:i64 key:i64)*)*n  subs
+//!                                              (a double's key its sortable long)
 //! HISTOGRAM    n:i32 (count:i32 (key:f64 docs:i64)*)*n  subs
 //! DATE_HIST.   n:i32 (count:i32 (key:i64 docs:i64)*)*n  subs
 //! RANGE/FILTERS/GLOBAL  n:i32 width:i32 docs:i64*(n*width)  subs
@@ -53,6 +56,7 @@ use std::sync::Arc;
 use lucene_search::aggs::{MinScore, Source, ValueKind};
 use lucene_search::bucket_aggs::{
     self, AggNode, AggResult, CardinalityKind, DateRounding, DateUnit, Globals, RoundingKind,
+    TermsOrder,
 };
 use lucene_search::field_norms::FieldNorms;
 use lucene_search::multi_segment::OpenSegment;
@@ -70,6 +74,7 @@ const AGG_DATE_HISTOGRAM: u8 = 4;
 const AGG_RANGE: u8 = 5;
 const AGG_FILTERS: u8 = 6;
 const AGG_GLOBAL: u8 = 7;
+const AGG_NUMERIC_TERMS: u8 = 8;
 
 /// `date_histogram` units; [`UNIT_INTERVAL`] is a fixed interval.
 const UNITS: [DateUnit; 8] = [
@@ -119,6 +124,27 @@ fn field(c: &mut Cursor<'_>) -> Result<String, FfiStatus> {
 
 fn f64_of(c: &mut Cursor<'_>) -> Result<f64, FfiStatus> {
     Ok(f64::from_bits(c.i64()? as u64))
+}
+
+/// A `terms`' effective `shard_size`: at least one.
+fn shard_size(c: &mut Cursor<'_>) -> Result<usize, FfiStatus> {
+    let n = c.i32()?;
+    usize::try_from(n)
+        .ok()
+        .filter(|&n| n >= 1)
+        .ok_or_else(|| bad(format!("aggregation tree: shard_size {n}")))
+}
+
+/// A `terms` order: 0 `_count` descending, 1 `_count` ascending, 2 `_key`
+/// ascending, 3 `_key` descending.
+fn terms_order(c: &mut Cursor<'_>) -> Result<TermsOrder, FfiStatus> {
+    Ok(match c.u8()? {
+        0 => TermsOrder::CountDesc,
+        1 => TermsOrder::CountAsc,
+        2 => TermsOrder::KeyAsc,
+        3 => TermsOrder::KeyDesc,
+        other => return Err(bad(format!("aggregation tree: terms order {other}"))),
+    })
 }
 
 fn width(c: &mut Cursor<'_>) -> Result<usize, FfiStatus> {
@@ -203,14 +229,23 @@ fn node(c: &mut Cursor<'_>, depth: usize, count: &mut usize) -> Result<AggNode, 
         }
         AGG_TERMS => {
             let field = field(c)?;
-            let shard_size = c.i32()?;
-            let shard_size = usize::try_from(shard_size)
-                .ok()
-                .filter(|&n| n >= 1)
-                .ok_or_else(|| bad(format!("aggregation tree: shard_size {shard_size}")))?;
+            let shard_size = shard_size(c)?;
             AggNode::Terms {
                 field,
                 shard_size,
+                order: terms_order(c)?,
+                subs: nodes(c, depth + 1, count)?,
+            }
+        }
+        AGG_NUMERIC_TERMS => {
+            let field = field(c)?;
+            let kind = value_kind(c.u8()?)?;
+            let shard_size = shard_size(c)?;
+            AggNode::NumericTerms {
+                field,
+                kind,
+                shard_size,
+                order: terms_order(c)?,
                 subs: nodes(c, depth + 1, count)?,
             }
         }
@@ -404,6 +439,18 @@ pub(crate) fn encode_result(r: &AggResult, out: &mut Vec<u8>) -> Result<(), FfiS
                 for (term, docs) in list {
                     put_u64(out, *docs);
                     put_bytes(out, term)?;
+                }
+            }
+            encode_subs(subs, out)?;
+        }
+        AggResult::NumericTerms { buckets, subs } => {
+            put_i32(out, buckets.len())?;
+            for (other, list) in buckets {
+                put_u64(out, *other);
+                put_i32(out, list.len())?;
+                for (key, docs) in list {
+                    put_u64(out, *docs);
+                    out.extend_from_slice(&key.to_le_bytes());
                 }
             }
             encode_subs(subs, out)?;
@@ -666,6 +713,7 @@ pub(crate) mod tests {
         string(&mut b, "body");
         b.extend_from_slice(&5i32.to_le_bytes());
         b.push(0);
+        b.push(0);
         // date_histogram(n, unit day, then interval) > []
         for unit in [4u8, UNIT_INTERVAL] {
             b.push(AGG_DATE_HISTOGRAM);
@@ -776,6 +824,63 @@ pub(crate) mod tests {
         assert!(t.slices.is_empty());
     }
 
+    /// `NUMERIC_TERMS field kind shard_size subs`, decoded and run: the
+    /// result is `n other count (docs key)*`, keys ascending, docs summing to
+    /// the matches with a value.
+    #[test]
+    fn numeric_terms_decode_and_run() {
+        let tree = |kind: u8, shard_size: i32| {
+            let mut b = vec![1u8, AGG_NUMERIC_TERMS];
+            string(&mut b, "n");
+            b.push(kind);
+            b.extend_from_slice(&shard_size.to_le_bytes());
+            b.push(2);
+            b.push(1);
+            metric(&mut b, 0, 0, "n");
+            b.push(0);
+            b.extend_from_slice(&0i32.to_le_bytes());
+            b
+        };
+        let t = decode_tree(&tree(0, 2)).unwrap();
+        let AggNode::NumericTerms {
+            kind,
+            shard_size,
+            order,
+            subs,
+            ..
+        } = &t.nodes[0]
+        else {
+            panic!()
+        };
+        assert_eq!(
+            (*kind, *shard_size, *order, subs.len()),
+            (ValueKind::Long, 2, TermsOrder::KeyAsc, 1)
+        );
+        assert!(decode_tree(&tree(9, 2)).is_err(), "value kind 9");
+        assert!(decode_tree(&tree(0, 0)).is_err(), "shard_size 0");
+        let full = tree(0, 2);
+        for n in 1..full.len() {
+            assert!(decode_tree(&full[..n]).is_err(), "truncated at {n}");
+        }
+
+        let h = open();
+        let fox = term_blob("body", "fox");
+        let out = aggregate_tree_blobs(h, &fox, &tree(0, 2)).unwrap();
+        let mut at = 0;
+        assert_eq!(i32_at(&out, &mut at), 1, "one owning bucket");
+        let other = i64_at(&out, &mut at);
+        let m = i32_at(&out, &mut at);
+        assert!((0..=2).contains(&m));
+        let mut keys = Vec::new();
+        for _ in 0..m {
+            assert!(i64_at(&out, &mut at) >= 1);
+            keys.push(i64_at(&out, &mut at));
+        }
+        assert!(other >= 0);
+        assert!(keys.windows(2).all(|w| w[0] < w[1]), "{keys:?}");
+        crate::jvm_reader::ffi_close_jvm_reader(h);
+    }
+
     #[test]
     fn malformed_trees_are_refused() {
         let bad = |b: &[u8]| decode_tree(b).err();
@@ -848,6 +953,12 @@ pub(crate) mod tests {
         let mut t = vec![AGG_TERMS];
         string(&mut t, "k");
         t.extend_from_slice(&0i32.to_le_bytes());
+        assert_eq!(bad(&with(&t)), invalid);
+        // An order past `_key` descending.
+        let mut t = vec![AGG_TERMS];
+        string(&mut t, "k");
+        t.extend_from_slice(&1i32.to_le_bytes());
+        t.push(4);
         assert_eq!(bad(&with(&t)), invalid);
         let mut f = vec![AGG_FILTERS];
         f.extend_from_slice(&1i32.to_le_bytes());
