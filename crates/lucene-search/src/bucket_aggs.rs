@@ -486,6 +486,159 @@ pub enum AggNode {
     },
     /// `global`: one bucket holding every document of its pass.
     Global { subs: Vec<AggNode> },
+    /// `composite` (`CompositeAggregator`), at the top level only: the
+    /// `size` first composite keys of the sources' values past `after`.
+    Composite {
+        sources: Vec<CompositeSource>,
+        size: usize,
+        /// `after`, one value per source.
+        after: Option<Vec<CompositeAfter>>,
+        /// Per segment: whether the first source is read through its points
+        /// or terms (`createSortedDocsProducerOrNull`), which counts a
+        /// document once per distinct first-source value.
+        sorted_lead: Vec<bool>,
+        subs: Vec<AggNode>,
+    },
+}
+
+/// A `composite` source (`CompositeValuesSourceConfig`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompositeSource {
+    pub field: String,
+    pub values: CompositeValues,
+    /// `order: desc` (`reverseMul` -1).
+    pub reverse: bool,
+    /// `missing_bucket`: a document without a value has the missing one.
+    pub missing_bucket: bool,
+    pub missing_order: MissingOrder,
+}
+
+/// What a `composite` source reads, each value its key.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CompositeValues {
+    /// `GlobalOrdinalValuesSource`: a keyword's global ordinal.
+    Keyword,
+    /// `LongValuesSource` without rounding: the long.
+    Long,
+    /// `DoubleValuesSource`: the double, as its sortable long.
+    Double(ValueKind),
+    /// `HistogramValuesSource`: `floor(v / interval) * interval`, as its
+    /// sortable long.
+    Histogram { kind: ValueKind, interval: f64 },
+    /// `LongValuesSource` over `RoundingValuesSource`: the rounded millis.
+    Date(DateRounding),
+}
+
+/// `MissingOrder`: where a source's missing value sorts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MissingOrder {
+    First,
+    Last,
+    /// First ascending, last descending.
+    Default,
+}
+
+/// A source's `after` value (`SingleDimensionValuesSource.afterValue`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum CompositeAfter {
+    /// The missing value (`missing_bucket`).
+    Missing,
+    /// A key as the source keeps it (a long, a double's sortable long).
+    Value(i64),
+    /// A keyword's term.
+    Term(Vec<u8>),
+}
+
+/// A composite bucket key's value, as `CompositeKey` holds it.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CompositeKeyValue {
+    Missing,
+    Long(i64),
+    Double(f64),
+    Term(Vec<u8>),
+}
+
+/// A source's value in a composite key: `None` the missing one.
+type KeyPart = Option<i64>;
+
+/// A resolved `after` value: a keyword's term not among the ordinals sorts
+/// just before the ordinal given.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AfterPart {
+    Missing,
+    Exact(i64),
+    Before(i64),
+}
+
+impl CompositeSource {
+    /// `SingleDimensionValuesSource.compare`: missing by `missingOrder`,
+    /// values by `reverseMul`.
+    fn compare(&self, a: KeyPart, b: KeyPart) -> std::cmp::Ordering {
+        use std::cmp::Ordering;
+        let missing_first = match self.missing_order {
+            MissingOrder::First => true,
+            MissingOrder::Last => false,
+            MissingOrder::Default => !self.reverse,
+        };
+        match (a, b) {
+            (None, None) => Ordering::Equal,
+            (None, Some(_)) if missing_first => Ordering::Less,
+            (None, Some(_)) => Ordering::Greater,
+            (Some(_), None) if missing_first => Ordering::Greater,
+            (Some(_), None) => Ordering::Less,
+            (Some(x), Some(y)) if self.reverse => y.cmp(&x),
+            (Some(x), Some(y)) => x.cmp(&y),
+        }
+    }
+
+    /// `compareCurrentWithAfter`.
+    fn compare_after(&self, a: KeyPart, after: AfterPart) -> std::cmp::Ordering {
+        use std::cmp::Ordering;
+        match (a, after) {
+            (_, AfterPart::Missing) => self.compare(a, None),
+            (_, AfterPart::Exact(v)) => self.compare(a, Some(v)),
+            (None, AfterPart::Before(v)) => self.compare(None, Some(v)),
+            // Between the ordinals `v - 1` and `v`.
+            (Some(x), AfterPart::Before(v)) => {
+                let natural = if x >= v {
+                    Ordering::Greater
+                } else {
+                    Ordering::Less
+                };
+                if self.reverse {
+                    natural.reverse()
+                } else {
+                    natural
+                }
+            }
+        }
+    }
+
+    /// The key of one of the column's values.
+    fn key(&self, map: &[i64], v: i64) -> Result<i64> {
+        Ok(match &self.values {
+            CompositeValues::Keyword => global_ord(map, v)?,
+            CompositeValues::Long => v,
+            CompositeValues::Double(kind) => numeric_terms_key(*kind, v),
+            CompositeValues::Histogram { kind, interval } => {
+                let bits =
+                    java_double_bits((aggs::to_double(*kind, v) / interval).floor() * interval);
+                bits ^ ((bits >> 63) & i64::MAX)
+            }
+            CompositeValues::Date(rounding) => rounding.round(v),
+        })
+    }
+}
+
+/// `compare` of two composite keys, source by source.
+fn compare_keys(sources: &[CompositeSource], a: &[KeyPart], b: &[KeyPart]) -> std::cmp::Ordering {
+    for ((s, &x), &y) in sources.iter().zip(a).zip(b) {
+        let c = s.compare(x, y);
+        if c.is_ne() {
+            return c;
+        }
+    }
+    std::cmp::Ordering::Equal
 }
 
 impl AggNode {
@@ -510,6 +663,7 @@ impl AggNode {
             | AggNode::DateHistogram { subs, .. }
             | AggNode::Range { subs, .. }
             | AggNode::Filters { subs, .. }
+            | AggNode::Composite { subs, .. }
             | AggNode::Global { subs } => subs,
         }
     }
@@ -523,6 +677,13 @@ impl AggNode {
                 kind: CardinalityKind::Keyword,
                 ..
             } if !out.contains(&field.as_str()) => out.push(field),
+            AggNode::Composite { sources, .. } => {
+                for s in sources {
+                    if s.values == CompositeValues::Keyword && !out.contains(&s.field.as_str()) {
+                        out.push(&s.field);
+                    }
+                }
+            }
             _ => {}
         }
         for s in self.subs() {
@@ -597,6 +758,11 @@ pub enum AggResult {
     Fixed {
         width: usize,
         docs: Vec<u64>,
+        subs: Vec<AggResult>,
+    },
+    /// The top-level `composite`'s buckets in key order: `(key, doc count)`.
+    Composite {
+        buckets: Vec<(Vec<CompositeKeyValue>, u64)>,
         subs: Vec<AggResult>,
     },
 }
@@ -777,6 +943,9 @@ enum State {
         docs: Vec<u64>,
         subs: Vec<State>,
     },
+    /// `CompositeValuesCollectorQueue`: each composite key's bucket, the
+    /// buckets no longer competitive dropped as the queue drops them.
+    Composite(Box<CompositeState>),
     Fixed {
         width: usize,
         docs: Vec<u64>,
@@ -826,7 +995,47 @@ impl State {
                 docs: Vec::new(),
                 subs: subs(),
             },
+            AggNode::Composite { .. } => State::Composite(Box::new(CompositeState {
+                keys: Vec::new(),
+                index: HashMap::new(),
+                docs: Vec::new(),
+                worst: None,
+                subs: subs(),
+            })),
         }
+    }
+}
+
+/// [`State::Composite`].
+struct CompositeState {
+    /// Each bucket's key.
+    keys: Vec<Box<[KeyPart]>>,
+    /// The competitive buckets by key.
+    index: HashMap<Box<[KeyPart]>, u32>,
+    docs: Vec<u64>,
+    /// The `size`-th best key once more than `2 * size` were seen: a key
+    /// past it is not competitive (the queue's full-heap test), now or later.
+    worst: Option<Box<[KeyPart]>>,
+    subs: Vec<State>,
+}
+
+impl CompositeState {
+    /// Drops every bucket past the `size` best, and remembers the last kept.
+    fn prune(&mut self, sources: &[CompositeSource], size: usize) {
+        let mut live: Vec<u32> = self.index.values().copied().collect();
+        live.sort_unstable_by(|&a, &b| {
+            compare_keys(sources, &self.keys[a as usize], &self.keys[b as usize])
+        });
+        if live.len() <= size {
+            return;
+        }
+        for &o in &live[size..] {
+            self.index.remove(&self.keys[o as usize]);
+            self.keys[o as usize] = Box::default();
+        }
+        self.worst = live
+            .get(size.wrapping_sub(1))
+            .map(|&o| self.keys[o as usize].clone());
     }
 }
 
@@ -899,7 +1108,22 @@ struct Leaf<'a> {
     missing_key: Option<i64>,
     /// A keyword `terms`' `include`/`exclude`.
     filter: Option<LeafFilter>,
+    /// A `composite`'s per-segment reading.
+    composite: Option<Box<CompositeLeaf<'a>>>,
     subs: Vec<Leaf<'a>>,
+}
+
+/// A `composite` over one segment.
+struct CompositeLeaf<'a> {
+    /// Each source's column.
+    sources: Vec<Leaf<'a>>,
+    /// `after`, resolved against the global ordinals.
+    after: Option<Vec<AfterPart>>,
+    /// [`AggNode::Composite::sorted_lead`] for this segment.
+    sorted_lead: bool,
+    /// Each source's keys for the document, and the key being collected.
+    values: Vec<Vec<KeyPart>>,
+    key: Vec<KeyPart>,
 }
 
 /// An ordinal a `terms` window has not placed yet.
@@ -963,6 +1187,11 @@ impl Leaf<'_> {
         for s in &mut self.subs {
             s.prefetch(base, len)?;
         }
+        if let Some(c) = &mut self.composite {
+            for s in &mut c.sources {
+                s.prefetch(base, len)?;
+            }
+        }
         Ok(())
     }
 
@@ -986,6 +1215,11 @@ impl Leaf<'_> {
         self.pre_len = 0;
         for s in &mut self.subs {
             s.drop_prefetch();
+        }
+        if let Some(c) = &mut self.composite {
+            for s in &mut c.sources {
+                s.drop_prefetch();
+            }
         }
     }
 
@@ -1110,7 +1344,7 @@ fn open_leaf<'a>(
             }
             Col::Filters(bits)
         }
-        AggNode::Global { .. } => Col::None,
+        AggNode::Global { .. } | AggNode::Composite { .. } => Col::None,
     };
     let mut subs = Vec::with_capacity(node.subs().len());
     let sub_view = SegmentView {
@@ -1119,6 +1353,7 @@ fn open_leaf<'a>(
     };
     let sub_states: &mut [State] = match state {
         State::Keyed { subs, .. } | State::Fixed { subs, .. } => subs,
+        State::Composite(c) => &mut c.subs,
         _ => &mut [],
     };
     for (s, st) in node.subs().iter().zip(sub_states) {
@@ -1146,8 +1381,76 @@ fn open_leaf<'a>(
         missing: node.missing(),
         missing_key: globals.missing_key(node)?,
         filter: globals.leaf_filter(node)?,
+        composite: composite_leaf(node, view, globals)?,
         subs,
     })
+}
+
+/// A `composite`'s sources opened over the segment, and its `after`
+/// resolved.
+fn composite_leaf<'a>(
+    node: &AggNode,
+    view: &SegmentView<'_, 'a>,
+    globals: &Globals<'a>,
+) -> Result<Option<Box<CompositeLeaf<'a>>>> {
+    let AggNode::Composite {
+        sources,
+        after,
+        sorted_lead,
+        ..
+    } = node
+    else {
+        return Ok(None);
+    };
+    let mut leaves = Vec::with_capacity(sources.len());
+    for s in sources {
+        // Each source read as a `terms` on its field would read it.
+        let as_terms = match s.values {
+            CompositeValues::Keyword => AggNode::Terms {
+                field: s.field.clone(),
+                missing: None,
+                accepted: None,
+                shard_size: 0,
+                order: TermsOrder::CountDesc,
+                zero_buckets: false,
+                subs: Vec::new(),
+            },
+            _ => AggNode::NumericTerms {
+                field: s.field.clone(),
+                missing: None,
+                kind: ValueKind::Long,
+                shard_size: 0,
+                order: TermsOrder::CountDesc,
+                subs: Vec::new(),
+            },
+        };
+        let mut state = State::new(&as_terms);
+        leaves.push(open_leaf(&as_terms, view, globals, &mut state)?);
+    }
+    let after = match after {
+        Some(values) => {
+            let mut parts = Vec::with_capacity(values.len());
+            for (s, a) in sources.iter().zip(values) {
+                parts.push(match a {
+                    CompositeAfter::Missing => AfterPart::Missing,
+                    CompositeAfter::Value(v) => AfterPart::Exact(*v),
+                    CompositeAfter::Term(t) => match globals.missing(&s.field, t)? {
+                        MissingTerm::Ord(o) => AfterPart::Exact(o),
+                        MissingTerm::Insert(at) => AfterPart::Before(at),
+                    },
+                });
+            }
+            Some(parts)
+        }
+        None => None,
+    };
+    Ok(Some(Box::new(CompositeLeaf {
+        values: vec![Vec::new(); sources.len()],
+        key: Vec::with_capacity(sources.len()),
+        sources: leaves,
+        after,
+        sorted_lead: sorted_lead.get(view.index).copied().unwrap_or(false),
+    })))
 }
 
 /// A filter's matches in one segment, deletions ignored (`FiltersAggregator`
@@ -1222,6 +1525,11 @@ fn numeric_hash(kind: ValueKind, v: i64) -> i64 {
 /// float as `NumericUtils.doubleToSortableLong` of its double, as
 /// `FieldData.toSortableLongBits` hands `NumericTermsAggregator` its values.
 #[inline]
+/// The double of a sortable long ([`numeric_terms_key`] of a double).
+fn sortable_double(k: i64) -> f64 {
+    f64::from_bits((k ^ ((k >> 63) & i64::MAX)) as u64)
+}
+
 fn numeric_terms_key(kind: ValueKind, v: i64) -> i64 {
     match kind {
         ValueKind::Long => v,
@@ -1660,6 +1968,96 @@ fn collect_window(
     Ok(())
 }
 
+/// `CompositeAggregator`'s collection of one document: every combination of
+/// its sources' values (`missing_bucket`'s missing one for a source without
+/// any) past `after` and competitive, counted and passed to the
+/// sub-aggregations. A segment whose first source is read through its points
+/// or terms counts the document once per distinct first-source value; the
+/// sub-aggregations, replayed from the doc values, see every combination.
+fn collect_composite(
+    sources: &[CompositeSource],
+    size: usize,
+    subs: &[AggNode],
+    st: &mut CompositeState,
+    c: &mut CompositeLeaf<'_>,
+    leaf_subs: &mut [Leaf<'_>],
+    doc: i32,
+) -> Result<()> {
+    if size == 0 {
+        return Ok(());
+    }
+    for ((s, l), values) in sources.iter().zip(&mut c.sources).zip(&mut c.values) {
+        values.clear();
+        if l.read(doc)? {
+            let map = match &l.col {
+                Col::Ords(_, map) => *map,
+                _ => &[],
+            };
+            for &v in &l.buf {
+                values.push(Some(s.key(map, v)?));
+            }
+        } else if s.missing_bucket {
+            values.push(None);
+        } else {
+            return Ok(());
+        }
+    }
+    let mut at = vec![0usize; sources.len()];
+    loop {
+        c.key.clear();
+        c.key.extend(at.iter().zip(&c.values).map(|(&i, v)| v[i]));
+        let lead_run = at[0] == 0 || c.values[0][at[0]] != c.values[0][at[0] - 1];
+        let past_after = c.after.as_ref().is_none_or(|after| {
+            for ((s, &k), &a) in sources.iter().zip(&c.key).zip(after) {
+                let o = s.compare_after(k, a);
+                if o.is_ne() {
+                    return o.is_gt();
+                }
+            }
+            false
+        });
+        let competitive = past_after
+            && st
+                .worst
+                .as_deref()
+                .is_none_or(|w| compare_keys(sources, &c.key, w).is_le());
+        if competitive {
+            let ord = match st.index.get(c.key.as_slice()) {
+                Some(&o) => o,
+                None => {
+                    let o = st.keys.len() as u32;
+                    let key: Box<[KeyPart]> = c.key.as_slice().into();
+                    st.index.insert(key.clone(), o);
+                    st.keys.push(key);
+                    o
+                }
+            };
+            if !c.sorted_lead || lead_run {
+                *slot(&mut st.docs, ord as usize) += 1;
+            }
+            for ((n, sub), l) in subs.iter().zip(&mut st.subs).zip(&mut *leaf_subs) {
+                collect(n, sub, l, doc, ord)?;
+            }
+            if st.index.len() > size.saturating_mul(2) {
+                st.prune(sources, size);
+            }
+        }
+        // The next combination, the last source fastest.
+        let mut i = sources.len();
+        loop {
+            if i == 0 {
+                return Ok(());
+            }
+            i -= 1;
+            at[i] += 1;
+            if at[i] < c.values[i].len() {
+                break;
+            }
+            at[i] = 0;
+        }
+    }
+}
+
 /// A bucket aggregation's sub-aggregations over the documents it placed in
 /// a window ([`collect_window`]).
 fn collect_subs_window(
@@ -1688,6 +2086,22 @@ fn collect(
     owning: u32,
 ) -> Result<()> {
     match (node, state) {
+        (
+            AggNode::Composite {
+                sources,
+                size,
+                subs,
+                ..
+            },
+            State::Composite(st),
+        ) => {
+            let Some(c) = leaf.composite.as_deref_mut() else {
+                return Err(crate::Error::TermsAggType(
+                    "composite without its sources".to_string(),
+                ));
+            };
+            collect_composite(sources, *size, subs, st, c, &mut leaf.subs, doc)?;
+        }
         (AggNode::Metric { kind, needs, .. }, State::Metric(states)) => {
             if matches!(leaf.col, Col::Values(_, true)) || !leaf.read(doc)? {
                 return Ok(());
@@ -2553,13 +2967,25 @@ fn resolve_missing(
 ) -> Result<HashMap<(String, Vec<u8>), MissingTerm>> {
     fn walk<'n>(nodes: &'n [AggNode], out: &mut Vec<(&'n str, &'n [u8])>) {
         for n in nodes {
-            if let AggNode::Terms {
-                field,
-                missing: Some(m),
-                ..
-            } = n
-            {
-                out.push((field, m));
+            match n {
+                AggNode::Terms {
+                    field,
+                    missing: Some(m),
+                    ..
+                } => out.push((field, m)),
+                // A keyword source's `after` term.
+                AggNode::Composite {
+                    sources,
+                    after: Some(after),
+                    ..
+                } => {
+                    for (s, a) in sources.iter().zip(after) {
+                        if let CompositeAfter::Term(t) = a {
+                            out.push((&s.field, t));
+                        }
+                    }
+                }
+                _ => {}
             }
             walk(n.subs(), out);
         }
@@ -2604,8 +3030,44 @@ fn finish(
     globals: &Globals<'_>,
     terms: &mut TermLookup<'_>,
 ) -> Result<AggResult> {
+    // FBS: `v` is a count slice, and `get` is bounds-checked.
     let at = |v: &[u64], i: usize| v.get(i).copied().unwrap_or(0);
     match (node, state) {
+        (
+            AggNode::Composite {
+                sources,
+                size,
+                subs,
+                ..
+            },
+            State::Composite(st),
+        ) => {
+            let st = *st;
+            let mut kept: Vec<u32> = st.index.values().copied().collect();
+            kept.sort_unstable_by(|&a, &b| {
+                compare_keys(sources, &st.keys[a as usize], &st.keys[b as usize])
+            });
+            kept.truncate(*size);
+            let mut buckets = Vec::with_capacity(kept.len());
+            for &o in &kept {
+                let mut key = Vec::with_capacity(sources.len());
+                for (s, &part) in sources.iter().zip(st.keys[o as usize].iter()) {
+                    key.push(match (part, &s.values) {
+                        (None, _) => CompositeKeyValue::Missing,
+                        (Some(g), CompositeValues::Keyword) => CompositeKeyValue::Term(
+                            terms.term(globals.get(&s.field)?, &s.field, g)?,
+                        ),
+                        (Some(v), CompositeValues::Long | CompositeValues::Date(_)) => {
+                            CompositeKeyValue::Long(v)
+                        }
+                        (Some(k), _) => CompositeKeyValue::Double(sortable_double(k)),
+                    });
+                }
+                buckets.push((key, at(&st.docs, o as usize)));
+            }
+            let subs = finish_subs(subs, st.subs, &kept, globals, terms)?;
+            Ok(AggResult::Composite { buckets, subs })
+        }
         (AggNode::Metric { .. }, State::Metric(states)) => Ok(AggResult::Metric(
             owners
                 .iter()
@@ -2975,6 +3437,7 @@ mod tests {
             missing: None,
             missing_key: None,
             filter: None,
+            composite: None,
             subs: Vec::new(),
         }
     }
@@ -4420,6 +4883,207 @@ mod tests {
         assert_eq!(every.len(), terms_count + 1);
         assert!(every.contains(&(after, absent)));
         assert!(every.windows(2).all(|w| w[0].0 < w[1].0));
+    }
+
+    /// A `composite` paged with `after` lists the same buckets as one page
+    /// holding them all, whatever its sources' orders and missing buckets,
+    /// and with `size` small enough that the queue drops buckets.
+    #[test]
+    fn composite_pages_list_every_bucket_once() {
+        let source =
+            |field: &str, values, reverse, missing_bucket, missing_order| CompositeSource {
+                field: field.to_string(),
+                values,
+                reverse,
+                missing_bucket,
+                missing_order,
+            };
+        let cases = [
+            (
+                "terms_aggs_index",
+                vec![
+                    source(
+                        "kw",
+                        CompositeValues::Keyword,
+                        false,
+                        false,
+                        MissingOrder::Default,
+                    ),
+                    source(
+                        "mkw",
+                        CompositeValues::Keyword,
+                        true,
+                        true,
+                        MissingOrder::Default,
+                    ),
+                ],
+            ),
+            (
+                "terms_aggs_index",
+                vec![
+                    source(
+                        "sk",
+                        CompositeValues::Keyword,
+                        true,
+                        true,
+                        MissingOrder::First,
+                    ),
+                    source(
+                        "kw",
+                        CompositeValues::Keyword,
+                        false,
+                        false,
+                        MissingOrder::Default,
+                    ),
+                ],
+            ),
+            (
+                "metric_aggs_index",
+                vec![
+                    source("ml", CompositeValues::Long, true, true, MissingOrder::Last),
+                    source(
+                        "d",
+                        CompositeValues::Histogram {
+                            kind: ValueKind::Double,
+                            interval: 25.0,
+                        },
+                        false,
+                        true,
+                        MissingOrder::Default,
+                    ),
+                ],
+            ),
+            (
+                "metric_aggs_index",
+                vec![source(
+                    "md",
+                    CompositeValues::Double(ValueKind::Double),
+                    false,
+                    false,
+                    MissingOrder::Default,
+                )],
+            ),
+        ];
+        // Buckets compared with their doubles as bits: a histogram of NaN is
+        // keyed NaN.
+        fn bits(buckets: &[(Vec<CompositeKeyValue>, u64)]) -> Vec<String> {
+            buckets
+                .iter()
+                .map(|(key, docs)| {
+                    let parts: Vec<String> = key
+                        .iter()
+                        .map(|v| match v {
+                            CompositeKeyValue::Double(d) => format!("d{:x}", d.to_bits()),
+                            v => format!("{v:?}"),
+                        })
+                        .collect();
+                    format!("{parts:?} {docs}")
+                })
+                .collect()
+        }
+        for (index, sources) in cases {
+            let reader = fixture(index);
+            let node = |size, after, subs| AggNode::Composite {
+                sources: sources.clone(),
+                size,
+                after,
+                sorted_lead: Vec::new(),
+                subs,
+            };
+            let page = |n: AggNode| {
+                let got = run(&reader, &all(), &[n], &whole(&reader))
+                    .unwrap()
+                    .remove(0)
+                    .remove(0);
+                let AggResult::Composite { buckets, subs } = got else {
+                    panic!("{got:?}")
+                };
+                (buckets, subs)
+            };
+            let (every, _) = page(node(1 << 20, None, Vec::new()));
+            assert!(every.len() > 20, "{index}: {} buckets", every.len());
+            let total: u64 = every.iter().map(|b| b.1).sum();
+            assert!(total > 0);
+            let to_after = |key: &[CompositeKeyValue]| -> Vec<CompositeAfter> {
+                key.iter()
+                    .zip(&sources)
+                    .map(|(v, s)| match v {
+                        CompositeKeyValue::Missing => CompositeAfter::Missing,
+                        CompositeKeyValue::Term(t) => CompositeAfter::Term(t.clone()),
+                        CompositeKeyValue::Long(l) => CompositeAfter::Value(*l),
+                        CompositeKeyValue::Double(d) => {
+                            assert!(!matches!(s.values, CompositeValues::Keyword));
+                            CompositeAfter::Value(numeric_terms_key(
+                                ValueKind::Double,
+                                lucene_util::numeric_utils::double_to_sortable_long(*d),
+                            ))
+                        }
+                    })
+                    .collect()
+            };
+            // The first pages, and a page size that reaches the end.
+            for (size, pages) in [(1, 12), (7, 12), (every.len() / 3 + 1, 5)] {
+                let mut paged = Vec::new();
+                let mut after = None;
+                for _ in 0..pages {
+                    let (buckets, _) = page(node(size, after.clone(), Vec::new()));
+                    assert!(buckets.len() <= size);
+                    let Some(last) = buckets.last() else {
+                        break;
+                    };
+                    after = Some(to_after(&last.0));
+                    paged.extend(buckets);
+                }
+                let n = paged.len().min(every.len());
+                assert_eq!(bits(&paged), bits(&every[..n]), "{index} size {size}");
+                assert!(n == every.len() || n == size * pages, "{index} size {size}");
+            }
+            // An `after` term none of the ordinals holds: the buckets past it.
+            if let Some(i) = every
+                .iter()
+                .position(|b| matches!(b.0[0], CompositeKeyValue::Term(_)))
+            {
+                let mut after = to_after(&every[i].0);
+                if let CompositeAfter::Term(t) = &mut after[0] {
+                    t.push(0);
+                }
+                let (got, _) = page(node(1 << 20, Some(after), Vec::new()));
+                let first = &every[i].0[0];
+                let reverse = sources[0].reverse;
+                let want: Vec<_> = every
+                    .iter()
+                    .filter(|b| {
+                        let (CompositeKeyValue::Term(a), CompositeKeyValue::Term(b)) =
+                            (first, &b.0[0])
+                        else {
+                            // The missing value sorts first in these cases.
+                            return false;
+                        };
+                        // The `after` term sorts just past `a`.
+                        if reverse {
+                            b <= a
+                        } else {
+                            b > a
+                        }
+                    })
+                    .cloned()
+                    .collect();
+                assert_eq!(bits(&got), bits(&want), "{index}: after an absent term");
+            }
+            // A sub-aggregation sees each kept bucket's documents.
+            let (with_subs, subs) = page(node(5, None, vec![metric("d", ValueKind::Double)]));
+            assert_eq!(bits(&with_subs), bits(&every[..5]));
+            let AggResult::Metric(states) = &subs[0] else {
+                panic!("{subs:?}")
+            };
+            assert_eq!(states.len(), 5);
+            if index == "metric_aggs_index" {
+                // Every document holds a `d`.
+                for (b, st) in with_subs.iter().zip(states) {
+                    assert!(st.count >= b.1, "{index}: {b:?} {st:?}");
+                }
+            }
+        }
     }
 
     /// A keyword `terms` with `include`/`exclude` keeps the accepted terms'
