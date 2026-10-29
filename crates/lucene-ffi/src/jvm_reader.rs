@@ -119,8 +119,9 @@ use std::sync::Arc;
 /// flag; 39, its `missing` term (the flag byte's bit 2); 40, its
 /// `include`/`exclude` as accepted ordinals (bit 4); 41, the tree's
 /// top-level `COMPOSITE` node; 42, the `PERCENTILES` node (a t-digest per
-/// bucket, its whole state in the result).
-pub const JVM_ABI_VERSION: u32 = 42;
+/// bucket, its whole state in the result); 43, the `TOP_HITS` node (each
+/// bucket's top hits by score).
+pub const JVM_ABI_VERSION: u32 = 43;
 
 /// Blob tag for a single `TermQuery`.
 pub const QUERY_TERM: u8 = 0;

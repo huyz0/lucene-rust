@@ -942,6 +942,8 @@ public final class NativeAggregationTree {
         switch (factory) {
             case AGGS + "bucket.global.GlobalAggregatorFactory":
                 return top ? new GlobalNode(agg, subs) : null;
+            case AGGS + "metrics.TopHitsAggregatorFactory":
+                return NativeTopHits.node(agg);
             case AGGS + "bucket.composite.CompositeAggregationFactory":
                 return top ? NativeComposite.node(ctx, agg, subs) : null;
             case AGGS + "bucket.filter.FilterAggregatorFactory": {
