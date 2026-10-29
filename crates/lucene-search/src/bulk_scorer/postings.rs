@@ -643,10 +643,7 @@ mod tests {
                 sum_total_term_freq: 1461,
                 sum_doc_freq: 1461,
             },
-            &[TermStatistics {
-                doc_freq: cost,
-                total_term_freq: cost,
-            }],
+            &[TermStatistics::new(cost, cost).unwrap()],
         );
         let expected = scorer.score(1.0, 1);
         let mut cursor = TermPostings::text(te.impacts(text::FREQS).unwrap(), true).unwrap();

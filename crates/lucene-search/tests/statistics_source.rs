@@ -43,7 +43,7 @@ impl StatisticsSource for Global {
     ) -> Result<TermStatistics> {
         self.asked.fetch_add(1, Ordering::Relaxed);
         assert!(local.doc_freq > 0, "asked about a term the shard lacks");
-        Ok(self.terms[&(field.to_string(), term.to_vec())])
+        Ok(self.terms[&(field.to_string(), term.to_vec())].clone())
     }
 
     fn collection_statistics(

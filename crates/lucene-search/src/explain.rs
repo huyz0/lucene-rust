@@ -1187,14 +1187,14 @@ fn explain_under_similarity(
         for term in terms {
             // Present: the caller found every term in the segment.
             if let Some(entry) = crate::exec::extended::term_entry(&ctx, field, term)? {
-                entries.push(entry);
+                entries.push((term, entry));
             }
         }
-        let Some(first) = entries.first() else {
+        let Some((_, first)) = entries.first() else {
             return Ok(None);
         };
         let collection = first.collection_statistics();
-        let term_stats: Vec<_> = entries.iter().map(|e| e.term_statistics()).collect();
+        let term_stats: Vec<_> = entries.iter().map(|(t, e)| e.term_statistics(t)).collect();
         // `LeafSimScorer.getNormValue`: `1` for a field without norms.
         let encoded = match norms {
             Some(n) => n.cursor().norm_long(doc)?.unwrap_or(1),

@@ -378,7 +378,10 @@ pub fn new_term(random: &mut JavaRandom, corpus: &CollectionStatistics) -> TermS
             _ => test_util::next_long(random, doc_freq, upper_bound),
         }
     };
-    TermStatistics::new(doc_freq, total_term_freq).expect("a consistent term")
+    // `new TermStatistics(TERM, ...)`, `TERM` being `new BytesRef("term")`.
+    TermStatistics::new(doc_freq, total_term_freq)
+        .expect("a consistent term")
+        .with_term(b"term")
 }
 
 /// One `doTestScoring` call: its inputs, and the scores it compared.
@@ -548,7 +551,7 @@ pub fn do_test_scoring(
         }
         explanations.push(explanation.to_string());
     };
-    let scorer = similarity.scorer("field", boost, &corpus, &[term]);
+    let scorer = similarity.scorer("field", boost, &corpus, std::slice::from_ref(&term));
     let n = i64::from(norm);
     let max_score = scorer.score(f32::MAX, 1);
     assert!(!max_score.is_nan(), "maxScore is NaN: {}", ctx());
@@ -617,7 +620,8 @@ pub fn do_test_scoring(
     // `freq < totalTermFreq` compares in float, as Java's promotion does
     if term.doc_freq > 1 && freq < term.total_term_freq as f32 {
         // Java builds the rarer term's statistics, then scores `term` again
-        let prev_term_scorer = similarity.scorer("field", boost, &corpus, &[term]);
+        let prev_term_scorer =
+            similarity.scorer("field", boost, &corpus, std::slice::from_ref(&term));
         let s = prev_term_scorer.score(freq, n);
         assert!(s.is_finite(), "{}", ctx());
         if non_negative {
@@ -675,7 +679,7 @@ pub fn bulk_score(
     let corpus = new_corpus(random, 1);
     let term = new_term(random, &corpus);
     let boost = next_float_bounded(random, 5.0);
-    let scorer = similarity.scorer("field", boost, &corpus, &[term]);
+    let scorer = similarity.scorer("field", boost, &corpus, std::slice::from_ref(&term));
     let freq_upper_bound =
         i32::try_from((term.total_term_freq - term.doc_freq + 1).min(i64::from(i32::MAX)))
             .expect("at most Integer.MAX_VALUE");
