@@ -3,6 +3,7 @@
  */
 package org.lucenerust.opensearch;
 
+import org.apache.lucene.index.DocValues;
 import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.search.BoostQuery;
@@ -69,6 +70,15 @@ final class NativeComposite {
                 return null;
             }
         }
+        // OpenSearch's filter rewrite answers a lone date_histogram source from the points
+        // (FilterRewriteOptimizationContext): faster than reading every document.
+        // Both early-terminating paths below are slower shapes: native only under
+        // `native_shapes: all`.
+        boolean allShapes = RustQueryPhaseSearcher.allShapes(ctx);
+        Object rewrite = get(agg, "filterRewriteOptimizationContext");
+        if (allShapes == false && rewrite != null && Boolean.TRUE.equals(get(rewrite, "canOptimize"))) {
+            return null;
+        }
         Object[] sources = (Object[]) get(agg, "sources");
         boolean hasAfter = get(agg, "rawAfterKey") != null;
         List<Source> out = new ArrayList<>(configs.length);
@@ -87,19 +97,30 @@ final class NativeComposite {
             return null;
         }
         List<LeafReaderContext> leaves = reader.leaves();
+        int size = (int) get(agg, "size");
         boolean[] sortedLead = new boolean[leaves.size()];
         boolean earlyTerminated = false;
         for (int i = 0; i < leaves.size(); i++) {
             Object p = producer.invoke(sources[0], leaves.get(i).reader(), ctx.query());
             if (p != null) {
+                // A range query on that field also bounds the values the points read sees.
                 if (p.getClass().getSimpleName().equals("PointsSortedDocsProducer") && unwrap(ctx.query()) instanceof PointRangeQuery) {
+                    return null;
+                }
+                // The sorted read stops once the queue is full and the first source's values pass
+                // its worst key: past `size` distinct values it visits only the documents of the
+                // first ones, where the native pass reads every document. A keyword's values are
+                // counted; a points field's are not, so it stays on Lucene.
+                if (allShapes == false
+                    && (p.getClass().getSimpleName().equals("PointsSortedDocsProducer")
+                        || DocValues.getSortedSet(leaves.get(i).reader(), configs[0].fieldType().name()).getValueCount() > size)) {
                     return null;
                 }
                 sortedLead[i] = true;
                 earlyTerminated = true;
             }
         }
-        return new Node(agg, subs, out, (int) get(agg, "size"), hasAfter, sortedLead, earlyTerminated);
+        return new Node(agg, subs, out, size, hasAfter, sortedLead, earlyTerminated);
     }
 
     /** {@code LongValuesSource.extractQuery}. */

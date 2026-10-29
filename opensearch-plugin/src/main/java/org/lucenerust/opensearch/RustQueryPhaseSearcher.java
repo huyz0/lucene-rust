@@ -463,6 +463,11 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         return f;
     }
 
+    /** Whether {@code ctx}'s index runs every shape native ({@code native_shapes: all}). */
+    static boolean allShapes(SearchContext ctx) {
+        return flags(ctx).allShapes();
+    }
+
     /** True when {@code field} scores with a default-parameter {@link BM25Similarity}. */
     static boolean defaultBm25(ContextIndexSearcher searcher, String field) {
         Similarity sim = searcher.getSimilarity();

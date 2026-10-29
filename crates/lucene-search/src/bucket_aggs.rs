@@ -101,6 +101,11 @@ impl Hasher for Fx {
     fn write_i64(&mut self, i: i64) {
         self.add(i as u64);
     }
+
+    /// A slice's length and an enum's discriminant (a composite key's parts).
+    fn write_usize(&mut self, i: usize) {
+        self.add(i as u64);
+    }
 }
 
 type FastMap<K, V> = HashMap<K, V, BuildHasherDefault<Fx>>;
@@ -997,9 +1002,10 @@ impl State {
             },
             AggNode::Composite { .. } => State::Composite(Box::new(CompositeState {
                 keys: Vec::new(),
-                index: HashMap::new(),
+                index: FastMap::default(),
                 docs: Vec::new(),
                 worst: None,
+                direct: Vec::new(),
                 subs: subs(),
             })),
         }
@@ -1011,11 +1017,14 @@ struct CompositeState {
     /// Each bucket's key.
     keys: Vec<Box<[KeyPart]>>,
     /// The competitive buckets by key.
-    index: HashMap<Box<[KeyPart]>, u32>,
+    index: FastMap<Box<[KeyPart]>, u32>,
     docs: Vec<u64>,
     /// The `size`-th best key once more than `2 * size` were seen: a key
     /// past it is not competitive (the queue's full-heap test), now or later.
     worst: Option<Box<[KeyPart]>>,
+    /// A lone keyword source's competitive buckets by global ordinal (the
+    /// missing value first): the index without hashing a key per document.
+    direct: Vec<u32>,
     subs: Vec<State>,
 }
 
@@ -1030,12 +1039,40 @@ impl CompositeState {
             return;
         }
         for &o in &live[size..] {
+            if let Some(d) =
+                direct_slot(sources, &self.keys[o as usize]).and_then(|i| self.direct.get_mut(i))
+            {
+                *d = NO_BUCKET;
+            }
             self.index.remove(&self.keys[o as usize]);
             self.keys[o as usize] = Box::default();
         }
         self.worst = live
             .get(size.wrapping_sub(1))
             .map(|&o| self.keys[o as usize].clone());
+    }
+}
+
+/// A slot of `v`, grown with `fill` to hold it.
+fn slot_or<T: Clone>(v: &mut Vec<T>, i: usize, fill: T) -> &mut T {
+    if v.len() <= i {
+        v.resize(i + 1, fill);
+    }
+    &mut v[i]
+}
+
+/// [`CompositeState::direct`]'s slot for `key`: one past its global
+/// ordinal, 0 for the missing value; `None` unless a lone keyword source.
+fn direct_slot(sources: &[CompositeSource], key: &[KeyPart]) -> Option<usize> {
+    match (sources, key) {
+        (
+            [CompositeSource {
+                values: CompositeValues::Keyword,
+                ..
+            }],
+            [part],
+        ) => Some(part.map_or(0, |g| g as usize + 1)),
+        _ => None,
     }
 }
 
@@ -1124,6 +1161,8 @@ struct CompositeLeaf<'a> {
     /// Each source's keys for the document, and the key being collected.
     values: Vec<Vec<KeyPart>>,
     key: Vec<KeyPart>,
+    /// The combination being collected: a position in each source's keys.
+    at: Vec<usize>,
 }
 
 /// An ordinal a `terms` window has not placed yet.
@@ -1447,6 +1486,7 @@ fn composite_leaf<'a>(
     Ok(Some(Box::new(CompositeLeaf {
         values: vec![Vec::new(); sources.len()],
         key: Vec::with_capacity(sources.len()),
+        at: Vec::with_capacity(sources.len()),
         sources: leaves,
         after,
         sorted_lead: sorted_lead.get(view.index).copied().unwrap_or(false),
@@ -2002,44 +2042,61 @@ fn collect_composite(
             return Ok(());
         }
     }
-    let mut at = vec![0usize; sources.len()];
-    loop {
-        c.key.clear();
-        c.key.extend(at.iter().zip(&c.values).map(|(&i, v)| v[i]));
-        let lead_run = at[0] == 0 || c.values[0][at[0]] != c.values[0][at[0] - 1];
-        let past_after = c.after.as_ref().is_none_or(|after| {
-            for ((s, &k), &a) in sources.iter().zip(&c.key).zip(after) {
-                let o = s.compare_after(k, a);
-                if o.is_ne() {
-                    return o.is_gt();
-                }
+    if let ([s], [values]) = (sources, c.values.as_slice()) {
+        // One source: its keys in turn, without the combinations' bookkeeping.
+        for (i, &k) in values.iter().enumerate() {
+            if c.after
+                .as_ref()
+                .is_some_and(|a| !s.compare_after(k, a[0]).is_gt())
+                || st
+                    .worst
+                    .as_deref()
+                    .is_some_and(|w| s.compare(k, w[0]).is_gt())
+            {
+                continue;
             }
-            false
-        });
-        let competitive = past_after
-            && st
+            // A repeated doc-values value counts again; a sorted read does not.
+            let count = !c.sorted_lead || i == 0 || values[i - 1] != k;
+            place(sources, size, subs, st, &[k], count, leaf_subs, doc)?;
+        }
+        return Ok(());
+    }
+    let at = &mut c.at;
+    at.clear();
+    at.extend(std::iter::repeat_n(0, sources.len()));
+    loop {
+        let lead = c.values[0][at[0]];
+        // A first-source key before `after`'s, or past the worst kept one,
+        // rules out every combination it leads.
+        let hopeless = c
+            .after
+            .as_ref()
+            .is_some_and(|a| s0_before_after(&sources[0], lead, a[0]))
+            || st
                 .worst
                 .as_deref()
-                .is_none_or(|w| compare_keys(sources, &c.key, w).is_le());
-        if competitive {
-            let ord = match st.index.get(c.key.as_slice()) {
-                Some(&o) => o,
-                None => {
-                    let o = st.keys.len() as u32;
-                    let key: Box<[KeyPart]> = c.key.as_slice().into();
-                    st.index.insert(key.clone(), o);
-                    st.keys.push(key);
-                    o
+                .is_some_and(|w| sources[0].compare(lead, w[0]).is_gt());
+        if !hopeless {
+            c.key.clear();
+            c.key.extend(at.iter().zip(&c.values).map(|(&i, v)| v[i]));
+            let past_after = c.after.as_ref().is_none_or(|after| {
+                for ((s, &k), &a) in sources.iter().zip(&c.key).zip(after) {
+                    let o = s.compare_after(k, a);
+                    if o.is_ne() {
+                        return o.is_gt();
+                    }
                 }
-            };
-            if !c.sorted_lead || lead_run {
-                *slot(&mut st.docs, ord as usize) += 1;
-            }
-            for ((n, sub), l) in subs.iter().zip(&mut st.subs).zip(&mut *leaf_subs) {
-                collect(n, sub, l, doc, ord)?;
-            }
-            if st.index.len() > size.saturating_mul(2) {
-                st.prune(sources, size);
+                false
+            });
+            let competitive = past_after
+                && st
+                    .worst
+                    .as_deref()
+                    .is_none_or(|w| compare_keys(sources, &c.key, w).is_le());
+            if competitive {
+                let lead_run = at[0] == 0 || c.values[0][at[0] - 1] != lead;
+                let count = !c.sorted_lead || lead_run;
+                place(sources, size, subs, st, &c.key, count, leaf_subs, doc)?;
             }
         }
         // The next combination, the last source fastest.
@@ -2056,6 +2113,61 @@ fn collect_composite(
             at[i] = 0;
         }
     }
+}
+
+/// Whether a first-source key sorts before `after`'s first part: every key
+/// it leads is then at or before `after`.
+fn s0_before_after(s: &CompositeSource, k: KeyPart, a: AfterPart) -> bool {
+    s.compare_after(k, a).is_lt()
+}
+
+/// A competitive key's bucket: found (by ordinal for a lone keyword
+/// source) or added, its count bumped when `count`, the document passed to
+/// the sub-aggregations, and the queue pruned past `2 * size` buckets.
+#[allow(clippy::too_many_arguments)]
+fn place(
+    sources: &[CompositeSource],
+    size: usize,
+    subs: &[AggNode],
+    st: &mut CompositeState,
+    key: &[KeyPart],
+    count: bool,
+    leaf_subs: &mut [Leaf<'_>],
+    doc: i32,
+) -> Result<()> {
+    let direct = direct_slot(sources, key);
+    let cached = direct
+        .and_then(|i| st.direct.get(i).copied())
+        .filter(|&o| o != NO_BUCKET);
+    let ord = match cached {
+        Some(o) => o,
+        None => {
+            let o = match st.index.get(key) {
+                Some(&o) => o,
+                None => {
+                    let o = st.keys.len() as u32;
+                    let boxed: Box<[KeyPart]> = key.into();
+                    st.index.insert(boxed.clone(), o);
+                    st.keys.push(boxed);
+                    o
+                }
+            };
+            if let Some(i) = direct {
+                *slot_or(&mut st.direct, i, NO_BUCKET) = o;
+            }
+            o
+        }
+    };
+    if count {
+        *slot(&mut st.docs, ord as usize) += 1;
+    }
+    for ((n, sub), l) in subs.iter().zip(&mut st.subs).zip(leaf_subs) {
+        collect(n, sub, l, doc, ord)?;
+    }
+    if st.index.len() > size.saturating_mul(2) {
+        st.prune(sources, size);
+    }
+    Ok(())
 }
 
 /// A bucket aggregation's sub-aggregations over the documents it placed in
