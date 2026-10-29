@@ -644,6 +644,7 @@ search/DoubleValuesSource	ported	crates/lucene-search/src/values_source.rs::Doub
 search/DoubleValuesSourceRescorer	ported	crates/lucene-search/src/rescorer.rs::DoubleValuesSourceRescorer
 search/ExactPhraseMatcher	ported	crates/lucene-search/src/exec/phrase.rs::PhraseScorer
 search/Explanation	ported	crates/lucene-search/src/explain.rs::Explanation
+search/ExplicitVectorSimilarityCollector	ported	crates/lucene-search/src/knn_collectors.rs::ExplicitVectorSimilarityCollector
 search/FieldComparator	ported	crates/lucene-search/src/top_field.rs::FieldComparator
 search/FieldComparatorSource	ported	crates/lucene-search/src/top_field.rs::FieldComparatorSource
 search/FieldDoc	ported	crates/lucene-search/src/top_field.rs::FieldDoc

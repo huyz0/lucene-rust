@@ -1380,7 +1380,7 @@ impl MultiVectorSimilarity for ScoreFunction {
 }
 
 /// `Float.max`: NaN wins, and `+0.0` beats `-0.0`.
-fn java_float_max(a: f32, b: f32) -> f32 {
+pub(crate) fn java_float_max(a: f32, b: f32) -> f32 {
     if a.is_nan() || b.is_nan() {
         f32::NAN
     } else if a == 0.0 && b == 0.0 {
