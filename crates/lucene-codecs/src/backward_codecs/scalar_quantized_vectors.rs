@@ -199,6 +199,24 @@ impl<'a> Lucene99ScalarQuantizedVectorsReader<'a> {
         self.fields.iter().find(|f| f.field_number == field_number)
     }
 
+    /// `getVectorCount(fieldInfo)` (Lucene 10.6, `branch_10_6`, #16647): the
+    /// quantized entry's size, or for a field without one (a `BYTE` field,
+    /// which is not quantized) the raw reader's count -- `raw` being the
+    /// `rawVectorsReader` this port opens beside this reader.
+    ///
+    /// # Errors
+    /// [`Error::UnknownField`] for a field neither reader holds.
+    pub fn vector_count(
+        &self,
+        field_number: i32,
+        raw: &crate::vectors::FlatVectorsReader<'_>,
+    ) -> Result<i32> {
+        match self.field(field_number) {
+            Some(f) => Ok(f.size),
+            None => raw.vector_count(field_number),
+        }
+    }
+
     /// The `FieldInfos` half of `readFields`: every entry's field must exist
     /// ("Invalid field number"), with the entry's similarity
     /// (`readField`'s "Inconsistent vector similarity function") and
