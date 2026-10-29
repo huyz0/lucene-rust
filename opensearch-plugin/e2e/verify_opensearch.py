@@ -354,7 +354,17 @@ def matrix():
     add("agg sparse, nothing matches", {"size": 0, "query": {"term": {"tag": "no-such-tag"}}, "aggs": {"s": {"stats": {"field": "sp"}}, "a": {"avg": {"field": "sp"}}}}, "native")
     add("agg float sum with sort", {"query": {"match": {"body": "gamma"}}, "sort": [{"n": "desc"}], "aggs": {"r": {"sum": {"field": "ratio"}}}}, "native")
     add("agg with meta", {"size": 0, "query": {"match": {"body": "delta"}}, "aggs": {"lo": {"min": {"field": "qty"}, "meta": {"k": "v"}}}}, "native")
-    add("agg missing value", {"size": 0, "query": {"match": {"body": "alpha"}}, "aggs": {"s": {"sum": {"field": "sp", "missing": 1}}}}, "aggregations")
+    add("agg missing value", {"size": 0, "query": {"match": {"body": "alpha"}}, "aggs": {"s": {"sum": {"field": "sp", "missing": 1}}}}, "native")
+    add("agg missing min match_all", {"size": 0, "aggs": {"lo": {"min": {"field": "sp", "missing": -1000}}, "hi": {"max": {"field": "m", "missing": 5000}}}}, "native")
+    add("agg missing avg multi-valued double", {"size": 0, "query": {"match": {"body": "beta"}}, "aggs": {"a": {"avg": {"field": "md", "missing": 2.5}}}}, "native")
+    add("agg missing stats under terms", {"size": 0, "aggs": {"t": {"terms": {"field": "tag", "size": 5}, "aggs": {"s": {"stats": {"field": "mi", "missing": 0}}}}}}, "native")
+    add("agg missing histogram", {"size": 0, "aggs": {"h": {"histogram": {"field": "mi", "interval": 10, "missing": 0}}}}, "native")
+    add("agg missing date_histogram", {"size": 0, "aggs": {"h": {"date_histogram": {"field": "ts", "calendar_interval": "day", "missing": "2023-11-15"}}}}, "native")
+    add("agg missing range", {"size": 0, "query": {"match": {"body": "gamma"}}, "aggs": {"r": {"range": {"field": "m", "missing": 500, "ranges": [{"to": 100}, {"from": 100, "to": 600}, {"from": 600}]}}}}, "native")
+    add("agg missing terms double", {"size": 0, "aggs": {"t": {"terms": {"field": "md", "size": 4, "missing": -1.25}}}}, "native")
+    add("agg missing fraction on a long", {"size": 0, "aggs": {"t": {"terms": {"field": "m", "missing": 3.5}}}}, "aggregations")
+    add("agg missing keyword terms", {"size": 0, "aggs": {"t": {"terms": {"field": "mtag", "missing": "none"}}}}, "aggregations")
+    add("agg missing cardinality", {"size": 0, "aggs": {"c": {"cardinality": {"field": "sp", "missing": 0}}}}, "aggregations")
     add("agg global sub-aggregation", {"size": 0, "query": {"match": {"body": "epsilon"}}, "aggs": {"g": {"global": {}, "aggs": {"lo": {"min": {"field": "n"}}}}}}, "native")
     # Bucket aggregations and sub-aggregations (R5): the native tree.
     add("agg histogram", {"size": 0, "query": {"match": {"body": "zeta"}}, "aggs": {"h": {"histogram": {"field": "price", "interval": 50}}}}, "native")
@@ -415,7 +425,7 @@ def matrix():
     add("agg terms integer order _key", {"size": 0, "aggs": {"t": {"terms": {"field": "qty", "order": {"_key": "desc"}}}}}, "native")
     add("agg terms multi-valued long order _count asc", {"size": 0, "query": {"match": {"body": "delta"}}, "aggs": {"t": {"terms": {"field": "m", "size": 5, "order": {"_count": "asc"}}}}}, "native")
     add("agg terms double order _key asc size 4", {"size": 0, "aggs": {"t": {"terms": {"field": "price", "size": 4, "order": {"_key": "asc"}}}}}, "native")
-    add("agg terms integer missing", {"size": 0, "aggs": {"t": {"terms": {"field": "sp", "missing": 0}}}}, "aggregations")
+    add("agg terms integer missing", {"size": 0, "aggs": {"t": {"terms": {"field": "sp", "missing": 0}}}}, "native")
     add("agg terms unsigned_long", {"size": 0, "aggs": {"t": {"terms": {"field": "ul", "size": 3}}}}, "aggregations")
     # post_filter (read path R7): the hits are "query AND filter", scored by the query alone;
     # aggregations see every match of the query.
