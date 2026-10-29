@@ -12,10 +12,12 @@
 //! `SORTED` field as a single-valued `SORTED_SET` one
 //! (`DocValues.getSortedNumeric`/`getSortedSet`), as in Java.
 //!
-//! Deliberate difference: `NumericFieldStats`' rewrite of a range the whole
-//! reader's value range excludes (to `MatchNoDocsQuery`) or covers in every
-//! document (to `MatchAllDocsQuery`) is not applied; each segment finds the
-//! same hits itself.
+//! Deliberate difference: `SortedNumericDocValuesRangeQuery.rewrite`'s use
+//! of `DocValuesSkipper.globalMinValue`/`globalMaxValue`/`globalDocCount`
+//! (Lucene 10.5.2, #16629, which replaced 10.5.0's `NumericFieldStats`)
+//! to rewrite a range the whole reader's value range excludes (to
+//! `MatchNoDocsQuery`) or covers in every document (to `MatchAllDocsQuery`)
+//! is not applied; each segment's skip index finds the same hits itself.
 
 use lucene_codecs::doc_values::{
     self, DocValuesMeta, DocValuesSkipIndex, DocValuesSkipper, NumericEntry, SortedEntry,

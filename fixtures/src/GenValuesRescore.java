@@ -72,7 +72,6 @@ import java.util.stream.Stream;
  * <ul>
  *   <li>{@code vs.NAME} / {@code ls.NAME}: every document's value (deleted ones too) under each
  *       double / long values source, as {@code doc:bits} (a double's raw bits, a long as is);
- *   <li>{@code stats.FIELD}: {@code NumericFieldStats.getStats};
  *   <li>{@code fp.N}: a first-pass top 40, then {@code qr.*}, {@code dvr.*}, {@code late.*},
  *       {@code sort.*} and {@code rtn.*}: QueryRescorer, DoubleValuesSourceRescorer,
  *       LateInteractionRescorer, SortRescorer and RescoreTopNQuery results over it, as {@code

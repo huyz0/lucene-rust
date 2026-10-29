@@ -5,8 +5,9 @@
 //! (`VectorSimilarityValuesSource`, `FloatVectorSimilarityValuesSource`,
 //! `ByteVectorSimilarityValuesSource`,
 //! `FullPrecisionFloatVectorSimilarityValuesSource`),
-//! `LateInteractionFloatValuesSource` with `MultiVectorSimilarity`, and
-//! `NumericFieldStats`.
+//! `LateInteractionFloatValuesSource` with `MultiVectorSimilarity`.
+//! (`NumericFieldStats`, added in Lucene 10.5.0, was removed in 10.5.2 by
+//! GITHUB#16573, and is not ported.)
 //!
 //! # Shape
 //!
@@ -1883,118 +1884,6 @@ pub fn long_sort_field(
     crate::top_field::SortField::custom(&field, id, reverse)
 }
 
-// ---------------------------------------------------------------------------
-// NumericFieldStats
-// ---------------------------------------------------------------------------
-
-/// `NumericFieldStats.Stats`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Stats {
-    pub min: i64,
-    pub max: i64,
-    pub doc_count: i32,
-}
-
-/// `NumericFieldStats.getStats(reader, field)`: the field's global minimum,
-/// maximum and document count from its points (a value of at most 8 bytes),
-/// else from its doc-values skip index; `None` when neither answers.
-///
-/// Needs each segment's points opened (`OpenedSegments::open_points`) and its
-/// reader.
-pub fn numeric_field_stats(searcher: &IndexSearcher<'_, '_>, field: &str) -> Result<Option<Stats>> {
-    if let Some(s) = stats_from_points(searcher, field) {
-        return Ok(Some(s));
-    }
-    stats_from_skipper(searcher, field)
-}
-
-/// `PointValues.getMinPackedValue`/`getMaxPackedValue`/`getDocCount` over the
-/// reader, then `decodeLong`.
-fn stats_from_points(searcher: &IndexSearcher<'_, '_>, field: &str) -> Option<Stats> {
-    let mut min: Option<Vec<u8>> = None;
-    let mut max: Option<Vec<u8>> = None;
-    let mut doc_count: i32 = 0;
-    for seg in searcher.segments() {
-        let Some(points) = seg.points else { continue };
-        let Some(f) = points
-            .field_number(field)
-            .and_then(|n| points.reader.field(n))
-        else {
-            continue;
-        };
-        let bytes = usize::try_from(f.bytes_per_dim).ok()?;
-        let dims = usize::try_from(f.num_index_dims).ok()?;
-        doc_count = doc_count.saturating_add(f.doc_count);
-        let merge = |acc: &mut Option<Vec<u8>>, v: &[u8], want_less: bool| match acc {
-            None => *acc = Some(v.to_vec()),
-            Some(a) => {
-                for d in 0..dims {
-                    let r = d * bytes..(d + 1) * bytes;
-                    let (x, y) = (&v[r.clone()], &a[r.clone()]);
-                    if (want_less && x < y) || (!want_less && x > y) {
-                        a[r].copy_from_slice(x);
-                    }
-                }
-            }
-        };
-        merge(&mut min, &f.min_packed_value, true);
-        merge(&mut max, &f.max_packed_value, false);
-    }
-    let (min, max) = (min?, max?);
-    if min.len() > 8 || max.len() > 8 {
-        return None;
-    }
-    Some(Stats {
-        min: decode_long(&min),
-        max: decode_long(&max),
-        doc_count,
-    })
-}
-
-/// `NumericFieldStats.decodeLong`: the first byte's sign flipped, then the
-/// rest big-endian.
-fn decode_long(packed: &[u8]) -> i64 {
-    let Some((&first, rest)) = packed.split_first() else {
-        return 0;
-    };
-    let mut result = i64::from((first ^ 0x80) as i8);
-    for &b in rest {
-        result = (result << 8) | i64::from(b);
-    }
-    result
-}
-
-fn stats_from_skipper(searcher: &IndexSearcher<'_, '_>, field: &str) -> Result<Option<Stats>> {
-    let mut acc: Option<(i64, i64)> = None;
-    let mut doc_count: i32 = 0;
-    for (i, seg) in searcher.segments().iter().enumerate() {
-        let reader = seg.reader.ok_or_else(|| {
-            Error::IllegalState(format!(
-                "leaf {i}: NumericFieldStats needs the segment's reader"
-            ))
-        })?;
-        let Some(info) = reader.field_infos().field_by_name(field) else {
-            continue;
-        };
-        let skipper = reader
-            .doc_values_meta()
-            .and_then(|m| m.skipper_meta(info.number));
-        let Some(skipper) = skipper else {
-            return Ok(None);
-        };
-        acc = Some(match acc {
-            None => (skipper.min_value, skipper.max_value),
-            Some((lo, hi)) => (lo.min(skipper.min_value), hi.max(skipper.max_value)),
-        });
-        doc_count = doc_count.saturating_add(skipper.doc_count);
-    }
-    Ok(acc.map(|(min, max)| Stats {
-        min,
-        max,
-        doc_count,
-    }))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2060,14 +1949,6 @@ mod tests {
         assert_eq!(java_float_max(0.0, -0.0).to_bits(), 0.0f32.to_bits());
         assert_eq!(java_float_max(2.0, 1.0), 2.0);
         assert_eq!(java_float_max(1.0, 2.0), 2.0);
-    }
-
-    #[test]
-    fn decode_long_is_numeric_field_stats() {
-        assert_eq!(decode_long(&[0x80, 0, 0, 0, 0, 0, 0, 5]), 5);
-        assert_eq!(decode_long(&[0x7f, 0xff, 0xff, 0xff]), -1);
-        assert_eq!(decode_long(&[0x80, 0, 0, 7]), 7);
-        assert_eq!(decode_long(&[]), 0);
     }
 
     #[test]

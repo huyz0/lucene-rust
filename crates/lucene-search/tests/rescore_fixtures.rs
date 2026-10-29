@@ -1,6 +1,5 @@
 #![allow(clippy::arithmetic_side_effects)]
-//! **Values sources, `NumericFieldStats` and the rescorers against real
-//! Lucene.**
+//! **Values sources and the rescorers against real Lucene.**
 //!
 //! `fixtures/src/GenValuesRescore.java` writes two segments (the first with
 //! deletions) carrying sparse numeric/float/double/sorted/sorted-set/
@@ -14,8 +13,6 @@
 //!   products sum in a different lane order (the tolerance
 //!   `vector_query_fixtures.rs` uses; the documents with a value are
 //!   compared exactly);
-//! * `NumericFieldStats.getStats` from points (8- and 4-byte), from a skip
-//!   index, and for fields with neither;
 //! * over three first passes, `QueryRescorer.rescore` (three queries, two
 //!   weights, two `topN`s), a `DoubleValuesSourceRescorer` over three
 //!   sources, both `LateInteractionRescorer`s, `SortRescorer` under ten
@@ -448,16 +445,6 @@ fn values_sources_and_rescorers_match_real_lucene() {
                 assert_eq!(g.values[j], v, "{what}");
             }
         }
-    }
-
-    // NumericFieldStats.
-    for f in ["r", "ip", "rs", "n", "missing"] {
-        let got = vs::numeric_field_stats(&searcher, f).unwrap();
-        let want = m.get(&format!("stats.{f}"));
-        let got = got.map_or("null".to_string(), |s| {
-            format!("{}:{}:{}", s.min, s.max, s.doc_count)
-        });
-        assert_eq!(got, want, "stats {f}");
     }
 
     // First passes: our own search must give Lucene's hits, then every

@@ -900,3 +900,43 @@ fn ordinal_set_gap_in_the_trailing_window_is_no_match() {
     );
     assert_eq!(docs(&leaves, &range), all);
 }
+
+/// `TestDocValuesQueries.testDocValueQueryWhenFieldNameIsAlsoUsedForPoints`
+/// (Lucene 10.5.2, #16629): a field holding both a `DoublePoint` and the
+/// double's bits as numeric doc values must not let the points' (sortable)
+/// range decide the doc-values range -- each exact-value query finds its one
+/// document, with or without a skip index.
+#[test]
+fn doc_values_range_ignores_points_of_the_same_field() {
+    let tmp = TempDir::new("doc-dv-points-same-field");
+    let values = [
+        f64::from_bits(1), // Double.MIN_VALUE
+        f64::MAX,
+        f64::NEG_INFINITY,
+        f64::INFINITY,
+        -f64::from_bits(1),
+        -f64::MAX,
+    ];
+    let seg: Vec<Vec<Box<dyn IndexableField>>> = values
+        .iter()
+        .map(|&v| {
+            let bits = v.to_bits() as i64;
+            vec![
+                b(d::DoublePoint::new("plain", &[v]).unwrap()),
+                b(d::NumericDocValuesField::new("plain", bits)),
+                b(d::DoublePoint::new("skip", &[v]).unwrap()),
+                b(d::NumericDocValuesField::indexed_field("skip", bits)),
+            ]
+        })
+        .collect();
+    let r = index(&tmp, vec![seg]);
+    let opened = r.open_segments().unwrap();
+    let leaves = opened.as_open_segments();
+    for (doc, &v) in values.iter().enumerate() {
+        let bits = v.to_bits() as i64;
+        for field in ["plain", "skip"] {
+            let q = numeric_doc_values_field::new_slow_range_query(field, bits, bits);
+            assert_eq!(docs(&leaves, &q), vec![doc as i32], "{field} {v}");
+        }
+    }
+}

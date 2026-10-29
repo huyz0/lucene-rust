@@ -711,7 +711,6 @@ search/Multiset	not-needed	lucene.internal generic collection used for BooleanQu
 search/NGramPhraseQuery	ported	crates/lucene-search/src/extended_query.rs::NGramPhraseQuery
 search/NamedMatches	ported	crates/lucene-search/src/matches.rs::NamedMatches
 search/NumericDocValuesRangeQuery	ported	crates/lucene-search/src/extended_query.rs::NumericDocValuesRangeQuery
-search/NumericFieldStats	ported	crates/lucene-search/src/values_source.rs::numeric_field_stats
 search/PatienceKnnVectorQuery	ported	crates/lucene-search/src/vector_query.rs::PatienceKnnVectorQuery
 search/PhraseMatcher	ported	crates/lucene-search/src/exec/phrase.rs::PhraseScorer
 search/PhrasePositions	ported	crates/lucene-search/src/sloppy_phrase.rs::Pp
