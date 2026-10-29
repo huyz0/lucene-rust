@@ -76,7 +76,7 @@ fn sim_stats(
             sum_doc_freq: field_terms.sum_doc_freq,
         },
     };
-    (g.collection_statistics(), g.term_statistics())
+    (g.collection_statistics(), g.term_statistics(term))
 }
 
 /// The scorer for `clause`, or `None` when it matches nothing in this

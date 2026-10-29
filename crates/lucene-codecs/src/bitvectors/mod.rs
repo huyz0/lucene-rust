@@ -363,6 +363,15 @@ impl<'a> BitVectorsReader<'a> {
         Ok(BitVectorsReader { flat, hnsw })
     }
 
+    /// `getVectorCount(fieldInfo)` (Lucene 10.6, `branch_10_6`, #16647):
+    /// `Lucene99HnswVectorsReader`'s, the graph entry's size.
+    ///
+    /// # Errors
+    /// An unknown field.
+    pub fn vector_count(&self, field_number: i32) -> Result<i32> {
+        Ok(self.hnsw.vector_count(field_number)?)
+    }
+
     /// `getByteVectorValues(field)`.
     ///
     /// # Errors

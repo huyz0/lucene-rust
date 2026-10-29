@@ -277,6 +277,16 @@ impl<'a> RetiredHnswVectorsReader<'a> {
         self.format
     }
 
+    /// `getVectorCount(fieldInfo)` (Lucene 10.6, `branch_10_6`, #16647):
+    /// `getFieldEntry(name).size()`, the count this format's `.vem` entry
+    /// holds, which the flat entry built from it carries.
+    ///
+    /// # Errors
+    /// [`Error::UnknownField`] for a field this reader does not hold.
+    pub fn vector_count(&self, field_number: i32) -> Result<i32> {
+        self.flat.vector_count(field_number)
+    }
+
     /// The vectors, served by the current flat reader: `getFloatVectorValues`
     /// and `getByteVectorValues` of every retired reader.
     pub fn flat(&self) -> &FlatVectorsReader<'a> {
@@ -1130,8 +1140,11 @@ mod tests {
             for e in fields {
                 assert_eq!(e.size, 200, "{version}: every other of 400 docs has one");
                 assert_eq!(r.graph(e.field_number).unwrap().size(), 200);
+                // `getVectorCount` (Lucene 10.6, #16647).
+                assert_eq!(r.vector_count(e.field_number).unwrap(), 200);
             }
             assert!(matches!(r.graph(999), Err(Error::UnknownField(999))));
+            assert!(matches!(r.vector_count(999), Err(Error::UnknownField(999))));
         }
     }
 
