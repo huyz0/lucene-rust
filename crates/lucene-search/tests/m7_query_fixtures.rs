@@ -488,7 +488,8 @@ fn the_index_sort_range_falls_back_on_blocks_and_multi_valued_fields() {
     };
     // Each block is {child value, parent value}, a negative value meaning
     // none; `by_doc` is the value of each document once sorted.
-    let cases: [(&[[i64; 2]], &[i64], i64, i64); 2] = [
+    type Case<'a> = (&'a [[i64; 2]], &'a [i64], i64, i64);
+    let cases: [Case<'_>; 2] = [
         (
             &[[-1, 20], [-1, 10], [-1, 30]],
             &[-1, 10, -1, 20, -1, 30],
