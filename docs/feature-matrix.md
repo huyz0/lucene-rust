@@ -88,11 +88,11 @@ parameters, falls back (`field_similarity`), as does
 
 | Aggregation | Native | Falls back when |
 |---|---|---|
-| `min`, `max`, `sum`, `avg`, `value_count`, `stats` | ✅ | a `script`, `missing` |
+| `min`, `max`, `sum`, `avg`, `value_count`, `stats` | ✅ | a `script`; a `missing` with a fraction on a whole-number field, or one no `float` holds on a `float` field |
 | `cardinality` | ✅ | a `script`, `missing` |
-| `terms` on `keyword`, numeric fields and dates | ✅ | `unsigned_long`/`half_float`/`scaled_float` `terms`, `include`/`exclude`, an order other than `_count` or `_key` alone, ascending or descending (by a sub-aggregation, or compound), `min_doc_count: 0` |
-| `histogram`, `date_histogram` | ✅ | a time zone with daylight saving |
-| `range`, `date_range` | ✅ | |
+| `terms` on `keyword`, numeric fields and dates | ✅ | `unsigned_long`/`half_float`/`scaled_float` `terms`, a `keyword`'s `missing` (a numeric one as for the metrics), `include`/`exclude`, an order other than `_count` or `_key` alone, ascending or descending (by a sub-aggregation, or compound), `min_doc_count: 0` |
+| `histogram`, `date_histogram` | ✅ | a time zone with daylight saving; `missing` as for the metrics |
+| `range`, `date_range` | ✅ | `missing` as for the metrics |
 | `filter`, `filters`, `global` | ✅ | |
 | any nesting of the above | ✅ | |
 | everything else (`top_hits`, `percentiles`, `significant_terms`, `composite`, `nested`, pipeline aggregations, ...) | ↩ | `aggregations` |

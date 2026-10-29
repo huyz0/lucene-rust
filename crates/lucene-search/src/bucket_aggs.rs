@@ -400,6 +400,9 @@ pub enum AggNode {
     /// [`Source::DocValues`] only at the top level.
     Metric {
         field: String,
+        /// `missing`: the value, in the column's encoding, a document
+        /// without one reads (`MissingValues.replaceMissing`).
+        missing: Option<i64>,
         kind: ValueKind,
         source: Source,
         /// The parts of [`MetricState`] the caller reads (`aggs::NEED_*`).
@@ -426,6 +429,9 @@ pub enum AggNode {
     /// `NumericUtils.doubleToSortableLong` of its value.
     NumericTerms {
         field: String,
+        /// `missing`: the value, in the column's encoding, a document
+        /// without one reads (`MissingValues.replaceMissing`).
+        missing: Option<i64>,
         kind: ValueKind,
         shard_size: usize,
         order: TermsOrder,
@@ -433,6 +439,9 @@ pub enum AggNode {
     },
     Histogram {
         field: String,
+        /// `missing`: the value, in the column's encoding, a document
+        /// without one reads (`MissingValues.replaceMissing`).
+        missing: Option<i64>,
         kind: ValueKind,
         interval: f64,
         offset: f64,
@@ -442,6 +451,9 @@ pub enum AggNode {
     },
     DateHistogram {
         field: String,
+        /// `missing`: the value, in the column's encoding, a document
+        /// without one reads (`MissingValues.replaceMissing`).
+        missing: Option<i64>,
         rounding: DateRounding,
         hard_bounds: (Option<i64>, Option<i64>),
         subs: Vec<AggNode>,
@@ -449,6 +461,9 @@ pub enum AggNode {
     /// The ranges as `(from, to)`, in `RangeAggregator`'s (sorted) order.
     Range {
         field: String,
+        /// `missing`: the value, in the column's encoding, a document
+        /// without one reads (`MissingValues.replaceMissing`).
+        missing: Option<i64>,
         kind: ValueKind,
         ranges: Vec<(f64, f64)>,
         subs: Vec<AggNode>,
@@ -465,6 +480,18 @@ pub enum AggNode {
 }
 
 impl AggNode {
+    /// The node's `missing` value, if it has one.
+    fn missing(&self) -> Option<i64> {
+        match self {
+            AggNode::Metric { missing, .. }
+            | AggNode::NumericTerms { missing, .. }
+            | AggNode::Histogram { missing, .. }
+            | AggNode::DateHistogram { missing, .. }
+            | AggNode::Range { missing, .. } => *missing,
+            _ => None,
+        }
+    }
+
     fn subs(&self) -> &[AggNode] {
         match self {
             AggNode::Metric { .. } | AggNode::Cardinality { .. } => &[],
@@ -719,6 +746,8 @@ struct Leaf<'a> {
     /// parent switching owners from document to document costs a lookup per
     /// switch, never a reset.
     term_buckets: Vec<(u32, u32)>,
+    /// The node's `missing`: what a document without a value reads.
+    missing: Option<i64>,
     subs: Vec<Leaf<'a>>,
 }
 
@@ -752,10 +781,22 @@ impl Leaf<'_> {
                 self.pre_bits.resize(len.div_ceil(64), 0);
                 r.fill_window(base, &mut self.pre_vals, &mut self.pre_bits)
                     .map_err(crate::Error::from)?;
+                if let Some(m) = self.missing {
+                    // Every document of the window has a value: its own or `missing`.
+                    for (i, v) in self.pre_vals.iter_mut().enumerate() {
+                        if self.pre_bits[i >> 6] >> (i & 63) & 1 == 0 {
+                            *v = m;
+                        }
+                    }
+                    self.pre_bits.fill(u64::MAX);
+                }
                 self.pre_base = base;
                 self.pre_len = len;
             }
-            Col::Values(Values::Multi(r), false) | Col::Ords(Ords::Multi(r), _) => {
+            // With `missing`, a multi-valued window is read document by document.
+            Col::Values(Values::Multi(r), false) | Col::Ords(Ords::Multi(r), _)
+                if self.missing.is_none() =>
+            {
                 // A column that cannot be read a window at a time is read
                 // document by document, for the matching ones only.
                 if r.fill_window(base, len, &mut self.pre_offsets, &mut self.pre_vals)
@@ -840,6 +881,9 @@ impl Leaf<'_> {
             Col::Ords(Ords::Multi(r), _) => r.values(doc, &mut self.buf)?,
             Col::Filters(_) | Col::None => {}
         }
+        if self.buf.is_empty() {
+            self.buf.extend(self.missing);
+        }
         Ok(!self.buf.is_empty())
     }
 }
@@ -873,7 +917,7 @@ fn open_leaf<'a>(
         } => {
             // The points shortcut (a top-level `min`/`max` over a match-all)
             // answers the segment without visiting a document.
-            let bound = if view.top && *source != Source::DocValues {
+            let bound = if view.top && *source != Source::DocValues && node.missing().is_none() {
                 let spec = aggs::MetricSpec {
                     field: field.clone(),
                     kind: *kind,
@@ -948,6 +992,7 @@ fn open_leaf<'a>(
         win_docs: Vec::new(),
         win_ords: Vec::new(),
         term_buckets: Vec::new(),
+        missing: node.missing(),
         subs,
     })
 }
@@ -1977,12 +2022,19 @@ fn countable_points<'s>(
     ValueKind,
 )> {
     let (field, kind) = match node {
-        AggNode::DateHistogram { field, subs, .. } if subs.is_empty() => (field, ValueKind::Long),
+        // A `missing` value counts documents the points do not hold.
+        AggNode::DateHistogram {
+            field,
+            subs,
+            missing: None,
+            ..
+        } if subs.is_empty() => (field, ValueKind::Long),
         AggNode::Range {
             field,
             kind,
             subs,
             ranges,
+            missing: None,
         } if subs.is_empty() && ranges.iter().all(|r| !r.0.is_nan() && !r.1.is_nan()) => {
             (field, *kind)
         }
@@ -2646,6 +2698,7 @@ mod tests {
             win_docs: Vec::new(),
             win_ords: Vec::new(),
             term_buckets: Vec::new(),
+            missing: None,
             subs: Vec::new(),
         }
     }
@@ -2714,6 +2767,7 @@ mod tests {
     #[test]
     fn reads_points_finds_a_points_metric() {
         let metric = |source| AggNode::Metric {
+            missing: None,
             field: "n".into(),
             kind: ValueKind::Long,
             source,
@@ -3003,6 +3057,7 @@ mod tests {
 
     fn metric(field: &str, kind: ValueKind) -> AggNode {
         AggNode::Metric {
+            missing: None,
             field: field.to_string(),
             kind,
             source: Source::DocValues,
@@ -3139,6 +3194,7 @@ mod tests {
                     ranked.sort_by_key(|k| k.0);
                 }
                 let node = AggNode::NumericTerms {
+                    missing: None,
                     field: field.to_string(),
                     kind,
                     shard_size,
@@ -3172,6 +3228,7 @@ mod tests {
                 // Without sub-aggregations a multi-valued window counts
                 // straight from the values read ahead: the same buckets.
                 let bare = AggNode::NumericTerms {
+                    missing: None,
                     field: field.to_string(),
                     kind,
                     shard_size,
@@ -3207,6 +3264,7 @@ mod tests {
     fn counting_from_points_declines_what_it_cannot_count_exactly() {
         let reader = fixture("metric_aggs_index");
         let range = |field: &str, kind, subs: Vec<AggNode>| AggNode::Range {
+            missing: None,
             field: field.to_string(),
             kind,
             ranges: vec![(f64::NEG_INFINITY, 0.0), (0.0, f64::INFINITY)],
@@ -3236,6 +3294,7 @@ mod tests {
                 vec![AggNode::Global { subs: vec![] }],
             ),
             AggNode::Range {
+                missing: None,
                 field: "d".to_string(),
                 kind: ValueKind::Double,
                 ranges: vec![(f64::NAN, 1.0)],
@@ -3348,6 +3407,7 @@ mod tests {
                 (1e9, 0.0, (None, None)),
             ] {
                 let node = AggNode::Histogram {
+                    missing: None,
                     field: field.to_string(),
                     kind,
                     interval,
@@ -3428,6 +3488,7 @@ mod tests {
                 (1e9, f64::INFINITY),
             ];
             let node = AggNode::Range {
+                missing: None,
                 field: field.to_string(),
                 kind,
                 ranges: ranges.clone(),
@@ -3487,6 +3548,7 @@ mod tests {
                         vec![metric("d", ValueKind::Double)]
                     };
                     let node = AggNode::DateHistogram {
+                        missing: None,
                         field: field.to_string(),
                         rounding,
                         hard_bounds: bounds,
@@ -3535,12 +3597,14 @@ mod tests {
             offset: 3,
         };
         let date = |field: &str, subs| AggNode::DateHistogram {
+            missing: None,
             field: field.to_string(),
             rounding,
             hard_bounds: (None, None),
             subs,
         };
         let histogram = |field: &str, kind, subs| AggNode::Histogram {
+            missing: None,
             field: field.to_string(),
             kind,
             interval: 3.5,
@@ -3587,6 +3651,7 @@ mod tests {
             ),
             histogram("md", ValueKind::Double, vec![metric("i", ValueKind::Long)]),
             AggNode::Range {
+                missing: None,
                 field: "d".to_string(),
                 kind: ValueKind::Double,
                 ranges: vec![(f64::NEG_INFINITY, 0.0), (0.0, 10.0), (5.0, f64::INFINITY)],
@@ -3610,6 +3675,7 @@ mod tests {
         ];
         fn only(field: &str, needs: u8) -> AggNode {
             AggNode::Metric {
+                missing: None,
                 field: field.to_string(),
                 kind: ValueKind::Long,
                 source: Source::DocValues,
@@ -3848,6 +3914,97 @@ mod tests {
         assert!(run(&reader, &all(), &[bad], &whole(&reader)).is_err());
     }
 
+    /// A `missing` value is what every matching document without a value
+    /// reads (`MissingValues.replaceMissing`), on the window read ahead
+    /// (single-valued columns), document by document (multi-valued ones),
+    /// and under a parent bucket alike.
+    #[test]
+    fn missing_values_stand_in_for_documents_without_one() {
+        use lucene_util::numeric_utils::{double_to_sortable_long, float_to_sortable_int};
+        let reader = fixture("metric_aggs_index");
+        let mut absent = 0;
+        for (q, field, kind, missing) in [
+            (all(), "i", ValueKind::Long, 7),
+            (all(), "ml", ValueKind::Long, -3),
+            (
+                body("w1"),
+                "d",
+                ValueKind::Double,
+                double_to_sortable_long(2.5),
+            ),
+            (
+                all(),
+                "md",
+                ValueKind::Double,
+                double_to_sortable_long(-0.0),
+            ),
+            (
+                body("w4"),
+                "f",
+                ValueKind::Float,
+                i64::from(float_to_sortable_int(1.5)),
+            ),
+            (all(), "no_such_field", ValueKind::Long, 11),
+        ] {
+            let mut counts: HashMap<i64, u64> = HashMap::new();
+            for (_, _, values) in scan(&reader, &q, field) {
+                let values = if values.is_empty() {
+                    absent += 1;
+                    vec![missing]
+                } else {
+                    values
+                };
+                let keys: HashSet<i64> =
+                    values.iter().map(|&v| numeric_terms_key(kind, v)).collect();
+                for k in keys {
+                    *counts.entry(k).or_default() += 1;
+                }
+            }
+            let mut want: Vec<(i64, u64)> = counts.into_iter().collect();
+            want.sort_unstable();
+            for subs in [Vec::new(), vec![all()]] {
+                let node = AggNode::NumericTerms {
+                    field: field.to_string(),
+                    missing: Some(missing),
+                    kind,
+                    shard_size: 1 << 20,
+                    order: TermsOrder::KeyAsc,
+                    subs: subs
+                        .iter()
+                        .map(|f: &BooleanQuery| AggNode::Filters {
+                            filters: vec![f.clone()],
+                            other: false,
+                            subs: Vec::new(),
+                        })
+                        .collect(),
+                };
+                // Under a filter bucket too: a sub-aggregation's leaf.
+                let parent = AggNode::Filters {
+                    filters: vec![all()],
+                    other: false,
+                    subs: vec![node.clone()],
+                };
+                for (n, nested) in [(node, false), (parent, true)] {
+                    let mut got = run(&reader, &q, &[n], &whole(&reader))
+                        .unwrap()
+                        .remove(0)
+                        .remove(0);
+                    if nested {
+                        let AggResult::Fixed { subs, .. } = got else {
+                            panic!("{got:?}")
+                        };
+                        got = subs.into_iter().next().unwrap();
+                    }
+                    let AggResult::NumericTerms { buckets, .. } = got else {
+                        panic!("{got:?}")
+                    };
+                    assert_eq!(buckets, vec![(0, want.clone())], "{field} nested {nested}");
+                }
+            }
+        }
+        assert!(absent > 0, "some documents lack a value");
+    }
+
     /// A keyword `terms` in each order keeps the `shard_size` best buckets
     /// of that order -- by count with the term ascending as tie-breaker, or
     /// by term -- listed by term (descending for `_key` descending).
@@ -4051,6 +4208,7 @@ mod tests {
         }];
         let _ = run(&reader, &all(), &numeric, &whole(&reader));
         assert!(AggNode::Metric {
+            missing: None,
             field: "x".into(),
             kind: ValueKind::Long,
             source: Source::PointsMin,
@@ -4099,6 +4257,7 @@ mod tests {
                 )
                 .unwrap();
                 let node = AggNode::Metric {
+                    missing: None,
                     field: field.to_string(),
                     kind,
                     source,

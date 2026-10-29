@@ -80,6 +80,8 @@ public final class NativeAggregationTree {
     static final byte FILTERS = 6;
     static final byte GLOBAL = 7;
     static final byte NUMERIC_TERMS = 8;
+    /** A prefix: the next node's {@code missing} value ({@code AGG_MISSING}). */
+    static final byte MISSING = 9;
     /** {@code date_histogram} unit codes, in the order {@code jvm_aggs.rs} lists them. */
     private static final Rounding.DateTimeUnit[] UNITS = {
         Rounding.DateTimeUnit.WEEK_OF_WEEKYEAR,
@@ -106,6 +108,8 @@ public final class NativeAggregationTree {
     abstract static class Node {
         final AggregatorBase agg;
         final List<Node> subs;
+        /** The field's {@code missing} value in its column's encoding ({@link #missing}), or null. */
+        Long missing;
 
         Node(AggregatorBase agg, List<Node> subs) {
             this.agg = agg;
@@ -114,13 +118,22 @@ public final class NativeAggregationTree {
 
         abstract void write(ByteArrayOutputStream out);
 
+        /** The node behind its {@code missing} prefix, when it has one. */
+        final void emit(ByteArrayOutputStream out) {
+            if (missing != null) {
+                out.write(MISSING);
+                writeLong(out, missing);
+            }
+            write(out);
+        }
+
         /** Its results for {@code n} owning buckets, read off the native result. */
         abstract List<InternalAggregation> read(ByteBuffer in, int n) throws ReflectiveOperationException;
 
         void writeSubs(ByteArrayOutputStream out) {
             out.write(subs.size());
             for (Node s : subs) {
-                s.write(out);
+                s.emit(out);
             }
         }
 
@@ -744,7 +757,7 @@ public final class NativeAggregationTree {
             ByteArrayOutputStream out = new ByteArrayOutputStream();
             out.write(main.size());
             for (Node n : main) {
-                n.write(out);
+                n.emit(out);
             }
             if (global.isEmpty()) {
                 out.write(0);
@@ -754,7 +767,7 @@ public final class NativeAggregationTree {
                 out.writeBytes(globalQuery);
                 out.write(global.size());
                 for (Node n : global) {
-                    n.write(out);
+                    n.emit(out);
                 }
             }
             NativeAggregations.writeSlices(out, slices);
@@ -932,15 +945,48 @@ public final class NativeAggregationTree {
         }
         // The values-source aggregations: a mapped field, no script or missing value.
         ValuesSourceConfig config = (ValuesSourceConfig) CONFIG.get(f);
-        if (config == null || config.script() != null || config.missing() != null || config.fieldContext() == null) {
+        if (config == null || config.script() != null || config.fieldContext() == null) {
             return null;
         }
         MappedFieldType type = config.fieldContext().fieldType();
         String field = config.fieldContext().field();
         byte valueKind = NativeAggregations.valueKind(type);
+        Long missing = null;
+        if (config.missing() != null) {
+            // Numeric nodes only; a keyword's missing term is not one of its ordinals.
+            missing = missing(ctx, config, valueKind);
+            if (missing == null) {
+                return null;
+            }
+        }
+        Node n = valuesSourceNode(ctx, f, agg, top, subs, config, factory, aggClass, type, field, valueKind, missing != null);
+        if (n != null) {
+            n.missing = missing;
+        }
+        return n;
+    }
+
+    /** {@link #node} for a values-source aggregation; {@code missing}: it has a {@code missing} value. */
+    private static Node valuesSourceNode(
+        SearchContext ctx,
+        AggregatorFactory f,
+        AggregatorBase agg,
+        boolean top,
+        List<Node> subs,
+        ValuesSourceConfig config,
+        String factory,
+        String aggClass,
+        MappedFieldType type,
+        String field,
+        byte valueKind,
+        boolean missing
+    ) throws Exception {
         switch (factory) {
             case TERMS_FACTORY: {
                 if (type instanceof KeywordFieldMapper.KeywordFieldType) {
+                    if (missing) {
+                        return null;
+                    }
                     NativeAggregations.Terms t = NativeAggregations.termsSpec(ctx, f, config);
                     return t == null ? null : new TermsNode(agg, subs, t);
                 }
@@ -953,7 +999,7 @@ public final class NativeAggregationTree {
                 return t == null ? null : new NumericTermsNode(agg, subs, t, valueKind);
             }
             case AGGS + "metrics.CardinalityAggregatorFactory": {
-                if (aggClass.equals(AGGS + "metrics.CardinalityAggregator") == false) {
+                if (missing || aggClass.equals(AGGS + "metrics.CardinalityAggregator") == false) {
                     return null;
                 }
                 byte kind = type instanceof KeywordFieldMapper.KeywordFieldType ? 0 : valueKind >= 0 ? (byte) (1 + valueKind) : -1;
@@ -997,6 +1043,37 @@ public final class NativeAggregationTree {
         // A metric: NativeAggregations' own, with the points shortcut only at the top level.
         NativeAggregations.Metric m = NativeAggregations.metric(ctx, f, config, top);
         return m == null || subs.isEmpty() == false ? null : new MetricNode(agg, m);
+    }
+
+    /**
+     * A numeric field's {@code missing} as {@code CoreValuesSourceType.NUMERIC.replaceMissing}
+     * parses it ({@code DocValueFormat.parseDouble}, dates included), in the column's encoding
+     * the native side reads: a long, or a double's or float's sortable bits. Null when it is not
+     * the same value to every consumer -- a fraction (or past 2^53) on a whole-number field,
+     * which {@code MissingValues} turns floating point; a float field's value no float holds
+     * ({@code doubleValues} reads the double itself); NaN -- or does not parse.
+     */
+    static Long missing(SearchContext ctx, ValuesSourceConfig config, byte valueKind) {
+        if (valueKind < 0) {
+            return null;
+        }
+        double d;
+        try {
+            d = config.format().parseDouble(config.missing().toString(), false, ctx.getQueryShardContext()::nowInMillis);
+        } catch (RuntimeException e) {
+            return null;
+        }
+        if (Double.isNaN(d)) {
+            return null;
+        }
+        if (valueKind == NativeAggregations.LONG) {
+            return d % 1 == 0 && Math.abs(d) <= (double) (1L << 53) ? (long) d : null;
+        }
+        if (valueKind == NativeAggregations.FLOAT) {
+            float v = (float) d;
+            return v == d ? (long) org.apache.lucene.util.NumericUtils.floatToSortableInt(v) : null;
+        }
+        return org.apache.lucene.util.NumericUtils.doubleToSortableLong(d);
     }
 
     private static List<Node> subs(SearchContext ctx, AggregatorFactory f, AggregatorBase agg, Predicate<String> fieldOk) throws Exception {
