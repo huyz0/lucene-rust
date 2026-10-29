@@ -429,7 +429,7 @@ fn node_of(
             if n == 0 || n > MAX_COMPOSITE_SOURCES {
                 return Err(bad(format!("aggregation tree: {n} composite sources")));
             }
-            let mut sources = Vec::with_capacity(n);
+            let mut sources = Vec::new();
             for _ in 0..n {
                 let field = field(c)?;
                 let values = match c.u8()? {
@@ -470,7 +470,7 @@ fn node_of(
             let after = match c.u8()? {
                 0 => None,
                 1 => {
-                    let mut parts = Vec::with_capacity(n);
+                    let mut parts = Vec::new();
                     for s in &sources {
                         parts.push(match (c.u8()?, &s.values) {
                             (0, _) if s.missing_bucket => CompositeAfter::Missing,
