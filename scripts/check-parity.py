@@ -31,7 +31,7 @@ was split, so the layout itself is checked too:
 
 Verifying that a row's *Java* side names something real is deliberately not
 done here: `scripts/check-java-refs.py` does it for the whole tree, against
-the pinned 10.5.0 checkout, and resolves that checkout in both the host and
+the pinned 10.5.2 checkout, and resolves that checkout in both the host and
 container layouts. This script used to print a warning about a
 Java-counterpart check it never performed, which was its own small instance
 of the defect both scripts exist to catch. Detecting two rows that

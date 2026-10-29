@@ -77,7 +77,8 @@ impl Bulk {
         }
     }
 
-    /// A candidate whose clause reports no run (`docIDRunEnd() == doc + 1`).
+    /// A candidate whose clause reports no run: `TwoPhaseIterator.docIDRunEnd()`'s
+    /// default, the empty run `doc`.
     pub(crate) fn candidate(
         &mut self,
         leaf: &OpenSegment<'_>,
@@ -85,11 +86,11 @@ impl Bulk {
         boost: f32,
         collector: &dyn ScoringCollector,
     ) -> Step {
-        self.candidate_run(leaf, doc, doc.saturating_add(1), boost, collector)
+        self.candidate_run(leaf, doc, doc, boost, collector)
     }
 
     /// A candidate whose clause matches every document of `doc..run_end`
-    /// (`docIDRunEnd()`): `scoreWindow` leaves such a clause out of the
+    /// (`docIDRunEnd()`; `run_end == doc` is no run): `scoreWindow` leaves such a clause out of the
     /// window when the run reaches the window's second half, and the window
     /// then ends where the run does.
     pub(crate) fn candidate_run(
@@ -218,20 +219,31 @@ impl<'a> SkipBlocks<'a> {
                 == self.skipper.doc_count(level).checked_sub(1)
     }
 
-    /// `docIDRunEnd()`: `doc + 1` unless the block is `YES`, then the end of
-    /// the coarsest enclosing `YES` interval.
+    /// `SkipBlockRangeIterator.docIDRunEnd()` (Lucene 10.5.2, #16450): the
+    /// end of the current block, extended to the coarsest enclosing `YES`
+    /// interval when the block is `YES`.
     pub(crate) fn doc_id_run_end(&self) -> i32 {
-        // `classifyBlock`, which `advance` caches as `match`; the exhausted
-        // iterator's `MAYBE` is `doc + 1` too.
-        if self.doc == NO_MORE_DOCS || !self.yes(0) {
-            return self.doc.saturating_add(1);
-        }
         let mut max_doc = self.skipper.max_doc_id(0);
-        let mut level = 1;
-        while level < self.skipper.num_levels() && self.yes(level) {
-            max_doc = self.skipper.max_doc_id(level);
-            level = level.saturating_add(1);
+        // `classifyBlock`, which `advance` caches as `match`; the exhausted
+        // iterator's is `MAYBE`.
+        if self.doc != NO_MORE_DOCS && self.yes(0) {
+            let mut level = 1;
+            while level < self.skipper.num_levels() && self.yes(level) {
+                max_doc = self.skipper.max_doc_id(level);
+                level = level.saturating_add(1);
+            }
         }
         max_doc.saturating_add(1)
+    }
+
+    /// `BulkBlockRangeIterator.docIDRunEnd()` (Lucene 10.5.2, #16450): the
+    /// two-phase iterator may be asked about a non-match, so only a `YES`
+    /// block proves a run; any other block reports the empty run `doc`.
+    pub(crate) fn match_run_end(&self) -> i32 {
+        if self.doc != NO_MORE_DOCS && self.yes(0) {
+            self.doc_id_run_end()
+        } else {
+            self.doc
+        }
     }
 }

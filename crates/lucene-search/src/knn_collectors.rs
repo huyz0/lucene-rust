@@ -1,5 +1,6 @@
 //! The search package's `KnnCollector`s beyond `TopKnnCollector`:
-//! `VectorSimilarityCollector` (a similarity threshold instead of a top-k),
+//! `VectorSimilarityCollector` (a similarity threshold instead of a top-k)
+//! with its Lucene 10.4 form `ExplicitVectorSimilarityCollector`,
 //! `HnswQueueSaturationCollector` (`PatienceKnnVectorQuery`'s early exit),
 //! `TimeLimitingKnnCollectorManager`'s collector, and
 //! `MultiLeafKnnCollector` with the `FloatHeap`/`BlockingFloatHeap` it shares
@@ -86,6 +87,108 @@ impl KnnCollect for VectorSimilarityCollector {
     }
     fn min_competitive_similarity(&self) -> f32 {
         self.min_competitive
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ExplicitVectorSimilarityCollector
+// ---------------------------------------------------------------------------
+
+/// `ExplicitVectorSimilarityCollector` (Lucene 10.5.2, #16654; deprecated in
+/// Java): Lucene 10.4's similarity collector, behind
+/// `[Byte|Float]VectorSimilarityQuery.Explicit`. Every visited vector at or
+/// above `result_similarity` is collected; the walk goes on while a better
+/// node is available or the best candidate is not below
+/// `traversal_similarity` (`minCompetitiveSimilarity` is the smaller of it
+/// and the best similarity seen).
+#[derive(Debug, Clone)]
+pub struct ExplicitVectorSimilarityCollector {
+    traversal_similarity: f32,
+    result_similarity: f32,
+    max_similarity: f32,
+    visited_count: u64,
+    visit_limit: u64,
+    hits: Vec<(i32, f32)>,
+}
+
+impl ExplicitVectorSimilarityCollector {
+    /// The constructor: `traversal_similarity > result_similarity` is Java's
+    /// `IllegalArgumentException`.
+    pub fn new(
+        traversal_similarity: f32,
+        result_similarity: f32,
+        visit_limit: u64,
+    ) -> crate::Result<Self> {
+        if traversal_similarity > result_similarity {
+            return Err(crate::Error::InvalidKnnQuery(
+                "traversalSimilarity should be <= resultSimilarity".to_string(),
+            ));
+        }
+        Ok(Self {
+            traversal_similarity,
+            result_similarity,
+            max_similarity: f32::NEG_INFINITY,
+            visited_count: 0,
+            visit_limit,
+            hits: Vec::new(),
+        })
+    }
+
+    /// `topDocs()`: the collected `(node, similarity)`s in collection order,
+    /// and whether the walk early-terminated.
+    pub fn into_hits(self) -> (Vec<(i32, f32)>, bool) {
+        let early = self.early_terminated();
+        (self.hits, early)
+    }
+
+    /// `numCollected()`.
+    pub fn num_collected(&self) -> usize {
+        self.hits.len()
+    }
+}
+
+impl KnnCollect for ExplicitVectorSimilarityCollector {
+    /// `super(1, ...)`.
+    fn k(&self) -> usize {
+        1
+    }
+    fn early_terminated(&self) -> bool {
+        self.visited_count >= self.visit_limit
+    }
+    fn inc_visited_count(&mut self, count: usize) {
+        self.visited_count = self.visited_count.saturating_add(count as u64);
+    }
+    fn visited_count(&self) -> u64 {
+        self.visited_count
+    }
+    fn visit_limit(&self) -> u64 {
+        self.visit_limit
+    }
+    /// `collect`: always `true`.
+    fn collect(&mut self, node: i32, similarity: f32) -> bool {
+        self.max_similarity = crate::values_source::java_float_max(self.max_similarity, similarity);
+        if similarity >= self.result_similarity {
+            self.hits.push((node, similarity));
+        }
+        true
+    }
+    /// `Math.min(traversalSimilarity, maxSimilarity)`: NaN wins, and `-0.0`
+    /// beats `+0.0`.
+    fn min_competitive_similarity(&self) -> f32 {
+        let (a, b) = (self.traversal_similarity, self.max_similarity);
+        if a.is_nan() || b.is_nan() {
+            f32::NAN
+        } else if a == 0.0 && b == 0.0 {
+            if a.is_sign_negative() {
+                a
+            } else {
+                b
+            }
+        } else if a <= b {
+            a
+        } else {
+            b
+        }
     }
 }
 
@@ -566,6 +669,39 @@ mod tests {
         assert!(early);
         let mut max_quality = VectorSimilarityCollector::new(0.5, 1.0, 10);
         assert!(!max_quality.collect(3, 0.1));
+    }
+
+    /// `TestVectorSimilarityCollector.testExplicitResultCollection`.
+    #[test]
+    fn explicit_collector_keeps_the_traversal_bound() {
+        let limit = i32::MAX as u64;
+        let mut c = ExplicitVectorSimilarityCollector::new(0.3, 0.5, limit).unwrap();
+        let nodes = [1, 5, 10, 4, 8, 3, 2, 6, 7, 9];
+        let scores = [0.1f32, 0.2, 0.3, 0.5, 0.2, 0.6, 0.9, 0.3, 0.7, 0.8];
+        let mut mins = Vec::new();
+        for (&n, &s) in nodes.iter().zip(&scores) {
+            assert!(c.collect(n, s));
+            mins.push(c.min_competitive_similarity());
+        }
+        assert_eq!(mins, [0.1, 0.2, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3]);
+        assert_eq!((c.k(), c.visit_limit(), c.num_collected()), (1, limit, 5));
+        c.inc_visited_count(3);
+        assert_eq!(c.visited_count(), 3);
+        let (hits, early) = c.into_hits();
+        assert_eq!(hits, vec![(4, 0.5), (3, 0.6), (2, 0.9), (7, 0.7), (9, 0.8)]);
+        assert!(!early);
+        assert!(ExplicitVectorSimilarityCollector::new(0.6, 0.5, 1).is_err());
+        let mut nan = ExplicitVectorSimilarityCollector::new(0.0, 0.0, 1).unwrap();
+        nan.collect(0, f32::NAN);
+        assert!(nan.min_competitive_similarity().is_nan());
+        let mut zero = ExplicitVectorSimilarityCollector::new(0.0, 0.0, 1).unwrap();
+        zero.collect(0, -0.0);
+        assert!(zero.min_competitive_similarity().is_sign_negative());
+        let mut pos = ExplicitVectorSimilarityCollector::new(-0.0, 0.0, 1).unwrap();
+        pos.collect(0, 0.0);
+        assert!(pos.min_competitive_similarity().is_sign_negative());
+        pos.inc_visited_count(1);
+        assert!(pos.into_hits().1);
     }
 
     #[test]

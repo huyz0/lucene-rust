@@ -4,12 +4,12 @@ T	0	brown fox jumps	10	25	1	1	shingle	0	-	0	1
 T	0	fox jumps over	16	30	1	1	shingle	0	-	0	1
 T	0	jumps over _	20	30	1	1	shingle	0	-	0	1
 T	0	over _ lazy	26	39	1	1	shingle	0	-	0	1
-E	0	44	44	0
+E	0	44	44	3
 T	1	The quick quick	8	23	3	1	shingle	0	-	0	1
 T	1	quick quick brown	12	29	1	1	shingle	0	-	0	1
 T	1	quick brown BROWN	18	35	1	1	shingle	0	-	0	1
 T	1	brown BROWN fox	24	39	1	1	shingle	0	-	0	1
-E	1	39	39	0
+E	1	39	39	2
 T	2	Running runs ran	0	16	1	1	shingle	0	-	0	1
 T	2	runs ran easily	8	23	1	1	shingle	0	-	0	1
 T	2	ran easily _	13	23	1	1	shingle	0	-	0	1
@@ -20,7 +20,7 @@ T	2	were relational conditional	46	74	1	1	shingle	0	-	0	1
 T	2	relational conditional _	51	74	1	1	shingle	0	-	0	1
 T	2	conditional _ generalizations	63	94	1	1	shingle	0	-	0	1
 T	2	generalizations _ happiness	79	107	2	1	shingle	0	-	0	1
-E	2	108	108	0
+E	2	108	108	2
 T	3	O'Neil's friend's dogs	0	22	1	1	shingle	0	-	0	1
 T	3	friend's dogs toys	9	28	1	1	shingle	0	-	0	1
 T	3	dogs toys John's	18	38	1	1	shingle	0	-	0	1
@@ -28,7 +28,7 @@ T	3	toys John's _	24	38	1	1	shingle	0	-	0	1
 T	3	John's _ JAMES'S	32	50	1	1	shingle	0	-	0	1
 T	3	JAMES'S books aren't	43	63	2	1	shingle	0	-	0	1
 T	3	books aren't theirs	51	70	1	1	shingle	0	-	0	1
-E	3	71	71	0
+E	3	71	71	2
 T	4	Wi Fi PowerShot500	0	18	1	1	shingle	0	-	0	1
 T	4	Fi PowerShot500 SD	3	21	1	1	shingle	0	-	0	1
 T	4	PowerShot500 SD 500	6	25	1	1	shingle	0	-	0	1
@@ -44,7 +44,7 @@ T	4	e mail j2se	54	65	1	1	shingle	0	-	0	1
 T	4	mail j2se iPhone	56	72	1	1	shingle	0	-	0	1
 T	4	j2se iPhone XMLHttpRequest	61	87	1	1	shingle	0	-	0	1
 T	4	iPhone XMLHttpRequest ABCdef	66	94	1	1	shingle	0	-	0	1
-E	4	94	94	0
+E	4	94	94	2
 T	5	U.S.A I.B.M e.g	0	17	1	1	shingle	0	-	0	1
 T	5	I.B.M e.g Dr	7	21	1	1	shingle	0	-	0	1
 T	5	e.g Dr Smith's	14	30	1	1	shingle	0	-	0	1
@@ -59,7 +59,7 @@ T	5	06 12 30	59	67	1	1	shingle	0	-	0	1
 T	5	12 30 42	62	71	1	1	shingle	0	-	0	1
 T	5	30 42 7	65	74	1	1	shingle	0	-	0	1
 T	5	42 7 1.5e10	69	81	1	1	shingle	0	-	0	1
-E	5	81	81	0
+E	5	81	81	2
 T	6	Crème brûlée à	0	14	1	1	shingle	0	-	0	1
 T	6	brûlée à la	6	17	1	1	shingle	0	-	0	1
 T	6	à la café	13	22	1	1	shingle	0	-	0	1
@@ -72,7 +72,7 @@ T	6	Straße Ĳsselmeer ﬁnancial	51	78	1	1	shingle	0	-	0	1
 T	6	Ĳsselmeer ﬁnancial ﬂow	59	82	1	1	shingle	0	-	0	1
 T	6	ﬁnancial ﬂow Œuvre	70	89	1	1	shingle	0	-	0	1
 T	6	ﬂow Œuvre Ångström	79	99	1	1	shingle	0	-	0	1
-E	6	99	99	0
+E	6	99	99	2
 T	7	l'avion d'Air France	0	20	1	1	shingle	0	-	0	1
 T	7	d'Air France qu'il	8	26	1	1	shingle	0	-	0	1
 T	7	France qu'il _	14	26	1	1	shingle	0	-	0	1
@@ -81,7 +81,7 @@ T	7	pris jusqu'à l'aéroport	29	52	2	1	shingle	0	-	0	1
 T	7	jusqu'à l'aéroport n'était	34	60	1	1	shingle	0	-	0	1
 T	7	l'aéroport n'était pas	42	64	1	1	shingle	0	-	0	1
 T	7	n'était pas L'Hôtel	53	72	1	1	shingle	0	-	0	1
-E	7	72	72	0
+E	7	72	72	2
 T	8	Die Bundesrepublik Deutschland	0	30	1	1	shingle	0	-	0	1
 T	8	Bundesrepublik Deutschland ist	4	34	1	1	shingle	0	-	0	1
 T	8	Deutschland ist ein	19	38	1	1	shingle	0	-	0	1
@@ -90,7 +90,7 @@ T	8	ein Bundesstaat _	35	50	1	1	shingle	0	-	0	1
 T	8	Bundesstaat _ Mitteleuropa	39	66	1	1	shingle	0	-	0	1
 T	8	Mitteleuropa Fußgängerübergänge sind	54	91	2	1	shingle	0	-	0	1
 T	8	Fußgängerübergänge sind häufig	68	98	1	1	shingle	0	-	0	1
-E	8	99	99	0
+E	8	99	99	2
 T	9	El niño comió	0	13	1	1	shingle	0	-	0	1
 T	9	niño comió pequeñas	3	22	1	1	shingle	0	-	0	1
 T	9	comió pequeñas manzanas	8	31	1	1	shingle	0	-	0	1
@@ -100,7 +100,7 @@ T	9	Dónde está la	34	47	1	1	shingle	0	-	0	1
 T	9	está la estación	40	56	1	1	shingle	0	-	0	1
 T	9	la estación Qué	45	62	1	1	shingle	0	-	0	1
 T	9	estación Qué día	48	66	1	1	shingle	0	-	0	1
-E	9	67	67	0
+E	9	67	67	2
 T	10	Съешь же ещё	0	12	1	1	shingle	0	-	0	1
 T	10	же ещё этих	6	17	1	1	shingle	0	-	0	1
 T	10	ещё этих мягких	9	24	1	1	shingle	0	-	0	1
@@ -111,7 +111,7 @@ T	10	булок да выпей	37	52	1	1	shingle	0	-	0	1
 T	10	да выпей чаю	44	56	1	1	shingle	0	-	0	1
 T	10	выпей чаю ЁЛКА	47	62	1	1	shingle	0	-	0	1
 T	10	чаю ЁЛКА ёлка	53	67	1	1	shingle	0	-	0	1
-E	10	67	67	0
+E	10	67	67	2
 T	11	Η γρήγορη καφέ	0	14	1	1	shingle	0	-	0	1
 T	11	γρήγορη καφέ αλεπού	2	21	1	1	shingle	0	-	0	1
 T	11	καφέ αλεπού πηδάει	10	28	1	1	shingle	0	-	0	1
@@ -122,13 +122,13 @@ T	11	από τον τεμπέλη	34	49	1	1	shingle	0	-	0	1
 T	11	τον τεμπέλη σκύλο	38	55	1	1	shingle	0	-	0	1
 T	11	τεμπέλη σκύλο ΟΔΟΣ	42	61	1	1	shingle	0	-	0	1
 T	11	σκύλο ΟΔΟΣ Σίσυφος	50	69	1	1	shingle	0	-	0	1
-E	11	69	69	0
+E	11	69	69	2
 T	12	Türkçe İstanbul ılık	0	20	1	1	shingle	0	-	0	1
 T	12	İstanbul ılık ISPARTA	7	28	1	1	shingle	0	-	0	1
 T	12	ılık ISPARTA Ünlü	16	34	1	1	shingle	0	-	0	1
 T	12	ISPARTA Ünlü şarkıcı	21	42	1	1	shingle	0	-	0	1
 T	12	Ünlü şarkıcı Çağrı	30	48	1	1	shingle	0	-	0	1
-E	12	48	48	0
+E	12	48	48	2
 T	13	Svenska åka på	0	15	1	1	shingle	0	-	0	1
 T	13	åka på sjön	9	20	1	1	shingle	0	-	0	1
 T	13	på sjön Norsk	13	27	1	1	shingle	0	-	0	1
@@ -140,17 +140,17 @@ T	13	rødgrød med fløde	52	69	1	1	shingle	0	-	0	1
 T	13	med fløde Íslenska	60	79	1	1	shingle	0	-	0	1
 T	13	fløde Íslenska þú	64	83	1	1	shingle	0	-	0	1
 T	13	Íslenska þú ðú	71	86	1	1	shingle	0	-	0	1
-E	13	86	86	0
+E	13	86	86	2
 T	14	العربية لغة جميلة	0	17	1	1	shingle	0	-	0	1
 T	14	لغة جميلة والكتابُ	8	27	1	1	shingle	0	-	0	1
 T	14	جميلة والكتابُ مفيدٌ	12	33	1	1	shingle	0	-	0	1
 T	14	والكتابُ مفيدٌ ٠١٢٣٤٥٦٧٨٩	19	44	1	1	shingle	0	-	0	1
-E	14	44	44	0
+E	14	44	44	2
 T	15	עברית היא שפה	0	13	1	1	shingle	0	-	0	1
 T	15	היא שפה שמית	6	18	1	1	shingle	0	-	0	1
 T	15	שפה שמית ספר	10	23	1	1	shingle	0	-	0	1
 T	15	שמית ספר תורה	14	29	1	1	shingle	0	-	0	1
-E	15	30	30	0
+E	15	30	30	2
 T	16	فارسی زبان زیبایی	0	17	1	1	shingle	0	-	0	1
 T	16	زبان زیبایی است	6	21	1	1	shingle	0	-	0	1
 T	16	زیبایی است و	11	23	1	1	shingle	0	-	0	1
@@ -159,18 +159,18 @@ T	16	و می‌خواهم کتاب‌ها	22	40	1	1	shingle	0	-	0	1
 T	16	می‌خواهم کتاب‌ها را	24	43	1	1	shingle	0	-	0	1
 T	16	کتاب‌ها را بخوانم	33	50	1	1	shingle	0	-	0	1
 T	16	را بخوانم ۱۲۳	41	54	1	1	shingle	0	-	0	1
-E	16	54	54	0
+E	16	54	54	2
 T	17	हिन्दी भाषा बहुत	0	16	1	1	shingle	0	-	0	1
 T	17	भाषा बहुत सुंदर	7	22	1	1	shingle	0	-	0	1
 T	17	बहुत सुंदर है	12	25	1	1	shingle	0	-	0	1
 T	17	सुंदर है संख्या	17	33	1	1	shingle	0	-	0	1
 T	17	है संख्या १२३	23	37	1	1	shingle	0	-	0	1
-E	17	37	37	0
+E	17	37	37	2
 T	18	বাংলা ভাষা সুন্দর	0	17	1	1	shingle	0	-	0	1
 T	18	ভাষা সুন্দর ১২৩	6	21	1	1	shingle	0	-	0	1
-E	18	21	21	0
+E	18	21	21	2
 T	19	ภาษาไทยไม่มีช่องว่างระหว่างคำ แต่มีช่องว่างระหว่างประโยค ๑๒๓	0	60	1	1	shingle	0	-	0	1
-E	19	60	60	0
+E	19	60	60	2
 T	20	中 华 人	0	3	1	1	shingle	0	-	0	1
 T	20	华 人 民	1	4	1	1	shingle	0	-	0	1
 T	20	人 民 共	2	5	1	1	shingle	0	-	0	1
@@ -188,7 +188,7 @@ T	20	爱 北 京	17	20	1	1	shingle	0	-	0	1
 T	20	北 京 天	18	21	1	1	shingle	0	-	0	1
 T	20	京 天 安	19	22	1	1	shingle	0	-	0	1
 T	20	天 安 门	20	23	1	1	shingle	0	-	0	1
-E	20	24	24	0
+E	20	24	24	2
 T	21	日 本 語	0	3	1	1	shingle	0	-	0	1
 T	21	本 語 の	1	4	1	1	shingle	0	-	0	1
 T	21	語 の テキスト	2	8	1	1	shingle	0	-	0	1
@@ -205,10 +205,10 @@ T	21	が な ＡＢＣ１２３	21	30	1	1	shingle	0	-	0	1
 T	21	な ＡＢＣ１２３ と	22	31	1	1	shingle	0	-	0	1
 T	21	ＡＢＣ１２３ と 全	24	32	1	1	shingle	0	-	0	1
 T	21	と 全 角	30	33	1	1	shingle	0	-	0	1
-E	21	33	33	0
+E	21	33	33	2
 T	22	한국어 텍스트입니다 서울특별시	0	16	1	1	shingle	0	-	0	1
 T	22	텍스트입니다 서울특별시 ＫＯＲＥＡ	4	22	1	1	shingle	0	-	0	1
-E	22	22	22	0
+E	22	22	22	2
 T	23	Emoji 👍 🇺🇸	0	14	1	1	shingle	0	-	0	1
 T	23	👍 🇺🇸 👨‍👩‍👧	7	23	1	1	shingle	0	-	0	1
 T	23	🇺🇸 👨‍👩‍👧 ✌🏽	10	27	1	1	shingle	0	-	0	1
@@ -223,14 +223,14 @@ T	23	math plus 𠀀	51	63	1	1	shingle	0	-	0	1
 T	23	plus 𠀀 𠀁	56	65	1	1	shingle	0	-	0	1
 T	23	𠀀 𠀁 rare	61	70	1	1	shingle	0	-	0	1
 T	23	𠀁 rare ideographs	63	81	1	1	shingle	0	-	0	1
-E	23	81	81	0
+E	23	81	81	2
 T	24	Visit https lucene.apache.org	0	31	1	1	shingle	0	-	0	1
 T	24	https lucene.apache.org core	6	36	1	1	shingle	0	-	0	1
 T	24	lucene.apache.org core _	14	36	1	1	shingle	0	-	0	1
 T	24	core _ mail	32	45	1	1	shingle	0	-	0	1
 T	24	mail dev lucene.apache.org	41	67	2	1	shingle	0	-	0	1
 T	24	dev lucene.apache.org today	46	73	1	1	shingle	0	-	0	1
-E	24	74	74	0
+E	24	74	74	2
 T	25	See www.example.com path	0	24	1	1	shingle	0	-	0	1
 T	25	www.example.com path q	4	26	1	1	shingle	0	-	0	1
 T	25	path q 1	20	28	1	1	shingle	0	-	0	1
@@ -244,13 +244,13 @@ T	25	1 8080 _	52	59	1	1	shingle	0	-	0	1
 T	25	8080 _ user.name	55	72	1	1	shingle	0	-	0	1
 T	25	user.name tag sub.example.co.uk	63	94	2	1	shingle	0	-	0	1
 T	25	tag sub.example.co.uk 192.168.0.1	73	107	1	1	shingle	0	-	0	1
-E	25	107	107	0
+E	25	107	107	2
 T	26	mailto:someone example.org ftp	0	30	1	1	shingle	0	-	0	1
 T	26	example.org ftp files.example.net	15	50	1	1	shingle	0	-	0	1
 T	26	ftp files.example.net pub	27	54	1	1	shingle	0	-	0	1
 T	26	files.example.net pub file.tar.gz	33	66	1	1	shingle	0	-	0	1
 T	26	pub file.tar.gz example.com	51	78	1	1	shingle	0	-	0	1
-E	26	79	79	0
+E	26	79	79	2
 T	27	p Hello b	1	11	1	1	shingle	0	-	0	1
 T	27	Hello b world	3	17	1	1	shingle	0	-	0	1
 T	27	b world b	10	20	1	1	shingle	0	-	0	1
@@ -267,7 +267,7 @@ T	27	nbsp x eacute	65	78	1	1	shingle	0	-	0	1
 T	27	x eacute p	70	82	1	1	shingle	0	-	0	1
 T	27	eacute p _	72	82	1	1	shingle	0	-	0	1
 T	27	p _ comment	81	97	1	1	shingle	0	-	0	1
-E	27	106	106	0
+E	27	106	106	3
 T	28	script type text	1	18	1	1	shingle	0	-	0	1
 T	28	type text javascript	8	29	1	1	shingle	0	-	0	1
 T	28	text javascript var	14	34	1	1	shingle	0	-	0	1
@@ -283,7 +283,7 @@ T	28	x.org _ link	70	84	1	1	shingle	0	-	0	1
 T	28	link _ style	80	95	2	1	shingle	0	-	0	1
 T	28	style p style	90	106	2	1	shingle	0	-	0	1
 T	28	p style after	96	112	1	1	shingle	0	-	0	1
-E	28	112	112	0
+E	28	112	112	2
 T	29	div class c	1	13	1	1	shingle	0	-	0	1
 T	29	class c quot	5	20	1	1	shingle	0	-	0	1
 T	29	c quot quoted	12	27	1	1	shingle	0	-	0	1
@@ -298,7 +298,7 @@ T	29	xZZ CDATA raw	65	83	1	1	shingle	0	-	0	1
 T	29	CDATA raw data	73	89	1	1	shingle	0	-	0	1
 T	29	raw data tail	80	99	1	1	shingle	0	-	0	1
 T	29	data tail div	85	104	1	1	shingle	0	-	0	1
-E	29	105	105	0
+E	29	105	105	2
 T	30	usr local bin	1	14	1	1	shingle	0	-	0	1
 T	30	local bin lucene	5	21	1	1	shingle	0	-	0	1
 T	30	bin lucene var	11	26	1	1	shingle	0	-	0	1
@@ -309,35 +309,35 @@ T	30	syslog 1 relative	32	49	1	1	shingle	0	-	0	1
 T	30	1 relative path	39	54	1	1	shingle	0	-	0	1
 T	30	relative path _	41	54	1	1	shingle	0	-	0	1
 T	30	path _ file.txt	50	66	1	1	shingle	0	-	0	1
-E	30	66	66	0
+E	30	66	66	2
 T	31	C Program Files	0	16	1	1	shingle	0	-	0	1
 T	31	Program Files Lucene	3	23	1	1	shingle	0	-	0	1
 T	31	Files Lucene index	11	29	1	1	shingle	0	-	0	1
 T	31	Lucene index _	17	29	1	1	shingle	0	-	0	1
 T	31	index _ b	24	33	1	1	shingle	0	-	0	1
-E	31	35	35	0
+E	31	35	35	3
 T	32	1.5 quick 2	4	15	2	1	shingle	0	-	0	1
 T	32	quick 2 brown	8	21	1	1	shingle	0	-	0	1
 T	32	2 brown 0.5	14	25	1	1	shingle	0	-	0	1
 T	32	brown 0.5 fox	16	29	1	1	shingle	0	-	0	1
 T	32	0.5 fox jumps	22	35	1	1	shingle	0	-	0	1
 T	32	fox jumps 3	26	37	1	1	shingle	0	-	0	1
-E	32	37	37	0
+E	32	37	37	2
 T	33	apple 3 banana	0	14	1	1	shingle	0	-	0	1
 T	33	3 banana 1	6	16	1	1	shingle	0	-	0	1
 T	33	banana 1 cherry	8	23	1	1	shingle	0	-	0	1
 T	33	1 cherry pear	15	28	1	1	shingle	0	-	0	1
 T	33	cherry pear 10	17	31	1	1	shingle	0	-	0	1
-E	33	31	31	0
+E	33	31	31	2
 T	34	quick 0.5 fox	0	13	1	1	shingle	0	-	0	1
 T	34	0.5 fox 2.0	6	17	1	1	shingle	0	-	0	1
 T	34	fox 2.0 dog	10	21	1	1	shingle	0	-	0	1
 T	34	2.0 dog 1.25	14	27	1	1	shingle	0	-	0	1
-E	34	27	27	0
+E	34	27	27	2
 T	35	token1 payload one	0	18	1	1	shingle	0	-	0	1
 T	35	payload one two	7	22	1	1	shingle	0	-	0	1
 T	35	one two three	15	28	1	1	shingle	0	-	0	1
-E	35	28	28	0
+E	35	28	28	2
 T	36	Tabs _ multiple	1	20	1	1	shingle	0	-	0	1
 T	36	multiple spaces _	12	29	2	1	shingle	0	-	0	1
 T	36	spaces _ NBSP	23	38	1	1	shingle	0	-	0	1
@@ -348,11 +348,11 @@ T	36	space _ line	60	74	1	1	shingle	0	-	0	1
 T	36	line sep _	70	78	2	1	shingle	0	-	0	1
 T	36	sep _ zero	75	87	1	1	shingle	0	-	0	1
 T	36	zero width soft­hyphen	83	105	2	1	shingle	0	-	0	1
-E	36	105	105	0
-E	37	2	2	0
-E	38	1	1	0
+E	36	105	105	2
+E	37	2	2	1
+E	38	1	1	1
 T	39	supercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilis ticexpialidocioussupercalifragilisticexpialidocious end	0	310	1	1	shingle	0	-	0	1
-E	39	310	310	0
+E	39	310	310	2
 T	40	x y z	0	5	1	1	shingle	0	-	0	1
 T	40	y z xy	2	8	1	1	shingle	0	-	0	1
 T	40	z xy xyz	4	12	1	1	shingle	0	-	0	1
@@ -363,7 +363,7 @@ T	40	c a.b.c a_b_c	17	30	1	1	shingle	0	-	0	1
 T	40	a.b.c a_b_c _	19	30	1	1	shingle	0	-	0	1
 T	40	a_b_c _ b	25	34	1	1	shingle	0	-	0	1
 T	40	b c a:b:c	33	42	2	1	shingle	0	-	0	1
-E	40	42	42	0
+E	40	42	42	2
 T	41	foo bar baz	0	11	1	1	shingle	0	-	0	1
 T	41	bar baz FooBarBaz	4	21	1	1	shingle	0	-	0	1
 T	41	baz FooBarBaz FOObar	8	28	1	1	shingle	0	-	0	1
@@ -373,7 +373,7 @@ T	41	fooBAR foo2bar 2foo	29	48	1	1	shingle	0	-	0	1
 T	41	foo2bar 2foo bar2	36	53	1	1	shingle	0	-	0	1
 T	41	2foo bar2 ellipsis	44	65	1	1	shingle	0	-	0	1
 T	41	bar2 ellipsis dashes	49	77	1	1	shingle	0	-	0	1
-E	41	79	79	0
+E	41	79	79	2
 T	42	The CEO's 1990s	0	15	1	1	shingle	0	-	0	1
 T	42	CEO's 1990s era	4	19	1	1	shingle	0	-	0	1
 T	42	1990s era IBM	10	23	1	1	shingle	0	-	0	1
@@ -390,7 +390,7 @@ T	42	gen Core i7	64	76	1	1	shingle	0	-	0	1
 T	42	Core i7 4790K	69	82	1	1	shingle	0	-	0	1
 T	42	i7 4790K CPU	74	86	1	1	shingle	0	-	0	1
 T	42	4790K CPU 4.00GHz	77	96	1	1	shingle	0	-	0	1
-E	42	96	96	0
+E	42	96	96	2
 T	43	running jumping happily	0	23	1	1	shingle	0	-	0	1
 T	43	jumping happily happiness	8	33	1	1	shingle	0	-	0	1
 T	43	happily happiness conditional	16	45	1	1	shingle	0	-	0	1
@@ -400,9 +400,9 @@ T	43	relational sensibility agreed	46	75	1	1	shingle	0	-	0	1
 T	43	sensibility agreed feed	57	80	1	1	shingle	0	-	0	1
 T	43	agreed feed bled	69	85	1	1	shingle	0	-	0	1
 T	43	feed bled sing	76	90	1	1	shingle	0	-	0	1
-E	43	90	90	0
+E	43	90	90	2
 T	44	leading _ trailing	2	22	1	1	shingle	0	-	0	1
-E	44	32	32	0
+E	44	32	32	3
 E	45	0	0	0
 T	46	ÀÁÂÃÄÅ àáâãäå ÇçÈÉÊË	0	20	1	1	shingle	0	-	0	1
 T	46	àáâãäå ÇçÈÉÊË èéêë	7	25	1	1	shingle	0	-	0	1
@@ -419,7 +419,7 @@ T	46	ŠšŽž Łł Ðð	64	74	1	1	shingle	0	-	0	1
 T	46	Łł Ðð Þþ	69	77	1	1	shingle	0	-	0	1
 T	46	Ðð Þþ ß	72	79	1	1	shingle	0	-	0	1
 T	46	Þþ ß ŒœÆæØø	75	86	1	1	shingle	0	-	0	1
-E	46	86	86	0
+E	46	86	86	2
 T	47	Smart quotes single	1	22	1	1	shingle	0	-	0	1
 T	47	quotes single guillemets	7	35	1	1	shingle	0	-	0	1
 T	47	single guillemets single	16	44	1	1	shingle	0	-	0	1
@@ -427,7 +427,7 @@ T	47	guillemets single low	25	50	1	1	shingle	0	-	0	1
 T	47	single low ©	38	70	1	1	shingle	0	-	0	1
 T	47	low © ®	47	72	1	1	shingle	0	-	0	1
 T	47	© ® ™	69	74	1	1	shingle	0	-	0	1
-E	47	84	84	0
+E	47	84	84	2
 T	48	abilities agreed activism	0	25	1	1	shingle	0	-	0	1
 T	48	agreed activism capable	10	33	1	1	shingle	0	-	0	1
 T	48	activism capable cried	17	39	1	1	shingle	0	-	0	1
@@ -460,16 +460,16 @@ T	48	dried studies classes	269	290	1	1	shingle	0	-	0	1
 T	48	studies classes buses	275	296	1	1	shingle	0	-	0	1
 T	48	classes buses heroes	283	303	1	1	shingle	0	-	0	1
 T	48	buses heroes axes	291	308	1	1	shingle	0	-	0	1
-E	48	308	308	0
+E	48	308	308	2
 T	49	ーﾟ ヽﾟ ｰﾟ	0	8	1	1	shingle	0	-	0	1
 T	49	ヽﾟ ｰﾟ ヽﾞ	3	11	1	1	shingle	0	-	0	1
 T	49	ｰﾟ ヽﾞ ｳﾞ	6	14	1	1	shingle	0	-	0	1
 T	49	ヽﾞ ｳﾞ ﾊﾟ	9	17	1	1	shingle	0	-	0	1
-E	49	17	17	0
+E	49	17	17	2
 T	50	ends _ _	0	4	1	1	shingle	0	-	0	1
-E	50	22	22	0
+E	50	22	22	4
 T	51	ends _ _	0	4	1	1	shingle	0	-	0	1
-E	51	27	27	0
+E	51	27	27	4
 T	52	The Café crossing	0	17	1	1	shingle	0	-	0	1
 T	52	Café crossing ΣΊΣΥΦΟΣ	4	25	1	1	shingle	0	-	0	1
 T	52	crossing ΣΊΣΥΦΟΣ straße	9	32	1	1	shingle	0	-	0	1
@@ -482,4 +482,4 @@ T	52	K 12 _	50	55	1	1	shingle	0	-	0	1
 T	52	12 _ _	53	55	1	1	shingle	0	-	0	1
 T	52	end 😀 x	64	72	3	1	shingle	0	-	0	1
 T	52	😀 x 𝐀	69	75	1	1	shingle	0	-	0	1
-E	52	75	75	0
+E	52	75	75	2

@@ -142,7 +142,7 @@ impl<'d> IndexSplitter<'d> {
 const LATEST: LuceneVersion = LuceneVersion {
     major: 10,
     minor: 5,
-    bugfix: 0,
+    bugfix: 2,
 };
 
 /// `DecimalFormat("###,###.###")` of a whole number: digits in groups of three.

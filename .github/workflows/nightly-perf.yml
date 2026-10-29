@@ -58,7 +58,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: fixtures/.jars
-          key: lucene-jars-10.5.0
+          key: lucene-jars-10.5.2
       # The corpus is a pure function of the generator and its seed.
       - uses: actions/cache@v4
         id: corpus

@@ -33,7 +33,7 @@ RUN curl -fsSL https://sh.rustup.rs \
 # Bake the pinned Lucene jars in, so a fixture or verification run is
 # reproducible and offline. `lib-lucene-jars.sh` checks $JARS first, so these
 # are found without touching Maven Central.
-ARG LUCENE_VERSION=10.5.0
+ARG LUCENE_VERSION=10.5.2
 ENV LUCENE_JARS=/opt/lucene-jars
 RUN mkdir -p "$LUCENE_JARS" && cd "$LUCENE_JARS" \
     && base=https://repo1.maven.org/maven2/org/apache/lucene \
