@@ -295,7 +295,10 @@ mod tests {
         assert!(!Version::LUCENE_9_0_0.on_or_after(Version::LUCENE_9_1_0));
         assert_eq!(Version::LUCENE_CURRENT, Version::LATEST);
         assert_eq!(Version::from_bits(10, 5, 2), Ok(Version::LATEST));
-        assert_eq!(Version::LATEST.encoded_value(), (10 << 18) | (5 << 10) | (2 << 2));
+        assert_eq!(
+            Version::LATEST.encoded_value(),
+            (10 << 18) | (5 << 10) | (2 << 2)
+        );
         assert_eq!(Version::LUCENE_9_12_4.prerelease(), 0);
     }
 
