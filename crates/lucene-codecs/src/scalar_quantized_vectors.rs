@@ -1097,7 +1097,10 @@ pub struct QuantizedOrdScorer<'v, 'a> {
 
 /// Builds the query-side vectors an asymmetric merge scores with:
 /// `writeBinarizedQueryData` over the merged raw vectors (`vectors`, one per
-/// ordinal).
+/// ordinal, as indexed). For `COSINE` each vector is normalized first
+/// (`getRandomVectorScorerSupplierForMerge` wraps the raw values in
+/// `NormalizedFloatVectorValues`, Lucene 10.5.2, GITHUB#16665): the index side
+/// was quantized from normalized vectors, so the query side must be too.
 pub fn binarized_query_data(
     values: &QuantizedVectorValues<'_>,
     similarity: VectorSimilarityFunction,
@@ -1115,8 +1118,15 @@ pub fn binarized_query_data(
     let mut scratch = vec![0u8; discrete];
     let mut out = Vec::new();
     let mut v = vec![0f32; dim];
+    let cosine = similarity == VectorSimilarityFunction::Cosine;
     for raw in vectors.chunks_exact(dim) {
         v.copy_from_slice(raw);
+        if cosine {
+            // `NormalizedFloatVectorValues.vectorValue`: `VectorUtil.l2normalize`,
+            // which throws on a zero vector.
+            vector_util::l2normalize(&mut v, true)
+                .map_err(|e| Error::InvalidGraphParameter(e.to_string()))?;
+        }
         let r = quantizer.scalar_quantize(
             &mut v,
             &mut scratch,
@@ -1375,6 +1385,48 @@ mod tests {
                     assert!(s.set_scoring_ordinal(n as i32).is_err());
                 }
             }
+        }
+    }
+
+    /// Modelled on Java's `TestLucene104HnswScalarQuantizedVectorsFormat
+    /// .testMergeCosineWithNonUnitVectors` (GITHUB#16665): for `COSINE` over
+    /// an asymmetric encoding, the merge scorer must score a pair exactly as
+    /// the search-time scorer does for the same (non-unit) query vector.
+    #[test]
+    fn asymmetric_cosine_merge_scorer_matches_the_search_scorer() {
+        let dim = 24usize;
+        let n = 60usize;
+        let mut v = vectors(n, dim, 31);
+        // Scale every vector away from the unit sphere, each by its own factor.
+        for (i, chunk) in v.chunks_exact_mut(dim).enumerate() {
+            let scale = 2.0 + (i % 9) as f32;
+            chunk.iter_mut().for_each(|x| *x *= scale);
+        }
+        let docs: Vec<i32> = (0..n as i32).collect();
+        let sim = VectorSimilarityFunction::Cosine;
+        for encoding in [
+            ScalarEncoding::SingleBitQueryNibble,
+            ScalarEncoding::DibitQueryNibble,
+        ] {
+            let (veq, vemq) = write(encoding, sim, &docs, &v, dim as i32, n as i32);
+            let r = ScalarQuantizedVectorsReader::open(&vemq, &veq, &ID, "suf").unwrap();
+            let values = r.quantized_vector_values(3).unwrap();
+            let q = binarized_query_data(&values, sim, &v).unwrap();
+            let mut merge = merge_scorer_supplier(&values, sim, Some(&q)).unwrap();
+            for (query_ord, target_ord) in [(0, 1), (5, 17), (23, 42), (59, 3), (31, 30)] {
+                let raw = &v[query_ord * dim..(query_ord + 1) * dim];
+                let mut search = QuantizedQueryScorer::new(&values, sim, raw).unwrap();
+                merge.set_scoring_ordinal(query_ord as i32).unwrap();
+                let expected = search.score(target_ord).unwrap();
+                let actual = merge.score(target_ord).unwrap();
+                assert!(
+                    (expected - actual).abs() <= 1e-5,
+                    "{encoding:?} query ord {query_ord} target ord {target_ord}: \
+                     {expected} vs {actual}"
+                );
+            }
+            // A zero vector cannot be normalized; Java's `l2normalize` throws.
+            assert!(binarized_query_data(&values, sim, &vec![0.0; dim]).is_err());
         }
     }
 

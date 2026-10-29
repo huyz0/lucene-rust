@@ -1207,10 +1207,68 @@ fn knn_queries_refuse_a_field_they_cannot_search() {
             .unwrap()
             .is_empty()
     );
-    let absent = FloatVectorSimilarityQuery::new("nosuch", target, 0.5, 0.5).unwrap();
+    let absent = FloatVectorSimilarityQuery::new("nosuch", target.clone(), 0.5, 0.5).unwrap();
     assert!(
         lucene_search::vector_query::float_vector_similarity_hits(&leaves, &absent)
             .unwrap()
             .is_empty()
     );
+
+    // `FloatVectorSimilarityQuery.Explicit` (Lucene 10.5.2, #16654;
+    // `BaseExplicitVectorSimilarityQueryTestCase`): the traversal bound may
+    // not exceed the result bound; an unbounded walk reaches every vector
+    // the adaptive one does; a bounded one finds only, and every hit of its
+    // walk, vectors at or above the result bound -- a subset of the exact
+    // answer -- and nothing under a filter that accepts nothing.
+    let sim_hits = |q: &FloatVectorSimilarityQuery, leaves: &[KnnSegment<'_>]| {
+        let mut h: Vec<(i32, u32)> =
+            lucene_search::vector_query::float_vector_similarity_hits(leaves, q)
+                .unwrap()
+                .iter()
+                .map(|d| (d.doc_id, d.score.to_bits()))
+                .collect();
+        h.sort_unstable();
+        h
+    };
+    let m = match FloatVectorSimilarityQuery::explicit(dense, target.clone(), 0.6, 0.5) {
+        Err(lucene_search::Error::InvalidKnnQuery(m)) => m,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(m, "traversalSimilarity should be <= resultSimilarity");
+    assert!(FloatVectorSimilarityQuery::explicit(dense, target.clone(), 0.5, f32::NAN).is_err());
+    let explicit_all = FloatVectorSimilarityQuery::explicit(
+        dense,
+        target.clone(),
+        f32::NEG_INFINITY,
+        f32::NEG_INFINITY,
+    )
+    .unwrap();
+    assert_ne!(explicit_all, all);
+    assert_eq!(explicit_all.decay, 0.0);
+    assert_eq!(sim_hits(&explicit_all, &leaves), sim_hits(&all, &leaves));
+    assert!(sim_hits(&explicit_all, &filtered).is_empty());
+    let scores: Vec<f32> = sim_hits(&all, &leaves)
+        .iter()
+        .map(|&(_, s)| f32::from_bits(s))
+        .collect();
+    let mut sorted = scores.clone();
+    sorted.sort_by(f32::total_cmp);
+    let r = sorted[sorted.len() / 2];
+    let exact = sim_hits(
+        &FloatVectorSimilarityQuery::new(dense, target.clone(), r, 1.0).unwrap(),
+        &leaves,
+    );
+    for traversal in [r, r - 0.5, f32::NEG_INFINITY] {
+        let explicit =
+            FloatVectorSimilarityQuery::explicit(dense, target.clone(), traversal, r).unwrap();
+        let got = sim_hits(&explicit, &leaves);
+        assert!(!got.is_empty(), "traversal {traversal}");
+        assert!(
+            got.iter().all(|h| exact.contains(h)),
+            "traversal {traversal}"
+        );
+        if traversal == f32::NEG_INFINITY {
+            assert_eq!(got, exact);
+        }
+    }
 }

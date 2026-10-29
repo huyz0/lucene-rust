@@ -23,7 +23,7 @@
 #   DOCKER_LOCK_STALE_S: where it lives, when a dead holder's lock is reclaimed)
 #   PREFLIGHT=0 skips the engine and disk checks (scripts/preflight.sh lists
 #   their own knobs: MIN_FREE_GB, DOCKER_VHDX_MAX_GB, BUILD_CACHE_MAX_GB, ...)
-#   LUCENE_JAVA_SRC selects the pinned Lucene 10.5.0 checkout (read-only)
+#   LUCENE_JAVA_SRC selects the pinned Lucene 10.5.2 checkout (read-only)
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -32,7 +32,7 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # two checkouts on different Dockerfiles never overwrite each other's image).
 DOCKERFILE_TAG="$(sha256sum "$REPO/docker/Dockerfile" | cut -c1-12)"
 IMAGE="${IMAGE:-lucene-rust-test:$DOCKERFILE_TAG}"
-JAVA_SOURCE="${LUCENE_JAVA_SRC:-$HOME/work/lucene-10.5.0}"
+JAVA_SOURCE="${LUCENE_JAVA_SRC:-$HOME/work/lucene-10.5.2}"
 
 # Hard ceilings. `--memory-swap` equal to `--memory` disables swap for the
 # container: without it, a runaway allocates into swap and drags the host down
@@ -202,7 +202,7 @@ docker run --rm "${TTY_FLAGS[@]}" \
   --tmpfs "/tmp:rw,size=$TMPFS,mode=1777" \
   -v "$REPO:/work" \
   "${GIT_FLAGS[@]}" \
-  -v "$JAVA_SOURCE:/lucene-10.5.0:ro" \
+  -v "$JAVA_SOURCE:/lucene-10.5.2:ro" \
   -v lucene-rust-cargo:/usr/local/cargo/registry \
   -v "$TARGET_VOLUME:/work/target-docker" \
   -v lucene-rust-corpus:/work/benchmarks/.corpus \

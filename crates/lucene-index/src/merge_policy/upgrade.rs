@@ -23,7 +23,7 @@ use crate::segment_info::LuceneVersion;
 pub const LATEST: LuceneVersion = LuceneVersion {
     major: 10,
     minor: 5,
-    bugfix: 0,
+    bugfix: 2,
 };
 
 /// `UpgradeIndexMergePolicy`.

@@ -1,4 +1,4 @@
-    version 10.5.0
+    version 10.5.2
     min version 10.0.0
     number of documents 7
     uses compound file true
@@ -19,4 +19,4 @@ break\\
       type <double: "plain\\\
 é"> missingValue=NaN
       bytes [9 70 6c 61 69 6e 5c a c3 a9 6 44 4f 55 42 4c 45 0 0 0 0 1 0 0 0 0 0 0 0 0 0 f8 7f]
-checksum 00000000002512648746
+checksum 00000000002703792007

@@ -524,16 +524,16 @@ public class GenM7Queries {
       }
       case "VSF": {
         String field = tok[pos++];
-        return new FloatVectorSimilarityQuery(field, QVEC, f(tok));
+        return new FloatVectorSimilarityQuery.Adaptive(field, QVEC, f(tok));
       }
       case "VSFF": {
         String field = tok[pos++];
         float sim = f(tok);
-        return new FloatVectorSimilarityQuery(field, QVEC, sim, parse(tok));
+        return new FloatVectorSimilarityQuery.Adaptive(field, QVEC, sim, parse(tok));
       }
       case "VSB": {
         String field = tok[pos++];
-        return new ByteVectorSimilarityQuery(field, QBVEC, f(tok));
+        return new ByteVectorSimilarityQuery.Adaptive(field, QBVEC, f(tok));
       }
       case "KF": {
         String field = tok[pos++];

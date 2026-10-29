@@ -130,6 +130,7 @@ codecs/lucene104/Lucene104ScalarQuantizedVectorScorer	ported	crates/lucene-codec
 codecs/lucene104/Lucene104ScalarQuantizedVectorsFormat	ported	crates/lucene-codecs/src/scalar_quantized_vectors.rs::NAME
 codecs/lucene104/Lucene104ScalarQuantizedVectorsReader	ported	crates/lucene-codecs/src/scalar_quantized_vectors.rs::ScalarQuantizedVectorsReader
 codecs/lucene104/Lucene104ScalarQuantizedVectorsWriter	ported	crates/lucene-codecs/src/scalar_quantized_vectors.rs::ScalarQuantizedVectorsWriter
+codecs/lucene104/NormalizedFloatVectorValues	ported	crates/lucene-codecs/src/scalar_quantized_vectors.rs::binarized_query_data
 codecs/lucene104/OffHeapScalarQuantizedFloatVectorValues	ported	crates/lucene-codecs/src/scalar_quantized_vectors.rs::dequantized
 codecs/lucene104/OffHeapScalarQuantizedVectorValues	ported	crates/lucene-codecs/src/scalar_quantized_vectors.rs::QuantizedVectorValues
 codecs/lucene104/PForUtil	ported	crates/lucene-codecs/src/for_util.rs::pfor_decode
@@ -643,6 +644,7 @@ search/DoubleValuesSource	ported	crates/lucene-search/src/values_source.rs::Doub
 search/DoubleValuesSourceRescorer	ported	crates/lucene-search/src/rescorer.rs::DoubleValuesSourceRescorer
 search/ExactPhraseMatcher	ported	crates/lucene-search/src/exec/phrase.rs::PhraseScorer
 search/Explanation	ported	crates/lucene-search/src/explain.rs::Explanation
+search/ExplicitVectorSimilarityCollector	ported	crates/lucene-search/src/knn_collectors.rs::ExplicitVectorSimilarityCollector
 search/FieldComparator	ported	crates/lucene-search/src/top_field.rs::FieldComparator
 search/FieldComparatorSource	ported	crates/lucene-search/src/top_field.rs::FieldComparatorSource
 search/FieldDoc	ported	crates/lucene-search/src/top_field.rs::FieldDoc
@@ -710,7 +712,6 @@ search/Multiset	not-needed	lucene.internal generic collection used for BooleanQu
 search/NGramPhraseQuery	ported	crates/lucene-search/src/extended_query.rs::NGramPhraseQuery
 search/NamedMatches	ported	crates/lucene-search/src/matches.rs::NamedMatches
 search/NumericDocValuesRangeQuery	ported	crates/lucene-search/src/extended_query.rs::NumericDocValuesRangeQuery
-search/NumericFieldStats	ported	crates/lucene-search/src/values_source.rs::numeric_field_stats
 search/PatienceKnnVectorQuery	ported	crates/lucene-search/src/vector_query.rs::PatienceKnnVectorQuery
 search/PhraseMatcher	ported	crates/lucene-search/src/exec/phrase.rs::PhraseScorer
 search/PhrasePositions	ported	crates/lucene-search/src/sloppy_phrase.rs::Pp

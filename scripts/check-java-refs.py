@@ -6,12 +6,12 @@ the `// ARITH:` proofs, the sweep reports and the "no new bound rejects a file
 real Lucene wrote" tables all rest on "Java does X here". c31's Tier-2 review
 found a proof citing `DataInput.readVInt`'s
 `"Invalid vInt detected (too many bits)"` -- an exception that exists in
-Lucene `main` and **not** in the pinned 10.5.0 tree this port targets. The
+Lucene `main` and **not** in the pinned 10.5.2 tree this port targets. The
 conclusion happened to survive on a different argument, but the evidence was
 fiction, and the next person to touch that code would have trusted it.
 
 This is the mechanical form of the sweep protocol's own rule ("compare against
-`lucene-10.5.0`, NOT `lucene`"), and the same discipline as grepping the Java
+`lucene-10.5.2`, NOT `lucene`"), and the same discipline as grepping the Java
 for `>>>`.
 
 Two kinds of citation are checked, both only inside comments:
@@ -74,15 +74,15 @@ AUDITED = [
 def _default_java() -> Path:
     """The pinned tree, wherever this is running.
 
-    `scripts/docker-test.sh` mounts it read-only at `/lucene-10.5.0`; on the
+    `scripts/docker-test.sh` mounts it read-only at `/lucene-10.5.2`; on the
     host it sits beside the repo. `LUCENE_JAVA_SRC` overrides both.
     """
     if "LUCENE_JAVA_SRC" in os.environ:
         return Path(os.environ["LUCENE_JAVA_SRC"])
-    for candidate in (Path("/lucene-10.5.0"), Path.home() / "work" / "lucene-10.5.0"):
+    for candidate in (Path("/lucene-10.5.2"), Path.home() / "work" / "lucene-10.5.2"):
         if candidate.is_dir():
             return candidate
-    return Path("/lucene-10.5.0")
+    return Path("/lucene-10.5.2")
 
 
 DEFAULT_JAVA = _default_java()

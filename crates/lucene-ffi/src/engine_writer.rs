@@ -65,7 +65,7 @@ use crate::registry::{engine_writers, lock_recovering, read_recovering, WriterHa
 const VERSION: LuceneVersion = LuceneVersion {
     major: 10,
     minor: 5,
-    bugfix: 0,
+    bugfix: 2,
 };
 
 /// The doc-values field OpenSearch keeps each document's sequence number in

@@ -1,4 +1,4 @@
-    version 10.5.0
+    version 10.5.2
     min version null
     number of documents 7
     uses compound file false
@@ -27,4 +27,4 @@ break\\
       name BinarySortField
       type <binary: "fourth">
       bytes [6 66 6f 75 72 74 68 0 0 0 0 0 0 0 0]
-checksum 00000000002163362482
+checksum 00000000001797883305
