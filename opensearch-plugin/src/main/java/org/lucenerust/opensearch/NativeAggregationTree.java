@@ -271,6 +271,7 @@ public final class NativeAggregationTree {
             out.write(TERMS);
             terms.write(out);
             out.write(NativeAggregations.orderCode(terms.order()));
+            out.write(terms.thresholds().getMinDocCount() == 0 ? 1 : 0);
             writeSubs(out);
         }
 
@@ -988,7 +989,11 @@ public final class NativeAggregationTree {
                         return null;
                     }
                     NativeAggregations.Terms t = NativeAggregations.termsSpec(ctx, f, config);
-                    return t == null ? null : new TermsNode(agg, subs, t);
+                    // min_doc_count 0: every term an empty bucket, none of which has sub-aggregations.
+                    if (t == null || (t.thresholds().getMinDocCount() == 0 && subs.isEmpty() == false)) {
+                        return null;
+                    }
+                    return new TermsNode(agg, subs, t);
                 }
                 // Numeric: integers, longs, floats, doubles and millisecond dates, collected by
                 // NumericTermsAggregator (not a significant-terms or star-tree variant).
@@ -996,7 +1001,7 @@ public final class NativeAggregationTree {
                     return null;
                 }
                 NativeAggregations.Terms t = NativeAggregations.termsSpec(ctx, f, config);
-                return t == null ? null : new NumericTermsNode(agg, subs, t, valueKind);
+                return t == null || t.thresholds().getMinDocCount() == 0 ? null : new NumericTermsNode(agg, subs, t, valueKind);
             }
             case AGGS + "metrics.CardinalityAggregatorFactory": {
                 if (missing || aggClass.equals(AGGS + "metrics.CardinalityAggregator") == false) {

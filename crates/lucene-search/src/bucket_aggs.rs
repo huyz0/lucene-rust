@@ -416,11 +416,14 @@ pub enum AggNode {
         /// distinct values themselves ([`AggResult::Cardinality`]).
         precision: Option<u32>,
     },
-    /// Keyword `terms`, default order, `min_doc_count` of at least 1.
+    /// Keyword `terms`.
     Terms {
         field: String,
         shard_size: usize,
         order: TermsOrder,
+        /// `min_doc_count: 0`: every term of the shard's global ordinals is
+        /// a candidate bucket, counted or not (`collectionStrategy.forEach`).
+        zero_buckets: bool,
         subs: Vec<AggNode>,
     },
     /// Numeric `terms` (`NumericTermsAggregator`'s `LongTerms` and
@@ -2483,6 +2486,7 @@ fn finish(
                 field,
                 shard_size,
                 order,
+                zero_buckets,
                 subs,
             },
             State::Keyed {
@@ -2496,6 +2500,7 @@ fn finish(
             let by_owner = group(&keys);
             let mut buckets = Vec::with_capacity(owners.len());
             let mut child = Vec::new();
+            let mut seen = Vec::new();
             for &o in owners {
                 let mut kept: Vec<(i64, u64, u32)> = by_owner
                     .get(&o)
@@ -2505,6 +2510,20 @@ fn finish(
                             .collect()
                     })
                     .unwrap_or_default();
+                if *zero_buckets {
+                    // Every other global ordinal as an empty bucket (the
+                    // plan has no sub-aggregations under it).
+                    seen.clear();
+                    seen.resize(g.value_count(), false);
+                    for k in &kept {
+                        if let Some(s) = usize::try_from(k.0).ok().and_then(|i| seen.get_mut(i)) {
+                            *s = true;
+                        }
+                    }
+                    for (ord, _) in seen.iter().enumerate().filter(|(_, s)| !**s) {
+                        kept.push((ord as i64, 0, u32::MAX));
+                    }
+                }
                 let total: u64 = kept.iter().map(|k| k.1).sum();
                 kept.sort_unstable_by(|a, b| order.compare((a.0, a.1), (b.0, b.1)));
                 kept.truncate(*shard_size);
@@ -2776,6 +2795,7 @@ mod tests {
         assert!(metric(Source::PointsMin).reads_points());
         assert!(!metric(Source::DocValues).reads_points());
         let terms = |sub| AggNode::Terms {
+            zero_buckets: false,
             field: "k".into(),
             shard_size: 10,
             order: TermsOrder::CountDesc,
@@ -3281,6 +3301,7 @@ mod tests {
         let segments = plain.as_open_segments();
         let seg = &segments[0];
         let terms = AggNode::Terms {
+            zero_buckets: false,
             field: "d".to_string(),
             shard_size: 1,
             order: TermsOrder::CountDesc,
@@ -3700,6 +3721,7 @@ mod tests {
         let reader = fixture("terms_aggs_index");
         for (field, other) in [("kw", "mkw"), ("mkw", "kw")] {
             let tree = AggNode::Terms {
+                zero_buckets: false,
                 field: field.to_string(),
                 shard_size: 5,
                 order: TermsOrder::CountDesc,
@@ -3723,6 +3745,7 @@ mod tests {
         // Single-valued terms under single-valued terms: each window's owner
         // changes from document to document.
         let keyword = |field: &str, subs| AggNode::Terms {
+            zero_buckets: false,
             field: field.to_string(),
             shard_size: 5,
             order: TermsOrder::CountDesc,
@@ -4005,6 +4028,71 @@ mod tests {
         assert!(absent > 0, "some documents lack a value");
     }
 
+    /// `min_doc_count: 0` makes every term of the shard's global ordinals a
+    /// candidate: the counted ones with their counts, every other one empty.
+    #[test]
+    fn keyword_terms_with_min_doc_count_zero_hold_every_term() {
+        let reader = fixture("terms_aggs_index");
+        let mut opened = reader.open_segments().unwrap();
+        opened.open_points().unwrap();
+        let segments = opened.as_open_segments();
+        for field in ["kw", "mkw"] {
+            let terms_count = crate::terms_agg::GlobalOrds::build(reader.segment_readers(), field)
+                .unwrap()
+                .value_count();
+            let q = BooleanQuery {
+                must: vec![Clause::PointsRange(PointsRangeQuery::new("r", 0, 2))],
+                ..Default::default()
+            };
+            let counted =
+                crate::terms_agg::terms(&segments, reader.segment_readers(), &q, field, 1 << 20)
+                    .unwrap()
+                    .buckets;
+            assert!(counted.len() < terms_count, "{field}: some terms uncounted");
+            let node = |order, shard_size| AggNode::Terms {
+                field: field.to_string(),
+                shard_size,
+                order,
+                zero_buckets: true,
+                subs: Vec::new(),
+            };
+            let got = run(
+                &reader,
+                &q,
+                &[node(TermsOrder::KeyAsc, 1 << 20)],
+                &whole(&reader),
+            )
+            .unwrap()
+            .remove(0)
+            .remove(0);
+            let AggResult::Terms { buckets, .. } = got else {
+                panic!("{got:?}")
+            };
+            let (other, list) = &buckets[0];
+            assert_eq!(*other, 0);
+            assert_eq!(list.len(), terms_count, "{field}");
+            assert!(list.windows(2).all(|w| w[0].0 < w[1].0), "{field}: by term");
+            let nonzero: Vec<_> = list.iter().filter(|b| b.1 > 0).cloned().collect();
+            assert_eq!(nonzero, counted, "{field}");
+            // `_count` ascending keeps empty buckets first, ties by term.
+            let got = run(
+                &reader,
+                &q,
+                &[node(TermsOrder::CountAsc, 2)],
+                &whole(&reader),
+            )
+            .unwrap()
+            .remove(0)
+            .remove(0);
+            let AggResult::Terms { buckets, .. } = got else {
+                panic!("{got:?}")
+            };
+            let zero: Vec<_> = list.iter().filter(|b| b.1 == 0).take(2).cloned().collect();
+            let total: u64 = counted.iter().map(|b| b.1).sum();
+            assert_eq!(buckets, vec![(total, zero)], "{field}");
+        }
+    }
+
     /// A keyword `terms` in each order keeps the `shard_size` best buckets
     /// of that order -- by count with the term ascending as tie-breaker, or
     /// by term -- listed by term (descending for `_key` descending).
@@ -4051,6 +4139,7 @@ mod tests {
                             want.sort_by(|a, b| a.0.cmp(&b.0));
                         }
                         let node = AggNode::Terms {
+                            zero_buckets: false,
                             field: field.to_string(),
                             shard_size,
                             order,
@@ -4093,6 +4182,7 @@ mod tests {
                 )
                 .unwrap();
                 let terms = AggNode::Terms {
+                    zero_buckets: false,
                     field: field.to_string(),
                     shard_size,
                     order: TermsOrder::CountDesc,
@@ -4145,6 +4235,7 @@ mod tests {
             }
             // Sliced: every slice from scratch; the counts add up.
             let node = AggNode::Terms {
+                zero_buckets: false,
                 field: "kw".to_string(),
                 shard_size: 10_000,
                 order: TermsOrder::CountDesc,
@@ -4176,6 +4267,7 @@ mod tests {
     fn a_bad_tree_or_slice_is_an_error() {
         let reader = fixture("terms_aggs_index");
         let nodes = [AggNode::Terms {
+            zero_buckets: false,
             field: "kw".to_string(),
             shard_size: 1,
             order: TermsOrder::CountDesc,
@@ -4201,6 +4293,7 @@ mod tests {
         assert!(missing.is_err(), "no global ordinals for the field");
         // A numeric field under terms is a mapping error.
         let numeric = [AggNode::Terms {
+            zero_buckets: false,
             field: "r".to_string(),
             shard_size: 1,
             order: TermsOrder::CountDesc,

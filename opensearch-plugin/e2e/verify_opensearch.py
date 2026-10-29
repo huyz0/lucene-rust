@@ -407,7 +407,11 @@ def matrix():
     add("agg terms order _count asc shard_size", {"size": 0, "aggs": {"t": {"terms": {"field": "tag", "size": 2, "shard_size": 3, "order": {"_count": "asc"}}, "aggs": {"s": {"sum": {"field": "qty"}}}}}}, "native")
     add("agg terms order _key under date_histogram", {"size": 0, "aggs": {"h": {"date_histogram": {"field": "ts", "calendar_interval": "day"}, "aggs": {"t": {"terms": {"field": "tag", "size": 2, "order": {"_key": "asc"}}}}}}}, "native")
     add("agg terms order _count asc then _key desc", {"size": 0, "aggs": {"t": {"terms": {"field": "tag", "order": [{"_count": "asc"}, {"_key": "desc"}]}}}}, "aggregations")
-    add("agg terms min_doc_count 0", {"size": 0, "query": {"match": {"body": "omega"}}, "aggs": {"t": {"terms": {"field": "tag", "min_doc_count": 0}}}}, "aggregations")
+    add("agg terms min_doc_count 0", {"size": 0, "query": {"match": {"body": "omega"}}, "aggs": {"t": {"terms": {"field": "tag", "min_doc_count": 0}}}}, "native")
+    add("agg terms min_doc_count 0 one document", {"size": 0, "query": {"term": {"n": 5}}, "aggs": {"t": {"terms": {"field": "mtag", "size": 5, "min_doc_count": 0, "order": {"_count": "asc"}}}}}, "native")
+    add("agg terms min_doc_count 0 under histogram", {"size": 0, "query": {"range": {"n": {"lt": 40}}}, "aggs": {"h": {"histogram": {"field": "qty", "interval": 10}, "aggs": {"t": {"terms": {"field": "tag", "size": 3, "min_doc_count": 0}}}}}}, "native")
+    add("agg terms min_doc_count 0 numeric", {"size": 0, "query": {"term": {"n": 5}}, "aggs": {"t": {"terms": {"field": "qty", "min_doc_count": 0}}}}, "aggregations")
+    add("agg terms min_doc_count 0 with sub", {"size": 0, "query": {"term": {"n": 5}}, "aggs": {"t": {"terms": {"field": "tag", "min_doc_count": 0}, "aggs": {"a": {"avg": {"field": "qty"}}}}}}, "aggregations")
     add("agg terms include", {"size": 0, "aggs": {"t": {"terms": {"field": "tag", "include": "a.*"}}}}, "aggregations")
     # terms on numeric fields (LongTerms, DoubleTerms): the same order and thresholds.
     add("agg terms integer", {"size": 0, "aggs": {"t": {"terms": {"field": "qty"}}}}, "native")

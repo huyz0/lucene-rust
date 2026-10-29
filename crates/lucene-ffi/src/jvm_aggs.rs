@@ -14,7 +14,7 @@
 //! global   := 0 | 1 query:bytes nodes         (the global pass: its query and nodes)
 //! node     := METRIC value_kind:u8 source:u8 needs:u8 field
 //!           | CARDINALITY card_kind:u8 precision:u8 field
-//!           | TERMS field shard_size:i32 order:u8 nodes
+//!           | TERMS field shard_size:i32 order:u8 zero_buckets:u8 nodes
 //!           | NUMERIC_TERMS field value_kind:u8 shard_size:i32 order:u8 nodes
 //!           | HISTOGRAM field value_kind:u8 interval:f64 offset:f64 bounds_f64 nodes
 //!           | DATE_HISTOGRAM field unit:u8 [interval:i64 when unit = UNIT_INTERVAL]
@@ -268,11 +268,25 @@ fn node_of(
         AGG_TERMS => {
             let field = field(c)?;
             let shard_size = shard_size(c)?;
+            let order = terms_order(c)?;
+            // `min_doc_count: 0`, which the plan sends without sub-aggregations.
+            let zero_buckets = match c.u8()? {
+                0 => false,
+                1 => true,
+                other => return Err(bad(format!("aggregation tree: min_doc_count flag {other}"))),
+            };
+            let subs = nodes(c, depth + 1, count)?;
+            if zero_buckets && !subs.is_empty() {
+                return Err(bad(
+                    "aggregation tree: min_doc_count 0 with sub-aggregations".to_string(),
+                ));
+            }
             AggNode::Terms {
                 field,
                 shard_size,
-                order: terms_order(c)?,
-                subs: nodes(c, depth + 1, count)?,
+                order,
+                zero_buckets,
+                subs,
             }
         }
         AGG_NUMERIC_TERMS => {
@@ -756,6 +770,7 @@ pub(crate) mod tests {
         b.extend_from_slice(&5i32.to_le_bytes());
         b.push(0);
         b.push(0);
+        b.push(0);
         // date_histogram(n, unit day, then interval) > []
         for unit in [4u8, UNIT_INTERVAL] {
             b.push(AGG_DATE_HISTOGRAM);
@@ -1028,6 +1043,17 @@ pub(crate) mod tests {
         assert_eq!(bad(&with(&points)), invalid);
         let doc_values = [m, vec![AGG_METRIC, 0, 0, 1, 1, 0, 0, 0, b'n']].concat();
         assert!(decode_tree(&with(&doc_values)).is_ok());
+        // A min_doc_count flag past 1, and min_doc_count 0 over a sub-aggregation.
+        let mut t = vec![AGG_TERMS];
+        string(&mut t, "k");
+        t.extend_from_slice(&1i32.to_le_bytes());
+        t.extend_from_slice(&[0, 2, 0]);
+        assert_eq!(bad(&with(&t)), invalid);
+        let mut t = vec![AGG_TERMS];
+        string(&mut t, "k");
+        t.extend_from_slice(&1i32.to_le_bytes());
+        t.extend_from_slice(&[0, 1, 1, AGG_METRIC, 0, 0, 1, 1, 0, 0, 0, b'n']);
+        assert_eq!(bad(&with(&t)), invalid);
         // An order past `_key` descending.
         let mut t = vec![AGG_TERMS];
         string(&mut t, "k");
