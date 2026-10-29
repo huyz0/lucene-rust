@@ -1214,6 +1214,7 @@ impl<'d> IndexWriter<'d> {
     /// any document is buffered; refused with an index sort, and once on, the
     /// native [`Document`] entry points are refused.
     pub fn enable_explicit_documents(&mut self) -> Result<()> {
+        self.write_pending_try_deletes()?;
         if self.cfg.explicit {
             return Ok(());
         }
@@ -1292,6 +1293,7 @@ impl<'d> IndexWriter<'d> {
     /// A known name with a different schema is refused, as Lucene refuses to
     /// change a field's index options, doc-values type or point shape.
     pub fn register_field(&mut self, info: FieldInfo) -> Result<i32> {
+        self.write_pending_try_deletes()?;
         if !self.cfg.explicit {
             return Err(explicit_error(
                 "register_field needs explicit documents enabled",
@@ -1523,6 +1525,7 @@ impl<'d> IndexWriter<'d> {
     /// time a segment sees a last-in-block document. `None` without a parent
     /// field.
     pub(crate) fn register_parent_field(&mut self) -> Result<Option<i32>> {
+        self.write_pending_try_deletes()?;
         // Already registered as the parent field: nothing to check again.
         // This runs once per added document, and `register_field` builds a
         // whole `FieldInfo` and scans the index sort each time.
@@ -1540,6 +1543,7 @@ impl<'d> IndexWriter<'d> {
     /// the add, so it is the parent, `-1` in the parent field. Without a
     /// parent field there is nothing to mark.
     pub(crate) fn mark_last_buffered_parent(&mut self) -> Result<()> {
+        self.write_pending_try_deletes()?;
         if let Some(parent) = self.register_parent_field()? {
             if let Some(last) = self.pending_explicit.last_mut() {
                 last.doc_values.push(StoredField {
@@ -1561,6 +1565,7 @@ impl<'d> IndexWriter<'d> {
     /// `IndexWriter.addDocuments` for explicit documents (one document is a
     /// block of one).
     pub fn add_explicit_documents(&mut self, docs: Vec<ExplicitDocument>) -> Result<super::SeqNo> {
+        self.write_pending_try_deletes()?;
         self.explicit_documents_check(&docs)?;
         self.add_explicit_with_delete(None, docs, None)
     }
@@ -1571,6 +1576,7 @@ impl<'d> IndexWriter<'d> {
         term: super::Term,
         docs: Vec<ExplicitDocument>,
     ) -> Result<super::SeqNo> {
+        self.write_pending_try_deletes()?;
         self.explicit_documents_check(&docs)?;
         self.add_explicit_with_delete(
             Some(super::DeleteNode::Terms(vec![std::sync::Arc::new(term)])),
@@ -1588,6 +1594,7 @@ impl<'d> IndexWriter<'d> {
         docs: Vec<ExplicitDocument>,
         soft_deletes: &[super::DocValuesUpdate],
     ) -> Result<super::SeqNo> {
+        self.write_pending_try_deletes()?;
         if soft_deletes.is_empty() {
             return Err(Error::NoSoftDeletesSupplied);
         }
@@ -1617,6 +1624,7 @@ impl<'d> IndexWriter<'d> {
         docs: Vec<ExplicitDocument>,
         vectors: Vec<Vec<super::DocumentVector>>,
     ) -> Result<super::SeqNo> {
+        self.write_pending_try_deletes()?;
         let delete = delete.map(|term| super::DeleteNode::Terms(vec![std::sync::Arc::new(term)]));
         self.add_explicit_documents_with_node(delete, docs, vectors)
     }
@@ -1630,6 +1638,7 @@ impl<'d> IndexWriter<'d> {
         docs: Vec<ExplicitDocument>,
         vectors: Vec<Vec<super::DocumentVector>>,
     ) -> Result<super::SeqNo> {
+        self.write_pending_try_deletes()?;
         // The document API builds these documents itself, from fields it has
         // just registered: they hold by construction what
         // `validate_explicit` checks of a caller's, so the check runs only
@@ -1656,6 +1665,7 @@ impl<'d> IndexWriter<'d> {
         vectors: Vec<Vec<super::DocumentVector>>,
         soft_deletes: &[super::DocValuesUpdate],
     ) -> Result<super::SeqNo> {
+        self.write_pending_try_deletes()?;
         if soft_deletes.is_empty() {
             return Err(Error::NoSoftDeletesSupplied);
         }
@@ -3511,13 +3521,14 @@ mod tests {
     /// soft-deletes field, found by name -- not on whichever field of the
     /// merged segment happens to carry the writer's number for it.
     #[test]
-    fn a_soft_delete_finds_its_field_by_name_in_a_renumbered_segment() {
+    fn a_soft_delete_lands_in_a_merged_sparse_segment() {
         let tmp = TempDir::new("explicit-renumbered");
         let dir = FsDirectory::open(tmp.path());
         let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", VERSION).unwrap();
         let f = register(&mut w);
-        // A first segment with only `_id` and `_seq_no`, so the merged
-        // segment numbers those two first.
+        // A first segment with only `_id` and `_seq_no`; the merge keeps the
+        // writer's numbers rather than numbering those two first, as Java's
+        // global field numbers do.
         let mut sparse = doc(&f, 0);
         sparse.stored.retain(|s| s.field_number == f.id);
         sparse.fields.inverted.retain(|i| i.field_number == f.id);
@@ -3532,14 +3543,14 @@ mod tests {
         w.force_merge(1).unwrap();
         let merged = w.commit().unwrap().segments[0].clone();
         let renumbered = segment_fields(&dir, &merged);
-        assert_ne!(
+        assert_eq!(
             renumbered
                 .iter()
                 .find(|x| x.name == "_seq_no")
                 .unwrap()
                 .number,
             f.seq,
-            "the merged segment numbers its fields its own way"
+            "the merged segment keeps the writer's field numbers"
         );
 
         w.soft_update_explicit_documents(id_term(2), vec![doc_at(&f, 2, 100)], &[soft_delete(2)])
