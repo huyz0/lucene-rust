@@ -21,7 +21,6 @@ use lucene_codecs::field_infos::{FieldInfo, IndexOptions};
 use lucene_codecs::stored_fields::{Document, FieldValue, StoredField};
 use lucene_index::index_writer::IndexWriter;
 use lucene_index::merge_policy::upgrade::LATEST;
-use lucene_index::segment_info::LuceneVersion;
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_store::{Directory, Error};
 use lucene_util::test_support::TempDir;
