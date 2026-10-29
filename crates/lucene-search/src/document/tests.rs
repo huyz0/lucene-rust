@@ -804,3 +804,99 @@ fn point_fields_without_points_or_doc_values() {
     )
     .is_empty());
 }
+
+/// `TestSkipBlockRangeIterator`/`TestDocValuesRangeIterator`'s run ends
+/// (Lucene 10.5.2, #16450): over real 4096-document skip blocks -- one
+/// `YES`, one `MAYBE`, one `YES_IF_PRESENT` -- the approximation's run is
+/// the block, and the two-phase iterator's (`match_run_end`) is the empty
+/// run `doc` everywhere but in the `YES` block.
+#[test]
+fn skip_block_run_ends_follow_the_block_match() {
+    let tmp = TempDir::new("doc-skip-run-end");
+    let seg: Vec<Vec<Box<dyn IndexableField>>> = (0..3 * 4096i64)
+        .map(|i| match i / 4096 {
+            0 => vec![b(d::NumericDocValuesField::indexed_field("n", 5))],
+            1 => vec![b(d::NumericDocValuesField::indexed_field(
+                "n",
+                if i % 2 == 0 { 50 } else { 5 },
+            ))],
+            _ if i % 2 == 0 => vec![b(d::NumericDocValuesField::indexed_field("n", 6))],
+            _ => vec![b(d::StringField::new("other", "x", Store::No))],
+        })
+        .collect();
+    let r = index(&tmp, vec![seg]);
+    let opened = r.open_segments().unwrap();
+    let leaves = opened.as_open_segments();
+    let leaf = &leaves[0];
+    let info = field_info(leaf, "n").unwrap().unwrap();
+    let s = doc_values_queries::skip_index(leaf, info).unwrap().unwrap();
+    let mut it = dense_bulk::SkipBlocks::new(s, 0, 10);
+    // YES: the block (and no further, the level above holds a MAYBE block).
+    assert_eq!(it.next_doc(), 0);
+    assert_eq!(it.doc_id_run_end(), 4096);
+    assert_eq!(it.match_run_end(), 4096);
+    // MAYBE: the approximation's run is the block, the match run empty.
+    it.skip_to(4095);
+    assert_eq!(it.next_doc(), 4096);
+    assert_eq!(it.block().0, 8191);
+    assert_eq!(it.doc_id_run_end(), 8192);
+    assert_eq!(it.match_run_end(), 4096);
+    assert_eq!(it.next_doc(), 4097);
+    assert_eq!(it.doc_id_run_end(), 8192);
+    assert_eq!(it.match_run_end(), 4097);
+    // YES_IF_PRESENT: likewise.
+    it.skip_to(8191);
+    assert_eq!(it.next_doc(), 8192);
+    // (the block ends at its last document with a value, 12286)
+    assert_eq!(it.doc_id_run_end(), 3 * 4096 - 1);
+    assert_eq!(it.match_run_end(), 8192);
+    assert_eq!(it.next_doc(), 8193);
+    assert_eq!(it.match_run_end(), 8193);
+    // The queries over those blocks still confirm each candidate.
+    let want: Vec<i32> = (0..3 * 4096)
+        .filter(|&i| i < 4096 || (i % 2 == 1) == (i < 8192))
+        .collect();
+    assert_eq!(
+        docs(
+            &leaves,
+            &numeric_doc_values_field::new_slow_range_query("n", 0, 10)
+        ),
+        want
+    );
+}
+
+/// `TestDocValuesOrdinalSetIterator.testOrdinalSetDocIDRunEndFalsePositive`
+/// (Lucene 10.5.2, #16450): in a `WINDOW_SIZE + 1`-document segment whose
+/// last document holds an ordinal inside the set's bounds but not in it,
+/// that document is no match, though a range over the bounds takes it.
+#[test]
+fn ordinal_set_gap_in_the_trailing_window_is_no_match() {
+    let tmp = TempDir::new("doc-ord-set-trailing");
+    let max_doc = 4096 + 1;
+    let seg: Vec<Vec<Box<dyn IndexableField>>> = (0..max_doc)
+        .map(|i| {
+            let v = if i == max_doc - 1 {
+                "bbb"
+            } else if i % 100 == 0 {
+                "ccc"
+            } else {
+                "aaa"
+            };
+            vec![b(d::SortedDocValuesField::indexed_field("field", v))]
+        })
+        .collect();
+    let r = index(&tmp, vec![seg]);
+    let opened = r.open_segments().unwrap();
+    let leaves = opened.as_open_segments();
+    let set = sorted_doc_values_field::new_slow_set_query("field", &[b"aaa", b"ccc"]);
+    let all: Vec<i32> = (0..max_doc).collect();
+    assert_eq!(docs(&leaves, &set), all[..all.len() - 1].to_vec());
+    let range = sorted_doc_values_field::new_slow_range_query(
+        "field",
+        Some(b"aaa"),
+        Some(b"ccc"),
+        true,
+        true,
+    );
+    assert_eq!(docs(&leaves, &range), all);
+}

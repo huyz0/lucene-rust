@@ -273,7 +273,7 @@ impl DocumentQuery for SortedNumericDocValuesRangeQuery {
             if doc >= r.max_doc {
                 return Ok(());
             }
-            let run_end = approximation.doc_id_run_end();
+            let run_end = approximation.match_run_end();
             match bulk.candidate_run(leaf, doc, run_end, boost, collector) {
                 Step::Stop => return Ok(()),
                 Step::Skip => continue,
@@ -725,7 +725,7 @@ impl DocumentQuery for SortedSetDocValuesRangeQuery {
             if doc >= r.max_doc {
                 return Ok(());
             }
-            let run_end = approximation.doc_id_run_end();
+            let run_end = approximation.match_run_end();
             match bulk.candidate_run(leaf, doc, run_end, boost, collector) {
                 Step::Stop => return Ok(()),
                 Step::Skip => continue,
