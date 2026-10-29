@@ -479,6 +479,7 @@ impl SegmentReader {
         Ok(Self {
             index_sort: (!core.info.index_sort.is_empty())
                 .then(|| Arc::new(core.info.index_sort.clone())),
+            has_blocks: core.info.has_blocks,
             max_doc: core.info.doc_count,
             num_docs: crate::reader::num_docs_of(core.info.doc_count, live_docs.as_deref()),
             field_infos: core.field_infos.clone(),

@@ -92,6 +92,16 @@ impl OneField {
         }
     }
 
+    /// `SimpleTextDocValuesReader.isSingleValued(field)` (Lucene 10.6,
+    /// branch_10_6, #16714): every document has at most one value, by the
+    /// writer's recorded `maxValueCount`, so `getSortedNumeric`/`getSortedSet`
+    /// expose the column as a singleton (`DocValues.singleton`), as the
+    /// default codec does. An unknown count (`-1`, a pre-`maxValueCount`
+    /// file) is not single-valued.
+    pub fn is_single_valued(&self) -> bool {
+        (0..=1).contains(&self.max_value_count)
+    }
+
     /// `pattern.length()` (UTF-16 units).
     fn pattern_len(&self) -> i64 {
         java_len(&self.pattern)
@@ -1403,6 +1413,26 @@ mod tests {
 
     fn text(data: &[u8]) -> String {
         String::from_utf8(data.to_vec()).unwrap()
+    }
+
+    /// Lucene 10.6's `isSingleValued` (#16714), off the recorded
+    /// `maxValueCount`.
+    #[test]
+    fn single_valued_fields_follow_max_value_count() {
+        let data = file();
+        let r = SimpleTextDocValuesReader::open(&data, MAX_DOC).unwrap();
+        for (name, single) in [
+            ("num", true),
+            ("sorted", true),
+            ("snum", false),
+            ("sset", false),
+            ("none", true),
+        ] {
+            assert_eq!(r.field(name).unwrap().is_single_valued(), single, "{name}");
+        }
+        let mut unknown = OneField::new(DocValuesType::SortedNumeric);
+        unknown.max_value_count = -1;
+        assert!(!unknown.is_single_valued());
     }
 
     #[test]

@@ -24,6 +24,7 @@
 //! entry can be built where Lucene would have run the clause uncached.
 //! None of these changes a hit or a score.
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex};
@@ -436,7 +437,18 @@ pub(crate) struct CachedScorer {
     /// The cost the set was built with, when it is not its size: a
     /// `DocIdSetBuilder` bit set's estimate.
     cost: Option<i64>,
+    /// `BitSetIterator`'s `runStart` and `runEnd`: the known run of set bits
+    /// around the current document, `(-1, -1)` before any, so that
+    /// [`Scorer::doc_id_run_end`] resumes its scan rather than rescanning
+    /// the run on every call (Lucene 10.6, branch_10_6, #16849). A `Cell`
+    /// because `docIDRunEnd` takes `&self` here.
+    run: Cell<(i32, i32)>,
 }
+
+/// `BitSetIterator.MAX_RUN_END_SCAN` (Lucene 10.6, branch_10_6, #16849): the
+/// most bits one `docIDRunEnd` scans past the current document, so that a
+/// caller consuming only a prefix of a long run does not scan all of it.
+pub(crate) const MAX_RUN_END_SCAN: i32 = 1 << 16;
 
 impl CachedScorer {
     pub(crate) fn new(set: Arc<CachedSet>) -> Self {
@@ -453,6 +465,7 @@ impl CachedScorer {
             top_scores,
             emptied: false,
             cost: None,
+            run: Cell::new((-1, -1)),
         }
     }
 
@@ -537,16 +550,34 @@ impl Scorer for CachedScorer {
         }
     }
 
-    /// `BitSetIterator.docIDRunEnd`: the run of set bits from here.
+    /// `BitSetIterator.docIDRunEnd` (as of Lucene 10.6, branch_10_6,
+    /// #16849): the run of set bits from here, resumed from the run end
+    /// already known and scanned at most [`MAX_RUN_END_SCAN`] bits past the
+    /// current document -- so a caller asking once per window pays for each
+    /// bit once, not once per window, and may get a prefix of the run.
     fn doc_id_run_end(&self) -> i32 {
         if self.emptied {
             return self.doc.saturating_add(1);
         }
         match &*self.set {
             CachedSet::Bits { bits, .. } => {
-                let from = usize::try_from(self.doc).unwrap_or(0);
-                let end = lucene_util::fixed_bit_set::next_clear_bit_in_words(bits.words(), from);
-                end.min(bits.len()) as i32
+                let doc = self.doc;
+                let length = i32::try_from(bits.len()).unwrap_or(i32::MAX);
+                let (mut run_start, mut run_end) = self.run.get();
+                if doc < run_start || doc >= run_end {
+                    run_start = doc;
+                    run_end = doc.saturating_add(1);
+                }
+                let up_to = doc.saturating_add(length.saturating_sub(doc).min(MAX_RUN_END_SCAN));
+                if run_end < up_to {
+                    run_end = usize::try_from(run_end)
+                        .ok()
+                        .zip(usize::try_from(up_to).ok())
+                        .and_then(|(from, to)| bits.next_clear_bit_in_range(from, to))
+                        .map_or(up_to, |end| end as i32);
+                }
+                self.run.set((run_start, run_end));
+                run_end
             }
             CachedSet::Docs(_) => self.doc.saturating_add(1),
         }
@@ -558,6 +589,67 @@ mod tests {
 
     #![allow(clippy::arithmetic_side_effects)]
     use super::*;
+
+    fn bits_scorer(bits: FixedBitSet) -> CachedScorer {
+        let cardinality = bits.cardinality() as i64;
+        CachedScorer::new(Arc::new(CachedSet::Bits { bits, cardinality }))
+    }
+
+    /// Lucene 10.6's `TestBitSetIterator.testDocIDRunEndScanIsBounded`
+    /// (branch_10_6, #16849): one call scans at most `MAX_RUN_END_SCAN` bits
+    /// past the current document.
+    #[test]
+    fn a_bit_set_run_end_scan_is_bounded() {
+        let max = MAX_RUN_END_SCAN;
+        let n = 2 * max + 5;
+        let mut bits = FixedBitSet::new(n as usize);
+        bits.set_range(0, n as usize);
+        let mut s = bits_scorer(bits);
+        assert_eq!(s.next_doc().unwrap(), 0);
+        assert_eq!(s.doc_id_run_end(), max);
+        assert_eq!(s.advance(10).unwrap(), 10);
+        assert_eq!(s.doc_id_run_end(), 10 + max);
+        assert_eq!(s.advance(2 * max).unwrap(), 2 * max);
+        assert_eq!(s.doc_id_run_end(), n);
+    }
+
+    /// `TestBitSetIterator.testRandomDocIDRunEndLongRuns`: whatever is
+    /// remembered between calls, each run end is the bounded scan from the
+    /// current document.
+    #[test]
+    fn a_bit_set_run_end_resumes_to_the_bounded_scan() {
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = |bound: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % bound
+        };
+        for _ in 0..10 {
+            let n = 1 + next(4 * MAX_RUN_END_SCAN as u64) as usize;
+            let mut bits = FixedBitSet::new(n);
+            for _ in 0..1 + next(10) {
+                let start = next(n as u64) as usize;
+                let end = start + next((n - start) as u64 + 1) as usize;
+                bits.set_range(start, end);
+            }
+            let expected = |doc: usize| {
+                let len = doc + (n - doc).min(MAX_RUN_END_SCAN as usize);
+                let mut end = doc + 1;
+                while end < len && bits.get(end) {
+                    end += 1;
+                }
+                end as i32
+            };
+            let mut s = bits_scorer(bits.clone());
+            let mut d = s.next_doc().unwrap();
+            while d != NO_MORE_DOCS {
+                assert!(bits.get(d as usize));
+                assert_eq!(s.doc_id_run_end(), expected(d as usize), "doc {d} of {n}");
+                d = s.advance(d + 1 + next(5_000) as i32).unwrap();
+            }
+        }
+    }
 
     #[test]
     fn a_dropped_bit_set_goes_back_to_the_pool_cleared() {

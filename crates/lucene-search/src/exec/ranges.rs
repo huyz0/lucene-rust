@@ -334,7 +334,10 @@ pub(crate) fn numeric_range<'a>(
 /// `IndexSortSortedNumericDocValuesRangeQuery`: on a segment sorted first by
 /// the field (an `INT` or `LONG` key over a single-valued column), the
 /// matches are one contiguous run found by two binary searches with the
-/// sort's comparator; anywhere else, `fallback`.
+/// sort's comparator; anywhere else, `fallback` -- including a segment with
+/// document blocks (`getDocIdSetIteratorOrNull`'s `hasBlocks` check, Lucene
+/// 10.6, branch_10_6, #16893 fixing #16886), where only the blocks follow
+/// the sort.
 pub(crate) fn index_sort_range<'a>(
     ctx: &LeafContext<'a>,
     q: &IndexSortSortedNumericDocValuesRangeQuery,
@@ -353,6 +356,11 @@ pub(crate) fn index_sort_range<'a>(
     let Some(reader) = ctx.reader else {
         return fallback();
     };
+    if reader.has_blocks() {
+        // With blocks only the parent documents are sorted, so the doc values
+        // do not follow the doc-ID order and the binary search does not apply.
+        return fallback();
+    }
     let Some(sort) = reader.index_sort().and_then(|s| s.first()) else {
         return fallback();
     };

@@ -3063,3 +3063,125 @@ fn a_scoring_block_join_beside_an_optional_term_scores_like_lucene() {
     assert_eq!(super::bulk::test_only_req_scorer_opt::take(), 0);
     assert_eq!(top[..], all[..top.len()]);
 }
+
+/// Lucene 10.6's `TestDenseConjunctionBulkScorer.testTwoPhaseDefaultRunEndIsPartitionInvariant`
+/// (branch_10_6, d1e035949f): a two-phase clause's current document is only
+/// a candidate until `matches()`, so no window may collect it as part of a
+/// run; scored in one pass or as adjacent width-1 windows, it collects the
+/// same documents.
+#[test]
+fn a_two_phase_clause_is_partition_invariant() {
+    struct Docs(Vec<i32>);
+    impl ScoringCollector for Docs {
+        fn collect(&mut self, doc: i32, _score: f32) {
+            self.0.push(doc);
+        }
+        fn collect_range(&mut self, min: i32, max: i32, _score: f32) {
+            self.0.extend(min..max);
+        }
+    }
+    let max_doc = 5_000;
+    let hits: Vec<(i32, f32)> = (0..max_doc)
+        .filter(|d| d % 3 != 0)
+        .map(|d| (d, 1.0))
+        .collect();
+    let expected: Vec<i32> = hits.iter().map(|h| h.0).collect();
+    let leaf = Leaf {
+        hits,
+        approx: (0..max_doc).collect(),
+        two_phase: true,
+        block_max: Vec::new(),
+    };
+    for mode in [Mode::NoScores, Mode::Complete] {
+        let mut whole = Bulk::scorer(Box::new(Fake::new(leaf.clone())));
+        let mut single = Docs(Vec::new());
+        whole
+            .score(mode, None, &mut single, 0, NO_MORE_DOCS)
+            .unwrap();
+        assert_eq!(single.0, expected);
+        let mut windows = Bulk::scorer(Box::new(Fake::new(leaf.clone())));
+        let mut per_doc = Docs(Vec::new());
+        for doc in 0..max_doc {
+            windows
+                .score(mode, None, &mut per_doc, doc, doc + 1)
+                .unwrap();
+        }
+        assert_eq!(per_doc.0, expected);
+    }
+}
+
+/// Lucene 10.6's `TestBlockMaxConjunctionBulkScorer.testDoesNotIterateWindowsBeyondMaxDoc`
+/// (branch_10_6, #16855): when the windows at the end of a segment are not
+/// competitive the lead is not advanced, and scoring must still stop at
+/// `maxDoc` rather than iterating windows up to the `max` it was given
+/// (`NO_MORE_DOCS` for a whole segment). The clauses here report a block
+/// boundary past every target, never `NO_MORE_DOCS`, as a disjunction lead
+/// can.
+#[test]
+fn a_block_max_conjunction_stops_at_max_doc() {
+    use crate::bulk_scorer::ConjunctionBulk;
+    use crate::collector::ScoreMode;
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    struct Counting {
+        inner: DocList,
+        shallow_calls: Rc<Cell<u64>>,
+    }
+    impl Scorer for Counting {
+        fn doc_id(&self) -> i32 {
+            self.inner.doc_id()
+        }
+        fn next_doc(&mut self) -> Result<i32> {
+            self.inner.next_doc()
+        }
+        fn advance(&mut self, target: i32) -> Result<i32> {
+            self.inner.advance(target)
+        }
+        fn cost(&self) -> i64 {
+            self.inner.cost()
+        }
+        fn score(&mut self) -> Result<f32> {
+            Ok(1.0)
+        }
+        fn advance_shallow(&mut self, _target: i32) -> Result<i32> {
+            self.shallow_calls.set(self.shallow_calls.get() + 1);
+            Ok(NO_MORE_DOCS - 1)
+        }
+        fn max_score(&mut self, _up_to: i32) -> Result<f32> {
+            Ok(1.0)
+        }
+    }
+    /// A full top-k: nothing scores above its threshold.
+    struct Full;
+    impl ScoringCollector for Full {
+        fn collect(&mut self, doc: i32, _score: f32) {
+            panic!("doc {doc} is not competitive");
+        }
+        fn min_competitive_score(&self) -> Option<f32> {
+            Some(10.0)
+        }
+        fn score_mode(&self) -> ScoreMode {
+            ScoreMode::TopScores
+        }
+    }
+    let max_doc = 70_000;
+    let calls = Rc::new(Cell::new(0u64));
+    let docs: Vec<i32> = (0..max_doc).step_by(3).collect();
+    let mut legs: Vec<BoxScorer<'static>> = (0..2)
+        .map(|_| {
+            Box::new(Counting {
+                inner: DocList::new(docs.clone(), vec![1.0; docs.len()]),
+                shallow_calls: Rc::clone(&calls),
+            }) as BoxScorer<'static>
+        })
+        .collect();
+    let mut state = ConjunctionBulk::new(legs.len(), max_doc);
+    let next = state
+        .score(&mut legs, None, &mut Full, 0, NO_MORE_DOCS)
+        .unwrap();
+    assert_eq!(next, NO_MORE_DOCS);
+    // Every window calls `advanceShallow` on each clause: a couple of 64K
+    // windows, nowhere near the ~32K it takes to reach `Integer.MAX_VALUE`.
+    assert!(calls.get() < 100, "{} advanceShallow calls", calls.get());
+}
