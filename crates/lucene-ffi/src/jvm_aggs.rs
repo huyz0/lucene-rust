@@ -16,6 +16,7 @@
 //!           | CARDINALITY card_kind:u8 precision:u8 field
 //!           | PERCENTILES value_kind:u8 compression:f64 field   (a t-digest per bucket;
 //!                                              compression in (0, MAX_COMPRESSION])
+//!           | TOP_HITS top_n:i32             (by score; top_n > 0)
 //!           | TERMS field shard_size:i32 order:u8 flags:u8 [missing:bytes]
 //!                   [ords:i64 words:i32 word:i64*] nodes
 //!                  (flag 1: `min_doc_count: 0`; 2: a `missing` term follows;
@@ -60,6 +61,10 @@
 //!                                              value was NaN, which Java refuses)
 //! digest       merges:i32 last:i32 total:f64 unmerged:f64 temp_used:i32 min:f64
 //!              max:f64 (mean:f64 weight:f64)*last (mean:f64 weight:f64)*temp_used
+//! TOP_HITS     n:i32 (0 | 1 total:i64 count:i32 (doc:i32 score:f32)*)*n
+//!                                              each bucket's top hits by score,
+//!                                              global documents (0: the bucket
+//!                                              collected nothing)
 //! CARDINALITY  n:i32 (len:i32 sketch)*n       each bucket's `HyperLogLogPlusPlus`
 //!                                              as `writeTo` writes it (`len` 0:
 //!                                              the bucket saw nothing)
@@ -107,6 +112,7 @@ const AGG_NUMERIC_TERMS: u8 = 8;
 const AGG_MISSING: u8 = 9;
 const AGG_COMPOSITE: u8 = 10;
 const AGG_PERCENTILES: u8 = 11;
+const AGG_TOP_HITS: u8 = 12;
 /// The largest t-digest compression a tree may ask for: a digest holds
 /// about `12 * compression` doubles.
 const MAX_COMPRESSION: f64 = 10_000.0;
@@ -317,6 +323,13 @@ fn node_of(
                 kind,
                 compression,
             }
+        }
+        AGG_TOP_HITS => {
+            let top_n = c.i32()?;
+            let Ok(top_n @ 1..) = usize::try_from(top_n) else {
+                return Err(bad(format!("aggregation tree: top_hits size {top_n}")));
+            };
+            AggNode::TopHits { top_n }
         }
         AGG_CARDINALITY => {
             let kind = match c.u8()? {
@@ -670,6 +683,22 @@ pub(crate) fn encode_result(r: &AggResult, out: &mut Vec<u8>) -> Result<(), FfiS
                 }
             }
         }
+        AggResult::TopHits(per) => {
+            put_i32(out, per.len())?;
+            for bucket in per {
+                let Some((total, hits)) = bucket else {
+                    out.push(0);
+                    continue;
+                };
+                out.push(1);
+                put_u64(out, *total);
+                put_i32(out, hits.len())?;
+                for h in hits {
+                    out.extend_from_slice(&h.doc_id.to_le_bytes());
+                    out.extend_from_slice(&h.score.to_bits().to_le_bytes());
+                }
+            }
+        }
         AggResult::CardinalitySketch(per) => {
             put_i32(out, per.len())?;
             for sketch in per {
@@ -851,21 +880,41 @@ pub(crate) fn aggregate_tree_blobs(
         ords.insert(f.to_string(), g);
     }
     let globals = Globals::new(&ords);
-    let norm_fields: Vec<String> = if min_score.is_some() {
-        crate::query::clause_field_names(&q)
-            .into_iter()
-            .map(str::to_string)
-            .collect()
-    } else {
-        Vec::new()
-    };
+    // A pass scores its query behind `min_score`, or for a `top_hits`
+    // (behind none: `-inf`), with the norms of the fields it scores.
+    let main_scores = tree.nodes.iter().any(AggNode::needs_scores);
+    let global_scores = tree
+        .global
+        .as_ref()
+        .is_some_and(|(_, g)| g.iter().any(AggNode::needs_scores));
+    let mut norm_fields: Vec<String> = Vec::new();
+    if min_score.is_some() || main_scores {
+        norm_fields.extend(
+            crate::query::clause_field_names(&q)
+                .into_iter()
+                .map(str::to_string),
+        );
+    }
+    if let (true, Some(gq)) = (global_scores, global_query) {
+        for f in crate::query::clause_field_names(gq) {
+            if !norm_fields.iter().any(|n| n == f) {
+                norm_fields.push(f.to_string());
+            }
+        }
+    }
     let owned = h
         .reader
         .field_norms_by_field(&norm_fields)
         .map_err(|error| map_search_error(error.into()))?;
     let norms: Vec<Option<&HashMap<String, FieldNorms<'_>>>> =
         owned.iter().map(|m| (!m.is_empty()).then_some(m)).collect();
-    let min = min_score.map(|min| MinScore { min, norms: &norms });
+    let min = min_score
+        .or(main_scores.then_some(f32::NEG_INFINITY))
+        .map(|min| MinScore { min, norms: &norms });
+    let global_min = global_scores.then_some(MinScore {
+        min: f32::NEG_INFINITY,
+        norms: &norms,
+    });
     let mut out = Vec::new();
     if !tree.nodes.is_empty() {
         let sliced = bucket_aggs::aggregate_tree(
@@ -888,9 +937,16 @@ pub(crate) fn aggregate_tree_blobs(
         // The aggregation processor's `postProcess` searches the global
         // query with the same slices (one collector over every segment, in
         // order, without them).
-        let results =
-            bucket_aggs::aggregate_tree(&segments, readers, gq, gnodes, &globals, &slices, None)
-                .map_err(crate::query::map_search_error)?;
+        let results = bucket_aggs::aggregate_tree(
+            &segments,
+            readers,
+            gq,
+            gnodes,
+            &globals,
+            &slices,
+            global_min.as_ref(),
+        )
+        .map_err(crate::query::map_search_error)?;
         for results in &results {
             for r in results {
                 encode_result(r, &mut out)?;
@@ -1418,6 +1474,47 @@ pub(crate) mod tests {
         f64s(&mut want, &[0.0, 3.0]);
         want.extend_from_slice(&3i32.to_le_bytes());
         f64s(&mut want, &[1.0, 3.0, 3.0, 1.0, 1.0, 1.0, 2.0, 1.0]);
+        assert_eq!(out, want);
+    }
+
+    #[test]
+    fn top_hits_decode_and_encode() {
+        let with = |node: &[u8]| {
+            let mut b = vec![1u8];
+            b.extend_from_slice(node);
+            b.extend_from_slice(&[0u8, 0, 0, 0, 0]);
+            b
+        };
+        let top_hits = |n: i32| {
+            let mut t = vec![AGG_TOP_HITS];
+            t.extend_from_slice(&n.to_le_bytes());
+            t
+        };
+        let tree = decode_tree(&with(&top_hits(3))).unwrap();
+        assert!(matches!(tree.nodes[0], AggNode::TopHits { top_n: 3 }));
+        assert!(tree.nodes[0].needs_scores());
+        for bad in [0, -1, i32::MIN] {
+            assert_eq!(
+                decode_tree(&with(&top_hits(bad))).err(),
+                Some(FfiStatus::InvalidArgument),
+                "{bad}"
+            );
+        }
+        let hit = |doc_id, score| lucene_search::collector::ScoreDoc { doc_id, score };
+        let mut out = Vec::new();
+        encode_result(
+            &AggResult::TopHits(vec![None, Some((5, vec![hit(7, 2.5), hit(1, 1.0)]))]),
+            &mut out,
+        )
+        .unwrap();
+        let mut want = 2i32.to_le_bytes().to_vec();
+        want.extend_from_slice(&[0, 1]);
+        want.extend_from_slice(&5u64.to_le_bytes());
+        want.extend_from_slice(&2i32.to_le_bytes());
+        for (d, s) in [(7i32, 2.5f32), (1, 1.0)] {
+            want.extend_from_slice(&d.to_le_bytes());
+            want.extend_from_slice(&s.to_bits().to_le_bytes());
+        }
         assert_eq!(out, want);
     }
 
