@@ -14,6 +14,8 @@
 //! global   := 0 | 1 query:bytes nodes         (the global pass: its query and nodes)
 //! node     := METRIC value_kind:u8 source:u8 needs:u8 field
 //!           | CARDINALITY card_kind:u8 precision:u8 field
+//!           | PERCENTILES value_kind:u8 compression:f64 field   (a t-digest per bucket;
+//!                                              compression in (0, MAX_COMPRESSION])
 //!           | TERMS field shard_size:i32 order:u8 flags:u8 [missing:bytes]
 //!                   [ords:i64 words:i32 word:i64*] nodes
 //!                  (flag 1: `min_doc_count: 0`; 2: a `missing` term follows;
@@ -26,7 +28,8 @@
 //!           | FILTERS count:i32 query:bytes* other:u8 nodes
 //!           | GLOBAL nodes
 //!           | MISSING value:i64 node        (a numeric node's `missing`, in its
-//!                                            column's encoding; doc-values metrics)
+//!                                            column's encoding; doc-values metrics,
+//!                                            percentiles)
 //!           | COMPOSITE size:i32 count:u8 source* after:u8 [part*] segments:i32 u8*
 //!                       nodes                 (top level only; `after` 1: one part
 //!                                              per source; a flag per segment: its
@@ -52,6 +55,11 @@
 //!
 //! ```text
 //! METRIC       n:i32 (count:i64 sum delta min max min_of_mins max_of_maxes:f64)*n
+//! PERCENTILES  n:i32 nan:u8 (0 | 1 digest)*n   each bucket's `MergingDigest` (0: the
+//!                                              bucket collected nothing; `nan` 1: a
+//!                                              value was NaN, which Java refuses)
+//! digest       merges:i32 last:i32 total:f64 unmerged:f64 temp_used:i32 min:f64
+//!              max:f64 (mean:f64 weight:f64)*last (mean:f64 weight:f64)*temp_used
 //! CARDINALITY  n:i32 (len:i32 sketch)*n       each bucket's `HyperLogLogPlusPlus`
 //!                                              as `writeTo` writes it (`len` 0:
 //!                                              the bucket saw nothing)
@@ -98,6 +106,10 @@ const AGG_NUMERIC_TERMS: u8 = 8;
 /// A prefix, not a node: the next node's `missing` value.
 const AGG_MISSING: u8 = 9;
 const AGG_COMPOSITE: u8 = 10;
+const AGG_PERCENTILES: u8 = 11;
+/// The largest t-digest compression a tree may ask for: a digest holds
+/// about `12 * compression` doubles.
+const MAX_COMPRESSION: f64 = 10_000.0;
 /// The most `composite` sources a tree may name.
 const MAX_COMPOSITE_SOURCES: usize = 16;
 
@@ -246,6 +258,7 @@ fn node(c: &mut Cursor<'_>, depth: usize, count: &mut usize) -> Result<AggNode, 
             source: Source::DocValues,
             ..
         }
+        | AggNode::Percentiles { missing, .. }
         | AggNode::NumericTerms { missing, .. }
         | AggNode::Histogram { missing, .. }
         | AggNode::DateHistogram { missing, .. }
@@ -288,6 +301,21 @@ fn node_of(
                 kind,
                 source,
                 needs,
+            }
+        }
+        AGG_PERCENTILES => {
+            let kind = value_kind(c.u8()?)?;
+            let compression = f64_of(c)?;
+            if !(compression > 0.0 && compression <= MAX_COMPRESSION) {
+                return Err(bad(format!(
+                    "aggregation tree: percentiles compression {compression}"
+                )));
+            }
+            AggNode::Percentiles {
+                field: field(c)?,
+                missing: None,
+                kind,
+                compression,
             }
         }
         AGG_CARDINALITY => {
@@ -615,6 +643,30 @@ pub(crate) fn encode_result(r: &AggResult, out: &mut Vec<u8>) -> Result<(), FfiS
                 put_u64(out, s.count);
                 for v in jvm_reader::metric_values(s) {
                     out.extend_from_slice(&v.to_bits().to_le_bytes());
+                }
+            }
+        }
+        AggResult::Digests { digests, nan } => {
+            put_i32(out, digests.len())?;
+            out.push(u8::from(*nan));
+            for d in digests {
+                let Some(d) = d else {
+                    out.push(0);
+                    continue;
+                };
+                out.push(1);
+                out.extend_from_slice(&d.merge_count.to_le_bytes());
+                put_i32(out, d.last_used_cell)?;
+                out.extend_from_slice(&d.total_weight.to_bits().to_le_bytes());
+                out.extend_from_slice(&d.unmerged_weight.to_bits().to_le_bytes());
+                put_i32(out, d.temp_used)?;
+                out.extend_from_slice(&d.min.to_bits().to_le_bytes());
+                out.extend_from_slice(&d.max.to_bits().to_le_bytes());
+                let merged = d.mean.iter().zip(&d.weight).take(d.last_used_cell);
+                let buffered = d.temp_mean.iter().zip(&d.temp_weight).take(d.temp_used);
+                for (m, w) in merged.chain(buffered) {
+                    out.extend_from_slice(&m.to_bits().to_le_bytes());
+                    out.extend_from_slice(&w.to_bits().to_le_bytes());
                 }
             }
         }
@@ -1304,6 +1356,69 @@ pub(crate) mod tests {
         }
         wide.extend_from_slice(&tail);
         assert_eq!(bad(&wide), invalid);
+    }
+
+    #[test]
+    fn percentiles_decode_and_encode() {
+        let with = |node: &[u8]| {
+            let mut b = vec![1u8];
+            b.extend_from_slice(node);
+            b.extend_from_slice(&[0u8, 0, 0, 0, 0]);
+            b
+        };
+        let percentiles = |compression: f64| {
+            let mut t = vec![AGG_PERCENTILES, 1];
+            f64s(&mut t, &[compression]);
+            string(&mut t, "d");
+            t
+        };
+        let tree = decode_tree(&with(&percentiles(100.0))).unwrap();
+        assert!(matches!(
+            &tree.nodes[0],
+            AggNode::Percentiles { field, kind: ValueKind::Double, compression, missing: None }
+                if field == "d" && *compression == 100.0
+        ));
+        // `missing` in front of it.
+        let mut m = vec![AGG_MISSING];
+        m.extend_from_slice(&7i64.to_le_bytes());
+        m.extend_from_slice(&percentiles(50.0));
+        let tree = decode_tree(&with(&m)).unwrap();
+        assert!(matches!(
+            &tree.nodes[0],
+            AggNode::Percentiles {
+                missing: Some(7),
+                ..
+            }
+        ));
+        for bad in [0.0, -1.0, f64::NAN, f64::INFINITY, MAX_COMPRESSION * 2.0] {
+            assert_eq!(
+                decode_tree(&with(&percentiles(bad))).err(),
+                Some(FfiStatus::InvalidArgument),
+                "{bad}"
+            );
+        }
+        // The result: a bucket that collected nothing, then a digest.
+        let mut d = lucene_search::tdigest::MergingDigest::new(100.0);
+        for x in [3.0, 1.0, 2.0] {
+            d.add(x).unwrap();
+        }
+        let mut out = Vec::new();
+        encode_result(
+            &AggResult::Digests {
+                digests: vec![None, Some(d)],
+                nan: false,
+            },
+            &mut out,
+        )
+        .unwrap();
+        let mut want = 2i32.to_le_bytes().to_vec();
+        want.extend_from_slice(&[0, 0, 1]);
+        want.extend_from_slice(&0i32.to_le_bytes());
+        want.extend_from_slice(&0i32.to_le_bytes());
+        f64s(&mut want, &[0.0, 3.0]);
+        want.extend_from_slice(&3i32.to_le_bytes());
+        f64s(&mut want, &[1.0, 3.0, 3.0, 1.0, 1.0, 1.0, 2.0, 1.0]);
+        assert_eq!(out, want);
     }
 
     #[test]

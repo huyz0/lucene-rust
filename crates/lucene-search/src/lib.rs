@@ -268,6 +268,7 @@ mod sparse_docs_cache;
 pub mod spatial;
 pub mod spell;
 pub mod suggest;
+pub mod tdigest;
 pub mod term_vectors_query;
 pub mod terminate;
 pub mod terms_agg;
