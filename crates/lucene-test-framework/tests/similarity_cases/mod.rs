@@ -9,6 +9,7 @@ use lucene_search::similarities::{
     BooleanSimilarity, ClassicSimilarity, CollectionModel, DfiSimilarity, DfrSimilarity,
     Distribution, IbSimilarity, Independence, IndriDirichletSimilarity, Lambda,
     LmDirichletSimilarity, LmJelinekMercerSimilarity, Normalization, RawTfSimilarity, Similarity,
+    StableTflSimilarity,
 };
 use lucene_test_framework::search::similarities::FLOAT_MIN_VALUE;
 use lucene_util::java_random::JavaRandom;
@@ -161,10 +162,22 @@ pub const CASES: [(&str, GetSimilarity); 22] = [
     ("DistributionSPL", |r| distribution(r, Distribution::SPL)),
 ];
 
+/// The subclasses Lucene 10.6 (`branch_10_6`) adds, kept apart from
+/// [`CASES`]: the 10.5.2 fixtures hold one row per entry there.
+pub const LUCENE_10_6_CASES: [(&str, GetSimilarity); 1] = [
+    // `TestStableTflSimilarity.getSimilarity` (#16243): k1, then c.
+    ("StableTfl", |r| {
+        let k1 = unbounded(r);
+        let c = unbounded(r);
+        Arc::new(StableTflSimilarity::new(k1, c).expect("valid"))
+    }),
+];
+
 /// The subclass called `name`.
 pub fn get(name: &str) -> GetSimilarity {
     CASES
         .iter()
+        .chain(&LUCENE_10_6_CASES)
         .find(|(n, _)| *n == name)
         .unwrap_or_else(|| panic!("no similarity test {name}"))
         .1

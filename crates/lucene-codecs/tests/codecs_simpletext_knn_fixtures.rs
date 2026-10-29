@@ -235,6 +235,8 @@ fn reads_java_vectors_and_searches_bit_for_bit() {
                 want.push((row[2].parse::<i32>().unwrap(), row[3].clone()));
             }
             assert_eq!(want.len(), size);
+            // `getVectorCount` (Lucene 10.6, #16647).
+            assert_eq!(r.vector_count(fi).unwrap() as usize, size);
             if encoding == "BYTE" {
                 let v = r.byte_vector_values(&name).unwrap().unwrap();
                 assert_eq!((v.dimension(), v.size()), (dim, size));

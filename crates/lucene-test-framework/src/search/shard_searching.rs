@@ -698,13 +698,14 @@ impl StatisticsSource for ShardIndexSearcher<'_, '_> {
         let mut sum = TermStatistics {
             doc_freq: 0,
             total_term_freq: 0,
+            term: Some(term.into()),
         };
         for (node_id, &version) in self.node_versions.iter().enumerate() {
             let sub = if node_id == self.my_node_id {
-                local
+                local.clone()
             } else {
                 match cache.get(&(node_id, version, key.clone())) {
-                    Some(s) => *s,
+                    Some(s) => s.clone(),
                     None => continue,
                 }
             };

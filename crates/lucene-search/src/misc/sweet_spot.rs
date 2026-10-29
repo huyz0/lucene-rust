@@ -235,7 +235,7 @@ mod tests {
         s.set_length_norm_factors(3, 5, 0.5);
         let collection = CollectionStatistics::new(10, 10, 50, 20).unwrap();
         let term = TermStatistics::new(2, 4).unwrap();
-        let scorer = s.scorer("f", 2.0, &collection, &[term, term]);
+        let scorer = s.scorer("f", 2.0, &collection, &[term.clone(), term]);
         let freq = Explanation::match_(2.0, "freq, occurrences of term within document");
         let e = scorer.explain(freq, 9);
         assert_eq!(e.value, scorer.score(2.0, 9));

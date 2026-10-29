@@ -410,7 +410,7 @@ pub(crate) fn scorer<'a>(
         if let Some(entry) = term_entry(ctx, &q.field, term)? {
             if entry.doc_freq > 0 {
                 collection.get_or_insert(entry.collection_statistics());
-                stats.push(entry.term_statistics());
+                stats.push(entry.term_statistics(term));
             }
         }
     }

@@ -635,7 +635,7 @@ pub(crate) fn span_doc_scores(
     for (f, t) in &leaves {
         if let Some(entry) = term_entry(ctx, f, t)? {
             if entry.doc_freq > 0 {
-                term_stats.push(entry.term_statistics());
+                term_stats.push(entry.term_statistics(t));
             }
         }
     }

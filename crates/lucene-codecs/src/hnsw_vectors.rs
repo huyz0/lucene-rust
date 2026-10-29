@@ -875,6 +875,19 @@ impl<'a> HnswVectorsReader<'a> {
         self.fields.iter().find(|f| f.field_number == field_number)
     }
 
+    /// `getVectorCount(fieldInfo)` (Lucene 10.6, `branch_10_6`, #16647): the
+    /// field's vector count as its metadata entry holds it, without opening
+    /// its vector values.
+    /// `Lucene99HnswVectorsReader`'s: `getFieldEntryOrThrow(name).size()`.
+    ///
+    /// # Errors
+    /// [`Error::UnknownField`] for a field this reader does not hold.
+    pub fn vector_count(&self, field_number: i32) -> Result<i32> {
+        self.field(field_number)
+            .map(|f| f.size)
+            .ok_or(Error::UnknownField(field_number))
+    }
+
     /// Port of `Lucene99HnswVectorsReader.getGraph(FieldEntry)`. `None` is
     /// Java's `HnswGraph.EMPTY`: the field exists but carries no graph, so a
     /// search must be exhaustive.

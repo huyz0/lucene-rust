@@ -185,6 +185,7 @@ fn flat_metadata_matches_lucene() {
     let f = Fixture::load();
     let m = &f.manifest;
     let reader = f.flat();
+    let hnsw = f.hnsw();
     assert_eq!(reader.fields().len(), m.int("field_count") as usize);
     for i in 0..m.int("field_count") {
         let key = format!("f{i}");
@@ -194,6 +195,11 @@ fn flat_metadata_matches_lucene() {
             .unwrap_or_else(|| panic!("field {number} missing from .vemf"));
         assert_eq!(entry.dimension, m.int(&format!("{key}.dim")) as i32);
         assert_eq!(entry.size, m.int(&format!("{key}.count")) as i32);
+        // `getVectorCount` (Lucene 10.6, #16647): Lucene's count, from the
+        // flat and the graph metadata alike.
+        let count = m.int(&format!("{key}.count")) as i32;
+        assert_eq!(reader.vector_count(number).unwrap(), count);
+        assert_eq!(hnsw.vector_count(number).unwrap(), count);
         assert_eq!(
             entry.similarity,
             parse_similarity(m.get(&format!("{key}.similarity")))
@@ -208,6 +214,14 @@ fn flat_metadata_matches_lucene() {
         let dense = entry.size == m.int("max_doc") as i32;
         assert_eq!(entry.ord_to_doc.is_dense(), dense, "{key} density");
     }
+    assert!(matches!(
+        reader.vector_count(9999),
+        Err(lucene_codecs::vectors::Error::UnknownField(9999))
+    ));
+    assert!(matches!(
+        hnsw.vector_count(9999),
+        Err(lucene_codecs::vectors::Error::UnknownField(9999))
+    ));
 }
 
 #[test]

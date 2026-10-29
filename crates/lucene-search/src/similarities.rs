@@ -1,5 +1,6 @@
 //! Lucene 10.5.0's `search/similarities` package: every similarity it ships,
-//! behind its `Similarity`/`SimScorer` contract.
+//! behind its `Similarity`/`SimScorer` contract, plus Lucene 10.6's
+//! [`StableTflSimilarity`] (`branch_10_6`, #16243).
 //!
 //! [`crate::similarity`] is BM25 as the scorer tree's fast path computes it
 //! (a weight, a norm-inverse table, block bounds over impacts). This module
@@ -36,6 +37,9 @@ pub use lucene_index::similarity::{default_compute_norm, FieldInvertState, NormS
 use lucene_util::small_float;
 
 use crate::explain::Explanation;
+
+mod stable_tfl;
+pub use stable_tfl::StableTflSimilarity;
 
 /// `CollectionStatistics`: a field's reader-wide statistics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,10 +91,15 @@ impl CollectionStatistics {
 }
 
 /// `TermStatistics`: a term's reader-wide statistics.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TermStatistics {
     pub doc_freq: i64,
     pub total_term_freq: i64,
+    /// `term()`: the term's bytes, which a similarity that scores on the
+    /// term itself ([`StableTflSimilarity`]) reads. `None` where this port
+    /// builds statistics without one (a caller's `TermStatistics::new`, a
+    /// synthetic statistic); Java's constructor requires the term.
+    pub term: Option<Arc<[u8]>>,
 }
 
 impl TermStatistics {
@@ -108,7 +117,14 @@ impl TermStatistics {
         Ok(Self {
             doc_freq,
             total_term_freq,
+            term: None,
         })
+    }
+
+    /// These statistics with `term()` set to `term`'s bytes.
+    pub fn with_term(mut self, term: &[u8]) -> Self {
+        self.term = Some(Arc::from(term));
+        self
     }
 }
 

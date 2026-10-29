@@ -348,6 +348,20 @@ impl<'a> SimpleTextKnnVectorsReader<'a> {
         util::check_integrity(self.data_in)
     }
 
+    /// `getVectorCount(fieldInfo)` (Lucene 10.6, `branch_10_6`, #16647): the
+    /// `.gri` entry's size.
+    ///
+    /// # Errors
+    /// `IllegalArgument` (`field="name" not found`) for a field the `.gri`
+    /// does not list.
+    pub fn vector_count(&self, field_info: &FieldInfo) -> Result<i32> {
+        // Java: SimpleTextKnnVectorsReader.getVectorCount
+        let entry = self.field_entries.get(&field_info.number).ok_or_else(|| {
+            Error::IllegalArgument(format!("field=\"{}\" not found", field_info.name))
+        })?;
+        Ok(i32::try_from(entry.size()).unwrap_or(i32::MAX))
+    }
+
     /// `getOffHeapByteSize(fieldInfo)`: `None` for a field the `.gri` does
     /// not list, else empty (every vector is on heap).
     pub fn off_heap_byte_size(&self, field_info: &FieldInfo) -> Option<HashMap<String, i64>> {
