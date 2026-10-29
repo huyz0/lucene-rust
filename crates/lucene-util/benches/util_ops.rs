@@ -13,6 +13,7 @@
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use lucene_util::fixed_bit_set::FixedBitSet;
+use lucene_util::quantization;
 use lucene_util::vector_util;
 use lucene_util::zigzag;
 
@@ -120,6 +121,20 @@ fn bench_byte_vector_kernels(c: &mut Criterion) {
     });
 }
 
+/// `OffHeapScalarQuantizedVectorValues`' uint4 nibble unpack (Lucene 10.6's
+/// `VectorUtil.int4Unpack`, #16631) of a 768-dim `PackedNibble` vector: the
+/// per-vector decode a 4-bit quantized merge and exact search pay.
+fn bench_unpack_nibbles(c: &mut Criterion) {
+    let packed: Vec<u8> = (0..384u32).map(|i| ((i * 37 + 11) % 256) as u8).collect();
+    let mut unpacked = vec![0u8; 768];
+    c.bench_function("quantization/unpack_nibbles_768", |b| {
+        b.iter(|| {
+            quantization::unpack_nibbles(black_box(&packed), &mut unpacked);
+            black_box(&unpacked);
+        })
+    });
+}
+
 /// Range combinators over a 1M-bit set at an unaligned offset: `apply_mask`
 /// (live docs applied to a doc-id slice) and `for_each_in_range`.
 fn bench_fixed_bit_set_ranges(c: &mut Criterion) {
@@ -156,6 +171,7 @@ criterion_group!(
     benches,
     bench_fixed_bit_set_ranges,
     bench_byte_vector_kernels,
+    bench_unpack_nibbles,
     bench_zigzag_roundtrip,
     bench_fixed_bit_set_get,
     bench_fixed_bit_set_cardinality

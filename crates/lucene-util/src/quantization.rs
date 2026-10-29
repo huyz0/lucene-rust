@@ -604,12 +604,19 @@ pub fn pack_nibbles(unpacked: &[u8], packed: &mut [u8]) {
     }
 }
 
-/// `OffHeapScalarQuantizedVectorValues.unpackNibbles`.
+/// `OffHeapScalarQuantizedVectorValues.unpackNibbles` (Lucene 10.6,
+/// branch_10_6, #16631: `VectorUtil.int4Unpack`): the high nibble of
+/// `packed[i]` into `unpacked[i]`, its low nibble into
+/// `unpacked[packed.len() + i]`. Written as one bounds-check-free pass over
+/// the two output halves, which the compiler vectorizes -- Java's Panama
+/// kernel. Panics, as the indexed loop did, when `unpacked` is shorter than
+/// `2 * packed.len()`; bytes past that are left alone.
 pub fn unpack_nibbles(packed: &[u8], unpacked: &mut [u8]) {
     let n = packed.len();
-    for i in 0..n {
-        unpacked[i] = (packed[i] >> 4) & 0x0F;
-        unpacked[n + i] = packed[i] & 0x0F;
+    let (hi, lo) = unpacked[..n * 2].split_at_mut(n);
+    for ((h, l), &p) in hi.iter_mut().zip(lo.iter_mut()).zip(packed) {
+        *h = p >> 4;
+        *l = p & 0x0F;
     }
 }
 
@@ -1297,6 +1304,20 @@ mod tests {
         let mut back = vec![0u8; 24];
         unpack_nibbles(&packed, &mut back);
         assert_eq!(back, v);
+
+        // Lucene 10.6's `TestVectorUtil.testInt4Unpack`: lengths around a
+        // vector register and odd tails, against the scalar loop; bytes past
+        // `2 * n` are left alone.
+        for n in [0usize, 1, 2, 3, 7, 15, 16, 17, 31, 32, 33, 63, 64, 65, 2048] {
+            let packed: Vec<u8> = (0..n).map(|i| (i * 151 + 29) as u8).collect();
+            let mut actual = vec![0xAAu8; n * 2 + 1];
+            unpack_nibbles(&packed, &mut actual);
+            for (i, &p) in packed.iter().enumerate() {
+                assert_eq!(actual[i], p >> 4, "n={n} i={i}");
+                assert_eq!(actual[n + i], p & 0x0F, "n={n} i={i}");
+            }
+            assert_eq!(actual[n * 2], 0xAA);
+        }
 
         let bits: Vec<u8> = (0..21).map(|i| (i % 3 == 0) as u8).collect();
         let mut packed = vec![0u8; 3];
