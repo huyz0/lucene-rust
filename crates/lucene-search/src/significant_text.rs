@@ -704,16 +704,45 @@ mod tests {
         assert_eq!(murmur_h1(b"hello") as u64, 0xcbd8_a7b3_41bd_9b02);
     }
 
+    const DEDUP_GOLDEN: &str = "\
+w0 w2 w0 w1 w3 w1 w2 w2 w0 w3|w0 w2 w0 w1 w3 w1 w2 w2 w0 w3\n\
+w0 w0 w8 w8 w0 w6 w7 w5 w8 w7 w2 w9 w11 w9 w10 w10 w7 w6 w10 w0 w2 w5|w0 w0 w8 w8 w0 w6 w7 w5 w8 w7 w2 w9 w11 w9 w10 w10 w7 w6 w10 w0 w2 w5\n\
+w11 w0 w1 w1 w0 w11 w1 w11 w1 w11 w6 w7 w11 w1 w7 w1 w8|w11 w0 w1 w1 w0 w11 w1 w11 w1 w11 w6 w7 w11 w1 w7 w1 w8\n\
+w0 w1 w3 w3 w0 w2 w2 w1 w3 w1 w0 w3 w2 w3 w0 w2 w1 w1 w0 w1 w1 w1 w2 w1 w2 w1 w3 w1 w2 w3 w0 w0 w0 w3 w3 w1 w3 w1|w0 w1 w3 w3 w0 w2 w2 w1 w3 w1 w0 w3 w2 w3 w0 w2 w1 w1 w0 w1 w1 w1 w2 w1 w2 w1 w3 w1 w2 w3 w0 w0 w0 w3 w3 w1 w3 w1\n\
+w3 w3 w11 w3 w9 w0 w8 w4 w6 w4 w0 w1 w11 w7 w9 w2|w3 w3 w11 w3 w9 w0 w8 w4 w6 w4 w0 w1 w11 w7 w9 w2\n\
+w2 w2 w4 w9 w7 w3 w6 w10 w7 w2 w3 w6 w0 w2 w7 w8 w0 w10 w3 w1 w10 w4 w8 w10 w4 w0 w8 w9 w2 w11 w1 w5 w11 w1 w11|w2 w2 w4 w9 w7 w3 w6 w10 w7 w2 w3 w6 w0 w2 w7 w8 w0 w10 w3 w1 w10 w4 w8 w10 w4 w0 w8 w9 w2 w11 w1 w5 w11 w1 w11\n\
+w1 w1 w1 w2 w1 w1 w1 w3 w0 w1 w3 w2 w3 w3 w2 w3 w1 w2 w1 w3 w2 w0 w1 w3|w1 w1 w1 w2 w1 w1 w1 w3 w0 w1 w3 w2 w3 w3 w2 w3 w1 w2 w1 w3 w2 w0 w1 w3\n\
+w8 w2 w9 w0 w10 w9 w0 w0 w1 w10 w2|w8 w2 w9 w0 w10 w9 w0 w0 w1 w10 w2\n\
+w2 w7 w6 w5 w0 w9 w0 w3 w2 w9 w2 w10 w6 w11 w5 w11 w1 w6 w9 w8 w6 w8 w5 w1 w6 w7 w10 w8 w6|w2 w7 w6 w5 w0 w9 w0 w3 w2 w9 w2 w10 w6 w11 w5 w11 w1 w6 w9 w8 w6 w8 w5 w1 w6 w7 w10 w8 w6\n\
+w2 w1 w3 w2 w2 w1 w2 w3 w2 w1 w0 w1 w2|w2 w1 w3 w2 w2 w1 w2 w3 w2 w1 w0 w1 w2\n\
+w4 w1 w10 w7 w9 w1 w10 w3 w6 w3 w7 w6 w5 w6 w6 w6 w11 w10 w0 w9 w1 w11 w6 w7 w9 w9 w5 w9 w9 w3 w11 w3 w3|w4 w1 w10 w7 w9 w1 w10 w3 w6 w3 w7 w6 w5 w6 w6 w6 w11 w10 w0 w9 w1 w11 w6 w7 w9 w9 w5 w9 w9 w3 w11 w3 w3\n\
+w2 w9 w0 w4 w4 w7 w5 w11 w3 w6 w2|w2 w9 w0 w4 w4 w7 w5 w11 w3 w6 w2\n\
+w3 w0 w2 w1 w0 w0 w3 w2 w2 w1 w3 w3 w3 w2 w3 w1 w3 w2 w0 w0|w3 w0 w2 w1 w0 w0 w3 w2 w2 w1 w3 w3 w3 w2 w3 w1 w3 w2 w0 w0\n\
+w2 w11 w5 w3 w7 w5 w1 w11 w1 w6 w6 w0 w9 w1 w1 w10 w8 w5 w2|w2 w11 w5 w3 w7 w5 w1 w11 w1 w6 w6 w0 w9 w1 w1 w10 w8 w5 w2\n\
+w2 w11 w2 w7 w1 w9 w8 w3 w1 w6 w1 w8 w6 w5 w5 w6 w6 w8 w5 w5 w1 w8 w8 w1|w2 w11 w2 w7 w1 w9 w8 w3 w1 w6 w1 w8 w6 w5 w5 w6 w6 w8 w5 w5 w1 w8 w8 w1\n\
+w2 w3 w2 w0 w3 w1 w3 w1 w1 w2 w1 w0 w2 w0 w1 w1 w3 w1 w2 w2 w0 w2 w1 w1 w2 w0 w2 w3 w2 w1 w2 w1 w3|w2 w3 w2 w0 w3 w1 w3 w1 w1 w2 w1 w0 w2 w0 w1 w2 w1 w1 w2 w0 w2 w3 w2 w1 w2 w1 w3\n\
+w10 w9 w8 w10 w1 w2 w5 w4 w6 w8 w0 w1 w6 w11 w8 w1 w11 w9 w8 w10 w8|w10 w9 w8 w10 w1 w2 w5 w4 w6 w8 w0 w1 w6 w11 w8 w1 w11 w9 w8 w10 w8\n\
+w7 w8 w9 w2 w0 w4 w1 w1 w7 w11 w10 w5 w4 w5 w6 w10 w4 w3 w1 w0 w4 w6 w0 w11 w1 w2 w1 w0 w5|w7 w8 w9 w2 w0 w4 w1 w1 w7 w11 w10 w5 w4 w5 w6 w10 w4 w3 w1 w0 w4 w6 w0 w11 w1 w2 w1 w0 w5\n\
+w1 w2 w1 w3 w0 w1 w3 w0 w2 w1 w1 w1 w2 w1 w2|w1 w2 w1 w3 w0 w1 w3 w0 w2\n\
+w6 w2 w3 w5 w6 w6 w8 w1 w9 w6 w6 w6 w4 w2 w5 w7 w4 w1 w10 w1|w6 w2 w3 w5 w6 w6 w8 w1 w9 w6 w6 w6 w4 w2 w5 w7 w4 w1 w10 w1\n\
+w3|w3\n\
+w0 w1 w0 w2 w1 w0 w2 w2 w0 w1 w3 w2 w2 w3 w1 w3 w2 w2 w2 w3 w0 w1 w2 w2 w1 w3 w2 w2 w1 w2 w1 w0 w2 w2 w1 w0 w3 w2 w0|w0 w1 w0 w2 w1 w0 w2 w2 w0 w1 w3 w2 w2 w3 w1 w3 w2 w2 w2 w3 w0 w1 w2 w1 w0 w2 w2 w1 w0 w3 w2 w0\n\
+w11 w2 w6 w6 w3 w8 w10 w11 w1 w10 w10|w11 w2 w6 w6 w3 w8 w10 w11 w1 w10 w10\n\
+w5|w5\n\
+w3 w1 w3 w2 w1|w3 w1 w3 w2 w1\n\
+w3 w3 w2 w11 w6|w3 w3 w2 w11 w6\n\
+w6 w0 w6 w10 w10 w10 w5 w6 w3 w1 w3 w4 w1 w1 w2 w2 w6 w6|w6 w0 w6 w10 w10 w10 w5 w6 w3 w1 w3 w4 w1 w1 w2 w2 w6 w6\n\
+w0 w2 w1 w3 w0 w2 w1|w0 w2 w1 w3 w0 w2 w1\n\
+w2 w7 w7 w7 w0 w9 w7 w4 w1 w5 w0 w9|w2 w7 w7 w7 w0 w9 w7 w4 w1 w5 w0 w9\n\
+w8 w0 w6 w11 w5 w8 w1 w2 w6 w11 w10 w0 w2 w6 w11 w2 w8|w8 w0 w6 w11 w5 w8 w1 w2 w6 w11 w10 w0 w2 w6 w11 w2 w8";
+
     /// `DeDuplicatingTokenFilter` over a `WhitespaceTokenizer`, one
     /// spotter for all lines and `startNewSequence()` after every second
     /// line, as OpenSearch 3.9 ran it: `input|kept` per line.
     #[test]
     fn dedup_matches_opensearch() {
         let mut s = Spotter::default();
-        for (n, line) in include_str!("significant_text_dedup.txt")
-            .lines()
-            .enumerate()
-        {
+        for (n, line) in DEDUP_GOLDEN.lines().enumerate() {
             let (input, kept) = line.split_once('|').unwrap();
             let t: Vec<Vec<u8>> = input
                 .split_whitespace()
