@@ -156,7 +156,7 @@ def run_rows(index, rows, label, plugin, stock, shards, expect_override=None):
     for name, body, _ in rows:
         url, b = vo.search_url(index, body)
         try:
-            reference[name] = vo.shape(vo.complete(vo.req("POST", url, b)), b)
+            reference[name] = vo.shape(vo.complete(vo.search(index, body)), b)
         except RuntimeError as e:
             vo.UNVERIFIABLE.append(f"{label} {index} [{name}]")
             print(f"UNVERIFIABLE: {label} {index} [{name}]: the stock node failed: {str(e)[:300]}")
@@ -175,7 +175,7 @@ def run_rows(index, rows, label, plugin, stock, shards, expect_override=None):
             expect = "aggregations"
         before = vo.stats()
         url, b = vo.search_url(index, body)
-        got = vo.shape(vo.req("POST", url, b), b)
+        got = vo.shape(vo.search(index, body), b)
         after = vo.stats()
         diff = vo.same(got, reference[name])
         vo.check(diff is None, f"{label} {index} [{name}]: the plugin node differs from the stock node: {diff}")

@@ -24,6 +24,11 @@ import java.util.concurrent.atomic.AtomicLong;
 public final class RustEngineFactory implements EngineFactory {
     /** Engines created on this node, by kind, for the stats endpoint. */
     public static final AtomicLong RUST = new AtomicLong();
+
+    /** Text field values the Rust engine's writer analyzed in Rust, and in Java, since startup. */
+    public static long[] analyzedValues() {
+        return new long[] { DocumentEncoder.ANALYZED_NATIVELY.get(), DocumentEncoder.ANALYZED_IN_JAVA.get() };
+    }
     public static final AtomicLong JAVA = new AtomicLong();
     public static final AtomicLong NRT_REPLICA = new AtomicLong();
 

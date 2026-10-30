@@ -255,6 +255,7 @@ pub mod rescorer;
 pub mod sandbox;
 pub mod segment_cacheable;
 pub mod segment_order;
+pub mod significant_text;
 pub mod similarities;
 pub mod similarity;
 pub mod simpletext_native;
