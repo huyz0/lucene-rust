@@ -4487,19 +4487,19 @@ impl lucene_util::sorter::IntroTarget for ByBucketKey<'_> {
         self.pivot = self.key(i);
     }
     fn compare_pivot(&mut self, j: usize) -> i32 {
-        java_double_compare(self.pivot, self.key(j))
+        java_double_compare(self.pivot, self.key(j)) as i32
     }
 }
 
 /// `Double.compare`: `-0.0` below `0.0`, every NaN equal and above all else.
-fn java_double_compare(a: f64, b: f64) -> i32 {
+fn java_double_compare(a: f64, b: f64) -> std::cmp::Ordering {
     if a < b {
-        return -1;
+        return std::cmp::Ordering::Less;
     }
     if a > b {
-        return 1;
+        return std::cmp::Ordering::Greater;
     }
-    java_double_bits(a).cmp(&java_double_bits(b)) as i32
+    java_double_bits(a).cmp(&java_double_bits(b))
 }
 
 fn group(keys: &[(u32, i64)]) -> HashMap<u32, Vec<u32>> {
@@ -4536,9 +4536,10 @@ mod tests {
             [2, 0, 1]
         );
         assert_eq!(sorted(vec![(-0.0, 1, 0), (0.0, 1, 1)]), [0, 1]);
-        assert_eq!(java_double_compare(-0.0, 0.0), -1);
-        assert_eq!(java_double_compare(f64::NAN, f64::INFINITY), 1);
-        assert_eq!(java_double_compare(f64::NAN, -f64::NAN), 0);
+        use std::cmp::Ordering::{Equal, Greater, Less};
+        assert_eq!(java_double_compare(-0.0, 0.0), Less);
+        assert_eq!(java_double_compare(f64::NAN, f64::INFINITY), Greater);
+        assert_eq!(java_double_compare(f64::NAN, -f64::NAN), Equal);
     }
 
     /// A leaf over no column whose window holds `vals` (one per document
