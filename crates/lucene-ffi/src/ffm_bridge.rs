@@ -391,6 +391,43 @@ pub unsafe extern "C" fn ffi_jvm_reader_aggregate_tree_alloc(
     })
 }
 
+/// [`jvm_reader::search_collapsed_blobs`]: a collapsed search (OpenSearch's
+/// `collapse`), its slices' groups encoded in an owned buffer.
+///
+/// # Safety
+/// `query`/`sort`/`collapse` must be valid for `query_len`/`sort_len`/
+/// `collapse_len` bytes and `out_ptr`/`out_len` for one write each.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn ffi_jvm_reader_search_collapsed_alloc(
+    handle: u64,
+    query: *const u8,
+    query_len: usize,
+    sort: *const u8,
+    sort_len: usize,
+    collapse: *const u8,
+    collapse_len: usize,
+    top_n: usize,
+    out_ptr: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    guard(|| {
+        // SAFETY: caller contract.
+        unsafe { clear_out(out_ptr, out_len)? };
+        // SAFETY: caller contract.
+        let blob = unsafe { bytes_from_raw(query, query_len)? };
+        // SAFETY: caller contract.
+        let sort_blob = unsafe { bytes_from_raw(sort, sort_len)? };
+        // SAFETY: caller contract.
+        let collapse_blob = unsafe { bytes_from_raw(collapse, collapse_len)? };
+        let encoded =
+            jvm_reader::search_collapsed_blobs(handle, blob, sort_blob, collapse_blob, top_n)?;
+        // SAFETY: caller contract.
+        unsafe { give(encoded, out_ptr, out_len) };
+        Ok(())
+    })
+}
+
 /// [`crate::jvm_fetch::ffi_jvm_reader_document`], the encoded fields as an
 /// owned buffer.
 ///
@@ -1103,5 +1140,44 @@ mod tests {
             unsafe { ffi_jvm_parent_cache_stats(std::ptr::null_mut()) },
             FfiStatus::NullPointer.code()
         );
+    }
+
+    #[test]
+    fn a_collapsed_search_hands_back_its_encoding() {
+        let h = open();
+        let q = term_blob("body", "fox");
+        let sort = sort_blob_terms(&[(SORT_LONG, 0, "n", 0)], None);
+        let mut collapse = 1i32.to_le_bytes().to_vec();
+        collapse.extend_from_slice(b"n");
+        collapse.push(0);
+        let call = |collapse: &[u8], out_ptr: *mut *mut u8, out_len: *mut usize| unsafe {
+            ffi_jvm_reader_search_collapsed_alloc(
+                h,
+                q.as_ptr(),
+                q.len(),
+                sort.as_ptr(),
+                sort.len(),
+                collapse.as_ptr(),
+                collapse.len(),
+                4,
+                out_ptr,
+                out_len,
+            )
+        };
+        let (mut p, mut n) = (std::ptr::null_mut(), 0usize);
+        assert_eq!(call(&collapse, &mut p, &mut n), 0, "{}", last_error_text());
+        assert_eq!(
+            take(p, n),
+            jvm_reader::search_collapsed_blobs(h, &q, &sort, &collapse, 4).unwrap()
+        );
+        let (mut p, mut n) = (std::ptr::null_mut(), 0usize);
+        // A truncated collapse blob: refused, nothing handed back.
+        assert_ne!(call(&collapse[..2], &mut p, &mut n), 0);
+        assert!(p.is_null() && n == 0);
+        assert_eq!(
+            call(&collapse, std::ptr::null_mut(), &mut n),
+            FfiStatus::NullPointer.code()
+        );
+        assert_eq!(ffi_close_jvm_reader(h), 0);
     }
 }
