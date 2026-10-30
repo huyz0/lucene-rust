@@ -17,6 +17,7 @@ import org.opensearch.search.aggregations.InternalAggregations;
 import org.opensearch.search.aggregations.InternalMultiBucketAggregation;
 import org.opensearch.search.aggregations.bucket.BucketsAggregator;
 import org.opensearch.search.aggregations.bucket.terms.BytesKeyedBucketOrds;
+import org.opensearch.search.aggregations.bucket.terms.IncludeExclude;
 import org.opensearch.search.aggregations.bucket.terms.LongKeyedBucketOrds;
 import org.opensearch.search.internal.SearchContext;
 
@@ -52,7 +53,8 @@ import static org.lucenerust.opensearch.NativeAggregationTree.writeString;
  * {@code _source}, analyzes the values at the source paths with a Rust copy of the field's index
  * analyzer ({@link AnalyzerSpec}) and, with {@code filter_duplicate_text}, replays OpenSearch's
  * {@code DeDuplicatingTokenFilter}. A source it would read differently from Java (not JSON, a
- * duplicate key) answers a refusal, and the search re-runs on Lucene.
+ * duplicate key) answers a refusal, and the search re-runs on Lucene. {@code include}/{@code exclude}
+ * filters the collected terms as they are read back.
  */
 final class NativeSignificantTerms {
     private NativeSignificantTerms() {}
@@ -125,9 +127,9 @@ final class NativeSignificantTerms {
         if (BUCKET_ORD == null || BUCKET_AGGS == null || agg.getClass().getName().equals(MAP) == false) {
             return null;
         }
-        if (get(agg, "includeExclude") != null) {
-            return null;
-        }
+        // include/exclude drops a term before it reaches the bucket ords (and the document's
+        // seen terms), so the native side collects them all and the read skips the rejected ones.
+        IncludeExclude.StringFilter filter = (IncludeExclude.StringFilter) get(agg, "includeExclude");
         Object results = get(agg, "resultStrategy");
         if (results.getClass().getName().endsWith("$SignificantTermsResults") == false
             || Reflect.inHierarchy(results.getClass(), "subsetSizes") == null) {
@@ -156,7 +158,9 @@ final class NativeSignificantTerms {
         if (spec.ok() == false) {
             return null;
         }
-        return new TextNode(ctx, f, agg, subs, type.name(), spec.blob(), sources, dedup);
+        TextNode node = new TextNode(ctx, f, agg, subs, type.name(), spec.blob(), sources, dedup);
+        node.filter = filter;
+        return node;
     }
 
     /** {@code significant_text}: a {@link Node} whose keys are the analyzed source terms. */
@@ -206,6 +210,9 @@ final class NativeSignificantTerms {
     }
 
     static class Node extends NativeAggregationTree.Node {
+        /** A term the aggregator's {@code include}/{@code exclude} rejects (null: none). */
+        IncludeExclude.StringFilter filter;
+
         final SearchContext ctx;
         final AggregatorFactory factory;
         final String field;
@@ -295,6 +302,10 @@ final class NativeSignificantTerms {
                         }
                         byte[] term = new byte[len];
                         in.get(term);
+                        if (filter != null && filter.accept(new BytesRef(term)) == false) {
+                            in.getLong();
+                            continue;
+                        }
                         bucket = bytesOrds.add(i, new BytesRef(term));
                     } else {
                         long key = in.getLong();
