@@ -242,6 +242,13 @@ impl Scorer for ConstantScorer<'_> {
         }
         self.inner.doc_id_run_end()
     }
+
+    fn two_phase_run_end(&self) -> i32 {
+        if self.emptied {
+            return self.doc;
+        }
+        self.inner.two_phase_run_end()
+    }
 }
 
 /// The anonymous `FilterScorer` `BooleanScorerSupplier.req` wraps a lone
@@ -269,6 +276,9 @@ impl<S: Scorer + ?Sized> Scorer for ZeroScorer<S> {
     }
     fn match_cost(&self) -> f32 {
         self.0.match_cost()
+    }
+    fn two_phase_run_end(&self) -> i32 {
+        self.0.two_phase_run_end()
     }
     fn score(&mut self) -> Result<f32> {
         Ok(0.0)

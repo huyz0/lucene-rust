@@ -746,7 +746,9 @@ fn publish<S: super::Scorer + ?Sized, C: ScoringCollector + ?Sized>(
 /// `ReqExclBulkScorer.score`: the required bulk scorer, run only over the
 /// ranges between excluded documents -- and past a whole run of consecutive
 /// excluded documents at once (`docIDRunEnd`), which on a dense excluded
-/// term skips entire postings blocks of the required clause.
+/// term skips entire postings blocks of the required clause. A two-phase
+/// excluded clause skips its confirmed run too (Lucene 10.6, branch_10_6,
+/// #16307: `TwoPhaseIterator.docIDRunEnd`, at least one document).
 fn req_excl_score<C: ScoringCollector + ?Sized>(
     req: &mut Bulk<'_>,
     excl: &mut dyn super::Scorer,
@@ -766,7 +768,9 @@ fn req_excl_score<C: ScoringCollector + ?Sized>(
             if !excl.two_phase() {
                 up_to = excl.doc_id_run_end().min(max);
             } else if excl.matches()? {
-                up_to += 1;
+                up_to = up_to
+                    .saturating_add(1)
+                    .max(excl.two_phase_run_end().min(max));
             }
             excl_doc = excl.next_doc()?;
         } else {

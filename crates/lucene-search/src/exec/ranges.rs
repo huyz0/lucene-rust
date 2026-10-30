@@ -230,6 +230,28 @@ impl<F: FnMut(i32, bool) -> Result<bool>> Scorer for SkipBlockRange<'_, F> {
     fn match_cost(&self) -> f32 {
         2.0
     }
+    /// `DocValuesBlockRangeIterator.docIDRunEnd()` (Lucene 10.6,
+    /// branch_10_6, #16307): only a `YES` block proves a run of matches --
+    /// `SkipBlockRangeIterator.docIDRunEnd()`, the block extended to every
+    /// coarser enclosing `YES` interval; any other block reports none.
+    fn two_phase_run_end(&self) -> i32 {
+        if self.matched != BlockMatch::Yes {
+            return self.doc;
+        }
+        let s = &self.skipper;
+        let mut max_doc = s.max_doc_id(0);
+        let mut level = 1;
+        while level < s.num_levels()
+            && s.min_value(level) >= self.min
+            && s.max_value(level) <= self.max
+            && i64::from(s.max_doc_id(level)) - i64::from(s.min_doc_id(level))
+                == i64::from(s.doc_count(level)) - 1
+        {
+            max_doc = s.max_doc_id(level);
+            level = level.saturating_add(1);
+        }
+        max_doc.saturating_add(1)
+    }
     fn score(&mut self) -> Result<f32> {
         Ok(0.0)
     }
@@ -803,24 +825,39 @@ pub(crate) fn doc_values_rewrite<'a>(
         }
         None => 0,
     };
-    let mut accepted = vec![false; usize::try_from(size).unwrap_or(0)];
-    let mut any = false;
+    // `buildOrdinalSet` (Lucene 10.6, branch_10_6, #16297): the accepted
+    // ordinals collected in order, then held as their `[min, max]` range when
+    // contiguous, else as a bit set spanning only that range -- memory and
+    // clearing that scale with the matching terms, not the field's ordinal
+    // count. The same ordinals either way, so the same matches.
+    let mut collected: Vec<i64> = Vec::new();
     while ord < size {
         let term = dict.seek_ord(ord).map_err(store)?;
         if !within(term) {
             break;
         }
         if accepts(term) {
-            if let Some(slot) = usize::try_from(ord).ok().and_then(|i| accepted.get_mut(i)) {
-                *slot = true;
-                any = true;
-            }
+            collected.push(ord);
         }
         ord = ord.saturating_add(1);
     }
-    if !any {
+    let (Some(&min_ord), Some(&max_ord)) = (collected.first(), collected.last()) else {
         return Ok(None);
-    }
+    };
+    let span = usize::try_from(max_ord.saturating_sub(min_ord))
+        .unwrap_or(0)
+        .saturating_add(1);
+    // `contiguous`: one ordinal per slot of the span (ascending, distinct).
+    let ord_set = if collected.len() == span {
+        None
+    } else {
+        let mut bits = FixedBitSet::new(span);
+        for &o in &collected {
+            // FBS: `min_ord <= o <= max_ord`, so `o - min_ord < span`.
+            bits.set(usize::try_from(o.saturating_sub(min_ord)).unwrap_or(0));
+        }
+        Some(bits)
+    };
     let mut buf = Vec::new();
     let mut single = match &ords {
         Ords::Single(s) => Some(NumericReader::new(data, &s.ords)),
@@ -839,11 +876,11 @@ pub(crate) fn doc_values_rewrite<'a>(
             r.values(doc, &mut buf)?;
         }
         Ok(buf.iter().any(|&o| {
-            usize::try_from(o)
-                .ok()
-                .and_then(|i| accepted.get(i))
-                .copied()
-                .unwrap_or(false)
+            (min_ord..=max_ord).contains(&o)
+                && ord_set.as_ref().is_none_or(|b| {
+                    // FBS: `o` is in `[min_ord, max_ord]`, the set's span.
+                    b.get(usize::try_from(o.saturating_sub(min_ord)).unwrap_or(0))
+                })
         }))
     };
     Ok(constant(
