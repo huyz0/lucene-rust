@@ -3473,6 +3473,12 @@ pub(crate) fn search_boolean_query_scored_segment<C: ScoringCollector>(
     global: Option<&GlobalStats>,
     collector: &mut C,
 ) -> Result<()> {
+    // The searcher's own similarity skips the BM25 shortcuts.
+    if let (Some(similarity), Some(global)) = (seg.similarity, global) {
+        return search_boolean_query_scored_segment_with_similarity(
+            seg, query, norms, global, similarity, collector,
+        );
+    }
     let max_doc = seg.max_doc;
     search_boolean_query_scored_impl(
         seg.fields,
@@ -3552,7 +3558,7 @@ pub(crate) fn search_boolean_query_scored_segment_time_limited<C: ScoringCollect
         max_doc: seg.max_doc,
         cache: seg.cache,
         reader: seg.reader,
-        similarity,
+        similarity: similarity.or(seg.similarity),
     };
     let mode = exec::Mode::of(collector);
     match exec::bulk_boolean(&ctx, query, 1.0, mode)? {
@@ -3601,7 +3607,7 @@ pub fn count_boolean_query_segment(
         max_doc: seg.max_doc,
         cache: seg.cache,
         reader: seg.reader,
-        similarity: None,
+        similarity: seg.similarity,
     };
     if let Some(n) = count_boolean_query_shortcut(seg, query)? {
         return Ok(n);

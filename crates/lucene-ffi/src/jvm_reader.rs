@@ -58,6 +58,7 @@ use lucene_search::extended_query::{
 use lucene_search::field_norms::FieldNorms;
 use lucene_search::multi_segment::OpenSegment;
 use lucene_search::query::{BooleanQuery, Clause, TermQuery};
+use lucene_search::similarities::{PerFieldSimilarity, Similarity};
 use lucene_search::terms_agg::TermsSpec;
 use lucene_search::top_field::{FieldDoc, NestedSort, Selector, SortField, SortType};
 use lucene_search::weight_count::count_term_query;
@@ -126,8 +127,9 @@ use std::sync::Arc;
 /// `TOP_HITS` its sort (a sorted bucket's values and terms back), and the
 /// `HDR_PERCENTILES` node (each bucket's values back); 46, the `NESTED` and
 /// `REVERSE_NESTED` nodes; 47, the multi-term, doc-values, covering and
-/// distance-feature nodes ([`crate::jvm_queries`], 27-35).
-pub const JVM_ABI_VERSION: u32 = 47;
+/// distance-feature nodes ([`crate::jvm_queries`], 27-35); 48, the per-field
+/// similarity table in front of a request ([`crate::jvm_similarity`]).
+pub const JVM_ABI_VERSION: u32 = 48;
 
 /// Blob tag for a single `TermQuery`.
 pub const QUERY_TERM: u8 = 0;
@@ -189,19 +191,42 @@ pub extern "C" fn ffi_jvm_abi_version() -> u32 {
 
 /// A request's query blob: the query, and the `min_score` in front of it
 /// ([`QUERY_MIN_SCORE`]) when there is one -- rewritten, as
-/// `IndexSearcher.search` rewrites before it builds a weight ([`rewritten`]).
-pub(crate) fn decode_request(blob: &[u8]) -> Result<(JvmQuery, Option<f32>), FfiStatus> {
-    if blob.first() != Some(&QUERY_MIN_SCORE) {
-        return Ok((rewritten(decode_query(blob)?), None));
+/// `IndexSearcher.search` rewrites before it builds a weight ([`rewritten`]);
+/// and, before or after that `min_score`, the searcher's per-field
+/// similarities ([`crate::jvm_similarity`]) when a field scores with another
+/// than the default BM25. A request with them is always a boolean: the lone-term
+/// search scores BM25.
+pub(crate) fn decode_request(
+    blob: &[u8],
+) -> Result<(JvmQuery, Option<f32>, Option<PerFieldSimilarity>), FfiStatus> {
+    use crate::jvm_similarity::QUERY_SIMILARITY;
+    // The prefixes, in either order, each at most once.
+    let (mut min, mut similarity) = (None, None);
+    let mut c = Cursor { buf: blob, pos: 0 };
+    loop {
+        let at = c.pos;
+        match blob.get(at) {
+            Some(&QUERY_MIN_SCORE) if min.is_none() => {
+                c.pos += 1;
+                min = Some(f32::from_bits(u32::from_le_bytes(c.i32()?.to_le_bytes())));
+            }
+            Some(&QUERY_SIMILARITY) if similarity.is_none() => {
+                c.pos += 1;
+                similarity = Some(crate::jvm_similarity::decode(&mut c)?);
+            }
+            Some(&QUERY_MIN_SCORE | &QUERY_SIMILARITY) => {
+                set_last_error("query blob: min_score or similarity table twice");
+                return Err(FfiStatus::InvalidArgument);
+            }
+            _ => break,
+        }
     }
-    let mut c = Cursor { buf: blob, pos: 1 };
-    let min = f32::from_bits(u32::from_le_bytes(c.i32()?.to_le_bytes()));
     let rest = blob.get(c.pos..).ok_or(FfiStatus::InvalidArgument)?;
-    if rest.first() == Some(&QUERY_MIN_SCORE) {
-        set_last_error("query blob: min_score twice");
-        return Err(FfiStatus::InvalidArgument);
-    }
-    Ok((rewritten(decode_query(rest)?), Some(min)))
+    let query = rewritten(decode_query(rest)?);
+    Ok(match similarity {
+        Some(s) => (JvmQuery::Boolean(boolean_of(&query)), min, Some(s)),
+        None => (query, min, None),
+    })
 }
 
 /// `IndexSearcher.rewrite`, before the free `search_*_multi_segment`
@@ -640,7 +665,8 @@ pub unsafe extern "C" fn ffi_jvm_reader_search(
         }
         // SAFETY: caller contract.
         let blob = unsafe { bytes_from_raw(query, query_len)? };
-        let (query, min_score) = decode_request(blob)?;
+        let (query, min_score, sim) = decode_request(blob)?;
+        let sim = sim.as_ref();
         // No lock is held while searching: a slow query must not block a
         // refresh's open or close, and through it every other search.
         let h = lookup(
@@ -648,8 +674,8 @@ pub unsafe extern "C" fn ffi_jvm_reader_search(
             "ffi_jvm_reader_search: unknown or already-closed handle",
         )?;
         let (hits, total, lower_bound) = match min_score {
-            Some(min) => search_min_score(&h, &query, top_n, count_limit, min)?,
-            None => search(&h, &query, top_n, count_limit)?,
+            Some(min) => search_min_score(&h, &query, top_n, count_limit, min, sim)?,
+            None => search(&h, &query, top_n, count_limit, sim)?,
         };
         // SAFETY: caller contract; `hits.len() <= top_n <= buf_len`.
         unsafe {
@@ -1191,7 +1217,7 @@ pub(crate) fn search_sorted_blobs(
     top_n: usize,
     count_limit: i64,
 ) -> Result<SortedOut, FfiStatus> {
-    let (query, min_score) = decode_request(query_blob)?;
+    let (query, min_score, sim) = decode_request(query_blob)?;
     let (keys, after, track, slices, terminate_after, index_sorted) = decode_sort(sort_blob)?;
     if min_score.is_some() && terminate_after.is_some() {
         set_last_error("ffi_jvm_reader_search_sorted: min_score is not run behind terminate_after");
@@ -1213,6 +1239,7 @@ pub(crate) fn search_sorted_blobs(
         terminate_after,
         &index_sorted,
         min_score,
+        sim.as_ref(),
     )?;
     let terms = encode_terms(&keys, &hits)?;
     Ok(SortedOut {
@@ -1481,7 +1508,8 @@ pub(crate) fn aggregate_counting_blobs_seen(
     ),
     FfiStatus,
 > {
-    let (query, min_score) = decode_request(query_blob)?;
+    let (query, min_score, sim) = decode_request(query_blob)?;
+    let sim = sim.as_ref();
     let (specs, terms, slices) = decode_metrics(aggs_blob)?;
     let h = lookup(
         handle,
@@ -1503,6 +1531,7 @@ pub(crate) fn aggregate_counting_blobs_seen(
         .zip(&h.live_docs)
         .map(|(mut s, live)| {
             s.live_docs = live.as_ref();
+            s.similarity = sim.map(|p| p as &dyn Similarity);
             s
         })
         .collect();
@@ -1626,7 +1655,8 @@ pub(crate) fn count_terminates_blobs(
     query_blob: &[u8],
     spec_blob: &[u8],
 ) -> Result<bool, FfiStatus> {
-    let (query, min_score) = decode_request(query_blob)?;
+    let (query, min_score, sim) = decode_request(query_blob)?;
+    let sim = sim.as_ref();
     let (n, iterate, slices) = decode_count_spec(spec_blob)?;
     let h = lookup(
         handle,
@@ -1648,6 +1678,7 @@ pub(crate) fn count_terminates_blobs(
         .zip(&h.live_docs)
         .map(|(mut s, live)| {
             s.live_docs = live.as_ref();
+            s.similarity = sim.map(|p| p as &dyn Similarity);
             s
         })
         .collect();
@@ -1756,6 +1787,7 @@ pub(crate) fn search_sorted(
     terminate_after: Option<(u64, bool)>,
     index_sorted: &[bool],
     min_score: Option<f32>,
+    sim: Option<&PerFieldSimilarity>,
 ) -> Result<(Vec<FieldDoc>, i64, bool, f32, bool), FfiStatus> {
     let mut opened = h.reader.open_segments().map_err(|e| {
         set_last_error(format!("opening segment postings: {e}"));
@@ -1778,6 +1810,7 @@ pub(crate) fn search_sorted(
         .enumerate()
         .map(|(i, (mut s, live))| {
             s.live_docs = live.as_ref();
+            s.similarity = sim.map(|p| p as &dyn Similarity);
             s.index_sort_prefix = index_sorted.get(i).copied().unwrap_or(false);
             s
         })
@@ -1949,6 +1982,7 @@ pub(crate) fn search(
     query: &JvmQuery,
     top_n: usize,
     count_limit: i64,
+    sim: Option<&PerFieldSimilarity>,
 ) -> Result<(Vec<ScoreDoc>, i64, bool), FfiStatus> {
     let mut opened = h.reader.open_segments().map_err(|e| {
         set_last_error(format!("opening segment postings: {e}"));
@@ -1966,6 +2000,7 @@ pub(crate) fn search(
         .zip(&h.live_docs)
         .map(|(mut s, live)| {
             s.live_docs = live.as_ref();
+            s.similarity = sim.map(|p| p as &dyn Similarity);
             s
         })
         .collect();
@@ -2035,6 +2070,7 @@ pub(crate) fn search_min_score(
     top_n: usize,
     count_limit: i64,
     min: f32,
+    sim: Option<&PerFieldSimilarity>,
 ) -> Result<(Vec<ScoreDoc>, i64, bool), FfiStatus> {
     let mut opened = h.reader.open_segments().map_err(|e| {
         set_last_error(format!("opening segment postings: {e}"));
@@ -2052,6 +2088,7 @@ pub(crate) fn search_min_score(
         .zip(&h.live_docs)
         .map(|(mut s, live)| {
             s.live_docs = live.as_ref();
+            s.similarity = sim.map(|p| p as &dyn Similarity);
             s
         })
         .collect();

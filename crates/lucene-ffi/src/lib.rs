@@ -297,6 +297,7 @@ mod jvm_function_score;
 mod jvm_nodes;
 mod jvm_queries;
 mod jvm_reader;
+mod jvm_similarity;
 #[cfg(test)]
 mod legacy_boolean_abi;
 mod points_query;

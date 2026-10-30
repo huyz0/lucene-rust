@@ -134,6 +134,12 @@ public final class NativeSelfTest {
             System.out.printf("NativeSelfTest (leaves only): %s; %d checks, %d failures; %d of %d compared scores bit-exact%n", NativeSelfTestLeaves.ENCODED.entrySet().stream().map(e -> e.getKey() + "=" + e.getValue()[0]).toList(), checks, failures, bitExact, scored);
             System.exit(failures > 0 ? 1 : 0);
         }
+        // SELFTEST_ONLY=similarity: NativeSelfTestSimilarity's per-field similarities alone.
+        if ("similarity".equals(System.getenv("SELFTEST_ONLY"))) {
+            NativeSelfTestSimilarity.run(new Random(29), (ok, what) -> check(ok, what), NativeSelfTest::compare);
+            System.out.printf("NativeSelfTest (similarity only): %s; %d checks, %d failures; %d of %d compared scores bit-exact%n", NativeSelfTestSimilarity.COMPARED.entrySet().stream().map(e -> e.getKey() + "=" + e.getValue()[0]).toList(), checks, failures, bitExact, scored);
+            System.exit(failures > 0 ? 1 : 0);
+        }
         if (onlyM10 == false) {
         bridgeErrorPaths();
         encoderMatrix();
@@ -147,6 +153,8 @@ public final class NativeSelfTest {
             check(e.getValue()[0] >= (e.getKey().equals("term_states") ? 6 : 50), "leaf " + e.getKey() + " queries encoded and compared: " + e.getValue()[0]);
         }
         check(NativeSelfTestLeaves.ENCODED.size() == NativeSelfTestLeaves.SHAPES, "leaf shapes compared: " + NativeSelfTestLeaves.ENCODED.keySet());
+        NativeSelfTestSimilarity.run(new Random(29), (ok, what) -> check(ok, what), NativeSelfTest::compare);
+        check(NativeSelfTestSimilarity.COMPARED.size() == 7, "similarities compared: " + NativeSelfTestSimilarity.COMPARED.keySet());
         System.out.printf("NativeSelfTest: leaf queries encoded and compared, by shape: %s%n", NativeSelfTestLeaves.ENCODED.entrySet().stream().map(e -> e.getKey() + "=" + e.getValue()[0]).toList());
         for (var e : NativeSelfTestM10.ENCODED.entrySet()) {
             check(e.getValue()[0] >= 100, "M10 " + e.getKey() + " queries encoded and compared: " + e.getValue()[0]);
@@ -471,9 +479,34 @@ public final class NativeSelfTest {
         }
     }
 
+    /** A searcher without an executor over {@code searcher}'s reader, under its similarity. */
+    private static IndexSearcher sequential(IndexSearcher searcher) {
+        IndexSearcher s = new IndexSearcher(searcher.getIndexReader());
+        s.setSimilarity(searcher.getSimilarity());
+        return s;
+    }
+
     /** Compares the native path with Lucene for {@code queries} on {@code reader}. */
+
     private static void compare(String where, DirectoryReader reader, NativeReaders readers, List<Query> queries) throws Exception {
+        compare(where, reader, readers, queries, null);
+    }
+
+    /**
+     * {@link #compare} under the searcher similarity {@code similarity} (null: the default), each
+     * blob behind the table {@link SimilarityEncoder} records for it.
+     */
+    static void compare(
+        String where,
+        DirectoryReader reader,
+        NativeReaders readers,
+        List<Query> queries,
+        org.apache.lucene.search.similarities.Similarity similarity
+    ) throws Exception {
         IndexSearcher searcher = new IndexSearcher(reader);
+        if (similarity != null) {
+            searcher.setSimilarity(similarity);
+        }
         NativeReaders.Acquired acquired = readers.acquire(reader);
         check(acquired.handle() != 0, where + ": native reader opens (" + acquired.fallbackReason() + ")");
         if (acquired.handle() == 0) {
@@ -481,10 +514,12 @@ public final class NativeSelfTest {
         }
         for (Query query : queries) {
             Query rewritten = searcher.rewrite(query);
-            QueryEncoder.Encoded enc = QueryEncoder.encode(rewritten, f -> true);
-            if (enc.blob() == null) {
+            SimilarityEncoder similarities = new SimilarityEncoder(searcher.getSimilarity());
+            QueryEncoder.Encoded encoded = QueryEncoder.encode(rewritten, similarity == null ? f -> true : similarities);
+            if (encoded.blob() == null) {
                 continue;
             }
+            QueryEncoder.Encoded enc = new QueryEncoder.Encoded(similarities.prefix(encoded.blob()), null, encoded.fast());
             termRangesCompared += holdsTermRange(rewritten) ? 1 : 0;
             pointsCompared += holdsPoints(rewritten) ? 1 : 0;
             // size: 0 -- no collector, so the count takes its own path (bounds, then counting).
@@ -1046,7 +1081,7 @@ public final class NativeSelfTest {
                 ? org.apache.lucene.search.MultiCollector.wrap(early, top, new MaxScore(wantMax))
                 : org.apache.lucene.search.MultiCollector.wrap(early, top);
             try {
-                new IndexSearcher(searcher.getIndexReader()).search(query, c);
+                sequential(searcher).search(query, c);
             } catch (Early.Stop e) {
                 // terminated
             }
@@ -1139,7 +1174,7 @@ public final class NativeSelfTest {
         if (top.scoreDocs.length == 0) {
             return;
         }
-        IndexSearcher sequential = new IndexSearcher(searcher.getIndexReader());
+        IndexSearcher sequential = sequential(searcher);
         for (float min : new float[] { top.scoreDocs[0].score * 0.5f, top.scoreDocs[top.scoreDocs.length - 1].score }) {
             org.apache.lucene.search.TopScoreDocCollector tc = new org.apache.lucene.search.TopScoreDocCollectorManager(10, null, Integer.MAX_VALUE)
                 .newCollector();
@@ -1241,7 +1276,7 @@ public final class NativeSelfTest {
     ) throws Exception {
         org.apache.lucene.search.TopFieldCollector top = new TopFieldCollectorManager(sort, topN, after, threshold).newCollector();
         org.apache.lucene.search.Collector inner = track ? org.apache.lucene.search.MultiCollector.wrap(top, new MaxScore(max)) : top;
-        new IndexSearcher(searcher.getIndexReader()).search(query, new MinScore(inner, min));
+        sequential(searcher).search(query, new MinScore(inner, min));
         return top.topDocs();
     }
 

@@ -987,7 +987,8 @@ pub(crate) fn aggregate_tree_blobs(
     query_blob: &[u8],
     tree_blob: &[u8],
 ) -> Result<Vec<u8>, FfiStatus> {
-    let (query, min_score) = jvm_reader::decode_request(query_blob)?;
+    let (query, min_score, sim) = jvm_reader::decode_request(query_blob)?;
+    let sim = sim.as_ref();
     let tree = decode_tree(tree_blob)?;
     let h = jvm_reader::lookup(
         handle,
@@ -1031,6 +1032,7 @@ pub(crate) fn aggregate_tree_blobs(
         .zip(&h.live_docs)
         .map(|(mut s, live)| {
             s.live_docs = live.as_ref();
+            s.similarity = sim.map(|p| p as &dyn lucene_search::similarities::Similarity);
             s
         })
         .collect();

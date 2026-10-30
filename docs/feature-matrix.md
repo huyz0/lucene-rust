@@ -63,8 +63,10 @@ OpenSearch's answer on the same shard:
 | `exists` | ✅ | on a vector field it falls back |
 | any other query | ? | runs native when OpenSearch rewrites it into the Lucene queries the rows above produce (term, boolean, constant-score, boost, disjunction-max, match-all/none, phrase, prefix/wildcard/regexp/fuzzy/terms, 8-byte point range, exists) -- e.g. `simple_query_string`, `match_bool_prefix` -- and falls back otherwise, counted as `query_<Class>`/`clause_<Class>` (`nested`, `geo_*`, `knn`, `script_score`, `function_score`, `span_*`, `intervals`, ...). Not verified per query type: measure with the stats below |
 
-Scoring is BM25. A field with another similarity, or BM25 with other
-parameters, falls back (`field_similarity`), as does
+Each field scores with its mapping's similarity: `BM25` with any
+parameters, `boolean`, `DFR`, `IB`, `DFI`, `LMDirichlet` and
+`LMJelinekMercer` run native (since 2026-10-30); `scripted`, `LegacyBM25` and
+a plugin's similarity fall back (`field_similarity`), as does
 `search_type=dfs_query_then_fetch` (`dfs`).
 
 ### Request features
@@ -134,7 +136,7 @@ Each is a counter under `fallbacks` in `GET /_plugins/lucene_rust/stats`.
 | `points_width` | is a points range beyond Lucene's limits (more than 16 dimensions or 16 bytes per dimension) |
 | `phrase_positions`, `boolean_msm_negative`, `boost_invalid` | uses a variant of a supported query the native side does not take |
 | `query_too_deep`, `query_too_large` | nests deeper than 32 or has more than 1,024 query nodes |
-| `field_similarity` | scores a field with a non-default similarity |
+| `field_similarity` | scores a field with a `scripted`, `LegacyBM25` or plugin similarity, or `combined_fields` over a field that is not default BM25 |
 | `term_states` | carries term statistics the native side cannot reproduce |
 | `dfs` | is `dfs_query_then_fetch` |
 | `aggregations`, `collectors` | has an aggregation or collector the native side does not run |
