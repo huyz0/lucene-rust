@@ -726,12 +726,14 @@ fn field_names(query: &BooleanQuery, all: bool) -> Vec<&str> {
             }
             // The M10 nodes (`jvm_nodes`): a block join's child and a
             // function score's sub-query score with their own fields' norms,
-            // a span query with its (masked) field's, BM25F with each field's.
+            // a span query with its (masked) field's, BM25F with each field's, a
+            // covering query with its sub-queries'.
             Clause::Extended(e) => {
                 use lucene_search::extended_query::ExtendedQuery;
                 match e.as_ref() {
                     ExtendedQuery::ToParentBlockJoin(j) => stack.push(&j.child),
                     ExtendedQuery::FunctionScore(f) => stack.push(&f.in_query),
+                    ExtendedQuery::Covering(c) => stack.extend(c.queries.iter()),
                     ExtendedQuery::Span(s) => {
                         if let Some(field) = s.field() {
                             if !out.contains(&field) {
