@@ -1069,6 +1069,8 @@ public final class NativeAggregationTree {
                 NativeAggregations.Terms t = NativeAggregations.termsSpec(ctx, f, config);
                 return t == null || t.thresholds().getMinDocCount() == 0 ? null : new NumericTermsNode(agg, subs, t, valueKind);
             }
+            case AGGS + "bucket.terms.SignificantTermsAggregatorFactory":
+                return NativeSignificantTerms.node(agg, type, field, missing, subs);
             case AGGS + "metrics.PercentilesAggregatorFactory":
             case AGGS + "metrics.PercentileRanksAggregatorFactory":
                 return NativePercentiles.node(agg, field, valueKind);
