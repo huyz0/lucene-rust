@@ -27,6 +27,7 @@ import org.apache.lucene.search.Query;
 import org.apache.lucene.search.TermQuery;
 import org.apache.lucene.search.TopDocs;
 import org.apache.lucene.search.FieldDoc;
+import org.apache.lucene.search.ScoreDoc;
 import org.apache.lucene.search.Sort;
 import org.apache.lucene.search.SortField;
 import org.apache.lucene.search.TopFieldCollectorManager;
@@ -152,10 +153,18 @@ public final class NativeSelfTest {
             System.out.printf("NativeSelfTest (similarity only): %s; %d checks, %d failures; %d of %d compared scores bit-exact%n", NativeSelfTestSimilarity.COMPARED.entrySet().stream().map(e -> e.getKey() + "=" + e.getValue()[0]).toList(), checks, failures, bitExact, scored);
             System.exit(failures > 0 ? 1 : 0);
         }
+        // SELFTEST_ONLY=nrt: the multi-segment readers alone.
+        if ("nrt".equals(System.getenv("SELFTEST_ONLY"))) {
+            nrtReaders(new Random(42));
+            pointSetsMatchingNothing(new Random(43));
+            System.out.printf("NativeSelfTest (nrt only): %d checks, %d failures%n", checks, failures);
+            System.exit(failures > 0 ? 1 : 0);
+        }
         if (onlyM10 == false) {
         bridgeErrorPaths();
         encoderMatrix();
         nrtReaders(new Random(42));
+        pointSetsMatchingNothing(new Random(43));
         softDeletes(new Random(7));
         geo(new Random(13));
         }
@@ -1009,7 +1018,8 @@ public final class NativeSelfTest {
                     same = got[i].doc == w.doc && Arrays.equals(got[i].fields, w.fields);
                 }
                 sortedChecks++;
-                check(same, what + ": native " + Arrays.toString(Arrays.copyOf(docs, (int) counts[0])) + " lucene " + Arrays.toString(Arrays.stream(want.scoreDocs).mapToInt(d -> d.doc).toArray()));
+                check(same, what + ": native " + Arrays.toString(Arrays.copyOf(docs, (int) counts[0])) + " lucene " + Arrays.toString(Arrays.stream(want.scoreDocs).mapToInt(d -> d.doc).toArray())
+                    + (same ? "" : "; values native " + sortValues(got) + " lucene " + sortValues(want.scoreDocs)));
                 boolean exact = want.totalHits.relation() == TotalHits.Relation.EQUAL_TO;
                 check(
                     // Tracked, nothing is skipped on either side: the same count, bound or not.
@@ -1029,6 +1039,17 @@ public final class NativeSelfTest {
                 after = (FieldDoc) want.scoreDocs[want.scoreDocs.length - 1];
             }
         }
+    }
+
+    /** Each hit's sort values, for a failure message (a score shown with its bits). */
+    private static String sortValues(ScoreDoc[] hits) {
+        StringBuilder b = new StringBuilder("[");
+        for (ScoreDoc h : hits) {
+            b.append(b.length() > 1 ? ", " : "").append(h.doc).append('=');
+            Object[] fields = h instanceof FieldDoc f ? f.fields : new Object[0];
+            b.append(Arrays.toString(Arrays.stream(fields).map(v -> v instanceof Float x ? x + "/" + Integer.toHexString(Float.floatToIntBits(x)) : String.valueOf(v)).toArray()));
+        }
+        return b.append(']').toString();
     }
 
     /** OpenSearch's EarlyTerminatingCollector(EMPTY_COLLECTOR, n, true): throws past n. */
@@ -1500,6 +1521,49 @@ public final class NativeSelfTest {
         @Override
         public void doubleField(org.apache.lucene.index.FieldInfo fi, double value) {
             log.add(fi.name + "=d" + Double.doubleToRawLongBits(value));
+        }
+    }
+
+    /**
+     * A point set whose bounds overlap a segment's values but that matches none of them still has
+     * a scorer in Lucene (PointInSetQuery returns null only for disjoint bounds), so a boolean
+     * keeps it among its minimum-should-match clauses: WANDScorer rounds the optional sum to a
+     * float before ConjunctionScorer adds the required clause. Dropping the clause instead turns
+     * the optional clauses into required ones, one double sum, and the score can move an ulp.
+     * Segments of ids [0, 62), [62, 184) and [184, 700), and sets of {27, 61, 184, 353}: the middle
+     * segment holds none of them.
+     */
+    private static void pointSetsMatchingNothing(Random r) throws Exception {
+        Path dir = Files.createTempDirectory("lucene-rust-selftest-pointsets");
+        NativeReaders readers = new NativeReaders();
+        IndexWriterConfig cfg = new IndexWriterConfig(new StandardAnalyzer()).setMergePolicy(org.apache.lucene.index.NoMergePolicy.INSTANCE);
+        try (FSDirectory d = FSDirectory.open(dir); IndexWriter w = new IndexWriter(d, cfg)) {
+            for (int id = 0; id < 700; id++) {
+                w.addDocument(doc(r, id));
+                if (id == 61 || id == 183) {
+                    w.flush();
+                }
+            }
+            try (DirectoryReader reader = DirectoryReader.open(w)) {
+                check(reader.leaves().size() == 3, "point sets: three segments, not " + reader.leaves().size());
+                List<Query> queries = new ArrayList<>();
+                for (int q = 0; q < 120; q++) {
+                    org.apache.lucene.search.BooleanQuery.Builder b = new org.apache.lucene.search.BooleanQuery.Builder();
+                    b.add(new TermQuery(new Term("tag", word(r))), org.apache.lucene.search.BooleanClause.Occur.SHOULD);
+                    b.add(LongPoint.newSetQuery("n", 27, 61, 184, 353), org.apache.lucene.search.BooleanClause.Occur.SHOULD);
+                    b.add(new TermQuery(new Term("body", word(r))), org.apache.lucene.search.BooleanClause.Occur.SHOULD);
+                    if (r.nextBoolean()) {
+                        b.add(new TermQuery(new Term("body", word(r))), org.apache.lucene.search.BooleanClause.Occur.SHOULD);
+                    }
+                    b.add(new TermQuery(new Term("body", word(r))), org.apache.lucene.search.BooleanClause.Occur.MUST);
+                    b.setMinimumNumberShouldMatch(2);
+                    queries.add(b.build());
+                }
+                compare("point sets matching nothing in a segment", reader, readers, queries);
+            }
+        }
+        try (Stream<Path> s = Files.walk(dir)) {
+            s.sorted(Comparator.reverseOrder()).forEach(p -> p.toFile().delete());
         }
     }
 
