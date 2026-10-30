@@ -174,6 +174,19 @@ where the native call's fixed cost shows -- see
 | `has_child`, `has_parent` | `JoinUtil`'s global-ordinal joins (package-private Lucene classes) | no (`query_*`, `clause_*`): the join's from side runs in Java during the rewrite |
 | `script_score` | OpenSearch's `ScriptScoreQuery` | no (`query_ScriptScoreQuery`) |
 
+### Lucene-side leaves (Track A, 2026-10-30)
+
+| Request (DSL) | Rewritten Lucene query | Native |
+|---|---|---|
+| `regexp` with any flags or `case_insensitive`, an escaped `wildcard`, `prefix`/`wildcard`/`regexp` with `rewrite: constant_score_blended` | `AutomatonQuery` (and subclasses) under `MultiTermQuery`'s blended or plain constant-score rewrite | yes: Lucene's `CompiledAutomaton` sent as is (node 27), up to 65,536 states (`automaton_states`) |
+| `fuzzy` under a constant-score rewrite (`rewrite` set, or inside `query_string`) | `FuzzyQuery` | yes: `FuzzyQuery.getFuzzyAutomaton` sent as node 27 (`fuzzy_automaton` if Lucene refuses it) |
+| any multi-term query on a `keyword` with `index: false` (`rewrite` over doc values) | `MultiTermQueryDocValuesWrapper` | yes: the automaton (node 27, doc-values rewrite) or a `terms` set (node 28) |
+| `range`/`term`/`terms` on a numeric or `date` field with `index: false` | `SortedNumericDocValuesRangeQuery`, `SortedNumericDocValuesSetQuery` | yes (nodes 29, 30) |
+| `range`/`term` on a `keyword` or `ip` with `index: false`; `terms` on such an `ip` | `SortedSetDocValuesRangeQuery`, the sandbox's `SortedSetDocValuesMultiRangeQuery` | yes (nodes 31, 32) |
+| `terms_set` with `minimum_should_match_field` or a constant | the sandbox's `CoveringQuery` | yes (node 33); a script minimum (`covering_script`) or a field that is not plain integral doc values (`covering_field_data`) falls back |
+| `distance_feature` on a `date` or `geo_point` | `LongDistanceFeatureQuery`, `LatLonPointDistanceFeatureQuery` | yes (nodes 34, 35); scored per document. Lucene's scorer narrows itself to the points near the origin once a threshold is set; the native one scores every document with a value and skips those below the threshold |
+| a `TermQuery` carrying `TermStates` built for another reader (`terms` lookup, `more_like_this`, percolate) or with no statistics | `TermQuery` | yes: rebuilt from the searcher's reader, or matching nothing, as `TermWeight` does |
+
 `index.lucene_rust.search.native_shapes` (`fast`/`all`) predates read path
 R1, when mixed booleans measured slower and were routed to Lucene
 (`slower_shape`); since R1 every encodable shape runs native under both
@@ -196,7 +209,8 @@ Each fallback is counted by reason at `GET /_plugins/lucene_rust/stats`.
 | `scroll_after` | a sorted scroll page whose last emitted hit carries no sort values |
 | `timeout` | the request's `timeout` had already passed when the native call would start; Lucene answers it (nothing, `timed_out`) |
 | `query_<Class>` | the rewritten query's root is not a supported shape — e.g. `query_GlobalOrdinalsWithScoreQuery` (`has_child`), `query_ScriptScoreQuery` (`script_score`), `query_TermQuery` on a numeric field |
-| `regexp_flags` | a `regexp` whose flags are not the default `ALL` with no match flags — e.g. `case_insensitive` (compared by the automaton they build) |
+| `automaton_states`, `fuzzy_automaton` | a multi-term query whose automaton has more than 65,536 states, or a fuzzy query Lucene cannot build an automaton for |
+| `covering_script`, `covering_field_data` | `terms_set` whose minimum is a script, or field data other than plain integral doc values |
 | `clause_<Class>` | the same, for a clause anywhere below the root (inside a `bool`, `constant_score`, `dis_max`, a boost) |
 | `query_too_deep`, `query_too_large` | more than 32 levels, or more than 1,024 nodes counting wrappers (Lucene counts only leaves, and `indices.query.bool.max_clause_count` can raise its limit) |
 | `boolean_msm_negative` | a `BooleanQuery` with a negative `minimumNumberShouldMatch` |
@@ -210,10 +224,9 @@ Each fallback is counted by reason at `GET /_plugins/lucene_rust/stats`.
 | `interval_<Class>`, `interval_scoring`, `interval_automaton` | an intervals source outside Lucene's own classes (OpenSearch's `script` filter), a payload-filtered term, another scoring function, a multi-term automaton past 65,536 states |
 | `function_score_min_score`, `function_score_script`, `function_score_field_data`, `function_score_decay`, `function_score_<Class>` | `function_score` with `min_score`; a script function; a function over field data other than plain sorted-numeric doc values (keyword for `random_score`; not `half_float`, `unsigned_long` or `date_nanos`); another decay or function class (geo decays) |
 | `combined_fields_empty`, `extended_reflect` | a `CombinedFieldQuery` over no field; a Lucene or OpenSearch class whose private fields the plugin cannot read (a version whose classes changed) |
-| `wildcard_escape` | a `wildcard` pattern with a `\\` escape (the native matcher has no escape syntax) |
 | `phrase_positions` | a `PhraseQuery` whose terms are not at consecutive positions (the analyzer removed a stopword, leaving a gap) |
 | `field_similarity` | a field scores with anything but default-parameter BM25 |
-| `term_states` | a term query carries its own statistics (`multi_match` `cross_fields`), or is a `TermQuery` subclass |
+| `term_states` | a `TermQuery` subclass, or a term query whose own statistics cannot be read (built without them, or with no document frequency while some leaf holds the term) |
 | `dfs` | `search_type=dfs_query_then_fetch`: scoring uses statistics aggregated across shards |
 | `collector_spec` | another plugin registered a replacement top-docs collector |
 | `cancelled` | the task was cancelled before the native call |
@@ -241,9 +254,8 @@ around them is:
   the term dictionary) are Lucene's, through the same reader;
 - `query_string` and `simple_query_string`: OpenSearch's parser builds the
   Lucene query, and its shapes encode by the rules above (term ranges since
-  M13), except those that fall back by name: an escaped wildcard
-  (`wildcard_escape`), a regexp with non-default flags (`regexp_flags`),
-  and a phrase with position gaps (stopwords the analyzer removed).
+  M13; escaped wildcards and regexps with any flags since 2026-10-30),
+  except a phrase with position gaps (stopwords the analyzer removed).
 
 The M13 rows were measured on Docker Desktop (Windows host), the e2e
 `single` index, 60 interleaved rounds a mode over one keep-alive

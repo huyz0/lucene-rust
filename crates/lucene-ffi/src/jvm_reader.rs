@@ -128,7 +128,8 @@ use std::sync::Arc;
 /// fields, keys as terms, a keyword `missing` term) and sub-aggregations,
 /// `TOP_HITS` its sort (a sorted bucket's values and terms back), and the
 /// `HDR_PERCENTILES` node (each bucket's values back); 46, the `NESTED` and
-/// `REVERSE_NESTED` nodes; 47, taken by a parallel change; 48, the collapsed
+/// `REVERSE_NESTED` nodes; 47, the multi-term, doc-values, covering and
+/// distance-feature nodes ([`crate::jvm_queries`], 27-35); 48, the collapsed
 /// search (`ffi_jvm_reader_search_collapsed_alloc`, `terminate_after` too),
 /// the rescorer (`ffi_jvm_reader_rescore`) and the sort blob's `_shard_doc`,
 /// `half_float` and `unsigned_long` keys.
@@ -172,6 +173,7 @@ const _: () = assert!(NODE_TERM_RANGE == crate::jvm_nodes::NODE_LAST + 1);
 /// `PointInSetQuery` (`terms` on a numeric or `ip` field, `IntPoint.newSetQuery`
 /// and the like): the field, its dimensions and width, then the packed points.
 pub(crate) const NODE_POINT_SET: u8 = 26;
+const _: () = assert!(crate::jvm_queries::NODE_FIRST == NODE_POINT_SET + 1);
 /// [`NODE_TERM_RANGE`]'s flags: which bounds follow, and which are inclusive.
 const RANGE_HAS_LOWER: u8 = 1;
 const RANGE_HAS_UPPER: u8 = 2;
@@ -2965,9 +2967,13 @@ pub(crate) fn decode_node(
         crate::jvm_nodes::NODE_TO_PARENT..=crate::jvm_nodes::NODE_LAST => {
             return crate::jvm_nodes::decode(c, kind, start, depth, nodes);
         }
+        crate::jvm_queries::NODE_FIRST..=crate::jvm_queries::NODE_LAST => {
+            return crate::jvm_queries::decode(c, kind, start, depth, nodes);
+        }
         other => {
             set_last_error(format!(
-                "query tree: unknown node kind {other} (expected 0..={NODE_POINT_SET})"
+                "query tree: unknown node kind {other} (expected 0..={})",
+                crate::jvm_queries::NODE_LAST
             ));
             return Err(FfiStatus::InvalidArgument);
         }

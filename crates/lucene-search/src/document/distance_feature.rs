@@ -292,6 +292,11 @@ impl Pruning {
 }
 
 impl DocumentQuery for LongDistanceFeatureQuery {
+    /// `boost * pivot / (pivot + distance)`: at most `boost`.
+    fn constant_score(&self) -> bool {
+        false
+    }
+
     fn score_leaf(
         &self,
         leaf: &OpenSegment<'_>,

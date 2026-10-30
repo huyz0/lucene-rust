@@ -295,7 +295,7 @@ final class ExtendedEncoder {
         return f.getFloat(o);
     }
 
-    private static Object field(Object o, String name) throws ReflectiveOperationException {
+    static Object field(Object o, String name) throws ReflectiveOperationException {
         Field f = Reflect.inHierarchy(o.getClass(), name);
         if (f == null) {
             throw new NoSuchFieldException(name);
@@ -399,7 +399,7 @@ final class ExtendedEncoder {
                 out.write(18);
                 writeInt(out, (int) field(s, "maxExpansions"));
                 writeString(out, (String) field(s, "pattern"));
-                return automaton((CompiledAutomaton) field(s, "automaton"), out);
+                return automaton((CompiledAutomaton) field(s, "automaton"), out, "interval_automaton");
             }
             default -> {
                 return "interval_" + s.getClass().getSimpleName();
@@ -430,7 +430,12 @@ final class ExtendedEncoder {
     /** At most this many states of a multi-term source's automaton are sent (the native limit). */
     private static final int MAX_AUTOMATON_STATES = 1 << 16;
 
-    private static String automaton(CompiledAutomaton c, ByteArrayOutputStream out) {
+    /**
+     * Writes {@code c} as {@code decode_compiled_automaton} in {@code jvm_nodes.rs} reads it: its
+     * type, then the term (single) or the byte automaton (normal). Returns {@code tooLarge} for an
+     * automaton of more states than the native side accepts, or null.
+     */
+    static String automaton(CompiledAutomaton c, ByteArrayOutputStream out, String tooLarge) {
         switch (c.type) {
             case NONE -> out.write(0);
             case ALL -> out.write(1);
@@ -441,7 +446,7 @@ final class ExtendedEncoder {
             case NORMAL -> {
                 Automaton a = c.automaton;
                 if (a.getNumStates() > MAX_AUTOMATON_STATES) {
-                    return "interval_automaton";
+                    return tooLarge;
                 }
                 out.write(3);
                 writeInt(out, a.getNumStates());
@@ -459,7 +464,7 @@ final class ExtendedEncoder {
                 }
             }
             default -> {
-                return "interval_automaton";
+                return tooLarge;
             }
         }
         return null;
@@ -638,7 +643,7 @@ final class ExtendedEncoder {
      * each value with {@code Long.toString} -- 1 a double, 2 a float; -1 for field data that is not
      * plain sorted-numeric doc values of those types.
      */
-    private static byte numericType(Object data) {
+    static byte numericType(Object data) {
         if (data == null || data.getClass().getName().equals("org.opensearch.index.fielddata.plain.SortedNumericIndexFieldData") == false) {
             return -1;
         }
