@@ -326,7 +326,9 @@ def matrix():
     add("sort mode avg", {"track_total_hits": True, "query": {"match": {"body": "alpha"}}, "sort": [{"m": {"order": "asc", "mode": "avg"}}]}, "native")
     # sum: OpenSearch's comparator skips with the points of the single values,
     # which a sum can pass -- its answer depends on where skipping starts, so it
-    # runs natively only where Lucene's cannot skip: an exact total here.
+    # runs natively only where Lucene's cannot skip: an exact total here, over
+    # two terms (one term on a reader without deletions takes the shortcut
+    # total, whose collector counts only to the page and may skip).
     # An exact total, or on more than one shard the stock answer is not one:
     # the coordinator sends each later shard the bottom sort value so far, and
     # the shard skips itself when its bounds cannot beat it -- bounds that
@@ -334,17 +336,17 @@ def matrix():
     # whatever the mode. A shard's largest sum is above its largest value, so a
     # shard holding the top sums is dropped depending on which shard answered
     # first (OpenSearch 3.8.0). An exact total turns that pruning off.
-    add("sort mode sum", {"track_total_hits": True, "query": {"match": {"body": "beta"}}, "sort": [{"m": {"order": "desc", "mode": "sum"}}, "_doc"]}, "native")
-    add("sort mode sum double", {"track_total_hits": True, "query": {"match": {"body": "gamma"}}, "sort": [{"md": {"order": "asc", "mode": "sum"}}, "_doc"]}, "native")
+    add("sort mode sum", {"track_total_hits": True, "query": {"match": {"body": "beta omega"}}, "sort": [{"m": {"order": "desc", "mode": "sum"}}, "_doc"]}, "native")
+    add("sort mode sum double", {"track_total_hits": True, "query": {"match": {"body": "gamma omega"}}, "sort": [{"md": {"order": "asc", "mode": "sum"}}, "_doc"]}, "native")
     # OpenSearch's own comparators (half_float, unsigned_long, the wildcard
     # field's non-pruning keyword sort): native without skipping, so where
     # Lucene's cannot skip either -- an exact total, or a small shard.
-    add("sort half_float", {"track_total_hits": True, "query": {"match": {"body": "alpha"}}, "sort": [{"hf": "desc"}, {"n": "asc"}]}, "native")
-    add("sort half_float avg missing", {"track_total_hits": True, "query": {"match": {"body": "beta"}}, "sort": [{"hf": {"order": "asc", "mode": "avg", "missing": 3.3}}, "_doc"]}, "native")
+    add("sort half_float", {"track_total_hits": True, "query": {"match": {"body": "alpha omega"}}, "sort": [{"hf": "desc"}, {"n": "asc"}]}, "native")
+    add("sort half_float avg missing", {"track_total_hits": True, "query": {"match": {"body": "beta omega"}}, "sort": [{"hf": {"order": "asc", "mode": "avg", "missing": 3.3}}, "_doc"]}, "native")
     add("sort half_float default total", {"query": {"match": {"body": "alpha"}}, "sort": [{"hf": "asc"}, {"n": "desc"}]}, "either")
-    add("sort unsigned_long", {"track_total_hits": True, "query": {"match": {"body": "delta"}}, "sort": [{"ul": "desc"}]}, "native")
-    add("sort unsigned_long search_after", {"track_total_hits": True, "query": {"match": {"body": "alpha"}}, "sort": [{"ul": "asc"}, {"n": "asc"}], "search_after": [18_000_000_000_000_000_700, 100], "size": 7}, "native")
-    add("sort unsigned_long max track_scores", {"track_total_hits": True, "query": {"match": {"body": "gamma"}}, "sort": [{"ul": {"order": "asc", "mode": "max"}}], "track_scores": True}, "native")
+    add("sort unsigned_long", {"track_total_hits": True, "query": {"match": {"body": "delta omega"}}, "sort": [{"ul": "desc"}]}, "native")
+    add("sort unsigned_long search_after", {"track_total_hits": True, "query": {"match": {"body": "alpha omega"}}, "sort": [{"ul": "asc"}, {"n": "asc"}], "search_after": [18_000_000_000_000_000_700, 100], "size": 7}, "native")
+    add("sort unsigned_long max track_scores", {"track_total_hits": True, "query": {"match": {"body": "gamma omega"}}, "sort": [{"ul": {"order": "asc", "mode": "max"}}], "track_scores": True}, "native")
     add("sort wildcard", {"track_total_hits": True, "query": {"match": {"body": "omega"}}, "sort": [{"wc": "asc"}, {"n": "asc"}]}, "native")
     add("sort wildcard desc", {"track_total_hits": True, "query": {"match": {"body": "kappa"}}, "sort": [{"wc": "desc"}, {"n": "asc"}]}, "native")
     add("sort mode median", {"query": {"match": {"body": "gamma"}}, "sort": [{"m": {"order": "asc", "mode": "median", "missing": "_first"}}]}, "native")
