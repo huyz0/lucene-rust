@@ -14,6 +14,7 @@
 //! | `33` covering | `count: i32`, the sub-queries (nodes), the minimum: `0` + `i64` constant, or `1` + `field` (the field's first sorted-numeric value) | `CoveringQuery` (`terms_set`) |
 //! | `34` long distance feature | `field`, `origin: i64`, `pivot: i64` | `LongDistanceFeatureQuery` (`distance_feature` on a `date`) |
 //! | `35` lat/lon distance feature | `field`, `lat: f64`, `lon: f64`, `pivot: f64` (metres) | `LatLonPointDistanceFeatureQuery` (`distance_feature` on a `geo_point`) |
+//! | `36` synonym | `field`, `count: i32`, each `term: bytes`, `boost: f32` bits as `i32` | `SynonymQuery` (a `match` whose analyzer stacks tokens: `hunspell`, `synonym_graph`, `keyword_repeat`) |
 //!
 //! The doc-values and distance-feature nodes become
 //! [`DocumentClause`]s keyed by their own wire bytes, as the geo nodes do.
@@ -30,6 +31,7 @@ use lucene_search::document::{
 };
 use lucene_search::extended_query::{
     AutomatonQuery, DocumentClause, ExtendedQuery, MultiTermQuery, MultiTermSource, RewriteMethod,
+    SynonymQuery,
 };
 use lucene_search::query::Clause;
 use lucene_search::reader::doc_values::get_sorted_numeric;
@@ -53,9 +55,11 @@ pub(crate) const NODE_DV_MULTI_RANGE: u8 = 32;
 pub(crate) const NODE_COVERING: u8 = 33;
 pub(crate) const NODE_LONG_DISTANCE_FEATURE: u8 = 34;
 pub(crate) const NODE_GEO_DISTANCE_FEATURE: u8 = 35;
+/// `SynonymQuery`: `field`, `n: i32`, then `n` of `term: bytes`, `boost: f32`.
+pub(crate) const NODE_SYNONYM: u8 = 36;
 /// The first and last kinds this module decodes.
 pub(crate) const NODE_FIRST: u8 = NODE_MULTI_TERM;
-pub(crate) const NODE_LAST: u8 = NODE_GEO_DISTANCE_FEATURE;
+pub(crate) const NODE_LAST: u8 = NODE_SYNONYM;
 
 /// The multi-term node's rewrite methods.
 const REWRITE_CONSTANT_SCORE_BLENDED: u8 = 0;
@@ -206,6 +210,19 @@ pub(crate) fn decode(
                 LongDistanceFeatureQuery::new(field, origin, pivot)
                     .map_err(|e| built("distance feature", e))?,
             )
+        }
+        NODE_SYNONYM => {
+            let field = field(c)?;
+            let count = c.len()?;
+            *nodes = nodes.saturating_add(count);
+            check_clause_count(*nodes)?;
+            let mut terms = Vec::with_capacity(count);
+            for _ in 0..count {
+                let term = c.bytes()?.to_vec();
+                terms.push((term, f32::from_bits(c.i32()? as u32)));
+            }
+            let q = SynonymQuery::new(field, terms).map_err(|e| built("synonym query", e))?;
+            return Ok(Clause::Extended(Box::new(ExtendedQuery::Synonym(q))));
         }
         NODE_GEO_DISTANCE_FEATURE => {
             let field = field(c)?;
@@ -404,6 +421,41 @@ mod tests {
         let (rc, e) = fails(h, &multi_term("kw", 9, &k0_or_k2()));
         assert_ne!(rc, 0);
         assert!(e.contains("multi-term rewrite 9"), "{e}");
+        assert_eq!(ffi_close_jvm_reader(h), 0);
+    }
+
+    fn synonym(terms: &[(&str, f32)]) -> Blob {
+        let mut b = Blob::tree()
+            .u8(NODE_SYNONYM)
+            .str("body")
+            .i32(terms.len() as i32);
+        for (t, boost) in terms {
+            b = b.str(t).f32(*boost);
+        }
+        b
+    }
+
+    #[test]
+    fn a_synonym_node_scores_its_terms_as_one() {
+        let tmp = index("jvm-queries-synonym");
+        let h = open(&tmp);
+        let either = matching(|i| {
+            let b = BODIES[(i % 6) as usize];
+            b.contains("delta") || b.contains("epsilon")
+        });
+        let q = synonym(&[("epsilon", 1.0), ("delta", 0.5)]);
+        assert_eq!(docs(h, &q), either);
+        let (hits, _) = search(h, &q);
+        // One pseudo-term: a document's score depends on its summed weighted
+        // frequency and its length only, so the two `delta beta` documents tie.
+        let score = |d: i32| hits.iter().find(|&&(x, _)| x == d).unwrap().1;
+        assert_eq!(score(3), score(9));
+        assert!(hits.iter().all(|&(_, s)| s > 0.0));
+        // No term matches nothing; a boost outside (0, 1] is Java's builder error.
+        assert!(docs(h, &synonym(&[])).is_empty());
+        let (rc, e) = fails(h, &synonym(&[("delta", 2.0)]));
+        assert_ne!(rc, 0);
+        assert!(e.contains("synonym query"), "{e}");
         assert_eq!(ffi_close_jvm_reader(h), 0);
     }
 

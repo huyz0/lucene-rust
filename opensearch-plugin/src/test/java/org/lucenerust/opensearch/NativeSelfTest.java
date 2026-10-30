@@ -417,7 +417,7 @@ public final class NativeSelfTest {
         String field = fields.get(r.nextInt(fields.size()));
         if (depth > 1 || r.nextInt(4) == 0) {
             Query t = new TermQuery(new Term(field, word(r)));
-            return switch (r.nextInt(12)) {
+            return switch (r.nextInt(13)) {
                 case 0 -> new ConstantScoreQuery(t);
                 case 1 -> new BoostQuery(t, r.nextInt(4) * 0.75f);
                 case 2 -> new DisjunctionMaxQuery(
@@ -463,6 +463,14 @@ public final class NativeSelfTest {
                 case 9 -> {
                     String a = r.nextInt(5) == 0 ? null : word(r), b = r.nextInt(5) == 0 ? null : word(r);
                     yield TermRangeQuery.newStringRange(field, a, b, r.nextBoolean(), r.nextBoolean());
+                }
+                // Stacked tokens (hunspell, synonyms, keyword_repeat): one pseudo-term, boosts in (0, 1].
+                case 12 -> {
+                    org.apache.lucene.search.SynonymQuery.Builder s = new org.apache.lucene.search.SynonymQuery.Builder(field);
+                    for (int i = r.nextInt(4); i >= 0; i--) {
+                        s.addTerm(new Term(field, word(r)), r.nextBoolean() ? 1f : 0.25f + r.nextInt(3) * 0.25f);
+                    }
+                    yield s.build();
                 }
                 default -> t;
             };
