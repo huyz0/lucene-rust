@@ -492,7 +492,7 @@ pub(crate) fn decode_source(
 
 /// A `CompiledAutomaton` as the byte automaton its terms enumeration runs:
 /// every case as a deterministic automaton over bytes.
-fn decode_compiled_automaton(c: &mut Cursor<'_>) -> Result<Automaton, FfiStatus> {
+pub(crate) fn decode_compiled_automaton(c: &mut Cursor<'_>) -> Result<Automaton, FfiStatus> {
     let mut a = Automaton::new();
     match c.u8()? {
         AUTOMATON_NONE => {
@@ -1490,7 +1490,7 @@ pub(crate) mod tests {
         // An unknown score mode, and kinds past the last.
         let (_, msg) = fails(h, &Blob::tree().u8(NODE_TO_PARENT).u8(9));
         assert!(msg.contains("score mode 9"), "{msg}");
-        let (_, msg) = fails(h, &Blob::tree().u8(crate::jvm_reader::NODE_POINT_SET + 1));
+        let (_, msg) = fails(h, &Blob::tree().u8(crate::jvm_queries::NODE_LAST + 1));
         assert!(msg.contains("unknown node kind"), "{msg}");
         // The decode on its own: the nodes are extended clauses.
         assert!(matches!(decode(&spans(st("a"))), Ok(Clause::Extended(_))));
