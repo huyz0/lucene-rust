@@ -169,10 +169,15 @@ impl ReaderPool {
         Ok(Arc::clone(infos.entry(key).or_insert(si)))
     }
 
-    /// `ReaderPool.drop(info)` for every segment named: a merge retired them.
-    pub(crate) fn drop_segments(&self, names: &[String]) {
-        self.entries().retain(|k, _| !names.contains(&k.name));
-        self.infos().retain(|k, _| !names.contains(&k.name));
+    /// `ReaderPool.drop(info)` for every segment named: a merge retired them,
+    /// or their deletes left them empty. Called before the deleter
+    /// checkpoint that can delete their files, since an entry holds the
+    /// segment's `.doc` open.
+    pub(crate) fn drop_segments(&self, names: &[&str]) {
+        self.entries()
+            .retain(|k, _| !names.contains(&k.name.as_str()));
+        self.infos()
+            .retain(|k, _| !names.contains(&k.name.as_str()));
     }
 
     /// Keeps only the segments still in the index.
