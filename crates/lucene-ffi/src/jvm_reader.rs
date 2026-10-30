@@ -59,7 +59,10 @@ use lucene_search::field_norms::FieldNorms;
 use lucene_search::multi_segment::OpenSegment;
 use lucene_search::query::{BooleanQuery, Clause, TermQuery};
 use lucene_search::terms_agg::TermsSpec;
-use lucene_search::top_field::{FieldDoc, NestedSort, Selector, SortField, SortType};
+use lucene_search::top_field::{
+    CollapseKind, CollapseTopDocs, CollapseValue, FieldDoc, NestedSort, Selector, SortField,
+    SortType,
+};
 use lucene_search::weight_count::count_term_query;
 use lucene_search::{
     count_boolean_query_segment, search_boolean_query_multi_segment_maxscore_counting,
@@ -672,6 +675,16 @@ const SORT_FLOAT: u8 = 5;
 pub(crate) const SORT_STRING: u8 = 6;
 /// A geo-distance key ([`decode_geo_sort`]).
 const SORT_GEO_DISTANCE: u8 = 7;
+/// OpenSearch's `_shard_doc` key ([`decode_opensearch_sort`]): flags
+/// [`SORT_REVERSE`] only, then `shardKeyPrefix: i64`.
+const SORT_SHARD_DOC: u8 = 8;
+/// OpenSearch's `half_float` key: the flags of a numeric key without
+/// [`SORT_NESTED`], the field, then the missing float as its sortable int
+/// (`i64`).
+const SORT_HALF_FLOAT: u8 = 9;
+/// OpenSearch's `unsigned_long` key: as [`SORT_HALF_FLOAT`] but no
+/// [`SORT_MODE_MEDIAN`], the missing value the unsigned long's bits.
+const SORT_UNSIGNED_LONG: u8 = 10;
 /// At most this many origins in a geo-distance key: each costs a distance
 /// per value per document.
 const MAX_GEO_ORIGINS: usize = 1024;
@@ -787,6 +800,11 @@ pub(crate) fn decode_sort(blob: &[u8]) -> Result<DecodedSort, FfiStatus> {
             return Err(bad(format!("sort blob: unknown flags {flags:#x}")));
         }
         let mode = flags & SORT_MODE_MASK;
+        if matches!(ty, SORT_SHARD_DOC | SORT_HALF_FLOAT | SORT_UNSIGNED_LONG) {
+            keys.push(decode_opensearch_sort(&mut c, ty, flags)?);
+            lucene_geo.push(false);
+            continue;
+        }
         let ty = match ty {
             SORT_SCORE => SortType::Score,
             SORT_DOC => SortType::Doc,
@@ -971,6 +989,41 @@ const GEO_SORT_FLAGS: u8 = SORT_REVERSE | SORT_MAX | SORT_MODE_MASK;
 /// Each value crosses as `double_to_sortable_long` of the double. Returns
 /// the key, and whether it is Lucene's comparator (which takes no
 /// `search_after`: its `compareTop` compares metres, not the keys).
+/// A key of one of OpenSearch's own comparator sources: [`SORT_SHARD_DOC`],
+/// [`SORT_HALF_FLOAT`] or [`SORT_UNSIGNED_LONG`], after its type and flags.
+fn decode_opensearch_sort(c: &mut Cursor<'_>, ty: u8, flags: u8) -> Result<SortField, FfiStatus> {
+    use lucene_search::top_field::{HalfFloatSort, Selector, ShardDocSort, UnsignedLongSort};
+    let reverse = flags & SORT_REVERSE != 0;
+    if ty == SORT_SHARD_DOC {
+        if flags & !SORT_REVERSE != 0 {
+            return Err(invalid(format!("sort blob: _shard_doc key flags {flags:#x}")));
+        }
+        let prefix = c.i64()?;
+        return Ok(SortField::with_source("_shard_doc", Arc::new(ShardDocSort { prefix }), reverse));
+    }
+    let selector = match (flags & SORT_MODE_MASK, flags & SORT_MAX != 0) {
+        (0, false) => Selector::Min,
+        (0, true) => Selector::Max,
+        (SORT_MODE_SUM, false) => Selector::Sum,
+        (SORT_MODE_AVG, false) => Selector::Avg,
+        (SORT_MODE_MEDIAN, false) if ty == SORT_HALF_FLOAT => Selector::Median,
+        _ => return Err(invalid(format!("sort blob: key {ty} flags {flags:#x}"))),
+    };
+    if flags & SORT_NESTED != 0 {
+        return Err(invalid(format!("sort blob: key {ty} flags {flags:#x}")));
+    }
+    let field = std::str::from_utf8(c.bytes()?).map_err(|_| FfiStatus::InvalidUtf8)?;
+    let missing = c.i64()?;
+    Ok(if ty == SORT_HALF_FLOAT {
+        let bits = i32::try_from(missing)
+            .map_err(|_| invalid(format!("sort blob: half_float missing value {missing}")))?;
+        let missing = lucene_util::numeric_utils::sortable_int_to_float(bits);
+        SortField::with_source(field, Arc::new(HalfFloatSort { selector, missing }), reverse)
+    } else {
+        SortField::with_source(field, Arc::new(UnsignedLongSort { selector, missing }), reverse)
+    })
+}
+
 fn decode_geo_sort(c: &mut Cursor<'_>, flags: u8) -> Result<(SortField, bool), FfiStatus> {
     use lucene_search::document::geo::{
         DistanceMode, LatLonPointSortField, OpenSearchGeoDistanceSort,
@@ -1221,6 +1274,363 @@ pub(crate) fn search_sorted_blobs(
         lower_bound,
         terms,
         terminated,
+    })
+}
+
+/// Collapse-blob kinds: OpenSearch's `CollapsingDocValuesSource.Numeric`
+/// and `.Keyword`.
+const COLLAPSE_NUMERIC: u8 = 0;
+const COLLAPSE_KEYWORD: u8 = 1;
+/// Collapse values in a collapsed search's answer: none (the group of the
+/// documents without one), a long, a term.
+const COLLAPSE_VALUE_MISSING: u8 = 0;
+const COLLAPSE_VALUE_LONG: u8 = 1;
+const COLLAPSE_VALUE_BYTES: u8 = 2;
+
+/// Decodes a collapse blob: the field (`len: i32`, UTF-8) and `kind: u8`
+/// ([`COLLAPSE_NUMERIC`], [`COLLAPSE_KEYWORD`]). Trailing bytes are an error.
+pub(crate) fn decode_collapse(blob: &[u8]) -> Result<(String, CollapseKind), FfiStatus> {
+    let mut c = Cursor { buf: blob, pos: 0 };
+    let field = std::str::from_utf8(c.bytes()?)
+        .map_err(|_| FfiStatus::InvalidUtf8)?
+        .to_string();
+    let kind = match c.u8()? {
+        COLLAPSE_NUMERIC => CollapseKind::Numeric,
+        COLLAPSE_KEYWORD => CollapseKind::Keyword,
+        other => {
+            set_last_error(format!("collapse blob: unknown kind {other}"));
+            return Err(FfiStatus::InvalidArgument);
+        }
+    };
+    if c.pos != blob.len() {
+        set_last_error(format!(
+            "collapse blob: {} trailing bytes",
+            blob.len() - c.pos
+        ));
+        return Err(FfiStatus::InvalidArgument);
+    }
+    Ok((field, kind))
+}
+
+/// A collapsed search (OpenSearch's `collapse`): the query blob's matches
+/// through `CollapsingTopDocsCollector` by the sort blob's keys
+/// ([`decode_sort`]: its `search_after`, `track_scores` option and slices;
+/// no `terminate_after`) on the collapse blob's field
+/// ([`decode_collapse`]), keeping `top_n` groups per slice
+/// ([`lucene_search::top_field::search_collapsed`]). Encoded, little-endian:
+/// `slices: i32`, then per slice `total: i64`, `max_score: i32` (the float's
+/// bits, `NaN` untracked), `hits: i32` and per hit `doc: i32`, each key's
+/// value -- a keyword key's term as `len: i32` (`-1` for none) and the bytes,
+/// any other key's comparable `i64` (a score as its float bits) -- and the
+/// group's value: `kind: u8` ([`COLLAPSE_VALUE_MISSING`],
+/// [`COLLAPSE_VALUE_LONG`] and an `i64`, [`COLLAPSE_VALUE_BYTES`] and
+/// `len: i32` and the bytes).
+pub(crate) fn search_collapsed_blobs(
+    handle: u64,
+    query_blob: &[u8],
+    sort_blob: &[u8],
+    collapse_blob: &[u8],
+    top_n: usize,
+) -> Result<Vec<u8>, FfiStatus> {
+    let (query, min_score) = decode_request(query_blob)?;
+    let (keys, after, track, slices, terminate_after, _) = decode_sort(sort_blob)?;
+    let (field, kind) = decode_collapse(collapse_blob)?;
+    if let Some((_, count_segments)) = terminate_after {
+        // OpenSearch runs a terminate_after search sequentially, one
+        // collector; the size-0 count is not a collapsed search's.
+        if count_segments || slices.len() > 1 || min_score.is_some() {
+            set_last_error(
+                "collapse: terminate_after runs on one slice, without min_score or segment counts",
+            );
+            return Err(FfiStatus::InvalidArgument);
+        }
+    }
+    if top_n == 0 {
+        set_last_error("collapse: topN must be at least 1");
+        return Err(FfiStatus::InvalidArgument);
+    }
+    let h = lookup(
+        handle,
+        "ffi_jvm_reader_search_collapsed: unknown or already-closed handle",
+    )?;
+    let mut opened = h.reader.open_segments().map_err(|e| {
+        set_last_error(format!("opening segment postings: {e}"));
+        FfiStatus::Decode
+    })?;
+    if query_uses_points(&query) {
+        opened.open_points().map_err(|e| {
+            set_last_error(format!("opening segment points: {e}"));
+            FfiStatus::Decode
+        })?;
+    }
+    let segments: Vec<OpenSegment<'_>> = opened
+        .as_open_segments()
+        .into_iter()
+        .zip(&h.live_docs)
+        .map(|(mut s, live)| {
+            s.live_docs = live.as_ref();
+            s
+        })
+        .collect();
+    let q = match query {
+        JvmQuery::Term(t) => BooleanQuery {
+            must: vec![Clause::Term(t)],
+            ..Default::default()
+        },
+        JvmQuery::Boolean(b) => b,
+    };
+    let needs_scores =
+        track || min_score.is_some() || keys.iter().any(|k| k.ty == SortType::Score);
+    let fields: Vec<String> = if needs_scores {
+        crate::query::clause_field_names(&q)
+            .into_iter()
+            .map(str::to_string)
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let owned = h
+        .reader
+        .field_norms_by_field(&fields)
+        .map_err(|error| map_search_error(error.into()))?;
+    let norms: Vec<Option<&std::collections::HashMap<String, FieldNorms<'_>>>> =
+        owned.iter().map(|m| (!m.is_empty()).then_some(m)).collect();
+    if let Some((n, _)) = terminate_after {
+        let (top, cut) = lucene_search::top_field::search_collapsed_until(
+            &segments,
+            h.reader.segment_readers(),
+            &q,
+            &norms,
+            &keys,
+            &field,
+            kind,
+            top_n,
+            after.as_ref(),
+            track,
+            n,
+        )
+        .map_err(map_search_error)?;
+        return encode_collapsed(&keys, &[top], cut.terminated);
+    }
+    let parts = lucene_search::top_field::search_collapsed(
+        &segments,
+        h.reader.segment_readers(),
+        &q,
+        &norms,
+        &keys,
+        &field,
+        kind,
+        top_n,
+        after.as_ref(),
+        track,
+        &slices,
+        min_score,
+    )
+    .map_err(map_search_error)?;
+    encode_collapsed(&keys, &parts, false)
+}
+
+/// [`search_collapsed_blobs`]'s encoding of the slices' answers, then
+/// `terminated: u8` (a `terminate_after` search that ended early).
+fn encode_collapsed(
+    keys: &[SortField],
+    parts: &[CollapseTopDocs],
+    terminated: bool,
+) -> Result<Vec<u8>, FfiStatus> {
+    let too_big = |what: &str| {
+        set_last_error(format!("collapse result: {what} past i32"));
+        FfiStatus::InvalidArgument
+    };
+    let len = |n: usize, what: &str| i32::try_from(n).map_err(|_| too_big(what));
+    let mut out = Vec::new();
+    out.extend_from_slice(&len(parts.len(), "slice count")?.to_le_bytes());
+    for p in parts {
+        out.extend_from_slice(&i64::try_from(p.total).unwrap_or(i64::MAX).to_le_bytes());
+        out.extend_from_slice(&p.max_score.to_bits().to_le_bytes());
+        out.extend_from_slice(&len(p.hits.len(), "hit count")?.to_le_bytes());
+        for (hit, value) in p.hits.iter().zip(&p.values) {
+            out.extend_from_slice(&hit.doc.to_le_bytes());
+            for (k, key) in keys.iter().enumerate() {
+                if key.ty != SortType::String {
+                    out.extend_from_slice(&hit.values.get(k).copied().unwrap_or(0).to_le_bytes());
+                    continue;
+                }
+                match hit.terms.get(k).and_then(Option::as_ref) {
+                    None => out.extend_from_slice(&(-1i32).to_le_bytes()),
+                    Some(t) => {
+                        out.extend_from_slice(&len(t.len(), "a sort term")?.to_le_bytes());
+                        out.extend_from_slice(t);
+                    }
+                }
+            }
+            match value {
+                CollapseValue::Missing => out.push(COLLAPSE_VALUE_MISSING),
+                CollapseValue::Long(v) => {
+                    out.push(COLLAPSE_VALUE_LONG);
+                    out.extend_from_slice(&v.to_le_bytes());
+                }
+                CollapseValue::Bytes(b) => {
+                    out.push(COLLAPSE_VALUE_BYTES);
+                    out.extend_from_slice(&len(b.len(), "a collapse term")?.to_le_bytes());
+                    out.extend_from_slice(b);
+                }
+            }
+        }
+    }
+    out.push(u8::from(terminated));
+    Ok(out)
+}
+
+/// OpenSearch's `QueryRescorer` over a search's hits
+/// ([`lucene_search::rescorer::opensearch_query_rescore`]): `docs`/`scores`
+/// (global ids, best first) rescored in place by the query blob's query
+/// over the top `window`, `mode` being the `QueryRescoreMode` ordinal (`avg`,
+/// `max`, `min`, `total`, `multiply`). Returns how many hits were rescored.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn rescore_hits(
+    handle: u64,
+    query_blob: &[u8],
+    window: usize,
+    query_weight: f32,
+    rescore_query_weight: f32,
+    mode: i32,
+    docs: &mut [i32],
+    scores: &mut [f32],
+) -> Result<usize, FfiStatus> {
+    use lucene_search::rescorer::{opensearch_query_rescore, QueryRescoreMode};
+    let mode = match mode {
+        0 => QueryRescoreMode::Avg,
+        1 => QueryRescoreMode::Max,
+        2 => QueryRescoreMode::Min,
+        3 => QueryRescoreMode::Total,
+        4 => QueryRescoreMode::Multiply,
+        other => {
+            set_last_error(format!("rescore: unknown score mode {other}"));
+            return Err(FfiStatus::InvalidArgument);
+        }
+    };
+    if docs.len() != scores.len() {
+        set_last_error("rescore: as many scores as documents");
+        return Err(FfiStatus::InvalidArgument);
+    }
+    let (query, min_score) = decode_request(query_blob)?;
+    if min_score.is_some() {
+        set_last_error("rescore: a rescore query has no min_score");
+        return Err(FfiStatus::InvalidArgument);
+    }
+    let h = lookup(
+        handle,
+        "ffi_jvm_reader_rescore: unknown or already-closed handle",
+    )?;
+    let mut opened = h.reader.open_segments().map_err(|e| {
+        set_last_error(format!("opening segment postings: {e}"));
+        FfiStatus::Decode
+    })?;
+    if query_uses_points(&query) {
+        opened.open_points().map_err(|e| {
+            set_last_error(format!("opening segment points: {e}"));
+            FfiStatus::Decode
+        })?;
+    }
+    let segments: Vec<OpenSegment<'_>> = opened
+        .as_open_segments()
+        .into_iter()
+        .zip(&h.live_docs)
+        .map(|(mut s, live)| {
+            s.live_docs = live.as_ref();
+            s
+        })
+        .collect();
+    let q = match query {
+        JvmQuery::Term(t) => BooleanQuery {
+            must: vec![Clause::Term(t)],
+            ..Default::default()
+        },
+        JvmQuery::Boolean(b) => b,
+    };
+    let fields: Vec<String> = crate::query::clause_field_names(&q)
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    let owned = h
+        .reader
+        .field_norms_by_field(&fields)
+        .map_err(|error| map_search_error(error.into()))?;
+    let norms: Vec<Option<&std::collections::HashMap<String, FieldNorms<'_>>>> =
+        owned.iter().map(|m| (!m.is_empty()).then_some(m)).collect();
+    let searcher = lucene_search::index_searcher::IndexSearcher::new(&segments, &norms)
+        .map_err(map_search_error)?;
+    let ctx = lucene_search::values_source::ValuesContext::new(&searcher);
+    let mut hits: Vec<lucene_search::top_docs::ShardScoreDoc> = docs
+        .iter()
+        .zip(scores.iter())
+        .map(|(&d, &s)| lucene_search::top_docs::ShardScoreDoc::new(d, s))
+        .collect();
+    let rescored = opensearch_query_rescore(
+        &ctx,
+        &mut hits,
+        q,
+        window,
+        query_weight,
+        rescore_query_weight,
+        mode,
+    )
+    .map_err(map_search_error)?;
+    for (i, hit) in hits.iter().enumerate() {
+        docs[i] = hit.doc;
+        scores[i] = hit.score;
+    }
+    Ok(rescored)
+}
+
+/// [`rescore_hits`] across the boundary: `docs`/`scores` hold `n` hits and
+/// are rewritten in place.
+///
+/// # Safety
+/// `query` must be valid for `query_len` bytes, `docs`/`scores` for `n`
+/// reads and writes each.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn ffi_jvm_reader_rescore(
+    handle: u64,
+    query: *const u8,
+    query_len: usize,
+    window: i32,
+    query_weight: f32,
+    rescore_query_weight: f32,
+    mode: i32,
+    docs: *mut i32,
+    scores: *mut f32,
+    n: usize,
+) -> i32 {
+    guard(|| {
+        if docs.is_null() || scores.is_null() {
+            return Err(FfiStatus::NullPointer);
+        }
+        let window = usize::try_from(window).map_err(|_| {
+            set_last_error(format!("rescore: window {window}"));
+            FfiStatus::InvalidArgument
+        })?;
+        // SAFETY: caller contract.
+        let blob = unsafe { bytes_from_raw(query, query_len)? };
+        // SAFETY: caller contract: `docs` and `scores` hold `n` slots each.
+        let (docs, scores) = unsafe {
+            (
+                std::slice::from_raw_parts_mut(docs, n),
+                std::slice::from_raw_parts_mut(scores, n),
+            )
+        };
+        rescore_hits(
+            handle,
+            blob,
+            window,
+            query_weight,
+            rescore_query_weight,
+            mode,
+            docs,
+            scores,
+        )?;
+        Ok(())
     })
 }
 

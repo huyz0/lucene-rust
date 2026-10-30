@@ -92,6 +92,11 @@ use crate::query::{BooleanQuery, Clause};
 use crate::Result;
 use std::sync::Arc;
 
+mod collapse;
+mod opensearch;
+pub use collapse::{search_collapsed, search_collapsed_until, CollapseKind, CollapseTopDocs, CollapseValue, MULTI_VALUED};
+pub use opensearch::{HalfFloatSort, ShardDocSort, UnsignedLongSort};
+
 /// `SortField.Type`, for the keys this collector sorts by.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SortType {
@@ -1178,50 +1183,58 @@ impl TopField {
         }
     }
 
-    /// `populateResults`/`newTopDocs`.
-    fn top_docs(mut self) -> TopFieldDocs {
-        let mut hits = Vec::with_capacity(self.queue.heap.len());
-        let any_terms = self.comps.iter().any(|c| {
+    /// Whether any key's values are bytes ([`FieldDoc::terms`]).
+    fn any_terms(&self) -> bool {
+        self.comps.iter().any(|c| {
             c.strs.is_some()
                 || c.vals.is_some()
                 || c.custom
                     .as_ref()
                     .is_some_and(|cs| cs.cmp.values_are_bytes())
-        });
-        while let Some(e) = self.queue.pop(&self.comps) {
-            let values = self
-                .comps
+        })
+    }
+
+    /// The hit `doc` whose values are in `slot`, as `FieldComparator.value`
+    /// returns them (a score as its `f32` bits); `terms` per key when
+    /// `any_terms`.
+    fn slot_hit(&self, slot: usize, doc: i32, any_terms: bool) -> FieldDoc {
+        let values = self
+            .comps
+            .iter()
+            .map(|c| {
+                let v = c.values[slot];
+                if let Some(cs) = &c.custom {
+                    return sort_value_parts(&cs.values[slot]).0;
+                }
+                match c.field.ty {
+                    SortType::Score => i64::from(sortable_int_to_float(-v).to_bits()),
+                    SortType::String | SortType::StringVal => 0,
+                    _ => v,
+                }
+            })
+            .collect();
+        let terms = if any_terms {
+            self.comps
                 .iter()
-                .map(|c| {
-                    let v = c.values[e.slot];
-                    if let Some(cs) = &c.custom {
-                        return sort_value_parts(&cs.values[e.slot]).0;
-                    }
-                    match c.field.ty {
-                        SortType::Score => i64::from(sortable_int_to_float(-v).to_bits()),
-                        SortType::String | SortType::StringVal => 0,
-                        _ => v,
-                    }
+                .map(|c| match (&c.strs, &c.vals, &c.custom) {
+                    (Some(st), _, _) => st.values[slot].clone(),
+                    (_, Some(v), _) => v.values[slot].clone(),
+                    (_, _, Some(cs)) => sort_value_parts(&cs.values[slot]).1,
+                    _ => None,
                 })
-                .collect();
-            let terms = if any_terms {
-                self.comps
-                    .iter()
-                    .map(|c| match (&c.strs, &c.vals, &c.custom) {
-                        (Some(st), _, _) => st.values[e.slot].clone(),
-                        (_, Some(v), _) => v.values[e.slot].clone(),
-                        (_, _, Some(cs)) => sort_value_parts(&cs.values[e.slot]).1,
-                        _ => None,
-                    })
-                    .collect()
-            } else {
-                Vec::new()
-            };
-            hits.push(FieldDoc {
-                doc: e.doc,
-                values,
-                terms,
-            });
+                .collect()
+        } else {
+            Vec::new()
+        };
+        FieldDoc { doc, values, terms }
+    }
+
+    /// `populateResults`/`newTopDocs`.
+    fn top_docs(mut self) -> TopFieldDocs {
+        let mut hits = Vec::with_capacity(self.queue.heap.len());
+        let any_terms = self.any_terms();
+        while let Some(e) = self.queue.pop(&self.comps) {
+            hits.push(self.slot_hit(e.slot, e.doc, any_terms));
         }
         hits.reverse();
         TopFieldDocs {

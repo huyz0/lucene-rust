@@ -168,6 +168,38 @@ public final class NativeBridge {
             "ffi_jvm_reader_aggregate_tree_alloc",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS)
         );
+        static final MethodHandle SEARCH_COLLAPSED = bind(
+            "ffi_jvm_reader_search_collapsed_alloc",
+            FunctionDescriptor.of(
+                JAVA_INT,
+                JAVA_LONG,
+                ADDRESS,
+                JAVA_LONG,
+                ADDRESS,
+                JAVA_LONG,
+                ADDRESS,
+                JAVA_LONG,
+                JAVA_LONG,
+                ADDRESS,
+                ADDRESS
+            )
+        );
+        static final MethodHandle RESCORE = bind(
+            "ffi_jvm_reader_rescore",
+            FunctionDescriptor.of(
+                JAVA_INT,
+                JAVA_LONG,
+                ADDRESS,
+                JAVA_LONG,
+                JAVA_INT,
+                JAVA_FLOAT,
+                JAVA_FLOAT,
+                JAVA_INT,
+                ADDRESS,
+                ADDRESS,
+                JAVA_LONG
+            )
+        );
         static final MethodHandle DOCUMENT = bind(
             "ffi_jvm_reader_document_alloc",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_INT, ADDRESS, ADDRESS)
@@ -962,6 +994,104 @@ public final class NativeBridge {
                     return tooLarge("the aggregation results");
                 }
                 out[0] = encoded;
+            }
+            return rc;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * Runs a query blob collapsed ({@link NativeCollapse}): the sort blob's keys ({@link
+     * SortEncoder}) on the collapse blob's field, {@code topN} groups per slice; the encoded
+     * groups ({@code search_collapsed_blobs} in {@code jvm_reader.rs}) in {@code out[0]}.
+     */
+    public static int searchCollapsed(long handle, byte[] query, byte[] sort, byte[] collapse, int topN, byte[][] out) {
+        if (query == null) {
+            return nullArgument("query");
+        }
+        if (sort == null) {
+            return nullArgument("sort");
+        }
+        if (collapse == null) {
+            return nullArgument("collapse");
+        }
+        if (topN < 1) {
+            return fail(INVALID_ARGUMENT, "searchCollapsed: topN must be at least 1");
+        }
+        if (out == null || out.length < 1) {
+            return fail(INVALID_ARGUMENT, "out holds no slot");
+        }
+        try (Scratch s = Scratch.open()) {
+            MemorySegment result = ownedSlot(s);
+            int rc = (int) H.SEARCH_COLLAPSED.invokeExact(
+                handle,
+                s.bytes(query),
+                (long) query.length,
+                s.bytes(sort),
+                (long) sort.length,
+                s.bytes(collapse),
+                (long) collapse.length,
+                (long) topN,
+                ptrOf(result),
+                lenOf(result)
+            );
+            if (rc == OK) {
+                byte[] encoded = take(result);
+                if (encoded == null) {
+                    return tooLarge("the collapsed hits");
+                }
+                out[0] = encoded;
+            }
+            return rc;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * Rescores {@code docs}/{@code scores} (a search's hits, best first, global ids) in place as
+     * OpenSearch's {@code QueryRescorer} does: the query blob's query over the top {@code window},
+     * {@code mode} the {@code QueryRescoreMode} ordinal ({@code rescore_hits} in {@code
+     * jvm_reader.rs}).
+     */
+    public static int rescore(
+        long handle,
+        byte[] query,
+        int window,
+        float queryWeight,
+        float rescoreQueryWeight,
+        int mode,
+        int[] docs,
+        float[] scores
+    ) {
+        if (query == null) {
+            return nullArgument("query");
+        }
+        if (docs == null || scores == null || docs.length != scores.length) {
+            return fail(INVALID_ARGUMENT, "rescore: as many scores as documents");
+        }
+        int n = docs.length;
+        try (Scratch s = Scratch.open()) {
+            MemorySegment d = s.room(JAVA_INT, Math.max(1, n));
+            MemorySegment sc = s.room(JAVA_FLOAT, Math.max(1, n));
+            MemorySegment.copy(docs, 0, d, JAVA_INT, 0, n);
+            MemorySegment.copy(scores, 0, sc, JAVA_FLOAT, 0, n);
+            int rc = (int) H.RESCORE.invokeExact(
+                handle,
+                s.bytes(query),
+                (long) query.length,
+                window,
+                queryWeight,
+                rescoreQueryWeight,
+                mode,
+                d,
+                sc,
+                (long) n
+            );
+            if (rc == OK) {
+                MemorySegment.copy(d, JAVA_INT, 0, docs, 0, n);
+                MemorySegment.copy(sc, JAVA_FLOAT, 0, scores, 0, n);
             }
             return rc;
         } catch (Throwable t) {

@@ -16,6 +16,7 @@ import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.NumericUtils;
 import org.opensearch.index.fielddata.IndexFieldData;
 import org.opensearch.index.fielddata.IndexNumericFieldData;
+import org.opensearch.index.fielddata.plain.NonPruningSortedSetOrdinalsIndexFieldData;
 
 import java.io.ByteArrayOutputStream;
 import java.lang.reflect.Field;
@@ -60,6 +61,12 @@ public final class SortEncoder {
     static final byte STRING = 6;
     /** A {@code _geo_distance} key ({@link GeoEncoder#sort}). */
     static final byte GEO = 7;
+    /** {@code _shard_doc} ({@code ShardDocFieldComparatorSource}): its shard key prefix follows. */
+    static final byte SHARD_DOC = 8;
+    /** A {@code half_float} field ({@code HalfFloatValuesComparatorSource}). */
+    static final byte HALF_FLOAT = 9;
+    /** An {@code unsigned_long} field ({@code UnsignedLongValuesComparatorSource}). */
+    static final byte UNSIGNED_LONG = 10;
     static final byte REVERSE = 1;
     static final byte MAX = 2;
     /** Key flags' mode field: OpenSearch's {@code MultiValueMode} for its own comparator sources. */
@@ -153,10 +160,11 @@ public final class SortEncoder {
         }
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         out.write(fields.length);
-        for (SortField f : fields) {
+        for (SortField key : fields) {
+            SortField f = unwrap(key);
             byte type = type(f);
             if (type < 0) {
-                return new Encoded(null, "sort_" + f.getClass().getSimpleName() + "_" + f.getType());
+                return new Encoded(null, "sort_" + f.getClass().getSimpleName() + "_" + f.getType() + customReason(f));
             }
             if (f.getOptimizeSortWithIndexedData() == false) {
                 // The native comparator always skips with points; this one was told not to.
@@ -169,7 +177,15 @@ public final class SortEncoder {
                 }
                 continue;
             }
-            byte flags = f.getReverse() ? REVERSE : 0;
+            if (type == SHARD_DOC) {
+                out.write(type);
+                out.write(f.getReverse() ? REVERSE : 0);
+                writeLong(out, shardKeyPrefix(f));
+                continue;
+            }
+            // FieldValueHitQueue reverses by the key's own `reverse` field, which a
+            // NonPruningSortField leaves false whatever its delegate's getReverse() says.
+            byte flags = key == f && f.getReverse() ? REVERSE : 0;
             if (f instanceof SortedNumericSortField sn && sn.getSelector() == SortedNumericSelector.Type.MAX) {
                 flags |= MAX;
             }
@@ -220,7 +236,7 @@ public final class SortEncoder {
                     // native side holds: such a page runs on Lucene.
                     return new Encoded(null, "search_after_geo");
                 }
-                if (type(fields[i]) == STRING) {
+                if (type(unwrap(fields[i])) == STRING) {
                     // A missing term is a value of its own (TermOrdValComparator's null top).
                     if (after.fields[i] == null) {
                         out.write(0);
@@ -236,7 +252,7 @@ public final class SortEncoder {
                 if (after.fields[i] == null) {
                     return new Encoded(null, "search_after_null");
                 }
-                writeLong(out, comparable(type(fields[i]), after.fields[i]));
+                writeLong(out, comparable(type(unwrap(fields[i])), after.fields[i]));
             }
         }
         out.write(
@@ -291,6 +307,7 @@ public final class SortEncoder {
 
     /** The blob type of {@code f}, or -1 when it has none. */
     static byte type(SortField f) {
+        f = unwrap(f);
         if (GeoEncoder.luceneSort(f) || GeoEncoder.openSearchSort(f)) {
             return GEO;
         }
@@ -299,6 +316,9 @@ public final class SortEncoder {
                 case SCORE -> SCORE;
                 case DOC -> DOC;
                 case CUSTOM -> {
+                    if (shardKeyPrefix(f) != null) {
+                        yield SHARD_DOC;
+                    }
                     Mode mode = mode(f);
                     yield mode == null ? -1 : mode.type();
                 }
@@ -330,7 +350,7 @@ public final class SortEncoder {
      * {@code sum}, {@code avg} and {@code median}: its blob type, its mode flags and the missing value
      * its comparator is given.
      */
-    record Mode(byte type, byte flags, Object missing, byte[] parents, byte[] children, int maxChildren) {}
+    record Mode(byte type, byte flags, Object missing, byte[] parents, byte[] children, int maxChildren, boolean unlikeSkipping) {}
 
     private static final String SOURCES = "org.opensearch.index.fielddata.fieldcomparator.";
     private static final Field SORT_MODE = field(IndexFieldData.XFieldComparatorSource.class, "sortMode");
@@ -349,11 +369,29 @@ public final class SortEncoder {
      * one only where Lucene's comparator would not skip either ({@link #hasNested}).
      */
     static Mode mode(SortField f) {
+        return modeOrReason(f) instanceof Mode m ? m : null;
+    }
+
+    /**
+     * Why a {@code CUSTOM} key has no {@link Mode}, as a suffix of its fallback reason ({@code
+     * _<source>_<why>}), or empty for any other key.
+     */
+    static String customReason(SortField f) {
+        Object r = f.getType() == SortField.Type.CUSTOM ? modeOrReason(f) : null;
+        if (!(r instanceof String why)) {
+            return "";
+        }
+        Object src = f.getComparatorSource();
+        return "_" + (src == null ? "null" : src.getClass().getSimpleName()) + (why.isEmpty() ? "" : "_" + why);
+    }
+
+    /** {@link #mode}, or the reason there is none ({@link #customReason}). */
+    private static Object modeOrReason(SortField f) {
         if (f.getClass() != SortField.class || f.getType() != SortField.Type.CUSTOM) {
-            return null;
+            return "";
         }
         if (!(f.getComparatorSource() instanceof IndexFieldData.XFieldComparatorSource src)) {
-            return null;
+            return "";
         }
         String name = src.getClass().getName();
         byte type = switch (name.startsWith(SOURCES) ? name.substring(SOURCES.length()) : "") {
@@ -361,16 +399,24 @@ public final class SortEncoder {
             case "IntValuesComparatorSource" -> INT;
             case "DoubleValuesComparatorSource" -> DOUBLE;
             case "FloatValuesComparatorSource" -> FLOAT;
+            case "HalfFloatValuesComparatorSource" -> HALF_FLOAT;
+            case "UnsignedLongValuesComparatorSource" -> UNSIGNED_LONG;
             default -> -1;
         };
         if (type < 0 || SORT_MODE == null || MISSING == null || NESTED == null || SKIPPING == null) {
-            return null;
+            return "";
         }
         try {
-            if (SKIPPING.getBoolean(src) == false) {
-                return null;
+            // OpenSearch's own comparators run natively without skipping, which is exact here.
+            boolean own = type == HALF_FLOAT || type == UNSIGNED_LONG;
+            boolean skipping = SKIPPING.getBoolean(src);
+            if (skipping == false && own == false) {
+                return "noskip";
             }
             Object nested = NESTED.get(src);
+            if (nested != null && own) {
+                return "nested";
+            }
             byte[] parents = null;
             byte[] children = null;
             int maxChildren = Integer.MAX_VALUE;
@@ -378,7 +424,7 @@ public final class SortEncoder {
                 // XFieldComparatorSource.Nested: the root documents' BitSetProducer (the query
                 // it wraps), the inner query, the searcher that rewrites it, max_children.
                 if (!(nested instanceof IndexFieldData.XFieldComparatorSource.Nested n)) {
-                    return null;
+                    return "nested";
                 }
                 Object producer = NativeAggregationTree.get(n, "rootFilter");
                 org.apache.lucene.search.IndexSearcher searcher = (org.apache.lucene.search.IndexSearcher) NativeAggregationTree.get(
@@ -386,12 +432,12 @@ public final class SortEncoder {
                     "searcher"
                 );
                 if (!(NativeAggregationTree.get(producer, "query") instanceof org.apache.lucene.search.Query parentQuery)) {
-                    return null;
+                    return "nested_parents";
                 }
                 parents = QueryEncoder.encode(searcher.rewrite(parentQuery), field -> true).blob();
                 children = QueryEncoder.encode(searcher.rewrite(n.getInnerQuery()), field -> true).blob();
                 if (parents == null || children == null) {
-                    return null;
+                    return "nested_query";
                 }
                 if (n.getNestedSort() != null) {
                     maxChildren = n.getNestedSort().getMaxChildren();
@@ -399,47 +445,53 @@ public final class SortEncoder {
             }
             Field data = Reflect.declared(src.getClass(), "indexFieldData");
             if (data == null || !(data.get(src) instanceof IndexNumericFieldData ifd)) {
-                return null;
+                return "data";
             }
-            boolean own = switch (ifd.getNumericType()) {
+            boolean ownType = switch (ifd.getNumericType()) {
                 case LONG, DATE -> type == LONG;
                 case INT, SHORT, BYTE -> type == INT;
                 case DOUBLE -> type == DOUBLE;
                 case FLOAT -> type == FLOAT;
+                case HALF_FLOAT -> type == HALF_FLOAT;
+                case UNSIGNED_LONG -> type == UNSIGNED_LONG;
                 default -> false;
             };
-            if (own == false) {
-                return null;
+            if (ownType == false) {
+                return "type_" + ifd.getNumericType();
             }
             if (type == LONG) {
                 Field converter = Reflect.declared(src.getClass(), "converter");
                 if (converter == null || converter.get(src) != null) {
-                    return null;
+                    return "converter";
                 }
             }
             byte flags = switch (((Enum<?>) SORT_MODE.get(src)).name()) {
                 case "MIN" -> 0;
                 case "MAX" -> MAX;
-                // SUM stays Lucene's: its comparator skips with the points of the single values,
-                // which a sum can pass, so which documents it keeps depends on where skipping
-                // starts. An average or median lies between a document's least and greatest value,
-                // so the same skipping is exact for them, and the native answer is Lucene's. A
-                // nested key never skips natively and runs only where Lucene's does not either.
-                case "SUM" -> nested != null ? MODE_SUM : -1;
+                // A SUM's comparator skips with the points of the single values, which a sum can
+                // pass, so which documents it keeps depends on where skipping starts: it runs
+                // natively only where Lucene's does not skip ({@link #unlikeSkipping}). An average
+                // or median lies between a document's least and greatest value, so the same
+                // skipping is exact for them, and the native answer is Lucene's.
+                case "SUM" -> MODE_SUM;
                 case "AVG" -> MODE_AVG;
-                // MultiValueMode.MEDIAN has no nested pick.
-                case "MEDIAN" -> nested != null ? -1 : MODE_MEDIAN;
+                // MultiValueMode.MEDIAN has no nested pick, nor an unsigned one here.
+                case "MEDIAN" -> nested != null || type == UNSIGNED_LONG ? -1 : MODE_MEDIAN;
                 default -> -1;
             };
             if (flags < 0) {
-                return null;
+                return "mode_" + ((Enum<?>) SORT_MODE.get(src)).name() + (nested != null ? "_nested" : "");
             }
             if (nested != null) {
                 flags |= NESTED_KEY;
             }
-            return new Mode(type, flags, src.missingObject(MISSING.get(src), f.getReverse()), parents, children, maxChildren);
+            // Where the native answer is Lucene's only while Lucene's comparator does not skip: a
+            // nested key and a SUM (see above), and OpenSearch's own comparators, which skip with
+            // points the native ones do not read.
+            boolean unlike = nested != null || flags == MODE_SUM || (own && skipping);
+            return new Mode(type, flags, src.missingObject(MISSING.get(src), f.getReverse()), parents, children, maxChildren, unlike);
         } catch (ReflectiveOperationException | RuntimeException | java.io.IOException e) {
-            return null;
+            return "error";
         }
     }
 
@@ -474,15 +526,53 @@ public final class SortEncoder {
         return any ? out : null;
     }
 
-    /** Whether any key of {@code fields} is a nested one ({@link #NESTED_KEY}). */
-    static boolean hasNested(SortField[] fields) {
+    /**
+     * Why {@code fields} runs natively only where Lucene's comparators cannot skip (no more
+     * documents than the total-hits threshold), or null when it runs anywhere: {@code sort_nested}
+     * for a nested key ({@link #NESTED_KEY}), whose field's points are the children's; {@code
+     * sort_skipping} for a key whose native comparator does not skip as Lucene's does ({@link
+     * Mode#unlikeSkipping}, a {@code NonPruningSortField}).
+     */
+    static String skippingReason(SortField[] fields) {
+        String reason = null;
         for (SortField f : fields) {
-            Mode m = mode(f);
+            Mode m = mode(unwrap(f));
             if (m != null && m.parents() != null) {
-                return true;
+                return "sort_nested";
+            }
+            if ((m != null && m.unlikeSkipping()) || unwrap(f) != f) {
+                reason = "sort_skipping";
             }
         }
-        return false;
+        return reason;
+    }
+
+    /**
+     * {@code f}, or the {@link SortedSetSortField} a {@code NonPruningSortField} (the wildcard
+     * field's) delegates to, which Lucene's comparator runs with {@code Pruning.NONE}.
+     */
+    static SortField unwrap(SortField f) {
+        if (f instanceof NonPruningSortedSetOrdinalsIndexFieldData.NonPruningSortField np
+            && np.getDelegate() instanceof SortedSetSortField ss) {
+            return ss;
+        }
+        return f;
+    }
+
+    private static final String SHARD_DOC_SOURCE = "org.opensearch.search.sort.ShardDocFieldComparatorSource";
+
+    /** The {@code shardKeyPrefix} of a {@code _shard_doc} key, or null for any other key. */
+    static Long shardKeyPrefix(SortField f) {
+        Object src = f.getComparatorSource();
+        if (f.getClass() != SortField.class || src == null || !src.getClass().getName().equals(SHARD_DOC_SOURCE)) {
+            return null;
+        }
+        try {
+            Field p = Reflect.declared(src.getClass(), "shardKeyPrefix");
+            return p == null ? null : p.getLong(src);
+        } catch (ReflectiveOperationException | RuntimeException e) {
+            return null;
+        }
     }
 
     /** Whether any key of {@code fields} is a keyword key, whose terms come back as bytes. */
@@ -531,7 +621,8 @@ public final class SortEncoder {
             case DOC, INT -> ((Number) v).intValue();
             case LONG -> ((Number) v).longValue();
             case DOUBLE, GEO -> NumericUtils.doubleToSortableLong(((Number) v).doubleValue());
-            case FLOAT -> NumericUtils.floatToSortableInt(((Number) v).floatValue());
+            case FLOAT, HALF_FLOAT -> NumericUtils.floatToSortableInt(((Number) v).floatValue());
+            case SHARD_DOC, UNSIGNED_LONG -> ((Number) v).longValue();
             default -> throw new IllegalArgumentException("sort type " + type);
         };
     }
@@ -543,7 +634,9 @@ public final class SortEncoder {
             case DOC, INT -> (int) v;
             case LONG -> v;
             case DOUBLE -> NumericUtils.sortableLongToDouble(v);
-            case FLOAT -> NumericUtils.sortableIntToFloat((int) v);
+            case FLOAT, HALF_FLOAT -> NumericUtils.sortableIntToFloat((int) v);
+            case SHARD_DOC -> v;
+            case UNSIGNED_LONG -> new java.math.BigInteger(Long.toUnsignedString(v));
             // Lucene's comparator holds the haversine sort key and reports its distance.
             case GEO -> GeoEncoder.luceneSort(f)
                 ? GeoEncoder.haversin2(NumericUtils.sortableLongToDouble(v))

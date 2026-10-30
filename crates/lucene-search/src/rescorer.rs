@@ -498,6 +498,97 @@ fn key_is_bytes(key: &SortField) -> bool {
     }
 }
 
+/// OpenSearch's `QueryRescoreMode`: how a rescore query's score joins the
+/// first pass's (`score_mode`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueryRescoreMode {
+    /// `(primary + secondary) / 2`.
+    Avg,
+    /// `Math.max`.
+    Max,
+    /// `Math.min`.
+    Min,
+    /// `primary + secondary` (`total`, the default).
+    Total,
+    /// `primary * secondary`.
+    Multiply,
+}
+
+impl QueryRescoreMode {
+    /// `combine(primary, secondary)`, in `float` arithmetic.
+    pub fn combine(self, primary: f32, secondary: f32) -> f32 {
+        use crate::join::query_time::{java_max_f32, java_min_f32};
+        match self {
+            QueryRescoreMode::Avg => (primary + secondary) / 2.0,
+            QueryRescoreMode::Max => java_max_f32(primary, secondary),
+            QueryRescoreMode::Min => java_min_f32(primary, secondary),
+            QueryRescoreMode::Total => primary + secondary,
+            QueryRescoreMode::Multiply => primary * secondary,
+        }
+    }
+}
+
+/// OpenSearch's `QueryRescorer.rescore(topDocs, searcher, rescoreContext)`
+/// on `hits` (the first pass's, best first), in place: the top `window` go
+/// through Lucene's `QueryRescorer` with `query`, each combined as
+/// `mode.combine(first * query_weight, second * rescore_query_weight)` where
+/// the second pass matches and `first * query_weight` where it does not; the
+/// hits past the window are scaled by `query_weight` alone and, when there
+/// are any, everything is re-sorted (`Float.compare` of the scores, highest
+/// first, then the document). Returns how many hits were rescored (the
+/// window's documents are the first that many hits handed in).
+///
+/// # Errors
+/// What [`QueryRescorer::rescore`] reports.
+pub fn opensearch_query_rescore(
+    ctx: &ValuesContext<'_>,
+    hits: &mut Vec<ShardScoreDoc>,
+    query: BooleanQuery,
+    window: usize,
+    query_weight: f32,
+    rescore_query_weight: f32,
+    mode: QueryRescoreMode,
+) -> Result<usize> {
+    if hits.is_empty() {
+        return Ok(0);
+    }
+    let rescorer = QueryRescorer::new(
+        query,
+        Arc::new(move |first: f32, matches: bool, second: f32| {
+            if matches {
+                mode.combine(first * query_weight, second * rescore_query_weight)
+            } else {
+                first * query_weight
+            }
+        }),
+    );
+    // `topN(topDocs, windowSize)`.
+    let top = hits.len().min(window);
+    let first_pass = TopDocs {
+        total_hits: TotalHits {
+            value: 0,
+            relation: TotalHitsRelation::EqualTo,
+        },
+        score_docs: hits[..top].to_vec(),
+    };
+    let rescored = rescorer.rescore(ctx, &first_pass, window)?;
+    // `combine`: the rescored window spliced back over the first hits.
+    for (slot, hit) in hits.iter_mut().zip(rescored.score_docs) {
+        *slot = hit;
+    }
+    if hits.len() > top {
+        for hit in &mut hits[top..] {
+            hit.score *= query_weight;
+        }
+        // `SCORE_DOC_COMPARATOR`: `Float.compare(o2.score, o1.score)`, then
+        // the document.
+        hits.sort_by(|a, b| {
+            java_float_compare(b.score, a.score).then(a.doc.cmp(&b.doc))
+        });
+    }
+    Ok(top)
+}
+
 /// `SortRescorer`: the first-pass hits re-ordered by a sort, as a
 /// `TopFieldCollector` over just those documents collects them (the
 /// first-pass score is the score a `SCORE` key reads).

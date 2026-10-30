@@ -177,6 +177,13 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
                 hitsBlob = QueryEncoder.withMinScore(hitsBlob, ctx.minimumScore());
             }
         }
+        // The rescore queries, encoded before anything runs: one that cannot be leaves the whole
+        // search to Lucene.
+        List<NativeRescore> rescores = null;
+        if (reason == null && NativeRescore.applies(ctx)) {
+            rescores = new ArrayList<>();
+            reason = NativeRescore.encode(ctx, searcher, field -> defaultBm25(searcher, field), rescores);
+        }
         // OpenSearch's approximate match_all/range (ApproximateScoreQuery resolved to its
         // ApproximateQuery) collects documents in BKD order and so breaks ties differently from
         // Lucene's exact answer, which is what the native engine gives: stay on OpenSearch's.
@@ -215,7 +222,20 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             sort = new Sort(SortField.FIELD_SCORE);
             scoreDocs = true;
         }
-        if (reason == null && sort != null && (ctx.size() > 0 || terminateAfter > 0)) {
+        // collapse: CollapsingTopDocsCollectorContext, by the request's sort or the score, from + size
+        // groups; its comparators never skip, so no index-sort flags.
+        byte[] collapseBlob = null;
+        if (reason == null && ctx.collapse() != null && ctx.size() > 0) {
+            int[][] slices = NativeAggregations.slices(ctx);
+            Sort collapseSort = NativeCollapse.sort(ctx);
+            boolean trackMaxScore = ctx.trackScores() && NativeCollapse.sortByScore(ctx) == false;
+            SortEncoder.Encoded sorted = slices == null ? new SortEncoder.Encoded(null, "intra_segment")
+                : SortEncoder.encode(collapseSort, after, trackMaxScore, slices, terminateAfter, false, null);
+            reason = sorted.fallbackReason();
+            sortBlob = sorted.blob();
+            sort = collapseSort;
+            collapseBlob = NativeCollapse.blob(ctx.collapse());
+        } else if (reason == null && sort != null && (ctx.size() > 0 || terminateAfter > 0)) {
             // track_scores behind another key: OpenSearch's MaxScoreCollector over every match.
             boolean trackMaxScore = ctx.trackScores() && ctx.size() > 0 && sortByScore(sort) == false;
             // A concurrent search collects each slice separately, as Lucene does.
@@ -241,7 +261,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             } else if (hasTimeout && deadlinePassed(ctx)) {
                 reason = "timeout";
             } else {
-                reason = searchNative(ctx, acquired.handle(), blob, hitsBlob, sortBlob, sort, scoreDocs, aggs, tree);
+                reason = searchNative(ctx, acquired.handle(), blob, hitsBlob, sortBlob, collapseBlob, rescores, sort, scoreDocs, aggs, tree);
             }
             if (reason == null) {
                 stats.nativeQuery();
@@ -299,8 +319,24 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         // size 0 behind search_after: ContextIndexSearcher skips segments the after value rules out
         // before any collector sees them, which the native count does not.
         if (ctx.searchAfter() != null && ctx.size() == 0) return "search_after";
-        if (ctx.collapse() != null) return "collapse";
-        if (ctx.rescore() != null && ctx.rescore().isEmpty() == false) return "rescore";
+        // collapse natively (NativeCollapse) on a keyword or numeric field, behind terminate_after
+        // too: EarlyTerminatingCollector lets the first matches in index order through, which the
+        // native collector takes as the plain sorted search does (terminateAfterIneligible above).
+        if (ctx.collapse() != null && ctx.size() > 0) {
+            if (NativeCollapse.blob(ctx.collapse()) == null) return "collapse_field";
+            // CollapsingTopDocsCollector refuses search_after unless the sort is the collapse field.
+            SortField[] keys = NativeCollapse.sort(ctx).getSort();
+            if (ctx.searchAfter() != null
+                && (keys.length != 1 || java.util.Objects.equals(keys[0].getField(), ctx.collapse().getFieldName()) == false)) {
+                return "collapse_search_after";
+            }
+        }
+        // rescore natively (NativeRescore) when every rescorer is OpenSearch's QueryRescorer, over the
+        // top docs however they were collected (behind terminate_after too); a scroll or a size-0
+        // search never rescores.
+        if (ctx.rescore() != null && ctx.rescore().isEmpty() == false && ctx.scrollContext() == null && ctx.size() > 0) {
+            if (NativeRescore.supported(ctx) == false) return "rescore";
+        }
         if (ctx.getProfilers() != null) return "profile";
         // A shard with an @timestamp field sorted by it ascending: ContextIndexSearcher visits
         // each slice's segments last first, which breaks sort ties and orders an aggregation's sums
@@ -335,12 +371,31 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         int trackUpTo = ctx.trackTotalHitsUpTo();
         return ctx.queryCollectorManagers().isEmpty() == false
             || (countSegments(ctx, ctx.terminateAfter()) && segmentCountable(ctx.query()) == false)
-            || (ctx.size() > 0 && ctx.parsedPostFilter() == null && (scoresNeeded(ctx) == false || rangeCollected(ctx.query())))
+            || (ctx.size() > 0
+                && ctx.parsedPostFilter() == null
+                && ((scoresNeeded(ctx) == false && neverCached(ctx) == false) || rangeCollected(ctx.query())))
             || ctx.searchAfter() != null
             || ctx.scrollContext() != null
             || (trackUpTo != SearchContext.TRACK_TOTAL_HITS_ACCURATE
                 && trackUpTo != SearchContext.TRACK_TOTAL_HITS_DISABLED
                 && ctx.terminateAfter() > trackUpTo);
+    }
+
+    /**
+     * Whether an unscored search's query never goes through the query cache, whose cached bulk
+     * scorer hands the collector whole ranges once a query has been seen often enough (history
+     * no native search reproduces): a plain {@code TermQuery}, which {@code
+     * UsageTrackingQueryCachingPolicy.shouldNeverCache} turns away, unless the index caches
+     * everything ({@code index.queries.cache.everything}).
+     */
+    static boolean neverCached(SearchContext ctx) {
+        Query q = ctx.query();
+        while (q instanceof BoostQuery b) {
+            q = b.getQuery();
+        }
+        return q.getClass() == TermQuery.class
+            && org.opensearch.index.IndexModule.INDEX_QUERY_CACHE_EVERYTHING_SETTING.get(ctx.indexShard().indexSettings().getSettings())
+                == false;
     }
 
     /**
@@ -493,6 +548,8 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         byte[] blob,
         byte[] hitsBlob,
         byte[] sortBlob,
+        byte[] collapseBlob,
+        List<NativeRescore> rescores,
         Sort sort,
         boolean scoreDocs,
         NativeAggregations.Plan aggs,
@@ -509,6 +566,12 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         // (TopDocsCollectorContext.createTopDocsCollectorContext).
         int numDocs = size == 0 ? 0
             : Math.min(scroll != null ? size : ctx.from() + size, Math.max(1, ctx.searcher().getIndexReader().numDocs()));
+        // A rescored search collects at least each rescorer's window (createTopDocsCollectorContext).
+        if (rescores != null) {
+            for (NativeRescore r : rescores) {
+                numDocs = Math.max(numDocs, r.window());
+            }
+        }
         boolean terminating = ctx.terminateAfter() != SearchContext.DEFAULT_TERMINATE_AFTER;
         int trackUpTo = scroll == null ? ctx.trackTotalHitsUpTo()
             : scroll.totalHits != null ? SearchContext.TRACK_TOTAL_HITS_DISABLED
@@ -527,7 +590,9 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         // each crossing into native code costs more than the term lookup it makes.
         Term shortcutTerm = null;
         // TopDocsCollectorContext: "hasFilterCollector ? -1 : shortcutTotalHitCount(...)".
+        // (A collapsed search counts every match itself, whatever track_total_hits says.)
         if (trackUpTo != SearchContext.TRACK_TOTAL_HITS_DISABLED
+            && collapseBlob == null
             && ctx.parsedPostFilter() == null
             && terminating == false
             && ctx.minimumScore() == null) {
@@ -613,9 +678,14 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
                 return "native_error";
             }
         }
-        String reason = sortBlob != null
+        String reason = collapseBlob != null ? searchCollapsed(ctx, handle, hitsBlob, sortBlob, collapseBlob, Math.max(1, numDocs))
+            : sortBlob != null
             ? searchSorted(ctx, handle, hitsBlob, sortBlob, sort, scoreDocs, Math.max(1, numDocs), countLimit, shortcut)
             : searchUnsorted(ctx, handle, hitsBlob, numDocs, countLimit, shortcut, shortcutTerm, counted, segCounts);
+        if (reason == null && rescores != null) {
+            // RescoreProcessor, after the query phase: each rescorer over the hits so far.
+            reason = rescore(ctx, handle, rescores);
+        }
         if (reason == null && aggResult != null) {
             // DefaultAggregationProcessor.postProcess keeps a result already there (hasAggs).
             ctx.queryResult().aggregations(aggResult);
@@ -933,6 +1003,78 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
     }
 
     /**
+     * OpenSearch's RescoreProcessor over the native hits: each rescorer in turn ({@link
+     * NativeRescore}), the max score then the first hit's.
+     */
+    private String rescore(SearchContext ctx, long handle, List<NativeRescore> rescores) {
+        TopDocsAndMaxScore stored = ctx.queryResult().topDocs();
+        TopDocs top = stored.topDocs;
+        if (top.scoreDocs.length == 0) {
+            return null;
+        }
+        int n = top.scoreDocs.length;
+        int[] docs = new int[n];
+        float[] scores = new float[n];
+        for (int i = 0; i < n; i++) {
+            docs[i] = top.scoreDocs[i].doc;
+            scores[i] = top.scoreDocs[i].score;
+        }
+        for (NativeRescore r : rescores) {
+            // QueryRescorer.rescore: the window's documents, for explain.
+            java.util.Set<Integer> window = new java.util.HashSet<>();
+            for (int i = 0; i < Math.min(n, r.window()); i++) {
+                window.add(docs[i]);
+            }
+            int rc = NativeBridge.rescore(handle, r.blob(), r.window(), r.queryWeight(), r.rescoreQueryWeight(), r.mode(), docs, scores);
+            if (rc != NativeBridge.OK) {
+                stats.nativeError();
+                logger.warn("lucene-rust: native rescore failed ({}), re-running on Lucene: {}", rc, NativeBridge.lastError());
+                return "native_error";
+            }
+            r.context().setRescoredDocs(java.util.Collections.unmodifiableSet(window));
+        }
+        ScoreDoc[] hits = new ScoreDoc[n];
+        for (int i = 0; i < n; i++) {
+            hits[i] = new ScoreDoc(docs[i], scores[i]);
+        }
+        ctx.queryResult().topDocs(new TopDocsAndMaxScore(new TopDocs(top.totalHits, hits), hits[0].score), ctx.queryResult().sortValueFormats());
+        return null;
+    }
+
+    /**
+     * The collapsed half of {@link #searchNative} ({@link NativeCollapse}): {@code numDocs} groups,
+     * stored as CollapsingTopDocsCollectorContext stores them, with the sort's formats.
+     */
+    private String searchCollapsed(SearchContext ctx, long handle, byte[] blob, byte[] sortBlob, byte[] collapseBlob, int numDocs) {
+        byte[][] out = new byte[1][];
+        int rc = NativeBridge.searchCollapsed(handle, blob, sortBlob, collapseBlob, numDocs, out);
+        if (rc != NativeBridge.OK) {
+            String message = NativeBridge.lastError();
+            if (NativeCollapse.refused(message)) {
+                // A multi-valued collapse field: Lucene's collector raises the request's error.
+                return "collapse_refused";
+            }
+            stats.nativeError();
+            logger.warn("lucene-rust: native collapsed search failed ({}), re-running on Lucene: {}", rc, message);
+            return "native_error";
+        }
+        TopDocsAndMaxScore td;
+        try {
+            td = NativeCollapse.decode(ctx, out[0], numDocs);
+        } catch (RuntimeException e) {
+            stats.nativeError();
+            logger.warn("lucene-rust: decoding native collapsed hits failed, re-running on Lucene", e);
+            return "native_error";
+        }
+        ctx.queryResult().topDocs(td, ctx.sort() == null ? new DocValueFormat[] { DocValueFormat.RAW } : ctx.sort().formats);
+        if (ctx.terminateAfter() != SearchContext.DEFAULT_TERMINATE_AFTER) {
+            // QueryPhase: true when EarlyTerminatingCollector threw, false otherwise.
+            ctx.queryResult().terminatedEarly(NativeCollapse.terminated(out[0]));
+        }
+        return null;
+    }
+
+    /**
      * The sorted half of {@link #searchNative}: {@code TopFieldCollectorManager(sort, numDocs,
      * searchAfter, countLimit)}, answered as {@code SimpleTopDocsCollectorContext} answers it -- a
      * {@link TopFieldDocs} of {@link FieldDoc}s with {@code NaN} scores, the max score read off the
@@ -950,11 +1092,13 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         int shortcut
     ) {
         SortField[] fields = sort.getSort();
-        // A nested key does not skip natively (its field's points are the children's); Lucene's
-        // comparator does once more than the threshold's hits are in, so a nested sort runs here
-        // only where the shard cannot hold that many documents.
-        if (SortEncoder.hasNested(fields) && ctx.searcher().getIndexReader().maxDoc() > countLimit) {
-            return "sort_nested";
+        // A nested key does not skip natively (its field's points are the children's), nor do a
+        // few others as Lucene's do (SortEncoder.skippingReason); Lucene's comparator skips once
+        // more than the threshold's hits are in, so such a sort runs here only where the shard
+        // cannot hold that many documents.
+        String skipping = SortEncoder.skippingReason(fields);
+        if (skipping != null && ctx.searcher().getIndexReader().maxDoc() > countLimit) {
+            return skipping;
         }
         int[] docs = new int[numDocs];
         long[] values = new long[numDocs * fields.length];
