@@ -736,6 +736,7 @@ pub(crate) fn document<'a>(
         points: ctx.points,
         reader: Some(reader),
         index_sort_prefix: false,
+        similarity: None,
     };
     if !q.query.constant_score() {
         let mut hits = ScoredCollector::default();

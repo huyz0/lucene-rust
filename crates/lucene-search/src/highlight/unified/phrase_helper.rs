@@ -342,7 +342,7 @@ fn leaf_context<'a>(seg: &OpenSegment<'a>) -> LeafContext<'a> {
         max_doc: seg.max_doc,
         cache: None,
         reader: seg.reader,
-        similarity: None,
+        similarity: seg.similarity,
     }
 }
 

@@ -575,7 +575,7 @@ mod tests {
             max_doc: seg.max_doc,
             cache: None,
             reader: seg.reader,
-            similarity: None,
+            similarity: seg.similarity,
         };
         let q = Arc::new(crate::query::Clause::MatchNoDocs(Default::default()));
         let missing = SpanNode::term("body", "nosuch");
@@ -629,7 +629,7 @@ mod tests {
             max_doc: seg.max_doc,
             cache: None,
             reader: None,
-            similarity: None,
+            similarity: seg.similarity,
         };
         let empty = SpanNode::Near {
             clauses: Vec::new(),

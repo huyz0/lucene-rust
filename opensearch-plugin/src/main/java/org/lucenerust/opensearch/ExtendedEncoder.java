@@ -486,7 +486,8 @@ final class ExtendedEncoder {
         writeInt(out, fields.size());
         for (Object fw : fields.values()) {
             String f = (String) field(fw, "field");
-            if (fieldOk.test(f) == false) {
+            // BM25F is BM25's own: a field the searcher scores otherwise is not native.
+            if (fieldOk.test(f) == false || (fieldOk instanceof SimilarityEncoder s && s.isDefault(f) == false)) {
                 return "field_similarity";
             }
             writeString(out, f);

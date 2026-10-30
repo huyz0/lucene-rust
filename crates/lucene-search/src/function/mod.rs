@@ -1055,7 +1055,7 @@ pub(crate) fn leaf_context<'a>(
         max_doc: seg.max_doc,
         cache: None,
         reader: seg.reader,
-        similarity,
+        similarity: similarity.or(seg.similarity),
     }
 }
 

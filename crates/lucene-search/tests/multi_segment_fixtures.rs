@@ -197,6 +197,7 @@ fn multi_segment_merge_matches_real_lucene_scores_from_two_real_segment_copies()
             cache: None,
             reader: None,
             index_sort_prefix: false,
+            similarity: None,
             points: None,
         },
         OpenSegment {
@@ -210,6 +211,7 @@ fn multi_segment_merge_matches_real_lucene_scores_from_two_real_segment_copies()
             cache: None,
             reader: None,
             index_sort_prefix: false,
+            similarity: None,
             points: None,
         },
     ];
@@ -317,6 +319,7 @@ fn multi_segment_merge_respects_each_segments_own_distinct_live_docs() {
             cache: None,
             reader: None,
             index_sort_prefix: false,
+            similarity: None,
             points: None,
         },
         OpenSegment {
@@ -330,6 +333,7 @@ fn multi_segment_merge_respects_each_segments_own_distinct_live_docs() {
             cache: None,
             reader: None,
             index_sort_prefix: false,
+            similarity: None,
             points: None,
         },
     ];
@@ -386,6 +390,7 @@ fn multi_segment_zero_match_segment_does_not_break_real_fixture_merge() {
             cache: None,
             reader: None,
             index_sort_prefix: false,
+            similarity: None,
             points: None,
         },
         OpenSegment {
@@ -398,6 +403,7 @@ fn multi_segment_zero_match_segment_does_not_break_real_fixture_merge() {
             cache: None,
             reader: None,
             index_sort_prefix: false,
+            similarity: None,
             points: None,
             max_doc: None,
         },
@@ -434,6 +440,7 @@ fn multi_segment_zero_match_segment_does_not_break_real_fixture_merge() {
             cache: None,
             reader: None,
             index_sort_prefix: false,
+            similarity: None,
             points: None,
         },
         OpenSegment {
@@ -446,6 +453,7 @@ fn multi_segment_zero_match_segment_does_not_break_real_fixture_merge() {
             cache: None,
             reader: None,
             index_sort_prefix: false,
+            similarity: None,
             points: None,
             max_doc: None,
         },
