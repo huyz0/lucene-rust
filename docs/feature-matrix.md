@@ -90,16 +90,17 @@ parameters, falls back (`field_similarity`), as does
 |---|---|---|
 | `min`, `max`, `sum`, `avg`, `value_count`, `stats` | ✅ | a `script`; a `missing` with a fraction on a whole-number field, or one no `float` holds on a `float` field |
 | `cardinality` | ✅ | a `script`, `missing` |
-| `percentiles`, `percentile_ranks` (t-digest) | ✅ | `hdr`; a `script`; the field types the metrics refuse; a compression above 10 000 |
-| `top_hits` by score, with every fetch option (`_source`, `docvalue_fields`, `highlight`, `explain`, `version`, ...) | ✅ | a `sort`; a `rescore` on the request |
-| `significant_terms` on `keyword` fields, every heuristic, `background_filter`, `include`/`exclude` | ✅ | sub-aggregations; `missing`; `execution_hint: map`; numeric fields; `significant_text` |
+| `percentiles`, `percentile_ranks` (t-digest and `hdr`) | ✅ | a `script`; the field types the metrics refuse; a t-digest compression above 10 000 |
+| `top_hits` by score or with a `sort` (score, `_doc`, numeric, date and keyword keys, `missing`, `track_scores`), with every fetch option (`_source`, `docvalue_fields`, `highlight`, `explain`, `version`, ...) | ✅ | a `rescore` on the request (unsorted); a sort key with a `mode` other than `min`/`max`, a `nested` or geo-distance key; `track_scores` under `global` |
+| `significant_terms` on `keyword`, whole-number and date fields, every heuristic, `background_filter`, `include`/`exclude`, `missing`, `execution_hint: map`, sub-aggregations | ✅ | `include`/`exclude` under `execution_hint: map` or on a numeric field; floating-point and `unsigned_long` fields |
 | `terms` on `keyword`, numeric fields and dates | ✅ | `unsigned_long`/`half_float`/`scaled_float` `terms`, a numeric `missing` the metrics would refuse, `include`/`exclude` on a numeric field (or under `execution_hint: map`), an order other than `_count` or `_key` alone, ascending or descending (by a sub-aggregation, or compound), `min_doc_count: 0` on a numeric field or over sub-aggregations |
 | `histogram`, `date_histogram` | ✅ | a time zone with daylight saving; `missing` as for the metrics |
 | `range`, `date_range` | ✅ | `missing` as for the metrics |
 | `filter`, `filters`, `global` | ✅ | |
 | any nesting of the above | ✅ | |
 | `composite` (top level) over `terms`, `histogram` and `date_histogram` sources, with `after`, `missing_bucket`, `missing_order` and sub-aggregations | ✅ | nested under another aggregation; a `script`; an `ip`, `geotile_grid` or other source type, or `terms` on a field type the numeric `terms` refuse; a `date_histogram` time zone with daylight saving; documents with `_doc_count`; an index sort led by the first source's field; a range query on the first source's field over its points; and, unless `native_shapes: all`, the shapes OpenSearch answers faster: a lone `date_histogram` source its filter rewrite counts from the points, and a first source read sorted under a match-all or `exists` query with more than `size` values (any points field, a keyword with more terms) |
-| everything else (`significant_text`, `nested`, pipeline aggregations, ...) | ↩ | `aggregations` |
+| pipeline aggregations (`avg_bucket`, `derivative`, `bucket_script`, `bucket_sort`, ...) | ✅ | they run at the coordinating node's reduce, over whichever shard results their parents produced |
+| everything else (`significant_text`, `nested`, ...) | ↩ | `aggregations` |
 
 ## Indexing: the Rust engine
 

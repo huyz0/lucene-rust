@@ -3,9 +3,12 @@
  */
 package org.lucenerust.opensearch;
 
+import org.HdrHistogram.DoubleHistogram;
 import org.opensearch.search.DocValueFormat;
 import org.opensearch.search.aggregations.AggregatorBase;
 import org.opensearch.search.aggregations.InternalAggregation;
+import org.opensearch.search.aggregations.metrics.InternalHDRPercentileRanks;
+import org.opensearch.search.aggregations.metrics.InternalHDRPercentiles;
 import org.opensearch.search.aggregations.metrics.InternalTDigestPercentileRanks;
 import org.opensearch.search.aggregations.metrics.InternalTDigestPercentiles;
 import org.opensearch.search.aggregations.metrics.TDigestState;
@@ -24,13 +27,16 @@ import static org.lucenerust.opensearch.NativeAggregationTree.writeString;
  * {@code TDigestPercentileRanksAggregator}) as a native tree node: the native side feeds each bucket's
  * {@code MergingDigest} the values Java would, in the same order, and hands back the digest's whole
  * state, which is written into a {@code TDigestState} field by field -- the state the Java aggregator
- * would have built, so the reduce and the quantiles asked of it come out the same. HDR percentiles,
- * scripts and the field types the metrics refuse fall back.
+ * would have built, so the reduce and the quantiles asked of it come out the same. HDR percentiles
+ * ({@code HDRPercentilesAggregator}, {@code HDRPercentileRanksAggregator}) take each bucket's values
+ * instead, in collection order, and record them into a {@code DoubleHistogram} as the Java aggregator
+ * would. Scripts and the field types the metrics refuse fall back.
  */
 final class NativePercentiles {
     private NativePercentiles() {}
 
     static final byte PERCENTILES = 11;
+    static final byte HDR_PERCENTILES = 14;
     /** {@code MAX_COMPRESSION} in {@code jvm_aggs.rs}. */
     private static final double MAX_COMPRESSION = 10_000;
 
@@ -76,6 +82,10 @@ final class NativePercentiles {
     /** The node for a built t-digest percentiles aggregator over {@code field}, or null. */
     static NativeAggregationTree.Node node(AggregatorBase agg, String field, byte valueKind) throws ReflectiveOperationException {
         String cls = agg.getClass().getName();
+        boolean hdrRanks = cls.equals(METRICS + "HDRPercentileRanksAggregator");
+        if (hdrRanks || cls.equals(METRICS + "HDRPercentilesAggregator")) {
+            return valueKind < 0 ? null : new HdrNode(agg, field, valueKind, hdrRanks);
+        }
         boolean ranks = cls.equals(METRICS + "TDigestPercentileRanksAggregator");
         if (FIELDS_OK == false || valueKind < 0 || (ranks == false && cls.equals(METRICS + "TDigestPercentilesAggregator") == false)) {
             return null;
@@ -85,6 +95,60 @@ final class NativePercentiles {
             return null;
         }
         return new Node(agg, field, valueKind, compression, ranks);
+    }
+
+    /** An HDR percentiles node: each bucket's values back, recorded here. */
+    static final class HdrNode extends NativeAggregationTree.Node {
+        final String field;
+        final byte valueKind;
+        final boolean ranks;
+
+        HdrNode(AggregatorBase agg, String field, byte valueKind, boolean ranks) {
+            super(agg, List.of());
+            this.field = field;
+            this.valueKind = valueKind;
+            this.ranks = ranks;
+        }
+
+        @Override
+        void write(ByteArrayOutputStream out) {
+            out.write(HDR_PERCENTILES);
+            out.write(valueKind);
+            writeString(out, field);
+        }
+
+        @Override
+        List<InternalAggregation> read(ByteBuffer in, int n) throws ReflectiveOperationException {
+            count(in, n);
+            double[] keys = (double[]) get(agg, "keys");
+            boolean keyed = (boolean) get(agg, "keyed");
+            DocValueFormat format = (DocValueFormat) get(agg, "format");
+            int digits = (int) get(agg, "numberOfSignificantValueDigits");
+            List<InternalAggregation> out = new ArrayList<>(n);
+            for (int i = 0; i < n; i++) {
+                if (in.get() == 0) {
+                    // HDRPercentilesAggregator.buildAggregation: a bucket that collected nothing.
+                    out.add(agg.buildEmptyAggregation());
+                    continue;
+                }
+                int count = in.getInt();
+                if (count < 0 || (long) count * Double.BYTES > in.remaining()) {
+                    throw new IllegalStateException("lucene-rust: " + count + " HDR percentiles values");
+                }
+                // AbstractHDRPercentilesAggregator.getExistingOrNewHistogram, then collect's recordValue.
+                DoubleHistogram state = new DoubleHistogram(digits);
+                state.setAutoResize(true);
+                for (int v = 0; v < count; v++) {
+                    state.recordValue(in.getDouble());
+                }
+                out.add(
+                    ranks
+                        ? new InternalHDRPercentileRanks(agg.name(), keys, state, keyed, format, agg.metadata())
+                        : new InternalHDRPercentiles(agg.name(), keys, state, keyed, format, agg.metadata())
+                );
+            }
+            return out;
+        }
     }
 
     static final class Node extends NativeAggregationTree.Node {

@@ -925,6 +925,7 @@ public final class NativeAggregationTree {
     }
 
     private static final String TERMS_FACTORY = AGGS + "bucket.terms.TermsAggregatorFactory";
+    private static final String SIGNIFICANT_FACTORY = AGGS + "bucket.terms.SignificantTermsAggregatorFactory";
 
     /** One factory and the aggregator built from it, or null when either is not supported. */
     @SuppressWarnings("unchecked")
@@ -978,13 +979,15 @@ public final class NativeAggregationTree {
         Long missing = null;
         if (config.missing() != null && type instanceof KeywordFieldMapper.KeywordFieldType) {
             // A keyword's missing term (CoreValuesSourceType.BYTES.replaceMissing): keyword terms only.
-            if (factory.equals(TERMS_FACTORY) == false) {
+            if (factory.equals(TERMS_FACTORY) == false && factory.equals(SIGNIFICANT_FACTORY) == false) {
                 return null;
             }
             BytesRef term = config.format().parseBytesRef(config.missing().toString());
             Node n = valuesSourceNode(ctx, f, agg, top, subs, config, factory, aggClass, type, field, valueKind, false);
             if (n instanceof TermsNode t) {
                 t.missingTerm = BytesRef.deepCopyOf(term);
+            } else if (n instanceof NativeSignificantTerms.Node s) {
+                s.missingTerm = BytesRef.deepCopyOf(term);
             }
             return n;
         }
@@ -1069,8 +1072,8 @@ public final class NativeAggregationTree {
                 NativeAggregations.Terms t = NativeAggregations.termsSpec(ctx, f, config);
                 return t == null || t.thresholds().getMinDocCount() == 0 ? null : new NumericTermsNode(agg, subs, t, valueKind);
             }
-            case AGGS + "bucket.terms.SignificantTermsAggregatorFactory":
-                return NativeSignificantTerms.node(agg, type, field, missing, subs);
+            case SIGNIFICANT_FACTORY:
+                return NativeSignificantTerms.node(ctx, f, agg, type, field, valueKind, subs);
             case AGGS + "metrics.PercentilesAggregatorFactory":
             case AGGS + "metrics.PercentileRanksAggregatorFactory":
                 return NativePercentiles.node(agg, field, valueKind);
