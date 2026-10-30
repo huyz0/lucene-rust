@@ -558,3 +558,24 @@ fn lucene_10_6_factories_by_name() {
         );
     }
 }
+
+#[test]
+fn hunspell_dedup_extension() {
+    // `runs` stems to `run` along two suffixes: dedup (OpenSearch's default) keeps one.
+    let loader = MapResourceLoader::new()
+        .with(
+            "a.aff",
+            "SET UTF-8\nSFX S Y 1\nSFX S 0 s .\nSFX T Y 1\nSFX T 0 s .\n",
+        )
+        .with("d.dic", "1\nrun/ST\n");
+    for (dedup, want) in [("true", vec!["run"]), ("false", vec!["run", "run"])] {
+        let mut h = build::<HunspellStemFilterFactory>(&[
+            ("dictionary", "d.dic"),
+            ("affix", "a.aff"),
+            ("dedup", dedup),
+        ])
+        .unwrap();
+        h.inform(&loader).unwrap();
+        assert_eq!(terms(h.create(input("runs")).unwrap()).unwrap(), want);
+    }
+}
