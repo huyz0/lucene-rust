@@ -65,7 +65,9 @@ if [[ $ENGINE == 1 ]]; then
 fi
 start_node() { # name port image [docker-run args...]
     docker rm -f "$1" >/dev/null 2>&1 || true
+    # The e2e hunspell dictionary (config/hunspell/en_US) on every node, stock ones too.
     docker run -d --name "$1" -p "$2:9200" "${@:4}" \
+        -v "$PWD/opensearch-plugin/e2e/hunspell:/usr/share/opensearch/config/hunspell:ro" \
         -e discovery.type=single-node -e DISABLE_SECURITY_PLUGIN=true \
         -e cluster.routing.allocation.disk.threshold_enabled=false \
         -e DISABLE_INSTALL_DEMO_CONFIG=true -e OPENSEARCH_JAVA_OPTS="-Xms1g -Xmx1g" \

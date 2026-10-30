@@ -41,10 +41,12 @@ import java.io.IOException;
 import java.util.function.Supplier;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.TermQuery;
+import org.apache.lucene.search.SynonymQuery;
 import org.apache.lucene.util.BytesRef;
 import org.opensearch.search.approximate.ApproximateScoreQuery;
 
 import java.io.ByteArrayOutputStream;
+import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
 import java.util.function.Predicate;
 
@@ -265,6 +267,9 @@ public final class QueryEncoder {
             writeLong(out, docFreq);
             return null;
         }
+        if (q instanceof SynonymQuery sq) {
+            return synonym(sq, out, fieldOk, nodes);
+        }
         if (q instanceof BooleanQuery bq) {
             if (bq.getMinimumNumberShouldMatch() < 0) {
                 // BooleanQuery.Builder does not reject it; the native decoder does.
@@ -434,6 +439,52 @@ public final class QueryEncoder {
         }
         // The whole query is unsupported ("query_"), or one clause of an otherwise native tree is.
         return (depth == 0 ? "query_" : "clause_") + name(q);
+    }
+
+    /** {@code NODE_SYNONYM} in {@code jvm_queries.rs}. */
+    private static final byte NODE_SYNONYM = 36;
+
+    /**
+     * {@code NODE_SYNONYM}: the field, then each term with its boost, in the query's own (sorted)
+     * order. A {@code match} whose analyzer stacks tokens at one position (hunspell's stems,
+     * synonyms, {@code keyword_repeat}) builds one.
+     */
+    private static String synonym(SynonymQuery q, ByteArrayOutputStream out, Predicate<String> fieldOk, int[] nodes) {
+        if (fieldOk.test(q.getField()) == false) {
+            return "field_similarity";
+        }
+        Field termsField = Reflect.declared(SynonymQuery.class, "terms");
+        Object[] terms = termsField == null ? null : (Object[]) get(termsField, q);
+        if (terms == null) {
+            return "clause_SynonymQuery";
+        }
+        Class<?> entry = terms.getClass().getComponentType();
+        Field term = Reflect.declared(entry, "term");
+        Field boost = Reflect.declared(entry, "boost");
+        if (term == null || boost == null) {
+            return "clause_SynonymQuery";
+        }
+        nodes[0] += terms.length;
+        if (nodes[0] > MAX_NODES) {
+            return "query_too_large";
+        }
+        out.write(NODE_SYNONYM);
+        writeBytes(out, q.getField().getBytes(StandardCharsets.UTF_8));
+        writeInt(out, terms.length);
+        for (Object t : terms) {
+            BytesRef b = (BytesRef) get(term, t);
+            writeBytes(out, b);
+            writeInt(out, Float.floatToIntBits((Float) get(boost, t)));
+        }
+        return null;
+    }
+
+    private static Object get(Field f, Object o) {
+        try {
+            return f.get(o);
+        } catch (IllegalAccessException e) {
+            return null;
+        }
     }
 
     /** Whether {@code states} holds no term state for any leaf of {@code top}. */

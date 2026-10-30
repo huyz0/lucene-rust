@@ -9,6 +9,7 @@ import org.apache.lucene.analysis.CharFilter;
 import org.apache.lucene.analysis.TokenFilter;
 import org.apache.lucene.analysis.TokenStream;
 import org.apache.lucene.analysis.Tokenizer;
+import org.apache.lucene.analysis.hunspell.Dictionary;
 import org.apache.lucene.analysis.miscellaneous.StemmerOverrideFilter;
 import org.apache.lucene.analysis.synonym.SynonymMap;
 import org.apache.lucene.analysis.tokenattributes.FlagsAttribute;
@@ -34,10 +35,13 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.StringJoiner;
+import java.util.WeakHashMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -153,7 +157,7 @@ public final class AnalyzerSpec {
         } catch (IOException | RuntimeException e) {
             return new Spec(null, "analysis_reflect");
         }
-        Writer w = new Writer();
+        Writer w = new Writer(analyzer, field);
         try {
             ByteArrayOutputStream out = new ByteArrayOutputStream();
             out.write(VERSION);
@@ -172,9 +176,9 @@ public final class AnalyzerSpec {
                 if (reason != null) return new Spec(null, reason);
             }
             writeInt(out, w.resources.size());
-            for (Map.Entry<String, String> e : w.resources.entrySet()) {
+            for (Map.Entry<String, byte[]> e : w.resources.entrySet()) {
                 writeBytes(out, e.getKey().getBytes(StandardCharsets.UTF_8));
-                writeBytes(out, e.getValue().getBytes(StandardCharsets.UTF_8));
+                writeBytes(out, e.getValue());
             }
             return new Spec(out.toByteArray(), null);
         } catch (ReflectionMiss e) {
@@ -325,6 +329,17 @@ public final class AnalyzerSpec {
 
     // ---- The mapping ----
 
+    /** The bytes a hunspell {@link Dictionary} was parsed from: its affix file and its dictionary files, in load order. */
+    public record HunspellFiles(byte[] affix, List<byte[]> dictionaries) {}
+
+    /** Each dictionary's files, by identity ({@link Dictionary} keeps the default equals). */
+    private static final Map<Dictionary, HunspellFiles> HUNSPELL = Collections.synchronizedMap(new WeakHashMap<>());
+
+    /** Records the files {@code d} was parsed from, for a dictionary no OpenSearch factory leads to (the self-test's). */
+    public static void hunspellFiles(Dictionary d, HunspellFiles files) {
+        HUNSPELL.put(d, files);
+    }
+
     /** One component's SPI name and arguments, filled in by a {@link Mapper}. */
     static final class Component {
         String name;
@@ -425,12 +440,35 @@ public final class AnalyzerSpec {
 
     /** Collects the inline resources while components are written. */
     static final class Writer {
-        final Map<String, String> resources = new LinkedHashMap<>();
+        final Map<String, byte[]> resources = new LinkedHashMap<>();
+        final Analyzer analyzer;
+        final String field;
+
+        Writer(Analyzer analyzer, String field) {
+            this.analyzer = analyzer;
+            this.field = field;
+        }
 
         String resource(String content) {
-            String name = "r" + resources.size() + ".txt";
+            return resource(content.getBytes(StandardCharsets.UTF_8), ".txt");
+        }
+
+        String resource(byte[] content, String extension) {
+            String name = "r" + resources.size() + extension;
             resources.put(name, content);
             return name;
+        }
+
+        /** The files {@code d} was built from: registered, or found through the analyzer's OpenSearch factories. */
+        HunspellFiles hunspell(Dictionary d) {
+            HunspellFiles f = HUNSPELL.get(d);
+            if (f == null) {
+                f = HunspellSources.find(analyzer, field, d);
+                if (f != null) {
+                    HUNSPELL.put(d, f);
+                }
+            }
+            return f;
         }
 
         String component(ByteArrayOutputStream out, Object o) {
@@ -787,6 +825,27 @@ public final class AnalyzerSpec {
             }
             c.name = "stemmerOverride";
             c.arg("dictionary", c.writer.resource(lines.toString())).arg("ignoreCase", flag(readBool(m, "ignoreCase")));
+            return null;
+        });
+        map("hunspell.HunspellStemFilter", (o, c) -> {
+            Dictionary d = (Dictionary) read(read(o, "stemmer"), "dictionary");
+            HunspellFiles files = c.writer.hunspell(d);
+            if (files == null) {
+                return "analysis_hunspell";
+            }
+            StringJoiner dics = new StringJoiner(",");
+            for (byte[] dic : files.dictionaries()) {
+                dics.add(c.writer.resource(dic, ".dic"));
+            }
+            c.name = "hunspellStem";
+            c.arg("dictionary", dics.toString())
+                .arg("affix", c.writer.resource(files.affix(), ".aff"))
+                .arg("ignoreCase", flag(readBool(d, "ignoreCase")))
+                .arg("longestOnly", flag(readBool(o, "longestOnly")));
+            // OpenSearch's dedup setting; Lucene's factory always dedups.
+            if (readBool(o, "dedup") == false) {
+                c.arg("dedup", "false");
+            }
             return null;
         });
         map("miscellaneous.KeepWordFilter", (o, c) -> {

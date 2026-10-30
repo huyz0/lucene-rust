@@ -741,6 +741,11 @@ fn field_names(query: &BooleanQuery, all: bool) -> Vec<&str> {
                             }
                         }
                     }
+                    ExtendedQuery::Synonym(s) => {
+                        if !out.contains(&s.field.as_str()) {
+                            out.push(s.field.as_str());
+                        }
+                    }
                     ExtendedQuery::CombinedField(c) => {
                         for (field, _) in &c.fields {
                             if !out.contains(&field.as_str()) {
