@@ -132,6 +132,7 @@ def create(index, shards, index_sort=None):
             "addr": {"type": "ip"},
             "hf": {"type": "half_float"},
             "ul": {"type": "unsigned_long"},
+            "wc": {"type": "wildcard"},
         }},
     })
 
@@ -168,6 +169,7 @@ def load(index, docs, seed, deletes=True):
             doc["addr"] = f"10.0.{i % 7}.{(i * 13) % 256}"
             doc["hf"] = (i % 41) / 4
             doc["ul"] = 18_000_000_000_000_000_000 + i * 7
+            doc["wc"] = f"w{(i * 31) % 97}"
             lines.append(json.dumps(doc))
         res = req("POST", "/_bulk", "\n".join(lines) + "\n", ndjson=True)
         check(not res["errors"], f"{index}: bulk batch at {start} has no errors")
@@ -355,7 +357,9 @@ def matrix():
     add("sort mode avg", {"track_total_hits": True, "query": {"match": {"body": "alpha"}}, "sort": [{"m": {"order": "asc", "mode": "avg"}}]}, "native")
     # sum: OpenSearch's comparator skips with the points of the single values,
     # which a sum can pass -- its answer depends on where skipping starts, so it
-    # stays Lucene's.
+    # runs natively only where Lucene's cannot skip: an exact total here, over
+    # two terms (one term on a reader without deletions takes the shortcut
+    # total, whose collector counts only to the page and may skip).
     # An exact total, or on more than one shard the stock answer is not one:
     # the coordinator sends each later shard the bottom sort value so far, and
     # the shard skips itself when its bounds cannot beat it -- bounds that
@@ -363,7 +367,19 @@ def matrix():
     # whatever the mode. A shard's largest sum is above its largest value, so a
     # shard holding the top sums is dropped depending on which shard answered
     # first (OpenSearch 3.8.0). An exact total turns that pruning off.
-    add("sort mode sum", {"track_total_hits": True, "query": {"match": {"body": "beta"}}, "sort": [{"m": {"order": "desc", "mode": "sum"}}, "_doc"]}, "sort_*")
+    add("sort mode sum", {"track_total_hits": True, "query": {"match": {"body": "beta omega"}}, "sort": [{"m": {"order": "desc", "mode": "sum"}}, "_doc"]}, "native")
+    add("sort mode sum double", {"track_total_hits": True, "query": {"match": {"body": "gamma omega"}}, "sort": [{"md": {"order": "asc", "mode": "sum"}}, "_doc"]}, "native")
+    # OpenSearch's own comparators (half_float, unsigned_long, the wildcard
+    # field's non-pruning keyword sort): native without skipping, so where
+    # Lucene's cannot skip either -- an exact total, or a small shard.
+    add("sort half_float", {"track_total_hits": True, "query": {"match": {"body": "alpha omega"}}, "sort": [{"hf": "desc"}, {"n": "asc"}]}, "native")
+    add("sort half_float avg missing", {"track_total_hits": True, "query": {"match": {"body": "beta omega"}}, "sort": [{"hf": {"order": "asc", "mode": "avg", "missing": 3.3}}, "_doc"]}, "native")
+    add("sort half_float default total", {"query": {"match": {"body": "alpha"}}, "sort": [{"hf": "asc"}, {"n": "desc"}]}, "either")
+    add("sort unsigned_long", {"track_total_hits": True, "query": {"match": {"body": "delta omega"}}, "sort": [{"ul": "desc"}]}, "native")
+    add("sort unsigned_long search_after", {"track_total_hits": True, "query": {"match": {"body": "alpha omega"}}, "sort": [{"ul": "asc"}, {"n": "asc"}], "search_after": [18_000_000_000_000_000_700, 100], "size": 7}, "native")
+    add("sort unsigned_long max track_scores", {"track_total_hits": True, "query": {"match": {"body": "gamma omega"}}, "sort": [{"ul": {"order": "asc", "mode": "max"}}], "track_scores": True}, "native")
+    add("sort wildcard", {"track_total_hits": True, "query": {"match": {"body": "omega beta"}}, "sort": [{"wc": "asc"}, {"n": "asc"}]}, "native")
+    add("sort wildcard desc", {"track_total_hits": True, "query": {"match": {"body": "kappa omega"}}, "sort": [{"wc": "desc"}, {"n": "asc"}]}, "native")
     add("sort mode median", {"query": {"match": {"body": "gamma"}}, "sort": [{"m": {"order": "asc", "mode": "median", "missing": "_first"}}]}, "native")
     add("sort mode avg double", {"track_total_hits": True, "query": {"match": {"body": "alpha"}}, "sort": [{"md": {"order": "desc", "mode": "avg"}}, "_doc"]}, "native")
     add("sort mode median double", {"track_total_hits": True, "query": {"match_all": {}}, "sort": [{"md": {"order": "asc", "mode": "median"}}, {"n": "asc"}]}, "native")
@@ -535,7 +551,8 @@ def matrix():
     add("agg terms > significant_text dedup", {"_sequential": True, "size": 0, "query": {"match": {"body": "nu theta"}}, "aggs": {"t": {"terms": {"field": "tag", "size": 4}, "aggs": {"s": {"significant_text": {"field": "title", "filter_duplicate_text": True, "size": 3, "min_doc_count": 1}}}}}}, "native")
     add("agg filter > significant_text", {"size": 0, "query": {"match": {"body": "kappa"}}, "aggs": {"f": {"filter": {"range": {"n": {"gte": 1000}}}, "aggs": {"s": {"significant_text": {"field": "body", "size": 4}}}}}}, "native")
     add("agg significant_text match_all", {"size": 0, "aggs": {"s": {"significant_text": {"field": "title", "min_doc_count": 1, "chi_square": {}}}}}, "native")
-    add("agg significant_text include", {"size": 0, "query": {"match": {"body": "omega"}}, "aggs": {"s": {"significant_text": {"field": "body", "include": "[a-m].*"}}}}, "aggregations")
+    add("agg significant_text include", {"size": 0, "query": {"match": {"body": "omega"}}, "aggs": {"s": {"significant_text": {"field": "body", "include": "[a-m].*"}}}}, "native")
+    add("agg significant_text exclude terms", {"size": 0, "query": {"match": {"body": "omega"}}, "aggs": {"s": {"significant_text": {"field": "body", "exclude": ["omega", "alpha"], "min_doc_count": 1}}}}, "native")
     add("agg terms > avg_bucket pipeline", {"size": 0, "query": {"match": {"body": "beta"}}, "aggs": {"t": {"terms": {"field": "tag", "size": 5}, "aggs": {"a": {"avg": {"field": "price"}}}}, "ab": {"avg_bucket": {"buckets_path": "t>a"}}, "mb": {"max_bucket": {"buckets_path": "t>_count"}}, "sb": {"stats_bucket": {"buckets_path": "t>a"}}}}, "native")
     add("agg date_histogram > derivative pipeline", {"size": 0, "aggs": {"d": {"date_histogram": {"field": "ts", "fixed_interval": "1d"}, "aggs": {"s": {"sum": {"field": "qty"}}, "dv": {"derivative": {"buckets_path": "s"}}, "cs": {"cumulative_sum": {"buckets_path": "s"}}, "bs": {"bucket_script": {"buckets_path": {"x": "s", "c": "_count"}, "script": "params.x / params.c"}}, "sel": {"bucket_selector": {"buckets_path": {"c": "_count"}, "script": "params.c > 10"}}, "mv": {"moving_fn": {"buckets_path": "s", "window": 3, "script": "MovingFunctions.unweightedAvg(values)"}}}}}}, "native")
     add("agg histogram > serial_diff and bucket_sort pipeline", {"size": 0, "query": {"match": {"body": "gamma"}}, "aggs": {"h": {"histogram": {"field": "price", "interval": 50}, "aggs": {"m": {"max": {"field": "qty"}}, "sd": {"serial_diff": {"buckets_path": "m", "lag": 2}}, "bs": {"bucket_sort": {"sort": [{"m": "desc"}], "size": 4}}}}, "pb": {"percentiles_bucket": {"buckets_path": "h>m"}}}}, "native")
@@ -622,7 +639,11 @@ def matrix():
     add("terminate_after sort score then field", {"query": {"match": {"body": "delta"}}, "sort": ["_score", {"n": "asc"}], "terminate_after": 25}, "native")
     add("terminate_after post_filter", {"query": {"match_all": {}}, "post_filter": {"term": {"tag": "alpha"}}, "terminate_after": 7}, "native")
     add("terminate_after not reached", {"track_total_hits": True, "query": {"match": {"body": "omega"}}, "terminate_after": 100000}, "native")
-    add("terminate_after field sort", {"query": {"match": {"body": "alpha"}}, "sort": [{"n": "desc"}], "terminate_after": 5}, "terminate_after")
+    # Unscored: native over a term query, which the query cache never holds (a cached query's
+    # bulk scorer hands out ranges, as Lucene's match-all does).
+    add("terminate_after field sort", {"query": {"match": {"body": "alpha"}}, "sort": [{"n": "desc"}], "terminate_after": 5}, "native")
+    add("terminate_after keyword sort", {"query": {"match": {"body": "gamma"}}, "sort": [{"tag": "asc"}, {"n": "asc"}], "terminate_after": 60, "size": 20}, "native")
+    add("terminate_after field sort range", {"query": {"range": {"n": {"gte": 100}}}, "sort": [{"n": "desc"}], "terminate_after": 5}, "terminate_after")
     add("terminate_after match_all hits", {"query": {"match_all": {}}, "terminate_after": 5}, "terminate_after")
     add("terminate_after aggs", {"size": 0, "query": {"match": {"body": "alpha"}}, "terminate_after": 5, "aggs": {"t": {"terms": {"field": "tag"}}}}, "terminate_after")
     add("profile", {"query": {"match": {"body": "alpha"}}, "profile": True}, "profile")
@@ -630,7 +651,26 @@ def matrix():
     # checks it before each segment; none of these reaches it.
     add("timeout", {"query": {"match": {"body": "alpha"}}, "timeout": "10s"}, "native")
     add("timeout sort aggs", {"query": {"match": {"body": "beta"}}, "timeout": "30s", "sort": [{"n": "asc"}], "aggs": {"t": {"terms": {"field": "tag"}}}}, "native")
-    add("collapse", {"query": {"match": {"body": "alpha"}}, "collapse": {"field": "tag"}}, "collapse")
+    # collapse: CollapsingTopDocsCollector natively, on a keyword or numeric field, by score or
+    # any native sort, paged, behind a post_filter or min_score, beside aggregations.
+    add("collapse", {"query": {"match": {"body": "alpha"}}, "collapse": {"field": "tag"}}, "native")
+    add("collapse numeric sorted", {"query": {"match": {"body": "beta gamma"}}, "collapse": {"field": "qty"}, "sort": [{"n": "desc"}]}, "native")
+    add("collapse missing values track_scores", {"query": {"match": {"body": "beta"}}, "collapse": {"field": "sp"}, "sort": [{"price": "asc"}], "track_scores": True, "size": 30}, "native")
+    add("collapse keyword sort two keys", {"query": {"match": {"body": "delta"}}, "collapse": {"field": "tag"}, "sort": [{"ts": "desc"}, "_score"], "size": 15}, "native")
+    add("collapse paged", {"query": {"match": {"body": "alpha omega"}}, "collapse": {"field": "qty"}, "from": 5, "size": 10}, "native")
+    add("collapse search_after keyword", {"query": {"match": {"body": "omega"}}, "collapse": {"field": "tag"}, "sort": [{"tag": "asc"}], "search_after": ["delta"], "size": 5}, "native")
+    add("collapse search_after numeric desc", {"query": {"match": {"body": "gamma"}}, "collapse": {"field": "qty"}, "sort": [{"qty": "desc"}], "search_after": [20], "size": 8}, "native")
+    add("collapse post_filter", {"query": {"match": {"body": "alpha"}}, "collapse": {"field": "qty"}, "post_filter": {"term": {"tag": "beta"}}}, "native")
+    add("collapse min_score", {"query": {"match": {"body": "alpha beta"}}, "collapse": {"field": "tag"}, "min_score": 0.8}, "native")
+    add("collapse + aggs", {"query": {"match": {"body": "gamma"}}, "collapse": {"field": "tag"}, "aggs": {"s": {"stats": {"field": "qty"}}}}, "native")
+    add("collapse inner_hits", {"query": {"match": {"body": "alpha"}}, "collapse": {"field": "tag", "inner_hits": {"name": "top", "size": 2, "sort": [{"n": "asc"}]}}}, "either")
+    add("collapse score ascending", {"query": {"match": {"body": "beta"}}, "collapse": {"field": "sp"}, "sort": [{"_score": "asc"}]}, "native")
+    add("collapse double field", {"query": {"match": {"body": "delta"}}, "collapse": {"field": "price"}, "size": 12}, "native")
+    add("collapse terminate_after", {"query": {"match": {"body": "alpha"}}, "collapse": {"field": "tag"}, "terminate_after": 50}, "native")
+    add("collapse terminate_after not reached", {"track_total_hits": True, "query": {"match": {"body": "omega"}}, "collapse": {"field": "qty"}, "terminate_after": 100000}, "native")
+    add("collapse terminate_after field sort", {"query": {"match": {"body": "beta"}}, "collapse": {"field": "qty"}, "sort": [{"n": "desc"}], "terminate_after": 300, "size": 6}, "native")
+    add("collapse terminate_after track_scores", {"query": {"match": {"body": "gamma"}}, "collapse": {"field": "tag"}, "sort": [{"price": "asc"}], "track_scores": True, "terminate_after": 120}, "native")
+    add("collapse terminate_after match_all", {"query": {"match_all": {}}, "collapse": {"field": "tag"}, "sort": [{"n": "asc"}], "terminate_after": 50}, "terminate_after")
     # Scored with statistics the native engine does not have: cross-shard (dfs) or blended
     # TermStates (cross_fields; tie_breaker 1 makes Lucene rewrite the dismax to a boolean).
     add("cross_fields", {"query": {"multi_match": {"query": "alpha", "type": "cross_fields", "fields": ["body", "title"], "tie_breaker": 1}}}, "native")
@@ -640,7 +680,19 @@ def matrix():
     add("match fuzziness", {"query": {"match": {"body": {"query": "alpah betta", "fuzziness": "AUTO"}}}}, "native")
     add("fuzzy in bool", {"query": {"bool": {"must": [{"match": {"body": "gamma"}}], "should": [{"fuzzy": {"body": "delda"}}]}}}, "native")
     add("dfs_query_then_fetch", {"_params": "&search_type=dfs_query_then_fetch", "query": {"match": {"body": "alpha"}}}, "dfs_multi")
-    add("rescore", {"query": {"match": {"body": "alpha"}}, "rescore": {"window_size": 20, "query": {"rescore_query": {"match": {"title": "beta"}}}}}, "rescore")
+    # rescore: OpenSearch's QueryRescorer natively, every score_mode, windows below and past the
+    # hits asked for, chained rescorers, beside aggregations and a post_filter.
+    add("rescore", {"query": {"match": {"body": "alpha"}}, "rescore": {"window_size": 20, "query": {"rescore_query": {"match": {"title": "beta"}}}}}, "native")
+    add("rescore terminate_after", {"query": {"match": {"body": "alpha"}}, "terminate_after": 40, "rescore": {"window_size": 30, "query": {"rescore_query": {"match": {"title": "gamma"}}}}}, "native")
+    add("rescore terminate_after disjunction", {"size": 5, "query": {"match": {"body": "beta delta"}}, "terminate_after": 200, "rescore": {"window_size": 100, "query": {"rescore_query": {"match": {"body": "omega"}}, "score_mode": "multiply"}}}, "native")
+    add("rescore weights max", {"query": {"match": {"body": "alpha beta"}}, "rescore": {"window_size": 50, "query": {"rescore_query": {"match": {"body": "gamma"}}, "query_weight": 0.7, "rescore_query_weight": 1.3, "score_mode": "max"}}}, "native")
+    add("rescore min", {"query": {"match": {"body": "delta"}}, "rescore": {"window_size": 5, "query": {"rescore_query": {"term": {"tag": "alpha"}}, "score_mode": "min"}}}, "native")
+    add("rescore avg paged", {"from": 10, "size": 10, "query": {"match": {"body": "omega"}}, "rescore": {"window_size": 15, "query": {"rescore_query": {"match_phrase": {"body": "alpha beta"}}, "score_mode": "avg"}}}, "native")
+    add("rescore multiply", {"query": {"match": {"body": "gamma"}}, "rescore": {"window_size": 100, "query": {"rescore_query": {"range": {"qty": {"gte": 10}}}, "score_mode": "multiply", "rescore_query_weight": 2}}}, "either")
+    add("rescore multiply exact", {"query": {"match": {"body": "gamma"}}, "rescore": {"window_size": 100, "query": {"rescore_query": {"bool": {"must": [{"match": {"title": "alpha"}}], "filter": [{"range": {"qty": {"gte": 10}}}]}}, "score_mode": "multiply", "rescore_query_weight": 2}}}, "native")
+    add("rescore chained", {"query": {"match": {"body": "alpha"}}, "rescore": [{"window_size": 30, "query": {"rescore_query": {"match": {"title": "gamma"}}}}, {"window_size": 8, "query": {"rescore_query": {"match": {"body": "delta"}}, "score_mode": "max", "query_weight": 0.5}}]}, "native")
+    add("rescore + aggs post_filter", {"query": {"match": {"body": "beta"}}, "post_filter": {"term": {"tag": "gamma"}}, "aggs": {"t": {"terms": {"field": "tag"}}}, "rescore": {"window_size": 40, "query": {"rescore_query": {"match": {"title": "alpha"}}}}}, "native")
+    add("rescore no matches", {"query": {"match": {"body": "alpha"}}, "rescore": {"window_size": 20, "query": {"rescore_query": {"term": {"tag": "no-such-tag"}}}}}, "native")
     return q
 
 

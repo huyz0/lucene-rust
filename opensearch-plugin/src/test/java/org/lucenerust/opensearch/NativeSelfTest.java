@@ -128,7 +128,7 @@ public final class NativeSelfTest {
 
         // The analysis bridge first: quick, and SELFTEST_ONLY=analysis runs it alone.
         NativeSelfTestAnalysis.run(new Random(23), (ok, what) -> check(ok, what));
-        check(NativeSelfTestAnalysis.described >= 40, "analyzers described: " + NativeSelfTestAnalysis.described);
+        check(NativeSelfTestAnalysis.described >= 43, "analyzers described: " + NativeSelfTestAnalysis.described);
         System.out.printf(
             "NativeSelfTest: %d analyzers described, %d texts analyzed in Rust and compared%n",
             NativeSelfTestAnalysis.described,

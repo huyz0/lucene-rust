@@ -30,8 +30,9 @@ A request runs native when **all** of these hold:
   (where Lucene collects document by document: see the milestone's R7), and
   aggregations the native side plans (R5: the metrics, `terms`, the histograms,
   ranges, `filter(s)`, `global` and `cardinality`, nested in any combination), and
-  `min_score` -- but
-  no `collapse`, `rescore` or `profile`, not `search_type=dfs_query_then_fetch`,
+  `min_score`, `collapse` on a keyword or numeric field (`NativeCollapse`)
+  and `rescore` with `query` rescorers (`NativeRescore`) -- but
+  no `profile`, not `search_type=dfs_query_then_fetch`,
   and no other plugin replacing the top-docs collector. A `post_filter`
   searches the hits as `query AND filter` (the filter a non-scoring clause, as
   `FilteredCollector` leaves the query's score alone) and the aggregations as
@@ -201,8 +202,11 @@ Each fallback is counted by reason at `GET /_plugins/lucene_rust/stats`.
 | `disabled` | `index.lucene_rust.search.enabled: false` |
 | `aggregations`, `collectors` | the request adds a collector the native side does not run |
 | `min_score` | `min_score` behind a scroll or `terminate_after` |
-| `terminate_after` | a `terminate_after` Lucene collects in ranges (an unscored sort, a constant-score or filter-only query), or with aggregations, `search_after`, a scroll, more than `track_total_hits` counts, or a `size: 0` count over a query whose `Weight.count` is not ported |
-| `sort_*`, `search_after`, `collapse`, `rescore`, `profile` | the request needs something the native top-hits path does not produce |
+| `terminate_after` | a `terminate_after` Lucene collects in ranges (an unscored sort over anything but a plain `TermQuery`, which alone the query cache never holds; a constant-score or filter-only query), or with aggregations, `search_after`, a scroll, more than `track_total_hits` counts, or a `size: 0` count over a query whose `Weight.count` is not ported |
+| `sort_*`, `search_after`, `profile` | the request needs something the native top-hits path does not produce |
+| `sort_nested`, `sort_skipping` | a nested key, a `mode: sum` key, a `half_float` or `unsigned_long` key, or the `wildcard` field's key, on a shard with more documents than the total-hits threshold: their native comparators do not skip as Lucene's do past it |
+| `collapse_field`, `collapse_search_after`, `collapse_refused` | `collapse` on a field neither keyword nor numeric; `search_after` with a sort other than the collapse field alone (Lucene refuses it); a multi-valued collapse field (Lucene raises the error) |
+| `rescore`, `rescore_<reason>` | a rescorer other than OpenSearch's `query` one; a rescore query that falls back for `<reason>` |
 | `scroll_after` | a sorted scroll page whose last emitted hit carries no sort values |
 | `timeout` | the request's `timeout` had already passed when the native call would start; Lucene answers it (nothing, `timed_out`) |
 | `query_<Class>` | the rewritten query's root is not a supported shape — e.g. `query_GlobalOrdinalsWithScoreQuery` (`has_child`), `query_ScriptScoreQuery` (`script_score`), `query_TermQuery` on a numeric field |

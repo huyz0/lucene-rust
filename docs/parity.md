@@ -86,12 +86,12 @@ Milestones (M1-M12, task ids such as T9.4) are [`docs/roadmap.md`](roadmap.md)'s
 | [facet.md](parity/facet.md) | `lucene-facet`'s taxonomy index (T13.4a), counting (T13.4b), drill-down (T13.4c), value, range and facet-set counting (T13.4d1), and sorted-set counts, sampling and taxonomy utilities (T13.4d2) | 40 |
 | [functions.md](parity/functions.md) | `lucene-queries` function queries (M10 T10.5) | 11 |
 | [queries.md](parity/queries.md) | `lucene-queries` intervals, payloads, more-like-this, common terms, spans (M10 T10.6); sandbox fuzzy-like-this (M13) | 14 |
-| [analysis-lang.md](parity/analysis-lang.md) | `lucene-analysis-common` synonyms, classic, language packages (M11 part 3), Thai, collation, `SegmentingTokenizerBase` | 16 |
+| [analysis-lang.md](parity/analysis-lang.md) | `lucene-analysis-common` synonyms, classic, language packages (M11 part 3), Thai, collation, `SegmentingTokenizerBase` | 17 |
 | [analysis-icu.md](parity/analysis-icu.md) | `lucene-analysis-icu` (M12 T12.4): the ICU4J runtime port, normalization, folding, `ICUTokenizer`, collation keys, transliteration, the break rule compiler, character names | 16 |
 | [analysis-opennlp.md](parity/analysis-opennlp.md) | `lucene-analysis-opennlp` (M12 T12.5): the OpenNLP 2.5.3 runtime port (models, maxent/perceptron, beam search, the six tools), `OpenNLPTokenizer` and the POS, chunker and lemmatizer filters | 14 |
 | [analysis-lang-modules.md](parity/analysis-lang-modules.md) | The M12 language modules: `lucene-analysis-phonetic` (with Commons Codec), Stempel (with Egothor), Morfologik, `lucene-analysis`' `morph` base, Kuromoji, Nori, SmartCN | 19 |
 | [ffi.md](parity/ffi.md) | `lucene-ffi`: the general C ABI (handles, searches, writer) | 19 |
-| [plugin.md](parity/plugin.md) | `lucene-ffi`: the OpenSearch plugin boundary (JVM reader, FFM, query phase), M10 query shapes, M13 term ranges and completion-field indexes (suggester/highlighter execution deferred: `NamedRegistry` forbids replacing them) | 12 |
+| [plugin.md](parity/plugin.md) | `lucene-ffi`: the OpenSearch plugin boundary (JVM reader, FFM, query phase), M10 query shapes, M13 term ranges and completion-field indexes (suggester/highlighter execution deferred: `NamedRegistry` forbids replacing them) | 15 |
 | [plugin-geo.md](parity/plugin-geo.md) | OpenSearch plugin: geo queries and geo sorting (M9 T9.6) | 7 |
 | [engine.md](parity/engine.md) | The OpenSearch engine (M5): writer features it needed | 12 |
 
