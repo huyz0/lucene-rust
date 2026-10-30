@@ -132,7 +132,7 @@ Each is a counter under `fallbacks` in `GET /_plugins/lucene_rust/stats`.
 | `query_<Class>`, `clause_<Class>` | contains a Lucene query the native side does not run (the class names it) |
 | `approximate` | uses OpenSearch's approximate `range` |
 | `points_width` | is a points range beyond Lucene's limits (more than 16 dimensions or 16 bytes per dimension) |
-| `regexp_flags`, `wildcard_escape`, `phrase_positions`, `boolean_msm_negative`, `boost_invalid` | uses a variant of a supported query the native side does not take |
+| `phrase_positions`, `boolean_msm_negative`, `boost_invalid` | uses a variant of a supported query the native side does not take |
 | `query_too_deep`, `query_too_large` | nests deeper than 32 or has more than 1,024 query nodes |
 | `field_similarity` | scores a field with a non-default similarity |
 | `term_states` | carries term statistics the native side cannot reproduce |

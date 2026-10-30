@@ -737,6 +737,22 @@ pub(crate) fn document<'a>(
         reader: Some(reader),
         index_sort_prefix: false,
     };
+    if !q.query.constant_score() {
+        let mut hits = ScoredCollector::default();
+        q.query.score_leaf(&leaf, boost, &mut hits)?;
+        if hits.docs.is_empty() {
+            return Ok(None);
+        }
+        return Ok(Some(Box::new(ScoredDocs {
+            docs: hits.docs,
+            scores: hits.scores,
+            at: 0,
+            doc: -1,
+            max: boost,
+            min: 0.0,
+            prune: mode == Mode::TopScores,
+        })));
+    }
     let len = usize::try_from(reader.max_doc).unwrap_or(0);
     let mut hits = SetCollector {
         bits: crate::bit_set_pool::take(len).unwrap_or_else(|| FixedBitSet::new(len)),
@@ -752,6 +768,86 @@ pub(crate) fn document<'a>(
         super::cache::CachedSet::Bits { bits, cardinality },
     )));
     Ok(constant(inner, boost, mode))
+}
+
+/// Collects a scoring document query's matches with their scores.
+#[derive(Default)]
+struct ScoredCollector {
+    docs: Vec<i32>,
+    scores: Vec<f32>,
+}
+
+impl crate::collector::ScoringCollector for ScoredCollector {
+    fn collect(&mut self, doc_id: i32, score: f32) {
+        // Ascending, each document once.
+        if self.docs.last().is_none_or(|&last| doc_id > last) {
+            self.docs.push(doc_id);
+            self.scores.push(score);
+        }
+    }
+}
+
+/// A scoring document query's matches and scores, every score at most
+/// `max` (the boost). Lucene's own scorer (`DistanceScorer` of the distance
+/// feature queries) iterates the doc values and narrows itself to the points
+/// near the origin once a minimum competitive score is set; this one has
+/// scored every document up front, so a threshold just skips those below it.
+struct ScoredDocs {
+    docs: Vec<i32>,
+    scores: Vec<f32>,
+    /// The index of the current document in `docs`.
+    at: usize,
+    doc: i32,
+    max: f32,
+    /// The minimum competitive score, honoured in `TOP_SCORES` only.
+    min: f32,
+    prune: bool,
+}
+
+impl ScoredDocs {
+    /// Positions on the first document from index `at` that can compete.
+    fn settle(&mut self, mut at: usize) -> i32 {
+        while at < self.docs.len() && self.scores[at] < self.min {
+            at += 1;
+        }
+        self.at = at;
+        self.doc = self.docs.get(at).copied().unwrap_or(NO_MORE_DOCS);
+        self.doc
+    }
+}
+
+impl Scorer for ScoredDocs {
+    fn doc_id(&self) -> i32 {
+        self.doc
+    }
+    fn next_doc(&mut self) -> Result<i32> {
+        let from = if self.doc < 0 {
+            0
+        } else {
+            self.at.saturating_add(1)
+        };
+        Ok(self.settle(from))
+    }
+    fn advance(&mut self, target: i32) -> Result<i32> {
+        let from =
+            self.at + self.docs[self.at.min(self.docs.len())..].partition_point(|&d| d < target);
+        Ok(self.settle(from))
+    }
+    fn cost(&self) -> i64 {
+        i64::try_from(self.docs.len()).unwrap_or(i64::MAX)
+    }
+    fn score(&mut self) -> Result<f32> {
+        Ok(self.scores.get(self.at).copied().unwrap_or(0.0))
+    }
+    fn max_score(&mut self, _up_to: i32) -> Result<f32> {
+        Ok(self.max)
+    }
+    fn set_min_competitive_score(&mut self, min: f32) -> Result<()> {
+        if self.prune {
+            self.min = min;
+        }
+        Ok(())
+    }
 }
 
 /// Collects a document query's matches into a set.

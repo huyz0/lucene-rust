@@ -125,11 +125,13 @@ use std::sync::Arc;
 /// fields, keys as terms, a keyword `missing` term) and sub-aggregations,
 /// `TOP_HITS` its sort (a sorted bucket's values and terms back), and the
 /// `HDR_PERCENTILES` node (each bucket's values back); 46, the `NESTED` and
-/// `REVERSE_NESTED` nodes; 47, `ffi_jvm_analyze_alloc` (an analyzer spec run
-/// over a text, `jvm_analysis.rs`), analyzed text fields in the engine
-/// writer's ops (`ffi_engine_prepare`), and the `SIGNIFICANT_TEXT` node (a
-/// refused one answers a count of -1).
-pub const JVM_ABI_VERSION: u32 = 47;
+/// `REVERSE_NESTED` nodes; 47, the multi-term, doc-values, covering and
+/// distance-feature nodes ([`crate::jvm_queries`], 27-35); 48 (reserved);
+/// 49, `ffi_jvm_analyze_alloc` (an analyzer spec run over a text,
+/// `jvm_analysis.rs`), analyzed text fields in the engine writer's ops
+/// (`ffi_engine_prepare`), and the `SIGNIFICANT_TEXT` node (a refused one
+/// answers a count of -1).
+pub const JVM_ABI_VERSION: u32 = 49;
 
 /// Blob tag for a single `TermQuery`.
 pub const QUERY_TERM: u8 = 0;
@@ -169,6 +171,7 @@ const _: () = assert!(NODE_TERM_RANGE == crate::jvm_nodes::NODE_LAST + 1);
 /// `PointInSetQuery` (`terms` on a numeric or `ip` field, `IntPoint.newSetQuery`
 /// and the like): the field, its dimensions and width, then the packed points.
 pub(crate) const NODE_POINT_SET: u8 = 26;
+const _: () = assert!(crate::jvm_queries::NODE_FIRST == NODE_POINT_SET + 1);
 /// [`NODE_TERM_RANGE`]'s flags: which bounds follow, and which are inclusive.
 const RANGE_HAS_LOWER: u8 = 1;
 const RANGE_HAS_UPPER: u8 = 2;
@@ -2542,9 +2545,13 @@ pub(crate) fn decode_node(
         crate::jvm_nodes::NODE_TO_PARENT..=crate::jvm_nodes::NODE_LAST => {
             return crate::jvm_nodes::decode(c, kind, start, depth, nodes);
         }
+        crate::jvm_queries::NODE_FIRST..=crate::jvm_queries::NODE_LAST => {
+            return crate::jvm_queries::decode(c, kind, start, depth, nodes);
+        }
         other => {
             set_last_error(format!(
-                "query tree: unknown node kind {other} (expected 0..={NODE_POINT_SET})"
+                "query tree: unknown node kind {other} (expected 0..={})",
+                crate::jvm_queries::NODE_LAST
             ));
             return Err(FfiStatus::InvalidArgument);
         }

@@ -116,6 +116,13 @@ pub trait DocumentQuery: AsAnyQuery + fmt::Debug + Send + Sync {
         collector: &mut dyn ScoringCollector,
     ) -> Result<()>;
 
+    /// Whether every match scores `boost` (a constant-score weight), so a
+    /// scorer tree may keep just the set of matches. `false` for a query
+    /// whose scores vary by document, which must not exceed `boost`.
+    fn constant_score(&self) -> bool {
+        true
+    }
+
     /// `Query.equals(Object)`: `Object`'s identity unless the query
     /// overrides it with Java's value equality.
     fn equals(&self, other: &dyn DocumentQuery) -> bool {
