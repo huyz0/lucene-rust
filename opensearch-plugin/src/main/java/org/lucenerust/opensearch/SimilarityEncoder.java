@@ -13,6 +13,7 @@ import org.apache.lucene.search.similarities.BasicModelIF;
 import org.apache.lucene.search.similarities.BasicModelIn;
 import org.apache.lucene.search.similarities.BasicModelIne;
 import org.apache.lucene.search.similarities.BooleanSimilarity;
+import org.apache.lucene.search.similarities.ClassicSimilarity;
 import org.apache.lucene.search.similarities.DFISimilarity;
 import org.apache.lucene.search.similarities.DFRSimilarity;
 import org.apache.lucene.search.similarities.Distribution;
@@ -36,6 +37,7 @@ import org.apache.lucene.search.similarities.NormalizationH3;
 import org.apache.lucene.search.similarities.NormalizationZ;
 import org.apache.lucene.search.similarities.PerFieldSimilarityWrapper;
 import org.apache.lucene.search.similarities.Similarity;
+import org.opensearch.lucene.similarity.LegacyBM25Similarity;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
@@ -50,9 +52,10 @@ import java.util.function.Predicate;
  * <p>As the {@link QueryEncoder}'s field predicate it accepts a field whose similarity is
  * Lucene's default {@code BM25Similarity} (nothing to send) or one of the classes OpenSearch's
  * {@code SimilarityProviders} builds -- {@code BM25} with any parameters, {@code boolean}, {@code
- * DFR}, {@code IB}, {@code DFI}, {@code LMDirichlet}, {@code LMJelinekMercer} -- and records it;
- * it refuses anything else ({@code scripted}, {@code LegacyBM25}, a plugin's), which falls back as
- * {@code field_similarity}. Matched by exact class: a subclass may score differently.
+ * DFR}, {@code IB}, {@code DFI}, {@code LMDirichlet}, {@code LMJelinekMercer}, {@code LegacyBM25},
+ * {@code classic} -- and records it. It refuses anything else, which falls back as {@code
+ * field_similarity}: {@code scripted} runs the user's script and a plugin's similarity the
+ * plugin's code. Matched by exact class: a subclass may score differently.
  */
 final class SimilarityEncoder implements Predicate<String> {
     static final byte QUERY_SIMILARITY = 4;
@@ -116,6 +119,7 @@ final class SimilarityEncoder implements Predicate<String> {
     }
 
     /** One similarity's encoding, or null when it is not one the native side computes. */
+    @SuppressWarnings("deprecation") // LegacyBM25Similarity: OpenSearch still builds it for LegacyBM25
     static byte[] spec(Similarity sim) {
         if (sim == null) {
             return null;
@@ -169,6 +173,19 @@ final class SimilarityEncoder implements Predicate<String> {
         } else if (c == LMJelinekMercerSimilarity.class && defaultCollectionModel((LMSimilarity) sim)) {
             out.write(6);
             writeFloat(out, ((LMJelinekMercerSimilarity) sim).getLambda());
+        } else if (c == ClassicSimilarity.class) {
+            out.write(7);
+        } else if (c == LegacyBM25Similarity.class) {
+            // Its own discountOverlaps is Similarity's default; the wrapped BM25's computes the norms.
+            BM25Similarity bm25 = legacyBm25(sim);
+            if (bm25 == null) {
+                return null;
+            }
+            out.write(8);
+            writeFloat(out, bm25.getK1());
+            writeFloat(out, bm25.getB());
+            out.write(bm25.getDiscountOverlaps() ? 1 : 0);
+            return out.toByteArray();
         } else {
             return null;
         }
@@ -233,6 +250,17 @@ final class SimilarityEncoder implements Predicate<String> {
             return model != null && model.getClass() == LMSimilarity.DefaultCollectionModel.class;
         } catch (ReflectiveOperationException | RuntimeException e) {
             return false;
+        }
+    }
+
+    /** {@code LegacyBM25Similarity}'s wrapped {@code BM25Similarity}, or null when unreadable. */
+    @SuppressWarnings("deprecation")
+    private static BM25Similarity legacyBm25(Similarity sim) {
+        try {
+            Object bm25 = Reflect.inHierarchy(LegacyBM25Similarity.class, "bm25Similarity").get(sim);
+            return bm25 != null && bm25.getClass() == BM25Similarity.class ? (BM25Similarity) bm25 : null;
+        } catch (ReflectiveOperationException | RuntimeException e) {
+            return null;
         }
     }
 

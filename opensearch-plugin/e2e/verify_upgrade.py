@@ -49,6 +49,10 @@ DIM = 8
 INDICES = {"single": 1, "multi": 3, "nest": 1, "knn": 1}
 
 
+# 2.x creates these indices and knows no `LegacyBM25` similarity.
+vo.SIMILARITIES = tuple(k for k in vo.SIMILARITIES if k != "legacy")
+
+
 def on(base):
     vo.BASE = base.rstrip("/")
 
