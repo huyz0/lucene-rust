@@ -603,6 +603,10 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             }
             try {
                 aggResult = tree.build(result[0], slices, ctx.partialOnShard());
+            } catch (JavaRefuses e) {
+                // Values the Java aggregator would refuse (a NaN for a t-digest, a negative value
+                // for an HDR histogram): Lucene's pass raises its own error.
+                return "aggregations";
             } catch (ReflectiveOperationException | RuntimeException e) {
                 stats.nativeError();
                 logger.warn("lucene-rust: building native aggregation results failed, re-running on Lucene", e);
