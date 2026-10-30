@@ -57,7 +57,6 @@ use std::time::Duration;
 use lucene_index::buffered_updates::Term;
 use lucene_index::document::{Document, Store, StoredValue, StringField, TextField};
 use lucene_index::index_writer::{IndexWriter, MergedSegmentWarmer};
-use lucene_index::segment_info;
 use lucene_index::segment_infos::SegmentCommitInfo;
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::index_searcher::{IndexSearcher, SegmentNorms};
@@ -563,14 +562,12 @@ impl<'d> Shared<'_, 'd> {
             self.searches.fetch_add(1, Ordering::SeqCst);
             // Verify 1) the writer sets diagnostics, and 2) merged
             // segments are warmed.
+            // Java reads the diagnostics off the reader's in-memory
+            // `SegmentInfo`; the `.si` itself may already be deleted when this
+            // is a past searcher's reader.
             for leaf in reader.segment_readers() {
-                let si_bytes = self
-                    .dir
-                    .open(&format!("{}.si", leaf.segment_name))
-                    .map_err(text)?;
-                let si = segment_info::parse(&si_bytes, &leaf.segment_id()).map_err(text)?;
-                let source = si
-                    .diagnostics
+                let source = leaf
+                    .diagnostics()
                     .iter()
                     .find(|(k, _)| k == "source")
                     .map(|(_, v)| v.as_str())
@@ -580,7 +577,8 @@ impl<'d> Shared<'_, 'd> {
                     if !lock(&self.warmed).contains(&leaf.segment_name) {
                         return Err(format!(
                             "sub reader {} wasn't warmed: diagnostics={:?}",
-                            leaf.segment_name, si.diagnostics
+                            leaf.segment_name,
+                            leaf.diagnostics()
                         ));
                     }
                 }

@@ -163,6 +163,11 @@ pub struct SegmentReader {
     /// (`SegmentInfo.getHasBlocks`), so an index sort orders whole blocks by
     /// their parent and not each document.
     has_blocks: bool,
+    /// `SegmentInfo.getDiagnostics()`: what wrote the segment (`source` is
+    /// `flush`, `merge` or `addIndexes(CodecReader...)`), from the `.si`
+    /// read when the reader was opened, so it stays readable after the file
+    /// is deleted.
+    diagnostics: Arc<Vec<(String, String)>>,
     /// Each doc-values format instance's `.dvs`, with its codec suffix and
     /// the `.dvm` that locates its fields' skip indexes in it: every field's
     /// doc-values skip index, parsed on first use into
@@ -894,6 +899,7 @@ impl SegmentReader {
             segment_name,
             index_sort: si.index_sort.clone().map(Arc::new),
             has_blocks: si.has_blocks,
+            diagnostics: Arc::new(si.diagnostics.clone()),
             dvs,
             skip_indexes: Arc::default(),
             docs_with_field: Arc::default(),
@@ -1459,6 +1465,11 @@ impl SegmentReader {
     /// document blocks.
     pub fn has_blocks(&self) -> bool {
         self.has_blocks
+    }
+
+    /// `SegmentReader.getSegmentInfo().info.getDiagnostics()`.
+    pub fn diagnostics(&self) -> &[(String, String)] {
+        &self.diagnostics
     }
 
     /// This segment's hard-deletions bitset (`.liv`), or `None` when it has no

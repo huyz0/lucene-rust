@@ -157,6 +157,13 @@ pub(crate) trait Scorer {
     fn doc_id_run_end(&self) -> i32 {
         self.doc_id().saturating_add(1)
     }
+    /// `TwoPhaseIterator.docIDRunEnd()` of a two-phase scorer positioned on
+    /// a document [`Self::matches`] confirmed: one past the end of the run
+    /// of consecutive *matches* starting there, or the current document --
+    /// the conservative default -- when no run is known.
+    fn two_phase_run_end(&self) -> i32 {
+        self.doc_id()
+    }
     /// Whether the approximation holds `target` (`> doc_id()`), when that is
     /// cheap to tell without moving past it: `Some(true)` positions on
     /// `target`, as [`Self::advance`] would; `Some(false)` leaves the
@@ -387,6 +394,9 @@ impl Scorer for Below<'_> {
     }
     fn doc_id_run_end(&self) -> i32 {
         self.inner.doc_id_run_end().min(self.end)
+    }
+    fn two_phase_run_end(&self) -> i32 {
+        self.inner.two_phase_run_end().min(self.end)
     }
     fn contains(&self, doc: i32) -> Option<bool> {
         self.inner.contains(doc).map(|m| m && doc < self.end)
