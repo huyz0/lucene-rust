@@ -9,6 +9,8 @@ import org.apache.lucene.analysis.CharFilter;
 import org.apache.lucene.analysis.TokenFilter;
 import org.apache.lucene.analysis.TokenStream;
 import org.apache.lucene.analysis.Tokenizer;
+import org.apache.lucene.analysis.miscellaneous.StemmerOverrideFilter;
+import org.apache.lucene.analysis.synonym.SynonymMap;
 import org.apache.lucene.analysis.tokenattributes.FlagsAttribute;
 import org.apache.lucene.analysis.tokenattributes.KeywordAttribute;
 import org.apache.lucene.analysis.tokenattributes.OffsetAttribute;
@@ -21,6 +23,7 @@ import org.apache.lucene.analysis.tokenattributes.TypeAttribute;
 import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.CharsRef;
 import org.apache.lucene.util.IntsRef;
+import org.apache.lucene.store.ByteArrayDataInput;
 import org.apache.lucene.util.fst.FST;
 import org.apache.lucene.util.fst.IntsRefFSTEnum;
 
@@ -368,6 +371,48 @@ public final class AnalyzerSpec {
         }
     }
 
+    /**
+     * A synonym filter's map, entry by entry ({@code lucene_rust.synonym_entries}): each input with
+     * its {@code keepOrig} and outputs in order, as the FST holds them, so the Rust map is this one.
+     */
+    private static String synonyms(Object o, Component c, String name) {
+        SynonymMap map = (SynonymMap) read(o, "synonyms");
+        StringBuilder sb = new StringBuilder();
+        try {
+            // The FST's inputs are code points (FST.INPUT_TYPE.BYTE4).
+            IntsRefFSTEnum<BytesRef> e = new IntsRefFSTEnum<>(map.fst);
+            IntsRefFSTEnum.InputOutput<BytesRef> io;
+            ByteArrayDataInput in = new ByteArrayDataInput();
+            BytesRef word = new BytesRef();
+            while ((io = e.next()) != null) {
+                in.reset(io.output.bytes, io.output.offset, io.output.length);
+                int code = in.readVInt();
+                sb.append((code & 1) == 0 ? '1' : '0').append('\t');
+                hex(sb, new BytesRef(new String(io.input.ints, io.input.offset, io.input.length)));
+                for (int i = code >>> 1; i > 0; i--) {
+                    map.words.get(in.readVInt(), word);
+                    sb.append('\t');
+                    hex(sb, word);
+                }
+                sb.append('\n');
+            }
+        } catch (IOException | RuntimeException ex) {
+            return "analysis_synonyms";
+        }
+        c.name = name;
+        c.arg("synonyms", c.writer.resource(sb.toString()))
+            .arg("format", "lucene_rust.synonym_entries")
+            .arg("ignoreCase", flag(readBool(o, "ignoreCase")));
+        return null;
+    }
+
+    private static void hex(StringBuilder sb, BytesRef b) {
+        for (int i = 0; i < b.length; i++) {
+            int v = b.bytes[b.offset + i] & 0xFF;
+            sb.append(Character.forDigit(v >>> 4, 16)).append(Character.forDigit(v & 15, 16));
+        }
+    }
+
     private static boolean ignoreCase(CharArraySet set) {
         return readBool(read(set, CharArraySet.class, "map"), "ignoreCase");
     }
@@ -707,6 +752,41 @@ public final class AnalyzerSpec {
                 .arg("katakana", flag(read(o, "doKatakana") != no))
                 .arg("hangul", flag(read(o, "doHangul") != no))
                 .arg("outputUnigrams", flag(readBool(o, "outputUnigrams")));
+            return null;
+        });
+        map("synonym.SynonymGraphFilter", (o, c) -> synonyms(o, c, "synonymGraph"));
+        map("synonym.SynonymFilter", (o, c) -> synonyms(o, c, "synonym"));
+        map("miscellaneous.StemmerOverrideFilter", (o, c) -> {
+            StemmerOverrideFilter.StemmerOverrideMap m = (StemmerOverrideFilter.StemmerOverrideMap) read(o, "stemmerOverrideMap");
+            @SuppressWarnings("unchecked")
+            FST<BytesRef> fst = (FST<BytesRef>) read(m, "fst");
+            StringBuilder lines = new StringBuilder();
+            if (fst != null) {
+                try {
+                    IntsRefFSTEnum<BytesRef> e = new IntsRefFSTEnum<>(fst);
+                    IntsRefFSTEnum.InputOutput<BytesRef> io;
+                    while ((io = e.next()) != null) {
+                        String word = new String(io.input.ints, io.input.offset, io.input.length);
+                        String stem = io.output.utf8ToString();
+                        // getLines trims each line and skips comments; split("\t", 2) takes the first tab.
+                        if (word.isEmpty()
+                            || word.startsWith("#")
+                            || word.startsWith("\uFEFF")
+                            || word.charAt(0) <= ' '
+                            || word.indexOf('\t') >= 0
+                            || (stem.isEmpty() == false && stem.charAt(stem.length() - 1) <= ' ')
+                            || (word + stem).indexOf('\n') >= 0
+                            || (word + stem).indexOf('\r') >= 0) {
+                            return "analysis_stemmer_override";
+                        }
+                        lines.append(word).append('\t').append(stem).append('\n');
+                    }
+                } catch (IOException ex) {
+                    return "analysis_reflect";
+                }
+            }
+            c.name = "stemmerOverride";
+            c.arg("dictionary", c.writer.resource(lines.toString())).arg("ignoreCase", flag(readBool(m, "ignoreCase")));
             return null;
         });
         map("miscellaneous.KeepWordFilter", (o, c) -> {
