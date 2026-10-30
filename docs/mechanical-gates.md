@@ -930,6 +930,22 @@ more`). **Blind to** a directory recorded under the wrong licence, a marker
 line another licence also contains, a resource read at run time rather than
 embedded, and an include whose path is not a string literal.
 
+## wire-constants
+
+`python3 scripts/check-wire-constants.py`. The plugin and `lucene-ffi` share a
+byte protocol whose numbers (query node kinds, aggregation kinds, sort flags,
+stored-field types, `FfiStatus` codes, the ABI version) are written once in
+Java and once in Rust, tied together only by comments. The check pairs every
+integer `static final` under `opensearch-plugin/src/main/java` with the Rust
+`const` of the same name (or with the file's prefix: `AGG_`, `SORT_`,
+`METRIC_`, `COLLAPSE_`) in the `lucene-ffi` files the Java file names, and
+fails on a different value, an ambiguous pairing, or a constant with no
+counterpart that `JAVA_ONLY` does not excuse. **Seen to fail** with
+`NODE_SYNONYM = 37` planted in `QueryEncoder.java` (`Rust has jvm_queries.rs
+NODE_SYNONYM = 36`). **Blind to** a wire number written as a bare literal
+(`out.write(3)`) rather than a constant, a layout change that keeps every
+number (a field added inside a node), and Rust constants Java never mirrors.
+
 ## Running them
 
 All of them are in `scripts/gate.sh` and therefore in
