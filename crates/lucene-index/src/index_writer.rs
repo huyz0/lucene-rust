@@ -10730,16 +10730,14 @@ impl IndexWriter<'_> {
         let held = plan.held.clone();
         let retired = plan.names.clone();
         let result = self.finish_merge_holding(plan, outcome);
-        if matches!(result, Ok(true)) {
-            // `ReaderPool.drop` for each merged-away source, before their
-            // files can go: a pooled reader (one opened to apply deletes)
-            // still has them open, and `commitMerge` drops it first too.
-            self.cfg.reader_pool.drop_segments(&retired);
-        }
         // After the merge is published (or abandoned): released last, so the
         // sources' files go only once nothing else references them.
         let released = self.deleter.release_files(&held);
         let published = result?;
+        if published {
+            // `ReaderPool.drop` for each merged-away source.
+            self.cfg.reader_pool.drop_segments(&retired);
+        }
         released?;
         Ok(published)
     }
