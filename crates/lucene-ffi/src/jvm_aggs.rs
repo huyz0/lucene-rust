@@ -36,6 +36,9 @@
 //!           | RANGE field value_kind:u8 count:i32 (from:f64 to:f64)* nodes
 //!           | FILTERS count:i32 query:bytes* other:u8 nodes
 //!           | GLOBAL nodes
+//!           | NESTED parents:bytes children:bytes nodes  (the parent and child
+//!                                              filters' queries; no scores below)
+//!           | REVERSE_NESTED parents:bytes nodes
 //!           | MISSING value:i64 node        (a numeric node's `missing`, in its
 //!                                            column's encoding; doc-values metrics,
 //!                                            percentiles)
@@ -135,6 +138,8 @@ const AGG_PERCENTILES: u8 = 11;
 const AGG_TOP_HITS: u8 = 12;
 const AGG_SIGNIFICANT_TERMS: u8 = 13;
 const AGG_HDR_PERCENTILES: u8 = 14;
+const AGG_NESTED: u8 = 15;
+const AGG_REVERSE_NESTED: u8 = 16;
 /// The largest t-digest compression a tree may ask for: a digest holds
 /// about `12 * compression` doubles.
 const MAX_COMPRESSION: f64 = 10_000.0;
@@ -664,6 +669,30 @@ fn node_of(
         AGG_GLOBAL => AggNode::Global {
             subs: nodes(c, depth + 1, count)?,
         },
+        AGG_NESTED | AGG_REVERSE_NESTED => {
+            let parents = query_of(c.bytes()?)?;
+            let children = if kind == AGG_NESTED {
+                Some(query_of(c.bytes()?)?)
+            } else {
+                None
+            };
+            let subs = nodes(c, depth + 1, count)?;
+            // A child document has no score of its own (Java hands it its
+            // parent's).
+            if subs.iter().any(AggNode::needs_scores) {
+                return Err(bad(
+                    "aggregation tree: a scored aggregation under nested".to_string()
+                ));
+            }
+            match children {
+                Some(children) => AggNode::Nested {
+                    parents,
+                    children,
+                    subs,
+                },
+                None => AggNode::ReverseNested { parents, subs },
+            }
+        }
         other => return Err(bad(format!("aggregation tree: node kind {other}"))),
     })
 }
