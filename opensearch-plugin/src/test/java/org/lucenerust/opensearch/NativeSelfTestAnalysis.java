@@ -61,7 +61,9 @@ final class NativeSelfTestAnalysis {
                 "keep.txt", "the\nquick\nfox's\njumps\nbanana\ncafé\n",
                 "articles.txt", "l\nd\nqu\n",
                 "common.txt", "the\nof\nand\nto\n",
-                "wdtypes.txt", "- => ALPHA\n"
+                "wdtypes.txt", "- => ALPHA\n",
+                "synonyms.txt", "quick, fast, speedy\njumps => leaps, hops over\nthe fox => the vixen\nbanana, ba\\,na\ne mail, email\ncafé => coffee shop\nwi fi, wifi, wireless\n",
+                "override.txt", "running\trun\njumps\tjump\ncafé\tcoffee\nbanana\tfruit thing\n"
             );
             for (Map.Entry<String, String> f : files.entrySet()) {
                 java.nio.file.Files.writeString(resources.resolve(f.getKey()), f.getValue());
@@ -194,6 +196,32 @@ final class NativeSelfTestAnalysis {
                 .build()
         );
         m.put(
+            "synonym graph, flatten",
+            b()
+                .withTokenizer("standard")
+                .addTokenFilter("lowercase")
+                .addTokenFilter("synonymGraph", "synonyms", "synonyms.txt", "expand", "true")
+                .addTokenFilter("flattenGraph")
+                .build()
+        );
+        m.put(
+            "synonym graph without expand, ignore case",
+            b()
+                .withTokenizer("whitespace")
+                .addTokenFilter("synonymGraph", "synonyms", "synonyms.txt", "expand", "false", "ignoreCase", "true")
+                .build()
+        );
+        m.put(
+            "synonym (old filter), stemmer override",
+            b()
+                .withTokenizer("classic")
+                .addTokenFilter("lowercase")
+                .addTokenFilter("stemmerOverride", "dictionary", "override.txt", "ignoreCase", "true")
+                .addTokenFilter("synonym", "synonyms", "synonyms.txt")
+                .addTokenFilter("porterStem")
+                .build()
+        );
+        m.put(
             "keyword repeat, porter, remove duplicates",
             b()
                 .withTokenizer("standard")
@@ -245,7 +273,7 @@ final class NativeSelfTestAnalysis {
         "l'avion", "d'Artagnan", "O'Neil", "café", "naïve", "Straße", "İstanbul", "ΣΊΣΥΦΟΣ", "Москва", "東京都", "서울", "カタカナ",
         "ﾊﾝｶｸ", "ＦＵＬＬ", "ภาษาไทย", "العربية", "हिन्दी", "😀", "👍🏽", "ab😀cd", "<b>", "</b>", "<p>", "&amp;", "&eacute;", "<br/>",
         "<script>", "</script>", "https://example.org/a?b=c", "user@example.com", "/usr/local/lib", "a/b/c/d", "'quoted'", "aaa",
-        "banana", "of", "and", "to", "is", ";", ",", ".", "!", "?", "-", "_", "#tag", "@who", "x", "supercalifragilistic", "٣٤٥",
+        "banana", "fox", "fast", "wifi", "of", "and", "to", "is", ";", ",", ".", "!", "?", "-", "_", "#tag", "@who", "x", "supercalifragilistic", "٣٤٥",
     };
 
     private static final String[] SPACES = { " ", " ", " ", "  ", "\t", "\n", " ", "　", "", ", " };
