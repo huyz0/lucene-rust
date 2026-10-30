@@ -6,12 +6,14 @@
 //! T11.7's; `word2vec` (a model-driven synonym source) is `lucene-search`'s
 //! `word2vec` module, as its provider is an HNSW graph.
 
+mod entries;
 mod solr_synonym_parser;
 mod synonym_filter;
 mod synonym_graph_filter;
 mod synonym_map;
 mod wordnet_synonym_parser;
 
+pub use entries::{parse_entries, ENTRIES_FORMAT};
 pub use solr_synonym_parser::SolrSynonymParser;
 pub use synonym_filter::SynonymFilter;
 pub use synonym_graph_filter::{SynonymGraphFilter, TYPE_SYNONYM};

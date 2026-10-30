@@ -79,6 +79,7 @@ MAPPING = {
         # Custom analyzers built from Lucene components: analyzed in Rust by the Rust engine.
         "note": {"type": "text", "analyzer": "fancy"},
         "code": {"type": "text", "analyzer": "parts", "index_options": "offsets"},
+        "syn": {"type": "text", "analyzer": "syn"},
         "tag": {"type": "keyword"},
         "n": {"type": "long"},
         "price": {"type": "double"},
@@ -107,8 +108,15 @@ ANALYSIS = {
                   "filter": ["lowercase", "keep_both", "stop", "snowball"]},
         "parts": {"type": "custom", "tokenizer": "whitespace",
                   "filter": ["word_delimiter", "lowercase", "kstem", "remove_duplicates"]},
+        "syn": {"type": "custom", "tokenizer": "standard",
+                "filter": ["lowercase", "overrides", "synonyms", "porter_stem"]},
     },
-    "filter": {"keep_both": {"type": "asciifolding", "preserve_original": True}},
+    "filter": {
+        "keep_both": {"type": "asciifolding", "preserve_original": True},
+        "overrides": {"type": "stemmer_override", "rules": ["runners => runner", "houses' => home"]},
+        "synonyms": {"type": "synonym", "synonyms": ["quick, fast, speedy", "foxes => vixens, foxes",
+                                                    "jumping cats => leaping felines", "café, coffee shop"]},
+    },
 }
 
 NOTES = ["<p>Caf\u00e9 na\u00efve</p>", "r\u00e9sum\u00e9 &amp; <b>runners</b>", "The QUICK foxes",
@@ -134,6 +142,7 @@ def source(r, i):
         doc["body"] = [words(r, r.randrange(40)) for _ in range(1 + r.randrange(2))]
     if r.random() < 0.6:
         doc["note"] = [" ".join(r.choice(NOTES) for _ in range(1 + r.randrange(4))) for _ in range(1 + r.randrange(2))]
+        doc["syn"] = doc["note"]
     if r.random() < 0.6:
         doc["code"] = " ".join(r.choice(CODES) for _ in range(1 + r.randrange(5)))
     if r.random() < 0.1:
@@ -246,6 +255,9 @@ QUERIES = [
     {"match": {"note": "café uber"}},
     {"match_phrase": {"note": "quick fox"}},
     {"match": {"code": "shot 500"}},
+    {"match": {"syn": "fast vixens"}},
+    {"match_phrase": {"syn": "leaping felines"}},
+    {"match": {"syn": "coffee runner"}},
     {"match_phrase": {"code": "http request"}},
     {"prefix": {"tag": "t1"}},
     {"exists": {"field": "title"}},

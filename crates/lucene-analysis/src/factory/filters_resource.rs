@@ -1346,6 +1346,18 @@ impl<const GRAPH: bool> SynonymFactory<GRAPH> {
                 ignore_case: self.ignore_case,
             }),
         };
+        let files = args::split_file_names(Some(&self.synonyms));
+        if self.format.as_deref() == Some(crate::synonym::ENTRIES_FORMAT) {
+            // A built map's entries (`synonym::entries`): no rule analysis.
+            let mut text = String::new();
+            for file in &files {
+                text.push_str(&decode_utf8(loader.open_resource(file)?)?);
+                text.push('\n');
+            }
+            let map = crate::synonym::parse_entries(&text)?;
+            self.map = (!map.is_empty()).then(|| Arc::new(map));
+            return Ok(());
+        }
         let solr = match self.format.as_deref() {
             None | Some("solr") | Some("org.apache.lucene.analysis.synonym.SolrSynonymParser") => {
                 true
@@ -1367,7 +1379,6 @@ impl<const GRAPH: bool> SynonymFactory<GRAPH> {
         // loadSynonyms: each file opened, decoded as strict UTF-8 and parsed
         // before the next is opened (so a parse error precedes a later
         // file's absence, as in Java).
-        let files = args::split_file_names(Some(&self.synonyms));
         let read = |file: &String| decode_utf8(loader.open_resource(file)?);
         let map = if solr {
             let mut parser = SolrSynonymParser::new(true, self.expand, &analyzer);
