@@ -126,7 +126,9 @@ use std::sync::Arc;
 /// `TOP_HITS` its sort (a sorted bucket's values and terms back), and the
 /// `HDR_PERCENTILES` node (each bucket's values back); 46, the `NESTED` and
 /// `REVERSE_NESTED` nodes; 47, `ffi_jvm_analyze_alloc` (an analyzer spec run
-/// over a text, `jvm_analysis.rs`).
+/// over a text, `jvm_analysis.rs`), analyzed text fields in the engine
+/// writer's ops (`ffi_engine_prepare`), and the `SIGNIFICANT_TEXT` node (a
+/// refused one answers a count of -1).
 pub const JVM_ABI_VERSION: u32 = 47;
 
 /// Blob tag for a single `TermQuery`.
