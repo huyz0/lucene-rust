@@ -1235,6 +1235,74 @@ impl TopField {
     }
 }
 
+/// A `TopFieldCollector` fed from outside a search, a document at a time
+/// with its score: `TopFieldCollectorManager(sort, n, null,
+/// Integer.MAX_VALUE, false)`'s collector, as a `top_hits` bucket runs one.
+/// The count is exact and nothing is skipped.
+pub struct FedTopField(TopField);
+
+/// One segment's side of a [`FedTopField`] (`getLeafCollector`).
+pub struct FedLeaf<'a>(Leaf<'a>);
+
+impl FedTopField {
+    /// A collector of the `top_n` best by `sort`.
+    ///
+    /// # Errors
+    /// A sort without keys.
+    pub fn new(sort: &[SortField], top_n: usize) -> Result<Self> {
+        if sort.is_empty() {
+            return Err(SortError::NoKeys.into());
+        }
+        Ok(FedTopField(TopField::new(
+            sort,
+            top_n.max(1),
+            u64::MAX,
+            None,
+        )))
+    }
+
+    /// The collector's leaf over `seg` (read from `reader`).
+    ///
+    /// # Errors
+    /// What opening the sort's columns reports.
+    pub fn leaf<'a>(
+        &mut self,
+        reader: &'a SegmentReader,
+        seg: &OpenSegment<'a>,
+    ) -> Result<FedLeaf<'a>> {
+        open_leaf(&mut self.0, reader, seg, i64::from(reader.max_doc)).map(FedLeaf)
+    }
+
+    /// Collects `doc` of `leaf`'s segment, with its score (`NaN` when the
+    /// sort reads none).
+    ///
+    /// # Errors
+    /// What reading the sort's columns reports.
+    pub fn collect(&mut self, leaf: &mut FedLeaf<'_>, doc: i32, score: f32) -> Result<()> {
+        let leaf = &mut leaf.0;
+        if leaf.terminated {
+            return Ok(());
+        }
+        leaf.score = score;
+        leaf.score_doc = doc;
+        leaf.collect(&mut self.0, doc, None)
+    }
+
+    /// The end of `leaf`'s segment: its keyword keys read their terms, as
+    /// they must before the next segment's ordinals are compared.
+    ///
+    /// # Errors
+    /// What reading the terms reports.
+    pub fn finish(&mut self, mut leaf: FedLeaf<'_>) -> Result<()> {
+        leaf.0.finish(&mut self.0)
+    }
+
+    /// The hits, best first, and the count (`topDocs()`).
+    pub fn top_docs(self) -> TopFieldDocs {
+        self.0.top_docs()
+    }
+}
+
 /// `NumericUtils.sortableIntToFloat`, from a relevance value's negation.
 fn sortable_int_to_float(v: i64) -> f32 {
     let i = v as i32;
