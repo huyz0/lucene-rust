@@ -474,10 +474,12 @@ pub(crate) fn index_sort_range<'a>(
 
 /// The documents `docs` (unsorted, possibly repeated) as a constant-scored
 /// leaf: a bit set when dense, a list otherwise (`DocIdSetBuilder`).
+///
+/// No matching document still gives a scorer: Lucene's supplier exists once
+/// the segment's points overlap the query's bounds ([`disjoint`]), and a
+/// boolean counts its clauses by supplier (`BooleanWeight.scorerSupplier`
+/// turns `minimumNumberShouldMatch` optional clauses into required ones).
 fn doc_set<'a>(mut docs: Vec<i32>, max_doc: i32, boost: f32, mode: Mode) -> Option<BoxScorer<'a>> {
-    if docs.is_empty() {
-        return None;
-    }
     let len = usize::try_from(max_doc).unwrap_or(0);
     let inner: BoxScorer<'a> = if docs.len() > len / 128 {
         let mut bits = FixedBitSet::new(len);
@@ -549,6 +551,48 @@ fn points_field<'a>(
     Ok(Some((points, number, max_doc)))
 }
 
+/// `PointRangeQuery`'s and `PointInSetQuery`'s null supplier: a segment
+/// without documents for the field, or whose `[min, max]` packed values miss
+/// `[lower, upper]` in some dimension.
+fn disjoint(
+    info: &lucene_codecs::points::PointsField,
+    lower: &[u8],
+    upper: &[u8],
+    num_dims: usize,
+    bpd: usize,
+) -> bool {
+    info.doc_count == 0
+        || (0..num_dims).any(|d| {
+            let r = d * bpd..(d + 1) * bpd;
+            match (
+                lower.get(r.clone()),
+                upper.get(r.clone()),
+                info.min_packed_value.get(r.clone()),
+                info.max_packed_value.get(r),
+            ) {
+                (Some(lo), Some(hi), Some(min), Some(max)) => lo > max || hi < min,
+                _ => false,
+            }
+        })
+}
+
+/// [`disjoint`] for a `PointInSetQuery`, whose bounds are its first and last
+/// packed points (none for an empty set, which only a segment without
+/// documents for the field leaves without a supplier).
+pub(crate) fn point_set_disjoint(
+    points: &crate::points_query::PointsInput<'_>,
+    number: i32,
+    q: &PointInSetQuery,
+) -> bool {
+    let Some(info) = points.reader.field(number) else {
+        return true;
+    };
+    match (q.points.first(), q.points.last()) {
+        (Some(lo), Some(hi)) => disjoint(info, lo, hi, q.num_dims, q.bytes_per_dim),
+        _ => info.doc_count == 0,
+    }
+}
+
 /// `PointRangeQuery`: every document with a point inside the box.
 pub(crate) fn point_range<'a>(
     ctx: &LeafContext<'a>,
@@ -561,6 +605,13 @@ pub(crate) fn point_range<'a>(
     else {
         return Ok(None);
     };
+    if points
+        .reader
+        .field(number)
+        .is_none_or(|info| disjoint(info, &q.lower, &q.upper, q.num_dims, q.bytes_per_dim))
+    {
+        return Ok(None);
+    }
     let docs = points.reader.range_query(number, &q.lower, &q.upper)?;
     Ok(doc_set(docs, max_doc, boost, mode))
 }
@@ -582,6 +633,9 @@ pub(crate) fn point_range_cost(
     let Some(info) = points.reader.field(number) else {
         return Ok(Supplier::Absent);
     };
+    if disjoint(info, &q.lower, &q.upper, q.num_dims, q.bytes_per_dim) {
+        return Ok(Supplier::Absent);
+    }
     if info.doc_count == max_doc {
         let bpd = q.bytes_per_dim;
         let all = (0..q.num_dims).all(|d| {
@@ -615,14 +669,14 @@ pub(crate) fn point_in_set<'a>(
     boost: f32,
     mode: Mode,
 ) -> Result<Option<BoxScorer<'a>>> {
-    if q.points.is_empty() {
-        return Ok(None);
-    }
     let Some((points, number, max_doc)) =
         points_field(ctx, &q.field, q.num_dims, q.bytes_per_dim, false)?
     else {
         return Ok(None);
     };
+    if point_set_disjoint(points, number, q) {
+        return Ok(None);
+    }
     let docs = if q.num_dims == 1 {
         // `PointInSetQuery.MergePointVisitor`: one walk of the tree, the
         // sorted query points merged with the cells' ascending values.

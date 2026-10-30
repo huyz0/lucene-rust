@@ -81,6 +81,13 @@ WORDS = ("alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu 
          "sigma tau upsilon phi chi psi omega").split()
 
 
+# Whether the nodes have config/hunspell/en_US: set by this script's own run.
+HUNSPELL = False
+
+EN = ("the quick brown fox foxes jumps jumped jumping over lazy dogs cats sleeping runners running ran "
+      "houses housed housing unhappy while alphas").split()
+
+
 def word(r):
     return WORDS[min(len(WORDS) - 1, int((r.random() ** 2.2) * len(WORDS)))]
 
@@ -104,6 +111,13 @@ def create(index, shards, index_sort=None):
         },
     }
     settings["similarity"] = {k: v for k, v in settings["similarity"].items() if k in SIMILARITIES + ("tuned", "scr")}
+    # A hunspell analyzer over config/hunspell/en_US (opensearch-plugin/e2e/hunspell), on the nodes
+    # verify-opensearch.sh mounts it into; elsewhere (upgrade, rollback) `hun` is a plain text field.
+    if HUNSPELL:
+        settings["analysis"] = {
+            "filter": {"en_stem": {"type": "hunspell", "locale": "en_US"}},
+            "analyzer": {"hun": {"type": "custom", "tokenizer": "standard", "filter": ["lowercase", "en_stem"]}},
+        }
     if index_sort:
         settings["sort.field"] = [f for f, _ in index_sort]
         settings["sort.order"] = [o for _, o in index_sort]
@@ -111,6 +125,7 @@ def create(index, shards, index_sort=None):
         "settings": settings,
         "mappings": {"properties": {
             "body": {"type": "text"},
+            "hun": {"type": "text", "analyzer": "hun"} if HUNSPELL else {"type": "text"},
             "title": {"type": "text", "store": True},
             "tuned": {"type": "text", "similarity": "tuned", "fields": {
                 k: {"type": "text", "similarity": k} for k in SIMILARITIES + ("scr",)
@@ -150,6 +165,7 @@ def load(index, docs, seed, deletes=True):
             doc = {
                 "body": " ".join(word(r) for _ in range(r.randint(1, 40))),
                 "title": " ".join(word(r) for _ in range(r.randint(1, 5))),
+                "hun": " ".join(r.choice(EN) for _ in range(r.randint(1, 12))),
                 "tuned": " ".join(word(r) for _ in range(r.randint(1, 10))),
                 "tag": word(r),
                 "mtag": [word(r) + str(r.randint(0, 9)) for _ in range(r.randint(0, 3))],
@@ -547,6 +563,8 @@ def matrix():
     # significant_text: `_source` read and analyzed natively (the field's index analyzer in Rust).
     add("agg significant_text", {"size": 0, "query": {"match": {"body": "omega"}}, "aggs": {"s": {"significant_text": {"field": "body"}}}}, "native")
     add("agg significant_text filter_duplicate_text", {"_sequential": True, "size": 0, "query": {"match": {"body": "pi rho"}}, "aggs": {"s": {"significant_text": {"field": "body", "filter_duplicate_text": True, "size": 5, "min_doc_count": 1}}}}, "native")
+    add("agg significant_text hunspell", {"size": 0, "query": {"match": {"hun": "runners"}}, "aggs": {"s": {"significant_text": {"field": "hun", "min_doc_count": 1}}}}, "native")
+    add("match hunspell stems", {"query": {"match": {"hun": "running houses"}}}, "native")
     add("agg significant_text source_fields", {"size": 0, "query": {"match": {"body": "xi"}}, "aggs": {"s": {"significant_text": {"field": "body", "source_fields": ["title", "body"], "min_doc_count": 1}}}}, "native")
     add("agg terms > significant_text dedup", {"_sequential": True, "size": 0, "query": {"match": {"body": "nu theta"}}, "aggs": {"t": {"terms": {"field": "tag", "size": 4}, "aggs": {"s": {"significant_text": {"field": "title", "filter_duplicate_text": True, "size": 3, "min_doc_count": 1}}}}}}, "native")
     add("agg filter > significant_text", {"size": 0, "query": {"match": {"body": "kappa"}}, "aggs": {"f": {"filter": {"range": {"n": {"gte": 1000}}}, "aggs": {"s": {"significant_text": {"field": "body", "size": 4}}}}}}, "native")
@@ -1335,7 +1353,8 @@ def nested_rows():
 
 
 def main():
-    global BASE
+    global BASE, HUNSPELL
+    HUNSPELL = True
     ap = argparse.ArgumentParser()
     ap.add_argument("base")
     ap.add_argument("container")

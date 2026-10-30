@@ -316,8 +316,7 @@ pub(crate) fn index_side(ctx: &LeafContext<'_>, clause: &Clause) -> Result<Suppl
         ExtendedQuery::PointInSet(q) => Ok(match ctx.points {
             Some(p)
                 if p.field_number(&q.field)
-                    .and_then(|n| p.reader.field(n))
-                    .is_some() =>
+                    .is_some_and(|n| !super::ranges::point_set_disjoint(p, n, q)) =>
             {
                 Supplier::Present(None)
             }

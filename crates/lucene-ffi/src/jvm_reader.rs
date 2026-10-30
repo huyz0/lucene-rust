@@ -139,8 +139,9 @@ use std::sync::Arc;
 /// the collapsed search (`ffi_jvm_reader_search_collapsed_alloc`,
 /// `terminate_after` too), the rescorer (`ffi_jvm_reader_rescore`) and the
 /// sort blob's `_shard_doc`, `half_float` and `unsigned_long` keys; 53, the
-/// similarity table's `classic` and `LegacyBM25` kinds.
-pub const JVM_ABI_VERSION: u32 = 53;
+/// similarity table's `classic` and `LegacyBM25` kinds; 54, the
+/// `SynonymQuery` node (36).
+pub const JVM_ABI_VERSION: u32 = 54;
 
 /// Blob tag for a single `TermQuery`.
 pub const QUERY_TERM: u8 = 0;

@@ -1,0 +1,23 @@
+# lucene-rust's own test dictionary for the OpenSearch e2e runs: suffixes,
+# a prefix, a continuation class and a stem exception.
+SET UTF-8
+TRY esianrtolcdugmphbyfvkwz
+
+PFX U Y 1
+PFX U   0     un         .
+
+SFX S Y 2
+SFX S   0     s          [^sxz]
+SFX S   0     es         [sxz]
+
+SFX D Y 2
+SFX D   0     d          e
+SFX D   0     ed         [^e]
+
+SFX G Y 2
+SFX G   e     ing        e
+SFX G   0     ing        [^e]
+
+SFX N Y 2
+SFX N   0     ning       n
+SFX N   0     ner/S      n
