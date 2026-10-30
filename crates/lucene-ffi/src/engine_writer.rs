@@ -224,6 +224,7 @@ fn inverted_field(c: &mut Cursor<'_>) -> Result<InvertedField, FfiStatus> {
     let norm = match c.u8("norm flag")? {
         0 => None,
         1 => Some(c.i64("norm")?),
+        2 => return analyzed_field(c, field_number),
         _ => return Err(decode_error("norm flag")),
     };
     // A term is at least its length, its freq and its flags.
@@ -289,6 +290,28 @@ fn inverted_field(c: &mut Cursor<'_>) -> Result<InvertedField, FfiStatus> {
     })
 }
 
+/// An inverted field the JVM left to Rust to analyze ([`crate::jvm_invert`]):
+/// `i32 analyzer` (a [`crate::jvm_analysis::register`] id), `u8 index
+/// options` (ordinal), `u8 norm` ([`crate::jvm_invert::Norm`]), `i32 len,
+/// name`, `i32 instances`, then each instance's text (`i32 len`, UTF-8).
+fn analyzed_field(c: &mut Cursor<'_>, field_number: i32) -> Result<InvertedField, FfiStatus> {
+    use crate::jvm_invert::{invert, Norm, Options};
+    let registered = crate::jvm_analysis::registered(c.i32("analyzer")?)?;
+    let options = Options::from_ordinal(c.u8("index options")?)
+        .ok_or_else(|| decode_error("index options"))?;
+    let norm = Norm::from_byte(c.u8("norm mode")?).ok_or_else(|| decode_error("norm mode"))?;
+    let name = c.string("field name")?;
+    let n = c.count(4, "instances")?;
+    let mut texts = try_with_capacity(n)?;
+    for _ in 0..n {
+        texts.push(
+            std::str::from_utf8(c.bytes("instance text")?)
+                .map_err(|_| decode_error("instance text"))?,
+        );
+    }
+    invert(field_number, &name, &registered, options, norm, &texts)
+}
+
 /// One document: its stored values, inverted fields, doc values and points,
 /// each a count followed by that many entries.
 ///
@@ -298,7 +321,8 @@ fn inverted_field(c: &mut Cursor<'_>) -> Result<InvertedField, FfiStatus> {
 ///   `i32 len, bytes, i32 freq, u8 flags (1 positions, 2 offsets,
 ///   4 payloads), [freq x i32 position], [freq x (i32 start, i32 end)],
 ///   [freq x (i32 len, bytes) payload]` -- a zero-length payload is an
-///   occurrence without one
+///   occurrence without one; or `i32 field, u8 2` and a field to analyze
+///   here ([`analyzed_field`])
 /// - doc values: `i32 field, u8 kind (0 long, 1 bytes), i64 | (i32 len, bytes)`
 /// - points: `i32 field, i32 len, packed bytes`
 fn document(c: &mut Cursor<'_>) -> Result<ExplicitDocument, FfiStatus> {
@@ -643,6 +667,39 @@ pub unsafe extern "C" fn ffi_engine_writer_register_field(
     })
 }
 
+/// Applies one decoded operation under the writer's lock.
+fn apply_op(handle: u64, op: Op) -> Result<(), FfiStatus> {
+    with_writer(handle, |w| {
+        let writer = &mut w.handle.writer;
+        match op {
+            Op::Add(docs) => writer.add_explicit_documents(docs).map_err(writer_error)?,
+            Op::SoftUpdate {
+                term,
+                soft_field,
+                soft_value,
+                docs,
+            } => {
+                let soft = DocValuesUpdate::Numeric {
+                    term: term.clone(),
+                    field: soft_field,
+                    value: Some(soft_value),
+                };
+                writer
+                    .soft_update_explicit_documents(term, docs, &[soft])
+                    .map_err(writer_error)?
+            }
+            Op::Panic => {
+                if !w.fault_injection {
+                    set_last_error("engine writer: fault injection is not enabled");
+                    return Err(FfiStatus::InvalidArgument);
+                }
+                panic!("injected fault: engine writer panic");
+            }
+        };
+        Ok(())
+    })
+}
+
 /// Applies one operation blob ([`decode_op`]).
 ///
 /// # Safety
@@ -652,35 +709,68 @@ pub unsafe extern "C" fn ffi_engine_writer_apply(handle: u64, op: *const u8, op_
     guard(|| {
         // SAFETY: caller contract.
         let op = decode_op(unsafe { bytes_from_raw(op, op_len)? })?;
-        with_writer(handle, |w| {
-            let writer = &mut w.handle.writer;
-            match op {
-                Op::Add(docs) => writer.add_explicit_documents(docs).map_err(writer_error)?,
-                Op::SoftUpdate {
-                    term,
-                    soft_field,
-                    soft_value,
-                    docs,
-                } => {
-                    let soft = DocValuesUpdate::Numeric {
-                        term: term.clone(),
-                        field: soft_field,
-                        value: Some(soft_value),
-                    };
-                    writer
-                        .soft_update_explicit_documents(term, docs, &[soft])
-                        .map_err(writer_error)?
-                }
-                Op::Panic => {
-                    if !w.fault_injection {
-                        set_last_error("engine writer: fault injection is not enabled");
-                        return Err(FfiStatus::InvalidArgument);
-                    }
-                    panic!("injected fault: engine writer panic");
-                }
-            };
-            Ok(())
-        })
+        apply_op(handle, op)
+    })
+}
+
+/// Decoded operations waiting for [`ffi_engine_writer_apply_prepared`], by id.
+static PREPARED: std::sync::LazyLock<Mutex<HashMap<u64, Op>>> =
+    std::sync::LazyLock::new(Default::default);
+static NEXT_PREPARED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// Decodes an operation blob -- analyzing the fields it leaves to Rust,
+/// the expensive part -- without any writer's lock, so indexing threads
+/// analyze in parallel; `*out_id` names the result for
+/// [`ffi_engine_writer_apply_prepared`] (or [`ffi_engine_prepared_free`]).
+/// A document the decoder refuses is [`FfiStatus::InvalidArgument`], as
+/// from [`ffi_engine_writer_apply`].
+///
+/// # Safety
+/// `op` valid for `op_len` bytes; `out_id` valid for one write.
+#[no_mangle]
+pub unsafe extern "C" fn ffi_engine_prepare(op: *const u8, op_len: usize, out_id: *mut u64) -> i32 {
+    guard(|| {
+        if out_id.is_null() {
+            return Err(FfiStatus::NullPointer);
+        }
+        // SAFETY: caller contract.
+        let op = decode_op(unsafe { bytes_from_raw(op, op_len)? })?;
+        let id = NEXT_PREPARED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        PREPARED
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(id, op);
+        // SAFETY: caller contract.
+        unsafe { *out_id = id };
+        Ok(())
+    })
+}
+
+/// Applies (and forgets) the operation [`ffi_engine_prepare`] decoded.
+#[no_mangle]
+pub extern "C" fn ffi_engine_writer_apply_prepared(handle: u64, id: u64) -> i32 {
+    guard(|| {
+        let op = PREPARED
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&id)
+            .ok_or_else(|| {
+                set_last_error(format!("no prepared operation {id}"));
+                FfiStatus::InvalidHandle
+            })?;
+        apply_op(handle, op)
+    })
+}
+
+/// Forgets a prepared operation that will not be applied.
+#[no_mangle]
+pub extern "C" fn ffi_engine_prepared_free(id: u64) -> i32 {
+    guard(|| {
+        PREPARED
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&id);
+        Ok(())
     })
 }
 
@@ -1841,7 +1931,7 @@ mod tests {
                 .i32(0)
                 .i32(1)
                 .i32(0)
-                .u8(2)
+                .u8(3)
                 .i32(0)
                 .i32(0)
                 .i32(0),

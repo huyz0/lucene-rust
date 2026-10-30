@@ -19,7 +19,12 @@ import org.apache.lucene.index.IndexableFieldType;
 import org.apache.lucene.document.InvertableType;
 import org.apache.lucene.document.StoredValue;
 import org.apache.lucene.index.Term;
+import org.apache.lucene.document.TextField;
+import org.apache.lucene.document.Field;
+import org.apache.lucene.search.similarities.PerFieldSimilarityWrapper;
 import org.apache.lucene.search.similarities.Similarity;
+import org.lucenerust.opensearch.AnalyzerSpec;
+import org.lucenerust.opensearch.NativeBridge;
 import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.BytesRefHash;
 import org.apache.lucene.util.IntsRefBuilder;
@@ -30,6 +35,8 @@ import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Turns OpenSearch's Lucene documents into the operation blobs {@code engine_writer.rs} decodes.
@@ -60,6 +67,23 @@ final class DocumentEncoder {
     private final int indexCreatedVersionMajor;
     private final String softDeletesField;
     private final FormatCheck formats;
+    /** Per field: its analyzer registered in Rust, or {@link #JAVA}; null when analysis stays in Java. */
+    private final ConcurrentHashMap<String, NativeField> nativeFields;
+
+    /**
+     * {@code lucene_rust.native_analysis=false} keeps every field's analysis in the JVM (the Rust
+     * side then only lays out what Java inverted, as before).
+     */
+    static final boolean NATIVE_ANALYSIS = Boolean.parseBoolean(System.getProperty("lucene_rust.native_analysis", "true"));
+
+    /** Field instances analyzed in Rust, and in Java, since startup (the plugin's stats). */
+    static final AtomicLong ANALYZED_NATIVELY = new AtomicLong();
+    static final AtomicLong ANALYZED_IN_JAVA = new AtomicLong();
+
+    /** A field whose analysis runs in Rust: its registration and its similarity's overlap rule. */
+    record NativeField(int id, boolean discountOverlaps) {}
+
+    private static final NativeField JAVA = new NativeField(-1, false);
 
     DocumentEncoder(
         FieldRegistry registry,
@@ -75,6 +99,56 @@ final class DocumentEncoder {
         this.indexCreatedVersionMajor = indexCreatedVersionMajor;
         this.softDeletesField = softDeletesField;
         this.formats = formats;
+        this.nativeFields = NATIVE_ANALYSIS && analyzer != null ? new ConcurrentHashMap<>() : null;
+    }
+
+    /**
+     * Field {@code name}'s analysis in Rust: its analyzer is one {@link AnalyzerSpec} describes
+     * (and the Rust copy passed its probe check), and its similarity computes the norm as {@link
+     * Similarity#computeNorm} itself does. Decided once per field.
+     */
+    private NativeField nativeField(String name) {
+        NativeField f = nativeFields.get(name);
+        if (f != null) {
+            return f;
+        }
+        f = JAVA;
+        try {
+            Similarity s = similarity instanceof PerFieldSimilarityWrapper p ? p.get(name) : similarity;
+            if (s != null
+                && s.getClass().getMethod("computeNorm", FieldInvertState.class).getDeclaringClass() == Similarity.class) {
+                AnalyzerSpec.Spec spec = AnalyzerSpec.describe(analyzer, name);
+                int[] id = new int[1];
+                if (spec.ok() && NativeBridge.analysisRegister(spec.blob(), String.valueOf(s), id) == NativeBridge.OK) {
+                    f = new NativeField(id[0], s.getDiscountOverlaps());
+                }
+            }
+        } catch (ReflectiveOperationException | RuntimeException | LinkageError e) {
+            f = JAVA;
+        }
+        NativeField prior = nativeFields.putIfAbsent(name, f);
+        return prior == null ? f : prior;
+    }
+
+    /** Whether Rust can analyze this instance: a plain text value its field's analyzer tokenizes. */
+    private static boolean analyzableNatively(IndexableField field, IndexOptions options) {
+        Class<?> c = field.getClass();
+        if (c != Field.class && c != TextField.class) {
+            return false;
+        }
+        IndexableFieldType type = field.fieldType();
+        if (type.indexOptions() != options
+            || type.tokenized() == false
+            || type.storeTermVectors()
+            || field.invertableType() != InvertableType.TOKEN_STREAM) {
+            return false;
+        }
+        Field f = (Field) field;
+        if (f.tokenStreamValue() != null || f.readerValue() != null) {
+            return false;
+        }
+        String text = f.stringValue();
+        return text != null && AnalyzerSpec.encodable(text);
     }
 
     /** An add of {@code docs} as one block. */
@@ -115,6 +189,10 @@ final class DocumentEncoder {
         int number;
         final List<IndexableField> instances = new ArrayList<>(1);
         Inverted inverted;
+        /** Set when Rust analyzes every instance; then {@link #texts} holds them, in order. */
+        NativeField nativeField;
+        IndexOptions nativeOptions;
+        List<String> texts;
 
         PerField(String name) {
             schema = new FieldSchema(name);
@@ -139,6 +217,21 @@ final class DocumentEncoder {
                 throw new IllegalArgumentException(unsupported);
             }
             pf.number = registry.resolve(pf.schema).number();
+            if (nativeFields != null) {
+                IndexOptions options = pf.instances.get(0).fieldType().indexOptions();
+                boolean all = options != IndexOptions.NONE;
+                for (int i = 0; all && i < pf.instances.size(); i++) {
+                    all = analyzableNatively(pf.instances.get(i), options);
+                }
+                if (all) {
+                    NativeField nf = nativeField(pf.schema.name);
+                    if (nf != JAVA) {
+                        pf.nativeField = nf;
+                        pf.nativeOptions = options;
+                        pf.texts = new ArrayList<>(pf.instances.size());
+                    }
+                }
+            }
         }
 
         // Pass 2, in document order: stored values, inversion, doc values, points.
@@ -150,7 +243,9 @@ final class DocumentEncoder {
         for (IndexableField field : doc) {
             PerField pf = fields.get(field.name());
             IndexableFieldType type = field.fieldType();
-            if (type.indexOptions() != IndexOptions.NONE) {
+            if (pf.nativeField != null) {
+                pf.texts.add(field.stringValue());
+            } else if (type.indexOptions() != IndexOptions.NONE) {
                 if (pf.inverted == null) {
                     pf.inverted = new Inverted(pf.schema.name, type.indexOptions());
                 }
@@ -181,14 +276,27 @@ final class DocumentEncoder {
 
         int invertedCount = 0;
         for (PerField pf : fields.values()) {
-            if (pf.inverted != null) {
+            if (pf.inverted != null || pf.nativeField != null) {
                 invertedCount++;
             }
         }
         b.i32(invertedCount);
         for (PerField pf : fields.values()) {
-            if (pf.inverted != null) {
+            if (pf.nativeField != null) {
+                // engine_writer.rs's analyzed_field: Rust analyzes and inverts these values.
+                int norm = pf.schema.omitNorms ? 0 : pf.nativeField.discountOverlaps() ? 1 : 2;
+                b.i32(pf.number).u8(2).i32(pf.nativeField.id()).u8(pf.nativeOptions.ordinal()).u8(norm).string(pf.schema.name);
+                b.i32(pf.texts.size());
+                for (String text : pf.texts) {
+                    b.string(text);
+                }
+                b.analyzesNatively = true;
+                ANALYZED_NATIVELY.addAndGet(pf.texts.size());
+            } else if (pf.inverted != null) {
                 pf.inverted.write(b, pf.number, pf.schema.omitNorms ? null : similarity, indexCreatedVersionMajor);
+                if (analyzer != null && pf.instances.get(0).fieldType().tokenized()) {
+                    ANALYZED_IN_JAVA.addAndGet(pf.instances.size());
+                }
             }
         }
 

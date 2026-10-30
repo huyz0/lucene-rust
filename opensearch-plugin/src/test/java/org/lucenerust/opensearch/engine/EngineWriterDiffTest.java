@@ -101,8 +101,16 @@ public final class EngineWriterDiffTest {
     public static void main(String[] args) throws Exception {
         NativeLibrary.load(Path.of("."));
         for (long seed : new long[] { 1, 2, 3 }) {
-            run(seed, 1500);
+            run(seed, 1500, new TestAnalyzer());
         }
+        // TestAnalyzer's own filters keep its analysis in Java.
+        check(DocumentEncoder.ANALYZED_NATIVELY.get() == 0, "custom filters are analyzed in Java");
+        // Analyzers made of Lucene's own components are analyzed and inverted in Rust: the
+        // segments must still be Lucene's own, byte for byte where compare() looks.
+        for (long seed : new long[] { 4, 5 }) {
+            run(seed, 1500, nativeAnalyzer());
+        }
+        check(DocumentEncoder.ANALYZED_NATIVELY.get() > 3000, "field values analyzed in Rust: " + DocumentEncoder.ANALYZED_NATIVELY.get());
         check(payloadsSeen > 0, "payloads were indexed and compared");
         refusals();
         mappingFallback();
@@ -319,11 +327,33 @@ public final class EngineWriterDiffTest {
         return t;
     }
 
-    private static void run(long seed, int ops) throws Exception {
+    /** Per field, Lucene components only, with the gaps TestAnalyzer has. */
+    static Analyzer nativeAnalyzer() throws IOException {
+        Analyzer plain = org.apache.lucene.analysis.custom.CustomAnalyzer.builder()
+            .withTokenizer("standard")
+            .addTokenFilter("lowercase")
+            .addTokenFilter("stop")
+            .withPositionIncrementGap(100)
+            .withOffsetGap(7)
+            .build();
+        Analyzer english = org.apache.lucene.analysis.custom.CustomAnalyzer.builder()
+            .withTokenizer("standard")
+            .addTokenFilter("englishPossessive")
+            .addTokenFilter("lowercase")
+            .addTokenFilter("stop")
+            .addTokenFilter("keywordRepeat")
+            .addTokenFilter("porterStem")
+            .addTokenFilter("removeDuplicates")
+            .withPositionIncrementGap(100)
+            .withOffsetGap(7)
+            .build();
+        return new org.apache.lucene.analysis.miscellaneous.PerFieldAnalyzerWrapper(plain, Map.of("body", english));
+    }
+
+    private static void run(long seed, int ops, Analyzer analyzer) throws Exception {
         Path root = Files.createTempDirectory("engine-writer-diff");
         Path javaPath = root.resolve("java");
         Path rustPath = root.resolve("rust");
-        Analyzer analyzer = new TestAnalyzer();
         BM25Similarity similarity = new BM25Similarity();
         try (FSDirectory javaDir = FSDirectory.open(javaPath); FSDirectory rustDir = FSDirectory.open(rustPath)) {
             // The Rust shard starts from an empty commit, as Store.createEmpty leaves it.

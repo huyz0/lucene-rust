@@ -83,6 +83,12 @@ public final class RestStatsAction extends BaseRestHandler {
             b.field("rust_indexer", org.lucenerust.opensearch.engine.RustIndexerFactory.INDEXERS.get());
             b.field("segrep_primary", org.lucenerust.opensearch.engine.RustIndexerFactory.NATIVE ? "native" : "indexer_factory");
             b.endObject();
+            // Text field values the Rust engine's writer analyzed in Rust and in Java.
+            long[] analyzed = RustEngineFactory.analyzedValues();
+            b.startObject("analyzed_values");
+            b.field("native", analyzed[0]);
+            b.field("java", analyzed[1]);
+            b.endObject();
             b.endObject();
             channel.sendResponse(new BytesRestResponse(RestStatus.OK, b));
         };

@@ -3,6 +3,7 @@
  */
 package org.lucenerust.opensearch;
 
+import org.apache.lucene.analysis.Analyzer;
 import org.apache.lucene.util.BytesRef;
 import org.opensearch.common.util.LongArray;
 import org.opensearch.index.mapper.KeywordFieldMapper;
@@ -25,6 +26,9 @@ import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
+import java.util.WeakHashMap;
+import java.util.concurrent.ConcurrentHashMap;
 
 import static org.lucenerust.opensearch.NativeAggregationTree.get;
 import static org.lucenerust.opensearch.NativeAggregationTree.writeString;
@@ -41,17 +45,30 @@ import static org.lucenerust.opensearch.NativeAggregationTree.writeString;
  * {@code GlobalOrdinalsStringTermsAggregator} (dense or remapped ordinals),
  * {@code MapStringTermsAggregator} ({@code execution_hint: map}) and {@code NumericTermsAggregator}.
  * {@code include}/{@code exclude} under {@code map} or on a numeric field, floating-point and
- * unsigned fields, and {@code significant_text} fall back.
+ * unsigned fields fall back.
+ *
+ * <p>{@code significant_text} ({@link #textNode}) is the {@code map} collection over
+ * {@code SignificantTextCollectorSource}: the native side reads each document's stored
+ * {@code _source}, analyzes the values at the source paths with a Rust copy of the field's index
+ * analyzer ({@link AnalyzerSpec}) and, with {@code filter_duplicate_text}, replays OpenSearch's
+ * {@code DeDuplicatingTokenFilter}. A source it would read differently from Java (not JSON, a
+ * duplicate key) answers a refusal, and the search re-runs on Lucene.
  */
 final class NativeSignificantTerms {
     private NativeSignificantTerms() {}
 
     static final byte SIGNIFICANT_TERMS = 13;
+    static final byte SIGNIFICANT_TEXT = 17;
 
     private static final String TERMS = "org.opensearch.search.aggregations.bucket.terms.";
     private static final String ORDS = TERMS + "GlobalOrdinalsStringTermsAggregator";
     private static final String MAP = TERMS + "MapStringTermsAggregator";
     private static final String NUMERIC = TERMS + "NumericTermsAggregator";
+    private static final String TEXT_SOURCE = TERMS + "SignificantTextAggregatorFactory$SignificantTextCollectorSource";
+    /** The most source fields the native side reads (its {@code MAX_SOURCE_FIELDS}). */
+    private static final int MAX_SOURCE_FIELDS = 1024;
+    /** Each index analyzer's described chain, by field (described once: the probes run Rust). */
+    private static final Map<Analyzer, Map<String, AnalyzerSpec.Spec>> SPECS = new WeakHashMap<>();
     private static final Field BUCKET_ORD = bucketField("bucketOrd");
     private static final Field BUCKET_AGGS = bucketField("aggregations");
 
@@ -102,7 +119,93 @@ final class NativeSignificantTerms {
         return new Node(ctx, f, agg, subs, field, flags);
     }
 
-    static final class Node extends NativeAggregationTree.Node {
+    /** The node for a built {@code significant_text} aggregator, or null. */
+    static Node textNode(SearchContext ctx, AggregatorFactory f, AggregatorBase agg, List<NativeAggregationTree.Node> subs)
+        throws ReflectiveOperationException {
+        if (BUCKET_ORD == null || BUCKET_AGGS == null || agg.getClass().getName().equals(MAP) == false) {
+            return null;
+        }
+        if (get(agg, "includeExclude") != null) {
+            return null;
+        }
+        Object results = get(agg, "resultStrategy");
+        if (results.getClass().getName().endsWith("$SignificantTermsResults") == false
+            || Reflect.inHierarchy(results.getClass(), "subsetSizes") == null) {
+            return null;
+        }
+        Object source = get(agg, "collectorSource");
+        if (source.getClass().getName().equals(TEXT_SOURCE) == false) {
+            return null;
+        }
+        // A derived source is rebuilt by the reader wrapper the native side does not read through.
+        if (ctx.indexShard() == null || ctx.indexShard().indexSettings().isDerivedSourceEnabled()) {
+            return null;
+        }
+        MappedFieldType type = (MappedFieldType) get(source, "fieldType");
+        String[] sources = (String[]) get(source, "sourceFieldNames");
+        if (type == null || type.indexAnalyzer() == null || sources == null || sources.length == 0 || sources.length > MAX_SOURCE_FIELDS) {
+            return null;
+        }
+        boolean dedup = get(source, "dupSequenceSpotters") != null;
+        Analyzer analyzer = type.indexAnalyzer();
+        Map<String, AnalyzerSpec.Spec> byField;
+        synchronized (SPECS) {
+            byField = SPECS.computeIfAbsent(analyzer, a -> new ConcurrentHashMap<>());
+        }
+        AnalyzerSpec.Spec spec = byField.computeIfAbsent(type.name(), name -> AnalyzerSpec.describe(analyzer, name));
+        if (spec.ok() == false) {
+            return null;
+        }
+        return new TextNode(ctx, f, agg, subs, type.name(), spec.blob(), sources, dedup);
+    }
+
+    /** {@code significant_text}: a {@link Node} whose keys are the analyzed source terms. */
+    static final class TextNode extends Node {
+        final byte[] spec;
+        final String[] sources;
+        final boolean dedup;
+
+        TextNode(
+            SearchContext ctx,
+            AggregatorFactory factory,
+            AggregatorBase agg,
+            List<NativeAggregationTree.Node> subs,
+            String field,
+            byte[] spec,
+            String[] sources,
+            boolean dedup
+        ) {
+            super(ctx, factory, agg, subs, field, (byte) 2);
+            this.spec = spec;
+            this.sources = sources;
+            this.dedup = dedup;
+        }
+
+        @Override
+        void write(ByteArrayOutputStream out) {
+            out.write(SIGNIFICANT_TEXT);
+            out.write(dedup ? 1 : 0);
+            NativeAggregations.writeInt(out, spec.length);
+            out.write(spec, 0, spec.length);
+            writeString(out, field);
+            NativeAggregations.writeInt(out, sources.length);
+            for (String s : sources) {
+                writeString(out, s);
+            }
+            writeSubs(out);
+        }
+
+        @Override
+        List<InternalAggregation> read(ByteBuffer in, int n) throws ReflectiveOperationException {
+            if (in.remaining() >= Integer.BYTES && in.getInt(in.position()) == -1) {
+                in.getInt();
+                throw new JavaRefuses("lucene-rust: significant_text over a _source the native side does not read", null);
+            }
+            return super.read(in, n);
+        }
+    }
+
+    static class Node extends NativeAggregationTree.Node {
         final SearchContext ctx;
         final AggregatorFactory factory;
         final String field;
