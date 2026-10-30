@@ -309,14 +309,17 @@ a dependency the shipped library links is not under a licence listed here.
     UCD (through `unicodedata2`).
   - **not allowed**: data whose only source is the JDK. The Thai word
     dictionary behind `BreakIterator.getWordInstance(th)` (`ThaiTokenizer`)
-    has no known permissive upstream; the path to Thai is ICU's
-    Unicode-licensed dictionary through `ICUTokenizer` (M12 T12.4).
+    has no known permissive upstream; Thai is segmented with ICU's
+    Unicode-licensed dictionary instead, through `ICUTokenizer` (M12 T12.4)
+    and through `ThaiTokenizer`'s pluggable word iterator, which
+    `lucene-analysis-icu` installs (its Thai runs split by ICU's words, not
+    the JDK's: `docs/parity/analysis-lang.md`).
     `java.text.Collator`'s default rules (`CollationRules`) are the legacy
     Taligent/IBM table, not the Unicode Collation Algorithm's DUCET, so a
     clean-room UCA cannot reach `CollationKeyAnalyzer` parity either; the
     path is `ICUCollationKeyAnalyzer` over ICU's (Unicode-licensed) CLDR
-    collation. Thai segmentation fails with a typed error; collation has
-    no Rust type (`docs/parity/analysis-lang.md`).
+    collation. Without ICU's iterator installed, Thai segmentation fails
+    with a typed error; collation has no Rust type (`docs/parity/analysis-lang.md`).
   - `scripts/check-vendored-licences.py` keeps the attribution true: every
     generated source must be listed with its data's licence, and `NOTICE`
     must name each third-party one. It cannot judge which side of the
