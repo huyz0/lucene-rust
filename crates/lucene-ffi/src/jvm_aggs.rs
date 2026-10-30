@@ -16,8 +16,15 @@
 //!           | CARDINALITY card_kind:u8 precision:u8 field
 //!           | PERCENTILES value_kind:u8 compression:f64 field   (a t-digest per bucket;
 //!                                              compression in (0, MAX_COMPRESSION])
-//!           | TOP_HITS top_n:i32             (by score; top_n > 0)
-//!           | SIGNIFICANT_TERMS field         (a keyword's collection only)
+//!           | HDR_PERCENTILES value_kind:u8 field  (each bucket's values, for an
+//!                                              HDR `DoubleHistogram`)
+//!           | TOP_HITS top_n:i32 sorted:u8 [sort:bytes]  (top_n > 0; sorted 0: by
+//!                  score; 1: by the sort blob, `jvm_reader::decode_sort`'s, its
+//!                  track-max-score option `track_scores`, without search-after,
+//!                  terminate_after, slices or index-sort flags)
+//!           | SIGNIFICANT_TERMS flags:u8 [missing:bytes] field nodes
+//!                  (flag 1: a numeric field, its longs the keys; 2: a keyword's
+//!                   keys answered as terms; 4: a keyword `missing` term follows)
 //!           | TERMS field shard_size:i32 order:u8 flags:u8 [missing:bytes]
 //!                   [ords:i64 words:i32 word:i64*] nodes
 //!                  (flag 1: `min_doc_count: 0`; 2: a `missing` term follows;
@@ -66,9 +73,18 @@
 //!                                              each bucket's top hits by score,
 //!                                              global documents (0: the bucket
 //!                                              collected nothing)
-//! SIGNIFICANT  n:i32 (subset:i64 count:i32 (ord:i64 docs:i64)*)*n  each bucket's
-//!                                              documents, and its global ordinals
-//!                                              in first-collected order
+//! RECORDED     n:i32 (0 | 1 count:i32 value:f64*count)*n  each bucket's values
+//!              in collection order (an HDR percentiles'; 0: the bucket collected
+//!              nothing)
+//! SORTED_HITS  n:i32 (0 | 1 total:i64 max_score:f32 count:i32 doc:i32*count
+//!              score:f32*count value:i64*(count*keys) terms:bytes)*n  a sorted
+//!              `top_hits`'s: each hit's global document, score (NaN without
+//!              `track_scores`) and one value per key, and the keyword keys'
+//!              terms (`jvm_reader::encode_terms`)
+//! SIGNIFICANT  n:i32 (subset:i64 count:i32 (key docs:i64)*)*n  subs  each bucket's
+//!                                              documents, and its keys in
+//!                                              first-collected order (key: an
+//!                                              i64, or a term:bytes under flag 2)
 //! CARDINALITY  n:i32 (len:i32 sketch)*n       each bucket's `HyperLogLogPlusPlus`
 //!                                              as `writeTo` writes it (`len` 0:
 //!                                              the bucket saw nothing)
@@ -93,7 +109,7 @@ use lucene_search::aggs::{MinScore, Source, ValueKind};
 use lucene_search::bucket_aggs::{
     self, AcceptedOrds, AggNode, AggResult, CardinalityKind, CompositeAfter, CompositeKeyValue,
     CompositeSource, CompositeValues, DateRounding, DateUnit, Globals, MissingOrder, RoundingKind,
-    TermsOrder,
+    SignificantKey, TermsOrder,
 };
 use lucene_search::field_norms::FieldNorms;
 use lucene_search::multi_segment::OpenSegment;
@@ -118,6 +134,7 @@ const AGG_COMPOSITE: u8 = 10;
 const AGG_PERCENTILES: u8 = 11;
 const AGG_TOP_HITS: u8 = 12;
 const AGG_SIGNIFICANT_TERMS: u8 = 13;
+const AGG_HDR_PERCENTILES: u8 = 14;
 /// The largest t-digest compression a tree may ask for: a digest holds
 /// about `12 * compression` doubles.
 const MAX_COMPRESSION: f64 = 10_000.0;
@@ -271,6 +288,11 @@ fn node(c: &mut Cursor<'_>, depth: usize, count: &mut usize) -> Result<AggNode, 
         }
         | AggNode::Percentiles { missing, .. }
         | AggNode::NumericTerms { missing, .. }
+        | AggNode::SignificantTerms {
+            missing,
+            numeric: true,
+            ..
+        }
         | AggNode::Histogram { missing, .. }
         | AggNode::DateHistogram { missing, .. }
         | AggNode::Range { missing, .. } => *missing = Some(value),
@@ -327,15 +349,65 @@ fn node_of(
                 missing: None,
                 kind,
                 compression,
+                hdr: false,
             }
         }
-        AGG_SIGNIFICANT_TERMS => AggNode::SignificantTerms { field: field(c)? },
+        AGG_HDR_PERCENTILES => AggNode::Percentiles {
+            kind: value_kind(c.u8()?)?,
+            field: field(c)?,
+            missing: None,
+            compression: 0.0,
+            hdr: true,
+        },
+        AGG_SIGNIFICANT_TERMS => {
+            let flags = c.u8()?;
+            let (numeric, terms) = (flags & 1 != 0, flags & 2 != 0);
+            if flags > 7 || (numeric && flags & 6 != 0) {
+                return Err(bad(format!(
+                    "aggregation tree: significant_terms flags {flags}"
+                )));
+            }
+            let missing_term = if flags & 4 != 0 {
+                Some(c.bytes()?.to_vec())
+            } else {
+                None
+            };
+            AggNode::SignificantTerms {
+                field: field(c)?,
+                numeric,
+                terms,
+                missing_term,
+                missing: None,
+                subs: nodes(c, depth + 1, count)?,
+            }
+        }
         AGG_TOP_HITS => {
             let top_n = c.i32()?;
             let Ok(top_n @ 1..) = usize::try_from(top_n) else {
                 return Err(bad(format!("aggregation tree: top_hits size {top_n}")));
             };
-            AggNode::TopHits { top_n }
+            match c.u8()? {
+                0 => AggNode::TopHits { top_n },
+                1 => {
+                    let (sort, after, track_scores, slices, terminate, index_sorted) =
+                        jvm_reader::decode_sort(c.bytes()?)?;
+                    if after.is_some()
+                        || terminate.is_some()
+                        || !slices.is_empty()
+                        || !index_sorted.is_empty()
+                    {
+                        return Err(bad(
+                            "aggregation tree: a top_hits sort with search options".to_string()
+                        ));
+                    }
+                    AggNode::SortedTopHits {
+                        top_n,
+                        sort: Arc::new(sort),
+                        track_scores,
+                    }
+                }
+                other => return Err(bad(format!("aggregation tree: top_hits sorted {other}"))),
+            }
         }
         AGG_CARDINALITY => {
             let kind = match c.u8()? {
@@ -689,15 +761,21 @@ pub(crate) fn encode_result(r: &AggResult, out: &mut Vec<u8>) -> Result<(), FfiS
                 }
             }
         }
-        AggResult::Significant(per) => {
-            put_i32(out, per.len())?;
-            for (subset, buckets) in per {
+        AggResult::Significant { buckets, subs } => {
+            put_i32(out, buckets.len())?;
+            for (subset, listed) in buckets {
                 put_u64(out, *subset);
-                put_i32(out, buckets.len())?;
-                for &(ord, docs) in buckets {
-                    out.extend_from_slice(&ord.to_le_bytes());
-                    put_u64(out, docs);
+                put_i32(out, listed.len())?;
+                for (key, docs) in listed {
+                    match key {
+                        SignificantKey::Long(k) => out.extend_from_slice(&k.to_le_bytes()),
+                        SignificantKey::Term(t) => put_bytes(out, t)?,
+                    }
+                    put_u64(out, *docs);
                 }
+            }
+            for s in subs {
+                encode_result(s, out)?;
             }
         }
         AggResult::TopHits(per) => {
@@ -714,6 +792,60 @@ pub(crate) fn encode_result(r: &AggResult, out: &mut Vec<u8>) -> Result<(), FfiS
                     out.extend_from_slice(&h.doc_id.to_le_bytes());
                     out.extend_from_slice(&h.score.to_bits().to_le_bytes());
                 }
+            }
+        }
+        AggResult::Recorded(per) => {
+            put_i32(out, per.len())?;
+            for bucket in per {
+                let Some(values) = bucket else {
+                    out.push(0);
+                    continue;
+                };
+                out.push(1);
+                put_i32(out, values.len())?;
+                for v in values {
+                    out.extend_from_slice(&v.to_bits().to_le_bytes());
+                }
+            }
+        }
+        AggResult::SortedTopHits(per) => {
+            put_i32(out, per.len())?;
+            for bucket in per {
+                let Some(hits) = bucket else {
+                    out.push(0);
+                    continue;
+                };
+                out.push(1);
+                put_u64(out, hits.top.total.value);
+                out.extend_from_slice(&hits.max_score.to_bits().to_le_bytes());
+                let docs = &hits.top.hits;
+                put_i32(out, docs.len())?;
+                if hits.scores.len() != docs.len() {
+                    return Err(bad(format!(
+                        "aggregation tree: {} scores for {} sorted hits",
+                        hits.scores.len(),
+                        docs.len()
+                    )));
+                }
+                for h in docs {
+                    out.extend_from_slice(&h.doc.to_le_bytes());
+                }
+                for s in &hits.scores {
+                    out.extend_from_slice(&s.to_bits().to_le_bytes());
+                }
+                let keys = hits.sort.len();
+                for h in docs {
+                    if h.values.len() != keys {
+                        return Err(bad(format!(
+                            "aggregation tree: a sorted hit of {} values for {keys} keys",
+                            h.values.len()
+                        )));
+                    }
+                    for v in &h.values {
+                        out.extend_from_slice(&v.to_le_bytes());
+                    }
+                }
+                put_bytes(out, &jvm_reader::encode_terms(&hits.sort, docs)?)?;
             }
         }
         AggResult::CardinalitySketch(per) => {
@@ -1448,7 +1580,7 @@ pub(crate) mod tests {
         let tree = decode_tree(&with(&percentiles(100.0))).unwrap();
         assert!(matches!(
             &tree.nodes[0],
-            AggNode::Percentiles { field, kind: ValueKind::Double, compression, missing: None }
+            AggNode::Percentiles { field, kind: ValueKind::Double, compression, missing: None, hdr: false }
                 if field == "d" && *compression == 100.0
         ));
         // `missing` in front of it.
@@ -1495,6 +1627,34 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn hdr_percentiles_decode_and_encode() {
+        let mut b = vec![1u8, AGG_MISSING];
+        b.extend_from_slice(&7i64.to_le_bytes());
+        b.extend_from_slice(&[AGG_HDR_PERCENTILES, 0]);
+        string(&mut b, "n");
+        b.extend_from_slice(&[0u8, 0, 0, 0, 0]);
+        let tree = decode_tree(&b).unwrap();
+        assert!(matches!(
+            &tree.nodes[0],
+            AggNode::Percentiles { field, kind: ValueKind::Long, missing: Some(7), hdr: true, .. }
+                if field == "n"
+        ));
+        let mut out = Vec::new();
+        encode_result(
+            &AggResult::Recorded(vec![Some(vec![2.5, -1.0]), None, Some(Vec::new())]),
+            &mut out,
+        )
+        .unwrap();
+        let mut want = 3i32.to_le_bytes().to_vec();
+        want.push(1);
+        want.extend_from_slice(&2i32.to_le_bytes());
+        f64s(&mut want, &[2.5, -1.0]);
+        want.extend_from_slice(&[0, 1]);
+        want.extend_from_slice(&0i32.to_le_bytes());
+        assert_eq!(out, want);
+    }
+
+    #[test]
     fn top_hits_decode_and_encode() {
         let with = |node: &[u8]| {
             let mut b = vec![1u8];
@@ -1505,6 +1665,7 @@ pub(crate) mod tests {
         let top_hits = |n: i32| {
             let mut t = vec![AGG_TOP_HITS];
             t.extend_from_slice(&n.to_le_bytes());
+            t.push(0);
             t
         };
         let tree = decode_tree(&with(&top_hits(3))).unwrap();
@@ -1536,15 +1697,171 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn sorted_top_hits_decode_and_encode() {
+        use lucene_search::bucket_aggs::SortedHits;
+        use lucene_search::top_field::{FieldDoc, SortField, SortType, TopFieldDocs};
+        // A sort blob: `kw` ascending (missing last), then `n` (long) descending.
+        let sort_blob = |after: bool, options: u8| {
+            let mut b = vec![2u8, jvm_reader::SORT_STRING, 0];
+            b.extend_from_slice(&2i32.to_le_bytes());
+            b.extend_from_slice(b"kw");
+            b.extend_from_slice(&1i64.to_le_bytes());
+            b.extend_from_slice(&[jvm_reader::SORT_LONG, 1]);
+            b.extend_from_slice(&1i32.to_le_bytes());
+            b.push(b'n');
+            b.extend_from_slice(&0i64.to_le_bytes());
+            if after {
+                b.push(1);
+                b.extend_from_slice(&0i32.to_le_bytes());
+                b.push(0);
+                b.extend_from_slice(&0i64.to_le_bytes());
+            } else {
+                b.push(0);
+            }
+            b.push(options);
+            b.extend_from_slice(&0i32.to_le_bytes());
+            b
+        };
+        let tree = |blob: &[u8]| {
+            let mut b = vec![1u8, AGG_TOP_HITS];
+            b.extend_from_slice(&3i32.to_le_bytes());
+            b.push(1);
+            b.extend_from_slice(&i32::try_from(blob.len()).unwrap().to_le_bytes());
+            b.extend_from_slice(blob);
+            b.extend_from_slice(&[0u8, 0, 0, 0, 0]);
+            decode_tree(&b)
+        };
+        let got = tree(&sort_blob(false, 1)).unwrap();
+        let AggNode::SortedTopHits {
+            top_n: 3,
+            sort,
+            track_scores: true,
+        } = &got.nodes[0]
+        else {
+            panic!("{:?}", got.nodes[0])
+        };
+        assert_eq!(sort.len(), 2);
+        assert_eq!(
+            (sort[0].ty, sort[1].ty, sort[1].reverse),
+            (SortType::String, SortType::Long, true)
+        );
+        assert!(got.nodes[0].needs_scores() && got.nodes[0].reads_points());
+        assert!(!tree(&sort_blob(false, 0)).unwrap().nodes[0].needs_scores());
+        // Search-after and terminate_after are a search's, not a bucket's.
+        for bad in [sort_blob(true, 0), sort_blob(false, 2)] {
+            assert_eq!(tree(&bad).err(), Some(FfiStatus::InvalidArgument));
+        }
+        let sort = Arc::new(vec![
+            SortField::string("kw", false),
+            SortField::numeric("n", SortType::Long, true),
+        ]);
+        let hits = SortedHits {
+            sort: Arc::clone(&sort),
+            top: TopFieldDocs {
+                hits: vec![
+                    FieldDoc {
+                        doc: 4,
+                        values: vec![0, 9],
+                        terms: vec![Some(b"a".to_vec()), None],
+                    },
+                    FieldDoc {
+                        doc: 1,
+                        values: vec![0, -2],
+                        terms: vec![None, None],
+                    },
+                ],
+                total: lucene_search::collector::TotalHits {
+                    value: 6,
+                    relation: lucene_search::collector::TotalHitsRelation::EqualTo,
+                },
+                max_score: f32::NAN,
+            },
+            scores: vec![1.5, 0.5],
+            max_score: 2.0,
+        };
+        let mut out = Vec::new();
+        encode_result(&AggResult::SortedTopHits(vec![Some(hits), None]), &mut out).unwrap();
+        let mut want = 2i32.to_le_bytes().to_vec();
+        want.push(1);
+        want.extend_from_slice(&6u64.to_le_bytes());
+        want.extend_from_slice(&2.0f32.to_bits().to_le_bytes());
+        want.extend_from_slice(&2i32.to_le_bytes());
+        for d in [4i32, 1] {
+            want.extend_from_slice(&d.to_le_bytes());
+        }
+        for s in [1.5f32, 0.5] {
+            want.extend_from_slice(&s.to_bits().to_le_bytes());
+        }
+        for v in [0i64, 9, 0, -2] {
+            want.extend_from_slice(&v.to_le_bytes());
+        }
+        let mut terms = 1i32.to_le_bytes().to_vec();
+        terms.push(b'a');
+        terms.extend_from_slice(&(-1i32).to_le_bytes());
+        want.extend_from_slice(&i32::try_from(terms.len()).unwrap().to_le_bytes());
+        want.extend_from_slice(&terms);
+        want.push(0);
+        assert_eq!(out, want);
+    }
+
+    #[test]
     fn significant_terms_decode_and_encode() {
-        let mut b = vec![1u8, AGG_SIGNIFICANT_TERMS];
+        // A keyword's, as terms, with a `missing` term and no sub-aggregation.
+        let mut b = vec![1u8, AGG_SIGNIFICANT_TERMS, 6];
+        string(&mut b, "none");
         string(&mut b, "kw");
+        b.push(0);
         b.extend_from_slice(&[0u8, 0, 0, 0, 0]);
         let tree = decode_tree(&b).unwrap();
-        assert!(matches!(&tree.nodes[0], AggNode::SignificantTerms { field } if field == "kw"));
+        assert!(matches!(
+            &tree.nodes[0],
+            AggNode::SignificantTerms { field, numeric: false, terms: true, missing_term: Some(m), missing: None, subs }
+                if field == "kw" && m == b"none" && subs.is_empty()
+        ));
+        // A numeric one behind `missing`.
+        let mut b = vec![1u8, AGG_MISSING];
+        b.extend_from_slice(&7i64.to_le_bytes());
+        b.extend_from_slice(&[AGG_SIGNIFICANT_TERMS, 1]);
+        string(&mut b, "n");
+        b.push(0);
+        b.extend_from_slice(&[0u8, 0, 0, 0, 0]);
+        let tree = decode_tree(&b).unwrap();
+        assert!(matches!(
+            &tree.nodes[0],
+            AggNode::SignificantTerms {
+                numeric: true,
+                missing: Some(7),
+                ..
+            }
+        ));
+        // Flags a numeric field cannot have.
+        for flags in [3u8, 5, 8] {
+            let mut b = vec![1u8, AGG_SIGNIFICANT_TERMS, flags];
+            string(&mut b, "x");
+            string(&mut b, "n");
+            b.push(0);
+            b.extend_from_slice(&[0u8, 0, 0, 0, 0]);
+            assert_eq!(
+                decode_tree(&b).err(),
+                Some(FfiStatus::InvalidArgument),
+                "{flags}"
+            );
+        }
         let mut out = Vec::new();
         encode_result(
-            &AggResult::Significant(vec![(0, vec![]), (4, vec![(9, 3), (2, 1)])]),
+            &AggResult::Significant {
+                buckets: vec![
+                    (0, vec![]),
+                    (
+                        4,
+                        vec![
+                            (SignificantKey::Long(9), 3),
+                            (SignificantKey::Term(b"ab".to_vec()), 1),
+                        ],
+                    ),
+                ],
+                subs: vec![],
+            },
             &mut out,
         )
         .unwrap();
@@ -1553,9 +1870,12 @@ pub(crate) mod tests {
         want.extend_from_slice(&0i32.to_le_bytes());
         want.extend_from_slice(&4u64.to_le_bytes());
         want.extend_from_slice(&2i32.to_le_bytes());
-        for v in [9i64, 3, 2, 1] {
+        for v in [9i64, 3] {
             want.extend_from_slice(&v.to_le_bytes());
         }
+        want.extend_from_slice(&2i32.to_le_bytes());
+        want.extend_from_slice(b"ab");
+        want.extend_from_slice(&1i64.to_le_bytes());
         assert_eq!(out, want);
     }
 

@@ -415,7 +415,9 @@ pub enum AggNode {
     },
     /// `percentiles` and `percentile_ranks` over a t-digest
     /// (`TDigestPercentilesAggregator`): each owning bucket's
-    /// [`crate::tdigest::MergingDigest`], fed every value in document order.
+    /// [`crate::tdigest::MergingDigest`], fed every value in document order;
+    /// with `hdr` (`HDRPercentilesAggregator`) each bucket's values in that
+    /// order instead, for the caller's `DoubleHistogram` to record.
     Percentiles {
         field: String,
         /// `missing`: the value, in the column's encoding, a document
@@ -423,17 +425,41 @@ pub enum AggNode {
         missing: Option<i64>,
         kind: ValueKind,
         compression: f64,
+        hdr: bool,
     },
-    /// Keyword `significant_terms`' collection
-    /// (`GlobalOrdinalsStringTermsAggregator` with `SignificantTermsResults`):
-    /// each owning bucket's document count (`subsetSizes`), and each
-    /// `(owning bucket, global ordinal)`'s, the pairs in the order they were
-    /// first collected (`LongKeyedBucketOrds`). The caller scores them.
-    SignificantTerms { field: String },
+    /// `significant_terms`' collection (`GlobalOrdinalsStringTermsAggregator`,
+    /// `MapStringTermsAggregator` or `NumericTermsAggregator` with their
+    /// significant-terms results): each owning bucket's document count
+    /// (`subsetSizes`), and each `(owning bucket, key)`'s, the pairs in the
+    /// order they were first collected (`LongKeyedBucketOrds`,
+    /// `BytesKeyedBucketOrds`), with their sub-aggregations. The caller
+    /// scores them.
+    SignificantTerms {
+        field: String,
+        /// A numeric field: its longs are the keys (a keyword's are its
+        /// global ordinals).
+        numeric: bool,
+        /// `MapStringTermsAggregator`: a keyword's keys answered as terms.
+        terms: bool,
+        /// A keyword's `missing` term (`MissingValues.replaceMissingOrdinals`).
+        missing_term: Option<Vec<u8>>,
+        /// A numeric `missing`, in the column's encoding.
+        missing: Option<i64>,
+        subs: Vec<AggNode>,
+    },
     /// `top_hits` by score (`TopHitsAggregator` without a sort): each
     /// owning bucket's `TopScoreDocCollector` of `top_n` hits, fed every
     /// document with its score in visit order, by global document.
     TopHits { top_n: usize },
+    /// `top_hits` with a sort: each owning bucket's `TopFieldCollector` of
+    /// `top_n` hits (`TopFieldCollectorManager(sort, n, null,
+    /// Integer.MAX_VALUE, false)`), and with `track_scores` its
+    /// `MaxScoreCollector`.
+    SortedTopHits {
+        top_n: usize,
+        sort: Arc<Vec<crate::top_field::SortField>>,
+        track_scores: bool,
+    },
     Cardinality {
         field: String,
         kind: CardinalityKind,
@@ -672,6 +698,7 @@ impl AggNode {
     fn missing(&self) -> Option<i64> {
         match self {
             AggNode::Metric { missing, .. }
+            | AggNode::SignificantTerms { missing, .. }
             | AggNode::Percentiles { missing, .. }
             | AggNode::NumericTerms { missing, .. }
             | AggNode::Histogram { missing, .. }
@@ -686,9 +713,10 @@ impl AggNode {
             AggNode::Metric { .. }
             | AggNode::Percentiles { .. }
             | AggNode::TopHits { .. }
-            | AggNode::SignificantTerms { .. }
+            | AggNode::SortedTopHits { .. }
             | AggNode::Cardinality { .. } => &[],
             AggNode::Terms { subs, .. }
+            | AggNode::SignificantTerms { subs, .. }
             | AggNode::NumericTerms { subs, .. }
             | AggNode::Histogram { subs, .. }
             | AggNode::DateHistogram { subs, .. }
@@ -702,14 +730,30 @@ impl AggNode {
     /// Whether the node or one below it reads each document's score (a
     /// `top_hits`): the pass then scores the query (`ScoreMode.COMPLETE`).
     pub fn needs_scores(&self) -> bool {
-        matches!(self, AggNode::TopHits { .. }) || self.subs().iter().any(AggNode::needs_scores)
+        let own = match self {
+            AggNode::TopHits { .. } => true,
+            AggNode::SortedTopHits {
+                sort, track_scores, ..
+            } => {
+                *track_scores
+                    || sort
+                        .iter()
+                        .any(|k| k.ty == crate::top_field::SortType::Score)
+            }
+            _ => false,
+        };
+        own || self.subs().iter().any(AggNode::needs_scores)
     }
 
     /// The keyword fields whose global ordinals the tree reads.
     pub fn keyword_fields<'n>(&'n self, out: &mut Vec<&'n str>) {
         match self {
             AggNode::Terms { field, .. }
-            | AggNode::SignificantTerms { field }
+            | AggNode::SignificantTerms {
+                field,
+                numeric: false,
+                ..
+            }
             | AggNode::Cardinality {
                 field,
                 kind: CardinalityKind::Keyword,
@@ -743,6 +787,15 @@ impl AggNode {
     /// Whether any metric of the tree reads a points bound.
     pub fn reads_points(&self) -> bool {
         matches!(self, AggNode::Metric { source, .. } if *source != Source::DocValues)
+            // A numeric sort key skips with its field's points.
+            || matches!(self, AggNode::SortedTopHits { sort, .. } if sort.iter().any(|k| {
+                !matches!(
+                    k.ty,
+                    crate::top_field::SortType::Score
+                        | crate::top_field::SortType::Doc
+                        | crate::top_field::SortType::String
+                )
+            }))
             || self.subs().iter().any(AggNode::reads_points)
     }
 }
@@ -752,6 +805,26 @@ impl AggNode {
 pub enum CardinalityValue {
     Term(Vec<u8>),
     Long(i64),
+}
+
+/// One `top_hits` bucket's sorted hits: its sort, the collector's `TopFieldDocs`, each
+/// hit's score (`NaN` without `track_scores`), and the max score.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SortedHits {
+    /// The sort the hits were collected by.
+    pub sort: Arc<Vec<crate::top_field::SortField>>,
+    pub top: crate::top_field::TopFieldDocs,
+    pub scores: Vec<f32>,
+    pub max_score: f32,
+}
+
+/// A `significant_terms` key as the Java aggregator holds it: a global
+/// ordinal (of the ordinals `missing` inserts a term into) or a long, or a
+/// term (`MapStringTermsAggregator`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SignificantKey {
+    Long(i64),
+    Term(Vec<u8>),
 }
 
 /// One owning bucket's `terms`: `otherDocCount`, and `(term, doc count)` of
@@ -769,12 +842,23 @@ pub enum AggResult {
         digests: Vec<Option<crate::tdigest::MergingDigest>>,
         nan: bool,
     },
-    /// Per owning bucket: its document count, and each global ordinal it
-    /// collected with its count, in first-collected order.
-    Significant(Vec<(u64, Vec<(i64, u64)>)>),
+    /// Per owning bucket, its values as collected (`None` for a bucket that
+    /// collected nothing): an HDR `percentiles`'.
+    Recorded(Vec<Option<Vec<f64>>>),
+    /// Per owning bucket: its document count, and each key it collected
+    /// with its count, in first-collected order; `subs[i]`'s owning buckets
+    /// are those keys, owner by owner, in that order.
+    Significant {
+        buckets: Vec<(u64, Vec<(SignificantKey, u64)>)>,
+        subs: Vec<AggResult>,
+    },
     /// Per owning bucket, `None` when it collected nothing, else its hit
     /// count and top hits by score (`TopDocs`), global documents.
     TopHits(Vec<Option<(u64, Vec<crate::collector::ScoreDoc>)>>),
+    /// Per owning bucket, `None` when it collected nothing, else its sorted
+    /// hits (global documents, their sort values) and, with `track_scores`,
+    /// each hit's score and the bucket's max score (`NaN` otherwise).
+    SortedTopHits(Vec<Option<SortedHits>>),
     Cardinality(Vec<Vec<CardinalityValue>>),
     /// Per owning bucket, its `HyperLogLogPlusPlus` as `writeTo` writes it
     /// (`crate::cardinality_sketch`); empty for a bucket that saw nothing.
@@ -943,13 +1027,19 @@ impl<'g> Globals<'g> {
     /// The key a keyword `terms`' documents without a value are collected
     /// under, when it has a `missing` term its filter accepts.
     fn missing_key(&self, node: &AggNode) -> Result<Option<i64>> {
-        let AggNode::Terms {
-            field,
-            missing: Some(m),
-            ..
-        } = node
-        else {
-            return Ok(None);
+        let (field, m) = match node {
+            AggNode::Terms {
+                field,
+                missing: Some(m),
+                ..
+            }
+            | AggNode::SignificantTerms {
+                field,
+                numeric: false,
+                missing_term: Some(m),
+                ..
+            } => (field, m),
+            _ => return Ok(None),
         };
         let key = match self.missing(field, m)? {
             MissingTerm::Ord(o) => o,
@@ -969,6 +1059,15 @@ impl<'g> Globals<'g> {
     }
 }
 
+/// A sorted `top_hits` bucket: its collector, and with `track_scores` its
+/// max score and every collected document's score (what `populateScores`
+/// reads back for the kept hits).
+struct SortedState {
+    top: crate::top_field::FedTopField,
+    max_score: Option<f32>,
+    scores: FastMap<i32, f32>,
+}
+
 /// The collected state of one aggregation (`BucketsAggregator` and kin).
 enum State {
     Metric(Vec<MetricState>),
@@ -980,6 +1079,9 @@ enum State {
         digests: Vec<Option<Box<crate::tdigest::MergingDigest>>>,
         nan: bool,
     },
+    /// Each owning bucket's values, in collection order, from its first
+    /// document (`getExistingOrNewHistogram`), whether or not it has one.
+    Recorded(Vec<Option<Vec<f64>>>),
     /// `significant_terms`: `LongKeyedBucketOrds` of `(owning, global
     /// ordinal)`, each bucket's count, and each owning bucket's documents.
     Significant {
@@ -987,10 +1089,14 @@ enum State {
         keys: Vec<(u32, i64)>,
         docs: Vec<u64>,
         subset: Vec<u64>,
+        subs: Vec<State>,
     },
     /// Each owning bucket's top hits, made when it collects its first
     /// document (`TopHitsAggregator.collect`).
     TopHits(Vec<Option<Box<crate::collector::TopDocsCollector>>>),
+    /// A sorted `top_hits`' collector per owning bucket, with its max score
+    /// so far (`MaxScoreCollector`, `None` before the first document).
+    SortedHits(Vec<Option<Box<SortedState>>>),
     /// Distinct values per owning bucket: global ordinals for a keyword, raw
     /// longs otherwise.
     Cardinality(Vec<FastSet<i64>>),
@@ -1027,17 +1133,20 @@ impl State {
         let subs = || node.subs().iter().map(State::new).collect();
         match node {
             AggNode::Metric { .. } => State::Metric(Vec::new()),
+            AggNode::Percentiles { hdr: true, .. } => State::Recorded(Vec::new()),
             AggNode::Percentiles { compression, .. } => State::Digests {
                 compression: *compression,
                 digests: Vec::new(),
                 nan: false,
             },
             AggNode::TopHits { .. } => State::TopHits(Vec::new()),
+            AggNode::SortedTopHits { .. } => State::SortedHits(Vec::new()),
             AggNode::SignificantTerms { .. } => State::Significant {
                 ords: FastMap::default(),
                 keys: Vec::new(),
                 docs: Vec::new(),
                 subset: Vec::new(),
+                subs: subs(),
             },
             AggNode::Cardinality {
                 kind: CardinalityKind::Numeric(_),
@@ -1223,7 +1332,17 @@ struct Leaf<'a> {
     filter: Option<LeafFilter>,
     /// A `composite`'s per-segment reading.
     composite: Option<Box<CompositeLeaf<'a>>>,
+    /// A sorted `top_hits`' segment, and each owning bucket's leaf of it.
+    fed: Option<Box<FedSegment<'a>>>,
     subs: Vec<Leaf<'a>>,
+}
+
+/// A sorted `top_hits`' segment: what each bucket's collector opens its
+/// leaf over, and the leaves opened.
+struct FedSegment<'a> {
+    reader: &'a SegmentReader,
+    seg: &'a OpenSegment<'a>,
+    leaves: Vec<Option<crate::top_field::FedLeaf<'a>>>,
 }
 
 /// A `composite` over one segment.
@@ -1409,7 +1528,7 @@ struct SegmentView<'s, 'a> {
 
 fn open_leaf<'a>(
     node: &AggNode,
-    view: &SegmentView<'_, 'a>,
+    view: &SegmentView<'a, 'a>,
     globals: &Globals<'a>,
     state: &mut State,
 ) -> Result<Leaf<'a>> {
@@ -1450,12 +1569,17 @@ fn open_leaf<'a>(
             ..
         }
         | AggNode::Terms { field, .. }
-        | AggNode::SignificantTerms { field } => {
+        | AggNode::SignificantTerms {
+            field,
+            numeric: false,
+            ..
+        } => {
             let map = globals.get(field)?.segment_map(view.index).unwrap_or(&[]);
             Col::Ords(crate::terms_agg::open_ords(reader, field)?.0, map)
         }
         AggNode::Cardinality { field, .. }
         | AggNode::Percentiles { field, .. }
+        | AggNode::SignificantTerms { field, .. }
         | AggNode::NumericTerms { field, .. }
         | AggNode::Histogram { field, .. }
         | AggNode::DateHistogram { field, .. }
@@ -1467,6 +1591,10 @@ fn open_leaf<'a>(
             }
             Col::Filters(bits)
         }
+        AggNode::SortedTopHits { .. } => match view.scores {
+            Some((docs, scores)) => Col::Scores(docs, scores, view.doc_base),
+            None => Col::None,
+        },
         AggNode::TopHits { .. } => match view.scores {
             Some((docs, scores)) => Col::Scores(docs, scores, view.doc_base),
             None => {
@@ -1482,12 +1610,7 @@ fn open_leaf<'a>(
         top: false,
         ..*view
     };
-    let sub_states: &mut [State] = match state {
-        State::Keyed { subs, .. } | State::Fixed { subs, .. } => subs,
-        State::Composite(c) => &mut c.subs,
-        _ => &mut [],
-    };
-    for (s, st) in node.subs().iter().zip(sub_states) {
+    for (s, st) in node.subs().iter().zip(sub_states(state)) {
         subs.push(open_leaf(s, &sub_view, globals, st)?);
     }
     let max_to = match node {
@@ -1513,15 +1636,57 @@ fn open_leaf<'a>(
         missing_key: globals.missing_key(node)?,
         filter: globals.leaf_filter(node)?,
         composite: composite_leaf(node, view, globals)?,
+        fed: matches!(node, AggNode::SortedTopHits { .. }).then(|| {
+            Box::new(FedSegment {
+                reader: view.reader,
+                seg: view.seg,
+                leaves: Vec::new(),
+            })
+        }),
         subs,
     })
+}
+
+/// A bucketing state's sub-aggregations' states, as `node.subs()` lists
+/// them (none for a metric).
+fn sub_states(state: &mut State) -> &mut [State] {
+    match state {
+        State::Keyed { subs, .. } | State::Fixed { subs, .. } | State::Significant { subs, .. } => {
+            subs
+        }
+        State::Composite(c) => &mut c.subs,
+        _ => &mut [],
+    }
+}
+
+/// The end of `leaf`'s segment: each sorted `top_hits` under `node` ends
+/// its owning buckets' leaf collectors (their keyword keys read their
+/// terms before the next segment's ordinals).
+fn end_segment(node: &AggNode, state: &mut State, leaf: &mut Leaf<'_>) -> Result<()> {
+    if let (Some(fed), State::SortedHits(states)) = (leaf.fed.as_deref_mut(), &mut *state) {
+        for (l, st) in fed.leaves.drain(..).zip(states.iter_mut()) {
+            if let (Some(l), Some(st)) = (l, st.as_deref_mut()) {
+                st.top.finish(l)?;
+            }
+        }
+        return Ok(());
+    }
+    for ((n, s), l) in node
+        .subs()
+        .iter()
+        .zip(sub_states(state))
+        .zip(&mut leaf.subs)
+    {
+        end_segment(n, s, l)?;
+    }
+    Ok(())
 }
 
 /// A `composite`'s sources opened over the segment, and its `after`
 /// resolved.
 fn composite_leaf<'a>(
     node: &AggNode,
-    view: &SegmentView<'_, 'a>,
+    view: &SegmentView<'a, 'a>,
     globals: &Globals<'a>,
 ) -> Result<Option<Box<CompositeLeaf<'a>>>> {
     let AggNode::Composite {
@@ -2312,6 +2477,13 @@ fn collect(
             }
             slot(states, owning as usize).collect_needs(*needs, *kind, &leaf.buf);
         }
+        (AggNode::Percentiles { kind, .. }, State::Recorded(values)) => {
+            let bucket = slot(values, owning as usize).get_or_insert_with(Vec::new);
+            if !leaf.read(doc)? {
+                return Ok(());
+            }
+            bucket.extend(leaf.buf.iter().map(|&v| aggs::to_double(*kind, v)));
+        }
         (
             AggNode::Percentiles { kind, .. },
             State::Digests {
@@ -2333,27 +2505,117 @@ fn collect(
             }
         }
         (
-            AggNode::SignificantTerms { .. },
+            AggNode::SignificantTerms { numeric, .. },
             State::Significant {
                 ords,
                 keys,
                 docs,
                 subset,
+                subs,
             },
         ) => {
             // `SignificantTermsResults.wrapCollector`: every document the
             // aggregation collects, with a value or not.
             *slot(subset, owning as usize) += 1;
             if !leaf.read(doc)? {
+                // A keyword's `missing`: the document reads the term.
+                if let Some(key) = leaf.missing_key {
+                    let ord = keyed_ord(ords, keys, owning, key);
+                    collect_bucket(node, docs, subs, &mut leaf.subs, doc, ord)?;
+                }
                 return Ok(());
             }
+            let values = std::mem::take(&mut leaf.buf);
             let map = match &leaf.col {
                 Col::Ords(_, map) => *map,
                 _ => &[],
             };
-            for &o in &leaf.buf {
-                let ord = keyed_ord(ords, keys, owning, global_ord(map, o)?);
-                *slot(docs, ord as usize) += 1;
+            // A document's keys ascending, a run of equal ones one bucket
+            // (`NumericTermsAggregator`; a keyword's ordinals are distinct).
+            let mut previous = None;
+            let mut out = Ok(());
+            for &v in &values {
+                let key = if *numeric {
+                    v
+                } else {
+                    match global_ord(map, v) {
+                        Ok(g) => g,
+                        Err(e) => {
+                            out = Err(e);
+                            break;
+                        }
+                    }
+                };
+                if previous == Some(key) {
+                    continue;
+                }
+                previous = Some(key);
+                let ord = keyed_ord(ords, keys, owning, key);
+                if let Err(e) = collect_bucket(node, docs, subs, &mut leaf.subs, doc, ord) {
+                    out = Err(e);
+                    break;
+                }
+            }
+            leaf.buf = values;
+            out?;
+        }
+        (
+            AggNode::SortedTopHits {
+                top_n,
+                sort,
+                track_scores,
+            },
+            State::SortedHits(states),
+        ) => {
+            let score = match leaf.col {
+                Col::Scores(docs, scores, _) => match docs.binary_search(&doc) {
+                    // FBS: `scores` is parallel to `docs`, and `get` is bounds-checked.
+                    Ok(i) => scores.get(i).copied().unwrap_or(f32::NAN),
+                    Err(_) => {
+                        return Err(crate::Error::TermsAggType(format!(
+                            "top_hits: document {doc} was not scored"
+                        )))
+                    }
+                },
+                _ => f32::NAN,
+            };
+            let entry = slot(states, owning as usize);
+            if entry.is_none() {
+                *entry = Some(Box::new(SortedState {
+                    top: crate::top_field::FedTopField::new(sort, *top_n)?,
+                    max_score: None,
+                    scores: FastMap::default(),
+                }));
+            }
+            let Some(st) = entry.as_deref_mut() else {
+                return Ok(());
+            };
+            if *track_scores {
+                // `MaxScoreCollector`: `Math.max`, a NaN winning.
+                st.max_score = Some(match st.max_score {
+                    Some(m) if m.is_nan() || score.is_nan() => f32::NAN,
+                    Some(m) => m.max(score),
+                    None => score,
+                });
+                if let Some(global) = leaf
+                    .fed
+                    .as_ref()
+                    .map(|f| f.seg.doc_base.saturating_add(doc))
+                {
+                    st.scores.insert(global, score);
+                }
+            }
+            let Some(fed) = leaf.fed.as_deref_mut() else {
+                return Err(crate::Error::TermsAggType(
+                    "top_hits without its segment".to_string(),
+                ));
+            };
+            let l = slot(&mut fed.leaves, owning as usize);
+            if l.is_none() {
+                *l = Some(st.top.leaf(fed.reader, fed.seg)?);
+            }
+            if let Some(l) = l.as_mut() {
+                st.top.collect(l, doc, score)?;
             }
         }
         (AggNode::TopHits { top_n }, State::TopHits(collectors)) => {
@@ -3191,6 +3453,9 @@ pub fn aggregate_tree(
                     }
                 }
             }
+            for ((n, s), l) in nodes.iter().zip(&mut states).zip(&mut leaves) {
+                end_segment(n, s, l)?;
+            }
         }
         let mut terms = TermLookup::new(readers);
         nodes
@@ -3278,6 +3543,12 @@ fn resolve_missing(
                 AggNode::Terms {
                     field,
                     missing: Some(m),
+                    ..
+                }
+                | AggNode::SignificantTerms {
+                    field,
+                    numeric: false,
+                    missing_term: Some(m),
                     ..
                 } => out.push((field, m)),
                 // A keyword source's `after` term.
@@ -3375,6 +3646,12 @@ fn finish(
             let subs = finish_subs(subs, st.subs, &kept, globals, terms)?;
             Ok(AggResult::Composite { buckets, subs })
         }
+        (AggNode::Percentiles { .. }, State::Recorded(mut values)) => Ok(AggResult::Recorded(
+            owners
+                .iter()
+                .map(|&o| values.get_mut(o as usize).and_then(Option::take))
+                .collect(),
+        )),
         (
             AggNode::Percentiles { .. },
             State::Digests {
@@ -3393,24 +3670,102 @@ fn finish(
             nan,
         }),
         (
-            AggNode::SignificantTerms { .. },
+            AggNode::SignificantTerms {
+                field,
+                numeric,
+                terms: as_terms,
+                missing_term,
+                subs,
+                ..
+            },
             State::Significant {
-                keys, docs, subset, ..
+                keys,
+                docs,
+                subset,
+                subs: sub_states,
+                ..
             },
         ) => {
             let at_owner: FastMap<u32, usize> =
                 owners.iter().enumerate().map(|(i, &o)| (o, i)).collect();
-            let mut out: Vec<(u64, Vec<(i64, u64)>)> = owners
-                .iter()
-                .map(|&o| (at(&subset, o as usize), Vec::new()))
-                .collect();
-            for (b, &(o, key)) in keys.iter().enumerate() {
+            // Each owner's buckets, first collected first.
+            let mut kept: Vec<Vec<u32>> = vec![Vec::new(); owners.len()];
+            for (b, &(o, _)) in keys.iter().enumerate() {
                 if let Some(&i) = at_owner.get(&o) {
-                    out[i].1.push((key, at(&docs, b)));
+                    kept[i].push(b as u32);
                 }
             }
-            Ok(AggResult::Significant(out))
+            // A keyword's key as Java's ordinals number it: `missing`'s
+            // inserted term takes its place among them (the collected
+            // `missing_key` is the one past the last).
+            let inserted = match (numeric, missing_term) {
+                (false, Some(m)) => match globals.missing(field, m)? {
+                    MissingTerm::Insert(at) => Some((
+                        at,
+                        i64::try_from(globals.get(field)?.value_count()).unwrap_or(i64::MAX),
+                    )),
+                    MissingTerm::Ord(_) => None,
+                },
+                _ => None,
+            };
+            let mut buckets = Vec::with_capacity(owners.len());
+            for (&o, kept) in owners.iter().zip(&kept) {
+                let mut listed = Vec::with_capacity(kept.len());
+                for &b in kept {
+                    // FBS: `keys` is the bucket list, and `get` is bounds-checked.
+                    let key = keys.get(b as usize).map_or(0, |k| k.1);
+                    let key = if *as_terms {
+                        SignificantKey::Term(match (inserted, missing_term) {
+                            (Some((_, past)), Some(m)) if key == past => m.clone(),
+                            _ => terms.term(globals.get(field)?, field, key)?,
+                        })
+                    } else {
+                        SignificantKey::Long(match inserted {
+                            Some((at, past)) if key == past => at,
+                            Some((at, _)) if key >= at => key + 1,
+                            _ => key,
+                        })
+                    };
+                    listed.push((key, at(&docs, b as usize)));
+                }
+                buckets.push((at(&subset, o as usize), listed));
+            }
+            let all: Vec<u32> = kept.concat();
+            let subs = finish_subs(subs, sub_states, &all, globals, terms)?;
+            Ok(AggResult::Significant { buckets, subs })
         }
+        (
+            AggNode::SortedTopHits {
+                track_scores, sort, ..
+            },
+            State::SortedHits(mut states),
+        ) => Ok(AggResult::SortedTopHits(
+            owners
+                .iter()
+                .map(|&o| {
+                    states.get_mut(o as usize).and_then(Option::take).map(|st| {
+                        let top = st.top.top_docs();
+                        let scores = top
+                            .hits
+                            .iter()
+                            .map(|h| {
+                                if *track_scores {
+                                    st.scores.get(&h.doc).copied().unwrap_or(f32::NAN)
+                                } else {
+                                    f32::NAN
+                                }
+                            })
+                            .collect();
+                        SortedHits {
+                            sort: Arc::clone(sort),
+                            top,
+                            scores,
+                            max_score: st.max_score.unwrap_or(f32::NAN),
+                        }
+                    })
+                })
+                .collect(),
+        )),
         (AggNode::TopHits { .. }, State::TopHits(mut collectors)) => Ok(AggResult::TopHits(
             owners
                 .iter()
@@ -3792,6 +4147,7 @@ mod tests {
             missing_key: None,
             filter: None,
             composite: None,
+            fed: None,
             subs: Vec::new(),
         }
     }
@@ -5975,10 +6331,16 @@ mod tests {
     /// order.
     #[test]
     fn significant_terms_collect_in_first_seen_order() {
-        let reader = fixture("terms_aggs_index");
-        let readers = reader.segment_readers();
-        for field in ["kw", "mkw"] {
-            let globals = crate::terms_agg::GlobalOrds::build(readers, field).unwrap();
+        for (index, field, numeric) in [
+            ("terms_aggs_index", "kw", false),
+            ("terms_aggs_index", "mkw", false),
+            ("metric_aggs_index", "ml", true),
+            ("metric_aggs_index", "i", true),
+        ] {
+            let reader = fixture(index);
+            let readers = reader.segment_readers();
+            let globals =
+                (!numeric).then(|| crate::terms_agg::GlobalOrds::build(readers, field).unwrap());
             for q in [all(), body("w1")] {
                 let mut opened = reader.open_segments().unwrap();
                 opened.open_points().unwrap();
@@ -6004,18 +6366,28 @@ mod tests {
                                 .filter(|&d| seg.live_docs.is_none_or(|l| l.get_doc(d)))
                                 .collect(),
                         };
-                        let map = globals.segment_map(i).unwrap_or(&[]);
-                        let mut ords = crate::terms_agg::open_ords(r, field).unwrap().0;
                         for doc in docs {
                             subset += 1;
                             let mut v = Vec::new();
-                            match &mut ords {
-                                Ords::Absent => {}
-                                Ords::Single(c) => v.extend(c.value(doc).unwrap()),
-                                Ords::Multi(c) => c.values(doc, &mut v).unwrap(),
+                            if let Some(g) = &globals {
+                                let map = g.segment_map(i).unwrap_or(&[]);
+                                match &mut crate::terms_agg::open_ords(r, field).unwrap().0 {
+                                    Ords::Absent => {}
+                                    Ords::Single(c) => v.extend(c.value(doc).unwrap()),
+                                    Ords::Multi(c) => c.values(doc, &mut v).unwrap(),
+                                }
+                                for o in &mut v {
+                                    *o = map[*o as usize];
+                                }
+                            } else {
+                                match &mut aggs::open_values(r, field).unwrap() {
+                                    Values::Absent => {}
+                                    Values::Single(c) => v.extend(c.value(doc).unwrap()),
+                                    Values::Multi(c) => c.values(doc, &mut v).unwrap(),
+                                }
+                                v.dedup();
                             }
-                            for o in v {
-                                let g = map[o as usize];
+                            for g in v {
                                 match seen.iter_mut().find(|(k, _)| *k == g) {
                                     Some((_, n)) => *n += 1,
                                     None => seen.push((g, 1)),
@@ -6026,9 +6398,16 @@ mod tests {
                     (subset, seen)
                 };
                 let mut ords = HashMap::new();
-                ords.insert(field.to_string(), Arc::new(globals.clone()));
+                if let Some(g) = &globals {
+                    ords.insert(field.to_string(), Arc::new(g.clone()));
+                }
                 let node = [AggNode::SignificantTerms {
                     field: field.to_string(),
+                    numeric,
+                    terms: false,
+                    missing_term: None,
+                    missing: None,
+                    subs: vec![],
                 }];
                 let slices: Vec<Vec<usize>> = vec![
                     (0..readers.len()).collect(),
@@ -6045,14 +6424,151 @@ mod tests {
                         None,
                     )
                     .unwrap();
-                    let AggResult::Significant(per) = &got[0][0] else {
+                    let AggResult::Significant { buckets, subs } = &got[0][0] else {
                         panic!("{got:?}")
                     };
-                    let want = oracle(slice);
-                    assert!(want.0 > 0 && !want.1.is_empty());
-                    assert_eq!(per, &vec![want], "{field} {q:?} {slice:?}");
+                    assert!(subs.is_empty());
+                    let (subset, seen) = oracle(slice);
+                    assert!(subset > 0 && !seen.is_empty());
+                    let want: Vec<(SignificantKey, u64)> = seen
+                        .into_iter()
+                        .map(|(k, n)| (SignificantKey::Long(k), n))
+                        .collect();
+                    assert_eq!(buckets, &vec![(subset, want)], "{field} {q:?} {slice:?}");
                 }
             }
         }
+    }
+
+    /// A sorted `top_hits` keeps what one `TopFieldCollector` over the same
+    /// matches keeps: the sorted search's hits and count, at the top level and
+    /// under `global`; with `track_scores`, each kept hit's score and the max.
+    #[test]
+    fn sorted_top_hits_are_the_sorted_searchs_hits() {
+        use crate::top_field::{SortField, SortType};
+        for (index, q, sort, track) in [
+            (
+                "metric_aggs_index",
+                body("w1"),
+                vec![SortField::numeric("d", SortType::Double, true)],
+                false,
+            ),
+            (
+                "metric_aggs_index",
+                all(),
+                vec![
+                    SortField::numeric("i", SortType::Int, false),
+                    SortField::doc(),
+                ],
+                true,
+            ),
+            (
+                "metric_aggs_index",
+                body("w3"),
+                vec![
+                    SortField::score(),
+                    SortField::numeric("f", SortType::Float, false),
+                ],
+                true,
+            ),
+            (
+                "terms_aggs_index",
+                all(),
+                vec![SortField::string("kw", false), SortField::doc()],
+                false,
+            ),
+            (
+                "terms_aggs_index",
+                body("w1"),
+                vec![SortField::string("kw", true)],
+                true,
+            ),
+        ] {
+            let reader = fixture(index);
+            let readers = reader.segment_readers();
+            let mut opened = reader.open_segments().unwrap();
+            opened.open_points().unwrap();
+            let segments = opened.as_open_segments();
+            let owned = reader.field_norms_by_field(&["body".to_string()]).unwrap();
+            let norms: Vec<Option<&HashMap<String, crate::field_norms::FieldNorms<'_>>>> =
+                owned.iter().map(Some).collect();
+            let sort = Arc::new(sort);
+            for top_n in [1, 4, 50] {
+                let want = crate::top_field::search_sorted(
+                    &segments,
+                    readers,
+                    &q,
+                    &norms,
+                    &sort,
+                    top_n,
+                    u64::MAX,
+                    None,
+                )
+                .unwrap();
+                let node = AggNode::SortedTopHits {
+                    top_n,
+                    sort: Arc::clone(&sort),
+                    track_scores: track,
+                };
+                let m = crate::aggs::MinScore {
+                    min: f32::NEG_INFINITY,
+                    norms: &norms,
+                };
+                for tree in [
+                    vec![node.clone()],
+                    vec![AggNode::Global {
+                        subs: vec![node.clone()],
+                    }],
+                ] {
+                    let got = aggregate_tree(
+                        &segments,
+                        readers,
+                        &q,
+                        &tree,
+                        &Globals::new(&HashMap::new()),
+                        &whole(&reader),
+                        tree[0].needs_scores().then_some(&m),
+                    )
+                    .unwrap();
+                    let r = match &got[0][0] {
+                        AggResult::Fixed { subs, .. } => &subs[0],
+                        r => r,
+                    };
+                    let AggResult::SortedTopHits(per) = r else {
+                        panic!("{r:?}")
+                    };
+                    let hits = per[0].as_ref().unwrap();
+                    assert_eq!(hits.top.hits, want.hits, "{index} {sort:?} {top_n}");
+                    assert_eq!(hits.top.total.value, want.total.value);
+                    assert_eq!(hits.scores.len(), want.hits.len());
+                    if track {
+                        let all = searcher_scores(&segments, &norms, &q);
+                        for (h, s) in want.hits.iter().zip(&hits.scores) {
+                            assert_eq!(s.to_bits(), all[&h.doc].to_bits());
+                        }
+                        let max = all.values().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
+                        assert_eq!(hits.max_score.to_bits(), max.to_bits());
+                    } else {
+                        assert!(hits.scores.iter().all(|s| s.is_nan()) && hits.max_score.is_nan());
+                    }
+                }
+            }
+        }
+    }
+
+    /// Every match's score, by global document, from the searcher.
+    fn searcher_scores(
+        segments: &[OpenSegment<'_>],
+        norms: &[Option<&HashMap<String, crate::field_norms::FieldNorms<'_>>>],
+        q: &BooleanQuery,
+    ) -> HashMap<i32, f32> {
+        let searcher = crate::index_searcher::IndexSearcher::new(segments, norms).unwrap();
+        searcher
+            .search(q, 1_000_000)
+            .unwrap()
+            .score_docs
+            .iter()
+            .map(|d| (d.doc, d.score))
+            .collect()
     }
 }
