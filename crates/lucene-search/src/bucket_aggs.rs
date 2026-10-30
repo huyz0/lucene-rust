@@ -1385,6 +1385,12 @@ struct NestedLeaf {
 }
 
 impl NestedLeaf {
+    /// `childDocs.docID()`.
+    //
+    // SENTINEL: `-1` = "not yet advanced", `DocIdSetIterator.docID()`'s own
+    // value before the first move; its one reader, `parent_and_child`, only
+    // compares it with the previous parent (`<= prev`), where `-1` is at or
+    // below every one, so the iterator advances, as in Java.
     fn doc_id(&self) -> i32 {
         match self.pos {
             None => -1,
@@ -1405,7 +1411,11 @@ impl NestedLeaf {
         self.doc_id()
     }
 
-    /// `BitSet.prevSetBit(doc)`: the last parent at or before `doc`, or -1.
+    /// `BitSet.prevSetBit(doc)`: the last parent at or before `doc`.
+    //
+    // SENTINEL: `-1` = "no parent at or before `doc`", `prevSetBit`'s own;
+    // `parent_and_child` tests it (`== -1`) and otherwise uses it as the
+    // block's lower bound, where `-1` means "from the segment's start".
     fn prev_parent(&self, doc: i32) -> i32 {
         let i = self.parents.partition_point(|&d| d <= doc);
         i.checked_sub(1)
