@@ -991,7 +991,7 @@ mod tests {
                 max_doc: seg.max_doc,
                 cache: None,
                 reader: None,
-                similarity: None,
+                similarity: seg.similarity,
             };
             let pos_in = ctx.pos_in.unwrap();
             let ft = ctx.fields.field("pay").unwrap();

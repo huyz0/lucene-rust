@@ -150,6 +150,12 @@ pub struct OpenSegment<'a> {
     /// the sort's order: set per request by a caller that knows both, and
     /// only a sorted search reads it.
     pub index_sort_prefix: bool,
+    /// The searcher's similarity (`IndexSearcher.setSimilarity`), every
+    /// segment of a search holding the same one: what scores the request
+    /// when the search function is not handed one itself. `None` is
+    /// Lucene's default BM25, which the scorer tree computes on its fast
+    /// path.
+    pub similarity: Option<&'a dyn crate::similarities::Similarity>,
 }
 
 /// The shared fan-out+merge core (see this module's doc comment): runs
@@ -747,6 +753,7 @@ fn reader_stats(
     similarity: Option<&dyn crate::similarities::Similarity>,
     functions_only: bool,
 ) -> crate::Result<crate::GlobalStats> {
+    let similarity = similarity.or_else(|| segments.first().and_then(|s| s.similarity));
     fn walk_clause(c: &crate::query::Clause, out: &mut Collected) {
         use crate::query::Clause;
         match c {
@@ -1215,8 +1222,10 @@ pub fn search_boolean_query_multi_segment_maxscore_counting(
     // `BooleanQuery.rewrite`: a boolean of one scoring clause is that clause.
     // A lone term runs as the term query it rewrites to -- one dictionary
     // seek per segment, reused by its scorer, and no segment visited at all
-    // for a term that none of them holds.
-    if let Some(term) = lone_term(query) {
+    // for a term that none of them holds. It scores BM25: under the
+    // searcher's own similarity the term runs as the scorer tree's.
+    if let Some(term) = lone_term(query).filter(|_| segments.iter().all(|s| s.similarity.is_none()))
+    {
         let term_norms: Vec<Option<&FieldNorms<'_>>> = norms
             .iter()
             .map(|m| m.and_then(|m| m.get(&term.field)))
@@ -1319,7 +1328,7 @@ pub fn search_boolean_query_multi_segment_with_deadline(
                 max_doc: seg.max_doc,
                 cache: seg.cache,
                 reader: seg.reader,
-                similarity: None,
+                similarity: seg.similarity,
             };
             let mode = crate::exec::Mode::of(local);
             if let Some(mut bulk) = crate::exec::bulk_boolean(&ctx, query, 1.0, mode)? {
@@ -2094,6 +2103,7 @@ mod tests {
                 cache: None,
                 reader: None,
                 index_sort_prefix: false,
+                similarity: None,
                 points: None,
             },
             OpenSegment {
@@ -2106,6 +2116,7 @@ mod tests {
                 cache: None,
                 reader: None,
                 index_sort_prefix: false,
+                similarity: None,
                 points: None,
                 max_doc: None,
             },
@@ -2174,6 +2185,7 @@ mod tests {
                 cache: None,
                 reader: None,
                 index_sort_prefix: false,
+                similarity: None,
                 points: None,
             },
             OpenSegment {
@@ -2186,6 +2198,7 @@ mod tests {
                 cache: None,
                 reader: None,
                 index_sort_prefix: false,
+                similarity: None,
                 points: None,
                 max_doc: None,
             },
@@ -2249,6 +2262,7 @@ mod tests {
                 cache: None,
                 reader: None,
                 index_sort_prefix: false,
+                similarity: None,
                 points: None,
             },
             OpenSegment {
@@ -2261,6 +2275,7 @@ mod tests {
                 cache: None,
                 reader: None,
                 index_sort_prefix: false,
+                similarity: None,
                 points: None,
                 max_doc: None,
             },
@@ -2298,6 +2313,7 @@ mod tests {
                 cache: None,
                 reader: None,
                 index_sort_prefix: false,
+                similarity: None,
                 points: None,
             },
             OpenSegment {
@@ -2310,6 +2326,7 @@ mod tests {
                 cache: None,
                 reader: None,
                 index_sort_prefix: false,
+                similarity: None,
                 points: None,
                 max_doc: None,
             },
@@ -2342,6 +2359,7 @@ mod tests {
             cache: None,
             reader: None,
             index_sort_prefix: false,
+            similarity: None,
             points: None,
         }];
         let norms = [None];
@@ -2719,6 +2737,7 @@ mod tests {
                 cache: None,
                 reader: None,
                 index_sort_prefix: false,
+                similarity: None,
                 points: None,
             },
             OpenSegment {
@@ -2731,6 +2750,7 @@ mod tests {
                 cache: None,
                 reader: None,
                 index_sort_prefix: false,
+                similarity: None,
                 points: None,
                 max_doc: None,
             },
@@ -2766,6 +2786,7 @@ mod tests {
                 cache: None,
                 reader: None,
                 index_sort_prefix: false,
+                similarity: None,
                 points: None,
             },
             OpenSegment {
@@ -2778,6 +2799,7 @@ mod tests {
                 cache: None,
                 reader: None,
                 index_sort_prefix: false,
+                similarity: None,
                 points: None,
                 max_doc: None,
             },
