@@ -542,7 +542,7 @@ impl QueryRescoreMode {
 /// What [`QueryRescorer::rescore`] reports.
 pub fn opensearch_query_rescore(
     ctx: &ValuesContext<'_>,
-    hits: &mut Vec<ShardScoreDoc>,
+    hits: &mut [ShardScoreDoc],
     query: BooleanQuery,
     window: usize,
     query_weight: f32,
@@ -582,9 +582,7 @@ pub fn opensearch_query_rescore(
         }
         // `SCORE_DOC_COMPARATOR`: `Float.compare(o2.score, o1.score)`, then
         // the document.
-        hits.sort_by(|a, b| {
-            java_float_compare(b.score, a.score).then(a.doc.cmp(&b.doc))
-        });
+        hits.sort_by(|a, b| java_float_compare(b.score, a.score).then(a.doc.cmp(&b.doc)));
     }
     Ok(top)
 }
@@ -1088,6 +1086,19 @@ mod tests {
             by_score_then_doc(&sd(1, 0.0), &sd(2, f32::NAN)),
             Ordering::Less
         );
+    }
+
+    #[test]
+    fn query_rescore_modes_combine_as_opensearch() {
+        use QueryRescoreMode::*;
+        assert_eq!(Avg.combine(1.0, 2.0), 1.5);
+        assert_eq!(Max.combine(1.0, 2.0), 2.0);
+        assert_eq!(Min.combine(1.0, 2.0), 1.0);
+        assert_eq!(Total.combine(1.0, 2.0), 3.0);
+        assert_eq!(Multiply.combine(1.5, 2.0), 3.0);
+        // Math.max/min: NaN wins, -0.0 is below 0.0.
+        assert!(Max.combine(f32::NAN, 1.0).is_nan());
+        assert!(Min.combine(0.0, -0.0).is_sign_negative());
     }
 
     #[test]

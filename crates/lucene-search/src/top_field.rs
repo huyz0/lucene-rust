@@ -94,7 +94,10 @@ use std::sync::Arc;
 
 mod collapse;
 mod opensearch;
-pub use collapse::{search_collapsed, search_collapsed_until, CollapseKind, CollapseTopDocs, CollapseValue, MULTI_VALUED};
+pub use collapse::{
+    search_collapsed, search_collapsed_until, CollapseKind, CollapseTopDocs, CollapseValue,
+    MULTI_VALUED,
+};
 pub use opensearch::{HalfFloatSort, ShardDocSort, UnsignedLongSort};
 
 /// `SortField.Type`, for the keys this collector sorts by.

@@ -1081,4 +1081,43 @@ mod tests {
             FfiStatus::NullPointer.code()
         );
     }
+
+    #[test]
+    fn a_collapsed_search_hands_back_its_encoding() {
+        let h = open();
+        let q = term_blob("body", "fox");
+        let sort = sort_blob_terms(&[(SORT_LONG, 0, "n", 0)], None);
+        let mut collapse = 1i32.to_le_bytes().to_vec();
+        collapse.extend_from_slice(b"n");
+        collapse.push(0);
+        let call = |collapse: &[u8], out_ptr: *mut *mut u8, out_len: *mut usize| unsafe {
+            ffi_jvm_reader_search_collapsed_alloc(
+                h,
+                q.as_ptr(),
+                q.len(),
+                sort.as_ptr(),
+                sort.len(),
+                collapse.as_ptr(),
+                collapse.len(),
+                4,
+                out_ptr,
+                out_len,
+            )
+        };
+        let (mut p, mut n) = (std::ptr::null_mut(), 0usize);
+        assert_eq!(call(&collapse, &mut p, &mut n), 0, "{}", last_error_text());
+        assert_eq!(
+            take(p, n),
+            jvm_reader::search_collapsed_blobs(h, &q, &sort, &collapse, 4).unwrap()
+        );
+        let (mut p, mut n) = (std::ptr::null_mut(), 0usize);
+        // A truncated collapse blob: refused, nothing handed back.
+        assert_ne!(call(&collapse[..2], &mut p, &mut n), 0);
+        assert!(p.is_null() && n == 0);
+        assert_eq!(
+            call(&collapse, std::ptr::null_mut(), &mut n),
+            FfiStatus::NullPointer.code()
+        );
+        assert_eq!(ffi_close_jvm_reader(h), 0);
+    }
 }
