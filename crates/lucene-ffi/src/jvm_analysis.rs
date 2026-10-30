@@ -147,6 +147,72 @@ pub(crate) fn analyzer(spec: &[u8]) -> Result<Arc<CustomAnalyzer>, FfiStatus> {
     Ok(Arc::clone(map.entry(spec.to_vec()).or_insert(built)))
 }
 
+/// An analyzer registered for indexing: its spec's analyzer, and the
+/// similarity's `toString()` for the one error that names it.
+pub(crate) struct Registered {
+    pub(crate) analyzer: Arc<CustomAnalyzer>,
+    pub(crate) similarity: String,
+}
+
+/// At most this many registrations are kept, for the life of the process (a
+/// registration is a field's analyzer, so there are only as many as there
+/// are distinct analyzer and similarity pairs).
+const MAX_REGISTERED: usize = 1 << 16;
+
+#[derive(Default)]
+struct Registry {
+    by_key: HashMap<Vec<u8>, u32>,
+    entries: Vec<Arc<Registered>>,
+}
+
+static REGISTRY: LazyLock<RwLock<Registry>> = LazyLock::new(Default::default);
+
+/// Registers `spec: bytes, similarity: bytes` (UTF-8), once per distinct
+/// pair, and answers its id for [`registered`].
+pub(crate) fn register(blob: &[u8]) -> Result<u32, FfiStatus> {
+    if let Some(&id) = REGISTRY
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .by_key
+        .get(blob)
+    {
+        return Ok(id);
+    }
+    let mut c = Cursor::new(blob);
+    let spec = c.bytes()?;
+    let similarity = utf8(c.bytes()?, "the similarity")?.to_string();
+    if c.pos() != blob.len() {
+        return Err(invalid("analysis registration: trailing bytes".to_string()));
+    }
+    let analyzer = analyzer(spec)?;
+    let mut r = REGISTRY.write().unwrap_or_else(|e| e.into_inner());
+    if let Some(&id) = r.by_key.get(blob) {
+        return Ok(id);
+    }
+    if r.entries.len() >= MAX_REGISTERED {
+        return Err(invalid(format!(
+            "analysis registration: more than {MAX_REGISTERED} analyzers"
+        )));
+    }
+    let id = u32::try_from(r.entries.len()).map_err(|_| FfiStatus::InvalidArgument)?;
+    r.entries.push(Arc::new(Registered {
+        analyzer,
+        similarity,
+    }));
+    r.by_key.insert(blob.to_vec(), id);
+    Ok(id)
+}
+
+/// The registration `id` names.
+pub(crate) fn registered(id: i32) -> Result<Arc<Registered>, FfiStatus> {
+    let r = REGISTRY.read().unwrap_or_else(|e| e.into_inner());
+    usize::try_from(id)
+        .ok()
+        .and_then(|i| r.entries.get(i))
+        .cloned()
+        .ok_or_else(|| invalid(format!("no analyzer registered as {id}")))
+}
+
 /// How many distinct specs are built and kept.
 #[cfg(test)]
 pub(crate) fn cached_specs() -> usize {
@@ -180,7 +246,7 @@ pub(crate) fn analyze(spec: &[u8], field: &str, text: &str) -> Result<Vec<u8>, F
         .analyzer()
         .token_stream(field, text)
         .map_err(failed)?;
-    let mut out = Vec::with_capacity(16 + text.len() * 3);
+    let mut out = Vec::with_capacity(16 + text.len() * 3); // alloc-ok: sized from a &str Rust already holds
     put_i32(&mut out, 0);
     let mut count: i32 = 0;
     stream.reset().map_err(failed)?;

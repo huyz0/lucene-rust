@@ -414,6 +414,30 @@ pub unsafe extern "C" fn ffi_jvm_reader_document_alloc(
     })
 }
 
+/// [`crate::jvm_analysis::register`]: an analyzer for indexing, its id into
+/// `*out_id`.
+///
+/// # Safety
+/// `blob` must be valid for `blob_len` bytes and `out_id` for one write.
+#[no_mangle]
+pub unsafe extern "C" fn ffi_jvm_analysis_register(
+    blob: *const u8,
+    blob_len: usize,
+    out_id: *mut i32,
+) -> i32 {
+    guard(|| {
+        if out_id.is_null() {
+            return Err(FfiStatus::NullPointer);
+        }
+        // SAFETY: caller contract.
+        let blob = unsafe { bytes_from_raw(blob, blob_len)? };
+        let id = crate::jvm_analysis::register(blob)?;
+        // SAFETY: caller contract.
+        unsafe { *out_id = i32::try_from(id).map_err(|_| FfiStatus::InvalidArgument)? };
+        Ok(())
+    })
+}
+
 /// [`crate::jvm_analysis::analyze`]: `spec`'s analyzer over `text` (UTF-8)
 /// as field `field`, its tokens into an owned buffer.
 ///

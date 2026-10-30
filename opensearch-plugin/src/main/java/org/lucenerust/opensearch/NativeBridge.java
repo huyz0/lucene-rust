@@ -194,6 +194,19 @@ public final class NativeBridge {
             "ffi_engine_writer_apply",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG)
         );
+        static final MethodHandle WRITER_PREPARE = bind(
+            "ffi_engine_prepare",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS)
+        );
+        static final MethodHandle WRITER_APPLY_PREPARED = bind(
+            "ffi_engine_writer_apply_prepared",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG)
+        );
+        static final MethodHandle PREPARED_FREE = bind("ffi_engine_prepared_free", FunctionDescriptor.of(JAVA_INT, JAVA_LONG));
+        static final MethodHandle ANALYSIS_REGISTER = bind(
+            "ffi_jvm_analysis_register",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS)
+        );
         static final MethodHandle WRITER_COMMIT = bind(
             "ffi_engine_writer_commit",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS)
@@ -1121,6 +1134,78 @@ public final class NativeBridge {
         }
         try (Scratch s = Scratch.open()) {
             return (int) H.WRITER_APPLY.invokeExact(handle, s.bytes(op, n), (long) n);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * Decodes {@code op} -- analyzing the fields it leaves to Rust -- outside any writer's lock;
+     * {@code outId[0]} names it for {@link #writerApplyPrepared} or {@link #preparedFree}.
+     */
+    public static int writerPrepare(byte[] op, int len, long[] outId) {
+        if (op == null) {
+            return nullArgument("op");
+        }
+        if (outId == null || outId.length < 1) {
+            return fail(INVALID_ARGUMENT, "outId holds no slot");
+        }
+        int n = len < 0 ? op.length : len;
+        if (n > op.length) {
+            return fail(INVALID_ARGUMENT, "op: length " + n + " exceeds the array's " + op.length);
+        }
+        try (Scratch s = Scratch.open()) {
+            MemorySegment id = s.alloc(Long.BYTES);
+            int rc = (int) H.WRITER_PREPARE.invokeExact(s.bytes(op, n), (long) n, id);
+            if (rc == OK) {
+                outId[0] = id.get(JAVA_LONG, 0);
+            }
+            return rc;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** Applies (and forgets) the operation {@link #writerPrepare} decoded. */
+    public static int writerApplyPrepared(long handle, long id) {
+        try {
+            return (int) H.WRITER_APPLY_PREPARED.invokeExact(handle, id);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** Forgets a prepared operation that will not be applied. */
+    public static int preparedFree(long id) {
+        try {
+            return (int) H.PREPARED_FREE.invokeExact(id);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * Registers an analyzer for indexing ({@code jvm_analysis::register}: its spec and the
+     * similarity's name), its id in {@code outId[0]}.
+     */
+    public static int analysisRegister(byte[] spec, String similarity, int[] outId) {
+        if (spec == null || similarity == null) {
+            return nullArgument(spec == null ? "spec" : "similarity");
+        }
+        if (outId == null || outId.length < 1) {
+            return fail(INVALID_ARGUMENT, "outId holds no slot");
+        }
+        byte[] sim = similarity.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        byte[] blob = new byte[8 + spec.length + sim.length];
+        java.nio.ByteBuffer b = java.nio.ByteBuffer.wrap(blob).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        b.putInt(spec.length).put(spec).putInt(sim.length).put(sim);
+        try (Scratch s = Scratch.open()) {
+            MemorySegment id = s.alloc(Integer.BYTES);
+            int rc = (int) H.ANALYSIS_REGISTER.invokeExact(s.bytes(blob), (long) blob.length, id);
+            if (rc == OK) {
+                outId[0] = id.get(JAVA_INT, 0);
+            }
+            return rc;
         } catch (Throwable t) {
             throw rethrow(t);
         }
