@@ -81,6 +81,9 @@ MAPPING = {
         "code": {"type": "text", "analyzer": "parts", "index_options": "offsets"},
         "syn": {"type": "text", "analyzer": "syn"},
         "hun": {"type": "text", "analyzer": "hun"},
+        # The plugin's rust_thai analyzer, and its tokenizer in a custom chain.
+        "thai": {"type": "text", "analyzer": "rust_thai"},
+        "thai_html": {"type": "text", "analyzer": "thai_html"},
         "tag": {"type": "keyword"},
         "n": {"type": "long"},
         "price": {"type": "double"},
@@ -113,6 +116,8 @@ ANALYSIS = {
                 "filter": ["lowercase", "overrides", "synonyms", "porter_stem"]},
         # config/hunspell/en_US (opensearch-plugin/e2e/hunspell), two .dic files.
         "hun": {"type": "custom", "tokenizer": "standard", "filter": ["lowercase", "en_stem"]},
+        "thai_html": {"type": "custom", "char_filter": ["html_strip"], "tokenizer": "rust_thai",
+                      "filter": ["lowercase"]},
     },
     "filter": {
         "keep_both": {"type": "asciifolding", "preserve_original": True},
@@ -125,6 +130,8 @@ ANALYSIS = {
 
 NOTES = ["<p>Caf\u00e9 na\u00efve</p>", "r\u00e9sum\u00e9 &amp; <b>runners</b>", "The QUICK foxes",
          "houses'", "Stra\u00dfe \u00fcber", "jumping <i>cats</i>"]
+THAI = ["ภาษาไทยง่ายนิดเดียว", "ประเทศไทยมีประชากรประมาณหกสิบหกล้านคน", "<b>กรุงเทพมหานคร</b>เป็นเมืองหลวง",
+        "ฉันชอบกินข้าวผัดกับไข่ดาว", "นักเรียนกำลังอ่านหนังสือในห้องสมุด", "Thai ไทย 123 ๑๒๓"]
 CODES = ["PowerShot500", "wi-fi_router", "parseHTTPRequest", "x86-64 ARMv8", "SD-500 sd500", "o'neil's"]
 
 
@@ -149,6 +156,9 @@ def source(r, i):
         doc["syn"] = doc["note"]
     if r.random() < 0.6:
         doc["hun"] = words(r, 1 + r.randrange(12))
+    if r.random() < 0.5:
+        doc["thai"] = " ".join(r.choice(THAI) for _ in range(1 + r.randrange(3)))
+        doc["thai_html"] = doc["thai"]
     if r.random() < 0.6:
         doc["code"] = " ".join(r.choice(CODES) for _ in range(1 + r.randrange(5)))
     if r.random() < 0.1:
@@ -267,6 +277,9 @@ QUERIES = [
     {"match": {"hun": "runners housing"}},
     {"match_phrase": {"hun": "lazy dogs"}},
     {"match": {"hun": "ran"}},
+    {"match": {"thai": "ประเทศไทย"}},
+    {"match_phrase": {"thai": "ข้าวผัด"}},
+    {"match": {"thai_html": "กรุงเทพมหานคร ๑๒๓"}},
     {"match_phrase": {"code": "http request"}},
     {"prefix": {"tag": "t1"}},
     {"exists": {"field": "title"}},
