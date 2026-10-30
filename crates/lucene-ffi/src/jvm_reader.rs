@@ -138,8 +138,9 @@ use std::sync::Arc;
 /// similarity table in front of a request ([`crate::jvm_similarity`]); 52,
 /// the collapsed search (`ffi_jvm_reader_search_collapsed_alloc`,
 /// `terminate_after` too), the rescorer (`ffi_jvm_reader_rescore`) and the
-/// sort blob's `_shard_doc`, `half_float` and `unsigned_long` keys.
-pub const JVM_ABI_VERSION: u32 = 52;
+/// sort blob's `_shard_doc`, `half_float` and `unsigned_long` keys; 53, the
+/// similarity table's `classic` and `LegacyBM25` kinds.
+pub const JVM_ABI_VERSION: u32 = 53;
 
 /// Blob tag for a single `TermQuery`.
 pub const QUERY_TERM: u8 = 0;

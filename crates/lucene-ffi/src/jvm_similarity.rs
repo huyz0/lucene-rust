@@ -2,7 +2,8 @@
 //! `SimilarityService.PerFieldSimilarity` (a `PerFieldSimilarityWrapper`)
 //! unwrapped, for every field the query scores, to the Lucene similarity its
 //! mapping names -- `BM25` with its parameters, `boolean`, `DFR`, `IB`,
-//! `DFI`, `LMDirichlet`, `LMJelinekMercer`. A field the table leaves out
+//! `DFI`, `LMDirichlet`, `LMJelinekMercer`, `LegacyBM25`, and Lucene's
+//! `ClassicSimilarity`. A field the table leaves out
 //! scores with the default `BM25Similarity`.
 //!
 //! ```text
@@ -18,6 +19,8 @@
 //!                        discount_overlaps: u8
 //!     5 LMDirichlet      mu: f32, discount_overlaps: u8
 //!     6 LMJelinekMercer  lambda: f32, discount_overlaps: u8
+//!     7 classic          discount_overlaps: u8
+//!     8 LegacyBM25       k1: f32, b: f32, discount_overlaps: u8
 //!   normalization: u8 (0 none, 1 H1, 2 H2, 3 H3, 4 Z), then its f32 unless none
 //! ```
 //!
@@ -27,9 +30,10 @@
 use std::sync::Arc;
 
 use lucene_search::similarities::{
-    AfterEffect, BasicModel, Bm25Similarity, BooleanSimilarity, CollectionModel, DfiSimilarity,
-    DfrSimilarity, Distribution, IbSimilarity, Independence, Lambda, LmDirichletSimilarity,
-    LmJelinekMercerSimilarity, Normalization, PerFieldSimilarity, Similarity,
+    AfterEffect, BasicModel, Bm25Similarity, BooleanSimilarity, ClassicSimilarity, CollectionModel,
+    DfiSimilarity, DfrSimilarity, Distribution, IbSimilarity, Independence, Lambda,
+    LegacyBm25Similarity, LmDirichletSimilarity, LmJelinekMercerSimilarity, Normalization,
+    PerFieldSimilarity, Similarity,
 };
 
 use crate::error::{set_last_error, FfiStatus};
@@ -49,6 +53,8 @@ const IB: u8 = 3;
 const DFI: u8 = 4;
 const LM_DIRICHLET: u8 = 5;
 const LM_JELINEK_MERCER: u8 = 6;
+const CLASSIC: u8 = 7;
+const LEGACY_BM25: u8 = 8;
 
 fn bad(message: impl Into<String>) -> FfiStatus {
     set_last_error(format!("similarity table: {}", message.into()));
@@ -144,6 +150,11 @@ fn similarity(c: &mut Cursor<'_>) -> Result<Arc<dyn Similarity>, FfiStatus> {
                     .map_err(bad)?,
             )
         }
+        CLASSIC => Arc::new(ClassicSimilarity::new(discount(c)?)),
+        LEGACY_BM25 => {
+            let (k1, b) = (f32_of(c)?, f32_of(c)?);
+            Arc::new(LegacyBm25Similarity::new(k1, b, discount(c)?).map_err(bad)?)
+        }
         k => return Err(bad(format!("unknown similarity {k}"))),
     })
 }
@@ -196,6 +207,7 @@ mod tests {
         let ib = [&[IB, 1, 1, 4][..], &f(0.3), &[1]].concat();
         let lmd = [&[LM_DIRICHLET][..], &f(1000.0), &[1]].concat();
         let lmj = [&[LM_JELINEK_MERCER][..], &f(0.3), &[1]].concat();
+        let legacy = [&[LEGACY_BM25][..], &f(1.5), &f(0.6), &[1]].concat();
         let blob = table(&[
             ("a", &bm25),
             ("b", &[BOOLEAN]),
@@ -204,9 +216,11 @@ mod tests {
             ("e", &[DFI, 2, 1]),
             ("f", &lmd),
             ("g", &lmj),
+            ("h", &[CLASSIC, 0]),
+            ("i", &legacy),
         ]);
         let sims = decode(&mut Cursor::new(&blob)).unwrap();
-        let names: Vec<&str> = ["a", "b", "c", "d", "e", "f", "g", "other"]
+        let names: Vec<&str> = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "other"]
             .iter()
             .map(|field| sims.get(field).simple_name())
             .collect();
@@ -220,12 +234,15 @@ mod tests {
                 "DFISimilarity",
                 "LMDirichletSimilarity",
                 "LMJelinekMercerSimilarity",
+                "ClassicSimilarity",
+                "LegacyBM25Similarity",
                 "BM25Similarity",
             ]
         );
         use lucene_index::similarity::NormSimilarity as _;
         let a = sims.get("a").as_bm25("a").unwrap();
         assert_eq!((a.k1(), a.b(), a.discount_overlaps()), (2.0, 0.5, false));
+        assert!(!sims.get("h").discount_overlaps());
         assert!(!sims.is_default_bm25());
     }
 
@@ -250,7 +267,8 @@ mod tests {
         let lmd = [&[LM_DIRICHLET][..], &f(-1.0), &[1]].concat();
         let lmj = [&[LM_JELINEK_MERCER][..], &f(1.5), &[1]].concat();
         let flag = [&[DFI, 0][..], &[2]].concat();
-        for spec in [lmd, lmj, flag] {
+        let legacy = [&[LEGACY_BM25][..], &f(-1.0), &f(0.5), &[1]].concat();
+        for spec in [lmd, lmj, flag, legacy, vec![CLASSIC, 3]] {
             assert!(decode(&mut Cursor::new(&table(&[("a", &spec)]))).is_err());
         }
         assert!(decode(&mut Cursor::new(&(MAX_FIELDS as i32 + 1).to_le_bytes())).is_err());
