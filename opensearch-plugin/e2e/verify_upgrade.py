@@ -208,8 +208,9 @@ def serve_all(label, plugin, stock, prefix="", merged=False):
     # Once a force merge has dropped every deletion, OpenSearch answers a term's total without
     # counting (shortcutTotalHitCount), which leaves a count limit of `size`: past it Lucene's
     # comparator skips, which a nested key does not natively, so such a sort falls back.
-    native += run_rows(prefix + "nest", vo.nested_rows(), label, plugin, stock, 1,
-                       expect_override="native|sort_nested" if merged else None)
+    # Rows that stay in Java anyway (an aggregation it cannot run) keep their own reason.
+    nest = [(n, b, "native|sort_nested" if merged and e == "native" else e) for n, b, e in vo.nested_rows()]
+    native += run_rows(prefix + "nest", nest, label, plugin, stock, 1)
     # The k-NN plugin's codec: the whole reader falls back, text queries included.
     text = [(n, b, e) for n, b, e in vo.matrix()[:8]]
     native += run_rows(prefix + "knn", text, label, plugin, stock, 1, expect_override="native_open_failed")

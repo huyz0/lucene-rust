@@ -1517,7 +1517,7 @@ impl NestedColumn<'_> {
 
 /// A [`NestedSort`]'s query over one segment, deletions ignored: its
 /// documents, ascending.
-fn nested_docs(seg: &OpenSegment<'_>, q: &BooleanQuery) -> Result<Vec<i32>> {
+pub(crate) fn nested_docs(seg: &OpenSegment<'_>, q: &BooleanQuery) -> Result<Vec<i32>> {
     let rewritten = crate::multi_segment::rewrite_points_ranges(q, std::slice::from_ref(seg));
     let q = rewritten.as_ref().unwrap_or(q);
     let clause = crate::aggs::lone_clause(q);

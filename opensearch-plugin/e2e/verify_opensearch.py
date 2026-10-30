@@ -1254,6 +1254,13 @@ def nested_rows():
     add("nested then n", {"query": {"match": {"body": "xi"}}, "sort": [{"props.w": {"order": "asc", "nested": {"path": "props"}}}, {"n": "desc"}]}, "native")
     add("nested search_after", {"query": {"match": {"body": "alpha"}}, "sort": [{"props.v": {"order": "asc", "mode": "min", "nested": {"path": "props"}}}, {"n": "asc"}], "search_after": [0, 500]}, "native")
     add("nested with aggs", {"query": {"match": {"body": "omicron"}}, "sort": ns("props.v", "asc", "max"), "aggs": {"t": {"terms": {"field": "tag"}}}}, "native")
+    # `nested` and `reverse_nested` aggregations: the block join over the same documents.
+    add("agg nested > terms > avg", {"size": 0, "query": {"match": {"body": "alpha"}}, "aggs": {"p": {"nested": {"path": "props"}, "aggs": {"k": {"terms": {"field": "props.k", "size": 5}, "aggs": {"w": {"avg": {"field": "props.w"}}}}, "v": {"max": {"field": "props.v"}}}}}}, "native")
+    add("agg terms > nested > stats", {"size": 0, "query": {"match": {"body": "beta gamma"}}, "aggs": {"t": {"terms": {"field": "tag", "size": 6}, "aggs": {"p": {"nested": {"path": "props"}, "aggs": {"i": {"stats": {"field": "props.i"}}, "v": {"value_count": {"field": "props.v"}}}}}}}}, "native")
+    add("agg nested > reverse_nested", {"size": 0, "query": {"match": {"body": "delta"}}, "aggs": {"p": {"nested": {"path": "props"}, "aggs": {"k": {"terms": {"field": "props.k", "size": 4}, "aggs": {"r": {"reverse_nested": {}, "aggs": {"t": {"terms": {"field": "tag", "size": 3}}, "n": {"avg": {"field": "n"}}}}}}, "r": {"reverse_nested": {}}}}}}, "native")
+    add("agg nested > filter, histogram and percentiles", {"size": 0, "aggs": {"p": {"nested": {"path": "props"}, "aggs": {"f": {"filter": {"term": {"props.k": "alpha"}}, "aggs": {"s": {"sum": {"field": "props.f"}}}}, "h": {"histogram": {"field": "props.v", "interval": 25}}, "q": {"percentiles": {"field": "props.w"}}, "c": {"cardinality": {"field": "props.k"}}}}}}, "native")
+    add("agg global > nested and terms > nested", {"size": 0, "query": {"match": {"body": "epsilon"}}, "aggs": {"g": {"global": {}, "aggs": {"p": {"nested": {"path": "props"}, "aggs": {"v": {"min": {"field": "props.v"}}}}}}, "t": {"terms": {"field": "tag", "size": 2}, "aggs": {"p": {"nested": {"path": "props"}, "aggs": {"k": {"terms": {"field": "props.k"}}}}}}}}, "native")
+    add("agg nested > top_hits", {"size": 0, "query": {"match": {"body": "zeta"}}, "aggs": {"p": {"nested": {"path": "props"}, "aggs": {"h": {"top_hits": {"size": 2}}}}}}, "aggregations")
     add("nested no total", {"query": {"match": {"body": "rho"}}, "track_total_hits": False, "sort": ns("props.v", "asc", "min")}, "sort_nested")
     return rows
 
