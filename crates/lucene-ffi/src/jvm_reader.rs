@@ -127,9 +127,13 @@ use std::sync::Arc;
 /// `TOP_HITS` its sort (a sorted bucket's values and terms back), and the
 /// `HDR_PERCENTILES` node (each bucket's values back); 46, the `NESTED` and
 /// `REVERSE_NESTED` nodes; 47, the multi-term, doc-values, covering and
-/// distance-feature nodes ([`crate::jvm_queries`], 27-35); 48, the per-field
+/// distance-feature nodes ([`crate::jvm_queries`], 27-35); 48 (reserved);
+/// 49, `ffi_jvm_analyze_alloc` (an analyzer spec run over a text,
+/// `jvm_analysis.rs`), analyzed text fields in the engine writer's ops
+/// (`ffi_engine_prepare`), and the `SIGNIFICANT_TEXT` node (a refused one
+/// answers a count of -1); 50, taken by Track C; 51, the per-field
 /// similarity table in front of a request ([`crate::jvm_similarity`]).
-pub const JVM_ABI_VERSION: u32 = 48;
+pub const JVM_ABI_VERSION: u32 = 51;
 
 /// Blob tag for a single `TermQuery`.
 pub const QUERY_TERM: u8 = 0;

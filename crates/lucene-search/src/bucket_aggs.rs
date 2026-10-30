@@ -445,6 +445,11 @@ pub enum AggNode {
         missing_term: Option<Vec<u8>>,
         /// A numeric `missing`, in the column's encoding.
         missing: Option<i64>,
+        /// `significant_text` (`MapStringTermsAggregator` over
+        /// `SignificantTextCollectorSource`): the keys are the terms each
+        /// document's `_source` analyzes to, answered as terms; `field`,
+        /// `numeric` and the missing values are unused.
+        text: Option<Arc<crate::significant_text::TextSource>>,
         subs: Vec<AggNode>,
     },
     /// `nested` (`NestedAggregator`): each document collected in a bucket
@@ -773,6 +778,7 @@ impl AggNode {
             | AggNode::SignificantTerms {
                 field,
                 numeric: false,
+                text: None,
                 ..
             }
             | AggNode::Cardinality {
@@ -878,6 +884,9 @@ pub enum AggResult {
         buckets: Vec<(u64, Vec<(SignificantKey, u64)>)>,
         subs: Vec<AggResult>,
     },
+    /// What the Java aggregator would read differently (a `significant_text`
+    /// over a `_source` that is not JSON): the caller runs it in Java.
+    Refused(String),
     /// Per owning bucket, `None` when it collected nothing, else its hit
     /// count and top hits by score (`TopDocs`), global documents.
     TopHits(Vec<Option<(u64, Vec<crate::collector::ScoreDoc>)>>),
@@ -1115,6 +1124,8 @@ enum State {
         keys: Vec<(u32, i64)>,
         docs: Vec<u64>,
         subset: Vec<u64>,
+        /// `significant_text`'s terms and spotters.
+        text: Option<Box<TextState>>,
         subs: Vec<State>,
     },
     /// Each owning bucket's top hits, made when it collects its first
@@ -1167,11 +1178,12 @@ impl State {
             },
             AggNode::TopHits { .. } => State::TopHits(Vec::new()),
             AggNode::SortedTopHits { .. } => State::SortedHits(Vec::new()),
-            AggNode::SignificantTerms { .. } => State::Significant {
+            AggNode::SignificantTerms { text, .. } => State::Significant {
                 ords: FastMap::default(),
                 keys: Vec::new(),
                 docs: Vec::new(),
                 subset: Vec::new(),
+                text: text.as_ref().map(|_| Box::default()),
                 subs: subs(),
             },
             AggNode::Cardinality {
@@ -1364,7 +1376,30 @@ struct Leaf<'a> {
     fed: Option<Box<FedSegment<'a>>>,
     /// A `nested` or `reverse_nested`'s block join over the segment.
     nested: Option<Box<NestedLeaf>>,
+    /// A `significant_text`'s stored `_source`.
+    text: Option<Box<TextLeaf<'a>>>,
     subs: Vec<Leaf<'a>>,
+}
+
+/// One segment of a `significant_text`: its reader and `_source`'s field
+/// number (`None`: no document of the segment stores one).
+struct TextLeaf<'a> {
+    reader: &'a SegmentReader,
+    source: Option<i32>,
+}
+
+/// A `significant_text`'s terms across segments: each term's key (its
+/// index in `terms`, first collected first), each owning bucket's
+/// `DuplicateByteSequenceSpotter` when de-duplicating, and the first
+/// `_source` Java would read differently (the aggregation then runs in
+/// Java).
+#[derive(Default)]
+struct TextState {
+    keys: HashMap<Vec<u8>, i64>,
+    terms: Vec<Vec<u8>>,
+    spotters: Vec<Option<Box<crate::significant_text::Spotter>>>,
+    scratch: Vec<Vec<u8>>,
+    refused: Option<String>,
 }
 
 /// One segment of a `nested` (`children` and the buffer) or a
@@ -1713,6 +1748,7 @@ fn open_leaf<'a>(
             }
             Col::Values(aggs::open_values(reader, field)?, bound.is_some())
         }
+        AggNode::SignificantTerms { text: Some(_), .. } => Col::None,
         AggNode::Cardinality {
             field,
             kind: CardinalityKind::Keyword,
@@ -1797,6 +1833,15 @@ fn open_leaf<'a>(
             })
         }),
         nested: nested_leaf(node, view.seg)?,
+        text: match node {
+            AggNode::SignificantTerms { text: Some(_), .. } => Some(Box::new(TextLeaf {
+                reader: view.reader,
+                source: crate::reader::LeafReader::field_infos(view.reader)
+                    .field_by_name(crate::significant_text::SOURCE_FIELD)
+                    .map(|fi| fi.number),
+            })),
+            _ => None,
+        },
         subs,
     })
 }
@@ -2684,6 +2729,70 @@ fn collect(
             }
         }
         (
+            AggNode::SignificantTerms {
+                text: Some(source), ..
+            },
+            State::Significant {
+                ords,
+                keys,
+                docs,
+                subset,
+                text: Some(st),
+                subs,
+            },
+        ) => {
+            *slot(subset, owning as usize) += 1;
+            if st.refused.is_some() {
+                return Ok(());
+            }
+            let Some(tl) = leaf.text.as_deref() else {
+                return Err(crate::Error::TermsAggType(
+                    "significant_text without its segment".to_string(),
+                ));
+            };
+            let bytes = match tl.source {
+                Some(number) => {
+                    let mut v = crate::significant_text::SourceVisitor::new(number);
+                    tl.reader.visit_stored_document(doc, &mut v)?;
+                    v.bytes
+                }
+                None => None,
+            };
+            let TextState {
+                keys: dict,
+                terms,
+                spotters,
+                scratch,
+                refused,
+            } = &mut **st;
+            let mut spotter = if source.dedup {
+                Some(slot(spotters, owning as usize).get_or_insert_with(Box::default))
+            } else {
+                None
+            };
+            let read = source.terms(
+                bytes.as_deref(),
+                spotter.as_deref_mut().map(|s| &mut **s),
+                scratch,
+            );
+            if let Some(s) = spotter {
+                s.start_new_sequence();
+            }
+            if let Err(crate::significant_text::Refused(why)) = read {
+                *refused = Some(why);
+                return Ok(());
+            }
+            for term in scratch.drain(..) {
+                let next = terms.len() as i64;
+                let key = *dict.entry(term).or_insert_with_key(|t| {
+                    terms.push(t.clone());
+                    next
+                });
+                let ord = keyed_ord(ords, keys, owning, key);
+                collect_bucket(node, docs, subs, &mut leaf.subs, doc, ord)?;
+            }
+        }
+        (
             AggNode::SignificantTerms { numeric, .. },
             State::Significant {
                 ords,
@@ -2691,6 +2800,7 @@ fn collect(
                 docs,
                 subset,
                 subs,
+                ..
             },
         ) => {
             // `SignificantTermsResults.wrapCollector`: every document the
@@ -3893,10 +4003,14 @@ fn finish(
                 keys,
                 docs,
                 subset,
+                text,
                 subs: sub_states,
                 ..
             },
         ) => {
+            if let Some(why) = text.as_ref().and_then(|t| t.refused.clone()) {
+                return Ok(AggResult::Refused(why));
+            }
             let at_owner: FastMap<u32, usize> =
                 owners.iter().enumerate().map(|(i, &o)| (o, i)).collect();
             // Each owner's buckets, first collected first.
@@ -3925,7 +4039,10 @@ fn finish(
                 for &b in kept {
                     // FBS: `keys` is the bucket list, and `get` is bounds-checked.
                     let key = keys.get(b as usize).map_or(0, |k| k.1);
-                    let key = if *as_terms {
+                    let key = if let Some(t) = &text {
+                        // FBS: `key` indexes `terms`, and `get` is bounds-checked.
+                        SignificantKey::Term(t.terms.get(key as usize).cloned().unwrap_or_default())
+                    } else if *as_terms {
                         SignificantKey::Term(match (inserted, missing_term) {
                             (Some((_, past)), Some(m)) if key == past => m.clone(),
                             _ => terms.term(globals.get(field)?, field, key)?,
@@ -4364,6 +4481,7 @@ mod tests {
             composite: None,
             fed: None,
             nested: None,
+            text: None,
             subs: Vec::new(),
         }
     }
@@ -6623,6 +6741,7 @@ mod tests {
                     terms: false,
                     missing_term: None,
                     missing: None,
+                    text: None,
                     subs: vec![],
                 }];
                 let slices: Vec<Vec<usize>> = vec![
