@@ -299,7 +299,9 @@ fn confusion_matrix_skips_what_it_cannot_evaluate() {
         let m = ConfusionMatrixGenerator::get_confusion_matrix(&index, &none, "cat", "text", 0)
             .unwrap();
         assert_eq!(m.number_of_evaluated_docs(), 0);
-        assert!(m.avg_classification_time().is_nan());
+        // time / 0, as Java divides: NaN, or infinity once a call took a
+        // millisecond (a slow, instrumented build).
+        assert!(!m.avg_classification_time().is_finite());
         let m =
             ConfusionMatrixGenerator::get_confusion_matrix(&index, &knn, "cat", "nope", 0).unwrap();
         assert_eq!(m.number_of_evaluated_docs(), 0);
