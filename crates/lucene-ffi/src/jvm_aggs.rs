@@ -17,6 +17,7 @@
 //!           | PERCENTILES value_kind:u8 compression:f64 field   (a t-digest per bucket;
 //!                                              compression in (0, MAX_COMPRESSION])
 //!           | TOP_HITS top_n:i32             (by score; top_n > 0)
+//!           | SIGNIFICANT_TERMS field         (a keyword's collection only)
 //!           | TERMS field shard_size:i32 order:u8 flags:u8 [missing:bytes]
 //!                   [ords:i64 words:i32 word:i64*] nodes
 //!                  (flag 1: `min_doc_count: 0`; 2: a `missing` term follows;
@@ -65,6 +66,9 @@
 //!                                              each bucket's top hits by score,
 //!                                              global documents (0: the bucket
 //!                                              collected nothing)
+//! SIGNIFICANT  n:i32 (subset:i64 count:i32 (ord:i64 docs:i64)*)*n  each bucket's
+//!                                              documents, and its global ordinals
+//!                                              in first-collected order
 //! CARDINALITY  n:i32 (len:i32 sketch)*n       each bucket's `HyperLogLogPlusPlus`
 //!                                              as `writeTo` writes it (`len` 0:
 //!                                              the bucket saw nothing)
@@ -113,6 +117,7 @@ const AGG_MISSING: u8 = 9;
 const AGG_COMPOSITE: u8 = 10;
 const AGG_PERCENTILES: u8 = 11;
 const AGG_TOP_HITS: u8 = 12;
+const AGG_SIGNIFICANT_TERMS: u8 = 13;
 /// The largest t-digest compression a tree may ask for: a digest holds
 /// about `12 * compression` doubles.
 const MAX_COMPRESSION: f64 = 10_000.0;
@@ -324,6 +329,7 @@ fn node_of(
                 compression,
             }
         }
+        AGG_SIGNIFICANT_TERMS => AggNode::SignificantTerms { field: field(c)? },
         AGG_TOP_HITS => {
             let top_n = c.i32()?;
             let Ok(top_n @ 1..) = usize::try_from(top_n) else {
@@ -680,6 +686,17 @@ pub(crate) fn encode_result(r: &AggResult, out: &mut Vec<u8>) -> Result<(), FfiS
                 for (m, w) in merged.chain(buffered) {
                     out.extend_from_slice(&m.to_bits().to_le_bytes());
                     out.extend_from_slice(&w.to_bits().to_le_bytes());
+                }
+            }
+        }
+        AggResult::Significant(per) => {
+            put_i32(out, per.len())?;
+            for (subset, buckets) in per {
+                put_u64(out, *subset);
+                put_i32(out, buckets.len())?;
+                for &(ord, docs) in buckets {
+                    out.extend_from_slice(&ord.to_le_bytes());
+                    put_u64(out, docs);
                 }
             }
         }
@@ -1514,6 +1531,30 @@ pub(crate) mod tests {
         for (d, s) in [(7i32, 2.5f32), (1, 1.0)] {
             want.extend_from_slice(&d.to_le_bytes());
             want.extend_from_slice(&s.to_bits().to_le_bytes());
+        }
+        assert_eq!(out, want);
+    }
+
+    #[test]
+    fn significant_terms_decode_and_encode() {
+        let mut b = vec![1u8, AGG_SIGNIFICANT_TERMS];
+        string(&mut b, "kw");
+        b.extend_from_slice(&[0u8, 0, 0, 0, 0]);
+        let tree = decode_tree(&b).unwrap();
+        assert!(matches!(&tree.nodes[0], AggNode::SignificantTerms { field } if field == "kw"));
+        let mut out = Vec::new();
+        encode_result(
+            &AggResult::Significant(vec![(0, vec![]), (4, vec![(9, 3), (2, 1)])]),
+            &mut out,
+        )
+        .unwrap();
+        let mut want = 2i32.to_le_bytes().to_vec();
+        want.extend_from_slice(&0u64.to_le_bytes());
+        want.extend_from_slice(&0i32.to_le_bytes());
+        want.extend_from_slice(&4u64.to_le_bytes());
+        want.extend_from_slice(&2i32.to_le_bytes());
+        for v in [9i64, 3, 2, 1] {
+            want.extend_from_slice(&v.to_le_bytes());
         }
         assert_eq!(out, want);
     }
