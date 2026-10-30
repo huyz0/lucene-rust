@@ -1,23 +1,26 @@
-//! `org.apache.lucene.analysis.th`: `ThaiTokenizer` and `ThaiAnalyzer` --
-//! **not supported by design**: they refuse with the
-//! `UnsupportedOperationException` Lucene raises on a JRE without Thai
-//! dictionary segmentation.
+//! `org.apache.lucene.analysis.th`: `ThaiTokenizer` and `ThaiAnalyzer`.
 //!
 //! `ThaiTokenizer` splits sentences with the JDK's sentence iterator
 //! ([`crate::util::sentence_break`], ported) and words with
 //! `BreakIterator.getWordInstance(th)`, the JDK's dictionary-based iterator.
-//! Its output is a function of the JDK's Thai word list (`thai_dict`, in
-//! `java.base`), which is GPL-2.0-with-Classpath-Exception data: it cannot be
-//! vendored into this Apache-2.0 library, nor re-derived from the JDK's
-//! answers without copying it, and no other dictionary (ICU's, LibThai's)
-//! splits Thai the same way. So the port does what Lucene does on a JRE whose
-//! word iterator does not segment Thai: [`DBBI_AVAILABLE`] is `false`, and
-//! constructing the tokenizer -- directly, through [`ThaiAnalyzer`] or the
-//! `thai` factory -- is an [`AnalysisError::UnsupportedOperation`] with
+//! The JDK's Thai word list (`thai_dict`, in `java.base`) is
+//! GPL-2.0-with-Classpath-Exception data: it cannot be vendored into this
+//! Apache-2.0 library, nor re-derived from the JDK's answers without copying
+//! it (`docs/licences.md`). So the word iterator here is pluggable
+//! ([`ThaiWordBreaker`]): `lucene-analysis-icu` installs ICU's word iterator
+//! over ICU's Unicode-licensed Thai dictionary ([`install_word_breaker`]),
+//! the dictionary Lucene's `ICUTokenizer`, Meilisearch's charabia (through
+//! ICU4X) and Typesense segment Thai with. The sentence loop and the
+//! letter-or-digit filter are Lucene's; the word boundaries inside Thai runs
+//! are ICU's, which do not always match the JDK's (a different word list:
+//! `docs/parity/analysis-lang.md`).
+//!
+//! Without an installed iterator the port does what Lucene does on a JRE
+//! whose word iterator does not segment Thai: [`dbbi_available`] is `false`,
+//! and constructing the tokenizer -- directly, through [`ThaiAnalyzer`] or
+//! the `thai` factory -- is an [`AnalysisError::UnsupportedOperation`] with
 //! Java's message. `ThaiAnalyzer`'s stop set and `normalize` chain need no
-//! dictionary and work. Thai text can be segmented with ICU's tokenizer
-//! (`analysis-icu`, M12 T12.4) instead, as Lucene's own documentation
-//! suggests.
+//! dictionary and always work.
 //!
 //! Lucene 10.6 (branch_10_6, not in the pinned 10.5.2 jars) adds Thai
 //! components that need no dictionary, ported here as standalone pieces:
@@ -27,7 +30,7 @@
 //! change the analyzer's output and wait for the 10.6.0 release, so
 //! [`ThaiAnalyzer`] stays 10.5.2's.
 
-use std::sync::{Arc, LazyLock};
+use std::sync::{Arc, LazyLock, OnceLock};
 
 use crate::attributes::StateSlot;
 use crate::charfilter::OffsetCorrections;
@@ -35,13 +38,39 @@ use crate::core_analysis::DecimalDigitFilter;
 use crate::reader::{CharFilter, CharReader};
 use crate::token_stream::{TokenFilter, TokenStream};
 use crate::util::stemmer_util::delete;
+use crate::util::{Segmenter, SegmentingBase, SegmentingTokenizer};
 use crate::{AnalysisError, CharArraySet, LowerCaseFilter};
 
 use super::{comment_set, CharStemmer, StemFilter};
 
-/// `ThaiTokenizer.DBBI_AVAILABLE`: whether the JRE's word iterator
-/// segments Thai with a dictionary -- never, here (see the module docs).
-pub const DBBI_AVAILABLE: bool = false;
+/// A word `BreakIterator` over one sentence (Java's `CharArrayIterator`
+/// wrapper: positions are relative to the sentence's first unit).
+pub trait ThaiWordBreaker: Send {
+    /// `setText`: positions the iterator on the sentence's first boundary.
+    fn set_text(&mut self, text: &[u16]);
+    /// `current()`.
+    fn current(&self) -> i32;
+    /// `next()`: the following boundary, [`DONE`] past the last.
+    fn next(&mut self) -> i32;
+}
+
+/// `BreakIterator.DONE`.
+pub const DONE: i32 = -1;
+
+static WORD_BREAKER: OnceLock<fn() -> Box<dyn ThaiWordBreaker>> = OnceLock::new();
+
+/// Installs the Thai word iterator `ThaiTokenizer` clones per tokenizer
+/// (`proto`). The first installation wins; `false` when one was installed
+/// already.
+pub fn install_word_breaker(new_breaker: fn() -> Box<dyn ThaiWordBreaker>) -> bool {
+    WORD_BREAKER.set(new_breaker).is_ok()
+}
+
+/// `ThaiTokenizer.DBBI_AVAILABLE`: whether a word iterator that segments
+/// Thai is installed (see the module docs).
+pub fn dbbi_available() -> bool {
+    WORD_BREAKER.get().is_some()
+}
 
 /// The message of `ThaiTokenizer`'s `UnsupportedOperationException`.
 pub const UNSUPPORTED: &str = "This JRE does not have support for Thai segmentation";
@@ -50,26 +79,108 @@ pub const UNSUPPORTED: &str = "This JRE does not have support for Thai segmentat
 pub static DEFAULT_STOP_SET: LazyLock<Arc<CharArraySet>> =
     LazyLock::new(|| comment_set(include_str!("stopwords/th_stopwords.txt")));
 
-/// `ThaiTokenizer`: never constructed (see the module docs).
-#[derive(Debug)]
-pub struct ThaiTokenizer {
-    _never: (),
+/// The `ThaiTokenizer` half of `SegmentingTokenizerBase`: each sentence's
+/// words from the installed [`ThaiWordBreaker`], those not starting with a
+/// letter or digit skipped.
+pub struct ThaiSegmenter {
+    word_breaker: Box<dyn ThaiWordBreaker>,
+    sentence_start: usize,
+    sentence_end: usize,
 }
 
-impl ThaiTokenizer {
-    /// `new ThaiTokenizer()`: Java's `UnsupportedOperationException` for a
-    /// JRE without Thai segmentation.
-    pub fn new() -> Result<Self, AnalysisError> {
-        if DBBI_AVAILABLE {
-            unreachable!("no Thai dictionary is shipped");
-        }
-        Err(AnalysisError::UnsupportedOperation(UNSUPPORTED.to_string()))
+impl std::fmt::Debug for ThaiSegmenter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ThaiSegmenter")
+            .field("sentence_start", &self.sentence_start)
+            .field("sentence_end", &self.sentence_end)
+            .finish_non_exhaustive()
     }
 }
 
+impl Segmenter for ThaiSegmenter {
+    fn set_next_sentence(
+        &mut self,
+        base: &SegmentingBase,
+        sentence_start: usize,
+        sentence_end: usize,
+    ) -> Result<(), AnalysisError> {
+        self.sentence_start = sentence_start;
+        self.sentence_end = sentence_end;
+        let sentence = base
+            .buffer()
+            .get(sentence_start..sentence_end)
+            .unwrap_or_default();
+        self.word_breaker.set_text(sentence);
+        Ok(())
+    }
+
+    fn increment_word(&mut self, base: &mut SegmentingBase) -> Result<bool, AnalysisError> {
+        let mut start = self.word_breaker.current();
+        if start == DONE {
+            return Ok(false); // BreakIterator exhausted
+        }
+        // find the next set of boundaries, skipping over non-tokens
+        let mut end = self.word_breaker.next();
+        let sentence = base
+            .buffer()
+            .get(self.sentence_start..self.sentence_end)
+            .unwrap_or_default();
+        while end != DONE && !starts_with_letter_or_digit(sentence, start) {
+            start = end;
+            end = self.word_breaker.next();
+        }
+        if end == DONE {
+            return Ok(false); // BreakIterator exhausted
+        }
+        let (Ok(s), Ok(e)) = (usize::try_from(start), usize::try_from(end)) else {
+            return Ok(false);
+        };
+        let term = sentence.get(s..e).unwrap_or_default().to_vec();
+        let at = base.offset().saturating_add(self.sentence_start as i32);
+        let start_offset = base.correct_offset(at.saturating_add(start));
+        let end_offset = base.correct_offset(at.saturating_add(end));
+        let a = base.attributes_mut();
+        a.clear_attributes();
+        a.set_term_utf16(&term);
+        a.set_offset(start_offset, end_offset)?;
+        Ok(true)
+    }
+}
+
+/// `Character.isLetterOrDigit(Character.codePointAt(buffer, sentenceStart +
+/// start, sentenceEnd))`.
+fn starts_with_letter_or_digit(sentence: &[u16], start: i32) -> bool {
+    let Some(rest) = usize::try_from(start).ok().and_then(|s| sentence.get(s..)) else {
+        return false;
+    };
+    match char::decode_utf16(rest.iter().copied()).next() {
+        Some(Ok(c)) => crate::java_character::is_letter_or_digit(u32::from(c)),
+        Some(Err(e)) => {
+            crate::java_character::is_letter_or_digit(u32::from(e.unpaired_surrogate()))
+        }
+        None => false,
+    }
+}
+
+/// `ThaiTokenizer`.
+pub type ThaiTokenizer = SegmentingTokenizer<ThaiSegmenter>;
+
+/// `new ThaiTokenizer()`: Java's `UnsupportedOperationException` when no
+/// Thai word iterator is installed.
+pub fn thai_tokenizer() -> Result<ThaiTokenizer, AnalysisError> {
+    let Some(new_breaker) = WORD_BREAKER.get() else {
+        return Err(AnalysisError::UnsupportedOperation(UNSUPPORTED.to_string()));
+    };
+    Ok(SegmentingTokenizer::new(ThaiSegmenter {
+        word_breaker: new_breaker(),
+        sentence_start: 0,
+        sentence_end: 0,
+    }))
+}
+
 /// `ThaiAnalyzer`: `ThaiTokenizer`, `LowerCaseFilter`,
-/// `DecimalDigitFilter`, `StopFilter`. Its token streams refuse (see the
-/// module docs); `normalize` works.
+/// `DecimalDigitFilter`, `StopFilter`. Its token streams refuse without an
+/// installed word iterator (see the module docs); `normalize` always works.
 #[derive(Debug, Clone)]
 pub struct ThaiAnalyzer {
     stopwords: Arc<CharArraySet>,
@@ -101,8 +212,10 @@ impl crate::analyzer::AnalyzerDefinition for ThaiAnalyzer {
         &self,
         _field: &str,
     ) -> Result<crate::analyzer::TokenStreamComponents, AnalysisError> {
-        let _ = ThaiTokenizer::new()?;
-        unreachable!("ThaiTokenizer::new always refuses")
+        let result = DecimalDigitFilter::new(LowerCaseFilter::new(thai_tokenizer()?));
+        Ok(crate::analyzer::TokenStreamComponents::new(
+            crate::StopFilter::new(result, Arc::clone(&self.stopwords)),
+        ))
     }
 
     fn normalize(
@@ -612,7 +725,11 @@ mod tests {
 
     #[test]
     fn the_tokenizer_refuses_as_on_a_jre_without_thai_segmentation() {
-        let e = ThaiTokenizer::new().unwrap_err();
+        // No word iterator is installed in this crate's tests.
+        assert!(!dbbi_available());
+        let Err(e) = thai_tokenizer() else {
+            panic!("no word iterator is installed")
+        };
         assert_eq!(e, AnalysisError::UnsupportedOperation(UNSUPPORTED.into()));
         assert_eq!(
             e.to_string(),

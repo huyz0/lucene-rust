@@ -427,9 +427,9 @@ impl TokenizerFactory for SimplePatternSplitTokenizerFactory {
 
 factory_struct! {
     /// `org.apache.lucene.analysis.th.ThaiTokenizerFactory` (`thai`): the
-    /// arguments are Java's; creating the tokenizer is `ThaiTokenizer`'s
-    /// `UnsupportedOperationException` (no Thai dictionary, see
-    /// [`crate::lang::th`]).
+    /// arguments are Java's; without an installed Thai word iterator,
+    /// creating the tokenizer is `ThaiTokenizer`'s
+    /// `UnsupportedOperationException` (see [`crate::lang::th`]).
     ThaiTokenizerFactory {}
 }
 analysis_factory!(ThaiTokenizerFactory);
@@ -446,8 +446,7 @@ impl FactoryClass for ThaiTokenizerFactory {
 
 impl TokenizerFactory for ThaiTokenizerFactory {
     fn create(&self) -> Result<Box<dyn TokenStream>, AnalysisError> {
-        crate::lang::th::ThaiTokenizer::new()?;
-        unreachable!("ThaiTokenizer::new always refuses")
+        Ok(Box::new(crate::lang::th::thai_tokenizer()?))
     }
 }
 
@@ -572,7 +571,8 @@ mod tests {
         }
         let k = build::<KeywordTokenizerFactory>(&[("maxTokenLen", "10")]).unwrap();
         assert_eq!(k.max_token_len(), 10);
-        // Thai configures as in Java and refuses to create its tokenizer.
+        // Thai configures as in Java and, without an installed word
+        // iterator, refuses to create its tokenizer.
         let thai = build::<ThaiTokenizerFactory>(&[]).unwrap();
         let e = thai.create().err().unwrap();
         assert_eq!(

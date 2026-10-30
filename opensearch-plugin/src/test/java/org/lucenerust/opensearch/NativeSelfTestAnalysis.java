@@ -127,6 +127,18 @@ final class NativeSelfTestAnalysis {
     static Map<String, Analyzer> analyzers() throws Exception {
         Map<String, Analyzer> m = new LinkedHashMap<>();
         m.put("standard", new StandardAnalyzer());
+        m.put("rust_thai", new RustThaiAnalysis.RustThaiAnalyzer(ThaiAnalyzer.getDefaultStopSet()));
+        m.put("rust_thai, html strip, no stop words", new Analyzer() {
+            @Override
+            protected TokenStreamComponents createComponents(String fieldName) {
+                return new TokenStreamComponents(new RustThaiTokenizer());
+            }
+
+            @Override
+            protected java.io.Reader initReader(String fieldName, java.io.Reader reader) {
+                return new org.apache.lucene.analysis.charfilter.HTMLStripCharFilter(reader);
+            }
+        });
         StandardAnalyzer shortTokens = new StandardAnalyzer(EnglishAnalyzer.ENGLISH_STOP_WORDS_SET);
         shortTokens.setMaxTokenLength(7);
         m.put("standard english stop, max 7", shortTokens);
@@ -364,6 +376,55 @@ final class NativeSelfTestAnalysis {
         return sb.toString();
     }
 
+    /** Thai sentences, for how often rust_thai's words are Lucene's (the JDK dictionary's). */
+    static final String[] THAI = {
+        "การที่ได้ต้องแสดงว่างานดี",
+        "ภาษาไทยง่ายนิดเดียว",
+        "ประเทศไทยมีประชากรประมาณหกสิบหกล้านคน",
+        "กรุงเทพมหานครเป็นเมืองหลวงของประเทศไทย",
+        "ฉันชอบกินข้าวผัดกับไข่ดาว",
+        "นักเรียนกำลังอ่านหนังสือในห้องสมุด",
+        "รถไฟฟ้าวิ่งเร็วมากในตอนเช้า",
+        "โปรแกรมคอมพิวเตอร์ทำงานผิดพลาด",
+        "เขาไปเที่ยวทะเลเมื่อวานนี้",
+        "ราคาน้ำมันขึ้นอีกแล้ว ๑๒๓ บาท",
+    };
+
+    /** Lucene's ThaiAnalyzer and rust_thai side by side: Lucene's test words, and the agreement. */
+    static void thai(BiConsumer<Boolean, String> check) throws Exception {
+        Analyzer rust = new RustThaiAnalysis.RustThaiAnalyzer(ThaiAnalyzer.getDefaultStopSet());
+        // TestThaiAnalyzer.testOffsets and testStopWords: the JDK's and ICU's words agree here.
+        List<String> want = List.of("แสดง", "งาน", "ดี");
+        List<String> got = AnalyzerSpec.java(rust, "body", THAI[0]).tokens().stream().map(t -> t.term().utf8ToString()).toList();
+        check.accept(want.equals(got), "rust_thai splits Lucene's test sentence as Lucene does: " + got);
+        // The tokenizers alone: the same text kept (stop words aside, which drop different words
+        // when the splits differ), split the same way or not.
+        Analyzer luceneWords = new Analyzer() {
+            @Override
+            protected TokenStreamComponents createComponents(String fieldName) {
+                return new TokenStreamComponents(new org.apache.lucene.analysis.th.ThaiTokenizer());
+            }
+        };
+        Analyzer rustWords = new Analyzer() {
+            @Override
+            protected TokenStreamComponents createComponents(String fieldName) {
+                return new TokenStreamComponents(new RustThaiTokenizer());
+            }
+        };
+        int same = 0;
+        int total = 0;
+        for (String text : THAI) {
+            List<String> j = AnalyzerSpec.java(luceneWords, "body", text).tokens().stream().map(t -> t.term().utf8ToString()).toList();
+            List<String> r = AnalyzerSpec.java(rustWords, "body", text).tokens().stream().map(t -> t.term().utf8ToString()).toList();
+            check.accept(String.join("", j).equals(String.join("", r)), "rust_thai keeps the text Lucene keeps: " + j + " vs " + r);
+            total++;
+            if (j.equals(r)) same++;
+        }
+        System.out.printf("NativeSelfTest: rust_thai splits %d of %d Thai sentences as Lucene's ThaiAnalyzer does%n", same, total);
+        check.accept("ab\ufffdc".equals(RustThaiTokenizer.wellFormed("ab\ud800c")), "a lone surrogate becomes U+FFFD");
+        check.accept("a😀b".equals(RustThaiTokenizer.wellFormed("a😀b")), "a surrogate pair stays");
+    }
+
     /** Where two token streams part, for a failure message. */
     static String difference(AnalyzerSpec.Tokens java, AnalyzerSpec.Tokens rust) {
         if (rust == null) {
@@ -413,6 +474,7 @@ final class NativeSelfTestAnalysis {
                 "analyzer left in Java: " + e.getKey() + " (" + spec.reason() + ")"
             );
         }
+        thai(check);
         check.accept(AnalyzerSpec.encodable("a😀b"), "a surrogate pair is encodable");
         check.accept(AnalyzerSpec.encodable("a\ud83db") == false, "a lone surrogate is not");
     }

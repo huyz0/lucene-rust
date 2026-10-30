@@ -83,6 +83,8 @@ fn component(c: &mut Cursor<'_>) -> Result<Component, FfiStatus> {
 /// A component is `name: bytes`, `n: i32`, then `n` of `key: bytes`,
 /// `value: bytes`. Trailing bytes are an error.
 fn build(spec: &[u8]) -> Result<CustomAnalyzer, FfiStatus> {
+    // The `thai` tokenizer's word iterator: ICU's Thai dictionary.
+    lucene_analysis_icu::install_thai_word_breaker();
     let mut c = Cursor::new(spec);
     let version = c.u8()?;
     if version != SPEC_VERSION {
