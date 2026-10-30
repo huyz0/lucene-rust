@@ -84,6 +84,8 @@ public final class NativeAggregationTree {
     /** A prefix: the next node's {@code missing} value ({@code AGG_MISSING}). */
     static final byte MISSING = 9;
     static final byte COMPOSITE = 10;
+    static final byte NESTED = 15;
+    static final byte REVERSE_NESTED = 16;
     /** {@code date_histogram} unit codes, in the order {@code jvm_aggs.rs} lists them. */
     private static final Rounding.DateTimeUnit[] UNITS = {
         Rounding.DateTimeUnit.WEEK_OF_WEEKYEAR,
@@ -750,6 +752,50 @@ public final class NativeAggregationTree {
         }
     }
 
+    /** A {@code top_hits} anywhere in {@code nodes}: it reads scores. */
+    private static boolean scored(List<Node> nodes) {
+        for (Node n : nodes) {
+            if (n instanceof NativeTopHits.Node || scored(n.subs)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** A block join's filter (a nested path's type filter, or the non-nested one), or null. */
+    private static byte[] joinBlob(SearchContext ctx, Query q) throws java.io.IOException {
+        return q == null ? null : QueryEncoder.encode(ctx.searcher().rewrite(q), field -> true).blob();
+    }
+
+    /** {@code nested} ({@code children} set) or {@code reverse_nested}: one bucket per owner. */
+    static final class NestedNode extends FixedNode {
+        final byte[] parents;
+        final byte[] children;
+
+        NestedNode(AggregatorBase agg, List<Node> subs, byte[] parents, byte[] children) {
+            super(agg, subs, 1);
+            this.parents = parents;
+            this.children = children;
+        }
+
+        @Override
+        void write(ByteArrayOutputStream out) {
+            out.write(children == null ? REVERSE_NESTED : NESTED);
+            NativeAggregations.writeInt(out, parents.length);
+            out.writeBytes(parents);
+            if (children != null) {
+                NativeAggregations.writeInt(out, children.length);
+                out.writeBytes(children);
+            }
+            writeSubs(out);
+        }
+
+        @Override
+        InternalAggregation build(long[] docs, List<InternalAggregations> subs) throws ReflectiveOperationException {
+            return (children == null ? REVERSE_NESTED_CTOR : NESTED_CTOR).newInstance(agg.name(), docs[0], subs.get(0), agg.metadata());
+        }
+    }
+
     static final class GlobalNode extends FixedNode {
         GlobalNode(AggregatorBase agg, List<Node> subs) {
             super(agg, subs, 1);
@@ -945,6 +991,25 @@ public final class NativeAggregationTree {
                 return top ? new GlobalNode(agg, subs) : null;
             case AGGS + "metrics.TopHitsAggregatorFactory":
                 return NativeTopHits.node(agg);
+            case AGGS + "bucket.nested.NestedAggregatorFactory": {
+                // NestedAggregator itself (not the unmapped one), its parent filter the bitset
+                // producer's query; nothing below reads a score (Java hands a child its parent's).
+                if (aggClass.equals(AGGS + "bucket.nested.NestedAggregator") == false || NESTED_CTOR == null || scored(subs)) {
+                    return null;
+                }
+                byte[] parents = joinBlob(ctx, (Query) get(get(agg, "parentFilter"), "query"));
+                byte[] children = joinBlob(ctx, (Query) get(agg, "childFilter"));
+                return parents == null || children == null ? null : new NestedNode(agg, subs, parents, children);
+            }
+            case AGGS + "bucket.nested.ReverseNestedAggregatorFactory": {
+                if (aggClass.equals(AGGS + "bucket.nested.ReverseNestedAggregator") == false
+                    || REVERSE_NESTED_CTOR == null
+                    || scored(subs)) {
+                    return null;
+                }
+                byte[] parents = joinBlob(ctx, (Query) get(agg, "parentFilter"));
+                return parents == null ? null : new NestedNode(agg, subs, parents, null);
+            }
             case AGGS + "bucket.composite.CompositeAggregationFactory":
                 return top ? NativeComposite.node(ctx, agg, subs) : null;
             case AGGS + "bucket.filter.FilterAggregatorFactory": {
@@ -1302,6 +1367,20 @@ public final class NativeAggregationTree {
     );
     private static final Constructor<InternalAggregation> GLOBAL_CTOR = ctor(
         AGGS + "bucket.global.InternalGlobal",
+        String.class,
+        long.class,
+        InternalAggregations.class,
+        Map.class
+    );
+    private static final Constructor<InternalAggregation> NESTED_CTOR = ctor(
+        AGGS + "bucket.nested.InternalNested",
+        String.class,
+        long.class,
+        InternalAggregations.class,
+        Map.class
+    );
+    private static final Constructor<InternalAggregation> REVERSE_NESTED_CTOR = ctor(
+        AGGS + "bucket.nested.InternalReverseNested",
         String.class,
         long.class,
         InternalAggregations.class,

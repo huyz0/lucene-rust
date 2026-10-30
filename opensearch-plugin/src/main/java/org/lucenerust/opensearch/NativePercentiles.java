@@ -138,8 +138,13 @@ final class NativePercentiles {
                 // AbstractHDRPercentilesAggregator.getExistingOrNewHistogram, then collect's recordValue.
                 DoubleHistogram state = new DoubleHistogram(digits);
                 state.setAutoResize(true);
-                for (int v = 0; v < count; v++) {
-                    state.recordValue(in.getDouble());
+                try {
+                    for (int v = 0; v < count; v++) {
+                        state.recordValue(in.getDouble());
+                    }
+                } catch (ArrayIndexOutOfBoundsException e) {
+                    // A negative value, which the Java aggregator's histogram refuses as well.
+                    throw new JavaRefuses("lucene-rust: an HDR histogram refused a value", e);
                 }
                 out.add(
                     ranks
@@ -178,7 +183,7 @@ final class NativePercentiles {
             count(in, n);
             if (in.get() != 0) {
                 // MergingDigest.add on a NaN value, as the Java aggregator would have.
-                throw new IllegalArgumentException("Cannot add NaN to t-digest");
+                throw new JavaRefuses("Cannot add NaN to t-digest", null);
             }
             double[] keys = (double[]) get(agg, "keys");
             boolean keyed = (boolean) get(agg, "keyed");
