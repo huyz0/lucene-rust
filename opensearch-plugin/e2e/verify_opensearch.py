@@ -693,14 +693,17 @@ def same(a, b):
 def search_url(index, body):
     """`_search`, with a matrix row's `_params` (URL parameters) moved to the query string."""
     params = body.get("_params", "")
+    if body.get("_sequential"):
+        # One shard at a time as well: the shared hash races between shards too.
+        params += "&max_concurrent_shard_requests=1"
     return f"/{index}/_search?request_cache=false{params}", {k: v for k, v in body.items() if k not in ("_params", "_sequential")}
 
 
 def search(index, body):
-    """A matrix row's `_search`. A `_sequential` row runs with concurrent segment search off on
-    the index: OpenSearch's own answer to it races between slices (DeDuplicatingTokenFilter
-    hashes into one static MurmurHash3.Hash128 shared by every searching thread), so only a
-    one-slice search is a reference."""
+    """A matrix row's `_search`. A `_sequential` row runs one shard at a time and with
+    concurrent segment search off on the index: OpenSearch's own answer to it races between
+    threads (DeDuplicatingTokenFilter hashes into one static MurmurHash3.Hash128 shared by every
+    searching thread), so only a single-threaded search is a reference."""
     url, b = search_url(index, body)
     if not body.get("_sequential"):
         return req("POST", url, b)
