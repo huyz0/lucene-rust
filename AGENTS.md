@@ -186,6 +186,27 @@ perf|build|ci` + optional `(scope)` + lowercase description, and requires a
 `Co-Authored-By:` trailer. Single dev — work directly on `main`. See the
 **git-workflow** skill.
 
+## Finding code (cheapest first)
+
+Each tool gives the answer to a different kind of lookup for the fewest
+tokens (measured on this workspace):
+
+- **Java class → Rust file::symbol:** `docs/inventory/*.tsv`, one line.
+- **A unique name (type, Java class name, error variant):** ripgrep, through
+  the Grep tool or `rg -n -w Name crates`.
+- **Callers of a method with a common name (`add`, `get`, `next`, `read`,
+  `seek`) or a type question:** [lsp-cli](https://github.com/huyz0/lsp-cli)
+  over rust-analyzer. `lsp reference <file> --scope Type.method -p .
+  --output markdown` gave 19 exact hits for about 350 tokens, where
+  `rg '\.add\('` gave about 40k tokens. `lsp doc` returns the signature
+  without a Read, and `lsp outline <file> -p . --output markdown` costs
+  about 1.4k tokens for a 10k-line file.
+  - Always pass `-p <repo root>`: until huyz0/lsp-cli#1 ships, each crate
+    otherwise gets its own rust-analyzer, at about 4 GB each.
+  - The first query takes 20 to 40 s while rust-analyzer loads; later ones
+    take under 3 s.
+  - It needs `rustup component add rust-analyzer`.
+
 ## Where to look (task → skill)
 
 Skills are the process source of truth; `PLAN.md`/`docs/` are the deep-dives.
