@@ -58,6 +58,13 @@ record NativeRescore(
             } catch (IOException | RuntimeException e) {
                 return "rescore_query";
             }
+            // A root range or match_all that ContextIndexSearcher.rewrite resolved to OpenSearch's
+            // approximation (for the search's own size) matches only the documents it visits
+            // first: the rescore then scales the rest by query_weight alone, which the exact native
+            // query does not reproduce.
+            if (RustQueryPhaseSearcher.approximated(query)) {
+                return "rescore_approximate";
+            }
             QueryEncoder.Encoded enc = QueryEncoder.encode(query, defaultSimilarity, searcher.getTopReaderContext());
             if (enc.fallbackReason() != null) {
                 return "rescore_" + enc.fallbackReason();
