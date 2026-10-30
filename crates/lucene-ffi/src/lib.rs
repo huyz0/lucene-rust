@@ -292,6 +292,7 @@ mod ffm_bridge;
 mod handle;
 mod highlighter;
 mod jvm_aggs;
+mod jvm_analysis;
 mod jvm_fetch;
 mod jvm_function_score;
 mod jvm_nodes;

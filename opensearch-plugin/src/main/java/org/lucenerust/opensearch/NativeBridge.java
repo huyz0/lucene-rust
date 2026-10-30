@@ -38,7 +38,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code jvm_reader.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 46;
+    public static final int EXPECTED_ABI_VERSION = 47;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -177,6 +177,10 @@ public final class NativeBridge {
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS)
         );
         static final MethodHandle CLOSE_READER = bind("ffi_close_jvm_reader", FunctionDescriptor.of(JAVA_INT, JAVA_LONG));
+        static final MethodHandle ANALYZE = bind(
+            "ffi_jvm_analyze_alloc",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS)
+        );
 
         static final MethodHandle WRITER_OPEN = bind(
             "ffi_engine_writer_open",
@@ -985,6 +989,42 @@ public final class NativeBridge {
                 byte[] encoded = take(result);
                 if (encoded == null) {
                     return tooLarge("the document");
+                }
+                out[0] = encoded;
+            }
+            return rc;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * {@code text} analyzed as field {@code field} by the analyzer {@code spec} describes ({@code
+     * jvm_analysis.rs}; {@link AnalyzerSpec} writes the spec), its tokens in {@code out[0]}.
+     */
+    public static int analyze(byte[] spec, byte[] field, byte[] text, byte[][] out) {
+        if (spec == null || field == null || text == null) {
+            return nullArgument(spec == null ? "spec" : field == null ? "field" : "text");
+        }
+        if (out == null || out.length < 1) {
+            return fail(INVALID_ARGUMENT, "out holds no slot");
+        }
+        try (Scratch s = Scratch.open()) {
+            MemorySegment result = ownedSlot(s);
+            int rc = (int) H.ANALYZE.invokeExact(
+                s.bytes(spec),
+                (long) spec.length,
+                s.bytes(field),
+                (long) field.length,
+                s.bytes(text),
+                (long) text.length,
+                ptrOf(result),
+                lenOf(result)
+            );
+            if (rc == OK) {
+                byte[] encoded = take(result);
+                if (encoded == null) {
+                    return tooLarge("the tokens");
                 }
                 out[0] = encoded;
             }

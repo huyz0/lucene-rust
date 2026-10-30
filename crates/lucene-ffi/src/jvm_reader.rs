@@ -125,8 +125,9 @@ use std::sync::Arc;
 /// fields, keys as terms, a keyword `missing` term) and sub-aggregations,
 /// `TOP_HITS` its sort (a sorted bucket's values and terms back), and the
 /// `HDR_PERCENTILES` node (each bucket's values back); 46, the `NESTED` and
-/// `REVERSE_NESTED` nodes.
-pub const JVM_ABI_VERSION: u32 = 46;
+/// `REVERSE_NESTED` nodes; 47, `ffi_jvm_analyze_alloc` (an analyzer spec run
+/// over a text, `jvm_analysis.rs`).
+pub const JVM_ABI_VERSION: u32 = 47;
 
 /// Blob tag for a single `TermQuery`.
 pub const QUERY_TERM: u8 = 0;

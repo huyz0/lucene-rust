@@ -414,6 +414,42 @@ pub unsafe extern "C" fn ffi_jvm_reader_document_alloc(
     })
 }
 
+/// [`crate::jvm_analysis::analyze`]: `spec`'s analyzer over `text` (UTF-8)
+/// as field `field`, its tokens into an owned buffer.
+///
+/// # Safety
+/// `spec`/`field`/`text` must be valid for their lengths, and
+/// `out_ptr`/`out_len` for one write each.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn ffi_jvm_analyze_alloc(
+    spec: *const u8,
+    spec_len: usize,
+    field: *const u8,
+    field_len: usize,
+    text: *const u8,
+    text_len: usize,
+    out_ptr: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    guard(|| {
+        // SAFETY: caller contract.
+        unsafe { clear_out(out_ptr, out_len)? };
+        // SAFETY: caller contract.
+        let spec = unsafe { bytes_from_raw(spec, spec_len)? };
+        // SAFETY: caller contract.
+        let field = unsafe { bytes_from_raw(field, field_len)? };
+        // SAFETY: caller contract.
+        let text = unsafe { bytes_from_raw(text, text_len)? };
+        let utf8 = |b| std::str::from_utf8(b).map_err(|_| FfiStatus::InvalidUtf8);
+        let (field, text) = (utf8(field)?, utf8(text)?);
+        let encoded = crate::jvm_analysis::analyze(spec, field, text)?;
+        // SAFETY: caller contract.
+        unsafe { give(encoded, out_ptr, out_len) };
+        Ok(())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
