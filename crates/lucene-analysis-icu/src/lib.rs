@@ -44,7 +44,9 @@ pub use icu4j::translit::Transliterator;
 pub use icu4j::unicode_set::UnicodeSet;
 pub use normalizer2_char_filter::ICUNormalizer2CharFilter;
 pub use normalizer2_filter::ICUNormalizer2Filter;
-pub use segmentation::{DefaultICUTokenizerConfig, ICUTokenizer, ICUTokenizerConfig};
+pub use segmentation::{
+    install_thai_word_breaker, DefaultICUTokenizerConfig, ICUTokenizer, ICUTokenizerConfig,
+};
 pub use tokenattributes::ScriptAttribute;
 pub use transform_filter::ICUTransformFilter;
 

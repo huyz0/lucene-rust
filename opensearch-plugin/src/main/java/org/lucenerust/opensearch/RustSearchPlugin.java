@@ -20,7 +20,11 @@ import org.opensearch.index.engine.EngineFactory;
 import org.opensearch.core.common.breaker.CircuitBreaker;
 import org.opensearch.indices.breaker.BreakerSettings;
 import org.opensearch.monitor.jvm.JvmInfo;
+import org.opensearch.index.analysis.AnalyzerProvider;
+import org.opensearch.index.analysis.TokenizerFactory;
+import org.opensearch.indices.analysis.AnalysisModule;
 import org.opensearch.plugins.ActionPlugin;
+import org.opensearch.plugins.AnalysisPlugin;
 import org.opensearch.plugins.CircuitBreakerPlugin;
 import org.opensearch.plugins.EnginePlugin;
 import org.opensearch.plugins.Plugin;
@@ -37,6 +41,7 @@ import java.net.URISyntaxException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.function.Supplier;
 
@@ -50,7 +55,7 @@ import java.util.function.Supplier;
  * is missing or stale stops the node at startup with one clear message rather than failing
  * searches later.
  */
-public class RustSearchPlugin extends Plugin implements SearchPlugin, ActionPlugin, EnginePlugin, CircuitBreakerPlugin {
+public class RustSearchPlugin extends Plugin implements SearchPlugin, ActionPlugin, EnginePlugin, CircuitBreakerPlugin, AnalysisPlugin {
     /**
      * Whether this node serves Rust-engine indices with the Rust writer; {@code false} serves them
      * with OpenSearch's own engine -- a mixed cluster, one index.
@@ -191,6 +196,17 @@ public class RustSearchPlugin extends Plugin implements SearchPlugin, ActionPlug
         } catch (URISyntaxException e) {
             throw new IllegalStateException("lucene-rust: cannot locate the plugin directory", e);
         }
+    }
+
+    /** {@code rust_thai}: Thai segmented in Rust on the index and query side alike. */
+    @Override
+    public Map<String, AnalysisModule.AnalysisProvider<TokenizerFactory>> getTokenizers() {
+        return Map.of(RustThaiAnalysis.NAME, RustThaiAnalysis.TokenizerFactory::new);
+    }
+
+    @Override
+    public Map<String, AnalysisModule.AnalysisProvider<AnalyzerProvider<? extends org.apache.lucene.analysis.Analyzer>>> getAnalyzers() {
+        return Map.of(RustThaiAnalysis.NAME, RustThaiAnalysis.AnalyzerProvider::new);
     }
 
     @Override

@@ -13,6 +13,9 @@ lucene-index = { path = "../lucene-index" }
 lucene-search = { path = "../lucene-search" }
 lucene-util = { path = "../lucene-util" }
 lucene-analysis = { path = "../lucene-analysis" }
+# ICU's Thai dictionary word iterator, which `ThaiTokenizer` (the `thai`
+# tokenizer and analyzer) segments with (lucene_analysis::lang::th).
+lucene-analysis-icu = { path = "../lucene-analysis-icu" }
 
 [dev-dependencies]
 # The shared RAII scratch-directory guard (`lucene_util::test_support::TempDir`).
