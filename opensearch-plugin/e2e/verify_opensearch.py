@@ -87,8 +87,17 @@ def create(index, shards, index_sort=None):
         "number_of_shards": shards,
         "number_of_replicas": 0,
         "refresh_interval": -1,
-        # A field with non-default BM25 parameters: must fall back.
-        "similarity": {"tuned": {"type": "BM25", "k1": 2.0, "b": 0.5}},
+        # Fields scored with other similarities: native, but for a scripted one.
+        "similarity": {
+            "tuned": {"type": "BM25", "k1": 2.0, "b": 0.5},
+            "dfr": {"type": "DFR", "basic_model": "g", "after_effect": "l", "normalization": "h2", "normalization.h2.c": "3.0"},
+            "ib": {"type": "IB", "distribution": "spl", "lambda": "ttf", "normalization": "z", "normalization.z.z": "0.3"},
+            "lmd": {"type": "LMDirichlet", "mu": 1000},
+            "lmj": {"type": "LMJelinekMercer", "lambda": 0.3},
+            "dfi": {"type": "DFI", "independence_measure": "chisquared"},
+            "bool": {"type": "boolean"},
+            "scr": {"type": "scripted", "script": {"source": "return query.boost * doc.freq;"}},
+        },
     }
     if index_sort:
         settings["sort.field"] = [f for f, _ in index_sort]
@@ -98,7 +107,9 @@ def create(index, shards, index_sort=None):
         "mappings": {"properties": {
             "body": {"type": "text"},
             "title": {"type": "text", "store": True},
-            "tuned": {"type": "text", "similarity": "tuned"},
+            "tuned": {"type": "text", "similarity": "tuned", "fields": {
+                k: {"type": "text", "similarity": k} for k in ("dfr", "ib", "lmd", "lmj", "dfi", "bool", "scr")
+            }},
             "tag": {"type": "keyword"},
             "mtag": {"type": "keyword"},
             "n": {"type": "long"},
@@ -281,7 +292,11 @@ def matrix():
     add("constant_score match_all", {"query": {"constant_score": {"filter": {"match_all": {}}, "boost": 2}}}, "native")
     add("match_all + filter", {"query": {"bool": {"must": [{"match_all": {}}], "filter": [{"term": {"tag": "beta"}}]}}}, "native")
     add("bool msm with must", {"query": {"bool": {"must": [{"match": {"body": "alpha"}}], "should": [{"match": {"title": "beta"}}, {"match": {"title": "gamma"}}], "minimum_should_match": 1}}}, "native")
-    add("custom similarity", {"query": {"match": {"tuned": "alpha"}}}, "field_similarity")
+    add("custom similarity", {"query": {"match": {"tuned": "alpha"}}}, "native")
+    for k in ("dfr", "ib", "lmd", "lmj", "dfi", "bool"):
+        add(f"similarity {k}", {"query": {"bool": {"should": [{"match": {f"tuned.{k}": "alpha beta"}}, {"match": {"body": "gamma"}}]}}}, "native")
+    add("similarity dfr phrase", {"query": {"match_phrase": {"tuned.dfr": {"query": "alpha beta", "slop": 2}}}}, "native")
+    add("similarity scripted", {"query": {"match": {"tuned.scr": "alpha"}}}, "field_similarity")
     # Sorted searches (read path R4): numeric keys of every type, missing values, several keys,
     # the score and _doc, search_after, and the ones that stay on Lucene.
     add("sort long desc", {"query": {"match": {"body": "alpha"}}, "sort": [{"n": "desc"}]}, "native")
