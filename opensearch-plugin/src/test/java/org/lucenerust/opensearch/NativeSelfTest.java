@@ -321,11 +321,8 @@ public final class NativeSelfTest {
             "an unsupported root reports query_, not clause_"
         );
         check(
-            "wildcard_escape".equals(
-                QueryEncoder.encode(new IndexSearcher(new MultiReader()).rewrite(new WildcardQuery(new Term("body", "a\\*b"))), f -> true)
-                    .fallbackReason()
-            ),
-            "an escaped wildcard falls back"
+            QueryEncoder.encode(new IndexSearcher(new MultiReader()).rewrite(new WildcardQuery(new Term("body", "a\\*b"))), f -> true).blob() != null,
+            "an escaped wildcard encodes (its automaton)"
         );
         check(QueryEncoder.encode(IntPoint.newRangeQuery("i", 1, 5), f -> true).blob() != null, "a 4-byte points range encodes");
         check(QueryEncoder.encode(IntPoint.newSetQuery("i", 1, 5, 9), f -> true).blob() != null, "an int point set encodes");
