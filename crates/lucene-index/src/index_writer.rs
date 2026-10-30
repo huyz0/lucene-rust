@@ -10728,16 +10728,13 @@ impl IndexWriter<'_> {
     pub(crate) fn finish_merge(&mut self, plan: MergePlan, outcome: MergeOutcome) -> Result<bool> {
         self.write_pending_try_changes()?;
         let held = plan.held.clone();
-        let retired = plan.names.clone();
         let result = self.finish_merge_holding(plan, outcome);
         // After the merge is published (or abandoned): released last, so the
         // sources' files go only once nothing else references them.
+        // A published merge already dropped its sources' pooled postings in
+        // `commit_merge`, before this release can delete their files.
         let released = self.deleter.release_files(&held);
         let published = result?;
-        if published {
-            // `ReaderPool.drop` for each merged-away source.
-            self.cfg.reader_pool.drop_segments(&retired);
-        }
         released?;
         Ok(published)
     }
@@ -11066,6 +11063,9 @@ impl IndexWriter<'_> {
             .map(|s| s.segment_name == name)
             .collect();
         self.drop_fully_deleted_segments(&[], &flushed);
+        // Its own deletes pooled its postings: close them before the
+        // checkpoint deletes its files.
+        self.cfg.reader_pool.drop_segments(&[name]);
         let live = self.live_infos();
         self.deleter.checkpoint(&live, false)?;
         Ok(())
@@ -11104,10 +11104,9 @@ impl IndexWriter<'_> {
     /// *Not modelled*: `dropDeletedSegment`'s `mergingSegments` guard -- a
     /// [`crate::concurrent_writer::ConcurrentIndexWriter`] merge may be
     /// running over the dropped segment, and [`Self::finish_merge`] abandons
-    /// a merge whose source is gone instead -- `readerPool.drop` (no reader
-    /// pool) and
-    /// `adjustPendingNumDocs` (no such counter -- see
-    /// `crates/lucene-index/src/deletes.rs`' module doc).
+    /// a merge whose source is gone instead -- and `adjustPendingNumDocs`
+    /// (no such counter -- see `crates/lucene-index/src/deletes.rs`' module
+    /// doc). `readerPool.drop` is the caller's, before its checkpoint.
     fn drop_fully_deleted_segments(&mut self, committed: &[bool], flushed: &[bool]) {
         if self
             .merge_policy
@@ -11676,6 +11675,13 @@ impl IndexWriter<'_> {
             !self.updates_stream.any(),
             "a delete packet outlived its flush; the merged segment would take it"
         );
+        // `closeMergeReaders(merge, false, dropSegment)` and `readerPool.drop`
+        // before `checkpoint()` -- "Must close before checkpoint, otherwise
+        // IFD won't be able to delete the held-open files from the merge
+        // readers". A source a delete round pooled keeps its `.doc` open, so
+        // dropping it after the deleter reclaims the sources would delete a
+        // file still open.
+        self.cfg.reader_pool.drop_segments(source_segment_names);
         if self.merges_by_caller {
             // `commitMerge`: swap the segments and checkpoint; the next
             // `commit()` makes it durable. The last commit still names the
