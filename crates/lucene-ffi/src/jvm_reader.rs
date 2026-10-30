@@ -60,7 +60,10 @@ use lucene_search::multi_segment::OpenSegment;
 use lucene_search::query::{BooleanQuery, Clause, TermQuery};
 use lucene_search::similarities::{PerFieldSimilarity, Similarity};
 use lucene_search::terms_agg::TermsSpec;
-use lucene_search::top_field::{FieldDoc, NestedSort, Selector, SortField, SortType};
+use lucene_search::top_field::{
+    CollapseKind, CollapseTopDocs, CollapseValue, FieldDoc, NestedSort, Selector, SortField,
+    SortType,
+};
 use lucene_search::weight_count::count_term_query;
 use lucene_search::{
     count_boolean_query_segment, search_boolean_query_multi_segment_maxscore_counting,
@@ -127,13 +130,16 @@ use std::sync::Arc;
 /// `TOP_HITS` its sort (a sorted bucket's values and terms back), and the
 /// `HDR_PERCENTILES` node (each bucket's values back); 46, the `NESTED` and
 /// `REVERSE_NESTED` nodes; 47, the multi-term, doc-values, covering and
-/// distance-feature nodes ([`crate::jvm_queries`], 27-35); 48 (reserved);
-/// 49, `ffi_jvm_analyze_alloc` (an analyzer spec run over a text,
+/// distance-feature nodes ([`crate::jvm_queries`], 27-35); 48, never
+/// shipped; 49, `ffi_jvm_analyze_alloc` (an analyzer spec run over a text,
 /// `jvm_analysis.rs`), analyzed text fields in the engine writer's ops
 /// (`ffi_engine_prepare`), and the `SIGNIFICANT_TEXT` node (a refused one
-/// answers a count of -1); 50, taken by Track C; 51, the per-field
-/// similarity table in front of a request ([`crate::jvm_similarity`]).
-pub const JVM_ABI_VERSION: u32 = 51;
+/// answers a count of -1); 50, never shipped; 51, the per-field
+/// similarity table in front of a request ([`crate::jvm_similarity`]); 52,
+/// the collapsed search (`ffi_jvm_reader_search_collapsed_alloc`,
+/// `terminate_after` too), the rescorer (`ffi_jvm_reader_rescore`) and the
+/// sort blob's `_shard_doc`, `half_float` and `unsigned_long` keys.
+pub const JVM_ABI_VERSION: u32 = 52;
 
 /// Blob tag for a single `TermQuery`.
 pub const QUERY_TERM: u8 = 0;
@@ -705,6 +711,16 @@ const SORT_FLOAT: u8 = 5;
 pub(crate) const SORT_STRING: u8 = 6;
 /// A geo-distance key ([`decode_geo_sort`]).
 const SORT_GEO_DISTANCE: u8 = 7;
+/// OpenSearch's `_shard_doc` key ([`decode_opensearch_sort`]): flags
+/// [`SORT_REVERSE`] only, then `shardKeyPrefix: i64`.
+const SORT_SHARD_DOC: u8 = 8;
+/// OpenSearch's `half_float` key: the flags of a numeric key without
+/// [`SORT_NESTED`], the field, then the missing float as its sortable int
+/// (`i64`).
+const SORT_HALF_FLOAT: u8 = 9;
+/// OpenSearch's `unsigned_long` key: as [`SORT_HALF_FLOAT`] but no
+/// [`SORT_MODE_MEDIAN`], the missing value the unsigned long's bits.
+const SORT_UNSIGNED_LONG: u8 = 10;
 /// At most this many origins in a geo-distance key: each costs a distance
 /// per value per document.
 const MAX_GEO_ORIGINS: usize = 1024;
@@ -820,6 +836,11 @@ pub(crate) fn decode_sort(blob: &[u8]) -> Result<DecodedSort, FfiStatus> {
             return Err(bad(format!("sort blob: unknown flags {flags:#x}")));
         }
         let mode = flags & SORT_MODE_MASK;
+        if matches!(ty, SORT_SHARD_DOC | SORT_HALF_FLOAT | SORT_UNSIGNED_LONG) {
+            keys.push(decode_opensearch_sort(&mut c, ty, flags)?);
+            lucene_geo.push(false);
+            continue;
+        }
         let ty = match ty {
             SORT_SCORE => SortType::Score,
             SORT_DOC => SortType::Doc,
@@ -1004,6 +1025,55 @@ const GEO_SORT_FLAGS: u8 = SORT_REVERSE | SORT_MAX | SORT_MODE_MASK;
 /// Each value crosses as `double_to_sortable_long` of the double. Returns
 /// the key, and whether it is Lucene's comparator (which takes no
 /// `search_after`: its `compareTop` compares metres, not the keys).
+/// A key of one of OpenSearch's own comparator sources: [`SORT_SHARD_DOC`],
+/// [`SORT_HALF_FLOAT`] or [`SORT_UNSIGNED_LONG`], after its type and flags.
+fn decode_opensearch_sort(c: &mut Cursor<'_>, ty: u8, flags: u8) -> Result<SortField, FfiStatus> {
+    use lucene_search::top_field::{HalfFloatSort, Selector, ShardDocSort, UnsignedLongSort};
+    let reverse = flags & SORT_REVERSE != 0;
+    if ty == SORT_SHARD_DOC {
+        if flags & !SORT_REVERSE != 0 {
+            return Err(invalid(format!(
+                "sort blob: _shard_doc key flags {flags:#x}"
+            )));
+        }
+        let prefix = c.i64()?;
+        return Ok(SortField::with_source(
+            "_shard_doc",
+            Arc::new(ShardDocSort { prefix }),
+            reverse,
+        ));
+    }
+    let selector = match (flags & SORT_MODE_MASK, flags & SORT_MAX != 0) {
+        (0, false) => Selector::Min,
+        (0, true) => Selector::Max,
+        (SORT_MODE_SUM, false) => Selector::Sum,
+        (SORT_MODE_AVG, false) => Selector::Avg,
+        (SORT_MODE_MEDIAN, false) if ty == SORT_HALF_FLOAT => Selector::Median,
+        _ => return Err(invalid(format!("sort blob: key {ty} flags {flags:#x}"))),
+    };
+    if flags & SORT_NESTED != 0 {
+        return Err(invalid(format!("sort blob: key {ty} flags {flags:#x}")));
+    }
+    let field = std::str::from_utf8(c.bytes()?).map_err(|_| FfiStatus::InvalidUtf8)?;
+    let missing = c.i64()?;
+    Ok(if ty == SORT_HALF_FLOAT {
+        let bits = i32::try_from(missing)
+            .map_err(|_| invalid(format!("sort blob: half_float missing value {missing}")))?;
+        let missing = lucene_util::numeric_utils::sortable_int_to_float(bits);
+        SortField::with_source(
+            field,
+            Arc::new(HalfFloatSort { selector, missing }),
+            reverse,
+        )
+    } else {
+        SortField::with_source(
+            field,
+            Arc::new(UnsignedLongSort { selector, missing }),
+            reverse,
+        )
+    })
+}
+
 fn decode_geo_sort(c: &mut Cursor<'_>, flags: u8) -> Result<(SortField, bool), FfiStatus> {
     use lucene_search::document::geo::{
         DistanceMode, LatLonPointSortField, OpenSearchGeoDistanceSort,
@@ -1255,6 +1325,366 @@ pub(crate) fn search_sorted_blobs(
         lower_bound,
         terms,
         terminated,
+    })
+}
+
+/// Collapse-blob kinds: OpenSearch's `CollapsingDocValuesSource.Numeric`
+/// and `.Keyword`.
+const COLLAPSE_NUMERIC: u8 = 0;
+const COLLAPSE_KEYWORD: u8 = 1;
+/// Collapse values in a collapsed search's answer: none (the group of the
+/// documents without one), a long, a term.
+const COLLAPSE_VALUE_MISSING: u8 = 0;
+const COLLAPSE_VALUE_LONG: u8 = 1;
+const COLLAPSE_VALUE_BYTES: u8 = 2;
+
+/// Decodes a collapse blob: the field (`len: i32`, UTF-8) and `kind: u8`
+/// ([`COLLAPSE_NUMERIC`], [`COLLAPSE_KEYWORD`]). Trailing bytes are an error.
+pub(crate) fn decode_collapse(blob: &[u8]) -> Result<(String, CollapseKind), FfiStatus> {
+    let mut c = Cursor { buf: blob, pos: 0 };
+    let field = std::str::from_utf8(c.bytes()?)
+        .map_err(|_| FfiStatus::InvalidUtf8)?
+        .to_string();
+    let kind = match c.u8()? {
+        COLLAPSE_NUMERIC => CollapseKind::Numeric,
+        COLLAPSE_KEYWORD => CollapseKind::Keyword,
+        other => {
+            set_last_error(format!("collapse blob: unknown kind {other}"));
+            return Err(FfiStatus::InvalidArgument);
+        }
+    };
+    if c.pos != blob.len() {
+        set_last_error(format!(
+            "collapse blob: {} trailing bytes",
+            blob.len() - c.pos
+        ));
+        return Err(FfiStatus::InvalidArgument);
+    }
+    Ok((field, kind))
+}
+
+/// A collapsed search (OpenSearch's `collapse`): the query blob's matches
+/// through `CollapsingTopDocsCollector` by the sort blob's keys
+/// ([`decode_sort`]: its `search_after`, `track_scores` option and slices,
+/// or `terminate_after` over one slice) on the collapse blob's field
+/// ([`decode_collapse`]), keeping `top_n` groups per slice
+/// ([`lucene_search::top_field::search_collapsed`]). Encoded, little-endian:
+/// `slices: i32`, then per slice `total: i64`, `max_score: i32` (the float's
+/// bits, `NaN` untracked), `hits: i32` and per hit `doc: i32`, each key's
+/// value -- a keyword key's term as `len: i32` (`-1` for none) and the bytes,
+/// any other key's comparable `i64` (a score as its float bits) -- and the
+/// group's value: `kind: u8` ([`COLLAPSE_VALUE_MISSING`],
+/// [`COLLAPSE_VALUE_LONG`] and an `i64`, [`COLLAPSE_VALUE_BYTES`] and
+/// `len: i32` and the bytes); last `terminated: u8`.
+pub(crate) fn search_collapsed_blobs(
+    handle: u64,
+    query_blob: &[u8],
+    sort_blob: &[u8],
+    collapse_blob: &[u8],
+    top_n: usize,
+) -> Result<Vec<u8>, FfiStatus> {
+    let (query, min_score, sim) = decode_request(query_blob)?;
+    let sim = sim.as_ref();
+    let (keys, after, track, slices, terminate_after, _) = decode_sort(sort_blob)?;
+    let (field, kind) = decode_collapse(collapse_blob)?;
+    if let Some((_, count_segments)) = terminate_after {
+        // OpenSearch runs a terminate_after search sequentially, one
+        // collector; the size-0 count is not a collapsed search's.
+        if count_segments || slices.len() > 1 || min_score.is_some() {
+            set_last_error(
+                "collapse: terminate_after runs on one slice, without min_score or segment counts",
+            );
+            return Err(FfiStatus::InvalidArgument);
+        }
+    }
+    if top_n == 0 {
+        set_last_error("collapse: topN must be at least 1");
+        return Err(FfiStatus::InvalidArgument);
+    }
+    let h = lookup(
+        handle,
+        "ffi_jvm_reader_search_collapsed: unknown or already-closed handle",
+    )?;
+    let mut opened = h.reader.open_segments().map_err(|e| {
+        set_last_error(format!("opening segment postings: {e}"));
+        FfiStatus::Decode
+    })?;
+    if query_uses_points(&query) {
+        opened.open_points().map_err(|e| {
+            set_last_error(format!("opening segment points: {e}"));
+            FfiStatus::Decode
+        })?;
+    }
+    let segments: Vec<OpenSegment<'_>> = opened
+        .as_open_segments()
+        .into_iter()
+        .zip(&h.live_docs)
+        .map(|(mut s, live)| {
+            s.live_docs = live.as_ref();
+            s.similarity = sim.map(|p| p as &dyn Similarity);
+            s
+        })
+        .collect();
+    let q = match query {
+        JvmQuery::Term(t) => BooleanQuery {
+            must: vec![Clause::Term(t)],
+            ..Default::default()
+        },
+        JvmQuery::Boolean(b) => b,
+    };
+    let needs_scores = track || min_score.is_some() || keys.iter().any(|k| k.ty == SortType::Score);
+    let fields: Vec<String> = if needs_scores {
+        crate::query::clause_field_names(&q)
+            .into_iter()
+            .map(str::to_string)
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let owned = h
+        .reader
+        .field_norms_by_field(&fields)
+        .map_err(|error| map_search_error(error.into()))?;
+    let norms: Vec<Option<&std::collections::HashMap<String, FieldNorms<'_>>>> =
+        owned.iter().map(|m| (!m.is_empty()).then_some(m)).collect();
+    if let Some((n, _)) = terminate_after {
+        let (top, cut) = lucene_search::top_field::search_collapsed_until(
+            &segments,
+            h.reader.segment_readers(),
+            &q,
+            &norms,
+            &keys,
+            &field,
+            kind,
+            top_n,
+            after.as_ref(),
+            track,
+            n,
+        )
+        .map_err(map_search_error)?;
+        return encode_collapsed(&keys, &[top], cut.terminated);
+    }
+    let parts = lucene_search::top_field::search_collapsed(
+        &segments,
+        h.reader.segment_readers(),
+        &q,
+        &norms,
+        &keys,
+        &field,
+        kind,
+        top_n,
+        after.as_ref(),
+        track,
+        &slices,
+        min_score,
+    )
+    .map_err(map_search_error)?;
+    encode_collapsed(&keys, &parts, false)
+}
+
+/// [`search_collapsed_blobs`]'s encoding of the slices' answers, then
+/// `terminated: u8` (a `terminate_after` search that ended early).
+fn encode_collapsed(
+    keys: &[SortField],
+    parts: &[CollapseTopDocs],
+    terminated: bool,
+) -> Result<Vec<u8>, FfiStatus> {
+    let too_big = |what: &str| {
+        set_last_error(format!("collapse result: {what} past i32"));
+        FfiStatus::InvalidArgument
+    };
+    let len = |n: usize, what: &str| i32::try_from(n).map_err(|_| too_big(what));
+    let mut out = Vec::new();
+    out.extend_from_slice(&len(parts.len(), "slice count")?.to_le_bytes());
+    for p in parts {
+        out.extend_from_slice(&i64::try_from(p.total).unwrap_or(i64::MAX).to_le_bytes());
+        out.extend_from_slice(&p.max_score.to_bits().to_le_bytes());
+        out.extend_from_slice(&len(p.hits.len(), "hit count")?.to_le_bytes());
+        for (hit, value) in p.hits.iter().zip(&p.values) {
+            out.extend_from_slice(&hit.doc.to_le_bytes());
+            for (k, key) in keys.iter().enumerate() {
+                if key.ty != SortType::String {
+                    out.extend_from_slice(&hit.values.get(k).copied().unwrap_or(0).to_le_bytes());
+                    continue;
+                }
+                match hit.terms.get(k).and_then(Option::as_ref) {
+                    None => out.extend_from_slice(&(-1i32).to_le_bytes()),
+                    Some(t) => {
+                        out.extend_from_slice(&len(t.len(), "a sort term")?.to_le_bytes());
+                        out.extend_from_slice(t);
+                    }
+                }
+            }
+            match value {
+                CollapseValue::Missing => out.push(COLLAPSE_VALUE_MISSING),
+                CollapseValue::Long(v) => {
+                    out.push(COLLAPSE_VALUE_LONG);
+                    out.extend_from_slice(&v.to_le_bytes());
+                }
+                CollapseValue::Bytes(b) => {
+                    out.push(COLLAPSE_VALUE_BYTES);
+                    out.extend_from_slice(&len(b.len(), "a collapse term")?.to_le_bytes());
+                    out.extend_from_slice(b);
+                }
+            }
+        }
+    }
+    out.push(u8::from(terminated));
+    Ok(out)
+}
+
+/// OpenSearch's `QueryRescorer` over a search's hits
+/// ([`lucene_search::rescorer::opensearch_query_rescore`]): `docs`/`scores`
+/// (global ids, best first) rescored in place by the query blob's query
+/// over the top `window`, `mode` being the `QueryRescoreMode` ordinal (`avg`,
+/// `max`, `min`, `total`, `multiply`). Returns how many hits were rescored.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn rescore_hits(
+    handle: u64,
+    query_blob: &[u8],
+    window: usize,
+    query_weight: f32,
+    rescore_query_weight: f32,
+    mode: i32,
+    docs: &mut [i32],
+    scores: &mut [f32],
+) -> Result<usize, FfiStatus> {
+    use lucene_search::rescorer::{opensearch_query_rescore, QueryRescoreMode};
+    let mode = match mode {
+        0 => QueryRescoreMode::Avg,
+        1 => QueryRescoreMode::Max,
+        2 => QueryRescoreMode::Min,
+        3 => QueryRescoreMode::Total,
+        4 => QueryRescoreMode::Multiply,
+        other => {
+            set_last_error(format!("rescore: unknown score mode {other}"));
+            return Err(FfiStatus::InvalidArgument);
+        }
+    };
+    if docs.len() != scores.len() {
+        set_last_error("rescore: as many scores as documents");
+        return Err(FfiStatus::InvalidArgument);
+    }
+    let (query, min_score, sim) = decode_request(query_blob)?;
+    let sim = sim.as_ref();
+    if min_score.is_some() {
+        set_last_error("rescore: a rescore query has no min_score");
+        return Err(FfiStatus::InvalidArgument);
+    }
+    let h = lookup(
+        handle,
+        "ffi_jvm_reader_rescore: unknown or already-closed handle",
+    )?;
+    let mut opened = h.reader.open_segments().map_err(|e| {
+        set_last_error(format!("opening segment postings: {e}"));
+        FfiStatus::Decode
+    })?;
+    if query_uses_points(&query) {
+        opened.open_points().map_err(|e| {
+            set_last_error(format!("opening segment points: {e}"));
+            FfiStatus::Decode
+        })?;
+    }
+    let segments: Vec<OpenSegment<'_>> = opened
+        .as_open_segments()
+        .into_iter()
+        .zip(&h.live_docs)
+        .map(|(mut s, live)| {
+            s.live_docs = live.as_ref();
+            s.similarity = sim.map(|p| p as &dyn Similarity);
+            s
+        })
+        .collect();
+    let q = match query {
+        JvmQuery::Term(t) => BooleanQuery {
+            must: vec![Clause::Term(t)],
+            ..Default::default()
+        },
+        JvmQuery::Boolean(b) => b,
+    };
+    let fields: Vec<String> = crate::query::clause_field_names(&q)
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    let owned = h
+        .reader
+        .field_norms_by_field(&fields)
+        .map_err(|error| map_search_error(error.into()))?;
+    let norms: Vec<Option<&std::collections::HashMap<String, FieldNorms<'_>>>> =
+        owned.iter().map(|m| (!m.is_empty()).then_some(m)).collect();
+    let searcher = lucene_search::index_searcher::IndexSearcher::new(&segments, &norms)
+        .map_err(map_search_error)?;
+    let ctx = lucene_search::values_source::ValuesContext::new(&searcher);
+    let mut hits: Vec<lucene_search::top_docs::ShardScoreDoc> = docs
+        .iter()
+        .zip(scores.iter())
+        .map(|(&d, &s)| lucene_search::top_docs::ShardScoreDoc::new(d, s))
+        .collect();
+    let rescored = opensearch_query_rescore(
+        &ctx,
+        &mut hits,
+        q,
+        window,
+        query_weight,
+        rescore_query_weight,
+        mode,
+    )
+    .map_err(map_search_error)?;
+    for (i, hit) in hits.iter().enumerate() {
+        docs[i] = hit.doc;
+        scores[i] = hit.score;
+    }
+    Ok(rescored)
+}
+
+/// [`rescore_hits`] across the boundary: `docs`/`scores` hold `n` hits and
+/// are rewritten in place.
+///
+/// # Safety
+/// `query` must be valid for `query_len` bytes, `docs`/`scores` for `n`
+/// reads and writes each.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn ffi_jvm_reader_rescore(
+    handle: u64,
+    query: *const u8,
+    query_len: usize,
+    window: i32,
+    query_weight: f32,
+    rescore_query_weight: f32,
+    mode: i32,
+    docs: *mut i32,
+    scores: *mut f32,
+    n: usize,
+) -> i32 {
+    guard(|| {
+        if docs.is_null() || scores.is_null() {
+            return Err(FfiStatus::NullPointer);
+        }
+        let window = usize::try_from(window).map_err(|_| {
+            set_last_error(format!("rescore: window {window}"));
+            FfiStatus::InvalidArgument
+        })?;
+        // SAFETY: caller contract.
+        let blob = unsafe { bytes_from_raw(query, query_len)? };
+        // SAFETY: caller contract: `docs` and `scores` hold `n` slots each.
+        let (docs, scores) = unsafe {
+            (
+                std::slice::from_raw_parts_mut(docs, n),
+                std::slice::from_raw_parts_mut(scores, n),
+            )
+        };
+        rescore_hits(
+            handle,
+            blob,
+            window,
+            query_weight,
+            rescore_query_weight,
+            mode,
+            docs,
+            scores,
+        )?;
+        Ok(())
     })
 }
 
@@ -6118,5 +6548,277 @@ pub(crate) mod tests {
         let mut trailing = tree(N::All);
         trailing.push(0);
         assert_eq!(status(&trailing), invalid, "trailing bytes");
+    }
+
+    fn collapse_blob(field: &str, kind: u8) -> Vec<u8> {
+        let mut b = (field.len() as i32).to_le_bytes().to_vec();
+        b.extend_from_slice(field.as_bytes());
+        b.push(kind);
+        b
+    }
+
+    /// A collapsed answer's one slice: `(total, max_score, [(doc, keys, value)])`
+    /// with `string` saying which keys are terms, and the terminated flag.
+    #[allow(clippy::type_complexity)]
+    fn parse_collapsed(
+        out: &[u8],
+        string: &[bool],
+    ) -> (i64, f32, Vec<(i32, Vec<i64>, Option<Vec<u8>>)>, bool) {
+        let mut c = Cursor { buf: out, pos: 0 };
+        assert_eq!(c.i32().unwrap(), 1);
+        let total = c.i64().unwrap();
+        let max = f32::from_bits(c.i32().unwrap() as u32);
+        let n = c.i32().unwrap();
+        let mut hits = Vec::new();
+        for _ in 0..n {
+            let doc = c.i32().unwrap();
+            let mut keys = Vec::new();
+            for &is_term in string {
+                if is_term {
+                    let len = c.i32().unwrap();
+                    if len >= 0 {
+                        c.pos += len as usize;
+                    }
+                    keys.push(i64::from(len));
+                } else {
+                    keys.push(c.i64().unwrap());
+                }
+            }
+            let value = match c.u8().unwrap() {
+                COLLAPSE_VALUE_MISSING => None,
+                COLLAPSE_VALUE_LONG => Some(c.i64().unwrap().to_le_bytes().to_vec()),
+                COLLAPSE_VALUE_BYTES => Some(c.bytes().unwrap().to_vec()),
+                other => panic!("value kind {other}"),
+            };
+            hits.push((doc, keys, value));
+        }
+        let terminated = c.u8().unwrap() != 0;
+        assert_eq!(c.pos, out.len());
+        (total, max, hits, terminated)
+    }
+
+    #[test]
+    fn collapsed_searches_keep_a_group_per_value() {
+        let h = open_fixture("sorted_search_index");
+        let q = term_blob("body", "w0");
+        let by_l = sort_blob(&[(SORT_LONG, 0, "l", 0)], None);
+        let on_i = collapse_blob("i", COLLAPSE_NUMERIC);
+        let out = search_collapsed_blobs(h, &q, &by_l, &on_i, 10).unwrap();
+        let (total, max, hits, terminated) = parse_collapsed(&out, &[false]);
+        assert!(total > 10 && max.is_nan() && !terminated);
+        assert_eq!(hits.len(), 10);
+        let mut values: Vec<_> = hits.iter().map(|h| h.2.clone()).collect();
+        values.dedup();
+        assert_eq!(values.len(), 10, "one hit per group");
+        assert!(
+            hits.windows(2).all(|w| w[0].1[0] <= w[1].1[0]),
+            "sorted by l"
+        );
+        // Behind terminate_after: the first five matches only, stopped early.
+        let five = with_terminate_after(by_l.clone(), SORT_TERMINATE_AFTER, 5);
+        let out = search_collapsed_blobs(h, &q, &five, &on_i, 10).unwrap();
+        let (total, _, hits, terminated) = parse_collapsed(&out, &[false]);
+        assert_eq!(total, 5);
+        assert!(terminated && hits.len() <= 5);
+        let all = with_terminate_after(by_l.clone(), SORT_TERMINATE_AFTER, i32::MAX);
+        let (whole, ..) = parse_collapsed(
+            &search_collapsed_blobs(h, &q, &by_l, &on_i, 3).unwrap(),
+            &[false],
+        );
+        let (until, _, _, stopped) = parse_collapsed(
+            &search_collapsed_blobs(h, &q, &all, &on_i, 3).unwrap(),
+            &[false],
+        );
+        assert_eq!((until, stopped), (whole, false));
+        // Scores tracked behind another key.
+        let tracked = with_terminate_after(by_l.clone(), SORT_TRACK_MAX_SCORE, 0);
+        let (_, max, ..) = parse_collapsed(
+            &search_collapsed_blobs(h, &q, &tracked, &on_i, 3).unwrap(),
+            &[false],
+        );
+        assert!(max > 0.0);
+        let invalid = Err(FfiStatus::InvalidArgument);
+        let counted =
+            with_terminate_after(by_l.clone(), SORT_TERMINATE_AFTER | SORT_COUNT_SEGMENTS, 5);
+        assert_eq!(search_collapsed_blobs(h, &q, &counted, &on_i, 10), invalid);
+        assert_eq!(search_collapsed_blobs(h, &q, &by_l, &on_i, 0), invalid);
+        assert_eq!(
+            search_collapsed_blobs(h, &q, &by_l, &collapse_blob("i", 9), 5),
+            invalid
+        );
+        let mut trailing = on_i.clone();
+        trailing.push(0);
+        assert_eq!(search_collapsed_blobs(h, &q, &by_l, &trailing, 5), invalid);
+        // A multi-valued field: the collector's own refusal.
+        assert!(
+            search_collapsed_blobs(h, &q, &by_l, &collapse_blob("m", COLLAPSE_NUMERIC), 50)
+                .is_err()
+        );
+        assert!(crate::error::last_error().contains("failed to collapse"));
+        assert_eq!(
+            search_collapsed_blobs(u64::MAX, &q, &by_l, &on_i, 5),
+            Err(FfiStatus::InvalidHandle)
+        );
+        assert_eq!(ffi_close_jvm_reader(h), 0);
+
+        let h = open_fixture("keyword_sort_index");
+        let all = tree(N::All);
+        let by_k = sort_blob(&[(SORT_STRING, 0, "kd", 1)], None);
+        let out = search_collapsed_blobs(h, &all, &by_k, &collapse_blob("k", COLLAPSE_KEYWORD), 4)
+            .unwrap();
+        let (_, _, hits, _) = parse_collapsed(&out, &[true]);
+        assert_eq!(hits.len(), 4);
+        assert!(hits.iter().filter(|h| h.2.is_some()).count() >= 3);
+        assert_eq!(ffi_close_jvm_reader(h), 0);
+    }
+
+    fn opensearch_key(ty: u8, flags: u8, field: &str, missing: i64) -> Vec<u8> {
+        let mut b = vec![1, ty, flags];
+        if ty == SORT_SHARD_DOC {
+            b.extend_from_slice(&missing.to_le_bytes());
+        } else {
+            b.extend_from_slice(&(field.len() as i32).to_le_bytes());
+            b.extend_from_slice(field.as_bytes());
+            b.extend_from_slice(&missing.to_le_bytes());
+        }
+        b.push(0);
+        b.push(0);
+        b.extend_from_slice(&0i32.to_le_bytes());
+        b
+    }
+
+    #[test]
+    fn opensearchs_own_sort_keys_decode_and_sort() {
+        let prefix = 2i64 << 32;
+        let shard = opensearch_key(SORT_SHARD_DOC, SORT_REVERSE, "", prefix);
+        let (keys, ..) = decode_sort(&shard).unwrap();
+        assert!(matches!(keys[0].ty, SortType::Custom(_)) && keys[0].reverse);
+        let half = lucene_util::numeric_utils::float_to_sortable_int(1.5);
+        for (ty, flags, missing) in [
+            (SORT_HALF_FLOAT, 0, i64::from(half)),
+            (SORT_HALF_FLOAT, SORT_MAX, 0),
+            (SORT_HALF_FLOAT, SORT_MODE_MEDIAN, 0),
+            (SORT_UNSIGNED_LONG, SORT_MODE_SUM, -1),
+            (SORT_UNSIGNED_LONG, SORT_MODE_AVG | SORT_REVERSE, 0),
+        ] {
+            assert!(
+                decode_sort(&opensearch_key(ty, flags, "l", missing)).is_ok(),
+                "{ty} {flags}"
+            );
+        }
+        let invalid = Some(FfiStatus::InvalidArgument);
+        for blob in [
+            opensearch_key(SORT_SHARD_DOC, SORT_MAX, "", 0),
+            opensearch_key(SORT_UNSIGNED_LONG, SORT_MODE_MEDIAN, "l", 0),
+            opensearch_key(SORT_HALF_FLOAT, SORT_MAX | SORT_MODE_SUM, "l", 0),
+            opensearch_key(SORT_HALF_FLOAT, SORT_NESTED, "l", 0),
+            opensearch_key(SORT_HALF_FLOAT, 0, "l", i64::MAX),
+        ] {
+            assert_eq!(decode_sort(&blob).err(), invalid, "{blob:?}");
+        }
+        let h = open_fixture("sorted_search_index");
+        let q = term_blob("body", "w1");
+        let out = search_sorted_blobs(h, &q, &shard, 5, i64::MAX).unwrap();
+        assert_eq!(out.hits.len(), 5);
+        assert!(out.hits.windows(2).all(|w| w[0].doc > w[1].doc));
+        assert!(out
+            .hits
+            .iter()
+            .all(|f| f.values[0] == prefix | i64::from(f.doc)));
+        let ul = opensearch_key(SORT_UNSIGNED_LONG, 0, "m", -1);
+        let out = search_sorted_blobs(h, &q, &ul, 5, i64::MAX).unwrap();
+        assert!(out
+            .hits
+            .windows(2)
+            .all(|w| (w[0].values[0] as u64) <= (w[1].values[0] as u64)));
+        assert_eq!(ffi_close_jvm_reader(h), 0);
+    }
+
+    #[test]
+    fn rescoring_reorders_the_window() {
+        let h = open();
+        let (hits, _) = run(h, &term_blob("body", "fox"), 10, true).unwrap();
+        assert!(hits.len() > 3);
+        let rescore = term_blob("body", "dog");
+        for mode in 0..5 {
+            let mut docs: Vec<i32> = hits.iter().map(|h| h.0).collect();
+            let mut scores: Vec<f32> = hits.iter().map(|h| h.1).collect();
+            let rc = unsafe {
+                ffi_jvm_reader_rescore(
+                    h,
+                    rescore.as_ptr(),
+                    rescore.len(),
+                    3,
+                    0.5,
+                    2.0,
+                    mode,
+                    docs.as_mut_ptr(),
+                    scores.as_mut_ptr(),
+                    docs.len(),
+                )
+            };
+            assert_eq!(rc, 0, "{}", crate::error::last_error());
+            let mut sorted = docs.clone();
+            sorted.sort_unstable();
+            let mut want: Vec<i32> = hits.iter().map(|h| h.0).collect();
+            want.sort_unstable();
+            assert_eq!(sorted, want, "the same documents");
+            assert!(scores.windows(2).all(|w| w[0] >= w[1]), "best first");
+        }
+        let mut docs = vec![hits[0].0];
+        let mut scores = vec![1.0f32, 2.0];
+        let invalid = Err(FfiStatus::InvalidArgument);
+        assert_eq!(
+            rescore_hits(h, &rescore, 3, 1.0, 1.0, 9, &mut docs, &mut scores[..1]),
+            invalid
+        );
+        assert_eq!(
+            rescore_hits(h, &rescore, 3, 1.0, 1.0, 0, &mut docs, &mut scores),
+            invalid
+        );
+        assert_eq!(
+            rescore_hits(
+                u64::MAX,
+                &rescore,
+                3,
+                1.0,
+                1.0,
+                0,
+                &mut docs,
+                &mut scores[..1]
+            ),
+            Err(FfiStatus::InvalidHandle)
+        );
+        let rc = unsafe {
+            ffi_jvm_reader_rescore(
+                h,
+                rescore.as_ptr(),
+                rescore.len(),
+                -1,
+                1.0,
+                1.0,
+                0,
+                docs.as_mut_ptr(),
+                scores.as_mut_ptr(),
+                1,
+            )
+        };
+        assert_eq!(rc, FfiStatus::InvalidArgument.code());
+        let rc = unsafe {
+            ffi_jvm_reader_rescore(
+                h,
+                rescore.as_ptr(),
+                rescore.len(),
+                3,
+                1.0,
+                1.0,
+                0,
+                std::ptr::null_mut(),
+                scores.as_mut_ptr(),
+                1,
+            )
+        };
+        assert_eq!(rc, FfiStatus::NullPointer.code());
+        assert_eq!(ffi_close_jvm_reader(h), 0);
     }
 }
