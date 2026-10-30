@@ -15,6 +15,8 @@ import java.nio.charset.StandardCharsets;
 final class Blob {
     private byte[] buf;
     private int len;
+    /** Whether a field in it is left to Rust to analyze (worth decoding outside the writer's lock). */
+    boolean analyzesNatively;
 
     Blob(int capacity) {
         buf = new byte[Math.max(16, capacity)];

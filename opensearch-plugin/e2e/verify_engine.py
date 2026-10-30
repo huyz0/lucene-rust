@@ -76,6 +76,9 @@ MAPPING = {
     "properties": {
         "title": {"type": "text", "analyzer": "english"},
         "body": {"type": "text"},
+        # Custom analyzers built from Lucene components: analyzed in Rust by the Rust engine.
+        "note": {"type": "text", "analyzer": "fancy"},
+        "code": {"type": "text", "analyzer": "parts", "index_options": "offsets"},
         "tag": {"type": "keyword"},
         "n": {"type": "long"},
         "price": {"type": "double"},
@@ -98,6 +101,21 @@ def words(r, n):
     return " ".join(WORDS[int((r.random() ** 2) * len(WORDS))] for _ in range(n))
 
 
+ANALYSIS = {
+    "analyzer": {
+        "fancy": {"type": "custom", "char_filter": ["html_strip"], "tokenizer": "standard",
+                  "filter": ["lowercase", "keep_both", "stop", "snowball"]},
+        "parts": {"type": "custom", "tokenizer": "whitespace",
+                  "filter": ["word_delimiter", "lowercase", "kstem", "remove_duplicates"]},
+    },
+    "filter": {"keep_both": {"type": "asciifolding", "preserve_original": True}},
+}
+
+NOTES = ["<p>Caf\u00e9 na\u00efve</p>", "r\u00e9sum\u00e9 &amp; <b>runners</b>", "The QUICK foxes",
+         "houses'", "Stra\u00dfe \u00fcber", "jumping <i>cats</i>"]
+CODES = ["PowerShot500", "wi-fi_router", "parseHTTPRequest", "x86-64 ARMv8", "SD-500 sd500", "o'neil's"]
+
+
 def source(r, i):
     doc = {
         "title": words(r, 1 + r.randrange(6)),
@@ -114,6 +132,10 @@ def source(r, i):
     }
     if r.random() < 0.7:
         doc["body"] = [words(r, r.randrange(40)) for _ in range(1 + r.randrange(2))]
+    if r.random() < 0.6:
+        doc["note"] = [" ".join(r.choice(NOTES) for _ in range(1 + r.randrange(4))) for _ in range(1 + r.randrange(2))]
+    if r.random() < 0.6:
+        doc["code"] = " ".join(r.choice(CODES) for _ in range(1 + r.randrange(5)))
     if r.random() < 0.1:
         del doc["title"]
     return doc
@@ -124,6 +146,7 @@ def create(index, rust, extra=None):
     # nothing is a Rust one.
     settings = {"number_of_shards": 2, "number_of_replicas": 0, "refresh_interval": -1,
                 "index.lucene_rust.engine": bool(rust)}
+    settings["analysis"] = ANALYSIS
     settings.update(extra or {})
     must("PUT", f"/{index}", {"settings": settings, "mappings": MAPPING})
 
@@ -219,6 +242,11 @@ QUERIES = [
               "must_not": [{"term": {"tag": "upd"}}]}},
     {"nested": {"path": "nest", "query": {"term": {"nest.k": "k1"}}}},
     {"match_phrase": {"body": "quick brown"}},
+    {"match": {"note": "cafe runner"}},
+    {"match": {"note": "café uber"}},
+    {"match_phrase": {"note": "quick fox"}},
+    {"match": {"code": "shot 500"}},
+    {"match_phrase": {"code": "http request"}},
     {"prefix": {"tag": "t1"}},
     {"exists": {"field": "title"}},
     {"geo_distance": {"distance": "3000km", "loc": {"lat": 10, "lon": 10}}},
@@ -529,6 +557,9 @@ def main():
     check(stats["segments"]["count"] >= 1, "segment stats are populated")
     check(stats["indexing"]["index_total"] > 0, "indexing stats are populated")
     check(stats["segments"]["index_writer_memory_in_bytes"] >= 0, "writer memory is reported")
+    analyzed = must("GET", "/_plugins/lucene_rust/stats").get("analyzed_values", {})
+    # title (english), body (standard), note and code (custom) are all Lucene components.
+    check(analyzed.get("native", 0) > a.ops // 2, f"text values analyzed in Rust: {analyzed}")
     compare_all("after the stream", stream.ids)
     # Recovery: a graceful restart replays nothing; SIGKILL replays the translog into the writer.
     run_stream(600, seed=43)
