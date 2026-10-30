@@ -222,7 +222,7 @@ Each fallback is counted by reason at `GET /_plugins/lucene_rust/stats`.
 | `function_score_min_score`, `function_score_script`, `function_score_field_data`, `function_score_decay`, `function_score_<Class>` | `function_score` with `min_score`; a script function; a function over field data other than plain sorted-numeric doc values (keyword for `random_score`; not `half_float`, `unsigned_long` or `date_nanos`); another decay or function class (geo decays) |
 | `combined_fields_empty`, `extended_reflect` | a `CombinedFieldQuery` over no field; a Lucene or OpenSearch class whose private fields the plugin cannot read (a version whose classes changed) |
 | `phrase_positions` | a `PhraseQuery` whose terms are not at consecutive positions (the analyzer removed a stopword, leaving a gap) |
-| `field_similarity` | a field scores with a similarity the native side does not compute (`scripted`, `LegacyBM25`, a plugin's), or `combined_fields` (BM25F) covers a field that is not default BM25 |
+| `field_similarity` | a field scores with a similarity the native side does not compute (`scripted` or a plugin's: both run code the native side cannot), or `combined_fields` (BM25F) covers a field that is not default BM25 |
 | `term_states` | a `TermQuery` subclass, or a term query whose own statistics cannot be read (built without them, or with no document frequency while some leaf holds the term) |
 | `dfs` | `search_type=dfs_query_then_fetch`: scoring uses statistics aggregated across shards |
 | `collector_spec` | another plugin registered a replacement top-docs collector |

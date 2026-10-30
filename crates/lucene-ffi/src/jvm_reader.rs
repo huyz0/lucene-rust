@@ -132,8 +132,9 @@ use std::sync::Arc;
 /// `jvm_analysis.rs`), analyzed text fields in the engine writer's ops
 /// (`ffi_engine_prepare`), and the `SIGNIFICANT_TEXT` node (a refused one
 /// answers a count of -1); 50, taken by Track C; 51, the per-field
-/// similarity table in front of a request ([`crate::jvm_similarity`]).
-pub const JVM_ABI_VERSION: u32 = 51;
+/// similarity table in front of a request ([`crate::jvm_similarity`]); 52,
+/// taken by Track C; 53, the table's `classic` and `LegacyBM25` kinds.
+pub const JVM_ABI_VERSION: u32 = 53;
 
 /// Blob tag for a single `TermQuery`.
 pub const QUERY_TERM: u8 = 0;

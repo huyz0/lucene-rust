@@ -96,6 +96,7 @@ def create(index, shards, index_sort=None):
             "lmj": {"type": "LMJelinekMercer", "lambda": 0.3},
             "dfi": {"type": "DFI", "independence_measure": "chisquared"},
             "bool": {"type": "boolean"},
+            "legacy": {"type": "LegacyBM25", "k1": 1.5, "b": 0.6},
             "scr": {"type": "scripted", "script": {"source": "return query.boost * doc.freq;"}},
         },
     }
@@ -108,7 +109,7 @@ def create(index, shards, index_sort=None):
             "body": {"type": "text"},
             "title": {"type": "text", "store": True},
             "tuned": {"type": "text", "similarity": "tuned", "fields": {
-                k: {"type": "text", "similarity": k} for k in ("dfr", "ib", "lmd", "lmj", "dfi", "bool", "scr")
+                k: {"type": "text", "similarity": k} for k in ("dfr", "ib", "lmd", "lmj", "dfi", "bool", "legacy", "scr")
             }},
             "tag": {"type": "keyword"},
             "mtag": {"type": "keyword"},
@@ -293,9 +294,11 @@ def matrix():
     add("match_all + filter", {"query": {"bool": {"must": [{"match_all": {}}], "filter": [{"term": {"tag": "beta"}}]}}}, "native")
     add("bool msm with must", {"query": {"bool": {"must": [{"match": {"body": "alpha"}}], "should": [{"match": {"title": "beta"}}, {"match": {"title": "gamma"}}], "minimum_should_match": 1}}}, "native")
     add("custom similarity", {"query": {"match": {"tuned": "alpha"}}}, "native")
-    for k in ("dfr", "ib", "lmd", "lmj", "dfi", "bool"):
+    for k in ("dfr", "ib", "lmd", "lmj", "dfi", "bool", "legacy"):
         add(f"similarity {k}", {"query": {"bool": {"should": [{"match": {f"tuned.{k}": "alpha beta"}}, {"match": {"body": "gamma"}}]}}}, "native")
     add("similarity dfr phrase", {"query": {"match_phrase": {"tuned.dfr": {"query": "alpha beta", "slop": 2}}}}, "native")
+    # A scripted similarity runs the user's script, which stays on the JVM. (`classic` is native too,
+    # but OpenSearch refuses it in a mapping now, so only the self-test reaches it.)
     add("similarity scripted", {"query": {"match": {"tuned.scr": "alpha"}}}, "field_similarity")
     # Sorted searches (read path R4): numeric keys of every type, missing values, several keys,
     # the score and _doc, search_after, and the ones that stay on Lucene.

@@ -405,6 +405,50 @@ impl Similarity for Bm25Similarity {
     }
 }
 
+/// OpenSearch's `LegacyBM25Similarity` (`org.opensearch.lucene.similarity`):
+/// [`Bm25Similarity`] with the `(k1 + 1)` numerator Lucene 8 dropped, put
+/// back by scaling the boost. Norms are BM25's.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LegacyBm25Similarity {
+    bm25: Bm25Similarity,
+}
+
+impl LegacyBm25Similarity {
+    /// `LegacyBM25Similarity(k1, b, discountOverlaps)`.
+    pub fn new(k1: f32, b: f32, discount_overlaps: bool) -> Result<Self, String> {
+        Ok(Self {
+            bm25: Bm25Similarity::new(k1, b, discount_overlaps)?,
+        })
+    }
+}
+
+impl NormSimilarity for LegacyBm25Similarity {
+    fn discount_overlaps(&self) -> bool {
+        self.bm25.discount_overlaps
+    }
+}
+
+impl Similarity for LegacyBm25Similarity {
+    fn simple_name(&self) -> &str {
+        "LegacyBM25Similarity"
+    }
+
+    fn scorer(
+        &self,
+        field: &str,
+        boost: f32,
+        collection: &CollectionStatistics,
+        terms: &[TermStatistics],
+    ) -> Arc<dyn SimScorer> {
+        self.bm25
+            .scorer(field, boost * (1.0 + self.bm25.k1), collection, terms)
+    }
+
+    fn shared(&self) -> Option<Arc<dyn Similarity>> {
+        Some(Arc::new(*self))
+    }
+}
+
 // ---------------------------------------------------------------------------
 // TF-IDF, Boolean, raw TF
 // ---------------------------------------------------------------------------
@@ -2272,6 +2316,22 @@ mod tests {
         assert!(e.details[0]
             .description
             .starts_with("score(DFISimilarity, freq=3.0)"));
+    }
+
+    /// `LegacyBM25Similarity` scores BM25 at `boost * (1 + k1)`.
+    #[test]
+    fn legacy_bm25_scales_the_boost_by_k1_plus_one() {
+        let legacy = LegacyBm25Similarity::new(1.5, 0.6, true).unwrap();
+        let bm25 = Bm25Similarity::new(1.5, 0.6, true).unwrap();
+        let (l, b) = (
+            legacy.scorer("f", 2.0, &coll(), &[term()]),
+            bm25.scorer("f", 2.0 * 2.5, &coll(), &[term()]),
+        );
+        for (freq, norm) in [(1.0, 1), (3.0, 7), (9.0, 200)] {
+            assert_eq!(l.score(freq, norm).to_bits(), b.score(freq, norm).to_bits());
+        }
+        assert_eq!(legacy.simple_name(), "LegacyBM25Similarity");
+        assert!(!legacy.is_default_bm25());
     }
 
     /// Each similarity reports its Java class's simple name, which an
