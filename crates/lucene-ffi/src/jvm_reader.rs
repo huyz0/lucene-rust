@@ -124,8 +124,8 @@ use std::sync::Arc;
 /// keyword's collection in first-collected order); 45, its flags (numeric
 /// fields, keys as terms, a keyword `missing` term) and sub-aggregations,
 /// `TOP_HITS` its sort (a sorted bucket's values and terms back), and the
-/// `HDR_PERCENTILES` node (each bucket's values back); 46, taken by the
-/// nested aggregations; 47, the multi-term, doc-values, covering and
+/// `HDR_PERCENTILES` node (each bucket's values back); 46, the `NESTED` and
+/// `REVERSE_NESTED` nodes; 47, the multi-term, doc-values, covering and
 /// distance-feature nodes ([`crate::jvm_queries`], 27-35).
 pub const JVM_ABI_VERSION: u32 = 47;
 
