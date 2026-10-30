@@ -120,8 +120,9 @@ use std::sync::Arc;
 /// `include`/`exclude` as accepted ordinals (bit 4); 41, the tree's
 /// top-level `COMPOSITE` node; 42, the `PERCENTILES` node (a t-digest per
 /// bucket, its whole state in the result); 43, the `TOP_HITS` node (each
-/// bucket's top hits by score).
-pub const JVM_ABI_VERSION: u32 = 43;
+/// bucket's top hits by score); 44, the `SIGNIFICANT_TERMS` node (a
+/// keyword's collection in first-collected order).
+pub const JVM_ABI_VERSION: u32 = 44;
 
 /// Blob tag for a single `TermQuery`.
 pub const QUERY_TERM: u8 = 0;
