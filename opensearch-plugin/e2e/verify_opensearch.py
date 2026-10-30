@@ -499,10 +499,10 @@ def matrix():
     add("agg significant_terms numeric include", {"size": 0, "query": {"match": {"body": "omega"}}, "aggs": {"s": {"significant_terms": {"field": "qty", "include": [1, 2, 3]}}}}, "aggregations")
     # significant_text: `_source` read and analyzed natively (the field's index analyzer in Rust).
     add("agg significant_text", {"size": 0, "query": {"match": {"body": "omega"}}, "aggs": {"s": {"significant_text": {"field": "body"}}}}, "native")
-    add("agg significant_text filter_duplicate_text", {"size": 0, "query": {"match": {"body": "pi rho"}}, "aggs": {"s": {"significant_text": {"field": "body", "filter_duplicate_text": True, "size": 5, "min_doc_count": 1}}}}, "native")
+    add("agg significant_text filter_duplicate_text", {"_sequential": True, "size": 0, "query": {"match": {"body": "pi rho"}}, "aggs": {"s": {"significant_text": {"field": "body", "filter_duplicate_text": True, "size": 5, "min_doc_count": 1}}}}, "native")
     add("agg significant_text source_fields", {"size": 0, "query": {"match": {"body": "xi"}}, "aggs": {"s": {"significant_text": {"field": "body", "source_fields": ["title", "body"], "min_doc_count": 1}}}}, "native")
-    add("agg terms > significant_text dedup", {"size": 0, "query": {"match": {"body": "nu theta"}}, "aggs": {"t": {"terms": {"field": "tag", "size": 4}, "aggs": {"s": {"significant_text": {"field": "title", "filter_duplicate_text": True, "size": 3, "min_doc_count": 1}}}}}}, "native")
-    add("agg significant_text with sub", {"size": 0, "query": {"match": {"body": "kappa"}}, "aggs": {"s": {"significant_text": {"field": "body", "size": 4}, "aggs": {"m": {"max": {"field": "n"}}, "t": {"terms": {"field": "tag", "size": 2}}}}}}, "native")
+    add("agg terms > significant_text dedup", {"_sequential": True, "size": 0, "query": {"match": {"body": "nu theta"}}, "aggs": {"t": {"terms": {"field": "tag", "size": 4}, "aggs": {"s": {"significant_text": {"field": "title", "filter_duplicate_text": True, "size": 3, "min_doc_count": 1}}}}}}, "native")
+    add("agg filter > significant_text", {"size": 0, "query": {"match": {"body": "kappa"}}, "aggs": {"f": {"filter": {"range": {"n": {"gte": 1000}}}, "aggs": {"s": {"significant_text": {"field": "body", "size": 4}}}}}}, "native")
     add("agg significant_text match_all", {"size": 0, "aggs": {"s": {"significant_text": {"field": "title", "min_doc_count": 1, "chi_square": {}}}}}, "native")
     add("agg significant_text include", {"size": 0, "query": {"match": {"body": "omega"}}, "aggs": {"s": {"significant_text": {"field": "body", "include": "[a-m].*"}}}}, "aggregations")
     add("agg terms > avg_bucket pipeline", {"size": 0, "query": {"match": {"body": "beta"}}, "aggs": {"t": {"terms": {"field": "tag", "size": 5}, "aggs": {"a": {"avg": {"field": "price"}}}}, "ab": {"avg_bucket": {"buckets_path": "t>a"}}, "mb": {"max_bucket": {"buckets_path": "t>_count"}}, "sb": {"stats_bucket": {"buckets_path": "t>a"}}}}, "native")
@@ -684,7 +684,30 @@ def same(a, b):
 def search_url(index, body):
     """`_search`, with a matrix row's `_params` (URL parameters) moved to the query string."""
     params = body.get("_params", "")
-    return f"/{index}/_search?request_cache=false{params}", {k: v for k, v in body.items() if k != "_params"}
+    return f"/{index}/_search?request_cache=false{params}", {k: v for k, v in body.items() if k not in ("_params", "_sequential")}
+
+
+def search(index, body):
+    """A matrix row's `_search`. A `_sequential` row runs with concurrent segment search off on
+    the index: OpenSearch's own answer to it races between slices (DeDuplicatingTokenFilter
+    hashes into one static MurmurHash3.Hash128 shared by every searching thread), so only a
+    one-slice search is a reference."""
+    url, b = search_url(index, body)
+    if not body.get("_sequential"):
+        return req("POST", url, b)
+    concurrency(index, "none")
+    try:
+        return req("POST", url, b)
+    finally:
+        concurrency(index, None)
+
+
+def concurrency(index, mode):
+    try:
+        req("PUT", f"/{index}/_settings", {"index.search.concurrent_segment_search.mode": mode})
+    except RuntimeError:
+        # A 2.x node without the mode setting: concurrent search is off there by default.
+        pass
 
 
 def run_matrix(index, shards, label, shapes="fast", index_sorted=False, rows=None):
@@ -697,7 +720,7 @@ def run_matrix(index, shards, label, shapes="fast", index_sorted=False, rows=Non
     for name, body, _ in queries:
         url, b = search_url(index, body)
         try:
-            reference[name] = shape(complete(req("POST", url, b)), b)
+            reference[name] = shape(complete(search(index, body)), b)
         except RuntimeError as e:
             # A row the stock engine itself cannot answer is no reference.
             UNVERIFIABLE.append(f"{label} {index} [{name}]")
@@ -723,7 +746,7 @@ def run_matrix(index, shards, label, shapes="fast", index_sorted=False, rows=Non
             expect = "native"
         before = stats()
         url, b = search_url(index, body)
-        got = shape(req("POST", url, b), b)
+        got = shape(search(index, body), b)
         after = stats()
         diff = same(got, reference[name])
         check(diff is None, f"{label} {index} [{name}]: native-enabled response differs from Lucene: {diff}")
