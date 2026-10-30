@@ -30,6 +30,7 @@ import org.apache.lucene.search.similarities.BasicModelIF;
 import org.apache.lucene.search.similarities.BasicModelIn;
 import org.apache.lucene.search.similarities.BasicModelIne;
 import org.apache.lucene.search.similarities.BooleanSimilarity;
+import org.apache.lucene.search.similarities.ClassicSimilarity;
 import org.apache.lucene.search.similarities.DFISimilarity;
 import org.apache.lucene.search.similarities.DFRSimilarity;
 import org.apache.lucene.search.similarities.DistributionLL;
@@ -50,6 +51,7 @@ import org.apache.lucene.search.similarities.NormalizationZ;
 import org.apache.lucene.search.similarities.PerFieldSimilarityWrapper;
 import org.apache.lucene.search.similarities.Similarity;
 import org.apache.lucene.store.FSDirectory;
+import org.opensearch.lucene.similarity.LegacyBM25Similarity;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -90,6 +92,7 @@ final class NativeSelfTestSimilarity {
     }
 
     /** One of each kind the encoder sends, with random parameters. */
+    @SuppressWarnings("deprecation") // LegacyBM25Similarity
     private static List<Similarity> similarities(Random r) {
         List<Similarity> out = new ArrayList<>();
         out.add(new BM25Similarity(0.5f + r.nextInt(30) / 10f, r.nextInt(11) / 10f, r.nextBoolean()));
@@ -124,6 +127,8 @@ final class NativeSelfTestSimilarity {
         );
         out.add(new LMDirichletSimilarity(100f + r.nextInt(3000)));
         out.add(new LMJelinekMercerSimilarity(0.05f + r.nextInt(19) / 20f));
+        out.add(new ClassicSimilarity(r.nextBoolean()));
+        out.add(new LegacyBM25Similarity(0.5f + r.nextInt(30) / 10f, r.nextInt(11) / 10f, r.nextBoolean()));
         return out;
     }
 
@@ -198,9 +203,10 @@ final class NativeSelfTestSimilarity {
                     COMPARED.computeIfAbsent(name, k -> new int[1])[0] += queries.size();
                     withSimilarity.run("similarity round " + round + " body " + body + " note " + note, reader, readers, queries, perField);
                 }
-                // The encoder refuses a similarity it does not know, and sends nothing for the default.
-                SimilarityEncoder unknown = new SimilarityEncoder(new org.apache.lucene.search.similarities.ClassicSimilarity());
-                check.accept(unknown.test("body") == false, "ClassicSimilarity is not sent");
+                // The encoder refuses a similarity it does not know (a subclass may score differently),
+                // and sends nothing for the default.
+                SimilarityEncoder unknown = new SimilarityEncoder(new ClassicSimilarity() {});
+                check.accept(unknown.test("body") == false, "a ClassicSimilarity subclass is not sent");
                 SimilarityEncoder plain = new SimilarityEncoder(new BM25Similarity());
                 byte[] blob = { 1, 2, 3 };
                 check.accept(plain.test("body") && plain.prefix(blob) == blob, "the default BM25 sends no table");
