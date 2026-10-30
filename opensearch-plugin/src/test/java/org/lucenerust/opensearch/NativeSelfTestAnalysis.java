@@ -4,6 +4,8 @@
 package org.lucenerust.opensearch;
 
 import org.apache.lucene.analysis.Analyzer;
+import org.apache.lucene.analysis.TokenStream;
+import org.apache.lucene.analysis.Tokenizer;
 import org.apache.lucene.analysis.CharArraySet;
 import org.apache.lucene.analysis.ar.ArabicAnalyzer;
 import org.apache.lucene.analysis.bg.BulgarianAnalyzer;
@@ -11,6 +13,8 @@ import org.apache.lucene.analysis.br.BrazilianAnalyzer;
 import org.apache.lucene.analysis.cjk.CJKAnalyzer;
 import org.apache.lucene.analysis.classic.ClassicAnalyzer;
 import org.apache.lucene.analysis.core.KeywordAnalyzer;
+import org.apache.lucene.analysis.core.LowerCaseFilter;
+import org.apache.lucene.analysis.core.WhitespaceTokenizer;
 import org.apache.lucene.analysis.core.SimpleAnalyzer;
 import org.apache.lucene.analysis.core.StopAnalyzer;
 import org.apache.lucene.analysis.core.UnicodeWhitespaceAnalyzer;
@@ -25,12 +29,19 @@ import org.apache.lucene.analysis.es.SpanishAnalyzer;
 import org.apache.lucene.analysis.fa.PersianAnalyzer;
 import org.apache.lucene.analysis.fr.FrenchAnalyzer;
 import org.apache.lucene.analysis.hi.HindiAnalyzer;
+import org.apache.lucene.analysis.hunspell.Dictionary;
+import org.apache.lucene.analysis.hunspell.HunspellStemFilter;
 import org.apache.lucene.analysis.it.ItalianAnalyzer;
 import org.apache.lucene.analysis.pt.PortugueseAnalyzer;
 import org.apache.lucene.analysis.ru.RussianAnalyzer;
 import org.apache.lucene.analysis.standard.StandardAnalyzer;
+import org.apache.lucene.analysis.standard.StandardTokenizer;
+import org.apache.lucene.store.ByteBuffersDirectory;
 import org.apache.lucene.analysis.th.ThaiAnalyzer;
 
+import java.io.ByteArrayInputStream;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -70,6 +81,46 @@ final class NativeSelfTestAnalysis {
             }
         }
         return CustomAnalyzer.builder(resources);
+    }
+
+    // The e2e runs' dictionary (opensearch-plugin/e2e/hunspell/en_US), inline.
+    private static final String EN_AFF = "SET UTF-8\nTRY esianrtolcdugmphbyfvkwz\n\nPFX U Y 1\nPFX U 0 un .\n\n"
+        + "SFX S Y 2\nSFX S 0 s [^sxz]\nSFX S 0 es [sxz]\n\nSFX D Y 2\nSFX D 0 d e\nSFX D 0 ed [^e]\n\n"
+        + "SFX G Y 2\nSFX G e ing e\nSFX G 0 ing [^e]\n\nSFX N Y 2\nSFX N 0 ning n\nSFX N 0 ner/S n\n";
+    private static final String EN_DIC = "14\nthe\nquick\nbrown\nfox/S\njump/SDG\nover\nlazy\ndog/S\ncat/S\nsleep/SG\n"
+        + "run/N\nran st:run\nhouse/SDG\nhappy/U\n";
+    private static final String EXTRA_DIC = "3\nwhile\nalpha/S\nrunner/S\n";
+    // ISO-8859-1 with a one-letter UTF-8 flag (fixtures/corpus/hunspell/latin1.*).
+    private static final String LATIN1_AFF = "SET ISO8859-1\nFLAG UTF-8\nTRY e\n\nSFX \u00c3\u00a9 Y 1\nSFX \u00c3\u00a9 0 \u00e9 .\n";
+    private static final String LATIN1_DIC = "2\ncaf/\u00c3\u00a9\nna\u00efve\n";
+
+    /** A dictionary parsed from these bytes, its files recorded for {@link AnalyzerSpec} unless {@code record} is false. */
+    private static Dictionary dictionary(byte[] aff, List<byte[]> dics, boolean ignoreCase, boolean record) throws Exception {
+        List<InputStream> streams = new ArrayList<>();
+        for (byte[] d : dics) {
+            streams.add(new ByteArrayInputStream(d));
+        }
+        Dictionary d = new Dictionary(new ByteBuffersDirectory(), "hunspell", new ByteArrayInputStream(aff), streams, ignoreCase);
+        if (record) {
+            AnalyzerSpec.hunspellFiles(d, new AnalyzerSpec.HunspellFiles(aff, dics));
+        }
+        return d;
+    }
+
+    /** {@code tokenizer}, optionally lowercased, then hunspell over {@code d}. */
+    private static Analyzer hunspell(boolean whitespace, boolean lowercase, Dictionary d, boolean dedup, boolean longestOnly) {
+        return new Analyzer() {
+            @Override
+            protected TokenStreamComponents createComponents(String field) {
+                Tokenizer t = whitespace ? new WhitespaceTokenizer() : new StandardTokenizer();
+                TokenStream s = lowercase ? new LowerCaseFilter(t) : t;
+                return new TokenStreamComponents(t, new HunspellStemFilter(s, d, dedup, longestOnly));
+            }
+        };
+    }
+
+    private static byte[] utf8(String s) {
+        return s.getBytes(StandardCharsets.UTF_8);
     }
 
     /** Analyzers that must be described, by name. */
@@ -248,6 +299,27 @@ final class NativeSelfTestAnalysis {
                 .build()
         );
         m.put("keyword tokenizer, ascii folding", b().withTokenizer("keyword").addTokenFilter("asciiFolding").build());
+        List<byte[]> en = List.of(utf8(EN_DIC), utf8(EXTRA_DIC));
+        m.put("hunspell (two .dic files, stem exception)", hunspell(false, true, dictionary(utf8(EN_AFF), en, false, true), true, false));
+        m.put(
+            "hunspell ignore case, longest only, no dedup",
+            hunspell(true, false, dictionary(utf8(EN_AFF), en, true, true), false, true)
+        );
+        m.put(
+            "hunspell ISO-8859-1",
+            hunspell(
+                false,
+                false,
+                dictionary(
+                    LATIN1_AFF.getBytes(StandardCharsets.ISO_8859_1),
+                    List.of(LATIN1_DIC.getBytes(StandardCharsets.ISO_8859_1)),
+                    false,
+                    true
+                ),
+                true,
+                false
+            )
+        );
         return m;
     }
 
@@ -256,6 +328,11 @@ final class NativeSelfTestAnalysis {
         Map<String, Map.Entry<Analyzer, String>> m = new LinkedHashMap<>();
         // The Rust port has no dictionary segmentation for Thai.
         m.put("thai", Map.entry(new ThaiAnalyzer(), "analysis_ThaiTokenizer"));
+        // A dictionary with no known files (a plugin's own, say).
+        m.put(
+            "hunspell without its files",
+            Map.entry(hunspell(false, true, dictionary(utf8(EN_AFF), List.of(utf8(EN_DIC)), false, false), true, false), "analysis_hunspell")
+        );
         // PersianCharFilter is not mapped.
         m.put("persian", Map.entry(new PersianAnalyzer(), "analysis_PersianCharFilter"));
         m.put(
@@ -273,7 +350,7 @@ final class NativeSelfTestAnalysis {
         "l'avion", "d'Artagnan", "O'Neil", "café", "naïve", "Straße", "İstanbul", "ΣΊΣΥΦΟΣ", "Москва", "東京都", "서울", "カタカナ",
         "ﾊﾝｶｸ", "ＦＵＬＬ", "ภาษาไทย", "العربية", "हिन्दी", "😀", "👍🏽", "ab😀cd", "<b>", "</b>", "<p>", "&amp;", "&eacute;", "<br/>",
         "<script>", "</script>", "https://example.org/a?b=c", "user@example.com", "/usr/local/lib", "a/b/c/d", "'quoted'", "aaa",
-        "banana", "fox", "fast", "wifi", "of", "and", "to", "is", ";", ",", ".", "!", "?", "-", "_", "#tag", "@who", "x", "supercalifragilistic", "٣٤٥",
+        "banana", "fox", "fast", "wifi", "runners", "Running", "houses", "housing", "ran", "unhappy", "Jumping", "dogs", "caf", "alphas", "of", "and", "to", "is", ";", ",", ".", "!", "?", "-", "_", "#tag", "@who", "x", "supercalifragilistic", "٣٤٥",
     };
 
     private static final String[] SPACES = { " ", " ", " ", "  ", "\t", "\n", " ", "　", "", ", " };

@@ -485,12 +485,14 @@ factory_struct! {
     /// `recursionCap` are read and ignored, as in Java. Differs: a
     /// dictionary Lucene cannot parse is Java's `IOException`, whose message
     /// names the dictionaries by file name where Java prints its
-    /// `InputStream` objects.
+    /// `InputStream` objects; `dedup` (default true, Java's factory always
+    /// dedups) is an extension, OpenSearch's `hunspell` filter setting.
     HunspellStemFilterFactory {
         dictionary_files: String,
         affix_file: Option<String>,
         ignore_case: bool,
         longest_only: bool,
+        dedup: bool,
         dictionary: Option<Arc<Dictionary>>,
     }
 }
@@ -506,6 +508,7 @@ impl FactoryClass for HunspellStemFilterFactory {
         let affix_file = args::get(args, "affix");
         let ignore_case = args::get_boolean(args, "ignoreCase", false);
         let longest_only = args::get_boolean(args, "longestOnly", false);
+        let dedup = args::get_boolean(args, "dedup", true);
         args::get_boolean(args, "strictAffixParsing", true);
         args::get_int(args, "recursionCap", 0)?;
         args::reject_unknown(args)?;
@@ -515,6 +518,7 @@ impl FactoryClass for HunspellStemFilterFactory {
             affix_file,
             ignore_case,
             longest_only,
+            dedup,
             dictionary: None,
         })
     }
@@ -579,7 +583,7 @@ impl TokenFilterFactory for HunspellStemFilterFactory {
         Ok(Box::new(HunspellStemFilter::new(
             input,
             dictionary,
-            true,
+            self.dedup,
             self.longest_only,
         )))
     }

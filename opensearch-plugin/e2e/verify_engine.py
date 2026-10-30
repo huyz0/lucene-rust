@@ -80,6 +80,7 @@ MAPPING = {
         "note": {"type": "text", "analyzer": "fancy"},
         "code": {"type": "text", "analyzer": "parts", "index_options": "offsets"},
         "syn": {"type": "text", "analyzer": "syn"},
+        "hun": {"type": "text", "analyzer": "hun"},
         "tag": {"type": "keyword"},
         "n": {"type": "long"},
         "price": {"type": "double"},
@@ -110,10 +111,13 @@ ANALYSIS = {
                   "filter": ["word_delimiter", "lowercase", "kstem", "remove_duplicates"]},
         "syn": {"type": "custom", "tokenizer": "standard",
                 "filter": ["lowercase", "overrides", "synonyms", "porter_stem"]},
+        # config/hunspell/en_US (opensearch-plugin/e2e/hunspell), two .dic files.
+        "hun": {"type": "custom", "tokenizer": "standard", "filter": ["lowercase", "en_stem"]},
     },
     "filter": {
         "keep_both": {"type": "asciifolding", "preserve_original": True},
         "overrides": {"type": "stemmer_override", "rules": ["runners => runner", "houses' => home"]},
+        "en_stem": {"type": "hunspell", "locale": "en_US"},
         "synonyms": {"type": "synonym", "synonyms": ["quick, fast, speedy", "foxes => vixens, foxes",
                                                     "jumping cats => leaping felines", "café, coffee shop"]},
     },
@@ -143,6 +147,8 @@ def source(r, i):
     if r.random() < 0.6:
         doc["note"] = [" ".join(r.choice(NOTES) for _ in range(1 + r.randrange(4))) for _ in range(1 + r.randrange(2))]
         doc["syn"] = doc["note"]
+    if r.random() < 0.6:
+        doc["hun"] = words(r, 1 + r.randrange(12))
     if r.random() < 0.6:
         doc["code"] = " ".join(r.choice(CODES) for _ in range(1 + r.randrange(5)))
     if r.random() < 0.1:
@@ -258,6 +264,9 @@ QUERIES = [
     {"match": {"syn": "fast vixens"}},
     {"match_phrase": {"syn": "leaping felines"}},
     {"match": {"syn": "coffee runner"}},
+    {"match": {"hun": "runners housing"}},
+    {"match_phrase": {"hun": "lazy dogs"}},
+    {"match": {"hun": "ran"}},
     {"match_phrase": {"code": "http request"}},
     {"prefix": {"tag": "t1"}},
     {"exists": {"field": "title"}},
