@@ -337,6 +337,16 @@ impl Scorer for AssertingScorer<'_> {
         Ok(())
     }
 
+    fn two_phase_run_end(&self) -> i32 {
+        let end = self.inner.two_phase_run_end();
+        assert!(
+            end >= self.doc_id(),
+            "TwoPhaseIterator.docIDRunEnd={end}, docID={}",
+            self.doc_id()
+        );
+        end
+    }
+
     fn doc_id_run_end(&self) -> i32 {
         let end = self.inner.doc_id_run_end();
         assert!(

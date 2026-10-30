@@ -78,6 +78,13 @@ harness = false
 name = "filter_vs_must"
 harness = false
 
+# `MUST_NOT` bulk scoring and the doc-values rewrite's ordinal set, the
+# shapes Lucene 10.6's #16307, #16669 and #16297 change -- see the bench's
+# own module doc.
+[[bench]]
+name = "req_excl"
+harness = false
+
 # Settles c1's F-13 (`directory_reader` -> `blocktree::open_shared`): how much
 # of a segment open is the `.tim`/`.tip` copy -- see the bench's own module doc.
 [[bench]]
