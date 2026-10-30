@@ -1012,6 +1012,8 @@ public final class NativeAggregationTree {
             }
             case AGGS + "bucket.composite.CompositeAggregationFactory":
                 return top ? NativeComposite.node(ctx, agg, subs) : null;
+            case AGGS + "bucket.terms.SignificantTextAggregatorFactory":
+                return NativeSignificantTerms.textNode(ctx, f, agg, subs);
             case AGGS + "bucket.filter.FilterAggregatorFactory": {
                 byte[] q = filterBlob(ctx, (Query) declared(f, "filter"), fieldOk);
                 return q == null ? null : new FiltersNode(agg, subs, new byte[][] { q }, false);

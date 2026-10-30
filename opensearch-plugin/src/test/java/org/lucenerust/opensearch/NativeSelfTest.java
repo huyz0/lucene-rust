@@ -126,6 +126,18 @@ public final class NativeSelfTest {
         NativeLibrary.load(Path.of("."));
         check(NativeBridge.abiVersion() == NativeBridge.EXPECTED_ABI_VERSION, "ABI handshake");
 
+        // The analysis bridge first: quick, and SELFTEST_ONLY=analysis runs it alone.
+        NativeSelfTestAnalysis.run(new Random(23), (ok, what) -> check(ok, what));
+        check(NativeSelfTestAnalysis.described >= 40, "analyzers described: " + NativeSelfTestAnalysis.described);
+        System.out.printf(
+            "NativeSelfTest: %d analyzers described, %d texts analyzed in Rust and compared%n",
+            NativeSelfTestAnalysis.described,
+            NativeSelfTestAnalysis.compared
+        );
+        if ("analysis".equals(System.getenv("SELFTEST_ONLY"))) {
+            System.out.printf("NativeSelfTest (analysis only): %d checks, %d failures%n", checks, failures);
+            System.exit(failures > 0 ? 1 : 0);
+        }
         // SELFTEST_ONLY=m10: the M10 shapes alone (a quick loop while working on them).
         boolean onlyM10 = "m10".equals(System.getenv("SELFTEST_ONLY"));
         // SELFTEST_ONLY=leaves: NativeSelfTestLeaves' shapes alone.

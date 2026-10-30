@@ -214,13 +214,38 @@ final class RustIndexWriter implements DocumentIndexWriter {
         if (breaker != null) {
             breaker.addEstimateBytesAndMaybeBreak(estimate, "lucene_rust_writer");
         }
+        // A blob with fields left to Rust to analyze is decoded (analyzed) first, outside the
+        // lock, so indexing threads analyze in parallel as they do in Java.
+        long prepared = 0;
+        if (op.analyzesNatively) {
+            long[] id = new long[1];
+            int rc = NativeBridge.writerPrepare(op.array(), op.length(), id);
+            if (rc != NativeBridge.OK) {
+                if (breaker != null) {
+                    breaker.addWithoutBreaking(-estimate);
+                }
+                synchronized (lock) {
+                    check(rc, "analyzing");
+                }
+            }
+            prepared = id[0];
+        }
         synchronized (lock) {
             accounted += estimate;
             try {
                 ensureOpen();
-                check(NativeBridge.writerApply(handle, op.array(), op.length()), "indexing");
+                if (prepared != 0) {
+                    long id = prepared;
+                    prepared = 0;
+                    check(NativeBridge.writerApplyPrepared(handle, id), "indexing");
+                } else {
+                    check(NativeBridge.writerApply(handle, op.array(), op.length()), "indexing");
+                }
                 docsSinceCommit.addAndGet(docs);
             } finally {
+                if (prepared != 0) {
+                    NativeBridge.preparedFree(prepared);
+                }
                 reconcileBreaker();
             }
         }

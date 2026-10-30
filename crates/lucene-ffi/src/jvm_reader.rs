@@ -129,11 +129,15 @@ use std::sync::Arc;
 /// `TOP_HITS` its sort (a sorted bucket's values and terms back), and the
 /// `HDR_PERCENTILES` node (each bucket's values back); 46, the `NESTED` and
 /// `REVERSE_NESTED` nodes; 47, the multi-term, doc-values, covering and
-/// distance-feature nodes ([`crate::jvm_queries`], 27-35); 48, the collapsed
-/// search (`ffi_jvm_reader_search_collapsed_alloc`, `terminate_after` too),
-/// the rescorer (`ffi_jvm_reader_rescore`) and the sort blob's `_shard_doc`,
+/// distance-feature nodes ([`crate::jvm_queries`], 27-35); 48, never
+/// shipped; 49, `ffi_jvm_analyze_alloc` (an analyzer spec run over a text,
+/// `jvm_analysis.rs`), analyzed text fields in the engine writer's ops
+/// (`ffi_engine_prepare`), and the `SIGNIFICANT_TEXT` node (a refused one
+/// answers a count of -1); 50, the collapsed search
+/// (`ffi_jvm_reader_search_collapsed_alloc`, `terminate_after` too), the
+/// rescorer (`ffi_jvm_reader_rescore`) and the sort blob's `_shard_doc`,
 /// `half_float` and `unsigned_long` keys.
-pub const JVM_ABI_VERSION: u32 = 48;
+pub const JVM_ABI_VERSION: u32 = 50;
 
 /// Blob tag for a single `TermQuery`.
 pub const QUERY_TERM: u8 = 0;

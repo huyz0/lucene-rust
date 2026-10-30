@@ -140,6 +140,9 @@ const AGG_SIGNIFICANT_TERMS: u8 = 13;
 const AGG_HDR_PERCENTILES: u8 = 14;
 const AGG_NESTED: u8 = 15;
 const AGG_REVERSE_NESTED: u8 = 16;
+const AGG_SIGNIFICANT_TEXT: u8 = 17;
+/// The most source fields a `significant_text` may read.
+const MAX_SOURCE_FIELDS: i32 = 1024;
 /// The largest t-digest compression a tree may ask for: a digest holds
 /// about `12 * compression` doubles.
 const MAX_COMPRESSION: f64 = 10_000.0;
@@ -383,6 +386,42 @@ fn node_of(
                 terms,
                 missing_term,
                 missing: None,
+                text: None,
+                subs: nodes(c, depth + 1, count)?,
+            }
+        }
+        AGG_SIGNIFICANT_TEXT => {
+            let dedup = match c.u8()? {
+                0 => false,
+                1 => true,
+                f => return Err(bad(format!("aggregation tree: significant_text flags {f}"))),
+            };
+            let analyzer = crate::jvm_analysis::analyzer(c.bytes()?)?;
+            let name = field(c)?;
+            let n = c.i32()?;
+            if !(1..=MAX_SOURCE_FIELDS).contains(&n) {
+                return Err(bad(format!(
+                    "aggregation tree: significant_text with {n} source fields"
+                )));
+            }
+            let mut source_fields = Vec::new();
+            for _ in 0..n {
+                source_fields.push(field(c)?);
+            }
+            AggNode::SignificantTerms {
+                field: name.clone(),
+                numeric: false,
+                terms: true,
+                missing_term: None,
+                missing: None,
+                text: Some(std::sync::Arc::new(
+                    lucene_search::significant_text::TextSource {
+                        source_fields,
+                        field: name,
+                        analyzer,
+                        dedup,
+                    },
+                )),
                 subs: nodes(c, depth + 1, count)?,
             }
         }
@@ -790,6 +829,8 @@ pub(crate) fn encode_result(r: &AggResult, out: &mut Vec<u8>) -> Result<(), FfiS
                 }
             }
         }
+        // Java reads a count of -1 as its aggregator's refusal.
+        AggResult::Refused(_) => out.extend_from_slice(&(-1i32).to_le_bytes()),
         AggResult::Significant { buckets, subs } => {
             put_i32(out, buckets.len())?;
             for (subset, listed) in buckets {
@@ -1834,6 +1875,52 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn significant_text_decodes_and_a_refusal_encodes_as_minus_one() {
+        let spec =
+            crate::jvm_analysis::tests::spec(&[], ("whitespace", &[]), &[("lowercase", &[])], &[]);
+        let mut b = vec![1u8, AGG_SIGNIFICANT_TEXT, 1];
+        b.extend_from_slice(&(spec.len() as i32).to_le_bytes());
+        b.extend_from_slice(&spec);
+        string(&mut b, "body");
+        b.extend_from_slice(&2i32.to_le_bytes());
+        string(&mut b, "title");
+        string(&mut b, "body");
+        b.push(0);
+        b.extend_from_slice(&[0u8, 0, 0, 0, 0]);
+        let tree = decode_tree(&b).unwrap();
+        let AggNode::SignificantTerms {
+            field,
+            terms: true,
+            text: Some(t),
+            subs,
+            ..
+        } = &tree.nodes[0]
+        else {
+            panic!("{:?}", tree.nodes[0]);
+        };
+        assert_eq!(field, "body");
+        assert!(t.dedup && subs.is_empty());
+        assert_eq!(t.source_fields, ["title", "body"]);
+        // No source fields, or a flag past 1.
+        for (flag, n) in [(1u8, 0i32), (2, 1)] {
+            let mut b = vec![1u8, AGG_SIGNIFICANT_TEXT, flag];
+            b.extend_from_slice(&(spec.len() as i32).to_le_bytes());
+            b.extend_from_slice(&spec);
+            string(&mut b, "body");
+            b.extend_from_slice(&n.to_le_bytes());
+            if n > 0 {
+                string(&mut b, "body");
+            }
+            b.push(0);
+            b.extend_from_slice(&[0u8, 0, 0, 0, 0]);
+            assert_eq!(decode_tree(&b).err(), Some(FfiStatus::InvalidArgument));
+        }
+        let mut out = Vec::new();
+        encode_result(&AggResult::Refused("not JSON".into()), &mut out).unwrap();
+        assert_eq!(out, (-1i32).to_le_bytes());
+    }
+
+    #[test]
     fn significant_terms_decode_and_encode() {
         // A keyword's, as terms, with a `missing` term and no sub-aggregation.
         let mut b = vec![1u8, AGG_SIGNIFICANT_TERMS, 6];
@@ -1844,7 +1931,7 @@ pub(crate) mod tests {
         let tree = decode_tree(&b).unwrap();
         assert!(matches!(
             &tree.nodes[0],
-            AggNode::SignificantTerms { field, numeric: false, terms: true, missing_term: Some(m), missing: None, subs }
+            AggNode::SignificantTerms { field, numeric: false, terms: true, missing_term: Some(m), missing: None, text: None, subs }
                 if field == "kw" && m == b"none" && subs.is_empty()
         ));
         // A numeric one behind `missing`.
