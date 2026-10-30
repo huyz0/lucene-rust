@@ -447,6 +447,25 @@ pub enum AggNode {
         missing: Option<i64>,
         subs: Vec<AggNode>,
     },
+    /// `nested` (`NestedAggregator`): each document collected in a bucket
+    /// hands that bucket its block's child documents matching `children`
+    /// (`getParentAndChildId` over the `parents` bitset), the buckets a
+    /// document was collected in buffered until the next document
+    /// (`BufferingNestedLeafBucketCollector`) or the segment's end. One
+    /// bucket per owning bucket, as `global`'s. Its sub-aggregations read
+    /// no scores.
+    Nested {
+        parents: BooleanQuery,
+        children: BooleanQuery,
+        subs: Vec<AggNode>,
+    },
+    /// `reverse_nested` (`ReverseNestedAggregator`): each child document
+    /// hands its bucket the parent it belongs to (`parents.nextSetBit`),
+    /// once per parent per bucket in the segment.
+    ReverseNested {
+        parents: BooleanQuery,
+        subs: Vec<AggNode>,
+    },
     /// `top_hits` by score (`TopHitsAggregator` without a sort): each
     /// owning bucket's `TopScoreDocCollector` of `top_n` hits, fed every
     /// document with its score in visit order, by global document.
@@ -723,6 +742,8 @@ impl AggNode {
             | AggNode::Range { subs, .. }
             | AggNode::Filters { subs, .. }
             | AggNode::Composite { subs, .. }
+            | AggNode::Nested { subs, .. }
+            | AggNode::ReverseNested { subs, .. }
             | AggNode::Global { subs } => subs,
         }
     }
@@ -776,8 +797,13 @@ impl AggNode {
     /// Whether the tree reads points (a filter's range query, a metric's
     /// points bound).
     pub fn filter_queries<'n>(&'n self, out: &mut Vec<&'n BooleanQuery>) {
-        if let AggNode::Filters { filters, .. } = self {
-            out.extend(filters.iter());
+        match self {
+            AggNode::Filters { filters, .. } => out.extend(filters.iter()),
+            AggNode::Nested {
+                parents, children, ..
+            } => out.extend([parents, children]),
+            AggNode::ReverseNested { parents, .. } => out.push(parents),
+            _ => {}
         }
         for s in self.subs() {
             s.filter_queries(out);
@@ -1180,11 +1206,13 @@ impl State {
                 docs: Vec::new(),
                 subs: subs(),
             },
-            AggNode::Global { .. } => State::Fixed {
-                width: 1,
-                docs: Vec::new(),
-                subs: subs(),
-            },
+            AggNode::Global { .. } | AggNode::Nested { .. } | AggNode::ReverseNested { .. } => {
+                State::Fixed {
+                    width: 1,
+                    docs: Vec::new(),
+                    subs: subs(),
+                }
+            }
             AggNode::Composite { .. } => State::Composite(Box::new(CompositeState {
                 keys: Vec::new(),
                 index: FastMap::default(),
@@ -1334,7 +1362,121 @@ struct Leaf<'a> {
     composite: Option<Box<CompositeLeaf<'a>>>,
     /// A sorted `top_hits`' segment, and each owning bucket's leaf of it.
     fed: Option<Box<FedSegment<'a>>>,
+    /// A `nested` or `reverse_nested`'s block join over the segment.
+    nested: Option<Box<NestedLeaf>>,
     subs: Vec<Leaf<'a>>,
+}
+
+/// One segment of a `nested` (`children` and the buffer) or a
+/// `reverse_nested` (`last`).
+struct NestedLeaf {
+    /// The parent bitset's documents, ascending (deleted ones too, as the
+    /// bitset holds them).
+    parents: Vec<i32>,
+    /// The child filter's documents, ascending, and the iterator over them:
+    /// `docID()` is `children[pos]`, -1 before the first `advance`.
+    children: Vec<i32>,
+    pos: Option<usize>,
+    /// The document whose buckets are buffered, and those buckets.
+    current: i32,
+    buffer: Vec<u32>,
+    /// `reverse_nested`'s `bucketOrdToLastCollectedParentDoc`.
+    last: FastMap<u32, i32>,
+}
+
+impl NestedLeaf {
+    /// `childDocs.docID()`.
+    //
+    // SENTINEL: `-1` = "not yet advanced", `DocIdSetIterator.docID()`'s own
+    // value before the first move; its one reader, `parent_and_child`, only
+    // compares it with the previous parent (`<= prev`), where `-1` is at or
+    // below every one, so the iterator advances, as in Java.
+    fn doc_id(&self) -> i32 {
+        match self.pos {
+            None => -1,
+            Some(p) => self.children.get(p).copied().unwrap_or(i32::MAX),
+        }
+    }
+
+    /// `advance(target)`: the first child at or past `target`.
+    fn advance(&mut self, target: i32) -> i32 {
+        let from = self.pos.unwrap_or(0);
+        let rest = self.children.get(from..).unwrap_or(&[]);
+        self.pos = Some(from + rest.partition_point(|&d| d < target));
+        self.doc_id()
+    }
+
+    fn next_doc(&mut self) -> i32 {
+        self.pos = Some(self.pos.map_or(0, |p| p + 1));
+        self.doc_id()
+    }
+
+    /// `BitSet.prevSetBit(doc)`: the last parent at or before `doc`.
+    //
+    // SENTINEL: `-1` = "no parent at or before `doc`", `prevSetBit`'s own;
+    // `parent_and_child` tests it (`== -1`) and otherwise uses it as the
+    // block's lower bound, where `-1` means "from the segment's start".
+    fn prev_parent(&self, doc: i32) -> i32 {
+        let i = self.parents.partition_point(|&d| d <= doc);
+        i.checked_sub(1)
+            .and_then(|i| self.parents.get(i))
+            .copied()
+            .unwrap_or(-1)
+    }
+
+    /// `BitSet.nextSetBit(doc)`: the first parent at or after `doc`.
+    fn next_parent(&self, doc: i32) -> i32 {
+        let i = self.parents.partition_point(|&d| d < doc);
+        self.parents.get(i).copied().unwrap_or(i32::MAX)
+    }
+
+    /// `NestedAggregator.getParentAndChildId`: the block-level parent of
+    /// `doc`, and the iterator's next child under it.
+    fn parent_and_child(&mut self, doc: i32) -> (i32, i32) {
+        let mut prev = self.prev_parent(doc);
+        let current = if prev == -1 {
+            self.next_parent(0)
+        } else if prev == doc {
+            prev = if doc == 0 {
+                -1
+            } else {
+                self.prev_parent(doc - 1)
+            };
+            doc
+        } else {
+            self.next_parent(prev + 1)
+        };
+        let mut child = self.doc_id();
+        if child <= prev {
+            child = self.advance(prev + 1);
+        }
+        (current, child)
+    }
+}
+
+/// `processBufferedChildBuckets`: the buffered document's children, each
+/// handed every buffered bucket in turn.
+fn flush_nested(
+    node: &AggNode,
+    docs: &mut Vec<u64>,
+    subs: &mut [State],
+    leaf: &mut Leaf<'_>,
+) -> Result<()> {
+    let Some(n) = leaf.nested.as_deref_mut() else {
+        return Ok(());
+    };
+    if n.buffer.is_empty() {
+        return Ok(());
+    }
+    let (parent, mut child) = n.parent_and_child(n.current);
+    while child < parent {
+        for &b in &n.buffer {
+            collect_bucket(node, docs, subs, &mut leaf.subs, child, b)?;
+        }
+        child = n.next_doc();
+    }
+    n.buffer.clear();
+    Ok(())
 }
 
 /// A sorted `top_hits`' segment: what each bucket's collector opens its
@@ -1386,6 +1528,14 @@ impl Leaf<'_> {
     fn prefetch(&mut self, base: i32, len: usize) -> Result<()> {
         self.pre_len = 0;
         self.pre_multi = false;
+        if self.nested.is_some() {
+            // A block join reads other documents than the window's: its
+            // sub-aggregations read each one as it comes.
+            for s in &mut self.subs {
+                s.drop_prefetch();
+            }
+            return Ok(());
+        }
         match &mut self.col {
             // A keyword's segment ordinals are the same column shapes.
             Col::Values(Values::Single(r), false) | Col::Ords(Ords::Single(r), _) => {
@@ -1603,7 +1753,10 @@ fn open_leaf<'a>(
                 ))
             }
         },
-        AggNode::Global { .. } | AggNode::Composite { .. } => Col::None,
+        AggNode::Global { .. }
+        | AggNode::Nested { .. }
+        | AggNode::ReverseNested { .. }
+        | AggNode::Composite { .. } => Col::None,
     };
     let mut subs = Vec::with_capacity(node.subs().len());
     let sub_view = SegmentView {
@@ -1643,6 +1796,7 @@ fn open_leaf<'a>(
                 leaves: Vec::new(),
             })
         }),
+        nested: nested_leaf(node, view.seg)?,
         subs,
     })
 }
@@ -1671,6 +1825,9 @@ fn end_segment(node: &AggNode, state: &mut State, leaf: &mut Leaf<'_>) -> Result
         }
         return Ok(());
     }
+    if let (AggNode::Nested { .. }, State::Fixed { docs, subs, .. }) = (node, &mut *state) {
+        flush_nested(node, docs, subs, leaf)?;
+    }
     for ((n, s), l) in node
         .subs()
         .iter()
@@ -1680,6 +1837,28 @@ fn end_segment(node: &AggNode, state: &mut State, leaf: &mut Leaf<'_>) -> Result
         end_segment(n, s, l)?;
     }
     Ok(())
+}
+
+/// A `nested` or `reverse_nested`'s bitsets over the segment.
+fn nested_leaf(node: &AggNode, seg: &OpenSegment<'_>) -> Result<Option<Box<NestedLeaf>>> {
+    let (parents, children) = match node {
+        AggNode::Nested {
+            parents, children, ..
+        } => (parents, Some(children)),
+        AggNode::ReverseNested { parents, .. } => (parents, None),
+        _ => return Ok(None),
+    };
+    Ok(Some(Box::new(NestedLeaf {
+        parents: crate::top_field::nested_docs(seg, parents)?,
+        children: match children {
+            Some(c) => crate::top_field::nested_docs(seg, c)?,
+            None => Vec::new(),
+        },
+        pos: None,
+        current: -1,
+        buffer: Vec::new(),
+        last: FastMap::default(),
+    })))
 }
 
 /// A `composite`'s sources opened over the segment, and its `after`
@@ -2946,6 +3125,38 @@ fn collect(
         (AggNode::Global { .. }, State::Fixed { docs, subs, .. }) => {
             collect_bucket(node, docs, subs, &mut leaf.subs, doc, owning)?;
         }
+        (AggNode::Nested { .. }, State::Fixed { docs, subs, .. }) => {
+            let Some(n) = leaf.nested.as_deref_mut() else {
+                return Ok(());
+            };
+            // `parentDocs == null || childDocs == null`: nothing to join.
+            if n.parents.is_empty() || n.children.is_empty() {
+                return Ok(());
+            }
+            if n.current != doc {
+                flush_nested(node, docs, subs, leaf)?;
+                if let Some(n) = leaf.nested.as_deref_mut() {
+                    n.current = doc;
+                    n.buffer.push(owning);
+                }
+            } else {
+                n.buffer.push(owning);
+            }
+        }
+        (AggNode::ReverseNested { .. }, State::Fixed { docs, subs, .. }) => {
+            let Some(n) = leaf.nested.as_deref_mut() else {
+                return Ok(());
+            };
+            if n.parents.is_empty() {
+                return Ok(());
+            }
+            let parent = n.next_parent(doc);
+            if n.last.get(&owning).is_some_and(|&last| parent <= last) {
+                return Ok(());
+            }
+            n.last.insert(owning, parent);
+            collect_bucket(node, docs, subs, &mut leaf.subs, parent, owning)?;
+        }
         _ => {
             return Err(crate::Error::TermsAggType(
                 "aggregation state does not match its node".to_string(),
@@ -4068,7 +4279,11 @@ fn finish(
             Ok(AggResult::DateHistogram { buckets, subs })
         }
         (
-            AggNode::Range { subs, .. } | AggNode::Filters { subs, .. } | AggNode::Global { subs },
+            AggNode::Range { subs, .. }
+            | AggNode::Filters { subs, .. }
+            | AggNode::Global { subs }
+            | AggNode::Nested { subs, .. }
+            | AggNode::ReverseNested { subs, .. },
             State::Fixed {
                 width,
                 docs,
@@ -4148,6 +4363,7 @@ mod tests {
             filter: None,
             composite: None,
             fed: None,
+            nested: None,
             subs: Vec::new(),
         }
     }
@@ -6570,5 +6786,83 @@ mod tests {
             .iter()
             .map(|d| (d.doc, d.score))
             .collect()
+    }
+    /// `nested` hands each owning bucket the children between a collected
+    /// parent and the one before it (`getParentAndChildId`), and
+    /// `reverse_nested` under it each of their parents once per bucket --
+    /// with one owner and with several (`BufferingNestedLeafBucketCollector`).
+    #[test]
+    fn nested_joins_each_parents_children_and_reverse_nested_their_parents() {
+        let reader = fixture("metric_aggs_index");
+        let readers = reader.segment_readers();
+        let opened = reader.open_segments().unwrap();
+        let segments = opened.as_open_segments();
+        // Parents: the documents with `w1`; children: those with `w2`.
+        let (parents, children) = (body("w1"), body("w2"));
+        let matches = |seg: &OpenSegment<'_>, q: &BooleanQuery| {
+            crate::top_field::nested_docs(seg, q).unwrap()
+        };
+        let nested = |subs| AggNode::Nested {
+            parents: parents.clone(),
+            children: children.clone(),
+            subs,
+        };
+        let reverse = AggNode::ReverseNested {
+            parents: parents.clone(),
+            subs: vec![],
+        };
+        // Per filter (an owning bucket): children joined, parents reached.
+        let filters = [all(), body("w3")];
+        let mut want = vec![(0u64, 0u64); filters.len()];
+        for seg in &segments {
+            let ps = matches(seg, &parents);
+            let cs = matches(seg, &children);
+            let live = |d: i32| seg.live_docs.is_none_or(|l| l.get_doc(d));
+            for (f, w) in filters.iter().zip(&mut want) {
+                let fs = matches(seg, f);
+                let mut prev = -1;
+                for &p in &ps {
+                    if live(p) && fs.binary_search(&p).is_ok() {
+                        let n = cs.iter().filter(|&&c| c > prev && c < p).count() as u64;
+                        w.0 += n;
+                        w.1 += u64::from(n > 0);
+                    }
+                    prev = p;
+                }
+            }
+        }
+        assert!(want[0].0 > 0 && want[1].0 > 0 && want[1].0 < want[0].0);
+        let docs_of = |r: &AggResult| match r {
+            AggResult::Fixed { docs, subs, .. } => (docs.clone(), subs.clone()),
+            r => panic!("{r:?}"),
+        };
+        let run = |tree: Vec<AggNode>| {
+            aggregate_tree(
+                &segments,
+                readers,
+                &parents,
+                &tree,
+                &Globals::new(&HashMap::new()),
+                &whole(&reader),
+                None,
+            )
+            .unwrap()
+            .remove(0)
+            .remove(0)
+        };
+        // One owner.
+        let (docs, subs) = docs_of(&run(vec![nested(vec![reverse.clone()])]));
+        assert_eq!(docs, vec![want[0].0]);
+        assert_eq!(docs_of(&subs[0]).0, vec![want[0].1]);
+        // Two owners, each document in both or one.
+        let tree = vec![AggNode::Filters {
+            filters: filters.to_vec(),
+            other: false,
+            subs: vec![nested(vec![reverse])],
+        }];
+        let (_, subs) = docs_of(&run(tree));
+        let (docs, rev) = docs_of(&subs[0]);
+        assert_eq!(docs, vec![want[0].0, want[1].0]);
+        assert_eq!(docs_of(&rev[0]).0, vec![want[0].1, want[1].1]);
     }
 }
