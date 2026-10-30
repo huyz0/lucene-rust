@@ -714,7 +714,7 @@ fn slice_states(
             max_doc: seg.max_doc,
             cache: seg.cache,
             reader: seg.reader,
-            similarity: None,
+            similarity: seg.similarity,
         };
         // The points shortcut first (AggregatorBase.getLeafCollector asks
         // tryPrecomputeAggregationForLeaf before collecting): a field it
@@ -934,7 +934,7 @@ pub(crate) fn plain_context<'s>(seg: &'s OpenSegment<'_>) -> exec::LeafContext<'
         max_doc: seg.max_doc,
         cache: seg.cache,
         reader: seg.reader,
-        similarity: None,
+        similarity: seg.similarity,
     }
 }
 
@@ -1333,7 +1333,7 @@ mod tests {
                 max_doc: seg.max_doc,
                 cache: seg.cache,
                 reader: seg.reader,
-                similarity: None,
+                similarity: seg.similarity,
             };
             let max_doc = seg.reader.unwrap().max_doc;
             for q in &queries {
@@ -1409,7 +1409,7 @@ mod tests {
             max_doc: ctx_seg.max_doc,
             cache: ctx_seg.cache,
             reader: ctx_seg.reader,
-            similarity: None,
+            similarity: ctx_seg.similarity,
         };
         let bulk = exec::bulk_boolean(&ctx, &queries[1], 1.0, Mode::NoScores)
             .unwrap()

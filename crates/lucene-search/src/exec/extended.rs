@@ -2753,7 +2753,7 @@ pub(crate) fn segment_match_bits(
         max_doc: seg.max_doc,
         cache: None,
         reader: seg.reader,
-        similarity: None,
+        similarity: seg.similarity,
     };
     let mut bits = Bits(FixedBitSet::new(
         usize::try_from(seg.max_doc.unwrap_or(0)).unwrap_or(0),
@@ -2913,7 +2913,7 @@ mod tests {
                 max_doc: seg.max_doc,
                 cache: None,
                 reader: seg.reader,
-                similarity: None,
+                similarity: seg.similarity,
             };
             assert!(cursor(&ctx, "no_such_field", b"a", PostingsFlags::Freqs)
                 .unwrap()

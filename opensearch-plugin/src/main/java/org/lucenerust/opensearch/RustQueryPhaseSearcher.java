@@ -22,9 +22,6 @@ import org.apache.lucene.search.TopDocs;
 import org.apache.lucene.search.TopFieldDocs;
 import org.apache.lucene.search.TotalHits;
 import org.apache.lucene.search.Weight;
-import org.apache.lucene.search.similarities.BM25Similarity;
-import org.apache.lucene.search.similarities.PerFieldSimilarityWrapper;
-import org.apache.lucene.search.similarities.Similarity;
 import org.apache.lucene.util.BytesRef;
 import org.opensearch.common.lucene.search.TopDocsAndMaxScore;
 import org.opensearch.common.settings.Setting;
@@ -66,7 +63,7 @@ import java.util.List;
  * SortEncoder} can encode, with or without {@code search_after}, {@code post_filter}, {@code timeout},
  * scroll, {@code terminate_after} and {@code min_score} -- with no collapse, rescore or profile, no aggregation beyond the
  * metrics {@link NativeAggregations} plans, and a query {@link QueryEncoder} can encode over fields
- * using the default {@link BM25Similarity}. What it produces is what OpenSearch's own {@code
+ * whose similarities {@link SimilarityEncoder} can send. What it produces is what OpenSearch's own {@code
  * SimpleTopDocsCollectorContext} would: the top {@code from + size} hits (with their sort values),
  * the max score, and total hits under the same {@code track_total_hits} rules; and, with
  * aggregations, the shard results their aggregators would have built, stored before {@code
@@ -144,7 +141,9 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         // non-scoring clause, so each hit keeps the query's score; the aggregations the query.
         byte[] hitsBlob = null;
         if (reason == null) {
-            QueryEncoder.Encoded enc = QueryEncoder.encode(query, field -> defaultBm25(searcher, field), searcher.getTopReaderContext());
+            // Each scored field's similarity, sent in front of the blobs when one is not the default.
+            SimilarityEncoder similarities = new SimilarityEncoder(searcher.getSimilarity());
+            QueryEncoder.Encoded enc = QueryEncoder.encode(query, similarities, searcher.getTopReaderContext());
             reason = enc.fallbackReason();
             blob = enc.blob();
             boolean fast = enc.fast();
@@ -160,7 +159,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             if (reason == null && postFilter != null) {
                 QueryEncoder.Encoded filtered = QueryEncoder.encode(
                     postFiltered(query, postFilter),
-                    field -> defaultBm25(searcher, field),
+                    similarities,
                     searcher.getTopReaderContext()
                 );
                 reason = filtered.fallbackReason();
@@ -176,13 +175,17 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
                 blob = QueryEncoder.withMinScore(blob, ctx.minimumScore());
                 hitsBlob = QueryEncoder.withMinScore(hitsBlob, ctx.minimumScore());
             }
+            if (reason == null) {
+                blob = similarities.prefix(blob);
+                hitsBlob = similarities.prefix(hitsBlob);
+            }
         }
         // The rescore queries, encoded before anything runs: one that cannot be leaves the whole
         // search to Lucene.
         List<NativeRescore> rescores = null;
         if (reason == null && NativeRescore.applies(ctx)) {
             rescores = new ArrayList<>();
-            reason = NativeRescore.encode(ctx, searcher, field -> defaultBm25(searcher, field), rescores);
+            reason = NativeRescore.encode(ctx, searcher, new SimilarityEncoder(searcher.getSimilarity()), rescores);
         }
         // OpenSearch's approximate match_all/range (ApproximateScoreQuery resolved to its
         // ApproximateQuery) collects documents in BKD order and so breaks ties differently from
@@ -521,19 +524,6 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
     /** Whether {@code ctx}'s index runs every shape native ({@code native_shapes: all}). */
     static boolean allShapes(SearchContext ctx) {
         return flags(ctx).allShapes();
-    }
-
-    /** True when {@code field} scores with a default-parameter {@link BM25Similarity}. */
-    static boolean defaultBm25(ContextIndexSearcher searcher, String field) {
-        Similarity sim = searcher.getSimilarity();
-        if (sim instanceof PerFieldSimilarityWrapper w) {
-            sim = w.get(field);
-        }
-        return sim != null
-            && sim.getClass() == BM25Similarity.class
-            && ((BM25Similarity) sim).getK1() == 1.2f
-            && ((BM25Similarity) sim).getB() == 0.75f
-            && sim.getDiscountOverlaps();
     }
 
     /**

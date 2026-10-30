@@ -4209,6 +4209,7 @@ pub(crate) fn search_sorted_leaves_with_statistics(
     statistics: Option<&dyn crate::index_searcher::StatisticsSource>,
     scorer_only: bool,
 ) -> Result<TopFieldDocs> {
+    let similarity = similarity.or_else(|| segments.first().and_then(|s| s.similarity));
     if sort.is_empty() {
         return Err(SortError::NoKeys.into());
     }
@@ -4609,7 +4610,7 @@ fn search_segments(run: &Run<'_, '_>, order: &[usize]) -> Result<TopFieldDocs> {
             max_doc: seg.max_doc,
             cache: seg.cache,
             reader: seg.reader,
-            similarity,
+            similarity: similarity.or(seg.similarity),
         };
         if sort[0].ty == SortType::Score {
             // No competitive iterator: the bulk scorers, pruning by score.
@@ -6109,7 +6110,7 @@ mod tests {
             max_doc: seg.max_doc,
             cache: None,
             reader: None,
-            similarity: None,
+            similarity: seg.similarity,
         };
         let all = Clause::MatchAllDocs(crate::query::MatchAllDocsQuery::new(0));
         let tree = exec::build::child(&ctx, &all, 1.0, Mode::Complete, true)
@@ -6152,7 +6153,7 @@ mod tests {
             max_doc: seg.max_doc,
             cache: None,
             reader: None,
-            similarity: None,
+            similarity: seg.similarity,
         };
         let all = Clause::MatchAllDocs(crate::query::MatchAllDocsQuery::new(0));
         let scorer = || {

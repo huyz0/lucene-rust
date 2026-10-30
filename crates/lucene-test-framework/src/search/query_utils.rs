@@ -147,6 +147,7 @@ pub fn with_wrapped_underlying_reader<R>(
             points: s.points,
             reader: s.reader,
             index_sort_prefix: s.index_sort_prefix,
+            similarity: None,
         })
         .collect();
     let mut norms: Vec<SegmentNorms<'_, '_>> =
@@ -165,6 +166,7 @@ pub fn with_wrapped_underlying_reader<R>(
             points: None,
             reader: None,
             index_sort_prefix: false,
+            similarity: None,
         });
         norms.push(None);
         doc_base += n;

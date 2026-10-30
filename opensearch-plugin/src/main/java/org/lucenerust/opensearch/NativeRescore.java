@@ -11,7 +11,6 @@ import org.opensearch.search.rescore.RescoreContext;
 
 import java.io.IOException;
 import java.util.List;
-import java.util.function.Predicate;
 
 /**
  * One {@code rescore} entry run natively: OpenSearch's {@link QueryRescorer} (Lucene's {@code
@@ -49,7 +48,7 @@ record NativeRescore(
      * Encodes each rescorer of {@code ctx} into {@code out}, its query rewritten as Lucene's
      * QueryRescorer rewrites it ({@code searcher.rewrite}); returns null, or why one cannot run.
      */
-    static String encode(SearchContext ctx, ContextIndexSearcher searcher, Predicate<String> defaultSimilarity, List<NativeRescore> out) {
+    static String encode(SearchContext ctx, ContextIndexSearcher searcher, SimilarityEncoder similarities, List<NativeRescore> out) {
         for (RescoreContext r : ctx.rescore()) {
             QueryRescorer.QueryRescoreContext q = (QueryRescorer.QueryRescoreContext) r;
             Query query;
@@ -65,11 +64,11 @@ record NativeRescore(
             if (RustQueryPhaseSearcher.approximated(query)) {
                 return "rescore_approximate";
             }
-            QueryEncoder.Encoded enc = QueryEncoder.encode(query, defaultSimilarity, searcher.getTopReaderContext());
+            QueryEncoder.Encoded enc = QueryEncoder.encode(query, similarities, searcher.getTopReaderContext());
             if (enc.fallbackReason() != null) {
                 return "rescore_" + enc.fallbackReason();
             }
-            out.add(new NativeRescore(enc.blob(), q.getWindowSize(), q.queryWeight(), q.rescoreQueryWeight(), q.scoreMode().ordinal(), q));
+            out.add(new NativeRescore(similarities.prefix(enc.blob()), q.getWindowSize(), q.queryWeight(), q.rescoreQueryWeight(), q.scoreMode().ordinal(), q));
         }
         return null;
     }

@@ -186,6 +186,7 @@ where the native call's fixed cost shows -- see
 | `terms_set` with `minimum_should_match_field` or a constant | the sandbox's `CoveringQuery` | yes (node 33); a script minimum (`covering_script`) or a field that is not plain integral doc values (`covering_field_data`) falls back |
 | `distance_feature` on a `date` or `geo_point` | `LongDistanceFeatureQuery`, `LatLonPointDistanceFeatureQuery` | yes (nodes 34, 35); scored per document. Lucene's scorer narrows itself to the points near the origin once a threshold is set; the native one scores every document with a value and skips those below the threshold |
 | a `TermQuery` carrying `TermStates` built for another reader (`terms` lookup, `more_like_this`, percolate) or with no statistics | `TermQuery` | yes: rebuilt from the searcher's reader, or matching nothing, as `TermWeight` does |
+| any scoring query on a field mapped with `similarity`: `BM25` (any `k1`, `b`, `discount_overlaps`), `boolean`, `DFR`, `IB`, `DFI`, `LMDirichlet`, `LMJelinekMercer` | the same queries, under OpenSearch's per-field similarity | yes: each scored field's similarity sent in front of the query (`SimilarityEncoder`, `jvm_similarity.rs`), scored by the port of the same Lucene class |
 
 `index.lucene_rust.search.native_shapes` (`fast`/`all`) predates read path
 R1, when mixed booleans measured slower and were routed to Lucene
@@ -225,7 +226,7 @@ Each fallback is counted by reason at `GET /_plugins/lucene_rust/stats`.
 | `function_score_min_score`, `function_score_script`, `function_score_field_data`, `function_score_decay`, `function_score_<Class>` | `function_score` with `min_score`; a script function; a function over field data other than plain sorted-numeric doc values (keyword for `random_score`; not `half_float`, `unsigned_long` or `date_nanos`); another decay or function class (geo decays) |
 | `combined_fields_empty`, `extended_reflect` | a `CombinedFieldQuery` over no field; a Lucene or OpenSearch class whose private fields the plugin cannot read (a version whose classes changed) |
 | `phrase_positions` | a `PhraseQuery` whose terms are not at consecutive positions (the analyzer removed a stopword, leaving a gap) |
-| `field_similarity` | a field scores with anything but default-parameter BM25 |
+| `field_similarity` | a field scores with a similarity the native side does not compute (`scripted`, `LegacyBM25`, a plugin's), or `combined_fields` (BM25F) covers a field that is not default BM25 |
 | `term_states` | a `TermQuery` subclass, or a term query whose own statistics cannot be read (built without them, or with no document frequency while some leaf holds the term) |
 | `dfs` | `search_type=dfs_query_then_fetch`: scoring uses statistics aggregated across shards |
 | `collector_spec` | another plugin registered a replacement top-docs collector |
