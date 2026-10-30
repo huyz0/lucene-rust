@@ -216,7 +216,7 @@ pub(crate) fn decode(
             let count = c.len()?;
             *nodes = nodes.saturating_add(count);
             check_clause_count(*nodes)?;
-            let mut terms = Vec::with_capacity(count);
+            let mut terms = Vec::with_capacity(count); // alloc-ok: count is within the clause limit
             for _ in 0..count {
                 let term = c.bytes()?.to_vec();
                 terms.push((term, f32::from_bits(c.i32()? as u32)));
