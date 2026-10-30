@@ -166,7 +166,7 @@ public final class NativeSelfTest {
         }
         check(NativeSelfTestLeaves.ENCODED.size() == NativeSelfTestLeaves.SHAPES, "leaf shapes compared: " + NativeSelfTestLeaves.ENCODED.keySet());
         NativeSelfTestSimilarity.run(new Random(29), (ok, what) -> check(ok, what), NativeSelfTest::compare);
-        check(NativeSelfTestSimilarity.COMPARED.size() == 7, "similarities compared: " + NativeSelfTestSimilarity.COMPARED.keySet());
+        check(NativeSelfTestSimilarity.COMPARED.size() == 9, "similarities compared: " + NativeSelfTestSimilarity.COMPARED.keySet());
         System.out.printf("NativeSelfTest: leaf queries encoded and compared, by shape: %s%n", NativeSelfTestLeaves.ENCODED.entrySet().stream().map(e -> e.getKey() + "=" + e.getValue()[0]).toList());
         for (var e : NativeSelfTestM10.ENCODED.entrySet()) {
             check(e.getValue()[0] >= 100, "M10 " + e.getKey() + " queries encoded and compared: " + e.getValue()[0]);
