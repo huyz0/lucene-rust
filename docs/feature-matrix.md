@@ -100,7 +100,8 @@ parameters, falls back (`field_similarity`), as does
 | any nesting of the above | ✅ | |
 | `composite` (top level) over `terms`, `histogram` and `date_histogram` sources, with `after`, `missing_bucket`, `missing_order` and sub-aggregations | ✅ | nested under another aggregation; a `script`; an `ip`, `geotile_grid` or other source type, or `terms` on a field type the numeric `terms` refuse; a `date_histogram` time zone with daylight saving; documents with `_doc_count`; an index sort led by the first source's field; a range query on the first source's field over its points; and, unless `native_shapes: all`, the shapes OpenSearch answers faster: a lone `date_histogram` source its filter rewrite counts from the points, and a first source read sorted under a match-all or `exists` query with more than `size` values (any points field, a keyword with more terms) |
 | pipeline aggregations (`avg_bucket`, `derivative`, `bucket_script`, `bucket_sort`, ...) | ✅ | they run at the coordinating node's reduce, over whichever shard results their parents produced |
-| everything else (`significant_text`, `nested`, ...) | ↩ | `aggregations` |
+| `nested`, `reverse_nested` | ✅ | a `top_hits` below them (a child document's score is its parent's); an unmapped path |
+| everything else (`significant_text`, `sampler`, ...) | ↩ | `aggregations` |
 
 ## Indexing: the Rust engine
 
