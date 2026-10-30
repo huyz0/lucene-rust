@@ -4337,7 +4337,12 @@ fn finish(
             Ok(AggResult::NumericTerms { buckets, subs })
         }
         (
-            AggNode::Histogram { subs, .. },
+            AggNode::Histogram {
+                subs,
+                interval,
+                offset,
+                ..
+            },
             State::Keyed {
                 keys,
                 docs,
@@ -4349,6 +4354,11 @@ fn finish(
             let mut buckets = Vec::with_capacity(owners.len());
             let mut child = Vec::new();
             for &o in owners {
+                // In ord order, as `buildAggregationsForVariableBuckets` lists
+                // them, then `CollectionUtil.introSort` by the bucket's key
+                // (`roundKey * interval + offset`, `Double.compare`): not
+                // stable, and two rounded keys can make one key (`-0.0` and
+                // `0.0` both make `0.0`), whose order the slices' reduce sums in.
                 let mut list: Vec<(f64, u64, u32)> = by_owner
                     .get(&o)
                     .map(|ords| {
@@ -4360,7 +4370,17 @@ fn finish(
                             .collect()
                     })
                     .unwrap_or_default();
-                list.sort_by(|a, b| a.0.total_cmp(&b.0));
+                let len = list.len();
+                lucene_util::sorter::intro_sort(
+                    &mut ByBucketKey {
+                        list: &mut list,
+                        interval: *interval,
+                        offset: *offset,
+                        pivot: 0.0,
+                    },
+                    0,
+                    len,
+                );
                 child.extend(list.iter().map(|k| k.2));
                 buckets.push(list.into_iter().map(|(k, n, _)| (k, n)).collect());
             }
@@ -4444,6 +4464,44 @@ fn finish_subs(
 }
 
 /// A keyed aggregation's buckets by owning bucket, each in ordinal order.
+/// A histogram's buckets as `CollectionUtil.introSort` sorts them by
+/// `BucketOrder.key(true)`: `Double.compare` of each bucket's key.
+struct ByBucketKey<'a> {
+    list: &'a mut [(f64, u64, u32)],
+    interval: f64,
+    offset: f64,
+    pivot: f64,
+}
+
+impl ByBucketKey<'_> {
+    fn key(&self, i: usize) -> f64 {
+        self.list[i].0 * self.interval + self.offset
+    }
+}
+
+impl lucene_util::sorter::IntroTarget for ByBucketKey<'_> {
+    fn swap(&mut self, i: usize, j: usize) {
+        self.list.swap(i, j);
+    }
+    fn set_pivot(&mut self, i: usize) {
+        self.pivot = self.key(i);
+    }
+    fn compare_pivot(&mut self, j: usize) -> i32 {
+        java_double_compare(self.pivot, self.key(j))
+    }
+}
+
+/// `Double.compare`: `-0.0` below `0.0`, every NaN equal and above all else.
+fn java_double_compare(a: f64, b: f64) -> i32 {
+    if a < b {
+        return -1;
+    }
+    if a > b {
+        return 1;
+    }
+    java_double_bits(a).cmp(&java_double_bits(b)) as i32
+}
+
 fn group(keys: &[(u32, i64)]) -> HashMap<u32, Vec<u32>> {
     let mut out: HashMap<u32, Vec<u32>> = HashMap::new();
     for (b, &(o, _)) in keys.iter().enumerate() {
@@ -4455,6 +4513,33 @@ fn group(keys: &[(u32, i64)]) -> HashMap<u32, Vec<u32>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn histogram_buckets_sort_as_collection_util_sorts_them() {
+        let sorted = |mut list: Vec<(f64, u64, u32)>| {
+            let len = list.len();
+            lucene_util::sorter::intro_sort(
+                &mut ByBucketKey {
+                    list: &mut list,
+                    interval: 10.0,
+                    offset: 0.0,
+                    pivot: 0.0,
+                },
+                0,
+                len,
+            );
+            list.iter().map(|k| k.2).collect::<Vec<_>>()
+        };
+        // `-0.0 * 10 + 0.0` is `0.0`: the two keys tie and keep their ord order.
+        assert_eq!(
+            sorted(vec![(0.0, 1, 0), (-0.0, 1, 1), (-1.0, 1, 2)]),
+            [2, 0, 1]
+        );
+        assert_eq!(sorted(vec![(-0.0, 1, 0), (0.0, 1, 1)]), [0, 1]);
+        assert_eq!(java_double_compare(-0.0, 0.0), -1);
+        assert_eq!(java_double_compare(f64::NAN, f64::INFINITY), 1);
+        assert_eq!(java_double_compare(f64::NAN, -f64::NAN), 0);
+    }
 
     /// A leaf over no column whose window holds `vals` (one per document
     /// from 0; `multi`: each document's values at `offsets`).
