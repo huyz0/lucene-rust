@@ -128,6 +128,12 @@ public final class NativeSelfTest {
 
         // SELFTEST_ONLY=m10: the M10 shapes alone (a quick loop while working on them).
         boolean onlyM10 = "m10".equals(System.getenv("SELFTEST_ONLY"));
+        // SELFTEST_ONLY=leaves: NativeSelfTestLeaves' shapes alone.
+        if ("leaves".equals(System.getenv("SELFTEST_ONLY"))) {
+            NativeSelfTestLeaves.run(new Random(23), (ok, what) -> check(ok, what), NativeSelfTest::compare);
+            System.out.printf("NativeSelfTest (leaves only): %s; %d checks, %d failures; %d of %d compared scores bit-exact%n", NativeSelfTestLeaves.ENCODED.entrySet().stream().map(e -> e.getKey() + "=" + e.getValue()[0]).toList(), checks, failures, bitExact, scored);
+            System.exit(failures > 0 ? 1 : 0);
+        }
         if (onlyM10 == false) {
         bridgeErrorPaths();
         encoderMatrix();
@@ -136,6 +142,12 @@ public final class NativeSelfTest {
         geo(new Random(13));
         }
         NativeSelfTestM10.run(new Random(17), (ok, what) -> check(ok, what), NativeSelfTest::compare);
+        NativeSelfTestLeaves.run(new Random(23), (ok, what) -> check(ok, what), NativeSelfTest::compare);
+        for (var e : NativeSelfTestLeaves.ENCODED.entrySet()) {
+            check(e.getValue()[0] >= (e.getKey().equals("term_states") ? 6 : 50), "leaf " + e.getKey() + " queries encoded and compared: " + e.getValue()[0]);
+        }
+        check(NativeSelfTestLeaves.ENCODED.size() == NativeSelfTestLeaves.SHAPES, "leaf shapes compared: " + NativeSelfTestLeaves.ENCODED.keySet());
+        System.out.printf("NativeSelfTest: leaf queries encoded and compared, by shape: %s%n", NativeSelfTestLeaves.ENCODED.entrySet().stream().map(e -> e.getKey() + "=" + e.getValue()[0]).toList());
         for (var e : NativeSelfTestM10.ENCODED.entrySet()) {
             check(e.getValue()[0] >= 100, "M10 " + e.getKey() + " queries encoded and compared: " + e.getValue()[0]);
         }
@@ -309,11 +321,8 @@ public final class NativeSelfTest {
             "an unsupported root reports query_, not clause_"
         );
         check(
-            "wildcard_escape".equals(
-                QueryEncoder.encode(new IndexSearcher(new MultiReader()).rewrite(new WildcardQuery(new Term("body", "a\\*b"))), f -> true)
-                    .fallbackReason()
-            ),
-            "an escaped wildcard falls back"
+            QueryEncoder.encode(new IndexSearcher(new MultiReader()).rewrite(new WildcardQuery(new Term("body", "a\\*b"))), f -> true).blob() != null,
+            "an escaped wildcard encodes (its automaton)"
         );
         check(QueryEncoder.encode(IntPoint.newRangeQuery("i", 1, 5), f -> true).blob() != null, "a 4-byte points range encodes");
         check(QueryEncoder.encode(IntPoint.newSetQuery("i", 1, 5, 9), f -> true).blob() != null, "an int point set encodes");

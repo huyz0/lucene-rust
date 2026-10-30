@@ -3,7 +3,13 @@
  */
 package org.lucenerust.opensearch;
 
+import org.apache.lucene.util.automaton.Automata;
 import org.apache.lucene.util.automaton.CompiledAutomaton;
+import org.apache.lucene.index.Terms;
+import org.apache.lucene.search.AutomatonQuery;
+import org.apache.lucene.search.FuzzyQuery;
+import org.apache.lucene.search.MultiTermQuery;
+import org.apache.lucene.util.AttributeSource;
 import java.util.concurrent.ConcurrentHashMap;
 import org.apache.lucene.index.Term;
 import org.apache.lucene.search.BooleanClause;
@@ -24,6 +30,7 @@ import org.apache.lucene.search.QueryVisitor;
 import org.apache.lucene.search.TermInSetQuery;
 import org.apache.lucene.search.TermRangeQuery;
 import org.apache.lucene.index.IndexReaderContext;
+import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.index.TermStates;
 import org.apache.lucene.search.FieldExistsQuery;
 import org.apache.lucene.search.RegexpQuery;
@@ -229,8 +236,16 @@ public final class QueryEncoder {
                 return null;
             }
             IndexReaderContext top = TOP.get();
-            if (top == null || states.wasBuiltFor(top) == false) {
+            if (top == null) {
                 return "term_states";
+            }
+            if (states.wasBuiltFor(top) == false) {
+                // TermQuery.createWeight ignores states built for another reader and rebuilds them
+                // from the searcher's: the plain term ("terms" lookup, more_like_this, percolate).
+                out.write(NODE_TERM);
+                writeBytes(out, t.field().getBytes(StandardCharsets.UTF_8));
+                writeBytes(out, t.bytes());
+                return null;
             }
             int docFreq;
             try {
@@ -240,7 +255,9 @@ public final class QueryEncoder {
                 return "term_states";
             }
             if (docFreq < 1) {
-                return "term_states";
+                // No statistics, so no scorer (TermWeight's termStates.get(leaf) is null on every
+                // leaf): the term matches nothing, whatever the index holds.
+                return noLeafState(states, top) ? matchNone(out) : "term_states";
             }
             out.write(NODE_TERM_STATS);
             writeBytes(out, t.field().getBytes(StandardCharsets.UTF_8));
@@ -370,14 +387,20 @@ public final class QueryEncoder {
             return null;
         }
         String wrapper = q.getClass().getSimpleName();
-        if (wrapper.equals("MultiTermQueryConstantScoreBlendedWrapper") || wrapper.equals("MultiTermQueryConstantScoreWrapper")) {
-            // A MultiTermQuery under a constant-score rewrite (package-private classes, so found
-            // by name; their query by the visitor, which hands it over as it is).
+        byte rewrite = switch (wrapper) {
+            case "MultiTermQueryConstantScoreBlendedWrapper" -> REWRITE_CONSTANT_SCORE_BLENDED;
+            case "MultiTermQueryConstantScoreWrapper" -> REWRITE_CONSTANT_SCORE;
+            case "MultiTermQueryDocValuesWrapper" -> REWRITE_DOC_VALUES;
+            default -> -1;
+        };
+        if (rewrite >= 0 && q.getClass().getPackageName().equals("org.apache.lucene.search")) {
+            // A MultiTermQuery under a constant-score or doc-values rewrite (package-private
+            // classes, so found by name; their query by the visitor, which hands it over as it is).
             Query inner = wrappedMultiTermQuery(q);
             if (inner == null) {
                 return "clause_" + wrapper;
             }
-            return multiTerm(inner, out, fieldOk, depth, nodes);
+            return multiTerm(inner, rewrite, out, fieldOk, depth, nodes);
         }
         if (q.getClass() == MatchAllDocsQuery.class) {
             out.write(NODE_MATCH_ALL);
@@ -394,6 +417,11 @@ public final class QueryEncoder {
             out.write(NODE_MATCH_NONE);
             return null;
         }
+        // The doc-values-only queries, terms_set and distance_feature (DocValuesEncoder).
+        String docValues = DocValuesEncoder.node(q, out, c -> node(c, out, fieldOk, depth + 1, nodes));
+        if (docValues != DocValuesEncoder.NOT_DOC_VALUES) {
+            return docValues;
+        }
         // nested, spans, intervals, combined_fields, function_score (ExtendedEncoder, M10).
         String extended = ExtendedEncoder.node(q, out, fieldOk, c -> node(c, out, fieldOk, depth + 1, nodes));
         if (extended != ExtendedEncoder.NOT_EXTENDED) {
@@ -408,8 +436,42 @@ public final class QueryEncoder {
         return (depth == 0 ? "query_" : "clause_") + name(q);
     }
 
-    /** The query a constant-score multi-term wrapper wraps, as its visitor reports it, or null. */
+    /** Whether {@code states} holds no term state for any leaf of {@code top}. */
+    private static boolean noLeafState(TermStates states, IndexReaderContext top) {
+        try {
+            for (LeafReaderContext leaf : top.leaves()) {
+                if (states.get(leaf) != null) {
+                    return false;
+                }
+            }
+            return true;
+        } catch (IOException | RuntimeException e) {
+            return false;
+        }
+    }
+
+    private static String matchNone(ByteArrayOutputStream out) {
+        out.write(NODE_MATCH_NONE);
+        return null;
+    }
+
+    /**
+     * The query a constant-score or doc-values multi-term wrapper wraps: its {@code query} field
+     * (both wrappers' constructor argument), else as its visitor reports it, or null. The visitor
+     * misses one whose automaton matches nothing ({@code CompiledAutomaton.visit} reports no
+     * terms) and the doc-values wrapper, which only asks for a sub-visitor.
+     */
     private static Query wrappedMultiTermQuery(Query wrapper) {
+        java.lang.reflect.Field f = Reflect.inHierarchy(wrapper.getClass(), "query");
+        if (f != null) {
+            try {
+                if (f.get(wrapper) instanceof MultiTermQuery mtq) {
+                    return mtq;
+                }
+            } catch (IllegalAccessException e) {
+                // Read it from the visitor.
+            }
+        }
         Query[] inner = new Query[1];
         wrapper.visit(new QueryVisitor() {
             @Override
@@ -435,8 +497,46 @@ public final class QueryEncoder {
         return inner[0];
     }
 
-    /** A term set, prefix, wildcard, regexp or term range under a constant-score rewrite: scored as its boost. */
-    private static String multiTerm(Query q, ByteArrayOutputStream out, Predicate<String> fieldOk, int depth, int[] nodes) {
+    /** The multi-term node's rewrite methods ({@code jvm_queries.rs}). */
+    private static final byte REWRITE_CONSTANT_SCORE_BLENDED = 0;
+    private static final byte REWRITE_CONSTANT_SCORE = 1;
+    private static final byte REWRITE_DOC_VALUES = 2;
+
+    /** {@code NODE_MULTI_TERM} and {@code NODE_DV_TERM_SET} in {@code jvm_queries.rs}. */
+    private static final byte NODE_MULTI_TERM = 27;
+    private static final byte NODE_DV_TERM_SET = 28;
+
+    /**
+     * A multi-term query under a constant-score ({@code rewrite} 0 or 1) or doc-values (2) rewrite:
+     * scored as its boost. The constant-score term set, prefix, wildcard, regexp and term range keep
+     * their own nodes; any other {@code AutomatonQuery} (a wildcard with escapes, a regexp with
+     * flags or {@code case_insensitive}, OpenSearch's automata) and {@link FuzzyQuery} send the
+     * {@code CompiledAutomaton} their terms enumeration intersects the terms with.
+     */
+    private static String multiTerm(Query q, byte rewrite, ByteArrayOutputStream out, Predicate<String> fieldOk, int depth, int[] nodes) {
+        if (rewrite == REWRITE_DOC_VALUES && q.getClass() == TermInSetQuery.class) {
+            // TermInSetQuery's doc-values rewrite: its terms looked up in the ordinals.
+            TermInSetQuery ts = (TermInSetQuery) q;
+            nodes[0] += (int) Math.min(Integer.MAX_VALUE, ts.getTermsCount());
+            if (nodes[0] > MAX_NODES) {
+                return "query_too_large";
+            }
+            out.write(NODE_DV_TERM_SET);
+            writeBytes(out, ts.getField().getBytes(StandardCharsets.UTF_8));
+            writeInt(out, (int) ts.getTermsCount());
+            try {
+                BytesRefIterator it = ts.getBytesRefIterator();
+                for (BytesRef t = it.next(); t != null; t = it.next()) {
+                    writeBytes(out, BytesRef.deepCopyOf(t));
+                }
+            } catch (IOException e) {
+                return "clause_TermInSetQuery";
+            }
+            return null;
+        }
+        if (rewrite == REWRITE_DOC_VALUES) {
+            return automatonNode(q, rewrite, out, depth);
+        }
         if (q.getClass() == TermInSetQuery.class) {
             TermInSetQuery ts = (TermInSetQuery) q;
             nodes[0] += (int) Math.min(Integer.MAX_VALUE, ts.getTermsCount());
@@ -466,8 +566,8 @@ public final class QueryEncoder {
         if (q.getClass() == WildcardQuery.class) {
             Term t = ((WildcardQuery) q).getTerm();
             if (t.text().indexOf(WildcardQuery.WILDCARD_ESCAPE) >= 0) {
-                // The native matcher has no escape syntax.
-                return "wildcard_escape";
+                // The native pattern matcher has no escape syntax: the automaton it compiled to.
+                return automatonNode(q, rewrite, out, depth);
             }
             out.write(NODE_WILDCARD);
             writeBytes(out, t.field().getBytes(StandardCharsets.UTF_8));
@@ -499,14 +599,81 @@ public final class QueryEncoder {
             // not readable back, so the automaton they built is compared with that one's --
             // case_insensitive or a narrower flags set changes it and falls back.
             if (rq.getCompiled().equals(defaultCompiled(t)) == false) {
-                return "regexp_flags";
+                return automatonNode(q, rewrite, out, depth);
             }
             out.write(NODE_REGEXP);
             writeBytes(out, t.field().getBytes(StandardCharsets.UTF_8));
             writeBytes(out, t.text().getBytes(StandardCharsets.UTF_8));
             return null;
         }
-        return (depth == 0 ? "query_" : "clause_") + name(q);
+        return automatonNode(q, rewrite, out, depth);
+    }
+
+    /**
+     * {@code NODE_MULTI_TERM}: {@code q}'s field, the rewrite, and the automaton its terms
+     * enumeration runs -- an {@link AutomatonQuery} whose class keeps {@code AutomatonQuery}'s own
+     * {@code getTermsEnum} (its {@code getCompiled()}), or a {@link FuzzyQuery} ({@link
+     * #fuzzyCompiled}).
+     */
+    private static String automatonNode(Query q, byte rewrite, ByteArrayOutputStream out, int depth) {
+        CompiledAutomaton compiled;
+        String field;
+        if (q instanceof AutomatonQuery aq && AUTOMATON_TERMS.get(q.getClass())) {
+            compiled = aq.getCompiled();
+            field = aq.getField();
+        } else if (q.getClass() == FuzzyQuery.class) {
+            FuzzyQuery fq = (FuzzyQuery) q;
+            try {
+                compiled = fuzzyCompiled(fq);
+            } catch (RuntimeException e) {
+                // TooComplexToDeterminize: Lucene's search throws it too.
+                return "fuzzy_automaton";
+            }
+            field = fq.getField();
+        } else {
+            return (depth == 0 ? "query_" : "clause_") + name(q);
+        }
+        out.write(NODE_MULTI_TERM);
+        writeBytes(out, field.getBytes(StandardCharsets.UTF_8));
+        out.write(rewrite);
+        return ExtendedEncoder.automaton(compiled, out, "automaton_states");
+    }
+
+    /**
+     * Whether a class's terms are {@code AutomatonQuery.getTermsEnum}'s -- {@code
+     * getCompiled().getTermsEnum(terms)} -- because neither it nor a superclass below {@link
+     * AutomatonQuery} overrides that method.
+     */
+    private static final ClassValue<Boolean> AUTOMATON_TERMS = new ClassValue<>() {
+        @Override
+        protected Boolean computeValue(Class<?> c) {
+            for (Class<?> k = c; k != AutomatonQuery.class; k = k.getSuperclass()) {
+                try {
+                    k.getDeclaredMethod("getTermsEnum", Terms.class, AttributeSource.class);
+                    return false;
+                } catch (NoSuchMethodException e) {
+                    // Inherited: look further up.
+                }
+            }
+            return true;
+        }
+    };
+
+    /**
+     * The automaton {@code FuzzyQuery.getTermsEnum} intersects the terms with: the exact term for
+     * {@code maxEdits} 0 ({@code SingleTermsEnum}), otherwise {@code FuzzyTermsEnum}'s automaton
+     * for its maximum edit distance -- which, with no competitive boost to track (a constant-score
+     * or doc-values rewrite sets none), is {@code maxEdits}, except for an empty term, whose
+     * {@code 1 - maxEdits / 0} boost bound drops it to 0 at once ({@code bottomChanged}).
+     */
+    static CompiledAutomaton fuzzyCompiled(FuzzyQuery fq) {
+        Term t = fq.getTerm();
+        if (fq.getMaxEdits() == 0) {
+            return new CompiledAutomaton(Automata.makeBinary(t.bytes()), true, false, true);
+        }
+        String text = t.text();
+        int edits = text.isEmpty() ? 0 : fq.getMaxEdits();
+        return FuzzyQuery.getFuzzyAutomaton(text, edits, fq.getPrefixLength(), fq.getTranspositions());
     }
 
     /** At most this many patterns' reference automata are kept; the cache is cleared when full. */
