@@ -48,6 +48,7 @@ fn leaf_segment<'s>(ctx: &LeafContext<'s>) -> OpenSegment<'s> {
         points: ctx.points,
         reader: ctx.reader,
         index_sort_prefix: false,
+        similarity: None,
     }
 }
 

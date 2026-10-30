@@ -279,6 +279,7 @@ impl MemorySegment {
             points: None,
             reader: None,
             index_sort_prefix: false,
+            similarity: None,
         }];
         let segment_norms: [SegmentNorms<'_, '_>; 1] = [Some(&norms)];
         let mut searcher = IndexSearcher::new(&segments, &segment_norms)?;

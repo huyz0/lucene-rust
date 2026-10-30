@@ -144,7 +144,7 @@ impl DrillSidewaysQuery {
                     max_doc: Some(max_doc),
                     cache: seg.cache,
                     reader: seg.reader,
-                    similarity,
+                    similarity: similarity.or(seg.similarity),
                 };
                 let base_scorer = build(&ctx, &base, 1.0, mode, false)?;
                 let mut collectors: Vec<S::Collector> = Vec::with_capacity(dims.len());

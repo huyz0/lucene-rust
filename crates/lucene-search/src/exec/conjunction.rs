@@ -599,7 +599,7 @@ mod tests {
                 max_doc: seg.max_doc,
                 cache: seg.cache,
                 reader: seg.reader,
-                similarity: None,
+                similarity: seg.similarity,
             };
             for (a, b) in [("w0", "w1"), ("w2", "w0"), ("w1", "w3")] {
                 let q = Clause::Boolean(Box::new(BooleanQuery {

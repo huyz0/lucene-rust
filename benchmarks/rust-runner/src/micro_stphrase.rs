@@ -71,6 +71,7 @@ pub fn bench(warmup: Duration, measure: Duration, root: &str) {
         points: None,
         reader: Some(segment),
         index_sort_prefix: false,
+        similarity: None,
     }];
     let norms = reader.field_norms_by_field(&["body".into()]).unwrap();
     let norm_refs = [Some(&norms[0])];
