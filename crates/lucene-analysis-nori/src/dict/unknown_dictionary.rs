@@ -51,9 +51,9 @@ impl UnknownDictionary {
         static INSTANCE: LazyLock<Arc<UnknownDictionary>> = LazyLock::new(|| {
             Arc::new(
                 UnknownDictionary::read(
-                    &inflate(include_bytes!("../resources/unknown_target_map.dat.z")),
-                    &inflate(include_bytes!("../resources/unknown_pos_dict.dat.z")),
-                    &inflate(include_bytes!("../resources/unknown_buffer.dat.z")),
+                    &inflate(&crate::pack::get("unknown_target_map.dat.z")),
+                    &inflate(&crate::pack::get("unknown_pos_dict.dat.z")),
+                    &inflate(&crate::pack::get("unknown_buffer.dat.z")),
                 )
                 .expect("the vendored unknown dictionary reads"),
             )

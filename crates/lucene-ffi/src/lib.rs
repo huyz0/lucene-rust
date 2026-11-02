@@ -282,6 +282,7 @@
 //!   crate is a plain `lucene_search::VecCollector`; the caller retrieves
 //!   final results via [`results::ffi_results_copy`], never a callback.
 
+mod analysis_modules;
 mod directory;
 mod directory_reader;
 pub(crate) mod engine_writer;

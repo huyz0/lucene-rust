@@ -9,14 +9,12 @@ use crate::diff;
 use crate::egothor::{OutOfBounds, Table};
 use crate::StempelError;
 
-/// `PolishAnalyzer.DEFAULT_STEMMER_FILE`, zlib-compressed.
-const DEFAULT_TABLE_Z: &[u8] = include_bytes!("resources/stemmer_20000.tbl.z");
-
 /// `PolishAnalyzer.getDefaultTable()`: the table, read once.
 pub fn default_table() -> Arc<Table> {
     static TABLE: LazyLock<Arc<Table>> = LazyLock::new(|| {
-        let bytes = miniz_oxide::inflate::decompress_to_vec_zlib(DEFAULT_TABLE_Z)
-            .expect("the vendored stemmer table inflates");
+        let bytes =
+            miniz_oxide::inflate::decompress_to_vec_zlib(&crate::pack::get("stemmer_20000.tbl.z"))
+                .expect("the vendored stemmer table inflates");
         Arc::new(Table::load(&bytes).expect("the vendored stemmer table reads"))
     });
     Arc::clone(&TABLE)

@@ -19,6 +19,7 @@
 pub mod analyzer;
 pub mod factory;
 pub mod hhmm;
+pub mod pack;
 pub mod serialized;
 pub mod tokenizer;
 pub mod utility;

@@ -16,6 +16,7 @@ pub mod factory;
 pub mod filter;
 pub mod fsa;
 pub mod metadata;
+pub mod pack;
 pub mod properties;
 
 pub use analyzer::{MorfologikAnalyzer, UkrainianMorfologikAnalyzer};

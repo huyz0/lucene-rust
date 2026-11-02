@@ -61,8 +61,8 @@ impl CharacterDefinition {
     pub fn instance() -> Arc<CharacterDefinition> {
         static INSTANCE: LazyLock<Arc<CharacterDefinition>> = LazyLock::new(|| {
             Arc::new(
-                CharacterDefinition::read(&inflate(include_bytes!(
-                    "../resources/character_definition.dat.z"
+                CharacterDefinition::read(&inflate(&crate::pack::get(
+                    "character_definition.dat.z",
                 )))
                 .expect("the vendored character definition reads"),
             )
