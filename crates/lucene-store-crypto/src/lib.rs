@@ -13,8 +13,8 @@
 //!   [`SETTING_KEY_PROVIDER`] (a provider registered with
 //!   [`register_key_provider`]) and, optionally, [`SETTING_CHUNK_SIZE`].
 //!
-//! The crypto library is chosen at build time ([`backend`]): RustCrypto by
-//! default, or AWS-LC's FIPS 140-3 validated module with feature `fips`.
+//! The crypto is AWS-LC through `aws-lc-rs` ([`backend`]): the regular build
+//! by default, or AWS-LC's FIPS 140-3 validated module with feature `fips`.
 //!
 //! ```
 //! use std::sync::Arc;

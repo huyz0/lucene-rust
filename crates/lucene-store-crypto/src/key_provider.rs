@@ -95,7 +95,7 @@ const WRAP_NONCE_LEN: usize = 12;
 const WRAP_AAD: &[u8] = b"lucene-rust key wrap v1:";
 
 /// Key-encryption keys held in memory, each 256 bits, wrapping with
-/// AES-256-GCM (random nonce, the key id as associated data).
+/// AES-256-GCM (a module-drawn nonce, the key id as associated data).
 pub struct StaticKeyProvider {
     current: String,
     keys: BTreeMap<String, Aes256Gcm>,
@@ -160,10 +160,8 @@ impl KeyProvider for StaticKeyProvider {
 
     fn wrap_key(&self, key_id: &str, data_key: &[u8; DATA_KEY_LEN]) -> Result<Vec<u8>> {
         let aead = self.key(key_id)?;
-        let mut nonce = [0u8; WRAP_NONCE_LEN];
-        random(&mut nonce)?;
         let mut sealed = data_key.to_vec();
-        let tag = aead.seal(&nonce, &Self::aad(key_id), &mut sealed)?;
+        let (nonce, tag) = aead.seal(&Self::aad(key_id), &mut sealed)?;
         let mut out = nonce.to_vec();
         out.extend_from_slice(&sealed);
         out.extend_from_slice(&tag);
@@ -180,13 +178,13 @@ impl KeyProvider for StaticKeyProvider {
         if wrapped.len() != WRAP_NONCE_LEN + DATA_KEY_LEN + TAG_LEN {
             return Err(bad());
         }
-        let (nonce, rest) = wrapped.split_at(WRAP_NONCE_LEN);
-        let (sealed, tag) = rest.split_at(DATA_KEY_LEN);
-        let mut key = DataKey::new([0; DATA_KEY_LEN]);
-        key.copy_from_slice(sealed);
+        let (nonce, sealed) = wrapped.split_at(WRAP_NONCE_LEN);
         let nonce: &[u8; WRAP_NONCE_LEN] = nonce.try_into().map_err(|_| bad())?;
-        aead.open(nonce, &Self::aad(key_id), &mut key[..], tag)
+        let mut buf = zeroize::Zeroizing::new(sealed.to_vec());
+        aead.open(nonce, &Self::aad(key_id), &mut buf)
             .map_err(|_| bad())?;
+        let mut key = DataKey::new([0; DATA_KEY_LEN]);
+        key.copy_from_slice(&buf[..DATA_KEY_LEN]);
         Ok(key)
     }
 }

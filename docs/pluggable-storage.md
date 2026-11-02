@@ -45,8 +45,10 @@ blob store.
 
 Each file gets its own random 256-bit data key, stored only wrapped by the
 key provider's current key (envelope encryption), then the plaintext in
-64 KiB chunks, each sealed with AES-256-GCM. The header (key id, wrapped key,
-nonce prefix) and a final-chunk flag are every chunk's associated data, so
+64 KiB chunks, each sealed with AES-256-GCM under a nonce the crypto module
+draws (FIPS-approved IV generation) and stored before the chunk. The header
+(key id, wrapped key, chunk size), the chunk's index and a final-chunk flag
+are every chunk's associated data, so
 header edits, reordered, dropped or truncated chunks fail authentication.
 Rotation: change the provider's current key; old files keep naming the key
 that wrapped them, and merges rewrite them under the new one over time.
@@ -55,17 +57,19 @@ Revoking a key in the KMS makes the files it wrapped unreadable (after
 
 ## FIPS
 
-The crypto library is a build-time choice (`lucene-store-crypto/src/backend.rs`):
+All crypto goes through AWS-LC via `aws-lc-rs`
+(`lucene-store-crypto/src/backend.rs`), using only FIPS-approved services
+(`RandomizedNonceKey` seal, `open_in_place`):
 
-- default (`rustcrypto`): RustCrypto's `aes-gcm` and the OS CSPRNG;
+- default (feature `aws-lc`): the regular AWS-LC build;
 - `--no-default-features --features fips`: AES-256-GCM and the DRBG from
-  AWS-LC's FIPS 140-3 validated module (`aws-lc-rs` / `aws-lc-fips-sys`),
-  with no other AES implementation linked. `lucene_store_crypto::is_fips()`
+  AWS-LC's FIPS 140-3 validated module (`aws-lc-fips-sys`), with no other
+  AES implementation linked. `lucene_store_crypto::is_fips()`
   reports whether the module is in FIPS mode; the FIPS build's tests assert it.
 
 `scripts/build-fips.sh [--test]` is the release recipe (needs CMake, Go, Perl,
-a C compiler) and CI's `fips` job runs it. Both backends write identical
-bytes (a NIST GCM vector pins it), so an index moves between them freely.
+a C compiler) and CI's `fips` job runs it. Both builds write the same format
+(a NIST GCM vector pins the cipher), so an index moves between them freely.
 Compliance also depends on the deployed module version and platform: check
 AWS-LC's current CMVP certificate for the resolved `aws-lc-fips-sys`. A
 key provider over a KMS must itself use FIPS endpoints for an end-to-end

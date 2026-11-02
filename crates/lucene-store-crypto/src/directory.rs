@@ -12,7 +12,7 @@ use lucene_store::lock::Lock;
 use lucene_store::{DataOutput, Directory, Error, FsIndexOutput, IndexOutput, OutputSink, Result};
 
 use crate::format::{plaintext_len, ChunkCipher, Header, DEFAULT_CHUNK_SIZE, MAX_CHUNK_SIZE};
-use crate::key_provider::{random, GeneratedKey, KeyProvider};
+use crate::key_provider::{GeneratedKey, KeyProvider};
 
 /// Encrypts the files of `D` with per-file data keys wrapped by a
 /// [`KeyProvider`]. See [`crate::format`] for the file layout.
@@ -82,13 +82,10 @@ impl<D: Directory> EncryptedDirectory<D> {
             data_key,
             wrapped: wrapped_key,
         } = self.keys.generate_data_key()?;
-        let mut nonce_prefix = [0u8; 8];
-        random(&mut nonce_prefix)?;
         let header = Header {
             chunk_size: self.chunk_size,
             key_id,
             wrapped_key,
-            nonce_prefix,
         };
         let header_bytes = header.encode()?;
         let name = out.name().to_string();
@@ -96,7 +93,7 @@ impl<D: Directory> EncryptedDirectory<D> {
             .insert(name.clone(), (header_bytes.len() as u64, self.chunk_size));
         let mut out = out;
         out.write_bytes(&header_bytes);
-        let cipher = ChunkCipher::new(&data_key, &header, header_bytes)?;
+        let cipher = ChunkCipher::new(&data_key, header_bytes)?;
         Ok(FsIndexOutput::from_sink(
             &name,
             Box::new(EncryptingSink {
@@ -104,7 +101,6 @@ impl<D: Directory> EncryptedDirectory<D> {
                 cipher,
                 chunk: self.chunk_size as usize,
                 buf: Vec::new(),
-                scratch: Vec::new(),
                 index: 0,
             }),
         ))
@@ -114,7 +110,7 @@ impl<D: Directory> EncryptedDirectory<D> {
     fn cipher_for(&self, name: &str, file: &[u8]) -> Result<(ChunkCipher, Header, usize)> {
         let (header, header_len) = Header::decode(file, name)?;
         let data_key = self.keys.unwrap_key(&header.key_id, &header.wrapped_key)?;
-        let cipher = ChunkCipher::new(&data_key, &header, file[..header_len].to_vec())?;
+        let cipher = ChunkCipher::new(&data_key, file[..header_len].to_vec())?;
         Ok((cipher, header, header_len))
     }
 }
@@ -127,20 +123,19 @@ struct EncryptingSink {
     cipher: ChunkCipher,
     chunk: usize,
     buf: Vec<u8>,
-    scratch: Vec<u8>,
     index: u32,
 }
 
 impl EncryptingSink {
-    /// Seals `buf[start..end]` as chunk `index` and writes it out.
+    /// Seals `buf[start..end]` in place as chunk `index` and writes it out.
     fn seal(&mut self, start: usize, end: usize, last: bool) -> std::io::Result<()> {
-        self.scratch.clear();
-        self.scratch.extend_from_slice(&self.buf[start..end]);
-        let tag = self
+        let piece = &mut self.buf[start..end];
+        let (nonce, tag) = self
             .cipher
-            .seal(self.index, last, &mut self.scratch)
+            .seal(self.index, last, piece)
             .map_err(lucene_store::blob_directory::into_io)?;
-        self.out.write_bytes(&self.scratch);
+        self.out.write_bytes(&nonce);
+        self.out.write_bytes(piece);
         self.out.write_bytes(&tag);
         self.index = self
             .index

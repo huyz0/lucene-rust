@@ -390,7 +390,7 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # The FIPS build of the encryption layer: lucene-store-crypto with AWS-LC's
-  # FIPS 140-3 module instead of RustCrypto (docs/pluggable-storage.md#fips).
+  # FIPS 140-3 module instead of its regular build (docs/pluggable-storage.md#fips).
   # Its own job because aws-lc-fips-sys builds the module from source (CMake,
   # Go, a C compiler: all on the hosted runner) and the default build never
   # compiles it. The tests assert the module is in FIPS mode.

@@ -11,23 +11,27 @@ workspace = true
 [dependencies]
 lucene-store = { path = "../lucene-store" }
 zeroize = "1"
-# Default backend (`rustcrypto`): AES-256-GCM from RustCrypto (Apache-2.0 OR
-# MIT), AES-NI/PMULL accelerated, and the OS CSPRNG through `getrandom`.
-aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc", "zeroize"], optional = true }
-getrandom = { version = "0.4", optional = true }
-# FIPS backend (`fips`): AWS-LC's FIPS 140-3 validated module (ISC AND
-# Apache-2.0 AND OpenSSL). Needs CMake, Go and a C compiler to build.
-aws-lc-rs = { version = "1", default-features = false, features = ["fips"], optional = true }
+# AES-256-GCM and the DRBG come from AWS-LC through aws-lc-rs (ISC AND
+# Apache-2.0 AND OpenSSL): hand-tuned AES-NI/VAES/AVX-512 and ARMv8 code.
+# Default `aws-lc`: the regular build (needs a C compiler). `fips`: the FIPS
+# 140-3 validated module (needs CMake, Go and a C compiler as well); build it
+# with `--no-default-features --features fips` (scripts/build-fips.sh).
+aws-lc-rs = { version = "1", default-features = false, optional = true }
+# Large files are decrypted chunk-parallel on open.
+rayon.workspace = true
 
 [features]
-default = ["rustcrypto"]
-rustcrypto = ["dep:aes-gcm", "dep:getrandom"]
-# Build with `--no-default-features --features fips` so no other AES code is
-# linked; see src/backend.rs and scripts/build-fips.sh.
-fips = ["dep:aws-lc-rs"]
+default = ["aws-lc"]
+aws-lc = ["dep:aws-lc-rs", "aws-lc-rs/aws-lc-sys"]
+fips = ["dep:aws-lc-rs", "aws-lc-rs/fips"]
 
 [dev-dependencies]
 lucene-util = { path = "../lucene-util", features = ["test-support"] }
 lucene-index = { path = "../lucene-index" }
 lucene-search = { path = "../lucene-search" }
 lucene-codecs = { path = "../lucene-codecs" }
+criterion.workspace = true
+
+[[bench]]
+name = "encryption"
+harness = false

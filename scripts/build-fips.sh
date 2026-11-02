@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The FIPS build of the encryption layer: AES-256-GCM and the DRBG from
 # AWS-LC's FIPS 140-3 validated module (aws-lc-rs, feature `fips`), with the
-# default RustCrypto backend left out (`--no-default-features`), so no
+# default non-validated AWS-LC build left out (`--no-default-features`), so no
 # non-validated AES code is linked.
 #
 #   scripts/build-fips.sh          # build lucene-store-crypto (release)
