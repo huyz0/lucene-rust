@@ -316,6 +316,7 @@ mod results_scored;
 mod results_sorted;
 mod segment;
 mod sort;
+mod store;
 mod vectors;
 mod writer;
 

@@ -409,7 +409,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
       - uses: Swatinem/rust-cache@v2
@@ -418,6 +418,8 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build and test with the FIPS module only
         run: scripts/build-fips.sh --test
+      - name: The plugin's library with the FIPS module only
+        run: scripts/build-fips.sh --ffi --test
 
   # ---------------------------------------------------------------------------
   # The committed fixtures must still be what Lucene 10.5.0 actually produces.
@@ -645,6 +647,38 @@ jobs:
         run: ./scripts/verify-opensearch-cluster.sh --no-build
 
   # ---------------------------------------------------------------------------
+  # The plugin's FIPS variant (gradle -Pfips): the native library against
+  # AWS-LC's FIPS module and the JVM's encryption through the Corretto Crypto
+  # Provider's FIPS build. EncryptedStoreTest asserts both are in FIPS mode and
+  # reads and writes one encrypted index from Lucene and the Rust engine.
+  # ---------------------------------------------------------------------------
+  opensearch-fips:
+    name: opensearch plugin, FIPS variant
+    needs: changes
+    if: needs.changes.outputs.plugin == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: |
+            25
+            21
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.14.3'
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: fips
+          save-if: false
+      - name: The FIPS plugin's encrypted store, and its zip
+        run: |
+          scripts/opensearch-dist.sh
+          gradle --no-daemon -p opensearch-plugin -Pfips encryptedStoreTest bundlePlugin
+
+  # ---------------------------------------------------------------------------
   # M8 acceptance criterion 3: an index written by OpenSearch 2.19 (Lucene
   # 9.12 segments) opened in place by 3.9.0 with the plugin, served natively
   # and compared with a stock 3.9.0 node -- before and after a snapshot
@@ -754,6 +788,7 @@ jobs:
       - write-path
       - opensearch
       - opensearch-engine
+      - opensearch-fips
       - opensearch-upgrade
       - fuzz
     runs-on: ubuntu-24.04

@@ -21,7 +21,14 @@ def opensearchVersion = '3.9.0'
 def repoRoot = projectDir.parentFile
 def opensearchLib = file(findProperty('opensearchLib') ?: "${repoRoot}/target/opensearch-dist/${opensearchVersion}/lib")
 def cargoTarget = file(System.getenv('CARGO_TARGET_DIR') ?: "${repoRoot}/target")
-def nativeLib = file("${cargoTarget}/release/liblucene_ffi.so")
+// -Pfips: the FIPS variant. The native library's encryption uses AWS-LC's FIPS
+// 140-3 module (scripts/build-fips.sh --ffi, its own target directory), and the
+// JVM side's uses the Amazon Corretto Crypto Provider's FIPS build (the same
+// module), bundled in the zip; SunJCE is never used (store/StoreCrypto.java).
+def fips = findProperty('fips') != null
+def accpVersion = '2.5.0'
+def fipsTarget = file(System.getenv('CARGO_TARGET_DIR') ?: "${repoRoot}/target/fips")
+def nativeLib = file("${fips ? fipsTarget : cargoTarget}/release/liblucene_ffi.so")
 
 // Mirrors NativeLibrary.platform(): the directory the zip carries the
 // library under.
@@ -69,10 +76,36 @@ tasks.withType(JavaCompile).configureEach {
     options.encoding = 'UTF-8'
 }
 
+configurations {
+    fipsProvider
+}
+
 dependencies {
     compileOnly fileTree(dir: opensearchLib, include: '*.jar')
     testImplementation fileTree(dir: opensearchLib, include: '*.jar')
+    if (fips) {
+        // ACCP's classifier names the platform: linux-x86_64 or linux-aarch_64.
+        def accpPlatform = hostPlatform == 'linux-aarch64' ? 'linux-aarch_64' : hostPlatform
+        fipsProvider "software.amazon.cryptools:AmazonCorrettoCryptoProvider-FIPS:${accpVersion}:${accpPlatform}"
+        testRuntimeOnly "software.amazon.cryptools:AmazonCorrettoCryptoProvider-FIPS:${accpVersion}:${accpPlatform}"
+    }
 }
+
+// lucene-rust-build.properties: which variant this jar is (StoreCrypto.buildIsFips).
+def buildProperties = layout.buildDirectory.dir('generated/build-properties')
+def writeBuildProperties = tasks.register('writeBuildProperties') {
+    def out = buildProperties
+    def isFips = fips
+    inputs.property('fips', isFips)
+    outputs.dir(out)
+    doLast {
+        def f = out.get().file('lucene-rust-build.properties').asFile
+        f.parentFile.mkdirs()
+        f.text = "fips=${isFips}\n"
+    }
+}
+sourceSets.main.resources.srcDir(buildProperties)
+tasks.named('processResources') { dependsOn writeBuildProperties }
 
 def checkDist = tasks.register('checkOpensearchDist') {
     doLast {
@@ -84,9 +117,13 @@ def checkDist = tasks.register('checkOpensearchDist') {
 tasks.named('compileJava') { dependsOn checkDist }
 
 def cargoBuild = tasks.register('cargoBuild', Exec) {
-    description = 'Builds liblucene_ffi.so (release) for this host.'
+    description = 'Builds liblucene_ffi.so (release) for this host; with -Pfips, against the FIPS module.'
     workingDir repoRoot
-    commandLine 'cargo', 'build', '--release', '-p', 'lucene-ffi'
+    if (fips) {
+        commandLine 'scripts/build-fips.sh', '--ffi'
+    } else {
+        commandLine 'cargo', 'build', '--release', '-p', 'lucene-ffi'
+    }
 }
 
 // The analysis modules' data packs (their dictionaries), for the self test
@@ -101,13 +138,15 @@ def makeDataPacks = tasks.register('makeDataPacks', Exec) {
 tasks.register('bundlePlugin', Zip) {
     description = 'The installable plugin zip: jar, descriptor, and native/<platform>/liblucene_ffi.so.'
     dependsOn tasks.named('jar'), cargoBuild
-    archiveFileName = "lucene-rust-${version}.zip"
+    archiveFileName = fips ? "lucene-rust-fips-${version}.zip" : "lucene-rust-${version}.zip"
     destinationDirectory = layout.buildDirectory.dir('distributions')
     from(tasks.named('jar'))
     from('src/plugin-metadata') {
         expand(version: version, opensearchVersion: opensearchVersion)
     }
     from(nativeLib) { into "native/${hostPlatform}" }
+    // The FIPS variant's JCE provider, on the plugin's class path.
+    from(configurations.fipsProvider)
     // The licence and notices ship with the binary they cover.
     from(file("${repoRoot}/LICENSE"))
     from(file("${repoRoot}/NOTICE"))
@@ -149,8 +188,17 @@ def engineWriterTest = tasks.register('engineWriterTest', JavaExec) {
     systemProperty 'lucene_rust.library.path', nativeLib.absolutePath
     jvmArgs nativeAccess, '-ea'
 }
+// The rust_encrypted store: Lucene and the Rust engine reading and writing one encrypted index.
+def encryptedStoreTest = tasks.register('encryptedStoreTest', JavaExec) {
+    description = 'The rust_encrypted store end to end: Java writes / Rust reads, Rust writes / Java reads.'
+    dependsOn tasks.named('testClasses'), cargoBuild
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'org.lucenerust.opensearch.engine.EncryptedStoreTest'
+    systemProperty 'lucene_rust.library.path', nativeLib.absolutePath
+    jvmArgs nativeAccess, '-ea'
+}
 tasks.named('test') { enabled = false }
-tasks.named('check') { dependsOn selfTest, engineWriterTest }
+tasks.named('check') { dependsOn selfTest, engineWriterTest, encryptedStoreTest }
 
 // M2 T2.7 with the JVM in the loop: the native call's crossing cost and
 // in-process query latency, native vs Lucene. Not part of `check` -- it is a

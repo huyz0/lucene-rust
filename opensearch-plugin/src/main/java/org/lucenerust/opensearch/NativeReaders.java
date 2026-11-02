@@ -17,9 +17,9 @@ import org.apache.lucene.index.StandardDirectoryReader;
 import org.apache.lucene.store.ByteBuffersDataOutput;
 import org.apache.lucene.store.ByteBuffersIndexOutput;
 import org.apache.lucene.store.Directory;
-import org.apache.lucene.store.FSDirectory;
-import org.apache.lucene.store.FilterDirectory;
 import org.apache.lucene.util.Bits;
+import org.lucenerust.opensearch.store.NativeStores;
+import org.lucenerust.opensearch.store.RustEncryptedDirectory;
 import org.apache.lucene.util.FixedBitSet;
 
 import java.io.IOException;
@@ -179,22 +179,20 @@ public final class NativeReaders {
             SegmentCommitInfo sci = org.opensearch.common.lucene.Lucene.segmentReader(leaf).getSegmentInfo();
             infos.add(sci);
             maxDocs[i] = leaf.maxDoc();
-            Directory d = FilterDirectory.unwrap(sci.info.dir);
-            if (!(d instanceof FSDirectory fs)) {
-                return new Acquired(0, "directory_not_fs");
+            if (NativeStores.refusal(sci.info.dir) != null) {
+                return new Acquired(0, "directory_not_native");
             }
-            Path p = fs.getDirectory();
+            Path p = NativeStores.path(sci.info.dir);
             if (path != null && path.equals(p) == false) {
                 return new Acquired(0, "directory_mixed");
             }
             path = p;
         }
         if (path == null) {
-            Directory d = FilterDirectory.unwrap(sdr.directory());
-            if (!(d instanceof FSDirectory fs)) {
-                return new Acquired(0, "directory_not_fs");
+            if (NativeStores.refusal(sdr.directory()) != null) {
+                return new Acquired(0, "directory_not_native");
             }
-            path = fs.getDirectory();
+            path = NativeStores.path(sdr.directory());
         }
         byte[] infoBytes;
         try {
@@ -207,7 +205,7 @@ public final class NativeReaders {
             logger.warn("lucene-rust: serializing SegmentInfos failed", e);
             return new Acquired(0, "segment_infos_write");
         }
-        byte[] pathBytes = path.toAbsolutePath().toString().getBytes(StandardCharsets.UTF_8);
+        byte[] pathBytes = RustEncryptedDirectory.nativePath(path).getBytes(StandardCharsets.UTF_8);
         long[][] live = new long[leaves.size()][];
         for (int i = 0; i < leaves.size(); i++) {
             Bits bits = leaves.get(i).reader().getLiveDocs();

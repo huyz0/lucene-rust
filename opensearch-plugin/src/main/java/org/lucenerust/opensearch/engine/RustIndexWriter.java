@@ -124,7 +124,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
     ) throws IOException {
         long[] out = new long[1];
         int status = NativeBridge.writerOpen(
-            indexPath.toString().getBytes(StandardCharsets.UTF_8),
+            org.lucenerust.opensearch.store.RustEncryptedDirectory.nativePath(indexPath).getBytes(StandardCharsets.UTF_8),
             ramBufferMb,
             faultInjection,
             maxDocs,

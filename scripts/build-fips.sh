@@ -6,6 +6,10 @@
 #
 #   scripts/build-fips.sh          # build lucene-store-crypto (release)
 #   scripts/build-fips.sh --test   # and run its tests, which assert FIPS mode
+#   scripts/build-fips.sh --ffi    # build the plugin's library, lucene-ffi, with
+#                                  # the FIPS module (target/fips/release/
+#                                  # liblucene_ffi.so); `gradle -Pfips` runs this
+#   scripts/build-fips.sh --ffi --test   # and its encrypted-store tests
 #
 # Needs CMake, Go, Perl and a C compiler (aws-lc-fips-sys builds the module
 # from source, as its validation requires). Uses its own target directory so
@@ -20,14 +24,32 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target/fips}"
 args=(-p lucene-store-crypto --no-default-features --features fips)
+ffi=false
+tests=false
+for arg in "$@"; do
+    case "$arg" in
+        --ffi) ffi=true ;;
+        --test) tests=true ;;
+        *) echo "build-fips: unknown argument $arg" >&2; exit 2 ;;
+    esac
+done
+if $ffi; then
+    # lucene-ffi's default features, with `fips` in place of `crypto`.
+    args=(-p lucene-ffi --no-default-features --features
+        fips,analysis-icu,analysis-kuromoji,analysis-nori,analysis-smartcn,analysis-stempel,analysis-morfologik,analysis-phonetic)
+fi
 
 for tool in cmake go cc; do
     command -v "$tool" >/dev/null || { echo "build-fips: $tool is required" >&2; exit 1; }
 done
 
 cargo build --release "${args[@]}"
-if [[ "${1:-}" == "--test" ]]; then
-    cargo test "${args[@]}"
+if $tests; then
+    if $ffi; then
+        cargo test "${args[@]}" --lib store::
+    else
+        cargo test "${args[@]}"
+    fi
 fi
 cargo tree "${args[@]}" -i aws-lc-fips-sys --depth 0
 echo "build-fips: ok (${CARGO_TARGET_DIR})"

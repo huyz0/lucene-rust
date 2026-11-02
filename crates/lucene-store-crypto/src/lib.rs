@@ -40,7 +40,7 @@ use std::sync::Arc;
 use lucene_store::{register_store_wrapper, Directory, Error, StoreSettings};
 
 pub use backend::{backend_name, is_fips};
-pub use directory::EncryptedDirectory;
+pub use directory::{is_commit_metadata, EncryptedDirectory};
 pub use format::DataKey;
 pub use key_provider::{
     key_provider, key_unavailable, register_key_provider, CachingKeyProvider, GeneratedKey,
