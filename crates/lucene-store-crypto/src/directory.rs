@@ -11,10 +11,8 @@ use lucene_store::directory::Input;
 use lucene_store::lock::Lock;
 use lucene_store::{DataOutput, Directory, Error, FsIndexOutput, IndexOutput, OutputSink, Result};
 
-use crate::format::{
-    plaintext_len, ChunkCipher, DataKey, Header, DATA_KEY_LEN, DEFAULT_CHUNK_SIZE, MAX_CHUNK_SIZE,
-};
-use crate::key_provider::{random, KeyProvider};
+use crate::format::{plaintext_len, ChunkCipher, Header, DEFAULT_CHUNK_SIZE, MAX_CHUNK_SIZE};
+use crate::key_provider::{random, GeneratedKey, KeyProvider};
 
 /// Encrypts the files of `D` with per-file data keys wrapped by a
 /// [`KeyProvider`]. See [`crate::format`] for the file layout.
@@ -79,10 +77,11 @@ impl<D: Directory> EncryptedDirectory<D> {
 
     /// Wraps an output of the inner directory: a fresh data key and header.
     fn encrypting(&self, out: FsIndexOutput) -> Result<FsIndexOutput> {
-        let key_id = self.keys.current_key_id()?;
-        let mut data_key = DataKey::new([0; DATA_KEY_LEN]);
-        random(&mut data_key[..])?;
-        let wrapped_key = self.keys.wrap_key(&key_id, &data_key)?;
+        let GeneratedKey {
+            key_id,
+            data_key,
+            wrapped: wrapped_key,
+        } = self.keys.generate_data_key()?;
         let mut nonce_prefix = [0u8; 8];
         random(&mut nonce_prefix)?;
         let header = Header {

@@ -1,7 +1,7 @@
 //! Where data keys are wrapped and unwrapped: the bring-your-own-key seam.
 //!
 //! [`KeyProvider`] is envelope encryption's key-encryption side. Each file's
-//! random data key is handed to [`KeyProvider::wrap_key`] once, when the file
+//! random data key is wrapped once ([`KeyProvider::generate_data_key`]), when the file
 //! is created, and the wrapped bytes are stored in the file's header; opening
 //! the file calls [`KeyProvider::unwrap_key`]. A customer-managed key in a KMS
 //! (AWS KMS `Encrypt`/`Decrypt`, Azure Key Vault `wrapKey`/`unwrapKey`, GCP
@@ -22,14 +22,54 @@ use lucene_store::{Error, Result};
 
 use crate::format::{DataKey, DATA_KEY_LEN, TAG_LEN};
 
+/// A fresh data key for one file: its plaintext, and the same key wrapped
+/// under the key-encryption key `key_id`.
+pub struct GeneratedKey {
+    /// The id of the key-encryption key that wrapped `data_key`.
+    pub key_id: String,
+    /// The data key itself.
+    pub data_key: DataKey,
+    /// `data_key`, wrapped: what the file's header stores.
+    pub wrapped: Vec<u8>,
+}
+
 /// Wraps and unwraps per-file data keys under named key-encryption keys.
+///
+/// Implement either [`KeyProvider::current_key_id`] plus
+/// [`KeyProvider::wrap_key`] (this crate draws the data key), or
+/// [`KeyProvider::generate_data_key`] (the KMS draws it, as AWS KMS
+/// `GenerateDataKey` and OpenSearch's `MasterKeyProvider.generateDataPair`
+/// do), plus [`KeyProvider::unwrap_key`] in both cases.
 pub trait KeyProvider: Send + Sync {
     /// The id of the key new files are wrapped under. Changing what this
     /// returns rotates the key for files written from then on.
-    fn current_key_id(&self) -> Result<String>;
+    fn current_key_id(&self) -> Result<String> {
+        Err(key_unavailable(
+            "this key provider only generates data keys",
+        ))
+    }
 
     /// Encrypts `data_key` under the key `key_id`.
-    fn wrap_key(&self, key_id: &str, data_key: &[u8; DATA_KEY_LEN]) -> Result<Vec<u8>>;
+    fn wrap_key(&self, key_id: &str, data_key: &[u8; DATA_KEY_LEN]) -> Result<Vec<u8>> {
+        let _ = (key_id, data_key);
+        Err(key_unavailable(
+            "this key provider only generates data keys",
+        ))
+    }
+
+    /// A new random data key for a file, wrapped under the current key. The
+    /// default draws it and calls [`KeyProvider::wrap_key`].
+    fn generate_data_key(&self) -> Result<GeneratedKey> {
+        let key_id = self.current_key_id()?;
+        let mut data_key = DataKey::new([0; DATA_KEY_LEN]);
+        random(&mut data_key[..])?;
+        let wrapped = self.wrap_key(&key_id, &data_key)?;
+        Ok(GeneratedKey {
+            key_id,
+            data_key,
+            wrapped,
+        })
+    }
 
     /// Decrypts a data key [`KeyProvider::wrap_key`] produced under `key_id`.
     /// An unknown, disabled or revoked key fails with [`key_unavailable`].
@@ -202,6 +242,16 @@ impl<P: KeyProvider> KeyProvider for CachingKeyProvider<P> {
         Ok(wrapped)
     }
 
+    fn generate_data_key(&self) -> Result<GeneratedKey> {
+        let generated = self.inner.generate_data_key()?;
+        self.insert(
+            &generated.key_id,
+            &generated.wrapped,
+            generated.data_key.clone(),
+        );
+        Ok(generated)
+    }
+
     fn unwrap_key(&self, key_id: &str, wrapped: &[u8]) -> Result<DataKey> {
         let entry = (key_id.to_string(), wrapped.to_vec());
         if let Some((at, key)) = self.lock().get(&entry) {
@@ -354,6 +404,31 @@ mod tests {
         let w = off.wrap_key("k", &[7; 32]).unwrap();
         off.unwrap_key("k", &w).unwrap();
         assert!(off.lock().is_empty());
+    }
+
+    /// A KMS that draws data keys itself (`GenerateDataKey`): the default
+    /// wrap path is refused, and the cache still learns generated keys.
+    struct GenerateOnly(StaticKeyProvider);
+
+    impl KeyProvider for GenerateOnly {
+        fn generate_data_key(&self) -> Result<GeneratedKey> {
+            self.0.generate_data_key()
+        }
+        fn unwrap_key(&self, key_id: &str, wrapped: &[u8]) -> Result<DataKey> {
+            self.0.unwrap_key(key_id, wrapped)
+        }
+    }
+
+    #[test]
+    fn a_generate_only_provider_needs_no_wrap() {
+        let p = GenerateOnly(StaticKeyProvider::new("g", &[6; 32]));
+        assert!(p.current_key_id().is_err());
+        assert!(p.wrap_key("g", &[0; 32]).is_err());
+        let c = CachingKeyProvider::new(p, Duration::from_secs(60), 4);
+        let g = c.generate_data_key().unwrap();
+        assert_eq!(g.key_id, "g");
+        assert_eq!(c.lock().len(), 1);
+        assert_eq!(*c.unwrap_key("g", &g.wrapped).unwrap(), *g.data_key);
     }
 
     #[test]

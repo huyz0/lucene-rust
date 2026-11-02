@@ -43,8 +43,8 @@ pub use backend::{backend_name, is_fips};
 pub use directory::EncryptedDirectory;
 pub use format::DataKey;
 pub use key_provider::{
-    key_provider, key_unavailable, register_key_provider, CachingKeyProvider, KeyProvider,
-    StaticKeyProvider,
+    key_provider, key_unavailable, register_key_provider, CachingKeyProvider, GeneratedKey,
+    KeyProvider, StaticKeyProvider,
 };
 
 /// The store wrapper's name in lucene-store's registry.
