@@ -10,11 +10,21 @@ workspace = true
 
 [dependencies]
 lucene-store = { path = "../lucene-store" }
-# AES-256-GCM (RustCrypto, Apache-2.0 OR MIT), hardware-accelerated where the
-# CPU has AES-NI/PMULL. `getrandom` draws the per-file data keys and nonces.
-aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc", "zeroize"] }
-getrandom = "0.4"
 zeroize = "1"
+# Default backend (`rustcrypto`): AES-256-GCM from RustCrypto (Apache-2.0 OR
+# MIT), AES-NI/PMULL accelerated, and the OS CSPRNG through `getrandom`.
+aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc", "zeroize"], optional = true }
+getrandom = { version = "0.4", optional = true }
+# FIPS backend (`fips`): AWS-LC's FIPS 140-3 validated module (ISC AND
+# Apache-2.0 AND OpenSSL). Needs CMake, Go and a C compiler to build.
+aws-lc-rs = { version = "1", default-features = false, features = ["fips"], optional = true }
+
+[features]
+default = ["rustcrypto"]
+rustcrypto = ["dep:aes-gcm", "dep:getrandom"]
+# Build with `--no-default-features --features fips` so no other AES code is
+# linked; see src/backend.rs and scripts/build-fips.sh.
+fips = ["dep:aws-lc-rs"]
 
 [dev-dependencies]
 lucene-util = { path = "../lucene-util", features = ["test-support"] }

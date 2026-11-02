@@ -17,8 +17,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::{Duration, Instant};
 
-use aes_gcm::aead::AeadInPlace;
-use aes_gcm::{Aes256Gcm, KeyInit, Nonce, Tag};
+use crate::backend::{fill_random, Aes256Gcm};
 use lucene_store::{Error, Result};
 
 use crate::format::{DataKey, DATA_KEY_LEN, TAG_LEN};
@@ -49,7 +48,7 @@ pub fn key_unavailable(message: impl Into<String>) -> Error {
 
 /// Fills `buf` from the operating system's CSPRNG.
 pub(crate) fn random(buf: &mut [u8]) -> Result<()> {
-    getrandom::fill(buf).map_err(|e| Error::Io(std::io::Error::other(e.to_string())))
+    fill_random(buf)
 }
 
 const WRAP_NONCE_LEN: usize = 12;
@@ -85,7 +84,11 @@ impl StaticKeyProvider {
     /// Adds (or replaces) a key, without making it current: how a rotated-out
     /// key stays available for reading old files.
     pub fn with_key(mut self, key_id: &str, key: &[u8; DATA_KEY_LEN]) -> Self {
-        let aead = Aes256Gcm::new(key.into());
+        // Infallible for a 32-byte key in both backends; a backend failure
+        // here is the FIPS module refusing to run, which `key()` reports.
+        let Ok(aead) = Aes256Gcm::new(key) else {
+            return self;
+        };
         self.keys.insert(key_id.to_string(), aead);
         self
     }
@@ -120,9 +123,7 @@ impl KeyProvider for StaticKeyProvider {
         let mut nonce = [0u8; WRAP_NONCE_LEN];
         random(&mut nonce)?;
         let mut sealed = data_key.to_vec();
-        let tag = aead
-            .encrypt_in_place_detached(Nonce::from_slice(&nonce), &Self::aad(key_id), &mut sealed)
-            .map_err(|_| Error::IllegalArgument("key wrap failed".into()))?;
+        let tag = aead.seal(&nonce, &Self::aad(key_id), &mut sealed)?;
         let mut out = nonce.to_vec();
         out.extend_from_slice(&sealed);
         out.extend_from_slice(&tag);
@@ -143,13 +144,9 @@ impl KeyProvider for StaticKeyProvider {
         let (sealed, tag) = rest.split_at(DATA_KEY_LEN);
         let mut key = DataKey::new([0; DATA_KEY_LEN]);
         key.copy_from_slice(sealed);
-        aead.decrypt_in_place_detached(
-            Nonce::from_slice(nonce),
-            &Self::aad(key_id),
-            &mut key[..],
-            Tag::from_slice(tag),
-        )
-        .map_err(|_| bad())?;
+        let nonce: &[u8; WRAP_NONCE_LEN] = nonce.try_into().map_err(|_| bad())?;
+        aead.open(nonce, &Self::aad(key_id), &mut key[..], tag)
+            .map_err(|_| bad())?;
         Ok(key)
     }
 }

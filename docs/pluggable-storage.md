@@ -53,6 +53,24 @@ that wrapped them, and merges rewrite them under the new one over time.
 Revoking a key in the KMS makes the files it wrapped unreadable (after
 `CachingKeyProvider`'s TTL). Details: `lucene-store-crypto/src/format.rs`.
 
+## FIPS
+
+The crypto library is a build-time choice (`lucene-store-crypto/src/backend.rs`):
+
+- default (`rustcrypto`): RustCrypto's `aes-gcm` and the OS CSPRNG;
+- `--no-default-features --features fips`: AES-256-GCM and the DRBG from
+  AWS-LC's FIPS 140-3 validated module (`aws-lc-rs` / `aws-lc-fips-sys`),
+  with no other AES implementation linked. `lucene_store_crypto::is_fips()`
+  reports whether the module is in FIPS mode; the FIPS build's tests assert it.
+
+`scripts/build-fips.sh [--test]` is the release recipe (needs CMake, Go, Perl,
+a C compiler) and CI's `fips` job runs it. Both backends write identical
+bytes (a NIST GCM vector pins it), so an index moves between them freely.
+Compliance also depends on the deployed module version and platform: check
+AWS-LC's current CMVP certificate for the resolved `aws-lc-fips-sys`. A
+key provider over a KMS must itself use FIPS endpoints for an end-to-end
+FIPS deployment.
+
 ## Limits to know
 
 - An input is a whole contiguous file. `MmapDirectory` maps it, but an

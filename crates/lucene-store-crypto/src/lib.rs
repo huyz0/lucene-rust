@@ -13,6 +13,9 @@
 //!   [`SETTING_KEY_PROVIDER`] (a provider registered with
 //!   [`register_key_provider`]) and, optionally, [`SETTING_CHUNK_SIZE`].
 //!
+//! The crypto library is chosen at build time ([`backend`]): RustCrypto by
+//! default, or AWS-LC's FIPS 140-3 validated module with feature `fips`.
+//!
 //! ```
 //! use std::sync::Arc;
 //! use lucene_store::{ByteBuffersDirectory, DataOutput, Directory};
@@ -27,6 +30,7 @@
 //! assert_ne!(&*dir.inner().open("_0.si").unwrap(), b"segment info");
 //! ```
 
+pub mod backend;
 pub mod directory;
 pub mod format;
 pub mod key_provider;
@@ -35,6 +39,7 @@ use std::sync::Arc;
 
 use lucene_store::{register_store_wrapper, Directory, Error, StoreSettings};
 
+pub use backend::{backend_name, is_fips};
 pub use directory::EncryptedDirectory;
 pub use format::DataKey;
 pub use key_provider::{

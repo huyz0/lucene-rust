@@ -389,6 +389,28 @@ jobs:
         run: cargo test --release -p lucene-search --doc
 
   # ---------------------------------------------------------------------------
+  # The FIPS build of the encryption layer: lucene-store-crypto with AWS-LC's
+  # FIPS 140-3 module instead of RustCrypto (docs/pluggable-storage.md#fips).
+  # Its own job because aws-lc-fips-sys builds the module from source (CMake,
+  # Go, a C compiler: all on the hosted runner) and the default build never
+  # compiles it. The tests assert the module is in FIPS mode.
+  # ---------------------------------------------------------------------------
+  fips:
+    name: encryption, FIPS backend
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: fips
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Build and test with the FIPS module only
+        run: scripts/build-fips.sh --test
+
+  # ---------------------------------------------------------------------------
   # The committed fixtures must still be what Lucene 10.5.0 actually produces.
   # fixtures/data is load-bearing for every differential test in the repo.
   # ---------------------------------------------------------------------------
@@ -717,6 +739,7 @@ jobs:
       - gate-x64
       - gate-arm64
       - release-tests
+      - fips
       - fixtures
       - snowball
       - write-path

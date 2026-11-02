@@ -24,8 +24,7 @@
 //!   files under each other's names is caught by Lucene itself (each file's
 //!   codec header carries its segment's random id).
 
-use aes_gcm::aead::AeadInPlace;
-use aes_gcm::{Aes256Gcm, KeyInit, Nonce, Tag};
+use crate::backend::Aes256Gcm;
 use lucene_store::{Error, Result};
 use zeroize::Zeroizing;
 
@@ -38,7 +37,7 @@ pub const ALG_AES_256_GCM: u8 = 1;
 /// A data key's length: AES-256.
 pub const DATA_KEY_LEN: usize = 32;
 /// An AES-GCM tag.
-pub const TAG_LEN: usize = 16;
+pub const TAG_LEN: usize = crate::backend::TAG_LEN;
 /// The default chunk: 64 KiB of plaintext per tag (0.02% overhead).
 pub const DEFAULT_CHUNK_SIZE: u32 = 64 * 1024;
 /// The largest chunk accepted, so a corrupt header cannot ask for a huge
@@ -185,8 +184,7 @@ pub struct ChunkCipher {
 impl ChunkCipher {
     /// A cipher for the file whose encoded header is `header_bytes`.
     pub fn new(data_key: &DataKey, header: &Header, header_bytes: Vec<u8>) -> Result<Self> {
-        let aead = Aes256Gcm::new_from_slice(&data_key[..])
-            .map_err(|_| Error::IllegalArgument("data key is not 256 bits".into()))?;
+        let aead = Aes256Gcm::new(data_key)?;
         Ok(Self {
             aead,
             header: header_bytes,
@@ -207,13 +205,7 @@ impl ChunkCipher {
     /// Encrypts `chunk` in place and returns its tag.
     pub fn seal(&self, index: u32, last: bool, chunk: &mut [u8]) -> Result<[u8; TAG_LEN]> {
         let (nonce, aad) = self.nonce_and_aad(index, last);
-        let tag = self
-            .aead
-            .encrypt_in_place_detached(Nonce::from_slice(&nonce), &aad, chunk)
-            .map_err(|_| Error::IllegalArgument("chunk too large to encrypt".into()))?;
-        let mut out = [0u8; TAG_LEN];
-        out.copy_from_slice(&tag);
-        Ok(out)
+        self.aead.seal(&nonce, &aad, chunk)
     }
 
     /// Decrypts `chunk` in place, checking `tag`.
@@ -226,14 +218,12 @@ impl ChunkCipher {
         name: &str,
     ) -> Result<()> {
         let (nonce, aad) = self.nonce_and_aad(index, last);
-        self.aead
-            .decrypt_in_place_detached(Nonce::from_slice(&nonce), &aad, chunk, Tag::from_slice(tag))
-            .map_err(|_| {
-                Error::Corrupted(format!(
-                    "encrypted file {name}: chunk {index} failed authentication \
+        self.aead.open(&nonce, &aad, chunk, tag).map_err(|_| {
+            Error::Corrupted(format!(
+                "encrypted file {name}: chunk {index} failed authentication \
                      (wrong key, tampered or truncated file)"
-                ))
-            })
+            ))
+        })
     }
 
     /// Decrypts a whole body (everything after the header).
