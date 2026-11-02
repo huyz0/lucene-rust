@@ -9,6 +9,12 @@ license.workspace = true
 # lucene-analysis' morph module, user dictionaries, n-best), its filters,
 # JapaneseAnalyzer and the factories. Over lucene-analysis only, as Lucene's
 # module is over lucene-analysis-common (docs/milestones/m12-language-analysis.md).
+[features]
+default = ["embedded-data"]
+# Compiles the dictionary files in (src/resources); without it they are read
+# from a data pack directory (lucene_analysis::data_pack).
+embedded-data = []
+
 [lints]
 workspace = true
 

@@ -390,6 +390,43 @@ final class NativeSelfTestAnalysis {
         "ราคาน้ำมันขึ้นอีกแล้ว ๑๒๓ บาท",
     };
 
+    /**
+     * The data-pack tokenizers: refused while no pack directory holds their dictionaries, then
+     * Lucene's tokens once {@code lucene_rust.data_packs} (scripts/make-data-packs.sh) is added.
+     */
+    static void packs(BiConsumer<Boolean, String> check) throws Exception {
+        String dir = System.getProperty("lucene_rust.data_packs");
+        if (dir == null) {
+            System.out.println("NativeSelfTest: no lucene_rust.data_packs, data-pack tokenizers skipped");
+            return;
+        }
+        try {
+            RustAnalysis.JAPANESE.check();
+            check.accept(false, "rust_japanese is refused without its data pack");
+        } catch (IllegalArgumentException e) {
+            check.accept(e.getMessage().contains("data pack kuromoji"), "rust_japanese names its missing pack: " + e.getMessage());
+        }
+        check.accept(NativeBridge.addDataPackDir(dir) == 0, "the data pack directory is added");
+        // The tokenizers alone (no part-of-speech stop filter), as Lucene's split these texts.
+        Map<RustAnalysis.Entry, Map.Entry<String, List<String>>> want = new LinkedHashMap<>();
+        want.put(RustAnalysis.JAPANESE, Map.entry("東京都に住む", List.of("東京", "都", "に", "住む")));
+        want.put(RustAnalysis.KOREAN, Map.entry("한국어를 처리하는 예시입니다", List.of("한국", "어", "를", "처리", "하", "는", "예시", "이", "ᄇ니다")));
+        want.put(RustAnalysis.CHINESE, Map.entry("我是中国人", List.of("我", "是", "中国", "人")));
+        for (Map.Entry<RustAnalysis.Entry, Map.Entry<String, List<String>>> e : want.entrySet()) {
+            RustAnalysis.Entry entry = e.getKey();
+            entry.check();
+            Analyzer a = new Analyzer() {
+                @Override
+                protected TokenStreamComponents createComponents(String fieldName) {
+                    return new TokenStreamComponents(entry.tokenizer());
+                }
+            };
+            List<String> got = AnalyzerSpec.java(a, "body", e.getValue().getKey()).tokens().stream().map(t -> t.term().utf8ToString()).toList();
+            check.accept(e.getValue().getValue().equals(got), entry.name + " tokenizes from its data pack: " + got);
+            check.accept(AnalyzerSpec.describe(a, "body").ok(), entry.name + " runs natively in a chain");
+        }
+    }
+
     /** Lucene's ThaiAnalyzer and rust_thai side by side: Lucene's test words, and the agreement. */
     static void thai(BiConsumer<Boolean, String> check) throws Exception {
         Analyzer rust = new RustAnalysis.RustAnalyzer(RustAnalysis.THAI, ThaiAnalyzer.getDefaultStopSet());
@@ -475,6 +512,7 @@ final class NativeSelfTestAnalysis {
             );
         }
         thai(check);
+        packs(check);
         check.accept(AnalyzerSpec.encodable("a😀b"), "a surrogate pair is encodable");
         check.accept(AnalyzerSpec.encodable("a\ud83db") == false, "a lone surrogate is not");
     }

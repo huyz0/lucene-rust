@@ -34,6 +34,12 @@ import java.util.Map;
  * (the stop word default comes from the analyzer's {@code stopwords} setting). The Rust factory
  * must be registered in {@code lucene-ffi}'s build; {@link AnalyzerSpec} maps every
  * {@link RustTokenizer} by its SPI name and arguments, so nothing else changes on either side.
+ *
+ * <p>The language modules' tokenizers ({@code rust_japanese}, {@code rust_korean},
+ * {@code rust_chinese}) read their dictionaries from data packs, which a node opts into by
+ * putting the pack directories (from {@code scripts/make-data-packs.sh}) under
+ * {@code <config>/lucene-rust/packs/}. An index naming one of them without its pack is refused
+ * when the index is created, with the missing file in the message.
  */
 final class RustAnalysis {
     private RustAnalysis() {}
@@ -59,6 +65,13 @@ final class RustAnalysis {
         RustTokenizer tokenizer() {
             return new RustTokenizer(name, spi, args, spec);
         }
+
+        /** Builds the Rust tokenizer once, so a missing data pack refuses the index, not a document. */
+        void check() {
+            if (AnalyzerSpec.rust(spec, "", "") == null) {
+                throw new IllegalArgumentException("[" + name + "]: the Rust tokenizer is unavailable: " + NativeBridge.lastError());
+            }
+        }
     }
 
     /** An analyzer's chain over its tokenizer: the filters, then {@code normalize}'s. */
@@ -83,8 +96,15 @@ final class RustAnalysis {
         }
     });
 
+    /** {@code rust_japanese}: Lucene's {@code JapaneseTokenizer} (IPADIC; the {@code kuromoji} pack). */
+    static final Entry JAPANESE = new Entry("rust_japanese", "japanese", Map.of(), null, null);
+    /** {@code rust_korean}: Lucene's {@code KoreanTokenizer} (mecab-ko-dic; the {@code nori} pack). */
+    static final Entry KOREAN = new Entry("rust_korean", "korean", Map.of(), null, null);
+    /** {@code rust_chinese}: Lucene's {@code HMMChineseTokenizer} (the {@code smartcn} pack). */
+    static final Entry CHINESE = new Entry("rust_chinese", "hmmChinese", Map.of(), null, null);
+
     /** Every {@code rust_*} tokenizer the plugin registers. */
-    static final List<Entry> TOKENIZERS = List.of(THAI);
+    static final List<Entry> TOKENIZERS = List.of(THAI, JAPANESE, KOREAN, CHINESE);
 
     static Map<String, AnalysisModule.AnalysisProvider<TokenizerFactory>> tokenizers() {
         Map<String, AnalysisModule.AnalysisProvider<TokenizerFactory>> m = new LinkedHashMap<>();
@@ -110,6 +130,7 @@ final class RustAnalysis {
         Factory(IndexSettings indexSettings, String name, Settings settings, Entry entry) {
             super(indexSettings, settings, name);
             this.entry = entry;
+            entry.check();
         }
 
         @Override
@@ -145,6 +166,7 @@ final class RustAnalysis {
 
         Provider(IndexSettings indexSettings, Environment env, String name, Settings settings, Entry entry) {
             super(indexSettings, name, settings);
+            entry.check();
             analyzer = new RustAnalyzer(entry, Analysis.parseStopWords(env, settings, entry.defaultStopWords));
         }
 

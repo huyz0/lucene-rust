@@ -119,4 +119,13 @@ scripts/coverage.sh --workspace -- --fail-under-lines 95
 echo "gate: lucene-search tests in release"
 cargo test --release -p lucene-search
 
+# The shipped library reads the language modules' dictionaries from data
+# packs; the workspace build above compiles them in. See
+# docs/mechanical-gates.md#data-packs.
+echo "gate: language modules over data packs (no embedded dictionaries)"
+scripts/make-data-packs.sh target/data-packs >/dev/null
+LUCENE_RUST_PACKS="$PWD/target/data-packs" cargo test --no-default-features \
+  -p lucene-analysis-kuromoji -p lucene-analysis-nori -p lucene-analysis-smartcn \
+  -p lucene-analysis-morfologik -p lucene-analysis-stempel
+
 echo "gate: ok"

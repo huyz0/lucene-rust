@@ -83,8 +83,9 @@ fn component(c: &mut Cursor<'_>) -> Result<Component, FfiStatus> {
 /// A component is `name: bytes`, `n: i32`, then `n` of `key: bytes`,
 /// `value: bytes`. Trailing bytes are an error.
 fn build(spec: &[u8]) -> Result<CustomAnalyzer, FfiStatus> {
-    // The `thai` tokenizer's word iterator: ICU's Thai dictionary.
-    lucene_analysis_icu::install_thai_word_breaker();
+    // The analysis modules' factories, and the `thai` tokenizer's word
+    // iterator (ICU's Thai dictionary).
+    crate::analysis_modules::register();
     let mut c = Cursor::new(spec);
     let version = c.u8()?;
     if version != SPEC_VERSION {
@@ -369,6 +370,45 @@ pub(crate) mod tests {
         let before = cached_specs();
         analyze(&s, "body", "again").unwrap();
         assert_eq!(cached_specs(), before);
+    }
+
+    /// A spec may name the analysis modules' factories (`analysis_modules`),
+    /// whose dictionaries come from a data pack directory: refused while the
+    /// pack is in none (unless compiled in), built once it is.
+    #[test]
+    #[cfg(all(feature = "analysis-kuromoji", feature = "analysis-icu"))]
+    fn a_spec_names_an_analysis_module_factory_and_its_data_pack() {
+        use lucene_analysis_kuromoji::pack;
+        let s = spec(
+            &[],
+            ("japanese", &[("mode", "search")]),
+            &[("icuFolding", &[])],
+            &[],
+        );
+        if pack::RESOURCES.iter().all(|r| r.embedded.is_none()) {
+            assert_eq!(
+                analyze(&s, "body", "x").unwrap_err(),
+                FfiStatus::InvalidArgument
+            );
+            let message = crate::error::last_error();
+            assert!(message.contains("data pack kuromoji"), "{message}");
+        }
+        let dir = lucene_util::test_support::TempDir::new("ffi-data-pack");
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../lucene-analysis-kuromoji/src/resources");
+        std::fs::create_dir_all(dir.path().join(pack::NAME)).unwrap();
+        for r in &pack::RESOURCES {
+            std::fs::copy(src.join(r.file), dir.path().join(pack::NAME).join(r.file)).unwrap();
+        }
+        let path = dir.path().to_str().unwrap().as_bytes();
+        // SAFETY: `path` is valid for its length.
+        assert_eq!(
+            unsafe { crate::analysis_modules::ffi_add_data_pack_dir(path.as_ptr(), path.len()) },
+            0
+        );
+        let (t, _) = tokens(&analyze(&s, "body", "東京都に住む").unwrap());
+        let terms: Vec<_> = t.into_iter().map(|t| t.0).collect();
+        assert_eq!(terms, ["東京", "都", "に", "住む"]);
     }
 
     #[test]

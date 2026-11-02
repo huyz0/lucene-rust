@@ -25,8 +25,6 @@ use crate::SmartcnError;
 /// `PRIME_INDEX_LENGTH`: the hash tables' size.
 pub const PRIME_INDEX_LENGTH: usize = 12071;
 
-const CORE_DICT_Z: &[u8] = include_bytes!("../resources/coredict.mem.z");
-
 /// One row of `wordItem_charArrayTable`: the rests of its words.
 type Row = Arc<[Word]>;
 
@@ -51,7 +49,7 @@ pub struct WordDictionary {
 }
 
 static DEFAULT: LazyLock<Arc<WordDictionary>> = LazyLock::new(|| {
-    let bytes = miniz_oxide::inflate::decompress_to_vec_zlib(CORE_DICT_Z)
+    let bytes = miniz_oxide::inflate::decompress_to_vec_zlib(&crate::pack::get("coredict.mem.z"))
         .expect("the vendored coredict.mem inflates");
     Arc::new(WordDictionary::from_mem(&bytes).expect("the vendored coredict.mem loads"))
 });

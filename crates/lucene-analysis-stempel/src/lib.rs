@@ -15,6 +15,7 @@ pub mod diff;
 pub mod egothor;
 pub mod factory;
 pub mod filter;
+pub mod pack;
 pub mod polish;
 pub mod stemmer;
 
