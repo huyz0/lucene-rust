@@ -406,7 +406,10 @@ final class NativeSelfTestAnalysis {
         } catch (IllegalArgumentException e) {
             check.accept(e.getMessage().contains("data pack kuromoji"), "rust_japanese names its missing pack: " + e.getMessage());
         }
+        check.accept(!RustAnalysis.tokenizers().containsKey("rust_japanese"), "rust_japanese is not registered without its data pack");
+        check.accept(RustAnalysis.tokenizers().containsKey("rust_thai"), "rust_thai is registered without any data pack");
         check.accept(NativeBridge.addDataPackDir(dir) == 0, "the data pack directory is added");
+        check.accept(RustAnalysis.tokenizers().keySet().containsAll(List.of("rust_japanese", "rust_korean", "rust_chinese")), "the data-pack tokenizers are registered once their packs are there");
         // The tokenizers alone (no part-of-speech stop filter), as Lucene's split these texts.
         Map<RustAnalysis.Entry, Map.Entry<String, List<String>>> want = new LinkedHashMap<>();
         want.put(RustAnalysis.JAPANESE, Map.entry("東京都に住む", List.of("東京", "都", "に", "住む")));

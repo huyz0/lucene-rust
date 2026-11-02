@@ -71,10 +71,11 @@ cp -r /tmp/packs/kuromoji "$OPENSEARCH_PATH_CONF/lucene-rust/packs/"
 
 The plugin reads `<config>/lucene-rust/packs/<pack>/` first, then the
 plugin's own `packs/` (a zip built with `gradle bundlePlugin -PdataPacks`
-carries all of them, about 21 MB). Restart the node after adding a pack. An
-index naming a tokenizer whose pack is missing is refused at creation:
-`[rust_japanese]: the Rust tokenizer is unavailable: data pack kuromoji:
-kuromoji/character_definition.dat.z is not in any pack directory (...)`.
+carries all of them, about 21 MB). Restart the node after adding a pack. A
+tokenizer whose pack is missing is not registered (OpenSearch builds every
+registered tokenizer for every index), so an index naming it is refused as
+naming an unknown tokenizer; the node logs at startup which pack it lacks:
+`[rust_japanese] not registered, its data pack [kuromoji] is not installed`.
 A library built with `cargo build --release -p lucene-ffi --features
 embedded-data` has every pack compiled in and needs no directory.
 
