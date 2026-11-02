@@ -75,6 +75,60 @@ AWS-LC's current CMVP certificate for the resolved `aws-lc-fips-sys`. A
 key provider over a KMS must itself use FIPS endpoints for an end-to-end
 FIPS deployment.
 
+## In OpenSearch: the `rust_encrypted` store type
+
+The plugin adds the store type `rust_encrypted`. Both Lucene (the JVM) and
+the Rust engine read and write a shard's files in the format above, with the
+same keys.
+
+```yaml
+index.store.type: rust_encrypted
+index.store.rust_encrypted.key_provider_type: aws-kms     # a CryptoKeyProviderPlugin type
+index.store.rust_encrypted.key_provider: my-kms           # its name
+index.store.rust_encrypted.kms.key_arn: arn:aws:kms:...   # what that provider reads
+index.store.rust_encrypted.kms.encryption_context: tenant=a
+# optional
+index.store.rust_encrypted.chunk_size: 64kb
+index.store.rust_encrypted.data_key_ttl: 1h     # one KMS GenerateDataKey per period, not per file
+index.store.rust_encrypted.key_cache_ttl: 5m    # how long a revoked key keeps working
+```
+
+- **Keys:** keys come from OpenSearch's `MasterKeyProvider`, through any
+  installed `CryptoKeyProviderPlugin` (`crypto-kms` for AWS KMS). The
+  key-encryption key never leaves the KMS.
+  - The provider type `lucene_rust_local` instead wraps data keys with a
+    key in the node keystore (`lucene_rust.store.local_key`, base64 of 32
+    bytes; id `lucene_rust.store.local_key_id`). It is meant for tests and
+    for clusters without a KMS.
+- **How the engine gets keys:** when the plugin creates the directory, it
+  binds the shard path in the native library to the same key source
+  (`ffi_store_bind_encrypted`). The Rust writer and readers call back into
+  the JVM for keys through one FFM upcall, and cache what they unwrap.
+- **Commit metadata stays plaintext:** `segments_N`, `.si` files and
+  OpenSearch's `corrupted_*` markers are not encrypted
+  (`EncryptedDirectory::with_plaintext_commit_metadata`, on in both the Java
+  and Rust sides). OpenSearch reads them through a plain `NIOFSDirectory`,
+  not the store's directory, when it allocates a primary after a restart
+  (`Store.tryOpenIndex`); encrypted, a shard would never come back. They
+  hold segment and file names, document counts, codec names and commit user
+  data (sequence numbers, translog and history UUIDs), never field contents.
+- **No silent plaintext:**
+  - The Rust engine refuses an index whose `index.store.type` it cannot
+    write through (another plugin's encryption, say). Use
+    `rust_encrypted` for encryption at rest.
+  - The native read path declines any store directory that changes bytes on
+    disk.
+- **FIPS:** the plugin built with `gradle -Pfips bundlePlugin` produces
+  `lucene-rust-fips-*.zip`, which contains:
+  - the native library built against AWS-LC's FIPS module
+    (`scripts/build-fips.sh --ffi`);
+  - the Amazon Corretto Crypto Provider's FIPS build, the same AWS-LC
+    module, which does the JVM side's AES-GCM and random numbers. SunJCE is
+    not FIPS validated and is never used.
+
+  At startup the node checks that both are in FIPS mode, and refuses to
+  start otherwise. The default zip uses the JDK's own providers.
+
 ## Limits to know
 
 - An input is a whole contiguous file. `MmapDirectory` maps it, but an
@@ -84,6 +138,11 @@ FIPS deployment.
 - `BlobDirectory`'s default lock only excludes writers in one process. A store
   shared by several writer processes needs its own `LockFactory`.
 - File names are not encrypted, and file sizes are visible (plus a small
-  overhead).
-- The OpenSearch plugin does not use this layer yet: the Rust engine opens
-  the shard path with `MmapDirectory`/`FsDirectory` directly.
+  overhead). In OpenSearch, commit metadata is plaintext too (see above).
+- In OpenSearch, a replica's store metadata (`Store.readMetadataSnapshot`)
+  is also read through a plain directory, which cannot read an encrypted
+  file's footer. A node therefore never reuses a stale local copy of an
+  encrypted replica: peer recovery copies its files again.
+- In OpenSearch, Lucene's side reads an encrypted file a chunk at a time,
+  decrypting the chunk under the read position. The Rust side decrypts
+  whole files when it opens them, as above.

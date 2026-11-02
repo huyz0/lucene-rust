@@ -55,7 +55,7 @@ use lucene_index::index_writer::{
     MergePolicyConfig, SoftDeletesRetention,
 };
 use lucene_index::segment_info::LuceneVersion;
-use lucene_store::directory::{Directory, MmapDirectory};
+use lucene_store::directory::Directory;
 
 use crate::error::{guard, set_last_error, FfiStatus};
 use crate::raw::{bytes_from_raw, str_from_raw, try_with_capacity};
@@ -592,7 +592,12 @@ pub unsafe extern "C" fn ffi_engine_writer_open(
         // OpenSearch writes with -- maps them too. Segment files are written
         // once and only deleted (never truncated) once unreferenced, which is
         // the condition mapping needs.
-        let dir: Box<dyn Directory> = Box::new(MmapDirectory::open(path));
+        // A `rust_encrypted` shard's path is bound to an encrypting directory
+        // over the mapping (`store.rs`).
+        let dir: Box<dyn Directory> = crate::store::shard_directory(path).map_err(|e| {
+            set_last_error(format!("opening the shard directory [{path}]: {e}"));
+            FfiStatus::Io
+        })?;
         let dir_ref: &dyn Directory = &*dir;
         // SAFETY: `WriterHandle`'s own argument -- the boxed directory
         // outlives the writer that borrows it (see `writer.rs`).

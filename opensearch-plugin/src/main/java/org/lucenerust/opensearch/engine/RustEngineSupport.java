@@ -133,6 +133,13 @@ public final class RustEngineSupport {
         if (settings.isRemoteStoreEnabled() || settings.isAssignedOnRemoteNode()) {
             return "the Rust engine does not support remote-backed storage";
         }
+        // The engine writes the shard's files itself: a store type that changes the bytes on disk
+        // (another plugin's encryption, say) would be bypassed. `rust_encrypted` is the encrypted one
+        // it writes through.
+        String storeType = settings.getValue(org.opensearch.index.IndexModule.INDEX_STORE_TYPE_SETTING);
+        if (org.lucenerust.opensearch.store.NativeStores.STORE_TYPES.contains(storeType) == false) {
+            return "the Rust engine cannot write through index.store.type [" + storeType + "]; use [rust_encrypted] for encryption at rest";
+        }
         return null;
     }
 
@@ -221,11 +228,7 @@ public final class RustEngineSupport {
      * directory must be a filesystem one underneath its wrappers.
      */
     static java.nio.file.Path indexPath(Store store) {
-        org.apache.lucene.store.Directory d = org.apache.lucene.store.FilterDirectory.unwrap(store.directory());
-        if (d instanceof org.apache.lucene.store.FSDirectory fs) {
-            return fs.getDirectory();
-        }
-        throw new IllegalArgumentException("the Rust engine needs a filesystem directory, and the store's is a [" + d.getClass().getName() + "]");
+        return org.lucenerust.opensearch.store.NativeStores.path(store.directory());
     }
 
     /**
