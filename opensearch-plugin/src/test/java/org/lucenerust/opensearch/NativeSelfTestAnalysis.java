@@ -127,11 +127,11 @@ final class NativeSelfTestAnalysis {
     static Map<String, Analyzer> analyzers() throws Exception {
         Map<String, Analyzer> m = new LinkedHashMap<>();
         m.put("standard", new StandardAnalyzer());
-        m.put("rust_thai", new RustThaiAnalysis.RustThaiAnalyzer(ThaiAnalyzer.getDefaultStopSet()));
+        m.put("rust_thai", new RustAnalysis.RustAnalyzer(RustAnalysis.THAI, ThaiAnalyzer.getDefaultStopSet()));
         m.put("rust_thai, html strip, no stop words", new Analyzer() {
             @Override
             protected TokenStreamComponents createComponents(String fieldName) {
-                return new TokenStreamComponents(new RustThaiTokenizer());
+                return new TokenStreamComponents(RustAnalysis.THAI.tokenizer());
             }
 
             @Override
@@ -392,7 +392,7 @@ final class NativeSelfTestAnalysis {
 
     /** Lucene's ThaiAnalyzer and rust_thai side by side: Lucene's test words, and the agreement. */
     static void thai(BiConsumer<Boolean, String> check) throws Exception {
-        Analyzer rust = new RustThaiAnalysis.RustThaiAnalyzer(ThaiAnalyzer.getDefaultStopSet());
+        Analyzer rust = new RustAnalysis.RustAnalyzer(RustAnalysis.THAI, ThaiAnalyzer.getDefaultStopSet());
         // TestThaiAnalyzer.testOffsets and testStopWords: the JDK's and ICU's words agree here.
         List<String> want = List.of("แสดง", "งาน", "ดี");
         List<String> got = AnalyzerSpec.java(rust, "body", THAI[0]).tokens().stream().map(t -> t.term().utf8ToString()).toList();
@@ -408,7 +408,7 @@ final class NativeSelfTestAnalysis {
         Analyzer rustWords = new Analyzer() {
             @Override
             protected TokenStreamComponents createComponents(String fieldName) {
-                return new TokenStreamComponents(new RustThaiTokenizer());
+                return new TokenStreamComponents(RustAnalysis.THAI.tokenizer());
             }
         };
         int same = 0;
@@ -421,8 +421,8 @@ final class NativeSelfTestAnalysis {
             if (j.equals(r)) same++;
         }
         System.out.printf("NativeSelfTest: rust_thai splits %d of %d Thai sentences as Lucene's ThaiAnalyzer does%n", same, total);
-        check.accept("ab\ufffdc".equals(RustThaiTokenizer.wellFormed("ab\ud800c")), "a lone surrogate becomes U+FFFD");
-        check.accept("a😀b".equals(RustThaiTokenizer.wellFormed("a😀b")), "a surrogate pair stays");
+        check.accept("ab\ufffdc".equals(RustTokenizer.wellFormed("ab\ud800c")), "a lone surrogate becomes U+FFFD");
+        check.accept("a😀b".equals(RustTokenizer.wellFormed("a😀b")), "a surrogate pair stays");
     }
 
     /** Where two token streams part, for a failure message. */
