@@ -6,6 +6,7 @@ exclude = ["benchmarks/rust-runner", "crates/lucene-ffi/fuzz"]
 members = [
     "crates/lucene-util",
     "crates/lucene-store",
+    "crates/lucene-store-crypto",
     "crates/lucene-codecs",
     "crates/lucene-index",
     "crates/lucene-analysis",
@@ -31,6 +32,7 @@ members = [
 default-members = [
     "crates/lucene-util",
     "crates/lucene-store",
+    "crates/lucene-store-crypto",
     "crates/lucene-codecs",
     "crates/lucene-index",
     "crates/lucene-analysis",
