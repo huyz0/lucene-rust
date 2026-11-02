@@ -22,6 +22,8 @@ impl FactoryClass for HMMChineseTokenizerFactory {
     fn from_args(args: &mut JavaArgs) -> Result<Self, FactoryError> {
         let base = FactoryBase::new(Self::CLASS_NAME, args)?;
         args::reject_unknown(args)?;
+        // The dictionary is a data pack (`crate::pack`): refuse here when it is missing.
+        crate::pack::require()?;
         Ok(HMMChineseTokenizerFactory { base })
     }
 }

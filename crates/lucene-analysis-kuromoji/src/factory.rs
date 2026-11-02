@@ -71,6 +71,8 @@ impl FactoryClass for JapaneseTokenizerFactory {
     const CLASS_NAME: &'static str = "org.apache.lucene.analysis.ja.JapaneseTokenizerFactory";
     fn from_args(args: &mut JavaArgs) -> Result<Self, FactoryError> {
         let base = FactoryBase::new(Self::CLASS_NAME, args)?;
+        // The dictionary is a data pack (`crate::pack`): refuse here when it is missing.
+        crate::pack::require()?;
         let mode = Mode::value_of(&upper(&args::get_or(args, "mode", "SEARCH")))?;
         let user_dictionary_path = args::get(args, "userDictionary");
         let user_dictionary_encoding = args::get(args, "userDictionaryEncoding");

@@ -24,8 +24,6 @@ pub const PRIME_BIGRAM_LENGTH: usize = 402_137;
 /// `WORD_SEGMENT_CHAR`: the separator of a pair's two words, `@`.
 pub const WORD_SEGMENT_CHAR: u16 = 0x40;
 
-const BIGRAM_DICT_Z: &[u8] = include_bytes!("../resources/bigramdict.mem.z");
-
 /// `BigramDictionary`.
 #[derive(Debug)]
 pub struct BigramDictionary {
@@ -34,7 +32,7 @@ pub struct BigramDictionary {
 }
 
 static DEFAULT: LazyLock<Arc<BigramDictionary>> = LazyLock::new(|| {
-    let bytes = miniz_oxide::inflate::decompress_to_vec_zlib(BIGRAM_DICT_Z)
+    let bytes = miniz_oxide::inflate::decompress_to_vec_zlib(&crate::pack::get("bigramdict.mem.z"))
         .expect("the vendored bigramdict.mem inflates");
     Arc::new(BigramDictionary::from_mem(&bytes).expect("the vendored bigramdict.mem loads"))
 });

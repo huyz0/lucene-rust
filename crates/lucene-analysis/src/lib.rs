@@ -66,6 +66,7 @@ pub mod classic;
 pub mod commongrams;
 pub mod compound;
 pub mod core_analysis;
+pub mod data_pack;
 pub mod email;
 pub mod en;
 pub mod factory;

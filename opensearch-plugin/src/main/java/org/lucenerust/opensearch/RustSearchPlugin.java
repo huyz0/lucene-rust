@@ -40,6 +40,7 @@ import org.opensearch.common.SetOnce;
 import java.net.URISyntaxException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -86,8 +87,9 @@ public class RustSearchPlugin extends Plugin implements SearchPlugin, ActionPlug
     private final boolean nodeEngineEnabled;
     private final boolean fetchWrapper;
 
-    public RustSearchPlugin(Settings settings) {
+    public RustSearchPlugin(Settings settings, Path configPath) {
         this.libraryPath = NativeLibrary.load(pluginDir());
+        addDataPackDirs(configPath);
         this.nodeEngineEnabled = NODE_ENGINE_ENABLED.get(settings);
         boolean security = Files.isDirectory(pluginDir().resolveSibling("opensearch-security"));
         this.fetchWrapper = NODE_FETCH_WRAPPER.exists(settings) ? NODE_FETCH_WRAPPER.get(settings) : security == false;
@@ -188,6 +190,24 @@ public class RustSearchPlugin extends Plugin implements SearchPlugin, ActionPlug
             }
         }
         return Optional.of(new RustEngineFactory(nodeEngineEnabled));
+    }
+
+    /**
+     * Where Rust looks for the analysis modules' data packs (their dictionaries, see
+     * {@link RustAnalysis}): {@code <config>/lucene-rust/packs}, then the plugin's own {@code packs}
+     * directory (a zip built with {@code -PdataPacks}).
+     */
+    static void addDataPackDirs(Path configPath) {
+        List<Path> dirs = new ArrayList<>();
+        if (configPath != null) {
+            dirs.add(configPath.resolve("lucene-rust").resolve("packs"));
+        }
+        dirs.add(pluginDir().resolve("packs"));
+        for (Path dir : dirs) {
+            if (NativeBridge.addDataPackDir(dir.toAbsolutePath().toString()) != 0) {
+                logger.warn("lucene-rust: cannot add data pack directory [{}]: {}", dir, NativeBridge.lastError());
+            }
+        }
     }
 
     private static Path pluginDir() {

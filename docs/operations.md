@@ -57,6 +57,28 @@ indices that ask for it.
 it: with it on, a document carrying a `__lucene_rust_panic` field makes the
 writer panic.
 
+### Language data packs
+
+The plugin's `rust_japanese`, `rust_korean` and `rust_chinese` tokenizers
+(Lucene's `JapaneseTokenizer`, `KoreanTokenizer` and `HMMChineseTokenizer`,
+run in Rust on the index and query side alike) need their dictionaries,
+which the plugin zip leaves out to stay small. Opt a node in per language:
+
+```
+scripts/make-data-packs.sh /tmp/packs     # kuromoji/ nori/ smartcn/ morfologik/ stempel/
+cp -r /tmp/packs/kuromoji "$OPENSEARCH_PATH_CONF/lucene-rust/packs/"
+```
+
+The plugin reads `<config>/lucene-rust/packs/<pack>/` first, then the
+plugin's own `packs/` (a zip built with `gradle bundlePlugin -PdataPacks`
+carries all of them, about 21 MB). Restart the node after adding a pack. A
+tokenizer whose pack is missing is not registered (OpenSearch builds every
+registered tokenizer for every index), so an index naming it is refused as
+naming an unknown tokenizer; the node logs at startup which pack it lacks:
+`[rust_japanese] not registered, its data pack [kuromoji] is not installed`.
+A library built with `cargo build --release -p lucene-ffi --features
+embedded-data` has every pack compiled in and needs no directory.
+
 ### Memory
 
 The plugin allocates native memory the JVM heap does not see. Leave headroom

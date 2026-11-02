@@ -89,6 +89,15 @@ def cargoBuild = tasks.register('cargoBuild', Exec) {
     commandLine 'cargo', 'build', '--release', '-p', 'lucene-ffi'
 }
 
+// The analysis modules' data packs (their dictionaries), for the self test
+// and for a zip built with -PdataPacks.
+def dataPacks = file("${cargoTarget}/data-packs")
+def makeDataPacks = tasks.register('makeDataPacks', Exec) {
+    description = 'Writes the analysis modules\' data packs (scripts/make-data-packs.sh).'
+    workingDir repoRoot
+    commandLine 'scripts/make-data-packs.sh', dataPacks.absolutePath
+}
+
 tasks.register('bundlePlugin', Zip) {
     description = 'The installable plugin zip: jar, descriptor, and native/<platform>/liblucene_ffi.so.'
     dependsOn tasks.named('jar'), cargoBuild
@@ -102,6 +111,13 @@ tasks.register('bundlePlugin', Zip) {
     // The licence and notices ship with the binary they cover.
     from(file("${repoRoot}/LICENSE"))
     from(file("${repoRoot}/NOTICE"))
+    // -PdataPacks: the analysis modules' data packs ship in the zip
+    // (packs/<pack>/...), about 21 MB; without it a node adds them under
+    // <config>/lucene-rust/packs/.
+    if (findProperty('dataPacks')) {
+        dependsOn makeDataPacks
+        from(dataPacks) { into 'packs' }
+    }
     // A library built elsewhere for another platform, e.g.
     // -PextraNative=linux-aarch64=/path/to/liblucene_ffi.so
     if (findProperty('extraNative')) {
@@ -116,10 +132,11 @@ tasks.register('bundlePlugin', Zip) {
 // so that the build needs no artifact beyond the distribution's own jars.
 def selfTest = tasks.register('selfTest', JavaExec) {
     description = 'Differential self test: the native path against Lucene IndexSearcher.'
-    dependsOn tasks.named('testClasses'), cargoBuild
+    dependsOn tasks.named('testClasses'), cargoBuild, makeDataPacks
     classpath = sourceSets.test.runtimeClasspath
     mainClass = 'org.lucenerust.opensearch.NativeSelfTest'
     systemProperty 'lucene_rust.library.path', nativeLib.absolutePath
+    systemProperty 'lucene_rust.data_packs', dataPacks.absolutePath
     jvmArgs nativeAccess, '-ea'
     args "${repoRoot}/fixtures/data"
 }
