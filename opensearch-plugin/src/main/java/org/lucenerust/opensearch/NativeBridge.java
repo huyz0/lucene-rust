@@ -38,7 +38,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code jvm_reader.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 55;
+    public static final int EXPECTED_ABI_VERSION = 56;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -213,6 +213,13 @@ public final class NativeBridge {
             "ffi_add_data_pack_dir",
             FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG)
         );
+        static final MethodHandle STORE_SET_KEY_UPCALL = bind("ffi_store_set_key_upcall", FunctionDescriptor.of(JAVA_INT, ADDRESS));
+        static final MethodHandle STORE_BIND_ENCRYPTED = bind(
+            "ffi_store_bind_encrypted",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, JAVA_LONG, JAVA_INT)
+        );
+        static final MethodHandle STORE_UNBIND = bind("ffi_store_unbind", FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG));
+        static final MethodHandle STORE_IS_FIPS = bind("ffi_store_is_fips", FunctionDescriptor.of(JAVA_INT));
         static final MethodHandle ANALYZE = bind(
             "ffi_jvm_analyze_alloc",
             FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS)
@@ -1140,6 +1147,65 @@ public final class NativeBridge {
                 out[0] = encoded;
             }
             return rc;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    // ---- The encrypted store (store.rs) ---------------------------------------------
+
+    /** The key upcall's operations and statuses ({@code KEY_OP_*}, {@code KEY_UPCALL_*} in {@code store.rs}). */
+    public static final int KEY_OP_GENERATE = 1;
+    public static final int KEY_OP_UNWRAP = 2;
+    public static final int KEY_UPCALL_OK = 0;
+    public static final int KEY_UPCALL_BUFFER_TOO_SMALL = 1;
+    public static final int KEY_UPCALL_FAILED = 2;
+
+    /**
+     * Registers {@code upcall} (a stub with {@code store.rs}'s {@code KeyUpcall} signature, alive for
+     * the life of the JVM) as the library's key provider callback. Only the first registration counts.
+     */
+    public static int storeSetKeyUpcall(MemorySegment upcall) {
+        try {
+            return (int) H.STORE_SET_KEY_UPCALL.invokeExact(upcall);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * Binds the shard directory {@code path} to the encrypted store: the engine's writers and readers
+     * opened there from now on use the JVM key provider {@code provider} through the key upcall.
+     */
+    public static int storeBindEncrypted(String path, long provider, int chunkSize) {
+        if (path == null) {
+            return nullArgument("path");
+        }
+        byte[] utf8 = path.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        try (Scratch s = Scratch.open()) {
+            return (int) H.STORE_BIND_ENCRYPTED.invokeExact(s.bytes(utf8), (long) utf8.length, provider, chunkSize);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** Removes {@code path}'s store binding; directories the engine already opened keep theirs. */
+    public static int storeUnbind(String path) {
+        if (path == null) {
+            return nullArgument("path");
+        }
+        byte[] utf8 = path.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        try (Scratch s = Scratch.open()) {
+            return (int) H.STORE_UNBIND.invokeExact(s.bytes(utf8), (long) utf8.length);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** Whether the library's encryption runs in AWS-LC's FIPS 140-3 module in FIPS mode. */
+    public static boolean storeIsFips() {
+        try {
+            return (int) H.STORE_IS_FIPS.invokeExact() == 1;
         } catch (Throwable t) {
             throw rethrow(t);
         }

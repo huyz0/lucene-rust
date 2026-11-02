@@ -19,7 +19,9 @@ swapped), every observable result must be identical:
     the Rust writer);
   * failure containment: a Rust-engine shard whose writer panics is failed and recovered, and
     no other shard notices;
-  * the writer's circuit breaker trips (HTTP 429) instead of the node running out of memory.
+  * the writer's circuit breaker trips (HTTP 429) instead of the node running out of memory;
+  * the rust_encrypted store (encryption at rest) on both engines: plaintext-equal results, every
+    shard file encrypted on disk, recovery after SIGKILL.
 
 Usage: verify_engine.py <base-url> <container-name> [--ops N]
 Standard library only.
@@ -573,6 +575,75 @@ def unsupported():
         must("DELETE", "/fallback_codec")
 
 
+def encrypted(container):
+    """The rust_encrypted store (BYOK encryption at rest) under both engines: the same results as a
+    plaintext index, every shard file encrypted on disk, and both survive SIGKILL."""
+    enc = {"index.store.type": "rust_encrypted",
+           "index.store.rust_encrypted.key_provider_type": "lucene_rust_local",
+           "index.store.rust_encrypted.chunk_size": "16kb"}
+    names = (("enc_plain", False, None), ("enc_java", False, enc), ("enc_rust", True, enc))
+    for idx, rust, extra in names:
+        req("DELETE", f"/{idx}")
+        create(idx, rust, extra)
+    wait_green("enc_plain,enc_java,enc_rust")
+    r = random.Random(11)
+    for batch in range(8):
+        lines = []
+        for i in range(250):
+            n = batch * 250 + i
+            lines += [{"index": {"_id": f"e{n}"}}, source(r, n)]
+        if batch == 5:
+            lines += [{"delete": {"_id": f"e{n}"}} for n in range(0, 1000, 9)]
+        body = "\n".join(json.dumps(l) for l in lines) + "\n"
+        for idx, _, _ in names:
+            must("POST", f"/{idx}/_bulk", body, ndjson=True)
+            if batch % 3 == 2:
+                must("POST", f"/{idx}/_refresh")
+    for idx, _, _ in names:
+        must("POST", f"/{idx}/_flush")
+        must("POST", f"/{idx}/_refresh")
+    compare_searches("encrypted, Java engine", scores=False, java="enc_plain", rust="enc_java")
+    compare_searches("encrypted, Rust engine", scores=False, java="enc_plain", rust="enc_rust")
+
+    for idx in ("enc_java", "enc_rust"):
+        uuid = must("GET", f"/{idx}/_settings")[idx]["settings"]["index"]["uuid"]
+        script = (f"cd /usr/share/opensearch/data/nodes/0/indices/{uuid} && "
+                  "for f in */index/*; do [ \"${f##*/}\" = write.lock ] && continue; "
+                  "printf '%s %s\\n' \"$(head -c4 \"$f\")\" \"$f\"; done")
+        out = subprocess.run(["docker", "exec", container, "sh", "-c", script],
+                             capture_output=True, text=True, errors="replace").stdout.splitlines()
+        # Commit metadata (segments_N, .si) stays plaintext: OpenSearch's gateway reads it without
+        # the store's directory (RustEncryptedDirectory.isCommitMetadata).
+        def commit(line):
+            name = line.rsplit("/", 1)[-1]
+            return "segments_" in name or name.endswith(".si") or name.startswith("corrupted_")
+        wrong = [l for l in out if l.startswith("LRSE ") == commit(l)]
+        check(len(out) > 4 and not wrong, f"{idx}: every shard file but commit metadata is encrypted ({len(out)} files): {wrong[:5]}")
+    stats = must("GET", "/_plugins/lucene_rust/stats")
+    check(stats.get("native_errors", 0) == 0, f"no native errors on encrypted indices: {stats.get('native_errors')}")
+
+    subprocess.run(["docker", "kill", "-s", "KILL", container], check=True, capture_output=True)
+    subprocess.run(["docker", "start", container], check=True, capture_output=True)
+    check(wait_green("enc_plain,enc_java,enc_rust", 300), "encrypted indices green after SIGKILL")
+    compare_searches("encrypted after SIGKILL, Rust engine", scores=False, java="enc_plain", rust="enc_rust")
+    for idx in ("enc_java", "enc_rust"):
+        must("POST", f"/{idx}/_forcemerge?max_num_segments=1")
+    compare_searches("encrypted, force-merged", scores=False, java="enc_plain", rust="enc_rust")
+
+    # A store type the Rust engine cannot write through is refused, not bypassed.
+    status, out = req("PUT", "/enc_bad", {"settings": {"index.lucene_rust.engine": True,
+                                                        "index.store.type": "rust_encrypted",
+                                                        "index.store.rust_encrypted.key_provider_type": "aws-kms",
+                                                        "number_of_replicas": 0}})
+    if status in (200, 201):
+        time.sleep(3)
+        health = must("GET", "/_cluster/health/enc_bad?timeout=10s")
+        check(health["status"] == "red", f"an encrypted index without a key provider does not start: {health['status']}")
+        must("DELETE", "/enc_bad")
+    for idx, _, _ in names:
+        must("DELETE", f"/{idx}")
+
+
 def main():
     global BASE
     p = argparse.ArgumentParser()
@@ -606,6 +677,7 @@ def main():
     fault_containment()
     breaker()
     unsupported()
+    encrypted(a.container)
     print(f"verify_engine: {CHECKS[0]} checks, {len(FAILURES)} failures", flush=True)
     sys.exit(1 if FAILURES else 0)
 

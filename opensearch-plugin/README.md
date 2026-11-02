@@ -23,6 +23,16 @@ match its node exactly, and the build then needs no Maven repository.
 under `native/<os>-<arch>/` in the zip; `-PextraNative=linux-aarch64=PATH`
 adds one built elsewhere.
 
+`gradle -p opensearch-plugin -Pfips bundlePlugin` builds the FIPS variant,
+`lucene-rust-fips-0.1.0.zip`. It contains:
+
+- the native library built against AWS-LC's FIPS 140-3 module
+  (`scripts/build-fips.sh --ffi`, which needs CMake, Go and Perl);
+- the Amazon Corretto Crypto Provider's FIPS build, which does the JVM's
+  encryption for the `rust_encrypted` store.
+
+See [`docs/pluggable-storage.md`](../docs/pluggable-storage.md#in-opensearch-the-rust_encrypted-store-type).
+
 ## Install
 
 ```
@@ -53,6 +63,30 @@ cannot be installed alongside `neural-search`.
 | `index.lucene_rust.fetch.enabled` (index, dynamic, default `true`) | read this index's stored fields (`_source`, `_id`, `stored_fields`) natively in the fetch phase and the get API (read path R6) |
 | `lucene_rust.fetch.reader_wrapper` (node, default `true` unless the security plugin is installed) | install the index reader wrapper native stored fields need. An index takes one reader wrapper and the security plugin claims it for field- and document-level security, so with it installed the default is off and stored fields are read by Lucene; if another plugin set a wrapper first, this one logs and stands down |
 | `GET /_plugins/lucene_rust/stats` | native queries, native errors, fallbacks by reason, open native readers, native stored-fields reads (`native_fetches`, `native_sequential_fetches`) and `StoredFields.document` time per path (`fetch_nanos`) |
+
+### Encryption at rest
+
+`index.store.type: rust_encrypted` encrypts every shard file but commit
+metadata (`segments_N`, `.si`), which OpenSearch reads on restart without the
+store. Lucene and the
+Rust engine both read and write it, and keys come from a KMS through
+OpenSearch's `crypto-kms` plugin (BYOK):
+
+```
+PUT /tenant-a
+{ "settings": {
+    "index.store.type": "rust_encrypted",
+    "index.store.rust_encrypted.key_provider_type": "aws-kms",
+    "index.store.rust_encrypted.key_provider": "kms",
+    "index.store.rust_encrypted.kms.key_arn": "arn:aws:kms:us-east-1:111122223333:key/..." } }
+```
+
+With no KMS, the provider type `lucene_rust_local` wraps data keys with a key
+from the node keystore (`opensearch-keystore add lucene_rust.store.local_key`,
+base64 of 32 random bytes). The Rust engine refuses other store types that
+change bytes on disk, rather than bypass them. Settings, key rotation and
+FIPS:
+[`docs/pluggable-storage.md`](../docs/pluggable-storage.md#in-opensearch-the-rust_encrypted-store-type).
 
 A native failure is logged, counted as `native_errors`, and the query is re-run
 on Lucene: it never fails a search Lucene can answer.

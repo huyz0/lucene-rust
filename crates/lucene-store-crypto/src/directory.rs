@@ -35,6 +35,22 @@ pub struct EncryptedDirectory<D: Directory> {
     /// not read the file (a whole download, over a blob store). Lucene files
     /// are written once under a name; a delete or a rename forgets the entry.
     header_lens: Mutex<HashMap<String, (u64, u32)>>,
+    /// Whether [`is_commit_metadata`] files are stored in plaintext.
+    plain_commit_metadata: bool,
+}
+
+/// Whether `name` is commit metadata: a `segments_N` (or `pending_segments_N`)
+/// file, a segment's `.si` file, or an OpenSearch `corrupted_*` marker,
+/// including under a recovery temp name (`recovery.<uuid>.<name>`).
+///
+/// These hold segment names, document counts, codec names, file lists and
+/// commit user data, never field contents. OpenSearch reads them through a
+/// plain `NIOFSDirectory` before any store opens (gateway allocation of a
+/// primary after a restart, `Store.tryOpenIndex`), so an encrypted store
+/// that OpenSearch must restart from keeps them in plaintext; see
+/// [`EncryptedDirectory::with_plaintext_commit_metadata`].
+pub fn is_commit_metadata(name: &str) -> bool {
+    name.contains("segments_") || name.ends_with(".si") || name.starts_with("corrupted_")
 }
 
 impl<D: Directory> std::fmt::Debug for EncryptedDirectory<D> {
@@ -51,7 +67,31 @@ impl<D: Directory> EncryptedDirectory<D> {
             keys,
             chunk_size: DEFAULT_CHUNK_SIZE,
             header_lens: Mutex::new(HashMap::new()),
+            plain_commit_metadata: false,
         }
+    }
+
+    /// Stores commit metadata ([`is_commit_metadata`]) in plaintext and
+    /// encrypts everything else. Off by default; the OpenSearch plugin's
+    /// `rust_encrypted` store turns it on, on both its Java and Rust sides,
+    /// because OpenSearch reads `segments_N` and `.si` files without the
+    /// store's directory when it allocates a shard after a restart.
+    pub fn with_plaintext_commit_metadata(mut self) -> Self {
+        self.plain_commit_metadata = true;
+        self
+    }
+
+    fn is_plain(&self, name: &str) -> bool {
+        self.plain_commit_metadata && is_commit_metadata(name)
+    }
+
+    /// An inner output, encrypting unless its name is stored in plaintext.
+    fn wrap(&self, out: FsIndexOutput) -> Result<FsIndexOutput> {
+        if self.is_plain(out.name()) {
+            self.header_lens().remove(out.name());
+            return Ok(out);
+        }
+        self.encrypting(out)
     }
 
     /// Sets the plaintext bytes per authenticated chunk for new files
@@ -179,6 +219,9 @@ impl<D: Directory> Directory for EncryptedDirectory<D> {
     }
 
     fn open(&self, name: &str) -> Result<Input> {
+        if self.is_plain(name) {
+            return self.inner.open(name);
+        }
         let file = self.inner.open(name)?;
         let (cipher, header, header_len) = self.cipher_for(name, &file)?;
         let plain = cipher.open_body(&file[header_len..], header.chunk_size, name)?;
@@ -188,6 +231,9 @@ impl<D: Directory> Directory for EncryptedDirectory<D> {
     }
 
     fn file_length(&self, name: &str) -> Result<u64> {
+        if self.is_plain(name) {
+            return self.inner.file_length(name);
+        }
         let known = self.header_lens().get(name).copied();
         let (header_len, chunk_size) = match known {
             Some(k) => k,
@@ -211,7 +257,7 @@ impl<D: Directory> Directory for EncryptedDirectory<D> {
     }
 
     fn create_output(&self, name: &str) -> Result<FsIndexOutput> {
-        self.encrypting(self.inner.create_output(name)?)
+        self.wrap(self.inner.create_output(name)?)
     }
 
     fn create_output_with_estimate(
@@ -219,14 +265,14 @@ impl<D: Directory> Directory for EncryptedDirectory<D> {
         name: &str,
         estimated_bytes: Option<u64>,
     ) -> Result<FsIndexOutput> {
-        self.encrypting(
+        self.wrap(
             self.inner
                 .create_output_with_estimate(name, estimated_bytes)?,
         )
     }
 
     fn create_temp_output(&self, prefix: &str, suffix: &str) -> Result<FsIndexOutput> {
-        self.encrypting(self.inner.create_temp_output(prefix, suffix)?)
+        self.wrap(self.inner.create_temp_output(prefix, suffix)?)
     }
 
     fn create_temp_output_with_estimate(
@@ -235,11 +281,10 @@ impl<D: Directory> Directory for EncryptedDirectory<D> {
         suffix: &str,
         estimated_bytes: Option<u64>,
     ) -> Result<FsIndexOutput> {
-        self.encrypting(self.inner.create_temp_output_with_estimate(
-            prefix,
-            suffix,
-            estimated_bytes,
-        )?)
+        self.wrap(
+            self.inner
+                .create_temp_output_with_estimate(prefix, suffix, estimated_bytes)?,
+        )
     }
 
     fn sync(&self, names: &[String]) -> Result<()> {
@@ -247,6 +292,11 @@ impl<D: Directory> Directory for EncryptedDirectory<D> {
     }
 
     fn rename(&self, source: &str, dest: &str) -> Result<()> {
+        if self.is_plain(source) != self.is_plain(dest) {
+            return Err(Error::IllegalArgument(format!(
+                "cannot rename {source} to {dest}: one is stored encrypted, the other in plaintext"
+            )));
+        }
         self.inner.rename(source, dest)?;
         let mut lens = self.header_lens();
         lens.remove(dest);
@@ -378,6 +428,56 @@ mod tests {
         let lock = again.obtain_lock("write.lock").unwrap();
         assert!(again.obtain_lock("write.lock").is_err());
         drop(lock);
+    }
+
+    #[test]
+    fn plaintext_commit_metadata_keeps_only_commit_files_readable() {
+        for name in [
+            "segments_3",
+            "pending_segments_4",
+            "_0.si",
+            "corrupted_x",
+            "recovery.abc.segments_3",
+            "recovery.abc._1.si",
+        ] {
+            assert!(is_commit_metadata(name), "{name}");
+        }
+        for name in [
+            "_0.cfs",
+            "_0_Lucene104_0.tim",
+            "_0.fdt",
+            "write.lock",
+            "x_sort_1.tmp",
+        ] {
+            assert!(!is_commit_metadata(name), "{name}");
+        }
+        let dir = EncryptedDirectory::new(ByteBuffersDirectory::new(), keys())
+            .with_plaintext_commit_metadata();
+        write(&dir, "pending_segments_1", b"commit bytes", 5);
+        write(&dir, "_0.si", b"segment info", 4);
+        write(&dir, "_0.tim", b"secret terms", 4);
+        let mut t = dir.create_temp_output("_0", "si").unwrap();
+        t.write_bytes(b"tmp");
+        let tname = t.name().to_string();
+        t.close().unwrap();
+        // A temp name ends in `.tmp`, so it is encrypted whatever its suffix.
+        assert_eq!(&dir.inner().open(&tname).unwrap()[..4], b"LRSE");
+        assert_eq!(&*dir.open(&tname).unwrap(), b"tmp");
+        dir.rename("pending_segments_1", "segments_1").unwrap();
+        assert_eq!(&*dir.inner().open("segments_1").unwrap(), b"commit bytes");
+        assert_eq!(&*dir.inner().open("_0.si").unwrap(), b"segment info");
+        assert_eq!(&dir.inner().open("_0.tim").unwrap()[..4], b"LRSE");
+        assert_eq!(&*dir.open("segments_1").unwrap(), b"commit bytes");
+        assert_eq!(dir.file_length("_0.si").unwrap(), 12);
+        assert_eq!(dir.file_length("_0.tim").unwrap(), 12);
+        assert_eq!(&*dir.open("_0.tim").unwrap(), b"secret terms");
+        let err = dir.rename("_0.tim", "segments_9").unwrap_err();
+        assert!(err.to_string().contains("plaintext"), "{err}");
+        // Off by default: the same names are encrypted.
+        let all = EncryptedDirectory::new(ByteBuffersDirectory::new(), keys());
+        write(&all, "segments_1", b"commit bytes", 5);
+        assert_eq!(&all.inner().open("segments_1").unwrap()[..4], b"LRSE");
+        all.rename("segments_1", "x").unwrap();
     }
 
     #[test]
