@@ -69,7 +69,7 @@ use lucene_search::{
     count_boolean_query_segment, search_boolean_query_multi_segment_maxscore_counting,
     search_term_query_multi_segment_counting, ScoreDoc, TotalHits, TotalHitsRelation,
 };
-use lucene_store::MmapDirectory;
+use lucene_store::Directory;
 use lucene_util::fixed_bit_set::{bits2words, FixedBitSet};
 
 use crate::error::{guard, set_last_error, FfiStatus};
@@ -141,8 +141,10 @@ use std::sync::Arc;
 /// sort blob's `_shard_doc`, `half_float` and `unsigned_long` keys; 53, the
 /// similarity table's `classic` and `LegacyBM25` kinds; 54, the
 /// `SynonymQuery` node (36); 55, `ffi_add_data_pack_dir` (the analysis
-/// modules' data pack directories, `analysis_modules.rs`).
-pub const JVM_ABI_VERSION: u32 = 55;
+/// modules' data pack directories, `analysis_modules.rs`); 56, the shard
+/// store bindings and key upcall (`ffi_store_*`, `store.rs`) for the
+/// `rust_encrypted` store.
+pub const JVM_ABI_VERSION: u32 = 56;
 
 /// Blob tag for a single `TermQuery`.
 pub const QUERY_TERM: u8 = 0;
@@ -537,9 +539,15 @@ pub unsafe extern "C" fn ffi_open_jvm_reader(
         // `MMapDirectory` -- what OpenSearch searches with -- maps them too. The
         // mapping lives as long as the segment reader, which is why closing the
         // handle matters (M2 T2.6).
-        let dir = MmapDirectory::open(path);
+        // A `rust_encrypted` shard's path is bound to an encrypting directory
+        // over the mapping (`store.rs`), which decrypts each file on open.
+        let dir = crate::store::shard_directory(path).map_err(|e| {
+            set_last_error(format!("opening the shard directory [{path}]: {e}"));
+            FfiStatus::Io
+        })?;
+        let dir: &dyn Directory = &*dir;
         let reader = if previous == 0 {
-            DirectoryReader::open_at(&dir, segment_infos)
+            DirectoryReader::open_at(dir, segment_infos)
         } else {
             // Cloned out under a short read lock: the reopen reads files and
             // must not hold up every other search and close on the node.
@@ -547,7 +555,7 @@ pub unsafe extern "C" fn ffi_open_jvm_reader(
                 previous,
                 "ffi_open_jvm_reader: unknown or already-closed previous handle",
             )?;
-            prev.reader.reopen_at(&dir, segment_infos)
+            prev.reader.reopen_at(dir, segment_infos)
         }
         .map_err(|e| {
             set_last_error(format!("opening the JVM reader's segments: {e}"));

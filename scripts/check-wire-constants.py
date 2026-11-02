@@ -38,6 +38,9 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 JAVA_DIR = os.path.join(ROOT, "opensearch-plugin", "src", "main", "java")
 RUST_DIR = os.path.join(ROOT, "crates", "lucene-ffi", "src")
+# The encrypted store's file format, which the plugin's store/Lrse.java reads
+# and writes too.
+CRYPTO_DIR = os.path.join(ROOT, "crates", "lucene-store-crypto", "src")
 
 # Rust files a Java file encodes for without naming them.
 EXTRA_FILES = {
@@ -70,6 +73,9 @@ RENAMES = {
     ("SortEncoder.java", "GEO"): ("jvm_reader.rs", "SORT_GEO_DISTANCE"),
     ("AnalyzerSpec.java", "VERSION"): ("jvm_analysis.rs", "SPEC_VERSION"),
     ("NativeBridge.java", "EXPECTED_ABI_VERSION"): ("jvm_reader.rs", "JVM_ABI_VERSION"),
+    # format.rs re-exports these from backend.rs.
+    ("Lrse.java", "NONCE_LEN"): ("backend.rs", "NONCE_LEN"),
+    ("Lrse.java", "TAG_LEN"): ("backend.rs", "TAG_LEN"),
 }
 
 # Constants with no Rust counterpart, and why.
@@ -107,10 +113,10 @@ def snake(camel):
 
 def load_rust():
     consts = {}
-    for name in sorted(os.listdir(RUST_DIR)):
-        if not name.endswith(".rs"):
+    for d, name in [(d, n) for d in (RUST_DIR, CRYPTO_DIR) for n in sorted(os.listdir(d))]:
+        if not name.endswith(".rs") or name in consts:
             continue
-        with open(os.path.join(RUST_DIR, name), encoding="utf-8") as f:
+        with open(os.path.join(d, name), encoding="utf-8") as f:
             text = f.read()
         found = {}
         for m in RUST_CONST.finditer(text):

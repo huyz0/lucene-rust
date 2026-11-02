@@ -14,6 +14,9 @@ import org.opensearch.common.settings.SettingsFilter;
 import org.lucenerust.opensearch.engine.RustEngineFactory;
 import org.lucenerust.opensearch.engine.RustEngineSupport;
 import org.lucenerust.opensearch.engine.RustIndexerFactory;
+import org.lucenerust.opensearch.store.LocalKeySource;
+import org.lucenerust.opensearch.store.RustEncryptedDirectoryFactory;
+import org.lucenerust.opensearch.store.StoreCrypto;
 import org.opensearch.index.IndexModule;
 import org.opensearch.index.IndexSettings;
 import org.opensearch.index.engine.EngineFactory;
@@ -27,6 +30,7 @@ import org.opensearch.plugins.ActionPlugin;
 import org.opensearch.plugins.AnalysisPlugin;
 import org.opensearch.plugins.CircuitBreakerPlugin;
 import org.opensearch.plugins.EnginePlugin;
+import org.opensearch.plugins.IndexStorePlugin;
 import org.opensearch.plugins.Plugin;
 import org.opensearch.plugins.SearchPlugin;
 import org.opensearch.rest.RestController;
@@ -56,7 +60,13 @@ import java.util.function.Supplier;
  * is missing or stale stops the node at startup with one clear message rather than failing
  * searches later.
  */
-public class RustSearchPlugin extends Plugin implements SearchPlugin, ActionPlugin, EnginePlugin, CircuitBreakerPlugin, AnalysisPlugin {
+public class RustSearchPlugin extends Plugin implements
+    SearchPlugin,
+    ActionPlugin,
+    EnginePlugin,
+    CircuitBreakerPlugin,
+    AnalysisPlugin,
+    IndexStorePlugin {
     /**
      * Whether this node serves Rust-engine indices with the Rust writer; {@code false} serves them
      * with OpenSearch's own engine -- a mixed cluster, one index.
@@ -86,6 +96,7 @@ public class RustSearchPlugin extends Plugin implements SearchPlugin, ActionPlug
     private final String libraryPath;
     private final boolean nodeEngineEnabled;
     private final boolean fetchWrapper;
+    private final LocalKeySource.Config localKey;
 
     public RustSearchPlugin(Settings settings, Path configPath) {
         this.libraryPath = NativeLibrary.load(pluginDir());
@@ -97,6 +108,22 @@ public class RustSearchPlugin extends Plugin implements SearchPlugin, ActionPlug
             logger.info("lucene-rust: the security plugin is installed; stored fields are read by Lucene");
         }
         RustIndexerFactory.verify();
+        // The keystore is only open during startup.
+        this.localKey = LocalKeySource.Config.fromNode(settings);
+        // The FIPS build checks its crypto now: a node that cannot encrypt with validated modules
+        // does not start.
+        if (StoreCrypto.buildIsFips()) {
+            logger.info("lucene-rust: encrypted store crypto is {}", StoreCrypto.get().description());
+        }
+    }
+
+    /**
+     * The {@code rust_encrypted} store type: encryption at rest with keys from a KMS, which Lucene
+     * and the Rust engine both read and write ({@link RustEncryptedDirectoryFactory}).
+     */
+    @Override
+    public Map<String, DirectoryFactory> getDirectoryFactories() {
+        return Map.of(RustEncryptedDirectoryFactory.TYPE, new RustEncryptedDirectoryFactory(localKey));
     }
 
     /**
@@ -236,7 +263,8 @@ public class RustSearchPlugin extends Plugin implements SearchPlugin, ActionPlug
 
     @Override
     public List<Setting<?>> getSettings() {
-        return List.of(
+        List<Setting<?>> settings = new ArrayList<>(RustEncryptedDirectoryFactory.settings());
+        settings.addAll(List.of(
             RustQueryPhaseSearcher.ENABLED,
             FETCH_ENABLED,
             NODE_FETCH_WRAPPER,
@@ -244,8 +272,11 @@ public class RustSearchPlugin extends Plugin implements SearchPlugin, ActionPlug
             RustEngineSupport.ENGINE_ENABLED,
             RustEngineSupport.ENGINE_DEFAULT,
             RustEngineSupport.FAULT_INJECTION,
-            NODE_ENGINE_ENABLED
-        );
+            NODE_ENGINE_ENABLED,
+            LocalKeySource.KEY,
+            LocalKeySource.KEY_ID
+        ));
+        return settings;
     }
 
     @Override
