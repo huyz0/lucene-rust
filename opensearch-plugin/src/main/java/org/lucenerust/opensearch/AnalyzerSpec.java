@@ -621,10 +621,13 @@ public final class AnalyzerSpec {
             c.arg("rule", "unicode").arg("maxTokenLen", readInt(o, "maxTokenLen"));
             return null;
         });
-        // The plugin's rust_thai tokenizer is Rust's ThaiTokenizer on the Java side too, so the chain
-        // runs natively as is. Lucene's own ThaiTokenizer (the JDK's dictionary) stays in Java.
-        MAPPERS.put(RustThaiTokenizer.class.getName(), (o, c) -> {
-            c.name = "thai";
+        // The plugin's rust_* tokenizers (RustAnalysis) run Rust on the Java side too, so the chain
+        // runs natively as is: the Rust factory by its SPI name and arguments. Lucene's own
+        // ThaiTokenizer (the JDK's dictionary) stays in Java.
+        MAPPERS.put(RustTokenizer.class.getName(), (o, c) -> {
+            RustTokenizer t = (RustTokenizer) o;
+            c.name = t.spi;
+            t.args.forEach(c::arg);
             return null;
         });
         map("core.LetterTokenizer", (o, c) -> {
