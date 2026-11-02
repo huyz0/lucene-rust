@@ -198,15 +198,15 @@ public class RustSearchPlugin extends Plugin implements SearchPlugin, ActionPlug
         }
     }
 
-    /** {@code rust_thai}: Thai segmented in Rust on the index and query side alike. */
+    /** The {@code rust_*} tokenizers ({@link RustAnalysis#TOKENIZERS}): Rust on the index and query side alike. */
     @Override
     public Map<String, AnalysisModule.AnalysisProvider<TokenizerFactory>> getTokenizers() {
-        return Map.of(RustThaiAnalysis.NAME, RustThaiAnalysis.TokenizerFactory::new);
+        return RustAnalysis.tokenizers();
     }
 
     @Override
     public Map<String, AnalysisModule.AnalysisProvider<AnalyzerProvider<? extends org.apache.lucene.analysis.Analyzer>>> getAnalyzers() {
-        return Map.of(RustThaiAnalysis.NAME, RustThaiAnalysis.AnalyzerProvider::new);
+        return RustAnalysis.analyzers();
     }
 
     @Override
