@@ -41,10 +41,14 @@ def alternatives(expr):
     """An SPDX expression (or the older `A/B` form) as its OR alternatives,
     each a list of licences that must all hold."""
     expr = expr.replace("/", " OR ")
-    # One level of parentheses is all crates.io uses: `(A OR B) AND C`.
+    # One level of parentheses is all crates.io uses: `(A OR B) AND C` or
+    # `C AND (A OR B)`.
     m = re.fullmatch(r"\((.+)\)\s+AND\s+(.+)", expr.strip())
     if m:
         return [[a.strip(), m.group(2).strip()] for a in m.group(1).split(" OR ")]
+    m = re.fullmatch(r"(.+?)\s+AND\s+\((.+)\)", expr.strip())
+    if m:
+        return [[m.group(1).strip(), a.strip()] for a in m.group(2).split(" OR ")]
     return [[p.strip() for p in alt.split(" AND ")] for alt in expr.split(" OR ")]
 
 
