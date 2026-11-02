@@ -376,10 +376,10 @@ impl TokenInfoDictionary {
         static INSTANCE: LazyLock<Arc<TokenInfoDictionary>> = LazyLock::new(|| {
             Arc::new(
                 TokenInfoDictionary::read(
-                    &inflate(include_bytes!("../resources/token_info_target_map.dat.z")),
-                    &inflate(include_bytes!("../resources/token_info_pos_dict.dat.z")),
-                    &inflate(include_bytes!("../resources/token_info_buffer.dat.z")),
-                    &inflate(include_bytes!("../resources/token_info_fst.dat.z")),
+                    &inflate(&crate::pack::get("token_info_target_map.dat.z")),
+                    &inflate(&crate::pack::get("token_info_pos_dict.dat.z")),
+                    &inflate(&crate::pack::get("token_info_buffer.dat.z")),
+                    &inflate(&crate::pack::get("token_info_fst.dat.z")),
                 )
                 .expect("the vendored IPADIC dictionary reads"),
             )

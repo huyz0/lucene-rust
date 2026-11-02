@@ -20,6 +20,7 @@ pub mod factory;
 pub mod iteration_mark;
 pub mod katakana_stem;
 pub mod number;
+pub mod pack;
 pub mod pos_stop;
 pub mod reading_form;
 pub mod token;

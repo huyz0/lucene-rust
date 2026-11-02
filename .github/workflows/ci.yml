@@ -346,6 +346,15 @@ jobs:
         run: cargo nextest run --workspace
       - name: Doctests
         run: cargo test --workspace --doc
+      # The workspace build compiles the language modules' dictionaries in;
+      # the shipped library reads them from data packs. Run the modules'
+      # tests the shipped way too. See docs/mechanical-gates.md#data-packs.
+      - name: Language modules read their dictionaries from data packs
+        run: |
+          scripts/make-data-packs.sh target/data-packs
+          LUCENE_RUST_PACKS="$PWD/target/data-packs" cargo nextest run --no-default-features \
+            -p lucene-analysis-kuromoji -p lucene-analysis-nori -p lucene-analysis-smartcn \
+            -p lucene-analysis-morfologik -p lucene-analysis-stempel
       - name: Slowest tests (non-blocking)
         if: always()
         run: python3 scripts/ci-slowest-tests.py target/nextest/ci/junit.xml >> "$GITHUB_STEP_SUMMARY" || true

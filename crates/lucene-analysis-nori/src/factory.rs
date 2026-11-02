@@ -64,6 +64,8 @@ impl FactoryClass for KoreanTokenizerFactory {
     const CLASS_NAME: &'static str = "org.apache.lucene.analysis.ko.KoreanTokenizerFactory";
     fn from_args(args: &mut JavaArgs) -> Result<Self, FactoryError> {
         let base = FactoryBase::new(Self::CLASS_NAME, args)?;
+        // The dictionary is a data pack (`crate::pack`): refuse here when it is missing.
+        crate::pack::require()?;
         let user_dictionary_path = args::get(args, "userDictionary");
         let user_dictionary_encoding = args::get(args, "userDictionaryEncoding");
         let mode = args::get_or(args, "decompoundMode", "DISCARD");

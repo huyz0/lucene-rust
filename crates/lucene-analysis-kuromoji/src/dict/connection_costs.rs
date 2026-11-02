@@ -27,10 +27,8 @@ impl ConnectionCosts {
     pub fn instance() -> Arc<MorphConnectionCosts> {
         static INSTANCE: LazyLock<Arc<MorphConnectionCosts>> = LazyLock::new(|| {
             Arc::new(
-                ConnectionCosts::read(&inflate(include_bytes!(
-                    "../resources/connection_costs.dat.z"
-                )))
-                .expect("the vendored connection costs read"),
+                ConnectionCosts::read(&inflate(&crate::pack::get("connection_costs.dat.z")))
+                    .expect("the vendored connection costs read"),
             )
         });
         Arc::clone(&INSTANCE)

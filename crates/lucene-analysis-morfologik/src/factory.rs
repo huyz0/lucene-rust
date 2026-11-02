@@ -45,6 +45,10 @@ impl FactoryClass for MorfologikFilterFactory {
         }
         let resource_name = args::get(args, "dictionary");
         args::reject_unknown(args)?;
+        // The default dictionary is a data pack (`crate::pack`): refuse here when it is missing.
+        if resource_name.is_none() {
+            crate::pack::require()?;
+        }
         Ok(MorfologikFilterFactory {
             base,
             resource_name,

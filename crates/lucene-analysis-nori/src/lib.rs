@@ -13,6 +13,7 @@ pub mod attributes;
 pub mod dict;
 pub mod factory;
 pub mod number;
+pub mod pack;
 pub mod pos;
 pub mod pos_stop;
 pub mod reading_form;

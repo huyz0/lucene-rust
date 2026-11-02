@@ -946,6 +946,21 @@ NODE_SYNONYM = 36`). **Blind to** a wire number written as a bare literal
 (`out.write(3)`) rather than a constant, a layout change that keeps every
 number (a field added inside a node), and Rust constants Java never mirrors.
 
+## data-packs
+
+The language modules (`kuromoji`, `nori`, `smartcn`, `morfologik`,
+`stempel`) read their dictionaries through `lucene_analysis::data_pack`: a
+pack directory's copy first, then the one compiled in with the module's
+`embedded-data` feature (on by default, so every `--workspace` build has
+it). The shipped `-p lucene-ffi` build turns it off. The gate and CI's arm64
+job write the packs (`scripts/make-data-packs.sh`) and run the modules' own
+tests with `--no-default-features` and `LUCENE_RUST_PACKS`, so the files a
+pack holds are proven to be every file the module reads. **Seen to fail**
+with no `LUCENE_RUST_PACKS` (`data pack kuromoji: kuromoji/character_definition.dat.z
+is not in any pack directory`). **Blind to** a resource read by
+`include_bytes!` outside `pack.rs` (it stays compiled in, which works, just
+larger).
+
 ## Running them
 
 All of them are in `scripts/gate.sh` and therefore in

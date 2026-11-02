@@ -25,7 +25,7 @@ fn inflate(z: &[u8]) -> Vec<u8> {
 /// `new PolishStemmer().getDictionary()`: Morfologik's Polish dictionary.
 pub fn polish_dictionary() -> Arc<Dictionary> {
     static DICT: LazyLock<Arc<Dictionary>> = LazyLock::new(|| {
-        let fsa = inflate(include_bytes!("resources/polish.dict.z"));
+        let fsa = inflate(&crate::pack::get("polish.dict.z"));
         Arc::new(
             Dictionary::from_vec(fsa, include_str!("resources/polish.info"))
                 .expect("the vendored Polish dictionary reads"),
@@ -37,7 +37,7 @@ pub fn polish_dictionary() -> Arc<Dictionary> {
 /// `UkrainianMorfologikAnalyzer`'s dictionary (`ua/net/nlp/ukrainian.dict`).
 pub fn ukrainian_dictionary() -> Arc<Dictionary> {
     static DICT: LazyLock<Arc<Dictionary>> = LazyLock::new(|| {
-        let fsa = inflate(include_bytes!("resources/ukrainian.dict.z"));
+        let fsa = inflate(&crate::pack::get("ukrainian.dict.z"));
         Arc::new(
             Dictionary::from_vec(fsa, include_str!("resources/ukrainian.info"))
                 .expect("the vendored Ukrainian dictionary reads"),

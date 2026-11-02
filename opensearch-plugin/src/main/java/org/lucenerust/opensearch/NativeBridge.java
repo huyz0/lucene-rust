@@ -38,7 +38,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code jvm_reader.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 54;
+    public static final int EXPECTED_ABI_VERSION = 55;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -209,6 +209,10 @@ public final class NativeBridge {
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS)
         );
         static final MethodHandle CLOSE_READER = bind("ffi_close_jvm_reader", FunctionDescriptor.of(JAVA_INT, JAVA_LONG));
+        static final MethodHandle ADD_DATA_PACK_DIR = bind(
+            "ffi_add_data_pack_dir",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG)
+        );
         static final MethodHandle ANALYZE = bind(
             "ffi_jvm_analyze_alloc",
             FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS)
@@ -1136,6 +1140,19 @@ public final class NativeBridge {
                 out[0] = encoded;
             }
             return rc;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** Adds a directory Rust searches for the analysis modules' data packs ({@code analysis_modules.rs}). */
+    public static int addDataPackDir(String dir) {
+        if (dir == null) {
+            return nullArgument("dir");
+        }
+        byte[] utf8 = dir.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        try (Scratch s = Scratch.open()) {
+            return (int) H.ADD_DATA_PACK_DIR.invokeExact(s.bytes(utf8), (long) utf8.length);
         } catch (Throwable t) {
             throw rethrow(t);
         }
