@@ -111,7 +111,9 @@ impl UpcallKeyProvider {
             .ok_or_else(|| key_unavailable("no key upcall registered"))?;
         let mut cap = FIRST_OUT_CAP;
         loop {
-            let mut out = vec![0u8; cap];
+            let mut out = crate::raw::try_with_capacity::<u8>(cap)
+                .map_err(|_| key_unavailable("cannot allocate the key upcall's buffer"))?;
+            out.resize(cap, 0);
             let mut len = 0usize;
             // SAFETY: the registered upcall's contract: it reads `input` for
             // `input.len()` bytes, writes at most `cap` bytes to `out` and one
@@ -184,11 +186,12 @@ impl KeyProvider for UpcallKeyProvider {
     }
 
     fn unwrap_key(&self, key_id: &str, wrapped: &[u8]) -> lucene_store::Result<DataKey> {
-        let mut input = Vec::with_capacity(
+        let mut input = crate::raw::try_with_capacity::<u8>(
             2usize
                 .saturating_add(key_id.len())
                 .saturating_add(wrapped.len()),
-        );
+        )
+        .map_err(|_| key_unavailable("cannot allocate the unwrap request"))?;
         put_key_id(&mut input, key_id)?;
         input.extend_from_slice(wrapped);
         let out = zeroize::Zeroizing::new(self.call(KEY_OP_UNWRAP, &input)?);
