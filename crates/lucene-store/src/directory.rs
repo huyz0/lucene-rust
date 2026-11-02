@@ -59,6 +59,12 @@ pub enum Input {
         start: usize,
         len: usize,
     },
+    /// Bytes a third-party [`Directory`] produced and owns its own way: a
+    /// blob store's downloaded object kept in a pooled buffer, a decrypted
+    /// file in an anonymous mapping, a local cache file's mapping. Opening
+    /// costs whatever the directory chose; reading is a slice like every
+    /// other input. Build it with [`Input::external`].
+    External(Box<dyn AsRef<[u8]> + Send + Sync>),
     /// Another input held open by a test harness (feature `test-util`): the
     /// guard is dropped with the bytes, which is how the test framework's
     /// `MockDirectoryWrapper` sees an input "closed".
@@ -101,6 +107,7 @@ impl std::fmt::Debug for Input {
             Input::Mapped(_) => "Mapped",
             Input::Shared(_) => "Shared",
             Input::Slice { .. } => "Slice",
+            Input::External(_) => "External",
             #[cfg(any(test, feature = "test-util"))]
             Input::Tracked(_) => "Tracked",
         };
@@ -119,6 +126,7 @@ impl Deref for Input {
             // In bounds: `slice_of` checked `start + len <= base.len()`, and
             // `base` cannot change length behind the `Arc`.
             Input::Slice { base, start, len } => &base[*start..][..*len],
+            Input::External(bytes) => (**bytes).as_ref(),
             #[cfg(any(test, feature = "test-util"))]
             Input::Tracked(t) => &t.input,
         }
@@ -126,6 +134,12 @@ impl Deref for Input {
 }
 
 impl Input {
+    /// An [`Input::External`] over `bytes`, which the input owns and drops
+    /// when it is closed.
+    pub fn external(bytes: impl AsRef<[u8]> + Send + Sync + 'static) -> Input {
+        Input::External(Box::new(bytes))
+    }
+
     /// `len` bytes of `base` from `start`, sharing `base` rather than copying
     /// them ([`Input::Slice`]). Out of bounds is corruption, as Java's
     /// `IndexInput.slice` reports it.

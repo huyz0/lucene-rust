@@ -62,10 +62,36 @@ pub const CHUNK_SIZE: usize = 8192;
 /// `ByteBuffersIndexOutput`'s `onClose`.
 pub(crate) type PublishFn = Box<dyn FnOnce(Vec<u8>) + Send>;
 
+/// Where a third-party [`crate::Directory`]'s output bytes go: the write
+/// half of a pluggable store (a blob store's upload, an encrypting
+/// wrapper's cipher stream). [`FsIndexOutput::from_sink`] wraps one in the
+/// output type every codec writer writes through, with the same buffering
+/// (writes reach the sink in pieces of at most [`CHUNK_SIZE`] bytes, or one
+/// larger piece for a large write), CRC32 and rate limiting a file gets.
+///
+/// Lucene's `IndexOutput` is an open class a directory subclasses; here the
+/// output type is one concrete struct (codec writers are monomorphic over
+/// it, which is what keeps `write_byte` an inlined push), and this trait is
+/// the seam instead.
+pub trait OutputSink: Send {
+    /// Appends `bytes`. An error is latched by the output, later writes are
+    /// dropped, and it is returned by [`FsIndexOutput::close`].
+    fn write_all(&mut self, bytes: &[u8]) -> std::io::Result<()>;
+
+    /// Called once by [`FsIndexOutput::close`] after the last write, when no
+    /// write failed: flush, finalize (a cipher's last block, an upload's
+    /// commit) and publish the file. An error fails the close. It is not
+    /// called when a write failed, and a sink dropped without it must leave
+    /// no visible file (or a file the directory can still delete).
+    fn finish(self: Box<Self>) -> std::io::Result<()>;
+}
+
 /// Where an [`FsIndexOutput`]'s bytes go.
 enum Sink {
     /// A real file: `FSDirectory.FSIndexOutput`.
     File { file: File, path: PathBuf },
+    /// A pluggable directory's [`OutputSink`], buffered like a file.
+    Stream(Box<dyn OutputSink>),
     /// Kept in memory and handed over on close: `ByteBuffersIndexOutput`,
     /// which is what `ByteBuffersDirectory` (and through it
     /// `NRTCachingDirectory`'s cache) hands out.
@@ -197,10 +223,20 @@ impl FsIndexOutput {
         Ok(Self::over_file(name, file, path))
     }
 
+    /// An output named `name` whose bytes go to `sink`: what a third-party
+    /// [`crate::Directory`]'s `create_output` returns. See [`OutputSink`].
+    pub fn from_sink(name: &str, sink: Box<dyn OutputSink>) -> Self {
+        Self::over_sink(name, Sink::Stream(sink))
+    }
+
     fn over_file(name: &str, file: File, path: PathBuf) -> Self {
+        Self::over_sink(name, Sink::File { file, path })
+    }
+
+    fn over_sink(name: &str, sink: Sink) -> Self {
         Self {
             name: name.to_string(),
-            sink: Sink::File { file, path },
+            sink,
             buf: Vec::with_capacity(CHUNK_SIZE),
             crc_pos: 0,
             bytes_written: 0,
@@ -269,6 +305,12 @@ impl FsIndexOutput {
                 file.write_all(&self.buf)?;
                 file.flush()?;
             }
+            Sink::Stream(mut sink) => {
+                if !self.buf.is_empty() {
+                    sink.write_all(&self.buf)?;
+                }
+                sink.finish()?;
+            }
             Sink::Memory { publish } => {
                 if let Some(publish) = publish {
                     publish(std::mem::take(&mut self.buf));
@@ -303,7 +345,7 @@ impl FsIndexOutput {
     pub fn path(&self) -> Option<&Path> {
         match &self.sink {
             Sink::File { path, .. } => Some(path),
-            Sink::Memory { .. } => None,
+            Sink::Stream(_) | Sink::Memory { .. } => None,
         }
     }
 
@@ -311,14 +353,15 @@ impl FsIndexOutput {
     /// write failed. Every byte handed over is either hashed into `crc` here
     /// or left in `buf` past `crc_pos` for [`Self::checksum`] to cover.
     fn write_through(&mut self, b: &[u8]) -> bool {
-        let Sink::File { file, .. } = &mut self.sink else {
+        if let Sink::Memory { .. } = self.sink {
             self.buf.extend_from_slice(b);
             if self.buf.len().saturating_sub(self.crc_pos) >= CHUNK_SIZE {
                 self.crc.update(&self.buf[self.crc_pos..]);
                 self.crc_pos = self.buf.len();
             }
             return true;
-        };
+        }
+        let file = &mut self.sink;
         if self.buf.len().saturating_add(b.len()) > CHUNK_SIZE && !self.buf.is_empty() {
             self.crc.update(&self.buf);
             if let Err(e) = file.write_all(&self.buf) {
@@ -474,7 +517,21 @@ impl std::fmt::Debug for FsIndexOutput {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.sink {
             Sink::File { path, .. } => write!(f, "FSIndexOutput(path=\"{}\")", path.display()),
+            Sink::Stream(_) => write!(f, "SinkIndexOutput(file={})", self.name),
             Sink::Memory { .. } => write!(f, "ByteBuffersIndexOutput(file={})", self.name),
+        }
+    }
+}
+
+impl Sink {
+    /// Writes `bytes` to a file or a stream sink; a memory sink never gets
+    /// here ([`FsIndexOutput::write_through`] buffers it).
+    #[inline]
+    fn write_all(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+        match self {
+            Sink::File { file, .. } => file.write_all(bytes),
+            Sink::Stream(sink) => sink.write_all(bytes),
+            Sink::Memory { .. } => unreachable!("a memory sink is buffered, not written through"),
         }
     }
 }
