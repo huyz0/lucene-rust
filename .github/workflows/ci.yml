@@ -140,6 +140,12 @@ jobs:
       - name: parity ledger consistency (docs/parity.md + docs/parity/)
         run: python3 scripts/check-parity.py
 
+      # The plugin's wire numbers (node kinds, agg kinds, status codes, the
+      # ABI version) are written in Java and Rust both; see
+      # docs/mechanical-gates.md#wire-constants.
+      - name: Plugin wire constants equal lucene-ffi's
+        run: python3 scripts/check-wire-constants.py
+
       # Needs the pinned Java tree, which CI does not check out; the script
       # skips cleanly when it is absent, so this is a no-op there and a real
       # check locally and in the container. Listed anyway so the step cannot

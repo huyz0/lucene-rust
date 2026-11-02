@@ -59,6 +59,9 @@ python3 scripts/test-test-framework-fixture-selection.py
 echo "gate: check-parity (the parity ledger: paths, items, index links, budgets)"
 python3 scripts/check-parity.py
 
+echo "gate: check-wire-constants (plugin wire numbers equal lucene-ffi's)"
+python3 scripts/check-wire-constants.py
+
 echo "gate: check-java-refs (comments cite Java that exists in the *pinned* tree)"
 python3 scripts/check-java-refs.py
 
