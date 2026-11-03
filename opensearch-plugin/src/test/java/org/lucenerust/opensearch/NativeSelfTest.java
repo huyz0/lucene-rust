@@ -334,7 +334,7 @@ public final class NativeSelfTest {
         check(QueryEncoder.isFast(t) && QueryEncoder.isFast(new ConstantScoreQuery(t)), "terms are fast");
         check(QueryEncoder.isFast(new BooleanQuery.Builder().add(t, Occur.SHOULD).add(t2, Occur.SHOULD).build()), "disjunction is fast");
         check(QueryEncoder.isFast(new BooleanQuery.Builder().add(t, Occur.MUST).add(t2, Occur.FILTER).build()), "conjunction is fast");
-        // Since read path R1 every encodable shape is measured at least as fast as Lucene.
+        // Every encodable shape is measured at least as fast as Lucene.
         check(QueryEncoder.isFast(new BooleanQuery.Builder().add(t, Occur.MUST).add(t2, Occur.SHOULD).build()), "mixed is fast");
         check(QueryEncoder.isFast(new BooleanQuery.Builder().add(t, Occur.MUST).add(t2, Occur.MUST_NOT).build()), "must_not is fast");
         check(QueryEncoder.isFast(new BoostQuery(t, 2f)), "boost is fast");
@@ -1379,7 +1379,7 @@ public final class NativeSelfTest {
     }
 
     /**
-     * Read path R6: a Lucene-written index with every stored type, read through {@link
+     * A Lucene-written index with every stored type, read through {@link
      * NativeStoredFieldsReader} (random access and the sequential reader) and by Lucene with the same
      * visitors -- everything, a {@code NO} on some fields (the last included), a {@code STOP} midway --
      * every visit recorded and compared call for call.

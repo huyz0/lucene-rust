@@ -78,7 +78,7 @@ public class RustSearchPlugin extends Plugin implements
     );
 
     /**
-     * Whether this node installs the stored-fields reader wrapper (read path R6). An index takes one
+     * Whether this node installs the stored-fields reader wrapper. An index takes one
      * reader wrapper ({@code IndexModule.setReaderWrapper} is set-once), which the security plugin
      * also claims for field- and document-level security; the default is on unless the security
      * plugin is installed beside this one.
@@ -157,7 +157,7 @@ public class RustSearchPlugin extends Plugin implements
     @Override
     public void onIndexModule(IndexModule indexModule) {
         RustIndexerFactory.install(indexModule);
-        // Read path R6: every searcher OpenSearch hands out for the index -- the fetch phase's, the
+        // Every searcher OpenSearch hands out for the index -- the fetch phase's, the
         // get API's -- reads stored fields natively while index.lucene_rust.fetch.enabled is on, and
         // with Lucene otherwise (either way timed, SearchStats.fetchTime).
         if (fetchWrapper) {
@@ -189,7 +189,7 @@ public class RustSearchPlugin extends Plugin implements
         }
     }
 
-    /** Whether the index's stored fields are read natively (read path R6). */
+    /** Whether the index's stored fields are read natively. */
     public static final Setting<Boolean> FETCH_ENABLED = Setting.boolSetting(
         "index.lucene_rust.fetch.enabled",
         true,

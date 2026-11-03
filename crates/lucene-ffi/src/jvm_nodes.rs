@@ -1,4 +1,4 @@
-//! The query-tree nodes M10 T10.7 adds to [`crate::jvm_reader`]'s
+//! Query-tree nodes in [`crate::jvm_reader`]'s
 //! `QUERY_TREE` blob: the OpenSearch shapes `lucene-join` and
 //! `lucene-queries` back natively.
 //!

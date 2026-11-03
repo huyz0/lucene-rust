@@ -52,70 +52,11 @@ use std::sync::Arc;
 
 /// The version of the contract between this library and the Java classes in
 /// `opensearch-plugin/`: the entry points in this module, `engine_writer.rs`
-/// and `ffm_bridge.rs`,
-/// their argument order, and the query blob layout. The plugin refuses to
+/// and `ffm_bridge.rs`, their argument order, and the query blob layout. The plugin refuses to
 /// start against a library reporting any other number -- a jar carrying a
 /// stale `.so` must not get as far as reading an index.
 ///
-/// Bump it on any change a Java caller could observe. History: 1, the first
-/// plugin; 2, `CONSTANT_SCORE` and `BOOST` clause kinds; 3, `count_limit`;
-/// 4, live docs passed to `ffi_open_jvm_reader` (no `set_live_docs`);
-/// 5, the engine writer (`engine_writer.rs`); 6, the writer's `max_docs`;
-/// 7, the [`QUERY_TREE`] blob (read path R2); 8, its phrase node (R3); 9,
-/// its term-set, prefix and wildcard nodes (R3); 10, its points range node;
-/// 11, sorted search ([`ffi_jvm_reader_search_sorted`], read path R4); 12,
-/// its keyword keys (terms in, terms out); 13, its options byte and max
-/// score (`track_scores`); 14, metric aggregations
-/// ([`ffi_jvm_reader_aggregate`], read path R5) and, in the same call, the
-/// `terms` aggregation; 15, `terminate_after` and the concurrent count
-/// replay (read path R7); 16, `min_score` in front of a query blob; 17,
-/// [`doc_freq`] (the total-hits shortcut of a term query); 18, the `size: 0`
-/// count from the aggregation's own pass ([`aggregate_counting_blobs`]); 19,
-/// the regexp node; 20, the exists node; 21, a term with its own `docFreq`;
-/// 22, the sort keys' `sum`/`avg`/`median` modes; 23, the sort blob's
-/// index-sort prefix flags; 24, aggregation trees
-/// ([`crate::jvm_aggs::ffi_jvm_reader_aggregate_tree`]: bucket aggregations,
-/// sub-aggregations, `global`, `cardinality`); 25, nested sort keys
-/// (`SORT_NESTED`); 26, a document's stored fields
-/// ([`crate::jvm_fetch::ffi_jvm_reader_document`], read path R6); 27,
-/// `cardinality` answered as `HyperLogLogPlusPlus` sketches (its precision in
-/// the tree); 28, the JNI `searchDocFreq` (a term query's total-hits shortcut
-/// and its search in one call); 29, the JNI entry points replaced by the
-/// Foreign Function & Memory API's downcalls ([`crate::ffm_bridge`]); 30,
-/// the points-box and geo nodes; 31, the geo-distance sort key;
-/// 32, the aggregations' per-segment match counts
-/// ([`crate::ffm_bridge::ffi_jvm_reader_aggregate_alloc`]'s `out_seg_counts`);
-/// 33, the block-join, span, interval, combined-field and function-score
-/// nodes ([`crate::jvm_nodes`]); 34, the term-range node and
-/// segments with completion postings formats; 35, the point-set
-/// node, and points boxes of any width (`integer`, `float`, `ip`, ...); 36,
-/// numeric `terms` in aggregation trees (`NUMERIC_TERMS`), and each tree
-/// `terms` node's order byte; 37, the tree's `MISSING` prefix (a numeric
-/// node's `missing` value); 38, a tree `terms` node's `min_doc_count: 0`
-/// flag; 39, its `missing` term (the flag byte's bit 2); 40, its
-/// `include`/`exclude` as accepted ordinals (bit 4); 41, the tree's
-/// top-level `COMPOSITE` node; 42, the `PERCENTILES` node (a t-digest per
-/// bucket, its whole state in the result); 43, the `TOP_HITS` node (each
-/// bucket's top hits by score); 44, the `SIGNIFICANT_TERMS` node (a
-/// keyword's collection in first-collected order); 45, its flags (numeric
-/// fields, keys as terms, a keyword `missing` term) and sub-aggregations,
-/// `TOP_HITS` its sort (a sorted bucket's values and terms back), and the
-/// `HDR_PERCENTILES` node (each bucket's values back); 46, the `NESTED` and
-/// `REVERSE_NESTED` nodes; 47, the multi-term, doc-values, covering and
-/// distance-feature nodes ([`crate::jvm_queries`], 27-35); 48, never
-/// shipped; 49, `ffi_jvm_analyze_alloc` (an analyzer spec run over a text,
-/// `jvm_analysis.rs`), analyzed text fields in the engine writer's ops
-/// (`ffi_engine_prepare`), and the `SIGNIFICANT_TEXT` node (a refused one
-/// answers a count of -1); 50, never shipped; 51, the per-field
-/// similarity table in front of a request ([`crate::jvm_similarity`]); 52,
-/// the collapsed search (`ffi_jvm_reader_search_collapsed_alloc`,
-/// `terminate_after` too), the rescorer (`ffi_jvm_reader_rescore`) and the
-/// sort blob's `_shard_doc`, `half_float` and `unsigned_long` keys; 53, the
-/// similarity table's `classic` and `LegacyBM25` kinds; 54, the
-/// `SynonymQuery` node (36); 55, `ffi_add_data_pack_dir` (the analysis
-/// modules' data pack directories, `analysis_modules.rs`); 56, the shard
-/// store bindings and key upcall (`ffi_store_*`, `store.rs`) for the
-/// `rust_encrypted` store.
+/// Bump it on any change a Java caller could observe.
 pub const JVM_ABI_VERSION: u32 = 56;
 
 /// Blob tag for a single `TermQuery`.
@@ -149,8 +90,8 @@ const NODE_GEO_DISTANCE: u8 = 16;
 const NODE_GEO_POINT: u8 = 17;
 const NODE_GEO_SHAPE: u8 = 18;
 const NODE_GEO_SHAPE_BOX: u8 = 19;
-/// After the M10 kinds ([`crate::jvm_nodes::NODE_LAST`]): `TermRangeQuery`
-/// under its constant-score rewrite.
+/// `TermRangeQuery` under its constant-score rewrite; follows
+/// [`crate::jvm_nodes::NODE_LAST`].
 pub(crate) const NODE_TERM_RANGE: u8 = 25;
 const _: () = assert!(NODE_TERM_RANGE == crate::jvm_nodes::NODE_LAST + 1);
 /// `PointInSetQuery` (`terms` on a numeric or `ip` field, `IntPoint.newSetQuery`
@@ -5932,7 +5873,7 @@ pub(crate) mod tests {
         ));
     }
 
-    // ---- the query-tree blob (ABI 7) ---------------------------------------
+    // ---- the query-tree blob ---------------------------------------------
 
     /// A query-tree node, for building blobs in tests.
     enum N<'a> {

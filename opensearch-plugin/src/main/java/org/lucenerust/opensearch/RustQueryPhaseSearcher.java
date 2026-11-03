@@ -87,8 +87,8 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
     /**
      * Which encodable shapes run native: {@code fast} (default) only those measured at least as fast
      * as Lucene ({@link QueryEncoder#isFast}); {@code all} every shape the engine answers correctly.
-     * Since read path R1 the two agree -- every encodable shape is measured faster -- and the
-     * setting stays so that indices which set it keep opening.
+     * The two agree, since every encodable shape is measured faster; the setting stays so that
+     * indices which set it keep opening.
      */
     public static final Setting<String> NATIVE_SHAPES = new Setting<>(
         "index.lucene_rust.search.native_shapes",

@@ -52,7 +52,7 @@ public final class NativeReaders {
 
     /**
      * The postings formats the Rust reader decodes: Lucene 10.5.0's default and every default an
-     * older Lucene an OpenSearch 2.x/3.x cluster can hold segments of wrote (M8: {@code Lucene90} for
+     * older Lucene an OpenSearch 2.x/3.x cluster can hold segments of wrote ({@code Lucene90} for
      * 9.0-9.10, {@code Lucene99} for 9.11, {@code Lucene912} for 9.12-10.0, {@code Lucene101} for
      * 10.1-10.2, {@code Lucene103} for 10.3), and the completion formats OpenSearch's {@code
      * completion} fields are written in ({@code Completion104} since 3.x, the older ones by the

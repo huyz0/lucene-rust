@@ -26,7 +26,7 @@ import java.util.List;
 import java.util.function.BooleanSupplier;
 
 /**
- * A searcher's reader whose segments answer {@link StoredFields#document} natively (read path R6):
+ * A searcher's reader whose segments answer {@link StoredFields#document} natively:
  * the fetch phase's {@code _source}, {@code _id} and stored fields, and the get API's, read from the
  * Rust reader of the same segments ({@code ffi_jvm_reader_document}) and replayed into OpenSearch's
  * {@link StoredFieldVisitor} in stored order, with its {@code needsField} answers ({@code NO}

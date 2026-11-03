@@ -57,7 +57,7 @@ import java.util.function.LongPredicate;
 import java.util.function.Predicate;
 
 /**
- * Aggregation trees that run natively (read path R5): {@code histogram}, {@code date_histogram},
+ * Aggregation trees that run natively: {@code histogram}, {@code date_histogram},
  * {@code range}/{@code date_range}, {@code filter}, {@code filters}, {@code global}, keyword
  * and numeric {@code terms}, {@code cardinality} and the metrics of {@link NativeAggregations}, nested in any
  * combination -- what {@link NativeAggregations#plan} (flat metrics and {@code terms} only) does

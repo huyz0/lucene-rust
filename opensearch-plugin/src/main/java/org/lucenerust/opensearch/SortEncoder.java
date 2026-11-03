@@ -30,7 +30,7 @@ import java.nio.charset.StandardCharsets;
  * cannot -- and turns the native search's per-hit values back into the {@link FieldDoc#fields}
  * Lucene's {@code TopFieldCollector} would have produced.
  *
- * <p>Encodable keys, in any number and order (read path R4):
+ * <p>Encodable keys, in any number and order:
  *
  * <ul>
  *   <li>the score ({@link SortField.Type#SCORE}, either direction) and the document ({@link
