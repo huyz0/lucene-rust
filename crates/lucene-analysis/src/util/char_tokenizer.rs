@@ -37,7 +37,7 @@ impl<F: Fn(u32) -> bool + Send> TokenChar for F {
 pub struct NotJavaWhitespace;
 
 impl TokenChar for NotJavaWhitespace {
-    #[inline]
+    #[inline(always)]
     fn is_token_char(&self, c: u32) -> bool {
         !java_character::is_whitespace(c)
     }
@@ -48,7 +48,7 @@ impl TokenChar for NotJavaWhitespace {
 pub struct JavaLetter;
 
 impl TokenChar for JavaLetter {
-    #[inline]
+    #[inline(always)]
     fn is_token_char(&self, c: u32) -> bool {
         java_character::is_letter(c)
     }
@@ -268,6 +268,18 @@ fn scan_utf8<P: TokenChar>(
     let start_off = off;
     let mut length = 0usize;
     while i < bytes.len() {
+        // A run of ASCII token characters: one unit and one byte each.
+        let run_end = bytes.len().min(i + (max_token_len - length));
+        let run = bytes[i..run_end]
+            .iter()
+            .position(|&b| b >= 0x80 || !predicate.is_token_char(u32::from(b)))
+            .unwrap_or(run_end - i);
+        i += run;
+        off += run;
+        length += run;
+        if length >= max_token_len || i >= bytes.len() || bytes[i] < 0x80 {
+            break;
+        }
         let (c, n) = decode_utf8(bytes, i);
         if !predicate.is_token_char(c) {
             break;
@@ -539,10 +551,14 @@ mod tests {
     /// characters, no-break spaces and every cut length.
     #[test]
     fn the_utf8_scan_equals_the_buffered_read() {
-        const ALPHABET: [&str; 12] = [
+        const ALPHABET: [&str; 16] = [
             "a",
             "b",
             "z",
+            "A",
+            "1",
+            "-",
+            "\u{7F}",
             " ",
             "\t",
             "\u{00A0}",

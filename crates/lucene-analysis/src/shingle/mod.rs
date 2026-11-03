@@ -354,9 +354,8 @@ impl<I: TokenStream> TokenFilter for ShingleFilter<I> {
                     .expect("non-empty window")
                     .att_source;
                 let a = self.input.attributes_mut();
-                a.restore_state(first);
+                a.restore_state_with_term(first, &self.gram_builder);
                 a.set_position_increment(if self.is_output_here { 0 } else { 1 })?;
-                a.set_term(&self.gram_builder);
                 if self.gram_size.value > 1 {
                     a.set_token_type(self.token_type.clone());
                     self.no_shingle_output = false;

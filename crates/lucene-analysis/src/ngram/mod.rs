@@ -354,9 +354,8 @@ impl GramState {
         n: usize,
         inc: i32,
     ) -> Result<(), AnalysisError> {
-        a.restore_state(&self.state);
         let gram = &self.state.term()[self.bounds[from]..self.bounds[from + n]];
-        a.set_term(gram);
+        a.restore_state_with_term(&self.state, gram);
         a.set_position_increment(inc)
     }
 }

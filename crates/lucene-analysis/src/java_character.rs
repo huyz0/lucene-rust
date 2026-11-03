@@ -139,7 +139,11 @@ pub fn get_type(cp: u32) -> u8 {
 }
 
 /// `Character.isLetter(int)`: categories `Lu Ll Lt Lm Lo`.
+#[inline]
 pub fn is_letter(cp: u32) -> bool {
+    if cp < 0x80 {
+        return (cp | 0x20).wrapping_sub(u32::from(b'a')) < 26;
+    }
     matches!(
         get_type(cp),
         UPPERCASE_LETTER | LOWERCASE_LETTER | TITLECASE_LETTER | MODIFIER_LETTER | OTHER_LETTER
@@ -407,6 +411,22 @@ pub fn special_upper(unit: u16) -> Option<&'static [u16]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The ASCII shortcut of `is_letter` is the general-category test.
+    #[test]
+    fn ascii_letters_are_the_category_letters() {
+        for cp in 0..0x80 {
+            let by_category = matches!(
+                get_type(cp),
+                UPPERCASE_LETTER
+                    | LOWERCASE_LETTER
+                    | TITLECASE_LETTER
+                    | MODIFIER_LETTER
+                    | OTHER_LETTER
+            );
+            assert_eq!(is_letter(cp), by_category, "U+{cp:04X}");
+        }
+    }
 
     /// `is_whitespace` consults the category table only for its candidate
     /// ranges: no separator lies outside them.
