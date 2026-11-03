@@ -138,6 +138,9 @@ pub enum BytesRefHashError {
 pub struct BytesRefHash {
     pool: BytesRefBlockPool,
     bytes_start: Option<Vec<i32>>,
+    /// Each term's hash, by id, kept so that `rehash` never re-reads and
+    /// re-hashes term bytes. Unused (0) for terms added by pool offset.
+    hashes: Vec<i32>,
     hash_size: usize,
     hash_half_size: usize,
     hash_mask: i32,
@@ -189,6 +192,7 @@ impl BytesRefHash {
         Ok(BytesRefHash {
             pool: BytesRefBlockPool::new(),
             bytes_start: Some(Vec::new()),
+            hashes: Vec::new(),
             hash_size: capacity,
             hash_half_size: capacity >> 1,
             hash_mask: (capacity - 1) as i32,
@@ -308,6 +312,7 @@ impl BytesRefHash {
             self.pool.reset();
         }
         self.bytes_start = None;
+        self.hashes.clear();
         if self.last_count != -1 && self.shrink(self.last_count as usize) {
             return;
         }
@@ -369,6 +374,7 @@ impl BytesRefHash {
             .as_mut()
             .ok_or(BytesRefHashError::NotInitialized)?
             .push(start);
+        self.hashes.push(hashcode);
         self.count += 1;
         let high = hashcode & self.high_mask;
         if let Some(ids) = &mut self.ids {
@@ -411,6 +417,7 @@ impl BytesRefHash {
             .as_mut()
             .ok_or(BytesRefHashError::NotInitialized)?
             .push(offset);
+        self.hashes.push(0);
         self.count += 1;
         if let Some(ids) = &mut self.ids {
             ids[pos] = id;
@@ -428,7 +435,7 @@ impl BytesRefHash {
         let starts = self.bytes_start.as_deref().unwrap_or(&[]);
         for (id, &start) in starts.iter().enumerate().take(self.count) {
             let (hashcode, mut code) = if hash_on_data {
-                let h = self.do_hash(self.pool.get(start));
+                let h = self.hashes[id];
                 (h, h)
             } else {
                 (0, start)

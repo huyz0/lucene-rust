@@ -152,7 +152,18 @@ impl FixedBitSet {
     /// `bits2words(numBits)` words off disk and `cardinality()`/`words()`
     /// would otherwise have to distinguish "words in use" from "words
     /// allocated" for no gain.
+    ///
+    /// # Panics
+    ///
+    /// If `words` is shorter than `bits2words(num_bits)`: the single-bit
+    /// accessors index `words` without a second bounds check, which is sound
+    /// only because every bit below `num_bits` has its word.
     pub fn from_words(words: Vec<u64>, num_bits: usize) -> Self {
+        assert!(
+            words.len() >= bits2words(num_bits),
+            "{} words cannot hold {num_bits} bits",
+            words.len()
+        );
         debug_assert_eq!(words.len(), bits2words(num_bits));
         debug_assert!(
             ghost_bits_clear(&words, num_bits),
@@ -197,7 +208,9 @@ impl FixedBitSet {
         if index >= self.num_bits {
             out_of_range(index, self.num_bits);
         }
-        let word = self.words[index >> 6];
+        // SAFETY: `index < num_bits`, and every constructor gives `words` at
+        // least `bits2words(num_bits)` entries, so `index >> 6` is in bounds.
+        let word = unsafe { *self.words.get_unchecked(index >> 6) };
         (word >> (index & 63)) & 1 != 0
     }
 
@@ -243,7 +256,8 @@ impl FixedBitSet {
         if index >= self.num_bits {
             out_of_range(index, self.num_bits);
         }
-        self.words[index >> 6] |= 1u64 << (index & 63);
+        // SAFETY: as in `get`.
+        unsafe { *self.words.get_unchecked_mut(index >> 6) |= 1u64 << (index & 63) };
     }
 
     /// `FixedBitSet.clear(index)`.
@@ -256,7 +270,8 @@ impl FixedBitSet {
         if index >= self.num_bits {
             out_of_range(index, self.num_bits);
         }
-        self.words[index >> 6] &= !(1u64 << (index & 63));
+        // SAFETY: as in `get`.
+        unsafe { *self.words.get_unchecked_mut(index >> 6) &= !(1u64 << (index & 63)) };
     }
 
     /// Port of `FixedBitSet.clear()` (the no-argument overload): unsets every
