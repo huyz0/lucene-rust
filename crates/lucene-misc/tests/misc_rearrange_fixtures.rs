@@ -10,8 +10,8 @@
 use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 
+use lucene_misc::index::{BinaryDocValueSelector, DocumentSelector, IndexRearranger};
 use lucene_search::directory_reader::DirectoryReader;
-use lucene_search::misc::index::{BinaryDocValueSelector, DocumentSelector, IndexRearranger};
 use lucene_store::FsDirectory;
 use lucene_util::test_support::TempDir;
 

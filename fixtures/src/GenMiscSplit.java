@@ -32,7 +32,7 @@ import org.apache.lucene.util.BytesRef;
  * R  case  output  segments  ids        the live documents of one output, in order (ids joined by ",")
  * </pre>
  *
- * <p>Read by {@code crates/lucene-search/tests/misc_split_fixtures.rs}.
+ * <p>Read by {@code crates/lucene-misc/tests/misc_split_fixtures.rs}.
  */
 public class GenMiscSplit {
 

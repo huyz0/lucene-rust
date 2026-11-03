@@ -18,9 +18,9 @@ use lucene_util::fixed_bit_set::FixedBitSet;
 use lucene_util::sorter::{intro_select, intro_sort, IntroTarget};
 use lucene_util::splittable_random::SplittableRandom;
 
-use crate::reader::sorting::{DocMap, SortingCodecReader};
-use crate::reader::{CodecReader, PostingsFlags, NO_MORE_DOCS};
-use crate::{Error, Result};
+use lucene_search::reader::sorting::{DocMap, SortingCodecReader};
+use lucene_search::reader::{CodecReader, PostingsFlags, NO_MORE_DOCS};
+use lucene_search::{Error, Result};
 
 /// `DEFAULT_MIN_DOC_FREQ`.
 pub const DEFAULT_MIN_DOC_FREQ: i32 = 4096;

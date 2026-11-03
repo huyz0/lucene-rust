@@ -4,7 +4,7 @@
 
 /// `org.apache.lucene.util.PriorityQueue` with its `lessThan`: a binary heap
 /// whose `pop` order on equal elements is the heap's, not insertion order.
-pub(crate) struct JavaPriorityQueue<T, F: Fn(&T, &T) -> bool> {
+pub struct JavaPriorityQueue<T, F: Fn(&T, &T) -> bool> {
     /// 1-based, as Java's.
     heap: Vec<Option<T>>,
     size: usize,
@@ -17,7 +17,7 @@ impl<T, F: Fn(&T, &T) -> bool> JavaPriorityQueue<T, F> {
     /// rather than being allocated at `max_size` up front: a size read off
     /// a request (`FuzzyLikeThisQuery`'s `maxNumTerms`) must not allocate
     /// what it never fills.
-    pub(crate) fn new(max_size: usize, less_than: F) -> Self {
+    pub fn new(max_size: usize, less_than: F) -> Self {
         let heap = vec![None];
         Self {
             heap,
@@ -27,7 +27,7 @@ impl<T, F: Fn(&T, &T) -> bool> JavaPriorityQueue<T, F> {
         }
     }
 
-    pub(crate) fn size(&self) -> usize {
+    pub fn size(&self) -> usize {
         self.size
     }
 
@@ -51,7 +51,7 @@ impl<T, F: Fn(&T, &T) -> bool> JavaPriorityQueue<T, F> {
 
     /// `insertWithOverflow(element)`: added while there is room, else it
     /// replaces the least element unless it is less than it.
-    pub(crate) fn insert_with_overflow(&mut self, element: T) {
+    pub fn insert_with_overflow(&mut self, element: T) {
         self.insert_with_overflow_dropped(element);
     }
 
@@ -118,7 +118,7 @@ impl<T, F: Fn(&T, &T) -> bool> JavaPriorityQueue<T, F> {
     }
 
     /// `pop()`.
-    pub(crate) fn pop(&mut self) -> Option<T> {
+    pub fn pop(&mut self) -> Option<T> {
         if self.size == 0 {
             return None;
         }

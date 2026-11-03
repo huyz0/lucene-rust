@@ -11,8 +11,8 @@
 use std::collections::BTreeMap;
 
 use lucene_index::document::Number;
+use lucene_misc::lazy_document::{LazyDocument, LazyField};
 use lucene_search::directory_reader::{DirectoryReader, SegmentReader};
-use lucene_search::misc::lazy_document::{LazyDocument, LazyField};
 use lucene_store::FsDirectory;
 
 const GROUP_A: [&str; 3] = ["s", "i", "b"];

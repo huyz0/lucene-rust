@@ -6,8 +6,8 @@
 use lucene_store::directory::Directory;
 
 use super::{index_error, live_flags, open_writer};
-use crate::directory_reader::DirectoryReader;
-use crate::{Error, Result};
+use lucene_search::directory_reader::DirectoryReader;
+use lucene_search::{Error, Result};
 
 /// `MultiPassIndexSplitter`.
 #[derive(Debug, Default, Clone, Copy)]

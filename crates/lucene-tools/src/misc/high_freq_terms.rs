@@ -5,8 +5,8 @@
 //! lucene-tools HighFreqTerms <index dir> [-t] [number_terms] [field]
 //! ```
 
+use lucene_misc::{get_high_freq_terms, TermOrder, DEFAULT_NUMTERMS};
 use lucene_search::directory_reader::DirectoryReader;
-use lucene_search::misc::{get_high_freq_terms, TermOrder, DEFAULT_NUMTERMS};
 use lucene_store::directory::FsDirectory;
 
 use crate::cli::{exception, group_digits, parse_int, Io, ToolResult};

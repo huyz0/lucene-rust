@@ -8,17 +8,17 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use lucene_search::collector::ScoringCollector;
-use lucene_search::collectors::CollectorManager;
-use lucene_search::directory_reader::DirectoryReader;
-use lucene_search::index_searcher::IndexSearcher;
-use lucene_search::misc::memory::{CollectorMemoryTracker, MemoryTracker};
-use lucene_search::misc::search::{
+use lucene_misc::memory::{CollectorMemoryTracker, MemoryTracker};
+use lucene_misc::search::{
     DiversifiedTopDocs, DiversifiedTopDocsCollector, DiversifiedTopDocsCollectorManager,
     DocValuesStats, DocValuesStatsCollectorManager, DoubleDocValuesStats, KeySource, Leaves,
     LongDocValuesStats, MemoryAccountingBitsetCollectorManager, SortedDocValuesStats,
     SortedDoubleDocValuesStats, SortedLongDocValuesStats, SortedSetDocValuesStats,
 };
+use lucene_search::collector::ScoringCollector;
+use lucene_search::collectors::CollectorManager;
+use lucene_search::directory_reader::DirectoryReader;
+use lucene_search::index_searcher::IndexSearcher;
 use lucene_search::query::{BooleanQuery, Clause, TermQuery};
 use lucene_search::reader::LeafReader;
 use lucene_store::FsDirectory;
@@ -354,7 +354,7 @@ fn memory_accounting_bitset_is_sized_to_the_highest_match() {
 
 #[test]
 fn human_readable_query_prefixes_its_description() {
-    use lucene_search::misc::search::HumanReadableQuery;
+    use lucene_misc::search::HumanReadableQuery;
     let inner = Clause::Term(TermQuery::new("txt", b"a".to_vec()));
     let q = HumanReadableQuery::new(inner.clone(), "users");
     assert_eq!(q.to_string_field("txt"), "users:a");

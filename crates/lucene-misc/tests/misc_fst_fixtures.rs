@@ -11,7 +11,7 @@
 use lucene_codecs::fst::{ByteSequenceOutputs, InputType, PositiveIntOutputs};
 use lucene_codecs::fst_compiler::{FstCompilerBuilder, FstOutputs};
 use lucene_codecs::fst_util::{get_bytes, TypedFst};
-use lucene_search::misc::{ListOfOutputs, ListOutput, UpToTwoOutput, UpToTwoPositiveIntOutputs};
+use lucene_misc::{ListOfOutputs, ListOutput, UpToTwoOutput, UpToTwoPositiveIntOutputs};
 
 fn read_case(name: &str) -> String {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

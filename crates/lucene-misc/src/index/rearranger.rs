@@ -14,9 +14,9 @@ use std::collections::HashSet;
 use lucene_store::directory::Directory;
 
 use super::{index_error, open_writer};
-use crate::directory_reader::DirectoryReader;
-use crate::reader::{CodecReader, LeafReader};
-use crate::{Error, Result};
+use lucene_search::directory_reader::DirectoryReader;
+use lucene_search::reader::{CodecReader, LeafReader};
+use lucene_search::{Error, Result};
 
 /// `IndexRearranger.DocumentSelector`: which documents of a segment a
 /// selector picks, one flag per document (Java's `BitSet`).
@@ -203,7 +203,7 @@ impl BinaryDocValueSelector {
 
     /// The key of `doc`, or Java's `AssertionError` as an error.
     fn key(
-        values: Option<&mut (dyn crate::reader::BinaryDocValues + '_)>,
+        values: Option<&mut (dyn lucene_search::reader::BinaryDocValues + '_)>,
         doc: i32,
         field: &str,
     ) -> Result<Vec<u8>> {

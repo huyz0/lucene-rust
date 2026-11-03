@@ -3,7 +3,7 @@
 
 use std::sync::atomic::{AtomicI64, Ordering};
 
-use crate::{Error, Result};
+use lucene_search::{Error, Result};
 
 /// `org.apache.lucene.misc.util.MemoryTracker`: tracks dynamic allocations of
 /// transient objects.

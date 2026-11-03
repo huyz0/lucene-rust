@@ -8,8 +8,8 @@
 
 use std::path::{Path, PathBuf};
 
+use lucene_misc::index::BpIndexReorderer;
 use lucene_search::directory_reader::DirectoryReader;
-use lucene_search::misc::index::BpIndexReorderer;
 use lucene_store::FsDirectory;
 
 fn data() -> PathBuf {

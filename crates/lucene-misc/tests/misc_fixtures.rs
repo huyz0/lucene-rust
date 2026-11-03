@@ -8,8 +8,8 @@
 
 use std::collections::BTreeMap;
 
+use lucene_misc::{get_high_freq_terms, TermOrder};
 use lucene_search::directory_reader::DirectoryReader;
-use lucene_search::misc::{get_high_freq_terms, TermOrder};
 use lucene_search::Error;
 use lucene_store::FsDirectory;
 
@@ -77,9 +77,9 @@ fn a_named_field_that_does_not_exist_is_refused() {
 /// `SweetSpotSimilarity`.
 mod sweet_spot {
     use super::data;
+    use lucene_misc::SweetSpotSimilarity;
     use lucene_search::directory_reader::DirectoryReader;
     use lucene_search::index_searcher::{IndexSearcher, SegmentNorms};
-    use lucene_search::misc::SweetSpotSimilarity;
     use lucene_search::query::{BooleanQuery, Clause, TermQuery};
     use lucene_search::similarities::TfIdfSimilarity;
     use lucene_store::FsDirectory;

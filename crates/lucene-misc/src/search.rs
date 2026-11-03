@@ -16,13 +16,13 @@ use std::sync::Arc;
 
 use lucene_util::fixed_bit_set::FixedBitSet;
 
-use crate::collector::{ScoreMode, ScoringCollector};
-use crate::collectors::CollectorManager;
-use crate::misc::memory::MemoryTracker;
-use crate::query::Clause;
-use crate::reader::{LeafReader, NumericDocValues, SortedDocValues};
-use crate::reader::{SortedNumericDocValues, SortedSetDocValues};
-use crate::{Error, Result};
+use crate::memory::MemoryTracker;
+use lucene_search::collector::{ScoreMode, ScoringCollector};
+use lucene_search::collectors::CollectorManager;
+use lucene_search::query::Clause;
+use lucene_search::reader::{LeafReader, NumericDocValues, SortedDocValues};
+use lucene_search::reader::{SortedNumericDocValues, SortedSetDocValues};
+use lucene_search::{Error, Result};
 
 /// The leaves of an index in doc-base order, with each one's doc base.
 #[derive(Clone, Copy)]
@@ -1160,7 +1160,7 @@ impl HumanReadableQuery {
         format!(
             "{}:{}",
             self.description,
-            crate::query_builder::to_query_string(Some(&self.inner), field)
+            lucene_search::query_builder::to_query_string(Some(&self.inner), field)
         )
     }
 }

@@ -10,8 +10,8 @@
 use std::path::{Path, PathBuf};
 
 use lucene_index::segment_infos;
+use lucene_misc::index::IndexSplitter;
 use lucene_search::directory_reader::DirectoryReader;
-use lucene_search::misc::index::IndexSplitter;
 use lucene_store::directory::Directory;
 use lucene_store::FsDirectory;
 use lucene_util::test_support::TempDir;

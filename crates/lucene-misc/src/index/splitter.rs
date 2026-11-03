@@ -11,7 +11,7 @@ use lucene_index::segment_infos::{self, LuceneVersion, SegmentCommitInfo, Segmen
 use lucene_store::directory::Directory;
 
 use super::index_error;
-use crate::{Error, Result};
+use lucene_search::{Error, Result};
 
 /// `IndexSplitter`.
 pub struct IndexSplitter<'d> {

@@ -3,11 +3,11 @@
 
 use std::cmp::Ordering;
 
-use crate::classification::java_string_cmp;
-use crate::java_priority_queue::JavaPriorityQueue;
-use crate::multi_terms::{indexed_fields, MultiTerms};
-use crate::reader::{IndexReader, TermsEnum};
-use crate::{Error, Result};
+use lucene_search::classification::java_string_cmp;
+use lucene_search::java_priority_queue::JavaPriorityQueue;
+use lucene_search::multi_terms::{indexed_fields, MultiTerms};
+use lucene_search::reader::{IndexReader, TermsEnum};
+use lucene_search::{Error, Result};
 
 /// `HighFreqTerms.DEFAULT_NUMTERMS`.
 pub const DEFAULT_NUMTERMS: usize = 100;

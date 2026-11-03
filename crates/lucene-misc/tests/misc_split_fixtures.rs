@@ -9,11 +9,11 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+use lucene_misc::index::{MultiPassIndexSplitter, PkIndexSplitter};
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::extended_query::{
     ExtendedQuery, MultiTermQuery, MultiTermSource, RewriteMethod, TermRangeQuery,
 };
-use lucene_search::misc::index::{MultiPassIndexSplitter, PkIndexSplitter};
 use lucene_search::query::{BooleanQuery, Clause};
 use lucene_store::directory::Directory;
 use lucene_store::FsDirectory;

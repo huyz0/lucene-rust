@@ -308,7 +308,7 @@ pub(crate) fn split_boost(name: &str) -> (&str, Option<&str>) {
 }
 
 /// `String.compareTo`: by UTF-16 code unit.
-pub(crate) fn java_string_cmp(a: &str, b: &str) -> Ordering {
+pub fn java_string_cmp(a: &str, b: &str) -> Ordering {
     a.encode_utf16().cmp(b.encode_utf16())
 }
 

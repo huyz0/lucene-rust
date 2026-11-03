@@ -8,8 +8,8 @@ use lucene_codecs::field_infos::FieldInfo;
 use lucene_codecs::stored_fields::{DocumentVisitor, FieldValue, StoredField};
 use lucene_index::document::Number;
 
-use crate::directory_reader::DirectoryReader;
-use crate::{Error, Result};
+use lucene_search::directory_reader::DirectoryReader;
+use lucene_search::{Error, Result};
 
 /// A lazy field's slot: Java's `volatile IndexableField realValue`.
 type Slot = Arc<Mutex<Option<StoredField>>>;
@@ -81,7 +81,7 @@ impl<'r> LazyDocument<'r> {
     /// (Java's `IllegalStateException("unable to load document")`).
     fn load(&self, state: &mut State) -> Result<()> {
         if state.doc.is_none() {
-            let (segment, local) = crate::mlt::locate(self.reader, self.doc_id)?;
+            let (segment, local) = lucene_search::mlt::locate(self.reader, self.doc_id)?;
             let numbers: Vec<i32> = state
                 .field_names
                 .iter()
@@ -100,7 +100,7 @@ impl<'r> LazyDocument<'r> {
     fn fetch_real_values(&self, name: &str, field_num: i32) -> Result<()> {
         let mut state = self.lock();
         self.load(&mut state)?;
-        let (segment, _) = crate::mlt::locate(self.reader, self.doc_id)?;
+        let (segment, _) = lucene_search::mlt::locate(self.reader, self.doc_id)?;
         let number = segment.field_infos().field_by_name(name).map(|i| i.number);
         let real: Vec<&StoredField> = state
             .doc
@@ -171,7 +171,9 @@ impl LazyField<'_, '_> {
     /// # Errors
     /// As [`Self::real_value`].
     pub fn string_value(&self) -> Result<Option<String>> {
-        Ok(crate::mlt::stored_string_value(&self.real_value()?.value))
+        Ok(lucene_search::mlt::stored_string_value(
+            &self.real_value()?.value,
+        ))
     }
 
     /// `binaryValue()`.

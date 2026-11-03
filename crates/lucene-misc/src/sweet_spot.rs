@@ -8,8 +8,8 @@ use lucene_index::similarity::NormSimilarity;
 use lucene_util::geo::{java_double_string, java_float_string};
 use lucene_util::{small_float, strict_math};
 
-use crate::explain::Explanation;
-use crate::similarities::{
+use lucene_search::explain::Explanation;
+use lucene_search::similarities::{
     summed_idf, ClassicSimilarity, CollectionStatistics, SimScorer, Similarity, TermStatistics,
     TfIdfExplain, TfIdfSimilarity,
 };

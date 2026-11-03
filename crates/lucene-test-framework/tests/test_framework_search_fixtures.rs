@@ -13,7 +13,7 @@ use std::fmt::Write as _;
 use explanation_dsl::{
     a, boost, bq, bq_msm, csq, dmq, match_all, mpq, phrase, synonym, t, F, M, N, S,
 };
-use lucene_search::misc::SweetSpotSimilarity;
+use lucene_misc::SweetSpotSimilarity;
 use lucene_search::query::{Clause, MatchAllDocsQuery, TermQuery};
 use lucene_search::similarities::{
     AfterEffect, BasicModel, Bm25Similarity, ClassicSimilarity, DfrSimilarity, Normalization,

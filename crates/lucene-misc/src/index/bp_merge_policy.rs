@@ -13,10 +13,10 @@ use lucene_index::merge_policy::{
 };
 
 use super::bp::{BpIndexReorderer, ReorderError};
-use crate::reader::merge_readers::{MergeReaderHooks, SegmentMergeHooks};
-use crate::reader::sorting::DocMap;
-use crate::reader::CodecReader;
-use crate::{Error, Result};
+use lucene_search::reader::merge_readers::{MergeReaderHooks, SegmentMergeHooks};
+use lucene_search::reader::sorting::DocMap;
+use lucene_search::reader::CodecReader;
+use lucene_search::{Error, Result};
 
 /// `REORDERED`: the diagnostics key Java records on a merged segment.
 pub const REORDERED: &str = "bp.reordered";

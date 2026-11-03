@@ -21,11 +21,11 @@ use lucene_index::index_writer::IndexWriter;
 use lucene_index::segment_info::LuceneVersion;
 use lucene_store::directory::Directory;
 
-use crate::collector::{ScoreMode, ScoringCollector};
-use crate::directory_reader::DirectoryReader;
-use crate::index_searcher::IndexSearcher;
-use crate::query::BooleanQuery;
-use crate::{Error, Result};
+use lucene_search::collector::{ScoreMode, ScoringCollector};
+use lucene_search::directory_reader::DirectoryReader;
+use lucene_search::index_searcher::IndexSearcher;
+use lucene_search::query::BooleanQuery;
+use lucene_search::{Error, Result};
 
 /// The version and codec the splitters' writers record: `new
 /// IndexWriterConfig(null)` on Lucene 10.5.0's default codec.

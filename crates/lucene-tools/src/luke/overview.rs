@@ -4,8 +4,8 @@
 
 use std::collections::HashMap;
 
+use lucene_misc::high_freq::{get_high_freq_terms, TermOrder};
 use lucene_search::directory_reader::DirectoryReader;
-use lucene_search::misc::high_freq::{get_high_freq_terms, TermOrder};
 use lucene_search::multi_terms::MultiTerms;
 use lucene_search::reader::{merged_field_infos, IndexReader};
 

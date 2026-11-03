@@ -8,12 +8,12 @@
 use lucene_store::directory::Directory;
 
 use super::{index_error, live_flags, match_flags, open_writer};
-use crate::directory_reader::DirectoryReader;
-use crate::extended_query::{
+use lucene_search::directory_reader::DirectoryReader;
+use lucene_search::extended_query::{
     ExtendedQuery, MultiTermQuery, MultiTermSource, RewriteMethod, TermRangeQuery,
 };
-use crate::query::{BooleanQuery, Clause};
-use crate::Result;
+use lucene_search::query::{BooleanQuery, Clause};
+use lucene_search::Result;
 
 /// `PKIndexSplitter`.
 pub struct PkIndexSplitter<'d> {
