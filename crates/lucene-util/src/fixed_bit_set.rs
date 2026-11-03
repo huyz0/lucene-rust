@@ -382,6 +382,49 @@ impl FixedBitSet {
         }
     }
 
+    /// `FixedBitSet.or(DocIdSetIterator)` for a `DocBaseBitSetIterator`:
+    /// sets bit `word_offset * 64 + i` for every bit `i` set in `words`, a
+    /// word at a time. Bits that fall at or past `len()` are dropped, and the
+    /// answer is `false` when there were any.
+    pub fn or_words_at(&mut self, word_offset: usize, words: &[u64]) -> bool {
+        self.merge_words_at(word_offset, words, |a, b| *a |= b)
+    }
+
+    /// `FixedBitSet.andNot(DocIdSetIterator)` for a `DocBaseBitSetIterator`:
+    /// clears bit `word_offset * 64 + i` for every bit `i` set in `words`, as
+    /// [`Self::or_words_at`] sets them.
+    pub fn and_not_words_at(&mut self, word_offset: usize, words: &[u64]) -> bool {
+        self.merge_words_at(word_offset, words, |a, b| *a &= !b)
+    }
+
+    #[inline]
+    fn merge_words_at(
+        &mut self,
+        word_offset: usize,
+        words: &[u64],
+        op: impl Fn(&mut u64, u64),
+    ) -> bool {
+        let own = bits2words(self.num_bits);
+        let fit = own.saturating_sub(word_offset).min(words.len());
+        let mut in_range = words[fit..].iter().all(|&w| w == 0);
+        if fit == 0 {
+            return in_range;
+        }
+        let dst = &mut self.words[word_offset..word_offset + fit];
+        let (last_dst, head_dst) = dst.split_last_mut().expect("fit > 0");
+        for (a, &b) in head_dst.iter_mut().zip(&words[..fit - 1]) {
+            op(a, b);
+        }
+        let mut last = words[fit - 1];
+        if word_offset + fit == own && self.num_bits & 63 != 0 {
+            let keep = (1u64 << (self.num_bits & 63)) - 1;
+            in_range &= last & !keep == 0;
+            last &= keep;
+        }
+        op(last_dst, last);
+        in_range
+    }
+
     /// Port of `FixedBitSet.intersectionCount(a, b)`: the number of bits set
     /// in both, without materializing the intersection.
     pub fn intersection_count(a: &FixedBitSet, b: &FixedBitSet) -> usize {
@@ -1188,6 +1231,26 @@ mod tests {
         let bs = FixedBitSet::new(5);
         assert!(!bs.is_empty());
         assert_eq!(bs.len(), 5);
+    }
+
+    #[test]
+    fn or_and_not_words_at_match_bit_by_bit_and_drop_ghost_bits() {
+        let mut a = FixedBitSet::new(200);
+        let words = [0x8000_0000_0000_0001u64, u64::MAX];
+        assert!(a.or_words_at(1, &words));
+        for i in 0..200 {
+            let want = i == 64 || i == 127 || (128..192).contains(&i);
+            assert_eq!(a.get(i), want, "bit {i}");
+        }
+        // Word 3 holds bits 192..256 but only 192..200 exist.
+        assert!(!a.or_words_at(3, &[u64::MAX]));
+        assert_eq!(a.cardinality(), 2 + 64 + 8);
+        assert!(!a.or_words_at(4, &[1]));
+        assert!(a.or_words_at(9, &[0]));
+        assert!(a.and_not_words_at(2, &[u64::MAX]));
+        assert_eq!(a.cardinality(), 2 + 8);
+        assert!(!a.and_not_words_at(3, &[u64::MAX]));
+        assert_eq!(a.cardinality(), 2);
     }
 
     #[test]
