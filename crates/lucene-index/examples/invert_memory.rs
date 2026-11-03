@@ -1,11 +1,6 @@
 //! What one flush's inverted form costs in memory, against the **indexed
-//! field's** text it was built from -- the instrument for `LEDGER.md` item 15,
-//! the block-pool redesign.
-//!
-//! Not directly comparable to c3's "8.3 MB of text becomes 78.5 MB, 9.4x":
-//! that ratio's denominator is the whole document arena, stored `id` field
-//! included, where this one is the body text alone (4.90 MB on the default
-//! shape). The MB column is what carries across; the ratio is not.
+//! field's** text it was built from (the body text alone, 4.90 MB on the
+//! default shape, not the whole document arena).
 //!
 //! Java's `IndexingChain` inverts into `BytesRefHash` +
 //! `ByteBlockPool`/`IntBlockPool`/`ByteSlicePool` and pays *zero* heap objects

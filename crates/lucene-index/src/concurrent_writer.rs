@@ -1,4 +1,4 @@
-//! Many indexing threads, one index -- the T4.3, Java's `DocumentsWriter`
+//! Many indexing threads, one index -- Java's `DocumentsWriter`
 //! (`DocumentsWriterPerThreadPool`, `DocumentsWriterFlushControl`,
 //! `DocumentsWriterFlushQueue`) plus the executor half of
 //! `ConcurrentMergeScheduler`, in the shape `PLAN.md` §3.5 point 6 sets:
@@ -76,8 +76,7 @@
 //! see [`IndexWriter::finish_merge`]. Each ticket's frozen packet is applied to
 //! every published segment under the control lock, where Java applies
 //! packets outside `IndexWriter`'s monitor, per segment; that is the cost the
-//! update benchmark still pays (`docs/milestones/m4-write-path-hardened.md`,
-//! T4.3). The merge policy's segment statistics are read from disk under the
+//! update benchmark pays. The merge policy's segment statistics are read from disk under the
 //! control lock too.
 
 use std::collections::{HashSet, VecDeque};

@@ -1,23 +1,20 @@
-//! Alternating A/B measurement of `IndexFileDeleter`'s **checkpoint** (ledger
-//! item 25b): the same segment list reference-counted twice, once with each
-//! segment's file set already in memory and once with the deleter having to
+//! Alternating A/B measurement of `IndexFileDeleter`'s **checkpoint**:
+//! the same segment list reference-counted twice, once with each segment's file set already in memory and once with the deleter having to
 //! open and parse every `.si` to get it.
 //!
 //! What the change is. Java's `SegmentCommitInfo` holds its `SegmentInfo`, so
 //! `SegmentInfos.files()` -- and therefore every checkpoint -- reads a
 //! segment's file set out of memory. This port's `SegmentCommitInfo`
-//! deliberately does not own the parsed `.si`, so the deleter opened the file
-//! and ran `segment_info::parse` over it (index-header check and a CRC over
-//! the whole file included). `c36-merge-metadata` left exactly one such read
-//! per flushed segment and pinned it with a counting `Directory`;
-//! `IndexFileDeleter::record_segment_files` removes it, fed from the same
+//! deliberately does not own the parsed `.si`; without help the deleter
+//! opens the file and runs `segment_info::parse` over it (index-header check
+//! and a CRC over the whole file included).
+//! `IndexFileDeleter::record_segment_files` avoids that, fed from the same
 //! in-memory `SegmentInfo` `seal_flushed_segment` encodes.
 //!
 //! Both arms are shipped code paths and run in one process from one build:
 //! arm A is a deleter the writer has told about its segments, arm B is one
-//! that has not been. There is no second binary and no rebuild between arms --
-//! the trap `c42-readpath-perf` found in `scripts/bench-micro.sh`, where the
-//! container had been timing a months-old binary. Criterion is not used: it
+//! that has not been. There is no second binary and no rebuild between arms, so a
+//! stale binary cannot be timed. Criterion is not used: it
 //! reported 83/91/129 µs for identical code on this machine,
 //! so every figure is a **min of N
 //! alternating repetitions**.
@@ -143,7 +140,7 @@ fn run(label: &str, segments: usize, reps: usize) {
         deleter.checkpoint(black_box(&infos), false).unwrap();
         best_memory = best_memory.min(t.elapsed().as_nanos());
 
-        // Arm B: the pre-`c43-final-cleanup` situation -- the deleter has to
+        // Arm B: the deleter has to
         // open and parse every `.si` itself.
         let mut deleter =
             IndexFileDeleter::open(&dir, &infos, DeletionPolicy::KeepOnlyLastCommit).unwrap();

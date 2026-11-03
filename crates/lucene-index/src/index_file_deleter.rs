@@ -763,11 +763,9 @@ impl<'d> IndexFileDeleter<'d> {
     /// Measurement-only: drop every recorded file set, so the next checkpoint
     /// has to open and parse each `.si` again.
     ///
-    /// This is the pre-`c43-final-cleanup` state of the deleter, and it exists
-    /// so `examples/deleter_checkpoint.rs` can time both arms in **one process
-    /// from one build** -- the only shape of A/B this project trusts (see
-    /// `docs/sweep/m2/c24-arith-codecs.md` on criterion and `c42`'s stale
-    /// binary). Correct but pointless in production: the cache refills itself
+    It exists so `examples/deleter_checkpoint.rs` can time both arms in
+    /// **one process from one build**, the only shape of A/B this project
+    /// trusts. Correct but pointless in production: the cache refills itself
     /// from disk.
     #[doc(hidden)]
     pub fn forget_segment_files(&mut self) {
