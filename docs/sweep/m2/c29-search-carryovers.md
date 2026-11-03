@@ -117,7 +117,7 @@ Swept clean; c14's A1 closed. c14's A2 (`check_index` reads the base `.fnm`) is
 
 ---
 
-## 2. `crates/lucene-search/src/highlighter.rs` — c23's F13, the offset unit
+## 2. `crates/lucene-highlighter/src/highlighter.rs` — c23's F13, the offset unit
 
 Java: `analysis/tokenattributes/OffsetAttribute`,
 `search/uhighlight/{Passage,DefaultPassageFormatter,FieldHighlighter}`.
@@ -198,7 +198,7 @@ The fix is contained but not here:
   converts *scalars* to bytes, so it is itself wrong for astral text — the
   `GenAnalysis` fixture has no supplementary-plane case, which is worth adding
   at the same time).
-- `crates/lucene-search/src/highlighter.rs::offsets_from_analysis`'s boundary
+- `crates/lucene-highlighter/src/highlighter.rs::offsets_from_analysis`'s boundary
   conversion then becomes an identity and should be deleted, not left in.
 - `lucene-index`'s `indexing_chain` passes offsets through opaquely, so it
   needs no change; its ASCII-only positions fixtures stay green either way,
@@ -371,7 +371,7 @@ estimate is pinned; the BKD walk is a precise `lucene-codecs` handoff.
 
 ---
 
-## 5. `crates/lucene-search/src/highlighter.rs` — `PhraseHelper`
+## 5. `crates/lucene-highlighter/src/highlighter.rs` — `PhraseHelper`
 
 Java: `search/uhighlight/PhraseHelper.java`.
 

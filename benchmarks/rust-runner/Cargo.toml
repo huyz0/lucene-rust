@@ -8,6 +8,11 @@ publish = false
 [dependencies]
 lucene-store = { path = "../../crates/lucene-store" }
 lucene-search = { path = "../../crates/lucene-search", features = ["test-support"] }
+lucene-replicator = { path = "../../crates/lucene-replicator" }
+lucene-misc = { path = "../../crates/lucene-misc" }
+lucene-queryparser = { path = "../../crates/lucene-queryparser" }
+lucene-monitor = { path = "../../crates/lucene-monitor" }
+lucene-highlighter = { path = "../../crates/lucene-highlighter" }
 lucene-codecs = { path = "../../crates/lucene-codecs", features = ["test-support"] }
 lucene-index = { path = "../../crates/lucene-index" }
 lucene-ffi = { path = "../../crates/lucene-ffi" }

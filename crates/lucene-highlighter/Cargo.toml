@@ -1,0 +1,20 @@
+[package]
+name = "lucene-highlighter"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+lucene-util = { path = "../lucene-util" }
+lucene-store = { path = "../lucene-store" }
+lucene-codecs = { path = "../lucene-codecs" }
+lucene-index = { path = "../lucene-index" }
+lucene-search = { path = "../lucene-search" }
+lucene-analysis = { path = "../lucene-analysis" }
+# UAX #29 sentence segmentation, for the highlighter's `BreakIterator`
+# equivalent -- see `highlighter::sentence_boundaries`.
+unicode-segmentation.workspace = true
+
+[dev-dependencies]
+lucene-queryparser = { path = "../lucene-queryparser" }
+lucene-util = { path = "../lucene-util", features = ["test-support"] }

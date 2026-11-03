@@ -33,7 +33,7 @@ import org.apache.lucene.store.FSDirectory;
  * three highlighter configurations. {@code matchhighlight.tsv}: configuration, query index,
  * then per hit document in the order returned: {@code id=field:values|...}. {@code words.tsv}:
  * the boundaries of {@code BreakIterator.getWordInstance(Locale.ROOT)} over
- * {@code matchhighlight-words.txt}. {@code crates/lucene-search/tests/matchhighlight_fixtures.rs}
+ * {@code matchhighlight-words.txt}. {@code crates/lucene-highlighter/tests/matchhighlight_fixtures.rs}
  * compares.
  */
 public class GenMatchHighlight {

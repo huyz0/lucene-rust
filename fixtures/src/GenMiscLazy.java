@@ -32,7 +32,7 @@ import org.apache.lucene.util.BytesRef;
  * Stages: 1 = group A handed out; 2 = A's first value read; 3 = group B handed out; 4 = B's first
  * value read; 5 = every value read.
  *
- * <p>Read by {@code crates/lucene-search/tests/misc_fixtures.rs}.
+ * <p>Read by {@code crates/lucene-misc/tests/misc_fixtures.rs}.
  */
 public class GenMiscLazy {
 

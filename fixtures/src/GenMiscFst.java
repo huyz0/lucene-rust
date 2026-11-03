@@ -29,7 +29,7 @@ import org.apache.lucene.util.fst.Util;
  * get  hexKey  result       Util.get: L:v, T:first,second, or M:v;v;...
  * </pre>
  *
- * Read by {@code crates/lucene-search/tests/misc_fst_fixtures.rs}.
+ * Read by {@code crates/lucene-misc/tests/misc_fst_fixtures.rs}.
  */
 public class GenMiscFst {
   static Path out;

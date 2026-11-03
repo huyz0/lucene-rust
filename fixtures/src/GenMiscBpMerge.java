@@ -36,7 +36,7 @@ import org.apache.lucene.store.FSDirectory;
  * (minNaturalMergeNumDocs above the merge's size, so the natural merge is left in order, run as a
  * non-forced merge through {@code maybeMerge}).
  *
- * <p>Read by {@code crates/lucene-search/tests/misc_bp_fixtures.rs}.
+ * <p>Read by {@code crates/lucene-misc/tests/misc_bp_fixtures.rs}.
  */
 public class GenMiscBpMerge {
 

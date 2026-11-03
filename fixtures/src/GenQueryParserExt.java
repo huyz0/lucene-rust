@@ -23,7 +23,7 @@ import org.apache.lucene.search.TermQuery;
  * the classic corpus, with five extensions (upper-cased term, nested parse, {@code null}, a
  * {@code ParseException}, a boosted term) under the default {@code :} delimiter and {@code #}
  * ({@code <config>.tsv}; rows as {@link GenQueryParserClassic}'s). {@code
- * crates/lucene-search/tests/queryparser_ext_fixtures.rs} compares.
+ * crates/lucene-queryparser/tests/queryparser_ext_fixtures.rs} compares.
  */
 public class GenQueryParserExt {
 

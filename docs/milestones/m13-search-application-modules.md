@@ -68,10 +68,10 @@ Each module has a per-class inventory, `docs/inventory/lucene-<module>.tsv`
 - **T13.1** — Query parsers: a differential harness that parses a corpus of
   query strings in Java and in Rust and compares the query trees.
   *Progress:* the harness is `fixtures/src/GenQueryParserClassic.java` ->
-  `crates/lucene-search/tests/queryparser_classic_fixtures.rs`: a query's
+  `crates/lucene-queryparser/tests/queryparser_classic_fixtures.rs`: a query's
   `toString` and class tree, or its exception message, row for row. The
   classic parser is the JavaCC 7 lexer and parser ported state for state
-  (`crates/lucene-search/src/queryparser/classic/`), so its 9,000-odd
+  (`crates/lucene-queryparser/src/classic/`), so its 9,000-odd
   failing rows carry Lucene's token, column and expected tokens; with
   `MultiFieldQueryParser` it matches every row under fourteen
   configurations (operators, analyzers, synonyms, per-field analyzers,

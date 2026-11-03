@@ -34,7 +34,7 @@ import org.apache.lucene.util.BytesRef;
  * E  case  message                  the rearrange failed with this IllegalStateException message
  * </pre>
  *
- * <p>Read by {@code crates/lucene-search/tests/misc_rearrange_fixtures.rs}.
+ * <p>Read by {@code crates/lucene-misc/tests/misc_rearrange_fixtures.rs}.
  */
 public class GenMiscRearrange {
 

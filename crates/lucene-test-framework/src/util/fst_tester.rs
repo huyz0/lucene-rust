@@ -22,7 +22,7 @@ use lucene_codecs::fst_compiler::{
     CompileError, FstCompiler, FstCompilerBuilder, FstOutputs, FstReadError,
 };
 use lucene_codecs::fst_util::{self, IntsRefFstEnum, TypedFst, END_LABEL};
-use lucene_search::misc::{ListOfOutputs, ListOutput};
+use lucene_misc::{ListOfOutputs, ListOutput};
 use lucene_util::java_random::JavaRandom;
 
 use super::lucene_test_case::at_least;

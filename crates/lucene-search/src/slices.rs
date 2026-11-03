@@ -84,10 +84,7 @@ pub(crate) fn estimated_matches(
 }
 
 /// `f` over every slice, the results in slice order.
-pub(crate) fn run_slices<T: Send>(
-    slices: &[Vec<usize>],
-    f: impl Fn(&[usize]) -> T + Sync,
-) -> Vec<T> {
+pub fn run_slices<T: Send>(slices: &[Vec<usize>], f: impl Fn(&[usize]) -> T + Sync) -> Vec<T> {
     let Some((first, rest)) = slices.split_first() else {
         return Vec::new();
     };

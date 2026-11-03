@@ -159,10 +159,10 @@ GENERATED = {
     "crates/lucene-analysis/src/snowball/algorithms/": (
         "the Snowball compiler's output (BSD-3-Clause)", True,
         [("LICENSE", SNOWBALL)]),
-    "crates/lucene-search/src/queryparser/flexible/token_manager.rs": (
+    "crates/lucene-queryparser/src/flexible/token_manager.rs": (
         "Lucene's compiled StandardSyntaxParserTokenManager tables (Apache-2.0)", False,
         [("LICENSE", APACHE)]),
-    "crates/lucene-search/src/queryparser/flexible/constants.rs": (
+    "crates/lucene-queryparser/src/flexible/constants.rs": (
         "Lucene's StandardSyntaxParserConstants (Apache-2.0)", False,
         [("LICENSE", APACHE)]),
     "crates/lucene-analysis/src/standard/tables.rs": (

@@ -14,14 +14,14 @@ use std::time::Instant;
 
 use lucene_analysis::standard::StandardAnalyzer;
 use lucene_analysis::Analyzer;
+use lucene_queryparser::classic::{QueryParser, QueryParserError};
+use lucene_queryparser::ParsedQuery;
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::extended_query::DocAndScoreQuery;
 use lucene_search::field_norms::FieldNorms;
 use lucene_search::index_searcher::IndexSearcher;
 use lucene_search::query::{BooleanQuery, Clause, MatchNoDocsQuery};
 use lucene_search::query_visitor::{self, QueryVisitor, Term};
-use lucene_search::queryparser::classic::{QueryParser, QueryParserError};
-use lucene_search::queryparser::ParsedQuery;
 use lucene_search::vector_query::{
     search_knn_float_vector_query_multi_segment, KnnFloatVectorQuery, KnnSegment, VectorsInput,
 };
