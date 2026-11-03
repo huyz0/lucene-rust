@@ -246,7 +246,8 @@ fn build_document(writer: &mut IndexWriter<'_>, doc: &EntryDoc) -> Result<Explic
                 positions: vec![0],
                 offsets: Vec::new(),
                 payloads: Vec::new(),
-            }],
+            }]
+            .into(),
             norm: Some(length_norm(1)),
         });
         stored.push(StoredField {
@@ -270,7 +271,8 @@ fn build_document(writer: &mut IndexWriter<'_>, doc: &EntryDoc) -> Result<Explic
             positions: Vec::new(),
             offsets: Vec::new(),
             payloads: Vec::new(),
-        }],
+        }]
+        .into(),
         norm: None,
     });
     let cache_id = register(

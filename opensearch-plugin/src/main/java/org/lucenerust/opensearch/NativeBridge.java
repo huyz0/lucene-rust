@@ -38,7 +38,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code jvm_reader.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 57;
+    public static final int EXPECTED_ABI_VERSION = 58;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -278,6 +278,10 @@ public final class NativeBridge {
         static final MethodHandle WRITER_SET_RETENTION = bind(
             "ffi_engine_writer_set_retention",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_BYTE, JAVA_LONG)
+        );
+        static final MethodHandle WRITER_SET_MERGE_ON_FLUSH = bind(
+            "ffi_engine_writer_set_merge_on_flush",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG, JAVA_BYTE)
         );
         static final MethodHandle WRITER_FORCE_MERGE = bind(
             "ffi_engine_writer_force_merge",
@@ -1542,6 +1546,19 @@ public final class NativeBridge {
         }
     }
 
+    /**
+     * Merge-on-commit/refresh: commits and refreshes wait up to {@code waitMillis} for the merges of the
+     * segments they publish ({@code 0} turns them off), picked by {@code MergeOnFlushMergePolicy} when
+     * {@code mergeOnFlushPolicy}.
+     */
+    public static int writerSetMergeOnFlush(long handle, long waitMillis, boolean mergeOnFlushPolicy) {
+        try {
+            return (int) H.WRITER_SET_MERGE_ON_FLUSH.invokeExact(handle, waitMillis, (byte) (mergeOnFlushPolicy ? 1 : 0));
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
     /** {@code forceMerge(maxSegments)}, or {@code forceMergeDeletes()}; writes the newest generation. */
     public static int writerForceMerge(long handle, int maxSegments, boolean onlyDeletes, long[] outGeneration) {
         try (Scratch s = Scratch.open()) {
@@ -1559,16 +1576,21 @@ public final class NativeBridge {
         }
     }
 
-    /** Fills {@code out} with the {@code STAT_*} counters (as many as it holds). */
+    /**
+     * Fills {@code out} with the {@code STAT_*} counters, as many as it holds: the writer reads only
+     * those, so a one-element array asks for the RAM count alone, which is cheap while other threads
+     * index.
+     */
     public static int writerStats(long handle, long[] out) {
+        if (out == null) {
+            return nullArgument("out");
+        }
+        int n = Math.min(out.length, STAT_COUNT);
         try (Scratch s = Scratch.open()) {
             MemorySegment stats = s.alloc((long) STAT_COUNT * Long.BYTES);
-            int rc = (int) H.WRITER_STATS.invokeExact(handle, stats, (long) STAT_COUNT);
+            int rc = (int) H.WRITER_STATS.invokeExact(handle, stats, (long) n);
             if (rc == OK) {
-                if (out == null) {
-                    return nullArgument("out");
-                }
-                MemorySegment.copy(stats, JAVA_LONG, 0, out, 0, Math.min(out.length, STAT_COUNT));
+                MemorySegment.copy(stats, JAVA_LONG, 0, out, 0, n);
             }
             return rc;
         } catch (Throwable t) {

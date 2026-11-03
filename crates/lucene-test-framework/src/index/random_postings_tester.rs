@@ -592,11 +592,17 @@ impl RandomPostingsTester {
                     if inverted.last().is_none_or(|f| f.field_number != number) {
                         inverted.push(InvertedField {
                             field_number: number,
-                            terms: Vec::new(),
+                            terms: Default::default(),
                             norm: Some(doc_to_norm(doc)),
                         });
                     }
-                    inverted.last_mut().expect("pushed above").terms.push(t);
+                    inverted.last_mut().expect("pushed above").terms.push(
+                        &t.term,
+                        t.freq,
+                        &t.positions,
+                        &t.offsets,
+                        &t.payloads,
+                    );
                 }
             }
         }
