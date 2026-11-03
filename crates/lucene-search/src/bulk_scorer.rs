@@ -53,6 +53,67 @@ pub(crate) use postings::{PhrasePostings, TermPostings};
 
 /// `MaxScoreBulkScorer.INNER_WINDOW_SIZE`.
 const INNER_WINDOW_SIZE: i32 = 1 << 12;
+
+/// `INNER_WINDOW_SIZE` in 64-bit words.
+const WINDOW_WORDS: usize = INNER_WINDOW_SIZE as usize / 64;
+
+/// An inner window's documents (bit `i` is the window's `i`-th): only the
+/// words a window of a given length covers are read and cleared, and an
+/// index is masked to the window, so it is never bounds-checked.
+struct WindowBits(Box<[u64; WINDOW_WORDS]>);
+
+impl WindowBits {
+    fn new() -> Self {
+        Self(Box::new([0; WINDOW_WORDS]))
+    }
+
+    #[inline]
+    fn set(&mut self, i: usize) {
+        let i = i & (INNER_WINDOW_SIZE as usize - 1);
+        self.0[i >> 6] |= 1u64 << (i & 63);
+    }
+
+    #[inline]
+    fn get(&self, i: usize) -> bool {
+        let i = i & (INNER_WINDOW_SIZE as usize - 1);
+        self.0[i >> 6] & (1u64 << (i & 63)) != 0
+    }
+
+    /// The words a window of `len` documents covers.
+    #[inline]
+    fn words_mut(&mut self, len: usize) -> &mut [u64] {
+        let n = len.div_ceil(64).min(WINDOW_WORDS);
+        &mut self.0[..n]
+    }
+
+    /// Calls `f` for each set bit below `len`, in order, clearing them.
+    #[inline]
+    fn drain(&mut self, len: usize, mut f: impl FnMut(usize)) {
+        for (w, word) in self.words_mut(len).iter_mut().enumerate() {
+            let mut bits = std::mem::take(word);
+            while bits != 0 {
+                f((w << 6) | bits.trailing_zeros() as usize);
+                bits &= bits.wrapping_sub(1);
+            }
+        }
+    }
+}
+
+/// The 64 bits of `live` from document `from` on (bit `i` is document
+/// `from + i`); bits past its end are clear.
+#[inline]
+fn live_word_at(live: &FixedBitSet, from: i32) -> u64 {
+    let words = live.words();
+    let from = from as usize;
+    let (at, shift) = (from >> 6, from & 63);
+    let lo = words.get(at).copied().unwrap_or(0) >> shift;
+    if shift == 0 {
+        return lo;
+    }
+    // ARITH: 0 < shift < 64.
+    let hi = words.get(at + 1).copied().unwrap_or(0) << (64 - shift);
+    lo | hi
+}
 /// `BlockMaxConjunctionBulkScorer.MAX_WINDOW_SIZE`.
 const MAX_WINDOW_SIZE: i32 = 65536;
 
@@ -223,7 +284,8 @@ fn compact_by_score(docs: &mut [i32], scores: &mut [f64], min: f64) -> usize {
     while n < len && scores[n] >= min {
         n += 1;
     }
-    for i in n..len {
+    let start = n;
+    for i in start..len {
         let (d, s) = (docs[i], scores[i]);
         // `n <= i`: the `min` tells the compiler, so neither write is
         // bounds-checked; written before it is read again.
@@ -1908,8 +1970,10 @@ pub(crate) struct MaxScore {
     first_required: usize,
     next_min_competitive: f32,
     max_score_sums: Vec<f64>,
-    window_matches: FixedBitSet,
-    window_scores: Vec<f64>,
+    window_matches: WindowBits,
+    /// Indexed by window position masked to the window, so never
+    /// bounds-checked.
+    window_scores: Box<[f64; INNER_WINDOW_SIZE as usize]>,
     num_outer_windows: i64,
     num_candidates: i64,
     min_window_size: i32,
@@ -1918,7 +1982,7 @@ pub(crate) struct MaxScore {
     min_competitive: f32,
     /// `filterMatches`: the filter's documents in the current inner window,
     /// when [`Self::with_filter`] chose the bit-set path over leapfrogging.
-    filter_matches: Option<FixedBitSet>,
+    filter_matches: Option<WindowBits>,
     /// The segment's `maxDoc` (`NO_MORE_DOCS` when unknown): no candidate
     /// lies at or past it.
     max_doc: i32,
@@ -1954,8 +2018,8 @@ impl MaxScore {
             first_required: n,
             next_min_competitive: f32::INFINITY,
             max_score_sums: vec![0.0; n],
-            window_matches: FixedBitSet::new(INNER_WINDOW_SIZE as usize),
-            window_scores: vec![0.0; INNER_WINDOW_SIZE as usize],
+            window_matches: WindowBits::new(),
+            window_scores: Box::new([0.0; INNER_WINDOW_SIZE as usize]),
             num_outer_windows: 0,
             num_candidates: 0,
             min_window_size: 1,
@@ -1995,7 +2059,7 @@ impl MaxScore {
                 .map(MaxScoreLeg::leg_cost)
                 .fold(0i64, i64::saturating_add);
             if min_cost >= filter_cost || (legs.len() > 4 && cost >= filter_cost) {
-                self.filter_matches = Some(FixedBitSet::new(INNER_WINDOW_SIZE as usize));
+                self.filter_matches = Some(WindowBits::new());
             }
         }
         self
@@ -2024,6 +2088,35 @@ impl MaxScore {
         ms.docs.extend(legs.iter().map(MaxScoreLeg::cur));
         ms.min_competitive = min_competitive_score(collector);
         let filter_cost = filter.as_deref().map(|f| f.cost());
+        if collector.score_mode().is_exhaustive() {
+            // No threshold can ever be published (`BooleanScorer`'s case in
+            // Lucene): every clause is essential over one window, so no
+            // window bounds or partitions are worked out.
+            let n = legs.len();
+            ms.order.clear();
+            ms.order.extend(0..n);
+            ms.first_essential = 0;
+            ms.first_required = n;
+            ms.next_min_competitive = f32::INFINITY;
+            for (i, leg) in legs.iter_mut().enumerate() {
+                if leg.cur() < min {
+                    let d = leg.advance(min)?;
+                    leg.set_cur(d);
+                    ms.docs[i] = d;
+                }
+            }
+            ms.build_heap();
+            while ms.top().1 < max {
+                match filter.as_deref_mut() {
+                    Some(f) => {
+                        ms.score_inner_window_with_filter(legs, f, live_docs, collector, max)?
+                    }
+                    None => ms.score_inner_window(legs, live_docs, collector, max)?,
+                }
+            }
+            ms.num_outer_windows += 1;
+            return Ok(Self::next_candidate(legs, max, ms.max_doc));
+        }
         let mut outer_min = min;
         'outer: while outer_min < max {
             let mut outer_max = ms
@@ -2182,7 +2275,9 @@ impl MaxScore {
         let Some(mut bits) = self.filter_matches.take() else {
             return Ok(());
         };
-        bits.clear_all();
+        // ARITH: `inner_min <= inner_max <= inner_min + INNER_WINDOW_SIZE`.
+        let len = (inner_max - inner_min) as usize;
+        bits.words_mut(len).fill(0);
         let mut doc = filter.doc_id();
         if doc < inner_max {
             if doc < inner_min {
@@ -2197,14 +2292,13 @@ impl MaxScore {
             }
         }
         if let Some(live) = live_docs {
-            // `acceptDocs.applyMask(filterMatches, innerWindowMin)`.
-            let mut i = bits.next_set_bit(0);
-            while let Some(b) = i {
-                if !live.get_doc(inner_min.wrapping_add(b as i32)) {
-                    // FBS: `b` came from `next_set_bit` on `bits`.
-                    bits.clear(b);
+            // `acceptDocs.applyMask(filterMatches, innerWindowMin)`, a word
+            // at a time.
+            for (w, word) in bits.words_mut(len).iter_mut().enumerate() {
+                if *word != 0 {
+                    // ARITH: `w * 64 < len`, so the offset stays below `inner_max`.
+                    *word &= live_word_at(live, inner_min + (w * 64) as i32);
                 }
-                i = bits.next_set_bit(b + 1);
             }
         }
         loop {
@@ -2225,9 +2319,8 @@ impl MaxScore {
                     if !bits.get(i) {
                         continue;
                     }
-                    // FBS: as above.
                     self.window_matches.set(i);
-                    self.window_scores[i] += score as f64;
+                    self.window_scores[i & (INNER_WINDOW_SIZE as usize - 1)] += score as f64;
                 }
             }
             legs[top].set_cur(legs[top].doc_id());
@@ -2240,12 +2333,12 @@ impl MaxScore {
         self.acc.scores.clear();
         let window_scores = &mut self.window_scores;
         let acc = &mut self.acc;
-        self.window_matches.for_each_set_bit(|i| {
+        self.window_matches.drain(len, |i| {
+            let i = i & (INNER_WINDOW_SIZE as usize - 1);
             acc.docs.push(inner_min + i as i32);
             acc.scores.push(window_scores[i]);
             window_scores[i] = 0.0;
         });
-        self.window_matches.clear_all();
         self.score_non_essential(legs, collector)
     }
 
@@ -2506,12 +2599,11 @@ impl MaxScore {
                 }
                 for (&doc, &score) in self.single.docs.iter().zip(&self.single.scores) {
                     let i = (doc - inner_min) as usize;
-                    // FBS: `window_matches` is `FixedBitSet::new(INNER_WINDOW_SIZE)`,
-                    // and `next_docs_and_scores(inner_max, ..)` only returns docs in
+                    // `next_docs_and_scores(inner_max, ..)` only returns docs in
                     // `inner_min..inner_max`, a span of at most `INNER_WINDOW_SIZE`
                     // (`inner_max = min(max, inner_min + INNER_WINDOW_SIZE)`).
                     self.window_matches.set(i);
-                    self.window_scores[i] += score as f64;
+                    self.window_scores[i & (INNER_WINDOW_SIZE as usize - 1)] += score as f64;
                 }
             }
             legs[top].set_cur(legs[top].doc_id());
@@ -2523,12 +2615,14 @@ impl MaxScore {
         self.acc.scores.clear();
         let window_scores = &mut self.window_scores;
         let acc = &mut self.acc;
-        self.window_matches.for_each_set_bit(|i| {
+        // ARITH: `inner_min <= inner_max <= inner_min + INNER_WINDOW_SIZE`.
+        let len = (inner_max - inner_min) as usize;
+        self.window_matches.drain(len, |i| {
+            let i = i & (INNER_WINDOW_SIZE as usize - 1);
             acc.docs.push(inner_min + i as i32);
             acc.scores.push(window_scores[i]);
             window_scores[i] = 0.0;
         });
-        self.window_matches.clear_all();
         self.score_non_essential(legs, collector)
     }
 
