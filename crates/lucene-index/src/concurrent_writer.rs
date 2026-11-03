@@ -273,8 +273,12 @@ pub struct ConcurrentIndexWriter<'d> {
     /// Held for the whole of a [`Self::flush`] or [`Self::commit`]: one full
     /// flush at a time, as Java's `IndexWriter.fullFlushLock`.
     full_flush: Mutex<()>,
-    /// Round-robin start for choosing a slot.
+    /// Which slot to wait on when every slot is taken.
     next_slot: AtomicUsize,
+    /// Tests: every add takes the next slot in rotation, so one thread can
+    /// fill several buffers.
+    #[cfg(test)]
+    rotate_slots: std::sync::atomic::AtomicBool,
     max_buffered_docs: Option<usize>,
     ram_buffer_bytes: Option<usize>,
     merge_policy: Option<MergePolicyConfig>,
@@ -414,6 +418,8 @@ impl<'d> ConcurrentIndexWriter<'d> {
             log: Mutex::new(log),
             full_flush: Mutex::new(()),
             next_slot: AtomicUsize::new(0),
+            #[cfg(test)]
+            rotate_slots: std::sync::atomic::AtomicBool::new(false),
             max_buffered_docs,
             ram_buffer_bytes,
             merge_policy,
@@ -868,24 +874,34 @@ impl<'d> ConcurrentIndexWriter<'d> {
         self.slices[i].store(end, Ordering::Release);
     }
 
-    /// Locks a free slot -- any, trying each once from a rotating start, then
-    /// waiting on one -- `DocumentsWriterPerThreadPool.getAndLock`.
+    /// Locks a free slot -- `DocumentsWriterPerThreadPool.getAndLock`. Free
+    /// slots are tried lowest first, so a thread indexing alone keeps filling
+    /// one buffer and `k` threads fill `k` buffers, as Java hands out a free
+    /// `DocumentsWriterPerThread` before it creates another. With every slot
+    /// taken, it waits on one, picked in rotation.
     fn acquire_slot(&self) -> (usize, MutexGuard<'_, Dwpt>) {
-        let n = self.slots.len();
-        // `n >= 1` (`new` makes at least one slot); `checked_rem` only because
-        // the arithmetic gate cannot see that.
-        let start = self
-            .next_slot
-            .fetch_add(1, Ordering::Relaxed)
-            .checked_rem(n)
-            .unwrap_or(0);
-        for k in 0..n {
-            let i = start.saturating_add(k).checked_rem(n).unwrap_or(0);
-            if let Ok(guard) = self.slots[i].try_lock() {
+        #[cfg(test)]
+        if self.rotate_slots.load(Ordering::Relaxed) {
+            let i = self
+                .next_slot
+                .fetch_add(1, Ordering::Relaxed)
+                .checked_rem(self.slots.len())
+                .unwrap_or(0);
+            return (i, lock(&self.slots[i]));
+        }
+        for (i, slot) in self.slots.iter().enumerate() {
+            if let Ok(guard) = slot.try_lock() {
                 return (i, guard);
             }
         }
-        (start, lock(&self.slots[start]))
+        // `n >= 1` (`new` makes at least one slot); `checked_rem` only because
+        // the arithmetic gate cannot see that.
+        let wait = self
+            .next_slot
+            .fetch_add(1, Ordering::Relaxed)
+            .checked_rem(self.slots.len())
+            .unwrap_or(0);
+        (wait, lock(&self.slots[wait]))
     }
 
     /// `DocumentsWriterPerThread.updateDocuments` + `finishDocuments`: the
@@ -2823,6 +2839,7 @@ mod tests {
         let tmp = TempDir::new("concurrent-largest");
         let dir = FsDirectory::open(&tmp);
         let w = ram_writer(&dir, 10);
+        w.rotate_slots.store(true, Ordering::Relaxed);
         for k in 0..9 {
             w.add_document(doc(&format!("t1x{k:02}"), 0)).unwrap();
         }
@@ -2846,6 +2863,7 @@ mod tests {
             let tmp = TempDir::new("concurrent-pending");
             let dir = FsDirectory::open(&tmp);
             let w = ram_writer(&dir, 10);
+            w.rotate_slots.store(true, Ordering::Relaxed);
             w.set_check_pending_flush_on_update(check);
             let big = Document {
                 fields: vec![
@@ -3392,6 +3410,28 @@ mod tests {
         assert_eq!(lock(&w.core).writer.committed_doc_count().unwrap(), 200);
     }
 
+    /// One thread indexing alone keeps filling one buffer, so a flush writes
+    /// one segment, as Java reuses a free `DocumentsWriterPerThread`.
+    #[test]
+    fn one_thread_fills_one_buffer() {
+        let tmp = TempDir::new("concurrent-one-thread");
+        let dir = FsDirectory::open(&tmp);
+        let w = ConcurrentIndexWriter::new(writer(&dir, 1000), 4).unwrap();
+        for i in 0..20 {
+            w.add_document(doc(&format!("d{i}"), 0)).unwrap();
+        }
+        let counts: Vec<usize> = w.slots.iter().map(|s| lock(s).docs.len()).collect();
+        assert_eq!(counts, [20, 0, 0, 0]);
+        w.commit().unwrap();
+        assert_eq!(
+            crate::segment_infos::read_latest(&dir)
+                .unwrap()
+                .segments
+                .len(),
+            1
+        );
+    }
+
     /// `flushNextBuffer` takes the fullest slot; `tryDeleteDocument` and
     /// `tryUpdateDocValue` act on a snapshot's doc ids and are numbered from
     /// this writer's log.
@@ -3401,6 +3441,7 @@ mod tests {
         let tmp = TempDir::new("concurrent-try");
         let dir = FsDirectory::open(&tmp);
         let w = ConcurrentIndexWriter::new(writer(&dir, 1000), 2).unwrap();
+        w.rotate_slots.store(true, Ordering::Relaxed);
         assert!(!w.flush_next_buffer().unwrap());
         for i in 0..3 {
             w.add_document(doc(&format!("a{i}"), 0)).unwrap();
