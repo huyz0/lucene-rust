@@ -13,7 +13,8 @@
 //! at a selectivity below `maxDoc / 128` (a sorted doc list), around 5% (a
 //! bit set), and above half the segment (the dense field's inverse walk).
 //! `points_range/*` is the `Clause::PointsRange` (i64) path, `point_range/*`
-//! the `PointRangeQuery` (`LongPoint.newRangeQuery`) one.
+//! the `PointRangeQuery` (`LongPoint.newRangeQuery`) one. `walk/*` is the
+//! BKD walk alone into a doc-id list, `sort/*` that list's sort and dedup.
 //!
 //! Run with `cargo bench -p lucene-search --bench point_range`.
 
@@ -79,7 +80,12 @@ fn bench(c: &mut Criterion) {
     g.measurement_time(Duration::from_secs(2));
     g.sample_size(20);
     for field in ["p", "pm", "t", "b"] {
-        for (label, hi) in [("0.5pct", 5_000i64), ("5pct", 50_000), ("70pct", 700_000)] {
+        for (label, hi) in [
+            ("one", 0i64),
+            ("0.5pct", 5_000),
+            ("5pct", 50_000),
+            ("70pct", 700_000),
+        ] {
             let lo = 1_000i64;
             let q = BooleanQuery::new().with_filter([Clause::PointsRange(PointsRangeQuery::new(
                 field,
@@ -99,6 +105,23 @@ fn bench(c: &mut Criterion) {
             assert_eq!(searcher.count(&q2).unwrap(), expected);
             g.bench_function(format!("point_range/{field}/{label}"), |b| {
                 b.iter(|| searcher.count(black_box(&q2)).unwrap())
+            });
+            let points = segs[0].points.unwrap();
+            let number = points.field_number(field).unwrap();
+            let (pl, ph) = (
+                lucene_search::points_query::pack_i64(lo),
+                lucene_search::points_query::pack_i64(lo + hi),
+            );
+            g.bench_function(format!("walk/{field}/{label}"), |b| {
+                b.iter(|| points.reader.range_query(number, &pl, &ph).unwrap().len())
+            });
+            let ids = points.reader.range_query(number, &pl, &ph).unwrap();
+            g.bench_function(format!("sort/{field}/{label}"), |b| {
+                b.iter(|| {
+                    let mut d = ids.clone();
+                    lucene_util::doc_id_sort::sort_dedup_doc_ids(&mut d);
+                    d.len()
+                })
             });
         }
     }
