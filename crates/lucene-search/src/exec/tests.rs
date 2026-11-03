@@ -2072,6 +2072,71 @@ mod fixture {
             .collect()
     }
 
+    /// A per-field similarity whose similarity for the searched field is the
+    /// default BM25 scores every document bit for bit as no similarity does
+    /// (and so as the default path's Lucene fixtures check), in every mode.
+    #[test]
+    fn a_per_field_default_bm25_scores_as_the_default() {
+        use crate::similarities::{
+            Bm25Similarity, ClassicSimilarity, PerFieldSimilarity, Similarity,
+        };
+        use std::sync::Arc;
+        let reader = DirectoryReader::open(&lucene_store::FsDirectory::open(dir())).unwrap();
+        let opened = reader.open_segments().unwrap();
+        let segments = opened.as_open_segments();
+        let owned: Vec<HashMap<String, FieldNorms<'_>>> = reader
+            .field_norms("body")
+            .unwrap()
+            .into_iter()
+            .map(|n| n.into_iter().map(|n| ("body".to_string(), n)).collect())
+            .collect();
+        let per_field = PerFieldSimilarity::new(Arc::new(Bm25Similarity::default()))
+            .with_field("other", Arc::new(ClassicSimilarity::default()));
+        let mut compared = 0;
+        for w in ["w0", "w1", "w2", "w9"] {
+            let q = BooleanQuery::new().with_must([Clause::Term(TermQuery::new("body", w))]);
+            let global = crate::multi_segment::global_boolean_stats(&segments, &q).unwrap();
+            let clause = Clause::Term(TermQuery::new("body", w));
+            for (s, seg) in segments.iter().enumerate() {
+                for mode in [Mode::TopScores, Mode::Complete] {
+                    let scores = |sim: Option<&dyn Similarity>| {
+                        let ctx = LeafContext {
+                            fields: seg.fields,
+                            doc_in: seg.doc_in,
+                            pos_in: seg.pos_in,
+                            pay_in: seg.pay_in,
+                            live_docs: seg.live_docs,
+                            points: seg.points,
+                            norms: Some(&owned[s]),
+                            global: Some(&global),
+                            max_doc: None,
+                            cache: None,
+                            reader: None,
+                            similarity: sim,
+                        };
+                        let mut out = Vec::new();
+                        if let Some(mut sc) =
+                            crate::exec::build::build(&ctx, &clause, 1.0, mode, true).unwrap()
+                        {
+                            loop {
+                                let d = sc.next_doc().unwrap();
+                                if d == crate::exec::NO_MORE_DOCS {
+                                    break;
+                                }
+                                out.push((d, sc.score().unwrap().to_bits()));
+                            }
+                        }
+                        out
+                    };
+                    let want = scores(None);
+                    assert_eq!(scores(Some(&per_field)), want, "{w} {mode:?}");
+                    compared += want.len();
+                }
+            }
+        }
+        assert!(compared > 0);
+    }
+
     /// Every bulk scorer the dispatch can choose is reached by some fixture
     /// query -- so the Lucene differential test in
     /// `tests/mixed_boolean_fixtures.rs` covers each of them, not only the
