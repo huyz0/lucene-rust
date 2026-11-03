@@ -183,11 +183,11 @@ public final class QueryEncoder {
         return new Encoded(out.toByteArray(), null, true);
     }
 
-    /** The native decoder's depth limit ({@code MAX_CLAUSE_DEPTH} in {@code query.rs}). */
+    /** The native decoder's depth limit ({@code MAX_CLAUSE_DEPTH} in {@code clauses.rs}). */
     private static final int MAX_DEPTH = 32;
 
     /**
-     * The native decoder's node limit ({@code MAX_CLAUSE_COUNT} in {@code query.rs}), over every
+     * The native decoder's node limit ({@code MAX_CLAUSE_COUNT} in {@code clauses.rs}), over every
      * node, wrappers included. Lucene counts only leaves and OpenSearch's {@code
      * indices.query.bool.max_clause_count} may raise its limit, so a larger query is legal: it runs
      * on Lucene, under a named reason rather than as a native error.

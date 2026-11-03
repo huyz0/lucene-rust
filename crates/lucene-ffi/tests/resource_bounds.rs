@@ -1,4 +1,4 @@
-//! **Nothing the C ABI hands out outlives its release**, measured in bytes.
+//! **Nothing the library hands out outlives its release**, measured in bytes.
 //!
 //! The time-based soak's replacement for the native side: every entry point
 //! the JVM calls in a loop -- open and close a reader, reopen one from the
@@ -104,18 +104,6 @@ extern "C" {
     fn ffi_close_jvm_reader(handle: u64) -> i32;
     fn ffi_jvm_last_error(out_ptr: *mut *mut u8, out_len: *mut usize) -> i32;
     fn ffi_jvm_free_bytes(ptr: *mut u8, len: usize);
-    fn ffi_open_directory_reader(path: *const c_char, path_len: usize, out: *mut u64) -> i32;
-    fn ffi_close_directory_reader(handle: u64) -> i32;
-    fn ffi_search_term_query_multi_segment(
-        reader_handle: u64,
-        field: *const c_char,
-        field_len: usize,
-        term: *const u8,
-        term_len: usize,
-        top_n: usize,
-        out_scored_results_handle: *mut u64,
-    ) -> i32;
-    fn ffi_close_scored_results(handle: u64) -> i32;
 }
 
 /// A real Java-written two-segment index (`GenMultiSegmentScoring`): four
@@ -268,34 +256,4 @@ fn every_native_resource_is_released_by_its_close() {
     });
     // SAFETY: closing a handle opened above.
     assert_eq!(unsafe { ffi_close_jvm_reader(live) }, 0);
-
-    // The older reader-handle surface: open, search into a results handle,
-    // close both.
-    steady("directory reader and scored results", || {
-        let mut reader = 0;
-        // SAFETY: a live path of the stated length and a live out-pointer.
-        let rc = unsafe {
-            ffi_open_directory_reader(FIXTURE.as_ptr().cast(), FIXTURE.len(), &mut reader)
-        };
-        assert_eq!(rc, 0);
-        let mut results = 0;
-        // SAFETY: live field and term slices and a live out-pointer.
-        let rc = unsafe {
-            ffi_search_term_query_multi_segment(
-                reader,
-                b"body".as_ptr().cast(),
-                4,
-                b"fox".as_ptr(),
-                3,
-                10,
-                &mut results,
-            )
-        };
-        assert_eq!(rc, 0);
-        // SAFETY: closing handles this closure opened.
-        unsafe {
-            assert_eq!(ffi_close_scored_results(results), 0);
-            assert_eq!(ffi_close_directory_reader(reader), 0);
-        }
-    });
 }

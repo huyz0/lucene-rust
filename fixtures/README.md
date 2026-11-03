@@ -1044,8 +1044,7 @@ outright.
 - `GenVectorsFiltered.java` — a **single-segment** index that also carries a
   term dictionary (`vectors_filter_index/` subdirectory): 1200 documents with
   a FLOAT32 and a BYTE vector field plus `bucket`/`group` `StringField`s. It
-  exists for the C ABI, which opens one segment's vector files per handle and
-  therefore needs ground truth from a *one-leaf* index — where
+  gives single-segment ground truth from a *one-leaf* index — where
   `leafProportion == 1` makes `perLeafTopK == k` and no re-entry pass runs.
   Running the same query against one leaf of the four-leaf index is a
   different search (that leaf's collector is pro-rata sized), so

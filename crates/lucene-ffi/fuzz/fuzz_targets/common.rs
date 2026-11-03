@@ -62,23 +62,6 @@ extern "C" {
         out_terminated: *mut bool,
     ) -> i32;
     pub fn ffi_close_jvm_reader(handle: u64) -> i32;
-    pub fn ffi_open_directory_reader(path: *const c_char, path_len: usize, out: *mut u64) -> i32;
-    pub fn ffi_search_boolean_query_multi_segment(
-        reader_handle: u64,
-        clause_occurs: *const u8,
-        clause_kinds: *const u8,
-        clause_fields: *const *const c_char,
-        clause_field_lens: *const usize,
-        clause_terms: *const *const u8,
-        clause_term_lens: *const usize,
-        clause_parents: *const i32,
-        clause_params: *const i32,
-        clause_count: usize,
-        minimum_should_match: i32,
-        top_n: usize,
-        out_scored_results_handle: *mut u64,
-    ) -> i32;
-    pub fn ffi_close_scored_results(handle: u64) -> i32;
 }
 
 pub const FIXTURE: &str = concat!(

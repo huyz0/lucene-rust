@@ -51,9 +51,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # Files that are boundary or test infrastructure rather than a port of
 # anything in Lucene. Each needs a reason, so the list cannot grow silently.
 EXEMPT = {
-    "lucene-ffi/src/raw.rs": "C-ABI pointer/length helpers",
+    "lucene-ffi/src/raw.rs": "FFI pointer/length helpers",
     "lucene-ffi/src/registry.rs": "handle table; the boundary's own machinery",
-    "lucene-ffi/src/legacy_boolean_abi.rs": "test-only bridge pinning the pre-c13 ABI",
     "lucene-util/src/test_support.rs": "shared test scratch-directory guard; compiled only under cfg(test)/the test-support feature",
 }
 PARITY = os.path.join(ROOT, "docs", "parity.md")

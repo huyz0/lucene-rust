@@ -1,46 +1,22 @@
-//! Status codes and the panic/last-error machinery every exported function
-//! in this crate goes through — see the `ffi-safety` skill: "a panic must
-//! never unwind into the JVM" and "all exported calls return a status code".
+//! Status codes and the panic and last-error handling every exported
+//! function goes through.
 //!
-//! Every `extern "C" fn` in this crate is a thin wrapper around
-//! [`guard`], which:
-//! 1. Runs the real body inside [`std::panic::catch_unwind`].
-//! 2. On success, converts the body's `Result<(), FfiStatus>` into the
-//!    plain `i32` the C ABI returns (`0` on `Ok`).
-//! 3. On a caught panic, records a message in a thread-local slot (read
-//!    back via [`crate::ffi_get_last_error_message`]) and returns
-//!    [`FfiStatus::Panic`] instead of propagating the unwind.
-//! 4. On *any* non-`Ok` return, guarantees the thread-local message slot
-//!    describes **this** call: a body that returned a status without
-//!    calling [`set_last_error`] itself (a bare null-pointer or
-//!    buffer-too-small check, say) gets [`FfiStatus::default_message`]
-//!    written for it. Without that backfill,
-//!    [`crate::ffi_get_last_error_message`] would hand the caller a
-//!    *previous*, unrelated failure's text -- a stale message read as a
-//!    diagnosis of the call that just failed, which is worse than an
-//!    uninformative one. The one exported function outside this invariant
-//!    is [`crate::ffi_get_last_error_message`] itself, which bypasses
-//!    [`guard`] deliberately: its own `BufferTooSmall`/`NullPointer`
-//!    returns must *not* overwrite the message the caller is retrying to
-//!    read, so it records nothing and leaves the slot intact for the retry.
+//! Each exported function's body runs inside [`guard`], which catches a panic
+//! (a panic must never unwind into the JVM) and turns the body's
+//! `Result<(), FfiStatus>` into the `i32` it returns, `0` on success. Every
+//! non-`Ok` return leaves a thread-local message about that call: a body that
+//! returned an error without recording one gets [`FfiStatus::default_message`],
+//! so the caller never reads an older failure's text. The plugin reads the
+//! message with `ffi_jvm_last_error`.
 //!
-//! `catch_unwind`'s closure must be [`std::panic::UnwindSafe`]; every raw
-//! pointer this crate receives is `*const`/`*mut`, and raw pointers are
-//! already `UnwindSafe` (unlike `&mut T`, a raw pointer carries no
-//! compiler-enforced invariant a panic could leave torn), so every exported
-//! function's [`guard`]-wrapped closure — which only ever captures raw
-//! pointers and other `Copy` primitives (handles, lengths) — satisfies
-//! `UnwindSafe` on its own. No `AssertUnwindSafe` wrapping is used anywhere
-//! in this crate.
+//! The guarded closures capture only raw pointers and `Copy` values, which
+//! are `UnwindSafe`, so no `AssertUnwindSafe` is needed.
 
 use std::cell::RefCell;
-use std::os::raw::c_char;
 use std::sync::Once;
 
-/// Every exported function's return code. `0` (`Ok`) is success; every
-/// other value is a specific, stable failure reason a Java caller can branch
-/// on without parsing a string (the string is available too, via
-/// [`crate::ffi_get_last_error_message`], for logging).
+/// Every exported function's return code: `0` is success, any other value a
+/// stable failure reason the caller can branch on without parsing the message.
 #[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FfiStatus {
@@ -149,12 +125,7 @@ fn install_panic_hook() {
     });
 }
 
-/// Records `message` in this thread's last-error slot, overwriting any
-/// previous message. Called on every non-`Ok` path so
-/// [`crate::ffi_get_last_error_message`] always reflects the most recent
-/// failure on the calling thread (Java callers are expected to check the
-/// status code and only then, if non-zero, fetch the message — matching a
-/// plain `errno`-style contract).
+/// Records `message` as this thread's last error, replacing the previous one.
 pub fn set_last_error(message: impl Into<String>) {
     ERROR_RECORDED.with(|c| c.set(true));
     LAST_ERROR.with(|slot| *slot.borrow_mut() = message.into());
@@ -162,48 +133,6 @@ pub fn set_last_error(message: impl Into<String>) {
 
 pub(crate) fn last_error() -> String {
     LAST_ERROR.with(|slot| slot.borrow().clone())
-}
-
-/// Copies the calling thread's last-error message into `buf` (a
-/// caller-allocated buffer of `buf_len` bytes), NUL-terminated, writing the
-/// number of bytes written (excluding the NUL) to `*out_written`.
-///
-/// Returns [`FfiStatus::BufferTooSmall`] (without writing anything to
-/// `buf`) if `buf_len` is too small to hold the message plus its
-/// terminating NUL — the caller can retry with a larger buffer; the
-/// message itself is left in the thread-local slot for a retry to read
-/// (this call does not clear it).
-///
-/// # Safety
-/// `buf` must be valid for writes of `buf_len` bytes, and `out_written`
-/// must be valid for a single `usize` write (or null, in which case the
-/// written length is not reported).
-pub unsafe fn get_last_error_message(
-    buf: *mut c_char,
-    buf_len: usize,
-    out_written: *mut usize,
-) -> i32 {
-    let message = last_error();
-    let bytes = message.as_bytes();
-    if bytes.len() + 1 > buf_len {
-        return FfiStatus::BufferTooSmall.code();
-    }
-    if buf.is_null() {
-        return FfiStatus::NullPointer.code();
-    }
-    // SAFETY: caller contract guarantees `buf` is valid for `buf_len` bytes,
-    // and `bytes.len() + 1 <= buf_len` was just checked above.
-    unsafe {
-        std::ptr::copy_nonoverlapping(bytes.as_ptr() as *const c_char, buf, bytes.len());
-        *buf.add(bytes.len()) = 0;
-    }
-    if !out_written.is_null() {
-        // SAFETY: caller contract guarantees `out_written` is valid for one write.
-        unsafe {
-            *out_written = bytes.len();
-        }
-    }
-    FfiStatus::Ok.code()
 }
 
 /// Runs `body` under `catch_unwind`, converting a caught panic into
@@ -354,54 +283,5 @@ mod tests {
         ] {
             assert!(!status.default_message().is_empty(), "{status:?}");
         }
-    }
-
-    #[test]
-    fn get_last_error_message_roundtrips_through_buffer() {
-        set_last_error("hello");
-        let mut buf = [0 as c_char; 16];
-        let mut written: usize = 0;
-        let code =
-            unsafe { get_last_error_message(buf.as_mut_ptr(), buf.len(), &mut written as *mut _) };
-        assert_eq!(code, FfiStatus::Ok.code());
-        assert_eq!(written, 5);
-        let s = unsafe { std::ffi::CStr::from_ptr(buf.as_ptr()) };
-        assert_eq!(s.to_str().unwrap(), "hello");
-    }
-
-    #[test]
-    fn get_last_error_message_reports_buffer_too_small() {
-        set_last_error("a longer message than the buffer");
-        let mut buf = [0 as c_char; 4];
-        let code =
-            unsafe { get_last_error_message(buf.as_mut_ptr(), buf.len(), std::ptr::null_mut()) };
-        assert_eq!(code, FfiStatus::BufferTooSmall.code());
-    }
-
-    #[test]
-    fn get_last_error_message_null_buf_is_null_pointer_error() {
-        set_last_error("");
-        let code = unsafe { get_last_error_message(std::ptr::null_mut(), 0, std::ptr::null_mut()) };
-        // Empty message + NUL fits in buf_len == 0? No: 0+1 > 0, so BufferTooSmall
-        // wins before the null check runs -- verify that ordering explicitly.
-        assert_eq!(code, FfiStatus::BufferTooSmall.code());
-    }
-
-    #[test]
-    fn get_last_error_message_null_buf_with_room_is_null_pointer_error() {
-        set_last_error("");
-        let mut written: usize = 0;
-        let code =
-            unsafe { get_last_error_message(std::ptr::null_mut(), 1, &mut written as *mut _) };
-        assert_eq!(code, FfiStatus::NullPointer.code());
-    }
-
-    #[test]
-    fn get_last_error_message_null_out_written_is_fine() {
-        set_last_error("ok");
-        let mut buf = [0 as c_char; 8];
-        let code =
-            unsafe { get_last_error_message(buf.as_mut_ptr(), buf.len(), std::ptr::null_mut()) };
-        assert_eq!(code, FfiStatus::Ok.code());
     }
 }

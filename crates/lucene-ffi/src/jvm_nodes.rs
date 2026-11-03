@@ -45,9 +45,9 @@ use lucene_search::spans::SpanNode;
 use lucene_util::automaton::Automaton;
 use lucene_util::fixed_bit_set::FixedBitSet;
 
+use crate::clauses::{check_clause_count, MAX_CLAUSE_DEPTH};
 use crate::error::{set_last_error, FfiStatus};
 use crate::jvm_reader::Cursor;
-use crate::query::{check_clause_count, MAX_CLAUSE_DEPTH};
 
 pub(crate) const NODE_TO_PARENT: u8 = 20;
 pub(crate) const NODE_SPAN: u8 = 21;
@@ -361,11 +361,11 @@ pub(crate) fn decode_source(
             // `Intervals.ordered`/`unordered`, so the clause limit bounds it,
             // and each copy counts as a node.
             if count < 1
-                || usize::try_from(count).map_or(true, |n| n > crate::query::MAX_CLAUSE_COUNT)
+                || usize::try_from(count).map_or(true, |n| n > crate::clauses::MAX_CLAUSE_COUNT)
             {
                 return Err(invalid(format!(
                     "query tree: a repeating interval source of {count} copies (want 1..={})",
-                    crate::query::MAX_CLAUSE_COUNT
+                    crate::clauses::MAX_CLAUSE_COUNT
                 )));
             }
             *nodes = nodes.saturating_add(usize::try_from(count).unwrap_or(usize::MAX));
@@ -465,10 +465,10 @@ pub(crate) fn decode_source(
         }
         SOURCE_MULTI_TERM => {
             let max_expansions = c.len()?;
-            if max_expansions > crate::query::MAX_CLAUSE_COUNT {
+            if max_expansions > crate::clauses::MAX_CLAUSE_COUNT {
                 return Err(invalid(format!(
                     "query tree: maxExpansions [{max_expansions}] cannot be greater than {}",
-                    crate::query::MAX_CLAUSE_COUNT
+                    crate::clauses::MAX_CLAUSE_COUNT
                 )));
             }
             let name = utf8(c.bytes()?)?.to_string();

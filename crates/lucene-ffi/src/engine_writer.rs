@@ -520,7 +520,163 @@ fn decode_user_data(blob: &[u8]) -> Result<Vec<(String, String)>, FfiStatus> {
 /// is [`FfiStatus::InvalidArgument`] and fails only the operation; the rest
 /// is I/O and tragic.
 fn writer_error(e: index_writer::Error) -> FfiStatus {
-    crate::writer::map_writer_error("engine writer", e)
+    let status = match &e {
+        index_writer::Error::NoPreparedCommit
+        // Caller-misuse, exactly like NoPreparedCommit: a commit is already
+        // prepared, so this call would have silently reverted it.
+        | index_writer::Error::PrepareCommitAlreadyCalled
+        | index_writer::Error::PreparedCommitPending(_)
+        | index_writer::Error::ConcurrentUnsupported(_)
+        // The explicit-documents mode's refusals and `forceMerge(0)`: both
+        // Java's `IllegalArgumentException`.
+        | index_writer::Error::Explicit(_)
+        // The document API's `IllegalArgumentException`/`IllegalStateException`
+        // refusals (field-schema inconsistencies, bad column batches).
+        | index_writer::Error::Document(_)
+        // A configured similarity returning a 0 norm for a non-empty field:
+        // a caller-supplied object misbehaving, not the disk.
+        | index_writer::Error::ZeroNorm(_)
+        // A `OneMerge`'s caller-supplied hooks failing or answering what the
+        // merge cannot honour: likewise the caller's object.
+        | index_writer::Error::MergeHook(_)
+        | index_writer::Error::InvalidMaxNumSegments(_)
+        | index_writer::Error::UnknownPostingsField(_)
+        | index_writer::Error::UnsupportedPostingsIndexOptions(_, _)
+        // c23's two payload-configuration errors. Both are what Java raises
+        // as `IllegalArgumentException`: `FieldInfo.checkConsistency`'s
+        // "indexed field cannot have payloads without positions", and a
+        // payload supplier installed against a field list where nothing
+        // declares payloads (so every payload would be silently discarded).
+        // c40: `IndexWriter::open`'s field-list validation -- Java's
+        // `FieldInfo`/`FieldInfos` constructors, which throw
+        // `IllegalArgumentException` (this is where "indexed field cannot have
+        // payloads without positions" now surfaces).
+        | index_writer::Error::FieldInfos(_)
+        | index_writer::Error::NoPayloadFields
+        | index_writer::Error::UnknownTermVectorField(_)
+        | index_writer::Error::UnsupportedTermVectorField(_)
+        | index_writer::Error::UnknownDocValuesField(_)
+        | index_writer::Error::UnsupportedDocValuesType(_, _)
+        | index_writer::Error::MissingDenseDocValue(_, _)
+        | index_writer::Error::NonNumericDocValue(_, _, _)
+        | index_writer::Error::NonBinaryDocValue(_, _, _)
+        // Everything below was reaching the `_ => Io` arm, which is wrong for
+        // the same reason the variants above are listed: each one is a
+        // caller-misuse error real Lucene raises as `IllegalArgumentException`,
+        // and a Java caller branching on `Io` would retry, log a disk problem,
+        // or fail a shard for what is actually a bad argument. The list grew
+        // (vector fields, custom-freq postings, norms, the auto-flush knobs,
+        // and `c7-delete-queue`'s soft-delete/doc-values-update errors) while
+        // this mapping did not; every variant is enumerated explicitly rather
+        // than left to a catch-all so the next one added to `lucene-index`
+        // fails to compile here instead of silently becoming an I/O error.
+        | index_writer::Error::UnknownVectorField(_)
+        | index_writer::Error::UnknownPointsField(_)
+        | index_writer::Error::UnsupportedPointsField(_, _, _, _)
+        | index_writer::Error::DuplicatePointsField(_)
+        | index_writer::Error::PointValueShape(_, _, _, _, _)
+        | index_writer::Error::UnsupportedVectorField(_, _)
+        | index_writer::Error::DuplicateVectorField(_)
+        | index_writer::Error::VectorDimensionMismatch(_, _, _, _)
+        | index_writer::Error::VectorEncodingMismatch(_, _, _, _)
+        | index_writer::Error::DuplicatePostingsField(_)
+        | index_writer::Error::UnknownCustomFreqPostingsField(_)
+        | index_writer::Error::UnsupportedCustomFreqPostingsIndexOptions(_, _)
+        | index_writer::Error::PostingsAndCustomFreqPostingsMutuallyExclusive(_)
+        | index_writer::Error::DuplicateTermVectorField(_)
+        | index_writer::Error::UnknownNormsField(_)
+        | index_writer::Error::UnsupportedNormsField(_)
+        | index_writer::Error::InvalidRamBufferSize(_)
+        | index_writer::Error::InvalidMaxBufferedDocs(_)
+        | index_writer::Error::BothAutoFlushTriggersDisabled
+        | index_writer::Error::NoSoftDeletesSupplied
+        | index_writer::Error::TooManyDocs(_)
+        | index_writer::Error::NoDocValuesUpdatesSupplied
+        | index_writer::Error::UnknownDocValuesUpdateField(_)
+        | index_writer::Error::WrongDocValuesUpdateType { .. }
+        // `c17-index-sort`'s configuration surface. Every one of these is an
+        // `IllegalArgumentException` (or, for the blocks case, a
+        // `CorruptIndexException` raised on a caller-chosen combination) in
+        // real Lucene: a sort field that is not a NUMERIC doc-values field,
+        // a sort that disagrees with the segments already in the index, a
+        // doc-values update aimed at the column the sort is defined over.
+        | index_writer::Error::EmptyIndexSort
+        | index_writer::Error::UnknownIndexSortField(_)
+        | index_writer::Error::UnsupportedIndexSortField(_, _)
+        | index_writer::Error::IndexSortFieldWithoutDocValues(_)
+        | index_writer::Error::IncongruentIndexSort { .. }
+        | index_writer::Error::IndexSortChangedMidBuffer(_)
+        | index_writer::Error::IndexSortWithBlocksAndNoParentField
+        | index_writer::Error::BlocksWithIndexSortNeedParentField
+        | index_writer::Error::DocValuesUpdateOnIndexSortField { .. }
+        | index_writer::Error::DuplicateDocValuesField(_)
+        // `c22-sorted-merge`'s two configuration errors. Both describe a
+        // writer configured inconsistently with the index it was opened on,
+        // which is what real Lucene's `validateIndexSort` raises as
+        // `IllegalArgumentException`: segments in one merge declaring
+        // different sorts, and a sort field this writer's field list does not
+        // contain. Retrying either is futile, so `Io` would be actively
+        // misleading to a Java caller.
+        | index_writer::Error::MergeSortDisagreement { .. }
+        // `MergeRateLimiter.setMBPerSec`'s `IllegalArgumentException`, and
+        // `ConcurrentMergeScheduler.setMaxMergesAndThreads`'.
+        | index_writer::Error::InvalidMergeRate(_)
+        | index_writer::Error::InvalidMergeScheduler(_)
+        // `addIndexes`' conflicting-schema `IllegalArgumentException`.
+        | index_writer::Error::AddIndexes(_)
+        | index_writer::Error::UnknownSortField(_) => FfiStatus::InvalidArgument,
+        // Everything left is a genuine I/O or decode failure of the index
+        // itself. Enumerated rather than left to a `_` arm so that the next
+        // variant added to `lucene_index::index_writer::Error` fails to
+        // compile here and has to be *classified*, instead of silently
+        // becoming an `Io` a Java caller would read as "the disk or the index
+        // is broken" -- which is exactly how the whole list above came to be
+        // misclassified in the first place.
+        index_writer::Error::Store(_)
+        // A merge that panicked on a merge thread: the index is intact (the
+        // merge's output is never published), but the merge failed.
+        | index_writer::Error::MergeThreadPanicked(_)
+        | index_writer::Error::SegmentWriter(_)
+        | index_writer::Error::SegmentInfos(_)
+        | index_writer::Error::UpdateDocument(_)
+        | index_writer::Error::TermDelete(_)
+        | index_writer::Error::Deletes(_)
+        | index_writer::Error::FieldUpdates(_)
+        | index_writer::Error::Deleter(_)
+        | index_writer::Error::Merge(_)
+        | index_writer::Error::SegmentInfo(_)
+        | index_writer::Error::SimpleText(_)
+        | index_writer::Error::StoredFields(_)
+        | index_writer::Error::LiveDocs(_)
+        | index_writer::Error::PostingsWriter(_)
+        | index_writer::Error::Blocktree(_)
+        | index_writer::Error::Postings(_)
+        | index_writer::Error::TermVectors(_)
+        | index_writer::Error::DocValues(_)
+        | index_writer::Error::Norms(_)
+        | index_writer::Error::Vectors(_)
+        | index_writer::Error::Points(_)
+        // The read-side halves of a merge's inputs, exactly like `DocValues`
+        // and `Norms` above: a source segment's column could not be decoded.
+        | index_writer::Error::DocValuesRead(_)
+        | index_writer::Error::NormsRead(_)
+        // Not caller misuse: a segment's own `.si` declares an index sort it
+        // has no doc-values column to satisfy, so the segment contradicts
+        // itself. That is a corrupt index, the same class as
+        // `UnreadableSegmentPostings`, and no argument the caller could pass
+        // would make it succeed.
+        | index_writer::Error::MergeSortColumnMissing(_)
+        // Same class again: a segment's `.si` and its stored-fields metadata
+        // disagree about how many documents it has, so the segment
+        // contradicts itself and no caller argument would make the merge
+        // succeed.
+        | index_writer::Error::SegmentDocCountMismatch { .. }
+        // `MergePolicy.MergeAbortedException` is an `IOException` in Java.
+        | index_writer::Error::MergeAborted
+        | index_writer::Error::UnreadableSegmentPostings { .. } => FfiStatus::Io,
+    };
+    set_last_error(format!("engine writer: {e}"));
+    status
 }
 
 fn lookup(handle: u64) -> Result<Arc<Mutex<EngineWriter>>, FfiStatus> {
