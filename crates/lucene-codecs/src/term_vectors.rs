@@ -1340,8 +1340,9 @@ fn common_prefix_len(a: &[u8], b: &[u8]) -> usize {
 pub struct TermVectorsWriter {
     segment_id: [u8; ID_LENGTH],
     segment_suffix: String,
-    /// `None` for `Lucene90TermVectorsFormat` (`FAST`); a `CompressingCodec`'s format otherwise, whose units
-    /// `compressor` writes as Java's compressor does.
+    /// `None` for `Lucene90TermVectorsFormat` (`FAST`); a `CompressingCodec`'s
+    /// format otherwise, whose units `compressor` writes as Java's compressor
+    /// does.
     format: Option<&'static CompressingFormat>,
     compressor: Compressor,
     /// `Lucene90CompressingTermVectorsWriter`'s `chunkSize` constructor

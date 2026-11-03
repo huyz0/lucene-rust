@@ -500,14 +500,15 @@ pub enum Error {
     },
     #[error(transparent)]
     Points(#[from] lucene_codecs::points::Error),
-    /// A live-doc-contributing source *declares* this points field in its
-    /// own `FieldInfos` but its [`MergeSource::points`] carries no entry for
-    /// it (or its opened reader has no such field) -- a caller wiring bug.
+    /// A live-doc-contributing source *declares* this points field in its own
+    /// `FieldInfos` but its [`MergeSource::points`] carries no entry for it (or
+    /// its opened reader has no such field) -- a caller wiring bug.
     /// Deliberately stricter than Java (real `PointsWriter.merge` tolerates
     /// `values == null` for a declared field): unlike an indexed field, a
     /// points field cannot be declared by a segment without a value, since
-    /// every points instance carries one. A source whose `FieldInfos` never saw the field at all is fine
-    /// and simply contributes no points, matching `PointsWriter.merge`.
+    /// every points instance carries one. A source whose `FieldInfos` never saw
+    /// the field at all is fine and simply contributes no points, matching
+    /// `PointsWriter.merge`.
     #[error(
         "merged field number {merged_field_number} is declared by a live-doc-contributing source whose MergeSource supplied no BKD points for it"
     )]
@@ -884,9 +885,10 @@ impl<'a> MergeSource<'a> {
 /// # Why this type exists
 ///
 /// Something must check mechanically that `execute_merge` opens every format
-/// the flush can write, because the failure is silent by construction. A format the merge does not open
-/// contributes nothing; [`describe_written_files`] then clears the
-/// corresponding capability off the merged `.fnm` so the segment stays
+/// the flush can write, because the failure is silent by construction. A format
+/// the merge does not open contributes nothing; [`describe_written_files`] then
+/// clears the corresponding capability off the merged `.fnm` so the segment
+/// stays
 /// *openable*; and what is left is well-formed, checksummed and
 /// `CheckIndex`-clean, with the data gone or (for norms) wrong. Nothing
 /// downstream reports it.
@@ -3237,16 +3239,16 @@ fn index_source_fields<'a, T>(
 /// **multi-tier index sort** needs (a second tier is a second NUMERIC
 /// column), and it is what a real segment looks like.
 ///
-/// A live document with **no** value for the field is not an error either:
-/// it is `SortField.setMissingValue`'s normal case, and the merged column is
-/// then written sparsely through the same `IndexedDISI` + values body
-/// `Lucene90DocValuesConsumer.writeValues` uses; so is a source with no
-/// column for the field at all (see the comment in the body). A field for which **no** merged document has a value is still
-/// written -- as `Lucene90DocValuesConsumer.writeValues`' all-missing column
-/// (`docsWithFieldOffset = -2`), not omitted -- because omitting it would
-/// zero the field's `DocValuesType` in the merged `.fnm` and, for an
-/// index-sort tier, leave a segment whose `.si` claims an order nothing can
-/// re-derive.
+/// A live document with **no** value for the field is not an error either: it
+/// is `SortField.setMissingValue`'s normal case, and the merged column is then
+/// written sparsely through the same `IndexedDISI` + values body
+/// `Lucene90DocValuesConsumer.writeValues` uses; so is a source with no column
+/// for the field at all (see the comment in the body). A field for which **no**
+/// merged document has a value is still written -- as
+/// `Lucene90DocValuesConsumer.writeValues`' all-missing column
+/// (`docsWithFieldOffset = -2`), not omitted -- because omitting it would zero
+/// the field's `DocValuesType` in the merged `.fnm` and, for an index-sort
+/// tier, leave a segment whose `.si` claims an order nothing can re-derive.
 fn merge_numeric_doc_values(
     sources: &[MergeSource],
     per_source_maps: &[HashMap<i32, i32>],

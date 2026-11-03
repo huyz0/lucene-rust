@@ -257,7 +257,8 @@ final class NativeStoredFieldsReader extends FilterDirectoryReader {
                 }
                 case BINARY -> {
                     if (yes) {
-                        // Two arguments: `ByteArrayDataInput.length()` is its limit (offset + len), not len.
+                        // Two arguments: `ByteArrayDataInput.length()` is its
+                        // limit (offset + len), not len.
                         visitor.binaryField(fi, new StoredFieldDataInput(new ByteArrayDataInput(blob, b.position(), len), len));
                     }
                     b.position(b.position() + len);

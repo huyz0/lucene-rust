@@ -1,11 +1,12 @@
 #![forbid(unsafe_code)]
 //! lucene-analysis-opennlp: Lucene's `analysis-opennlp` module
 //! -- `OpenNLPTokenizer` (sentence detection, then tokenization, each token
-//! with its sentence index), `OpenNLPPOSFilter` (the part-of-speech tag as
-//! the token type), `OpenNLPChunkerFilter` (the chunk tag as the type),
-//! `OpenNLPLemmatizerFilter` (dictionary and/or statistical lemmas),
-//! their factories and the `NLPNERTaggerOp` no filter calls -- over a port of the Apache OpenNLP 2.5.3 inference
-//! runtime they call ([`tools`]), reading OpenNLP's own model packages.
+//! with its sentence index), `OpenNLPPOSFilter` (the part-of-speech tag as the
+//! token type), `OpenNLPChunkerFilter` (the chunk tag as the type),
+//! `OpenNLPLemmatizerFilter` (dictionary and/or statistical lemmas), their
+//! factories and the `NLPNERTaggerOp` no filter calls -- over a port of the
+//! Apache OpenNLP 2.5.3 inference runtime they call ([`tools`]), reading
+//! OpenNLP's own model packages.
 //!
 //! **Why a port and not a JVM call.** The models are zips of a manifest,
 //! dictionaries and maxent/perceptron parameters that inference only

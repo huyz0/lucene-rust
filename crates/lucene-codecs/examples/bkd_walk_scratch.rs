@@ -6,10 +6,10 @@
 //!
 //! Both arms are the shipped `points.rs` code, selected by
 //! `PointsReader::intersect_with_scratch`'s `reuse_scratch` argument, so they
-//! run in one process from one build. There is no second binary and no
-//! rebuild between arms, so a stale binary cannot be timed. Criterion is not used: it reported 83/91/129 µs for identical code
-//! on this machine, so every figure here
-//! is a **min of N alternating repetitions**.
+//! run in one process from one build. There is no second binary and no rebuild
+//! between arms, so a stale binary cannot be timed. Criterion is not used: it
+//! reported 83/91/129 µs for identical code on this machine, so every figure
+//! here is a **min of N alternating repetitions**.
 //!
 //! Run: `cargo run --release -p lucene-codecs --example bkd_walk_scratch`
 // Benchmark support code opts out of the arithmetic gate at the file

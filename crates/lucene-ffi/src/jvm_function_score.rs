@@ -1,4 +1,5 @@
-//! OpenSearch's `function_score` (`org.opensearch.common.lucene.search.function.FunctionScoreQuery`,
+//! OpenSearch's `function_score`
+//! (`org.opensearch.common.lucene.search.function.FunctionScoreQuery`,
 //! OpenSearch 3.8.0) as node `24` of the query tree ([`crate::jvm_nodes`]).
 //!
 //! OpenSearch's query is not Lucene's `FunctionScoreQuery`: it combines the

@@ -559,14 +559,15 @@ impl SegmentReader {
         };
 
         // `.dvm`/`.dvd` (the skipper's `.dvs` is opened beside them and
-        // checksummed by `check_integrity`): present together or not at all, exactly like `.tim`/`.tip`/`.tmd` above -- a segment
-        // with no doc-values field opted in has neither (see
-        // `segment_writer.rs`'s "no pending values -> no files" contract).
-        // The codec suffix is derived the same way `.tim`'s is above --
-        // this port's own writer uses `""` (matching the sparse/dense unit
-        // tests in `index_writer.rs`), but a real Lucene-written segment
-        // (e.g. `fixtures/data/compound_index/`) gives doc values their own
-        // codec suffix (`Lucene90_<n>`), independent of the postings suffix.
+        // checksummed by `check_integrity`): present together or not at all,
+        // exactly like `.tim`/`.tip`/`.tmd` above -- a segment with no
+        // doc-values field opted in has neither (see `segment_writer.rs`'s "no
+        // pending values -> no files" contract). The codec suffix is derived
+        // the same way `.tim`'s is above -- this port's own writer uses `""`
+        // (matching the sparse/dense unit tests in `index_writer.rs`), but a
+        // real Lucene-written segment (e.g. `fixtures/data/compound_index/`)
+        // gives doc values their own codec suffix (`Lucene90_<n>`), independent
+        // of the postings suffix.
         let stored = match (
             open_segment_file(dir, compound.as_ref(), &si.files, ".fdt")?,
             open_segment_file(dir, compound.as_ref(), &si.files, ".fdx")?,

@@ -547,9 +547,10 @@ fn search_after_pages_match_real_lucene_bit_for_bit() {
 }
 
 /// A filter-only query under a top-`n` collector: every hit scores 0, so the
-/// block-max bound is 0 and the threshold a full queue publishes is 0. `0 <= 0` is
-/// not "pruning on a tie": Lucene prunes it (`TopScoreDocCollector` publishes `Math.nextUp(0f)` and a
-/// block whose maximum is 0 is below that), and these are its own answers.
+/// block-max bound is 0 and the threshold a full queue publishes is 0. `0 <= 0`
+/// is not "pruning on a tie": Lucene prunes it (`TopScoreDocCollector`
+/// publishes `Math.nextUp(0f)` and a block whose maximum is 0 is below that),
+/// and these are its own answers.
 ///
 /// `big:everywhere` is in 300 documents, so a top-20 search fills the queue
 /// long before the postings end -- which the 5-document `body` field could

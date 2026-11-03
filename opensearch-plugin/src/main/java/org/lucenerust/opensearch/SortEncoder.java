@@ -92,8 +92,9 @@ public final class SortEncoder {
 
     private SortEncoder() {}
 
-    // getOptimizeSortWithIndexedData is deprecated in 10.5.0 but still read by every comparator
-    // (it disables skipping), so a sort that set it must not run on the always-skipping native side.
+    // getOptimizeSortWithIndexedData is deprecated in 10.5.0 but still read by
+    // every comparator (it disables skipping), so a sort that set it must not
+    // run on the always-skipping native side.
     public static Encoded encode(Sort sort, FieldDoc after) {
         return encode(sort, after, false);
     }
@@ -232,8 +233,9 @@ public final class SortEncoder {
             writeInt(out, after.doc);
             for (int i = 0; i < fields.length; i++) {
                 if (GeoEncoder.luceneSort(fields[i])) {
-                    // LatLonPointDistanceComparator.compareTop compares metres, not the sort keys the
-                    // native side holds: such a page runs on Lucene.
+                    // LatLonPointDistanceComparator.compareTop compares metres,
+                    // not the sort keys the native side holds: such a page runs
+                    // on Lucene.
                     return new Encoded(null, "search_after_geo");
                 }
                 if (type(unwrap(fields[i])) == STRING) {

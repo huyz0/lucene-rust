@@ -96,7 +96,8 @@ harness = false
 name = "highlight_offsets"
 harness = false
 
-# Measures what `PostingsFlags::DocsOnly` buys the unscored paths (`PForUtil.skip`) -- see the bench's own module doc.
+# Measures what `PostingsFlags::DocsOnly` buys the unscored paths
+# (`PForUtil.skip`) -- see the bench's own module doc.
 [[bench]]
 name = "docs_only_postings"
 harness = false

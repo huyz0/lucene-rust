@@ -4,7 +4,8 @@
 //! `TopDocs` (`IndexSearcher.search`'s per-`LeafReaderContext` loop +
 //! `TopDocs.merge`-equivalent).
 //!
-//! The single-segment query functions take one already-opened segment's fields/doc-values/norms and returns doc IDs
+//! The single-segment query functions take one already-opened segment's
+//! fields/doc-values/norms and returns doc IDs
 //! **local** to that segment (`0..maxDoc` for that segment alone). A real
 //! multi-segment index's global doc ID space is the concatenation of every
 //! segment's local space in segment order -- segment `i`'s `doc_base` is the
@@ -3481,9 +3482,9 @@ mod tests {
         ///
         /// That function declines the pruned MAXSCORE loop on three conditions
         /// -- no `.doc` input, `docFreq <= 1`, and an index option
-        /// `LazyDocsCursor` rejects -- and each fallback must score with the `global` it was handed,
-        /// not the leaf's own `docFreq`/`docCount`, bit for bit, exactly as the pruned path
-        /// does.
+        /// `LazyDocsCursor` rejects -- and each fallback must score with the
+        /// `global` it was handed, not the leaf's own `docFreq`/`docCount`, bit
+        /// for bit, exactly as the pruned path does.
         ///
         /// The third fallback is unreachable for a scored term query --
         /// `LazyDocsCursor` rejects only `IndexOptions::None`, which carries no

@@ -2832,11 +2832,11 @@ mod tests {
     /// documents), so it can correctly explain a doc that a MAXSCORE search
     /// over the *same term* would have safely skipped decoding entirely once
     /// its `TopDocsCollector` filled up. This uses the same "big"/"everywhere"
-    /// fixture term (`docFreq == 300`, real impacts) as
-    /// `lib.rs`'s `maxscore_lazy_path_matches_eager_path_on_real_fixture_and_actually_skips_blocks`:
+    /// fixture term (`docFreq == 300`, real impacts) as `lib.rs`'s
+    /// `maxscore_lazy_path_matches_eager_path_on_real_fixture_and_actually_skips_blocks`:
     /// a `top_n = 1` MAXSCORE search only ever collects/returns its single
-    /// best-scoring doc, skipping real-Lucene-block decode for the rest of
-    /// the term's docs -- yet `explain_clause` asked to explain one of those
+    /// best-scoring doc, skipping real-Lucene-block decode for the rest of the
+    /// term's docs -- yet `explain_clause` asked to explain one of those
     /// *not*-returned docs still produces the exact score
     /// `search_term_query_scored` (the eager path) computes for it,
     /// unaffected by the unrelated search having pruned blocks. This is not a

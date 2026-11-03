@@ -116,8 +116,9 @@ public final class NativeReaders {
         }
         return byReader.computeIfAbsent(key, k -> {
             Acquired a = openFor(reader);
-            // Failures are cached for the reader's life too -- and so must be evicted with it, or an
-            // index that always falls back (a completion field) leaks one entry per refresh.
+            // Failures are cached for the reader's life too -- and so must be
+            // evicted with it, or an index that always falls back (a completion
+            // field) leaks one entry per refresh.
             try {
                 helper.addClosedListener(this::onClosed);
             } catch (RuntimeException e) {

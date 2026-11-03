@@ -5157,9 +5157,10 @@ mod tests {
     /// `total_term_freq >= BLOCK_SIZE` alone (via a single doc with a huge
     /// freq, so `docFreq == 1`) is no longer rejected. (A `docFreq >=
     /// BLOCK_SIZE` ceiling for positions, the since-removed
-    /// `DocFreqTooLargeForPositions`, outlived it for a while.) This is the "one doc, many positions" full-position-block
-    /// case (see [`positions_full_block_from_one_doc_round_trips`] for the
-    /// round-trip proof); this test only checks it no longer errors.
+    /// `DocFreqTooLargeForPositions`, outlived it for a while.) This is the
+    /// "one doc, many positions" full-position-block case (see
+    /// [`positions_full_block_from_one_doc_round_trips`] for the round-trip
+    /// proof); this test only checks it no longer errors.
     #[test]
     fn total_term_freq_at_or_above_block_size_from_one_doc_is_now_accepted() {
         let positions: Vec<Vec<i32>> = vec![(0..BLOCK_SIZE).collect()];

@@ -1,12 +1,13 @@
 //! Differentially against Lucene 10.5.0:
 //! `fixtures/src/GenMoreLikeThis.java`'s `mlt.tsv`.
 //!
-//! `mlt.tsv`: `MoreLikeThis` under thirteen settings over a four-segment
-//! index with deletions -- for six documents (from term vectors, or stored
-//! values re-analyzed, a stored number skipped) the interesting terms, the query's clauses and its hits;
-//! `like(field, texts)` and `like(Map)`; `MoreLikeThisQuery` with hits and
-//! explanations. The file is rebuilt here line for line and compared with
-//! Lucene's (`common.tsv` is `common_terms_fixtures.rs`').
+//! `mlt.tsv`: `MoreLikeThis` under thirteen settings over a four-segment index
+//! with deletions -- for six documents (from term vectors, or stored values
+//! re-analyzed, a stored number skipped) the interesting terms, the query's
+//! clauses and its hits; `like(field, texts)` and `like(Map)`;
+//! `MoreLikeThisQuery` with hits and explanations. The file is rebuilt here
+//! line for line and compared with Lucene's (`common.tsv` is
+//! `common_terms_fixtures.rs`').
 
 // Test fixtures' own arithmetic -- see `docs/arithmetic-gate.md`'s "Test code".
 #![allow(clippy::arithmetic_side_effects)]

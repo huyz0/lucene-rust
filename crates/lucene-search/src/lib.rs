@@ -386,7 +386,8 @@ pub enum Error {
     /// region) -- the points-range analog of [`Error::DocValues`].
     #[error(transparent)]
     Points(#[from] lucene_codecs::points::Error),
-    /// A [`Clause::PointsRange`] (`field:[min TO max]` in the query parser) reached [`resolve_clause_docs`]/[`clause_scores`] with no
+    /// A [`Clause::PointsRange`] (`field:[min TO max]` in the query parser)
+    /// reached [`resolve_clause_docs`]/[`clause_scores`] with no
     /// [`points_query::PointsInput`] supplied -- same "this clause needs an
     /// opened resource this call didn't provide" shape as
     /// [`Error::MissingPosInput`] for a multi-term [`PhraseQuery`], not a
@@ -1665,10 +1666,11 @@ pub type BenchExpandedTerm = (Vec<u8>, f32, i64);
 /// Measurement-only entry point for `examples/fuzzy_pruning.rs`: the term
 /// expansion [`fuzzy_doc_ids`]/[`fuzzy_doc_scores`] run, with the
 /// `MaxNonCompetitiveBoostAttribute` feedback loop switchable so both arms are
-/// one build in one process (criterion is unusable on this project's machine). Returns the selected terms with
-/// their boosts, the blended document frequency, and the edit budget the walk
-/// ended on -- the last of which is the only *observable* of the feedback loop
-/// itself, so a test can require that it actually fired.
+/// one build in one process (criterion is unusable on this project's machine).
+/// Returns the selected terms with their boosts, the blended document
+/// frequency, and the edit budget the walk ended on -- the last of which is the
+/// only *observable* of the feedback loop itself, so a test can require that it
+/// actually fired.
 ///
 /// `#[doc(hidden)] pub` rather than `#[cfg(feature = "test-support")]`, and
 /// deliberately: a feature-gated example is one `cargo clippy --all-targets`

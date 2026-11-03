@@ -105,8 +105,9 @@
 //! **Rust's `char` (a Unicode scalar) is not the same unit.** The two agree
 //! for the Basic Multilingual Plane and disagree for every supplementary-plane
 //! character: an emoji is one Unicode scalar and two UTF-16 code units.
-//! `crates/lucene-search/tests/highlighter_utf16_offsets_fixtures.rs` pins the unit against real Lucene's own `StandardAnalyzer` offsets over
-//! text that separates all three.
+//! `crates/lucene-search/tests/highlighter_utf16_offsets_fixtures.rs` pins the
+//! unit against real Lucene's own `StandardAnalyzer` offsets over text that
+//! separates all three.
 //!
 //! `lucene_analysis::Token` emits Java `char` offsets too, so there is
 //! exactly **one** offset unit from the analyzer through the

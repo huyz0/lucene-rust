@@ -1,11 +1,11 @@
 //! What `OrdinalMap::build` costs in memory, and how much of that cost is the
 //! **materialized input** rather than the map itself.
 //!
-//! `OrdinalMap.build` in Java takes `TermsEnum[]` and never holds a
-//! dictionary; [`OrdinalMap::build_streaming`] takes cursors likewise, and the
-//! materialized arm takes every segment's complete term list instead. This example runs either arm, one per process, so the peak RSS it
-//! reports is the arm's own and not whatever the other arm left behind in the
-//! allocator.
+//! `OrdinalMap.build` in Java takes `TermsEnum[]` and never holds a dictionary;
+//! [`OrdinalMap::build_streaming`] takes cursors likewise, and the materialized
+//! arm takes every segment's complete term list instead. This example runs
+//! either arm, one per process, so the peak RSS it reports is the arm's own and
+//! not whatever the other arm left behind in the allocator.
 //!
 //! ```text
 //! cargo build -p lucene-search --release --example ordinal_map_memory

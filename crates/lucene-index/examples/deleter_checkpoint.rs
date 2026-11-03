@@ -1,6 +1,7 @@
-//! Alternating A/B measurement of `IndexFileDeleter`'s **checkpoint**:
-//! the same segment list reference-counted twice, once with each segment's file set already in memory and once with the deleter having to
-//! open and parse every `.si` to get it.
+//! Alternating A/B measurement of `IndexFileDeleter`'s **checkpoint**: the same
+//! segment list reference-counted twice, once with each segment's file set
+//! already in memory and once with the deleter having to open and parse every
+//! `.si` to get it.
 //!
 //! What the change is. Java's `SegmentCommitInfo` holds its `SegmentInfo`, so
 //! `SegmentInfos.files()` -- and therefore every checkpoint -- reads a

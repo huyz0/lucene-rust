@@ -1,8 +1,9 @@
 //! Where the time in `DirectoryReader::open` actually goes.
 //!
-//! A single end-to-end number cannot say where the time goes, so this replays `SegmentReader::open`'s phases
-//! one at a time, over the same directory, in the same order, and prints the
-//! breakdown next to the real `DirectoryReader::open` it is a replica of.
+//! A single end-to-end number cannot say where the time goes, so this replays
+//! `SegmentReader::open`'s phases one at a time, over the same directory, in
+//! the same order, and prints the breakdown next to the real
+//! `DirectoryReader::open` it is a replica of.
 //!
 //! The replica is checked, not assumed: the phase total is printed beside the
 //! measured whole, and a replica that has drifted shows up as a gap between

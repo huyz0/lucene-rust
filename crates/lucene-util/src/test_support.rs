@@ -1,11 +1,7 @@
 //! Scratch directories for tests, with an RAII guard that cleans up.
 //!
-//! Every crate in this workspace used to grow its own `fn tempdir() -> PathBuf`
-//! around `std::env::temp_dir()`, and none of them removed anything. The cost
-//! is not theoretical: batch c28 found `/tmp` (a 16 GB tmpfs) at 100% full from
-//! roughly 21 000 leftover `lucene-*-test-*` directories, which failed tests for
-//! reasons having nothing to do with the code under test — the most expensive
-//! kind of flake to diagnose.
+//! Leftover test directories fill `/tmp` (often a small tmpfs) and fail tests
+//! for reasons having nothing to do with the code under test.
 //!
 //! [`TempDir`] is the one shared replacement. It removes its directory on
 //! `Drop`, **except while the thread is panicking**, so a failing test leaves

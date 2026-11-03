@@ -34,11 +34,11 @@
 //! **input** ([`VectorsInput::filter`]), exactly as `live_docs` already is
 //! for every other query function in this crate. A caller builds it from
 //! whatever query it likes -- [`crate::resolve_clause_docs`] turns a
-//! [`crate::query::BooleanQuery`] (`Occur::FILTER` clauses included) into a `Vec<i32>` and [`accept_bitset`] turns that into the bitset
-//! this module wants. Java's implicit `FieldExistsQuery(field)` conjunct is
-//! folded in here too, for free: translating the accept set into **ordinal**
-//! space drops every document that has no vector, which is all that conjunct
-//! does.
+//! [`crate::query::BooleanQuery`] (`Occur::FILTER` clauses included) into a
+//! `Vec<i32>` and [`accept_bitset`] turns that into the bitset this module
+//! wants. Java's implicit `FieldExistsQuery(field)` conjunct is folded in here
+//! too, for free: translating the accept set into **ordinal** space drops every
+//! document that has no vector, which is all that conjunct does.
 //!
 //! ## Per-leaf `k` is pro-rata in 10.5.0, not `k`
 //!

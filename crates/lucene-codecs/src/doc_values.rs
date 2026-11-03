@@ -3739,11 +3739,12 @@ fn write_binary_entry_body(
     write_docs_with_field(meta, data, doc_ids, max_doc);
 
     meta.write_i32(values.len() as i32); // numDocsWithField
-                                         // Java's `minLength`/`maxLength` trackers start at `(Integer.MAX_VALUE,
-                                         // 0)` and stay there when no document has a value, which is what
-                                         // `addBinaryField` then writes. Nothing reads them back (the `-2` marker
-                                         // means no doc ever resolves to an ordinal), but matching keeps the bytes
-                                         // identical to real Lucene's -- and, because `maxLength > minLength` is
+                                         // Java's `minLength`/`maxLength` trackers start at
+                                         // `(Integer.MAX_VALUE, 0)` and stay there when no document has
+                                         // a value, which is what `addBinaryField` then writes. Nothing
+                                         // reads them back (the `-2` marker means no doc ever resolves
+                                         // to an ordinal), but matching keeps the bytes identical to
+                                         // real Lucene's -- and, because `maxLength > minLength` is
                                          // then false, no address array is written.
     let min_length = values
         .iter()
@@ -4537,12 +4538,13 @@ fn finish_field_list_and_footers(
 /// [`write_single_sparse_numeric_field`], not here.
 ///
 /// Skip indexes and multiple fields in one `.dvm`/`.dvd`/`.dvs` triple are
-/// [`write_fields_with_skip_indexes`]'s. BINARY ([`write_single_dense_binary_field`]), SORTED_NUMERIC
+/// [`write_fields_with_skip_indexes`]'s. BINARY
+/// ([`write_single_dense_binary_field`]), SORTED_NUMERIC
 /// ([`write_single_dense_sorted_numeric_field`]), SORTED
 /// ([`write_single_dense_sorted_field`]), and SORTED_SET
-/// ([`write_single_dense_sorted_set_field`]) write sides now exist as
-/// siblings of this function, all built on this same dense scope. Sparse
-/// BINARY ([`write_single_sparse_binary_field`]), sparse SORTED
+/// ([`write_single_dense_sorted_set_field`]) write sides now exist as siblings
+/// of this function, all built on this same dense scope. Sparse BINARY
+/// ([`write_single_sparse_binary_field`]), sparse SORTED
 /// ([`write_single_sparse_sorted_field`]), sparse SORTED_NUMERIC
 /// ([`write_single_sparse_sorted_numeric_field`]), and sparse SORTED_SET
 /// ([`write_single_sparse_sorted_set_field`]) writing are also now ported --

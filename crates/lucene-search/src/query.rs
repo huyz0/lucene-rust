@@ -104,20 +104,21 @@ impl WildcardQuery {
 /// which could be built two ways: (a) a thin wrapper constructing a
 /// `WildcardQuery` pattern by literal-escaping `prefix` (backslash-escaping
 /// every `*`/`?`/`\` byte) and appending an unescaped trailing `*`, reusing
-/// `WildcardPattern::new`'s glob parser unchanged, or (b) a direct prefix
-/// match with no glob syntax involved at all. This port takes (b) — and it's
-/// not even new code: [`lucene_codecs::wildcard::WildcardPattern::prefix`]
-/// already exists (see that module's doc comment) and builds its token list directly from `prefix`'s
-/// raw bytes as `Literal` tokens plus one trailing `AnyMany`, **never calling
-/// `WildcardPattern::new`'s escape-parsing loop at all**. Option (a) was
-/// rejected because it would require this query to re-escape `prefix` byte-by-
-/// byte before matching could reuse the parser — fiddly and exactly the kind
-/// of edge case the task called out: a prefix like `a*b` must match every term
-/// starting with the 3 literal bytes `a`, `*`, `b`, not be reinterpreted as
-/// "`a`, then anything, then `b`". Building on `WildcardPattern::prefix`
-/// sidesteps that risk entirely rather than mitigating it with careful
-/// escaping — there is no escaping step to get wrong, since `prefix`'s bytes
-/// never pass through anything that treats `*`/`?`/`\` specially.
+/// `WildcardPattern::new`'s glob parser unchanged, or (b) a direct prefix match
+/// with no glob syntax involved at all. This port takes (b) — and it's not even
+/// new code: [`lucene_codecs::wildcard::WildcardPattern::prefix`] already
+/// exists (see that module's doc comment) and builds its token list directly
+/// from `prefix`'s raw bytes as `Literal` tokens plus one trailing `AnyMany`,
+/// **never calling `WildcardPattern::new`'s escape-parsing loop at all**.
+/// Option (a) was rejected because it would require this query to re-escape
+/// `prefix` byte-by- byte before matching could reuse the parser — fiddly and
+/// exactly the kind of edge case the task called out: a prefix like `a*b` must
+/// match every term starting with the 3 literal bytes `a`, `*`, `b`, not be
+/// reinterpreted as "`a`, then anything, then `b`". Building on
+/// `WildcardPattern::prefix` sidesteps that risk entirely rather than
+/// mitigating it with careful escaping — there is no escaping step to get
+/// wrong, since `prefix`'s bytes never pass through anything that treats
+/// `*`/`?`/`\` specially.
 ///
 /// **Why `prefix: Vec<u8>` instead of `String`**: same reasoning as
 /// [`WildcardQuery::pattern`]'s own doc comment — terms in this port are raw
@@ -875,13 +876,14 @@ impl From<TermInSetQuery> for Clause {
     }
 }
 
-/// `BooleanQuery`-equivalent (`org.apache.lucene.search.BooleanQuery`): a flat list
-/// of [`Clause`]s (each a `TermQuery`, a `PhraseQuery`, or a nested
-/// `BooleanQuery`, recursively — see `Clause`'s doc comment) per `Occur` bucket,
-/// plus `minimumNumberShouldMatch`. All four of Java's
+/// `BooleanQuery`-equivalent (`org.apache.lucene.search.BooleanQuery`): a flat
+/// list of [`Clause`]s (each a `TermQuery`, a `PhraseQuery`, or a nested
+/// `BooleanQuery`, recursively — see `Clause`'s doc comment) per `Occur`
+/// bucket, plus `minimumNumberShouldMatch`. All four of Java's
 /// [`BooleanClause.Occur`](https://lucene.apache.org/core/10_5_0/core/org/apache/lucene/search/BooleanClause.Occur.html)
-/// values are represented: `MUST` ([`Self::must`]), `FILTER` ([`Self::filter`]),
-/// `SHOULD` ([`Self::should`]) and `MUST_NOT` ([`Self::must_not`]).
+/// values are represented: `MUST` ([`Self::must`]), `FILTER`
+/// ([`Self::filter`]), `SHOULD` ([`Self::should`]) and `MUST_NOT`
+/// ([`Self::must_not`]).
 ///
 /// **Why four flat `Vec<Clause>` fields instead of real Lucene's single
 /// `Vec<(Occur, Query)>` clause list**: real `BooleanQuery` stores clauses in

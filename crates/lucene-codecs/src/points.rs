@@ -706,8 +706,9 @@ impl<'d> PointsReader<'d> {
 
     /// [`intersect`](Self::intersect) with the traversal scratch's reuse
     /// switchable -- see [`IntersectCtx::reuse_scratch`]. Production always
-    /// passes `true`; `false` reallocates at every node, kept only so `examples/bkd_walk_scratch.rs` can time both arms in one
-    /// process, and it must produce the **same answer**, which
+    /// passes `true`; `false` reallocates at every node, kept only so
+    /// `examples/bkd_walk_scratch.rs` can time both arms in one process, and it
+    /// must produce the **same answer**, which
     /// `the_two_scratch_arms_visit_exactly_the_same_documents` asserts.
     #[doc(hidden)]
     pub fn intersect_with_scratch<V: IntersectVisitor>(
@@ -1290,10 +1291,11 @@ struct IntersectCtx<'a> {
     /// `docs/arithmetic-gate.md` singles out as the one that aborts.
     stack: Vec<LevelScratch>,
     /// Measurement-only. `false` reallocates every scratch buffer at each node
-    /// instead of reusing it -- four `Vec`s per inner node visited. It exists so
-    /// `examples/bkd_walk_scratch.rs` can time both arms in **one process from
-    /// one build**, which is the only shape of A/B this project trusts. Production always passes `true`; the cost is one predictable
-    /// branch per node against a `.kdi` read.
+    /// instead of reusing it -- four `Vec`s per inner node visited. It exists
+    /// so `examples/bkd_walk_scratch.rs` can time both arms in **one process
+    /// from one build**, which is the only shape of A/B this project trusts.
+    /// Production always passes `true`; the cost is one predictable branch per
+    /// node against a `.kdi` read.
     reuse_scratch: bool,
     /// Java's `int[maxPointsInLeafNode]` doc-id buffer: every leaf the walk
     /// decodes (inside a matching subtree or crossing the query) reuses it.

@@ -321,9 +321,10 @@ fn multi_segment_boolean_query_scores_match_real_lucene_bit_for_bit() {
 }
 
 /// Negative control for the fix: scoring each leaf with **its own** `avgdl` --
-/// which is what `SegmentReader::field_norms` alone can compute -- must *not* reproduce Lucene's scores. Without this,
-/// the tests above could pass for the wrong reason (e.g. if norms were silently
-/// unused and both answers collapsed to the unnormed fallback).
+/// which is what `SegmentReader::field_norms` alone can compute -- must *not*
+/// reproduce Lucene's scores. Without this, the tests above could pass for the
+/// wrong reason (e.g. if norms were silently unused and both answers collapsed
+/// to the unnormed fallback).
 #[test]
 fn per_leaf_avgdl_does_not_reproduce_lucenes_scores() {
     let m = Manifest::load();

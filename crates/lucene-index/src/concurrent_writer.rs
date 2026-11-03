@@ -69,15 +69,15 @@
 //!
 //! Soft deletes and two-phase commit are single-writer features for now --
 //! [`ConcurrentIndexWriter::into_writer`] hands the writer back for them.
-//! (Vectors and custom-frequency postings ride in each slot's buffer with
-//! their documents: [`ConcurrentIndexWriter::add_document_with_vectors`],
-//! [`ConcurrentIndexWriter::add_document_with_custom_freq_terms`].) A merge whose source takes a doc-values
-//! update while it runs is abandoned and retried later rather than carried --
-//! see [`IndexWriter::finish_merge`]. Each ticket's frozen packet is applied to
-//! every published segment under the control lock, where Java applies
-//! packets outside `IndexWriter`'s monitor, per segment; that is the cost the
-//! update benchmark pays. The merge policy's segment statistics are read from disk under the
-//! control lock too.
+//! (Vectors and custom-frequency postings ride in each slot's buffer with their
+//! documents: [`ConcurrentIndexWriter::add_document_with_vectors`],
+//! [`ConcurrentIndexWriter::add_document_with_custom_freq_terms`].) A merge
+//! whose source takes a doc-values update while it runs is abandoned and
+//! retried later rather than carried -- see [`IndexWriter::finish_merge`]. Each
+//! ticket's frozen packet is applied to every published segment under the
+//! control lock, where Java applies packets outside `IndexWriter`'s monitor,
+//! per segment; that is the cost the update benchmark pays. The merge policy's
+//! segment statistics are read from disk under the control lock too.
 
 use std::collections::{HashSet, VecDeque};
 use std::ops::DerefMut;
@@ -1407,9 +1407,10 @@ impl<'d> ConcurrentIndexWriter<'d> {
     }
 
     /// Flushes every buffer and hands the single-threaded writer back, merging
-    /// on commit again, for what only it does (two-phase commit, rollback). Segments flushed and not yet committed stay pending in it,
-    /// and so do deletes not yet applied; its sequence numbers continue from
-    /// this writer's.
+    /// on commit again, for what only it does (two-phase commit, rollback).
+    /// Segments flushed and not yet committed stay pending in it, and so do
+    /// deletes not yet applied; its sequence numbers continue from this
+    /// writer's.
     pub fn into_writer(self) -> Result<IndexWriter<'d>> {
         self.flush()?;
         let mut core = self

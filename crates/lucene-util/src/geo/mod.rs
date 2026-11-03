@@ -5,8 +5,8 @@
 //! WKT/GeoJSON parsers.
 //!
 //! Everything here is pure geometry with no index dependency, so it lives in
-//! `lucene-util`, the lowest crate the `document` fields and queries (M9
-//! T9.2/T9.3) can reach. It carries `forbid(unsafe_code)` even though its
+//! `lucene-util`, the lowest crate the `document` fields and queries
+//! can reach. It carries `forbid(unsafe_code)` even though its
 //! crate may hold `unsafe` elsewhere.
 //!
 //! # Fidelity

@@ -5937,19 +5937,20 @@ mod tests {
         assert_eq!(got, vec![b"banana".to_vec(), b"band".to_vec()]);
     }
 
-    /// Backs `FuzzyQuery::max_expansions`'s (`lucene-search`) selection-policy claim: `fuzzy_intersect` returns a lazy
-    /// iterator over this field's already-fully-decoded, in-memory sorted
-    /// entries (the whole term dictionary is materialized once at segment
-    /// open, not decoded on demand here -- see this module's own doc
-    /// comment), filtering one candidate at a time as it's pulled. `.take(n)`
-    /// stops pulling once `n` matches are found, so it skips the fuzzy-match
-    /// predicate/allocation for every entry past the cap, but it does not
-    /// skip any term-dictionary decode work (that already happened). This
-    /// test builds a term dictionary with more than 50 terms that all match
-    /// the same fuzzy pattern (all single-byte substitutions of a
-    /// fixed-length target, so every one is within `max_edits` of it) and
-    /// checks that `.take(50)` yields exactly the first 50 in sorted order,
-    /// while the untruncated iterator yields every one of them.
+    /// Backs `FuzzyQuery::max_expansions`'s (`lucene-search`) selection-policy
+    /// claim: `fuzzy_intersect` returns a lazy iterator over this field's
+    /// already-fully-decoded, in-memory sorted entries (the whole term
+    /// dictionary is materialized once at segment open, not decoded on demand
+    /// here -- see this module's own doc comment), filtering one candidate at a
+    /// time as it's pulled. `.take(n)` stops pulling once `n` matches are
+    /// found, so it skips the fuzzy-match predicate/allocation for every entry
+    /// past the cap, but it does not skip any term-dictionary decode work (that
+    /// already happened). This test builds a term dictionary with more than 50
+    /// terms that all match the same fuzzy pattern (all single-byte
+    /// substitutions of a fixed-length target, so every one is within
+    /// `max_edits` of it) and checks that `.take(50)` yields exactly the first
+    /// 50 in sorted order, while the untruncated iterator yields every one of
+    /// them.
     #[test]
     fn fuzzy_intersect_take_truncates_the_lazy_walk() {
         let b = Builder::new();

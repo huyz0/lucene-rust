@@ -19,23 +19,23 @@
 //!
 //! **Incremental marking, through an update overlay.**
 //! Real Lucene's soft-delete *write* path (`IndexWriter.softUpdateDocument`)
-//! relies on `NumericDocValuesFieldUpdates`: an existing segment's
-//! doc-values file gets a small delta record appended (a per-doc-values-
-//! generation "diff" file), not rewritten from scratch, so marking one doc
-//! soft-deleted is cheap even on a huge segment.
-//! [`lucene_codecs::doc_values_updates`] provides this primitive in single-generation form: [`mark_soft_deleted_via_overlay`]
+//! relies on `NumericDocValuesFieldUpdates`: an existing segment's doc-values
+//! file gets a small delta record appended (a per-doc-values- generation "diff"
+//! file), not rewritten from scratch, so marking one doc soft-deleted is cheap
+//! even on a huge segment. [`lucene_codecs::doc_values_updates`] provides this
+//! primitive in single-generation form: [`mark_soft_deleted_via_overlay`]
 //! writes a tiny standalone overlay file recording just the one doc's
 //! soft-deletes-field value (any value — presence is all that matters, see
-//! [`is_soft_deleted`]'s doc comment) without touching the base
-//! `.dvd`/`.dvm` bytes at all, and [`is_soft_deleted_with_overlay`]/
-//! [`effective_live_docs_with_overlay`] check that overlay before falling
-//! back to the base decode. This is a **single overlay round** (one file, one
-//! batch of updates); it does not implement stacking many
-//! sequential update generations with newest-wins semantics across rounds,
-//! nor `SegmentCommitInfo`/`.si` `docValuesGen` metadata wiring (see that
-//! module's own doc comment for the full scope statement). A caller needing
-//! a second independent update round has to compose a fresh merged
-//! overlay itself rather than relying on multi-generation stacking.
+//! [`is_soft_deleted`]'s doc comment) without touching the base `.dvd`/`.dvm`
+//! bytes at all, and [`is_soft_deleted_with_overlay`]/
+//! [`effective_live_docs_with_overlay`] check that overlay before falling back
+//! to the base decode. This is a **single overlay round** (one file, one batch
+//! of updates); it does not implement stacking many sequential update
+//! generations with newest-wins semantics across rounds, nor
+//! `SegmentCommitInfo`/`.si` `docValuesGen` metadata wiring (see that module's
+//! own doc comment for the full scope statement). A caller needing a second
+//! independent update round has to compose a fresh merged overlay itself rather
+//! than relying on multi-generation stacking.
 //!
 //! The plain (non-overlay) [`is_soft_deleted`]/[`effective_live_docs`]
 //! functions below are the right choice whenever no
@@ -1089,9 +1089,9 @@ mod tests {
 
     /// `is_live` takes a caller-supplied `doc` and a caller-supplied
     /// `live_docs` and nothing relates the two. A negative `doc` sign-extends
-    /// through `as usize` into `usize::MAX`, which `FixedBitSet::get` turns into an index panic. This is the
-    /// `fixed-bitset-bound` rule's own regression test: without the bound it
-    /// panics rather than answering.
+    /// through `as usize` into `usize::MAX`, which `FixedBitSet::get` turns
+    /// into an index panic. This is the `fixed-bitset-bound` rule's own
+    /// regression test: without the bound it panics rather than answering.
     #[test]
     fn a_negative_doc_id_is_not_live_rather_than_a_panic() {
         let mut live = FixedBitSet::new(5);
@@ -1118,10 +1118,11 @@ mod tests {
     }
 
     /// `hard_live_bits` clones the caller's `live_docs`, so the bitset
-    /// `clear_present` then indexes has the *caller's* length -- not
-    /// `max_doc`. Bounding on `max_doc` would be wrong: here the two genuinely can disagree because they are
-    /// separate parameters of a `pub fn`. With a 5-bit `live_docs` and a
-    /// `max_doc` of 64, the old bound let a soft-delete write a ghost bit.
+    /// `clear_present` then indexes has the *caller's* length -- not `max_doc`.
+    /// Bounding on `max_doc` would be wrong: here the two genuinely can
+    /// disagree because they are separate parameters of a `pub fn`. With a
+    /// 5-bit `live_docs` and a `max_doc` of 64, the old bound let a soft-delete
+    /// write a ghost bit.
     #[test]
     fn a_max_doc_larger_than_the_live_docs_bitset_does_not_write_a_ghost_bit() {
         // A *dense* soft-deletes entry says "every one of `numValues`

@@ -371,12 +371,14 @@ fn boolean_query_scored_minimum_should_match_sums_all_matching_clauses() {
     let (fields, doc, id, suffix, _m) = open_segment();
     let doc_in = DocInput::open(&doc, &id, &suffix).expect("open .doc");
 
-    // must=[cat]={0,2}; should=[dog,bird], dog={0,1}, bird={1,4}, minimum_should_match=1
-    // narrows the matched set to {0} (see `boolean_minimum_should_match_one_with_must_present_narrows_the_set`
-    // in `lib.rs`'s unit tests for the matching-side proof) -- this test instead
-    // asserts the *score* for doc 0 is `cat_score(0) + dog_score(0)` (bird doesn't
-    // match doc 0 at all, so it contributes nothing either way), proving the
-    // threshold only gates which docs match, not how many clause scores get summed.
+    // must=[cat]={0,2}; should=[dog,bird], dog={0,1}, bird={1,4},
+    // minimum_should_match=1 narrows the matched set to {0} (see
+    // `boolean_minimum_should_match_one_with_must_present_narrows_the_set` in
+    // `lib.rs`'s unit tests for the matching-side proof) -- this test instead
+    // asserts the *score* for doc 0 is `cat_score(0) + dog_score(0)` (bird
+    // doesn't match doc 0 at all, so it contributes nothing either way),
+    // proving the threshold only gates which docs match, not how many clause
+    // scores get summed.
     let query = BooleanQuery::new()
         .with_must([TermQuery::new("body", "cat")])
         .with_should([

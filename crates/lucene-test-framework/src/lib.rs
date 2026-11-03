@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 //! lucene-test-framework: a port of Lucene 10.5.0's `lucene/test-framework`
-//! (`org.apache.lucene.tests.*`), M14.h.
+//! (`org.apache.lucene.tests.*`).
 //!
 //! Randomized-test infrastructure (seeds, `rarely`/`atLeast`, random string
 //! and number generators, line docs) and the reusable `Base*TestCase` suites

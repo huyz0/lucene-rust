@@ -335,10 +335,11 @@ impl InMemoryInvertedIndex {
     /// nearly every `(doc, term)` pair is unique on that corpus, so a ~6-byte
     /// token becomes a `(String, String)` key slot, a [`PostingEntry`], and a
     /// `Vec<Occurrence>` whose first `push` reserves capacity 4 -- 48 bytes of
-    /// allocation for 12 bytes of payload. Closing it needs a block-pool redesign. Handing the `Vec` surplus
-    /// back with `shrink_to_fit` was tried and rejected: it cuts this figure
-    /// sharply but costs 25-60% indexing throughput and moves peak RSS not at
-    /// all, because glibc keeps the freed 48-byte chunks in its arena.
+    /// allocation for 12 bytes of payload. Closing it needs a block-pool
+    /// redesign. Handing the `Vec` surplus back with `shrink_to_fit` was tried
+    /// and rejected: it cuts this figure sharply but costs 25-60% indexing
+    /// throughput and moves peak RSS not at all, because glibc keeps the freed
+    /// 48-byte chunks in its arena.
     ///
     /// `crates/lucene-index/examples/invert_memory.rs` is the instrument that
     /// produces the numbers above.

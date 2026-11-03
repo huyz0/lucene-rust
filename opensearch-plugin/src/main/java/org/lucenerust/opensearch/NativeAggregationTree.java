@@ -936,7 +936,8 @@ public final class NativeAggregationTree {
             }
             byte[] globalQuery = null;
             if (global.isEmpty() == false) {
-                // DefaultAggregationProcessor.postProcess searches this for the global aggregations.
+                // DefaultAggregationProcessor.postProcess searches this for the
+                // global aggregations.
                 QueryEncoder.Encoded enc = QueryEncoder.encode(
                     ctx.searcher().rewrite(ctx.buildFilteredQuery(new MatchAllDocsQuery())),
                     fieldOk
@@ -1045,7 +1046,8 @@ public final class NativeAggregationTree {
         byte valueKind = NativeAggregations.valueKind(type);
         Long missing = null;
         if (config.missing() != null && type instanceof KeywordFieldMapper.KeywordFieldType) {
-            // A keyword's missing term (CoreValuesSourceType.BYTES.replaceMissing): keyword terms only.
+            // A keyword's missing term
+            // (CoreValuesSourceType.BYTES.replaceMissing): keyword terms only.
             if (factory.equals(TERMS_FACTORY) == false && factory.equals(SIGNIFICANT_FACTORY) == false) {
                 return null;
             }
@@ -1115,7 +1117,8 @@ public final class NativeAggregationTree {
             case TERMS_FACTORY: {
                 if (type instanceof KeywordFieldMapper.KeywordFieldType) {
                     NativeAggregations.Terms t = NativeAggregations.termsSpec(ctx, f, config);
-                    // min_doc_count 0: every term an empty bucket, none of which has sub-aggregations.
+                    // min_doc_count 0: every term an empty bucket, none of
+                    // which has sub-aggregations.
                     if (t == null || (t.thresholds().getMinDocCount() == 0 && subs.isEmpty() == false)) {
                         return null;
                     }

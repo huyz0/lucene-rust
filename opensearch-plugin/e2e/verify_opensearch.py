@@ -111,8 +111,9 @@ def create(index, shards, index_sort=None):
         },
     }
     settings["similarity"] = {k: v for k, v in settings["similarity"].items() if k in SIMILARITIES + ("tuned", "scr")}
-    # A hunspell analyzer over config/hunspell/en_US (opensearch-plugin/e2e/hunspell), on the nodes
-    # verify-opensearch.sh mounts it into; elsewhere (upgrade, rollback) `hun` is a plain text field.
+    # A hunspell analyzer over config/hunspell/en_US
+    # (opensearch-plugin/e2e/hunspell), on the nodes verify-opensearch.sh mounts
+    # it into; elsewhere (upgrade, rollback) `hun` is a plain text field.
     if HUNSPELL:
         settings["analysis"] = {
             "filter": {"en_stem": {"type": "hunspell", "locale": "en_US"}},
@@ -319,8 +320,9 @@ def matrix():
     for k in SIMILARITIES:
         add(f"similarity {k}", {"query": {"bool": {"should": [{"match": {f"tuned.{k}": "alpha beta"}}, {"match": {"body": "gamma"}}]}}}, "native")
     add("similarity dfr phrase", {"query": {"match_phrase": {"tuned.dfr": {"query": "alpha beta", "slop": 2}}}}, "native")
-    # A scripted similarity runs the user's script, which stays on the JVM. (`classic` is native too,
-    # but OpenSearch refuses it in a mapping now, so only the self-test reaches it.)
+    # A scripted similarity runs the user's script, which stays on the JVM.
+    # (`classic` is native too, but OpenSearch refuses it in a mapping now, so
+    # only the self-test reaches it.)
     add("similarity scripted", {"query": {"match": {"tuned.scr": "alpha"}}}, "field_similarity")
     # Sorted searches: numeric keys of every type, missing values, several keys,
     # the score and _doc, search_after, and the ones that stay on Lucene.

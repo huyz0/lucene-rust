@@ -1,8 +1,9 @@
-//! `org.apache.lucene.search.suggest.analyzing.FreeTextSuggester`: a statistical n-gram language model for free text. Every 1..=`grams`
-//! token n-gram of the suggestions goes into one FST whose output is the
-//! n-gram's count (stored as `Long.MAX_VALUE - count`); a lookup completes the
-//! last tokens of the query with the highest order model that has seen them,
-//! backing off to lower orders with a constant `ALPHA` penalty.
+//! `org.apache.lucene.search.suggest.analyzing.FreeTextSuggester`: a
+//! statistical n-gram language model for free text. Every 1..=`grams` token
+//! n-gram of the suggestions goes into one FST whose output is the n-gram's
+//! count (stored as `Long.MAX_VALUE - count`); a lookup completes the last
+//! tokens of the query with the highest order model that has seen them, backing
+//! off to lower orders with a constant `ALPHA` penalty.
 //!
 //! Java counts the n-grams with a temporary `IndexWriter` over a `body` field;
 //! here the analyzed tokens are counted in memory, which gives the same terms

@@ -937,11 +937,11 @@ pub enum IndexOrDocValuesPlan {
 /// ```
 ///
 /// `cost()` is the *index* side's `ScorerSupplier.cost()`, which for a point
-/// range query is `PointValues.estimateDocCount(visitor)` -- a BKD tree walk. The `>>> 3` is Java's own
-/// comment: "at equal costs, doc values tend to be worse than points since
-/// they still need to perform one comparison per document while points can do
-/// much better than that given how values are organized. So we give an
-/// arbitrary 8x penalty to doc values."
+/// range query is `PointValues.estimateDocCount(visitor)` -- a BKD tree walk.
+/// The `>>> 3` is Java's own comment: "at equal costs, doc values tend to be
+/// worse than points since they still need to perform one comparison per
+/// document while points can do much better than that given how values are
+/// organized. So we give an arbitrary 8x penalty to doc values."
 ///
 /// **`index_cost: None` means "no estimate available" and plans
 /// [`IndexOrDocValuesPlan::Index`].** That is not a guess: it is the answer

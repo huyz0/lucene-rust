@@ -1858,8 +1858,9 @@ mod tests {
     }
 
     /// **Read direction.** A numeric sort with *no* missing
-    /// value is what `new SortField("f", Type.LONG)` produces when nobody
-    /// calls `setMissingValue` -- the most ordinary sort there is. Java sorts such a document as if it held `0`.
+    /// value is what `new SortField("f", Type.LONG)` produces when nobody calls
+    /// `setMissingValue` -- the most ordinary sort there is. Java sorts such a
+    /// document as if it held `0`.
     #[test]
     fn a_numeric_sort_with_no_missing_value_parses_and_compares_as_zero() {
         let mut b = SiBuilder::valid();

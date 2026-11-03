@@ -390,10 +390,11 @@ done < <(cd "$TMP_A" && find . -type f | sed 's|^\./||' | sort)
 # Files committed under fixtures/data that no Java generator produces. These are
 # written by Rust examples (see scripts/verify-write-path.sh) and are expected.
 RUST_WRITTEN='^sparse_numeric_doc_values/'
-# bwc/, bwc-big/, bwc-quantized/ and bwc-completion/ are written by old Lucene jars through
-# scripts/gen-bwc-fixtures.sh (bwc/, bwc-quantized/ and bwc-completion/ are verified by its own --check; bwc-big/
-# has no dump, its tests read the index directly); the segment ids of both are
-# in the baseline below.
+# bwc/, bwc-big/, bwc-quantized/ and bwc-completion/ are written by old Lucene
+# jars through scripts/gen-bwc-fixtures.sh (bwc/, bwc-quantized/ and
+# bwc-completion/ are verified by its own --check; bwc-big/ has no dump, its
+# tests read the index directly); the segment ids of both are in the baseline
+# below.
 BWC_OWNED='^bwc(-big|-quantized|-completion)?/'
 # Written under JDK 25 only (GenAnalysisDateLocales --jdk25), and verified by
 # scripts/check-date-locales-jdk25.sh in CI's JDK 25 step.

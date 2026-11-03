@@ -794,13 +794,13 @@ mod tests {
         // this module.
         //
         // The range below has to be a *narrow* one. With the real
-        // `PointValues.intersect` pruning walk, an all-encompassing `[i64::MIN, i64::MAX]` range hits
-        // `CELL_INSIDE_QUERY` at the root, which -- exactly like Java's
-        // `visitDocIDs` shortcut -- reads only the leaf's doc-id block and
-        // never decodes a packed value, so it can happily return garbage doc
-        // ids from garbage bytes without erroring (detecting *that* is
-        // `checkIntegrity`'s/the footer checksum's job, not the tree walk's,
-        // in Java too). A narrow range makes the root cell
+        // `PointValues.intersect` pruning walk, an all-encompassing `[i64::MIN,
+        // i64::MAX]` range hits `CELL_INSIDE_QUERY` at the root, which --
+        // exactly like Java's `visitDocIDs` shortcut -- reads only the leaf's
+        // doc-id block and never decodes a packed value, so it can happily
+        // return garbage doc ids from garbage bytes without erroring (detecting
+        // *that* is `checkIntegrity`'s/the footer checksum's job, not the tree
+        // walk's, in Java too). A narrow range makes the root cell
         // `CELL_CROSSES_QUERY`, which is the branch that decodes the block.
         let footer_start = kdd.len() - lucene_store::codec_util::FOOTER_LENGTH;
         // The `.kdd` index header: magic (4) + `"Lucene90PointsFormatData"`

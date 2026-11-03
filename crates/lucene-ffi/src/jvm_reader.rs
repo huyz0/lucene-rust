@@ -1631,11 +1631,11 @@ pub const METRIC_VALUES: usize = 6;
 /// Decodes a metrics blob: `count: u8`, then per field `kind: u8`
 /// ([`METRIC_LONG`], [`METRIC_DOUBLE`], [`METRIC_FLOAT`]), `source: u8`
 /// ([`METRIC_DOC_VALUES`], [`METRIC_POINTS_MIN`], [`METRIC_POINTS_MAX`]),
-/// `needs: u8` (the parts read back, [`lucene_search::aggs::NEED_ALL`]'s
-/// bits, at least one) and the field (`len: i32`, UTF-8); then `count: u8`
-/// `terms` aggregations, each its field (`len: i32`, UTF-8) and
-/// `shard_size: i32` (at least 1) -- at least one aggregation in all; then the concurrent-search slices
-/// ([`decode_slices`]). Little-endian, and trailing bytes are an error.
+/// `needs: u8` (the parts read back, [`lucene_search::aggs::NEED_ALL`]'s bits,
+/// at least one) and the field (`len: i32`, UTF-8); then `count: u8` `terms`
+/// aggregations, each its field (`len: i32`, UTF-8) and `shard_size: i32` (at
+/// least 1) -- at least one aggregation in all; then the concurrent-search
+/// slices ([`decode_slices`]). Little-endian, and trailing bytes are an error.
 pub(crate) fn decode_metrics(blob: &[u8]) -> Result<DecodedAggs, FfiStatus> {
     let mut c = Cursor { buf: blob, pos: 0 };
     let bad = |msg: String| {

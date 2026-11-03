@@ -1931,11 +1931,11 @@ impl Problems {
 /// it; a position beyond this could only come from a corrupt `.pos` or a
 /// writer that never checked.
 ///
-/// Re-exported from the **writer's** definition rather than duplicated. The two halves of one rule -- what
-/// [`crate::indexing_chain::advance_position`] clamps to and what
-/// `postings.positions_valid` rejects -- must move together, and a verifier
-/// with its own copy of the writer's ceiling is a verifier that can silently
-/// stop agreeing with the writer it verifies.
+/// Re-exported from the **writer's** definition rather than duplicated. The two
+/// halves of one rule -- what [`crate::indexing_chain::advance_position`]
+/// clamps to and what `postings.positions_valid` rejects -- must move together,
+/// and a verifier with its own copy of the writer's ceiling is a verifier that
+/// can silently stop agreeing with the writer it verifies.
 use crate::indexing_chain::MAX_POSITION;
 
 /// The segment's postings files, read into memory once so the term
@@ -3556,10 +3556,10 @@ fn compare_intersect_with_scan(
 /// "verifier that does not check something silently passes corrupt
 /// segments" failure mode.
 ///
-/// Skipped (not failed) for a segment where no field claims doc-values. A field that claims them while the segment lacks
-/// `.dvd`/`.dvm` is already reported by [`check_field_flags_vs_files`]'s
-/// `fnm.doc_values_vs_files`, so this function returns quietly in that case
-/// rather than duplicating the failure.
+/// Skipped (not failed) for a segment where no field claims doc-values. A field
+/// that claims them while the segment lacks `.dvd`/`.dvm` is already reported
+/// by [`check_field_flags_vs_files`]'s `fnm.doc_values_vs_files`, so this
+/// function returns quietly in that case rather than duplicating the failure.
 fn check_doc_values(
     dir: &dyn Directory,
     commit: &SegmentCommitInfo,
@@ -4809,11 +4809,12 @@ fn check_soft_deletes(
 /// - the leaves' decoded point counts must sum to `.kdm`'s own declared
 ///   field-level `point_count` -- `points.point_count_matches:<field>`.
 ///
-/// Skipped (not failed) when no field in `.fnm` claims points at all. A field that *does* claim points but whose segment is missing one
-/// of `.kdm`/`.kdi`/`.kdd` is reported as a single `points.open` failure
-/// rather than silently skipped -- points files are optional at the
-/// segment level (most segments have none), but once one field commits to
-/// having them, all three must be present and parse.
+/// Skipped (not failed) when no field in `.fnm` claims points at all. A field
+/// that *does* claim points but whose segment is missing one of
+/// `.kdm`/`.kdi`/`.kdd` is reported as a single `points.open` failure rather
+/// than silently skipped -- points files are optional at the segment level
+/// (most segments have none), but once one field commits to having them, all
+/// three must be present and parse.
 fn check_points_structural_invariants(
     dir: &dyn Directory,
     commit: &SegmentCommitInfo,
@@ -13399,9 +13400,10 @@ mod tests {
     /// A partially-restored snapshot or an interrupted copy is the common
     /// way to produce one, and it must not read as agreement.
     ///
-    /// Each row also asserts the isolation property: the *named* check fails. `file:<name>` fails too (the file
-    /// is genuinely absent, and `check_files_exist_and_validate` says so
-    /// first), which is correct and is not what this test is about.
+    /// Each row also asserts the isolation property: the *named* check fails.
+    /// `file:<name>` fails too (the file is genuinely absent, and
+    /// `check_files_exist_and_validate` says so first), which is correct and is
+    /// not what this test is about.
     #[test]
     fn every_listed_file_that_goes_missing_is_reported_by_its_own_open_check() {
         // (fixture, extension to delete, the check that must fail)
@@ -13959,9 +13961,10 @@ mod tests {
     ///
     /// `FixedBitSet::get` does `words[index >> 6]` behind a bare
     /// `debug_assert`, so an unbounded id 64 or more past the end panics in a
-    /// release build too (the crate rule in `docs/arithmetic-gate.md`). Both modes are covered: an *empty* bitset
-    /// (`words` is empty, so any index is a real panic) and a short one
-    /// (`words` has room, so the read would silently return a ghost bit).
+    /// release build too (the crate rule in `docs/arithmetic-gate.md`). Both
+    /// modes are covered: an *empty* bitset (`words` is empty, so any index is
+    /// a real panic) and a short one (`words` has room, so the read would
+    /// silently return a ghost bit).
     #[test]
     fn a_doc_id_past_the_end_of_the_live_docs_bitset_is_treated_as_live() {
         use lucene_util::fixed_bit_set::FixedBitSet;

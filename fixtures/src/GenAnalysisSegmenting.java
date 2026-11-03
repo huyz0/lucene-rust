@@ -135,7 +135,8 @@ public class GenAnalysisSegmenting {
 
   /** Code points of every class, each with the same class under JDK 21 and 25. */
   static final int[] POOL = {
-    // Other: symbols, opening punctuation, Pi, Mc, controls, private use, unassigned, lone surrogates
+    // Other: symbols, opening punctuation, Pi, Mc, controls, private use,
+    // unassigned, lone surrogates
     '#', '(', '-', '@', '*', 0xAB, 0x903, 0x85, 0x0B, 0xE000, 0x378, 0x1F600, 0xD800, 0xDC00,
     // Space
     ' ', ' ', ' ', ' ', '\t', '\n', '\r', '\f', 0xA0, 0x3000, 0x2028,

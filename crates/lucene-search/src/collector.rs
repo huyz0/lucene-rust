@@ -121,8 +121,9 @@ pub enum TotalHitsRelation {
 /// `org.apache.lucene.search.TotalHits`: a hit count plus whether it is exact.
 ///
 /// Real `TopDocs` always carries one of these, and every caller that prints
-/// "about N results" is reading its [`TotalHitsRelation`]. `top_docs().len()` is only the *kept* hit count (capped at `top_n`) and
-/// says nothing about how many documents matched.
+/// "about N results" is reading its [`TotalHitsRelation`]. `top_docs().len()`
+/// is only the *kept* hit count (capped at `top_n`) and says nothing about how
+/// many documents matched.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TotalHits {
     pub value: u64,

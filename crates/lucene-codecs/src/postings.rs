@@ -3462,12 +3462,12 @@ struct Level1Entry<'a> {
     /// impacts field exists on the wire at all).
     ///
     /// Kept **undecoded**, as a zero-copy view into the mapped `.doc` bytes,
-    /// exactly as [`FullBlockHeader::impact_bytes`] is and for the same
-    /// reason: `skipLevel1To` decodes the run only when
-    /// `needsImpacts && level1LastDocID >= target` and `skipBytes` past it
-    /// otherwise, so a walk crossing 610 spans to reach a document does not
-    /// decode -- or allocate -- 610 impact lists it never looks at. (Otherwise it is the dominant cost of a skip-driven
-    /// `advance` on a five-million-document term.)
+    /// exactly as [`FullBlockHeader::impact_bytes`] is and for the same reason:
+    /// `skipLevel1To` decodes the run only when `needsImpacts &&
+    /// level1LastDocID >= target` and `skipBytes` past it otherwise, so a walk
+    /// crossing 610 spans to reach a document does not decode -- or allocate --
+    /// 610 impact lists it never looks at. (Otherwise it is the dominant cost
+    /// of a skip-driven `advance` on a five-million-document term.)
     impact_bytes: &'a [u8],
     /// The span's `.pos`/`.pay` skip pointers, or `None` when the field does
     /// not index positions (in which case the sub-fields do not exist on the
@@ -3621,11 +3621,11 @@ fn read_pos_skip(r: &mut SliceInput, index_has_offsets_or_payloads: bool) -> Res
 /// field here is a small fixed-width or vint/vlong-prefixed value, including
 /// the impacts byte run (captured undecoded as
 /// [`FullBlockHeader::impact_bytes`], a borrow of the mapped file, and decoded
-/// only if a caller asks for a bound) — so determining `last_doc_id` and `body_start`/`body_len` never runs
-/// `ForUtil`/`PForUtil` decode, which is the expensive part of a block
-/// (bit-unpacking 256 values). That decode work is exactly what
-/// [`LazyDocsCursor`] avoids for a block this header proves is entirely
-/// before the caller's target.
+/// only if a caller asks for a bound) — so determining `last_doc_id` and
+/// `body_start`/`body_len` never runs `ForUtil`/`PForUtil` decode, which is the
+/// expensive part of a block (bit-unpacking 256 values). That decode work is
+/// exactly what [`LazyDocsCursor`] avoids for a block this header proves is
+/// entirely before the caller's target.
 struct FullBlockHeader<'a> {
     /// This block's last (highest) doc ID — `prev_doc_id + docDelta`, proven
     /// consistent with the body's own delta-decoded last entry by every

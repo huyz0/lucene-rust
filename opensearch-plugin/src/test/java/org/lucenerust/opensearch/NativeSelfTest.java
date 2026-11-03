@@ -446,8 +446,8 @@ public final class NativeSelfTest {
                 case 7 -> r.nextInt(2) == 0
                     ? new WildcardQuery(new Term(field, word(r).charAt(0) + "?" + "*"))
                     : new TermInSetQuery(field, List.of(new BytesRef(word(r)), new BytesRef(word(r)), new BytesRef(word(r))));
-                // `range`, `term` and `terms` on the other numeric widths and `ip`: points boxes and
-                // point sets (OpenSearch 3.9.0 upgrade).
+                // `range`, `term` and `terms` on the other numeric widths and
+                // `ip`: points boxes and point sets (OpenSearch 3.9.0 upgrade).
                 case 10 -> switch (r.nextInt(6)) {
                     case 0 -> IntPoint.newRangeQuery("si", r.nextInt(50) - 5, r.nextInt(60));
                     case 1 -> org.apache.lucene.document.FloatPoint.newRangeQuery("sf", (float) r.nextGaussian(), (float) r.nextGaussian() + 1f);
@@ -473,7 +473,8 @@ public final class NativeSelfTest {
                     String a = r.nextInt(5) == 0 ? null : word(r), b = r.nextInt(5) == 0 ? null : word(r);
                     yield TermRangeQuery.newStringRange(field, a, b, r.nextBoolean(), r.nextBoolean());
                 }
-                // Stacked tokens (hunspell, synonyms, keyword_repeat): one pseudo-term, boosts in (0, 1].
+                // Stacked tokens (hunspell, synonyms, keyword_repeat): one
+                // pseudo-term, boosts in (0, 1].
                 case 12 -> {
                     org.apache.lucene.search.SynonymQuery.Builder s = new org.apache.lucene.search.SynonymQuery.Builder(field);
                     for (int i = r.nextInt(4); i >= 0; i--) {
@@ -605,8 +606,9 @@ public final class NativeSelfTest {
                 long limit = exact > 0 ? 1 + new Random(exact).nextLong(exact) : 1;
                 long[] limited = new long[3];
                 check(NativeBridge.search(acquired.handle(), enc.blob(), topN, limit, docs, scores, limited) == NativeBridge.OK, what + ": limited");
-                // Exact up to the limit (Lucene switches to GTE only past it); above it either exact, or
-                // a lower bound that itself exceeds the limit.
+                // Exact up to the limit (Lucene switches to GTE only past it);
+                // above it either exact, or a lower bound that itself exceeds
+                // the limit.
                 boolean ok = limited[2] == 0 ? limited[1] == exact : exact > limit && limited[1] > limit && limited[1] <= exact;
                 check(ok, what + ": limit " + limit + " gave " + limited[1] + (limited[2] == 1 ? "+" : "") + ", exact " + exact);
                 check(counts[0] == want.scoreDocs.length, what + ": hits " + counts[0] + " vs " + want.scoreDocs.length);
@@ -696,9 +698,10 @@ public final class NativeSelfTest {
                     sum += n;
                 }
                 check(counted[0] == sum, what + ": total " + counted[0] + " vs the segments' " + sum);
-                // The plugin's replay of a concurrent count's early termination from those counts
-                // answers as the native replay that searches again, for every limit, which-segments-
-                // iterate pattern and slicing (one slice in reverse order included).
+                // The plugin's replay of a concurrent count's early termination
+                // from those counts answers as the native replay that searches
+                // again, for every limit, which-segments- iterate pattern and
+                // slicing (one slice in reverse order included).
                 int m = leaves.size();
                 int[] all = java.util.stream.IntStream.range(0, m).toArray();
                 int[] reversed = java.util.stream.IntStream.range(0, m).map(i -> m - 1 - i).toArray();
@@ -984,7 +987,8 @@ public final class NativeSelfTest {
                 String what = where + ": " + query + " sorted " + sort + " top" + topN + " threshold " + threshold + " page " + page
                     + (track ? " tracking the max score" : "") + (min != null ? " min_score " + min : "");
                 if (after != null && Arrays.stream(sort.getSort()).anyMatch(GeoEncoder::luceneSort)) {
-                    // LatLonPointDistanceComparator.compareTop compares metres: Lucene runs the page.
+                    // LatLonPointDistanceComparator.compareTop compares metres:
+                    // Lucene runs the page.
                     check("search_after_geo".equals(enc.fallbackReason()), what + ": falls back as search_after_geo, not " + enc.fallbackReason());
                     geoAfterFallbacks++;
                     break;
@@ -1897,7 +1901,8 @@ public final class NativeSelfTest {
                 return r.nextBoolean() ? new org.apache.lucene.search.IndexOrDocValuesQuery(index, dv) : index;
             }
             case 5: {
-                // LatLonPoint.newGeometryQuery under any relation (OpenSearch asks only INTERSECTS).
+                // LatLonPoint.newGeometryQuery under any relation (OpenSearch
+                // asks only INTERSECTS).
                 var rel = relation(r);
                 int n = 1 + r.nextInt(2);
                 org.apache.lucene.geo.LatLonGeometry[] g = new org.apache.lucene.geo.LatLonGeometry[n];
@@ -1913,7 +1918,8 @@ public final class NativeSelfTest {
                 return org.apache.lucene.document.LatLonShape.newBoxQuery("shape", relation(r), b.minLat, b.maxLat, b.minLon, b.maxLon);
             }
             default: {
-                // geo_shape / geo_distance / geo_polygon on a geo_shape: LatLonShape.newGeometryQuery.
+                // geo_shape / geo_distance / geo_polygon on a geo_shape:
+                // LatLonShape.newGeometryQuery.
                 var rel = relation(r);
                 int n = 1 + (r.nextInt(3) == 0 ? 1 + r.nextInt(2) : 0);
                 org.apache.lucene.geo.LatLonGeometry[] g = new org.apache.lucene.geo.LatLonGeometry[n];
