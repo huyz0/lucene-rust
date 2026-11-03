@@ -2787,339 +2787,404 @@ impl EdgeNGramTokenFilter {
     }
 }
 
-/// The classic Porter stemming algorithm (Martin Porter, 1980), operating on
-/// lowercase ASCII alphabetic words. See [`PorterStemFilter`] for the
-/// documented per-step scope; this module is a direct, mechanical port of
-/// the published algorithm's five steps.
+/// Lucene's `org.apache.lucene.analysis.en.PorterStemmer` (Porter, 1980,
+/// release 3 with Brian Goetz's buffer reuse), step for step: the word is
+/// stemmed in a buffer of code units, `k` being its last index and `j` the
+/// end of the stem a matched suffix leaves.
+///
+/// Java runs over the term's UTF-16 `char`s. Every test the algorithm makes
+/// is an equality with an ASCII letter, so an ASCII term is stemmed over its
+/// bytes, which are its units; any other term is stemmed over its UTF-16
+/// units, as Java does, so a supplementary character counts as the two
+/// consonants Java sees.
 pub(crate) mod porter {
-    /// Stems `term`.
-    ///
-    /// Java's `PorterStemmer.stem(char[], int)` runs the six steps only when
-    /// `k > k0 + 1`, i.e. when the word is **at least three characters**;
-    /// one- and two-character words come back untouched. This port had no
-    /// such guard and had an unrelated one of its own ("all lowercase ASCII"),
-    /// which produced two families of wrong answers:
-    ///
-    /// - `"s"` stemmed to the **empty string** (step 1a deleted the only
-    ///   character), and `"as"`/`"is"`/`"us"` lost their `s`; Java returns
-    ///   all of them unchanged.
-    /// - `"Cats"` and `"cafés"` came back unstemmed, because of the
-    ///   ASCII-lowercase guard. Java has no such test -- `cons()` simply
-    ///   treats every character that is not `a/e/i/o/u/y` as a consonant --
-    ///   so it stems them to `"Cat"` and `"café"`.
-    pub(crate) fn stem(term: &str) -> String {
-        let mut w = Vec::new();
-        stem_in_place(term, &mut w);
-        w.into_iter().collect()
+    /// A code unit: a byte of an ASCII term or a UTF-16 unit.
+    pub(crate) trait Unit: Copy + Eq {
+        fn of(b: u8) -> Self;
+        fn is(self, b: u8) -> bool;
     }
 
-    /// [`stem`] into a reused buffer: `w` ends holding the stem's chars.
-    pub(crate) fn stem_in_place(term: &str, w: &mut Vec<char>) {
-        w.clear();
-        w.extend(term.chars());
-        if w.len() <= 2 {
-            return;
+    impl Unit for u8 {
+        #[inline(always)]
+        fn of(b: u8) -> Self {
+            b
         }
-        step1a(w);
-        step1b(w);
-        step1c(w);
-        step2(w);
-        step3(w);
-        step4(w);
-        step5a(w);
-        step5b(w);
-    }
-
-    /// Is `chars[i]` a consonant? Vowels are `a`/`e`/`i`/`o`/`u`; `y` is a
-    /// consonant at position 0 or immediately after a VOWEL, and a vowel
-    /// immediately after a consonant -- Porter's own reference rule
-    /// (`case 'y': return (i==0) ? TRUE : !cons(i-1);`). E.g. "syzygy": the
-    /// first `y` follows consonant `s`, so it's a VOWEL there (not a
-    /// consonant); "toy": `y` follows vowel `o`, so it's a CONSONANT there.
-    fn is_consonant(chars: &[char], i: usize) -> bool {
-        match chars[i] {
-            'a' | 'e' | 'i' | 'o' | 'u' => false,
-            'y' => i == 0 || !is_consonant(chars, i - 1),
-            _ => true,
+        #[inline(always)]
+        fn is(self, b: u8) -> bool {
+            self == b
         }
     }
 
-    /// The algorithm's "measure" `m`: the number of `VC` (vowel-then-
-    /// consonant) sequences in `chars`, after skipping any leading
-    /// consonants and ignoring any trailing vowels.
-    fn measure(chars: &[char]) -> u32 {
-        let n = chars.len();
-        let mut i = 0;
-        while i < n && is_consonant(chars, i) {
-            i += 1;
+    impl Unit for u16 {
+        #[inline(always)]
+        fn of(b: u8) -> Self {
+            u16::from(b)
         }
-        let mut m = 0;
-        loop {
-            while i < n && !is_consonant(chars, i) {
-                i += 1;
-            }
-            if i >= n {
-                break;
-            }
-            while i < n && is_consonant(chars, i) {
-                i += 1;
-            }
-            m += 1;
-            if i >= n {
-                break;
+        #[inline(always)]
+        fn is(self, b: u8) -> bool {
+            self == u16::from(b)
+        }
+    }
+
+    /// The stemmer's state over one word: `b[..=k]` is the word, `j`
+    /// Java's `j`, which a matched `-ion` on a three-letter word leaves at
+    /// `-1`. As in Java, the units past `k` stay in the buffer: step 6
+    /// measures up to the `j` it set before dropping a final `e`.
+    struct Stemmer<'a, T> {
+        b: &'a mut Vec<T>,
+        k: isize,
+        j: isize,
+        dirty: bool,
+    }
+
+    impl<T: Unit> Stemmer<'_, T> {
+        #[inline(always)]
+        fn k(&self) -> isize {
+            self.k
+        }
+
+        #[inline(always)]
+        fn at(&self, i: isize) -> T {
+            self.b[i as usize]
+        }
+
+        /// `k = to`.
+        #[inline(always)]
+        fn set_k(&mut self, to: isize) {
+            self.k = to;
+        }
+
+        /// `cons(i)`: `b[i]` is a consonant (`y` is one after a vowel or at
+        /// the start).
+        fn cons(&self, i: isize) -> bool {
+            let c = self.at(i);
+            if c.is(b'a') || c.is(b'e') || c.is(b'i') || c.is(b'o') || c.is(b'u') {
+                false
+            } else if c.is(b'y') {
+                i == 0 || !self.cons(i - 1)
+            } else {
+                true
             }
         }
-        m
-    }
 
-    /// Does `chars` contain at least one vowel?
-    fn contains_vowel(chars: &[char]) -> bool {
-        (0..chars.len()).any(|i| !is_consonant(chars, i))
-    }
-
-    /// Does `chars` end in a double consonant (e.g. `-tt`, `-ss`)?
-    fn ends_double_consonant(chars: &[char]) -> bool {
-        let n = chars.len();
-        n >= 2 && chars[n - 1] == chars[n - 2] && is_consonant(chars, n - 1)
-    }
-
-    /// Does `chars` end in consonant-vowel-consonant, where the final
-    /// consonant is not `w`, `x`, or `y` (real Porter's `*o` condition)?
-    fn cvc(chars: &[char]) -> bool {
-        let n = chars.len();
-        n >= 3
-            && is_consonant(chars, n - 3)
-            && !is_consonant(chars, n - 2)
-            && is_consonant(chars, n - 1)
-            && !matches!(chars[n - 1], 'w' | 'x' | 'y')
-    }
-
-    /// Java's `ends(s)`: does `w` end with `suffix`? Returns the length of
-    /// the stem that would be left (Java's `j + 1`), or `None`.
-    fn ends(w: &[char], suffix: &str) -> Option<usize> {
-        let suf_len = suffix.chars().count();
-        let stem_len = w.len().checked_sub(suf_len)?;
-        w[stem_len..]
-            .iter()
-            .copied()
-            .eq(suffix.chars())
-            .then_some(stem_len)
-    }
-
-    /// Java's `switch` + `if (ends(..)) { r(..); break; }` chain, expressed
-    /// once.
-    ///
-    /// The load-bearing detail, and the one this module used to get wrong:
-    /// **the first suffix that matches wins, whether or not the measure test
-    /// then lets the replacement through.** Java's `break` leaves the
-    /// `switch` as soon as `ends()` succeeds, and only `r()` -- called before
-    /// the `break` -- checks `m() > 0`. A rule list that instead kept
-    /// searching after a measure failure produces different stems:
-    ///
-    /// - `"argument"` matches `-ment` in Java's step 5 with `m("argu") == 1`,
-    ///   which is not `> 1`, so Java leaves the word alone. Falling through
-    ///   to `-ent` instead gives `m("argum") == 2` and strips it, yielding
-    ///   `"argum"`.
-    /// - `"ization"` matches `-ization` in step 3 with `m("") == 0`, so Java
-    ///   leaves it. Falling through to `-ation` gives `"izate"`.
-    ///
-    /// Returns `true` when a suffix matched at all.
-    fn apply_first_match(w: &mut Vec<char>, rules: &[(&str, &str)], min_m: u32) -> bool {
-        for (suffix, replacement) in rules {
-            let Some(stem_len) = ends(w, suffix) else {
-                continue;
-            };
-            if measure(&w[..stem_len]) >= min_m {
-                w.truncate(stem_len);
-                w.extend(replacement.chars());
-            }
-            return true;
-        }
-        false
-    }
-
-    /// Step 1a: `-sses`->`-ss`, `-ies`->`-i`, `-ss`->`-ss` (no-op), else
-    /// trailing `-s`-> (delete). Unconditional on measure.
-    fn step1a(w: &mut Vec<char>) {
-        if ends(w, "sses").is_some() {
-            w.truncate(w.len() - 2);
-        } else if ends(w, "ies").is_some() {
-            w.truncate(w.len() - 3);
-            w.push('i');
-        } else if ends(w, "ss").is_some() {
-            // no-op: "ss" stays "ss".
-        } else if w.last() == Some(&'s') {
-            w.truncate(w.len() - 1);
-        }
-    }
-
-    /// Step 1b: `-eed`->`-ee` (if `m(stem) > 0`); `-ed`/`-ing` deleted only
-    /// if the stem contains a vowel, then post-deletion cleanup.
-    fn step1b(w: &mut Vec<char>) {
-        if ends(w, "eed").is_some() {
-            let stem_len = w.len() - 3;
-            if measure(&w[..stem_len]) > 0 {
-                w.truncate(w.len() - 1);
-            }
-            return;
-        }
-        let deleted = if ends(w, "ed").is_some() && contains_vowel(&w[..w.len() - 2]) {
-            w.truncate(w.len() - 2);
-            true
-        } else if ends(w, "ing").is_some() && contains_vowel(&w[..w.len() - 3]) {
-            w.truncate(w.len() - 3);
-            true
-        } else {
-            false
-        };
-        if !deleted {
-            return;
-        }
-        if ends(w, "at").is_some() || ends(w, "bl").is_some() || ends(w, "iz").is_some() {
-            w.push('e');
-        } else if ends_double_consonant(w) && !matches!(w[w.len() - 1], 'l' | 's' | 'z') {
-            w.pop();
-        } else if measure(w) == 1 && cvc(w) {
-            w.push('e');
-        }
-    }
-
-    /// Step 1c: trailing `y` -> `i` if the stem (word minus the `y`)
-    /// contains a vowel.
-    fn step1c(w: &mut [char]) {
-        let n = w.len();
-        if n > 0 && w[n - 1] == 'y' && contains_vowel(&w[..n - 1]) {
-            w[n - 1] = 'i';
-        }
-    }
-
-    /// Java's `step3()` (the paper's step 2): maps double suffixes to single
-    /// ones.
-    ///
-    /// Dispatch is a `switch` on the **second-to-last** character, and only
-    /// the rules in that group are ever tried -- see [`apply_first_match`]
-    /// for why "first match wins" matters. Two rules were also wrong here:
-    /// the `l` group's first entry is `bli -> ble` (this port had
-    /// `abli -> able`, so `"possibly"` stayed `"possibli"`), and the `g`
-    /// group -- `logi -> log` -- was missing entirely, so `"technology"`,
-    /// `"biology"` and `"apology"` all stopped at `-logi`.
-    fn step2(w: &mut Vec<char>) {
-        let n = w.len();
-        // Java: `if (k == k0) return;` -- a one-character word has no
-        // `b[k - 1]` to switch on.
-        if n < 2 {
-            return;
-        }
-        let rules: &[(&str, &str)] = match w[n - 2] {
-            'a' => &[("ational", "ate"), ("tional", "tion")],
-            'c' => &[("enci", "ence"), ("anci", "ance")],
-            'e' => &[("izer", "ize")],
-            'l' => &[
-                ("bli", "ble"),
-                ("alli", "al"),
-                ("entli", "ent"),
-                ("eli", "e"),
-                ("ousli", "ous"),
-            ],
-            'o' => &[("ization", "ize"), ("ation", "ate"), ("ator", "ate")],
-            's' => &[
-                ("alism", "al"),
-                ("iveness", "ive"),
-                ("fulness", "ful"),
-                ("ousness", "ous"),
-            ],
-            't' => &[("aliti", "al"), ("iviti", "ive"), ("biliti", "ble")],
-            'g' => &[("logi", "log")],
-            _ => return,
-        };
-        apply_first_match(w, rules, 1);
-    }
-
-    /// Java's `step4()` (the paper's step 3): `-ic-`, `-full`, `-ness` etc.
-    /// Dispatch is on the **last** character here, not the second-to-last.
-    fn step3(w: &mut Vec<char>) {
-        let n = w.len();
-        if n == 0 {
-            return;
-        }
-        let rules: &[(&str, &str)] = match w[n - 1] {
-            'e' => &[("icate", "ic"), ("ative", ""), ("alize", "al")],
-            'i' => &[("iciti", "ic")],
-            'l' => &[("ical", "ic"), ("ful", "")],
-            's' => &[("ness", "")],
-            _ => return,
-        };
-        apply_first_match(w, rules, 1);
-    }
-
-    /// Java's `step5()` (the paper's step 4): takes off `-ant`, `-ence` etc.
-    /// in context `<c>vcvc<v>`, i.e. when `m(stem) > 1`.
-    ///
-    /// Dispatch is on the second-to-last character again, and the group falls
-    /// straight through to `return` when no suffix in it matches -- there is
-    /// no cross-group fallback. `-ion` additionally requires the stem to end
-    /// in `s` or `t` (Java's `ends("ion") && j >= 0 && (b[j] == 's' ||
-    /// b[j] == 't')`), and when that guard fails the `o` group tries `-ou`
-    /// and then gives up.
-    fn step4(w: &mut Vec<char>) {
-        let n = w.len();
-        if n < 2 {
-            return;
-        }
-        let stem_len = if w[n - 2] == 'o' {
-            match ends(w, "ion") {
-                Some(stem_len) if stem_len >= 1 && matches!(w[stem_len - 1], 's' | 't') => {
-                    Some(stem_len)
+        /// `m()`: the number of consonant sequences between `0` and `j`.
+        fn m(&self) -> u32 {
+            let mut n = 0;
+            let mut i = 0;
+            loop {
+                if i > self.j {
+                    return n;
                 }
-                _ => ends(w, "ou"),
+                if !self.cons(i) {
+                    break;
+                }
+                i += 1;
             }
-        } else {
-            let rules: &[&str] = match w[n - 2] {
-                'a' => &["al"],
-                'c' => &["ance", "ence"],
-                'e' => &["er"],
-                'i' => &["ic"],
-                'l' => &["able", "ible"],
-                // "element" etc. not stripped before the `m`.
-                'n' => &["ant", "ement", "ment", "ent"],
-                's' => &["ism"],
-                't' => &["ate", "iti"],
-                'u' => &["ous"],
-                'v' => &["ive"],
-                'z' => &["ize"],
-                _ => return,
+            i += 1;
+            loop {
+                loop {
+                    if i > self.j {
+                        return n;
+                    }
+                    if self.cons(i) {
+                        break;
+                    }
+                    i += 1;
+                }
+                i += 1;
+                n += 1;
+                loop {
+                    if i > self.j {
+                        return n;
+                    }
+                    if !self.cons(i) {
+                        break;
+                    }
+                    i += 1;
+                }
+                i += 1;
+            }
+        }
+
+        /// `vowelinstem()`: `0..=j` holds a vowel.
+        fn vowel_in_stem(&self) -> bool {
+            (0..=self.j).any(|i| !self.cons(i))
+        }
+
+        /// `doublec(j)`: `j-1, j` is a double consonant.
+        fn doublec(&self, j: isize) -> bool {
+            j >= 1 && self.at(j) == self.at(j - 1) && self.cons(j)
+        }
+
+        /// `cvc(i)`: `i-2, i-1, i` is consonant-vowel-consonant and the
+        /// second consonant is not `w`, `x` or `y`.
+        fn cvc(&self, i: isize) -> bool {
+            if i < 2 || !self.cons(i) || self.cons(i - 1) || !self.cons(i - 2) {
+                return false;
+            }
+            let c = self.at(i);
+            !(c.is(b'w') || c.is(b'x') || c.is(b'y'))
+        }
+
+        /// `ends(s)`: `0..=k` ends with `s`; sets `j` to the stem's end.
+        #[inline]
+        fn ends(&mut self, s: &[u8]) -> bool {
+            let l = s.len() as isize;
+            let o = self.k() - l + 1;
+            if o < 0 {
+                return false;
+            }
+            let tail = &self.b[o as usize..=self.k as usize];
+            if !tail.iter().zip(s).all(|(&c, &e)| c.is(e)) {
+                return false;
+            }
+            self.j = self.k() - l;
+            true
+        }
+
+        /// `setto(s)`: `j+1..` becomes `s`, `k` its end.
+        fn setto(&mut self, s: &[u8]) {
+            let o = (self.j + 1) as usize;
+            if self.b.len() < o + s.len() {
+                self.b.resize(o + s.len(), T::of(0));
+            }
+            for (slot, &c) in self.b[o..].iter_mut().zip(s) {
+                *slot = T::of(c);
+            }
+            self.k = self.j + s.len() as isize;
+            self.dirty = true;
+        }
+
+        /// `r(s)`: [`Self::setto`] when `m() > 0`.
+        fn r(&mut self, s: &[u8]) {
+            if self.m() > 0 {
+                self.setto(s);
+            }
+        }
+
+        /// `step1()`: plurals and `-ed`/`-ing`.
+        fn step1(&mut self) {
+            if self.at(self.k()).is(b's') {
+                if self.ends(b"sses") {
+                    self.set_k(self.k() - 2);
+                } else if self.ends(b"ies") {
+                    self.setto(b"i");
+                } else if !self.at(self.k() - 1).is(b's') {
+                    self.set_k(self.k() - 1);
+                }
+            }
+            if self.ends(b"eed") {
+                if self.m() > 0 {
+                    self.set_k(self.k() - 1);
+                }
+            } else if (self.ends(b"ed") || self.ends(b"ing")) && self.vowel_in_stem() {
+                self.set_k(self.j);
+                if self.ends(b"at") {
+                    self.setto(b"ate");
+                } else if self.ends(b"bl") {
+                    self.setto(b"ble");
+                } else if self.ends(b"iz") {
+                    self.setto(b"ize");
+                } else if self.doublec(self.k()) {
+                    let ch = self.at(self.k());
+                    if !(ch.is(b'l') || ch.is(b's') || ch.is(b'z')) {
+                        self.set_k(self.k() - 1);
+                    }
+                } else if self.m() == 1 && self.cvc(self.k()) {
+                    self.setto(b"e");
+                }
+            }
+        }
+
+        /// `step2()`: a final `y` after a vowel in the stem becomes `i`.
+        fn step2(&mut self) {
+            if self.ends(b"y") && self.vowel_in_stem() {
+                let k = self.k() as usize;
+                self.b[k] = T::of(b'i');
+                self.dirty = true;
+            }
+        }
+
+        /// The first of `rules` whose suffix matches, replaced through
+        /// [`Self::r`] (Java's `if (ends(..)) { r(..); break; }` chain).
+        fn first(&mut self, rules: &[(&[u8], &[u8])]) {
+            for (suffix, to) in rules {
+                if self.ends(suffix) {
+                    self.r(to);
+                    return;
+                }
+            }
+        }
+
+        /// `step3()`: double suffixes to single ones, by `b[k-1]`.
+        fn step3(&mut self) {
+            if self.k() == 0 {
+                return;
+            }
+            let c = self.at(self.k() - 1);
+            let rules: &[(&[u8], &[u8])] = if c.is(b'a') {
+                &[(b"ational", b"ate"), (b"tional", b"tion")]
+            } else if c.is(b'c') {
+                &[(b"enci", b"ence"), (b"anci", b"ance")]
+            } else if c.is(b'e') {
+                &[(b"izer", b"ize")]
+            } else if c.is(b'l') {
+                &[
+                    (b"bli", b"ble"),
+                    (b"alli", b"al"),
+                    (b"entli", b"ent"),
+                    (b"eli", b"e"),
+                    (b"ousli", b"ous"),
+                ]
+            } else if c.is(b'o') {
+                &[(b"ization", b"ize"), (b"ation", b"ate"), (b"ator", b"ate")]
+            } else if c.is(b's') {
+                &[
+                    (b"alism", b"al"),
+                    (b"iveness", b"ive"),
+                    (b"fulness", b"ful"),
+                    (b"ousness", b"ous"),
+                ]
+            } else if c.is(b't') {
+                &[(b"aliti", b"al"), (b"iviti", b"ive"), (b"biliti", b"ble")]
+            } else if c.is(b'g') {
+                &[(b"logi", b"log")]
+            } else {
+                return;
             };
-            rules.iter().find_map(|suffix| ends(w, suffix))
-        };
-        let Some(stem_len) = stem_len else {
-            return;
-        };
-        if measure(&w[..stem_len]) > 1 {
-            w.truncate(stem_len);
+            self.first(rules);
+        }
+
+        /// `step4()`: `-ic-`, `-full`, `-ness` etc., by `b[k]`.
+        fn step4(&mut self) {
+            let c = self.at(self.k());
+            let rules: &[(&[u8], &[u8])] = if c.is(b'e') {
+                &[(b"icate", b"ic"), (b"ative", b""), (b"alize", b"al")]
+            } else if c.is(b'i') {
+                &[(b"iciti", b"ic")]
+            } else if c.is(b'l') {
+                &[(b"ical", b"ic"), (b"ful", b"")]
+            } else if c.is(b's') {
+                &[(b"ness", b"")]
+            } else {
+                return;
+            };
+            self.first(rules);
+        }
+
+        /// `step5()`: `-ant`, `-ence` etc. in context `<c>vcvc<v>`, by
+        /// `b[k-1]`.
+        fn step5(&mut self) {
+            if self.k() == 0 {
+                return;
+            }
+            let c = self.at(self.k() - 1);
+            let matched = if c.is(b'o') {
+                (self.ends(b"ion")
+                    && self.j >= 0
+                    && (self.at(self.j).is(b's') || self.at(self.j).is(b't')))
+                    || self.ends(b"ou")
+            } else {
+                let suffixes: &[&[u8]] = if c.is(b'a') {
+                    &[b"al"]
+                } else if c.is(b'c') {
+                    &[b"ance", b"ence"]
+                } else if c.is(b'e') {
+                    &[b"er"]
+                } else if c.is(b'i') {
+                    &[b"ic"]
+                } else if c.is(b'l') {
+                    &[b"able", b"ible"]
+                } else if c.is(b'n') {
+                    &[b"ant", b"ement", b"ment", b"ent"]
+                } else if c.is(b's') {
+                    &[b"ism"]
+                } else if c.is(b't') {
+                    &[b"ate", b"iti"]
+                } else if c.is(b'u') {
+                    &[b"ous"]
+                } else if c.is(b'v') {
+                    &[b"ive"]
+                } else if c.is(b'z') {
+                    &[b"ize"]
+                } else {
+                    return;
+                };
+                suffixes.iter().any(|s| self.ends(s))
+            };
+            if matched && self.m() > 1 {
+                self.set_k(self.j);
+            }
+        }
+
+        /// `step6()`: a final `-e`, and `-ll` to `-l`, when `m() > 1`.
+        fn step6(&mut self) {
+            self.j = self.k();
+            if self.at(self.k()).is(b'e') {
+                let a = self.m();
+                if a > 1 || a == 1 && !self.cvc(self.k() - 1) {
+                    self.set_k(self.k() - 1);
+                }
+            }
+            if self.at(self.k()).is(b'l') && self.doublec(self.k()) && self.m() > 1 {
+                self.set_k(self.k() - 1);
+            }
         }
     }
 
-    /// Step 5a: trailing `e` deleted if `m(stem) > 1`, or if `m(stem) == 1`
-    /// and the stem is not CVC.
-    fn step5a(w: &mut Vec<char>) {
-        let n = w.len();
-        if n == 0 || w[n - 1] != 'e' {
+    /// `PorterStemmer.stem(char[], int, int)` over `b` in place: `true`
+    /// when the word changed (Java's `dirty`), `b` then holding the stem.
+    pub(crate) fn stem_units<T: Unit>(b: &mut Vec<T>) -> bool {
+        let len = b.len();
+        // Java: `if (k > k0 + 1)` -- words of one or two units stay.
+        if len < 3 {
+            return false;
+        }
+        let mut s = Stemmer {
+            b,
+            k: len as isize - 1,
+            j: 0,
+            dirty: false,
+        };
+        s.step1();
+        s.step2();
+        s.step3();
+        s.step4();
+        s.step5();
+        s.step6();
+        let end = (s.k + 1) as usize;
+        let dirty = s.dirty || end != len;
+        b.truncate(end);
+        dirty
+    }
+
+    /// Stems `term` in place, as `PorterStemFilter` copies the stemmer's
+    /// buffer back when it is dirty; `units` is the UTF-16 buffer for a
+    /// non-ASCII term.
+    pub(crate) fn stem_term(term: &mut String, units: &mut Vec<u16>) {
+        if term.len() < 3 {
             return;
         }
-        let stem = &w[..n - 1];
-        let m = measure(stem);
-        if m > 1 || (m == 1 && !cvc(stem)) {
-            w.truncate(n - 1);
+        if term.is_ascii() {
+            let mut b = std::mem::take(term).into_bytes();
+            stem_units(&mut b);
+            // ASCII in, ASCII suffixes out.
+            *term = String::from_utf8(b).unwrap_or_default();
+            return;
+        }
+        units.clear();
+        units.extend(term.encode_utf16());
+        if stem_units(units) {
+            term.clear();
+            crate::util::push_str_utf16(term, units);
         }
     }
 
-    /// Step 5b: a trailing double `l` collapses to a single `l` if
-    /// `m(word) > 1`.
-    fn step5b(w: &mut Vec<char>) {
-        let n = w.len();
-        if n >= 2 && w[n - 1] == 'l' && w[n - 2] == 'l' && measure(w) > 1 {
-            w.pop();
-        }
+    /// Stems `term` (`PorterStemmer.stem(String)`).
+    pub(crate) fn stem(term: &str) -> String {
+        let mut t = term.to_string();
+        stem_term(&mut t, &mut Vec::new());
+        t
     }
 }
 
@@ -4256,6 +4321,26 @@ mod tests {
             PorterStemFilter::apply(vec![tok("Cats", 0, 4, 1)])[0].term,
             "Cat"
         );
+    }
+
+    /// A non-ASCII term is stemmed over its UTF-16 units, as Java's
+    /// `char[]`: a supplementary character is two consonants, a Latin-1
+    /// letter one. The expected stems are Lucene 10.5's `PorterStemFilter`.
+    #[test]
+    fn porter_stem_non_ascii_terms_over_utf16_units() {
+        for (word, java) in [
+            ("😀öible", "😀öibl"),
+            ("éational", "éation"),
+            ("😀angularant", "😀angular"),
+            ("ürevivales", "ürevival"),
+            ("é😀ies", "é😀i"),
+            ("😀activable", "😀activ"),
+            ("ü😀ization", "ü😀izat"),
+            ("Lucene", "Lucen"),
+            ("é😀", "é😀"),
+        ] {
+            assert_eq!(porter::stem(word), java, "stemming {word:?}");
+        }
     }
 
     /// Java runs the six steps only when `k > k0 + 1`, so a one- or

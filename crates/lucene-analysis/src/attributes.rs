@@ -466,12 +466,18 @@ impl Clone for AttributeSource {
 impl AttributeSource {
     /// The core attributes of `source`, field by field, so a restore reuses
     /// this source's term and payload buffers (a derived `clone_from` would
-    /// allocate a whole new value per call). The destructuring names every
-    /// field, so a field added to the struct fails to compile here until it
-    /// is copied too.
+    /// allocate a whole new value per call).
     fn copy_core_from(&mut self, source: &Self) {
+        self.term.clone_from(&source.term);
+        self.copy_core_but_term_from(source);
+    }
+
+    /// [`Self::copy_core_from`] without the term. The destructuring names
+    /// every field, so a field added to the struct fails to compile here
+    /// until it is copied too.
+    fn copy_core_but_term_from(&mut self, source: &Self) {
         let AttributeSource {
-            term,
+            term: _,
             bytes_term,
             bytes_spare: _,
             start_offset,
@@ -487,7 +493,6 @@ impl AttributeSource {
             boost_bits,
             custom,
         } = source;
-        self.term.clone_from(term);
         match (&mut self.bytes_term, bytes_term) {
             (Some(mine), Some(theirs)) => mine.clone_from(theirs),
             (mine, theirs) => {
@@ -505,7 +510,11 @@ impl AttributeSource {
         self.end_offset = *end_offset;
         self.position_increment = *position_increment;
         self.position_length = *position_length;
-        self.token_type.clone_from(token_type);
+        // (the common case, the same static type, is a pointer compare)
+        match (&self.token_type, token_type) {
+            (Cow::Borrowed(mine), Cow::Borrowed(theirs)) if std::ptr::eq(*mine, *theirs) => {}
+            _ => self.token_type.clone_from(token_type),
+        }
         self.flags = *flags;
         self.keyword = *keyword;
         if self.payload.is_some() || payload.is_some() {
@@ -629,6 +638,19 @@ impl AttributeSource {
     /// as Java does.
     pub fn restore_state(&mut self, state: &State) {
         self.copy_core_from(state);
+        for c in &state.custom {
+            match self.custom.iter_mut().find(|a| a.id == c.id) {
+                Some(mine) => mine.attr.copy_from(c.attr.as_ref()),
+                None => self.custom.push(Custom::new(c.attr.clone_box())),
+            }
+        }
+    }
+
+    /// [`Self::restore_state`] then `CharTermAttribute.setEmpty().append(
+    /// term)`, without first copying the state's own term.
+    pub fn restore_state_with_term(&mut self, state: &State, term: &str) {
+        self.copy_core_but_term_from(state);
+        self.set_term(term);
         for c in &state.custom {
             match self.custom.iter_mut().find(|a| a.id == c.id) {
                 Some(mine) => mine.attr.copy_from(c.attr.as_ref()),
@@ -771,17 +793,20 @@ impl AttributeSource {
     // ------------------------------------------------------ CharTermAttribute
 
     /// `CharTermAttribute.toString()`.
+    #[inline]
     pub fn term(&self) -> &str {
         &self.term
     }
 
     /// The term buffer, for a filter that rewrites it in place (Java's
     /// `buffer()` + `setLength()`).
+    #[inline]
     pub fn term_mut(&mut self) -> &mut String {
         &mut self.term
     }
 
     /// `CharTermAttribute.setEmpty().append(s)`.
+    #[inline]
     pub fn set_term(&mut self, s: &str) {
         self.term.clear();
         self.term.push_str(s);
@@ -804,6 +829,7 @@ impl AttributeSource {
     /// `TermToBytesRefAttribute.getBytesRef()`: the binary term when one is
     /// set (`BytesTermAttributeImpl`), else the term's UTF-8
     /// (`CharTermAttributeImpl`).
+    #[inline]
     pub fn term_bytes(&self) -> &[u8] {
         match &self.bytes_term {
             Some(b) => b,
@@ -859,6 +885,7 @@ impl AttributeSource {
     }
 
     /// `OffsetAttribute.setOffset`, with Java's validation.
+    #[inline]
     pub fn set_offset(&mut self, start: i32, end: i32) -> Result<(), AnalysisError> {
         if start < 0 || end < start {
             return Err(AnalysisError::IllegalArgument(format!(
@@ -873,12 +900,14 @@ impl AttributeSource {
     // ---------------------------------------------- PositionIncrementAttribute
 
     /// `PositionIncrementAttribute.getPositionIncrement()`.
+    #[inline]
     pub fn position_increment(&self) -> i32 {
         self.position_increment
     }
 
     /// `PositionIncrementAttribute.setPositionIncrement`, with Java's
     /// validation.
+    #[inline]
     pub fn set_position_increment(&mut self, inc: i32) -> Result<(), AnalysisError> {
         if inc < 0 {
             return Err(AnalysisError::IllegalArgument(format!(
@@ -921,6 +950,7 @@ impl AttributeSource {
     }
 
     /// `TypeAttribute.setType`.
+    #[inline]
     pub fn set_token_type(&mut self, t: impl Into<Cow<'static, str>>) {
         self.token_type = t.into();
     }
@@ -1077,6 +1107,29 @@ mod tests {
         assert_eq!(c.bytes_term(), None);
         a.set_bytes_term(None);
         assert_eq!(a.bytes_term(), None);
+    }
+
+    /// Restoring with a term is restoring, then setting the term.
+    #[test]
+    fn restore_state_with_term_is_restore_then_set_term() {
+        let mut state = dirty();
+        state.add_custom::<Tags>().0 = Some(vec!["t".into()]);
+        state.set_token_type(String::from("<OWNED>"));
+        for start in [AttributeSource::new(), dirty()] {
+            let mut want = start.clone();
+            want.restore_state(&state);
+            want.set_term("gram");
+            let mut got = start;
+            got.restore_state_with_term(&state, "gram");
+            assert_eq!(got, want);
+            // again, over its own buffers and the same (static) type
+            got.set_token_type(DEFAULT_TYPE);
+            want.set_token_type(DEFAULT_TYPE);
+            let other = got.clone();
+            got.restore_state_with_term(&other, "x");
+            want.set_term("x");
+            assert_eq!(got, want);
+        }
     }
 
     #[test]
