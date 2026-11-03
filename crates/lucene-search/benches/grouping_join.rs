@@ -24,7 +24,9 @@
 //! - `join/terms_create_10k/avg`: `create_join_query` from the 10k-term
 //!   `group` field (every from document's term already seen);
 //! - `grouping_sorted/sn1_sort/top10`: groups sorted by a single-valued
-//!   SORTED_NUMERIC field.
+//!   SORTED_NUMERIC field;
+//! - `grouping_sorted/within_string_sort/docs{3,10}`: groups sorted by a
+//!   NUMERIC field, each group's top 3 / 10 documents by a SORTED one.
 //!
 //! Run with `cargo bench -p lucene-search --bench grouping_join`.
 
@@ -96,6 +98,18 @@ fn bench(c: &mut Criterion) {
                 let gs = GroupingSearch::new(|| TermGroupSelector::new("group"))
                     .set_group_sort(by_key.clone());
                 black_box(gs.search(&searcher, &q30, 0, top_n).unwrap())
+            })
+        });
+    }
+    let by_dense = Sort::new(vec![SortField::numeric("dense", SortType::Long, false)]);
+    for limit in [3usize, 10] {
+        g.bench_function(format!("within_string_sort/docs{limit}"), |b| {
+            b.iter(|| {
+                let gs = GroupingSearch::new(|| TermGroupSelector::new("group"))
+                    .set_group_sort(by_dense.clone())
+                    .set_sort_within_group(by_key.clone())
+                    .set_group_docs_limit(limit);
+                black_box(gs.search(&searcher, &q30, 0, 10).unwrap())
             })
         });
     }
