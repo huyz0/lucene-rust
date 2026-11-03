@@ -194,9 +194,12 @@ pub(crate) fn build_unchecked<'a>(
                     });
                 }
             }
+            // `setTopLevelScoringClause`: a zero-tie dismax hands the minimum
+            // competitive score to every disjunct, so they are built to skip.
+            let sub_top_level = top_level && d.tie_breaker == 0.0;
             let mut subs = Vec::with_capacity(d.disjuncts.len());
             for disjunct in &d.disjuncts {
-                if let Some(s) = build(ctx, disjunct, boost, mode, false)? {
+                if let Some(s) = build(ctx, disjunct, boost, mode, sub_top_level)? {
                     subs.push(s);
                 }
             }
