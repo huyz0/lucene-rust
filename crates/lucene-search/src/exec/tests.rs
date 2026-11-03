@@ -3286,3 +3286,105 @@ fn must_not_bulk_scoring_matches_brute_force() {
         assert_eq!(got, want[..10], "{name}: top 10");
     }
 }
+
+/// A point range's matches are the same whichever walk builds them: a
+/// sorted list (a small range), a bit set (past `maxDoc / 128`), or the
+/// dense single-valued field's inverse walk (past half the segment), over
+/// leaves of every doc-id encoding -- random values (packed ids), a
+/// value per document in document order (one run per leaf), and every
+/// third document in order (a bit set per leaf).
+#[test]
+fn point_range_walks_match_brute_force() {
+    use crate::directory_reader::DirectoryReader;
+    use crate::extended_query::PointRangeQuery;
+    use crate::index_searcher::IndexSearcher;
+    use crate::query::{BooleanQuery, Clause, PointsRangeQuery};
+    use lucene_index::document::{Document, LongPoint};
+    use lucene_index::index_writer::IndexWriter;
+    use lucene_index::merge_policy::upgrade::LATEST;
+
+    const DOCS: usize = 30_000;
+    let dir = lucene_store::ByteBuffersDirectory::new();
+    let mut state = 0x2545_f491_4f6c_dd1du64;
+    let mut rng = move |n: u64| {
+        state ^= state >> 12;
+        state ^= state << 25;
+        state ^= state >> 27;
+        state.wrapping_mul(0x9e37_79b9_7f4a_7c15) % n
+    };
+    let mut values: Vec<[Vec<i64>; 4]> = Vec::with_capacity(DOCS);
+    {
+        let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", LATEST).unwrap();
+        w.set_ram_buffer_size_mb(1024.0).unwrap();
+        for i in 0..DOCS {
+            let mut d = Document::new();
+            let mut v: [Vec<i64>; 4] = Default::default();
+            v[0].push(rng(100_000) as i64);
+            v[1].push(i as i64);
+            if i % 3 == 0 {
+                v[2].push(i as i64);
+            }
+            if rng(2) == 0 {
+                for _ in 0..1 + rng(3) {
+                    v[3].push(rng(100_000) as i64);
+                }
+            }
+            for (f, vals) in ["p", "t", "b", "pm"].iter().zip(&v) {
+                for &x in vals {
+                    d.add(LongPoint::new(*f, &[x]).unwrap());
+                }
+            }
+            w.add_fields_document(&d).unwrap();
+            values.push(v);
+        }
+        w.commit().unwrap();
+    }
+    let reader = DirectoryReader::open(&dir).unwrap();
+    let mut opened = reader.open_segments().unwrap();
+    opened.open_points().unwrap();
+    let mut segs = opened.as_open_segments();
+    assert_eq!(segs.len(), 1);
+    for s in &mut segs {
+        s.cache = None;
+    }
+    let norms = vec![None; segs.len()];
+    let searcher = IndexSearcher::new(&segs, &norms).unwrap();
+    let ranges: &[(i64, i64)] = &[
+        (10, 20),
+        (500, 900),
+        (1_000, 9_000),
+        (5_000, 80_000),
+        (-5, 95_000),
+        (0, 100_000),
+        (29_000, 40_000),
+        (17, 17),
+    ];
+    for (fi, field) in ["p", "t", "b", "pm"].iter().enumerate() {
+        for &(lo, hi) in ranges {
+            let expected: Vec<i32> = (0..DOCS)
+                .filter(|&i| values[i][fi].iter().any(|&x| lo <= x && x <= hi))
+                .map(|i| i as i32)
+                .collect();
+            for clause in [
+                Clause::PointsRange(PointsRangeQuery::new(*field, lo, hi)),
+                Clause::from(PointRangeQuery::long_range(*field, &[lo], &[hi]).unwrap()),
+            ] {
+                let q = BooleanQuery::new().with_filter([clause]);
+                let mut got: Vec<i32> = searcher
+                    .search(&q, DOCS)
+                    .unwrap()
+                    .score_docs
+                    .iter()
+                    .map(|h| h.doc)
+                    .collect();
+                got.sort_unstable();
+                assert_eq!(got, expected, "{field} [{lo}, {hi}]");
+                assert_eq!(
+                    searcher.count(&q).unwrap(),
+                    expected.len() as u64,
+                    "{field} [{lo}, {hi}]"
+                );
+            }
+        }
+    }
+}

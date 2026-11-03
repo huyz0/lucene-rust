@@ -77,6 +77,12 @@ harness = false
 name = "filter_vs_must"
 harness = false
 
+# Point range queries: the sorted-list, bit-set and dense inverse walks --
+# see the bench's own module doc.
+[[bench]]
+name = "point_range"
+harness = false
+
 # `MUST_NOT` bulk scoring and the doc-values rewrite's ordinal set, the
 # shapes Lucene 10.6's #16307, #16669 and #16297 change -- see the bench's
 # own module doc.
