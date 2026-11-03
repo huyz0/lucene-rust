@@ -791,6 +791,32 @@ pub(crate) fn sloppy_phrase_freq(
     sloppy_phrase_freq_in(&mut SloppyScratch::default(), term_positions, repeats, slop)
 }
 
+/// [`sloppy_phrase_matches`] with the matcher's buffers taken from, and
+/// given back to, `scratch`, and the phrase's explicit positions (`offsets`,
+/// as [`sloppy_phrase_freq_offsets_in`] takes them) when it has them: the
+/// first match only, for a caller that needs no frequency.
+pub(crate) fn sloppy_phrase_matches_in(
+    scratch: &mut SloppyScratch,
+    term_positions: &[&[i32]],
+    repeats: &PhraseRepeats,
+    slop: u32,
+    offsets: Option<&[i32]>,
+) -> bool {
+    match degenerate(term_positions) {
+        Degenerate::Yes(freq) => freq > 0.0,
+        Degenerate::No if offsets.is_none() && !repeats.has_rpts && term_positions.len() == 2 => {
+            two_slot(term_positions[0], term_positions[1], slop, true) > 0.0
+        }
+        Degenerate::No => {
+            let mut m =
+                SloppyMatcher::new_in(term_positions, repeats, slop, std::mem::take(scratch), offsets);
+            let found = m.next_match();
+            *scratch = m.into_scratch();
+            found
+        }
+    }
+}
+
 /// [`sloppy_phrase_freq`] with the matcher's buffers taken from, and given
 /// back to, `scratch`.
 pub(crate) fn sloppy_phrase_freq_in(
@@ -925,6 +951,12 @@ pub(crate) fn sloppy_phrase_match_spans(
 /// one without building the matcher. Same match sequence, same weights, summed
 /// in the same order: the general matcher's frequency to the bit.
 fn two_slot_freq(a: &[i32], b: &[i32], slop: u32) -> f32 {
+    two_slot(a, b, slop, false)
+}
+
+/// [`two_slot_freq`], stopping at the first match when `first_only`: that
+/// match's weight, or `0.0` when there is none.
+fn two_slot(a: &[i32], b: &[i32], slop: u32, first_only: bool) -> f32 {
     let slop = i64::from(slop);
     // `PhrasePositions.position`: the raw position minus the slot's offset.
     let at = |slot: usize, i: usize| -> Option<i64> {
@@ -977,6 +1009,9 @@ fn two_slot_freq(a: &[i32], b: &[i32], slop: u32) -> f32 {
             return freq;
         }
         let w = 1.0f32 / (1.0f32 + match_length as f32);
+        if first_only {
+            return w;
+        }
         if first {
             freq = w;
             first = false;
@@ -1249,6 +1284,22 @@ mod tests {
             };
             let fast = two_slot_freq(&a, &b, slop);
             assert_eq!(fast.to_bits(), general.to_bits(), "{a:?} {b:?} slop {slop}");
+            // The first match alone agrees on whether there is one, for two
+            // slots and for three, with and without a repeated term.
+            let mut scratch = SloppyScratch::default();
+            let none2 = PhraseRepeats::none(2);
+            let first = sloppy_phrase_matches_in(&mut scratch, &lists, &none2, slop, None);
+            assert_eq!(first, general > 0.0, "{a:?} {b:?} slop {slop}");
+            let c = list(&mut rand);
+            let three = [&a[..], &b[..], &c[..]];
+            for repeats in [
+                PhraseRepeats::none(3),
+                PhraseRepeats::for_phrase(&[b"x".to_vec(), b"y".to_vec(), b"x".to_vec()]),
+            ] {
+                let freq = sloppy_phrase_freq(&three, &repeats, slop);
+                let first = sloppy_phrase_matches_in(&mut scratch, &three, &repeats, slop, None);
+                assert_eq!(first, freq > 0.0, "{a:?} {b:?} {c:?} slop {slop}");
+            }
         }
         assert_eq!(two_slot_freq(&[], &[1], 3), 0.0);
     }
