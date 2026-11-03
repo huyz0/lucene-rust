@@ -90,6 +90,8 @@ pub struct ReverseStringFilter<I> {
     input: I,
     marker: u16,
     buf: Vec<u16>,
+    /// The reversed term is built here and swapped in.
+    spare: String,
 }
 
 impl<I: TokenStream> ReverseStringFilter<I> {
@@ -105,6 +107,7 @@ impl<I: TokenStream> ReverseStringFilter<I> {
             input,
             marker,
             buf: Vec::new(),
+            spare: String::new(),
         }
     }
 }
@@ -118,6 +121,34 @@ impl<I: TokenStream> TokenFilter for ReverseStringFilter<I> {
             return Ok(false);
         }
         let marker = self.marker;
+        // A term's UTF-16 has no unpaired surrogate, so reversing it with
+        // the pairs kept is reversing its code points.
+        // (a surrogate marker takes the UTF-16 path below)
+        let marker_char = if marker == NOMARKER {
+            Some(None)
+        } else {
+            char::from_u32(u32::from(marker)).map(Some)
+        };
+        if let Some(m) = marker_char {
+            let term = self.input.attributes_mut().term_mut();
+            if term.is_ascii() && m.is_none_or(|c| c.is_ascii()) {
+                let mut b = std::mem::take(term).into_bytes();
+                if let Some(c) = m {
+                    b.push(c as u8);
+                }
+                b.reverse();
+                // reversed ASCII is ASCII
+                *term = String::from_utf8(b).unwrap_or_default();
+            } else {
+                let mut out = std::mem::take(&mut self.spare);
+                out.clear();
+                out.extend(m);
+                out.extend(term.chars().rev());
+                std::mem::swap(term, &mut out);
+                self.spare = out;
+            }
+            return Ok(true);
+        }
         crate::util::with_utf16_term(self.input.attributes_mut(), &mut self.buf, |b| {
             if marker != NOMARKER {
                 b.push(marker);
@@ -149,5 +180,40 @@ mod tests {
         assert_eq!(reverse_string("😀😁"), "😁😀");
         assert_eq!(reverse_string("😀😁a"), "a😁😀");
         assert_eq!(reverse_string(""), "");
+    }
+
+    /// The filter's code-point reversal (ASCII in place, else rebuilt) is
+    /// Harmony's unit reversal, with and without each marker.
+    #[test]
+    fn the_filter_reverses_as_the_units_do() {
+        use crate::{KeywordTokenizer, StrReader, Tokenizer};
+        let markers = [
+            NOMARKER,
+            START_OF_HEADING_MARKER,
+            INFORMATION_SEPARATOR_MARKER,
+            PUA_EC00_MARKER,
+            RTL_DIRECTION_MARKER,
+            0xD800,
+        ];
+        for term in ["", "a", "abc", "Zürich", "a😀b", "😀😁", "易经x"] {
+            for marker in markers {
+                let mut units: Vec<u16> = term.encode_utf16().collect();
+                if marker != NOMARKER {
+                    units.push(marker);
+                }
+                let n = units.len();
+                reverse(&mut units, 0, n);
+                let expected = String::from_utf16_lossy(&units);
+                let mut t = KeywordTokenizer::new();
+                t.set_reader(Box::new(StrReader::new(term))).unwrap();
+                let mut f = ReverseStringFilter::with_marker(t, marker);
+                f.reset().unwrap();
+                if f.increment_token().unwrap() {
+                    assert_eq!(f.attributes().term(), expected, "{term:?} {marker:#X}");
+                }
+                f.end().unwrap();
+                f.close().unwrap();
+            }
+        }
     }
 }

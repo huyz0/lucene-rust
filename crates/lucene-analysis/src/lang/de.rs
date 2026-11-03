@@ -6,7 +6,6 @@ use std::sync::{Arc, LazyLock};
 use crate::analyzer::{AnalyzerDefinition, TokenStreamComponents};
 use crate::miscellaneous::SetKeywordMarkerFilter;
 use crate::token_stream::{TokenFilter, TokenStream};
-use crate::util::stemmer_util::delete;
 use crate::{AnalysisError, CharArraySet, LowerCaseFilter, StandardTokenizer, StopFilter};
 
 use super::{copy_set, java_string_to_lower_case, snowball_set, CharStemmer, StemFilter};
@@ -137,7 +136,7 @@ impl<I: TokenStream> GermanNormalizationFilter<I> {
 }
 
 /// `GermanNormalizationFilter.incrementToken`'s loop over one term.
-pub(crate) fn german_normalize(buffer: &mut Vec<u16>) {
+pub(crate) fn german_normalize<T: Copy + Into<u32> + From<u8>>(buffer: &mut Vec<T>) {
     const N: u8 = 0;
     const V: u8 = 1;
     const U: u8 = 2;
@@ -145,13 +144,13 @@ pub(crate) fn german_normalize(buffer: &mut Vec<u16>) {
     let mut length = buffer.len();
     let mut i = 0usize;
     while i < length {
-        match buffer[i] {
+        match buffer[i].into() {
             0x61 | 0x6F => state = U,
             0x75 => state = if state == N { U } else { V },
             0x65 => {
                 if state == U {
-                    length = delete(buffer, i, length);
-                    buffer.truncate(length);
+                    buffer.remove(i);
+                    length -= 1;
                     state = V;
                     continue;
                 }
@@ -159,21 +158,21 @@ pub(crate) fn german_normalize(buffer: &mut Vec<u16>) {
             }
             0x69 | 0x71 | 0x79 => state = V,
             0xE4 => {
-                buffer[i] = c('a');
+                buffer[i] = T::from(b'a');
                 state = V;
             }
             0xF6 => {
-                buffer[i] = c('o');
+                buffer[i] = T::from(b'o');
                 state = V;
             }
             0xFC => {
-                buffer[i] = c('u');
+                buffer[i] = T::from(b'u');
                 state = V;
             }
             0xDF => {
-                buffer[i] = c('s');
+                buffer[i] = T::from(b's');
                 i += 1;
-                buffer.insert(i, c('s'));
+                buffer.insert(i, T::from(b's'));
                 length += 1;
                 state = N;
             }
@@ -191,10 +190,18 @@ impl<I: TokenStream> TokenFilter for GermanNormalizationFilter<I> {
         if !self.input.increment_token()? {
             return Ok(false);
         }
-        crate::util::with_utf16_term(self.input.attributes_mut(), &mut self.buf, |b| {
-            german_normalize(b);
-            true
-        });
+        let term = self.input.attributes_mut().term_mut();
+        if term.is_ascii() {
+            // only the `ae`/`oe`/`ue` deletions apply: in place
+            let mut b = std::mem::take(term).into_bytes();
+            german_normalize(&mut b);
+            *term = String::from_utf8(b).unwrap_or_default();
+        } else {
+            crate::util::with_utf16_term(self.input.attributes_mut(), &mut self.buf, |b| {
+                german_normalize(b);
+                true
+            });
+        }
         Ok(true)
     }
 }
@@ -463,5 +470,25 @@ mod tests {
         let mut b = u("Straße schön aue");
         german_normalize(&mut b);
         assert_eq!(String::from_utf16_lossy(&b), "Strasse schon aue");
+        // an ASCII term is normalized over its bytes, as over its units
+        for w in ["haeuser", "aue", "quelle", "oeoe", "Strasse", "ue", "e", ""] {
+            let mut bytes = w.as_bytes().to_vec();
+            german_normalize(&mut bytes);
+            let mut units = u(w);
+            german_normalize(&mut units);
+            assert_eq!(
+                String::from_utf8(bytes).unwrap(),
+                String::from_utf16_lossy(&units),
+                "{w}"
+            );
+        }
+        let mut c = crate::util::canned::Canned::parse("a:0:1:1:1 b:0:1:1:1");
+        c.set_terms(&["haeuser", "häuser"]);
+        let mut out = Vec::new();
+        crate::token_stream::consume(&mut GermanNormalizationFilter::new(c), |a| {
+            out.push(a.term().to_string())
+        })
+        .unwrap();
+        assert_eq!(out, vec!["hauser", "hauser"]);
     }
 }
