@@ -3677,6 +3677,45 @@ pub(crate) fn count_boolean_query_shortcut(
                 return Ok(Some(u64::try_from(n).unwrap_or(0)));
             }
         }
+        // `PointRangeQuery.count`, on a segment without deletions.
+        (Some(leaf @ (Clause::PointsRange(_) | Clause::Extended(_))), _)
+            if seg.live_docs.is_none() && seg.points.is_some() =>
+        {
+            let points = seg.points.expect("checked");
+            let n = match leaf {
+                Clause::PointsRange(q) => exec::ranges::point_range_count(
+                    points,
+                    &q.field,
+                    &points_query::pack_i64(q.min),
+                    &points_query::pack_i64(q.max),
+                    1,
+                    8,
+                )?,
+                Clause::Extended(e) => match &**e {
+                    extended_query::ExtendedQuery::PointRange(q) => {
+                        exec::ranges::point_range_count(
+                            points,
+                            &q.field,
+                            &q.lower,
+                            &q.upper,
+                            q.num_dims,
+                            q.bytes_per_dim,
+                        )?
+                    }
+                    _ => None,
+                },
+                _ => None,
+            };
+            if let Some(n) = n {
+                #[cfg(any(test, feature = "asserting"))]
+                exec::asserting::check_count(
+                    i64::try_from(n).unwrap_or(i64::MAX),
+                    seg.max_doc,
+                    seg.live_docs,
+                );
+                return Ok(Some(n));
+            }
+        }
         _ => {}
     }
     Ok(None)

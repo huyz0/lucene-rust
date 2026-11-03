@@ -650,6 +650,71 @@ pub(crate) fn range_docs(
     }
 }
 
+/// `PointRangeQuery`'s `Weight.count` on a segment without deletions, the
+/// caller's check: no match when the segment has no points for the field or
+/// its points miss the box, the field's `docCount` when they all fall
+/// inside it, and for a one-dimension single-valued field (`docCount ==
+/// size`) the points inside counted off the tree (`pointCount`: inside
+/// cells by their size, only the crossing leaves read). `None` -- iterate --
+/// for anything else, including a field of another shape than the box's,
+/// which the scorer reports.
+pub(crate) fn point_range_count(
+    points: &crate::points_query::PointsInput<'_>,
+    field: &str,
+    lower: &[u8],
+    upper: &[u8],
+    num_dims: usize,
+    bytes_per_dim: usize,
+) -> Result<Option<u64>> {
+    let Some(number) = points.field_number(field) else {
+        return Ok(Some(0));
+    };
+    let Some(info) = points.reader.field(number) else {
+        return Ok(Some(0));
+    };
+    if usize::try_from(info.num_dims).ok() != Some(num_dims)
+        || usize::try_from(info.bytes_per_dim).ok() != Some(bytes_per_dim)
+        || lower.len() != num_dims * bytes_per_dim
+        || upper.len() != num_dims * bytes_per_dim
+    {
+        return Ok(None);
+    }
+    if disjoint(info, lower, upper, num_dims, bytes_per_dim) {
+        return Ok(Some(0));
+    }
+    let matcher = points.reader.range_matcher(number, lower, upper)?;
+    if matcher.compare(&info.min_packed_value, &info.max_packed_value) == Relation::CellInsideQuery
+    {
+        return Ok(Some(u64::try_from(info.doc_count).unwrap_or(0)));
+    }
+    if num_dims != 1 || i64::from(info.doc_count) != info.point_count {
+        return Ok(None);
+    }
+    struct Count {
+        matcher: lucene_codecs::points::RangeMatcher,
+        n: u64,
+    }
+    impl IntersectVisitor for Count {
+        fn compare(&mut self, min_packed: &[u8], max_packed: &[u8]) -> Relation {
+            self.matcher.compare(min_packed, max_packed)
+        }
+        fn visit(&mut self, _doc_id: i32) {
+            self.n += 1;
+        }
+        fn visit_many(&mut self, doc_ids: &[i32]) {
+            self.n += doc_ids.len() as u64;
+        }
+        fn visit_with_value(&mut self, _doc_id: i32, packed_value: &[u8]) {
+            if self.matcher.matches(packed_value) {
+                self.n += 1;
+            }
+        }
+    }
+    let mut v = Count { matcher, n: 0 };
+    let inside = points.reader.count_points(number, &mut v)?;
+    Ok(Some(v.n.saturating_add(u64::try_from(inside).unwrap_or(0))))
+}
+
 /// The bits of the last word of a `len`-bit set that are inside it.
 fn tail_mask(len: usize) -> u64 {
     match len & 63 {
