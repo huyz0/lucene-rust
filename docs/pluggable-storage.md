@@ -112,6 +112,12 @@ index.store.rust_encrypted.key_cache_ttl: 5m    # how long a revoked key keeps w
   (`Store.tryOpenIndex`); encrypted, a shard would never come back. They
   hold segment and file names, document counts, codec names and commit user
   data (sequence numbers, translog and history UUIDs), never field contents.
+  The lock file `write.lock` is empty and stored as-is too, on both sides.
+- **Store sizing:** OpenSearch sizes a store from every file it lists
+  (`Store.stats`, also while it allocates another shard of the same index),
+  including files a writer still has open. The Java directory's
+  `fileLength` counts the complete chunks of a file that ends inside its
+  header or a chunk instead of failing; opening such a file still fails.
 - **No silent plaintext:**
   - The Rust engine refuses an index whose `index.store.type` it cannot
     write through (another plugin's encryption, say). Use
