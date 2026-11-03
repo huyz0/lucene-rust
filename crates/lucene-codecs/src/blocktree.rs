@@ -879,6 +879,7 @@ impl Frame {
     // `0 <= next_ent < ent_count as i32`, and `ent_count <= i32::MAX` by the
     // `ENT_COUNT` invariant, so `next_ent + 1 <= i32::MAX`.
     #[allow(clippy::arithmetic_side_effects)]
+    #[inline]
     fn next_leaf(&mut self, term: &mut TermBuf) -> Result<()> {
         if self.next_ent < 0 || self.next_ent >= self.ent_count as i32 {
             return Err(Error::Store(lucene_store::Error::Corrupted(
@@ -1321,6 +1322,8 @@ impl Frame {
             )));
         }
         let mut absolute = self.meta_data_upto == 0;
+        let mut r = SliceInput::new(&self.meta_bytes[..self.meta_bytes_len]);
+        r.seek(self.meta_pos)?;
         while self.meta_data_upto < limit {
             if self.stats_singleton_run_length > 0 {
                 self.doc_freq = 1;
@@ -1363,15 +1366,7 @@ impl Frame {
             }
 
             let (doc_freq, total_term_freq) = (self.doc_freq, self.total_term_freq);
-            let Frame {
-                meta_bytes,
-                meta_bytes_len,
-                meta_pos,
-                meta,
-                ..
-            } = self;
-            let mut r = SliceInput::new(&meta_bytes[..*meta_bytes_len]);
-            r.seek(*meta_pos)?;
+            let meta = &mut self.meta;
             *meta = postings::decode_term_metadata_for(
                 format,
                 &mut r,
@@ -1390,8 +1385,7 @@ impl Frame {
                 meta.pos_start_fp = meta.pos_start_fp.saturating_add(postings_base[1]);
                 meta.pay_start_fp = meta.pay_start_fp.saturating_add(postings_base[2]);
             }
-            *meta_pos = r.position();
-
+            self.meta_pos = r.position();
             self.meta_data_upto += 1;
             absolute = false;
         }
