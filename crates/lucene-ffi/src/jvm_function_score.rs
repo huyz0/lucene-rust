@@ -47,10 +47,10 @@ use lucene_search::values_source::{
 };
 use lucene_search::{Error, Result};
 
+use crate::clauses::check_clause_count;
 use crate::error::FfiStatus;
 use crate::jvm_nodes::invalid;
 use crate::jvm_reader::{decode_node, hex, Cursor};
-use crate::query::check_clause_count;
 
 /// `CombineFunction`.
 #[derive(Debug, Clone, Copy, PartialEq)]
