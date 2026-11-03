@@ -38,7 +38,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code jvm_reader.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 56;
+    public static final int EXPECTED_ABI_VERSION = 57;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -220,6 +220,11 @@ public final class NativeBridge {
         );
         static final MethodHandle STORE_UNBIND = bind("ffi_store_unbind", FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG));
         static final MethodHandle STORE_IS_FIPS = bind("ffi_store_is_fips", FunctionDescriptor.of(JAVA_INT));
+        static final MethodHandle STORE_SET_LAZY_DECRYPT = bind(
+            "ffi_store_set_lazy_decrypt",
+            FunctionDescriptor.of(JAVA_INT, JAVA_INT, JAVA_LONG)
+        );
+        static final MethodHandle STORE_LAZY_DECRYPT_ACTIVE = bind("ffi_store_lazy_decrypt_active", FunctionDescriptor.of(JAVA_INT));
         static final MethodHandle ANALYZE = bind(
             "ffi_jvm_analyze_alloc",
             FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS)
@@ -1206,6 +1211,27 @@ public final class NativeBridge {
     public static boolean storeIsFips() {
         try {
             return (int) H.STORE_IS_FIPS.invokeExact() == 1;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * Turns demand decryption of encrypted shards on or off for directories the engine opens from now
+     * on, keeping at most {@code budgetBytes} of decrypted pages resident (0 keeps the current budget).
+     */
+    public static int storeSetLazyDecrypt(boolean enabled, long budgetBytes) {
+        try {
+            return (int) H.STORE_SET_LAZY_DECRYPT.invokeExact(enabled ? 1 : 0, budgetBytes);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** Whether encrypted shards the engine opens now are demand-decrypted (on, and supported here). */
+    public static boolean storeLazyDecryptActive() {
+        try {
+            return (int) H.STORE_LAZY_DECRYPT_ACTIVE.invokeExact() == 1;
         } catch (Throwable t) {
             throw rethrow(t);
         }

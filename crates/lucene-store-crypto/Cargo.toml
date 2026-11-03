@@ -20,6 +20,9 @@ aws-lc-rs = { version = "1", default-features = false, optional = true }
 # Large files are decrypted chunk-parallel on open.
 rayon.workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+libc.workspace = true
+
 [features]
 default = ["aws-lc"]
 aws-lc = ["dep:aws-lc-rs", "aws-lc-rs/aws-lc-sys"]

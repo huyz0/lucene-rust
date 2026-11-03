@@ -5,7 +5,8 @@
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, Weak};
 
 use lucene_store::directory::Input;
 use lucene_store::lock::Lock;
@@ -22,11 +23,17 @@ use crate::key_provider::{GeneratedKey, KeyProvider};
 /// inner directory's commit and durability semantics. `write.lock` is the
 /// inner directory's lock and is not encrypted (it is empty).
 ///
-/// Reads decrypt the whole file into memory when it is opened, because an
-/// [`Input`] is a contiguous byte slice: an encrypted index is read from
-/// the heap, not from a memory mapping, and costs its size in memory while
-/// a reader holds it open. AES-GCM with AES-NI decrypts at several GB/s per
-/// core.
+/// An [`Input`] is a contiguous byte slice, so by default a file is
+/// decrypted whole when it is opened and costs its size in memory while a
+/// reader holds it open (AES-GCM with AES-NI decrypts at several GB/s per
+/// core). With [`EncryptedDirectory::with_lazy_decrypt`] on Linux, a file is
+/// authenticated on open and then decrypted page by page on first touch
+/// into a mapping bounded by a process-wide budget ([`crate::lazy`]).
+///
+/// Opened plaintext is shared through a [`PlaintextCache`]: while any input
+/// of a file is alive, opening it again costs a reference count. Directories
+/// over the same files can share one cache
+/// ([`EncryptedDirectory::with_plaintext_cache`]).
 pub struct EncryptedDirectory<D: Directory> {
     inner: D,
     keys: Arc<dyn KeyProvider>,
@@ -37,6 +44,88 @@ pub struct EncryptedDirectory<D: Directory> {
     header_lens: Mutex<HashMap<String, (u64, u32)>>,
     /// Whether [`is_commit_metadata`] files are stored in plaintext.
     plain_commit_metadata: bool,
+    /// Whether files are demand-decrypted rather than decrypted whole.
+    lazy: bool,
+    cache: Arc<PlaintextCache>,
+}
+
+static LAZY_DEFAULT: AtomicBool = AtomicBool::new(false);
+
+/// Sets whether new [`EncryptedDirectory`]s demand-decrypt their files
+/// (default off), and returns whether demand decryption is available in
+/// this process: on Linux, with `userfaultfd` permitted. Where it is not,
+/// files are decrypted whole whatever this is set to.
+pub fn set_lazy_decrypt_default(enabled: bool) -> bool {
+    LAZY_DEFAULT.store(enabled, Ordering::Relaxed);
+    lazy_available()
+}
+
+/// Whether new [`EncryptedDirectory`]s ask for demand decryption
+/// ([`set_lazy_decrypt_default`]).
+pub fn lazy_decrypt_default() -> bool {
+    LAZY_DEFAULT.load(Ordering::Relaxed)
+}
+
+/// Whether demand decryption works in this process (starting its fault
+/// handler if it does).
+pub fn lazy_available() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        crate::lazy::Pager::global().is_some()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        false
+    }
+}
+
+/// Opened plaintext by file name, held weakly: an entry lives exactly as
+/// long as some input of the file does. Lucene writes a file once under a
+/// name, and a delete, rename or new output of the name drops its entry; the
+/// ciphertext length is checked on every hit as well, so a file replaced
+/// behind the directory's back is never served from the cache.
+#[derive(Default)]
+pub struct PlaintextCache {
+    files: Mutex<HashMap<String, (u64, Weak<Input>)>>,
+}
+
+impl PlaintextCache {
+    /// An empty cache.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn files(&self) -> std::sync::MutexGuard<'_, HashMap<String, (u64, Weak<Input>)>> {
+        self.files.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    fn get(&self, name: &str, sealed_len: u64) -> Option<Arc<Input>> {
+        let mut files = self.files();
+        let (len, weak) = files.get(name)?;
+        match weak.upgrade() {
+            Some(input) if *len == sealed_len => Some(input),
+            _ => {
+                files.remove(name);
+                None
+            }
+        }
+    }
+
+    fn put(&self, name: &str, sealed_len: u64, input: &Arc<Input>) {
+        let mut files = self.files();
+        files.retain(|_, (_, w)| w.strong_count() > 0);
+        files.insert(name.to_string(), (sealed_len, Arc::downgrade(input)));
+    }
+
+    fn forget(&self, name: &str) {
+        self.files().remove(name);
+    }
+}
+
+impl std::fmt::Debug for PlaintextCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "PlaintextCache({} files)", self.files().len())
+    }
 }
 
 /// Whether `name` is commit metadata: a `segments_N` (or `pending_segments_N`)
@@ -68,7 +157,24 @@ impl<D: Directory> EncryptedDirectory<D> {
             chunk_size: DEFAULT_CHUNK_SIZE,
             header_lens: Mutex::new(HashMap::new()),
             plain_commit_metadata: false,
+            lazy: LAZY_DEFAULT.load(Ordering::Relaxed),
+            cache: Arc::new(PlaintextCache::new()),
         }
+    }
+
+    /// Demand-decrypts files on open instead of decrypting them whole
+    /// (default: [`set_lazy_decrypt_default`]). A no-op where demand
+    /// decryption is unavailable ([`lazy_available`]).
+    pub fn with_lazy_decrypt(mut self, enabled: bool) -> Self {
+        self.lazy = enabled;
+        self
+    }
+
+    /// Shares opened plaintext with every directory given the same cache;
+    /// they must be over the same files.
+    pub fn with_plaintext_cache(mut self, cache: Arc<PlaintextCache>) -> Self {
+        self.cache = cache;
+        self
     }
 
     /// Stores commit metadata ([`is_commit_metadata`]) in plaintext and
@@ -87,6 +193,7 @@ impl<D: Directory> EncryptedDirectory<D> {
 
     /// An inner output, encrypting unless its name is stored in plaintext.
     fn wrap(&self, out: FsIndexOutput) -> Result<FsIndexOutput> {
+        self.cache.forget(out.name());
         if self.is_plain(out.name()) {
             self.header_lens().remove(out.name());
             return Ok(out);
@@ -146,8 +253,39 @@ impl<D: Directory> EncryptedDirectory<D> {
         ))
     }
 
+    /// The plaintext of `file`, demand-decrypted when that is on and
+    /// available, else decrypted whole.
+    fn decrypt(
+        &self,
+        file: Input,
+        cipher: ChunkCipher,
+        header: &Header,
+        header_len: usize,
+        name: &str,
+    ) -> Result<Input> {
+        #[cfg(target_os = "linux")]
+        if let Some(pager) =
+            crate::lazy::Pager::global().filter(|p| self.lazy && p.supports(header.chunk_size))
+        {
+            let body = &file[header_len..];
+            cipher.verify_body(body, header.chunk_size, name)?;
+            let plain_len = plaintext_len(body.len() as u64, header.chunk_size)
+                .and_then(|n| usize::try_from(n).ok())
+                .ok_or_else(|| {
+                    Error::Corrupted(format!("encrypted file {name}: malformed length"))
+                })?;
+            return pager.open(file, header_len, plain_len, header.chunk_size, cipher, name);
+        }
+        let plain = cipher.open_body(&file[header_len..], header.chunk_size, name)?;
+        Ok(Input::Owned(plain))
+    }
+
     /// The header of `name` from its bytes, and the cipher to open it.
-    fn cipher_for(&self, name: &str, file: &[u8]) -> Result<(ChunkCipher, Header, usize)> {
+    pub(crate) fn cipher_for(
+        &self,
+        name: &str,
+        file: &[u8],
+    ) -> Result<(ChunkCipher, Header, usize)> {
         let (header, header_len) = Header::decode(file, name)?;
         let data_key = self.keys.unwrap_key(&header.key_id, &header.wrapped_key)?;
         let cipher = ChunkCipher::new(&data_key, file[..header_len].to_vec())?;
@@ -222,12 +360,18 @@ impl<D: Directory> Directory for EncryptedDirectory<D> {
         if self.is_plain(name) {
             return self.inner.open(name);
         }
+        let sealed_len = self.inner.file_length(name)?;
+        if let Some(shared) = self.cache.get(name, sealed_len) {
+            return Input::slice_of(&shared, 0, shared.len());
+        }
         let file = self.inner.open(name)?;
         let (cipher, header, header_len) = self.cipher_for(name, &file)?;
-        let plain = cipher.open_body(&file[header_len..], header.chunk_size, name)?;
         self.header_lens()
             .insert(name.to_string(), (header_len as u64, header.chunk_size));
-        Ok(Input::Owned(plain))
+        let plain = self.decrypt(file, cipher, &header, header_len, name)?;
+        let shared = Arc::new(plain);
+        self.cache.put(name, sealed_len, &shared);
+        Input::slice_of(&shared, 0, shared.len())
     }
 
     fn file_length(&self, name: &str) -> Result<u64> {
@@ -298,6 +442,8 @@ impl<D: Directory> Directory for EncryptedDirectory<D> {
             )));
         }
         self.inner.rename(source, dest)?;
+        self.cache.forget(source);
+        self.cache.forget(dest);
         let mut lens = self.header_lens();
         lens.remove(dest);
         if let Some(entry) = lens.remove(source) {
@@ -308,6 +454,7 @@ impl<D: Directory> Directory for EncryptedDirectory<D> {
 
     fn delete_file(&self, name: &str) -> Result<()> {
         self.header_lens().remove(name);
+        self.cache.forget(name);
         self.inner.delete_file(name)
     }
 
@@ -478,6 +625,48 @@ mod tests {
         write(&all, "segments_1", b"commit bytes", 5);
         assert_eq!(&all.inner().open("segments_1").unwrap()[..4], b"LRSE");
         all.rename("segments_1", "x").unwrap();
+    }
+
+    /// Two directories sharing a cache share one plaintext while an input
+    /// is alive; a delete, a rename or a rewrite of the name is never served
+    /// stale bytes, and nothing is kept once every input is gone.
+    #[test]
+    fn the_plaintext_cache_shares_live_inputs_and_forgets_changed_names() {
+        let inner = Arc::new(ByteBuffersDirectory::new());
+        let cache = Arc::new(PlaintextCache::new());
+        let a = EncryptedDirectory::new(Arc::clone(&inner), keys())
+            .with_plaintext_cache(Arc::clone(&cache));
+        let b = EncryptedDirectory::new(Arc::clone(&inner), keys())
+            .with_plaintext_cache(Arc::clone(&cache));
+        write(&a, "f", b"first contents", 64);
+        let one = a.open("f").unwrap();
+        let two = b.open("f").unwrap();
+        assert_eq!(
+            one.as_ptr(),
+            two.as_ptr(),
+            "the second open shares the first"
+        );
+        drop((one, two));
+        assert!(cache.get("f", inner.file_length("f").unwrap()).is_none());
+
+        let held = a.open("f").unwrap();
+        b.delete_file("f").unwrap();
+        write(&b, "f", b"second, longer contents", 64);
+        assert_eq!(&*a.open("f").unwrap(), b"second, longer contents");
+        assert_eq!(&*held, b"first contents", "an open input keeps its bytes");
+
+        let g = a.open("f").unwrap();
+        a.rename("f", "g").unwrap();
+        assert_eq!(&*b.open("g").unwrap(), b"second, longer contents");
+        assert!(b.open("f").is_err());
+        drop(g);
+
+        // Replaced behind the directories' back, with a different length.
+        let _keep = a.open("g").unwrap();
+        let other = EncryptedDirectory::new(Arc::clone(&inner), keys());
+        other.delete_file("g").unwrap();
+        write(&other, "g", b"replaced", 64);
+        assert_eq!(&*a.open("g").unwrap(), b"replaced");
     }
 
     #[test]
