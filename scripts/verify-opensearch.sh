@@ -83,6 +83,12 @@ status=0
 if [[ $ENGINE == 1 ]]; then
     for _ in $(seq 1 90); do curl -sf "localhost:$PORT" >/dev/null && break; sleep 2; done
     python3 opensearch-plugin/e2e/verify_engine.py "http://localhost:${PORT}" "$NAME" "${ARGS[@]}" || status=$?
+    if [[ $status != 0 ]]; then
+        # The node's own account of a failed check (a shard that failed to start, say); the
+        # container is gone once the script exits.
+        echo "verify-opensearch: the node's last warnings and errors:" >&2
+        docker logs "$NAME" 2>&1 | grep -E -A12 '^\[[^]]*\]\[(WARN|ERROR)' | tail -n 200 >&2 || true
+    fi
 else
     python3 opensearch-plugin/e2e/verify_opensearch.py "http://localhost:${PORT}" "$NAME" "${ARGS[@]}" || status=$?
 fi
