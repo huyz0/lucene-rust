@@ -323,17 +323,16 @@ impl PendingPostings {
             return Ok(());
         }
         let f = self.field(field.field_number, index_options);
-        for t in &field.terms {
+        for t in field.terms.iter() {
             // every term once: `validate_explicit` refused a repeat
-            let slot = f.occurrence(doc, &t.term);
+            let slot = f.occurrence(doc, t.term);
             f.first_in_doc(slot, doc, t.freq);
             // the postings writer reads positions and offsets only for a
             // field that indexes positions
             if f.positions {
                 for (i, &position) in t.positions.iter().enumerate() {
                     let offsets = t.offsets.get(i).copied().unwrap_or_default();
-                    let payload = t.payloads.get(i).map_or(&[][..], Vec::as_slice);
-                    f.prox(slot, position, offsets, payload);
+                    f.prox(slot, position, offsets, t.payloads.get(i));
                 }
             }
         }
@@ -667,7 +666,7 @@ mod tests {
     ) {
         let field = InvertedField {
             field_number: field,
-            terms,
+            terms: terms.into(),
             norm: None,
         };
         p.add_field(doc, &field, opts).unwrap();

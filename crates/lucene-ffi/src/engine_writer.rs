@@ -58,7 +58,7 @@ use lucene_index::buffered_updates::{DocValuesUpdate, Term};
 use lucene_index::concurrent_writer::ConcurrentIndexWriter;
 use lucene_index::index_file_deleter::DeletionPolicy;
 use lucene_index::index_writer::{
-    self, ExplicitDocument, ExplicitFields, IndexWriter, InvertedField, InvertedTerm,
+    self, ExplicitDocument, ExplicitFields, IndexWriter, InvertedField, InvertedTerms,
     MergePolicyConfig, SoftDeletesRetention,
 };
 use lucene_index::segment_info::LuceneVersion;
@@ -260,59 +260,41 @@ fn inverted_field(c: &mut Cursor<'_>) -> Result<InvertedField, FfiStatus> {
     };
     // A term is at least its length, its freq and its flags.
     let n = c.count(9, "term count")?;
-    let mut terms = try_with_capacity(n)?;
+    let mut terms = InvertedTerms::new();
     for _ in 0..n {
-        let term = c.bytes("term")?.to_vec();
+        let term = c.bytes("term")?;
         let freq = c.i32("freq")?;
         let flags = c.u8("term flags")?;
         if flags & !7 != 0 {
             return Err(decode_error("term flags"));
         }
         let occurrences = usize::try_from(freq).map_err(|_| decode_error("freq"))?;
-        let positions = if flags & 1 != 0 {
-            if occurrences.saturating_mul(4) > c.remaining() {
-                return Err(decode_error("positions"));
-            }
-            let mut p = try_with_capacity(occurrences)?;
+        // Each occurrence's position, offsets and payload length are at
+        // least 4 bytes apiece.
+        let per = [1u8, 2, 4]
+            .iter()
+            .map(|&bit| if flags & bit != 0 { 4usize } else { 0 })
+            .sum::<usize>();
+        if occurrences.saturating_mul(per) > c.remaining() {
+            return Err(decode_error("occurrences"));
+        }
+        let mut t = terms.start(term);
+        t.freq(freq);
+        if flags & 1 != 0 {
             for _ in 0..occurrences {
-                p.push(c.i32("position")?);
+                t.position(c.i32("position")?);
             }
-            p
-        } else {
-            Vec::new()
-        };
-        let offsets = if flags & 2 != 0 {
-            if occurrences.saturating_mul(8) > c.remaining() {
-                return Err(decode_error("offsets"));
-            }
-            let mut o = try_with_capacity(occurrences)?;
+        }
+        if flags & 2 != 0 {
             for _ in 0..occurrences {
-                o.push((c.i32("start offset")?, c.i32("end offset")?));
+                t.offsets(c.i32("start offset")?, c.i32("end offset")?);
             }
-            o
-        } else {
-            Vec::new()
-        };
-        let payloads = if flags & 4 != 0 {
-            // Each payload is at least its length.
-            if occurrences.saturating_mul(4) > c.remaining() {
-                return Err(decode_error("payloads"));
-            }
-            let mut p = try_with_capacity(occurrences)?;
+        }
+        if flags & 4 != 0 {
             for _ in 0..occurrences {
-                p.push(c.bytes("payload")?.to_vec());
+                t.payload(c.bytes("payload")?);
             }
-            p
-        } else {
-            Vec::new()
-        };
-        terms.push(InvertedTerm {
-            term,
-            freq,
-            positions,
-            offsets,
-            payloads,
-        });
+        }
     }
     Ok(InvertedField {
         field_number,

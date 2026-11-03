@@ -174,12 +174,14 @@ mod add_indexes;
 #[cfg(test)]
 mod block_tests;
 mod explicit;
+mod inverted_terms;
 mod lifecycle;
 pub(crate) mod pending_postings;
 mod pluggable_merge;
 mod try_modify;
 pub(crate) use explicit::explicit_error;
 pub use explicit::{ExplicitDocument, ExplicitFields, InvertedField, InvertedTerm};
+pub use inverted_terms::{InvertedTerms, Payloads, TermBuilder, TermRef};
 pub use lifecycle::MergedSegmentWarmer;
 
 pub use crate::merge_policy::MergePolicyConfig;
