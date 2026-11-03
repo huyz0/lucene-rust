@@ -12,13 +12,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use lucene_analysis::{Analyzer, StandardAnalyzer};
-use lucene_search::directory_reader::DirectoryReader;
-use lucene_search::field_norms::FieldNorms;
 use lucene_highlighter::unified::UnifiedHighlighter;
 use lucene_highlighter::vectorhighlight::FastVectorHighlighter;
+use lucene_queryparser::classic::QueryParser;
+use lucene_search::directory_reader::DirectoryReader;
+use lucene_search::field_norms::FieldNorms;
 use lucene_search::index_searcher::IndexSearcher;
 use lucene_search::query::Clause;
-use lucene_queryparser::classic::QueryParser;
 
 use super::measure;
 
