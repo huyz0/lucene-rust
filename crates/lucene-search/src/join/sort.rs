@@ -550,8 +550,8 @@ fn child_long(
 /// `SortedSetSelector`'s pick and the terms dictionary for `lookupOrd`.
 enum OrdColumn<'a> {
     Absent,
-    Single(&'a [u8], &'a doc_values::SortedEntry, TermsDict<'a>),
-    Multi(&'a [u8], &'a doc_values::SortedNumericEntry, TermsDict<'a>),
+    Single(doc_values::NumericReader<'a>, TermsDict<'a>),
+    Multi(doc_values::SortedNumericReader<'a>, TermsDict<'a>),
 }
 
 impl<'a> OrdColumn<'a> {
@@ -566,12 +566,21 @@ impl<'a> OrdColumn<'a> {
         let dict = |entry| TermsDict::open(data, entry).map_err(store);
         if let Some(e) = meta.sorted_set_entry(info.number) {
             return Ok(match &e.kind {
-                SortedSetKind::Single(s) => OrdColumn::Single(data, s, dict(&s.terms)?),
-                SortedSetKind::Multi { ords, terms } => OrdColumn::Multi(data, ords, dict(terms)?),
+                SortedSetKind::Single(s) => OrdColumn::Single(
+                    doc_values::NumericReader::new(data, &s.ords),
+                    dict(&s.terms)?,
+                ),
+                SortedSetKind::Multi { ords, terms } => OrdColumn::Multi(
+                    doc_values::SortedNumericReader::new(data, ords),
+                    dict(terms)?,
+                ),
             });
         }
         if let Some(s) = meta.sorted_entry(info.number) {
-            return Ok(OrdColumn::Single(data, s, dict(&s.terms)?));
+            return Ok(OrdColumn::Single(
+                doc_values::NumericReader::new(data, &s.ords),
+                dict(&s.terms)?,
+            ));
         }
         if info.doc_values_type == lucene_codecs::field_infos::DocValuesType::None {
             return Ok(OrdColumn::Absent);
@@ -592,9 +601,9 @@ impl<'a> OrdColumn<'a> {
     ) -> Result<Option<i64>> {
         Ok(match self {
             OrdColumn::Absent => None,
-            OrdColumn::Single(data, s, _) => doc_values::sorted_ord(data, s, doc)?,
-            OrdColumn::Multi(data, m, _) => {
-                *buf = doc_values::sorted_numeric_values(data, m, doc)?;
+            OrdColumn::Single(r, _) => r.value(doc)?,
+            OrdColumn::Multi(r, _) => {
+                r.values(doc, buf)?;
                 match selector {
                     BlockJoinSelector::Min => buf.first().copied(),
                     BlockJoinSelector::Max => buf.last().copied(),
@@ -607,7 +616,7 @@ impl<'a> OrdColumn<'a> {
     fn size(&self) -> i64 {
         match self {
             OrdColumn::Absent => 0,
-            OrdColumn::Single(_, _, d) | OrdColumn::Multi(_, _, d) => d.size(),
+            OrdColumn::Single(_, d) | OrdColumn::Multi(_, d) => d.size(),
         }
     }
 
@@ -616,9 +625,7 @@ impl<'a> OrdColumn<'a> {
         let store = |e| Error::from(lucene_codecs::blocktree::Error::Store(e));
         match self {
             OrdColumn::Absent => Ok(&[]),
-            OrdColumn::Single(_, _, d) | OrdColumn::Multi(_, _, d) => {
-                d.seek_ord(ord).map_err(store)
-            }
+            OrdColumn::Single(_, d) | OrdColumn::Multi(_, d) => d.seek_ord(ord).map_err(store),
         }
     }
 }
