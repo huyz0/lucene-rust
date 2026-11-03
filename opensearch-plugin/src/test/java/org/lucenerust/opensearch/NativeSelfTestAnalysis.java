@@ -32,6 +32,20 @@ import org.apache.lucene.analysis.hi.HindiAnalyzer;
 import org.apache.lucene.analysis.hunspell.Dictionary;
 import org.apache.lucene.analysis.hunspell.HunspellStemFilter;
 import org.apache.lucene.analysis.it.ItalianAnalyzer;
+import org.apache.lucene.analysis.ja.JapaneseAnalyzer;
+import org.apache.lucene.analysis.ja.JapaneseCompletionAnalyzer;
+import org.apache.lucene.analysis.ja.JapaneseCompletionFilter;
+import org.apache.lucene.analysis.ja.JapaneseHiraganaUppercaseFilter;
+import org.apache.lucene.analysis.ja.JapaneseIterationMarkCharFilter;
+import org.apache.lucene.analysis.ja.JapaneseKatakanaUppercaseFilter;
+import org.apache.lucene.analysis.ja.JapaneseNumberFilter;
+import org.apache.lucene.analysis.ja.JapaneseReadingFormFilter;
+import org.apache.lucene.analysis.ja.JapaneseTokenizer;
+import org.apache.lucene.analysis.ko.KoreanAnalyzer;
+import org.apache.lucene.analysis.ko.KoreanNumberFilter;
+import org.apache.lucene.analysis.ko.KoreanPartOfSpeechStopFilter;
+import org.apache.lucene.analysis.ko.KoreanTokenizer;
+import org.apache.lucene.analysis.ko.POS;
 import org.apache.lucene.analysis.pt.PortugueseAnalyzer;
 import org.apache.lucene.analysis.ru.RussianAnalyzer;
 import org.apache.lucene.analysis.standard.StandardAnalyzer;
@@ -41,8 +55,11 @@ import org.apache.lucene.analysis.th.ThaiAnalyzer;
 
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
+import java.io.Reader;
+import java.io.StringReader;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.EnumSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -430,6 +447,101 @@ final class NativeSelfTestAnalysis {
         }
     }
 
+    /** Texts with the kuromoji and nori chains' own cases: user entries, numbers, iteration marks, widths. */
+    private static final List<String> CJK = List.of(
+        "関西国際空港に行った。朝青龍は日本経済新聞を読む。時々、こゝろ、ところゞ、カヽミ",
+        "一〇〇〇円で３．２兆円の取引、二千五百人。ｺｰﾋｰとコーヒーとサーバー、すもももももももものうち",
+        "세종시에 있는 세종대왕 동상, c++ 프로그래밍. 십이만 삼천 원과 3.5조 원",
+        "한국어를 처리하는 예시입니다. 가곡역은 정말 아름답습니다!"
+    );
+
+    /** One tokenizer and its filters, around optional char filters, as an analyzer. */
+    private static Analyzer chain(
+        java.util.function.Supplier<Tokenizer> tokenizer,
+        java.util.function.UnaryOperator<TokenStream> filters,
+        java.util.function.UnaryOperator<Reader> charFilters
+    ) {
+        return new Analyzer() {
+            @Override
+            protected TokenStreamComponents createComponents(String fieldName) {
+                Tokenizer t = tokenizer.get();
+                return new TokenStreamComponents(t, filters.apply(t));
+            }
+
+            @Override
+            protected Reader initReader(String fieldName, Reader reader) {
+                return charFilters.apply(reader);
+            }
+        };
+    }
+
+    /**
+     * The kuromoji and nori components (OpenSearch's analysis-kuromoji and analysis-nori), user
+     * dictionaries included, described and run in Rust; needs the data packs {@link #packs} adds.
+     */
+    static void cjkModules(BiConsumer<Boolean, String> check) throws Exception {
+        if (System.getProperty("lucene_rust.data_packs") == null) {
+            return;
+        }
+        var ja = org.apache.lucene.analysis.ja.dict.UserDictionary.open(new StringReader("""
+            # a comment
+            関西国際空港,関西 国際 空港,カンサイ コクサイ クウコウ,カスタム名詞
+            日本経済新聞,日本 経済 新聞,ニホン ケイザイ シンブン,カスタム名詞
+            朝青龍,朝青龍,アサショウリュウ,カスタム人名
+            """));
+        var ko = org.apache.lucene.analysis.ko.dict.UserDictionary.open(new StringReader("""
+            세종
+            세종시 세종 시
+            c++
+            가곡역 가곡 역
+            """));
+        Map<String, Analyzer> chains = new LinkedHashMap<>();
+        chains.put("JapaneseAnalyzer", new JapaneseAnalyzer());
+        chains.put(
+            "JapaneseAnalyzer, user dictionary, extended",
+            new JapaneseAnalyzer(ja, JapaneseTokenizer.Mode.EXTENDED, JapaneseAnalyzer.getDefaultStopSet(), JapaneseAnalyzer.getDefaultStopTags())
+        );
+        chains.put("kuromoji custom chain", chain(() -> {
+            JapaneseTokenizer t = new JapaneseTokenizer(ja, false, false, JapaneseTokenizer.Mode.SEARCH);
+            t.setNBestCost(2000);
+            return t;
+        }, ts -> new JapaneseKatakanaUppercaseFilter(new JapaneseHiraganaUppercaseFilter(new JapaneseNumberFilter(new JapaneseReadingFormFilter(ts, true)))),
+            r -> new JapaneseIterationMarkCharFilter(r, true, false)));
+        chains.put("kuromoji normal mode", chain(() -> new JapaneseTokenizer(ja, true, JapaneseTokenizer.Mode.NORMAL), ts -> ts, r -> r));
+        chains.put("JapaneseCompletionAnalyzer", new JapaneseCompletionAnalyzer(ja, JapaneseCompletionFilter.Mode.QUERY));
+        chains.put("KoreanAnalyzer", new KoreanAnalyzer());
+        chains.put(
+            "KoreanAnalyzer, user dictionary, mixed",
+            new KoreanAnalyzer(ko, KoreanTokenizer.DecompoundMode.MIXED, KoreanPartOfSpeechStopFilter.DEFAULT_STOP_TAGS, true)
+        );
+        chains.put("nori custom chain", chain(
+            () -> new KoreanTokenizer(TokenStream.DEFAULT_TOKEN_ATTRIBUTE_FACTORY, ko, KoreanTokenizer.DecompoundMode.NONE, false, false),
+            ts -> new KoreanNumberFilter(new KoreanPartOfSpeechStopFilter(ts, EnumSet.of(POS.Tag.JKS, POS.Tag.JKB, POS.Tag.EF, POS.Tag.SP))),
+            r -> r
+        ));
+        for (Map.Entry<String, Analyzer> e : chains.entrySet()) {
+            AnalyzerSpec.Spec spec = AnalyzerSpec.describeUnchecked(e.getValue(), "body");
+            check.accept(spec.ok(), "kuromoji/nori chain described: " + e.getKey() + " (" + spec.reason() + ")");
+            if (spec.ok() == false) continue;
+            described++;
+            List<String> texts = new ArrayList<>(AnalyzerSpec.PROBES);
+            texts.addAll(CJK);
+            for (String text : texts) {
+                AnalyzerSpec.Tokens java = AnalyzerSpec.java(e.getValue(), "body", text);
+                AnalyzerSpec.Tokens rust = AnalyzerSpec.rust(spec.blob(), "body", text);
+                boolean same = java.equals(rust);
+                check.accept(same, "analysis matches Lucene: " + e.getKey() + " on [" + text + "]" + (same ? "" : difference(java, rust)));
+                compared++;
+                if (same == false) break;
+            }
+        }
+        // A part of speech with a space is left in Java: the line format is not checked for those.
+        var spaced = org.apache.lucene.analysis.ja.dict.UserDictionary.open(new StringReader("東京,東京,トウキョウ,固有 名詞\n"));
+        Analyzer refused = chain(() -> new JapaneseTokenizer(spaced, true, JapaneseTokenizer.Mode.SEARCH), ts -> ts, r -> r);
+        AnalyzerSpec.Spec spec = AnalyzerSpec.describe(refused, "body");
+        check.accept("analysis_japanese_user_dictionary".equals(spec.reason()), "an unwritable user dictionary stays in Java (" + spec.reason() + ")");
+    }
+
     /** Lucene's ThaiAnalyzer and rust_thai side by side: Lucene's test words, and the agreement. */
     static void thai(BiConsumer<Boolean, String> check) throws Exception {
         Analyzer rust = new RustAnalysis.RustAnalyzer(RustAnalysis.THAI, ThaiAnalyzer.getDefaultStopSet());
@@ -516,6 +628,7 @@ final class NativeSelfTestAnalysis {
         }
         thai(check);
         packs(check);
+        cjkModules(check);
         check.accept(AnalyzerSpec.encodable("a😀b"), "a surrogate pair is encodable");
         check.accept(AnalyzerSpec.encodable("a\ud83db") == false, "a lone surrogate is not");
     }
