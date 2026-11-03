@@ -585,7 +585,9 @@ def encrypted(container):
     for idx, rust, extra in names:
         req("DELETE", f"/{idx}")
         create(idx, rust, extra)
-    wait_green("enc_plain,enc_java,enc_rust")
+    # A shard that fails to start leaves its half of every bulk unindexed, and the searches below
+    # then count only the other shard's documents.
+    check(wait_green("enc_plain,enc_java,enc_rust"), "encrypted indices start green")
     r = random.Random(11)
     for batch in range(8):
         lines = []
@@ -596,7 +598,9 @@ def encrypted(container):
             lines += [{"delete": {"_id": f"e{n}"}} for n in range(0, 1000, 9)]
         body = "\n".join(json.dumps(l) for l in lines) + "\n"
         for idx, _, _ in names:
-            must("POST", f"/{idx}/_bulk", body, ndjson=True)
+            out = must("POST", f"/{idx}/_bulk", body, ndjson=True)
+            errors = [v.get("error") for it in out["items"] for v in it.values() if "error" in v]
+            check(not errors, f"{idx}: bulk {batch} applies every operation: {len(errors)} errors, {json.dumps(errors[:1])[:300]}")
             if batch % 3 == 2:
                 must("POST", f"/{idx}/_refresh")
     for idx, _, _ in names:
