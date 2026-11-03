@@ -1125,22 +1125,36 @@ impl<'d> PointsReader<'d> {
                 upper.len()
             )));
         }
-        let (num_index_dims, bytes_per_dim) =
-            (field.num_index_dims as usize, field.bytes_per_dim as usize);
         Ok(RangeVisitor {
-            lower: lower.to_vec(),
-            upper: upper.to_vec(),
-            num_index_dims,
-            bytes_per_dim,
-            fixed: FixedWidthRange::new(num_index_dims, bytes_per_dim, lower, upper),
+            matcher: RangeMatcher::new(field, lower, upper),
             docs: Vec::new(),
         })
+    }
+
+    /// [`range_query`](Self::range_query)'s box over `field_number`, for a
+    /// visitor of the caller's that collects the matches its own way (into a
+    /// bit set, or clearing the documents outside the box).
+    pub fn range_matcher(
+        &self,
+        field_number: i32,
+        lower: &[u8],
+        upper: &[u8],
+    ) -> Result<RangeMatcher> {
+        let field = self
+            .field(field_number)
+            .ok_or(Error::IllegalFieldNumber(field_number))?;
+        Ok(self.range_visitor(field, lower, upper)?.matcher)
     }
 }
 
 /// Port of `org.apache.lucene.index.PointValues.Relation`, defined in
 /// `lucene-util` so the geo relations can answer in it too.
 pub use lucene_util::point_values_relation::Relation;
+
+/// How many doc ids [`IntersectVisitor::visit_range`]'s and
+/// [`IntersectVisitor::visit_bit_words`]'s defaults hand to
+/// [`IntersectVisitor::visit_many`] at a time.
+const VISIT_CHUNK: usize = 256;
 
 /// Port of `org.apache.lucene.index.PointValues.IntersectVisitor`.
 ///
@@ -1159,6 +1173,61 @@ pub trait IntersectVisitor {
     fn visit_many(&mut self, doc_ids: &[i32]) {
         for &doc_id in doc_ids {
             self.visit(doc_id);
+        }
+    }
+    /// The doc ids `start..start + count` of a leaf entirely inside the
+    /// query, in order (a leaf whose ids are one run). `start >= 0` and
+    /// `start + count <= i32::MAX`. Defaults to [`Self::visit_many`] over
+    /// consecutive chunks of the run.
+    fn visit_range(&mut self, start: i32, count: usize) {
+        let mut buf = [0i32; VISIT_CHUNK];
+        // ARITH: the caller guarantees `start + count <= i32::MAX`, so every
+        // id and `end` fit an `i32`.
+        #[allow(clippy::arithmetic_side_effects)]
+        let end = start + count as i32;
+        let mut next = start;
+        while next < end {
+            // `end - next > 0` and fits an `i32`.
+            #[allow(clippy::arithmetic_side_effects)]
+            let n = ((end - next) as usize).min(VISIT_CHUNK);
+            for (slot, doc_id) in buf[..n].iter_mut().zip(next..) {
+                *slot = doc_id;
+            }
+            self.visit_many(&buf[..n]);
+            #[allow(clippy::arithmetic_side_effects)]
+            {
+                next += n as i32;
+            }
+        }
+    }
+    /// The doc ids of a leaf entirely inside the query, given as the bits of
+    /// `words` from doc `doc_base` on (a leaf stored as a bit set), in
+    /// order. `doc_base >= 0` and `doc_base + 64 * words.len() <= i32::MAX`.
+    /// Defaults to [`Self::visit_many`] over chunks of the set bits' ids.
+    fn visit_bit_words(&mut self, doc_base: i32, words: BitWords<'_>) {
+        let mut buf = [0i32; VISIT_CHUNK];
+        let mut n = 0usize;
+        for (i, word) in words.iter().enumerate() {
+            // ARITH: bounded by the caller's `doc_base + 64 * len <= i32::MAX`.
+            #[allow(clippy::arithmetic_side_effects)]
+            let base = doc_base + (i as i32) * 64;
+            let mut w = word;
+            while w != 0 {
+                // ARITH: as above; `n < VISIT_CHUNK` before each store.
+                #[allow(clippy::arithmetic_side_effects)]
+                {
+                    buf[n] = base + w.trailing_zeros() as i32;
+                    n += 1;
+                }
+                w &= w.wrapping_sub(1);
+                if n == VISIT_CHUNK {
+                    self.visit_many(&buf);
+                    n = 0;
+                }
+            }
+        }
+        if n > 0 {
+            self.visit_many(&buf[..n]);
         }
     }
     /// `IntersectVisitor.visit(int, byte[])` -- called for every point in a
@@ -1901,6 +1970,43 @@ fn count_node<V: IntersectVisitor>(
     }
 }
 
+/// The `count` doc ids of a leaf entirely inside the query, from `input`
+/// positioned at its doc-id block: a run (`CONTINUOUS_IDS`) as
+/// [`IntersectVisitor::visit_range`], a bit set (`BITSET_IDS`) as
+/// [`IntersectVisitor::visit_bit_words`], every other encoding decoded into
+/// the walk's buffer and handed over as [`IntersectVisitor::visit_many`].
+fn visit_leaf_doc_ids<V: IntersectVisitor>(
+    input: &mut SliceInput,
+    count: usize,
+    ctx: &mut IntersectCtx,
+    visitor: &mut V,
+) -> Result<()> {
+    match input.as_slice().first().map(|&b| b as i8) {
+        Some(CONTINUOUS_IDS) => {
+            let mut probe = input.clone();
+            probe.read_byte()?;
+            let start = probe.read_vint()?;
+            // A run that would wrap past `i32::MAX` is decoded the general
+            // way, which reproduces Java's wrapped ids.
+            if start >= 0
+                && i64::from(start).saturating_add(count as i64) <= i64::from(i32::MAX)
+            {
+                *input = probe;
+                visitor.visit_range(start, count);
+                return Ok(());
+            }
+        }
+        Some(BITSET_IDS) => {
+            input.read_byte()?;
+            return visit_bitset_ids(input, count, visitor);
+        }
+        _ => {}
+    }
+    read_doc_ids_into(input, count, &mut ctx.doc_ids, ctx.field.bkd_version)?;
+    visitor.visit_many(&ctx.doc_ids);
+    Ok(())
+}
+
 /// Port of `BKDReader.BKDPointTree.addAll` (reached from `visitDocIDs`):
 /// every leaf under `node_id` contributes its doc ids and nothing else --
 /// no `compare`, no packed values, no per-leaf bounding box. Consumes the
@@ -1917,14 +2023,7 @@ fn add_all<V: IntersectVisitor>(
         let mut kdd_input = SliceInput::new(ctx.kdd);
         seek_leaf_block(&mut kdd_input, fp)?;
         let count = read_leaf_count(&mut kdd_input, ctx.field)?;
-        read_doc_ids_into(
-            &mut kdd_input,
-            count,
-            &mut ctx.doc_ids,
-            ctx.field.bkd_version,
-        )?;
-        visitor.visit_many(&ctx.doc_ids);
-        return Ok(());
+        return visit_leaf_doc_ids(&mut kdd_input, count, ctx, visitor);
     }
 
     // Same split-descriptor skip as `walk_node`: the split value itself is
@@ -1946,14 +2045,83 @@ fn add_all<V: IntersectVisitor>(
     )
 }
 
-/// `PointRangeQuery`'s `IntersectVisitor`, inclusive on both ends.
-struct RangeVisitor {
+/// `PointRangeQuery`'s inclusive box over one field: how a cell relates to
+/// it and whether a point is inside, for a visitor that collects the
+/// matches its own way. Made by [`PointsReader::range_matcher`].
+#[derive(Clone)]
+pub struct RangeMatcher {
     lower: Vec<u8>,
     upper: Vec<u8>,
     num_index_dims: usize,
     bytes_per_dim: usize,
     /// The bounds as integers, for the one-dimensional 4- and 8-byte shapes.
     fixed: Option<FixedWidthRange>,
+}
+
+impl RangeMatcher {
+    fn new(field: &PointsField, lower: &[u8], upper: &[u8]) -> Self {
+        let (num_index_dims, bytes_per_dim) =
+            (field.num_index_dims as usize, field.bytes_per_dim as usize);
+        Self {
+            lower: lower.to_vec(),
+            upper: upper.to_vec(),
+            num_index_dims,
+            bytes_per_dim,
+            fixed: FixedWidthRange::new(num_index_dims, bytes_per_dim, lower, upper),
+        }
+    }
+
+    /// How the cell `[min_packed, max_packed]` relates to the box.
+    pub fn compare(&self, min_packed: &[u8], max_packed: &[u8]) -> Relation {
+        let mut crosses = false;
+        for dim in 0..self.num_index_dims {
+            // ARITH: `dim < num_index_dims`, so `hi <= num_index_dims *
+            // bytes_per_dim` -- the length `range_matcher` verified for
+            // `lower`/`upper`, the length `PointsReader::intersect` gives the
+            // cell bounds it passes in, and a product `check_config` proved
+            // fits an `i32`.
+            #[allow(clippy::arithmetic_side_effects)]
+            let (lo, hi) = (dim * self.bytes_per_dim, (dim + 1) * self.bytes_per_dim);
+            if max_packed[lo..hi] < self.lower[lo..hi] || min_packed[lo..hi] > self.upper[lo..hi] {
+                return Relation::CellOutsideQuery;
+            }
+            crosses |=
+                min_packed[lo..hi] < self.lower[lo..hi] || max_packed[lo..hi] > self.upper[lo..hi];
+        }
+        if crosses {
+            Relation::CellCrossesQuery
+        } else {
+            Relation::CellInsideQuery
+        }
+    }
+
+    /// Whether the point `packed_value` (the field's packed value) is inside
+    /// the box.
+    #[inline]
+    pub fn matches(&self, packed_value: &[u8]) -> bool {
+        if let Some(inside) = self.fixed.and_then(|f| f.contains(packed_value)) {
+            return inside;
+        }
+        for dim in 0..self.num_index_dims {
+            // ARITH: same bound as `compare`; `packed_value` is
+            // `num_dims * bytes_per_dim` long, which is at least as long as
+            // the `num_index_dims * bytes_per_dim` scanned here.
+            #[allow(clippy::arithmetic_side_effects)]
+            let (lo, hi) = (dim * self.bytes_per_dim, (dim + 1) * self.bytes_per_dim);
+            if packed_value[lo..hi] < self.lower[lo..hi]
+                || packed_value[lo..hi] > self.upper[lo..hi]
+            {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+/// `PointRangeQuery`'s `IntersectVisitor`, inclusive on both ends, into a
+/// list of doc ids.
+struct RangeVisitor {
+    matcher: RangeMatcher,
     docs: Vec<i32>,
 }
 
@@ -2010,52 +2178,31 @@ impl FixedWidthRange {
 
 impl IntersectVisitor for RangeVisitor {
     fn compare(&mut self, min_packed: &[u8], max_packed: &[u8]) -> Relation {
-        let mut crosses = false;
-        for dim in 0..self.num_index_dims {
-            // ARITH: `dim < num_index_dims`, so `hi <= num_index_dims *
-            // bytes_per_dim` -- the length `range_query` verified for
-            // `lower`/`upper`, the length `PointsReader::intersect` gives the
-            // cell bounds it passes in, and a product `check_config` proved
-            // fits an `i32`.
-            #[allow(clippy::arithmetic_side_effects)]
-            let (lo, hi) = (dim * self.bytes_per_dim, (dim + 1) * self.bytes_per_dim);
-            if max_packed[lo..hi] < self.lower[lo..hi] || min_packed[lo..hi] > self.upper[lo..hi] {
-                return Relation::CellOutsideQuery;
-            }
-            crosses |=
-                min_packed[lo..hi] < self.lower[lo..hi] || max_packed[lo..hi] > self.upper[lo..hi];
-        }
-        if crosses {
-            Relation::CellCrossesQuery
-        } else {
-            Relation::CellInsideQuery
-        }
+        self.matcher.compare(min_packed, max_packed)
     }
 
     fn visit(&mut self, doc_id: i32) {
         self.docs.push(doc_id);
     }
 
+    fn visit_many(&mut self, doc_ids: &[i32]) {
+        self.docs.extend_from_slice(doc_ids);
+    }
+
+    fn visit_range(&mut self, start: i32, count: usize) {
+        // ARITH: the caller guarantees `start + count <= i32::MAX`.
+        #[allow(clippy::arithmetic_side_effects)]
+        self.docs.extend(start..start + count as i32);
+    }
+
     fn visit_with_value(&mut self, doc_id: i32, packed_value: &[u8]) {
-        if let Some(inside) = self.fixed.and_then(|f| f.contains(packed_value)) {
-            if inside {
-                self.docs.push(doc_id);
-            }
-            return;
+        if self.matcher.matches(packed_value) {
+            self.docs.push(doc_id);
         }
-        for dim in 0..self.num_index_dims {
-            // ARITH: same bound as `compare`; `packed_value` is
-            // `num_dims * bytes_per_dim` long, which is at least as long as
-            // the `num_index_dims * bytes_per_dim` scanned here.
-            #[allow(clippy::arithmetic_side_effects)]
-            let (lo, hi) = (dim * self.bytes_per_dim, (dim + 1) * self.bytes_per_dim);
-            if packed_value[lo..hi] < self.lower[lo..hi]
-                || packed_value[lo..hi] > self.upper[lo..hi]
-            {
-                return;
-            }
-        }
-        self.docs.push(doc_id);
+    }
+
+    fn grow(&mut self, count: usize) {
+        self.docs.reserve(count);
     }
 }
 
@@ -2625,6 +2772,70 @@ fn read_legacy_delta_vint(input: &mut SliceInput, count: usize, out: &mut Vec<i3
 }
 
 fn read_bitset_ids(input: &mut SliceInput, count: usize, out: &mut Vec<i32>) -> Result<()> {
+    let (doc_base, words) = read_bitset_header(input)?;
+    let long_len = words.len() / 8;
+
+    // `count` is the writer's own set-bit count, so a well-formed block
+    // reserves exactly what it needs; a corrupt one is capped by the number of
+    // bits that actually exist.
+    out.reserve(count.min(long_len.saturating_mul(64)));
+    for (word_idx, word) in BitWords(words).iter().enumerate() {
+        // ARITH: `read_bitset_header` established `doc_base + long_len * 64
+        // <= i32::MAX` with `doc_base >= 0`, so `long_len * 64 <= i32::MAX`
+        // and `word_idx < long_len` makes `word_idx * 64` fit an `i32`; the
+        // sum with `doc_base` is bounded by the same inequality.
+        #[allow(clippy::arithmetic_side_effects)]
+        let word_base = doc_base + (word_idx as i32) * 64;
+        let mut w = word;
+        while w != 0 {
+            let bit = w.trailing_zeros();
+            // ARITH: `bit <= 63` and `word_base + 64 <= i32::MAX` by the same
+            // bound, so this stays inside `0..=i32::MAX`.
+            #[allow(clippy::arithmetic_side_effects)]
+            out.push(word_base + bit as i32);
+            // ARITH: `w != 0` is the loop condition, so `w - 1` cannot
+            // underflow.
+            #[allow(clippy::arithmetic_side_effects)]
+            {
+                w &= w - 1;
+            }
+        }
+    }
+    if out.len() != count {
+        return Err(Error::SubBlockCountMismatch {
+            expected: count,
+            actual: out.len(),
+        });
+    }
+    Ok(())
+}
+
+/// A bitset leaf's doc ids handed to the visitor as words
+/// ([`IntersectVisitor::visit_bit_words`]), after the same checks
+/// [`read_bitset_ids`] makes: the header's bounds and a set-bit count equal
+/// to the leaf's `count`.
+fn visit_bitset_ids<V: IntersectVisitor>(
+    input: &mut SliceInput,
+    count: usize,
+    visitor: &mut V,
+) -> Result<()> {
+    let (doc_base, words) = read_bitset_header(input)?;
+    let words = BitWords(words);
+    let actual: usize = words.iter().map(|w| w.count_ones() as usize).sum();
+    if actual != count {
+        return Err(Error::SubBlockCountMismatch {
+            expected: count,
+            actual,
+        });
+    }
+    visitor.visit_bit_words(doc_base, words);
+    Ok(())
+}
+
+/// A bitset leaf's header (`offsetWords`, `longLen`), checked, and its words:
+/// the doc id of the first word's bit 0, and the words' little-endian bytes
+/// (`longLen * 8` of them).
+fn read_bitset_header<'a>(input: &mut SliceInput<'a>) -> Result<(i32, &'a [u8])> {
     let offset_words = input.read_vint()?;
     let long_len = input.read_vint()?;
     if offset_words < 0 || long_len < 0 {
@@ -2652,47 +2863,34 @@ fn read_bitset_ids(input: &mut SliceInput, count: usize, out: &mut Vec<i32>) -> 
              offsetWords={offset_words}, longLen={long_len}"
         )));
     }
-    let doc_base = doc_base as i32;
-
     // Read in place off the mapped file, eight bytes per word.
     let words = take_bytes(input, long_len.saturating_mul(8), "bitset doc ids")?;
+    Ok((doc_base as i32, words))
+}
 
-    // `count` is the writer's own set-bit count, so a well-formed block
-    // reserves exactly what it needs; a corrupt one is capped by the number of
-    // bits that actually exist.
-    out.reserve(count.min(long_len.saturating_mul(64)));
-    for (word_idx, word) in words.chunks_exact(8).enumerate() {
-        let word = u64::from_le_bytes([
-            word[0], word[1], word[2], word[3], word[4], word[5], word[6], word[7],
-        ]);
-        // ARITH: the guard above established `doc_base + long_len * 64 <=
-        // i32::MAX` with `doc_base >= 0`, so `long_len * 64 <= i32::MAX` and
-        // `word_idx < long_len` makes `word_idx * 64` fit an `i32`; the sum
-        // with `doc_base` is bounded by the same inequality.
-        #[allow(clippy::arithmetic_side_effects)]
-        let word_base = doc_base + (word_idx as i32) * 64;
-        let mut w = word;
-        while w != 0 {
-            let bit = w.trailing_zeros();
-            // ARITH: `bit <= 63` and `word_base + 64 <= i32::MAX` by the same
-            // bound, so this stays inside `0..=i32::MAX`.
-            #[allow(clippy::arithmetic_side_effects)]
-            out.push(word_base + bit as i32);
-            // ARITH: `w != 0` is the loop condition, so `w - 1` cannot
-            // underflow.
-            #[allow(clippy::arithmetic_side_effects)]
-            {
-                w &= w - 1;
-            }
-        }
+/// A bitset leaf's words as stored: little-endian `u64`s over a byte slice
+/// whose length is a multiple of eight. Bit `b` of word `i` is doc
+/// `doc_base + 64 * i + b`.
+#[derive(Clone, Copy)]
+pub struct BitWords<'a>(&'a [u8]);
+
+impl BitWords<'_> {
+    /// The words in order.
+    pub fn iter(&self) -> impl Iterator<Item = u64> + '_ {
+        self.0.chunks_exact(8).map(|w| {
+            u64::from_le_bytes([w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7]])
+        })
     }
-    if out.len() != count {
-        return Err(Error::SubBlockCountMismatch {
-            expected: count,
-            actual: out.len(),
-        });
+
+    /// How many words there are.
+    pub fn len(&self) -> usize {
+        self.0.len() / 8
     }
-    Ok(())
+
+    /// Whether there are none.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
 }
 
 fn read_delta_bpv16(input: &mut SliceInput, count: usize, out: &mut Vec<i32>) -> Result<()> {
@@ -5712,16 +5910,7 @@ mod intersect_tests {
     fn counting(field: &PointsField, lower: &[u8], upper: &[u8]) -> CountingRange {
         CountingRange {
             inner: RangeVisitor {
-                lower: lower.to_vec(),
-                upper: upper.to_vec(),
-                num_index_dims: field.num_index_dims as usize,
-                bytes_per_dim: field.bytes_per_dim as usize,
-                fixed: FixedWidthRange::new(
-                    field.num_index_dims as usize,
-                    field.bytes_per_dim as usize,
-                    lower,
-                    upper,
-                ),
+                matcher: RangeMatcher::new(field, lower, upper),
                 docs: Vec::new(),
             },
             cells_compared: 0,

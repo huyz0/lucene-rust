@@ -308,32 +308,14 @@ fn points_range<'a>(
             top_scores,
         ))));
     }
-    let mut docs = points.reader.range_query(field_number, &min, &max)?;
+    let docs = super::ranges::range_docs(points, field_number, field, max_doc, &min, &max)?;
     if docs.is_empty() {
         return Ok(None);
     }
-    let len = usize::try_from(max_doc).unwrap_or(0);
-    let inner: BoxScorer<'a> = if docs.len() > len / 128 {
-        let mut bits = FixedBitSet::new(len);
-        for &d in &docs {
-            if let Ok(i) = usize::try_from(d) {
-                // FBS: every doc id the walk returns is below `maxDoc`, the
-                // set's length; `i < len` holds by construction.
-                if i < len {
-                    bits.set(i);
-                }
-            }
-        }
-        let cardinality = bits.cardinality() as i64;
-        Box::new(super::cache::CachedScorer::new(std::sync::Arc::new(
-            super::cache::CachedSet::Bits { bits, cardinality },
-        )))
-    } else {
-        lucene_util::doc_id_sort::sort_dedup_doc_ids(&mut docs);
-        Box::new(DocList::new(docs, Vec::new()))
-    };
     Ok(Some(Box::new(ConstantScorer::new(
-        inner, boost, top_scores,
+        docs.into_scorer(max_doc),
+        boost,
+        top_scores,
     ))))
 }
 
@@ -1010,8 +992,24 @@ fn child_led<'a>(
                 ..*ctx
             };
             let cacheable = crate::segment_cacheable::is_cacheable(clause, ctx.reader);
-            match cache.scorer_if_cacheable(clause, max_doc, cacheable, || {
-                build_led(&core, clause, boost, mode, top_level, lead_cost)
+            // `CachingWrapperWeight`'s supplier: skip caching a clause that
+            // costs `skipCacheFactor` times more than the conjunction it
+            // leads into, and populate the cache from the clause's whole
+            // matches (`supplier.bulkScorer()`, `get(Long.MAX_VALUE)`), which
+            // an `IndexOrDocValuesQuery` builds from its index side.
+            let skip = || -> Result<bool> {
+                let (Some(lead), Some(q)) = (lead_cost, index_or_doc_values_of(clause)) else {
+                    return Ok(false);
+                };
+                Ok(match super::extended::index_side(ctx, &q.index_query)? {
+                    super::extended::Supplier::Present(cost) => {
+                        super::cache::skip_cache(cost.unwrap_or(i64::MAX), lead)
+                    }
+                    super::extended::Supplier::Absent => false,
+                })
+            };
+            match cache.scorer_if_cacheable(clause, max_doc, cacheable, skip, || {
+                build_led(&core, clause, boost, mode, top_level, None)
             })? {
                 Some(super::cache::CacheResult::Hit(set)) => {
                     return Ok(Some(Child::Scorer(Box::new(

@@ -456,9 +456,20 @@ pub(crate) fn index_sort_range<'a>(
     // `denseRange` when a document without a value cannot sort inside the
     // run; `sparseRange` (the documents with a value) otherwise.
     let dense = missing < q.lower || missing > q.upper;
-    let mut docs = Vec::with_capacity(usize::try_from(last - first).unwrap_or(0));
+    if dense {
+        return Ok(constant(
+            Box::new(DocRange {
+                doc: -1,
+                min: first,
+                max: last,
+            }),
+            boost,
+            mode,
+        ));
+    }
+    let mut docs = Vec::new();
     for doc in first..last {
-        if dense || values.value(doc)?.is_some() {
+        if values.value(doc)?.is_some() {
             docs.push(doc);
         }
     }
@@ -472,6 +483,47 @@ pub(crate) fn index_sort_range<'a>(
     ))
 }
 
+/// `DocIdSetIterator.range(min, max)`: every document in `min..max`
+/// (`min < max`).
+struct DocRange {
+    doc: i32,
+    min: i32,
+    max: i32,
+}
+
+impl Scorer for DocRange {
+    fn doc_id(&self) -> i32 {
+        self.doc
+    }
+    fn next_doc(&mut self) -> Result<i32> {
+        self.advance(self.doc.saturating_add(1))
+    }
+    fn advance(&mut self, target: i32) -> Result<i32> {
+        self.doc = if target >= self.max {
+            NO_MORE_DOCS
+        } else {
+            target.max(self.min)
+        };
+        Ok(self.doc)
+    }
+    fn cost(&self) -> i64 {
+        i64::from(self.max) - i64::from(self.min)
+    }
+    fn score(&mut self) -> Result<f32> {
+        Ok(0.0)
+    }
+    fn max_score(&mut self, _up_to: i32) -> Result<f32> {
+        Ok(0.0)
+    }
+    fn contains(&self, doc: i32) -> Option<bool> {
+        Some((self.min..self.max).contains(&doc))
+    }
+    /// The range's own end: every document to `max` matches.
+    fn doc_id_run_end(&self) -> i32 {
+        self.max
+    }
+}
+
 /// The documents `docs` (unsorted, possibly repeated) as a constant-scored
 /// leaf: a bit set when dense, a list otherwise (`DocIdSetBuilder`).
 ///
@@ -479,27 +531,309 @@ pub(crate) fn index_sort_range<'a>(
 /// the segment's points overlap the query's bounds ([`disjoint`]), and a
 /// boolean counts its clauses by supplier (`BooleanWeight.scorerSupplier`
 /// turns `minimumNumberShouldMatch` optional clauses into required ones).
-fn doc_set<'a>(mut docs: Vec<i32>, max_doc: i32, boost: f32, mode: Mode) -> Option<BoxScorer<'a>> {
-    let len = usize::try_from(max_doc).unwrap_or(0);
-    let inner: BoxScorer<'a> = if docs.len() > len / 128 {
-        let mut bits = FixedBitSet::new(len);
-        for &d in &docs {
-            if let Ok(i) = usize::try_from(d) {
-                // FBS: a BKD walk only returns doc ids below `maxDoc`.
-                if i < len {
-                    bits.set(i);
+fn doc_set<'a>(docs: Vec<i32>, max_doc: i32, boost: f32, mode: Mode) -> Option<BoxScorer<'a>> {
+    constant(RangeDocs::Docs(docs).into_scorer(max_doc), boost, mode)
+}
+
+/// A point range's matches over one segment, before deletions.
+pub(crate) enum RangeDocs {
+    /// Unsorted, possibly repeated doc ids (a sparse result).
+    Docs(Vec<i32>),
+    /// The matching documents as a set of `maxDoc` bits, and how many.
+    Bits(FixedBitSet, i64),
+}
+
+impl RangeDocs {
+    /// Whether nothing matched.
+    pub(crate) fn is_empty(&self) -> bool {
+        match self {
+            RangeDocs::Docs(d) => d.is_empty(),
+            RangeDocs::Bits(_, n) => *n == 0,
+        }
+    }
+
+    /// The matches as a scorer's iterator: the set as it is, or the doc ids
+    /// as `DocIdSetBuilder` keeps them (a bit set past `maxDoc / 128`, a
+    /// sorted list below).
+    pub(crate) fn into_scorer<'a>(self, max_doc: i32) -> BoxScorer<'a> {
+        let bits_scorer = |bits, cardinality| -> BoxScorer<'a> {
+            Box::new(super::cache::CachedScorer::new(std::sync::Arc::new(
+                super::cache::CachedSet::Bits { bits, cardinality },
+            )))
+        };
+        match self {
+            RangeDocs::Bits(bits, n) => bits_scorer(bits, n),
+            RangeDocs::Docs(mut docs) => {
+                let len = usize::try_from(max_doc).unwrap_or(0);
+                if docs.len() > len / 128 {
+                    let mut bits =
+                        crate::bit_set_pool::take(len).unwrap_or_else(|| FixedBitSet::new(len));
+                    let mut cardinality = 0i64;
+                    for &d in &docs {
+                        if let Ok(i) = usize::try_from(d) {
+                            // FBS: a BKD walk only returns doc ids below
+                            // `maxDoc`; `i < len` holds by construction.
+                            if i < len && !bits.get_and_set(i) {
+                                cardinality += 1;
+                            }
+                        }
+                    }
+                    bits_scorer(bits, cardinality)
+                } else {
+                    lucene_util::doc_id_sort::sort_dedup_doc_ids(&mut docs);
+                    Box::new(DocList::new(docs, Vec::new()))
                 }
             }
         }
-        let cardinality = bits.cardinality() as i64;
-        Box::new(super::cache::CachedScorer::new(std::sync::Arc::new(
-            super::cache::CachedSet::Bits { bits, cardinality },
-        )))
+    }
+}
+
+/// `PointRangeQuery`'s scorer supplier's walk: the documents of segment
+/// field `number` (`info`) with a point inside `[lower, upper]`.
+///
+/// - A dense single-valued field (`docCount == maxDoc == size`) whose
+///   estimated match count passes half the segment starts from every
+///   document and clears the ones whose point is outside the box
+///   (`getInverseIntersectVisitor`), walking the cells outside the box
+///   rather than the larger set inside it.
+/// - An estimate past `maxDoc / 128` (`DocIdSetBuilder`'s bit-set threshold)
+///   sets the matches straight into a bit set, counting them as it goes.
+/// - Anything smaller collects doc ids.
+pub(crate) fn range_docs(
+    points: &crate::points_query::PointsInput<'_>,
+    number: i32,
+    info: &lucene_codecs::points::PointsField,
+    max_doc: i32,
+    lower: &[u8],
+    upper: &[u8],
+) -> Result<RangeDocs> {
+    let len = usize::try_from(max_doc).unwrap_or(0);
+    if len == 0 {
+        return Ok(RangeDocs::Docs(points.reader.range_query(number, lower, upper)?));
+    }
+    let estimate = points
+        .reader
+        .estimate_range_point_count(number, lower, upper)?;
+    let single_valued = info.doc_count == max_doc && i64::from(info.doc_count) == info.point_count;
+    let inverse = single_valued && estimate > i64::from(max_doc / 2);
+    if !inverse && estimate <= i64::from(max_doc >> 7) {
+        return Ok(RangeDocs::Docs(points.reader.range_query(number, lower, upper)?));
+    }
+    let matcher = points.reader.range_matcher(number, lower, upper)?;
+    let words = crate::bit_set_pool::take(len)
+        .map(FixedBitSet::into_words)
+        .unwrap_or_else(|| vec![0u64; lucene_util::fixed_bit_set::bits2words(len)]);
+    if inverse {
+        let mut v = BitsRangeVisitor::<true> {
+            matcher,
+            words,
+            len,
+            changed: 0,
+        };
+        v.words.fill(u64::MAX);
+        if let Some(last) = v.words.last_mut() {
+            *last &= tail_mask(len);
+        }
+        points.reader.intersect(number, &mut v)?;
+        let n = i64::from(max_doc) - v.changed;
+        Ok(RangeDocs::Bits(FixedBitSet::from_words(v.words, len), n))
     } else {
-        lucene_util::doc_id_sort::sort_dedup_doc_ids(&mut docs);
-        Box::new(DocList::new(docs, Vec::new()))
+        let mut v = BitsRangeVisitor::<false> {
+            matcher,
+            words,
+            len,
+            changed: 0,
+        };
+        points.reader.intersect(number, &mut v)?;
+        let n = v.changed;
+        Ok(RangeDocs::Bits(FixedBitSet::from_words(v.words, len), n))
+    }
+}
+
+/// `PointRangeQuery`'s `Weight.count` on a segment without deletions, the
+/// caller's check: no match when the segment has no points for the field or
+/// its points miss the box, the field's `docCount` when they all fall
+/// inside it, and for a one-dimension single-valued field (`docCount ==
+/// size`) the points inside counted off the tree (`pointCount`: inside
+/// cells by their size, only the crossing leaves read). `None` -- iterate --
+/// for anything else, including a field of another shape than the box's,
+/// which the scorer reports.
+pub(crate) fn point_range_count(
+    points: &crate::points_query::PointsInput<'_>,
+    field: &str,
+    lower: &[u8],
+    upper: &[u8],
+    num_dims: usize,
+    bytes_per_dim: usize,
+) -> Result<Option<u64>> {
+    let Some(number) = points.field_number(field) else {
+        return Ok(Some(0));
     };
-    constant(inner, boost, mode)
+    let Some(info) = points.reader.field(number) else {
+        return Ok(Some(0));
+    };
+    if usize::try_from(info.num_dims).ok() != Some(num_dims)
+        || usize::try_from(info.bytes_per_dim).ok() != Some(bytes_per_dim)
+        || lower.len() != num_dims * bytes_per_dim
+        || upper.len() != num_dims * bytes_per_dim
+    {
+        return Ok(None);
+    }
+    if disjoint(info, lower, upper, num_dims, bytes_per_dim) {
+        return Ok(Some(0));
+    }
+    let matcher = points.reader.range_matcher(number, lower, upper)?;
+    if matcher.compare(&info.min_packed_value, &info.max_packed_value) == Relation::CellInsideQuery
+    {
+        return Ok(Some(u64::try_from(info.doc_count).unwrap_or(0)));
+    }
+    if num_dims != 1 || i64::from(info.doc_count) != info.point_count {
+        return Ok(None);
+    }
+    struct Count {
+        matcher: lucene_codecs::points::RangeMatcher,
+        n: u64,
+    }
+    impl IntersectVisitor for Count {
+        fn compare(&mut self, min_packed: &[u8], max_packed: &[u8]) -> Relation {
+            self.matcher.compare(min_packed, max_packed)
+        }
+        fn visit(&mut self, _doc_id: i32) {
+            self.n += 1;
+        }
+        fn visit_many(&mut self, doc_ids: &[i32]) {
+            self.n += doc_ids.len() as u64;
+        }
+        fn visit_with_value(&mut self, _doc_id: i32, packed_value: &[u8]) {
+            if self.matcher.matches(packed_value) {
+                self.n += 1;
+            }
+        }
+    }
+    let mut v = Count { matcher, n: 0 };
+    let inside = points.reader.count_points(number, &mut v)?;
+    Ok(Some(v.n.saturating_add(u64::try_from(inside).unwrap_or(0))))
+}
+
+/// The bits of the last word of a `len`-bit set that are inside it.
+fn tail_mask(len: usize) -> u64 {
+    match len & 63 {
+        0 => u64::MAX,
+        r => (1u64 << r) - 1,
+    }
+}
+
+/// A point range's visitor over a set's words. `INVERSE == false` sets every
+/// matching document (`changed` counts the bits it newly set);
+/// `INVERSE == true` starts from a full set, walks the cells outside the box
+/// and clears every document with a point outside it (`changed` counts the
+/// bits it cleared). Doc ids at or past `len` are ignored.
+struct BitsRangeVisitor<const INVERSE: bool> {
+    matcher: lucene_codecs::points::RangeMatcher,
+    words: Vec<u64>,
+    len: usize,
+    changed: i64,
+}
+
+impl<const INVERSE: bool> BitsRangeVisitor<INVERSE> {
+    /// Applies `mask` to word `w`: sets its bits, or clears them.
+    #[inline(always)]
+    fn apply(&mut self, w: usize, mask: u64) {
+        if let Some(word) = self.words.get_mut(w) {
+            if INVERSE {
+                self.changed += i64::from((*word & mask).count_ones());
+                *word &= !mask;
+            } else {
+                self.changed += i64::from((mask & !*word).count_ones());
+                *word |= mask;
+            }
+        }
+    }
+
+    #[inline(always)]
+    fn doc(&mut self, doc_id: i32) {
+        let i = doc_id as u32 as usize;
+        if i < self.len {
+            self.apply(i >> 6, 1u64 << (i & 63));
+        }
+    }
+}
+
+impl<const INVERSE: bool> IntersectVisitor for BitsRangeVisitor<INVERSE> {
+    fn compare(&mut self, min_packed: &[u8], max_packed: &[u8]) -> Relation {
+        let r = self.matcher.compare(min_packed, max_packed);
+        if INVERSE {
+            match r {
+                Relation::CellInsideQuery => Relation::CellOutsideQuery,
+                Relation::CellOutsideQuery => Relation::CellInsideQuery,
+                Relation::CellCrossesQuery => Relation::CellCrossesQuery,
+            }
+        } else {
+            r
+        }
+    }
+
+    fn visit(&mut self, doc_id: i32) {
+        self.doc(doc_id);
+    }
+
+    fn visit_many(&mut self, doc_ids: &[i32]) {
+        for &d in doc_ids {
+            self.doc(d);
+        }
+    }
+
+    fn visit_range(&mut self, start: i32, count: usize) {
+        let from = usize::try_from(start).unwrap_or(usize::MAX).min(self.len);
+        let to = from.saturating_add(count).min(self.len);
+        if from >= to {
+            return;
+        }
+        let (fw, tw) = (from >> 6, (to - 1) >> 6);
+        let head = u64::MAX << (from & 63);
+        let tail = u64::MAX >> (63 - ((to - 1) & 63));
+        if fw == tw {
+            self.apply(fw, head & tail);
+            return;
+        }
+        self.apply(fw, head);
+        for w in fw + 1..tw {
+            self.apply(w, u64::MAX);
+        }
+        self.apply(tw, tail);
+    }
+
+    fn visit_bit_words(&mut self, doc_base: i32, words: lucene_codecs::points::BitWords<'_>) {
+        let base = doc_base as u32 as usize;
+        if base & 63 != 0 {
+            for (i, word) in words.iter().enumerate() {
+                let mut w = word;
+                while w != 0 {
+                    let d = base + i * 64 + w.trailing_zeros() as usize;
+                    if d < self.len {
+                        self.apply(d >> 6, 1u64 << (d & 63));
+                    }
+                    w &= w - 1;
+                }
+            }
+            return;
+        }
+        let last = (self.len - 1) >> 6;
+        let tail = tail_mask(self.len);
+        for (i, word) in words.iter().enumerate() {
+            let w = (base >> 6) + i;
+            if w > last {
+                break;
+            }
+            self.apply(w, if w == last { word & tail } else { word });
+        }
+    }
+
+    fn visit_with_value(&mut self, doc_id: i32, packed_value: &[u8]) {
+        if self.matcher.matches(packed_value) != INVERSE {
+            self.doc(doc_id);
+        }
+    }
 }
 
 /// The field's points and the segment's `maxDoc`, after
@@ -605,15 +939,14 @@ pub(crate) fn point_range<'a>(
     else {
         return Ok(None);
     };
-    if points
-        .reader
-        .field(number)
-        .is_none_or(|info| disjoint(info, &q.lower, &q.upper, q.num_dims, q.bytes_per_dim))
-    {
+    let Some(info) = points.reader.field(number) else {
+        return Ok(None);
+    };
+    if disjoint(info, &q.lower, &q.upper, q.num_dims, q.bytes_per_dim) {
         return Ok(None);
     }
-    let docs = points.reader.range_query(number, &q.lower, &q.upper)?;
-    Ok(doc_set(docs, max_doc, boost, mode))
+    let docs = range_docs(points, number, info, max_doc, &q.lower, &q.upper)?;
+    Ok(constant(docs.into_scorer(max_doc), boost, mode))
 }
 
 /// `PointRangeQuery`'s `ScorerSupplier.cost()` without building its scorer:

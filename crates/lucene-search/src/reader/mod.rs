@@ -720,6 +720,12 @@ impl IntersectVisitor for DynVisitor<'_> {
     fn visit_many(&mut self, doc_ids: &[i32]) {
         self.0.visit_many(doc_ids);
     }
+    fn visit_range(&mut self, start: i32, count: usize) {
+        self.0.visit_range(start, count);
+    }
+    fn visit_bit_words(&mut self, doc_base: i32, words: lucene_codecs::points::BitWords<'_>) {
+        self.0.visit_bit_words(doc_base, words);
+    }
     fn visit_with_value(&mut self, doc_id: i32, packed_value: &[u8]) {
         self.0.visit_with_value(doc_id, packed_value);
     }

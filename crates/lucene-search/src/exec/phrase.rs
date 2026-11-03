@@ -580,6 +580,16 @@ impl Scorer for PhraseScorer<'_> {
         };
         self.freq = if self.slop == 0 {
             crate::phrase_freq_exact(slices) as f32
+        } else if !self.needs_scores {
+            // `matches()` alone: the first match, not the frequency.
+            let found = sloppy_phrase::sloppy_phrase_matches_in(
+                &mut self.scratch,
+                slices,
+                &self.repeats,
+                self.slop,
+                None,
+            );
+            f32::from(u8::from(found))
         } else {
             sloppy_phrase::sloppy_phrase_freq_in(
                 &mut self.scratch,
