@@ -14,7 +14,8 @@ use lucene_util::geo::{
 };
 
 use super::{
-    check_walk, clear_doc, collect_bits, geo, get_doc, idx, illegal, set_doc, QueryRelation,
+    check_walk, clear_doc, collect_bits, geo, get_doc, idx, illegal, set_doc, write_doc_bitset,
+    write_doc_range, QueryRelation,
 };
 use crate::collector::ScoringCollector;
 use crate::document::{field_info, reader, same_class, DocumentQuery};
@@ -259,6 +260,18 @@ impl IntersectVisitor for DistanceVisitor<'_> {
             set_doc(&mut self.result, doc_id, &mut self.bad);
         }
     }
+    fn visit_run(&mut self, doc_ids: &[i32], packed: &[u8]) {
+        if self.q.matches(packed) {
+            self.visit_many(doc_ids);
+        }
+    }
+    fn visit_range(&mut self, start: i32, count: usize) -> bool {
+        write_doc_range(&mut self.result, start, count, true, &mut self.bad);
+        true
+    }
+    fn visit_bitset(&mut self, words: &[u64], base: i32, _count: usize) -> bool {
+        write_doc_bitset(&mut self.result, words, base, true, &mut self.bad)
+    }
 }
 
 /// The distance query's inverse visitor (`getInverseIntersectVisitor`):
@@ -281,6 +294,18 @@ impl IntersectVisitor for InverseDistanceVisitor<'_> {
         if !self.q.matches(packed) {
             clear_doc(&mut self.result, doc_id, &mut self.bad);
         }
+    }
+    fn visit_run(&mut self, doc_ids: &[i32], packed: &[u8]) {
+        if !self.q.matches(packed) {
+            self.visit_many(doc_ids);
+        }
+    }
+    fn visit_range(&mut self, start: i32, count: usize) -> bool {
+        write_doc_range(&mut self.result, start, count, false, &mut self.bad);
+        true
+    }
+    fn visit_bitset(&mut self, words: &[u64], base: i32, _count: usize) -> bool {
+        write_doc_bitset(&mut self.result, words, base, false, &mut self.bad)
     }
 }
 
@@ -556,6 +581,95 @@ impl<V: SpatialVisitor + ?Sized> IntersectVisitor for SpatialWalk<'_, V> {
                 if !self.found && self.leaf(packed) {
                     self.found = true;
                 }
+            }
+        }
+    }
+
+    /// `visit(DocIdSetIterator, byte[])`: every document of the run has
+    /// `packed`, so the leaf test runs once. The dense walks set a document
+    /// that `excluded` already holds, as Java's run overloads do; their
+    /// final `and_not(excluded)` removes it either way.
+    fn visit_run(&mut self, doc_ids: &[i32], packed: &[u8]) {
+        match self.walk {
+            Walk::Estimate | Walk::ShallowInverse => {}
+            Walk::Forward => {
+                if self.leaf(packed) {
+                    self.visit_many(doc_ids);
+                }
+            }
+            Walk::Inverse => {
+                if !self.leaf(packed) {
+                    self.visit_many(doc_ids);
+                }
+            }
+            Walk::Dense => {
+                let target = if self.leaf(packed) {
+                    &mut self.result
+                } else {
+                    &mut self.excluded
+                };
+                for &d in doc_ids {
+                    set_doc(target, d, &mut self.bad);
+                }
+            }
+            Walk::ContainsDense => {
+                let target = match self.v.contains(packed) {
+                    Ok(WithinRelation::Candidate) => &mut self.result,
+                    Ok(WithinRelation::NotWithin) => &mut self.excluded,
+                    Ok(WithinRelation::Disjoint) => return,
+                    Err(e) => {
+                        self.error.get_or_insert(e);
+                        return;
+                    }
+                };
+                for &d in doc_ids {
+                    set_doc(target, d, &mut self.bad);
+                }
+            }
+            Walk::AnyHits => {
+                if !self.found && !doc_ids.is_empty() && self.leaf(packed) {
+                    self.found = true;
+                }
+            }
+        }
+    }
+
+    /// `visit(DocIdSetIterator)` over consecutive ids: one range write
+    /// (`FixedBitSet.or` / `andNot` of a range in Java).
+    fn visit_range(&mut self, start: i32, count: usize) -> bool {
+        match self.walk {
+            Walk::Estimate => {}
+            Walk::AnyHits => self.found |= count > 0,
+            Walk::Forward | Walk::Dense => {
+                write_doc_range(&mut self.result, start, count, true, &mut self.bad)
+            }
+            Walk::Inverse | Walk::ShallowInverse => {
+                write_doc_range(&mut self.result, start, count, false, &mut self.bad)
+            }
+            Walk::ContainsDense => {
+                write_doc_range(&mut self.excluded, start, count, true, &mut self.bad)
+            }
+        }
+        true
+    }
+
+    /// `visit(DocIdSetIterator)` over a bit-set leaf, merged a word at a
+    /// time as `FixedBitSet.or` / `andNot` take a `DocBaseBitSetIterator`.
+    fn visit_bitset(&mut self, words: &[u64], base: i32, count: usize) -> bool {
+        match self.walk {
+            Walk::Estimate => true,
+            Walk::AnyHits => {
+                self.found |= count > 0;
+                true
+            }
+            Walk::Forward | Walk::Dense => {
+                write_doc_bitset(&mut self.result, words, base, true, &mut self.bad)
+            }
+            Walk::Inverse | Walk::ShallowInverse => {
+                write_doc_bitset(&mut self.result, words, base, false, &mut self.bad)
+            }
+            Walk::ContainsDense => {
+                write_doc_bitset(&mut self.excluded, words, base, true, &mut self.bad)
             }
         }
     }
@@ -863,6 +977,19 @@ impl IntersectVisitor for XYVisitor<'_> {
             set_doc(&mut self.result, doc_id, &mut self.bad);
         }
     }
+    fn visit_run(&mut self, doc_ids: &[i32], packed: &[u8]) {
+        let (x, y) = Self::decode(packed);
+        if self.tree.contains(x, y) {
+            self.visit_many(doc_ids);
+        }
+    }
+    fn visit_range(&mut self, start: i32, count: usize) -> bool {
+        write_doc_range(&mut self.result, start, count, true, &mut self.bad);
+        true
+    }
+    fn visit_bitset(&mut self, words: &[u64], base: i32, _count: usize) -> bool {
+        write_doc_bitset(&mut self.result, words, base, true, &mut self.bad)
+    }
 }
 
 impl DocumentQuery for XYPointInGeometryQuery {
@@ -1000,6 +1127,48 @@ mod tests {
         w.visit_many(&[-5]);
         assert_eq!(w.bad, Some(-5));
         assert!(check_walk(None, "f", 8).is_ok());
+
+        // Runs, ranges and bit-set leaves write what the same ids one by one
+        // would.
+        let mut w = SpatialWalk::new(&v, QueryRelation::Intersects, Walk::Forward, 200);
+        w.visit_run(&[1, 2], &p);
+        assert!(w.visit_range(10, 5));
+        assert!(w.visit_bitset(&[0b101], 128, 2));
+        let want: Vec<usize> = vec![1, 2, 10, 11, 12, 13, 14, 128, 130];
+        let got: Vec<usize> = (0..200).filter(|&i| w.result.get(i)).collect();
+        assert_eq!(got, want);
+        assert_eq!(w.bad, None);
+        // A bit-set leaf off a word boundary falls back to the id list.
+        assert!(!w.visit_bitset(&[1], 3, 1));
+        // The inverse walk clears; a run failing the leaf test (under
+        // DISJOINT, one that intersects) is cleared, one passing it kept.
+        let mut w = SpatialWalk::new(&v, QueryRelation::Disjoint, Walk::Inverse, 200);
+        w.result.set_range(0, 200);
+        w.visit_run(&[4], &p);
+        assert!(w.visit_range(10, 5));
+        assert!(w.visit_bitset(&[u64::MAX], 64, 64));
+        assert_eq!(w.result.cardinality(), 200 - 1 - 5 - 64);
+        assert!(!w.result.get(4) && !w.result.get(12) && !w.result.get(100));
+        let mut w = SpatialWalk::new(&miss, QueryRelation::Disjoint, Walk::Inverse, 200);
+        w.result.set_range(0, 200);
+        w.visit_run(&[4], &p);
+        assert!(w.result.get(4));
+        // The dense walk sends a run to `excluded` on a miss.
+        let mut w = SpatialWalk::new(&miss, QueryRelation::Within, Walk::Dense, 8);
+        w.visit_run(&[5, 6], &p);
+        assert!(get_doc(&w.excluded, 5) && get_doc(&w.excluded, 6));
+        assert_eq!(w.result.cardinality(), 0);
+        // Out-of-segment ranges and bits set nothing past the end and fail
+        // the walk.
+        let mut w = SpatialWalk::new(&v, QueryRelation::Intersects, Walk::Forward, 100);
+        assert!(w.visit_range(98, 5));
+        assert_eq!((w.result.cardinality(), w.bad), (0, Some(98)));
+        let mut w = SpatialWalk::new(&v, QueryRelation::Intersects, Walk::Forward, 100);
+        assert!(w.visit_bitset(&[u64::MAX], 64, 64));
+        assert_eq!((w.result.cardinality(), w.bad), (36, Some(64)));
+        let mut w = SpatialWalk::new(&v, QueryRelation::Within, Walk::AnyHits, 8);
+        assert!(w.visit_range(0, 1));
+        assert!(w.found);
     }
 
     #[test]
