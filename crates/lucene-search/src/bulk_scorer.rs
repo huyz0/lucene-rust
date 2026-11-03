@@ -1894,6 +1894,9 @@ pub(crate) struct MaxScore {
     /// `filterMatches`: the filter's documents in the current inner window,
     /// when [`Self::with_filter`] chose the bit-set path over leapfrogging.
     filter_matches: Option<FixedBitSet>,
+    /// The segment's `maxDoc` (`NO_MORE_DOCS` when unknown): no candidate
+    /// lies at or past it.
+    max_doc: i32,
 }
 
 /// `MaxScoreBulkScorer.score` over the whole segment.
@@ -1935,7 +1938,15 @@ impl MaxScore {
             acc: DocScoreAcc::default(),
             min_competitive: 0.0,
             filter_matches: None,
+            max_doc: NO_MORE_DOCS,
         }
+    }
+
+    /// The segment's `maxDoc`, when known: a range ending at or past it has
+    /// no next candidate.
+    pub(crate) fn with_max_doc(mut self, max_doc: Option<i32>) -> Self {
+        self.max_doc = max_doc.unwrap_or(NO_MORE_DOCS);
+        self
     }
 
     /// The constructor's filter heuristic: a filter without two phases, on
@@ -2038,11 +2049,14 @@ impl MaxScore {
             outer_min = ms.top().1.min(outer_max);
             ms.num_outer_windows += 1;
         }
-        Ok(Self::next_candidate(legs, max))
+        Ok(Self::next_candidate(legs, max, ms.max_doc))
     }
 
     /// `nextCandidate(rangeEnd)`.
-    fn next_candidate<L: MaxScoreLeg>(legs: &[L], range_end: i32) -> i32 {
+    fn next_candidate<L: MaxScoreLeg>(legs: &[L], range_end: i32, max_doc: i32) -> i32 {
+        if range_end >= max_doc {
+            return NO_MORE_DOCS;
+        }
         let mut next = NO_MORE_DOCS;
         for leg in legs {
             if leg.cur() < range_end {

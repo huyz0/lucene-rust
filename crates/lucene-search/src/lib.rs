@@ -3611,6 +3611,25 @@ pub fn count_boolean_query_segment(
     if let Some(n) = count_boolean_query_shortcut(seg, query)? {
         return Ok(n);
     }
+    // `CachingWrapperWeight`: a count's weight is built without scores, so
+    // the whole query asks the segment's query cache before it runs.
+    if let (Some(cache), Some(max_doc)) = (ctx.cache, ctx.max_doc) {
+        let clause = Clause::Boolean(Box::new(query.clone()));
+        let cacheable = segment_cacheable::is_cacheable(&clause, ctx.reader);
+        // The core's matches, before deletions.
+        let core = exec::LeafContext {
+            live_docs: None,
+            cache: None,
+            ..ctx
+        };
+        match cache.scorer_if_cacheable(&clause, max_doc, cacheable, || {
+            exec::build::build(&core, &clause, 1.0, exec::Mode::NoScores, true)
+        })? {
+            Some(exec::cache::CacheResult::Hit(set)) => return Ok(set.live_count(seg.live_docs)),
+            Some(exec::cache::CacheResult::Empty) => return Ok(0),
+            None => {}
+        }
+    }
     let mut count = Count(0);
     if let Some(mut bulk) = exec::bulk_boolean(&ctx, query, 1.0, exec::Mode::NoScores)? {
         exec::score_segment(
