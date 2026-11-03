@@ -1076,6 +1076,43 @@ pub fn string_to_path(s: &str) -> Vec<String> {
     parts
 }
 
+/// What the dim layer reads of [`string_to_path`]`(s)`: its first component
+/// and how many components it has, without building the others (borrowed
+/// when the first holds no escape).
+fn path_head(s: &str) -> (std::borrow::Cow<'_, str>, usize) {
+    let bytes = s.as_bytes();
+    // Both marks are ASCII: no byte of a multi-byte character equals one,
+    // so the escaped character is skipped by skipping its first byte.
+    let (delim, escape) = (DELIM_CHAR as u8, ESCAPE_CHAR as u8);
+    let mut first_end = None;
+    let mut first_escaped = false;
+    let mut count = 1usize;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == escape {
+            if first_end.is_none() {
+                first_escaped = true;
+            }
+            i += 2;
+            continue;
+        }
+        if b == delim {
+            if first_end.is_none() {
+                first_end = Some(i);
+            }
+            count += 1;
+        }
+        i += 1;
+    }
+    let first = &s[..first_end.unwrap_or(s.len())];
+    if !first_escaped {
+        return (std::borrow::Cow::Borrowed(first), count);
+    }
+    let mut owned = string_to_path(first);
+    (std::borrow::Cow::Owned(owned.swap_remove(0)), count)
+}
+
 // ---------------------------------------------------------------------------
 // `SortedSetDocValuesReaderState`: the dim layer over one flat ordinal space
 // ---------------------------------------------------------------------------
@@ -1227,9 +1264,11 @@ impl FacetsState {
         let value_count = state.labels.len() as i64;
         let mut ord = 0i64;
         while ord != value_count {
-            let components = string_to_path(&state.labels[ord as usize]);
-            let dim = components[0].clone();
-            ord = if state.config.dim_config(&dim).hierarchical {
+            let hierarchical = {
+                let (dim, _) = path_head(&state.labels[ord as usize]);
+                state.config.dim_config(&dim).hierarchical
+            };
+            ord = if hierarchical {
                 state.build_one_hierarchical_dim(ord)? + 1
             } else {
                 state.build_one_flat_dim(ord)? + 1
@@ -1246,29 +1285,29 @@ impl FacetsState {
     ) -> std::result::Result<i64, FacetsStateError> {
         let value_count = self.labels.len() as i64;
         let mut dim_end_ord = dim_start_ord;
-        let mut next_components = string_to_path(&self.labels[dim_end_ord as usize]);
-        if next_components.len() > 2 {
-            return Err(FacetsStateError::NotHierarchical {
-                path: next_components,
-                term: self.labels[dim_end_ord as usize].clone(),
-            });
+        let not_hierarchical = |term: &String| FacetsStateError::NotHierarchical {
+            path: string_to_path(term),
+            term: term.clone(),
+        };
+        let first = &self.labels[dim_end_ord as usize];
+        let (dim, len) = path_head(first);
+        if len > 2 {
+            return Err(not_hierarchical(first));
         }
-        // In-bounds: `FacetsState::new` rejected every empty label up front.
-        let dim = next_components[0].clone();
+        // The first component of every label: non-empty labels (checked by
+        // `FacetsState::new`) have one.
+        let dim = dim.into_owned();
         loop {
-            let components = next_components;
             if dim_end_ord + 1 == value_count {
                 break;
             }
-            next_components = string_to_path(&self.labels[(dim_end_ord + 1) as usize]);
-            if next_components[0] != components[0] {
+            let next = &self.labels[(dim_end_ord + 1) as usize];
+            let (next_dim, next_len) = path_head(next);
+            if next_dim != dim.as_str() {
                 break;
             }
-            if next_components.len() != 2 {
-                return Err(FacetsStateError::NotHierarchical {
-                    path: next_components,
-                    term: self.labels[(dim_end_ord + 1) as usize].clone(),
-                });
+            if next_len != 2 {
+                return Err(not_hierarchical(next));
             }
             dim_end_ord += 1;
         }
@@ -1301,20 +1340,20 @@ impl FacetsState {
         let mut sibling_stack: Vec<(usize, usize)> = Vec::new();
 
         let mut dim_end_ord = dim_start_ord;
-        let mut next_components = string_to_path(&self.labels[dim_end_ord as usize]);
-        // In-bounds: `FacetsState::new` rejected every empty label up front.
-        let dim = next_components[0].clone();
+        // Each label's first component and component count.
+        let (dim, mut next_len) = path_head(&self.labels[dim_end_ord as usize]);
+        let dim = dim.into_owned();
 
         loop {
-            let components = next_components;
+            let len = next_len;
             let ord = (dim_end_ord - dim_start_ord) as usize;
 
             while let Some(&(stacked_ord, stacked_len)) = sibling_stack.last() {
-                if stacked_len < components.len() {
+                if stacked_len < len {
                     break;
                 }
                 sibling_stack.pop();
-                if stacked_len == components.len() {
+                if stacked_len == len {
                     siblings[stacked_ord] = ord as i32;
                 }
             }
@@ -1325,20 +1364,21 @@ impl FacetsState {
                 break;
             }
 
-            next_components = string_to_path(&self.labels[(dim_end_ord + 1) as usize]);
-            if next_components[0] != components[0] {
+            let (next_dim, len_after) = path_head(&self.labels[(dim_end_ord + 1) as usize]);
+            next_len = len_after;
+            if next_dim != dim.as_str() {
                 siblings.push(INVALID_ORDINAL);
                 has_children.push(false);
                 break;
             }
 
-            match components.len().cmp(&next_components.len()) {
+            match len.cmp(&next_len) {
                 std::cmp::Ordering::Less => {
                     // The next ordinal is a direct child: every ancestor path
                     // is indexed, so a deeper next term is always exactly one
                     // level deeper.
                     has_children.push(true);
-                    sibling_stack.push((ord, components.len()));
+                    sibling_stack.push((ord, len));
                     siblings.push(INVALID_ORDINAL);
                 }
                 std::cmp::Ordering::Equal => {
@@ -2102,6 +2142,30 @@ fn label_counts(ranges: &[NumericRange], counts: Vec<u64>) -> Vec<(String, u64)>
 mod tests {
     use super::*;
     use lucene_codecs::doc_values::{DocValuesMeta, SortedSetKind};
+
+    /// `path_head` answers what `string_to_path` does for the first
+    /// component and the count, escapes (of the marks, of a multi-byte
+    /// character, a trailing one) included.
+    #[test]
+    fn path_head_is_string_to_paths_head() {
+        let (d, e) = (DELIM_CHAR, ESCAPE_CHAR);
+        for s in [
+            "a".to_string(),
+            format!("dim{d}x"),
+            format!("dim{d}x{d}y"),
+            format!("d{e}{d}im{d}x"),
+            format!("{e}é{d}{e}{d}z"),
+            format!("{d}x"),
+            format!("x{d}"),
+            format!("x{e}"),
+            format!("{e}"),
+            format!("a{e}{e}{d}b{e}{d}c"),
+        ] {
+            let full = string_to_path(&s);
+            let (head, n) = path_head(&s);
+            assert_eq!((head.as_ref(), n), (full[0].as_str(), full.len()), "{s:?}");
+        }
+    }
 
     fn multi_dv_dir() -> String {
         concat!(

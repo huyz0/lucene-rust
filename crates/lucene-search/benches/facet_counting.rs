@@ -171,6 +171,11 @@ fn bench_sorted_set(c: &mut Criterion) {
         let hits = FacetsCollectorManager::new(false)
             .collect(&searcher, &match_all(reader.max_doc()))
             .unwrap();
+        g.bench_function(format!("state/{segments}seg"), |b| {
+            b.iter(|| {
+                black_box(DefaultSortedSetDocValuesReaderState::new(&reader, &config).unwrap())
+            })
+        });
         g.bench_function(format!("sequential/{segments}seg"), |b| {
             b.iter(|| black_box(SortedSetDocValuesFacetCounts::with_hits(&state, &hits).unwrap()))
         });

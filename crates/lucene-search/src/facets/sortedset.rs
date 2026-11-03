@@ -92,6 +92,9 @@ impl<'r> DefaultSortedSetDocValuesReaderState<'r> {
                 check_value_count(dv.value_count())?;
                 (all_terms(dv.as_mut())?, None)
             }
+            _ if leaves.iter().all(|l| l.reader.segment_reader().is_some()) => {
+                streamed_labels(&leaves, field)?.ok_or_else(not_indexed)?
+            }
             _ => {
                 // `MultiDocValues.getSortedSetValues`: `null` unless some
                 // leaf holds the field as `SORTED_SET`.
@@ -250,6 +253,95 @@ fn check_value_count(n: i64) -> Result<()> {
 }
 
 /// Every term of `dv`, in ordinal order, as `utf8ToString` decodes it.
+/// The labels and ordinal map of `field` over segment leaves, the map built
+/// over each segment's terms dictionary walked in order (`OrdinalMap.build`
+/// over `TermsEnum`s) and each label read back from the first segment
+/// holding it, as `MultiSortedSetDocValues.lookupOrd` does: no segment's
+/// terms are materialized. `None` when no leaf holds the field as
+/// `SORTED_SET`.
+fn streamed_labels(
+    leaves: &[LeafReaderContext<'_>],
+    field: &str,
+) -> Result<Option<(Vec<String>, Option<OrdinalMap>)>> {
+    use lucene_codecs::doc_values::SortedSetKind;
+    use lucene_codecs::terms_dict::{TermsCursor, TermsDict};
+    let store = |e: lucene_store::Error| Error::from(lucene_codecs::doc_values::Error::from(e));
+    let mut entries = Vec::with_capacity(leaves.len());
+    for leaf in leaves {
+        let entry = leaf.reader.segment_reader().and_then(|seg| {
+            let fi = seg.field_infos().field_by_name(field)?;
+            if fi.doc_values_type != DocValuesType::SortedSet {
+                return None;
+            }
+            let (meta, data) = seg.doc_values_for_field(fi.number)?;
+            let terms = match &meta.sorted_set_entry(fi.number)?.kind {
+                SortedSetKind::Single(e) => &e.terms,
+                SortedSetKind::Multi { terms, .. } => terms,
+            };
+            Some((data, terms))
+        });
+        entries.push(entry);
+    }
+    if entries.iter().all(Option::is_none) {
+        return Ok(None);
+    }
+    let mut cursors = Vec::with_capacity(entries.len());
+    for e in &entries {
+        cursors.push(match e {
+            Some((data, terms)) => Some(TermsCursor::open(data, terms).map_err(store)?),
+            None => None,
+        });
+    }
+    let mut empty: Vec<NoTerms> = std::iter::repeat_with(|| NoTerms)
+        .take(cursors.len())
+        .collect();
+    let mut refs: Vec<&mut dyn crate::ordinal_map::TermCursor> = cursors
+        .iter_mut()
+        .zip(&mut empty)
+        .map(|(c, e)| match c {
+            Some(c) => c as &mut dyn crate::ordinal_map::TermCursor,
+            None => e as &mut dyn crate::ordinal_map::TermCursor,
+        })
+        .collect();
+    let map = OrdinalMap::build_streaming(&mut refs).map_err(store)?;
+    check_value_count(map.value_count())?;
+    let mut dicts = Vec::with_capacity(entries.len());
+    for e in &entries {
+        dicts.push(match e {
+            Some((data, terms)) => Some(TermsDict::open(data, terms).map_err(store)?),
+            None => None,
+        });
+    }
+    let mut labels = Vec::with_capacity(usize::try_from(map.value_count()).unwrap_or(0));
+    let mut global = 0i64;
+    while global < map.value_count() {
+        let (seg, ord) = map
+            .first_segment(global)
+            .zip(map.first_segment_ord(global))
+            .ok_or_else(|| bad_ord(global))?;
+        let dict = dicts
+            .get_mut(seg)
+            .and_then(Option::as_mut)
+            .ok_or_else(|| bad_ord(global))?;
+        let bytes = dict.seek_ord(ord).map_err(store)?;
+        labels.push(match std::str::from_utf8(bytes) {
+            Ok(s) => s.to_owned(),
+            Err(_) => String::from_utf8_lossy(bytes).into_owned(),
+        });
+        global = global.saturating_add(1);
+    }
+    Ok(Some((labels, Some(map))))
+}
+
+/// A leaf without the field: no terms.
+struct NoTerms;
+
+impl crate::ordinal_map::TermCursor for NoTerms {
+    fn next_term(&mut self) -> lucene_store::Result<Option<&[u8]>> {
+        Ok(None)
+    }
+}
+
 fn all_terms(dv: &mut (dyn SortedSetDocValues + '_)) -> Result<Vec<String>> {
     let n = dv.value_count();
     let mut out = Vec::with_capacity(usize::try_from(n).unwrap_or(0));
