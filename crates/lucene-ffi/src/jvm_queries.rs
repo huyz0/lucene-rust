@@ -41,10 +41,10 @@ use lucene_search::values_source::{
     long_constant, BoxDoubleValues, BoxLongValues, LongValues, LongValuesSource, ValuesContext,
 };
 
+use crate::clauses::check_clause_count;
 use crate::error::FfiStatus;
 use crate::jvm_nodes::{decode_compiled_automaton, invalid};
 use crate::jvm_reader::{hex, Cursor};
-use crate::query::check_clause_count;
 
 pub(crate) const NODE_MULTI_TERM: u8 = 27;
 pub(crate) const NODE_DV_TERM_SET: u8 = 28;

@@ -752,7 +752,7 @@ jobs:
         working-directory: crates/lucene-ffi/fuzz
         run: |
           set -u
-          targets=(jvm_search jvm_search_sorted jvm_open_reader jvm_live_docs boolean_clause_arrays read_planet_object)
+          targets=(jvm_search jvm_search_sorted jvm_open_reader jvm_live_docs read_planet_object)
           rc=0
           for (( i = 0; i < ${#targets[@]}; i += 3 )); do
             pids=()

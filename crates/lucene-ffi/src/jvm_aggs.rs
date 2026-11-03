@@ -118,9 +118,9 @@ use lucene_search::field_norms::FieldNorms;
 use lucene_search::multi_segment::OpenSegment;
 use lucene_search::BooleanQuery;
 
+use crate::clauses::map_search_error;
 use crate::error::{set_last_error, FfiStatus};
 use crate::jvm_reader::{self, Cursor};
-use crate::query::map_search_error;
 
 const AGG_METRIC: u8 = 0;
 const AGG_CARDINALITY: u8 = 1;
@@ -1097,7 +1097,7 @@ pub(crate) fn aggregate_tree_blobs(
         let g: Arc<_> = h
             .reader
             .global_ords(f)
-            .map_err(crate::query::map_search_error)?;
+            .map_err(crate::clauses::map_search_error)?;
         ords.insert(f.to_string(), g);
     }
     let globals = Globals::new(&ords);
@@ -1111,13 +1111,13 @@ pub(crate) fn aggregate_tree_blobs(
     let mut norm_fields: Vec<String> = Vec::new();
     if min_score.is_some() || main_scores {
         norm_fields.extend(
-            crate::query::clause_field_names(&q)
+            crate::clauses::clause_field_names(&q)
                 .into_iter()
                 .map(str::to_string),
         );
     }
     if let (true, Some(gq)) = (global_scores, global_query) {
-        for f in crate::query::clause_field_names(gq) {
+        for f in crate::clauses::clause_field_names(gq) {
             if !norm_fields.iter().any(|n| n == f) {
                 norm_fields.push(f.to_string());
             }
@@ -1147,7 +1147,7 @@ pub(crate) fn aggregate_tree_blobs(
             &slices,
             min.as_ref(),
         )
-        .map_err(crate::query::map_search_error)?;
+        .map_err(crate::clauses::map_search_error)?;
         for results in &sliced {
             for r in results {
                 encode_result(r, &mut out)?;
@@ -1167,7 +1167,7 @@ pub(crate) fn aggregate_tree_blobs(
             &slices,
             global_min.as_ref(),
         )
-        .map_err(crate::query::map_search_error)?;
+        .map_err(crate::clauses::map_search_error)?;
         for results in &results {
             for r in results {
                 encode_result(r, &mut out)?;
