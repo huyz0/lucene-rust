@@ -24,7 +24,7 @@ use super::FxHashMap;
 use crate::multi_segment::OpenSegment;
 use crate::reader::doc_values::{self as dv, SortedOrds};
 use crate::reader::{NumericDocValues, SortedNumericDocValues, SortedSetDocValues};
-use crate::top_field::{SortField, SortType};
+use crate::top_field::{Selector, SortField, SortType};
 use crate::{Error, Result};
 use lucene_codecs::field_infos::DocValuesType;
 
@@ -334,11 +334,22 @@ impl<'a> LeafKeys<'a> {
                         .field_infos()
                         .field_by_name(&f.field)
                         .is_some_and(|fi| fi.doc_values_type == DocValuesType::Numeric);
+                    // A selector that picks the one value of a document
+                    // with one: a singleton is then read as its column.
+                    let identity = matches!(
+                        f.selector,
+                        Selector::Min | Selector::Max | Selector::MiddleMin | Selector::MiddleMax
+                    );
+                    let singleton = (!single && identity)
+                        .then(|| dv::direct_sorted_numeric_singleton(reader, &f.field))
+                        .flatten();
                     if single {
                         match dv::direct_numeric(reader, &f.field) {
                             Some(r) => LeafKey::Direct(Box::new(r)),
                             None => LeafKey::Single(dv::get_numeric(reader, &f.field)?),
                         }
+                    } else if let Some(r) = singleton {
+                        LeafKey::Direct(Box::new(r))
                     } else {
                         LeafKey::Numeric(dv::get_sorted_numeric(reader, &f.field)?, Vec::new())
                     }

@@ -7,8 +7,51 @@ use lucene_util::fixed_bit_set::FixedBitSet;
 use crate::facets::facets_collector::DocIdSet;
 use lucene_codecs::field_infos::DocValuesType;
 
+pub(crate) use crate::reader::segment::{DirectColumn, DocFilter};
 use crate::reader::{DocIdSetIterator, DocValuesIterator, LeafReader, NO_MORE_DOCS};
 use crate::{Error, Result};
+
+/// `reader`'s `field` read as its column ([`DirectColumn`]) when the leaf
+/// is a segment and the field's doc-values type is one of `kinds`; `None`
+/// otherwise, for the caller's iterator to read instead.
+///
+/// # Errors
+/// Whatever decoding the field's documents reports.
+pub(crate) fn direct_column<'r>(
+    reader: &'r dyn LeafReader,
+    field: &str,
+    kinds: &[DocValuesType],
+) -> Result<Option<DirectColumn<'r>>> {
+    let Some(segment) = reader.segment_reader() else {
+        return Ok(None);
+    };
+    let Some(fi) = segment.field_infos().field_by_name(field) else {
+        return Ok(None);
+    };
+    if !kinds.contains(&fi.doc_values_type) {
+        return Ok(None);
+    }
+    segment.direct_column(field, fi.doc_values_type)
+}
+
+/// A segment's hits as the documents a [`DirectColumn`] walk visits;
+/// `None` for no hits.
+pub(crate) fn hits_filter(hits: &DocIdSet) -> Option<DocFilter<'_>> {
+    match hits {
+        DocIdSet::Empty => None,
+        DocIdSet::Array(docs) => Some(DocFilter::Docs(docs)),
+        DocIdSet::Bits { bits, .. } => Some(DocFilter::Bits(bits.words())),
+    }
+}
+
+/// A segment's live documents as the documents a [`DirectColumn`] walk
+/// visits.
+pub(crate) fn live_filter(reader: &dyn LeafReader) -> DocFilter<'_> {
+    match reader.live_docs() {
+        Some(live) => DocFilter::Bits(live.words()),
+        None => DocFilter::All,
+    }
+}
 
 /// `FacetUtils.liveDocsDISI(it, liveDocs)`: `it` without the deleted
 /// documents.

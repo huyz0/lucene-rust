@@ -156,3 +156,9 @@ harness = false
 [[bench]]
 name = "segment_open_compound"
 harness = false
+
+# The geo point, shape, doc-values and Geo3D queries and the distance sort
+# over one in-memory index -- see the bench's module doc.
+[[bench]]
+name = "geo_queries"
+harness = false
