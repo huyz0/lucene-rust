@@ -14,7 +14,9 @@
 use std::cell::RefCell;
 
 use super::facet_result::{FacetResult, FacetValue, LabelAndValue};
-use super::facet_utils::{for_each_hit, validate_dim_and_path};
+use super::facet_utils::{
+    direct_column, for_each_hit, hits_filter, live_filter, validate_dim_and_path, DirectColumn,
+};
 use super::facets_collector::{FacetsCollector, MatchingDocs};
 use super::facets_trait::{validate_top_n, Facets};
 use super::top_ord_and_number_queue::{OrdAndValue, TopOrdAndNumberQueue};
@@ -26,6 +28,7 @@ use crate::reader::{
     NO_MORE_DOCS,
 };
 use crate::{Error, Result};
+use lucene_codecs::field_infos::DocValuesType;
 
 /// `StringDocValuesReaderState`: a reader and the ordinal map of one of its
 /// fields, built once per reader.
@@ -239,14 +242,21 @@ impl<'s> StringValueFacetCounts<'s> {
             self.initialized = true;
         }
         let state = self.state;
+        // A segment's column read directly: `unwrapSingleton`'s
+        // `ordValue()` for a single-valued one.
+        let mut direct = direct_column(
+            context.reader,
+            &state.field,
+            &[DocValuesType::Sorted, DocValuesType::SortedSet],
+        )?;
         // `DocValues.unwrapSingleton`: a `SORTED` field is read as one.
         if let Some(mut single) = context.reader.sorted_doc_values(&state.field)? {
             let cardinality = single.value_count();
-            return self.count_values(hits, context, single.as_mut(), cardinality);
+            return self.count_values(hits, context, single.as_mut(), direct.as_mut(), cardinality);
         }
         let mut values = get_sorted_set(context.reader, &state.field)?;
         let cardinality = i32::try_from(values.value_count()).unwrap_or(i32::MAX);
-        self.count_values(hits, context, values.as_mut(), cardinality)
+        self.count_values(hits, context, values.as_mut(), direct.as_mut(), cardinality)
     }
 
     /// `countOneSegment`'s three ways to count, over either doc-values form.
@@ -255,6 +265,7 @@ impl<'s> StringValueFacetCounts<'s> {
         hits: Option<&MatchingDocs<'_>>,
         context: &LeafReaderContext<'_>,
         values: &mut V,
+        mut direct: Option<&mut DirectColumn<'_>>,
         segment_cardinality: i32,
     ) -> Result<()> {
         let state = self.state;
@@ -269,8 +280,11 @@ impl<'s> StringValueFacetCounts<'s> {
         let Some(segment_ords) = segment_ords else {
             // No ordinal map: segment ordinals are global.
             let (dense, sparse) = (&mut self.dense_counts, &mut self.sparse_counts);
-            for_each_doc_of(hits, context, values, |dv| {
-                if dv.each_ord(|ord| increment(dense, sparse, ord, 1))? > 0 {
+            for_each_doc_ords(hits, context, values, direct.as_deref_mut(), |ords| {
+                for &ord in ords {
+                    increment(dense, sparse, ord, 1)?;
+                }
+                if !ords.is_empty() {
                     total = total.wrapping_add(1);
                 }
                 Ok(())
@@ -281,10 +295,11 @@ impl<'s> StringValueFacetCounts<'s> {
         if hits.is_some_and(|h| h.total_hits < segment_cardinality / 10) {
             // Remap every ordinal as it comes.
             let (dense, sparse) = (&mut self.dense_counts, &mut self.sparse_counts);
-            for_each_doc_of(hits, context, values, |dv| {
-                let n =
-                    dv.each_ord(|ord| increment(dense, sparse, global(segment_ords, ord)?, 1))?;
-                if n > 0 {
+            for_each_doc_ords(hits, context, values, direct.as_deref_mut(), |ords| {
+                for &ord in ords {
+                    increment(dense, sparse, global(segment_ords, ord)?, 1)?;
+                }
+                if !ords.is_empty() {
                     total = total.wrapping_add(1);
                 }
                 Ok(())
@@ -292,16 +307,15 @@ impl<'s> StringValueFacetCounts<'s> {
         } else {
             // Count in segment ordinals, then migrate to global ones.
             let mut seg_counts = vec![0i32; usize::try_from(segment_cardinality).unwrap_or(0)];
-            for_each_doc_of(hits, context, values, |dv| {
-                let n = dv.each_ord(|ord| {
+            for_each_doc_ords(hits, context, values, direct, |ords| {
+                for &ord in ords {
                     let slot = usize::try_from(ord)
                         .ok()
                         .and_then(|o| seg_counts.get_mut(o))
                         .ok_or_else(|| bad_ord(ord))?;
                     *slot = slot.wrapping_add(1);
-                    Ok(())
-                })?;
-                if n > 0 {
+                }
+                if !ords.is_empty() {
                     total = total.wrapping_add(1);
                 }
                 Ok(())
@@ -446,6 +460,37 @@ fn for_each_doc_of<V: Ords + ?Sized>(
         doc = values.next_doc()?;
     }
     Ok(())
+}
+
+/// `f(ords)` for each document of a segment to count ([`for_each_doc_of`]'s),
+/// its ordinals off the segment's column when it can be read directly, else
+/// off `values`.
+fn for_each_doc_ords<V: Ords + ?Sized>(
+    hits: Option<&MatchingDocs<'_>>,
+    context: &LeafReaderContext<'_>,
+    values: &mut V,
+    direct: Option<&mut DirectColumn<'_>>,
+    mut f: impl FnMut(&[i64]) -> Result<()>,
+) -> Result<()> {
+    if let Some(column) = direct {
+        let filter = match hits {
+            Some(h) => match hits_filter(&h.bits) {
+                Some(filter) => filter,
+                None => return Ok(()),
+            },
+            None => live_filter(context.reader),
+        };
+        return column.for_each(filter, 0, i32::MAX, |_, ords| f(ords));
+    }
+    let mut buf = Vec::new();
+    for_each_doc_of(hits, context, values, |dv| {
+        buf.clear();
+        dv.each_ord(|ord| {
+            buf.push(ord);
+            Ok(())
+        })?;
+        f(&buf)
+    })
 }
 
 /// `ordMap.get(ord)`.

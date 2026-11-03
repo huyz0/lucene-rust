@@ -13,7 +13,8 @@ use std::sync::Arc;
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use lucene_util::geo::{
-    simple_wkt_shape_parser, tessellator, GeoEncodingUtils, LatLonGeometry, Polygon,
+    simple_wkt_shape_parser, tessellator, GeoEncodingUtils, GeoUtils, LatLonGeometry, Polygon,
+    Rectangle, XYGeometry, XYRectangle,
 };
 use lucene_util::spatial4j::{Shape, SpatialContext, SpatialContextFactory};
 use lucene_util::spatial_extras::prefix_tree::{
@@ -311,8 +312,145 @@ fn bench_prefix_trees(c: &mut Criterion) {
     });
 }
 
+/// The wide-box and very large polygon edge-tree walks, many-polygon
+/// triangle tests, the rectangle's edge test, the distance-circle box
+/// relation and the S2 cell walk.
+fn bench_hot_paths(c: &mut Criterion) {
+    let mut rng = Rng(77);
+    let (la, lo) = ring(&mut rng, 10.0, 20.0, 5.0, 100_000, true);
+    let big = LatLonGeometry::Polygon(Polygon::new(&la, &lo, vec![]).unwrap())
+        .to_component2d()
+        .unwrap();
+    let pts: Vec<(f64, f64)> = (0..100_000)
+        .map(|_| (rng.f64_in(15.0, 25.0), rng.f64_in(5.0, 15.0)))
+        .collect();
+    c.bench_function("polygon2d/contains_100kv_100k_points", |b| {
+        b.iter(|| {
+            let mut hits = 0u32;
+            for &(x, y) in &pts {
+                hits += u32::from(big.contains(black_box(x), black_box(y)));
+            }
+            black_box(hits)
+        })
+    });
+    let poly = polygon_with_hole(&mut rng, 10_000);
+    let tree = LatLonGeometry::Polygon(poly).to_component2d().unwrap();
+    for w in [0.1f64, 1.0] {
+        c.bench_function(&format!("polygon2d/relate_10kv_1k_boxes_{w}deg"), |b| {
+            b.iter(|| {
+                let mut acc = 0u32;
+                for &(x, y) in pts.iter().take(1_000) {
+                    acc += tree.relate(x, x + w, y, y + w) as u32;
+                }
+                black_box(acc)
+            })
+        });
+    }
+
+    let mut geoms = Vec::new();
+    for i in 0..200 {
+        let lat = -60.0 + (i / 20) as f64 * 12.0;
+        let lon = -150.0 + (i % 20) as f64 * 15.0;
+        let (la, lo) = ring(&mut rng, lat, lon, 4.0, 20, true);
+        geoms.push(LatLonGeometry::Polygon(
+            Polygon::new(&la, &lo, vec![]).unwrap(),
+        ));
+    }
+    let multi = LatLonGeometry::create(&geoms).unwrap();
+    let tris: Vec<[f64; 6]> = (0..100_000)
+        .map(|_| {
+            let x = rng.f64_in(-180.0, 179.0);
+            let y = rng.f64_in(-70.0, 69.0);
+            [
+                x,
+                y,
+                x + rng.f64_in(0.0, 0.5),
+                y,
+                x,
+                y + rng.f64_in(0.0, 0.5),
+            ]
+        })
+        .collect();
+    c.bench_function("component_tree/intersects_triangle_200polys_100k", |b| {
+        b.iter(|| {
+            let mut acc = 0u32;
+            for t in &tris {
+                acc += u32::from(multi.intersects_triangle(t[0], t[1], t[2], t[3], t[4], t[5]));
+            }
+            black_box(acc)
+        })
+    });
+
+    let rect = XYGeometry::create(&[XYGeometry::Rectangle(
+        XYRectangle::new(-10.0, 10.0, -10.0, 10.0).unwrap(),
+    )])
+    .unwrap();
+    let edge_tris: Vec<[f64; 6]> = (0..1_000_000)
+        .map(|_| {
+            let side = rng.next_u64() % 4;
+            let t = rng.f64_in(-12.0, 12.0);
+            let (x, y) = match side {
+                0 => (rng.f64_in(-11.0, -9.0), t),
+                1 => (rng.f64_in(9.0, 11.0), t),
+                2 => (t, rng.f64_in(-11.0, -9.0)),
+                _ => (t, rng.f64_in(9.0, 11.0)),
+            };
+            [
+                x,
+                y,
+                x + rng.f64_in(-0.5, 0.5),
+                y + rng.f64_in(-0.5, 0.5),
+                x + rng.f64_in(-0.5, 0.5),
+                y + rng.f64_in(-0.5, 0.5),
+            ]
+        })
+        .collect();
+    c.bench_function("rectangle2d/intersects_triangle_edges_1m", |b| {
+        b.iter(|| {
+            let mut acc = 0u32;
+            for t in &edge_tris {
+                acc += u32::from(rect.intersects_triangle(t[0], t[1], t[2], t[3], t[4], t[5]));
+            }
+            black_box(acc)
+        })
+    });
+
+    let (lat, lon, radius) = (0.0, 0.0, 50_000.0);
+    let sort_key = GeoUtils::distance_query_sort_key(radius);
+    let axis_lat = Rectangle::axis_lat(lat, radius);
+    let cells: Vec<(f64, f64, f64)> = (0..100_000)
+        .map(|_| {
+            (
+                rng.f64_in(-1.5, 1.5),
+                rng.f64_in(-1.5, 1.5),
+                rng.f64_in(0.05, 0.8),
+            )
+        })
+        .collect();
+    c.bench_function("geo_utils/relate_circle_50km_100k_boxes", |b| {
+        b.iter(|| {
+            let mut acc = 0u32;
+            for &(y, x, w) in &cells {
+                acc += GeoUtils::relate(y, y + w, x, x + w, lat, lon, sort_key, axis_lat).unwrap()
+                    as u32;
+            }
+            black_box(acc)
+        })
+    });
+
+    let ctx3d = SpatialContextFactory::geo3d()
+        .new_spatial_context()
+        .unwrap();
+    let s2 = S2PrefixTree::new(ctx3d.clone(), 12, 2).unwrap();
+    let circle3d: Arc<dyn Shape> = ctx3d.circle(10.0, 20.0, 1.0).unwrap();
+    c.bench_function("prefix_tree/s2_circle_detail10", |b| {
+        b.iter(|| black_box(count_cells(&s2, &circle3d, 10)))
+    });
+}
+
 criterion_group!(
     benches,
+    bench_hot_paths,
     bench_polygon2d,
     bench_predicates,
     bench_component_tree,

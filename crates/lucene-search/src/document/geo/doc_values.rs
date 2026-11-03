@@ -12,7 +12,7 @@ use lucene_util::geo::{
 
 use super::{geo, illegal, sorted_numeric_only, GeoValues, QueryRelation};
 use crate::collector::ScoringCollector;
-use crate::document::{collect_live, reader, same_class, DocumentQuery};
+use crate::document::{reader, same_class, DocumentQuery};
 use crate::multi_segment::OpenSegment;
 use crate::Result;
 
@@ -31,9 +31,14 @@ fn two_phase(
     let max_doc = reader(leaf)?.max_doc;
     let mut buf = Vec::new();
     for doc in 0..max_doc {
+        // `DefaultBulkScorer`: `acceptDocs.get(doc)` before the two-phase
+        // `matches()`, so a deleted document's values are never decoded.
+        if !leaf.live_docs.is_none_or(|bits| bits.get_doc(doc)) {
+            continue;
+        }
         values_of(&mut values, doc, &mut buf)?;
         if !buf.is_empty() && matches(&buf)? {
-            collect_live(leaf, doc, score, collector);
+            collector.collect(doc, score);
         }
     }
     Ok(())

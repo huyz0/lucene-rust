@@ -46,8 +46,16 @@ struct Overlapping {
     /// The intervals set in `interval_hits` by the current document, so the
     /// next one clears only those rather than every interval.
     touched_intervals: Vec<usize>,
-    /// The ranges `rollup_multi_valued` set in `range_hits`.
+    /// The ranges a multi-valued document's roll-up set in `range_hits`.
     touched_ranges: Vec<usize>,
+    /// Each elementary interval's leaf node.
+    leaf_of: Vec<usize>,
+    /// Each node's parent (`usize::MAX` for the root).
+    parent: Vec<usize>,
+    /// The document a node was last rolled up for (`seen_epoch`'s value
+    /// then), so a multi-valued document visits each node once.
+    node_seen: Vec<u32>,
+    seen_epoch: u32,
     upto: usize,
     missing_count: i32,
 }
@@ -126,6 +134,20 @@ impl LongRangeCounter {
         for (i, r) in ranges.iter().enumerate() {
             add_outputs(&mut nodes, root, i, r);
         }
+        let mut parent = vec![usize::MAX; nodes.len()];
+        let mut leaf_of = Vec::with_capacity(intervals.len());
+        // `split` pushes a node after its children, so the arena in order
+        // lists the leaves left to right.
+        for (i, n) in nodes.iter().enumerate() {
+            match n.children {
+                Some((left, right)) => {
+                    parent[left] = i;
+                    parent[right] = i;
+                }
+                None => leaf_of.push(i),
+            }
+        }
+        let node_seen = vec![0u32; nodes.len()];
         let boundaries: Vec<i64> = intervals.iter().map(|&(_, end)| end).collect();
         LongRangeCounter {
             counts: vec![0; ranges.len()],
@@ -140,6 +162,10 @@ impl LongRangeCounter {
                 range_hits: Vec::new(),
                 touched_intervals: Vec::new(),
                 touched_ranges: Vec::new(),
+                leaf_of,
+                parent,
+                node_seen,
+                seen_epoch: 0,
                 upto: 0,
                 missing_count: 0,
             })),
@@ -198,9 +224,7 @@ impl LongRangeCounter {
                     o.range_hits.resize(range_count, false);
                 }
                 o.touched_ranges.clear();
-                o.upto = 0;
-                let root = o.root;
-                o.rollup_multi_valued(root);
+                o.rollup_touched();
                 // Only the ranges the roll-up set, each reset for the next
                 // document as it is counted.
                 for &r in &o.touched_ranges {
@@ -353,28 +377,30 @@ impl Overlapping {
         count
     }
 
-    fn rollup_multi_valued(&mut self, node: usize) -> bool {
-        let contained_hit = match self.nodes[node].children {
-            Some((left, right)) => {
-                let l = self.rollup_multi_valued(left);
-                let r = self.rollup_multi_valued(right);
-                l | r
-            }
-            None => {
-                let hit = self.interval_hits[self.upto];
-                self.upto += 1;
-                hit
-            }
-        };
-        if contained_hit {
-            for &r in &self.nodes[node].outputs {
-                if !self.range_hits[r] {
-                    self.range_hits[r] = true;
-                    self.touched_ranges.push(r);
+    /// `rollupMultiValued(root)`'s ranges for the current document: the
+    /// outputs of every node holding an interval the document hit, which
+    /// are the nodes from each hit interval's leaf up to the root -- walked
+    /// from the leaves, each node once, rather than over the whole tree.
+    fn rollup_touched(&mut self) {
+        self.seen_epoch = self.seen_epoch.wrapping_add(1);
+        if self.seen_epoch == 0 {
+            self.node_seen.fill(0);
+            self.seen_epoch = 1;
+        }
+        let epoch = self.seen_epoch;
+        for &interval in &self.touched_intervals {
+            let mut node = self.leaf_of[interval];
+            while node != usize::MAX && self.node_seen[node] != epoch {
+                self.node_seen[node] = epoch;
+                for &r in &self.nodes[node].outputs {
+                    if !self.range_hits[r] {
+                        self.range_hits[r] = true;
+                        self.touched_ranges.push(r);
+                    }
                 }
+                node = self.parent[node];
             }
         }
-        contained_hit
     }
 }
 
