@@ -28,6 +28,7 @@ import org.lucenerust.opensearch.NativeBridge;
 import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.BytesRefHash;
 import org.apache.lucene.util.IntsRefBuilder;
+import org.apache.lucene.util.RecyclingByteBlockAllocator;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -151,10 +152,25 @@ final class DocumentEncoder {
         return text != null && AnalyzerSpec.encodable(text);
     }
 
+    /**
+     * The size of the last document's blob: a new blob starts that large, so encoding a document
+     * rarely regrows it. Read and written without synchronization; any recent value will do.
+     */
+    private int bytesPerDocument = 256;
+
+    private Blob blob(int docs, int extra) {
+        return new Blob((int) Math.min((long) bytesPerDocument * docs + extra, 1 << 20));
+    }
+
+    private Blob sized(Blob b, int docs) {
+        bytesPerDocument = Math.max(256, b.length() / docs);
+        return b;
+    }
+
     /** An add of {@code docs} as one block. */
     Blob add(List<? extends Iterable<? extends IndexableField>> docs) throws IOException {
-        Blob b = new Blob(256 * docs.size()).u8(OP_ADD);
-        return documents(b, docs);
+        Blob b = blob(docs.size(), 16).u8(OP_ADD);
+        return sized(documents(b, docs), docs.size());
     }
 
     /**
@@ -166,10 +182,10 @@ final class DocumentEncoder {
         if (softDeletes.name().equals(softDeletesField) == false || softDeletes.numericValue() == null) {
             throw new IllegalArgumentException("a soft update needs a numeric [" + softDeletesField + "] value");
         }
-        Blob b = new Blob(256 * docs.size() + 64).u8(OP_SOFT_UPDATE);
+        Blob b = blob(docs.size(), 64).u8(OP_SOFT_UPDATE);
         b.string(term.field()).bytes(term.bytes());
         b.string(softDeletes.name()).i64(softDeletes.numericValue().longValue());
-        return documents(b, docs);
+        return sized(documents(b, docs), docs.size());
     }
 
     private Blob documents(Blob b, List<? extends Iterable<? extends IndexableField>> docs) throws IOException {
@@ -199,7 +215,48 @@ final class DocumentEncoder {
         }
     }
 
+    /**
+     * Per indexing thread, the inversion state reused from field to field and document to document.
+     * A fresh {@link BytesRefHash} takes a new 32 KB block for its first term, which for the
+     * single-term fields most documents carry ({@code _id}, keywords, {@code _field_names}) was most of
+     * the cost of encoding a document; the blocks are recycled here instead.
+     */
+    private static final class Workspace {
+        /** Blocks kept between documents: a few per field a document inverts in Java. */
+        final RecyclingByteBlockAllocator blocks = new RecyclingByteBlockAllocator(32);
+        final List<Inverted> pool = new ArrayList<>();
+        int used;
+
+        Inverted inverted(String name, IndexOptions options) {
+            if (used == pool.size()) {
+                pool.add(new Inverted(blocks));
+            }
+            Inverted inv = pool.get(used++);
+            inv.reset(name, options);
+            return inv;
+        }
+
+        /** Returns every state taken since the last release; their blocks go back to {@link #blocks}. */
+        void release() {
+            for (int i = 0; i < used; i++) {
+                pool.get(i).terms.clear(true);
+            }
+            used = 0;
+        }
+    }
+
+    private static final ThreadLocal<Workspace> WORKSPACE = ThreadLocal.withInitial(Workspace::new);
+
     private void document(Blob b, Iterable<? extends IndexableField> doc) throws IOException {
+        Workspace ws = WORKSPACE.get();
+        try {
+            document(b, doc, ws);
+        } finally {
+            ws.release();
+        }
+    }
+
+    private void document(Blob b, Iterable<? extends IndexableField> doc, Workspace ws) throws IOException {
         // Pass 1: the document's schema per field name, checked against (or registered as) the
         // shard's -- IndexingChain.processDocument's first loop.
         Map<String, PerField> fields = new LinkedHashMap<>();
@@ -247,7 +304,7 @@ final class DocumentEncoder {
                 pf.texts.add(field.stringValue());
             } else if (type.indexOptions() != IndexOptions.NONE) {
                 if (pf.inverted == null) {
-                    pf.inverted = new Inverted(pf.schema.name, type.indexOptions());
+                    pf.inverted = ws.inverted(pf.schema.name, type.indexOptions());
                 }
                 invert(pf.inverted, field);
             }
@@ -465,12 +522,12 @@ final class DocumentEncoder {
      * {@code FreqProxTermsWriterPerField} would have buffered for it.
      */
     private static final class Inverted {
-        final String name;
-        final IndexOptions options;
-        final boolean hasFreq;
-        final boolean hasProx;
-        final boolean hasOffsets;
-        int position = -1;
+        String name;
+        IndexOptions options;
+        boolean hasFreq;
+        boolean hasProx;
+        boolean hasOffsets;
+        int position;
         int length;
         int numOverlap;
         int offset;
@@ -479,7 +536,8 @@ final class DocumentEncoder {
         int lastStartOffset;
         int lastPosition;
 
-        final BytesRefHash terms = new BytesRefHash();
+        /** Empty between uses ({@link Workspace#release}). */
+        final BytesRefHash terms;
         int[] freqs = new int[8];
         /** Per term: positions, and (start, end) offsets interleaved after them, when indexed. */
         IntsRefBuilder[] prox = new IntsRefBuilder[8];
@@ -494,12 +552,26 @@ final class DocumentEncoder {
             final List<BytesRef> list = new ArrayList<>();
         }
 
-        Inverted(String name, IndexOptions options) {
+        Inverted(RecyclingByteBlockAllocator blocks) {
+            terms = new BytesRefHash(new org.apache.lucene.util.ByteBlockPool(blocks));
+        }
+
+        /** A fresh state for field {@code name}; {@link #terms} is already empty. */
+        void reset(String name, IndexOptions options) {
+            terms.reinit();
             this.name = name;
             this.options = options;
             hasFreq = options.compareTo(IndexOptions.DOCS_AND_FREQS) >= 0;
             hasProx = options.compareTo(IndexOptions.DOCS_AND_FREQS_AND_POSITIONS) >= 0;
             hasOffsets = options.compareTo(IndexOptions.DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS) >= 0;
+            position = -1;
+            length = 0;
+            numOverlap = 0;
+            offset = 0;
+            maxTermFrequency = 0;
+            uniqueTermCount = 0;
+            lastStartOffset = 0;
+            lastPosition = 0;
         }
 
         /** {@code TermsHashPerField.add}: {@code newTerm} or {@code addTerm} for this document. */
