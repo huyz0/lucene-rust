@@ -34,7 +34,7 @@ use lucene_util::spatial3d::{
 };
 
 use super::point_queries::points_of;
-use super::{check_walk, collect_bits, idx, illegal, set_doc};
+use super::{check_walk, collect_bits, idx, illegal, set_doc, write_doc_bitset, write_doc_range};
 use crate::collector::ScoringCollector;
 use crate::document::{reader, DocumentQuery};
 use crate::multi_segment::OpenSegment;
@@ -414,21 +414,43 @@ impl IntersectVisitor for ShapeVisitor<'_> {
         set_doc(&mut self.result, doc_id, &mut self.bad);
     }
 
+    fn visit_run(&mut self, doc_ids: &[i32], packed: &[u8]) {
+        if self.matches(packed) {
+            self.visit_many(doc_ids);
+        }
+    }
+
+    fn visit_range(&mut self, start: i32, count: usize) -> bool {
+        write_doc_range(&mut self.result, start, count, true, &mut self.bad);
+        true
+    }
+
+    fn visit_bitset(&mut self, words: &[u64], base: i32, _count: usize) -> bool {
+        write_doc_bitset(&mut self.result, words, base, true, &mut self.bad)
+    }
+
     fn visit_with_value(&mut self, doc_id: i32, packed: &[u8]) {
+        if self.matches(packed) {
+            set_doc(&mut self.result, doc_id, &mut self.bad);
+        }
+    }
+}
+
+impl ShapeVisitor<'_> {
+    /// `visit(int, byte[])`'s test: the point lies in the shape's bounds and
+    /// in the shape.
+    fn matches(&self, packed: &[u8]) -> bool {
         let pm = self.planet_model;
         let x = Geo3DPoint::decode_dimension(packed, pm);
         let y = Geo3DPoint::decode_dimension(&packed[4..], pm);
         let z = Geo3DPoint::decode_dimension(&packed[8..], pm);
-        if x >= self.minimum_x
+        x >= self.minimum_x
             && x <= self.maximum_x
             && y >= self.minimum_y
             && y <= self.maximum_y
             && z >= self.minimum_z
             && z <= self.maximum_z
             && self.shape.is_within_xyz(x, y, z)
-        {
-            set_doc(&mut self.result, doc_id, &mut self.bad);
-        }
     }
 }
 
