@@ -3392,18 +3392,14 @@ mod tests {
             )),
         )));
         let w = ConcurrentIndexWriter::new(iw, 4).unwrap();
-        std::thread::scope(|scope| {
-            for t in 0..4 {
-                let w = &w;
-                scope.spawn(move || {
-                    for i in 0..50 {
-                        w.add_document(doc(&format!("t{t}-{i}"), 0)).unwrap();
-                    }
-                });
-            }
-        });
+        // Every add takes the next slot, so all four buffers fill however
+        // the threads would have been scheduled.
+        w.rotate_slots.store(true, Ordering::Relaxed);
+        for i in 0..200 {
+            w.add_document(doc(&format!("d{i}"), 0)).unwrap();
+        }
         w.flush().unwrap();
-        assert!(lock(&w.core).writer.live_infos().segments.len() > 1);
+        assert_eq!(lock(&w.core).writer.live_infos().segments.len(), 4);
         w.commit().unwrap();
         let committed = crate::segment_infos::read_latest(&dir).unwrap();
         assert_eq!(committed.segments.len(), 1);
