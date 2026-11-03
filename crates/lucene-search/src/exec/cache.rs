@@ -926,7 +926,13 @@ mod tests {
         let phrase = Clause::Phrase(PhraseQuery::new("f", ["a", "b"]));
         for _ in 0..6 {
             let r = cache
-                .scorer_if_cacheable(&phrase, 20_000, false, || Ok(false), || panic!("never built"))
+                .scorer_if_cacheable(
+                    &phrase,
+                    20_000,
+                    false,
+                    || Ok(false),
+                    || panic!("never built"),
+                )
                 .unwrap();
             assert!(r.is_none());
         }
@@ -936,7 +942,13 @@ mod tests {
             .unwrap());
         assert_eq!(cache.stats().0, 1);
         assert!(cache
-            .scorer_if_cacheable(&phrase, 20_000, false, || Ok(false), || panic!("not served either"))
+            .scorer_if_cacheable(
+                &phrase,
+                20_000,
+                false,
+                || Ok(false),
+                || panic!("not served either")
+            )
             .unwrap()
             .is_none());
     }

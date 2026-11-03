@@ -1187,13 +1187,14 @@ pub trait IntersectVisitor {
         let end = start + count as i32;
         let mut next = start;
         while next < end {
-            // `end - next > 0` and fits an `i32`.
+            // ARITH: `next < end`, so `end - next` is positive and fits an `i32`.
             #[allow(clippy::arithmetic_side_effects)]
             let n = ((end - next) as usize).min(VISIT_CHUNK);
             for (slot, doc_id) in buf[..n].iter_mut().zip(next..) {
                 *slot = doc_id;
             }
             self.visit_many(&buf[..n]);
+            // ARITH: `n <= end - next`, so `next + n <= end`.
             #[allow(clippy::arithmetic_side_effects)]
             {
                 next += n as i32;
@@ -1988,9 +1989,7 @@ fn visit_leaf_doc_ids<V: IntersectVisitor>(
             let start = probe.read_vint()?;
             // A run that would wrap past `i32::MAX` is decoded the general
             // way, which reproduces Java's wrapped ids.
-            if start >= 0
-                && i64::from(start).saturating_add(count as i64) <= i64::from(i32::MAX)
-            {
+            if start >= 0 && i64::from(start).saturating_add(count as i64) <= i64::from(i32::MAX) {
                 *input = probe;
                 visitor.visit_range(start, count);
                 return Ok(());
@@ -2877,9 +2876,9 @@ pub struct BitWords<'a>(&'a [u8]);
 impl BitWords<'_> {
     /// The words in order.
     pub fn iter(&self) -> impl Iterator<Item = u64> + '_ {
-        self.0.chunks_exact(8).map(|w| {
-            u64::from_le_bytes([w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7]])
-        })
+        self.0
+            .chunks_exact(8)
+            .map(|w| u64::from_le_bytes([w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7]]))
     }
 
     /// How many words there are.

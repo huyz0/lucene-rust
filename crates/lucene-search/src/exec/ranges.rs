@@ -609,7 +609,9 @@ pub(crate) fn range_docs(
 ) -> Result<RangeDocs> {
     let len = usize::try_from(max_doc).unwrap_or(0);
     if len == 0 {
-        return Ok(RangeDocs::Docs(points.reader.range_query(number, lower, upper)?));
+        return Ok(RangeDocs::Docs(
+            points.reader.range_query(number, lower, upper)?,
+        ));
     }
     let estimate = points
         .reader
@@ -617,7 +619,9 @@ pub(crate) fn range_docs(
     let single_valued = info.doc_count == max_doc && i64::from(info.doc_count) == info.point_count;
     let inverse = single_valued && estimate > i64::from(max_doc / 2);
     if !inverse && estimate <= i64::from(max_doc >> 7) {
-        return Ok(RangeDocs::Docs(points.reader.range_query(number, lower, upper)?));
+        return Ok(RangeDocs::Docs(
+            points.reader.range_query(number, lower, upper)?,
+        ));
     }
     let matcher = points.reader.range_matcher(number, lower, upper)?;
     let words = crate::bit_set_pool::take(len)

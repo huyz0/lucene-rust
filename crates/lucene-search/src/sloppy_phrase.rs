@@ -808,8 +808,13 @@ pub(crate) fn sloppy_phrase_matches_in(
             two_slot(term_positions[0], term_positions[1], slop, true) > 0.0
         }
         Degenerate::No => {
-            let mut m =
-                SloppyMatcher::new_in(term_positions, repeats, slop, std::mem::take(scratch), offsets);
+            let mut m = SloppyMatcher::new_in(
+                term_positions,
+                repeats,
+                slop,
+                std::mem::take(scratch),
+                offsets,
+            );
             let found = m.next_match();
             *scratch = m.into_scratch();
             found

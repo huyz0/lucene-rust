@@ -3594,8 +3594,10 @@ fn index_or_doc_values_fills_the_cache_from_its_index_side() {
     };
     let run = |lead: &str| {
         let mut q = BooleanQuery::new();
-        q.must
-            .push(Clause::Term(TermQuery::new("lead", lead.as_bytes().to_vec())));
+        q.must.push(Clause::Term(TermQuery::new(
+            "lead",
+            lead.as_bytes().to_vec(),
+        )));
         q.filter.push(iodv());
         IODV_PLANS.with(|p| p.borrow_mut().clear());
         let n = searcher.count(&q).unwrap();

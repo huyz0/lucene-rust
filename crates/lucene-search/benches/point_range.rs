@@ -113,8 +113,9 @@ fn bench(c: &mut Criterion) {
                     n
                 })
             });
-            let q2 = BooleanQuery::new()
-                .with_filter([Clause::from(long_point::new_range_query(field, lo, lo + hi).unwrap())]);
+            let q2 = BooleanQuery::new().with_filter([Clause::from(
+                long_point::new_range_query(field, lo, lo + hi).unwrap(),
+            )]);
             assert_eq!(searcher.count(&q2).unwrap(), expected);
             g.bench_function(format!("point_range/{field}/{label}"), |b| {
                 b.iter(|| searcher.count(black_box(&q2)).unwrap())
@@ -165,14 +166,17 @@ fn bench(c: &mut Criterion) {
     g.sample_size(10);
     for lead in ["mid", "few"] {
         let mut q = BooleanQuery::new();
-        q.must.push(Clause::Term(lucene_search::query::TermQuery::new(
-            "lead",
-            lead.as_bytes().to_vec(),
-        )));
-        q.filter.push(Clause::from(lucene_search::extended_query::IndexOrDocValuesQuery::new(
-            Clause::from(long_point::new_range_query("p", 0, 799_999).unwrap()),
-            Clause::from(NumericDocValuesRangeQuery::new("p", 0, 799_999)),
-        )));
+        q.must
+            .push(Clause::Term(lucene_search::query::TermQuery::new(
+                "lead",
+                lead.as_bytes().to_vec(),
+            )));
+        q.filter.push(Clause::from(
+            lucene_search::extended_query::IndexOrDocValuesQuery::new(
+                Clause::from(long_point::new_range_query("p", 0, 799_999).unwrap()),
+                Clause::from(NumericDocValuesRangeQuery::new("p", 0, 799_999)),
+            ),
+        ));
         g.bench_function(format!("five_runs/{lead}"), |b| {
             b.iter(|| {
                 let cache = lucene_search::SegmentQueryCache::default();
@@ -181,7 +185,9 @@ fn bench(c: &mut Criterion) {
                     s.cache = Some(&cache);
                 }
                 let searcher = IndexSearcher::new(&cached, &norms).unwrap();
-                (0..5).map(|_| searcher.count(black_box(&q)).unwrap()).sum::<u64>()
+                (0..5)
+                    .map(|_| searcher.count(black_box(&q)).unwrap())
+                    .sum::<u64>()
             })
         });
     }
@@ -202,7 +208,10 @@ fn bench(c: &mut Criterion) {
     g.warm_up_time(Duration::from_millis(500));
     g.measurement_time(Duration::from_secs(2));
     g.sample_size(20);
-    for (label, hi) in [("5pct", SORTED_DOCS as i64 / 20), ("50pct", SORTED_DOCS as i64 / 2)] {
+    for (label, hi) in [
+        ("5pct", SORTED_DOCS as i64 / 20),
+        ("50pct", SORTED_DOCS as i64 / 2),
+    ] {
         let fallback = NumericDocValuesRangeQuery::new("v", 1_000, 1_000 + hi);
         let q = BooleanQuery::new().with_filter([Clause::from(
             IndexSortSortedNumericDocValuesRangeQuery::new("v", 1_000, 1_000 + hi, fallback),

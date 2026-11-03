@@ -3627,9 +3627,13 @@ pub fn count_boolean_query_segment(
             cache: None,
             ..ctx
         };
-        match cache.scorer_if_cacheable(&clause, max_doc, cacheable, || Ok(false), || {
-            exec::build::build(&core, &clause, 1.0, exec::Mode::NoScores, true)
-        })? {
+        match cache.scorer_if_cacheable(
+            &clause,
+            max_doc,
+            cacheable,
+            || Ok(false),
+            || exec::build::build(&core, &clause, 1.0, exec::Mode::NoScores, true),
+        )? {
             Some(exec::cache::CacheResult::Hit(set)) => return Ok(set.live_count(seg.live_docs)),
             Some(exec::cache::CacheResult::Empty) => return Ok(0),
             None => {}
