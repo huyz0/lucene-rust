@@ -209,13 +209,28 @@ fn filter_competitive_hits(
 /// returns how many.
 fn compact_by_score(docs: &mut [i32], scores: &mut [f64], min: f64) -> usize {
     let len = docs.len().min(scores.len());
+    let (docs, scores) = (&mut docs[..len], &mut scores[..len]);
+    // The kept prefix stays where it is: found a run of 8 at a time without
+    // a branch per score, then the first dropped one in the failing run.
     let mut n = 0;
-    for i in 0..len {
+    while n + 8 <= len {
+        let run: &[f64; 8] = scores[n..n + 8].try_into().expect("8 scores");
+        if !run.iter().fold(true, |all, &s| all & (s >= min)) {
+            break;
+        }
+        n += 8;
+    }
+    while n < len && scores[n] >= min {
+        n += 1;
+    }
+    for i in n..len {
         let (d, s) = (docs[i], scores[i]);
-        // `n <= i < len`: in bounds, and written before it is read again.
-        docs[n] = d;
-        scores[n] = s;
-        n += usize::from(s >= min);
+        // `n <= i`: the `min` tells the compiler, so neither write is
+        // bounds-checked; written before it is read again.
+        let at = n.min(i);
+        docs[at] = d;
+        scores[at] = s;
+        n = at + usize::from(s >= min);
     }
     n
 }
@@ -1654,12 +1669,22 @@ impl ConjunctionBulk {
                         if single.docs.is_empty() {
                             break;
                         }
-                        acc.copy_from(single);
+                        // The first clause's filter folded into the copy.
+                        let first = if sum_of_others[1] != sum_of_others[0] {
+                            min_required_score(sum_of_others[1], min_competitive, n)
+                        } else {
+                            0.0
+                        };
+                        if first > 0.0 {
+                            acc.copy_from_filtered(single, first);
+                        } else {
+                            acc.copy_from(single);
+                        }
                         for i in 1..n {
                             let remaining = sum_of_others[i];
                             // Two equal consecutive sums mean clause `i - 1` scores
                             // nothing, so filtering again would remove nothing.
-                            if remaining != sum_of_others[i - 1] {
+                            if i > 1 && remaining != sum_of_others[i - 1] {
                                 filter_competitive_hits(acc, remaining, min_competitive, n);
                             }
                             apply_required_clause(acc, &mut legs[i])?;

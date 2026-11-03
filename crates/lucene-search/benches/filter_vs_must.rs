@@ -106,6 +106,10 @@ fn bench(c: &mut Criterion) {
             BooleanQuery::new().with_must([term("t0"), term("t1")]),
         ),
         (
+            "and_t0_t1_t2",
+            BooleanQuery::new().with_must([term("t0"), term("t1"), term("t2")]),
+        ),
+        (
             "filter_t1",
             BooleanQuery::new()
                 .with_must([term("t0")])
