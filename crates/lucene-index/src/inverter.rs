@@ -71,14 +71,29 @@ fn home_slot(h: u64, size: usize) -> usize {
     h.checked_shr(shift).unwrap_or(0) as usize
 }
 
+/// The hash bits a table slot keeps: bits 24..56, which every input byte
+/// reaches and which only partly overlap [`home_slot`]'s high bits.
+#[inline]
+fn tag(h: u64) -> u64 {
+    (h >> 24) & u64::from(u32::MAX)
+}
+
+/// A table slot for term `id` with hash `h`.
+#[inline]
+fn entry(h: u64, id: u32) -> u64 {
+    tag(h) << 32 | u64::from(id.wrapping_add(1))
+}
+
 /// `BytesRefHash`: term bytes in one arena, dense ids, open addressing.
 #[derive(Debug, Default)]
 pub(crate) struct TermHash {
     arena: Vec<u8>,
     /// Term `i` is `arena[starts[i]..starts[i + 1]]`.
     starts: Vec<u32>,
-    /// `id + 1`, or `0` for an empty slot. Power-of-two sized.
-    table: Vec<u32>,
+    /// `0` for an empty slot, else [`tag`] of the term's hash in the high
+    /// half and `id + 1` in the low: a probe compares the tag before it
+    /// reads the term. Power-of-two sized.
+    table: Vec<u64>,
     hashes: Vec<u64>,
 }
 
@@ -102,15 +117,6 @@ impl TermHash {
             self.starts[(id as usize).wrapping_add(1)],
         );
         &self.arena[a as usize..b as usize]
-    }
-
-    /// Heap bytes held.
-    pub(crate) fn ram_bytes(&self) -> usize {
-        self.arena
-            .capacity()
-            .saturating_add(self.starts.capacity().saturating_mul(4))
-            .saturating_add(self.table.capacity().saturating_mul(4))
-            .saturating_add(self.hashes.capacity().saturating_mul(8))
     }
 
     /// Forgets every term from id `len` on, as if never added.
@@ -142,9 +148,11 @@ impl TermHash {
             if entry == 0 {
                 break;
             }
-            let id = entry.wrapping_sub(1);
-            if self.hashes[id as usize] == h && self.term(id) == bytes {
-                return (id, false);
+            if entry >> 32 == tag(h) {
+                let id = (entry as u32).wrapping_sub(1);
+                if self.term(id) == bytes {
+                    return (id, false);
+                }
             }
             slot = slot.wrapping_add(1) & mask;
         }
@@ -152,7 +160,7 @@ impl TermHash {
         self.arena.extend_from_slice(bytes);
         self.starts.push(self.arena.len() as u32);
         self.hashes.push(h);
-        self.table[slot] = id.wrapping_add(1);
+        self.table[slot] = entry(h, id);
         // Keep the load under 1/2.
         if self.hashes.len().saturating_mul(2) > self.table.len() {
             self.grow();
@@ -166,14 +174,14 @@ impl TermHash {
 
     /// Rebuilds the table at `size` slots over every term.
     fn rehash(&mut self, size: usize) {
-        let mut table = vec![0u32; size];
+        let mut table = vec![0u64; size];
         let mask = size.wrapping_sub(1);
         for (id, &h) in self.hashes.iter().enumerate() {
             let mut slot = home_slot(h, size);
             while table[slot] != 0 {
                 slot = slot.wrapping_add(1) & mask;
             }
-            table[slot] = (id as u32).wrapping_add(1);
+            table[slot] = entry(h, id as u32);
         }
         self.table = table;
     }
@@ -870,7 +878,7 @@ mod tests {
             .enumerate()
             .filter(|(_, &e)| e != 0)
             .map(|(slot, &e)| {
-                let home = home_slot(h.hashes[(e - 1) as usize], size);
+                let home = home_slot(h.hashes[(e as u32 - 1) as usize], size);
                 slot.wrapping_sub(home) & mask
             })
             .max()

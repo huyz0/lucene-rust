@@ -205,7 +205,7 @@ public final class RustEngineSupport {
         int maxDocs
     ) throws IOException {
         Codec codec = config.getCodec();
-        return RustIndexWriter.open(
+        RustIndexWriter writer = RustIndexWriter.open(
             store.directory(),
             indexPath(store),
             config.getIndexingBufferSize().getMbFrac(),
@@ -221,6 +221,19 @@ public final class RustEngineSupport {
             breaker,
             codec
         );
+        // NativeLuceneIndexWriterFactory's merge-on-commit/refresh settings.
+        IndexSettings indexSettings = config.getIndexSettings();
+        long wait = indexSettings.isMergeOnFlushEnabled() ? indexSettings.getMaxFullFlushMergeWaitTime().millis() : 0;
+        boolean success = false;
+        try {
+            writer.setMergeOnFlush(Math.max(wait, 0), wait > 0 && indexSettings.getMergeOnFlushPolicy().isPresent());
+            success = true;
+        } finally {
+            if (success == false) {
+                writer.close();
+            }
+        }
+        return writer;
     }
 
     /**

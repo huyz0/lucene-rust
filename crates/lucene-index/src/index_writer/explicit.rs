@@ -79,6 +79,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use super::inverted_terms::InvertedTerms;
 use super::pending_postings::PendingPostings;
 #[cfg(test)]
 use super::DOC_VALUES_FORMAT_NAME;
@@ -132,7 +133,7 @@ pub struct ExplicitFields {
 pub struct InvertedField {
     pub field_number: i32,
     /// Each distinct term once. Order does not matter.
-    pub terms: Vec<InvertedTerm>,
+    pub terms: InvertedTerms,
     /// `Similarity.computeNorm` for this document, or `None` when the field
     /// omits norms.
     pub norm: Option<i64>,
@@ -164,23 +165,7 @@ impl ExplicitFields {
         let inverted: usize = self
             .inverted
             .iter()
-            .flat_map(|f| &f.terms)
-            .map(|t| {
-                t.term
-                    .capacity()
-                    .saturating_add(t.positions.capacity().saturating_mul(4))
-                    .saturating_add(t.offsets.capacity().saturating_mul(8))
-                    .saturating_add(
-                        t.payloads
-                            .iter()
-                            .map(|p| p.capacity().saturating_add(24))
-                            .fold(
-                                t.payloads.capacity().saturating_mul(24),
-                                usize::saturating_add,
-                            ),
-                    )
-                    .saturating_add(48)
-            })
+            .map(|f| f.terms.ram_bytes().saturating_add(48))
             .fold(0usize, usize::saturating_add);
         let values = |v: &[StoredField]| -> usize {
             v.iter()
@@ -371,6 +356,40 @@ pub(crate) fn key_of_parent(keys: &mut [Option<i64>], is_parent: &dyn Fn(usize) 
 }
 
 impl IndexingConfig {
+    /// Whether this configuration takes explicit documents.
+    pub(crate) fn takes_explicit(&self) -> bool {
+        self.explicit
+    }
+
+    /// Checks an add of explicit documents against the registered schema and
+    /// returns, per document and inverted field, the field's index options
+    /// (`None` for a field with no terms).
+    pub(crate) fn explicit_add_options(
+        &self,
+        docs: &[ExplicitDocument],
+    ) -> Result<Vec<Vec<Option<IndexOptions>>>> {
+        if !self.explicit {
+            return Err(explicit_error("explicit documents are not enabled"));
+        }
+        docs.iter()
+            .map(|doc| {
+                self.validate_explicit(doc)?;
+                doc.fields
+                    .inverted
+                    .iter()
+                    .map(|inv| {
+                        if inv.terms.is_empty() {
+                            Ok(None)
+                        } else {
+                            self.explicit_field(inv.field_number)
+                                .map(|f| Some(f.index_options))
+                        }
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
     /// The registered number of the parent field, once a document has
     /// registered it.
     pub(crate) fn parent_field_number(&self) -> Option<i32> {
@@ -484,12 +503,12 @@ impl IndexingConfig {
             // rather than a tree node per term; only a document that has one
             // walks the set, so the error is still the first repeat in order.
             sorted.clear();
-            sorted.extend(inv.terms.iter().map(|t| t.term.as_slice()));
+            sorted.extend(inv.terms.iter().map(|t| t.term));
             sorted.sort_unstable();
             let repeats = sorted.windows(2).any(|w| w[0] == w[1]);
             let mut terms = BTreeSet::new();
-            for t in &inv.terms {
-                if repeats && !terms.insert(t.term.as_slice()) {
+            for t in inv.terms.iter() {
+                if repeats && !terms.insert(t.term) {
                     return Err(explicit_error(format!(
                         "field {:?}: term {:?} listed twice",
                         f.name, t.term
@@ -731,7 +750,7 @@ impl IndexingConfig {
                         p.add_field(doc_id, inv, options)?;
                     }
                 }
-                inverted_here = p;
+                inverted_here = p.into_flushed(buf.old_to_new)?;
                 &inverted_here
             }
         };
@@ -767,9 +786,8 @@ impl IndexingConfig {
             .into_iter()
             .map(|(number, values)| (number, super::NormsColumn::from_values(values)))
             .collect();
-        let remapped = buf.old_to_new.map(|map| pending.remap(map)).transpose()?;
         let term_lists: Vec<(i32, IndexOptions, i32, Vec<_>)> = pending
-            .term_lists(remapped.as_ref())
+            .term_lists()
             .into_iter()
             .map(|(n, docs, terms)| {
                 let options = self.explicit_field(n).map(|f| f.index_options)?;
@@ -1753,7 +1771,7 @@ impl<'d> IndexWriter<'d> {
                 };
                 self.pending_postings.add_field(doc_id, inv, options)?;
                 // the hash holds them now; the document keeps its norm
-                inv.terms = Vec::new();
+                inv.terms = InvertedTerms::default();
             }
             *self
                 .pending_explicit
@@ -1904,17 +1922,17 @@ mod tests {
             inverted: vec![
                 InvertedField {
                     field_number: f.id,
-                    terms: vec![term_docs(&id)],
+                    terms: vec![term_docs(&id)].into(),
                     norm: None,
                 },
                 InvertedField {
                     field_number: f.body,
-                    terms: body,
+                    terms: body.into(),
                     norm: Some(length),
                 },
                 InvertedField {
                     field_number: f.tag,
-                    terms: vec![term_docs(std::str::from_utf8(&tag).unwrap())],
+                    terms: vec![term_docs(std::str::from_utf8(&tag).unwrap())].into(),
                     norm: None,
                 },
             ],
@@ -2176,7 +2194,8 @@ mod tests {
                                 positions: Vec::new(),
                                 offsets: Vec::new(),
                                 payloads: Vec::new(),
-                            }],
+                            }]
+                            .into(),
                             norm: None,
                         }],
                         ..ExplicitFields::default()
@@ -2250,7 +2269,7 @@ mod tests {
                         fields: ExplicitFields {
                             inverted: vec![InvertedField {
                                 field_number: 0,
-                                terms: Vec::new(),
+                                terms: Vec::new().into(),
                                 norm: Some(0),
                             }],
                             ..ExplicitFields::default()
@@ -2310,7 +2329,7 @@ mod tests {
                         fields: ExplicitFields {
                             inverted: vec![InvertedField {
                                 field_number: 0,
-                                terms: Vec::new(),
+                                terms: Vec::new().into(),
                                 norm: Some(0),
                             }],
                             ..ExplicitFields::default()
@@ -2461,7 +2480,7 @@ mod tests {
                         .into_iter()
                         .map(|n| InvertedField {
                             field_number: n,
-                            terms: vec![term_docs("a")],
+                            terms: vec![term_docs("a")].into(),
                             norm: None,
                         })
                         .collect(),
@@ -2558,29 +2577,42 @@ mod tests {
         d.fields.inverted[0].norm = Some(1);
         cases.push(("norm on an omitNorms field", d));
         let mut d = base();
-        let dup = d.fields.inverted[1].terms[0].clone();
-        d.fields.inverted[1].terms.push(dup);
+        d.fields.inverted[1].terms.edit(|t| t.push(t[0].clone()));
         cases.push(("duplicate term", d));
         let mut d = base();
-        d.fields.inverted[1].terms[0].freq = 0;
+        d.fields.inverted[1].terms.edit(|t| {
+            t[0].freq = 0;
+        });
         cases.push(("freq 0", d));
         let mut d = base();
-        d.fields.inverted[1].terms[1].positions = vec![3, 1];
+        d.fields.inverted[1].terms.edit(|t| {
+            t[1].positions = vec![3, 1];
+        });
         cases.push(("descending positions", d));
         let mut d = base();
-        d.fields.inverted[0].terms[0].positions = vec![0];
+        d.fields.inverted[0].terms.edit(|t| {
+            t[0].positions = vec![0];
+        });
         cases.push(("positions on a docs-only field", d));
         let mut d = base();
-        d.fields.inverted[1].terms[0].positions.pop();
+        d.fields.inverted[1].terms.edit(|t| {
+            t[0].positions.pop();
+        });
         cases.push(("positions out of step with freq", d));
         let mut d = base();
-        d.fields.inverted[1].terms[0].offsets.pop();
+        d.fields.inverted[1].terms.edit(|t| {
+            t[0].offsets.pop();
+        });
         cases.push(("offsets out of step with freq", d));
         let mut d = base();
-        d.fields.inverted[1].terms[0].offsets = vec![(5, 1)];
+        d.fields.inverted[1].terms.edit(|t| {
+            t[0].offsets = vec![(5, 1)];
+        });
         cases.push(("end before start", d));
         let mut d = base();
-        d.fields.inverted[0].terms[0].offsets = vec![(0, 1)];
+        d.fields.inverted[0].terms.edit(|t| {
+            t[0].offsets = vec![(0, 1)];
+        });
         cases.push(("offsets on a docs-only field", d));
         let mut d = base();
         d.fields.doc_values[0].value = FieldValue::Long(1);
@@ -2599,7 +2631,9 @@ mod tests {
         d.fields.points[0].value = FieldValue::Binary(vec![0; 3]);
         cases.push(("short point", d));
         let mut d = base();
-        d.fields.inverted[1].terms[0].payloads = vec![vec![1]; 7];
+        d.fields.inverted[1].terms.edit(|t| {
+            t[0].payloads = vec![vec![1]; 7];
+        });
         cases.push(("payloads out of step with positions", d));
         for (what, d) in cases {
             let err = w.add_explicit_documents(vec![d]).expect_err(what);
@@ -3610,7 +3644,7 @@ mod tests {
             fields: ExplicitFields {
                 inverted: vec![InvertedField {
                     field_number: id,
-                    terms: vec![term_docs(i)],
+                    terms: vec![term_docs(i)].into(),
                     norm: None,
                 }],
                 doc_values: Vec::new(),
@@ -3671,8 +3705,10 @@ mod tests {
             .iter_mut()
             .find(|inv| inv.field_number == f.body)
             .unwrap();
-        let beta = body.terms.iter_mut().find(|t| t.term == b"beta").unwrap();
-        beta.payloads = vec![format!("p{i}").into_bytes(), Vec::new()];
+        body.terms.edit(|terms| {
+            let beta = terms.iter_mut().find(|t| t.term == b"beta").unwrap();
+            beta.payloads = vec![format!("p{i}").into_bytes(), Vec::new()];
+        });
         d
     }
 
@@ -3770,11 +3806,11 @@ mod tests {
 
         let mut short = doc_with_payload(&f, 0);
         for inv in &mut short.fields.inverted {
-            for t in &mut inv.terms {
-                if t.term == b"beta" {
+            inv.terms.edit(|terms| {
+                for t in terms.iter_mut().filter(|t| t.term == b"beta") {
                     t.payloads.pop();
                 }
-            }
+            });
         }
         let err = w
             .add_explicit_documents(vec![short])
@@ -3785,7 +3821,9 @@ mod tests {
         let mut no_positions = doc(&f, 1);
         for inv in &mut no_positions.fields.inverted {
             if inv.field_number == f.id {
-                inv.terms[0].payloads = vec![b"x".to_vec()];
+                inv.terms.edit(|t| {
+                    t[0].payloads = vec![b"x".to_vec()];
+                });
             }
         }
         let err = w
@@ -3842,5 +3880,67 @@ mod tests {
             assert_eq!(info.doc_values_type, DocValuesType::Numeric, "{name}");
             assert_eq!(info.index_options, IndexOptions::None, "{name}");
         }
+    }
+
+    /// Several threads index explicit documents through the concurrent
+    /// writer, each re-indexing every document it added as a soft update.
+    /// Each update's soft delete reaches its earlier copy whichever slot
+    /// holds it, a field registered mid-run is indexed, and the segments
+    /// pass `CheckIndex`.
+    #[test]
+    fn explicit_documents_index_from_several_threads() {
+        const THREADS: i64 = 4;
+        const PER_THREAD: i64 = 200;
+        let tmp = TempDir::new("explicit-concurrent");
+        let dir = FsDirectory::open(tmp.path());
+        let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", VERSION).unwrap();
+        let f = register(&mut w);
+        w.set_max_buffered_docs(37).unwrap();
+        let w = crate::concurrent_writer::ConcurrentIndexWriter::new(w, 4).unwrap();
+        std::thread::scope(|scope| {
+            for t in 0..THREADS {
+                let (w, f) = (&w, &f);
+                scope.spawn(move || {
+                    for k in 0..PER_THREAD {
+                        let i = t * PER_THREAD + k;
+                        w.add_explicit_documents(vec![doc(f, i)]).unwrap();
+                        w.soft_update_explicit_documents(
+                            id_term(i),
+                            vec![doc_at(f, i, 1_000 + i)],
+                            &[soft_delete(i)],
+                        )
+                        .unwrap();
+                        if t == 0 && k == PER_THREAD / 2 {
+                            let extra = w
+                                .register_field(
+                                    FieldInfo::new("late", 0)
+                                        .with_index_options(IndexOptions::Docs)
+                                        .with_omit_norms(true),
+                                )
+                                .unwrap();
+                            let mut d = doc(f, 10_000);
+                            d.fields.inverted.push(InvertedField {
+                                field_number: extra,
+                                terms: vec![term_docs("x")].into(),
+                                norm: None,
+                            });
+                            w.add_explicit_documents(vec![d]).unwrap();
+                        }
+                    }
+                });
+            }
+        });
+        w.commit().unwrap();
+        let mut w = w.into_writer().unwrap();
+        let docs = usize::try_from(THREADS * PER_THREAD).unwrap();
+        assert_eq!(counts(&mut w), (2 * docs + 1, i32::try_from(docs).unwrap()));
+        check(&dir);
+        let late = w
+            .segment_infos()
+            .segments
+            .iter()
+            .filter(|sci| segment_fields(&dir, sci).iter().any(|fi| fi.name == "late"))
+            .count();
+        assert_eq!(late, 1, "one segment holds the late field");
     }
 }

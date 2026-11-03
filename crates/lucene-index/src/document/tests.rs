@@ -379,11 +379,11 @@ fn a_document_inverts_as_the_indexing_chain_does() {
         .find(|f| f.field_number == 0)
         .unwrap();
     let a = t.terms.iter().find(|x| x.term == b"a").unwrap();
-    assert_eq!((a.freq, a.positions.clone()), (2, vec![0, 2]));
-    assert_eq!(a.offsets, vec![(0, 1), (4, 5)]);
+    assert_eq!((a.freq, a.positions), (2, &[0, 2][..]));
+    assert_eq!(a.offsets, [(0, 1), (4, 5)]);
     let b = t.terms.iter().find(|x| x.term == b"b").unwrap();
-    assert_eq!(b.positions, vec![1, 3]);
-    assert_eq!(b.offsets, vec![(2, 3), (6, 7)]);
+    assert_eq!(b.positions, [1, 3]);
+    assert_eq!(b.offsets, [(2, 3), (6, 7)]);
     assert!(t.norm.is_some());
     let feat = e
         .fields
@@ -391,7 +391,7 @@ fn a_document_inverts_as_the_indexing_chain_does() {
         .iter()
         .find(|f| f.field_number == 3)
         .unwrap();
-    assert_eq!(feat.terms[0].freq, (2.0f32.to_bits() >> 15) as i32);
+    assert_eq!(feat.terms.get(0).freq, (2.0f32.to_bits() >> 15) as i32);
     assert_eq!(feat.norm, None);
     assert_eq!(e.stored.len(), 1);
     assert_eq!(e.fields.doc_values.len(), 2);
@@ -710,7 +710,7 @@ fn token_streams_are_checked_as_invert_token_stream_checks_them() {
         tokens(vec![("x", 1, 0, 1, 3), ("x", 1, 0, 1, 4)]),
     )
     .unwrap();
-    assert_eq!(e.fields.inverted[0].terms[0].freq, 7);
+    assert_eq!(e.fields.inverted[0].terms.get(0).freq, 7);
     let e = run(
         "d",
         IndexOptions::DocsAndCustomFreqs,
