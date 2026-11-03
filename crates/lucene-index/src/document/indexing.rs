@@ -1049,7 +1049,10 @@ impl IndexWriter<'_> {
         let checkpoint = self.pending_postings.checkpoint(doc_id);
         let (mut e, vectors) = self.invert_fields_document_at(doc, doc_id)?;
         for inv in &mut e.fields.inverted {
-            inv.terms = self.pending_postings.doc_terms(inv.field_number, doc_id);
+            inv.terms = self
+                .pending_postings
+                .doc_terms(inv.field_number, doc_id)
+                .into();
         }
         self.pending_postings.rollback(checkpoint);
         Ok((e, vectors))
@@ -1238,7 +1241,7 @@ impl IndexWriter<'_> {
             // the terms are in the buffered postings already
             out.fields.inverted.push(InvertedField {
                 field_number: number,
-                terms: Vec::new(),
+                terms: crate::index_writer::InvertedTerms::default(),
                 norm,
             });
         }
