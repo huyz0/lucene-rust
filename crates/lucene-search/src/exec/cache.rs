@@ -74,6 +74,23 @@ impl CachedSet {
         }
     }
 
+    /// How many of its documents `live_docs` keeps (all, without deletions).
+    pub(crate) fn live_count(&self, live_docs: Option<&FixedBitSet>) -> u64 {
+        let n = match (self, live_docs) {
+            (CachedSet::Bits { cardinality, .. }, None) => {
+                return u64::try_from(*cardinality).unwrap_or(0)
+            }
+            (CachedSet::Bits { bits, .. }, Some(live)) => {
+                FixedBitSet::intersection_count(bits, live)
+            }
+            (CachedSet::Docs(docs), None) => docs.len(),
+            (CachedSet::Docs(docs), Some(live)) => {
+                docs.iter().filter(|&&d| live.get_doc(d)).count()
+            }
+        };
+        n as u64
+    }
+
     /// Whether the set holds no document (a cached empty answer).
     fn is_empty(&self) -> bool {
         match self {
