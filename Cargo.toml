@@ -19,6 +19,7 @@ members = [
     "crates/lucene-analysis-icu",
     "crates/lucene-analysis-opennlp",
     "crates/lucene-search",
+    "crates/lucene-replicator",
     "crates/lucene-ffi",
     "crates/lucene-tools",
     "crates/lucene-test-framework",
@@ -44,6 +45,7 @@ default-members = [
     "crates/lucene-analysis-icu",
     "crates/lucene-analysis-opennlp",
     "crates/lucene-search",
+    "crates/lucene-replicator",
     "crates/lucene-ffi",
     "crates/lucene-tools",
 ]

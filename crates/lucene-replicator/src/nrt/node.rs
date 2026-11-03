@@ -186,7 +186,10 @@ impl NodeCore {
     ///
     /// # Errors
     /// An I/O failure other than a missing file.
-    pub fn read_local_file_metadata(&self, file_name: &str) -> crate::Result<Option<FileMetaData>> {
+    pub fn read_local_file_metadata(
+        &self,
+        file_name: &str,
+    ) -> lucene_search::Result<Option<FileMetaData>> {
         if let Some(cache) = self.last_file_meta_data() {
             if let Some(found) = cache.get(file_name) {
                 return Ok(Some(found.clone()));

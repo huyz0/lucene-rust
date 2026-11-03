@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use lucene_search::replicator::nrt::{
+use lucene_replicator::nrt::{
     CopyJob, FileMetaData, OnceDone, ReplicaCore, ReplicaHooks, ReplicaNode,
 };
 use lucene_search::{Error, Result};

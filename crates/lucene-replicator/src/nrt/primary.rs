@@ -15,8 +15,8 @@ use lucene_store::directory::Directory;
 use super::copy::CopyStream;
 use super::node::{bytes_to_string, NodeCore, Printer, PRIMARY_GEN_KEY, VERSION_KEY};
 use super::types::{CopyState, FileMetaData};
-use crate::directory_reader::DirectoryReader;
-use crate::{Error, Result};
+use lucene_search::directory_reader::DirectoryReader;
+use lucene_search::{Error, Result};
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())
@@ -513,7 +513,7 @@ fn lock_writer<'w, 'd>(writer: &'w Mutex<IndexWriter<'d>>) -> MutexGuard<'w, Ind
 }
 
 fn index_error(e: index_writer::Error) -> Error {
-    Error::DirectoryReader(crate::directory_reader::Error::IndexWriter(e))
+    Error::DirectoryReader(lucene_search::directory_reader::Error::IndexWriter(e))
 }
 
 fn set_entry(data: &mut Vec<(String, String)>, key: &str, value: String) {

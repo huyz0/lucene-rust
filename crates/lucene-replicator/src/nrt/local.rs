@@ -22,8 +22,8 @@ use super::node::NodeCore;
 use super::primary::{PrimaryHooks, PrimaryShared};
 use super::replica::{ReplicaHooks, ReplicaNode};
 use super::types::{CopyState, FileMetaData};
-use crate::{Error, Result};
 use lucene_index::segment_infos::SegmentCommitInfo;
+use lucene_search::{Error, Result};
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())
@@ -722,8 +722,8 @@ impl PrimaryHooks for LocalPrimaryHooks {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::replicator::nrt::replica::empty_infos;
-    use crate::replicator::nrt::replica_file_deleter::ReplicaFileDeleter;
+    use crate::nrt::replica::empty_infos;
+    use crate::nrt::replica_file_deleter::ReplicaFileDeleter;
     use lucene_store::{ByteBuffersDirectory, DataOutput};
     use std::sync::atomic::AtomicUsize;
 

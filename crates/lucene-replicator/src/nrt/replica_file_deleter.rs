@@ -8,7 +8,7 @@ use lucene_index::file_deleter::{FileDeleter, MsgType};
 use lucene_store::directory::Directory;
 
 use super::node::NodeCore;
-use crate::Result;
+use lucene_search::Result;
 
 /// `ReplicaFileDeleter`.
 pub struct ReplicaFileDeleter {

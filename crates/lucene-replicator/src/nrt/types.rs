@@ -65,22 +65,7 @@ impl fmt::Display for CopyState {
     }
 }
 
-/// `NodeCommunicationException`: the other node could not be reached.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NodeCommunicationError {
-    /// What was being attempted.
-    pub when: String,
-    /// The failure underneath.
-    pub cause: String,
-}
-
-impl fmt::Display for NodeCommunicationError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.when)
-    }
-}
-
-impl std::error::Error for NodeCommunicationError {}
+pub use lucene_search::NodeCommunicationError;
 
 #[cfg(test)]
 mod tests {
@@ -102,7 +87,7 @@ mod tests {
             infos_bytes: Arc::new(Vec::new()),
             completed_merge_files: Arc::new(BTreeSet::new()),
             primary_gen: 1,
-            infos: Arc::new(crate::replicator::nrt::replica::empty_infos()),
+            infos: Arc::new(crate::nrt::replica::empty_infos()),
             hold: None,
         };
         assert_eq!(format!("{state:?}"), "CopyState(version=12)");

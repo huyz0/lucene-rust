@@ -15,8 +15,8 @@ use lucene_codecs::stored_fields::{Document, FieldValue, StoredField};
 use lucene_index::buffered_updates::Term;
 use lucene_index::index_writer::IndexWriter;
 use lucene_index::segment_info::LuceneVersion;
-use lucene_search::replicator::nrt::local::{LocalPrimaryHooks, LocalReplicaHooks};
-use lucene_search::replicator::nrt::{PrimaryNode, ReplicaNode, PRIMARY_GEN_KEY, VERSION_KEY};
+use lucene_replicator::nrt::local::{LocalPrimaryHooks, LocalReplicaHooks};
+use lucene_replicator::nrt::{PrimaryNode, ReplicaNode, PRIMARY_GEN_KEY, VERSION_KEY};
 use lucene_store::{Directory, FsDirectory};
 use lucene_util::test_support::TempDir;
 
@@ -71,7 +71,7 @@ fn replicas_follow_the_primary_point_by_point() {
 
     let log = Arc::new(Mutex::new(Vec::<String>::new()));
     let sink = Arc::clone(&log);
-    let printer: lucene_search::replicator::nrt::Printer =
+    let printer: lucene_replicator::nrt::Printer =
         Arc::new(move |s: &str| sink.lock().unwrap().push(s.to_string()));
 
     let group_hooks = LocalPrimaryHooks::new(1);

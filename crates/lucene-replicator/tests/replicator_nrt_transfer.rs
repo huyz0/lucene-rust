@@ -14,8 +14,8 @@ use lucene_codecs::field_infos::{FieldInfo, IndexOptions};
 use lucene_codecs::stored_fields::{Document, FieldValue, StoredField};
 use lucene_index::index_writer::IndexWriter;
 use lucene_index::segment_info::LuceneVersion;
-use lucene_search::replicator::nrt::local::{LocalPrimaryHooks, LocalReplicaHooks};
-use lucene_search::replicator::nrt::{
+use lucene_replicator::nrt::local::{LocalPrimaryHooks, LocalReplicaHooks};
+use lucene_replicator::nrt::{
     CopyJob, FileMetaData, NodeCommunicationError, OnceDone, PrimaryNode, Printer, ReplicaCore,
     ReplicaHooks, ReplicaNode,
 };

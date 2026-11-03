@@ -19,8 +19,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use lucene_index::segment_infos::{self, SegmentInfos};
-use lucene_search::replicator::nrt::local::{CopySource, FileStream, LocalReplicaHooks};
-use lucene_search::replicator::nrt::{
+use lucene_replicator::nrt::local::{CopySource, FileStream, LocalReplicaHooks};
+use lucene_replicator::nrt::{
     CopyOneFile, CopyState, CopyStream, FileMetaData, NodeCore, ReplicaNode, PRIMARY_GEN_KEY,
     VERSION_KEY,
 };

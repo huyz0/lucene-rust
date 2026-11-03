@@ -7,9 +7,9 @@ use lucene_index::segment_infos::SegmentInfos;
 use lucene_store::directory::Directory;
 
 use super::node::NodeCore;
-use crate::directory_reader::DirectoryReader;
-use crate::reference_manager::{ReferenceManager, Refresher};
-use crate::Result;
+use lucene_search::directory_reader::DirectoryReader;
+use lucene_search::reference_manager::{ReferenceManager, Refresher};
+use lucene_search::Result;
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())

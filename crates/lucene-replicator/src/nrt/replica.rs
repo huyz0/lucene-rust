@@ -16,8 +16,8 @@ use super::node::{bytes_to_string, NodeCore, Printer, PRIMARY_GEN_KEY, VERSION_K
 use super::replica_file_deleter::ReplicaFileDeleter;
 use super::searcher_manager::{describe, segments_file_name, SegmentInfosSearcherManager};
 use super::types::{FileMetaData, NodeCommunicationError};
-use crate::directory_reader::DirectoryReader;
-use crate::{Error, Result};
+use lucene_search::directory_reader::DirectoryReader;
+use lucene_search::{Error, Result};
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())

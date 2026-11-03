@@ -7,8 +7,8 @@ use lucene_codecs::field_infos::{FieldInfo, IndexOptions};
 use lucene_codecs::stored_fields::{Document, FieldValue, StoredField};
 use lucene_index::index_writer::IndexWriter;
 use lucene_index::segment_info::LuceneVersion;
-use lucene_search::replicator::nrt::local::LocalPrimaryHooks;
-use lucene_search::replicator::nrt::{PrimaryNode, Printer, PRIMARY_GEN_KEY, VERSION_KEY};
+use lucene_replicator::nrt::local::LocalPrimaryHooks;
+use lucene_replicator::nrt::{PrimaryNode, Printer, PRIMARY_GEN_KEY, VERSION_KEY};
 use lucene_store::FsDirectory;
 use lucene_util::test_support::TempDir;
 

@@ -250,7 +250,6 @@ pub mod queryparser;
 pub mod reader;
 pub mod reader_manager;
 pub mod reference_manager;
-pub mod replicator;
 pub mod rescorer;
 pub mod sandbox;
 pub mod segment_cacheable;
@@ -331,6 +330,24 @@ use lucene_codecs::postings::{DocInput, PayInput, PosInput};
 use lucene_codecs::regexp::RegexpPattern;
 use lucene_codecs::wildcard::WildcardPattern;
 use lucene_util::fixed_bit_set::FixedBitSet;
+
+/// `NodeCommunicationException`: the other node of a replication group
+/// could not be reached (`lucene-replicator`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NodeCommunicationError {
+    /// What was being attempted.
+    pub when: String,
+    /// The failure underneath.
+    pub cause: String,
+}
+
+impl std::fmt::Display for NodeCommunicationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.when)
+    }
+}
+
+impl std::error::Error for NodeCommunicationError {}
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -501,7 +518,7 @@ pub enum Error {
     /// `NodeCommunicationException`: the other node of a replication group
     /// could not be reached.
     #[error(transparent)]
-    NodeCommunication(#[from] replicator::nrt::NodeCommunicationError),
+    NodeCommunication(#[from] NodeCommunicationError),
     /// Reading or writing a `segments_N`.
     #[error(transparent)]
     SegmentInfos(#[from] lucene_index::segment_infos::Error),
