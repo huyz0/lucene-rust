@@ -26,6 +26,7 @@ use std::time::Duration;
 use lucene_store::directory::{Directory, MmapDirectory};
 use lucene_store_crypto::{
     key_unavailable, CachingKeyProvider, DataKey, EncryptedDirectory, GeneratedKey, KeyProvider,
+    PlaintextCache,
 };
 
 use crate::error::{guard, set_last_error, FfiStatus};
@@ -72,6 +73,9 @@ const MAX_OUT_CAP: usize = 1 << 20;
 struct Binding {
     keys: Arc<dyn KeyProvider>,
     chunk_size: u32,
+    /// Shared by the writer's and every reader's directory at the path, so
+    /// a file both open is decrypted once.
+    cache: Arc<PlaintextCache>,
 }
 
 fn bindings() -> &'static RwLock<HashMap<String, Binding>> {
@@ -93,7 +97,8 @@ pub(crate) fn shard_directory(path: &str) -> lucene_store::Result<Box<dyn Direct
         Some(b) => Box::new(
             EncryptedDirectory::new(mapped, b.keys)
                 .with_chunk_size(b.chunk_size)?
-                .with_plaintext_commit_metadata(),
+                .with_plaintext_commit_metadata()
+                .with_plaintext_cache(b.cache),
         ),
     })
 }
@@ -262,7 +267,14 @@ pub unsafe extern "C" fn ffi_store_bind_encrypted(
         bindings()
             .write()
             .unwrap_or_else(|p| p.into_inner())
-            .insert(path.to_string(), Binding { keys, chunk_size });
+            .insert(
+                path.to_string(),
+                Binding {
+                    keys,
+                    chunk_size,
+                    cache: Arc::new(PlaintextCache::new()),
+                },
+            );
         Ok(())
     })
 }
@@ -282,6 +294,34 @@ pub unsafe extern "C" fn ffi_store_unbind(path: *const c_char, path_len: usize) 
             .remove(path);
         Ok(())
     })
+}
+
+/// Turns demand decryption of encrypted shards on (`enabled != 0`) or off
+/// for directories opened afterwards, and sets the decrypted bytes kept
+/// resident across all of them (`budget_bytes`; 0 keeps the current
+/// budget). Where demand decryption is unavailable it stays off;
+/// [`ffi_store_lazy_decrypt_active`] reports which.
+#[no_mangle]
+pub extern "C" fn ffi_store_set_lazy_decrypt(enabled: i32, budget_bytes: u64) -> i32 {
+    guard(|| {
+        let available = lucene_store_crypto::set_lazy_decrypt_default(enabled != 0);
+        #[cfg(target_os = "linux")]
+        if available && budget_bytes > 0 {
+            if let Some(pager) = lucene_store_crypto::lazy::Pager::global() {
+                pager.set_budget(budget_bytes);
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = (available, budget_bytes);
+        Ok(())
+    })
+}
+
+/// 1 when encrypted shards opened now are demand-decrypted: it was turned
+/// on and `userfaultfd` is available. Else 0.
+#[no_mangle]
+pub extern "C" fn ffi_store_lazy_decrypt_active() -> i32 {
+    i32::from(lucene_store_crypto::lazy_decrypt_default() && lucene_store_crypto::lazy_available())
 }
 
 /// 1 when this library's encryption runs in AWS-LC's FIPS 140-3 module in
@@ -428,6 +468,34 @@ mod tests {
         assert_eq!(unbind(&path), 0);
         let unbound = shard_directory(&path).unwrap();
         assert!(unbound.open("enc.bin").unwrap().starts_with(b"LRSE"));
+    }
+
+    /// Demand decryption turned on through the FFI reads a bound shard back
+    /// (through the pager where `userfaultfd` is available), and the
+    /// writer's and a reader's directories at one path share the plaintext.
+    #[test]
+    fn lazy_decrypt_reads_a_bound_shard_and_shares_plaintext_per_path() {
+        // SAFETY: a function with the upcall's contract.
+        unsafe { ffi_store_set_key_upcall(Some(test_upcall)) };
+        assert_eq!(ffi_store_set_lazy_decrypt(1, 64 << 20), 0);
+        assert_eq!(
+            ffi_store_lazy_decrypt_active(),
+            i32::from(lucene_store_crypto::lazy_available())
+        );
+        let tmp = TempDir::new("ffi-store-lazy");
+        let path = tmp.path().to_str().unwrap().to_string();
+        assert_eq!(bind(&path, 7, 0), 0);
+        let writer = shard_directory(&path).unwrap();
+        let body: Vec<u8> = (0..300_000u32).map(|i| (i * 7) as u8).collect();
+        write(&*writer, "_0.fdt", &body);
+        let a = writer.open("_0.fdt").unwrap();
+        let reader = shard_directory(&path).unwrap();
+        let b = reader.open("_0.fdt").unwrap();
+        assert_eq!(&a[..], &body[..]);
+        assert_eq!(a.as_ptr(), b.as_ptr(), "one plaintext per path");
+        assert_eq!(ffi_store_set_lazy_decrypt(0, 0), 0);
+        assert_eq!(ffi_store_lazy_decrypt_active(), 0);
+        assert_eq!(unbind(&path), 0);
     }
 
     #[test]

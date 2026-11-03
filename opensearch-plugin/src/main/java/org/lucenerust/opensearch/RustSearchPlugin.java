@@ -11,6 +11,8 @@ import org.opensearch.common.settings.IndexScopedSettings;
 import org.opensearch.common.settings.Setting;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.common.settings.SettingsFilter;
+import org.opensearch.core.common.unit.ByteSizeUnit;
+import org.opensearch.core.common.unit.ByteSizeValue;
 import org.lucenerust.opensearch.engine.RustEngineFactory;
 import org.lucenerust.opensearch.engine.RustEngineSupport;
 import org.lucenerust.opensearch.engine.RustIndexerFactory;
@@ -89,6 +91,27 @@ public class RustSearchPlugin extends Plugin implements
         Setting.Property.NodeScope
     );
 
+    /**
+     * Whether the Rust engine decrypts {@code rust_encrypted} shard files page by page on first touch,
+     * keeping at most {@link #NODE_DECRYPT_CACHE} of them resident, instead of decrypting each file
+     * whole into memory when it opens. Needs Linux with {@code userfaultfd} permitted (container
+     * runtimes' default seccomp profiles block it); elsewhere files are decrypted whole.
+     */
+    public static final Setting<Boolean> NODE_LAZY_DECRYPT = Setting.boolSetting(
+        "lucene_rust.store.encrypted.lazy_decrypt",
+        false,
+        Setting.Property.NodeScope
+    );
+
+    /** Decrypted bytes kept resident across all demand-decrypted shard files on this node. */
+    public static final Setting<ByteSizeValue> NODE_DECRYPT_CACHE = Setting.byteSizeSetting(
+        "lucene_rust.store.encrypted.decrypt_cache_size",
+        new ByteSizeValue(512, ByteSizeUnit.MB),
+        new ByteSizeValue(1, ByteSizeUnit.MB),
+        new ByteSizeValue(Long.MAX_VALUE, ByteSizeUnit.BYTES),
+        Setting.Property.NodeScope
+    );
+
     private static final Logger logger = LogManager.getLogger(RustSearchPlugin.class);
 
     private final NativeReaders readers = new NativeReaders();
@@ -114,6 +137,28 @@ public class RustSearchPlugin extends Plugin implements
         // does not start.
         if (StoreCrypto.buildIsFips()) {
             logger.info("lucene-rust: encrypted store crypto is {}", StoreCrypto.get().description());
+        }
+        configureLazyDecrypt(settings);
+    }
+
+    private static void configureLazyDecrypt(Settings settings) {
+        boolean wanted = NODE_LAZY_DECRYPT.get(settings);
+        int rc = NativeBridge.storeSetLazyDecrypt(wanted, NODE_DECRYPT_CACHE.get(settings).getBytes());
+        if (rc != 0) {
+            throw new IllegalStateException("lucene-rust: cannot configure demand decryption (status " + rc + ")");
+        }
+        if (wanted) {
+            if (NativeBridge.storeLazyDecryptActive()) {
+                logger.info(
+                    "lucene-rust: encrypted shard files are demand-decrypted, {} resident at most",
+                    NODE_DECRYPT_CACHE.get(settings)
+                );
+            } else {
+                logger.warn(
+                    "lucene-rust: [{}] is set but userfaultfd is unavailable here; encrypted shard files are decrypted whole",
+                    NODE_LAZY_DECRYPT.getKey()
+                );
+            }
         }
     }
 
@@ -276,7 +321,9 @@ public class RustSearchPlugin extends Plugin implements
             RustEngineSupport.FAULT_INJECTION,
             NODE_ENGINE_ENABLED,
             LocalKeySource.KEY,
-            LocalKeySource.KEY_ID
+            LocalKeySource.KEY_ID,
+            NODE_LAZY_DECRYPT,
+            NODE_DECRYPT_CACHE
         ));
         return settings;
     }
