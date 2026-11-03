@@ -163,3 +163,30 @@ fn an_encrypted_blob_store_index_round_trips() {
         assert!(raw.starts_with(b"LRSE"), "{name}");
     }
 }
+
+/// The same index with files demand-decrypted (where `userfaultfd` is
+/// available) under a budget of a few chunks, over a memory-mapped and a
+/// blob directory: writes, merges, `CheckIndex` and searches all read
+/// through the pager while it keeps evicting.
+#[test]
+fn a_demand_decrypted_index_round_trips_under_a_tiny_budget() {
+    #[cfg(target_os = "linux")]
+    if let Some(pager) = lucene_store_crypto::lazy::Pager::global() {
+        pager.set_budget(256 * 1024);
+    }
+    let tmp = TempDir::new("crypto-index-lazy");
+    let mmap = lucene_store::MmapDirectory::open(tmp.path());
+    index_and_verify(
+        &EncryptedDirectory::new(mmap, keys())
+            .with_chunk_size(4096)
+            .unwrap()
+            .with_lazy_decrypt(true),
+    );
+    let blob = BlobDirectory::new(InMemoryBlobStore::new());
+    index_and_verify(&EncryptedDirectory::new(blob, keys()).with_lazy_decrypt(true));
+    #[cfg(target_os = "linux")]
+    if let Some(pager) = lucene_store_crypto::lazy::Pager::global() {
+        assert!(pager.faults() > 0, "reads went through the pager");
+        pager.set_budget(lucene_store_crypto::lazy::DEFAULT_BUDGET);
+    }
+}

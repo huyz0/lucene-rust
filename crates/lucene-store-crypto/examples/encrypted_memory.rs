@@ -1,6 +1,6 @@
 //! Resident memory and query latency of an encrypted index held open by a
 //! reader, demand-decrypted (default) or decrypted whole
-//! (`LUCENE_RUST_ENCRYPTED_LAZY=0`).
+//! (`LAZY=0`).
 //!
 //! `cargo run --release -p lucene-store-crypto --example encrypted_memory -- <dir> [docs]`
 //! builds the index in `<dir>` when it is empty, then opens it, runs term
@@ -90,13 +90,10 @@ fn main() {
         .unwrap()
         .map(|e| e.unwrap().metadata().unwrap().len())
         .sum();
-    println!(
-        "index {:.1} MB, lazy={}",
-        size as f64 / 1e6,
-        std::env::var("LUCENE_RUST_ENCRYPTED_LAZY").map_or(true, |v| v != "0")
-    );
+    let lazy = std::env::var("LAZY").map_or(true, |v| v != "0");
+    println!("index {:.1} MB, lazy={}", size as f64 / 1e6, lazy);
     println!("rss start {}", rss_mb());
-    let dir = EncryptedDirectory::new(MmapDirectory::open(&path), keys());
+    let dir = EncryptedDirectory::new(MmapDirectory::open(&path), keys()).with_lazy_decrypt(lazy);
     let t = Instant::now();
     let reader = DirectoryReader::open(&dir).unwrap();
     let opened = reader.open_segments().unwrap();

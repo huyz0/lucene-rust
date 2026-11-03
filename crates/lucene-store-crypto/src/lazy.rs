@@ -87,9 +87,8 @@ struct UffdMsg {
 }
 
 /// Bytes resident across every demand-decrypted file before the oldest
-/// chunks are released. Default 512 MiB; `LUCENE_RUST_ENCRYPTED_CACHE_MB`
-/// overrides it when the pager starts.
-const DEFAULT_BUDGET: u64 = 512 * 1024 * 1024;
+/// chunks are released, until [`Pager::set_budget`] changes it.
+pub const DEFAULT_BUDGET: u64 = 512 * 1024 * 1024;
 
 /// The process-wide fault handler: one `userfaultfd`, one handler thread,
 /// every registered file, and the resident-chunk budget.
@@ -186,26 +185,34 @@ impl Pager {
     /// `userfaultfd` is unavailable.
     pub fn global() -> Option<&'static Pager> {
         static PAGER: OnceLock<Option<&'static Pager>> = OnceLock::new();
-        *PAGER.get_or_init(|| {
-            if std::env::var_os("LUCENE_RUST_ENCRYPTED_LAZY").is_some_and(|v| v == "0") {
-                return None;
-            }
-            let pager = Pager::start().ok()?;
-            let pager: &'static Pager = Box::leak(Box::new(pager));
-            std::thread::Builder::new()
-                .name("lucene-encrypted-pager".into())
-                .spawn(move || pager.serve())
-                .ok()?;
-            Some(pager)
-        })
+        *PAGER.get_or_init(|| Pager::spawn(false))
     }
 
-    fn start() -> std::io::Result<Pager> {
+    /// Starts a pager and its handler thread. Both live for the rest of the
+    /// process.
+    fn spawn(user_mode_only: bool) -> Option<&'static Pager> {
+        let pager = Pager::start(user_mode_only).ok()?;
+        let pager: &'static Pager = Box::leak(Box::new(pager));
+        std::thread::Builder::new()
+            .name("lucene-encrypted-pager".into())
+            .spawn(move || pager.serve())
+            .ok()?;
+        Some(pager)
+    }
+
+    fn start(user_mode_only: bool) -> std::io::Result<Pager> {
         // Full mode first (kernel accesses fault in too); user-mode-only is
         // what an unprivileged process gets when vm.unprivileged_userfaultfd
         // is 0.
+        let full = libc::O_CLOEXEC;
+        let user = libc::O_CLOEXEC | UFFD_USER_MODE_ONLY;
+        let modes: &[libc::c_int] = if user_mode_only {
+            &[user]
+        } else {
+            &[full, user]
+        };
         let mut fd = -1;
-        for flags in [libc::O_CLOEXEC, libc::O_CLOEXEC | UFFD_USER_MODE_ONLY] {
+        for &flags in modes {
             // SAFETY: a plain syscall with integer arguments.
             fd = unsafe { libc::syscall(libc::SYS_userfaultfd, flags) } as libc::c_int;
             if fd >= 0 {
@@ -229,17 +236,13 @@ impl Pager {
         // SAFETY: sysconf has no preconditions.
         let page = usize::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) })
             .map_err(|_| std::io::Error::other("page size"))?;
-        let budget = std::env::var("LUCENE_RUST_ENCRYPTED_CACHE_MB")
-            .ok()
-            .and_then(|v| v.parse::<u64>().ok())
-            .map_or(DEFAULT_BUDGET, |mb| mb.saturating_mul(1024 * 1024));
         Ok(Pager {
             uffd,
             page,
             files: RwLock::new(BTreeMap::new()),
             resident: Mutex::new(VecDeque::new()),
             resident_bytes: AtomicU64::new(0),
-            budget: AtomicU64::new(budget),
+            budget: AtomicU64::new(DEFAULT_BUDGET),
             faults: AtomicU64::new(0),
         })
     }
@@ -516,6 +519,7 @@ mod tests {
         EncryptedDirectory::new(ByteBuffersDirectory::new(), keys)
             .with_chunk_size(chunk)
             .unwrap()
+            .with_lazy_decrypt(true)
     }
 
     fn put(d: &dyn Directory, name: &str, bytes: &[u8]) {
@@ -568,6 +572,43 @@ mod tests {
         });
         pager.set_budget(DEFAULT_BUDGET);
         assert!(pager.faults() > before, "reads went through the pager");
+    }
+
+    /// Under a user-mode-only `userfaultfd` the kernel cannot fault pages
+    /// in: a `write(2)` straight from a page not yet resident fails with
+    /// `EFAULT`. A filesystem output copies such bytes through a buffer, so
+    /// copying a demand-decrypted file out to a plain directory works.
+    #[test]
+    fn a_user_mode_only_pager_still_copies_out_through_a_file_output() {
+        let Some(pager) = Pager::spawn(true) else {
+            return;
+        };
+        // Two chunks resident at most: by the time the output's checksum
+        // pass reaches the end, the start has been released again.
+        pager.set_budget(2 * 4096);
+        let d = dir(4096);
+        let bytes = plain(1 << 20, 5);
+        put(&d, "f", &bytes);
+        let raw = d.inner().open("f").unwrap();
+        let (cipher, header, header_len) = d.cipher_for("f", &raw).unwrap();
+        let input = pager
+            .open(raw, header_len, bytes.len(), header.chunk_size, cipher, "f")
+            .unwrap();
+        let tmp = lucene_util::test_support::TempDir::new("lazy-efault");
+        let direct = std::fs::write(tmp.path().join("direct"), &input[..]);
+        let e = direct.expect_err("the kernel cannot fault pages in");
+        assert_eq!(e.raw_os_error(), Some(libc::EFAULT), "{e}");
+        drop(input);
+        let raw = d.inner().open("f").unwrap();
+        let (cipher, header, header_len) = d.cipher_for("f", &raw).unwrap();
+        let input = pager
+            .open(raw, header_len, bytes.len(), header.chunk_size, cipher, "f")
+            .unwrap();
+        let fs = lucene_store::FsDirectory::open(tmp.path());
+        let mut out = fs.create_output("copied").unwrap();
+        out.write_bytes(&input);
+        out.close().unwrap();
+        assert!(std::fs::read(tmp.path().join("copied")).unwrap() == bytes);
     }
 
     /// A tampered chunk anywhere in the file fails `open`, as a whole-file
