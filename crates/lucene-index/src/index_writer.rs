@@ -178,6 +178,7 @@ mod lifecycle;
 pub(crate) mod pending_postings;
 mod pluggable_merge;
 mod try_modify;
+pub(crate) use explicit::explicit_error;
 pub use explicit::{ExplicitDocument, ExplicitFields, InvertedField, InvertedTerm};
 pub use lifecycle::MergedSegmentWarmer;
 
@@ -739,7 +740,7 @@ pub(crate) fn buffer_node(
 /// `IndexWriter.buildDocValuesUpdate(term, updates)`: every supplied field
 /// becomes an update keyed by the caller's `term`, whatever term the caller
 /// happened to put in the [`DocValuesUpdate`] they built.
-fn retarget_update(update: &DocValuesUpdate, term: &Term) -> DocValuesUpdate {
+pub(crate) fn retarget_update(update: &DocValuesUpdate, term: &Term) -> DocValuesUpdate {
     match update {
         DocValuesUpdate::Numeric { field, value, .. } => DocValuesUpdate::Numeric {
             term: term.clone(),
@@ -1284,13 +1285,9 @@ impl IndexingConfig {
     /// parent field: what the concurrent writer, which builds native
     /// documents only, refuses.
     pub(crate) fn concurrent_unsupported(&self) -> Option<&'static str> {
-        if self.parent_field.is_some() {
-            Some("a parent field (set_parent_field)")
-        } else if self.explicit {
-            Some("explicit documents (enable_explicit_documents)")
-        } else {
-            None
-        }
+        self.parent_field
+            .is_some()
+            .then_some("a parent field (set_parent_field)")
     }
 
     /// `IndexWriter._mergeInit`'s `estimatedMergeBytes`: each source's

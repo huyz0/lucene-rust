@@ -1,6 +1,6 @@
 //! The writer the OpenSearch plugin's `RustEngine` indexes through: one
-//! handle per shard, wrapping a
-//! [`IndexWriter`] in *explicit-documents* mode.
+//! handle per shard, wrapping a [`ConcurrentIndexWriter`] in
+//! *explicit-documents* mode.
 //!
 //! ## Why explicit documents
 //!
@@ -14,11 +14,15 @@
 //! writer only has to lay those bytes out in Lucene's formats, which is the
 //! part this port already does byte-for-byte.
 //!
-//! ## One lock per shard
+//! ## Indexing threads
 //!
-//! Handles live in their own registry as `Arc<Mutex<EngineWriter>>`: a call
-//! takes the registry's shared guard only long enough to clone the `Arc`, then
-//! serializes on the one shard's mutex. Two shards never wait for each other.
+//! Handles live in their own registry as `Arc<EngineWriter>`; a call takes
+//! the registry's shared guard only long enough to clone the `Arc`. Adds run
+//! on the caller's thread without a shard-wide lock: each indexing thread
+//! buffers into one of the writer's per-thread buffers and builds the
+//! segment when its buffer fills, as Lucene's `DocumentsWriterPerThread`s
+//! do. Commits, merges and commit points take the handle's maintenance lock,
+//! one at a time.
 //!
 //! ## Failures
 //!
@@ -27,21 +31,23 @@
 //! document-level failure. Any other failure while writing leaves the writer
 //! in a state nothing vouches for, so it is recorded as the handle's *tragic*
 //! error (`IndexWriter.getTragicException()`): every later call fails with it,
-//! and the engine fails the shard. A panic poisons the handle's mutex, which
-//! is read the same way. Neither ever takes down another shard.
+//! and the engine fails the shard. A panic inside a call is recorded the same
+//! way. Neither ever takes down another shard.
 //!
 //! ## Commits
 //!
 //! Every commit publishes the caller's user data and then runs the merge
-//! policy, each merge publishing its own commit with the same user data --
-//! so every `segments_N` this writer leaves is a consistent recovery point.
+//! policy; when it merged anything, a second commit with the same user data
+//! publishes the merged segments -- so every `segments_N` this writer leaves
+//! is a consistent recovery point.
 //! Commit points are never dropped by the writer itself
 //! ([`DeletionPolicy::KeepAll`]): OpenSearch's `CombinedDeletionPolicy` runs
 //! in the JVM and names the ones to drop ([`ffi_engine_writer_delete_commits`]).
 
 use std::collections::HashMap;
 use std::os::raw::c_char;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
 use lucene_codecs::field_infos::{
     DocValuesSkipIndexType, DocValuesType, FieldInfo, IndexOptions, VectorEncoding,
@@ -49,6 +55,7 @@ use lucene_codecs::field_infos::{
 };
 use lucene_codecs::stored_fields::{FieldValue, StoredField};
 use lucene_index::buffered_updates::{DocValuesUpdate, Term};
+use lucene_index::concurrent_writer::ConcurrentIndexWriter;
 use lucene_index::index_file_deleter::DeletionPolicy;
 use lucene_index::index_writer::{
     self, ExplicitDocument, ExplicitFields, IndexWriter, InvertedField, InvertedTerm,
@@ -82,7 +89,7 @@ const RECOVERY_SOURCE_FIELD: &str = "_recovery_source";
 /// Operation kinds of [`decode_op`].
 const OP_ADD: u8 = 0;
 const OP_SOFT_UPDATE: u8 = 1;
-/// Panics inside the writer's lock -- the fault the "a panic fails exactly one
+/// Panics inside the writer -- the fault the "a panic fails exactly one
 /// shard" test injects. Refused unless the handle was opened with fault
 /// injection enabled.
 const OP_PANIC: u8 = 0xFF;
@@ -98,12 +105,36 @@ pub const STAT_COUNT: usize = 5;
 /// One shard's writer and the state the JVM side drives it with.
 pub struct EngineWriter {
     handle: WriterHandle,
-    /// Files pinned by [`ffi_engine_writer_hold_commit`], by hold id.
-    holds: HashMap<u64, Vec<String>>,
-    next_hold: u64,
+    /// Held for the whole of a commit, merge or commit-point change, so they
+    /// run one at a time; adds do not take it.
+    maintenance: Mutex<Holds>,
     /// `IndexWriter.getTragicException()`: once set, every call fails.
-    tragic: Option<String>,
+    tragic: OnceLock<String>,
     fault_injection: bool,
+}
+
+/// Files pinned by [`ffi_engine_writer_hold_commit`], by hold id.
+#[derive(Default)]
+struct Holds {
+    files: HashMap<u64, Vec<String>>,
+    next: u64,
+}
+
+impl EngineWriter {
+    fn writer(&self) -> &ConcurrentIndexWriter<'static> {
+        &self.handle.writer
+    }
+
+    fn maintenance(&self) -> MutexGuard<'_, Holds> {
+        self.maintenance
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The generation of the newest commit written or attempted.
+    fn generation(&self) -> i64 {
+        self.writer().with_writer(|w| w.segment_infos().generation)
+    }
 }
 
 /// A little-endian reader over a caller's blob; running off the end is
@@ -617,7 +648,7 @@ fn writer_error(e: index_writer::Error) -> FfiStatus {
     status
 }
 
-fn lookup(handle: u64) -> Result<Arc<Mutex<EngineWriter>>, FfiStatus> {
+fn lookup(handle: u64) -> Result<Arc<EngineWriter>, FfiStatus> {
     read_recovering(engine_writers())
         .get(handle)
         .cloned()
@@ -627,36 +658,32 @@ fn lookup(handle: u64) -> Result<Arc<Mutex<EngineWriter>>, FfiStatus> {
         })
 }
 
-/// Runs `body` on the handle's writer. A poisoned mutex (an earlier call
-/// panicked mid-write) and a recorded tragic error both fail the call; so
-/// does `body`, which then records a tragic error unless `document_level`
-/// says the failure is the document's own ([`FfiStatus::InvalidArgument`]).
+/// Runs `body` on the handle's writer. A recorded tragic error fails the
+/// call; a failure of `body` records one unless it is the document's own
+/// ([`FfiStatus::InvalidArgument`], [`FfiStatus::Decode`]), and so does a
+/// panic, which then carries on to the caller's guard.
 fn with_writer<T>(
     handle: u64,
-    body: impl FnOnce(&mut EngineWriter) -> Result<T, FfiStatus>,
+    body: impl FnOnce(&EngineWriter) -> Result<T, FfiStatus>,
 ) -> Result<T, FfiStatus> {
-    let shared = lookup(handle)?;
-    let mut w = match shared.lock() {
-        Ok(w) => w,
-        Err(poisoned) => {
-            let mut w = poisoned.into_inner();
-            if w.tragic.is_none() {
-                w.tragic = Some("a previous call panicked inside the writer".to_string());
-            }
-            w
-        }
-    };
-    if let Some(t) = &w.tragic {
+    let w = lookup(handle)?;
+    if let Some(t) = w.tragic.get() {
         set_last_error(format!("engine writer closed by a tragic event: {t}"));
         return Err(FfiStatus::Io);
     }
-    let out = body(&mut w);
-    if let Err(status) = out {
-        if status != FfiStatus::InvalidArgument && status != FfiStatus::Decode {
-            w.tragic = Some(crate::error::last_error());
+    match catch_unwind(AssertUnwindSafe(|| body(&w))) {
+        Ok(Err(status)) if status != FfiStatus::InvalidArgument && status != FfiStatus::Decode => {
+            let _ = w.tragic.set(crate::error::last_error());
+            Err(status)
+        }
+        Ok(out) => out,
+        Err(panic) => {
+            let _ = w
+                .tragic
+                .set("a previous call panicked inside the writer".to_string());
+            resume_unwind(panic)
         }
     }
-    out
 }
 
 /// Opens the shard's writer over the index at `path`, which must already hold
@@ -696,7 +723,7 @@ pub unsafe extern "C" fn ffi_engine_writer_open(
         // SAFETY: `WriterHandle`'s own argument -- the boxed directory
         // outlives the writer that borrows it (see `writer.rs`).
         let dir_ref: &'static dyn Directory = unsafe { std::mem::transmute(dir_ref) };
-        let open = || -> index_writer::Result<IndexWriter<'static>> {
+        let open = || -> index_writer::Result<ConcurrentIndexWriter<'static>> {
             let mut writer = IndexWriter::open(dir_ref, Vec::new(), "Lucene104", VERSION)?;
             writer.enable_explicit_documents()?;
             writer.set_deletion_policy(DeletionPolicy::KeepAll)?;
@@ -716,18 +743,21 @@ pub unsafe extern "C" fn ffi_engine_writer_open(
             // The JVM's `IndexWriter.getActualMaxDocs()`, so a test lowering
             // Java's limit lowers this one too.
             writer.set_max_docs(usize::try_from(max_docs).unwrap_or(0));
-            Ok(writer)
+            // One buffer per thread that can index at once.
+            let slots = std::thread::available_parallelism().map_or(1, |n| n.get());
+            ConcurrentIndexWriter::new(writer, slots)
         };
         let writer = open().map_err(writer_error)?;
         let engine = EngineWriter {
             handle: WriterHandle { writer, dir },
-            holds: HashMap::new(),
-            next_hold: 1,
-            tragic: None,
+            maintenance: Mutex::new(Holds {
+                files: HashMap::new(),
+                next: 1,
+            }),
+            tragic: OnceLock::new(),
             fault_injection: fault_injection != 0,
         };
-        let handle =
-            lock_recovering(engine_writers()).insert_checked(Arc::new(Mutex::new(engine)))?;
+        let handle = lock_recovering(engine_writers()).insert_checked(Arc::new(engine))?;
         // SAFETY: caller contract.
         unsafe { *out_handle = handle };
         Ok(())
@@ -753,7 +783,7 @@ pub unsafe extern "C" fn ffi_engine_writer_register_field(
         let spec = unsafe { bytes_from_raw(spec, spec_len)? };
         let info = decode_field(spec)?;
         let number = with_writer(handle, |w| {
-            w.handle.writer.register_field(info).map_err(|e| {
+            w.writer().register_field(info).map_err(|e| {
                 // A field the writer cannot index is the mapping's problem,
                 // not the writer's: document-level.
                 set_last_error(e.to_string());
@@ -766,10 +796,10 @@ pub unsafe extern "C" fn ffi_engine_writer_register_field(
     })
 }
 
-/// Applies one decoded operation under the writer's lock.
+/// Applies one decoded operation on the calling thread.
 fn apply_op(handle: u64, op: Op) -> Result<(), FfiStatus> {
     with_writer(handle, |w| {
-        let writer = &mut w.handle.writer;
+        let writer = w.writer();
         match op {
             Op::Add(docs) => writer.add_explicit_documents(docs).map_err(writer_error)?,
             Op::SoftUpdate {
@@ -893,10 +923,14 @@ pub unsafe extern "C" fn ffi_engine_writer_commit(
         // SAFETY: caller contract.
         let data = decode_user_data(unsafe { bytes_from_raw(user_data, user_data_len)? })?;
         let generation = with_writer(handle, |w| {
-            let writer = &mut w.handle.writer;
-            writer.set_live_commit_data(data);
+            let _maintenance = w.maintenance();
+            let writer = w.writer();
+            writer.with_writer(|iw| iw.set_live_commit_data(data));
             writer.commit().map_err(writer_error)?;
-            Ok(writer.segment_infos().generation)
+            if writer.maybe_merge().map_err(writer_error)? > 0 {
+                writer.commit().map_err(writer_error)?;
+            }
+            Ok(w.generation())
         })?;
         // SAFETY: caller contract.
         unsafe { *out_generation = generation };
@@ -922,7 +956,10 @@ pub unsafe extern "C" fn ffi_engine_writer_commit_generations(
         if out_len.is_null() || (out.is_null() && cap != 0) {
             return Err(FfiStatus::NullPointer);
         }
-        let gens = with_writer(handle, |w| Ok(w.handle.writer.commit_generations()))?;
+        let gens = with_writer(handle, |w| {
+            let _maintenance = w.maintenance();
+            Ok(w.writer().with_writer(|iw| iw.commit_generations()))
+        })?;
         // SAFETY: caller contract.
         unsafe { *out_len = gens.len() };
         if gens.len() > cap {
@@ -955,7 +992,10 @@ pub unsafe extern "C" fn ffi_engine_writer_delete_commits(
             crate::raw::try_to_vec(unsafe { std::slice::from_raw_parts(generations, n) })?
         };
         with_writer(handle, |w| {
-            w.handle.writer.delete_commits(&gens).map_err(writer_error)
+            let _maintenance = w.maintenance();
+            w.writer()
+                .with_writer(|iw| iw.delete_commits(&gens))
+                .map_err(writer_error)
         })
     })
 }
@@ -976,14 +1016,18 @@ pub unsafe extern "C" fn ffi_engine_writer_hold_commit(
             return Err(FfiStatus::NullPointer);
         }
         let id = with_writer(handle, |w| {
-            let files = w.handle.writer.hold_commit(generation).map_err(|e| {
-                // No such commit is the caller's mistake, not the writer's.
-                set_last_error(e.to_string());
-                FfiStatus::InvalidArgument
-            })?;
-            let id = w.next_hold;
-            w.next_hold = w.next_hold.saturating_add(1);
-            w.holds.insert(id, files);
+            let mut holds = w.maintenance();
+            let files = w
+                .writer()
+                .with_writer(|iw| iw.hold_commit(generation))
+                .map_err(|e| {
+                    // No such commit is the caller's mistake, not the writer's.
+                    set_last_error(e.to_string());
+                    FfiStatus::InvalidArgument
+                })?;
+            let id = holds.next;
+            holds.next = holds.next.saturating_add(1);
+            holds.files.insert(id, files);
             Ok(id)
         })?;
         // SAFETY: caller contract.
@@ -997,11 +1041,14 @@ pub unsafe extern "C" fn ffi_engine_writer_hold_commit(
 pub extern "C" fn ffi_engine_writer_release_hold(handle: u64, hold: u64) -> i32 {
     guard(|| {
         with_writer(handle, |w| {
-            let Some(files) = w.holds.remove(&hold) else {
+            let mut holds = w.maintenance();
+            let Some(files) = holds.files.remove(&hold) else {
                 set_last_error(format!("engine writer: no hold {hold}"));
                 return Err(FfiStatus::InvalidArgument);
             };
-            w.handle.writer.release_files(&files).map_err(writer_error)
+            w.writer()
+                .with_writer(|iw| iw.release_files(&files))
+                .map_err(writer_error)
         })
     })
 }
@@ -1017,14 +1064,14 @@ pub extern "C" fn ffi_engine_writer_set_retention(
 ) -> i32 {
     guard(|| {
         with_writer(handle, |w| {
-            w.handle
-                .writer
-                .set_soft_deletes_retention((enabled != 0).then(|| SoftDeletesRetention {
-                    seq_no_field: SEQ_NO_FIELD.to_string(),
-                    min_retained_seq_no,
-                    prune_postings_field: Some(ID_FIELD.to_string()),
-                    prune_recovery_source_field: Some(RECOVERY_SOURCE_FIELD.to_string()),
-                }));
+            let retention = (enabled != 0).then(|| SoftDeletesRetention {
+                seq_no_field: SEQ_NO_FIELD.to_string(),
+                min_retained_seq_no,
+                prune_postings_field: Some(ID_FIELD.to_string()),
+                prune_recovery_source_field: Some(RECOVERY_SOURCE_FIELD.to_string()),
+            });
+            w.writer()
+                .with_writer(|iw| iw.set_soft_deletes_retention(retention));
             Ok(())
         })
     })
@@ -1056,13 +1103,19 @@ pub unsafe extern "C" fn ffi_engine_writer_force_merge(
             return Err(FfiStatus::InvalidArgument);
         }
         let generation = with_writer(handle, |w| {
-            let writer = &mut w.handle.writer;
-            if only_deletes != 0 {
-                writer.force_merge_deletes().map_err(writer_error)?;
-            } else {
-                writer.force_merge(max).map_err(writer_error)?;
-            }
-            Ok(writer.segment_infos().generation)
+            let _maintenance = w.maintenance();
+            w.writer()
+                .with_writer(|iw| {
+                    if only_deletes != 0 {
+                        iw.force_merge_deletes()
+                    } else {
+                        iw.force_merge(max)
+                    }
+                })
+                .map_err(writer_error)?;
+            // The merged segments become durable with a commit.
+            w.writer().commit().map_err(writer_error)?;
+            Ok(w.generation())
         })?;
         // SAFETY: caller contract.
         unsafe { *out_generation = generation };
@@ -1074,7 +1127,8 @@ pub unsafe extern "C" fn ffi_engine_writer_force_merge(
 /// buffered documents, whether anything is uncommitted (0/1), the last
 /// commit generation written or attempted (a failed or only prepared commit
 /// advances it, as Java's `updateGeneration` does), and the segment count
-/// (`STAT_*`).
+/// (`STAT_*`). Only the counters asked for are read: the RAM count alone
+/// takes no lock an indexing thread holds for long.
 ///
 /// # Safety
 /// `out` valid for `n` writes.
@@ -1084,18 +1138,29 @@ pub unsafe extern "C" fn ffi_engine_writer_stats(handle: u64, out: *mut i64, n: 
         if out.is_null() && n != 0 {
             return Err(FfiStatus::NullPointer);
         }
+        let k = n.min(STAT_COUNT);
         let stats = with_writer(handle, |w| {
-            let writer = &w.handle.writer;
+            let writer = w.writer();
             let mut s = [0i64; STAT_COUNT];
             s[STAT_RAM_BYTES] = i64::try_from(writer.ram_bytes_used()).unwrap_or(i64::MAX);
-            s[STAT_PENDING_DOCS] = i64::try_from(writer.pending_doc_count()).unwrap_or(i64::MAX);
-            s[STAT_UNCOMMITTED] = i64::from(writer.has_uncommitted_changes());
-            s[STAT_GENERATION] = writer.segment_infos().generation;
-            s[STAT_SEGMENTS] =
-                i64::try_from(writer.segment_infos().segments.len()).unwrap_or(i64::MAX);
+            if k > STAT_PENDING_DOCS {
+                s[STAT_PENDING_DOCS] =
+                    i64::try_from(writer.pending_doc_count()).unwrap_or(i64::MAX);
+            }
+            if k > STAT_UNCOMMITTED {
+                s[STAT_UNCOMMITTED] = i64::from(writer.has_uncommitted_changes());
+            }
+            if k > STAT_GENERATION {
+                (s[STAT_GENERATION], s[STAT_SEGMENTS]) = writer.with_writer(|iw| {
+                    let infos = iw.segment_infos();
+                    (
+                        infos.generation,
+                        i64::try_from(infos.segments.len()).unwrap_or(i64::MAX),
+                    )
+                });
+            }
             Ok(s)
         })?;
-        let k = n.min(STAT_COUNT);
         // SAFETY: `k <= n` and `out` is valid for `n` writes.
         unsafe { std::ptr::copy_nonoverlapping(stats.as_ptr(), out, k) };
         Ok(())
@@ -1115,8 +1180,8 @@ pub extern "C" fn ffi_engine_writer_close(handle: u64) -> i32 {
         };
         // Another thread may still be inside a call; the last `Arc` drops the
         // writer. Holds die with it, as a JVM's readers' pins die with the JVM.
-        let mut w = shared.lock().unwrap_or_else(PoisonError::into_inner);
-        w.handle.writer.rollback();
+        let _maintenance = shared.maintenance();
+        shared.writer().rollback();
         Ok(())
     })
 }
@@ -1333,11 +1398,10 @@ mod tests {
         let tmp = empty_index("engine-writer-config");
         let h = open(&tmp, 0);
         let engine = lookup(h).unwrap();
-        {
-            let engine = engine.lock().unwrap();
-            assert_eq!(engine.handle.writer.max_full_flush_merge_wait_millis(), 0);
-            assert!(!engine.handle.writer.use_compound_file());
-        }
+        engine.writer().with_writer(|w| {
+            assert_eq!(w.max_full_flush_merge_wait_millis(), 0);
+            assert!(!w.use_compound_file());
+        });
         ffi_engine_writer_close(h);
     }
 
@@ -1714,18 +1778,23 @@ mod tests {
         );
         assert_eq!(ffi_close_jvm_reader(reader), 0);
         assert_eq!(ffi_engine_writer_release_hold(h, hold), 0);
+        // What is still mapped is the writer's own: the postings its reader
+        // pool keeps for resolving the next deletes, of live segments only.
         let (fds, maps) = open_under(tmp.path());
         let lock = tmp.path().join("write.lock").to_string_lossy().into_owned();
         assert!(
-            fds == [lock] && maps.is_empty(),
+            fds == [lock] && maps.iter().all(|m| !m.ends_with("(deleted)")),
             "after the last close: {fds:?} {maps:?}"
         );
         check(&tmp);
         assert_eq!(ffi_engine_writer_close(h), 0);
-        // Closing the writer releases the lock, and with it the last
-        // descriptor.
-        let (fds, _) = open_under(tmp.path());
-        assert!(fds.is_empty(), "after the writer closed: {fds:?}");
+        // Closing the writer releases the lock and its pool, and with them
+        // the last descriptor and mapping.
+        let (fds, maps) = open_under(tmp.path());
+        assert!(
+            fds.is_empty() && maps.is_empty(),
+            "after the writer closed: {fds:?} {maps:?}"
+        );
     }
 
     #[test]

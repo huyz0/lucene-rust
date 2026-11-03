@@ -1559,16 +1559,21 @@ public final class NativeBridge {
         }
     }
 
-    /** Fills {@code out} with the {@code STAT_*} counters (as many as it holds). */
+    /**
+     * Fills {@code out} with the {@code STAT_*} counters, as many as it holds: the writer reads only
+     * those, so a one-element array asks for the RAM count alone, which is cheap while other threads
+     * index.
+     */
     public static int writerStats(long handle, long[] out) {
+        if (out == null) {
+            return nullArgument("out");
+        }
+        int n = Math.min(out.length, STAT_COUNT);
         try (Scratch s = Scratch.open()) {
             MemorySegment stats = s.alloc((long) STAT_COUNT * Long.BYTES);
-            int rc = (int) H.WRITER_STATS.invokeExact(handle, stats, (long) STAT_COUNT);
+            int rc = (int) H.WRITER_STATS.invokeExact(handle, stats, (long) n);
             if (rc == OK) {
-                if (out == null) {
-                    return nullArgument("out");
-                }
-                MemorySegment.copy(stats, JAVA_LONG, 0, out, 0, Math.min(out.length, STAT_COUNT));
+                MemorySegment.copy(stats, JAVA_LONG, 0, out, 0, n);
             }
             return rc;
         } catch (Throwable t) {

@@ -33,15 +33,17 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.LongSupplier;
 
 /**
  * OpenSearch's {@link DocumentIndexWriter} over the Rust writer ({@code engine_writer.rs}).
  *
- * <p>Documents are inverted in the calling thread ({@link DocumentEncoder}), in parallel; only the
- * hand-off to Rust is serialized, on {@link #lock}. A commit takes the same lock, so the commit
- * data it evaluates -- the local checkpoint and the maximum sequence number -- describes exactly
- * the operations the commit contains: nothing can be added between the evaluation and the commit.
+ * <p>Documents are encoded in the calling thread ({@link DocumentEncoder}) and handed to the Rust
+ * writer, which buffers each indexing thread's documents separately; adds run in parallel. A commit
+ * stops them ({@link #indexing}'s write side), so the commit data it evaluates -- the local
+ * checkpoint and the maximum sequence number -- describes exactly the operations the commit
+ * contains: nothing can be added between the evaluation and the commit.
  *
  * <p><b>Refresh is a commit.</b> Java readers open commits ({@link #acquireLatest}), so making new
  * documents visible publishes a {@code segments_N} with the live commit data. Every commit is
@@ -64,6 +66,14 @@ final class RustIndexWriter implements DocumentIndexWriter {
     private final DocumentEncoder encoder;
     private final IndexWriterConfig config;
     private final Object lock = new Object();
+    /**
+     * Indexing threads hold the read side while they call into the native writer, which takes
+     * adds from many threads at once; {@link #close} takes the write side, so the handle is never
+     * closed under an add.
+     */
+    private final ReentrantReadWriteLock indexing = new ReentrantReadWriteLock();
+    /** Guards {@link #accounted}. */
+    private final Object accounting = new Object();
     private final Map<Long, RustIndexCommit> commits = new HashMap<>();
     private final AtomicLong docsSinceCommit = new AtomicLong();
 
@@ -74,7 +84,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
     private IndexDeletionPolicy deletionPolicy;
     private LongSupplier minRetainedSeqNo;
     private CircuitBreaker breaker;
-    /** Bytes of the Rust writer's buffer currently accounted to {@link #breaker}; under {@link #lock}. */
+    /** Bytes of the Rust writer's buffer currently accounted to {@link #breaker}; under {@link #accounting}. */
     private long accounted;
     private boolean faultInjection;
     private boolean policyInitialized;
@@ -230,44 +240,50 @@ final class RustIndexWriter implements DocumentIndexWriter {
             }
             prepared = id[0];
         }
-        synchronized (lock) {
-            accounted += estimate;
-            try {
-                ensureOpen();
-                if (prepared != 0) {
-                    long id = prepared;
-                    prepared = 0;
-                    check(NativeBridge.writerApplyPrepared(handle, id), "indexing");
-                } else {
-                    check(NativeBridge.writerApply(handle, op.array(), op.length()), "indexing");
-                }
-                docsSinceCommit.addAndGet(docs);
-            } finally {
-                if (prepared != 0) {
-                    NativeBridge.preparedFree(prepared);
-                }
-                reconcileBreaker();
+        // No writer-wide lock: the native writer buffers each thread's documents separately, as
+        // Lucene's per-thread buffers do.
+        indexing.readLock().lock();
+        try {
+            synchronized (accounting) {
+                accounted += estimate;
             }
+            ensureOpen();
+            if (prepared != 0) {
+                long id = prepared;
+                prepared = 0;
+                check(NativeBridge.writerApplyPrepared(handle, id), "indexing");
+            } else {
+                check(NativeBridge.writerApply(handle, op.array(), op.length()), "indexing");
+            }
+            docsSinceCommit.addAndGet(docs);
+        } finally {
+            if (prepared != 0) {
+                NativeBridge.preparedFree(prepared);
+            }
+            reconcileBreaker();
+            indexing.readLock().unlock();
         }
     }
 
     /** A conservative ratio of buffered bytes to blob bytes, for the pre-operation reservation. */
     private static final long BUFFER_BYTES_PER_BLOB_BYTE = 4;
 
-    /** Trues the breaker up to the writer's own count. Called under {@link #lock}. */
+    /** Trues the breaker up to the writer's own count. */
     private void reconcileBreaker() {
         if (breaker == null) {
             return;
         }
-        long[] out = new long[NativeBridge.STAT_COUNT];
+        long[] out = new long[1];
         long ram = closed == false && NativeBridge.writerStats(handle, out) == NativeBridge.OK ? out[NativeBridge.STAT_RAM_BYTES] : 0;
-        breaker.addWithoutBreaking(ram - accounted);
-        accounted = ram;
+        synchronized (accounting) {
+            breaker.addWithoutBreaking(ram - accounted);
+            accounted = ram;
+        }
     }
 
     /** Bytes currently accounted to the circuit breaker, for tests. */
     long accountedBytes() {
-        synchronized (lock) {
+        synchronized (accounting) {
             return accounted;
         }
     }
@@ -375,10 +391,21 @@ final class RustIndexWriter implements DocumentIndexWriter {
     }
 
     private long commitLocked() throws IOException {
+        // No add runs during a commit: the user data (OpenSearch's max_seq_no among it) must
+        // cover every operation the commit holds.
+        indexing.writeLock().lock();
+        try {
+            return commitIndexingStopped();
+        } finally {
+            indexing.writeLock().unlock();
+        }
+    }
+
+    private long commitIndexingStopped() throws IOException {
         Blob data = new Blob(256);
         int countAt = data.reserveI32();
         int n = 0;
-        // Evaluated here, under the lock: see the class comment.
+        // Evaluated here, with adds stopped: see the class comment.
         for (Map.Entry<String, String> e : liveCommitData) {
             data.string(e.getKey()).string(e.getValue());
             n++;
@@ -507,7 +534,13 @@ final class RustIndexWriter implements DocumentIndexWriter {
             }
             applyRetention();
             long[] out = new long[1];
-            check(NativeBridge.writerForceMerge(handle, maxNumSegments, onlyDeletes, out), "force merge");
+            // The merge commits with the last commit's user data, so nothing may be added meanwhile.
+            indexing.writeLock().lock();
+            try {
+                check(NativeBridge.writerForceMerge(handle, maxNumSegments, onlyDeletes, out), "force merge");
+            } finally {
+                indexing.writeLock().unlock();
+            }
             onNewCommits();
         }
     }
@@ -530,7 +563,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
         if (closed) {
             return 0;
         }
-        long[] out = new long[NativeBridge.STAT_COUNT];
+        long[] out = new long[1];
         return NativeBridge.writerStats(handle, out) == NativeBridge.OK ? out[NativeBridge.STAT_RAM_BYTES] : 0;
     }
 
@@ -581,14 +614,21 @@ final class RustIndexWriter implements DocumentIndexWriter {
     public void close() throws IOException {
         synchronized (lock) {
             closed = true;
-            if (nativeClosed == false) {
-                nativeClosed = true;
-                NativeBridge.writerClose(handle);
+            indexing.writeLock().lock();
+            try {
+                if (nativeClosed == false) {
+                    nativeClosed = true;
+                    NativeBridge.writerClose(handle);
+                }
+            } finally {
+                indexing.writeLock().unlock();
             }
-            if (breaker != null) {
-                breaker.addWithoutBreaking(-accounted);
+            synchronized (accounting) {
+                if (breaker != null) {
+                    breaker.addWithoutBreaking(-accounted);
+                }
+                accounted = 0;
             }
-            accounted = 0;
         }
     }
 

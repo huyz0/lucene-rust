@@ -371,6 +371,40 @@ pub(crate) fn key_of_parent(keys: &mut [Option<i64>], is_parent: &dyn Fn(usize) 
 }
 
 impl IndexingConfig {
+    /// Whether this configuration takes explicit documents.
+    pub(crate) fn takes_explicit(&self) -> bool {
+        self.explicit
+    }
+
+    /// Checks an add of explicit documents against the registered schema and
+    /// returns, per document and inverted field, the field's index options
+    /// (`None` for a field with no terms).
+    pub(crate) fn explicit_add_options(
+        &self,
+        docs: &[ExplicitDocument],
+    ) -> Result<Vec<Vec<Option<IndexOptions>>>> {
+        if !self.explicit {
+            return Err(explicit_error("explicit documents are not enabled"));
+        }
+        docs.iter()
+            .map(|doc| {
+                self.validate_explicit(doc)?;
+                doc.fields
+                    .inverted
+                    .iter()
+                    .map(|inv| {
+                        if inv.terms.is_empty() {
+                            Ok(None)
+                        } else {
+                            self.explicit_field(inv.field_number)
+                                .map(|f| Some(f.index_options))
+                        }
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
     /// The registered number of the parent field, once a document has
     /// registered it.
     pub(crate) fn parent_field_number(&self) -> Option<i32> {
@@ -3842,5 +3876,67 @@ mod tests {
             assert_eq!(info.doc_values_type, DocValuesType::Numeric, "{name}");
             assert_eq!(info.index_options, IndexOptions::None, "{name}");
         }
+    }
+
+    /// Several threads index explicit documents through the concurrent
+    /// writer, each re-indexing every document it added as a soft update.
+    /// Each update's soft delete reaches its earlier copy whichever slot
+    /// holds it, a field registered mid-run is indexed, and the segments
+    /// pass `CheckIndex`.
+    #[test]
+    fn explicit_documents_index_from_several_threads() {
+        const THREADS: i64 = 4;
+        const PER_THREAD: i64 = 200;
+        let tmp = TempDir::new("explicit-concurrent");
+        let dir = FsDirectory::open(tmp.path());
+        let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", VERSION).unwrap();
+        let f = register(&mut w);
+        w.set_max_buffered_docs(37).unwrap();
+        let w = crate::concurrent_writer::ConcurrentIndexWriter::new(w, 4).unwrap();
+        std::thread::scope(|scope| {
+            for t in 0..THREADS {
+                let (w, f) = (&w, &f);
+                scope.spawn(move || {
+                    for k in 0..PER_THREAD {
+                        let i = t * PER_THREAD + k;
+                        w.add_explicit_documents(vec![doc(f, i)]).unwrap();
+                        w.soft_update_explicit_documents(
+                            id_term(i),
+                            vec![doc_at(f, i, 1_000 + i)],
+                            &[soft_delete(i)],
+                        )
+                        .unwrap();
+                        if t == 0 && k == PER_THREAD / 2 {
+                            let extra = w
+                                .register_field(
+                                    FieldInfo::new("late", 0)
+                                        .with_index_options(IndexOptions::Docs)
+                                        .with_omit_norms(true),
+                                )
+                                .unwrap();
+                            let mut d = doc(f, 10_000);
+                            d.fields.inverted.push(InvertedField {
+                                field_number: extra,
+                                terms: vec![term_docs("x")],
+                                norm: None,
+                            });
+                            w.add_explicit_documents(vec![d]).unwrap();
+                        }
+                    }
+                });
+            }
+        });
+        w.commit().unwrap();
+        let mut w = w.into_writer().unwrap();
+        let docs = usize::try_from(THREADS * PER_THREAD).unwrap();
+        assert_eq!(counts(&mut w), (2 * docs + 1, i32::try_from(docs).unwrap()));
+        check(&dir);
+        let late = w
+            .segment_infos()
+            .segments
+            .iter()
+            .filter(|sci| segment_fields(&dir, sci).iter().any(|fi| fi.name == "late"))
+            .count();
+        assert_eq!(late, 1, "one segment holds the late field");
     }
 }
