@@ -106,7 +106,7 @@ impl TermIds {
     fn with_expected(expected: usize) -> TermIds {
         let n = (expected.max(4) * 2).next_power_of_two();
         TermIds {
-            slots: vec![Self::EMPTY; n],
+            slots: vec![Self::EMPTY; n], // alloc-ok: expected is capped at 2^16
         }
     }
 
@@ -138,7 +138,7 @@ impl TermIds {
         self.slots[slot] = (terms.len() - 1) as u32;
         if terms.len() * 2 > self.slots.len() {
             let mask = self.slots.len() * 2 - 1;
-            let mut slots = vec![Self::EMPTY; mask + 1];
+            let mut slots = vec![Self::EMPTY; mask + 1]; // alloc-ok: twice the terms already held
             for (id, t) in terms.iter().enumerate() {
                 let mut i = t.hash as usize & mask;
                 while slots[i] != Self::EMPTY {
@@ -278,7 +278,7 @@ pub(crate) fn invert(
         last_start_offset: 0,
         last_position: 0,
         ids: TermIds::with_expected(expected),
-        terms: Vec::with_capacity(expected),
+        terms: Vec::with_capacity(expected), // alloc-ok: capped at 2^16
     };
     for text in instances {
         let mut stream = analyzer.token_stream(name, text).map_err(failed)?;
