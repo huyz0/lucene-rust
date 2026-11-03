@@ -25,6 +25,22 @@ use crate::fst::{
 };
 use crate::fst_compiler::{CompiledFst, FstOutputs, FstReadError, ReverseReader};
 
+/// The set bits in `bytes`, eight bytes at a time (`BitTableUtil.countBits`
+/// reads the table as longs). Bit order does not matter to a count, so the
+/// table's bytes are counted in whatever order they sit in.
+pub(crate) fn popcount_bytes(bytes: &[u8]) -> u32 {
+    let mut words = bytes.chunks_exact(8);
+    let mut count: u32 = 0;
+    for w in &mut words {
+        let w = u64::from_ne_bytes([w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7]]);
+        count = count.wrapping_add(w.count_ones());
+    }
+    for &b in words.remainder() {
+        count = count.wrapping_add(b.count_ones());
+    }
+    count
+}
+
 mod fst_enum;
 pub use fst_enum::{BytesRefFstEnum, IntsRefFstEnum};
 
@@ -922,11 +938,8 @@ impl<O: FstOutputs> TypedFst<O> {
     fn bit_count(&self, arc: &Arc<O::Value>, input: &mut ReverseReader<'_>) -> Result<i32> {
         input.set_position(arc.bit_table_start);
         let n = Self::num_presence_bytes(arc.num_arcs);
-        let mut count = 0i32;
-        for _ in 0..n {
-            count += input.read_byte()?.count_ones() as i32;
-        }
-        Ok(count)
+        let table = input.take_below(usize::try_from(n).unwrap_or(usize::MAX))?;
+        Ok(popcount_bytes(table) as i32)
     }
 
     // ARITH: popcounts of at most `bit` bits.
@@ -938,11 +951,9 @@ impl<O: FstOutputs> TypedFst<O> {
         input: &mut ReverseReader<'_>,
     ) -> Result<i32> {
         input.set_position(arc.bit_table_start);
-        let mut count = 0i32;
         let full = bit >> 3;
-        for _ in 0..full {
-            count += input.read_byte()?.count_ones() as i32;
-        }
+        let table = input.take_below(usize::try_from(full).unwrap_or(usize::MAX))?;
+        let mut count = popcount_bytes(table) as i32;
         let rem = bit & 7;
         if rem != 0 {
             count += (input.read_byte()? & ((1u8 << rem) - 1)).count_ones() as i32;
@@ -1038,11 +1049,12 @@ pub fn get<O: FstOutputs>(fst: &TypedFst<O>, input: &[i32]) -> Result<Option<O::
             None => return Ok(None),
             Some(next) => arc = next,
         }
-        output = O::add(&output, &arc.output);
+        O::add_assign(&mut output, &arc.output);
     }
-    Ok(arc
-        .is_final()
-        .then(|| O::add(&output, &arc.next_final_output)))
+    Ok(arc.is_final().then(|| {
+        O::add_assign(&mut output, &arc.next_final_output);
+        output
+    }))
 }
 
 /// `Util.get(fst, BytesRef)`.
