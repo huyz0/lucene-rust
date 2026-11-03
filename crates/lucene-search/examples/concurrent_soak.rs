@@ -1,4 +1,4 @@
-//! The concurrent writer's endurance run (M4's T4.3 and its soak criteria):
+//! The concurrent writer's endurance run:
 //! indexing threads update and delete their own ids at random through one
 //! `ConcurrentIndexWriter`, a merge thread merges, and the main thread commits
 //! at random intervals. Every commit is checked **exactly**: `commit()`

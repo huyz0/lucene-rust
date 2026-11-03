@@ -8,7 +8,7 @@
 //!   is written through its sparse (`IndexedDISI`) variant.
 //! - `<out>/merged`: the same documents, merged into one segment. The merge
 //!   must carry every missing value across as missing -- the sparse merge
-//!   path, which for the four non-numeric types did not exist before M4.
+//!   path.
 //!
 //! Document `i` (in insertion order, stored as `id = "doc{i}"`) has:
 //!

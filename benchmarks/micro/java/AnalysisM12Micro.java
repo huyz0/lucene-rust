@@ -46,7 +46,7 @@ import org.apache.lucene.analysis.uk.UkrainianMorfologikAnalyzer;
 import morfologik.stemming.polish.PolishStemmer;
 
 /**
- * M12's pairs (the Rust twin is {@code benchmarks/rust-runner/src/micro_analysis_m12.rs}): the
+ * The pairs (the Rust twin is {@code benchmarks/rust-runner/src/micro_analysis_m12.rs}): the
  * language modules' filters over corpora both sides generate from {@link SweepMicro.Rng}. Units are
  * tokens; output is {@code name\tns_per_token\ttokens}.
  */

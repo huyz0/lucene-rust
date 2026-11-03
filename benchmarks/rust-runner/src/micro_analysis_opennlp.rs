@@ -1,4 +1,4 @@
-//! M12 T12.5's pairs (`benchmarks/micro/java/AnalysisOpenNlpMicro.java` is
+//! The pairs (`benchmarks/micro/java/AnalysisOpenNlpMicro.java` is
 //! the Java twin): analysis-opennlp chains, built by their factories over
 //! the models `fixtures/src/GenAnalysisOpenNLP.java` trains, over that
 //! fixture's text, one document per line.

@@ -9,10 +9,8 @@
 //!
 //! # Fidelity
 //!
-//! As of the M2 sweep this is a **faithful, line-by-line port** of
-//! `TieredMergePolicy`'s three decision entry points and their shared
-//! machinery, not the "real-shaped but simplified" approximation that used
-//! to live here:
+//! This is a **faithful, line-by-line port** of `TieredMergePolicy`'s three
+//! decision entry points and their shared machinery:
 //!
 //! | Java | Rust |
 //! |---|---|

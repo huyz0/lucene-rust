@@ -1,4 +1,4 @@
-//! M13 T13.3c's infix pair (the Java twin is
+//! The infix pair (the Java twin is
 //! `benchmarks/micro/java/InfixSuggestMicro.java`): the phrases of
 //! `micro_analyzing` repeated to [`SCALE`] suggestions, each with its number
 //! appended, so a lookup has hundreds of matches to rank. `infix_lookup`: top 5

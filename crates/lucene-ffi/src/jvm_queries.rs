@@ -1,5 +1,5 @@
 //! The query-tree nodes that take the last Lucene queries OpenSearch builds
-//! off the Java fallback (the plugin's Track A): multi-term queries over any
+//! off the Java fallback: multi-term queries over any
 //! automaton, the doc-values-only queries, `CoveringQuery` and the two
 //! distance-feature queries.
 //!

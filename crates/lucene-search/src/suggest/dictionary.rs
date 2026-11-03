@@ -1,5 +1,5 @@
 //! `FileDictionary`, `DocumentDictionary` and `DocumentValueSourceDictionary`
-//! (M13 T13.3a): the [`Dictionary`]s of the suggest
+//! The [`Dictionary`]s of the suggest
 //! package. Each reads its source when
 //! [`get_entry_iterator`](crate::spell::Dictionary::get_entry_iterator) is
 //! called and replays the entries from memory, so a malformed line or a

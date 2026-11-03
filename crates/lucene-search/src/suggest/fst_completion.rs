@@ -1,6 +1,6 @@
 //! `org.apache.lucene.search.suggest.fst.FSTCompletion`, `FSTCompletionBuilder`
 //! and `FSTCompletionLookup`, with the `BytesRefSorter` they sort through
-//! (M13 T13.3b): an automaton over the suggestion strings whose root arcs
+//! An automaton over the suggestion strings whose root arcs
 //! are the weight buckets.
 //!
 //! Departures from Java, all forced by Rust or by this port's in-memory

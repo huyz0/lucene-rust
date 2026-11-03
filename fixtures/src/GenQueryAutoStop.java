@@ -28,7 +28,7 @@ import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
 
 /**
- * M11 T11.6: {@code QueryAutoStopWordAnalyzer} over a Java-written index, recorded for
+ * {@code QueryAutoStopWordAnalyzer} over a Java-written index, recorded for
  * crates/lucene-search/tests/query_auto_stop_fixtures.rs.
  *
  * <p>{@code query_auto_stop/index}: three segments (no merging) of documents whose {@code body} and

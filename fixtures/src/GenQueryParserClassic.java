@@ -31,7 +31,7 @@ import org.apache.lucene.search.Query;
 import org.apache.lucene.util.CharsRef;
 
 /**
- * M13 T13.1: the classic {@code QueryParser} over {@code fixtures/corpus/queryparser-classic.txt}
+ * The classic {@code QueryParser} over {@code fixtures/corpus/queryparser-classic.txt}
  * ({@code <config>.tsv}) and over 3,000 seeded joins of syntax fragments ({@code fragments.txt},
  * then {@code frag_<config>.tsv}), under several parser configurations. A row is the escaped query
  * string, then {@code Q}, the query's {@code toString("f")} and its class tree, or {@code E} and

@@ -1,6 +1,6 @@
 //! A [`Directory`] that can **crash** -- the durability half of Lucene's
 //! test-framework `MockDirectoryWrapper` (`crash()`, `unSyncedFiles`), for
-//! M4's crash fuzzing (T4.4).
+//! the crash fuzzing.
 //!
 //! A process kill leaves the page cache intact, so it cannot test what
 //! `fsync` ordering is for. This models a **power loss** instead. It wraps a

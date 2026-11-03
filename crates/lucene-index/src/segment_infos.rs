@@ -1689,7 +1689,7 @@ mod tests {
         std::fs::remove_dir_all(&dir_path).ok();
     }
 
-    // --- the arithmetic gate (c28) ---
+    // --- the arithmetic gate ---
 
     /// Eight flipped bytes in `delGen` are enough to make every *later* commit
     /// panic: `getNextDelGen()` is `delGen + 1`, which Java wraps and Rust

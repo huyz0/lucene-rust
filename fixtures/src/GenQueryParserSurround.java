@@ -33,7 +33,7 @@ import org.apache.lucene.search.TermQuery;
 import org.apache.lucene.store.FSDirectory;
 
 /**
- * M13 T13.1: the surround query language over {@code fixtures/corpus/queryparser-surround.txt}, an
+ * The surround query language over {@code fixtures/corpus/queryparser-surround.txt}, an
  * index of ten documents ({@code index/}, fields {@code body} and {@code title}) and, per query,
  * {@code surround.tsv}: the escaped query, then {@code P}, {@link SrndQuery#toString()}, the
  * rewritten Lucene query for field {@code body} (canonical: a {@code SpanOrQuery}'s clauses

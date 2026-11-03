@@ -10,7 +10,7 @@ import org.apache.lucene.queryparser.classic.QueryParser;
 import org.apache.lucene.search.Query;
 
 /**
- * M13 T13.5's pairs (the Rust twin is {@code benchmarks/rust-runner/src/micro_memory_index.rs}):
+ * The pairs (the Rust twin is {@code benchmarks/rust-runner/src/micro_memory_index.rs}):
  * {@code MemoryIndex} over {@code fixtures/corpus/memory-index-docs.txt} with offsets, the queries of
  * {@code memory-index-queries.txt} parsed beforehand. {@code mi_build}: every document indexed and
  * frozen (units: documents); {@code mi_build_search}: every document indexed, then every query run

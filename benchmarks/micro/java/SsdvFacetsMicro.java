@@ -31,7 +31,7 @@ import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
 
 /**
- * M13 T13.4d2's sorted-set facet and sampling pair (the Rust twin is {@code
+ * The sorted-set facet and sampling pair (the Rust twin is {@code
  * benchmarks/rust-runner/src/micro_ssdv_facets.rs}), with the same case names. {@code build <dir>}
  * writes, once, a 200,000-document, four-segment index of {@code SortedSetDocValuesFacetField}s: a
  * flat {@code Author} (2,000 values), a multi-valued {@code Tag} (1-3 of 500), a hierarchical

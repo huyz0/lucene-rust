@@ -16,7 +16,7 @@ import org.apache.lucene.index.Term;
 import org.apache.lucene.store.FSDirectory;
 
 /**
- * Concurrent indexing throughput (M4's T4.3): {@code IndexWriter} shared by several threads, each
+ * Concurrent indexing throughput: {@code IndexWriter} shared by several threads, each
  * adding its share of the same 100 000 documents, then one commit.
  *
  * <ul>

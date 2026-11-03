@@ -446,7 +446,7 @@ pub fn cannot_load_class(class_name: &str) -> FactoryError {
 /// The analyzers a `SynonymFilterFactory`'s `analyzer` may name: every
 /// analyzer with a public no-arg constructor (Java's
 /// `getConstructor().newInstance()`) in lucene-core and analysis-common,
-/// bar `ThaiAnalyzer` (M12).
+/// bar `ThaiAnalyzer`.
 pub fn new_analyzer(class_name: &str) -> Result<Analyzer, FactoryError> {
     use crate::core_analysis::{SimpleAnalyzer, UnicodeWhitespaceAnalyzer, WhitespaceAnalyzer};
     Ok(match class_name {

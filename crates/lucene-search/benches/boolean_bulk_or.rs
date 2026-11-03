@@ -1,4 +1,4 @@
-//! Settles b12 finding F-22: `BooleanScorer`'s 4,096-document window/bucket bulk
+//! Measures `BooleanScorer`'s 4,096-document window/bucket bulk
 //! OR against this port's per-document min-scan disjunction
 //! (`docid_set::Disjunction`) and, for `minimum_should_match > 1`, against the
 //! whole-segment `HashMap<i32, usize>` tally that `should_match_counts` built.
@@ -7,7 +7,7 @@
 //!
 //! - **`or4_dense`** -- four clauses over a 1,000,000-document segment, each
 //!   matching roughly one document in ten. This is the benchmark corpus's
-//!   `or t0 t1 t2 t3` shape, the query b12 measured at 0.26x of Java.
+//!   `or t0 t1 t2 t3` shape.
 //! - **`or4_sparse`** -- the same four clauses at one match in a thousand, so
 //!   most windows are empty. This is where a window-at-a-time scorer could
 //!   plausibly *lose*, and the reason this port visits only non-empty windows

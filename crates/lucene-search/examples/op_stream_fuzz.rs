@@ -1,4 +1,4 @@
-//! The Rust half of M4's differential operation-stream fuzzer (T4.5):
+//! The Rust half of the differential operation-stream fuzzer:
 //! `fixtures/src/OpStreamFuzz.java`'s seeded stream -- adds, updates,
 //! deletes by id and by body word, numeric doc-values updates, flushes and
 //! commits -- applied to this port's `IndexWriter`, then dumped in the same

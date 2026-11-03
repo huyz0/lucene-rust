@@ -1,4 +1,4 @@
-//! M14.i, differentially against Lucene 10.5.0: `fixtures/src/GenToolsDemo.java`
+//! Differentially against Lucene 10.5.0: `fixtures/src/GenToolsDemo.java`
 //! ran each line of `tools/demo/cases.tsv` through the `demo` module's
 //! `IndexFiles` and `SearchFiles`, with the line's text on `System.in`, and
 //! recorded what they printed. The same lines through

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# M5's cluster proof: three OpenSearch 3.9.0 nodes with the lucene-rust plugin,
+# the cluster proof: three OpenSearch 3.9.0 nodes with the lucene-rust plugin,
 # two serving Rust-engine indices with the Rust writer and one
 # (lucene_rust.engine.node_enabled: false) with OpenSearch's own engine, then
 # opensearch-plugin/e2e/verify_cluster.py: document replication, peer recovery,
@@ -10,7 +10,8 @@
 #
 #   scripts/verify-opensearch-cluster.sh [--keep] [--no-build]
 #
-# Needs Docker, a JDK 25 (Gradle's toolchain; see opensearch-plugin/build.gradle), Gradle and cargo; the plugin image is the one
+# Needs Docker, a JDK 25 (Gradle's toolchain; see
+# opensearch-plugin/build.gradle), Gradle and cargo; the plugin image is the one
 # scripts/verify-opensearch.sh builds. Nodes listen on localhost:9201..9203.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."

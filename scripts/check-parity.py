@@ -7,8 +7,7 @@ The ledger is `docs/parity.md` (an index) plus one file per area under
 Two failure modes have already been observed and cost real review time:
 
   * A Rust path in a row no longer exists -- a module was renamed or moved
-    and the row rotted. Batch c10 shipped a stale path that survived to its
-    own Tier-2 review.
+    and the row rotted.
   * A ported source file has no row at all, so its status cannot be looked
     up.
 
@@ -60,28 +59,10 @@ PARITY_DIR = os.path.join(ROOT, "docs", "parity")
 
 # Budgets. A row is one Java class or one coherent feature: what is ported,
 # where, how it differs, the evidence, the benchmark ratio -- not its history
-# (that is `git log` and `docs/sweep/`). Past these, split the row or the
+# (that is `git log`). Past these, split the row or the
 # file; do not raise them to fit.
 MAX_ROW = 2_000
 MAX_FILE = 80_000
-# The total grew with the port: 400 KB held until M13, which adds six modules'
-# worth of rows (highlighter, suggest, facet, monitor, memory, queryparser) and
-# M14 more. 450 KB was spent by M13's highlighter, suggest and first facet
-# rows; the rest of lucene-facet and M14's modules need room for their rows,
-# so it was 550 KB. M14.g's lucene-codecs (bloom, memory, bitvectors,
-# SimpleText, blocktreeords, uniformsplit, blockterms: a row or two each)
-# found it full, with rows trimmed to fit, so it is 560 KB. M14.i's
-# command-line tools (`tools.md`: misc, demo, luke, benchmark) and M14.h's
-# lucene-test-framework (`test-framework.md`, growing over eight batches)
-# need room for theirs, so it is 590 KB. M14.h's h6 found it full: trimming
-# other rows to fit dropped Differs that were still true, and h6's points,
-# KNN and test-postings rows and h8's are still to come, so it is 600 KB.
-# h8 left it at 599,973 with the last ~80 test-framework rows (test codecs,
-# search, geo, index, util) and M14.j's closing rows still unwritten, at
-# roughly 500 bytes each, so it was 660 KB. On 2026-10-27 four M14 tracks
-# (test codecs, search, geo, format suites) started in parallel against a
-# ledger at 659,860: 760 KB lets each write its rows without trimming true
-# Differs from the others'.
 # The per-row and per-file budgets
 # are what keep a row short; the total only says how many rows there may be.
 MAX_TOTAL = 760_000
@@ -95,18 +76,16 @@ MD_LINK = re.compile(r"\[[^\]]*\]\(([^)\s#]+)(?:#[^)]*)?\)")
 # A Rust path: `crate/src/path.rs`, optionally followed by `::item`.
 RUST_PATH = re.compile(r"`(lucene-[a-z]+(?:-[a-z0-9]+)*/(?:src|tests|benches|examples)/[A-Za-z0-9_/]+\.rs)(?:::[^`]*)?`")
 # The same, capturing the `::item` suffix -- a single item, or a
-# `::{a, b, C::d}` group. Validated since c41: c37's Tier-2 review found
-# `parity.md` describing two *deleted* functions in the present tense, and
-# this script pointedly checked only the file path.
+# `::{a, b, C::d}` group. Validated, so a row cannot describe a deleted function
+# in the present tense.
 RUST_ITEMS = re.compile(
     r"`(lucene-[a-z]+(?:-[a-z0-9]+)*/(?:src|tests|benches|examples)/[A-Za-z0-9_/]+\.rs)::([^`]+)`"
 )
 # What an item name may look like once the `Type::method` and generic noise is
 # stripped: the last path segment is what has to exist in the file.
 ITEM_SPLIT = re.compile(r"[,\s]+")
-# A script or generator named in a row: `scripts/x.sh`, `tools/X.java`. The
-# M11 part 2 review found the Snowball rows naming `tools/snowball_utf16_tables.py`,
-# a file that never existed (the script is `snowball_utf16.py`).
+# A script or generator named in a row: `scripts/x.sh`, `tools/X.java`. It must
+# exist.
 TOOL_PATH = re.compile(r"`((?:scripts|tools)/[A-Za-z0-9_./-]+\.(?:sh|py|java|rs))`")
 # A Java class reference: `pkg/Class` or `pkg/Class.method`, inside backticks.
 JAVA_REF = re.compile(r"`((?:[a-z0-9]+/)+[A-Z][A-Za-z0-9]*)")
@@ -301,7 +280,7 @@ def check_layout(ledger, errors):
 # the items a bench case drives.
 BENCH_SOURCES = os.path.join(ROOT, "benchmarks", "rust-runner", "src")
 BENCH_USE = re.compile(r"\buse\s+(lucene_[a-z0-9_]+)::([^;]*);", re.S)
-# The crates `check_bench_clauses` covers: M12's language modules, one crate
+# The crates `check_bench_clauses` covers: the language modules, one crate
 # per Lucene module (`lucene-analysis-kuromoji`, ...).
 BENCH_CLAUSE_CRATE = re.compile(r"lucene-analysis-[a-z0-9-]+")
 BENCH_CLAUSE = re.compile(r"\bBench\b")
@@ -324,8 +303,7 @@ def bench_imports():
 def check_bench_clauses(name, text, errors, imported):
     """A **ported** row of a language-module crate whose Rust column names an
     item a bench case imports must carry a `Bench` clause (its ratio, or a
-    pointer to the row that has it): the M12 part 2 review found the Nori
-    rows silent about a bench that existed and had been run.
+    pointer to the row that has it).
 
     Scoped to the `lucene-analysis-<module>` crates: ledger-wide, the same
     rule flags 95 rows of other crates whose items a bench imports only to

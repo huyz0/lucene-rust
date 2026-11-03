@@ -1,4 +1,4 @@
-//! Port of `org.apache.lucene.index.IndexUpgrader` (M8): rewrites every
+//! Port of `org.apache.lucene.index.IndexUpgrader`: rewrites every
 //! segment an older Lucene wrote into the current format, by a forced merge
 //! under [`UpgradeIndexMergePolicy`], then commits -- the tool an operator
 //! runs to finish a 9.x/10.x-to-10.5 upgrade instead of waiting for ordinary

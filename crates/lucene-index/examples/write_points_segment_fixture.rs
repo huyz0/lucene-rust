@@ -1,6 +1,6 @@
 //! Writes three indexes whose documents carry **points**, through the real
 //! `IndexWriter`, for `fixtures/src/VerifyPointsSegment.java` to read with
-//! real Lucene (M4's T4.2):
+//! real Lucene:
 //!
 //! - `<out>/flushed`: 20 000 documents in three flushed segments;
 //! - `<out>/merged`: the same documents merged into one segment;

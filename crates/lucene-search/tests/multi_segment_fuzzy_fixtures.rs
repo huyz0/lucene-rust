@@ -11,8 +11,7 @@
 //! over those frequencies and scores every clause with it against the
 //! reader-wide `CollectionStatistics.docCount`.
 //!
-//! This port expanded and blended within one segment (ledger item 9's
-//! remaining half), which is the multi-term twin of the per-leaf idf defect
+//! Expanding and blending within one segment is the multi-term twin of the per-leaf idf defect
 //! `multi_segment_scoring_fixtures.rs` covers for `TermQuery` -- and is
 //! likewise invisible on a single segment, which is why every other fuzzy
 //! fixture in this tree (all over `blocktree_index`) agrees with either

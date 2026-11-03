@@ -23,7 +23,7 @@ import org.apache.lucene.util.BytesRef;
 
 /**
  * Differential fixture for {@code TermsEnum.termState()} and {@code seekExact(term, state)} on
- * the block-tree terms dictionary (M14.h, {@code RandomPostingsTester}'s {@code TERM_STATE}): a
+ * the block-tree terms dictionary ({@code RandomPostingsTester}'s {@code TERM_STATE}): a
  * one-segment index of {@value #DOCS} standard-analyzed documents drawn from {@code new
  * Random(42)}, every term's state saved by one enum, then {@value #SEEKS} seeks of fresh enums
  * through a saved state drawn from {@code new Random(7)}.

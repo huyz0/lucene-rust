@@ -12,34 +12,33 @@
 //! (newest) version of the document — not a specific sentinel value, mere
 //! presence. [`is_soft_deleted`]/[`effective_live_docs`] use that same
 //! presence-based rule against an already-opened
-//! [`lucene_codecs::doc_values::NumericEntry`] (the read side this port
-//! already has — see `crates/lucene-codecs/src/doc_values.rs`, task #4/#21).
+//! [`lucene_codecs::doc_values::NumericEntry`] (see
+//! `crates/lucene-codecs/src/doc_values.rs`).
 //!
 //! # Scope: what this deliberately is not
 //!
-//! **Incremental marking: now available via task #54's update overlay.**
+//! **Incremental marking, through an update overlay.**
 //! Real Lucene's soft-delete *write* path (`IndexWriter.softUpdateDocument`)
-//! relies on `NumericDocValuesFieldUpdates`: an existing segment's
-//! doc-values file gets a small delta record appended (a per-doc-values-
-//! generation "diff" file), not rewritten from scratch, so marking one doc
-//! soft-deleted is cheap even on a huge segment.
-//! [`lucene_codecs::doc_values_updates`] (task #54) now provides exactly
-//! this primitive in single-generation form: [`mark_soft_deleted_via_overlay`]
+//! relies on `NumericDocValuesFieldUpdates`: an existing segment's doc-values
+//! file gets a small delta record appended (a per-doc-values- generation "diff"
+//! file), not rewritten from scratch, so marking one doc soft-deleted is cheap
+//! even on a huge segment. [`lucene_codecs::doc_values_updates`] provides this
+//! primitive in single-generation form: [`mark_soft_deleted_via_overlay`]
 //! writes a tiny standalone overlay file recording just the one doc's
 //! soft-deletes-field value (any value — presence is all that matters, see
-//! [`is_soft_deleted`]'s doc comment) without touching the base
-//! `.dvd`/`.dvm` bytes at all, and [`is_soft_deleted_with_overlay`]/
-//! [`effective_live_docs_with_overlay`] check that overlay before falling
-//! back to the base decode. This is a **single overlay round** (one file, one
-//! batch of updates) — task #54 explicitly does not implement stacking many
-//! sequential update generations with newest-wins semantics across rounds,
-//! nor `SegmentCommitInfo`/`.si` `docValuesGen` metadata wiring (see that
-//! module's own doc comment for the full scope statement). A caller needing
-//! a second independent update round today has to compose a fresh merged
-//! overlay itself rather than relying on multi-generation stacking.
+//! [`is_soft_deleted`]'s doc comment) without touching the base `.dvd`/`.dvm`
+//! bytes at all, and [`is_soft_deleted_with_overlay`]/
+//! [`effective_live_docs_with_overlay`] check that overlay before falling back
+//! to the base decode. This is a **single overlay round** (one file, one batch
+//! of updates); it does not implement stacking many sequential update
+//! generations with newest-wins semantics across rounds, nor
+//! `SegmentCommitInfo`/`.si` `docValuesGen` metadata wiring (see that module's
+//! own doc comment for the full scope statement). A caller needing a second
+//! independent update round has to compose a fresh merged overlay itself rather
+//! than relying on multi-generation stacking.
 //!
 //! The plain (non-overlay) [`is_soft_deleted`]/[`effective_live_docs`]
-//! functions below are unchanged and remain the right choice whenever no
+//! functions below are the right choice whenever no
 //! overlay is in play (the common case — most segments never get an
 //! incremental doc-values update at all).
 //!
@@ -240,7 +239,7 @@ pub fn is_live(
 ) -> Result<bool> {
     // `doc` is a caller-supplied `i32` and `live_docs` a caller-supplied
     // bitset: nothing here relates the two. A negative `doc` sign-extends
-    // through `as usize` to `usize::MAX` (c28's `term_delete` defect), and a
+    // through `as usize` to `usize::MAX`, and a
     // `doc` merely past the end reads a ghost bit -- a document reported
     // *live* that the bitset never covered. A doc outside the live-docs
     // bitset is not live, which is the same answer `vector_query`'s accept
@@ -292,7 +291,7 @@ pub fn effective_live_docs(
 /// already-buffered updates for the same segment (multiple docs marked
 /// before one flush) is the caller's responsibility — pass every
 /// `(doc, value)` pair accumulated so far; this is still exactly one overlay
-/// generation (task #54's documented single-round MVP scope), not a
+/// generation, not a
 /// stacked-generations API.
 pub fn mark_soft_deleted_via_overlay(
     docs: &[i32],
@@ -445,7 +444,7 @@ mod tests {
 
     /// Reuses the real checked-in `doc_values_index` fixture's "sparse"
     /// numeric field (real Java-`IndexWriter`-written `.dvm`/`.dvd`/`.fnm`
-    /// bytes, task #4/#21 -- see `crates/lucene-codecs/tests/
+    /// bytes -- see `crates/lucene-codecs/tests/
     /// doc_values_fixtures.rs`) rather than a hand-built or synthetically
     /// encoded field: this is genuinely presence-shaped (`IndexedDISI`, not
     /// dense) doc-values, exactly the encoding real Lucene's actual
@@ -781,7 +780,7 @@ mod tests {
         assert!(collector2.docs.is_empty());
     }
 
-    // --- task #54: overlay-based incremental soft-delete marking ---
+    // --- overlay-based incremental soft-delete marking ---
 
     const SEG_ID: [u8; ID_LENGTH] = [3u8; ID_LENGTH];
 
@@ -1090,10 +1089,9 @@ mod tests {
 
     /// `is_live` takes a caller-supplied `doc` and a caller-supplied
     /// `live_docs` and nothing relates the two. A negative `doc` sign-extends
-    /// through `as usize` into `usize::MAX` -- c28's `term_delete` defect,
-    /// which `FixedBitSet::get` turns into an index panic. This is the
-    /// `fixed-bitset-bound` rule's own regression test: without the bound it
-    /// panics rather than answering.
+    /// through `as usize` into `usize::MAX`, which `FixedBitSet::get` turns
+    /// into an index panic. This is the `fixed-bitset-bound` rule's own
+    /// regression test: without the bound it panics rather than answering.
     #[test]
     fn a_negative_doc_id_is_not_live_rather_than_a_panic() {
         let mut live = FixedBitSet::new(5);
@@ -1120,11 +1118,11 @@ mod tests {
     }
 
     /// `hard_live_bits` clones the caller's `live_docs`, so the bitset
-    /// `clear_present` then indexes has the *caller's* length -- not
-    /// `max_doc`. Bounding on `max_doc` is c28's `deletes::mark_deleted`
-    /// shape exactly, and here the two genuinely can disagree because they are
-    /// separate parameters of a `pub fn`. With a 5-bit `live_docs` and a
-    /// `max_doc` of 64, the old bound let a soft-delete write a ghost bit.
+    /// `clear_present` then indexes has the *caller's* length -- not `max_doc`.
+    /// Bounding on `max_doc` would be wrong: here the two genuinely can
+    /// disagree because they are separate parameters of a `pub fn`. With a
+    /// 5-bit `live_docs` and a `max_doc` of 64, the old bound let a soft-delete
+    /// write a ghost bit.
     #[test]
     fn a_max_doc_larger_than_the_live_docs_bitset_does_not_write_a_ghost_bit() {
         // A *dense* soft-deletes entry says "every one of `numValues`

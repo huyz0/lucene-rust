@@ -25,7 +25,7 @@ import org.apache.lucene.analysis.shingle.ShingleFilter;
 import org.apache.lucene.analysis.standard.StandardTokenizer;
 
 /**
- * M11's analysis-common pair (the Rust twin is {@code
+ * The analysis-common pair (the Rust twin is {@code
  * benchmarks/rust-runner/src/micro_analysis_common.rs}): one analyzer per ported package over
  * {@link SweepMicro}'s documents, each token's term bytes read as {@code IndexingChain} reads
  * them. Units are tokens; output is {@code name\tns_per_token\ttokens}.

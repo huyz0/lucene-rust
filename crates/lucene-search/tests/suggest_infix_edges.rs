@@ -1,4 +1,4 @@
-//! Boundary and error handling of the infix suggesters (M13 T13.3c) that the
+//! Boundary and error handling of the infix suggesters that the
 //! Java-fixture differential tests do not reach: the blended constructors and
 //! custom coefficient, the writer flow of the blended wrapper, overlapping
 //! payloads, and the persistence hooks Java leaves to subclasses.

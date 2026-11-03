@@ -1,4 +1,4 @@
-//! M13 T13.3e against Lucene 10.5.0 (`fixtures/src/GenSpellDistances.java`):
+//! Against Lucene 10.5.0 (`fixtures/src/GenSpellDistances.java`):
 //! every string distance over every ordered pair of `words.tsv`, bit for
 //! bit; `SuggestWord.toString`; the two comparators as sort orders; the
 //! queue's pop order at several sizes; and `PlainTextDictionary`'s entries.

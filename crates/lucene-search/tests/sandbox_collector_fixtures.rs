@@ -1,4 +1,4 @@
-//! M14.f, differentially against Lucene 10.5.0:
+//! Differentially against Lucene 10.5.0:
 //! `fixtures/src/GenSandboxCollectors.java`.
 //!
 //! lucene-sandbox's collectors over a three-segment index with deletions:

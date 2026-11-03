@@ -1,4 +1,4 @@
-//! M13 T13.4c's drill-sideways pair (the Java twin is
+//! The drill-sideways pair (the Java twin is
 //! `benchmarks/micro/java/DrillSidewaysMicro.java`), with the same case
 //! names, over the corpus `FacetCountsMicro build <dir>` writes. Each case is
 //! one sequential `DrillSideways::search(ddq, 10)`: the `DrillSidewaysQuery`

@@ -1,4 +1,4 @@
-//! M13 T13.2 (`matchhighlight`) against Lucene 10.5.0 and the JDK it ran on.
+//! (`matchhighlight`) against Lucene 10.5.0 and the JDK it ran on.
 
 use std::fs;
 use std::path::PathBuf;

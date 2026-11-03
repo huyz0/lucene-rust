@@ -1,4 +1,4 @@
-//! M13 T13.3e against Lucene 10.5.0 (`fixtures/src/GenSpellChecker.java`):
+//! Against Lucene 10.5.0 (`fixtures/src/GenSpellChecker.java`):
 //! `DirectSpellChecker` over a four-segment index with deletions, 22
 //! configurations x every query x the three modes x three sizes; the
 //! dictionaries a `LuceneDictionary` and a `HighFrequencyDictionary` read off

@@ -1,4 +1,4 @@
-//! M11 T11.3's Snowball pair (`benchmarks/micro/java/SnowballMicro.java` is
+//! The Snowball pair (`benchmarks/micro/java/SnowballMicro.java` is
 //! the Java twin): `WhitespaceTokenizer` + `SnowballFilter` per language over
 //! that language's fixture vocabulary (`fixtures/data/snowball/<Language>.words`,
 //! the words only, 100 to a document).

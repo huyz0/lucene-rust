@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# M14.h's fault run: crates/lucene-test-framework/examples/io_faults.rs over
+# the fault run: crates/lucene-test-framework/examples/io_faults.rs over
 # 300 seeds. An IndexWriter indexes through a MockDirectoryWrapper failing
 # 10% of its writes and opens; each round must not panic, must see only
 # injected errors, and must leave (after the mock directory's crash on close)

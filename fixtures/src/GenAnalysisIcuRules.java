@@ -15,7 +15,7 @@ import java.util.TreeMap;
  * (Rule sets of a custom {@code $dictionary} variable are not generated: ICU4J 77.1 loops forever
  * iterating one over Thai text; Lucene's {@code Default.rbbi} covers the dictionary categories.)
  *
- * M12 T12.4: ICU4J 77.1's break rule compiler ({@code new RuleBasedBreakIterator(String rules)},
+ * ICU4J 77.1's break rule compiler ({@code new RuleBasedBreakIterator(String rules)},
  * what Lucene's {@code ICUTokenizerFactory} runs for each of its {@code rulefiles}), compared by
  * {@code crates/lucene-analysis-icu/tests/icu_rule_compiler_fixtures.rs} with this port's
  * compiler.

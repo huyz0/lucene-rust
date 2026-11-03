@@ -47,7 +47,7 @@ import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.packed.PackedInts;
 
 /**
- * M10 T10.3's query-time join fixture: {@code query_time_join/index}, a four-segment index of
+ * The query-time join fixture: {@code query_time_join/index}, a four-segment index of
  * "from" documents ({@code type:from}) that reference "to" documents ({@code type:to}) by key,
  * with deletions in two segments.
  *

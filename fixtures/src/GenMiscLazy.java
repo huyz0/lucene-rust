@@ -20,7 +20,7 @@ import org.apache.lucene.store.FSDirectory;
 import org.apache.lucene.util.BytesRef;
 
 /**
- * M14 T14.3 `misc`: {@link LazyDocument}. Writes {@code misc/lazy}, an index of stored fields only
+ * `misc`: {@link LazyDocument}. Writes {@code misc/lazy}, an index of stored fields only
  * (two commits, so two segments), and {@code misc/lazy.tsv}, which records for every document how
  * a {@code LazyDocument} behaves when its fields are handed out in two groups and loaded on use:
  *

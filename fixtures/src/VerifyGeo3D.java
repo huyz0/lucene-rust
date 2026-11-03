@@ -21,7 +21,7 @@ import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
 
 /**
- * M9 T9.4's write-path proof: real Lucene opens the {@code Geo3DPoint}/{@code
+ * The write-path proof: real Lucene opens the {@code Geo3DPoint}/{@code
  * Geo3DDocValuesField} index this port's {@code IndexWriter} wrote ({@code
  * write_geo3d_points_fixture}, from {@code GenGeo3dPoints}' documents), finds it clean ({@link
  * CheckIndex}), and answers every query and sort of {@code fixtures/data/geo3d_points/queries.tsv}

@@ -51,7 +51,7 @@ import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.IOUtils;
 
 /**
- * M13 T13.4b: taxonomy facet counting. Writes {@code facet_counts/}:
+ * Taxonomy facet counting. Writes {@code facet_counts/}:
  *
  * <ul>
  *   <li>{@code index/} and {@code taxo/}: {@link #DOCS} documents in four segments (deletions in

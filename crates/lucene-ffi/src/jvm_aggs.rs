@@ -1,4 +1,4 @@
-//! The plugin's aggregation trees (read path R5): a tree blob decoded into
+//! The plugin's aggregation trees: a tree blob decoded into
 //! [`lucene_search::bucket_aggs::AggNode`]s, run over a reader handle, and
 //! the shard results encoded for the plugin's `NativeAggregations.Tree` to
 //! turn into OpenSearch's `InternalAggregation`s.

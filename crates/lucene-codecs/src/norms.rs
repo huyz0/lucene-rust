@@ -189,12 +189,9 @@ fn entries_to_norms(entries: Vec<NormsEntry>) -> Norms {
 /// that actually has norms.
 ///
 /// Java does this inside `readFields`, which takes `FieldInfos`; this port's
-/// [`parse_meta`] does not, so it is a separate call. **The split is settled
-/// and deliberate** -- recorded and deferred three times (b6 #4, c7 F-23, c15
-/// §F14) and closed as INTENTIONAL by `c41-gates-and-record`. Three things
-/// decide it, and none of them is the call-site count c15 reasoned from (23,
-/// of which only **four** are production code -- the rest are `#[cfg(test)]`
-/// round-trips and integration tests):
+/// [`parse_meta`] does not, so it is a separate call. **The split is
+/// deliberate.** Three things decide it (four production call sites; the
+/// rest are `#[cfg(test)]` round-trips and integration tests):
 ///
 /// 1. **Norms do not need `FieldInfos` to parse.** Every `.nvm` entry is
 ///    fixed-shape. `doc_values::parse_meta` *does* take a `&FieldInfos`, but
@@ -211,8 +208,8 @@ fn entries_to_norms(entries: Vec<NormsEntry>) -> Norms {
 ///    that pass at the first problem and would still need a second,
 ///    non-validating entry point -- it moves the split rather than removing
 ///    it.
-/// 3. **Parse-then-validate is this port's shape, not a shortfall.** c40 put
-///    `field_infos::parse` behind the validating `FieldInfos::new`
+/// 3. **Parse-then-validate is this port's shape, not a shortfall.**
+///    `field_infos::parse` sits behind the validating `FieldInfos::new`
 ///    constructor for the same reason.
 ///
 /// The *behaviour* gap Java's `readFields` covers is closed: the two places

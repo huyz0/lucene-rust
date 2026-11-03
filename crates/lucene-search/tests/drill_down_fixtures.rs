@@ -1,4 +1,4 @@
-//! M13 T13.4c against `fixtures/src/GenDrillDown.java`: drill-down and
+//! Against `fixtures/src/GenDrillDown.java`: drill-down and
 //! drill-sideways.
 //!
 //! - `DrillSideways.search(ddq, 10)` for every base query and drill-down,

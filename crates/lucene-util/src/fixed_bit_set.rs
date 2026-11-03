@@ -209,8 +209,7 @@ impl FixedBitSet {
     /// vector store's ordinal range -- and it exists because writing the bound
     /// by hand at each of those call sites is the defect
     /// `docs/mechanical-gates.md`'s `fixed-bitset-bound` rule was built to
-    /// catch, found by hand three times (c28 twice, c30 once) and mechanically
-    /// thirty more.
+    /// catch.
     ///
     /// Two things it gets right that `get(doc as usize)` does not:
     ///

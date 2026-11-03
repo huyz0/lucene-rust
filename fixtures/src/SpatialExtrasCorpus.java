@@ -50,7 +50,7 @@ import org.locationtech.spatial4j.shape.Rectangle;
 import org.locationtech.spatial4j.shape.Shape;
 
 /**
- * The spatial-extras strategies corpus (M9 T9.5), shared by {@code GenSpatialStrategies} (which
+ * The spatial-extras strategies corpus, shared by {@code GenSpatialStrategies} (which
  * indexes it and records Lucene's answers) and {@code VerifySpatialExtras} (which replays the
  * answers over the index this port writes): the contexts, the strategies, how a document's shape
  * specs become fields, how a field is described, and how every recorded question is answered.

@@ -24,7 +24,7 @@ import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
 
 /**
- * M14 T14.3 `misc`: {@link BPReorderingMergePolicy}. Writes {@code misc/bp_merge_src} (three
+ * `misc`: {@link BPReorderingMergePolicy}. Writes {@code misc/bp_merge_src} (three
  * segments of 150 documents, every seventh deleted) and {@code misc/bp_merge.tsv}:
  *
  * <pre>

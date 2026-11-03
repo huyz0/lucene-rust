@@ -53,8 +53,7 @@
 //! standalone serialization for `lucene_search::soft_deletes`'
 //! `mark_soft_deleted_via_overlay`, which uses them to carry a soft-delete
 //! marking outside an index. Do not reach for them when writing a segment:
-//! a segment that references them is a segment real Lucene cannot open, which
-//! is precisely the defect `docs/sweep/m2/c14-dv-updates-format.md` closes.
+//! a segment that references them is a segment real Lucene cannot open.
 //!
 //! Format of that standalone encoding: `codec_util` index header (codec name
 //! [`NUMERIC_UPDATES_CODEC`], version [`VERSION_CURRENT`], a segment id +

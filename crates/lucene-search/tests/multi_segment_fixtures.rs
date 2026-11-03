@@ -1,4 +1,4 @@
-//! Cross-engine verification for task #41's multi-segment fan-out/merge
+//! Cross-engine verification for the multi-segment fan-out/merge
 //! (`lucene_search::multi_segment`).
 //!
 //! **Approach taken, and why**: this crate has no genuine 2+-segment real-Lucene
@@ -138,7 +138,7 @@ fn multi_segment_merge_matches_real_lucene_scores_from_two_real_segment_copies()
     //
     // Before this, the expectation was each segment scored from its own
     // counters -- which is what the multi-segment search used to do, and is why
-    // M1's benchmark found all 20 queries disagreeing with Java on a
+    // the benchmark found all 20 queries disagreeing with Java on a
     // 15-segment index while agreeing exactly on a single-segment one. This
     // test asserts the *merge* is correct, so it must not also pin the older
     // per-segment idf.

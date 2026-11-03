@@ -1,4 +1,4 @@
-//! M11 T11.1: the analysis-common differential harness.
+//! The analysis-common differential harness.
 //!
 //! `fixtures/src/GenAnalysisCommon.java` runs every chain it names over each
 //! line of `fixtures/corpus/analysis-common.txt` and writes

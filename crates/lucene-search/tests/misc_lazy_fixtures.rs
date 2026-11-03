@@ -1,4 +1,4 @@
-//! M14 T14.3 `misc`, differentially against Lucene 10.5.0:
+//! `misc`, differentially against Lucene 10.5.0:
 //! `fixtures/src/GenMiscLazy.java`'s `misc/lazy.tsv`.
 //!
 //! For each document of a two-segment index of stored fields, a

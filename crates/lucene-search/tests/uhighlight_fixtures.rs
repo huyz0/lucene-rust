@@ -1,4 +1,4 @@
-//! M13 T13.2 (`uhighlight`) against Lucene 10.5.0: the unified highlighter's
+//! (`uhighlight`) against Lucene 10.5.0: the unified highlighter's
 //! snippets (for parsed and hand-built queries), its stored-field batching
 //! and objects, and its break iterators.
 

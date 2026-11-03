@@ -237,7 +237,7 @@ Each fallback is counted by reason at `GET /_plugins/lucene_rust/stats`.
 | `reader_*`, `directory_*` | the searcher's reader or directory is not a local, standard one (remote store, a wrapped reader the plugin cannot see through) |
 | `native_open_failed`, `native_error` | the native side refused the reader or the query; the node log has the message. Never a failed search: the query re-runs on Lucene |
 
-## Suggesters and highlighters (M13 T13.6)
+## Suggesters and highlighters
 
 OpenSearch registers its highlighters (`plain`, `unified`, `fvh`), its
 suggesters (`completion`, `term`, `phrase`), `SuggestPhase` and its query

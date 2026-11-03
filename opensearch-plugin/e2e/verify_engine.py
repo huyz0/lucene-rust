@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""End-to-end verification of the Rust engine (M5) inside a real OpenSearch node.
+"""End-to-end verification of the Rust engine inside a real OpenSearch node.
 
 Two indices with the same mapping and shard count -- one on OpenSearch's own engine, one created
 with index.lucene_rust.engine: true -- receive the same operation stream, operation for operation.

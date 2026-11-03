@@ -1,4 +1,4 @@
-//! M13 T13.1: `SimpleQueryParser` against Lucene 10.5.0
+//! `SimpleQueryParser` against Lucene 10.5.0
 //! (`fixtures/src/GenQueryParserSimple.java`): the classic parser's corpus,
 //! the simple parser's own (`fixtures/corpus/queryparser-simple.txt`) and
 //! 3,000 seeded joins of operator fragments, under fourteen configurations

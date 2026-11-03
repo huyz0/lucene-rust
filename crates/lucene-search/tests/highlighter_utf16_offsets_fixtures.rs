@@ -19,9 +19,8 @@
 //! Lucene's own `substring` produced. That leaves no room to re-derive the
 //! offsets on the Rust side and accidentally agree with itself.
 //!
-//! Before `c29-search-carryovers` the highlighter read these offsets as
-//! Unicode scalars, so `offset_text.2` (`"alpha 😀 beta 𝐀 gamma"`) highlighted
-//! the wrong span for every token after the first emoji.
+//! Read as Unicode scalars, `offset_text.2` (`"alpha 😀 beta 𝐀 gamma"`) would
+//! highlight the wrong span for every token after the first emoji.
 
 use lucene_search::highlighter::{assemble_fragments, FragmentConfig};
 use lucene_search::term_vectors_query::TermOffsetSpan;
@@ -227,7 +226,7 @@ fn a_whole_text_fragments_offsets_are_reported_in_utf16_code_units() {
 }
 
 /// The negative control the module doc names: reading Lucene's offsets as
-/// Unicode scalars (what this port did before `c29-search-carryovers`) marks
+/// Unicode scalars marks
 /// the wrong span as soon as a supplementary-plane character precedes the
 /// token. Without this, the test above could pass for a reader that got the
 /// unit wrong in a way the BMP happens to hide.

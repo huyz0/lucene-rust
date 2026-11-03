@@ -1,4 +1,4 @@
-//! The function-query benchmark pair (M10 T10.5), against
+//! The function-query benchmark pair, against
 //! `benchmarks/micro/java/FunctionMicro.java`: per word, one top-10 search
 //! -- `FunctionScoreQuery` over `body:word` with a field source and
 //! `boostByValue` with a composite source, `FunctionQuery` over a field and

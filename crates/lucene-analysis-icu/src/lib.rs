@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! lucene-analysis-icu: Lucene's `analysis-icu` module (M12 T12.4) --
+//! lucene-analysis-icu: Lucene's `analysis-icu` module --
 //! Unicode normalization (`ICUNormalizer2Filter`, `ICUNormalizer2CharFilter`),
 //! UTR #30 folding (`ICUFoldingFilter`), script-aware segmentation
 //! (`ICUTokenizer`), collation keys (`ICUCollationKeyAnalyzer`,

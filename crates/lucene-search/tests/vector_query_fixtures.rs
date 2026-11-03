@@ -17,8 +17,8 @@
 //!   documents.
 //!
 //! Every assertion here is doc-for-doc and score-for-score against Lucene's
-//! own answer. None of them is a recall threshold: c5 established that recall
-//! does *not* discriminate for this subsystem (mutating the diversity rule
+//! own answer. None of them is a recall threshold: recall does *not*
+//! discriminate for this subsystem (mutating the diversity rule
 //! took graph agreement to 1/4273 while recall rose).
 
 use std::collections::HashMap;
@@ -128,8 +128,8 @@ fn doc_list(spec: &str) -> Vec<i32> {
 }
 
 /// Lucene's scores are `float` arithmetic in a different lane order than
-/// ours (c5 finding 15), so an exact bit comparison would be dishonest;
-/// 1e-6 relative is the tolerance c5 and c13 both use. The **doc ids and
+/// ours, so an exact bit comparison would be dishonest;
+/// 1e-6 relative is the tolerance. The **doc ids and
 /// their order** are compared exactly, which is the half that discriminates.
 fn assert_hits_match(got: &[ScoreDoc], expected: &[(i32, f32)], what: &str) {
     let got_docs: Vec<i32> = got.iter().map(|h| h.doc_id).collect();

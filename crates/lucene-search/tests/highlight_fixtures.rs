@@ -1,4 +1,4 @@
-//! M13 T13.2: the classic `Highlighter` against Lucene 10.5.0. Every query of
+//! The classic `Highlighter` against Lucene 10.5.0. Every query of
 //! `fixtures/corpus/highlight-queries.txt` over every text of
 //! `highlight-texts.txt`, under eleven configurations of scorer, fragmenter,
 //! formatter, encoder and limits, gives the fragments Lucene gives

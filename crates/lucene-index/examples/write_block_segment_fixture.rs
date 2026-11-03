@@ -136,7 +136,7 @@ fn main() {
     // One last block, then a buffered delete of it. The delete is issued while
     // the whole batch is still in the buffer, so it becomes the segment's own
     // private packet and is resolved against the segment this flush writes --
-    // the path `docs/sweep/m2/c7-delete-queue.md` F-3 describes.
+    // the private-packet path.
     let tombstones: Vec<Document> = (0..BLOCK_SIZE)
         .map(|i| doc(&format!("tombstone{i}"), TOMBSTONE_TERM))
         .collect();

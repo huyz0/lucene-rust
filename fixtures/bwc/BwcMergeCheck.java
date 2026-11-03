@@ -39,7 +39,7 @@ import org.apache.lucene.util.Bits;
 import org.apache.lucene.util.BytesRef;
 
 /**
- * M8 T8.4's Java half: real Lucene 10.5.0 (with backward-codecs) checks an index this port merged
+ * Real Lucene 10.5.0 (with backward-codecs) checks an index this port merged
  * out of an older Lucene's segments.
  *
  * <pre>java BwcMergeCheck &lt;original-index&gt; &lt;merged-index&gt;</pre>

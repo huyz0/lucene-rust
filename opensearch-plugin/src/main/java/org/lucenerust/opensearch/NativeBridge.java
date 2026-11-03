@@ -1268,7 +1268,7 @@ public final class NativeBridge {
         }
     }
 
-    // ---- The engine writer (engine_writer.rs, M5). ----
+    // ---- The engine writer (engine_writer.rs). ----
 
     /** Indices into {@link #writerStats}' output. */
     public static final int STAT_RAM_BYTES = 0;

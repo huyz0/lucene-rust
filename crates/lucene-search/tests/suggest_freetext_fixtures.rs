@@ -1,4 +1,4 @@
-//! M13 T13.3c against Lucene 10.5.0 (`fixtures/src/GenFreeTextSuggest.java`):
+//! Against Lucene 10.5.0 (`fixtures/src/GenFreeTextSuggest.java`):
 //! `FreeTextSuggester` answers as Lucene's does over a free-text corpus for
 //! unigram to four-gram models, writes Lucene's bytes, and reads them back.
 

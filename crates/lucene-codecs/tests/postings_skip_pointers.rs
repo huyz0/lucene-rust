@@ -7,10 +7,7 @@
 //! `advance(doc)` can jump the position streams instead of walking the whole
 //! postings list.
 //!
-//! Until `c20-postings-skip` this port wrote neither (a term indexing
-//! positions was refused past `docFreq >= BLOCK_SIZE` precisely because the
-//! sub-fields were missing) and read neither (they were parsed and thrown
-//! away). This file covers both directions at once: the terms are written by
+//! This file covers both directions at once: the terms are written by
 //! this crate's own `postings_writer`, so the skip records under test are the
 //! ones it emits, and every expectation is **differential against
 //! [`FieldTerms::positions`]** -- the whole-term reader that
@@ -364,7 +361,7 @@ fn a_wrong_last_pos_block_offset_is_visible_to_the_skip_driven_walk() {
         }
     }
 
-    // Now flip `lastPosBlockOffset` to `0` -- b5's exact defect -- by
+    // Now flip `lastPosBlockOffset` to `0` -- a writer defect this guards against -- by
     // rewriting the term metadata region of the `.tim`. Rather than locating
     // the vlong by hand, re-run the writer over a doctored copy: any byte
     // change is caught by `.tim`'s footer, so the honest route is to make the

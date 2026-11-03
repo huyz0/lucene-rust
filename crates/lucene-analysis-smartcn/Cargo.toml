@@ -4,11 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-# lucene-analysis-smartcn (M12 T12.2): Chinese word segmentation -- the
+# lucene-analysis-smartcn: Chinese word segmentation -- the
 # hierarchical HMM over the bundled core and bigram dictionaries,
 # HMMChineseTokenizer and SmartChineseAnalyzer. Over lucene-analysis only, as
-# Lucene's module is over lucene-analysis-common
-# (docs/milestones/m12-language-analysis.md).
+# Lucene's module is over lucene-analysis-common.
 [features]
 default = ["embedded-data"]
 # Compiles the dictionary files in (src/resources); without it they are read

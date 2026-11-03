@@ -217,7 +217,7 @@ fn two_term_phrase_matches_real_lucenes_exact_phrase_scorer_doc_set() {
     assert_eq!(collector.docs, expected);
 }
 
-/// Differential/consistency test for `search_phrase_query_scored` (task #29):
+/// Differential/consistency test for `search_phrase_query_scored`:
 /// the phrase's BM25 score for doc 8555 must equal `idf(alpha) + idf(beta)`
 /// (real `BM25Similarity`'s combined-term-statistics idf, see
 /// `search_phrase_query_scored`'s doc comment) times `tfNorm(phraseFreq=1, ...)`
@@ -338,10 +338,9 @@ fn phrase_with_a_missing_term_matches_nothing() {
 /// Cross-engine differential test for sloppy phrase matching, closing the gap
 /// flagged in code review: the sloppy matcher's unit tests only checked this
 /// port's own formula for self-consistency (hand-computed arithmetic), never
-/// against real Lucene's actual `PhraseQuery.setSlop(n)` behavior. (The matcher
-/// itself is now `sloppy_phrase.rs`; this test is unchanged and still passes,
-/// which is part of the evidence that c37's rewrite is a strict superset --
-/// it pins the *in-order* gap case at five slop values.) `GenBlockTree.java`'s doc7 (`"pos"`
+/// against real Lucene's actual `PhraseQuery.setSlop(n)` behavior. (The matcher is
+/// `sloppy_phrase.rs`; this pins the *in-order* gap case at five slop
+/// values.) `GenBlockTree.java`'s doc7 (`"pos"`
 /// field: `alpha`@0, `beta`@3, a real, non-adjacent, manifest-recorded gap)
 /// plus its own `field.pos.sloppyGap.realLuceneSlopResults` manifest key
 /// (written by *actually running* `IndexSearcher.search` with a real

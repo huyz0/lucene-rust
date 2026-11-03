@@ -6,9 +6,8 @@
 //! deliberately scopes each check to one format. The gap that leaves is
 //! everything that binds those files into a segment: per-field format routing
 //! and the `.fnm` attributes that record it, the `.psm` metadata file, and the
-//! cross-file lengths `.tmd` declares. All four were broken at once while all
-//! thirteen single-format checks passed (see `docs/sweep/findings.md`,
-//! "Then real Lucene tried to open what we wrote").
+//! cross-file lengths `.tmd` declares. Single-format checks cannot see a
+//! defect in any of these.
 //!
 //! So this fixture writes no files itself. It drives the real write path and
 //! leaves an index directory for `VerifyFullSegment` to open with
@@ -96,10 +95,7 @@ fn main() {
         },
         // A second indexed field, whose only purpose is that **nothing here
         // opts it into norms**. Lucene writes norms for every indexed field
-        // that does not omit them; before c35 this port required a
-        // `set_norms_field` call per field and rewrote every other indexed
-        // field's `.fnm` entry as `omit_norms: true`, so BM25 scored it
-        // against a constant length. `VerifyFullSegment` reads this field's
+        // that does not omit them. `VerifyFullSegment` reads this field's
         // norm for every document back through real Lucene and compares it
         // to `SmallFloat.intToByte4(tokenCount)`.
         field("title", 3, true),

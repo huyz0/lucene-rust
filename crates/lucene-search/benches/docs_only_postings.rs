@@ -1,5 +1,5 @@
 //! Measures what `PostingsFlags::DocsOnly` actually buys the unscored paths
-//! in `lucene-search` (c8's `PForUtil.skip` addition, wired here by c12).
+//! in `lucene-search` (`PForUtil.skip`).
 //!
 //! The A/B is in one build rather than across two: the same term's postings
 //! are resolved twice, once with `Freqs` (what these paths asked for before)
@@ -7,10 +7,9 @@
 //! the frequency-block decode that the constant-score / `Occur::FILTER` /
 //! `TermInSetQuery` / wildcard-family paths were paying for and discarding.
 //!
-//! c8 measured 1.07-1.32x and explained why it is not more: a `.doc` block is
-//! dominated by the doc-delta bit-packing, not the frequency bit-packing. This
-//! bench re-takes that number on this crate's own call shape rather than
-//! quoting it, over three terms whose posting lists differ by two orders of
+//! Expect 1.07-1.32x, not more: a `.doc` block is dominated by the doc-delta
+//! bit-packing, not the frequency bit-packing. Measured on this crate's own
+//! call shape, over three terms whose posting lists differ by two orders of
 //! magnitude.
 //!
 //! Measured against `benchmarks/.corpus/merged` (`scripts/bench-corpus.sh`);

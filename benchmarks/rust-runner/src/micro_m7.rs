@@ -1,5 +1,5 @@
-//! M7's benchmark pairs, against `benchmarks/micro/java/M7Micro.java`: the
-//! queries and similarities M7 brought into the scorer tree, the sorted
+//! The benchmark pairs, against `benchmarks/micro/java/M7Micro.java`: the
+//! extended queries and similarities in the scorer tree, the sorted
 //! searches' comparator pruning, `QueryBuilder`, and stored-fields writes in
 //! both modes (the zlib port behind `BEST_COMPRESSION`).
 //!
@@ -76,7 +76,7 @@ fn check(case: &str, digest: Fnv, n: usize) {
 }
 
 /// `M7Micro.family`: the family a `GenM7Queries` query is reported under --
-/// its first M7 op, the multi-term ones by rewrite method.
+/// its first op, the multi-term ones by rewrite method.
 fn family(q: &str) -> String {
     let toks: Vec<&str> = q.split(' ').collect();
     for t in &toks {
@@ -130,7 +130,7 @@ struct Search {
     top: usize,
 }
 
-/// Runs the M7 searches of one index, grouped into cases by `family`.
+/// Runs the `GenM7Queries` searches of one index, grouped into cases by `family`.
 fn run_m7_cases(
     w: Duration,
     m: Duration,
@@ -250,7 +250,7 @@ pub fn bench_m7_fixture(w: Duration, m: Duration) {
 /// `GenM7Queries.QVEC8`.
 const QVEC8: [f32; 8] = [0.1, -0.3, 0.25, 0.6, -0.05, 0.4, -0.2, 0.15];
 
-/// `M7Micro.CORPUS_QUERIES`: the M7 families the benchmark corpus can run
+/// `M7Micro.CORPUS_QUERIES`: the query families the benchmark corpus can run
 /// (`body`/`title` text, `keyword` SORTED doc values, `num` 1-D long points
 /// and NUMERIC doc values), at a million documents, in `GenM7Queries`'
 /// grammar.
@@ -304,7 +304,7 @@ pub const CORPUS_QUERIES: [&str; 47] = [
     "B 0 2 0 BY 1.5 1 0 T body t2 T body t5",
 ];
 
-/// The M7 families over the million-document benchmark corpus, top 10 under
+/// The query families over the million-document benchmark corpus, top 10 under
 /// BM25.
 pub fn bench_m7_corpus(w: Duration, m: Duration, index: &str) {
     let lines: Vec<(String, String, usize)> = CORPUS_QUERIES

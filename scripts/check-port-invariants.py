@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Mechanical gates for defect shapes this port's M2 sweep kept re-finding by hand.
+"""Mechanical gates for defect shapes that review kept re-finding by hand.
 
 Companion to `scripts/check-arith-allows.py`. That script enforces the two
 *arithmetic* rules in `docs/arithmetic-gate.md`; this one enforces the rules in
 that document that `clippy::arithmetic_side_effects` structurally cannot see,
-plus two record-keeping rules a Tier-2 review found by eye.
+plus two record-keeping rules.
 
 Every rule below exists because the same defect was found **by hand more than
 once**, in unrelated modules, after an audit had already walked past it. What
@@ -154,10 +154,10 @@ def leading_comment(lines, idx, span=6):
 # live/dead answer that no error path can catch -- and one 64 or more past the
 # end is an index panic, in release as well as debug.
 #
-# Found by hand three times: twice in one crate by c28
-# (`term_delete::resolve_term_doc_ids` with no bound at all, `deletes::
-# mark_deleted` bounded against a separate `max_doc` parameter), then again by
-# c30 in `merge_segments` (the `.liv` indexed by a bound taken off the `.fdm`).
+# Found by hand three times: `term_delete::resolve_term_doc_ids` with no bound
+# at all, `deletes::mark_deleted` bounded against a separate `max_doc`
+# parameter, and `merge_segments` (the `.liv` indexed by a bound taken off the
+# `.fdm`).
 # `clippy::arithmetic_side_effects` sees none of it: this is the *indexing* row
 # of the arithmetic gate's table, which that lint does not cover.
 
@@ -177,7 +177,7 @@ def let_statements(text):
     `let mut bits = match live_docs { Some(e) => e.clone(), None =>
     FixedBitSet::from_words(..) };` binds a bitset over five lines, and a
     line-at-a-time scan sees none of it -- which is how `deletes::mark_deleted`,
-    one of the two sites c28 actually fixed, would have slipped past this rule.
+    one of the real sites, would have slipped past this rule.
     """
     out = []
     for m in re.finditer(r"\blet\s+(mut\s+)?(\w+)", text):
@@ -236,8 +236,7 @@ def bitset_names(text):
             break
     # Rebindings of a known bitset that no `let` and no type annotation names.
     # These are the *dominant* shape in `lucene-search`, and leaving them out
-    # made the rule miss roughly half the real index sites -- which c41's own
-    # Tier-2 review caught, in a rule written to catch exactly that:
+    # made the rule miss roughly half the real index sites:
     #   live_docs.is_none_or(|bits| bits.get(doc as usize))
     #   if let Some(bits) = live_docs { .. }
     #   match live_docs { Some(bits) => .. }
@@ -325,19 +324,19 @@ def rule_fixed_bitset_bound(files, problems, stats):
 # A function returning a sentinel *outside* the domain of its result (`-1` for
 # "no next set bit", "not found", ...) has to be checked by every caller, and
 # an audit that records "this function's sentinel is handled" instead of "this
-# call site handles it" will miss one. c31 shipped exactly that: it bounded
+# call site handles it" will miss one. One fix did exactly that: it bounded
 # `bit_table_next_bit_set`'s upper end and left the `-1` unchecked one function
 # over, where it became an arc one label below the node's declared range -- and
 # for `firstLabel == 0`, exactly `END_LABEL`.
 #
 # A byte-flip sweep structurally cannot find this: it asserts "a typed error or
-# a clean decode", and a plausible wrong label *is* a clean decode. c31's sweep
-# ran 40 136 flips over this code and passed.
+# a clean decode", and a plausible wrong label *is* a clean decode. A sweep of
+# 40 136 flips over this code passed.
 
 SENTINEL_DECL = "SENTINEL:"
 SENTINEL_OK = "SENTINEL-OK:"
 # How far after a call the sentinel test may sit. Wide enough for the prose
-# these checks carry (the c31 one runs to twelve comment lines), narrow enough
+# these checks carry (the longest runs to twelve comment lines), narrow enough
 # that an unrelated `< 0` further down the function cannot silently satisfy it.
 SENTINEL_WINDOW = 22
 INT_RET = re.compile(r"^(i8|i16|i32|i64|isize)$")
@@ -443,7 +442,7 @@ def rule_sentinel_callers(files, problems, stats):
 # Rule 3: the per-field codec suffix is derived, never spelled out
 # --------------------------------------------------------------------------
 #
-# c14 shipped a hardcoded `"Lucene90_0"` per-field suffix (its F-12). The
+# A hardcoded `"Lucene90_0"` per-field suffix once shipped. The
 # suffix belongs to `index_writer::per_field_codec_suffix` and nowhere else:
 # a literal anywhere in production code is a second, silently diverging copy
 # of a rule that has to match what `PerFieldDocValuesFormat` computes.
@@ -473,12 +472,10 @@ def rule_codec_suffix_literal(files, problems, stats):
 # Rule 4: the infallible blocktree lookups stay retired
 # --------------------------------------------------------------------------
 #
-# c1 added `try_seek_exact`/`try_next`/`try_seek_ceil`/`try_current`, which
-# surface a corrupt `.tim` block as an error instead of degrading it to "no
-# such term". c39 finished the migration by hand -- marking the four infallible
-# spellings `#[deprecated]` and rebuilding -- and `blocktree.rs`'s method docs
-# describe the rule, but nothing ran it, so the migration could silently
-# regress on the next batch that reached for the shorter name.
+# `try_seek_exact`/`try_next`/`try_seek_ceil`/`try_current` surface a corrupt
+# `.tim` block as an error instead of degrading it to "no such term".
+# `blocktree.rs`'s method docs describe the rule; this check keeps callers
+# from reaching for the shorter, infallible names again.
 
 BLOCKTREE_RETIRED = ("seek_exact", "seek_ceil", "current")
 BLOCKTREE_OWNER = "crates/lucene-codecs/src/blocktree.rs"
@@ -519,7 +516,7 @@ def rule_blocktree_infallible(files, problems, stats):
 # from its `NumericEntry`/`BinaryEntry` on every call; `NumericReader`/
 # `BinaryReader` derive it once and are the sanctioned multi-lookup API. The
 # "call the free function once per document" defect has already shipped twice
-# (b13's `soft_deletes::effective_live_docs`, c14's column merge).
+# (`soft_deletes::effective_live_docs`, the column merge).
 #
 # The existing sites are a burn-down list, not a clean bill of health, and they
 # are keyed by (file, enclosing fn) rather than by line so ordinary edits do not
@@ -591,12 +588,10 @@ def rule_doc_values_per_doc(files, problems, stats):
 # Rule 6: the sweep ledger has exactly one list to plan from
 # --------------------------------------------------------------------------
 #
-# `docs/sweep/m2/LEDGER.md` carries a reconciled "Open work, prioritised"
-# section and, below it, a frozen archive of where each finding was first
-# raised. Batches repeatedly closed the prioritised entry and left its archive
-# twin sitting open -- which is the drift c34 was run to remove, and which
-# still misled **six** later batches after c34 ran, because 16 duplicate boxes
-# survived that reconciliation.
+# The sweep ledger (`LEDGER` below) carries a reconciled "Open work,
+# prioritised" section and, below it, a frozen archive of where each finding
+# was first raised. Closing the prioritised entry and leaving its archive twin
+# open made the two lists drift apart.
 #
 # The invariant is the smallest one that makes the failure impossible to
 # express: **the file contains no `- [ ]`.** An archive entry is `- [x]`
@@ -605,8 +600,7 @@ def rule_doc_values_per_doc(files, problems, stats):
 # itself is numbered, not checkboxed, so it is unaffected.
 #
 # This is a rule about a document, not about code. It lives here because there
-# is no other gate a document can fail, and because the defect it prevents has
-# cost this sweep more batches than any single code defect has.
+# is no other gate a document can fail.
 
 LEDGER = "docs/sweep/m2/LEDGER.md"
 OPEN_BOX = re.compile(r"^\s*- \[ \]")
@@ -639,7 +633,7 @@ def rule_ledger_single_list(_files, problems, stats):
 # `DocumentsWriterPerThread.updateDocuments` refuses a block of more than one
 # document in a sorted index without a parent field *before* buffering it. A
 # writer path that sets its buffer's block flag without that check accepts a
-# block no flush can ever write (the T10.1 review found two such paths). Every
+# block no flush can ever write (two such paths were found). Every
 # function setting `pending_has_blocks = true` or `<dwpt>.has_blocks = true`
 # must call `check_block(` on an earlier line of the same function.
 
@@ -674,7 +668,7 @@ def rule_block_guard(files, problems, stats):
 # Rule 8: an allocation is never sized from a decoded document id
 # --------------------------------------------------------------------------
 #
-# M10's T10.4 review found `SparseDocs::new` sizing its bit words (and their
+# `SparseDocs::new` once sized its bit words (and their
 # rank table) from the *last decoded* document of an `IndexedDISI` rather than
 # from the segment's `maxDoc`: eight corrupt bytes (a SPARSE block numbered
 # ~0x7FFF) named a document near `i32::MAX`, and the reader cached a ~400 MB
@@ -745,8 +739,7 @@ def rule_alloc_from_doc(files, problems, stats):
 #
 # `ValueSource.createWeight` and `DoubleValuesSource.rewrite` read the
 # searcher's top-level reader (a `scale`'s minimum and maximum, `docfreq`,
-# `maxdoc`, the `IndexReaderFunctions`). The T10.5 review found the function
-# scorers falling back to `TopLevel::single(leaf)` -- one segment as the
+# `maxdoc`, the `IndexReaderFunctions`). The function scorers once fell back to `TopLevel::single(leaf)` -- one segment as the
 # whole index -- whenever an entry point (sorted, counted, aggregated,
 # terminated searches) had not run the statistics pass: silently wrong hits
 # on any multi-segment index. The `TopLevel` is now built in one place,
@@ -794,7 +787,7 @@ def rule_toplevel_whole_reader(files, problems, stats):
 # Rule 10: a guard on a boolean's occurs names all four of them
 # --------------------------------------------------------------------------
 #
-# T10.6's review found `BooleanQuery::rewrite` flattening a nested "pure
+# The review found `BooleanQuery::rewrite` flattening a nested "pure
 # disjunction" on `inner.must.is_empty() && inner.must_not.is_empty()`: Java's
 # `isPureDisjunction()` is "every clause is SHOULD", and the guard forgot the
 # fourth occur, so `[(a #b), c]` flattened to `[a, c]` and lost `#b`. `FILTER`
@@ -838,7 +831,7 @@ def rule_occur_guard(files, problems, stats):
 # Rule 11: an analysis table transcribed from Java has a fixed-length type
 # --------------------------------------------------------------------------
 #
-# The M11 part 1 review found `cjk::KANA_COMBINE_HALF_VOICED` declared as
+# `cjk::KANA_COMBINE_HALF_VOICED` was once declared as
 # `&[u8]` with 86 entries where Java's `byte[]` has 88 (two trailing zeros
 # dropped): `combine` indexes it by `prev - 0x30A6` for `prev` up to U+30FD, so
 # `ーﾟ` panicked in `CJKWidthFilter`, `CJKWidthCharFilter` and `CJKAnalyzer`.
@@ -892,7 +885,7 @@ def rule_table_fixed_len(files, problems, stats):
 # Rule 12: an allocation is never sized from a count parsed out of text
 # --------------------------------------------------------------------------
 #
-# The M11 part 2 review found Hunspell's `AF`/`AM` parsers pre-sizing their
+# Hunspell's `AF`/`AM` parsers once pre-sized their
 # alias tables as `vec![Vec::new(); count.max(0) as usize]`, `count` straight
 # off the `.aff` header line: `AF 2000000000` asked for 48 GB and aborted the
 # process (Java's own `new String[count]` merely throws an `OutOfMemoryError`).
@@ -906,8 +899,7 @@ def rule_table_fixed_len(files, problems, stats):
 # the size expression caps it with `min(`, or an `// ALLOC:` comment within the
 # 6 lines above names the bound that makes it sound.
 #
-# The M11 part 4 review found the same abort one step removed: an analysis
-# factory parses `bucketCount`/`maxGramSize` with `getInt` and hands the int to
+# The same abort one step removed: an analysis factory parses `bucketCount`/`maxGramSize` with `getInt` and hands the int to
 # a filter's constructor, which sized `vec![..; bucket_count as usize]`. So in
 # the analysis crates a Java-int parameter (`i32`, `i64`, `u32`) of the fn is a
 # source too -- its value comes from configuration more often than not.
@@ -999,7 +991,7 @@ def rule_literal_space_run(files, problems, stats):
             )
 
 
-# lucene-test-framework (M14.h) is a dev-dependency only: a normal or build
+# lucene-test-framework is a dev-dependency only: a normal or build
 # edge would put the test framework (and the `test-support` items it turns
 # on) into the library `lucene-ffi` ships. Each dependency key in the root and
 # `crates/*/Cargo.toml` manifests is read under the section it sits in.

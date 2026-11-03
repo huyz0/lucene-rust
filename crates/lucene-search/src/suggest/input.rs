@@ -1,6 +1,6 @@
-//! `org.apache.lucene.search.suggest.InputIterator` and its wrappers (M13
-//! T13.3a): the `(term, weight, payload, contexts)` stream a suggester is
-//! built from, the buffering and sorting adapters, and the in-memory form of
+//! `org.apache.lucene.search.suggest.InputIterator` and its wrappers: the
+//! `(term, weight, payload, contexts)` stream a suggester is built from, the
+//! buffering and sorting adapters, and the in-memory form of
 //! `SortedInputIterator`.
 //!
 //! Java sorts on disk with `OfflineSorter` once the input outgrows memory. The

@@ -7,7 +7,7 @@ import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
 
 /**
- * M9 T9.5's write-path proof: real Lucene opens the index this port's {@code IndexWriter} wrote
+ * The write-path proof: real Lucene opens the index this port's {@code IndexWriter} wrote
  * through its spatial-extras strategies ({@code write_spatial_strategies_fixture}, from {@code
  * GenSpatialStrategies}' documents), finds it clean ({@link CheckIndex}), and answers every
  * question of {@code fixtures/data/spatial_strategies/queries.tsv} -- every strategy x operation

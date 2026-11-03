@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# M4's differential operation-stream fuzzer (T4.5): the same seeded stream of
+# the differential operation-stream fuzzer: the same seeded stream of
 # adds, updates, deletes (by id and by body word), numeric doc-values updates,
 # flushes and commits, applied to real Lucene 10.5.0's IndexWriter
 # (fixtures/src/OpStreamFuzz.java) and to this port's

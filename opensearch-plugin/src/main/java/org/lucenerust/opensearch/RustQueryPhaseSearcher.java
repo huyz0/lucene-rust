@@ -50,7 +50,7 @@ import java.util.List;
 
 /**
  * Runs the query phase of a shard search natively when the whole request is inside the supported
- * matrix, and on Lucene otherwise -- per query, transparently (M2 T2.4).
+ * matrix, and on Lucene otherwise -- per query, transparently.
  *
  * <p>This hooks {@link QueryPhaseSearcher}, the extension point OpenSearch gives a plugin for the
  * query phase, rather than an {@code EngineFactory}: the query phase is the only part of a search
@@ -87,8 +87,8 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
     /**
      * Which encodable shapes run native: {@code fast} (default) only those measured at least as fast
      * as Lucene ({@link QueryEncoder#isFast}); {@code all} every shape the engine answers correctly.
-     * Since read path R1 the two agree -- every encodable shape is measured faster -- and the
-     * setting stays so that indices which set it keep opening.
+     * The two agree, since every encodable shape is measured faster; the setting stays so that
+     * indices which set it keep opening.
      */
     public static final Setting<String> NATIVE_SHAPES = new Setting<>(
         "index.lucene_rust.search.native_shapes",
@@ -141,17 +141,20 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         // non-scoring clause, so each hit keeps the query's score; the aggregations the query.
         byte[] hitsBlob = null;
         if (reason == null) {
-            // Each scored field's similarity, sent in front of the blobs when one is not the default.
+            // Each scored field's similarity, sent in front of the blobs when
+            // one is not the default.
             SimilarityEncoder similarities = new SimilarityEncoder(searcher.getSimilarity());
             QueryEncoder.Encoded enc = QueryEncoder.encode(query, similarities, searcher.getTopReaderContext());
             reason = enc.fallbackReason();
             blob = enc.blob();
             boolean fast = enc.fast();
             hitsBlob = blob;
-            // The post_filter is rewritten here as QueryPhase rewrites it, which is also when an
-            // approximate range in it (ApproximateScoreQuery) resolves: approximated, it matches only
-            // the first track_total_hits documents it visits in BKD order -- a filter narrower than
-            // the range, which the native engine would not reproduce, so OpenSearch answers.
+            // The post_filter is rewritten here as QueryPhase rewrites it,
+            // which is also when an approximate range in it
+            // (ApproximateScoreQuery) resolves: approximated, it matches only
+            // the first track_total_hits documents it visits in BKD order -- a
+            // filter narrower than the range, which the native engine would not
+            // reproduce, so OpenSearch answers.
             Query postFilter = reason == null && ctx.parsedPostFilter() != null ? searcher.rewrite(ctx.parsedPostFilter().query()) : null;
             if (postFilter != null && approximated(postFilter)) {
                 reason = "approximate";
@@ -216,8 +219,9 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
                 reason = "scroll_after";
             }
         }
-        // terminate_after runs on the sorted search, which takes the cut (SortEncoder): by score as
-        // the score sort, and without hits (size 0) by _doc, the cheapest order, its one hit dropped.
+        // terminate_after runs on the sorted search, which takes the cut
+        // (SortEncoder): by score as the score sort, and without hits (size 0)
+        // by _doc, the cheapest order, its one hit dropped.
         int terminateAfter = ctx.terminateAfter() == SearchContext.DEFAULT_TERMINATE_AFTER ? 0 : ctx.terminateAfter();
         if (terminateAfter > 0 && ctx.size() == 0) {
             sort = new Sort(SortField.FIELD_DOC);
@@ -225,8 +229,9 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             sort = new Sort(SortField.FIELD_SCORE);
             scoreDocs = true;
         }
-        // collapse: CollapsingTopDocsCollectorContext, by the request's sort or the score, from + size
-        // groups; its comparators never skip, so no index-sort flags.
+        // collapse: CollapsingTopDocsCollectorContext, by the request's sort or
+        // the score, from + size groups; its comparators never skip, so no
+        // index-sort flags.
         byte[] collapseBlob = null;
         if (reason == null && ctx.collapse() != null && ctx.size() > 0) {
             int[][] slices = NativeAggregations.slices(ctx);
@@ -243,8 +248,9 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             boolean trackMaxScore = ctx.trackScores() && ctx.size() > 0 && sortByScore(sort) == false;
             // A concurrent search collects each slice separately, as Lucene does.
             int[][] slices = NativeAggregations.slices(ctx);
-            // TopFieldCollector ends a segment whose index sort begins with the search's sort at its
-            // first non-competitive document; the native collector does too, told which segments.
+            // TopFieldCollector ends a segment whose index sort begins with the
+            // search's sort at its first non-competitive document; the native
+            // collector does too, told which segments.
             boolean[] indexSorted = SortEncoder.indexSorted(searcher.getIndexReader(), sort);
             SortEncoder.Encoded sorted = slices == null ? new SortEncoder.Encoded(null, "intra_segment")
                 : SortEncoder.encode(sort, after, trackMaxScore, slices, terminateAfter, countSegments(ctx, terminateAfter), indexSorted);
@@ -327,16 +333,17 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         // native collector takes as the plain sorted search does (terminateAfterIneligible above).
         if (ctx.collapse() != null && ctx.size() > 0) {
             if (NativeCollapse.blob(ctx.collapse()) == null) return "collapse_field";
-            // CollapsingTopDocsCollector refuses search_after unless the sort is the collapse field.
+            // CollapsingTopDocsCollector refuses search_after unless the sort
+            // is the collapse field.
             SortField[] keys = NativeCollapse.sort(ctx).getSort();
             if (ctx.searchAfter() != null
                 && (keys.length != 1 || java.util.Objects.equals(keys[0].getField(), ctx.collapse().getFieldName()) == false)) {
                 return "collapse_search_after";
             }
         }
-        // rescore natively (NativeRescore) when every rescorer is OpenSearch's QueryRescorer, over the
-        // top docs however they were collected (behind terminate_after too); a scroll or a size-0
-        // search never rescores.
+        // rescore natively (NativeRescore) when every rescorer is OpenSearch's
+        // QueryRescorer, over the top docs however they were collected (behind
+        // terminate_after too); a scroll or a size-0 search never rescores.
         if (ctx.rescore() != null && ctx.rescore().isEmpty() == false && ctx.scrollContext() == null && ctx.size() > 0) {
             if (NativeRescore.supported(ctx) == false) return "rescore";
         }
@@ -556,7 +563,8 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         // (TopDocsCollectorContext.createTopDocsCollectorContext).
         int numDocs = size == 0 ? 0
             : Math.min(scroll != null ? size : ctx.from() + size, Math.max(1, ctx.searcher().getIndexReader().numDocs()));
-        // A rescored search collects at least each rescorer's window (createTopDocsCollectorContext).
+        // A rescored search collects at least each rescorer's window
+        // (createTopDocsCollectorContext).
         if (rescores != null) {
             for (NativeRescore r : rescores) {
                 numDocs = Math.max(numDocs, r.window());
@@ -840,9 +848,10 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             // A slice's collector stops only past trackUpTo documents it iterated.
             return false;
         }
-        // Past the limit, it depends on which segments the count collector answers from Weight.count
-        // (nothing reaches the terminating collector) and which it iterates: Lucene's own weight,
-        // the query cache included, says; the native side replays each slice.
+        // Past the limit, it depends on which segments the count collector
+        // answers from Weight.count (nothing reaches the terminating collector)
+        // and which it iterates: Lucene's own weight, the query cache included,
+        // says; the native side replays each slice.
         int[][] slices = NativeAggregations.slices(ctx);
         if (slices == null) {
             return null;
@@ -867,8 +876,9 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
                 ? null
                 : ctx.searcher().createWeight(ctx.query(), org.apache.lucene.search.ScoreMode.COMPLETE_NO_SCORES, 1f);
             for (int i = 0; i < leaves.size(); i++) {
-                // Under a post_filter or min_score the count collector gets no weight (neither
-                // FilteredCollector nor MinimumScoreCollector passes it on): it iterates everywhere.
+                // Under a post_filter or min_score the count collector gets no
+                // weight (neither FilteredCollector nor MinimumScoreCollector
+                // passes it on): it iterates everywhere.
                 iterate[i] = weight == null || weight.count(leaves.get(i)) == -1;
                 spec.write(iterate[i] ? 1 : 0);
             }
@@ -1153,7 +1163,8 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
      * part way (docs/opensearch-native-queries.md, Known limits) -- which a partial answer allows.
      */
     static void timedOut(SearchContext ctx) {
-        // Only a registered low_level_cancellation check sees the task; the timeout's alone does not.
+        // Only a registered low_level_cancellation check sees the task; the
+        // timeout's alone does not.
         if (ctx.lowLevelCancellation() && ctx.isCancelled()) {
             throw new TaskCancelledException("cancelled task with reason: " + ctx.getTask().getReasonCancelled());
         }

@@ -41,7 +41,7 @@ import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
 
 /**
- * Java side of the block-join benchmark pair (M10 T10.2); the Rust side is {@code
+ * Java side of the block-join benchmark pair; the Rust side is {@code
  * benchmarks/rust-runner/src/micro_join.rs}, with the same case names. {@code build <dir>} writes
  * the corpus once -- 60 000 blocks of zero to ten children (a body of words, a {@code price}) and
  * a parent (a body and a {@code rank}), force-merged to one segment -- and the word list ({@code

@@ -1,4 +1,4 @@
-//! M13 T13.4b's facet-counting pair (the Java twin is
+//! The facet-counting pair (the Java twin is
 //! `benchmarks/micro/java/FacetCountsMicro.java`), with the same case names,
 //! over the 200,000-document, four-segment index and taxonomy the Java side
 //! builds (`FacetCountsMicro build <dir>`): a flat `Author`, a three-level

@@ -65,18 +65,10 @@
 //! `next()` walks blocks and in-block sub-block pointers with the same frame
 //! stack, never re-consulting the trie.
 //!
-//! **Why this replaced the previous design.** Until this port's `c1` batch,
-//! `open` recursively visited every trie node, expanded every floor block,
-//! decoded every `.tim` block and merged every field's terms into one sorted
-//! array. It gave the same answers but cost `O(all terms in the segment)` in
-//! both time and memory at open: **35.4 ms** to open the M1 benchmark
-//! corpus' single 579k-term segment where real Lucene's whole
-//! `DirectoryReader.open` costs 0.34 ms, and one live copy of every term's
-//! bytes plus a 64-byte record for as long as the reader lived. A search
-//! engine reopens readers on every refresh, so that was the largest
-//! architectural divergence left in the read path (finding A1 in
-//! `docs/sweep/m2/LEDGER.md`). See `docs/sweep/m2/c1-lazy-blocktree.md` for
-//! the before/after numbers.
+//! **Why lazy.** Materializing every field's terms at open costs
+//! `O(all terms in the segment)` in time and memory (35 ms for the benchmark
+//! corpus' 579k-term segment, where Lucene's whole `DirectoryReader.open`
+//! costs 0.34 ms), and a search engine reopens readers on every refresh.
 //!
 //! ## Fallible lookups
 //!
@@ -1535,8 +1527,7 @@ impl Default for EnumState {
 /// spatial prefix-tree traversals (heatmaps, RPT intersects) nothing here
 /// issued sorted seeks, and every seek restarted from the root; the
 /// in-place [`Frame::rewind`] and the per-field pooled state (which make
-/// any access order cheap to repeat) stay. See
-/// `docs/sweep/m2/c1-lazy-blocktree.md`.
+/// any access order cheap to repeat) stay.
 ///
 /// Unported, with the same status as before:
 /// `seekExact(BytesRef, TermState)`/`termState()`/`ord()` (no `TermStates`
@@ -2243,7 +2234,7 @@ impl<'a> TermsEnum<'a> {
     /// `SegmentTermsEnum.next()` exactly: advance to the next term and hand
     /// back **only its bytes**, leaving `decodeMetaData` undone.
     ///
-    /// This is the split c1's F-14 asked for. A scan that filters on the term
+    /// A scan that filters on the term
     /// bytes -- a wildcard/regexp/fuzzy intersection, a term-range delete, a
     /// `CheckIndex` pass -- discards `docFreq`/`totalTermFreq` for every term
     /// it rejects, and through [`Self::try_next`] it paid a stats vint and a
@@ -2301,8 +2292,7 @@ impl<'a> TermsEnum<'a> {
     /// end-of-terms.
     ///
     /// **Test convenience only.** No production caller in this workspace uses
-    /// this spelling any more (`c39-codecs-readpath` migrated the last of
-    /// them, and the migration is re-checkable by marking these four methods
+    /// this spelling (re-checkable by marking these four methods
     /// `#[deprecated]` and building `--all-targets`). It survives because a
     /// test that has just built its own bytes gains nothing from an error
     /// channel; a decoder that degrades corruption to "no such term" is how a
@@ -2491,11 +2481,10 @@ impl<'a> TermsEnum<'a> {
 /// Shared, type-erased ownership of one whole codec file's bytes.
 ///
 /// [`FieldTerms`] navigates the segment's `.tim`/`.tip` for as long as it
-/// lives, so it has to *own* a share of them. `Arc<[u8]>` was the obvious
-/// choice and was what this held until c12, but an `Arc<[u8]>` owns its own
+/// lives, so it has to *own* a share of them. An `Arc<[u8]>` owns its own
 /// allocation: building one from a `memmap2::Mmap` (what
 /// `lucene_store::MmapDirectory` hands back, and Lucene's own
-/// `MMapDirectory` equivalent) copies the whole file. On the M1 benchmark
+/// `MMapDirectory` equivalent) copies the whole file. On the benchmark
 /// corpus that was 199 µs of a 579 µs `DirectoryReader::open` -- for a 4.7 MB
 /// `.tim` whose bytes were already resident in the page cache.
 ///
@@ -3072,7 +3061,7 @@ impl FieldTerms {
     /// past that whole prefix range, which with lazy frames means the blocks
     /// under it are never loaded. That is what real Lucene's
     /// `IntersectTermsEnum` gets from a `ByteRunAutomaton` entering a dead
-    /// state; see `docs/sweep/m2/c1-lazy-blocktree.md` for the measurement.
+    /// state.
     pub fn regexp_intersect<'a>(
         &'a self,
         pattern: &'a RegexpPattern,
@@ -4019,8 +4008,7 @@ impl<'a, M: TermMatcher> Intersect<'a, M> {
             // `term()`, not `try_current()`: `IntersectTermsEnum` walks on the
             // term bytes alone and only the terms it *yields* need stats, so
             // decoding `docFreq`/`totalTermFreq`/`TermMetadata` here would
-            // charge every rejected term for numbers this loop throws away
-            // (item 21 / c1's F-14).
+            // charge every rejected term for numbers this loop throws away.
             let Some(term) = self.enum_.term() else {
                 self.done = true;
                 return Ok(None);
@@ -5949,20 +5937,20 @@ mod tests {
         assert_eq!(got, vec![b"banana".to_vec(), b"band".to_vec()]);
     }
 
-    /// Backs `FuzzyQuery::max_expansions`'s (task #221, `lucene-search`
-    /// crate) selection-policy claim: `fuzzy_intersect` returns a lazy
-    /// iterator over this field's already-fully-decoded, in-memory sorted
-    /// entries (the whole term dictionary is materialized once at segment
-    /// open, not decoded on demand here -- see this module's own doc
-    /// comment), filtering one candidate at a time as it's pulled. `.take(n)`
-    /// stops pulling once `n` matches are found, so it skips the fuzzy-match
-    /// predicate/allocation for every entry past the cap, but it does not
-    /// skip any term-dictionary decode work (that already happened). This
-    /// test builds a term dictionary with more than 50 terms that all match
-    /// the same fuzzy pattern (all single-byte substitutions of a
-    /// fixed-length target, so every one is within `max_edits` of it) and
-    /// checks that `.take(50)` yields exactly the first 50 in sorted order,
-    /// while the untruncated iterator yields every one of them.
+    /// Backs `FuzzyQuery::max_expansions`'s (`lucene-search`) selection-policy
+    /// claim: `fuzzy_intersect` returns a lazy iterator over this field's
+    /// already-fully-decoded, in-memory sorted entries (the whole term
+    /// dictionary is materialized once at segment open, not decoded on demand
+    /// here -- see this module's own doc comment), filtering one candidate at a
+    /// time as it's pulled. `.take(n)` stops pulling once `n` matches are
+    /// found, so it skips the fuzzy-match predicate/allocation for every entry
+    /// past the cap, but it does not skip any term-dictionary decode work (that
+    /// already happened). This test builds a term dictionary with more than 50
+    /// terms that all match the same fuzzy pattern (all single-byte
+    /// substitutions of a fixed-length target, so every one is within
+    /// `max_edits` of it) and checks that `.take(50)` yields exactly the first
+    /// 50 in sorted order, while the untruncated iterator yields every one of
+    /// them.
     #[test]
     fn fuzzy_intersect_take_truncates_the_lazy_walk() {
         let b = Builder::new();
@@ -8846,8 +8834,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // c27: the arithmetic gate. One regression test per fix, each written
-    // against the *unfixed* code first.
+    // The arithmetic gate: one regression test per bounded operation.
     // -----------------------------------------------------------------
 
     fn default_field_infos() -> FieldInfos {
@@ -9126,9 +9113,8 @@ mod tests {
         }
 
         // Measured when this was written: 391 of 436. The rest decode to a
-        // different but self-consistent dictionary -- c19 measured 44 of 99
-        // on `.tip` alone and c25 15 of 43 on `.tvd`, so a rate below 100% is
-        // the norm, not a gap. What this pins is that nothing *panics or
+        // different but self-consistent dictionary -- so a rate below
+        // 100% is the norm, not a gap. What this pins is that nothing *panics or
         // aborts*, plus a floor so a future change that stops bounding
         // something fails loudly.
         assert_eq!(total, 436);

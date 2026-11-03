@@ -1,4 +1,4 @@
-//! M13 T13.1: `ExtendableQueryParser` against Lucene 10.5.0
+//! `ExtendableQueryParser` against Lucene 10.5.0
 //! (`fixtures/src/GenQueryParserExt.java`): the extension corpus and the
 //! classic one, with five extensions (an upper-cased term, a nested parse,
 //! `null`, a `ParseException`, a boosted term) under the `:` and `#`

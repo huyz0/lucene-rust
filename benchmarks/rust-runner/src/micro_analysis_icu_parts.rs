@@ -1,4 +1,4 @@
-//! M12's ICU gaps taken apart (`benchmarks/micro/java/AnalysisIcuPartsMicro.java`
+//! The ICU gaps taken apart (`benchmarks/micro/java/AnalysisIcuPartsMicro.java`
 //! is the Java twin): for each `--bench analysis_icu` case below Lucene, the
 //! tokenizer alone and the ICU kernel alone over the same inputs, so that
 //! the chain's ratio splits into the part each engine spends where. Units

@@ -1,4 +1,4 @@
-//! The M10 T10.6 benchmark pair, against
+//! The benchmark pair, against
 //! `benchmarks/micro/java/QueriesMicro.java`: per word, one top-10 search of
 //! each case -- interval queries (ordered, phrase, unordered under
 //! `maxgaps`, a phrase over a disjunction, containing, at-least, a prefix,

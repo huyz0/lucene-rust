@@ -1,4 +1,4 @@
-//! M10 T10.6, differentially against Lucene 10.5.0:
+//! Differentially against Lucene 10.5.0:
 //! `fixtures/src/GenIntervals.java`.
 //!
 //! `queries.tsv`: every `Intervals` factory's source over a four-segment

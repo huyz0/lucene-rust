@@ -1,4 +1,4 @@
-//! M13 T13.3e's spell pair (the Java twin is
+//! The spell pair (the Java twin is
 //! `benchmarks/micro/java/SpellMicro.java`) over 5,000 pseudo-words from a
 //! shared LCG, word `i` in `i % 5 + 1` documents of a one-segment index.
 //! `direct_suggest`: `DirectSpellChecker` top 5 for 500 misspellings, units:

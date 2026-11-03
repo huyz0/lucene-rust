@@ -1,4 +1,4 @@
-//! M14 T14.3 `misc`, differentially against Lucene 10.5.0:
+//! `misc`, differentially against Lucene 10.5.0:
 //! `fixtures/src/GenMiscSplit.java`'s `misc/split.tsv`.
 //!
 //! `PKIndexSplitter` and `MultiPassIndexSplitter` run over the same source

@@ -28,7 +28,7 @@ import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
 
 /**
- * M14.i: what the {@code misc} module's command-line tools print. Writes {@code tools/misc}:
+ * What the {@code misc} module's command-line tools print. Writes {@code tools/misc}:
  *
  * <ul>
  *   <li>{@code index} (three commits and a delete: three segments, one with deletions) and

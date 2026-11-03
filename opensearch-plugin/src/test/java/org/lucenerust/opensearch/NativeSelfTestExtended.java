@@ -72,15 +72,15 @@ import java.util.function.Predicate;
 import java.util.stream.Stream;
 
 /**
- * M10 T10.7's shapes in {@link NativeSelfTest}: {@code nested} (block joins over OpenSearch's
+ * The extended query shapes in {@link NativeSelfTest}: {@code nested} (block joins over OpenSearch's
  * nested layout), the span queries, {@code intervals}, {@code combined_fields} and OpenSearch's
  * {@code function_score}, built as OpenSearch builds them, over an NRT block index with deletions --
  * every one encoded (the test fails on any fallback) and compared by {@code NativeSelfTest.compare}:
  * top hits and scores, counts, sorted pages, {@code terminate_after}, {@code min_score} and the
  * aggregations.
  */
-final class NativeSelfTestM10 {
-    private NativeSelfTestM10() {}
+final class NativeSelfTestExtended {
+    private NativeSelfTestExtended() {}
 
     /** Queries encoded and compared, by shape. */
     static final Map<String, int[]> ENCODED = new java.util.TreeMap<>();
@@ -130,7 +130,7 @@ final class NativeSelfTestM10 {
     }
 
     static void run(Random r, BiConsumer<Boolean, String> check, Compare compare) throws Exception {
-        Path dir = Files.createTempDirectory("lucene-rust-selftest-m10");
+        Path dir = Files.createTempDirectory("lucene-rust-selftest-extended");
         NativeReaders readers = new NativeReaders();
         try (FSDirectory d = FSDirectory.open(dir); IndexWriter w = new IndexWriter(d, new IndexWriterConfig(new StandardAnalyzer()))) {
             DirectoryReader reader = null;
@@ -207,19 +207,19 @@ final class NativeSelfTestM10 {
                 IndexSearcher searcher = new IndexSearcher(reader);
                 for (int q = 0; q < queries.size(); q++) {
                     QueryEncoder.Encoded enc = QueryEncoder.encode(searcher.rewrite(queries.get(q)), f -> true);
-                    check.accept(enc.blob() != null, "M10 query does not encode: " + queries.get(q) + " (" + enc.fallbackReason() + ")");
+                    check.accept(enc.blob() != null, "extended query does not encode: " + queries.get(q) + " (" + enc.fallbackReason() + ")");
                     if (enc.blob() != null) {
                         ENCODED.computeIfAbsent(shapes.get(q), k -> new int[1])[0]++;
                     }
                 }
-                compare.run("m10 round " + round + " (" + reader.leaves().size() + " segments, " + reader.numDeletedDocs() + " deleted)", reader, readers, queries);
+                compare.run("extended round " + round + " (" + reader.leaves().size() + " segments, " + reader.numDeletedDocs() + " deleted)", reader, readers, queries);
             }
             long[] parents = NativeBridge.parentCacheStats();
-            check.accept(parents[0] > 0 && parents[1] > 0, "m10: nested parent sets cached natively: " + java.util.Arrays.toString(parents));
+            check.accept(parents[0] > 0 && parents[1] > 0, "extended: nested parent sets cached natively: " + java.util.Arrays.toString(parents));
             reader.close();
-            check.accept(readers.openCount() == 0, "m10: no native readers left open");
+            check.accept(readers.openCount() == 0, "extended: no native readers left open");
             parents = NativeBridge.parentCacheStats();
-            check.accept(parents[0] == 0 && parents[1] == 0, "m10: closing the last reader drops its parent sets: " + java.util.Arrays.toString(parents));
+            check.accept(parents[0] == 0 && parents[1] == 0, "extended: closing the last reader drops its parent sets: " + java.util.Arrays.toString(parents));
         }
         try (Stream<Path> s = Files.walk(dir)) {
             s.sorted(Comparator.reverseOrder()).forEach(p -> p.toFile().delete());

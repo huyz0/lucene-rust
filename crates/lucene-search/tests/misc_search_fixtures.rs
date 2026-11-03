@@ -1,4 +1,4 @@
-//! M14 T14.3 `misc`, differentially against Lucene 10.5.0:
+//! `misc`, differentially against Lucene 10.5.0:
 //! `fixtures/src/GenMiscSearch.java`'s `misc/search.tsv` over
 //! `misc/search_src` (two segments): the doc-values statistics, the
 //! diversified top-docs collector (one collector, and one per segment reduced

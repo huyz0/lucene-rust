@@ -24,7 +24,7 @@ import org.apache.lucene.search.ScoreDoc;
 import org.apache.lucene.store.FSDirectory;
 
 /**
- * M13 T13.1: {@code CoreParser} over {@code fixtures/corpus/queryparser-xml.txt}, one XML document a
+ * {@code CoreParser} over {@code fixtures/corpus/queryparser-xml.txt}, one XML document a
  * line, default field {@code body}, against ten documents ({@code index/}) with an {@code IntPoint} field {@code n} (1 to 10); no
  * document has {@code x}, so a range on it finds nothing. A row of {@code xml.tsv}
  * is the escaped document, then {@code Q}, {@code toString("body")}, the class tree, and the matching

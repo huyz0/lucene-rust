@@ -11,7 +11,7 @@
 //! length filter instead, which is where the time goes.
 //!
 //! Criterion is not used: it reported 83/91/129 µs for identical code on this
-//! project's machine (`docs/sweep/m2/c24-arith-codecs.md`), so every figure
+//! project's machine, so every figure
 //! here is a **min of N alternating repetitions**, the statistic that survives
 //! a noisy host. Both arms run in one process from one build, so there is no
 //! second binary and no rebuild between them -- only the `prune` argument.

@@ -1,4 +1,4 @@
-//! The query-time join benchmark pair (M10 T10.3), against
+//! The query-time join benchmark pair, against
 //! `benchmarks/micro/java/QueryJoinMicro.java`: per word, `JoinUtil`'s
 //! `createJoinQuery` over `+type:from +body:word` (collecting the from side)
 //! and the top 10 of the join it returns -- the terms join in each score mode

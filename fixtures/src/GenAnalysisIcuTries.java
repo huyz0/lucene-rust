@@ -14,7 +14,7 @@ import java.util.Map;
 import java.util.Random;
 
 /**
- * M12 T12.4: ICU4J 77.1's {@code BytesTrie} and {@code CharsTrie} (what the dictionary break engines
+ * ICU4J 77.1's {@code BytesTrie} and {@code CharsTrie} (what the dictionary break engines
  * match against), built by ICU4J's own builders over seeded key sets whose values and sizes reach
  * every value and jump-delta encoding, then walked unit by unit; compared by {@code
  * crates/lucene-analysis-icu/tests/icu_tries_fixtures.rs}.

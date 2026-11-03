@@ -59,7 +59,7 @@
 //!   `filteredSearchThreshold` exceeds the percentage of the graph the filter
 //!   passes. 10.5.0's `DEFAULT_FILTERED_SEARCH_THRESHOLD` is **`0`**, so only
 //!   an explicit strategy reaches it (`main` raised the default to 60 after
-//!   10.5.0 -- see `docs/sweep/m2/c18-version-audit.md`).
+//!   10.5.0).
 //! - **`SeededHnswGraphSearcher` is a method, not a class.**
 //!   [`HnswGraphSearcher::search_seeded`] is Java's whole seeded searcher:
 //!   the class exists there only to override `findBestEntryPoint` with a
@@ -1137,7 +1137,7 @@ impl HnswGraphSearcher {
     /// break even -- or lose -- once `|seeds|` approaches it. Measured on
     /// this port's fixtures: 26% fewer vector comparisons for `k = 10` over
     /// 4000 vectors with 10 seeds, but 4.1% for `k = 100` over 700 vectors
-    /// with 93 (`docs/sweep/m2/c21-hnsw-seeded.md`).
+    /// with 93.
     ///
     /// `seed_ords` is Java's `SeededHnswGraphSearcher.fromEntryPoints`
     /// argument, already resolved to level-0 ordinals (Java resolves them
@@ -1435,7 +1435,7 @@ impl HnswGraphSearcher {
         self.prepare_scratch_state(size, Self::bulk_width(graph));
         // Java asserts `friendOrd < size` inside the loop below -- an
         // assertion, i.e. absent in production, where the same ordinal then
-        // indexes `visited`. Since c41 `FixedBitSet::get`/`set` check their
+        // indexes `visited`. `FixedBitSet::get`/`set` check their
         // bound in release too, so an out-of-range ordinal is a panic rather
         // than a ghost bit -- but a panic on a hot search path is still an
         // aborted query, and the bound belongs where the ordinal is decoded,
@@ -3523,8 +3523,7 @@ mod tests {
     /// With one source graph, no deletions and an identity ordinal map, the
     /// merge is a pure structural copy: the merged graph must be **arc for
     /// arc** the source graph. This is the assertion that actually
-    /// discriminates -- recall would not (see `docs/sweep/m2/c5-vectors.md`'s
-    /// Verification section).
+    /// discriminates -- recall would not.
     #[test]
     fn merging_one_undeleted_graph_reproduces_it_arc_for_arc() {
         let n = 300;
@@ -3832,9 +3831,7 @@ mod tests {
     /// Every `HnswGraphView` in this crate rejects those when it decodes them,
     /// so this is the searcher's own bound: without it the ordinal indexes
     /// `visited` and the query dies on `FixedBitSet`'s own out-of-range panic
-    /// instead of returning `Error::InvalidGraphParameter`. Before c41 made
-    /// that bound unconditional it was worse -- a **ghost bit** in a release
-    /// build, a silently wrong "already visited".
+    /// instead of returning `Error::InvalidGraphParameter`.
     struct WildArcs {
         neighbour: i32,
         count: usize,

@@ -93,7 +93,7 @@ import org.junit.runner.Result;
 import org.junit.runner.RunWith;
 import org.junit.runner.notification.Failure;
 /**
- * Differential fixtures for lucene-test-framework's search bases (M14.h h7): what Lucene 10.5.0
+ * Differential fixtures for lucene-test-framework's search bases: what Lucene 10.5.0
  * scores, explains and draws from a seeded {@code java.util.Random}.
  *
  * <p>Writes {@code search.txt}, five sections:

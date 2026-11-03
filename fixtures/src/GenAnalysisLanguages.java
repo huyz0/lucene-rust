@@ -59,7 +59,7 @@ import org.apache.lucene.analysis.tokenattributes.CharTermAttribute;
 import org.apache.lucene.analysis.tr.*;
 
 /**
- * M11 T11.6: the per-language packages. Every language analyzer (default stop set, and some with a
+ * The per-language packages. Every language analyzer (default stop set, and some with a
  * stem exclusion set), and the stemming and normalization filters on their own, over {@code
  * fixtures/corpus/analysis-lang.txt} (sentences written for this project) as {@code <chain>.tsv}
  * ({@link AnalysisRows}' rows), {@code normalize.words} ({@code Analyzer.normalize} of each), and {@code lang.words}: each stemmer and normalizer over words

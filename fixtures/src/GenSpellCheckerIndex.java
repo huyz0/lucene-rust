@@ -26,7 +26,7 @@ import org.apache.lucene.store.FSDirectory;
 import org.apache.lucene.util.IOUtils;
 
 /**
- * M13 T13.3e: the classic {@code SpellChecker}. Writes {@code spell_checker_index/}: {@code
+ * The classic {@code SpellChecker}. Writes {@code spell_checker_index/}: {@code
  * user/} (a one-segment user index, field {@code body}), {@code first/} (a spell index built from
  * {@code DICTIONARY} by a {@code PlainTextDictionary}, fully merged), {@code second/} (the same,
  * then the user index's {@code LuceneDictionary} added unmerged), {@code suggest.tsv} (stage,

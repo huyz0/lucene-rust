@@ -32,7 +32,7 @@ import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.IOUtils;
 
 /**
- * M13 T13.3e: {@code DirectSpellChecker}, {@code LuceneDictionary} and {@code
+ * {@code DirectSpellChecker}, {@code LuceneDictionary} and {@code
  * HighFrequencyDictionary} over a four-segment index with deletions. Writes {@code
  * spell_checker/}: {@code index/}, {@code queries.tsv}, {@code direct.tsv} (configuration, query,
  * mode, numSug, then {@code string:freq:scoreBits} per suggestion), {@code dictionaries.tsv}

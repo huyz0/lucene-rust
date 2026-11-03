@@ -4,11 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-# lucene-analysis-nori (M12 T12.1): Korean morphological analysis over
+# lucene-analysis-nori: Korean morphological analysis over
 # mecab-ko-dic -- KoreanTokenizer (the Viterbi lattice of lucene-analysis'
 # morph module, user dictionaries, decompounding), its filters,
 # KoreanAnalyzer and the factories. Over lucene-analysis only, as Lucene's
-# module is over lucene-analysis-common (docs/milestones/m12-language-analysis.md).
+# module is over lucene-analysis-common.
 [features]
 default = ["embedded-data"]
 # Compiles the dictionary files in (src/resources); without it they are read

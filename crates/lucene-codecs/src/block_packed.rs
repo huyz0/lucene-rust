@@ -209,14 +209,14 @@ pub(crate) fn decode_all(input: &mut impl DataInput, total_value_count: i64) -> 
 /// containing a negative value**. A block of all-negative values took
 /// `max <= 0 -> bitsPerValue = 0`, encoding every value as the constant `0`;
 /// a mixed block truncated each negative value to the low `bitsPerValue` bits.
-/// That was latent when it was fixed and is **not latent any more** (c33):
+/// That was latent when it was fixed and is **not latent any more**:
 /// the term-vectors writer stores a length as `span - prefixLength -
 /// suffixLength`, where `span` is `endOffset - startOffset`: the
 /// occurrence's span minus the term's length *in UTF-8 bytes* -- exactly
 /// what Java's
 /// `Lucene90CompressingTermVectorsWriter.flushOffsets` writes and what its
-/// reader adds back. The span is now measured in UTF-16 code units
-/// (`OffsetAttribute`'s unit; it was UTF-8 bytes here until c33), so **every
+/// reader adds back. The span is measured in UTF-16 code units
+/// (`OffsetAttribute`'s unit), so **every
 /// multi-byte term produces a negative length**: `caf\u{e9}` spans 4 `char`s
 /// and occupies 5 bytes, giving `-1`. Start-offset deltas can be negative
 /// too, since `charsPerTerm * position` may overshoot. `BlockPackedWriter` is

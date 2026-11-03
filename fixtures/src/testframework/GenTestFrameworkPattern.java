@@ -5,7 +5,7 @@ import java.util.regex.Pattern;
 import org.apache.lucene.tests.util.TestUtil;
 
 /**
- * Differential fixture for {@code TestUtil.randomPattern} (M14.h): which regexpish string Lucene
+ * Differential fixture for {@code TestUtil.randomPattern}: which regexpish string Lucene
  * 10.5.0's test framework settles on for a seeded {@code java.util.Random}, after retrying those
  * that do not compile or that split {@code "AB𠀀C"}'s surrogate pair.
  *

@@ -1,4 +1,4 @@
-//! Standalone, fast checksum-only verifier CLI (task #217): a thin wrapper
+//! Standalone, fast checksum-only verifier CLI: a thin wrapper
 //! around [`lucene_index::checksum_verify::verify_directory`], the lighter,
 //! cheaper sibling of `check_index.rs`'s much deeper `CheckIndex`-equivalent
 //! -- see that module's doc comment for exactly how the two differ in

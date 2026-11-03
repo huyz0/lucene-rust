@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# M6's upgrade and rollback, executed (T6.4): three OpenSearch 3.9.0 nodes go
+# the upgrade and rollback, executed: three OpenSearch 3.9.0 nodes go
 # from no plugin, onto the plugin, adopt the Rust engine by reindex, and back
 # off it -- OpenSearch's engine, a force merge, then no plugin at all -- with
 # every acknowledged write and every answer checked after each step.

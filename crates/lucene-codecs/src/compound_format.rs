@@ -172,7 +172,7 @@ pub fn check_data_header_footer(
 /// This is `IndexInput.slice(sliceDescription, offset, length)` (see
 /// `lucene_store::data_input::SliceInput::slice_input`) rather than
 /// hand-rolled offset math: the real caller this generalizes for is segment
-/// merging (task #15), which needs to read a sub-range of a shared `.cfs`
+/// merging, which needs to read a sub-range of a shared `.cfs`
 /// with its own cursor per source segment, independent of any other open
 /// sub-file reader over the same bytes.
 pub fn open_input<'d>(

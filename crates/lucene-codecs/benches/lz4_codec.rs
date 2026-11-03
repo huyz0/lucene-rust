@@ -1,7 +1,6 @@
 //! Microbenchmarks for the LZ4 block codec (`org.apache.lucene.util.compress.LZ4`).
 //!
-//! Three things this guards, all of which the M2 sweep of
-//! `crates/lucene-codecs/src/lz4.rs` changed:
+//! Three properties of `crates/lucene-codecs/src/lz4.rs` this guards:
 //!
 //! 1. **Hash-table reuse.** Java's compressors own one `HashTable` for their
 //!    whole lifetime and never clear it between inputs; a table allocated per

@@ -69,8 +69,7 @@
 //!   removes that column outright: what `build_streaming` holds is one reused
 //!   term buffer per segment plus the map. The `Vec<i64>`-rather-than-
 //!   `PackedLongValues` divergence above is the 51 MB column, i.e. what is
-//!   left once the larger half is gone. See
-//!   `docs/sweep/m2/c38-allocation-shape.md`.
+//!   left once the larger half is gone.
 //! - **No `IndexReader.CacheKey` owner.** Java carries one so
 //!   `DefaultSortedSetDocValuesReaderState` can cache the map against the
 //!   reader it was built for. This port has no reader cache-key mechanism, so

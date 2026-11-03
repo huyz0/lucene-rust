@@ -407,8 +407,8 @@ fn bit_table_count_bits_up_to(bit_index: i32, arc: &Arc, r: &mut BytesReader) ->
 /// index of the next set bit strictly after `bit_index` (which may be `-1`,
 /// meaning "the first set bit"), or `-1` if none.
 //
-// SENTINEL: `-1` = "no next present arc". c31 left exactly this unchecked one
-// function over, where `-1` flowed on as an `arcIdx` and `read_arc` derived
+// SENTINEL: `-1` = "no next present arc". Unchecked, `-1` would flow on as
+// an `arcIdx` and `read_arc` would derive
 // `firstLabel - 1` -- for `firstLabel == 0`, exactly `END_LABEL`. A byte-flip
 // sweep cannot find it: a plausible wrong label is a clean decode.
 fn bit_table_next_bit_set(bit_index: i32, arc: &Arc, r: &mut BytesReader) -> Result<i32> {
@@ -937,8 +937,8 @@ impl<'a> Fst<'a> {
         match self.metadata.input_type {
             InputType::Byte1 => Ok(r.read_byte()? as i32),
             InputType::Byte2 => {
-                // `DataInput.readShort`: b1 = first byte read, b2 = second;
-                // value = (b2 << 8) | b1 (little-endian), regardless of
+                // `DataInput.readShort`: `b1` = first byte read, `b2` = second;
+                // value = `(b2 << 8) | b1` (little-endian), regardless of
                 // whether the underlying reader walks forward or backward --
                 // see `BytesReader::read_vint`'s identical observation.
                 let b1 = r.read_byte()?;
@@ -2783,8 +2783,8 @@ impl<'f, 'a> FstEnum<'f, 'a> {
             // direct-addressing node is `first_label` and is always present,
             // so a `target_index` that reached this branch is at least 1 and
             // has a set bit below it. A `.tip`/FST byte with that bit cleared
-            // makes `previous_bit_set` answer `-1`, and `-1` here is the exact
-            // shape c31 found one function over in `read_next_real_arc`:
+            // makes `previous_bit_set` answer `-1`, and `-1` here would be the
+            // same sentinel misuse as in `read_next_real_arc`:
             // `read_arc_by_direct_addressing` derives `first_label - 1`, an
             // arc one label below the range the node declared, and for
             // `first_label == 0` exactly `END_LABEL` -- a *plausible wrong
@@ -3076,7 +3076,7 @@ impl<'f, 'a> FstEnum<'f, 'a> {
 /// `INPUT_TYPE`'s alphabet, and `bit_table_next_bit_set` refuses an index
 /// past `numArcs`. Every `arcIdx` is then in `0..numArcs`, so every label of a
 /// `BYTE1` FST is in `0..=255` and this narrowing is total -- and free, which
-/// a per-key check on this path is not (c31 measured one at 7% of a full
+/// a per-key check on this path is not (one measured at 7% of a full
 /// enumeration).
 fn labels_to_bytes(labels: &[i32]) -> Vec<u8> {
     debug_assert!(labels.iter().all(|&l| (0..=255).contains(&l)));
@@ -4463,8 +4463,8 @@ mod tests {
         assert!(matches!(it.next(), Some(Err(Error::Corrupt(_)))));
     }
 
-    /// The **third** call site of the same out-of-domain sentinel, and the one
-    /// c31 left. `seek_floor_direct_addressing`'s in-range-but-absent branch
+    /// The **third** call site of the same out-of-domain sentinel.
+    /// `seek_floor_direct_addressing`'s in-range-but-absent branch
     /// passes `bit_table_previous_bit_set`'s result straight into
     /// `read_arc_by_direct_addressing`, where Java has only
     /// `assert floorIndex != -1;` -- off in production. A presence table whose
@@ -5518,9 +5518,7 @@ mod tests {
     /// FST is a few hundred bytes, i.e. under
     /// `lucene_store::directory::SMALL_FILE_READ_THRESHOLD`, so the default
     /// backend hands back an `Input::Owned` and this test would go on passing
-    /// while proving nothing whatsoever about mmap. `c42-readpath-perf`
-    /// introduced that threshold and found this test (and its sibling in
-    /// `tests/fst_borrowed_seek_fixtures.rs`) already silently converted; the
+    /// while proving nothing whatsoever about mmap. The
     /// assertion is what stops the next threshold change from doing it again.
     #[test]
     fn read_borrowed_over_a_real_mmap_directory_input() {

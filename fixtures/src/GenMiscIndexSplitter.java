@@ -19,7 +19,7 @@ import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
 
 /**
- * M14 T14.3 `misc`: {@link IndexSplitter}. Writes {@code misc/index_splitter_src} (four segments,
+ * `misc`: {@link IndexSplitter}. Writes {@code misc/index_splitter_src} (four segments,
  * one with a deletion) and {@code misc/index_splitter.tsv}:
  *
  * <pre>

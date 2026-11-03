@@ -1,4 +1,4 @@
-//! M14.h h5's and h6's acceptance run: each format suite's
+//! H5's and h6's acceptance run: each format suite's
 //! `addRandomFields` (postings, stored fields, term vectors, doc values,
 //! segment infos, field infos, compound, norms, points, float and byte
 //! KNN vectors) fills a fresh

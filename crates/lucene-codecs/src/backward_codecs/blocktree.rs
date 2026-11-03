@@ -40,10 +40,9 @@
 //! Both indexes send a seek to the same block. A corrupt FST body is found
 //! by the first lookup that reaches it, as Lucene's off-heap FST finds it.
 //!
-//! Until the M8 close-out the FST was converted into this crate's trie --
-//! first at open, then at each field's first use -- which cost 3.3 ms per
-//! 1M-document segment against Lucene's tens of microseconds. No path needs
-//! the conversion: the dictionary, `CheckIndex` and merging read an old
+//! The FST is not converted into this crate's trie (that would cost ~3.3 ms
+//! per 1M-document segment against Lucene's tens of microseconds), and no
+//! path needs it: the dictionary, `CheckIndex` and merging read an old
 //! field through the same enum. Recorded in `docs/parity.md`.
 
 use std::sync::Arc;

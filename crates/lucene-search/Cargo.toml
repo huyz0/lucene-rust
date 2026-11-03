@@ -46,33 +46,32 @@ asserting = []
 # A `[dev-dependencies]` edge, so resolver-2 feature unification keeps the
 # module out of this crate's production build.
 lucene-util = { path = "../lucene-util", features = ["test-support"] }
-# `CrashingDirectory`, for `examples/crash_fuzz.rs` (M4 T4.4).
+# `CrashingDirectory`, for `examples/crash_fuzz.rs`.
 lucene-store = { path = "../lucene-store", features = ["test-util"] }
 criterion.workspace = true
 # Re-signs a Rust-written file's footer after normalising its segment id, for
 # the byte-for-byte fixture comparisons (`tests/merge_reorder_fixtures.rs`).
 crc32fast.workspace = true
 
-# Settles b12 finding F-21 (`phrase_freq_exact`'s binary search vs
-# `ExactPhraseMatcher`'s merge walk) with a measurement rather than an
-# exponent -- see the bench's own module doc.
+# Measures `phrase_freq_exact`'s binary search against `ExactPhraseMatcher`'s
+# merge walk -- see the bench's own module doc.
 [[bench]]
 name = "phrase_freq"
 harness = false
 
-# Settles c6 item 2 (`FieldNorms`'s eager sparse `Vec<i32>` vs a per-scorer
-# `IndexedDISI` cursor) with a measurement -- see the bench's own module doc.
+# Measures `FieldNorms`'s eager sparse `Vec<i32>` against a per-scorer
+# `IndexedDISI` cursor -- see the bench's own module doc.
 [[bench]]
 name = "field_norms_sparse"
 harness = false
 
-# Settles b12 finding F-22 (`BooleanScorer`'s window/bucket bulk OR vs this
-# port's per-document min-scan disjunction) -- see the bench's own module doc.
+# Measures `BooleanScorer`'s window/bucket bulk OR against this port's
+# per-document min-scan disjunction -- see the bench's own module doc.
 [[bench]]
 name = "boolean_bulk_or"
 harness = false
 
-# Settles c11's claim that an `Occur.FILTER` clause is cheaper than the same
+# Measures whether an `Occur.FILTER` clause is cheaper than the same
 # clause as `Occur.MUST` -- see the bench's own module doc.
 [[bench]]
 name = "filter_vs_must"
@@ -85,21 +84,20 @@ harness = false
 name = "req_excl"
 harness = false
 
-# Settles c1's F-13 (`directory_reader` -> `blocktree::open_shared`): how much
-# of a segment open is the `.tim`/`.tip` copy -- see the bench's own module doc.
+# How much of a segment open is the `.tim`/`.tip` copy -- see the bench's own module doc.
 [[bench]]
 name = "directory_reader_open"
 harness = false
 
-# Measures what c15's offsets-carrying postings API buys the unified
+# Measures what the offsets-carrying postings API buys the unified
 # highlighter, and the same change on the phrase paths -- see the bench's own
 # module doc.
 [[bench]]
 name = "highlight_offsets"
 harness = false
 
-# Measures what `PostingsFlags::DocsOnly` buys the unscored paths (c8's
-# `PForUtil.skip`, wired by c12) -- see the bench's own module doc.
+# Measures what `PostingsFlags::DocsOnly` buys the unscored paths
+# (`PForUtil.skip`) -- see the bench's own module doc.
 [[bench]]
 name = "docs_only_postings"
 harness = false

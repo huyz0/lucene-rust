@@ -1,4 +1,4 @@
-//! `PlainTextDictionary` (M13 T13.3e): one word per line, each of weight 1.
+//! `PlainTextDictionary`: one word per line, each of weight 1.
 
 use crate::spell::Dictionary;
 use crate::suggest::dictionary::read_lines;

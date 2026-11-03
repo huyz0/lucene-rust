@@ -1,13 +1,11 @@
 //! Alternating A/B measurement of `IndexedDISI`'s **block jump table**: the
 //! same bytes, the same cursor, read once with the table declared and once
-//! with it declared absent (`jumpTableEntryCount = 0`, which is what every
-//! region this port wrote before `c39-codecs-readpath` carried).
+//! with it declared absent (`jumpTableEntryCount = 0`).
 //!
 //! Both arms run in one process from one build, so this is the cleanest shape
 //! the A/B method has -- there is no second binary and no rebuild between
 //! arms, only the `jump_table_entry_count` argument. Criterion is not used:
-//! it reported 83/91/129 µs for identical code on this machine (see
-//! `docs/sweep/m2/c24-arith-codecs.md`), so every figure here is a
+//! it reported 83/91/129 µs for identical code on this machine, so every figure here is a
 //! **min of N alternating repetitions**, which is the statistic that survives
 //! a noisy host.
 //!
@@ -38,7 +36,7 @@ fn cold_seeks(region: &[u8], jumps: i16, targets: &[i32]) -> u64 {
 /// The other shape: one cursor walked forward over every present doc. The
 /// jump table is never consulted here (each step is at most one block ahead),
 /// so the two arms differ only by `advance_block`'s new guard -- which makes
-/// this the regression check for the scan path c2 optimised.
+/// this the regression check for the scan path.
 fn forward_scan(region: &[u8], jumps: i16, docs: &[i32]) -> u64 {
     let mut cursor = DisiCursor::new(black_box(region), DEFAULT_DENSE_RANK_POWER, jumps);
     let mut sum = 0u64;

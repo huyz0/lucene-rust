@@ -4,14 +4,9 @@
 //!
 //! # Why this fixture exists
 //!
-//! Batch c20 ported the `.pos`/`.pay` skip machinery on both sides and then
-//! recorded, in its own carry-over list, that no `CheckIndex` run and no Java
-//! reader had ever seen a `.pos`/`.pay` file this port *wrote*: the evidence
-//! for the whole positional write path was two of this port's own readers
-//! agreeing with each other. This sweep has watched that exact evidence shape
-//! fail twice (b4's FST framing, b11's invented `.si` sort encoding), because
-//! a writer and a reader that share a misreading of the spec round-trip
-//! perfectly.
+//! It has real Lucene read `.pos`/`.pay` files this port *wrote*. A writer
+//! and a reader that share a misreading of the spec round-trip perfectly, so
+//! this port's own readers are not enough evidence.
 //!
 //! `write_full_segment_fixture` -- the one other whole-index case -- indexes
 //! `DocsAndFreqs`, so it writes no `.pos` at all.
@@ -26,11 +21,10 @@
 //! - **20 000 documents**, and `dense` occurs in every one of them: 78 full
 //!   level-0 doc blocks, a group-varint tail, and **two complete level-1
 //!   spans** (at doc 8191 and 16383) -- so the level-1 `.pos`/`.pay` skip
-//!   record, the one c20 singled out as load-bearing, is written more than
+//!   record, which is load-bearing, is written more than
 //!   once and read back by Lucene's own `advance`.
 //! - **Per-document frequency cycles 1..5.** The period matters and is not
-//!   decoration: c20's Tier-2 review found its first fixture cycling with
-//!   period 4, which made `sum(freq)` over a level-1 span an exact multiple
+//!   decoration: period 4 would make `sum(freq)` over a level-1 span an exact multiple
 //!   of 256 and the level-1 `posBufferUpto` byte indistinguishable from a
 //!   hardcoded zero. 5 is coprime with 256, so `.pos` block boundaries drift
 //!   against `.doc` block boundaries and the skip records carry non-zero

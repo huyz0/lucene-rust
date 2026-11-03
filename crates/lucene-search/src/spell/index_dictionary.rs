@@ -1,4 +1,4 @@
-//! `LuceneDictionary` and `HighFrequencyDictionary` (M13 T13.3e): a field's
+//! `LuceneDictionary` and `HighFrequencyDictionary`: a field's
 //! terms, read off an index, as a [`Dictionary`].
 //!
 //! Departure from Java: both read the field's terms when

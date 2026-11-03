@@ -1,4 +1,4 @@
-//! M14.h h8's acceptance run: `ThreadedIndexingAndSearchingTestCase` over
+//! H8's acceptance run: `ThreadedIndexingAndSearchingTestCase` over
 //! a range of seeds, alternating a fresh NRT reader per search with a shared
 //! reader reopened when changed. Each seed's run must pass every check the
 //! test makes (deletes, packs in order, surviving documents, the document

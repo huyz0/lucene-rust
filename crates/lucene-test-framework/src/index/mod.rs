@@ -1,6 +1,6 @@
 //! `org.apache.lucene.tests.index`: the writer, merge-policy and reader
-//! infrastructure the index tests share (M14.h h4), and the index file
-//! format suites (h5).
+//! infrastructure the index tests share, and the index file
+//! format suites.
 
 pub mod asserting_leaf_reader;
 pub mod base_compound_format;

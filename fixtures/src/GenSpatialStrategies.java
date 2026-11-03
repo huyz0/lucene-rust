@@ -19,7 +19,7 @@ import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
 
 /**
- * spatial-extras' strategies (M9 T9.5), differentially: indexes a seeded corpus through every
+ * spatial-extras' strategies, differentially: indexes a seeded corpus through every
  * {@code SpatialStrategy} of {@link SpatialExtrasCorpus} -- RPT over geohash, quad (pruned and not),
  * packed quad, S2 (Geo3D) and a planar quad, RPT points-only, the term-query strategy, BBox
  * (geodetic and planar, stored), point-vector, serialized doc values (Spatial4j's and Geo3D's

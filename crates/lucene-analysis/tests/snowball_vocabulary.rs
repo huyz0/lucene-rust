@@ -1,4 +1,4 @@
-//! M11 T11.3, opt-in: every Snowball stemmer over the Snowball project's
+//! Opt-in: every Snowball stemmer over the Snowball project's
 //! own test vocabularies.
 //!
 //! `snowball-data` (github.com/snowballstem/snowball-data) holds, per

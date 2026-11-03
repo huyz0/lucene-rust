@@ -1,12 +1,9 @@
 //! Segment-open, per-seek and term-intersection cost of the block-tree term
 //! dictionary, measured against a **real Lucene 10.5.0-written** segment.
 //!
-//! This is the benchmark for finding A1 (`docs/sweep/m2/LEDGER.md`): this port
-//! used to materialize every term of every field into a sorted array when a
-//! segment was opened, where `Lucene103BlockTreeTermsReader` reads only each
-//! field's `.tmd` record and lets `SegmentTermsEnum` load individual `.tim`
-//! blocks lazily as a seek walks into them. M1.6 measured that at 52.7 ms
-//! against Lucene's 0.34 ms for a whole `DirectoryReader.open`.
+//! Like `Lucene103BlockTreeTermsReader`, open reads only each field's `.tmd`
+//! record and `SegmentTermsEnum` loads individual `.tim` blocks lazily as a
+//! seek walks into them; Lucene's whole `DirectoryReader.open` costs ~0.34 ms.
 //!
 //! The corpus is `benchmarks/.corpus/merged` (see `scripts/bench-corpus.sh`),
 //! the same single-segment, force-merged, real-Lucene index
@@ -54,7 +51,7 @@ fn corpus_dir() -> PathBuf {
 
 /// The `t0`..`t999999` dictionary the term-intersection cases run over --
 /// `benchmarks/corpus/src/GenTermCorpus.java`, the shape
-/// `docs/sweep/m2/b8-automata-analysis.md` measured the dead-prefix skip on.
+/// the dead-prefix skip is measured on.
 fn terms_dir() -> PathBuf {
     match std::env::var_os("LUCENE_RUST_BENCH_TERMS_INDEX") {
         Some(p) => PathBuf::from(p),
@@ -228,8 +225,7 @@ fn bench_blocktree(c: &mut Criterion) {
 
 /// `FieldReader.intersect`'s equivalent: how much the dead-prefix skip saves
 /// now that skipping a prefix range also skips *loading* the `.tim` blocks
-/// under it -- the win `docs/sweep/m2/b8-automata-analysis.md` could not get
-/// while the whole dictionary was decoded at open.
+/// under it.
 ///
 /// `scan` is the same walk with the skip taken out: seek to the pattern's
 /// literal prefix, then `next()` through the range testing every term.

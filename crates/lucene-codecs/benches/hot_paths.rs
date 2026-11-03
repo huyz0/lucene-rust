@@ -603,8 +603,7 @@ fn bench_postings_lazy_cursor(c: &mut Criterion) {
 /// exploit, and both this port and Lucene recover ~15% of the true top-10 --
 /// a real property of the data, but a misleading thing to benchmark, because
 /// the search terminates early for the wrong reason. Clustered data is the
-/// shape a real embedding field has. See `docs/sweep/m2/c5-vectors.md`, which
-/// reports both.
+/// shape a real embedding field has.
 ///
 /// Three arms:
 /// - `brute_force_50k_dim128_k10_x25`: the exhaustive `O(n*d)` scan, which is

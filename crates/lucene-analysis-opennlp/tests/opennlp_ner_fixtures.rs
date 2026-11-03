@@ -1,4 +1,4 @@
-//! M14: `NLPNERTaggerOp` against Lucene 10.5.0 over OpenNLP 2.5.3.
+//! `NLPNERTaggerOp` against Lucene 10.5.0 over OpenNLP 2.5.3.
 //!
 //! `fixtures/src/GenAnalysisOpenNLPNer.java` trains name finder models
 //! with OpenNLP itself (GIS and perceptron, BIO and BILOU, typed and

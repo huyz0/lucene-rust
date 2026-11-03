@@ -17,7 +17,7 @@ import org.apache.lucene.analysis.cn.smart.hhmm.SmartcnAccess;
 import org.apache.lucene.analysis.custom.CustomAnalyzer;
 
 /**
- * M12 T12.2: smartcn ({@code crates/lucene-analysis-smartcn/tests/smartcn_fixtures.rs} compares).
+ * Smartcn ({@code crates/lucene-analysis-smartcn/tests/smartcn_fixtures.rs} compares).
  *
  * <ul>
  *   <li>{@code <chain>.tsv} ({@link AnalysisRows}' rows) over {@code corpus/analysis-chinese.txt}

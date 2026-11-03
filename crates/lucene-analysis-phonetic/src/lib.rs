@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
-//! lucene-analysis-phonetic: Lucene's `analysis-phonetic` module (M12
-//! T12.3) -- `PhoneticFilter`, `DoubleMetaphoneFilter`,
-//! `BeiderMorseFilter`, `DaitchMokotoffSoundexFilter` and their factories
+//! lucene-analysis-phonetic: Lucene's `analysis-phonetic` module --
+//! `PhoneticFilter`, `DoubleMetaphoneFilter`, `BeiderMorseFilter`,
+//! `DaitchMokotoffSoundexFilter` and their factories
 //! -- with the Apache Commons Codec 1.17.2 encoders they run (the version
 //! Lucene 10.5.0's module declares) reimplemented here: `Soundex`,
 //! `RefinedSoundex`, `Metaphone`, `DoubleMetaphone`, `Caverphone1`/`2`,

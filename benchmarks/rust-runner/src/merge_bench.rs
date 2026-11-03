@@ -1,6 +1,6 @@
 //! Merge throughput: the three stored-fields merge strategies, the postings
 //! merge, and the BKD point merge, each measured against the implementation
-//! this port had before batch `c4-merge-fastpath`.
+//! this port had before its bulk-copy fast paths.
 //!
 //! Every "before" number here is produced by code in this file that reproduces
 //! the old algorithm exactly, over the same inputs, in the same process --
@@ -299,10 +299,10 @@ fn stored_fields_scenarios(docs_per_segment: usize, num_segments: usize, vocab: 
 /// What an **index sort** costs a merge, measured against the identical merge
 /// of the identical sources with the sort switched off.
 ///
-/// The sort is not free the way it is at flush time (c17 measured ~1%), and
+/// The sort is not free the way it is at flush time (~1% there), and
 /// the reason is worth naming: the stored-fields and term-vector merges copy
 /// whole *compressed chunks* only for a run of consecutive documents from one
-/// source (c4 measured that path at 520x). An index sort interleaves the
+/// source (measured at 520x). An index sort interleaves the
 /// sources, so those runs collapse to roughly one document each and the merge
 /// falls back to copying serialized documents. That is not a regression to
 /// fix -- byte-copying a chunk is illegal when the document order changes --
@@ -651,9 +651,9 @@ fn points_scenario(total_points: usize) {
 }
 
 // ---------------------------------------------------------------------------
-// Term vectors (`c8-tv-chunking`).
+// Term vectors (chunking).
 //
-// Every "before" figure here is the pre-`c8` writer: one chunk per segment.
+// Every "before" figure here is the old writer: one chunk per segment.
 // That is reproduced exactly -- not approximated -- by the same writer given
 // `Lucene90CompressingTermVectorsWriter`'s own `chunkSize`/`maxDocsPerChunk`
 // constructor parameters set past any segment this benchmark builds, which is
@@ -868,7 +868,7 @@ fn term_vectors_scenarios(docs_per_segment: usize, num_segments: usize, vocab: &
 }
 
 // ---------------------------------------------------------------------------
-// Postings: `PostingsEnum` flags (b5's F6).
+// Postings: `PostingsEnum` flags.
 // ---------------------------------------------------------------------------
 
 /// A docs-only walk over one long term, with and without

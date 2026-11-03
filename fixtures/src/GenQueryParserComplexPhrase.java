@@ -31,7 +31,7 @@ import org.apache.lucene.search.TermQuery;
 import org.apache.lucene.store.FSDirectory;
 
 /**
- * M13 T13.1: {@code ComplexPhraseQueryParser} over {@code
+ * {@code ComplexPhraseQueryParser} over {@code
  * fixtures/corpus/queryparser-complexphrase.txt}, field {@code body}, in order and not, against
  * an index of twelve documents in two segments ({@code index/}). A row of {@code <config>.tsv} is the escaped query,
  * then {@code Q}, {@code toString("body")}, the class tree, the {@code IndexSearcher.rewrite} of

@@ -1,4 +1,4 @@
-//! Settles b12 finding F-21: `phrase_freq_exact` binary-searches each
+//! `phrase_freq_exact` binary-searches each
 //! subsequent term's position list for `p0 + i`, where
 //! `ExactPhraseMatcher.nextMatch` advances all lists together in one merge
 //! pass.
@@ -6,8 +6,7 @@
 //! The two are `O(|p0| · (n-1) · log|list|)` against `O(sum of list lengths)`,
 //! but that is not the interesting number: this project has twice measured a
 //! binary search losing to a linear scan for reasons that have nothing to do
-//! with the exponents (`LazyDocsCursor::advance` and `next_doc`, M1.6 findings
-//! #O5 and "advance binary-searched where Lucene scans linearly"), because the
+//! with the exponents (`LazyDocsCursor::advance` and `next_doc`), because the
 //! branch in a binary search is unpredictable and the one in a forward scan is
 //! not.
 //!

@@ -57,7 +57,7 @@ import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.NumericUtils;
 
 /**
- * M10 T10.2's block-join fixture: {@code block_join/index}, a four-segment index of two-level
+ * The block-join fixture: {@code block_join/index}, a four-segment index of two-level
  * document blocks -- grandchildren ({@code type:grand}) closed by their child ({@code
  * type:child}), children closed by their parent ({@code type:parent}) -- with empty and
  * single-child blocks, written with the parent field {@code _parent}; then deletions: whole blocks

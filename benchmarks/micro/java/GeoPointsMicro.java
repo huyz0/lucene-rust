@@ -37,13 +37,13 @@ import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
 
 /**
- * Java side of the geo point query benchmark pair (M9 T9.2); the Rust side is {@code
+ * Java side of the geo point query benchmark pair; the Rust side is {@code
  * benchmarks/rust-runner/src/micro_geo_points.rs}, with the same case names. {@code build <dir>}
  * writes the corpus once -- one million documents with a {@code LatLonPoint} and a {@code
  * LatLonDocValuesField}, half uniform over the globe and half in twenty clusters, force-merged to
  * one segment -- and the query set ({@code geo-queries-v2.tsv}) both engines replay: boxes (two across
  * the dateline), distance queries, polygons, distance sorts (top 10 of every document) and
- * {@code LatLonPoint.nearest} (10); then (T9.2 review) {@code newDistanceFeatureQuery} top 10
+ * {@code LatLonPoint.nearest} (10); then {@code newDistanceFeatureQuery} top 10
  * through {@code IndexSearcher.search(query, 10)} (the collector's threshold drives the scorer's
  * pruning), {@code newGeometryQuery} under the other relations -- polygons {@code WITHIN} and
  * {@code DISJOINT}, points {@code CONTAINS}, lines, circles {@code WITHIN} -- and the cartesian
@@ -175,7 +175,7 @@ public final class GeoPointsMicro {
     for (int i = 0; i < 20; i++) {
       q.append("nearest\t").append(r.nextDouble() * 160 - 80).append('\t').append(r.nextDouble() * 360 - 180).append('\n');
     }
-    // T9.2 review: the feature query, the other geometry relations, the cartesian queries.
+    // Review: the feature query, the other geometry relations, the cartesian queries.
     for (int i = 0; i < 20; i++) {
       double[] c = i % 2 == 0 ? clusters[r.nextInt(clusters.length)] : new double[] {r.nextDouble() * 160 - 80, r.nextDouble() * 360 - 180};
       q.append("feature\t").append(c[0]).append('\t').append(c[1]).append('\t')

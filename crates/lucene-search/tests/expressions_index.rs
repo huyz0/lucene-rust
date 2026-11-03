@@ -1,5 +1,5 @@
 #![allow(clippy::arithmetic_side_effects)]
-//! M14 T14.2: an expression as a `DoubleValuesSource`, sort and rescorer over
+//! An expression as a `DoubleValuesSource`, sort and rescorer over
 //! a real (Lucene-written) index -- `values_rescore_index`, two segments, the
 //! first with deletions, sparse `n` (long), `i` (int), `f` (float) and `d`
 //! (double) doc values. The expected values are computed here from the plain

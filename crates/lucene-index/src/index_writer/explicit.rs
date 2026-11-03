@@ -1,5 +1,5 @@
 //! Documents whose indexing is already decided: the shape the OpenSearch
-//! engine (M5) hands this writer.
+//! engine hands this writer.
 //!
 //! [`Document`] -- this writer's native input -- is a list of stored values,
 //! and the writer's own configuration decides what else each one becomes: a

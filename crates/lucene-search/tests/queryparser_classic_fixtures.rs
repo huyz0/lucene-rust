@@ -1,4 +1,4 @@
-//! M13 T13.1: the classic `QueryParser` and `MultiFieldQueryParser`
+//! The classic `QueryParser` and `MultiFieldQueryParser`
 //! against Lucene 10.5.0 (`fixtures/src/GenQueryParserClassic.java`): every
 //! query string of `fixtures/corpus/queryparser-classic.txt` and 3,000
 //! seeded joins of syntax fragments, under sixteen parser configurations, to

@@ -33,7 +33,7 @@ import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
 
 /**
- * spatial3d's field, query and sorts (M9 T9.4), differentially: indexes a seeded corpus of {@link
+ * spatial3d's field, query and sorts, differentially: indexes a seeded corpus of {@link
  * Geo3DPoint}/{@link Geo3DDocValuesField} points -- the poles, the dateline, exact duplicates,
  * clusters, multi-valued documents, documents without the field, several segments with deletions,
  * on WGS84 ({@code p}, with the first point's doc value in {@code pd}) and on the sphere ({@code

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""M6's upgrade and rollback, executed (T6.4), driven by scripts/verify-rollback.sh.
+"""The engine's upgrade and rollback, executed, driven by scripts/verify-rollback.sh.
 
 Three nodes, each node's data bind-mounted so a node can be re-created on
 another image or with other settings and keep its shards. Every write is

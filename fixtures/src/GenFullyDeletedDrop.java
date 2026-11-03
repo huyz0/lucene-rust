@@ -20,7 +20,7 @@ import java.util.List;
 
 /**
  * Cross-engine ground truth for {@code IndexWriter}'s <b>100%-deleted segment
- * drop</b> (ledger item 11b), recorded as an outcome rather than as bytes.
+ * drop</b>, recorded as an outcome rather than as bytes.
  *
  * <p>{@code IndexWriter.finishApply} removes from the in-memory
  * {@code SegmentInfos} every segment the just-applied deletes left fully

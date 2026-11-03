@@ -15,7 +15,7 @@ import org.apache.lucene.index.StoredFields;
 import org.apache.lucene.store.FSDirectory;
 
 /**
- * M14 T14.3's pairs (the Rust twin is {@code
+ * The pairs (the Rust twin is {@code
  * benchmarks/rust-runner/src/micro_classification.rs}): each classifier's {@code assignClass}
  * over the stored text of the first 40 documents of {@code
  * fixtures/data/classification/random} (240 documents, four classes, {@code WhitespaceAnalyzer}),

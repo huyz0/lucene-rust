@@ -16,7 +16,7 @@ import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
 
 /**
- * M14 T14.3 `misc`: {@link SweetSpotSimilarity}. Writes
+ * `misc`: {@link SweetSpotSimilarity}. Writes
  * {@code misc/sweet_spot.tsv}, whose rows are
  *
  * <pre>

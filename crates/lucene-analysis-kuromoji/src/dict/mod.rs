@@ -9,7 +9,7 @@
 //! `docs/licences.md`); every class also loads a caller's files
 //! (`from_paths`) or bytes (`read`). The builders (`DictionaryBuilder`,
 //! `TokenInfoDictionaryBuilder`, `UnknownDictionaryBuilder`,
-//! `ConnectionCostsBuilder` and their writers) are not ported: M12 loads
+//! `ConnectionCostsBuilder` and their writers) are not ported: this port loads
 //! dictionaries, it does not build them.
 
 pub mod character_definition;
