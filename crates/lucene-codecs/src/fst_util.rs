@@ -953,8 +953,8 @@ impl<O: FstOutputs> TypedFst<O> {
     /// `BitTableUtil.nextBitSet`: the next set bit after `bit`, or -1.
     //
     // SENTINEL: `-1` = "no next present arc"; all three callers turn it into
-    // an error or `None` before it can become an `arcIdx` (the c31 class in
-    // `fst.rs`'s `bit_table_next_bit_set`).
+    // an error or `None` before it can become an `arcIdx` (see `fst.rs`'s
+    // `bit_table_next_bit_set`).
     // ARITH: byte indices over the node's presence table.
     #[allow(clippy::arithmetic_side_effects)]
     fn bit_next_set(

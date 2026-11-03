@@ -514,7 +514,7 @@ fn read_binary_entry(input: &mut SliceInput, field_number: i32) -> Result<Binary
         let addresses_offset = input.read_i64()?;
         // ARITH: `num_docs_with_field` is an `i32` widened to `i64`, so the
         // `+ 1` is nowhere near an `i64` boundary. `load_meta` is what bounds
-        // the value itself (c24's F1: it rejects a negative count and caps
+        // the value itself (it rejects a negative count and caps
         // the reservation by the bytes left in `.dvm`).
         #[allow(clippy::arithmetic_side_effects)]
         let num_addresses = num_docs_with_field as i64 + 1;
@@ -1067,8 +1067,8 @@ impl<'a> DocValuesSkipper<'a> {
 /// so `offset + length` is exactly the shape `docs/arithmetic-gate.md`
 /// exists for: it panics in a debug build and, in a release build, wraps to
 /// a *plausible in-range* offset that slices valid-looking doc values out of
-/// the wrong part of the file -- the silent-wrong-answer half of the class,
-/// which is what c24 found in `norms::read_value_at_ordinal`. Folding the
+/// the wrong part of the file -- the silent-wrong-answer half of the class.
+/// Folding the
 /// widening, the add and the bounds check into one place also means there is
 /// one parser of this shape rather than eight.
 fn region(data: &[u8], offset: i64, length: i64) -> Result<&[u8]> {
@@ -1148,7 +1148,7 @@ pub fn numeric_value(data: &[u8], entry: &NumericEntry, doc: i32) -> Result<Opti
 /// composing a cursor rather than a doc-id array: this used to decode the
 /// sparse field's entire `IndexedDISI` region into a `Vec<i32>` (4 bytes per
 /// present document -- 2 MB for a field on half of a million documents) so it
-/// could binary-search it. See `docs/sweep/m2/c2-sparse-lookup.md`.
+/// could binary-search it.
 ///
 /// Both caches are transparent: the values returned are identical to
 /// [`numeric_value`]'s, which is asserted document-for-document in this
@@ -1795,8 +1795,6 @@ fn decode_value_cached(
 /// panic at the one value the range check lets through. In `u64` the
 /// subtraction is exact for every accepted `shift` and the reinterpretation
 /// back to `i64` is the bit pattern Java's `long` arithmetic produces.
-/// (c27's Tier-2 review caught the original as c24's own failure mode: a
-/// shift proof whose stated bound includes the failing value.)
 fn low_bits_mask(shift: u32) -> i64 {
     debug_assert!(
         shift <= 63,
@@ -2850,9 +2848,8 @@ pub enum DenseField<'a> {
     /// doc-values field partway through its life produces a sparse column for
     /// every one of the five types. Without these variants
     /// `lucene-index`'s `execute_merge` had to *fail* such a merge for the
-    /// four non-NUMERIC types (c26's finding: a merge failure surfacing to
-    /// the caller as an error on a perfectly valid index). c17 added
-    /// `SparseNumeric` for the same reason on the sort path.
+    /// four non-NUMERIC types, an error on a perfectly valid index.
+    /// `SparseNumeric` serves the same purpose on the sort path.
     SparseBinary(i32, &'a [(i32, Vec<u8>)]),
     SparseSorted(i32, &'a [(i32, Vec<u8>)]),
     SparseSortedNumeric(i32, &'a [(i32, Vec<i64>)]),
@@ -4136,7 +4133,7 @@ fn write_dense_numeric_entry_body(meta: &mut Vec<u8>, data: &mut Vec<u8>, values
 /// (`IndexedDISI.writeBitSet(it, data)` defaults to power 9). It costs 256
 /// bytes per DENSE block and turns a cold random lookup inside one from ~844
 /// word reads into one rank read plus at most 8 -- measured at ~420 ns vs
-/// ~16 ns, see `docs/sweep/m2/c2-sparse-lookup.md`.
+/// ~16 ns.
 /// `Lucene90DocValuesConsumer`'s `numDocsWithValue == 0` branch, shared by
 /// `writeValues` and `addBinaryField`: `meta[-2, 0]`, "no documents with
 /// values". Written **instead of** an [`indexed_disi`] structure -- a
@@ -5655,8 +5652,7 @@ mod tests {
         // `blockShift` is `-2 - tableSize` off `.dvm`, and `read_numeric_entry`
         // accepts the whole of `0..=63`. At exactly 63 the mask used to be
         // `(1i64 << 63) - 1`, i.e. `i64::MIN - 1` -- a debug-build panic at the
-        // one value the range check lets through, and c24's own failure mode
-        // (a shift proof whose stated bound includes the failing value).
+        // one value the range check lets through.
         // Java's `(1L << 63) - 1` wraps to `Long.MAX_VALUE`, which is what the
         // `u64` computation now reproduces exactly.
         assert_eq!(low_bits_mask(63), i64::MAX);
@@ -8432,7 +8428,7 @@ mod tests {
         // panics in a debug build and, in a release build, wraps to a
         // *plausible in-range* offset that decodes valid-looking doc values
         // out of the wrong part of `.dvd` -- the same silent-wrong-answer
-        // shape c24 found in `norms::read_value_at_ordinal`.
+        // shape.
         let id = [11u8; ID_LENGTH];
         let (meta_bytes, data_bytes, _) =
             write_single_dense_numeric_field(0, &[1i64, 2, 3, 4], 4, &id, "").unwrap();
@@ -8526,8 +8522,7 @@ mod tests {
     /// well-formed values -- that is what a checksum is for). The point is
     /// that **nothing panics and nothing aborts**: `clippy::
     /// arithmetic_side_effects` covers arithmetic and shifts, not indexing,
-    /// slicing or allocation, and c25 found two defects of exactly that kind
-    /// in an already-lint-clean file. An allocation abort is the worst case,
+    /// slicing or allocation. An allocation abort is the worst case,
     /// because `catch_unwind` at the FFI boundary cannot intercept it.
     #[test]
     fn every_resigned_single_byte_dvm_and_dvd_corruption_is_an_error_or_a_clean_decode() {
@@ -9757,7 +9752,7 @@ mod tests {
 
     #[test]
     fn write_dense_fields_all_four_sparse_types_together_round_trip() {
-        // c26's blocker: `DocValuesConsumer.getMerged*DocValues` drops a
+        // `DocValuesConsumer.getMerged*DocValues` drops a
         // source reader that has no column for the field, so merging an
         // ordinary index that started writing a doc-values field partway
         // through its life produces a *sparse* column for every one of the

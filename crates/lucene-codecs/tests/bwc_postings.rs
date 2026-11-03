@@ -1,4 +1,4 @@
-//! Every postings read path, on the retired postings formats of the M8
+//! Every postings read path, on the retired postings formats of the
 //! backward-codecs corpus (`fixtures/data/bwc/<version>/`, written by that
 //! Lucene release): `Lucene90` (9.0.0), `Lucene99` (9.11.1), `Lucene912`
 //! (9.12.2) and `Lucene101` (10.2.2), plus the current `Lucene104` (10.4.0)

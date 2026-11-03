@@ -43,8 +43,7 @@
 //!
 //! `\`-escaping of literal `*`/`?` **is** supported (see
 //! [`WildcardPattern::new`]'s doc comment) — this mirrors real
-//! `WildcardQuery.toAutomaton`'s `WILDCARD_ESCAPE` handling exactly, added
-//! for task #34's `WildcardQuery` port.
+//! `WildcardQuery.toAutomaton`'s `WILDCARD_ESCAPE` handling exactly.
 
 /// One token of a compiled glob pattern.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

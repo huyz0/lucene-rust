@@ -18,8 +18,8 @@
 //! that has not been. There is no second binary and no rebuild between arms --
 //! the trap `c42-readpath-perf` found in `scripts/bench-micro.sh`, where the
 //! container had been timing a months-old binary. Criterion is not used: it
-//! reported 83/91/129 µs for identical code on this machine
-//! (`docs/sweep/m2/c24-arith-codecs.md`), so every figure is a **min of N
+//! reported 83/91/129 µs for identical code on this machine,
+//! so every figure is a **min of N
 //! alternating repetitions**.
 //!
 //! Run: `cargo run --release -p lucene-index --example deleter_checkpoint`

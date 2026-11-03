@@ -706,8 +706,7 @@ impl<'d> PointsReader<'d> {
 
     /// [`intersect`](Self::intersect) with the traversal scratch's reuse
     /// switchable -- see [`IntersectCtx::reuse_scratch`]. Production always
-    /// passes `true`; `false` is the pre-`c43-final-cleanup` allocation shape,
-    /// kept only so `examples/bkd_walk_scratch.rs` can time both arms in one
+    /// passes `true`; `false` reallocates at every node, kept only so `examples/bkd_walk_scratch.rs` can time both arms in one
     /// process, and it must produce the **same answer**, which
     /// `the_two_scratch_arms_visit_exactly_the_same_documents` asserts.
     #[doc(hidden)]
@@ -1291,12 +1290,9 @@ struct IntersectCtx<'a> {
     /// `docs/arithmetic-gate.md` singles out as the one that aborts.
     stack: Vec<LevelScratch>,
     /// Measurement-only. `false` reallocates every scratch buffer at each node
-    /// instead of reusing it, which is exactly the pre-`c43-final-cleanup`
-    /// shape -- four `Vec`s per inner node visited. It exists so
+    /// instead of reusing it -- four `Vec`s per inner node visited. It exists so
     /// `examples/bkd_walk_scratch.rs` can time both arms in **one process from
-    /// one build**, which is the only shape of A/B this project trusts (see
-    /// `docs/sweep/m2/c24-arith-codecs.md` on criterion, and `c42`'s stale
-    /// binary). Production always passes `true`; the cost is one predictable
+    /// one build**, which is the only shape of A/B this project trusts. Production always passes `true`; the cost is one predictable
     /// branch per node against a `.kdi` read.
     reuse_scratch: bool,
     /// Java's `int[maxPointsInLeafNode]` doc-id buffer: every leaf the walk
@@ -2083,7 +2079,7 @@ fn decode_leaf_pointers(inner_nodes: &[u8], field: &PointsField) -> Result<Vec<i
 /// `numLeaves` is a `.kdm` vint bounded only by `> 0`, and eight bytes per
 /// leaf of `i32::MAX` leaves is a 17 GB reservation -- an allocation failure,
 /// which **aborts**, and no `catch_unwind` at the FFI boundary can intercept
-/// an abort. (Batch b7 found the sibling of this defect in the same header.)
+/// an abort.
 ///
 /// The packed index itself is the ceiling. Every leaf but the leftmost is
 /// reached through a right-child FP-delta vlong of at least one byte, and the
@@ -5760,7 +5756,7 @@ mod intersect_tests {
 
     /// The two arms of [`PointsReader::intersect_with_scratch`] are the same
     /// walk with the per-level scratch either reused or reallocated at every
-    /// inner node (the pre-`c43-final-cleanup` shape, kept so
+    /// inner node (kept so
     /// `examples/bkd_walk_scratch.rs` can time both in one process). They must
     /// visit exactly the same documents, in the same order, and produce the
     /// same estimate -- otherwise the measurement compares two algorithms

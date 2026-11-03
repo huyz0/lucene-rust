@@ -1,4 +1,4 @@
-//! Cross-engine verification for task #41's multi-segment fan-out/merge
+//! Cross-engine verification for the multi-segment fan-out/merge
 //! (`lucene_search::multi_segment`).
 //!
 //! **Approach taken, and why**: this crate has no genuine 2+-segment real-Lucene

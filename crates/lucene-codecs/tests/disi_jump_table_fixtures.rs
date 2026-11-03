@@ -1,18 +1,11 @@
 //! **A block jump table real Lucene wrote, read by this port.**
 //!
-//! `c39-codecs-readpath` ported `IndexedDISI`'s block jump table in both
-//! directions and proved the *write* side against real Lucene
-//! (`VerifySparseNumericDocValues`' block-jump pass, two independent negative
-//! controls). The read side had never run over bytes Lucene wrote, for a
-//! fixture reason rather than a design one: `IndexedDISI.writeBitSet` emits
+//! The *write* side is proved against real Lucene by
+//! `VerifySparseNumericDocValues`' block-jump pass. This proves the read side
+//! over bytes Lucene wrote; `IndexedDISI.writeBitSet` emits
 //! `jumpTableEntryCount = 0` for anything under two logical 65 536-document
-//! blocks, and the largest Java-written index in this tree was 36 000
-//! documents. So there was no Java-written table to read (ledger item 23c).
-//!
-//! That matters because this sweep has twice found a writer and a reader
-//! agreeing on a *shared* mistake -- the FST framing bug and the invented
-//! `.si` sort encoding -- both in formats where only one direction had been
-//! checked.
+//! blocks, so it needs a large fixture. Checking both directions keeps a
+//! writer and a reader from agreeing on a shared mistake.
 //!
 //! `fixtures/src/GenDisiJumpTable.java` writes 200 000 documents with a
 //! numeric doc-values field on every third one (DENSE blocks, four of them)
@@ -245,8 +238,8 @@ fn a_full_scan_of_a_java_written_column_matches_lucenes_cardinality_and_checksum
 ///
 /// Two independent perturbations, because the table's two `i32` halves fail
 /// differently: the *index* (the cardinality before the block, which seeds the
-/// ordinal) and the *offset* (where the block header starts). c39 ruled both
-/// out in the write direction; this is the read direction.
+/// ordinal) and the *offset* (where the block header starts). The write
+/// direction is checked elsewhere; this is the read direction.
 #[test]
 fn corrupting_the_java_written_jump_table_changes_the_answer() {
     let f = open();

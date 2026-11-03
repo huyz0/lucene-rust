@@ -833,9 +833,8 @@ pub fn write(fields: &[FieldInfo], segment_id: &[u8; ID_LENGTH], segment_suffix:
         // hand `write` the combination Java makes unrepresentable -- and the
         // bits then land on the wire, where Java's reader coerces them away
         // again but this port's own `parse` rejects them outright
-        // (`check_consistency`). The result was an `IndexWriter` able to write
-        // a `.fnm` it could not itself re-open, found by c23 running
-        // `check_index` over a writer-produced segment. Coercing here rather
+        // (`check_consistency`). The result would be an `IndexWriter` able to
+        // write a `.fnm` it could not itself re-open. Coercing here rather
         // than erroring is what Java does, and it is the behaviour that keeps
         // `write` -> `parse` total.
         let indexed = f.index_options != IndexOptions::None;

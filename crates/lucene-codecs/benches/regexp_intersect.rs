@@ -7,8 +7,8 @@
 //!
 //! The term dictionary is the shape the search benchmark's corpus has:
 //! `t0`..`t999999`, sorted lexicographically, so the interesting patterns are
-//! the interior-constrained ones (`t1[0-9]`, `t1*z`) that the b4 sweep
-//! measured at 34-38x over-scan.
+//! the interior-constrained ones (`t1[0-9]`, `t1*z`), where a plain
+//! scan over-reads 34-38x.
 //!
 //! Each pattern is run twice: `scan` tests every term in the literal-prefix
 //! range (what this port did before), `skip` uses the dead-prefix jump plus the

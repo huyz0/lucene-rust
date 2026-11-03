@@ -111,7 +111,7 @@ fn main() {
 
     // `LUCENE_RUST_VECTOR_DIM`, when set, gives every document a FLOAT32
     // `KnnFloatVectorField` of that dimension as well -- the A/B that measures
-    // what indexing vectors costs per document (`docs/sweep/m2/c10-vectors-wiring.md`).
+    // what indexing vectors costs per document.
     let vector_dim: usize = std::env::var("LUCENE_RUST_VECTOR_DIM")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -119,8 +119,8 @@ fn main() {
 
     // `LUCENE_RUST_INDEX_SORT`, when set, configures an index sort over one
     // (`rank`) or two (`rank,tie`) NUMERIC doc-values fields -- the A/B that
-    // measures what sorting a flush costs per document
-    // (`docs/sweep/m2/c17-index-sort.md`). Values: "", "1", "2".
+    // measures what sorting a flush costs per document.
+    // Values: "", "1", "2".
     let sort_tiers: usize = std::env::var("LUCENE_RUST_INDEX_SORT")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -136,7 +136,7 @@ fn main() {
 
     // `LUCENE_RUST_INDEX_OPTIONS` raises the `body` field's `IndexOptions`
     // rung -- the A/B that measures what indexing positions, then offsets,
-    // then payloads costs per document (`docs/sweep/m2/c23-positions-writer.md`).
+    // then payloads costs per document.
     // Unset (or "freqs") is the baseline every other arm here is measured
     // against; "positions", "offsets" and "payloads" are cumulative.
     let index_options_arm =
@@ -245,8 +245,7 @@ fn main() {
     // is normed on both sides and the two are doing the same work.
     // `LUCENE_RUST_OMIT_NORMS` is the control arm for that: it opts `body`
     // out again (`FieldType.setOmitNorms(true)`), so the A/B prices what
-    // making norms the default costs per document
-    // (`docs/sweep/m2/c35-norms-and-sort.md`).
+    // making norms the default costs per document.
     if omit_norms {
         writer
             .omit_norms_field("body")

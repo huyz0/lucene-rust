@@ -2,9 +2,8 @@
 //! **materialized input** rather than the map itself.
 //!
 //! `OrdinalMap.build` in Java takes `TermsEnum[]` and never holds a
-//! dictionary. c29 measured what taking every segment's complete term list
-//! instead cost, and c38 closed it: [`OrdinalMap::build_streaming`] takes
-//! cursors. This example runs either arm, one per process, so the peak RSS it
+//! dictionary; [`OrdinalMap::build_streaming`] takes cursors likewise, and the
+//! materialized arm takes every segment's complete term list instead. This example runs either arm, one per process, so the peak RSS it
 //! reports is the arm's own and not whatever the other arm left behind in the
 //! allocator.
 //!
@@ -88,9 +87,8 @@ fn main() {
     let offset = |s: usize| (s * (distinct - terms)) / segments.max(1);
 
     let (elapsed, map, input_kb, input_bytes) = match arm.as_str() {
-        // Every segment's dictionary, held whole, then merged -- what this
-        // port did before c38 and what a caller that needs the lists anyway
-        // still does.
+        // Every segment's dictionary, held whole, then merged -- what a
+        // caller that needs the lists anyway does.
         "materialized" => {
             let mut input: Vec<Vec<Vec<u8>>> = Vec::with_capacity(segments);
             for s in 0..segments {

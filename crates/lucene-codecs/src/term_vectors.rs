@@ -626,7 +626,7 @@ impl<'d> TermVectorsReader<'d> {
         // overflowed (debug panic) or wrapped (release), and
         // `packed_ints::byte_count` then sized `vec![0u8; n]` at up to ~16 GB
         // -- the **abort** shape, which `catch_unwind` at the FFI boundary
-        // cannot intercept. Flagged live by c24 and fixed here.
+        // cannot intercept.
         //
         // `i64` throughout so nothing can wrap, then bounded by two
         // independent facts: the writer's own invariant (`flush_field_nums`
@@ -874,7 +874,7 @@ impl<'d> TermVectorsReader<'d> {
         // (one 0xFF length-extension byte yields 255 output bytes), so a
         // decompressed length past that multiple of the bytes left in the
         // chunk cannot be produced by *any* input and is rejected before a
-        // byte is allocated. Found by c25's re-signed `.tvd` body sweep.
+        // byte is allocated.
         //
         // The `.max(0)` this used to fold in silently accepted a *negative*
         // length and then let the per-document cursor below add it as a huge
@@ -2404,9 +2404,8 @@ fn build_field(inp: FieldDecodeInput) -> Result<TermVectorField> {
     // longer than the term it shares with panicked, and a `freq` or a
     // `numTerms` a corrupt file chose asked for a multi-petabyte allocation,
     // which **aborts** -- a failure no `catch_unwind` at the FFI boundary can
-    // intercept. Both were found by c25's re-signed `.tvd` body sweep, which
-    // is the first thing that ever handed this decoder a well-formed-but-
-    // wrong file. The rule (`docs/arithmetic-gate.md`): a length off disk is
+    // intercept. The re-signed `.tvd` body sweep hands this decoder
+    // well-formed-but-wrong files. The rule (`docs/arithmetic-gate.md`): a length off disk is
     // bounded by the bytes that must exist for it before it sizes anything.
     let bounded = |off: usize, len: usize, have: usize| -> Result<std::ops::Range<usize>> {
         let end = off
@@ -2977,7 +2976,7 @@ mod tests {
     }
 
     /// Splices `insert` over `tvd[at..at + remove]`, then repairs `.tvm`'s
-    /// `maxPointer` and re-signs both footers -- c15's shape, so that only
+    /// `maxPointer` and re-signs both footers, so that only
     /// the semantic invariant under test can fire and never a checksum or a
     /// length mismatch the corruption happened to also break.
     fn splice_tvd(tvd: &mut Vec<u8>, tvm: &mut [u8], at: usize, remove: usize, insert: &[u8]) {
@@ -3005,8 +3004,8 @@ mod tests {
 
     #[test]
     fn negative_distinct_field_count_extension_is_a_decode_error_not_an_allocation() {
-        // c24 flagged this one live: `totalDistinctFields` accumulated a
-        // `readVInt` into a `u32`, so a negative escape became ~4 billion and
+        // `totalDistinctFields` accumulated into a `u32` would turn a negative
+        // escape into ~4 billion and
         // `packed_ints::byte_count` then sized `vec![0u8; n]` at ~16 GB --
         // an abort, not a catchable error.
         let (mut tvd, tvx, mut tvm, chunk_start) =
@@ -3310,9 +3309,8 @@ mod tests {
     /// (so it never reaches `block_packed::decode_all` for the per-document
     /// field counts), has one distinct field number (so the `fieldNumOff`
     /// range check is vacuous), and gives the `.tvx` monotonic arrays
-    /// nothing to discriminate. c27's `.fdm` sweep learned this the
-    /// expensive way: its first run scored 211/282 against a single-chunk
-    /// segment and was measuring the fixture, not the decoder.
+    /// nothing to discriminate: such a sweep measures the fixture, not
+    /// the decoder.
     ///
     /// The assertion is deliberately *not* "every corruption is rejected":
     /// many single-bit flips produce a self-consistent chunk that decodes to
@@ -3401,7 +3399,7 @@ mod tests {
         // payload bytes -- and flipping one of those yields a different but
         // perfectly well-formed vector, which is what the checksum exists to
         // catch. `.tvm`, which is all structure, rejects 145 of its 152.
-        // Compare c27's `.kdd` 204/438 and `.fdt` 624/904, both for the same
+        // Compare `.kdd` 204/438 and `.fdt` 624/904, both for the same
         // reason, against `.fdm` 269/282 and `.tim`+`.tip`+`.tmd` 391/436.
         // What this pins is that nothing *panics or aborts* on 3 724 corrupt
         // multi-chunk segments, plus a floor so a future change that stops
@@ -3754,7 +3752,7 @@ mod tests {
         assert_eq!(field.terms[0].positions, Some(vec![0]));
     }
 
-    /// c33: with `OffsetAttribute`'s real unit (UTF-16 code units), a
+    /// With `OffsetAttribute`'s real unit (UTF-16 code units), a
     /// multi-byte term's offset span is **shorter** than the term's UTF-8 byte
     /// length, so `flushOffsets`' `length - prefixLength - suffixLength` goes
     /// negative -- the first caller in this crate ever to feed
@@ -4344,9 +4342,9 @@ mod tests {
     }
 
     // ---------------------------------------------------------------
-    // Chunking (`c8-tv-chunking`): the writer is
+    // Chunking: the writer has
     // `Lucene90CompressingTermVectorsWriter`'s streaming, chunk-flushing
-    // shape now, not one chunk per segment.
+    // shape, not one chunk per segment.
     // ---------------------------------------------------------------
 
     /// A positions-only document whose single field holds `terms` terms, each

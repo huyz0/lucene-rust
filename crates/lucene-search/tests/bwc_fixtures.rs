@@ -1,4 +1,4 @@
-//! T8.2/T8.3's differential harness: every `fixtures/data/bwc/<version>/`
+//! The backward-compatibility differential harness: every `fixtures/data/bwc/<version>/`
 //! index, written by that Lucene release's own jars (`fixtures/bwc/BwcWrite.java`),
 //! read back by this port and compared line by line against the
 //! `expected.txt` that Lucene 10.5.0 with backward-codecs wrote for it

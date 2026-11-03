@@ -134,7 +134,7 @@ fn bench_for_decode(warmup: Duration, measure: Duration) {
     // throws `ArrayIndexOutOfBoundsException` there. This port's `mask32`
     // saturates instead and decodes 32 happily -- being more permissive on the
     // read side is harmless, but there is nothing on the Java side to compare
-    // against, so the shared range stops at 31. See `docs/sweep/findings.md`.
+    // against, so the shared range stops at 31.
     for bits in 1..=31u32 {
         let values = block_for(bits);
         let mut bytes = Vec::new();
@@ -375,7 +375,7 @@ fn bench_stored_fields(warmup: Duration, measure: Duration, index: &str) {
     const STRIDE: i32 = 4099;
     // Guard the fixture: a benchmark over a reader that returns nothing would
     // look extremely fast. `GenCorpus` currently indexes every field
-    // `Store.NO`, so the M1 corpus has a 66 KB `.fdt` for 5M documents and
+    // `Store.NO`, so the benchmark corpus has a 66 KB `.fdt` for 5M documents and
     // cannot exercise this at all -- see `docs/sweep/findings.md`.
     if sr.document(0).expect("document 0").fields.is_empty() {
         eprintln!(

@@ -172,7 +172,7 @@ fn main() {
             vector_encoding: VectorEncoding::Float32,
             vector_similarity_function: VectorSimilarityFunction::Euclidean,
         },
-        // c40: the combination Java's `FieldInfo` constructor makes
+        // The combination Java's `FieldInfo` constructor makes
         // unrepresentable and its *reader* silently clears. Recorded here with
         // the flags already coerced off, because that is what real Lucene
         // reports for the bytes below -- `force_non_indexed` patches this

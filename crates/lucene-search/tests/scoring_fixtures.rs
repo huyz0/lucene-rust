@@ -114,8 +114,7 @@ fn expected_bm25(doc_freq: i64, doc_count: i64, freq: f32) -> f32 {
     let b = 0.75_f64;
     // No `(k1 + 1)` numerator factor -- real Lucene 10.5.0's actual
     // `BM25Scorer.doScore` formula, not the textbook one; see
-    // `similarity.rs`'s module doc for the real-Lucene-source citation and how
-    // this was caught (task #32's cross-engine `DisjunctionMaxQuery` test).
+    // `similarity.rs`'s module doc for the real-Lucene-source citation.
     let tf_norm = (freq as f64) / (freq as f64 + k1 * (1.0 - b + b));
     (idf * tf_norm) as f32
 }

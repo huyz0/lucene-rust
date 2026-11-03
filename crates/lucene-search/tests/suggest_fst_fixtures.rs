@@ -1,4 +1,4 @@
-//! T13.3a/b against Lucene 10.5.0 (`fixtures/src/GenSuggestFst.java`):
+//! The FST suggesters against Lucene 10.5.0 (`fixtures/src/GenSuggestFst.java`):
 //! `WFSTCompletionLookup`, `FSTCompletionLookup`, `FileDictionary`,
 //! `DocumentDictionary` and `DocumentValueSourceDictionary` answer as Lucene's
 //! do, and the two lookups write and read Lucene's bytes.

@@ -4625,8 +4625,8 @@ mod tests {
     // ---------------------------------------------------------------------
     // The arithmetic gate (docs/arithmetic-gate.md): every length, count,
     // offset and width this format reads off disk, driven past the range a
-    // Lucene writer could ever have produced. Each of these fails against the
-    // code as it stood before batch c27 -- by panicking, by reserving memory
+    // Lucene writer could ever have produced. Each of these must fail cleanly rather
+    // than by panicking, by reserving memory
     // proportional to the *claim*, or by accepting the file outright.
     // ---------------------------------------------------------------------
 
@@ -4955,7 +4955,7 @@ mod tests {
 
     #[test]
     fn every_single_bit_flip_in_a_re_signed_index_is_handled_without_panicking() {
-        // c25's `.tvd` sweep, applied to the stored-fields `.fdx`/`.fdm`
+        // The `.tvd` sweep, applied to the stored-fields `.fdx`/`.fdm`
         // pair. The footers are recomputed after every flip so only the
         // *semantic* invariants can fire -- a checksum catching everything
         // would prove nothing about the decoders. Three chunks, so that the

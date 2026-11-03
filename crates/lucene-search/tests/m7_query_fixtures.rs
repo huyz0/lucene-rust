@@ -2,7 +2,7 @@
 //! `fixtures/src/GenM7Queries.java`.
 //!
 //! One three-segment, index-sorted index with deletions, searched with every
-//! query M7 brings into the scorer tree -- synonyms, BM25F, n-gram phrases,
+//! extended query in the scorer tree -- synonyms, BM25F, n-gram phrases,
 //! explicit phrase positions, multi-phrases, the multi-term rewrite methods,
 //! blended terms, Indri, log-odds fusion, Bayesian calibration, doc-values and
 //! index-sort ranges, multi-dimensional and 4/16-byte points, vector

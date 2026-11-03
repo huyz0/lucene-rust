@@ -8,9 +8,8 @@
 //! terms-dictionary seek and nothing else -- no `.doc` file opened, no postings
 //! block decoded, no per-document loop.
 //!
-//! Until c37 this port had no such shortcut: a caller wanting a count ran
-//! `search_term_query` into a `CountCollector` and paid for the whole postings
-//! walk. This bench is the two sides of that, on the real benchmark corpus
+//! The alternative is `search_term_query` into a `CountCollector`, paying for
+//! the whole postings walk. This bench is the two sides of that, on the real benchmark corpus
 //! (`benchmarks/.corpus/merged`, ~5M documents, one segment) rather than on a
 //! synthetic list, because what the shortcut skips is postings decode and a
 //! synthetic list has none. **The bench skips itself when that corpus is

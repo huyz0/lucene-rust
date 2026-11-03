@@ -1,18 +1,14 @@
-//! Alternating A/B measurement of the **BKD tree walk's per-node allocations**
-//! (ledger item 23b): the same tree, the same descent, run once reusing the
-//! per-level scratch buffers and once reallocating them at every inner node,
-//! which is exactly the shape `points.rs` had before `c43-final-cleanup`
-//! (`InnerNode` owning `saved_split_tail` and `split_value`, plus a `to_vec()`
-//! of each cell bound at both call sites -- four `Vec`s per inner node
-//! visited, where Java's `BKDPointTree` preallocates per-level stacks).
+//! Alternating A/B measurement of the **BKD tree walk's per-node allocations**:
+//! the same tree, the same descent, run once reusing the per-level scratch
+//! buffers (as Java's `BKDPointTree` preallocates per-level stacks) and once
+//! reallocating them at every inner node (four `Vec`s per inner node visited:
+//! `saved_split_tail`, `split_value` and a `to_vec()` of each cell bound).
 //!
 //! Both arms are the shipped `points.rs` code, selected by
 //! `PointsReader::intersect_with_scratch`'s `reuse_scratch` argument, so they
 //! run in one process from one build. There is no second binary and no
-//! rebuild between arms -- which is the trap `c42-readpath-perf` found in
-//! `scripts/bench-micro.sh`, where the container had been timing a months-old
-//! binary. Criterion is not used: it reported 83/91/129 µs for identical code
-//! on this machine (`docs/sweep/m2/c24-arith-codecs.md`), so every figure here
+//! rebuild between arms, so a stale binary cannot be timed. Criterion is not used: it reported 83/91/129 µs for identical code
+//! on this machine, so every figure here
 //! is a **min of N alternating repetitions**.
 //!
 //! Run: `cargo run --release -p lucene-codecs --example bkd_walk_scratch`
@@ -169,8 +165,8 @@ fn run(label: &str, num_points: usize, dims: usize, max_points_in_leaf: i32, rep
     );
 
     // The estimate is the walk with every leaf read removed, so it is where
-    // the allocations are the largest share of the work -- which is why c39's
-    // review raised this against `estimate_point_count` specifically.
+    // the allocations are the largest share of the work -- hence the separate
+    // `estimate_point_count` arm.
     let mut best_est_reuse = u128::MAX;
     let mut best_est_alloc = u128::MAX;
     for _ in 0..reps {

@@ -323,7 +323,7 @@ fn main() {
     // similarity and dimension must equal the `FieldInfo`'s -- in front of
     // *our* bytes on both sides. A hand-built `FieldInfos` cannot see a
     // disagreement between the two files, which is exactly the class of defect
-    // c4 found in a merged `.fnm` while thirteen hand-built verifiers passed.
+    // a merged `.fnm` can carry.
     let fnm_bytes = field_infos::write(&field_infos_of(&specs), &SEGMENT_ID, "");
 
     for (name, bytes) in [

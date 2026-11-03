@@ -249,8 +249,8 @@ pub type Result<T> = std::result::Result<T, Error>;
 ///
 /// Flat rather than the nested `Vec<Vec<Vec<u8>>>` it used to be, because
 /// that shape cost a heap object per occurrence *and* a vector header per
-/// posting entry, on both sides of the `lucene-index` boundary: c23 measured
-/// it at 26 us/doc and ~190 MB per 50 000 documents with an all-empty-payload
+/// posting entry, on both sides of the `lucene-index` boundary: it measured
+/// 26 us/doc and ~190 MB per 50 000 documents with an all-empty-payload
 /// control costing the same, which is what identifies the slot rather than
 /// the bytes as the cost. This is also the exact layout
 /// [`write_position_tail`] already had to build internally, and the layout
@@ -2642,8 +2642,8 @@ fn write_tail_block(
 /// written) and `Lucene104PostingsReader.reset` turns it back into
 /// `lastPosBlockFP = posStartFP + lastPosBlockOffset`, the file pointer at
 /// which `refillPositions` switches from `PForUtil` blocks to
-/// `refillLastPositionBlock`. It is load-bearing for real Lucene, and — since
-/// `c20-postings-skip` — for this port's own skip-driven single-document
+/// `refillLastPositionBlock`. It is load-bearing for real Lucene, and for this
+/// port's own skip-driven single-document
 /// position walk too, which jumps into the middle of `.pos` and so cannot
 /// re-derive the split from a running occurrence count.
 #[allow(clippy::too_many_arguments)]
@@ -3196,11 +3196,9 @@ fn write_term_metadata(
             // `lastPosBlockFP = posStartFP + lastPosBlockOffset` and
             // `refillPositions` switches to `refillLastPositionBlock` the
             // moment `posIn.getFilePointer()` equals it. Writing a constant 0
-            // here -- which this writer did until the M2 sweep -- made that
-            // comparison true at the term's very first position block, so
-            // real Lucene decoded a `PForUtil` block as if it were the vint
-            // tail. It was unreachable from this port's own round-trip tests
-            // when b5 fixed it; c20's skip-driven walk makes it reachable
+            // here would make that comparison true at the term's very first
+            // position block, so real Lucene would decode a `PForUtil` block as
+            // if it were the vint tail; the skip-driven walk reads it too
             // (`postings_skip_pointers.rs`).
             if terms[i].total_term_freq > BLOCK_SIZE as i64 {
                 out.write_vlong(last_pos_block_offset[i]);
@@ -4214,7 +4212,7 @@ mod tests {
         }
     }
 
-    /// b5's F6, closed: `PostingsEnum` flags. With
+    /// `PostingsEnum` flags. With
     /// [`crate::postings::PostingsFlags::DocsOnly`] every frequency block on
     /// the wire is stepped over (`PForUtil.skip`) instead of unpacked, and
     /// every reported frequency is `1` -- so the *doc ids* must be
@@ -4583,7 +4581,7 @@ mod tests {
     /// `postings::DocInput`, whatever blocks `crate::blocktree_writer` cuts
     /// it into. (An earlier writer split such a field into one block per
     /// leading byte under a root with no output, which real Lucene cannot
-    /// read; see `docs/sweep/findings.md`.) Every term is looked up independently,
+    /// read.) Every term is looked up independently,
     /// not just the first and last. See
     /// `crates/lucene-search/tests/postings_writer_round_trip.rs`'s
     /// `term_query_finds_correct_docs_across_multiple_tim_blocks` for the same
@@ -5864,7 +5862,7 @@ mod tests {
     /// the tail. Same irregular-delta construction and per-doc assertion
     /// style as [`total_term_freq_exactly_one_full_position_block_round_trips`].
     /// `lastPosBlockOffset` must be the real byte offset of the vint position
-    /// tail, not the constant `0` this writer emitted until the M2 sweep.
+    /// tail, not a constant `0`.
     ///
     /// This port's own `read_positions` re-derives the full-block/tail split
     /// from `total_term_freq` and never reads the field, so every round-trip
