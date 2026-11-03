@@ -1,4 +1,4 @@
-//! Differential test for `RegexpQuery` (task #43) against the same real
+//! Differential test for `RegexpQuery` against the same real
 //! `IndexWriter`-produced segment `tests/wildcard_query_fixtures.rs`/
 //! `tests/fuzzy_query_fixtures.rs` already validate
 //! (`fixtures/data/blocktree_index/`) -- see those files' module docs for

@@ -30,7 +30,7 @@ import urllib.error
 import urllib.request
 
 import geo_matrix
-import m10_matrix
+import extended_matrix
 
 BASE = "http://localhost:9200"
 FAILURES = []
@@ -111,8 +111,9 @@ def create(index, shards, index_sort=None):
         },
     }
     settings["similarity"] = {k: v for k, v in settings["similarity"].items() if k in SIMILARITIES + ("tuned", "scr")}
-    # A hunspell analyzer over config/hunspell/en_US (opensearch-plugin/e2e/hunspell), on the nodes
-    # verify-opensearch.sh mounts it into; elsewhere (upgrade, rollback) `hun` is a plain text field.
+    # A hunspell analyzer over config/hunspell/en_US
+    # (opensearch-plugin/e2e/hunspell), on the nodes verify-opensearch.sh mounts
+    # it into; elsewhere (upgrade, rollback) `hun` is a plain text field.
     if HUNSPELL:
         settings["analysis"] = {
             "filter": {"en_stem": {"type": "hunspell", "locale": "en_US"}},
@@ -133,7 +134,7 @@ def create(index, shards, index_sort=None):
             "tag": {"type": "keyword"},
             "mtag": {"type": "keyword"},
             "n": {"type": "long"},
-            # Sort fields (read path R4): ties, gaps, several values per document.
+            # Sort fields: ties, gaps, several values per document.
             "price": {"type": "double"},
             "qty": {"type": "integer"},
             "ts": {"type": "date"},
@@ -203,8 +204,8 @@ def load(index, docs, seed, deletes=True):
 
 
 # (name, request body, expected): "native" runs native in both routing modes
-# (since read path R1 no encodable shape is routed to Lucene as slower, so
-# `native_shapes` fast and all agree); anything else is the fallback reason
+# (no encodable shape is routed to Lucene as slower, so `native_shapes` fast
+# and all agree); anything else is the fallback reason
 # expected in both modes ("query_*" matches any query class).
 def matrix():
     q = []
@@ -225,7 +226,7 @@ def matrix():
         {"bool": {"must": [{"match": {"body": "alpha"}}, {"match": {"title": "gamma"}}]}},
         {"match": {"body": "omega"}}]}}}, "native")
     add("query_string OR", {"query": {"query_string": {"query": "body:(delta OR theta)"}}}, "native")
-    # M13 T13.6: query_string and simple_query_string shapes, term ranges among them.
+    # Query_string and simple_query_string shapes, term ranges among them.
     add("query_string keyword range", {"query": {"query_string": {"query": "tag:[beta TO kappa}"}}}, "native")
     add("query_string open text range", {"query": {"query_string": {"query": "body:{mu TO *] AND body:alpha"}}}, "native")
     add("query_string fuzzy prefix phrase", {"query": {"query_string": {"query": "body:alpah~ OR body:be* OR \"gamma delta\"~2", "default_field": "body"}}}, "native")
@@ -264,7 +265,7 @@ def matrix():
     add("exists must_not", {"query": {"bool": {"must": [{"match": {"body": "beta"}}], "must_not": [{"exists": {"field": "mtag"}}]}}}, "native")
     add("exists size 0", {"size": 0, "query": {"exists": {"field": "sp"}}}, "native")
     add("regexp case_insensitive", {"query": {"regexp": {"tag": {"value": "GA.*", "case_insensitive": True}}}}, "native")
-    # Track A (2026-10-30): Lucene's automaton, fuzzy, covering and distance-feature queries.
+    # Lucene's automaton, fuzzy, covering and distance-feature queries.
     add("wildcard escaped", {"query": {"wildcard": {"tag": "ga\\*ma*"}}}, "native")
     add("wildcard case_insensitive", {"query": {"wildcard": {"tag": {"value": "GA*", "case_insensitive": True}}}}, "native")
     add("fuzzy constant_score", {"query": {"fuzzy": {"body": {"value": "alpah", "rewrite": "constant_score"}}}}, "native")
@@ -319,10 +320,11 @@ def matrix():
     for k in SIMILARITIES:
         add(f"similarity {k}", {"query": {"bool": {"should": [{"match": {f"tuned.{k}": "alpha beta"}}, {"match": {"body": "gamma"}}]}}}, "native")
     add("similarity dfr phrase", {"query": {"match_phrase": {"tuned.dfr": {"query": "alpha beta", "slop": 2}}}}, "native")
-    # A scripted similarity runs the user's script, which stays on the JVM. (`classic` is native too,
-    # but OpenSearch refuses it in a mapping now, so only the self-test reaches it.)
+    # A scripted similarity runs the user's script, which stays on the JVM.
+    # (`classic` is native too, but OpenSearch refuses it in a mapping now, so
+    # only the self-test reaches it.)
     add("similarity scripted", {"query": {"match": {"tuned.scr": "alpha"}}}, "field_similarity")
-    # Sorted searches (read path R4): numeric keys of every type, missing values, several keys,
+    # Sorted searches: numeric keys of every type, missing values, several keys,
     # the score and _doc, search_after, and the ones that stay on Lucene.
     add("sort long desc", {"query": {"match": {"body": "alpha"}}, "sort": [{"n": "desc"}]}, "native")
     add("sort double asc", {"query": {"match": {"body": "beta"}}, "sort": [{"price": "asc"}]}, "native")
@@ -404,7 +406,7 @@ def matrix():
     add("sort mode median int missing first", {"size": 25, "query": {"match_all": {}}, "sort": [{"mi": {"order": "asc", "mode": "median", "missing": "_first"}}]}, "native")
     add("sort track_scores", {"query": {"match": {"body": "alpha"}}, "sort": [{"n": "desc"}], "track_scores": True}, "native")
     add("sort keyword track_scores", {"query": {"match": {"body": "beta gamma"}}, "sort": [{"tag": "asc"}, "_doc"], "track_scores": True}, "native")
-    # Metric aggregations (read path R5): top level, numeric or date fields, no missing/script.
+    # Metric aggregations: top level, numeric or date fields, no missing/script.
     add("agg min max size 0", {"size": 0, "query": {"match": {"body": "alpha"}}, "aggs": {"lo": {"min": {"field": "price"}}, "hi": {"max": {"field": "n"}}}}, "native")
     add("agg stats + hits", {"query": {"match": {"body": "beta"}}, "aggs": {"s": {"stats": {"field": "qty"}}}}, "native")
     add("agg sum avg multi-valued", {"size": 0, "query": {"match_all": {}}, "aggs": {"s": {"sum": {"field": "m"}}, "a": {"avg": {"field": "m"}}, "c": {"value_count": {"field": "m"}}}}, "native")
@@ -437,7 +439,7 @@ def matrix():
     add("agg missing keyword cardinality", {"size": 0, "aggs": {"c": {"cardinality": {"field": "mtag", "missing": "none"}}}}, "aggregations")
     add("agg missing cardinality", {"size": 0, "aggs": {"c": {"cardinality": {"field": "sp", "missing": 0}}}}, "aggregations")
     add("agg global sub-aggregation", {"size": 0, "query": {"match": {"body": "epsilon"}}, "aggs": {"g": {"global": {}, "aggs": {"lo": {"min": {"field": "n"}}}}}}, "native")
-    # Bucket aggregations and sub-aggregations (R5): the native tree.
+    # Bucket aggregations and sub-aggregations: the native tree.
     add("agg histogram", {"size": 0, "query": {"match": {"body": "zeta"}}, "aggs": {"h": {"histogram": {"field": "price", "interval": 50}}}}, "native")
     add("agg histogram offset + min_doc_count 0", {"size": 0, "query": {"match": {"body": "eta"}}, "aggs": {"h": {"histogram": {"field": "qty", "interval": 7, "offset": 3, "min_doc_count": 0, "extended_bounds": {"min": -10, "max": 60}}}}}, "native")
     add("agg histogram multi-valued + stats", {"size": 0, "aggs": {"h": {"histogram": {"field": "md", "interval": 10}, "aggs": {"s": {"stats": {"field": "md"}}, "a": {"avg": {"field": "price"}}}}}}, "native")
@@ -612,7 +614,7 @@ def matrix():
     add("agg terms double order _key asc size 4", {"size": 0, "aggs": {"t": {"terms": {"field": "price", "size": 4, "order": {"_key": "asc"}}}}}, "native")
     add("agg terms integer missing", {"size": 0, "aggs": {"t": {"terms": {"field": "sp", "missing": 0}}}}, "native")
     add("agg terms unsigned_long", {"size": 0, "aggs": {"t": {"terms": {"field": "ul", "size": 3}}}}, "aggregations")
-    # post_filter (read path R7): the hits are "query AND filter", scored by the query alone;
+    # post_filter: the hits are "query AND filter", scored by the query alone;
     # aggregations see every match of the query.
     add("post_filter", {"query": {"match": {"body": "alpha"}}, "post_filter": {"term": {"tag": "beta"}}}, "native")
     add("post_filter + aggs", {"query": {"match": {"body": "alpha"}}, "post_filter": {"term": {"tag": "beta"}}, "aggs": {"t": {"terms": {"field": "tag"}}, "p": {"sum": {"field": "price"}}}}, "native")
@@ -625,7 +627,7 @@ def matrix():
     add("post_filter bool query paged exists", {"from": 5, "size": 7, "query": {"bool": {"must": [{"match": {"body": "alpha"}}], "should": [{"match": {"title": "beta"}}]}}, "post_filter": {"exists": {"field": "sp"}}}, "native")
     add("post_filter no total", {"track_total_hits": False, "query": {"match": {"body": "beta delta"}}, "post_filter": {"term": {"tag": "gamma"}}}, "native")
     add("post_filter nothing", {"query": {"match": {"body": "alpha"}}, "post_filter": {"term": {"tag": "no-such-tag"}}}, "native")
-    # min_score (R7): by score natively, OpenSearch's MinimumScoreCollector around every collector
+    # min_score: by score natively, OpenSearch's MinimumScoreCollector around every collector
     # (aggregations too); behind a sort it stays on Lucene.
     add("min_score", {"query": {"match": {"body": "alpha"}}, "min_score": 0.3}, "native")
     add("min_score disjunction", {"query": {"match": {"body": "alpha beta gamma"}}, "min_score": 1.2}, "native")
@@ -643,7 +645,7 @@ def matrix():
     add("min_score sort search_after", {"query": {"match": {"body": "alpha"}}, "min_score": 0.3, "sort": [{"n": "desc"}, {"qty": "asc"}], "search_after": [50, 3], "size": 6}, "native")
     add("min_score sort nothing passes", {"query": {"match": {"body": "alpha"}}, "min_score": 1000, "sort": [{"n": "desc"}], "track_scores": True}, "native")
     add("min_score sort + aggs", {"query": {"match": {"body": "gamma"}}, "min_score": 0.6, "sort": [{"price": "asc"}], "aggs": {"s": {"stats": {"field": "qty"}}}}, "native")
-    # terminate_after (R7): native where Lucene collects document by document (a scored search
+    # terminate_after: native where Lucene collects document by document (a scored search
     # over a query whose bulk scorer hands out no ranges, anything under a post_filter) and for
     # a size-0 count over a term or match-all; Lucene's otherwise.
     add("terminate_after", {"query": {"match": {"body": "alpha"}}, "terminate_after": 5}, "native")
@@ -665,7 +667,7 @@ def matrix():
     add("terminate_after match_all hits", {"query": {"match_all": {}}, "terminate_after": 5}, "terminate_after")
     add("terminate_after aggs", {"size": 0, "query": {"match": {"body": "alpha"}}, "terminate_after": 5, "aggs": {"t": {"terms": {"field": "tag"}}}}, "terminate_after")
     add("profile", {"query": {"match": {"body": "alpha"}}, "profile": True}, "profile")
-    # timeout (R7): native, checked before and after the native search as ContextIndexSearcher
+    # timeout: native, checked before and after the native search as ContextIndexSearcher
     # checks it before each segment; none of these reaches it.
     add("timeout", {"query": {"match": {"body": "alpha"}}, "timeout": "10s"}, "native")
     add("timeout sort aggs", {"query": {"match": {"body": "beta"}}, "timeout": "30s", "sort": [{"n": "asc"}], "aggs": {"t": {"terms": {"field": "tag"}}}}, "native")
@@ -993,7 +995,7 @@ def load_more(index, n):
 
 
 def completion_rows():
-    """M13 T13.6: searches over an index with completion fields, each with the
+    """Searches over an index with completion fields, each with the
     suggesters OpenSearch runs after the query phase (completion, term, phrase)
     and the highlighters of the fetch phase: answered natively, every
     suggestion and fragment equal to Lucene's."""
@@ -1016,8 +1018,8 @@ def completion_rows():
 
 
 def completion_index():
-    """An index with completion fields (`Completion104`, M13 T13.6): read
-    natively since the postings-format fallback was lifted for them, while the
+    """An index with completion fields (`Completion104`): read
+    natively, while the
     suggesters themselves stay OpenSearch's (they cannot be replaced by a
     plugin) over Lucene's reader. Two segments and deletes; every row of
     `completion_rows` runs native and answers as Lucene does."""
@@ -1312,7 +1314,7 @@ def load_nested(index, docs, seed):
 
 
 def nested_rows():
-    """Sorts on nested fields (read path R4): OpenSearch's XFieldComparatorSource.Nested."""
+    """Sorts on nested fields: OpenSearch's XFieldComparatorSource.Nested."""
     rows = []
 
     def add(name, body, expect):
@@ -1402,20 +1404,20 @@ def main():
         create_nested(index, shards)
         load_nested(index, 1500, 5 + shards)
         native += run_matrix(index, shards, "nested", rows=nested_rows())
-        # M10 T10.7: the nested query itself (ToParentBlockJoinQuery).
-        native += run_matrix(index, shards, "nested query", rows=m10_matrix.nested_rows())
-    # M10 T10.7: spans, intervals, combined_fields, function_score, more_like_this.
+        # The nested query itself (ToParentBlockJoinQuery).
+        native += run_matrix(index, shards, "nested query", rows=extended_matrix.nested_rows())
+    # Spans, intervals, combined_fields, function_score, more_like_this.
     for index, shards in (("single", 1), ("multi", 3)):
-        native += run_matrix(index, shards, "m10", rows=m10_matrix.rows())
-    # parent-join: has_child/has_parent fall back (see m10_matrix.join_rows).
+        native += run_matrix(index, shards, "extended", rows=extended_matrix.rows())
+    # parent-join: has_child/has_parent fall back (see extended_matrix.join_rows).
     try:
         req("DELETE", "/pj")
     except RuntimeError:
         pass
-    m10_matrix.create_join(req, "pj")
-    m10_matrix.load_join(req, check, "pj", 400, 21)
-    native += run_matrix("pj", 1, "parent-join", rows=m10_matrix.join_rows())
-    # M9 T9.6: geo_point and geo_shape queries (and _geo_distance sorts), on a
+    extended_matrix.create_join(req, "pj")
+    extended_matrix.load_join(req, check, "pj", 400, 21)
+    native += run_matrix("pj", 1, "parent-join", rows=extended_matrix.join_rows())
+    # Geo_point and geo_shape queries (and _geo_distance sorts), on a
     # one-shard and a three-shard index; then the one-shard index merged into a
     # segment past 10,000 documents, where the native query cache holds geo sets.
     geo_matrix.create_shapes(req)
@@ -1439,7 +1441,7 @@ def main():
     for _ in range(5):
         native += run_matrix("geo", 1, "geo merged", rows=geo_matrix.rows())
     print(f"matrix: {len(matrix())} request shapes x 4 indices, {len(geo_matrix.rows())} geo shapes x 2 indices; {native} shard queries ran native")
-    # Read path R6: the fetch phase and get API with native stored fields.
+    # The fetch phase and get API with native stored fields.
     run_fetch("single", "fetch")
     run_fetch("multi", "fetch")
     run_scroll("single", 1, "scroll")

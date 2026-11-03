@@ -1,4 +1,4 @@
-//! M13 T13.4a against `fixtures/src/GenTaxonomy.java`: the taxonomy index.
+//! Against `fixtures/src/GenTaxonomy.java`: the taxonomy index.
 //!
 //! - Every taxonomy Lucene wrote reads, through [`DirectoryTaxonomyReader`],
 //!   exactly as Lucene's reader dumps it (ordinals, parents, children,

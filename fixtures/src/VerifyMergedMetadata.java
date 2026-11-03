@@ -44,7 +44,7 @@ import java.util.Properties;
  * <p>Both are read back through {@link org.apache.lucene.index.LeafMetaData},
  * which is the only place either surfaces. Neither affects a checksum, a
  * document or a query, so a merge that stamps the merging writer's own version
- * (what this port did before c36) produces an index that opens cleanly, reads
+ * produces an index that opens cleanly, reads
  * every document correctly and passes {@link CheckIndex} -- while claiming it
  * was never touched by the older Lucene whose bytes it is still carrying, and
  * while silently invalidating every parent/child join query if the block flag

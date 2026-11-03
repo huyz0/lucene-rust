@@ -1,6 +1,5 @@
 //! `lucene-replicator` (Lucene 10.5.0's `replicator` module), ported class by
-//! class. The inventory is `docs/inventory/lucene-replicator.tsv`; the
-//! milestone is M14.e.
+//! class. The inventory is `docs/inventory/lucene-replicator.tsv`.
 //!
 //! Lucene 10.5.0's replicator is `org.apache.lucene.replicator.nrt` alone
 //! (the revision replicator and its HTTP service are gone): a primary node

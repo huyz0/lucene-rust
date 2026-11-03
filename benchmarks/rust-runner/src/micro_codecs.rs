@@ -1,4 +1,4 @@
-//! Rust side of the lucene-codecs benchmark pair (M14.g); the Java side is
+//! Rust side of the lucene-codecs benchmark pair; the Java side is
 //! `benchmarks/micro/java/CodecsMicro.java`, with the same case names, over
 //! the indexes it builds (once) under each codec's subdirectory.
 //!

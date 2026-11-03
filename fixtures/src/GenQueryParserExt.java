@@ -19,7 +19,7 @@ import org.apache.lucene.search.Query;
 import org.apache.lucene.search.TermQuery;
 
 /**
- * M13 T13.1: {@code ExtendableQueryParser} over {@code fixtures/corpus/queryparser-ext.txt} and
+ * {@code ExtendableQueryParser} over {@code fixtures/corpus/queryparser-ext.txt} and
  * the classic corpus, with five extensions (upper-cased term, nested parse, {@code null}, a
  * {@code ParseException}, a boosted term) under the default {@code :} delimiter and {@code #}
  * ({@code <config>.tsv}; rows as {@link GenQueryParserClassic}'s). {@code

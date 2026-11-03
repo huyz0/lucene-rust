@@ -216,7 +216,7 @@ fn the_fixture_term_actually_carries_skip_data() {
 
     // The term metadata must locate the vint tail: `lastPosBlockOffset` is
     // what tells the skip-driven walk a full block from the tail once it has
-    // jumped into the middle of `.pos` (b5 F4 wrote this as a constant 0).
+    // jumped into the middle of `.pos`.
     let meta = field
         .term_metadata(fx.manifest.get("term").as_bytes())
         .expect("term metadata")

@@ -1,4 +1,4 @@
-//! M12 T12.4's pairs (`benchmarks/micro/java/AnalysisIcuMicro.java` is the
+//! The pairs (`benchmarks/micro/java/AnalysisIcuMicro.java` is the
 //! Java twin): analysis-icu over `fixtures/corpus/analysis-icu.txt` and the
 //! normalization fixture's stress strings, one document per line.
 

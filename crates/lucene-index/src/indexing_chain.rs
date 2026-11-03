@@ -64,8 +64,8 @@ use std::collections::{BTreeMap, HashMap};
 ///
 /// The offsets are **UTF-16 code units** -- Java `char` indices into the field
 /// text, exactly what `OffsetAttribute` reports, which is what real Lucene
-/// reads back out of the `.pos`/`.pay`/`.tvd` this structure feeds. They were
-/// UTF-8 byte offsets until c33; nothing here converts, so the unit is
+/// reads back out of the `.pos`/`.pay`/`.tvd` this structure feeds. Nothing here
+/// converts, so the unit is
 /// whatever the analyzer emits, and it is pinned there
 /// (`crates/lucene-analysis/tests/analysis_fixtures.rs`, the `utf16_*` cases).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -81,8 +81,8 @@ pub struct Occurrence {
 ///
 /// **Payloads are not here.** They live once per `(field, term)`, on
 /// [`TermPostingList`], because a payload slot per posting entry is a heap
-/// object per posting entry: c23 measured the nested
-/// `Vec<Vec<u8>>`-per-entry shape this used to have at 26 us/doc and ~190 MB
+/// object per posting entry: a nested `Vec<Vec<u8>>`-per-entry shape
+/// measured 26 us/doc and ~190 MB
 /// per 50 000 documents, with an all-empty-payload control costing the same,
 /// which is what identifies the *slot* rather than the bytes as the cost.
 /// Java pays neither -- `FreqProxTermsWriterPerField.writeProx` appends the payload
@@ -329,19 +329,17 @@ impl InMemoryInvertedIndex {
     /// This is the number that makes the memory shape of a flush legible.
     /// Measured on `benchmarks/rust-runner`'s `index-bench` corpus (20k docs x
     /// 40 tokens drawn from a 20k-word vocabulary, 4.90 MB of body text):
-    /// **102.5 MB here before c38, 75.8 MB after**, against Java's *zero*
+    /// **75.8 MB here**, against Java's *zero*
     /// heap objects per occurrence (a token becomes a few bytes in a
     /// `ByteBlockPool` slice). What is left is per-occurrence and structural:
     /// nearly every `(doc, term)` pair is unique on that corpus, so a ~6-byte
     /// token becomes a `(String, String)` key slot, a [`PostingEntry`], and a
     /// `Vec<Occurrence>` whose first `push` reserves capacity 4 -- 48 bytes of
-    /// allocation for 12 bytes of payload. That is the divergence
-    /// `docs/sweep/m2/LEDGER.md` records as the block-pool redesign, and it is
-    /// a milestone rather than a batch (see
-    /// `docs/sweep/m2/c38-allocation-shape.md`). Handing the `Vec` surplus
-    /// back with `shrink_to_fit` was tried and rejected: it cuts this figure
-    /// sharply but costs 25-60% indexing throughput and moves peak RSS not at
-    /// all, because glibc keeps the freed 48-byte chunks in its arena.
+    /// allocation for 12 bytes of payload. Closing it needs a block-pool
+    /// redesign. Handing the `Vec` surplus back with `shrink_to_fit` was tried
+    /// and rejected: it cuts this figure sharply but costs 25-60% indexing
+    /// throughput and moves peak RSS not at all, because glibc keeps the freed
+    /// 48-byte chunks in its arena.
     ///
     /// `crates/lucene-index/examples/invert_memory.rs` is the instrument that
     /// produces the numbers above.
@@ -790,7 +788,7 @@ mod tests {
         }
     }
 
-    /// c33: the offsets this module forwards into `.pos`/`.pay`/`.tvd` are
+    /// The offsets this module forwards into `.pos`/`.pay`/`.tvd` are
     /// Java `char` indices, so a JVM reader that does
     /// `text.substring(startOffset, endOffset)` gets the term back.
     ///
@@ -1151,7 +1149,7 @@ mod tests {
         assert_eq!(index, same);
     }
 
-    /// The allocation-shape assertion behind c38's item 2: a
+    /// The allocation-shape assertion: a
     /// [`PostingEntry`] carries **no payload slot at all**, so a payload
     /// costs nothing per posting entry for the overwhelmingly common field
     /// that has none. Against the shape this replaced -- a `Vec<Vec<u8>>` on
@@ -1170,7 +1168,7 @@ mod tests {
         );
     }
 
-    /// c23's finding, asserted from the other side: the cost of payloads must
+    /// The cost of payloads must
     /// be the **bytes**, not a per-occurrence slot. An all-empty-payload field
     /// therefore costs one `u32` length per occurrence and nothing else --
     /// where the nested shape cost a `Vec` header per posting entry (24 bytes)

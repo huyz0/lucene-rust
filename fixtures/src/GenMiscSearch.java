@@ -46,7 +46,7 @@ import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.FixedBitSet;
 
 /**
- * M14 T14.3 `misc`: the {@code misc.search} collectors. Writes {@code misc/search_src} (two
+ * `misc`: the {@code misc.search} collectors. Writes {@code misc/search_src} (two
  * segments of 40 and 35 documents) and {@code misc/search.tsv}:
  *
  * <pre>

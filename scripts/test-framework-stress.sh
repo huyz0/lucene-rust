@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# M14.h h8's acceptance run: crates/lucene-test-framework/examples/
+# Acceptance run for crates/lucene-test-framework/examples/
 # threaded_stress.rs over 200 seeds of ThreadedIndexingAndSearchingTestCase
 # (indexing threads adding, updating and deleting documents and blocks while
 # search threads open and search near-real-time readers; seeds alternate a

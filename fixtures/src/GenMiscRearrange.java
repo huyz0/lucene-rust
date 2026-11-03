@@ -25,7 +25,7 @@ import org.apache.lucene.store.FSDirectory;
 import org.apache.lucene.util.BytesRef;
 
 /**
- * M14 T14.3 `misc`: {@link IndexRearranger} and {@link BinaryDocValueSelector}. Writes the source
+ * `misc`: {@link IndexRearranger} and {@link BinaryDocValueSelector}. Writes the source
  * index {@code misc/rearrange_src} (three segments of binary-doc-value-keyed documents, three
  * deleted), rearranges it into scratch directories, and writes {@code misc/rearrange.tsv}:
  *

@@ -1,4 +1,4 @@
-//! M13 T13.2's pairs (`benchmarks/micro/java/HighlightMicro.java` is the Java
+//! The pairs (`benchmarks/micro/java/HighlightMicro.java` is the Java
 //! twin): the unified highlighter and the fast vector highlighter over the
 //! fixture indexes, every templated query of `uhighlight-queries.txt` /
 //! `vhighlight-queries.txt` against every document, default configuration.

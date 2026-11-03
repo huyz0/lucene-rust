@@ -41,7 +41,7 @@ import org.apache.lucene.store.FSDirectory;
 import org.apache.lucene.util.BytesRef;
 
 /**
- * The shape fields and queries (M9 T9.3), differentially: indexes a seeded random corpus of {@link
+ * The shape fields and queries, differentially: indexes a seeded random corpus of {@link
  * LatLonShape} and {@link XYShape} shapes -- points, lines, polygons with holes, several shapes per
  * document, shapes on the poles and the dateline, slivers and collinear runs, exact duplicates,
  * documents without the field, several segments with deletions -- with their shape doc values, and

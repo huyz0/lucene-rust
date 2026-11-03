@@ -1,4 +1,4 @@
-//! M12 T12.6: the JDK's sentence `BreakIterator` and
+//! The JDK's sentence `BreakIterator` and
 //! `SegmentingTokenizerBase` against `fixtures/src/GenAnalysisSegmenting.java`.
 
 mod support;

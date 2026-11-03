@@ -762,7 +762,7 @@ fn the_manifest_actually_carries_something() {
 }
 
 // ---------------------------------------------------------------------------
-// `FacetsConfig.build` -- the write side (c12 §2.9)
+// `FacetsConfig.build` -- the write side
 // ---------------------------------------------------------------------------
 
 const SUB: char = '\u{2}';

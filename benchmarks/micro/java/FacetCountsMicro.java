@@ -34,7 +34,7 @@ import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
 
 /**
- * M13 T13.4b's facet-counting pair (the Rust twin is {@code
+ * The facet-counting pair (the Rust twin is {@code
  * benchmarks/rust-runner/src/micro_facet_counts.rs}), with the same case names. {@code build <dir>}
  * writes, once, a 200,000-document, four-segment index ({@code dir/index}) and its taxonomy
  * ({@code dir/taxo}, ~4,800 ordinals): a flat {@code Author} (2,000 values), a three-level

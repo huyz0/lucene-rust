@@ -1,4 +1,4 @@
-//! M8 T8.2/T8.3's differential harness: every `fixtures/data/bwc/<version>/`
+//! The backward-compatibility differential harness: every `fixtures/data/bwc/<version>/`
 //! index, written by that Lucene release's own jars (`fixtures/bwc/BwcWrite.java`),
 //! read back by this port and compared line by line against the
 //! `expected.txt` that Lucene 10.5.0 with backward-codecs wrote for it
@@ -1483,7 +1483,7 @@ fn every_version_passes_check_index() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
-/// M8 T8.4, this side of it: a buffered delete by term resolves against an
+/// This side of it: a buffered delete by term resolves against an
 /// old segment's own term dictionary, and every fixture, force-merged by
 /// this port's `IndexWriter`, becomes one `Lucene104` segment -- every postings field
 /// `Lucene104`, every vector field `Lucene99HnswVectorsFormat` -- that this

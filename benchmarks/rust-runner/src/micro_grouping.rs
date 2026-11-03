@@ -1,4 +1,4 @@
-//! The grouping benchmark pair (M10 T10.4), against
+//! The grouping benchmark pair, against
 //! `benchmarks/micro/java/GroupingMicro.java`: per word, one grouping search
 //! over `body:word` -- `GroupingSearch` by term (by relevance; by a field
 //! with a within-group sort; with all groups and group heads; cached), by

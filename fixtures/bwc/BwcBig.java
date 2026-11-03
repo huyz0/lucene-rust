@@ -14,7 +14,7 @@ import org.apache.lucene.store.FSDirectory;
 import org.apache.lucene.util.Version;
 
 /**
- * M8's skip-data fixture: one segment of 20,000 documents whose terms are long enough to need
+ * Skip-data fixture: one segment of 20,000 documents whose terms are long enough to need
  * every level of a retired postings format's skip data -- the trailing multi-level skip list of
  * {@code Lucene90}/{@code Lucene99} (levels at 128, 1,024 and 8,192 documents) and the inline
  * level-1 entries of {@code Lucene912}/{@code Lucene101} (every 4,096). {@code BwcWrite}'s

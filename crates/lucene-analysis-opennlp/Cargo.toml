@@ -4,13 +4,12 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-# lucene-analysis-opennlp (M12 T12.5): Lucene's analysis-opennlp module --
+# lucene-analysis-opennlp: Lucene's analysis-opennlp module --
 # OpenNLPTokenizer and the part-of-speech, chunker and lemmatizer filters --
 # over a port of the Apache OpenNLP 2.5.3 inference runtime they call
 # (src/tools/: model files, maxent/perceptron evaluation, beam search and the
 # sentence detector, tokenizer, POS tagger, chunker and lemmatizer). Over
-# lucene-analysis only, as Lucene's module is over lucene-analysis-common
-# (docs/milestones/m12-language-analysis.md).
+# lucene-analysis only, as Lucene's module is over lucene-analysis-common.
 [lints]
 workspace = true
 

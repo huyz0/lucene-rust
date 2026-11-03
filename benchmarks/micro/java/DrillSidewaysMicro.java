@@ -15,7 +15,7 @@ import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
 
 /**
- * M13 T13.4c's drill-sideways pair (the Rust twin is {@code
+ * The drill-sideways pair (the Rust twin is {@code
  * benchmarks/rust-runner/src/micro_drill_sideways.rs}), with the same case names, over the corpus
  * {@link FacetCountsMicro} builds ({@code build <dir>} delegates to it). Each case is one
  * sequential {@code DrillSideways.search(ddq, 10)}: the {@code DrillSidewaysQuery} search and the

@@ -68,7 +68,7 @@ import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.NumericUtils;
 
 /**
- * M10 T10.4's grouping fixture: {@code grouping/index}, a four-segment index with deletions in two
+ * The grouping fixture: {@code grouping/index}, a four-segment index with deletions in two
  * segments, and {@code grouping/blocks}, a three-segment index of document blocks (each closed by
  * a document with {@code end:x}) with deletions, some of them of a block's closing document.
  *

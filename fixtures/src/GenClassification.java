@@ -55,7 +55,7 @@ import org.apache.lucene.store.FSDirectory;
 import org.apache.lucene.util.BytesRef;
 
 /**
- * M14 T14.3 ({@code classification}): what Lucene's classifiers make of two indexes.
+ * ({@code classification}): what Lucene's classifiers make of two indexes.
  *
  * <p>{@code sample/} holds {@code ClassificationTestBase}'s documents (its sample index, then its
  * update, as two segments) analysed by {@code StandardAnalyzer}; {@code random/} 240 documents of

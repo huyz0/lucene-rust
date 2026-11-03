@@ -52,8 +52,8 @@
 // and not adopted"), but this module is small enough to carry it: it fires on
 // exactly three casts here, each of which has a written justification below.
 // It is the lint that catches the "negative value sign-extended into a wider
-// unsigned type" shape, which is what turned a `-1` into a `usize::MAX`
-// length in batches b1 and c15 -- so keeping it on locks this decode kernel
+// unsigned type" shape, which turns a `-1` into a `usize::MAX` length --
+// so keeping it on locks this decode kernel
 // against a future `i32 as usize` slipping in unremarked.
 #![deny(clippy::cast_sign_loss)]
 
@@ -1061,8 +1061,7 @@ impl ForUtil {
     /// repeatable bench of a destructive encoder has to restore its input each
     /// iteration, which reinstates exactly the copy that was removed. See
     /// `for_util/for_encode`'s `oneshot` vs `reused` arms in
-    /// `benches/for_util_decode.rs` for the scratch-reuse half, and
-    /// `docs/sweep/m2/b2-packed.md` for why the numbers there are inconclusive.
+    /// `benches/for_util_decode.rs` for the scratch-reuse half.
     ///
     /// # Panics
     ///
@@ -1976,8 +1975,8 @@ mod tests {
 
     // --- A/B microbenchmark -------------------------------------------
     //
-    // Criterion is unusable on this machine (batch c24 measured the same code
-    // at 83/91/129 us across three runs), so this is a min-of-N harness: the
+    // Criterion is unusable on this machine (the same code measured
+    // 83/91/129 us across three runs), so this is a min-of-N harness: the
     // minimum of N timed batches is the run least disturbed by the scheduler,
     // and it is repeatable to within ~0.3% here where the mean is not. This
     // is what the "iterators measured slower" claim in `decode3`..`decode15`

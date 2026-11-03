@@ -1,4 +1,4 @@
-//! M14.i, differentially against Lucene 10.5.0: `fixtures/src/GenToolsBenchmark.java`
+//! Differentially against Lucene 10.5.0: `fixtures/src/GenToolsBenchmark.java`
 //! ran each line of `tools/benchmark/cases.tsv` through the `benchmark`
 //! module's `QueryDriver` and `QualityQueriesFinder` over `index/`, a
 //! Java-written two-segment index, and recorded what they printed and the

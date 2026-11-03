@@ -1,12 +1,9 @@
 //! Where the time in `DirectoryReader::open` actually goes.
 //!
-//! Ledger item 14 has carried a 52.7 ms figure since `verdict-m1.6.md`, taken
-//! before c1 made the term dictionary lazy and before c12's `open_shared`
-//! stopped copying `.tim`/`.tip`. The ledger's own instruction is to
-//! re-measure before planning against it, and a single end-to-end number
-//! cannot say what is left -- so this replays `SegmentReader::open`'s phases
-//! one at a time, over the same directory, in the same order, and prints the
-//! breakdown next to the real `DirectoryReader::open` it is a replica of.
+//! A single end-to-end number cannot say where the time goes, so this replays
+//! `SegmentReader::open`'s phases one at a time, over the same directory, in
+//! the same order, and prints the breakdown next to the real
+//! `DirectoryReader::open` it is a replica of.
 //!
 //! The replica is checked, not assumed: the phase total is printed beside the
 //! measured whole, and a replica that has drifted shows up as a gap between
@@ -14,7 +11,7 @@
 //!
 //! Every figure is a **min of N alternating repetitions**, not a mean and not
 //! criterion's estimate -- criterion reported 83/91/129 µs for identical code
-//! on this host (`docs/sweep/m2/c24-arith-codecs.md`).
+//! on this host.
 //!
 //! ```text
 //! cargo build -p lucene-search --release --example reader_open_profile
@@ -210,8 +207,7 @@ fn main() {
     push("blocktree::open_shared (mappings held)", open_shared_only);
     // Not a phase of the open (so not in the sum): what the first lookup in
     // every field costs on top of it: one seek per field, through the trie
-    // or, for a retired format, the FST read in place (M8; until the M8
-    // close-out this is where the FST-to-trie conversion's cost landed).
+    // or, for a retired format, the FST read in place.
     {
         let a: Arc<Input> = Arc::new(dir.open(&tim).expect(".tim"));
         let b: Arc<Input> = Arc::new(dir.open(&tip).expect(".tip"));

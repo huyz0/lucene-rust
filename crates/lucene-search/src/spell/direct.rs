@@ -1,4 +1,4 @@
-//! `DirectSpellChecker` (M13 T13.3e): spelling suggestions read straight off
+//! `DirectSpellChecker`: spelling suggestions read straight off
 //! an index's terms, with no side index: the field's terms within one, then
 //! two edits of the query term, ranked by similarity and frequency.
 //!

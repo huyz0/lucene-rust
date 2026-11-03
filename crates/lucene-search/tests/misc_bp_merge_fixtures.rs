@@ -1,4 +1,4 @@
-//! M14 T14.3 `misc`, differentially against Lucene 10.5.0:
+//! `misc`, differentially against Lucene 10.5.0:
 //! `fixtures/src/GenMiscBpMerge.java`'s `misc/bp_merge.tsv`.
 //!
 //! `BPReorderingMergePolicy` through the writer over `misc/bp_merge_src`

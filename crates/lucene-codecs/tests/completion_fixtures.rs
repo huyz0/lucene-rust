@@ -1,4 +1,4 @@
-//! M13 T13.3d against Lucene 10.5.0 (`fixtures/src/GenCompletion.java`): a
+//! Against Lucene 10.5.0 (`fixtures/src/GenCompletion.java`): a
 //! suggest field built by a real `IndexWriter` with `Completion104PostingsFormat`.
 //! Fed the same documents, the Rust writer produces the same `.cmp` and `.lkp`
 //! bytes, and the reader opens Lucene's.

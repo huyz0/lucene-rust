@@ -1,4 +1,4 @@
-// The lucene-rust OpenSearch plugin (docs/milestones/m2-opensearch-read-path.md).
+// The lucene-rust OpenSearch plugin.
 //
 // It compiles against the jars of the OpenSearch distribution it installs
 // into -- `lib/` of the pinned `opensearchproject/opensearch` image, which
@@ -179,7 +179,7 @@ def selfTest = tasks.register('selfTest', JavaExec) {
     jvmArgs nativeAccess, '-ea'
     args "${repoRoot}/fixtures/data"
 }
-// M5: the Rust engine's writer against Lucene's IndexWriter, document by document.
+// The Rust engine's writer against Lucene's IndexWriter, document by document.
 def engineWriterTest = tasks.register('engineWriterTest', JavaExec) {
     description = 'Differential test: RustIndexWriter against Lucene IndexWriter on the same operations.'
     dependsOn tasks.named('testClasses'), cargoBuild
@@ -200,7 +200,7 @@ def encryptedStoreTest = tasks.register('encryptedStoreTest', JavaExec) {
 tasks.named('test') { enabled = false }
 tasks.named('check') { dependsOn selfTest, engineWriterTest, encryptedStoreTest }
 
-// M2 T2.7 with the JVM in the loop: the native call's crossing cost and
+// With the JVM in the loop: the native call's crossing cost and
 // in-process query latency, native vs Lucene. Not part of `check` -- it is a
 // measurement.
 tasks.register('nativeBench', JavaExec) {

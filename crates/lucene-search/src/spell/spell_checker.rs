@@ -1,4 +1,4 @@
-//! `SpellChecker` (M13 T13.3e): the classic spell checker, which keeps its
+//! `SpellChecker`: the classic spell checker, which keeps its
 //! own index of dictionary words, each with its character n-grams (`gramN`)
 //! and its first and last n-gram (`startN`, `endN`). A misspelled word's
 //! n-grams are searched as one disjunction (BM25, the first n-gram boosted by

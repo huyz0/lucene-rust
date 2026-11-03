@@ -2,8 +2,7 @@
 //! fixed query set over it with this port's own searcher, and records both, for
 //! `VerifyIndex` to open with real Lucene 10.5.0 and compare hit for hit.
 //!
-//! This is M3's headline check (task T3.4, see
-//! `docs/milestones/m3-write-path-proven.md`). Every other write-path verifier
+//! This is the headline write-path check. Every other write-path verifier
 //! checks one property of a small segment. This one checks the property all of
 //! them exist for: that an index this port writes *searches the same* in real
 //! Lucene as in this port -- same `CheckIndex` verdict, same top-50 documents

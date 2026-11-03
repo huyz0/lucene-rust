@@ -75,10 +75,8 @@ criterion = "0.5"
 # `+`/`-`/`*`/`<<` without a bound is a *panic* in a debug build and a silent
 # wrap in a release one. Through the FFI a panic is at best an error code and
 # at worst a dead JVM, and the same value reaching `Vec::with_capacity` is an
-# **abort**, which no `catch_unwind` can intercept. The M2 sweep found this
-# class by hand nine separate times (b1, b2, b4, b6, b7, c8, c15 x3) and c15's
-# own deliberate audit still missed eight sites that its Tier-2 review caught
-# -- which is the argument for a mechanical gate rather than more auditing.
+# **abort**, which no `catch_unwind` can intercept. Hand audits keep missing
+# this class, which is the argument for a mechanical gate.
 #
 # `clippy::arithmetic_side_effects` is that gate. It is opted into per crate
 # (`[lints] workspace = true`) rather than switched on everywhere at once: a

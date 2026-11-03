@@ -1,5 +1,5 @@
 //! `org.apache.lucene.search.suggest.analyzing.AnalyzingInfixSuggester` and
-//! `BlendedInfixSuggester` (M13 T13.3c): suggestions matched anywhere in the
+//! `BlendedInfixSuggester`: suggestions matched anywhere in the
 //! text, not only at its start. Every suggestion is a document with its
 //! analyzed `text`, the edge n-grams of each token (`textgrams`, so a prefix
 //! shorter than `minPrefixChars` is a plain term lookup), its exact text, its

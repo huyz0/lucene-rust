@@ -1,4 +1,4 @@
-//! M13 T13.1: `StandardQueryParser` (the flexible query parser) against
+//! `StandardQueryParser` (the flexible query parser) against
 //! Lucene 10.5.0 (`fixtures/src/GenQueryParserFlexible.java`): every query of
 //! `fixtures/corpus/queryparser-classic.txt` and `queryparser-flexible.txt`,
 //! under eleven configurations, to the same query (`toString("f")` and the

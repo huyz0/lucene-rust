@@ -1,4 +1,4 @@
-//! Differential test against real Lucene 10.5.0 for M7's analysis port:
+//! Differential test against real Lucene 10.5.0 for the analysis port:
 //! `StandardTokenizer` (maxTokenLength 255, 5 and the limits around it),
 //! `StandardAnalyzer` (with and without stopwords), a custom chain built from
 //! the core APIs (a `CharFilter`, a `TokenFilter`, a `FilteringTokenFilter`,

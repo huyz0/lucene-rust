@@ -48,7 +48,7 @@ import java.util.Set;
  *   <li>{@code PerFieldKnnVectorsFormat.format}/{@code .suffix} missing from
  *       the {@code .fnm}, or files not written under the suffixed segment name
  *       -- the field reads back with no vectors at all rather than as an
- *       error, exactly the shape c4 found for postings and doc values.</li>
+ *       error, the same shape as for postings and doc values.</li>
  *   <li>The four files missing from {@code SegmentInfo.files} -- invisible to
  *       a reader, fatal to {@code IndexFileDeleter} and {@code CheckIndex}.</li>
  *   <li>A {@code .fnm} claiming {@code vectorDimension > 0} for a field the

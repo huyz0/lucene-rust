@@ -1,4 +1,4 @@
-//! M14 T14.2 (`expressions`) against Lucene 10.5.0: what `JavascriptCompiler`
+//! (`expressions`) against Lucene 10.5.0: what `JavascriptCompiler`
 //! makes of 7,484 expressions -- Lucene's own tests' and random ones -- the
 //! values it evaluates to bit for bit, the errors it reports, and
 //! `VariableContext.parse`.

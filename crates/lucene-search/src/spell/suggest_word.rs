@@ -1,5 +1,5 @@
 //! `SuggestWord`, its two comparators, `SuggestWordQueue`, `SuggestMode` and
-//! `CombineSuggestion` (M13 T13.3e): the values the spell checkers answer
+//! `CombineSuggestion`: the values the spell checkers answer
 //! with and the order they rank them in.
 
 use std::cmp::Ordering;

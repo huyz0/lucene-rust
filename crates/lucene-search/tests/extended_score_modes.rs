@@ -5,7 +5,7 @@
 //! `COMPLETE` scoring, score bits included, and a count with the query as a
 //! filter (`COMPLETE_NO_SCORES`, where several of them rewrite to a plain
 //! disjunction) counts exactly the exhaustive scoring's live matches. Lucene's
-//! own scores for these queries are pinned by the M7 differential suites;
+//! own scores for these queries are pinned by the extended-query differential suites;
 //! this checks the paths those suites' shapes do not reach -- two-phase
 //! sub-clauses, weighted fields, one- and no-clause fusions.
 

@@ -1,4 +1,4 @@
-//! M12 T12.1: Kuromoji against Lucene 10.5.0.
+//! Kuromoji against Lucene 10.5.0.
 //!
 //! `fixtures/src/GenAnalysisKuromoji.java` writes `analysis_kuromoji/`:
 //! token rows of `JapaneseTokenizer` in every mode, with punctuation,

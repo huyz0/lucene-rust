@@ -11,7 +11,7 @@ import java.util.List;
 import java.util.Random;
 
 /**
- * M12 T12.4: ICU4J 77.1's {@code RuleBasedBreakIterator} over ICU's own character, line, sentence
+ * ICU4J 77.1's {@code RuleBasedBreakIterator} over ICU's own character, line, sentence
  * and title rules ({@code getInstanceFromCompiledRules} on the jar's {@code .brk} files, copied here
  * byte for byte as {@code *.brk}), compared by {@code
  * crates/lucene-analysis-icu/tests/icu_breaks_fixtures.rs}. The word rules are {@code

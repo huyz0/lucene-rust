@@ -1,4 +1,4 @@
-//! M14.h h4's acceptance run: a `RandomIndexWriter` under a random
+//! H4's acceptance run: a `RandomIndexWriter` under a random
 //! `newIndexWriterConfig` (merge policy, scheduler, buffers, flush mode)
 //! drives a random stream of adds, updates, deletes, doc-values updates,
 //! commits, flushes and forced merges over a fresh `FsDirectory`, per seed.

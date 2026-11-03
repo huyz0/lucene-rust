@@ -359,12 +359,11 @@ fn expected_terms_and_increments(m: &Manifest, case: &str) -> Vec<(String, i32)>
         .collect()
 }
 
-/// b8 sweep: real `PorterStemFilter` -- `EnglishAnalyzer`'s default stemmer,
-/// a different algorithm from the Snowball English one checked above -- over
-/// a 100-word vocabulary. This is the check that pinned four divergences at
-/// once: the missing `k > k0 + 1` length guard (which stemmed `"s"` to the
-/// empty string), the missing lowercase-ASCII precondition on Java's side
-/// (so `"Cats"` really does stem to `"Cat"`), the `bli -> ble` and
+/// Real `PorterStemFilter` -- `EnglishAnalyzer`'s default stemmer, a
+/// different algorithm from the Snowball English one checked above -- over a
+/// 100-word vocabulary. It pins the `k > k0 + 1` length guard (so `"s"` is
+/// not stemmed to the empty string), Java's lowercase-ASCII precondition (so
+/// `"Cats"` really does stem to `"Cat"`), the `bli -> ble` and
 /// `logi -> log` rules, and Java's "first suffix that matches wins even if
 /// its measure test then fails" `switch`/`break` structure.
 #[test]
@@ -388,9 +387,8 @@ fn porter_stemmer_matches_real_porter_stem_filter() {
     assert_eq!(actual, expected, "porter_english diverged from real Lucene");
 }
 
-/// b8 sweep: `ASCIIFoldingFilter` over one token per Unicode block the real
-/// filter covers. This port used to ship 92 of Lucene's 1242 mappings, so
-/// every one of these cases folded to itself here and to ASCII there.
+/// `ASCIIFoldingFilter` over one token per Unicode block the real filter
+/// covers (all 1242 of Lucene's mappings).
 #[test]
 fn ascii_folding_covers_every_block_real_lucene_folds() {
     let m = Manifest::load();
@@ -419,7 +417,7 @@ fn ascii_folding_covers_every_block_real_lucene_folds() {
     }
 }
 
-/// b8 sweep: `LowerCaseFilter` uses Java's **simple** per-codepoint
+/// `LowerCaseFilter` uses Java's **simple** per-codepoint
 /// `Character.toLowerCase`, not full Unicode lowercasing. `U+0130` maps to a
 /// single `i`, and a word-final capital sigma stays a plain `σ` -- both of
 /// which Rust's `str::to_lowercase` gets differently.
@@ -445,8 +443,8 @@ fn lowercase_filter_matches_javas_simple_case_mapping() {
     }
 }
 
-/// b8 sweep: `NGramTokenFilter`/`EdgeNGramTokenFilter`. The two behaviours
-/// this pins are the ones the port had wrong: an input token too short to
+/// `NGramTokenFilter`/`EdgeNGramTokenFilter`. It pins two
+/// behaviours: an input token too short to
 /// produce a gram still consumes a position (Java's `curPosIncr` carry), and
 /// every gram keeps the **input token's** offsets because Java
 /// `restoreState`s rather than calling `setOffset`.
@@ -492,12 +490,10 @@ fn ngram_filters_match_real_lucene() {
     }
 }
 
-/// b8 sweep: `SynonymGraphFilter`'s emission order, position increments,
+/// `SynonymGraphFilter`'s emission order, position increments,
 /// position lengths and offsets, all of which come out of the synonym graph's
-/// nodes. This port used to emit the originals first with the synonym at
-/// increment 0 (one position too late) and stamp the whole match's offsets
-/// onto every token (making `startOffset` decrease, which real Lucene's
-/// `IndexingChain` rejects outright).
+/// nodes. Stamping the whole match's offsets onto every token would make
+/// `startOffset` decrease, which real Lucene's `IndexingChain` rejects.
 #[test]
 fn synonym_graph_filter_matches_real_lucene() {
     use lucene_analysis::{SynonymFilter, SynonymRule};
@@ -557,7 +553,7 @@ fn synonym_graph_filter_matches_real_lucene() {
 }
 
 // ---------------------------------------------------------------------------
-// c33 sweep: the offset **unit**.
+// The offset **unit**.
 //
 // `OffsetAttribute` reports UTF-16 code-unit (Java `char`) indices into the
 // original text. This port used to emit UTF-8 **byte** offsets, and
@@ -632,7 +628,7 @@ fn assert_defeats_scalar_offsets(m: &Manifest, case: &str) {
     );
 }
 
-/// c33: `tokenize()`'s offsets are Java `char` indices, verbatim against a
+/// `tokenize()`'s offsets are Java `char` indices, verbatim against a
 /// real `StandardTokenizer` over text where UTF-8 bytes, Unicode scalars and
 /// UTF-16 code units all disagree: a Latin-1 accented letter (1 char, 2
 /// bytes), a CJK ideograph (1 char, 3 bytes), a decomposed combining mark (2
@@ -689,13 +685,11 @@ fn tokenizer_offsets_are_java_char_indices() {
     }
 }
 
-/// c33: an emoji shifts every later token by exactly **two** Java `char`s --
+/// An emoji shifts every later token by exactly **two** Java `char`s --
 /// one scalar, four UTF-8 bytes.
 ///
 /// Real `StandardTokenizer` also emits the emoji itself as an `<EMOJI>`
-/// token. The pre-M7 `unicode_word_indices` stand-in did not (b8's F40), and
-/// this test used to pin that gap; the JFlex scanner port closes it, so the
-/// whole stream now matches Lucene verbatim.
+/// token. The whole stream matches Lucene verbatim.
 #[test]
 fn an_emoji_shifts_later_offsets_by_two_java_chars() {
     let m = Manifest::load();
@@ -715,7 +709,7 @@ fn an_emoji_shifts_later_offsets_by_two_java_chars() {
     assert_eq!(other_units(text, beta.2), (11, 8));
 }
 
-/// c33: `Analyzer::keyword`'s single token ends at Java's
+/// `Analyzer::keyword`'s single token ends at Java's
 /// `correctOffset(charCount)` -- a `char` count, so for `"id-<emoji>-e-acute"`
 /// it is 7, not the 6 scalars or the 10 UTF-8 bytes.
 #[test]
@@ -735,7 +729,7 @@ fn keyword_analyzer_offsets_are_java_char_indices() {
     assert_eq!(text.len(), 10);
 }
 
-/// c33: a filter that changes a term's *length* still reports the source
+/// A filter that changes a term's *length* still reports the source
 /// text's span. `ASCIIFoldingFilter` grows `"stra<sharp-s>e"` (6 chars) to
 /// `"strasse"` (7) behind a supplementary-plane letter that has already
 /// shifted the offsets, so a producer that re-derived the span from the folded
@@ -759,7 +753,7 @@ fn ascii_folding_keeps_the_source_span_after_an_astral_token() {
     assert_eq!(folded.3 - folded.2, 6);
 }
 
-/// c33: same for `PorterStemFilter` (`"running" -> "run"`, `"fishes" ->
+/// Same for `PorterStemFilter` (`"running" -> "run"`, `"fishes" ->
 /// "fish"`), and the supplementary-plane token itself passes through the
 /// stemmer untouched, keeping its own two-`char` span.
 #[test]
@@ -777,7 +771,7 @@ fn porter_stem_keeps_the_source_span_after_an_astral_token() {
     assert_defeats_scalar_offsets(&m, case);
 }
 
-/// c33: the n-gram filters `restoreState()` the input token's offsets, so
+/// The n-gram filters `restoreState()` the input token's offsets, so
 /// every gram of a non-ASCII token reports that token's Java `char` span --
 /// not the gram's own, and not a byte span. `EdgeNGramTokenFilter` also has to
 /// keep slicing by **code point** (`Character.offsetByCodePoints`) while
@@ -817,11 +811,11 @@ fn ngram_filters_keep_the_input_tokens_java_char_span() {
     }
 }
 
-/// c33: `SynonymGraphFilter`'s collapsed match spans from the first matched
+/// `SynonymGraphFilter`'s collapsed match spans from the first matched
 /// token's `startOffset` to the last one's `endOffset`, and the originals keep
 /// their own -- in Java `char`s, behind a Latin-1 letter and in front of a CJK
 /// one. The emitted `startOffset`s must still be **non-decreasing**, which is
-/// the rule b8 fixed (`IndexingChain` rejects a decreasing one outright) and
+/// a hard rule (`IndexingChain` rejects a decreasing one outright) and
 /// which a unit change is exactly the kind of edit that could regress.
 #[test]
 fn synonym_graph_offsets_are_java_char_indices_and_non_decreasing() {

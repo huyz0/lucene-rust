@@ -4,10 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-# lucene-analysis-morfologik (M12 T12.3): Morfologik's FSA dictionaries
+# lucene-analysis-morfologik: Morfologik's FSA dictionaries
 # (FSA5, CFSA2) and lookup, MorfologikFilter, MorfologikAnalyzer and
 # UkrainianMorfologikAnalyzer. Over lucene-analysis only, as Lucene's module
-# is over lucene-analysis-common (docs/milestones/m12-language-analysis.md).
+# is over lucene-analysis-common.
 [features]
 default = ["embedded-data"]
 # Compiles the dictionary files in (src/resources); without it they are read

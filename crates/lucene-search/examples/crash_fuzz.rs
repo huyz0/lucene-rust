@@ -1,4 +1,4 @@
-//! M4's crash fuzzer (T4.4): a seeded, replayable random operation stream
+//! The crash fuzzer: a seeded, replayable random operation stream
 //! against a real on-disk index, crashed at a random point, then checked.
 //!
 //! Two kinds of crash:

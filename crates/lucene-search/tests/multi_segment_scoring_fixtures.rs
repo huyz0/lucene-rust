@@ -11,8 +11,7 @@
 //!
 //! Every other scoring fixture in this tree is a single segment, where per-leaf
 //! and reader-wide are the same number by construction, so none of them can see
-//! it -- which is why b13's F-26 (`avgdl` derived per leaf) survived two sweep
-//! batches. `fixtures/src/GenMultiSegmentScoring.java` builds the shape that
+//! it (`avgdl` derived per leaf). `fixtures/src/GenMultiSegmentScoring.java` builds the shape that
 //! can: two committed segments whose own `avgdl` values are 1.75 and 40.0
 //! against a reader-wide 20.875, and a term (`fox`) whose `docFreq` is 1 of 4
 //! in one leaf and 3 of 4 in the other.
@@ -322,10 +321,10 @@ fn multi_segment_boolean_query_scores_match_real_lucene_bit_for_bit() {
 }
 
 /// Negative control for the fix: scoring each leaf with **its own** `avgdl` --
-/// which is what `SegmentReader::field_norms` alone can compute, and what this
-/// port did before c6 -- must *not* reproduce Lucene's scores. Without this,
-/// the tests above could pass for the wrong reason (e.g. if norms were silently
-/// unused and both answers collapsed to the unnormed fallback).
+/// which is what `SegmentReader::field_norms` alone can compute -- must *not*
+/// reproduce Lucene's scores. Without this, the tests above could pass for the
+/// wrong reason (e.g. if norms were silently unused and both answers collapsed
+/// to the unnormed fallback).
 #[test]
 fn per_leaf_avgdl_does_not_reproduce_lucenes_scores() {
     let m = Manifest::load();

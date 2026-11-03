@@ -1,4 +1,4 @@
-//! A standalone, fast checksum-only verifier (task #217): the lighter
+//! A standalone, fast checksum-only verifier: the lighter
 //! sibling of [`crate::check_index`]'s much deeper `CheckIndex`-equivalent.
 //!
 //! Real Lucene's `CheckIndex` supports a `-fastCheck`-style mode that only
@@ -182,7 +182,7 @@ fn verify_file(dir: &dyn Directory, segment_name: &str, file_name: &str) -> File
     };
 
     // `CodecUtil.checksumEntireFile` -- the same helper `merge.rs` calls
-    // before a byte-copy merge (batch c4's `StoredFieldsReader::check_integrity`)
+    // before a byte-copy merge (`StoredFieldsReader::check_integrity`)
     // and the same one `check_index`'s `file:*` checks now use, rather than a
     // third hand-rolled seek-to-footer-then-`check_footer` sequence.
     // `check_whole_file_footer` reports the "file shorter than a footer" case

@@ -37,7 +37,7 @@ import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.SmallFloat;
 
 /**
- * The Java half of M4's interoperability matrix (T4.6): indexes written partly by real Lucene and
+ * The Java half of the interoperability matrix: indexes written partly by real Lucene and
  * partly by this port, in either order, and read back by both.
  *
  * <p>Document {@code i} is the same in both engines -- {@code crates/lucene-search/examples/interop.rs}

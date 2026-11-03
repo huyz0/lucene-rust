@@ -36,7 +36,7 @@ import org.apache.lucene.util.Version;
 
 /**
  * Writes one index with whichever Lucene version is on the classpath (9.0.0 through 10.4.0), for
- * the backward-codecs differential tests (M8). Only APIs every one of those versions has are used
+ * the backward-codecs differential tests. Only APIs every one of those versions has are used
  * directly; vector fields, whose classes were renamed in 9.5, are built by reflection.
  *
  * <p>Two segments (no merging), a few deletions, and every field kind: text with positions,

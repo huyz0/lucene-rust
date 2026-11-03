@@ -1,4 +1,4 @@
-//! M14 T14.3 `misc`, differentially against Lucene 10.5.0:
+//! `misc`, differentially against Lucene 10.5.0:
 //! `fixtures/src/GenMiscFst.java`'s `misc/fst/*.txt`.
 //!
 //! Each case adds keys (some more than once in a row, so the outputs'

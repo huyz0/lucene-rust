@@ -31,7 +31,7 @@ import org.apache.lucene.search.similarities.Similarity;
 import org.apache.lucene.util.BytesRef;
 
 /**
- * M13 T13.5: {@code MemoryIndex}. Every document of {@code fixtures/corpus/memory-index-docs.txt}
+ * {@code MemoryIndex}. Every document of {@code fixtures/corpus/memory-index-docs.txt}
  * (a line: {@code field=value} pairs separated by tabs, a field repeated for several values) is
  * indexed under each configuration ({@link #CONFIGS}: analyzer, similarity, offsets, payloads), and
  * every query of {@code memory-index-queries.txt} (classic syntax, default field {@code body}, parsed

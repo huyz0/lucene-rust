@@ -11,9 +11,7 @@
 //! field's ordinals are per segment: each segment's terms dictionary numbers
 //! its own terms 0..n, so ordinal 3 in segment 0 and ordinal 3 in segment 1
 //! are in general different terms, and summing the per-segment count arrays
-//! elementwise conflates them. Until c12 this module had no answer to that and
-//! its doc told callers to merge per-segment results by resolved *label*
-//! instead. [`crate::ordinal_map::OrdinalMap`] removes the workaround: build
+//! elementwise conflates them. [`crate::ordinal_map::OrdinalMap`] solves it: build
 //! one over every segment's term list, count each segment with
 //! [`facet_counts`], and remap-and-sum with [`merge_segment_counts`], which is
 //! `SortedSetDocValuesFacetCounts.countOneSegment`'s own
@@ -59,13 +57,13 @@
 //! doc in the segment" passes `0..max_doc` (every live doc ID) as that
 //! slice — no separate code path is needed or added.
 //!
-//! **The taxonomy index exists too** ([`taxonomy`], M13 T13.4a): a
+//! **The taxonomy index exists too** ([`taxonomy`]): a
 //! [`taxonomy::DirectoryTaxonomyWriter`] hands out category ordinals,
 //! [`FacetsConfig::build`] indexes a document's [`FacetField`]s as those
 //! ordinals (and its [`SortedSetDocValuesFacetField`]s as above), and a
 //! [`taxonomy::DirectoryTaxonomyReader`] maps ordinals back to paths.
 //!
-//! **The counting layer is Java's too** (M13 T13.4b). [`Facets`] is the
+//! **The counting layer is Java's too**. [`Facets`] is the
 //! `Facets` contract (every method returns Java's errors as
 //! `Err(IllegalArgument)`); a result's numbers are [`FacetValue`]s, Java's
 //! `Number` (`Integer` for counts and int sums, `Float` for float sums).
@@ -74,12 +72,12 @@
 //! association facets count or aggregate them, and [`MultiFacets`] routes
 //! dims to the facets that hold them.
 //!
-//! **Drill-down is Java's too** (M13 T13.4c). [`DrillDownQuery`] narrows a
+//! **Drill-down is Java's too**. [`DrillDownQuery`] narrows a
 //! base query to chosen categories, [`FacetQuery`]/[`MultiFacetQuery`] are
 //! a category's term as a query, and [`DrillSideways`] counts, for each dim
 //! drilled into, the documents matching every other dim.
 //!
-//! **Value, range and facet-set counting are Java's too** (M13 T13.4d1).
+//! **Value, range and facet-set counting are Java's too**.
 //! [`LongValueFacetCounts`] and [`StringValueFacetCounts`] count each
 //! distinct value of a field; [`range`] counts `long`/`double` values into
 //! ranges ([`range::LongRangeFacetCounts`], [`range::DoubleRangeFacetCounts`],
@@ -89,8 +87,7 @@
 //! [`multi_double_values_source`]. The older range primitives here
 //! ([`NumericRange`], [`range_facet_counts`]) remain for the FFI layer.
 //!
-//! **Sorted-set counting over a reader, and sampling, are Java's too** (M13
-//! T13.4d2). [`DefaultSortedSetDocValuesReaderState`] builds the
+//! **Sorted-set counting over a reader, and sampling, are Java's too**. [`DefaultSortedSetDocValuesReaderState`] builds the
 //! [`FacetsState`] of an index reader's SORTED_SET facet field (through an
 //! [`crate::ordinal_map::OrdinalMap`] when it has several segments);
 //! [`SortedSetDocValuesFacetCounts`] and
@@ -1186,7 +1183,7 @@ pub enum FacetsStateError {
 ///
 /// This is what [`FacetResult`]'s `dim`/`path` and [`SortedSetFacetCounts`]'s
 /// `getAllDims`/`getSpecificValue` need and what
-/// b14 recorded as "genuinely one layer up".
+/// sit one layer above the counts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FacetsState {
     labels: Vec<String>,
@@ -1994,7 +1991,7 @@ fn count_single_valued(
 }
 
 /// `RangeFacetCounts.count`'s **multi-valued** branch: the SORTED_NUMERIC
-/// sibling of [`range_facet_counts`], which b14 recorded as missing.
+/// sibling of [`range_facet_counts`].
 ///
 /// Two rules make this more than "run the single-valued loop per value", and
 /// both are load-bearing:
@@ -3358,7 +3355,7 @@ mod tests {
 
     // --- range_facet_counts ---
     //
-    // Reuses `doc_values_index`'s `varying` field (task #21/#31's own
+    // Reuses `doc_values_index`'s `varying` field (its own
     // fixture -- see `doc_value_query.rs`'s tests), whose 5 docs' real-Lucene-
     // recorded values are already differentially verified there: -100, 7, 42,
     // 1000, -3 for docs 0..4. Bucket assignment is hand-verified against

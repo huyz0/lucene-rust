@@ -1,12 +1,13 @@
-//! The block-join benchmark pair (M10 T10.2), against
+//! The block-join benchmark pair, against
 //! `benchmarks/micro/java/JoinMicro.java`: `ToParentBlockJoinQuery` in each
 //! score mode, alone and inside a boolean, `ToChildBlockJoinQuery`,
 //! `ParentsChildrenBlockJoinQuery`, `ParentChildrenBlockJoinQuery` over 200
 //! parents, a `ToParentBlockJoinSortField` sort and
 //! `DiversifyingChildrenFloatKnnVectorQuery` (unfiltered and with a child
-//! filter), each the top 10 through `IndexSearcher.search`, over the 60 000-block index the Java side builds
-//! (`JoinMicro build <dir>`). Each case prints a `#check` digest of its hits
-//! the report compares before it shows a ratio.
+//! filter), each the top 10 through `IndexSearcher.search`, over the
+//! 60 000-block index the Java side builds (`JoinMicro build <dir>`). Each
+//! case prints a `#check` digest of its hits the report compares before it shows a
+//! ratio.
 
 use std::hint::black_box;
 use std::sync::Arc;

@@ -1,4 +1,4 @@
-//! `org.apache.lucene.search.spell` (`lucene-suggest`, M13 T13.3): the
+//! `org.apache.lucene.search.spell` (`lucene-suggest`): the
 //! spell-checking package. This file starts with the package's interface,
 //! [`Dictionary`]; the suggest package's dictionaries implement it.
 

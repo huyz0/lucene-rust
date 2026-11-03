@@ -1,4 +1,4 @@
-//! Differential/consistency test for `DisjunctionMaxQuery` (task #32) against
+//! Differential/consistency test for `DisjunctionMaxQuery` against
 //! the same real `IndexWriter`-produced segment `tests/scoring_fixtures.rs`
 //! and `tests/boolean_query_fixtures.rs` already validate
 //! (`fixtures/data/blocktree_index/`) -- see those files' module docs for why

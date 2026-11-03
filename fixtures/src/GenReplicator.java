@@ -26,7 +26,7 @@ import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
 
 /**
- * M14.e {@code replicator.nrt}: what a primary node hands a replica. Writes two indexes under
+ * {@code replicator.nrt}: what a primary node hands a replica. Writes two indexes under
  * {@code replicator/} and {@code replicator/nrt.tsv}:
  *
  * <ul>

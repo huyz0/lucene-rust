@@ -34,7 +34,7 @@ import org.apache.lucene.analysis.custom.CustomAnalyzer;
 import org.apache.lucene.util.BytesRef;
 
 /**
- * M12 T12.3: Lucene's analysis-phonetic module and the Commons Codec 1.17.2 encoders it runs.
+ * Lucene's analysis-phonetic module and the Commons Codec 1.17.2 encoders it runs.
  *
  * <p>Writes {@code analysis_phonetic/}:
  *

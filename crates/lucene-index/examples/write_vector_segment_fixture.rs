@@ -10,8 +10,8 @@
 //! `.fnm` attributes that record them, `SegmentInfo.files` listing them, and
 //! `.fnm` `vector_dimension` agreeing with the `.vemf` for **every** field --
 //! including the ones this flush wrote no vectors for. A segment that gets any
-//! of those wrong opens with the vector fields silently absent, which is the
-//! same failure shape c4 found for postings and doc values.
+//! of those wrong opens with the vector fields silently absent, the same
+//! failure shape postings and doc values can have.
 //!
 //! Four vector fields, chosen to cover every branch of the writer:
 //!

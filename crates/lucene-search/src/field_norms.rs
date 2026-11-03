@@ -67,15 +67,9 @@ pub struct FieldNorms<'a> {
     /// recorded region does not lie inside `data` -- in which case the general
     /// [`norms::norm_value`] path re-raises that error per lookup.
     ///
-    /// This used to be an `Option<Vec<i32>>` holding *every* doc id with a
-    /// norm, decoded eagerly by each constructor, because
-    /// `norms::norm_value`'s sparse branch then re-decoded the whole region on
-    /// every call. c2 turned `IndexedDISI` into a real incremental cursor, so
-    /// neither is needed: [`FieldNorms::cursor`] hands a per-scorer
+    /// No doc id list is decoded: [`FieldNorms::cursor`] hands a per-scorer
     /// [`FieldNormsCursor`] that walks the region forward once per *scan*
-    /// instead of once per lookup, and the `Vec` -- 4 bytes per
-    /// document-with-the-field, allocated per `FieldNorms` and therefore per
-    /// query per leaf -- is gone.
+    /// instead of once per lookup.
     sparse_region: Option<&'a [u8]>,
     /// SimpleText's numeric norms, cloned into each scorer's cursor. Values
     /// stay in the text file and are decoded by its fallible positioning path.
@@ -204,7 +198,7 @@ impl<'a> FieldNorms<'a> {
     /// `SmallFloat`-quantized into a single byte. The average of the lossy
     /// values is close to, but not equal to, the average of the true lengths,
     /// so BM25 scores came out systematically 0.1-0.6% away from Lucene's --
-    /// enough to reorder documents at the top-k boundary. M1's benchmark
+    /// enough to reorder documents at the top-k boundary. the benchmark
     /// cross-check caught it: 19 of 20 queries disagreed with Java on hit sets
     /// for this reason alone. See `docs/benchmarks/verdict.md`.
     ///
@@ -236,7 +230,7 @@ impl<'a> FieldNorms<'a> {
     /// (`sumTotalTermFreq / docCount`, with `sumTotalTermFreq` equal to
     /// `sumDocFreq` for a `DOCS` field). Substituting `1` for *both* lengths,
     /// which a `None` norms argument still does, agrees with Java only when
-    /// the field averages one token per document -- `VerifyIndex` (M3) caught
+    /// the field averages one token per document -- `VerifyIndex` caught
     /// it scoring a freqs-only field 12% low.
     pub fn unnormed(max_doc: i32, avg_field_length: f32) -> FieldNorms<'static> {
         FieldNorms::unnormed_with_table(max_doc, avg_field_length, inverse_table(avg_field_length))
@@ -629,9 +623,7 @@ impl<'a> FieldNormsCursor<'_, 'a> {
     ///
     /// Distinct from [`Self::field_length`]/[`Self::norm_inverse`], which
     /// deliberately *substitute* `UNNORMED_FIELD_LENGTH` for an absent norm
-    /// because a scorer must produce a number -- that substitution is what
-    /// made "does this doc have a norm" unanswerable through this type before
-    /// (c12 §5.3).
+    /// because a scorer must produce a number.
     #[inline]
     pub fn has_norm(&mut self, doc: i32) -> norms::Result<bool> {
         Ok(self.norm_byte(doc)?.is_some())
@@ -862,7 +854,7 @@ mod tests {
     /// exact, so averaging decoded norms and dividing exact counters agree --
     /// which is precisely why every existing fixture (whose documents are 1-3
     /// terms long) passed with the wrong formula. Above that range the encoding
-    /// is lossy and the two diverge, which is what M1's 5M-document corpus,
+    /// is lossy and the two diverge, which is what the 5M-document corpus,
     /// with 40-160 term documents, exposed.
     #[test]
     fn small_float_encoding_is_exact_below_25_and_lossy_above() {
@@ -1099,8 +1091,7 @@ mod tests {
     /// rewind path). Two implementations of one lookup; the only thing worth
     /// testing about the fast one is that it is not also different.
     ///
-    /// This is the test that would have caught the c6 rewrite silently turning
-    /// `FieldNorms`'s eager `Vec<i32>` of doc ids into a forward-only walk:
+    /// Guards the forward-only cursor:
     /// a forward-only cursor that did *not* rewind would answer "absent" for
     /// every doc after the first backwards step.
     #[test]

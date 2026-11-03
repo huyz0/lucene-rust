@@ -39,7 +39,7 @@ import java.util.concurrent.atomic.AtomicLong;
  * any commit, and its deletions (hard and soft) are in memory, so opening the latest {@code
  * segments_N} instead would be wrong in both.
  *
- * <p>Lifecycle (M2 T2.6): the native handle is closed from the Java reader's {@link
+ * <p>Lifecycle: the native handle is closed from the Java reader's {@link
  * IndexReader.CacheHelper} closed-listener -- when OpenSearch releases a searcher's reader, the
  * native side releases its mapped segment files with it, so a merged-away segment's files can be
  * deleted. A refresh reuses the previous native reader's unchanged segments.
@@ -52,11 +52,11 @@ public final class NativeReaders {
 
     /**
      * The postings formats the Rust reader decodes: Lucene 10.5.0's default and every default an
-     * older Lucene an OpenSearch 2.x/3.x cluster can hold segments of wrote (M8: {@code Lucene90} for
+     * older Lucene an OpenSearch 2.x/3.x cluster can hold segments of wrote ({@code Lucene90} for
      * 9.0-9.10, {@code Lucene99} for 9.11, {@code Lucene912} for 9.12-10.0, {@code Lucene101} for
      * 10.1-10.2, {@code Lucene103} for 10.3), and the completion formats OpenSearch's {@code
      * completion} fields are written in ({@code Completion104} since 3.x, the older ones by the
-     * Lucene versions above; M13 T13.6): their postings are the default format's, which a query on
+     * Lucene versions above): their postings are the default format's, which a query on
      * the field reads, and the suggester itself stays OpenSearch's, on Lucene's reader. A field
      * written in any other format makes the whole reader fall back, rather than failing (and
      * falling back) on every query that opens it.
@@ -116,8 +116,9 @@ public final class NativeReaders {
         }
         return byReader.computeIfAbsent(key, k -> {
             Acquired a = openFor(reader);
-            // Failures are cached for the reader's life too -- and so must be evicted with it, or an
-            // index that always falls back (a completion field) leaks one entry per refresh.
+            // Failures are cached for the reader's life too -- and so must be
+            // evicted with it, or an index that always falls back (a completion
+            // field) leaks one entry per refresh.
             try {
                 helper.addClosedListener(this::onClosed);
             } catch (RuntimeException e) {

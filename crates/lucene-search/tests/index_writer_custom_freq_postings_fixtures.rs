@@ -1,4 +1,4 @@
-//! Required end-to-end proof for task #212: documents added through
+//! End-to-end proof that documents added through
 //! `IndexWriter::add_document_with_custom_freq_terms` (not analyzed text) and
 //! flushed by a real `IndexWriter::commit()` produce real
 //! `IndexOptions::DocsAndCustomFreqs` postings whose freq value is exactly the

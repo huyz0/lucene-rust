@@ -1,4 +1,4 @@
-//! Differential test for `WildcardQuery` (task #34) against the same real
+//! Differential test for `WildcardQuery` against the same real
 //! `IndexWriter`-produced segment `tests/boolean_query_fixtures.rs`/
 //! `tests/dismax_query_fixtures.rs` already validate
 //! (`fixtures/data/blocktree_index/`) -- see those files' module docs for the

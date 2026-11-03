@@ -1,4 +1,4 @@
-//! M14.i, differentially against Lucene 10.5.0: `fixtures/src/GenToolsLuke.java`
+//! Differentially against Lucene 10.5.0: `fixtures/src/GenToolsLuke.java`
 //! ran each line of `tools/luke/cases.tsv` through Luke's own models
 //! (`OverviewImpl`, `DocumentsImpl`, `CommitsImpl`, `SearchImpl`,
 //! `AnalysisImpl`, `IndexToolsImpl`) and recorded what they returned. The

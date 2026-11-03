@@ -7,7 +7,7 @@
 //! carries -- mecab-ko-dic-2.1.1-20180720 compiled by Lucene's builder --
 //! vendored zlib-compressed under `src/resources/` (Apache-2.0; see
 //! `docs/licences.md`); every class also loads a caller's files
-//! (`from_paths`) or bytes (`read`). The builders are not ported: M12 loads
+//! (`from_paths`) or bytes (`read`). The builders are not ported: this port loads
 //! dictionaries, it does not build them.
 
 pub mod character_definition;

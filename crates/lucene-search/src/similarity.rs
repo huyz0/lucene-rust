@@ -37,9 +37,8 @@
 //! agree in exact arithmetic and disagree in `f32`: they round at different
 //! points, so the gap is *a few* ULP in general (see
 //! `do_score_reproduces_the_algebraic_form_to_within_rounding`, which allows
-//! four), and was exactly one ULP on every hit of the fixture that caught this.
-//! Every scored path in this crate used the multiply form until the b12 sweep;
-//! `tests/bm25_scoring_fixtures.rs` now pins term, boolean, phrase and
+//! four), and is exactly one ULP on every hit of the BM25 fixture.
+//! `tests/bm25_scoring_fixtures.rs` pins term, boolean, phrase and
 //! multi-phrase scores against real Lucene's own recorded `TopDocs` output
 //! **bit for bit**.
 //!
@@ -80,9 +79,7 @@
 //!
 //! **`FieldNorms` has two constructors and they do not compute the same
 //! `avgFieldLength`**; only `from_field_stats` matches Java, and it is not the
-//! one the production callers use. That is a live divergence, not a note about
-//! this module: see `docs/sweep/m2/LEDGER.md`'s carry-over row and
-//! `docs/sweep/m2/b12-search-core.md` F-7, owned by b13 and b15.
+//! one the production callers use. That is a live divergence.
 
 /// `BM25Similarity`'s default `k1` (term-frequency saturation parameter).
 pub const DEFAULT_K1: f32 = 1.2;
@@ -90,8 +87,7 @@ pub const DEFAULT_K1: f32 = 1.2;
 pub const DEFAULT_B: f32 = 0.75;
 
 /// The two knobs real Lucene's `BM25Similarity(float k1, float b)` constructor
-/// exposes per-`Similarity`-instance (task #214, "Configurable BM25 constant
-/// from FFI") -- `k1` (term-frequency saturation) and `b` (field-length
+/// exposes per-`Similarity`-instance -- `k1` (term-frequency saturation) and `b` (field-length
 /// normalization). [`Default`] reproduces today's hardcoded [`DEFAULT_K1`]/
 /// [`DEFAULT_B`] byte-for-byte, so every existing call site that doesn't know
 /// about this struct keeps its exact current behavior.
@@ -146,9 +142,8 @@ impl Bm25Params {
     /// impacts-derived upper bound this crate computes
     /// ([`max_score_for_impacts`]), turning MAXSCORE block skipping from an
     /// optimization into a source of missing hits. A negative `k1` can make
-    /// the denominator zero or negative and produce infinities. This port had
-    /// no validation at all before the b12 sweep: [`Bm25Params`]'s fields are
-    /// public and a caller (including the FFI one) could set any float.
+    /// the denominator zero or negative and produce infinities. [`Bm25Params`]'s
+    /// fields are public, so a caller could set any float.
     ///
     /// The error messages are Lucene's own, verbatim, so a caller diagnosing a
     /// rejection finds the same string in either engine.
@@ -245,9 +240,8 @@ pub fn norm_inverse(field_length: f32, avg_field_length: f32, k1: f32, b: f32) -
 /// that [`tf_norm`] spells out. Two reasons, both from `BM25Similarity.java`'s
 /// own comment on this method:
 ///
-/// 1. **Bit-for-bit agreement with real Lucene.** Every scored path in this
-///    port used the multiply form until the b12 sweep, and every one of them
-///    came out exactly one ULP away from real Lucene's own recorded `TopDocs`
+/// 1. **Bit-for-bit agreement with real Lucene.** The multiply form comes out
+///    exactly one ULP away from real Lucene's own recorded `TopDocs`
 ///    scores on a real fixture segment (see
 ///    `crates/lucene-search/tests/bm25_scoring_fixtures.rs`). Float addition,
 ///    subtraction and division do not commute across the rewrite; only this
@@ -836,7 +830,7 @@ mod tests {
 
     #[test]
     fn score_with_params_using_defaults_matches_score_byte_for_byte() {
-        // Regression proof (task #214): the new parameterized path must
+        // Regression proof: the new parameterized path must
         // reproduce the existing hardcoded-default path exactly when given
         // Bm25Params::default(), not just "close enough".
         let got = score_with_params(

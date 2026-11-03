@@ -93,10 +93,8 @@ fn parsed_sort() -> Vec<IndexSortField> {
         .expect("the segment declares an index sort")
 }
 
-/// **The c35 fix.** Before it, this `parse` call returned
-/// `Error::UnsupportedSortField` for tier 0 alone (`missing value 42 is
-/// neither the sort-first nor the sort-last sentinel`) and the index was
-/// unopenable.
+/// Tier 0's missing value (42) is neither the sort-first nor the sort-last
+/// sentinel, and the index must still open.
 #[test]
 fn a_sort_the_old_model_rejected_now_parses_tier_for_tier() {
     let sort = parsed_sort();

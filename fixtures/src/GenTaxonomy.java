@@ -29,7 +29,7 @@ import org.apache.lucene.store.FSDirectory;
 import org.apache.lucene.util.IOUtils;
 
 /**
- * M13 T13.4a: the taxonomy index. Writes {@code taxonomy/}:
+ * The taxonomy index. Writes {@code taxonomy/}:
  *
  * <ul>
  *   <li>one directory per writer-cache configuration ({@code default}, {@code lru_hashed_3},

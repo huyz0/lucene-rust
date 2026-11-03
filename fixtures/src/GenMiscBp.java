@@ -22,7 +22,7 @@ import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
 
 /**
- * M14 T14.3 `misc`: {@link BPIndexReorderer}. Writes {@code misc/bp_flat} (one segment of 700
+ * `misc`: {@link BPIndexReorderer}. Writes {@code misc/bp_flat} (one segment of 700
  * documents drawn from overlapping topics), {@code misc/bp_blocks} (the same kind of documents in
  * parent blocks of 1 to 4 children) and {@code misc/bp.tsv}:
  *

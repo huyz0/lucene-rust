@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# M14.h h5's and h6's acceptance run: crates/lucene-test-framework/examples/
+# Acceptance run for crates/lucene-test-framework/examples/
 # format_suites.rs over 30 seeds per format suite (postings, stored fields,
 # term vectors, doc values, segment infos, field infos, compound, norms,
 # points, float and byte KNN vectors).

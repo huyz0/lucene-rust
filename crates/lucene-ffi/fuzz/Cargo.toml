@@ -1,4 +1,4 @@
-# cargo-fuzz targets over lucene-ffi's C ABI (M2 T2.5). Outside the workspace:
+# cargo-fuzz targets over lucene-ffi's C ABI. Outside the workspace:
 # libFuzzer needs a nightly toolchain, and the workspace pins a stable one.
 #
 #   cd crates/lucene-ffi/fuzz && cargo +nightly fuzz run jvm_search -- -max_total_time=300

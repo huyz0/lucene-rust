@@ -1,12 +1,13 @@
 # opensearch-plugin
 
-The lucene-rust plugin for **OpenSearch 3.9.0** (Lucene 10.5.1): it runs the
-query phase of supported searches in Rust, through `liblucene_ffi.so` called
-with Java's Foreign Function & Memory API (JDK 25, the JDK OpenSearch 3.9.0 bundles),
-and leaves everything else — unsupported searches, fetch, indexing, refresh —
-to OpenSearch and Lucene. Milestone:
-[`docs/milestones/m2-opensearch-read-path.md`](../docs/milestones/m2-opensearch-read-path.md).
-What runs native: [`docs/opensearch-native-queries.md`](../docs/opensearch-native-queries.md).
+The lucene-rust plugin for **OpenSearch 3.9.0** (Lucene 10.5.1). Through
+`liblucene_ffi.so`, called with Java's Foreign Function & Memory API (JDK 25,
+the JDK OpenSearch 3.9.0 bundles), it runs in Rust the query phase of supported
+searches, their aggregations, stored-field reads in the fetch phase, and, with
+the Rust engine, indexing and merging. Anything it cannot answer natively runs
+on OpenSearch and Lucene as usual.
+What runs native: [`docs/opensearch-native-queries.md`](../docs/opensearch-native-queries.md);
+the engine: [`docs/opensearch-engine.md`](../docs/opensearch-engine.md).
 
 ## Build
 
@@ -59,8 +60,8 @@ cannot be installed alongside `neural-search`.
 | | |
 |---|---|
 | `index.lucene_rust.search.enabled` (index, dynamic, default `true`) | route this index's searches native when eligible |
-| `index.lucene_rust.search.native_shapes` (index, dynamic, `fast`/`all`, default `fast`) | `all` also runs shapes that are correct natively but measured slower. Since read path R1 there are none (every encodable shape measures faster), so the two values agree |
-| `index.lucene_rust.fetch.enabled` (index, dynamic, default `true`) | read this index's stored fields (`_source`, `_id`, `stored_fields`) natively in the fetch phase and the get API (read path R6) |
+| `index.lucene_rust.search.native_shapes` (index, dynamic, `fast`/`all`, default `fast`) | `all` also runs shapes that are correct natively but measured slower. Every encodable shape currently measures faster, so the two values agree |
+| `index.lucene_rust.fetch.enabled` (index, dynamic, default `true`) | read this index's stored fields (`_source`, `_id`, `stored_fields`) natively in the fetch phase and the get API |
 | `lucene_rust.fetch.reader_wrapper` (node, default `true` unless the security plugin is installed) | install the index reader wrapper native stored fields need. An index takes one reader wrapper and the security plugin claims it for field- and document-level security, so with it installed the default is off and stored fields are read by Lucene; if another plugin set a wrapper first, this one logs and stands down |
 | `GET /_plugins/lucene_rust/stats` | native queries, native errors, fallbacks by reason, open native readers, native stored-fields reads (`native_fetches`, `native_sequential_fetches`) and `StoredFields.document` time per path (`fetch_nanos`) |
 
@@ -93,14 +94,14 @@ on Lucene: it never fails a search Lucene can answer.
 
 Highlighters, suggesters and the query-string parsers stay OpenSearch's own:
 `NamedRegistry` refuses a plugin that registers a built-in name again, so
-they cannot be replaced (M13 T13.6, deferred with that reason). The query
+they cannot be replaced. The query
 phase they ride on runs natively, `query_string` and `simple_query_string`
 included (but for the shapes that fall back by name: escaped wildcards,
 non-default regexp flags, phrases with position gaps), and so does an index
 with `completion` fields (the Completion90-104
 postings formats are read natively; the suggesters read Lucene's reader).
 Term vectors, which `fvh` and the unified highlighter may read, are Lucene's.
-See [`docs/opensearch-native-queries.md`](../docs/opensearch-native-queries.md#suggesters-and-highlighters-m13-t136).
+See [`docs/opensearch-native-queries.md`](../docs/opensearch-native-queries.md#suggesters-and-highlighters).
 
 Native memory the JVM does not see, per segment of 10,000 documents or more:
 the query cache (at most 16 MB) and, for sorted searches, decoded sort columns
@@ -121,7 +122,7 @@ decode it, and is freed with the segment).
 | `src/test/…/NativeBench` | `gradle nativeBench`: the downcall's crossing cost and in-process latency |
 | `src/yamlRestTest/…/LuceneRustYamlIT` | OpenSearch's REST YAML suites, for `verify-opensearch.sh --yaml` |
 | `e2e/verify_opensearch.py` | the node-level harness `scripts/verify-opensearch.sh` runs |
-| `e2e/verify_upgrade.py` | `scripts/verify-opensearch-upgrade.sh` (M8): an index OpenSearch 2.19 wrote, opened in place and restored from its snapshot by 3.9.0 with this plugin, answered as a stock 3.9.0 node answers it, natively, before and after a force merge |
+| `e2e/verify_upgrade.py` | `scripts/verify-opensearch-upgrade.sh`: an index OpenSearch 2.19 wrote, opened in place and restored from its snapshot by 3.9.0 with this plugin, answered as a stock 3.9.0 node answers it, natively, before and after a force merge |
 | `docker/Dockerfile` | the test node: the pinned image, bundled plugins removed, this one installed |
 
 The Rust side is plain C ABI, unit-tested without a JVM:

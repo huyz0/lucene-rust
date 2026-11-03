@@ -1,17 +1,17 @@
-//! M10 T10.6, differentially against Lucene 10.5.0:
+//! Differentially against Lucene 10.5.0:
 //! `fixtures/src/GenMoreLikeThis.java`'s `common.tsv`.
 //!
-//! `CommonTermsQuery` over a four-segment index with deletions: fourteen
-//! term sets and settings (a count or a fraction of `maxDoc` as the
-//! frequent-term threshold, every legal occur on either side, `FILTER`
-//! included, minimum-should-match counts and fractions, boosts, a term absent
-//! everywhere, a field of its own, no terms and one term) -- `toString`,
-//! every hit's score bits and four documents' explanations; then hits and
-//! explanations for eight boosted booleans of `MUST`/`FILTER`/`SHOULD`/
-//! `MUST_NOT` term, phrase and nested-boolean clauses (a boost the term
-//! weights take into their explanation; the filters' and exclusions' weights
-//! created without scores, two of the eight under `ClassicSimilarity`). The file is rebuilt here line for line and compared with
-//! Lucene's.
+//! `CommonTermsQuery` over a four-segment index with deletions: fourteen term
+//! sets and settings (a count or a fraction of `maxDoc` as the frequent-term
+//! threshold, every legal occur on either side, `FILTER` included,
+//! minimum-should-match counts and fractions, boosts, a term absent everywhere,
+//! a field of its own, no terms and one term) -- `toString`, every hit's score
+//! bits and four documents' explanations; then hits and explanations for eight
+//! boosted booleans of `MUST`/`FILTER`/`SHOULD`/ `MUST_NOT` term, phrase and
+//! nested-boolean clauses (a boost the term weights take into their
+//! explanation; the filters' and exclusions' weights created without scores,
+//! two of the eight under `ClassicSimilarity`). The file is rebuilt here line
+//! for line and compared with Lucene's.
 
 // Test fixtures' own arithmetic -- see `docs/arithmetic-gate.md`'s "Test code".
 #![allow(clippy::arithmetic_side_effects)]

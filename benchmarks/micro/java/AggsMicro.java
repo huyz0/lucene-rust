@@ -26,7 +26,7 @@ import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.PriorityQueue;
 
 /**
- * Java side of the terms-aggregation benchmark pair (M10 stage 3); the Rust side is {@code
+ * Java side of the terms-aggregation benchmark pair; the Rust side is {@code
  * benchmarks/rust-runner/src/micro_aggs.rs}, with the same case names. Over the benchmark corpus
  * ({@code benchmarks/.corpus/merged}, one segment: {@code keyword} {@code SORTED}, {@code cat}
  * {@code SORTED_SET}, {@code num} a {@code LongPoint}), the shape the OpenSearch plugin serves

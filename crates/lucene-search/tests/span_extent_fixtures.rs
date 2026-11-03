@@ -9,10 +9,9 @@
 //! `endPosition()` is a *running* `maxEndPosition` that is never recomputed
 //! when the span that set it moves on.
 //!
-//! This port enumerated the cartesian product until `c43-final-cleanup`, which
-//! reported extents Lucene never produces. No hit set moved, because
-//! `span_doc_ids` only asks whether the span list is non-empty -- which is
-//! exactly why it survived three batches. What it moves is the extents, and a
+//! Enumerating the cartesian product would report extents Lucene never
+//! produces without moving any hit set, because `span_doc_ids` only asks
+//! whether the span list is non-empty. What it moves is the extents, and a
 //! nested `SpanNear`-of-`SpanNear` *consumes* its inner clause's extents, so
 //! the `nested_*` cases here are hit-set cases as well.
 //!

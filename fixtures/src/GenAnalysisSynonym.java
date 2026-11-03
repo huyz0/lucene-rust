@@ -24,7 +24,7 @@ import org.apache.lucene.util.CharsRefBuilder;
 import org.apache.lucene.util.fst.IntsRefFSTEnum;
 
 /**
- * M11 T11.5: synonyms. Parses {@code fixtures/corpus/synonyms-solr.txt} and {@code
+ * Synonyms. Parses {@code fixtures/corpus/synonyms-solr.txt} and {@code
  * synonyms-wordnet.txt} (rules written for this project) into {@link SynonymMap}s, dumps each map
  * ({@code maps.tsv}), records what the parsers make of small rule texts, bad ones included ({@code
  * parse.tsv}), and runs {@code SynonymGraphFilter}/{@code SynonymFilter} chains over {@code

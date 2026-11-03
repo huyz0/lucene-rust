@@ -85,14 +85,11 @@
 //! before this the merge could carry only one field per type and only one
 //! type per call.
 //!
-//! **Norms have no per-merge field limit either** (c26): every merged norms
+//! **Norms have no per-merge field limit either**: every merged norms
 //! field goes into one `.nvm`/`.nvd` pair through
 //! [`lucene_codecs::norms::write_fields`], which is the real on-disk shape of
 //! a `Lucene90NormsFormat` segment (`Lucene90NormsConsumer` gets one
-//! `addNormsField` call per field into one pair). Until c26 this was capped at
-//! one field per merge, because [`lucene_codecs::norms::write_single_dense_field`]
-//! writes a whole pair and two of them in one merge overwrote each other.
-//! Term vectors and postings have never had a limit.
+//! `addNormsField` call per field into one pair). Term vectors and postings have never had a limit.
 //!
 //! ## The "sparse across sources" rule
 //!
@@ -503,14 +500,15 @@ pub enum Error {
     },
     #[error(transparent)]
     Points(#[from] lucene_codecs::points::Error),
-    /// A live-doc-contributing source *declares* this points field in its
-    /// own `FieldInfos` but its [`MergeSource::points`] carries no entry for
-    /// it (or its opened reader has no such field) -- a caller wiring bug.
+    /// A live-doc-contributing source *declares* this points field in its own
+    /// `FieldInfos` but its [`MergeSource::points`] carries no entry for it (or
+    /// its opened reader has no such field) -- a caller wiring bug.
     /// Deliberately stricter than Java (real `PointsWriter.merge` tolerates
     /// `values == null` for a declared field): unlike an indexed field, a
     /// points field cannot be declared by a segment without a value, since
-    /// every points instance carries one. A source whose `FieldInfos` never saw the field at all is fine
-    /// and simply contributes no points, matching `PointsWriter.merge`.
+    /// every points instance carries one. A source whose `FieldInfos` never saw
+    /// the field at all is fine and simply contributes no points, matching
+    /// `PointsWriter.merge`.
     #[error(
         "merged field number {merged_field_number} is declared by a live-doc-contributing source whose MergeSource supplied no BKD points for it"
     )]
@@ -568,8 +566,7 @@ pub enum Error {
     /// for a format whose readers the caller did not put on that source's
     /// [`MergeSource`]. The merge would then run to completion and write a
     /// well-formed, checksummed, `CheckIndex`-clean segment with that
-    /// format's data simply gone -- the exact shape of c22's findings 14, 22,
-    /// 23 and 24. Refused instead.
+    /// format's data simply gone. Refused instead.
     #[error(
         "source segment `{segment}` has {format} files ({files}) that this merge never opened; merging it would silently drop them"
     )]
@@ -799,8 +796,7 @@ pub struct MergeSource<'a> {
     /// `hasBlocks |= readerMeta.hasBlocks()`). Concatenation preserves each
     /// source's own document order, so its blocks stay contiguous; a
     /// *sorted* merge would shred them, which is why a block plus an index
-    /// sort is refused at flush (`IndexWriter::set_index_sort`, c17 finding
-    /// 8) and so cannot reach here.
+    /// sort is refused at flush (`IndexWriter::set_index_sort`) and so cannot reach here.
     ///
     /// Losing the flag is silent: the merged segment reads back perfectly and
     /// every parent/child join query against it is quietly invalid.
@@ -888,21 +884,14 @@ impl<'a> MergeSource<'a> {
 ///
 /// # Why this type exists
 ///
-/// c22 fixed eleven correctness defects in the merge path; its Tier-2 review
-/// traced three of them (findings 22, 23 and 24 -- doc-values types other
-/// than NUMERIC, positional postings, and `has_blocks`) plus one older one
-/// (finding 14, norms, standing since c4 and making **every merged BM25 score
-/// wrong**) to a single structural gap, in its own words:
-///
-/// > nothing mechanically checks that `execute_merge` opens every format the
-/// > flush can write
-///
-/// The failure is silent by construction. A format the merge does not open
-/// contributes nothing; [`describe_written_files`] then clears the
-/// corresponding capability off the merged `.fnm` so the segment stays
+/// Something must check mechanically that `execute_merge` opens every format
+/// the flush can write, because the failure is silent by construction. A format
+/// the merge does not open contributes nothing; [`describe_written_files`] then
+/// clears the corresponding capability off the merged `.fnm` so the segment
+/// stays
 /// *openable*; and what is left is well-formed, checksummed and
 /// `CheckIndex`-clean, with the data gone or (for norms) wrong. Nothing
-/// downstream reports it, which is why all four were found by reading.
+/// downstream reports it.
 ///
 /// [`check_format_coverage`] closes that loop mechanically. See its doc
 /// comment for the two properties that make it hard to rot.
@@ -1071,7 +1060,7 @@ impl SegmentFormat {
 ///    exhaustive `match`es) and [`SegmentFormat::ALL`] (a fixed-length
 ///    array), and `is_opened` cannot be written without a [`MergeSource`]
 ///    field to read -- which cannot be populated without the caller opening
-///    the format. That is the closed loop c22 asked for.
+///    the format.
 /// 2. **It runs on every merge, not in one test.** It is called from
 ///    `IndexWriter::execute_merge` on the real path, so every existing and
 ///    future merge test exercises it over whatever formats that test's
@@ -1081,14 +1070,13 @@ impl SegmentFormat {
 ///
 /// - **That an opened format is merged *correctly*.** A format whose doc map
 ///   is wrong produces exactly the same well-formed segment; that is what
-///   c22's `assert_every_format_agrees` and c17's `VerifySortedSegment` are
-///   for. This gate is "opened at all", which is the failure c22 actually hit
-///   four times.
+///   `assert_every_format_agrees` and `VerifySortedSegment` are for. This
+///   gate is "opened at all".
 /// - **A format the flush writes without listing it in the `.si`.** Such a
 ///   file is already invisible to `IndexFileDeleter` and to `CheckIndex`, so
 ///   it is a different (and louder) defect.
-/// - **A format opened per source but dropped per *field*.** c22 finding 22
-///   was a per-type drop inside an opened `.dvm`; the `debug_assert!` in
+/// - **A format opened per source but dropped per *field*.** For example a
+///   per-type drop inside an opened `.dvm`; the `debug_assert!` in
 ///   `execute_merge` covers the doc-values case specifically, and this gate
 ///   covers the coarser "not opened at all".
 /// - **Compound segments.** `IndexWriter` always flushes loose files
@@ -1528,9 +1516,7 @@ fn concat_doc_order(per_source_live_ids: &[Vec<i32>]) -> Vec<(usize, i32)> {
 /// doc-values types, vectors and points), and
 /// [`crate::index_writer::IndexWriter::segment_stats`] withholds from the
 /// merge policy the one case it cannot round-trip (a doc-values *generation*).
-/// A format opened by neither would be dropped here silently -- which is what
-/// happened to norms until `c22-sorted-merge`, for the whole life of
-/// `execute_merge`.
+/// A format opened by neither would be dropped here silently.
 ///
 fn describe_written_files(
     merged_fields: &mut [FieldInfo],
@@ -2150,8 +2136,7 @@ pub struct MergedSegment {
 /// consecutive documents from one source, and an index sort interleaves the
 /// sources, so those runs collapse. `write_merged_stored_fields` and
 /// `write_merged_term_vectors` detect runs from `doc_order` itself, so the
-/// fast path is taken exactly when it is legal and never when it is not --
-/// see `docs/sweep/m2/c22-sorted-merge.md` for the measurement.
+/// fast path is taken exactly when it is legal and never when it is not.
 #[allow(clippy::too_many_arguments)]
 pub fn merge_segments(
     dir: &dyn Directory,
@@ -3254,16 +3239,16 @@ fn index_source_fields<'a, T>(
 /// **multi-tier index sort** needs (a second tier is a second NUMERIC
 /// column), and it is what a real segment looks like.
 ///
-/// A live document with **no** value for the field is not an error either:
-/// it is `SortField.setMissingValue`'s normal case, and the merged column is
-/// then written sparsely through the same `IndexedDISI` + values body
-/// `Lucene90DocValuesConsumer.writeValues` uses; so is a source with no
-/// column for the field at all (see the comment in the body). A field for which **no** merged document has a value is still
-/// written -- as `Lucene90DocValuesConsumer.writeValues`' all-missing column
-/// (`docsWithFieldOffset = -2`), not omitted -- because omitting it would
-/// zero the field's `DocValuesType` in the merged `.fnm` and, for an
-/// index-sort tier, leave a segment whose `.si` claims an order nothing can
-/// re-derive.
+/// A live document with **no** value for the field is not an error either: it
+/// is `SortField.setMissingValue`'s normal case, and the merged column is then
+/// written sparsely through the same `IndexedDISI` + values body
+/// `Lucene90DocValuesConsumer.writeValues` uses; so is a source with no column
+/// for the field at all (see the comment in the body). A field for which **no**
+/// merged document has a value is still written -- as
+/// `Lucene90DocValuesConsumer.writeValues`' all-missing column
+/// (`docsWithFieldOffset = -2`), not omitted -- because omitting it would zero
+/// the field's `DocValuesType` in the merged `.fnm` and, for an index-sort
+/// tier, leave a segment whose `.si` claims an order nothing can re-derive.
 fn merge_numeric_doc_values(
     sources: &[MergeSource],
     per_source_maps: &[HashMap<i32, i32>],
@@ -3305,17 +3290,13 @@ fn merge_numeric_doc_values(
         //
         // -- so every one of its documents comes out of the merge with no
         // value, which is the sparse column `SortField.setMissingValue`
-        // already models and `write_dense_fields` already writes. This port
-        // used to raise `DocValuesFieldMissingInSource` instead, which made
-        // two ordinary cases unmergeable: a field added to the schema after
-        // some segments were flushed, and a doc-values **update** against a
-        // field whose base flush wrote no column -- the update's generation
-        // is then the field's only column and the other sources have none at
-        // all, which is what kept generational segments out of the merge
-        // policy until c26.
+        // already models and `write_dense_fields` already writes. Two ordinary
+        // cases depend on it: a field added to the schema after some segments
+        // were flushed, and a doc-values **update** against a field whose base
+        // flush wrote no column.
         //
-        // What makes it safe to stop treating this as a caller error is that
-        // c26 added a better detector for the same class one level up:
+        // It is safe not to treat this as a caller error because a better
+        // detector for the same class runs one level up:
         // [`check_format_coverage`] refuses a merge whose caller never opened
         // a format a source's own `.si` lists, and the `debug_assert!` in
         // `IndexWriter::execute_merge` pins that every entry an opened `.dvm`
@@ -3882,13 +3863,8 @@ fn merge_sorted_set_doc_values(
 /// entry order is a function of the schema rather than of which source
 /// happened to be first.
 ///
-/// Until c26 this took at most one field per merge
-/// (`Error::TooManyNormsFields`), because `norms::write_single_dense_field`
-/// writes a whole `.nvm`/`.nvd` pair and two of them in one merge overwrote
-/// each other. `norms::write_fields` -- the norms analogue of
-/// `doc_values::write_dense_fields` -- removed that limitation, and this is
-/// the merge side taking it up. `Lucene90NormsConsumer` has never had the
-/// limit: it gets one `addNormsField` call per field into one pair.
+/// Every field goes into one `.nvm`/`.nvd` pair through `norms::write_fields`,
+/// as `Lucene90NormsConsumer` gets one `addNormsField` call per field.
 ///
 /// Which fields get a column, and what a document with no norm becomes, are
 /// both Java's:
@@ -3909,13 +3885,9 @@ fn merge_sorted_set_doc_values(
 /// whose norm column simply has no entry for it, both contribute *nothing*
 /// and appear as a gap in the merged column, which is written sparse.
 ///
-/// Until c35 both of those were [`Error::NormsFieldMissingInSource`]: the
-/// merge assumed norms are dense across every source and every document,
-/// which held only because norms were opt-in per writer and the opt-in
-/// wrote a dense column. With norms on by default a segment whose documents
-/// do not all carry the field has a genuinely sparse column, and merging two
-/// segments that disagree about a field is the ordinary case for a schema
-/// that grew -- so both are now data, not errors.
+/// A segment whose documents do not all carry the field has a sparse column,
+/// and merging two segments that disagree about a field is the ordinary case
+/// for a schema that grew, so neither is an error.
 fn merge_norms(
     sources: &[MergeSource],
     merged_fields: &[FieldInfo],
@@ -6703,10 +6675,10 @@ mod tests {
         }
     }
 
-    /// **The gate's negative control, in c22's shape.** A source segment
+    /// **The gate's negative control.** A source segment
     /// whose own `.si` lists `.nvm`/`.nvd` merged through a `MergeSource`
-    /// with no norms is exactly finding 14 -- `execute_merge` passing
-    /// `norms: &[]` while every merged BM25 score silently went wrong. The
+    /// with no norms: `execute_merge` passing `norms: &[]` would make every
+    /// merged BM25 score silently wrong. The
     /// merge itself would succeed and produce a `CheckIndex`-clean segment,
     /// so nothing but this check reports it.
     #[test]
@@ -7696,19 +7668,10 @@ mod tests {
     /// lost across a merge. See `docs/parity.md` and `PLAN.md` for the full
     /// scope writeup.
     ///
-    /// **Update (c14 sweep):** `IndexWriter` *does* now write doc-values
-    /// updates against a committed segment -- as real Lucene generations, not
-    /// as these overlays (`crate::field_updates`). The half of this gap that
-    /// was reachable in production is closed from the other side:
-    /// `IndexWriter::segment_stats` excludes any segment with
-    /// `doc_values_gen != -1` from merge consideration, so a segment carrying
-    /// updates is never fed to `merge_stored_only_segments` at all (see
-    /// `docs/sweep/m2/c14-dv-updates-format.md` F-8). What this test still
-    /// documents is the *shape* of the remaining gap: `MergeSource` reads a
-    /// field's base column and nothing else, so whenever a doc-values-aware
-    /// merge is built it must resolve each source's newest generation before
-    /// constructing the `MergeSource`, exactly as this test's overlay stands
-    /// in for.
+    /// `IndexWriter` writes doc-values updates as real Lucene generations, not
+    /// as these overlays (`crate::field_updates`), and `execute_merge` resolves
+    /// each source's newest generation before constructing the `MergeSource`.
+    /// `MergeSource` itself reads a field's base column and nothing else.
     #[test]
     fn numeric_doc_values_update_overlay_does_not_survive_a_merge_today() {
         use lucene_codecs::doc_values_updates;
@@ -7822,9 +7785,7 @@ mod tests {
     /// `DocValuesConsumer.getMergedNumericDocValues` skips a reader with no
     /// NUMERIC column for the field, so every one of that reader's documents
     /// lands in the merged column as **missing** -- it does not fail the
-    /// merge. This port refused it until c26, which made a field added to
-    /// the schema after some segments were flushed, and a doc-values update
-    /// against a field with no base column, both unmergeable.
+    /// merge.
     ///
     /// The reason it is safe to be permissive here is one level up:
     /// [`check_format_coverage`] refuses a merge whose caller never opened a
@@ -9380,9 +9341,6 @@ mod tests {
     /// `NormsConsumer.merge` iterates the **merged** `FieldInfos` and
     /// `mergeNormsField` adds a sub only for a source whose own `FieldInfo`
     /// says `hasNorms()`, so both are gaps in the merged column, not errors.
-    /// Until c35 each was `Error::NormsFieldMissingInSource` -- which made
-    /// the ordinary "a schema grew" merge fail outright the moment the flush
-    /// started writing sparse columns.
     #[test]
     fn merged_norms_are_sparse_across_a_gap_and_a_source_that_never_declared_the_field() {
         let seg0_id = [1u8; ID_LENGTH];
@@ -16491,10 +16449,10 @@ mod tests {
         // source's stored-fields `maxDoc` (off the `.fdm`) and the bitset
         // comes off the `.liv` -- two independent files.
         //
-        // Both failure modes c28's rule names are covered:
+        // Both failure modes of the `FixedBitSet` rule are covered:
         //  * an **empty** bitset, where every index is out of range, so
         //    `FixedBitSet::get`'s own bound (checked in release as well as
-        //    debug since c41) panics -- this case aborts the test without
+        //    debug) panics -- this case aborts the test without
         //    the fix;
         //  * a bitset a few bits **short**, where the index still lands
         //    inside `words` and reads a ghost bit: five documents silently
@@ -16778,10 +16736,8 @@ mod tests {
         assert!(fields[0].attributes.is_empty());
     }
 
-    /// `describe_written_files` must **not** touch `omit_norms` any more.
-    /// Until c35 it forced `omit_norms = true` onto every indexed field the
-    /// merge had written no norms column for, because the merge only carried
-    /// norms a source happened to have; `merge_norms` now writes a column for
+    /// `describe_written_files` must **not** touch `omit_norms`: `merge_norms`
+    /// writes a column for
     /// exactly the fields whose merged `.fnm` claims one (Java's
     /// `mergeFieldInfos`-driven loop), so rewriting the schema here would
     /// undo the claim the column was written for.

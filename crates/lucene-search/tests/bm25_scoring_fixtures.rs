@@ -397,9 +397,8 @@ fn sloppy_phrase_scores_match_real_lucene_bit_for_bit() {
     }
 }
 
-/// **Reordered** sloppy matches -- the half of `SloppyPhraseMatcher` this port
-/// did not have until c37, and the reason it silently under-matched every
-/// transposition.
+/// **Reordered** sloppy matches -- the half of `SloppyPhraseMatcher` that
+/// matches transpositions.
 ///
 /// `SloppyPhraseMatcher` shifts each slot's positions back by the slot's own
 /// index, so a match is a *window* over the shifted positions and phrase order
@@ -548,15 +547,14 @@ fn search_after_pages_match_real_lucene_bit_for_bit() {
 }
 
 /// A filter-only query under a top-`n` collector: every hit scores 0, so the
-/// block-max bound is 0 and the threshold a full queue publishes is 0. c11 read
-/// `0 <= 0` as "pruning on a tie" and switched pruning off for this shape; real
-/// Lucene prunes it (`TopScoreDocCollector` publishes `Math.nextUp(0f)` and a
-/// block whose maximum is 0 is below that), and these are its own answers.
+/// block-max bound is 0 and the threshold a full queue publishes is 0. `0 <= 0`
+/// is not "pruning on a tie": Lucene prunes it (`TopScoreDocCollector`
+/// publishes `Math.nextUp(0f)` and a block whose maximum is 0 is below that),
+/// and these are its own answers.
 ///
 /// `big:everywhere` is in 300 documents, so a top-20 search fills the queue
-/// long before the postings end -- which is exactly what the 5-document `body`
-/// field could not do, and why c11 recorded this as blocked on a fixture. The
-/// fixture was already there.
+/// long before the postings end -- which the 5-document `body` field could
+/// not do.
 ///
 /// Lucene prunes the query `IndexSearcher` runs: `BooleanQuery.rewrite` turns
 /// a lone `FILTER` into `BoostQuery(ConstantScoreQuery(q), 0)`, whose

@@ -15,7 +15,7 @@ import org.apache.lucene.tests.util.TestUtil;
 
 /**
  * Differential fixture for {@code TestUtil.unzip} and {@code VocabularyAssert}'s zip overloads
- * (M14.h): a vocabulary zip as {@code java.util.zip.ZipOutputStream} writes it, and the files
+ * A vocabulary zip as {@code java.util.zip.ZipOutputStream} writes it, and the files
  * Lucene 10.5.0's {@code TestUtil.unzip} extracts from it.
  *
  * <p>Writes {@code vocabulary.zip} (a stored entry, deflated entries with data descriptors, a

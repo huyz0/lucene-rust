@@ -1,14 +1,13 @@
 #![forbid(unsafe_code)]
-//! lucene-analysis-morfologik: Lucene's `analysis-morfologik` module (M12
-//! T12.3) -- `MorfologikFilter`, `MorphosyntacticTagsAttribute`,
-//! `MorfologikAnalyzer`, `UkrainianMorfologikAnalyzer` and
-//! `MorfologikFilterFactory` -- over the parts of Morfologik 2.1.9
-//! (`morfologik-fsa`, `morfologik-stemming`; BSD, Copyright (c) 2006 Dawid
-//! Weiss, (c) 2007-2016 Dawid Weiss, Marcin Miłkowski) a lookup needs:
-//! the automata ([`fsa`]), dictionary metadata ([`metadata`],
+//! lucene-analysis-morfologik: Lucene's `analysis-morfologik` module --
+//! `MorfologikFilter`, `MorphosyntacticTagsAttribute`, `MorfologikAnalyzer`,
+//! `UkrainianMorfologikAnalyzer` and `MorfologikFilterFactory` -- over the
+//! parts of Morfologik 2.1.9 (`morfologik-fsa`, `morfologik-stemming`; BSD,
+//! Copyright (c) 2006 Dawid Weiss, (c) 2007-2016 Dawid Weiss, Marcin Miłkowski)
+//! a lookup needs: the automata ([`fsa`]), dictionary metadata ([`metadata`],
 //! [`properties`]) and `DictionaryLookup` with its sequence decoders
-//! ([`dictionary`]). Building automata and dictionaries is not ported (M12
-//! loads dictionaries, it does not build them).
+//! ([`dictionary`]). Building automata and dictionaries is not ported: this
+//! crate loads dictionaries, it does not build them.
 
 pub mod analyzer;
 pub mod dictionary;

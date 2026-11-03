@@ -42,7 +42,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * The aggregations of a search that run natively (read path R5): top-level {@code min}, {@code
+ * The aggregations of a search that run natively: top-level {@code min}, {@code
  * max}, {@code sum}, {@code avg}, {@code value_count} and {@code stats} on a mapped numeric or date
  * field, without {@code missing}, scripts or sub-aggregations. {@link #plan} reads OpenSearch's own
  * aggregator factories -- so the name, metadata and resolved {@link DocValueFormat} are the ones its

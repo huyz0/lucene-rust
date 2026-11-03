@@ -1,4 +1,4 @@
-//! M13 T13.5c's pairs (`benchmarks/micro/java/MonitorMicro.java` is the Java
+//! The pairs (`benchmarks/micro/java/MonitorMicro.java` is the Java
 //! twin): a `Monitor` over the 41 queries of
 //! `fixtures/corpus/monitor-queries.txt`. `mon_register`: a fresh monitor,
 //! every query registered; `mon_match`: four documents matched against the

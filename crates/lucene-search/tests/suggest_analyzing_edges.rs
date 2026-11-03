@@ -1,4 +1,4 @@
-//! Boundary and error handling of the analyzing suggesters (M13 T13.3c) that
+//! Boundary and error handling of the analyzing suggesters that
 //! the Java-fixture differential tests do not reach: limits, unsupported
 //! inputs, corrupt saved state.
 

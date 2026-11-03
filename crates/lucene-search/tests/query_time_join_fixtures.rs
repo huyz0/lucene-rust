@@ -1,4 +1,4 @@
-//! M10 T10.3, differentially against Lucene 10.5.0:
+//! Differentially against Lucene 10.5.0:
 //! `fixtures/src/GenQueryTimeJoin.java`.
 //!
 //! A four-segment index of from and to documents with deletions in two

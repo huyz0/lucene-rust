@@ -316,7 +316,7 @@ fn a_field_without_positions_is_an_error_not_a_silent_wrong_offset() {
 }
 
 // ---------------------------------------------------------------------------
-// `PhraseHelper` -- position-sensitive offsets (c12 §3.4)
+// `PhraseHelper` -- position-sensitive offsets
 // ---------------------------------------------------------------------------
 
 /// The whole point of `PhraseHelper`: an occurrence of a phrase term that is

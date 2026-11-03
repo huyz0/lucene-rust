@@ -1,4 +1,4 @@
-//! Boundary and error handling of the FST suggesters (M13 T13.3b) that the
+//! Boundary and error handling of the FST suggesters that the
 //! Java-fixture differential tests do not reach: unbuilt lookups, builder
 //! limits, unsupported inputs, and the sorters.
 

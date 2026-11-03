@@ -7,7 +7,7 @@
 //! field over the batch's terms, ORed with the any-token marker, which every
 //! query with no narrowing term carries. Java runs these queries against a
 //! Lucene index of the registered queries; this port returns the two halves
-//! as values, and T13.5c's query index runs them. The rules -- which terms
+//! as values, and the query index runs them. The rules -- which terms
 //! are indexed, which are filtered out, the metadata-field filter and the
 //! multipass expansion -- are Java's.
 

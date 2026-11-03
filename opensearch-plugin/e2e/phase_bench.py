@@ -35,7 +35,7 @@ if os.environ.get("GEO_LOAD"):
     geo_matrix.create_shapes(v.req)
     geo_matrix.load(v.req, v.check, index, int(os.environ["GEO_LOAD"]), 21)
 pat = sys.argv[3] if len(sys.argv) > 3 else ""
-# GEO=1: geo_matrix.py's rows (M9 T9.6), against an index loaded as its geo indices are.
+# GEO=1: geo_matrix.py's rows, against an index loaded as its geo indices are.
 rows = geo_matrix.rows() if os.environ.get("GEO") == "1" else v.matrix()
 qs = [(n, b) for n, b, e in rows if e in ("native", "slow") and pat in n]
 

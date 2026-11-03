@@ -1,4 +1,4 @@
-//! M8 T8.4: merge an index an older Lucene wrote into one `Lucene104`
+//! Merge an index an older Lucene wrote into one `Lucene104`
 //! segment with this port's `IndexWriter`, for `scripts/verify-bwc-merge.sh`
 //! to hand to real Lucene 10.5.0.
 //!

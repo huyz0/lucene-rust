@@ -83,7 +83,7 @@ import java.util.Random;
 import java.util.stream.Stream;
 
 /**
- * M7's query and scoring half, for crates/lucene-search/tests/m7_query_fixtures.rs: every query
+ * The query and scoring half, for crates/lucene-search/tests/m7_query_fixtures.rs: every query
  * Lucene 10.5.0 adds on top of the term/phrase/boolean core -- synonyms, BM25F, n-gram phrases,
  * explicit phrase positions, the multi-term rewrite methods, blended terms, the Indri and fusion
  * queries, numeric doc-values and index-sort ranges, multi-dimensional and 4/16-byte points,

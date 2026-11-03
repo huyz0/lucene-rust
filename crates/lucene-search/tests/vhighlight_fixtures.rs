@@ -1,4 +1,4 @@
-//! M13 T13.2 (`vectorhighlight`) against Lucene 10.5.0: the
+//! (`vectorhighlight`) against Lucene 10.5.0: the
 //! `FastVectorHighlighter`'s fragments.
 
 use std::fs;

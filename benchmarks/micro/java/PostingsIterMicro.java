@@ -10,7 +10,7 @@ import org.apache.lucene.store.MMapDirectory;
 import org.apache.lucene.util.BytesRef;
 
 /**
- * Java side of the posting-list iteration microbenchmark -- the operation M1 is actually about.
+ * Java side of the posting-list iteration microbenchmark.
  * The Rust side is {@code benchmarks/rust-runner/src/micro.rs}'s {@code postings_iter} case;
  * {@code scripts/bench-micro.sh --bench postings_iter} runs both over the same index directory
  * and joins them on term.

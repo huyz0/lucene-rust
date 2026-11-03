@@ -1,5 +1,5 @@
 //! OpenSearch's `terms` aggregation on a keyword field, as a shard computes
-//! it before the coordinator reduces it (read path R5).
+//! it before the coordinator reduces it.
 //!
 //! `GlobalOrdinalsStringTermsAggregator` (and each of its collection
 //! strategies, and `MapStringTermsAggregator`) counts, per term, the live

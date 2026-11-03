@@ -5,7 +5,7 @@
 //! `BloomFilter_0`). Files are passed in and returned as bytes, so neither
 //! carries Java's `Directory`, segment name or `IOContext`.
 //!
-//! The carrier for the M14.g postings formats that wrap or replace the
+//! The carrier for the postings formats that wrap or replace the
 //! default one; the default codec's writers predate it and still take the
 //! id and suffix as loose arguments.
 

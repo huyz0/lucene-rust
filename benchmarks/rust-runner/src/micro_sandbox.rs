@@ -1,4 +1,4 @@
-//! The lucene-sandbox benchmark pair (M14.f), against
+//! The lucene-sandbox benchmark pair, against
 //! `benchmarks/micro/java/SandboxMicro.java`: per range set, one top-10
 //! search -- `IntPointMultiRangeBuilder` over `p`, the sorted-numeric
 //! multi-range query over `sn` and over the skip-indexed `snx`, the

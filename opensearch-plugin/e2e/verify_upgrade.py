@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""M8 acceptance criterion 3: an index an OpenSearch 2.x node wrote, served
+"""An index an OpenSearch 2.x node wrote, served
 natively after the upgrade to OpenSearch 3.9.0 with the lucene-rust plugin.
 
 Driven by scripts/verify-opensearch-upgrade.sh, in two phases:

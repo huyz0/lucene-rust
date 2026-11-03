@@ -25,7 +25,7 @@ import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
 
 /**
- * M14.i: what the {@code demo} module's {@code IndexFiles} and {@code SearchFiles} print, and
+ * What the {@code demo} module's {@code IndexFiles} and {@code SearchFiles} print, and
  * the toy word-vector dictionary they share. Writes {@code tools/demo}:
  *
  * <ul>

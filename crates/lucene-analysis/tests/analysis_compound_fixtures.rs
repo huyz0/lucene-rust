@@ -1,4 +1,4 @@
-//! M11 T11.6: the compound package against
+//! The compound package against
 //! `fixtures/src/GenAnalysisCompound.java`: a toy hyphenation grammar's
 //! points for words (`points.words`), and the dictionary and hyphenation
 //! decompounders with their options over

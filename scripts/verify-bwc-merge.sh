@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# M8 T8.4: this port merges segments an older Lucene wrote into Lucene104
+# This port merges segments an older Lucene wrote into Lucene104
 # ones, and real Lucene 10.5.0 checks the result.
 #
 # For every fixtures/data/bwc/<version> index (one per codec era, 9.0.0 to

@@ -68,12 +68,9 @@
 //! for a string one). [`write()`] is the exact byte-level inverse of [`parse`]
 //! for every one of them.
 //!
-//! Until c35 it carried only `(field, reverse, missing-first-or-last)` -- the
-//! shape this port's own sort-on-flush writer produces -- and [`parse`]
-//! *rejected* everything else. That was honest but it meant an index a real
-//! `IndexWriter` wrote with an ordinary sort (a numeric sort with no missing
-//! value, an arbitrary sentinel, a `MAX` selector, a string sort) could not
-//! be **opened by this port at all**.
+//! So an index a real `IndexWriter` wrote with an ordinary sort (a numeric
+//! sort with no missing value, an arbitrary sentinel, a `MAX` selector, a
+//! string sort) opens here.
 //!
 //! Two things are still refused, and both are refused by Java too:
 //!
@@ -429,8 +426,7 @@ pub struct IndexSortField {
 impl IndexSortField {
     /// The `SortField(field, Type.LONG, reverse)` with an explicit
     /// `missingValue` that this port's own sort-on-flush and sort-preserving
-    /// merge writers produce -- the whole of what [`IndexSortField`] could
-    /// represent before c35, and still the common case.
+    /// merge writers produce -- the common case.
     pub fn long(field: impl Into<String>, reverse: bool, missing: Option<i64>) -> Self {
         Self {
             field: field.into(),
@@ -1861,11 +1857,10 @@ mod tests {
         assert!(!si.index_sort.unwrap()[0].reverse);
     }
 
-    /// **The c35 fix, read direction.** A numeric sort with *no* missing
-    /// value is what `new SortField("f", Type.LONG)` produces when nobody
-    /// calls `setMissingValue` -- the most ordinary sort there is -- and
-    /// until c35 this port refused to open the index at all rather than
-    /// model it. Java sorts such a document as if it held `0`.
+    /// **Read direction.** A numeric sort with *no* missing
+    /// value is what `new SortField("f", Type.LONG)` produces when nobody calls
+    /// `setMissingValue` -- the most ordinary sort there is. Java sorts such a
+    /// document as if it held `0`.
     #[test]
     fn a_numeric_sort_with_no_missing_value_parses_and_compares_as_zero() {
         let mut b = SiBuilder::valid();

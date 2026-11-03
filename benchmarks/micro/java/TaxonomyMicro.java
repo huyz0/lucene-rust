@@ -8,7 +8,7 @@ import org.apache.lucene.index.IndexWriterConfig.OpenMode;
 import org.apache.lucene.store.ByteBuffersDirectory;
 
 /**
- * M13 T13.4a's taxonomy pair (the Rust twin is {@code
+ * The taxonomy pair (the Rust twin is {@code
  * benchmarks/rust-runner/src/micro_taxonomy.rs}) over 20,000 labels {@code dim<i%10> / l<(i/10)%50>
  * / v<i>} (20,511 categories with their ancestors). {@code taxo_add_new}: a fresh {@code
  * DirectoryTaxonomyWriter} (default cache of 4000) adding every label, units: labels; {@code

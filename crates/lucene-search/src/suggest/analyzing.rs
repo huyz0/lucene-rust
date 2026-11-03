@@ -1,5 +1,5 @@
 //! `org.apache.lucene.search.suggest.analyzing.AnalyzingSuggester` and
-//! `FuzzySuggester` (M13 T13.3c): a weighted FST over the *analyzed* form of
+//! `FuzzySuggester`: a weighted FST over the *analyzed* form of
 //! each suggestion, so "Ghost  Christmas" finds "the ghost of christmas".
 //!
 //! Each surface form is analyzed into an automaton (a graph analyzer may give

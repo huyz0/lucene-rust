@@ -26,7 +26,7 @@ import org.apache.lucene.analysis.synonym.SynonymGraphFilter;
 import org.apache.lucene.analysis.synonym.SynonymMap;
 
 /**
- * M11 part 3's pair (the Rust twin is {@code benchmarks/rust-runner/src/micro_analysis_lang.rs}):
+ * The pair (the Rust twin is {@code benchmarks/rust-runner/src/micro_analysis_lang.rs}):
  * each language analyzer over its own language's lines of {@code fixtures/corpus/analysis-lang.txt}
  * (repeated 200 times as documents; the whole multilingual corpus would mostly measure a stemmer
  * missing on foreign words), and synonym filters over {@code fixtures/corpus/analysis-synonym.txt}

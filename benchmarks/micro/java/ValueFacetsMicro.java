@@ -29,7 +29,7 @@ import org.apache.lucene.store.FSDirectory;
 import org.apache.lucene.util.BytesRef;
 
 /**
- * M13 T13.4d1's value- and range-facet pair (the Rust twin is {@code
+ * The value- and range-facet pair (the Rust twin is {@code
  * benchmarks/rust-runner/src/micro_value_facets.rs}), with the same case names. {@code build <dir>}
  * writes, once, a 200,000-document, four-segment index: {@code l} a single-valued long (0..9,999),
  * {@code lm} 1-3 longs (0..999), {@code s} one of 2,000 strings ({@code SORTED}) and {@code d} a

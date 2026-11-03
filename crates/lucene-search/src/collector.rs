@@ -12,7 +12,7 @@
 //! per-doc `collect()` call in the hot loop is a direct (inlinable) call, not
 //! a vtable dispatch.
 //!
-//! ## `ScoringCollector` (task #13's addition) — a new trait, not a breaking
+//! ## `ScoringCollector` — a new trait, not a breaking
 //! change to `Collector`
 //!
 //! `lib.rs`'s module doc, written when this file only had unscored matching,
@@ -73,11 +73,7 @@ use std::sync::Arc;
 /// This port models the enum and the two predicates faithfully, and uses them
 /// where it has the machinery to act on them ([`TopDocsCollector`] reports its
 /// own mode, and returns no competitive threshold in an exhaustive one, so
-/// MAXSCORE block skipping shuts off). It does **not** yet have the other half
-/// -- a `needs_scores == false` postings path -- because
-/// `lucene_codecs::postings` has no `PostingsEnum`-flags plumbing at all; that
-/// is a codec-side carry-over item recorded in `docs/sweep/m2/LEDGER.md`, and
-/// this enum is the search-side half of it landing first.
+/// MAXSCORE block skipping shuts off).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScoreMode {
     /// Every match, with scores -- `IndexSearcher.count`-style exhaustive
@@ -125,10 +121,9 @@ pub enum TotalHitsRelation {
 /// `org.apache.lucene.search.TotalHits`: a hit count plus whether it is exact.
 ///
 /// Real `TopDocs` always carries one of these, and every caller that prints
-/// "about N results" is reading its [`TotalHitsRelation`]. This port reported
-/// only `top_docs().len()` before the b12 sweep, which is the *kept* hit count
-/// (capped at `top_n`) and says nothing at all about how many documents
-/// matched.
+/// "about N results" is reading its [`TotalHitsRelation`]. `top_docs().len()`
+/// is only the *kept* hit count (capped at `top_n`) and says nothing about how
+/// many documents matched.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TotalHits {
     pub value: u64,

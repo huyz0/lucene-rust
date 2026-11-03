@@ -1,4 +1,4 @@
-//! M13 T13.3d's pairs (`benchmarks/micro/java/CompletionMicro.java` is the
+//! The pairs (`benchmarks/micro/java/CompletionMicro.java` is the
 //! Java twin): `SuggestIndexSearcher::suggest` over `GenCompletionQuery`'s
 //! index (three segments, one with deletions), top 10 with duplicates
 //! skipped. `completion_prefix`: 12 prefixes on `suggest`;

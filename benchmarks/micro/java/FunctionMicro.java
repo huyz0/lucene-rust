@@ -46,7 +46,7 @@ import org.apache.lucene.store.FSDirectory;
 import org.apache.lucene.util.BytesRef;
 
 /**
- * Java side of the function-query benchmark pair (M10 T10.5); the Rust side is {@code
+ * Java side of the function-query benchmark pair; the Rust side is {@code
  * benchmarks/rust-runner/src/micro_function.rs}, with the same case names. {@code build <dir>}
  * writes the corpus once -- 200 000 documents in four segments, each with a text {@code body}, a
  * {@code NUMERIC} int {@code i} (one in ten missing), a {@code NUMERIC} long {@code n} and a float

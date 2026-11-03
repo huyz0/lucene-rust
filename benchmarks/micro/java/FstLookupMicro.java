@@ -13,7 +13,7 @@ import org.apache.lucene.store.ByteBuffersDirectory;
 import org.apache.lucene.util.BytesRef;
 
 /**
- * M13 T13.3b's pairs (the Rust twin is {@code benchmarks/rust-runner/src/micro_fst_lookup.rs}):
+ * The pairs (the Rust twin is {@code benchmarks/rust-runner/src/micro_fst_lookup.rs}):
  * {@code GenSuggestFst}'s 324 weighted terms ({@code fixtures/data/suggest_fst/terms.tsv}). {@code
  * wfst_lookup}/{@code fstc_lookup}: top 10 for every 1-3 character prefix of a term (WFST exact
  * first; FSTCompletion with ten buckets, higher weights first), units: lookups; {@code

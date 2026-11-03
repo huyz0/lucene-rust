@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# M2's end-to-end proof: builds the lucene-rust OpenSearch plugin, installs it
+# the end-to-end proof: builds the lucene-rust OpenSearch plugin, installs it
 # into the pinned OpenSearch image, starts a node, and runs
 # opensearch-plugin/e2e/verify_opensearch.py against it -- the query matrix
 # native vs Lucene, force-merge reader release, and SIGKILL recovery.
@@ -10,7 +10,7 @@
 # the plugin to report no native error: the suites' own pass/fail is
 # OpenSearch's business, a difference between the two nodes is ours.
 #
-# With --engine (M5) the plugin node serves every index -- system indices and
+# With --engine the plugin node serves every index -- system indices and
 # every index the YAML suites create included -- with the Rust engine
 # (lucene_rust.engine.default: true), and the e2e stage is
 # opensearch-plugin/e2e/verify_engine.py: the Rust engine against OpenSearch's
@@ -19,7 +19,8 @@
 #
 #   scripts/verify-opensearch.sh [--docs N] [--bench-out FILE] [--yaml] [--engine] [--keep]
 #
-# Needs Docker, a JDK 25 (Gradle's toolchain; see opensearch-plugin/build.gradle), Gradle and cargo. The node listens on
+# Needs Docker, a JDK 25 (Gradle's toolchain; see
+# opensearch-plugin/build.gradle), Gradle and cargo. The node listens on
 # localhost:${OS_PORT:-9200}.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."

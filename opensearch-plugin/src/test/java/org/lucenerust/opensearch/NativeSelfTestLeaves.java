@@ -129,7 +129,7 @@ final class NativeSelfTestLeaves {
         return d;
     }
 
-    static void run(Random r, BiConsumer<Boolean, String> check, NativeSelfTestM10.Compare compare) throws Exception {
+    static void run(Random r, BiConsumer<Boolean, String> check, NativeSelfTestExtended.Compare compare) throws Exception {
         Path dir = Files.createTempDirectory("lucene-rust-selftest-leaves");
         NativeReaders readers = new NativeReaders();
         try (FSDirectory d = FSDirectory.open(dir); IndexWriter w = new IndexWriter(d, new IndexWriterConfig(new StandardAnalyzer()))) {

@@ -1,4 +1,4 @@
-//! M14 T14.3 `misc`, differentially against Lucene 10.5.0:
+//! `misc`, differentially against Lucene 10.5.0:
 //! `fixtures/src/GenMiscRearrange.java`'s `misc/rearrange.tsv`.
 //!
 //! `IndexRearranger` with `BinaryDocValueSelector`s rearranges

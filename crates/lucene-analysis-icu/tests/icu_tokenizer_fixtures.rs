@@ -1,4 +1,4 @@
-//! M12 T12.4: `ICUTokenizer` against Lucene 10.5.0 over ICU4J 77.1.
+//! `ICUTokenizer` against Lucene 10.5.0 over ICU4J 77.1.
 //!
 //! `fixtures/src/GenAnalysisIcu.java` writes `analysis_icu/tok_*.tsv`: the
 //! tokenizer in its four configurations over `corpus/analysis-icu.txt` and

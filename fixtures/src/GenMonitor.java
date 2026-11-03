@@ -14,7 +14,7 @@ import org.apache.lucene.search.Query;
 import org.apache.lucene.util.BytesRef;
 
 /**
- * M13 T13.5a: {@code QueryDecomposer} and {@code QueryAnalyzer} (the term tree the
+ * {@code QueryDecomposer} and {@code QueryAnalyzer} (the term tree the
  * presearcher indexes) over {@code fixtures/corpus/monitor-queries.txt}, one classic-syntax query a
  * line, default field {@code body}, parsed with {@code StandardAnalyzer}. {@code decompose.tsv}:
  * per query, the escaped query, then each decomposed sub-query's {@code toString()} (escaped,
@@ -77,7 +77,7 @@ public class GenMonitor {
     Files.writeString(out.resolve("decompose.tsv"), decompose.toString(), StandardCharsets.UTF_8);
     Files.writeString(out.resolve("tree.tsv"), tree.toString(), StandardCharsets.UTF_8);
 
-    // T13.5b: the presearcher's indexed document per query, and a batch's query
+    // The presearcher's indexed document per query, and a batch's query
     StringBuilder presearch = new StringBuilder();
     org.apache.lucene.monitor.Presearcher plain = new org.apache.lucene.monitor.TermFilteredPresearcher();
     org.apache.lucene.monitor.Presearcher multi =
@@ -118,7 +118,7 @@ public class GenMonitor {
     }
     Files.writeString(out.resolve("batch.tsv"), batches.toString(), StandardCharsets.UTF_8);
 
-    // T13.5c: a real Monitor -- register the corpus, match a batch of documents,
+    // A real Monitor -- register the corpus, match a batch of documents,
     // and dump each document's matched query ids, in Java's order
     org.apache.lucene.monitor.Monitor monitor =
         new org.apache.lucene.monitor.Monitor(new StandardAnalyzer());
@@ -152,7 +152,7 @@ public class GenMonitor {
     }
     Files.writeString(out.resolve("match.tsv"), matchRows.toString(), StandardCharsets.UTF_8);
     Files.writeString(out.resolve("score.tsv"), scoreRows.toString(), StandardCharsets.UTF_8);
-    // T13.5d: whole batches under each matcher; per batch and matcher, per document, the
+    // Whole batches under each matcher; per batch and matcher, per document, the
     // matched query ids with their detail (score bits, explanation, hits)
     String[][][] batchSets = {
       {{"body=the quick brown fox"}, {"body=a b", "title=quick"}},
@@ -188,7 +188,7 @@ public class GenMonitor {
       }
     }
     Files.writeString(out.resolve("batch_match.tsv"), batchMatch.toString(), StandardCharsets.UTF_8);
-    // T13.5d: MonitorQuerySerializer's bytes for queries with and without metadata
+    // MonitorQuerySerializer's bytes for queries with and without metadata
     org.apache.lucene.monitor.MonitorQuerySerializer ser =
         org.apache.lucene.monitor.MonitorQuerySerializer.fromParser(t -> {
           try {
@@ -242,7 +242,7 @@ public class GenMonitor {
           pm.getQueryCount() + " " + pm.getDisjunctCount() + "\n",
           StandardCharsets.UTF_8);
     }
-    // T13.5d slice 4: the n-gram filter, the regexp handler, and debug()
+    // Slice 4: the n-gram filter, the regexp handler, and debug()
     StringBuilder ngramRows = new StringBuilder();
     String[][] ngramInputs = {
       {"abc"}, {"abcd", "abcd"}, {"a"}, {"ab", "b"}, {"hello", "help", "helm"},

@@ -1,4 +1,4 @@
-//! M14.f against `fixtures/src/GenSandboxFacet.java`: lucene-sandbox's
+//! Against `fixtures/src/GenSandboxFacet.java`: lucene-sandbox's
 //! facet package (`org.apache.lucene.sandbox.facet`).
 //!
 //! - `builders.tsv`: every builder kind through one `FacetOrchestrator`

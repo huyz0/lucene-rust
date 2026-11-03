@@ -1,4 +1,4 @@
-//! M13 T13.4d1's value- and range-facet pair (the Java twin is
+//! The value- and range-facet pair (the Java twin is
 //! `benchmarks/micro/java/ValueFacetsMicro.java`), with the same case
 //! names, over the 200,000-document, four-segment index
 //! `ValueFacetsMicro build <dir>` writes: `l` a single-valued long, `lm` 1-3

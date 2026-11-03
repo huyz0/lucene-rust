@@ -32,7 +32,7 @@ import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.CharsRef;
 
 /**
- * M13 T13.3c: {@code AnalyzingSuggester} and {@code FuzzySuggester} over a phrase corpus (stop
+ * {@code AnalyzingSuggester} and {@code FuzzySuggester} over a phrase corpus (stop
  * words, case variants of one analyzed form, a synonym graph, non-ASCII). Writes {@code
  * suggest_analyzing/}: {@code phrases.tsv} (surface, weight, payload), {@code queries.tsv}, and
  * per configuration {@code NAME.tsv} (query, num, results), {@code NAME_reload.tsv} (the same

@@ -1,4 +1,4 @@
-//! M13 T13.4d2's sorted-set facet and sampling pair (the Java twin is
+//! The sorted-set facet and sampling pair (the Java twin is
 //! `benchmarks/micro/java/SsdvFacetsMicro.java`), with the same case names,
 //! over the 200,000-document, four-segment index `SsdvFacetsMicro build
 //! <dir>` writes: `SortedSetDocValuesFacetField`s for a flat `Author`

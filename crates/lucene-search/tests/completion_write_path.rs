@@ -1,4 +1,4 @@
-//! M13 T13.3d through [`IndexWriter`]: `GenCompletion`'s documents as
+//! Through [`IndexWriter`]: `GenCompletion`'s documents as
 //! [`SuggestField`]s on a field routed to `Completion104`, flushed (one
 //! segment) and force-merged (from three of falling sizes), must leave `.lkp`/`.cmp` whose
 //! bodies are Lucene's, with the delegate's files under the same suffix, and

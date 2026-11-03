@@ -1,5 +1,5 @@
-//! The query side of `org.apache.lucene.search.suggest.document` (M13
-//! T13.3d): [`CompletionAnalyzer`] (with `CompletionTokenStream.toAutomaton`),
+//! The query side of `org.apache.lucene.search.suggest.document`:
+//! [`CompletionAnalyzer`] (with `CompletionTokenStream.toAutomaton`),
 //! [`CompletionQuery`] and its prefix, regex, fuzzy and context kinds, the
 //! [`CompletionWeight`] each becomes (`setNextMatch`, `boost`, `context`),
 //! [`BitsProducer`], and [`SuggestIndexSearcher`], which runs a query over

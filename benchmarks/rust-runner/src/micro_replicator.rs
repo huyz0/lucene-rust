@@ -1,4 +1,4 @@
-//! M14 T14.3's replicator pairs (`benchmarks/micro/java/ReplicatorMicro.java`
+//! The replicator pairs (`benchmarks/micro/java/ReplicatorMicro.java`
 //! is the Java twin), over the 25 files of the NRT point in
 //! `fixtures/data/replicator/plain` (copied to a scratch directory first):
 //!

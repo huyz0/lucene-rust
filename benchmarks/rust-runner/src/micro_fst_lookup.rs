@@ -1,4 +1,4 @@
-//! M13 T13.3b's pairs (`benchmarks/micro/java/FstLookupMicro.java` is the
+//! The pairs (`benchmarks/micro/java/FstLookupMicro.java` is the
 //! Java twin): `GenSuggestFst`'s 324 weighted terms
 //! (`fixtures/data/suggest_fst/terms.tsv`). `wfst_lookup`/`fstc_lookup`: top
 //! 10 for every 1-3 character prefix of a term (WFST exact first;

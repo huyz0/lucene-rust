@@ -233,7 +233,7 @@ impl FieldExistsLeaf {
 /// return super.count(context);
 /// ```
 ///
-/// The last three lines are the whole finding c12 left open: a leaf where every
+/// In the last three lines, a leaf where every
 /// document has the field answers `numDocs()` (deletions and all), a leaf with
 /// no deletions answers the raw count directly, and only the "some documents
 /// lack the field *and* some are deleted" case has to intersect the two sets by

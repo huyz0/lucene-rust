@@ -1,4 +1,4 @@
-//! M13 T13.3c against Lucene 10.5.0 (`fixtures/src/GenAnalyzingSuggest.java`):
+//! Against Lucene 10.5.0 (`fixtures/src/GenAnalyzingSuggest.java`):
 //! `AnalyzingSuggester` and `FuzzySuggester` answer as Lucene's do over a
 //! phrase corpus (stop words, case variants of one analyzed form, a synonym
 //! graph, non-ASCII), write Lucene's bytes, and read them back.

@@ -30,7 +30,7 @@ import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
 
 /**
- * Java side of the spatial3d query benchmark pair (M9 T9.4); the Rust side is {@code
+ * Java side of the spatial3d query benchmark pair; the Rust side is {@code
  * benchmarks/rust-runner/src/micro_geo3d_points.rs}, with the same case names. {@code build <dir>}
  * writes the corpus once -- 300 000 documents with a WGS84 {@code Geo3DPoint} and {@code
  * Geo3DDocValuesField}, half uniform and half in twenty clusters, force-merged to one segment --

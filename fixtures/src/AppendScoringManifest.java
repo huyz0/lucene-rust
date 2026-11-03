@@ -224,7 +224,7 @@ public class AppendScoringManifest {
               .add(new TermQuery(new Term("body", "cat")), BooleanClause.Occur.MUST)
               .build());
 
-      // ---- filter-only pruning (c37) ------------------------------------
+      // ---- filter-only pruning ------------------------------------
       // A filter-only query scores every hit 0, so under a top-`n` collector
       // the queue fills with zeroes and the block-max bound (also 0) can never
       // beat it -- Lucene prunes anyway, because
@@ -306,7 +306,7 @@ public class AppendScoringManifest {
               .setSlop(2)
               .build());
 
-      // ---- reordered sloppy phrases (c37) --------------------------------
+      // ---- reordered sloppy phrases --------------------------------
       // `SloppyPhraseMatcher` shifts each slot's positions back by the slot's
       // own index, so a match is a *window* over the shifted positions and the
       // terms may appear in any order within it. This port was in-order only

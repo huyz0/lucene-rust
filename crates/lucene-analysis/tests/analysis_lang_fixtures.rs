@@ -1,4 +1,4 @@
-//! M11 T11.6: the per-language packages against
+//! The per-language packages against
 //! `fixtures/src/GenAnalysisLanguages.java`: every language analyzer (and a
 //! few filter chains) over `fixtures/corpus/analysis-lang.txt` row for row,
 //! and `lang.words` -- each stemmer and normalizer over words built from its

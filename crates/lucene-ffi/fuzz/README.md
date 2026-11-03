@@ -28,7 +28,7 @@ cargo +nightly fuzz run jvm_search corpus/jvm_search seeds/jvm_search -- -max_to
 
 `seeds/` holds the checked-in starting inputs (a real `segments_2`, term,
 boolean and nested-wrapper blobs, the geo nodes: a distance, a shape query
-over every geometry, a points box in a boolean, and the `m10_*` seeds: a
+over every geometry, a points box in a boolean, and the `extended_*` seeds: a
 block join, spans, intervals with a multi-term automaton, combined fields and
 a function score with every function kind); `corpus/` is what a run grows and is not
 committed. CI (`fuzz` job) runs each target for 60 seconds per push.

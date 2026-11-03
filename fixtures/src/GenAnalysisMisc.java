@@ -16,7 +16,7 @@ import org.apache.lucene.analysis.reverse.ReverseStringFilter;
 import org.apache.lucene.analysis.util.CSVUtil;
 
 /**
- * M11 T11.6: small packages. {@code WordDelimiterFilter} (the deprecated one) over {@link
+ * Small packages. {@code WordDelimiterFilter} (the deprecated one) over {@link
  * #WDF_LINES} ({@code wdf_lines.txt}, {@code wdf_<chain>.tsv}); {@code ReverseStringFilter} (with and without each marker) over the
  * lines of {@link #LINES} (written here; surrogate pairs at every position), stored with the
  * fixture as {@code lines.txt} and run as {@code <chain>.tsv} ({@link AnalysisRows}' rows); {@code

@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! lucene-analysis-nori: Lucene's `analysis-nori` module (M12 T12.1) --
+//! lucene-analysis-nori: Lucene's `analysis-nori` module --
 //! Korean morphological analysis over mecab-ko-dic.
 //!
 //! - [`KoreanTokenizer`] over `lucene-analysis`' `morph` Viterbi search

@@ -32,7 +32,7 @@ import org.apache.lucene.queryparser.flexible.standard.parser.Token;
 import org.apache.lucene.queryparser.flexible.standard.parser.TokenMgrError;
 
 /**
- * M13 T13.1: the flexible query parser. {@code tokens.tsv} is {@code
+ * The flexible query parser. {@code tokens.tsv} is {@code
  * StandardSyntaxParserTokenManager}'s token stream for each query of {@code
  * fixtures/corpus/queryparser-classic.txt} and {@code queryparser-flexible.txt}: the escaped query,
  * then each token as {@code kind:begin-column:image} (escaped, space-separated) up to the end of

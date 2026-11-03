@@ -193,7 +193,7 @@ use crate::for_util::{self, ForUtil};
 /// is `Lucene104`'s at a 128-value block, which [`read_positions`] and its
 /// siblings handle directly.
 ///
-/// This is the seam M8 cut into the read path: a [`DocInput`]/[`PosInput`]/
+/// This is how the read path supports retired formats: a [`DocInput`]/[`PosInput`]/
 /// [`PayInput`] learns its generation from its own header, the term
 /// dictionary learns it from `FieldInfo` (`decodeTerm` differs too), and
 /// every decode entry point dispatches on it. For a retired generation the
@@ -2367,8 +2367,8 @@ fn refill_last_position_block(
 /// exactly, so its `.pos` is one full block and nothing else. Java writes
 /// `-1`, a file pointer no `.pos` position can equal, for the same reason.
 ///
-/// This is the field `b5` found being written as a constant `0`
-/// (`docs/sweep/m2/b5-postings.md` F4). Nothing in this port read it back
+/// This is the field `b5` found being written as a constant `0`.
+/// Nothing in this port read it back
 /// then, because every position walk started at the term's `posStartFP` and
 /// counted occurrences. A walk that *jumps into the middle* of `.pos` has no
 /// occurrence count to derive the split from, so this is now the only thing
@@ -2613,7 +2613,7 @@ fn walk_document_occurrences<S: OccurrenceSink>(
 /// highlighter asks and what the skip data can address; this batch form is
 /// still what phrase matching wants, because its `wanted` set is a large
 /// fraction of the term's doc list and it has already decoded that list to
-/// intersect it. See `docs/sweep/m2/c20-postings-skip.md`.
+/// intersect it.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn walk_wanted_occurrences<S: OccurrenceSink>(
     pos: &PosInput<'_>,
@@ -2734,7 +2734,7 @@ pub(crate) fn walk_wanted_occurrences<S: OccurrenceSink>(
         // is at most `BLOCK_SIZE - 1` occurrences, so decoding it whole
         // rather than streaming it costs nothing worth a second decoder.
         if tail_count > 0 {
-            // The early exit c15 established: if every wanted document is
+            // The early exit: if every wanted document is
             // already behind us, the tail is never touched at all. Checked
             // before the refill, not after, so a walk that ends on the last
             // full block reads none of it.
@@ -2787,7 +2787,7 @@ pub(crate) fn walk_wanted_occurrences<S: OccurrenceSink>(
 ///
 /// Phrase matching only ever needs positions for documents in the
 /// intersection of its terms' postings lists, which is a fraction of any one
-/// term's. Building them all is wasted: on the M1 corpus `phrase t0 t1`
+/// term's. Building them all is wasted: on the benchmark corpus `phrase t0 t1`
 /// materialized every position of `t0` -- roughly 15 million, 60 MB -- to look
 /// at the 2.2 million documents the intersection actually contains.
 ///
@@ -3462,13 +3462,12 @@ struct Level1Entry<'a> {
     /// impacts field exists on the wire at all).
     ///
     /// Kept **undecoded**, as a zero-copy view into the mapped `.doc` bytes,
-    /// exactly as [`FullBlockHeader::impact_bytes`] is and for the same
-    /// reason: `skipLevel1To` decodes the run only when
-    /// `needsImpacts && level1LastDocID >= target` and `skipBytes` past it
-    /// otherwise, so a walk crossing 610 spans to reach a document does not
-    /// decode -- or allocate -- 610 impact lists it never looks at. (b5 F7,
-    /// recorded there as bounded; c20 measured it as the dominant residual of
-    /// a skip-driven `advance` on a five-million-document term.)
+    /// exactly as [`FullBlockHeader::impact_bytes`] is and for the same reason:
+    /// `skipLevel1To` decodes the run only when `needsImpacts &&
+    /// level1LastDocID >= target` and `skipBytes` past it otherwise, so a walk
+    /// crossing 610 spans to reach a document does not decode -- or allocate --
+    /// 610 impact lists it never looks at. (Otherwise it is the dominant cost
+    /// of a skip-driven `advance` on a five-million-document term.)
     impact_bytes: &'a [u8],
     /// The span's `.pos`/`.pay` skip pointers, or `None` when the field does
     /// not index positions (in which case the sub-fields do not exist on the
@@ -3622,11 +3621,11 @@ fn read_pos_skip(r: &mut SliceInput, index_has_offsets_or_payloads: bool) -> Res
 /// field here is a small fixed-width or vint/vlong-prefixed value, including
 /// the impacts byte run (captured undecoded as
 /// [`FullBlockHeader::impact_bytes`], a borrow of the mapped file, and decoded
-/// only if a caller asks for a bound) — so determining `last_doc_id` and `body_start`/`body_len` never runs
-/// `ForUtil`/`PForUtil` decode, which is the expensive part of a block
-/// (bit-unpacking 256 values). That decode work is exactly what
-/// [`LazyDocsCursor`] avoids for a block this header proves is entirely
-/// before the caller's target.
+/// only if a caller asks for a bound) — so determining `last_doc_id` and
+/// `body_start`/`body_len` never runs `ForUtil`/`PForUtil` decode, which is the
+/// expensive part of a block (bit-unpacking 256 values). That decode work is
+/// exactly what [`LazyDocsCursor`] avoids for a block this header proves is
+/// entirely before the caller's target.
 struct FullBlockHeader<'a> {
     /// This block's last (highest) doc ID — `prev_doc_id + docDelta`, proven
     /// consistent with the body's own delta-decoded last entry by every
@@ -3930,7 +3929,6 @@ fn full_blocks_and_tail(n: usize) -> (usize, usize) {
 /// corrupt file, and a panic in a debug build of the FFI takes the JVM down.
 /// `debug_assert` is for invariants this code's own arithmetic guarantees;
 /// these are values read off disk. Both are hard decode errors now.
-/// (`c9-check-index`'s byte-flipping sweep reaches the first one.)
 #[inline]
 fn check_wire_position(position: usize, expected: usize, what: &str) -> Result<()> {
     if position != expected {
@@ -5527,11 +5525,10 @@ impl<'a> LazyDocsCursor<'a> {
     ///
     /// ## Why this exists
     ///
-    /// This is the single largest structural divergence the M1.6 sweep found.
     /// Without it, deciding "can this block hold a competitive document?"
     /// required [`Self::advance`], which decodes the block first -- so a
     /// scoring loop paid the `ForUtil`/`PForUtil` unpack of 256 documents for
-    /// every block it then discarded. Counted on the M1 corpus, `and t0 tz`
+    /// every block it then discarded. Counted on the benchmark corpus, `and t0 tz`
     /// unpacked 6,067,712 documents to score 80,226 of them: **1.3% of the
     /// decode work was used.** Lucene never does that; `advanceShallow` sets
     /// `needsRefilling` and `refillDocs()` runs only if the block survives.
@@ -8569,8 +8566,8 @@ mod tests {
     /// `.doc` can put a negative there, and `negative as usize` sign-extends
     /// to ~2^64, so the `impact_start + len` that follows overflows -- which
     /// in a debug build is a panic, and a panic in a debug build of the FFI
-    /// takes the JVM down. Java throws instead. Same class as the four
-    /// `debug_assert` sites c8 converted and the lazy-cursor tail block.
+    /// takes the JVM down. Java throws instead. Same class as the
+    /// lazy-cursor tail block.
     #[test]
     fn a_level1_entry_with_a_negative_impacts_length_is_rejected() {
         let id = [70u8; ID_LENGTH];
@@ -10556,9 +10553,9 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------
-    // Min-of-N A/B harness (see `docs/sweep/m2/c27-*`). Criterion is unusable
-    // on this machine -- c24 measured the same code at 83/91/129 us across
-    // three consecutive runs -- so this reports the **minimum** of 40 timed
+    // Min-of-N A/B harness. Criterion is unusable
+    // on this machine (the same code measured 83/91/129 us across three
+    // consecutive runs), so this reports the **minimum** of 40 timed
     // repetitions, which is the statistic a noisy shared machine does not
     // corrupt upward. Run with:
     //

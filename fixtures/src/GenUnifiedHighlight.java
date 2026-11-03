@@ -53,15 +53,15 @@ import org.apache.lucene.search.uhighlight.WholeBreakIterator;
 import org.apache.lucene.store.FSDirectory;
 
 /**
- * M13 T13.2 ({@code uhighlight}): an index of {@code matchhighlight-docs.tsv} whose first value
+ * ({@code uhighlight}): an index of {@code matchhighlight-docs.tsv} whose first value
  * column is indexed five ways (postings offsets, positions only, docs only, term vectors,
  * postings offsets plus term vectors) and what {@code UnifiedHighlighter} makes of every query of
  * {@code uhighlight-queries.txt} ({@code F:} stands for the field being highlighted) under six
  * configurations, over every document. {@code uhighlight.tsv}: configuration, query, field,
  * {@code R}/{@code X}, then the snippet of each document ({@code \u0002} for none).
  * {@code breaks.tsv}: random texts through Lucene's break iterators. {@code uhighlight-built.tsv}
- * (M14): hand-built queries (spans, positioned and multi-phrases, synonyms, mixed fields) the
- * query parser cannot write. {@code uhighlight-calls.tsv} (M14): {@code
+ * Hand-built queries (spans, positioned and multi-phrases, synonyms, mixed fields) the
+ * query parser cannot write. {@code uhighlight-calls.tsv}: {@code
  * highlightFieldsAsObjects} under three stored-value batching thresholds, with the formatter's
  * call order. {@code
  * crates/lucene-search/tests/uhighlight_fixtures.rs} compares.

@@ -46,9 +46,8 @@
 //! ## Why both arms are walks and not a cartesian product
 //!
 //! Both Java classes are `Spans` iterators, and the *sequence* they emit is
-//! narrower than "every arrangement satisfying the budget" -- which is what
-//! this port enumerated until `c43-final-cleanup`, and which reported extents
-//! Lucene never produces:
+//! narrower than "every arrangement satisfying the budget", which would
+//! report extents Lucene never produces:
 //!
 //! - `NearSpansOrdered`'s sub-span cursors are **monotonic**. `stretchToOrder`
 //!   advances each later clause with `while (spans.startPosition() < position)

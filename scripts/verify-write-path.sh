@@ -17,9 +17,8 @@
 #
 # The postings/term-dictionary write path (.doc/.pos/.pay/.tim/.tip/.tmd) is
 # covered by the full-segment, merged-segment, sorted-segment and
-# positions-segment cases below -- the last of which (c23) is the one that
-# reads back positions, offsets and payloads occurrence by occurrence. Task
-# T3.1, see docs/milestones/m3-write-path-proven.md.
+# positions-segment cases below -- the last of which is the one that
+# reads back positions, offsets and payloads occurrence by occurrence.
 set -euo pipefail
 
 LUCENE_MODULES=(lucene-core lucene-analysis-common lucene-queries lucene-queryparser lucene-memory lucene-monitor lucene-spatial3d lucene-spatial-extras lucene-join lucene-suggest lucene-facet lucene-sandbox lucene-codecs)
@@ -75,20 +74,20 @@ CASES=(
   # measures its recall against the exact top-k. A graph that decodes cleanly
   # but is built wrong passes every structural check and fails the recall one.
   "lucene-codecs|write_vectors_fixture|vectors|VerifyVectors"
-  # Scalar-quantized vectors (M7 T7.6): one Lucene104HnswScalarQuantizedVectorsFormat
+  # Scalar-quantized vectors: one Lucene104HnswScalarQuantizedVectorsFormat
   # file set per ScalarEncoding -- raw .vec/.vemf, quantized .veq/.vemq and the
   # .vem/.vex graph, all written by this port -- read by real Lucene's format,
   # which must return for every query the exact top-10 (documents and score
   # bits) this port's reader computed over the same bytes.
   "lucene-codecs|write_scalar_quantized_fixture|scalar-quantized|VerifyScalarQuantized"
-  # lucene-sandbox's IDVersionPostingsFormat (M14.f): two .tiv/.tipv groups
+  # lucene-sandbox's IDVersionPostingsFormat: two .tiv/.tipv groups
   # (default and 4/9 block sizes, deletes dropped at write) opened by real
   # Lucene's own format, every term walked with its version, document and
   # payload, and seekExact(id, version) / seekExact(id, version + 1) on fresh
   # enums -- the second is decided by the terms index's per-prefix
   # MAX_VALUE - maxVersion outputs, so a wrong FST output fails it.
   "lucene-codecs|write_idversion_fixture|idversion|VerifyIdVersion"
-  # lucene-codecs' BloomFilteringPostingsFormat (M14.g): two .blm groups over
+  # lucene-codecs' BloomFilteringPostingsFormat: two .blm groups over
   # Lucene104PostingsFormat delegates (default and 4/9), one with a filter
   # that saturates and is left out, opened by real Lucene's own format. Java
   # checks each filter's toString, that it never refuses a written term, and
@@ -96,7 +95,7 @@ CASES=(
   # port's does -- pinning the bit positions, not only their count -- then
   # walks and seeks every term through the filtered enum.
   "lucene-codecs|write_bloom_fixture|bloom|VerifyCodecsBloom"
-  # lucene-codecs' SimpleTextPostingsFormat (M14.g): one .pst (docs-only
+  # lucene-codecs' SimpleTextPostingsFormat: one .pst (docs-only
   # fields with the empty term and binary terms holding 0x0a and 0x5c, freqs,
   # and positions/offsets/payloads, the last two with norms) opened by real
   # Lucene's own format: checksum line, every term walked with every
@@ -104,7 +103,7 @@ CASES=(
   # Lucene's own writer re-writes it from its reader with the same norms and
   # the two files must be equal byte for byte, skip lists and impacts too.
   "lucene-codecs|write_simpletext_fixture|simpletext|VerifyCodecsSimpleText"
-  # IndexWriter with SimpleTextCodec (M14.g): the port's writer publishing
+  # IndexWriter with SimpleTextCodec: the port's writer publishing
   # through SimpleTextDirectory -- two segments (one compound), deletions,
   # two doc-values update rounds, then force-merged. Lucene writes the same
   # with SimpleTextCodec: the same segments, generations and files, every
@@ -112,7 +111,7 @@ CASES=(
   # field's generation file against its own); CheckIndex passes and Lucene
   # reads every component of the port's index as of its own.
   "lucene-search|write_simpletext_index_fixture|simpletext-index|VerifySimpleTextWritePath"
-  # lucene-codecs' FSTPostingsFormat and DirectPostingsFormat (M14.g): an
+  # lucene-codecs' FSTPostingsFormat and DirectPostingsFormat: an
   # FST50 group (.tfp over Lucene104 postings) and a Direct group (Lucene104's
   # files) opened by real Lucene's own formats; every term walked with its
   # docFreq/totalTermFreq and every document's freq, positions, offsets and
@@ -120,32 +119,32 @@ CASES=(
   # three start terms required to enumerate exactly what this port's own
   # readers do.
   "lucene-codecs|write_memory_fixture|memory|VerifyCodecsMemory"
-  # lucene-codecs' HnswBitVectorsFormat (M14.g): two groups (default and
+  # lucene-codecs' HnswBitVectorsFormat: two groups (default and
   # 6/30, one field too small for a graph) opened by real Lucene's own
   # format; every vector read back, and KnnVectorsReader.search -- Java's
   # bit scorer walking the Rust-built graph -- required to return exactly
   # this port's hits and score bits for 270 searches.
   "lucene-codecs|write_bitvectors_fixture|bitvectors|VerifyCodecsBitVectors"
-  # lucene-codecs' BlockTreeOrdsPostingsFormat (M14.g): two groups (25/48
+  # lucene-codecs' BlockTreeOrdsPostingsFormat: two groups (25/48
   # and 10/20 blocks) opened by real Lucene's own format; every term walked
   # with its ord, docFreq/totalTermFreq and every document's freq,
   # positions, offsets and payloads, every term seeked by bytes and by ord
   # (Java's seekExact(long) walking the Rust-built index's ord ranges), and
   # Terms.intersect required to enumerate exactly what this port's reader does.
   "lucene-codecs|write_blocktreeords_fixture|blocktreeords|VerifyCodecsBlockTreeOrds"
-  # lucene-codecs' UniformSplitPostingsFormat (M14.g): three groups (32/3,
+  # lucene-codecs' UniformSplitPostingsFormat: three groups (32/3,
   # 8/2, and 16/3 through an XOR block encoder Java is handed too) opened by
   # real Lucene's own format; every term walked with its docFreq/
   # totalTermFreq and every document's postings, seekExact on every term and
   # seekCeil just past it, and Terms.intersect required to enumerate exactly
   # what this port's reader does.
   "lucene-codecs|write_uniformsplit_fixture|uniformsplit|VerifyCodecsUniformSplit"
-  # lucene-codecs' STUniformSplitPostingsFormat (M14.g): the same three
+  # lucene-codecs' STUniformSplitPostingsFormat: the same three
   # groups with every field's terms in one shared dictionary (body and tag
   # sharing many lines), opened by real Lucene's own format and checked the
   # same way.
   "lucene-codecs|write_sharedterms_fixture|sharedterms|VerifyCodecsSharedTerms"
-  # lucene-codecs' blockterms (M14.g): four groups (fixed-gap index of 32
+  # lucene-codecs' blockterms: four groups (fixed-gap index of 32
   # and 3, variable-gap over every 5th term and over every 9th or docFreq
   # >= 30) opened by real Lucene's own BlockTermsReader over its own terms
   # index readers; every term walked with its docFreq/totalTermFreq, every
@@ -220,7 +219,7 @@ CASES=(
   # through its own doc map. Every one of those can go wrong while leaving a
   # segment that decodes cleanly and passes every checksum.
   "lucene-index|write_sorted_merged_segment_fixture|sorted-merged-segment|VerifySortedSegment|53"
-  # And the byte-keyed index sorts (M7): STRING over SORTED, SortedSetSortField
+  # And the byte-keyed index sorts: STRING over SORTED, SortedSetSortField
   # (every selector) over SORTED_SET and BinarySortField over BINARY, eight
   # configurations flushed (three segments) and force-merged with deletions.
   # The verifier re-indexes the documents it reads out of the Rust index with
@@ -228,21 +227,18 @@ CASES=(
   # requires the same physical order in every segment, then runs CheckIndex.
   # Measured: a MIDDLE_MAX selector off by one fails CheckIndex's testSort.
   "lucene-index|write_string_sorted_segment_fixture|string-sorted|VerifyStringSortedIndex"
-  # And a segment whose postings carry positions, offsets and payloads. Until
-  # c23 the only whole-index case above (`write_full_segment_fixture`) indexed
-  # DOCS_AND_FREQS, so no `.pos` or `.pay` file this port wrote had ever been
-  # read by anything but this port itself -- and c20 had just added a whole new
-  # wire region to them (the level-0/level-1 `.pos`/`.pay` skip records) whose
-  # only evidence was two of our own readers agreeing with each other. That is
-  # the same evidence shape that let b4's FST framing bug and b11's invented
-  # `.si` sort encoding round-trip perfectly while being wrong.
+  # And a segment whose postings carry positions, offsets and payloads. The
+  # whole-index case above (`write_full_segment_fixture`) indexes only
+  # DOCS_AND_FREQS, so without this case no `.pos` or `.pay` file (and none of
+  # their level-0/level-1 skip records) would be read by anything but this
+  # port's own readers, which can round-trip a wrong encoding perfectly.
   #
   # The fixture is sized to the format rather than to convenience: 20 000
   # documents with a term in every one of them, so two whole LEVEL1_NUM_DOCS
   # spans close and 78 level-0 blocks plus a group-varint tail all carry skip
   # records; per-document frequencies cycling with a period coprime with 256 so
   # a level-1 `posBufferUpto` of zero is distinguishable from a hardcoded zero
-  # (c20's Tier-2 review found exactly that degeneracy in its own fixture); and
+  # (an earlier fixture had exactly that degeneracy); and
   # six fields covering every IndexOptions rung plus offsets-without-payloads
   # and payloads-without-offsets, since Lucene frames `.pay` differently for
   # each. Java walks 51 documents chosen around those boundaries with a fresh
@@ -254,7 +250,7 @@ CASES=(
   # doc 8192, the level-0 one at doc 256, and dropping the payload-length
   # stream while the `.fnm` still claims payloads mis-frames every offset.
   "lucene-index|write_positions_segment_fixture|positions-segment|VerifyPositionsSegment"
-  # And the case every one above exists for (M3's T3.4): a whole index that
+  # And the case every one above exists for: a whole index that
   # *searches the same* in real Lucene as in this port. 120 000 Zipfian
   # documents through IndexWriter, flushed into seven segments across two
   # commits with deletes between them; five fields (text with positions,
@@ -273,7 +269,7 @@ CASES=(
   # decode *identically* but wrongly (a mis-encoded norm scores the same in
   # both) -- only CheckIndex and the occurrence walk see those.
   "lucene-search|write_verify_index_fixture|verify-index|VerifyIndex"
-  # M13 T13.5d: a monitor query index written by this port, opened by Lucene's
+  # A monitor query index written by this port, opened by Lucene's
   # own Monitor (a writable WritableQueryIndex), CheckIndex-clean, with the same
   # queries, pieces and matches as the index Lucene writes for the corpus.
   "lucene-search|write_monitor_index_fixture|monitor-index|VerifyMonitorIndex"
@@ -292,45 +288,42 @@ CASES=(
   # silently invalidating every parent/child join against it.
   "lucene-index|write_merged_metadata_fixture|merged-metadata|VerifyMergedMetadata|fixtures/data/merge_metadata"
   # Doc values sparse in all five types at once, flushed (three segments) and
-  # merged (one): M4's T4.1. Until M4 only NUMERIC could be sparse in a
-  # multi-field flush or a merge, and only sparse NUMERIC had ever been read by
-  # real Lucene. Java checks every document's presence and value per field --
+  # merged (one). Java checks every document's presence and value per field --
   # presence is the point, since an off-by-one IndexedDISI reads back a
   # plausible value on the wrong document -- and runs CheckIndex on both.
   "lucene-index|write_sparse_doc_values_fixture|sparse-doc-values|VerifySparseDocValues"
-  # Points through IndexWriter (M4's T4.2): a multi-valued LongPoint, a sparse
+  # Points through IndexWriter: a multi-valued LongPoint, a sparse
   # IntPoint, a DoublePoint and a 2-D packed point, flushed (three segments),
   # merged, and merged under an index sort. Java reads every point back per
   # document -- so one attached to the wrong document by the sorted merge's
   # remap is caught, not just a malformed tree -- runs range counts, and
-  # CheckIndex. Until M4 IndexWriter wrote no points at all, and the merge
-  # remap for points had only hand-built tests.
+  # CheckIndex.
   "lucene-index|write_points_segment_fixture|points-segment|VerifyPointsSegment"
-  # Compound segments through IndexWriter (M7): three flushed with
+  # Compound segments through IndexWriter: three flushed with
   # useCompoundFile, and the three merged into one by a policy whose
   # useCompoundFile says yes. Lucene must open each through its own
   # Lucene90CompoundFormat reader -- stored fields, postings with positions,
   # norms and doc values all live inside the archive -- list no loose file in
   # any .si, and pass CheckIndex.
   "lucene-index|write_compound_segment_fixture|compound-segments|VerifyCompoundSegments"
-  # PerFieldPostingsFormat through IndexWriter (M7): `key`/`tag` routed to a
+  # PerFieldPostingsFormat through IndexWriter: `key`/`tag` routed to a
   # second Lucene104PostingsFormat(10, 20), flushed (three segments, two
   # compound), a delete by a routed field's term, and a force-merge. Lucene
   # must find each field in its own group's files under the suffix its .fnm
   # records, see exactly the deleted documents gone, and pass CheckIndex.
   "lucene-index|write_per_field_formats_fixture|per-field-formats|VerifyPerFieldFormats"
   # The same, key and tag routed to BlockTreeOrdsPostingsFormat(10, 20)
-  # (M14): Lucene must read their .tio/.tipo dictionaries over the group's
+  # Lucene must read their .tio/.tipo dictionaries over the group's
   # postings, number every term by ord and seek back to it, and pass
   # CheckIndex.
   "lucene-index|write_per_field_formats_fixture ords|block-tree-ords|VerifyPerFieldFormats|BlockTreeOrds"
   # And to UniformSplitPostingsFormat / STUniformSplitPostingsFormat and
-  # FSTPostingsFormat (M14): Lucene must read their .ustd/.ustb
+  # FSTPostingsFormat: Lucene must read their .ustd/.ustb
   # (.stustd/.stustb) and .tfp dictionaries.
   "lucene-index|write_per_field_formats_fixture UniformSplit|uniform-split|VerifyPerFieldFormats|UniformSplit"
   "lucene-index|write_per_field_formats_fixture SharedTermsUniformSplit|shared-terms|VerifyPerFieldFormats|SharedTermsUniformSplit"
   "lucene-index|write_per_field_formats_fixture FST50|fst50|VerifyPerFieldFormats|FST50"
-  # And to the test framework's terms-dictionary formats (M14), which its
+  # And to the test framework's terms-dictionary formats, which its
   # jar registers with Lucene's SPI: block terms over each terms index, the
   # ROT13 uniform-split pair, the low-memory bloom filter, and MockRandom's
   # seeded dictionaries.
@@ -342,12 +335,12 @@ CASES=(
   "lucene-test-framework|write_test_framework_postings_fixture TestBloomFilteredLucenePostings|tf-bloom|VerifyPerFieldFormats|TestBloomFilteredLucenePostings"
   "lucene-test-framework|write_test_framework_postings_fixture MockRandom|tf-mock-random|VerifyPerFieldFormats|MockRandom"
   # The test framework's Lucene104 filter codecs installed in IndexWriter
-  # (M14): CheapBastard's direct postings and ConfigurableMCodec's direct
+  # CheapBastard's direct postings and ConfigurableMCodec's direct
   # HNSW vectors, unsuffixed and without per-field attributes. Lucene reads
   # them through Codec.forName, appends a segment of its own, and leaves the
   # index for filter_codecs_write_path::java_written_segments (below).
   "lucene-test-framework|write_filter_codecs_fixture|filter-codecs|VerifyFilterCodecs"
-  # RandomCodec installed in IndexWriter (M14): six seeds' shuffled postings
+  # RandomCodec installed in IndexWriter: six seeds' shuffled postings
   # and doc-values candidates and RandomlySplittingBKDWriter points. Lucene
   # writes the same documents with new RandomCodec(new Random(seed)) itself:
   # every segment must hold the same per-field instances' files and the same
@@ -355,25 +348,25 @@ CASES=(
   # port's index must pass CheckIndex and answer every term, doc-value and
   # point-range question.
   "lucene-test-framework|write_random_codec_fixture|random-codec|VerifyRandomCodec"
-  # The six CompressingCodecs installed in IndexWriter (M14): eight
+  # The six CompressingCodecs installed in IndexWriter: eight
   # configurations (compression, chunk geometry, block shift, segment
   # suffix). Lucene writes the same documents with the same codec: the same
   # files, stored-fields bytes identical, flushed and merged; Lucene reads
   # every stored field and term vector of the port's index.
   "lucene-test-framework|write_compressing_codec_fixture|compressing-codecs|VerifyCompressingCodecs"
-  # PerFieldDocValuesFormat through IndexWriter (M7): the s_ fields routed to
+  # PerFieldDocValuesFormat through IndexWriter: the s_ fields routed to
   # Lucene90DocValuesFormat(16), two flushed segments and a force-merge, whose
   # instances are numbered in opposite orders. Lucene must read every value
   # from its own instance's files, find the routed skip indexes' 16-document
   # intervals, and pass CheckIndex.
   "lucene-index|write_per_field_doc_values_fixture|per-field-doc-values|VerifyPerFieldDocValues"
-  # PerFieldKnnVectorsFormat through IndexWriter (M7): two HNSW instances,
+  # PerFieldKnnVectorsFormat through IndexWriter: two HNSW instances,
   # an HNSW scalar-quantized and a flat scalar-quantized one, flushed and
   # merged. Lucene must read every vector from its field's instance, run a
   # KNN query over each field, and pass CheckIndex.
   "lucene-index|write_per_field_knn_vectors_fixture|per-field-knn-vectors|VerifyPerFieldKnnVectors"
   # IndexingChain reading a TokenFilter's PayloadAttribute and
-  # TermFrequencyAttribute through the document API (M7): payloads on a
+  # TermFrequencyAttribute through the document API: payloads on a
   # positional field, custom frequencies on a DOCS_AND_FREQS field, flushed
   # and merged over a source without payloads. Lucene must read every
   # payload and frequency back as the filter set them, and pass CheckIndex.
@@ -384,12 +377,12 @@ CASES=(
   # (each pair is one token: the norm counts terms, not frequencies), and
   # CheckIndex must pass.
   "lucene-index|write_custom_freq_norms_fixture|custom-freq-norms|VerifyCustomFreqNorms"
-  # OneMerge.wrapForMerge/reorder in the writer's merge (M7): three segments
+  # OneMerge.wrapForMerge/reorder in the writer's merge: three segments
   # with deletes force-merged by a policy whose merges hide every rank
   # multiple of 11 and order by rank descending. Lucene must find exactly the
   # carried-over documents, in that order, and pass CheckIndex.
   "lucene-search|write_merge_reorder_fixture|merge-reorder|VerifyMergeReorder"
-  # The geo point fields (M9 T9.2): GenGeoPoints' corpus -- LatLonPoint,
+  # The geo point fields: GenGeoPoints' corpus -- LatLonPoint,
   # LatLonDocValuesField, XYPointField and XYDocValuesField, multi-valued,
   # across four segments with deletes -- written by this port. Lucene runs
   # CheckIndex, then replays every query of fixtures/data/geo_points/
@@ -400,7 +393,7 @@ CASES=(
   # query's answer -- the Rust test `every_point_is_indexed_as_lucene_indexes_it`
   # compares the packed points byte for byte instead.
   "lucene-search|write_geo_points_fixture|geo-points|VerifyGeoPoints|fixtures/data/geo_points"
-  # The shape fields (M9 T9.3): GenGeoShapes' corpus -- LatLonShape and
+  # The shape fields: GenGeoShapes' corpus -- LatLonShape and
   # XYShape triangles (seven-dimension points, four indexed) and their
   # BINARY shape doc values, several shapes per document, across four
   # segments with deletes -- written by this port. Lucene runs CheckIndex,
@@ -412,7 +405,7 @@ CASES=(
   # `every_triangle_and_doc_value_is_written_as_lucene_writes_it` compares
   # them byte for byte instead.
   "lucene-search|write_geo_shapes_fixture|geo-shapes|VerifyGeoShapes|fixtures/data/geo_shapes"
-  # The spatial3d fields (M9 T9.4): GenGeo3dPoints' corpus -- Geo3DPoint
+  # The spatial3d fields: GenGeo3dPoints' corpus -- Geo3DPoint
   # (three indexed four-byte dimensions) and Geo3DDocValuesField on WGS84 and
   # the sphere, multi-valued, across four segments with deletes -- written by
   # this port. Lucene runs CheckIndex, then answers every Geo3DPoint query
@@ -423,7 +416,7 @@ CASES=(
   # answer reflects -- `every_geo3d_point_is_indexed_as_lucene_indexes_it`
   # compares the packed points byte for byte instead.
   "lucene-search|write_geo3d_points_fixture|geo3d-points|VerifyGeo3D|fixtures/data/geo3d_points"
-  # The spatial-extras strategies (M9 T9.5): GenSpatialStrategies' corpus --
+  # The spatial-extras strategies: GenSpatialStrategies' corpus --
   # every strategy's fields (prefix-tree token streams of geohash, quad,
   # packed quad, S2 and date cells; BBox and point-vector doubles as points,
   # doc values and stored values; serialized shapes in binary doc values),
@@ -436,7 +429,7 @@ CASES=(
   # visits) -- `every_spatial_strategy_makes_the_fields_lucene_makes`
   # compares every field's tokens and values byte for byte instead.
   "lucene-search|write_spatial_strategies_fixture|spatial-strategies|VerifySpatialExtras|fixtures/data/spatial_strategies"
-  # Document blocks through merges (M10 T10.1): two seeded streams of block
+  # Document blocks through merges: two seeded streams of block
   # adds, updateDocuments, whole-block deletes, commits and natural merges
   # with the parent field `_parent`, one of them index-sorted (whole blocks
   # moved by their parents' keys). Lucene runs CheckIndex and CheckJoinIndex,
@@ -446,7 +439,7 @@ CASES=(
   # checks again. What it cannot catch: a block intact but holding the wrong
   # field values -- the stored ids are all it reads besides the structure.
   "lucene-index|write_block_join_fixture|block-join|VerifyJoin"
-  # Completion104PostingsFormat through IndexWriter (M13 T13.3d):
+  # Completion104PostingsFormat through IndexWriter:
   # SuggestFields routed to Completion104 beside a Lucene104 TextField, one
   # flushed segment and a force-merge of three. Lucene must find each field
   # under its own format, pass CheckIndex, and give every prefix and regex
@@ -454,7 +447,7 @@ CASES=(
   # from the same documents. What it cannot catch: a defect Lucene's own
   # index shares -- both are read by the same SuggestIndexSearcher.
   "lucene-search|write_completion_fixture|completion|VerifyCompletion"
-  # The taxonomy index (M13 T13.4a): three taxonomies written by this port's
+  # The taxonomy index: three taxonomies written by this port's
   # DirectoryTaxonomyWriter -- an LRU cache of 3 that sends nearly every add
   # through the writer's near-real-time reader (a segment per refresh, merged
   # by LogByteSizeMergePolicy), the default cache over two sessions, and a

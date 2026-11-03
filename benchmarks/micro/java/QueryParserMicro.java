@@ -19,7 +19,7 @@ import java.io.ByteArrayInputStream;
 import org.apache.lucene.store.FSDirectory;
 
 /**
- * M13 T13.1's pairs (the Rust twin is {@code benchmarks/rust-runner/src/micro_queryparser.rs}):
+ * The pairs (the Rust twin is {@code benchmarks/rust-runner/src/micro_queryparser.rs}):
  * the classic {@code QueryParser} over {@code fixtures/corpus/queryparser-classic.txt} and over
  * {@code fixtures/data/queryparser_classic/fragments.txt} (most of which are syntax errors), and
  * {@code MultiFieldQueryParser} over the corpus; {@code ComplexPhraseQueryParser} over its corpus,

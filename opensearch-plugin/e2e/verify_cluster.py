@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The Rust engine (M5) in a three-node cluster, driven by scripts/verify-opensearch-cluster.sh.
+"""The Rust engine in a three-node cluster, driven by scripts/verify-opensearch-cluster.sh.
 
 os1 and os2 serve Rust-engine indices with the Rust writer; os3 runs with
 lucene_rust.engine.node_enabled: false and serves them with OpenSearch's own engine. Every write

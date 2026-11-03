@@ -20,7 +20,7 @@ import org.apache.lucene.analysis.tokenattributes.TermToBytesRefAttribute;
 import org.apache.lucene.util.BytesRef;
 
 /**
- * M12 T12.4: ICU collation sort keys (ICU4J 77.1's {@code RuleBasedCollator.getRawCollationKey},
+ * ICU collation sort keys (ICU4J 77.1's {@code RuleBasedCollator.getRawCollationKey},
  * what Lucene's {@code ICUCollationKeyAnalyzer}, {@code ICUCollationAttributeFactory} and {@code
  * ICUCollationDocValuesField} index), compared by {@code
  * crates/lucene-analysis-icu/tests/icu_collation_fixtures.rs}.
@@ -65,7 +65,8 @@ public class GenAnalysisIcuCollation {
     // kana with prolonged sound and iteration marks (prefix contractions), Han
     {0x3042, 0x3044, 0x304b, 0x304c, 0x30a2, 0x30ab, 0x30ac, 0x30fc, 0x309d, 0x309e, 0x30fd, 0x30fe, 0x3005,
       0xff71, 0xff70, 0x4e00, 0x4e8c, 0x5b57, 0x6f22, 0x9fa5, 0x20000, 0x2a6d6, 0x3400, 0xf900, 0x2f00},
-    // scripts: Greek, Cyrillic, Arabic, Hebrew, Devanagari, Thai and Lao prevowels, Myanmar, Ethiopic
+    // scripts: Greek, Cyrillic, Arabic, Hebrew, Devanagari, Thai and Lao
+    // prevowels, Myanmar, Ethiopic
     {0x3b1, 0x3ac, 0x3c3, 0x3c2, 0x391, 0x430, 0x451, 0x439, 0x419, 0x44c, 0x627, 0x644, 0x623, 0x5d0, 0x5e9,
       0x915, 0x937, 0x93f, 0xe01, 0xe40, 0xe44, 0xe32, 0xe33, 0xe81, 0xec0, 0x1000, 0x1031, 0x1200, 0x10d0},
     // specials: unassigned, private use, noncharacters, lone surrogates, U+0000, U+FFFD, emoji

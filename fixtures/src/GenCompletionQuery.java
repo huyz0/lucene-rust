@@ -41,7 +41,7 @@ import org.apache.lucene.util.Bits;
 import org.apache.lucene.util.automaton.Operations;
 
 /**
- * M13 T13.3d: the query side of {@code suggest.document}. Three segments (one with deletions) of
+ * The query side of {@code suggest.document}. Three segments (one with deletions) of
  * documents holding a {@link SuggestField} {@code suggest}, the same values under a {@link
  * CompletionAnalyzer} that drops separators ({@code nosep}) and a {@link ContextSuggestField}
  * {@code ctx}, all analyzed by a StandardAnalyzer with "the" and "of" as stop words (so values
