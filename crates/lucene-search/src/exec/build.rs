@@ -986,8 +986,24 @@ fn child_led<'a>(
                 ..*ctx
             };
             let cacheable = crate::segment_cacheable::is_cacheable(clause, ctx.reader);
-            match cache.scorer_if_cacheable(clause, max_doc, cacheable, || {
-                build_led(&core, clause, boost, mode, top_level, lead_cost)
+            // `CachingWrapperWeight`'s supplier: skip caching a clause that
+            // costs `skipCacheFactor` times more than the conjunction it
+            // leads into, and populate the cache from the clause's whole
+            // matches (`supplier.bulkScorer()`, `get(Long.MAX_VALUE)`), which
+            // an `IndexOrDocValuesQuery` builds from its index side.
+            let skip = || -> Result<bool> {
+                let (Some(lead), Some(q)) = (lead_cost, index_or_doc_values_of(clause)) else {
+                    return Ok(false);
+                };
+                Ok(match super::extended::index_side(ctx, &q.index_query)? {
+                    super::extended::Supplier::Present(cost) => {
+                        super::cache::skip_cache(cost.unwrap_or(i64::MAX), lead)
+                    }
+                    super::extended::Supplier::Absent => false,
+                })
+            };
+            match cache.scorer_if_cacheable(clause, max_doc, cacheable, skip, || {
+                build_led(&core, clause, boost, mode, top_level, None)
             })? {
                 Some(super::cache::CacheResult::Hit(set)) => {
                     return Ok(Some(Child::Scorer(Box::new(

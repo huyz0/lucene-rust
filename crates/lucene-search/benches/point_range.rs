@@ -29,7 +29,7 @@ mod support;
 use std::time::Duration;
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use lucene_index::document::{Document, LongPoint, NumericDocValuesField};
+use lucene_index::document::{Document, LongPoint, NumericDocValuesField, Store, StringField};
 use lucene_index::index_writer::IndexWriter;
 use lucene_index::merge_policy::upgrade::LATEST;
 use lucene_search::directory_reader::DirectoryReader;
@@ -54,6 +54,12 @@ fn build() -> ByteBuffersDirectory {
             let v = rng.below(1_000_000) as i64;
             d.add(LongPoint::new("p", &[v]).unwrap());
             d.add(NumericDocValuesField::new("p", v));
+            if i % 100 < 9 {
+                d.add(StringField::new("lead", "mid", Store::No));
+            }
+            if i % 10_000 == 0 {
+                d.add(StringField::new("lead", "few", Store::No));
+            }
             d.add(LongPoint::new("t", &[i as i64]).unwrap());
             if i % 3 == 0 {
                 d.add(LongPoint::new("b", &[i as i64]).unwrap());
@@ -145,6 +151,39 @@ fn bench(c: &mut Criterion) {
                 })
             });
         }
+    }
+    g.finish();
+
+    // An `IndexOrDocValuesQuery` filter (80% of `p`) behind a lead term,
+    // with a fresh query cache, run five times: its fifth use fills the
+    // cache. `mid` (9% of the documents) leads it to its doc-values side
+    // uncached; `few` (100 documents) costs it more than `skipCacheFactor`
+    // times the lead, so it is never cached.
+    let mut g = c.benchmark_group("iodv_cache");
+    g.warm_up_time(Duration::from_millis(500));
+    g.measurement_time(Duration::from_secs(3));
+    g.sample_size(10);
+    for lead in ["mid", "few"] {
+        let mut q = BooleanQuery::new();
+        q.must.push(Clause::Term(lucene_search::query::TermQuery::new(
+            "lead",
+            lead.as_bytes().to_vec(),
+        )));
+        q.filter.push(Clause::from(lucene_search::extended_query::IndexOrDocValuesQuery::new(
+            Clause::from(long_point::new_range_query("p", 0, 799_999).unwrap()),
+            Clause::from(NumericDocValuesRangeQuery::new("p", 0, 799_999)),
+        )));
+        g.bench_function(format!("five_runs/{lead}"), |b| {
+            b.iter(|| {
+                let cache = lucene_search::SegmentQueryCache::default();
+                let mut cached = opened.as_open_segments();
+                for s in &mut cached {
+                    s.cache = Some(&cache);
+                }
+                let searcher = IndexSearcher::new(&cached, &norms).unwrap();
+                (0..5).map(|_| searcher.count(black_box(&q)).unwrap()).sum::<u64>()
+            })
+        });
     }
     g.finish();
 

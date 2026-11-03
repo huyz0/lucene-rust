@@ -19,10 +19,11 @@
 //! bounds are per segment ([`MAX_ENTRIES`], [`MAX_BYTES`]) rather than
 //! node-wide; the usage history is per segment too, which counts the same
 //! uses since a query visits each segment once; `skipCacheFactor` (don't
-//! cache a clause costing ten times its conjunction's lead) and the
-//! "at least half the average leaf" size rule are not ported, so a cache
-//! entry can be built where Lucene would have run the clause uncached.
-//! None of these changes a hit or a score.
+//! cache a clause costing ten times its conjunction's lead) applies only to
+//! an `IndexOrDocValuesQuery` clause, the one kind built here with its
+//! conjunction's lead cost, and the "at least half the average leaf" size
+//! rule is not ported, so a clause can be cached where Lucene would have run
+//! it uncached. None of these changes a hit or a score.
 
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -46,6 +47,14 @@ pub(crate) const MAX_ENTRIES: usize = 1_000;
 pub(crate) const MAX_BYTES: usize = 16 << 20;
 /// `LRUQueryCache`'s `MinSegmentSizePredicate` floor.
 pub(crate) const MIN_SEGMENT_SIZE: i32 = 10_000;
+/// `LRUQueryCache`'s default `skipCacheFactor`: a clause costing more than
+/// this many times the lead cost of the conjunction it is in runs uncached.
+pub(crate) const SKIP_CACHE_FACTOR: f32 = 10.0;
+
+/// `cost / skipCacheFactor > leadCost`, in Java's `float` arithmetic.
+pub(crate) fn skip_cache(cost: i64, lead_cost: i64) -> bool {
+    cost as f32 / SKIP_CACHE_FACTOR > lead_cost as f32
+}
 
 /// A segment's matches for one query, before deletions.
 pub(crate) enum CachedSet {
@@ -268,18 +277,23 @@ impl SegmentQueryCache {
         max_doc: i32,
         uncached: impl FnOnce() -> Result<Option<BoxScorer<'a>>>,
     ) -> Result<Option<CacheResult>> {
-        self.scorer_if_cacheable(clause, max_doc, true, uncached)
+        self.scorer_if_cacheable(clause, max_doc, true, || Ok(false), uncached)
     }
 
     /// [`Self::scorer`] for a clause whose weight says whether it may be
     /// cached against this segment (`SegmentCacheable.isCacheable`): the use
     /// is still counted, but an uncacheable clause is neither looked up nor
     /// stored (`CachingWrapperWeight.scorerSupplier`'s short-circuit).
+    ///
+    /// `skip` is asked only when the clause is not cached yet and the policy
+    /// would cache it: `true` runs the clause uncached this time instead
+    /// (`LRUQueryCache`'s `cost / skipCacheFactor > leadCost`).
     pub(crate) fn scorer_if_cacheable<'a>(
         &self,
         clause: &Clause,
         max_doc: i32,
         cacheable: bool,
+        skip: impl FnOnce() -> Result<bool>,
         uncached: impl FnOnce() -> Result<Option<BoxScorer<'a>>>,
     ) -> Result<Option<CacheResult>> {
         let (costly, composite, never) = shape(clause);
@@ -310,7 +324,7 @@ impl SegmentQueryCache {
             }
             inner.policy.should_cache(&policy_key)
         };
-        if !cache {
+        if !cache || skip()? {
             return Ok(None);
         }
         // Built without the lock: another search may build the same set at
@@ -893,17 +907,17 @@ mod tests {
         let phrase = Clause::Phrase(PhraseQuery::new("f", ["a", "b"]));
         for _ in 0..6 {
             let r = cache
-                .scorer_if_cacheable(&phrase, 20_000, false, || panic!("never built"))
+                .scorer_if_cacheable(&phrase, 20_000, false, || Ok(false), || panic!("never built"))
                 .unwrap();
             assert!(r.is_none());
         }
         assert_eq!(cache.stats().0, 0);
         let _ = hit(cache
-            .scorer_if_cacheable(&phrase, 20_000, true, || list(vec![5]))
+            .scorer_if_cacheable(&phrase, 20_000, true, || Ok(false), || list(vec![5]))
             .unwrap());
         assert_eq!(cache.stats().0, 1);
         assert!(cache
-            .scorer_if_cacheable(&phrase, 20_000, false, || panic!("not served either"))
+            .scorer_if_cacheable(&phrase, 20_000, false, || Ok(false), || panic!("not served either"))
             .unwrap()
             .is_none());
     }

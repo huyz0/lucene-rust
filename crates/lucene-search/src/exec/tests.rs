@@ -3388,3 +3388,86 @@ fn point_range_walks_match_brute_force() {
         }
     }
 }
+
+/// `LRUQueryCache` and an `IndexOrDocValuesQuery` filter: the run that
+/// populates the cache builds the clause from its index side
+/// (`supplier.bulkScorer()`), whatever side the conjunction's lead cost
+/// would pick, and a clause costing more than `skipCacheFactor` times the
+/// lead runs uncached, from the side the lead cost picks, every time.
+#[test]
+fn index_or_doc_values_fills_the_cache_from_its_index_side() {
+    use super::extended::IODV_PLANS;
+    use crate::directory_reader::DirectoryReader;
+    use crate::doc_value_query::IndexOrDocValuesPlan;
+    use crate::extended_query::{
+        IndexOrDocValuesQuery, NumericDocValuesRangeQuery, PointRangeQuery,
+    };
+    use crate::index_searcher::IndexSearcher;
+    use crate::query::{BooleanQuery, Clause, TermQuery};
+    use lucene_index::document::{Document, LongPoint, NumericDocValuesField, Store, StringField};
+    use lucene_index::index_writer::IndexWriter;
+    use lucene_index::merge_policy::upgrade::LATEST;
+
+    const DOCS: i64 = 100_000;
+    let dir = lucene_store::ByteBuffersDirectory::new();
+    {
+        let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", LATEST).unwrap();
+        w.set_ram_buffer_size_mb(1024.0).unwrap();
+        for i in 0..DOCS {
+            let mut d = Document::new();
+            let v = (i * 7919) % DOCS;
+            d.add(LongPoint::new("num", &[v]).unwrap());
+            d.add(NumericDocValuesField::new("num", v));
+            // 9,000 documents: between a tenth and an eighth of the
+            // filter's 80,000.
+            if i % 100 < 9 {
+                d.add(StringField::new("lead", "mid", Store::No));
+            }
+            if i % 10_000 == 0 {
+                d.add(StringField::new("lead", "few", Store::No));
+            }
+            w.add_fields_document(&d).unwrap();
+        }
+        w.commit().unwrap();
+    }
+    let reader = DirectoryReader::open(&dir).unwrap();
+    let mut opened = reader.open_segments().unwrap();
+    opened.open_points().unwrap();
+    let segments = opened.as_open_segments();
+    assert_eq!(segments.len(), 1);
+    let norms = vec![None; segments.len()];
+    let searcher = IndexSearcher::new(&segments, &norms).unwrap();
+    let iodv = || {
+        Clause::from(IndexOrDocValuesQuery::new(
+            Clause::from(PointRangeQuery::long_range("num", &[0], &[79_999]).unwrap()),
+            Clause::from(NumericDocValuesRangeQuery::new("num", 0, 79_999)),
+        ))
+    };
+    let run = |lead: &str| {
+        let mut q = BooleanQuery::new();
+        q.must
+            .push(Clause::Term(TermQuery::new("lead", lead.as_bytes().to_vec())));
+        q.filter.push(iodv());
+        IODV_PLANS.with(|p| p.borrow_mut().clear());
+        let n = searcher.count(&q).unwrap();
+        (n, IODV_PLANS.with(|p| p.borrow().clone()))
+    };
+    // A lead of 10: 80,000 / 10 > 10, so the clause is never cached, and
+    // each run builds the side the lead cost picks.
+    for _ in 0..7 {
+        let (n, p) = run("few");
+        assert_eq!(n, 8);
+        assert_eq!(p, vec![IndexOrDocValuesPlan::DocValues]);
+    }
+    // A lead of 9,000 would pick the doc-values side too, but the clause has
+    // been used often enough to be cached: the run that fills the cache
+    // builds the index side, and later runs build neither.
+    let (n, p) = run("mid");
+    assert_eq!(n, 7_200);
+    assert_eq!(p, vec![IndexOrDocValuesPlan::Index]);
+    for _ in 0..3 {
+        let (n, p) = run("mid");
+        assert_eq!(n, 7_200);
+        assert!(p.is_empty(), "{p:?}");
+    }
+}
