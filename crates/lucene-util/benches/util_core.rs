@@ -17,6 +17,7 @@ use lucene_util::bytes_ref_hash::BytesRefHash;
 use lucene_util::fixed_bit_set::FixedBitSet;
 use lucene_util::live_docs::{LiveDocs, SparseLiveDocs};
 use lucene_util::packed::{BulkOperation, Format, Packed64SingleBlock, Reader};
+use lucene_util::packed_longs::PackedLongs;
 use lucene_util::sparse_fixed_bit_set::SparseFixedBitSet;
 use lucene_util::string_helper::bytes_difference;
 
@@ -61,6 +62,32 @@ fn bench_fixed_bit_set(c: &mut Criterion) {
     const N: usize = 2_000_000;
     let mut sparse = FixedBitSet::new(N);
     sparse.set(N - 1);
+    // Per-doc live-docs style tests: `get_doc` at sequential-with-gaps ids,
+    // and `set` at the same ids (a collector filling its result bitset).
+    let mut live = FixedBitSet::new(N);
+    for i in (0..N).step_by(3) {
+        live.set(i);
+    }
+    let ids: Vec<i32> = (0..N as i32).step_by(2).collect();
+    c.bench_function("fixed_bit_set/get_doc_1m", |b| {
+        b.iter(|| {
+            let mut hits = 0usize;
+            for &d in black_box(&ids) {
+                hits += usize::from(live.get_doc(d));
+            }
+            black_box(hits)
+        })
+    });
+    let mut out = FixedBitSet::new(N);
+    c.bench_function("fixed_bit_set/set_1m", |b| {
+        b.iter(|| {
+            for &d in black_box(&ids) {
+                // FBS: `ids` are below N, this bitset's len().
+                out.set(d as usize);
+            }
+            black_box(out.words()[1])
+        })
+    });
     c.bench_function("fixed_bit_set/next_set_bit_in_range_sparse", |b| {
         b.iter(|| {
             let mut hits = 0usize;
@@ -494,6 +521,30 @@ fn bench_string_helper(c: &mut Criterion) {
     }
 }
 
+/// `PackedLongs::decode_range` over 1M values in 256-value chunks, the shape
+/// of a sequential numeric doc-values scan.
+fn bench_packed_longs(c: &mut Criterion) {
+    const N: usize = 1 << 20;
+    let mut r = Lcg(7);
+    let bytes: Vec<u8> = (0..N * 8 + 8).map(|_| r.below(256) as u8).collect();
+    let mut out = [0i64; 256];
+    for bpv in [1u32, 2, 4, 12, 20, 40] {
+        let p = PackedLongs::new(&bytes, bpv).unwrap();
+        c.bench_function(&format!("packed_longs/decode_range_bpv{bpv}"), |b| {
+            b.iter(|| {
+                let mut s = 0i64;
+                let mut start = 0u64;
+                while start < N as u64 {
+                    let n = p.decode_range(start, &mut out);
+                    s = s.wrapping_add(out[n - 1]);
+                    start += n as u64;
+                }
+                black_box(s)
+            })
+        });
+    }
+}
+
 criterion_group!(
     benches,
     bench_fixed_bit_set,
@@ -501,6 +552,7 @@ criterion_group!(
     bench_automaton,
     bench_bytes_ref_hash,
     bench_packed,
+    bench_packed_longs,
     bench_string_helper
 );
 criterion_main!(benches);

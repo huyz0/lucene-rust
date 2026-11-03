@@ -128,6 +128,7 @@ impl Geo3DPoint {
     }
 
     /// `decodeDimension(value, offset, planetModel)`: of `bytes[..4]`.
+    #[inline]
     pub fn decode_dimension(bytes: &[u8], planet_model: &PlanetModel) -> f64 {
         planet_model.decode_value(sortable_bytes_to_int(bytes))
     }

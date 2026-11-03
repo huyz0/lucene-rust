@@ -8,8 +8,13 @@ use super::{LongRange, LongRangeCounter};
 use crate::facets::facet_counts_with_filter_query::FacetCountsWithFilterQuery;
 use crate::facets::facet_result::{FacetResult, FacetValue, LabelAndValue};
 use crate::facets::facet_utils::{
-    for_each_hit, for_each_iter, sorted_numeric_is_single_valued, validate_dim_and_path,
+    direct_column, for_each_hit, for_each_iter, hits_filter, sorted_numeric_is_single_valued,
+    validate_dim_and_path,
 };
+use lucene_codecs::field_infos::DocValuesType;
+
+/// The doc-values types `DocValues.getSortedNumeric` reads.
+const NUMERIC_KINDS: &[DocValuesType] = &[DocValuesType::Numeric, DocValuesType::SortedNumeric];
 use crate::facets::facets_collector::{FacetsCollector, MatchingDocs};
 use crate::facets::facets_trait::{validate_top_n, Facets};
 use crate::facets::multi_long_values_source::BoxMultiLongValues;
@@ -134,7 +139,18 @@ impl RangeFacetCounts {
                 self.tot_count = self.tot_count.wrapping_add(hits.total_hits);
                 let mut seen = 0usize;
                 let reader = hits.context.reader;
-                if let Some(mut single) = reader.numeric_doc_values(&self.field)? {
+                let direct = direct_column(reader, &self.field, NUMERIC_KINDS)?;
+                if let (Some(mut column), Some(filter)) = (direct, hits_filter(&hits.bits)) {
+                    // One value per document: `unwrapSingleton`'s
+                    // `longValue()`, off the column.
+                    column.for_each(filter, 0, i32::MAX, |_, values| {
+                        if let Some(&v) = values.first() {
+                            counter.add_single_valued(map(v));
+                        }
+                        seen = seen.wrapping_add(1);
+                        Ok(())
+                    })?;
+                } else if let Some(mut single) = reader.numeric_doc_values(&self.field)? {
                     for_each_hit(&hits.bits, single.as_mut(), |v| {
                         counter.add_single_valued(map(v.long_value()));
                         seen = seen.wrapping_add(1);
@@ -151,6 +167,33 @@ impl RangeFacetCounts {
                 let unseen = hits.bits.len().saturating_sub(seen);
                 missing = missing.wrapping_add(i32::try_from(unseen).unwrap_or(i32::MAX));
                 continue;
+            }
+            if found_multi_valued && self.base.fast_match_query().is_none() {
+                let direct = direct_column(hits.context.reader, &self.field, NUMERIC_KINDS)?;
+                if let (Some(mut column), Some(filter)) = (direct, hits_filter(&hits.bits)) {
+                    let tot = &mut self.tot_count;
+                    column.for_each(filter, 0, i32::MAX, |_, values| {
+                        if let [v] = values {
+                            counter.add_single_valued(map(*v));
+                            *tot = tot.wrapping_add(1);
+                            return Ok(());
+                        }
+                        counter.start_multi_valued_doc();
+                        let mut previous = 0i64;
+                        for (j, &v) in values.iter().enumerate() {
+                            let val = map(v);
+                            if j == 0 || val != previous {
+                                counter.add_multi_valued(val);
+                                previous = val;
+                            }
+                        }
+                        if counter.end_multi_valued_doc() {
+                            *tot = tot.wrapping_add(1);
+                        }
+                        Ok(())
+                    })?;
+                    continue;
+                }
             }
             let Some(mut it) = self.create_iterator(searcher, hits)? else {
                 continue;

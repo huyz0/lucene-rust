@@ -24,6 +24,7 @@ use super::{
 };
 
 /// `NumericUtils.intToSortableBytes`.
+#[inline]
 pub fn int_to_sortable_bytes(value: i32) -> [u8; 4] {
     ((value as u32) ^ 0x8000_0000).to_be_bytes()
 }
@@ -33,12 +34,14 @@ pub fn int_to_sortable_bytes(value: i32) -> [u8; 4] {
 /// # Panics
 /// When `encoded` is shorter than four bytes (Java's
 /// `ArrayIndexOutOfBoundsException`).
+#[inline]
 pub fn sortable_bytes_to_int(encoded: &[u8]) -> i32 {
     let b: [u8; 4] = encoded[..4].try_into().expect("four bytes");
     (u32::from_be_bytes(b) ^ 0x8000_0000) as i32
 }
 
 /// `NumericUtils.longToSortableBytes`.
+#[inline]
 pub fn long_to_sortable_bytes(value: i64) -> [u8; 8] {
     ((value as u64) ^ 0x8000_0000_0000_0000).to_be_bytes()
 }
@@ -47,6 +50,7 @@ pub fn long_to_sortable_bytes(value: i64) -> [u8; 8] {
 ///
 /// # Panics
 /// When `encoded` is shorter than eight bytes.
+#[inline]
 pub fn sortable_bytes_to_long(encoded: &[u8]) -> i64 {
     let b: [u8; 8] = encoded[..8].try_into().expect("eight bytes");
     (u64::from_be_bytes(b) ^ 0x8000_0000_0000_0000) as i64
@@ -54,6 +58,7 @@ pub fn sortable_bytes_to_long(encoded: &[u8]) -> i64 {
 
 /// `NumericUtils.floatToSortableInt` (over `Float.floatToIntBits`, which
 /// collapses every `NaN` to one).
+#[inline]
 pub fn float_to_sortable_int(value: f32) -> i32 {
     let bits = if value.is_nan() {
         0x7fc0_0000
@@ -64,16 +69,19 @@ pub fn float_to_sortable_int(value: f32) -> i32 {
 }
 
 /// `NumericUtils.sortableIntToFloat`.
+#[inline]
 pub fn sortable_int_to_float(encoded: i32) -> f32 {
     f32::from_bits((encoded ^ ((encoded >> 31) & 0x7fff_ffff)) as u32)
 }
 
 /// `NumericUtils.sortableDoubleBits`: the involution both directions share.
+#[inline]
 pub fn sortable_double_bits(bits: i64) -> i64 {
     bits ^ ((bits >> 63) & 0x7fff_ffff_ffff_ffff)
 }
 
 /// `NumericUtils.doubleToSortableLong` (over `Double.doubleToLongBits`).
+#[inline]
 pub fn double_to_sortable_long(value: f64) -> i64 {
     let bits = if value.is_nan() {
         0x7ff8_0000_0000_0000
@@ -84,6 +92,7 @@ pub fn double_to_sortable_long(value: f64) -> i64 {
 }
 
 /// `NumericUtils.sortableLongToDouble`.
+#[inline]
 pub fn sortable_long_to_double(encoded: i64) -> f64 {
     f64::from_bits(sortable_double_bits(encoded) as u64)
 }

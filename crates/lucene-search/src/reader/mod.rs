@@ -1018,6 +1018,13 @@ pub trait LeafReader: IndexReader {
         false
     }
 
+    /// This leaf as the segment it reads, when it is one with nothing in
+    /// between: its doc-values columns can then be read directly. `None`,
+    /// by default, for a view.
+    fn segment_reader(&self) -> Option<&crate::directory_reader::SegmentReader> {
+        None
+    }
+
     /// `checkIntegrity()`: verifies the checksums of the files behind this
     /// leaf. A view with no files of its own checks its inner readers; the
     /// default, for a leaf holding none, has nothing to check.

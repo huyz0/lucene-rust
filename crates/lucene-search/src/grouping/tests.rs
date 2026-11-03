@@ -763,3 +763,67 @@ fn fx_hashes_of_similar_keys_spread_over_the_low_bits() {
         .collect();
     assert!(buckets.len() > 2048, "{} distinct buckets", buckets.len());
 }
+
+/// A singleton `SORTED_NUMERIC` key (read off its column) sorts the groups
+/// as the same values in a `NUMERIC` field do, sparse and with a missing
+/// value, for every selector that picks a document's only value; `SUM`
+/// reads it through the iterator and agrees too.
+#[test]
+fn a_singleton_sorted_numeric_key_sorts_as_its_numeric_twin() {
+    use crate::facets::test_index::{id_doc, match_all, plain_index};
+    use crate::leaf_collector::search_segments;
+    use crate::top_field::{Selector, SortField};
+    use lucene_index::document::{
+        NumericDocValuesField, SortedDocValuesField, SortedNumericDocValuesField,
+    };
+    let docs: Vec<_> = (0..500usize)
+        .map(|i| {
+            let mut d = id_doc(&i.to_string());
+            d.add(SortedDocValuesField::new(
+                "g",
+                format!("g{:02}", (i * 37) % 40).into_bytes(),
+            ));
+            if !i.is_multiple_of(7) {
+                let v = ((i * 7919) % 1000) as i64 - 300;
+                d.add(NumericDocValuesField::new("n", v));
+                d.add(SortedNumericDocValuesField::new("sn", v));
+            }
+            d
+        })
+        .collect();
+    plain_index(docs, &[249]).with(|searcher, reader, _| {
+        let top = |field: SortField| {
+            let mut fp = FirstPassGroupingCollector::new(
+                TermGroupSelector::new("g"),
+                Sort::new(vec![field]),
+                12,
+                false,
+            )
+            .unwrap();
+            search_segments(searcher, &match_all(reader), &mut fp).unwrap();
+            fp.top_groups(0)
+                .unwrap()
+                .into_iter()
+                .map(|g| (g.group_value, g.sort_values))
+                .collect::<Vec<_>>()
+        };
+        for reverse in [false, true] {
+            for missing in [0i64, -1_000, 1_000] {
+                let mut numeric = SortField::numeric("n", SortType::Long, reverse);
+                numeric.missing = missing;
+                let want = top(numeric);
+                for selector in [
+                    Selector::Min,
+                    Selector::Max,
+                    Selector::MiddleMin,
+                    Selector::Sum,
+                ] {
+                    let mut sn = SortField::numeric("sn", SortType::Long, reverse);
+                    sn.missing = missing;
+                    sn.selector = selector;
+                    assert_eq!(top(sn), want, "{selector:?} {reverse} {missing}");
+                }
+            }
+        }
+    });
+}

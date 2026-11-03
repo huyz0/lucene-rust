@@ -2499,3 +2499,172 @@ fn parallel_term_vectors_come_from_each_fields_first_reader() {
         [("a".into(), true), ("b".into(), true), ("c".into(), false)]
     );
 }
+
+/// A segment's columns read directly (`DirectColumn`) visit the documents,
+/// and hand over the values, a walk of the iterators does: every field
+/// shape (dense, sparse in DENSE and SPARSE `IndexedDISI` blocks, single-
+/// and multi-valued), every filter, and ranges cutting words.
+#[test]
+fn direct_columns_read_what_the_iterators_read() {
+    use super::segment::DocFilter;
+    use lucene_codecs::field_infos::DocValuesType as T;
+    use lucene_index::document::{self as d, Document};
+    use lucene_index::index_writer::IndexWriter;
+    use lucene_index::segment_info::LuceneVersion;
+
+    let dir = lucene_store::ByteBuffersDirectory::new();
+    let version = LuceneVersion {
+        major: 10,
+        minor: 5,
+        bugfix: 0,
+    };
+    let max = 70_000i64;
+    {
+        let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", version).unwrap();
+        for i in 0..max {
+            let mut doc = Document::new();
+            let term = |k: i64| format!("t{:03}", (k * 7919) % 500).into_bytes();
+            doc.add(d::NumericDocValuesField::new("n_dense", i * 3));
+            if i % 3 == 0 {
+                doc.add(d::NumericDocValuesField::new("n_sparse", i));
+            }
+            doc.add(d::SortedDocValuesField::new("s_dense", term(i)));
+            if i % 50 == 0 {
+                doc.add(d::SortedDocValuesField::new("s_sparse", term(i)));
+                doc.add(d::SortedSetDocValuesField::new("ss_single_sparse", term(i)));
+            }
+            doc.add(d::SortedSetDocValuesField::new("ss_single", term(i)));
+            for k in 0..(i % 3) {
+                doc.add(d::SortedSetDocValuesField::new("ss_multi", term(i + k)));
+            }
+            doc.add(d::SortedSetDocValuesField::new("ss_multi_dense", term(i)));
+            doc.add(d::SortedSetDocValuesField::new(
+                "ss_multi_dense",
+                term(i + 1),
+            ));
+            doc.add(d::SortedNumericDocValuesField::new("sn_single", -i));
+            for k in 0..(i % 4) {
+                if i % 7 == 0 {
+                    doc.add(d::SortedNumericDocValuesField::new("sn_multi", i + k));
+                }
+            }
+            doc.add(d::SortedNumericDocValuesField::new("sn_multi_dense", i));
+            doc.add(d::SortedNumericDocValuesField::new("sn_multi_dense", i * 2));
+            w.add_fields_document(&doc).unwrap();
+        }
+        w.commit().unwrap();
+    }
+    let reader = DirectoryReader::open(&dir).unwrap();
+    let seg = &reader.segment_readers()[0];
+    let max_doc = seg.max_doc;
+
+    // What the iterators answer: each document with values, and them.
+    let walk = |field: &str, kind: T| -> Vec<(i32, Vec<i64>)> {
+        let mut out = Vec::new();
+        match kind {
+            T::Numeric => {
+                let mut it = LeafReader::numeric_doc_values(seg, field).unwrap().unwrap();
+                while it.next_doc().unwrap() != NO_MORE_DOCS {
+                    out.push((it.doc_id(), vec![it.long_value()]));
+                }
+            }
+            T::Sorted => {
+                let mut it = LeafReader::sorted_doc_values(seg, field).unwrap().unwrap();
+                while it.next_doc().unwrap() != NO_MORE_DOCS {
+                    out.push((it.doc_id(), vec![i64::from(it.ord_value())]));
+                }
+            }
+            T::SortedSet => {
+                let mut it = LeafReader::sorted_set_doc_values(seg, field)
+                    .unwrap()
+                    .unwrap();
+                while it.next_doc().unwrap() != NO_MORE_DOCS {
+                    let doc = it.doc_id();
+                    let v = (0..it.doc_value_count()).map(|_| it.next_ord().unwrap());
+                    out.push((doc, v.collect()));
+                }
+            }
+            _ => {
+                let mut it = LeafReader::sorted_numeric_doc_values(seg, field)
+                    .unwrap()
+                    .unwrap();
+                while it.next_doc().unwrap() != NO_MORE_DOCS {
+                    let doc = it.doc_id();
+                    let v = (0..it.doc_value_count()).map(|_| it.next_value().unwrap());
+                    out.push((doc, v.collect()));
+                }
+            }
+        }
+        out
+    };
+    let mut bits = FixedBitSet::new(max_doc as usize);
+    let mut list = Vec::new();
+    for doc in 0..max_doc {
+        if (doc * 31 + 7) % 5 < 2 || (6_000..6_200).contains(&doc) {
+            // FBS: `doc < max_doc`, the length the set was made with.
+            bits.set(doc as usize);
+            list.push(doc);
+        }
+    }
+    let fields = [
+        ("n_dense", T::Numeric),
+        ("n_sparse", T::Numeric),
+        ("s_dense", T::Sorted),
+        ("s_sparse", T::Sorted),
+        ("ss_single", T::SortedSet),
+        ("ss_single_sparse", T::SortedSet),
+        ("ss_multi", T::SortedSet),
+        ("ss_multi_dense", T::SortedSet),
+        ("sn_single", T::SortedNumeric),
+        ("sn_multi", T::SortedNumeric),
+        ("sn_multi_dense", T::SortedNumeric),
+    ];
+    for (field, kind) in fields {
+        let expected = walk(field, kind);
+        for (lo, hi) in [
+            (0, i32::MAX),
+            (0, max_doc),
+            (5, 70),
+            (63, 129),
+            (65_530, 65_600),
+            (-3, 2),
+        ] {
+            let inside = |d: i32| d >= lo.max(0) && d < hi;
+            for (name, filter) in [
+                ("all", DocFilter::All),
+                ("bits", DocFilter::Bits(bits.words())),
+                ("docs", DocFilter::Docs(&list)),
+            ] {
+                let mut got = Vec::new();
+                seg.direct_column(field, kind)
+                    .unwrap()
+                    .unwrap()
+                    .for_each(filter, lo, hi, |doc, v| {
+                        got.push((doc, v.to_vec()));
+                        Ok(())
+                    })
+                    .unwrap();
+                let want: Vec<_> = expected
+                    .iter()
+                    .filter(|(d, _)| inside(*d) && (name == "all" || bits.get_doc(*d)))
+                    .cloned()
+                    .collect();
+                assert_eq!(got, want, "{field} {name} {lo}..{hi}");
+            }
+        }
+    }
+    // An error from the callback stops the walk.
+    let mut col = seg.direct_column("n_dense", T::Numeric).unwrap().unwrap();
+    let mut seen = 0;
+    let r = col.for_each(DocFilter::All, 0, i32::MAX, |_, _| {
+        seen += 1;
+        Err(Error::IllegalState("stop".into()))
+    });
+    assert!(r.is_err());
+    assert_eq!(seen, 1);
+    // Another type, a missing field, and a type no column serves.
+    assert!(seg.direct_column("n_dense", T::Sorted).unwrap().is_none());
+    assert!(seg.direct_column("absent", T::Numeric).unwrap().is_none());
+    assert!(seg.direct_column("n_dense", T::Binary).unwrap().is_none());
+    assert!(LeafReader::segment_reader(seg).is_some());
+}

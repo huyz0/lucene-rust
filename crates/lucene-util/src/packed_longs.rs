@@ -96,13 +96,53 @@ impl<'a> PackedLongs<'a> {
         let n = out.len().min(usize::try_from(room).unwrap_or(usize::MAX));
         let out = &mut out[..n];
         match self.bits {
+            1 => self.decode_words::<1>(start, out),
+            2 => self.decode_words::<2>(start, out),
+            4 => self.decode_words::<4>(start, out),
             8 => self.decode_run::<8>(start, out),
+            12 => self.decode_run::<12>(start, out),
             16 => self.decode_run::<16>(start, out),
+            20 => self.decode_run::<20>(start, out),
+            24 => self.decode_run::<24>(start, out),
+            28 => self.decode_run::<28>(start, out),
             32 => self.decode_run::<32>(start, out),
+            40 => self.decode_run::<40>(start, out),
+            48 => self.decode_run::<48>(start, out),
+            56 => self.decode_run::<56>(start, out),
             64 => self.decode_run::<64>(start, out),
             _ => self.decode_run::<0>(start, out),
         }
         n
+    }
+
+    /// `decode_run` for a width that divides 64: values that share a 64-bit
+    /// word are taken from one load, `64 / B` of them per word, with constant
+    /// shifts. A scalar head reaches the first word boundary and a scalar tail
+    /// finishes the run.
+    #[inline(always)]
+    fn decode_words<const B: u32>(&self, start: u64, out: &mut [i64]) {
+        let per_word = (64 / B) as usize;
+        let head = ((per_word as u64 - start % per_word as u64) % per_word as u64) as usize;
+        let head = head.min(out.len());
+        let (head_out, rest) = out.split_at_mut(head);
+        self.decode_run::<B>(start, head_out);
+        let word_start = start + head as u64;
+        let done = head + (rest.len() / per_word) * per_word;
+        let mut chunks = rest.chunks_exact_mut(per_word);
+        let base = self.bytes.as_ptr();
+        let mask = self.mask;
+        for (w, chunk) in (&mut chunks).enumerate() {
+            let byte = ((word_start + (w * per_word) as u64) * B as u64 / 8) as usize;
+            // SAFETY: the word's first value has an index below `fast_limit`
+            // (the caller trimmed `out` to the fast range), which puts the
+            // 8-byte window at its byte inside `bytes` (see `new`).
+            let word =
+                u64::from_le(unsafe { std::ptr::read_unaligned(base.add(byte) as *const u64) });
+            for (k, slot) in chunk.iter_mut().enumerate() {
+                *slot = ((word >> (k as u32 * B)) & mask) as i64;
+            }
+        }
+        self.decode_run::<B>(start + done as u64, chunks.into_remainder());
     }
 
     /// `decode_range`'s loop; `BITS == 0` means "read `self.bits`", any other
@@ -259,18 +299,27 @@ mod tests {
         let bytes: Vec<u8> = (0..300u32)
             .map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8)
             .collect();
-        for bits in [1u32, 3, 8, 12, 16, 24, 32, 48, 56, 64] {
+        for bits in [1u32, 2, 3, 4, 8, 12, 16, 20, 24, 28, 32, 40, 48, 56, 64] {
             let p = PackedLongs::new(&bytes, bits).unwrap();
             for start in [
                 0u64,
                 1,
                 5,
+                7,
+                15,
+                16,
+                31,
+                32,
                 63,
+                64,
+                65,
+                p.fast_limit.saturating_sub(130),
+                p.fast_limit.saturating_sub(64),
                 p.fast_limit - 1,
                 p.fast_limit,
                 p.fast_limit + 3,
             ] {
-                let mut out = [-1i64; 100];
+                let mut out = [-1i64; 300];
                 let n = p.decode_range(start, &mut out);
                 for (i, &v) in out[..n].iter().enumerate() {
                     assert_eq!(

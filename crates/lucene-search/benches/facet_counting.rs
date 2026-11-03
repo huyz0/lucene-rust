@@ -20,6 +20,18 @@
 //!   whose counts mostly tie;
 //! - `top_ord_queue/*`: `TopOrdAndNumberQueue` fed 1M ordinals with counts
 //!   in 0..64 (many ties), top 10 and top 1,000.
+//! - `counts/*`: the hit loops of the field counters over a match-all and a
+//!   30% collector: `SortedSetDocValuesFacetCounts` over a single-valued
+//!   `$facets` (1 and 8 segments), `StringValueFacetCounts` over a dense
+//!   single-valued SORTED_SET and a sparse multi-valued one,
+//!   `LongValueFacetCounts` over a sparse multi-valued SORTED_NUMERIC,
+//!   `LongRangeFacetCounts` (32 ranges) over a single-valued SORTED_NUMERIC
+//!   and a sparse multi-valued one (overlapping ranges too), and
+//!   `FastTaxonomyFacetCounts` over the taxonomy index.
+//! - `dyn_dv/*`: a segment's doc-values iterators walked by
+//!   `advance_exact` over every 3rd document, the values summed: a dense
+//!   single-valued SORTED_SET (`join_keys`), the sparse multi-valued
+//!   `tags` and `nums`, and the dense singleton `sn1`.
 //!
 //! Run with `cargo bench -p lucene-search --bench facet_counting`.
 
@@ -29,17 +41,21 @@ mod support;
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use lucene_codecs::doc_values::SortedSetKind;
-use lucene_index::document::{Document, NumericDocValuesField};
+use lucene_index::document::{
+    Document, NumericDocValuesField, SortedNumericDocValuesField, Store, StringField,
+};
 use lucene_index::index_writer::IndexWriter;
 use lucene_index::merge_policy::upgrade::LATEST;
 use lucene_search::directory_reader::DirectoryReader;
+use lucene_search::facets::range::{LongRange, LongRangeFacetCounts};
 use lucene_search::facets::taxonomy::{
     AssociationAggregationFunction, DirectoryTaxonomyReader, DirectoryTaxonomyWriter,
     FastTaxonomyFacetCounts, TaxonomyFacetFloatAssociations, TaxonomyWriter,
 };
 use lucene_search::facets::{
     self, ConcurrentSortedSetDocValuesFacetCounts, DefaultSortedSetDocValuesReaderState,
-    FacetsCollectorManager, NumericRange, SortedSetDocValuesFacetCounts,
+    FacetsCollectorManager, LongValueFacetCounts, NumericRange, SortedSetDocValuesFacetCounts,
+    SortedSetDocValuesFacetField, StringDocValuesReaderState, StringValueFacetCounts,
 };
 use lucene_search::facets::{
     FacetEntry, FacetField, FacetValue, Facets, FacetsConfig, OrdAndValue, TopOrdAndNumberQueue,
@@ -155,6 +171,11 @@ fn bench_sorted_set(c: &mut Criterion) {
         let hits = FacetsCollectorManager::new(false)
             .collect(&searcher, &match_all(reader.max_doc()))
             .unwrap();
+        g.bench_function(format!("state/{segments}seg"), |b| {
+            b.iter(|| {
+                black_box(DefaultSortedSetDocValuesReaderState::new(&reader, &config).unwrap())
+            })
+        });
         g.bench_function(format!("sequential/{segments}seg"), |b| {
             b.iter(|| black_box(SortedSetDocValuesFacetCounts::with_hits(&state, &hits).unwrap()))
         });
@@ -337,8 +358,193 @@ fn bench_top_queue(c: &mut Criterion) {
     g.finish();
 }
 
+/// `docs` documents in `segments` segments, each with one `Author` (one of
+/// 1,000) in `$facets`, one SORTED_NUMERIC `sn` value (0..1,000,000) and
+/// `body:all` (`body:t30` on 30% of them).
+fn build_single_valued_index(docs: usize, segments: usize) -> ByteBuffersDirectory {
+    let dir = ByteBuffersDirectory::new();
+    let config = FacetsConfig::new();
+    let per_segment = docs.div_ceil(segments.max(1));
+    let mut rng = support::Rng::new(0x51e7);
+    {
+        let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", LATEST).unwrap();
+        w.set_ram_buffer_size_mb(4096.0).unwrap();
+        for i in 0..docs {
+            let mut d = Document::new();
+            d.add(StringField::new("body", "all", Store::No));
+            if rng.below(10) < 3 {
+                d.add(StringField::new("body", "t30", Store::No));
+            }
+            d.add(SortedNumericDocValuesField::new(
+                "sn",
+                rng.below(1_000_000) as i64,
+            ));
+            let facets: Vec<FacetEntry> = vec![SortedSetDocValuesFacetField::new(
+                "Author",
+                &[&format!("a{:04}", rng.below(1000))],
+            )
+            .unwrap()
+            .into()];
+            let built = config.build(None, &facets, d).unwrap();
+            w.add_fields_document(&built).unwrap();
+            if (i + 1) % per_segment == 0 {
+                w.flush().unwrap();
+            }
+        }
+        w.commit().unwrap();
+    }
+    dir
+}
+
+fn long_ranges(n: usize, overlapping: bool) -> Vec<LongRange> {
+    let width = 1_000_000 / n as i64;
+    (0..n as i64)
+        .map(|i| {
+            let lo = if overlapping { 0 } else { i * width };
+            LongRange::new(&format!("r{i}"), lo, true, (i + 1) * width, false).unwrap()
+        })
+        .collect()
+}
+
+fn bench_counts(c: &mut Criterion) {
+    let t30 = BooleanQuery {
+        must: vec![Clause::Term(TermQuery::new("body", "t30"))],
+        ..Default::default()
+    };
+    let mut g = c.benchmark_group("counts");
+    for segments in [1usize, 8] {
+        let dir = build_single_valued_index(DOCS, segments);
+        let reader = DirectoryReader::open(&dir).unwrap();
+        let opened = reader.open_segments().unwrap();
+        let segs = opened.as_open_segments();
+        let owned = reader.field_norms_by_field(&["body".to_string()]).unwrap();
+        let norms: Vec<_> = owned.iter().map(Some).collect();
+        let searcher = IndexSearcher::new(&segs, &norms).unwrap();
+        let state =
+            DefaultSortedSetDocValuesReaderState::new(&reader, &FacetsConfig::new()).unwrap();
+        for (label, q) in [("all", match_all(reader.max_doc())), ("t30", t30.clone())] {
+            let hits = FacetsCollectorManager::new(false)
+                .collect(&searcher, &q)
+                .unwrap();
+            g.bench_function(format!("sorted_set_single/{segments}seg/{label}"), |b| {
+                b.iter(|| {
+                    black_box(SortedSetDocValuesFacetCounts::with_hits(&state, &hits).unwrap())
+                })
+            });
+            if segments == 8 {
+                let rs = long_ranges(32, false);
+                g.bench_function(format!("range_sn_single/32/{label}"), |b| {
+                    b.iter(|| black_box(LongRangeFacetCounts::new("sn", &hits, &rs).unwrap()))
+                });
+            }
+        }
+    }
+
+    let dir = support::build_index(DOCS, 8, 1000);
+    let reader = DirectoryReader::open(&dir).unwrap();
+    let opened = reader.open_segments().unwrap();
+    let segs = opened.as_open_segments();
+    let owned = reader.field_norms_by_field(&["body".to_string()]).unwrap();
+    let norms: Vec<_> = owned.iter().map(Some).collect();
+    let searcher = IndexSearcher::new(&segs, &norms).unwrap();
+    let keys = StringDocValuesReaderState::new(&reader, "join_keys").unwrap();
+    let tags = StringDocValuesReaderState::new(&reader, "tags").unwrap();
+    for (label, q) in [("all", match_all(reader.max_doc())), ("t30", t30.clone())] {
+        let hits = FacetsCollectorManager::new(false)
+            .collect(&searcher, &q)
+            .unwrap();
+        g.bench_function(format!("string_value_single/{label}"), |b| {
+            b.iter(|| black_box(StringValueFacetCounts::with_hits(&keys, &hits).unwrap()))
+        });
+        g.bench_function(format!("string_value_sparse_tags/{label}"), |b| {
+            b.iter(|| black_box(StringValueFacetCounts::with_hits(&tags, &hits).unwrap()))
+        });
+        g.bench_function(format!("long_value_sparse_nums/{label}"), |b| {
+            b.iter(|| black_box(LongValueFacetCounts::new("nums", &hits).unwrap()))
+        });
+        for (kind, overlapping) in [("exclusive", false), ("overlapping", true)] {
+            for n in [32usize, 256] {
+                let rs = long_ranges(n, overlapping);
+                g.bench_function(format!("range_nums_{kind}/{n}/{label}"), |b| {
+                    b.iter(|| black_box(LongRangeFacetCounts::new("nums", &hits, &rs).unwrap()))
+                });
+            }
+        }
+    }
+    g.finish();
+}
+
+fn bench_dyn_dv(c: &mut Criterion) {
+    use lucene_search::reader::LeafReader;
+    let dir = support::build_index(DOCS, 1, 1000);
+    let reader = DirectoryReader::open(&dir).unwrap();
+    let seg = &reader.segment_readers()[0];
+    let max_doc = seg.max_doc;
+    let mut g = c.benchmark_group("dyn_dv");
+    for field in ["join_keys", "tags"] {
+        g.bench_function(format!("sorted_set/{field}"), |b| {
+            b.iter(|| {
+                let mut dv = LeafReader::sorted_set_doc_values(seg, field)
+                    .unwrap()
+                    .unwrap();
+                let mut sum = 0i64;
+                for doc in (0..max_doc).step_by(3) {
+                    if dv.advance_exact(doc).unwrap() {
+                        for _ in 0..dv.doc_value_count() {
+                            sum += dv.next_ord().unwrap();
+                        }
+                    }
+                }
+                black_box(sum)
+            })
+        });
+    }
+    for field in ["nums", "sn1"] {
+        g.bench_function(format!("sorted_numeric/{field}"), |b| {
+            b.iter(|| {
+                let mut dv = LeafReader::sorted_numeric_doc_values(seg, field)
+                    .unwrap()
+                    .unwrap();
+                let mut sum = 0i64;
+                for doc in (0..max_doc).step_by(3) {
+                    if dv.advance_exact(doc).unwrap() {
+                        for _ in 0..dv.doc_value_count() {
+                            sum = sum.wrapping_add(dv.next_value().unwrap());
+                        }
+                    }
+                }
+                black_box(sum)
+            })
+        });
+    }
+    g.finish();
+}
+
+fn bench_taxonomy_counts(c: &mut Criterion) {
+    let (index, taxo_dir) = build_taxonomy_index();
+    let config = FacetsConfig::new();
+    let reader = DirectoryReader::open(&index).unwrap();
+    let opened = reader.open_segments().unwrap();
+    let segs = opened.as_open_segments();
+    let owned = reader.field_norms_by_field(&[]).unwrap();
+    let norms: Vec<_> = owned.iter().map(Some).collect();
+    let searcher = IndexSearcher::new(&segs, &norms).unwrap();
+    let taxo = DirectoryTaxonomyReader::open(&taxo_dir).unwrap();
+    let plain = FacetsCollectorManager::new(false)
+        .collect(&searcher, &match_all(reader.max_doc()))
+        .unwrap();
+    let mut g = c.benchmark_group("counts");
+    g.bench_function("taxonomy_fast/all", |b| {
+        b.iter(|| black_box(FastTaxonomyFacetCounts::new(&taxo, &config, &plain).unwrap()))
+    });
+    g.finish();
+}
+
 criterion_group!(
     benches,
+    bench_counts,
+    bench_dyn_dv,
+    bench_taxonomy_counts,
     bench_ffi,
     bench_sorted_set,
     bench_search_sorted,

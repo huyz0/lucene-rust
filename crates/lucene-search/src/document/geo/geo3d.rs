@@ -27,6 +27,7 @@ use lucene_util::spatial3d::geo_path_factory::make_geo_path;
 use lucene_util::spatial3d::geo_polygon_factory::{
     make_geo_polygon_with_holes, make_large_geo_polygon, PolygonDescription,
 };
+use lucene_util::spatial3d::vector::MINIMUM_RESOLUTION;
 use lucene_util::spatial3d::{
     GeoAreaRelationship, GeoBBox, GeoCircle, GeoPath, GeoPoint, GeoPolygon, GeoShape, PlanetModel,
     XYZBounds,
@@ -375,6 +376,24 @@ impl IntersectVisitor for ShapeVisitor<'_> {
             && self.maximum_z <= z_max
         {
             return Relation::CellCrossesQuery;
+        }
+        // A cell disjoint from the shape's bounds holds no match:
+        // `visit_with_value` rejects every point outside them, so `OUTSIDE`
+        // answers what `CROSSES` would, without building the cell's solid.
+        // Only a cell at least `MINIMUM_RESOLUTION` wide in every dimension
+        // is skipped: its solid is a `StandardXYZSolid`, which neither the
+        // factory nor the relation rejects, so no error is lost.
+        if x_max - x_min >= MINIMUM_RESOLUTION
+            && y_max - y_min >= MINIMUM_RESOLUTION
+            && z_max - z_min >= MINIMUM_RESOLUTION
+            && (x_max < self.minimum_x
+                || x_min > self.maximum_x
+                || y_max < self.minimum_y
+                || y_min > self.maximum_y
+                || z_max < self.minimum_z
+                || z_min > self.maximum_z)
+        {
+            return Relation::CellOutsideQuery;
         }
         let relation = make_geo_area(self.planet_model, x_min, x_max, y_min, y_max, z_min, z_max)
             .and_then(|area| area.get_relationship(self.shape));
