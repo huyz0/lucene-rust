@@ -127,6 +127,9 @@ pub(crate) enum Bulk<'a> {
     /// `ToParentBlockJoinQuery`'s `BlockJoinBulkScorer`: the child's bulk
     /// scorer, its hits folded into their parents.
     BlockJoin(Box<super::join::BlockJoinBulk<'a>>),
+    /// `DisjunctionMaxBulkScorer`: a zero-tie dismax under `TOP_SCORES` over
+    /// its disjuncts' own bulk scorers. See [`DisMaxOf`].
+    DisMaxOf(Box<DisMaxOf<'a>>),
 }
 
 /// [`Bulk::ReqOptTerms`]' scorer.
@@ -191,6 +194,7 @@ impl<'a> Bulk<'a> {
             Bulk::ReqExcl(req, _) => req.cost(),
             Bulk::Combined(window) => window.cost(),
             Bulk::BlockJoin(join) => join.cost(),
+            Bulk::DisMaxOf(d) => sum(d.subs.iter().map(|(b, _)| b.cost())),
         }
     }
 
@@ -224,6 +228,7 @@ impl<'a> Bulk<'a> {
             Bulk::Union(..) => "union",
             Bulk::Combined(..) => "combined",
             Bulk::BlockJoin(..) => "block_join",
+            Bulk::DisMaxOf(..) => "dismax_of",
         }
     }
 
@@ -304,6 +309,7 @@ impl<'a> Bulk<'a> {
             Bulk::Union(legs) => union_score(legs, live_docs, collector, min, max),
             Bulk::Combined(c) => c.score(live_docs, collector, min, max),
             Bulk::BlockJoin(j) => j.score(live_docs, collector, min, max),
+            Bulk::DisMaxOf(d) => d.score(mode, live_docs, collector, min, max),
             Bulk::MinShouldMatch(legs, state) => state.score(legs, live_docs, collector, min, max),
             Bulk::Filtered(inner, filter) => {
                 let mut fc = FilterCollector {
@@ -419,6 +425,7 @@ fn union_score<C: ScoringCollector + ?Sized>(
     const WINDOW: i32 = 4096;
     let mut words = [0u64; (WINDOW / 64) as usize];
     let mut batch = DocScores::default();
+    let count_only = collector.add_hits(0);
     for leg in legs.iter_mut() {
         if leg.doc_id() < min {
             leg.advance(min)?;
@@ -448,6 +455,20 @@ fn union_score<C: ScoringCollector + ?Sized>(
                 }
             }
         }
+        if count_only {
+            // A counting collector: the window's live matches by popcount.
+            let mut n = 0u64;
+            for (w, word) in words.iter_mut().enumerate() {
+                let mut bits = std::mem::take(word);
+                if let Some(live) = live_docs {
+                    // ARITH: w < WINDOW / 64, so the offset stays below `end`.
+                    bits &= live_word(live, base + (w * 64) as i32);
+                }
+                n += u64::from(bits.count_ones());
+            }
+            collector.add_hits(n);
+            continue;
+        }
         for (w, word) in words.iter_mut().enumerate() {
             let mut bits = std::mem::take(word);
             while bits != 0 {
@@ -460,6 +481,134 @@ fn union_score<C: ScoringCollector + ?Sized>(
             }
         }
     }
+}
+
+/// [`Bulk::DisMaxOf`]: `DisjunctionMaxBulkScorer`. A window of
+/// [`DisMaxOf::WINDOW`] documents at a time, every disjunct's bulk scorer
+/// collects into the window's bits and keeps each document's best score;
+/// the window is then replayed into the real collector in doc-id order.
+/// The disjuncts prune against the real collector's threshold, which a
+/// zero-tie dismax's score (the best disjunct's) can only beat if one
+/// disjunct does.
+pub(crate) struct DisMaxOf<'a> {
+    /// Each disjunct's bulk scorer and the next document it scores.
+    subs: Vec<(Bulk<'a>, i32)>,
+    /// One bit past the window, as Java's `WINDOW_SIZE + 1` bit set.
+    bits: Box<[u64; DisMaxOf::WORDS]>,
+    scores: Box<[f32; DisMaxOf::WINDOW as usize]>,
+    /// The segment's `maxDoc` (`NO_MORE_DOCS` when unknown): scoring stops
+    /// there whatever the disjuncts report as their next document.
+    max_doc: i32,
+}
+
+impl<'a> DisMaxOf<'a> {
+    /// `BooleanScorer`'s window size.
+    const WINDOW: i32 = 4096;
+    const WORDS: usize = (Self::WINDOW as usize).div_ceil(64);
+
+    fn new(subs: Vec<(Bulk<'a>, i32)>, max_doc: Option<i32>) -> Self {
+        Self {
+            max_doc: max_doc.unwrap_or(NO_MORE_DOCS),
+            subs,
+            bits: Box::new([0; Self::WORDS]),
+            scores: Box::new([0.0; Self::WINDOW as usize]),
+        }
+    }
+
+    fn score<C: ScoringCollector + ?Sized>(
+        &mut self,
+        mode: Mode,
+        live_docs: Option<&FixedBitSet>,
+        collector: &mut C,
+        min: i32,
+        max: i32,
+    ) -> Result<i32> {
+        let max = max.min(self.max_doc);
+        loop {
+            let next = self
+                .subs
+                .iter()
+                .map(|(_, n)| *n)
+                .min()
+                .unwrap_or(NO_MORE_DOCS);
+            if next >= self.max_doc {
+                return Ok(NO_MORE_DOCS);
+            }
+            if next >= max {
+                return Ok(next);
+            }
+            let window_min = next.max(min);
+            let window_max = window_min.saturating_add(Self::WINDOW).min(max);
+            {
+                let mut window = DisMaxWindow {
+                    outer: &*collector,
+                    base: window_min,
+                    bits: &mut self.bits,
+                    scores: &mut self.scores,
+                };
+                for (sub, at) in self.subs.iter_mut() {
+                    if *at < window_max {
+                        // As a trait object, as `Bulk::Filtered` passes its own.
+                        let w: &mut dyn ScoringCollector = &mut window;
+                        *at = sub.score(mode, live_docs, w, window_min, window_max)?;
+                    }
+                }
+            }
+            for (w, word) in self.bits.iter_mut().enumerate() {
+                let mut bits = std::mem::take(word);
+                while bits != 0 {
+                    // ARITH: w < WORDS and the bit < 64: inside the window.
+                    let i = w * 64 + bits.trailing_zeros() as usize;
+                    bits &= bits - 1;
+                    let score = std::mem::take(&mut self.scores[i]);
+                    collector.collect(window_min + i as i32, score);
+                }
+            }
+        }
+    }
+}
+
+/// [`DisMaxOf`]'s window collector: marks each document and keeps its best
+/// score; thresholds and score mode are the real collector's.
+struct DisMaxWindow<'w, C: ?Sized> {
+    outer: &'w C,
+    base: i32,
+    bits: &'w mut [u64; DisMaxOf::WORDS],
+    scores: &'w mut [f32; DisMaxOf::WINDOW as usize],
+}
+
+impl<C: ScoringCollector + ?Sized> ScoringCollector for DisMaxWindow<'_, C> {
+    fn collect(&mut self, doc_id: i32, score: f32) {
+        // ARITH: the disjuncts collect inside [base, base + WINDOW).
+        let i = (doc_id - self.base) as usize;
+        self.bits[i >> 6] |= 1u64 << (i & 63);
+        let s = &mut self.scores[i];
+        *s = s.max(score);
+    }
+    fn min_competitive_score(&self) -> Option<f32> {
+        self.outer.min_competitive_score()
+    }
+    fn score_mode(&self) -> crate::collector::ScoreMode {
+        self.outer.score_mode()
+    }
+    fn pruning_threshold(&self) -> Option<f32> {
+        self.outer.pruning_threshold()
+    }
+}
+
+/// The 64 bits of `live` from document `from` on (bit `i` is document
+/// `from + i`); bits past its end are clear.
+fn live_word(live: &FixedBitSet, from: i32) -> u64 {
+    let words = live.words();
+    let from = from as usize;
+    let (at, shift) = (from >> 6, from & 63);
+    let lo = words.get(at).copied().unwrap_or(0) >> shift;
+    if shift == 0 {
+        return lo;
+    }
+    // ARITH: 0 < shift < 64.
+    let hi = words.get(at + 1).copied().unwrap_or(0) << (64 - shift);
+    lo | hi
 }
 
 /// `DefaultBulkScorer.score`, with `TopScoreDocCollector`'s leaf collector's
@@ -810,6 +959,22 @@ pub(crate) fn bulk_clause<'a>(
         if let Some(bulk) = bulk_dismax(ctx, d, dismax_boost, mode)? {
             return Ok(bulk);
         }
+        // `DisjunctionMaxWeight.bulkScorer`: with no tie-breaker a top-scores
+        // dismax takes the maximum of its disjuncts' own bulk scorers, each
+        // built as a top-level clause (`setTopLevelScoringClause`).
+        if mode == Mode::TopScores && d.tie_breaker == 0.0 && d.disjuncts.len() > 1 {
+            let mut subs = Vec::with_capacity(d.disjuncts.len());
+            for disjunct in &d.disjuncts {
+                if let Some(b) = bulk_clause(ctx, disjunct, dismax_boost, mode)? {
+                    subs.push((b, 0));
+                }
+            }
+            return Ok(match subs.len() {
+                0 => None,
+                1 => subs.pop().map(|(b, _)| b),
+                _ => Some(Bulk::DisMaxOf(Box::new(DisMaxOf::new(subs, ctx.max_doc)))),
+            });
+        }
     }
     if let Clause::Extended(e) = inner {
         // Java: BlockScoreQueryWrapper.createWeight returns inWeight directly
@@ -854,7 +1019,7 @@ pub(crate) fn bulk_clause<'a>(
                     .pop()
                     .map(|leg| Bulk::Term(Box::new(leg), DocScores::default())),
                 _ => {
-                    let state = MaxScore::new(&mut legs);
+                    let state = MaxScore::new(&mut legs).with_max_doc(ctx.max_doc);
                     Some(Bulk::Disjunction(legs, None, state))
                 }
             });
@@ -1045,7 +1210,7 @@ pub(crate) fn bulk_boolean_own<'a>(
                 .into_iter()
                 .map(|(c, _)| c.into_leg())
                 .collect();
-            let state = MaxScore::new(&mut legs);
+            let state = MaxScore::new(&mut legs).with_max_doc(ctx.max_doc);
             Some(Bulk::Disjunction(legs, None, state))
         } else if msm > 1 && all_legs(&should) && mode.needs_scores() {
             // `WANDScorer` with `minShouldMatch` in Lucene, a candidate at a
@@ -1062,7 +1227,7 @@ pub(crate) fn bulk_boolean_own<'a>(
             // `optionalBulkScorer`: `MaxScoreBulkScorer` over whatever the
             // clauses are.
             let mut legs = scorer_legs(std::mem::take(&mut should), mode)?;
-            let state = MaxScore::new(&mut legs);
+            let state = MaxScore::new(&mut legs).with_max_doc(ctx.max_doc);
             Some(Bulk::ScorerDisjunction(legs, None, state))
         } else {
             None
@@ -1073,7 +1238,7 @@ pub(crate) fn bulk_boolean_own<'a>(
                 .into_iter()
                 .map(|(c, _)| c.into_leg())
                 .collect();
-            let state = MaxScore::new(&mut legs);
+            let state = MaxScore::new(&mut legs).with_max_doc(ctx.max_doc);
             if filter.len() == 1 && all_legs(&filter) {
                 // `filter_of`'s scorer for a lone term, unboxed.
                 let (c, _) = filter.pop().expect("one filter clause");
@@ -1094,12 +1259,14 @@ pub(crate) fn bulk_boolean_own<'a>(
         } else if mode == Mode::TopScores && msm == 1 {
             let filter_scorer = filter_of(std::mem::take(&mut filter));
             let mut legs = scorer_legs(std::mem::take(&mut should), mode)?;
-            let state = MaxScore::new(&mut legs).with_filter(
-                &legs,
-                filter_scorer.cost(),
-                filter_scorer.two_phase(),
-                ctx.max_doc,
-            );
+            let state = MaxScore::new(&mut legs)
+                .with_max_doc(ctx.max_doc)
+                .with_filter(
+                    &legs,
+                    filter_scorer.cost(),
+                    filter_scorer.two_phase(),
+                    ctx.max_doc,
+                );
             Some(Bulk::ScorerDisjunction(legs, Some(filter_scorer), state))
         } else {
             None

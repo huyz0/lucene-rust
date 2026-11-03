@@ -114,7 +114,7 @@ fn main() {
     for q in &queries {
         // Parsed once, outside the timed loop, as the Java runner builds its
         // `Query` and `Sort` once.
-        let parsed = matches!(q.kind.as_str(), "sexpr" | "sorted")
+        let parsed = matches!(q.kind.as_str(), "sexpr" | "sorted" | "count")
             .then(|| sexpr::root(sexpr::parse(&q.field, &q.args[0])));
         let parsed_sort = (q.kind == "sorted").then(|| sexpr::sort(&q.args[1]));
         let run = || -> Vec<lucene_search::collector::ScoreDoc> {
@@ -199,6 +199,18 @@ fn main() {
                     )
                     .expect("sexpr")
                     .0
+                }
+                // `IndexSearcher.count`: one hit whose doc id is the count.
+                "count" => {
+                    let bq = parsed.as_ref().expect("parsed");
+                    let mut n = 0u64;
+                    for seg in &segments {
+                        n += lucene_search::count_boolean_query_segment(seg, bq).expect("count");
+                    }
+                    vec![lucene_search::collector::ScoreDoc {
+                        doc_id: n as i32,
+                        score: 0.0,
+                    }]
                 }
                 // A query and a sort (`GenSortedSearch`'s grammar), as
                 // `TopFieldCollectorManager(sort, n, null, 1000)`.
