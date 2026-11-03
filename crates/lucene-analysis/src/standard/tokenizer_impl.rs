@@ -412,6 +412,7 @@ impl StandardTokenizerImpl {
     /// match began, and anything past them reads as end of input -- which
     /// is what this applies. (A `&str` has no unpaired surrogates, so
     /// `zzRefill`'s read of a trailing low surrogate always succeeds.)
+    #[inline(never)]
     pub(crate) fn get_next_token_utf8(&mut self, text: &str) -> Result<i32, AnalysisError> {
         let bytes = text.as_bytes();
         let dfa = dfa();

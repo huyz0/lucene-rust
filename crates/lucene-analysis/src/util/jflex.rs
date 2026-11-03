@@ -22,6 +22,30 @@ use crate::java_character::{char_count, code_point_at, is_high_surrogate};
 use crate::reader::CharReader;
 use crate::AnalysisError;
 
+/// Most scanner buffers a thread keeps for reuse.
+const SPARE_BUFFERS: usize = 4;
+
+thread_local! {
+    /// Buffers of dropped scanners: a char filter is built per document
+    /// (`initReader`), and zeroing a fresh 16K-unit buffer for each one
+    /// cost more than scanning a short document.
+    static SPARE: std::cell::RefCell<Vec<Vec<u16>>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// A `size`-unit buffer, a dropped scanner's if one of that size is spare.
+/// The units are stale, not zeroed: a scanner reads only what it filled.
+fn take_buffer(size: usize) -> Vec<u16> {
+    SPARE
+        .try_with(|s| {
+            let mut s = s.try_borrow_mut().ok()?;
+            let i = s.iter().position(|b| b.len() == size)?;
+            Some(s.swap_remove(i))
+        })
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| vec![0; size])
+}
+
 /// `YYEOF`.
 pub const YYEOF: i32 = -1;
 
@@ -128,6 +152,22 @@ impl JFlexTables {
     }
 }
 
+impl Drop for JFlexScanner {
+    fn drop(&mut self) {
+        let buffer = std::mem::take(&mut self.buffer);
+        if buffer.len() != self.buffer_size {
+            return;
+        }
+        let _ = SPARE.try_with(|s| {
+            if let Ok(mut s) = s.try_borrow_mut() {
+                if s.len() < SPARE_BUFFERS {
+                    s.push(buffer);
+                }
+            }
+        });
+    }
+}
+
 /// What [`JFlexScanner::scan`] found.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scan {
@@ -178,7 +218,7 @@ impl JFlexScanner {
         JFlexScanner {
             tables,
             buffer_size,
-            buffer: vec![0; buffer_size],
+            buffer: take_buffer(buffer_size),
             lexical_state: 0,
             marked_pos: 0,
             current_pos: 0,
@@ -485,6 +525,39 @@ mod tests {
         table(&mut raw, "ZZ_ATTRIBUTE", &[0, 9]);
         let e = JFlexTables::load(&zlib(&raw)).unwrap_err().to_string();
         assert!(e.contains("ZZ_CMAP_BLOCKS"), "{e}");
+    }
+
+    /// A dropped scanner's buffer serves the next scanner of its size on
+    /// the thread (a few are kept, grown ones are not), and a reused
+    /// buffer scans as a fresh one does.
+    #[test]
+    fn dropped_buffers_are_reused() {
+        let tables: &'static JFlexTables = Box::leak(Box::new(JFlexTables::load(&tiny()).unwrap()));
+        let scan_all = |s: &mut JFlexScanner, text: &str| {
+            let mut r = StrReader::new(text);
+            let mut n = 0;
+            while s.scan(&mut r).unwrap() != Scan::Eof {
+                n += 1;
+            }
+            n
+        };
+        let scanners: Vec<JFlexScanner> = (0..SPARE_BUFFERS + 2)
+            .map(|_| JFlexScanner::new(tables, 7))
+            .collect();
+        drop(scanners);
+        let spare = || SPARE.with(|s| s.borrow().iter().filter(|b| b.len() == 7).count());
+        assert_eq!(spare(), SPARE_BUFFERS);
+        let mut s = JFlexScanner::new(tables, 7);
+        assert_eq!(spare(), SPARE_BUFFERS - 1);
+        assert_eq!(scan_all(&mut s, "abcdefghij"), 10);
+        drop(s);
+        let mut s = JFlexScanner::new(tables, 7);
+        assert_eq!(scan_all(&mut s, "xy"), 2);
+        // a buffer that no longer has its size is not kept
+        s.buffer.push(0);
+        let before = spare();
+        drop(s);
+        assert_eq!(spare(), before);
     }
 
     #[test]

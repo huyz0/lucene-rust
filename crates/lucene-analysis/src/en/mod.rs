@@ -24,8 +24,8 @@ use crate::{
 /// term.
 pub struct PorterStemFilter<I> {
     input: I,
-    /// The stemmer's working buffer, reused across tokens.
-    buf: Vec<char>,
+    /// The stemmer's UTF-16 buffer for non-ASCII terms, reused.
+    buf: Vec<u16>,
 }
 
 impl<I: TokenStream> PorterStemFilter<I> {
@@ -47,12 +47,7 @@ impl<I: TokenStream> TokenFilter for PorterStemFilter<I> {
         }
         let a = self.input.attributes_mut();
         if !a.is_keyword() {
-            crate::porter::stem_in_place(a.term(), &mut self.buf);
-            if !self.buf.iter().copied().eq(a.term().chars()) {
-                let t = a.term_mut();
-                t.clear();
-                t.extend(self.buf.iter());
-            }
+            crate::porter::stem_term(a.term_mut(), &mut self.buf);
         }
         Ok(true)
     }
@@ -62,16 +57,12 @@ impl<I: TokenStream> TokenFilter for PorterStemFilter<I> {
 /// `'s`, `’s` or `＇s` (either case of `s`).
 pub struct EnglishPossessiveFilter<I> {
     input: I,
-    buf: Vec<u16>,
 }
 
 impl<I: TokenStream> EnglishPossessiveFilter<I> {
     /// `new EnglishPossessiveFilter(TokenStream)`.
     pub fn new(input: I) -> Self {
-        EnglishPossessiveFilter {
-            input,
-            buf: Vec::new(),
-        }
+        EnglishPossessiveFilter { input }
     }
 }
 
@@ -82,26 +73,28 @@ impl<I: TokenStream> TokenFilter for EnglishPossessiveFilter<I> {
         if !self.input.increment_token()? {
             return Ok(false);
         }
-        with_utf16_term(self.input.attributes_mut(), &mut self.buf, |b| {
-            let n = b.len();
-            if n >= 2
-                && matches!(b[n - 2], 0x27 | 0x2019 | 0xFF07)
-                && (b[n - 1] == u16::from(b's') || b[n - 1] == u16::from(b'S'))
+        // The last unit is an ASCII `s`, so the unit before it is the
+        // character before it: the suffix is matched on the UTF-8 bytes.
+        let term = self.input.attributes_mut().term_mut();
+        if let Some(rest) = term.strip_suffix(['s', 'S']) {
+            if let Some(stem) = rest
+                .strip_suffix('\'')
+                .or_else(|| rest.strip_suffix('\u{2019}'))
+                .or_else(|| rest.strip_suffix('\u{FF07}'))
             {
-                b.truncate(n - 2);
-                return true;
+                let n = stem.len();
+                term.truncate(n);
             }
-            false
-        });
+        }
         Ok(true)
     }
 }
 
 /// `EnglishMinimalStemmer.stem(char[], int)`: the new length (`s` may have
 /// its third-last unit replaced by `y`).
-fn minimal_stem(s: &mut [u16], len: usize) -> usize {
+fn minimal_stem<T: Copy + PartialEq + From<u8>>(s: &mut [T], len: usize) -> usize {
     let c = |i: usize| s[i];
-    let is = |u: u16, ch: u8| u == u16::from(ch);
+    let is = |u: T, ch: u8| u == T::from(ch);
     if len < 3 || !is(c(len - 1), b's') {
         return len;
     }
@@ -111,7 +104,7 @@ fn minimal_stem(s: &mut [u16], len: usize) -> usize {
     }
     if is(pen, b'e') {
         if len > 3 && is(c(len - 3), b'i') && !is(c(len - 4), b'a') && !is(c(len - 4), b'e') {
-            s[len - 3] = u16::from(b'y');
+            s[len - 3] = T::from(b'y');
             return len - 2;
         }
         let t = c(len - 3);
@@ -147,12 +140,22 @@ impl<I: TokenStream> TokenFilter for EnglishMinimalStemFilter<I> {
             return Ok(false);
         }
         if !self.input.attributes().is_keyword() {
-            with_utf16_term(self.input.attributes_mut(), &mut self.buf, |b| {
+            let term = self.input.attributes_mut().term_mut();
+            if term.is_ascii() {
+                // an ASCII term's bytes are its units, and stay ASCII
+                let mut b = std::mem::take(term).into_bytes();
                 let n = b.len();
-                let new_len = minimal_stem(b, n);
+                let new_len = minimal_stem(&mut b, n);
                 b.truncate(new_len);
-                true
-            });
+                *term = String::from_utf8(b).unwrap_or_default();
+            } else {
+                with_utf16_term(self.input.attributes_mut(), &mut self.buf, |b| {
+                    let n = b.len();
+                    let new_len = minimal_stem(b, n);
+                    b.truncate(new_len);
+                    true
+                });
+            }
         }
         Ok(true)
     }
@@ -243,6 +246,13 @@ mod tests {
         assert_eq!(
             terms(&mut EnglishMinimalStemFilter::new(c)),
             vec!["pony", "boxe", "bus", "class", "toy", "cat", "ary", "foes", "goes", "is", "x"]
+        );
+        // a non-ASCII term goes through its UTF-16 units
+        let mut c = Canned::parse("a:0:1:1:1 b:0:1:1:1 c:0:1:1:1");
+        c.set_terms(&["cafés", "naïes", "😀ies"]);
+        assert_eq!(
+            terms(&mut EnglishMinimalStemFilter::new(c)),
+            vec!["café", "naïe", "😀y"]
         );
         let mut c = Canned::parse("dogs:0:4:1:1");
         c.set_keywords(&[true]);
