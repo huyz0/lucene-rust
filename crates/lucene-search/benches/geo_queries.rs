@@ -95,12 +95,12 @@ fn build() -> ByteBuffersDirectory {
         }
         d.add(LatLonPoint::new("p", lat, lon).unwrap());
         d.add(LatLonDocValuesField::new("p", lat, lon).unwrap());
-        if rng.next_u64() % 10 == 0 {
+        if rng.next_u64().is_multiple_of(10) {
             d.add(LatLonDocValuesField::new("sparse", lat, lon).unwrap());
         }
         d.add(Geo3DPoint::new("g", lat, lon).unwrap());
         d.add(XYPointField::new("xy", lon as f32, lat as f32).unwrap());
-        if rng.next_u64() % 5 == 0 {
+        if rng.next_u64().is_multiple_of(5) {
             for t in LatLonShape::create_indexable_fields("s", &square(lat, lon, 0.05)).unwrap() {
                 d.add(t);
             }
