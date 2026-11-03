@@ -128,7 +128,7 @@
 //! tracked during the initial scan, not by re-inspecting the escaped text
 //! afterward.
 //!
-//! **Numeric range queries**: `field:[min TO max]` (task #64's addition) --
+//! **Numeric range queries**: `field:[min TO max]` --
 //! an `i64` range, parsed into [`Clause::PointsRange`]. Either bound may be
 //! `*` for an open end (mapped to `i64::MIN`/`i64::MAX`, matching real
 //! Lucene's own unbounded-range convention), and either bound may be a
@@ -2370,7 +2370,7 @@ mod tests {
         assert_eq!(clause, Clause::Regexp(RegexpQuery::new("body", r"a\d")));
     }
 
-    // --- Analyzer wiring (task #62) ---
+    // --- Analyzer wiring ---
 
     use lucene_analysis::Analyzer;
     use std::collections::HashSet;

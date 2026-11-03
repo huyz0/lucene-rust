@@ -1,4 +1,4 @@
-//! Differential test for `PrefixQuery` (task #35) against the same real
+//! Differential test for `PrefixQuery` against the same real
 //! `IndexWriter`-produced segment `tests/wildcard_query_fixtures.rs` (task
 //! #34) already validates (`fixtures/data/blocktree_index/`) -- see that
 //! file's module doc for the shared fixture-reuse rationale.

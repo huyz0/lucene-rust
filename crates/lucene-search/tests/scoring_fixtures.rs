@@ -533,7 +533,7 @@ fn nested_boolean_must_clause_scoring_matches_real_lucene_additive_recursion() {
     }
 }
 
-/// `Clause::Phrase` inside a `BooleanQuery` (task #29): reuses the `pos` field's
+/// `Clause::Phrase` inside a `BooleanQuery`: reuses the `pos` field's
 /// real alpha/beta postings (`fixtures/data/blocktree_index/`, see
 /// `phrase_query_fixtures.rs`) to prove `search_boolean_query_scored` sums a
 /// `Clause::Phrase` clause's own [`search_phrase_query_scored`] contribution

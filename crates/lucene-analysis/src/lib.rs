@@ -4799,7 +4799,7 @@ mod tests {
         assert_eq!(out, vec![tok("café", 0, 4, 1)]);
     }
 
-    // -- Analyzer::keyword (task #208) --
+    // -- Analyzer::keyword --
 
     #[test]
     fn keyword_analyzer_emits_whole_text_as_one_unmodified_token() {

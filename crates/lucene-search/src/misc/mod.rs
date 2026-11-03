@@ -1,5 +1,5 @@
 //! `lucene-misc` (Lucene 10.5.0's `misc` module), ported class by class. The
-//! inventory is `docs/inventory/lucene-misc.tsv`; the milestone is M14.
+//! inventory is `docs/inventory/lucene-misc.tsv`.
 
 pub mod fst;
 pub mod high_freq;

@@ -1,4 +1,4 @@
-//! The queries M7 brings into the scorer tree, behind one [`Clause::Extended`]
+//! The extended queries in the scorer tree, behind one [`Clause::Extended`]
 //! variant: `SynonymQuery`, `CombinedFieldQuery`, `NGramPhraseQuery`, the
 //! `MultiTermQuery` rewrite methods (`TermRangeQuery`, `AutomatonQuery`, and
 //! the prefix/wildcard/regexp family under a chosen `RewriteMethod`),

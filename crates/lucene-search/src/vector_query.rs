@@ -1,6 +1,6 @@
 //! Search-side KNN (approximate nearest neighbour) vector queries: the
-//! *query-level* half of Lucene's vector search, on top of the codec half
-//! `c5-vectors` ported into [`lucene_codecs::vectors`] (the
+//! *query-level* half of Lucene's vector search, on top of the codec half in
+//! [`lucene_codecs::vectors`] (the
 //! `Lucene99FlatVectorsFormat` `.vec`/`.vemf` store),
 //! [`lucene_codecs::hnsw`] (`org.apache.lucene.util.hnsw.*`) and
 //! [`lucene_codecs::hnsw_vectors`] (the `.vem`/`.vex` graph).
@@ -34,8 +34,7 @@
 //! **input** ([`VectorsInput::filter`]), exactly as `live_docs` already is
 //! for every other query function in this crate. A caller builds it from
 //! whatever query it likes -- [`crate::resolve_clause_docs`] turns a
-//! [`crate::query::BooleanQuery`] (`Occur::FILTER` clauses included, since
-//! c11) into a `Vec<i32>` and [`accept_bitset`] turns that into the bitset
+//! [`crate::query::BooleanQuery`] (`Occur::FILTER` clauses included) into a `Vec<i32>` and [`accept_bitset`] turns that into the bitset
 //! this module wants. Java's implicit `FieldExistsQuery(field)` conjunct is
 //! folded in here too, for free: translating the accept set into **ordinal**
 //! space drops every document that has no vector, which is all that conjunct
@@ -2960,8 +2959,8 @@ mod tests {
     }
 
     /// A scorer that counts the vector comparisons the walk performs, so a
-    /// test can assert on *work done* rather than on a recall number (c5's
-    /// Tier-2 lesson: recall does not discriminate here -- mutating the
+    /// test can assert on *work done* rather than on a recall number (recall
+    /// does not discriminate here -- mutating the
     /// diversity rule took graph agreement to 1/4273 while recall rose).
     struct Counting<S> {
         inner: S,

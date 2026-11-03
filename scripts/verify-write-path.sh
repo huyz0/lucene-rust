@@ -17,7 +17,7 @@
 #
 # The postings/term-dictionary write path (.doc/.pos/.pay/.tim/.tip/.tmd) is
 # covered by the full-segment, merged-segment, sorted-segment and
-# positions-segment cases below -- the last of which (c23) is the one that
+# positions-segment cases below -- the last of which is the one that
 # reads back positions, offsets and payloads occurrence by occurrence. Task
 # T3.1, see docs/milestones/m3-write-path-proven.md.
 set -euo pipefail

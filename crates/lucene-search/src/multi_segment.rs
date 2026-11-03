@@ -1,18 +1,16 @@
-//! Multi-segment search (task #41): real `IndexSearcher`'s top-level fan-out --
+//! Multi-segment search: real `IndexSearcher`'s top-level fan-out --
 //! run a query against every segment of an index, translate each segment's
 //! locally-scored hits to global doc IDs, and merge into one globally-correct
 //! `TopDocs` (`IndexSearcher.search`'s per-`LeafReaderContext` loop +
 //! `TopDocs.merge`-equivalent).
 //!
-//! Every query function in this crate up to this task (task #10 onward) takes
-//! one already-opened segment's fields/doc-values/norms and returns doc IDs
+//! The single-segment query functions take one already-opened segment's fields/doc-values/norms and returns doc IDs
 //! **local** to that segment (`0..maxDoc` for that segment alone). A real
 //! multi-segment index's global doc ID space is the concatenation of every
 //! segment's local space in segment order -- segment `i`'s `doc_base` is the
 //! sum of every earlier segment's `maxDoc` (`SegmentReader.docBase`, computed
-//! by `IndexReaderContext.leaves()` in real Lucene; this port has no
-//! `DirectoryReader`/`LeafReaderContext` abstraction yet, so callers compute
-//! and pass `doc_base` directly per [`OpenSegment`]).
+//! by `IndexReaderContext.leaves()` in real Lucene; here each
+//! [`OpenSegment`] carries its `doc_base`).
 //!
 //! ## Design: one generic fan-out+merge core, not one per query type
 //!
@@ -621,10 +619,9 @@ pub(crate) fn global_term_stats_states(
 ///
 /// This is `avgdl`'s half of the reader-wide-statistics rule
 /// [`global_term_stats`] implements for `docFreq`/`docCount`. A
-/// `SegmentReader` cannot compute it -- it sees only itself -- so
-/// `SegmentReader::field_norms` used its own segment's counters, giving each
-/// leaf a different length-normalization curve for the same term. Reported as
-/// F-26 in `docs/sweep/m2/b13-search-readers.md`.
+/// `SegmentReader` cannot compute it -- it sees only itself -- and
+/// per-segment counters would give each leaf a different
+/// length-normalization curve for the same term.
 ///
 /// Returns `None` when no segment has the field, in which case there is
 /// nothing to normalize and the per-segment answer (also nothing) is already
@@ -1167,7 +1164,7 @@ pub fn search_boolean_query_multi_segment_concurrent(
 }
 
 /// Multi-segment sibling of [`crate::search_boolean_query_scored_maxscore`]
-/// (task #213): identical fan-out/merge shape to
+///: identical fan-out/merge shape to
 /// [`search_boolean_query_multi_segment`] -- same [`merge_multi_segment_scored`]
 /// core, same per-segment bounded `TopDocsCollector`, same doc-base
 /// translation and cross-segment re-rank -- but each segment is searched with
@@ -2136,7 +2133,7 @@ mod tests {
     }
 
     /// End-to-end exercise of [`search_boolean_query_multi_segment_maxscore`]
-    /// (task #213) against two real, `IndexWriter`-produced segment copies
+    /// against two real, `IndexWriter`-produced segment copies
     /// (the same "open the one real fixture segment twice" two-segment
     /// simulation `search_term_query_multi_segment_merges_two_real_segments`
     /// and `search_boolean_query_multi_segment_merges_two_real_segments`
@@ -3484,15 +3481,8 @@ mod tests {
         ///
         /// That function declines the pruned MAXSCORE loop on three conditions
         /// -- no `.doc` input, `docFreq <= 1`, and an index option
-        /// `LazyDocsCursor` rejects -- and used to answer each of them by
-        /// calling the *no-stats* `search_term_query_scored`, silently
-        /// reverting the leaf to its own `docFreq`/`docCount`. b13 could not
-        /// fix `lib.rs` mid-sweep and worked around it with a caller-side
-        /// guard (`maxscore_keeps_global_stats`) plus this tripwire, which
-        /// then pinned the *broken* behaviour so the guard could not rot
-        /// unnoticed. c6 fixed the defect and deleted the guard; the tripwire
-        /// stays, inverted: every reachable fallback must now score with the
-        /// `global` it was handed, bit for bit, exactly as the pruned path
+        /// `LazyDocsCursor` rejects -- and each fallback must score with the `global` it was handed,
+        /// not the leaf's own `docFreq`/`docCount`, bit for bit, exactly as the pruned path
         /// does.
         ///
         /// The third fallback is unreachable for a scored term query --

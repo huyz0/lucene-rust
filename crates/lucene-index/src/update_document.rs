@@ -2,7 +2,7 @@
 //! delete-by-term + add-document, composed entirely out of already-built
 //! primitives — [`crate::term_delete::resolve_and_apply_term_delete`] (task
 //! #27) for the delete half and [`crate::segment_writer::flush_stored_only_segment`]
-//! (task #11) for the add half, committed together via one
+//! for the add half, committed together via one
 //! [`crate::segment_infos::write`] call (task #16's `.liv`/`segments_N`
 //! machinery).
 //!

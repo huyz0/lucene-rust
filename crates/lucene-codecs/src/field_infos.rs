@@ -788,7 +788,7 @@ fn parse_generation(
         // non-indexed field is therefore a file real Lucene **opens**, with the
         // bits dropped -- not a corrupt one. This port used to reject it, which
         // is how a writer-produced segment became unreadable to its own reader
-        // (c23) while real Lucene read it fine.
+        // while real Lucene read it fine.
         fields.push(field.checked()?);
     }
 
@@ -1321,7 +1321,7 @@ mod tests {
     /// `FieldInfo` through the constructor, whose "for non-indexed fields,
     /// leave defaults" branch clears all three *before* `checkConsistency()`
     /// runs. This port rejected the file instead, which made a segment its own
-    /// writer had produced unopenable (c23). Real Lucene's own answer for the
+    /// writer had produced unopenable. Real Lucene's own answer for the
     /// same bytes is pinned by `fixtures/src/VerifyFieldInfos.java`'s
     /// `noindex_flags` field.
     #[test]

@@ -1,5 +1,5 @@
 //! OpenSearch's bucket aggregations, and whatever sits under them, as a shard
-//! computes them before any reduce (read path R5): `histogram`,
+//! computes them before any reduce: `histogram`,
 //! `date_histogram`, `range` (and `date_range`), `filter`, `filters`,
 //! `global`, keyword `terms` with sub-aggregations, `cardinality`, and the
 //! metrics of [`crate::aggs`] at any depth.

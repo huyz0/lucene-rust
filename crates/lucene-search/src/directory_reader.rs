@@ -1,12 +1,9 @@
-//! A minimal `DirectoryReader`/`SegmentReader`-equivalent (task #45): the
-//! "open every segment a commit lists, in one call" object this port has
-//! been missing since task #41 added multi-segment search. Every query
-//! function in this crate up to now (including [`crate::multi_segment`]'s
-//! own tests) required the *caller* to manually read `segments_N`, open each
-//! segment's `.fnm`/`.tim`/`.tip`/`.tmd`/`.doc`/`.pos`/`.pay`/`.liv` files by
-//! hand, and compute each segment's `doc_base` as a running sum of earlier
-//! segments' `maxDoc` -- exactly the boilerplate real `DirectoryReader.open`
-//! centralizes in Java. This module is that centralization, nothing more.
+//! A minimal `DirectoryReader`/`SegmentReader`-equivalent: the
+//! "open every segment a commit lists, in one call" object: it reads
+//! `segments_N`, opens each segment's `.fnm`/`.tim`/`.tip`/`.tmd`/`.doc`/
+//! `.pos`/`.pay`/`.liv` files, and computes each segment's `doc_base` as a
+//! running sum of earlier segments' `maxDoc`, as `DirectoryReader.open` does
+//! in Java.
 //!
 //! # Scope
 //!
@@ -206,18 +203,11 @@ pub struct SegmentReader {
     /// The segment's `.doc`/`.pos`/`.pay` bytes, held as the [`Input`] the
     /// directory handed back rather than copied out of it.
     ///
-    /// These used to be `Vec<u8>`, filled by `dir.open(name)?.to_vec()`. On the
-    /// M1 corpus that copied 1.57 GB per reader open -- `.doc` 540 MB, `.pay`
-    /// 521 MB, `.pos` 505 MB -- and was the whole of the 135x reader-open gap
-    /// against Lucene, which mmaps and reads in place. `Input` already had an
-    /// `Owned` variant for the compound-file case and already derefs to
-    /// `[u8]`, so holding it instead costs nothing and changes no reader.
+    /// Copying them out would cost ~1.5 GB per reader open on the benchmark
+    /// corpus; Lucene mmaps and reads in place, and so does this.
     ///
-    /// `Arc`, because `clone_reader` -- whose doc comment calls it "a cheap
-    /// in-memory copy ... a genuine no-disk-I/O reuse" -- was cloning those
-    /// `Vec`s, so reusing a segment across a reopen copied the same 1.57 GB
-    /// that opening it did. A refcount bump is what that comment always
-    /// described.
+    /// `Arc`, so `clone_reader` reuses a segment across a reopen with a
+    /// refcount bump instead of a copy.
     doc_buf: Option<Arc<Input>>,
     /// Original `.tim`, `.tip`, `.doc`, `.pos` and `.pay` files for each
     /// postings format, shared for [`Self::check_integrity`]. Multi-format
@@ -491,10 +481,10 @@ impl SegmentReader {
 
             // `open_shared`, not `open`: `open` copies the whole
             // `.tim`/`.tip` into fresh allocations because the returned
-            // `BlockTreeFields` navigates them for its whole life. On the M1
+            // `BlockTreeFields` navigates them for its whole life. On the
             // benchmark corpus that copy is 4.7 MB and 199 us -- 34% of a
             // 579 us `DirectoryReader::open`, and the single largest thing
-            // left in it after c1 made the dictionary lazy. `open_shared`
+            // in it. `open_shared`
             // takes a [`blocktree::SharedBytes`] (a type-erased shared
             // owner), and `open_segment_file` already hands back an
             // `Arc<Input>` -- for a `MmapDirectory` that *is* the mapping, so
@@ -1508,7 +1498,7 @@ impl SegmentReader {
     /// `docFreq`/`docCount` are. A `SegmentReader` cannot sum them -- it sees
     /// only itself -- so a multi-segment search must call
     /// [`DirectoryReader::field_norms`], which does the sum once and builds
-    /// every leaf's norms with the one reader-wide value. (b13's F-26.)
+    /// every leaf's norms with the one reader-wide value.
     pub fn field_norms(&self, field: &str) -> Result<Option<crate::field_norms::FieldNorms<'_>>> {
         let Some((sum_total_term_freq, doc_count)) = self.field_stats(field)? else {
             return Ok(None);
@@ -2665,8 +2655,7 @@ impl DirectoryReader {
 
     /// Every segment's norms for `field`, in commit order, **all built with the
     /// one reader-wide `avgFieldLength`** -- the `Vec` a multi-segment search
-    /// function's `norms` parameter wants, with b13's F-26 fixed at the point
-    /// where it can be.
+    /// function's `norms` parameter wants.
     ///
     /// An entry is `None` when that segment has no norms for the field (norms
     /// omitted, field absent, or no `.nvd`/`.nvm` pair), which the search
@@ -2946,7 +2935,7 @@ mod tests {
     /// through `DirectoryReader::open` (reading its real `segments_1`, not a
     /// hand-built `SegmentInfos`), confirming file-existence detection finds
     /// the real postings files and produces a working, single-segment
-    /// `OpenSegment` whose query results match task #41's manually-wired
+    /// `OpenSegment` whose query results match the manually wired
     /// `search_term_query_multi_segment` test.
     #[test]
     fn opens_real_single_segment_fixture_and_matches_manual_wiring() {
@@ -2964,7 +2953,7 @@ mod tests {
         let query = TermQuery::new("body", "cat");
         let norms = [None];
         let hits = search_term_query_multi_segment(&segments, &query, &norms, 10).unwrap();
-        // Same fixture/query task #41's own multi_segment.rs test uses
+        // Same fixture/query multi_segment.rs's own test uses
         // (`search_term_query_multi_segment_merges_two_real_segments`,
         // segment 0 half): must be non-empty and score-descending.
         assert!(!hits.is_empty());
@@ -3362,7 +3351,7 @@ mod tests {
     /// Confirms `doc_base` is computed as the running sum of previous
     /// segments' `maxDoc`, by opening the same real fixture segment twice
     /// under one hand-built two-segment `SegmentInfos` (the same "open the
-    /// same fixture twice" trick task #41's own cross-segment tests use).
+    /// same fixture twice" trick the cross-segment tests use).
     #[test]
     fn doc_base_is_running_sum_of_previous_max_docs() {
         let dir = FsDirectory::open(fixture_dir());
@@ -4651,16 +4640,8 @@ mod tests {
     /// Real end-to-end proof that positions survive
     /// `IndexWriter::add_document` (real, automatically-tokenized text, no
     /// hand-built `TermPostings`) -> `invert_documents` -> `commit` -> a real
-    /// `PhraseQuery` search against the resulting on-disk segment, closing
-    /// task #211's gap: before this task, `IndexWriter::build_postings_output`
-    /// dropped `invert_documents`'s positions/offsets and
-    /// `set_postings_field`/`resolve_postings_field` rejected
-    /// `IndexOptions::DocsAndFreqsAndPositions[AndOffsets]` fields outright, so
-    /// there was no way to reach `search_phrase_query` from the fully
-    /// automatic tokenization path -- every existing `PhraseQuery` test
-    /// (`phrase_query_fixtures.rs`, `explain.rs`) instead reads from a
-    /// hand-built `TermPostings`/`FieldPostingsInput` fixture or a real-Lucene
-    /// -written fixture, never from this crate's own `IndexWriter`.
+    /// `PhraseQuery` search against the resulting on-disk segment. The other
+    /// `PhraseQuery` tests read hand-built or Java-written postings.
     mod phrase_query_e2e {
         use super::*;
         use crate::{search_phrase_query, PhraseQuery, VecCollector};

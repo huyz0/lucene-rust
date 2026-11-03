@@ -1,277 +1,92 @@
-//! A `CheckIndex`-equivalent (task #57): a standalone consistency verifier
-//! that opens a segment/directory and cross-checks internal relationships a
-//! normal single-purpose open never bothers to verify -- does `.si`'s
-//! declared doc count match `.liv`'s bit-count-derived max doc, does
-//! `live_docs`' cardinality match `SegmentCommitInfo.del_count`, does every
-//! field `.fnm` claims to have doc-values/norms/postings/term-vectors for
-//! actually have a corresponding file (and vice versa), does the
-//! stored-fields reader's own doc count match `.si`'s.
+//! A `CheckIndex` equivalent: a standalone verifier that opens a commit's
+//! segments and cross-checks relationships a normal open never verifies.
 //!
-//! This is deliberately *not* built on top of `lucene-search`'s
-//! `DirectoryReader`/`SegmentReader` (task #45): those types only expose the
-//! curated subset of state a query needs (blocktree fields, postings
-//! buffers, live docs) and hide exactly the things a self-check needs to
-//! cross-reference -- `SegmentInfo.files`, per-field flags, raw
-//! `.si`/`.fnm`/stored-fields bytes. This module lives in `lucene-index`
-//! (not `lucene-search`, which it has no actual dependency on -- every type
-//! it touches is already available here) and reuses
-//! [`crate::segment_infos::read_latest`] for the one piece of "directory
-//! reader" logic that *is* shared (find the latest commit, list its
-//! segments), otherwise opening each segment's files directly through the
-//! same lower-level decoders `lucene-search`'s `directory_reader.rs` itself
-//! calls (`segment_info::parse`, `field_infos::parse`, `live_docs::parse`,
-//! `stored_fields::open`), since those are exactly the values this module
-//! needs to compare against each other.
+//! It is not built on `lucene-search`'s `DirectoryReader`/`SegmentReader`:
+//! those expose only what a query needs and hide what a self-check must
+//! compare (`SegmentInfo.files`, per-field flags, raw `.si`/`.fnm`/stored
+//! fields bytes). It reuses [`crate::segment_infos::read_latest`] to find the
+//! commit and opens each segment's files through the same decoders the
+//! reader calls (`segment_info::parse`, `field_infos::parse`,
+//! `live_docs::parse`, `stored_fields::open`).
 //!
-//! # Scope
+//! # Checks
 //!
-//! Implemented (real, valuable cross-checks given this port's current
-//! write-side scope -- see this module's unit tests for both the
-//! clean-pass and deliberately-corrupted-input cases):
+//! Per file and per commit:
 //!
-//! - Every file `SegmentInfo.files` lists opens and has a structurally valid
-//!   codec footer (magic/algorithm id/checksum shape) -- doubles as a "did
-//!   we forget to write/list a file" check.
-//! - `.si` doc_count vs `.liv`'s bit-count-implied max_doc (if the segment
-//!   has deletions).
-//! - `live_docs` cardinality vs `SegmentCommitInfo.del_count`'s implied live
-//!   count (`max_doc - del_count`).
-//! - `.fnm`'s per-field flags (doc values, norms, term vectors, postings via
-//!   indexed fields with routing attributes or existing direct-format files)
-//!   cross-checked against which of
-//!   `.dvd`/`.dvm`/`.nvd`/`.nvm`/`.tvd`/`.tvx`/`.tvm`/`.tim`/`.tip`/`.tmd`
-//!   the segment's file list actually includes, in both directions (a field
-//!   claiming doc-values with no `.dvd`/`.dvm` file is flagged, and so is a
-//!   `.dvd`/`.dvm` file present with no field claiming doc-values).
-//! - Stored-fields doc count (`StoredFieldsReader::max_doc`) vs `.si`'s
-//!   declared `doc_count`.
-//! - Postings term-by-term re-derivation (revisited; previously deferred --
-//!   see below): for every field with postings and every term in that
-//!   field's dictionary, walks the term's *actual* postings via
-//!   [`blocktree::BlockTreeFields`]/[`DocInput::read_postings`] (the same
-//!   read-side API `lucene-search`'s `directory_reader.rs` uses for real
-//!   queries) and independently recomputes `totalTermFreq` (sum of decoded
-//!   per-doc freqs), cross-checking it against the `.tmd`/`.tim`-recorded
-//!   [`lucene_codecs::blocktree::TermStats`] for that exact term -- a
-//!   metadata/data consistency check, not a re-validation of already-checked
-//!   block encoding: it would catch a dictionary claiming `totalTermFreq=50`
-//!   for a term whose actual per-doc freqs only sum to 49. Each decoded doc
-//!   ID is also checked for being in-range and strictly increasing (see
-//!   "why not a plain docFreq recount" below for why this, not a `docFreq`
-//!   recount, is `docFreq`'s meaningful proxy here).
-//! - Points-tree (BKD) structural invariants (revisited; previously
-//!   deferred -- see below): for every field with points data (`.fnm`'s
-//!   `point_dimension_count != 0`), walks the field's actual BKD tree
-//!   leaf-by-leaf via [`lucene_codecs::points::PointsReader::decode_leaves`]
-//!   (reusing this port's existing `.kdm`/`.kdi`/`.kdd` decoder, not a new
-//!   parser) and checks: every point's packed value (over the index
-//!   dimensions) falls within the field's own `.kdm`-declared
-//!   `min_packed_value`/`max_packed_value`
-//!   (`points.value_within_field_bounds:<field>`); for fields with more
-//!   than one index dimension, each leaf's own embedded bounding box (see
-//!   [`lucene_codecs::points::Leaf::bound`]) is itself a subset of that
-//!   field-level bound (`points.leaf_bounds_subset_of_field:<field>`); and
-//!   the leaves' decoded point counts sum to `.kdm`'s declared field-level
-//!   `point_count` (`points.point_count_matches:<field>`).
+//! - Every file `SegmentInfo.files` lists opens, and its CRC-32 is recomputed
+//!   over every byte (`checksumEntireFile`), not just the footer's shape.
+//! - The `.si` lists itself (`si.files_lists_itself`), and the commit-level
+//!   files (`.liv`, generational field-infos and doc-values-update files) that
+//!   live on `SegmentCommitInfo` are checked too.
+//! - `SegmentInfos.readCommit`'s cross-`.si` validations (`commit.*`):
+//!   `delCount`/`softDelCount` within `maxDoc`, `delCount == 0` without a
+//!   delete generation, segment versions against `minSegmentLuceneVersion`
+//!   and `indexCreatedVersionMajor`, `minVersion` recorded once
+//!   `indexCreatedVersionMajor >= 7`, total docs within
+//!   `IndexWriter.MAX_DOCS`, unique segment names, and `SegmentInfos.counter`
+//!   ahead of every name (`validCounter`).
+//! - `.si` doc count against `.liv`'s length, and `live_docs` cardinality
+//!   against `del_count`.
+//! - `.fnm`'s per-field flags (doc values, norms, term vectors, postings)
+//!   against the files the segment lists, in both directions.
+//! - Compound (`.cfs`) segments are read through
+//!   [`crate::compound_reader::CompoundReader`] like any other.
 //!
-//! ## Revisited scope decision: postings re-derivation
+//! Per format (Java's `test*` methods):
 //!
-//! This check was **deliberately deferred** in task #57 (see the prior
-//! revision of this doc comment / `PLAN.md`'s task #57 entry) with the
-//! stated reason "requires walking per-format internals this port's
-//! read-side decoders expose in different shapes per format -- genuinely a
-//! separate, large task". Re-examined now: that blocker no longer holds for
-//! postings specifically. `blocktree::FieldTerms::iter()` already yields
-//! every `(term, TermStats)` pair in a field in one pass,
-//! `blocktree::BlockTreeFields::iter_fields()` (added by this task) yields
-//! every field's dictionary, and `DocInput::read_postings`/
-//! `postings::singleton_postings` already fully materialize a term's
-//! `(docID, freq)` pairs -- every piece this check needs was already built
-//! and already exercised by `lucene-search`'s query path (task #45) before
-//! this task started; only a one-line accessor (`iter_fields`) was missing.
-//! Nothing about this check requires new decode logic, matching the
-//! `differential-testing` skill's precedent that this module's checks are
-//! self-consistency logic over already-differentially-verified decoders,
-//! not new byte parsing.
+//! - **Stored fields** (`stored_fields.*`): doc count against `.si`, and
+//!   every document decoded, deleted ones included.
+//! - **Term vectors** (`term_vectors.*`): doc count, every document's vectors
+//!   decoded, fields against `.fnm`'s `storeTermVectors`, and each vector
+//!   against the inverted index (`.self_consistent`, `.match_postings`).
+//! - **Doc values** (`doc_values.*`): every value decoded, SORTED/SORTED_SET
+//!   ordinals bounds-checked and SORTED_SET ordinals strictly increasing
+//!   within a doc, BINARY lengths within `.dvm`'s min/max, and the
+//!   docs-with-a-value count against `numDocsWithField`.
+//! - **Norms** (`norms.*`): every value read, the docs-with-a-value count
+//!   against `.nvm`, and a live doc's norm non-zero exactly when it has terms
+//!   in the field's postings.
+//! - **Postings** (`postings.*`): for every term, the postings are walked and
+//!   `totalTermFreq` recomputed against the dictionary's
+//!   [`lucene_codecs::blocktree::TermStats`]; doc ids in range and strictly
+//!   increasing; terms sorted, `docFreq > 0`, and `.tmd`'s field summary
+//!   re-derived; positions, offsets, seek, advance and intersect agreement;
+//!   `checkImpacts` and `checkDocIDRuns` over the lazy cursor. See
+//!   [`check_postings`] for the full table and the Java checks that are
+//!   vacuous in this representation.
+//! - **Points** (`points.*`): every point within the field's `.kdm` bounds,
+//!   each multi-dimension leaf's bounding box within the field's, and the
+//!   leaves' point counts summing to `point_count`.
+//! - **Vectors** (`vectors.*`) and HNSW graphs (`hnsw.*`).
+//! - **Index sort** (`sort.docs_in_index_sort_order`), using the
+//!   `segment_info::SortKeyComparator` the writer sorts with.
+//! - **Soft deletes** (`soft_deletes.count_matches`): live docs with a value
+//!   for the soft-deletes field equal `softDelCount`.
 //!
-//! **Why not a plain `docFreq` recount**: investigating this port's decode
-//! API (`DocInput::read_postings`/`postings::singleton_postings`) turned up
-//! a structural fact worth being explicit about rather than silently
-//! glossing over -- both are *parameterized by* the term dictionary's own
-//! claimed `docFreq` (it drives how many full 256-doc blocks vs. how large a
-//! tail block to decode), exactly like real Lucene's own
-//! `PostingsEnum.reset`/`BlockDocsEnum` (`TermState.docFreq` plays the same
-//! role there). That means `postings.docs.len()` is *always* exactly equal
-//! to the claimed `docFreq` whenever decoding succeeds at all -- a plain
-//! recount can never disagree, so it would be a vacuous, always-passing
-//! check dressed up as real verification. What a genuinely wrong claimed
-//! `docFreq` actually produces is the reader consuming a different number of
-//! bytes than the writer intended and wandering into unrelated bytes (the
-//! next term's data, or past the buffer) -- observable as a decoded doc ID
-//! that is out of the segment's valid `0..doc_count` range or not strictly
-//! increasing, which `postings.doc_ids_valid:<field>` checks directly, or as
-//! an outright decode error (already surfaced via this function's
-//! `postings.open` failure path). This is the same reason real `CheckIndex`
-//! catches this class of bug the way it does, not a limitation invented for
-//! this port.
+//! # Notes
 //!
-//! **Known, honest limitation carried over rather than papered over**: a
-//! term with `docFreq == 1` stores no per-doc freq on disk at all --
-//! `singleton_postings` reconstructs its one `(docID, freq)` pair from
-//! `TermMetadata.singleton_doc_id` and the term dictionary's own recorded
-//! `total_term_freq` (see `blocktree.rs`'s `postings()` and
-//! `postings::singleton_postings`'s doc comment). Re-deriving stats for such
-//! a term from "postings" therefore trivially reproduces the claimed
-//! `total_term_freq` rather than independently verifying it -- this mirrors
-//! real Lucene's own format (a singleton's freq genuinely isn't stored
-//! independently anywhere), not a gap specific to this port.
+//! **Why not a plain `docFreq` recount.** The postings decoder is driven by
+//! the dictionary's own `docFreq` (it decides how many full blocks and how
+//! large a tail block to read), as Lucene's `BlockDocsEnum` is, so a decoded
+//! doc count always equals the claimed one. A wrong `docFreq` shows instead
+//! as the reader wandering into unrelated bytes: a doc id out of range or
+//! not increasing (`postings.doc_ids_valid`), or a decode error
+//! (`postings.open`).
 //!
-//! **The same vacuity also applies to any `IndexOptions::Docs` (freq-less)
-//! field, not just singleton terms**: `blocktree.rs`'s meta parsing sets
-//! `total_term_freq = doc_freq` for such a field (no independent
-//! `total_term_freq` vlong is ever written for it -- see
-//! `postings_writer.rs`'s `IndexOptions::Docs` branch), and the postings
-//! decoder itself synthesizes freq `1` for every doc when the field has no
-//! stored freqs (never reading it from the wire). So for a `Docs`-only
-//! field with `docFreq > 1`, `postings.total_term_freq:<field>` compares
-//! `doc_freq` against `doc_freq` -- always trivially true, the same class
-//! of vacuity as the singleton case above, just for a different reason
-//! (field-wide format choice vs. per-term encoding). `postings.doc_ids_valid`
-//! remains meaningful for such fields regardless, since it only depends on
-//! decoded doc IDs, not freqs.
+//! **Where `totalTermFreq` cannot be checked.** A `docFreq == 1` term stores
+//! no freq; its one posting is rebuilt from the dictionary's
+//! `total_term_freq`. A freq-less (`IndexOptions::Docs`) field has
+//! `total_term_freq = doc_freq` and decodes freq `1` everywhere. In both
+//! cases the comparison is trivially true; `postings.doc_ids_valid` still
+//! applies.
 //!
-//! ## Revisited scope decision: points-tree structural invariants
+//! **Single-dimension points leaves** carry no bounding box on disk, so
+//! `points.leaf_bounds_subset_of_field` runs only for multi-dimension fields.
 //!
-//! Also **deliberately deferred** in task #57 for the same "separate,
-//! per-format task" reason as postings, and closed here for the same
-//! reason that blocker no longer holds: [`lucene_codecs::points`]'s
-//! existing read-side decoder already does all the packed-index/leaf-block
-//! parsing (used today by `lucene-search`'s points range queries, task
-//! #199) -- only a per-leaf accessor
-//! ([`lucene_codecs::points::PointsReader::decode_leaves`], added by this
-//! task, alongside a small [`lucene_codecs::points::Leaf`] type) was
-//! missing, plus actually reading (rather than skip-decoding) the
-//! multi-index-dim per-leaf bounding box `read_leaf_block` had always
-//! parsed past but discarded. Nothing about this check requires new BKD
-//! parsing logic, the same precedent as postings re-derivation above.
-//!
-//! **What this catches**: a corrupted or buggy writer producing a `.kdd`
-//! point value outside the field's own declared `.kdm` bounds (a
-//! metadata/data disagreement across two separate files, exactly the class
-//! of bug `postings.total_term_freq` catches for postings), a leaf whose
-//! own embedded bounding box has grown looser than its parent field's
-//! bound (a tree-invariant violation a range query's pruning silently
-//! relies on being true), or a leaf whose actually-decoded point count
-//! disagrees with `.kdm`'s own declared field-level `point_count`.
-//!
-//! **Known scope note**: `points.leaf_bounds_subset_of_field` only runs for
-//! fields with more than one index dimension, since a single-index-dimension
-//! leaf has no embedded bounding box on disk at all (see `points.rs`'s
-//! `read_leaf_block` doc comment) -- there is nothing there to cross-check
-//! beyond the field-wide bound `points.value_within_field_bounds` already
-//! covers for every field regardless of dimensionality.
-//!
-//! ## Checks added in the `b11-index-meta` sweep
-//!
-//! The sweep against `org/apache/lucene/index/CheckIndex.java` found that a
-//! number of Java's per-segment tests had no counterpart here, and a
-//! verifier that does not check something silently passes corrupt segments.
-//! Now also performed:
-//!
-//! - **`testStoredFields`'s actual document scan** (`stored_fields.every_doc_decodes`):
-//!   every document is decoded, deleted ones included ("to make sure they too
-//!   are not corrupt"). Comparing `max_doc` alone never decompressed a single
-//!   chunk, so a corrupted `.fdt` body passed cleanly.
-//! - **`testTermVectors`** (`term_vectors.*`): doc count vs `.si`, every
-//!   document's vectors decoded, and every field a document carries vectors
-//!   for cross-checked against `.fnm`'s `storeTermVectors`.
-//! - **`testDocValues`** (`doc_values.*`): every field's every per-doc value
-//!   decoded out of `.dvd`, with SORTED/SORTED_SET ordinals bounds-checked
-//!   against the terms dictionary's size, SORTED_SET ordinals checked for
-//!   being a strictly increasing set within a doc, BINARY value lengths
-//!   checked against `.dvm`'s declared min/max, and the decoded
-//!   docs-with-a-value count checked against `.dvm`'s own
-//!   `numDocsWithField`.
-//! - **`testSort`** (`sort.docs_in_index_sort_order`): a segment declaring an
-//!   `indexSort` really is in that order, verified by reading the sort
-//!   fields' doc values and applying `segment_info::SortKeyComparator` -- the
-//!   same comparator the sort-on-flush writer used to produce the order.
-//! - **`checkSoftDeletes`** (`soft_deletes.count_matches`): the number of
-//!   live docs carrying a value for `.fnm`'s soft-deletes field equals the
-//!   commit's `softDelCount`.
-//! - **`testPostings`' field-level and term-level invariants**
-//!   (`postings.terms_sorted`, `postings.doc_freq_positive`,
-//!   `postings.field_summary`): terms strictly increasing within a field,
-//!   `docFreq > 0`, and `.tmd`'s `numTerms`/`sumDocFreq`/`sumTotalTermFreq`/
-//!   `docCount`/`minTerm`/`maxTerm` each re-derived from the dictionary and
-//!   its postings.
-//! - **`SegmentInfos.readCommit`'s cross-`.si` validations**
-//!   (`commit.*`), which this port's `segment_infos::parse` structurally
-//!   cannot perform because it never opens a `.si`: `delCount`/`softDelCount`
-//!   within `maxDoc` and not summing past it, `delCount == 0` without a
-//!   delete generation, the segment's version at or after the commit's
-//!   `minSegmentLuceneVersion` and `indexCreatedVersionMajor`, `minVersion`
-//!   recorded once `indexCreatedVersionMajor >= 7`, total docs within
-//!   `IndexWriter.MAX_DOCS`, unique segment names, and
-//!   `SegmentInfos.counter` ahead of every segment name (real `CheckIndex`'s
-//!   `validCounter`).
-//! - **The `.si`'s own self-reference** (`si.files_lists_itself`) and the
-//!   commit-level files (`.liv`, generational field-infos/doc-values-update
-//!   files) that live on `SegmentCommitInfo` and never in the `.si`
-//!   (`SegmentCommitInfo.files()`).
-//!
-//! ## Checks added in the `c9-check-index` sweep
-//!
-//! b11 left three gaps, all closed here:
-//!
-//! - **`testFieldNorms`'s value scan and `checkFields`' terms-vs-norms
-//!   cross-check** (`norms.entry_present:*`, `norms.values_decode:*`,
-//!   `norms.agree_with_postings:*`): every norm value is read out of `.nvd`,
-//!   the docs-with-a-value count is checked against `.nvm`'s own
-//!   `numDocsWithField`, and a live doc's norm is required to be non-zero
-//!   exactly when that doc has terms in the field's postings -- Java's
-//!   "doesn't have terms according to postings but has a norm value that is
-//!   not zero" / "has terms according to postings but its norm value is 0".
-//! - **`checkFields`' positional, statistical, seek and intersect
-//!   invariants** (`postings.positions_valid:*`, `.offsets_valid:*`,
-//!   `.term_stats:*`, `.term_dict_shape:*`, `.field_in_fnm:*`,
-//!   `.advance_agrees:*`, `.seek_agrees:*`, `.intersect_agrees:*`,
-//!   `.terms_decode:*`) -- see [`check_postings`]' own table, and its list
-//!   of the Java checks that are structurally vacuous in this port's
-//!   representation and why.
-//! - **`testVectors`** (`vectors.*`). b11 recorded it as unreachable because
-//!   "this port has no vector/HNSW write path at all"; batch c5 built one, so
-//!   there is now writer output to check.
-//! - **The `hnsw.*` checks are an addition beyond 10.5.0, not a port.** The
-//!   pinned version's `CheckIndex` has no HNSW graph check at all --
-//!   `testHnswGraphs`/`testHnswGraph` were added to Lucene *after* 10.5.0,
-//!   and c9 mislabelled these as a port of them. They are kept because they
-//!   are diagnostic-only and do catch real graph corruption (see
-//!   [`check_hnsw_graphs`]), and because Lucene's own later equivalent
-//!   checks the same three properties -- but nothing here should be read as
-//!   describing what 10.5.0's `CheckIndex` does. (c18 version audit.)
-//!
-//! Two further gaps found while sweeping and closed here:
-//!
-//! - **The per-file check was `retrieve_checksum`, not
-//!   `checksumEntireFile`.** Real `CheckIndex`'s `test: check integrity`
-//!   step re-reads every byte of every segment file and recomputes its
-//!   CRC-32. This module only validated the footer's *shape*, so a byte
-//!   flipped in the middle of a `.kdd`/`.fdt`/`.tim` passed the `file:*`
-//!   check outright.
-//! - **`testTermVectors` never cross-checked a vector against the inverted
-//!   index** (`term_vectors.self_consistent`, `.match_postings`).
-//!
-//! `checkImpacts` and `checkDocIDRuns` run over the lazy postings cursor's
-//! `advance_shallow`, per-level impacts and `doc_id_run_end`
-//! (`postings.impacts:<f>`, `postings.doc_id_runs:<f>`), against the term's
-//! fully decoded doc list. Compound (`.cfs`) segments,
-//! which this module used to skip, are checked through
-//! [`crate::compound_reader::CompoundReader`] like any other.
-//! A previous version of this list also named the `Float16` vector encoding:
-//! that was a `main`-ism. 10.5.0's `VectorEncoding` has exactly `BYTE` and
-//! `FLOAT32`, so there is no third encoding to be out of scope -- and this
-//! port's reader correctly rejects a third ordinal. (c18 version audit.)
+//! **The `hnsw.*` checks go beyond 10.5.0.** Its `CheckIndex` has no graph
+//! check (`testHnswGraphs` came later). They are diagnostic-only and catch
+//! real graph corruption (see [`check_hnsw_graphs`]); they do not describe
+//! 10.5.0's behaviour.
 // This module is *audited* against the arithmetic gate: no `+`/`-`/`*`/`<<`
 // in it may panic, because a verifier that panics on a corrupt file has
 // failed at its one job (and through the FFI a panic in a debug build takes
@@ -341,8 +156,8 @@ pub struct Check {
 /// produces no check at all, as before, because there is nothing there to be
 /// unguarded.
 ///
-/// (Found by c23: a `.fnm` this port wrote but its own parser rejected made
-/// `check_index` skip every postings check in the segment. See c25.)
+/// For example, a `.fnm` that does not parse must not make every postings
+/// check in the segment vanish silently.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
     Passed,
@@ -1111,7 +926,7 @@ fn open_fnm(
 /// cleanly and only got caught later by whichever decoder happened to trip
 /// over it (and not at all for the bytes no decoder reads). It shares
 /// [`codec_util::check_whole_file_footer`] with `merge.rs`'s pre-bulk-copy
-/// `check_integrity` (batch c4) and with [`crate::checksum_verify`].
+/// `check_integrity` and with [`crate::checksum_verify`].
 fn check_files_exist_and_validate(
     dir: &dyn Directory,
     commit: &SegmentCommitInfo,
@@ -1374,11 +1189,10 @@ const LIV_FAMILIES: &[&str] = &[
 /// with an index bounded against anything other than that bitset's own
 /// `len()`.** Every caller here has a doc id bounded against `.si`'s
 /// `doc_count`, while the bitset comes out of the `.liv` -- two independent
-/// files, and exactly the pairing c28 found live twice in `deletes`/
-/// `term_delete`. They agree today only because [`check_live_docs`] hands
+/// files. They agree today only because [`check_live_docs`] hands
 /// `si.doc_count` to `live_docs::parse` as `max_doc`, which is one line away
-/// from not being true. Since c41 `FixedBitSet::get` checks its bound in
-/// release as well as debug, so the failure would be a panic -- in a
+/// from not being true. `FixedBitSet::get` checks its bound in release as
+/// well as debug, so the failure would be a panic -- in a
 /// *verifier*, which is meant to report damage, not die on it.
 ///
 /// A doc id outside the bitset counts as **live**, deliberately: this is a
@@ -1630,8 +1444,8 @@ fn check_term_vectors(
         // every field when there is no `.fnm` to name them -- so with the
         // `.fnm` unreadable their problem lists are empty for the one reason
         // that must never read as a pass: nothing looked. Same for the
-        // cross-check when the postings side is missing. This is the exact
-        // shape c23 hit (`fnm.open` failing and the segment still reporting
+        // cross-check when the postings side is missing. This is the case
+        // of `fnm.open` failing and the segment still reporting
         // clean term vectors).
         if field_infos.is_none() {
             skip_families(
@@ -2117,8 +1931,7 @@ impl Problems {
 /// it; a position beyond this could only come from a corrupt `.pos` or a
 /// writer that never checked.
 ///
-/// Re-exported from the **writer's** definition rather than duplicated (c28's
-/// carry-over). The two halves of one rule -- what
+/// Re-exported from the **writer's** definition rather than duplicated. The two halves of one rule -- what
 /// [`crate::indexing_chain::advance_position`] clamps to and what
 /// `postings.positions_valid` rejects -- must move together, and a verifier
 /// with its own copy of the writer's ceiling is a verifier that can silently
@@ -2809,7 +2622,7 @@ fn check_term_impacts<'d>(
 ///   `blocktree` sets `totalTermFreq = docFreq` for an `IndexOptions::Docs`
 ///   field, `read_freq_pair` returns `(sumDocFreq, sumDocFreq)` for one, and
 ///   `read_tail_block`/`refill_full_block` do `freqs.fill(1)`. All four are
-///   `x == x`, and after c25 removed them nothing in this function reads
+///   `x == x`, so nothing in this function reads
 ///   `has_freqs` at all -- **the `.fnm`'s frequency flag has no independent
 ///   on-disk witness in this port.** `hasPayloads`/`hasOffsets` *are*
 ///   checked, because those do have one: whether the segment carries a `.pay`
@@ -2819,7 +2632,7 @@ fn check_term_impacts<'d>(
 ///   all three while parsing (`InvalidFieldNumber`, `InvalidDocCount`,
 ///   `InvalidSumTotalTermFreq`), the first because it takes each field's
 ///   *name* from the very `FieldInfos` a check here would compare against.
-///   A file that would trip them is reported as `postings.open`. (c25)
+///   A file that would trip them is reported as `postings.open`.
 /// - *`payload.length < 1`, and any payload check at all.* Java guards
 ///   against a codec handing back a zero-length `BytesRef`; this port
 ///   represents "no payload at this position" as an empty `Vec<u8>`, so a
@@ -2927,8 +2740,8 @@ fn check_postings(
         // `max_doc` and rejects a `.tmd` whose `docCount` is outside
         // `0..=max_doc` (`Error::InvalidDocCount`) while parsing, so a
         // dictionary that would trip this check never reaches
-        // `check_postings` at all -- it is reported as `postings.open`. See
-        // c9 finding 9 / c25 for this module's rule on never-firing checks.
+        // `check_postings` at all -- it is reported as `postings.open`. This
+        // module ships no check that can never fire.
         //
         // Java's `(minTerm == null) != (maxTerm == null)` has no
         // counterpart here: this port stores both as (possibly empty) byte
@@ -3299,7 +3112,7 @@ fn check_postings(
         // `checkFields`' seek round: every sampled term must be findable
         // again by an independent `seekExact`/`seekCeil` from the trie root,
         // returning the same statistics the forward scan reported. `try_*`
-        // is deliberate (batch c1): a corrupt block must surface as an error
+        // is deliberate: a corrupt block must surface as an error
         // here, not as "term not found".
         let mut seek_problems: Vec<String> = Vec::new();
         {
@@ -3848,7 +3661,7 @@ fn check_doc_values(
                         // The entry is how every value of this field is
                         // addressed, so without it the field's whole column
                         // goes unread -- and nothing else in the module reads
-                        // `.dvd` (c19 measured 0 corruptions caught elsewhere).
+                        // `.dvd`.
                         skip_families(
                             &mut out,
                             &[&format!("doc_values.values_decode:{name}")],
@@ -3884,7 +3697,7 @@ fn check_doc_values(
                         // The entry is how every value of this field is
                         // addressed, so without it the field's whole column
                         // goes unread -- and nothing else in the module reads
-                        // `.dvd` (c19 measured 0 corruptions caught elsewhere).
+                        // `.dvd`.
                         skip_families(
                             &mut out,
                             &[&format!("doc_values.values_decode:{name}")],
@@ -3927,7 +3740,7 @@ fn check_doc_values(
                         // The entry is how every value of this field is
                         // addressed, so without it the field's whole column
                         // goes unread -- and nothing else in the module reads
-                        // `.dvd` (c19 measured 0 corruptions caught elsewhere).
+                        // `.dvd`.
                         skip_families(
                             &mut out,
                             &[
@@ -3983,7 +3796,7 @@ fn check_doc_values(
                         // The entry is how every value of this field is
                         // addressed, so without it the field's whole column
                         // goes unread -- and nothing else in the module reads
-                        // `.dvd` (c19 measured 0 corruptions caught elsewhere).
+                        // `.dvd`.
                         skip_families(
                             &mut out,
                             &[&format!("doc_values.values_decode:{name}")],
@@ -4040,7 +3853,7 @@ fn check_doc_values(
                         // The entry is how every value of this field is
                         // addressed, so without it the field's whole column
                         // goes unread -- and nothing else in the module reads
-                        // `.dvd` (c19 measured 0 corruptions caught elsewhere).
+                        // `.dvd`.
                         skip_families(
                             &mut out,
                             &[
@@ -4601,10 +4414,9 @@ fn cached_base_column<'c>(
 /// "advanceExact returns true", which is what
 /// `PendingSoftDeletes.countSoftDeletes` counts over the soft-deletes field.
 ///
-/// Only the two doc-values types a soft-deletes field can have. Until c35
-/// this shared [`sort_key_values`], which is now sort-field-shaped and reads
-/// three different columns depending on the `SortField` kind -- an argument
-/// the soft-deletes check has nothing to pass.
+/// Only the two doc-values types a soft-deletes field can have; separate from
+/// [`sort_key_values`], which reads one of three columns depending on the
+/// `SortField` kind.
 fn doc_values_presence(
     dvd: &[u8],
     meta: &doc_values::DocValuesMeta,
@@ -4761,8 +4573,8 @@ pub(crate) fn check_index_sort(
         // The sharpest of the skip cases, and the reason this is modelled at
         // all: a segment that *declares* an index sort but carries no
         // doc-values files has nothing this check can read, and the sort is
-        // then verified by nothing anywhere. Before c25 that was silence, and
-        // `all_passed()` said the segment was fine -- over a `.si` whose
+        // then verified by nothing anywhere. Reporting it keeps `all_passed()` from
+        // calling the segment fine over a `.si` whose
         // declared order every merge and every early-terminating query will
         // trust. `fnm.doc_values_vs_files` does not cover it: a sort field
         // that is not in `.fnm` at all leaves nothing to claim doc values,
@@ -5195,11 +5007,9 @@ fn check_points_structural_invariants(
                 ));
             }
             // `VerifyPointsVisitor`'s constructor guards plus
-            // `testPoints`' `getDocCountSeen() != docCount` check. b11
-            // ported the point-count half of this; the doc-count half --
-            // which is what a `PointRangeQuery`'s `docCount`-based cost
-            // estimate and `IndexSearcher`'s pruning read -- had no
-            // counterpart.
+            // `testPoints`' `getDocCountSeen() != docCount` check; the doc count
+            // feeds a `PointRangeQuery`'s cost estimate and `IndexSearcher`'s
+            // pruning.
             if field.doc_count as i64 > field.point_count {
                 doc_problems.push(format!(
                     "field {field_name:?} claims docCount={} with only point_count={} points",
@@ -5417,10 +5227,8 @@ const POINTS_FAMILIES: &[&str] = &[
 /// **every** norm value out of `.nvd`, plus `checkFields`' terms-vs-norms
 /// cross-check.
 ///
-/// b11 recorded this as the one `test*` method with no counterpart here: the
-/// module only cross-checked that `.nvd`/`.nvm` existed when some field
-/// claimed norms, so a corrupted norms payload passed a clean run and then
-/// silently changed every BM25 score that read it.
+/// Checking only that `.nvd`/`.nvm` exist would let a corrupted norms
+/// payload pass and silently change every BM25 score that reads it.
 ///
 /// Three checks per field:
 ///
@@ -5486,7 +5294,7 @@ fn check_field_norms(
         Ok(v) => v,
         Err(e) => {
             checks.push(Check::fail("norms.open", e));
-            // c19 measured that **no** check other than these reads `.nvd`,
+            // No check other than these reads `.nvd`,
             // so a skipped norms family is a completely unguarded file.
             skip_families(
                 checks,
@@ -5524,8 +5332,8 @@ fn check_field_norms(
                 ),
             ));
             // Without an entry there is no column to read, so this field's
-            // norms are checked by nothing at all -- and c19 measured that
-            // nothing else in the module reads `.nvd`.
+            // norms are checked by nothing at all: nothing else in the
+            // module reads `.nvd`.
             skip_families(
                 checks,
                 &[
@@ -5702,17 +5510,14 @@ fn check_field_norms(
 /// (which are **this port's own addition**, not a port of 10.5.0 -- see
 /// there).
 ///
-/// b11 recorded this as out of scope because "this port has no vector/HNSW
-/// write path at all". Batch c5 built one -- `.vec`/`.vemf` are real
-/// `Lucene99FlatVectorsFormat` bytes and `.vem`/`.vex` real
-/// `Lucene99HnswVectorsFormat` ones -- so there is now writer output to
-/// check, and this is its checker.
+/// `.vec`/`.vemf` are `Lucene99FlatVectorsFormat` bytes and `.vem`/`.vex`
+/// `Lucene99HnswVectorsFormat` ones.
 ///
 /// `testVectors`:
 ///
 /// - Java's `dimension <= 0` guard is *not* ported: it is unfalsifiable in
-///   Java as well as here (see the comment at its site), and c9 finding 9
-///   established that this module does not ship checks that can only pass.
+///   Java as well as here (see the comment at its site), and this module ships
+///   no check that can only pass.
 /// - `vectors.field_entry_matches_fnm:<f>` -- the `.vemf` entry's
 ///   dimension/encoding/similarity agreeing with `.fnm`'s.
 /// - `vectors.values_decode:<f>` -- every one of the field's `size`
@@ -6019,8 +5824,7 @@ fn check_flat_vector_fields(
         // and `field_infos::FieldInfo::check_consistency` (a direct port of
         // Java's) rejects `vector_dimension < 0` inside `field_infos::parse`,
         // which is where `fnm.open` gets this `FieldInfos` from. Shipping it
-        // would be a check that can only ever pass, which c9 finding 9
-        // already established this module does not do.
+        // would be a check that can only ever pass.
         let Some(entry) = flat.field(fi.number) else {
             checks.push(Check::fail(
                 format!("vectors.field_entry_matches_fnm:{name}"),
@@ -6077,7 +5881,7 @@ fn check_flat_vector_fields(
         // that `read_field_entry` has already proved; and `bytes(ord, ..)`
         // rejects only an out-of-range ordinal, which `0..size` excludes.
         //
-        // They are kept, unlike c25's D1-D10 and c30's D11. The distinction
+        // They are kept, unlike never-firing `Check::fail` arms. The distinction
         // is what the arm *claims*: a `Check::fail` that cannot fire is a
         // false claim of coverage, so it is deleted; an `Err` arm that cannot
         // fire is total error handling over a `Result` the decoder's
@@ -6446,14 +6250,13 @@ impl VectorOrdToDoc for vectors::ByteVectorValues<'_> {
 ///
 /// **Not a port of 10.5.0.** The pinned version's `CheckIndex` has no HNSW
 /// check of any kind; `testHnswGraphs`/`testHnswGraph` were added to Lucene
-/// after 10.5.0, and c9 documented these as a port of them. They stay because
+/// after 10.5.0. These stay because
 /// they are diagnostic-only, cost nothing a caller does not ask for, and do
 /// catch real corruption -- `corrupted_hnsw_graph_bytes_are_never_silently_accepted`
 /// and `corrupted_hnsw_neighbours_are_caught_by_the_graph_checks` are their
 /// evidence -- and the three properties checked here are the same ones
-/// Lucene's own later `testHnswGraph` settled on. But the label was wrong and
-/// is corrected here: nothing below describes 10.5.0 behaviour. (c18 version
-/// audit.)
+/// Lucene's own later `testHnswGraph` settled on. Nothing below describes
+/// 10.5.0 behaviour.
 fn check_hnsw_graphs(
     dir: &dyn Directory,
     commit: &SegmentCommitInfo,
@@ -6673,8 +6476,7 @@ const HNSW_FAMILIES: &[&str] = &[
 /// Java's `getConnectedNodesOnLevel`: how many nodes a depth-first walk from
 /// the entry point reaches on `level`.
 ///
-/// c25 left an `if entry < 0 || entry >= size { return 0 }` guard here as a
-/// D-list candidate. It is deleted: `entry_node` is `0` for a single-level
+/// There is no `entry < 0 || entry >= size` guard: `entry_node` is `0` for a single-level
 /// graph and `nodes_by_level[top][0]` otherwise, and `read_field_entry`
 /// validates that ordinal into `0..size` -- so the guard could only fire for
 /// `size == 0`, and a `size == 0` graph never reaches this function at all.
@@ -7067,12 +6869,8 @@ mod tests {
         // `caught_by_advance > 0` -- an assertion that survives a regression
         // to one caught byte in three thousand.
         //
-        // This loop used to run under `catch_unwind` with a silenced panic
-        // hook, because a corrupt `.doc` could trip a `debug_assert_eq!` on
-        // a value read off disk and panic in a debug build -- and a panicking
-        // case was `continue`d, i.e. excluded from the assertion. Batch c8
-        // converted those four sites to typed `Corrupted` errors, so the
-        // escape hatch is gone and every byte flip is now actually checked.
+        // No `catch_unwind`: a corrupt `.doc` yields a typed `Corrupted` error,
+        // never a panic, so every byte flip is checked.
         let body_end = original.len() - lucene_store::codec_util::FOOTER_LENGTH;
         let mut caught_by_advance = 0usize;
         let mut caught_by_other = 0usize;
@@ -7454,7 +7252,7 @@ mod tests {
     /// does not, so corrupting it is exactly the case where the two
     /// disagree -- a term the scan enumerated that a seek can no longer
     /// find, or a `seekCeil` that lands on the wrong term. `try_seek_exact`
-    /// / `try_seek_ceil` (batch c1's error-carrying forms) are what let that
+    /// / `try_seek_ceil` (the error-carrying forms) are what let that
     /// surface as a failure instead of a silent "not found".
     #[test]
     fn corrupting_the_term_index_is_caught_by_the_seek_check() {
@@ -7471,8 +7269,8 @@ mod tests {
         // dominate the test suite. Every fourth byte still covers every
         // structural region of the trie.
         //
-        // Re-signed, like every other negative control in this module since
-        // c15: with a stale footer the `file:*` CRC catches every flip, so
+        // Re-signed, like every other negative control in this module: with a
+        // stale footer the `file:*` CRC catches every flip, so
         // `!failed.is_empty()` is trivially true and `caught_by_seek > 0` is
         // the only real claim left -- one that survives a regression to a
         // single caught byte.
@@ -7609,8 +7407,7 @@ mod tests {
         // perfectly well-formed and only the *semantic* checks can reject it.
         // Without that, `file:*`'s CRC catches every flip on its own and a
         // `caught_by_ords > 0` assertion says nothing about the ordinal-space
-        // checks -- the weakness c15 fixed in its own `.dvs` control and
-        // recorded here.
+        // checks.
         let body_end = original.len() - lucene_store::codec_util::FOOTER_LENGTH;
         let mut caught_by_ords = 0usize;
         let mut caught_by_other = 0usize;
@@ -8037,8 +7834,8 @@ mod tests {
     /// Without this a corruption test of `.vec`/`.vex` proves nothing about
     /// the structural checks: `FlatVectorsReader::open` and
     /// `HnswVectorsReader::open` both verify the *whole file's* checksum
-    /// before parsing a single field entry (c5 ported that from
-    /// `Lucene99FlatVectorsReader`/`Lucene99HnswVectorsReader`), so every
+    /// before parsing a single field entry (as
+    /// `Lucene99FlatVectorsReader`/`Lucene99HnswVectorsReader` do), so every
     /// byte flip surfaces as `vectors.open`/`hnsw.open` and never reaches
     /// the graph. Repairing the checksum isolates the check under test from
     /// the checksum, which is what "corrupt exactly the thing this check is
@@ -9098,7 +8895,7 @@ mod tests {
         assert_eq!(checks[0].name, "liv.open");
         assert_eq!(checks[0].outcome, Outcome::Failed);
         // ... and the two checks that needed the file are reported as not
-        // run, rather than vanishing from the result (c25).
+        // run, rather than vanishing from the result.
         assert_eq!(
             checks[1..]
                 .iter()
@@ -9999,10 +9796,9 @@ mod tests {
     /// [`write_points_fixture`] with the dimension count and a `.kdm` editor
     /// exposed.
     ///
-    /// c25 recorded that `points.leaf_bounds_subset_of_field` is *skipped
-    /// entirely* for a single-dimension field and that every hand-built
-    /// points fixture in this file is one, so the check had never run against
-    /// anything. `kdm_edit` is the same idea as `kdd_override` applied to the
+    /// `points.leaf_bounds_subset_of_field` is skipped for a single-dimension
+    /// field, and every other hand-built points fixture here is one.
+    /// `kdm_edit` is the same idea as `kdd_override` applied to the
     /// metadata: the field summary a `.kdm` records (`pointCount`,
     /// `docCount`) is computed by the writer from the points it is given, so
     /// it cannot be *asked* for a summary that lies -- which is precisely
@@ -10378,10 +10174,8 @@ mod tests {
     // Hand-built structures for the checks whose *failure* arms a real
     // segment never reaches.
     //
-    // c19's coverage audit found that `check_index.rs`'s uncovered lines were
-    // almost entirely `problems.push(..)`/`Check::fail(..)` arms: 4 000 lines
-    // of verifier in which ~150 individual checks had never once been seen to
-    // fire. That is the failure mode this module exists to prevent -- a check
+    // Each failure arm here must be seen to fire at least once. A check
+    // that is never seen to fire is the failure mode this module exists to prevent -- a check
     // that silently does nothing looks exactly like a check that passes.
     //
     // The two functions below take plain data structures rather than files,
@@ -11674,11 +11468,10 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------
-    // c25: the never-fired check arms.
+    // Failure arms no real segment reaches.
     //
-    // Every `Check::fail`/`problems.push` below had been observed to fire
-    // exactly zero times before this batch, which makes it indistinguishable
-    // -- from outside -- from a check that passes. Each test drives one
+    // A `Check::fail`/`problems.push` never seen to fire is
+    // indistinguishable, from outside, from a check that passes. Each test drives one
     // family and asserts the *named* check fails, not merely that something
     // did.
     // ---------------------------------------------------------------------
@@ -11880,10 +11673,8 @@ mod tests {
         std::fs::remove_dir_all(&dst).ok();
     }
 
-    /// Until the T4.6 every per-format check returned **silently** for a
-    /// compound segment -- so every segment real Lucene flushed passed this
-    /// module having been checked for nothing but its `.si`, `.fnm` and
-    /// stored-field count. Compound segments now reach the checks only through
+    /// A compound segment must not make the per-format checks return
+    /// silently. Compound segments reach the checks only through
     /// [`CompoundReader`] (`check_segment_in_commit`), as a loose segment
     /// whose files are the archive's members, and no check looks at the flag
     /// any more. This pins that: the flag changes nothing below
@@ -11906,8 +11697,7 @@ mod tests {
         // to do anyway". Without this pairing, five of the seven assertions
         // below would also hold with the guards deleted, because each check's
         // "this segment has no such files" early return would take over. That
-        // is exactly the c19 weakness this batch exists to remove, and the
-        // first version of this test had it.
+        // is the weakness this test guards against.
         let run = |is_compound_file: bool| -> Vec<Check> {
             let si = claiming_si(is_compound_file, claiming_files());
             let mut stats = CheckStats::default();
@@ -12306,7 +12096,7 @@ mod tests {
     // precisely the file `check_postings` exists to reject. These two helpers
     // decode the written `.tim` term-statistics region and the `.tmd`
     // field-summary record, let a test change one claim, and re-encode. That
-    // is a negative control in c15's shape: the bytes are real writer output
+    // is a negative control: the bytes are real writer output
     // apart from the one semantic claim under test, and every checksum is
     // re-signed so `file:*`'s CRC cannot "catch" the corruption first.
 
@@ -12487,8 +12277,7 @@ mod tests {
         // returns it as both sums, so reading two here would consume
         // `docCount` as `sumDocFreq` and shift the whole record. The
         // re-encoding is canonical, so the identity round trip would still be
-        // byte-identical and would not catch it -- assert instead. (c25
-        // review, A4.)
+        // byte-identical and would not catch it -- assert instead.
         let sum_total_term_freq = input.read_vlong().unwrap();
         let sum_doc_freq = input.read_vlong().unwrap();
         let doc_count = input.read_vint().unwrap();
@@ -12697,11 +12486,9 @@ mod tests {
         std::fs::remove_dir_all(&dst).ok();
     }
 
-    /// The `totalTermFreq` accumulator's overflow arm (c19's F8: this sum is
+    /// The `totalTermFreq` accumulator's overflow arm (this sum is
     /// `checked_add` precisely so a `.tmd` claiming `i64::MAX` cannot be made
-    /// to agree with itself). The arm reports and stops the walk; it had
-    /// never run, so the `checked_add` that F8 introduced was itself
-    /// unverified.
+    /// to agree with itself). The arm reports and stops the walk.
     #[test]
     fn per_term_total_term_freqs_that_overflow_i64_are_reported_not_summed() {
         let dst = tempdir();
@@ -12782,8 +12569,8 @@ mod tests {
     /// indexes offsets or stores payloads, and a `.pos` exactly when some
     /// field indexes positions -- so those two files are the only
     /// *independent on-disk witness* the `.fnm`'s positional flags have
-    /// (`hasFreqs`/`hasPositions` have none, which is why c25 deleted the
-    /// checks that pretended otherwise). Both arms, and the two decode paths
+    /// (`hasFreqs`/`hasPositions` have none, so they are not checked). Both
+    /// arms, and the two decode paths
     /// that then decline to read positions rather than panicking, had never
     /// run.
     #[test]
@@ -12877,8 +12664,8 @@ mod tests {
     /// A vector segment whose `.si` lists `.vec`/`.vemf`/`.vem`/`.vex` files
     /// that are not in the directory. Every one of the four is opened by a
     /// separate `dir.open(..)` whose failure arm reports under its own
-    /// subsystem name -- and those arms are *different* from the ones c19's
-    /// file-replacement test drove, which reach the readers' own parse
+    /// subsystem name -- and those arms are *different* from the ones the
+    /// file-replacement test drives, which reach the readers' own parse
     /// failures. A file that is simply gone is the more common accident of
     /// the two (an interrupted copy, a partially-restored snapshot).
     #[test]
@@ -13010,8 +12797,8 @@ mod tests {
     /// something a byte flip does often.
     ///
     /// Driven through this port's own `.vem`/`.vex` writer rather than by
-    /// corrupting bytes, for the same reason c19 drove the term-vector arms
-    /// at the function: a graph is a shape, not a byte, and this is the only
+    /// corrupting bytes, for the same reason the term-vector arms are
+    /// driven at the function: a graph is a shape, not a byte, and this is the only
     /// way to ask for a *specific* one.
     #[test]
     fn an_hnsw_entry_point_that_reaches_only_itself_is_caught() {
@@ -13169,7 +12956,7 @@ mod tests {
     /// will not decode had never run for either, which is the half of the
     /// check that does the work.
     ///
-    /// c19's file-replacement control reaches these subsystems by swapping a
+    /// The file-replacement control reaches these subsystems by swapping a
     /// whole file for another kind, which fails at `open`. A flipped byte in
     /// the middle of a compressed chunk is the failure that gets past `open`
     /// -- and past `file:*`, because the footer is re-signed -- and lands in
@@ -13180,7 +12967,7 @@ mod tests {
     /// **abort**, which no `catch_unwind` at the FFI boundary can intercept).
     /// Both are fixed; this test is what keeps them fixed.
     ///
-    /// Measured floors, in the shape c19's controls use: the number that was
+    /// Measured floors: the number that was
     /// measured when this was written is in the failure message, the floor is
     /// ~85% of it, and every corruption is accounted for as caught-here,
     /// caught-elsewhere or accepted so the denominator equals the sweep's own
@@ -13246,7 +13033,7 @@ mod tests {
                  {accepted} accepted); the floor is the measured number when this was written"
             );
             if *ext == ".fdt" {
-                // As with c19's `.nvm` and `.dvd` rows: nothing else in the
+                // As with the `.nvm` and `.dvd` rows: nothing else in the
                 // module reads `.fdt`, so a corruption this walk misses is a
                 // corruption nothing catches. The 14 it does miss are
                 // stored-field *values*, which have no second copy anywhere
@@ -13275,7 +13062,7 @@ mod tests {
     ///
     /// `term_vectors.fields_marked_in_fnm` has two arms -- the field exists
     /// but says `storeTermVectors=false`, and the field is not in `.fnm` --
-    /// and c19's control drove only the first. The second is what a `.fnm`
+    /// and the file-replacement control drives only the first. The second is what a `.fnm`
     /// rewritten by a field-infos *update* generation (or a lost `.fnm`
     /// generation) actually looks like, and it is worse than the first: the
     /// vectors are unaddressable rather than merely unexpected.
@@ -13346,12 +13133,10 @@ mod tests {
         std::fs::remove_dir_all(&dst).ok();
     }
 
-    /// **The c23 scenario**: a `.fnm` this port wrote and its own parser
-    /// rejects. `fnm.open` fails, and before c25 that was the *end* of the
-    /// report -- every postings, doc-values, norms, points, vector and
-    /// field-flag check simply never appeared, and three term-vector families
-    /// appeared as **passes**, because their problem lists were empty for the
-    /// one reason that must never read as agreement: nothing had looked.
+    /// A `.fnm` that does not parse. `fnm.open` fails, and the report must still
+    /// name every postings, doc-values, norms, points, vector and field-flag
+    /// check that did not run, and must not show term-vector families as
+    /// passes because nothing looked.
     ///
     /// A verifier that reports safety over a region it did not examine is
     /// worse than one that omits the check, because the omission is at least
@@ -13361,8 +13146,8 @@ mod tests {
     fn a_prerequisite_failure_names_every_family_it_takes_down() {
         let dst = copy_fixture("term_vectors_index");
         let fnm_path = find_file(&dst, ".fnm");
-        // Truncating the `.fnm` body is the cheapest stand-in for c23's
-        // "we wrote it, we reject it": any `.fnm` that will not parse
+        // Truncating the `.fnm` body is the cheapest stand-in for a `.fnm` the
+        // parser rejects: any `.fnm` that will not parse
         // reproduces the state exactly.
         std::fs::write(&fnm_path, b"not a field-infos file").unwrap();
 
@@ -13487,10 +13272,10 @@ mod tests {
     ///
     /// Prerequisites in this module can take a family of checks down
     /// with them. The danger is not that they do -- there is genuinely
-    /// nothing to check once the file will not open -- it is that before c25
-    /// they did it *invisibly*, so a caller could not tell a region that was
-    /// examined and found healthy from one nothing looked at. Every one of
-    /// them now names its casualties.
+    /// nothing to check once the file will not open -- it is doing it
+    /// *invisibly*, so a caller could not tell a region that was examined and
+    /// found healthy from one nothing looked at. Every one of them names its
+    /// casualties.
     ///
     /// This test exists so that adding a new `*.open` arm without its
     /// `skip_families` call fails the suite rather than quietly reintroducing
@@ -13608,17 +13393,13 @@ mod tests {
     /// Every file the `.si` lists that is *gone* from the directory must be
     /// reported by the check that opens it, by name.
     ///
-    /// c25 drove two of these arms (`.tim`, `.vec`/`.vex`). The rest --
-    /// `.fdt`/`.fdx`/`.fdm`, `.tvd`/`.tvx`/`.tvm`, `.dvm`/`.dvd`, `.nvd`,
-    /// `.kdm`/`.kdi`/`.kdd`, `.tip`/`.tmd`/`.doc`/`.pos` -- had never run,
-    /// which mattered because every one of them sits *inside* a
+    /// Every one of these arms sits *inside* a
     /// `(|| -> Result<..>{ ... })()` block whose failure arm is the only
     /// thing standing between a missing file and a silently empty walk.
     /// A partially-restored snapshot or an interrupted copy is the common
     /// way to produce one, and it must not read as agreement.
     ///
-    /// Each row also asserts what c19's controls call the isolation
-    /// property: the *named* check fails. `file:<name>` fails too (the file
+    /// Each row also asserts the isolation property: the *named* check fails. `file:<name>` fails too (the file
     /// is genuinely absent, and `check_files_exist_and_validate` says so
     /// first), which is correct and is not what this test is about.
     #[test]
@@ -13740,8 +13521,7 @@ mod tests {
     /// Every `.vec` fixture in this repo is `Float32`, so the whole
     /// `VectorEncoding::Byte` arm of `check_vectors` -- its decode loop, its
     /// per-vector length validation and its `ordToDoc` walk -- had never run
-    /// against anything at all. That is a *format* gap as much as a coverage
-    /// one (c25's carry-over).
+    /// against anything at all.
     ///
     /// `writer_max_doc` and `si_max_doc` are separate on purpose: the
     /// `ordToDoc` check compares the `.vec`'s doc mapping against the `.si`'s
@@ -13942,8 +13722,7 @@ mod tests {
     /// A re-signed sweep over the **sparse** byte-vector segment's `.vemf`,
     /// the metadata file that says where in the `.vec` every region lives.
     ///
-    /// This is c19's negative-control shape applied to a file c25's sweeps
-    /// never reached with a byte encoding: overwrite one 8-byte field with a
+    /// The negative-control shape: overwrite one 8-byte field with a
     /// hostile value, re-sign the footer so `file:*`'s CRC cannot claim the
     /// catch, and require that the verifier **reports** rather than panics.
     /// The `ordToDoc` addresses region is the interesting one -- its offset
@@ -14015,9 +13794,8 @@ mod tests {
     /// A `.vem` that parses cleanly but whose *per-field* graph does not
     /// open: `hnsw.open:<field>`, and the three families it takes down.
     ///
-    /// The whole-file `hnsw.open` arm has had a test since c19; this is the
-    /// per-field one, and it is the one with a `skip_families` call attached
-    /// -- so until now nothing proved that a field whose graph is
+    /// The whole-file `hnsw.open` arm has its own test; this is the per-field
+    /// one, the one with a `skip_families` call attached, proving that a field whose graph is
     /// unreadable *names* the checks that did not run on it. A segment can
     /// carry several vector fields and lose the graph of exactly one.
     ///
@@ -14181,8 +13959,7 @@ mod tests {
     ///
     /// `FixedBitSet::get` does `words[index >> 6]` behind a bare
     /// `debug_assert`, so an unbounded id 64 or more past the end panics in a
-    /// release build too -- c28's F6, in the shape `docs/arithmetic-gate.md`
-    /// now names as a crate rule. Both modes are covered: an *empty* bitset
+    /// release build too (the crate rule in `docs/arithmetic-gate.md`). Both modes are covered: an *empty* bitset
     /// (`words` is empty, so any index is a real panic) and a short one
     /// (`words` has room, so the read would silently return a ghost bit).
     #[test]
@@ -14207,7 +13984,7 @@ mod tests {
         );
 
         // A negative doc id -- `as usize` would sign-extend it to
-        // `usize::MAX`, which is the c28 shape exactly.
+        // `usize::MAX`.
         assert!(is_live(Some(&short), -1));
         // And no bitset at all means nothing is deleted.
         assert!(is_live(None, i32::MAX));
@@ -14224,7 +14001,7 @@ mod tests {
     /// check -- reads the decoded leaves, so all four have to be named as
     /// not run rather than silently omitted.
     ///
-    /// Reported as a rate, in c19's shape: the footer is re-signed over each
+    /// Reported as a rate: the footer is re-signed over each
     /// corruption so `file:*`'s CRC cannot claim the catch.
     #[test]
     fn a_re_signed_kdd_corruption_is_reported_by_the_points_decode() {
@@ -14297,8 +14074,7 @@ mod tests {
         );
     }
 
-    /// The two points arms c25 left open because no fixture in the tree
-    /// could reach them.
+    /// The two points arms no other fixture in the tree reaches.
     ///
     /// 1. **`points.leaf_bounds_subset_of_field`** is skipped outright for a
     ///    single-index-dimension field (Lucene's `VerifyPointsVisitor` gets
@@ -14429,8 +14205,7 @@ mod tests {
     /// *through*, corrupted one byte at a time with the footer re-signed so
     /// only a semantic check can fire.
     ///
-    /// This is c25's `patch_dvm` carry-over, taken as a sweep rather than as
-    /// a typed editor. The reason a sweep is the right shape here is that the
+    /// A sweep rather than a typed `.dvm` editor. A sweep is the right shape here is that the
     /// arms it has to reach are not one invariant but a family: a per-document
     /// decode that fails, an ordinal outside the terms dictionary, a
     /// non-increasing SORTED_SET ordinal run, a dictionary whose size
@@ -14439,8 +14214,8 @@ mod tests {
     /// entry region produces exactly that -- it moves an offset, a count or a
     /// bit width without touching the payload those describe.
     ///
-    /// c19 measured **0** of 261 `.dvd` corruptions caught by any check other
-    /// than `doc_values.*`; the same holds for the `.dvm` and is asserted, so
+    /// No check other than `doc_values.*` catches a `.dvd` corruption; the same
+    /// holds for the `.dvm` and is asserted, so
     /// a skipped `doc_values` family really is the column's only reader.
     #[test]
     fn no_re_signed_dvm_corruption_of_a_doc_values_index_goes_unnoticed() {
@@ -14522,7 +14297,7 @@ mod tests {
     ///    would be verified by nothing.
     /// 3. A `.dvd` the `.si` lists and the directory does not have -- the
     ///    `dir.open` arm inside `open_base_column`, distinct from the
-    ///    `doc_values.open` one c30 drives elsewhere because this is the
+    ///    `doc_values.open` one tested elsewhere because this is the
     ///    *second*, independent open of the same pair.
     /// 4. The same for the soft-deletes field, whose `softDelCount` is then a
     ///    claim about data that cannot be read.
@@ -14777,9 +14552,8 @@ mod tests {
         std::fs::remove_dir_all(&dst).ok();
 
         // (3) A `.si` that declares an index sort and lists a `.dvm` but no
-        // `.dvd`: nothing can be read, so the sort is *unverified* -- the
-        // c25 hole, reached through a different door (a half-listed file set
-        // rather than no doc-values files at all).
+        // `.dvd`: nothing can be read, so the sort is *unverified*, here
+        // through a half-listed file set rather than no doc-values files.
         let dst = tempdir();
         let commit = write_sorted_dv_fixture(&dst, &[1, 2, 3, 4], sort_asc(), false, 0);
         let si_path = dst.join("_0.si");

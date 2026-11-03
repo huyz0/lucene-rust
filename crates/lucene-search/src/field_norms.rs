@@ -67,15 +67,9 @@ pub struct FieldNorms<'a> {
     /// recorded region does not lie inside `data` -- in which case the general
     /// [`norms::norm_value`] path re-raises that error per lookup.
     ///
-    /// This used to be an `Option<Vec<i32>>` holding *every* doc id with a
-    /// norm, decoded eagerly by each constructor, because
-    /// `norms::norm_value`'s sparse branch then re-decoded the whole region on
-    /// every call. c2 turned `IndexedDISI` into a real incremental cursor, so
-    /// neither is needed: [`FieldNorms::cursor`] hands a per-scorer
+    /// No doc id list is decoded: [`FieldNorms::cursor`] hands a per-scorer
     /// [`FieldNormsCursor`] that walks the region forward once per *scan*
-    /// instead of once per lookup, and the `Vec` -- 4 bytes per
-    /// document-with-the-field, allocated per `FieldNorms` and therefore per
-    /// query per leaf -- is gone.
+    /// instead of once per lookup.
     sparse_region: Option<&'a [u8]>,
     /// SimpleText's numeric norms, cloned into each scorer's cursor. Values
     /// stay in the text file and are decoded by its fallible positioning path.
@@ -629,9 +623,7 @@ impl<'a> FieldNormsCursor<'_, 'a> {
     ///
     /// Distinct from [`Self::field_length`]/[`Self::norm_inverse`], which
     /// deliberately *substitute* `UNNORMED_FIELD_LENGTH` for an absent norm
-    /// because a scorer must produce a number -- that substitution is what
-    /// made "does this doc have a norm" unanswerable through this type before
-    /// (c12 §5.3).
+    /// because a scorer must produce a number.
     #[inline]
     pub fn has_norm(&mut self, doc: i32) -> norms::Result<bool> {
         Ok(self.norm_byte(doc)?.is_some())
@@ -1099,8 +1091,7 @@ mod tests {
     /// rewind path). Two implementations of one lookup; the only thing worth
     /// testing about the fast one is that it is not also different.
     ///
-    /// This is the test that would have caught the c6 rewrite silently turning
-    /// `FieldNorms`'s eager `Vec<i32>` of doc ids into a forward-only walk:
+    /// Guards the forward-only cursor:
     /// a forward-only cursor that did *not* rewind would answer "absent" for
     /// every doc after the first backwards step.
     #[test]

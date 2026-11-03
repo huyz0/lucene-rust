@@ -718,9 +718,8 @@ pub fn doc_has_value(doc_values_data: &[u8], field: DocValuesField<'_>, doc: i32
 /// function, in Java's own order. There is no fourth, points-based source --
 /// `FieldExistsQuery`'s scorer never touches `PointValues`; points appear only
 /// in its `rewrite`/`count` shortcuts as a *docCount* proxy, which is
-/// [`field_exists_leaf_is_complete`]. (c12 §5.3 recorded a points *iterator*
-/// as a deferred source; re-reading 10.5.0's `FieldExistsQuery` shows that
-/// source does not exist.)
+/// [`field_exists_leaf_is_complete`]. (10.5.0's `FieldExistsQuery` has no
+/// points iterator source.)
 pub fn search_field_exists<C: Collector>(
     doc_values_data: &[u8],
     field: DocValuesField<'_>,
@@ -938,9 +937,7 @@ pub enum IndexOrDocValuesPlan {
 /// ```
 ///
 /// `cost()` is the *index* side's `ScorerSupplier.cost()`, which for a point
-/// range query is `PointValues.estimateDocCount(visitor)` -- a BKD tree walk
-/// that this port does not have (b14 §1.4 recorded it as missing, with no
-/// consumer at the time; this is the consumer). The `>>> 3` is Java's own
+/// range query is `PointValues.estimateDocCount(visitor)` -- a BKD tree walk. The `>>> 3` is Java's own
 /// comment: "at equal costs, doc values tend to be worse than points since
 /// they still need to perform one comparison per document while points can do
 /// much better than that given how values are organized. So we give an
@@ -1218,7 +1215,7 @@ mod tests {
     }
 
     // --- search_numeric_range_with_skip_index: real-Lucene fixture tests ---
-    // `fixtures/data/doc_values_skip_index/` (task #185's fixture): 36000
+    // `fixtures/data/doc_values_skip_index/` 36000
     // docs, field "skip_numeric" with a strictly-increasing value
     // `i*7 - 3`, giving a 2-level skip index (see GenDocValuesSkipIndex.java).
 
@@ -2429,7 +2426,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // `FieldExistsQuery`: the norms and vector sources (c12 §5.3)
+    // `FieldExistsQuery`: the norms and vector sources
     // -----------------------------------------------------------------
 
     fn manifest_kv(dir: &str) -> std::collections::HashMap<String, String> {

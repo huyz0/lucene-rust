@@ -217,7 +217,7 @@ fn two_term_phrase_matches_real_lucenes_exact_phrase_scorer_doc_set() {
     assert_eq!(collector.docs, expected);
 }
 
-/// Differential/consistency test for `search_phrase_query_scored` (task #29):
+/// Differential/consistency test for `search_phrase_query_scored`:
 /// the phrase's BM25 score for doc 8555 must equal `idf(alpha) + idf(beta)`
 /// (real `BM25Similarity`'s combined-term-statistics idf, see
 /// `search_phrase_query_scored`'s doc comment) times `tfNorm(phraseFreq=1, ...)`

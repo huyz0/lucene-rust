@@ -209,7 +209,7 @@ pub(crate) fn decode_all(input: &mut impl DataInput, total_value_count: i64) -> 
 /// containing a negative value**. A block of all-negative values took
 /// `max <= 0 -> bitsPerValue = 0`, encoding every value as the constant `0`;
 /// a mixed block truncated each negative value to the low `bitsPerValue` bits.
-/// That was latent when it was fixed and is **not latent any more** (c33):
+/// That was latent when it was fixed and is **not latent any more**:
 /// the term-vectors writer stores a length as `span - prefixLength -
 /// suffixLength`, where `span` is `endOffset - startOffset`: the
 /// occurrence's span minus the term's length *in UTF-8 bytes* -- exactly

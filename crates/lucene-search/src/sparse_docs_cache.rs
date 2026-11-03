@@ -3,7 +3,7 @@
 //!
 //! Java has no such cache: `IndexedDISI` walks a sparse field's documents
 //! lazily, per iterator. This port decodes them once into a rank index
-//! (stage 3, M10 T10.4: the grouping collectors open a field's values in every
+//! (the grouping collectors open a field's values in every
 //! segment for every selector, and decoding was a tenth of a grouping
 //! search), and keeps the decoded set for the next iterator over the same
 //! field of the same segment core.

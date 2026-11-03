@@ -3773,7 +3773,7 @@ mod tests {
     /// Closes a coverage gap the field norms/sloppy-match branches of
     /// `explain_phrase` weren't exercised by: `slop != 0` and the real-norms
     /// path. Reuses `GenBlockTree.java`'s known sloppy-gap fixture doc
-    /// (`"alpha"@0`, `"beta"@3` -- a real 2-move gap, task #28) with a real
+    /// (`"alpha"@0`, `"beta"@3` -- a real 2-move gap) with a real
     /// `FieldNorms` built the same way `term_explain_with_real_norms_...`
     /// does for `Clause::Term`, at a slop large enough to match.
     #[test]

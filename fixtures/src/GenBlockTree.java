@@ -534,7 +534,7 @@ public class GenBlockTree {
         m.append("field.pos.sloppyGap.movesNeeded=2\n");
         m.append("field.pos.sloppyGap.realLuceneSlopResults=").append(slopResults).append('\n');
 
-        // SpanNearQuery/SpanOrQuery cross-engine ground truth (task #55):
+        // SpanNearQuery/SpanOrQuery cross-engine ground truth:
         // doc8's "pos" field has "delta"@0 and "gamma"@1 -- real occurrence
         // order is REVERSED relative to a SpanNearQuery built with clauses in
         // [gamma, delta] order. Run *real* SpanNearQuery(slop=0, inOrder) for

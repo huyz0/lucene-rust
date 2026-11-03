@@ -1563,8 +1563,7 @@ mod tests {
     /// `num_docs` and the doc ids the postings walk yields are two
     /// independent inputs to this `pub fn`: the caller's claim about the
     /// segment, and the segment's own `.doc` file. `FixedBitSet::new(num_docs)`
-    /// then gets indexed by a doc id nothing relates to it -- c28's
-    /// `deletes::mark_deleted` shape, on a public API. With `num_docs = 1` and
+    /// then gets indexed by a doc id nothing relates to it, on a public API. With `num_docs = 1` and
     /// a term whose postings name doc 2, the old code wrote a ghost bit into
     /// word 0 of a one-bit set; the doc it claimed to cache was never
     /// recoverable, and a `num_docs` of 0 panicked outright.

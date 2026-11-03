@@ -1,5 +1,4 @@
-//! `org.apache.lucene.search.suggest.analyzing.FreeTextSuggester` (M13
-//! T13.3c): a statistical n-gram language model for free text. Every 1..=`grams`
+//! `org.apache.lucene.search.suggest.analyzing.FreeTextSuggester`: a statistical n-gram language model for free text. Every 1..=`grams`
 //! token n-gram of the suggestions goes into one FST whose output is the
 //! n-gram's count (stored as `Long.MAX_VALUE - count`); a lookup completes the
 //! last tokens of the query with the highest order model that has seen them,

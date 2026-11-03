@@ -107,8 +107,7 @@ impl WildcardQuery {
 /// `WildcardPattern::new`'s glob parser unchanged, or (b) a direct prefix
 /// match with no glob syntax involved at all. This port takes (b) — and it's
 /// not even new code: [`lucene_codecs::wildcard::WildcardPattern::prefix`]
-/// already exists (added in task #1 for exactly this purpose, see that
-/// module's doc comment) and builds its token list directly from `prefix`'s
+/// already exists (see that module's doc comment) and builds its token list directly from `prefix`'s
 /// raw bytes as `Literal` tokens plus one trailing `AnyMany`, **never calling
 /// `WildcardPattern::new`'s escape-parsing loop at all**. Option (a) was
 /// rejected because it would require this query to re-escape `prefix` byte-by-
@@ -179,14 +178,14 @@ impl PrefixQuery {
 /// edit distance, and the terms are scored against one *blended* document
 /// frequency. See `crate::fuzzy_doc_scores`.
 ///
-/// **`max_expansions` (task #221)**: real `FuzzyQuery`'s `maxExpansions`
+/// **`max_expansions`**: real `FuzzyQuery`'s `maxExpansions`
 /// (`FuzzyQuery.defaultMaxExpansions = 50`) bounds how many matching terms
 /// from the field's term dictionary get expanded into the query's actual
 /// execution -- without this cap, a fuzzy query against a huge or adversarial
 /// term dictionary could match an unbounded number of terms (a real
 /// behavioral difference from Lucene, and a performance/DoS-shaped gap for a
 /// query whose target term can originate from untrusted input, the same
-/// class of concern task #198's regexp step-budget fix addressed). This
+/// class of concern as the regexp step budget). This
 /// port's [`crate::fuzzy_doc_ids`] enforces the cap by `take`ing only the
 /// first `max_expansions` terms off
 /// [`lucene_codecs::blocktree::FieldTerms::fuzzy_intersect`]'s iterator.
@@ -316,8 +315,8 @@ impl RegexpQuery {
     }
 }
 
-/// `PointRangeQuery`-equivalent (`org.apache.lucene.search.PointRangeQuery`),
-/// task #64's addition: a field plus an inclusive `[min, max]` `i64` range --
+/// `PointRangeQuery`-equivalent (`org.apache.lucene.search.PointRangeQuery`):
+/// a field plus an inclusive `[min, max]` `i64` range --
 /// this port's [`crate::query_parser`] produces this from `field:[min TO
 /// max]` syntax. **Parsing-only for now**: nothing in this crate resolves a
 /// `PointsRange` clause against an actual segment yet (see
@@ -376,7 +375,7 @@ impl PointsRangeQuery {
 
 /// `SpanQuery`-equivalent (`org.apache.lucene.queries.spans.SpanQuery` and its
 /// three concrete subclasses this port covers: `SpanTermQuery`,
-/// `SpanNearQuery`, `SpanOrQuery` — task #55's addition), a genuinely
+/// `SpanNearQuery`, `SpanOrQuery`), a genuinely
 /// different query family from [`PhraseQuery`]: instead of only reporting
 /// "does this doc match", a span query's result is the actual matching
 /// **span ranges** (`[start, end)` position pairs) within a doc, which can
@@ -606,8 +605,7 @@ impl TermInSetQuery {
 }
 
 /// One `must`/`should`/`must_not` slot in a [`BooleanQuery`] — a leaf
-/// `TermQuery`, a leaf `PhraseQuery` (task #29's addition, closing the gap this
-/// enum's doc comment previously flagged), or a nested `BooleanQuery`
+/// `TermQuery`, a leaf `PhraseQuery`, or a nested `BooleanQuery`
 /// (recursively, to arbitrary depth: a `Clause::Boolean` can itself contain any
 /// of the three variants). The Rust analogue of real `BooleanQuery.add(Query,
 /// Occur)` accepting any `Query` implementation into a clause list — this port
@@ -622,7 +620,7 @@ impl TermInSetQuery {
 /// containing a `Vec<Clause>` would otherwise be an infinitely-sized type without
 /// the indirection.
 // Only `PartialEq`, not `Eq`: `Clause::DisjunctionMax` embeds a `tie_breaker:
-// f32` (task #32), and `f32` has no total order (`NaN`) so it can't derive
+// f32`, and `f32` has no total order (`NaN`) so it can't derive
 // `Eq`. Nothing in this crate needs `Clause: Eq` (no `HashSet<Clause>`/`BTreeSet<Clause>`
 // use) -- every existing `assert_eq!`/`==` call site only needs `PartialEq`.
 #[derive(Debug, Clone, PartialEq)]
@@ -640,50 +638,50 @@ pub enum Clause {
     /// independently of the parent query's — see [`crate::search_boolean_query`]'s
     /// doc comment for the exact recursive semantics.
     Boolean(Box<BooleanQuery>),
-    /// A nested `DisjunctionMaxQuery` (task #32's addition) — matched (a doc
+    /// A nested `DisjunctionMaxQuery` — matched (a doc
     /// matches iff any disjunct matches) and scored (real Lucene's `max +
     /// tieBreaker * sum(rest)` dismax formula) via
     /// [`crate::resolve_clause_docs`]/[`crate::clause_scores`], same recursive
     /// treatment as `Clause::Boolean`.
     DisjunctionMax(Box<DisjunctionMaxQuery>),
-    /// A nested `ConstantScoreQuery` (task #33's addition) — matches iff the
+    /// A nested `ConstantScoreQuery` — matches iff the
     /// wrapped clause matches, but always scores exactly `score`, discarding
     /// whatever the wrapped clause's own score would have been; see
     /// [`ConstantScoreQuery`]'s doc comment.
     ConstantScore(Box<ConstantScoreQuery>),
-    /// A nested `BoostQuery` (task #33's addition) — matches iff the wrapped
+    /// A nested `BoostQuery` — matches iff the wrapped
     /// clause matches, scored as the wrapped clause's own score multiplied by
     /// `boost`; see [`BoostQuery`]'s doc comment.
     Boost(Box<BoostQuery>),
-    /// A leaf `WildcardQuery` (task #34's addition) -- matches every doc
+    /// A leaf `WildcardQuery` -- matches every doc
     /// containing at least one term (for `query.field`) that
     /// `lucene_codecs::wildcard::WildcardPattern` accepts, unscored (flat
     /// `1.0` per match); see [`WildcardQuery`]'s doc comment.
     Wildcard(WildcardQuery),
-    /// A leaf `PrefixQuery` (task #35's addition) -- matches every doc
+    /// A leaf `PrefixQuery` -- matches every doc
     /// containing at least one term (for `query.field`) starting with
     /// `query.prefix`'s literal bytes, unscored (flat `1.0` per match); see
     /// [`PrefixQuery`]'s doc comment.
     Prefix(PrefixQuery),
-    /// A leaf `FuzzyQuery` (task #42's addition) -- matches every doc
+    /// A leaf `FuzzyQuery` -- matches every doc
     /// containing at least one term (for `query.field`) within
     /// `query.max_edits` edit distance of `query.term` (restricted to terms
     /// sharing `query.term`'s first `query.prefix_length` bytes exactly),
     /// unscored (flat `1.0` per match); see [`FuzzyQuery`]'s doc comment.
     Fuzzy(FuzzyQuery),
-    /// A leaf `RegexpQuery` (task #43's addition) -- matches every doc
+    /// A leaf `RegexpQuery` -- matches every doc
     /// containing at least one term (for `query.field`) that
     /// `lucene_codecs::regexp::RegexpPattern` accepts (matching the term in
     /// full, see that module's whole-term-match convention), unscored (flat
     /// `1.0` per match); see [`RegexpQuery`]'s doc comment.
     Regexp(RegexpQuery),
-    /// A `SpanQuery` (task #55's addition, `SpanTerm`/`SpanNear`/`SpanOr`) --
+    /// A `SpanQuery` (`SpanTerm`/`SpanNear`/`SpanOr`) --
     /// matches every doc with at least one non-empty span (see
     /// [`crate::span_matches_in_doc`]), scored as `SpanScorer` scores it; see
     /// [`SpanQuery`]'s doc comment for the exact span-matching semantics and
     /// this port's scope decision.
     Span(SpanQuery),
-    /// A leaf `PointRangeQuery` (task #64's addition) -- parsing-only for
+    /// A leaf `PointRangeQuery` -- parsing-only for
     /// now, see [`PointsRangeQuery`]'s doc comment for the exact deferred
     /// execution scope; no `resolve_clause_docs`/`clause_scores` arm exists
     /// for this variant yet.
@@ -706,7 +704,7 @@ pub enum Clause {
     /// (its norms, else its doc values), constant-scored; see
     /// [`FieldExistsQuery`]'s doc comment.
     Exists(FieldExistsQuery),
-    /// The queries M7 brings into the scorer tree -- synonyms, BM25F, the
+    /// The extended queries in the scorer tree -- synonyms, BM25F, the
     /// multi-term rewrite methods, the fusion queries, doc-values and point
     /// ranges, KNN results; see [`crate::extended_query`].
     Extended(Box<crate::extended_query::ExtendedQuery>),
@@ -1108,16 +1106,8 @@ impl BooleanQuery {
     ///    at all, and `MatchNoDocsQuery("pure negative BooleanQuery")` when
     ///    every clause was `MUST_NOT`.
     ///
-    ///    This used to be a **no-op in code**, on the grounds that the port had
-    ///    "no separate `MatchNoDocsQuery`-equivalent `Clause` variant to
-    ///    rewrite *to*" and that [`crate::matched_boolean_docs`] already
-    ///    treated "`must` and `should` both empty" as matching nothing. The
-    ///    first half of that stopped being true when [`Clause::MatchNoDocs`]
-    ///    was added, and the b12 sweep's rules 5, 8 and 9 all `return
-    ///    Clause::MatchNoDocs(..)` -- so the justification no longer held and
-    ///    the rule is now implemented. The observable matching behaviour is
-    ///    unchanged (both forms match nothing); what changes is that
-    ///    `rewrite()` now *reports* it, with Java's reason string, instead of
+    ///    [`crate::matched_boolean_docs`] would match nothing either way;
+    ///    `rewrite()` *reports* it, with Java's reason string, instead of
     ///    handing back a query that looks satisfiable.
     ///
     ///    Java tests this before recursing and catches the post-recursion case
@@ -1187,12 +1177,9 @@ impl BooleanQuery {
     /// a filter.
     ///
     /// **`must`/`should` duplicate deduplication (Java's two "Deduplicate …
-    /// clauses by summing up their boosts" blocks).** Implemented, and worth a
-    /// note because an earlier version of this file declined to implement it
-    /// and justified the gap by citing
-    /// `Similarity.computeQueryTermWeight` — **which does not exist in Lucene
-    /// 10.5.0**, the version this port targets. It is a later addition on
-    /// Lucene `main`; the `c18-version-audit` sweep batch caught the citation.
+    /// clauses by summing up their boosts" blocks).** Implemented. (It does
+    /// not involve `Similarity.computeQueryTermWeight`, which is a later
+    /// addition on Lucene `main`, not in 10.5.0.)
     ///
     /// 10.5.0's rule is a pure structural transform with no `IndexSearcher`
     /// and no `Similarity` in sight, so nothing about it is out of reach here:

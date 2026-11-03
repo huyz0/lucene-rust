@@ -3,7 +3,7 @@
 //! that lets `blocktree::FieldTerms::regexp_intersect` jump past whole runs of
 //! the sorted term array instead of testing every term -- the sorted-array
 //! analogue of what `ByteRunAutomaton`'s dead state does for real Lucene's
-//! `IntersectTermsEnum` (see `docs/sweep/m2/b8-automata-analysis.md`).
+//! `IntersectTermsEnum`.
 //!
 //! The term dictionary is the shape the search benchmark's corpus has:
 //! `t0`..`t999999`, sorted lexicographically, so the interesting patterns are

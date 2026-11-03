@@ -1,10 +1,15 @@
-//! `org.apache.lucene.search.suggest` (`lucene-suggest`), M13 T13.3: the
-//! suggester API and the completion postings format. T13.3a is the base layer:
-//! [`lookup`] (`Lookup`, `LookupResult`, `LookupPriorityQueue`) and [`input`]
-//! (`InputIterator` and its buffering and sorting wrappers); T13.3b adds [`tst`]
-//! (`TSTLookup`); T13.3b also adds [`wfst`] (`WFSTCompletionLookup`) and
-//! [`fst_completion`] (`FSTCompletion` and its lookup and sorters), and T13.3a's
-//! [`dictionary`] (`FileDictionary`, `DocumentDictionary`); T13.3c adds [`analyzing`] (`AnalyzingSuggester`, `FuzzySuggester`, `SuggestStopFilter`) and [`suggest_stop_factory`] and [`free_text`] (`FreeTextSuggester`); T13.3d adds [`fst_util`] (`FSTUtil`) and [`document`] (the completion lookup).
+//! `org.apache.lucene.search.suggest` (`lucene-suggest`): the suggester API
+//! and the completion postings format.
+//!
+//! - [`lookup`] (`Lookup`, `LookupResult`, `LookupPriorityQueue`) and
+//!   [`input`] (`InputIterator` and its buffering and sorting wrappers).
+//! - [`dictionary`] (`FileDictionary`, `DocumentDictionary`).
+//! - [`tst`] (`TSTLookup`), [`wfst`] (`WFSTCompletionLookup`) and
+//!   [`fst_completion`] (`FSTCompletion` and its lookup and sorters).
+//! - [`analyzing`] (`AnalyzingSuggester`, `FuzzySuggester`,
+//!   `SuggestStopFilter`), [`suggest_stop_factory`] and [`free_text`]
+//!   (`FreeTextSuggester`).
+//! - [`fst_util`] (`FSTUtil`) and [`document`] (the completion lookup).
 
 pub mod analyzing;
 pub mod completion_query;

@@ -1,4 +1,4 @@
-//! Fragment assembly / highlighting over task #39's offset primitive (task #56).
+//! Fragment assembly and highlighting over the term-offset primitive.
 //!
 //! `crates/lucene-search/src/term_vectors_query.rs`'s `matched_term_offsets`
 //! computes character-offset spans for matched terms in one document's
@@ -54,9 +54,7 @@
 //!
 //! - **The boundaries are UAX #29's**, via [`sentence_boundaries`] -- the same
 //!   specification the JDK's `BreakIterator.getSentenceInstance` implements,
-//!   not a heuristic. c12 replaced a hand-rolled terminator scan with an
-//!   English abbreviation list; that list was a divergence from Java, which
-//!   applies no abbreviation suppression at all. See
+//!   not a heuristic, and with no abbreviation suppression, as in Java. See
 //!   [`sentence_boundaries`]'s own doc for the one tailoring that *is*
 //!   applied (folding a whitespace-only run into the preceding sentence, which
 //!   is what the JDK does and pure UAX #29 does not).
@@ -104,22 +102,14 @@
 //! panic on a multi-byte character even if the input offsets are wrong or
 //! out of range (they are clamped to the text's UTF-16 length first).
 //!
-//! **This used to be Rust's `char` -- Unicode scalars -- which is not the
-//! same unit** (M2 sweep `c29-search-carryovers`, closing c23's F13). The two
-//! agree for the whole Basic Multilingual Plane and disagree for every
-//! supplementary-plane character: an emoji is one Unicode scalar and two
-//! UTF-16 code units, so a document containing one shifted every subsequent
-//! offset by one per emoji and cut its snippets in the wrong place. Nothing
-//! caught it because every fixture in this repo was ASCII, where UTF-8 bytes,
-//! Unicode scalars and UTF-16 code units all coincide;
-//! `crates/lucene-search/tests/highlighter_utf16_offsets_fixtures.rs` now
-//! pins the unit against real Lucene's own `StandardAnalyzer` offsets over
+//! **Rust's `char` (a Unicode scalar) is not the same unit.** The two agree
+//! for the Basic Multilingual Plane and disagree for every supplementary-plane
+//! character: an emoji is one Unicode scalar and two UTF-16 code units.
+//! `crates/lucene-search/tests/highlighter_utf16_offsets_fixtures.rs` pins the unit against real Lucene's own `StandardAnalyzer` offsets over
 //! text that separates all three.
 //!
-//! [`offsets_from_analysis`] used to be the one place a *different* unit
-//! entered -- `lucene_analysis::Token`'s offsets were UTF-8 bytes and it
-//! converted at the boundary. As of c33 that producer emits Java `char`s too,
-//! so there is now exactly **one** offset unit from the analyzer through the
+//! `lucene_analysis::Token` emits Java `char` offsets too, so there is
+//! exactly **one** offset unit from the analyzer through the
 //! index to the rendered fragment, and no conversion anywhere in between.
 
 /// One assembled, highlighted fragment of field text -- real Lucene's
@@ -354,18 +344,13 @@ pub fn format_fragments(fragments: &[Fragment], config: &FragmentConfig) -> Stri
 /// per-locale rule tailorings; this is the untailored root behaviour, which is
 /// what `UnifiedHighlighter`'s own default (`Locale.ROOT`) asks for.
 ///
-/// ### What replacing the previous heuristic changed
+/// ### No abbreviation suppression
 ///
-/// Before c12 this was a hand-rolled scan for `.`/`!`/`?` followed by
-/// whitespace and an uppercase letter, with a hardcoded English abbreviation
-/// list ("Mr", "Dr", "St", ...) suppressing the break. That list was a
-/// **divergence from Java, not a refinement of it**: run against the JDK,
 /// `BreakIterator.getSentenceInstance(Locale.ROOT)` splits
 /// `"Mr. Smith went home."` into `["Mr. ", "Smith went home."]` -- it applies
 /// no abbreviation suppression at all, in either `Locale.ROOT` or
-/// `Locale.ENGLISH`. The highlighter's passages are therefore now cut where
-/// Lucene cuts them, including at the places the old list was trying to
-/// protect. `sentence_boundaries_match_jdk_break_iterator` pins the JDK's
+/// `Locale.ENGLISH`, so neither does this; passages are cut where Lucene
+/// cuts them. `sentence_boundaries_match_jdk_break_iterator` pins the JDK's
 /// actual output for six texts.
 pub fn sentence_boundaries(text: &str) -> Vec<usize> {
     use unicode_segmentation::UnicodeSegmentation;
@@ -1042,18 +1027,8 @@ pub fn optimize_offset_source(
 /// per term, which is Java's `postingsEnum.advance(doc)` followed by walking
 /// that one document's positions: `.doc`'s skip records down to the one
 /// 256-document block holding `doc_id`, then only the `.pos`/`.pay` blocks
-/// holding its own occurrences. Nothing else in the term is read.
-///
-/// It used to decode **every** document's positions and offsets and build a
-/// `Vec<Position>` per document in the term, because
-/// [`positions`][lucene_codecs::blocktree::FieldTerms::positions] was the only
-/// offset-carrying accessor in this port -- so highlighting one document of a
-/// high-`docFreq` term cost a full postings sweep (c12 §3.4). c15 closed that
-/// with an offsets-carrying wanted-documents reader, which still decoded the
-/// term's whole doc list to locate `doc_id`; c20 wired up `.doc`'s
-/// `.pos`/`.pay` skip pointers so it no longer does. Measured in
-/// `docs/sweep/m2/c15-postings-api.md` and
-/// `docs/sweep/m2/c20-postings-skip.md`.
+/// holding its own occurrences. Nothing else in the term is read, so highlighting one document of a
+/// high-`docFreq` term does not cost a full postings sweep.
 pub fn offsets_from_postings(
     fields: &lucene_codecs::blocktree::BlockTreeFields,
     doc_in: Option<&lucene_codecs::postings::DocInput<'_>>,
@@ -1101,10 +1076,8 @@ pub fn offsets_from_postings(
 /// **No unit conversion happens here.** `lucene_analysis::Token`'s offsets are
 /// UTF-16 code units -- Java `char` indices into `content`, the same unit
 /// [`TermOffsetSpan`] uses, the same unit real Lucene writes into a
-/// `.pos`/`.tvd` and reports from an `OffsetAttribute`. c29 converted from
-/// UTF-8 bytes here because the analyzer emitted bytes; c33 fixed the producer,
-/// and the conversion came out with it -- a compensating conversion left in
-/// place after its cause is fixed is exactly as wrong as the original defect.
+/// `.pos`/`.tvd` and reports from an `OffsetAttribute`. No conversion is needed:
+/// the analyzer emits the same unit.
 pub fn offsets_from_analysis(
     analyzer: &lucene_analysis::Analyzer,
     content: &str,
@@ -1313,7 +1286,7 @@ pub fn phrase_match_offsets(
 ///
 /// Costs one
 /// [`occurrences_for_doc`][lucene_codecs::blocktree::FieldTerms::occurrences_for_doc]
-/// per distinct phrase term (c15's/c20's skip-driven single-document read),
+/// per distinct phrase term (a skip-driven single-document read),
 /// the same per-term cost [`offsets_from_postings`] pays -- the phrase
 /// filtering itself is one merge pass over the decoded positions and reads
 /// nothing further.
@@ -1787,7 +1760,7 @@ mod tests {
         assert!(out[0].text.contains("<b>cat</b>"));
     }
 
-    // Real-fixture-composed test: genuine offsets from task #3/#39's
+    // Real-fixture-composed test: genuine offsets from the
     // checked-in Java-written fixture (`fixtures/data/term_vectors_index/`,
     // generated by `fixtures/src/GenTermVectors.java`), composed with the
     // REAL text those offsets describe. `GenTermVectors.java`'s doc 0
@@ -1965,13 +1938,11 @@ mod tests {
         assert!(offsets_from_analysis(&analyzer, "", &["quick"]).is_empty());
     }
 
-    /// c33: [`offsets_from_analysis`] passes the analyzer's offsets through
-    /// **unconverted**, because `lucene_analysis::Token` now reports the same
+    /// [`offsets_from_analysis`] passes the analyzer's offsets through
+    /// **unconverted**, because `lucene_analysis::Token` reports the same
     /// UTF-16 code units this module works in.
     ///
-    /// c29 converted here (the analyzer emitted UTF-8 bytes then). Leaving
-    /// that conversion in after c33 fixed the producer would shift every
-    /// non-ASCII highlight the other way, so this asserts the two sides are
+    /// A conversion here would shift every non-ASCII highlight, so this asserts the two sides are
     /// identical -- not merely that the result happens to be right.
     #[test]
     fn analysis_offsets_pass_through_unconverted_in_java_char_units() {
@@ -2070,14 +2041,11 @@ mod tests {
 
     #[test]
     fn sentence_snap_breaks_after_an_abbreviation_exactly_as_the_jdk_does() {
-        // Until c12 this port carried a hardcoded English abbreviation list
-        // that suppressed the break after "Mr.". That was a divergence, not a
-        // refinement: `BreakIterator.getSentenceInstance(Locale.ROOT)` --
+        // `BreakIterator.getSentenceInstance(Locale.ROOT)` --
         // and `Locale.ENGLISH` -- splits this text as
         // `["Mr. ", "Smith arrived early. ", "He left before noon."]`, applying
         // no abbreviation suppression at all (verified by running the JDK; see
-        // `sentence_boundaries_match_jdk_break_iterator`). The highlighter now
-        // cuts where Lucene cuts.
+        // `sentence_boundaries_match_jdk_break_iterator`).
         let text = "Mr. Smith arrived early. He left before noon.";
         let start = text.find("Smith").unwrap() as i32;
         let end = start + "Smith".len() as i32;

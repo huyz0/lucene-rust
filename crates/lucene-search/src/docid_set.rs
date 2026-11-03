@@ -223,7 +223,7 @@ impl Iterator for Disjunction<'_> {
 ///
 /// **This becomes wrong the moment a leapfrogging min-should-match scorer
 /// exists in this port.** Adding one means restoring the gate, with Java's
-/// threshold and Java's reason. See `docs/sweep/m2/c6-search-followups.md`.
+/// threshold and Java's reason.
 pub struct WindowedDisjunction {
     /// One clause's remaining doc ids: the list and the position in it.
     clauses: Vec<(Vec<i32>, usize)>,
@@ -604,8 +604,7 @@ impl RoaringDocIdSet {
             // A trailing partial block's bitset is shorter than 65536, so the
             // length check is load-bearing: a doc past `max_doc` inside the
             // last block would otherwise reach `FixedBitSet::get`, which
-            // panics on an out-of-range index (and, before c41, read a ghost
-            // bit in release). `local` is a `u16`-range offset, not a doc id,
+            // panics on an out-of-range index. `local` is a `u16`-range offset, not a doc id,
             // so this is the hand-written form rather than `get_doc`.
             Some(Block::Dense(bits)) => (local as usize) < bits.len() && bits.get(local as usize),
         }
@@ -779,10 +778,8 @@ impl RoaringBuilder {
     /// The `max_doc` bound is not decoration: a trailing partial block's dense
     /// bitset is sized `min(BLOCK_SIZE, max_doc - offset)`, and
     /// [`RoaringBuilder::append_in_current_block`]'s `// FBS:` proof
-    /// rests on every accepted doc id being below `max_doc`. Before c41 that
-    /// was a statement about callers the type did not enforce; a
-    /// `RoaringBuilder::new(100)` handed 4 097 documents built a
-    /// zero-bit bitset and then indexed it.
+    /// rests on every accepted doc id being below `max_doc`, so the type
+    /// enforces it.
     pub fn add(&mut self, doc_id: i32) {
         assert!(
             i64::from(doc_id) > self.last_doc_id,

@@ -2607,11 +2607,7 @@ impl IndexingConfig {
         // onto that source's `MergeSource` -- and every extension in that
         // `.si` must be one some `merge::SegmentFormat` claims.
         //
-        // This is the mechanism c22's Tier-2 review asked for after tracing
-        // four of its correctness findings (14: norms, silently wrong BM25
-        // scores since c4; 22: every doc-values type but NUMERIC; 23:
-        // positional postings; 24: `has_blocks`) to one omission: a format
-        // this method forgets to open is a format the merge drops, and the
+        // A format this method forgets to open is a format the merge drops, and the
         // merged segment is well-formed, checksummed and `CheckIndex`-clean
         // either way. Refusing the merge is strictly better than performing
         // it, because the loss is otherwise unobservable.
@@ -3221,16 +3217,10 @@ impl IndexingConfig {
                     .term_vector_fields
                     .iter()
                     .any(|config| config.field_number == f.number);
-                // No norms coercion here any more. Until c35 this writer's
-                // norms were opt-in per field, so every indexed field the
-                // caller had not named had to be rewritten as
-                // `omit_norms: true` -- a `.fnm` describing a different
-                // schema than the caller asked for, because
-                // `DirectoryReader.open` throws on the missing `.nvm` rather
-                // than degrading when the `.fnm` claims norms the segment
-                // does not carry. `norms_field_configs` now writes a column
-                // for exactly the fields whose `.fnm` claims one, so the two
-                // cannot disagree and there is nothing to coerce.
+                // No norms coercion: `norms_field_configs` writes a column for exactly
+                // the fields whose `.fnm` claims one, so the two cannot disagree.
+                // (`DirectoryReader.open` throws on a `.fnm` claiming norms the
+                // segment does not carry.)
                 debug_assert!(
                     !wrote_norms
                         || f.omit_norms
@@ -3348,11 +3338,7 @@ impl IndexingConfig {
     /// }
     /// ```
     ///
-    /// -- so that is what this returns. Until c35 this port required a
-    /// `set_norms_field`/`add_norms_field` call per field and forced
-    /// `omit_norms = true` into the `.fnm` for every other indexed field,
-    /// which made BM25 score every un-named field against a constant length
-    /// instead of the document's own. [`IndexWriter::omit_norms_field`] is
+    /// -- so that is what this returns. [`IndexWriter::omit_norms_field`] is
     /// the opt-*out* (`FieldType.setOmitNorms(true)`); there is no opt-in
     /// because Lucene has none.
     ///
@@ -4494,9 +4480,7 @@ struct DocValuesFieldConfig {
 /// on the field's own `FieldInfo.docValuesGen` in the segment's
 /// *newest* `.fnm`. Reading the base pair for such a field would
 /// resurrect the pre-update values into the merged segment -- valid,
-/// checksummed, `CheckIndex`-clean, wrong. Until c26 the containment
-/// was `segment_stats` withholding any segment with a doc-values
-/// generation from the merge policy entirely.
+/// checksummed, `CheckIndex`-clean, wrong.
 ///
 /// `columns` holds each distinct `.dvm`/`.dvd` pair once (a segment's
 /// base pair covers every field no update has touched, so a per-field
@@ -6597,8 +6581,7 @@ impl<'d> IndexWriter<'d> {
     ///
     /// **A deliberate deviation.** Java's `IndexWriter` with a soft-deletes
     /// field and *no* retention policy drops every soft-deleted document at
-    /// merge. This writer keeps them: before M5 soft deletes had no merge
-    /// semantics here at all, and keeping is the side that cannot lose an
+    /// merge. This writer keeps them: keeping is the side that cannot lose an
     /// operation's history. OpenSearch always installs a retention policy,
     /// and so does the engine (`lucene-ffi`'s `engine_writer`), so the engine
     /// never sees the difference.
@@ -7025,8 +7008,7 @@ impl IndexWriter<'_> {
     /// ~130 MB peak on that corpus, against ~860 MB and rising with no trigger
     /// at all. Closing the constant needs the incremental, per-document invert
     /// Java has, which in turn needs both a borrowed-token analyzer API and a
-    /// byte-pool posting representation (recorded in
-    /// `docs/sweep/m2/LEDGER.md`).
+    /// byte-pool posting representation.
     pub fn ram_bytes_used(&self) -> usize {
         self.ram_bytes_used
     }
@@ -7274,7 +7256,7 @@ impl IndexWriter<'_> {
     /// their files. A single-threaded writer never noticed, because its merges
     /// only ever committed right after a commit had taken every flushed segment
     /// in; a merge committing while another thread's segment was pending
-    /// deleted it (M4's T4.3 found this).
+    /// deleted it.
     fn checkpoint_committed(&mut self) -> Result<()> {
         let live = self.live_infos();
         self.deleter.checkpoint(&live, false)?;
@@ -8137,7 +8119,7 @@ impl IndexWriter<'_> {
         // stored fields, postings, term vectors, norms, doc values and
         // vectors in sort order together and by construction consistently.
         // The remap Java repeats per format is exactly where a format can be
-        // forgotten -- c10 found the vector one unreachable, and points has
+        // forgotten, and points has
         // no flush path here at all.
         //
         // Ahead of the two side effects below (freezing the global packet and
@@ -8441,7 +8423,7 @@ impl IndexWriter<'_> {
     /// **all** of them in sort order at once, and no format can be forgotten
     /// -- which is the failure mode Java's per-format `Sorter.DocMap`
     /// plumbing has (`Lucene99FlatVectorsWriter.writeSortingField` was
-    /// unreachable here for exactly that reason, c10 finding 11).
+    /// unreachable here for exactly that reason).
     ///
     /// The sort keys are each sort field's NUMERIC doc-values value,
     /// `None` for a document that has none -- the same column
@@ -8594,17 +8576,12 @@ impl IndexWriter<'_> {
     /// failures -- see that module's doc comment for the current set of
     /// rejected shapes (mismatched per-document position/offset/payload
     /// counts, non-ascending positions or doc ids, `freq < 1`). There is no
-    /// `docFreq` ceiling on a positions-indexing term: batch c20 removed the
-    /// one that existed (`DocFreqTooLargeForPositions`, which stood in for the
-    /// `.doc`-side full-block writer's then-missing pos/pay skip fields) when
-    /// it wrote those fields.
+    /// `docFreq` ceiling on a positions-indexing term.
     ///
     /// **The offsets it forwards are UTF-16 code units** -- Java `char` indices
     /// into the field text, the unit `OffsetAttribute` reports and the unit
-    /// real Lucene reads back out of the `.pos`/`.pay` written here. They were
-    /// `lucene_analysis`' UTF-8 **byte** offsets until c33 fixed the producer
-    /// (c23's F13, shipped rather than latent once this method started writing
-    /// them). Nothing here converts, and nothing on either side would catch a
+    /// real Lucene reads back out of the `.pos`/`.pay` written here. Nothing here
+    /// converts, and nothing on either side would catch a
     /// regression: `CheckIndex` only checks that offsets are ordered and in
     /// range, never that they index the stored text. The unit is pinned where
     /// it is produced, in `crates/lucene-analysis/tests/analysis_fixtures.rs`.
@@ -9046,9 +9023,8 @@ impl IndexWriter<'_> {
     /// and the column is written [`norms::NormsField::Dense`] when every doc
     /// has one and [`norms::NormsField::Sparse`] otherwise, which is the
     /// same `numDocsWithValue == maxDoc` branch `Lucene90NormsConsumer`
-    /// takes. Before c35 every doc got a dense `0`, which is the byte a
-    /// present-but-empty field has: an absent field and an empty one were
-    /// indistinguishable in the file.
+    /// takes, so an absent field and an empty one (norm `0`) stay
+    /// distinguishable.
     ///
     /// A doc's length is the sum of every matching term's occurrence count
     /// (real Lucene's `FieldInvertState.length` -- total indexed token
@@ -9243,7 +9219,7 @@ impl IndexWriter<'_> {
         // caller who named "title" after "body" produced a segment real
         // `CheckIndex` rejects. Sorting `configs` here is what makes the
         // per-doc `fields` list ascending by name, because `per_doc` is
-        // appended to in this loop's order. (Raised by b7; the fix belongs
+        // appended to in this loop's order. (The fix belongs
         // here, where names are known -- `term_vectors::write_best_speed` sees
         // only numbers.)
         let mut ordered_configs: Vec<&TermVectorFieldConfig> = configs.iter().collect();
@@ -10403,10 +10379,9 @@ impl IndexWriter<'_> {
     ///   An **index-sorted** segment merges too, through the same function's
     ///   k-way merge, and the merged `.si` keeps the sort.
     /// - A segment carrying a doc-values **update** (`doc_values_gen != -1`)
-    ///   is mergeable too, as of c26. Its newest column lives in generational
-    ///   `.dvm`/`.dvd` files no `.si` lists, and until c26 `execute_merge`
-    ///   read the base pair -- so merging one would have silently resurrected
-    ///   the pre-update values. `execute_merge` now resolves every field to
+    ///   is mergeable too. Its newest column lives in generational
+    ///   `.dvm`/`.dvd` files no `.si` lists, so reading the base pair would
+    ///   silently resurrect the pre-update values. `execute_merge` resolves every field to
     ///   its **current** generation through
     ///   [`crate::field_updates::read_current_field_infos`] and
     ///   [`crate::field_updates::read_current_column`], the same two
@@ -10415,12 +10390,9 @@ impl IndexWriter<'_> {
     ///   (`doc_values_gen == -1`), which is what
     ///   `IndexWriter.mergeMiddle` produces.
     ///
-    /// **Nothing is withheld any more.** That is not a claim about this
-    /// method: it is what [`crate::merge::check_format_coverage`] enforces on
-    /// every merge, from the source segments' own file lists. Before c26 the
-    /// burden of "`execute_merge` opens every format the flush can write" was
-    /// carried by reading, and four separate formats had already been dropped
-    /// silently (c22 findings 14, 22, 23, 24).
+    /// **Nothing is withheld.** That is not a claim about this method: it is
+    /// what [`crate::merge::check_format_coverage`] enforces on every merge,
+    /// from the source segments' own file lists.
     ///
     /// The bar for adding a format here is that losing it must be
     /// impossible, not unlikely: a merged segment that quietly dropped a
@@ -11757,7 +11729,7 @@ impl IndexWriter<'_> {
         );
         // Java bumps `segmentInfos.counter` in the same synchronized block that
         // hands out the name, precisely so a name can never be handed out twice
-        // -- see F-2 in `docs/sweep/m2/b9-index-write.md`.
+        // 
         // ARITH: `counter` is capped at `MAX_GENERATION` (`i64::MAX / 2`) by
         // `segment_infos::parse` and by `segment_infos::write`, and steps once
         // per segment name handed out.
@@ -12061,8 +12033,7 @@ impl IndexingConfig {
     /// The bytes are **real Lucene's**: each updated field's whole column is
     /// rewritten through the `Lucene90DocValuesFormat` writer into a
     /// generation-suffixed `.dvm`/`.dvd`/`.dvs` triple, and a new `.fnm`
-    /// generation records the field's `FieldInfo.docValuesGen`. See
-    /// `docs/sweep/m2/c14-dv-updates-format.md` for what this replaced.
+    /// generation records the field's `FieldInfo.docValuesGen`.
     fn write_doc_values_update_generation(
         dir: &dyn Directory,
         sci: &mut SegmentCommitInfo,
@@ -14678,14 +14649,9 @@ pub(crate) mod tests {
             1,
             "the segment's .si was written more than once: {created:?}"
         );
-        // **Zero** reads. c36 removed the read-modify-write per file group
-        // during the flush and left one: `IndexFileDeleter`'s checkpoint
-        // re-opened and re-parsed the finished `.si` (header check and CRC
-        // over the whole file included) to reference-count the segment's
-        // files. Java never does that -- `SegmentCommitInfo` holds its
+        // **Zero** reads. As in Java (`SegmentCommitInfo` holds its
         // `SegmentInfo`, so `SegmentInfos.files()` reads the list out of
-        // memory -- and since `c43-final-cleanup` neither does this port:
-        // `flush` hands the deleter the same in-memory list
+        // memory), the deleter never re-parses the finished `.si`: `flush` hands the deleter the same in-memory list
         // `seal_flushed_segment` encoded
         // (`IndexFileDeleter::record_segment_files`).
         assert_eq!(
@@ -15736,7 +15702,7 @@ pub(crate) mod tests {
     }
 
     /// Java's `FieldInfo.checkConsistency`: "indexed field cannot have
-    /// payloads without positions". Caught at `open` since c40 -- the writer
+    /// payloads without positions". Caught at `open` -- the writer
     /// can no longer *hold* the field, so `set_postings_field` never sees it.
     #[test]
     fn open_rejects_payloads_on_a_field_without_positions() {
@@ -15990,12 +15956,9 @@ pub(crate) mod tests {
     /// coerces `storeTermVectors`/`storePayloads`/`omitNorms` to `false` for a
     /// non-indexed field before `checkConsistency` ever looks -- but a Rust
     /// `FieldInfo` is a plain struct, so a caller can hand `IndexWriter::open`
-    /// a stored-only field with `omit_norms` set. Before c23 those bits went
-    /// straight onto the wire: real Lucene coerced them away again on read
-    /// (which is why every cross-engine verifier stayed green), and this
-    /// port's own `field_infos::parse` rejected the file outright, so
-    /// `check_index` could not open the `.fnm` of a segment the writer had
-    /// just produced and every postings check was silently skipped.
+    /// a stored-only field with `omit_norms` set. Written to the wire, real
+    /// Lucene would coerce those bits away on read, but this port's own
+    /// `field_infos::parse` would reject the file, so they are coerced here.
     ///
     /// The negative control is the second half: the same three bits on an
     /// *indexed* field must survive, so the fix cannot be "always clear them".
@@ -18847,14 +18810,12 @@ pub(crate) mod tests {
         assert!(writer.cfg.norms_field_configs().is_empty());
     }
 
-    /// **This is the c35 fix.** An indexed field the caller never named gets
+    /// An indexed field the caller never named gets
     /// norms, because that is what Lucene does
     /// (`IndexingChain.writeNorms`: every `FieldInfo` with
-    /// `omitsNorms() == false && indexOptions != NONE`). Before c35 the
-    /// writer forced `omit_norms = true` into the `.fnm` for it and wrote no
-    /// column, so BM25 scored the field against a constant length instead of
-    /// each document's own -- a wrong score reachable by indexing a text
-    /// field and searching it.
+    /// `omitsNorms() == false && indexOptions != NONE`). Without them BM25
+    /// would score the field against a constant length instead of each
+    /// document's own.
     #[test]
     fn an_indexed_field_gets_norms_with_no_opt_in_at_all() {
         let tmp = tempdir("norms-by-default");
@@ -18927,8 +18888,7 @@ pub(crate) mod tests {
     /// all, and one that carries it but tokenizes to nothing gets an
     /// explicit `0` -- Java's `PerField.finish`, which runs only for a field
     /// the document actually has and writes `0` for `invertState.length == 0`.
-    /// Before c35 both were a dense `0`, so an absent field and an empty one
-    /// were indistinguishable in the `.nvd`.
+    /// So an absent field and an empty one are distinguishable in the `.nvd`.
     #[test]
     fn a_document_without_the_field_gets_no_norm_and_an_empty_one_gets_zero() {
         let tmp = tempdir("norms-sparse");
@@ -19620,7 +19580,7 @@ pub(crate) mod tests {
     }
 
     // ---------------------------------------------------------------
-    // Sequence numbers and buffered deletes (`c7-delete-queue`).
+    // Sequence numbers and buffered deletes.
     //
     // These tests exist to prove the three properties
     // `crate::buffered_updates` claims, not merely that the methods run:
@@ -19755,7 +19715,7 @@ pub(crate) mod tests {
     }
 
     /// **`IndexWriter` drops a 100%-deleted segment when the deletes are
-    /// applied, and real Lucene says so** (ledger item 11b).
+    /// applied, and real Lucene says so**.
     ///
     /// `IndexWriter.finishApply` removes from the in-memory `SegmentInfos`
     /// every segment `closeSegmentStates` found fully deleted
@@ -20778,7 +20738,6 @@ pub(crate) mod tests {
     /// holding blocks but reporting `hasBlocks = false` reads back perfectly
     /// while silently invalidating every parent/child join query against it.
     /// Java's `IndexWriter.mergeMiddle` ORs it across `merge.segments`.
-    /// Caught by the Tier-2 review of `c22-sorted-merge`.
     #[test]
     fn an_automatic_merge_keeps_has_blocks() {
         let tmp = tempdir("has-blocks-merge");
@@ -20831,7 +20790,7 @@ pub(crate) mod tests {
     /// field at all while its `.fnm` still declared
     /// `DocsAndFreqsAndPositions` -- an indexed field with no registered
     /// postings producer, which reads back as having no terms and raises
-    /// nothing. Caught by the Tier-2 review of `c22-sorted-merge`.
+    /// nothing.
     #[test]
     fn an_automatic_merge_carries_positional_postings_through() {
         let tmp = tempdir("positional-postings-merge");
@@ -20934,8 +20893,7 @@ pub(crate) mod tests {
     /// SORTED / SORTED_NUMERIC / SORTED_SET) column was dropped by the merge
     /// and `describe_written_files` then zeroed its `DocValuesType` to keep
     /// the `.fnm` honest -- a valid, `CheckIndex`-clean segment with the data
-    /// gone. Caught by the Tier-2 review of `c22-sorted-merge`, which is why
-    /// this asserts on the *values*, per document, rather than on the merge
+    /// gone. This asserts on the *values*, per document, rather than on the merge
     /// having happened.
     #[test]
     fn an_automatic_merge_carries_every_doc_values_type_through() {
@@ -21040,8 +20998,7 @@ pub(crate) mod tests {
     /// but declares no doc values, so `CheckIndex.testSort` would fail rather
     /// than degrade -- and this port could never merge that segment again,
     /// because `read_sort_keys` would return `MergeSortColumnMissing` out of
-    /// every subsequent `commit`. Caught by the Tier-2 review of
-    /// `c22-sorted-merge`.
+    /// every subsequent `commit`.
     #[test]
     fn a_sort_tier_no_merged_document_has_a_value_for_is_still_written() {
         let tmp = tempdir("sorted-merge-empty-tier");
@@ -21132,10 +21089,10 @@ pub(crate) mod tests {
 
     /// A doc-values update against a segment produced by a **merge**, not by
     /// a flush. Worth its own case because the merged `.fnm` is written by
-    /// `merge::describe_written_files`, which this batch taught to zero
+    /// `merge::describe_written_files`, which zeroes
     /// `doc_values_type` for a field the merge wrote no column for -- the
-    /// exact state `field_updates::check_updatable` used to reject outright
-    /// (c17 finding 14/15). If the two disagreed, the update would fail on a
+    /// exact state `field_updates::check_updatable` would otherwise reject.
+    /// If the two disagreed, the update would fail on a
     /// merged segment while working on a flushed one.
     #[test]
     fn a_doc_values_update_still_works_against_a_merged_segment() {
@@ -21625,14 +21582,12 @@ pub(crate) mod tests {
         assert!(matches!(err, Error::NoSoftDeletesSupplied));
     }
 
-    /// **The last un-mergeable case, closed (c22's carry-over).** A segment
-    /// carrying a doc-values *update* used to be withheld from the merge
-    /// policy outright: its newest column lives in generational
-    /// `.dvm`/`.dvd` files that no `.si` lists, and `execute_merge` read the
-    /// base pair -- so merging it would have silently resurrected the
-    /// pre-update values into a valid, `CheckIndex`-clean segment.
+    /// **Merging a segment that carries a doc-values *update*.** Its newest
+    /// column lives in generational `.dvm`/`.dvd` files that no `.si` lists;
+    /// reading the base pair would silently resurrect the pre-update values
+    /// into a valid, `CheckIndex`-clean segment.
     ///
-    /// `execute_merge` now resolves every field to its **current**
+    /// `execute_merge` resolves every field to its **current**
     /// generation, through the same two functions the update path reads its
     /// own base from. This asserts on the merged *values*, not on the merge
     /// having happened: the failure mode is a merge that succeeds with the
@@ -22430,10 +22385,8 @@ pub(crate) mod tests {
         assert_eq!(sizes, vec![3, 2]);
     }
 
-    /// This port's own `CheckIndex` port (`crate::check_index`) has never had
-    /// a producer for its `testVectors`/`testHnswGraphs` blocks -- c9 ported
-    /// them against Java-written fixtures only, because nothing here could
-    /// write a vector segment. Run them over one now.
+    /// This port's own `CheckIndex` (`crate::check_index`) vector and HNSW
+    /// checks, run over a writer-produced vector segment.
     #[test]
     fn our_own_check_index_passes_over_a_writer_produced_vector_segment() {
         let tmp = tempdir("vectors-check-index");
@@ -23226,13 +23179,10 @@ pub(crate) mod tests {
     ///
     /// This is the observable half of `merge::check_format_coverage`: the
     /// gate refuses a merge that never *opened* a format, and this asserts
-    /// that every opened format was also *written*. Together they close
-    /// c22's carry-over ("nothing mechanically checks that `execute_merge`
-    /// opens every format the flush can write"), whose four instances --
-    /// norms (finding 14, wrong BM25 scores since c4), non-NUMERIC doc
-    /// values (22), positional postings (23) and `has_blocks` (24) -- each
-    /// produced a well-formed, checksummed, `CheckIndex`-clean segment with
-    /// the data gone.
+    /// that every opened format was also *written*. Together they check
+    /// mechanically that `execute_merge` opens every format the flush can
+    /// write; a dropped format would otherwise produce a well-formed,
+    /// checksummed, `CheckIndex`-clean segment with the data gone.
     ///
     /// The writer is configured with every format the flush path has an
     /// opt-in for: stored fields (always), postings **with positions and
@@ -23328,15 +23278,10 @@ pub(crate) mod tests {
             .collect()
     }
 
-    /// **Multi-field norms, flush and merge.** c22's finding 13 / carry-over:
-    /// `merge_norms` took one field per merge (`Error::TooManyNormsFields`)
-    /// because `norms::write_single_dense_field` writes a whole `.nvm`/`.nvd`
-    /// pair, so two of them in one merge overwrote each other -- exactly the
-    /// limitation `doc_values::write_dense_fields` had already removed for
-    /// doc values. `norms::write_fields` is the norms analogue, and this is
-    /// both sides taking it up: the flush's per-field column loop, and the
-    /// widened `merge_norms` on the merge. Since c35 neither side needs an
-    /// opt-in at all -- both `id` and `body` are indexed, so both get norms.
+    /// **Multi-field norms, flush and merge.** `norms::write_fields` writes
+    /// every field's column into one `.nvm`/`.nvd` pair, on both the flush's
+    /// per-field column loop and `merge_norms`. Both `id` and `body` are
+    /// indexed, so both get norms.
     ///
     /// Asserted on the *values*, per document per field, rather than on the
     /// merge having happened: a merge that carried only the first field
@@ -23422,10 +23367,8 @@ pub(crate) mod tests {
 
     /// The norms field set is derived from the schema, not accumulated: every
     /// indexed field that has not opted out gets exactly one column, and
-    /// `omit_norms_field` takes one away. Before c35 this was an
-    /// accumulating opt-in whose duplicate-entry and clear-the-list rules had
-    /// to be tested; the rule now is simply "the `.fnm` and the `.nvm` say the
-    /// same thing".
+    /// `omit_norms_field` takes one away: the `.fnm` and the `.nvm` say the
+    /// same thing.
     #[test]
     fn the_norms_columns_are_exactly_the_indexed_non_omitting_fields() {
         let tmp = tempdir("norms-column-set");
@@ -23488,11 +23431,9 @@ pub(crate) mod tests {
         );
     }
 
-    /// **The c35 widening, write side.** A `SortedNumericSortField` with the
-    /// `MAX` selector and **no missing value** was doubly inexpressible
-    /// before: the old `IndexSortField` had no selector at all (so `parse`
-    /// refused anything but `MIN`) and no way to say "no missing value" (Java
-    /// compares such a document as `0`).
+    /// **Index sort, write side.** A `SortedNumericSortField` with the `MAX`
+    /// selector and **no missing value** (Java compares such a document as
+    /// `0`).
     ///
     /// Asserted through this port's own `CheckIndex`, which re-derives the
     /// comparator from the written `.si` and re-reads the keys out of the

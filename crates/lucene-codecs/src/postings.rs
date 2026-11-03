@@ -10556,7 +10556,7 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------
-    // Min-of-N A/B harness (see `docs/sweep/m2/c27-*`). Criterion is unusable
+    // Min-of-N A/B harness. Criterion is unusable
     // on this machine -- c24 measured the same code at 83/91/129 us across
     // three consecutive runs -- so this reports the **minimum** of 40 timed
     // repetitions, which is the statistic a noisy shared machine does not

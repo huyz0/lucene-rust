@@ -793,9 +793,8 @@ mod tests {
         // confirming the crate-level `Error::Points` wiring documented on
         // this module.
         //
-        // The range below has to be a *narrow* one. Since batch b7 replaced
-        // the decode-every-point scan with the real `PointValues.intersect`
-        // pruning walk, an all-encompassing `[i64::MIN, i64::MAX]` range hits
+        // The range below has to be a *narrow* one. With the real
+        // `PointValues.intersect` pruning walk, an all-encompassing `[i64::MIN, i64::MAX]` range hits
         // `CELL_INSIDE_QUERY` at the root, which -- exactly like Java's
         // `visitDocIDs` shortcut -- reads only the leaf's doc-id block and
         // never decodes a packed value, so it can happily return garbage doc
@@ -935,7 +934,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // `PointValues.estimateDocCount` (b14 §1.4 / c12 §5.4)
+    // `PointValues.estimateDocCount`
     // -----------------------------------------------------------------
 
     /// Java's three branches, each with a case only that branch produces.
@@ -965,13 +964,12 @@ mod tests {
         assert_eq!(estimate_doc_count(1, 1_000_000, 1), 1);
     }
 
-    /// The `IndexOrDocValuesQuery` question c12 §5.4 left open: with a real
+    /// The `IndexOrDocValuesQuery` question: with a real
     /// estimate in hand, does the planner make a *different* choice from the
     /// `None` default -- and when?
     ///
-    /// The estimate now comes from Java's own walk --
-    /// `PointsReader::estimate_range_point_count`, ported by
-    /// `c39-codecs-readpath` -- over the real `fixtures/data/points_index/`
+    /// The estimate comes from Java's own walk --
+    /// `PointsReader::estimate_range_point_count` -- over the real `fixtures/data/points_index/`
     /// field, not from a match count standing in for it. The narrow range is
     /// deliberately one where the two differ (256 estimated against 8
     /// matched), so this test would not pass against the stand-in. The field

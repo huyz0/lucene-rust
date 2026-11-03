@@ -94,7 +94,7 @@ done
 
 # rustdoc's link lints are warn-by-default and are reported by none of `fmt`,
 # `clippy`, `test` or `llvm-cov`, so a broken doc link ships through a fully
-# green gate -- c4 did exactly that. `--document-private-items` is deliberate:
+# green gate. `--document-private-items` is deliberate:
 # the port's wire-format knowledge lives in the doc comments of private
 # decoders, and a link that only breaks there is still a broken link.
 # `private_intra_doc_links` is allowed (166 sites): a public module doc here

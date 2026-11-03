@@ -1,4 +1,4 @@
-//! A standalone, fast checksum-only verifier (task #217): the lighter
+//! A standalone, fast checksum-only verifier: the lighter
 //! sibling of [`crate::check_index`]'s much deeper `CheckIndex`-equivalent.
 //!
 //! Real Lucene's `CheckIndex` supports a `-fastCheck`-style mode that only

@@ -111,8 +111,8 @@
 //!   associative, so this is a bit-level property, not a stylistic one, and
 //!   `tests/bm25_scoring_fixtures.rs` asserts it against real `IndexSearcher`.
 //!
-//! `query.minimum_should_match` (task #24's addition; `query::BooleanQuery`'s doc
-//! comment has the full field-level accounting) gates `should` **regardless of
+//! `query.minimum_should_match` (`query::BooleanQuery`'s doc comment has the
+//! full field-level accounting) gates `should` **regardless of
 //! whether `must` is also non-empty** — this is the one place it's easy to get
 //! backwards, so it's called out explicitly: real `BooleanWeight.scorer`/
 //! `bulkScorer`/`explain` all compute `shouldMatchCount` and reject a doc with
@@ -140,7 +140,7 @@
 //! Either way, `must_not`'s disjunction is subtracted from whatever the above
 //! produces, same as before `minimum_should_match` existed.
 //!
-//! **Nested `BooleanQuery` clauses** (task #25's addition): a `must`/`should`/
+//! **Nested `BooleanQuery` clauses**: a `must`/`should`/
 //! `must_not` clause can itself be a [`query::Clause::Boolean`] (a boxed, nested
 //! `BooleanQuery`), to arbitrary depth — see [`query::Clause`]'s doc comment for
 //! why an enum (not a `Weight`/`Scorer`-style trait object) is the right shape
@@ -155,7 +155,7 @@
 //! `query::Clause`'s doc comment), and — same as `search_term_query` — relevance
 //! scoring (a separate task, #13, since implemented — see below).
 //!
-//! ## Relevance scoring (task #13's addition)
+//! ## Relevance scoring
 //!
 //! [`search_term_query_scored`]/[`search_boolean_query_scored`] add BM25 relevance
 //! scoring (see [`similarity`] for the formula and [`field_norms`] for how real
@@ -360,7 +360,7 @@ pub enum Error {
     /// a truncated/corrupt term-vectors region).
     #[error(transparent)]
     TermVectors(#[from] lucene_codecs::term_vectors::Error),
-    /// Surfaced by [`regexp_doc_ids`] (task #43's `Clause::Regexp`) when
+    /// Surfaced by [`regexp_doc_ids`] (`Clause::Regexp`) when
     /// [`RegexpQuery::pattern`] uses syntax
     /// [`lucene_codecs::regexp::RegexpPattern::new`] doesn't support (see
     /// that module's doc comment for exactly which subset is supported) --
@@ -386,8 +386,7 @@ pub enum Error {
     /// region) -- the points-range analog of [`Error::DocValues`].
     #[error(transparent)]
     Points(#[from] lucene_codecs::points::Error),
-    /// A [`Clause::PointsRange`] (task #64's `field:[min TO max]` query-parser
-    /// syntax) reached [`resolve_clause_docs`]/[`clause_scores`] with no
+    /// A [`Clause::PointsRange`] (`field:[min TO max]` in the query parser) reached [`resolve_clause_docs`]/[`clause_scores`] with no
     /// [`points_query::PointsInput`] supplied -- same "this clause needs an
     /// opened resource this call didn't provide" shape as
     /// [`Error::MissingPosInput`] for a multi-term [`PhraseQuery`], not a
@@ -458,8 +457,8 @@ pub enum Error {
     /// package.
     #[error("document query: {0}")]
     DocumentQuery(String),
-    /// Java's `IllegalArgumentException` from an API precondition (M7's
-    /// search infrastructure: `TopDocs.merge`/`rrf`, rescorers, values
+    /// Java's `IllegalArgumentException` from an API precondition (search
+    /// infrastructure: `TopDocs.merge`/`rrf`, rescorers, values
     /// sources, the Matches API).
     #[error("{0}")]
     IllegalArgument(String),
@@ -549,7 +548,7 @@ pub fn search_term_query<C: Collector>(
 
 /// `TermsEnum.postings(reuse, PostingsEnum.NONE)`: one term's matching doc IDs
 /// with the `.doc` file's **frequency blocks skipped** rather than unpacked
-/// (`PForUtil.skip`, c8's addition to `lucene-codecs`).
+/// (`PForUtil.skip`).
 ///
 /// **This returns the doc list only, deliberately.** `PostingsFlags::DocsOnly`
 /// fills `Postings::freqs` with `1`s, so a caller that took the whole
@@ -1132,7 +1131,7 @@ impl CutoffDocSet {
 /// did that by concatenating them all into a `Vec<i32>` and calling
 /// `sort_unstable` + `dedup`. That is `O(n log n)` in the *total* number of
 /// postings, which for a prefix matching thousands of terms is tens of millions
-/// of entries: on `prefix body:t12` over the M1 corpus the sort alone was 67% of
+/// of entries: on `prefix body:t12` over the benchmark corpus the sort alone was 67% of
 /// the query. A bit per document is `O(n + maxDoc/64)` and, incidentally,
 /// bounded memory rather than one `i32` per posting.
 ///
@@ -1305,7 +1304,7 @@ struct FuzzyExpansion {
 ///    skips the candidate). [`fuzzy_expanded_terms_pruned`] keeps that queue
 ///    as a sorted `Vec`, in the final `(boost desc, bytes asc)` order.
 /// 3. **Blended document frequency**, see [`FuzzyExpansion::blended_doc_freq`].
-/// 4. **The `MaxNonCompetitiveBoostAttribute` feedback loop** (c40): the worst
+/// 4. **The `MaxNonCompetitiveBoostAttribute` feedback loop**: the worst
 ///    boost still in that queue is fed *back* into the term enumeration, which
 ///    drops its edit budget as soon as no term at the higher distance could
 ///    still compete (`FuzzyTermsEnum.bottomChanged`). See
@@ -1666,8 +1665,7 @@ pub type BenchExpandedTerm = (Vec<u8>, f32, i64);
 /// Measurement-only entry point for `examples/fuzzy_pruning.rs`: the term
 /// expansion [`fuzzy_doc_ids`]/[`fuzzy_doc_scores`] run, with the
 /// `MaxNonCompetitiveBoostAttribute` feedback loop switchable so both arms are
-/// one build in one process (criterion is unusable on this project's machine
-/// -- see `docs/sweep/m2/c24-arith-codecs.md`). Returns the selected terms with
+/// one build in one process (criterion is unusable on this project's machine). Returns the selected terms with
 /// their boosts, the blended document frequency, and the edit budget the walk
 /// ended on -- the last of which is the only *observable* of the feedback loop
 /// itself, so a test can require that it actually fired.
@@ -1698,8 +1696,8 @@ pub fn bench_only_fuzzy_expansion(
     ))
 }
 
-/// [`Clause::Fuzzy`]'s matched doc-ID list (task #42, `max_expansions`
-/// bounded per task #221): same union-across-matching-terms mechanism as
+/// [`Clause::Fuzzy`]'s matched doc-ID list (`max_expansions`
+/// bounded): same union-across-matching-terms mechanism as
 /// [`wildcard_doc_ids`]/[`prefix_doc_ids`], built on
 /// [`lucene_codecs::blocktree::FieldTerms::fuzzy_intersect`] and
 /// [`lucene_codecs::fuzzy::FuzzyMatch`] instead of a glob pattern. Returns an
@@ -1840,9 +1838,7 @@ fn try_fuzzy_bulk<C: ScoringCollector>(
 /// query"), which matters for one-and-two-character query terms whose
 /// similarity really can go negative.
 ///
-/// This port previously returned a flat `1.0` for every fuzzy hit, which
-/// changed the top-k of every fuzzy query -- recorded as finding P4 in
-/// `docs/sweep/findings.md` and fixed here.
+/// A flat `1.0` per fuzzy hit would change the top-k of every fuzzy query.
 ///
 /// The blended `df`, the selected term set and the `docCount` are all
 /// *reader-wide* statistics in Lucene: `TopTermsRewrite.rewrite` drives one
@@ -1939,7 +1935,7 @@ fn fuzzy_doc_scores(
     Ok(scores)
 }
 
-/// [`Clause::Regexp`]'s matched doc-ID list (task #43): same
+/// [`Clause::Regexp`]'s matched doc-ID list: same
 /// union-across-matching-terms mechanism as [`wildcard_doc_ids`]/
 /// [`prefix_doc_ids`]/[`fuzzy_doc_ids`], built on
 /// [`lucene_codecs::blocktree::FieldTerms::regexp_intersect`] and
@@ -2023,12 +2019,12 @@ fn term_in_set_doc_ids(
 ///
 /// `pos_in`/`pay_in`: the segment's opened `.pos`/`.pay` files, needed only when
 /// `query` (at any nesting depth) contains a `Clause::Phrase` with more than one
-/// term (task #29's addition — see [`resolve_clause_docs`]). `None` is fine for
+/// term (see [`resolve_clause_docs`]). `None` is fine for
 /// a query with no multi-term phrase clause; passing `None` for a query that
 /// turns out to need it surfaces as [`Error::MissingPosInput`], same convention
 /// as [`search_phrase_query`].
 ///
-/// `points` (task #199's addition): the segment's opened `.kdm`/`.kdi`/`.kdd`
+/// `points`: the segment's opened `.kdm`/`.kdi`/`.kdd`
 /// BKD points data plus field infos, bundled as a [`points_query::PointsInput`]
 /// -- needed only when `query` (at any nesting depth) contains a
 /// `Clause::PointsRange`. `None` is fine for a query with no such clause;
@@ -2090,7 +2086,7 @@ pub(crate) fn should_match_counts(should_docs: &[Vec<i32>]) -> HashMap<i32, usiz
 ///   merge like any other clause. A nested query that itself resolves to "matches
 ///   nothing" (`Ok(None)`, see `matched_boolean_docs`'s doc comment) contributes an
 ///   empty list here, not an error.
-/// - `Clause::Phrase` (task #29's addition): collects [`search_phrase_query`]'s
+/// - `Clause::Phrase`: collects [`search_phrase_query`]'s
 ///   matches into a `Vec` via a local [`VecCollector`], reusing that function's
 ///   matching logic (missing field/term/degenerate-single-term handling and
 ///   all) rather than duplicating it.
@@ -2167,7 +2163,7 @@ fn resolve_clause_docs(
     }
 }
 
-/// [`Clause::PointsRange`]'s matched doc-ID list (task #199's addition):
+/// [`Clause::PointsRange`]'s matched doc-ID list:
 /// looks `query.field`'s number up from `points`'s [`PointsInput::field_infos`],
 /// packs `query.min`/`query.max` via [`points_query::pack_i64`] (real
 /// Lucene's `LongPoint` sortable-bytes encoding -- see that function's doc
@@ -2540,7 +2536,7 @@ fn search_term_query_scored_with_collection_stats<C: ScoringCollector>(
 
 /// [`term_doc_scores`]'s sibling taking an explicit [`similarity::Bm25Params`]
 /// instead of always using [`similarity::DEFAULT_K1`]/[`similarity::DEFAULT_B`]
-/// (task #214). See [`similarity::Bm25Params`]'s doc comment for this task's
+///. See [`similarity::Bm25Params`]'s doc comment for this task's
 /// scope.
 fn term_doc_scores_with_similarity(
     fields: &BlockTreeFields,
@@ -2589,7 +2585,7 @@ fn term_doc_scores_with_similarity(
 
 /// [`search_term_query_scored`]'s sibling taking an explicit
 /// [`similarity::Bm25Params`] (`k1`/`b`) instead of the hardcoded BM25
-/// defaults (task #214, "Configurable BM25 constant from FFI") — the narrowest
+/// defaults — the narrowest
 /// useful surface this task adds: the single most fundamental scored search
 /// entry point (a plain `TermQuery`, no MAXSCORE pruning), left as a new
 /// sibling function rather than an added parameter on
@@ -2856,7 +2852,7 @@ pub mod test_only_maxscore_block_skip_counter {
 ///   `minimum_should_match` excludes must not leak a score contribution into the
 ///   parent. This recursion has no depth limit: a `Clause::Boolean` nested inside
 ///   another `Clause::Boolean` resolves the same way, one level at a time.
-/// - `Clause::Phrase` (task #29's addition): this clause's own BM25 score per
+/// - `Clause::Phrase`: this clause's own BM25 score per
 ///   matching, live doc via [`search_phrase_query_scored`], collected through a
 ///   local [`ScoringCollector`] (a tiny inline impl, since neither existing
 ///   collector in `collector.rs` needs to be shared for this one-shot use), keyed
@@ -3892,12 +3888,7 @@ fn search_boolean_query_scored_impl<C: ScoringCollector>(
 /// `BooleanScorerSupplier.booleanScorer()` does; this entry point runs the
 /// same dispatch as [`search_boolean_query_scored_with_stats`].
 ///
-/// Until batch c12 it carried its own two-tier essential/non-essential
-/// implementation over [`lucene_codecs::postings::LazyDocsCursor`]s, whose
-/// body coverage showed to be unreachable (every shape it took, the lazy
-/// disjunction path took first) and 4-5x slower than that path on M1's
-/// 5M-document corpus (655 ms vs 163 ms on `t0 OR t1`). It was deleted then;
-/// the name and signature are kept for the callers above.
+/// The name and signature are kept for the callers above.
 #[allow(clippy::too_many_arguments)]
 pub fn search_boolean_query_scored_maxscore(
     fields: &BlockTreeFields,
@@ -3939,7 +3930,7 @@ pub fn search_boolean_query_scored_maxscore_with_stats<C: ScoringCollector>(
     )
 }
 
-/// `DisjunctionMaxQuery`-equivalent (task #32): reports every doc matching at
+/// `DisjunctionMaxQuery`-equivalent: reports every doc matching at
 /// least one of `query.disjuncts` (a pure union -- see [`resolve_dismax_docs`]'s
 /// doc comment) to `collector`, in ascending doc-ID order. Same
 /// `pos_in`/`pay_in` contract as [`search_boolean_query`]: `None` is fine
@@ -4042,8 +4033,7 @@ const MAX_INLINE_PHRASE_TERMS: usize = 32;
 /// `benches/phrase_freq.rs` on 4096-position lists: **5.0x-6.8x** faster
 /// (26.8 -> 4.9 µs at a 50% hit rate, 39.6 -> 5.8 µs for a three-term phrase),
 /// and 6.8% slower on an 8-position list where both are ~18 ns. The same
-/// finding as the `next_doc`/`advance` binary searches, in the function
-/// those two never reached (b12 finding F-21).
+/// change as the `next_doc`/`advance` binary searches.
 fn phrase_freq_exact_impl(term_positions: &[&[i32]], stop_at_first: bool) -> i32 {
     if let [first, second] = term_positions {
         return phrase_freq_exact_two(first, second, stop_at_first);
@@ -4094,8 +4084,8 @@ fn phrase_freq_exact_general(term_positions: &[&[i32]], stop_at_first: bool) -> 
     freq
 }
 
-/// [`phrase_freq_exact_impl`] for a two-term phrase -- every phrase in the M1
-/// mix, and the common case: one merge of two ascending lists, counting each
+/// [`phrase_freq_exact_impl`] for a two-term phrase -- every phrase in the
+/// benchmark mix, and the common case: one merge of two ascending lists, counting each
 /// `p` of `first` whose `p + 1` is in `second`. The general loop's cursor
 /// table, slice-of-slices indexing and per-term bookkeeping were two thirds
 /// of its cost on `"t0 t1"`, whose documents hold a handful of positions each.
@@ -4265,13 +4255,11 @@ pub(crate) fn span_matches_in_doc(
 ///   Its `endPosition()` is the *running* `maxEndPosition`, which can exceed
 ///   the current arrangement's own maximum end.
 ///
-/// Until `c43-final-cleanup` this enumerated the whole cartesian product and
-/// reported `(min start, max end)` per accepted arrangement, which produced
-/// extents Java's walk never visits (ledger item 8c). No *hit set* moved --
-/// [`span_doc_ids`] only asks whether the span list is non-empty, and the walk
-/// emits something whenever the lattice contains a match -- but a nested
-/// `SpanNear`-of-`SpanNear` consumes the inner clause's extents, and those
-/// were wrong. Ground truth for the sequences themselves:
+/// Enumerating the whole cartesian product and reporting `(min start, max
+/// end)` per accepted arrangement would produce extents Java's walk never
+/// visits. The hit set would not change ([`span_doc_ids`] only asks whether
+/// the span list is non-empty), but a nested `SpanNear`-of-`SpanNear`
+/// consumes the inner clause's extents. Ground truth for the sequences themselves:
 /// `fixtures/src/AppendSpanExtentManifest.java`'s `spanextent.*` keys, which
 /// are real `Spans.nextStartPosition()`/`endPosition()` walks.
 ///
@@ -4403,7 +4391,7 @@ pub(crate) fn require_span_positions(fields: &BlockTreeFields, query: &SpanQuery
     Ok(())
 }
 
-/// [`Clause::Span`]'s matched doc-ID list (task #55): [`span_doc_extents`]
+/// [`Clause::Span`]'s matched doc-ID list: [`span_doc_extents`]
 /// with the extents dropped.
 ///
 /// [`span_doc_extents`] gathers every distinct leaf `(field, term)` pair
@@ -4866,7 +4854,7 @@ pub fn search_phrase_query<C: Collector>(
     Ok(())
 }
 
-/// Scored sibling of [`search_phrase_query`] (task #29): same matching
+/// Scored sibling of [`search_phrase_query`]: same matching
 /// semantics and parameter contract, but feeds each matched, live doc's BM25
 /// score to a [`ScoringCollector`] instead of a plain [`Collector`].
 ///
@@ -5044,7 +5032,7 @@ pub(crate) fn phrase_doc_freqs(
     // Documents first, positions second.
     //
     // A phrase can only match where every term does, so positions are needed
-    // only for the intersection -- which for `phrase t0 t1` on the M1 corpus is
+    // only for the intersection -- which for `phrase t0 t1` on the benchmark corpus is
     // 2.2M documents out of `t0`'s 5M. Fetching each term's positions up front
     // materialized every one of them, roughly 15 million for `t0` alone, to
     // look at less than half. Intersecting the (cheap) doc lists first and then
@@ -5333,9 +5321,7 @@ pub fn search_multi_phrase_query_scored_with_stats<C: ScoringCollector>(
 
 /// The one implementation both [`search_multi_phrase_query`] and
 /// [`search_multi_phrase_query_scored_with_stats`] run, so matching and scoring
-/// can never disagree about which documents match (the defect
-/// `search_boolean_query_scored`'s two-pass general path used to have, see
-/// finding #O16 in `docs/sweep/findings.md`).
+/// can never disagree about which documents match .
 #[allow(clippy::too_many_arguments)]
 fn multi_phrase_hits<C: ScoringCollector>(
     fields: &BlockTreeFields,
@@ -6124,7 +6110,7 @@ mod tests {
         .unwrap();
         assert_eq!(c.docs, vec![1, 2, 3]);
 
-        // Exclusive `{20 TO 40}` (task #195's syntax) -- only doc 2 (value 30)
+        // Exclusive `{20 TO 40}` -- only doc 2 (value 30)
         // is strictly between 20 and 40.
         let clause = query_parser::parse_query("price:{20 TO 40}", None).unwrap();
         let q = BooleanQuery::new().with_must([clause]);
@@ -6474,7 +6460,7 @@ mod tests {
         // Not taking it cost 129.5ms against 8.8ms for the same conjunction
         // written with `MUST` clauses, because the general path materializes
         // each clause's whole doc list first -- see `benches/filter_vs_must.rs`.
-        // The leapfrog takes it, and (since c37) so does block-max pruning --
+        // The leapfrog takes it, and so does block-max pruning --
         // see `a_filter_only_conjunction_prunes_against_a_full_top_n_queue`.
         let q = BooleanQuery::new()
             .with_filter([TermQuery::new("body", "cat"), TermQuery::new("body", "dog")]);
@@ -6492,7 +6478,7 @@ mod tests {
     fn a_filter_only_conjunction_prunes_against_a_full_top_n_queue() {
         // Every document scores 0, so the block-max bound is 0 and the
         // threshold a full queue publishes is 0 -- `0 <= 0` authorizes the
-        // skip. c11 switched that off, reading it as "pruning on a tie";
+        // skip. This is not "pruning on a tie":
         // `TopScoreDocCollector` publishes `Math.nextUp(0f)` and Lucene's own
         // `bound < minCompetitiveScore` test skips exactly the same blocks.
         // The answer is unchanged because documents arrive ascending and
@@ -6502,8 +6488,7 @@ mod tests {
         // On `big` (`everywhere` in 300 documents), not on `body`: the
         // pruning branch needs a decoded block to bound, and `body`'s two-doc
         // postings live in the vint tail, where `current_block_last_doc_id()`
-        // is still `-1`. That is what "the fixture segment is too small" meant
-        // in c11's note.
+        // is still `-1`.
         let q = BooleanQuery::new().with_filter([
             TermQuery::new("big", "everywhere"),
             TermQuery::new("big", "everywhere"),
@@ -6625,14 +6610,11 @@ mod tests {
 
     // ---- single-scoring-clause fast path + constant-score streaming --------
     //
-    // c6 recorded `lib.rs` at 90.52% line coverage, below this repo's 95% bar.
-    // The largest single hole was this pair: `search_boolean_query_scored`'s
+    // Covers `search_boolean_query_scored`'s
     // one-clause shortcut and the `stream_constant_score_clause` /
-    // `expanded_terms` machinery it is the only caller of. Nothing reached them
-    // because the wildcard-family fixture suites all call
-    // `search_prefix_query_scored` and friends *directly*, never through a
-    // `BooleanQuery` -- so the whole shortcut, the streaming union, and its
-    // early exit were untested. Fixture fields used below: `big` holds one term
+    // `expanded_terms` machinery it is the only caller of, which the
+    // wildcard-family fixture suites (calling `search_prefix_query_scored` and
+    // friends directly) never reach. Fixture fields used below: `big` holds one term
     // `everywhere` in 300 documents, `many` holds 400 terms `term0000`..
     // `term0399` at one document each.
 
@@ -6775,7 +6757,7 @@ mod tests {
         }
     }
 
-    // ---- `MaxNonCompetitiveBoostAttribute`'s feedback loop (c40) --------
+    // ---- `MaxNonCompetitiveBoostAttribute`'s feedback loop --------
 
     /// The loop is a **pruning** channel, not a semantic one: whatever it
     /// skips could not have entered the top-`maxExpansions` queue anyway. So
@@ -7162,7 +7144,7 @@ mod tests {
 
     // ---- block-max pruning in the two lazy paths --------------------------
     //
-    // The other half of c6's coverage gap. Both lazy paths prune against the
+    // Both lazy paths prune against the
     // collector's bottom score, and neither pruning branch was reachable from
     // the fixture's 5-document `body` field: the queue has to *fill* before a
     // threshold exists at all. The `big` field (one term, 300 documents, term
@@ -7336,7 +7318,7 @@ mod tests {
     fn boolean_minimum_should_match_zero_with_must_present_is_unchanged_regression() {
         // Explicit regression test: `minimum_should_match == 0` (the default) must
         // still leave `should` purely score-only once `must` is non-empty, exactly
-        // like before task #24 added `minimum_should_match` at all.
+        // as without `minimum_should_match`.
         let (fields, doc) = open_fixture();
         let doc_in = doc.as_ref().map(|d| d.open());
         let mut c = VecCollector::default();
@@ -7533,7 +7515,7 @@ mod tests {
         }
     }
 
-    // Nested `BooleanQuery` clause tests (task #25): cat={0,2}, dog={0,1},
+    // Nested `BooleanQuery` clause tests: cat={0,2}, dog={0,1},
     // bird={1,4} (see above).
 
     #[test]
@@ -8236,7 +8218,7 @@ mod tests {
         assert!(c.docs.is_empty());
     }
 
-    // `phrase_freq_exact` unit tests (task #29): pure counting logic against
+    // `phrase_freq_exact` unit tests: pure counting logic against
     // hand-built position lists, no fixture needed.
 
     /// The branch-free two-term count is the brute-force one: each `p0` of
@@ -8537,7 +8519,7 @@ mod tests {
         );
     }
 
-    // `span_matches_in_doc` unit tests (task #55): synthetic per-leaf position
+    // `span_matches_in_doc` unit tests: synthetic per-leaf position
     // maps, no fixture needed -- this is the pure span-computation function in
     // isolation, mirroring `phrase_matches_in_doc`'s own test style above.
 
@@ -8717,7 +8699,7 @@ mod tests {
         assert!(span_matches_in_doc(&query, &positions).is_empty());
     }
 
-    // `search_phrase_query_scored` fixture-driven tests (task #29): reuses the
+    // `search_phrase_query_scored` fixture-driven tests: reuses the
     // `pos` field's real alpha/beta postings this module's `search_phrase_query`
     // tests already validate at the matching layer.
 
@@ -8938,7 +8920,7 @@ mod tests {
         assert!(hits[0].score > 0.0);
     }
 
-    // `Clause::Phrase` inside a `BooleanQuery` (task #29): matching + scoring,
+    // `Clause::Phrase` inside a `BooleanQuery`: matching + scoring,
     // plus one nested case.
 
     #[test]
@@ -9121,7 +9103,7 @@ mod tests {
         assert!(matches!(err, Error::MissingPosInput));
     }
 
-    // `DisjunctionMaxQuery` (task #32): matching is a pure union, scoring is
+    // `DisjunctionMaxQuery`: matching is a pure union, scoring is
     // `max(disjunct scores) + tie_breaker * sum(rest)`. `body`'s known postings
     // (see the `Clause::Boolean`/BM25 tests above and `scoring_fixtures.rs`):
     // cat={0,2}, dog={0,1}, bird={1,4}.
@@ -9467,7 +9449,7 @@ mod tests {
         assert!(matches!(err, Error::MissingPosInput));
     }
 
-    // `ConstantScoreQuery`/`BoostQuery` (task #33). `body`'s known real postings
+    // `ConstantScoreQuery`/`BoostQuery`. `body`'s known real postings
     // (see the dismax/boolean tests above): cat={0,2}, dog={0,1}, bird={1,4}.
     //
     // **Cross-engine verification scope, decided here rather than adding a new
@@ -9488,7 +9470,7 @@ mod tests {
     // exercise any Lucene-specific format or algorithm this port could get
     // subtly wrong -- unlike BM25's `tfNorm`/`idf` formulas or the dismax
     // tie-breaker formula, which *did* need real Lucene ground truth to catch
-    // a real bug (see the BM25 `tfNorm` fix task #32 found). Instead, these
+    // a real bug (the BM25 `tfNorm` fix). Instead, these
     // tests use `search_term_query_scored`'s already-cross-engine-consistent
     // real BM25 score for `body:cat`/`body:dog` at specific docs as the "known
     // real" inner score, and assert the wrapped score is exactly that constant,
@@ -10501,7 +10483,7 @@ mod tests {
         }
     }
 
-    /// c12: `search_boolean_query_scored_maxscore` is now a delegate for
+    /// `search_boolean_query_scored_maxscore` is a delegate for
     /// `search_boolean_query_scored`, so it must agree with the plain scored
     /// entry point on *every* shape -- not only on the ones the deleted body
     /// used to decline. The two shapes that most directly pinned the deleted
