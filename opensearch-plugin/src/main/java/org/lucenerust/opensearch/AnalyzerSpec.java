@@ -31,10 +31,12 @@ import org.apache.lucene.util.fst.IntsRefFSTEnum;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -421,6 +423,146 @@ public final class AnalyzerSpec {
         return null;
     }
 
+    /**
+     * Words one per line, as {@code getWordSet} reads them back; null when one cannot survive that
+     * format (empty, a comment, a line break, or edge whitespace).
+     */
+    private static String lines(Collection<String> words) {
+        StringBuilder sb = new StringBuilder();
+        for (String t : words) {
+            if (t.isEmpty() || t.startsWith("#") || t.startsWith("﻿") || t.indexOf('\n') >= 0 || t.indexOf('\r') >= 0
+                || t.charAt(0) <= ' ' || t.charAt(t.length() - 1) <= ' ') {
+                return null;
+            }
+            sb.append(t).append('\n');
+        }
+        return sb.toString();
+    }
+
+    /** The bundled dictionary {@code className.getInstance()}, from {@code near}'s class loader. */
+    private static Object bundled(Object near, String className) {
+        try {
+            Class<?> c = Class.forName(className, false, near.getClass().getClassLoader());
+            return c.getMethod("getInstance").invoke(null);
+        } catch (ReflectiveOperationException | RuntimeException | LinkageError e) {
+            throw new ReflectionMiss(className);
+        }
+    }
+
+    /**
+     * Whether a kuromoji or nori lattice ({@code pkg} {@code ja} or {@code ko}) runs on the module's
+     * bundled dictionaries, the only ones the Rust data pack holds.
+     */
+    private static boolean bundledDictionaries(Object viterbi, String pkg) {
+        String d = A + pkg + ".dict.";
+        return read(viterbi, "dictionary") == bundled(viterbi, d + "TokenInfoDictionary")
+            && read(viterbi, "unkDictionary") == bundled(viterbi, d + "UnknownDictionary")
+            && read(viterbi, "costs") == bundled(viterbi, d + "ConnectionCosts");
+    }
+
+    /** A kuromoji or nori user dictionary's surface forms, each with its ordinal, in FST order. */
+    private static List<Map.Entry<String, Integer>> userEntries(Object dictionary) throws IOException {
+        @SuppressWarnings("unchecked")
+        FST<Long> fst = (FST<Long>) read(read(dictionary, "fst"), "fst");
+        List<Map.Entry<String, Integer>> out = new ArrayList<>();
+        IntsRefFSTEnum<Long> e = new IntsRefFSTEnum<>(fst);
+        IntsRefFSTEnum.InputOutput<Long> io;
+        while ((io = e.next()) != null) {
+            // BYTE2 input: one UTF-16 unit per label.
+            StringBuilder sb = new StringBuilder(io.input.length);
+            for (int i = 0; i < io.input.length; i++) {
+                sb.append((char) io.input.ints[io.input.offset + i]);
+            }
+            out.add(Map.entry(sb.toString(), io.output.intValue()));
+        }
+        return out;
+    }
+
+    /** A user dictionary field that its line format keeps as is: no separator, quote, or whitespace. */
+    private static boolean plainField(String s) {
+        if (s.isEmpty()) return false;
+        for (int i = 0; i < s.length(); i++) {
+            char ch = s.charAt(i);
+            if (ch <= ' ' || ch == ',' || ch == '"' || ch == '#' || Character.isWhitespace(ch) || Character.isSpaceChar(ch)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * A kuromoji {@code UserDictionary} as the CSV it is read from ({@code surface,segments,readings,pos}),
+     * or null when an entry cannot be written back exactly.
+     */
+    private static String japaneseUserDictionary(Object dictionary) throws IOException {
+        int[][] segmentations = (int[][]) read(dictionary, "segmentations");
+        String[] data = (String[]) read(read(dictionary, "morphAtts"), "data");
+        int firstWordId = (Integer) read(null, dictionary.getClass(), "CUSTOM_DICTIONARY_WORD_ID_OFFSET");
+        StringBuilder sb = new StringBuilder();
+        for (Map.Entry<String, Integer> entry : userEntries(dictionary)) {
+            String surface = entry.getKey();
+            int[] s = segmentations[entry.getValue()];
+            if (plainField(surface) == false || s.length < 2) return null;
+            StringJoiner segments = new StringJoiner(" ");
+            StringJoiner readings = new StringJoiner(" ");
+            String pos = null;
+            int at = 0;
+            for (int i = 1; i < s.length; i++) {
+                if (s[i] <= 0 || s[i] > surface.length() - at) return null;
+                segments.add(surface.substring(at, at + s[i]));
+                at += s[i];
+                String[] feature = data[s[0] - firstWordId + i - 1].split("\u0000", -1);
+                if (feature.length != 2 || plainField(feature[0]) == false || plainField(feature[1]) == false) return null;
+                if (pos != null && pos.equals(feature[1]) == false) return null;
+                pos = feature[1];
+                readings.add(feature[0]);
+            }
+            if (at != surface.length()) return null;
+            sb.append(surface).append(',').append(segments).append(',').append(readings).append(',').append(pos).append('\n');
+        }
+        return sb.toString();
+    }
+
+    /**
+     * A nori {@code UserDictionary} as the lines it is read from ({@code token [segment...]}), or null
+     * when an entry cannot be written back exactly. Only segment lengths are kept, so segments are
+     * written as consecutive slices of the token; the entry's right id, which the line's last
+     * character decides, must come out the same.
+     */
+    private static String koreanUserDictionary(Object dictionary, Object charDef) throws ReflectiveOperationException, IOException {
+        Object morph = read(dictionary, "morphAtts");
+        int[][] segmentations = (int[][]) read(morph, "segmentations");
+        short[] rightIds = (short[]) read(morph, "rightIds");
+        Class<?> d = dictionary.getClass();
+        short plain = (Short) read(null, d, "RIGHT_ID");
+        short coda = (Short) read(null, d, "RIGHT_ID_T");
+        short noCoda = (Short) read(null, d, "RIGHT_ID_F");
+        Method isHangul = charDef.getClass().getMethod("isHangul", char.class);
+        Method hasCoda = charDef.getClass().getMethod("hasCoda", char.class);
+        StringBuilder sb = new StringBuilder();
+        for (Map.Entry<String, Integer> entry : userEntries(dictionary)) {
+            String token = entry.getKey();
+            int ord = entry.getValue();
+            if (plainField(token) == false) return null;
+            StringBuilder line = new StringBuilder(token);
+            int[] s = segmentations[ord];
+            if (s != null) {
+                if (s.length == 0) return null;
+                int at = 0;
+                for (int len : s) {
+                    if (len <= 0 || len > token.length() - at) return null;
+                    line.append(' ').append(token, at, at + len);
+                    at += len;
+                }
+            }
+            char last = line.charAt(line.length() - 1);
+            short rightId = (Boolean) isHangul.invoke(charDef, last) ? ((Boolean) hasCoda.invoke(charDef, last) ? coda : noCoda) : plain;
+            if (rightIds[ord] != rightId) return null;
+            sb.append(line).append('\n');
+        }
+        return sb.toString();
+    }
+
     private static void hex(StringBuilder sb, BytesRef b) {
         for (int i = 0; i < b.length; i++) {
             int v = b.bytes[b.offset + i] & 0xFF;
@@ -554,7 +696,14 @@ public final class AnalyzerSpec {
         A + "sv.SwedishLightStemFilter",
         A + "fi.FinnishLightStemFilter",
         A + "hu.HungarianLightStemFilter",
-        A + "core.KeywordTokenizer"
+        A + "core.KeywordTokenizer",
+        A + "cjk.CJKWidthCharFilter",
+        A + "ja.JapaneseBaseFormFilter",
+        A + "ja.JapaneseHiraganaUppercaseFilter",
+        A + "ja.JapaneseKatakanaUppercaseFilter",
+        A + "ja.JapaneseNumberFilter",
+        A + "ko.KoreanReadingFormFilter",
+        A + "ko.KoreanNumberFilter"
     );
 
     private static Mapper noArgs(Class<?> c) {
@@ -863,16 +1012,10 @@ public final class AnalyzerSpec {
         });
         map("core.TypeTokenFilter", (o, c) -> {
             @SuppressWarnings("unchecked")
-            Set<String> types = (Set<String>) read(o, "stopTypes");
-            StringBuilder sb = new StringBuilder();
-            for (String t : types) {
-                if (t.isEmpty() || t.startsWith("#") || t.indexOf('\n') >= 0 || t.indexOf('\r') >= 0 || t.charAt(0) <= ' ' || t.charAt(t.length() - 1) <= ' ') {
-                    return "analysis_words";
-                }
-                sb.append(t).append('\n');
-            }
+            String types = lines((Set<String>) read(o, "stopTypes"));
+            if (types == null) return "analysis_words";
             c.name = "type";
-            c.arg("types", c.writer.resource(sb.toString())).arg("useWhitelist", flag(readBool(o, "useWhiteList")));
+            c.arg("types", c.writer.resource(types)).arg("useWhitelist", flag(readBool(o, "useWhiteList")));
             return null;
         });
         map("pattern.PatternReplaceFilter", (o, c) -> {
@@ -930,6 +1073,95 @@ public final class AnalyzerSpec {
         };
         map("miscellaneous.WordDelimiterGraphFilter", wordDelimiter);
         map("miscellaneous.WordDelimiterFilter", wordDelimiter);
+
+        // ---- kuromoji and nori (OpenSearch's analysis-kuromoji and analysis-nori) ----
+        map("ja.JapaneseTokenizer", (o, c) -> {
+            Object v = read(o, "viterbi");
+            if (bundledDictionaries(v, "ja") == false) return "analysis_japanese_dictionary";
+            boolean search = readBool(v, "searchMode");
+            c.name = "japanese";
+            c.arg("mode", readBool(v, "extendedMode") ? "EXTENDED" : search ? "SEARCH" : "NORMAL")
+                .arg("discardPunctuation", flag(readBool(v, "discardPunctuation")));
+            if (search) {
+                c.arg("discardCompoundToken", flag(readBool(v, "outputCompounds") == false));
+            }
+            int nBestCost = readInt(v, "nBestCost");
+            if (nBestCost != 0) {
+                c.arg("nBestCost", nBestCost);
+            }
+            Object user = read(v, "userDictionary");
+            if (user != null) {
+                String text;
+                try {
+                    text = japaneseUserDictionary(user);
+                } catch (IOException e) {
+                    return "analysis_reflect";
+                }
+                if (text == null) return "analysis_japanese_user_dictionary";
+                c.arg("userDictionary", c.writer.resource(text));
+            }
+            return null;
+        });
+        map("ja.JapanesePartOfSpeechStopFilter", (o, c) -> {
+            @SuppressWarnings("unchecked")
+            String tags = lines((Set<String>) read(o, "stopTags"));
+            if (tags == null) return "analysis_words";
+            c.name = "japanesePartOfSpeechStop";
+            c.arg("tags", c.writer.resource(tags));
+            return null;
+        });
+        map("ja.JapaneseReadingFormFilter", (o, c) -> {
+            c.name = "japaneseReadingForm";
+            c.arg("useRomaji", flag(readBool(o, "useRomaji")));
+            return null;
+        });
+        map("ja.JapaneseKatakanaStemFilter", (o, c) -> {
+            c.name = "japaneseKatakanaStem";
+            c.arg("minimumLength", readInt(o, "minimumKatakanaLength"));
+            return null;
+        });
+        map("ja.JapaneseCompletionFilter", (o, c) -> {
+            c.name = "japaneseCompletion";
+            c.arg("mode", ((Enum<?>) read(read(o, "tokenGenerator"), "mode")).name());
+            return null;
+        });
+        map("ja.JapaneseIterationMarkCharFilter", (o, c) -> {
+            c.name = "japaneseIterationMark";
+            c.arg("normalizeKanji", flag(readBool(o, "normalizeKanji"))).arg("normalizeKana", flag(readBool(o, "normalizeKana")));
+            return null;
+        });
+        map("ko.KoreanTokenizer", (o, c) -> {
+            Object v = read(o, "viterbi");
+            if (bundledDictionaries(v, "ko") == false) return "analysis_korean_dictionary";
+            c.name = "korean";
+            c.arg("decompoundMode", ((Enum<?>) read(v, "mode")).name())
+                .arg("outputUnknownUnigrams", flag(readBool(v, "outputUnknownUnigrams")))
+                .arg("discardPunctuation", flag(readBool(v, "discardPunctuation")));
+            Object user = read(v, "userDictionary");
+            if (user != null) {
+                String text;
+                try {
+                    text = koreanUserDictionary(user, read(v, "characterDefinition"));
+                } catch (IOException | ReflectiveOperationException e) {
+                    return "analysis_reflect";
+                }
+                if (text == null) return "analysis_korean_user_dictionary";
+                c.arg("userDictionary", c.writer.resource(text));
+            }
+            return null;
+        });
+        map("ko.KoreanPartOfSpeechStopFilter", (o, c) -> {
+            Set<?> tags = (Set<?>) read(o, "stopTags");
+            // An empty argument means the default tags, not none.
+            if (tags.isEmpty()) return "analysis_korean_tags";
+            StringJoiner names = new StringJoiner(",");
+            for (Object t : tags) {
+                names.add(((Enum<?>) t).name());
+            }
+            c.name = "koreanPartOfSpeechStop";
+            c.arg("tags", names.toString());
+            return null;
+        });
     }
 
     private static void escape(StringBuilder sb, char ch) {
