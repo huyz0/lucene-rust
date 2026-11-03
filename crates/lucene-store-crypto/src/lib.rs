@@ -1,4 +1,4 @@
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 //! Application-level encryption (ALE) for lucene-store directories, with
 //! bring-your-own-key (BYOK) key providers.
 //!
@@ -34,6 +34,8 @@ pub mod backend;
 pub mod directory;
 pub mod format;
 pub mod key_provider;
+#[cfg(target_os = "linux")]
+pub mod lazy;
 
 use std::sync::Arc;
 

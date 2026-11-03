@@ -224,9 +224,21 @@ impl<D: Directory> Directory for EncryptedDirectory<D> {
         }
         let file = self.inner.open(name)?;
         let (cipher, header, header_len) = self.cipher_for(name, &file)?;
-        let plain = cipher.open_body(&file[header_len..], header.chunk_size, name)?;
         self.header_lens()
             .insert(name.to_string(), (header_len as u64, header.chunk_size));
+        #[cfg(target_os = "linux")]
+        if let Some(pager) = crate::lazy::Pager::global().filter(|p| p.supports(header.chunk_size))
+        {
+            let body = &file[header_len..];
+            cipher.verify_body(body, header.chunk_size, name)?;
+            let plain_len = plaintext_len(body.len() as u64, header.chunk_size)
+                .and_then(|n| usize::try_from(n).ok())
+                .ok_or_else(|| {
+                    Error::Corrupted(format!("encrypted file {name}: malformed length"))
+                })?;
+            return pager.open(file, header_len, plain_len, header.chunk_size, cipher, name);
+        }
+        let plain = cipher.open_body(&file[header_len..], header.chunk_size, name)?;
         Ok(Input::Owned(plain))
     }
 
