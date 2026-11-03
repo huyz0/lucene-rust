@@ -622,6 +622,8 @@ impl<'d> StoredFieldsReader<'d> {
             // The lengths are decoded into `offsets[1..]` and summed there in
             // place: `offsets[i + 1] = offsets[i] + lengths[i]`.
             read_bulk_ints_into(&mut input, chunk_docs as usize, &mut offsets)?;
+            let mut sum = 0i64;
+            let mut mismatch = false;
             // ARITH: `read_bulk_ints` guarantees every value it returns is
             // non-negative and at most `u32::MAX` (the widest shape is
             // 32-bit, read unsigned; the all-equal shape rejects a negative
@@ -631,18 +633,17 @@ impl<'d> StoredFieldsReader<'d> {
             // `offsets[i + 1] as usize - offsets[i]` depends on -- a
             // decreasing pair underflowed that to a ~2^64 slice length.
             #[allow(clippy::arithmetic_side_effects)]
-            for i in 0..chunk_docs as usize {
-                let len = offsets[i + 1];
-                offsets[i + 1] = offsets[i] + len;
+            for (slot, &n) in offsets[1..].iter_mut().zip(&num_stored_fields) {
+                let len = *slot;
                 // Java's "only the empty document has a serialized length of
                 // 0" check, folded into the same pass rather than a second
                 // one over the same two arrays.
-                if (len == 0) != (num_stored_fields[i] == 0) {
-                    return Err(Error::LengthFieldCountMismatch {
-                        length: len,
-                        num_stored_fields: num_stored_fields[i],
-                    });
-                }
+                mismatch |= (len == 0) != (n == 0);
+                sum += len;
+                *slot = sum;
+            }
+            if mismatch {
+                return Err(first_length_count_mismatch(&offsets, &num_stored_fields));
             }
             (num_stored_fields, offsets)
         };
@@ -2394,56 +2395,77 @@ fn read_bulk_ints_into(input: &mut SliceInput, count: usize, out: &mut Vec<i64>)
             out.resize(out.len().saturating_add(count), i64::from(v));
             Ok(())
         }
-        // ARITH: for the whole arm -- `bpv` is one of exactly 8, 16 and 32, so
-        // `values_per_word` is 8, 4 or 2 and `num_words` is 16, 32 or 64 --
-        // all three divisions are by a non-zero constant and the shift is by
-        // at most 32, well inside `u64`. `shift` peaks at
-        // `(values_per_word - 1) * bpv == 64 - bpv == 56`, *not* 64, which
-        // would be the panicking shift. `k` only ever advances while
-        // `k + 128 <= count` or `k < count`, so it stays within `0..=count`
-        // and `count` is a chunk's document count, at most 2^16
-        // (`read_chunk_header`); every write index `k + i + lane * num_words`
-        // is under `k + num_words * values_per_word == k + 128 <= count`.
-        #[allow(clippy::arithmetic_side_effects)]
-        8 | 16 | 32 => {
-            // Java transposes each 128-value block across `values_per_word`
-            // i64 words (see `StoredFieldsInts.readInts8/16/32`): word `i`'s
-            // `lane`-th slot (MSB-first) lands at output position
-            // `i + lane*num_words`, not `i*values_per_word + lane`.
-            const BLOCK_SIZE: usize = 128;
-            let bpv_usize = bpv as usize;
-            let values_per_word = 64 / bpv_usize;
-            let num_words = BLOCK_SIZE / values_per_word;
-            let mask: u64 = (1u64 << bpv_usize) - 1;
-            debug_assert!((values_per_word - 1) * bpv_usize <= 56);
-
-            // `base + count`: `out` holds at most one leading `0` (`offsets`).
-            let base = out.len();
-            out.resize(base + count, 0);
-            let out = &mut out[base..];
-            // Java reads each block through one reusable `long[]`; this one
-            // is on the stack (`num_words` is at most 64).
-            let mut words_buf = [0i64; 64];
-            let words = &mut words_buf[..num_words];
-            let mut k = 0usize;
-            while k + BLOCK_SIZE <= count {
-                input.read_i64s(words)?;
-                for (i, &w) in words.iter().enumerate() {
-                    let uw = w as u64;
-                    for lane in 0..values_per_word {
-                        let shift = (values_per_word - 1 - lane) * bpv_usize;
-                        out[k + i + lane * num_words] = ((uw >> shift) & mask) as i64;
-                    }
-                }
-                k += BLOCK_SIZE;
-            }
-            while k < count {
-                out[k] = read_scalar(input, bpv)?;
-                k += 1;
-            }
-            Ok(())
-        }
+        8 => read_packed_ints::<8>(input, count, out),
+        16 => read_packed_ints::<16>(input, count, out),
+        32 => read_packed_ints::<32>(input, count, out),
         other => Err(Error::UnsupportedBulkIntWidth(other)),
+    }
+}
+
+/// The 8/16/32-bit shapes of [`read_bulk_ints_into`]: full 128-value blocks,
+/// then a scalar tail.
+///
+/// Java packs each block across `64 / BPV` lanes of `128 / (64 / BPV)` words
+/// (`StoredFieldsInts.readInts8/16/32`): value `i + lane * num_words` sits in
+/// word `i`'s `lane`-th slot, most significant first. Walking lane by lane
+/// therefore emits the block in output order, so each lane is one sequential
+/// `extend` over the block's words.
+// ARITH: `BPV` is 8, 16 or 32, so `values_per_word` is 8, 4 or 2,
+// `num_words` 16, 32 or 64 and every shift at most `64 - BPV`. `full <=
+// count / 128`, so `full * block_bytes` is at most `count * BPV / 8`, and
+// `count` is a chunk's document count, at most 2^16 (`read_chunk_header`).
+#[allow(clippy::arithmetic_side_effects)]
+fn read_packed_ints<const BPV: usize>(
+    input: &mut SliceInput,
+    count: usize,
+    out: &mut Vec<i64>,
+) -> Result<()> {
+    const BLOCK_SIZE: usize = 128;
+    let values_per_word = 64 / BPV;
+    let num_words = BLOCK_SIZE / values_per_word;
+    let block_bytes = num_words * 8;
+    let mask: u64 = (1u64 << BPV) - 1;
+    let full = count / BLOCK_SIZE;
+    out.reserve(count);
+    let packed = input.slice(input.position(), input.position() + full * block_bytes)?;
+    input.skip(packed.len())?;
+    let mut words = [0u64; 64];
+    for block in packed.chunks_exact(block_bytes) {
+        for (w, b) in words.iter_mut().zip(block.chunks_exact(8)) {
+            *w = u64::from_le_bytes(b.try_into().expect("chunks_exact(8)"));
+        }
+        for lane in 0..values_per_word {
+            let shift = (values_per_word - 1 - lane) * BPV;
+            out.extend(
+                words[..num_words]
+                    .iter()
+                    .map(|&w| ((w >> shift) & mask) as i64),
+            );
+        }
+    }
+    for _ in full * BLOCK_SIZE..count {
+        out.push(read_scalar(input, BPV as u8)?);
+    }
+    Ok(())
+}
+
+/// The first document of a chunk whose serialized length is zero while its
+/// stored-field count is not, or the reverse, from the chunk's cumulative
+/// `offsets`.
+#[cold]
+fn first_length_count_mismatch(offsets: &[i64], num_stored_fields: &[i64]) -> Error {
+    // ARITH: `offsets` is a running sum of non-negative lengths, so each
+    // adjacent difference is a non-negative length.
+    #[allow(clippy::arithmetic_side_effects)]
+    let found = offsets
+        .windows(2)
+        .zip(num_stored_fields)
+        .map(|(w, &n)| (w[1] - w[0], n))
+        .find(|&(len, n)| (len == 0) != (n == 0));
+    let (length, num_stored_fields) = found.unwrap_or((0, 0));
+    Error::LengthFieldCountMismatch {
+        length,
+        num_stored_fields,
     }
 }
 
