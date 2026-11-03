@@ -17,6 +17,10 @@
 // comparing them with the document-at-a-time ones.
 thread_local! {
     pub(crate) static BATCHES_OFF: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Picks the dense conjunction for every non-scoring term conjunction,
+    /// whatever the segment size and lead cost.
+    pub(crate) static FORCE_DENSE_CONJUNCTION: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
 }
 
 use super::build::{compose, Child};
@@ -2152,6 +2156,55 @@ mod fixture {
                     .unwrap();
                     total += c.0;
                 }
+                // The dense conjunction, whatever the sizes: the same
+                // documents collected one by one, and the same count by
+                // popcount.
+                let docs_of = |force: bool| {
+                    crate::exec::tests::FORCE_DENSE_CONJUNCTION.with(|f| f.set(force));
+                    let mut docs = Docs(Vec::new());
+                    let mut kind = "";
+                    if let Some(mut b) = bulk_boolean(&ctx, &q, 1.0, Mode::NoScores).unwrap() {
+                        kind = b.kind();
+                        crate::exec::score_segment(
+                            &mut b,
+                            Mode::NoScores,
+                            seg.live_docs,
+                            &mut docs,
+                            ctx.max_doc,
+                        )
+                        .unwrap();
+                    }
+                    let mut counted = Popcount(0);
+                    if let Some(mut b) = bulk_boolean(&ctx, &q, 1.0, Mode::NoScores).unwrap() {
+                        crate::exec::score_segment(
+                            &mut b,
+                            Mode::NoScores,
+                            seg.live_docs,
+                            &mut counted,
+                            ctx.max_doc,
+                        )
+                        .unwrap();
+                    }
+                    crate::exec::tests::FORCE_DENSE_CONJUNCTION.with(|f| f.set(false));
+                    (kind, docs.0, counted.0)
+                };
+                let (_, want, _) = docs_of(false);
+                let (kind, got, counted) = docs_of(true);
+                if !kind.is_empty() {
+                    kinds.insert(kind);
+                }
+                assert_eq!(
+                    got,
+                    want,
+                    "{}: dense conjunction docs",
+                    m[&format!("query.{i}")]
+                );
+                assert_eq!(
+                    counted,
+                    want.len() as u64,
+                    "{}: dense count",
+                    m[&format!("query.{i}")]
+                );
             }
             assert_eq!(
                 total.to_string(),
@@ -2184,6 +2237,7 @@ mod fixture {
             "req_excl",
             "dismax",
             "union",
+            "dense_conjunction",
         ]
         .into_iter()
         .collect();
@@ -2351,6 +2405,36 @@ mod fixture {
         }
         fn score_mode(&self) -> crate::collector::ScoreMode {
             crate::collector::ScoreMode::CompleteNoScores
+        }
+    }
+
+    struct Docs(Vec<i32>);
+
+    impl crate::collector::ScoringCollector for Docs {
+        fn collect(&mut self, doc: i32, _score: f32) {
+            self.0.push(doc);
+        }
+        fn score_mode(&self) -> crate::collector::ScoreMode {
+            crate::collector::ScoreMode::CompleteNoScores
+        }
+    }
+
+    /// A count that takes whole windows (`add_hits`).
+    struct Popcount(u64);
+
+    impl crate::collector::ScoringCollector for Popcount {
+        fn collect(&mut self, _doc: i32, _score: f32) {
+            self.0 += 1;
+        }
+        fn score_mode(&self) -> crate::collector::ScoreMode {
+            crate::collector::ScoreMode::CompleteNoScores
+        }
+        fn add_hits(&mut self, n: u64) -> bool {
+            self.0 += n;
+            true
+        }
+        fn collect_range(&mut self, min: i32, max: i32, _score: f32) {
+            self.0 += (max - min) as u64;
         }
     }
 }
