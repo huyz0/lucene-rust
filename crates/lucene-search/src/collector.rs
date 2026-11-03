@@ -46,7 +46,7 @@
 //!   speculative generality (no shared supertrait, no `Collector: ScoringCollector`
 //!   blanket impl) is introduced beyond that.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 /// `org.apache.lucene.search.ScoreMode` -- what a collector needs from the
 /// scorers underneath it, and therefore what work those scorers are allowed to
@@ -586,20 +586,25 @@ impl MaxScoreAccumulator {
 /// by score (ties broken by lower doc ID, matching real Lucene's `HitQueue` —
 /// see [`rank_order`]), discarding everything else.
 ///
-/// **Design**: real `TopScoreDocCollector` is backed by a `HitQueue` (a binary
-/// min-heap over the *worst* currently-kept hit, so a new hit only needs one
-/// comparison against the heap's root to know whether it's worth keeping).
-/// This port instead keeps `hits` fully sorted (best-first) after every
-/// insert/eviction — a plain `Vec` with a binary-search insert position. This
-/// is the same tradeoff this crate's `docid_set` module already made for
-/// `Disjunction` ("simple first cut, revisit if scale demands it" — see that
-/// module's doc comment): correct, `O(n)` per insert instead of `O(log n)`,
-/// fine for the query sizes and `top_n` values this port's fixtures and tests
-/// exercise today.
+/// **Design**: up to [`SORTED_MAX`] hits are kept fully sorted (best-first) in
+/// a plain `Vec` with a binary-search insert position, which beats a heap at
+/// small sizes. A larger `top_n` keeps `hits` as a binary min-heap with the
+/// worst kept hit at the root (Java's `HitQueue`), so an insert costs
+/// `O(log n)`; [`TopDocsCollector::top_docs`] sorts a copy once on first read.
+/// Both keep the same set: a hit enters only when it outranks the worst kept
+/// hit under the total order [`rank_order`].
 #[derive(Debug, Clone)]
 pub struct TopDocsCollector {
     top_n: usize,
+    /// Best-first when `top_n <= SORTED_MAX`, else a min-heap whose root is
+    /// the worst kept hit.
     hits: Vec<ScoreDoc>,
+    /// `hits` sorted best-first, built on the first [`Self::top_docs`] read of
+    /// a heap-ordered collector and dropped by the next insert.
+    sorted: OnceLock<Vec<ScoreDoc>>,
+    /// Where the worst kept hit sits in a full `hits`: the root of a heap,
+    /// the end of a sorted list.
+    worst_at: usize,
     /// Every document handed to [`ScoringCollector::collect`], kept or not --
     /// real `TopScoreDocCollector`'s `totalHits`.
     total_hits: u64,
@@ -652,6 +657,8 @@ impl TopDocsCollector {
         Self {
             top_n,
             hits: Vec::new(),
+            sorted: OnceLock::new(),
+            worst_at: worst_at(top_n),
             total_hits: 0,
             total_hits_threshold: 0,
             total_hits_relation: TotalHitsRelation::EqualTo,
@@ -676,6 +683,8 @@ impl TopDocsCollector {
         Self {
             top_n,
             hits: Vec::new(),
+            sorted: OnceLock::new(),
+            worst_at: worst_at(top_n),
             total_hits: 0,
             total_hits_threshold: total_hits_threshold.max(top_n as u64),
             total_hits_relation: TotalHitsRelation::EqualTo,
@@ -760,7 +769,77 @@ impl TopDocsCollector {
     /// This is capped at `top_n` and is **not** a hit count; for that, and for
     /// whether it is exact, see [`Self::total_hits`].
     pub fn top_docs(&self) -> &[ScoreDoc] {
-        &self.hits
+        if !self.heap_ordered() {
+            return &self.hits;
+        }
+        self.sorted.get_or_init(|| {
+            let mut v = self.hits.clone();
+            v.sort_unstable_by(|a, b| rank_order(b, a));
+            v
+        })
+    }
+
+    /// Whether `hits` is a heap rather than a sorted list.
+    #[inline]
+    fn heap_ordered(&self) -> bool {
+        self.top_n > SORTED_MAX
+    }
+
+    /// The worst kept hit. Only called on a full, non-empty queue.
+    #[inline]
+    fn worst(&self) -> ScoreDoc {
+        self.hits[self.worst_at]
+    }
+
+    /// Adds `candidate`, evicting the worst kept hit when the queue is full.
+    /// The caller has checked that it outranks that hit.
+    fn insert_hit(&mut self, candidate: ScoreDoc) {
+        if !self.heap_ordered() {
+            if self.hits.len() == self.top_n {
+                self.hits.pop();
+            }
+            let pos = self
+                .hits
+                .partition_point(|h| rank_order(h, &candidate) == std::cmp::Ordering::Greater);
+            self.hits.insert(pos, candidate);
+            return;
+        }
+        self.sorted.take();
+        // `a` ranks below `b`: `a` belongs nearer the root.
+        let worse = |a: &ScoreDoc, b: &ScoreDoc| rank_order(a, b) == std::cmp::Ordering::Less;
+        let h = &mut self.hits;
+        if h.len() < self.top_n {
+            h.push(candidate);
+            let mut i = h.len() - 1;
+            while i > 0 {
+                let parent = (i - 1) / 2;
+                if worse(&h[i], &h[parent]) {
+                    h.swap(i, parent);
+                    i = parent;
+                } else {
+                    break;
+                }
+            }
+            return;
+        }
+        // `updateTop`: replace the root and sift it down.
+        let n = h.len();
+        let mut i = 0;
+        loop {
+            let l = 2 * i + 1;
+            if l >= n {
+                break;
+            }
+            let r = l + 1;
+            let child = if r < n && worse(&h[r], &h[l]) { r } else { l };
+            if worse(&h[child], &candidate) {
+                h[i] = h[child];
+                i = child;
+            } else {
+                break;
+            }
+        }
+        h[i] = candidate;
     }
 
     /// Real Lucene's `Scorable.setMinCompetitiveScore`-equivalent read side —
@@ -813,7 +892,7 @@ impl TopDocsCollector {
             // Otherwise the worst hit only ever rises, so this is the worst
             // hit's score, except after a queue full of NaN let a lower one in
             // -- and then too Java's scorer keeps its higher bar.
-            self.hits.last().map(|h| h.score.max(self.published_min))
+            Some(self.worst().score.max(self.published_min))
         }
     }
 
@@ -841,9 +920,8 @@ impl TopDocsCollector {
                     self.total_hits_relation = TotalHitsRelation::GreaterThanOrEqualTo;
                     self.published_min = local;
                     if let Some(acc) = &self.min_score_acc {
-                        if let Some(worst) = self.hits.last() {
-                            acc.accumulate(self.doc_base.saturating_add(worst.doc_id), worst.score);
-                        }
+                        let worst = self.worst();
+                        acc.accumulate(self.doc_base.saturating_add(worst.doc_id), worst.score);
                     }
                 } else {
                     self.note_shared_threshold();
@@ -876,6 +954,19 @@ impl TopDocsCollector {
 /// worst kept hit at once: long enough to vectorize, short enough that a hit
 /// which does compete is reached without re-testing many before it.
 const COLLECT_RUN: usize = 16;
+
+/// The largest `top_n` [`TopDocsCollector`] keeps as a sorted list; above it
+/// the hits are a heap.
+const SORTED_MAX: usize = 64;
+
+/// [`TopDocsCollector::worst_at`] for a queue of `top_n`.
+const fn worst_at(top_n: usize) -> usize {
+    if top_n > SORTED_MAX {
+        0
+    } else {
+        top_n.saturating_sub(1)
+    }
+}
 
 /// Whether any of `scores` might not lose to `worst` -- `collect_many`'s run
 /// test: true for a score above it, and whenever either side is a NaN, which
@@ -945,7 +1036,7 @@ impl ScoringCollector for TopDocsCollector {
             .min(usize::try_from(room).unwrap_or(usize::MAX));
         // The fast reject needs a full queue and no `searchAfter` page.
         let fast = self.after.is_none() && self.top_n != 0;
-        let mut worst = (fast && self.hits.len() == self.top_n).then(|| self.hits[self.top_n - 1]);
+        let mut worst = (fast && self.hits.len() == self.top_n).then(|| self.worst());
         let (docs, scores) = (&docs[..k], &scores[..k]);
         let mut counted = 0u64;
         let mut i = 0;
@@ -994,7 +1085,7 @@ impl ScoringCollector for TopDocsCollector {
             counted = 0;
             self.collect_counted(doc_id, score);
             if fast && self.hits.len() == self.top_n {
-                worst = Some(self.hits[self.top_n - 1]);
+                worst = Some(self.worst());
             }
         }
         self.total_hits += counted;
@@ -1014,7 +1105,7 @@ impl ScoringCollector for TopDocsCollector {
             || self.min_score_acc.is_some()
             || self.top_n == 0
             || self.hits.len() != self.top_n
-            || !(score <= self.hits[self.top_n - 1].score)
+            || !(score <= self.worst().score)
         {
             return false;
         }
@@ -1052,7 +1143,7 @@ impl ScoringCollector for TopDocsCollector {
         // `updateMinCompetitiveScore` from its reject branch only at
         // `hitCountSoFar == totalHitsThreshold + 1`).
         if self.after.is_none() && self.top_n != 0 && self.hits.len() == self.top_n {
-            let worst = self.hits[self.top_n - 1];
+            let worst = self.worst();
             if score < worst.score || (score == worst.score && doc_id >= worst.doc_id) {
                 if self.total_hits_relation == TotalHitsRelation::EqualTo
                     && (self.total_hits > self.total_hits_threshold || self.min_score_acc.is_some())
@@ -1099,14 +1190,11 @@ impl TopDocsCollector {
         // (a queue full of them) every hit replaces it: with one slot the last
         // NaN document wins.
         if self.hits.len() == self.top_n {
-            let worst = self.hits[self.top_n - 1];
+            let worst = self.worst();
             if score < worst.score || (score == worst.score && doc_id >= worst.doc_id) {
                 self.note_threshold_published();
                 return;
             }
-            // `heap.updateTop(code)`: the worst hit leaves whatever the new
-            // one's rank.
-            self.hits.pop();
         } else if score == f32::NEG_INFINITY {
             // A queue that is not full has the `-inf` sentinel on top
             // (`DocScoreEncoder.LEAST_COMPETITIVE_CODE`), and `-inf <= -inf`:
@@ -1118,10 +1206,9 @@ impl TopDocsCollector {
             doc_id,
             score: canonical_score(score),
         };
-        let pos = self
-            .hits
-            .partition_point(|h| rank_order(h, &candidate) == std::cmp::Ordering::Greater);
-        self.hits.insert(pos, candidate);
+        // `heap.updateTop(code)` when full: the worst hit leaves whatever the
+        // new one's rank.
+        self.insert_hit(candidate);
         self.note_threshold_published();
     }
 }
@@ -1401,6 +1488,64 @@ impl CollapsingCollector {
 
 #[cfg(test)]
 mod tests {
+
+    /// A heap-ordered collector (`top_n` above `SORTED_MAX`) keeps the same
+    /// hits, in the same order, as a full sort of the stream; with score
+    /// ties, `-inf`, NaN and out-of-order doc ids, and read between inserts.
+    #[test]
+    fn heap_ordered_queue_keeps_the_sorted_top_n() {
+        let mut x: u64 = 0x9e37_79b9_7f4a_7c15;
+        let mut next = || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        for &top_n in &[SORTED_MAX + 1, 100, 1000] {
+            let mut stream: Vec<ScoreDoc> = (0..5000)
+                .map(|doc_id| {
+                    let r = next();
+                    let score = match r % 97 {
+                        0 => f32::NAN,
+                        1 => f32::NEG_INFINITY,
+                        _ => (r % 300) as f32 / 7.0,
+                    };
+                    ScoreDoc { doc_id, score }
+                })
+                .collect();
+            // Out of order too: the tie-break is by doc id, not arrival.
+            for i in (1..stream.len()).rev() {
+                let j = (next() % (i as u64 + 1)) as usize;
+                stream.swap(i, j);
+            }
+            let mut c = TopDocsCollector::new(top_n);
+            for (i, h) in stream.iter().enumerate() {
+                ScoringCollector::collect(&mut c, h.doc_id, h.score);
+                if i == 2500 {
+                    assert!(c
+                        .top_docs()
+                        .windows(2)
+                        .all(|w| rank_order(&w[0], &w[1]).is_gt()));
+                }
+            }
+            let mut want: Vec<ScoreDoc> = stream
+                .iter()
+                .filter(|h| h.score != f32::NEG_INFINITY)
+                .map(|h| ScoreDoc {
+                    doc_id: h.doc_id,
+                    score: canonical_score(h.score),
+                })
+                .collect();
+            want.sort_by(|a, b| rank_order(b, a));
+            want.truncate(top_n);
+            let got = c.top_docs();
+            assert_eq!(got.len(), want.len());
+            for (g, w) in got.iter().zip(&want) {
+                assert_eq!(g.doc_id, w.doc_id);
+                assert_eq!(g.score.to_bits(), w.score.to_bits());
+            }
+        }
+    }
 
     /// `collect_range`'s default is a `collect` per document, and a
     /// `LeafCollector` hands its range on shifted by the doc base.

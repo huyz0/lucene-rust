@@ -3664,7 +3664,7 @@ impl<'a> Leaf<'a> {
             let c = &mut tf.comps[i];
             c.bottom = c.values[slot];
             if let Some(v) = c.vals.as_mut() {
-                v.bottom = v.values[slot].clone();
+                v.bottom.clone_from(&v.values[slot]);
                 continue;
             }
             if let Some(cs) = c.custom.as_mut() {
@@ -4241,6 +4241,16 @@ pub(crate) fn search_sorted_leaves_with_statistics(
             max_score: f32::NAN,
         });
     }
+    // `IndexSearcher.search`'s `cappedNumHits = min(numHits, max(1,
+    // maxDoc))`: the queue and every comparator's slots are sized by it.
+    let max_doc: Option<u64> = segments
+        .iter()
+        .map(|s| s.max_doc.map(|m| u64::try_from(m).unwrap_or(0)))
+        .sum();
+    let top_n = match max_doc {
+        Some(m) => top_n.min(usize::try_from(m.max(1)).unwrap_or(usize::MAX)),
+        None => top_n,
+    };
     let rewritten = crate::multi_segment::rewrite_points_ranges(query, segments);
     let query = rewritten.as_ref().unwrap_or(query);
     // The score leading the sort gives the max score itself (the first hit).

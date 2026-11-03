@@ -56,6 +56,10 @@ crc32fast.workspace = true
 # Measures `phrase_freq_exact`'s binary search against `ExactPhraseMatcher`'s
 # merge walk -- see the bench's own module doc.
 [[bench]]
+name = "top_k_collect"
+harness = false
+
+[[bench]]
 name = "phrase_freq"
 harness = false
 

@@ -3593,6 +3593,11 @@ pub fn count_boolean_query_segment(
             self.0 = self.0.saturating_add(n);
             true
         }
+        fn collect_range(&mut self, min: i32, max: i32, _score: f32) {
+            self.0 = self
+                .0
+                .saturating_add(u64::try_from(max.saturating_sub(min)).unwrap_or(0));
+        }
     }
     let ctx = exec::LeafContext {
         fields: seg.fields,
@@ -3667,6 +3672,16 @@ pub(crate) fn count_boolean_query_shortcut(
                 #[cfg(any(test, feature = "asserting"))]
                 exec::asserting::check_count(n, seg.max_doc, seg.live_docs);
                 return Ok(Some(u64::try_from(n).unwrap_or(0)));
+            }
+        }
+        // `MatchAllDocsQuery`'s `ConstantScoreWeight.count`: `numDocs`.
+        (Some(Clause::MatchAllDocs(_)), _) => {
+            if let Some(max_doc) = seg.max_doc {
+                let n = match seg.live_docs {
+                    Some(live) => live.cardinality() as u64,
+                    None => u64::try_from(max_doc).unwrap_or(0),
+                };
+                return Ok(Some(n));
             }
         }
         (Some(Clause::Term(t)), _) => {

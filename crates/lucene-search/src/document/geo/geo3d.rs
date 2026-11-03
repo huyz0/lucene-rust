@@ -240,9 +240,9 @@ impl std::fmt::Debug for PointInGeo3DShapeQuery {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "PointInGeo3DShapeQuery({:?}, class {:?})",
+            "PointInGeo3DShapeQuery({:?}, {})",
             self.field,
-            self.shape.class_code()
+            self.shape.java_to_string()
         )
     }
 }
