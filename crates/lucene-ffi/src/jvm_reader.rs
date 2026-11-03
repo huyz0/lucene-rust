@@ -1,52 +1,24 @@
-//! The reader the OpenSearch plugin (`opensearch-plugin/`, M2) searches
-//! through: one handle per *Java* `DirectoryReader`, opened from the exact
-//! segment list that reader sees and masked with the exact live docs it
-//! sees, so that a hit's doc ID means the same document on both sides of the
-//! boundary.
+//! The reader the OpenSearch plugin searches: one handle per Java
+//! `DirectoryReader`, opened from that reader's own segment list and masked
+//! with its live docs, so a doc ID means the same document on both sides.
 //!
-//! ## Why not [`crate::directory_reader::ffi_open_directory_reader`]
+//! An OpenSearch searcher is usually an NRT reader, not the last commit on
+//! disk: it lists segments flushed since the commit and carries deletions
+//! that exist only in the JVM. So the JVM hands over:
 //!
-//! That entry point opens the latest `segments_N` on disk. An OpenSearch
-//! searcher is almost never that commit: a refresh opens an NRT reader from
-//! the `IndexWriter` (`DirectoryReader.open(writer, applyAllDeletes = true,
-//! writeAllDeletes = false)`), which lists segments flushed since the last
-//! commit and carries deletions -- hard and soft -- that exist only in the
-//! JVM's memory. Searching the last commit instead would miss documents and
-//! serve deleted ones, and every doc ID after the first new segment would
-//! point at the wrong document.
+//! - the segment list, as the bytes `SegmentInfos.write(IndexOutput)` writes
+//!   (the `segments_N` format `lucene_index::segment_infos::parse` reads);
+//! - each segment's `maxDoc`, which [`ffi_open_jvm_reader`] checks against
+//!   what it opened, since a wrong doc base returns the wrong documents;
+//! - each segment's live docs from the leaf's `getLiveDocs()`, which replace
+//!   whatever `.liv` or a soft-deletes field would give.
 //!
-//! So the JVM hands over what it actually has:
+//! A refresh passes the previous handle as `previous`, and unchanged
+//! segments are shared ([`DirectoryReader::reopen_at`]).
 //!
-//! - **the segment list**, as the bytes `SegmentInfos.write(IndexOutput)`
-//!   produces for the reader's own `SegmentInfos` -- the `segments_N` format
-//!   `lucene_index::segment_infos::parse` already reads, so there is no second
-//!   encoding of a commit to keep in step with Java's;
-//! - **each segment's `maxDoc`**, which [`ffi_open_jvm_reader`] checks against
-//!   what it opened. A mismatch is an error, not a best effort: a wrong doc
-//!   base silently returns the wrong documents;
-//! - **each segment's live docs**, in the same call,
-//!   copied from the Java leaf's `getLiveDocs()`. These replace whatever this
-//!   port read from `.liv` (or derived from a soft-deletes field) *entirely*,
-//!   because the JVM's view is the one OpenSearch answers with.
-//!
-//! A refresh passes the previous handle as `previous`, and every segment
-//! that is unchanged is shared rather than re-read
-//! ([`DirectoryReader::reopen_at`]).
-//!
-//! ## One crossing per query
-//!
-//! [`ffi_jvm_reader_search`] decodes the query, runs it, counts the total
-//! hits when the caller asks, and writes the top hits straight into the
-//! caller's buffers -- no results handle to read back and close. The query
-//! arrives as one byte blob ([`decode_query`] documents the layout), so a Java
-//! caller passes one `byte[]` rather than seven parallel arrays of strings.
-//!
-//! ## Scope
-//!
-//! `TermQuery`, and `BooleanQuery` trees whose clauses are `TermQuery`,
-//! `BooleanQuery`, `ConstantScoreQuery` or `BoostQuery` -- the shapes the
-//! occur-tagged clause format ([`crate::query::read_boolean_query`])
-//! carries. Everything else is the caller's to fall back on.
+//! [`ffi_jvm_reader_search`] decodes the query blob ([`decode_query`]
+//! documents the layout), runs it, counts total hits when asked, and writes
+//! the top hits into the caller's buffers in one crossing.
 
 use std::os::raw::c_char;
 
@@ -72,8 +44,8 @@ use lucene_search::{
 use lucene_store::Directory;
 use lucene_util::fixed_bit_set::{bits2words, FixedBitSet};
 
+use crate::clauses::{check_clause_count, map_search_error, read_boolean_query};
 use crate::error::{guard, set_last_error, FfiStatus};
-use crate::query::{check_clause_count, map_search_error, read_boolean_query};
 use crate::raw::{bytes_from_raw, str_from_raw, try_with_capacity};
 use crate::registry::{jvm_readers, lock_recovering, read_recovering, JvmReaderHandle};
 use std::sync::Arc;
@@ -1445,7 +1417,7 @@ pub(crate) fn search_collapsed_blobs(
     };
     let needs_scores = track || min_score.is_some() || keys.iter().any(|k| k.ty == SortType::Score);
     let fields: Vec<String> = if needs_scores {
-        crate::query::clause_field_names(&q)
+        crate::clauses::clause_field_names(&q)
             .into_iter()
             .map(str::to_string)
             .collect()
@@ -1613,7 +1585,7 @@ pub(crate) fn rescore_hits(
         },
         JvmQuery::Boolean(b) => b,
     };
-    let fields: Vec<String> = crate::query::clause_field_names(&q)
+    let fields: Vec<String> = crate::clauses::clause_field_names(&q)
         .into_iter()
         .map(str::to_string)
         .collect();
@@ -2001,7 +1973,7 @@ pub(crate) fn aggregate_counting_blobs_seen(
         .map_err(map_search_error)?;
     // min_score scores the query: its fields' norms.
     let fields: Vec<String> = if min_score.is_some() {
-        crate::query::clause_field_names(&q)
+        crate::clauses::clause_field_names(&q)
             .into_iter()
             .map(str::to_string)
             .collect()
@@ -2140,7 +2112,7 @@ pub(crate) fn count_terminates_blobs(
         slices
     };
     let fields: Vec<String> = if min_score.is_some() {
-        crate::query::clause_field_names(&q)
+        crate::clauses::clause_field_names(&q)
             .into_iter()
             .map(str::to_string)
             .collect()
@@ -2270,7 +2242,7 @@ pub(crate) fn search_sorted(
     let needs_scores =
         track_max_score || min_score.is_some() || keys.iter().any(|k| k.ty == SortType::Score);
     let fields: Vec<String> = if needs_scores {
-        crate::query::clause_field_names(&q)
+        crate::clauses::clause_field_names(&q)
             .into_iter()
             .map(str::to_string)
             .collect()
@@ -2470,7 +2442,7 @@ pub(crate) fn search(
                     .map_err(map_search_error)?
             }
             JvmQuery::Boolean(q) => {
-                let fields: Vec<String> = crate::query::clause_field_names(q)
+                let fields: Vec<String> = crate::clauses::clause_field_names(q)
                     .into_iter()
                     .map(str::to_string)
                     .collect();
@@ -2538,7 +2510,7 @@ pub(crate) fn search_min_score(
         })
         .collect();
     let q = boolean_of(query);
-    let fields: Vec<String> = crate::query::clause_field_names(&q)
+    let fields: Vec<String> = crate::clauses::clause_field_names(&q)
         .into_iter()
         .map(str::to_string)
         .collect();
@@ -2782,7 +2754,7 @@ pub(crate) fn decode_node(
     depth: usize,
     nodes: &mut usize,
 ) -> Result<Clause, FfiStatus> {
-    use crate::query::MAX_CLAUSE_DEPTH;
+    use crate::clauses::MAX_CLAUSE_DEPTH;
     use lucene_search::query::{
         BoostQuery, ConstantScoreQuery, DisjunctionMaxQuery, FieldExistsQuery, MatchAllDocsQuery,
         MatchNoDocsQuery, PhraseQuery, PointsRangeQuery, PrefixQuery, RegexpQuery, TermInSetQuery,
@@ -3376,16 +3348,16 @@ pub(crate) mod tests {
                 0,
                 &[
                     (
-                        crate::query::OCCUR_SHOULD,
-                        crate::query::CLAUSE_KIND_TERM,
+                        crate::clauses::OCCUR_SHOULD,
+                        crate::clauses::CLAUSE_KIND_TERM,
                         -1,
                         0,
                         "body",
                         "alpha",
                     ),
                     (
-                        crate::query::OCCUR_SHOULD,
-                        crate::query::CLAUSE_KIND_TERM,
+                        crate::clauses::OCCUR_SHOULD,
+                        crate::clauses::CLAUSE_KIND_TERM,
                         -1,
                         0,
                         "title",
@@ -5929,7 +5901,7 @@ pub(crate) mod tests {
             lucene_search::query::Clause::ConstantScore(_)
         ));
         // A constant score's inner query never scores: no norms for it.
-        assert!(crate::query::clause_field_names(&q).is_empty());
+        assert!(crate::clauses::clause_field_names(&q).is_empty());
     }
 
     #[test]

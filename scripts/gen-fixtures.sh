@@ -69,11 +69,9 @@
 # Deriving the deterministic set by generating twice, rather than maintaining a
 # hand-written list, means the check stays correct as fixtures are added.
 #
-# Not yet checkable: running the Rust suite against freshly generated fixtures.
-# crates/lucene-ffi/src/segment.rs hardcodes the committed blocktree fixture's
-# segment ID, so fresh bytes fail those tests -- which is the same coupling
-# fixtures/segment-ids.txt now makes explicit. See docs/milestones/
-# m0-ci-and-green-tree.md ("Findings") for the follow-up.
+# Not checkable here: running the Rust suite against freshly generated
+# fixtures. Tests hardcode committed fixtures' segment IDs, so fresh bytes
+# fail them -- the coupling fixtures/segment-ids.txt makes explicit.
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
@@ -456,7 +454,7 @@ else
     echo "  SEGMENT IDS CHANGED: the committed fixtures are not the indexes segment-ids.txt records."
     echo "    An index was regenerated (a fresh StringHelper.randomId()), or one was added"
     echo "    or removed without refreshing the baseline. Every hardcoded segment id in the"
-    echo "    Rust suite -- crates/lucene-ffi/src/segment.rs among them -- is pinned to these."
+    echo "    Rust suite is pinned to these."
     printf '%s\n' "$id_diff" | head -10 | sed 's/^/      /'
     id_bad=$(printf '%s\n' "$id_diff" | wc -l)
     status=1

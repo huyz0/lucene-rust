@@ -65,8 +65,8 @@ PREFIXES = {
 # (Java file, Java name) -> (Rust file, Rust name), where the names differ by
 # more than a prefix or the prefix rule is ambiguous.
 RENAMES = {
-    ("QueryEncoder.java", "MAX_DEPTH"): ("query.rs", "MAX_CLAUSE_DEPTH"),
-    ("QueryEncoder.java", "MAX_NODES"): ("query.rs", "MAX_CLAUSE_COUNT"),
+    ("QueryEncoder.java", "MAX_DEPTH"): ("clauses.rs", "MAX_CLAUSE_DEPTH"),
+    ("QueryEncoder.java", "MAX_NODES"): ("clauses.rs", "MAX_CLAUSE_COUNT"),
     ("GeoEncoder.java", "MAX_ORIGINS"): ("jvm_reader.rs", "MAX_GEO_ORIGINS"),
     ("SortEncoder.java", "NESTED_KEY"): ("jvm_reader.rs", "SORT_NESTED"),
     ("SortEncoder.java", "MAX_KEYS"): ("jvm_reader.rs", "MAX_SORT_KEYS"),

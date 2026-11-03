@@ -33,10 +33,6 @@ name = "alloc-profile"
 path = "src/alloc_profile.rs"
 
 [[bin]]
-name = "ffi-overhead"
-path = "src/ffi_overhead.rs"
-
-[[bin]]
 name = "index-bench"
 path = "src/index_bench.rs"
 
