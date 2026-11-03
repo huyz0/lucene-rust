@@ -59,6 +59,7 @@ impl<'a> Payloads<'a> {
     }
 
     /// Occurrence `i`'s payload; empty for none.
+    #[inline]
     pub fn get(&self, i: usize) -> &'a [u8] {
         let Some(&end) = self.ends.get(i) else {
             return &[];
@@ -72,6 +73,7 @@ impl<'a> Payloads<'a> {
             .unwrap_or_default()
     }
 
+    #[inline]
     pub fn iter(&self) -> impl Iterator<Item = &'a [u8]> + '_ {
         (0..self.len()).map(|i| self.get(i))
     }
@@ -157,6 +159,7 @@ impl InvertedTerms {
     ///
     /// # Panics
     /// When `i >= self.len()`.
+    #[inline]
     pub fn get(&self, i: usize) -> TermRef<'_> {
         let e = self.ends[i];
         let s = i.checked_sub(1).map_or(
@@ -185,6 +188,7 @@ impl InvertedTerms {
         }
     }
 
+    #[inline]
     pub fn iter(&self) -> impl ExactSizeIterator<Item = TermRef<'_>> + '_ {
         (0..self.len()).map(|i| self.get(i))
     }
