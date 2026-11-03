@@ -113,6 +113,20 @@ fn bench(c: &mut Criterion) {
             g.bench_function(format!("point_range/{field}/{label}"), |b| {
                 b.iter(|| searcher.count(black_box(&q2)).unwrap())
             });
+            // A fresh query cache per iteration, and the query run twice:
+            // `UsageTrackingQueryCachingPolicy` caches a point range on its
+            // second use, so the second run builds the cached set.
+            g.bench_function(format!("cache_fill/{field}/{label}"), |b| {
+                b.iter(|| {
+                    let cache = lucene_search::SegmentQueryCache::default();
+                    let mut cached = opened.as_open_segments();
+                    for s in &mut cached {
+                        s.cache = Some(&cache);
+                    }
+                    let searcher = IndexSearcher::new(&cached, &norms).unwrap();
+                    searcher.count(black_box(&q2)).unwrap() + searcher.count(&q2).unwrap()
+                })
+            });
             let points = segs[0].points.unwrap();
             let number = points.field_number(field).unwrap();
             let (pl, ph) = (

@@ -243,6 +243,17 @@ fn shape(clause: &Clause) -> (bool, bool, bool) {
         | Clause::Fuzzy(_)
         | Clause::TermInSet(_)
         | Clause::PointsRange(_) => (true, false, false),
+        // `isCostly`: a `MultiTermQuery`, and `isPointQuery` (a class named
+        // `Point*Query`).
+        Clause::Extended(e) => match &**e {
+            crate::extended_query::ExtendedQuery::MultiTerm(_)
+            | crate::extended_query::ExtendedQuery::PointRange(_)
+            | crate::extended_query::ExtendedQuery::PointInSet(_)
+            | crate::extended_query::ExtendedQuery::PointInSetIncludingScore(_) => {
+                (true, false, false)
+            }
+            _ => (false, false, false),
+        },
         _ => (false, false, false),
     }
 }
@@ -311,7 +322,7 @@ impl SegmentQueryCache {
             self.insert(key, Arc::new(CachedSet::Docs(Vec::new())));
             return Ok(Some(CacheResult::Empty));
         };
-        let set = Arc::new(collect(&mut *s, max_doc)?);
+        let set = collect(&mut *s, max_doc)?;
         self.insert(key, Arc::clone(&set));
         Ok(Some(CacheResult::Hit(set)))
     }
@@ -411,31 +422,73 @@ pub(crate) enum CacheResult {
 
 /// `LRUQueryCache.cacheImpl`: every match of `s` (exact, before deletions),
 /// as a bitset when at least 1% of the segment matches, a doc list otherwise.
-fn collect(s: &mut dyn Scorer, max_doc: i32) -> Result<CachedSet> {
+///
+/// A scorer that already iterates a set of exactly this segment's bits (a
+/// point range, a geo query) hands that set over as it is when it is dense,
+/// and its documents read off the words when it is not. Otherwise the
+/// matches go into a list while the scorer's cost says they are sparse, and
+/// into a bit set otherwise, switching to the set once the list passes 1%.
+fn collect(s: &mut dyn Scorer, max_doc: i32) -> Result<Arc<CachedSet>> {
     let len = usize::try_from(max_doc).unwrap_or(0);
-    let mut bits = FixedBitSet::new(len);
+    let dense = |n: i64| n.saturating_mul(100) >= i64::from(max_doc);
+    if s.doc_id() == -1 {
+        if let Some((set, _)) = s.constant_bits() {
+            if let CachedSet::Bits { bits, cardinality } = &*set {
+                if bits.len() == len {
+                    if dense(*cardinality) {
+                        return Ok(set);
+                    }
+                    let mut docs = Vec::with_capacity(usize::try_from(*cardinality).unwrap_or(0));
+                    bits.for_each_set_bit(|i| docs.push(i as i32));
+                    return Ok(Arc::new(CachedSet::Docs(docs)));
+                }
+            }
+        }
+    }
+    let mut docs: Vec<i32> = Vec::new();
+    let mut bits: Option<FixedBitSet> = None;
     let mut cardinality = 0i64;
+    let into_bits = |docs: &[i32]| {
+        let mut b = crate::bit_set_pool::take(len).unwrap_or_else(|| FixedBitSet::new(len));
+        for &d in docs {
+            // FBS: every listed id passed the `i < len` check below.
+            b.set(d as usize);
+        }
+        b
+    };
+    if dense(s.cost()) {
+        bits = Some(into_bits(&[]));
+    }
     let mut doc = exact_next(s)?;
     while doc != NO_MORE_DOCS {
         if let Ok(i) = usize::try_from(doc) {
             if i < len {
-                // FBS: `i < len`, the set's length, checked just above.
-                bits.set(i);
                 cardinality += 1;
+                match &mut bits {
+                    // FBS: `i < len`, the set's length, checked just above.
+                    Some(b) => b.set(i),
+                    None => {
+                        docs.push(doc);
+                        if dense(cardinality) {
+                            bits = Some(into_bits(&docs));
+                            docs = Vec::new();
+                        }
+                    }
+                }
             }
         }
         doc = exact_next(s)?;
     }
-    if cardinality * 100 >= i64::from(max_doc) {
-        return Ok(CachedSet::Bits { bits, cardinality });
+    let Some(bits) = bits else {
+        return Ok(Arc::new(CachedSet::Docs(docs)));
+    };
+    if dense(cardinality) {
+        return Ok(Arc::new(CachedSet::Bits { bits, cardinality }));
     }
-    let mut docs = Vec::new();
-    let mut at = bits.next_set_bit(0);
-    while let Some(i) = at {
-        docs.push(i as i32);
-        at = bits.next_set_bit(i + 1);
-    }
-    Ok(CachedSet::Docs(docs))
+    let mut docs = Vec::with_capacity(usize::try_from(cardinality).unwrap_or(0));
+    bits.for_each_set_bit(|i| docs.push(i as i32));
+    crate::bit_set_pool::give(bits);
+    Ok(Arc::new(CachedSet::Docs(docs)))
 }
 
 /// A cached set as a scorer: matches only, every score 0 -- or, built by
@@ -499,6 +552,18 @@ impl Scorer for CachedScorer {
     }
 
     fn next_doc(&mut self) -> Result<i32> {
+        if let (CachedSet::Docs(docs), false) = (&*self.set, self.emptied) {
+            // `at` indexes the current document once positioned: the next
+            // one is the next entry.
+            let next = if self.doc == -1 {
+                0
+            } else {
+                self.at.saturating_add(1).min(docs.len())
+            };
+            self.at = next;
+            self.doc = docs.get(next).copied().unwrap_or(NO_MORE_DOCS);
+            return Ok(self.doc);
+        }
         let target = self.doc.saturating_add(1);
         self.advance(target)
     }
@@ -514,9 +579,18 @@ impl Scorer for CachedScorer {
                 .and_then(|t| bits.next_set_bit(t))
                 .map_or(NO_MORE_DOCS, |d| d as i32),
             CachedSet::Docs(docs) => {
-                // Galloping from the current index: callers advance forward.
-                let rest = &docs[self.at..];
-                let skip = rest.partition_point(|&d| d < target);
+                // Galloping from the current index (callers advance
+                // forward): double the step until it passes `target`, then
+                // binary-search the last step.
+                let rest = docs.get(self.at..).unwrap_or(&[]);
+                let mut lo = 0usize;
+                let mut step = 1usize;
+                while step < rest.len() && rest[step] < target {
+                    lo = step;
+                    step = step.saturating_mul(2);
+                }
+                let hi = step.saturating_add(1).min(rest.len());
+                let skip = lo + rest[lo..hi].partition_point(|&d| d < target);
                 self.at += skip;
                 docs.get(self.at).copied().unwrap_or(NO_MORE_DOCS)
             }
