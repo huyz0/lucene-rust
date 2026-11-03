@@ -13,8 +13,8 @@ use std::hint::black_box;
 use std::sync::Arc;
 use std::time::Duration;
 
-use lucene_search::replicator::nrt::local::{CopySource, FileStream, LocalReplicaHooks};
-use lucene_search::replicator::nrt::{
+use lucene_replicator::nrt::local::{CopySource, FileStream, LocalReplicaHooks};
+use lucene_replicator::nrt::{
     CopyOneFile, CopyState, CopyStream, FileMetaData, NodeCore, ReplicaNode,
 };
 use lucene_store::{Directory, FsDirectory};

@@ -9,10 +9,10 @@
 use std::fmt::Write as _;
 use std::time::Instant;
 
+use lucene_queryparser::ParsedQuery;
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::index_searcher::IndexSearcher;
 use lucene_search::query::{BooleanQuery, Clause};
-use lucene_search::queryparser::ParsedQuery;
 
 use crate::cli::{exception, java_trim, Error};
 

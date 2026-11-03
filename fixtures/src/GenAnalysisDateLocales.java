@@ -121,7 +121,7 @@ public class GenAnalysisDateLocales {
    * ParseException}): exponents, infinities, {@code long} and {@code int} wraps, months and days
    * rolling into the year. JDK 21 reads the two twenty-digit exponents otherwise (it does not
    * saturate them). No year has two digits, so no row depends on the clock. Read by {@code
-   * crates/lucene-search/src/queryparser/date_range.rs}.
+   * crates/lucene-queryparser/src/date_range.rs}.
    */
   static String numbers() throws Exception {
     String[] texts = {

@@ -27,7 +27,7 @@ import org.apache.lucene.store.FSDirectory;
  *
  * <pre>config  field  numTerms  term  totalTF  docFreq</pre>
  *
- * Read by {@code crates/lucene-search/tests/misc_fixtures.rs}.
+ * Read by {@code crates/lucene-misc/tests/misc_fixtures.rs}.
  */
 public class GenMisc {
 

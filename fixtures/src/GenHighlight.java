@@ -43,7 +43,7 @@ import org.apache.lucene.search.highlight.WeightedSpanTerm;
  * {@code highlight.tsv}: configuration, query index, text index, then the highlighted fragments
  * (escaped, joined by {@code <|>}) or {@code X} and the exception. {@code spanterms.tsv}: what
  * {@code WeightedSpanTermExtractor} extracts, per query and text.
- * {@code crates/lucene-search/tests/highlight_fixtures.rs} compares.
+ * {@code crates/lucene-highlighter/tests/highlight_fixtures.rs} compares.
  */
 public class GenHighlight {
 

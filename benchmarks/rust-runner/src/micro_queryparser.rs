@@ -10,8 +10,8 @@ use std::hint::black_box;
 use std::time::Duration;
 
 use lucene_analysis::{Analyzer, StandardAnalyzer};
-use lucene_search::queryparser::classic::QueryParser;
-use lucene_search::queryparser::simple::SimpleQueryParser;
+use lucene_queryparser::classic::QueryParser;
+use lucene_queryparser::simple::SimpleQueryParser;
 
 use super::measure;
 
@@ -111,7 +111,7 @@ pub fn bench_queryparser(w: Duration, m: Duration) {
         .collect();
     measure("qp_surround_corpus", w, m, || {
         for q in &surround {
-            match lucene_search::queryparser::surround::parser::parse(black_box(q)) {
+            match lucene_queryparser::surround::parser::parse(black_box(q)) {
                 Ok(parsed) => {
                     black_box(parsed.to_string().len());
                 }
@@ -148,7 +148,7 @@ pub fn bench_queryparser(w: Duration, m: Duration) {
             .map(str::to_string),
     );
     let flexible_parser =
-        lucene_search::queryparser::flexible::StandardQueryParser::with_analyzer(standard());
+        lucene_queryparser::flexible::StandardQueryParser::with_analyzer(standard());
     measure("qp_flexible_corpus", w, m, || {
         for q in &flexible {
             match flexible_parser.parse(black_box(q), Some("f")) {
@@ -167,7 +167,7 @@ pub fn bench_queryparser(w: Duration, m: Duration) {
         .lines()
         .map(str::to_string)
         .collect();
-    let xml_parser = lucene_search::queryparser::xml::CoreParser::new(Some("body"), standard());
+    let xml_parser = lucene_queryparser::xml::CoreParser::new(Some("body"), standard());
     measure("qp_xml_corpus", w, m, || {
         for q in &xml {
             match xml_parser.parse(black_box(q)) {

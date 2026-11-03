@@ -63,7 +63,7 @@ import org.apache.lucene.store.FSDirectory;
  * vhighlight-queries.txt} ({@code F:} stands for the field) and of ten queries built by hand,
  * under eight configurations, over every document. {@code vhighlight.tsv}: configuration, query,
  * field, document, {@code R}/{@code N}/
- * {@code X}, then the fragments. {@code crates/lucene-search/tests/vhighlight_fixtures.rs}
+ * {@code X}, then the fragments. {@code crates/lucene-highlighter/tests/vhighlight_fixtures.rs}
  * compares.
  */
 public class GenVectorHighlight {

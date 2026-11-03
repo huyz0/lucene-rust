@@ -138,9 +138,7 @@ pub fn java_hash_order_of(hashes: &[i32]) -> Vec<usize> {
 /// `Field.stringValue()` of a stored field as `DocumentStoredFieldVisitor`
 /// loads it: a string, or a number's `toString()` (`Integer`, `Long`,
 /// `Float`, `Double`); `null` for binary.
-pub(crate) fn stored_string_value(
-    value: &lucene_codecs::stored_fields::FieldValue,
-) -> Option<String> {
+pub fn stored_string_value(value: &lucene_codecs::stored_fields::FieldValue) -> Option<String> {
     use lucene_codecs::stored_fields::FieldValue;
     match value {
         FieldValue::String(s) => Some(s.clone()),
@@ -535,7 +533,7 @@ impl<'r> MoreLikeThis<'r> {
 }
 
 /// The segment holding global `doc`, and `doc` within it.
-pub(crate) fn locate(
+pub fn locate(
     reader: &DirectoryReader,
     doc: i32,
 ) -> Result<(&crate::directory_reader::SegmentReader, i32)> {

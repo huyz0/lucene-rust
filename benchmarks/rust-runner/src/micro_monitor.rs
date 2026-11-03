@@ -10,9 +10,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use lucene_analysis::{Analyzer, StandardAnalyzer};
-use lucene_search::monitor::facade::Monitor;
-use lucene_search::monitor::index::MonitorQuery;
-use lucene_search::queryparser::classic::QueryParser;
+use lucene_monitor::facade::Monitor;
+use lucene_monitor::index::MonitorQuery;
+use lucene_queryparser::classic::QueryParser;
 
 use super::measure;
 

@@ -635,7 +635,7 @@ Per-file line coverage, every file this batch touched or added:
 | `lucene-search/src/weight_count.rs` | 99.22% |
 | `lucene-search/src/sloppy_phrase.rs` | 99.21% |
 | `lucene-search/src/collector.rs` | 99.04% |
-| `lucene-search/src/highlighter.rs` | 98.57% |
+| `lucene-highlighter/src/highlighter.rs` | 98.57% |
 | `lucene-search/src/query.rs` | 98.37% |
 | `lucene-ffi/src/query.rs` | 97.81% |
 | `lucene-search/src/directory_reader.rs` | 97.81% |

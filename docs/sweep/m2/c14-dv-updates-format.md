@@ -528,7 +528,7 @@ another. F-6 above is the finding.
 - `cargo clippy -p lucene-codecs -p lucene-index --all-targets -- -D warnings` — clean.
   (`cargo clippy --workspace` reports two pre-existing failures in other
   batches' live files — `lucene-ffi/src/registry.rs`'s `% 1` and
-  `lucene-search/src/highlighter.rs`'s redundant closure — untouched.)
+  `lucene-highlighter/src/highlighter.rs`'s redundant closure — untouched.)
 - `cargo test -p lucene-codecs -p lucene-index` — green.
 - `cargo test -p lucene-search` — green.
 - `scripts/verify-write-path.sh` — **19/19**, up from a confirmed 18/18

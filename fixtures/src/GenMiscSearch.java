@@ -55,7 +55,7 @@ import org.apache.lucene.util.FixedBitSet;
  * B  config doc                         a document of the memory-accounting bitset (length in doc -1)
  * </pre>
  *
- * <p>Read by {@code crates/lucene-search/tests/misc_search_fixtures.rs}.
+ * <p>Read by {@code crates/lucene-misc/tests/misc_search_fixtures.rs}.
  */
 public class GenMiscSearch {
 

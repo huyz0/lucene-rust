@@ -45,7 +45,7 @@ use crate::{Error, Result};
 pub const NO_MORE_POSITIONS: i32 = i32::MAX;
 
 /// `SpanCollector`: what a span's leaves report through `collect`.
-pub(crate) trait SpanCollector {
+pub trait SpanCollector {
     /// `collectLeaf(postings, position, term)`: the term's occurrence at
     /// `position` of the current document, its payload read on demand.
     fn collect_leaf(&mut self, leaf: &mut TermSpans<'_>, position: i32) -> Result<()>;
@@ -54,7 +54,7 @@ pub(crate) trait SpanCollector {
 }
 
 /// `Spans` (with its two-phase view; see the module documentation).
-pub(crate) trait Spans {
+pub trait Spans {
     /// The approximation's document.
     fn doc_id(&self) -> i32;
     /// Moves the approximation to its next document.
@@ -101,7 +101,7 @@ pub(crate) trait Spans {
 // The term held inline, not boxed, is the point: no pointer to chase on
 // the hottest calls. Parents hold a few of these, never many.
 #[allow(clippy::large_enum_variant)]
-pub(crate) enum BoxSpans<'a> {
+pub enum BoxSpans<'a> {
     Term(TermSpans<'a>),
     Dyn(Box<dyn Spans + 'a>),
 }
@@ -202,12 +202,12 @@ const TERM_OPS_PER_POS: f32 = 7.0;
 
 /// `TermSpans`: one span `[p, p + 1)` per position of the term in the
 /// document, its occurrences (payloads, offsets) read when collected.
-pub(crate) struct TermSpans<'a> {
+pub struct TermSpans<'a> {
     postings: LeafPositions<'a>,
     field_terms: &'a FieldTerms,
     ctx: LeafContext<'a>,
     /// `(field, term)`.
-    pub(crate) term: (String, Vec<u8>),
+    pub term: (String, Vec<u8>),
     doc: i32,
     freq: i32,
     count: i32,
@@ -274,7 +274,7 @@ impl<'a> TermSpans<'a> {
     }
 
     /// The occurrence at the current position: its payload and offsets.
-    pub(crate) fn occurrence(&mut self) -> Result<Option<&Position>> {
+    pub fn occurrence(&mut self) -> Result<Option<&Position>> {
         if !self.occurrences_loaded {
             self.occurrences_loaded = true;
             self.postings.occurrences_at(
@@ -1467,7 +1467,7 @@ impl SpanFilter for NotFilter<'_> {
 /// A term of a field indexed without positions; a near query of fewer than
 /// two clauses; a [`SpanNode::MultiTerm`] not rewritten first (`"Rewrite
 /// first!"`).
-pub(crate) fn spans_with<'a>(
+pub fn spans_with<'a>(
     ctx: &LeafContext<'a>,
     q: &SpanNode,
     payloads: bool,

@@ -31,7 +31,7 @@ import org.apache.lucene.store.FSDirectory;
  * F  file                                files in the copy after the remove that the source also has
  * </pre>
  *
- * <p>Read by {@code crates/lucene-search/tests/misc_index_splitter_fixtures.rs}.
+ * <p>Read by {@code crates/lucene-misc/tests/misc_index_splitter_fixtures.rs}.
  */
 public class GenMiscIndexSplitter {
 

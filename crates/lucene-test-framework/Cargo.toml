@@ -31,6 +31,7 @@ lucene-index = { path = "../lucene-index" }
 # `asserting`: the scorer-tree seam the search checks (`search::query_utils`,
 # `search::asserting`) drive -- lucene-search's `test_support` module.
 lucene-search = { path = "../lucene-search", features = ["asserting"] }
+lucene-misc = { path = "../lucene-misc" }
 # The mock analysis chain (`analysis`) implements lucene-analysis's traits.
 lucene-analysis = { path = "../lucene-analysis" }
 # Inflates the gzip members of Lucene's `europarl.lines.txt.gz` when
