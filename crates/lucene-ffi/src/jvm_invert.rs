@@ -6,8 +6,6 @@
 //! arithmetic and Java's error messages, since OpenSearch shows those to
 //! users.
 
-use std::collections::HashMap;
-
 use lucene_analysis::TokenStream;
 use lucene_index::index_writer::{InvertedField, InvertedTerm};
 use lucene_util::small_float::int_to_byte4;
@@ -69,6 +67,7 @@ fn illegal(message: String) -> FfiStatus {
 /// One term's state within the document (`FreqProxTermsWriterPerField`'s).
 struct TermState {
     term: Vec<u8>,
+    hash: u32,
     freq: i32,
     positions: Vec<i32>,
     offsets: Vec<(i32, i32)>,
@@ -88,8 +87,68 @@ struct Inverted<'a> {
     unique_term_count: i32,
     last_start_offset: i32,
     last_position: i32,
-    ids: HashMap<Vec<u8>, usize>,
+    ids: TermIds,
     terms: Vec<TermState>,
+}
+
+/// The document's term ids by term bytes, as `BytesRefHash` keeps them: an
+/// open-addressed table of indices into [`Inverted::terms`], so a lookup
+/// copies no key and a new term is stored once.
+struct TermIds {
+    /// `EMPTY`, or an index into the terms.
+    slots: Vec<u32>,
+}
+
+impl TermIds {
+    const EMPTY: u32 = u32::MAX;
+
+    /// Room for about `expected` terms before the first rehash.
+    fn with_expected(expected: usize) -> TermIds {
+        let n = (expected.max(4) * 2).next_power_of_two();
+        TermIds {
+            slots: vec![Self::EMPTY; n],
+        }
+    }
+
+    fn hash(term: &[u8]) -> u32 {
+        lucene_util::string_helper::murmurhash3_x86_32(term, 0) as u32
+    }
+
+    /// The slot holding `term`, or the empty slot where it would go.
+    fn find(&self, terms: &[TermState], term: &[u8], hash: u32) -> Result<usize, usize> {
+        let mask = self.slots.len() - 1;
+        let mut i = hash as usize & mask;
+        loop {
+            match self.slots[i] {
+                Self::EMPTY => return Err(i),
+                id => {
+                    let t = &terms[id as usize];
+                    if t.hash == hash && t.term == term {
+                        return Ok(id as usize);
+                    }
+                }
+            }
+            i = (i + 1) & mask;
+        }
+    }
+
+    /// Records the newest of `terms` in the empty slot `slot`, growing the
+    /// table past half full.
+    fn insert(&mut self, slot: usize, terms: &[TermState]) {
+        self.slots[slot] = (terms.len() - 1) as u32;
+        if terms.len() * 2 > self.slots.len() {
+            let mask = self.slots.len() * 2 - 1;
+            let mut slots = vec![Self::EMPTY; mask + 1];
+            for (id, t) in terms.iter().enumerate() {
+                let mut i = t.hash as usize & mask;
+                while slots[i] != Self::EMPTY {
+                    i = (i + 1) & mask;
+                }
+                slots[i] = id as u32;
+            }
+            self.slots = slots;
+        }
+    }
 }
 
 impl Inverted<'_> {
@@ -130,10 +189,10 @@ impl Inverted<'_> {
                 self.name
             )));
         }
-        let id = match self.ids.get(term) {
-            None => {
+        let hash = TermIds::hash(term);
+        let id = match self.ids.find(&self.terms, term, hash) {
+            Err(slot) => {
                 let id = self.terms.len();
-                self.ids.insert(term.to_vec(), id);
                 let freq = if has_freq { term_freq } else { 1 };
                 self.max_term_frequency = if has_freq {
                     freq.max(self.max_term_frequency)
@@ -143,14 +202,16 @@ impl Inverted<'_> {
                 self.unique_term_count = self.unique_term_count.wrapping_add(1);
                 self.terms.push(TermState {
                     term: term.to_vec(),
+                    hash,
                     freq,
                     positions: Vec::new(),
                     offsets: Vec::new(),
                     payloads: None,
                 });
+                self.ids.insert(slot, &self.terms);
                 id
             }
-            Some(&id) => {
+            Ok(id) => {
                 if !has_freq {
                     if term_freq != 1 {
                         return Err(illegal(format!(
@@ -202,6 +263,9 @@ pub(crate) fn invert(
 ) -> Result<InvertedField, FfiStatus> {
     let analyzer = registered.analyzer.analyzer();
     let failed = |e: lucene_analysis::AnalysisError| illegal(format!("{e}"));
+    // About one distinct term per eight bytes of text; the guess only sizes
+    // the buffers.
+    let expected = (instances.iter().map(|t| t.len()).sum::<usize>() / 8).min(1 << 16);
     let mut inv = Inverted {
         name,
         options,
@@ -213,8 +277,8 @@ pub(crate) fn invert(
         unique_term_count: 0,
         last_start_offset: 0,
         last_position: 0,
-        ids: HashMap::new(),
-        terms: Vec::new(),
+        ids: TermIds::with_expected(expected),
+        terms: Vec::with_capacity(expected),
     };
     for text in instances {
         let mut stream = analyzer.token_stream(name, text).map_err(failed)?;
@@ -368,6 +432,31 @@ mod tests {
         assert!(empty.terms.is_empty());
         let omit = invert(3, "body", &r, Options::Freqs, Norm::Omit, &["x"]).unwrap();
         assert_eq!(omit.norm, None);
+    }
+
+    #[test]
+    fn many_terms_keep_first_occurrence_order_through_table_growth() {
+        let r = reg(false);
+        // The table is sized for one term per eight bytes of text; 3000
+        // distinct terms of five bytes each make it grow.
+        let words: Vec<String> = (0..3000).map(|i| format!("w{i}")).collect();
+        let distinct = words.join(" ");
+        let f = invert(
+            1,
+            "body",
+            &r,
+            Options::Positions,
+            Norm::Plain,
+            &[&distinct, "w0 w2999"],
+        )
+        .unwrap();
+        assert_eq!(f.terms.len(), 3000);
+        for (i, t) in f.terms.iter().enumerate() {
+            assert_eq!(t.term, words[i].as_bytes());
+            let again = i == 0 || i == 2999;
+            assert_eq!(t.freq, if again { 2 } else { 1 });
+            assert_eq!(t.positions[0], i as i32);
+        }
     }
 
     #[test]

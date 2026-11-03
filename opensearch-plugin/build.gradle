@@ -223,6 +223,18 @@ tasks.register('nativeBench', JavaExec) {
     args findProperty('docs') ?: '500000'
 }
 
+// The indexing path stage by stage (encode, native prepare, RustIndexWriter) against Lucene's
+// IndexWriter on OpenSearch-shaped documents. A measurement, not part of `check`.
+tasks.register('indexingBench', JavaExec) {
+    description = 'Indexing throughput by stage: DocumentEncoder, native prepare, RustIndexWriter, Lucene.'
+    dependsOn tasks.named('testClasses'), cargoBuild
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'org.lucenerust.opensearch.engine.IndexingBench'
+    systemProperty 'lucene_rust.library.path', nativeLib.absolutePath
+    jvmArgs nativeAccess, '-Xms4g', '-Xmx4g'
+    args findProperty('docs') ?: '200000', findProperty('threads') ?: '4', findProperty('modes') ?: 'encode,prepare,rust,lucene', findProperty('rounds') ?: '2'
+}
+
 // OpenSearch's own REST YAML suites against a running node with the plugin
 // installed (scripts/verify-opensearch.sh --yaml). The only part of the build
 // that needs Maven Central: the YAML runner is OpenSearch's test framework.
