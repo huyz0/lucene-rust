@@ -2323,6 +2323,34 @@ impl<'a> SortedNumericReader<'a> {
                 None => return Ok(()),
             }
         };
+        self.push_values_at(rank, out)
+    }
+
+    /// Replaces `out` with the values of the `rank`-th document that has
+    /// any (its position among them, which a caller holding the field's
+    /// documents already knows; a dense field's rank is the document):
+    /// [`Self::values`] without a walk of the docs-with-field region.
+    ///
+    /// # Errors
+    /// [`Error::DocOutOfRange`] for a rank outside `0..numDocsWithField`;
+    /// what [`Self::values`] reports for the values themselves.
+    #[inline]
+    pub fn values_at_rank(&mut self, rank: i64, out: &mut Vec<i64>) -> Result<()> {
+        out.clear();
+        if rank < 0 || rank >= i64::from(self.entry.num_docs_with_field) {
+            return Err(Error::DocOutOfRange(
+                i32::try_from(rank).unwrap_or(i32::MAX),
+                self.entry.numeric.num_values,
+            ));
+        }
+        self.push_values_at(rank, out)
+    }
+
+    /// Appends the values of the document of rank `rank`, which the caller
+    /// has checked is one of the field's.
+    #[inline(always)]
+    fn push_values_at(&mut self, rank: i64, out: &mut Vec<i64>) -> Result<()> {
+        let numeric = &self.entry.numeric;
         match &self.entry.addresses {
             // A singleton: the value of rank `rank`, through the resolved
             // values array when its shape allows (one load), as below.
@@ -7723,6 +7751,18 @@ mod tests {
             r.values(d, &mut out).unwrap();
             assert_eq!(out, values[d as usize], "doc {d}");
         }
+        // By rank (a dense field's rank is its document), and a rank past
+        // the field's documents refused.
+        for d in [0i64, 17, 39_999, 8_192] {
+            r.values_at_rank(d, &mut out).unwrap();
+            assert_eq!(out, values[d as usize], "rank {d}");
+        }
+        assert!(matches!(
+            r.values_at_rank(40_000, &mut out),
+            Err(Error::DocOutOfRange(..))
+        ));
+        assert!(r.values_at_rank(-1, &mut out).is_err());
+        assert!(out.is_empty());
     }
 
     /// `gcd_i64` runs Euclid in `u64` where it once did in `u128`; it agrees
