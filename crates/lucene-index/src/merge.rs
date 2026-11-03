@@ -9341,7 +9341,7 @@ mod tests {
     /// `NormsConsumer.merge` iterates the **merged** `FieldInfos` and
     /// `mergeNormsField` adds a sub only for a source whose own `FieldInfo`
     /// says `hasNorms()`, so both are gaps in the merged column, not errors.
-        #[test]
+    #[test]
     fn merged_norms_are_sparse_across_a_gap_and_a_source_that_never_declared_the_field() {
         let seg0_id = [1u8; ID_LENGTH];
         let seg1_id = [2u8; ID_LENGTH];

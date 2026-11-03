@@ -11736,8 +11736,7 @@ impl IndexWriter<'_> {
             lucene_util::base36::to_base36(self.segment_infos.counter)
         );
         // Java bumps `segmentInfos.counter` in the same synchronized block that
-        // hands out the name, precisely so a name can never be handed out twice
-        // 
+        // hands out the name, precisely so a name can never be handed out twice.
         // ARITH: `counter` is capped at `MAX_GENERATION` (`i64::MAX / 2`) by
         // `segment_infos::parse` and by `segment_infos::write`, and steps once
         // per segment name handed out.

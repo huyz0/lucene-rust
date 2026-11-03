@@ -763,7 +763,7 @@ impl<'d> IndexFileDeleter<'d> {
     /// Measurement-only: drop every recorded file set, so the next checkpoint
     /// has to open and parse each `.si` again.
     ///
-    It exists so `examples/deleter_checkpoint.rs` can time both arms in
+    /// It exists so `examples/deleter_checkpoint.rs` can time both arms in
     /// **one process from one build**, the only shape of A/B this project
     /// trusts. Correct but pointless in production: the cache refills itself
     /// from disk.
