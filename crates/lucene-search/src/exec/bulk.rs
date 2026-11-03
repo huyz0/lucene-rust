@@ -418,7 +418,7 @@ fn req_scorer_opt_score<C: ScoringCollector + ?Sized>(
     Ok(doc)
 }
 
-/// [`DenseConjunctionBulkScorer.WINDOW_SIZE`]: the documents
+/// `DenseConjunctionBulkScorer.WINDOW_SIZE`: the documents
 /// [`dense_conjunction_score`] intersects at once.
 const DENSE_WINDOW: i32 = 4096;
 
