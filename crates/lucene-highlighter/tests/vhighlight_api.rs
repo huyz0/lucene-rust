@@ -5,16 +5,16 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use lucene_analysis::{Analyzer, StandardAnalyzer};
-use lucene_queryparser::classic::QueryParser;
-use lucene_search::directory_reader::DirectoryReader;
-use lucene_search::highlight::unified::break_iterators::{sentence_instance, BreakIterator};
-use lucene_search::highlight::vectorhighlight::{
+use lucene_highlighter::unified::break_iterators::{sentence_instance, BreakIterator};
+use lucene_highlighter::vectorhighlight::{
     BoundaryScanner, BreakIteratorBoundaryScanner, FastVectorHighlighter, FieldFragList,
     FieldPhraseList, FieldQuery, FieldTermStack, FragListBuilder, FragListKind, FragmentsBuilder,
     SimpleBoundaryScanner, SimpleFragListBuilder, SingleFragListBuilder, Toffs,
     WeightedFragListBuilder, WeightedPhraseInfo,
 };
-use lucene_search::highlight::{DefaultEncoder, Error};
+use lucene_highlighter::{DefaultEncoder, Error};
+use lucene_queryparser::classic::QueryParser;
+use lucene_search::directory_reader::DirectoryReader;
 
 fn reader() -> DirectoryReader {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/data/vhighlight");

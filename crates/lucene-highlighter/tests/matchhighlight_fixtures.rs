@@ -3,7 +3,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use lucene_search::highlight::{BreakKind as Kind, RuleBreakIterator};
+use lucene_highlighter::{BreakKind as Kind, RuleBreakIterator};
 
 fn dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/data/matchhighlight")
@@ -151,12 +151,12 @@ mod highlighting {
     use std::sync::Arc;
 
     use lucene_analysis::{Analyzer, StandardAnalyzer};
+    use lucene_highlighter::{
+        DocHighlights, FieldValueHighlighters, MatchHighlighter, PassageFormatter,
+    };
     use lucene_queryparser::classic::QueryParser;
     use lucene_search::directory_reader::DirectoryReader;
     use lucene_search::field_norms::FieldNorms;
-    use lucene_search::highlight::{
-        DocHighlights, FieldValueHighlighters, MatchHighlighter, PassageFormatter,
-    };
     use lucene_search::index_searcher::IndexSearcher;
     use lucene_search::query::{BooleanQuery, Clause};
 

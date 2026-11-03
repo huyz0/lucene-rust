@@ -211,6 +211,9 @@ pub mod doc_value_query;
 pub mod docid_set;
 pub mod document;
 mod exec;
+/// One segment's readers as the query executor reads them
+/// ([`LeafContext::for_spans`]).
+pub use exec::LeafContext;
 pub mod explain;
 pub mod expressions;
 pub mod extended_query;
@@ -219,8 +222,6 @@ pub mod field_norms;
 pub mod function;
 pub mod fuzzy_like_this;
 pub mod grouping;
-pub mod highlight;
-pub mod highlighter;
 pub mod index_searcher;
 pub mod intervals;
 pub mod java_priority_queue;

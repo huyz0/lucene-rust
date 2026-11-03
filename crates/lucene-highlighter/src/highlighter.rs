@@ -105,7 +105,7 @@
 //! **Rust's `char` (a Unicode scalar) is not the same unit.** The two agree
 //! for the Basic Multilingual Plane and disagree for every supplementary-plane
 //! character: an emoji is one Unicode scalar and two UTF-16 code units.
-//! `crates/lucene-search/tests/highlighter_utf16_offsets_fixtures.rs` pins the
+//! `crates/lucene-highlighter/tests/highlighter_utf16_offsets_fixtures.rs` pins the
 //! unit against real Lucene's own `StandardAnalyzer` offsets over text that
 //! separates all three.
 //!
@@ -202,7 +202,7 @@ impl PassageScorer {
     /// `OffsetsEnum.freq()`; [`assemble_fragments`] derives it by counting the
     /// term's occurrences across *every* span it was handed, which is the
     /// same number whenever those spans come from
-    /// [`crate::term_vectors_query::matched_term_offsets`] (it emits every
+    /// [`lucene_search::term_vectors_query::matched_term_offsets`] (it emits every
     /// occurrence of every matched term in the field).
     pub fn score(
         &self,
@@ -473,7 +473,7 @@ fn snap_end_to_sentence(sentence_starts: &[usize], byte_offset: usize, text: &st
     trimmed.len().max(byte_offset)
 }
 
-use crate::term_vectors_query::TermOffsetSpan;
+use lucene_search::term_vectors_query::TermOffsetSpan;
 use std::collections::HashMap;
 
 /// Converts a UTF-16 code-unit (Java `char`) offset into `text` to a UTF-8
@@ -593,7 +593,7 @@ struct Cluster {
 
 /// Assembles highlighted text fragments from `full_text` and a set of
 /// already-computed [`TermOffsetSpan`]s (e.g. from
-/// [`crate::term_vectors_query::matched_term_offsets`]).
+/// [`lucene_search::term_vectors_query::matched_term_offsets`]).
 ///
 /// `spans` need not be sorted or non-overlapping on input; empty spans
 /// (or an empty `full_text`) simply produce an empty `Vec<Fragment>` --
@@ -1009,7 +1009,7 @@ pub fn optimize_offset_source(
 /// One [`TermOffsetSpan`] per occurrence of each of `terms` in `doc_id`,
 /// ordered the way `OffsetsEnum.compareTo` orders them (start offset, then end
 /// offset, then the term) -- the same contract
-/// [`crate::term_vectors_query::matched_term_offsets`] establishes for the
+/// [`lucene_search::term_vectors_query::matched_term_offsets`] establishes for the
 /// term-vector source, so the two are interchangeable inputs to
 /// [`assemble_fragments`].
 ///
@@ -1038,7 +1038,7 @@ pub fn offsets_from_postings(
     field: &str,
     terms: &[&str],
     doc_id: i32,
-) -> crate::Result<Vec<TermOffsetSpan>> {
+) -> lucene_search::Result<Vec<TermOffsetSpan>> {
     let mut spans = Vec::new();
     let Some(field_terms) = fields.field(field) else {
         return Ok(spans);
@@ -1145,7 +1145,7 @@ fn collect_span<'t>(
 /// by running the query's `SpanQuery`s over the document and collecting each
 /// matched span's *leaf* postings through an `OffsetSpanCollector`
 /// (`PhraseHelper.createOffsetsEnumsForSpans`); [`offsets_from_postings`] and
-/// [`crate::term_vectors_query::matched_term_offsets`] are the
+/// [`lucene_search::term_vectors_query::matched_term_offsets`] are the
 /// position-*insensitive* sources it exists to correct.
 ///
 /// - `terms` are the phrase's terms **in phrase order**, one per slot, and
@@ -1194,11 +1194,11 @@ fn collect_span<'t>(
 ///   below, unchanged -- and it is why an exact phrase highlights exactly what
 ///   it matches.
 /// - **`slop > 0`** is `NearSpansUnordered`, whose budget is a *different
-///   quantity* from `SloppyPhraseMatcher`'s ([`crate::near_spans`] has the
+///   quantity* from `SloppyPhraseMatcher`'s ([`lucene_search::near_spans`] has the
 ///   comparison). This port enumerated in order here at every slop, so a
 ///   reordered occurrence was scored and never highlighted.
 ///
-/// `positionGaps` is always `0` for this function: [`crate::query::PhraseQuery`]
+/// `positionGaps` is always `0` for this function: [`lucene_search::query::PhraseQuery`]
 /// holds `terms` with no per-term positions, i.e. Java's `positions[i] == i`.
 ///
 /// The consequences of using the *span* matcher rather than the scorer's are
@@ -1236,7 +1236,7 @@ pub fn phrase_match_offsets(
 
     let slop = slop as i64;
 
-    // Both arms are `crate::near_spans`' ports of the two `Spans` walks, so
+    // Both arms are `lucene_search::near_spans`' ports of the two `Spans` walks, so
     // the highlighter and `span_near_matches` cannot drift apart. Every slot's
     // occurrences are one position wide, so a slot's spans are `[p, p + 1)`.
     {
@@ -1246,7 +1246,7 @@ pub fn phrase_match_offsets(
             .collect();
         let slices: Vec<&[(i32, i32)]> = slot_spans.iter().map(Vec::as_slice).collect();
         let mut chosen: Vec<i32> = vec![0; positions.len()];
-        let mut collect = |current: crate::near_spans::Arrangement<'_>, _: i32, _: i32| {
+        let mut collect = |current: lucene_search::near_spans::Arrangement<'_>, _: i32, _: i32| {
             for (slot, &(start, _)) in current.iter().enumerate() {
                 chosen[slot] = start;
             }
@@ -1257,10 +1257,10 @@ pub fn phrase_match_offsets(
             // the smallest position at or after the previous slot's end, once
             // per position of the first slot, and charges
             // `matchWidth += spans.startPosition() - prevSpans.endPosition()`.
-            crate::near_spans::for_each_ordered_match(&slices, slop, &mut collect);
+            lucene_search::near_spans::for_each_ordered_match(&slices, slop, &mut collect);
         } else {
             // `NearSpansUnordered`.
-            crate::near_spans::for_each_unordered_match(&slices, slop, &mut collect);
+            lucene_search::near_spans::for_each_unordered_match(&slices, slop, &mut collect);
         }
     }
 
@@ -1301,7 +1301,7 @@ pub fn offsets_from_phrase(
     phrase: &[&str],
     slop: u32,
     doc_id: i32,
-) -> crate::Result<Vec<TermOffsetSpan>> {
+) -> lucene_search::Result<Vec<TermOffsetSpan>> {
     let Some(field_terms) = fields.field(field) else {
         return Ok(Vec::new());
     };

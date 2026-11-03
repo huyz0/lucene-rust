@@ -38,8 +38,8 @@ pub use fragments::{
 };
 
 use super::{Encoder, Error, Result};
-use crate::directory_reader::DirectoryReader;
-use crate::query::Clause;
+use lucene_search::directory_reader::DirectoryReader;
+use lucene_search::query::Clause;
 
 /// `FastVectorHighlighter`.
 pub struct FastVectorHighlighter {

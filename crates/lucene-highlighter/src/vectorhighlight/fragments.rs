@@ -11,7 +11,7 @@ use super::super::unified::break_iterators::BreakIterator;
 use super::super::{DefaultEncoder, Encoder, Error, Result};
 use super::field_phrase_list::Toffs;
 use super::frag_list::{FieldFragList, SubInfo, WeightedFragInfo};
-use crate::directory_reader::DirectoryReader;
+use lucene_search::directory_reader::DirectoryReader;
 
 /// `BaseFragmentsBuilder.COLORED_PRE_TAGS`.
 pub const COLORED_PRE_TAGS: [&str; 20] = [

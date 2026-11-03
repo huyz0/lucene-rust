@@ -13,15 +13,15 @@ use super::super::{Error, Result};
 use super::matches_enum::{OfMatchesWithSubs, QueryTerms};
 use super::passage::{MatchEntry, MultiOffsets, OfMatches, OfPostings, OffsetsEnum};
 pub use super::phrase_helper::PhraseHelper;
-use crate::extended_query::ExtendedQuery;
 use crate::highlighter::OffsetSource;
-use crate::matches::BoxMatches;
-use crate::memory::{MemoryIndex, MemoryIndexReader};
-use crate::multi_segment::OpenSegment;
-use crate::query::{Clause, MatchAllDocsQuery, MatchNoDocsQuery};
-use crate::query_visitor::{self, Occur, QueryVisitor, SubVisitor, Term, TermMatcher};
-use crate::reader::{LeafReader, PostingsFlags, Terms};
-use crate::spans::SpanNode;
+use lucene_search::extended_query::ExtendedQuery;
+use lucene_search::matches::BoxMatches;
+use lucene_search::memory::{MemoryIndex, MemoryIndexReader};
+use lucene_search::multi_segment::OpenSegment;
+use lucene_search::query::{Clause, MatchAllDocsQuery, MatchNoDocsQuery};
+use lucene_search::query_visitor::{self, Occur, QueryVisitor, SubVisitor, Term, TermMatcher};
+use lucene_search::reader::{LeafReader, PostingsFlags, Terms};
+use lucene_search::spans::SpanNode;
 
 /// `Automata.MAX_STRING_UNION_TERM_LENGTH`: longer terms are left out of
 /// the memory index's pre-filter.
@@ -285,7 +285,7 @@ fn is_span(c: &Clause) -> bool {
     matches!(c, Clause::Span(_))
         || matches!(
             c,
-            Clause::Extended(e) if matches!(e.as_ref(), crate::extended_query::ExtendedQuery::Span(_))
+            Clause::Extended(e) if matches!(e.as_ref(), lucene_search::extended_query::ExtendedQuery::Span(_))
         )
 }
 
@@ -313,7 +313,7 @@ impl QueryVisitor for AutomataCollector<'_> {
         }
     }
     fn consume_terms_matching(&mut self, query: &Clause, _field: &str, matcher: &dyn TermMatcher) {
-        (self.on_automaton)(&crate::explain::describe_clause(query), matcher);
+        (self.on_automaton)(&lucene_search::explain::describe_clause(query), matcher);
     }
 }
 
@@ -452,9 +452,9 @@ pub struct LeafCtx<'a> {
     /// The document, leaf-local.
     pub doc: i32,
     /// `Weight.matches(leaf, doc)` of a query over the index.
-    pub matches: &'a dyn Fn(&Clause) -> crate::Result<Option<BoxMatches>>,
+    pub matches: &'a dyn Fn(&Clause) -> lucene_search::Result<Option<BoxMatches>>,
     /// `reader.termVectors().get(doc, field)`, by field number.
-    pub term_vector: &'a dyn Fn(i32) -> crate::Result<Option<TermVectorField>>,
+    pub term_vector: &'a dyn Fn(i32) -> lucene_search::Result<Option<TermVectorField>>,
 }
 
 /// A strategy: an offset source with the components it works from. Its
@@ -975,19 +975,20 @@ impl Strategy {
             let mut postings: Vec<Postings> = Vec::new();
             let scan = (|| -> Result<()> {
                 let mut te = terms_index.iterator()?;
-                let mut read = |te: &mut Box<dyn crate::reader::TermsEnum + '_>| -> Result<()> {
-                    let mut pe = te.postings(PostingsFlags::Offsets)?;
-                    if pe.advance(doc)? == doc {
-                        let freq = pe.freq();
-                        let mut offsets = Vec::new();
-                        for _ in 0..freq {
-                            pe.next_position()?;
-                            offsets.push((pe.start_offset(), pe.end_offset()));
+                let mut read =
+                    |te: &mut Box<dyn lucene_search::reader::TermsEnum + '_>| -> Result<()> {
+                        let mut pe = te.postings(PostingsFlags::Offsets)?;
+                        if pe.advance(doc)? == doc {
+                            let freq = pe.freq();
+                            let mut offsets = Vec::new();
+                            for _ in 0..freq {
+                                pe.next_position()?;
+                                offsets.push((pe.start_offset(), pe.end_offset()));
+                            }
+                            postings.push((freq, offsets));
                         }
-                        postings.push((freq, offsets));
-                    }
-                    Ok(())
-                };
+                        Ok(())
+                    };
                 match tv_terms {
                     Some(tv) => {
                         for term in tv.iter().filter(|t| m.matches(t)) {
@@ -1034,7 +1035,7 @@ impl Strategy {
 
 /// `TermVectorFilteredTermsEnum.moveToCurrentTerm`'s refusal.
 fn not_in_full_index(term: &[u8]) -> Error {
-    Error::Search(crate::Error::IllegalState(format!(
+    Error::Search(lucene_search::Error::IllegalState(format!(
         "Term vector term '{}' does not appear in full index.",
         String::from_utf8_lossy(term)
     )))
@@ -1219,9 +1220,11 @@ impl OffsetsEnum for NoOffsets {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common_terms::CommonTermsQuery;
-    use crate::extended_query::{MultiTermQuery, MultiTermSource, RewriteMethod, SynonymQuery};
-    use crate::query::{MultiPhraseQuery, TermInSetQuery, WildcardQuery};
+    use lucene_search::common_terms::CommonTermsQuery;
+    use lucene_search::extended_query::{
+        MultiTermQuery, MultiTermSource, RewriteMethod, SynonymQuery,
+    };
+    use lucene_search::query::{MultiPhraseQuery, TermInSetQuery, WildcardQuery};
 
     fn moved(q: impl Into<Clause>) -> String {
         format!("{:?}", retarget(&q.into(), &|f| f == "a", "x"))
@@ -1276,7 +1279,7 @@ mod tests {
     fn a_term_vector_term_missing_from_the_index_is_refused() {
         let e = not_in_full_index(b"fox");
         assert!(
-            matches!(&e, Error::Search(crate::Error::IllegalState(m)) if m.contains("'fox'")),
+            matches!(&e, Error::Search(lucene_search::Error::IllegalState(m)) if m.contains("'fox'")),
             "{e:?}"
         );
     }

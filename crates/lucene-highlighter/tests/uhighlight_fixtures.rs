@@ -8,17 +8,17 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use lucene_analysis::{Analyzer, StandardAnalyzer};
+use lucene_highlighter::unified::break_iterators::{
+    sentence_instance, word_instance, BreakIterator, CustomSeparatorBreakIterator,
+    LengthGoalBreakIterator, SplittingBreakIterator, WholeBreakIterator,
+};
+use lucene_highlighter::unified::{
+    DefaultPassageFormatter, HighlightObject, Passage, PassageFormatter, UnifiedHighlighter,
+};
 use lucene_queryparser::classic::QueryParser;
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::extended_query::{MultiTermQuery, MultiTermSource, RewriteMethod, SynonymQuery};
 use lucene_search::field_norms::FieldNorms;
-use lucene_search::highlight::unified::break_iterators::{
-    sentence_instance, word_instance, BreakIterator, CustomSeparatorBreakIterator,
-    LengthGoalBreakIterator, SplittingBreakIterator, WholeBreakIterator,
-};
-use lucene_search::highlight::unified::{
-    DefaultPassageFormatter, HighlightObject, Passage, PassageFormatter, UnifiedHighlighter,
-};
 use lucene_search::index_searcher::IndexSearcher;
 use lucene_search::query::{
     BooleanQuery, BoostQuery, Clause, ConstantScoreQuery, DisjunctionMaxQuery, MultiPhraseQuery,

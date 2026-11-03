@@ -23,6 +23,7 @@ members = [
     "crates/lucene-misc",
     "crates/lucene-queryparser",
     "crates/lucene-monitor",
+    "crates/lucene-highlighter",
     "crates/lucene-ffi",
     "crates/lucene-tools",
     "crates/lucene-test-framework",
@@ -52,6 +53,7 @@ default-members = [
     "crates/lucene-misc",
     "crates/lucene-queryparser",
     "crates/lucene-monitor",
+    "crates/lucene-highlighter",
     "crates/lucene-ffi",
     "crates/lucene-tools",
 ]

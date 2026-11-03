@@ -3,10 +3,10 @@
 //! weighted terms, and span queries of every shape through the extractor.
 
 use super::*;
-use crate::extended_query::{MultiTermQuery, MultiTermSource, RewriteMethod};
-use crate::query::{Clause, PrefixQuery, TermQuery, WildcardQuery};
-use crate::spans::SpanNode;
 use lucene_analysis::{Analyzer, StandardAnalyzer, TokenStream};
+use lucene_search::extended_query::{MultiTermQuery, MultiTermSource, RewriteMethod};
+use lucene_search::query::{Clause, PrefixQuery, TermQuery, WildcardQuery};
+use lucene_search::spans::SpanNode;
 use std::sync::Arc;
 
 fn stream<'a>(analyzer: &'a Analyzer, text: &str) -> DynStream<'a> {
@@ -52,7 +52,7 @@ fn every_error_names_its_java_class() {
     let e = Error::IllegalArgument("x".into());
     assert_eq!(e.class(), "java.lang.IllegalArgumentException");
     assert_eq!(e.message(), "x");
-    let e = Error::Search(crate::Error::IllegalArgument("y".into()));
+    let e = Error::Search(lucene_search::Error::IllegalArgument("y".into()));
     assert_eq!(e.class(), "java.io.IOException");
     assert!(e.message().contains('y'));
     let e: Error = lucene_analysis::AnalysisError::IllegalArgument("z".into()).into();
@@ -242,13 +242,13 @@ fn multi_term_clauses_are_read_through_the_documents_terms() {
         .collect();
     keys.sort();
     assert_eq!(keys, ["quack", "quark"]);
-    let got = f(Clause::Regexp(crate::query::RegexpQuery {
+    let got = f(Clause::Regexp(lucene_search::query::RegexpQuery {
         field: "f".into(),
         pattern: "qu.ck".into(),
     }));
     assert_eq!(got.len(), 2);
     // a fuzzy term carries its similarity as its weight
-    let fuzzy = f(Clause::Fuzzy(crate::query::FuzzyQuery::new(
+    let fuzzy = f(Clause::Fuzzy(lucene_search::query::FuzzyQuery::new(
         "f",
         b"fuzzy".to_vec(),
     )));
@@ -259,7 +259,7 @@ fn multi_term_clauses_are_read_through_the_documents_terms() {
     let mut qse = WeightedSpanTermExtractor::new(None);
     qse.set_expand_multi_term_query(true);
     qse.set_max_doc_chars_to_analyze(100);
-    let bad = Clause::Regexp(crate::query::RegexpQuery {
+    let bad = Clause::Regexp(lucene_search::query::RegexpQuery {
         field: "f".into(),
         pattern: "(".into(),
     });
@@ -275,19 +275,22 @@ fn multi_term_clauses_are_read_through_the_documents_terms() {
 fn query_shapes_reach_the_extractor() {
     let text = "alpha beta gamma delta alpha beta";
     // a constant-score, dismax, boost and multi-phrase leaf are read through
-    let boosted = Clause::Boost(Box::new(crate::query::BoostQuery::new(term("beta"), 2.5)));
+    let boosted = Clause::Boost(Box::new(lucene_search::query::BoostQuery::new(
+        term("beta"),
+        2.5,
+    )));
     assert_eq!(terms_of(&boosted, text)["beta"].weight(), 2.5);
-    let cs = Clause::ConstantScore(Box::new(crate::query::ConstantScoreQuery::new(
+    let cs = Clause::ConstantScore(Box::new(lucene_search::query::ConstantScoreQuery::new(
         term("gamma"),
         1.0,
     )));
     assert!(terms_of(&cs, text).contains_key("gamma"));
-    let dm = Clause::DisjunctionMax(Box::new(crate::query::DisjunctionMaxQuery::new(
+    let dm = Clause::DisjunctionMax(Box::new(lucene_search::query::DisjunctionMaxQuery::new(
         vec![term("delta"), term("alpha")],
         0.0,
     )));
     assert_eq!(terms_of(&dm, text).len(), 2);
-    let mp = Clause::MultiPhrase(crate::query::MultiPhraseQuery::new(
+    let mp = Clause::MultiPhrase(lucene_search::query::MultiPhraseQuery::new(
         "f",
         vec![
             vec![b"alpha".to_vec(), b"gamma".to_vec()],
@@ -298,10 +301,14 @@ fn query_shapes_reach_the_extractor() {
     assert!(got["alpha"].is_position_sensitive());
     assert_eq!(got["alpha"].position_spans().len(), 3);
     // a one-term phrase is that term's span
-    let one = Clause::Phrase(crate::query::PhraseQuery::new("f", [b"beta".to_vec()]));
+    let one = Clause::Phrase(lucene_search::query::PhraseQuery::new(
+        "f",
+        [b"beta".to_vec()],
+    ));
     assert_eq!(terms_of(&one, text)["beta"].position_spans().len(), 2);
     // a phrase with a gap between its positions
-    let mut gap = crate::query::PhraseQuery::new("f", [b"alpha".to_vec(), b"gamma".to_vec()]);
+    let mut gap =
+        lucene_search::query::PhraseQuery::new("f", [b"alpha".to_vec(), b"gamma".to_vec()]);
     gap.positions = vec![0, 2];
     // alpha at 0 and gamma at 2: a phrase with a hole of one position is a
     // span query with one position of slop, ordered
@@ -309,7 +316,7 @@ fn query_shapes_reach_the_extractor() {
     assert_eq!(got["gamma"].position_spans(), &[PositionSpan::new(0, 2)]);
     // match-all and match-none name no terms
     assert!(terms_of(
-        &Clause::MatchNoDocs(crate::query::MatchNoDocsQuery::default()),
+        &Clause::MatchNoDocs(lucene_search::query::MatchNoDocsQuery::default()),
         text
     )
     .is_empty());
@@ -331,7 +338,7 @@ fn the_idf_weights_scale_the_terms() {
         }
     }
     let q = Clause::Boolean(Box::new({
-        let mut b = crate::query::BooleanQuery::new();
+        let mut b = lucene_search::query::BooleanQuery::new();
         b.should.push(term("rare"));
         b.should.push(term("common"));
         b
@@ -341,7 +348,7 @@ fn the_idf_weights_scale_the_terms() {
     assert!(weight("rare") > weight("common"));
     assert!((weight("common") - ((100.0f64 / 50.0).ln() + 1.0) as f32).abs() < 1e-6);
     // a prohibited clause is only a term when asked for
-    let mut b = crate::query::BooleanQuery::new();
+    let mut b = lucene_search::query::BooleanQuery::new();
     b.must.push(term("a"));
     b.must_not.push(term("b"));
     let q = Clause::Boolean(Box::new(b));
@@ -661,8 +668,8 @@ fn the_shrinking_adjuster_keeps_passages_on_words() {
 
 struct NoMatches(Clause);
 
-impl crate::matches::MatchesIterator for NoMatches {
-    fn next(&mut self) -> crate::Result<bool> {
+impl lucene_search::matches::MatchesIterator for NoMatches {
+    fn next(&mut self) -> lucene_search::Result<bool> {
         Ok(false)
     }
     // SENTINEL: -1 is `MatchesIterator`'s "no positions/offsets" -- this stub has none
@@ -693,8 +700,8 @@ struct Listed {
     query: Clause,
 }
 
-impl crate::matches::MatchesIterator for Listed {
-    fn next(&mut self) -> crate::Result<bool> {
+impl lucene_search::matches::MatchesIterator for Listed {
+    fn next(&mut self) -> lucene_search::Result<bool> {
         self.at += 1;
         Ok(self.at <= self.matches.len())
     }

@@ -11,12 +11,12 @@ use std::sync::Arc;
 
 use lucene_analysis::attributes::java_float_to_string;
 use lucene_analysis::{Analyzer, StandardAnalyzer, TokenStream};
-use lucene_queryparser::classic::QueryParser;
-use lucene_search::highlight::{
+use lucene_highlighter::{
     DocFreqSource, DynStream, GradientFormatter, Highlighter, NullFragmenter, QueryScorer,
     QueryTermScorer, SimpleFragmenter, SimpleHtmlEncoder, SimpleHtmlFormatter,
     SimpleSpanFragmenter, SpanGradientFormatter, WeightedSpanTermExtractor,
 };
+use lucene_queryparser::classic::QueryParser;
 use lucene_search::query::Clause;
 use lucene_search::spans::SpanNode;
 
@@ -193,7 +193,7 @@ fn run(
     t: &str,
     index: &Arc<TextsIndex>,
 ) -> Result<String, String> {
-    let e = |e: lucene_search::highlight::Error| e.to_string();
+    let e = |e: lucene_highlighter::Error| e.to_string();
     match cfg {
         "L" => {
             let mut h =
@@ -458,7 +458,7 @@ fn vector_of<'a>(
 
 #[test]
 fn term_vector_token_streams_match_lucene() {
-    use lucene_search::highlight::TokenSources;
+    use lucene_highlighter::TokenSources;
     let analyzer = Analyzer::new(StandardAnalyzer::new());
     let texts = lines("highlight-texts.txt");
     let (reader, docs) = term_vectors();
@@ -515,7 +515,7 @@ fn term_vector_token_streams_match_lucene() {
 
 #[test]
 fn highlighting_through_term_vectors_matches_lucene() {
-    use lucene_search::highlight::TokenSources;
+    use lucene_highlighter::TokenSources;
     let analyzer = Analyzer::new(StandardAnalyzer::new());
     let parser = QueryParser::new("body", Arc::new(Analyzer::new(StandardAnalyzer::new())));
     let queries = lines("highlight-queries.txt");

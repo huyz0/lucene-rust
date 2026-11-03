@@ -9,13 +9,15 @@ use super::super::extractor::{collect_span_query_fields, must_rewrite};
 use super::super::Result;
 use super::passage::{OfPostings, OffsetsEnum};
 use super::strategies::FieldMatcher;
-use crate::exec::LeafContext;
-use crate::extended_query::ExtendedQuery;
-use crate::index_searcher::IndexSearcher;
-use crate::multi_segment::OpenSegment;
-use crate::query::{Clause, MultiPhraseQuery, PhraseQuery};
-use crate::query_visitor::{self, QueryVisitor, Term};
-use crate::spans::{spans_with, SpanCollector, SpanNode, Spans, TermSpans, NO_MORE_POSITIONS};
+use lucene_search::extended_query::ExtendedQuery;
+use lucene_search::index_searcher::IndexSearcher;
+use lucene_search::multi_segment::OpenSegment;
+use lucene_search::query::{Clause, MultiPhraseQuery, PhraseQuery};
+use lucene_search::query_visitor::{self, QueryVisitor, Term};
+use lucene_search::spans::{
+    spans_with, SpanCollector, SpanNode, Spans, TermSpans, NO_MORE_POSITIONS,
+};
+use lucene_search::LeafContext;
 
 /// `PhraseHelper`. [`Default`] is `PhraseHelper.NONE`.
 #[derive(Clone, Default)]
@@ -232,7 +234,7 @@ impl PhraseHelper {
     ) -> Result<()> {
         let norms = [None];
         let searcher = IndexSearcher::new(std::slice::from_ref(segment), &norms)?;
-        let ctx = leaf_context(segment);
+        let ctx = LeafContext::for_spans(segment);
         let (mut accepted, mut rejected) = (HashSet::new(), HashSet::new());
         let nodes: Vec<SpanNode> = self
             .span_queries
@@ -327,25 +329,6 @@ impl PhraseHelper {
     }
 }
 
-/// A segment as the spans read it: no live docs (`SpanWeight` positions
-/// on the document asked for), no scoring.
-fn leaf_context<'a>(seg: &OpenSegment<'a>) -> LeafContext<'a> {
-    LeafContext {
-        fields: seg.fields,
-        doc_in: seg.doc_in,
-        pos_in: seg.pos_in,
-        pay_in: seg.pay_in,
-        live_docs: None,
-        points: seg.points,
-        norms: None,
-        global: None,
-        max_doc: seg.max_doc,
-        cache: None,
-        reader: seg.reader,
-        similarity: seg.similarity,
-    }
-}
-
 /// `OffsetSpanCollector` with `SpanCollectedOffsetsEnum`: per term, its
 /// distinct offset pairs, sorted.
 struct OffsetSpanCollector<'h> {
@@ -356,7 +339,11 @@ struct OffsetSpanCollector<'h> {
 }
 
 impl SpanCollector for OffsetSpanCollector<'_> {
-    fn collect_leaf(&mut self, leaf: &mut TermSpans<'_>, _position: i32) -> crate::Result<()> {
+    fn collect_leaf(
+        &mut self,
+        leaf: &mut TermSpans<'_>,
+        _position: i32,
+    ) -> lucene_search::Result<()> {
         let term = &leaf.term.1;
         if self.rejected_only.contains(term) {
             return Ok(());
@@ -385,11 +372,11 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::extended_query::{
+    use lucene_search::extended_query::{
         IndexOrDocValuesQuery, MultiTermQuery, MultiTermSource, RewriteMethod,
     };
-    use crate::function::FunctionScoreQuery;
-    use crate::query::{
+    use lucene_search::function::FunctionScoreQuery;
+    use lucene_search::query::{
         BoostQuery, ConstantScoreQuery, DisjunctionMaxQuery, MatchAllDocsQuery, PrefixQuery,
         TermQuery,
     };
@@ -410,7 +397,7 @@ mod tests {
         assert_eq!(h.span_queries().len(), 1);
         let h = helper(FunctionScoreQuery::new(
             ab(),
-            crate::values_source::constant(1.0),
+            lucene_search::values_source::constant(1.0),
         ));
         assert_eq!(h.span_queries().len(), 1);
         let h = helper(DisjunctionMaxQuery::new(

@@ -30,11 +30,11 @@ use lucene_codecs::wildcard::WildcardPattern;
 use lucene_index::document::{FieldToken, FieldTokens};
 
 use super::{DynStream, Error, Result, Scorer};
-use crate::extended_query::{ExtendedQuery, MultiTermQuery, MultiTermSource};
-use crate::memory::MemoryIndex;
-use crate::query::{Clause, PhraseQuery};
-use crate::query_visitor::{self, Occur, QueryVisitor, SubVisitor, Term, TermCollector};
-use crate::spans::SpanNode;
+use lucene_search::extended_query::{ExtendedQuery, MultiTermQuery, MultiTermSource};
+use lucene_search::memory::MemoryIndex;
+use lucene_search::query::{Clause, PhraseQuery};
+use lucene_search::query_visitor::{self, Occur, QueryVisitor, SubVisitor, Term, TermCollector};
+use lucene_search::spans::SpanNode;
 
 /// The one field every query field is read from.
 const SHADOW_FIELD: &str = "shadowed_field";
@@ -330,7 +330,7 @@ impl Default for WeightedSpanTermExtractor {
 struct Leaf<'a> {
     stream: Option<DynStream<'a>>,
     replay: Option<DynStream<'a>>,
-    index: Option<Arc<crate::memory::MemoryIndexReader>>,
+    index: Option<Arc<lucene_search::memory::MemoryIndexReader>>,
     terms: Vec<Vec<u8>>,
 }
 
@@ -601,7 +601,7 @@ impl Run<'_, '_> {
 
     fn extract_multi_phrase(
         &mut self,
-        m: &crate::query::MultiPhraseQuery,
+        m: &lucene_search::query::MultiPhraseQuery,
         boost: f32,
     ) -> Result<()> {
         let positions = m.positions();
@@ -662,7 +662,7 @@ impl Run<'_, '_> {
         // `query.visit(QueryVisitor.termCollector(terms))`: a span query's terms
         // (a not query's include side only), each once
         let mut pairs = Vec::new();
-        crate::spans::weight_terms(&node, &mut pairs);
+        lucene_search::spans::weight_terms(&node, &mut pairs);
         let non_weighted_terms: std::collections::BTreeSet<Term> =
             pairs.into_iter().map(|(f, b)| Term::new(f, b)).collect();
         if non_weighted_terms.is_empty() {
@@ -702,12 +702,12 @@ impl Run<'_, '_> {
 /// `startPosition()` and `endPosition() - 1`, as `SpanWeight.matches` reports
 /// them.
 fn span_positions(
-    reader: &crate::memory::MemoryIndexReader,
+    reader: &lucene_search::memory::MemoryIndexReader,
     query: &Clause,
 ) -> Result<Vec<PositionSpan>> {
-    let found = reader.with_searcher(|searcher| -> crate::Result<Vec<PositionSpan>> {
+    let found = reader.with_searcher(|searcher| -> lucene_search::Result<Vec<PositionSpan>> {
         let mut out = Vec::new();
-        let Some(m) = crate::matches::matches(searcher, query, 0)? else {
+        let Some(m) = lucene_search::matches::matches(searcher, query, 0)? else {
             return Ok(out);
         };
         if let Some(mut it) = m.get_matches(SHADOW_FIELD)? {

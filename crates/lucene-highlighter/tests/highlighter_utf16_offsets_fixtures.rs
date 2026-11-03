@@ -22,7 +22,7 @@
 //! Read as Unicode scalars, `offset_text.2` (`"alpha 😀 beta 𝐀 gamma"`) would
 //! highlight the wrong span for every token after the first emoji.
 
-use lucene_search::highlighter::{assemble_fragments, FragmentConfig};
+use lucene_highlighter::highlighter::{assemble_fragments, FragmentConfig};
 use lucene_search::term_vectors_query::TermOffsetSpan;
 
 fn manifest() -> Vec<(String, String)> {

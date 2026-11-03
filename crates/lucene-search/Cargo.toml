@@ -12,9 +12,6 @@ lucene-codecs = { path = "../lucene-codecs" }
 lucene-index = { path = "../lucene-index" }
 lucene-analysis = { path = "../lucene-analysis" }
 rayon.workspace = true
-# UAX #29 sentence segmentation, for the highlighter's `BreakIterator`
-# equivalent -- see `highlighter::sentence_boundaries`.
-unicode-segmentation.workspace = true
 # Inflates a Deeplearning4j word2vec model zip (`word2vec::read_dl4j_model`).
 miniz_oxide.workspace = true
 
@@ -43,6 +40,7 @@ asserting = []
 # cycle: these link the one lucene-search library).
 lucene-queryparser = { path = "../lucene-queryparser" }
 lucene-monitor = { path = "../lucene-monitor" }
+lucene-highlighter = { path = "../lucene-highlighter" }
 # The shared RAII scratch-directory guard (`lucene_util::test_support::TempDir`).
 # A `[dev-dependencies]` edge, so resolver-2 feature unification keeps the
 # module out of this crate's production build.

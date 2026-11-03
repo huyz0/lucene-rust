@@ -307,6 +307,13 @@ pub struct MemoryIndexReader {
 }
 
 impl MemoryIndexReader {
+    /// The reader's document and field infos in debug form: two readers
+    /// built from the same input print alike.
+    #[doc(hidden)]
+    pub fn debug_form(&self) -> String {
+        format!("{:?} {:?}", self.doc, self.field_infos)
+    }
+
     pub(super) fn new(doc: Document, similarity: Arc<dyn Similarity>) -> Result<Self> {
         let infos = doc
             .fields

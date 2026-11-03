@@ -5,7 +5,7 @@ use std::collections::VecDeque;
 
 use super::super::{Error, Result};
 use super::field_query::FieldQuery;
-use crate::directory_reader::DirectoryReader;
+use lucene_search::directory_reader::DirectoryReader;
 
 /// `FieldTermStack.TermInfo`.
 #[derive(Debug, Clone)]

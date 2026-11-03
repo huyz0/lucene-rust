@@ -5,9 +5,9 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 
 use super::super::extractor::expand_clause;
 use super::super::{Error, Result};
-use crate::directory_reader::DirectoryReader;
-use crate::extended_query::ExtendedQuery;
-use crate::query::Clause;
+use lucene_search::directory_reader::DirectoryReader;
+use lucene_search::extended_query::ExtendedQuery;
+use lucene_search::query::Clause;
 
 use super::field_term_stack::TermInfo;
 
@@ -311,8 +311,10 @@ fn flatten(
         Clause::Extended(e) => {
             if let ExtendedQuery::Synonym(s) = &**e {
                 for (term, _) in &s.terms {
-                    let t =
-                        Clause::Term(crate::query::TermQuery::new(s.field.clone(), term.clone()));
+                    let t = Clause::Term(lucene_search::query::TermQuery::new(
+                        s.field.clone(),
+                        term.clone(),
+                    ));
                     flatten(&t, reader, out, boost)?;
                 }
             }
@@ -343,7 +345,10 @@ fn flatten(
             // `MultiPhraseQuery.rewrite` (which needs a reader): a single
             // position is a disjunction
             for t in &m.term_arrays[0] {
-                let t = Clause::Term(crate::query::TermQuery::new(m.field.clone(), t.clone()));
+                let t = Clause::Term(lucene_search::query::TermQuery::new(
+                    m.field.clone(),
+                    t.clone(),
+                ));
                 flatten(&t, reader, out, boost)?;
             }
         }
@@ -353,7 +358,7 @@ fn flatten(
             };
             if let Some((field, terms)) = expand_multi_term(reader, query)? {
                 for (term, term_boost) in terms {
-                    let t = Clause::Term(crate::query::TermQuery::new(field.clone(), term));
+                    let t = Clause::Term(lucene_search::query::TermQuery::new(field.clone(), term));
                     flatten(&t, Some(reader), out, boost * term_boost)?;
                 }
             }

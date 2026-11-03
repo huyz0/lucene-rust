@@ -58,11 +58,11 @@ use self::strategies::{
     multi_fields_enum, Components, FieldMatcher, LeafCtx, Strategy, MULTIVAL_SEP_CHAR,
 };
 use super::{Error, Result};
-use crate::directory_reader::DirectoryReader;
 use crate::highlighter::{offset_source_for_field, OffsetSource};
-use crate::index_searcher::IndexSearcher;
-use crate::query::Clause;
-use crate::query_visitor::extract_terms;
+use lucene_search::directory_reader::DirectoryReader;
+use lucene_search::index_searcher::IndexSearcher;
+use lucene_search::query::Clause;
+use lucene_search::query_visitor::extract_terms;
 
 /// `UnifiedHighlighter.DEFAULT_MAX_LENGTH`.
 pub const DEFAULT_MAX_LENGTH: i32 = 10_000;
@@ -242,7 +242,7 @@ impl<'r> UnifiedHighlighter<'r> {
         &self,
         field: &str,
         query: &Clause,
-        all_terms: &BTreeSet<crate::query_visitor::Term>,
+        all_terms: &BTreeSet<lucene_search::query_visitor::Term>,
     ) -> Result<Strategy> {
         let components = Components::new(
             field,
@@ -262,7 +262,7 @@ impl<'r> UnifiedHighlighter<'r> {
         &self,
         field: &str,
         query: &Clause,
-        all_terms: &BTreeSet<crate::query_visitor::Term>,
+        all_terms: &BTreeSet<lucene_search::query_visitor::Term>,
         max_passages: i32,
     ) -> Result<(Vec<Strategy>, FieldHighlighter)> {
         let masked = self.masked_fields.as_ref().and_then(|f| f(field));
@@ -347,7 +347,7 @@ impl<'r> UnifiedHighlighter<'r> {
             ));
         }
         let reader = self.reader.ok_or_else(|| {
-            Error::Search(crate::Error::IllegalState(
+            Error::Search(lucene_search::Error::IllegalState(
                 "This method requires that an indexSearcher was passed in the \
                  constructor.  Perhaps you mean to call highlightWithoutSearcher?"
                     .into(),
@@ -411,10 +411,10 @@ impl<'r> UnifiedHighlighter<'r> {
                     })?;
                     let segment = &searcher.segments()[leaf];
                     let matches = |c: &Clause| {
-                        crate::matches::matches(searcher, &c.clone().rewrite(), doc_id)
+                        lucene_search::matches::matches(searcher, &c.clone().rewrite(), doc_id)
                     };
                     let local = doc_id - segment.doc_base;
-                    let term_vector = |field: i32| -> crate::Result<_> {
+                    let term_vector = |field: i32| -> lucene_search::Result<_> {
                         let Some(tvs) = reader.segment_readers()[leaf].term_vectors_reader()?
                         else {
                             return Ok(None);

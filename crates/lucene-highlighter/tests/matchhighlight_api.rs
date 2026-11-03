@@ -6,13 +6,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use lucene_analysis::{Analyzer, StandardAnalyzer};
-use lucene_queryparser::classic::QueryParser;
-use lucene_search::directory_reader::DirectoryReader;
-use lucene_search::field_norms::FieldNorms;
-use lucene_search::highlight::{
+use lucene_highlighter::{
     compute_offset_retrieval_strategies, Error, FieldValueHighlighters, FieldValueProvider,
     MatchHighlighter, MatchRegionRetriever, OffsetRange,
 };
+use lucene_queryparser::classic::QueryParser;
+use lucene_search::directory_reader::DirectoryReader;
+use lucene_search::field_norms::FieldNorms;
 use lucene_search::index_searcher::IndexSearcher;
 use lucene_search::query::Clause;
 

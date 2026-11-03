@@ -4,9 +4,9 @@
 
 use std::sync::{Arc, Mutex, PoisonError};
 
-use crate::matches::BoxMatchesIterator;
-use crate::query::Clause;
-use crate::query_visitor::{self, QueryVisitor, Term};
+use lucene_search::matches::BoxMatchesIterator;
+use lucene_search::query::Clause;
+use lucene_search::query_visitor::{self, QueryVisitor, Term};
 
 use super::super::Result;
 use super::passage::OffsetsEnum;
@@ -27,7 +27,7 @@ pub(super) fn query_to_term(query: &Clause) -> Vec<u8> {
     let mut v = Terms(Vec::new());
     query_visitor::visit(query, &mut v);
     if v.0.is_empty() {
-        crate::explain::describe_clause(query).into_bytes()
+        lucene_search::explain::describe_clause(query).into_bytes()
     } else {
         v.0
     }
@@ -208,7 +208,7 @@ impl OffsetsEnum for OfMatchesWithSubs {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::query::{PrefixQuery, TermQuery};
+    use lucene_search::query::{PrefixQuery, TermQuery};
 
     /// The remembered term is the one [`query_to_term`] gives, remembered
     /// or not, for a term (an empty one too) and past the cap.

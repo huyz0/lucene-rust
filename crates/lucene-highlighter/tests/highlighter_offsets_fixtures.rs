@@ -14,7 +14,7 @@
 use lucene_codecs::blocktree;
 use lucene_codecs::field_infos;
 use lucene_codecs::postings::{DocInput, PayInput, PosInput};
-use lucene_search::highlighter::{
+use lucene_highlighter::highlighter::{
     offsets_from_phrase, offsets_from_postings, phrase_match_offsets,
 };
 

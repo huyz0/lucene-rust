@@ -23,11 +23,11 @@ use lucene_analysis::{Analyzer, TokenStream};
 use lucene_codecs::field_infos::IndexOptions;
 
 use super::{BreakKind, Error, Result, RuleBreakIterator};
-use crate::directory_reader::DirectoryReader;
-use crate::index_searcher::IndexSearcher;
-use crate::matches::{BoxMatchesIterator, MatchesIterator};
-use crate::query::Clause;
-use crate::query_visitor::{self, QueryVisitor, TermCollector};
+use lucene_search::directory_reader::DirectoryReader;
+use lucene_search::index_searcher::IndexSearcher;
+use lucene_search::matches::{BoxMatchesIterator, MatchesIterator};
+use lucene_search::query::Clause;
+use lucene_search::query_visitor::{self, QueryVisitor, TermCollector};
 
 fn io(e: impl std::fmt::Display) -> Error {
     Error::Io(e.to_string())
@@ -1075,7 +1075,7 @@ struct MatchesIteratorWithLimit {
 }
 
 impl MatchesIterator for MatchesIteratorWithLimit {
-    fn next(&mut self) -> crate::Result<bool> {
+    fn next(&mut self) -> lucene_search::Result<bool> {
         if self.limit == 0 {
             return Ok(false);
         }
@@ -1213,7 +1213,8 @@ impl MatchRegionRetriever {
         max_hits_per_field: &dyn Fn(&str) -> usize,
         output: &mut BTreeMap<String, Vec<OffsetRange>>,
     ) -> Result<()> {
-        let Some(matches) = crate::matches::matches(searcher, &self.query, doc_id).map_err(io)?
+        let Some(matches) =
+            lucene_search::matches::matches(searcher, &self.query, doc_id).map_err(io)?
         else {
             return Ok(());
         };
@@ -1253,8 +1254,8 @@ pub(crate) fn stored_string_value(
         FieldValue::String(s) => Some(s.clone()),
         FieldValue::Int(v) => Some(v.to_string()),
         FieldValue::Long(v) => Some(v.to_string()),
-        FieldValue::Float(v) => Some(crate::function::java_float(*v)),
-        FieldValue::Double(v) => Some(crate::function::java_double(*v)),
+        FieldValue::Float(v) => Some(lucene_search::function::java_float(*v)),
+        FieldValue::Double(v) => Some(lucene_search::function::java_double(*v)),
         FieldValue::Binary(_) => None,
     }
 }

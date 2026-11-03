@@ -18,7 +18,7 @@ faceted index + real `lucene-facet` answers) →
 `crates/lucene-search/tests/facets_fixtures.rs` (18 tests), and
 `fixtures/src/GenBreakIterator.java` (the JDK's own sentence boundaries) →
 `highlighter::sentence_boundaries`' test. Plus
-`crates/lucene-search/tests/highlighter_offsets_fixtures.rs` (3 tests) against
+`crates/lucene-highlighter/tests/highlighter_offsets_fixtures.rs` (3 tests) against
 `GenBlockTree.java`'s existing per-occurrence offsets ground truth.
 
 ---
@@ -274,7 +274,7 @@ three-segment index.
 
 ---
 
-## 3. `crates/lucene-search/src/highlighter.rs` — `BreakIterator` and `FieldOffsetStrategy`
+## 3. `crates/lucene-highlighter/src/highlighter.rs` — `BreakIterator` and `FieldOffsetStrategy`
 
 Java: `search/uhighlight/{FieldOffsetStrategy,PostingsOffsetStrategy,TermVectorOffsetStrategy,AnalysisOffsetStrategy,TokenStreamOffsetStrategy,NoOpOffsetStrategy,SplittingBreakIterator}.java`,
 `UnifiedHighlighter.{getOffsetSource,getOptimizedOffsetSource,getOffsetStrategy}`,

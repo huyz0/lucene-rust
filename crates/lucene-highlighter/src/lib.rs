@@ -41,6 +41,7 @@ pub use match_highlight::{
     OffsetsRetrievalStrategySupplier, OrHighlighter, Passage, PassageAdjuster, PassageFormatter,
     PassageSelector, QueryOffsetRange, StoredValues,
 };
+pub mod highlighter;
 pub use term_vector::{TokenSources, TokenStreamFromTermVector};
 pub use word_break::{Kind as BreakKind, RuleBreakIterator};
 
@@ -56,7 +57,7 @@ pub enum Error {
     /// The analysis chain failed.
     Analysis(AnalysisError),
     /// A query could not be run against the document.
-    Search(crate::Error),
+    Search(lucene_search::Error),
     /// `IllegalArgumentException`.
     IllegalArgument(String),
     /// `IOException`, with Java's message.
@@ -107,8 +108,8 @@ impl From<AnalysisError> for Error {
     }
 }
 
-impl From<crate::Error> for Error {
-    fn from(e: crate::Error) -> Self {
+impl From<lucene_search::Error> for Error {
+    fn from(e: lucene_search::Error) -> Self {
         Error::Search(e)
     }
 }
