@@ -1631,6 +1631,9 @@ enum Iter<'a> {
     Bits {
         bits: FixedBitSet,
         doc: i32,
+        /// How many documents the set holds (or an upper bound): what lets a
+        /// sparse set lead the scorer.
+        cost: i64,
     },
     /// `DocIdSetIterator.range(min, max_doc)`.
     Range {
@@ -1739,12 +1742,12 @@ impl Iter<'_> {
     }
 
     /// `cost`: an upper bound of the documents left, for choosing the
-    /// iterator that leads (unknown for a bit set: never it).
+    /// iterator that leads.
     fn cost(&self) -> i64 {
         match self {
             Iter::All { max_doc, .. } => i64::from(*max_doc),
             Iter::Docs { docs, .. } => docs.len() as i64,
-            Iter::Bits { .. } => i64::MAX,
+            Iter::Bits { cost, .. } => *cost,
             Iter::Range { min, max_doc, .. } => i64::from(*max_doc) - i64::from(*min),
             // `SkipBlockRangeIterator.cost()`: `NO_MORE_DOCS`, never the lead.
             Iter::Skip(_) | Iter::Adaptive(_) => i64::from(NO_MORE_DOCS),
@@ -1776,7 +1779,7 @@ impl Iter<'_> {
                 *doc = docs.get(*next).copied().unwrap_or(NO_MORE_DOCS);
                 *doc
             }
-            Iter::Bits { bits, doc } => {
+            Iter::Bits { bits, doc, .. } => {
                 *doc = usize::try_from(target)
                     .ok()
                     .and_then(|t| bits.next_set_bit(t))
@@ -2009,8 +2012,10 @@ impl<'a> WithValue<'a> {
                 let mut words = vec![0u64; n.div_ceil(64)];
                 lucene_codecs::indexed_disi::or_into_words(region, dense_rank_power, &mut words)
                     .map_err(|e| crate::Error::from(lucene_codecs::doc_values::Error::from(e)))?;
+                let bits = FixedBitSet::from_words(words, n);
                 Iter::Bits {
-                    bits: FixedBitSet::from_words(words, n),
+                    cost: bits.cardinality() as i64,
+                    bits,
                     doc: -1,
                 }
             }
@@ -2239,7 +2244,11 @@ impl Competitive<'_> {
             }
         }
         self.iterator_cost = bits.cardinality() as i64;
-        self.iter = Iter::Bits { bits, doc: -1 };
+        self.iter = Iter::Bits {
+            bits,
+            doc: -1,
+            cost: self.iterator_cost,
+        };
         Ok(())
     }
 
@@ -2306,7 +2315,11 @@ impl Competitive<'_> {
             Some(bits) => {
                 self.iterator_cost = visitor.added as i64;
                 self.scratch = docs;
-                Iter::Bits { bits, doc: -1 }
+                Iter::Bits {
+                    bits,
+                    doc: -1,
+                    cost: self.iterator_cost,
+                }
             }
             None => {
                 lucene_util::doc_id_sort::sort_dedup_doc_ids(&mut docs);
@@ -5734,7 +5747,11 @@ mod tests {
                 next: 0,
                 doc: -1,
             },
-            Iter::Bits { bits, doc: -1 },
+            Iter::Bits {
+                cost: bits.cardinality() as i64,
+                bits,
+                doc: -1,
+            },
         ];
         for it in &mut forms {
             assert_eq!(it.doc_id(), -1);
@@ -5941,6 +5958,7 @@ mod tests {
         comp.iter = Iter::Bits {
             bits: used,
             doc: -1,
+            cost: 2,
         };
         comp.spare_bits = Some(FixedBitSet::new(LEN));
         assert_eq!(crate::bit_set_pool::held(LEN), 0);
