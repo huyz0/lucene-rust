@@ -16,6 +16,10 @@
 //! the `PointRangeQuery` (`LongPoint.newRangeQuery`) one. `walk/*` is the
 //! BKD walk alone into a doc-id list, `sort/*` that list's sort and dedup.
 //!
+//! `index_sort_range/*` is `IndexSortSortedNumericDocValuesRangeQuery` over
+//! a 500k-document segment sorted by its field, counted alone and in a
+//! conjunction with a doc-values range.
+//!
 //! Run with `cargo bench -p lucene-search --bench point_range`.
 
 #![allow(clippy::arithmetic_side_effects)]
@@ -30,6 +34,9 @@ use lucene_index::index_writer::IndexWriter;
 use lucene_index::merge_policy::upgrade::LATEST;
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::document::long_point;
+use lucene_search::extended_query::{
+    IndexSortSortedNumericDocValuesRangeQuery, NumericDocValuesRangeQuery,
+};
 use lucene_search::index_searcher::IndexSearcher;
 use lucene_search::query::{BooleanQuery, Clause, PointsRangeQuery};
 use lucene_store::ByteBuffersDirectory;
@@ -126,6 +133,74 @@ fn bench(c: &mut Criterion) {
         }
     }
     g.finish();
+
+    // `IndexSortSortedNumericDocValuesRangeQuery` over a segment sorted by
+    // its field: the matches are one run of documents.
+    let sorted = build_sorted();
+    let reader = DirectoryReader::open(&sorted).unwrap();
+    let opened = reader.open_segments().unwrap();
+    let mut segs = opened.as_open_segments();
+    for s in &mut segs {
+        s.cache = None;
+    }
+    let norms: Vec<_> = segs.iter().map(|_| None).collect();
+    let searcher = IndexSearcher::new(&segs, &norms).unwrap();
+    let mut g = c.benchmark_group("index_sort_range");
+    g.warm_up_time(Duration::from_millis(500));
+    g.measurement_time(Duration::from_secs(2));
+    g.sample_size(20);
+    for (label, hi) in [("5pct", SORTED_DOCS as i64 / 20), ("50pct", SORTED_DOCS as i64 / 2)] {
+        let fallback = NumericDocValuesRangeQuery::new("v", 1_000, 1_000 + hi);
+        let q = BooleanQuery::new().with_filter([Clause::from(
+            IndexSortSortedNumericDocValuesRangeQuery::new("v", 1_000, 1_000 + hi, fallback),
+        )]);
+        // A conjunction iterates the range rather than counting it whole.
+        let q_and = BooleanQuery::new().with_filter([
+            Clause::from(IndexSortSortedNumericDocValuesRangeQuery::new(
+                "v",
+                1_000,
+                1_000 + hi,
+                NumericDocValuesRangeQuery::new("v", 1_000, 1_000 + hi),
+            )),
+            Clause::from(NumericDocValuesRangeQuery::new("w", 0, 499)),
+        ]);
+        g.bench_function(format!("count/{label}"), |b| {
+            b.iter(|| searcher.count(black_box(&q)).unwrap())
+        });
+        g.bench_function(format!("and_count/{label}"), |b| {
+            b.iter(|| searcher.count(black_box(&q_and)).unwrap())
+        });
+    }
+    g.finish();
+}
+
+const SORTED_DOCS: usize = 500_000;
+
+/// One segment of [`SORTED_DOCS`] documents sorted by `v` (the document's
+/// number), with `w` a random value in 0..1,000.
+fn build_sorted() -> ByteBuffersDirectory {
+    use lucene_index::segment_info::{IndexSortField, IndexSortKind, NumericSortKey};
+    let dir = ByteBuffersDirectory::new();
+    let mut rng = support::Rng::new(0x51);
+    {
+        let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", LATEST).unwrap();
+        w.set_ram_buffer_size_mb(4096.0).unwrap();
+        w.enable_explicit_documents().unwrap();
+        w.set_index_sort(Some(&[IndexSortField {
+            field: "v".to_string(),
+            reverse: false,
+            kind: IndexSortKind::Numeric(NumericSortKey::Long(None)),
+        }]))
+        .unwrap();
+        for i in 0..SORTED_DOCS {
+            let mut d = Document::new();
+            d.add(NumericDocValuesField::new("v", i as i64));
+            d.add(NumericDocValuesField::new("w", rng.below(1_000) as i64));
+            w.add_fields_document(&d).unwrap();
+        }
+        w.commit().unwrap();
+    }
+    dir
 }
 
 criterion_group!(benches, bench);

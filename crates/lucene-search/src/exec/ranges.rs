@@ -456,9 +456,20 @@ pub(crate) fn index_sort_range<'a>(
     // `denseRange` when a document without a value cannot sort inside the
     // run; `sparseRange` (the documents with a value) otherwise.
     let dense = missing < q.lower || missing > q.upper;
-    let mut docs = Vec::with_capacity(usize::try_from(last - first).unwrap_or(0));
+    if dense {
+        return Ok(constant(
+            Box::new(DocRange {
+                doc: -1,
+                min: first,
+                max: last,
+            }),
+            boost,
+            mode,
+        ));
+    }
+    let mut docs = Vec::new();
     for doc in first..last {
-        if dense || values.value(doc)?.is_some() {
+        if values.value(doc)?.is_some() {
             docs.push(doc);
         }
     }
@@ -470,6 +481,47 @@ pub(crate) fn index_sort_range<'a>(
         boost,
         mode,
     ))
+}
+
+/// `DocIdSetIterator.range(min, max)`: every document in `min..max`
+/// (`min < max`).
+struct DocRange {
+    doc: i32,
+    min: i32,
+    max: i32,
+}
+
+impl Scorer for DocRange {
+    fn doc_id(&self) -> i32 {
+        self.doc
+    }
+    fn next_doc(&mut self) -> Result<i32> {
+        self.advance(self.doc.saturating_add(1))
+    }
+    fn advance(&mut self, target: i32) -> Result<i32> {
+        self.doc = if target >= self.max {
+            NO_MORE_DOCS
+        } else {
+            target.max(self.min)
+        };
+        Ok(self.doc)
+    }
+    fn cost(&self) -> i64 {
+        i64::from(self.max) - i64::from(self.min)
+    }
+    fn score(&mut self) -> Result<f32> {
+        Ok(0.0)
+    }
+    fn max_score(&mut self, _up_to: i32) -> Result<f32> {
+        Ok(0.0)
+    }
+    fn contains(&self, doc: i32) -> Option<bool> {
+        Some((self.min..self.max).contains(&doc))
+    }
+    /// The range's own end: every document to `max` matches.
+    fn doc_id_run_end(&self) -> i32 {
+        self.max
+    }
 }
 
 /// The documents `docs` (unsorted, possibly repeated) as a constant-scored
