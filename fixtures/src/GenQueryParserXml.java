@@ -30,7 +30,7 @@ import org.apache.lucene.store.FSDirectory;
  * is the escaped document, then {@code Q}, {@code toString("body")}, the class tree, and the matching
  * documents; or {@code X} and the exception's class and message. A syntax error is recorded by its
  * class alone: Xerces' wording is not reproduced. {@code
- * crates/lucene-search/tests/queryparser_xml_fixtures.rs} compares.
+ * crates/lucene-queryparser/tests/queryparser_xml_fixtures.rs} compares.
  *
  * <p>{@code xml-plus.tsv} is {@code fixtures/corpus/queryparser-xml-plus.txt} through {@code
  * CorePlusQueriesParser} and {@code CorePlusExtensionsParser} (a row each, the parser named in the

@@ -299,7 +299,7 @@ items recorded, all of them genuinely one layer up.
 
 ---
 
-## `crates/lucene-search/src/highlighter.rs`
+## `crates/lucene-highlighter/src/highlighter.rs`
 
 Java counterparts (`lucene/highlighter/src/java/org/apache/lucene/search/uhighlight/`):
 `UnifiedHighlighter.java`, `FieldHighlighter.java`, `Passage.java`, `PassageScorer.java`,

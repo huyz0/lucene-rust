@@ -19,7 +19,7 @@ import org.apache.lucene.search.Query;
  * joins of its operator fragments ({@code fragments.txt}, then {@code frag_<config>.tsv}). Rows
  * are {@link GenQueryParserClassic}'s: the escaped query, then {@code Q}, {@code toString("f")}
  * and the class tree, or {@code X} and the exception. {@code
- * crates/lucene-search/tests/queryparser_simple_fixtures.rs} compares.
+ * crates/lucene-queryparser/tests/queryparser_simple_fixtures.rs} compares.
  */
 public class GenQueryParserSimple {
 

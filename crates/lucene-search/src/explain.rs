@@ -374,7 +374,7 @@ pub(crate) fn java_float(v: f32) -> String {
 /// when the field equals the enclosing "default" field; explanations always
 /// call the no-argument `toString()`, i.e. default field `""`, so every
 /// field is printed.
-pub(crate) fn describe_clause(clause: &Clause) -> String {
+pub fn describe_clause(clause: &Clause) -> String {
     fn term(bytes: &[u8]) -> String {
         String::from_utf8_lossy(bytes).into_owned()
     }

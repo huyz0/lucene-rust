@@ -519,7 +519,7 @@ impl MultiTermSource {
     }
 
     /// The field, to change.
-    pub(crate) fn field_mut(&mut self) -> &mut String {
+    pub fn field_mut(&mut self) -> &mut String {
         match self {
             MultiTermSource::Prefix(q) => &mut q.field,
             MultiTermSource::Wildcard(q) => &mut q.field,

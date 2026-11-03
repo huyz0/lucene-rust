@@ -64,7 +64,7 @@ import org.apache.lucene.store.FSDirectory;
  * query parser cannot write. {@code uhighlight-calls.tsv}: {@code
  * highlightFieldsAsObjects} under three stored-value batching thresholds, with the formatter's
  * call order. {@code
- * crates/lucene-search/tests/uhighlight_fixtures.rs} compares.
+ * crates/lucene-highlighter/tests/uhighlight_fixtures.rs} compares.
  */
 public class GenUnifiedHighlight {
 

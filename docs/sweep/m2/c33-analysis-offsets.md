@@ -14,7 +14,7 @@ Files: `crates/lucene-analysis/src/lib.rs`,
 `crates/lucene-analysis/tests/analysis_fixtures.rs`,
 `fixtures/src/GenAnalysis.java`, `fixtures/data/analysis/manifest.properties`.
 Consumer/evidence changes required by the fix, in other batches' files:
-`crates/lucene-search/src/highlighter.rs` (the compensating conversion comes
+`crates/lucene-highlighter/src/highlighter.rs` (the compensating conversion comes
 out), `crates/lucene-index/src/{indexing_chain,index_writer}.rs` (a
 pass-through test + doc), `crates/lucene-codecs/src/{block_packed,
 term_vectors}.rs` and `crates/lucene-codecs/examples/

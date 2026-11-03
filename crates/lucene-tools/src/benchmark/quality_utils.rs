@@ -13,11 +13,11 @@ use std::sync::Arc;
 use lucene_analysis::standard::StandardAnalyzer;
 use lucene_analysis::Analyzer;
 use lucene_codecs::stored_fields::FieldValue;
+use lucene_queryparser::classic::QueryParser;
+use lucene_queryparser::{ParsedBoolean, ParsedQuery};
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::multi_terms::MultiTerms;
 use lucene_search::query_visitor::Occur;
-use lucene_search::queryparser::classic::QueryParser;
-use lucene_search::queryparser::{ParsedBoolean, ParsedQuery};
 use lucene_store::directory::FsDirectory;
 
 use super::quality::{number_format, pad, QualityQuery, QualityQueryParser, QualitySearcher};

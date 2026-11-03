@@ -7,7 +7,7 @@
 //! lucene-tools IndexSplitter <srcDir> <destDir> <segments>+
 //! ```
 
-use lucene_search::misc::index::IndexSplitter;
+use lucene_misc::index::IndexSplitter;
 use lucene_store::directory::FsDirectory;
 
 use crate::cli::{Io, ToolResult};

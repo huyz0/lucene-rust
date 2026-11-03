@@ -10,12 +10,12 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use lucene_analysis::{Analyzer, StandardAnalyzer};
-use lucene_search::monitor::config::MonitorConfiguration;
-use lucene_search::monitor::facade::Monitor;
-use lucene_search::monitor::index::MonitorQuery;
-use lucene_search::monitor::presearcher::TermFilteredPresearcher;
-use lucene_search::monitor::serializer::MonitorQuerySerializer;
-use lucene_search::queryparser::classic::QueryParser;
+use lucene_monitor::config::MonitorConfiguration;
+use lucene_monitor::facade::Monitor;
+use lucene_monitor::index::MonitorQuery;
+use lucene_monitor::presearcher::TermFilteredPresearcher;
+use lucene_monitor::serializer::MonitorQuerySerializer;
+use lucene_queryparser::classic::QueryParser;
 
 fn main() {
     let out = std::env::args()

@@ -39,7 +39,7 @@ import org.apache.lucene.store.FSDirectory;
  * rewritten Lucene query for field {@code body} (canonical: a {@code SpanOrQuery}'s clauses
  * sorted, as a {@code HashMap}'s order is unspecified), the matching document ids, the rewrite
  * under {@code BasicQueryFactory(3)}; or {@code E} and the {@code ParseException}'s message, or
- * {@code X} and another exception. {@code crates/lucene-search/tests/queryparser_surround_fixtures.rs}
+ * {@code X} and another exception. {@code crates/lucene-queryparser/tests/queryparser_surround_fixtures.rs}
  * compares.
  */
 public class GenQueryParserSurround {

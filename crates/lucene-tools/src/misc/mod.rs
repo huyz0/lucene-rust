@@ -1,5 +1,5 @@
 //! `org.apache.lucene.misc`'s command-line tools. Their libraries are
-//! `lucene_search::misc`; these are the `main` methods over them.
+//! `lucene_misc`; these are the `main` methods over them.
 
 pub mod get_term_info;
 pub mod high_freq_terms;

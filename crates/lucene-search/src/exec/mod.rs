@@ -59,7 +59,7 @@ mod term_dismax;
 pub(crate) mod test_queries;
 mod wand;
 
-pub(crate) use build::LeafContext;
+pub use build::LeafContext;
 pub(crate) use bulk::{
     bulk_boolean, bulk_clause, score_segment, score_segment_below, score_segment_time_limited,
     score_segment_with_deadline, Bulk,

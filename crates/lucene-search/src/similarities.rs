@@ -352,7 +352,7 @@ impl SimScorer for Bm25Scorer {
 
 /// `idfExplain(collectionStats, termStats[])`'s value: one term's idf, or
 /// the float idfs of several summed as a `double` and narrowed once.
-pub(crate) fn summed_idf(idf: impl Fn(&TermStatistics) -> f32, terms: &[TermStatistics]) -> f32 {
+pub fn summed_idf(idf: impl Fn(&TermStatistics) -> f32, terms: &[TermStatistics]) -> f32 {
     match terms {
         [one] => idf(one),
         many => many.iter().map(|t| f64::from(idf(t))).sum::<f64>() as f32,
@@ -509,18 +509,14 @@ impl SimScorer for TfIdfScorer {
 /// What `TFIDFScorer.explain` reports beyond its score: the boost and the
 /// statistics its idf node is built from (when asked, where Java builds it
 /// in `scorer`).
-pub(crate) struct TfIdfExplain {
+pub struct TfIdfExplain {
     boost: f32,
     doc_count: i64,
     terms: Vec<TermStatistics>,
 }
 
 impl TfIdfExplain {
-    pub(crate) fn new(
-        boost: f32,
-        collection: &CollectionStatistics,
-        terms: &[TermStatistics],
-    ) -> Self {
+    pub fn new(boost: f32, collection: &CollectionStatistics, terms: &[TermStatistics]) -> Self {
         Self {
             boost,
             doc_count: collection.doc_count,
@@ -529,12 +525,7 @@ impl TfIdfExplain {
     }
 
     /// `TFIDFScorer.explain(freq, norm)` under `sim`.
-    pub(crate) fn explain(
-        &self,
-        sim: &dyn TfIdfSimilarity,
-        freq: Explanation,
-        norm: i64,
-    ) -> Explanation {
+    pub fn explain(&self, sim: &dyn TfIdfSimilarity, freq: Explanation, norm: i64) -> Explanation {
         let idfs = self
             .terms
             .iter()

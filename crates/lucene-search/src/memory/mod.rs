@@ -658,7 +658,7 @@ impl MemoryIndex {
     /// Every field's distinct terms, the fields in name order and each
     /// field's terms sorted: the terms dictionary a reader of this index
     /// walks.
-    pub(crate) fn field_terms(&self) -> Vec<(String, Vec<Vec<u8>>)> {
+    pub fn field_terms(&self) -> Vec<(String, Vec<Vec<u8>>)> {
         self.fields
             .iter()
             .map(|(name, info)| {

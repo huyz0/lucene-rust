@@ -13,7 +13,7 @@ use lucene_index::merge_policy::log::{LogByteSizeMergePolicy, LogDocMergePolicy}
 use lucene_index::merge_policy::MergePolicyConfig;
 use lucene_index::segment_info::LuceneVersion;
 use lucene_index::segment_infos;
-use lucene_search::misc::store::HardlinkCopyDirectory;
+use lucene_misc::store::HardlinkCopyDirectory;
 use lucene_store::directory::{Directory, FsDirectory};
 
 use crate::cli::{arg, exception, parse_int, Error, Io, ToolResult};
