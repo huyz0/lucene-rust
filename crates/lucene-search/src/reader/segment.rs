@@ -489,8 +489,20 @@ impl SegSortedNumeric<'_> {
         self.values.clear();
     }
 
+    #[inline(always)]
     fn load(&mut self) -> Result<()> {
+        if let Some(i) = self.cur.sparse_index() {
+            return self.load_rank(i);
+        }
         self.reader.values(self.cur.doc, &mut self.values)?;
+        self.upto = 0;
+        Ok(())
+    }
+
+    /// [`Self::load`] for a sparse field, by the rank the cursor found.
+    #[inline(never)]
+    fn load_rank(&mut self, rank: i64) -> Result<()> {
+        self.reader.values_at_rank(rank, &mut self.values)?;
         self.upto = 0;
         Ok(())
     }
@@ -534,7 +546,11 @@ impl SegSortedSet<'_> {
         self.values.clear();
     }
 
+    #[inline(always)]
     fn load(&mut self) -> Result<()> {
+        if let Some(i) = self.cur.sparse_index() {
+            return self.load_rank(i);
+        }
         match &mut self.ords {
             SetOrds::Single(r) => {
                 self.values.clear();
@@ -543,6 +559,20 @@ impl SegSortedSet<'_> {
                 }
             }
             SetOrds::Multi(r) => r.values(self.cur.doc, &mut self.values)?,
+        }
+        self.upto = 0;
+        Ok(())
+    }
+
+    /// [`Self::load`] for a sparse field, by the rank the cursor found.
+    #[inline(never)]
+    fn load_rank(&mut self, rank: i64) -> Result<()> {
+        match &mut self.ords {
+            SetOrds::Single(r) => {
+                self.values.clear();
+                self.values.push(r.value_at_index(rank)?);
+            }
+            SetOrds::Multi(r) => r.values_at_rank(rank, &mut self.values)?,
         }
         self.upto = 0;
         Ok(())
@@ -575,6 +605,275 @@ impl SortedSetDocValues for SegSortedSet<'_> {
     // SENTINEL: negative = absent, `-insertionPoint-1` (`SortedSetDocValues.lookupTerm`).
     fn lookup_term(&mut self, key: &[u8]) -> Result<i64> {
         dict_lookup_term(&mut self.terms, key)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Direct columns
+// ---------------------------------------------------------------------------
+
+/// The documents of a segment a [`DirectColumn`] walk visits.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum DocFilter<'b> {
+    /// Every document.
+    All,
+    /// The documents whose bits are set in these words.
+    Bits(&'b [u64]),
+    /// These documents, ascending and distinct.
+    Docs(&'b [i32]),
+}
+
+/// A column's values by rank among the documents that have one.
+enum ColumnValues<'a> {
+    /// One value per document (`NUMERIC`, `SORTED`'s ordinals, a
+    /// singleton `SORTED_NUMERIC` or `SORTED_SET`).
+    Single(NumericReader<'a>),
+    /// Any number per document.
+    Multi(SortedNumericReader<'a>),
+}
+
+/// A segment's doc-values column read straight off the codec: the
+/// documents with a value (the decoded set the iterators share) and the
+/// values by rank, walked against a set of documents without an iterator
+/// object, a virtual call or a second `IndexedDISI` walk per document --
+/// what `DocValues.unwrapSingleton` and the JIT's monomorphic calls give
+/// Java's counting loops.
+pub(crate) struct DirectColumn<'a> {
+    docs: DocSet,
+    values: ColumnValues<'a>,
+    buf: Vec<i64>,
+}
+
+impl SegmentReader {
+    /// `field`'s column when its doc-values type is `kind` (`NUMERIC`,
+    /// `SORTED`, `SORTED_NUMERIC` or `SORTED_SET`); `None` for another
+    /// type, a field without doc values, or no column.
+    ///
+    /// # Errors
+    /// Whatever decoding the documents with a value reports.
+    pub(crate) fn direct_column(
+        &self,
+        field: &str,
+        kind: DocValuesType,
+    ) -> Result<Option<DirectColumn<'_>>> {
+        let column = match kind {
+            DocValuesType::Numeric => self
+                .dv_field(field, kind, |m, n| m.numeric_entry(n))
+                .map(|(e, data)| self.single_column(data, e)),
+            DocValuesType::Sorted => self
+                .dv_field(field, kind, |m, n| m.sorted_entry(n))
+                .map(|(e, data)| self.single_column(data, &e.ords)),
+            DocValuesType::SortedNumeric => self
+                .dv_field(field, kind, |m, n| m.sorted_numeric_entry(n))
+                .map(|(e, data)| self.multi_column(data, e)),
+            DocValuesType::SortedSet => self
+                .dv_field(field, kind, |m, n| m.sorted_set_entry(n))
+                .map(|(e, data)| match &e.kind {
+                    SortedSetKind::Single(s) => self.single_column(data, &s.ords),
+                    SortedSetKind::Multi { ords, .. } => self.multi_column(data, ords),
+                }),
+            _ => None,
+        };
+        column.transpose()
+    }
+
+    fn single_column<'s>(
+        &'s self,
+        data: &'s [u8],
+        e: &'s NumericEntry,
+    ) -> Result<DirectColumn<'s>> {
+        Ok(DirectColumn {
+            docs: DocSet::of_numeric(self, data, e)?,
+            values: ColumnValues::Single(NumericReader::new(data, e)),
+            buf: Vec::new(),
+        })
+    }
+
+    /// A singleton is read as its one value per document.
+    fn multi_column<'s>(
+        &'s self,
+        data: &'s [u8],
+        e: &'s doc_values::SortedNumericEntry,
+    ) -> Result<DirectColumn<'s>> {
+        if e.addresses.is_none() {
+            return self.single_column(data, &e.numeric);
+        }
+        Ok(DirectColumn {
+            docs: DocSet::of_numeric(self, data, &e.numeric)?,
+            values: ColumnValues::Multi(SortedNumericReader::new(data, e)),
+            buf: Vec::new(),
+        })
+    }
+}
+
+/// `f(word index, mask)` for each word of `0..words` overlapping `lo..hi`,
+/// the mask keeping the bits inside it.
+#[inline(always)]
+fn for_each_word_in(
+    lo: usize,
+    hi: usize,
+    words: usize,
+    mut f: impl FnMut(usize, u64) -> Result<()>,
+) -> Result<()> {
+    if lo >= hi {
+        return Ok(());
+    }
+    let last = hi.div_ceil(64).min(words);
+    for wi in lo / 64..last {
+        let base = wi * 64;
+        let mut mask = u64::MAX;
+        if base < lo {
+            mask &= u64::MAX << (lo - base);
+        }
+        // `base < hi`: the word starts below `hi`.
+        if hi - base < 64 {
+            mask &= (1u64 << (hi - base)) - 1;
+        }
+        f(wi, mask)?;
+    }
+    Ok(())
+}
+
+/// `g(doc, doc)` for each document of `filter` in `lo..hi` (`hi` at most
+/// the dense field's document count): a dense field's rank is its document.
+#[inline(always)]
+fn walk_dense(
+    filter: DocFilter<'_>,
+    lo: usize,
+    hi: usize,
+    mut g: impl FnMut(i32, usize) -> Result<()>,
+) -> Result<()> {
+    match filter {
+        DocFilter::All => {
+            for doc in lo..hi {
+                g(doc as i32, doc)?;
+            }
+        }
+        DocFilter::Bits(words) => for_each_word_in(lo, hi, words.len(), |wi, mask| {
+            let mut w = words[wi] & mask;
+            while w != 0 {
+                let doc = wi * 64 + w.trailing_zeros() as usize;
+                g(doc as i32, doc)?;
+                w &= w - 1;
+            }
+            Ok(())
+        })?,
+        DocFilter::Docs(docs) => {
+            let start = docs.partition_point(|&d| (d as i64) < lo as i64);
+            for &doc in docs.get(start..).unwrap_or_default() {
+                if doc as i64 >= hi as i64 {
+                    break;
+                }
+                g(doc, doc as usize)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `g(doc, rank)` for each document of `filter` in `lo..hi` that `docs`
+/// holds, its rank among them read off the rank index.
+#[inline(always)]
+fn walk_sparse(
+    filter: DocFilter<'_>,
+    lo: usize,
+    hi: usize,
+    docs: &SparseDocs,
+    mut g: impl FnMut(i32, usize) -> Result<()>,
+) -> Result<()> {
+    match filter {
+        DocFilter::All => {
+            let start = docs.rank(i32::try_from(lo).unwrap_or(i32::MAX)).0;
+            for (rank, &doc) in (start..).zip(docs.docs.get(start..).unwrap_or_default()) {
+                if doc as i64 >= hi as i64 {
+                    break;
+                }
+                g(doc, rank)?;
+            }
+        }
+        DocFilter::Bits(words) => {
+            let n = words.len().min(docs.words.len()).min(docs.ranks.len());
+            let (with, ranks) = (&docs.words[..n], &docs.ranks[..n]);
+            for_each_word_in(lo, hi, n, |wi, mask| {
+                let present = with[wi];
+                let mut w = words[wi] & present & mask;
+                if w == 0 {
+                    return Ok(());
+                }
+                let before = ranks[wi] as usize;
+                while w != 0 {
+                    let bit = w.trailing_zeros();
+                    let below = (present & ((1u64 << bit) - 1)).count_ones() as usize;
+                    g((wi * 64 + bit as usize) as i32, before + below)?;
+                    w &= w - 1;
+                }
+                Ok(())
+            })?
+        }
+        DocFilter::Docs(list) => {
+            let start = list.partition_point(|&d| (d as i64) < lo as i64);
+            for &doc in list.get(start..).unwrap_or_default() {
+                if doc as i64 >= hi as i64 {
+                    break;
+                }
+                let (rank, found) = docs.rank(doc);
+                if found {
+                    g(doc, rank)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+impl DirectColumn<'_> {
+    /// `f(doc, values)` for each document of `filter` in `lo..hi` that has
+    /// a value, ascending, with its values in stored order: the calls a
+    /// walk of the doc-values iterator over those documents would make.
+    ///
+    /// # Errors
+    /// Whatever reading the column reports, and whatever `f` returns.
+    #[inline]
+    pub(crate) fn for_each(
+        &mut self,
+        filter: DocFilter<'_>,
+        lo: i32,
+        hi: i32,
+        mut f: impl FnMut(i32, &[i64]) -> Result<()>,
+    ) -> Result<()> {
+        let lo = usize::try_from(lo).unwrap_or(0);
+        let hi = usize::try_from(hi).unwrap_or(0);
+        let Self { docs, values, buf } = self;
+        let rank = |r: usize| i64::try_from(r).unwrap_or(i64::MAX);
+        match (docs, values) {
+            (DocSet::Empty, _) => Ok(()),
+            (DocSet::Dense(n), ColumnValues::Single(r)) => {
+                let hi = hi.min(usize::try_from(*n).unwrap_or(0));
+                walk_dense(filter, lo, hi, |doc, _| match r.value(doc)? {
+                    Some(v) => f(doc, std::slice::from_ref(&v)),
+                    None => Ok(()),
+                })
+            }
+            (DocSet::Dense(n), ColumnValues::Multi(r)) => {
+                let hi = hi.min(usize::try_from(*n).unwrap_or(0));
+                walk_dense(filter, lo, hi, |doc, i| {
+                    r.values_at_rank(rank(i), buf)?;
+                    f(doc, buf)
+                })
+            }
+            (DocSet::Sparse(d), ColumnValues::Single(r)) => {
+                walk_sparse(filter, lo, hi, d, |doc, i| {
+                    let v = r.value_at_index(rank(i))?;
+                    f(doc, std::slice::from_ref(&v))
+                })
+            }
+            (DocSet::Sparse(d), ColumnValues::Multi(r)) => {
+                walk_sparse(filter, lo, hi, d, |doc, i| {
+                    r.values_at_rank(rank(i), buf)?;
+                    f(doc, buf)
+                })
+            }
+        }
     }
 }
 
@@ -1221,6 +1520,10 @@ impl LeafReader for SegmentReader {
 
     fn check_integrity(&self) -> Result<()> {
         SegmentReader::check_integrity(self)
+    }
+
+    fn segment_reader(&self) -> Option<&SegmentReader> {
+        Some(self)
     }
 }
 

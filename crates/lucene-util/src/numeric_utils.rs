@@ -8,17 +8,20 @@
 //! (Some crates still carry private copies of the double/long half.)
 
 /// `NumericUtils.sortableFloatBits`.
+#[inline]
 pub fn sortable_float_bits(bits: i32) -> i32 {
     bits ^ ((bits >> 31) & 0x7fff_ffff)
 }
 
 /// `NumericUtils.floatToSortableInt`.
+#[inline]
 pub fn float_to_sortable_int(value: f32) -> i32 {
     sortable_float_bits(float_to_int_bits(value))
 }
 
 /// Java's `Float.floatToIntBits`: `to_bits` with every NaN collapsed to
 /// `0x7fc00000`.
+#[inline]
 pub fn float_to_int_bits(value: f32) -> i32 {
     if value.is_nan() {
         0x7fc0_0000
@@ -29,6 +32,7 @@ pub fn float_to_int_bits(value: f32) -> i32 {
 
 /// Java's `Double.doubleToLongBits`: `to_bits` with every NaN collapsed to
 /// `0x7ff8000000000000`.
+#[inline]
 pub fn double_to_long_bits(value: f64) -> i64 {
     if value.is_nan() {
         0x7ff8_0000_0000_0000
@@ -38,16 +42,19 @@ pub fn double_to_long_bits(value: f64) -> i64 {
 }
 
 /// `NumericUtils.sortableDoubleBits`.
+#[inline]
 pub fn sortable_double_bits(bits: i64) -> i64 {
     bits ^ ((bits >> 63) & 0x7fff_ffff_ffff_ffff)
 }
 
 /// `NumericUtils.doubleToSortableLong`.
+#[inline]
 pub fn double_to_sortable_long(value: f64) -> i64 {
     sortable_double_bits(double_to_long_bits(value))
 }
 
 /// `NumericUtils.sortableLongToDouble`.
+#[inline]
 pub fn sortable_long_to_double(encoded: i64) -> f64 {
     f64::from_bits(sortable_double_bits(encoded) as u64)
 }
@@ -55,26 +62,32 @@ pub fn sortable_long_to_double(encoded: i64) -> f64 {
 /// `NumericUtils.intToSortableBytes`: 4 big-endian bytes, sign bit flipped.
 /// Panics if `result[offset..offset + 4]` is out of range (Java's
 /// `IndexOutOfBoundsException`).
+#[inline]
 pub fn int_to_sortable_bytes(value: i32, result: &mut [u8], offset: usize) {
     result[offset..offset + 4].copy_from_slice(&((value ^ i32::MIN).to_be_bytes()));
 }
 
 /// `NumericUtils.sortableBytesToInt`.
+#[inline]
 pub fn sortable_bytes_to_int(encoded: &[u8], offset: usize) -> i32 {
-    let mut b = [0u8; 4];
-    b.copy_from_slice(&encoded[offset..offset + 4]);
+    let b: [u8; 4] = encoded[offset..offset + 4]
+        .try_into()
+        .expect("a four-byte slice");
     i32::from_be_bytes(b) ^ i32::MIN
 }
 
 /// `NumericUtils.longToSortableBytes`: 8 big-endian bytes, sign bit flipped.
+#[inline]
 pub fn long_to_sortable_bytes(value: i64, result: &mut [u8], offset: usize) {
     result[offset..offset + 8].copy_from_slice(&((value ^ i64::MIN).to_be_bytes()));
 }
 
 /// `NumericUtils.sortableBytesToLong`.
+#[inline]
 pub fn sortable_bytes_to_long(encoded: &[u8], offset: usize) -> i64 {
-    let mut b = [0u8; 8];
-    b.copy_from_slice(&encoded[offset..offset + 8]);
+    let b: [u8; 8] = encoded[offset..offset + 8]
+        .try_into()
+        .expect("an eight-byte slice");
     i64::from_be_bytes(b) ^ i64::MIN
 }
 
@@ -169,6 +182,7 @@ pub fn add(
 }
 
 /// `NumericUtils.sortableIntToFloat`.
+#[inline]
 pub fn sortable_int_to_float(encoded: i32) -> f32 {
     f32::from_bits(sortable_float_bits(encoded) as u32)
 }
