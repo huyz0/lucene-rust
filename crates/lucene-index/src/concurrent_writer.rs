@@ -1233,12 +1233,17 @@ impl<'d> ConcurrentIndexWriter<'d> {
             }
             old_to_new
         });
+        let postings = if explicit_docs {
+            Some(postings.into_flushed(old_to_new.as_deref())?)
+        } else {
+            None
+        };
         let buffer = DocumentBuffer {
             docs: &docs,
             custom_freq_terms: &custom_freq_terms,
             vectors: &vectors,
             explicit: &explicit,
-            postings: explicit_docs.then_some(&postings),
+            postings: postings.as_ref(),
             old_to_new: old_to_new.as_deref(),
             has_blocks,
         };

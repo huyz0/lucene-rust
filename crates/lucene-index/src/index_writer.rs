@@ -1200,13 +1200,15 @@ pub(crate) struct DocumentBuffer<'b> {
     /// Aligned with `docs` when the writer takes explicit documents; read only
     /// then.
     pub(crate) explicit: &'b [ExplicitFields],
-    /// The explicit documents' postings, inverted as they were buffered;
-    /// their `InvertedField`s then hold no terms. `None` for a buffer whose
-    /// `explicit` still carries every term (the concurrent writer's).
-    pub(crate) postings: Option<&'b pending_postings::PendingPostings>,
+    /// The explicit documents' postings, inverted as they were buffered and
+    /// laid out in the flush's doc order; their `InvertedField`s then hold
+    /// no terms. `None` for a buffer whose `explicit` still carries every
+    /// term.
+    pub(crate) postings: Option<&'b pending_postings::FlushedPostings>,
     /// Under an index sort, the flush's permutation: `old_to_new[d]` is
-    /// where buffered document `d` lands -- what `postings`' doc ids, in
-    /// insertion order, are remapped by. `explicit` is already permuted.
+    /// where buffered document `d` lands -- what the insertion-order doc
+    /// ids of terms still in `explicit` are remapped by. `explicit` is
+    /// already permuted.
     pub(crate) old_to_new: Option<&'b [usize]>,
     pub(crate) has_blocks: bool,
 }
@@ -1222,7 +1224,7 @@ impl DocumentBuffer<'_> {
             .chain(self.explicit.iter().map(ExplicitFields::ram_bytes))
             .chain(
                 self.postings
-                    .map(pending_postings::PendingPostings::ram_bytes),
+                    .map(pending_postings::FlushedPostings::ram_bytes),
             )
             .fold(0usize, usize::saturating_add);
         u64::try_from(docs).unwrap_or(u64::MAX)
@@ -5485,14 +5487,18 @@ impl<'d> IndexWriter<'d> {
         std::sync::Arc::clone(&self.cfg)
     }
 
-    /// This writer's pending documents, as the buffer a segment is built from.
-    fn document_buffer(&self) -> DocumentBuffer<'_> {
+    /// This writer's pending documents, as the buffer a segment is built
+    /// from, with their postings laid out for the flush.
+    fn document_buffer<'a>(
+        &'a self,
+        postings: &'a pending_postings::FlushedPostings,
+    ) -> DocumentBuffer<'a> {
         DocumentBuffer {
             docs: &self.pending_docs,
             custom_freq_terms: &self.pending_custom_freq_terms,
             vectors: &self.pending_vectors,
             explicit: &self.pending_explicit,
-            postings: Some(&self.pending_postings),
+            postings: Some(postings),
             old_to_new: None,
             has_blocks: self.pending_has_blocks,
         }
@@ -8160,16 +8166,21 @@ impl IndexWriter<'_> {
             old_to_new
         });
         let created = crate::created_outputs::CreatedOutputs::new(self.dir);
-        let written = self.cfg.build_and_write_segment(
-            &created,
-            &DocumentBuffer {
-                old_to_new: old_to_new.as_deref(),
-                ..self.document_buffer()
-            },
-            &segment_name,
-            segment_id,
-            None,
-        );
+        let written = self
+            .pending_postings
+            .flushed(old_to_new.as_deref())
+            .and_then(|postings| {
+                self.cfg.build_and_write_segment(
+                    &created,
+                    &DocumentBuffer {
+                        old_to_new: old_to_new.as_deref(),
+                        ..self.document_buffer(&postings)
+                    },
+                    &segment_name,
+                    segment_id,
+                    None,
+                )
+            });
 
         let (sci, si_files) = match written {
             Ok(pair) => pair,

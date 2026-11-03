@@ -119,15 +119,6 @@ impl TermHash {
         &self.arena[a as usize..b as usize]
     }
 
-    /// Heap bytes held.
-    pub(crate) fn ram_bytes(&self) -> usize {
-        self.arena
-            .capacity()
-            .saturating_add(self.starts.capacity().saturating_mul(4))
-            .saturating_add(self.table.capacity().saturating_mul(8))
-            .saturating_add(self.hashes.capacity().saturating_mul(8))
-    }
-
     /// Forgets every term from id `len` on, as if never added.
     pub(crate) fn truncate(&mut self, len: usize) {
         if len >= self.len() {

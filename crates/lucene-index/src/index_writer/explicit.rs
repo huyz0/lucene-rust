@@ -750,7 +750,7 @@ impl IndexingConfig {
                         p.add_field(doc_id, inv, options)?;
                     }
                 }
-                inverted_here = p;
+                inverted_here = p.into_flushed(buf.old_to_new)?;
                 &inverted_here
             }
         };
@@ -786,9 +786,8 @@ impl IndexingConfig {
             .into_iter()
             .map(|(number, values)| (number, super::NormsColumn::from_values(values)))
             .collect();
-        let remapped = buf.old_to_new.map(|map| pending.remap(map)).transpose()?;
         let term_lists: Vec<(i32, IndexOptions, i32, Vec<_>)> = pending
-            .term_lists(remapped.as_ref())
+            .term_lists()
             .into_iter()
             .map(|(n, docs, terms)| {
                 let options = self.explicit_field(n).map(|f| f.index_options)?;
