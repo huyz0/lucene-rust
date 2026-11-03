@@ -8,6 +8,8 @@ import java.nio.file.Path;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
+import org.apache.lucene.index.IndexWriter;
+import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
 import org.apache.lucene.store.FilterDirectory;
 import org.apache.lucene.store.IOContext;
@@ -36,8 +38,11 @@ public final class RustEncryptedDirectory extends FilterDirectory {
     private final int chunkSize;
     private final long handle;
     private final String boundPath;
-    /** Plaintext lengths of files this directory wrote or read the header of. */
-    private final Map<String, Long> lengths = new ConcurrentHashMap<>();
+    /** Lengths of files this directory wrote or opened, valid while the file's raw length is unchanged. */
+    private final Map<String, Known> lengths = new ConcurrentHashMap<>();
+
+    /** A file's raw (encrypted) length on disk and the plaintext length it holds. */
+    private record Known(long raw, long plain) {}
     private volatile boolean closed;
 
     /**
@@ -71,6 +76,14 @@ public final class RustEncryptedDirectory extends FilterDirectory {
         return name.contains("segments_") || name.endsWith(".si") || name.startsWith("corrupted_");
     }
 
+    /**
+     * Whether {@code name} is stored as-is: commit metadata, or the index's lock file, which the
+     * lock factory creates empty beside the store's outputs ({@code is_plain} in {@code directory.rs}).
+     */
+    public static boolean isPlaintext(String name) {
+        return isCommitMetadata(name) || name.equals(IndexWriter.WRITE_LOCK_NAME);
+    }
+
     /** The path string the native engine is handed for {@code dir}: what {@code shard_directory} is keyed by. */
     public static String nativePath(Path dir) {
         return dir.toAbsolutePath().toString();
@@ -101,7 +114,7 @@ public final class RustEncryptedDirectory extends FilterDirectory {
             }
             EncryptingIndexOutput out = new EncryptingIndexOutput(raw, name, keys.generate(), chunkSize, crypto);
             ok = true;
-            return new LengthRecordingOutput(out, lengths);
+            return new LengthRecordingOutput(out, lengths, in);
         } finally {
             if (ok == false) {
                 raw.close();
@@ -111,30 +124,40 @@ public final class RustEncryptedDirectory extends FilterDirectory {
 
     @Override
     public IndexInput openInput(String name, IOContext context) throws IOException {
-        if (isCommitMetadata(name)) {
+        if (isPlaintext(name)) {
             return in.openInput(name, context);
         }
-        DecryptingIndexInput input = DecryptingIndexInput.open(in.openInput(name, context), name, keys, crypto);
-        lengths.put(name, input.length());
+        IndexInput raw = in.openInput(name, context);
+        long rawLength = raw.length();
+        DecryptingIndexInput input = DecryptingIndexInput.open(raw, name, keys, crypto);
+        lengths.put(name, new Known(rawLength, input.length()));
         return input;
     }
 
     @Override
     public long fileLength(String name) throws IOException {
-        if (isCommitMetadata(name)) {
+        if (isPlaintext(name)) {
             return in.fileLength(name);
         }
         // The native engine writes and deletes files behind this directory's back, so a cached
-        // length counts only for a file that still exists (the raw length is a stat).
+        // length counts only while the file's raw length (a stat) is the one it was taken at.
         long rawLength = in.fileLength(name);
-        Long known = lengths.get(name);
-        if (known != null && rawLength > known) {
-            return known;
+        Known known = lengths.get(name);
+        if (known != null && known.raw == rawLength) {
+            return known.plain;
         }
         try (IndexInput raw = in.openInput(name, IOContext.READONCE)) {
-            long len = DecryptingIndexInput.plaintextLength(raw, name);
-            lengths.put(name, len);
-            return len;
+            // A file still being written (by the native engine, or an output of this directory not
+            // yet closed) can end inside its header or a chunk. Lucene leaves the length of an open
+            // output unspecified, and OpenSearch sizes the store from every listed file
+            // (Store.stats, also while it allocates another shard of the index), so such a file
+            // counts its complete chunks rather than failing the caller; opening it still fails.
+            long len = DecryptingIndexInput.plaintextLengthSoFar(raw, name);
+            if (len >= 0) {
+                lengths.put(name, new Known(raw.length(), len));
+                return len;
+            }
+            return -len - 1;
         }
     }
 
@@ -150,7 +173,7 @@ public final class RustEncryptedDirectory extends FilterDirectory {
             throw new IOException("cannot rename [" + source + "] to [" + dest + "]: one is stored encrypted, the other in plaintext");
         }
         in.rename(source, dest);
-        Long len = lengths.remove(source);
+        Known len = lengths.remove(source);
         lengths.remove(dest);
         if (len != null) {
             lengths.put(dest, len);
@@ -183,12 +206,14 @@ public final class RustEncryptedDirectory extends FilterDirectory {
     /** Records an output's plaintext length once it closes, for {@link #fileLength}. */
     private static final class LengthRecordingOutput extends IndexOutput {
         private final EncryptingIndexOutput out;
-        private final Map<String, Long> lengths;
+        private final Map<String, Known> lengths;
+        private final Directory dir;
 
-        LengthRecordingOutput(EncryptingIndexOutput out, Map<String, Long> lengths) {
+        LengthRecordingOutput(EncryptingIndexOutput out, Map<String, Known> lengths, Directory dir) {
             super(out.toString(), out.getName());
             this.out = out;
             this.lengths = lengths;
+            this.dir = dir;
         }
 
         @Override
@@ -214,7 +239,7 @@ public final class RustEncryptedDirectory extends FilterDirectory {
         @Override
         public void close() throws IOException {
             out.close();
-            lengths.put(getName(), out.getFilePointer());
+            lengths.put(getName(), new Known(dir.fileLength(getName()), out.getFilePointer()));
         }
     }
 }

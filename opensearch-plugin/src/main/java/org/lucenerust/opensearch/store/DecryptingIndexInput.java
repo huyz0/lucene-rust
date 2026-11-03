@@ -103,6 +103,27 @@ final class DecryptingIndexInput extends IndexInput {
         return len;
     }
 
+    /**
+     * The plaintext length of {@code raw} as {@link #plaintextLength} gives it, or, for a file that
+     * ends inside its header or inside a chunk (one still being written), {@code -n - 1} where
+     * {@code n} is the plaintext of its complete chunks. A file that is not LRSE still fails.
+     */
+    static long plaintextLengthSoFar(IndexInput raw, String name) throws IOException {
+        Lrse.Header h;
+        try {
+            h = Lrse.Header.read(raw, name);
+        } catch (EOFException e) {
+            return -1;
+        }
+        long body = raw.length() - h.length();
+        long len = Lrse.plaintextLength(body, h.chunkSize());
+        if (len >= 0) {
+            return len;
+        }
+        long complete = body / ((long) h.chunkSize() + Lrse.CHUNK_OVERHEAD) * h.chunkSize();
+        return -complete - 1;
+    }
+
     private void load(long chunk) throws IOException {
         if (cipher == null) {
             cipher = file.crypto.newCipher();

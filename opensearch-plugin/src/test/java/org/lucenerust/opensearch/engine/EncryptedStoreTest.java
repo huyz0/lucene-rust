@@ -67,6 +67,7 @@ public final class EncryptedStoreTest {
         javaWritesRustReads(crypto);
         rustWritesJavaReads(crypto);
         keyCache();
+        storeSizing(crypto);
         refusals();
         System.out.printf("EncryptedStoreTest: %d checks, %d failures%n", checks, failures);
         if (failures > 0) {
@@ -148,6 +149,74 @@ public final class EncryptedStoreTest {
                     }
                 }
             }
+        } finally {
+            delete(root);
+        }
+    }
+
+    /**
+     * OpenSearch sizes a store from every file it lists (Store.stats, also when it allocates another
+     * shard of the index): the lock file and files still being written must have a length, not fail
+     * the call -- a failure there fails the shard being allocated.
+     */
+    private static void storeSizing(StoreCrypto crypto) throws Exception {
+        Path root = Files.createTempDirectory("encrypted-store-sizing");
+        int chunk = 4096;
+        try (RustEncryptedDirectory dir = new RustEncryptedDirectory(new MMapDirectory(root), keys(crypto, (byte) 5), crypto, chunk)) {
+            try (IndexWriter w = new IndexWriter(dir, new IndexWriterConfig(new StandardAnalyzer()))) {
+                for (int i = 0; i < 300; i++) {
+                    w.addDocument(doc(i));
+                }
+                w.commit();
+                check(Files.exists(root.resolve(IndexWriter.WRITE_LOCK_NAME)), "the open writer holds write.lock");
+                check(RustEncryptedDirectory.isPlaintext(IndexWriter.WRITE_LOCK_NAME), "write.lock is stored as-is");
+                for (String name : dir.listAll()) {
+                    try {
+                        long len = dir.fileLength(name);
+                        check(len >= 0, "length of " + name + ": " + len);
+                    } catch (IOException e) {
+                        check(false, "every listed file has a length while the writer is open: " + name + ": " + e);
+                    }
+                }
+                check(dir.fileLength(IndexWriter.WRITE_LOCK_NAME) == 0, "write.lock has length 0");
+            }
+            // A file another writer is still writing: its raw bytes so far, cut inside the header,
+            // at its end, and inside a chunk. A cut that could be a short last chunk counts as one.
+            byte[] plain = new byte[3 * chunk + 100];
+            for (int i = 0; i < plain.length; i++) {
+                plain[i] = (byte) (i * 31);
+            }
+            try (IndexOutput out = dir.createOutput("_full.bin", IOContext.DEFAULT)) {
+                out.writeBytes(plain, 0, plain.length);
+            }
+            byte[] raw = Files.readAllBytes(root.resolve("_full.bin"));
+            int per = chunk + Lrse.CHUNK_OVERHEAD;
+            int header = raw.length - (3 * per + 100 + Lrse.CHUNK_OVERHEAD);
+            int[][] cuts = { { 0, 0 }, { 3, 0 }, { header - 1, 0 }, { header, 0 }, { header + per / 2, per / 2 - Lrse.CHUNK_OVERHEAD }, { header + 2 * per + 10, 2 * chunk } };
+            for (int[] cut : cuts) {
+                String name = "_partial" + cut[0] + ".bin";
+                Files.write(root.resolve(name), java.util.Arrays.copyOf(raw, cut[0]));
+                try {
+                    long len = dir.fileLength(name);
+                    check(len == cut[1], "a file cut at " + cut[0] + " raw bytes counts " + cut[1] + " complete plaintext bytes: " + len);
+                } catch (IOException e) {
+                    check(false, "a file cut at " + cut[0] + " raw bytes has a length: " + e);
+                }
+                try (IndexInput in = dir.openInput(name, IOContext.DEFAULT)) {
+                    byte[] all = new byte[(int) in.length()];
+                    in.readBytes(all, 0, all.length);
+                    check(false, "a file cut at " + cut[0] + " raw bytes opened");
+                } catch (IOException expected) {
+                    // Opening still refuses what is not a whole file.
+                }
+            }
+            // A length taken while the file was shorter is not served once it has grown.
+            String growing = "_growing.bin";
+            Files.write(root.resolve(growing), java.util.Arrays.copyOf(raw, header + per));
+            long early = dir.fileLength(growing);
+            Files.write(root.resolve(growing), raw, StandardOpenOption.TRUNCATE_EXISTING);
+            check(early == chunk && dir.fileLength(growing) == plain.length, "a grown file's length follows it: " + early + " then " + dir.fileLength(growing));
+            check(dir.fileLength("_full.bin") == plain.length, "a closed output's length is its plaintext");
         } finally {
             delete(root);
         }
