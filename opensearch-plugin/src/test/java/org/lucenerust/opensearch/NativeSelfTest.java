@@ -139,8 +139,8 @@ public final class NativeSelfTest {
             System.out.printf("NativeSelfTest (analysis only): %d checks, %d failures%n", checks, failures);
             System.exit(failures > 0 ? 1 : 0);
         }
-        // SELFTEST_ONLY=m10: the M10 shapes alone (a quick loop while working on them).
-        boolean onlyM10 = "m10".equals(System.getenv("SELFTEST_ONLY"));
+        // SELFTEST_ONLY=extended: NativeSelfTestExtended's shapes alone.
+        boolean onlyExtended = "extended".equals(System.getenv("SELFTEST_ONLY"));
         // SELFTEST_ONLY=leaves: NativeSelfTestLeaves' shapes alone.
         if ("leaves".equals(System.getenv("SELFTEST_ONLY"))) {
             NativeSelfTestLeaves.run(new Random(23), (ok, what) -> check(ok, what), NativeSelfTest::compare);
@@ -160,7 +160,7 @@ public final class NativeSelfTest {
             System.out.printf("NativeSelfTest (nrt only): %d checks, %d failures%n", checks, failures);
             System.exit(failures > 0 ? 1 : 0);
         }
-        if (onlyM10 == false) {
+        if (onlyExtended == false) {
         bridgeErrorPaths();
         encoderMatrix();
         nrtReaders(new Random(42));
@@ -168,7 +168,7 @@ public final class NativeSelfTest {
         softDeletes(new Random(7));
         geo(new Random(13));
         }
-        NativeSelfTestM10.run(new Random(17), (ok, what) -> check(ok, what), NativeSelfTest::compare);
+        NativeSelfTestExtended.run(new Random(17), (ok, what) -> check(ok, what), NativeSelfTest::compare);
         NativeSelfTestLeaves.run(new Random(23), (ok, what) -> check(ok, what), NativeSelfTest::compare);
         for (var e : NativeSelfTestLeaves.ENCODED.entrySet()) {
             check(e.getValue()[0] >= (e.getKey().equals("term_states") ? 6 : 50), "leaf " + e.getKey() + " queries encoded and compared: " + e.getValue()[0]);
@@ -177,13 +177,13 @@ public final class NativeSelfTest {
         NativeSelfTestSimilarity.run(new Random(29), (ok, what) -> check(ok, what), NativeSelfTest::compare);
         check(NativeSelfTestSimilarity.COMPARED.size() == 9, "similarities compared: " + NativeSelfTestSimilarity.COMPARED.keySet());
         System.out.printf("NativeSelfTest: leaf queries encoded and compared, by shape: %s%n", NativeSelfTestLeaves.ENCODED.entrySet().stream().map(e -> e.getKey() + "=" + e.getValue()[0]).toList());
-        for (var e : NativeSelfTestM10.ENCODED.entrySet()) {
-            check(e.getValue()[0] >= 100, "M10 " + e.getKey() + " queries encoded and compared: " + e.getValue()[0]);
+        for (var e : NativeSelfTestExtended.ENCODED.entrySet()) {
+            check(e.getValue()[0] >= 100, "extended " + e.getKey() + " queries encoded and compared: " + e.getValue()[0]);
         }
-        check(NativeSelfTestM10.ENCODED.size() == 5, "M10 shapes compared: " + NativeSelfTestM10.ENCODED.keySet());
-        System.out.printf("NativeSelfTest: M10 queries encoded and compared, by shape: %s%n", NativeSelfTestM10.ENCODED.entrySet().stream().map(e -> e.getKey() + "=" + e.getValue()[0]).toList());
-        if (onlyM10) {
-            System.out.printf("NativeSelfTest (M10 only): %d checks, %d failures; %d of %d compared scores bit-exact%n", checks, failures, bitExact, scored);
+        check(NativeSelfTestExtended.ENCODED.size() == 5, "extended shapes compared: " + NativeSelfTestExtended.ENCODED.keySet());
+        System.out.printf("NativeSelfTest: extended queries encoded and compared, by shape: %s%n", NativeSelfTestExtended.ENCODED.entrySet().stream().map(e -> e.getKey() + "=" + e.getValue()[0]).toList());
+        if (onlyExtended) {
+            System.out.printf("NativeSelfTest (extended only): %d checks, %d failures; %d of %d compared scores bit-exact%n", checks, failures, bitExact, scored);
             System.exit(failures > 0 ? 1 : 0);
         }
         storedFields(new Random(11));

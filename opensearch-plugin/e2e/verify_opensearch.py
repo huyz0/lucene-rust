@@ -30,7 +30,7 @@ import urllib.error
 import urllib.request
 
 import geo_matrix
-import m10_matrix
+import extended_matrix
 
 BASE = "http://localhost:9200"
 FAILURES = []
@@ -1402,19 +1402,19 @@ def main():
         create_nested(index, shards)
         load_nested(index, 1500, 5 + shards)
         native += run_matrix(index, shards, "nested", rows=nested_rows())
-        # M10 T10.7: the nested query itself (ToParentBlockJoinQuery).
-        native += run_matrix(index, shards, "nested query", rows=m10_matrix.nested_rows())
-    # M10 T10.7: spans, intervals, combined_fields, function_score, more_like_this.
+        # The nested query itself (ToParentBlockJoinQuery).
+        native += run_matrix(index, shards, "nested query", rows=extended_matrix.nested_rows())
+    # Spans, intervals, combined_fields, function_score, more_like_this.
     for index, shards in (("single", 1), ("multi", 3)):
-        native += run_matrix(index, shards, "m10", rows=m10_matrix.rows())
-    # parent-join: has_child/has_parent fall back (see m10_matrix.join_rows).
+        native += run_matrix(index, shards, "extended", rows=extended_matrix.rows())
+    # parent-join: has_child/has_parent fall back (see extended_matrix.join_rows).
     try:
         req("DELETE", "/pj")
     except RuntimeError:
         pass
-    m10_matrix.create_join(req, "pj")
-    m10_matrix.load_join(req, check, "pj", 400, 21)
-    native += run_matrix("pj", 1, "parent-join", rows=m10_matrix.join_rows())
+    extended_matrix.create_join(req, "pj")
+    extended_matrix.load_join(req, check, "pj", 400, 21)
+    native += run_matrix("pj", 1, "parent-join", rows=extended_matrix.join_rows())
     # M9 T9.6: geo_point and geo_shape queries (and _geo_distance sorts), on a
     # one-shard and a three-shard index; then the one-shard index merged into a
     # segment past 10,000 documents, where the native query cache holds geo sets.
