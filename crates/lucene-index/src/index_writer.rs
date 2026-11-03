@@ -4188,6 +4188,8 @@ pub struct IndexWriter<'d> {
     /// See [`IndexWriter::set_pluggable_merge_policy`]; decides instead of
     /// `merge_policy` when set.
     pluggable_merge_policy: Option<std::sync::Arc<dyn merge_policy::MergePolicy>>,
+    /// See [`IndexWriter::set_full_flush_merge_policy`].
+    full_flush_merge_policy: Option<std::sync::Arc<dyn merge_policy::MergePolicy>>,
     /// See [`IndexWriter::set_merges_by_caller`].
     merges_by_caller: bool,
     /// `IndexWriter.mergeMaxNumSegments`: [`IndexWriter::force_merge`]'s
@@ -5669,6 +5671,7 @@ impl<'d> IndexWriter<'d> {
             ram_bytes_used: 0,
             merge_policy: None,
             pluggable_merge_policy: None,
+            full_flush_merge_policy: None,
             merges_by_caller: false,
             merge_max_num_segments: -1,
             max_full_flush_merge_wait_millis: DEFAULT_MAX_FULL_FLUSH_MERGE_WAIT_MILLIS,

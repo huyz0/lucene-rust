@@ -38,7 +38,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code jvm_reader.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 57;
+    public static final int EXPECTED_ABI_VERSION = 58;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -278,6 +278,10 @@ public final class NativeBridge {
         static final MethodHandle WRITER_SET_RETENTION = bind(
             "ffi_engine_writer_set_retention",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_BYTE, JAVA_LONG)
+        );
+        static final MethodHandle WRITER_SET_MERGE_ON_FLUSH = bind(
+            "ffi_engine_writer_set_merge_on_flush",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG, JAVA_BYTE)
         );
         static final MethodHandle WRITER_FORCE_MERGE = bind(
             "ffi_engine_writer_force_merge",
@@ -1537,6 +1541,19 @@ public final class NativeBridge {
     public static int writerSetRetention(long handle, boolean enabled, long minRetainedSeqNo) {
         try {
             return (int) H.WRITER_SET_RETENTION.invokeExact(handle, (byte) (enabled ? 1 : 0), minRetainedSeqNo);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * Merge-on-commit/refresh: commits and refreshes wait up to {@code waitMillis} for the merges of the
+     * segments they publish ({@code 0} turns them off), picked by {@code MergeOnFlushMergePolicy} when
+     * {@code mergeOnFlushPolicy}.
+     */
+    public static int writerSetMergeOnFlush(long handle, long waitMillis, boolean mergeOnFlushPolicy) {
+        try {
+            return (int) H.WRITER_SET_MERGE_ON_FLUSH.invokeExact(handle, waitMillis, (byte) (mergeOnFlushPolicy ? 1 : 0));
         } catch (Throwable t) {
             throw rethrow(t);
         }

@@ -61,6 +61,7 @@ use lucene_index::index_writer::{
     self, ExplicitDocument, ExplicitFields, IndexWriter, InvertedField, InvertedTerms,
     MergePolicyConfig, SoftDeletesRetention,
 };
+use lucene_index::merge_policy::{MergeOnFlushMergePolicy, MergePolicy, TieredMergePolicy};
 use lucene_index::segment_info::LuceneVersion;
 use lucene_store::directory::Directory;
 
@@ -710,12 +711,9 @@ pub unsafe extern "C" fn ffi_engine_writer_open(
             writer.enable_explicit_documents()?;
             writer.set_deletion_policy(DeletionPolicy::KeepAll)?;
             writer.set_merge_policy(Some(MergePolicyConfig::default()));
-            // OpenSearch's `NativeLuceneIndexWriterFactory` turns
-            // merge-on-commit/refresh off (`setMaxFullFlushMergeWaitMillis(0)`)
-            // unless `index.merge_on_flush.enabled` is set, which this engine
-            // does not support; Lucene's own default (500 ms) would put
-            // merged segments into commits this engine has always written
-            // unmerged.
+            // Merge-on-commit/refresh stays off until the engine passes
+            // the shard's `index.merge_on_flush.*` settings
+            // (`ffi_engine_writer_set_merge_on_flush`).
             writer.set_max_full_flush_merge_wait_millis(0);
             // Loose segment files, as this engine has always written them.
             // OpenSearch's default is compound (`index.compound_format`);
@@ -1054,6 +1052,33 @@ pub extern "C" fn ffi_engine_writer_set_retention(
             });
             w.writer()
                 .with_writer(|iw| iw.set_soft_deletes_retention(retention));
+            Ok(())
+        })
+    })
+}
+
+/// Merge-on-commit/refresh as OpenSearch's `NativeLuceneIndexWriterFactory`
+/// configures it from `index.merge_on_flush.*`: commits and refreshes wait
+/// up to `wait_millis` for the merges the policy asks of the segments they
+/// publish (`0` or less turns them off), and `merge_on_flush_policy != 0`
+/// picks those merges with `MergeOnFlushMergePolicy` around the writer's
+/// policy (`index.merge_on_flush.policy: merge-on-flush`).
+#[no_mangle]
+pub extern "C" fn ffi_engine_writer_set_merge_on_flush(
+    handle: u64,
+    wait_millis: i64,
+    merge_on_flush_policy: u8,
+) -> i32 {
+    guard(|| {
+        with_writer(handle, |w| {
+            w.writer().with_writer(|iw| {
+                iw.set_max_full_flush_merge_wait_millis(wait_millis);
+                let policy = (merge_on_flush_policy != 0).then(|| {
+                    let inner = TieredMergePolicy::new(MergePolicyConfig::default());
+                    Arc::new(MergeOnFlushMergePolicy::new(Box::new(inner))) as Arc<dyn MergePolicy>
+                });
+                iw.set_full_flush_merge_policy(policy);
+            });
             Ok(())
         })
     })

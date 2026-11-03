@@ -3359,6 +3359,39 @@ mod tests {
         assert!(committed.iter().any(|n| !before.contains(n)));
     }
 
+    /// A full-flush merge policy (OpenSearch's `merge-on-flush`) merges the
+    /// segments several slots flushed into the one segment the commit names,
+    /// and leaves the writer's other merges alone.
+    #[test]
+    fn full_flush_merge_policy_merges_every_slot_into_the_commit() {
+        let tmp = TempDir::new("concurrent-full-flush-policy");
+        let dir = FsDirectory::open(&tmp);
+        let mut iw = writer(&dir, 1000);
+        iw.set_max_full_flush_merge_wait_millis(5000);
+        iw.set_full_flush_merge_policy(Some(Arc::new(
+            crate::merge_policy::MergeOnFlushMergePolicy::new(Box::new(
+                crate::merge_policy::TieredMergePolicy::new(MergePolicyConfig::default()),
+            )),
+        )));
+        let w = ConcurrentIndexWriter::new(iw, 4).unwrap();
+        std::thread::scope(|scope| {
+            for t in 0..4 {
+                let w = &w;
+                scope.spawn(move || {
+                    for i in 0..50 {
+                        w.add_document(doc(&format!("t{t}-{i}"), 0)).unwrap();
+                    }
+                });
+            }
+        });
+        w.flush().unwrap();
+        assert!(lock(&w.core).writer.live_infos().segments.len() > 1);
+        w.commit().unwrap();
+        let committed = crate::segment_infos::read_latest(&dir).unwrap();
+        assert_eq!(committed.segments.len(), 1);
+        assert_eq!(lock(&w.core).writer.committed_doc_count().unwrap(), 200);
+    }
+
     /// `flushNextBuffer` takes the fullest slot; `tryDeleteDocument` and
     /// `tryUpdateDocValue` act on a snapshot's doc ids and are numbered from
     /// this writer's log.

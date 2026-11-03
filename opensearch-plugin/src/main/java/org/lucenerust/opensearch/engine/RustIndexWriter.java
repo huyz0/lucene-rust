@@ -420,6 +420,14 @@ final class RustIndexWriter implements DocumentIndexWriter {
         return out[0];
     }
 
+    /**
+     * {@code IndexWriterConfig.setMaxFullFlushMergeWaitMillis}, with the merge policy wrapped in
+     * {@code MergeOnFlushMergePolicy} when {@code mergeOnFlushPolicy}.
+     */
+    void setMergeOnFlush(long waitMillis, boolean mergeOnFlushPolicy) throws IOException {
+        check(NativeBridge.writerSetMergeOnFlush(handle, waitMillis, mergeOnFlushPolicy), "setting merge-on-flush");
+    }
+
     private void applyRetention() throws IOException {
         if (minRetainedSeqNo != null) {
             check(NativeBridge.writerSetRetention(handle, true, minRetainedSeqNo.getAsLong()), "setting retention");
