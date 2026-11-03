@@ -147,9 +147,15 @@ impl<'a> ReverseReader<'a> {
     /// `readBytes(b, 0, len)`: the next `len` bytes, in reading order (the
     /// body's bytes from the position downwards).
     pub fn read_bytes_reversed(&mut self, len: usize) -> Result<Vec<u8>, FstReadError> {
+        Ok(self.take_below(len)?.iter().rev().copied().collect())
+    }
+    /// The next `len` bytes as the body slice they occupy (lowest address
+    /// first, so in the reverse of reading order), with the reader moved
+    /// past them: one bounds check for the run.
+    pub fn take_below(&mut self, len: usize) -> Result<&'a [u8], FstReadError> {
         if len == 0 {
             // `readBytes(b, 0, 0)` reads nothing, wherever the reader is.
-            return Ok(Vec::new());
+            return Ok(&[]);
         }
         let end = usize::try_from(self.pos)
             .ok()
@@ -159,7 +165,7 @@ impl<'a> ReverseReader<'a> {
         match (start, end) {
             (Some(start), Some(end)) => {
                 self.pos = self.pos.wrapping_sub(len as i64);
-                Ok(self.bytes[start..end].iter().rev().copied().collect())
+                Ok(&self.bytes[start..end])
             }
             _ => Err(FstReadError(format!(
                 "read of {len} bytes past the body at {}",

@@ -335,6 +335,7 @@ impl PostingsFormat {
 /// than one block of documents, read and dropped (this port's readers never
 /// seek to skip data; see [`PostingsFormat`]).
 #[allow(clippy::too_many_arguments)]
+#[inline]
 pub fn decode_term_metadata_for(
     format: PostingsFormat,
     r: &mut SliceInput,
@@ -481,6 +482,7 @@ pub fn decode_term_metadata(
 /// [`decode_term_metadata`] with the format's `BLOCK_SIZE`, which decides
 /// whether a `lastPosBlockOffset` is on the wire.
 #[allow(clippy::too_many_arguments)]
+#[inline(always)]
 fn decode_term_metadata_with_block(
     r: &mut SliceInput,
     doc_freq: i32,

@@ -888,7 +888,7 @@ impl<'d> PointsReader<'d> {
             negative_deltas: node.negative_deltas.clone(),
             stack: Vec::new(),
             reuse_scratch: true,
-            doc_ids: Vec::new(),
+            leaf: LeafBuf::default(),
         };
         let inner = read_inner_node(&mut input, node.node_id, &mut ctx, 0)?;
         let split = &ctx.stack[0].split_value;
@@ -947,7 +947,7 @@ impl<'d> PointsReader<'d> {
         read_leaf_block_into(
             &mut kdd_input,
             field,
-            &mut Vec::new(),
+            &mut LeafBuf::default(),
             &mut VisitSink(visitor),
         )?;
         Ok(())
@@ -994,7 +994,7 @@ impl<'d> PointsReader<'d> {
             negative_deltas: node.negative_deltas.clone(),
             stack: Vec::new(),
             reuse_scratch: true,
-            doc_ids: Vec::new(),
+            leaf: LeafBuf::default(),
         };
         add_all(&mut input, node.node_id, node.fp, &mut ctx, visitor)
     }
@@ -1165,6 +1165,32 @@ pub trait IntersectVisitor {
     /// cell that crosses the query boundary; the visitor must do its own
     /// per-point check.
     fn visit_with_value(&mut self, doc_id: i32, packed_value: &[u8]);
+    /// `IntersectVisitor.visit(DocIdSetIterator, byte[])`: every doc of
+    /// `doc_ids` has the value `packed_value`, in a leaf crossing the query
+    /// (a run of equal values, or a leaf of one value). Defaults to
+    /// [`Self::visit_with_value`] per id; a visitor whose test depends only
+    /// on the value overrides it to test once.
+    fn visit_run(&mut self, doc_ids: &[i32], packed_value: &[u8]) {
+        for &doc_id in doc_ids {
+            self.visit_with_value(doc_id, packed_value);
+        }
+    }
+    /// `IntersectVisitor.visit(DocIdSetIterator.range(start, start +
+    /// count))`: a leaf entirely inside the query whose ids are the
+    /// consecutive `start..start + count`. Return `false` (the default) to
+    /// receive them through [`Self::visit_many`] instead.
+    fn visit_range(&mut self, start: i32, count: usize) -> bool {
+        let _ = (start, count);
+        false
+    }
+    /// `IntersectVisitor.visit(DocBaseBitSetIterator)`: a leaf entirely
+    /// inside the query whose `count` ids are `base + i` for every set bit
+    /// `i` of `words` (bit `i % 64` of word `i / 64`). Return `false` (the
+    /// default) to receive them through [`Self::visit_many`] instead.
+    fn visit_bitset(&mut self, words: &[u64], base: i32, count: usize) -> bool {
+        let _ = (words, base, count);
+        false
+    }
     /// `IntersectVisitor.grow(count)`: how many documents the walk is about
     /// to hand over -- a whole matching subtree's size before its doc ids, a
     /// leaf's point count before it is visited. A hint (Java sizes a
@@ -1297,9 +1323,10 @@ struct IntersectCtx<'a> {
     /// Production always passes `true`; the cost is one predictable branch per
     /// node against a `.kdi` read.
     reuse_scratch: bool,
-    /// Java's `int[maxPointsInLeafNode]` doc-id buffer: every leaf the walk
-    /// decodes (inside a matching subtree or crossing the query) reuses it.
-    doc_ids: Vec<i32>,
+    /// Java's `int[maxPointsInLeafNode]` doc-id buffer and the leaf
+    /// decoder's scratch: every leaf the walk decodes (inside a matching
+    /// subtree or crossing the query) reuses them.
+    leaf: LeafBuf,
 }
 
 /// A tree walk's buffers, kept between walks by a caller that makes many
@@ -1311,7 +1338,23 @@ pub struct PointsScratch {
     split_values: Vec<u8>,
     negative_deltas: Vec<bool>,
     stack: Vec<LevelScratch>,
+    leaf: LeafBuf,
+}
+
+/// A leaf decode's buffers, reused from leaf to leaf as `BKDReader` reuses
+/// its scratch arrays.
+#[derive(Default)]
+struct LeafBuf {
     doc_ids: Vec<i32>,
+    /// A `BITSET_IDS` leaf's words (see [`input_doc_ids_shape`]).
+    words: Vec<u64>,
+    /// Per-dimension common prefix lengths.
+    prefix_lens: Vec<usize>,
+    /// The packed value being reconstructed.
+    value: Vec<u8>,
+    /// The leaf's own bounding box (multi-dimension leaves).
+    min: Vec<u8>,
+    max: Vec<u8>,
 }
 
 /// One level's reusable byte buffers -- see [`IntersectCtx::stack`].
@@ -1344,7 +1387,7 @@ impl<'a> IntersectCtx<'a> {
             negative_deltas: vec![false; field.num_index_dims as usize],
             stack: Vec::new(),
             reuse_scratch,
-            doc_ids: Vec::new(),
+            leaf: LeafBuf::default(),
         }
     }
 
@@ -1374,7 +1417,7 @@ impl<'a> IntersectCtx<'a> {
             negative_deltas,
             stack: std::mem::take(&mut scratch.stack),
             reuse_scratch: true,
-            doc_ids: std::mem::take(&mut scratch.doc_ids),
+            leaf: std::mem::take(&mut scratch.leaf),
         }
     }
 
@@ -1385,7 +1428,7 @@ impl<'a> IntersectCtx<'a> {
         scratch.split_values = self.split_values;
         scratch.negative_deltas = self.negative_deltas;
         scratch.stack = self.stack;
-        scratch.doc_ids = self.doc_ids;
+        scratch.leaf = self.leaf;
     }
 
     /// Makes `self.stack[level]` addressable. The walk only ever descends one
@@ -1440,7 +1483,7 @@ fn intersect_node<V: IntersectVisitor>(
         read_leaf_block_into(
             &mut kdd_input,
             ctx.field,
-            &mut ctx.doc_ids,
+            &mut ctx.leaf,
             &mut VisitSink(visitor),
         )?;
         return Ok(());
@@ -1860,7 +1903,7 @@ fn count_node<V: IntersectVisitor>(
             read_leaf_block_into(
                 &mut kdd_input,
                 ctx.field,
-                &mut ctx.doc_ids,
+                &mut ctx.leaf,
                 &mut VisitSink(visitor),
             )?;
             Ok(0)
@@ -1917,13 +1960,23 @@ fn add_all<V: IntersectVisitor>(
         let mut kdd_input = SliceInput::new(ctx.kdd);
         seek_leaf_block(&mut kdd_input, fp)?;
         let count = read_leaf_count(&mut kdd_input, ctx.field)?;
+        // `DocIdsWriter.readInts(in, count, visitor, buf)`: a leaf of
+        // consecutive ids or a bit set is offered to the visitor whole.
+        let at = kdd_input.position();
+        match input_doc_ids_shape(&mut kdd_input, count, &mut ctx.leaf.words)? {
+            DocIdsShape::Range(start) if visitor.visit_range(start, count) => return Ok(()),
+            DocIdsShape::Bits(base) if visitor.visit_bitset(&ctx.leaf.words, base, count) => {
+                return Ok(())
+            }
+            _ => kdd_input.seek(at)?,
+        }
         read_doc_ids_into(
             &mut kdd_input,
             count,
-            &mut ctx.doc_ids,
+            &mut ctx.leaf.doc_ids,
             ctx.field.bkd_version,
         )?;
-        visitor.visit_many(&ctx.doc_ids);
+        visitor.visit_many(&ctx.leaf.doc_ids);
         return Ok(());
     }
 
@@ -2217,6 +2270,14 @@ fn read_suffix_bytes(
 trait LeafSink {
     fn point(&mut self, doc_id: i32, packed_value: &[u8]);
 
+    /// Every document of `doc_ids` has the value `packed_value`.
+    #[inline]
+    fn run(&mut self, doc_ids: &[i32], packed_value: &[u8]) {
+        for &doc_id in doc_ids {
+            self.point(doc_id, packed_value);
+        }
+    }
+
     /// `visitor.compare(leafMin, leafMax)` on a multi-dimension leaf's own
     /// bounding box, which `BKDReader.visitDocValuesWithCardinality` asks
     /// before it decodes a value: a leaf outside the query is skipped, one
@@ -2254,6 +2315,11 @@ impl<V: IntersectVisitor> LeafSink for VisitSink<'_, V> {
         self.0.visit_with_value(doc_id, packed_value);
     }
 
+    #[inline]
+    fn run(&mut self, doc_ids: &[i32], packed_value: &[u8]) {
+        self.0.visit_run(doc_ids, packed_value);
+    }
+
     fn leaf_bounds(&mut self, min: &[u8], max: &[u8]) -> Relation {
         self.0.compare(min, max)
     }
@@ -2272,28 +2338,34 @@ fn read_leaf_block(
     field: &PointsField,
     out: &mut Vec<Point>,
 ) -> Result<Option<(Vec<u8>, Vec<u8>)>> {
-    read_leaf_block_into(input, field, &mut Vec::new(), out)
+    let mut buf = LeafBuf::default();
+    Ok(read_leaf_block_into(input, field, &mut buf, out)?.then_some((buf.min, buf.max)))
 }
 
-/// `doc_ids` is the caller's reusable decode buffer; its contents are
-/// replaced.
+/// `buf` is the caller's reusable decode scratch; its contents are
+/// replaced. Returns whether the leaf carried its own bounding box, which
+/// is then in `buf.min`/`buf.max`.
 fn read_leaf_block_into<S: LeafSink>(
     input: &mut SliceInput,
     field: &PointsField,
-    doc_ids: &mut Vec<i32>,
+    buf: &mut LeafBuf,
     out: &mut S,
-) -> Result<Option<(Vec<u8>, Vec<u8>)>> {
+) -> Result<bool> {
     let count = read_leaf_count(input, field)?;
-    read_doc_ids_into(input, count, doc_ids, field.bkd_version)?;
-    let doc_ids: &[i32] = doc_ids;
+    read_doc_ids_into(input, count, &mut buf.doc_ids, field.bkd_version)?;
+    let doc_ids: &[i32] = &buf.doc_ids;
 
     let num_dims = field.num_dims as usize;
     let num_index_dims = field.num_index_dims as usize;
     let bytes_per_dim = field.bytes_per_dim as usize;
     let packed_bytes_length = field.packed_bytes_length();
 
-    let mut common_prefix_lengths = vec![0usize; num_dims];
-    let mut scratch_value = vec![0u8; packed_bytes_length];
+    let common_prefix_lengths = &mut buf.prefix_lens;
+    common_prefix_lengths.clear();
+    common_prefix_lengths.resize(num_dims, 0);
+    let scratch_value = &mut buf.value;
+    scratch_value.clear();
+    scratch_value.resize(packed_bytes_length, 0);
     for (dim, prefix_len) in common_prefix_lengths.iter_mut().enumerate() {
         let prefix = input.read_vint()?;
         // A common prefix longer than the dimension it belongs to is not
@@ -2343,15 +2415,14 @@ fn read_leaf_block_into<S: LeafSink>(
 
     if compressed_dim == -1 {
         // Every point in this leaf has the identical value (common prefixes
-        // already cover every byte of every dimension).
+        // already cover every byte of every dimension):
+        // `visitUniqueRawDocValues`, one `visit(iterator, value)`.
         out.grow(count);
-        for &doc_id in doc_ids {
-            out.point(doc_id, &scratch_value);
-        }
-        return Ok(None);
+        out.run(doc_ids, scratch_value);
+        return Ok(false);
     }
 
-    let mut bound: Option<(Vec<u8>, Vec<u8>)> = None;
+    let mut bound = false;
     if num_index_dims != 1 {
         // The index gives a (possibly looser) per-leaf bounding box for the
         // indexed dimensions when there's more than one; read it (rather
@@ -2359,8 +2430,12 @@ fn read_leaf_block_into<S: LeafSink>(
         // `lucene_index::check_index`'s structural-invariant checker -- can
         // cross-check every point's value against it independently of the
         // field-wide box in `.kdm`.
-        let mut min_bound = vec![0u8; field.packed_index_bytes_length()];
-        let mut max_bound = vec![0u8; field.packed_index_bytes_length()];
+        let min_bound = &mut buf.min;
+        min_bound.clear();
+        min_bound.resize(field.packed_index_bytes_length(), 0);
+        let max_bound = &mut buf.max;
+        max_bound.clear();
+        max_bound.resize(field.packed_index_bytes_length(), 0);
         for (dim, &prefix) in common_prefix_lengths
             .iter()
             .take(num_index_dims)
@@ -2387,16 +2462,16 @@ fn read_leaf_block_into<S: LeafSink>(
         }
         // `visitDocValuesWithCardinality`'s second look at the leaf: its own
         // box is often much tighter than the cell the index gave it.
-        match out.leaf_bounds(&min_bound, &max_bound) {
-            Relation::CellOutsideQuery => return Ok(Some((min_bound, max_bound))),
+        match out.leaf_bounds(min_bound, max_bound) {
+            Relation::CellOutsideQuery => return Ok(true),
             Relation::CellInsideQuery => {
                 out.grow(count);
                 out.inside(doc_ids);
-                return Ok(Some((min_bound, max_bound)));
+                return Ok(true);
             }
             Relation::CellCrossesQuery => out.grow(count),
         }
-        bound = Some((min_bound, max_bound));
+        bound = true;
     } else {
         out.grow(count);
     }
@@ -2422,18 +2497,12 @@ fn read_leaf_block_into<S: LeafSink>(
                     actual: i.saturating_add(length),
                 });
             }
-            read_suffix_bytes(
-                input,
-                &common_prefix_lengths,
-                bytes_per_dim,
-                &mut scratch_value,
-            )?;
+            read_suffix_bytes(input, common_prefix_lengths, bytes_per_dim, scratch_value)?;
             // ARITH: `length <= count - i`, so `end <= count`.
             #[allow(clippy::arithmetic_side_effects)]
             let end = i + length;
-            for &doc_id in &doc_ids[i..end] {
-                out.point(doc_id, &scratch_value);
-            }
+            // `visitSparseRawDocValues`: one `visit(iterator, value)` per run.
+            out.run(&doc_ids[i..end], scratch_value);
             i = end;
         }
         debug_assert_eq!(i, count);
@@ -2482,13 +2551,8 @@ fn read_leaf_block_into<S: LeafSink>(
             #[allow(clippy::arithmetic_side_effects)]
             let end = i + run_len;
             for &doc_id in &doc_ids[i..end] {
-                read_suffix_bytes(
-                    input,
-                    &common_prefix_lengths,
-                    bytes_per_dim,
-                    &mut scratch_value,
-                )?;
-                out.point(doc_id, &scratch_value);
+                read_suffix_bytes(input, common_prefix_lengths, bytes_per_dim, scratch_value)?;
+                out.point(doc_id, scratch_value);
             }
             i = end;
         }
@@ -2554,6 +2618,70 @@ pub(crate) fn read_doc_ids(input: &mut SliceInput, count: usize) -> Result<Vec<i
 /// `VERSION_VECTORIZE_BPV24_AND_INTRODUCE_BPV21` (10) a `BPV_24` leaf is the
 /// scalar big-endian packing [`read_scalar_bpv24`] decodes, as
 /// `DocIdsWriter.readInts` dispatches on `version`.
+/// How a leaf's doc ids are encoded, for the two encodings a visitor can
+/// take without the ids being listed.
+enum DocIdsShape {
+    /// `CONTINUOUS_IDS`: `start..start + count`.
+    Range(i32),
+    /// `BITSET_IDS`: the set bits of the words read into the caller's
+    /// buffer, bit 0 of word 0 being this doc id.
+    Bits(i32),
+    /// Anything else (also a range that would wrap past `i32::MAX`): read
+    /// the ids with [`read_doc_ids_into`] from the same position.
+    List,
+}
+
+/// Reads a leaf's doc-id header and, for a `BITSET_IDS` leaf, its words
+/// into `words`, checking them as [`read_doc_ids_into`] does. Leaves
+/// `input` anywhere; a caller that gets [`DocIdsShape::List`] or does not
+/// take the shape seeks back and reads the ids.
+fn input_doc_ids_shape(
+    input: &mut SliceInput,
+    count: usize,
+    words: &mut Vec<u64>,
+) -> Result<DocIdsShape> {
+    match input.read_byte()? as i8 {
+        CONTINUOUS_IDS => {
+            let start = input.read_vint()?;
+            let fits =
+                start >= 0 && i64::from(start).saturating_add(count as i64) <= i64::from(i32::MAX);
+            Ok(if fits {
+                DocIdsShape::Range(start)
+            } else {
+                DocIdsShape::List
+            })
+        }
+        BITSET_IDS => {
+            let offset_words = input.read_vint()?;
+            let long_len = input.read_vint()?;
+            // The same bounds `read_bitset_ids` enforces; anything it would
+            // reject goes back to it for the error.
+            let base = i64::from(offset_words).saturating_mul(64);
+            let past_end = base.saturating_add(i64::from(long_len).saturating_mul(64));
+            if offset_words < 0 || long_len < 0 || past_end > i64::from(i32::MAX) {
+                return Ok(DocIdsShape::List);
+            }
+            let long_len = long_len as usize;
+            if input.remaining() < long_len.saturating_mul(8) {
+                return Ok(DocIdsShape::List);
+            }
+            let bytes = take_bytes(input, long_len.saturating_mul(8), "bitset doc ids")?;
+            words.clear();
+            words.extend(
+                bytes
+                    .chunks_exact(8)
+                    .map(|w| u64::from_le_bytes([w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7]])),
+            );
+            let set: u64 = words.iter().map(|w| u64::from(w.count_ones())).sum();
+            if set != count as u64 {
+                return Ok(DocIdsShape::List);
+            }
+            Ok(DocIdsShape::Bits(base as i32))
+        }
+        _ => Ok(DocIdsShape::List),
+    }
+}
+
 fn read_doc_ids_into(
     input: &mut SliceInput,
     count: usize,
@@ -6049,6 +6177,116 @@ mod intersect_tests {
             let mut got = reader.range_query(0, &lower, &upper).unwrap();
             got.sort_unstable();
             assert_eq!(got, expected, "duplicate-heavy range [{lo}, {hi}]");
+        }
+    }
+
+    /// A visitor taking the bulk callbacks (`visit_range`, `visit_bitset`,
+    /// `visit_run`) sees exactly the documents a per-document visitor sees,
+    /// and the bulk callbacks are really used on leaves of consecutive ids,
+    /// of bit-set ids and of runs of one value.
+    #[test]
+    fn bulk_visitor_callbacks_match_per_document_visits() {
+        struct Bulk<'q> {
+            lower: &'q [u8],
+            upper: &'q [u8],
+            docs: Vec<i32>,
+            ranges: usize,
+            bitsets: usize,
+            runs: usize,
+        }
+        impl IntersectVisitor for Bulk<'_> {
+            fn compare(&mut self, min: &[u8], max: &[u8]) -> Relation {
+                if max < self.lower || min > self.upper {
+                    Relation::CellOutsideQuery
+                } else if min >= self.lower && max <= self.upper {
+                    Relation::CellInsideQuery
+                } else {
+                    Relation::CellCrossesQuery
+                }
+            }
+            fn visit(&mut self, doc_id: i32) {
+                self.docs.push(doc_id);
+            }
+            fn visit_with_value(&mut self, doc_id: i32, packed: &[u8]) {
+                if packed >= self.lower && packed <= self.upper {
+                    self.docs.push(doc_id);
+                }
+            }
+            fn visit_run(&mut self, doc_ids: &[i32], packed: &[u8]) {
+                self.runs += 1;
+                if packed >= self.lower && packed <= self.upper {
+                    self.docs.extend_from_slice(doc_ids);
+                }
+            }
+            fn visit_range(&mut self, start: i32, count: usize) -> bool {
+                self.ranges += 1;
+                self.docs.extend(start..start + count as i32);
+                true
+            }
+            fn visit_bitset(&mut self, words: &[u64], base: i32, count: usize) -> bool {
+                self.bitsets += 1;
+                let before = self.docs.len();
+                for (i, &w) in words.iter().enumerate() {
+                    for bit in 0..64 {
+                        if w >> bit & 1 == 1 {
+                            self.docs.push(base + (i * 64 + bit) as i32);
+                        }
+                    }
+                }
+                assert_eq!(self.docs.len() - before, count);
+                true
+            }
+        }
+        // Field 0: doc i has value i (consecutive ids per leaf). Field 1:
+        // doc 2i has value i (dense, bit-set ids). Field 2: 8 distinct
+        // values over 2000 docs (runs of one value).
+        let fields = [
+            (0..2000)
+                .map(|i| (i, long_sortable_bytes(i as i64)))
+                .collect::<Vec<_>>(),
+            (0..2000)
+                .map(|i| (2 * i, long_sortable_bytes(i as i64)))
+                .collect(),
+            (0..2000)
+                .map(|i| (i, long_sortable_bytes((i % 8) as i64)))
+                .collect(),
+        ];
+        for (n, points) in fields.into_iter().enumerate() {
+            let field = WritePointsField {
+                field_number: 0,
+                num_dims: 1,
+                num_index_dims: 1,
+                bytes_per_dim: 8,
+                points,
+            };
+            let (kdm, kdi, kdd) = write(&[field], 64, &id(), "").unwrap();
+            let reader = open(&kdm, &kdi, &kdd, &id(), "").unwrap();
+            let (mut ranges, mut bitsets, mut runs) = (0, 0, 0);
+            for (lo, hi) in [(0i64, 1999i64), (100, 1500), (3, 5), (2, 2)] {
+                let lower = long_sortable_bytes(lo);
+                let upper = long_sortable_bytes(hi);
+                let mut expected = reader.range_query(0, &lower, &upper).unwrap();
+                expected.sort_unstable();
+                let mut v = Bulk {
+                    lower: &lower,
+                    upper: &upper,
+                    docs: Vec::new(),
+                    ranges: 0,
+                    bitsets: 0,
+                    runs: 0,
+                };
+                reader.intersect(0, &mut v).unwrap();
+                v.docs.sort_unstable();
+                assert_eq!(v.docs, expected, "field {n}, range [{lo}, {hi}]");
+                ranges += v.ranges;
+                bitsets += v.bitsets;
+                runs += v.runs;
+            }
+            match n {
+                0 => assert!(ranges > 0, "no consecutive-id leaf"),
+                1 => assert!(bitsets > 0, "no bit-set leaf"),
+                _ => assert!(runs > 0, "no run of one value"),
+            }
         }
     }
 
