@@ -21,7 +21,7 @@ import org.apache.lucene.util.BytesRef;
  * sorted, tab-separated) -- or {@code X} and the exception. {@code tree.tsv}: per query, the
  * escaped query, the tree's {@code toString()} and its collected terms under the default weightor,
  * or {@code X} and the exception. {@code weights.tsv}: the named weightors' weights over a few
- * terms. {@code crates/lucene-search/tests/monitor_fixtures.rs} compares.
+ * terms. {@code crates/lucene-monitor/tests/monitor_fixtures.rs} compares.
  */
 public class GenMonitor {
 

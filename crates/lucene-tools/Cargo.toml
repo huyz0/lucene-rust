@@ -19,6 +19,7 @@ lucene-index = { path = "../lucene-index" }
 lucene-analysis = { path = "../lucene-analysis" }
 lucene-search = { path = "../lucene-search" }
 lucene-misc = { path = "../lucene-misc" }
+lucene-queryparser = { path = "../lucene-queryparser" }
 
 [dev-dependencies]
 # The shared RAII scratch-directory guard (`lucene_util::test_support::TempDir`).

@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use lucene_analysis::{Analyzer, StandardAnalyzer};
+use lucene_queryparser::classic::QueryParser;
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::extended_query::SynonymQuery;
 use lucene_search::highlight::unified::break_iterators::sentence_instance;
@@ -19,7 +20,6 @@ use lucene_search::query::{
     BooleanQuery, BoostQuery, Clause, ConstantScoreQuery, DisjunctionMaxQuery, MultiPhraseQuery,
     PhraseQuery, TermInSetQuery, TermQuery,
 };
-use lucene_search::queryparser::classic::QueryParser;
 
 fn dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/data/vhighlight")

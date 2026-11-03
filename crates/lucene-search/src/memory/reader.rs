@@ -451,7 +451,7 @@ impl MemoryIndexReader {
 
     /// [`Self::search`] on the segment, whatever the in-memory form would
     /// say.
-    pub(super) fn search_segment(&self, bq: &BooleanQuery) -> Result<f32> {
+    pub fn search_segment(&self, bq: &BooleanQuery) -> Result<f32> {
         self.with_segment_searcher(|s| s.search(bq, 1))?.map(score)
     }
 }

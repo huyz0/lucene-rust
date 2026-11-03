@@ -332,7 +332,7 @@ fn wildcard_automaton(pattern: &[u8]) -> Option<automaton::Automaton> {
 
 /// `WildcardQuery.toAutomaton(term, DEFAULT_DETERMINIZE_WORK_LIMIT)`: the
 /// `TooComplexToDeterminizeException` it throws, or the automaton.
-pub(crate) fn wildcard_automaton_checked(
+pub fn wildcard_automaton_checked(
     pattern: &[u8],
 ) -> Result<automaton::Automaton, automaton::TooComplexToDeterminize> {
     wildcard_automaton_within(pattern, automaton::DEFAULT_DETERMINIZE_WORK_LIMIT)
@@ -340,7 +340,7 @@ pub(crate) fn wildcard_automaton_checked(
 
 /// `WildcardQuery.toAutomaton(term, determinizeWorkLimit)`: the pattern's
 /// automaton, determinized within `work_limit`.
-pub(crate) fn wildcard_automaton_within(
+pub fn wildcard_automaton_within(
     pattern: &[u8],
     work_limit: i32,
 ) -> Result<automaton::Automaton, automaton::TooComplexToDeterminize> {

@@ -37,12 +37,12 @@ import org.apache.lucene.queryparser.flexible.standard.parser.TokenMgrError;
  * fixtures/corpus/queryparser-classic.txt} and {@code queryparser-flexible.txt}: the escaped query,
  * then each token as {@code kind:begin-column:image} (escaped, space-separated) up to the end of
  * input, or {@code E} and the {@code TokenMgrError} message. {@code
- * crates/lucene-search/src/queryparser/flexible/tests.rs} compares.
+ * crates/lucene-queryparser/src/flexible/tests.rs} compares.
  *
  * <p>{@code <config>.tsv} is {@code StandardQueryParser.parse(query, field)} of each query under
  * one configuration ({@link #parser}): {@code Q}, {@code toString("f")} and the class tree, or
  * {@code X} and the exception's class and message. {@code
- * crates/lucene-search/tests/queryparser_flexible_fixtures.rs} compares.
+ * crates/lucene-queryparser/tests/queryparser_flexible_fixtures.rs} compares.
  */
 public class GenQueryParserFlexible {
 

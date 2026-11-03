@@ -18,7 +18,7 @@ use lucene_search::highlight::unified::UnifiedHighlighter;
 use lucene_search::highlight::vectorhighlight::FastVectorHighlighter;
 use lucene_search::index_searcher::IndexSearcher;
 use lucene_search::query::Clause;
-use lucene_search::queryparser::classic::QueryParser;
+use lucene_queryparser::classic::QueryParser;
 
 use super::measure;
 

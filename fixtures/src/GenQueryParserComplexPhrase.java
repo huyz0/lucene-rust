@@ -37,7 +37,7 @@ import org.apache.lucene.store.FSDirectory;
  * then {@code Q}, {@code toString("body")}, the class tree, the {@code IndexSearcher.rewrite} of
  * the query (canonical: a boolean's clauses sorted within each occur) or
  * {@code X} and its exception, and the matching documents; or {@code E}/{@code X} and the parse's
- * exception. {@code crates/lucene-search/tests/queryparser_complexphrase_fixtures.rs} compares.
+ * exception. {@code crates/lucene-queryparser/tests/queryparser_complexphrase_fixtures.rs} compares.
  */
 public class GenQueryParserComplexPhrase {
 

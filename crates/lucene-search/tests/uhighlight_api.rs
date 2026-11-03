@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use lucene_analysis::{Analyzer, StandardAnalyzer};
+use lucene_queryparser::classic::QueryParser;
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::field_norms::FieldNorms;
 use lucene_search::highlight::unified::{
@@ -14,7 +15,6 @@ use lucene_search::highlight::unified::{
 use lucene_search::highlight::Error;
 use lucene_search::index_searcher::IndexSearcher;
 use lucene_search::query::Clause;
-use lucene_search::queryparser::classic::QueryParser;
 
 fn dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/data/uhighlight/index")

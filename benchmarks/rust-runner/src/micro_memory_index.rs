@@ -12,7 +12,7 @@ use std::time::Duration;
 use lucene_analysis::{Analyzer, StandardAnalyzer};
 use lucene_search::memory::MemoryIndex;
 use lucene_search::query::Clause;
-use lucene_search::queryparser::classic::QueryParser;
+use lucene_queryparser::classic::QueryParser;
 
 use super::measure;
 

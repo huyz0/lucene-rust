@@ -11,13 +11,13 @@ use std::sync::Arc;
 
 use lucene_analysis::attributes::java_float_to_string;
 use lucene_analysis::{Analyzer, StandardAnalyzer, TokenStream};
+use lucene_queryparser::classic::QueryParser;
 use lucene_search::highlight::{
     DocFreqSource, DynStream, GradientFormatter, Highlighter, NullFragmenter, QueryScorer,
     QueryTermScorer, SimpleFragmenter, SimpleHtmlEncoder, SimpleHtmlFormatter,
     SimpleSpanFragmenter, SpanGradientFormatter, WeightedSpanTermExtractor,
 };
 use lucene_search::query::Clause;
-use lucene_search::queryparser::classic::QueryParser;
 use lucene_search::spans::SpanNode;
 
 fn dir() -> PathBuf {

@@ -1,0 +1,18 @@
+[package]
+name = "lucene-queryparser"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+lucene-util = { path = "../lucene-util" }
+lucene-store = { path = "../lucene-store" }
+lucene-codecs = { path = "../lucene-codecs" }
+lucene-index = { path = "../lucene-index" }
+lucene-search = { path = "../lucene-search" }
+lucene-analysis = { path = "../lucene-analysis" }
+# A streaming XML pull parser for `xml`'s DOM-shaped query documents.
+quick-xml = "0.39"
+
+[dev-dependencies]
+lucene-util = { path = "../lucene-util", features = ["test-support"] }
