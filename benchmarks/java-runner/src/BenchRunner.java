@@ -77,6 +77,8 @@ public final class BenchRunner {
         try (org.apache.lucene.store.Directory dir = MMapDirectory.open(index);
              DirectoryReader reader = DirectoryReader.open(dir)) {
             IndexSearcher searcher = new IndexSearcher(reader);   // single-threaded, no executor
+            // BENCH_NO_QUERY_CACHE: every query runs, none answered from the cache.
+            if (System.getenv("BENCH_NO_QUERY_CACHE") != null) searcher.setQueryCache(null);
             searcher.setSimilarity(new org.apache.lucene.search.similarities.BM25Similarity());
 
             System.out.println("id\thits\ttop1doc\ttop1score\ttopset\tqps\tp50_us\tp95_us\tp99_us\tscored");
@@ -90,6 +92,8 @@ public final class BenchRunner {
                         searcher.search(query, new org.apache.lucene.search.TopFieldCollectorManager(sortSpec, TOP_N, null, 1000));
                     } else if (q[1].equals("dv_sort")) {
                         searcher.search(query, TOP_N, new Sort(new SortField(q[2], SortField.Type.LONG)));
+                    } else if (q[1].equals("count")) {
+                        countDocs(searcher, query);
                     } else {
                         searcher.search(query, TOP_N);
                     }
@@ -102,7 +106,9 @@ public final class BenchRunner {
                 long t0 = System.nanoTime();
                 do {
                     long s = System.nanoTime();
-                    last = q[1].equals("sorted")
+                    last = q[1].equals("count")
+                            ? countDocs(searcher, query)
+                            : q[1].equals("sorted")
                             ? searcher.search(query, new org.apache.lucene.search.TopFieldCollectorManager(sortSpec, TOP_N, null, 1000))
                             : q[1].equals("dv_sort")
                             ? searcher.search(
@@ -154,6 +160,13 @@ public final class BenchRunner {
         }
     }
 
+    /** {@code IndexSearcher.count}, as a one-hit result whose doc id is the count. */
+    private static TopDocs countDocs(IndexSearcher searcher, Query query) throws java.io.IOException {
+        int n = searcher.count(query);
+        return new TopDocs(new org.apache.lucene.search.TotalHits(n, org.apache.lucene.search.TotalHits.Relation.EQUAL_TO),
+                new org.apache.lucene.search.ScoreDoc[] { new org.apache.lucene.search.ScoreDoc(n, 0f) });
+    }
+
     private static Query build(String[] f) {
         String kind = f[1], field = f[2];
         switch (kind) {
@@ -196,6 +209,7 @@ public final class BenchRunner {
             // A mixed boolean in GenMixedBooleanScoring's S-expression grammar.
             case "sexpr":
             case "sorted":
+            case "count":
                 return Sexpr.parse(field, new Sexpr(f[3]));
             default:
                 throw new IllegalArgumentException("unknown query kind: " + kind);
