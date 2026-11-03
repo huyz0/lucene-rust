@@ -43,7 +43,7 @@ import org.apache.lucene.store.FSDirectory;
  * LatLonDocValuesField}, half uniform over the globe and half in twenty clusters, force-merged to
  * one segment -- and the query set ({@code geo-queries-v2.tsv}) both engines replay: boxes (two across
  * the dateline), distance queries, polygons, distance sorts (top 10 of every document) and
- * {@code LatLonPoint.nearest} (10); then (T9.2 review) {@code newDistanceFeatureQuery} top 10
+ * {@code LatLonPoint.nearest} (10); then {@code newDistanceFeatureQuery} top 10
  * through {@code IndexSearcher.search(query, 10)} (the collector's threshold drives the scorer's
  * pruning), {@code newGeometryQuery} under the other relations -- polygons {@code WITHIN} and
  * {@code DISJOINT}, points {@code CONTAINS}, lines, circles {@code WITHIN} -- and the cartesian

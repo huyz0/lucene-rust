@@ -15,8 +15,8 @@ import org.apache.lucene.analysis.tokenattributes.OffsetAttribute;
  *
  * <p>Why this exists: `UnifiedHighlighter` cuts passages with
  * `BreakIterator.getSentenceInstance`, so the Rust port's
- * `highlighter::sentence_boundaries` has to agree with it, and until c12 it did
- * not (it carried a hand-rolled abbreviation list; the JDK suppresses nothing).
+ * `highlighter::sentence_boundaries` has to agree with it (a hand-rolled abbreviation list did
+ * not: the JDK suppresses nothing).
  * The replacement is UAX #29 via `unicode-segmentation`, which is the same
  * specification the JDK implements — but "the same specification" is an
  * argument, not evidence, and a JDK or CLDR data bump could reintroduce a
@@ -35,7 +35,7 @@ import org.apache.lucene.analysis.tokenattributes.OffsetAttribute;
  * entirely, so the Rust test compares text to text.
  *
  * <p><b>{@link #OFFSET_TEXTS} exists to make that unit difference itself
- * testable</b> (M2 sweep `c29-search-carryovers`, closing c23's F13). Lucene's
+ * testable</b>. Lucene's
  * `OffsetAttribute` offsets are indices into the original `String`, i.e. **UTF-16
  * code units**, and every highlighter slices the stored text with them. A Rust
  * highlighter that reads them as UTF-8 byte offsets, or as Unicode scalar

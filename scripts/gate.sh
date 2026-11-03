@@ -62,6 +62,9 @@ python3 scripts/check-parity.py
 echo "gate: check-wire-constants (plugin wire numbers equal lucene-ffi's)"
 python3 scripts/check-wire-constants.py
 
+echo "gate: check-dev-notes (code comments carry no milestone, batch or task references)"
+python3 scripts/check-dev-notes.py
+
 echo "gate: check-java-refs (comments cite Java that exists in the *pinned* tree)"
 python3 scripts/check-java-refs.py
 
@@ -75,7 +78,7 @@ python3 scripts/check-licences.py
 echo "gate: check-vendored-licences (every embedded third-party file's licence ships in LICENSE)"
 python3 scripts/check-vendored-licences.py
 
-echo "gate: check-port-inventory (every lucene-core, lucene-backward-codecs, lucene-spatial3d, lucene-spatial-extras, lucene-join, lucene-grouping, lucene-queries, lucene-queryparser, the M13 modules, lucene-analysis-common and M12 analysis module class has a status; every 'ported' location exists)"
+echo "gate: check-port-inventory (every lucene-core, lucene-backward-codecs, lucene-spatial3d, lucene-spatial-extras, lucene-join, lucene-grouping, lucene-queries, lucene-queryparser, lucene-analysis-common and other Lucene module class has a status; every 'ported' location exists)"
 python3 scripts/check-port-inventory.py --require-jar
 python3 scripts/check-port-inventory.py --module backward-codecs --require-jar
 python3 scripts/check-port-inventory.py --module spatial3d --require-jar

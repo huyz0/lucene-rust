@@ -35,7 +35,7 @@ import org.apache.lucene.store.OutputStreamDataOutput;
 import org.apache.lucene.util.BytesRef;
 
 /**
- * T13.3a/b: {@code WFSTCompletionLookup}, {@code FSTCompletionLookup}, {@code FileDictionary},
+ * {@code WFSTCompletionLookup}, {@code FSTCompletionLookup}, {@code FileDictionary},
  * {@code DocumentDictionary} and {@code DocumentValueSourceDictionary}, one fixture directory
  * {@code suggest_fst/}. The weighted-term corpus is {@code GenSuggest}'s ({@code terms.tsv}).
  * {@code wfst_*.tsv}/{@code fstc_*.tsv} are each lookup's answers to every short prefix; {@code

@@ -1,4 +1,4 @@
-//! lucene-rust side of the M1 performance gate.
+//! lucene-rust side of the performance gate.
 //!
 //! Reads a Java-written index and a query file, runs each query, and emits one
 //! TSV line per query. The Java runner (`benchmarks/java-runner`) emits the
@@ -69,8 +69,7 @@ fn main() {
     opened.open_points().expect("open points");
     let segments = opened.as_open_segments();
 
-    // Norms, wired per segment. DirectoryReader does not load these itself (see
-    // the M1 findings), so the runner reads .nvm/.nvd directly -- without them
+    // Norms, wired per segment. DirectoryReader does not load these itself, so the runner reads .nvm/.nvd directly -- without them
     // BM25 loses length normalization and would not match Lucene's scores.
     let norms_by_seg = load_norms(dir_path, &reader, &segments);
     let bool_norms: Vec<Option<&HashMap<String, FieldNorms<'_>>>> =
@@ -123,7 +122,7 @@ fn main() {
                 // Probe: the existing impacts-pruned single-segment path, which
                 // search_term_query_multi_segment does NOT call. Single-segment
                 // only (the merged corpus), which is all the probe needs.
-                // Diagnostic: the pre-M1.5 eager path, merged by hand exactly as
+                // Diagnostic: the eager (unpruned) path, merged by hand exactly as
                 // merge_multi_segment_scored does, to isolate whether a
                 // multi-segment disagreement comes from the pruned path or was
                 // already there.
@@ -261,7 +260,7 @@ fn main() {
                             .expect("bool")
                     }
                 }
-                // Query kinds the M1.6 sweep never measured. `intersect`'s own
+                // Further query kinds. `intersect`'s own
                 // doc comment says this port narrows by literal prefix and then
                 // linearly scans, where Lucene intersects a compiled automaton
                 // against the term dictionary -- an unquantified divergence

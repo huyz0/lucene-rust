@@ -2,7 +2,7 @@
 //! `benchmarks/micro/java/GeoPointsMicro.java`: boxes, distances, polygons,
 //! distance sorts and `nearest` over the million-point index the Java side
 //! builds (`GeoPointsMicro build <dir>`), replaying its `geo-queries-v2.tsv`:
-//! and (T9.2 review) the distance feature query's top 10, the geometry
+//! and the distance feature query's top 10, the geometry
 //! query under `WITHIN`/`DISJOINT`/`CONTAINS` and over lines and circles,
 //! and the cartesian box/distance/polygon queries. Every hit of a filter
 //! goes through a counting collector on both sides; each case prints a

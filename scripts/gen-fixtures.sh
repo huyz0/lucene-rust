@@ -39,8 +39,7 @@
 # 629 of the 675 generated files change on every run by design. The suite then
 # still goes green, over evidence that is no longer the evidence the findings
 # were written against, and the diff is hundreds of opaque binary files that no
-# reviewer can read. Batch c29 triggered exactly this and had to revert the
-# whole tree by hand.
+# reviewer can read.
 #
 # So: an in-place full run requires --all, and a single fixture is regenerated
 # with --only, which touches nothing else.
@@ -209,7 +208,7 @@ fi
 # shellcheck source=scripts/lib-lucene-jars.sh
 source "$(dirname "$0")/lib-lucene-jars.sh"
 CP=$(lucene_classpath "${LUCENE_MODULES[@]}"):$(thirdparty_classpath "${SPATIAL_EXTRAS_DEPS[@]}")
-# The M12 language modules and the third-party jars they run on. They join
+# The language modules and the third-party jars they run on. They join
 # only their own generators' classpaths (generator_classpath below): on the
 # shared one their SPI registrations would change what every other analysis
 # generator's `TokenFilterFactory.availableTokenFilters()` reports.

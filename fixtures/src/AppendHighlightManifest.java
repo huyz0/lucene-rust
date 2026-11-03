@@ -23,8 +23,8 @@ import java.util.List;
  * {@code manifest.properties} <b>without regenerating the index</b> (same
  * technique and same reason as {@link AppendScoringManifest}).
  *
- * <p>Why this exists: batch c37 ported {@code SloppyPhraseMatcher} into the
- * search path, leaving {@code highlighter::phrase_match_offsets} as the only
+ * <p>Why this exists: with {@code SloppyPhraseMatcher} in the search path,
+ * the port once left {@code highlighter::phrase_match_offsets} as the only
  * in-order-only phrase path in the port -- so a reordered sloppy match was
  * scored but offered no highlight. The obvious fix ("enumerate through the
  * sloppy matcher") would have been <b>wrong</b>, and only real Lucene says so:
@@ -81,7 +81,7 @@ public class AppendHighlightManifest {
 
       // The exact case both engines already agree on -- the control.
       record(out, "exact", leaf, 8555, "pos", new String[] {"alpha", "beta"}, 0);
-      // A reordered pair. c37 proved the *scorer* needs slop 2 here; these
+      // A reordered pair. The *scorer* needs slop 2 here; these
       // entries are what the *highlighter* does at each slop.
       record(out, "reordered_slop0", leaf, 8555, "pos", new String[] {"beta", "alpha"}, 0);
       record(out, "reordered_slop1", leaf, 8555, "pos", new String[] {"beta", "alpha"}, 1);

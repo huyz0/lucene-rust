@@ -137,7 +137,7 @@ public final class M7Micro {
     }
   }
 
-  /** Rust {@code family}: a query's first M7 op, the multi-term ones by rewrite method. */
+  /** Rust {@code family}: a query's first op, the multi-term ones by rewrite method. */
   static String family(String q) {
     String[] toks = q.split(" ");
     for (String t : toks) {

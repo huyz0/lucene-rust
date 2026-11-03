@@ -961,6 +961,18 @@ is not in any pack directory`). **Blind to** a resource read by
 `include_bytes!` outside `pack.rs` (it stays compiled in, which works, just
 larger).
 
+## dev-notes
+
+`python3 scripts/check-dev-notes.py` (`--list` prints hits and exits 0).
+Code comments say what the code does; milestone and task ids (`M12`,
+`T12.4`), sweep batch names, links into `docs/milestones` or `docs/sweep`,
+PR or task numbers and ledger references belong in git history and `docs/`.
+The check reads comment lines only, in tracked `.rs`, `.java`, `.py`, `.sh`,
+`.gradle`, `.toml` and `.yml` files outside `docs/`. **Seen to fail** with
+`// Added in M12 for T12.4.` appended to `numeric_utils.rs`. **Blind to**
+history written in prose ("this used to ...", "the review found ..."), notes
+inside string literals, and file names.
+
 ## Running them
 
 All of them are in `scripts/gate.sh` and therefore in

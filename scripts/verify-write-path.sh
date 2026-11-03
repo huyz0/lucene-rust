@@ -18,8 +18,7 @@
 # The postings/term-dictionary write path (.doc/.pos/.pay/.tim/.tip/.tmd) is
 # covered by the full-segment, merged-segment, sorted-segment and
 # positions-segment cases below -- the last of which is the one that
-# reads back positions, offsets and payloads occurrence by occurrence. Task
-# T3.1, see docs/milestones/m3-write-path-proven.md.
+# reads back positions, offsets and payloads occurrence by occurrence.
 set -euo pipefail
 
 LUCENE_MODULES=(lucene-core lucene-analysis-common lucene-queries lucene-queryparser lucene-memory lucene-monitor lucene-spatial3d lucene-spatial-extras lucene-join lucene-suggest lucene-facet lucene-sandbox lucene-codecs)
@@ -228,21 +227,18 @@ CASES=(
   # requires the same physical order in every segment, then runs CheckIndex.
   # Measured: a MIDDLE_MAX selector off by one fails CheckIndex's testSort.
   "lucene-index|write_string_sorted_segment_fixture|string-sorted|VerifyStringSortedIndex"
-  # And a segment whose postings carry positions, offsets and payloads. Until
-  # c23 the only whole-index case above (`write_full_segment_fixture`) indexed
-  # DOCS_AND_FREQS, so no `.pos` or `.pay` file this port wrote had ever been
-  # read by anything but this port itself -- and c20 had just added a whole new
-  # wire region to them (the level-0/level-1 `.pos`/`.pay` skip records) whose
-  # only evidence was two of our own readers agreeing with each other. That is
-  # the same evidence shape that let b4's FST framing bug and b11's invented
-  # `.si` sort encoding round-trip perfectly while being wrong.
+  # And a segment whose postings carry positions, offsets and payloads. The
+  # whole-index case above (`write_full_segment_fixture`) indexes only
+  # DOCS_AND_FREQS, so without this case no `.pos` or `.pay` file (and none of
+  # their level-0/level-1 skip records) would be read by anything but this
+  # port's own readers, which can round-trip a wrong encoding perfectly.
   #
   # The fixture is sized to the format rather than to convenience: 20 000
   # documents with a term in every one of them, so two whole LEVEL1_NUM_DOCS
   # spans close and 78 level-0 blocks plus a group-varint tail all carry skip
   # records; per-document frequencies cycling with a period coprime with 256 so
   # a level-1 `posBufferUpto` of zero is distinguishable from a hardcoded zero
-  # (c20's Tier-2 review found exactly that degeneracy in its own fixture); and
+  # (an earlier fixture had exactly that degeneracy); and
   # six fields covering every IndexOptions rung plus offsets-without-payloads
   # and payloads-without-offsets, since Lucene frames `.pay` differently for
   # each. Java walks 51 documents chosen around those boundaries with a fresh
@@ -254,7 +250,7 @@ CASES=(
   # doc 8192, the level-0 one at doc 256, and dropping the payload-length
   # stream while the `.fnm` still claims payloads mis-frames every offset.
   "lucene-index|write_positions_segment_fixture|positions-segment|VerifyPositionsSegment"
-  # And the case every one above exists for (M3's T3.4): a whole index that
+  # And the case every one above exists for: a whole index that
   # *searches the same* in real Lucene as in this port. 120 000 Zipfian
   # documents through IndexWriter, flushed into seven segments across two
   # commits with deletes between them; five fields (text with positions,
@@ -292,19 +288,16 @@ CASES=(
   # silently invalidating every parent/child join against it.
   "lucene-index|write_merged_metadata_fixture|merged-metadata|VerifyMergedMetadata|fixtures/data/merge_metadata"
   # Doc values sparse in all five types at once, flushed (three segments) and
-  # merged (one): the T4.1. Until M4 only NUMERIC could be sparse in a
-  # multi-field flush or a merge, and only sparse NUMERIC had ever been read by
-  # real Lucene. Java checks every document's presence and value per field --
+  # merged (one). Java checks every document's presence and value per field --
   # presence is the point, since an off-by-one IndexedDISI reads back a
   # plausible value on the wrong document -- and runs CheckIndex on both.
   "lucene-index|write_sparse_doc_values_fixture|sparse-doc-values|VerifySparseDocValues"
-  # Points through IndexWriter (M4's T4.2): a multi-valued LongPoint, a sparse
+  # Points through IndexWriter: a multi-valued LongPoint, a sparse
   # IntPoint, a DoublePoint and a 2-D packed point, flushed (three segments),
   # merged, and merged under an index sort. Java reads every point back per
   # document -- so one attached to the wrong document by the sorted merge's
   # remap is caught, not just a malformed tree -- runs range counts, and
-  # CheckIndex. Until M4 IndexWriter wrote no points at all, and the merge
-  # remap for points had only hand-built tests.
+  # CheckIndex.
   "lucene-index|write_points_segment_fixture|points-segment|VerifyPointsSegment"
   # Compound segments through IndexWriter: three flushed with
   # useCompoundFile, and the three merged into one by a policy whose

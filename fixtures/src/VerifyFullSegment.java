@@ -236,7 +236,7 @@ public class VerifyFullSegment {
 
       // Norms, for a field NOTHING opted into them. Real Lucene writes a
       // norm for every indexed field whose `omitNorms` is false; this port
-      // required an explicit per-field opt-in until c35 and forced
+      // once required an explicit per-field opt-in and forced
       // `omit_norms: true` into the `.fnm` for every other indexed field, so
       // a caller who indexed a text field and searched it got BM25 against a
       // constant length. Compared value by value rather than merely asserting

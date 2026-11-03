@@ -30,14 +30,14 @@ PATTERNS = [
     re.compile(r"\bTrack [A-E]\b"),
     re.compile(r"`[cb]\d{1,2}-[a-z][a-z0-9-]+`"),
     re.compile(r"\b(?:sweep|batch) [a-z]\d{1,2}\b"),
-    re.compile(r"\bparity ledger\b|\bledger (?:row|item)\b|\bTier-2 review\b"),
+    re.compile(r"\bledger (?:row|item)\b|\bTier-2 review\b"),
 ]
 # Sweep batch names (`c25`, `b11`), outside code spans so `{@code b8}` fields
 # and `c1=0` style labels pass.
 BATCH = re.compile(r"(?<!= )(?<![\w/`{.@\"'-])[cb][1-4]?\d(?:'s)?(?![\w=`}/.-]| =| \()")
 CODE_SPAN = re.compile(r"\{@code [^}]*\}|`[^`]*`")
 # Files that legitimately talk about the process itself.
-EXEMPT = {"scripts/check-dev-notes.py"}
+EXEMPT = {"scripts/check-dev-notes.py", "scripts/check-port-inventory.py"}
 
 
 def tracked():

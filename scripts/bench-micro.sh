@@ -3,8 +3,8 @@
 # generated inputs, join on case name, and report the per-case ratio.
 #
 # Where scripts/bench-compare.sh answers "is a query faster", this answers
-# "is this decode kernel faster". M1-e2e's profile came out flat -- largest
-# single item 14.78% -- and a flat profile is precisely what an end-to-end
+# "is this decode kernel faster". An end-to-end profile can come out flat,
+# and a flat profile is precisely what an end-to-end
 # benchmark cannot diagnose: it cannot tell you a kernel sitting at 9% of the
 # profile is 3x off Lucene's. That is what this measures.
 #
@@ -524,7 +524,7 @@ source "$(dirname "$0")/lib-lucene-jars.sh"
 CP=$(lucene_classpath ${JAR_MODULES:-lucene-core})
 # lucene-spatial-extras' Spatial4j and S2 jars.
 if [ -n "${SPATIAL_JARS:-}" ]; then CP="$CP:$(thirdparty_classpath "${SPATIAL_EXTRAS_DEPS[@]}")"; fi
-# The M12 modules' third-party jars (Commons Codec, Morfologik).
+# The language modules' third-party jars (Commons Codec, Morfologik).
 if [ -n "${ICU_THIRDPARTY:-}" ]; then CP="$CP:$(thirdparty_classpath "${ICU_DEPS[@]}")"; fi
 if [ -n "${OPENNLP_THIRDPARTY:-}" ]; then CP="$CP:$(thirdparty_classpath "${OPENNLP_DEPS[@]}")"; fi
 # lucene-expressions' ANTLR runtime and ASM.
@@ -535,8 +535,7 @@ fi
 
 OUT=$(mktemp -d); trap 'rm -rf "$OUT"' EXIT
 
-# Refuse to measure on a busy machine -- see bench-compare.sh's own note; two
-# M1 measurement rounds were thrown away to background load before that guard.
+# Refuse to measure on a busy machine -- see bench-compare.sh's own note.
 LOAD=$(cut -d' ' -f1 /proc/loadavg)
 MAXLOAD="${BENCH_MAX_LOAD:-1.5}"
 if awk "BEGIN{exit !($LOAD > $MAXLOAD)}"; then
@@ -551,10 +550,8 @@ echo "bench-micro: building" >&2
 # Where cargo actually put it. `scripts/docker-test.sh` exports
 # CARGO_TARGET_DIR, so inside the container the build lands there and NOT in
 # `benchmarks/rust-runner/target` -- which, being a bind mount of the host
-# repo, may still hold a months-old host build. This script used to run that
-# stale binary and report its timings as the current engine's; `c42-readpath-perf`
-# found it doing exactly that, reporting a figure identical to three digits
-# across a change that moved the operation by 20%.
+# repo, may still hold a months-old host build. Timing that stale binary would report
+# the old engine's numbers as the current one's.
 RUST_TARGET_DIR="${CARGO_TARGET_DIR:-benchmarks/rust-runner/target}"
 # shellcheck disable=SC2086  # EXTRA_SRC is a deliberate word list
 javac -nowarn -cp "$CP" -d "$OUT/classes" "$SRC" ${EXTRA_SRC:-}

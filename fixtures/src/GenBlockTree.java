@@ -281,7 +281,7 @@ public class GenBlockTree {
         //       DELIBERATELY REVERSED relative to a SpanNearQuery built with
         //       clauses in [gamma, delta] order: "gamma" (clause 0) occurs
         //       at position 1, *after* "delta" (clause 1) at position 0.
-        //       This is the cross-engine ground truth for task #55's
+        //       This is the cross-engine ground truth for the
         //       SpanNearQuery differential test (see
         //       crates/lucene-search/tests/span_query_fixtures.rs): a real
         //       SpanNearQuery([gamma, delta], slop=0, inOrder=true) must NOT

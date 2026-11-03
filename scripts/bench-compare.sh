@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Run both engines over the same index and query set, join on query id, and
-# report the ratio per query plus the M1 gate verdict.
+# report the ratio per query plus the gate verdict.
 #
 # Cross-checks recall BEFORE comparing timings: if the two engines disagree on
 # hit counts or top-10 doc ids, the timings are measuring different work and the
