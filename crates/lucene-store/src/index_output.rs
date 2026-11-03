@@ -529,11 +529,46 @@ impl Sink {
     #[inline]
     fn write_all(&mut self, bytes: &[u8]) -> std::io::Result<()> {
         match self {
-            Sink::File { file, .. } => file.write_all(bytes),
+            Sink::File { file, .. } => write_all_bounced(file, bytes),
             Sink::Stream(sink) => sink.write_all(bytes),
             Sink::Memory { .. } => unreachable!("a memory sink is buffered, not written through"),
         }
     }
+}
+
+/// `write_all`, except that bytes the kernel cannot read in place (`EFAULT`)
+/// are copied through a user-space buffer and written from there. A
+/// demand-paged input (`lucene-store-crypto`'s lazy decryption under a
+/// user-mode-only `userfaultfd`) faults pages in only on user-space access,
+/// so a `write(2)` straight from one of its pages that is not resident fails
+/// with `EFAULT`; the copy faults it in.
+fn write_all_bounced(file: &mut File, mut bytes: &[u8]) -> std::io::Result<()> {
+    const BOUNCE: usize = 64 * 1024;
+    while !bytes.is_empty() {
+        match file.write(bytes) {
+            Ok(0) => return Err(std::io::ErrorKind::WriteZero.into()),
+            Ok(n) => bytes = bytes.get(n..).unwrap_or_default(),
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) if is_efault(&e) => {
+                let n = bytes.len().min(BOUNCE);
+                let bounce = bytes[..n].to_vec();
+                file.write_all(&bounce)?;
+                bytes = &bytes[n..];
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn is_efault(e: &std::io::Error) -> bool {
+    e.raw_os_error() == Some(libc::EFAULT)
+}
+
+#[cfg(not(unix))]
+fn is_efault(_: &std::io::Error) -> bool {
+    false
 }
 
 impl IndexOutput for FsIndexOutput {
