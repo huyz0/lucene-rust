@@ -1,4 +1,4 @@
-//! M13 T13.3d against Lucene 10.5.0 (`fixtures/src/GenCompletion.java`):
+//! Against Lucene 10.5.0 (`fixtures/src/GenCompletion.java`):
 //! `PrefixCompletionQuery` over a real Completion104 index, answered from the
 //! `.cmp`/`.lkp` the writer left, 18 prefixes x 5 sizes x with and without
 //! `skipDuplicates` (180 queries), and `RegexCompletionQuery` (96).

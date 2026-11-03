@@ -674,7 +674,7 @@ def rule_block_guard(files, problems, stats):
 # Rule 8: an allocation is never sized from a decoded document id
 # --------------------------------------------------------------------------
 #
-# M10's T10.4 review found `SparseDocs::new` sizing its bit words (and their
+# The T10.4 review found `SparseDocs::new` sizing its bit words (and their
 # rank table) from the *last decoded* document of an `IndexedDISI` rather than
 # from the segment's `maxDoc`: eight corrupt bytes (a SPARSE block numbered
 # ~0x7FFF) named a document near `i32::MAX`, and the reader cached a ~400 MB
@@ -794,7 +794,7 @@ def rule_toplevel_whole_reader(files, problems, stats):
 # Rule 10: a guard on a boolean's occurs names all four of them
 # --------------------------------------------------------------------------
 #
-# T10.6's review found `BooleanQuery::rewrite` flattening a nested "pure
+# The review found `BooleanQuery::rewrite` flattening a nested "pure
 # disjunction" on `inner.must.is_empty() && inner.must_not.is_empty()`: Java's
 # `isPureDisjunction()` is "every clause is SHOULD", and the guard forgot the
 # fourth occur, so `[(a #b), c]` flattened to `[a, c]` and lost `#b`. `FILTER`
@@ -999,7 +999,7 @@ def rule_literal_space_run(files, problems, stats):
             )
 
 
-# lucene-test-framework (M14.h) is a dev-dependency only: a normal or build
+# lucene-test-framework is a dev-dependency only: a normal or build
 # edge would put the test framework (and the `test-support` items it turns
 # on) into the library `lucene-ffi` ships. Each dependency key in the root and
 # `crates/*/Cargo.toml` manifests is read under the section it sits in.

@@ -1,4 +1,4 @@
-//! M7's query and scoring half, differentially against Lucene 10.5.0:
+//! The query and scoring half, differentially against Lucene 10.5.0:
 //! `fixtures/src/GenM7Queries.java`.
 //!
 //! One three-segment, index-sorted index with deletions, searched with every

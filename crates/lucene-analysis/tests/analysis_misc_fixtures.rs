@@ -1,4 +1,4 @@
-//! M11 T11.6: `ReverseStringFilter`, `CSVUtil`, the deprecated
+//! `ReverseStringFilter`, `CSVUtil`, the deprecated
 //! `WordDelimiterFilter` and `DateRecognizerFilter` against
 //! `fixtures/src/GenAnalysisMisc.java`.
 

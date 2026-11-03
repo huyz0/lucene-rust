@@ -79,7 +79,7 @@ import java.util.function.Predicate;
  *   <li>the geo queries {@code geo_bounding_box}, {@code geo_distance}, {@code geo_polygon} and
  *       {@code geo_shape} build on {@code geo_point} and {@code geo_shape} fields ({@link GeoEncoder});
  *   <li>{@code nested}, the span queries, {@code intervals}, {@code combined_fields} and OpenSearch's
- *       {@code function_score} ({@link ExtendedEncoder}, M10).
+ *       {@code function_score} ({@link ExtendedEncoder}).
  * </ul>
  *
  * <p>The blob is {@code QUERY_TREE}: one node per query, each a kind byte and its payload (the
@@ -427,7 +427,7 @@ public final class QueryEncoder {
         if (docValues != DocValuesEncoder.NOT_DOC_VALUES) {
             return docValues;
         }
-        // nested, spans, intervals, combined_fields, function_score (ExtendedEncoder, M10).
+        // nested, spans, intervals, combined_fields, function_score (ExtendedEncoder).
         String extended = ExtendedEncoder.node(q, out, fieldOk, c -> node(c, out, fieldOk, depth + 1, nodes));
         if (extended != ExtendedEncoder.NOT_EXTENDED) {
             return extended;

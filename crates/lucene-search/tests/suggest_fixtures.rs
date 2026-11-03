@@ -1,4 +1,4 @@
-//! M13 T13.3b (`suggest`) against Lucene 10.5.0 (`fixtures/src/GenSuggest.java`):
+//! (`suggest`) against Lucene 10.5.0 (`fixtures/src/GenSuggest.java`):
 //! `TSTLookup`'s answers to every short prefix of a 324-entry corpus, its
 //! `get`, and the bytes of `store()`, both ways.
 

@@ -1,4 +1,4 @@
-//! M11 T11.5: the `word2vec` synonym package against
+//! The `word2vec` synonym package against
 //! `fixtures/src/GenWord2Vec.java`: both model zips read to the same model,
 //! `getSynonyms` finds the same synonyms with the same boost bits for every
 //! term, and `Word2VecSynonymFilter` gives the same tokens.

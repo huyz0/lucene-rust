@@ -1,4 +1,4 @@
-//! M10 T10.5, differentially against Lucene 10.5.0:
+//! Differentially against Lucene 10.5.0:
 //! `fixtures/src/GenFunction.java`.
 //!
 //! `values.tsv`: every value source of `lucene-queries`' `function` package

@@ -1,4 +1,4 @@
-//! M11's analysis-common pair (`benchmarks/micro/java/AnalysisCommonMicro.java`
+//! The analysis-common pair (`benchmarks/micro/java/AnalysisCommonMicro.java`
 //! is the Java twin): one analyzer per ported package over `SweepMicro`'s
 //! documents, each token's term bytes read as `IndexingChain` reads them.
 

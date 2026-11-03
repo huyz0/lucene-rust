@@ -1,4 +1,4 @@
-//! `org.apache.lucene.search.suggest.Lookup` (M13 T13.3a): the suggester API
+//! `org.apache.lucene.search.suggest.Lookup`: the suggester API
 //! every concrete suggester implements, its `LookupResult`, the
 //! `CHARSEQUENCE_COMPARATOR` that orders keys, and the `LookupPriorityQueue`
 //! that keeps the top `n` results by weight.

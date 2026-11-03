@@ -267,7 +267,7 @@ fn main() {
                 // against the term dictionary -- an unquantified divergence
                 // until now.
                 // Numeric doc-values range + sort. Never compared against
-                // Lucene before M1.6's hunt outside the benchmark's original
+                // Lucene before the hunt outside the benchmark's original
                 // four query shapes.
                 // Points range. Never measured before, and only reachable now
                 // that DirectoryReader opens .kdm/.kdi/.kdd at all -- note it

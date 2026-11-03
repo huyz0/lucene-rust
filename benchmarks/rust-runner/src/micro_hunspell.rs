@@ -1,4 +1,4 @@
-//! M11 T11.4's Hunspell pair (`benchmarks/micro/java/HunspellMicro.java` is
+//! The Hunspell pair (`benchmarks/micro/java/HunspellMicro.java` is
 //! the Java twin): `WhitespaceTokenizer` + `HunspellStemFilter` (dedup on) per
 //! dictionary of `fixtures/corpus/hunspell` over the words of its fixture
 //! (`fixtures/data/hunspell/<name>.tsv`, `W` lines, 100 to a document).

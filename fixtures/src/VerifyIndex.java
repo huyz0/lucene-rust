@@ -42,7 +42,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * M3's end-to-end proof (task T3.4): real Lucene opens a whole index this
+ * The end-to-end proof (task T3.4): real Lucene opens a whole index this
  * port's {@code IndexWriter} wrote, finds it clean, and searches it to the
  * same results this port's own searcher produced.
  *

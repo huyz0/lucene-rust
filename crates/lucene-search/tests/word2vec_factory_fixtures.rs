@@ -1,4 +1,4 @@
-//! M11 T11.7: `Word2VecSynonymFilterFactory` against Lucene. The
+//! `Word2VecSynonymFilterFactory` against Lucene. The
 //! `Word2VecSynonym` configurations of `fixtures/corpus/analysis-factories.conf`
 //! (`GenAnalysisFactories.java`) are built here, after
 //! [`register_factories`] adds the factory to `lucene-analysis`' registry,

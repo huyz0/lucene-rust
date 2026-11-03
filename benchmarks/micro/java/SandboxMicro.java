@@ -65,7 +65,7 @@ import org.apache.lucene.store.FSDirectory;
 import org.apache.lucene.util.BytesRef;
 
 /**
- * Java side of the lucene-sandbox benchmark pair (M14.f); the Rust side is {@code
+ * Java side of the lucene-sandbox benchmark pair; the Rust side is {@code
  * benchmarks/rust-runner/src/micro_sandbox.rs}, with the same case names. {@code build <dir>}
  * writes the corpus once -- 200 000 documents in four segments, each with an {@code IntPoint p}, up
  * to three {@code SortedNumericDocValuesField sn} values, one or two skip-indexed {@code snx} values

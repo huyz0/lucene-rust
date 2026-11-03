@@ -34,7 +34,7 @@ import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
 
 /**
- * M9 T9.2's write-path proof: real Lucene opens the geo point index this port's {@code
+ * The write-path proof: real Lucene opens the geo point index this port's {@code
  * IndexWriter} wrote ({@code write_geo_points_fixture}, from {@code GenGeoPoints}' documents),
  * finds it clean ({@link CheckIndex}), and answers every query of {@code
  * fixtures/data/geo_points/queries.tsv} -- boxes, distances, polygons, geometry relations, the

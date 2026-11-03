@@ -1,4 +1,4 @@
-//! `org.apache.lucene.search.suggest.tst` (M13 T13.3b): `TSTLookup`, a suggester
+//! `org.apache.lucene.search.suggest.tst`: `TSTLookup`, a suggester
 //! over a ternary search tree, with `TSTAutocomplete`'s insert and prefix
 //! completion and `TernaryTreeNode`.
 //!

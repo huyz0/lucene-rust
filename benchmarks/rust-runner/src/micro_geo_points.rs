@@ -1,4 +1,4 @@
-//! The geo point query benchmark pair (M9 T9.2), against
+//! The geo point query benchmark pair, against
 //! `benchmarks/micro/java/GeoPointsMicro.java`: boxes, distances, polygons,
 //! distance sorts and `nearest` over the million-point index the Java side
 //! builds (`GeoPointsMicro build <dir>`), replaying its `geo-queries-v2.tsv`:

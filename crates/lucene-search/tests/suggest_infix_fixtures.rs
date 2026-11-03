@@ -1,4 +1,4 @@
-//! M13 T13.3c against Lucene 10.5.0 (`fixtures/src/GenInfixSuggest.java`):
+//! Against Lucene 10.5.0 (`fixtures/src/GenInfixSuggest.java`):
 //! `AnalyzingInfixSuggester` and `BlendedInfixSuggester` answer as Lucene's do
 //! over a titled, weighted, payloaded and contexted corpus, for each lookup
 //! flavour (contexts as a set or as an occur map, `allTermsRequired`, highlight),

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# M4's crash fuzzing (T4.4): crates/lucene-search/examples/crash_fuzz.rs over
+# the crash fuzzing: crates/lucene-search/examples/crash_fuzz.rs over
 # a spread of seeds, in both crash models, with real Lucene's CheckIndex on a
 # share of them.
 #

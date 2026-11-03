@@ -66,18 +66,18 @@ MAX_ROW = 2_000
 MAX_FILE = 80_000
 # The total grew with the port: 400 KB held until M13, which adds six modules'
 # worth of rows (highlighter, suggest, facet, monitor, memory, queryparser) and
-# M14 more. 450 KB was spent by M13's highlighter, suggest and first facet
-# rows; the rest of lucene-facet and M14's modules need room for their rows,
-# so it was 550 KB. M14.g's lucene-codecs (bloom, memory, bitvectors,
+# M14 more. 450 KB was spent by the highlighter, suggest and first facet
+# rows; the rest of lucene-facet and the modules need room for their rows,
+# so it was 550 KB. the lucene-codecs (bloom, memory, bitvectors,
 # SimpleText, blocktreeords, uniformsplit, blockterms: a row or two each)
 # found it full, with rows trimmed to fit, so it is 560 KB. M14.i's
 # command-line tools (`tools.md`: misc, demo, luke, benchmark) and M14.h's
 # lucene-test-framework (`test-framework.md`, growing over eight batches)
-# need room for theirs, so it is 590 KB. M14.h's h6 found it full: trimming
+# need room for theirs, so it is 590 KB. the h6 found it full: trimming
 # other rows to fit dropped Differs that were still true, and h6's points,
 # KNN and test-postings rows and h8's are still to come, so it is 600 KB.
 # h8 left it at 599,973 with the last ~80 test-framework rows (test codecs,
-# search, geo, index, util) and M14.j's closing rows still unwritten, at
+# search, geo, index, util) and the closing rows still unwritten, at
 # roughly 500 bytes each, so it was 660 KB. On 2026-10-27 four M14 tracks
 # (test codecs, search, geo, format suites) started in parallel against a
 # ledger at 659,860: 760 KB lets each write its rows without trimming true
@@ -301,7 +301,7 @@ def check_layout(ledger, errors):
 # the items a bench case drives.
 BENCH_SOURCES = os.path.join(ROOT, "benchmarks", "rust-runner", "src")
 BENCH_USE = re.compile(r"\buse\s+(lucene_[a-z0-9_]+)::([^;]*);", re.S)
-# The crates `check_bench_clauses` covers: M12's language modules, one crate
+# The crates `check_bench_clauses` covers: the language modules, one crate
 # per Lucene module (`lucene-analysis-kuromoji`, ...).
 BENCH_CLAUSE_CRATE = re.compile(r"lucene-analysis-[a-z0-9-]+")
 BENCH_CLAUSE = re.compile(r"\bBench\b")

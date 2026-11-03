@@ -16,7 +16,7 @@ import org.apache.lucene.analysis.tokenattributes.PositionIncrementAttribute;
 import org.apache.lucene.analysis.util.SegmentingTokenizerBase;
 
 /**
- * M12 T12.6: {@code java.text.BreakIterator.getSentenceInstance(Locale.ROOT)} and {@code
+ * {@code java.text.BreakIterator.getSentenceInstance(Locale.ROOT)} and {@code
  * SegmentingTokenizerBase} (crates/lucene-analysis/src/util/sentence_break.rs,
  * segmenting_tokenizer_base.rs; tests/analysis_segmenting_fixtures.rs compares).
  *

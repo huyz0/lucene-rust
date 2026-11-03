@@ -13,7 +13,7 @@
 //! searches with the presearcher's query. This port keeps them in memory and
 //! evaluates the presearcher's query over the entries' indexed documents: the
 //! same candidate set, without a second on-disk index. The on-disk index and
-//! its purge cycle are the persistence half (T13.5d).
+//! its purge cycle are the persistence half.
 
 use std::collections::{BTreeMap, HashMap};
 

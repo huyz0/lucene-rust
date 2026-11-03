@@ -1,4 +1,4 @@
-//! M13 T13.3e against Lucene 10.5.0 (`fixtures/src/GenSpellCheckerIndex.java`):
+//! Against Lucene 10.5.0 (`fixtures/src/GenSpellCheckerIndex.java`):
 //! the classic `SpellChecker`, over the spell indexes Lucene wrote and over
 //! the ones this port writes from the same dictionaries, with and without a
 //! user index, eight configurations x every query x three sizes x every mode.

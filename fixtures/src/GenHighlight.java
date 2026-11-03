@@ -36,7 +36,7 @@ import org.apache.lucene.search.highlight.TextFragment;
 import org.apache.lucene.search.highlight.WeightedSpanTerm;
 
 /**
- * M13 T13.2 (classic {@code Highlighter}): every query of {@code
+ * (classic {@code Highlighter}): every query of {@code
  * fixtures/corpus/highlight-queries.txt} (classic syntax over {@code body}; a {@code span:} line is
  * an s-expression of span queries) against every text of {@code highlight-texts.txt}, under a set
  * of configurations (scorer, fragmenter, formatter, encoder, fragment count, character limit).

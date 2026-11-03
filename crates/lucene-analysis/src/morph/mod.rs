@@ -1,6 +1,6 @@
 //! analysis-common's `org.apache.lucene.analysis.morph`: the Viterbi lattice
 //! and dictionary readers Kuromoji (`lucene-analysis-kuromoji`) and Nori
-//! (`lucene-analysis-nori`) are built on (M12 T12.1; deferred from M11).
+//! (`lucene-analysis-nori`) are built on (deferred from M11).
 //!
 //! - [`resource`] -- the `DataInput`/`CodecUtil.checkHeader` reads the
 //!   dictionary files need.

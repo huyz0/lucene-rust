@@ -8,7 +8,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * M12 T12.7: {@code java.util.regex} beyond the shim -- the backtracking engine of {@code
+ * {@code java.util.regex} beyond the shim -- the backtracking engine of {@code
  * crates/lucene-analysis/src/util/java_backtrack.rs} against {@code Pattern} itself ({@code
  * tests/java_regex_fixtures.rs} compares).
  *

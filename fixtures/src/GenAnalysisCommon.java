@@ -120,7 +120,7 @@ import org.apache.lucene.search.BoostAttribute;
 import org.apache.lucene.util.BytesRef;
 
 /**
- * M11 T11.1: the analysis-common differential harness. Runs each named analyzer chain over every
+ * The analysis-common differential harness. Runs each named analyzer chain over every
  * line of {@code fixtures/corpus/analysis-common.txt} (a multilingual corpus written for this
  * project) and writes {@code analysis_common/<chain>.tsv}: every token's term, offsets, position
  * increment and length, type, flags, payload, keyword flag and term frequency, then the state

@@ -20,7 +20,7 @@ import org.apache.lucene.analysis.tokenattributes.TermToBytesRefAttribute;
 import org.apache.lucene.util.BytesRef;
 
 /**
- * M12 T12.4: ICU collation sort keys (ICU4J 77.1's {@code RuleBasedCollator.getRawCollationKey},
+ * ICU collation sort keys (ICU4J 77.1's {@code RuleBasedCollator.getRawCollationKey},
  * what Lucene's {@code ICUCollationKeyAnalyzer}, {@code ICUCollationAttributeFactory} and {@code
  * ICUCollationDocValuesField} index), compared by {@code
  * crates/lucene-analysis-icu/tests/icu_collation_fixtures.rs}.

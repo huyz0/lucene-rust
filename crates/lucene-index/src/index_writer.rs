@@ -5014,7 +5014,7 @@ pub fn per_field_segment(segment_name: &str, format: &str) -> String {
 /// The per-field segment name and codec suffix a segment's postings files
 /// carry, read off its own `.tim`: `_0_Lucene90_0.tim` -> (`_0_Lucene90_0`,
 /// `Lucene90_0`). A segment an older Lucene wrote names them after *its*
-/// default postings format (M8), which is also the suffix inside every
+/// default postings format, which is also the suffix inside every
 /// header; this writer's own segments give `Lucene104_0`. Falls back to that
 /// when the segment lists no `.tim` at all.
 /// Whether a postings group's terms dictionary is not a block tree, so it
@@ -12580,7 +12580,7 @@ pub(crate) mod tests {
 
     /// An older Lucene's segment names its postings and vector files after
     /// *its* formats; a merge and a buffered delete must find them by that
-    /// name (M8 T8.4).
+    /// name.
     #[test]
     fn old_segments_name_their_postings_and_vectors_after_their_own_formats() {
         let files: Vec<String> = vec![
@@ -24743,7 +24743,7 @@ pub(crate) mod tests {
         assert_eq!(read_all_docs(&dir, &infos), vec!["a", "b", "c", "d"]);
     }
 
-    // --- points (M4 T4.2) ---
+    // --- points ---
 
     fn points_field(name: &str, number: i32, dims: i32, index_dims: i32, bytes: i32) -> FieldInfo {
         FieldInfo {
@@ -24991,7 +24991,7 @@ pub(crate) mod tests {
         }
     }
 
-    // --- segments real Lucene wrote (M4 T4.6) ---
+    // --- segments real Lucene wrote ---
 
     /// `fixtures/data/compound_index`, copied: one **compound** segment real
     /// Lucene 10.5.0 flushed -- five documents, `id` a `StringField` ("0" ..

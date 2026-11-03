@@ -1,4 +1,4 @@
-//! M13 T13.3d: the completion queries against an index Lucene wrote.
+//! The completion queries against an index Lucene wrote.
 //! `GenCompletionQuery` indexes three segments (one with deletions) of
 //! `SuggestField`s under the default and a separator-dropping
 //! `CompletionAnalyzer` and of `ContextSuggestField`s, and records, for every

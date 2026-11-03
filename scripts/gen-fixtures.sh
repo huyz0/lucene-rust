@@ -91,10 +91,10 @@ set -euo pipefail
 # lucene-replicator is required by GenReplicator (org.apache.lucene.replicator.nrt).
 # lucene-sandbox is required by GenQueryParserXml (CorePlusExtensionsParser's
 # FuzzyLikeThisQuery) and the GenSandbox* generators (org.apache.lucene.sandbox).
-# lucene-codecs is required by the GenCodecs* generators (the non-default codecs, M14.g).
-# lucene-demo is required by GenToolsDemo (org.apache.lucene.demo, M14.i), lucene-luke by
-# GenToolsLuke (org.apache.lucene.luke.models, M14.i), lucene-benchmark by GenToolsBenchmark
-# (org.apache.lucene.benchmark.quality, M14.i).
+# lucene-codecs is required by the GenCodecs* generators (the non-default codecs).
+# lucene-demo is required by GenToolsDemo (org.apache.lucene.demo), lucene-luke by
+# GenToolsLuke (org.apache.lucene.luke.models), lucene-benchmark by GenToolsBenchmark
+# (org.apache.lucene.benchmark.quality).
 LUCENE_MODULES=(lucene-core lucene-analysis-common lucene-queries lucene-queryparser lucene-facet lucene-highlighter lucene-suggest lucene-memory lucene-monitor lucene-spatial3d lucene-spatial-extras lucene-join lucene-grouping lucene-classification lucene-misc lucene-replicator lucene-sandbox lucene-codecs lucene-demo lucene-luke lucene-benchmark)
 
 # The repository root. `git rev-parse` fails inside the container when this
@@ -222,7 +222,7 @@ NORI_CP=$(lucene_classpath lucene-analysis-nori)
 SMARTCN_CP=$(lucene_classpath lucene-analysis-smartcn)
 ICU_CP=$(lucene_classpath lucene-analysis-icu):$(thirdparty_classpath "${ICU_DEPS[@]}")
 OPENNLP_CP=$(lucene_classpath lucene-analysis-opennlp):$(thirdparty_classpath "${OPENNLP_DEPS[@]}")
-# M14's lucene-expressions and the ANTLR/ASM jars it runs on (EXPRESSIONS_DEPS).
+# The lucene-expressions and the ANTLR/ASM jars it runs on (EXPRESSIONS_DEPS).
 EXPRESSIONS_CP=$(lucene_classpath lucene-expressions):$(thirdparty_classpath "${EXPRESSIONS_DEPS[@]}")
 M12_COMPILE_CP="$PHONETIC_CP:$STEMPEL_CP:$MORFOLOGIK_CP:$KUROMOJI_CP:$NORI_CP:$SMARTCN_CP:$ICU_CP:$OPENNLP_CP:$EXPRESSIONS_CP"
 # Read as data, never put on the classpath (its SPI registrations name codecs

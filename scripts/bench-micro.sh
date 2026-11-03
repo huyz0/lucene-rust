@@ -75,26 +75,26 @@ case "$BENCH" in
     SRC=benchmarks/micro/java/IndexMicro.java
     JAR_MODULES="lucene-core lucene-analysis-common"
     RUST_BIN=index-bench ;;
-  # M11: one analyzer per analysis-common package, over SweepMicro's documents.
+  # One analyzer per analysis-common package, over SweepMicro's documents.
   analysis_common)
     MAIN=AnalysisCommonMicro
     SRC=benchmarks/micro/java/AnalysisCommonMicro.java
     EXTRA_SRC="benchmarks/micro/java/SweepMicro.java"
     JAR_MODULES="lucene-core lucene-analysis-common" ;;
-  # M11 part 3: language analyzers and synonym filters over their corpora.
+  # Part 3: language analyzers and synonym filters over their corpora.
   analysis_lang)
     MAIN=AnalysisLangMicro
     SRC=benchmarks/micro/java/AnalysisLangMicro.java
     EXTRA_SRC="benchmarks/micro/java/SweepMicro.java"
     JAR_MODULES="lucene-core lucene-analysis-common" ;;
-  # M11 part 3: decompounders, WordDelimiterFilter, classic, wikipedia,
+  # Part 3: decompounders, WordDelimiterFilter, classic, wikipedia,
   # DateRecognizerFilter and word2vec synonyms over generated corpora.
   analysis_misc)
     MAIN=AnalysisMiscMicro
     SRC=benchmarks/micro/java/AnalysisMiscMicro.java
     EXTRA_SRC="benchmarks/micro/java/SweepMicro.java"
     JAR_MODULES="lucene-core lucene-analysis-common" ;;
-  # M12: the language modules' filters over generated corpora; each module's
+  # The language modules' filters over generated corpora; each module's
   # third-party jars join through M12_THIRDPARTY.
   analysis_m12)
     MAIN=AnalysisM12Micro
@@ -102,7 +102,7 @@ case "$BENCH" in
     EXTRA_SRC="benchmarks/micro/java/SweepMicro.java"
     JAR_MODULES="lucene-core lucene-analysis-common lucene-analysis-phonetic lucene-analysis-stempel lucene-analysis-morfologik lucene-analysis-kuromoji lucene-analysis-nori lucene-analysis-smartcn"
     M12_THIRDPARTY=1 ;;
-  # M12 T12.4: analysis-icu over ICU4J (its jar joins through ICU_THIRDPARTY).
+  # Analysis-icu over ICU4J (its jar joins through ICU_THIRDPARTY).
   analysis_icu)
     MAIN=AnalysisIcuMicro
     SRC=benchmarks/micro/java/AnalysisIcuMicro.java
@@ -116,7 +116,7 @@ case "$BENCH" in
     EXTRA_SRC="benchmarks/micro/java/AnalysisIcuMicro.java benchmarks/micro/java/SweepMicro.java"
     JAR_MODULES="lucene-core lucene-analysis-common lucene-analysis-icu"
     ICU_THIRDPARTY=1 ;;
-  # M12 T12.5: analysis-opennlp over OpenNLP (its jars join through
+  # Analysis-opennlp over OpenNLP (its jars join through
   # OPENNLP_THIRDPARTY).
   analysis_opennlp)
     MAIN=AnalysisOpenNlpMicro
@@ -124,19 +124,19 @@ case "$BENCH" in
     EXTRA_SRC="benchmarks/micro/java/SweepMicro.java"
     JAR_MODULES="lucene-core lucene-analysis-common lucene-analysis-opennlp"
     OPENNLP_THIRDPARTY=1 ;;
-  # M13 T13.1: the classic and multi-field query parsers over the fixture corpus.
+  # The classic and multi-field query parsers over the fixture corpus.
   queryparser)
     MAIN=QueryParserMicro
     SRC=benchmarks/micro/java/QueryParserMicro.java
     EXTRA_SRC="benchmarks/micro/java/SweepMicro.java"
     JAR_MODULES="lucene-core lucene-analysis-common lucene-queries lucene-queryparser" ;;
-  # M13 T13.5: MemoryIndex build, build-then-search and frozen search.
+  # MemoryIndex build, build-then-search and frozen search.
   memory_index)
     MAIN=MemoryIndexMicro
     SRC=benchmarks/micro/java/MemoryIndexMicro.java
     EXTRA_SRC="benchmarks/micro/java/SweepMicro.java"
     JAR_MODULES="lucene-core lucene-analysis-common lucene-queries lucene-queryparser lucene-memory" ;;
-  # M13 T13.2: the unified and fast vector highlighters.
+  # The unified and fast vector highlighters.
   highlight)
     MAIN=HighlightMicro
     SRC=benchmarks/micro/java/HighlightMicro.java
@@ -149,38 +149,38 @@ case "$BENCH" in
     # Lucene's fvh path was still compiling 1.5 s in: 80-90 us a unit after
     # that warmup, 71-74 us after 4 s.
     BENCH_WARMUP=4000 ;;
-  # M13 T13.3c: AnalyzingSuggester and FuzzySuggester, lookups and builds.
+  # AnalyzingSuggester and FuzzySuggester, lookups and builds.
   analyzing)
     MAIN=AnalyzingSuggestMicro
     SRC=benchmarks/micro/java/AnalyzingSuggestMicro.java
     EXTRA_SRC="benchmarks/micro/java/SweepMicro.java"
     JAR_MODULES="lucene-core lucene-analysis-common lucene-suggest" ;;
-  # M13 T13.3c: FreeTextSuggester, lookups and builds.
+  # FreeTextSuggester, lookups and builds.
   freetext)
     MAIN=FreeTextSuggestMicro
     SRC=benchmarks/micro/java/FreeTextSuggestMicro.java
     EXTRA_SRC="benchmarks/micro/java/SweepMicro.java"
     JAR_MODULES="lucene-core lucene-analysis-common lucene-suggest" ;;
-  # M13 T13.3c: AnalyzingInfixSuggester, lookups and builds.
+  # AnalyzingInfixSuggester, lookups and builds.
   infix)
     MAIN=InfixSuggestMicro
     SRC=benchmarks/micro/java/InfixSuggestMicro.java
     EXTRA_SRC="benchmarks/micro/java/SweepMicro.java"
     JAR_MODULES="lucene-core lucene-analysis-common lucene-suggest" ;;
-  # M13 T13.3e: DirectSpellChecker, SpellChecker and WordBreakSpellChecker.
+  # DirectSpellChecker, SpellChecker and WordBreakSpellChecker.
   spell)
     MAIN=SpellMicro
     SRC=benchmarks/micro/java/SpellMicro.java
     EXTRA_SRC="benchmarks/micro/java/SweepMicro.java"
     JAR_MODULES="lucene-core lucene-suggest" ;;
-  # M13 T13.4a: the facet taxonomy's writer (addCategory) and reader lookups.
+  # The facet taxonomy's writer (addCategory) and reader lookups.
   taxonomy)
     MAIN=TaxonomyMicro
     SRC=benchmarks/micro/java/TaxonomyMicro.java
     EXTRA_SRC="benchmarks/micro/java/SweepMicro.java"
     JAR_MODULES="lucene-core lucene-facet" ;;
   facet_counts)
-    # M13 T13.4b's pair (FacetCountsMicro.java / micro_facet_counts.rs):
+    # The pair (FacetCountsMicro.java / micro_facet_counts.rs):
     # FacetsCollector, FastTaxonomyFacetCounts (dense and sparse),
     # getTopChildren and the association sums over the 200 000-document index
     # and taxonomy FacetCountsMicro builds (once) under
@@ -194,7 +194,7 @@ case "$BENCH" in
     JAVA_ARGS=(run)
     NEEDS_INDEX=1 ;;
   drill_sideways)
-    # M13 T13.4c's pair (DrillSidewaysMicro.java / micro_drill_sideways.rs):
+    # The pair (DrillSidewaysMicro.java / micro_drill_sideways.rs):
     # a sequential DrillSideways.search per DrillSidewaysScorer strategy, over
     # facet_counts' corpus (built by FacetCountsMicro, which this prep calls).
     MAIN=DrillSidewaysMicro
@@ -206,7 +206,7 @@ case "$BENCH" in
     JAVA_ARGS=(run)
     NEEDS_INDEX=1 ;;
   value_facets)
-    # M13 T13.4d1's pair (ValueFacetsMicro.java / micro_value_facets.rs):
+    # The pair (ValueFacetsMicro.java / micro_value_facets.rs):
     # LongValueFacetCounts, StringValueFacetCounts and the long/double range
     # counters over the 200 000-document index ValueFacetsMicro builds (once)
     # under benchmarks/.corpus/value-facets.
@@ -219,7 +219,7 @@ case "$BENCH" in
     JAVA_ARGS=(run)
     NEEDS_INDEX=1 ;;
   ssdv_facets)
-    # M13 T13.4d2's pair (SsdvFacetsMicro.java / micro_ssdv_facets.rs): the
+    # The pair (SsdvFacetsMicro.java / micro_ssdv_facets.rs): the
     # sorted-set reader state, SortedSetDocValuesFacetCounts (plain,
     # concurrent, over a reader) and RandomSamplingFacetsCollector over the
     # 200 000-document index SsdvFacetsMicro builds (once) under
@@ -238,51 +238,51 @@ case "$BENCH" in
     SRC=benchmarks/micro/java/DocIndexMicro.java
     EXTRA_SRC="benchmarks/micro/java/SweepMicro.java benchmarks/micro/java/SpellMicro.java"
     JAR_MODULES="lucene-core lucene-analysis-common lucene-suggest" ;;
-  # M13 T13.3b: WFSTCompletionLookup and FSTCompletionLookup, lookups and builds.
+  # WFSTCompletionLookup and FSTCompletionLookup, lookups and builds.
   fst_lookup)
     MAIN=FstLookupMicro
     SRC=benchmarks/micro/java/FstLookupMicro.java
     EXTRA_SRC="benchmarks/micro/java/SweepMicro.java"
     JAR_MODULES="lucene-core lucene-suggest" ;;
-  # M13 T13.3d: completion suggestions through SuggestIndexSearcher.
+  # Completion suggestions through SuggestIndexSearcher.
   completion)
     MAIN=CompletionMicro
     SRC=benchmarks/micro/java/CompletionMicro.java
     EXTRA_SRC="benchmarks/micro/java/SweepMicro.java"
     JAR_MODULES="lucene-core lucene-analysis-common lucene-suggest" ;;
-  # M13 T13.5c: the Monitor -- register the corpus, match four documents.
+  # The Monitor -- register the corpus, match four documents.
   monitor)
     MAIN=MonitorMicro
     SRC=benchmarks/micro/java/MonitorMicro.java
     EXTRA_SRC="benchmarks/micro/java/SweepMicro.java"
     JAR_MODULES="lucene-core lucene-analysis-common lucene-queries lucene-queryparser lucene-memory lucene-monitor" ;;
-  # M14 T14.2: expressions compiled from the corpus and evaluated per document.
+  # Expressions compiled from the corpus and evaluated per document.
   expressions)
     MAIN=ExpressionsMicro
     SRC=benchmarks/micro/java/ExpressionsMicro.java
     EXTRA_SRC="benchmarks/micro/java/SweepMicro.java"
     JAR_MODULES="lucene-core lucene-expressions"
     EXPRESSIONS_THIRDPARTY=1 ;;
-  # M14 T14.3: each classifier's assignClass over forty stored texts.
+  # Each classifier's assignClass over forty stored texts.
   classification)
     MAIN=ClassificationMicro
     SRC=benchmarks/micro/java/ClassificationMicro.java
     EXTRA_SRC="benchmarks/micro/java/SweepMicro.java"
     JAR_MODULES="lucene-core lucene-analysis-common lucene-queries lucene-grouping lucene-classification" ;;
-  # M14 T14.3: the replicator's per-file work -- reading a file's metadata and
+  # The replicator's per-file work -- reading a file's metadata and
   # copying it into a replica -- over fixtures/data/replicator/plain.
   replicator)
     MAIN=ReplicatorMicro
     SRC=benchmarks/micro/java/ReplicatorMicro.java
     EXTRA_SRC="benchmarks/micro/java/SweepMicro.java"
     JAR_MODULES="lucene-core lucene-replicator" ;;
-  # M11 T11.3: SnowballFilter per language over the fixture vocabularies.
+  # SnowballFilter per language over the fixture vocabularies.
   snowball)
     MAIN=SnowballMicro
     SRC=benchmarks/micro/java/SnowballMicro.java
     EXTRA_SRC="benchmarks/micro/java/SweepMicro.java"
     JAR_MODULES="lucene-core lucene-analysis-common" ;;
-  # M11 T11.4: HunspellStemFilter per dictionary over its fixture words.
+  # HunspellStemFilter per dictionary over its fixture words.
   hunspell)
     MAIN=HunspellMicro
     SRC=benchmarks/micro/java/HunspellMicro.java
@@ -320,7 +320,7 @@ case "$BENCH" in
     MAIN=ConcurrentIndexMicro
     SRC=benchmarks/micro/java/ConcurrentIndexMicro.java
     JAR_MODULES="lucene-core lucene-analysis-common" ;;
-  # M7's pairs (M7Micro.java): the queries parse with the fixture generators'
+  # The pairs (M7Micro.java): the queries parse with the fixture generators'
   # own grammars, so those sources compile alongside; spans need lucene-queries.
   m7_fixture|query_builder|stored_fields_write|m7_corpus|similarity|sort_pruning)
     MAIN=M7Micro
@@ -329,21 +329,21 @@ case "$BENCH" in
     JAR_MODULES="lucene-core lucene-queries"
     JAVA_ARGS=("$BENCH")
     case "$BENCH" in m7_corpus|similarity|sort_pruning) NEEDS_INDEX=1 ;; esac ;;
-  # M9's geo pair (GeoMicro.java / micro_geo.rs): the Tessellator, Component2D
+  # The geo pair (GeoMicro.java / micro_geo.rs): the Tessellator, Component2D
   # build/relate/contains/intersectsTriangle and haversin, over the inputs of
   # the fixtures under fixtures/data/geo/ (read from the repository root).
   geo)
     MAIN=GeoMicro
     SRC=benchmarks/micro/java/GeoMicro.java ;;
   geo3d)
-    # M9 T9.4's pair (Geo3dMicro.java / micro_geo3d.rs): geo3d shape
+    # The pair (Geo3dMicro.java / micro_geo3d.rs): geo3d shape
     # construction, x/y/z cell relations, membership and distances, over
     # inputs both sides draw from the same SplitMix64 stream.
     MAIN=Geo3dMicro
     SRC=benchmarks/micro/java/Geo3dMicro.java
     JAR_MODULES="lucene-core lucene-spatial3d" ;;
   spatial_extras)
-    # M9 T9.5's pair (SpatialExtrasMicro.java / micro_spatial_extras.rs): RPT
+    # The pair (SpatialExtrasMicro.java / micro_spatial_extras.rs): RPT
     # indexing a Geo3D polygon, RPT intersects, BBox with the overlap-ratio
     # similarity, heatmaps and date ranges over the 100 000-document index
     # SpatialExtrasMicro builds (once) under benchmarks/.corpus/spatial-extras.
@@ -356,7 +356,7 @@ case "$BENCH" in
     JAVA_ARGS=(run)
     NEEDS_INDEX=1 ;;
   geo3d_points)
-    # M9 T9.4's query pair (Geo3dPointsMicro.java / micro_geo3d_points.rs):
+    # The query pair (Geo3dPointsMicro.java / micro_geo3d_points.rs):
     # PointInGeo3DShapeQuery and the distance sorts over the 300 000-point
     # index Geo3dPointsMicro builds (once) under benchmarks/.corpus/geo3d-points.
     MAIN=Geo3dPointsMicro
@@ -387,7 +387,7 @@ case "$BENCH" in
     JAVA_ARGS=(run)
     NEEDS_INDEX=1 ;;
   join)
-    # M10 T10.2's pair (JoinMicro.java / micro_join.rs): the block-join
+    # The pair (JoinMicro.java / micro_join.rs): the block-join
     # queries and the ToParentBlockJoinSortField sort over the 60 000-block
     # index JoinMicro builds (once) under benchmarks/.corpus/join.
     MAIN=JoinMicro
@@ -398,7 +398,7 @@ case "$BENCH" in
     JAVA_ARGS=(run)
     NEEDS_INDEX=1 ;;
   query_join)
-    # M10 T10.3's pair (QueryJoinMicro.java / micro_query_join.rs): JoinUtil's
+    # The pair (QueryJoinMicro.java / micro_query_join.rs): JoinUtil's
     # query-time joins over the 200 000-document index QueryJoinMicro builds
     # (once) under benchmarks/.corpus/query-join.
     MAIN=QueryJoinMicro
@@ -409,7 +409,7 @@ case "$BENCH" in
     JAVA_ARGS=(run)
     NEEDS_INDEX=1 ;;
   grouping)
-    # M10 T10.4's pair (GroupingMicro.java / micro_grouping.rs): grouping
+    # The pair (GroupingMicro.java / micro_grouping.rs): grouping
     # searches, block grouping, distinct values and grouped facets over the
     # 200 000-document index GroupingMicro builds (once) under
     # benchmarks/.corpus/grouping.
@@ -421,7 +421,7 @@ case "$BENCH" in
     JAVA_ARGS=(run)
     NEEDS_INDEX=1 ;;
   function)
-    # M10 T10.5's pair (FunctionMicro.java / micro_function.rs): function,
+    # The pair (FunctionMicro.java / micro_function.rs): function,
     # function-score, range and match queries over the 200 000-document index
     # FunctionMicro builds (once) under benchmarks/.corpus/function.
     MAIN=FunctionMicro
@@ -461,7 +461,7 @@ case "$BENCH" in
     INDEX="${INDEX_ARG:-$PWD/fixtures/data/codecs_sharedterms_merge/unsorted}"
     NEEDS_INDEX=1 ;;
   codecs)
-    # M14.g's pair (CodecsMicro.java / micro_codecs.rs): lucene-codecs'
+    # The pair (CodecsMicro.java / micro_codecs.rs): lucene-codecs'
     # non-default formats, each over the index CodecsMicro builds (once) in
     # its own subdirectory of benchmarks/.corpus/codecs -- so far
     # BloomFilteringPostingsFormat's filtered seekExact (bloom/) and
@@ -478,7 +478,7 @@ case "$BENCH" in
     JAVA_ARGS=(run)
     NEEDS_INDEX=1 ;;
   sandbox)
-    # M14.f's pair (SandboxMicro.java / micro_sandbox.rs): lucene-sandbox's
+    # The pair (SandboxMicro.java / micro_sandbox.rs): lucene-sandbox's
     # multi-range queries, FloatPointNearestNeighbor and (over its text/
     # index) the scoring queries and the large-hits collector, and (over
     # its idv/ index) IDVersionSegmentTermsEnum.seekExact(id, minVersion),
@@ -493,7 +493,7 @@ case "$BENCH" in
     JAVA_ARGS=(run)
     NEEDS_INDEX=1 ;;
   queries)
-    # M10 T10.6's pair (QueriesMicro.java / micro_queries.rs): interval
+    # The pair (QueriesMicro.java / micro_queries.rs): interval
     # queries over the 200 000-document index QueriesMicro builds (once)
     # under benchmarks/.corpus/queries.
     MAIN=QueriesMicro
@@ -504,7 +504,7 @@ case "$BENCH" in
     JAVA_ARGS=(run)
     NEEDS_INDEX=1 ;;
   aggs)
-    # M10 stage 3's pair (AggsMicro.java / micro_aggs.rs): the plugin's
+    # Stage 3's pair (AggsMicro.java / micro_aggs.rs): the plugin's
     # `terms` aggregation behind a dense filter against OpenSearch's
     # collector for it, over the benchmark corpus (benchmarks/.corpus/merged).
     MAIN=AggsMicro

@@ -15,7 +15,7 @@ import org.apache.lucene.search.spell.WordBreakSpellChecker;
 import org.apache.lucene.store.ByteBuffersDirectory;
 
 /**
- * M13 T13.3e's spell pair (the Rust twin is {@code benchmarks/rust-runner/src/micro_spell.rs})
+ * The spell pair (the Rust twin is {@code benchmarks/rust-runner/src/micro_spell.rs})
  * over 5,000 pseudo-words from a shared LCG, word {@code i} in {@code i % 5 + 1} documents of a
  * one-segment index. {@code direct_suggest}: {@code DirectSpellChecker} top 5 for 500
  * misspellings, units: lookups; {@code spell_suggest}: {@code SpellChecker} top 5 for the same,

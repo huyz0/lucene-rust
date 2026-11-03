@@ -1,4 +1,4 @@
-//! M13 T13.1: `ComplexPhraseQueryParser` against Lucene 10.5.0
+//! `ComplexPhraseQueryParser` against Lucene 10.5.0
 //! (`fixtures/src/GenQueryParserComplexPhrase.java`), in order and not: each
 //! query of `fixtures/corpus/queryparser-complexphrase.txt` parses to the
 //! same tree or fails with the same exception, and against the twelve-document,

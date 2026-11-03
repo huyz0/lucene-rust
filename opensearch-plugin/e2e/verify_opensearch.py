@@ -225,7 +225,7 @@ def matrix():
         {"bool": {"must": [{"match": {"body": "alpha"}}, {"match": {"title": "gamma"}}]}},
         {"match": {"body": "omega"}}]}}}, "native")
     add("query_string OR", {"query": {"query_string": {"query": "body:(delta OR theta)"}}}, "native")
-    # M13 T13.6: query_string and simple_query_string shapes, term ranges among them.
+    # Query_string and simple_query_string shapes, term ranges among them.
     add("query_string keyword range", {"query": {"query_string": {"query": "tag:[beta TO kappa}"}}}, "native")
     add("query_string open text range", {"query": {"query_string": {"query": "body:{mu TO *] AND body:alpha"}}}, "native")
     add("query_string fuzzy prefix phrase", {"query": {"query_string": {"query": "body:alpah~ OR body:be* OR \"gamma delta\"~2", "default_field": "body"}}}, "native")
@@ -1415,7 +1415,7 @@ def main():
     extended_matrix.create_join(req, "pj")
     extended_matrix.load_join(req, check, "pj", 400, 21)
     native += run_matrix("pj", 1, "parent-join", rows=extended_matrix.join_rows())
-    # M9 T9.6: geo_point and geo_shape queries (and _geo_distance sorts), on a
+    # Geo_point and geo_shape queries (and _geo_distance sorts), on a
     # one-shard and a three-shard index; then the one-shard index merged into a
     # segment past 10,000 documents, where the native query cache holds geo sets.
     geo_matrix.create_shapes(req)

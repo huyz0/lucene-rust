@@ -15,7 +15,7 @@ import org.apache.lucene.store.ByteBuffersDirectory;
 import org.apache.lucene.util.BytesRef;
 
 /**
- * M13 T13.3c's pairs (the Rust twin is {@code benchmarks/rust-runner/src/micro_analyzing.rs}):
+ * The pairs (the Rust twin is {@code benchmarks/rust-runner/src/micro_analyzing.rs}):
  * {@code GenAnalyzingSuggest}'s 32 phrases ({@code fixtures/data/suggest_analyzing/phrases.tsv}).
  * {@code analyzing_lookup}/{@code fuzzy_lookup}: top 5 for every one to three word prefix (and
  * each phrase cut after four characters, so the fuzzy suggester has typos to forgive), units: lookups;

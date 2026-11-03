@@ -1,4 +1,4 @@
-//! M12 T12.4: analysis-icu against Lucene 10.5.0 over ICU4J 77.1.
+//! Analysis-icu against Lucene 10.5.0 over ICU4J 77.1.
 //!
 //! `fixtures/src/GenAnalysisIcu.java` writes `analysis_icu/`: normalization
 //! of every assigned 256-code-point block and of 600 stress strings through

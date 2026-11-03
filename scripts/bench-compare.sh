@@ -49,7 +49,7 @@ echo "bench-compare: building runners"
 ( cd benchmarks/rust-runner && cargo build --release --quiet )
 javac -nowarn -cp "$CP" -d "$OUT/classes" benchmarks/java-runner/src/BenchRunner.java
 
-# Refuse to measure on a busy machine. M1's own risk section named "measuring
+# Refuse to measure on a busy machine. the own risk section named "measuring
 # the wrong thing" as the dominant risk, and this has now bitten twice: a run
 # reporting 56.8 qps where three quiet runs gave 102-105, and an LTO comparison
 # spanning 59-131 qps, both with an unrelated build saturating the CPU. A

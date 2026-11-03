@@ -1,4 +1,4 @@
-//! M13 T13.3c's pairs (`benchmarks/micro/java/AnalyzingSuggestMicro.java` is
+//! The pairs (`benchmarks/micro/java/AnalyzingSuggestMicro.java` is
 //! the Java twin): `GenAnalyzingSuggest`'s 32 phrases
 //! (`fixtures/data/suggest_analyzing/phrases.tsv`). `analyzing_lookup`/
 //! `fuzzy_lookup`: top 5 for every one to three word prefix and each phrase

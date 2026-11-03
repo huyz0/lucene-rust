@@ -1,4 +1,4 @@
-//! M11 part 3's pair (`benchmarks/micro/java/AnalysisLangMicro.java` is the
+//! The pair (`benchmarks/micro/java/AnalysisLangMicro.java` is the
 //! Java twin): each language analyzer over its own language's lines of
 //! `fixtures/corpus/analysis-lang.txt` (repeated 200 times as documents; the
 //! whole multilingual corpus would mostly measure a stemmer missing on

@@ -1,4 +1,4 @@
-//! M11 T11.2: `ClassicTokenizer`, `ClassicFilter`, `ClassicAnalyzer` and
+//! `ClassicTokenizer`, `ClassicFilter`, `ClassicAnalyzer` and
 //! `WikipediaTokenizer` against `fixtures/src/GenAnalysisClassic.java`: the
 //! chains over `fixtures/corpus/analysis-classic.txt`, and four of them over
 //! 2,000 seeded fragment joins (`fragments.txt`), row for row.

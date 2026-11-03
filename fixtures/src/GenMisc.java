@@ -20,7 +20,7 @@ import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
 
 /**
- * M14 T14.3 `misc`: the index `HighFreqTerms` reads, and what
+ * `misc`: the index `HighFreqTerms` reads, and what
  * {@link HighFreqTerms#getHighFreqTerms} returns for it under each
  * configuration. Writes {@code misc/high_freq} (an index over three commits,
  * so three segments) and {@code misc/high_freq.tsv}:

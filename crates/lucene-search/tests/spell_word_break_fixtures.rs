@@ -1,4 +1,4 @@
-//! M13 T13.3e against Lucene 10.5.0 (`fixtures/src/GenSpellWordBreak.java`):
+//! Against Lucene 10.5.0 (`fixtures/src/GenSpellWordBreak.java`):
 //! `WordBreakSpellChecker`'s breaks and combinations over a three-segment
 //! index, ten configurations x every query x every mode, sort method and
 //! size.

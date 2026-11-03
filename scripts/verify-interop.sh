@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# M4's interoperability matrix (T4.6): one index written, appended to and
+# the interoperability matrix: one index written, appended to and
 # merged by real Lucene and by this port, in every order an incremental
 # OpenSearch adoption produces -- a shard holds segments from both engines at
 # once.

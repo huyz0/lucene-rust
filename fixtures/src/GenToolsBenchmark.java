@@ -20,7 +20,7 @@ import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
 
 /**
- * M14.i: what the {@code benchmark} module's search-quality command lines, {@code QueryDriver}
+ * What the {@code benchmark} module's search-quality command lines, {@code QueryDriver}
  * and {@code QualityQueriesFinder}, print and write. Writes {@code tools/benchmark}:
  *
  * <ul>

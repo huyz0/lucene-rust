@@ -3148,7 +3148,7 @@ pub(crate) fn dismax_value(scores: impl Iterator<Item = f32>, tie_breaker: f32) 
 /// its own `docFreq`/`docCount`, which is only equivalent when there is one
 /// segment.
 ///
-/// On M1's 15-segment corpus that made `body:t0`'s idf range 0.000473 to
+/// On the 15-segment corpus that made `body:t0`'s idf range 0.000473 to
 /// 0.000763 -- a 1.6x spread against the global 0.000574 -- so the top-k filled
 /// from whichever segment happened to make the term look rarest, and every one
 /// of the 20 benchmark queries disagreed with Java on its hit set. It is
@@ -4042,7 +4042,7 @@ const MAX_INLINE_PHRASE_TERMS: usize = 32;
 /// `benches/phrase_freq.rs` on 4096-position lists: **5.0x-6.8x** faster
 /// (26.8 -> 4.9 µs at a 50% hit rate, 39.6 -> 5.8 µs for a three-term phrase),
 /// and 6.8% slower on an 8-position list where both are ~18 ns. The same
-/// finding as M1.6's `next_doc`/`advance` binary searches, in the function
+/// finding as the `next_doc`/`advance` binary searches, in the function
 /// those two never reached (b12 finding F-21).
 fn phrase_freq_exact_impl(term_positions: &[&[i32]], stop_at_first: bool) -> i32 {
     if let [first, second] = term_positions {

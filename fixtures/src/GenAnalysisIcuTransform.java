@@ -16,7 +16,7 @@ import org.apache.lucene.analysis.core.WhitespaceTokenizer;
 import org.apache.lucene.analysis.icu.ICUTransformFilter;
 
 /**
- * M12 T12.4: ICU4J 77.1's transliterators ({@code Transliterator.getInstance}, {@code
+ * ICU4J 77.1's transliterators ({@code Transliterator.getInstance}, {@code
  * createFromRules}, {@code transliterate}, {@code getSourceSet}) and Lucene's {@code
  * ICUTransformFilter}, compared by {@code crates/lucene-analysis-icu/tests/icu_transform_fixtures.rs}.
  *

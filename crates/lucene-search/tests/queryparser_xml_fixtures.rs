@@ -1,4 +1,4 @@
-//! M13 T13.1: `CoreParser` against Lucene 10.5.0 (`fixtures/src/GenQueryParserXml.java`). Each
+//! `CoreParser` against Lucene 10.5.0 (`fixtures/src/GenQueryParserXml.java`). Each
 //! XML document of `fixtures/corpus/queryparser-xml.txt` parses to the query Java's `CoreParser`
 //! makes, with the same `toString`, class tree and matching documents over a ten-document
 //! Java-written index, or fails with the same exception class and message (a syntax error by its

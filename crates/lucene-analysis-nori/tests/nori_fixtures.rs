@@ -1,4 +1,4 @@
-//! M12 T12.1: Nori against Lucene 10.5.0.
+//! Nori against Lucene 10.5.0.
 //!
 //! `fixtures/src/GenAnalysisNori.java` writes `analysis_nori/`: token rows
 //! of `KoreanTokenizer` in every decompound mode, with punctuation, unknown

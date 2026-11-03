@@ -75,7 +75,7 @@ import org.apache.lucene.store.FSDirectory;
 import org.apache.lucene.util.BytesRef;
 
 /**
- * M10 T10.6's spans and payloads fixture: {@code spans/index}, a four-segment index with deletions
+ * The spans and payloads fixture: {@code spans/index}, a four-segment index with deletions
  * in two segments, and {@code spans/queries.tsv}, the span queries of {@code lucene-queries}' {@code
  * spans} package and the {@code payloads} package's queries over it.
  *

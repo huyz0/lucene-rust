@@ -196,10 +196,10 @@ public final class NativeSelfTest {
             compared += ok ? 1 : 0;
             bwc += old ? 1 : 0;
             bwcCompared += old && ok ? 1 : 0;
-            // M8 T8.5: every index an older Lucene 9.x/10.x wrote opens natively.
+            // Every index an older Lucene 9.x/10.x wrote opens natively.
             check(old == false || ok, "backward-codecs fixture served natively: " + fixture);
         }
-        // M13 T13.6: indexes with a completion field (Completion104, and the formats of 9.0-10.3)
+        // Indexes with a completion field (Completion104, and the formats of 9.0-10.3)
         // are read natively; their fixtures sit one level down.
         int completion = 0;
         List<Path> completionIndexes = new ArrayList<>(List.of(Path.of(args[0], "completion_query", "index")));
@@ -357,7 +357,7 @@ public final class NativeSelfTest {
         check(QueryEncoder.encode(IntPoint.newSetQuery("i", 1, 5, 9), f -> true).blob() != null, "an int point set encodes");
         check(QueryEncoder.encode(LongPoint.newSetQuery("n"), f -> true).blob() != null, "an empty point set encodes");
         check(QueryEncoder.encode(LongPoint.newRangeQuery("n", 1, 5), f -> true).blob() != null, "a long range encodes");
-        // M13 T13.6: query_string's [a TO b] and a keyword range, under the searcher's rewrite.
+        // Query_string's [a TO b] and a keyword range, under the searcher's rewrite.
         IndexSearcher empty = new IndexSearcher(new MultiReader());
         check(
             QueryEncoder.encode(empty.rewrite(TermRangeQuery.newStringRange("tag", "a", "m", true, false)), f -> true).blob() != null,
@@ -468,7 +468,7 @@ public final class NativeSelfTest {
                     case 1 -> LongPoint.newSetQuery("n", r.nextInt(400), r.nextInt(400), r.nextInt(400), r.nextInt(400));
                     default -> org.apache.lucene.document.InetAddressPoint.newSetQuery("ip", ip(r.nextInt(300)), ip(r.nextInt(300)));
                 };
-                // M13 T13.6: a term range, either end open or exclusive (query_string's {a TO *]).
+                // A term range, either end open or exclusive (query_string's {a TO *]).
                 case 9 -> {
                     String a = r.nextInt(5) == 0 ? null : word(r), b = r.nextInt(5) == 0 ? null : word(r);
                     yield TermRangeQuery.newStringRange(field, a, b, r.nextBoolean(), r.nextBoolean());
@@ -1608,7 +1608,7 @@ public final class NativeSelfTest {
         }
     }
 
-    // --- geo (M9 T9.6) ----------------------------------------------------------------------
+    // --- geo ----------------------------------------------------------------------
 
     /**
      * The geo queries OpenSearch builds for {@code geo_point} and {@code geo_shape} fields (and the
@@ -1974,7 +1974,7 @@ public final class NativeSelfTest {
     /**
      * Every fixture directory holding a {@code segments_N}, one level down, plus -- for the
      * backward-codecs corpora ({@code bwc/<version>}, {@code bwc-big/<version>},
-     * {@code bwc-quantized/<version>}, M8) -- two levels down.
+     * {@code bwc-quantized/<version>}) -- two levels down.
      */
     private static List<Path> fixtureIndexes(Path root) throws Exception {
         List<Path> out = new ArrayList<>();

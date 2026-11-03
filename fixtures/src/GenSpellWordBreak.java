@@ -25,7 +25,7 @@ import org.apache.lucene.store.FSDirectory;
 import org.apache.lucene.util.IOUtils;
 
 /**
- * M13 T13.3e: {@code WordBreakSpellChecker} over a three-segment index. Writes {@code
+ * {@code WordBreakSpellChecker} over a three-segment index. Writes {@code
  * spell_word_break/}: {@code index/}, {@code breaks.tsv} (configuration, query, mode, sort method,
  * maxSuggestions, then one column per suggestion: its words as {@code string:freq:scoreBits}
  * joined by spaces) and {@code combinations.tsv} (configuration, term list, mode, maxSuggestions,

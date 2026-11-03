@@ -16,7 +16,7 @@ import java.util.Set;
 import java.util.TimeZone;
 
 /**
- * M12 T12.7: {@code SimpleDateFormat}'s parse outside {@code Locale.ENGLISH}, for {@code
+ * {@code SimpleDateFormat}'s parse outside {@code Locale.ENGLISH}, for {@code
  * DateRecognizerFilterFactory}'s {@code locale} ({@code miscellaneous/date_locales.rs}, from
  * {@code tools/GenDateLocales.java}). The locales are {@code corpus/date-locales.txt}: those whose
  * record ({@code GenDateLocales --facts}) JDK 21 and JDK 25 agree on, so this file is the same under

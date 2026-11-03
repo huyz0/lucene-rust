@@ -92,7 +92,7 @@
 //!
 //! This was not always so, and the bug it caused is worth recording. Scoring
 //! each segment from its own term dictionary made `body:t0`'s idf range 0.000473
-//! to 0.000763 across M1's 15-segment corpus -- a 1.6x spread around the global
+//! to 0.000763 across the 15-segment corpus -- a 1.6x spread around the global
 //! 0.000574 -- so the merged top-k filled from whichever segment happened to
 //! make the term look rarest, and all 20 benchmark queries disagreed with Java
 //! on their hit sets. Every differential fixture is a single segment, where the
@@ -1094,7 +1094,7 @@ pub fn search_term_query_multi_segment_concurrent(
     // while the sequential path used the summed ones -- the two produced
     // different rankings for the same query on any multi-segment index, and
     // the idf spread that causes is precisely the bug this module's doc comment
-    // records (1.6x across M1's 15-segment corpus, all 20 benchmark queries
+    // records (1.6x across the 15-segment corpus, all 20 benchmark queries
     // disagreeing with Java).
     let global = global_term_stats(segments, &query.field, &query.term)?;
     let doc_bases: Vec<i32> = segments.iter().map(|s| s.doc_base).collect();
@@ -3346,7 +3346,7 @@ mod tests {
     /// no-stats scorer, so every segment computed idf from its own
     /// `docFreq`/`docCount` while the sequential path used the summed pair.
     /// That is the very bug this module's doc comment records (a 1.6x idf spread
-    /// across M1's 15-segment corpus, every benchmark query disagreeing with
+    /// across the 15-segment corpus, every benchmark query disagreeing with
     /// Java), reintroduced on the concurrent path alone.
     ///
     /// The existing "concurrent matches sequential" test cannot catch it: it

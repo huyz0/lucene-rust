@@ -82,12 +82,12 @@ use std::sync::Arc;
 /// the tree); 28, the JNI `searchDocFreq` (a term query's total-hits shortcut
 /// and its search in one call); 29, the JNI entry points replaced by the
 /// Foreign Function & Memory API's downcalls ([`crate::ffm_bridge`]); 30,
-/// the points-box and geo nodes (M9 T9.6); 31, the geo-distance sort key;
+/// the points-box and geo nodes; 31, the geo-distance sort key;
 /// 32, the aggregations' per-segment match counts
 /// ([`crate::ffm_bridge::ffi_jvm_reader_aggregate_alloc`]'s `out_seg_counts`);
 /// 33, the block-join, span, interval, combined-field and function-score
-/// nodes ([`crate::jvm_nodes`], M10 T10.7); 34, the term-range node and
-/// segments with completion postings formats (M13 T13.6); 35, the point-set
+/// nodes ([`crate::jvm_nodes`]); 34, the term-range node and
+/// segments with completion postings formats; 35, the point-set
 /// node, and points boxes of any width (`integer`, `float`, `ip`, ...); 36,
 /// numeric `terms` in aggregation trees (`NUMERIC_TERMS`), and each tree
 /// `terms` node's order byte; 37, the tree's `MISSING` prefix (a numeric
@@ -150,7 +150,7 @@ const NODE_GEO_POINT: u8 = 17;
 const NODE_GEO_SHAPE: u8 = 18;
 const NODE_GEO_SHAPE_BOX: u8 = 19;
 /// After the M10 kinds ([`crate::jvm_nodes::NODE_LAST`]): `TermRangeQuery`
-/// under its constant-score rewrite (M13 T13.6).
+/// under its constant-score rewrite.
 pub(crate) const NODE_TERM_RANGE: u8 = 25;
 const _: () = assert!(NODE_TERM_RANGE == crate::jvm_nodes::NODE_LAST + 1);
 /// `PointInSetQuery` (`terms` on a numeric or `ip` field, `IntPoint.newSetQuery`
@@ -510,7 +510,7 @@ pub unsafe extern "C" fn ffi_open_jvm_reader(
         // Mapped, not copied: a shard's postings are gigabytes, and Lucene's own
         // `MMapDirectory` -- what OpenSearch searches with -- maps them too. The
         // mapping lives as long as the segment reader, which is why closing the
-        // handle matters (M2 T2.6).
+        // handle matters.
         // A `rust_encrypted` shard's path is bound to an encrypting directory
         // over the mapping (`store.rs`), which decrypts each file on open.
         let dir = crate::store::shard_directory(path).map_err(|e| {
@@ -2735,7 +2735,7 @@ fn count_segment(seg: &OpenSegment<'_>, query: &JvmQuery) -> Result<i64, FfiStat
 /// | `17` geo points | `field`, `relation: u8`, geometries ([`decode_geometries`]) | `LatLonPointQuery` (`newPolygonQuery`, `newGeometryQuery`) |
 /// | `18` geo shapes | `field`, `relation: u8`, geometries | `LatLonShapeQuery` (`LatLonShape.newGeometryQuery`) |
 /// | `19` geo shapes in a box | `field`, `relation: u8`, `min_lat`, `max_lat`, `min_lon`, `max_lon` (`f64`) | `LatLonShapeBoundingBoxQuery` (`LatLonShape.newBoxQuery`) |
-/// | `20`-`24` | [`crate::jvm_nodes`] | block join, spans, intervals, combined fields, OpenSearch's function score (M10 T10.7) |
+/// | `20`-`24` | [`crate::jvm_nodes`] | block join, spans, intervals, combined fields, OpenSearch's function score |
 ///
 /// A relation is `ShapeField.QueryRelation`'s ordinal: `0` `INTERSECTS`, `1`
 /// `WITHIN`, `2` `DISJOINT`, `3` `CONTAINS`. The geo nodes (16-19) run as
@@ -3332,7 +3332,7 @@ pub(crate) mod tests {
         handle
     }
 
-    /// M8 T8.5: an index Lucene 9.0-10.3 wrote -- every retired postings,
+    /// An index Lucene 9.0-10.3 wrote -- every retired postings,
     /// term-dictionary, points and segment-info generation -- opens through
     /// the plugin's own entry point and answers term and boolean queries
     /// with the current codec's (10.4.0's) hits, scores and totals -- the
@@ -3386,7 +3386,7 @@ pub(crate) mod tests {
         }
     }
 
-    /// M13 T13.6: an index whose fields are written in the completion
+    /// An index whose fields are written in the completion
     /// postings formats (OpenSearch's `completion` fields; `Completion104`,
     /// and 9.0-10.3's under `bwc-completion`) opens through the plugin's entry
     /// point and answers queries on its other fields, deletions applied --
@@ -6265,7 +6265,7 @@ pub(crate) mod tests {
         assert_eq!(docs(&tree(N::Re("body", "d[aeiou]g"))), dog);
         assert_eq!(docs(&tree(N::Re("body", "(dog|nosuch)"))), dog);
         assert_eq!(docs(&tree(N::Re("body", "#"))), Vec::<i32>::new());
-        // M13 T13.6: a term range, each end open, closed or exclusive.
+        // A term range, each end open, closed or exclusive.
         assert_eq!(
             docs(&tree(N::Tr("body", Some("dog"), Some("dog"), true, true))),
             dog

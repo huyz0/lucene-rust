@@ -42,7 +42,7 @@ import org.apache.lucene.util.QueryBuilder;
 import org.apache.lucene.util.Version;
 
 /**
- * Java side of M7's benchmark pairs; the Rust side is {@code
+ * Java side of the benchmark pairs; the Rust side is {@code
  * benchmarks/rust-runner/src/micro_m7.rs}, with the same bench and case names.
  *
  * <p>The queries are parsed by the fixture generators' own {@code parse} ({@link GenM7Queries},

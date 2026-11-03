@@ -75,7 +75,7 @@ public final class RestStatsAction extends BaseRestHandler {
             b.field("lucene", stats.fetchLuceneNanos());
             b.field("lucene_count", stats.fetchLuceneCount());
             b.endObject();
-            // Engines this node has created for Rust-engine indices, by kind (M5).
+            // Engines this node has created for Rust-engine indices, by kind.
             b.startObject("engines");
             b.field("rust", RustEngineFactory.RUST.get());
             b.field("java", RustEngineFactory.JAVA.get());

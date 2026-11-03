@@ -1,4 +1,4 @@
-//! M13 T13.5a: `QueryAnalyzer`, `QueryDecomposer` and `TermWeightor` against
+//! `QueryAnalyzer`, `QueryDecomposer` and `TermWeightor` against
 //! Lucene 10.5.0 (`fixtures/src/GenMonitor.java`): every query of
 //! `fixtures/corpus/monitor-queries.txt`, parsed with the classic parser and
 //! `StandardAnalyzer` as the generator parses it, to its decomposition, its

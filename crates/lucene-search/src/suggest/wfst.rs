@@ -1,4 +1,4 @@
-//! `org.apache.lucene.search.suggest.fst.WFSTCompletionLookup` (M13 T13.3b):
+//! `org.apache.lucene.search.suggest.fst.WFSTCompletionLookup`:
 //! a weighted automaton over the suggestions. Each term's FST output is its
 //! weight, encoded as `Integer.MAX_VALUE - weight` so that the smallest output
 //! is the best suggestion, and `Util.shortestPaths` finds the top completions

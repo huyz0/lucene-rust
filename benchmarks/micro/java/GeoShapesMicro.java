@@ -28,7 +28,7 @@ import org.apache.lucene.store.FSDirectory;
 import org.apache.lucene.util.BytesRef;
 
 /**
- * Java side of the shape benchmark pair (M9 T9.3); the Rust side is {@code
+ * Java side of the shape benchmark pair; the Rust side is {@code
  * benchmarks/rust-runner/src/micro_geo_shapes.rs}, with the same case names. {@code build <dir>}
  * writes the corpus once -- 200 000 documents, each one {@code LatLonShape} (half polygons, a
  * quarter lines, a quarter points; half of them in twenty clusters) with its shape doc value under

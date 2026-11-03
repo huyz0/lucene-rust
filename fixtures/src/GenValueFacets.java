@@ -67,7 +67,7 @@ import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.IOUtils;
 
 /**
- * M13 T13.4d1: value, range, range-on-range and facet-set counting. Writes {@code value_facets/}:
+ * Value, range, range-on-range and facet-set counting. Writes {@code value_facets/}:
  *
  * <ul>
  *   <li>{@code multi/}: {@link #DOCS} documents in four segments of 700, 500, 300 and 60

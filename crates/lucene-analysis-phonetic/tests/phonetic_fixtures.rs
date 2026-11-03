@@ -1,4 +1,4 @@
-//! M12 T12.3: the phonetic encoders and filters against Commons Codec 1.17.2
+//! The phonetic encoders and filters against Commons Codec 1.17.2
 //! and Lucene 10.5.0.
 //!
 //! `fixtures/src/GenAnalysisPhonetic.java` writes `analysis_phonetic/`:

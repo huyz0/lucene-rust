@@ -1,4 +1,4 @@
-//! M12 T12.7: `SimpleDateFormat`'s parse against the generated table
+//! `SimpleDateFormat`'s parse against the generated table
 //! (`miscellaneous/date_locales.rs`), in every locale JDK 21 and 25 agree on
 //! (`GenAnalysisDateLocales.java`'s `dates.txt`) and, as JDK 25 alone
 //! answers, in all 1,151 of the table's (`dates_jdk25.txt`, no text left out

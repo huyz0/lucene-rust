@@ -13,7 +13,7 @@ import org.apache.lucene.analysis.hunspell.HunspellStemFilter;
 import org.apache.lucene.analysis.hunspell.SortingStrategy;
 
 /**
- * M11 T11.4's Hunspell pair (the Rust twin is {@code
+ * The Hunspell pair (the Rust twin is {@code
  * benchmarks/rust-runner/src/micro_hunspell.rs}): {@code WhitespaceTokenizer} + {@code
  * HunspellStemFilter} (dedup on) per dictionary of {@code fixtures/corpus/hunspell} over the words
  * of its fixture ({@code fixtures/data/hunspell/<name>.tsv}, {@code W} lines, 100 to a document).

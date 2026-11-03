@@ -1,4 +1,4 @@
-//! M10 T10.2, differentially against Lucene 10.5.0: `fixtures/src/GenBlockJoin.java`.
+//! Differentially against Lucene 10.5.0: `fixtures/src/GenBlockJoin.java`.
 //!
 //! A four-segment index of two-level blocks (grandchildren, children,
 //! parents; empty and single-child blocks), with whole blocks deleted in two

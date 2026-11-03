@@ -6,7 +6,7 @@ import org.apache.lucene.analysis.TokenStream;
 import org.apache.lucene.search.Query;
 
 /**
- * M13 T13.2: reaches {@code WeightedSpanTermExtractor}'s protected {@code
+ * Reaches {@code WeightedSpanTermExtractor}'s protected {@code
  * setMaxDocCharsToAnalyze}, which the extractor needs before it reads any token (its default
  * limit is zero characters).
  */

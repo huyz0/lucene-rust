@@ -1,4 +1,4 @@
-//! M13 T13.5: `MemoryIndex` against Lucene 10.5.0
+//! `MemoryIndex` against Lucene 10.5.0
 //! (`fixtures/src/GenMemoryIndex.java`): every document of
 //! `fixtures/corpus/memory-index-docs.txt` under eight configurations
 //! (analyzers, similarities, offsets, payloads, gaps), its `toStringDebug()`

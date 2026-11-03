@@ -37,7 +37,7 @@ import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.packed.PackedInts;
 
 /**
- * Java side of the query-time join benchmark pair (M10 T10.3); the Rust side is {@code
+ * Java side of the query-time join benchmark pair; the Rust side is {@code
  * benchmarks/rust-runner/src/micro_query_join.rs}, with the same case names. {@code build <dir>}
  * writes the corpus once -- 200 000 documents in four segments, half "from" documents referencing
  * one of 20 000 keys (a {@code SORTED} {@code fk}, a {@code SORTED_SET} {@code fkm} of one to three

@@ -20,7 +20,7 @@ import org.apache.lucene.search.suggest.InputIterator;
 import org.apache.lucene.util.BytesRef;
 
 /**
- * M13 T13.3e: the spell package's string distances, {@code SuggestWord} comparators, {@code
+ * The spell package's string distances, {@code SuggestWord} comparators, {@code
  * SuggestWordQueue} and {@code PlainTextDictionary}. Writes {@code spell_distances/}: {@code
  * words.tsv} (one word per line, the line number is its index), {@code distances.tsv} (distance,
  * i, j, {@code Float.floatToIntBits} in hex), {@code suggest_words.tsv} (string, score bits, freq,

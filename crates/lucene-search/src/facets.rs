@@ -59,13 +59,13 @@
 //! doc in the segment" passes `0..max_doc` (every live doc ID) as that
 //! slice — no separate code path is needed or added.
 //!
-//! **The taxonomy index exists too** ([`taxonomy`], M13 T13.4a): a
+//! **The taxonomy index exists too** ([`taxonomy`]): a
 //! [`taxonomy::DirectoryTaxonomyWriter`] hands out category ordinals,
 //! [`FacetsConfig::build`] indexes a document's [`FacetField`]s as those
 //! ordinals (and its [`SortedSetDocValuesFacetField`]s as above), and a
 //! [`taxonomy::DirectoryTaxonomyReader`] maps ordinals back to paths.
 //!
-//! **The counting layer is Java's too** (M13 T13.4b). [`Facets`] is the
+//! **The counting layer is Java's too**. [`Facets`] is the
 //! `Facets` contract (every method returns Java's errors as
 //! `Err(IllegalArgument)`); a result's numbers are [`FacetValue`]s, Java's
 //! `Number` (`Integer` for counts and int sums, `Float` for float sums).
@@ -74,12 +74,12 @@
 //! association facets count or aggregate them, and [`MultiFacets`] routes
 //! dims to the facets that hold them.
 //!
-//! **Drill-down is Java's too** (M13 T13.4c). [`DrillDownQuery`] narrows a
+//! **Drill-down is Java's too**. [`DrillDownQuery`] narrows a
 //! base query to chosen categories, [`FacetQuery`]/[`MultiFacetQuery`] are
 //! a category's term as a query, and [`DrillSideways`] counts, for each dim
 //! drilled into, the documents matching every other dim.
 //!
-//! **Value, range and facet-set counting are Java's too** (M13 T13.4d1).
+//! **Value, range and facet-set counting are Java's too**.
 //! [`LongValueFacetCounts`] and [`StringValueFacetCounts`] count each
 //! distinct value of a field; [`range`] counts `long`/`double` values into
 //! ranges ([`range::LongRangeFacetCounts`], [`range::DoubleRangeFacetCounts`],

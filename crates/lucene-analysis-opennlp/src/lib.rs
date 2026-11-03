@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! lucene-analysis-opennlp: Lucene's `analysis-opennlp` module (M12 T12.5)
+//! lucene-analysis-opennlp: Lucene's `analysis-opennlp` module
 //! -- `OpenNLPTokenizer` (sentence detection, then tokenization, each token
 //! with its sentence index), `OpenNLPPOSFilter` (the part-of-speech tag as
 //! the token type), `OpenNLPChunkerFilter` (the chunk tag as the type),

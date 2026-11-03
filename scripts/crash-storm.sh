@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# M4's crash campaign (T4.4): crates/lucene-search/examples/crash_fuzz.rs
+# the crash campaign: crates/lucene-search/examples/crash_fuzz.rs
 # driven hard instead of long. Where the fixed scripts/crash-fuzz.sh run is a
 # regression check, this spends a time budget on as many *different*
 # conditions as it can:

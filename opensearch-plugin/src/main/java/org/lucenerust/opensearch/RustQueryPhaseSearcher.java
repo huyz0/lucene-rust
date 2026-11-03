@@ -50,7 +50,7 @@ import java.util.List;
 
 /**
  * Runs the query phase of a shard search natively when the whole request is inside the supported
- * matrix, and on Lucene otherwise -- per query, transparently (M2 T2.4).
+ * matrix, and on Lucene otherwise -- per query, transparently.
  *
  * <p>This hooks {@link QueryPhaseSearcher}, the extension point OpenSearch gives a plugin for the
  * query phase, rather than an {@code EngineFactory}: the query phase is the only part of a search

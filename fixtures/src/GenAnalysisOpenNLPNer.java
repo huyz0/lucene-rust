@@ -34,7 +34,7 @@ import opennlp.tools.util.featuregen.WordClusterDictionary;
 import org.apache.lucene.analysis.opennlp.tools.NLPNERTaggerOp;
 
 /**
- * M14: Lucene's {@code NLPNERTaggerOp} over OpenNLP 2.5.3's {@code NameFinderME}, compared by
+ * Lucene's {@code NLPNERTaggerOp} over OpenNLP 2.5.3's {@code NameFinderME}, compared by
  * {@code crates/lucene-analysis-opennlp/tests/opennlp_ner_fixtures.rs}.
  *
  * <p>The name finder models are trained here by OpenNLP on a seeded synthetic corpus of sentences

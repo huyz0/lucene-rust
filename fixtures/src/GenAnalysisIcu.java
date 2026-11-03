@@ -32,7 +32,7 @@ import org.apache.lucene.analysis.tokenattributes.PositionIncrementAttribute;
 import org.apache.lucene.analysis.tokenattributes.TypeAttribute;
 
 /**
- * M12 T12.4: analysis-icu over ICU4J 77.1 ({@code crates/lucene-analysis-icu/tests/icu_fixtures.rs}
+ * Analysis-icu over ICU4J 77.1 ({@code crates/lucene-analysis-icu/tests/icu_fixtures.rs}
  * compares).
  *
  * <ul>

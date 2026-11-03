@@ -51,7 +51,7 @@ import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.IOUtils;
 
 /**
- * M13 T13.4d2: sorted-set facet counting, drill-sideways over a sorted-set state, random sampling
+ * Sorted-set facet counting, drill-sideways over a sorted-set state, random sampling
  * and the {@code Sort} overloads. Writes {@code sortedset_facets/}:
  *
  * <ul>

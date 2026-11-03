@@ -11,7 +11,7 @@ import org.apache.lucene.util.BytesRef;
 
 /**
  * Differential fixture for {@code LuceneTestCase.newField}/{@code newStringField}/{@code
- * newTextField} (M14.h): the field type Lucene 10.5.0's test framework upgrades each base type to
+ * newTextField}: the field type Lucene 10.5.0's test framework upgrades each base type to
  * for a seeded {@code java.util.Random}, and the type it reuses for a name it has seen.
  *
  * <p>Writes {@code new_field.txt}: for each seed and case, {@code <seed> <case> <type> <next>},

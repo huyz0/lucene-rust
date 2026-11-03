@@ -1,4 +1,4 @@
-//! M11 T11.4: Hunspell against Lucene on this repository's own dictionaries.
+//! Hunspell against Lucene on this repository's own dictionaries.
 //!
 //! `fixtures/src/GenHunspell.java` loads each `fixtures/corpus/hunspell/*.aff`
 //! (with its `.dic`) twice -- case-sensitive and `ignoreCase` -- and records,

@@ -1,4 +1,4 @@
-//! M12's pairs (`benchmarks/micro/java/AnalysisM12Micro.java` is the Java
+//! The pairs (`benchmarks/micro/java/AnalysisM12Micro.java` is the Java
 //! twin): the language modules' filters over corpora both sides generate
 //! from `SweepMicro.Rng`.
 

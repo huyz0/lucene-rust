@@ -1,4 +1,4 @@
-//! The spatial3d query benchmark pair (M9 T9.4), against
+//! The spatial3d query benchmark pair, against
 //! `benchmarks/micro/java/Geo3dPointsMicro.java`: `PointInGeo3DShapeQuery`
 //! over circles, boxes, polygons and paths, and the distance and
 //! outside-distance sorts, over the 300 000-point WGS84 index the Java side

@@ -43,7 +43,7 @@ import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
 
 /**
- * M10 T10.6's more-like-this and common-terms fixture: {@code mlt/index}, a four-segment index
+ * The more-like-this and common-terms fixture: {@code mlt/index}, a four-segment index
  * with deletions in two segments, and two result files.
  *
  * <p>Fields: {@code id} (StringField), {@code body} (stored text, no term vectors), {@code tv}

@@ -1,4 +1,4 @@
-//! M13 T13.4b against `fixtures/src/GenFacetCounts.java`: taxonomy facet
+//! Against `fixtures/src/GenFacetCounts.java`: taxonomy facet
 //! counting.
 //!
 //! - Every `Facets` call `GenFacetCounts.probe` makes -- over

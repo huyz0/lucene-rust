@@ -1,4 +1,4 @@
-//! Boundary and error handling of `FreeTextSuggester` (M13 T13.3c) that the
+//! Boundary and error handling of `FreeTextSuggester` that the
 //! Java-fixture differential tests do not reach.
 
 use std::collections::BTreeSet;

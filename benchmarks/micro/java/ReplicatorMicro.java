@@ -15,7 +15,7 @@ import org.apache.lucene.store.IOContext;
 import org.apache.lucene.store.IndexInput;
 
 /**
- * M14 T14.3's replicator pairs (the Rust twin is {@code
+ * The replicator pairs (the Rust twin is {@code
  * benchmarks/rust-runner/src/micro_replicator.rs}), over the 25 files of the NRT point in {@code
  * fixtures/data/replicator/plain} (copied to a scratch directory first):
  *

@@ -1,4 +1,4 @@
-//! M11 part 3's remaining pairs (`benchmarks/micro/java/AnalysisMiscMicro.java`
+//! The remaining pairs (`benchmarks/micro/java/AnalysisMiscMicro.java`
 //! is the Java twin): the decompounders, the deprecated `WordDelimiterFilter`,
 //! `ClassicAnalyzer`, `WikipediaTokenizer`, `DateRecognizerFilter` and
 //! `Word2VecSynonymFilter`, each over a corpus both sides generate from

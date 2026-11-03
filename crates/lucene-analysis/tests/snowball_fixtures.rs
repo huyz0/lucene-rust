@@ -1,4 +1,4 @@
-//! M11 T11.3: every Snowball stemmer against Lucene's `SnowballFilter`.
+//! Every Snowball stemmer against Lucene's `SnowballFilter`.
 //!
 //! `fixtures/src/GenSnowball.java` stems, per language, every string of the
 //! stemmer's `Among` tables with random stems around it, random stem + suffix

@@ -13,7 +13,7 @@ import org.apache.lucene.search.suggest.analyzing.FreeTextSuggester;
 import org.apache.lucene.util.BytesRef;
 
 /**
- * M13 T13.3c's FreeText pair (the Rust twin is {@code benchmarks/rust-runner/src/micro_freetext.rs}) over the phrases and
+ * The FreeText pair (the Rust twin is {@code benchmarks/rust-runner/src/micro_freetext.rs}) over the phrases and
  * queries of {@code AnalyzingSuggestMicro}. {@code freetext_lookup}: top 5 for every query with a token, units: lookups;
  * {@code freetext_build}: a build over all phrases, units: phrases. Output is {@code name	ns_per_unit	units}.
  */

@@ -17,7 +17,7 @@ import org.apache.lucene.queryparser.classic.QueryParser;
 import org.apache.lucene.store.FSDirectory;
 
 /**
- * M13 T13.5d: a query index the Rust port wrote ({@code write_monitor_index_fixture}), opened by
+ * A query index the Rust port wrote ({@code write_monitor_index_fixture}), opened by
  * Lucene's own {@code Monitor} with a writable {@code WritableQueryIndex}. It must pass {@code
  * CheckIndex}, hold the same 40 queries in 59 pieces Lucene itself writes for the corpus, and match
  * each document of {@code fixtures/data/monitor/match.tsv} to the same query ids.

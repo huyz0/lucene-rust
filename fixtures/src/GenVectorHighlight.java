@@ -55,7 +55,7 @@ import org.apache.lucene.search.vectorhighlight.WeightedFragListBuilder;
 import org.apache.lucene.store.FSDirectory;
 
 /**
- * M13 T13.2 ({@code vectorhighlight}): the docs of {@code matchhighlight-docs.tsv} (and a few
+ * ({@code vectorhighlight}): the docs of {@code matchhighlight-docs.tsv} (and a few
  * more) indexed with term vectors (positions and offsets) in {@code tv}, the same text analysed
  * without stop words in {@code tvb}, term vectors without offsets in {@code tvpos}, without
  * positions in {@code tvterms}, with a token over two ({@link QbFilter}) in {@code tvsyn}, and no

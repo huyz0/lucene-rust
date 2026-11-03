@@ -55,7 +55,7 @@ import org.apache.lucene.analysis.opennlp.tools.NLPSentenceDetectorOp;
 import org.apache.lucene.analysis.opennlp.tools.NLPTokenizerOp;
 
 /**
- * M12 T12.5: Lucene's analysis-opennlp over OpenNLP 2.5.3, compared by {@code
+ * Lucene's analysis-opennlp over OpenNLP 2.5.3, compared by {@code
  * crates/lucene-analysis-opennlp/tests/opennlp_fixtures.rs}.
  *
  * <p>The models are trained here, by OpenNLP's own trainers, on a seeded synthetic English corpus

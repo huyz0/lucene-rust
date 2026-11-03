@@ -46,7 +46,7 @@ import java.util.Map;
 import java.util.function.Predicate;
 
 /**
- * The M10 half of {@link QueryEncoder} (T10.7): the OpenSearch shapes {@code lucene-join} and
+ * The M10 half of {@link QueryEncoder}: the OpenSearch shapes {@code lucene-join} and
  * {@code lucene-queries} back natively, as the nodes {@code crates/lucene-ffi/src/jvm_nodes.rs}
  * reads.
  *

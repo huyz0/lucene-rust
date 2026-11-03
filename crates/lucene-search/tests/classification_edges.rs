@@ -1,4 +1,4 @@
-//! M14 T14.3: the classification module's edges the Lucene fixture
+//! The classification module's edges the Lucene fixture
 //! (`classification_fixtures.rs`) does not reach -- missing fields, empty
 //! classes, Java's exceptions (`subList`, `/ by zero`, a missing term
 //! vector) and the confusion matrix over documents it skips -- over small

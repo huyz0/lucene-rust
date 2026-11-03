@@ -1,4 +1,4 @@
-//! Many indexing threads, one index -- M4's T4.3, Java's `DocumentsWriter`
+//! Many indexing threads, one index -- the T4.3, Java's `DocumentsWriter`
 //! (`DocumentsWriterPerThreadPool`, `DocumentsWriterFlushControl`,
 //! `DocumentsWriterFlushQueue`) plus the executor half of
 //! `ConcurrentMergeScheduler`, in the shape `PLAN.md` §3.5 point 6 sets:

@@ -1,4 +1,4 @@
-//! The block-join benchmark pair (M10 T10.2), against
+//! The block-join benchmark pair, against
 //! `benchmarks/micro/java/JoinMicro.java`: `ToParentBlockJoinQuery` in each
 //! score mode, alone and inside a boolean, `ToChildBlockJoinQuery`,
 //! `ParentsChildrenBlockJoinQuery`, `ParentChildrenBlockJoinQuery` over 200

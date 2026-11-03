@@ -1,4 +1,4 @@
-//! Writes taxonomy indexes for `VerifyTaxonomy` (M13 T13.4a), each in its
+//! Writes taxonomy indexes for `VerifyTaxonomy`, each in its
 //! own directory beside a `dump.tsv` of what this port's reader reads back:
 //!
 //! - `small-cache`: an `LRU_STRING` cache of 3, so nearly every add evicts

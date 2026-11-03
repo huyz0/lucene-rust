@@ -48,7 +48,7 @@ import org.apache.lucene.store.FSDirectory;
 import org.apache.lucene.util.BytesRef;
 
 /**
- * M10 T10.6's benchmark pair, against {@code benchmarks/rust-runner/src/micro_queries.rs}: per
+ * The benchmark pair, against {@code benchmarks/rust-runner/src/micro_queries.rs}: per
  * word, one top-10 search of each case (interval queries, {@code CommonTermsQuery}, {@code
  * MoreLikeThisQuery}, span and payload queries) over a 200 000-document, four-segment index of text with
  * positions ({@code body}) and positions with one-byte payloads ({@code pay}).

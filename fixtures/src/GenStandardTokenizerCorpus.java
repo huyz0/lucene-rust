@@ -21,7 +21,7 @@ import org.apache.lucene.analysis.tokenattributes.PositionIncrementAttribute;
 import org.apache.lucene.analysis.tokenattributes.TypeAttribute;
 
 /**
- * M7's corpus-scale differential fixture for {@code StandardTokenizer} ({@code
+ * The corpus-scale differential fixture for {@code StandardTokenizer} ({@code
  * crates/lucene-analysis/tests/standard_tokenizer_corpus.rs}): Lucene 10.5.0's {@code
  * StandardTokenizer} and {@code StandardAnalyzer} over a few megabytes of real multilingual text,
  * recorded as digests rather than tokens.

@@ -1,4 +1,4 @@
-//! M10 T10.6, differentially against Lucene 10.5.0:
+//! Differentially against Lucene 10.5.0:
 //! `fixtures/src/GenMoreLikeThis.java`'s `common.tsv`.
 //!
 //! `CommonTermsQuery` over a four-segment index with deletions: fourteen

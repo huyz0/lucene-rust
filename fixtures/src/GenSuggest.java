@@ -16,7 +16,7 @@ import org.apache.lucene.store.OutputStreamDataOutput;
 import org.apache.lucene.util.BytesRef;
 
 /**
- * M13 T13.3b: the suggesters of {@code lucene-suggest}, one fixture directory {@code suggest/}.
+ * The suggesters of {@code lucene-suggest}, one fixture directory {@code suggest/}.
  * {@code terms.tsv} is the build input ({@code term TAB weight}, input order); {@code tst.tsv} is
  * {@code TSTLookup}'s answer to every short prefix of it, with and without {@code onlyMorePopular};
  * {@code tst.bin} is {@code store()}'s bytes; {@code tst_get.tsv} is {@code get()}.

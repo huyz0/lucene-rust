@@ -15,7 +15,7 @@ import org.apache.lucene.queryparser.classic.QueryParser;
 import org.apache.lucene.search.Query;
 
 /**
- * M13 T13.5c's pairs (the Rust twin is {@code benchmarks/rust-runner/src/micro_monitor.rs}): a
+ * The pairs (the Rust twin is {@code benchmarks/rust-runner/src/micro_monitor.rs}): a
  * {@code Monitor} over the 41 queries of {@code fixtures/corpus/monitor-queries.txt}. {@code
  * mon_register}: a fresh monitor, all queries registered (units: queries); {@code mon_match}: four
  * documents matched against the registered set (units: documents). Output is {@code

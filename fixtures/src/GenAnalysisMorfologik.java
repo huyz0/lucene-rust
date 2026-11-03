@@ -45,7 +45,7 @@ import org.apache.lucene.analysis.tokenattributes.PositionIncrementAttribute;
 import org.apache.lucene.analysis.uk.UkrainianMorfologikAnalyzer;
 
 /**
- * M12 T12.3: Lucene's analysis-morfologik module and the Morfologik 2.1.9 lookups it runs.
+ * Lucene's analysis-morfologik module and the Morfologik 2.1.9 lookups it runs.
  *
  * <p>Writes {@code analysis_morfologik/}:
  *

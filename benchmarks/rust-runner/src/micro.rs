@@ -1048,7 +1048,7 @@ fn bench_vectors(w: Duration, m: Duration) {
     }
 }
 
-/// The scalar-quantized vector kernels (M7 T7.6) -- see
+/// The scalar-quantized vector kernels -- see
 /// `SweepMicro.quantized`: the per-candidate distance of each
 /// `ScalarEncoding` over 1024 stored vectors, and the per-vector
 /// `OptimizedScalarQuantizer.scalarQuantize` the writer and every query run.

@@ -1,4 +1,4 @@
-//! Block integrity under merges -- M10's named risk: a merge that splits or
+//! Block integrity under merges -- the named risk: a merge that splits or
 //! reorders a document block breaks every join silently. Seeded streams of
 //! block adds, block updates (`updateDocuments` on a term every document of
 //! the block carries), whole-block deletes, flushes, commits and natural

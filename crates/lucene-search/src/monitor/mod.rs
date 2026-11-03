@@ -1,4 +1,4 @@
-//! `org.apache.lucene.monitor` (M13 T13.5): the percolator. Queries are
+//! `org.apache.lucene.monitor`: the percolator. Queries are
 //! registered once; a document batch is matched against all of them,
 //! narrowed by a presearcher over each query's term tree.
 //!

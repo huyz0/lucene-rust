@@ -1,4 +1,4 @@
-//! M7's benchmark pairs, against `benchmarks/micro/java/M7Micro.java`: the
+//! The benchmark pairs, against `benchmarks/micro/java/M7Micro.java`: the
 //! queries and similarities M7 brought into the scorer tree, the sorted
 //! searches' comparator pruning, `QueryBuilder`, and stored-fields writes in
 //! both modes (the zlib port behind `BEST_COMPRESSION`).

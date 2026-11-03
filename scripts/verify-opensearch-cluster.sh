@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# M5's cluster proof: three OpenSearch 3.9.0 nodes with the lucene-rust plugin,
+# the cluster proof: three OpenSearch 3.9.0 nodes with the lucene-rust plugin,
 # two serving Rust-engine indices with the Rust writer and one
 # (lucene_rust.engine.node_enabled: false) with OpenSearch's own engine, then
 # opensearch-plugin/e2e/verify_cluster.py: document replication, peer recovery,

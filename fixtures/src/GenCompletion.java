@@ -26,7 +26,7 @@ import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
 
 /**
- * M13 T13.3d: {@code suggest.document}'s completion postings format. One segment, one suggest field
+ * {@code suggest.document}'s completion postings format. One segment, one suggest field
  * (KeywordAnalyzer, so a term is its surface form); {@code docs.tsv} is the input ({@code doc TAB
  * surface TAB weight}), {@code id.hex} the segment id, {@code _0_Completion104_0.cmp/.lkp} the
  * bytes, {@code lookups.tsv} the answers of {@code PrefixCompletionQuery}.

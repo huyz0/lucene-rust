@@ -1,4 +1,4 @@
-//! Shared helpers for M7's search-infrastructure fixture tests: manifest
+//! Shared helpers for the search-infrastructure fixture tests: manifest
 //! loading and the query grammar the Java generators share
 //! (`GenMixedBooleanScoring.parse` / `GenSortedSearch.parse`).
 #![allow(dead_code, clippy::arithmetic_side_effects)]

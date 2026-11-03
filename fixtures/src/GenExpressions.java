@@ -45,7 +45,7 @@ import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
 
 /**
- * M14 T14.2 ({@code expressions}): what {@code JavascriptCompiler} makes of every expression of
+ * ({@code expressions}): what {@code JavascriptCompiler} makes of every expression of
  * {@code fixtures/corpus/expressions.txt} (the expressions of Lucene's own expression tests) and of
  * 4000 random ones, 1500 random token soups and 65 long runs of one precedence level's operators
  * (a fixed seed), compiled with the default functions ({@code D}) and with two

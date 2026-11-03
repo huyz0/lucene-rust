@@ -1,4 +1,4 @@
-//! M11 T11.5: synonyms against `fixtures/src/GenAnalysisSynonym.java`.
+//! Synonyms against `fixtures/src/GenAnalysisSynonym.java`.
 //!
 //! - `maps.tsv`: the Solr and WordNet rule files of `fixtures/corpus/` parsed
 //!   with each option set, every map entry (key, keepOrig, outputs) in FST

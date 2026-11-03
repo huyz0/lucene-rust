@@ -54,7 +54,7 @@ import org.apache.lucene.store.FSDirectory;
 import org.apache.lucene.util.BytesRef;
 
 /**
- * M10 T10.6's intervals fixture: {@code intervals/index}, a four-segment index with deletions in
+ * The intervals fixture: {@code intervals/index}, a four-segment index with deletions in
  * two segments, and {@code intervals/queries.tsv}, every {@code Intervals} factory's source over
  * it.
  *

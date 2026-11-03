@@ -267,7 +267,7 @@
 //! (`postings.impacts:<f>`, `postings.doc_id_runs:<f>`), against the term's
 //! fully decoded doc list. Compound (`.cfs`) segments,
 //! which this module used to skip, are checked through
-//! [`crate::compound_reader::CompoundReader`] like any other (M4 T4.6).
+//! [`crate::compound_reader::CompoundReader`] like any other.
 //! A previous version of this list also named the `Float16` vector encoding:
 //! that was a `main`-ism. 10.5.0's `VectorEncoding` has exactly `BYTE` and
 //! `FLOAT32`, so there is no third encoding to be out of scope -- and this
@@ -11880,7 +11880,7 @@ mod tests {
         std::fs::remove_dir_all(&dst).ok();
     }
 
-    /// Until M4's T4.6 every per-format check returned **silently** for a
+    /// Until the T4.6 every per-format check returned **silently** for a
     /// compound segment -- so every segment real Lucene flushed passed this
     /// module having been checked for nothing but its `.si`, `.fnm` and
     /// stored-field count. Compound segments now reach the checks only through

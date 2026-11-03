@@ -40,7 +40,7 @@ import org.apache.lucene.util.fst.FST;
 import org.apache.lucene.util.fst.IntsRefFSTEnum;
 
 /**
- * M12 T12.1: Lucene's analysis-kuromoji module -- JapaneseTokenizer over the IPADIC dictionary.
+ * Lucene's analysis-kuromoji module -- JapaneseTokenizer over the IPADIC dictionary.
  *
  * <p>Writes {@code analysis_kuromoji/}:
  *

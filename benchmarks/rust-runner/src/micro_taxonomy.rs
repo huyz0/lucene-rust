@@ -1,4 +1,4 @@
-//! M13 T13.4a's taxonomy pair (the Java twin is
+//! The taxonomy pair (the Java twin is
 //! `benchmarks/micro/java/TaxonomyMicro.java`) over 20,000 labels
 //! `dim<i%10> / l<(i/10)%50> / v<i>` (20,511 categories with their
 //! ancestors). `taxo_add_new`: a fresh `DirectoryTaxonomyWriter` (default

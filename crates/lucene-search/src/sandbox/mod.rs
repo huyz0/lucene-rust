@@ -15,7 +15,7 @@
 //! `merge_policy::merge_on_flush`.
 //!
 //! `queries/FuzzyLikeThisQuery` lives at [`crate::fuzzy_like_this`], where
-//! M13's `CorePlusExtensionsParser` needed it first.
+//! the `CorePlusExtensionsParser` needed it first.
 
 pub mod document;
 pub mod facet;

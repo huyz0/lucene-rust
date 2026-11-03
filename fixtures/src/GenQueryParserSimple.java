@@ -14,7 +14,7 @@ import org.apache.lucene.search.BooleanClause;
 import org.apache.lucene.search.Query;
 
 /**
- * M13 T13.1: {@code SimpleQueryParser} over {@code fixtures/corpus/queryparser-classic.txt} and
+ * {@code SimpleQueryParser} over {@code fixtures/corpus/queryparser-classic.txt} and
  * {@code fixtures/corpus/queryparser-simple.txt} ({@code <config>.tsv}), and over 3,000 seeded
  * joins of its operator fragments ({@code fragments.txt}, then {@code frag_<config>.tsv}). Rows
  * are {@link GenQueryParserClassic}'s: the escaped query, then {@code Q}, {@code toString("f")}

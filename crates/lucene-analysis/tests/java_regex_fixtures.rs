@@ -1,4 +1,4 @@
-//! M12 T12.7: `java.util.regex` beyond the shim -- `util/java_backtrack.rs`
+//! `java.util.regex` beyond the shim -- `util/java_backtrack.rs`
 //! (and the shim, for what it runs) against `Pattern` itself, over
 //! `fixtures/src/GenJavaRegex.java`'s curated and generated patterns.
 
