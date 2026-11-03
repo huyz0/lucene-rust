@@ -105,8 +105,8 @@ fn top_dims_keeps_the_replaced_dims_ordinal_like_java() {
     index.with(|searcher, reader, taxo| {
         let fc = collect(searcher, &match_all(reader), false);
         let facets = FastTaxonomyFacetCounts::new(taxo, &config, &fc).unwrap();
-        // Root's children are walked newest first: M2 (1) gets in, then M1
-        // (3) replaces it.
+        // Root's children are walked newest first: M2 (1) gets in, then
+        // M1 (3) replaces it.
         let top = facets.get_top_dims(1, 5).unwrap();
         assert_eq!(top.len(), 1);
         assert_eq!(top[0].dim, "M1");

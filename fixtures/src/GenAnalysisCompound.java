@@ -19,7 +19,7 @@ import org.apache.lucene.analysis.standard.StandardTokenizer;
 import org.xml.sax.InputSource;
 
 /**
- * M11 T11.6: the compound package. Loads {@code fixtures/corpus/hyphenation-test.xml} (a toy
+ * The compound package. Loads {@code fixtures/corpus/hyphenation-test.xml} (a toy
  * grammar written for this project) into a {@link HyphenationTree}, records its hyphenation points
  * for words ({@code points.words}: "remain push word -> points|-") and runs the dictionary and
  * hyphenation decompounders, with their options, over {@code fixtures/corpus/analysis-compound.txt}

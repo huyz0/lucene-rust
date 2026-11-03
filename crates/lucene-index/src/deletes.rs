@@ -231,10 +231,8 @@ pub fn mark_deleted(
     // but `live_docs` is a caller-supplied `&FixedBitSet` and `max_doc` a
     // separate caller-supplied `usize`: if they ever disagree, bounding on
     // `max_doc` and then indexing `bits` is precisely the shape
-    // `FixedBitSet::get` turns into a panic -- in release as well as debug
-    // since c41, and a silently wrong ghost bit before that. This function's
-    // own doc
-    // comment promises `DocOutOfRange` "rather than ... panicking", so the
+    // `FixedBitSet::get` turns into a panic, in release as well as debug.
+    // This function's own doc comment promises `DocOutOfRange` "rather than ... panicking", so the
     // bound has to be the one that actually governs the indexing. Hoisted:
     // one load, not one per doc ID.
     let num_bits = bits.len();

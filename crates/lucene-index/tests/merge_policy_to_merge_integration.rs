@@ -1,4 +1,4 @@
-//! Closes the loop between task #47's `merge_policy::find_merges` (decide
+//! Closes the loop between `merge_policy::find_merges` (decide
 //! which segments to merge) and the existing `merge::merge_stored_only_segments`
 //! (actually merge them): proves `find_merges`' output -- a chosen group of
 //! segment names -- can be fed straight into the real merge-execution

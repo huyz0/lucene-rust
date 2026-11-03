@@ -1,9 +1,7 @@
-//! Settles c1's F-13: how much of `DirectoryReader::open`'s residual cost is
-//! the `.tim`/`.tip` copy that `blocktree::open_shared` was meant to avoid?
-//!
-//! c1 took `blocktree::open` from 35.4 ms to 0.175 ms by making the term
-//! dictionary lazy, and recorded that most of what remains is a 4.86 MB
-//! `Arc::from(&tim[..])` copy out of the mapping. `open_shared` takes the
+//! How much of `DirectoryReader::open`'s cost is the `.tim`/`.tip` copy that
+//! `blocktree::open_shared` avoids? With a lazy term dictionary, most of what
+//! `blocktree::open` spends is a 4.86 MB `Arc::from(&tim[..])` copy out of
+//! the mapping. `open_shared` takes the
 //! shared buffers directly and skips that copy -- but only if the caller can
 //! *produce* an `Arc<[u8]>` without copying, which `lucene-store`'s `Input`
 //! (an owned `Vec` or a `memmap2::Mmap`) cannot. This bench measures the three

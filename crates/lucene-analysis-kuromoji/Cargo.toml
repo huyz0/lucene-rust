@@ -4,11 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-# lucene-analysis-kuromoji (M12 T12.1): Japanese morphological analysis over
+# lucene-analysis-kuromoji: Japanese morphological analysis over
 # the IPADIC dictionary -- JapaneseTokenizer (the Viterbi lattice of
 # lucene-analysis' morph module, user dictionaries, n-best), its filters,
 # JapaneseAnalyzer and the factories. Over lucene-analysis only, as Lucene's
-# module is over lucene-analysis-common (docs/milestones/m12-language-analysis.md).
+# module is over lucene-analysis-common.
 [features]
 default = ["embedded-data"]
 # Compiles the dictionary files in (src/resources); without it they are read

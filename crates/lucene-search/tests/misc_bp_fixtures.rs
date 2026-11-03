@@ -1,4 +1,4 @@
-//! M14 T14.3 `misc`, differentially against Lucene 10.5.0:
+//! `misc`, differentially against Lucene 10.5.0:
 //! `fixtures/src/GenMiscBp.java`'s `misc/bp.tsv`.
 //!
 //! `BPIndexReorderer.computeDocMap` over a flat index and over an index of

@@ -21,7 +21,7 @@ import org.apache.lucene.store.ByteBuffersDirectory;
 import org.apache.lucene.util.BytesRef;
 
 /**
- * M13 T13.3c: {@code AnalyzingInfixSuggester} and {@code BlendedInfixSuggester} over a title
+ * {@code AnalyzingInfixSuggester} and {@code BlendedInfixSuggester} over a title
  * corpus with weights, payloads and contexts. Writes {@code suggest_infix/}: {@code corpus.tsv},
  * {@code queries.tsv}, per configuration {@code NAME.tsv} (variant, query, num, results) and {@code
  * NAME.count}, {@code nrt.tsv} (lookups between {@code add}/{@code update}/{@code refresh}) and

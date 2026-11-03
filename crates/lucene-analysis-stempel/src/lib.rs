@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! lucene-analysis-stempel: Lucene's `analysis-stempel` module (M12 T12.2)
+//! lucene-analysis-stempel: Lucene's `analysis-stempel` module
 //! -- the Egothor stemmer's tables ([`egothor`], [`diff`]),
 //! `StempelStemmer`, `StempelFilter`, `PolishAnalyzer` and
 //! `StempelPolishStemFilterFactory` -- with Lucene's default Polish table
@@ -9,7 +9,7 @@
 //! (<http://egothor.sf.net/>); see [`egothor`] for its licence. The
 //! table-building half of Egothor (`Compile`, `DiffIt`, `Gener`, `Lift`,
 //! `Optimizer`, `Reduce`, `Diff.exec`, `Trie.add`/`reduce`) is not ported:
-//! M12 loads tables, it does not build them.
+//! Loads tables, it does not build them.
 
 pub mod diff;
 pub mod egothor;

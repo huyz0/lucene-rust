@@ -1,4 +1,4 @@
-//! M13 T13.4d2 against `fixtures/src/GenTaxonomyUtils.java`: the taxonomy
+//! Against `fixtures/src/GenTaxonomyUtils.java`: the taxonomy
 //! utilities.
 //!
 //! - `TaxonomyMergeUtils.merge` of the Java-written source index and taxonomy

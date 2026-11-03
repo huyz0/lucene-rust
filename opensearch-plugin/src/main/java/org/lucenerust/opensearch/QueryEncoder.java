@@ -79,7 +79,7 @@ import java.util.function.Predicate;
  *   <li>the geo queries {@code geo_bounding_box}, {@code geo_distance}, {@code geo_polygon} and
  *       {@code geo_shape} build on {@code geo_point} and {@code geo_shape} fields ({@link GeoEncoder});
  *   <li>{@code nested}, the span queries, {@code intervals}, {@code combined_fields} and OpenSearch's
- *       {@code function_score} ({@link ExtendedEncoder}, M10).
+ *       {@code function_score} ({@link ExtendedEncoder}).
  * </ul>
  *
  * <p>The blob is {@code QUERY_TREE}: one node per query, each a kind byte and its payload (the
@@ -117,12 +117,10 @@ public final class QueryEncoder {
     }
 
     /**
-     * Whether the native engine is measured at least as fast as Lucene on {@code q}'s shape. Since
-     * read path R1 (the scorer tree and bulk scorers, {@code docs/milestones/m5-6-native-read.md})
-     * that is every shape this class encodes: the boosts, {@code must_not}s, mixed booleans and
-     * {@code constant_score} wrappers M2 measured at 0.13-0.28x and routed to Lucene now run
-     * 1.2-6.7x Lucene in process. So an encodable query is a fast one; the {@code native_shapes}
-     * setting no longer has anything to exclude.
+     * Whether the native engine is measured at least as fast as Lucene on {@code q}'s shape. That
+     * is every shape this class encodes (boosts, {@code must_not}s, mixed booleans and {@code
+     * constant_score} wrappers run 1.2-6.7x Lucene in process), so an encodable query is a fast
+     * one and the {@code native_shapes} setting has nothing to exclude.
      */
     public static boolean isFast(Query q) {
         return encode(q, field -> true).blob() != null;
@@ -209,7 +207,7 @@ public final class QueryEncoder {
     private static final byte NODE_REGEXP = 12;
     private static final byte NODE_EXISTS = 13;
     private static final byte NODE_TERM_STATS = 14;
-    /** After the geo (15-19) and M10 (20-24) kinds: {@code NODE_TERM_RANGE} in {@code jvm_reader.rs}. */
+    /** After the geo (15-19) and join/span/interval (20-24) kinds: {@code NODE_TERM_RANGE} in {@code jvm_reader.rs}. */
     private static final byte NODE_TERM_RANGE = 25;
     private static final byte NODE_POINT_SET = 26;
 
@@ -427,7 +425,7 @@ public final class QueryEncoder {
         if (docValues != DocValuesEncoder.NOT_DOC_VALUES) {
             return docValues;
         }
-        // nested, spans, intervals, combined_fields, function_score (ExtendedEncoder, M10).
+        // nested, spans, intervals, combined_fields, function_score (ExtendedEncoder).
         String extended = ExtendedEncoder.node(q, out, fieldOk, c -> node(c, out, fieldOk, depth + 1, nodes));
         if (extended != ExtendedEncoder.NOT_EXTENDED) {
             return extended;

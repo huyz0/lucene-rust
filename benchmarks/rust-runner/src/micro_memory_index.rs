@@ -1,4 +1,4 @@
-//! M13 T13.5's pairs (`benchmarks/micro/java/MemoryIndexMicro.java` is the
+//! The pairs (`benchmarks/micro/java/MemoryIndexMicro.java` is the
 //! Java twin): `MemoryIndex` over `fixtures/corpus/memory-index-docs.txt`
 //! with offsets, the queries of `memory-index-queries.txt` parsed beforehand.
 //! `mi_build`: every document indexed and frozen; `mi_build_search`: every

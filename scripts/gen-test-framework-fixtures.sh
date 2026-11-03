@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Test-framework fixtures (M14.h): the Java twins in fixtures/src/testframework/
+# Test-framework fixtures: the Java twins in fixtures/src/testframework/
 # run against Lucene 10.5.2's lucene-test-framework jar (with lucene-misc,
 # whose SweetSpotSimilarity GenTestFrameworkSearch explains; plus the JUnit,
 # Hamcrest and randomizedtesting jars it needs on the classpath -- generator

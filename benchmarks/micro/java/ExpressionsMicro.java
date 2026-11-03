@@ -8,7 +8,7 @@ import org.apache.lucene.expressions.js.JavascriptCompiler;
 import org.apache.lucene.search.DoubleValues;
 
 /**
- * M14 T14.2's pairs (the Rust twin is {@code benchmarks/rust-runner/src/micro_expressions.rs}):
+ * The pairs (the Rust twin is {@code benchmarks/rust-runner/src/micro_expressions.rs}):
  * {@code expr_compile}, every expression of {@code fixtures/corpus/expressions.txt} that compiles
  * with the default functions (units: expressions); {@code expr_<shape>}, one expression evaluated
  * over 1,024 documents' values of {@code a}, {@code b} and {@code c} (units: evaluations). Output is

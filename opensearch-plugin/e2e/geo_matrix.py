@@ -1,4 +1,4 @@
-"""The geo half of verify_opensearch.py's matrix (M9 T9.6): geo_point and
+"""The geo half of verify_opensearch.py's matrix: geo_point and
 geo_shape indices whose points and shapes reach the poles and the
 antimeridian, and every geo query and _geo_distance sort shape OpenSearch
 builds on them -- each answered by the plugin and by stock Lucene, which must

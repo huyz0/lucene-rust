@@ -1,5 +1,5 @@
 //! analysis-common's `org.apache.lucene.analysis.core.KeywordTokenizer`,
-//! ported ahead of M11 because [`crate::Analyzer::keyword`] is built on it.
+//! kept in this crate because [`crate::Analyzer::keyword`] is built on it.
 
 use crate::attributes::AttributeSource;
 use crate::reader::CharReader;

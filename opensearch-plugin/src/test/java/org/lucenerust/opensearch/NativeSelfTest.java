@@ -139,8 +139,8 @@ public final class NativeSelfTest {
             System.out.printf("NativeSelfTest (analysis only): %d checks, %d failures%n", checks, failures);
             System.exit(failures > 0 ? 1 : 0);
         }
-        // SELFTEST_ONLY=m10: the M10 shapes alone (a quick loop while working on them).
-        boolean onlyM10 = "m10".equals(System.getenv("SELFTEST_ONLY"));
+        // SELFTEST_ONLY=extended: NativeSelfTestExtended's shapes alone.
+        boolean onlyExtended = "extended".equals(System.getenv("SELFTEST_ONLY"));
         // SELFTEST_ONLY=leaves: NativeSelfTestLeaves' shapes alone.
         if ("leaves".equals(System.getenv("SELFTEST_ONLY"))) {
             NativeSelfTestLeaves.run(new Random(23), (ok, what) -> check(ok, what), NativeSelfTest::compare);
@@ -160,7 +160,7 @@ public final class NativeSelfTest {
             System.out.printf("NativeSelfTest (nrt only): %d checks, %d failures%n", checks, failures);
             System.exit(failures > 0 ? 1 : 0);
         }
-        if (onlyM10 == false) {
+        if (onlyExtended == false) {
         bridgeErrorPaths();
         encoderMatrix();
         nrtReaders(new Random(42));
@@ -168,7 +168,7 @@ public final class NativeSelfTest {
         softDeletes(new Random(7));
         geo(new Random(13));
         }
-        NativeSelfTestM10.run(new Random(17), (ok, what) -> check(ok, what), NativeSelfTest::compare);
+        NativeSelfTestExtended.run(new Random(17), (ok, what) -> check(ok, what), NativeSelfTest::compare);
         NativeSelfTestLeaves.run(new Random(23), (ok, what) -> check(ok, what), NativeSelfTest::compare);
         for (var e : NativeSelfTestLeaves.ENCODED.entrySet()) {
             check(e.getValue()[0] >= (e.getKey().equals("term_states") ? 6 : 50), "leaf " + e.getKey() + " queries encoded and compared: " + e.getValue()[0]);
@@ -177,13 +177,13 @@ public final class NativeSelfTest {
         NativeSelfTestSimilarity.run(new Random(29), (ok, what) -> check(ok, what), NativeSelfTest::compare);
         check(NativeSelfTestSimilarity.COMPARED.size() == 9, "similarities compared: " + NativeSelfTestSimilarity.COMPARED.keySet());
         System.out.printf("NativeSelfTest: leaf queries encoded and compared, by shape: %s%n", NativeSelfTestLeaves.ENCODED.entrySet().stream().map(e -> e.getKey() + "=" + e.getValue()[0]).toList());
-        for (var e : NativeSelfTestM10.ENCODED.entrySet()) {
-            check(e.getValue()[0] >= 100, "M10 " + e.getKey() + " queries encoded and compared: " + e.getValue()[0]);
+        for (var e : NativeSelfTestExtended.ENCODED.entrySet()) {
+            check(e.getValue()[0] >= 100, "extended " + e.getKey() + " queries encoded and compared: " + e.getValue()[0]);
         }
-        check(NativeSelfTestM10.ENCODED.size() == 5, "M10 shapes compared: " + NativeSelfTestM10.ENCODED.keySet());
-        System.out.printf("NativeSelfTest: M10 queries encoded and compared, by shape: %s%n", NativeSelfTestM10.ENCODED.entrySet().stream().map(e -> e.getKey() + "=" + e.getValue()[0]).toList());
-        if (onlyM10) {
-            System.out.printf("NativeSelfTest (M10 only): %d checks, %d failures; %d of %d compared scores bit-exact%n", checks, failures, bitExact, scored);
+        check(NativeSelfTestExtended.ENCODED.size() == 5, "extended shapes compared: " + NativeSelfTestExtended.ENCODED.keySet());
+        System.out.printf("NativeSelfTest: extended queries encoded and compared, by shape: %s%n", NativeSelfTestExtended.ENCODED.entrySet().stream().map(e -> e.getKey() + "=" + e.getValue()[0]).toList());
+        if (onlyExtended) {
+            System.out.printf("NativeSelfTest (extended only): %d checks, %d failures; %d of %d compared scores bit-exact%n", checks, failures, bitExact, scored);
             System.exit(failures > 0 ? 1 : 0);
         }
         storedFields(new Random(11));
@@ -196,10 +196,10 @@ public final class NativeSelfTest {
             compared += ok ? 1 : 0;
             bwc += old ? 1 : 0;
             bwcCompared += old && ok ? 1 : 0;
-            // M8 T8.5: every index an older Lucene 9.x/10.x wrote opens natively.
+            // Every index an older Lucene 9.x/10.x wrote opens natively.
             check(old == false || ok, "backward-codecs fixture served natively: " + fixture);
         }
-        // M13 T13.6: indexes with a completion field (Completion104, and the formats of 9.0-10.3)
+        // Indexes with a completion field (Completion104, and the formats of 9.0-10.3)
         // are read natively; their fixtures sit one level down.
         int completion = 0;
         List<Path> completionIndexes = new ArrayList<>(List.of(Path.of(args[0], "completion_query", "index")));
@@ -334,7 +334,7 @@ public final class NativeSelfTest {
         check(QueryEncoder.isFast(t) && QueryEncoder.isFast(new ConstantScoreQuery(t)), "terms are fast");
         check(QueryEncoder.isFast(new BooleanQuery.Builder().add(t, Occur.SHOULD).add(t2, Occur.SHOULD).build()), "disjunction is fast");
         check(QueryEncoder.isFast(new BooleanQuery.Builder().add(t, Occur.MUST).add(t2, Occur.FILTER).build()), "conjunction is fast");
-        // Since read path R1 every encodable shape is measured at least as fast as Lucene.
+        // Every encodable shape is measured at least as fast as Lucene.
         check(QueryEncoder.isFast(new BooleanQuery.Builder().add(t, Occur.MUST).add(t2, Occur.SHOULD).build()), "mixed is fast");
         check(QueryEncoder.isFast(new BooleanQuery.Builder().add(t, Occur.MUST).add(t2, Occur.MUST_NOT).build()), "must_not is fast");
         check(QueryEncoder.isFast(new BoostQuery(t, 2f)), "boost is fast");
@@ -357,7 +357,7 @@ public final class NativeSelfTest {
         check(QueryEncoder.encode(IntPoint.newSetQuery("i", 1, 5, 9), f -> true).blob() != null, "an int point set encodes");
         check(QueryEncoder.encode(LongPoint.newSetQuery("n"), f -> true).blob() != null, "an empty point set encodes");
         check(QueryEncoder.encode(LongPoint.newRangeQuery("n", 1, 5), f -> true).blob() != null, "a long range encodes");
-        // M13 T13.6: query_string's [a TO b] and a keyword range, under the searcher's rewrite.
+        // Query_string's [a TO b] and a keyword range, under the searcher's rewrite.
         IndexSearcher empty = new IndexSearcher(new MultiReader());
         check(
             QueryEncoder.encode(empty.rewrite(TermRangeQuery.newStringRange("tag", "a", "m", true, false)), f -> true).blob() != null,
@@ -446,8 +446,8 @@ public final class NativeSelfTest {
                 case 7 -> r.nextInt(2) == 0
                     ? new WildcardQuery(new Term(field, word(r).charAt(0) + "?" + "*"))
                     : new TermInSetQuery(field, List.of(new BytesRef(word(r)), new BytesRef(word(r)), new BytesRef(word(r))));
-                // `range`, `term` and `terms` on the other numeric widths and `ip`: points boxes and
-                // point sets (OpenSearch 3.9.0 upgrade).
+                // `range`, `term` and `terms` on the other numeric widths and
+                // `ip`: points boxes and point sets (OpenSearch 3.9.0 upgrade).
                 case 10 -> switch (r.nextInt(6)) {
                     case 0 -> IntPoint.newRangeQuery("si", r.nextInt(50) - 5, r.nextInt(60));
                     case 1 -> org.apache.lucene.document.FloatPoint.newRangeQuery("sf", (float) r.nextGaussian(), (float) r.nextGaussian() + 1f);
@@ -468,12 +468,13 @@ public final class NativeSelfTest {
                     case 1 -> LongPoint.newSetQuery("n", r.nextInt(400), r.nextInt(400), r.nextInt(400), r.nextInt(400));
                     default -> org.apache.lucene.document.InetAddressPoint.newSetQuery("ip", ip(r.nextInt(300)), ip(r.nextInt(300)));
                 };
-                // M13 T13.6: a term range, either end open or exclusive (query_string's {a TO *]).
+                // A term range, either end open or exclusive (query_string's {a TO *]).
                 case 9 -> {
                     String a = r.nextInt(5) == 0 ? null : word(r), b = r.nextInt(5) == 0 ? null : word(r);
                     yield TermRangeQuery.newStringRange(field, a, b, r.nextBoolean(), r.nextBoolean());
                 }
-                // Stacked tokens (hunspell, synonyms, keyword_repeat): one pseudo-term, boosts in (0, 1].
+                // Stacked tokens (hunspell, synonyms, keyword_repeat): one
+                // pseudo-term, boosts in (0, 1].
                 case 12 -> {
                     org.apache.lucene.search.SynonymQuery.Builder s = new org.apache.lucene.search.SynonymQuery.Builder(field);
                     for (int i = r.nextInt(4); i >= 0; i--) {
@@ -605,8 +606,9 @@ public final class NativeSelfTest {
                 long limit = exact > 0 ? 1 + new Random(exact).nextLong(exact) : 1;
                 long[] limited = new long[3];
                 check(NativeBridge.search(acquired.handle(), enc.blob(), topN, limit, docs, scores, limited) == NativeBridge.OK, what + ": limited");
-                // Exact up to the limit (Lucene switches to GTE only past it); above it either exact, or
-                // a lower bound that itself exceeds the limit.
+                // Exact up to the limit (Lucene switches to GTE only past it);
+                // above it either exact, or a lower bound that itself exceeds
+                // the limit.
                 boolean ok = limited[2] == 0 ? limited[1] == exact : exact > limit && limited[1] > limit && limited[1] <= exact;
                 check(ok, what + ": limit " + limit + " gave " + limited[1] + (limited[2] == 1 ? "+" : "") + ", exact " + exact);
                 check(counts[0] == want.scoreDocs.length, what + ": hits " + counts[0] + " vs " + want.scoreDocs.length);
@@ -696,9 +698,10 @@ public final class NativeSelfTest {
                     sum += n;
                 }
                 check(counted[0] == sum, what + ": total " + counted[0] + " vs the segments' " + sum);
-                // The plugin's replay of a concurrent count's early termination from those counts
-                // answers as the native replay that searches again, for every limit, which-segments-
-                // iterate pattern and slicing (one slice in reverse order included).
+                // The plugin's replay of a concurrent count's early termination
+                // from those counts answers as the native replay that searches
+                // again, for every limit, which-segments- iterate pattern and
+                // slicing (one slice in reverse order included).
                 int m = leaves.size();
                 int[] all = java.util.stream.IntStream.range(0, m).toArray();
                 int[] reversed = java.util.stream.IntStream.range(0, m).map(i -> m - 1 - i).toArray();
@@ -984,7 +987,8 @@ public final class NativeSelfTest {
                 String what = where + ": " + query + " sorted " + sort + " top" + topN + " threshold " + threshold + " page " + page
                     + (track ? " tracking the max score" : "") + (min != null ? " min_score " + min : "");
                 if (after != null && Arrays.stream(sort.getSort()).anyMatch(GeoEncoder::luceneSort)) {
-                    // LatLonPointDistanceComparator.compareTop compares metres: Lucene runs the page.
+                    // LatLonPointDistanceComparator.compareTop compares metres:
+                    // Lucene runs the page.
                     check("search_after_geo".equals(enc.fallbackReason()), what + ": falls back as search_after_geo, not " + enc.fallbackReason());
                     geoAfterFallbacks++;
                     break;
@@ -1379,7 +1383,7 @@ public final class NativeSelfTest {
     }
 
     /**
-     * Read path R6: a Lucene-written index with every stored type, read through {@link
+     * A Lucene-written index with every stored type, read through {@link
      * NativeStoredFieldsReader} (random access and the sequential reader) and by Lucene with the same
      * visitors -- everything, a {@code NO} on some fields (the last included), a {@code STOP} midway --
      * every visit recorded and compared call for call.
@@ -1608,7 +1612,7 @@ public final class NativeSelfTest {
         }
     }
 
-    // --- geo (M9 T9.6) ----------------------------------------------------------------------
+    // --- geo ----------------------------------------------------------------------
 
     /**
      * The geo queries OpenSearch builds for {@code geo_point} and {@code geo_shape} fields (and the
@@ -1897,7 +1901,8 @@ public final class NativeSelfTest {
                 return r.nextBoolean() ? new org.apache.lucene.search.IndexOrDocValuesQuery(index, dv) : index;
             }
             case 5: {
-                // LatLonPoint.newGeometryQuery under any relation (OpenSearch asks only INTERSECTS).
+                // LatLonPoint.newGeometryQuery under any relation (OpenSearch
+                // asks only INTERSECTS).
                 var rel = relation(r);
                 int n = 1 + r.nextInt(2);
                 org.apache.lucene.geo.LatLonGeometry[] g = new org.apache.lucene.geo.LatLonGeometry[n];
@@ -1913,7 +1918,8 @@ public final class NativeSelfTest {
                 return org.apache.lucene.document.LatLonShape.newBoxQuery("shape", relation(r), b.minLat, b.maxLat, b.minLon, b.maxLon);
             }
             default: {
-                // geo_shape / geo_distance / geo_polygon on a geo_shape: LatLonShape.newGeometryQuery.
+                // geo_shape / geo_distance / geo_polygon on a geo_shape:
+                // LatLonShape.newGeometryQuery.
                 var rel = relation(r);
                 int n = 1 + (r.nextInt(3) == 0 ? 1 + r.nextInt(2) : 0);
                 org.apache.lucene.geo.LatLonGeometry[] g = new org.apache.lucene.geo.LatLonGeometry[n];
@@ -1974,7 +1980,7 @@ public final class NativeSelfTest {
     /**
      * Every fixture directory holding a {@code segments_N}, one level down, plus -- for the
      * backward-codecs corpora ({@code bwc/<version>}, {@code bwc-big/<version>},
-     * {@code bwc-quantized/<version>}, M8) -- two levels down.
+     * {@code bwc-quantized/<version>}) -- two levels down.
      */
     private static List<Path> fixtureIndexes(Path root) throws Exception {
         List<Path> out = new ArrayList<>();

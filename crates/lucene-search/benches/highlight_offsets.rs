@@ -1,13 +1,12 @@
-//! What c15's offsets-carrying postings API buys the unified highlighter's
+//! What the offsets-carrying postings API buys the unified highlighter's
 //! `POSTINGS` offset source: highlighting **one** document of a term whose
 //! postings list is long.
 //!
-//! The A/B is in one build. `positions` is what `offsets_from_postings` called
-//! before (c12 §3.4): the only offset-carrying accessor this port had, which
+//! The A/B is in one build. `positions` is the whole-term accessor, which
 //! decodes every document's positions and offsets and builds a
 //! `Vec<Position>` per document in the term. `occurrences_for_doc` is Java's
 //! `PostingsOffsetStrategy` shape -- `advance(doc)`, then walk that one
-//! document -- over c15's `read_occurrences_for_docs`.
+//! document -- over `read_occurrences_for_docs`.
 //!
 //! Three documents per term: the first in the postings list, one in the
 //! middle, and the last. The new path's cost depends on where the document
@@ -83,12 +82,11 @@ fn bench(c: &mut Criterion) {
                     black_box(per_doc[index].len());
                 })
             });
-            // c15's shape, kept as an A/B arm: `advance(doc)` over an
+            // Kept as an A/B arm: `advance(doc)` over an
             // already-materialized doc list, with `.pos` addressed by a
             // running sum over *every* preceding document's frequency. This
-            // is what `occurrences_for_doc` did before c20 wired up `.doc`'s
-            // `.pos`/`.pay` skip pointers, and the doc-list decode plus that
-            // frequency sum is the whole of the residual c15 recorded.
+            // is `occurrences_for_doc` without `.doc`'s `.pos`/`.pay` skip
+            // pointers.
             group.bench_function(format!("{term}_df{df}/{label}/one_doc_freq_sum"), |b| {
                 b.iter(|| {
                     let postings = field_terms

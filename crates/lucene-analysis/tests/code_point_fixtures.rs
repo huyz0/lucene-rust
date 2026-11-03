@@ -1,4 +1,4 @@
-//! M11: every code point through the analysis-common filters whose output
+//! Every code point through the analysis-common filters whose output
 //! depends on `java.lang.Character` (case mapping, categories, digits,
 //! whitespace) -- `fixtures/data/analysis_common/codepoints.words`, written
 //! by `fixtures/src/GenAnalysisCommon.java`.

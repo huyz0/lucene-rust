@@ -15,7 +15,7 @@ import org.apache.lucene.search.vectorhighlight.FieldQuery;
 import org.apache.lucene.store.FSDirectory;
 
 /**
- * M13 T13.2's pairs (the Rust twin is {@code benchmarks/rust-runner/src/micro_highlight.rs}): the
+ * The pairs (the Rust twin is {@code benchmarks/rust-runner/src/micro_highlight.rs}): the
  * unified highlighter and the fast vector highlighter over the fixture indexes, every templated
  * query of {@code uhighlight-queries.txt} / {@code vhighlight-queries.txt} against every document,
  * default configuration (but {@code uh_phrases}). {@code uh_postings}: field {@code offs}; {@code uh_analysis}: field {@code

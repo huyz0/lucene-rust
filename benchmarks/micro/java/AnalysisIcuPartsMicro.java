@@ -20,7 +20,7 @@ import com.ibm.icu.text.Transliterator;
 import com.ibm.icu.util.ULocale;
 
 /**
- * M12's ICU gaps taken apart (the Rust twin is {@code
+ * The ICU gaps taken apart (the Rust twin is {@code
  * benchmarks/rust-runner/src/micro_analysis_icu_parts.rs}): the tokenizers alone and each ICU
  * kernel alone over the inputs {@code AnalysisIcuMicro} analyzes.
  */

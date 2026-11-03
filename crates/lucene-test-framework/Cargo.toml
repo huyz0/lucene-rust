@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
-# Lucene's `lucene/test-framework` (M14.h): randomized-test infrastructure and
+# Lucene's `lucene/test-framework`: randomized-test infrastructure and
 # the reusable `Base*TestCase` suites, as library code so the port inventory
 # can point at it. A leaf that is only ever a `[dev-dependencies]` edge --
 # no crate names it under `[dependencies]`, so it never reaches a production
@@ -43,7 +43,7 @@ thiserror.workspace = true
 [dev-dependencies]
 proptest.workspace = true
 # `tests/check_random_data_all_analyzers.rs` runs `check_random_data` over
-# every Analyzer in the workspace, the M12 modules' included.
+# every Analyzer in the workspace, the language modules included.
 lucene-analysis-icu = { path = "../lucene-analysis-icu" }
 lucene-analysis-kuromoji = { path = "../lucene-analysis-kuromoji" }
 lucene-analysis-morfologik = { path = "../lucene-analysis-morfologik" }

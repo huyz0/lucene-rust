@@ -134,7 +134,7 @@ fn bench_for_decode(warmup: Duration, measure: Duration) {
     // throws `ArrayIndexOutOfBoundsException` there. This port's `mask32`
     // saturates instead and decodes 32 happily -- being more permissive on the
     // read side is harmless, but there is nothing on the Java side to compare
-    // against, so the shared range stops at 31. See `docs/sweep/findings.md`.
+    // against, so the shared range stops at 31.
     for bits in 1..=31u32 {
         let values = block_for(bits);
         let mut bytes = Vec::new();
@@ -176,8 +176,7 @@ fn bench_for_decode(warmup: Duration, measure: Duration) {
     }
 }
 
-/// Walk a whole posting list with `next_doc()`, the operation M1 is actually
-/// about. The Java counterpart is `PostingsIterMicro`, which drives
+/// Walk a whole posting list with `next_doc()`. The Java counterpart is `PostingsIterMicro`, which drives
 /// `Lucene104PostingsReader`'s `BlockPostingsEnum` through the public
 /// `TermsEnum.postings()` API over the same index directory and the same terms,
 /// so both sides walk identical on-disk bytes.
@@ -375,8 +374,8 @@ fn bench_stored_fields(warmup: Duration, measure: Duration, index: &str) {
     const STRIDE: i32 = 4099;
     // Guard the fixture: a benchmark over a reader that returns nothing would
     // look extremely fast. `GenCorpus` currently indexes every field
-    // `Store.NO`, so the M1 corpus has a 66 KB `.fdt` for 5M documents and
-    // cannot exercise this at all -- see `docs/sweep/findings.md`.
+    // `Store.NO`, so the benchmark corpus has a 66 KB `.fdt` for 5M documents and
+    // cannot exercise this at all.
     if sr.document(0).expect("document 0").fields.is_empty() {
         eprintln!(
             "micro: this index stores no fields, so stored-field retrieval cannot be \
@@ -1048,7 +1047,7 @@ fn bench_vectors(w: Duration, m: Duration) {
     }
 }
 
-/// The scalar-quantized vector kernels (M7 T7.6) -- see
+/// The scalar-quantized vector kernels -- see
 /// `SweepMicro.quantized`: the per-candidate distance of each
 /// `ScalarEncoding` over 1024 stored vectors, and the per-vector
 /// `OptimizedScalarQuantizer.scalarQuantize` the writer and every query run.
@@ -1924,7 +1923,7 @@ fn bench_points_write(warmup: Duration, measure: Duration) {
     let _ = std::fs::remove_dir_all(&root);
 }
 
-/// Concurrent indexing throughput (M4's T4.3), the Rust half of
+/// Concurrent indexing throughput, the Rust half of
 /// `benchmarks/micro/java/ConcurrentIndexMicro.java`: the same 100 000
 /// documents (a stored id and a stored twelve-word body) indexed through one
 /// `ConcurrentIndexWriter` by one and by four threads, then committed. No

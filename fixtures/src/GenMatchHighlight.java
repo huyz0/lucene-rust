@@ -27,7 +27,7 @@ import org.apache.lucene.search.matchhighlight.PassageFormatter;
 import org.apache.lucene.store.FSDirectory;
 
 /**
- * M13 T13.2 ({@code matchhighlight}): an index of {@code fixtures/corpus/matchhighlight-docs.tsv}
+ * ({@code matchhighlight}): an index of {@code fixtures/corpus/matchhighlight-docs.tsv}
  * (stored multi-valued fields indexed with offsets, positions only, and docs only), and what
  * {@code MatchHighlighter} makes of every query of {@code matchhighlight-queries.txt} under
  * three highlighter configurations. {@code matchhighlight.tsv}: configuration, query index,

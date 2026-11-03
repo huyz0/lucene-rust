@@ -22,7 +22,7 @@ import org.apache.lucene.analysis.icu.ICUNormalizer2Filter;
 import org.apache.lucene.analysis.icu.segmentation.ICUTokenizer;
 
 /**
- * M12 T12.4's pairs (the Rust twin is {@code benchmarks/rust-runner/src/micro_analysis_icu.rs}):
+ * The pairs (the Rust twin is {@code benchmarks/rust-runner/src/micro_analysis_icu.rs}):
  * analysis-icu over {@code fixtures/corpus/analysis-icu.txt} and the normalization fixture's
  * stress strings, one document per line. Units are tokens; output is {@code
  * name\tns_per_token\ttokens}.

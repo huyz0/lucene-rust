@@ -1,4 +1,4 @@
-//! M14 T14.3's pairs (`benchmarks/micro/java/ClassificationMicro.java` is
+//! The pairs (`benchmarks/micro/java/ClassificationMicro.java` is
 //! the Java twin): each classifier's `assign_class` over the stored text of
 //! the first 40 documents of `fixtures/data/classification/random`, and
 //! `cls_perceptron_train`, building the perceptron.

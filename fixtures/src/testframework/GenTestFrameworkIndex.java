@@ -31,7 +31,7 @@ import org.junit.runner.RunWith;
 import org.junit.runner.notification.Failure;
 
 /**
- * Differential fixtures for lucene-test-framework's writer configuration (M14.h h4): what Lucene
+ * Differential fixtures for lucene-test-framework's writer configuration: what Lucene
  * 10.5.0's {@code newIndexWriterConfig(r, a)} and {@code maybeChangeLiveIndexWriterConfig(r, c)}
  * draw from a seeded {@code java.util.Random r}.
  *

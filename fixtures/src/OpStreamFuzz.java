@@ -37,7 +37,7 @@ import org.apache.lucene.util.Bits;
 import org.apache.lucene.util.BytesRef;
 
 /**
- * The Java half of M4's differential operation-stream fuzzer (T4.5): the same seeded stream of
+ * The Java half of the differential operation-stream fuzzer: the same seeded stream of
  * adds, updates, deletes (by id and by body word), doc-values updates, flushes and commits,
  * applied to real Lucene's {@code IndexWriter}, then dumped **semantically** -- live documents
  * with their doc values and points, the live documents matching every term and a set of

@@ -1,4 +1,4 @@
-//! The spell package's string distances (M13 T13.3e): `StringDistance` and
+//! The spell package's string distances: `StringDistance` and
 //! its four implementations. Each answers a similarity in `[0, 1]` (1 is
 //! equal), computed in `float` the way Java does, operation for operation, so
 //! the bits match Lucene's.

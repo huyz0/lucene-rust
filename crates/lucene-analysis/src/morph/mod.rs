@@ -1,6 +1,6 @@
 //! analysis-common's `org.apache.lucene.analysis.morph`: the Viterbi lattice
 //! and dictionary readers Kuromoji (`lucene-analysis-kuromoji`) and Nori
-//! (`lucene-analysis-nori`) are built on (M12 T12.1; deferred from M11).
+//! (`lucene-analysis-nori`) are built on.
 //!
 //! - [`resource`] -- the `DataInput`/`CodecUtil.checkHeader` reads the
 //!   dictionary files need.
@@ -23,7 +23,7 @@
 //!
 //! The dictionary *builders* (`BinaryDictionaryWriter`,
 //! `CharacterDefinitionWriter`, `ConnectionCostsWriter`,
-//! `DictionaryEntryWriter`) are not ported: M12 loads dictionaries, it does
+//! `DictionaryEntryWriter`) are not ported: this port loads dictionaries, it does
 //! not build them.
 #![deny(clippy::arithmetic_side_effects)]
 

@@ -74,7 +74,7 @@ import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.NumericUtils;
 
 /**
- * M14.i: what Luke's index-inspector models report, through a command line that is the twin of
+ * What Luke's index-inspector models report, through a command line that is the twin of
  * {@code lucene-tools Luke}. Writes {@code tools/luke}:
  *
  * <ul>

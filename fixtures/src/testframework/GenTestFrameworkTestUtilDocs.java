@@ -17,7 +17,7 @@ import org.apache.lucene.util.BytesRef;
 
 /**
  * Differential fixture for {@code TestUtil.docs}, {@code bytesToCharSequence} and {@code
- * bytesRefToString} (M14.h): the postings flags Lucene 10.5.0's {@code TestUtil.docs} asks a terms
+ * bytesRefToString}: the postings flags Lucene 10.5.0's {@code TestUtil.docs} asks a terms
  * enum for, given the caller's flags and a seeded {@code java.util.Random}.
  *
  * <p>Writes {@code test_util_docs.txt}: for each of 200 seeds and each caller flag ({@code NONE},

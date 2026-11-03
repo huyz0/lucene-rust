@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
-//! lucene-analysis-kuromoji: Lucene's `analysis-kuromoji` module (M12
-//! T12.1) -- Japanese morphological analysis over the IPADIC dictionary.
+//! lucene-analysis-kuromoji: Lucene's `analysis-kuromoji` module -- Japanese
+//! morphological analysis over the IPADIC dictionary.
 //!
 //! - [`JapaneseTokenizer`] over `lucene-analysis`' `morph` Viterbi search
 //!   ([`viterbi`]), the dictionaries ([`dict`]), its attributes

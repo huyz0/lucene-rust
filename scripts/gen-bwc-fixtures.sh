@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Backward-codecs fixtures (M8): one index per Lucene release whose default
+# Backward-codecs fixtures: one index per Lucene release whose default
 # codec an OpenSearch 2.x/3.x cluster can hold, each written by *that
 # release's own jar*, then described by Lucene 10.5.0 + backward-codecs.
 #

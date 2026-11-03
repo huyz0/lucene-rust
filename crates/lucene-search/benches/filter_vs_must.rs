@@ -1,4 +1,4 @@
-//! Settles the c11 claim that an `Occur.FILTER` clause is **cheaper** than the
+//! Measures whether an `Occur.FILTER` clause is **cheaper** than the
 //! same clause as `Occur.MUST`.
 //!
 //! The claim is not self-evident. A filter clause is a leg of the same
@@ -31,15 +31,11 @@
 //! `ScoreMode` forbids pruning on either side, which is the like-for-like
 //! comparison of the *matching* work with the skipping taken out.
 //!
-//! **c37 changed what the filter-only row measures.** c11 switched block-max
-//! pruning off for that shape, reading `0 <= 0` (a zero bound against a queue
-//! whose bottom is also zero) as "pruning on a tie"; Lucene prunes it, because
-//! `TopScoreDocCollector` publishes `Math.nextUp(0f)` and skips a block whose
-//! maximum is below that -- the same rule, one ULP apart. With the guard gone,
-//! `filter_only_t0_t1` went from **44.20 ms to 2.00 ms** on this corpus (both
-//! re-measured together, same session), against 7.02 ms for the all-`MUST`
-//! form of the same conjunction: the filter form is now the cheaper one under a
-//! top-`n` collector, as it already was without one.
+//! **The filter-only row prunes.** A zero bound against a queue whose bottom
+//! is also zero is skippable, as in Lucene (`TopScoreDocCollector` publishes
+//! `Math.nextUp(0f)` and skips a block whose maximum is below that).
+//! `filter_only_t0_t1` measured **2.00 ms** on this corpus against 7.02 ms for
+//! the all-`MUST` form of the same conjunction.
 //!
 //! Run with `cargo bench -p lucene-search --bench filter_vs_must`.
 

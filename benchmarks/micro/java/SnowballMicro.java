@@ -10,7 +10,7 @@ import org.apache.lucene.analysis.core.WhitespaceTokenizer;
 import org.apache.lucene.analysis.snowball.SnowballFilter;
 
 /**
- * M11 T11.3's Snowball pair (the Rust twin is {@code
+ * The Snowball pair (the Rust twin is {@code
  * benchmarks/rust-runner/src/micro_snowball.rs}): {@code WhitespaceTokenizer} + {@code
  * SnowballFilter} per language over that language's fixture vocabulary ({@code
  * fixtures/data/snowball/<Language>.words}, the words only, 100 to a document). Units are tokens;

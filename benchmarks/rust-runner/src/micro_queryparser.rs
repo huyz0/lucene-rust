@@ -1,4 +1,4 @@
-//! M13 T13.1's pairs (`benchmarks/micro/java/QueryParserMicro.java` is the
+//! The pairs (`benchmarks/micro/java/QueryParserMicro.java` is the
 //! Java twin): the classic `QueryParser` over
 //! `fixtures/corpus/queryparser-classic.txt` and over
 //! `fixtures/data/queryparser_classic/fragments.txt` (most of which are

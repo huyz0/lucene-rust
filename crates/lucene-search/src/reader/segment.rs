@@ -168,7 +168,7 @@ impl DocSet {
     /// [`Self::read`] through `reader`'s cache of decoded sets: a sparse
     /// field's documents are decoded once per segment core, not once per
     /// iterator, while the process-wide budget keeps them
-    /// ([`crate::sparse_docs_cache`]; stage 3, M10 T10.4: the grouping
+    /// ([`crate::sparse_docs_cache`]: the grouping
     /// collectors open a field's values in every segment for every selector,
     /// and decoding them was a tenth of a grouping search).
     pub(crate) fn cached(

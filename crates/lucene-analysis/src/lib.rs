@@ -1,7 +1,6 @@
 #![forbid(unsafe_code)]
 //! lucene-analysis: Lucene's analysis model (`org.apache.lucene.analysis`,
-//! `.standard`, `.tokenattributes`), plus analysis-common filters ported
-//! ahead of M11.
+//! `.standard`, `.tokenattributes`), plus a few analysis-common filters.
 //!
 //! # The model
 //!
@@ -2100,9 +2099,8 @@ impl PorterStemFilter {
 /// **different, separate** algorithm from [`PorterStemFilter`] (the classic
 /// 1980 Porter algorithm, `org.tartarus.snowball.ext.PorterStemmer`, which is
 /// what real Lucene's `EnglishAnalyzer` actually wires up by default) -- see
-/// task #175's parity-check note on [`PorterStemFilter`] for why the two are
-/// not interchangeable. This filter is this crate's task #209 port of the
-/// Porter2/Snowball algorithm itself: step 0 (leading/trailing apostrophe
+/// [`PorterStemFilter`] for why the two are not interchangeable. This filter
+/// ports the Porter2/Snowball algorithm itself: step 0 (leading/trailing apostrophe
 /// and possessive `'s` removal), the y/Y consonant-vowel bookkeeping, R1/R2
 /// region computation (including the nine irregular-prefix words --
 /// `arsenal`, `commune`, `emergency`, `generalization`, `interest`,
@@ -4799,7 +4797,7 @@ mod tests {
         assert_eq!(out, vec![tok("café", 0, 4, 1)]);
     }
 
-    // -- Analyzer::keyword (task #208) --
+    // -- Analyzer::keyword --
 
     #[test]
     fn keyword_analyzer_emits_whole_text_as_one_unmodified_token() {
@@ -5161,7 +5159,7 @@ mod tests {
         assert_eq!(pos_incs, vec![1, 0, 1, 0]);
     }
 
-    // -- SnowballEnglishStemFilter (task #209, Porter2/Snowball) --
+    // -- SnowballEnglishStemFilter (Porter2/Snowball) --
 
     fn snowball(term: &str) -> String {
         SnowballEnglishStemFilter::apply(vec![tok(term, 0, 1, 1)])[0]
@@ -5325,13 +5323,13 @@ mod tests {
     #[test]
     fn snowball_english_step2_suffix_families() {
         assert_eq!(snowball("carelessly"), "careless"); // lessli -> less
-                                                        // fulli -> ful (step2), then step3's own "ful" entry deletes it
-                                                        // entirely (same R1 boundary reached again) -> "care".
+                                                        // fulli -> ful (step2), then step3's own "ful" entry deletes
+                                                        // it entirely (same R1 boundary reached again) -> "care".
         assert_eq!(snowball("carefully"), "care");
         assert_eq!(snowball("analogy"), "analog"); // "logi" (preceded by l) -> "log"
-                                                   // bli (not abli) -> ble (step2), then step5 deletes the trailing
-                                                   // "e" it just added (R1 holds, R2 doesn't, and the resulting stem
-                                                   // is not a short syllable) -> "trembl".
+                                                   // bli (not abli) -> ble (step2), then step5 deletes the
+                                                   // trailing "e" it just added (R1 holds, R2 doesn't, and the
+                                                   // resulting stem is not a short syllable) -> "trembl".
         assert_eq!(snowball("trembly"), "trembl");
         assert_eq!(snowball("national"), "nation"); // tional -> tion
     }

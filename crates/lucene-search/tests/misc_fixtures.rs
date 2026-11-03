@@ -1,4 +1,4 @@
-//! M14 T14.3 `misc`, differentially against Lucene 10.5.0:
+//! `misc`, differentially against Lucene 10.5.0:
 //! `fixtures/src/GenMisc.java`'s `misc/high_freq.tsv`.
 //!
 //! The index is one Lucene wrote over three commits (three segments); each

@@ -1,4 +1,4 @@
-//! M10 T10.4, differentially against Lucene 10.5.0:
+//! Differentially against Lucene 10.5.0:
 //! `fixtures/src/GenGrouping.java`.
 //!
 //! Every recorded search -- `GroupingSearch` by a term, long-range,

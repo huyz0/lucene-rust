@@ -1,4 +1,4 @@
-//! The shape benchmark pair (M9 T9.3), against
+//! The shape benchmark pair, against
 //! `benchmarks/micro/java/GeoShapesMicro.java`: tessellating and encoding
 //! polygons into triangle fields and into shape doc values, and polygon
 //! INTERSECTS / WITHIN, point CONTAINS and doc-values box queries over the

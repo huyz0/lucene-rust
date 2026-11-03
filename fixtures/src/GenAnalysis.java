@@ -50,7 +50,7 @@ import java.util.Arrays;
  * real Lucene's {@link StandardAnalyzer} (StandardTokenizer + LowerCaseFilter
  * + StopFilter) over a handful of strings with a real stopword set and
  * records the resulting (term, position, offset) triples. This is the
- * single most valuable check for task #61's position-increment-preservation
+ * single most valuable check for the position-increment-preservation
  * rule in StopFilter: a removed stopword's own increment must be carried
  * onto the next surviving token, not dropped.
  */
@@ -206,7 +206,7 @@ public class GenAnalysis {
       analyze(m, "french_stopwords", "Le chat et la souris sont dans la maison", frenchStop);
     }
 
-    // b8 sweep (Porter stemmer): real `PorterStemFilter` -- the filter
+    // Porter stemmer: real `PorterStemFilter` -- the filter
     // `EnglishAnalyzer` uses by default, and a *different* algorithm from the
     // Snowball English stemmer above. The word list covers the plural/-ed/-ing
     // vocabulary from Porter's own paper, every suffix family in Java's
@@ -242,12 +242,11 @@ public class GenAnalysis {
       analyze(m, "porter_english", String.join(" ", words), porter);
     }
 
-    // b8 sweep (ASCIIFoldingFilter): one token per Unicode block the real
-    // filter covers but this port used to miss entirely -- Latin Extended-A,
-    // Latin Extended-B, Latin Extended Additional (precomposed Vietnamese),
-    // General Punctuation, superscripts, Enclosed Alphanumerics, Latin
-    // Extended-C/D, Alphabetic Presentation Forms (ligatures) and
-    // Halfwidth/Fullwidth Forms. KeywordTokenizer, so nothing is dropped as
+    // ASCIIFoldingFilter: one token per Unicode block the real filter
+    // covers: Latin Extended-A, Latin Extended-B, Latin Extended Additional
+    // (precomposed Vietnamese), General Punctuation, superscripts, Enclosed
+    // Alphanumerics, Latin Extended-C/D, Alphabetic Presentation Forms
+    // (ligatures) and Halfwidth/Fullwidth Forms. KeywordTokenizer, so nothing is dropped as
     // punctuation before the filter sees it.
     try (Analyzer fold = new FoldKeywordAnalyzer()) {
       analyze(m, "fold_latin_ext_a", "\u0100\u0110\u0131\u017F\u0132", fold);
@@ -260,7 +259,7 @@ public class GenAnalysis {
       analyze(m, "fold_fullwidth", "\uFF21\uFF41\uFF10\uFF5B", fold);
     }
 
-    // b8 sweep (LowerCaseFilter): Java lowercases with
+    // LowerCaseFilter: Java lowercases with
     // `Character.toLowerCase(codePoint)`, the *simple* 1:1 mapping, written
     // back in place. "\u0130" folds to a single 'i' (not "i" + combining dot
     // above), and a word-final Greek sigma stays a plain sigma (no
@@ -271,7 +270,7 @@ public class GenAnalysis {
       analyze(m, "lowercase_german_sharp_s", "\u1E9E", lower);
     }
 
-    // b8 sweep (n-gram filters): the position-increment carry across a token
+    // n-gram filters: the position-increment carry across a token
     // too short to produce any gram, and the fact that every gram keeps the
     // *input token's* offsets (Java `restoreState`s and never calls
     // setOffset).
@@ -291,7 +290,7 @@ public class GenAnalysis {
       analyze(m, "edge_ngram_preserve_original", "a abcd", ng);
     }
 
-    // b8 sweep (SynonymGraphFilter): emission order, position increments and
+    // SynonymGraphFilter: emission order, position increments and
     // position lengths come out of the synonym graph's nodes, and the
     // original tokens keep their own offsets. Recorded with
     // positionLength, which the other cases here do not need.
@@ -303,7 +302,7 @@ public class GenAnalysis {
         m, "syn_in_context", "the wi fi router", new String[][] {{"wi fi", "wifi"}});
     analyzeGraph(m, "syn_single_to_single", "the cat sat", new String[][] {{"cat", "feline"}});
 
-    // c33 sweep (the offset *unit*): OffsetAttribute reports **UTF-16 code
+    // The offset *unit*: OffsetAttribute reports **UTF-16 code
     // unit** (Java `char`) indices into the original String -- not UTF-8
     // bytes and not Unicode scalars. Every text below separates all three,
     // so a producer using the wrong unit cannot pass:
@@ -321,7 +320,7 @@ public class GenAnalysis {
       // CJK: 1 char, 3 UTF-8 bytes, and each ideograph its own token.
       analyze(m, "utf16_cjk_offsets", "abc \u4E16\u754C def", plain);
       // Emoji: 2 chars, 1 scalar, 4 UTF-8 bytes. Real StandardTokenizer
-      // emits it as a token of its own (b8's F40: this port's
+      // emits it as a token of its own (this port's
       // `unicode_word_indices` does not), so what this case pins here is
       // that the emoji shifts every later token by exactly 2 chars.
       analyze(m, "utf16_emoji", "alpha \uD83D\uDE00 beta", plain);
@@ -342,27 +341,27 @@ public class GenAnalysis {
           plain);
     }
 
-    // c33: KeywordTokenizer's single token ends at `correctOffset(charCount)`
+    // KeywordTokenizer's single token ends at `correctOffset(charCount)`
     // -- a Java char count, so an astral input's end offset exceeds its
     // scalar count and falls short of its byte count.
     try (Analyzer keyword = new KeywordAnalyzer()) {
       analyze(m, "utf16_keyword_astral", "id-\uD83D\uDE00-\u00E9", keyword);
     }
 
-    // c33: a filter that *changes the term's length* must still report the
+    // A filter that *changes the term's length* must still report the
     // source text's span. ASCIIFoldingFilter grows "stra\u00DFe" (6 chars) to
     // "strasse" (7), after an emoji that has already shifted the offsets.
     try (Analyzer foldOnly = new FoldOnlyAnalyzer()) {
       analyze(m, "utf16_fold_after_astral", "\uD835\uDC00 stra\u00DFe", foldOnly);
     }
 
-    // c33: same for PorterStemFilter ("running" -> "run"), and the astral
+    // Same for PorterStemFilter ("running" -> "run"), and the astral
     // token itself passes through the stemmer untouched.
     try (Analyzer porter = new PorterAnalyzer()) {
       analyze(m, "utf16_porter_after_astral", "\uD835\uDC00 running fishes", porter);
     }
 
-    // c33: the n-gram filters restoreState() the input token's offsets, so
+    // The n-gram filters restoreState() the input token's offsets, so
     // every gram of a non-ASCII token reports that token's char span.
     try (Analyzer ng = new NGramAnalyzer(2, 3, false)) {
       analyze(m, "utf16_ngram_offsets", "caf\u00E9 \uD835\uDC00\uD835\uDC01cd", ng);
@@ -371,9 +370,9 @@ public class GenAnalysis {
       analyze(m, "utf16_edge_ngram_offsets", "\uD835\uDC00bc d\u00E9f", ng);
     }
 
-    // c33: SynonymGraphFilter's collapsed match spans from the first matched
+    // SynonymGraphFilter's collapsed match spans from the first matched
     // token's startOffset to the last one's endOffset, in char units, and the
-    // originals keep their own -- the non-decreasing-startOffset rule b8 fixed
+    // originals keep their own -- the non-decreasing-startOffset rule
     // has to keep holding once the unit changes.
     analyzeGraph(
         m,
@@ -381,7 +380,7 @@ public class GenAnalysis {
         "\uD835\uDC00 wi fi \u4E16",
         new String[][] {{"wi fi", "wifi"}});
 
-    // ---- c40: the TokenStream lifecycle, i.e. what `end()` decides -------
+    // ---- The TokenStream lifecycle, i.e. what `end()` decides ------------
     //
     // Everything above ends at `incrementToken()`. Two things only `end()`
     // and `IndexingChain.PerField.invertTokenStream` produce, and neither is
@@ -680,7 +679,7 @@ public class GenAnalysis {
 
   /**
    * StandardTokenizer + LowerCaseFilter + StopFilter(FrenchAnalyzer's default
-   * stop set) -- task #220's French default stopword list, deliberately
+   * stop set) -- the French default stopword list, deliberately
    * *not* the full FrenchAnalyzer (no ElisionFilter, no French stemming).
    */
   static class FrenchStopOnlyAnalyzer extends Analyzer {
@@ -695,7 +694,7 @@ public class GenAnalysis {
 
   /**
    * StandardTokenizer + LowerCaseFilter + SnowballFilter(EnglishStemmer) --
-   * task #209's Porter2/Snowball English stemmer, a different filter than
+   * the Porter2/Snowball English stemmer, a different filter than
    * EnglishAnalyzer's default (classic Porter) PorterStemFilter.
    */
   static class SnowballEnglishAnalyzer extends Analyzer {

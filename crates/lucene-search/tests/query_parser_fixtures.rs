@@ -7,7 +7,7 @@
 //! and does it execute to the same doc set as an equivalent hand-built
 //! `Clause`", using the already-differentially-verified single-clause
 //! queries (`TermQuery`/`PhraseQuery`/`WildcardQuery`/`PrefixQuery`/
-//! `FuzzyQuery`) as the comparison baseline, per task #44's scoping note.
+//! `FuzzyQuery`) as the comparison baseline.
 //!
 //! `body`'s real terms/postings in this fixture (see `GenBlockTree.java`'s
 //! own doc comment): `cat` = {0, 2}, `dog` = {0, 1}, `bird` = {1, 4}.

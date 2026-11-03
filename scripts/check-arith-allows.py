@@ -94,9 +94,7 @@ def main() -> int:
     # This used to skip `count == 0`, which made the check blind in the
     # direction that actually matters: deleting a module's marker without
     # auditing it turns the crate's gate red and silences this script at the
-    # same time. c31 found `lucene-codecs` in exactly that state (197 live
-    # errors, table still claiming 5 pending modules), and then found
-    # `lucene-index` in it too.
+    # same time.
     for crate, count in sorted(per_crate.items()):
         row = re.search(
             r"^\|\s*`" + re.escape(crate) + r"`\s*\|[^|]*\|\s*([^|]*?)\s*\|",

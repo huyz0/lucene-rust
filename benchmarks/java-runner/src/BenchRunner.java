@@ -7,7 +7,7 @@ import java.nio.file.*;
 import java.util.*;
 
 /**
- * Java Lucene side of the M1 performance gate. Emits the identical TSV schema
+ * Java Lucene side of the performance gate. Emits the identical TSV schema
  * as {@code benchmarks/rust-runner} so the two can be joined on query id.
  *
  * <p>Two methodology points that decide whether the numbers mean anything:
@@ -168,7 +168,7 @@ public final class BenchRunner {
                 for (int i = 3; i < f.length; i++) b.add(new TermQuery(new Term(field, f[i])), occur);
                 return b.build();
             }
-            // Query kinds the M1.6 sweep never measured.
+            // Further query kinds.
             case "points":
                 return org.apache.lucene.document.LongPoint.newRangeQuery(
                         field, Long.parseLong(f[3]), Long.parseLong(f[4]));

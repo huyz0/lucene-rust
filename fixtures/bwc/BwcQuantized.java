@@ -24,7 +24,7 @@ import org.apache.lucene.util.Version;
 
 /**
  * Writes one index of per-field quantized vector fields with whichever Lucene version is on the
- * classpath, for the M8 quantized-format differential tests: {@code
+ * classpath, for the quantized-format differential tests: {@code
  * Lucene99HnswScalarQuantizedVectorsFormat} (9.9+: format version 0 on 9.9, version 1 with 4-bit
  * and compressed variants from 9.10), the flat {@code Lucene99ScalarQuantizedVectorsFormat} (usable
  * per field from 9.11), and {@code Lucene102(Hnsw)BinaryQuantizedVectorsFormat} (10.2-10.3). The

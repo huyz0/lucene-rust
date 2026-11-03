@@ -1,4 +1,4 @@
-//! M13 T13.3c's FreeText pair (the Java twin is
+//! The FreeText pair (the Java twin is
 //! `benchmarks/micro/java/FreeTextSuggestMicro.java`) over the phrases and
 //! queries of `micro_analyzing`. `freetext_lookup`: top 5 for every query with
 //! a token, units: lookups; `freetext_build`: a build over all phrases, units:

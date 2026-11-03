@@ -1,4 +1,4 @@
-//! M14.i, differentially against Lucene 10.5.0: `fixtures/src/GenToolsMisc.java`
+//! Differentially against Lucene 10.5.0: `fixtures/src/GenToolsMisc.java`
 //! ran each line of `tools/misc/cases.tsv` through the `misc` module's
 //! command-line tools and recorded what they printed. The same lines run
 //! through [`lucene_tools::run`] must print the same bytes to stdout and

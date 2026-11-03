@@ -1,5 +1,5 @@
 //! What a `StoredFieldVisitor` saves over materialising the whole
-//! `Document` (ledger item 24).
+//! `Document`.
 //!
 //! `StoredFieldsReader::document` decodes and allocates every field of a
 //! document. Java hands a `StoredFieldVisitor` one field at a time and calls
@@ -9,7 +9,7 @@
 //!
 //! Both arms run over the same `.fdt`, alternating, in one process, and every
 //! figure is a **min of N repetitions** -- criterion reported 83/91/129 µs
-//! for identical code on this host (`docs/sweep/m2/c24-arith-codecs.md`).
+//! for identical code on this host.
 //!
 //! The documents are built here rather than read from a corpus because the
 //! benchmark corpus stores almost nothing (`GenCorpus` indexes every field

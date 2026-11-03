@@ -60,8 +60,7 @@ fn read_latest_commit_matches_raw_fixture_bytes() {
 /// `lucene_store::directory::SMALL_FILE_READ_THRESHOLD`, so the default
 /// `MmapDirectory` now *reads* it -- which would leave this test comparing
 /// one `Input::Owned` against another and no longer checking the mapping
-/// backend at all. `c42-readpath-perf` introduced that threshold; this is
-/// where the comparison it silently disabled is put back.
+/// backend at all, so this test maps explicitly.
 #[test]
 fn mmap_backend_reads_same_bytes_as_fs_backend() {
     use lucene_store::Input;

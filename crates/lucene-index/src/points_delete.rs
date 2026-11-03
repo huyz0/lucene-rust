@@ -27,10 +27,8 @@
 //! and prunes whole subtrees (`CELL_OUTSIDE_QUERY`), takes the doc-ids-only
 //! fast path for fully-contained cells (`CELL_INSIDE_QUERY`, no packed value
 //! decoded at all), and only decodes and per-point-checks the leaves that
-//! actually straddle the boundary. This module previously called
-//! `decode_all_points` and filtered in memory, which decoded every leaf of
-//! every tree regardless of selectivity; see `docs/sweep/m2/b11-index-meta.md`
-//! for the measured difference.
+//! actually straddle the boundary. Decoding every point and filtering in
+//! memory would decode every leaf of every tree regardless of selectivity.
 //!
 //! # Scope
 //!

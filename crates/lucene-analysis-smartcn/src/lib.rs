@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! lucene-analysis-smartcn: Lucene's `analysis-smartcn` module (M12 T12.2)
+//! lucene-analysis-smartcn: Lucene's `analysis-smartcn` module
 //! -- Chinese word segmentation by a hierarchical hidden Markov model
 //! ([`hhmm`]) over the core word dictionary and the word-bigram dictionary
 //! Lucene ships (`coredict.mem`, `bigramdict.mem`, vendored zlib-compressed

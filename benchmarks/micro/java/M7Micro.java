@@ -42,7 +42,7 @@ import org.apache.lucene.util.QueryBuilder;
 import org.apache.lucene.util.Version;
 
 /**
- * Java side of M7's benchmark pairs; the Rust side is {@code
+ * Java side of the benchmark pairs; the Rust side is {@code
  * benchmarks/rust-runner/src/micro_m7.rs}, with the same bench and case names.
  *
  * <p>The queries are parsed by the fixture generators' own {@code parse} ({@link GenM7Queries},
@@ -137,7 +137,7 @@ public final class M7Micro {
     }
   }
 
-  /** Rust {@code family}: a query's first M7 op, the multi-term ones by rewrite method. */
+  /** Rust {@code family}: a query's first op, the multi-term ones by rewrite method. */
   static String family(String q) {
     String[] toks = q.split(" ");
     for (String t : toks) {

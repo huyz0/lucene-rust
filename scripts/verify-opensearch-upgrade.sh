@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# M8 acceptance criterion 3: a cluster upgraded from OpenSearch 2.x serves its
+# A cluster upgraded from OpenSearch 2.x serves its
 # old index natively.
 #
 #   1. An OpenSearch 2.19 node (Lucene 9.12) indexes a representative corpus --

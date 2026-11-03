@@ -1,7 +1,6 @@
 //! Readers for the retired formats of `lucene-backward-codecs` that an index
 //! Lucene 10.5.0 opens can still hold: everything Lucene 9.0 through 10.3
-//! wrote whose wire format the current readers do not already accept
-//! (M8, `docs/milestones/m8-backward-codecs.md`).
+//! wrote whose wire format the current readers do not already accept.
 //!
 //! Most retired components need no module here, because their current
 //! reader was widened to the older versions instead -- the wire format did

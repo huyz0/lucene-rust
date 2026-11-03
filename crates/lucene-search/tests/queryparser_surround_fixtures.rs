@@ -1,4 +1,4 @@
-//! M13 T13.1: the surround query language against Lucene 10.5.0
+//! The surround query language against Lucene 10.5.0
 //! (`fixtures/src/GenQueryParserSurround.java`): each query of
 //! `fixtures/corpus/queryparser-surround.txt` parses to the same tree
 //! (`SrndQuery.toString()`) or fails with the same exception message; its

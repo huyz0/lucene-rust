@@ -86,7 +86,7 @@ import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.InfoStream;
 
 /**
- * Java side of the lucene-codecs benchmark pair (M14.g); the Rust side is {@code
+ * Java side of the lucene-codecs benchmark pair; the Rust side is {@code
  * benchmarks/rust-runner/src/micro_codecs.rs}, with the same case names. {@code build <dir>}
  * writes each codec's index once, in its own subdirectory; {@code run <dir>} times every case.
  *

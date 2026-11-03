@@ -1,4 +1,4 @@
-//! M12 T12.3: Morfologik against Lucene 10.5.0 and Morfologik 2.1.9.
+//! Morfologik against Lucene 10.5.0 and Morfologik 2.1.9.
 //!
 //! `fixtures/src/GenAnalysisMorfologik.java` writes `analysis_morfologik/`:
 //! `lookups_<lang>.tsv` (words through the real Polish and Ukrainian

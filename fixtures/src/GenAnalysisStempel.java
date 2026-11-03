@@ -28,7 +28,7 @@ import org.apache.lucene.util.BytesRef;
 import org.egothor.stemmer.Trie;
 
 /**
- * M12 T12.2: Lucene's analysis-stempel module -- the Egothor stemmer tables, {@code
+ * Lucene's analysis-stempel module -- the Egothor stemmer tables, {@code
  * StempelStemmer}, {@code StempelFilter}, {@code PolishAnalyzer} and its factory.
  *
  * <p>Writes {@code analysis_stempel/}:

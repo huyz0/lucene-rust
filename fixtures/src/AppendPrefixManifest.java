@@ -13,7 +13,7 @@ import java.nio.file.Path;
 import java.util.Arrays;
 
 /**
- * Cross-engine ground truth for `PrefixQuery` (task #35), appended to the
+ * Cross-engine ground truth for `PrefixQuery`, appended to the
  * already-checked-in {@code fixtures/data/blocktree_index/} directory's {@code
  * manifest.properties} <b>without regenerating the index itself</b> -- same
  * append-only approach {@link AppendWildcardManifest} already uses (opens the

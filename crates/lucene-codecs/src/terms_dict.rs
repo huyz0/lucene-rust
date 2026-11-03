@@ -157,7 +157,7 @@ pub fn read_term_dict_entry(input: &mut SliceInput) -> Result<TermsDictEntry> {
 /// dictionary once in order: `OrdinalMap::build` merge-sorts every segment's
 /// terms and keeps none of them, and materializing its input cost **267 MB of
 /// a 319 MB peak** on a 5-segment x 1 M-term shape where the map itself is
-/// 51 MB (`docs/sweep/m2/c29-search-carryovers.md`). Java never pays it
+/// 51 MB. Java never pays it
 /// because `OrdinalMap.build` takes `TermsEnum[]`.
 ///
 /// The current term is held in one buffer that is reused across calls, so a

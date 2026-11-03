@@ -1,4 +1,4 @@
-//! Differential test for `FuzzyQuery` (task #42) against the same real
+//! Differential test for `FuzzyQuery` against the same real
 //! `IndexWriter`-produced segment `tests/wildcard_query_fixtures.rs`/
 //! `tests/prefix_query_fixtures.rs` already validate
 //! (`fixtures/data/blocktree_index/`) -- see those files' module docs for
@@ -202,7 +202,7 @@ fn fuzzy_composes_inside_boolean_query_must() {
     assert_eq!(c.docs, vec![1]);
 }
 
-/// `max_expansions` (task #221): with a generous `max_edits` (4, at least
+/// `max_expansions`: with a generous `max_edits` (4, at least
 /// `max(len(term), len(candidate))` for every term in this fixture's `body`
 /// field, so every one of `bird`/`cat`/`dog` matches "cat" regardless of edit
 /// distance), the *unbounded* -- i.e. default `max_expansions = 50`, well

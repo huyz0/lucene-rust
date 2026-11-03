@@ -1,4 +1,4 @@
-//! M12 T12.2: smartcn against Lucene 10.5.0.
+//! Smartcn against Lucene 10.5.0.
 //!
 //! `fixtures/src/GenAnalysisSmartcn.java` writes `analysis_smartcn/`:
 //! `HMMChineseTokenizer` over `corpus/analysis-chinese.txt` and 200 seeded

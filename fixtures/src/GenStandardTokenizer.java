@@ -34,7 +34,7 @@ import org.apache.lucene.util.automaton.Automaton;
 import org.apache.lucene.util.automaton.Transition;
 
 /**
- * Differential fixture for M7's analysis port ({@code crates/lucene-analysis/tests/
+ * Differential fixture for the analysis port ({@code crates/lucene-analysis/tests/
  * standard_tokenizer_fixtures.rs}): real Lucene 10.5.0 {@code StandardTokenizer}, {@code
  * StandardAnalyzer}, a custom chain built from core APIs only (a {@code CharFilter}, a {@code
  * TokenFilter}, a {@code FilteringTokenFilter}, a case-insensitive {@code StopFilter}), {@code

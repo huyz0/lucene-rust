@@ -32,7 +32,7 @@ import org.junit.runner.RunWith;
 import org.junit.runner.notification.Failure;
 
 /**
- * Differential fixtures for lucene-test-framework's mock analysis chain (M14.h h3): the tokens
+ * Differential fixtures for lucene-test-framework's mock analysis chain: the tokens
  * Lucene 10.5.0's mocks produce from seeded {@code java.util.Random}s.
  *
  * <p>Writes {@code analysis.txt}: for each of 100 seeds, a {@code seed} line, then for each chain

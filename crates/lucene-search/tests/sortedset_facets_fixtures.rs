@@ -1,4 +1,4 @@
-//! M13 T13.4d2 against `fixtures/src/GenSortedSetFacets.java`: sorted-set
+//! Against `fixtures/src/GenSortedSetFacets.java`: sorted-set
 //! facet counting.
 //!
 //! - `DefaultSortedSetDocValuesReaderState` over a four-segment index with

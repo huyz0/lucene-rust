@@ -9,8 +9,7 @@
 //! Real Lucene never computes an edit distance per candidate term: it builds
 //! a Levenshtein automaton (`LevenshteinAutomata.toAutomaton(n, prefix)`) and
 //! runs it. This module computes the distance directly with a banded DP
-//! instead. Same accept/reject decision, different machine -- see
-//! `docs/sweep/m2/b8-automata-analysis.md` for the cost.
+//! instead. Same accept/reject decision, different machine.
 //!
 //! The **semantics** are Lucene's exactly, and each of these is a rule this
 //! port used to get wrong:

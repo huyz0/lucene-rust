@@ -23,7 +23,7 @@ import org.apache.lucene.store.FSDirectory;
 import org.apache.lucene.util.BytesRef;
 
 /**
- * M14 T14.3 `misc`: {@link PKIndexSplitter} and {@link MultiPassIndexSplitter}. Writes the source
+ * `misc`: {@link PKIndexSplitter} and {@link MultiPassIndexSplitter}. Writes the source
  * indexes {@code misc/split_a} (three segments, some documents deleted) and {@code misc/split_b}
  * (two segments, none deleted), runs the splitters over them into scratch directories, and writes
  * {@code misc/split.tsv}:

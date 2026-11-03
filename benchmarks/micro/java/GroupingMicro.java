@@ -43,7 +43,7 @@ import org.apache.lucene.store.FSDirectory;
 import org.apache.lucene.util.BytesRef;
 
 /**
- * Java side of the grouping benchmark pair (M10 T10.4); the Rust side is {@code
+ * Java side of the grouping benchmark pair; the Rust side is {@code
  * benchmarks/rust-runner/src/micro_grouping.rs}, with the same case names. {@code build <dir>}
  * writes the corpus once -- 200 000 documents in four segments, in blocks of one to eight closed
  * by an {@code end:x} document, each with a text {@code body}, a {@code SORTED} group {@code g} of

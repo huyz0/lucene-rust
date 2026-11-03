@@ -41,7 +41,7 @@ import org.locationtech.spatial4j.shape.Rectangle;
 import org.locationtech.spatial4j.shape.Shape;
 
 /**
- * Java side of the spatial-extras benchmark pair (M9 T9.5); the Rust side is {@code
+ * Java side of the spatial-extras benchmark pair; the Rust side is {@code
  * benchmarks/rust-runner/src/micro_spatial_extras.rs}, with the same case names. {@code build
  * <dir>} writes the corpus once -- 100 000 documents, each with an RPT (quad, 11 levels) shape
  * (mostly clustered points, some small boxes), its BBox, and a date or date range -- force-merged to

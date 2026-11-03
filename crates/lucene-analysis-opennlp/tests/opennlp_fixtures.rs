@@ -1,4 +1,4 @@
-//! M12 T12.5: analysis-opennlp against Lucene 10.5.0 over OpenNLP 2.5.3.
+//! Analysis-opennlp against Lucene 10.5.0 over OpenNLP 2.5.3.
 //!
 //! `fixtures/src/GenAnalysisOpenNLP.java` trains small models with
 //! OpenNLP itself (a seeded synthetic grammar: sentence detector,

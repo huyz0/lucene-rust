@@ -8,7 +8,7 @@ import org.apache.lucene.analysis.Analyzer;
 import org.apache.lucene.analysis.custom.CustomAnalyzer;
 
 /**
- * M12 T12.5's pairs (the Rust twin is {@code
+ * The pairs (the Rust twin is {@code
  * benchmarks/rust-runner/src/micro_analysis_opennlp.rs}): analysis-opennlp chains, built by their
  * factories over the models {@code fixtures/src/GenAnalysisOpenNLP.java} trains, over that
  * fixture's text, one document per line. Units are tokens; output is {@code

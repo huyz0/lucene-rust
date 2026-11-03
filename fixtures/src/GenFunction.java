@@ -69,7 +69,7 @@ import org.apache.lucene.util.NumericUtils;
 import org.apache.lucene.util.mutable.MutableValue;
 
 /**
- * M10 T10.5's function-query fixture: {@code function/index}, a four-segment index with deletions
+ * The function-query fixture: {@code function/index}, a four-segment index with deletions
  * in two segments, missing and multi-valued doc values, and every kind of field a value source
  * reads.
  *

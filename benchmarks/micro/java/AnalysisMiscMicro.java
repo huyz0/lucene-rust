@@ -27,7 +27,7 @@ import org.apache.lucene.util.TermAndVector;
 import org.xml.sax.InputSource;
 
 /**
- * M11 part 3's remaining pairs (the Rust twin is {@code
+ * The remaining pairs (the Rust twin is {@code
  * benchmarks/rust-runner/src/micro_analysis_misc.rs}): the decompounders, the deprecated {@code
  * WordDelimiterFilter}, {@code ClassicAnalyzer}, {@code WikipediaTokenizer}, {@code
  * DateRecognizerFilter} and {@code Word2VecSynonymFilter}, each over a corpus both sides generate

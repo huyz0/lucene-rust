@@ -114,8 +114,7 @@ fn expected_bm25(doc_freq: i64, doc_count: i64, freq: f32) -> f32 {
     let b = 0.75_f64;
     // No `(k1 + 1)` numerator factor -- real Lucene 10.5.0's actual
     // `BM25Scorer.doScore` formula, not the textbook one; see
-    // `similarity.rs`'s module doc for the real-Lucene-source citation and how
-    // this was caught (task #32's cross-engine `DisjunctionMaxQuery` test).
+    // `similarity.rs`'s module doc for the real-Lucene-source citation.
     let tf_norm = (freq as f64) / (freq as f64 + k1 * (1.0 - b + b));
     (idf * tf_norm) as f32
 }
@@ -372,12 +371,14 @@ fn boolean_query_scored_minimum_should_match_sums_all_matching_clauses() {
     let (fields, doc, id, suffix, _m) = open_segment();
     let doc_in = DocInput::open(&doc, &id, &suffix).expect("open .doc");
 
-    // must=[cat]={0,2}; should=[dog,bird], dog={0,1}, bird={1,4}, minimum_should_match=1
-    // narrows the matched set to {0} (see `boolean_minimum_should_match_one_with_must_present_narrows_the_set`
-    // in `lib.rs`'s unit tests for the matching-side proof) -- this test instead
-    // asserts the *score* for doc 0 is `cat_score(0) + dog_score(0)` (bird doesn't
-    // match doc 0 at all, so it contributes nothing either way), proving the
-    // threshold only gates which docs match, not how many clause scores get summed.
+    // must=[cat]={0,2}; should=[dog,bird], dog={0,1}, bird={1,4},
+    // minimum_should_match=1 narrows the matched set to {0} (see
+    // `boolean_minimum_should_match_one_with_must_present_narrows_the_set` in
+    // `lib.rs`'s unit tests for the matching-side proof) -- this test instead
+    // asserts the *score* for doc 0 is `cat_score(0) + dog_score(0)` (bird
+    // doesn't match doc 0 at all, so it contributes nothing either way),
+    // proving the threshold only gates which docs match, not how many clause
+    // scores get summed.
     let query = BooleanQuery::new()
         .with_must([TermQuery::new("body", "cat")])
         .with_should([
@@ -533,7 +534,7 @@ fn nested_boolean_must_clause_scoring_matches_real_lucene_additive_recursion() {
     }
 }
 
-/// `Clause::Phrase` inside a `BooleanQuery` (task #29): reuses the `pos` field's
+/// `Clause::Phrase` inside a `BooleanQuery`: reuses the `pos` field's
 /// real alpha/beta postings (`fixtures/data/blocktree_index/`, see
 /// `phrase_query_fixtures.rs`) to prove `search_boolean_query_scored` sums a
 /// `Clause::Phrase` clause's own [`search_phrase_query_scored`] contribution

@@ -2,7 +2,7 @@
 //! `CheckIndex` port.
 //!
 //! `scripts/verify-write-path.sh`'s `write_positions_segment_fixture` /
-//! `VerifyPositionsSegment` case is the cross-engine half of batch c23: real
+//! `VerifyPositionsSegment` case is the cross-engine half: real
 //! Lucene 10.5.0 opens a segment this port wrote and walks its `.pos`/`.pay`
 //! occurrence by occurrence. This is the in-tree half, and it exists because
 //! that one needs a JVM and the checked-in Lucene jars, so `cargo test` cannot
@@ -10,10 +10,8 @@
 //!
 //! `check_index`'s positional and offset ordering checks
 //! (`postings.positions_valid:*`, `postings.offsets_valid:*`, the
-//! term-vectors-versus-postings cross-check) were ported by batch c9 against
-//! **Java-written** fixtures. Until this batch nothing this port *wrote*
-//! carried positions at a scale that reached them, because
-//! `IndexWriter`-produced segments indexed `DocsAndFreqs`. This test is their
+//! term-vectors-versus-postings cross-check) are otherwise tested against
+//! **Java-written** fixtures. This test is their
 //! first writer-produced input. It deliberately does **not** try to make those
 //! checks fail -- driving their failure arms is batch `c25`'s scope -- it
 //! proves they run, and pass, over bytes this port emitted.
@@ -76,7 +74,7 @@ fn tempdir(tag: &str) -> TempDir {
 
 /// Period 5, coprime with the 256-occurrence `.pos` block, so `.pos` block
 /// boundaries drift against `.doc` block boundaries instead of lining up with
-/// them -- c20's Tier-2 review found a period-4 cycle making a level-1 skip
+/// them -- a period-4 cycle would make a level-1 skip
 /// record's in-block offset indistinguishable from a hardcoded zero.
 fn dense_freq(doc: usize) -> usize {
     1 + doc % 5
@@ -165,8 +163,7 @@ fn write_index(tag: &str) -> (TempDir, usize) {
 
 /// The headline: every check this port's `CheckIndex` port runs must pass over
 /// a segment whose postings carry positions, offsets and payloads and whose
-/// term vectors carry the same three axes -- bytes no `CheckIndex` run, ours
-/// or Java's, had ever seen this port write before batch c23.
+/// term vectors carry the same three axes -- bytes this port wrote.
 #[test]
 fn our_check_index_passes_over_a_writer_produced_positions_segment() {
     let (path, num_docs) = write_index("check-index");

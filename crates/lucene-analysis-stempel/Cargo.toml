@@ -4,10 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-# lucene-analysis-stempel (M12 T12.2): the Egothor/Stempel stemmer tables,
+# lucene-analysis-stempel: the Egothor/Stempel stemmer tables,
 # StempelFilter and PolishAnalyzer. Over lucene-analysis only, as Lucene's
-# module is over lucene-analysis-common
-# (docs/milestones/m12-language-analysis.md).
+# module is over lucene-analysis-common.
 [features]
 default = ["embedded-data"]
 # Compiles the dictionary files in (src/resources); without it they are read

@@ -47,9 +47,7 @@
 //! [`DeleteQueue`] therefore keeps the two things the slices actually
 //! *compute* — the private [`BufferedUpdates`] for the segment being built
 //! and the global [`BufferedUpdates`] for the segments already written — and
-//! drops the list, the slice heads and the locks. See
-//! `docs/sweep/m2/c7-delete-queue.md` for the equivalence argument
-//! document-by-document.
+//! drops the list, the slice heads and the locks.
 //!
 //! **`Query` is not available here.** Java's `deleteDocuments(Query...)`
 //! takes `org.apache.lucene.search.Query` and resolves it with an
@@ -847,8 +845,7 @@ impl DeleteQueue {
     /// through the same path every other segment's deletes take, so they stay
     /// in the packet. The outcome is identical (the `docIDUpto` limit is what
     /// bounds them either way); the cost is one extra `.liv` generation on a
-    /// freshly flushed segment where Java writes none, recorded in
-    /// `docs/sweep/m2/c7-delete-queue.md`.
+    /// freshly flushed segment where Java writes none.
     pub fn freeze_private_buffer(&mut self, segment_name: &str) -> Option<FrozenBufferedUpdates> {
         if self.private.any() {
             Some(FrozenBufferedUpdates::take(

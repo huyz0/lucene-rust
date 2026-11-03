@@ -1,4 +1,4 @@
-//! M11 T11.6: `QueryAutoStopWordAnalyzer` against
+//! `QueryAutoStopWordAnalyzer` against
 //! `fixtures/src/GenQueryAutoStop.java`: the same constructors over the same
 //! Java-written index (three segments, deletions) give the same stop words
 //! per field and the same tokens.

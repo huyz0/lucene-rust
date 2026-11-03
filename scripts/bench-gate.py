@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The nightly performance gate (M6 T6.2): the M1 query mix, both engines on
+"""The nightly performance gate: the benchmark query mix, both engines on
 the same index, failing on
 
   * a recall mismatch (the engines disagree on hits: timings are meaningless),

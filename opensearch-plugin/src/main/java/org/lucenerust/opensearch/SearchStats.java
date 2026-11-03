@@ -9,7 +9,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.LongAdder;
 
 /**
- * How much traffic ran native, and why the rest did not (M2 T2.4: fallback must be observable).
+ * How much traffic ran native, and why the rest did not, so that every fallback is observable.
  * Served by {@code GET /_plugins/lucene_rust/stats}.
  */
 public final class SearchStats {
@@ -30,7 +30,7 @@ public final class SearchStats {
     private final LongAdder nativeSequentialFetches = new LongAdder();
 
     /**
-     * A document whose stored fields the native reader served (read path R6); {@code sequential}
+     * A document whose stored fields the native reader served; {@code sequential}
      * when through the fetch phase's sequential reader (a run of adjacent hits).
      */
     public void nativeFetch(boolean sequential) {

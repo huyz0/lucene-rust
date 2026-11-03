@@ -13,7 +13,7 @@ import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.Version;
 
 /**
- * M11 T11.7: the analysis factories and {@code CustomAnalyzer}, built from configuration text.
+ * The analysis factories and {@code CustomAnalyzer}, built from configuration text.
  *
  * <p>{@code corpus/analysis-factories.conf} holds one configuration per line: a name, then the
  * builder steps ({@code tok:}, {@code cf:}, {@code tf:}, {@code when:}, {@code whenTerm:N} -- a

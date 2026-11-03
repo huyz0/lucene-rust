@@ -16,7 +16,7 @@ import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
 
 /**
- * M9 T9.3's write-path proof: real Lucene opens the shape index this port's {@code IndexWriter}
+ * The write-path proof: real Lucene opens the shape index this port's {@code IndexWriter}
  * wrote ({@code write_geo_shapes_fixture}, from {@code GenGeoShapes}' documents), finds it clean
  * ({@link CheckIndex}), and answers every query of {@code fixtures/data/geo_shapes/queries.tsv} --
  * every geometry under every relation, indexed ({@code LatLonShape}, {@code XYShape}) and over the

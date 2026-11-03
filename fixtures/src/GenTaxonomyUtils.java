@@ -46,7 +46,7 @@ import org.apache.lucene.util.Bits;
 import org.apache.lucene.util.IOUtils;
 
 /**
- * M13 T13.4d2: the taxonomy utilities. Writes {@code taxonomy_utils/}:
+ * The taxonomy utilities. Writes {@code taxonomy_utils/}:
  *
  * <ul>
  *   <li>{@code src/index}, {@code src/taxo}: {@link #SRC_DOCS} documents in two segments (40 and

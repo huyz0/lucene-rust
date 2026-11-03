@@ -1,4 +1,4 @@
-//! M14 T14.3, differentially against Lucene 10.5.0:
+//! Differentially against Lucene 10.5.0:
 //! `fixtures/src/GenClassification.java`'s `classification.tsv`.
 //!
 //! Every classifier of `lucene-classification` under seventeen

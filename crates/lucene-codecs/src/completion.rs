@@ -1,5 +1,5 @@
 //! `org.apache.lucene.search.suggest.document`'s completion postings format at
-//! the file level (M13 T13.3d): the weighted FST a suggest field is indexed
+//! the file level: the weighted FST a suggest field is indexed
 //! into (`NRTSuggesterBuilder`), the two files that hold it
 //! (`CompletionFieldsConsumer`: `.lkp`, the FSTs; `.cmp`, the field table),
 //! and the reader that opens them (`CompletionFieldsProducer`,

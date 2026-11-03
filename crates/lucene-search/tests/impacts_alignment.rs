@@ -21,8 +21,7 @@
 //! or a field-number mismatch between `NormsFieldConfig` and
 //! `PostingsFieldConfig`, produces a segment that passes every other gate and
 //! silently under-bounds its blocks -- and fails here.
-//!
-//! Raised as a gating finding by the Tier-2 review of batch `c42-readpath-perf`.
+
 #![allow(clippy::arithmetic_side_effects)]
 
 use lucene_codecs::field_infos::{

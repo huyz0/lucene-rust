@@ -9,14 +9,14 @@
 //!
 //! Three segments are written: `_0` (the original multi-field-number
 //! positions fixture), `_1` (every field number 0, a `bits_per_field_num`
-//! regression case), and `_2` -- added by batch `c8-tv-chunking` -- a
+//! regression case), and `_2`, a
 //! **multi-chunk** segment with offsets and payloads and prefix-shared terms,
 //! which is the only one that exercises the writer's real
 //! `Lucene90CompressingTermVectorsWriter.flush` chunking (4 096 bytes / 128
 //! documents), `flushOffsets`' derived `charsPerTerm`, `flushFlags`'
-//! per-field-number encoding, and `startTerm`'s prefix compression. Batch c33
-//! added its last document (400), whose terms are **non-ASCII with Java
-//! `char` offsets** -- the shape `lucene_analysis` now emits -- so the
+//! per-field-number encoding, and `startTerm`'s prefix compression. Its last
+//! document (400) has **non-ASCII terms with Java `char` offsets** -- the
+//! shape `lucene_analysis` emits -- so the
 //! negative `length - prefixLength - suffixLength` values that follow from a
 //! term occupying more bytes than it spans `char`s are read back by real
 //! Lucene rather than only by this port's own reader.
@@ -206,7 +206,7 @@ fn main() {
         })
         .collect();
 
-    // Document 400, added by batch c33: **non-ASCII terms with Java `char`
+    // Document 400: **non-ASCII terms with Java `char`
     // offsets**, the shape `lucene_analysis` now produces for any non-ASCII
     // text. Every other document here is pure ASCII, where a term's UTF-8
     // byte length and its offset span are equal and

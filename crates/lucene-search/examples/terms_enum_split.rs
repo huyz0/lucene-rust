@@ -1,5 +1,4 @@
-//! What `TermsEnum::next()` costs with and without its `TermStats`
-//! (ledger item 14's sibling, item 21 / c1's F-14).
+//! What `TermsEnum::next()` costs with and without its `TermStats`.
 //!
 //! Java's `SegmentTermsEnum.next()` decodes only the term bytes; `docFreq()`
 //! and `postings()` trigger `decodeMetaData` later, and a caller that walks
@@ -10,8 +9,7 @@
 //!
 //! Both arms run over the same field of the same index, alternating, in one
 //! process, and every figure is a **min of N repetitions** -- criterion
-//! reported 83/91/129 µs for identical code on this host
-//! (`docs/sweep/m2/c24-arith-codecs.md`).
+//! reported 83/91/129 µs for identical code on this host.
 //!
 //! ```text
 //! cargo build -p lucene-search --release --example terms_enum_split

@@ -13,7 +13,7 @@ import java.nio.file.Path;
 import java.util.List;
 
 /**
- * Cross-engine ground truth for `DisjunctionMaxQuery` (task #32), appended to the
+ * Cross-engine ground truth for `DisjunctionMaxQuery`, appended to the
  * already-checked-in {@code fixtures/data/blocktree_index/} directory's
  * {@code manifest.properties} <b>without regenerating the index itself</b>.
  *

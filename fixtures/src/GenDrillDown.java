@@ -49,7 +49,7 @@ import org.apache.lucene.store.FSDirectory;
 import org.apache.lucene.util.IOUtils;
 
 /**
- * M13 T13.4c: drill-down and drill-sideways. Writes {@code drill_down/}:
+ * Drill-down and drill-sideways. Writes {@code drill_down/}:
  *
  * <ul>
  *   <li>{@code index/} and {@code taxo/}: {@link #DOCS} documents in three segments of 2,600,

@@ -379,9 +379,7 @@ pub enum OrdToDoc {
 /// (`if start + length > file.len()`, the shape `docs/arithmetic-gate.md`
 /// names): a negative `addressesOffset` arrives as `usize::MAX` through
 /// `as usize`, the addition wraps to something small, the comparison
-/// *passes*, and the slice then panics with `start > end`. c30 reached it
-/// from `check_index`'s side with a re-signed `.vemf` overwrite -- and this
-/// decoder is on the query path, so through the FFI that is a dead JVM.
+/// *passes*, and the slice then panics with `start > end`. This decoder is on the query path, so through the FFI that is a dead JVM.
 pub(crate) fn file_region(file: &[u8], offset: i64, length: i64) -> Option<&[u8]> {
     let start = usize::try_from(offset).ok()?;
     let end = start.checked_add(usize::try_from(length).ok()?)?;
@@ -892,7 +890,7 @@ impl RawVectorValues<'_> {
         };
         // A `match`, not `.ok_or(..)`: `Error` carries `String` variants and
         // is wide, so an eagerly built error value is materialised on the
-        // *success* path too -- 40% of this call in c31's A/B, on the
+        // *success* path too -- 40% of this call in an A/B, on the
         // per-candidate KNN scoring path. (`ok_or_else` reads better but trips
         // `clippy::unnecessary_lazy_evaluations`, which does not know the
         // enum's size.)
@@ -1140,8 +1138,7 @@ impl FloatVectorValues<'_> {
     /// `out.len()` must be exactly `dimension()`. A wrong-sized buffer is an
     /// error rather than a silent partial fill: the zip below would otherwise
     /// stop at the shorter of the two and leave a plausible, wrong vector --
-    /// the same failure mode b7 found in the old `search`, which scored the
-    /// common prefix of a mismatched query.
+    /// as scoring the common prefix of a mismatched query would.
     pub fn vector_into(&self, ord: i32, out: &mut [f32]) -> Result<()> {
         if out.len() != self.values.dimension {
             return Err(Error::QueryDimensionMismatch(
@@ -1605,7 +1602,7 @@ impl FlatVectorsWriter {
 
     /// `Lucene99FlatVectorsWriter.alignOutput`: pad to the encoding's
     /// alignment and return the aligned offset. Part of the format, not an
-    /// optimisation -- see finding 7 in `docs/sweep/m2/c5-vectors.md`.
+    /// optimisation.
     fn align_output(&mut self, encoding: VectorEncoding) -> i64 {
         let align = alignment(encoding);
         let padded = self.data.len().next_multiple_of(align);

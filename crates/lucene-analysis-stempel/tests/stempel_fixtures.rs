@@ -1,4 +1,4 @@
-//! M12 T12.2: Stempel against Lucene 10.5.0.
+//! Stempel against Lucene 10.5.0.
 //!
 //! `fixtures/src/GenAnalysisStempel.java` writes `analysis_stempel/`:
 //! `stems.tsv` (30,000+ words through Lucene's default Polish table),

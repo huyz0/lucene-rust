@@ -1,6 +1,6 @@
 //! Port of `org.apache.lucene.index.UpgradeIndexMergePolicy`: a
 //! `FilterMergePolicy` whose forced merges only rewrite segments an older
-//! Lucene wrote, so `forceMerge` "upgrades" an index (M8) instead of merging
+//! Lucene wrote, so `forceMerge` "upgrades" an index instead of merging
 //! it down. Every other decision is the wrapped policy's.
 //!
 //! Rust-only differences: Java's `shouldUpgradeSegment` is an overridable

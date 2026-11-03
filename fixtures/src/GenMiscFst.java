@@ -19,7 +19,7 @@ import org.apache.lucene.util.fst.PositiveIntOutputs;
 import org.apache.lucene.util.fst.Util;
 
 /**
- * M14 T14.3 `misc`: {@link UpToTwoPositiveIntOutputs} and {@link ListOfOutputs}. Writes
+ * `misc`: {@link UpToTwoPositiveIntOutputs} and {@link ListOfOutputs}. Writes
  * {@code misc/fst/<case>.txt}, one per outputs type, whose lines are
  *
  * <pre>

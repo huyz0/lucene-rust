@@ -177,7 +177,7 @@ impl Input {
 /// this impl an `Arc<Input>` coerces straight to
 /// `Arc<dyn AsRef<[u8]> + Send + Sync>`, which is how
 /// `lucene_codecs::blocktree::open_shared` takes a `.tim`/`.tip` mapping
-/// without copying it (c12, ~199 µs on a 4.7 MB `.tim`).
+/// without copying it (~199 µs saved on a 4.7 MB `.tim`).
 impl AsRef<[u8]> for Input {
     fn as_ref(&self) -> &[u8] {
         self
@@ -194,7 +194,7 @@ impl AsRef<[u8]> for Input {
 ///
 /// `Send + Sync`, as Java's `Directory` is by contract: a writer's indexing
 /// threads flush segments into it concurrently while its merge thread reads
-/// sources out of it (M4's T4.3). Every implementation here is either
+/// sources out of it. Every implementation here is either
 /// stateless over the filesystem or guards its own state.
 ///
 /// Java's `close()` is `Drop`: [`FsDirectory`] retries its pending deletes
@@ -962,9 +962,7 @@ impl MmapDirectory {
     /// maps every file.
     ///
     /// Exposed because it is the only way to measure the two arms in **one
-    /// process**, which is how this project measures anything (see
-    /// `docs/sweep/m2/c24-arith-codecs.md` on why criterion is not trusted
-    /// here) -- and because a caller with an unusual access pattern (a
+    /// process**, which is how this project measures anything -- and because a caller with an unusual access pattern (a
     /// long-lived reader over many small files it seeks in repeatedly) can
     /// turn it off.
     pub fn with_read_threshold(root: impl Into<PathBuf>, read_threshold: u64) -> Self {

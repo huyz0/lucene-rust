@@ -1,4 +1,4 @@
-# M6 T6.2: the nightly performance gate. The M1 query mix on both corpora,
+# The nightly performance gate. The benchmark query mix on both corpora,
 # Rust against Lucene 10.5.0 on the same index in the same job; fails when a
 # query is slower than Lucene, regressed from the baseline recorded on this
 # runner class (benchmarks/baseline/ci/, committed from an `update_baseline`

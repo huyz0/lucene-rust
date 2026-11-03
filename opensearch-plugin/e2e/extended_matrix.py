@@ -1,4 +1,5 @@
-"""M10 T10.7's rows of the native-vs-Lucene REST matrix (verify_opensearch.py).
+"""The extended query shapes' rows of the native-vs-Lucene REST matrix (verify_opensearch.py):
+nested, spans, intervals, combined_fields, function_score and more_like_this.
 
 `rows()` runs on the main indices (`single`, `multi`: body/title text, tag
 keyword, n long, price double, qty integer, ratio float, ts date, m multi-valued

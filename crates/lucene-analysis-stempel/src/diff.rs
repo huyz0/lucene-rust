@@ -10,7 +10,7 @@
 //! does the port.
 //!
 //! `Diff.exec`, which builds commands from word pairs, belongs to table
-//! compilation, which M12 does not port.
+//! compilation, which is not ported.
 
 /// `Diff.apply(dest, diff)`.
 pub fn apply(dest: &mut Vec<u16>, diff: &[u16]) {

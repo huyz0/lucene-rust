@@ -13,7 +13,7 @@
 //! searches with the presearcher's query. This port keeps them in memory and
 //! evaluates the presearcher's query over the entries' indexed documents: the
 //! same candidate set, without a second on-disk index. The on-disk index and
-//! its purge cycle are the persistence half (T13.5d).
+//! its purge cycle are the persistence half.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -739,12 +739,13 @@ impl QueryIndex {
 
 /// Whether the presearcher's batch query selects an entry's indexed document,
 /// entry by entry: the reference [`QueryIndex::select`]'s inverted evaluation
-/// is tested against. A metadata value is a term of its field, as Java's
-/// query index document holds it (one `KeywordAnalyzer` token). The query is a `SHOULD`/`MUST` tree of `TermInSet` and `Term` clauses, so it
-/// is evaluated directly: a `TermInSet` matches when the entry indexes one of
-/// its terms in that field, a `Term` when it indexes that exact term, and a
-/// boolean by its occurrences (`MUST` all, `SHOULD` any, at least one `SHOULD`
-/// when there are no `MUST`s).
+/// is tested against. A metadata value is a term of its field, as Java's query
+/// index document holds it (one `KeywordAnalyzer` token). The query is a
+/// `SHOULD`/`MUST` tree of `TermInSet` and `Term` clauses, so it is evaluated
+/// directly: a `TermInSet` matches when the entry indexes one of its terms in
+/// that field, a `Term` when it indexes that exact term, and a boolean by its
+/// occurrences (`MUST` all, `SHOULD` any, at least one `SHOULD` when there are
+/// no `MUST`s).
 #[cfg(test)]
 fn matches_presearcher(query: &Clause, indexed: &IndexedEntry) -> bool {
     let holds = |field: &str, term: &[u8]| {

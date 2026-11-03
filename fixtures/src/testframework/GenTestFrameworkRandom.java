@@ -15,7 +15,7 @@ import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.automaton.Automaton;
 
 /**
- * Differential fixtures for lucene-test-framework's random generators (M14.h): what Lucene
+ * Differential fixtures for lucene-test-framework's random generators: what Lucene
  * 10.5.0's test framework draws from a seeded {@code java.util.Random}.
  *
  * <p>Writes {@code random.txt}: for each of 200 seeds, a {@code seed} line, then one line per

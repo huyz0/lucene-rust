@@ -1,4 +1,4 @@
-//! `org.apache.lucene.search.suggest.document` (M13 T13.3d): the lookup half
+//! `org.apache.lucene.search.suggest.document`: the lookup half
 //! of the completion postings format. [`lookup`] is `NRTSuggester.lookup`
 //! (an automaton intersected with the per-field FST, then a best-first search
 //! over what is below the accepting nodes); [`TopSuggestDocsCollector`] and

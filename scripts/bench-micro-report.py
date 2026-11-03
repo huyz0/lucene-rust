@@ -5,9 +5,8 @@ refuses to claim a difference it cannot resolve.
 Why this exists. The first version of this harness ran each engine once and
 printed the ratio. Investigating whether explicit SIMD was worth adding turned
 up the problem with that: running the *same binary against itself* three times,
-`for_decode` varied by a median of 1.21x and a worst case of 1.64x. Every
-difference smaller than that had been reported as if it were real, and several
-were quoted in `docs/sweep/findings.md` before anyone checked.
+`for_decode` varied by a median of 1.21x and a worst case of 1.64x. A
+difference smaller than that is noise.
 
 So this reports two things instead of one:
 

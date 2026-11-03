@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# M14.h h4's acceptance run: crates/lucene-test-framework/examples/random_index.rs
+# Acceptance run for crates/lucene-test-framework/examples/random_index.rs
 # over 300 seeds. A RandomIndexWriter under a random IndexWriterConfig runs a
 # random stream of adds, updates, deletes, doc-values updates, commits,
 # flushes and forced merges; every NRT reader it opens must hold exactly the

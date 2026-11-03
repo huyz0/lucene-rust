@@ -28,7 +28,7 @@ import org.apache.lucene.analysis.tokenattributes.TypeAttribute;
 import org.apache.lucene.util.BytesRef;
 
 /**
- * M11 T11.5: the {@code word2vec} synonym package, recorded for
+ * The {@code word2vec} synonym package, recorded for
  * crates/lucene-search/tests/word2vec_fixtures.rs.
  *
  * <p>Two Deeplearning4j-style model zips written here from seeded clustered vectors (80 terms, 12

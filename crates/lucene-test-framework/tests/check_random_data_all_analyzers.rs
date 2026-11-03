@@ -1,4 +1,4 @@
-//! `checkRandomData` over every ported analyzer, the M12 modules' included:
+//! `checkRandomData` over every ported analyzer, the language modules included:
 //! each Lucene analyzer test class has a `testRandomStrings` that does
 //! exactly this (`checkRandomData(random(), a, 200 * RANDOM_MULTIPLIER)`).
 //! and most add a `testRandomHugeStrings` (`checkRandomData(random(), a,

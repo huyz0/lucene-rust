@@ -35,7 +35,7 @@ import org.apache.lucene.util.fst.FST;
 import org.apache.lucene.util.fst.IntsRefFSTEnum;
 
 /**
- * M12 T12.1: Lucene's analysis-nori module -- KoreanTokenizer over the mecab-ko-dic dictionary.
+ * Lucene's analysis-nori module -- KoreanTokenizer over the mecab-ko-dic dictionary.
  *
  * <p>Writes {@code analysis_nori/}:
  *

@@ -1,4 +1,4 @@
-//! The spatial-extras benchmark pair (M9 T9.5), against
+//! The spatial-extras benchmark pair, against
 //! `benchmarks/micro/java/SpatialExtrasMicro.java`: RPT indexing a Geo3D
 //! polygon (every token consumed), RPT intersects of boxes and circles, BBox
 //! intersects with the overlap-ratio similarity of every hit, heatmaps and

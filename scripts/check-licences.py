@@ -2,7 +2,7 @@
 """Every Rust dependency the shipped library links is under a licence this
 project may redistribute under Apache-2.0 (docs/licences.md).
 
-The audit M6 asked for was done once, by hand; this keeps it true. A new
+The licence audit was done once, by hand; this keeps it true. A new
 dependency -- or an upgrade that changes a licence -- fails here until
 docs/licences.md records it, rather than being found at release time.
 

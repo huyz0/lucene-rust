@@ -1,4 +1,4 @@
-//! `WordBreakSpellChecker` (M13 T13.3e): suggestions made by breaking one
+//! `WordBreakSpellChecker`: suggestions made by breaking one
 //! query term into several indexed words, or by joining adjacent query terms
 //! into one.
 

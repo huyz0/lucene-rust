@@ -13,7 +13,7 @@ import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
 
 /**
- * M8 T8.4: turns a {@code fixtures/data/bwc/<version>} copy into a mixed-version index, the shape
+ * Turns a {@code fixtures/data/bwc/<version>} copy into a mixed-version index, the shape
  * an upgraded OpenSearch shard has -- the old release's segments plus {@code segments} new ones
  * Lucene 10.5.0 flushes on top (codec {@code Lucene104}), each of three documents, one of them
  * deleting an old document -- so an ordinary (policy-driven) merge in this port has old and new

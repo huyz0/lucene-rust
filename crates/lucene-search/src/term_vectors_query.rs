@@ -1,8 +1,7 @@
-//! Query-facing read API over already-decoded term vectors (task #39).
+//! Query-facing read API over already-decoded term vectors.
 //!
-//! `crates/lucene-codecs/src/term_vectors.rs` (task #3's write side, task
-//! #26's merge support) already fully decodes one document's term vectors
-//! into [`lucene_codecs::term_vectors::TermVectorsDocument`] --
+//! `crates/lucene-codecs/src/term_vectors.rs` fully decodes one document's
+//! term vectors into [`lucene_codecs::term_vectors::TermVectorsDocument`] --
 //! [`lucene_codecs::term_vectors::TermVectorField`] already carries, per
 //! field, every term with its frequency and (whichever of these the field
 //! had turned on at index time) positions, start/end character offsets, and
@@ -157,10 +156,8 @@ mod tests {
     // occurrences; doc 1 -- two fields "text"/"title"; doc 2 -- no term
     // vectors at all). This module's own logic (field-name resolution,
     // out-of-range propagation, span computation) doesn't touch any new
-    // byte-format decoding, so per the `differential-testing` skill's
-    // precedent for composition/wiring tasks (#36-38), no new Java fixture
-    // was generated for this task -- these tests reuse the fixture task #3
-    // already verified against real Lucene, the same real bytes
+    // byte-format decoding, so these tests reuse the fixture already verified
+    // against real Lucene, the same real bytes
     // `term_vectors_fixtures.rs` differentially checks.
     fn dir() -> String {
         concat!(

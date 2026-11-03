@@ -1,7 +1,7 @@
 //! `org.apache.lucene.analysis.core` (analysis-common's `core` package; the
 //! module is named apart from Rust's `core`).
 //!
-//! `KeywordTokenizer`, `LowerCaseFilter` and `StopFilter` predate M11 and live
+//! `KeywordTokenizer`, `LowerCaseFilter` and `StopFilter` live
 //! at the crate root ([`crate::KeywordTokenizer`], [`crate::LowerCaseFilter`],
 //! [`crate::StopFilter`]); `WhitespaceTokenizer`, `LetterTokenizer` and
 //! `UnicodeWhitespaceTokenizer` are [`crate::util::CharTokenizer`]s.

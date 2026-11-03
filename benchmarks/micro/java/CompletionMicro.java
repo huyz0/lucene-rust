@@ -15,7 +15,7 @@ import org.apache.lucene.search.suggest.document.SuggestIndexSearcher;
 import org.apache.lucene.store.FSDirectory;
 
 /**
- * M13 T13.3d's pairs (the Rust twin is {@code benchmarks/rust-runner/src/micro_completion.rs}):
+ * The pairs (the Rust twin is {@code benchmarks/rust-runner/src/micro_completion.rs}):
  * {@code SuggestIndexSearcher.suggest} over {@code GenCompletionQuery}'s index (three segments,
  * one with deletions), top 10 with duplicates skipped. {@code completion_prefix}: 12 prefixes on
  * {@code suggest}; {@code completion_fuzzy}: 6 misspellings, default fuzzy options; {@code

@@ -1,4 +1,4 @@
-//! M11 T11.7: the factories and `CustomAnalyzer` against Lucene, from the same
+//! The factories and `CustomAnalyzer` against Lucene, from the same
 //! configuration text.
 //!
 //! `fixtures/src/GenAnalysisFactories.java` builds every configuration of

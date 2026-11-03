@@ -1,11 +1,10 @@
 //! Streaming adapters that put this crate's `Vec<Token>`-era filters
-//! (analysis-common classes ported ahead of M11: ASCII folding, the Porter and
+//! (ASCII folding, the Porter and
 //! Snowball English stemmers, the synonym filter) into the streaming
 //! [`TokenStream`] model, so [`crate::Analyzer::standard`]'s `with_*`
 //! builders keep their behaviour on the new chain.
 //!
-//! These are not ports of a Java class; M11 replaces them with the real
-//! streaming filters.
+//! These are not ports of a Java class.
 
 use std::collections::HashMap;
 use std::sync::Arc;

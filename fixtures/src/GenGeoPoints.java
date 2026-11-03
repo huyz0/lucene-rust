@@ -45,7 +45,7 @@ import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
 
 /**
- * The geo point fields, queries, sorts and nearest-neighbour search (M9 T9.2), differentially:
+ * The geo point fields, queries, sorts and nearest-neighbour search, differentially:
  * indexes a seeded random corpus of {@link LatLonPoint}/{@link LatLonDocValuesField} and {@link
  * XYPointField}/{@link XYDocValuesField} points -- the poles, the dateline, exact duplicates,
  * dense clusters, multi-valued documents, documents without the field, several segments with

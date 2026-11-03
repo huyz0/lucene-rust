@@ -23,7 +23,7 @@ import org.apache.lucene.util.Bits;
 
 /**
  * Differential fixture for {@code SoftDeletesDirectoryReaderWrapper}, soft updates and update by
- * query as {@code RandomIndexWriter} uses them (M14.h): for each of {@value #SEEDS} seeds, an
+ * query as {@code RandomIndexWriter} uses them: for each of {@value #SEEDS} seeds, an
  * {@code IndexWriter} with a soft-deletes field and {@code NoMergePolicy} runs {@value #OPS}
  * operations drawn from {@code new Random(seed)}, and each reader taken on the way is described.
  *

@@ -18,7 +18,7 @@ import org.apache.lucene.store.OutputStreamDataOutput;
 import org.apache.lucene.util.BytesRef;
 
 /**
- * M13 T13.3c: {@code FreeTextSuggester} over a small free-text corpus. Writes {@code
+ * {@code FreeTextSuggester} over a small free-text corpus. Writes {@code
  * suggest_freetext/}: {@code corpus.tsv}, {@code queries.tsv}, and per configuration {@code
  * NAME.tsv} (query, num, results), {@code NAME_reload.tsv} (the same through {@code load()}),
  * {@code NAME.bin} ({@code store()}), {@code NAME.count}, plus {@code errors.tsv}.

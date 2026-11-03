@@ -16,10 +16,9 @@ import org.apache.lucene.store.FSDirectory;
  * t<n-1>}, one document per term.
  *
  * <p>It exists because that dictionary's *shape* is what the dead-prefix skip in {@code
- * blocktree::FieldTerms::regexp_intersect} is tuned for (see {@code
- * docs/sweep/m2/b8-automata-analysis.md}), and because measuring the skip against an in-memory
- * {@code Vec<&[u8]>} -- which is what b8 could do -- cannot see the win that matters after the
- * {@code c1-lazy-blocktree} batch: not *loading* the `.tim` blocks the skip jumps over. Only a real
+ * blocktree::FieldTerms::regexp_intersect} is tuned for, and because measuring the skip against
+ * an in-memory {@code Vec<&[u8]>} cannot see the win that matters with a lazily loaded block
+ * tree: not *loading* the `.tim` blocks the skip jumps over. Only a real
  * `Lucene103BlockTreeTermsWriter`-produced dictionary has those blocks; this port's own writer emits
  * one block per leading byte, which for a single-letter-prefixed vocabulary is one giant block.
  *

@@ -1,4 +1,4 @@
-//! The Rust half of M4's interoperability matrix (T4.6): indexes written
+//! The Rust half of the interoperability matrix: indexes written
 //! partly by real Lucene and partly by this port, in either order, and read
 //! back by both. `fixtures/src/InteropIndex.java` is the Java half, and
 //! `scripts/verify-interop.sh` drives the eight directions.

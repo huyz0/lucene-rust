@@ -1,4 +1,4 @@
-//! Settles c6 finding on `FieldNorms`'s sparse norms lookup: an eagerly decoded
+//! Compares two forms of `FieldNorms`'s sparse norms lookup: an eagerly decoded
 //! `Vec<i32>` of every doc-with-a-norm plus a binary search per lookup, against
 //! a per-scorer `IndexedDISI` cursor walked forward across the scan.
 //!

@@ -15,7 +15,7 @@ import org.apache.lucene.analysis.classic.ClassicTokenizer;
 import org.apache.lucene.analysis.wikipedia.WikipediaTokenizer;
 
 /**
- * M11 T11.2: {@code ClassicTokenizer}, {@code ClassicFilter}, {@code ClassicAnalyzer} and {@code
+ * {@code ClassicTokenizer}, {@code ClassicFilter}, {@code ClassicAnalyzer} and {@code
  * WikipediaTokenizer} (all three output modes) over {@code fixtures/corpus/analysis-classic.txt}
  * ({@code <chain>.tsv}), and over 2,000 seeded joins of wiki-markup and classic-grammar fragments
  * ({@code fragments.txt}, then {@code frag_<chain>.tsv}). Rows are {@link AnalysisRows}'. {@code

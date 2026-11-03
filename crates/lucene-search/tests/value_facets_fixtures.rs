@@ -1,4 +1,4 @@
-//! M13 T13.4d1 against `fixtures/src/GenValueFacets.java`: value, range,
+//! Against `fixtures/src/GenValueFacets.java`: value, range,
 //! range-on-range and facet-set counting.
 //!
 //! - Every call `GenValueFacets` makes on `LongValueFacetCounts`,

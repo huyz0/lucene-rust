@@ -43,8 +43,8 @@ import java.util.List;
  * <p>What this port then has to get right, in `write_merged_metadata_fixture`
  * + `VerifyMergedMetadata`: merging these three must produce a `.si` whose
  * `minVersion` is the *oldest* of the three (10.0.0) and whose `hasBlocks` is
- * the disjunction (true). Writing the merging writer's own version -- what
- * this port did before c36 -- passes every checksum, opens cleanly and is
+ * the disjunction (true). Writing the merging writer's own version instead
+ * passes every checksum, opens cleanly and is
  * wrong.
  */
 public class GenMergeMetadata {

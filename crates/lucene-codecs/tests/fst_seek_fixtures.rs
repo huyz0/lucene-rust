@@ -151,7 +151,7 @@ fn seek_floor_before_the_first_key_finds_nothing() {
 #[test]
 fn seek_ceil_and_floor_around_gaps_in_the_binary_search_fixture() {
     let fst = load_fst("fst_binary_search");
-    // Present single-byte keys, ascending: 01 28 50 78 a0 c8 f0.
+    // Present single-byte keys, ascending: `01 28 50 78 a0 c8 f0`.
     let mut e = fst.iter().unwrap();
 
     assert_eq!(e.seek_exact(&[0x28]).unwrap(), Some(kv(&[0x28], b"out1")));

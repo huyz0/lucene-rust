@@ -1,7 +1,6 @@
 //! What the KNN fan-out and the filtered path actually cost.
 //!
-//! Two questions this bench exists to answer, both raised by the
-//! `c16-knn-query` sweep batch:
+//! Two questions this bench exists to answer:
 //!
 //! 1. **How does the multi-segment fan-out scale?** Not "linearly in the
 //!    number of segments" -- Java's pro-rata `perLeafTopK` makes each leaf's

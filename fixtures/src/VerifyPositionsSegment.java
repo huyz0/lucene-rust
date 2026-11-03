@@ -30,17 +30,14 @@ import java.util.Properties;
 /**
  * Reverse-direction verifier (Rust writes, Java reads) for a segment whose
  * postings carry <b>positions, offsets and payloads</b>: the {@code .pos} and
- * {@code .pay} files, which before batch c23 no Java reader had ever seen this
- * port produce.
+ * {@code .pay} files.
  *
  * <p>{@code VerifyFullSegment} already opens a whole Rust-written index, but
  * its one indexed field is {@code DOCS_AND_FREQS}, so that index contains no
- * {@code .pos} at all. Batch c20 built the level-0/level-1 {@code .pos}/{@code
- * .pay} skip records on both sides and recorded in its own carry-over list
- * that the only evidence for them was two of this port's readers agreeing with
- * each other -- the evidence shape that let b4's FST framing bug and b11's
- * invented {@code .si} sort encoding both round-trip perfectly while being
- * wrong.
+ * {@code .pos} at all. Without this verifier the only evidence for the
+ * level-0/level-1 {@code .pos}/{@code .pay} skip records would be two of this
+ * port's readers agreeing with each other, which a wrong encoding can satisfy
+ * perfectly.
  *
  * <p>What this checks, in order of specificity:
  *
@@ -53,8 +50,7 @@ import java.util.Properties;
  *   <li>Term statistics, and explicit <b>non-degeneracy</b>: the dense term
  *       must reach past two whole {@code LEVEL1_NUM_DOCS} spans and past a
  *       full {@code .pos} block, or the fixture would exercise none of the
- *       machinery it exists for. (c20's Tier-2 review found exactly this class
- *       of silent degeneracy in its own fixture.)
+ *       machinery it exists for.
  *   <li>Occurrence-by-occurrence comparison against the manifest for 51
  *       sampled documents chosen around the format's block boundaries, with a
  *       <b>fresh {@link PostingsEnum} per sample</b> so every one is reached

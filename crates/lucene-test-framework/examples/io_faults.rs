@@ -1,4 +1,4 @@
-//! M14.h's fault run: an `IndexWriter` over a [`MockDirectoryWrapper`]
+//! The fault run: an `IndexWriter` over a [`MockDirectoryWrapper`]
 //! failing 10% of its writes and opens, as Lucene's
 //! `TestIndexWriterExceptions.testRandomIOExceptions` drives one.
 //!

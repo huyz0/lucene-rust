@@ -1,4 +1,4 @@
-//! `org.apache.lucene.facet.taxonomy`: the taxonomy index (M13 T13.4a) --
+//! `org.apache.lucene.facet.taxonomy`: the taxonomy index --
 //! a separate Lucene index with one document per category, whose document
 //! id is the category's ordinal, so a main index can record a document's
 //! categories as small integers (`FacetsConfig.build`, in
@@ -18,7 +18,7 @@
 //! under it (the taxonomy was recreated) simply reopens as a fresh reader,
 //! sharing nothing with the old one.
 //!
-//! The counting side (M13 T13.4b): [`FastTaxonomyFacetCounts`] counts a
+//! The counting side: [`FastTaxonomyFacetCounts`] counts a
 //! search's hits per ordinal, [`TaxonomyFacetIntAssociations`] and
 //! [`TaxonomyFacetFloatAssociations`] aggregate the values
 //! [`AssociationFacetField`]s indexed (or a values source's), all on

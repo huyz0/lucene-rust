@@ -14,7 +14,7 @@ import org.apache.lucene.store.ByteBuffersDirectory;
 import org.apache.lucene.util.BytesRef;
 
 /**
- * M13 T13.3c's infix pair (the Rust twin is {@code benchmarks/rust-runner/src/micro_infix.rs}): the phrases of
+ * The infix pair (the Rust twin is {@code benchmarks/rust-runner/src/micro_infix.rs}): the phrases of
  * {@code AnalyzingSuggestMicro} repeated to {@code SCALE} suggestions, each with its number appended.
  * {@code infix_lookup}: top 5 for every query of {@code AnalyzingSuggestMicro}, units: lookups;
  * {@code infix_build}: a build over the whole dictionary, units: suggestions. Output is {@code name	ns_per_unit	units}.

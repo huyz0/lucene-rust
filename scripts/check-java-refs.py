@@ -3,8 +3,7 @@
 
 A comment that names a Java class, method or exception message is evidence:
 the `// ARITH:` proofs, the sweep reports and the "no new bound rejects a file
-real Lucene wrote" tables all rest on "Java does X here". c31's Tier-2 review
-found a proof citing `DataInput.readVInt`'s
+real Lucene wrote" tables all rest on "Java does X here". A proof once cited `DataInput.readVInt`'s
 `"Invalid vInt detected (too many bits)"` -- an exception that exists in
 Lucene `main` and **not** in the pinned 10.5.2 tree this port targets. The
 conclusion happened to survive on a different argument, but the evidence was
@@ -37,7 +36,7 @@ citation of something that is not there at all.
 Scope is incremental, exactly as the arithmetic gate's is: by default it scans
 `AUDITED` below -- the files whose citations have been checked -- and fails on
 any regression there. `--all` scans the whole workspace and shows the backlog
-(98 citations at c31, mostly paraphrases naming a method that lives on a
+(mostly paraphrases naming a method that lives on a
 sibling or parent class). Add a file to `AUDITED` when its citations are
 clean.
 

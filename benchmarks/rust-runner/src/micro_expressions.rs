@@ -1,4 +1,4 @@
-//! M14 T14.2's pairs (`benchmarks/micro/java/ExpressionsMicro.java` is the
+//! The pairs (`benchmarks/micro/java/ExpressionsMicro.java` is the
 //! Java twin): `expr_compile`, every expression of
 //! `fixtures/corpus/expressions.txt` that compiles with the default
 //! functions; `expr_<shape>`, one expression evaluated over 1,024 documents'
