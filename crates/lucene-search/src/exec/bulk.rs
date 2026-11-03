@@ -1835,6 +1835,15 @@ impl BulkLeg for ScorerLeg<'_> {
     ) -> Result<()> {
         super::Scorer::next_docs_and_scores_exact(&mut *self.s, up_to, live_docs, out)
     }
+    /// The scorer's own cheap membership test, which for a two-phase
+    /// scorer would answer for the approximation, not the exact view.
+    #[inline]
+    fn advance_exact_cheap(&mut self, target: i32) -> Option<bool> {
+        if self.s.two_phase() {
+            return None;
+        }
+        super::Scorer::advance_exact_cheap(&mut *self.s, target)
+    }
 }
 
 impl MaxScoreLeg for ScorerLeg<'_> {
@@ -1884,6 +1893,13 @@ impl crate::bulk_scorer::BulkLeg for BoxScorer<'_> {
     ) -> Result<()> {
         debug_assert!(!self.two_phase());
         super::Scorer::next_docs_and_scores(&mut **self, up_to, live_docs, out)
+    }
+    #[inline]
+    fn advance_exact_cheap(&mut self, target: i32) -> Option<bool> {
+        if self.two_phase() {
+            return None;
+        }
+        super::Scorer::advance_exact_cheap(&mut **self, target)
     }
 }
 

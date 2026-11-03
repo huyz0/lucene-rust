@@ -555,6 +555,25 @@ impl Scorer for CachedScorer {
             .then(|| (Arc::clone(&self.set), self.score))
     }
 
+    /// A bit set answers with one bit test, moving onto `target` only when
+    /// it is set.
+    #[inline]
+    fn advance_exact_cheap(&mut self, target: i32) -> Option<bool> {
+        if self.emptied {
+            return None;
+        }
+        match &*self.set {
+            CachedSet::Bits { bits, .. } => {
+                let hit = usize::try_from(target).is_ok_and(|d| d < bits.len() && bits.get(d));
+                if hit {
+                    self.doc = target;
+                }
+                Some(hit)
+            }
+            CachedSet::Docs(_) => None,
+        }
+    }
+
     fn contains(&self, doc: i32) -> Option<bool> {
         if self.emptied {
             return None;
