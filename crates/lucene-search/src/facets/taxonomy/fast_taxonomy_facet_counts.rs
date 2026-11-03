@@ -4,11 +4,12 @@
 
 use super::taxonomy_facets::{taxonomy_facets_wrapper, Aggregation, OrdValues, TaxonomyFacets};
 use super::TaxonomyReader;
-use crate::facets::facet_utils::for_each_hit;
+use crate::facets::facet_utils::{direct_column, for_each_hit, hits_filter, live_filter};
 use crate::facets::facets_collector::FacetsCollector;
 use crate::facets::{FacetsConfig, DEFAULT_INDEX_FIELD_NAME};
 use crate::reader::{IndexReader, SortedNumericDocValues, NO_MORE_DOCS};
 use crate::{Error, Result};
+use lucene_codecs::field_infos::DocValuesType;
 
 /// `FastTaxonomyFacetCounts`. Derefs to its [`TaxonomyFacets`].
 #[derive(Debug)]
@@ -75,6 +76,17 @@ impl<'t> FastTaxonomyFacetCounts<'t> {
             let OrdValues::Dense(counts) = &mut inner.counts else {
                 continue;
             };
+            let direct = direct_column(
+                context.reader,
+                index_field_name,
+                &[DocValuesType::SortedNumeric],
+            )?;
+            if let Some(mut column) = direct {
+                column.for_each(live_filter(context.reader), 0, i32::MAX, |_, ords| {
+                    count_slice(counts, ords)
+                })?;
+                continue;
+            }
             let mut doc = dv.next_doc()?;
             while doc != NO_MORE_DOCS {
                 if live_docs.is_none_or(|live| live.get_doc(doc)) {
@@ -87,6 +99,15 @@ impl<'t> FastTaxonomyFacetCounts<'t> {
         inner.finish_counting();
         Ok(FastTaxonomyFacetCounts { inner })
     }
+}
+
+/// `counts[(int) value]++` for each of a document's values.
+#[inline]
+fn count_slice(counts: &mut [i32], values: &[i64]) -> Result<()> {
+    for &value in values {
+        count_one(counts, value as i32)?;
+    }
+    Ok(())
 }
 
 /// `counts[(int) value]++` for each value of the current document.
@@ -140,6 +161,23 @@ fn count(facets: &mut TaxonomyFacets<'_>, fc: &FacetsCollector<'_>) -> Result<()
             continue;
         };
         facets.initialize_value_counters();
+        let direct = direct_column(hits.context.reader, &field, &[DocValuesType::SortedNumeric])?;
+        if let (Some(mut column), Some(filter)) = (direct, hits_filter(&hits.bits)) {
+            match &mut facets.counts {
+                OrdValues::Sparse(map) => column.for_each(filter, 0, i32::MAX, |_, ords| {
+                    for &ord in ords {
+                        let slot = map.entry(ord as i32).or_insert(0);
+                        *slot = slot.wrapping_add(1);
+                    }
+                    Ok(())
+                })?,
+                OrdValues::Dense(counts) => {
+                    column.for_each(filter, 0, i32::MAX, |_, ords| count_slice(counts, ords))?
+                }
+                _ => {}
+            }
+            continue;
+        }
         // `initialize_value_counters` left the counts dense or sparse.
         if let OrdValues::Sparse(map) = &mut facets.counts {
             for_each_hit(&hits.bits, &mut *dv, |dv| {

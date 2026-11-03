@@ -19,15 +19,14 @@
 //! * a field whose leaves hold more than `Integer.MAX_VALUE` terms is refused
 //!   before the state is built, as Java refuses it, but a term that is not
 //!   UTF-8 is decoded lossily where Java's `utf8ToString` substitutes too;
-//! * Java's `SortedSetDocValues.unwrapSingleton` fast path (a field the codec
-//!   stored one value per document) is not taken: every leaf is read as a
-//!   set, which counts the same;
 //! * the concurrent counter counts the segments on the rayon pool, not on a
 //!   caller's `ExecutorService`, and each task into counts of its own that are
 //!   summed at the end rather than into one shared `AtomicIntegerArray` (the
 //!   same sums: the additions wrap either way).
 
-use super::facet_utils::{for_each_hit, for_each_hit_in};
+use super::facet_utils::{
+    direct_column, for_each_hit, for_each_hit_in, hits_filter, live_filter, DirectColumn,
+};
 use super::facets_collector::{FacetsCollector, MatchingDocs};
 use super::{
     DimTree, FacetResult, FacetValue, Facets, FacetsConfig, FacetsState, FacetsStateError,
@@ -37,6 +36,7 @@ use crate::ordinal_map::OrdinalMap;
 use crate::reader::doc_values::get_sorted_set;
 use crate::reader::{IndexReader, LeafReaderContext, SortedSetDocValues, NO_MORE_DOCS};
 use crate::{Error, Result};
+use lucene_codecs::field_infos::DocValuesType;
 
 /// The message of the counters' `IllegalStateException` for hits from
 /// another reader.
@@ -336,23 +336,39 @@ fn for_each_counted(
     Ok(())
 }
 
-/// `f(ord)` for each ordinal of the current document, in bulk when `dv`
-/// holds them decoded.
-#[inline]
-fn for_each_ord(
-    dv: &mut (dyn SortedSetDocValues + '_),
-    mut f: impl FnMut(i64) -> Result<()>,
+/// `f(ords)` for each document to count ([`for_each_counted`]'s), its
+/// ordinals off the segment's column when it can be read directly, else
+/// off `values`.
+fn for_each_counted_ords(
+    direct: Option<&mut DirectColumn<'_>>,
+    hits: Option<&MatchingDocs<'_>>,
+    context: &LeafReaderContext<'_>,
+    range: Option<(i32, i32)>,
+    values: &mut (dyn SortedSetDocValues + '_),
+    mut f: impl FnMut(&[i64]) -> Result<()>,
 ) -> Result<()> {
-    if let Some(ords) = dv.take_ords() {
-        for &ord in ords {
-            f(ord)?;
+    if let Some(column) = direct {
+        let filter = match hits {
+            Some(h) => match hits_filter(&h.bits) {
+                Some(filter) => filter,
+                None => return Ok(()),
+            },
+            None => live_filter(context.reader),
+        };
+        let (lo, hi) = range.unwrap_or((0, i32::MAX));
+        return column.for_each(filter, lo, hi, |_, ords| f(ords));
+    }
+    let mut buf = Vec::new();
+    for_each_counted(hits, context, range, values, |dv| {
+        if let Some(ords) = dv.take_ords() {
+            return f(ords);
         }
-        return Ok(());
-    }
-    for _ in 0..dv.doc_value_count() {
-        f(dv.next_ord()?)?;
-    }
-    Ok(())
+        buf.clear();
+        for _ in 0..dv.doc_value_count() {
+            buf.push(dv.next_ord()?);
+        }
+        f(&buf)
+    })
 }
 
 /// `countOneSegment` / `countOneSegmentNHLD` / `CountOneSegment.call`: one
@@ -370,10 +386,18 @@ fn count_one_segment<S: CountSink + ?Sized>(
 ) -> Result<()> {
     let mut values = get_sorted_set(context.reader, field)?;
     let values = values.as_mut();
+    let mut direct = direct_column(
+        context.reader,
+        field,
+        &[DocValuesType::Sorted, DocValuesType::SortedSet],
+    )?;
     let Some(map) = ordinal_map else {
         // No ordinal map (one segment): segment ordinals are global.
-        return for_each_counted(hits, context, range, values, |dv| {
-            for_each_ord(dv, |ord| counts.add(ord, 1))
+        return for_each_counted_ords(direct.as_mut(), hits, context, range, values, |ords| {
+            for &ord in ords {
+                counts.add(ord, 1)?;
+            }
+            Ok(())
         });
     };
     let seg_ords = map.segment_ords(context.ord).ok_or_else(|| {
@@ -389,14 +413,21 @@ fn count_one_segment<S: CountSink + ?Sized>(
     };
     if hits.is_some_and(|h| h.total_hits < num_seg_ords / 10) {
         // Remap every ordinal to its global one as it comes.
-        return for_each_counted(hits, context, range, values, |dv| {
-            for_each_ord(dv, |ord| counts.add(global(ord)?, 1))
+        return for_each_counted_ords(direct.as_mut(), hits, context, range, values, |ords| {
+            for &ord in ords {
+                counts.add(global(ord)?, 1)?;
+            }
+            Ok(())
         });
     }
     // Count in segment ordinals first, then migrate to global ones.
     let mut seg_counts = vec![0i32; usize::try_from(num_seg_ords).unwrap_or(0)];
-    for_each_counted(hits, context, range, values, |dv| {
-        for_each_ord(dv, |ord| seg_counts.as_mut_slice().add(ord, 1))
+    for_each_counted_ords(direct.as_mut(), hits, context, range, values, |ords| {
+        let seg = seg_counts.as_mut_slice();
+        for &ord in ords {
+            seg.add(ord, 1)?;
+        }
+        Ok(())
     })?;
     for (ord, &count) in (0i64..).zip(&seg_counts) {
         if count != 0 {
