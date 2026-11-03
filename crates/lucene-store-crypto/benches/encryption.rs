@@ -218,5 +218,56 @@ fn bench_index(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_cipher, bench_file, bench_index);
+/// Demand decryption: the first touch of every page of a 16 MiB file opened
+/// lazily, by one reader and by four at once (each reading its own quarter,
+/// as concurrent searches touch different regions). Opening (which
+/// authenticates every chunk) is setup, not timed.
+#[cfg(target_os = "linux")]
+fn bench_lazy(c: &mut Criterion) {
+    if lucene_store_crypto::lazy::Pager::global().is_none() {
+        eprintln!("userfaultfd unavailable; skipping lazy benches");
+        return;
+    }
+    let data = bytes(16 << 20);
+    let mut group = c.benchmark_group(format!("lazy/{}", lucene_store_crypto::backend_name()));
+    group.throughput(Throughput::Bytes(data.len() as u64));
+    group.sample_size(20);
+    let tmp = TempDir::new("bench-crypto-lazy");
+    let enc =
+        EncryptedDirectory::new(MmapDirectory::open(tmp.path()), keys()).with_lazy_decrypt(true);
+    write_file(&enc, "enc", &data);
+    group.bench_function("open_16m", |b| {
+        b.iter(|| black_box(enc.open("enc").unwrap().len()))
+    });
+    for threads in [1usize, 4] {
+        group.bench_function(format!("first_touch_16m_x{threads}"), |b| {
+            b.iter_batched(
+                || enc.open("enc").unwrap(),
+                |input| {
+                    let part = input.len().div_ceil(threads);
+                    let sum: u64 = std::thread::scope(|s| {
+                        let handles: Vec<_> = input
+                            .chunks(part)
+                            .map(|piece| {
+                                s.spawn(move || {
+                                    piece.iter().step_by(4096).map(|&b| b as u64).sum::<u64>()
+                                })
+                            })
+                            .collect();
+                        handles.into_iter().map(|h| h.join().unwrap()).sum()
+                    });
+                    black_box(sum);
+                    input
+                },
+                criterion::BatchSize::PerIteration,
+            )
+        });
+    }
+    group.finish();
+}
+
+#[cfg(not(target_os = "linux"))]
+fn bench_lazy(_c: &mut Criterion) {}
+
+criterion_group!(benches, bench_cipher, bench_file, bench_lazy, bench_index);
 criterion_main!(benches);
