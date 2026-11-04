@@ -48,7 +48,7 @@ rm -rf "$data"; mkdir -p "$data"
 
 echo "pgo-build: instrumented build" >&2
 CARGO_TARGET_DIR=target/pgo-gen RUSTFLAGS="$base_flags -Cprofile-generate=$data" \
-  cargo build --profile dist -p lucene-ffi
+  cargo build --profile dist -p lucene-ffi --features mimalloc
 
 # RUSTFLAGS instruments the build scripts too, and they wrote profiles while
 # the build ran: keep only the training's.
@@ -64,5 +64,5 @@ raw=("$data"/*.profraw)
 
 echo "pgo-build: optimized build" >&2
 CARGO_TARGET_DIR=target/pgo RUSTFLAGS="$base_flags -Cprofile-use=$data/merged.profdata" \
-  cargo build --profile dist -p lucene-ffi
+  cargo build --profile dist -p lucene-ffi --features mimalloc
 echo "pgo-build: ok (target/pgo/dist/liblucene_ffi.so, from ${#raw[@]} profiles)"

@@ -39,9 +39,10 @@ while [ $# -gt 0 ]; do
     shift
 done
 if $ffi; then
-    # lucene-ffi's default features, with `fips` in place of `crypto`.
+    # lucene-ffi's default features, with `fips` in place of `crypto`, and
+    # the plugin build's `mimalloc`.
     args=(-p lucene-ffi --no-default-features --features
-        fips,analysis-icu,analysis-kuromoji,analysis-nori,analysis-smartcn,analysis-stempel,analysis-morfologik,analysis-phonetic)
+        fips,analysis-icu,analysis-kuromoji,analysis-nori,analysis-smartcn,analysis-stempel,analysis-morfologik,analysis-phonetic,mimalloc)
 fi
 
 for tool in cmake go cc; do
