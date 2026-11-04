@@ -16,7 +16,9 @@
 //! thread-local message.
 
 /// mimalloc returns freed memory to the system; glibc's per-thread arenas
-/// kept what the JVM's indexing threads freed.
+/// kept what the JVM's indexing threads freed. It also frees a buffer that
+/// another thread allocated without taking that thread's arena lock, which
+/// glibc does, and those locks stalled write threads under bulk load.
 #[cfg(feature = "mimalloc")]
 #[global_allocator]
 static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
