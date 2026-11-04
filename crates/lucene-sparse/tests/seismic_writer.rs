@@ -448,7 +448,8 @@ fn copy_out(from: &std::path::Path, name: &str) {
 
 /// [`lucene_sparse::SparseAnnQuery`] on segments it cannot search: a field
 /// the segment lacks, a segment without clustered postings (written without
-/// `SparseCodec`), a `native` engine field, and a leaf without its reader.
+/// `SparseCodec`, so the fallback's), a `native` engine field, and a leaf
+/// without its reader.
 #[test]
 fn sparse_ann_query_edges() {
     use lucene_search::document::{search_all, DocumentQuery};
@@ -501,8 +502,10 @@ fn sparse_ann_query_edges() {
     assert_eq!(query("emb").field(), Some("emb"));
     assert!(query("emb").equals(&query("emb")));
     assert!(!query("emb").equals(&query("nat")));
+    // Without clusters the field is the fallback's; searched anyway, nothing.
+    assert!(!query("emb").scores_leaf(&leaves[0]).unwrap());
+    assert!(query("missing").scores_leaf(&leaves[0]).unwrap());
     for field in ["emb", "missing"] {
-        assert!(query(field).scores_leaf(&leaves[0]).unwrap());
         assert!(search_all(&leaves, &query(field)).unwrap().is_empty());
     }
     assert!(query("nat").scores_leaf(&leaves[0]).unwrap());

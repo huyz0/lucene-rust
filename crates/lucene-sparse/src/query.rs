@@ -5,7 +5,9 @@
 //! [`crate::search()`] over the segment's clustered postings, under the
 //! clause's filter when it has one. On any other segment it does not score:
 //! the clause's fallback (neural-search's `fallbackQuery`, a sum of linear
-//! `FeatureField` queries) runs there instead.
+//! `FeatureField` queries) runs there instead. So does a segment written
+//! without [`crate::SparseCodec`], which has no clusters for the field: its
+//! `FeatureField` postings give the exact scores.
 
 use crate::postings::{self, ClusteredPostings};
 use crate::search::{SegmentView, SeismicField, SeismicQuery};
@@ -82,14 +84,24 @@ impl DocumentQuery for SparseAnnQuery {
     }
 
     /// `SparseQueryWeight`: a `lucene` engine segment under the threshold is
-    /// the fallback's.
+    /// the fallback's, and so is one without clusters for the field.
     fn scores_leaf(&self, leaf: &OpenSegment<'_>) -> lucene_search::Result<bool> {
         let Some(reader) = leaf.reader else {
             return Ok(true);
         };
-        Ok(self
-            .seismic_field(reader)?
-            .is_none_or(|f| f.native_engine || f.is_seismic_segment(reader.max_doc)))
+        let Some(field) = self.seismic_field(reader)? else {
+            return Ok(true);
+        };
+        if field.native_engine {
+            return Ok(true);
+        }
+        if !field.is_seismic_segment(reader.max_doc) {
+            return Ok(false);
+        }
+        Ok(clustered_postings(reader)?
+            .0
+            .as_ref()
+            .is_some_and(|p| p.has_field(field.number)))
     }
 
     fn score_leaf(
