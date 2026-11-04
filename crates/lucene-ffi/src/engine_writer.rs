@@ -60,13 +60,13 @@ use lucene_codecs::field_infos::{
 use lucene_codecs::stored_fields::{FieldValue, StoredField};
 use lucene_index::buffered_updates::{DocValuesUpdate, Term};
 use lucene_index::concurrent_writer::ConcurrentIndexWriter;
-use lucene_index::merge_scheduler::ConcurrentMergeScheduler;
 use lucene_index::index_file_deleter::DeletionPolicy;
 use lucene_index::index_writer::{
     self, ExplicitDocument, ExplicitFields, IndexWriter, InvertedField, InvertedTerms,
     MergePolicyConfig, SoftDeletesRetention,
 };
 use lucene_index::merge_policy::{MergeOnFlushMergePolicy, MergePolicy, TieredMergePolicy};
+use lucene_index::merge_scheduler::ConcurrentMergeScheduler;
 use lucene_index::segment_info::LuceneVersion;
 use lucene_store::directory::Directory;
 
@@ -129,7 +129,7 @@ struct Holds {
 
 impl EngineWriter {
     fn writer(&self) -> &ConcurrentIndexWriter<'static> {
-        &*self.handle.writer
+        &self.handle.writer
     }
 
     fn maintenance(&self) -> MutexGuard<'_, Holds> {
@@ -742,7 +742,11 @@ pub unsafe extern "C" fn ffi_engine_writer_open(
         };
         let writer = open().map_err(writer_error)?;
         let engine = EngineWriter {
-            handle: WriterHandle { writer, merges, dir },
+            handle: WriterHandle {
+                writer,
+                merges,
+                dir,
+            },
             maintenance: Mutex::new(Holds {
                 files: HashMap::new(),
                 next: 1,
@@ -918,7 +922,9 @@ static COMMIT_DATA_UPCALL: OnceLock<CommitDataUpcall> = OnceLock::new();
 /// `upcall` must have [`CommitDataUpcall`]'s contract and stay callable for
 /// the life of the process.
 #[no_mangle]
-pub unsafe extern "C" fn ffi_engine_set_commit_data_upcall(upcall: Option<CommitDataUpcall>) -> i32 {
+pub unsafe extern "C" fn ffi_engine_set_commit_data_upcall(
+    upcall: Option<CommitDataUpcall>,
+) -> i32 {
     guard(|| {
         let upcall = upcall.ok_or(FfiStatus::NullPointer)?;
         let _ = COMMIT_DATA_UPCALL.set(upcall);
@@ -932,7 +938,8 @@ fn commit_data(context: u64) -> Result<Vec<(String, String)>, FfiStatus> {
         set_last_error("engine writer: no commit-data upcall is registered");
         return Err(FfiStatus::InvalidArgument);
     };
-    let mut buf = vec![0u8; 512];
+    let mut buf = crate::raw::try_with_capacity::<u8>(512)?;
+    buf.resize(512, 0);
     for _ in 0..2 {
         let mut len = 0usize;
         // SAFETY: `buf` is valid for `buf.len()` writes and `len` for one;
@@ -942,7 +949,10 @@ fn commit_data(context: u64) -> Result<Vec<(String, String)>, FfiStatus> {
             COMMIT_DATA_OK if len <= buf.len() => {
                 return decode_user_data(buf.get(..len).unwrap_or_default());
             }
-            COMMIT_DATA_BUFFER_TOO_SMALL if len > buf.len() => buf.resize(len, 0),
+            COMMIT_DATA_BUFFER_TOO_SMALL if len > buf.len() => {
+                buf = crate::raw::try_with_capacity::<u8>(len)?;
+                buf.resize(len, 0);
+            }
             _ => break,
         }
     }
@@ -1278,8 +1288,7 @@ pub unsafe extern "C" fn ffi_engine_writer_stats(handle: u64, out: *mut i64, n: 
             let mut s = [0i64; STAT_COUNT];
             s[STAT_RAM_BYTES] = i64::try_from(writer.ram_bytes_used()).unwrap_or(i64::MAX);
             if k > STAT_FLUSHING_BYTES {
-                s[STAT_FLUSHING_BYTES] =
-                    i64::try_from(writer.flushing_bytes()).unwrap_or(i64::MAX);
+                s[STAT_FLUSHING_BYTES] = i64::try_from(writer.flushing_bytes()).unwrap_or(i64::MAX);
             }
             if k > STAT_PENDING_DOCS {
                 s[STAT_PENDING_DOCS] =
@@ -1427,7 +1436,12 @@ mod tests {
     }
 
     /// The tests' commit-data upcall: the bytes [`commit`] set for this thread.
-    unsafe extern "C" fn test_commit_data(_: u64, out: *mut u8, cap: usize, len: *mut usize) -> i32 {
+    unsafe extern "C" fn test_commit_data(
+        _: u64,
+        out: *mut u8,
+        cap: usize,
+        len: *mut usize,
+    ) -> i32 {
         COMMIT_DATA.with(|d| {
             let d = d.borrow();
             // SAFETY: the upcall's contract.
@@ -1449,7 +1463,10 @@ mod tests {
         }
         COMMIT_DATA.with(|d| *d.borrow_mut() = b.0);
         // SAFETY: the upcall keeps its contract for the life of the process.
-        assert_eq!(unsafe { ffi_engine_set_commit_data_upcall(Some(test_commit_data)) }, 0);
+        assert_eq!(
+            unsafe { ffi_engine_set_commit_data_upcall(Some(test_commit_data)) },
+            0
+        );
         let mut gen = 0;
         // SAFETY: a live out-pointer.
         let rc = unsafe { ffi_engine_writer_commit(h, 0, &mut gen) };

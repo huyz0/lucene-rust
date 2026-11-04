@@ -43,4 +43,3 @@ mod registry;
 mod store;
 
 pub use error::FfiStatus;
-

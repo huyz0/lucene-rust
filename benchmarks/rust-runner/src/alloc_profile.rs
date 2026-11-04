@@ -414,7 +414,10 @@ fn main() {
     let per_commit = docs.div_ceil(segments);
     let mut generation = 0i64;
     // SAFETY: `empty_commit_data` keeps the upcall's contract for the whole run.
-    check(unsafe { ffi_engine_set_commit_data_upcall(Some(empty_commit_data)) }, "commit-data upcall");
+    check(
+        unsafe { ffi_engine_set_commit_data_upcall(Some(empty_commit_data)) },
+        "commit-data upcall",
+    );
     let mut index_phase = begin("index");
     let mut commit_total = (0u64, 0u64, 0u64, 0f64);
     // The writer's own RAM accounting (what triggers a flush) against what
@@ -445,9 +448,7 @@ fn main() {
             PEAK.store(live_before, Relaxed);
             // SAFETY: live slice and out-pointer.
             check(
-                unsafe {
-                    ffi_engine_writer_commit(h, 0, &mut generation)
-                },
+                unsafe { ffi_engine_writer_commit(h, 0, &mut generation) },
                 "commit",
             );
             commit_total.0 += ALLOCS.load(Relaxed) - a;
