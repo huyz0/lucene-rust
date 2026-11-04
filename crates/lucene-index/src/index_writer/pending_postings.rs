@@ -117,6 +117,26 @@ impl IntPool {
         }
     }
 
+    /// Appends the first `n` ints of `s` to `out`, a slice's worth at a time.
+    fn extend_into(&self, s: &Stream, n: u32, out: &mut Vec<i32>) {
+        if s.start == NONE {
+            return;
+        }
+        let (mut at, mut level, mut left) = (s.start as usize, 0u8, n as usize);
+        while left > 0 {
+            let link = at
+                .saturating_add(level_size(level) as usize)
+                .saturating_sub(1);
+            let take = link.saturating_sub(at).min(left);
+            out.extend_from_slice(&self.buf[at..at.saturating_add(take)]);
+            left = left.saturating_sub(take);
+            if left > 0 {
+                at = u32::from_ne_bytes(self.buf[link].to_ne_bytes()) as usize;
+                level = level.saturating_add(1).min(TOP_LEVEL);
+            }
+        }
+    }
+
     /// `s` cut back to its first `n` ints.
     fn cut(&self, s: &Stream, n: u32) -> Stream {
         if s.start == NONE {
@@ -242,6 +262,10 @@ pub(crate) struct FieldRuns {
 /// starts loading the likely term's bytes and run, and (half as far) the pool
 /// ints that run appends to.
 const PREFETCH_TERMS: usize = 8;
+
+/// How many terms ahead of the one being laid out [`FieldRuns::flushed`]
+/// starts loading the next term's run, and (half as far) its streams.
+const LAYOUT_PREFETCH: usize = 16;
 
 /// A new term's fixed cost as `bytesUsed` counts it: its postings-array
 /// entries, its hash slot share, start and hash.
@@ -421,7 +445,12 @@ impl FieldRuns {
         let mut freqs = 0u32;
         match old_to_new {
             None => {
-                while let (Some(doc), Some(freq)) = (pairs.next(), pairs.next()) {
+                let ints = &mut scratch.ints;
+                ints.clear();
+                self.pool
+                    .extend_into(&run.docs, run.doc_count.saturating_mul(2), ints);
+                for c in ints.chunks_exact(2) {
+                    let (doc, freq) = (c[0], c[1]);
                     out.docs.push((doc, freq));
                     if self.positions {
                         freqs = freqs.saturating_add(u32::try_from(freq).unwrap_or(0));
@@ -429,16 +458,15 @@ impl FieldRuns {
                     }
                 }
                 if self.positions {
-                    out.positions
-                        .extend(self.pool.read(&run.positions, run.occurrences));
+                    self.pool
+                        .extend_into(&run.positions, run.occurrences, &mut out.positions);
                 }
                 if self.offsets {
-                    let mut o = self
-                        .pool
-                        .read(&run.offsets, run.occurrences.saturating_mul(2));
-                    while let (Some(s), Some(e)) = (o.next(), o.next()) {
-                        out.offsets.push((s, e));
-                    }
+                    ints.clear();
+                    self.pool
+                        .extend_into(&run.offsets, run.occurrences.saturating_mul(2), ints);
+                    out.offsets
+                        .extend(ints.chunks_exact(2).map(|c| (c[0], c[1])));
                 }
                 if let Some(p) = payloads {
                     out.payload_lengths.extend_from_slice(&p.lengths);
@@ -476,9 +504,8 @@ impl FieldRuns {
                     freqs = freqs.saturating_add(n);
                 }
                 if self.positions {
-                    scratch
-                        .positions
-                        .extend(self.pool.read(&run.positions, run.occurrences));
+                    self.pool
+                        .extend_into(&run.positions, run.occurrences, &mut scratch.positions);
                 }
                 if self.offsets {
                     let mut o = self
@@ -572,7 +599,23 @@ impl FieldRuns {
             payload_bytes: Vec::new(),
         };
         let mut scratch = Scratch::default();
-        for id in ids {
+        // Byte order visits the terms' runs and streams at random: start
+        // loading a term's run, and its bytes, a few terms ahead, and its
+        // streams' first ints once the run is in cache.
+        for (i, &id) in ids.iter().enumerate() {
+            if let Some(&ahead) = ids.get(i.saturating_add(LAYOUT_PREFETCH)) {
+                lucene_util::simd::prefetch(&self.runs, ahead as usize);
+                self.terms.prefetch_term(ahead);
+            }
+            if let Some(run) = ids
+                .get(i.saturating_add(LAYOUT_PREFETCH / 2))
+                .and_then(|&near| self.runs.get(near as usize))
+            {
+                lucene_util::simd::prefetch(&self.pool.buf, run.docs.start as usize);
+                if self.positions {
+                    lucene_util::simd::prefetch(&self.pool.buf, run.positions.start as usize);
+                }
+            }
             self.lay_out(id, old_to_new, &mut scratch, &mut out)?;
         }
         Ok(out)
@@ -644,6 +687,8 @@ struct Scratch {
     payload_at: usize,
     positions: Vec<i32>,
     offsets: Vec<(i32, i32)>,
+    /// A stream's ints, read a slice at a time before pairing.
+    ints: Vec<i32>,
 }
 
 impl Scratch {
@@ -1084,6 +1129,16 @@ mod tests {
         }
         assert!(pool.read(&a, 2_000).eq(0..2_000));
         assert!(pool.read(&b, 2_000).eq((0..2_000).map(|i: i32| -i)));
+        // a bulk read stops anywhere, on or either side of a slice boundary
+        for n in [0u32, 1, 3, 4, 5, 16, 17, 18, 36, 37, 1_999, 2_000] {
+            let mut bulk = vec![7];
+            pool.extend_into(&b, n, &mut bulk);
+            assert_eq!(bulk[0], 7);
+            assert!(bulk[1..].iter().copied().eq(pool.read(&b, n)), "{n}");
+        }
+        let mut none = Vec::new();
+        pool.extend_into(&Stream::EMPTY, 3, &mut none);
+        assert!(none.is_empty());
         // longest first: a cut overwrites what followed it
         for keep in [2_000u32, 777, 19, 18, 5, 4, 1, 0] {
             let mut c = pool.cut(&a, keep);
