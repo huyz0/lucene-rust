@@ -131,7 +131,7 @@ def cargoBuild = tasks.register('cargoBuild', Exec) {
     if (fips) {
         commandLine 'scripts/build-fips.sh', '--ffi'
     } else {
-        commandLine 'cargo', 'build', '--release', '-p', 'lucene-ffi'
+        commandLine 'cargo', 'build', '--release', '-p', 'lucene-ffi', '--features', 'mimalloc'
     }
 }
 
