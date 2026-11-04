@@ -11,9 +11,9 @@ use lucene_util::strict_math::exp;
 use super::{
     for_each_token, java_string_cmp, ClassificationResult, Classifier, TermVectors, TrainingIndex,
 };
-use crate::multi_terms::MultiTerms;
-use crate::query::{BooleanQuery, Clause};
-use crate::{Error, Result};
+use lucene_search::multi_terms::MultiTerms;
+use lucene_search::query::{BooleanQuery, Clause};
+use lucene_search::{Error, Result};
 
 /// `BooleanPerceptronClassifier`: a document is `true` when the summed
 /// weights of its terms reach the bias. The weights start as each term's
@@ -103,7 +103,7 @@ impl BooleanPerceptronClassifier {
         let bias = match bias {
             Some(b) if b != 0.0 => b,
             _ => {
-                use crate::reader::IndexReader;
+                use lucene_search::reader::IndexReader;
                 let t = index.reader.sum_total_term_freq(text_field)? as f64
                     / f64::from(IndexReader::doc_count(index.reader, text_field)?);
                 if t == -1.0 {

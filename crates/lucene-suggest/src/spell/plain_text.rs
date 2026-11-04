@@ -1,8 +1,8 @@
 //! `PlainTextDictionary`: one word per line, each of weight 1.
 
-use crate::spell::Dictionary;
 use crate::dictionary::read_lines;
 use crate::input::{InputIterator, InputIteratorWrapper};
+use crate::spell::Dictionary;
 use lucene_search::{Error, Result};
 
 /// `PlainTextDictionary`: every line of the text is an entry, in order,

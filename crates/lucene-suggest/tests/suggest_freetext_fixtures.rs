@@ -8,10 +8,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use lucene_analysis::Analyzer;
+use lucene_store::{SliceInput, VecDataOutput};
 use lucene_suggest::free_text::FreeTextSuggester;
 use lucene_suggest::input::InputIterator;
 use lucene_suggest::lookup::{Lookup, LookupResult};
-use lucene_store::{SliceInput, VecDataOutput};
 
 fn dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/data/suggest_freetext")

@@ -15,8 +15,8 @@ use super::{
     ClassificationResult, KNearestNeighborClassifier, SharedSimilarity, SimpleNaiveBayesClassifier,
     TrainingIndex,
 };
-use crate::query::{BooleanQuery, Clause, TermQuery};
-use crate::{Error, Result};
+use lucene_search::query::{BooleanQuery, Clause, TermQuery};
+use lucene_search::{Error, Result};
 
 /// `DocumentClassifier<T>`.
 pub trait DocumentClassifier<T> {
@@ -93,7 +93,7 @@ impl<'s, 'a> KNearestNeighborDocumentClassifier<'s, 'a> {
         }
     }
 
-    fn knn_search(&self, document: &Document) -> Result<crate::top_docs::TopDocs> {
+    fn knn_search(&self, document: &Document) -> Result<lucene_search::top_docs::TopDocs> {
         let mut should = Vec::new();
         for name in &self.knn.text_fields {
             let (field, boost) = split_boost(name);

@@ -8,6 +8,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use lucene_search::directory_reader::DirectoryReader;
+use lucene_store::FsDirectory;
+use lucene_suggest::input::InputIterator;
 use lucene_suggest::spell::direct::DirectSpellChecker;
 use lucene_suggest::spell::distance::{
     JaroWinklerDistance, LevenshteinDistance, LuceneLevenshteinDistance, NGramDistance,
@@ -15,8 +17,6 @@ use lucene_suggest::spell::distance::{
 use lucene_suggest::spell::index_dictionary::{HighFrequencyDictionary, LuceneDictionary};
 use lucene_suggest::spell::suggest_word::{frequency_comparator, SuggestMode};
 use lucene_suggest::spell::Dictionary;
-use lucene_suggest::input::InputIterator;
-use lucene_store::FsDirectory;
 
 fn dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/data/spell_checker")

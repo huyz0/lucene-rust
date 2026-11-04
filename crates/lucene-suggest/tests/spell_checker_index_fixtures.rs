@@ -8,6 +8,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use lucene_search::directory_reader::DirectoryReader;
+use lucene_search::Error;
+use lucene_store::{ByteBuffersDirectory, Directory, FsDirectory};
 use lucene_suggest::spell::distance::{
     JaroWinklerDistance, LevenshteinDistance, LuceneLevenshteinDistance, NGramDistance,
 };
@@ -15,8 +17,6 @@ use lucene_suggest::spell::index_dictionary::LuceneDictionary;
 use lucene_suggest::spell::plain_text::PlainTextDictionary;
 use lucene_suggest::spell::spell_checker::SpellChecker;
 use lucene_suggest::spell::suggest_word::{frequency_comparator, score_comparator, SuggestMode};
-use lucene_search::Error;
-use lucene_store::{ByteBuffersDirectory, Directory, FsDirectory};
 
 /// `GenSpellCheckerIndex.DICTIONARY`.
 const DICTIONARY: &str =

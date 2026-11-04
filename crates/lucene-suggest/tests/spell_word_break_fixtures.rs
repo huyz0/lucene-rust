@@ -7,11 +7,11 @@ use std::path::PathBuf;
 
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::query_visitor::Term;
+use lucene_store::FsDirectory;
 use lucene_suggest::spell::suggest_word::{SuggestMode, SuggestWord};
 use lucene_suggest::spell::word_break::{
     separator_term, BreakSuggestionSortMethod, WordBreakSpellChecker,
 };
-use lucene_store::FsDirectory;
 
 fn dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/data/spell_word_break")

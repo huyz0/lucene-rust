@@ -15,12 +15,12 @@ use lucene_index::document::Document;
 use lucene_index::index_writer::IndexWriter;
 use lucene_index::segment_info::LuceneVersion;
 use lucene_search::directory_reader::DirectoryReader;
+use lucene_store::FsDirectory;
 use lucene_suggest::completion_query::{
     CompletionAnalyzer, CompletionQuery, ContextQuery, FuzzyCompletionQuery, PrefixCompletionQuery,
     RegexCompletionQuery, SuggestIndexSearcher,
 };
 use lucene_suggest::suggest_field::{ContextSuggestField, SuggestField};
-use lucene_store::FsDirectory;
 use lucene_util::test_support::TempDir;
 
 fn analyzer() -> CompletionAnalyzer {

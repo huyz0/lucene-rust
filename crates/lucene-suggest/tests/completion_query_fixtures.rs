@@ -24,14 +24,14 @@ use lucene_index::document::{Document, Store, StringField};
 use lucene_index::index_writer::IndexWriter;
 use lucene_index::segment_info::LuceneVersion;
 use lucene_search::directory_reader::{DirectoryReader, SegmentReader};
+use lucene_search::Result;
+use lucene_store::FsDirectory;
 use lucene_suggest::completion_query::{
     BitsProducer, CompletionAnalyzer, CompletionQuery, ContextQuery, FilterBits,
     FuzzyCompletionQuery, PrefixCompletionQuery, RegexCompletionQuery, SuggestIndexSearcher,
 };
 use lucene_suggest::document::{merge, SuggestScoreDoc};
 use lucene_suggest::suggest_field::{CompletionOptions, ContextSuggestField, SuggestField};
-use lucene_search::Result;
-use lucene_store::FsDirectory;
 use lucene_util::test_support::TempDir;
 
 fn data() -> PathBuf {

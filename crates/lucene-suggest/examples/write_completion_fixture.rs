@@ -18,8 +18,8 @@ use lucene_codecs::per_field_postings::Lucene104PostingsFormat;
 use lucene_index::document::{Document, Store, TextField};
 use lucene_index::index_writer::IndexWriter;
 use lucene_index::segment_info::LuceneVersion;
-use lucene_suggest::suggest_field::SuggestField;
 use lucene_store::FsDirectory;
+use lucene_suggest::suggest_field::SuggestField;
 
 const WORDS: [&str; 14] = [
     "cat",

@@ -16,20 +16,20 @@ use std::sync::Arc;
 
 use lucene_analysis::core_analysis::WhitespaceAnalyzer;
 use lucene_analysis::Analyzer;
-use lucene_codecs::stored_fields::FieldValue;
-use lucene_codecs::term_vectors::TermVectorField;
-use lucene_index::document::{Document, Field, FieldType, TextField};
-use lucene_search::classification::document::{
+use lucene_classification::document::{
     DocumentClassifier, KNearestNeighborDocumentClassifier, SimpleNaiveBayesDocumentClassifier,
 };
-use lucene_search::classification::utils::{
+use lucene_classification::utils::{
     ConfusionMatrixGenerator, DatasetSplitter, DocToDoubleVectorUtils,
 };
-use lucene_search::classification::{
+use lucene_classification::{
     term_vector, Bm25NbClassifier, BooleanPerceptronClassifier, CachingNaiveBayesClassifier,
     ClassName, ClassificationResult, Classifier, KNearestFuzzyClassifier,
     KNearestNeighborClassifier, SimpleNaiveBayesClassifier, TrainingIndex,
 };
+use lucene_codecs::stored_fields::FieldValue;
+use lucene_codecs::term_vectors::TermVectorField;
+use lucene_index::document::{Document, Field, FieldType, TextField};
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::index_searcher::SegmentNorms;
 use lucene_search::query::{Clause, TermQuery};
@@ -194,7 +194,7 @@ fn classifier<'s, 'a>(
 ) -> Result<AnyClassifier<'s, 'a>> {
     let q = || Some(Clause::Term(TermQuery::new("bool", b"true".to_vec())));
     let a = Arc::clone(a);
-    let classic = || -> lucene_search::classification::SharedSimilarity {
+    let classic = || -> lucene_classification::SharedSimilarity {
         Some(Arc::new(ClassicSimilarity::default()))
     };
     let knn = |sim, k, df, tf, query, field: &str| {

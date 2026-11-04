@@ -20,7 +20,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
 use lucene_analysis::attributes::java_float_to_string;
-use lucene_analysis::Analyzer;
+use lucene_analysis::{Analyzer, TokenStream};
 use lucene_codecs::fuzzy::{FuzzyMatch, MAXIMUM_SUPPORTED_DISTANCE};
 use lucene_util::strict_math::log;
 
@@ -122,7 +122,7 @@ fn score_term_less(a: &ScoreTerm, b: &ScoreTerm) -> bool {
 
 fn term_less(af: &str, at: &[u8], ascore: f32, bf: &str, bt: &[u8], bscore: f32) -> bool {
     if ascore == bscore {
-        let by_field = crate::classification::java_string_cmp(af, bf);
+        let by_field = af.encode_utf16().cmp(bf.encode_utf16());
         by_field.then_with(|| at.cmp(bt)) == std::cmp::Ordering::Greater
     } else {
         ascore < bscore
@@ -146,10 +146,13 @@ type TermQueue = JavaPriorityQueue<ScoreTerm, fn(&ScoreTerm, &ScoreTerm) -> bool
 
 /// The reader a rewrite reads: its segments, `numDocs()`, and the hash seed
 /// `Term.hashCode()` is computed under.
-pub(crate) struct FuzzyReader<'s, 'a> {
-    pub(crate) segments: &'s [OpenSegment<'a>],
-    pub(crate) num_docs: i32,
-    pub(crate) hash_seed: i32,
+pub struct FuzzyReader<'s, 'a> {
+    /// The open segments, in reader order.
+    pub segments: &'s [OpenSegment<'a>],
+    /// `IndexReader.numDocs()`.
+    pub num_docs: i32,
+    /// The seed `Term.hashCode()` is computed under.
+    pub hash_seed: i32,
 }
 
 impl FuzzyReader<'_, '_> {
@@ -253,7 +256,7 @@ impl FuzzyLikeThisQuery {
         self.rewrite_over(&reader)
     }
 
-    pub(crate) fn rewrite_over(&self, reader: &FuzzyReader<'_, '_>) -> Result<BooleanQuery> {
+    pub fn rewrite_over(&self, reader: &FuzzyReader<'_, '_>) -> Result<BooleanQuery> {
         if self.max_num_terms < 0 || self.max_num_terms >= MAX_ARRAY_LENGTH {
             return Err(Error::IllegalArgument(format!(
                 "maxSize must be >= 0 and < {MAX_ARRAY_LENGTH}; got: {}",
@@ -333,7 +336,7 @@ impl FuzzyLikeThisQuery {
             return Ok(());
         }
         let mut processed = HashSet::new();
-        for token in crate::classification::analyze(&self.analyzer, field, &f.query_string)? {
+        for token in analyze(&self.analyzer, field, &f.query_string)? {
             if !processed.insert(token.clone()) {
                 continue;
             }
@@ -426,6 +429,19 @@ impl FuzzyLikeThisQuery {
 /// / (double) (docFreq + 1)) + 1.0)`.
 fn idf(doc_freq: i32, doc_count: i32) -> f32 {
     (log((f64::from(doc_count) + 1.0) / (f64::from(doc_freq) + 1.0)) + 1.0) as f32
+}
+
+/// The terms `analyzer` makes of `text` as `field`, in token order.
+fn analyze(analyzer: &Analyzer, field: &str, text: &str) -> Result<Vec<String>> {
+    let err = |e: lucene_analysis::AnalysisError| Error::IllegalArgument(e.to_string());
+    let mut ts = analyzer.token_stream(field, text).map_err(err)?;
+    ts.reset().map_err(err)?;
+    let mut out = Vec::new();
+    while ts.increment_token().map_err(err)? {
+        out.push(ts.attributes().term().to_string());
+    }
+    ts.end().map_err(err)?;
+    Ok(out)
 }
 
 #[cfg(test)]

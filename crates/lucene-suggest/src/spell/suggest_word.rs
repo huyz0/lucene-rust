@@ -6,8 +6,8 @@ use std::cmp::Ordering;
 use std::fmt;
 use std::sync::Arc;
 
-use lucene_search::function::java_float;
 use crate::lookup::charsequence_compare;
+use lucene_search::function::java_float;
 use lucene_search::{Error, Result};
 
 /// `SuggestWord`: a suggested term, its score and its document frequency.

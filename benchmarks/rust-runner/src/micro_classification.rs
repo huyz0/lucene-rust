@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use lucene_analysis::core_analysis::WhitespaceAnalyzer;
 use lucene_analysis::Analyzer;
-use lucene_search::classification::{
+use lucene_classification::{
     Bm25NbClassifier, BooleanPerceptronClassifier, CachingNaiveBayesClassifier, Classifier,
     KNearestFuzzyClassifier, KNearestNeighborClassifier, SimpleNaiveBayesClassifier, TrainingIndex,
 };

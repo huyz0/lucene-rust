@@ -11,12 +11,12 @@ use std::sync::Arc;
 
 use lucene_analysis::Analyzer;
 use lucene_search::query_visitor::Occur;
+use lucene_store::{SliceInput, VecDataOutput};
 use lucene_suggest::infix::{
     AnalyzingInfixSuggester, BlendedInfixSuggester, BlenderType, DEFAULT_CLOSE_INDEXWRITER_ON_BUILD,
 };
 use lucene_suggest::input::InputIterator;
 use lucene_suggest::lookup::{Lookup, LookupResult};
-use lucene_store::{SliceInput, VecDataOutput};
 
 type Answer = lucene_store::Result<Vec<LookupResult>>;
 

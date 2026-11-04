@@ -4,13 +4,13 @@
 
 use std::collections::BTreeSet;
 
+use lucene_store::SliceInput;
 use lucene_suggest::fst_completion::{
     BytesRefSorter, FstCompletion, FstCompletionBuilder, FstCompletionLookup, InMemorySorter,
 };
 use lucene_suggest::input::{InputIterator, InputIteratorWrapper, UnsortedInputIterator};
 use lucene_suggest::lookup::Lookup;
 use lucene_suggest::wfst::WfstCompletionLookup;
-use lucene_store::SliceInput;
 
 /// An iterator that claims payloads or contexts.
 struct Claims {

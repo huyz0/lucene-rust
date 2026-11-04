@@ -14,11 +14,11 @@ use lucene_index::segment_info::LuceneVersion;
 use lucene_store::Directory;
 
 use super::{java_string_cmp, ClassName, Classifier, TrainingIndex};
-use crate::grouping::{GroupingSearch, Sort, TermGroupSelector};
-use crate::mlt::java_hash_order;
-use crate::query::{BooleanQuery, Clause, MatchAllDocsQuery, WildcardQuery};
-use crate::reader::{IndexReader, Terms};
-use crate::{Error, Result};
+use lucene_search::grouping::{GroupingSearch, Sort, TermGroupSelector};
+use lucene_search::mlt::java_hash_order;
+use lucene_search::query::{BooleanQuery, Clause, MatchAllDocsQuery, WildcardQuery};
+use lucene_search::reader::{IndexReader, Terms};
+use lucene_search::{Error, Result};
 
 /// `ConfusionMatrixGenerator`.
 pub struct ConfusionMatrixGenerator;
@@ -464,13 +464,13 @@ fn new_doc(
 ) -> Result<Document> {
     let mut out = Document::new();
     if field_names.is_empty() {
-        let (seg, local) = crate::mlt::locate(index.reader, doc)?;
+        let (seg, local) = lucene_search::mlt::locate(index.reader, doc)?;
         let stored = seg.stored_document(local)?.unwrap_or_default();
         for f in &stored.fields {
             let Some(info) = seg.field_infos().field_by_number(f.field_number) else {
                 continue;
             };
-            let value = crate::mlt::stored_string_value(&f.value).ok_or_else(|| {
+            let value = lucene_search::mlt::stored_string_value(&f.value).ok_or_else(|| {
                 Error::IllegalArgument(format!(
                     "field {} has a binary value a text field cannot index",
                     info.name

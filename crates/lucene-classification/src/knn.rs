@@ -10,10 +10,10 @@ use super::{
     best, parse_boost, sort_results, split_boost, ClassificationResult, Classifier,
     NearestFuzzyQuery, SharedSimilarity, TrainingIndex,
 };
-use crate::mlt::{java_hash_order_of, MoreLikeThis};
-use crate::query::{BooleanQuery, Clause, MatchNoDocsQuery, WildcardQuery};
-use crate::top_docs::TopDocs;
-use crate::Result;
+use lucene_search::mlt::{java_hash_order_of, MoreLikeThis};
+use lucene_search::query::{BooleanQuery, Clause, MatchNoDocsQuery, WildcardQuery};
+use lucene_search::top_docs::TopDocs;
+use lucene_search::Result;
 
 /// A rewritten query as a clause: an empty `BooleanQuery` matches nothing.
 pub(crate) fn boolean_clause(q: BooleanQuery) -> Clause {
@@ -30,7 +30,7 @@ pub(crate) fn boolean_clause(q: BooleanQuery) -> Clause {
 /// fuzzy variants of one term) into one clause, which can round differently
 /// from scoring them apart.
 ///
-/// [`IndexSearcher::search`]: crate::index_searcher::IndexSearcher::search
+/// [`IndexSearcher::search`]: lucene_search::index_searcher::IndexSearcher::search
 pub(crate) fn rewritten(q: BooleanQuery) -> BooleanQuery {
     match Clause::Boolean(Box::new(q)).rewrite() {
         Clause::Boolean(b) => *b,

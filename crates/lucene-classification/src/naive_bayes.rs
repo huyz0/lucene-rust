@@ -11,10 +11,10 @@ use super::{
     best, norm_classification_results, sort_results, tokenize, ClassificationResult, Classifier,
     TrainingIndex,
 };
-use crate::multi_terms::MultiTerms;
-use crate::query::{BooleanQuery, Clause, TermQuery, WildcardQuery};
-use crate::reader::Terms;
-use crate::{Error, Result};
+use lucene_search::multi_terms::MultiTerms;
+use lucene_search::query::{BooleanQuery, Clause, TermQuery, WildcardQuery};
+use lucene_search::reader::Terms;
+use lucene_search::{Error, Result};
 
 /// `MultiTerms.getTerms(reader, field)`'s terms, in order.
 pub(crate) fn field_terms(

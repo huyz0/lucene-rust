@@ -7,10 +7,10 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use lucene_analysis::Analyzer;
+use lucene_store::{SliceInput, VecDataOutput};
 use lucene_suggest::infix::{AnalyzingInfixSuggester, BlendedInfixSuggester, BlenderType};
 use lucene_suggest::input::InputIterator;
 use lucene_suggest::lookup::Lookup;
-use lucene_store::{SliceInput, VecDataOutput};
 
 fn plain() -> Arc<Analyzer> {
     Arc::new(Analyzer::standard(None))

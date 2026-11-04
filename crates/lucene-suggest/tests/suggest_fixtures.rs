@@ -6,10 +6,10 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::PathBuf;
 
+use lucene_store::{SliceInput, VecDataOutput};
 use lucene_suggest::input::InputIterator;
 use lucene_suggest::lookup::{Lookup, LookupResult};
 use lucene_suggest::tst::TstLookup;
-use lucene_store::{SliceInput, VecDataOutput};
 
 fn dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/data/suggest")

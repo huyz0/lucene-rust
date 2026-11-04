@@ -498,7 +498,7 @@ pub(crate) fn java_float_compare(a: f32, b: f32) -> std::cmp::Ordering {
 }
 
 /// `Double.compare`.
-pub(crate) fn java_double_compare(a: f64, b: f64) -> std::cmp::Ordering {
+pub fn java_double_compare(a: f64, b: f64) -> std::cmp::Ordering {
     fn key(v: f64) -> i64 {
         let bits = if v.is_nan() {
             0x7ff8_0000_0000_0000_u64 as i64

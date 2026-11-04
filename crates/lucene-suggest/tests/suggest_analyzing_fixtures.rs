@@ -13,12 +13,12 @@ use lucene_analysis::{
     Analyzer, AnalyzerDefinition, CharArraySet, LowerCaseFilter, StandardTokenizer, StopFilter,
     TokenStream, TokenStreamComponents,
 };
+use lucene_store::{SliceInput, VecDataOutput};
 use lucene_suggest::analyzing::{
     AnalyzingSuggester, FuzzySuggester, SuggestStopFilter, EXACT_FIRST, PRESERVE_SEP,
 };
 use lucene_suggest::input::InputIterator;
 use lucene_suggest::lookup::{Lookup, LookupResult};
-use lucene_store::{SliceInput, VecDataOutput};
 
 fn dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/data/suggest_analyzing")

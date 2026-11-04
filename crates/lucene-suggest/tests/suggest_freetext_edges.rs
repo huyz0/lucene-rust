@@ -5,10 +5,10 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use lucene_analysis::Analyzer;
+use lucene_store::{SliceInput, VecDataOutput};
 use lucene_suggest::free_text::FreeTextSuggester;
 use lucene_suggest::input::InputIterator;
 use lucene_suggest::lookup::Lookup;
-use lucene_store::{SliceInput, VecDataOutput};
 
 struct One {
     text: String,

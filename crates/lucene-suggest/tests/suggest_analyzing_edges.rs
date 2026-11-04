@@ -6,10 +6,10 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use lucene_analysis::Analyzer;
+use lucene_store::{SliceInput, VecDataOutput};
 use lucene_suggest::analyzing::{AnalyzingSuggester, FuzzySuggester};
 use lucene_suggest::input::InputIterator;
 use lucene_suggest::lookup::Lookup;
-use lucene_store::{SliceInput, VecDataOutput};
 
 /// One phrase, optionally with a payload and contexts.
 struct One {
@@ -168,9 +168,7 @@ mod factory {
         AnalysisFactory, FactoryClass, JavaException, MapResourceLoader, TokenFilterFactory,
     };
     use lucene_analysis::{KeywordTokenizer, TokenStream};
-    use lucene_suggest::suggest_stop_factory::{
-        register_factories, SuggestStopFilterFactory,
-    };
+    use lucene_suggest::suggest_stop_factory::{register_factories, SuggestStopFilterFactory};
 
     fn build(pairs: &[(&str, &str)]) -> SuggestStopFilterFactory {
         SuggestStopFilterFactory::from_args(&mut JavaArgs::from_pairs(pairs)).unwrap()

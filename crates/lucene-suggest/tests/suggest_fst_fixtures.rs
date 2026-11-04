@@ -8,16 +8,16 @@ use std::fs;
 use std::path::PathBuf;
 
 use lucene_search::directory_reader::DirectoryReader;
-use lucene_suggest::spell::Dictionary;
+use lucene_search::values_source::{long_constant, long_from_long_field};
+use lucene_store::{FsDirectory, SliceInput, VecDataOutput};
 use lucene_suggest::dictionary::{
     DocumentDictionary, DocumentValueSourceDictionary, FileDictionary,
 };
 use lucene_suggest::fst_completion::FstCompletionLookup;
 use lucene_suggest::input::{InputIterator, JavaRandom};
 use lucene_suggest::lookup::{Lookup, LookupResult};
+use lucene_suggest::spell::Dictionary;
 use lucene_suggest::wfst::WfstCompletionLookup;
-use lucene_search::values_source::{long_constant, long_from_long_field};
-use lucene_store::{FsDirectory, SliceInput, VecDataOutput};
 
 fn dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/data/suggest_fst")

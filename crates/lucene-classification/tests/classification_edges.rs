@@ -12,22 +12,22 @@ use std::sync::Arc;
 
 use lucene_analysis::core_analysis::WhitespaceAnalyzer;
 use lucene_analysis::Analyzer;
+use lucene_classification::document::{
+    DocumentClassifier, KNearestNeighborDocumentClassifier, SimpleNaiveBayesDocumentClassifier,
+};
+use lucene_classification::utils::{
+    ConfusionMatrixGenerator, DatasetSplitter, DocToDoubleVectorUtils,
+};
+use lucene_classification::{
+    term_vector, Bm25NbClassifier, BooleanPerceptronClassifier, CachingNaiveBayesClassifier,
+    Classifier, KNearestNeighborClassifier, SimpleNaiveBayesClassifier, TrainingIndex,
+};
 use lucene_index::document::{
     Document, Field, FieldType, SortedDocValuesField, SortedSetDocValuesField, Store, StringField,
     TextField,
 };
 use lucene_index::index_writer::IndexWriter;
 use lucene_index::segment_info::LuceneVersion;
-use lucene_search::classification::document::{
-    DocumentClassifier, KNearestNeighborDocumentClassifier, SimpleNaiveBayesDocumentClassifier,
-};
-use lucene_search::classification::utils::{
-    ConfusionMatrixGenerator, DatasetSplitter, DocToDoubleVectorUtils,
-};
-use lucene_search::classification::{
-    term_vector, Bm25NbClassifier, BooleanPerceptronClassifier, CachingNaiveBayesClassifier,
-    Classifier, KNearestNeighborClassifier, SimpleNaiveBayesClassifier, TrainingIndex,
-};
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::index_searcher::SegmentNorms;
 use lucene_search::multi_terms::MultiTerms;

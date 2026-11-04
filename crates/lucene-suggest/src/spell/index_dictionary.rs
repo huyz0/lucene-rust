@@ -8,10 +8,10 @@
 
 use std::collections::BTreeSet;
 
+use crate::input::{InputIterator, InputIteratorWrapper};
+use crate::spell::Dictionary;
 use lucene_search::multi_terms::MultiTerms;
 use lucene_search::reader::IndexReader;
-use crate::spell::Dictionary;
-use crate::input::{InputIterator, InputIteratorWrapper};
 use lucene_search::Result;
 
 /// `LuceneDictionary`: every term of a field, in term order, weight 1.

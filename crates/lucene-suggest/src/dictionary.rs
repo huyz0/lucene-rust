@@ -23,8 +23,8 @@ use std::sync::Arc;
 use lucene_codecs::stored_fields::{DocumentVisitor, FieldValue};
 
 use super::input::InputIterator;
-use lucene_search::directory_reader::{DirectoryReader, SegmentReader};
 use crate::spell::Dictionary;
+use lucene_search::directory_reader::{DirectoryReader, SegmentReader};
 use lucene_search::values_source::{LongValuesSource, ValuesContext};
 use lucene_search::{Error, Result};
 

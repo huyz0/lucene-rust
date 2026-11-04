@@ -1,4 +1,4 @@
-//! `org.apache.lucene.classification`: classifiers that learn from an
+//! `org.apache.lucene.classification` (`lucene-classification`): classifiers that learn from an
 //! index's documents -- naive Bayes ([`SimpleNaiveBayesClassifier`],
 //! [`CachingNaiveBayesClassifier`], [`Bm25NbClassifier`]), k nearest
 //! neighbours by `MoreLikeThis` or by fuzzy terms
@@ -40,12 +40,12 @@ use std::sync::Arc;
 
 use lucene_analysis::{Analyzer, TokenStream};
 
-use crate::directory_reader::DirectoryReader;
-use crate::function::java_double_compare;
-use crate::index_searcher::{IndexSearcher, SegmentNorms};
-use crate::multi_segment::OpenSegment;
-use crate::similarities::Similarity;
-use crate::{Error, Result};
+use lucene_search::directory_reader::DirectoryReader;
+use lucene_search::function::java_double_compare;
+use lucene_search::index_searcher::{IndexSearcher, SegmentNorms};
+use lucene_search::multi_segment::OpenSegment;
+use lucene_search::similarities::Similarity;
+use lucene_search::{Error, Result};
 
 /// `ClassificationResult<T>`: a class and its score.
 #[derive(Debug, Clone, PartialEq)]
@@ -199,7 +199,7 @@ pub(crate) fn stored_values_of(
     doc: i32,
     fields: &[&str],
 ) -> Result<Vec<Vec<String>>> {
-    let (seg, local) = crate::mlt::locate(reader, doc)?;
+    let (seg, local) = lucene_search::mlt::locate(reader, doc)?;
     let numbers: Vec<Option<i32>> = fields
         .iter()
         .map(|f| seg.field_infos().field_by_name(f).map(|i| i.number))
@@ -212,7 +212,7 @@ pub(crate) fn stored_values_of(
     for f in &document.fields {
         for (slot, number) in out.iter_mut().zip(&numbers) {
             if *number == Some(f.field_number) {
-                if let Some(v) = crate::mlt::stored_string_value(&f.value) {
+                if let Some(v) = lucene_search::mlt::stored_string_value(&f.value) {
                     slot.push(v);
                 }
             }
@@ -221,7 +221,7 @@ pub(crate) fn stored_values_of(
     Ok(out)
 }
 
-/// An analyzer error, as this crate reports it.
+/// An analyzer error, as `lucene_search` reports it.
 pub(crate) fn analysis(e: lucene_analysis::AnalysisError) -> Error {
     Error::IllegalArgument(e.to_string())
 }
@@ -318,11 +318,14 @@ pub fn term_vector(
     doc: i32,
     field: &str,
 ) -> Result<Option<lucene_codecs::term_vectors::TermVectorField>> {
-    let (seg, local) = crate::mlt::locate(reader, doc)?;
+    let (seg, local) = lucene_search::mlt::locate(reader, doc)?;
     match seg.term_vectors_reader()? {
-        Some(tv) => {
-            crate::term_vectors_query::term_vector_for_doc(&tv, seg.field_infos(), local, field)
-        }
+        Some(tv) => lucene_search::term_vectors_query::term_vector_for_doc(
+            &tv,
+            seg.field_infos(),
+            local,
+            field,
+        ),
         None => Ok(None),
     }
 }
@@ -354,7 +357,7 @@ impl<'r> TermVectors<'r> {
         for (seg, tv) in self.reader.segment_readers().iter().zip(&self.segments) {
             if doc >= base && doc < base.saturating_add(seg.max_doc) {
                 return match tv {
-                    Some(tv) => crate::term_vectors_query::term_vector_for_doc(
+                    Some(tv) => lucene_search::term_vectors_query::term_vector_for_doc(
                         tv,
                         seg.field_infos(),
                         doc - base,
