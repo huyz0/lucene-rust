@@ -19,10 +19,11 @@
 //! bounds are per segment ([`MAX_ENTRIES`], [`MAX_BYTES`]) rather than
 //! node-wide; the usage history is per segment too, which counts the same
 //! uses since a query visits each segment once; `skipCacheFactor` (don't
-//! cache a clause costing ten times its conjunction's lead) and the
-//! "at least half the average leaf" size rule are not ported, so a cache
-//! entry can be built where Lucene would have run the clause uncached.
-//! None of these changes a hit or a score.
+//! cache a clause costing ten times its conjunction's lead) applies only to
+//! an `IndexOrDocValuesQuery` clause, the one kind built here with its
+//! conjunction's lead cost, and the "at least half the average leaf" size
+//! rule is not ported, so a clause can be cached where Lucene would have run
+//! it uncached. None of these changes a hit or a score.
 
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -46,6 +47,14 @@ pub(crate) const MAX_ENTRIES: usize = 1_000;
 pub(crate) const MAX_BYTES: usize = 16 << 20;
 /// `LRUQueryCache`'s `MinSegmentSizePredicate` floor.
 pub(crate) const MIN_SEGMENT_SIZE: i32 = 10_000;
+/// `LRUQueryCache`'s default `skipCacheFactor`: a clause costing more than
+/// this many times the lead cost of the conjunction it is in runs uncached.
+pub(crate) const SKIP_CACHE_FACTOR: f32 = 10.0;
+
+/// `cost / skipCacheFactor > leadCost`, in Java's `float` arithmetic.
+pub(crate) fn skip_cache(cost: i64, lead_cost: i64) -> bool {
+    cost as f32 / SKIP_CACHE_FACTOR > lead_cost as f32
+}
 
 /// A segment's matches for one query, before deletions.
 pub(crate) enum CachedSet {
@@ -243,6 +252,17 @@ fn shape(clause: &Clause) -> (bool, bool, bool) {
         | Clause::Fuzzy(_)
         | Clause::TermInSet(_)
         | Clause::PointsRange(_) => (true, false, false),
+        // `isCostly`: a `MultiTermQuery`, and `isPointQuery` (a class named
+        // `Point*Query`).
+        Clause::Extended(e) => match &**e {
+            crate::extended_query::ExtendedQuery::MultiTerm(_)
+            | crate::extended_query::ExtendedQuery::PointRange(_)
+            | crate::extended_query::ExtendedQuery::PointInSet(_)
+            | crate::extended_query::ExtendedQuery::PointInSetIncludingScore(_) => {
+                (true, false, false)
+            }
+            _ => (false, false, false),
+        },
         _ => (false, false, false),
     }
 }
@@ -257,18 +277,23 @@ impl SegmentQueryCache {
         max_doc: i32,
         uncached: impl FnOnce() -> Result<Option<BoxScorer<'a>>>,
     ) -> Result<Option<CacheResult>> {
-        self.scorer_if_cacheable(clause, max_doc, true, uncached)
+        self.scorer_if_cacheable(clause, max_doc, true, || Ok(false), uncached)
     }
 
     /// [`Self::scorer`] for a clause whose weight says whether it may be
     /// cached against this segment (`SegmentCacheable.isCacheable`): the use
     /// is still counted, but an uncacheable clause is neither looked up nor
     /// stored (`CachingWrapperWeight.scorerSupplier`'s short-circuit).
+    ///
+    /// `skip` is asked only when the clause is not cached yet and the policy
+    /// would cache it: `true` runs the clause uncached this time instead
+    /// (`LRUQueryCache`'s `cost / skipCacheFactor > leadCost`).
     pub(crate) fn scorer_if_cacheable<'a>(
         &self,
         clause: &Clause,
         max_doc: i32,
         cacheable: bool,
+        skip: impl FnOnce() -> Result<bool>,
         uncached: impl FnOnce() -> Result<Option<BoxScorer<'a>>>,
     ) -> Result<Option<CacheResult>> {
         let (costly, composite, never) = shape(clause);
@@ -299,7 +324,7 @@ impl SegmentQueryCache {
             }
             inner.policy.should_cache(&policy_key)
         };
-        if !cache {
+        if !cache || skip()? {
             return Ok(None);
         }
         // Built without the lock: another search may build the same set at
@@ -311,7 +336,7 @@ impl SegmentQueryCache {
             self.insert(key, Arc::new(CachedSet::Docs(Vec::new())));
             return Ok(Some(CacheResult::Empty));
         };
-        let set = Arc::new(collect(&mut *s, max_doc)?);
+        let set = collect(&mut *s, max_doc)?;
         self.insert(key, Arc::clone(&set));
         Ok(Some(CacheResult::Hit(set)))
     }
@@ -411,31 +436,73 @@ pub(crate) enum CacheResult {
 
 /// `LRUQueryCache.cacheImpl`: every match of `s` (exact, before deletions),
 /// as a bitset when at least 1% of the segment matches, a doc list otherwise.
-fn collect(s: &mut dyn Scorer, max_doc: i32) -> Result<CachedSet> {
+///
+/// A scorer that already iterates a set of exactly this segment's bits (a
+/// point range, a geo query) hands that set over as it is when it is dense,
+/// and its documents read off the words when it is not. Otherwise the
+/// matches go into a list while the scorer's cost says they are sparse, and
+/// into a bit set otherwise, switching to the set once the list passes 1%.
+fn collect(s: &mut dyn Scorer, max_doc: i32) -> Result<Arc<CachedSet>> {
     let len = usize::try_from(max_doc).unwrap_or(0);
-    let mut bits = FixedBitSet::new(len);
+    let dense = |n: i64| n.saturating_mul(100) >= i64::from(max_doc);
+    if s.doc_id() == -1 {
+        if let Some((set, _)) = s.constant_bits() {
+            if let CachedSet::Bits { bits, cardinality } = &*set {
+                if bits.len() == len {
+                    if dense(*cardinality) {
+                        return Ok(set);
+                    }
+                    let mut docs = Vec::with_capacity(usize::try_from(*cardinality).unwrap_or(0));
+                    bits.for_each_set_bit(|i| docs.push(i as i32));
+                    return Ok(Arc::new(CachedSet::Docs(docs)));
+                }
+            }
+        }
+    }
+    let mut docs: Vec<i32> = Vec::new();
+    let mut bits: Option<FixedBitSet> = None;
     let mut cardinality = 0i64;
+    let into_bits = |docs: &[i32]| {
+        let mut b = crate::bit_set_pool::take(len).unwrap_or_else(|| FixedBitSet::new(len));
+        for &d in docs {
+            // FBS: every listed id passed the `i < len` check below.
+            b.set(d as usize);
+        }
+        b
+    };
+    if dense(s.cost()) {
+        bits = Some(into_bits(&[]));
+    }
     let mut doc = exact_next(s)?;
     while doc != NO_MORE_DOCS {
         if let Ok(i) = usize::try_from(doc) {
             if i < len {
-                // FBS: `i < len`, the set's length, checked just above.
-                bits.set(i);
                 cardinality += 1;
+                match &mut bits {
+                    // FBS: `i < len`, the set's length, checked just above.
+                    Some(b) => b.set(i),
+                    None => {
+                        docs.push(doc);
+                        if dense(cardinality) {
+                            bits = Some(into_bits(&docs));
+                            docs = Vec::new();
+                        }
+                    }
+                }
             }
         }
         doc = exact_next(s)?;
     }
-    if cardinality * 100 >= i64::from(max_doc) {
-        return Ok(CachedSet::Bits { bits, cardinality });
+    let Some(bits) = bits else {
+        return Ok(Arc::new(CachedSet::Docs(docs)));
+    };
+    if dense(cardinality) {
+        return Ok(Arc::new(CachedSet::Bits { bits, cardinality }));
     }
-    let mut docs = Vec::new();
-    let mut at = bits.next_set_bit(0);
-    while let Some(i) = at {
-        docs.push(i as i32);
-        at = bits.next_set_bit(i + 1);
-    }
-    Ok(CachedSet::Docs(docs))
+    let mut docs = Vec::with_capacity(usize::try_from(cardinality).unwrap_or(0));
+    bits.for_each_set_bit(|i| docs.push(i as i32));
+    crate::bit_set_pool::give(bits);
+    Ok(Arc::new(CachedSet::Docs(docs)))
 }
 
 /// A cached set as a scorer: matches only, every score 0 -- or, built by
@@ -499,6 +566,18 @@ impl Scorer for CachedScorer {
     }
 
     fn next_doc(&mut self) -> Result<i32> {
+        if let (CachedSet::Docs(docs), false) = (&*self.set, self.emptied) {
+            // `at` indexes the current document once positioned: the next
+            // one is the next entry.
+            let next = if self.doc == -1 {
+                0
+            } else {
+                self.at.saturating_add(1).min(docs.len())
+            };
+            self.at = next;
+            self.doc = docs.get(next).copied().unwrap_or(NO_MORE_DOCS);
+            return Ok(self.doc);
+        }
         let target = self.doc.saturating_add(1);
         self.advance(target)
     }
@@ -514,9 +593,18 @@ impl Scorer for CachedScorer {
                 .and_then(|t| bits.next_set_bit(t))
                 .map_or(NO_MORE_DOCS, |d| d as i32),
             CachedSet::Docs(docs) => {
-                // Galloping from the current index: callers advance forward.
-                let rest = &docs[self.at..];
-                let skip = rest.partition_point(|&d| d < target);
+                // Galloping from the current index (callers advance
+                // forward): double the step until it passes `target`, then
+                // binary-search the last step.
+                let rest = docs.get(self.at..).unwrap_or(&[]);
+                let mut lo = 0usize;
+                let mut step = 1usize;
+                while step < rest.len() && rest[step] < target {
+                    lo = step;
+                    step = step.saturating_mul(2);
+                }
+                let hi = step.saturating_add(1).min(rest.len());
+                let skip = lo + rest[lo..hi].partition_point(|&d| d < target);
                 self.at += skip;
                 docs.get(self.at).copied().unwrap_or(NO_MORE_DOCS)
             }
@@ -553,6 +641,25 @@ impl Scorer for CachedScorer {
     fn constant_bits(&self) -> Option<(Arc<CachedSet>, f32)> {
         (!self.emptied && matches!(&*self.set, CachedSet::Bits { .. }))
             .then(|| (Arc::clone(&self.set), self.score))
+    }
+
+    /// A bit set answers with one bit test, moving onto `target` only when
+    /// it is set.
+    #[inline]
+    fn advance_exact_cheap(&mut self, target: i32) -> Option<bool> {
+        if self.emptied {
+            return None;
+        }
+        match &*self.set {
+            CachedSet::Bits { bits, .. } => {
+                let hit = usize::try_from(target).is_ok_and(|d| d < bits.len() && bits.get(d));
+                if hit {
+                    self.doc = target;
+                }
+                Some(hit)
+            }
+            CachedSet::Docs(_) => None,
+        }
     }
 
     fn contains(&self, doc: i32) -> Option<bool> {
@@ -819,17 +926,29 @@ mod tests {
         let phrase = Clause::Phrase(PhraseQuery::new("f", ["a", "b"]));
         for _ in 0..6 {
             let r = cache
-                .scorer_if_cacheable(&phrase, 20_000, false, || panic!("never built"))
+                .scorer_if_cacheable(
+                    &phrase,
+                    20_000,
+                    false,
+                    || Ok(false),
+                    || panic!("never built"),
+                )
                 .unwrap();
             assert!(r.is_none());
         }
         assert_eq!(cache.stats().0, 0);
         let _ = hit(cache
-            .scorer_if_cacheable(&phrase, 20_000, true, || list(vec![5]))
+            .scorer_if_cacheable(&phrase, 20_000, true, || Ok(false), || list(vec![5]))
             .unwrap());
         assert_eq!(cache.stats().0, 1);
         assert!(cache
-            .scorer_if_cacheable(&phrase, 20_000, false, || panic!("not served either"))
+            .scorer_if_cacheable(
+                &phrase,
+                20_000,
+                false,
+                || Ok(false),
+                || panic!("not served either")
+            )
             .unwrap()
             .is_none());
     }
