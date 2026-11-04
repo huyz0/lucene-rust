@@ -710,9 +710,8 @@ impl PendingPostings {
         let mut hashes = std::mem::take(&mut f.hashes);
         hashes.clear();
         for t in field.terms.iter() {
-            let h = hash_bytes(t.term);
-            f.terms.prefetch_slot(h);
-            hashes.push(h);
+            f.terms.prefetch_slot(t.hash);
+            hashes.push(t.hash);
         }
         for (i, t) in field.terms.iter().enumerate() {
             f.prefetch_ahead(&hashes, i);

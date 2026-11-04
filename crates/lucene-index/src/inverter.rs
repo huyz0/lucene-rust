@@ -39,7 +39,7 @@ use crate::indexing_chain::MAX_POSITION;
 const FX_K: u64 = 0x517c_c1b7_2722_0a95;
 
 #[inline]
-pub(crate) fn hash_bytes(bytes: &[u8]) -> u64 {
+pub fn hash_bytes(bytes: &[u8]) -> u64 {
     let mut h: u64 = bytes.len() as u64;
     let mut chunks = bytes.chunks_exact(8);
     for c in &mut chunks {

@@ -5138,6 +5138,37 @@ impl MergedRun {
         }
     }
 
+    /// Room for a `1 / parts` share of the sources' postings, from their
+    /// dictionaries' totals, so the buffers do not grow by doubling: every
+    /// doubling copies what was merged so far into freshly faulted pages.
+    /// Deleted documents make it an overestimate; the untouched tail is
+    /// address space only.
+    fn reserve_share(&mut self, sources: &[Option<&SourcePostings<'_>>], parts: usize) {
+        let parts = parts.max(1);
+        let total = |f: fn(&FieldTerms) -> i64| -> usize {
+            sources
+                .iter()
+                .flatten()
+                .map(|s| usize::try_from(f(s.field_terms)).unwrap_or(0))
+                .fold(0usize, usize::saturating_add)
+                .checked_div(parts)
+                .unwrap_or(0)
+        };
+        let terms = total(|t| t.num_terms);
+        let docs = total(|t| t.sum_doc_freq);
+        self.terms.reserve(terms);
+        self.docs.reserve(docs);
+        if self.has_positions {
+            // a field without frequencies reports -1, which counts as none
+            let positions = total(|t| t.sum_total_term_freq);
+            self.pos_ends.reserve(docs);
+            self.positions.reserve(positions);
+            if self.has_offsets {
+                self.offsets.reserve(positions);
+            }
+        }
+    }
+
     /// The ends of the last finished term: where the open one starts.
     fn open_start(&self) -> RunTerm {
         self.terms.last().copied().unwrap_or_default()
@@ -5629,7 +5660,7 @@ fn merge_field_runs(
     let ranges = term_ranges(per_source_field)?;
     let mut docs_seen = FixedBitSet::new(shape.merged_doc_count.max(1));
     if ranges.len() == 1 {
-        let (run, seen) = merge_term_range(per_source_field, doc_id_maps, shape, None, None)?;
+        let (run, seen) = merge_term_range(per_source_field, doc_id_maps, shape, None, None, 1)?;
         docs_seen.or(&seen);
         sink(run)?;
     } else {
@@ -5643,7 +5674,14 @@ fn merge_field_runs(
                 .map(|i| {
                     let lower = (i > 0).then(|| ranges[i].as_slice());
                     let upper = ranges.get(i.saturating_add(1)).map(Vec::as_slice);
-                    merge_term_range(per_source_field, doc_id_maps, shape, lower, upper)
+                    merge_term_range(
+                        per_source_field,
+                        doc_id_maps,
+                        shape,
+                        lower,
+                        upper,
+                        ranges.len(),
+                    )
                 })
                 .collect::<Result<_>>()?;
             for (run, seen) in parts {
@@ -5731,6 +5769,7 @@ fn merge_term_range(
     shape: FieldShape,
     lower: Option<&[u8]>,
     upper: Option<&[u8]>,
+    parts: usize,
 ) -> Result<(MergedRun, FixedBitSet)> {
     let FieldShape {
         has_positions,
@@ -5762,6 +5801,7 @@ fn merge_term_range(
     }
 
     let mut run = MergedRun::new(has_positions, has_offsets, has_payloads);
+    run.reserve_share(per_source_field, parts);
     // One source term's decoded postings at a time, their buffers reused
     // from term to term.
     let mut source_postings = lucene_codecs::postings::Postings::default();
@@ -16903,7 +16943,7 @@ mod tests {
             merged_doc_count: 160,
         };
         let (serial, serial_seen) =
-            merge_term_range(&per_source_field, &doc_id_maps, shape, None, None).unwrap();
+            merge_term_range(&per_source_field, &doc_id_maps, shape, None, None, 1).unwrap();
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(4)
             .build()
@@ -16916,7 +16956,7 @@ mod tests {
             let lower = (i > 0).then(|| ranges[i].as_slice());
             let upper = ranges.get(i + 1).map(Vec::as_slice);
             let (run, seen) =
-                merge_term_range(&per_source_field, &doc_id_maps, shape, lower, upper).unwrap();
+                merge_term_range(&per_source_field, &doc_id_maps, shape, lower, upper, 3).unwrap();
             runs.push(run);
             parallel_seen.or(&seen);
         }
@@ -16940,7 +16980,7 @@ mod tests {
         assert_eq!(parallel_seen.cardinality(), serial_seen.cardinality());
         // A lower bound past every term: nothing.
         let (none, _) =
-            merge_term_range(&per_source_field, &doc_id_maps, shape, Some(b"u"), None).unwrap();
+            merge_term_range(&per_source_field, &doc_id_maps, shape, Some(b"u"), None, 2).unwrap();
         assert_eq!(none.views().count(), 0);
     }
 }
