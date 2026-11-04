@@ -319,12 +319,115 @@ fn written_segments_are_clustered_and_searchable() {
         .iter()
         .all(|s| s.codec_name == lucene_sparse::CODEC_NAME));
     assert_eq!(check(&dir, &all), 3);
+    check_fallback(&dir, &all);
     copy_out(tmp.path(), "flushed");
 
     w.force_merge(1).unwrap();
     w.commit().unwrap();
     assert_eq!(check(&dir, &all), 1);
     copy_out(tmp.path(), "merged");
+}
+
+/// A [`lucene_sparse::SparseAnnQuery`] clause through the searcher: the
+/// segment under the threshold is scored by the fallback, neural-search's sum
+/// of linear `FeatureField` queries, and the others by the clustered search.
+fn check_fallback(dir: &FsDirectory, all: &[Vec<(u32, f32)>]) {
+    use lucene_search::document::feature_field;
+    use lucene_search::extended_query::DocumentClause;
+    use lucene_search::index_searcher::{IndexSearcher, SegmentNorms};
+    use lucene_search::query::{BooleanQuery, Clause};
+
+    let reader = DirectoryReader::open(dir).unwrap();
+    let mut ids: Vec<usize> = Vec::new();
+    let mut small = Vec::new();
+    for seg in reader.segment_readers() {
+        let id_field = seg
+            .field_infos()
+            .fields
+            .iter()
+            .find(|f| f.name == "_id")
+            .unwrap()
+            .number;
+        for d in 0..seg.max_doc {
+            let doc = seg.stored_document(d).unwrap().unwrap();
+            let f = doc
+                .fields
+                .iter()
+                .find(|f| f.field_number == id_field)
+                .unwrap();
+            let FieldValue::String(s) = &f.value else {
+                panic!("{:?}", f.value)
+            };
+            if seg.max_doc < THRESHOLD {
+                small.push(ids.len());
+            }
+            ids.push(s[1..].parse().unwrap());
+        }
+    }
+    assert_eq!(small.len(), 20);
+    let opened = reader.open_segments().unwrap();
+    let segments = opened.as_open_segments();
+    let norms: Vec<SegmentNorms<'_, '_>> = segments.iter().map(|_| None).collect();
+    let searcher = IndexSearcher::new(&segments, &norms).unwrap();
+    for q in 0..20u32 {
+        let tokens: Vec<(u32, f32)> = (0..5)
+            .map(|i| ((q * 37 + i * 61) % 300, 0.5 + i as f32))
+            .collect();
+        let mut fallback = BooleanQuery::new();
+        for &(t, w) in &tokens {
+            let feature = feature_field::new_linear_query("emb", &t.to_string(), w).unwrap();
+            fallback
+                .should
+                .push(DocumentClause::new(format!("feature {t} {w}"), Arc::from(feature)).into());
+        }
+        let query = lucene_sparse::SparseAnnQuery {
+            field: "emb".to_string(),
+            tokens: tokens.clone(),
+            top_n: 5,
+            k: 10,
+            heap_factor: 1e30,
+        };
+        let clause = DocumentClause::new(format!("sparse {q}"), Arc::new(query))
+            .with_fallback(fallback.into());
+        let mut top = BooleanQuery::new();
+        top.must.push(Clause::from(clause));
+        let hits = searcher.search(&top, 10_000).unwrap();
+        // Every small-segment document holding a query token, with the sum
+        // of `weight * value` over its matching tokens.
+        let mut want: Vec<(usize, f32)> = small
+            .iter()
+            .filter_map(|&g| {
+                let v = &all[ids[g]];
+                let mut score = 0f32;
+                let mut matched = false;
+                for &(t, w) in &tokens {
+                    if let Some(&(_, x)) = v.iter().find(|&&(u, _)| u == t) {
+                        score += w * f32::from_bits((x.to_bits() >> 15) << 15);
+                        matched = true;
+                    }
+                }
+                matched.then_some((g, score))
+            })
+            .collect();
+        want.sort_by_key(|&(g, _)| g);
+        let mut got: Vec<(usize, f32)> = hits
+            .score_docs
+            .iter()
+            .map(|h| (h.doc as usize, h.score))
+            .filter(|(g, _)| small.contains(g))
+            .collect();
+        got.sort_by_key(|&(g, _)| g);
+        assert_eq!(got.len(), want.len(), "query {q}");
+        for ((g, s), (wg, ws)) in got.iter().zip(&want) {
+            assert_eq!(g, wg);
+            assert!(
+                (s - ws).abs() <= ws * 1e-5,
+                "query {q} doc {g}: {s} vs {ws}"
+            );
+        }
+        // The clustered segments add at most k hits each.
+        assert!(hits.score_docs.len() - got.len() <= 30);
+    }
 }
 
 /// With `SEISMIC_WRITER_OUT` set, copies the index to `$SEISMIC_WRITER_OUT/{name}`
@@ -341,4 +444,87 @@ fn copy_out(from: &std::path::Path, name: &str) {
             std::fs::copy(e.path(), to.join(e.file_name())).unwrap();
         }
     }
+}
+
+/// [`lucene_sparse::SparseAnnQuery`] on segments it cannot search: a field
+/// the segment lacks, a segment without clustered postings (written without
+/// `SparseCodec`), a `native` engine field, and a leaf without its reader.
+#[test]
+fn sparse_ann_query_edges() {
+    use lucene_search::document::{search_all, DocumentQuery};
+    use lucene_search::multi_segment::OpenSegment;
+    use lucene_sparse::SparseAnnQuery;
+
+    lucene_sparse::register_codec();
+    let tmp = TempDir::new("seismic-query-edges");
+    let dir = FsDirectory::open(tmp.path());
+    let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", VERSION).unwrap();
+    w.enable_explicit_documents().unwrap();
+    let id_field = w
+        .register_field(
+            FieldInfo::new("_id", 0)
+                .with_index_options(IndexOptions::Docs)
+                .with_omit_norms(true),
+        )
+        .unwrap();
+    let sparse = |name: &str, engine: &str| {
+        let mut a = vec![("engine".to_string(), engine.to_string())];
+        a.extend(attrs().into_iter().filter(|(k, _)| k != "engine"));
+        FieldInfo::new(name, 0)
+            .with_index_options(IndexOptions::DocsAndFreqs)
+            .with_omit_norms(true)
+            .with_doc_values(DocValuesType::Binary, DocValuesSkipIndexType::None, -1)
+            .with_attributes(a)
+    };
+    let emb = w.register_field(sparse("emb", "lucene")).unwrap();
+    let nat = w.register_field(sparse("nat", "native")).unwrap();
+    let all = vectors(60, 3);
+    let docs = all
+        .iter()
+        .enumerate()
+        .map(|(i, v)| document(i, v, id_field, if i % 2 == 0 { emb } else { nat }))
+        .collect();
+    w.add_explicit_documents(docs).unwrap();
+    w.commit().unwrap();
+    drop(w);
+
+    let reader = DirectoryReader::open(&dir).unwrap();
+    let opened = reader.open_segments().unwrap();
+    let leaves = opened.as_open_segments();
+    let query = |field: &str| SparseAnnQuery {
+        field: field.to_string(),
+        tokens: all[0].clone(),
+        top_n: 5,
+        k: 10,
+        heap_factor: 1.0,
+    };
+    assert_eq!(query("emb").field(), Some("emb"));
+    assert!(query("emb").equals(&query("emb")));
+    assert!(!query("emb").equals(&query("nat")));
+    for field in ["emb", "missing"] {
+        assert!(query(field).scores_leaf(&leaves[0]).unwrap());
+        assert!(search_all(&leaves, &query(field)).unwrap().is_empty());
+    }
+    assert!(query("nat").scores_leaf(&leaves[0]).unwrap());
+    let err = search_all(&leaves, &query("nat")).unwrap_err().to_string();
+    assert!(err.contains("native engine"), "{err}");
+
+    let l = &leaves[0];
+    let bare = [OpenSegment {
+        fields: l.fields,
+        doc_in: l.doc_in,
+        pos_in: l.pos_in,
+        pay_in: l.pay_in,
+        live_docs: l.live_docs,
+        doc_base: l.doc_base,
+        max_doc: l.max_doc,
+        cache: l.cache,
+        points: l.points,
+        reader: None,
+        index_sort_prefix: l.index_sort_prefix,
+        similarity: l.similarity,
+    }];
+    assert!(query("emb").scores_leaf(&bare[0]).unwrap());
+    let err = search_all(&bare, &query("emb")).unwrap_err().to_string();
+    assert!(err.contains("reader"), "{err}");
 }

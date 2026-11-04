@@ -116,9 +116,37 @@ pub trait DocumentQuery: AsAnyQuery + fmt::Debug + Send + Sync {
         collector: &mut dyn ScoringCollector,
     ) -> Result<()>;
 
+    /// [`Self::score_leaf`] restricted to `filter`'s documents (live ones of
+    /// `leaf`), `None` for a clause without a filter. The default keeps the
+    /// matches in `filter`; a query that searches differently under a filter
+    /// (an approximate one) overrides it.
+    fn score_leaf_filtered(
+        &self,
+        leaf: &OpenSegment<'_>,
+        boost: f32,
+        filter: Option<&lucene_util::fixed_bit_set::FixedBitSet>,
+        collector: &mut dyn ScoringCollector,
+    ) -> Result<()> {
+        let Some(filter) = filter else {
+            return self.score_leaf(leaf, boost, collector);
+        };
+        let mut kept = FilteredCollector {
+            filter,
+            inner: collector,
+        };
+        self.score_leaf(leaf, boost, &mut kept)
+    }
+
+    /// Whether this query scores `leaf` itself; `false` runs its clause's
+    /// fallback there instead.
+    fn scores_leaf(&self, leaf: &OpenSegment<'_>) -> Result<bool> {
+        let _ = leaf;
+        Ok(true)
+    }
+
     /// Whether every match scores `boost` (a constant-score weight), so a
     /// scorer tree may keep just the set of matches. `false` for a query
-    /// whose scores vary by document, which must not exceed `boost`.
+    /// whose scores vary by document.
     fn constant_score(&self) -> bool {
         true
     }
@@ -127,6 +155,20 @@ pub trait DocumentQuery: AsAnyQuery + fmt::Debug + Send + Sync {
     /// overrides it with Java's value equality.
     fn equals(&self, other: &dyn DocumentQuery) -> bool {
         std::ptr::addr_eq(self.as_any_query(), other.as_any_query())
+    }
+}
+
+/// Passes on the matches in `filter`.
+struct FilteredCollector<'a> {
+    filter: &'a lucene_util::fixed_bit_set::FixedBitSet,
+    inner: &'a mut dyn ScoringCollector,
+}
+
+impl ScoringCollector for FilteredCollector<'_> {
+    fn collect(&mut self, doc: i32, score: f32) {
+        if self.filter.get_doc(doc) {
+            self.inner.collect(doc, score);
+        }
     }
 }
 
@@ -227,6 +269,10 @@ impl DocumentQuery for Boosted {
         same_class::<Self>(other).is_some_and(|o| {
             self.boost.to_bits() == o.boost.to_bits() && self.query.equals(&*o.query)
         })
+    }
+
+    fn constant_score(&self) -> bool {
+        self.query.constant_score()
     }
 
     /// `BoostQuery.rewrite`: the inner query rewritten, the boost kept.

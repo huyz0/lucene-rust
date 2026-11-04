@@ -57,6 +57,9 @@ pub struct CodecFormats {
     /// The codec's default vectors format name
     /// (`PerFieldKnnVectorsFormat.format`).
     pub default_knn_vectors: &'static str,
+    /// Extensions of the files a `FilterCodec`'s own formats add to each
+    /// segment (`sit`, `sip`), which a reader opens beside the native ones.
+    pub extra_files: &'static [&'static str],
 }
 
 /// Every codec Lucene 10.5.0 can read an index with, oldest first: the
@@ -69,6 +72,7 @@ pub const CODECS: &[CodecFormats] = &[
         segment_info: SegmentInfoFormat::Lucene90,
         field_infos: FieldInfosFormat::Lucene90,
         default_postings: "Lucene90",
+        extra_files: &[],
         default_knn_vectors: "Lucene90HnswVectorsFormat",
     },
     CodecFormats {
@@ -76,6 +80,7 @@ pub const CODECS: &[CodecFormats] = &[
         segment_info: SegmentInfoFormat::Lucene90,
         field_infos: FieldInfosFormat::Lucene90,
         default_postings: "Lucene90",
+        extra_files: &[],
         default_knn_vectors: "Lucene91HnswVectorsFormat",
     },
     CodecFormats {
@@ -85,6 +90,7 @@ pub const CODECS: &[CodecFormats] = &[
         default_postings: "Lucene90",
         // `Lucene92HnswVectorsFormat.NAME` really is lower-case: 9.2 and 9.3
         // name their vector files `_N_lucene92HnswVectorsFormat_0.vec`.
+        extra_files: &[],
         default_knn_vectors: "lucene92HnswVectorsFormat",
     },
     CodecFormats {
@@ -92,6 +98,7 @@ pub const CODECS: &[CodecFormats] = &[
         segment_info: SegmentInfoFormat::Lucene90,
         field_infos: FieldInfosFormat::Lucene94,
         default_postings: "Lucene90",
+        extra_files: &[],
         default_knn_vectors: "Lucene94HnswVectorsFormat",
     },
     CodecFormats {
@@ -99,6 +106,7 @@ pub const CODECS: &[CodecFormats] = &[
         segment_info: SegmentInfoFormat::Lucene90,
         field_infos: FieldInfosFormat::Lucene94,
         default_postings: "Lucene90",
+        extra_files: &[],
         default_knn_vectors: "Lucene95HnswVectorsFormat",
     },
     CodecFormats {
@@ -106,6 +114,7 @@ pub const CODECS: &[CodecFormats] = &[
         segment_info: SegmentInfoFormat::Lucene99,
         field_infos: FieldInfosFormat::Lucene94,
         default_postings: "Lucene99",
+        extra_files: &[],
         default_knn_vectors: "Lucene99HnswVectorsFormat",
     },
     CodecFormats {
@@ -113,6 +122,7 @@ pub const CODECS: &[CodecFormats] = &[
         segment_info: SegmentInfoFormat::Lucene99,
         field_infos: FieldInfosFormat::Lucene94,
         default_postings: "Lucene912",
+        extra_files: &[],
         default_knn_vectors: "Lucene99HnswVectorsFormat",
     },
     CodecFormats {
@@ -120,6 +130,7 @@ pub const CODECS: &[CodecFormats] = &[
         segment_info: SegmentInfoFormat::Lucene99,
         field_infos: FieldInfosFormat::Lucene94,
         default_postings: "Lucene912",
+        extra_files: &[],
         default_knn_vectors: "Lucene99HnswVectorsFormat",
     },
     CodecFormats {
@@ -127,6 +138,7 @@ pub const CODECS: &[CodecFormats] = &[
         segment_info: SegmentInfoFormat::Lucene99,
         field_infos: FieldInfosFormat::Lucene94,
         default_postings: "Lucene101",
+        extra_files: &[],
         default_knn_vectors: "Lucene99HnswVectorsFormat",
     },
     CodecFormats {
@@ -134,6 +146,7 @@ pub const CODECS: &[CodecFormats] = &[
         segment_info: SegmentInfoFormat::Lucene99,
         field_infos: FieldInfosFormat::Lucene94,
         default_postings: "Lucene103",
+        extra_files: &[],
         default_knn_vectors: "Lucene99HnswVectorsFormat",
     },
     CodecFormats {
@@ -141,6 +154,7 @@ pub const CODECS: &[CodecFormats] = &[
         segment_info: SegmentInfoFormat::Lucene99,
         field_infos: FieldInfosFormat::Lucene94,
         default_postings: "Lucene104",
+        extra_files: &[],
         default_knn_vectors: "Lucene99HnswVectorsFormat",
     },
 ];

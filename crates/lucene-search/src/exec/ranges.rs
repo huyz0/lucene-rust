@@ -1131,18 +1131,47 @@ pub(crate) fn document<'a>(
         index_sort_prefix: false,
         similarity: None,
     };
+    if let Some(fallback) = &q.fallback {
+        if !q.query.scores_leaf(&leaf)? {
+            return build::build(ctx, fallback, boost, mode, false);
+        }
+    }
+    let filter = match &q.filter {
+        None => None,
+        Some(filter) => match build::build(ctx, filter, 1.0, Mode::NoScores, false)? {
+            // `Weight.scorer` returned null: the query searches unfiltered.
+            None => None,
+            Some(mut scorer) => {
+                let len = usize::try_from(reader.max_doc).unwrap_or(0);
+                let mut bits = FixedBitSet::new(len);
+                let mut doc = super::exact_advance(scorer.as_mut(), 0)?;
+                while doc != NO_MORE_DOCS {
+                    if ctx.live_docs.is_none_or(|live| live.get_doc(doc)) {
+                        if let Some(d) = usize::try_from(doc).ok().filter(|&d| d < bits.len()) {
+                            bits.set(d);
+                        }
+                    }
+                    doc = super::exact_advance(scorer.as_mut(), doc.saturating_add(1))?;
+                }
+                Some(bits)
+            }
+        },
+    };
     if !q.query.constant_score() {
         let mut hits = ScoredCollector::default();
-        q.query.score_leaf(&leaf, boost, &mut hits)?;
+        q.query
+            .score_leaf_filtered(&leaf, boost, filter.as_ref(), &mut hits)?;
         if hits.docs.is_empty() {
             return Ok(None);
         }
+        // `boost` bounds a distance feature; other queries' scores can exceed it.
+        let max = hits.scores.iter().copied().fold(boost, f32::max);
         return Ok(Some(Box::new(ScoredDocs {
             docs: hits.docs,
             scores: hits.scores,
             at: 0,
             doc: -1,
-            max: boost,
+            max,
             min: 0.0,
             prune: mode == Mode::TopScores,
         })));
@@ -1152,7 +1181,8 @@ pub(crate) fn document<'a>(
         bits: crate::bit_set_pool::take(len).unwrap_or_else(|| FixedBitSet::new(len)),
         cardinality: 0,
     };
-    q.query.score_leaf(&leaf, boost, &mut hits)?;
+    q.query
+        .score_leaf_filtered(&leaf, boost, filter.as_ref(), &mut hits)?;
     let SetCollector { bits, cardinality } = hits;
     if cardinality == 0 {
         crate::bit_set_pool::give(bits);

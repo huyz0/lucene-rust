@@ -145,6 +145,10 @@ impl DocumentQuery for FeatureQuery {
         Ok(None)
     }
 
+    fn constant_score(&self) -> bool {
+        false
+    }
+
     /// `TermScorer` over the feature's postings with the function's
     /// `SimScorer`.
     fn score_leaf(

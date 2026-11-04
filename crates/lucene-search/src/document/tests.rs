@@ -1066,3 +1066,107 @@ fn a_dense_skipper_primary_sort_with_blocks_is_not_a_doc_id_range() {
         }
     }
 }
+
+/// Scores the feature only on segments of at least two documents.
+#[derive(Debug)]
+struct LargeSegmentsOnly(FeatureQuery);
+
+impl DocumentQuery for LargeSegmentsOnly {
+    fn scores_leaf(&self, leaf: &OpenSegment<'_>) -> Result<bool> {
+        Ok(leaf.max_doc.is_some_and(|n| n >= 2))
+    }
+
+    fn constant_score(&self) -> bool {
+        self.0.constant_score()
+    }
+
+    fn score_leaf(
+        &self,
+        leaf: &OpenSegment<'_>,
+        boost: f32,
+        collector: &mut dyn ScoringCollector,
+    ) -> Result<()> {
+        self.0.score_leaf(leaf, boost, collector)
+    }
+}
+
+/// A document clause's filter restricts its matches (a filter matching
+/// nothing leaves the query unfiltered), and its fallback runs on the
+/// segments the query does not score.
+#[test]
+fn document_clause_filter_and_fallback() {
+    use crate::extended_query::DocumentClause;
+    use crate::index_searcher::{IndexSearcher, SegmentNorms};
+    use crate::query::{BooleanQuery, Clause, ConstantScoreQuery, TermQuery};
+    use std::sync::Arc;
+
+    let tmp = TempDir::new("doc-clause-filter");
+    let doc = |tag: &str, x: f32| {
+        vec![
+            b(d::StringField::new("tag", tag, Store::No)),
+            b(d::FeatureField::new("f", "x", x).unwrap()),
+        ]
+    };
+    let r = index(
+        &tmp,
+        vec![
+            vec![doc("a", 2.0), doc("b", 4.0), doc("a", 8.0)],
+            vec![doc("a", 3.0)],
+        ],
+    );
+    let opened = r.open_segments().unwrap();
+    let leaves = opened.as_open_segments();
+    let norms: Vec<SegmentNorms<'_, '_>> = leaves.iter().map(|_| None).collect();
+    let searcher = IndexSearcher::new(&leaves, &norms).unwrap();
+    let feature = || {
+        Arc::new(LargeSegmentsOnly(FeatureQuery::new(
+            "f",
+            "x",
+            FeatureFunction::Linear,
+        )))
+    };
+    let tag = |t: &str| Clause::from(TermQuery::new("tag", t.as_bytes().to_vec()));
+    let run = |clause: DocumentClause| {
+        let mut top = BooleanQuery::new();
+        top.must.push(clause.into());
+        searcher
+            .search(&top, 10)
+            .unwrap()
+            .score_docs
+            .iter()
+            .map(|h| (h.doc, h.score))
+            .collect::<Vec<_>>()
+    };
+    let value = |x: f32| d::FeatureField::decode_feature_value((x.to_bits() >> 15) as f32);
+
+    // No fallback: the small segment scores the feature too.
+    assert_eq!(
+        run(DocumentClause::new("all", feature())),
+        vec![
+            (2, value(8.0)),
+            (1, value(4.0)),
+            (3, value(3.0)),
+            (0, value(2.0))
+        ]
+    );
+    let fallback = Clause::from(ConstantScoreQuery::new(tag("a"), 0.5));
+    assert_eq!(
+        run(DocumentClause::new("filtered", feature())
+            .with_filter(tag("a"))
+            .with_fallback(fallback.clone())),
+        vec![(2, value(8.0)), (0, value(2.0)), (3, 0.5)]
+    );
+    assert_eq!(
+        run(DocumentClause::new("unfiltered", feature())
+            .with_filter(tag("zz"))
+            .with_fallback(fallback.clone())),
+        vec![(2, value(8.0)), (1, value(4.0)), (0, value(2.0)), (3, 0.5)]
+    );
+    let a = DocumentClause::new("k", feature()).with_filter(tag("a"));
+    assert_ne!(a, DocumentClause::new("k", feature()));
+    assert_ne!(a, a.clone().with_fallback(fallback.clone()));
+    assert_eq!(
+        format!("{:?}", a.with_fallback(fallback)),
+        r#"DocumentClause(k, filter Term(TermQuery { field: "tag", term: [97], doc_freq: None }), fallback ConstantScore(ConstantScoreQuery { inner: Term(TermQuery { field: "tag", term: [97], doc_freq: None }), score: 0.5 }))"#
+    );
+}

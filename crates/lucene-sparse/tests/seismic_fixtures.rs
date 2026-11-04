@@ -230,3 +230,63 @@ fn seismic_hits_match_neural_search() {
     }
     assert_eq!(checked, 120);
 }
+
+/// The same cases as a [`SparseAnnQuery`] clause run by the searcher, with
+/// the filter as neural-search builds it: `tag` AND the field exists.
+#[test]
+fn sparse_ann_query_matches_neural_search() {
+    use lucene_search::extended_query::DocumentClause;
+    use lucene_search::index_searcher::{IndexSearcher, SegmentNorms};
+    use lucene_search::query::{BooleanQuery, Clause, FieldExistsQuery, TermQuery};
+    use lucene_sparse::SparseAnnQuery;
+
+    lucene_sparse::register_codec();
+    let cases = load_cases();
+    let mut checked = 0;
+    for index in ["merged", "two_segments"] {
+        let path = format!("{}/{index}", fixture_dir());
+        let dir = MmapDirectory::open(&path);
+        let reader = DirectoryReader::open(&dir).unwrap();
+        let ids: Vec<String> = reader
+            .segment_readers()
+            .iter()
+            .flat_map(|s| open_segment(&dir, s).ids)
+            .collect();
+        let opened = reader.open_segments().unwrap();
+        let segments = opened.as_open_segments();
+        let norms: Vec<SegmentNorms<'_, '_>> = segments.iter().map(|_| None).collect();
+        let searcher = IndexSearcher::new(&segments, &norms).unwrap();
+        for (ci, case) in cases.iter().enumerate() {
+            let query = SparseAnnQuery {
+                field: "emb".to_string(),
+                tokens: case.tokens.clone(),
+                top_n: case.top_n,
+                k: case.k,
+                heap_factor: case.heap_factor,
+            };
+            let mut clause = DocumentClause::new(format!("sparse {ci}"), Arc::new(query));
+            if let Some(tag) = &case.filter {
+                let mut filter = BooleanQuery::new();
+                filter
+                    .filter
+                    .push(TermQuery::new("tag", tag.as_bytes().to_vec()).into());
+                filter
+                    .filter
+                    .push(Clause::Exists(FieldExistsQuery::new("emb")));
+                clause = clause.with_filter(filter.into());
+            }
+            let mut top = BooleanQuery::new();
+            top.must.push(Clause::from(clause));
+            let hits = searcher.search(&top, 10_000).unwrap();
+            let got: Vec<(String, f32)> = hits
+                .score_docs
+                .iter()
+                .map(|h| (ids[h.doc as usize].clone(), h.score))
+                .collect();
+            let want = &case.hits.iter().find(|(i, _)| i == index).unwrap().1;
+            assert_eq!(&got, want, "{index} case {ci}");
+            checked += 1;
+        }
+    }
+    assert_eq!(checked, 120);
+}

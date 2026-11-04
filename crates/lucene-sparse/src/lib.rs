@@ -23,11 +23,13 @@
 //! each flushed and merged segment's postings ([`writer`]).
 
 pub mod postings;
+pub mod query;
 pub mod search;
 pub mod vector;
 pub mod writer;
 
 pub use postings::{Cluster, ClusteredPostings};
+pub use query::SparseAnnQuery;
 pub use search::{search, SeismicField, SeismicQuery};
 pub use vector::SparseVector;
 pub use writer::SparseCodec;
@@ -37,10 +39,15 @@ pub const CODEC_NAME: &str = "Sparse10010Codec";
 
 /// Makes [`CODEC_NAME`] segments readable. The codec resolves to Lucene 10.1's
 /// formats on read, as neural-search's own `SparseCodec()` does; the per-field
-/// postings and doc-values formats come from each field's attributes.
+/// postings and doc-values formats come from each field's attributes. A
+/// reader keeps each segment's `.sit`/`.sip`
+/// ([`lucene_search::directory_reader::SegmentReader::codec_file`]).
 pub fn register_codec() {
     if let Some(base) = lucene_codecs::codecs::for_name("Lucene101") {
-        lucene_codecs::codecs::register(lucene_codecs::codecs::renamed(base, CODEC_NAME));
+        lucene_codecs::codecs::register(lucene_codecs::codecs::CodecFormats {
+            extra_files: &[postings::TERMS_EXTENSION, postings::POSTINGS_EXTENSION],
+            ..lucene_codecs::codecs::renamed(base, CODEC_NAME)
+        });
     }
 }
 
