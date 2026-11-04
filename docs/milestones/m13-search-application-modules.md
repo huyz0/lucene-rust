@@ -174,7 +174,7 @@ Each module has a per-class inventory, `docs/inventory/lucene-<module>.tsv`
     inversion), owed by the writer: the explicit-document flush now hashes terms (`TermHash`) instead of a `BTreeMap`
     per occurrence, from 0.29x.
 - **T13.4** — Taxonomy facets and drill-sideways, four sub-tasks in order (`lucene-facet`, 80 classes
-  `todo:M13` in `docs/inventory/lucene-facet.tsv`; the existing `crates/lucene-search/src/facets.rs`
+  `todo:M13` in `docs/inventory/lucene-facet.tsv`; the existing `crates/lucene-facet/src/lib.rs`
   holds the earlier sorted-set and range subset, folded into the real classes as each sub-task lands):
   - **T13.4a** — the taxonomy index: `FacetLabel`, the `writercache` package, `TaxonomyWriter`,
     `DirectoryTaxonomyWriter`, `DirectoryTaxonomyReader`, `TaxonomyIndexArrays`,

@@ -2,7 +2,7 @@
 //! (`DocIdSet::Array`; Java's trailing `NO_MORE_DOCS` sentinel is implicit
 //! in the Rust iterator).
 
-use lucene_search::facets::DocIdSet;
+use lucene_facet::DocIdSet;
 use lucene_test_framework::util::base_bit_set::{set_bits, JavaUtilBitSet};
 use lucene_test_framework::util::base_doc_id_set::BaseDocIdSetTestCase;
 use lucene_test_framework::util::lucene_test_case::LuceneTestCase;

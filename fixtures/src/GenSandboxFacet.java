@@ -81,7 +81,7 @@ import org.apache.lucene.util.IOUtils;
 
 /**
  * lucene-sandbox's facet package ({@code org.apache.lucene.sandbox.facet}), recorded from Lucene
- * 10.5.0 for crates/lucene-search/tests/sandbox_facet_fixtures.rs. Written to {@code
+ * 10.5.0 for crates/lucene-sandbox/tests/sandbox_facet_fixtures.rs. Written to {@code
  * sandbox_facet/}:
  *
  * <pre>

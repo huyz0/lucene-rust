@@ -265,7 +265,7 @@ impl<'a> TermSpans<'a> {
 
     /// The payload at the current position (`postings.getPayload()`),
     /// `None` where it has none.
-    pub(crate) fn payload(&mut self) -> Result<Option<&[u8]>> {
+    pub fn payload(&mut self) -> Result<Option<&[u8]>> {
         if self.stream {
             return self.postings.payload();
         }
@@ -1473,6 +1473,33 @@ pub fn spans_with<'a>(
     payloads: bool,
 ) -> Result<Option<BoxSpans<'a>>> {
     root_spans(ctx, q, payloads, Boxing)
+}
+
+/// [`spans_with`] over a whole segment, deleted documents included (as
+/// Java's `Spans` read every document of a leaf).
+///
+/// # Errors
+/// As [`spans_with`].
+pub fn segment_spans<'a>(
+    seg: &crate::multi_segment::OpenSegment<'a>,
+    q: &SpanNode,
+    payloads: bool,
+) -> Result<Option<BoxSpans<'a>>> {
+    let ctx = LeafContext {
+        fields: seg.fields,
+        doc_in: seg.doc_in,
+        pos_in: seg.pos_in,
+        pay_in: seg.pay_in,
+        live_docs: None,
+        points: seg.points,
+        norms: None,
+        global: None,
+        max_doc: seg.max_doc,
+        cache: None,
+        reader: seg.reader,
+        similarity: seg.similarity,
+    };
+    spans_with(&ctx, q, payloads)
 }
 
 /// What [`root_spans`] hands a query's spans to: generic over the spans'

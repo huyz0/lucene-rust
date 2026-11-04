@@ -20,12 +20,12 @@ const DENSITY_THRESHOLD_INVERSE: i32 = 32;
 
 /// Whether the collector can no longer take a document scoring `score`:
 /// the bulk scorers' `minCompetitiveScore > score`.
-pub(crate) fn saturated(collector: &dyn ScoringCollector, score: f32) -> bool {
+pub fn saturated(collector: &dyn ScoringCollector, score: f32) -> bool {
     crate::bulk_scorer::min_competitive_score(collector) > score
 }
 
 /// What the bulk scorer does with a candidate.
-pub(crate) enum Step {
+pub enum Step {
     Stop,
     Skip,
     Check,
@@ -46,7 +46,7 @@ pub(crate) enum Step {
 /// * `DefaultBulkScorer` (otherwise, and [`Bulk::default_scorer`]): only
 ///   live candidates confirmed, the search ending at the hit that saturates
 ///   the collector.
-pub(crate) struct Bulk {
+pub struct Bulk {
     windows: bool,
     live_first: bool,
     window_end: i32,
@@ -54,7 +54,7 @@ pub(crate) struct Bulk {
 }
 
 impl Bulk {
-    pub(crate) fn new(needs_scores: bool, max_doc: i32, cost: i64) -> Self {
+    pub fn new(needs_scores: bool, max_doc: i32, cost: i64) -> Self {
         let windows =
             max_doc >= WINDOW_SIZE / 2 && cost >= i64::from(max_doc / DENSITY_THRESHOLD_INVERSE);
         Bulk {
@@ -79,7 +79,7 @@ impl Bulk {
 
     /// A candidate whose clause reports no run: `TwoPhaseIterator.docIDRunEnd()`'s
     /// default, the empty run `doc`.
-    pub(crate) fn candidate(
+    pub fn candidate(
         &mut self,
         leaf: &OpenSegment<'_>,
         doc: i32,
@@ -124,7 +124,7 @@ impl Bulk {
 
     /// Candidates `first..=last` that cannot match: only a window starting
     /// among them checks the collector. Whether to stop.
-    pub(crate) fn pass(
+    pub fn pass(
         &mut self,
         first: i32,
         last: i32,
@@ -147,7 +147,7 @@ impl Bulk {
     }
 
     /// Collects a confirmed candidate if it is live; whether to stop.
-    pub(crate) fn hit(
+    pub fn hit(
         &self,
         leaf: &OpenSegment<'_>,
         doc: i32,
@@ -161,7 +161,7 @@ impl Bulk {
 
 /// `SkipBlockRangeIterator`: every document of the skip blocks whose value
 /// range meets `[min, max]`.
-pub(crate) struct SkipBlocks<'a> {
+pub struct SkipBlocks<'a> {
     skipper: DocValuesSkipper<'a>,
     min: i64,
     max: i64,
@@ -169,7 +169,7 @@ pub(crate) struct SkipBlocks<'a> {
 }
 
 impl<'a> SkipBlocks<'a> {
-    pub(crate) fn new(index: &'a DocValuesSkipIndex, min: i64, max: i64) -> Self {
+    pub fn new(index: &'a DocValuesSkipIndex, min: i64, max: i64) -> Self {
         SkipBlocks {
             skipper: DocValuesSkipper::new(index),
             min,
@@ -179,7 +179,7 @@ impl<'a> SkipBlocks<'a> {
     }
 
     /// The current level-0 block: its last document and its value range.
-    pub(crate) fn block(&self) -> (i32, i64, i64) {
+    pub fn block(&self) -> (i32, i64, i64) {
         (
             self.skipper.max_doc_id(0),
             self.skipper.min_value(0),
@@ -188,12 +188,12 @@ impl<'a> SkipBlocks<'a> {
     }
 
     /// Moves to `doc`, a document of the current block.
-    pub(crate) fn skip_to(&mut self, doc: i32) {
+    pub fn skip_to(&mut self, doc: i32) {
         self.doc = doc;
     }
 
     /// `nextDoc()`: `advance(doc + 1)`.
-    pub(crate) fn next_doc(&mut self) -> i32 {
+    pub fn next_doc(&mut self) -> i32 {
         let target = self.doc.saturating_add(1);
         if target <= self.skipper.max_doc_id(0) {
             if self.doc > -1 {

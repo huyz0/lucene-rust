@@ -19,14 +19,14 @@ use std::hint::black_box;
 use std::path::Path;
 use std::time::Duration;
 
-use lucene_search::directory_reader::DirectoryReader;
-use lucene_search::facets::taxonomy::{
+use lucene_facet::taxonomy::{
     AssociationAggregationFunction, DirectoryTaxonomyReader, FastTaxonomyFacetCounts,
     TaxonomyFacetFloatAssociations, TaxonomyFacetIntAssociations,
 };
-use lucene_search::facets::{
+use lucene_facet::{
     FacetResult, FacetValue, Facets, FacetsCollector, FacetsCollectorManager, FacetsConfig,
 };
+use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::field_norms::FieldNorms;
 use lucene_search::index_searcher::{IndexSearcher, SegmentNorms};
 use lucene_search::query::{BooleanQuery, Clause, MatchAllDocsQuery, TermQuery};

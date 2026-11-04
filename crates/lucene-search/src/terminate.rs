@@ -160,7 +160,7 @@ pub fn count_until(
 }
 
 /// `Weight.count(leaf)` for the queries it is ported for.
-pub(crate) enum LeafCount {
+pub enum LeafCount {
     /// Answered without iterating.
     Whole(u64),
     /// `-1`: the collector counts what reaches it.
@@ -174,7 +174,7 @@ pub(crate) enum LeafCount {
 /// wrappers whose weights hand `count` to the one they wrap
 /// (`ConstantScoreQuery`, a `BoostQuery`) -- and a boolean of one required
 /// clause, the form a lone clause arrives in here (Lucene rewrites it away).
-pub(crate) fn leaf_count(seg: &OpenSegment<'_>, query: &BooleanQuery) -> Result<LeafCount> {
+pub fn leaf_count(seg: &OpenSegment<'_>, query: &BooleanQuery) -> Result<LeafCount> {
     use crate::query::Clause;
     fn clause(seg: &OpenSegment<'_>, c: &Clause) -> Result<LeafCount> {
         Ok(match c {

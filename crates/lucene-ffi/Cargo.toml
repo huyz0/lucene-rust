@@ -22,6 +22,8 @@ mimalloc = { version = "0.1", default-features = false, features = ["local_dynam
 lucene-codecs = { path = "../lucene-codecs" }
 lucene-index = { path = "../lucene-index" }
 lucene-search = { path = "../lucene-search" }
+lucene-facet = { path = "../lucene-facet" }
+lucene-sandbox = { path = "../lucene-sandbox" }
 lucene-util = { path = "../lucene-util" }
 lucene-analysis = { path = "../lucene-analysis" }
 # ICU's Thai dictionary word iterator, which `ThaiTokenizer` (the `thai`

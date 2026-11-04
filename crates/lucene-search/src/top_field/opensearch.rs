@@ -18,7 +18,6 @@ use super::{
     LeafFieldComparator, Selector, SortError, SortType, SortValue,
 };
 use crate::directory_reader::SegmentReader;
-use crate::sandbox::document::HalfFloatPoint;
 use crate::Result;
 
 /// `ShardDocFieldComparatorSource`: a document's key is `shardKeyPrefix |
@@ -127,7 +126,7 @@ impl Pick {
             Pick::HalfFloat(s) => {
                 scratch.clear();
                 scratch.extend(values.iter().map(|&v| {
-                    let f = HalfFloatPoint::sortable_short_to_half_float(v as i16);
+                    let f = lucene_util::half_float::sortable_short_to_half_float(v as i16);
                     i64::from(float_to_sortable_int(f))
                 }));
                 s.selector
@@ -498,7 +497,7 @@ mod tests {
                 let f = if w.values[0] == i64::MAX {
                     f32::INFINITY
                 } else {
-                    HalfFloatPoint::sortable_short_to_half_float(w.values[0] as i16)
+                    lucene_util::half_float::sortable_short_to_half_float(w.values[0] as i16)
                 };
                 assert_eq!(
                     g.values[0],
@@ -515,7 +514,7 @@ mod tests {
         assert_eq!(s.value_string(i64::from(float_to_sortable_int(1.5))), "1.5");
         // A document's values averaged as doubles, then cast to float.
         let pick = Pick::HalfFloat(s);
-        let raw = |f: f32| i64::from(HalfFloatPoint::half_float_to_sortable_short(f));
+        let raw = |f: f32| i64::from(lucene_util::half_float::half_float_to_sortable_short(f));
         let mut scratch = Vec::new();
         assert_eq!(
             pick.value(&[raw(1.0), raw(2.5)], &mut scratch),
