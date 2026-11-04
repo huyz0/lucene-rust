@@ -12,9 +12,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use lucene_analysis::Analyzer;
-use lucene_search::suggest::analyzing::{AnalyzingSuggester, FuzzySuggester};
-use lucene_search::suggest::input::InputIterator;
-use lucene_search::suggest::lookup::Lookup;
+use lucene_suggest::analyzing::{AnalyzingSuggester, FuzzySuggester};
+use lucene_suggest::input::InputIterator;
+use lucene_suggest::lookup::Lookup;
 
 use super::measure;
 

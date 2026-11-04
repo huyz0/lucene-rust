@@ -28,7 +28,7 @@ fn classpath() {
     REGISTERED.call_once(|| {
         // a name already taken is ignored, not an error
         let _ = lucene_search::word2vec::register_factories();
-        let _ = lucene_search::suggest::suggest_stop_factory::register_factories();
+        let _ = lucene_suggest::suggest_stop_factory::register_factories();
     });
 }
 

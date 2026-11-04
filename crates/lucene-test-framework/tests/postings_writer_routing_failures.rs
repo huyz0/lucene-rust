@@ -763,8 +763,8 @@ fn missing_routed_group_is_rejected_when_another_group_survives() {
 
 #[test]
 fn mixed_completion_keeps_ordinary_outputs_and_only_installs_native_groups_on_flush_and_merge() {
-    use lucene_search::suggest::document::{lookup, SegmentView, TopSuggestDocsCollector};
-    use lucene_search::suggest::suggest_field::SuggestField;
+    use lucene_suggest::document::{lookup, SegmentView, TopSuggestDocsCollector};
+    use lucene_suggest::suggest_field::SuggestField;
     use lucene_util::automaton::automata::make_binary;
 
     fn add_mixed(writer: &mut IndexWriter<'_>, id: &str, surface: &str, weight: i32) {

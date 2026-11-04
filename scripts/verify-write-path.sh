@@ -446,7 +446,7 @@ CASES=(
   # suggestion (key, doc, score) it gives over the index it builds itself
   # from the same documents. What it cannot catch: a defect Lucene's own
   # index shares -- both are read by the same SuggestIndexSearcher.
-  "lucene-search|write_completion_fixture|completion|VerifyCompletion"
+  "lucene-suggest|write_completion_fixture|completion|VerifyCompletion"
   # The taxonomy index: three taxonomies written by this port's
   # DirectoryTaxonomyWriter -- an LRU cache of 3 that sends nearly every add
   # through the writer's near-real-time reader (a segment per refresh, merged
