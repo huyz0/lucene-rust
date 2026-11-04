@@ -512,8 +512,14 @@ def fault_containment():
         must("DELETE", f"/{idx}")
 
 
+def recovery_types(index):
+    """How each shard of `index` last recovered: EMPTY_STORE until a failed shard is recovered."""
+    return {s["type"] for s in must("GET", f"/{index}/_recovery")[index]["shards"]}
+
+
 def breaker():
-    """The Rust writer's buffer is accounted: a tiny limit trips the breaker with a 429."""
+    """The Rust writer's buffer is accounted: a tiny limit trips the breaker with a 429, and only
+    the refused documents fail: the no-ops recording them are not refused, so no shard fails."""
     create("breaker_rust", True)
     wait_green("breaker_rust")
     must("PUT", "/_cluster/settings", {"transient": {"breaker.lucene_rust_writer.limit": "1kb"}})
@@ -540,6 +546,9 @@ def breaker():
     node = next(iter(stats.values()))
     check(node["breakers"]["lucene_rust_writer"]["estimated_size_in_bytes"] == 0,
           f"a refresh releases the accounted buffer: {node['breakers']['lucene_rust_writer']}")
+    wait_green("breaker_rust")
+    types = recovery_types("breaker_rust")
+    check(types == {"EMPTY_STORE"}, f"a refused document fails no shard (recoveries: {types})")
     must("DELETE", "/breaker_rust")
 
 
