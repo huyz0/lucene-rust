@@ -955,11 +955,15 @@ fn commit_data(context: u64) -> Result<Vec<(String, String)>, FfiStatus> {
                 buf = crate::raw::try_with_capacity::<u8>(len)?;
                 buf.resize(len, 0);
             }
+            COMMIT_DATA_FAILED => {
+                // A refusal, not the writer's failure: the JVM reports its own error.
+                set_last_error("engine writer: the commit-data upcall failed");
+                return Err(FfiStatus::InvalidArgument);
+            }
             _ => break,
         }
     }
-    // A refusal, not the writer's failure: the JVM reports its own error.
-    set_last_error("engine writer: the commit-data upcall failed");
+    set_last_error("engine writer: the commit-data upcall returned an inconsistent length");
     Err(FfiStatus::InvalidArgument)
 }
 
