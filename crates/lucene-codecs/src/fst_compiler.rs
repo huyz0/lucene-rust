@@ -133,7 +133,10 @@ impl<'a> ReverseReader<'a> {
     /// `readByte()`.
     #[inline]
     pub fn read_byte(&mut self) -> Result<u8, FstReadError> {
-        match usize::try_from(self.pos).ok().and_then(|p| self.bytes.get(p)) {
+        match usize::try_from(self.pos)
+            .ok()
+            .and_then(|p| self.bytes.get(p))
+        {
             Some(&b) => {
                 self.pos = self.pos.wrapping_sub(1);
                 Ok(b)
