@@ -15,6 +15,12 @@
 //! validated on every call; failures return a status code and leave a
 //! thread-local message.
 
+/// mimalloc returns freed memory to the system; glibc's per-thread arenas
+/// kept what the JVM's indexing threads freed.
+#[cfg(feature = "mimalloc")]
+#[global_allocator]
+static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 mod analysis_modules;
 mod clauses;
 pub(crate) mod engine_writer;
