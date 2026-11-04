@@ -151,6 +151,14 @@ impl TermHash {
         (entry != 0 && entry >> 32 == tag(h)).then(|| (entry as u32).wrapping_sub(1))
     }
 
+    /// Starts loading where term `id`'s bytes start, which
+    /// [`Self::prefetch_term`] and a lookup read: a stage ahead of
+    /// [`Self::prefetch_term`], whose own read of it would otherwise stall.
+    #[inline]
+    pub(crate) fn prefetch_start(&self, id: u32) {
+        lucene_util::simd::prefetch(&self.starts, id as usize);
+    }
+
     /// Starts loading term `id`'s bytes, which a lookup compares.
     #[inline]
     pub(crate) fn prefetch_term(&self, id: u32) {

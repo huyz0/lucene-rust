@@ -504,7 +504,7 @@ impl IndexingConfig {
             // document with equal hashes walks the set, which finds the
             // first real repeat in order (or none, for a collision).
             sorted.clear();
-            sorted.extend(inv.terms.iter().map(|t| t.hash));
+            sorted.extend_from_slice(inv.terms.hashes());
             sorted.sort_unstable();
             let repeats = sorted.windows(2).any(|w| w[0] == w[1]);
             let mut terms = BTreeSet::new();
