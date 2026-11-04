@@ -399,7 +399,10 @@ impl ExpressionValueSource {
                     )?,
                 ),
                 None => {
-                    let values: BoxDoubleValues<'c> = match source.as_expression() {
+                    let values: BoxDoubleValues<'c> = match source
+                        .as_any()
+                        .and_then(|a| a.downcast_ref::<ExpressionValueSource>())
+                    {
                         Some(nested) if self.caching && nested.caching => {
                             nested.values_with_cache(ctx, leaf, scores, cache)?
                         }
@@ -459,7 +462,7 @@ impl DoubleValuesSource for ExpressionValueSource {
         format!("expr({})", self.expression.source_text)
     }
 
-    fn as_expression(&self) -> Option<&ExpressionValueSource> {
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }
 
@@ -670,7 +673,10 @@ mod tests {
         assert!(!without.needs_scores());
         assert_eq!(with.describe(), "expr(s + c)");
         let caching = ExpressionValueSource::caching(&b, expr("c")).unwrap();
-        assert!(caching.as_expression().is_some());
+        assert!(caching
+            .as_any()
+            .and_then(|a| a.downcast_ref::<ExpressionValueSource>())
+            .is_some());
     }
 
     /// Even documents have the value `doc`, odd ones none; each read of a

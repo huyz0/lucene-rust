@@ -279,3 +279,28 @@ pub fn search_slices_concurrent<'a, C: SegmentCollector<'a> + Send>(
     .into_iter()
     .collect()
 }
+
+/// `CollectorManager<C, T>` for a [`SegmentCollector`]: one collector per
+/// slice of the searcher, reduced to a result.
+pub trait SegmentCollectorManager<'a> {
+    type Collector: SegmentCollector<'a>;
+    type Output;
+    /// `newCollector()`.
+    fn new_collector(&self) -> Result<Self::Collector>;
+    /// `reduce(collectors)`, the collectors in slice order.
+    fn reduce(&self, collectors: Vec<Self::Collector>) -> Result<Self::Output>;
+}
+
+/// `searcher.search(query, manager)`: a collector per slice (in order, on
+/// this thread), then the manager's `reduce`.
+///
+/// # Errors
+/// What the search, a collector or the reduction reports.
+pub fn search_manager<'a, M: SegmentCollectorManager<'a>>(
+    searcher: &IndexSearcher<'_, 'a>,
+    query: &BooleanQuery,
+    manager: &M,
+) -> Result<M::Output> {
+    let collectors = search_slices(searcher, query, || manager.new_collector())?;
+    manager.reduce(collectors)
+}

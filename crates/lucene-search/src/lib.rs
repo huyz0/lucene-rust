@@ -270,6 +270,7 @@ pub mod terms_agg;
 pub mod test_support;
 pub mod top_docs;
 pub mod top_field;
+pub mod tree_set;
 pub mod values_source;
 pub mod vector_query;
 pub mod weight_count;

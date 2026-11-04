@@ -13,11 +13,11 @@ use lucene_util::fixed_bit_set::FixedBitSet;
 use super::sort::{compare_all, compare_values, GroupSortValue, LeafKeys, Sort};
 use super::{
     non_nan_max, CollectedSearchGroup, GroupDocs, GroupIndex, GroupReducer, GroupScoreDoc,
-    GroupSelector, GroupState, GroupingCollectorManager, IdIndex, ScoreMergeMode, SearchGroup,
+    GroupSelector, GroupState, IdIndex, ScoreMergeMode, SearchGroup, SegmentCollectorManager,
     TopGroups, TreeSet,
 };
 use crate::collector::{ScoreMode, TotalHits, TotalHitsRelation};
-use crate::join::query_time::java_max_f32;
+use crate::function::valuesource::functions::java_max_f32;
 use crate::leaf_collector::SegmentCollector;
 use crate::multi_segment::OpenSegment;
 use crate::{Error, Result};
@@ -379,9 +379,9 @@ impl<'a, S: GroupSelector<'a>> SegmentCollector<'a> for FirstPassGroupingCollect
     }
 }
 
-/// `FirstPassGroupingCollectorManager<T>`: a first pass of `groupOffset +
+/// `FirstPassSegmentCollectorManager<T>`: a first pass of `groupOffset +
 /// topNGroups` groups per slice, merged by [`SearchGroup::merge`].
-pub struct FirstPassGroupingCollectorManager<F> {
+pub struct FirstPassSegmentCollectorManager<F> {
     selector_factory: F,
     group_sort: Sort,
     group_offset: usize,
@@ -389,8 +389,8 @@ pub struct FirstPassGroupingCollectorManager<F> {
     ignore_docs_without_group_field: bool,
 }
 
-impl<F> FirstPassGroupingCollectorManager<F> {
-    /// `new FirstPassGroupingCollectorManager(groupSelectorFactory,
+impl<F> FirstPassSegmentCollectorManager<F> {
+    /// `new FirstPassSegmentCollectorManager(groupSelectorFactory,
     /// groupSort, groupOffset, topNGroups, ignoreDocsWithoutGroupField)`.
     ///
     /// # Errors
@@ -417,7 +417,7 @@ impl<F> FirstPassGroupingCollectorManager<F> {
     }
 }
 
-impl<'a, S, F> GroupingCollectorManager<'a> for FirstPassGroupingCollectorManager<F>
+impl<'a, S, F> SegmentCollectorManager<'a> for FirstPassSegmentCollectorManager<F>
 where
     S: GroupSelector<'a>,
     F: Fn() -> S,
@@ -999,7 +999,7 @@ impl<F, V> TopGroupsCollectorManager<F, V> {
     }
 }
 
-impl<'a, S, F> GroupingCollectorManager<'a> for TopGroupsCollectorManager<F, S::Value>
+impl<'a, S, F> SegmentCollectorManager<'a> for TopGroupsCollectorManager<F, S::Value>
 where
     S: GroupSelector<'a>,
     F: Fn() -> S,
@@ -1119,7 +1119,7 @@ impl<F> AllGroupsCollectorManager<F> {
     }
 }
 
-impl<'a, S, F> GroupingCollectorManager<'a> for AllGroupsCollectorManager<F>
+impl<'a, S, F> SegmentCollectorManager<'a> for AllGroupsCollectorManager<F>
 where
     S: GroupSelector<'a>,
     F: Fn() -> S,
@@ -1346,7 +1346,7 @@ impl<F> AllGroupHeadsCollectorManager<F> {
     }
 }
 
-impl<'a, S, F> GroupingCollectorManager<'a> for AllGroupHeadsCollectorManager<F>
+impl<'a, S, F> SegmentCollectorManager<'a> for AllGroupHeadsCollectorManager<F>
 where
     S: GroupSelector<'a>,
     F: Fn() -> S,
@@ -1583,7 +1583,7 @@ impl<F, G, V> DistinctValuesCollectorManager<F, G, V> {
     }
 }
 
-impl<'a, S, R, F, G> GroupingCollectorManager<'a> for DistinctValuesCollectorManager<F, G, S::Value>
+impl<'a, S, R, F, G> SegmentCollectorManager<'a> for DistinctValuesCollectorManager<F, G, S::Value>
 where
     S: GroupSelector<'a>,
     R: GroupSelector<'a>,

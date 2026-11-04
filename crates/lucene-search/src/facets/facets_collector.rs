@@ -485,7 +485,7 @@ impl FacetsCollectorManager {
         let mut merged: Vec<MatchingDocs<'a>> = Vec::new();
         // Each segment's position in `merged`, by `context.ord`: one probe per
         // matching docs rather than a scan of everything merged so far.
-        let mut at: crate::grouping::FxHashMap<usize, usize> = Default::default();
+        let mut at: lucene_util::fx_hash::avalanche::FxHashMap<usize, usize> = Default::default();
         for c in collectors {
             for docs in c.matching_docs {
                 match at.get(&docs.context.ord) {

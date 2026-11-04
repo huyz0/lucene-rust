@@ -20,14 +20,14 @@ use std::hash::Hash;
 
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::grouping::{
-    search_manager, AllGroupHeadsCollectorManager, AllGroupsCollectorManager,
-    DistinctValuesCollectorManager, DoubleRange, DoubleRangeFactory, DoubleRangeGroupSelector,
-    FirstPassGroupingCollectorManager, GroupSelector, GroupSortValue, GroupingSearch, LongRange,
-    LongRangeFactory, LongRangeGroupSelector, ScoreMergeMode, SearchGroup, Sort,
-    TermGroupFacetCollector, TermGroupSelector, TopGroups, TopGroupsCollectorManager,
+    AllGroupHeadsCollectorManager, AllGroupsCollectorManager, DistinctValuesCollectorManager,
+    DoubleRange, DoubleRangeFactory, DoubleRangeGroupSelector, FirstPassSegmentCollectorManager,
+    GroupSelector, GroupSortValue, GroupingSearch, LongRange, LongRangeFactory,
+    LongRangeGroupSelector, ScoreMergeMode, SearchGroup, Sort, TermGroupFacetCollector,
+    TermGroupSelector, TopGroups, TopGroupsCollectorManager,
 };
 use lucene_search::index_searcher::{IndexSearcher, SegmentNorms};
-use lucene_search::leaf_collector::search_segments;
+use lucene_search::leaf_collector::{search_manager, search_segments};
 use lucene_search::query::{BooleanQuery, Clause, MatchAllDocsQuery, TermQuery};
 use lucene_search::top_field::{Selector, SortField, SortType};
 use lucene_search::values_source;
@@ -309,13 +309,7 @@ where
     let first = search_manager(
         searcher,
         &q,
-        &FirstPassGroupingCollectorManager::new(
-            factory,
-            gs.clone(),
-            n("go"),
-            n("gl"),
-            flag("ign"),
-        )?,
+        &FirstPassSegmentCollectorManager::new(factory, gs.clone(), n("go"), n("gl"), flag("ign"))?,
     )?;
     let mut b = format!("first={}", search_groups(&first));
     if !first.is_empty() {

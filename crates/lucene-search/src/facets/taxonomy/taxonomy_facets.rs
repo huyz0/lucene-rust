@@ -34,8 +34,8 @@ use crate::facets::taxonomy::{
 };
 use crate::facets::top_ord_and_number_queue::{OrdAndValue, PriorityQueue, TopOrdAndNumberQueue};
 use crate::facets::{DimConfig, FacetsConfig};
-use crate::grouping::FxHashMap;
 use crate::{Error, Result};
+use lucene_util::fx_hash::avalanche::FxHashMap;
 
 /// What a [`TaxonomyFacets`] aggregates beside the counts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -24,7 +24,7 @@ use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::document::{search_top_docs, DocumentQuery};
 use lucene_search::facets::multi_long_values_source;
 use lucene_search::facets::range::LongRange;
-use lucene_search::grouping::search_manager;
+use lucene_search::leaf_collector::search_manager;
 use lucene_search::index_searcher::{IndexSearcher, SegmentNorms};
 use lucene_search::multi_segment::OpenSegment;
 use lucene_search::query::MatchAllDocsQuery;

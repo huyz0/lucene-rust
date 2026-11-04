@@ -8,9 +8,9 @@ use lucene_util::fixed_bit_set::FixedBitSet;
 
 use super::collectors::{GroupTopDocs, FLOAT_MIN_VALUE};
 use super::sort::{compare_all, GroupSortValue, LeafKeys, Sort};
-use super::{GroupDocs, GroupingCollectorManager, TopGroups};
+use super::{GroupDocs, SegmentCollectorManager, TopGroups};
 use crate::collector::{ScoreMode, TotalHits, TotalHitsRelation};
-use crate::join::query_time::java_max_f32;
+use crate::function::valuesource::functions::java_max_f32;
 use crate::leaf_collector::SegmentCollector;
 use crate::multi_segment::OpenSegment;
 use crate::query::BooleanQuery;
@@ -412,10 +412,10 @@ impl<'a> SegmentCollector<'a> for BlockGroupingCollector<'a> {
     }
 }
 
-/// `BlockGroupingCollectorManager<T>`: a [`BlockGroupingCollector`] of
+/// `BlockSegmentCollectorManager<T>`: a [`BlockGroupingCollector`] of
 /// `groupOffset + topNGroups` groups per slice, merged by
 /// [`TopGroups::merge_block_groups`].
-pub struct BlockGroupingCollectorManager {
+pub struct BlockSegmentCollectorManager {
     group_sort: Sort,
     group_offset: usize,
     top_n_groups: usize,
@@ -426,8 +426,8 @@ pub struct BlockGroupingCollectorManager {
     max_docs_per_group: usize,
 }
 
-impl BlockGroupingCollectorManager {
-    /// `new BlockGroupingCollectorManager(groupSort, groupOffset,
+impl BlockSegmentCollectorManager {
+    /// `new BlockSegmentCollectorManager(groupSort, groupOffset,
     /// topNGroups, needsScores, lastDocPerGroup, withinGroupSort,
     /// withinGroupOffset, maxDocsPerGroup)`.
     ///
@@ -468,7 +468,7 @@ impl BlockGroupingCollectorManager {
     }
 }
 
-impl<'a> GroupingCollectorManager<'a> for BlockGroupingCollectorManager {
+impl<'a> SegmentCollectorManager<'a> for BlockSegmentCollectorManager {
     type Collector = BlockGroupingCollector<'a>;
     type Output = TopGroups<()>;
 

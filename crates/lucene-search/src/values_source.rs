@@ -303,10 +303,10 @@ pub trait DoubleValuesSource: Send + Sync {
         false
     }
 
-    /// This source as an [`crate::expressions::ExpressionValueSource`], when
-    /// it is one (`instanceof ExpressionValueSource`): a caching expression
-    /// shares the values of the expressions nested in it.
-    fn as_expression(&self) -> Option<&crate::expressions::ExpressionValueSource> {
+    /// This source as `Any`, for a caller that tests its concrete type
+    /// (`instanceof`): a caching expression shares the values of the
+    /// expressions nested in it. `None` unless overridden.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
         None
     }
 

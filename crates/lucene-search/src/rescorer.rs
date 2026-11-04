@@ -517,7 +517,7 @@ pub enum QueryRescoreMode {
 impl QueryRescoreMode {
     /// `combine(primary, secondary)`, in `float` arithmetic.
     pub fn combine(self, primary: f32, secondary: f32) -> f32 {
-        use crate::join::query_time::{java_max_f32, java_min_f32};
+        use crate::function::valuesource::functions::{java_max_f32, java_min_f32};
         match self {
             QueryRescoreMode::Avg => (primary + secondary) / 2.0,
             QueryRescoreMode::Max => java_max_f32(primary, secondary),

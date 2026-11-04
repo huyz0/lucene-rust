@@ -17,9 +17,9 @@
 
 use crate::collector::ScoreMode;
 use crate::exec::{build::build, BoxScorer, LeafContext, Mode};
-use crate::grouping::GroupingCollectorManager;
 use crate::index_searcher::IndexSearcher;
 use crate::leaf_collector::SegmentCollector;
+use crate::leaf_collector::SegmentCollectorManager;
 use crate::query::{BooleanQuery, Clause};
 use crate::{Error, Result};
 
@@ -73,8 +73,8 @@ impl DrillSidewaysQuery {
         sideways: &[S],
     ) -> Result<(M::Output, Vec<Vec<S::Collector>>)>
     where
-        M: GroupingCollectorManager<'a>,
-        S: GroupingCollectorManager<'a>,
+        M: SegmentCollectorManager<'a>,
+        S: SegmentCollectorManager<'a>,
     {
         if self.drill_down_queries.is_empty() {
             return Err(Error::IllegalArgument(

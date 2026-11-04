@@ -5,7 +5,10 @@
 
 use super::*;
 use crate::grouping::sort::GroupSortValue as V;
+use crate::leaf_collector::SegmentCollector;
+use crate::query::BooleanQuery;
 use crate::top_field::SortType;
+use lucene_util::fx_hash::avalanche::FxHasher;
 
 fn sg(value: Option<&str>, sort: f32) -> SearchGroup<Vec<u8>> {
     SearchGroup {
@@ -387,7 +390,7 @@ fn collectors_check_their_arguments() {
         FirstPassGroupingCollector::new(TermGroupSelector::new("g"), sort.clone(), 0, false)
             .is_err()
     );
-    assert!(FirstPassGroupingCollectorManager::new(
+    assert!(FirstPassSegmentCollectorManager::new(
         || TermGroupSelector::new("g"),
         sort.clone(),
         0,
@@ -412,7 +415,7 @@ fn collectors_check_their_arguments() {
     }
     let end = BooleanQuery::default();
     assert!(BlockGroupingCollector::new(sort.clone(), 0, true, end.clone()).is_err());
-    assert!(BlockGroupingCollectorManager::new(
+    assert!(BlockSegmentCollectorManager::new(
         sort.clone(),
         0,
         0,
@@ -423,7 +426,7 @@ fn collectors_check_their_arguments() {
         1
     )
     .is_err());
-    assert!(BlockGroupingCollectorManager::new(
+    assert!(BlockSegmentCollectorManager::new(
         sort.clone(),
         0,
         1,

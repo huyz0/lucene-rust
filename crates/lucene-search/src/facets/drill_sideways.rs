@@ -21,7 +21,7 @@
 //! * the `create*FacetsCollectorManager` and `buildFacetsResult` hooks are
 //!   not overridable; [`DrillSideways::with_score_sub_docs_at_once`] is the
 //!   `scoreSubDocsAtOnce` one;
-//! * a collector manager is a [`GroupingCollectorManager`] (Java's
+//! * a collector manager is a [`SegmentCollectorManager`] (Java's
 //!   `CollectorManager`); `search(query, null, managers)`'s refusal of a
 //!   `null` drill-down manager has no Rust counterpart.
 
@@ -34,9 +34,9 @@ use crate::facets::{
     DefaultSortedSetDocValuesReaderState, FacetResult, FacetValue, Facets, FacetsCollector,
     FacetsCollectorManager, FacetsConfig, MultiFacets, SortedSetDocValuesFacetCounts,
 };
-use crate::grouping::{search_manager, GroupingCollectorManager};
 use crate::index_searcher::IndexSearcher;
 use crate::leaf_collector::SegmentCollector;
+use crate::leaf_collector::{search_manager, SegmentCollectorManager};
 use crate::multi_segment::OpenSegment;
 use crate::query::{Clause, MatchAllDocsQuery};
 use crate::top_docs::{self, ShardScoreDoc, TieBreaker, TopDocs};
@@ -314,7 +314,7 @@ impl<'r, 's, 'a, 't> DrillSideways<'r, 's, 'a, 't> {
     ///
     /// # Errors
     /// Whatever the search, a collector or the counting reports.
-    pub fn search_with<M: GroupingCollectorManager<'a>>(
+    pub fn search_with<M: SegmentCollectorManager<'a>>(
         &self,
         query: &DrillDownQuery<'_>,
         hit_manager: &M,
@@ -364,8 +364,8 @@ impl<'r, 's, 'a, 't> DrillSideways<'r, 's, 'a, 't> {
         sideways: Option<&[S]>,
     ) -> Result<DrillSidewaysSearchResult<M::Output, S::Output>>
     where
-        M: GroupingCollectorManager<'a>,
-        S: GroupingCollectorManager<'a>,
+        M: SegmentCollectorManager<'a>,
+        S: SegmentCollectorManager<'a>,
     {
         let sideways = match sideways {
             None if !query.dims().is_empty() => {
@@ -442,8 +442,8 @@ impl<'r, 's, 'a, 't> DrillSideways<'r, 's, 'a, 't> {
         sideways: &[S],
     ) -> Result<DrillSidewaysSearchResult<M::Output, S::Output>>
     where
-        M: GroupingCollectorManager<'a>,
-        S: GroupingCollectorManager<'a>,
+        M: SegmentCollectorManager<'a>,
+        S: SegmentCollectorManager<'a>,
     {
         if query.dims().is_empty() {
             // No dim, so no sideways counts.
@@ -492,8 +492,8 @@ impl<'r, 's, 'a, 't> DrillSideways<'r, 's, 'a, 't> {
         sideways: &[S],
     ) -> Result<DrillSidewaysSearchResult<M::Output, S::Output>>
     where
-        M: GroupingCollectorManager<'a>,
-        S: GroupingCollectorManager<'a>,
+        M: SegmentCollectorManager<'a>,
+        S: SegmentCollectorManager<'a>,
     {
         let result = search_manager(self.searcher, &query.rewrite(), drill_down)?;
         let filters = query.drill_down_queries();
@@ -529,7 +529,7 @@ impl<'r, 's, 'a, 't> DrillSideways<'r, 's, 'a, 't> {
     }
 }
 
-impl<'a> GroupingCollectorManager<'a> for FacetsCollectorManager {
+impl<'a> SegmentCollectorManager<'a> for FacetsCollectorManager {
     type Collector = FacetsCollector<'a>;
     type Output = FacetsCollector<'a>;
 
@@ -588,10 +588,10 @@ impl<'a, A: SegmentCollector<'a>, B: SegmentCollector<'a>> SegmentCollector<'a> 
     }
 }
 
-impl<'a, A, B> GroupingCollectorManager<'a> for PairManager<'_, A, B>
+impl<'a, A, B> SegmentCollectorManager<'a> for PairManager<'_, A, B>
 where
-    A: GroupingCollectorManager<'a>,
-    B: GroupingCollectorManager<'a>,
+    A: SegmentCollectorManager<'a>,
+    B: SegmentCollectorManager<'a>,
 {
     type Collector = Pair<A::Collector, B::Collector>;
     type Output = (A::Output, B::Output);
@@ -631,7 +631,7 @@ impl<'a> SegmentCollector<'a> for NoHits {
     }
 }
 
-impl<'a> GroupingCollectorManager<'a> for NoHitsManager {
+impl<'a> SegmentCollectorManager<'a> for NoHitsManager {
     type Collector = NoHits;
     type Output = ();
 
@@ -688,7 +688,7 @@ impl<'a> SegmentCollector<'a> for TopScoreDocCollector {
     }
 }
 
-impl<'a> GroupingCollectorManager<'a> for TopScoreDocCollectorManager {
+impl<'a> SegmentCollectorManager<'a> for TopScoreDocCollectorManager {
     type Collector = TopScoreDocCollector;
     type Output = TopDocs;
 

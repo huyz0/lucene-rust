@@ -5,7 +5,7 @@
 
 use lucene_util::fixed_bit_set::FixedBitSet;
 
-use super::block::BlockGroupingCollectorManager;
+use super::block::BlockSegmentCollectorManager;
 use super::collectors::{
     AllGroupHeadsCollector, AllGroupsCollector, FirstPassGroupingCollector, TopGroupsCollector,
 };
@@ -163,7 +163,7 @@ impl<F> GroupingSearch<F> {
     }
 
     /// `search(searcher, query, groupOffset, groupLimit)` for grouping by
-    /// blocks (`groupByDocBlock`): a [`BlockGroupingCollectorManager`] run
+    /// blocks (`groupByDocBlock`): a [`BlockSegmentCollectorManager`] run
     /// per slice.
     ///
     /// # Errors
@@ -181,7 +181,7 @@ impl<F> GroupingSearch<F> {
                 "Either groupField, groupFunction or groupEndDocs must be set.".into(),
             ));
         };
-        let manager = BlockGroupingCollectorManager::new(
+        let manager = BlockSegmentCollectorManager::new(
             self.group_sort.clone(),
             group_offset,
             group_limit,
