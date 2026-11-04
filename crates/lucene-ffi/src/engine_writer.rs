@@ -912,6 +912,8 @@ pub type CommitDataUpcall = unsafe extern "C" fn(u64, *mut u8, usize, *mut usize
 pub const COMMIT_DATA_OK: i32 = 0;
 /// The commit-data upcall's buffer was too small; `*out_len` is the size needed.
 pub const COMMIT_DATA_BUFFER_TOO_SMALL: i32 = 1;
+/// The JVM could not produce the commit data; it keeps its own error.
+pub const COMMIT_DATA_FAILED: i32 = 2;
 
 static COMMIT_DATA_UPCALL: OnceLock<CommitDataUpcall> = OnceLock::new();
 
