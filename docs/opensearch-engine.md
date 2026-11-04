@@ -25,9 +25,9 @@ The writer side works like this:
 |---|---|
 | Documents | Inverted in Java by `DocumentEncoder`, a port of `IndexingChain` / `FreqProxTermsWriterPerField` / `FieldInvertState`, including payloads, and norms through the index's `Similarity`. The inverted fields cross JNI as one blob per operation, and Rust writes them as explicit documents (`lucene-index/src/index_writer/explicit.rs`). |
 | Updates and deletes | `softUpdateDocuments`: the new document (or delete tombstone) is added, and every earlier document with the `_id` gets `__soft_deletes`, atomically. |
-| Refresh | A Rust **commit**, carrying the live commit data. That data is evaluated under the writer's lock, as `IndexWriter` evaluates it inside `commit`. The engine's readers are Java `StandardDirectoryReader`s opened on those commits and reuse every unchanged segment reader. `SoftDeletesReader` applies soft deletes the way `IndexWriter`'s NRT readers do, and keeps fully soft-deleted segments for the history they hold. |
+| Refresh | A Rust **commit**, carrying the live commit data. Indexing continues while it runs. The writer reads the commit data through an upcall after it has flushed the buffered documents, as `IndexWriter.commit` reads `liveCommitData` after `flushAllThreads`, so the recorded `max_seq_no` covers every flushed operation. The engine's readers are Java `StandardDirectoryReader`s opened on those commits and reuse every unchanged segment reader. `SoftDeletesReader` applies soft deletes the way `IndexWriter`'s NRT readers do, and keeps fully soft-deleted segments for the history they hold. |
 | File lifetime | OpenSearch's `CombinedDeletionPolicy` runs in Java and names the commits to drop, and Rust deletes them. A reader pins its commit's files until it closes (`hold_commit` / `release_files`). |
-| Merges | The Rust writer's `TieredMergePolicy`, run at commit, with `SoftDeletesRetentionMergePolicy`, `PrunePostingsMergePolicy` and `RecoverySourcePruneMergePolicy` ported. The minimum retained sequence number comes from OpenSearch's `SoftDeletesPolicy` at every commit and force merge. |
+| Merges | The Rust writer's `TieredMergePolicy`, run on a `ConcurrentMergeScheduler` configured from `index.merge.scheduler.*`, with `SoftDeletesRetentionMergePolicy`, `PrunePostingsMergePolicy` and `RecoverySourcePruneMergePolicy` ported. The minimum retained sequence number comes from OpenSearch's `SoftDeletesPolicy` at every commit and force merge. |
 | Memory | The buffered documents' RAM is accounted to the `lucene_rust_writer` circuit breaker. It defaults to 20% of the heap, is set with `breaker.lucene_rust_writer.limit`, and trips on that limit; the parent breaker adds it in only with `indices.breaker.total.use_real_memory: false` (the default real-memory parent measures the heap, and these bytes are native). A trip is a 429, not an OOM. |
 | Failure | A Rust panic is caught at the FFI boundary. The writer records it as tragic, the engine fails that one shard, and OpenSearch recovers the shard from its translog. |
 | `maxDocs` | Enforced by the Rust writer (`IndexWriter.MAX_DOCS`, or the engine's lower limit), with Lucene's message. |
@@ -118,8 +118,7 @@ Remote-backed storage stays refused, because its upload listener asks for an
 - **No merged-segment pre-copy.** With
   `indices.replication.merges.warmer.enabled` (default false), OpenSearch's
   engine pushes a merged segment to segment-replication replicas before the
-  merge commits. The Rust writer merges inside its own commit and runs no
-  warmer. Replicas fetch the merged segment at the next refresh: replication
+  merge commits. The Rust writer runs no merge warmer. Replicas fetch the merged segment at the next refresh: replication
   stays correct, and that refresh copies more.
 
 - **Refresh is a commit.** Every refreshed operation is already in the last
@@ -141,9 +140,11 @@ Remote-backed storage stays refused, because its upload listener asks for an
   Index-level `docs.count` and `docs.deleted` are exact.
 - **Merges.** The Rust writer's merge policy uses its defaults, and
   `index.merge.policy.*` and `index.merge_on_flush` are not honoured. Merges
-  run inside commits, not on a merge scheduler, so `_stats` reports no merge
-  activity, and a big merge does not trigger an early flush. That flush is not
-  needed, because the merged segment is already committed.
+  run on the Rust writer's own merge threads, so `_stats` reports no merge
+  activity, and a finished merge becomes visible at the next refresh. When
+  merges fall behind, the writer stalls the indexing thread, as Lucene's
+  `ConcurrentMergeScheduler` does, and OpenSearch's indexing throttle does not
+  engage.
 - **No infoStream.** Lucene's `IndexWriter` debug log has no counterpart.
 
 ## How it is verified

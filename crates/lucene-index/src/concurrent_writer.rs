@@ -282,6 +282,8 @@ pub struct ConcurrentIndexWriter<'d> {
     max_buffered_docs: Option<usize>,
     ram_buffer_bytes: Option<usize>,
     merge_policy: Option<MergePolicyConfig>,
+    /// Set by [`Self::stop_merges`]: no merge is registered any more.
+    merges_stopped: AtomicBool,
     /// `DocumentsWriterFlushControl`'s accounting -- RAM in the slots and in
     /// buffers being built, each slot's `flushPending` -- updated together
     /// with the flush policy's decision and the stall decision, as Java's is
@@ -423,6 +425,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
             max_buffered_docs,
             ram_buffer_bytes,
             merge_policy,
+            merges_stopped: AtomicBool::new(false),
             ram: Mutex::new(FlushControl::new(slots)),
             policy: FlushByRamOrCountsPolicy {
                 max_buffered_docs,
@@ -446,6 +449,9 @@ impl<'d> ConcurrentIndexWriter<'d> {
         let Some(policy) = &self.merge_policy else {
             return Ok(());
         };
+        if self.merges_stopped.load(Ordering::Acquire) {
+            return Ok(());
+        }
         while let Some((names, estimated)) = core.writer.next_merge_sized(policy, &core.merging)? {
             core.merging.extend(names.iter().cloned());
             self.pending_merges
@@ -524,6 +530,22 @@ impl<'d> ConcurrentIndexWriter<'d> {
         drop(core);
         self.changed.notify_all();
         result
+    }
+
+    /// Registers no merge from now on and drops the registered ones no merge
+    /// thread has taken yet -- what `IndexWriter.rollback` does to merges
+    /// (`stopMerges`, `abortMerges`) before the writer closes. Merges already
+    /// running finish; a merge scheduler's `close` waits for them.
+    pub fn stop_merges(&self) {
+        self.merges_stopped.store(true, Ordering::Release);
+        let mut core = lock(&self.core);
+        while let Some(merge) = self.pending_merges.pop() {
+            for name in &merge.segments {
+                core.merging.remove(name);
+            }
+        }
+        drop(core);
+        self.changed.notify_all();
     }
 
     /// `IndexWriter.close()`'s merge half: registers what the policy still
@@ -1005,12 +1027,14 @@ impl<'d> ConcurrentIndexWriter<'d> {
         let count = docs.len();
         self.add_with(delete, count, move |_| {
             Ok(Box::new(move |dwpt: &mut Dwpt| {
+                // The postings count what they grew by, as `bytesUsed` counts
+                // `TermsHashPerField`'s pools; the documents' own inverted
+                // terms are dropped once they are in.
+                let postings_before = dwpt.postings.bytes();
                 let mut added = 0usize;
                 for (mut doc, options) in docs.into_iter().zip(options) {
                     let stored = Document { fields: doc.stored };
-                    added = added
-                        .saturating_add(document_ram_bytes(&stored))
-                        .saturating_add(doc.fields.ram_bytes());
+                    added = added.saturating_add(document_ram_bytes(&stored));
                     dwpt.docs.push(stored);
                     dwpt.custom_freq_terms.push(Vec::new());
                     dwpt.vectors.push(Vec::new());
@@ -1026,9 +1050,11 @@ impl<'d> ConcurrentIndexWriter<'d> {
                         // the postings hold them now; the document keeps its norm
                         inv.terms = InvertedTerms::default();
                     }
+                    added = added.saturating_add(doc.fields.ram_bytes());
                     dwpt.explicit.push(doc.fields);
                 }
-                Ok(added)
+                let grown = dwpt.postings.bytes().saturating_sub(postings_before);
+                Ok(added.saturating_add(grown))
             }) as Fill)
         })
     }
@@ -1494,10 +1520,27 @@ impl<'d> ConcurrentIndexWriter<'d> {
     /// Java's does: every operation numbered at or below it is in, every one
     /// above it is not.
     pub fn commit(&self) -> Result<SeqNo> {
+        self.commit_with(|| Ok::<(), crate::index_writer::Error>(()))
+    }
+
+    /// [`Self::commit`], running `before_commit` once every buffer holding
+    /// operations from before the cut is flushed and before `segments_N` is
+    /// written. Java's `IndexWriter.prepareCommitInternal` iterates the
+    /// commit's user data at the same point (`setLiveCommitData` takes a lazy
+    /// `Iterable`), so the user data may describe every operation in the
+    /// commit -- a maximum sequence number read here is at least that of each
+    /// one -- while other threads go on indexing into the emptied buffers.
+    /// `before_commit` may set the user data through [`Self::with_writer`];
+    /// when it fails, no commit is written.
+    pub fn commit_with<E: From<crate::index_writer::Error>>(
+        &self,
+        before_commit: impl FnOnce() -> std::result::Result<(), E>,
+    ) -> std::result::Result<SeqNo, E> {
         let last_seq = {
             let _full_flush = lock(&self.full_flush);
             let _barrier = BarrierGuard(self);
             let last_seq = self.flush_all(true)?;
+            before_commit()?;
             let mut core = lock(&self.core);
             // Merge-on-commit leaves the segments this writer's merge
             // threads hold alone (`registerMerge` rejects those merges).
@@ -1698,6 +1741,18 @@ impl<'d> ConcurrentIndexWriter<'d> {
             .iter()
             .map(|s| lock(s).ram_bytes)
             .fold(0, usize::saturating_add)
+    }
+
+    /// `IndexWriter.getFlushingBytes()`: the RAM of the buffers marked for
+    /// flushing or being built into segments, part of
+    /// [`Self::ram_bytes_used`]. `0` without a RAM buffer, which is not
+    /// accounted.
+    pub fn flushing_bytes(&self) -> usize {
+        if self.ram_buffer_bytes.is_some() {
+            lock(&self.ram).flush_bytes()
+        } else {
+            0
+        }
     }
 
     /// [`IndexWriter::has_uncommitted_changes`], counting the slots' buffers

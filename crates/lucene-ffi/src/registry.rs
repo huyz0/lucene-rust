@@ -25,17 +25,29 @@ pub(crate) fn read_recovering<T>(lock: &RwLock<T>) -> RwLockReadGuard<'_, T> {
     lock.read().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// A `ConcurrentIndexWriter` together with the directory it borrows.
+/// A `ConcurrentIndexWriter` together with the directory it borrows and the
+/// merge scheduler whose threads merge for it.
 ///
 /// The writer borrows a `&dyn Directory`, so the handle owns the directory
 /// on the heap and erases the borrow to `'static` (`engine_writer.rs`). The
-/// `Box` keeps the directory at a stable address, and fields drop in
-/// declaration order, so `writer` is dropped before `dir`.
+/// `Box` keeps the directory at a stable address. The scheduler's threads
+/// hold the writer while they merge, so dropping the handle first stops
+/// merging and waits for those threads; fields then drop in declaration
+/// order, `writer` before `dir`.
 pub struct WriterHandle {
-    pub writer: lucene_index::concurrent_writer::ConcurrentIndexWriter<'static>,
+    pub writer: std::sync::Arc<lucene_index::concurrent_writer::ConcurrentIndexWriter<'static>>,
+    pub merges: lucene_index::merge_scheduler::ConcurrentMergeScheduler,
     // Only keeps the allocation `writer` borrows alive.
     #[allow(dead_code)]
     pub dir: Box<dyn lucene_store::directory::Directory>,
+}
+
+impl Drop for WriterHandle {
+    fn drop(&mut self) {
+        self.writer.stop_merges();
+        // A merge's failure no longer matters to a writer being dropped.
+        let _ = self.merges.sync();
+    }
 }
 
 // SAFETY: `WriterHandle` is `!Send`/`!Sync` only because of the erased

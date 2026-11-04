@@ -28,7 +28,7 @@ use lucene_codecs::postings_writer::TermSource;
 
 use super::explicit::{explicit_error, InvertedField};
 use super::Result;
-use crate::inverter::TermHash;
+use crate::inverter::{hash_bytes, TermHash};
 
 /// Ints per slice at each level, the last repeating: `ByteBlockPool`'s
 /// `LEVEL_SIZE_ARRAY`. A slice's last int links the next slice.
@@ -234,7 +234,14 @@ pub(crate) struct FieldRuns {
     /// What the runs and dictionary grew by, as `bytesUsed` counts it: the
     /// RAM buffer's share of this field.
     bytes: usize,
+    /// Scratch for [`PendingPostings::add_field`]: the document's term hashes.
+    hashes: Vec<u64>,
 }
+
+/// How many terms ahead of the one being added [`FieldRuns::prefetch_ahead`]
+/// starts loading the likely term's bytes and run, and (half as far) the pool
+/// ints that run appends to.
+const PREFETCH_TERMS: usize = 8;
 
 /// A new term's fixed cost as `bytesUsed` counts it: its postings-array
 /// entries, its hash slot share, start and hash.
@@ -252,6 +259,33 @@ impl FieldRuns {
             doc_count: 0,
             last_doc: -1,
             bytes: 0,
+            hashes: Vec::new(),
+        }
+    }
+
+    /// Starts loading what adding the terms after `i` will read: for the
+    /// term [`PREFETCH_TERMS`] ahead, the bytes and run of the id its first
+    /// table slot names (that slot was prefetched with every hash); for the
+    /// term half as far ahead, whose run is in cache by now, the pool ints
+    /// its documents and positions go to next.
+    #[inline]
+    fn prefetch_ahead(&self, hashes: &[u64], i: usize) {
+        if let Some(id) = hashes
+            .get(i.saturating_add(PREFETCH_TERMS))
+            .and_then(|&h| self.terms.likely_id(h))
+        {
+            self.terms.prefetch_term(id);
+            lucene_util::simd::prefetch(&self.runs, id as usize);
+        }
+        if let Some(run) = hashes
+            .get(i.saturating_add(PREFETCH_TERMS / 2))
+            .and_then(|&h| self.terms.likely_id(h))
+            .and_then(|id| self.runs.get(id as usize))
+        {
+            lucene_util::simd::prefetch(&self.pool.buf, run.docs.write as usize);
+            if self.positions {
+                lucene_util::simd::prefetch(&self.pool.buf, run.positions.write as usize);
+            }
         }
     }
 
@@ -275,7 +309,13 @@ impl FieldRuns {
     /// dictionary if new, and its frequency in `doc` so far.
     #[inline]
     pub(crate) fn occurrence(&mut self, doc: i32, term: &[u8]) -> TermSlot {
-        let (id, new_to_segment) = self.terms.add(term);
+        self.occurrence_hashed(doc, term, hash_bytes(term))
+    }
+
+    /// [`Self::occurrence`] for a term whose [`hash_bytes`] is known.
+    #[inline]
+    fn occurrence_hashed(&mut self, doc: i32, term: &[u8], h: u64) -> TermSlot {
+        let (id, new_to_segment) = self.terms.add_hashed(term, h);
         if new_to_segment {
             self.runs.push(TermRun::NEW);
             if let Some(p) = &mut self.payloads {
@@ -662,9 +702,22 @@ impl PendingPostings {
             return Ok(());
         }
         let f = self.field(field.field_number, index_options);
+        // Every term's hash first, starting each one's table slot loading:
+        // the table outgrows the caches, and lookups waiting on their slots
+        // were most of the cost of buffering a document. Then, a few terms
+        // ahead of the one being added, the likely term's bytes and run, and
+        // a little later the pool ints its run appends to.
+        let mut hashes = std::mem::take(&mut f.hashes);
+        hashes.clear();
         for t in field.terms.iter() {
+            let h = hash_bytes(t.term);
+            f.terms.prefetch_slot(h);
+            hashes.push(h);
+        }
+        for (i, t) in field.terms.iter().enumerate() {
+            f.prefetch_ahead(&hashes, i);
             // every term once: `validate_explicit` refused a repeat
-            let slot = f.occurrence(doc, t.term);
+            let slot = f.occurrence_hashed(doc, t.term, hashes[i]);
             f.first_in_doc(slot, doc, t.freq);
             // the postings writer reads positions and offsets only for a
             // field that indexes positions
@@ -675,6 +728,7 @@ impl PendingPostings {
                 }
             }
         }
+        f.hashes = hashes;
         Ok(())
     }
 

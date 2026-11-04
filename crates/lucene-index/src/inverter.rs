@@ -136,10 +136,33 @@ impl TermHash {
         self.add_hashed(bytes, hash_bytes(bytes))
     }
 
+    /// Starts loading the table slot a term hashed to `h` probes first.
+    #[inline]
+    pub(crate) fn prefetch_slot(&self, h: u64) {
+        lucene_util::simd::prefetch(&self.table, home_slot(h, self.table.len()));
+    }
+
+    /// The id in the slot a term hashed to `h` probes first, if that slot
+    /// holds a term with the same tag: most likely the term itself, so a
+    /// caller can start loading what it will read about that id.
+    #[inline]
+    pub(crate) fn likely_id(&self, h: u64) -> Option<u32> {
+        let entry = *self.table.get(home_slot(h, self.table.len()))?;
+        (entry != 0 && entry >> 32 == tag(h)).then(|| (entry as u32).wrapping_sub(1))
+    }
+
+    /// Starts loading term `id`'s bytes, which a lookup compares.
+    #[inline]
+    pub(crate) fn prefetch_term(&self, id: u32) {
+        if let Some(&start) = self.starts.get(id as usize) {
+            lucene_util::simd::prefetch(&self.arena, start as usize);
+        }
+    }
+
     /// [`Self::add`] for bytes whose [`hash_bytes`] is already known -- a
     /// term moving from one table to another keeps its hash.
     #[inline]
-    fn add_hashed(&mut self, bytes: &[u8], h: u64) -> (u32, bool) {
+    pub(crate) fn add_hashed(&mut self, bytes: &[u8], h: u64) -> (u32, bool) {
         // `table.len()` is a power of two, at least 1024.
         let mask = self.table.len().wrapping_sub(1);
         let mut slot = home_slot(h, self.table.len());
