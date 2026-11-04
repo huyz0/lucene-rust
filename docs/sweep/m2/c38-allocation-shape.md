@@ -452,7 +452,7 @@ mean), from `cargo llvm-cov --workspace --summary-only`:
 | `lucene-index/src/index_writer.rs` | 98.32% |
 | `lucene-index/src/merge.rs` | 98.60% |
 | `lucene-search/src/ordinal_map.rs` | 99.03% |
-| `lucene-search/src/facets.rs` | 99.49% |
+| `lucene-facet/src/lib.rs` | 99.49% |
 | `lucene-index/src/check_index.rs` | 98.27% |
 
 Workspace total 98.12% lines, unchanged.

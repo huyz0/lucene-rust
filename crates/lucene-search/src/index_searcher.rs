@@ -402,7 +402,7 @@ impl<'s, 'a> IndexSearcher<'s, 'a> {
     /// [`Self::search_sorted`] counting every hit
     /// (`TopFieldCollectorManager(sort, n, after, Integer.MAX_VALUE)`), as
     /// the facet searches do.
-    pub(crate) fn search_sorted_counting_all(
+    pub fn search_sorted_counting_all(
         &self,
         readers: &[crate::directory_reader::SegmentReader],
         query: &BooleanQuery,

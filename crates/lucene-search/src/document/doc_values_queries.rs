@@ -40,14 +40,14 @@ fn illegal(message: impl Into<String>) -> Error {
     Error::DocumentQuery(message.into())
 }
 
-pub(crate) fn store_err(e: lucene_store::Error) -> Error {
+pub fn store_err(e: lucene_store::Error) -> Error {
     Error::DocValues(doc_values::Error::Store(e))
 }
 
 /// `DocValues.getSortedNumeric(reader, field)`'s column: a `NUMERIC` field
 /// (a singleton) or a `SORTED_NUMERIC` one.
 #[derive(Debug, Clone, Copy)]
-pub(crate) enum NumericColumn<'a> {
+pub enum NumericColumn<'a> {
     Numeric(&'a NumericEntry),
     SortedNumeric(&'a SortedNumericEntry),
 }
@@ -98,7 +98,7 @@ fn unexpected(info: &FieldInfo, expected: &str) -> Error {
 
 /// The segment's numeric column for `field`, `None` when the field has no
 /// doc values here.
-pub(crate) fn numeric_column<'a>(
+pub fn numeric_column<'a>(
     leaf: &OpenSegment<'a>,
     info: &FieldInfo,
 ) -> Result<Option<(&'a [u8], NumericColumn<'a>)>> {
@@ -124,7 +124,7 @@ fn column_of(meta: &DocValuesMeta, number: i32) -> Option<NumericColumn<'_>> {
 }
 
 /// The field's skip index in this segment, if it has one.
-pub(crate) fn skip_index<'a>(
+pub fn skip_index<'a>(
     leaf: &OpenSegment<'a>,
     info: &FieldInfo,
 ) -> Result<Option<&'a DocValuesSkipIndex>> {
@@ -509,13 +509,13 @@ impl DocumentQuery for SortedNumericDocValuesSetQuery {
 /// `DocValues.getSortedSet(reader, field)`'s column: a `SORTED` field (a
 /// singleton) or a `SORTED_SET` one, with its terms dictionary.
 #[derive(Debug, Clone, Copy)]
-pub(crate) enum OrdsColumn<'a> {
+pub enum OrdsColumn<'a> {
     Sorted(&'a SortedEntry),
     Multi(&'a SortedNumericEntry, &'a TermsDictEntry),
 }
 
 impl<'a> OrdsColumn<'a> {
-    pub(crate) fn terms(&self) -> &'a TermsDictEntry {
+    pub fn terms(&self) -> &'a TermsDictEntry {
         match self {
             OrdsColumn::Sorted(e) => &e.terms,
             OrdsColumn::Multi(_, t) => t,
@@ -545,7 +545,7 @@ impl<'a> OrdsColumn<'a> {
     }
 }
 
-pub(crate) fn ords_column<'a>(
+pub fn ords_column<'a>(
     leaf: &OpenSegment<'a>,
     info: &FieldInfo,
 ) -> Result<Option<(&'a [u8], OrdsColumn<'a>)>> {

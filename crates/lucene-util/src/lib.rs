@@ -10,6 +10,7 @@ pub mod fixed_bit_set;
 pub mod float_heap;
 pub mod fx_hash;
 pub mod geo;
+pub mod half_float;
 pub mod java_random;
 pub mod live_docs;
 pub mod math_util;

@@ -108,6 +108,12 @@ impl DirectoryReader {
     pub fn nrt_hold(&self) -> Option<&Arc<lucene_index::nrt::NrtFileHold>> {
         self.nrt_hold.as_ref()
     }
+
+    /// Pins a writer's files for as long as this reader (or one built from
+    /// it) lives: what a reader opened from a writer's snapshot holds.
+    pub fn set_nrt_hold(&mut self, hold: Arc<lucene_index::nrt::NrtFileHold>) {
+        self.nrt_hold = Some(hold);
+    }
 }
 
 #[cfg(test)]

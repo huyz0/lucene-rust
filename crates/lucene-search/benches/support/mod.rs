@@ -2,13 +2,13 @@
 //! multi-segment index built in memory through `IndexWriter`.
 #![allow(dead_code, clippy::arithmetic_side_effects)]
 
+use lucene_facet::{FacetEntry, FacetsConfig, SortedSetDocValuesFacetField};
 use lucene_index::document::{
     Document, LongPoint, NumericDocValuesField, SortedDocValuesField, SortedNumericDocValuesField,
     SortedSetDocValuesField, Store, StringField,
 };
 use lucene_index::index_writer::IndexWriter;
 use lucene_index::merge_policy::upgrade::LATEST;
-use lucene_search::facets::{FacetEntry, FacetsConfig, SortedSetDocValuesFacetField};
 use lucene_store::ByteBuffersDirectory;
 
 /// A tiny deterministic PRNG (xorshift64*), so every run indexes the same

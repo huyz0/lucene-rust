@@ -3620,7 +3620,7 @@ pub(crate) mod tests {
         // Sorted by a field the index lacks: every hit at +Infinity, by doc.
         let h = open();
         let fox = term_blob("body", "fox");
-        let inf = lucene_search::facets::double_to_sortable_long(f64::INFINITY);
+        let inf = lucene_facet::double_to_sortable_long(f64::INFINITY);
         for blob in [
             lucene,
             geo_sort_blob(SORT_REVERSE | SORT_MODE_AVG, 1, &o, 1000.0, None),

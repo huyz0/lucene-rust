@@ -14,11 +14,11 @@
 use std::hint::black_box;
 use std::time::Duration;
 
-use lucene_index::deletion_policy::OpenMode;
-use lucene_search::facets::taxonomy::writercache::LruTaxonomyWriterCache;
-use lucene_search::facets::taxonomy::{
+use lucene_facet::taxonomy::writercache::LruTaxonomyWriterCache;
+use lucene_facet::taxonomy::{
     DirectoryTaxonomyReader, DirectoryTaxonomyWriter, FacetLabel, TaxonomyReader, TaxonomyWriter,
 };
+use lucene_index::deletion_policy::OpenMode;
 use lucene_store::ByteBuffersDirectory;
 
 use super::measure;

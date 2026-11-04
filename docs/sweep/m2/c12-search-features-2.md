@@ -15,7 +15,7 @@ every PERF claim is measured with the "before" re-run, not quoted.
 
 Two new Java fixture generators: `fixtures/src/GenFacets.java` (a three-segment
 faceted index + real `lucene-facet` answers) →
-`crates/lucene-search/tests/facets_fixtures.rs` (18 tests), and
+`crates/lucene-facet/tests/facets_fixtures.rs` (18 tests), and
 `fixtures/src/GenBreakIterator.java` (the JDK's own sentence boundaries) →
 `highlighter::sentence_boundaries`' test. Plus
 `crates/lucene-highlighter/tests/highlighter_offsets_fixtures.rs` (3 tests) against
@@ -80,7 +80,7 @@ shapes that pinned the deadness.
 
 ---
 
-## 2. `crates/lucene-search/src/facets.rs` + `src/ordinal_map.rs` — the missing layer
+## 2. `crates/lucene-facet/src/lib.rs` + `src/ordinal_map.rs` — the missing layer
 
 Java counterparts:
 - `lucene/facet/src/java/org/apache/lucene/facet/FacetsConfig.java`,
