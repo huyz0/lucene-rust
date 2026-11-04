@@ -2951,6 +2951,18 @@ fn merge_segments_mapped_inner(
     // its own file list is a file nothing holds a reference to (and a
     // `CheckIndex` failure: `si.files_lists_itself`). The flush path
     // (`segment_writer`) already did this; the merge did not.
+    let extra = crate::index_writer::write_codec_segment_files(
+        options.codec.as_deref(),
+        lucene_codecs::codec::SegmentWrite {
+            directory: dir,
+            segment: merged_segment_name,
+            id: &merged_segment_id,
+            max_doc: doc_count,
+            field_infos: &merged_fields,
+            files: &files,
+        },
+    )?;
+    files.extend(extra);
     let si_name = format!("{merged_segment_name}.si");
     files.push(si_name.clone());
 

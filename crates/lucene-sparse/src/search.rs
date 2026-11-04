@@ -29,7 +29,7 @@ pub struct SeismicField {
     pub native_engine: bool,
 }
 
-fn attribute<'a>(info: &'a FieldInfo, key: &str) -> Option<&'a str> {
+pub(crate) fn attribute<'a>(info: &'a FieldInfo, key: &str) -> Option<&'a str> {
     info.attributes
         .iter()
         .find(|(k, _)| k == key)
@@ -37,7 +37,7 @@ fn attribute<'a>(info: &'a FieldInfo, key: &str) -> Option<&'a str> {
 }
 
 /// `NumberUtils.createFloat` on a non-empty attribute, the default otherwise.
-fn float_attribute(info: &FieldInfo, key: &str, default: f32) -> Result<f32> {
+pub(crate) fn float_attribute(info: &FieldInfo, key: &str, default: f32) -> Result<f32> {
     match attribute(info, key) {
         None | Some("") => Ok(default),
         Some(v) => v

@@ -12,6 +12,8 @@ lucene-index = { path = "../lucene-index" }
 lucene-search = { path = "../lucene-search" }
 thiserror.workspace = true
 
+[dev-dependencies]
+lucene-util = { path = "../lucene-util", features = ["test-support"] }
 
 [lints]
 workspace = true

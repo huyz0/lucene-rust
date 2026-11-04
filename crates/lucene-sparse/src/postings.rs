@@ -187,6 +187,69 @@ impl ClusteredPostings {
     }
 }
 
+/// One field's clustered postings, as [`write()`] lays them out.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct FieldClusters {
+    /// The field's number.
+    pub number: i32,
+    /// Each term's bytes and clusters, in the order they are written.
+    pub terms: Vec<(Vec<u8>, Vec<Cluster>)>,
+}
+
+/// Writes `value` as a `VLong` of a length or count.
+fn write_len(out: &mut Vec<u8>, value: usize) {
+    use lucene_store::DataOutput;
+    // A Vec length fits in an i64.
+    out.write_vlong(i64::try_from(value).unwrap_or(i64::MAX));
+}
+
+/// `.sit` and `.sip` for `fields`, in the order given: what
+/// `SparsePostingsConsumer` writes for a segment of `segment_id`.
+pub fn write(segment_id: &[u8; ID_LENGTH], fields: &[FieldClusters]) -> (Vec<u8>, Vec<u8>) {
+    use lucene_store::DataOutput;
+    let mut sit = Vec::new();
+    let mut sip = Vec::new();
+    codec_util::write_index_header(&mut sit, CODEC_NAME, VERSION, segment_id, "");
+    codec_util::write_index_header(&mut sip, CODEC_NAME, VERSION, segment_id, "");
+    let sit_start = sit.len();
+    let sip_start = sip.len();
+    sit.write_vint(i32::try_from(fields.len()).unwrap_or(i32::MAX));
+    for field in fields {
+        sit.write_vint(field.number);
+        write_len(&mut sit, field.terms.len());
+        for (term, clusters) in &field.terms {
+            sit.write_vint(i32::try_from(term.len()).unwrap_or(i32::MAX));
+            sit.write_bytes(term);
+            write_len(&mut sit, sip.len());
+            write_len(&mut sip, clusters.len());
+            for c in clusters {
+                write_len(&mut sip, c.docs.len());
+                for (&d, &w) in c.docs.iter().zip(&c.weights) {
+                    sip.write_vint(d);
+                    sip.write_byte(w);
+                }
+                sip.write_byte(u8::from(c.should_not_skip));
+                match &c.summary {
+                    None => write_len(&mut sip, 0),
+                    Some(summary) => {
+                        write_len(&mut sip, summary.tokens().len());
+                        for (&t, &w) in summary.tokens().iter().zip(summary.weights()) {
+                            sip.write_vint(i32::from(t));
+                            sip.write_byte(w);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for (out, start) in [(&mut sit, sit_start), (&mut sip, sip_start)] {
+        // Header lengths are small.
+        out.write_i64(i64::try_from(start).unwrap_or(i64::MAX));
+        codec_util::write_footer(out);
+    }
+    (sit, sip)
+}
+
 #[cfg(test)]
 impl ClusteredPostings {
     /// Postings for one field built from clusters, laid out as `.sip` is.

@@ -18,14 +18,19 @@
 //! `OrderedPostingWithClustersScorer` and `ExactMatchScorer` do and returns the
 //! same documents with the same scores. Segments under the threshold hold plain
 //! `FeatureField` postings and are searched as an ordinary query instead.
+//!
+//! [`SparseCodec`] writes the same files: an index writer given it clusters
+//! each flushed and merged segment's postings ([`writer`]).
 
 pub mod postings;
 pub mod search;
 pub mod vector;
+pub mod writer;
 
 pub use postings::{Cluster, ClusteredPostings};
 pub use search::{search, SeismicField, SeismicQuery};
 pub use vector::SparseVector;
+pub use writer::SparseCodec;
 
 /// The codec name neural-search records for a segment of an `index.sparse` index.
 pub const CODEC_NAME: &str = "Sparse10010Codec";
