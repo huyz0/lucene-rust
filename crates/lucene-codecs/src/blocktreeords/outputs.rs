@@ -112,7 +112,7 @@ impl FstOutputs for FstOrdsOutputs {
     fn read(input: &mut ReverseReader<'_>) -> Result<Output, FstReadError> {
         let len = input.read_vint()?;
         let len = usize::try_from(len)
-            .map_err(|_| FstReadError(format!("negative output length {len}")))?;
+            .map_err(|_| FstReadError(format!("negative output length {len}").into()))?;
         let bytes = input.read_bytes_reversed(len)?;
         let start_ord = input.read_vlong()?;
         let end_ord = input.read_vlong()?;

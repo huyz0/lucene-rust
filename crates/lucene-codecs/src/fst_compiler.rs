@@ -108,7 +108,7 @@ pub trait FstOutputs {
 /// A malformed FST body met while reading outputs or arcs.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("corrupt FST: {0}")]
-pub struct FstReadError(pub String);
+pub struct FstReadError(pub Box<str>);
 
 /// `FST.BytesReader` over an on-heap body: reads move *backwards*.
 #[derive(Debug, Clone)]
@@ -131,14 +131,23 @@ impl<'a> ReverseReader<'a> {
         self.pos = pos;
     }
     /// `readByte()`.
+    #[inline]
     pub fn read_byte(&mut self) -> Result<u8, FstReadError> {
-        let b = usize::try_from(self.pos)
+        match usize::try_from(self.pos)
             .ok()
             .and_then(|p| self.bytes.get(p))
-            .copied()
-            .ok_or_else(|| FstReadError(format!("read past the body at {}", self.pos)))?;
-        self.pos = self.pos.wrapping_sub(1);
-        Ok(b)
+        {
+            Some(&b) => {
+                self.pos = self.pos.wrapping_sub(1);
+                Ok(b)
+            }
+            None => Err(self.past_body()),
+        }
+    }
+    #[cold]
+    #[inline(never)]
+    fn past_body(&self) -> FstReadError {
+        FstReadError(format!("read past the body at {}", self.pos).into())
     }
     /// `skipBytes(n)`.
     pub fn skip_bytes(&mut self, n: i64) {
@@ -167,23 +176,52 @@ impl<'a> ReverseReader<'a> {
                 self.pos = self.pos.wrapping_sub(len as i64);
                 Ok(&self.bytes[start..end])
             }
-            _ => Err(FstReadError(format!(
-                "read of {len} bytes past the body at {}",
-                self.pos
-            ))),
+            _ => Err(FstReadError(
+                format!("read of {len} bytes past the body at {}", self.pos).into(),
+            )),
         }
     }
     /// `readVInt()`.
+    #[inline]
     pub fn read_vint(&mut self) -> Result<i32, FstReadError> {
         Ok(self.read_vlong_bounded(5)? as i32)
     }
     /// `readVLong()`.
+    #[inline]
     pub fn read_vlong(&mut self) -> Result<i64, FstReadError> {
         self.read_vlong_bounded(9)
     }
+    /// A variable-length integer of at most `max` bytes. The bytes it may
+    /// span are bounds-checked once, so the decode loop reads unchecked
+    /// slots; a value near the body's start takes the byte-by-byte path.
+    // ARITH: `i < max <= 9`, so the shift stays below 64, and `p - i` stays
+    // at or above `p + 1 - max` (checked below).
+    #[allow(clippy::arithmetic_side_effects)]
+    #[inline]
+    fn read_vlong_bounded(&mut self, max: u32) -> Result<i64, FstReadError> {
+        let max_len = max as usize;
+        match usize::try_from(self.pos) {
+            Ok(p) if p < self.bytes.len() && p + 1 >= max_len => {
+                let window = &self.bytes[p + 1 - max_len..=p];
+                let mut v: u64 = 0;
+                for i in 0..max_len {
+                    let b = window[max_len - 1 - i];
+                    v |= u64::from(b & 0x7f) << (7 * i);
+                    if b & 0x80 == 0 {
+                        self.pos -= i as i64 + 1;
+                        return Ok(v as i64);
+                    }
+                }
+                Err(Self::too_long())
+            }
+            _ => self.read_vlong_slow(max),
+        }
+    }
     // ARITH: `i < max <= 9`, so the shift stays below 64.
     #[allow(clippy::arithmetic_side_effects)]
-    fn read_vlong_bounded(&mut self, max: u32) -> Result<i64, FstReadError> {
+    #[cold]
+    #[inline(never)]
+    fn read_vlong_slow(&mut self, max: u32) -> Result<i64, FstReadError> {
         let mut v: u64 = 0;
         for i in 0..max {
             let b = self.read_byte()?;
@@ -192,7 +230,11 @@ impl<'a> ReverseReader<'a> {
                 return Ok(v as i64);
             }
         }
-        Err(FstReadError("variable-length integer too long".into()))
+        Err(Self::too_long())
+    }
+    #[cold]
+    fn too_long() -> FstReadError {
+        FstReadError("variable-length integer too long".into())
     }
     /// `readShort()` (little-endian, as every `VERSION_90`+ FST).
     pub fn read_short(&mut self) -> Result<i16, FstReadError> {
@@ -245,7 +287,7 @@ fn seq_add<T: Clone>(prefix: &[T], output: &[T]) -> Vec<T> {
 
 fn read_len(input: &mut ReverseReader<'_>) -> Result<usize, FstReadError> {
     let len = input.read_vint()?;
-    usize::try_from(len).map_err(|_| FstReadError(format!("negative output length {len}")))
+    usize::try_from(len).map_err(|_| FstReadError(format!("negative output length {len}").into()))
 }
 
 impl FstOutputs for ByteSequenceOutputs {

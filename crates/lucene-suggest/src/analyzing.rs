@@ -63,7 +63,7 @@ fn illegal(e: impl std::fmt::Display) -> Error {
 }
 
 fn fst_err(e: FstReadError) -> Error {
-    Error::Corrupted(e.0)
+    Error::Corrupted(e.0.into())
 }
 
 /// `FuzzySuggester`'s settings.

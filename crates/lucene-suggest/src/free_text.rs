@@ -43,7 +43,7 @@ pub const DEFAULT_SEPARATOR: u8 = 0x1e;
 const MAX_TERM_LENGTH: usize = 32766;
 
 fn fst_err(e: FstReadError) -> Error {
-    Error::Corrupted(e.0)
+    Error::Corrupted(e.0.into())
 }
 
 fn analysis_err(e: AnalysisError) -> Error {
