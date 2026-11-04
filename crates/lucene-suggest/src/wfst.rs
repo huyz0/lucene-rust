@@ -23,7 +23,7 @@ use super::lookup::{unsupported_operation, Lookup, LookupResult};
 type WeightedFst = TypedFst<PositiveIntOutputs>;
 
 fn fst_err(e: FstReadError) -> Error {
-    Error::Corrupted(e.0)
+    Error::Corrupted(e.0.into())
 }
 
 /// `WFSTCompletionLookup`.

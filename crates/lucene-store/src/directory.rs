@@ -118,6 +118,7 @@ impl std::fmt::Debug for Input {
 impl Deref for Input {
     type Target = [u8];
 
+    #[inline]
     fn deref(&self) -> &[u8] {
         match self {
             Input::Owned(v) => v,

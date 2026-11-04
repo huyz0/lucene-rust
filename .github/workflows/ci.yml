@@ -40,6 +40,10 @@ env:
   CARGO_PROFILE_DEV_DEBUG: line-tables-only
   CARGO_PROFILE_TEST_DEBUG: line-tables-only
   NEXTEST_PROFILE: ci
+  # The plugin jobs build liblucene_ffi with the release profile, not the
+  # whole-program-LTO `dist` profile a shipped zip uses: same code and float
+  # semantics, several times faster to build, and it shares the release cache.
+  ORG_GRADLE_PROJECT_cargoProfile: release
 
 jobs:
   # ---------------------------------------------------------------------------

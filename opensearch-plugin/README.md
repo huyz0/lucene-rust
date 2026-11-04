@@ -20,9 +20,15 @@ gradle -p opensearch-plugin check          # JVM-side differential self test
 The plugin compiles against the jars of the distribution it installs into,
 extracted from the `opensearchproject/opensearch:3.9.0` image — a plugin must
 match its node exactly, and the build then needs no Maven repository.
-`bundlePlugin` runs `cargo build --release -p lucene-ffi` and puts the library
-under `native/<os>-<arch>/` in the zip; `-PextraNative=linux-aarch64=PATH`
-adds one built elsewhere.
+`bundlePlugin` runs `cargo build --profile dist -p lucene-ffi` (the release
+build with LTO, `target/dist/`) and puts the library under `native/<os>-<arch>/`
+in the zip; `-PextraNative=linux-aarch64=PATH` adds one built elsewhere.
+`-PcargoProfile=release` builds without LTO, several times faster and about 20%
+slower to run (what CI's test jobs use). `-PnativeLib=PATH` uses an already
+built library instead, such as the profile-guided one
+`scripts/pgo-build.sh` writes to `target/pgo/dist/` after training it on a
+workload (search 1.27x faster on the queries it was trained on, untrained code
+7-10% slower; see the script).
 
 `gradle -p opensearch-plugin -Pfips bundlePlugin` builds the FIPS variant,
 `lucene-rust-fips-0.1.0.zip`. It contains:

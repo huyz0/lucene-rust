@@ -32,7 +32,7 @@ use super::lookup::{illegal_state, unsupported_operation, Lookup, LookupResult};
 pub type Automaton = TypedFst<NoOutputs>;
 
 fn fst_err(e: FstReadError) -> Error {
-    Error::Corrupted(e.0)
+    Error::Corrupted(e.0.into())
 }
 
 fn compile_err(e: impl std::fmt::Display) -> Error {
