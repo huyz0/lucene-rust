@@ -161,3 +161,39 @@ impl<T, F: Fn(&T, &T) -> bool> JavaPriorityQueue<T, F> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn priority_queue_pops_least_first_and_overflows_like_java() {
+        let mut q = JavaPriorityQueue::new(3, |a: &i32, b: &i32| a < b);
+        assert!(q.top().is_none());
+        assert!(q.pop().is_none());
+        for v in [5, 1, 4, 2, 3] {
+            q.insert_with_overflow(v);
+        }
+        // 1 was dropped when 2 arrived, then 2 when 3 did.
+        assert_eq!(q.size(), 3);
+        assert_eq!(q.top(), Some(&3));
+        let popped: Vec<i32> = std::iter::from_fn(|| q.pop()).collect();
+        assert_eq!(popped, vec![3, 4, 5]);
+        // the slots a pop frees are reused
+        q.insert_with_overflow(9);
+        q.insert_with_overflow(8);
+        assert_eq!(
+            std::iter::from_fn(|| q.pop()).collect::<Vec<_>>(),
+            vec![8, 9]
+        );
+        // An element less than the top is not taken by a full queue.
+        let mut q = JavaPriorityQueue::new(1, |a: &i32, b: &i32| a < b);
+        q.insert_with_overflow(5);
+        q.insert_with_overflow(4);
+        assert_eq!(q.pop(), Some(5));
+        // A zero-sized queue holds nothing.
+        let mut q = JavaPriorityQueue::new(0, |a: &i32, b: &i32| a < b);
+        q.insert_with_overflow(1);
+        assert_eq!(q.size(), 0);
+    }
+}

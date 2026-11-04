@@ -157,7 +157,7 @@ last within the milestone.
   `GenSpatialPrefixTree` -> `spatial_prefix_tree_fixtures.rs` (4 534
   records: byte-identical cell tokens for every tree, date parse/format
   round trips, `SpatialArgsParser`); every strategy
-  (`lucene-search/src/spatial/`: RPT, term-query, number-range, BBox,
+  (`lucene-spatial-extras/src/`: RPT, term-query, number-range, BBox,
   point-vector, serialized doc values, composite, heatmaps, date facets, the
   value sources), `GenSpatialStrategies` -> `spatial_strategies_fixtures.rs`
   (byte-identical fields, 1 901 answers over Lucene's index and this port's),
@@ -366,7 +366,7 @@ Tests, all generated with HotSpot's trig intrinsics off (as `GenGeo3d`):
   cells of 70 shapes per tree, terms read back, both date trees,
   `SpatialArgsParser`/`SpatialOperation`: 4 534 records.
 - `fixtures/src/GenSpatialStrategies.java` (+ `SpatialExtrasCorpus.java`) ->
-  `spatial_strategies/` -> `crates/lucene-search/tests/spatial_strategies_fixtures.rs`:
+  `spatial_strategies/` -> `crates/lucene-spatial-extras/tests/spatial_strategies_fixtures.rs`:
   400 documents through 15 strategies, four segments with deletions; every
   field token byte for byte, then 1 901 answers (every strategy x operation,
   BM25 scores for RPT's point term query, value sources bit for bit,

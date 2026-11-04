@@ -228,7 +228,7 @@ impl<'c> ValuesContext<'c> {
 
     /// Leaf `leaf`'s doc base (`LeafReaderContext.docBase`): `0` for a
     /// context of one reader.
-    pub(crate) fn doc_base(&self, leaf: usize) -> i32 {
+    pub fn doc_base(&self, leaf: usize) -> i32 {
         self.searcher
             .and_then(|s| s.segments().get(leaf))
             .map_or(0, |s| s.doc_base)

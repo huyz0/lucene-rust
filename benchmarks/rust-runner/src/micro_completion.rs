@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use lucene_analysis::Analyzer;
 use lucene_search::directory_reader::DirectoryReader;
-use lucene_search::suggest::completion_query::{
+use lucene_suggest::completion_query::{
     CompletionAnalyzer, CompletionQuery, ContextQuery, FuzzyCompletionQuery, PrefixCompletionQuery,
     RegexCompletionQuery, SuggestIndexSearcher,
 };

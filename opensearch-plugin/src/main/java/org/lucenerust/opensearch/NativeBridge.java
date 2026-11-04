@@ -38,7 +38,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code jvm_reader.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 58;
+    public static final int EXPECTED_ABI_VERSION = 59;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -257,7 +257,12 @@ public final class NativeBridge {
         );
         static final MethodHandle WRITER_COMMIT = bind(
             "ffi_engine_writer_commit",
-            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS)
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG, ADDRESS)
+        );
+        static final MethodHandle SET_COMMIT_DATA_UPCALL = bind("ffi_engine_set_commit_data_upcall", FunctionDescriptor.of(JAVA_INT, ADDRESS));
+        static final MethodHandle WRITER_SET_MERGE_SCHEDULER = bind(
+            "ffi_engine_writer_set_merge_scheduler",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_BYTE, JAVA_DOUBLE)
         );
         static final MethodHandle WRITER_COMMIT_GENERATIONS = bind(
             "ffi_engine_writer_commit_generations",
@@ -1302,11 +1307,12 @@ public final class NativeBridge {
 
     /** Indices into {@link #writerStats}' output. */
     public static final int STAT_RAM_BYTES = 0;
-    public static final int STAT_PENDING_DOCS = 1;
-    public static final int STAT_UNCOMMITTED = 2;
-    public static final int STAT_GENERATION = 3;
-    public static final int STAT_SEGMENTS = 4;
-    public static final int STAT_COUNT = 5;
+    public static final int STAT_FLUSHING_BYTES = 1;
+    public static final int STAT_PENDING_DOCS = 2;
+    public static final int STAT_UNCOMMITTED = 3;
+    public static final int STAT_GENERATION = 4;
+    public static final int STAT_SEGMENTS = 5;
+    public static final int STAT_COUNT = 6;
 
     /**
      * Opens a shard's writer over the index at {@code path}, which must already hold a commit. Commit
@@ -1454,21 +1460,60 @@ public final class NativeBridge {
         }
     }
 
-    /** Commits with {@code userData} (see {@code decode_user_data}), runs merges, writes the newest generation. */
-    public static int writerCommit(long handle, byte[] userData, long[] outGeneration) {
-        if (userData == null) {
-            return nullArgument("userData");
+    /**
+     * Commits, and writes the newest generation. Once the buffers holding earlier operations are
+     * flushed, the native writer asks the commit-data upcall ({@link #setCommitDataUpcall}) for the
+     * user data of {@code context}, on this thread; other threads go on indexing meanwhile.
+     */
+    public static int writerCommit(long handle, long context, long[] outGeneration) {
+        if (outGeneration == null || outGeneration.length < 1) {
+            return fail(INVALID_ARGUMENT, "outGeneration holds no slot");
         }
         try (Scratch s = Scratch.open()) {
             MemorySegment generation = s.alloc(Long.BYTES);
-            int rc = (int) H.WRITER_COMMIT.invokeExact(handle, s.bytes(userData), (long) userData.length, generation);
+            int rc = (int) H.WRITER_COMMIT.invokeExact(handle, context, generation);
             if (rc == OK) {
-                if (outGeneration == null || outGeneration.length < 1) {
-                    return fail(INVALID_ARGUMENT, "outGeneration holds no slot");
-                }
                 outGeneration[0] = generation.get(JAVA_LONG, 0);
             }
             return rc;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** The commit-data upcall's statuses ({@code COMMIT_DATA_*} in {@code engine_writer.rs}). */
+    public static final int COMMIT_DATA_OK = 0;
+    public static final int COMMIT_DATA_BUFFER_TOO_SMALL = 1;
+    public static final int COMMIT_DATA_FAILED = 2;
+
+    /** Registers the commit-data upcall {@link #writerCommit} reads a commit's user data through. */
+    public static int setCommitDataUpcall(MemorySegment upcall) {
+        try {
+            return (int) H.SET_COMMIT_DATA_UPCALL.invokeExact(upcall);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * {@code index.merge.scheduler.*}: merges at once, threads running big merges, the auto IO
+     * throttle, and forced merges' MB/s.
+     */
+    public static int writerSetMergeScheduler(
+        long handle,
+        int maxMergeCount,
+        int maxThreadCount,
+        boolean autoThrottle,
+        double maxForceMergeMbPerSec
+    ) {
+        try {
+            return (int) H.WRITER_SET_MERGE_SCHEDULER.invokeExact(
+                handle,
+                maxMergeCount,
+                maxThreadCount,
+                (byte) (autoThrottle ? 1 : 0),
+                maxForceMergeMbPerSec
+            );
         } catch (Throwable t) {
             throw rethrow(t);
         }
