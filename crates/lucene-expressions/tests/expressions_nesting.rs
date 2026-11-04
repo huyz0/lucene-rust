@@ -3,7 +3,7 @@
 //! (compiled against the 10.5.2 jars) answers; `TestJavascriptCompiler`'s
 //! `testRecursionDepth*` follow, with where this port answers otherwise.
 
-use lucene_search::expressions::{
+use lucene_expressions::{
     compile, compile_with_max_nesting_depth, default_functions, Error, ParseException,
     DEFAULT_MAX_NESTING_DEPTH,
 };

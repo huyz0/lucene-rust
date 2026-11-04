@@ -19,10 +19,10 @@
 //!   per group; [`TermGroupFacetCollector`]: facet counts that count each
 //!   group once.
 //!
-//! Every collector is a [`SegmentCollector`], reading each segment's doc
+//! Every collector is a [`SegmentCollector`](lucene_search::leaf_collector::SegmentCollector), reading each segment's doc
 //! values as the search reaches it, and a manager runs one per slice
 //! ([`search_manager`]); sorts are [`Sort`]s of
-//! [`crate::top_field::SortField`] keys.
+//! [`lucene_search::top_field::SortField`] keys.
 //!
 //! # What differs from Java
 //!
@@ -73,13 +73,12 @@ use std::collections::HashMap;
 use std::fmt;
 use std::hash::Hash;
 
-use crate::collector::{TotalHits, TotalHitsRelation};
-use crate::index_searcher::IndexSearcher;
-use crate::leaf_collector::{search_slices, SegmentCollector};
-use crate::multi_segment::OpenSegment;
-use crate::query::BooleanQuery;
-use crate::top_field::SortField;
-use crate::{Error, Result};
+use lucene_search::collector::{TotalHits, TotalHitsRelation};
+use lucene_search::leaf_collector::{search_manager, SegmentCollectorManager};
+use lucene_search::multi_segment::OpenSegment;
+use lucene_search::top_field::SortField;
+pub(crate) use lucene_search::tree_set::TreeSet;
+use lucene_search::{Error, Result};
 
 /// `GroupSelector.State`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -142,70 +141,7 @@ pub struct CollectedSearchGroup<V> {
     pub comparator_slot: usize,
 }
 
-/// The multiply-rotate hash rustc uses (`FxHasher`): the group maps hash a
-/// group value per collected document, where SipHash's DoS resistance buys
-/// nothing (stage 3: SipHash was a tenth of a term grouping's time).
-#[derive(Debug, Default, Clone, Copy)]
-pub struct FxHasher(u64);
-
-impl std::hash::Hasher for FxHasher {
-    /// The state through a final avalanche (`fmix64`'s first half): a
-    /// multiply carries entropy only upward, so the raw state's low bits --
-    /// which `hashbrown` takes the bucket from -- depend only on the low
-    /// bytes of the last word. Keys sharing those
-    /// (`"group-value-000000001234"`: the last word's low bytes are `"00"`)
-    /// fell in a handful of buckets, and every lookup walked a long probe
-    /// of `memcmp`s (a grouping search with all groups was 17x slower).
-    /// Folding the high half down and multiplying again makes every bit of
-    /// the result depend on every bit of the state.
-    fn finish(&self) -> u64 {
-        let mut x = self.0;
-        x ^= x >> 33;
-        x = x.wrapping_mul(0xff51_afd7_ed55_8ccd);
-        x ^ (x >> 33)
-    }
-
-    fn write(&mut self, bytes: &[u8]) {
-        let mut chunks = bytes.chunks_exact(8);
-        for c in &mut chunks {
-            let mut w = [0u8; 8];
-            w.copy_from_slice(c);
-            self.add(u64::from_le_bytes(w));
-        }
-        for &b in chunks.remainder() {
-            self.add(u64::from(b));
-        }
-    }
-
-    fn write_u8(&mut self, i: u8) {
-        self.add(u64::from(i));
-    }
-
-    fn write_u32(&mut self, i: u32) {
-        self.add(u64::from(i));
-    }
-
-    fn write_u64(&mut self, i: u64) {
-        self.add(i);
-    }
-
-    fn write_usize(&mut self, i: usize) {
-        self.add(i as u64);
-    }
-}
-
-impl FxHasher {
-    fn add(&mut self, w: u64) {
-        self.0 = (self.0.rotate_left(5) ^ w).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95);
-    }
-}
-
-/// A `HashMap` under [`FxHasher`].
-pub type FxHashMap<K, V> = HashMap<K, V, std::hash::BuildHasherDefault<FxHasher>>;
-
-/// A `HashSet` under [`FxHasher`].
-pub(crate) type FxHashSet<K> =
-    std::collections::HashSet<K, std::hash::BuildHasherDefault<FxHasher>>;
+pub(crate) use lucene_util::fx_hash::avalanche::{FxHashMap, FxHashSet};
 
 /// A map from group values (`null` included) to an index, looked up by
 /// reference -- Java's `HashMap<T, ...>` with its one `null` key.
@@ -317,31 +253,6 @@ impl IdIndex {
     }
 }
 
-/// `CollectorManager<C, T>` for a [`SegmentCollector`]: one collector per
-/// slice of the searcher, reduced to a result.
-pub trait GroupingCollectorManager<'a> {
-    type Collector: SegmentCollector<'a>;
-    type Output;
-    /// `newCollector()`.
-    fn new_collector(&self) -> Result<Self::Collector>;
-    /// `reduce(collectors)`, the collectors in slice order.
-    fn reduce(&self, collectors: Vec<Self::Collector>) -> Result<Self::Output>;
-}
-
-/// `searcher.search(query, manager)`: a collector per slice (in order, on
-/// this thread), then the manager's `reduce`.
-///
-/// # Errors
-/// What the search, a collector or the reduction reports.
-pub fn search_manager<'a, M: GroupingCollectorManager<'a>>(
-    searcher: &IndexSearcher<'_, 'a>,
-    query: &BooleanQuery,
-    manager: &M,
-) -> Result<M::Output> {
-    let collectors = search_slices(searcher, query, || manager.new_collector())?;
-    manager.reduce(collectors)
-}
-
 /// One hit of a group: `ScoreDoc`, or a `FieldDoc` with its sort values.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GroupScoreDoc {
@@ -399,96 +310,7 @@ pub(crate) fn non_nan_max(a: f32, b: f32) -> f32 {
     } else if b.is_nan() {
         a
     } else {
-        crate::join::query_time::java_max_f32(a, b)
-    }
-}
-
-/// A `TreeSet` under a comparator that the elements' state decides: kept
-/// sorted, an element comparing equal to one already in is not added, and
-/// `remove` takes out the element comparing equal (as Java's does) -- both
-/// faithful to `TreeSet`, including where a comparator that is not a total
-/// order makes it drop elements.
-///
-/// The items sit in a ring buffer, so taking the first (a merge's queue
-/// drained best first) is O(1), and an insertion moves the shorter side.
-#[derive(Debug, Default, Clone)]
-pub(crate) struct TreeSet<T> {
-    items: std::collections::VecDeque<T>,
-}
-
-impl<T: Copy + PartialEq> TreeSet<T> {
-    pub(crate) fn new() -> Self {
-        Self {
-            items: std::collections::VecDeque::new(),
-        }
-    }
-
-    /// `items` added one by one in order -- each comparing equal to an
-    /// earlier one dropped, as `add` drops it -- built by one stable sort
-    /// rather than an insertion each: the same set for any `cmp` that is a
-    /// total preorder.
-    pub(crate) fn from_items(mut items: Vec<T>, cmp: &mut dyn FnMut(&T, &T) -> Ordering) -> Self {
-        // Stable: of the items comparing equal the earliest comes first, and
-        // is the one `add` would have kept.
-        items.sort_by(|a, b| cmp(a, b));
-        items.dedup_by(|later, kept| cmp(kept, later) == Ordering::Equal);
-        Self {
-            items: items.into(),
-        }
-    }
-
-    fn search(
-        &self,
-        x: &T,
-        cmp: &mut dyn FnMut(&T, &T) -> Ordering,
-    ) -> std::result::Result<usize, usize> {
-        self.items.binary_search_by(|e| cmp(e, x))
-    }
-
-    /// `add(x)`: whether it was added.
-    pub(crate) fn add(&mut self, x: T, cmp: &mut dyn FnMut(&T, &T) -> Ordering) -> bool {
-        match self.search(&x, cmp) {
-            Ok(_) => false,
-            Err(i) => {
-                self.items.insert(i, x);
-                true
-            }
-        }
-    }
-
-    /// `remove(x)`: the element comparing equal to `x`.
-    pub(crate) fn remove(&mut self, x: &T, cmp: &mut dyn FnMut(&T, &T) -> Ordering) -> bool {
-        match self.search(x, cmp) {
-            Ok(i) => {
-                self.items.remove(i);
-                true
-            }
-            Err(_) => false,
-        }
-    }
-
-    pub(crate) fn first(&self) -> Option<T> {
-        self.items.front().copied()
-    }
-
-    pub(crate) fn last(&self) -> Option<T> {
-        self.items.back().copied()
-    }
-
-    pub(crate) fn poll_first(&mut self) -> Option<T> {
-        self.items.pop_front()
-    }
-
-    pub(crate) fn poll_last(&mut self) -> Option<T> {
-        self.items.pop_back()
-    }
-
-    pub(crate) fn len(&self) -> usize {
-        self.items.len()
-    }
-
-    pub(crate) fn iter(&self) -> impl Iterator<Item = &T> {
-        self.items.iter()
+        lucene_search::function::valuesource::functions::java_max_f32(a, b)
     }
 }
 

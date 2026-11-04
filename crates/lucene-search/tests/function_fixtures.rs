@@ -21,6 +21,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use lucene_codecs::field_infos::VectorSimilarityFunction;
+use lucene_grouping::{GroupingSearch, ValueSourceGroupSelector};
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::function::index_reader_functions as irf;
 use lucene_search::function::valuesource::*;
@@ -30,7 +31,6 @@ use lucene_search::function::{
     FunctionQuery, FunctionRangeQuery, FunctionScoreQuery, FunctionValues, MutableValue, ObjectVal,
     TopLevel, ValueLeaf, ValueSource,
 };
-use lucene_search::grouping::{GroupingSearch, ValueSourceGroupSelector};
 use lucene_search::index_searcher::{IndexSearcher, SegmentNorms};
 use lucene_search::query::{BooleanQuery, BoostQuery, Clause, MatchAllDocsQuery, TermQuery};
 use lucene_search::similarities::ClassicSimilarity;

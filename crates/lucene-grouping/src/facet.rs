@@ -7,12 +7,12 @@ use std::collections::HashMap;
 
 use super::FxHashSet;
 
-use crate::collector::ScoreMode;
-use crate::leaf_collector::SegmentCollector;
-use crate::multi_segment::OpenSegment;
-use crate::reader::doc_values as dv;
-use crate::reader::{SortedDocValues, SortedSetDocValues};
-use crate::{Error, Result};
+use lucene_search::collector::ScoreMode;
+use lucene_search::leaf_collector::SegmentCollector;
+use lucene_search::multi_segment::OpenSegment;
+use lucene_search::reader::doc_values as dv;
+use lucene_search::reader::{SortedDocValues, SortedSetDocValues};
+use lucene_search::{Error, Result};
 
 /// `UnicodeUtil.BIG_TERM`: ten `0xff` bytes, after every UTF-8 term.
 const BIG_TERM: [u8; 10] = [0xff; 10];

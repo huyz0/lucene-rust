@@ -9,14 +9,16 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
 use super::{FxHashMap, GroupSelector, GroupState, SearchGroup};
-use crate::function::{BoxValues, FunctionContext, MutableValue, TopLevel, ValueLeaf, ValueSource};
-use crate::multi_segment::OpenSegment;
-use crate::reader::doc_values::SortedOrds;
-use crate::values_source::{
+use lucene_search::function::{
+    BoxValues, FunctionContext, MutableValue, TopLevel, ValueLeaf, ValueSource,
+};
+use lucene_search::multi_segment::OpenSegment;
+use lucene_search::reader::doc_values::SortedOrds;
+use lucene_search::values_source::{
     BoxDoubleValues, BoxLongValues, DoubleValues, DoubleValuesSource, LongValuesSource,
     ValuesContext,
 };
-use crate::{Error, Result};
+use lucene_search::{Error, Result};
 
 /// A range selector moved before `setScorer` gave it values (Java's
 /// `NullPointerException` on `values`).
@@ -30,7 +32,9 @@ fn no_context() -> Error {
     Error::IllegalState("the group selector was given a scorer before a segment".into())
 }
 
-fn leaf_reader<'a>(leaf: &OpenSegment<'a>) -> Result<&'a crate::directory_reader::SegmentReader> {
+fn leaf_reader<'a>(
+    leaf: &OpenSegment<'a>,
+) -> Result<&'a lucene_search::directory_reader::SegmentReader> {
     leaf.reader
         .ok_or_else(|| Error::MissingSegmentReader("a group selector".into()))
 }
@@ -114,7 +118,7 @@ impl OrdTable {
 /// `reader`'s `SORTED` `field` dictionary as the codec stores it, `None`
 /// for a field of another type (or none).
 fn sorted_dict<'a>(
-    reader: &'a crate::directory_reader::SegmentReader,
+    reader: &'a lucene_search::directory_reader::SegmentReader,
     field: &str,
 ) -> Option<(&'a [u8], &'a lucene_codecs::terms_dict::TermsDictEntry)> {
     let fi = reader.field_infos().field_by_name(field)?;
@@ -478,7 +482,7 @@ impl<R: Clone + Eq + Hash> RangeState<R> {
 pub struct LongRangeGroupSelector<'a> {
     source: Arc<dyn LongValuesSource>,
     factory: LongRangeFactory,
-    reader: Option<&'a crate::directory_reader::SegmentReader>,
+    reader: Option<&'a lucene_search::directory_reader::SegmentReader>,
     values: Option<BoxLongValues<'a>>,
     score: CurrentScore,
     state: RangeState<LongRange>,
@@ -542,7 +546,7 @@ impl<'a> GroupSelector<'a> for LongRangeGroupSelector<'a> {
 pub struct DoubleRangeGroupSelector<'a> {
     source: Arc<dyn DoubleValuesSource>,
     factory: DoubleRangeFactory,
-    reader: Option<&'a crate::directory_reader::SegmentReader>,
+    reader: Option<&'a lucene_search::directory_reader::SegmentReader>,
     values: Option<BoxDoubleValues<'a>>,
     score: CurrentScore,
     state: RangeState<DoubleRange>,
@@ -649,8 +653,8 @@ impl<'a> GroupSelector<'a> for ValueSourceGroupSelector<'a> {
 
     /// `setNextReader`: the segment's values and their filler.
     fn set_next_reader(&mut self, ord: usize, leaf: &OpenSegment<'a>) -> Result<()> {
-        let leaf = match self.top.as_ref().and_then(|t| t.leaves.get(ord)) {
-            Some(ctx) => ValueLeaf::new(*ctx),
+        let leaf = match self.top.as_ref().and_then(|t| t.leaf(ord)) {
+            Some(leaf) => leaf,
             None => ValueLeaf::of_segment(leaf),
         };
         let values = self.source.get_values(&self.context, &leaf)?;

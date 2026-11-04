@@ -23,9 +23,9 @@ use crate::facets::taxonomy::taxonomy_reader::TaxonomyReader;
 use crate::facets::{
     DrillDownQuery, DrillSideways, FacetResult, FacetValue, FacetsConfig, LabelAndValue,
 };
-use crate::grouping::{search_manager, GroupingCollectorManager};
 use crate::index_searcher::IndexSearcher;
 use crate::leaf_collector::SegmentCollector;
+use crate::leaf_collector::{search_manager, SegmentCollectorManager};
 use crate::multi_segment::OpenSegment;
 use crate::query::BooleanQuery;
 use crate::{Error, Result};
@@ -536,7 +536,7 @@ impl<'a, C: SegmentCollector<'a>> SegmentCollector<'a> for MainCollector<'_, 'a,
     }
 }
 
-impl<'t, 'a, M: GroupingCollectorManager<'a>> GroupingCollectorManager<'a>
+impl<'t, 'a, M: SegmentCollectorManager<'a>> SegmentCollectorManager<'a>
     for MainCollectorManager<'_, 't, M>
 {
     type Collector = MainCollector<'t, 'a, M::Collector>;
@@ -578,7 +578,7 @@ impl<'t, 'a, M: GroupingCollectorManager<'a>> GroupingCollectorManager<'a>
 /// [`FacetOrchestrator::collect`]'s missing main manager.
 pub struct NoMainCollector;
 
-impl<'a> GroupingCollectorManager<'a> for NoMainCollector {
+impl<'a> SegmentCollectorManager<'a> for NoMainCollector {
     type Collector = NoCollector;
     type Output = ();
 
@@ -645,7 +645,7 @@ impl<'b, 't> FacetOrchestrator<'b, 't> {
     ///
     /// # Errors
     /// What the search, a collector, a cutter or a recorder reports.
-    pub fn collect_with<'a, M: GroupingCollectorManager<'a>>(
+    pub fn collect_with<'a, M: SegmentCollectorManager<'a>>(
         &self,
         query: &BooleanQuery,
         searcher: &IndexSearcher<'_, 'a>,
@@ -713,7 +713,7 @@ impl<'b, 't> DrillSidewaysFacetOrchestrator<'b, 't> {
     /// [`Error::IllegalArgument`] when a dim's builders need more than one
     /// collection, or the dims do not match the query's; what the search
     /// reports.
-    pub fn collect_with<'a, M: GroupingCollectorManager<'a>>(
+    pub fn collect_with<'a, M: SegmentCollectorManager<'a>>(
         &self,
         query: &DrillDownQuery<'_>,
         drill_sideways: &DrillSideways<'_, '_, 'a, '_>,

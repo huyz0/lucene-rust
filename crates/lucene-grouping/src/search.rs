@@ -11,13 +11,13 @@ use super::collectors::{
 };
 use super::sort::Sort;
 use super::{search_manager, GroupSelector, TopGroups};
-use crate::collector::{ScoreMode, ScoringCollector};
-use crate::collectors::{CachingCollector, NoOpCollector};
-use crate::index_searcher::IndexSearcher;
-use crate::leaf_collector::{search_segments, PerSegment, SegmentCollector};
-use crate::multi_segment::OpenSegment;
-use crate::query::BooleanQuery;
-use crate::{Error, Result};
+use lucene_search::collector::{ScoreMode, ScoringCollector};
+use lucene_search::collectors::{CachingCollector, NoOpCollector};
+use lucene_search::index_searcher::IndexSearcher;
+use lucene_search::leaf_collector::{search_segments, PerSegment, SegmentCollector};
+use lucene_search::multi_segment::OpenSegment;
+use lucene_search::query::BooleanQuery;
+use lucene_search::{Error, Result};
 
 /// What a [`GroupingSearch`] groups by.
 enum Grouper<F> {

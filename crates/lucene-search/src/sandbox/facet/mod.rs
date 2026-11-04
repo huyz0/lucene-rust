@@ -43,8 +43,8 @@ use std::sync::Arc;
 
 use crate::collector::ScoreMode;
 use crate::directory_reader::SegmentReader;
-use crate::grouping::GroupingCollectorManager;
 use crate::leaf_collector::SegmentCollector;
+use crate::leaf_collector::SegmentCollectorManager;
 use crate::multi_segment::OpenSegment;
 use crate::{Error, Result};
 
@@ -360,7 +360,7 @@ impl<'t, R: FacetRecorder + 't> FacetFieldCollectorManager<'t, R> {
     }
 }
 
-impl<'t, 'a, R: FacetRecorder + 't> GroupingCollectorManager<'a>
+impl<'t, 'a, R: FacetRecorder + 't> SegmentCollectorManager<'a>
     for FacetFieldCollectorManager<'t, R>
 {
     type Collector = FacetFieldCollector<'t, 'a>;

@@ -10,6 +10,7 @@ lucene-store = { path = "../lucene-store" }
 lucene-codecs = { path = "../lucene-codecs" }
 lucene-index = { path = "../lucene-index" }
 lucene-search = { path = "../lucene-search" }
+lucene-grouping = { path = "../lucene-grouping" }
 lucene-analysis = { path = "../lucene-analysis" }
 
 [dev-dependencies]
