@@ -26,12 +26,12 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::time::Duration;
 
-use lucene_search::directory_reader::DirectoryReader;
-use lucene_search::facets::{
+use lucene_facet::{
     ConcurrentSortedSetDocValuesFacetCounts, DefaultSortedSetDocValuesReaderState, Facets,
     FacetsCollector, FacetsCollectorManager, FacetsConfig, RandomSamplingFacetsCollectorManager,
     SortedSetDocValuesFacetCounts,
 };
+use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::field_norms::FieldNorms;
 use lucene_search::index_searcher::{IndexSearcher, SegmentNorms};
 use lucene_search::query::{BooleanQuery, Clause, MatchAllDocsQuery, TermQuery};

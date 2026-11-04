@@ -50,7 +50,7 @@ import java.util.stream.Stream;
 
 /**
  * lucene-sandbox's document package and its multi-range queries, recorded from Lucene 10.5.0 for
- * crates/lucene-search/tests/sandbox_document_fixtures.rs. Written to {@code sandbox_document/}:
+ * crates/lucene-sandbox/tests/sandbox_document_fixtures.rs. Written to {@code sandbox_document/}:
  *
  * <pre>
  *   index/         three segments of 200 documents, every 13th id deleted in segments 0 and 2

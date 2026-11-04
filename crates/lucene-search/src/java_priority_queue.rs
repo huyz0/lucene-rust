@@ -113,7 +113,7 @@ impl<T, F: Fn(&T, &T) -> bool> JavaPriorityQueue<T, F> {
     }
 
     /// `top()`.
-    pub(crate) fn top(&self) -> Option<&T> {
+    pub fn top(&self) -> Option<&T> {
         self.heap.get(1).and_then(Option::as_ref)
     }
 

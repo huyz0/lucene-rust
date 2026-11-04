@@ -1384,7 +1384,7 @@ it as not soft-deleted, proving the base bytes were genuinely untouched. See
 `docs/parity.md` for the full row and scope writeup.
 
 **Progress (task #50):** basic faceting over a SORTED_SET doc-values field,
-`lucene-search/src/facets.rs::{facet_counts, resolve_labels, top_n_facets,
+`lucene-facet/src/lib.rs::{facet_counts, resolve_labels, top_n_facets,
 FacetCount}` — a simplified port of real Lucene's
 `SortedSetDocValuesFacetCounts` (`lucene-facet` module): for every doc in a
 caller-supplied matching-doc-ID slice, `facet_counts` increments a counter
@@ -1427,7 +1427,7 @@ module (not a project dependency). No new Java fixture generator was needed
 since the existing manifest already had everything required. Coverage:
 `facets.rs` 98.74% lines.
 
-**Progress (task #58):** numeric range faceting, `lucene-search/src/facets.rs
+**Progress (task #58):** numeric range faceting, `lucene-facet/src/lib.rs
 ::{NumericRange, range_facet_counts}` — a companion to task #50's SortedSet
 facet counting, extending the same module rather than starting a new one. A
 simplified port of real Lucene's `LongRangeFacetCounts`/
@@ -3345,7 +3345,7 @@ green. `cargo clippy --workspace --all-targets -- -D warnings` clean. See
 `docs/parity.md`'s updated row for the exact scope statement.
 
 **Progress (Faceted search FFI exposure):** `lucene-ffi` C-ABI wrappers for
-tasks #50/#58's `lucene-search/src/facets.rs`, the last "no FFI exposure"
+tasks #50/#58's `lucene-facet/src/lib.rs`, the last "no FFI exposure"
 gap that module's own scope notes left open. Two new modules following
 tasks #20/#30/#40's exact pattern (opaque `u64` handles, `catch_unwind`
 via `guard`, per-call status codes, handle validation before use):

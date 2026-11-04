@@ -483,7 +483,7 @@ blocker named. One contained cleanup, honestly reported as a wash.
 
 ---
 
-## 7. `crates/lucene-search/src/facets.rs` — `FacetsConfig.build`
+## 7. `crates/lucene-facet/src/lib.rs` — `FacetsConfig.build`
 
 Java: `facet/FacetsConfig.java`.
 

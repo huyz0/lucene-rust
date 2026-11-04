@@ -614,7 +614,7 @@ impl SortedSetDocValues for SegSortedSet<'_> {
 
 /// The documents of a segment a [`DirectColumn`] walk visits.
 #[derive(Debug, Clone, Copy)]
-pub(crate) enum DocFilter<'b> {
+pub enum DocFilter<'b> {
     /// Every document.
     All,
     /// The documents whose bits are set in these words.
@@ -638,7 +638,7 @@ enum ColumnValues<'a> {
 /// object, a virtual call or a second `IndexedDISI` walk per document --
 /// what `DocValues.unwrapSingleton` and the JIT's monomorphic calls give
 /// Java's counting loops.
-pub(crate) struct DirectColumn<'a> {
+pub struct DirectColumn<'a> {
     docs: DocSet,
     values: ColumnValues<'a>,
     buf: Vec<i64>,
@@ -651,7 +651,7 @@ impl SegmentReader {
     ///
     /// # Errors
     /// Whatever decoding the documents with a value reports.
-    pub(crate) fn direct_column(
+    pub fn direct_column(
         &self,
         field: &str,
         kind: DocValuesType,
@@ -834,7 +834,7 @@ impl DirectColumn<'_> {
     /// # Errors
     /// Whatever reading the column reports, and whatever `f` returns.
     #[inline]
-    pub(crate) fn for_each(
+    pub fn for_each(
         &mut self,
         filter: DocFilter<'_>,
         lo: i32,

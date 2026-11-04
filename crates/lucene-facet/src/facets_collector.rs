@@ -1,0 +1,902 @@
+//! `FacetsCollector` and `FacetsCollectorManager`: the matching documents of
+//! a search, per segment, for the facet implementations to count.
+//!
+//! A [`FacetsCollector`] is a [`SegmentCollector`]: the search hands it each
+//! segment ([`FacetsCollector::set_next_reader`] /
+//! [`SegmentCollector::finish`], for every segment, matching or not) and the
+//! matching documents in order, which it keeps as a [`DocIdSet`] per segment
+//! ([`MatchingDocs`]). [`FacetsCollectorManager::collect`] is
+//! `searcher.search(query, facetsCollectorManager)`: one collector per slice
+//! (the slices on rayon's pool when there are several), then
+//! [`FacetsCollectorManager::reduce`].
+//!
+//! Differs:
+//! * `reduce` merges the matching docs of a segment searched in several
+//!   partitions into one, as Java does, but keeps the segments in the order
+//!   they were first seen; Java collects them into a `HashMap` keyed by
+//!   identity and returns its values in that map's (unspecified) order.
+//! * `search`/`searchAfter` with a `Sort` are not ported (the field-sorted
+//!   top docs collector is not driven here); the score-ordered ones are.
+
+use std::borrow::Borrow;
+
+use lucene_util::fixed_bit_set::FixedBitSet;
+
+use lucene_search::collector::TotalHitsRelation;
+use lucene_search::collector::{
+    ScoreDoc, ScoreMode, ScoringCollector, TopDocsCollector, TotalHits,
+};
+use lucene_search::directory_reader::SegmentReader;
+use lucene_search::index_searcher::IndexSearcher;
+use lucene_search::leaf_collector::{search_slice, PerSegment, SegmentCollector};
+use lucene_search::multi_segment::OpenSegment;
+use lucene_search::query::BooleanQuery;
+use lucene_search::reader::{DocIdSetIterator, IndexReader, LeafReaderContext, NO_MORE_DOCS};
+use lucene_search::top_docs::{ShardScoreDoc, TopDocs};
+use lucene_search::top_field::{FieldDoc, SortField, TopFieldDocs};
+use lucene_search::{Error, Result};
+
+/// A set of a segment's document ids: what `DocIdSetBuilder.build()` hands
+/// out (`IntArrayDocIdSet` or `BitDocIdSet`), or `DocIdSet.EMPTY`.
+#[derive(Debug, Clone)]
+pub enum DocIdSet {
+    /// `DocIdSet.EMPTY`.
+    Empty,
+    /// Sorted, distinct document ids.
+    Array(Vec<i32>),
+    /// A bit per document, and the number of documents set.
+    Bits { bits: FixedBitSet, cost: i64 },
+}
+
+impl DocIdSet {
+    /// `iterator()`.
+    pub fn iterator(&self) -> DocIdSetIter<&DocIdSet> {
+        DocIdSetIter {
+            set: self,
+            doc: -1,
+            pos: 0,
+        }
+    }
+
+    /// `iterator()` over a set the iterator owns.
+    pub fn into_iterator(self) -> DocIdSetIter<DocIdSet> {
+        DocIdSetIter {
+            set: self,
+            doc: -1,
+            pos: 0,
+        }
+    }
+
+    /// The number of documents in the set.
+    pub fn len(&self) -> usize {
+        match self {
+            DocIdSet::Empty => 0,
+            DocIdSet::Array(docs) => docs.len(),
+            DocIdSet::Bits { bits, .. } => bits.cardinality(),
+        }
+    }
+
+    /// Whether the set has no document.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// `ramBytesUsed()`: the set itself plus the heap it owns (an array's
+    /// allocated capacity, a bitset's words).
+    pub fn ram_bytes_used(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + match self {
+                DocIdSet::Empty => 0,
+                DocIdSet::Array(docs) => docs.capacity() * std::mem::size_of::<i32>(),
+                DocIdSet::Bits { bits, .. } => std::mem::size_of_val(bits.words()),
+            }
+    }
+}
+
+/// [`DocIdSet::iterator`]: over a borrowed or an owned set.
+#[derive(Debug)]
+pub struct DocIdSetIter<S: Borrow<DocIdSet>> {
+    set: S,
+    doc: i32,
+    /// The next index into an [`DocIdSet::Array`].
+    pos: usize,
+}
+
+impl<S: Borrow<DocIdSet>> DocIdSetIter<S> {
+    fn exhaust(&mut self) -> i32 {
+        self.doc = NO_MORE_DOCS;
+        NO_MORE_DOCS
+    }
+}
+
+impl<S: Borrow<DocIdSet>> DocIdSetIterator for DocIdSetIter<S> {
+    fn doc_id(&self) -> i32 {
+        self.doc
+    }
+
+    fn next_doc(&mut self) -> Result<i32> {
+        let target = self.doc.saturating_add(1);
+        self.advance(target)
+    }
+
+    fn advance(&mut self, target: i32) -> Result<i32> {
+        if self.doc == NO_MORE_DOCS {
+            return Ok(NO_MORE_DOCS);
+        }
+        let target = target.max(0);
+        match self.set.borrow() {
+            DocIdSet::Empty => Ok(self.exhaust()),
+            DocIdSet::Array(docs) => {
+                let mut pos = self.pos;
+                while let Some(&d) = docs.get(pos) {
+                    pos = pos.saturating_add(1);
+                    if d >= target {
+                        self.pos = pos;
+                        self.doc = d;
+                        return Ok(d);
+                    }
+                }
+                self.pos = pos;
+                Ok(self.exhaust())
+            }
+            DocIdSet::Bits { bits, .. } => {
+                // `next_set_bit` is bounded by the bitset's own `len()`.
+                let from = usize::try_from(target).unwrap_or(usize::MAX);
+                let next = bits.next_set_bit(from).and_then(|d| i32::try_from(d).ok());
+                match next {
+                    Some(d) => {
+                        self.doc = d;
+                        Ok(d)
+                    }
+                    None => Ok(self.exhaust()),
+                }
+            }
+        }
+    }
+
+    fn cost(&self) -> i64 {
+        match self.set.borrow() {
+            DocIdSet::Empty => 0,
+            DocIdSet::Array(docs) => i64::try_from(docs.len()).unwrap_or(i64::MAX),
+            DocIdSet::Bits { cost, .. } => *cost,
+        }
+    }
+}
+
+/// `DocIdSetBuilder(maxDoc)`: buffers ids, switching to a bitset once more
+/// than `maxDoc >>> 7` were added.
+#[derive(Debug)]
+pub(crate) struct DocIdSetBuilder {
+    max_doc: usize,
+    threshold: usize,
+    buffer: Vec<i32>,
+    bits: Option<FixedBitSet>,
+    /// Ids added since the switch to the bitset.
+    counter: i64,
+}
+
+impl DocIdSetBuilder {
+    pub(crate) fn new(max_doc: i32) -> Self {
+        let max_doc = usize::try_from(max_doc).unwrap_or(0);
+        DocIdSetBuilder {
+            max_doc,
+            threshold: max_doc >> 7,
+            buffer: Vec::new(),
+            bits: None,
+            counter: 0,
+        }
+    }
+
+    /// `grow(1).add(doc)`.
+    #[inline]
+    pub(crate) fn add(&mut self, doc: i32) {
+        match &mut self.bits {
+            Some(bits) => {
+                // FBS: `doc` is a document of the segment this builder was
+                // sized for; `get_doc`-style bounds keep a stray id out.
+                if let Ok(i) = usize::try_from(doc) {
+                    if i < bits.len() {
+                        bits.set(i);
+                    }
+                }
+                self.counter = self.counter.saturating_add(1);
+            }
+            None => {
+                self.buffer.push(doc);
+                if self.buffer.len() > self.threshold {
+                    self.upgrade();
+                }
+            }
+        }
+    }
+
+    /// `add` of each document in `[min, max)`, ascending: a run set in the
+    /// bitset at once, the buffer upgraded first when the run would take it
+    /// past the threshold.
+    pub(crate) fn add_range(&mut self, min: i32, max: i32) {
+        // From document 0: a run below it holds no document of the segment
+        // (where `add` would buffer such an id, a range keeps none).
+        let (lo, Ok(hi)) = (usize::try_from(min).unwrap_or(0), usize::try_from(max)) else {
+            return;
+        };
+        if hi <= lo {
+            return;
+        }
+        let n = hi.saturating_sub(lo);
+        if self.bits.is_none() && self.buffer.len().saturating_add(n) > self.threshold {
+            self.upgrade();
+        }
+        match &mut self.bits {
+            Some(bits) => {
+                // FBS: clamped to this bitset's `len()`, as `add` drops a
+                // stray id.
+                let hi_in = hi.min(bits.len());
+                if lo < hi_in {
+                    bits.set_range(lo, hi_in);
+                }
+                self.counter = self
+                    .counter
+                    .saturating_add(i64::try_from(n).unwrap_or(i64::MAX));
+            }
+            None => self.buffer.extend(min.max(0)..max),
+        }
+    }
+
+    /// `add(DocIdSetIterator)`.
+    pub(crate) fn add_all(&mut self, it: &mut dyn DocIdSetIterator) -> Result<()> {
+        loop {
+            let d = it.next_doc()?;
+            if d == NO_MORE_DOCS {
+                return Ok(());
+            }
+            self.add(d);
+        }
+    }
+
+    fn upgrade(&mut self) {
+        let mut bits = FixedBitSet::new(self.max_doc);
+        for &d in &self.buffer {
+            if let Ok(i) = usize::try_from(d) {
+                if i < bits.len() {
+                    bits.set(i);
+                }
+            }
+        }
+        self.counter = i64::try_from(self.buffer.len()).unwrap_or(i64::MAX);
+        self.buffer = Vec::new();
+        self.bits = Some(bits);
+    }
+
+    /// `build()`.
+    pub(crate) fn build(self) -> DocIdSet {
+        match self.bits {
+            Some(bits) => DocIdSet::Bits {
+                bits,
+                cost: self.counter,
+            },
+            None => {
+                let mut docs = self.buffer;
+                docs.sort_unstable();
+                docs.dedup();
+                DocIdSet::Array(docs)
+            }
+        }
+    }
+}
+
+/// `FacetsCollector.MatchingDocs`: one segment's matching documents.
+#[derive(Clone)]
+pub struct MatchingDocs<'a> {
+    /// `context`.
+    pub context: LeafReaderContext<'a>,
+    /// `bits`: the matching documents, segment-local.
+    pub bits: DocIdSet,
+    /// `totalHits`.
+    pub total_hits: i32,
+    /// `scores`, by segment-local document, when scores were kept.
+    pub scores: Option<Vec<f32>>,
+}
+
+impl std::fmt::Debug for MatchingDocs<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MatchingDocs")
+            .field("ord", &self.context.ord)
+            .field("doc_base", &self.context.doc_base)
+            .field("total_hits", &self.total_hits)
+            .field("bits", &self.bits)
+            .finish()
+    }
+}
+
+/// `FacetsCollector`.
+#[derive(Default)]
+pub struct FacetsCollector<'a> {
+    keep_scores: bool,
+    matching_docs: Vec<MatchingDocs<'a>>,
+    context: Option<LeafReaderContext<'a>>,
+    builder: Option<DocIdSetBuilder>,
+    total_hits: i32,
+    scores: Option<Vec<f32>>,
+}
+
+impl<'a> FacetsCollector<'a> {
+    /// `new FacetsCollector(keepScores)`.
+    pub fn new(keep_scores: bool) -> Self {
+        FacetsCollector {
+            keep_scores,
+            ..Default::default()
+        }
+    }
+
+    /// `getKeepScores()`.
+    pub fn keep_scores(&self) -> bool {
+        self.keep_scores
+    }
+
+    /// `getMatchingDocs()`.
+    pub fn matching_docs(&self) -> &[MatchingDocs<'a>] {
+        &self.matching_docs
+    }
+
+    /// Forgets the kept scores: the collector as one that never kept them.
+    pub(crate) fn drop_scores(&mut self) {
+        self.keep_scores = false;
+        for m in &mut self.matching_docs {
+            m.scores = None;
+        }
+    }
+
+    /// `getMatchingDocs().add(..)`: what a caller collecting by hand appends.
+    pub fn push_matching_docs(&mut self, docs: MatchingDocs<'a>) {
+        self.matching_docs.push(docs);
+    }
+}
+
+impl std::fmt::Debug for FacetsCollector<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FacetsCollector")
+            .field("keep_scores", &self.keep_scores)
+            .field("matching_docs", &self.matching_docs)
+            .finish()
+    }
+}
+
+impl<'a> SegmentCollector<'a> for FacetsCollector<'a> {
+    fn score_mode(&self) -> ScoreMode {
+        if self.keep_scores {
+            ScoreMode::Complete
+        } else {
+            ScoreMode::CompleteNoScores
+        }
+    }
+
+    /// `doSetNextReader(context)`.
+    fn set_next_reader(&mut self, ord: usize, leaf: &OpenSegment<'a>) -> Result<()> {
+        let reader = leaf
+            .reader
+            .ok_or_else(|| Error::MissingSegmentReader("FacetsCollector".into()))?;
+        let context = LeafReaderContext {
+            reader,
+            ord,
+            doc_base: leaf.doc_base,
+        };
+        self.builder = Some(DocIdSetBuilder::new(reader.max_doc()));
+        self.total_hits = 0;
+        if self.keep_scores {
+            self.scores = Some(Vec::with_capacity(64));
+        }
+        self.context = Some(context);
+        Ok(())
+    }
+
+    /// `collect(doc)`.
+    #[inline]
+    fn collect(&mut self, doc: i32, score: f32) -> Result<()> {
+        if let Some(b) = &mut self.builder {
+            b.add(doc);
+        }
+        if let Some(scores) = &mut self.scores {
+            if let Ok(i) = usize::try_from(doc) {
+                if i >= scores.len() {
+                    scores.resize(i.saturating_add(1), 0.0);
+                }
+                scores[i] = score;
+            }
+        }
+        self.total_hits = self.total_hits.wrapping_add(1);
+        Ok(())
+    }
+
+    /// `collectRange(min, max)` (Java's default, a `collect` per document),
+    /// with the run handed to the builder at once.
+    fn collect_range(&mut self, min: i32, max: i32, score: f32) -> Result<()> {
+        if max <= min {
+            return Ok(());
+        }
+        if let Some(b) = &mut self.builder {
+            b.add_range(min, max);
+        }
+        if let Some(scores) = &mut self.scores {
+            if let (lo, Ok(hi)) = (usize::try_from(min).unwrap_or(0), usize::try_from(max)) {
+                if hi > scores.len() {
+                    scores.resize(hi, 0.0);
+                }
+                scores[lo..hi].fill(score);
+            }
+        }
+        self.total_hits = self.total_hits.wrapping_add(max.saturating_sub(min));
+        Ok(())
+    }
+
+    /// `finish()`.
+    fn finish(&mut self) -> Result<()> {
+        let bits = match self.builder.take() {
+            Some(b) => b.build(),
+            None => DocIdSet::Empty,
+        };
+        let Some(context) = self.context.take() else {
+            return Err(Error::IllegalState(
+                "FacetsCollector.finish without a segment".into(),
+            ));
+        };
+        self.matching_docs.push(MatchingDocs {
+            context,
+            bits,
+            total_hits: self.total_hits,
+            scores: self.scores.take(),
+        });
+        Ok(())
+    }
+}
+
+/// `FacetsCollectorManager`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FacetsCollectorManager {
+    keep_scores: bool,
+}
+
+/// `FacetsCollectorManager.FacetsResult`: the top documents and the facets
+/// collector of one search.
+#[derive(Debug)]
+pub struct FacetsResult<'a> {
+    pub top_docs: TopDocs,
+    pub facets_collector: FacetsCollector<'a>,
+}
+
+impl FacetsCollectorManager {
+    /// `new FacetsCollectorManager(keepScores)`.
+    pub fn new(keep_scores: bool) -> Self {
+        FacetsCollectorManager { keep_scores }
+    }
+
+    /// `newCollector()`.
+    pub fn new_collector<'a>(&self) -> FacetsCollector<'a> {
+        FacetsCollector::new(self.keep_scores)
+    }
+
+    /// `reduce(collectors)`: none is a new collector (that does not keep
+    /// scores, as in Java), one is itself, several are merged segment by
+    /// segment (see the module doc for the order).
+    pub fn reduce<'a>(&self, collectors: Vec<FacetsCollector<'a>>) -> Result<FacetsCollector<'a>> {
+        if collectors.len() <= 1 {
+            return Ok(collectors
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| FacetsCollector::new(false)));
+        }
+        let mut merged: Vec<MatchingDocs<'a>> = Vec::new();
+        // Each segment's position in `merged`, by `context.ord`: one probe per
+        // matching docs rather than a scan of everything merged so far.
+        let mut at: lucene_util::fx_hash::avalanche::FxHashMap<usize, usize> = Default::default();
+        for c in collectors {
+            for docs in c.matching_docs {
+                match at.get(&docs.context.ord) {
+                    Some(&i) => {
+                        let existing = &mut merged[i];
+                        *existing = merge(existing, &docs)?;
+                    }
+                    None => {
+                        at.insert(docs.context.ord, merged.len());
+                        merged.push(docs);
+                    }
+                }
+            }
+        }
+        let mut reduced = FacetsCollector::new(self.keep_scores);
+        reduced.matching_docs = merged;
+        Ok(reduced)
+    }
+
+    /// `searcher.search(query, this)`: a collector per slice of `searcher`,
+    /// reduced.
+    pub fn collect<'a>(
+        &self,
+        searcher: &IndexSearcher<'_, 'a>,
+        query: &BooleanQuery,
+    ) -> Result<FacetsCollector<'a>> {
+        let slices = searcher.slices();
+        if slices.is_empty() {
+            return self.reduce(vec![self.new_collector()]);
+        }
+        // The slices are independent (each its own collector, merged by
+        // `reduce` in slice order), so several run concurrently, as Java's
+        // `IndexSearcher` hands them to its executor; a search too small to
+        // be worth a pool thread's wake-up runs them in turn here.
+        let parallel = slices.len() > 1
+            && lucene_search::slices::estimated_matches(searcher.segments(), query)
+                >= lucene_search::slices::SEQUENTIAL_BELOW;
+        let collectors = lucene_search::slices::run_slices_if(parallel, slices, |slice| {
+            let mut c = self.new_collector();
+            search_slice(searcher, query, slice, &mut c)?;
+            Ok(c)
+        })
+        .into_iter()
+        .collect::<Result<Vec<_>>>()?;
+        self.reduce(collectors)
+    }
+
+    /// `FacetsCollectorManager.search(searcher, q, n, fcm)`: the top `n`
+    /// documents by score and the facets collector, in one pass.
+    pub fn search<'a>(
+        searcher: &IndexSearcher<'_, 'a>,
+        query: &BooleanQuery,
+        n: i32,
+        fcm: &FacetsCollectorManager,
+    ) -> Result<FacetsResult<'a>> {
+        do_search(searcher, None, query, n, fcm)
+    }
+
+    /// `FacetsCollectorManager.searchAfter(searcher, after, q, n, fcm)`.
+    pub fn search_after<'a>(
+        searcher: &IndexSearcher<'_, 'a>,
+        after: ScoreDoc,
+        query: &BooleanQuery,
+        n: i32,
+        fcm: &FacetsCollectorManager,
+    ) -> Result<FacetsResult<'a>> {
+        do_search(searcher, Some(after), query, n, fcm)
+    }
+
+    /// `FacetsCollectorManager.search(searcher, q, n, sort, doDocScores,
+    /// fcm)`: the top `n` documents by `sort` and the facets collector.
+    /// `readers[i]` is segment `i`'s reader (its doc values).
+    ///
+    /// # Errors
+    /// [`Error::IllegalArgument`] for an empty `sort` (Java's `null`);
+    /// whatever the search reports.
+    #[allow(clippy::too_many_arguments)]
+    pub fn search_sorted<'a>(
+        searcher: &IndexSearcher<'_, 'a>,
+        readers: &[SegmentReader],
+        query: &BooleanQuery,
+        n: i32,
+        sort: &[SortField],
+        do_doc_scores: bool,
+        fcm: &FacetsCollectorManager,
+    ) -> Result<SortedFacetsResult<'a>> {
+        do_search_sorted(searcher, readers, None, query, n, sort, do_doc_scores, fcm)
+    }
+
+    /// `FacetsCollectorManager.searchAfter(searcher, after, q, n, sort,
+    /// doDocScores, fcm)`.
+    ///
+    /// # Errors
+    /// As [`Self::search_sorted`], and [`Error::IllegalArgument`] when
+    /// `after.doc` is not below the reader's `maxDoc`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn search_after_sorted<'a>(
+        searcher: &IndexSearcher<'_, 'a>,
+        readers: &[SegmentReader],
+        after: &FieldDoc,
+        query: &BooleanQuery,
+        n: i32,
+        sort: &[SortField],
+        do_doc_scores: bool,
+        fcm: &FacetsCollectorManager,
+    ) -> Result<SortedFacetsResult<'a>> {
+        do_search_sorted(
+            searcher,
+            readers,
+            Some(after),
+            query,
+            n,
+            sort,
+            do_doc_scores,
+            fcm,
+        )
+    }
+}
+
+/// `FacetsCollectorManager.FacetsResult` of a sorted search: the hits, their
+/// scores (`populateScores`; `NaN` each without `doDocScores`) and the
+/// facets collector.
+#[derive(Debug)]
+pub struct SortedFacetsResult<'a> {
+    pub top_docs: TopFieldDocs,
+    /// `scoreDocs[i].score`, one per hit of [`Self::top_docs`].
+    pub scores: Vec<f32>,
+    pub facets_collector: FacetsCollector<'a>,
+}
+
+/// `FacetsCollectorManager.doSearch` with a sort. The hits and the facets
+/// collector come from two searches of the query (the same documents) --
+/// the field-sorted collector is driven by `top_field`, which takes no
+/// second collector -- run concurrently when the query is large enough to be
+/// worth a pool thread. The scores (`doDocScores`) are the facets
+/// collector's own: it keeps them for that search, and drops them again when
+/// `fcm` does not keep scores, rather than the query running a third time.
+#[allow(clippy::too_many_arguments)]
+fn do_search_sorted<'a>(
+    searcher: &IndexSearcher<'_, 'a>,
+    readers: &[SegmentReader],
+    after: Option<&FieldDoc>,
+    query: &BooleanQuery,
+    n: i32,
+    sort: &[SortField],
+    do_doc_scores: bool,
+    fcm: &FacetsCollectorManager,
+) -> Result<SortedFacetsResult<'a>> {
+    if sort.is_empty() {
+        return Err(Error::IllegalArgument("sort must not be null".into()));
+    }
+    let mut limit = searcher.max_doc();
+    if limit == 0 {
+        limit = 1;
+    }
+    let n = n.min(limit);
+    if let Some(a) = after {
+        if a.doc >= limit {
+            return Err(Error::IllegalArgument(format!(
+                "after.doc exceeds the number of documents in the reader: after.doc={} limit={limit}",
+                a.doc
+            )));
+        }
+    }
+    if n == 0 {
+        let facets_collector = fcm.collect(searcher, query)?;
+        let total = facets_collector
+            .matching_docs()
+            .iter()
+            .fold(0i32, |t, m| t.wrapping_add(m.total_hits));
+        return Ok(SortedFacetsResult {
+            top_docs: TopFieldDocs {
+                hits: Vec::new(),
+                total: TotalHits {
+                    value: u64::try_from(total).unwrap_or(0),
+                    relation: TotalHitsRelation::EqualTo,
+                },
+                max_score: f32::NAN,
+            },
+            scores: Vec::new(),
+            facets_collector,
+        });
+    }
+    let Ok(top_n) = usize::try_from(n) else {
+        return Err(Error::IllegalArgument(
+            "numHits must be > 0; please use TotalHitCountCollectorManager if you just need the \
+             total hit count"
+                .into(),
+        ));
+    };
+    // Scores for `populateScores` come from the facets collector of this
+    // same search, which keeps them when either side wants them.
+    let collect_manager = FacetsCollectorManager::new(fcm.keep_scores || do_doc_scores);
+    let facets = || collect_manager.collect(searcher, query);
+    let sorted = || searcher.search_sorted_counting_all(readers, query, top_n, sort, after);
+    let parallel = lucene_search::slices::estimated_matches(searcher.segments(), query)
+        >= lucene_search::slices::SEQUENTIAL_BELOW;
+    let (facets_collector, top_docs) = if parallel {
+        rayon::join(facets, sorted)
+    } else {
+        (facets(), sorted())
+    };
+    let (mut facets_collector, top_docs) = (facets_collector?, top_docs?);
+    let scores = if do_doc_scores {
+        populate_scores(&top_docs.hits, &facets_collector)
+    } else {
+        vec![f32::NAN; top_docs.hits.len()]
+    };
+    if !fcm.keep_scores && collect_manager.keep_scores {
+        // What `fcm` itself would have collected: no scores.
+        facets_collector.drop_scores();
+    }
+    Ok(SortedFacetsResult {
+        top_docs,
+        scores,
+        facets_collector,
+    })
+}
+
+/// `TopFieldCollector.populateScores`: each hit's score, read off a
+/// collector that kept the query's scores (`0` for a hit it did not see,
+/// which a collector of the same query cannot miss).
+///
+/// The segments are ordered by doc base once and each hit's found by binary
+/// search (the first segment ending past it), not by a scan per hit.
+pub(crate) fn populate_scores(hits: &[FieldDoc], scored: &FacetsCollector<'_>) -> Vec<f32> {
+    let matching = scored.matching_docs();
+    let mut by_base: Vec<&MatchingDocs<'_>> = matching.iter().collect();
+    by_base.sort_by_key(|m| m.context.doc_base);
+    let score_in = |m: &MatchingDocs<'_>, doc: i32| -> Option<f32> {
+        let local = doc.checked_sub(m.context.doc_base)?;
+        if local < 0 || local >= m.context.reader.max_doc() {
+            return None;
+        }
+        m.scores
+            .as_ref()?
+            .get(usize::try_from(local).ok()?)
+            .copied()
+    };
+    hits.iter()
+        .map(|h| {
+            // Segments partition the doc-id space, so at most the segment
+            // with the greatest base not above the hit holds it; any later
+            // one starting at the same base (an empty segment) is tried too.
+            let first = by_base
+                .partition_point(|m| m.context.doc_base <= h.doc)
+                .saturating_sub(1);
+            by_base
+                .get(first..)
+                .into_iter()
+                .flatten()
+                .take_while(|m| m.context.doc_base <= h.doc)
+                .find_map(|m| score_in(m, h.doc))
+                .or_else(|| {
+                    // A segment's matching docs listed twice (hand-built):
+                    // the original scan's answer.
+                    matching.iter().find_map(|m| score_in(m, h.doc))
+                })
+                .unwrap_or(0.0)
+        })
+        .collect()
+}
+
+/// `FacetsCollectorManager.merge`: one segment's matching docs from two
+/// partitions.
+fn merge<'a>(a: &MatchingDocs<'a>, b: &MatchingDocs<'a>) -> Result<MatchingDocs<'a>> {
+    let scores = match (&a.scores, &b.scores) {
+        (None, None) => Some(Vec::new()),
+        (Some(s), None) | (None, Some(s)) => Some(s.clone()),
+        (Some(x), Some(y)) => {
+            let len = x.len().max(y.len());
+            Some(
+                (0..len)
+                    .map(|i| {
+                        let first = x.get(i).copied().unwrap_or(0.0);
+                        let second = y.get(i).copied().unwrap_or(0.0);
+                        java_max(first, second)
+                    })
+                    .collect(),
+            )
+        }
+    };
+    let mut builder = DocIdSetBuilder::new(a.context.reader.max_doc());
+    builder.add_all(&mut a.bits.iterator())?;
+    builder.add_all(&mut b.bits.iterator())?;
+    Ok(MatchingDocs {
+        context: a.context,
+        bits: builder.build(),
+        total_hits: a.total_hits.wrapping_add(b.total_hits),
+        scores,
+    })
+}
+
+/// `Math.max(float, float)`: `NaN` wins, and `0.0` beats `-0.0`.
+pub(crate) fn java_max(a: f32, b: f32) -> f32 {
+    if a.is_nan() || b.is_nan() {
+        f32::NAN
+    } else if a == 0.0 && b == 0.0 {
+        if a.is_sign_negative() {
+            b
+        } else {
+            a
+        }
+    } else if a >= b {
+        a
+    } else {
+        b
+    }
+}
+
+/// The top documents collector and a slice's facets collector, fed together
+/// (`MultiCollectorManager(topScoreDocs, fcm)`).
+struct TopAndFacets<'c, 's, 'a> {
+    top: &'c mut TopDocsCollector,
+    facets: PerSegment<'c, 's, 'a, FacetsCollector<'a>>,
+}
+
+impl ScoringCollector for TopAndFacets<'_, '_, '_> {
+    fn collect(&mut self, doc_id: i32, score: f32) {
+        self.top.collect(doc_id, score);
+        self.facets.collect(doc_id, score);
+    }
+
+    fn score_mode(&self) -> ScoreMode {
+        ScoreMode::Complete
+    }
+}
+
+/// `FacetsCollectorManager.doSearch` without a sort.
+fn do_search<'a>(
+    searcher: &IndexSearcher<'_, 'a>,
+    after: Option<ScoreDoc>,
+    query: &BooleanQuery,
+    n: i32,
+    fcm: &FacetsCollectorManager,
+) -> Result<FacetsResult<'a>> {
+    let mut limit = searcher.max_doc();
+    if limit == 0 {
+        limit = 1;
+    }
+    let n = n.min(limit);
+    if let Some(a) = after {
+        if a.doc_id >= limit {
+            return Err(Error::IllegalArgument(format!(
+                "after.doc exceeds the number of documents in the reader: after.doc={} limit={limit}",
+                a.doc_id
+            )));
+        }
+    }
+    if n == 0 {
+        let facets_collector = fcm.collect(searcher, query)?;
+        let total = facets_collector
+            .matching_docs()
+            .iter()
+            .fold(0i32, |t, m| t.wrapping_add(m.total_hits));
+        return Ok(FacetsResult {
+            top_docs: TopDocs {
+                total_hits: TotalHits {
+                    value: u64::try_from(total).unwrap_or(0),
+                    relation: TotalHitsRelation::EqualTo,
+                },
+                score_docs: Vec::new(),
+            },
+            facets_collector,
+        });
+    }
+    let Ok(top_n) = usize::try_from(n) else {
+        return Err(Error::IllegalArgument(
+            "numHits must be > 0; please use TotalHitCountCollectorManager if you just need the \
+             total hit count"
+                .into(),
+        ));
+    };
+    // One top-docs collector across the slices: what merging each slice's
+    // top docs (`TopDocs.merge`, ties by doc id) yields.
+    let mut top = TopDocsCollector::with_total_hits_threshold(top_n, u64::MAX);
+    if let Some(a) = after {
+        top = top.with_after(a);
+    }
+    let mut collectors = Vec::new();
+    let slices: Vec<Vec<usize>> = if searcher.slices().is_empty() {
+        vec![Vec::new()]
+    } else {
+        searcher.slices().to_vec()
+    };
+    for slice in &slices {
+        let mut fc = fcm.new_collector();
+        {
+            let mut both = TopAndFacets {
+                top: &mut top,
+                facets: PerSegment::over(searcher.segments(), slice, &mut fc),
+            };
+            searcher.search_slice_collector(query, slice, &mut both)?;
+            both.facets.close()?;
+        }
+        collectors.push(fc);
+    }
+    Ok(FacetsResult {
+        top_docs: TopDocs {
+            total_hits: top.total_hits(),
+            score_docs: top
+                .top_docs()
+                .iter()
+                .map(|h| ShardScoreDoc::new(h.doc_id, h.score))
+                .collect(),
+        },
+        facets_collector: fcm.reduce(collectors)?,
+    })
+}
+
+#[cfg(test)]
+mod tests;

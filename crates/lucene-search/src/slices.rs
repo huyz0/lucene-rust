@@ -13,11 +13,11 @@
 /// for even when the caller could have run the slice itself. Lucene's
 /// `TaskExecutor` has the caller run any task not yet started; rayon cannot
 /// take a spawned job back, so the choice is made before spawning.
-pub(crate) const SEQUENTIAL_BELOW: u64 = 4_096;
+pub const SEQUENTIAL_BELOW: u64 = 4_096;
 
 /// [`run_slices`], or the slices in turn on this thread when `parallel` is
 /// false -- the same results in the same order.
-pub(crate) fn run_slices_if<T: Send>(
+pub fn run_slices_if<T: Send>(
     parallel: bool,
     slices: &[Vec<usize>],
     f: impl Fn(&[usize]) -> T + Sync,
@@ -36,7 +36,7 @@ pub(crate) fn run_slices_if<T: Send>(
 /// segment's documents. Deciding whether to hand slices to other threads,
 /// and [`crate::terminate::cannot_reach`], whose answer is only right while
 /// this never falls below the true count.
-pub(crate) fn estimated_matches(
+pub fn estimated_matches(
     segments: &[crate::multi_segment::OpenSegment<'_>],
     query: &crate::query::BooleanQuery,
 ) -> u64 {

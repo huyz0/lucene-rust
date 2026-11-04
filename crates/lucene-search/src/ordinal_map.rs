@@ -7,7 +7,7 @@
 //! because doc-values *merging* uses it as well as faceting. In this port
 //! nothing below `lucene-search` has a consumer for it yet (the merge path
 //! rebuilds a segment's dictionary from scratch rather than mapping ordinals),
-//! and faceting — [`crate::facets`] — is the one caller. Keeping it beside its
+//! and faceting — `lucene_facet` — is the one caller. Keeping it beside its
 //! caller instead of speculatively parking it a crate down is a one-file move
 //! if the merge path ever needs it.
 //!
@@ -17,7 +17,7 @@
 //! dictionary numbers its own terms 0..n, so ordinal 3 in segment 0 and
 //! ordinal 3 in segment 1 are, in general, different terms. Summing raw
 //! per-segment facet counts therefore conflates unrelated terms — this is the
-//! defect [`crate::facets`]' module doc used to warn callers about and work
+//! defect `lucene_facet`' module doc used to warn callers about and work
 //! around by merging on the resolved label instead.
 //!
 //! `OrdinalMap` removes the workaround: it merge-sorts every segment's terms
@@ -390,7 +390,7 @@ impl OrdinalMap {
 
     /// `OrdinalMap.getGlobalOrds(segmentIndex)` — the whole segment's map, for
     /// a caller remapping every ordinal of a segment in one pass (which is
-    /// what [`crate::facets::merge_segment_counts`] does).
+    /// what `lucene_facet::merge_segment_counts` does).
     pub fn segment_ords(&self, segment: usize) -> Option<&[i64]> {
         self.segment_to_global.get(segment).map(Vec::as_slice)
     }

@@ -32,9 +32,9 @@
 //!   for the geo point queries (and the queries they build), `Object`'s
 //!   identity for the rest.
 
-pub(crate) mod dense_bulk;
+pub mod dense_bulk;
 mod distance_feature;
-pub(crate) mod doc_values_queries;
+pub mod doc_values_queries;
 mod feature;
 pub mod geo;
 mod point_queries;
@@ -327,7 +327,7 @@ pub fn reader<'a>(leaf: &OpenSegment<'a>) -> Result<&'a SegmentReader> {
 }
 
 /// The leaf's `FieldInfo` for `field`.
-pub(crate) fn field_info<'a>(leaf: &OpenSegment<'a>, field: &str) -> Result<Option<&'a FieldInfo>> {
+pub fn field_info<'a>(leaf: &OpenSegment<'a>, field: &str) -> Result<Option<&'a FieldInfo>> {
     Ok(reader(leaf)?
         .field_infos()
         .fields
