@@ -12,7 +12,7 @@
 use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hash};
 
-use crate::grouping::FxHasher;
+use lucene_util::fx_hash::avalanche::FxHasher;
 
 const NIL: usize = usize::MAX;
 

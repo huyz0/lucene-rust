@@ -26,9 +26,9 @@ use lucene_search::facets::{
     Facets, FacetsCollector, FacetsCollectorManager, FacetsConfig, MultiFacetQuery,
 };
 use lucene_search::field_norms::FieldNorms;
-use lucene_search::grouping::GroupingCollectorManager;
 use lucene_search::index_searcher::{IndexSearcher, SegmentNorms};
 use lucene_search::leaf_collector::SegmentCollector;
+use lucene_search::leaf_collector::SegmentCollectorManager;
 use lucene_search::multi_segment::OpenSegment;
 use lucene_search::query::{BooleanQuery, Clause, MatchAllDocsQuery, PhraseQuery, TermQuery};
 use lucene_search::reader::{DocIdSetIterator, NO_MORE_DOCS};
@@ -338,7 +338,7 @@ impl<'a> SegmentCollector<'a> for Count {
     }
 }
 
-impl<'a> GroupingCollectorManager<'a> for CountManager {
+impl<'a> SegmentCollectorManager<'a> for CountManager {
     type Collector = Count;
     type Output = i64;
     fn new_collector(&self) -> Result<Count> {

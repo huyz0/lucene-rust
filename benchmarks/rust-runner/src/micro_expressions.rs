@@ -7,7 +7,7 @@
 use std::hint::black_box;
 use std::time::Duration;
 
-use lucene_search::expressions::compile;
+use lucene_expressions::compile;
 use lucene_search::values_source::{BoxDoubleValues, DoubleValues};
 
 use super::measure;

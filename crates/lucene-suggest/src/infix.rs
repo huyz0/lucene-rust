@@ -27,7 +27,7 @@ use lucene_analysis::{collect_tokens, AnalysisError, Analyzer};
 use lucene_store::{DataInput, DataOutput, Error, Result};
 use rayon::prelude::*;
 
-use lucene_search::grouping::{FxHashMap, FxHasher};
+use lucene_util::fx_hash::avalanche::{FxHashMap, FxHasher};
 
 use super::input::InputIterator;
 use super::lookup::{charsequence_compare, illegal_state, Lookup, LookupResult};

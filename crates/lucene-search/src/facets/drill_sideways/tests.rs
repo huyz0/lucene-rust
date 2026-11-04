@@ -343,7 +343,7 @@ fn any_hit_collector_manager() {
             first: &fcm,
             second: &fcm,
         };
-        let c = GroupingCollectorManager::new_collector(&pair).unwrap();
+        let c = SegmentCollectorManager::new_collector(&pair).unwrap();
         assert_eq!(c.score_mode(), ScoreMode::CompleteNoScores);
         let r = ds.search_with(&q, &fcm).unwrap();
         assert_eq!(digest(&r.hits).0, 2);
@@ -353,7 +353,7 @@ fn any_hit_collector_manager() {
             first: &fcm,
             second: &top,
         };
-        let c = GroupingCollectorManager::new_collector(&pair).unwrap();
+        let c = SegmentCollectorManager::new_collector(&pair).unwrap();
         assert_eq!(c.score_mode(), ScoreMode::Complete);
     });
 }

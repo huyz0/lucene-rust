@@ -23,7 +23,7 @@ use crate::function::{
 use crate::Result;
 
 /// `Math.max(float, float)`: `NaN` wins, and `0.0 > -0.0`.
-pub(crate) fn java_max_f32(a: f32, b: f32) -> f32 {
+pub fn java_max_f32(a: f32, b: f32) -> f32 {
     if a.is_nan() {
         return a;
     }
@@ -38,7 +38,7 @@ pub(crate) fn java_max_f32(a: f32, b: f32) -> f32 {
 }
 
 /// `Math.min(float, float)`: `NaN` wins, and `-0.0 < 0.0`.
-pub(crate) fn java_min_f32(a: f32, b: f32) -> f32 {
+pub fn java_min_f32(a: f32, b: f32) -> f32 {
     if a.is_nan() {
         return a;
     }

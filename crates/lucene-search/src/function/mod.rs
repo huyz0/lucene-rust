@@ -1083,6 +1083,11 @@ impl<'a> TopLevel<'a> {
         }
     }
 
+    /// Leaf `ord` as a [`ValueLeaf`], when the searcher has one.
+    pub fn leaf(&self, ord: usize) -> Option<ValueLeaf<'a>> {
+        self.leaves.get(ord).map(|c| ValueLeaf::new(*c))
+    }
+
     /// The leaves, in order.
     pub fn leaves(&self) -> impl Iterator<Item = ValueLeaf<'a>> + '_ {
         self.leaves.iter().map(|c| ValueLeaf::new(*c))

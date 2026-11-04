@@ -11,9 +11,9 @@
 use std::collections::HashMap;
 
 use crate::facets::{FacetsCollector, MatchingDocs};
-use crate::grouping::GroupingCollectorManager;
 use crate::index_searcher::IndexSearcher;
 use crate::leaf_collector::SegmentCollector;
+use crate::leaf_collector::SegmentCollectorManager;
 use crate::reader::DocIdSetIterator;
 use crate::{Error, Result};
 
@@ -43,8 +43,8 @@ pub struct PostCollectionFaceting<'m, 'c, 's, 'a, M, S> {
 
 impl<'m, 'c, 's, 'a, M, S> PostCollectionFaceting<'m, 'c, 's, 'a, M, S>
 where
-    M: GroupingCollectorManager<'a>,
-    S: GroupingCollectorManager<'a>,
+    M: SegmentCollectorManager<'a>,
+    S: SegmentCollectorManager<'a>,
 {
     /// `new PostCollectionFaceting(drillDownCollectorManager,
     /// drillSidewaysCollectorManagers, drillDownFacetsCollector,

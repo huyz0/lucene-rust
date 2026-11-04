@@ -14,7 +14,7 @@ use lucene_index::segment_info::LuceneVersion;
 use lucene_store::Directory;
 
 use super::{java_string_cmp, ClassName, Classifier, TrainingIndex};
-use lucene_search::grouping::{GroupingSearch, Sort, TermGroupSelector};
+use lucene_grouping::{GroupingSearch, Sort, TermGroupSelector};
 use lucene_search::mlt::java_hash_order;
 use lucene_search::query::{BooleanQuery, Clause, MatchAllDocsQuery, WildcardQuery};
 use lucene_search::reader::{IndexReader, Terms};

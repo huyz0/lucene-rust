@@ -23,11 +23,11 @@ use super::facets_collector::FacetsCollector;
 use super::facets_trait::{validate_top_n, Facets};
 use super::multi_long_values_source::{MultiLongValues, MultiLongValuesSource};
 use super::top_ord_and_number_queue::PriorityQueue;
-use crate::grouping::FxHashMap;
 use crate::reader::doc_values::get_sorted_numeric;
 use crate::reader::{IndexReader, SortedNumericDocValues, NO_MORE_DOCS};
 use crate::values_source::{LongValuesSource, ValuesContext};
 use crate::{Error, Result};
+use lucene_util::fx_hash::avalanche::FxHashMap;
 
 /// The values the array counts: `[0, COUNTS_LEN)`.
 const COUNTS_LEN: usize = 1024;

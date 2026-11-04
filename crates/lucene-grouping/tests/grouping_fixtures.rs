@@ -18,16 +18,16 @@
 use std::fmt::Debug;
 use std::hash::Hash;
 
-use lucene_search::directory_reader::DirectoryReader;
-use lucene_search::grouping::{
-    search_manager, AllGroupHeadsCollectorManager, AllGroupsCollectorManager,
-    DistinctValuesCollectorManager, DoubleRange, DoubleRangeFactory, DoubleRangeGroupSelector,
-    FirstPassGroupingCollectorManager, GroupSelector, GroupSortValue, GroupingSearch, LongRange,
-    LongRangeFactory, LongRangeGroupSelector, ScoreMergeMode, SearchGroup, Sort,
-    TermGroupFacetCollector, TermGroupSelector, TopGroups, TopGroupsCollectorManager,
+use lucene_grouping::{
+    AllGroupHeadsCollectorManager, AllGroupsCollectorManager, DistinctValuesCollectorManager,
+    DoubleRange, DoubleRangeFactory, DoubleRangeGroupSelector, FirstPassGroupingCollectorManager,
+    GroupSelector, GroupSortValue, GroupingSearch, LongRange, LongRangeFactory,
+    LongRangeGroupSelector, ScoreMergeMode, SearchGroup, Sort, TermGroupFacetCollector,
+    TermGroupSelector, TopGroups, TopGroupsCollectorManager,
 };
+use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::index_searcher::{IndexSearcher, SegmentNorms};
-use lucene_search::leaf_collector::search_segments;
+use lucene_search::leaf_collector::{search_manager, search_segments};
 use lucene_search::query::{BooleanQuery, Clause, MatchAllDocsQuery, TermQuery};
 use lucene_search::top_field::{Selector, SortField, SortType};
 use lucene_search::values_source;
@@ -541,7 +541,7 @@ fn grouping_matches_lucene() {
 /// their accessors, and their refusals.
 #[test]
 fn grouping_edges() {
-    use lucene_search::grouping::{
+    use lucene_grouping::{
         AllGroupHeadsCollector, BlockGroupingCollector, DistinctValuesCollector,
         FirstPassGroupingCollector, TopGroupsCollector,
     };
@@ -626,7 +626,7 @@ fn grouping_edges() {
     let mut t = TermGroupSelector::new("g");
     assert_eq!(
         t.advance_to(0, 1.0).unwrap(),
-        lucene_search::grouping::GroupState::Skip
+        lucene_grouping::GroupState::Skip
     );
     let mut lr = LongRangeGroupSelector::new(
         values_source::long_from_long_field("n"),

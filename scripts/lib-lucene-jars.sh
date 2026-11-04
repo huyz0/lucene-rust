@@ -71,7 +71,7 @@ OPENNLP_DEPS=(org.apache.opennlp:opennlp-tools:2.5.3 org.slf4j:slf4j-api:2.0.16)
 
 # lucene-expressions 10.5.0's pom names ANTLR 4.13.2's runtime (BSD-3-Clause),
 # which parses the expression language, and ASM 9.6 (BSD-3-Clause), which
-# compiles it to JVM bytecode; crates/lucene-search/src/expressions ports both
+# compiles it to JVM bytecode; crates/lucene-expressions/src ports both
 # halves as a parser and an evaluator.
 EXPRESSIONS_DEPS=(org.antlr:antlr4-runtime:4.13.2 org.ow2.asm:asm:9.6 org.ow2.asm:asm-commons:9.6)
 

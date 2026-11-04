@@ -56,7 +56,6 @@ use crate::collector::ScoreMode as CollectorScoreMode;
 use crate::extended_query::{
     ExtendedQuery, MultiTermQuery, MultiTermSource, PointInSetQuery, RewriteMethod,
 };
-use crate::grouping::FxHashMap;
 use crate::index_searcher::IndexSearcher;
 use crate::leaf_collector::{search_segments, SegmentCollector};
 use crate::multi_segment::OpenSegment;
@@ -68,6 +67,7 @@ use crate::reader::{
     NumericDocValues, SortedDocValues, SortedNumericDocValues, SortedSetDocValues, TermsEnum,
 };
 use crate::{Error, Result};
+use lucene_util::fx_hash::avalanche::FxHashMap;
 
 // ---------------------------------------------------------------------------
 // Java's float arithmetic

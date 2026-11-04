@@ -56,7 +56,7 @@ import org.apache.lucene.store.FSDirectory;
  * Double.doubleToLongBits} in hex: NaN canonical) -- or {@code ERR}, the exception's simple class
  * name, the {@code ParseException} offset ({@code -1} for any other) and the message. {@code V}
  * rows: a variable, then its contexts or {@code ERR}. {@code
- * crates/lucene-search/tests/expressions_fixtures.rs} compares.
+ * crates/lucene-expressions/tests/expressions_fixtures.rs} compares.
  *
  * <p>{@code index/} is a two-segment index (the first with deletions) with sparse {@code n}
  * (long) and {@code d} (double) doc values and a {@code body} text field; {@code index.tsv} holds,
@@ -64,7 +64,7 @@ import org.apache.lucene.store.FSDirectory;
  * rows, every document's value; {@code S} rows, the top hits of a term query sorted by the
  * expression (doc and sort value bits); {@code R} rows, {@code ExpressionRescorer}'s rescoring of
  * that query's hits (doc and score bits); {@code P} rows, its explanation of three of them.
- * {@code crates/lucene-search/tests/expressions_index.rs} compares.
+ * {@code crates/lucene-expressions/tests/expressions_index.rs} compares.
  */
 public class GenExpressions {
 
