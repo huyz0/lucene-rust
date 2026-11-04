@@ -124,6 +124,22 @@ fn end(p: Phase, ops: u64) {
     );
 }
 
+type CommitDataUpcall = unsafe extern "C" fn(u64, *mut u8, usize, *mut usize) -> i32;
+
+/// The commit-data upcall: every commit's user data is empty (a zero count).
+unsafe extern "C" fn empty_commit_data(_: u64, out: *mut u8, cap: usize, len: *mut usize) -> i32 {
+    let empty = 0i32.to_le_bytes();
+    // SAFETY: the caller passes `len` valid for one write and `out` for `cap`.
+    unsafe {
+        *len = empty.len();
+        if cap < empty.len() {
+            return 1;
+        }
+        std::ptr::copy_nonoverlapping(empty.as_ptr(), out, empty.len());
+    }
+    0
+}
+
 extern "C" {
     fn ffi_engine_writer_open(
         path: *const c_char,
@@ -140,12 +156,8 @@ extern "C" {
         out_number: *mut i32,
     ) -> i32;
     fn ffi_engine_writer_apply(handle: u64, op: *const u8, op_len: usize) -> i32;
-    fn ffi_engine_writer_commit(
-        handle: u64,
-        user_data: *const u8,
-        user_data_len: usize,
-        out_generation: *mut i64,
-    ) -> i32;
+    fn ffi_engine_writer_commit(handle: u64, context: u64, out_generation: *mut i64) -> i32;
+    fn ffi_engine_set_commit_data_upcall(upcall: Option<CommitDataUpcall>) -> i32;
     fn ffi_engine_writer_force_merge(
         handle: u64,
         max_segments: i32,
@@ -401,7 +413,11 @@ fn main() {
     let segments = 4;
     let per_commit = docs.div_ceil(segments);
     let mut generation = 0i64;
-    let empty_user_data = 0i32.to_le_bytes();
+    // SAFETY: `empty_commit_data` keeps the upcall's contract for the whole run.
+    check(
+        unsafe { ffi_engine_set_commit_data_upcall(Some(empty_commit_data)) },
+        "commit-data upcall",
+    );
     let mut index_phase = begin("index");
     let mut commit_total = (0u64, 0u64, 0u64, 0f64);
     // The writer's own RAM accounting (what triggers a flush) against what
@@ -432,14 +448,7 @@ fn main() {
             PEAK.store(live_before, Relaxed);
             // SAFETY: live slice and out-pointer.
             check(
-                unsafe {
-                    ffi_engine_writer_commit(
-                        h,
-                        empty_user_data.as_ptr(),
-                        empty_user_data.len(),
-                        &mut generation,
-                    )
-                },
+                unsafe { ffi_engine_writer_commit(h, 0, &mut generation) },
                 "commit",
             );
             commit_total.0 += ALLOCS.load(Relaxed) - a;

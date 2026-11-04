@@ -12,7 +12,9 @@ import org.apache.lucene.index.IndexOptions;
 import org.opensearch.common.settings.Setting;
 import org.opensearch.core.common.breaker.CircuitBreaker;
 import org.opensearch.index.IndexSettings;
+import org.opensearch.index.MergeSchedulerConfig;
 import org.opensearch.index.engine.DefaultPrimaryOperationPolicy;
+import org.opensearch.index.engine.DocumentIndexWriter;
 import org.opensearch.index.engine.EngineConfig;
 import org.opensearch.index.store.Store;
 
@@ -227,6 +229,7 @@ public final class RustEngineSupport {
         boolean success = false;
         try {
             writer.setMergeOnFlush(Math.max(wait, 0), wait > 0 && indexSettings.getMergeOnFlushPolicy().isPresent());
+            refreshMergeScheduler(writer, config);
             success = true;
         } finally {
             if (success == false) {
@@ -234,6 +237,28 @@ public final class RustEngineSupport {
             }
         }
         return writer;
+    }
+
+    /**
+     * {@code OpenSearchConcurrentMergeScheduler.refreshConfig} for the Rust writer's merge scheduler:
+     * the shard's current {@code index.merge.scheduler.*} settings.
+     */
+    static void refreshMergeScheduler(DocumentIndexWriter writer, EngineConfig config) {
+        if (writer instanceof RustIndexWriter rust) {
+            IndexSettings indexSettings = config.getIndexSettings();
+            MergeSchedulerConfig merges = indexSettings.getMergeSchedulerConfig();
+            merges.updateMaxForceMergeMBPerSec(indexSettings);
+            try {
+                rust.setMergeScheduler(
+                    merges.getMaxMergeCount(),
+                    merges.getMaxThreadCount(),
+                    merges.isAutoThrottle(),
+                    merges.getMaxForceMergeMBPerSec()
+                );
+            } catch (IOException e) {
+                throw new java.io.UncheckedIOException(e);
+            }
+        }
     }
 
     /**
