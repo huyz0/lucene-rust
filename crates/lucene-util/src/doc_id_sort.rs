@@ -13,6 +13,13 @@
 /// the result is correct for any input.
 pub fn sort_dedup_doc_ids(docs: &mut Vec<i32>) {
     const SMALL: usize = 64;
+    // Ids that already ascend (a BKD walk over a field whose values grow
+    // with the document number) need only the dedup; the scan stops at the
+    // first descent, which comes within a few ids for shuffled input.
+    if docs.windows(2).all(|w| w[0] <= w[1]) {
+        docs.dedup();
+        return;
+    }
     // The radix path counts in `u32` (see below), so an input longer than
     // that -- not a real doc-id set -- takes the comparison sort too.
     if docs.len() <= SMALL || docs.len() > u32::MAX as usize || docs.iter().any(|&d| d < 0) {

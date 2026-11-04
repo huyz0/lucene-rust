@@ -653,28 +653,30 @@ impl<'s, 'a> IndexSearcher<'s, 'a> {
                 self.0 += n;
                 true
             }
+            fn collect_range(&mut self, min: i32, max: i32, _score: f32) {
+                self.0 += u64::try_from(max.saturating_sub(min)).unwrap_or(0);
+            }
         }
         // `TotalHitCountCollector`: each leaf asks `Weight.count` first, so a
         // lone term is its `docFreq` and an `exists` its field statistics,
         // without iterating postings or gathering scoring statistics. Any
         // leaf without that answer counts through the search as before.
+        // Only the leaves without that answer are searched.
+        let mut c = Count(0);
         if self.timeout.is_none() && !self.scorer_only_enabled() {
             let rewritten = self.rewrite(query)?;
-            let mut total = Some(0u64);
-            for seg in self.segments {
-                total = match (total, crate::count_boolean_query_shortcut(seg, &rewritten)?) {
-                    (Some(t), Some(n)) => Some(t.saturating_add(n)),
-                    _ => None,
-                };
-                if total.is_none() {
-                    break;
+            let mut rest = Vec::new();
+            for (i, seg) in self.segments.iter().enumerate() {
+                match crate::count_boolean_query_shortcut(seg, &rewritten)? {
+                    Some(n) => c.0 = c.0.saturating_add(n),
+                    None => rest.push(i),
                 }
             }
-            if let Some(total) = total {
-                return Ok(total);
+            if !rest.is_empty() {
+                self.search_leaves(query, &rest, &mut c)?;
             }
+            return Ok(c.0);
         }
-        let mut c = Count(0);
         self.search_collector(query, &mut c)?;
         Ok(c.0)
     }

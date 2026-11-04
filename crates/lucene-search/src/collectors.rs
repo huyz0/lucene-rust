@@ -68,6 +68,10 @@ impl<C: ScoringCollector + ?Sized> ScoringCollector for &mut C {
     fn collect_many(&mut self, docs: &[i32], scores: &[f32], doc_base: i32) -> usize {
         (**self).collect_many(docs, scores, doc_base)
     }
+    #[inline]
+    fn collect_range(&mut self, min: i32, max: i32, score: f32) {
+        (**self).collect_range(min, max, score);
+    }
 }
 
 /// A boxed collector, as [`MultiCollector`] holds them.
@@ -76,6 +80,8 @@ pub type BoxCollector<'c> = Box<dyn ScoringCollector + Send + 'c>;
 /// `MultiCollector`: every hit goes to each of several collectors.
 pub struct MultiCollector<'c> {
     collectors: Vec<BoxCollector<'c>>,
+    /// `scoreMode()`, computed once as Java's constructor does.
+    mode: ScoreMode,
 }
 
 impl<'c> MultiCollector<'c> {
@@ -93,7 +99,9 @@ impl<'c> MultiCollector<'c> {
                 "At least 1 collector must not be null".to_string(),
             ));
         }
-        Ok(Self { collectors })
+        let mode = combined_score_mode(collectors.iter().map(|c| c.score_mode()))
+            .unwrap_or(ScoreMode::Complete);
+        Ok(Self { collectors, mode })
     }
 
     /// `getCollectors()`.
@@ -135,9 +143,38 @@ impl ScoringCollector for MultiCollector<'_> {
         }
     }
 
+    #[inline]
     fn score_mode(&self) -> ScoreMode {
-        combined_score_mode(self.collectors.iter().map(|c| c.score_mode()))
-            .unwrap_or(ScoreMode::Complete)
+        self.mode
+    }
+
+    #[inline]
+    fn collect_range(&mut self, min: i32, max: i32, score: f32) {
+        for c in &mut self.collectors {
+            c.collect_range(min, max, score);
+        }
+    }
+
+    // A lone collector is Java's unwrapped one: its batch paths stay live.
+    fn collect_many(&mut self, docs: &[i32], scores: &[f32], doc_base: i32) -> usize {
+        match self.collectors.as_mut_slice() {
+            [c] => c.collect_many(docs, scores, doc_base),
+            _ => 0,
+        }
+    }
+
+    fn count_losing_hits(&mut self, n: u64, score: f32) -> bool {
+        match self.collectors.as_mut_slice() {
+            [c] => c.count_losing_hits(n, score),
+            _ => false,
+        }
+    }
+
+    fn add_hits(&mut self, n: u64) -> bool {
+        match self.collectors.as_mut_slice() {
+            [c] => c.add_hits(n),
+            _ => false,
+        }
     }
 
     /// Only a `TOP_SCORES` multi-collector passes thresholds on

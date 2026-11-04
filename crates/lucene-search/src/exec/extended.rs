@@ -1072,6 +1072,12 @@ struct FreqSumScorer<'a> {
     min_competitive: f32,
     /// The last document the current shallow bound covers.
     up_to: i32,
+    /// [`Self::impact_bound`]'s per-member impact lists, reused.
+    impact_lists: Vec<Vec<Impact>>,
+    /// [`Self::impact_bound`]'s last answer and the window it was for, with
+    /// the members' level-0 block ends then: the same window over the same
+    /// blocks has the same bound.
+    bound_cache: Option<(i32, Vec<i32>, Option<f32>)>,
 }
 
 impl<'a> FreqSumScorer<'a> {
@@ -1104,6 +1110,8 @@ impl<'a> FreqSumScorer<'a> {
             impacts: false,
             min_competitive: 0.0,
             up_to: -1,
+            impact_lists: Vec::new(),
+            bound_cache: None,
         }
     }
 
@@ -1130,7 +1138,66 @@ impl<'a> FreqSumScorer<'a> {
     /// that can have a document there has no impacts reaching `up_to`
     /// (`mergeImpacts`' "impacts that trigger the maximum score").
     fn impact_bound(&mut self, up_to: i32) -> Option<f32> {
-        let mut lists: Vec<Vec<Impact>> = Vec::new();
+        // `MaxScoreCache`: keyed by the window and the blocks it reads (a
+        // member past `up_to` is keyed by its doc, which decides whether it
+        // takes part).
+        let key_of = |m: &Member<'_>| {
+            if m.cursor.doc_id() > up_to {
+                i32::MIN
+            } else {
+                m.cursor.level0_last_doc_id()
+            }
+        };
+        if let Some((at, keys, bound)) = &self.bound_cache {
+            if *at == up_to
+                && keys.len() == self.approx.subs.len()
+                && keys
+                    .iter()
+                    .zip(&self.approx.subs)
+                    .all(|(&k, m)| k == key_of(m))
+            {
+                return *bound;
+            }
+        }
+        let bound = self.impact_bound_uncached(up_to);
+        let keys: Vec<i32> = self.approx.subs.iter().map(key_of).collect();
+        self.bound_cache = Some((up_to, keys, bound));
+        bound
+    }
+
+    fn impact_bound_uncached(&mut self, up_to: i32) -> Option<f32> {
+        let mut lists = std::mem::take(&mut self.impact_lists);
+        let bound = self.fill_impact_lists(up_to, &mut lists).and_then(|used| {
+            let mut max = 0.0f32;
+            if let [only] = &lists[..used] {
+                for i in only {
+                    let s = self.scorer.score(i.freq as f32, i.norm);
+                    if s.is_nan() {
+                        return None;
+                    }
+                    max = max.max(s);
+                }
+                return Some(max);
+            }
+            let merged = merge_impacts(&lists[..used])?;
+            for i in &merged {
+                let s = self.scorer.score(i.freq as f32, i.norm);
+                if s.is_nan() {
+                    return None;
+                }
+                max = max.max(s);
+            }
+            Some(max)
+        });
+        self.impact_lists = lists;
+        bound
+    }
+
+    /// `getLevel(impacts[i], docIdUpTo)` for every member that can have a
+    /// document at or before `up_to`, weighted, into `lists`; how many were
+    /// filled, or `None` when some member has no impacts reaching `up_to`.
+    fn fill_impact_lists(&mut self, up_to: i32, lists: &mut Vec<Vec<Impact>>) -> Option<usize> {
+        let mut used = 0;
         for (m, &w) in self.approx.subs.iter_mut().zip(&self.weights) {
             if m.cursor.doc_id() > up_to {
                 continue;
@@ -1148,28 +1215,22 @@ impl<'a> FreqSumScorer<'a> {
             if impacts.is_empty() {
                 return None;
             }
-            lists.push(if w != 1.0 {
-                impacts
-                    .iter()
-                    .map(|i| Impact {
-                        freq: (i.freq as f32 * w).ceil() as i32,
-                        norm: i.norm,
-                    })
-                    .collect()
-            } else {
-                impacts.to_vec()
-            });
-        }
-        let merged = merge_impacts(&lists)?;
-        let mut max = 0.0f32;
-        for i in &merged {
-            let s = self.scorer.score(i.freq as f32, i.norm);
-            if s.is_nan() {
-                return None;
+            if lists.len() == used {
+                lists.push(Vec::new());
             }
-            max = max.max(s);
+            let list = &mut lists[used];
+            list.clear();
+            if w != 1.0 {
+                list.extend(impacts.iter().map(|i| Impact {
+                    freq: (i.freq as f32 * w).ceil() as i32,
+                    norm: i.norm,
+                }));
+            } else {
+                list.extend_from_slice(impacts);
+            }
+            used += 1;
         }
-        Some(max)
+        (used > 0).then_some(used)
     }
 
     /// `ImpactsDISI.advanceTarget`: from `target`, past every block whose
@@ -1266,13 +1327,20 @@ impl Scorer for FreqSumScorer<'_> {
     ) -> Result<()> {
         out.docs.clear();
         out.scores.clear();
+        // A BM25 scorer's two parts, read once per batch: `Bm25Scorer.score`
+        // inline, the same expression.
+        let scorer = Arc::clone(&self.scorer);
+        let bm25 = scorer.bm25_parts();
         let mut doc = self.doc_id();
         while doc < up_to && out.docs.len() < super::NEXT_DOCS_BATCH {
             if live_docs.is_none_or(|l| l.get_doc(doc)) {
                 let freq = self.freq();
                 let norm = self.norms.norm(doc, self.combined)?;
                 out.docs.push(doc);
-                out.scores.push(self.scorer.score(freq, norm));
+                out.scores.push(match bm25 {
+                    Some((w, cache)) => w - w / (1.0 + freq * cache[norm as u8 as usize]),
+                    None => scorer.score(freq, norm),
+                });
             }
             doc = self.next_doc()?;
         }
