@@ -12,6 +12,7 @@ lucene-store = { path = "../lucene-store" }
 # scripts/build-fips.sh).
 lucene-store-crypto = { path = "../lucene-store-crypto", default-features = false }
 zeroize = "1"
+mimalloc = { version = "0.1", default-features = false, features = ["local_dynamic_tls"] }
 lucene-codecs = { path = "../lucene-codecs" }
 lucene-index = { path = "../lucene-index" }
 lucene-search = { path = "../lucene-search" }

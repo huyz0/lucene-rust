@@ -35,3 +35,10 @@ mod registry;
 mod store;
 
 pub use error::FfiStatus;
+
+/// mimalloc rather than the system allocator: indexing threads free buffers
+/// that other threads allocated (a flushed segment's postings, a merge's
+/// readers), and glibc's per-arena locks serialise those frees. The
+/// `local_dynamic_tls` feature lets the library load through `dlopen`.
+#[global_allocator]
+static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
