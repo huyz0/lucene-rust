@@ -34,7 +34,7 @@ use std::sync::Arc;
 use lucene_util::{sloppy_math, strict_math};
 
 use super::Error as ExprError;
-use crate::values_source::BoxDoubleValues;
+use lucene_search::values_source::BoxDoubleValues;
 
 /// `java.text.ParseException`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1681,9 +1681,9 @@ impl Expression {
     /// # Errors
     /// What reading a variable's value reports; `IllegalArgument` when
     /// `values` has fewer entries than there are variables.
-    pub fn evaluate(&self, values: &mut [BoxDoubleValues<'_>]) -> crate::Result<f64> {
+    pub fn evaluate(&self, values: &mut [BoxDoubleValues<'_>]) -> lucene_search::Result<f64> {
         if values.len() < self.variables.len() {
-            return Err(crate::Error::IllegalArgument(format!(
+            return Err(lucene_search::Error::IllegalArgument(format!(
                 "{} values for the {} variables of {}",
                 values.len(),
                 self.variables.len(),
@@ -1699,9 +1699,13 @@ impl Expression {
     ///
     /// # Errors
     /// As [`Self::evaluate`].
-    pub(crate) fn evaluate_at(&self, slots: &mut [VarSlot<'_>], doc: i32) -> crate::Result<f64> {
+    pub(crate) fn evaluate_at(
+        &self,
+        slots: &mut [VarSlot<'_>],
+        doc: i32,
+    ) -> lucene_search::Result<f64> {
         if slots.len() < self.variables.len() {
-            return Err(crate::Error::IllegalArgument(format!(
+            return Err(lucene_search::Error::IllegalArgument(format!(
                 "{} values for the {} variables of {}",
                 slots.len(),
                 self.variables.len(),
@@ -1718,10 +1722,14 @@ impl Expression {
     /// # Errors
     /// `IllegalArgument` when `cols` has fewer values than the variables
     /// over the batch, or the batch is past an `i32`.
-    pub(crate) fn evaluate_batch(&self, cols: &[f64], out: &mut [f64]) -> crate::Result<()> {
+    pub(crate) fn evaluate_batch(
+        &self,
+        cols: &[f64],
+        out: &mut [f64],
+    ) -> lucene_search::Result<()> {
         let n = out.len();
         if cols.len() < self.variables.len() * n || i32::try_from(n).is_err() {
-            return Err(crate::Error::IllegalArgument(format!(
+            return Err(lucene_search::Error::IllegalArgument(format!(
                 "{} values for the {} variables of {} over {n} documents",
                 cols.len(),
                 self.variables.len(),
@@ -1743,7 +1751,7 @@ impl Expression {
     }
 
     #[inline]
-    fn run(&self, values: Values<'_, '_>, doc: i32) -> crate::Result<f64> {
+    fn run(&self, values: Values<'_, '_>, doc: i32) -> lucene_search::Result<f64> {
         let mut reads = Reads {
             values,
             doc,
@@ -1791,7 +1799,7 @@ impl<'c> SharedValues<'c> {
         }
     }
 
-    /// [`DoubleValues::fill_batch`](crate::values_source::DoubleValues::fill_batch) of the values, once per batch: the same
+    /// [`DoubleValues::fill_batch`](lucene_search::values_source::DoubleValues::fill_batch) of the values, once per batch: the same
     /// documents and scores as the last batch are its values again.
     pub(crate) fn fill_batch(
         &mut self,
@@ -1799,7 +1807,7 @@ impl<'c> SharedValues<'c> {
         scores: &[f32],
         out: &mut [f64],
         has: &mut [bool],
-    ) -> crate::Result<()> {
+    ) -> lucene_search::Result<()> {
         let n = docs.len();
         let scores = &scores[..n];
         let same = self.docs == docs
@@ -1848,7 +1856,7 @@ impl<'c> VarSlot<'c> {
     /// read for `doc` (a failed read is tried again at the next one, as
     /// Java's `computed` stays `false` when the read throws).
     #[inline]
-    fn value_at(&mut self, doc: i32) -> crate::Result<f64> {
+    fn value_at(&mut self, doc: i32) -> lucene_search::Result<f64> {
         if self.doc != doc {
             self.value = match &mut self.values {
                 VarValues::Owned(v) => {
@@ -1873,7 +1881,7 @@ impl<'c> VarSlot<'c> {
     }
 
     /// Whether the wrapped values can be read a batch at a time
-    /// ([`DoubleValues::batch_capable`](crate::values_source::DoubleValues::batch_capable)).
+    /// ([`DoubleValues::batch_capable`](lucene_search::values_source::DoubleValues::batch_capable)).
     pub(crate) fn batch_capable(&self) -> bool {
         match &self.values {
             VarValues::Owned(v) => v.batch_capable(),
@@ -1890,7 +1898,7 @@ impl<'c> VarSlot<'c> {
         scores: &[f32],
         out: &mut [f64],
         has: &mut [bool],
-    ) -> crate::Result<()> {
+    ) -> lucene_search::Result<()> {
         let n = docs.len();
         let (out, has) = (&mut out[..n], &mut has[..n]);
         match &mut self.values {
@@ -1932,7 +1940,7 @@ struct Reads<'a, 'c> {
     /// The document [`Values::Slots`] are read at (the batch index
     /// [`Values::Columns`] are).
     doc: i32,
-    error: Option<crate::Error>,
+    error: Option<lucene_search::Error>,
 }
 
 impl Reads<'_, '_> {
@@ -1954,7 +1962,7 @@ impl Reads<'_, '_> {
 
     #[cold]
     #[inline(never)]
-    fn park(&mut self, e: crate::Error) -> f64 {
+    fn park(&mut self, e: lucene_search::Error) -> f64 {
         self.error = Some(e);
         0.0
     }
@@ -2032,7 +2040,7 @@ pub fn compile_with_max_nesting_depth(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::values_source::ConstantDoubleValues;
+    use lucene_search::values_source::ConstantDoubleValues;
 
     fn run(src: &str, vars: &[f64]) -> f64 {
         let e = compile(src).unwrap();
@@ -2096,12 +2104,12 @@ mod tests {
     /// Values whose every read fails.
     struct Failing;
 
-    impl crate::values_source::DoubleValues for Failing {
-        fn advance_exact(&mut self, _doc: i32) -> crate::Result<bool> {
+    impl lucene_search::values_source::DoubleValues for Failing {
+        fn advance_exact(&mut self, _doc: i32) -> lucene_search::Result<bool> {
             Ok(true)
         }
-        fn double_value(&mut self) -> crate::Result<f64> {
-            Err(crate::Error::IllegalState("unreadable".into()))
+        fn double_value(&mut self) -> lucene_search::Result<f64> {
+            Err(lucene_search::Error::IllegalState("unreadable".into()))
         }
     }
 

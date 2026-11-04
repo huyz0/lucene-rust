@@ -21,9 +21,9 @@ use lucene_util::point_values_relation::Relation;
 
 use crate::collector::ScoreMode;
 use crate::extended_query::ExtendedQuery;
-use crate::grouping::{search_manager, GroupingCollectorManager};
 use crate::index_searcher::IndexSearcher;
 use crate::leaf_collector::SegmentCollector;
+use crate::leaf_collector::{search_manager, SegmentCollectorManager};
 use crate::multi_segment::OpenSegment;
 use crate::query::{BooleanQuery, Clause};
 use crate::reader::doc_values::{doc_values_type_name, get_sorted_numeric};
@@ -110,7 +110,7 @@ struct Bound<'m, 'q> {
     bulk_collected: Arc<Mutex<Vec<usize>>>,
 }
 
-impl<'a, 'm, 'q> GroupingCollectorManager<'a> for Bound<'m, 'q> {
+impl<'a, 'm, 'q> SegmentCollectorManager<'a> for Bound<'m, 'q> {
     type Collector = HistogramCollector<'m, 'q, 'a>;
     type Output = BTreeMap<i64, i32>;
 

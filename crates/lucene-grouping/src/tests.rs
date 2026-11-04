@@ -4,8 +4,11 @@
 //! `tests/grouping_fixtures.rs`.
 
 use super::*;
-use crate::grouping::sort::GroupSortValue as V;
-use crate::top_field::SortType;
+use crate::sort::GroupSortValue as V;
+use lucene_search::leaf_collector::SegmentCollector;
+use lucene_search::query::BooleanQuery;
+use lucene_search::top_field::SortType;
+use lucene_util::fx_hash::avalanche::FxHasher;
 
 fn sg(value: Option<&str>, sort: f32) -> SearchGroup<Vec<u8>> {
     SearchGroup {
@@ -532,9 +535,9 @@ fn doubles_compare_with_one_nan() {
 /// once, in first-seen order, and each head is its group's first document.
 #[test]
 fn all_groups_and_heads_over_a_walked_dictionary() {
-    use crate::facets::test_index::{id_doc, match_all, plain_index};
-    use crate::leaf_collector::search_segments;
+    use self::test_index::{id_doc, match_all, plain_index};
     use lucene_index::document::SortedDocValuesField;
+    use lucene_search::leaf_collector::search_segments;
     let group_of = |i: usize| (i * 37) % 150;
     let docs: Vec<_> = (0..400)
         .map(|i| {
@@ -599,10 +602,10 @@ fn a_tree_set_built_at_once_is_the_one_built_by_adds() {
 /// sort of the groups, for any number of top groups.
 #[test]
 fn a_string_sorted_first_pass_breaks_ties_by_the_top_document() {
-    use crate::facets::test_index::{id_doc, match_all, plain_index};
-    use crate::leaf_collector::search_segments;
-    use crate::top_field::SortField;
+    use self::test_index::{id_doc, match_all, plain_index};
     use lucene_index::document::SortedDocValuesField;
+    use lucene_search::leaf_collector::search_segments;
+    use lucene_search::top_field::SortField;
     let group_of = |i: usize| format!("g{:02}", (i * 37) % 50).into_bytes();
     let value_of = |i: usize| {
         (!i.is_multiple_of(11)).then(|| format!("s{}", (i * 7 + i / 13) % 5).into_bytes())
@@ -684,10 +687,10 @@ fn a_string_sorted_first_pass_breaks_ties_by_the_top_document() {
 /// a tie going to the block whose best came first -- for any queue size.
 #[test]
 fn block_groups_keep_the_sorted_order_on_ties() {
-    use crate::facets::test_index::{id_doc, match_all, plain_index};
-    use crate::query::{Clause, TermQuery};
-    use crate::top_field::SortField;
+    use self::test_index::{id_doc, match_all, plain_index};
     use lucene_index::document::{NumericDocValuesField, Store, StringField};
+    use lucene_search::query::{Clause, TermQuery};
+    use lucene_search::top_field::SortField;
     let price = |i: usize| ((i * 7 + i / 11) % 5) as i64;
     let docs: Vec<_> = (0..600)
         .map(|i| {
@@ -770,12 +773,12 @@ fn fx_hashes_of_similar_keys_spread_over_the_low_bits() {
 /// reads it through the iterator and agrees too.
 #[test]
 fn a_singleton_sorted_numeric_key_sorts_as_its_numeric_twin() {
-    use crate::facets::test_index::{id_doc, match_all, plain_index};
-    use crate::leaf_collector::search_segments;
-    use crate::top_field::{Selector, SortField};
+    use self::test_index::{id_doc, match_all, plain_index};
     use lucene_index::document::{
         NumericDocValuesField, SortedDocValuesField, SortedNumericDocValuesField,
     };
+    use lucene_search::leaf_collector::search_segments;
+    use lucene_search::top_field::{Selector, SortField};
     let docs: Vec<_> = (0..500usize)
         .map(|i| {
             let mut d = id_doc(&i.to_string());
@@ -826,4 +829,68 @@ fn a_singleton_sorted_numeric_key_sorts_as_its_numeric_twin() {
             }
         }
     });
+}
+
+/// Small in-memory indexes and a searcher over them.
+mod test_index {
+    use lucene_index::document::{Document, Store, StringField};
+    use lucene_index::index_writer::IndexWriter;
+    use lucene_index::merge_policy::upgrade::LATEST;
+    use lucene_search::directory_reader::DirectoryReader;
+    use lucene_search::index_searcher::IndexSearcher;
+    use lucene_search::query::{BooleanQuery, Clause, MatchAllDocsQuery};
+    use lucene_store::ByteBuffersDirectory;
+
+    /// An index in memory.
+    pub(super) struct PlainIndex(ByteBuffersDirectory);
+
+    /// Indexes `docs`, flushing a segment after each document whose index
+    /// is in `flush_after`.
+    pub(super) fn plain_index(docs: Vec<Document>, flush_after: &[usize]) -> PlainIndex {
+        let dir = ByteBuffersDirectory::new();
+        {
+            let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", LATEST).unwrap();
+            for (i, d) in docs.iter().enumerate() {
+                w.add_fields_document(d).unwrap();
+                if flush_after.contains(&i) {
+                    w.flush().unwrap();
+                }
+            }
+            w.commit().unwrap();
+        }
+        PlainIndex(dir)
+    }
+
+    impl PlainIndex {
+        /// Runs `f` with a searcher over the index and the reader.
+        pub(super) fn with<R>(
+            &self,
+            f: impl FnOnce(&IndexSearcher<'_, '_>, &DirectoryReader, ()) -> R,
+        ) -> R {
+            let reader = DirectoryReader::open(&self.0).unwrap();
+            let opened = reader.open_segments().unwrap();
+            let segments = opened.as_open_segments();
+            let owned = reader.field_norms_by_field(&["id".to_string()]).unwrap();
+            let norms: Vec<_> = owned.iter().map(Some).collect();
+            let searcher = IndexSearcher::new(&segments, &norms).unwrap();
+            f(&searcher, &reader, ())
+        }
+    }
+
+    /// A document with an `id` of `id`.
+    pub(super) fn id_doc(id: &str) -> Document {
+        let mut d = Document::new();
+        d.add(StringField::new("id", id, Store::No));
+        d
+    }
+
+    /// `MatchAllDocsQuery`.
+    pub(super) fn match_all(reader: &DirectoryReader) -> BooleanQuery {
+        BooleanQuery {
+            must: vec![Clause::MatchAllDocs(MatchAllDocsQuery::new(
+                reader.max_doc(),
+            ))],
+            ..Default::default()
+        }
+    }
 }

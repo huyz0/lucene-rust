@@ -20,7 +20,6 @@ use super::facet_utils::{
 use super::facets_collector::{FacetsCollector, MatchingDocs};
 use super::facets_trait::{validate_top_n, Facets};
 use super::top_ord_and_number_queue::{OrdAndValue, TopOrdAndNumberQueue};
-use crate::grouping::FxHashMap;
 use crate::ordinal_map::OrdinalMap;
 use crate::reader::doc_values::get_sorted_set;
 use crate::reader::{
@@ -29,6 +28,7 @@ use crate::reader::{
 };
 use crate::{Error, Result};
 use lucene_codecs::field_infos::DocValuesType;
+use lucene_util::fx_hash::avalanche::FxHashMap;
 
 /// `StringDocValuesReaderState`: a reader and the ordinal map of one of its
 /// fields, built once per reader.

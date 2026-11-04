@@ -7,8 +7,8 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
-use lucene_search::expressions::variable_context::{self, Type};
-use lucene_search::expressions::{compile_with, default_functions, Error, ExprFunction};
+use lucene_expressions::variable_context::{self, Type};
+use lucene_expressions::{compile_with, default_functions, Error, ExprFunction};
 use lucene_search::values_source::{BoxDoubleValues, ConstantDoubleValues};
 
 fn dir() -> PathBuf {

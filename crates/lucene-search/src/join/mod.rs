@@ -133,10 +133,7 @@ impl BitSetProducer for QueryBitSetProducer {
 
 /// `BitSet.of(weight.scorer(context).iterator(), maxDoc)` for `query` over
 /// one segment, deletions not applied; `None` without a scorer.
-pub(crate) fn query_bit_set(
-    leaf: &OpenSegment<'_>,
-    query: &BooleanQuery,
-) -> Result<Option<FixedBitSet>> {
+pub fn query_bit_set(leaf: &OpenSegment<'_>, query: &BooleanQuery) -> Result<Option<FixedBitSet>> {
     let max_doc = leaf
         .max_doc
         .or(leaf.reader.map(|r| r.max_doc))

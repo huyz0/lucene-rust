@@ -10,23 +10,18 @@
 //! is differential too: values, sorted hits, rescoring and explanations
 //! against Java's over `fixtures/data/expressions/index`.
 
-mod m7support;
-
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
+use lucene_expressions::{compile, ExpressionRescorer, ExpressionValueSource, SimpleBindings};
 use lucene_search::directory_reader::DirectoryReader;
-use lucene_search::expressions::{
-    compile, ExpressionRescorer, ExpressionValueSource, SimpleBindings,
-};
 use lucene_search::field_norms::FieldNorms;
 use lucene_search::index_searcher::IndexSearcher;
 use lucene_search::query::{BooleanQuery, Clause, MatchAllDocsQuery, TermQuery};
 use lucene_search::rescorer::Rescorer;
 use lucene_search::values_source::{self as vs, DoubleValuesSource, ValuesContext};
 use lucene_store::FsDirectory;
-use m7support::fixture;
 
 /// Every document's value under `source`, `None` where it has none.
 fn read(
@@ -467,4 +462,8 @@ fn an_expression_scores_a_function_score_query() {
             |v: &[Option<f64>]| -> Vec<u64> { v.iter().map(|x| x.unwrap().to_bits()).collect() };
         assert_eq!(bits(&batched), bits(&per_doc), "caching={caching}");
     }
+}
+
+fn fixture(name: &str) -> String {
+    format!("{}/../../fixtures/data/{name}", env!("CARGO_MANIFEST_DIR"))
 }

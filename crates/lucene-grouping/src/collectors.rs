@@ -13,14 +13,14 @@ use lucene_util::fixed_bit_set::FixedBitSet;
 use super::sort::{compare_all, compare_values, GroupSortValue, LeafKeys, Sort};
 use super::{
     non_nan_max, CollectedSearchGroup, GroupDocs, GroupIndex, GroupReducer, GroupScoreDoc,
-    GroupSelector, GroupState, GroupingCollectorManager, IdIndex, ScoreMergeMode, SearchGroup,
+    GroupSelector, GroupState, IdIndex, ScoreMergeMode, SearchGroup, SegmentCollectorManager,
     TopGroups, TreeSet,
 };
-use crate::collector::{ScoreMode, TotalHits, TotalHitsRelation};
-use crate::join::query_time::java_max_f32;
-use crate::leaf_collector::SegmentCollector;
-use crate::multi_segment::OpenSegment;
-use crate::{Error, Result};
+use lucene_search::collector::{ScoreMode, TotalHits, TotalHitsRelation};
+use lucene_search::function::valuesource::functions::java_max_f32;
+use lucene_search::leaf_collector::SegmentCollector;
+use lucene_search::multi_segment::OpenSegment;
+use lucene_search::{Error, Result};
 
 /// `Float.MIN_VALUE`: the smallest positive float, where Java's max-score
 /// accumulators start.
@@ -417,7 +417,7 @@ impl<F> FirstPassGroupingCollectorManager<F> {
     }
 }
 
-impl<'a, S, F> GroupingCollectorManager<'a> for FirstPassGroupingCollectorManager<F>
+impl<'a, S, F> SegmentCollectorManager<'a> for FirstPassGroupingCollectorManager<F>
 where
     S: GroupSelector<'a>,
     F: Fn() -> S,
@@ -999,7 +999,7 @@ impl<F, V> TopGroupsCollectorManager<F, V> {
     }
 }
 
-impl<'a, S, F> GroupingCollectorManager<'a> for TopGroupsCollectorManager<F, S::Value>
+impl<'a, S, F> SegmentCollectorManager<'a> for TopGroupsCollectorManager<F, S::Value>
 where
     S: GroupSelector<'a>,
     F: Fn() -> S,
@@ -1119,7 +1119,7 @@ impl<F> AllGroupsCollectorManager<F> {
     }
 }
 
-impl<'a, S, F> GroupingCollectorManager<'a> for AllGroupsCollectorManager<F>
+impl<'a, S, F> SegmentCollectorManager<'a> for AllGroupsCollectorManager<F>
 where
     S: GroupSelector<'a>,
     F: Fn() -> S,
@@ -1346,7 +1346,7 @@ impl<F> AllGroupHeadsCollectorManager<F> {
     }
 }
 
-impl<'a, S, F> GroupingCollectorManager<'a> for AllGroupHeadsCollectorManager<F>
+impl<'a, S, F> SegmentCollectorManager<'a> for AllGroupHeadsCollectorManager<F>
 where
     S: GroupSelector<'a>,
     F: Fn() -> S,
@@ -1583,7 +1583,7 @@ impl<F, G, V> DistinctValuesCollectorManager<F, G, V> {
     }
 }
 
-impl<'a, S, R, F, G> GroupingCollectorManager<'a> for DistinctValuesCollectorManager<F, G, S::Value>
+impl<'a, S, R, F, G> SegmentCollectorManager<'a> for DistinctValuesCollectorManager<F, G, S::Value>
 where
     S: GroupSelector<'a>,
     R: GroupSelector<'a>,
