@@ -43,7 +43,7 @@ import org.apache.lucene.store.FSDirectory;
  * I  tag  bytes                            CopyState.infosBytes (hex)
  * </pre>
  *
- * <p>Read by {@code crates/lucene-search/tests/replicator_nrt_fixtures.rs}.
+ * <p>Read by {@code crates/lucene-replicator/tests/replicator_nrt_fixtures.rs}.
  */
 public class GenReplicator {
 

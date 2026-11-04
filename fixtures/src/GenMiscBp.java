@@ -30,7 +30,7 @@ import org.apache.lucene.store.FSDirectory;
  * D  config  index  newToOld...   computeDocMap's new-to-old table, space separated
  * </pre>
  *
- * <p>Read by {@code crates/lucene-search/tests/misc_bp_fixtures.rs}.
+ * <p>Read by {@code crates/lucene-misc/tests/misc_bp_fixtures.rs}.
  */
 public class GenMiscBp {
 

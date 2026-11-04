@@ -202,7 +202,6 @@ mod bit_set_pool;
 pub mod bucket_aggs;
 mod bulk_scorer;
 pub mod cardinality_sketch;
-pub mod classification;
 pub mod collector;
 pub mod collectors;
 pub mod common_terms;
@@ -211,27 +210,24 @@ pub mod doc_value_query;
 pub mod docid_set;
 pub mod document;
 mod exec;
+/// One segment's readers as the query executor reads them
+/// ([`LeafContext::for_spans`]).
+pub use exec::LeafContext;
 pub mod explain;
-pub mod expressions;
 pub mod extended_query;
 pub mod facets;
 pub mod field_norms;
 pub mod function;
 pub mod fuzzy_like_this;
-pub mod grouping;
-pub mod highlight;
-pub mod highlighter;
 pub mod index_searcher;
 pub mod intervals;
-pub(crate) mod java_priority_queue;
+pub mod java_priority_queue;
 pub mod join;
 pub mod knn_collectors;
 pub mod leaf_collector;
 pub mod matches;
 pub mod memory;
-pub mod misc;
 pub mod mlt;
-pub mod monitor;
 pub mod multi_bits;
 pub mod multi_segment;
 pub mod multi_terms;
@@ -246,11 +242,9 @@ pub mod query_builder;
 pub mod query_cache;
 pub mod query_parser;
 pub mod query_visitor;
-pub mod queryparser;
 pub mod reader;
 pub mod reader_manager;
 pub mod reference_manager;
-pub mod replicator;
 pub mod rescorer;
 pub mod sandbox;
 pub mod segment_cacheable;
@@ -261,14 +255,11 @@ pub mod similarity;
 pub mod simpletext_native;
 pub mod simpletext_transcode;
 pub mod simpletext_writer;
-mod slices;
+pub mod slices;
 pub mod sloppy_phrase;
 pub mod soft_deletes;
 pub mod spans;
 mod sparse_docs_cache;
-pub mod spatial;
-pub mod spell;
-pub mod suggest;
 pub mod tdigest;
 pub mod term_vectors_query;
 pub mod terminate;
@@ -277,6 +268,7 @@ pub mod terms_agg;
 pub mod test_support;
 pub mod top_docs;
 pub mod top_field;
+pub mod tree_set;
 pub mod values_source;
 pub mod vector_query;
 pub mod weight_count;
@@ -331,6 +323,24 @@ use lucene_codecs::postings::{DocInput, PayInput, PosInput};
 use lucene_codecs::regexp::RegexpPattern;
 use lucene_codecs::wildcard::WildcardPattern;
 use lucene_util::fixed_bit_set::FixedBitSet;
+
+/// `NodeCommunicationException`: the other node of a replication group
+/// could not be reached (`lucene-replicator`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NodeCommunicationError {
+    /// What was being attempted.
+    pub when: String,
+    /// The failure underneath.
+    pub cause: String,
+}
+
+impl std::fmt::Display for NodeCommunicationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.when)
+    }
+}
+
+impl std::error::Error for NodeCommunicationError {}
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -501,7 +511,7 @@ pub enum Error {
     /// `NodeCommunicationException`: the other node of a replication group
     /// could not be reached.
     #[error(transparent)]
-    NodeCommunication(#[from] replicator::nrt::NodeCommunicationError),
+    NodeCommunication(#[from] NodeCommunicationError),
     /// Reading or writing a `segments_N`.
     #[error(transparent)]
     SegmentInfos(#[from] lucene_index::segment_infos::Error),

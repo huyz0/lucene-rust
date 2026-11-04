@@ -817,6 +817,26 @@ pub fn expand_bitset_scalar(words: &[u64], base: i32, out: &mut [i32]) -> usize 
     found
 }
 
+/// Starts loading the cache line holding `slice[i]`, so a lookup that will
+/// read it soon does not stall on the miss. A hint only: nothing is read,
+/// an index out of bounds does nothing, and on targets without a prefetch
+/// instruction the call is empty.
+#[inline(always)]
+pub fn prefetch<T>(slice: &[T], i: usize) {
+    #[cfg(target_arch = "x86_64")]
+    if let Some(r) = slice.get(i) {
+        // SAFETY: `PREFETCHT0` is a hint that never faults and reads nothing
+        // into the program; the address is an element of `slice` anyway.
+        unsafe {
+            core::arch::x86_64::_mm_prefetch::<{ core::arch::x86_64::_MM_HINT_T0 }>(
+                (r as *const T).cast::<i8>(),
+            );
+        }
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    let _ = (slice, i);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

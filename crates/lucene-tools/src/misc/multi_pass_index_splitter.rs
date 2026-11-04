@@ -7,7 +7,7 @@
 
 use std::path::Path;
 
-use lucene_search::misc::index::MultiPassIndexSplitter;
+use lucene_misc::index::MultiPassIndexSplitter;
 use lucene_store::directory::{Directory, FsDirectory};
 
 use crate::cli::{arg, exception, parse_int, Io, ToolResult};

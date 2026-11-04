@@ -25,7 +25,7 @@ use crate::{similarity, sloppy_phrase, GlobalStats, Result};
 
 /// One segment's readers, and the reader-wide statistics to score with.
 #[derive(Clone, Copy)]
-pub(crate) struct LeafContext<'a> {
+pub struct LeafContext<'a> {
     pub(crate) fields: &'a BlockTreeFields,
     pub(crate) doc_in: Option<&'a DocInput<'a>>,
     pub(crate) pos_in: Option<&'a PosInput<'a>>,
@@ -49,6 +49,27 @@ pub(crate) struct LeafContext<'a> {
     /// [`crate::multi_segment::search_boolean_query_multi_segment_with_similarity`],
     /// which maps a default BM25 to `None` too -- is the BM25 fast path.
     pub(crate) similarity: Option<&'a dyn crate::similarities::Similarity>,
+}
+
+impl<'a> LeafContext<'a> {
+    /// A segment as span queries read it: no live docs (`SpanWeight`
+    /// positions on the document asked for) and no scoring.
+    pub fn for_spans(seg: &crate::multi_segment::OpenSegment<'a>) -> Self {
+        LeafContext {
+            fields: seg.fields,
+            doc_in: seg.doc_in,
+            pos_in: seg.pos_in,
+            pay_in: seg.pay_in,
+            live_docs: None,
+            points: seg.points,
+            norms: None,
+            global: None,
+            max_doc: seg.max_doc,
+            cache: None,
+            reader: seg.reader,
+            similarity: seg.similarity,
+        }
+    }
 }
 
 /// `IndexSearcher.collectionStatistics(field)` and

@@ -24,6 +24,13 @@ import org.opensearch.index.engine.DocumentIndexWriter;
 import org.opensearch.index.mapper.ParseContext;
 
 import java.io.IOException;
+import java.lang.foreign.Arena;
+import java.lang.foreign.FunctionDescriptor;
+import java.lang.foreign.Linker;
+import java.lang.foreign.MemorySegment;
+import java.lang.invoke.MethodHandle;
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.MethodType;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -33,20 +40,28 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.LongSupplier;
+
+import static java.lang.foreign.ValueLayout.ADDRESS;
+import static java.lang.foreign.ValueLayout.JAVA_BYTE;
+import static java.lang.foreign.ValueLayout.JAVA_INT;
+import static java.lang.foreign.ValueLayout.JAVA_LONG;
 
 /**
  * OpenSearch's {@link DocumentIndexWriter} over the Rust writer ({@code engine_writer.rs}).
  *
- * <p>Documents are inverted in the calling thread ({@link DocumentEncoder}), in parallel; only the
- * hand-off to Rust is serialized, on {@link #lock}. A commit takes the same lock, so the commit
- * data it evaluates -- the local checkpoint and the maximum sequence number -- describes exactly
- * the operations the commit contains: nothing can be added between the evaluation and the commit.
+ * <p>Documents are encoded in the calling thread ({@link DocumentEncoder}) and handed to the Rust
+ * writer, which buffers each indexing thread's documents separately; adds run in parallel. A commit
+ * does not stop them: the Rust writer flushes the buffers holding the operations from before it, and
+ * only then reads the commit data through an upcall ({@link #commitDataUpcall}), as {@code
+ * IndexWriter.commit} iterates its live commit data after {@code flushAllThreads} -- so the maximum
+ * sequence number it records covers every operation the commit holds.
  *
  * <p><b>Refresh is a commit.</b> Java readers open commits ({@link #acquireLatest}), so making new
  * documents visible publishes a {@code segments_N} with the live commit data. Every commit is
- * therefore a complete recovery point, and the writer's merges -- which run over committed
- * segments -- happen as documents arrive rather than only at flush.
+ * therefore a complete recovery point. The writer's merges run on its merge threads ({@code
+ * index.merge.scheduler.*}) over committed segments, and a merged segment is in the next commit.
  *
  * <p><b>Commit points are OpenSearch's to drop.</b> After every commit the deletion policy the
  * engine passes (its {@code CombinedDeletionPolicy}) sees the full list, exactly as Lucene's {@code
@@ -64,6 +79,14 @@ final class RustIndexWriter implements DocumentIndexWriter {
     private final DocumentEncoder encoder;
     private final IndexWriterConfig config;
     private final Object lock = new Object();
+    /**
+     * Indexing threads hold the read side while they call into the native writer, which takes
+     * adds from many threads at once; {@link #close} takes the write side, so the handle is never
+     * closed under an add.
+     */
+    private final ReentrantReadWriteLock indexing = new ReentrantReadWriteLock();
+    /** Guards {@link #accounted}. */
+    private final Object accounting = new Object();
     private final Map<Long, RustIndexCommit> commits = new HashMap<>();
     private final AtomicLong docsSinceCommit = new AtomicLong();
 
@@ -74,7 +97,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
     private IndexDeletionPolicy deletionPolicy;
     private LongSupplier minRetainedSeqNo;
     private CircuitBreaker breaker;
-    /** Bytes of the Rust writer's buffer currently accounted to {@link #breaker}; under {@link #lock}. */
+    /** Bytes of the Rust writer's buffer currently accounted to {@link #breaker}; under {@link #accounting}. */
     private long accounted;
     private boolean faultInjection;
     private boolean policyInitialized;
@@ -122,6 +145,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
         CircuitBreaker breaker,
         org.apache.lucene.codecs.Codec codec
     ) throws IOException {
+        installCommitDataUpcall();
         long[] out = new long[1];
         int status = NativeBridge.writerOpen(
             org.lucenerust.opensearch.store.RustEncryptedDirectory.nativePath(indexPath).getBytes(StandardCharsets.UTF_8),
@@ -230,44 +254,50 @@ final class RustIndexWriter implements DocumentIndexWriter {
             }
             prepared = id[0];
         }
-        synchronized (lock) {
-            accounted += estimate;
-            try {
-                ensureOpen();
-                if (prepared != 0) {
-                    long id = prepared;
-                    prepared = 0;
-                    check(NativeBridge.writerApplyPrepared(handle, id), "indexing");
-                } else {
-                    check(NativeBridge.writerApply(handle, op.array(), op.length()), "indexing");
-                }
-                docsSinceCommit.addAndGet(docs);
-            } finally {
-                if (prepared != 0) {
-                    NativeBridge.preparedFree(prepared);
-                }
-                reconcileBreaker();
+        // No writer-wide lock: the native writer buffers each thread's documents separately, as
+        // Lucene's per-thread buffers do.
+        indexing.readLock().lock();
+        try {
+            synchronized (accounting) {
+                accounted += estimate;
             }
+            ensureOpen();
+            if (prepared != 0) {
+                long id = prepared;
+                prepared = 0;
+                check(NativeBridge.writerApplyPrepared(handle, id), "indexing");
+            } else {
+                check(NativeBridge.writerApply(handle, op.array(), op.length()), "indexing");
+            }
+            docsSinceCommit.addAndGet(docs);
+        } finally {
+            if (prepared != 0) {
+                NativeBridge.preparedFree(prepared);
+            }
+            reconcileBreaker();
+            indexing.readLock().unlock();
         }
     }
 
     /** A conservative ratio of buffered bytes to blob bytes, for the pre-operation reservation. */
     private static final long BUFFER_BYTES_PER_BLOB_BYTE = 4;
 
-    /** Trues the breaker up to the writer's own count. Called under {@link #lock}. */
+    /** Trues the breaker up to the writer's own count. */
     private void reconcileBreaker() {
         if (breaker == null) {
             return;
         }
-        long[] out = new long[NativeBridge.STAT_COUNT];
+        long[] out = new long[1];
         long ram = closed == false && NativeBridge.writerStats(handle, out) == NativeBridge.OK ? out[NativeBridge.STAT_RAM_BYTES] : 0;
-        breaker.addWithoutBreaking(ram - accounted);
-        accounted = ram;
+        synchronized (accounting) {
+            breaker.addWithoutBreaking(ram - accounted);
+            accounted = ram;
+        }
     }
 
     /** Bytes currently accounted to the circuit breaker, for tests. */
     long accountedBytes() {
-        synchronized (lock) {
+        synchronized (accounting) {
             return accounted;
         }
     }
@@ -356,6 +386,22 @@ final class RustIndexWriter implements DocumentIndexWriter {
 
     // ---- commits ----
 
+    /**
+     * Live commit data read in two steps, as {@code InternalEngine.commitIndexWriter} reads it
+     * around {@code IndexWriter.commit}: {@link #beforeFlush} as a commit starts (the local
+     * checkpoint), and the iterable it returns once the commit's flush is done (the maximum sequence
+     * number). Iterating it directly does both at once.
+     */
+    @FunctionalInterface
+    interface StagedCommitData extends Iterable<Map.Entry<String, String>> {
+        Iterable<Map.Entry<String, String>> beforeFlush();
+
+        @Override
+        default java.util.Iterator<Map.Entry<String, String>> iterator() {
+            return beforeFlush().iterator();
+        }
+    }
+
     @Override
     public void setLiveCommitData(Iterable<Map.Entry<String, String>> commitUserData) {
         this.liveCommitData = commitUserData;
@@ -374,23 +420,113 @@ final class RustIndexWriter implements DocumentIndexWriter {
         }
     }
 
+    /** Commits while adds go on (see the class comment). Called under {@link #lock}. */
     private long commitLocked() throws IOException {
-        Blob data = new Blob(256);
-        int countAt = data.reserveI32();
-        int n = 0;
-        // Evaluated here, under the lock: see the class comment.
-        for (Map.Entry<String, String> e : liveCommitData) {
-            data.string(e.getKey()).string(e.getValue());
-            n++;
-        }
-        data.patchI32(countAt, n);
         applyRetention();
+        // Adds counted from here on may or may not be in the commit; they stay counted until the
+        // next one, so the pending count errs high, never low.
+        long counted = docsSinceCommit.get();
+        Iterable<Map.Entry<String, String>> data = liveCommitData;
+        committingData = data instanceof StagedCommitData staged ? staged.beforeFlush() : data;
         long[] out = new long[1];
-        check(NativeBridge.writerCommit(handle, data.toArray(), out), "commit");
-        docsSinceCommit.set(0);
+        int status;
+        commitDataFailure = null;
+        COMMITTING.set(this);
+        try {
+            status = NativeBridge.writerCommit(handle, handle, out);
+        } finally {
+            COMMITTING.remove();
+            committingData = null;
+        }
+        Throwable failure = commitDataFailure;
+        if (failure != null) {
+            commitDataFailure = null;
+            if (failure instanceof IOException e) {
+                throw e;
+            }
+            if (failure instanceof RuntimeException e) {
+                throw e;
+            }
+            throw new IOException("evaluating the commit data failed", failure);
+        }
+        check(status, "commit");
+        docsSinceCommit.addAndGet(-counted);
         reconcileBreaker();
         onNewCommits();
         return out[0];
+    }
+
+    /** The writer committing on this thread, for {@link #commitDataUpcall}. */
+    private static final ThreadLocal<RustIndexWriter> COMMITTING = new ThreadLocal<>();
+    /** The running commit's data, for {@link #commitDataUpcall} to read; under {@link #lock}. */
+    private Iterable<Map.Entry<String, String>> committingData;
+    /** What evaluating the live commit data threw during the running commit; under {@link #lock}. */
+    private Throwable commitDataFailure;
+    private static boolean upcallInstalled;
+
+    /** Registers {@link #commitDataUpcall} with the native library, once per JVM. */
+    @SuppressWarnings("restricted") // an upcall stub is the point
+    private static synchronized void installCommitDataUpcall() {
+        if (upcallInstalled) {
+            return;
+        }
+        try {
+            MethodHandle target = MethodHandles.lookup()
+                .findStatic(
+                    RustIndexWriter.class,
+                    "commitDataUpcall",
+                    MethodType.methodType(int.class, long.class, MemorySegment.class, long.class, MemorySegment.class)
+                );
+            FunctionDescriptor fd = FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS);
+            MemorySegment stub = Linker.nativeLinker().upcallStub(target, fd, Arena.global());
+            if (NativeBridge.setCommitDataUpcall(stub) != NativeBridge.OK) {
+                throw new IllegalStateException("lucene-rust: registering the commit-data upcall failed: " + NativeBridge.lastError());
+            }
+            upcallInstalled = true;
+        } catch (ReflectiveOperationException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    /**
+     * The native writer's request for a commit's user data ({@code CommitDataUpcall} in {@code
+     * engine_writer.rs}), made on the committing thread once the commit's buffers are flushed: the live
+     * commit data, evaluated now. It never throws, since an exception crossing an upcall ends the JVM;
+     * what the evaluation throws is kept for {@link #commitLocked} to rethrow.
+     */
+    @SuppressWarnings("restricted") // the segments are the native caller's, sized by its contract
+    private static int commitDataUpcall(long context, MemorySegment out, long cap, MemorySegment outLen) {
+        RustIndexWriter w = COMMITTING.get();
+        if (w == null || w.handle != context) {
+            return NativeBridge.COMMIT_DATA_FAILED;
+        }
+        try {
+            Blob data = new Blob(256);
+            int countAt = data.reserveI32();
+            int n = 0;
+            for (Map.Entry<String, String> e : w.committingData) {
+                data.string(e.getKey()).string(e.getValue());
+                n++;
+            }
+            data.patchI32(countAt, n);
+            outLen.reinterpret(Long.BYTES).set(JAVA_LONG, 0, data.length());
+            if (data.length() > cap) {
+                return NativeBridge.COMMIT_DATA_BUFFER_TOO_SMALL;
+            }
+            MemorySegment.copy(data.array(), 0, out.reinterpret(cap), JAVA_BYTE, 0, data.length());
+            return NativeBridge.COMMIT_DATA_OK;
+        } catch (Throwable t) {
+            w.commitDataFailure = t;
+            return NativeBridge.COMMIT_DATA_FAILED;
+        }
+    }
+
+    /**
+     * {@code IndexWriterConfig.setMaxFullFlushMergeWaitMillis}, with the merge policy wrapped in
+     * {@code MergeOnFlushMergePolicy} when {@code mergeOnFlushPolicy}.
+     */
+    void setMergeOnFlush(long waitMillis, boolean mergeOnFlushPolicy) throws IOException {
+        check(NativeBridge.writerSetMergeOnFlush(handle, waitMillis, mergeOnFlushPolicy), "setting merge-on-flush");
     }
 
     private void applyRetention() throws IOException {
@@ -489,7 +625,20 @@ final class RustIndexWriter implements DocumentIndexWriter {
 
     @Override
     public void maybeMerge() throws IOException {
-        // Merges run with every commit.
+        // The writer's merge threads take every merge its policy finds after each commit.
+    }
+
+    /** {@code index.merge.scheduler.*}, from the shard's {@code MergeSchedulerConfig}. */
+    void setMergeScheduler(int maxMergeCount, int maxThreadCount, boolean autoThrottle, double maxForceMergeMbPerSec)
+        throws IOException {
+        if (closed) {
+            return;
+        }
+        int status = NativeBridge.writerSetMergeScheduler(handle, maxMergeCount, maxThreadCount, autoThrottle, maxForceMergeMbPerSec);
+        if (status == NativeBridge.INVALID_ARGUMENT) {
+            throw new IllegalArgumentException(NativeBridge.lastError());
+        }
+        check(status, "setting the merge scheduler");
     }
 
     @Override
@@ -507,7 +656,13 @@ final class RustIndexWriter implements DocumentIndexWriter {
             }
             applyRetention();
             long[] out = new long[1];
-            check(NativeBridge.writerForceMerge(handle, maxNumSegments, onlyDeletes, out), "force merge");
+            // The merge commits with the last commit's user data, so nothing may be added meanwhile.
+            indexing.writeLock().lock();
+            try {
+                check(NativeBridge.writerForceMerge(handle, maxNumSegments, onlyDeletes, out), "force merge");
+            } finally {
+                indexing.writeLock().unlock();
+            }
             onNewCommits();
         }
     }
@@ -530,13 +685,17 @@ final class RustIndexWriter implements DocumentIndexWriter {
         if (closed) {
             return 0;
         }
-        long[] out = new long[NativeBridge.STAT_COUNT];
+        long[] out = new long[1];
         return NativeBridge.writerStats(handle, out) == NativeBridge.OK ? out[NativeBridge.STAT_RAM_BYTES] : 0;
     }
 
     @Override
     public long getFlushingBytes() {
-        return 0;
+        if (closed) {
+            return 0;
+        }
+        long[] out = new long[NativeBridge.STAT_FLUSHING_BYTES + 1];
+        return NativeBridge.writerStats(handle, out) == NativeBridge.OK ? out[NativeBridge.STAT_FLUSHING_BYTES] : 0;
     }
 
     @Override
@@ -581,14 +740,21 @@ final class RustIndexWriter implements DocumentIndexWriter {
     public void close() throws IOException {
         synchronized (lock) {
             closed = true;
-            if (nativeClosed == false) {
-                nativeClosed = true;
-                NativeBridge.writerClose(handle);
+            indexing.writeLock().lock();
+            try {
+                if (nativeClosed == false) {
+                    nativeClosed = true;
+                    NativeBridge.writerClose(handle);
+                }
+            } finally {
+                indexing.writeLock().unlock();
             }
-            if (breaker != null) {
-                breaker.addWithoutBreaking(-accounted);
+            synchronized (accounting) {
+                if (breaker != null) {
+                    breaker.addWithoutBreaking(-accounted);
+                }
+                accounted = 0;
             }
-            accounted = 0;
         }
     }
 

@@ -577,7 +577,8 @@ fn explicit_field_numbers_reserve_imported_names_for_copied_and_merged_sources()
                             positions: Vec::new(),
                             offsets: Vec::new(),
                             payloads: Vec::new(),
-                        }],
+                        }]
+                        .into(),
                         norm: Some(1),
                     }],
                     ..ExplicitFields::default()

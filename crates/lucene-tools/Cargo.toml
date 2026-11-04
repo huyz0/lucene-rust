@@ -12,12 +12,15 @@ name = "lucene-tools"
 path = "src/main.rs"
 
 [dependencies]
+lucene-suggest = { path = "../lucene-suggest" }
 lucene-util = { path = "../lucene-util" }
 lucene-store = { path = "../lucene-store" }
 lucene-codecs = { path = "../lucene-codecs" }
 lucene-index = { path = "../lucene-index" }
 lucene-analysis = { path = "../lucene-analysis" }
 lucene-search = { path = "../lucene-search" }
+lucene-misc = { path = "../lucene-misc" }
+lucene-queryparser = { path = "../lucene-queryparser" }
 
 [dev-dependencies]
 # The shared RAII scratch-directory guard (`lucene_util::test_support::TempDir`).

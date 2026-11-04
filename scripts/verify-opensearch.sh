@@ -50,7 +50,7 @@ cp opensearch-plugin/build/distributions/lucene-rust-*.zip opensearch-plugin/doc
 
 # The library must load in the image: its newest required glibc symbol
 # version may not exceed the image's glibc.
-need=$(objdump -T "${CARGO_TARGET_DIR:-target}/release/liblucene_ffi.so" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)
+need=$(objdump -T "${CARGO_TARGET_DIR:-target}/${ORG_GRADLE_PROJECT_cargoProfile:-dist}/liblucene_ffi.so" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)
 have=$(docker run --rm --entrypoint ldd "opensearchproject/opensearch:${VERSION}" --version 2>/dev/null | sed -n 1p | grep -o '[0-9.]*$')
 if [[ "$(printf '%s\n%s\n' "${need#GLIBC_}" "$have" | sort -V | tail -1)" != "$have" ]]; then
     echo "verify-opensearch: liblucene_ffi.so needs ${need}, the image has glibc ${have}" >&2
@@ -83,6 +83,12 @@ status=0
 if [[ $ENGINE == 1 ]]; then
     for _ in $(seq 1 90); do curl -sf "localhost:$PORT" >/dev/null && break; sleep 2; done
     python3 opensearch-plugin/e2e/verify_engine.py "http://localhost:${PORT}" "$NAME" "${ARGS[@]}" || status=$?
+    if [[ $status != 0 ]]; then
+        # The node's own account of a failed check (a shard that failed to start, say); the
+        # container is gone once the script exits.
+        echo "verify-opensearch: the node's last warnings and errors:" >&2
+        docker logs "$NAME" 2>&1 | grep -E -A12 '^\[[^]]*\]\[(WARN|ERROR)' | tail -n 200 >&2 || true
+    fi
 else
     python3 opensearch-plugin/e2e/verify_opensearch.py "http://localhost:${PORT}" "$NAME" "${ARGS[@]}" || status=$?
 fi

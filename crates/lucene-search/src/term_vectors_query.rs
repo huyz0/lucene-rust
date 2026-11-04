@@ -29,7 +29,7 @@
 //! like real Lucene. There is no fragmenting, scoring of fragments, or
 //! `PassageFormatter`-equivalent here: this is the offset-lookup primitive a
 //! real highlighter is built on top of, not a highlighter itself.
-//! [`crate::highlighter`] is the layer above -- it takes these spans plus the
+//! `lucene_highlighter::highlighter` is the layer above -- it takes these spans plus the
 //! original field text and does the passage assembly, `PassageScorer`-based
 //! selection and `DefaultPassageFormatter` rendering (only the
 //! `BreakIterator`-based boundary chooser stays a documented simplification
@@ -49,7 +49,7 @@ use crate::Result;
 /// own numbers, decoded verbatim off the `.tvd`/`.pos` by `lucene-codecs`
 /// and never reinterpreted here, and they are indices into the original
 /// `String` the indexing-time analyzer saw -- which is what makes them UTF-16
-/// rather than bytes or Unicode scalars. [`crate::highlighter`] slices the
+/// rather than bytes or Unicode scalars. `lucene_highlighter::highlighter` slices the
 /// stored text with them in that unit; see its module doc.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TermOffsetSpan {

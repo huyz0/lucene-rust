@@ -212,10 +212,35 @@ impl<'a> BytesReader<'a> {
     }
 
     fn read_bytes(&mut self, out: &mut [u8]) -> Result<()> {
-        for slot in out.iter_mut() {
-            *slot = self.read_byte()?;
+        let run = self.take_below(out.len())?;
+        for (slot, &b) in out.iter_mut().zip(run.iter().rev()) {
+            *slot = b;
         }
         Ok(())
+    }
+
+    /// The next `len` bytes as the body slice they occupy (lowest address
+    /// first, the reverse of reading order), with the cursor moved past
+    /// them: one bounds check for the run instead of one per byte.
+    fn take_below(&mut self, len: usize) -> Result<&'a [u8]> {
+        if len == 0 {
+            return Ok(&[]);
+        }
+        let end = usize::try_from(self.pos)
+            .ok()
+            .and_then(|p| p.checked_add(1))
+            .filter(|&e| e <= self.bytes.len());
+        match end.and_then(|e| Some((e.checked_sub(len)?, e))) {
+            Some((start, end)) => {
+                self.pos = self.pos.saturating_sub(len as i64);
+                Ok(&self.bytes[start..end])
+            }
+            None => Err(Error::Corrupt(format!(
+                "FST byte-reader read of {len} bytes at position {} out of range (len={})",
+                self.pos,
+                self.bytes.len()
+            ))),
+        }
     }
 
     /// `DataInput.readVInt`: identical varint algorithm regardless of the
@@ -364,14 +389,8 @@ fn bit_table_count_bits(arc: &Arc, r: &mut BytesReader) -> Result<i32> {
     // `try_from` below is what a table that large would fail on; a real one is
     // at most `(0x110000 + 7) >> 3` bytes, since a node's labels are distinct
     // and drawn from the `INPUT_TYPE`'s alphabet.
-    let mut count = 0i64;
-    // ARITH: `num_bytes` is at most 2^28 and each byte contributes at most 8,
-    // so `count` stays at or below 2^31 -- four billion times short of
-    // `i64::MAX`.
-    #[allow(clippy::arithmetic_side_effects)]
-    for _ in 0..num_bytes {
-        count += i64::from(r.read_byte()?.count_ones());
-    }
+    let table = r.take_below(usize::try_from(num_bytes).unwrap_or(usize::MAX))?;
+    let count = i64::from(crate::fst_util::popcount_bytes(table));
     i32::try_from(count).map_err(|_| Error::Corrupt(format!("FST bit table too large: {count}")))
 }
 
@@ -390,9 +409,8 @@ fn bit_table_count_bits_up_to(bit_index: i32, arc: &Arc, r: &mut BytesReader) ->
     // at most 128 and the `- 1` cannot underflow.
     #[allow(clippy::arithmetic_side_effects)]
     {
-        for _ in 0..full_bytes {
-            count += i64::from(r.read_byte()?.count_ones());
-        }
+        let table = r.take_below(usize::try_from(full_bytes).unwrap_or(usize::MAX))?;
+        count += i64::from(crate::fst_util::popcount_bytes(table));
         let rem_bits = bit_index & 7;
         if rem_bits != 0 {
             let b = r.read_byte()?;
@@ -2079,8 +2097,7 @@ impl<'a> Fst<'a> {
                     .to_string(),
             ));
         }
-        let labels: Vec<i32> = key.iter().map(|&b| b as i32).collect();
-        self.get_labels(&labels)
+        self.get_label_iter(key.iter().map(|&b| i32::from(b)))
     }
 
     /// Label-domain equivalent of `get`, mirroring `Util.get(FST, IntsRef)`:
@@ -2091,6 +2108,13 @@ impl<'a> Fst<'a> {
     /// are full Unicode code points, neither representable in a `u8`, which
     /// is why `get` alone can't reach those.
     pub fn get_labels(&self, labels: &[i32]) -> Result<Option<Vec<u8>>> {
+        self.get_label_iter(labels.iter().copied())
+    }
+
+    /// [`Self::get_labels`] over any label sequence. The output is
+    /// accumulated in one buffer (`ByteSequenceOutputs.add` appends, so
+    /// extending in place is the same concatenation).
+    fn get_label_iter(&self, labels: impl IntoIterator<Item = i32>) -> Result<Option<Vec<u8>>> {
         let mut r = self.reader();
         let mut arc = self.first_arc();
         // The virtual first arc isn't itself the answer for an empty key --
@@ -2098,10 +2122,10 @@ impl<'a> Fst<'a> {
         // so an empty key's answer is the empty output.
         let mut output: Vec<u8> = Vec::new();
 
-        for &label in labels {
+        for label in labels {
             match self.find_target_arc(label, &arc, &mut r)? {
                 Some(next) => {
-                    output = output_add(&output, next.output());
+                    output.extend_from_slice(next.output());
                     arc = next;
                 }
                 None => return Ok(None),
@@ -2109,7 +2133,8 @@ impl<'a> Fst<'a> {
         }
 
         if arc.is_final() {
-            Ok(Some(output_add(&output, arc.next_final_output())))
+            output.extend_from_slice(arc.next_final_output());
+            Ok(Some(output))
         } else {
             Ok(None)
         }

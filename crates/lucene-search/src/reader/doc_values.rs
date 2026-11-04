@@ -13,7 +13,7 @@
 //! - [`get_binary`][]: `DocValues.getBinary`.
 //!
 //! The query-time joins ([`crate::join`]) and the grouping collectors
-//! ([`crate::grouping`]) read every leaf through these, as their Java
+//! (`lucene_grouping`) read every leaf through these, as their Java
 //! originals do.
 
 use lucene_codecs::field_infos::DocValuesType;
@@ -381,7 +381,7 @@ impl SortedNumericDocValues for SingletonSortedNumeric<'_> {
 /// when the segment has no such field (the iterator's empty values).
 ///
 /// [`NumericReader`]: lucene_codecs::doc_values::NumericReader
-pub(crate) fn direct_numeric<'a>(
+pub fn direct_numeric<'a>(
     reader: &'a crate::directory_reader::SegmentReader,
     field: &str,
 ) -> Option<lucene_codecs::doc_values::NumericReader<'a>> {
@@ -394,11 +394,34 @@ pub(crate) fn direct_numeric<'a>(
     Some(lucene_codecs::doc_values::NumericReader::new(data, entry))
 }
 
+/// A segment's `SORTED_NUMERIC` field that the codec stored one value per
+/// document (`DocValues.unwrapSingleton` answers it) as the codec's column
+/// over those values: each document's one value, looked up without an
+/// iterator object. `None` for any other field.
+pub fn direct_sorted_numeric_singleton<'a>(
+    reader: &'a crate::directory_reader::SegmentReader,
+    field: &str,
+) -> Option<lucene_codecs::doc_values::NumericReader<'a>> {
+    let fi = reader.field_infos().field_by_name(field)?;
+    if fi.doc_values_type != DocValuesType::SortedNumeric {
+        return None;
+    }
+    let (meta, data) = reader.doc_values_for_field(fi.number)?;
+    let entry = meta.sorted_numeric_entry(fi.number)?;
+    if entry.addresses.is_some() {
+        return None;
+    }
+    Some(lucene_codecs::doc_values::NumericReader::new(
+        data,
+        &entry.numeric,
+    ))
+}
+
 /// A `SORTED` field's per-document ordinals read straight from the codec's
 /// ordinal column, beside its [`get_sorted`] values for everything else
 /// (the dictionary): `SortedDocValues.advanceExact` + `ordValue` without a
 /// virtual call per document, over a segment's own field.
-pub(crate) struct SortedOrds<'a> {
+pub struct SortedOrds<'a> {
     direct: Option<lucene_codecs::doc_values::NumericReader<'a>>,
     values: Box<dyn SortedDocValues + 'a>,
 }
@@ -408,10 +431,7 @@ impl<'a> SortedOrds<'a> {
     ///
     /// # Errors
     /// As [`get_sorted`].
-    pub(crate) fn open(
-        reader: &'a crate::directory_reader::SegmentReader,
-        field: &str,
-    ) -> Result<Self> {
+    pub fn open(reader: &'a crate::directory_reader::SegmentReader, field: &str) -> Result<Self> {
         Ok(Self::with(get_sorted(reader, field)?, reader, field))
     }
 
@@ -442,7 +462,7 @@ impl<'a> SortedOrds<'a> {
     /// # Errors
     /// Whatever reading the column reports; an ordinal past `i32`.
     #[inline(always)]
-    pub(crate) fn ord(&mut self, doc: i32) -> Result<Option<i32>> {
+    pub fn ord(&mut self, doc: i32) -> Result<Option<i32>> {
         match &mut self.direct {
             Some(r) => r.value(doc)?.map(ordinal).transpose(),
             None => Ok(if self.values.advance_exact(doc)? {
@@ -455,7 +475,7 @@ impl<'a> SortedOrds<'a> {
 
     /// The values, for the dictionary (`lookupOrd`, `lookupTerm`,
     /// `getValueCount`).
-    pub(crate) fn dict(&mut self) -> &mut (dyn SortedDocValues + 'a) {
+    pub fn dict(&mut self) -> &mut (dyn SortedDocValues + 'a) {
         self.values.as_mut()
     }
 }

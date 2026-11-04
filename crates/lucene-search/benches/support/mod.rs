@@ -46,6 +46,8 @@ pub fn facets_config() -> FacetsConfig {
 /// - `num` (NUMERIC, 20% of documents, 0..1,000,000) and `dense` (NUMERIC,
 ///   every document, 0..1,000,000);
 /// - `nums` (SORTED_NUMERIC, 50% of documents, 1-3 values in 0..1,000,000);
+/// - `sn1` (SORTED_NUMERIC, one value per document, 0..1,000,000, from the
+///   document number so the other fields' values do not move);
 /// - `$facets`: `Author` (one of 100) and `Tag` (multi-valued, 2 of 2,000);
 /// - `group` (SORTED, one of `groups` 24-byte terms);
 /// - `join_to` (an indexed term), `join_key` (SORTED), `join_keys`
@@ -89,6 +91,10 @@ pub fn build_index(docs: usize, segments: usize, groups: usize) -> ByteBuffersDi
                     ));
                 }
             }
+            d.add(SortedNumericDocValuesField::new(
+                "sn1",
+                ((i as u64).wrapping_mul(2_654_435_761) % 1_000_000) as i64,
+            ));
             let g = rng.below(groups.max(1) as u64);
             d.add(SortedDocValuesField::new(
                 "group",

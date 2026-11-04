@@ -37,7 +37,7 @@ import org.apache.lucene.util.CharsRef;
  * string, then {@code Q}, the query's {@code toString("f")} and its class tree, or {@code E} and
  * the {@code ParseException} message (position and expected tokens included), or {@code X} and
  * any other exception's class and message. {@code
- * crates/lucene-search/tests/queryparser_classic_fixtures.rs} compares.
+ * crates/lucene-queryparser/tests/queryparser_classic_fixtures.rs} compares.
  */
 public class GenQueryParserClassic {
 

@@ -544,7 +544,7 @@ a segment. Unit: `lucene-index/src/index_writer/block_tests.rs`,
   every document, or Lucene's exception) and 236 searches (`searches.tsv`:
   score bits, four explanations each; reader-wide filters through the
   sorted, counted and aggregated paths), all equal.
-- Grouping: `fixtures/src/GenGrouping.java` -> `lucene-search/tests/grouping_fixtures.rs`,
+- Grouping: `fixtures/src/GenGrouping.java` -> `lucene-grouping/tests/grouping_fixtures.rs`,
   668 searches over a four-segment index with deletions (missing,
   multi-valued, tied values; `SORTED`, `NUMERIC`, double/float,
   `SORTED_NUMERIC`, `SORTED_SET` keys) and a three-segment block index --

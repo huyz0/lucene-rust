@@ -19,6 +19,16 @@ members = [
     "crates/lucene-analysis-icu",
     "crates/lucene-analysis-opennlp",
     "crates/lucene-search",
+    "crates/lucene-replicator",
+    "crates/lucene-misc",
+    "crates/lucene-expressions",
+    "crates/lucene-grouping",
+    "crates/lucene-classification",
+    "crates/lucene-suggest",
+    "crates/lucene-spatial-extras",
+    "crates/lucene-queryparser",
+    "crates/lucene-monitor",
+    "crates/lucene-highlighter",
     "crates/lucene-ffi",
     "crates/lucene-tools",
     "crates/lucene-test-framework",
@@ -44,9 +54,28 @@ default-members = [
     "crates/lucene-analysis-icu",
     "crates/lucene-analysis-opennlp",
     "crates/lucene-search",
+    "crates/lucene-replicator",
+    "crates/lucene-misc",
+    "crates/lucene-expressions",
+    "crates/lucene-grouping",
+    "crates/lucene-classification",
+    "crates/lucene-suggest",
+    "crates/lucene-spatial-extras",
+    "crates/lucene-queryparser",
+    "crates/lucene-monitor",
+    "crates/lucene-highlighter",
     "crates/lucene-ffi",
     "crates/lucene-tools",
 ]
+
+# The build the OpenSearch plugin ships (`gradle -p opensearch-plugin
+# bundlePlugin`). LTO lets calls inline across crates (lucene-search into
+# lucene-codecs into lucene-store); the plain release profile measured 19%
+# slower end to end. Thin rather than fat: fat LTO over all of lucene-ffi needs
+# more than 15 GB to link. Tests keep the faster-building `release`.
+[profile.dist]
+inherits = "release"
+lto = "thin"
 
 [workspace.package]
 version = "0.1.0"

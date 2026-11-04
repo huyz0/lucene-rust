@@ -1,6 +1,6 @@
 //! The writer the OpenSearch plugin's `RustEngine` indexes through: one
-//! handle per shard, wrapping a
-//! [`IndexWriter`] in *explicit-documents* mode.
+//! handle per shard, wrapping a [`ConcurrentIndexWriter`] in
+//! *explicit-documents* mode.
 //!
 //! ## Why explicit documents
 //!
@@ -14,11 +14,15 @@
 //! writer only has to lay those bytes out in Lucene's formats, which is the
 //! part this port already does byte-for-byte.
 //!
-//! ## One lock per shard
+//! ## Indexing threads
 //!
-//! Handles live in their own registry as `Arc<Mutex<EngineWriter>>`: a call
-//! takes the registry's shared guard only long enough to clone the `Arc`, then
-//! serializes on the one shard's mutex. Two shards never wait for each other.
+//! Handles live in their own registry as `Arc<EngineWriter>`; a call takes
+//! the registry's shared guard only long enough to clone the `Arc`. Adds run
+//! on the caller's thread without a shard-wide lock: each indexing thread
+//! buffers into one of the writer's per-thread buffers and builds the
+//! segment when its buffer fills, as Lucene's `DocumentsWriterPerThread`s
+//! do. Commits, forced merges and commit points take the handle's maintenance
+//! lock, one at a time.
 //!
 //! ## Failures
 //!
@@ -27,21 +31,27 @@
 //! document-level failure. Any other failure while writing leaves the writer
 //! in a state nothing vouches for, so it is recorded as the handle's *tragic*
 //! error (`IndexWriter.getTragicException()`): every later call fails with it,
-//! and the engine fails the shard. A panic poisons the handle's mutex, which
-//! is read the same way. Neither ever takes down another shard.
+//! and the engine fails the shard. A panic inside a call is recorded the same
+//! way. Neither ever takes down another shard.
 //!
-//! ## Commits
+//! ## Commits and merges
 //!
-//! Every commit publishes the caller's user data and then runs the merge
-//! policy, each merge publishing its own commit with the same user data --
-//! so every `segments_N` this writer leaves is a consistent recovery point.
+//! A commit does not stop indexing. It flushes every buffer holding
+//! operations from before it, and only then asks the JVM for its user data
+//! (OpenSearch's local checkpoint and maximum sequence number), as Lucene's
+//! `IndexWriter.commit` iterates its live commit data after the flush; other
+//! threads go on indexing into the emptied buffers meanwhile. Merges run on
+//! the handle's `ConcurrentMergeScheduler` threads over committed segments,
+//! and a merged segment is in the next commit -- so every `segments_N` this
+//! writer leaves is a consistent recovery point.
 //! Commit points are never dropped by the writer itself
 //! ([`DeletionPolicy::KeepAll`]): OpenSearch's `CombinedDeletionPolicy` runs
 //! in the JVM and names the ones to drop ([`ffi_engine_writer_delete_commits`]).
 
 use std::collections::HashMap;
 use std::os::raw::c_char;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
 use lucene_codecs::field_infos::{
     DocValuesSkipIndexType, DocValuesType, FieldInfo, IndexOptions, VectorEncoding,
@@ -49,11 +59,14 @@ use lucene_codecs::field_infos::{
 };
 use lucene_codecs::stored_fields::{FieldValue, StoredField};
 use lucene_index::buffered_updates::{DocValuesUpdate, Term};
+use lucene_index::concurrent_writer::ConcurrentIndexWriter;
 use lucene_index::index_file_deleter::DeletionPolicy;
 use lucene_index::index_writer::{
-    self, ExplicitDocument, ExplicitFields, IndexWriter, InvertedField, InvertedTerm,
+    self, ExplicitDocument, ExplicitFields, IndexWriter, InvertedField, InvertedTerms,
     MergePolicyConfig, SoftDeletesRetention,
 };
+use lucene_index::merge_policy::{MergeOnFlushMergePolicy, MergePolicy, TieredMergePolicy};
+use lucene_index::merge_scheduler::ConcurrentMergeScheduler;
 use lucene_index::segment_info::LuceneVersion;
 use lucene_store::directory::Directory;
 
@@ -82,28 +95,53 @@ const RECOVERY_SOURCE_FIELD: &str = "_recovery_source";
 /// Operation kinds of [`decode_op`].
 const OP_ADD: u8 = 0;
 const OP_SOFT_UPDATE: u8 = 1;
-/// Panics inside the writer's lock -- the fault the "a panic fails exactly one
+/// Panics inside the writer -- the fault the "a panic fails exactly one
 /// shard" test injects. Refused unless the handle was opened with fault
 /// injection enabled.
 const OP_PANIC: u8 = 0xFF;
 
 /// Indices into [`ffi_engine_writer_stats`]' output.
 pub const STAT_RAM_BYTES: usize = 0;
-pub const STAT_PENDING_DOCS: usize = 1;
-pub const STAT_UNCOMMITTED: usize = 2;
-pub const STAT_GENERATION: usize = 3;
-pub const STAT_SEGMENTS: usize = 4;
-pub const STAT_COUNT: usize = 5;
+pub const STAT_FLUSHING_BYTES: usize = 1;
+pub const STAT_PENDING_DOCS: usize = 2;
+pub const STAT_UNCOMMITTED: usize = 3;
+pub const STAT_GENERATION: usize = 4;
+pub const STAT_SEGMENTS: usize = 5;
+pub const STAT_COUNT: usize = 6;
 
 /// One shard's writer and the state the JVM side drives it with.
 pub struct EngineWriter {
     handle: WriterHandle,
-    /// Files pinned by [`ffi_engine_writer_hold_commit`], by hold id.
-    holds: HashMap<u64, Vec<String>>,
-    next_hold: u64,
+    /// Held for the whole of a commit, merge or commit-point change, so they
+    /// run one at a time; adds do not take it.
+    maintenance: Mutex<Holds>,
     /// `IndexWriter.getTragicException()`: once set, every call fails.
-    tragic: Option<String>,
+    tragic: OnceLock<String>,
     fault_injection: bool,
+}
+
+/// Files pinned by [`ffi_engine_writer_hold_commit`], by hold id.
+#[derive(Default)]
+struct Holds {
+    files: HashMap<u64, Vec<String>>,
+    next: u64,
+}
+
+impl EngineWriter {
+    fn writer(&self) -> &ConcurrentIndexWriter<'static> {
+        &self.handle.writer
+    }
+
+    fn maintenance(&self) -> MutexGuard<'_, Holds> {
+        self.maintenance
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The generation of the newest commit written or attempted.
+    fn generation(&self) -> i64 {
+        self.writer().with_writer(|w| w.segment_infos().generation)
+    }
 }
 
 /// A little-endian reader over a caller's blob; running off the end is
@@ -229,59 +267,41 @@ fn inverted_field(c: &mut Cursor<'_>) -> Result<InvertedField, FfiStatus> {
     };
     // A term is at least its length, its freq and its flags.
     let n = c.count(9, "term count")?;
-    let mut terms = try_with_capacity(n)?;
+    let mut terms = InvertedTerms::new();
     for _ in 0..n {
-        let term = c.bytes("term")?.to_vec();
+        let term = c.bytes("term")?;
         let freq = c.i32("freq")?;
         let flags = c.u8("term flags")?;
         if flags & !7 != 0 {
             return Err(decode_error("term flags"));
         }
         let occurrences = usize::try_from(freq).map_err(|_| decode_error("freq"))?;
-        let positions = if flags & 1 != 0 {
-            if occurrences.saturating_mul(4) > c.remaining() {
-                return Err(decode_error("positions"));
-            }
-            let mut p = try_with_capacity(occurrences)?;
+        // Each occurrence's position, offsets and payload length are at
+        // least 4 bytes apiece.
+        let per = [1u8, 2, 4]
+            .iter()
+            .map(|&bit| if flags & bit != 0 { 4usize } else { 0 })
+            .sum::<usize>();
+        if occurrences.saturating_mul(per) > c.remaining() {
+            return Err(decode_error("occurrences"));
+        }
+        let mut t = terms.start(term);
+        t.freq(freq);
+        if flags & 1 != 0 {
             for _ in 0..occurrences {
-                p.push(c.i32("position")?);
+                t.position(c.i32("position")?);
             }
-            p
-        } else {
-            Vec::new()
-        };
-        let offsets = if flags & 2 != 0 {
-            if occurrences.saturating_mul(8) > c.remaining() {
-                return Err(decode_error("offsets"));
-            }
-            let mut o = try_with_capacity(occurrences)?;
+        }
+        if flags & 2 != 0 {
             for _ in 0..occurrences {
-                o.push((c.i32("start offset")?, c.i32("end offset")?));
+                t.offsets(c.i32("start offset")?, c.i32("end offset")?);
             }
-            o
-        } else {
-            Vec::new()
-        };
-        let payloads = if flags & 4 != 0 {
-            // Each payload is at least its length.
-            if occurrences.saturating_mul(4) > c.remaining() {
-                return Err(decode_error("payloads"));
-            }
-            let mut p = try_with_capacity(occurrences)?;
+        }
+        if flags & 4 != 0 {
             for _ in 0..occurrences {
-                p.push(c.bytes("payload")?.to_vec());
+                t.payload(c.bytes("payload")?);
             }
-            p
-        } else {
-            Vec::new()
-        };
-        terms.push(InvertedTerm {
-            term,
-            freq,
-            positions,
-            offsets,
-            payloads,
-        });
+        }
     }
     Ok(InvertedField {
         field_number,
@@ -617,7 +637,7 @@ fn writer_error(e: index_writer::Error) -> FfiStatus {
     status
 }
 
-fn lookup(handle: u64) -> Result<Arc<Mutex<EngineWriter>>, FfiStatus> {
+fn lookup(handle: u64) -> Result<Arc<EngineWriter>, FfiStatus> {
     read_recovering(engine_writers())
         .get(handle)
         .cloned()
@@ -627,36 +647,32 @@ fn lookup(handle: u64) -> Result<Arc<Mutex<EngineWriter>>, FfiStatus> {
         })
 }
 
-/// Runs `body` on the handle's writer. A poisoned mutex (an earlier call
-/// panicked mid-write) and a recorded tragic error both fail the call; so
-/// does `body`, which then records a tragic error unless `document_level`
-/// says the failure is the document's own ([`FfiStatus::InvalidArgument`]).
+/// Runs `body` on the handle's writer. A recorded tragic error fails the
+/// call; a failure of `body` records one unless it is the document's own
+/// ([`FfiStatus::InvalidArgument`], [`FfiStatus::Decode`]), and so does a
+/// panic, which then carries on to the caller's guard.
 fn with_writer<T>(
     handle: u64,
-    body: impl FnOnce(&mut EngineWriter) -> Result<T, FfiStatus>,
+    body: impl FnOnce(&EngineWriter) -> Result<T, FfiStatus>,
 ) -> Result<T, FfiStatus> {
-    let shared = lookup(handle)?;
-    let mut w = match shared.lock() {
-        Ok(w) => w,
-        Err(poisoned) => {
-            let mut w = poisoned.into_inner();
-            if w.tragic.is_none() {
-                w.tragic = Some("a previous call panicked inside the writer".to_string());
-            }
-            w
-        }
-    };
-    if let Some(t) = &w.tragic {
+    let w = lookup(handle)?;
+    if let Some(t) = w.tragic.get() {
         set_last_error(format!("engine writer closed by a tragic event: {t}"));
         return Err(FfiStatus::Io);
     }
-    let out = body(&mut w);
-    if let Err(status) = out {
-        if status != FfiStatus::InvalidArgument && status != FfiStatus::Decode {
-            w.tragic = Some(crate::error::last_error());
+    match catch_unwind(AssertUnwindSafe(|| body(&w))) {
+        Ok(Err(status)) if status != FfiStatus::InvalidArgument && status != FfiStatus::Decode => {
+            let _ = w.tragic.set(crate::error::last_error());
+            Err(status)
+        }
+        Ok(out) => out,
+        Err(panic) => {
+            let _ = w
+                .tragic
+                .set("a previous call panicked inside the writer".to_string());
+            resume_unwind(panic)
         }
     }
-    out
 }
 
 /// Opens the shard's writer over the index at `path`, which must already hold
@@ -696,17 +712,21 @@ pub unsafe extern "C" fn ffi_engine_writer_open(
         // SAFETY: `WriterHandle`'s own argument -- the boxed directory
         // outlives the writer that borrows it (see `writer.rs`).
         let dir_ref: &'static dyn Directory = unsafe { std::mem::transmute(dir_ref) };
-        let open = || -> index_writer::Result<IndexWriter<'static>> {
+        // Merges run on the scheduler's threads, as under OpenSearch's
+        // `ConcurrentMergeScheduler`, with `index.merge.scheduler.*`'s
+        // defaults until the engine passes the shard's settings
+        // (`ffi_engine_writer_set_merge_scheduler`).
+        let merges = ConcurrentMergeScheduler::new();
+        merges.set_default_max_merges_and_threads(false);
+        merges.enable_auto_io_throttle();
+        let open = || -> index_writer::Result<Arc<ConcurrentIndexWriter<'static>>> {
             let mut writer = IndexWriter::open(dir_ref, Vec::new(), "Lucene104", VERSION)?;
             writer.enable_explicit_documents()?;
             writer.set_deletion_policy(DeletionPolicy::KeepAll)?;
             writer.set_merge_policy(Some(MergePolicyConfig::default()));
-            // OpenSearch's `NativeLuceneIndexWriterFactory` turns
-            // merge-on-commit/refresh off (`setMaxFullFlushMergeWaitMillis(0)`)
-            // unless `index.merge_on_flush.enabled` is set, which this engine
-            // does not support; Lucene's own default (500 ms) would put
-            // merged segments into commits this engine has always written
-            // unmerged.
+            // Merge-on-commit/refresh stays off until the engine passes
+            // the shard's `index.merge_on_flush.*` settings
+            // (`ffi_engine_writer_set_merge_on_flush`).
             writer.set_max_full_flush_merge_wait_millis(0);
             // Loose segment files, as this engine has always written them.
             // OpenSearch's default is compound (`index.compound_format`);
@@ -716,18 +736,25 @@ pub unsafe extern "C" fn ffi_engine_writer_open(
             // The JVM's `IndexWriter.getActualMaxDocs()`, so a test lowering
             // Java's limit lowers this one too.
             writer.set_max_docs(usize::try_from(max_docs).unwrap_or(0));
-            Ok(writer)
+            // One buffer per thread that can index at once.
+            let slots = std::thread::available_parallelism().map_or(1, |n| n.get());
+            ConcurrentIndexWriter::with_merge_scheduler(writer, slots, Arc::new(merges.clone()))
         };
         let writer = open().map_err(writer_error)?;
         let engine = EngineWriter {
-            handle: WriterHandle { writer, dir },
-            holds: HashMap::new(),
-            next_hold: 1,
-            tragic: None,
+            handle: WriterHandle {
+                writer,
+                merges,
+                dir,
+            },
+            maintenance: Mutex::new(Holds {
+                files: HashMap::new(),
+                next: 1,
+            }),
+            tragic: OnceLock::new(),
             fault_injection: fault_injection != 0,
         };
-        let handle =
-            lock_recovering(engine_writers()).insert_checked(Arc::new(Mutex::new(engine)))?;
+        let handle = lock_recovering(engine_writers()).insert_checked(Arc::new(engine))?;
         // SAFETY: caller contract.
         unsafe { *out_handle = handle };
         Ok(())
@@ -753,7 +780,7 @@ pub unsafe extern "C" fn ffi_engine_writer_register_field(
         let spec = unsafe { bytes_from_raw(spec, spec_len)? };
         let info = decode_field(spec)?;
         let number = with_writer(handle, |w| {
-            w.handle.writer.register_field(info).map_err(|e| {
+            w.writer().register_field(info).map_err(|e| {
                 // A field the writer cannot index is the mapping's problem,
                 // not the writer's: document-level.
                 set_last_error(e.to_string());
@@ -766,10 +793,10 @@ pub unsafe extern "C" fn ffi_engine_writer_register_field(
     })
 }
 
-/// Applies one decoded operation under the writer's lock.
+/// Applies one decoded operation on the calling thread.
 fn apply_op(handle: u64, op: Op) -> Result<(), FfiStatus> {
     with_writer(handle, |w| {
-        let writer = &mut w.handle.writer;
+        let writer = w.writer();
         match op {
             Op::Add(docs) => writer.add_explicit_documents(docs).map_err(writer_error)?,
             Op::SoftUpdate {
@@ -873,34 +900,164 @@ pub extern "C" fn ffi_engine_prepared_free(id: u64) -> i32 {
     })
 }
 
-/// Commits with `user_data` ([`decode_user_data`]) as the commit's user data,
-/// runs the merge policy, and writes the newest commit's generation.
+/// The JVM's commit-data upcall: `(context, out, cap, out_len) -> status`.
+/// It writes the user data of the commit `context` names ([`decode_user_data`]'s
+/// layout) into `out` and its length into `*out_len`, and returns
+/// [`COMMIT_DATA_OK`]; when `cap` is too small it writes only the length
+/// needed and returns [`COMMIT_DATA_BUFFER_TOO_SMALL`]. Any other status is a
+/// failure the JVM keeps and reports itself. It is called on the thread that
+/// called [`ffi_engine_writer_commit`], while that call is running.
+pub type CommitDataUpcall = unsafe extern "C" fn(u64, *mut u8, usize, *mut usize) -> i32;
+/// The commit-data upcall succeeded.
+pub const COMMIT_DATA_OK: i32 = 0;
+/// The commit-data upcall's buffer was too small; `*out_len` is the size needed.
+pub const COMMIT_DATA_BUFFER_TOO_SMALL: i32 = 1;
+/// The JVM could not produce the commit data; it keeps its own error.
+pub const COMMIT_DATA_FAILED: i32 = 2;
+
+static COMMIT_DATA_UPCALL: OnceLock<CommitDataUpcall> = OnceLock::new();
+
+/// Registers the commit-data upcall ([`CommitDataUpcall`]), once per process;
+/// later registrations are ignored.
 ///
 /// # Safety
-/// `user_data` valid for `user_data_len` bytes; `out_generation` valid for
-/// one write.
+/// `upcall` must have [`CommitDataUpcall`]'s contract and stay callable for
+/// the life of the process.
+#[no_mangle]
+pub unsafe extern "C" fn ffi_engine_set_commit_data_upcall(
+    upcall: Option<CommitDataUpcall>,
+) -> i32 {
+    guard(|| {
+        let upcall = upcall.ok_or(FfiStatus::NullPointer)?;
+        let _ = COMMIT_DATA_UPCALL.set(upcall);
+        Ok(())
+    })
+}
+
+/// Asks the JVM for the user data of the commit `context` names.
+fn commit_data(context: u64) -> Result<Vec<(String, String)>, FfiStatus> {
+    let Some(upcall) = COMMIT_DATA_UPCALL.get() else {
+        set_last_error("engine writer: no commit-data upcall is registered");
+        return Err(FfiStatus::InvalidArgument);
+    };
+    let mut buf = crate::raw::try_with_capacity::<u8>(512)?;
+    buf.resize(512, 0);
+    for _ in 0..2 {
+        let mut len = 0usize;
+        // SAFETY: `buf` is valid for `buf.len()` writes and `len` for one;
+        // the upcall's contract is `ffi_engine_set_commit_data_upcall`'s.
+        let status = unsafe { upcall(context, buf.as_mut_ptr(), buf.len(), &mut len) };
+        match status {
+            COMMIT_DATA_OK if len <= buf.len() => {
+                return decode_user_data(buf.get(..len).unwrap_or_default());
+            }
+            COMMIT_DATA_BUFFER_TOO_SMALL if len > buf.len() => {
+                buf = crate::raw::try_with_capacity::<u8>(len)?;
+                buf.resize(len, 0);
+            }
+            COMMIT_DATA_FAILED => {
+                // A refusal, not the writer's failure: the JVM reports its own error.
+                set_last_error("engine writer: the commit-data upcall failed");
+                return Err(FfiStatus::InvalidArgument);
+            }
+            _ => break,
+        }
+    }
+    set_last_error("engine writer: the commit-data upcall returned an inconsistent length");
+    Err(FfiStatus::InvalidArgument)
+}
+
+/// A commit's failure: the writer's, or the commit data's.
+enum CommitError {
+    Writer(index_writer::Error),
+    Status(FfiStatus),
+}
+
+impl From<index_writer::Error> for CommitError {
+    fn from(e: index_writer::Error) -> Self {
+        CommitError::Writer(e)
+    }
+}
+
+/// Commits, and writes the new commit's generation. Every buffer holding
+/// operations from before the call is flushed first; then the commit-data
+/// upcall gives the commit's user data for `context` -- read at this point,
+/// as `IndexWriter.commit` iterates its live commit data after
+/// `flushAllThreads`, so a maximum sequence number in it covers every
+/// operation in the commit. Other threads go on indexing meanwhile, into
+/// buffers this commit does not hold. Merges the commit makes possible run
+/// on the writer's merge threads; the merged segments are in the next commit.
+///
+/// # Safety
+/// `out_generation` valid for one write.
 #[no_mangle]
 pub unsafe extern "C" fn ffi_engine_writer_commit(
     handle: u64,
-    user_data: *const u8,
-    user_data_len: usize,
+    context: u64,
     out_generation: *mut i64,
 ) -> i32 {
     guard(|| {
         if out_generation.is_null() {
             return Err(FfiStatus::NullPointer);
         }
-        // SAFETY: caller contract.
-        let data = decode_user_data(unsafe { bytes_from_raw(user_data, user_data_len)? })?;
         let generation = with_writer(handle, |w| {
-            let writer = &mut w.handle.writer;
-            writer.set_live_commit_data(data);
-            writer.commit().map_err(writer_error)?;
-            Ok(writer.segment_infos().generation)
+            let _maintenance = w.maintenance();
+            let writer = w.writer();
+            writer
+                .commit_with(|| {
+                    let data = commit_data(context).map_err(CommitError::Status)?;
+                    writer.with_writer(|iw| iw.set_live_commit_data(data));
+                    Ok::<(), CommitError>(())
+                })
+                .map_err(|e| match e {
+                    CommitError::Writer(e) => writer_error(e),
+                    CommitError::Status(status) => status,
+                })?;
+            Ok(w.generation())
         })?;
         // SAFETY: caller contract.
         unsafe { *out_generation = generation };
         Ok(())
+    })
+}
+
+/// Sets `index.merge.scheduler.*` as `OpenSearchConcurrentMergeScheduler.refreshConfig`
+/// does: at most `max_merge_count` merges at once, `max_thread_count` of them
+/// running big merges, the automatic IO throttle (`auto_throttle != 0`), and
+/// forced merges' rate (`max_force_merge_mb_per_sec`, infinite for none).
+#[no_mangle]
+pub extern "C" fn ffi_engine_writer_set_merge_scheduler(
+    handle: u64,
+    max_merge_count: i32,
+    max_thread_count: i32,
+    auto_throttle: u8,
+    max_force_merge_mb_per_sec: f64,
+) -> i32 {
+    guard(|| {
+        with_writer(handle, |w| {
+            let merges = &w.handle.merges;
+            if merges.max_merge_count() != max_merge_count
+                || merges.max_thread_count() != max_thread_count
+            {
+                merges
+                    .set_max_merges_and_threads(max_merge_count, max_thread_count)
+                    .map_err(|e| {
+                        set_last_error(e.to_string());
+                        FfiStatus::InvalidArgument
+                    })?;
+            }
+            if (auto_throttle != 0) != merges.auto_io_throttle() {
+                if auto_throttle != 0 {
+                    merges.enable_auto_io_throttle();
+                } else {
+                    merges.disable_auto_io_throttle();
+                }
+            }
+            if max_force_merge_mb_per_sec != merges.force_merge_mb_per_sec() {
+                merges.set_force_merge_mb_per_sec(max_force_merge_mb_per_sec);
+            }
+            Ok(())
+        })
     })
 }
 
@@ -922,7 +1079,10 @@ pub unsafe extern "C" fn ffi_engine_writer_commit_generations(
         if out_len.is_null() || (out.is_null() && cap != 0) {
             return Err(FfiStatus::NullPointer);
         }
-        let gens = with_writer(handle, |w| Ok(w.handle.writer.commit_generations()))?;
+        let gens = with_writer(handle, |w| {
+            let _maintenance = w.maintenance();
+            Ok(w.writer().with_writer(|iw| iw.commit_generations()))
+        })?;
         // SAFETY: caller contract.
         unsafe { *out_len = gens.len() };
         if gens.len() > cap {
@@ -955,7 +1115,10 @@ pub unsafe extern "C" fn ffi_engine_writer_delete_commits(
             crate::raw::try_to_vec(unsafe { std::slice::from_raw_parts(generations, n) })?
         };
         with_writer(handle, |w| {
-            w.handle.writer.delete_commits(&gens).map_err(writer_error)
+            let _maintenance = w.maintenance();
+            w.writer()
+                .with_writer(|iw| iw.delete_commits(&gens))
+                .map_err(writer_error)
         })
     })
 }
@@ -976,14 +1139,18 @@ pub unsafe extern "C" fn ffi_engine_writer_hold_commit(
             return Err(FfiStatus::NullPointer);
         }
         let id = with_writer(handle, |w| {
-            let files = w.handle.writer.hold_commit(generation).map_err(|e| {
-                // No such commit is the caller's mistake, not the writer's.
-                set_last_error(e.to_string());
-                FfiStatus::InvalidArgument
-            })?;
-            let id = w.next_hold;
-            w.next_hold = w.next_hold.saturating_add(1);
-            w.holds.insert(id, files);
+            let mut holds = w.maintenance();
+            let files = w
+                .writer()
+                .with_writer(|iw| iw.hold_commit(generation))
+                .map_err(|e| {
+                    // No such commit is the caller's mistake, not the writer's.
+                    set_last_error(e.to_string());
+                    FfiStatus::InvalidArgument
+                })?;
+            let id = holds.next;
+            holds.next = holds.next.saturating_add(1);
+            holds.files.insert(id, files);
             Ok(id)
         })?;
         // SAFETY: caller contract.
@@ -997,11 +1164,14 @@ pub unsafe extern "C" fn ffi_engine_writer_hold_commit(
 pub extern "C" fn ffi_engine_writer_release_hold(handle: u64, hold: u64) -> i32 {
     guard(|| {
         with_writer(handle, |w| {
-            let Some(files) = w.holds.remove(&hold) else {
+            let mut holds = w.maintenance();
+            let Some(files) = holds.files.remove(&hold) else {
                 set_last_error(format!("engine writer: no hold {hold}"));
                 return Err(FfiStatus::InvalidArgument);
             };
-            w.handle.writer.release_files(&files).map_err(writer_error)
+            w.writer()
+                .with_writer(|iw| iw.release_files(&files))
+                .map_err(writer_error)
         })
     })
 }
@@ -1017,14 +1187,41 @@ pub extern "C" fn ffi_engine_writer_set_retention(
 ) -> i32 {
     guard(|| {
         with_writer(handle, |w| {
-            w.handle
-                .writer
-                .set_soft_deletes_retention((enabled != 0).then(|| SoftDeletesRetention {
-                    seq_no_field: SEQ_NO_FIELD.to_string(),
-                    min_retained_seq_no,
-                    prune_postings_field: Some(ID_FIELD.to_string()),
-                    prune_recovery_source_field: Some(RECOVERY_SOURCE_FIELD.to_string()),
-                }));
+            let retention = (enabled != 0).then(|| SoftDeletesRetention {
+                seq_no_field: SEQ_NO_FIELD.to_string(),
+                min_retained_seq_no,
+                prune_postings_field: Some(ID_FIELD.to_string()),
+                prune_recovery_source_field: Some(RECOVERY_SOURCE_FIELD.to_string()),
+            });
+            w.writer()
+                .with_writer(|iw| iw.set_soft_deletes_retention(retention));
+            Ok(())
+        })
+    })
+}
+
+/// Merge-on-commit/refresh as OpenSearch's `NativeLuceneIndexWriterFactory`
+/// configures it from `index.merge_on_flush.*`: commits and refreshes wait
+/// up to `wait_millis` for the merges the policy asks of the segments they
+/// publish (`0` or less turns them off), and `merge_on_flush_policy != 0`
+/// picks those merges with `MergeOnFlushMergePolicy` around the writer's
+/// policy (`index.merge_on_flush.policy: merge-on-flush`).
+#[no_mangle]
+pub extern "C" fn ffi_engine_writer_set_merge_on_flush(
+    handle: u64,
+    wait_millis: i64,
+    merge_on_flush_policy: u8,
+) -> i32 {
+    guard(|| {
+        with_writer(handle, |w| {
+            w.writer().with_writer(|iw| {
+                iw.set_max_full_flush_merge_wait_millis(wait_millis);
+                let policy = (merge_on_flush_policy != 0).then(|| {
+                    let inner = TieredMergePolicy::new(MergePolicyConfig::default());
+                    Arc::new(MergeOnFlushMergePolicy::new(Box::new(inner))) as Arc<dyn MergePolicy>
+                });
+                iw.set_full_flush_merge_policy(policy);
+            });
             Ok(())
         })
     })
@@ -1056,13 +1253,19 @@ pub unsafe extern "C" fn ffi_engine_writer_force_merge(
             return Err(FfiStatus::InvalidArgument);
         }
         let generation = with_writer(handle, |w| {
-            let writer = &mut w.handle.writer;
-            if only_deletes != 0 {
-                writer.force_merge_deletes().map_err(writer_error)?;
-            } else {
-                writer.force_merge(max).map_err(writer_error)?;
-            }
-            Ok(writer.segment_infos().generation)
+            let _maintenance = w.maintenance();
+            w.writer()
+                .with_writer(|iw| {
+                    if only_deletes != 0 {
+                        iw.force_merge_deletes()
+                    } else {
+                        iw.force_merge(max)
+                    }
+                })
+                .map_err(writer_error)?;
+            // The merged segments become durable with a commit.
+            w.writer().commit().map_err(writer_error)?;
+            Ok(w.generation())
         })?;
         // SAFETY: caller contract.
         unsafe { *out_generation = generation };
@@ -1070,11 +1273,12 @@ pub unsafe extern "C" fn ffi_engine_writer_force_merge(
     })
 }
 
-/// Writes `min(n, STAT_COUNT)` counters into `out`: RAM bytes buffered,
-/// buffered documents, whether anything is uncommitted (0/1), the last
+/// Writes `min(n, STAT_COUNT)` counters into `out`: RAM bytes buffered, the
+/// part of them in buffers being flushed, buffered documents, whether anything is uncommitted (0/1), the last
 /// commit generation written or attempted (a failed or only prepared commit
 /// advances it, as Java's `updateGeneration` does), and the segment count
-/// (`STAT_*`).
+/// (`STAT_*`). Only the counters asked for are read: the two RAM counts
+/// take no lock an indexing thread holds for long.
 ///
 /// # Safety
 /// `out` valid for `n` writes.
@@ -1084,18 +1288,32 @@ pub unsafe extern "C" fn ffi_engine_writer_stats(handle: u64, out: *mut i64, n: 
         if out.is_null() && n != 0 {
             return Err(FfiStatus::NullPointer);
         }
+        let k = n.min(STAT_COUNT);
         let stats = with_writer(handle, |w| {
-            let writer = &w.handle.writer;
+            let writer = w.writer();
             let mut s = [0i64; STAT_COUNT];
             s[STAT_RAM_BYTES] = i64::try_from(writer.ram_bytes_used()).unwrap_or(i64::MAX);
-            s[STAT_PENDING_DOCS] = i64::try_from(writer.pending_doc_count()).unwrap_or(i64::MAX);
-            s[STAT_UNCOMMITTED] = i64::from(writer.has_uncommitted_changes());
-            s[STAT_GENERATION] = writer.segment_infos().generation;
-            s[STAT_SEGMENTS] =
-                i64::try_from(writer.segment_infos().segments.len()).unwrap_or(i64::MAX);
+            if k > STAT_FLUSHING_BYTES {
+                s[STAT_FLUSHING_BYTES] = i64::try_from(writer.flushing_bytes()).unwrap_or(i64::MAX);
+            }
+            if k > STAT_PENDING_DOCS {
+                s[STAT_PENDING_DOCS] =
+                    i64::try_from(writer.pending_doc_count()).unwrap_or(i64::MAX);
+            }
+            if k > STAT_UNCOMMITTED {
+                s[STAT_UNCOMMITTED] = i64::from(writer.has_uncommitted_changes());
+            }
+            if k > STAT_GENERATION {
+                (s[STAT_GENERATION], s[STAT_SEGMENTS]) = writer.with_writer(|iw| {
+                    let infos = iw.segment_infos();
+                    (
+                        infos.generation,
+                        i64::try_from(infos.segments.len()).unwrap_or(i64::MAX),
+                    )
+                });
+            }
             Ok(s)
         })?;
-        let k = n.min(STAT_COUNT);
         // SAFETY: `k <= n` and `out` is valid for `n` writes.
         unsafe { std::ptr::copy_nonoverlapping(stats.as_ptr(), out, k) };
         Ok(())
@@ -1115,8 +1333,9 @@ pub extern "C" fn ffi_engine_writer_close(handle: u64) -> i32 {
         };
         // Another thread may still be inside a call; the last `Arc` drops the
         // writer. Holds die with it, as a JVM's readers' pins die with the JVM.
-        let mut w = shared.lock().unwrap_or_else(PoisonError::into_inner);
-        w.handle.writer.rollback();
+        let _maintenance = shared.maintenance();
+        shared.writer().stop_merges();
+        shared.writer().rollback();
         Ok(())
     })
 }
@@ -1217,16 +1436,62 @@ mod tests {
         unsafe { ffi_engine_writer_apply(h, blob.as_ptr(), blob.len()) }
     }
 
+    thread_local! {
+        /// The user data the test upcall hands the next commit on this thread.
+        static COMMIT_DATA: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    /// The tests' commit-data upcall: the bytes [`commit`] set for this thread.
+    unsafe extern "C" fn test_commit_data(
+        _: u64,
+        out: *mut u8,
+        cap: usize,
+        len: *mut usize,
+    ) -> i32 {
+        COMMIT_DATA.with(|d| {
+            let d = d.borrow();
+            // SAFETY: the upcall's contract.
+            unsafe {
+                *len = d.len();
+                if cap < d.len() {
+                    return COMMIT_DATA_BUFFER_TOO_SMALL;
+                }
+                std::ptr::copy_nonoverlapping(d.as_ptr(), out, d.len());
+            }
+            COMMIT_DATA_OK
+        })
+    }
+
     fn commit(h: u64, data: &[(&str, &str)]) -> i64 {
         let mut b = Blob::default().i32(data.len() as i32);
         for (k, v) in data {
             b = b.bytes(k.as_bytes()).bytes(v.as_bytes());
         }
+        COMMIT_DATA.with(|d| *d.borrow_mut() = b.0);
+        // SAFETY: the upcall keeps its contract for the life of the process.
+        assert_eq!(
+            unsafe { ffi_engine_set_commit_data_upcall(Some(test_commit_data)) },
+            0
+        );
         let mut gen = 0;
-        // SAFETY: live slice and out-pointer.
-        let rc = unsafe { ffi_engine_writer_commit(h, b.0.as_ptr(), b.0.len(), &mut gen) };
+        // SAFETY: a live out-pointer.
+        let rc = unsafe { ffi_engine_writer_commit(h, 0, &mut gen) };
         assert_eq!(rc, 0, "{}", crate::error::last_error());
         gen
+    }
+
+    /// Commits, then waits for the merges that commit set off and commits
+    /// their results, until a commit leaves nothing uncommitted: a commit
+    /// whose files are all the writer has on disk.
+    fn commit_settled(h: u64) -> i64 {
+        let mut gen = commit(h, &[]);
+        loop {
+            lookup(h).unwrap().handle.merges.sync().unwrap();
+            if !lookup(h).unwrap().writer().has_uncommitted_changes() {
+                return gen;
+            }
+            gen = commit(h, &[]);
+        }
     }
 
     fn register(h: u64, spec: &[u8]) -> Result<i32, i32> {
@@ -1333,11 +1598,10 @@ mod tests {
         let tmp = empty_index("engine-writer-config");
         let h = open(&tmp, 0);
         let engine = lookup(h).unwrap();
-        {
-            let engine = engine.lock().unwrap();
-            assert_eq!(engine.handle.writer.max_full_flush_merge_wait_millis(), 0);
-            assert!(!engine.handle.writer.use_compound_file());
-        }
+        engine.writer().with_writer(|w| {
+            assert_eq!(w.max_full_flush_merge_wait_millis(), 0);
+            assert!(!w.use_compound_file());
+        });
         ffi_engine_writer_close(h);
     }
 
@@ -1593,7 +1857,7 @@ mod tests {
                 assert_eq!(apply(h, &doc(op, &f, &id, &text, seq, false).0), 0);
                 seq += 1;
             }
-            let gen = commit(h, &[]);
+            let gen = commit_settled(h);
             let mut new_hold = 0;
             // SAFETY: live out-pointer.
             assert_eq!(
@@ -1714,18 +1978,23 @@ mod tests {
         );
         assert_eq!(ffi_close_jvm_reader(reader), 0);
         assert_eq!(ffi_engine_writer_release_hold(h, hold), 0);
+        // What is still mapped is the writer's own: the postings its reader
+        // pool keeps for resolving the next deletes, of live segments only.
         let (fds, maps) = open_under(tmp.path());
         let lock = tmp.path().join("write.lock").to_string_lossy().into_owned();
         assert!(
-            fds == [lock] && maps.is_empty(),
+            fds == [lock] && maps.iter().all(|m| !m.ends_with("(deleted)")),
             "after the last close: {fds:?} {maps:?}"
         );
         check(&tmp);
         assert_eq!(ffi_engine_writer_close(h), 0);
-        // Closing the writer releases the lock, and with it the last
-        // descriptor.
-        let (fds, _) = open_under(tmp.path());
-        assert!(fds.is_empty(), "after the writer closed: {fds:?}");
+        // Closing the writer releases the lock and its pool, and with them
+        // the last descriptor and mapping.
+        let (fds, maps) = open_under(tmp.path());
+        assert!(
+            fds.is_empty() && maps.is_empty(),
+            "after the writer closed: {fds:?} {maps:?}"
+        );
     }
 
     #[test]
@@ -1877,7 +2146,7 @@ mod tests {
                 FfiStatus::NullPointer.code()
             );
             assert_eq!(
-                ffi_engine_writer_commit(h, [0u8; 4].as_ptr(), 4, std::ptr::null_mut()),
+                ffi_engine_writer_commit(h, 0, std::ptr::null_mut()),
                 FfiStatus::NullPointer.code()
             );
             assert_eq!(
@@ -1922,11 +2191,12 @@ mod tests {
         assert_eq!(register(h, &spec), Err(FfiStatus::Decode.code()));
         spec = field("f", 1, 0, 9, 0);
         assert_eq!(register(h, &spec), Err(FfiStatus::Decode.code()));
-        let data = Blob::default().i32(1).bytes(b"k").0;
+        commit(h, &[]);
+        COMMIT_DATA.with(|d| *d.borrow_mut() = Blob::default().i32(1).bytes(b"k").0);
         let mut g = 0;
-        // SAFETY: live slice and out-pointer.
+        // SAFETY: a live out-pointer.
         assert_eq!(
-            unsafe { ffi_engine_writer_commit(h, data.as_ptr(), data.len(), &mut g) },
+            unsafe { ffi_engine_writer_commit(h, 0, &mut g) },
             FfiStatus::Decode.code()
         );
         // A bad RAM buffer is refused at open.

@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use lucene_codecs::fst::PositiveIntOutputs;
 use lucene_codecs::fst_util::IntsRefFstEnum;
-use lucene_search::misc::{ListOfOutputs, ListOutput};
+use lucene_misc::{ListOfOutputs, ListOutput};
 use lucene_test_framework::util::fst_tester::{FstTester, InputOutput};
 use lucene_util::java_random::JavaRandom;
 

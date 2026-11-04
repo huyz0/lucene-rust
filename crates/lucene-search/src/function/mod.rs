@@ -498,7 +498,7 @@ pub(crate) fn java_float_compare(a: f32, b: f32) -> std::cmp::Ordering {
 }
 
 /// `Double.compare`.
-pub(crate) fn java_double_compare(a: f64, b: f64) -> std::cmp::Ordering {
+pub fn java_double_compare(a: f64, b: f64) -> std::cmp::Ordering {
     fn key(v: f64) -> i64 {
         let bits = if v.is_nan() {
             0x7ff8_0000_0000_0000_u64 as i64
@@ -1081,6 +1081,11 @@ impl<'a> TopLevel<'a> {
                 .map(|(i, seg)| leaf_context(seg, searcher.norms(i), global, similarity))
                 .collect(),
         }
+    }
+
+    /// Leaf `ord` as a [`ValueLeaf`], when the searcher has one.
+    pub fn leaf(&self, ord: usize) -> Option<ValueLeaf<'a>> {
+        self.leaves.get(ord).map(|c| ValueLeaf::new(*c))
     }
 
     /// The leaves, in order.

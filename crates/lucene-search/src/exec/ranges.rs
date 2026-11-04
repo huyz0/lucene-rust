@@ -787,30 +787,31 @@ impl<const INVERSE: bool> IntersectVisitor for BitsRangeVisitor<INVERSE> {
         }
     }
 
-    fn visit_range(&mut self, start: i32, count: usize) {
+    fn visit_range(&mut self, start: i32, count: usize) -> bool {
         let from = usize::try_from(start).unwrap_or(usize::MAX).min(self.len);
         let to = from.saturating_add(count).min(self.len);
         if from >= to {
-            return;
+            return true;
         }
         let (fw, tw) = (from >> 6, (to - 1) >> 6);
         let head = u64::MAX << (from & 63);
         let tail = u64::MAX >> (63 - ((to - 1) & 63));
         if fw == tw {
             self.apply(fw, head & tail);
-            return;
+            return true;
         }
         self.apply(fw, head);
         for w in fw + 1..tw {
             self.apply(w, u64::MAX);
         }
         self.apply(tw, tail);
+        true
     }
 
-    fn visit_bit_words(&mut self, doc_base: i32, words: lucene_codecs::points::BitWords<'_>) {
-        let base = doc_base as u32 as usize;
+    fn visit_bitset(&mut self, words: &[u64], base: i32, _count: usize) -> bool {
+        let base = base as u32 as usize;
         if base & 63 != 0 {
-            for (i, word) in words.iter().enumerate() {
+            for (i, &word) in words.iter().enumerate() {
                 let mut w = word;
                 while w != 0 {
                     let d = base + i * 64 + w.trailing_zeros() as usize;
@@ -820,17 +821,18 @@ impl<const INVERSE: bool> IntersectVisitor for BitsRangeVisitor<INVERSE> {
                     w &= w - 1;
                 }
             }
-            return;
+            return true;
         }
         let last = (self.len - 1) >> 6;
         let tail = tail_mask(self.len);
-        for (i, word) in words.iter().enumerate() {
+        for (i, &word) in words.iter().enumerate() {
             let w = (base >> 6) + i;
             if w > last {
                 break;
             }
             self.apply(w, if w == last { word & tail } else { word });
         }
+        true
     }
 
     fn visit_with_value(&mut self, doc_id: i32, packed_value: &[u8]) {

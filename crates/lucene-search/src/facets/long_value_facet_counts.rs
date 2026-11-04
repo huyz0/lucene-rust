@@ -7,21 +7,27 @@
 //! after the array's. `getTopChildren` and `getAllChildrenSortByValue` are
 //! totally ordered and so the same. Java's `unwrapSingleton` fast path for a
 //! single-valued field is the general path here (a document with one value
-//! counts the same either way).
+//! counts the same either way); a segment's column is read directly.
 
 use std::fmt;
 
 use super::facet_result::{FacetResult, FacetValue, LabelAndValue};
-use super::facet_utils::{for_each_doc, for_each_hit, validate_dim_and_path};
+use super::facet_utils::{
+    direct_column, for_each_doc, for_each_hit, hits_filter, live_filter, validate_dim_and_path,
+};
+use lucene_codecs::field_infos::DocValuesType;
+
+/// The doc-values types `DocValues.getSortedNumeric` reads.
+const NUMERIC_KINDS: &[DocValuesType] = &[DocValuesType::Numeric, DocValuesType::SortedNumeric];
 use super::facets_collector::FacetsCollector;
 use super::facets_trait::{validate_top_n, Facets};
 use super::multi_long_values_source::{MultiLongValues, MultiLongValuesSource};
 use super::top_ord_and_number_queue::PriorityQueue;
-use crate::grouping::FxHashMap;
 use crate::reader::doc_values::get_sorted_numeric;
 use crate::reader::{IndexReader, SortedNumericDocValues, NO_MORE_DOCS};
 use crate::values_source::{LongValuesSource, ValuesContext};
 use crate::{Error, Result};
+use lucene_util::fx_hash::avalanche::FxHashMap;
 
 /// The values the array counts: `[0, COUNTS_LEN)`.
 const COUNTS_LEN: usize = 1024;
@@ -108,6 +114,13 @@ impl LongValueFacetCounts {
         c.initialize_counters();
         for leaf in reader.leaves() {
             let mut values = get_sorted_numeric(leaf.reader, field)?;
+            if let Some(mut column) = direct_column(leaf.reader, field, NUMERIC_KINDS)? {
+                column.for_each(live_filter(leaf.reader), 0, i32::MAX, |_, values| {
+                    c.add_values(values);
+                    Ok(())
+                })?;
+                continue;
+            }
             match leaf.reader.live_docs() {
                 None => {
                     let mut doc = values.next_doc()?;
@@ -260,6 +273,14 @@ impl LongValueFacetCounts {
             }
             self.initialize_counters();
             let mut values = get_sorted_numeric(hits.context.reader, &self.field)?;
+            let direct = direct_column(hits.context.reader, &self.field, NUMERIC_KINDS)?;
+            if let (Some(mut column), Some(filter)) = (direct, hits_filter(&hits.bits)) {
+                column.for_each(filter, 0, i32::MAX, |_, values| {
+                    self.add_values(values);
+                    Ok(())
+                })?;
+                continue;
+            }
             for_each_hit(&hits.bits, values.as_mut(), |dv| self.add_doc(dv))?;
         }
         Ok(())
@@ -273,13 +294,7 @@ impl LongValueFacetCounts {
         }
         // In bulk when the doc values hold the document's values decoded.
         if let Some(all) = values.take_values() {
-            let mut previous = 0i64;
-            for (i, &value) in all.iter().enumerate() {
-                if i == 0 || value != previous {
-                    self.increment(value);
-                    previous = value;
-                }
-            }
+            self.count_distinct(all);
             return Ok(());
         }
         let mut previous = 0i64;
@@ -292,6 +307,29 @@ impl LongValueFacetCounts {
             }
         }
         Ok(())
+    }
+
+    /// One document's values, ascending: the document counted when it has
+    /// any, and each value once.
+    #[inline]
+    fn add_values(&mut self, values: &[i64]) {
+        if !values.is_empty() {
+            self.tot_count = self.tot_count.wrapping_add(1);
+        }
+        self.count_distinct(values);
+    }
+
+    /// Each of `values` (ascending) counted, a value repeated within them
+    /// once.
+    #[inline]
+    fn count_distinct(&mut self, values: &[i64]) {
+        let mut previous = 0i64;
+        for (i, &value) in values.iter().enumerate() {
+            if i == 0 || value != previous {
+                self.increment(value);
+                previous = value;
+            }
+        }
     }
 
     /// One document's multi-valued source values, positioned on it.

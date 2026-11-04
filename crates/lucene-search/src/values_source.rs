@@ -228,7 +228,7 @@ impl<'c> ValuesContext<'c> {
 
     /// Leaf `leaf`'s doc base (`LeafReaderContext.docBase`): `0` for a
     /// context of one reader.
-    pub(crate) fn doc_base(&self, leaf: usize) -> i32 {
+    pub fn doc_base(&self, leaf: usize) -> i32 {
         self.searcher
             .and_then(|s| s.segments().get(leaf))
             .map_or(0, |s| s.doc_base)
@@ -303,10 +303,10 @@ pub trait DoubleValuesSource: Send + Sync {
         false
     }
 
-    /// This source as an [`crate::expressions::ExpressionValueSource`], when
-    /// it is one (`instanceof ExpressionValueSource`): a caching expression
-    /// shares the values of the expressions nested in it.
-    fn as_expression(&self) -> Option<&crate::expressions::ExpressionValueSource> {
+    /// This source as `Any`, for a caller that tests its concrete type
+    /// (`instanceof`): a caching expression shares the values of the
+    /// expressions nested in it. `None` unless overridden.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
         None
     }
 

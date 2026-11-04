@@ -168,5 +168,5 @@ fn bytes_len(bits: u8, input: &mut ReverseReader<'_>) -> Result<usize, FstReadEr
         return Ok(inline);
     }
     let len = input.read_vint()?;
-    usize::try_from(len).map_err(|_| FstReadError(format!("negative metadata length {len}")))
+    usize::try_from(len).map_err(|_| FstReadError(format!("negative metadata length {len}").into()))
 }

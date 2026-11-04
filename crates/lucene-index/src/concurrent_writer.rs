@@ -67,8 +67,12 @@
 //!
 //! # Not (yet) here
 //!
-//! Soft deletes and two-phase commit are single-writer features for now --
-//! [`ConcurrentIndexWriter::into_writer`] hands the writer back for them.
+//! Two-phase commit, and soft deletes of native documents, are single-writer
+//! features for now -- [`ConcurrentIndexWriter::into_writer`] hands the
+//! writer back for them. Explicit documents take soft updates here
+//! ([`ConcurrentIndexWriter::soft_update_explicit_documents`]); a field they
+//! use is registered through [`ConcurrentIndexWriter::register_field`], and
+//! other settings change through [`ConcurrentIndexWriter::with_writer`].
 //! (Vectors and custom-frequency postings ride in each slot's buffer with their
 //! documents: [`ConcurrentIndexWriter::add_document_with_vectors`],
 //! [`ConcurrentIndexWriter::add_document_with_custom_freq_terms`].) A merge
@@ -83,7 +87,7 @@ use std::collections::{HashSet, VecDeque};
 use std::ops::DerefMut;
 use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, RwLock, Weak};
 use std::time::Duration;
 
 use lucene_codecs::stored_fields::Document;
@@ -94,16 +98,18 @@ use crate::buffered_updates::{
 };
 use crate::deletes;
 use crate::flush_policy::{FlushByRamOrCountsPolicy, FlushControl, FlushPolicy};
+use crate::index_writer::pending_postings::PendingPostings;
 use crate::index_writer::{
     buffer_node, custom_freq_terms_ram_bytes, document_ram_bytes, DeleteNode, DocumentBuffer,
-    DocumentVector, ExplicitFields, FlushDeletes, IndexWriter, IndexingConfig, Result,
-    SegmentTicket, DISABLE_AUTO_FLUSH,
+    DocumentVector, ExplicitDocument, ExplicitFields, FlushDeletes, IndexWriter, IndexingConfig,
+    InvertedTerms, Result, SegmentTicket, DISABLE_AUTO_FLUSH,
 };
 use crate::merge_policy::{MergePolicyConfig, MergeTrigger};
 use crate::merge_rate_limiter::MergeRateLimiter;
 use crate::merge_scheduler::{MergeScheduler, MergeSource, PendingMerges, ScheduledMerge};
 use crate::segment_infos::SegmentCommitInfo;
 use crate::stall_control::DocumentsWriterStallControl;
+use lucene_codecs::field_infos::FieldInfo;
 
 /// One indexing slot's buffer -- `DocumentsWriterPerThread`, before its flush.
 #[derive(Default)]
@@ -115,6 +121,11 @@ struct Dwpt {
     /// Parallel to `docs`: each document's vectors
     /// ([`ConcurrentIndexWriter::add_document_with_vectors`]).
     vectors: Vec<Vec<DocumentVector>>,
+    /// Parallel to `docs` in a writer that takes explicit documents: each
+    /// document's indexed fields, their terms moved into `postings`.
+    explicit: Vec<ExplicitFields>,
+    /// The explicit documents' postings, inverted as they are added.
+    postings: PendingPostings,
     has_blocks: bool,
     ram_bytes: usize,
     /// This buffer's share of every delete issued since it last flushed, each
@@ -197,9 +208,17 @@ struct Entry {
     vectors: Vec<DocumentVector>,
 }
 
-/// A buffer's per-document custom-frequency terms and vectors, parallel to
-/// its documents.
-type Buffered = (Vec<Vec<(String, i32)>>, Vec<Vec<DocumentVector>>);
+/// A buffer's per-document custom-frequency terms, vectors and explicit
+/// fields, parallel to its documents, and its explicit documents' postings.
+type Buffered = (
+    Vec<Vec<(String, i32)>>,
+    Vec<Vec<DocumentVector>>,
+    Vec<ExplicitFields>,
+    PendingPostings,
+);
+
+/// Buffers an add's documents into a slot, returning the RAM they take.
+type Fill = Box<dyn FnOnce(&mut Dwpt) -> Result<usize>>;
 
 /// A buffer that filled (or was flushed): everything its segment is built from.
 struct FlushBatch {
@@ -208,6 +227,8 @@ struct FlushBatch {
     docs: Vec<Document>,
     custom_freq_terms: Vec<Vec<(String, i32)>>,
     vectors: Vec<Vec<DocumentVector>>,
+    explicit: Vec<ExplicitFields>,
+    postings: PendingPostings,
     has_blocks: bool,
     private: BufferedUpdates,
     /// The slot's `ram_bytes` when it was taken: what this flush counts
@@ -235,7 +256,12 @@ const EMPTY_SLOT: usize = usize::MAX;
 /// See the module documentation.
 pub struct ConcurrentIndexWriter<'d> {
     dir: &'d dyn Directory,
-    cfg: Arc<IndexingConfig>,
+    /// The control plane's configuration as of its last change: a field
+    /// registered ([`Self::register_field`]) or a setting changed through
+    /// [`Self::with_writer`] replaces it. An add reads the snapshot current
+    /// when it starts; a flush or merge the one current when it builds, which
+    /// knows every field its documents use.
+    cfg: RwLock<Arc<IndexingConfig>>,
     core: Mutex<Core<'d>>,
     /// Signalled when a segment publishes or the index changes.
     changed: Condvar,
@@ -247,11 +273,17 @@ pub struct ConcurrentIndexWriter<'d> {
     /// Held for the whole of a [`Self::flush`] or [`Self::commit`]: one full
     /// flush at a time, as Java's `IndexWriter.fullFlushLock`.
     full_flush: Mutex<()>,
-    /// Round-robin start for choosing a slot.
+    /// Which slot to wait on when every slot is taken.
     next_slot: AtomicUsize,
+    /// Tests: every add takes the next slot in rotation, so one thread can
+    /// fill several buffers.
+    #[cfg(test)]
+    rotate_slots: std::sync::atomic::AtomicBool,
     max_buffered_docs: Option<usize>,
     ram_buffer_bytes: Option<usize>,
     merge_policy: Option<MergePolicyConfig>,
+    /// Set by [`Self::stop_merges`]: no merge is registered any more.
+    merges_stopped: AtomicBool,
     /// `DocumentsWriterFlushControl`'s accounting -- RAM in the slots and in
     /// buffers being built, each slot's `flushPending` -- updated together
     /// with the flush policy's decision and the stall decision, as Java's is
@@ -309,6 +341,38 @@ impl Drop for BarrierGuard<'_, '_> {
 }
 
 impl<'d> ConcurrentIndexWriter<'d> {
+    /// The current configuration snapshot (see the `cfg` field).
+    fn cfg(&self) -> Arc<IndexingConfig> {
+        Arc::clone(
+            &self
+                .cfg
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
+
+    /// Runs `body` on the wrapped writer under the control lock -- for what
+    /// only the single-threaded writer does (commit user data, commit points
+    /// and holds, soft-deletes retention, force merges). The buffers are not
+    /// flushed first; the configuration snapshot is refreshed after.
+    pub fn with_writer<T>(&self, body: impl FnOnce(&mut IndexWriter<'d>) -> T) -> T {
+        let mut core = lock(&self.core);
+        let out = body(&mut core.writer);
+        *self
+            .cfg
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = core.writer.shared_config();
+        drop(core);
+        self.changed.notify_all();
+        out
+    }
+
+    /// [`IndexWriter::register_field`], from any thread: the field is known
+    /// to every add that starts after this returns.
+    pub fn register_field(&self, info: FieldInfo) -> Result<i32> {
+        self.with_writer(|w| w.register_field(info))
+    }
+
     /// Shares `writer` among up to `slots` indexing threads at once. Its
     /// configuration is frozen from here on -- the building threads all read
     /// it -- and merging passes to [`Self::maybe_merge`], so that merges run
@@ -342,7 +406,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
         let max_docs = writer.max_docs_limit();
         Ok(ConcurrentIndexWriter {
             dir: writer.dir(),
-            cfg: writer.shared_config(),
+            cfg: RwLock::new(writer.shared_config()),
             core: Mutex::new(Core {
                 writer,
                 next_ticket: 0,
@@ -356,9 +420,12 @@ impl<'d> ConcurrentIndexWriter<'d> {
             log: Mutex::new(log),
             full_flush: Mutex::new(()),
             next_slot: AtomicUsize::new(0),
+            #[cfg(test)]
+            rotate_slots: std::sync::atomic::AtomicBool::new(false),
             max_buffered_docs,
             ram_buffer_bytes,
             merge_policy,
+            merges_stopped: AtomicBool::new(false),
             ram: Mutex::new(FlushControl::new(slots)),
             policy: FlushByRamOrCountsPolicy {
                 max_buffered_docs,
@@ -382,6 +449,9 @@ impl<'d> ConcurrentIndexWriter<'d> {
         let Some(policy) = &self.merge_policy else {
             return Ok(());
         };
+        if self.merges_stopped.load(Ordering::Acquire) {
+            return Ok(());
+        }
         while let Some((names, estimated)) = core.writer.next_merge_sized(policy, &core.merging)? {
             core.merging.extend(names.iter().cloned());
             self.pending_merges
@@ -434,7 +504,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
         };
         let tracking = TrackingDirectory::new(self.dir);
         let outcome = catch_unwind(AssertUnwindSafe(|| {
-            self.cfg.run_merge_limited(&tracking, &plan, limiter)
+            self.cfg().run_merge_limited(&tracking, &plan, limiter)
         }));
         let mut core = lock(&self.core);
         release(&mut core);
@@ -460,6 +530,22 @@ impl<'d> ConcurrentIndexWriter<'d> {
         drop(core);
         self.changed.notify_all();
         result
+    }
+
+    /// Registers no merge from now on and drops the registered ones no merge
+    /// thread has taken yet -- what `IndexWriter.rollback` does to merges
+    /// (`stopMerges`, `abortMerges`) before the writer closes. Merges already
+    /// running finish; a merge scheduler's `close` waits for them.
+    pub fn stop_merges(&self) {
+        self.merges_stopped.store(true, Ordering::Release);
+        let mut core = lock(&self.core);
+        while let Some(merge) = self.pending_merges.pop() {
+            for name in &merge.segments {
+                core.merging.remove(name);
+            }
+        }
+        drop(core);
+        self.changed.notify_all();
     }
 
     /// `IndexWriter.close()`'s merge half: registers what the policy still
@@ -718,7 +804,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
 
     /// `IndexWriter.updateDocValues(Term, Field...)`.
     pub fn update_doc_values(&self, term: Term, updates: &[DocValuesUpdate]) -> Result<SeqNo> {
-        let node = self.cfg.doc_values_update_node(&term, updates)?;
+        let node = self.cfg().doc_values_update_node(&term, updates)?;
         self.buffer_delete(node)
     }
 
@@ -810,24 +896,34 @@ impl<'d> ConcurrentIndexWriter<'d> {
         self.slices[i].store(end, Ordering::Release);
     }
 
-    /// Locks a free slot -- any, trying each once from a rotating start, then
-    /// waiting on one -- `DocumentsWriterPerThreadPool.getAndLock`.
+    /// Locks a free slot -- `DocumentsWriterPerThreadPool.getAndLock`. Free
+    /// slots are tried lowest first, so a thread indexing alone keeps filling
+    /// one buffer and `k` threads fill `k` buffers, as Java hands out a free
+    /// `DocumentsWriterPerThread` before it creates another. With every slot
+    /// taken, it waits on one, picked in rotation.
     fn acquire_slot(&self) -> (usize, MutexGuard<'_, Dwpt>) {
-        let n = self.slots.len();
-        // `n >= 1` (`new` makes at least one slot); `checked_rem` only because
-        // the arithmetic gate cannot see that.
-        let start = self
-            .next_slot
-            .fetch_add(1, Ordering::Relaxed)
-            .checked_rem(n)
-            .unwrap_or(0);
-        for k in 0..n {
-            let i = start.saturating_add(k).checked_rem(n).unwrap_or(0);
-            if let Ok(guard) = self.slots[i].try_lock() {
+        #[cfg(test)]
+        if self.rotate_slots.load(Ordering::Relaxed) {
+            let i = self
+                .next_slot
+                .fetch_add(1, Ordering::Relaxed)
+                .checked_rem(self.slots.len())
+                .unwrap_or(0);
+            return (i, lock(&self.slots[i]));
+        }
+        for (i, slot) in self.slots.iter().enumerate() {
+            if let Ok(guard) = slot.try_lock() {
                 return (i, guard);
             }
         }
-        (start, lock(&self.slots[start]))
+        // `n >= 1` (`new` makes at least one slot); `checked_rem` only because
+        // the arithmetic gate cannot see that.
+        let wait = self
+            .next_slot
+            .fetch_add(1, Ordering::Relaxed)
+            .checked_rem(self.slots.len())
+            .unwrap_or(0);
+        (wait, lock(&self.slots[wait]))
     }
 
     /// `DocumentsWriterPerThread.updateDocuments` + `finishDocuments`: the
@@ -850,45 +946,148 @@ impl<'d> ConcurrentIndexWriter<'d> {
     }
 
     fn add_entries(&self, delete: Option<DeleteNode>, docs: Vec<Entry>) -> Result<SeqNo> {
+        let cfg = self.cfg();
+        let count = docs.len();
+        self.add_with(delete, count, |dwpt| {
+            let before = dwpt.docs.len();
+            for (k, entry) in docs.iter().enumerate() {
+                cfg.validate_document_vectors(before.saturating_add(k), &entry.vectors)?;
+            }
+            Ok(Box::new(move |dwpt: &mut Dwpt| {
+                let mut added = 0usize;
+                for entry in docs {
+                    // A plain document is charged its stored fields only, as
+                    // before; the extras only when it carries them.
+                    let custom = if entry.custom_freq_terms.is_empty() {
+                        0
+                    } else {
+                        custom_freq_terms_ram_bytes(&entry.custom_freq_terms)
+                    };
+                    added = added
+                        .saturating_add(document_ram_bytes(&entry.doc))
+                        .saturating_add(custom)
+                        .saturating_add(
+                            entry
+                                .vectors
+                                .iter()
+                                .map(DocumentVector::ram_bytes)
+                                .fold(0usize, usize::saturating_add),
+                        );
+                    dwpt.docs.push(entry.doc);
+                    dwpt.custom_freq_terms.push(entry.custom_freq_terms);
+                    dwpt.vectors.push(entry.vectors);
+                }
+                Ok(added)
+            }) as Fill)
+        })
+    }
+
+    /// `IndexWriter.addDocuments` for explicit documents
+    /// ([`IndexWriter::add_explicit_documents`]), from any thread: each
+    /// document is inverted into its slot's postings as it is buffered.
+    pub fn add_explicit_documents(&self, docs: Vec<ExplicitDocument>) -> Result<SeqNo> {
+        self.add_explicit(None, docs)
+    }
+
+    /// `IndexWriter.softUpdateDocuments(term, docs, softDeletes...)` for
+    /// explicit documents ([`IndexWriter::soft_update_explicit_documents`]):
+    /// `docs` are added and every document matching `term` added before
+    /// them gets `soft_deletes`.
+    pub fn soft_update_explicit_documents(
+        &self,
+        term: Term,
+        docs: Vec<ExplicitDocument>,
+        soft_deletes: &[DocValuesUpdate],
+    ) -> Result<SeqNo> {
+        if soft_deletes.is_empty() {
+            return Err(crate::index_writer::Error::NoSoftDeletesSupplied);
+        }
+        let cfg = self.cfg();
+        // `verifyOrCreateDvOnlyField`: an update to a field this writer has
+        // never registered would resolve against nothing and vanish.
+        for update in soft_deletes {
+            cfg.verify_doc_values_update_field(update)?;
+        }
+        let updates = soft_deletes
+            .iter()
+            .map(|u| crate::index_writer::retarget_update(u, &term))
+            .collect();
+        self.add_explicit(Some(DeleteNode::DocValuesUpdates(updates)), docs)
+    }
+
+    fn add_explicit(
+        &self,
+        delete: Option<DeleteNode>,
+        docs: Vec<ExplicitDocument>,
+    ) -> Result<SeqNo> {
+        let cfg = self.cfg();
+        // Every fallible lookup runs before anything is buffered, so a
+        // refused document leaves nothing behind.
+        let options = cfg.explicit_add_options(&docs)?;
+        let count = docs.len();
+        self.add_with(delete, count, move |_| {
+            Ok(Box::new(move |dwpt: &mut Dwpt| {
+                // The postings count what they grew by, as `bytesUsed` counts
+                // `TermsHashPerField`'s pools; the documents' own inverted
+                // terms are dropped once they are in.
+                let postings_before = dwpt.postings.bytes();
+                let mut added = 0usize;
+                for (mut doc, options) in docs.into_iter().zip(options) {
+                    let stored = Document { fields: doc.stored };
+                    added = added.saturating_add(document_ram_bytes(&stored));
+                    dwpt.docs.push(stored);
+                    dwpt.custom_freq_terms.push(Vec::new());
+                    dwpt.vectors.push(Vec::new());
+                    let doc_id =
+                        i32::try_from(dwpt.docs.len().saturating_sub(1)).map_err(|_| {
+                            crate::index_writer::explicit_error("too many buffered documents")
+                        })?;
+                    for (inv, options) in doc.fields.inverted.iter_mut().zip(options) {
+                        let Some(options) = options else {
+                            continue;
+                        };
+                        dwpt.postings.add_field(doc_id, inv, options)?;
+                        // the postings hold them now; the document keeps its norm
+                        inv.terms = InvertedTerms::default();
+                    }
+                    added = added.saturating_add(doc.fields.ram_bytes());
+                    dwpt.explicit.push(doc.fields);
+                }
+                let grown = dwpt.postings.bytes().saturating_sub(postings_before);
+                Ok(added.saturating_add(grown))
+            }) as Fill)
+        })
+    }
+
+    /// The shared tail of every add: `check` validates against the slot
+    /// (nothing buffered yet) and returns what buffers the documents; then
+    /// the delete, the slice and the flush decision.
+    fn add_with(
+        &self,
+        delete: Option<DeleteNode>,
+        count: usize,
+        check: impl FnOnce(&Dwpt) -> Result<Fill>,
+    ) -> Result<SeqNo> {
         // BLOCK-GUARD: refused before anything is buffered, as
         // `DocumentsWriterPerThread.updateDocuments` refuses it; a buffered
         // block could never be flushed.
-        self.cfg.check_block(docs.len())?;
+        self.cfg().check_block(count)?;
         let mut flushed = self.pre_update()?;
         let (seq_no, batch) = {
             let (i, mut dwpt) = self.acquire_slot();
             let before = dwpt.docs.len();
-            for (k, entry) in docs.iter().enumerate() {
-                self.cfg
-                    .validate_document_vectors(before.saturating_add(k), &entry.vectors)?;
-            }
-            self.reserve_docs(docs.len())?;
-            if docs.len() > 1 {
+            let fill = check(&dwpt)?;
+            self.reserve_docs(count)?;
+            if count > 1 {
                 dwpt.has_blocks = true;
             }
-            let mut added = 0usize;
-            for entry in docs {
-                // A plain document is charged its stored fields only, as
-                // before; the extras only when it carries them.
-                let custom = if entry.custom_freq_terms.is_empty() {
-                    0
-                } else {
-                    custom_freq_terms_ram_bytes(&entry.custom_freq_terms)
-                };
-                added = added
-                    .saturating_add(document_ram_bytes(&entry.doc))
-                    .saturating_add(custom)
-                    .saturating_add(
-                        entry
-                            .vectors
-                            .iter()
-                            .map(DocumentVector::ram_bytes)
-                            .fold(0usize, usize::saturating_add),
-                    );
-                dwpt.docs.push(entry.doc);
-                dwpt.custom_freq_terms.push(entry.custom_freq_terms);
-                dwpt.vectors.push(entry.vectors);
-            }
+            let added = match fill(&mut dwpt) {
+                Ok(added) => added,
+                Err(e) => {
+                    self.buffered_docs.fetch_sub(count, Ordering::AcqRel);
+                    return Err(e);
+                }
+            };
             dwpt.ram_bytes = dwpt.ram_bytes.saturating_add(added);
             let (nodes, end, seq_no, delete_bytes) = {
                 let mut log = lock(&self.log);
@@ -986,6 +1185,8 @@ impl<'d> ConcurrentIndexWriter<'d> {
             docs: std::mem::take(&mut dwpt.docs),
             custom_freq_terms: std::mem::take(&mut dwpt.custom_freq_terms),
             vectors: std::mem::take(&mut dwpt.vectors),
+            explicit: std::mem::take(&mut dwpt.explicit),
+            postings: std::mem::take(&mut dwpt.postings),
             has_blocks: std::mem::take(&mut dwpt.has_blocks),
             private: std::mem::take(&mut dwpt.private),
             ram_bytes: dwpt.ram_bytes,
@@ -1047,27 +1248,45 @@ impl<'d> ConcurrentIndexWriter<'d> {
         &self,
         ticket: &SegmentTicket,
         mut docs: Vec<Document>,
-        (mut custom_freq_terms, mut vectors): Buffered,
+        (mut custom_freq_terms, mut vectors, mut explicit, postings): Buffered,
         has_blocks: bool,
         mut private: BufferedUpdates,
         tracking: &TrackingDirectory<'_>,
     ) -> Result<Built> {
-        // The concurrent writer takes native documents only.
-        let mut explicit = vec![ExplicitFields::default(); docs.len()];
-        let sort_map = self.cfg.sort_buffer(
+        let cfg = self.cfg();
+        // Native documents carry no explicit fields.
+        let explicit_docs = cfg.takes_explicit();
+        if !explicit_docs {
+            explicit = vec![ExplicitFields::default(); docs.len()];
+        }
+        let sort_map = cfg.sort_buffer(
             &mut docs,
             &mut custom_freq_terms,
             &mut vectors,
             &mut explicit,
             has_blocks,
         )?;
+        // The postings hold insertion-order doc ids; `sort_map` is
+        // `new_to_old`.
+        let old_to_new = sort_map.as_ref().map(|new_to_old| {
+            let mut old_to_new = vec![0usize; new_to_old.len()];
+            for (new, &old) in new_to_old.iter().enumerate() {
+                old_to_new[old] = new;
+            }
+            old_to_new
+        });
+        let postings = if explicit_docs {
+            Some(postings.into_flushed(old_to_new.as_deref())?)
+        } else {
+            None
+        };
         let buffer = DocumentBuffer {
             docs: &docs,
             custom_freq_terms: &custom_freq_terms,
             vectors: &vectors,
             explicit: &explicit,
-            postings: None,
-            old_to_new: None,
+            postings: postings.as_ref(),
+            old_to_new: old_to_new.as_deref(),
             has_blocks,
         };
         // This segment's own deletes are resolved here, with no lock held --
@@ -1088,7 +1307,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
             deleted: Vec::new(),
             resolved: false,
         };
-        let (mut sci, si_files) = self.cfg.build_and_write_segment(
+        let (mut sci, si_files) = cfg.build_and_write_segment(
             tracking,
             &buffer,
             &ticket.segment_name,
@@ -1111,7 +1330,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
                     None,
                     docs.len(),
                     deleted,
-                    self.cfg.codec.as_deref(),
+                    self.cfg().codec.as_deref(),
                 )?;
             }
         }
@@ -1119,8 +1338,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
         // updates, and term deletes the build did not resolve.
         let sort_map = sort_map.map(|m| (ticket.segment_name.clone(), m));
         let fully_deleted = if private.any() {
-            self.cfg
-                .apply_flush_private_updates(tracking, &private, &mut sci, sort_map.as_ref())?
+            cfg.apply_flush_private_updates(tracking, &private, &mut sci, sort_map.as_ref())?
         } else {
             usize::try_from(sci.del_count).is_ok_and(|n| n == docs.len())
         };
@@ -1143,6 +1361,8 @@ impl<'d> ConcurrentIndexWriter<'d> {
             docs,
             custom_freq_terms,
             vectors,
+            explicit,
+            postings,
             has_blocks,
             private,
             ram_bytes,
@@ -1153,7 +1373,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
             self.build(
                 &ticket,
                 docs,
-                (custom_freq_terms, vectors),
+                (custom_freq_terms, vectors, explicit, postings),
                 has_blocks,
                 private,
                 &tracking,
@@ -1300,10 +1520,27 @@ impl<'d> ConcurrentIndexWriter<'d> {
     /// Java's does: every operation numbered at or below it is in, every one
     /// above it is not.
     pub fn commit(&self) -> Result<SeqNo> {
+        self.commit_with(|| Ok::<(), crate::index_writer::Error>(()))
+    }
+
+    /// [`Self::commit`], running `before_commit` once every buffer holding
+    /// operations from before the cut is flushed and before `segments_N` is
+    /// written. Java's `IndexWriter.prepareCommitInternal` iterates the
+    /// commit's user data at the same point (`setLiveCommitData` takes a lazy
+    /// `Iterable`), so the user data may describe every operation in the
+    /// commit -- a maximum sequence number read here is at least that of each
+    /// one -- while other threads go on indexing into the emptied buffers.
+    /// `before_commit` may set the user data through [`Self::with_writer`];
+    /// when it fails, no commit is written.
+    pub fn commit_with<E: From<crate::index_writer::Error>>(
+        &self,
+        before_commit: impl FnOnce() -> std::result::Result<(), E>,
+    ) -> std::result::Result<SeqNo, E> {
         let last_seq = {
             let _full_flush = lock(&self.full_flush);
             let _barrier = BarrierGuard(self);
             let last_seq = self.flush_all(true)?;
+            before_commit()?;
             let mut core = lock(&self.core);
             // Merge-on-commit leaves the segments this writer's merge
             // threads hold alone (`registerMerge` rejects those merges).
@@ -1349,7 +1586,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
                 plan
             };
             let tracking = TrackingDirectory::new(self.dir);
-            let outcome = catch_unwind(AssertUnwindSafe(|| self.cfg.run_merge(&tracking, &plan)));
+            let outcome = catch_unwind(AssertUnwindSafe(|| self.cfg().run_merge(&tracking, &plan)));
             let mut core = lock(&self.core);
             for name in &plan.names {
                 core.merging.remove(name);
@@ -1490,6 +1727,88 @@ impl<'d> ConcurrentIndexWriter<'d> {
     /// Documents buffered in every slot, not yet in a segment.
     pub fn pending_doc_count(&self) -> usize {
         self.slots.iter().map(|s| lock(s).docs.len()).sum()
+    }
+
+    /// RAM held by the buffers, those being flushed included -- what the
+    /// flush policy counts (`DocumentsWriterFlushControl`'s active plus
+    /// flush bytes). Without a RAM buffer, the slots' own counts.
+    pub fn ram_bytes_used(&self) -> usize {
+        if self.ram_buffer_bytes.is_some() {
+            let ram = lock(&self.ram);
+            return ram.active_bytes().saturating_add(ram.flush_bytes());
+        }
+        self.slots
+            .iter()
+            .map(|s| lock(s).ram_bytes)
+            .fold(0, usize::saturating_add)
+    }
+
+    /// `IndexWriter.getFlushingBytes()`: the RAM of the buffers marked for
+    /// flushing or being built into segments, part of
+    /// [`Self::ram_bytes_used`]. `0` without a RAM buffer, which is not
+    /// accounted.
+    pub fn flushing_bytes(&self) -> usize {
+        if self.ram_buffer_bytes.is_some() {
+            lock(&self.ram).flush_bytes()
+        } else {
+            0
+        }
+    }
+
+    /// [`IndexWriter::has_uncommitted_changes`], counting the slots' buffers
+    /// and the deletes not yet handed to the control plane.
+    pub fn has_uncommitted_changes(&self) -> bool {
+        self.pending_doc_count() > 0
+            || {
+                let log = lock(&self.log);
+                log.handed < log.end()
+            }
+            || lock(&self.core).writer.has_uncommitted_changes()
+    }
+
+    /// `IndexWriter.rollback()`: drops every buffer and every delete not
+    /// yet committed and takes the wrapped writer back to its last commit,
+    /// as [`Self::delete_all`] takes every slot: flushes already ticketed
+    /// publish first, merges not started are dropped and running ones
+    /// finish.
+    pub fn rollback(&self) {
+        let _full_flush = lock(&self.full_flush);
+        let mut slots: Vec<MutexGuard<'_, Dwpt>> = self.slots.iter().map(lock).collect();
+        for (i, dwpt) in slots.iter_mut().enumerate() {
+            *dwpt.deref_mut() = Dwpt::default();
+            self.update_ram(|c| {
+                let bytes = c.checkout_for_flush(i);
+                c.flush_done(bytes);
+            });
+            self.slices[i].store(EMPTY_SLOT, Ordering::Release);
+        }
+        let mut core = lock(&self.core);
+        while let Some(merge) = self.pending_merges.pop() {
+            for name in &merge.segments {
+                core.merging.remove(name);
+            }
+        }
+        while core.next_publish != core.next_ticket || !core.merging.is_empty() {
+            core = self
+                .changed
+                .wait(core)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+        {
+            let mut log = lock(&self.log);
+            let end = log.end();
+            log.nodes.clear();
+            log.base = end;
+            log.handed = end;
+            log.unhanded_bytes = 0;
+        }
+        self.update_ram(|c| c.set_delete_bytes_used(0));
+        core.writer.rollback();
+        self.buffered_docs.store(0, Ordering::Release);
+        self.refresh_segment_docs(&mut core);
+        drop(core);
+        drop(slots);
+        self.changed.notify_all();
     }
 }
 
@@ -2061,7 +2380,7 @@ mod tests {
                 .unwrap();
             core.writer.begin_merge(&names).unwrap()
         };
-        let outcome = w.cfg.run_merge(&dir, &plan).unwrap();
+        let outcome = w.cfg().run_merge(&dir, &plan).unwrap();
         // Meanwhile: deletes reach the first two segments -- at least one of
         // them a source, whichever the policy chose -- and are published
         // there. (Emptying a source would abandon the merge instead.)
@@ -2103,7 +2422,7 @@ mod tests {
             core.writer.begin_merge(&names).unwrap()
         };
         let merged_name = plan.merged_name.clone();
-        let outcome = w.cfg.run_merge(&dir, &plan).unwrap();
+        let outcome = w.cfg().run_merge(&dir, &plan).unwrap();
         for id in ["m0", "m2", "m4"] {
             w.update_numeric_doc_value(Term::new("id", id.as_bytes().to_vec()), "score", 7)
                 .unwrap();
@@ -2238,29 +2557,10 @@ mod tests {
         assert_clean(&dir);
     }
 
-    /// The building threads write native documents only: a writer taking
-    /// explicit documents, or with a parent field, is refused up front
-    /// rather than built into segments missing what it was told to write.
+    /// A writer with a parent field is refused up front: the building
+    /// threads have no parent marker to give its blocks.
     #[test]
-    fn explicit_documents_and_a_parent_field_are_refused() {
-        let tmp = TempDir::new("concurrent-explicit");
-        let dir = FsDirectory::open(&tmp);
-        let mut explicit = IndexWriter::open(
-            &dir,
-            Vec::new(),
-            "Lucene104",
-            LuceneVersion {
-                major: 10,
-                minor: 5,
-                bugfix: 0,
-            },
-        )
-        .unwrap();
-        explicit.enable_explicit_documents().unwrap();
-        assert!(matches!(
-            ConcurrentIndexWriter::new(explicit, 1),
-            Err(Error::ConcurrentUnsupported(m)) if m.contains("explicit")
-        ));
+    fn a_parent_field_is_refused() {
         let tmp = TempDir::new("concurrent-parent");
         let dir = FsDirectory::open(&tmp);
         let mut parent = IndexWriter::open(
@@ -2594,6 +2894,7 @@ mod tests {
         let tmp = TempDir::new("concurrent-largest");
         let dir = FsDirectory::open(&tmp);
         let w = ram_writer(&dir, 10);
+        w.rotate_slots.store(true, Ordering::Relaxed);
         for k in 0..9 {
             w.add_document(doc(&format!("t1x{k:02}"), 0)).unwrap();
         }
@@ -2617,6 +2918,7 @@ mod tests {
             let tmp = TempDir::new("concurrent-pending");
             let dir = FsDirectory::open(&tmp);
             let w = ram_writer(&dir, 10);
+            w.rotate_slots.store(true, Ordering::Relaxed);
             w.set_check_pending_flush_on_update(check);
             let big = Document {
                 fields: vec![
@@ -3130,6 +3432,57 @@ mod tests {
         assert!(committed.iter().any(|n| !before.contains(n)));
     }
 
+    /// A full-flush merge policy (OpenSearch's `merge-on-flush`) merges the
+    /// segments several slots flushed into the one segment the commit names,
+    /// and leaves the writer's other merges alone.
+    #[test]
+    fn full_flush_merge_policy_merges_every_slot_into_the_commit() {
+        let tmp = TempDir::new("concurrent-full-flush-policy");
+        let dir = FsDirectory::open(&tmp);
+        let mut iw = writer(&dir, 1000);
+        iw.set_max_full_flush_merge_wait_millis(5000);
+        iw.set_full_flush_merge_policy(Some(Arc::new(
+            crate::merge_policy::MergeOnFlushMergePolicy::new(Box::new(
+                crate::merge_policy::TieredMergePolicy::new(MergePolicyConfig::default()),
+            )),
+        )));
+        let w = ConcurrentIndexWriter::new(iw, 4).unwrap();
+        // Every add takes the next slot, so all four buffers fill however
+        // the threads would have been scheduled.
+        w.rotate_slots.store(true, Ordering::Relaxed);
+        for i in 0..200 {
+            w.add_document(doc(&format!("d{i}"), 0)).unwrap();
+        }
+        w.flush().unwrap();
+        assert_eq!(lock(&w.core).writer.live_infos().segments.len(), 4);
+        w.commit().unwrap();
+        let committed = crate::segment_infos::read_latest(&dir).unwrap();
+        assert_eq!(committed.segments.len(), 1);
+        assert_eq!(lock(&w.core).writer.committed_doc_count().unwrap(), 200);
+    }
+
+    /// One thread indexing alone keeps filling one buffer, so a flush writes
+    /// one segment, as Java reuses a free `DocumentsWriterPerThread`.
+    #[test]
+    fn one_thread_fills_one_buffer() {
+        let tmp = TempDir::new("concurrent-one-thread");
+        let dir = FsDirectory::open(&tmp);
+        let w = ConcurrentIndexWriter::new(writer(&dir, 1000), 4).unwrap();
+        for i in 0..20 {
+            w.add_document(doc(&format!("d{i}"), 0)).unwrap();
+        }
+        let counts: Vec<usize> = w.slots.iter().map(|s| lock(s).docs.len()).collect();
+        assert_eq!(counts, [20, 0, 0, 0]);
+        w.commit().unwrap();
+        assert_eq!(
+            crate::segment_infos::read_latest(&dir)
+                .unwrap()
+                .segments
+                .len(),
+            1
+        );
+    }
+
     /// `flushNextBuffer` takes the fullest slot; `tryDeleteDocument` and
     /// `tryUpdateDocValue` act on a snapshot's doc ids and are numbered from
     /// this writer's log.
@@ -3139,6 +3492,7 @@ mod tests {
         let tmp = TempDir::new("concurrent-try");
         let dir = FsDirectory::open(&tmp);
         let w = ConcurrentIndexWriter::new(writer(&dir, 1000), 2).unwrap();
+        w.rotate_slots.store(true, Ordering::Relaxed);
         assert!(!w.flush_next_buffer().unwrap());
         for i in 0..3 {
             w.add_document(doc(&format!("a{i}"), 0)).unwrap();

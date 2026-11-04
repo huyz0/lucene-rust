@@ -36,9 +36,9 @@ use crate::facets::range::LongRange;
 use crate::facets::taxonomy::facet_label::FacetLabel;
 use crate::facets::{FacetsCollector, FacetsCollectorManager};
 use crate::function::FunctionScoreQuery;
-use crate::grouping::{search_manager, GroupingCollectorManager};
 use crate::index_searcher::{IndexSearcher, SegmentNorms};
 use crate::leaf_collector::SegmentCollector;
+use crate::leaf_collector::{search_manager, SegmentCollectorManager};
 use crate::query::{BooleanQuery, BoostQuery, Clause, ConstantScoreQuery, MatchAllDocsQuery};
 use crate::values_source::{constant, long_from_long_field};
 use crate::Error;
@@ -387,14 +387,14 @@ fn searches_over_a_written_index() {
 
     // The never-used main collector.
     let none = NoMainCollector;
-    let mut c: NoCollector = GroupingCollectorManager::new_collector(&none).unwrap();
+    let mut c: NoCollector = SegmentCollectorManager::new_collector(&none).unwrap();
     assert_eq!(
         c.score_mode(),
         crate::collector::ScoreMode::CompleteNoScores
     );
     c.set_next_reader(0, &segments[0]).unwrap();
     c.collect(0, 1.0).unwrap();
-    GroupingCollectorManager::reduce(&none, vec![c]).unwrap();
+    SegmentCollectorManager::reduce(&none, vec![c]).unwrap();
 }
 
 #[test]

@@ -20,12 +20,12 @@ use std::sync::Arc;
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use lucene_analysis::Analyzer;
+use lucene_monitor::batch::DocumentBatch;
+use lucene_monitor::facade::{Matcher, Monitor};
+use lucene_monitor::index::MonitorQuery;
 use lucene_search::memory::MemoryIndex;
-use lucene_search::monitor::batch::DocumentBatch;
-use lucene_search::monitor::facade::{Matcher, Monitor};
-use lucene_search::monitor::index::MonitorQuery;
 use lucene_search::query::{BooleanQuery, Clause, TermQuery};
-use lucene_search::spell::distance::{
+use lucene_suggest::spell::distance::{
     JaroWinklerDistance, LevenshteinDistance, LuceneLevenshteinDistance, NGramDistance,
     StringDistance,
 };

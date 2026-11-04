@@ -53,7 +53,7 @@ impl MemoryIndex {
     /// negative, each term's occurrences in the stream's order, and terms of
     /// valid UTF-8 shorter than `Short.MAX_VALUE` -- and the stream must be
     /// replayed instead.
-    pub(crate) fn vector_reader(
+    pub fn vector_reader(
         name: &str,
         vector: &TermVectorField,
     ) -> Result<Option<MemoryIndexReader>> {

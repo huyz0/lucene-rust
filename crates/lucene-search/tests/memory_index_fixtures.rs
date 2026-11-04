@@ -20,9 +20,9 @@ use lucene_analysis::{
 use lucene_index::document::{
     BinaryDocValuesField, LongPoint, NumericDocValuesField, Store, StringField,
 };
+use lucene_queryparser::classic::QueryParser;
 use lucene_search::memory::MemoryIndex;
 use lucene_search::query::{Clause, FieldExistsQuery, MatchAllDocsQuery, PointsRangeQuery};
-use lucene_search::queryparser::classic::QueryParser;
 use lucene_search::similarities::{
     Bm25Similarity, BooleanSimilarity, ClassicSimilarity, Similarity,
 };

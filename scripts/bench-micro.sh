@@ -13,6 +13,10 @@
 # scalar DefaultVectorizationProvider, and every ratio here flatters Rust.
 #
 # Usage: scripts/bench-micro.sh [--bench NAME] [--warmup-ms N] [--measure-ms N] [--pin CPUS]
+#                               [--rust-bin-dir DIR]
+#
+# --rust-bin-dir times an already built binary (for example a PGO build, see
+# scripts/pgo-build.sh) instead of building one from the working tree.
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
@@ -42,7 +46,8 @@ while [ $# -gt 0 ]; do
     --measure-ms) MEASURE="$2"; shift 2 ;;
     --pin)        PIN="$2";     shift 2 ;;
     --jars)       JARS="$2";    shift 2 ;;
-    -h|--help)    sed -n '2,16p' "$0"; exit 0 ;;
+    --rust-bin-dir) RUST_BIN_DIR="$2"; shift 2 ;;
+    -h|--help)    sed -n '2,20p' "$0"; exit 0 ;;
     *) echo "bench-micro: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -545,8 +550,10 @@ if awk "BEGIN{exit !($LOAD > $MAXLOAD)}"; then
   exit 3
 fi
 
-echo "bench-micro: building" >&2
-( cd benchmarks/rust-runner && cargo build --release --quiet --bin "${RUST_BIN:-micro}" )
+if [ -z "${RUST_BIN_DIR:-}" ]; then
+  echo "bench-micro: building" >&2
+  ( cd benchmarks/rust-runner && cargo build --release --quiet --bin "${RUST_BIN:-micro}" )
+fi
 # Where cargo actually put it. `scripts/docker-test.sh` exports
 # CARGO_TARGET_DIR, so inside the container the build lands there and NOT in
 # `benchmarks/rust-runner/target` -- which, being a bind mount of the host
@@ -590,7 +597,7 @@ for rep in $(seq 1 "$REPS"); do
   for case in ${CASES:-""}; do
     echo "bench-micro: rep $rep/$REPS rust ($BENCH${case:+ $case})" >&2
     env ${case:+MICRO_CASE="$case"} MICRO_WARMUP_MS="$WARMUP" MICRO_MEASURE_MS="$MEASURE" \
-      "${PINCMD[@]}" "$RUST_TARGET_DIR/release/$RUST_BIN" "${RUST_ARGS[@]}" \
+      "${PINCMD[@]}" "${RUST_BIN_DIR:-$RUST_TARGET_DIR/release}/$RUST_BIN" "${RUST_ARGS[@]}" \
       >> "$OUT/rust.$rep.tsv"
 
     echo "bench-micro: rep $rep/$REPS java ($BENCH${case:+ $case})" >&2

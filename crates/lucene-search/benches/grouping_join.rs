@@ -17,6 +17,17 @@
 //!   in blocks of 5 (40k groups), sorted by a NUMERIC field, top 10 /
 //!   1,000 / 10,000 groups (the group queue).
 //!
+//! - `join_sort/*`: parents sorted by `ToParentBlockJoinSortField` (STRING,
+//!   min) over 200k documents in blocks of 10, the children's SORTED_SET
+//!   on every child (`dense`), on 5% of them (`sparse`) or two values on
+//!   every child (`multi`), top 10;
+//! - `join/terms_create_10k/avg`: `create_join_query` from the 10k-term
+//!   `group` field (every from document's term already seen);
+//! - `grouping_sorted/sn1_sort/top10`: groups sorted by a single-valued
+//!   SORTED_NUMERIC field;
+//! - `grouping_sorted/within_string_sort/docs{3,10}`: groups sorted by a
+//!   NUMERIC field, each group's top 3 / 10 documents by a SORTED one.
+//!
 //! Run with `cargo bench -p lucene-search --bench grouping_join`.
 
 #![allow(clippy::arithmetic_side_effects)]
@@ -24,15 +35,20 @@
 mod support;
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use lucene_index::document::{Document, NumericDocValuesField, Store, StringField};
+use std::sync::Arc;
+
+use lucene_grouping::{GroupingSearch, Sort, TermGroupSelector};
+use lucene_index::document::{
+    Document, NumericDocValuesField, SortedSetDocValuesField, Store, StringField,
+};
 use lucene_index::index_writer::IndexWriter;
 use lucene_index::merge_policy::upgrade::LATEST;
 use lucene_search::directory_reader::DirectoryReader;
-use lucene_search::grouping::{GroupingSearch, Sort, TermGroupSelector};
 use lucene_search::index_searcher::IndexSearcher;
 use lucene_search::join::{
     create_global_ordinals_join_query, create_join_query, create_numeric_join_query, ordinal_map,
-    NumericType, ScoreMode,
+    BitSetProducer, JoinSortType, NumericType, QueryBitSetProducer, ScoreMode,
+    ToParentBlockJoinSortField,
 };
 use lucene_search::query::{BooleanQuery, Clause, MatchAllDocsQuery, TermQuery};
 use lucene_search::top_field::{SortField, SortType};
@@ -85,6 +101,26 @@ fn bench(c: &mut Criterion) {
             })
         });
     }
+    let by_dense = Sort::new(vec![SortField::numeric("dense", SortType::Long, false)]);
+    for limit in [3usize, 10] {
+        g.bench_function(format!("within_string_sort/docs{limit}"), |b| {
+            b.iter(|| {
+                let gs = GroupingSearch::new(|| TermGroupSelector::new("group"))
+                    .set_group_sort(by_dense.clone())
+                    .set_sort_within_group(by_key.clone())
+                    .set_group_docs_limit(limit);
+                black_box(gs.search(&searcher, &q30, 0, 10).unwrap())
+            })
+        });
+    }
+    let by_sn1 = Sort::new(vec![SortField::numeric("sn1", SortType::Long, false)]);
+    g.bench_function("sn1_sort/top10", |b| {
+        b.iter(|| {
+            let gs = GroupingSearch::new(|| TermGroupSelector::new("group"))
+                .set_group_sort(by_sn1.clone());
+            black_box(gs.search(&searcher, &q30, 0, 10).unwrap())
+        })
+    });
     g.finish();
 
     let mut g = c.benchmark_group("join");
@@ -109,6 +145,19 @@ fn bench(c: &mut Criterion) {
             })
         });
     }
+    g.bench_function("terms_create_10k/avg", |b| {
+        b.iter(|| {
+            black_box(create_join_query(
+                "group",
+                false,
+                "join_to",
+                &t30,
+                &searcher,
+                ScoreMode::Avg,
+            ))
+            .unwrap()
+        })
+    });
     g.bench_function("numeric_create/avg", |b| {
         b.iter(|| {
             black_box(
@@ -220,5 +269,93 @@ fn bench_block(c: &mut Criterion) {
     g.finish();
 }
 
-criterion_group!(benches, bench, bench_block);
+/// 200k documents in blocks of 10 (nine children, then their parent), 4
+/// segments. Children: `type:child`, `c_dense` (SORTED_SET, one of 10k terms,
+/// on every child), `c_sparse` (the same on 5% of children) and `c_multi`
+/// (two terms on every child). Parents: `type:parent`.
+fn build_join_sort_index() -> ByteBuffersDirectory {
+    let dir = ByteBuffersDirectory::new();
+    let mut rng = support::Rng::new(0x5047);
+    {
+        let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", LATEST).unwrap();
+        w.set_ram_buffer_size_mb(4096.0).unwrap();
+        let blocks = 20_000;
+        let term = |rng: &mut support::Rng| format!("color-{:06}", rng.below(10_000)).into_bytes();
+        for b in 0..blocks {
+            for _ in 0..9 {
+                let mut d = Document::new();
+                d.add(StringField::new("type", "child", Store::No));
+                d.add(SortedSetDocValuesField::new("c_dense", term(&mut rng)));
+                if rng.below(20) == 0 {
+                    d.add(SortedSetDocValuesField::new("c_sparse", term(&mut rng)));
+                }
+                d.add(SortedSetDocValuesField::new("c_multi", term(&mut rng)));
+                d.add(SortedSetDocValuesField::new("c_multi", term(&mut rng)));
+                w.add_fields_document(&d).unwrap();
+            }
+            let mut d = Document::new();
+            d.add(StringField::new("type", "parent", Store::No));
+            w.add_fields_document(&d).unwrap();
+            if (b + 1) % (blocks / 4) == 0 {
+                w.flush().unwrap();
+            }
+        }
+        w.commit().unwrap();
+    }
+    dir
+}
+
+fn bench_join_sort(c: &mut Criterion) {
+    let dir = build_join_sort_index();
+    let reader = DirectoryReader::open(&dir).unwrap();
+    let opened = reader.open_segments().unwrap();
+    let segs = opened.as_open_segments();
+    let owned = reader.field_norms_by_field(&["type".to_string()]).unwrap();
+    let norms: Vec<_> = owned.iter().map(Some).collect();
+    let searcher = IndexSearcher::new(&segs, &norms).unwrap();
+    let type_q = |t: &str| BooleanQuery {
+        must: vec![Clause::Term(TermQuery::new("type", t))],
+        ..Default::default()
+    };
+    let parents: Arc<dyn BitSetProducer> = Arc::new(QueryBitSetProducer::new(type_q("parent")));
+    let children: Arc<dyn BitSetProducer> = Arc::new(QueryBitSetProducer::new(type_q("child")));
+    let all_parents = type_q("parent");
+    let mut g = c.benchmark_group("join_sort");
+    for (label, field) in [
+        ("dense", "c_dense"),
+        ("sparse", "c_sparse"),
+        ("multi", "c_multi"),
+    ] {
+        let sf = ToParentBlockJoinSortField::new(
+            field,
+            JoinSortType::String,
+            false,
+            false,
+            None,
+            None,
+            Arc::clone(&parents),
+            Arc::clone(&children),
+        )
+        .unwrap()
+        .sort_field();
+        g.bench_function(format!("string_min/{label}"), |b| {
+            b.iter(|| {
+                black_box(
+                    searcher
+                        .search_sorted(
+                            reader.segment_readers(),
+                            &all_parents,
+                            10,
+                            std::slice::from_ref(&sf),
+                            None,
+                        )
+                        .unwrap(),
+                )
+            })
+        });
+    }
+    g.finish();
+}
+
+criterion_group!(benches, bench, bench_block, bench_join_sort);
 criterion_main!(benches);

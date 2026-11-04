@@ -38,6 +38,17 @@ use super::geo_utils::GeoUtils;
 use super::java_max;
 use super::rectangle::Rectangle;
 
+/// An edge's two vertices, the only fields the per-edge tests read: 32
+/// bytes, aligned so a record never straddles a cache line.
+#[derive(Debug, Clone, Copy)]
+#[repr(C, align(32))]
+struct Seg {
+    y1: f64,
+    y2: f64,
+    x1: f64,
+    x2: f64,
+}
+
 /// One edge, with its node's subtree `max` and link.
 #[derive(Debug, Clone, Copy)]
 struct Edge {
@@ -56,6 +67,18 @@ struct Edge {
     has_left: bool,
 }
 
+impl Edge {
+    #[inline(always)]
+    fn seg(&self) -> Seg {
+        Seg {
+            y1: self.y1,
+            y2: self.y2,
+            x1: self.x1,
+            x2: self.x2,
+        }
+    }
+}
+
 /// Port of `EdgeTree`: the root edge's first vertex, the tree, and the
 /// slab index over it.
 #[derive(Debug, Clone)]
@@ -64,11 +87,14 @@ pub(crate) struct EdgeTree {
     pub(crate) x1: f64,
     pub(crate) y1: f64,
     edges: Box<[Edge]>,
+    /// Every edge's vertices, in tree order: the scan of a query whose
+    /// y-range spans more slab entries than there are edges.
+    segs: Box<[Seg]>,
     slabs: Slabs,
 }
 
 /// The edges by y-slab: slab `b` covers the `y` with `slab(y) == b` and
-/// lists (as indices into the tree) the edges whose own range meets it.
+/// lists (as copies of their vertices) the edges whose own range meets it.
 #[derive(Debug, Clone)]
 struct Slabs {
     y0: f64,
@@ -76,9 +102,13 @@ struct Slabs {
     scale: f64,
     /// The last slab's index.
     last: usize,
-    /// `entries[start[b]..start[b + 1]]` are slab `b`'s edges.
+    /// `segs[start[b]..start[b + 1]]` are slab `b`'s edges.
     start: Box<[u32]>,
-    entries: Box<[u32]>,
+    /// The listed edges' vertices, copied in slab order so a lookup reads
+    /// them contiguously.
+    segs: Box<[Seg]>,
+    /// Each listed edge's first slab, `slab(low)`.
+    first: Box<[u32]>,
 }
 
 /// How many slab entries per edge an index may hold: an edge spanning
@@ -103,10 +133,16 @@ impl Slabs {
         }
     }
 
+    /// Slab `b`'s entries, as a range of `segs`/`first`.
+    #[inline(always)]
+    fn range(&self, b: usize) -> std::ops::Range<usize> {
+        self.start[b] as usize..self.start[b + 1] as usize
+    }
+
     /// Slab `b`'s edges.
     #[inline(always)]
-    fn edges(&self, b: usize) -> &[u32] {
-        &self.entries[self.start[b] as usize..self.start[b + 1] as usize]
+    fn edges(&self, b: usize) -> &[Seg] {
+        &self.segs[self.range(b)]
     }
 
     fn build(edges: &[Edge]) -> Slabs {
@@ -129,7 +165,8 @@ impl Slabs {
                 },
                 last: count - 1,
                 start: Box::new([]),
-                entries: Box::new([]),
+                segs: Box::new([]),
+                first: Box::new([]),
             };
             let total: usize = ranges
                 .iter()
@@ -151,15 +188,26 @@ impl Slabs {
             start[b + 1] += start[b];
         }
         let mut fill: Vec<u32> = start[..count].to_vec();
-        let mut entries = vec![0u32; start[count] as usize];
-        for (i, &(lo, hi)) in ranges.iter().enumerate() {
-            for b in slabs.slab(lo)..=slabs.slab(hi) {
-                entries[fill[b] as usize] = i as u32;
+        let total = start[count] as usize;
+        let empty = Seg {
+            y1: 0.0,
+            y2: 0.0,
+            x1: 0.0,
+            x2: 0.0,
+        };
+        let mut segs = vec![empty; total];
+        let mut first = vec![0u32; total];
+        for (e, &(lo, hi)) in edges.iter().zip(&ranges) {
+            let b_lo = slabs.slab(lo);
+            for b in b_lo..=slabs.slab(hi) {
+                segs[fill[b] as usize] = e.seg();
+                first[fill[b] as usize] = b_lo as u32;
                 fill[b] += 1;
             }
         }
         slabs.start = start.into_boxed_slice();
-        slabs.entries = entries.into_boxed_slice();
+        slabs.segs = segs.into_boxed_slice();
+        slabs.first = first.into_boxed_slice();
         slabs
     }
 }
@@ -179,8 +227,8 @@ impl EdgeTree {
             return false;
         }
         let mut res = false;
-        for &i in self.slabs.edges(self.slabs.slab(y)) {
-            match pn_poly_edge(&self.edges[i as usize], x, y) {
+        for e in self.slabs.edges(self.slabs.slab(y)) {
+            match pn_poly_edge(e, x, y) {
                 PnPoly::OnEdge => return true,
                 PnPoly::Crosses => res = !res,
                 PnPoly::Miss => {}
@@ -197,28 +245,31 @@ impl EdgeTree {
         self.slabs
             .edges(self.slabs.slab(y))
             .iter()
-            .any(|&i| point_on_edge(&self.edges[i as usize], x, y))
+            .any(|e| point_on_edge(e, x, y))
     }
 
     /// Whether `f` holds for an edge meeting `[min_y, max_y]` (Java's walk,
     /// whose pruning decides alone when a bound is NaN or the range is
     /// inverted).
     #[inline]
-    fn any_edge(&self, min_y: f64, max_y: f64, f: impl Fn(&Edge) -> bool) -> bool {
+    fn any_edge(&self, min_y: f64, max_y: f64, f: impl Fn(&Seg) -> bool) -> bool {
         if min_y.is_nan() || max_y.is_nan() || min_y > max_y {
             return walk(&self.edges, min_y, max_y, f);
         }
         let s = &self.slabs;
         let (b0, b1) = (s.slab(min_y), s.slab(max_y));
         if b0 == b1 {
-            return s.edges(b0).iter().any(|&i| f(&self.edges[i as usize]));
+            return s.edges(b0).iter().any(f);
+        }
+        // a range listing more entries than there are edges: every edge
+        // once (`f` is false for one that misses the range)
+        if (s.start[b1 + 1] - s.start[b0]) as usize > self.segs.len() {
+            return self.segs.iter().any(f);
         }
         // an edge listed in several of the slabs is tested in the first
         (b0..=b1).any(|b| {
-            s.edges(b).iter().any(|&i| {
-                let e = &self.edges[i as usize];
-                s.slab(e.low).max(b0) == b && f(e)
-            })
+            s.range(b)
+                .any(|k| (s.first[k] as usize).max(b0) == b && f(&s.segs[k]))
         })
     }
 
@@ -367,6 +418,7 @@ impl EdgeTree {
         EdgeTree {
             x1: tree[0].x1,
             y1: tree[0].y1,
+            segs: tree.iter().map(Edge::seg).collect(),
             edges: tree.into_boxed_slice(),
             slabs,
         }
@@ -398,7 +450,7 @@ fn build_pre_order(sorted: &[Edge], lo: usize, hi: usize, out: &mut Vec<Edge>) -
 /// its order (a node, its left subtree, its right subtree): a node is
 /// examined when `min_y <= max` of its subtree, its right subtree entered
 /// only when `max_y >= low`. True as soon as `f` is.
-fn walk(edges: &[Edge], min_y: f64, max_y: f64, f: impl Fn(&Edge) -> bool) -> bool {
+fn walk(edges: &[Edge], min_y: f64, max_y: f64, f: impl Fn(&Seg) -> bool) -> bool {
     // At most one pending right subtree per level, and a tree of < 2^32
     // edges is at most 33 levels deep.
     let mut stack = [0usize; 40];
@@ -407,7 +459,7 @@ fn walk(edges: &[Edge], min_y: f64, max_y: f64, f: impl Fn(&Edge) -> bool) -> bo
     loop {
         let e = &edges[i];
         if min_y <= e.max {
-            if f(e) {
+            if f(&e.seg()) {
                 return true;
             }
             if e.right != 0 && max_y >= e.low {
@@ -437,7 +489,7 @@ enum PnPoly {
 /// One edge's part of `containsPnPoly` (W. Randolph Franklin's crossing
 /// test, with an on-edge answer), Java's comparisons as written.
 #[inline(always)]
-fn pn_poly_edge(e: &Edge, x: f64, y: f64) -> PnPoly {
+fn pn_poly_edge(e: &Seg, x: f64, y: f64) -> PnPoly {
     let (y1, y2, x1, x2) = (e.y1, e.y2, e.x1, e.x2);
     // `&` rather than `&&`: plain comparisons, one branch instead of a
     // chain of unpredictable ones on the hot path.
@@ -456,7 +508,7 @@ fn pn_poly_edge(e: &Edge, x: f64, y: f64) -> PnPoly {
 
 /// One edge's part of `isPointOnLine`.
 #[inline(always)]
-fn point_on_edge(e: &Edge, x: f64, y: f64) -> bool {
+fn point_on_edge(e: &Seg, x: f64, y: f64) -> bool {
     let (a1x, a1y, b1x, b1y) = (e.x1, e.y1, e.x2, e.y2);
     let outside = (a1y < y && b1y < y)
         || (a1y > y && b1y > y)
@@ -605,7 +657,8 @@ mod tests {
         ys.push(0.0);
         let t = EdgeTree::create_tree(&xs, &ys);
         let r = reference::EdgeTree::create_tree(&xs, &ys);
-        assert!(t.slabs.entries.len() <= MAX_ENTRIES_PER_EDGE * t.edges.len());
+        assert!(t.slabs.segs.len() <= MAX_ENTRIES_PER_EDGE * t.edges.len());
+        assert_eq!(t.slabs.first.len(), t.slabs.segs.len());
         assert_eq!(t.slabs.start.len(), t.slabs.last + 2);
         for k in 0..400 {
             let (x, y) = (k as f64 * 0.5 + 0.25, (k % 101) as f64);

@@ -55,6 +55,16 @@ impl IndexWriter<'_> {
         self.pluggable_merge_policy = policy;
     }
 
+    /// The policy whose `findFullFlushMerges` picks the merges a commit or
+    /// near-real-time reader runs ([`IndexWriter::set_max_full_flush_merge_wait_millis`]),
+    /// in place of the writer's own policy. Every other merge decision stays
+    /// the writer's, which is how a filter that only overrides
+    /// `findFullFlushMerges` around the writer's policy behaves -- such as
+    /// [`merge_policy::MergeOnFlushMergePolicy`]. `None` asks the writer's own.
+    pub fn set_full_flush_merge_policy(&mut self, policy: Option<Arc<dyn MergePolicy>>) {
+        self.full_flush_merge_policy = policy;
+    }
+
     /// The policy [`IndexWriter::set_pluggable_merge_policy`] installed.
     pub fn pluggable_merge_policy(&self) -> Option<&Arc<dyn MergePolicy>> {
         self.pluggable_merge_policy.as_ref()
@@ -179,7 +189,8 @@ impl IndexWriter<'_> {
     /// the merged segment in place of its sources. Returns how many merges
     /// ran.
     ///
-    /// The policy is the installed pluggable one, or -- with only a
+    /// The policy is [`IndexWriter::set_full_flush_merge_policy`]'s, else the
+    /// installed pluggable one, or -- with only a
     /// [`super::MergePolicyConfig`] -- `TieredMergePolicy` over that
     /// configuration, whose `maxFullFlushMergeSize` is its floor segment
     /// size. With neither, or a wait of `0`, nothing happens.
@@ -204,11 +215,16 @@ impl IndexWriter<'_> {
         if wait <= 0 {
             return Ok(0);
         }
-        let policy: Arc<dyn MergePolicy> = match (&self.pluggable_merge_policy, &self.merge_policy)
-        {
-            (Some(policy), _) => Arc::clone(policy),
-            (None, Some(config)) => Arc::new(merge_policy::TieredMergePolicy::new(config.clone())),
-            (None, None) => return Ok(0),
+        let policy: Arc<dyn MergePolicy> = match (
+            &self.full_flush_merge_policy,
+            &self.pluggable_merge_policy,
+            &self.merge_policy,
+        ) {
+            (Some(policy), _, _) | (None, Some(policy), _) => Arc::clone(policy),
+            (None, None, Some(config)) => {
+                Arc::new(merge_policy::TieredMergePolicy::new(config.clone()))
+            }
+            (None, None, None) => return Ok(0),
         };
         let start = std::time::Instant::now();
         let deadline = std::time::Duration::from_millis(u64::try_from(wait).unwrap_or(0));

@@ -1416,6 +1416,20 @@ fn bench_doc_values(w: Duration, m: Duration, index: &str) {
             black_box(s);
             max_doc as u64
         });
+        let (_, kw_data) = r.doc_values_for_field(kw).expect("dv");
+        let value_count = kw_entry.terms.terms_dict_size;
+        let mut dict = lucene_codecs::terms_dict::TermsDict::open(kw_data, &kw_entry.terms)
+            .expect("keyword terms dict");
+        measure("lookup_ord", w, m, || {
+            let mut s = 0usize;
+            let mut ord = 0i64;
+            for _ in 0..4096 {
+                ord = (ord + 4099) % value_count;
+                s += dict.seek_ord(ord).unwrap().len();
+            }
+            black_box(s);
+            4096
+        });
     });
 }
 

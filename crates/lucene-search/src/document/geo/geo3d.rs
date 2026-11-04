@@ -27,13 +27,14 @@ use lucene_util::spatial3d::geo_path_factory::make_geo_path;
 use lucene_util::spatial3d::geo_polygon_factory::{
     make_geo_polygon_with_holes, make_large_geo_polygon, PolygonDescription,
 };
+use lucene_util::spatial3d::vector::MINIMUM_RESOLUTION;
 use lucene_util::spatial3d::{
     GeoAreaRelationship, GeoBBox, GeoCircle, GeoPath, GeoPoint, GeoPolygon, GeoShape, PlanetModel,
     XYZBounds,
 };
 
 use super::point_queries::points_of;
-use super::{check_walk, collect_bits, idx, illegal, set_doc};
+use super::{check_walk, collect_bits, idx, illegal, set_doc, write_doc_bitset, write_doc_range};
 use crate::collector::ScoringCollector;
 use crate::document::{reader, DocumentQuery};
 use crate::multi_segment::OpenSegment;
@@ -376,6 +377,24 @@ impl IntersectVisitor for ShapeVisitor<'_> {
         {
             return Relation::CellCrossesQuery;
         }
+        // A cell disjoint from the shape's bounds holds no match:
+        // `visit_with_value` rejects every point outside them, so `OUTSIDE`
+        // answers what `CROSSES` would, without building the cell's solid.
+        // Only a cell at least `MINIMUM_RESOLUTION` wide in every dimension
+        // is skipped: its solid is a `StandardXYZSolid`, which neither the
+        // factory nor the relation rejects, so no error is lost.
+        if x_max - x_min >= MINIMUM_RESOLUTION
+            && y_max - y_min >= MINIMUM_RESOLUTION
+            && z_max - z_min >= MINIMUM_RESOLUTION
+            && (x_max < self.minimum_x
+                || x_min > self.maximum_x
+                || y_max < self.minimum_y
+                || y_min > self.maximum_y
+                || z_max < self.minimum_z
+                || z_min > self.maximum_z)
+        {
+            return Relation::CellOutsideQuery;
+        }
         let relation = make_geo_area(self.planet_model, x_min, x_max, y_min, y_max, z_min, z_max)
             .and_then(|area| area.get_relationship(self.shape));
         match relation {
@@ -395,21 +414,43 @@ impl IntersectVisitor for ShapeVisitor<'_> {
         set_doc(&mut self.result, doc_id, &mut self.bad);
     }
 
+    fn visit_run(&mut self, doc_ids: &[i32], packed: &[u8]) {
+        if self.matches(packed) {
+            self.visit_many(doc_ids);
+        }
+    }
+
+    fn visit_range(&mut self, start: i32, count: usize) -> bool {
+        write_doc_range(&mut self.result, start, count, true, &mut self.bad);
+        true
+    }
+
+    fn visit_bitset(&mut self, words: &[u64], base: i32, _count: usize) -> bool {
+        write_doc_bitset(&mut self.result, words, base, true, &mut self.bad)
+    }
+
     fn visit_with_value(&mut self, doc_id: i32, packed: &[u8]) {
+        if self.matches(packed) {
+            set_doc(&mut self.result, doc_id, &mut self.bad);
+        }
+    }
+}
+
+impl ShapeVisitor<'_> {
+    /// `visit(int, byte[])`'s test: the point lies in the shape's bounds and
+    /// in the shape.
+    fn matches(&self, packed: &[u8]) -> bool {
         let pm = self.planet_model;
         let x = Geo3DPoint::decode_dimension(packed, pm);
         let y = Geo3DPoint::decode_dimension(&packed[4..], pm);
         let z = Geo3DPoint::decode_dimension(&packed[8..], pm);
-        if x >= self.minimum_x
+        x >= self.minimum_x
             && x <= self.maximum_x
             && y >= self.minimum_y
             && y <= self.maximum_y
             && z >= self.minimum_z
             && z <= self.maximum_z
             && self.shape.is_within_xyz(x, y, z)
-        {
-            set_doc(&mut self.result, doc_id, &mut self.bad);
-        }
     }
 }
 

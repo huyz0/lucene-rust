@@ -25,7 +25,7 @@ import org.apache.lucene.store.FSDirectory;
  * T  config  toString
  * </pre>
  *
- * Read by {@code crates/lucene-search/tests/misc_fixtures.rs}.
+ * Read by {@code crates/lucene-misc/tests/misc_fixtures.rs}.
  */
 public class GenMiscSweetSpot {
 

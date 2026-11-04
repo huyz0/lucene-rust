@@ -12,15 +12,8 @@ lucene-codecs = { path = "../lucene-codecs" }
 lucene-index = { path = "../lucene-index" }
 lucene-analysis = { path = "../lucene-analysis" }
 rayon.workspace = true
-# UAX #29 sentence segmentation, for the highlighter's `BreakIterator`
-# equivalent -- see `highlighter::sentence_boundaries`.
-unicode-segmentation.workspace = true
 # Inflates a Deeplearning4j word2vec model zip (`word2vec::read_dl4j_model`).
 miniz_oxide.workspace = true
-# A streaming XML pull parser for `queryparser::xml`'s DOM-shaped query
-# documents: read event by event into the element tree the builders walk,
-# never a second copy of the text. MIT, pure Rust.
-quick-xml = "0.39"
 
 [features]
 # Exposes this crate's `#[cfg(test)]`-only MAXSCORE block-skip counter
@@ -42,6 +35,15 @@ test-support = []
 asserting = []
 
 [dev-dependencies]
+# The modules split out of this crate, for the tests, benches and examples
+# that still exercise them together with lucene-search (a dev-dependency
+# cycle: these link the one lucene-search library).
+lucene-queryparser = { path = "../lucene-queryparser" }
+lucene-monitor = { path = "../lucene-monitor" }
+lucene-highlighter = { path = "../lucene-highlighter" }
+lucene-suggest = { path = "../lucene-suggest" }
+lucene-grouping = { path = "../lucene-grouping" }
+lucene-expressions = { path = "../lucene-expressions" }
 # The shared RAII scratch-directory guard (`lucene_util::test_support::TempDir`).
 # A `[dev-dependencies]` edge, so resolver-2 feature unification keeps the
 # module out of this crate's production build.
@@ -175,4 +177,10 @@ harness = false
 # bench's own module doc.
 [[bench]]
 name = "segment_open_compound"
+harness = false
+
+# The geo point, shape, doc-values and Geo3D queries and the distance sort
+# over one in-memory index -- see the bench's module doc.
+[[bench]]
+name = "geo_queries"
 harness = false

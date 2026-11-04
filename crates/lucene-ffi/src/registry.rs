@@ -25,25 +25,37 @@ pub(crate) fn read_recovering<T>(lock: &RwLock<T>) -> RwLockReadGuard<'_, T> {
     lock.read().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// An `IndexWriter` together with the directory it borrows.
+/// A `ConcurrentIndexWriter` together with the directory it borrows and the
+/// merge scheduler whose threads merge for it.
 ///
-/// `IndexWriter` borrows a `&dyn Directory`, so the handle owns the directory
+/// The writer borrows a `&dyn Directory`, so the handle owns the directory
 /// on the heap and erases the borrow to `'static` (`engine_writer.rs`). The
-/// `Box` keeps the directory at a stable address, and fields drop in
-/// declaration order, so `writer` is dropped before `dir`.
+/// `Box` keeps the directory at a stable address. The scheduler's threads
+/// hold the writer while they merge, so dropping the handle first stops
+/// merging and waits for those threads; fields then drop in declaration
+/// order, `writer` before `dir`.
 pub struct WriterHandle {
-    pub writer: lucene_index::index_writer::IndexWriter<'static>,
+    pub writer: std::sync::Arc<lucene_index::concurrent_writer::ConcurrentIndexWriter<'static>>,
+    pub merges: lucene_index::merge_scheduler::ConcurrentMergeScheduler,
     // Only keeps the allocation `writer` borrows alive.
     #[allow(dead_code)]
     pub dir: Box<dyn lucene_store::directory::Directory>,
 }
 
+impl Drop for WriterHandle {
+    fn drop(&mut self) {
+        self.writer.stop_merges();
+        // A merge's failure no longer matters to a writer being dropped.
+        let _ = self.merges.sync();
+    }
+}
+
 // SAFETY: `WriterHandle` is `!Send`/`!Sync` only because of the erased
-// `dyn Directory` borrow. `IndexWriter` has no interior mutability
-// (`lucene-index` forbids unsafe code, and every mutation takes `&mut self`),
-// and the borrowed directory is the `Send + Sync` one boxed in this struct.
+// `dyn Directory` borrow. The writer's shared state is behind its own locks
+// (`lucene-index` forbids unsafe code), and the borrowed directory is the
+// `Send + Sync` one boxed in this struct.
 unsafe impl Send for WriterHandle {}
-// SAFETY: as for `Send` above; shared `&WriterHandle` reads are data-race-free.
+// SAFETY: as for `Send` above.
 unsafe impl Sync for WriterHandle {}
 
 /// A `DirectoryReader` opened over a JVM reader's segments, plus that JVM
@@ -66,16 +78,12 @@ pub fn jvm_readers() -> &'static RwLock<SlotMap<std::sync::Arc<JvmReaderHandle>>
     REGISTRY.get_or_init(|| RwLock::new(SlotMap::new(RegistryTag::JvmReader)))
 }
 
-/// The OpenSearch engine's writers (`engine_writer.rs`): one per shard, each
-/// behind its own mutex so that two shards never serialize on each other --
-/// the registry lock is held only to clone the `Arc`.
-#[allow(clippy::type_complexity)]
+/// The OpenSearch engine's writers (`engine_writer.rs`): one per shard. The
+/// registry lock is held only to clone the `Arc`.
 pub fn engine_writers(
-) -> &'static RwLock<SlotMap<std::sync::Arc<std::sync::Mutex<crate::engine_writer::EngineWriter>>>>
-{
-    static REGISTRY: OnceLock<
-        RwLock<SlotMap<std::sync::Arc<std::sync::Mutex<crate::engine_writer::EngineWriter>>>>,
-    > = OnceLock::new();
+) -> &'static RwLock<SlotMap<std::sync::Arc<crate::engine_writer::EngineWriter>>> {
+    static REGISTRY: OnceLock<RwLock<SlotMap<std::sync::Arc<crate::engine_writer::EngineWriter>>>> =
+        OnceLock::new();
     REGISTRY.get_or_init(|| RwLock::new(SlotMap::new(RegistryTag::EngineWriter)))
 }
 

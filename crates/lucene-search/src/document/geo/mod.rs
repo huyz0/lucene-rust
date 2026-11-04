@@ -200,7 +200,7 @@ pub(crate) fn sorted_numeric_only<'a>(
 }
 
 /// Every live document of `bits`, ascending, at `score`.
-pub(crate) fn collect_bits(
+pub fn collect_bits(
     leaf: &OpenSegment<'_>,
     bits: &FixedBitSet,
     score: f32,
@@ -215,7 +215,7 @@ pub(crate) fn collect_bits(
 
 /// A non-negative count (`maxDoc`) as a bitset length.
 #[inline]
-pub(crate) fn idx(doc: i32) -> usize {
+pub fn idx(doc: i32) -> usize {
     usize::try_from(doc).unwrap_or(0)
 }
 
@@ -224,7 +224,7 @@ pub(crate) fn idx(doc: i32) -> usize {
 /// and is remembered in `bad` (the first one), which the walk's caller
 /// turns into an error with [`check_walk`].
 #[inline]
-pub(crate) fn set_doc(bits: &mut FixedBitSet, doc: i32, bad: &mut Option<i32>) {
+pub fn set_doc(bits: &mut FixedBitSet, doc: i32, bad: &mut Option<i32>) {
     match usize::try_from(doc) {
         Ok(d) if d < bits.len() => bits.set(d),
         _ => {
@@ -244,6 +244,57 @@ pub(crate) fn clear_doc(bits: &mut FixedBitSet, doc: i32, bad: &mut Option<i32>)
     }
 }
 
+/// `bits.set` (`set == true`) or `bits.clear` of `start..start + count`, a
+/// leaf of consecutive doc ids, checked as [`set_doc`].
+pub(crate) fn write_doc_range(
+    bits: &mut FixedBitSet,
+    start: i32,
+    count: usize,
+    set: bool,
+    bad: &mut Option<i32>,
+) {
+    let range = usize::try_from(start)
+        .ok()
+        .and_then(|s| Some((s, s.checked_add(count)?)))
+        .filter(|&(_, end)| end <= bits.len());
+    match range {
+        Some((from, to)) if set => bits.set_range(from, to),
+        Some((from, to)) => bits.clear_range(from, to),
+        None => {
+            bad.get_or_insert(start);
+        }
+    }
+}
+
+/// `bits.or` (`set == true`) or `bits.andNot` of a bit-set leaf: doc
+/// `base + i` for each bit `i` of `words`, merged a word at a time. `false`
+/// when `base` is not word-aligned, so the caller takes the ids one by one;
+/// bits past the segment are dropped and recorded as [`set_doc`] does.
+pub(crate) fn write_doc_bitset(
+    bits: &mut FixedBitSet,
+    words: &[u64],
+    base: i32,
+    set: bool,
+    bad: &mut Option<i32>,
+) -> bool {
+    let Some(word_offset) = usize::try_from(base)
+        .ok()
+        .filter(|b| b % 64 == 0)
+        .map(|b| b / 64)
+    else {
+        return false;
+    };
+    let in_range = if set {
+        bits.or_words_at(word_offset, words)
+    } else {
+        bits.and_not_words_at(word_offset, words)
+    };
+    if !in_range {
+        bad.get_or_insert(base);
+    }
+    true
+}
+
 /// The corruption error for a points walk over `field` that named document
 /// `doc` in a segment of `max_doc` documents.
 pub(crate) fn out_of_segment(field: &str, doc: i32, max_doc: i32) -> Error {
@@ -253,7 +304,7 @@ pub(crate) fn out_of_segment(field: &str, doc: i32, max_doc: i32) -> Error {
 }
 
 /// After a walk: the error for the first out-of-segment doc id it met.
-pub(crate) fn check_walk(bad: Option<i32>, field: &str, max_doc: i32) -> Result<()> {
+pub fn check_walk(bad: Option<i32>, field: &str, max_doc: i32) -> Result<()> {
     match bad {
         Some(doc) => Err(out_of_segment(field, doc, max_doc)),
         None => Ok(()),

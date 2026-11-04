@@ -174,11 +174,14 @@ mod add_indexes;
 #[cfg(test)]
 mod block_tests;
 mod explicit;
+mod inverted_terms;
 mod lifecycle;
 pub(crate) mod pending_postings;
 mod pluggable_merge;
 mod try_modify;
+pub(crate) use explicit::explicit_error;
 pub use explicit::{ExplicitDocument, ExplicitFields, InvertedField, InvertedTerm};
+pub use inverted_terms::{InvertedTerms, Payloads, TermBuilder, TermRef};
 pub use lifecycle::MergedSegmentWarmer;
 
 pub use crate::merge_policy::MergePolicyConfig;
@@ -739,7 +742,7 @@ pub(crate) fn buffer_node(
 /// `IndexWriter.buildDocValuesUpdate(term, updates)`: every supplied field
 /// becomes an update keyed by the caller's `term`, whatever term the caller
 /// happened to put in the [`DocValuesUpdate`] they built.
-fn retarget_update(update: &DocValuesUpdate, term: &Term) -> DocValuesUpdate {
+pub(crate) fn retarget_update(update: &DocValuesUpdate, term: &Term) -> DocValuesUpdate {
     match update {
         DocValuesUpdate::Numeric { field, value, .. } => DocValuesUpdate::Numeric {
             term: term.clone(),
@@ -1197,13 +1200,15 @@ pub(crate) struct DocumentBuffer<'b> {
     /// Aligned with `docs` when the writer takes explicit documents; read only
     /// then.
     pub(crate) explicit: &'b [ExplicitFields],
-    /// The explicit documents' postings, inverted as they were buffered;
-    /// their `InvertedField`s then hold no terms. `None` for a buffer whose
-    /// `explicit` still carries every term (the concurrent writer's).
-    pub(crate) postings: Option<&'b pending_postings::PendingPostings>,
+    /// The explicit documents' postings, inverted as they were buffered and
+    /// laid out in the flush's doc order; their `InvertedField`s then hold
+    /// no terms. `None` for a buffer whose `explicit` still carries every
+    /// term.
+    pub(crate) postings: Option<&'b pending_postings::FlushedPostings>,
     /// Under an index sort, the flush's permutation: `old_to_new[d]` is
-    /// where buffered document `d` lands -- what `postings`' doc ids, in
-    /// insertion order, are remapped by. `explicit` is already permuted.
+    /// where buffered document `d` lands -- what the insertion-order doc
+    /// ids of terms still in `explicit` are remapped by. `explicit` is
+    /// already permuted.
     pub(crate) old_to_new: Option<&'b [usize]>,
     pub(crate) has_blocks: bool,
 }
@@ -1219,7 +1224,7 @@ impl DocumentBuffer<'_> {
             .chain(self.explicit.iter().map(ExplicitFields::ram_bytes))
             .chain(
                 self.postings
-                    .map(pending_postings::PendingPostings::ram_bytes),
+                    .map(pending_postings::FlushedPostings::ram_bytes),
             )
             .fold(0usize, usize::saturating_add);
         u64::try_from(docs).unwrap_or(u64::MAX)
@@ -1284,13 +1289,9 @@ impl IndexingConfig {
     /// parent field: what the concurrent writer, which builds native
     /// documents only, refuses.
     pub(crate) fn concurrent_unsupported(&self) -> Option<&'static str> {
-        if self.parent_field.is_some() {
-            Some("a parent field (set_parent_field)")
-        } else if self.explicit {
-            Some("explicit documents (enable_explicit_documents)")
-        } else {
-            None
-        }
+        self.parent_field
+            .is_some()
+            .then_some("a parent field (set_parent_field)")
     }
 
     /// `IndexWriter._mergeInit`'s `estimatedMergeBytes`: each source's
@@ -4187,6 +4188,8 @@ pub struct IndexWriter<'d> {
     /// See [`IndexWriter::set_pluggable_merge_policy`]; decides instead of
     /// `merge_policy` when set.
     pluggable_merge_policy: Option<std::sync::Arc<dyn merge_policy::MergePolicy>>,
+    /// See [`IndexWriter::set_full_flush_merge_policy`].
+    full_flush_merge_policy: Option<std::sync::Arc<dyn merge_policy::MergePolicy>>,
     /// See [`IndexWriter::set_merges_by_caller`].
     merges_by_caller: bool,
     /// `IndexWriter.mergeMaxNumSegments`: [`IndexWriter::force_merge`]'s
@@ -5486,14 +5489,18 @@ impl<'d> IndexWriter<'d> {
         std::sync::Arc::clone(&self.cfg)
     }
 
-    /// This writer's pending documents, as the buffer a segment is built from.
-    fn document_buffer(&self) -> DocumentBuffer<'_> {
+    /// This writer's pending documents, as the buffer a segment is built
+    /// from, with their postings laid out for the flush.
+    fn document_buffer<'a>(
+        &'a self,
+        postings: &'a pending_postings::FlushedPostings,
+    ) -> DocumentBuffer<'a> {
         DocumentBuffer {
             docs: &self.pending_docs,
             custom_freq_terms: &self.pending_custom_freq_terms,
             vectors: &self.pending_vectors,
             explicit: &self.pending_explicit,
-            postings: Some(&self.pending_postings),
+            postings: Some(postings),
             old_to_new: None,
             has_blocks: self.pending_has_blocks,
         }
@@ -5664,6 +5671,7 @@ impl<'d> IndexWriter<'d> {
             ram_bytes_used: 0,
             merge_policy: None,
             pluggable_merge_policy: None,
+            full_flush_merge_policy: None,
             merges_by_caller: false,
             merge_max_num_segments: -1,
             max_full_flush_merge_wait_millis: DEFAULT_MAX_FULL_FLUSH_MERGE_WAIT_MILLIS,
@@ -8161,16 +8169,21 @@ impl IndexWriter<'_> {
             old_to_new
         });
         let created = crate::created_outputs::CreatedOutputs::new(self.dir);
-        let written = self.cfg.build_and_write_segment(
-            &created,
-            &DocumentBuffer {
-                old_to_new: old_to_new.as_deref(),
-                ..self.document_buffer()
-            },
-            &segment_name,
-            segment_id,
-            None,
-        );
+        let written = self
+            .pending_postings
+            .flushed(old_to_new.as_deref())
+            .and_then(|postings| {
+                self.cfg.build_and_write_segment(
+                    &created,
+                    &DocumentBuffer {
+                        old_to_new: old_to_new.as_deref(),
+                        ..self.document_buffer(&postings)
+                    },
+                    &segment_name,
+                    segment_id,
+                    None,
+                )
+            });
 
         let (sci, si_files) = match written {
             Ok(pair) => pair,

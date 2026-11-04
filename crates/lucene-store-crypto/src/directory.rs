@@ -49,6 +49,9 @@ pub struct EncryptedDirectory<D: Directory> {
     cache: Arc<PlaintextCache>,
 }
 
+/// The index lock file's name (Lucene's `IndexWriter.WRITE_LOCK_NAME`).
+const WRITE_LOCK_NAME: &str = "write.lock";
+
 static LAZY_DEFAULT: AtomicBool = AtomicBool::new(false);
 
 /// Sets whether new [`EncryptedDirectory`]s demand-decrypt their files
@@ -187,8 +190,11 @@ impl<D: Directory> EncryptedDirectory<D> {
         self
     }
 
+    /// Whether `name` is stored as-is: the index's lock file (created
+    /// empty by the inner directory's lock factory), and commit metadata when
+    /// [`EncryptedDirectory::with_plaintext_commit_metadata`] is on.
     fn is_plain(&self, name: &str) -> bool {
-        self.plain_commit_metadata && is_commit_metadata(name)
+        name == WRITE_LOCK_NAME || (self.plain_commit_metadata && is_commit_metadata(name))
     }
 
     /// An inner output, encrypting unless its name is stored in plaintext.
@@ -499,6 +505,23 @@ mod tests {
         let crc = out.checksum();
         assert_eq!(out.close().unwrap(), crc);
         crc
+    }
+
+    #[test]
+    fn the_lock_file_is_stored_as_is() {
+        // The lock factory creates `write.lock` empty in the inner directory;
+        // sizing the store lists it with every other file.
+        let dir = EncryptedDirectory::new(ByteBuffersDirectory::new(), keys());
+        dir.inner()
+            .create_output(WRITE_LOCK_NAME)
+            .unwrap()
+            .close()
+            .unwrap();
+        assert_eq!(dir.file_length(WRITE_LOCK_NAME).unwrap(), 0);
+        assert!(dir.open(WRITE_LOCK_NAME).unwrap().is_empty());
+        for name in dir.list_all().unwrap() {
+            dir.file_length(&name).unwrap();
+        }
     }
 
     #[test]

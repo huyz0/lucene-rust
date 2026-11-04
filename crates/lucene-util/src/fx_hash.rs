@@ -71,6 +71,76 @@ pub type FxHashMap<K, V> = HashMap<K, V, FxBuildHasher>;
 /// A `HashSet` hashed with [`FxHasher`].
 pub type FxHashSet<K> = HashSet<K, FxBuildHasher>;
 
+/// [`FxHasher`]'s word mixing with a final avalanche, for
+/// maps keyed by values whose distinguishing bytes may sit anywhere in a word.
+pub mod avalanche {
+    use std::collections::HashMap;
+
+    /// The multiply-rotate hash rustc uses (`FxHasher`): the group maps hash a
+    /// group value per collected document, where SipHash's DoS resistance buys
+    /// nothing .
+    #[derive(Debug, Default, Clone, Copy)]
+    pub struct FxHasher(u64);
+
+    impl std::hash::Hasher for FxHasher {
+        /// The state through a final avalanche (`fmix64`'s first half): a
+        /// multiply carries entropy only upward, so the raw state's low bits --
+        /// which `hashbrown` takes the bucket from -- depend only on the low
+        /// bytes of the last word. Keys sharing those
+        /// (`"group-value-000000001234"`: the last word's low bytes are `"00"`)
+        /// fell in a handful of buckets, and every lookup walked a long probe
+        /// of `memcmp`s (a grouping search with all groups was 17x slower).
+        /// Folding the high half down and multiplying again makes every bit of
+        /// the result depend on every bit of the state.
+        fn finish(&self) -> u64 {
+            let mut x = self.0;
+            x ^= x >> 33;
+            x = x.wrapping_mul(0xff51_afd7_ed55_8ccd);
+            x ^ (x >> 33)
+        }
+
+        fn write(&mut self, bytes: &[u8]) {
+            let mut chunks = bytes.chunks_exact(8);
+            for c in &mut chunks {
+                let mut w = [0u8; 8];
+                w.copy_from_slice(c);
+                self.add(u64::from_le_bytes(w));
+            }
+            for &b in chunks.remainder() {
+                self.add(u64::from(b));
+            }
+        }
+
+        fn write_u8(&mut self, i: u8) {
+            self.add(u64::from(i));
+        }
+
+        fn write_u32(&mut self, i: u32) {
+            self.add(u64::from(i));
+        }
+
+        fn write_u64(&mut self, i: u64) {
+            self.add(i);
+        }
+
+        fn write_usize(&mut self, i: usize) {
+            self.add(i as u64);
+        }
+    }
+
+    impl FxHasher {
+        fn add(&mut self, w: u64) {
+            self.0 = (self.0.rotate_left(5) ^ w).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95);
+        }
+    }
+
+    /// A `HashMap` under [`FxHasher`].
+    pub type FxHashMap<K, V> = HashMap<K, V, std::hash::BuildHasherDefault<FxHasher>>;
+
+    /// A `HashSet` under [`FxHasher`].
+    pub type FxHashSet<K> = std::collections::HashSet<K, std::hash::BuildHasherDefault<FxHasher>>;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

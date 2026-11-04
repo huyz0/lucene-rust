@@ -28,13 +28,13 @@ use crate::collector::{ScoreMode, ScoringCollector};
 use crate::directory_reader::SegmentReader;
 use crate::exec::{self, Mode, NO_MORE_DOCS};
 use crate::field_norms::FieldNorms;
-use crate::grouping::TreeSet;
 use crate::multi_segment::OpenSegment;
 use crate::query::BooleanQuery;
 use crate::reader::doc_values as dv;
 use crate::reader::{
     NumericDocValues, SortedDocValues, SortedNumericDocValues, SortedSetDocValues,
 };
+use crate::tree_set::TreeSet;
 use crate::{Error, Result};
 
 /// Which `CollapsingDocValuesSource` reads the collapse field.

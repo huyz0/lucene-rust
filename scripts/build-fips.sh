@@ -7,8 +7,10 @@
 #   scripts/build-fips.sh          # build lucene-store-crypto (release)
 #   scripts/build-fips.sh --test   # and run its tests, which assert FIPS mode
 #   scripts/build-fips.sh --ffi    # build the plugin's library, lucene-ffi, with
-#                                  # the FIPS module (target/fips/release/
+#                                  # the FIPS module (target/fips/<profile>/
 #                                  # liblucene_ffi.so); `gradle -Pfips` runs this
+#   scripts/build-fips.sh --ffi --profile dist   # with a Cargo profile other
+#                                  # than release
 #   scripts/build-fips.sh --ffi --test   # and its encrypted-store tests
 #
 # Needs CMake, Go, Perl and a C compiler (aws-lc-fips-sys builds the module
@@ -26,24 +28,28 @@ export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target/fips}"
 args=(-p lucene-store-crypto --no-default-features --features fips)
 ffi=false
 tests=false
-for arg in "$@"; do
-    case "$arg" in
+profile=release
+while [ $# -gt 0 ]; do
+    case "$1" in
         --ffi) ffi=true ;;
         --test) tests=true ;;
-        *) echo "build-fips: unknown argument $arg" >&2; exit 2 ;;
+        --profile) profile="$2"; shift ;;
+        *) echo "build-fips: unknown argument $1" >&2; exit 2 ;;
     esac
+    shift
 done
 if $ffi; then
-    # lucene-ffi's default features, with `fips` in place of `crypto`.
+    # lucene-ffi's default features, with `fips` in place of `crypto`, and
+    # the plugin build's `mimalloc`.
     args=(-p lucene-ffi --no-default-features --features
-        fips,analysis-icu,analysis-kuromoji,analysis-nori,analysis-smartcn,analysis-stempel,analysis-morfologik,analysis-phonetic)
+        fips,analysis-icu,analysis-kuromoji,analysis-nori,analysis-smartcn,analysis-stempel,analysis-morfologik,analysis-phonetic,mimalloc)
 fi
 
 for tool in cmake go cc; do
     command -v "$tool" >/dev/null || { echo "build-fips: $tool is required" >&2; exit 1; }
 done
 
-cargo build --release "${args[@]}"
+cargo build --profile "$profile" "${args[@]}"
 if $tests; then
     if $ffi; then
         cargo test "${args[@]}" --lib store::
