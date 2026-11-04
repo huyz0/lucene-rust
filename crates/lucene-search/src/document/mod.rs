@@ -144,6 +144,14 @@ pub trait DocumentQuery: AsAnyQuery + fmt::Debug + Send + Sync {
         Ok(true)
     }
 
+    /// The one term this query matches and the `SimScorer` that scores its
+    /// postings at `boost`, when it is such a query (`FeatureQuery`): the
+    /// scorer tree then runs it as a term, skipping blocks by their impacts.
+    fn sim_term(&self, boost: f32) -> Option<SimTerm<'_>> {
+        let _ = boost;
+        None
+    }
+
     /// Whether every match scores `boost` (a constant-score weight), so a
     /// scorer tree may keep just the set of matches. `false` for a query
     /// whose scores vary by document.
@@ -156,6 +164,13 @@ pub trait DocumentQuery: AsAnyQuery + fmt::Debug + Send + Sync {
     fn equals(&self, other: &dyn DocumentQuery) -> bool {
         std::ptr::addr_eq(self.as_any_query(), other.as_any_query())
     }
+}
+
+/// What [`DocumentQuery::sim_term`] answers: a field's term and its scorer.
+pub struct SimTerm<'a> {
+    pub field: &'a str,
+    pub term: &'a [u8],
+    pub scorer: std::sync::Arc<dyn crate::similarities::SimScorer>,
 }
 
 /// Passes on the matches in `filter`.
@@ -273,6 +288,10 @@ impl DocumentQuery for Boosted {
 
     fn constant_score(&self) -> bool {
         self.query.constant_score()
+    }
+
+    fn sim_term(&self, boost: f32) -> Option<SimTerm<'_>> {
+        self.query.sim_term(boost * self.boost)
     }
 
     /// `BoostQuery.rewrite`: the inner query rewritten, the boost kept.

@@ -15,7 +15,7 @@ use lucene_codecs::blocktree::FieldTerms;
 use lucene_index::document::FeatureField;
 
 use super::point_queries::boxed_boost;
-use super::{reader, DocumentQuery};
+use super::{reader, DocumentQuery, SimTerm};
 use crate::collector::ScoringCollector;
 use crate::multi_segment::OpenSegment;
 use crate::{Error, Result};
@@ -59,6 +59,20 @@ impl FeatureFunction {
                     as f32
             }
         })
+    }
+}
+
+/// `FeatureFunction.scorer(weight)`: the function of a document's feature
+/// value, the norm unused.
+struct FeatureScorer {
+    function: FeatureFunction,
+    weight: f32,
+}
+
+impl crate::similarities::SimScorer for FeatureScorer {
+    fn score(&self, freq: f32, _norm: i64) -> f32 {
+        // Only a rewritten saturation function, which always scores, gets here.
+        self.function.score(self.weight, freq).unwrap_or(0.0)
     }
 }
 
@@ -147,6 +161,22 @@ impl DocumentQuery for FeatureQuery {
 
     fn constant_score(&self) -> bool {
         false
+    }
+
+    /// `FeatureQuery`'s scorer: the feature's postings through `ImpactsDISI`,
+    /// scored by the function's `SimScorer`.
+    fn sim_term(&self, boost: f32) -> Option<SimTerm<'_>> {
+        if let FeatureFunction::Saturation { pivot: None } = self.function {
+            return None;
+        }
+        Some(SimTerm {
+            field: &self.field,
+            term: self.feature.as_bytes(),
+            scorer: std::sync::Arc::new(FeatureScorer {
+                function: self.function,
+                weight: boost,
+            }),
+        })
     }
 
     /// `TermScorer` over the feature's postings with the function's

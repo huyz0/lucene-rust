@@ -614,7 +614,7 @@ pub(crate) fn term_leg<'a>(
         Clause::Boost(b) => {
             let (chain, inner) = boost_chain(b);
             match inner {
-                Clause::Term(_) | Clause::ConstantScore(_) => {
+                Clause::Term(_) | Clause::ConstantScore(_) | Clause::Extended(_) => {
                     term_leg(ctx, inner, chain * boost, mode)
                 }
                 _ => Ok(TermForm::Other),
@@ -624,8 +624,57 @@ pub(crate) fn term_leg<'a>(
             Clause::Term(t) => term(ctx, t, Some(c.score * boost), boost, mode),
             _ => Ok(TermForm::Other),
         },
+        Clause::Extended(e) => match e.as_ref() {
+            crate::extended_query::ExtendedQuery::Document(d)
+                if d.filter.is_none() && d.fallback.is_none() =>
+            {
+                match d.query.sim_term(boost) {
+                    Some(t) => sim_term(ctx, &t, mode),
+                    None => Ok(TermForm::Other),
+                }
+            }
+            _ => Ok(TermForm::Other),
+        },
         _ => Ok(TermForm::Other),
     }
+}
+
+/// A document query that scores one term's postings with a `SimScorer` of
+/// its own ([`crate::document::DocumentQuery::sim_term`]) as a term leg.
+fn sim_term<'a>(
+    ctx: &LeafContext<'a>,
+    t: &crate::document::SimTerm<'_>,
+    mode: Mode,
+) -> Result<TermForm<'a>> {
+    if ctx.reader.is_some_and(|reader| reader.simpletext.is_some()) {
+        return Ok(TermForm::Other);
+    }
+    let Some(doc_in) = ctx.doc_in else {
+        return Ok(TermForm::Other);
+    };
+    let Some(field_terms) = ctx.fields.field(t.field) else {
+        return Ok(TermForm::Absent);
+    };
+    let Some(seeked) = field_terms.seek_term_state(t.term)? else {
+        return Ok(TermForm::Absent);
+    };
+    let cost = i64::from(seeked.stats.doc_freq);
+    if !mode.needs_scores() {
+        let cursor = field_terms.lazy_postings_for(&seeked, doc_in, PostingsFlags::DocsOnly)?;
+        return Ok(TermForm::Leg(Box::new(TermLeg::filter(cursor, cost))));
+    }
+    let flags = if mode == Mode::TopScores {
+        PostingsFlags::Freqs
+    } else {
+        PostingsFlags::FreqsNoImpacts
+    };
+    let cursor = field_terms.lazy_postings_for(&seeked, doc_in, flags)?;
+    Ok(TermForm::Leg(Box::new(TermLeg::scoring_sim(
+        cursor,
+        t.scorer.clone(),
+        None,
+        cost,
+    ))))
 }
 
 fn term<'a>(
