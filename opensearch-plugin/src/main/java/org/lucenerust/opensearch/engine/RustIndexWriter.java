@@ -227,16 +227,41 @@ final class RustIndexWriter implements DocumentIndexWriter {
         return out[0];
     }
 
+    /** Whether the operation this thread is applying may be refused by the breaker; see {@link #refusableIf}. */
+    private static final ThreadLocal<Boolean> REFUSABLE = ThreadLocal.withInitial(() -> false);
+
+    /**
+     * Marks the operations this thread applies until the returned scope closes as ones the breaker
+     * may refuse, when {@code refusable}. Only an index operation on the primary can be refused: a
+     * refusal there becomes a document failure (a 429) recorded as a no-op, while a failure of that
+     * no-op, of a delete, or of any operation on a replica or in recovery fails the shard. Those
+     * are accounted without breaking, as Lucene's {@code IndexWriter} never refuses a document for
+     * memory; the writer's stall control (indexing waits once buffered and flushing bytes pass
+     * twice the RAM buffer) still bounds them.
+     */
+    public static Releasable refusableIf(boolean refusable) {
+        if (refusable == false) {
+            return () -> {};
+        }
+        REFUSABLE.set(true);
+        return () -> REFUSABLE.set(false);
+    }
+
     /**
      * The Rust writer's buffer is native memory the JVM cannot see, so it is accounted to the
      * {@code accounting} circuit breaker: an operation first reserves an estimate -- which trips the
-     * breaker, refusing the document, when memory is short -- and the reservation is then trued up
-     * to what the writer reports, and released as commits empty the buffer.
+     * breaker, refusing the document, when memory is short and the operation is refusable (see
+     * {@link #refusableIf}) -- and the reservation is then trued up to what the writer reports, and
+     * released as commits empty the buffer.
      */
     private void apply(Blob op, int docs) throws IOException {
         long estimate = BUFFER_BYTES_PER_BLOB_BYTE * op.length();
         if (breaker != null) {
-            breaker.addEstimateBytesAndMaybeBreak(estimate, "lucene_rust_writer");
+            if (REFUSABLE.get()) {
+                breaker.addEstimateBytesAndMaybeBreak(estimate, "lucene_rust_writer");
+            } else {
+                breaker.addWithoutBreaking(estimate);
+            }
         }
         // A blob with fields left to Rust to analyze is decoded (analyzed) first, outside the
         // lock, so indexing threads analyze in parallel as they do in Java.
