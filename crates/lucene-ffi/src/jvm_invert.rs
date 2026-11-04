@@ -71,7 +71,8 @@ struct TermState {
     /// Where the term's bytes end in `term_bytes`; they start where the
     /// previous term's end.
     end: u32,
-    hash: u32,
+    /// [`hash_bytes`] of the term, which the writer reuses.
+    hash: u64,
     freq: i32,
     /// The first and last of the term's occurrences, `NONE` before any.
     first: u32,
@@ -93,6 +94,35 @@ struct Occurrence {
 }
 
 const NONE: u32 = u32::MAX;
+
+use lucene_index::inverter::hash_bytes;
+
+/// The first slot for `hash` in a table of `mask + 1` slots: the hash's top
+/// bits. [`hash_bytes`] ends in a multiply, so its low bits see only the
+/// term's first bytes.
+#[inline]
+fn home(hash: u64, mask: usize) -> usize {
+    let bits = (mask as u64).count_ones();
+    hash.checked_shr(u64::BITS - bits).unwrap_or(0) as usize & mask
+}
+
+/// The last inverted field's buffers, emptied: the next field on the same
+/// thread grows into them instead of allocating and faulting in new ones.
+#[derive(Default)]
+struct Spare {
+    slots: Vec<u32>,
+    terms: Vec<TermState>,
+    term_bytes: Vec<u8>,
+    occurrences: Vec<Occurrence>,
+    payload_bytes: Vec<u8>,
+}
+
+/// Above this many occurrences a field's buffers are freed, not kept.
+const SPARE_MAX_OCCURRENCES: usize = 1 << 16;
+
+thread_local! {
+    static SPARE: std::cell::RefCell<Spare> = std::cell::RefCell::default();
+}
 
 /// `FieldInvertState` plus the terms.
 struct Inverted<'a> {
@@ -129,16 +159,17 @@ struct TermIds {
 impl TermIds {
     const EMPTY: u32 = u32::MAX;
 
-    /// Room for about `expected` terms before the first rehash.
-    fn with_expected(expected: usize) -> TermIds {
+    /// Room for about `expected` terms before the first rehash, in `slots`'
+    /// allocation when it is large enough.
+    fn with_expected(expected: usize, mut slots: Vec<u32>) -> TermIds {
         let n = (expected.max(4) * 2).next_power_of_two();
-        TermIds {
-            slots: vec![Self::EMPTY; n], // alloc-ok: expected is capped at 2^16
-        }
+        slots.clear();
+        slots.resize(n, Self::EMPTY); // alloc-ok: expected is capped at 2^16
+        TermIds { slots }
     }
 
-    fn hash(term: &[u8]) -> u32 {
-        lucene_util::string_helper::murmurhash3_x86_32(term, 0) as u32
+    fn hash(term: &[u8]) -> u64 {
+        hash_bytes(term)
     }
 
     /// The slot holding `term`, or the empty slot where it would go.
@@ -147,10 +178,10 @@ impl TermIds {
         terms: &[TermState],
         bytes: &[u8],
         term: &[u8],
-        hash: u32,
+        hash: u64,
     ) -> Result<usize, usize> {
         let mask = self.slots.len() - 1;
-        let mut i = hash as usize & mask;
+        let mut i = home(hash, mask);
         loop {
             match self.slots[i] {
                 Self::EMPTY => return Err(i),
@@ -173,7 +204,7 @@ impl TermIds {
             let mask = self.slots.len() * 2 - 1;
             let mut slots = vec![Self::EMPTY; mask + 1]; // alloc-ok: twice the terms already held
             for (id, t) in terms.iter().enumerate() {
-                let mut i = t.hash as usize & mask;
+                let mut i = home(t.hash, mask);
                 while slots[i] != Self::EMPTY {
                     i = (i + 1) & mask;
                 }
@@ -186,6 +217,7 @@ impl TermIds {
 
 impl<'a> Inverted<'a> {
     fn new(name: &'a str, options: Options, expected: usize) -> Self {
+        let spare = SPARE.with(|s| std::mem::take(&mut *s.borrow_mut()));
         Inverted {
             name,
             options,
@@ -197,12 +229,32 @@ impl<'a> Inverted<'a> {
             unique_term_count: 0,
             last_start_offset: 0,
             last_position: 0,
-            ids: TermIds::with_expected(expected),
-            terms: Vec::with_capacity(expected), // alloc-ok: capped at 2^16
-            term_bytes: Vec::new(),
-            occurrences: Vec::new(),
-            payload_bytes: Vec::new(),
+            ids: TermIds::with_expected(expected, spare.slots),
+            terms: spare.terms,
+            term_bytes: spare.term_bytes,
+            occurrences: spare.occurrences,
+            payload_bytes: spare.payload_bytes,
         }
+    }
+
+    /// Gives this field's buffers back for the thread's next one.
+    fn recycle(self) {
+        let mut spare = Spare {
+            slots: self.ids.slots,
+            terms: self.terms,
+            term_bytes: self.term_bytes,
+            occurrences: self.occurrences,
+            payload_bytes: self.payload_bytes,
+        };
+        // a huge field's buffers are not worth holding on to
+        if spare.occurrences.capacity() > SPARE_MAX_OCCURRENCES {
+            return;
+        }
+        spare.terms.clear();
+        spare.term_bytes.clear();
+        spare.occurrences.clear();
+        spare.payload_bytes.clear();
+        SPARE.with(|s| *s.borrow_mut() = spare);
     }
 
     /// The terms in first-occurrence order, as the writer takes them.
@@ -215,7 +267,7 @@ impl<'a> Inverted<'a> {
         let mut terms = InvertedTerms::with_capacity(n, bytes, occurrences); // alloc-ok: sizes held
         let has_offsets = self.has_offsets();
         for (id, t) in self.terms.iter().enumerate() {
-            let mut b = terms.start(term_of(&self.terms, &self.term_bytes, id));
+            let mut b = terms.start_hashed(term_of(&self.terms, &self.term_bytes, id), t.hash);
             b.freq(t.freq);
             let mut at = t.first;
             while at != NONE {
@@ -230,6 +282,7 @@ impl<'a> Inverted<'a> {
                 at = o.next;
             }
         }
+        self.recycle();
         terms
     }
 
