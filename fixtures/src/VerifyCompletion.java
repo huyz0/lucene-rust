@@ -32,7 +32,7 @@ import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
 
 /**
- * Verifies {@code crates/lucene-search/examples/write_completion_fixture.rs}: in {@code
+ * Verifies {@code crates/lucene-suggest/examples/write_completion_fixture.rs}: in {@code
  * <dir>/flushed} (one segment) and {@code <dir>/merged} (three commits force-merged), {@code
  * suggest} is recorded as {@code Completion104} and {@code body} as {@code Lucene104}, CheckIndex
  * is clean, {@code body}'s terms are found, and every prefix and regex suggestion -- key, doc and

@@ -200,7 +200,7 @@ pub(crate) fn sorted_numeric_only<'a>(
 }
 
 /// Every live document of `bits`, ascending, at `score`.
-pub(crate) fn collect_bits(
+pub fn collect_bits(
     leaf: &OpenSegment<'_>,
     bits: &FixedBitSet,
     score: f32,
@@ -215,7 +215,7 @@ pub(crate) fn collect_bits(
 
 /// A non-negative count (`maxDoc`) as a bitset length.
 #[inline]
-pub(crate) fn idx(doc: i32) -> usize {
+pub fn idx(doc: i32) -> usize {
     usize::try_from(doc).unwrap_or(0)
 }
 
@@ -224,7 +224,7 @@ pub(crate) fn idx(doc: i32) -> usize {
 /// and is remembered in `bad` (the first one), which the walk's caller
 /// turns into an error with [`check_walk`].
 #[inline]
-pub(crate) fn set_doc(bits: &mut FixedBitSet, doc: i32, bad: &mut Option<i32>) {
+pub fn set_doc(bits: &mut FixedBitSet, doc: i32, bad: &mut Option<i32>) {
     match usize::try_from(doc) {
         Ok(d) if d < bits.len() => bits.set(d),
         _ => {
@@ -304,7 +304,7 @@ pub(crate) fn out_of_segment(field: &str, doc: i32, max_doc: i32) -> Error {
 }
 
 /// After a walk: the error for the first out-of-segment doc id it met.
-pub(crate) fn check_walk(bad: Option<i32>, field: &str, max_doc: i32) -> Result<()> {
+pub fn check_walk(bad: Option<i32>, field: &str, max_doc: i32) -> Result<()> {
     match bad {
         Some(doc) => Err(out_of_segment(field, doc, max_doc)),
         None => Ok(()),

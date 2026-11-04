@@ -1,0 +1,17 @@
+[package]
+name = "lucene-suggest"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+lucene-util = { path = "../lucene-util" }
+lucene-store = { path = "../lucene-store" }
+lucene-codecs = { path = "../lucene-codecs" }
+lucene-index = { path = "../lucene-index" }
+lucene-search = { path = "../lucene-search" }
+lucene-analysis = { path = "../lucene-analysis" }
+rayon.workspace = true
+
+[dev-dependencies]
+lucene-util = { path = "../lucene-util", features = ["test-support"] }

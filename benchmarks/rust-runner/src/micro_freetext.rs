@@ -7,8 +7,8 @@
 use std::hint::black_box;
 use std::time::Duration;
 
-use lucene_search::suggest::free_text::FreeTextSuggester;
-use lucene_search::suggest::lookup::Lookup;
+use lucene_suggest::free_text::FreeTextSuggester;
+use lucene_suggest::lookup::Lookup;
 
 use super::measure;
 use super::micro_analyzing::{analyzer, entries, lookups, phrases, queries};
