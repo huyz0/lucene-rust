@@ -226,6 +226,8 @@ def run(base, container, corpus, label, out, rounds, java_too):
     # Merged to one segment: the same shapes on the smallest index either engine makes.
     t = time.perf_counter()
     req("POST", "/bench/_forcemerge?max_num_segments=1", timeout=3600)
+    # refresh_interval is -1, so the merged segment is not searchable until a refresh.
+    req("POST", "/bench/_refresh", timeout=3600)
     result["force_merge_seconds"] = round(time.perf_counter() - t, 2)
     idx = req("GET", "/_cat/indices/bench?format=json&bytes=b")[0]
     result["merged_store_bytes"] = int(idx["store.size"])
