@@ -3604,6 +3604,11 @@ pub fn count_boolean_query_segment(
             self.0 = self.0.saturating_add(n);
             true
         }
+        fn collect_range(&mut self, min: i32, max: i32, _score: f32) {
+            self.0 = self
+                .0
+                .saturating_add(u64::try_from(max.saturating_sub(min)).unwrap_or(0));
+        }
     }
     let ctx = exec::LeafContext {
         fields: seg.fields,
@@ -3633,9 +3638,13 @@ pub fn count_boolean_query_segment(
             cache: None,
             ..ctx
         };
-        match cache.scorer_if_cacheable(&clause, max_doc, cacheable, || {
-            exec::build::build(&core, &clause, 1.0, exec::Mode::NoScores, true)
-        })? {
+        match cache.scorer_if_cacheable(
+            &clause,
+            max_doc,
+            cacheable,
+            || Ok(false),
+            || exec::build::build(&core, &clause, 1.0, exec::Mode::NoScores, true),
+        )? {
             Some(exec::cache::CacheResult::Hit(set)) => return Ok(set.live_count(seg.live_docs)),
             Some(exec::cache::CacheResult::Empty) => return Ok(0),
             None => {}
@@ -3680,12 +3689,61 @@ pub(crate) fn count_boolean_query_shortcut(
                 return Ok(Some(u64::try_from(n).unwrap_or(0)));
             }
         }
+        // `MatchAllDocsQuery`'s `ConstantScoreWeight.count`: `numDocs`.
+        (Some(Clause::MatchAllDocs(_)), _) => {
+            if let Some(max_doc) = seg.max_doc {
+                let n = match seg.live_docs {
+                    Some(live) => live.cardinality() as u64,
+                    None => u64::try_from(max_doc).unwrap_or(0),
+                };
+                return Ok(Some(n));
+            }
+        }
         (Some(Clause::Term(t)), _) => {
             if let Some(n) = weight_count::count_term_query_shortcut(seg.fields, seg.live_docs, t)?
             {
                 #[cfg(any(test, feature = "asserting"))]
                 exec::asserting::check_count(n, seg.max_doc, seg.live_docs);
                 return Ok(Some(u64::try_from(n).unwrap_or(0)));
+            }
+        }
+        // `PointRangeQuery.count`, on a segment without deletions.
+        (Some(leaf @ (Clause::PointsRange(_) | Clause::Extended(_))), _)
+            if seg.live_docs.is_none() && seg.points.is_some() =>
+        {
+            let points = seg.points.expect("checked");
+            let n = match leaf {
+                Clause::PointsRange(q) => exec::ranges::point_range_count(
+                    points,
+                    &q.field,
+                    &points_query::pack_i64(q.min),
+                    &points_query::pack_i64(q.max),
+                    1,
+                    8,
+                )?,
+                Clause::Extended(e) => match &**e {
+                    extended_query::ExtendedQuery::PointRange(q) => {
+                        exec::ranges::point_range_count(
+                            points,
+                            &q.field,
+                            &q.lower,
+                            &q.upper,
+                            q.num_dims,
+                            q.bytes_per_dim,
+                        )?
+                    }
+                    _ => None,
+                },
+                _ => None,
+            };
+            if let Some(n) = n {
+                #[cfg(any(test, feature = "asserting"))]
+                exec::asserting::check_count(
+                    i64::try_from(n).unwrap_or(i64::MAX),
+                    seg.max_doc,
+                    seg.live_docs,
+                );
+                return Ok(Some(n));
             }
         }
         _ => {}

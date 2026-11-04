@@ -106,6 +106,21 @@ fn bench(c: &mut Criterion) {
             BooleanQuery::new().with_must([term("t0"), term("t1")]),
         ),
         (
+            "and_t0_t1_t2",
+            BooleanQuery::new().with_must([term("t0"), term("t1"), term("t2")]),
+        ),
+        (
+            "or_t0_t1_t2",
+            BooleanQuery::new().with_should([term("t0"), term("t1"), term("t2")]),
+        ),
+        (
+            "or_filtered_t0_msm1",
+            BooleanQuery::new()
+                .with_filter([term("t0")])
+                .with_should([term("t1"), term("t2")])
+                .with_minimum_should_match(1),
+        ),
+        (
             "filter_t1",
             BooleanQuery::new()
                 .with_must([term("t0")])
@@ -133,6 +148,10 @@ fn bench(c: &mut Criterion) {
         (
             "and_t0_t1_exhaustive",
             BooleanQuery::new().with_must([term("t0"), term("t1")]),
+        ),
+        (
+            "or_t0_t1_t2_exhaustive",
+            BooleanQuery::new().with_should([term("t0"), term("t1"), term("t2")]),
         ),
         (
             "filter_only_t0_t1_exhaustive",

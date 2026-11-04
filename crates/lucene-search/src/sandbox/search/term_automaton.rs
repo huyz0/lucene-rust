@@ -56,7 +56,14 @@ impl std::fmt::Debug for TermAutomatonQuery {
         // `toString`.
         write!(f, "TermAutomatonQuery(field={}", self.field)?;
         if let Some(det) = &self.det {
-            write!(f, " numStates={}", det.get_num_states())?;
+            // The query cache keys on this text and equality is identity of
+            // the finished automaton, so the text names that automaton.
+            write!(
+                f,
+                " numStates={} @{:p}",
+                det.get_num_states(),
+                Arc::as_ptr(det)
+            )?;
         }
         f.write_str(")")
     }
@@ -649,8 +656,13 @@ mod tests {
             q.rewrite().unwrap(),
             Some(Clause::Term(TermQuery::new("f", "a")))
         );
-        assert_eq!(format!("{q:?}"), "TermAutomatonQuery(field=f numStates=2)");
+        assert!(format!("{q:?}").starts_with("TermAutomatonQuery(field=f numStates=2 @"));
         assert_eq!(q, q.clone());
+        assert_eq!(format!("{q:?}"), format!("{:?}", q.clone()));
+        // The query cache keys on this text: two automata with the same
+        // field and state count must not share it.
+        let other = finished(2, &[1], &[(0, 1, "z")]).unwrap();
+        assert_ne!(format!("{q:?}"), format!("{other:?}"));
         let q = finished(4, &[3], &[(0, 1, "a"), (1, 2, "*"), (2, 3, "b")]).unwrap();
         let mut pq = PhraseQuery::new("f", ["a", "b"]);
         pq.positions = vec![0, 2];
