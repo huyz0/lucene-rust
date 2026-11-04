@@ -50,7 +50,7 @@ indices that ask for it.
 | `index.lucene_rust.engine` | index, final | the node default | `true`: the index's shards are written by the Rust engine. Set at creation; creation fails with the reason if the index's configuration is one the engine refuses |
 | `lucene_rust.engine.default` | node | `false` | the default of the setting above. An index that only inherits it falls back to OpenSearch's engine where the Rust one would refuse it |
 | `lucene_rust.engine.node_enabled` | node | `true` | `false`: this node builds OpenSearch's engine even for Rust-engine indices. Used for rolling back and for mixed clusters |
-| `breaker.lucene_rust_writer.limit` | node | `20%` | circuit breaker for the Rust writer's buffered documents. A trip is a 429 on the indexing request |
+| `breaker.lucene_rust_writer.limit` | node | 3 × `indices.memory.index_buffer_size` | circuit breaker for the Rust writer's buffered documents. A trip is a 429 on the indexing request |
 | `-Dlucene_rust.library.path=FILE` | JVM system property | the zip's `native/<os>-<arch>/` | load `liblucene_ffi.so` from elsewhere; for testing a custom build |
 
 `index.lucene_rust.engine.fault_injection` exists for tests only. Do not set
@@ -89,13 +89,35 @@ beyond `-Xmx` for it:
   most 32 MB per segment and 512 MB per process). Both are freed with the
   segment.
 - **Indexing**, per Rust-engine shard: the buffered documents until the next
-  refresh, bounded by the `lucene_rust_writer` breaker (which counts native
-  bytes against a heap-sized limit). The real-memory parent breaker does not
-  see them.
+  refresh. The writer flushes at `indices.memory.index_buffer_size` and
+  stalls indexing at twice that, as Lucene's does; the `lucene_rust_writer`
+  breaker (three times the buffer by default) refuses documents beyond it.
+  The real-memory parent breaker does not see them.
 - **Reads**: segments are memory-mapped, as OpenSearch's `mmapfs`/`hybridfs`
   do, so they count as page cache, not process memory. A compound (`.cfs`)
   segment is read into memory instead, while a native reader holds it.
   OpenSearch's small, freshly flushed segments are usually compound.
+
+### Heap size
+
+The heap keeps OpenSearch's own work: bulk and search requests while they
+are handled (parsed `_source`, `IndexRequest`s, responses), translog writes,
+cluster state and mappings, aggregation reduction, and the request and
+fielddata caches. The Rust engine takes Lucene's indexing buffers out of it,
+so a plugin node needs less heap than a stock node for the same indexing
+load. On the 1M-document benchmark (`scripts/bench-opensearch.sh`, one shard,
+four bulk clients), the most the heap held after a young collection during
+the load was 180 to 260 MB on the plugin node against 360 to 730 MB on a
+stock one, and both held about 60 MB once the load ended.
+
+The JVM's resident memory follows `-Xms`/`-Xmx`, not what the heap holds:
+G1 touches the whole committed heap as it moves its young generation through
+it. Sizing the heap to the node's need is what lowers a plugin node's
+memory; the native memory listed above comes on top of it.
+
+`indices.memory.index_buffer_size` is a share of the heap (10% by default),
+and the Rust writers flush at it. When you shrink the heap, set the buffer as
+a size (for example `200mb`) to keep the same flush size.
 
 ## Watch
 
