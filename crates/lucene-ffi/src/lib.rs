@@ -15,6 +15,14 @@
 //! validated on every call; failures return a status code and leave a
 //! thread-local message.
 
+/// mimalloc returns freed memory to the system; glibc's per-thread arenas
+/// kept what the JVM's indexing threads freed. It also frees a buffer that
+/// another thread allocated without taking that thread's arena lock, which
+/// glibc does, and those locks stalled write threads under bulk load.
+#[cfg(feature = "mimalloc")]
+#[global_allocator]
+static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 mod analysis_modules;
 mod clauses;
 pub(crate) mod engine_writer;
@@ -36,9 +44,3 @@ mod store;
 
 pub use error::FfiStatus;
 
-/// mimalloc rather than the system allocator: indexing threads free buffers
-/// that other threads allocated (a flushed segment's postings, a merge's
-/// readers), and glibc's per-arena locks serialise those frees. The
-/// `local_dynamic_tls` feature lets the library load through `dlopen`.
-#[global_allocator]
-static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;

@@ -12,7 +12,13 @@ lucene-store = { path = "../lucene-store" }
 # scripts/build-fips.sh).
 lucene-store-crypto = { path = "../lucene-store-crypto", default-features = false }
 zeroize = "1"
-mimalloc = { version = "0.1", default-features = false, features = ["local_dynamic_tls"] }
+# The plugin library's allocator (feature `mimalloc`, which the plugin build
+# turns on). Indexing runs on many JVM threads; glibc's malloc gives each its
+# own arena and keeps freed memory in it, which left the node holding
+# gigabytes after a bulk load. `local_dynamic_tls`: the JVM loads the library
+# with dlopen, where initial-exec TLS has no room. Off by default so tests
+# can install their own counting allocator.
+mimalloc = { version = "0.1", default-features = false, features = ["local_dynamic_tls"], optional = true }
 lucene-codecs = { path = "../lucene-codecs" }
 lucene-index = { path = "../lucene-index" }
 lucene-search = { path = "../lucene-search" }
@@ -49,6 +55,7 @@ default = [
 crypto = ["lucene-store-crypto/aws-lc"]
 fips = ["lucene-store-crypto/fips"]
 analysis-icu = []
+mimalloc = ["dep:mimalloc"]
 analysis-kuromoji = ["dep:lucene-analysis-kuromoji"]
 analysis-nori = ["dep:lucene-analysis-nori"]
 analysis-smartcn = ["dep:lucene-analysis-smartcn"]
