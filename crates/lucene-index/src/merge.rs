@@ -5151,7 +5151,8 @@ impl MergedRun {
                 .flatten()
                 .map(|s| usize::try_from(f(s.field_terms)).unwrap_or(0))
                 .fold(0usize, usize::saturating_add)
-                / parts
+                .checked_div(parts)
+                .unwrap_or(0)
         };
         let terms = total(|t| t.num_terms);
         let docs = total(|t| t.sum_doc_freq);
