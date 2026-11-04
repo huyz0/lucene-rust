@@ -181,7 +181,7 @@ mod pluggable_merge;
 mod try_modify;
 pub(crate) use explicit::explicit_error;
 pub use explicit::{ExplicitDocument, ExplicitFields, InvertedField, InvertedTerm};
-pub use inverted_terms::{InvertedTerms, Payloads, TermBuilder, TermRef};
+pub use inverted_terms::{InvertedTerms, InvertedTermsIter, Payloads, TermBuilder, TermRef};
 pub use lifecycle::MergedSegmentWarmer;
 
 pub use crate::merge_policy::MergePolicyConfig;
