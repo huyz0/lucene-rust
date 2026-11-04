@@ -257,8 +257,6 @@ pub(crate) struct FieldRuns {
     /// What the runs and dictionary grew by, as `bytesUsed` counts it: the
     /// RAM buffer's share of this field.
     bytes: usize,
-    /// Scratch for [`PendingPostings::add_field`]: the document's term hashes.
-    hashes: Vec<u64>,
 }
 
 /// How many terms ahead of the one being added [`FieldRuns::prefetch_ahead`]
@@ -288,7 +286,6 @@ impl FieldRuns {
             doc_count: 0,
             last_doc: -1,
             bytes: 0,
-            hashes: Vec::new(),
         }
     }
 
@@ -761,16 +758,14 @@ impl PendingPostings {
         // were most of the cost of buffering a document. Then, a few terms
         // ahead of the one being added, the likely term's bytes and run, and
         // a little later the pool ints its run appends to.
-        let mut hashes = std::mem::take(&mut f.hashes);
-        hashes.clear();
-        for t in field.terms.iter() {
-            f.terms.prefetch_slot(t.hash);
-            hashes.push(t.hash);
+        let hashes = field.terms.hashes();
+        for &h in hashes {
+            f.terms.prefetch_slot(h);
         }
         for (i, t) in field.terms.iter().enumerate() {
-            f.prefetch_ahead(&hashes, i);
+            f.prefetch_ahead(hashes, i);
             // every term once: `validate_explicit` refused a repeat
-            let slot = f.occurrence_hashed(doc, t.term, hashes[i]);
+            let slot = f.occurrence_hashed(doc, t.term, t.hash);
             f.first_in_doc(slot, doc, t.freq);
             // the postings writer reads positions and offsets only for a
             // field that indexes positions
@@ -781,7 +776,6 @@ impl PendingPostings {
                 }
             }
         }
-        f.hashes = hashes;
         Ok(())
     }
 
