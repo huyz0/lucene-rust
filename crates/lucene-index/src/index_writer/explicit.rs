@@ -474,7 +474,7 @@ impl IndexingConfig {
             self.explicit_field(s.field_number)?;
         }
         let mut seen = BTreeSet::new();
-        let mut sorted: Vec<&[u8]> = Vec::new();
+        let mut sorted: Vec<u64> = Vec::new();
         for inv in &doc.fields.inverted {
             let f = self.explicit_field(inv.field_number)?;
             if !seen.insert(inv.field_number) {
@@ -499,11 +499,12 @@ impl IndexingConfig {
                     | IndexOptions::DocsAndFreqsAndPositionsAndOffsets
             );
             let offsets = f.index_options == IndexOptions::DocsAndFreqsAndPositionsAndOffsets;
-            // A sorted copy finds a repeat with one allocation per document
-            // rather than a tree node per term; only a document that has one
-            // walks the set, so the error is still the first repeat in order.
+            // The terms' hashes, sorted, find a possible repeat with one
+            // allocation per document and no byte comparison; only a
+            // document with equal hashes walks the set, which finds the
+            // first real repeat in order (or none, for a collision).
             sorted.clear();
-            sorted.extend(inv.terms.iter().map(|t| t.term));
+            sorted.extend(inv.terms.iter().map(|t| t.hash));
             sorted.sort_unstable();
             let repeats = sorted.windows(2).any(|w| w[0] == w[1]);
             let mut terms = BTreeSet::new();

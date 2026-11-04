@@ -4,6 +4,7 @@
 //! allocations per field rather than two or three per term.
 
 use super::explicit::InvertedTerm;
+use crate::inverter::hash_bytes;
 
 /// Where one term's data ends in each of [`InvertedTerms`]' arrays; it starts
 /// where the previous term's ends.
@@ -27,6 +28,9 @@ pub struct InvertedTerms {
     /// Where each payload ends in `payload_bytes`.
     payload_ends: Vec<u32>,
     payload_bytes: Vec<u8>,
+    /// Each term's [`hash_bytes`], taken once as it is pushed: the writer's
+    /// duplicate check and dictionary lookup both reuse it.
+    hashes: Vec<u64>,
 }
 
 /// One term of [`InvertedTerms`], read in place; the fields mean what
@@ -34,6 +38,8 @@ pub struct InvertedTerms {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TermRef<'a> {
     pub term: &'a [u8],
+    /// [`hash_bytes`] of `term`.
+    pub hash: u64,
     pub freq: i32,
     pub positions: &'a [i32],
     pub offsets: &'a [(i32, i32)],
@@ -93,6 +99,7 @@ impl InvertedTerms {
     pub fn with_capacity(terms: usize, bytes: usize, occurrences: usize) -> Self {
         InvertedTerms {
             ends: Vec::with_capacity(terms),
+            hashes: Vec::with_capacity(terms),
             bytes: Vec::with_capacity(bytes),
             positions: Vec::with_capacity(occurrences),
             ..Self::default()
@@ -110,6 +117,7 @@ impl InvertedTerms {
         offsets: &[(i32, i32)],
         payloads: &[P],
     ) {
+        self.hashes.push(hash_bytes(term));
         self.bytes.extend_from_slice(term);
         self.positions.extend_from_slice(positions);
         self.offsets.extend_from_slice(offsets);
@@ -130,6 +138,14 @@ impl InvertedTerms {
     /// one at a time through the returned [`TermBuilder`], which records the
     /// term when dropped.
     pub fn start(&mut self, term: &[u8]) -> TermBuilder<'_> {
+        self.start_hashed(term, hash_bytes(term))
+    }
+
+    /// [`Self::start`] for a term whose [`hash_bytes`] the caller already
+    /// has.
+    pub fn start_hashed(&mut self, term: &[u8], hash: u64) -> TermBuilder<'_> {
+        debug_assert_eq!(hash, hash_bytes(term));
+        self.hashes.push(hash);
         self.bytes.extend_from_slice(term);
         TermBuilder {
             terms: self,
@@ -148,6 +164,7 @@ impl InvertedTerms {
     /// Drops every term, keeping the allocations.
     pub fn clear(&mut self) {
         self.ends.clear();
+        self.hashes.clear();
         self.bytes.clear();
         self.positions.clear();
         self.offsets.clear();
@@ -177,6 +194,7 @@ impl InvertedTerms {
             .map_or(0, |p| self.payload_ends[p]);
         TermRef {
             term: &self.bytes[s.bytes as usize..e.bytes as usize],
+            hash: self.hashes[i],
             freq: e.freq,
             positions: &self.positions[s.positions as usize..e.positions as usize],
             offsets: &self.offsets[s.offsets as usize..e.offsets as usize],
@@ -226,6 +244,7 @@ impl InvertedTerms {
             .saturating_add(self.offsets.capacity().saturating_mul(8))
             .saturating_add(self.payload_ends.capacity().saturating_mul(4))
             .saturating_add(self.payload_bytes.capacity())
+            .saturating_add(self.hashes.capacity().saturating_mul(8))
     }
 }
 
