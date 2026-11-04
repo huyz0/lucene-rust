@@ -23,12 +23,12 @@ use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use lucene_analysis::Analyzer;
 use lucene_search::expressions::{compile, SimpleBindings};
 use lucene_search::index_searcher::IndexSearcher;
-use lucene_search::suggest::infix::AnalyzingInfixSuggester;
-use lucene_search::suggest::input::InputIterator;
-use lucene_search::suggest::lookup::Lookup;
 use lucene_search::values_source::{
     self as vs, BoxDoubleValues, DoubleValues, DoubleValuesSource, ValuesContext,
 };
+use lucene_suggest::infix::AnalyzingInfixSuggester;
+use lucene_suggest::input::InputIterator;
+use lucene_suggest::lookup::Lookup;
 
 /// A deterministic xorshift.
 struct Rng(u64);

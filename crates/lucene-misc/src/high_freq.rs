@@ -3,7 +3,6 @@
 
 use std::cmp::Ordering;
 
-use lucene_search::classification::java_string_cmp;
 use lucene_search::java_priority_queue::JavaPriorityQueue;
 use lucene_search::multi_terms::{indexed_fields, MultiTerms};
 use lucene_search::reader::{IndexReader, TermsEnum};
@@ -59,7 +58,7 @@ impl TermOrder {
             TermOrder::TotalTermFreq => a.total_term_freq.cmp(&b.total_term_freq),
         };
         by_freq
-            .then_with(|| java_string_cmp(&a.field, &b.field))
+            .then_with(|| a.field.encode_utf16().cmp(b.field.encode_utf16()))
             .then_with(|| a.termtext.cmp(&b.termtext))
     }
 }

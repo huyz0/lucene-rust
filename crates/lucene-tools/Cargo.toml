@@ -12,6 +12,7 @@ name = "lucene-tools"
 path = "src/main.rs"
 
 [dependencies]
+lucene-suggest = { path = "../lucene-suggest" }
 lucene-util = { path = "../lucene-util" }
 lucene-store = { path = "../lucene-store" }
 lucene-codecs = { path = "../lucene-codecs" }

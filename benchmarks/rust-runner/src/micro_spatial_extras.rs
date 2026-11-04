@@ -17,11 +17,11 @@ use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::document::DocumentQuery;
 use lucene_search::index_searcher::IndexSearcher;
 use lucene_search::multi_segment::OpenSegment;
-use lucene_search::spatial::bbox::BBoxStrategy;
-use lucene_search::spatial::{
+use lucene_search::values_source::{DoubleValuesSource, ValuesContext};
+use lucene_spatial_extras::bbox::BBoxStrategy;
+use lucene_spatial_extras::{
     NumberRangePrefixTreeStrategy, RecursivePrefixTreeStrategy, SpatialStrategy,
 };
-use lucene_search::values_source::{DoubleValuesSource, ValuesContext};
 use lucene_store::FsDirectory;
 use lucene_util::spatial4j::{Shape, SpatialContext, SpatialContextFactory};
 use lucene_util::spatial_extras::prefix_tree::{Calendar, DateRangePrefixTree, QuadPrefixTree};

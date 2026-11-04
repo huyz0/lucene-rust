@@ -25,7 +25,7 @@ use lucene_monitor::facade::{Matcher, Monitor};
 use lucene_monitor::index::MonitorQuery;
 use lucene_search::memory::MemoryIndex;
 use lucene_search::query::{BooleanQuery, Clause, TermQuery};
-use lucene_search::spell::distance::{
+use lucene_suggest::spell::distance::{
     JaroWinklerDistance, LevenshteinDistance, LuceneLevenshteinDistance, NGramDistance,
     StringDistance,
 };

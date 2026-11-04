@@ -42,6 +42,7 @@ crc32fast.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+lucene-suggest = { path = "../lucene-suggest" }
 proptest.workspace = true
 # `tests/check_random_data_all_analyzers.rs` runs `check_random_data` over
 # every Analyzer in the workspace, the language modules included.

@@ -4,7 +4,7 @@
 //! ([`prefix_tree`]) and the query arguments ([`query`]).
 //!
 //! What indexes and searches -- the `SpatialStrategy`s, their queries,
-//! value sources and facet counters -- lives in `lucene_search::spatial`,
+//! value sources and facet counters -- lives in `lucene_spatial_extras`,
 //! the lowest crate that has both fields and queries.
 
 #![forbid(unsafe_code)]
