@@ -17,10 +17,12 @@ use lucene_util::spatial4j::{DistanceCalculator, Point, Shape, SpatialContext};
 use lucene_util::spatial_extras::prefix_tree::SpatialPrefixTree;
 use lucene_util::spatial_extras::query::SpatialOperation;
 
-use crate::explain::Explanation;
-use crate::reader::{LeafReader, PostingsFlags};
-use crate::values_source::{BoxDoubleValues, DoubleValues, DoubleValuesSource, ValuesContext};
-use crate::Result;
+use lucene_search::explain::Explanation;
+use lucene_search::reader::{LeafReader, PostingsFlags};
+use lucene_search::values_source::{
+    BoxDoubleValues, DoubleValues, DoubleValuesSource, ValuesContext,
+};
+use lucene_search::Result;
 
 /// `ShapeValues`: a per-leaf cursor over each document's shape.
 pub trait ShapeValues {
@@ -439,7 +441,7 @@ impl DoubleValues for CachingValues<'_> {
         let cached = self
             .cache
             .lock()
-            .map_err(|_| crate::Error::IllegalState("value cache poisoned".into()))?
+            .map_err(|_| lucene_search::Error::IllegalState("value cache poisoned".into()))?
             .get(&key)
             .copied();
         if let Some(v) = cached {
@@ -448,7 +450,7 @@ impl DoubleValues for CachingValues<'_> {
         let v = self.vals.double_value()?;
         self.cache
             .lock()
-            .map_err(|_| crate::Error::IllegalState("value cache poisoned".into()))?
+            .map_err(|_| lucene_search::Error::IllegalState("value cache poisoned".into()))?
             .insert(key, v);
         Ok(v)
     }
@@ -588,7 +590,7 @@ impl PointPrefixTreeFieldCacheProvider {
                 let mut docs = te.postings(PostingsFlags::None)?;
                 loop {
                     let doc = docs.next_doc()?;
-                    if doc == crate::reader::NO_MORE_DOCS {
+                    if doc == lucene_search::reader::NO_MORE_DOCS {
                         break;
                     }
                     idx.add(doc, shape.clone());

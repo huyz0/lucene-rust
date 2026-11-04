@@ -8,8 +8,8 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use lucene_index::document::{Document, IndexableField, Store, StringField};
-use lucene_search::spatial::bbox::BBoxStrategy;
-use lucene_search::spatial::{
+use lucene_spatial_extras::bbox::BBoxStrategy;
+use lucene_spatial_extras::{
     CompositeSpatialStrategy, NumberRangePrefixTreeStrategy, PointVectorStrategy,
     RecursivePrefixTreeStrategy, SerializedDVStrategy, SpatialStrategy,
     TermQueryPrefixTreeStrategy,
@@ -118,7 +118,7 @@ pub fn corpus() -> Corpus {
     let mut bb = HashMap::new();
     bb.insert("bb", BBoxStrategy::new_instance(geo.clone(), "bb").unwrap());
     let mut all = lucene_index::document::FieldType::copy_of(
-        &lucene_search::spatial::bbox::default_field_type(),
+        &lucene_spatial_extras::bbox::default_field_type(),
     );
     all.set_stored(true).unwrap();
     bb.insert("bbf", BBoxStrategy::new(flat.clone(), "bbf", all).unwrap());

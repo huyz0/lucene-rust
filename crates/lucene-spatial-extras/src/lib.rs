@@ -24,13 +24,13 @@
 //! A strategy is a [`SpatialStrategy`] trait object. Its fields are the
 //! [`IndexableField`]s `lucene_index` indexes; its queries are
 //! [`DocumentQuery`]s and its value sources [`DoubleValuesSource`]s, so they
-//! run with the rest of `crate::document`. A Java setter on a strategy is a
+//! run with the rest of `lucene_search::document`. A Java setter on a strategy is a
 //! `&mut self` method, called before the strategy is shared.
 //!
 //! # Deliberate differences
 //!
 //! - `equals`/`hashCode` and `QueryVisitor` are not ported, as elsewhere in
-//!   `crate::document`.
+//!   `lucene_search::document`.
 //! - A query's `DocIdSet` is computed whole per segment (a bitset), then its
 //!   live documents are collected in order -- what Java's constant-score
 //!   scorer over the same set yields.
@@ -52,9 +52,9 @@ use lucene_index::document::IndexableField;
 use lucene_util::spatial4j::{Point, Shape, SpatialContext};
 use lucene_util::spatial_extras::query::SpatialArgs;
 
-use crate::document::DocumentQuery;
-use crate::values_source::DoubleValuesSource;
-use crate::{Error, Result};
+use lucene_search::document::DocumentQuery;
+use lucene_search::values_source::DoubleValuesSource;
+use lucene_search::{Error, Result};
 
 pub use bbox::BBoxStrategy;
 pub use composite::CompositeSpatialStrategy;

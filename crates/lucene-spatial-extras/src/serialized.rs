@@ -14,12 +14,12 @@ use super::util::{
     DistanceToShapeValueSource, ShapeValues, ShapeValuesPredicate, ShapeValuesSource,
 };
 use super::{check_field_name, Fields, SpatialStrategy};
-use crate::collector::ScoringCollector;
-use crate::document::{reader, DocumentQuery};
-use crate::multi_segment::OpenSegment;
-use crate::reader::{BinaryDocValues, LeafReader};
-use crate::values_source::{doc_values_cacheable, DoubleValuesSource, ValuesContext};
-use crate::Result;
+use lucene_search::collector::ScoringCollector;
+use lucene_search::document::{reader, DocumentQuery};
+use lucene_search::multi_segment::OpenSegment;
+use lucene_search::reader::{BinaryDocValues, LeafReader};
+use lucene_search::values_source::{doc_values_cacheable, DoubleValuesSource, ValuesContext};
+use lucene_search::Result;
 
 /// `SerializedDVStrategy`.
 #[derive(Clone)]

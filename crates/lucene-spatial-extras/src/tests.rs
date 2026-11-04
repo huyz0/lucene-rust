@@ -27,12 +27,12 @@ use super::util::{
     ShapeValuesPredicate,
 };
 use super::*;
-use crate::directory_reader::DirectoryReader;
-use crate::document::search_all;
-use crate::explain::Explanation;
-use crate::index_searcher::IndexSearcher;
-use crate::multi_segment::OpenSegment;
-use crate::values_source::{constant, ValuesContext};
+use lucene_search::directory_reader::DirectoryReader;
+use lucene_search::document::search_all;
+use lucene_search::explain::Explanation;
+use lucene_search::index_searcher::IndexSearcher;
+use lucene_search::multi_segment::OpenSegment;
+use lucene_search::values_source::{constant, ValuesContext};
 
 const VERSION: LuceneVersion = LuceneVersion {
     major: 10,
@@ -76,7 +76,7 @@ fn index(tmp: &TempDir, docs: Vec<Vec<Box<dyn IndexableField>>>) -> DirectoryRea
     DirectoryReader::open(&dir).unwrap()
 }
 
-fn hits(leaves: &[OpenSegment<'_>], q: &dyn crate::document::DocumentQuery) -> Vec<i32> {
+fn hits(leaves: &[OpenSegment<'_>], q: &dyn lucene_search::document::DocumentQuery) -> Vec<i32> {
     let mut h: Vec<i32> = search_all(leaves, q)
         .unwrap()
         .into_iter()
@@ -86,11 +86,11 @@ fn hits(leaves: &[OpenSegment<'_>], q: &dyn crate::document::DocumentQuery) -> V
     h
 }
 
-fn class(e: &crate::Error) -> &'static str {
+fn class(e: &lucene_search::Error) -> &'static str {
     match e {
-        crate::Error::Spatial(s) => s.java_class(),
-        crate::Error::IllegalArgument(_) => "java.lang.IllegalArgumentException",
-        crate::Error::IllegalState(_) => "java.lang.IllegalStateException",
+        lucene_search::Error::Spatial(s) => s.java_class(),
+        lucene_search::Error::IllegalArgument(_) => "java.lang.IllegalArgumentException",
+        lucene_search::Error::IllegalState(_) => "java.lang.IllegalStateException",
         _ => "other",
     }
 }

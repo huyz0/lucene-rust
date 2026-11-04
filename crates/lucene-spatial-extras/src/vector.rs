@@ -15,15 +15,15 @@ use super::bbox::numeric;
 use super::bool_query::{docs_of, BoolQuery, ConstantScoreBool};
 use super::util::WithDefault;
 use super::{check_field_name, Fields, SpatialStrategy};
-use crate::collector::ScoringCollector;
-use crate::document::geo::idx;
-use crate::document::{collect_live, double_point, reader, DocumentQuery};
-use crate::multi_segment::OpenSegment;
-use crate::reader::NumericDocValues;
-use crate::values_source::{
+use lucene_search::collector::ScoringCollector;
+use lucene_search::document::geo::idx;
+use lucene_search::document::{collect_live, double_point, reader, DocumentQuery};
+use lucene_search::multi_segment::OpenSegment;
+use lucene_search::reader::NumericDocValues;
+use lucene_search::values_source::{
     doc_values_cacheable, BoxDoubleValues, DoubleValues, DoubleValuesSource, ValuesContext,
 };
-use crate::{Error, Result};
+use lucene_search::{Error, Result};
 
 /// `PointVectorStrategy.SUFFIX_X`/`SUFFIX_Y`.
 pub const SUFFIX_X: &str = "__x";

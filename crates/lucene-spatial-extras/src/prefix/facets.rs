@@ -11,8 +11,8 @@ use lucene_util::spatial_extras::prefix_tree::{Cell, UnitNRShape};
 
 use super::query::{visit, Traverser, VisitingQuery, Visitor};
 use super::PrefixTreeStrategy;
-use crate::multi_segment::OpenSegment;
-use crate::{Error, Result};
+use lucene_search::multi_segment::OpenSegment;
+use lucene_search::{Error, Result};
 
 /// `PrefixTreeFacetCounter.FacetVisitor`.
 pub trait FacetVisitor {
@@ -235,7 +235,7 @@ impl std::fmt::Display for Heatmap {
 fn rect_of(cell: &dyn Cell) -> Result<Arc<dyn Shape>> {
     let shape = cell.shape()?;
     if shape.as_rectangle().is_none() {
-        return Err(crate::spatial::class_cast(
+        return Err(crate::class_cast(
             &*shape,
             "org.locationtech.spatial4j.shape.Rectangle",
         ));
@@ -693,7 +693,7 @@ fn unit_of(cell: &dyn Cell) -> Result<UnitNRShape> {
     let shape = cell.shape()?;
     match shape.as_any().downcast_ref::<UnitNRShape>() {
         Some(u) => Ok(u.clone()),
-        None => Err(crate::spatial::class_cast(
+        None => Err(crate::class_cast(
             &*shape,
             "org.apache.lucene.spatial.prefix.tree.NumberRangePrefixTree$UnitNRShape",
         )),

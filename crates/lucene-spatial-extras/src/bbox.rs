@@ -17,13 +17,13 @@ use lucene_util::spatial_extras::query::{SpatialArgs, SpatialOperation};
 use super::bool_query::{BoolQuery, ConstantScoreBool, Occur};
 use super::util::{DistanceToShapeValueSource, ShapeValues, ShapeValuesSource, WithDefault};
 use super::{check_field_name, Fields, SpatialStrategy};
-use crate::document::{double_point, DocumentQuery, TermConstantScoreQuery};
-use crate::explain::Explanation;
-use crate::reader::{LeafReader, NumericDocValues};
-use crate::values_source::{
+use lucene_search::document::{double_point, DocumentQuery, TermConstantScoreQuery};
+use lucene_search::explain::Explanation;
+use lucene_search::reader::{LeafReader, NumericDocValues};
+use lucene_search::values_source::{
     doc_values_cacheable, BoxDoubleValues, DoubleValues, DoubleValuesSource, ValuesContext,
 };
-use crate::{Error, Result};
+use lucene_search::{Error, Result};
 
 /// `BBoxStrategy.SUFFIX_MINX` and the others.
 pub const SUFFIX_MINX: &str = "__minX";
@@ -538,7 +538,7 @@ impl fmt::Display for BBoxValueSource {
 /// `DocValues.getNumeric(reader, field)`: the field's numeric column, or
 /// none.
 pub(crate) fn numeric<'c>(
-    reader: &'c crate::directory_reader::SegmentReader,
+    reader: &'c lucene_search::directory_reader::SegmentReader,
     field: &str,
 ) -> Result<Option<Box<dyn NumericDocValues + 'c>>> {
     reader.numeric_doc_values(field)

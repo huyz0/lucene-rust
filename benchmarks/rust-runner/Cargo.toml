@@ -10,6 +10,7 @@ lucene-store = { path = "../../crates/lucene-store" }
 lucene-search = { path = "../../crates/lucene-search", features = ["test-support"] }
 lucene-replicator = { path = "../../crates/lucene-replicator" }
 lucene-misc = { path = "../../crates/lucene-misc" }
+lucene-spatial-extras = { path = "../../crates/lucene-spatial-extras" }
 lucene-queryparser = { path = "../../crates/lucene-queryparser" }
 lucene-monitor = { path = "../../crates/lucene-monitor" }
 lucene-highlighter = { path = "../../crates/lucene-highlighter" }

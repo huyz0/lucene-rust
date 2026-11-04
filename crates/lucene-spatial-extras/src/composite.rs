@@ -17,12 +17,12 @@ use super::prefix::RecursivePrefixTreeStrategy;
 use super::serialized::SerializedDVStrategy;
 use super::util::ShapeValuesPredicate;
 use super::{Fields, SpatialStrategy};
-use crate::collector::ScoringCollector;
-use crate::document::geo::{idx, set_doc};
-use crate::document::{reader, DocumentQuery};
-use crate::multi_segment::OpenSegment;
-use crate::values_source::{DoubleValuesSource, ValuesContext};
-use crate::{Error, Result};
+use lucene_search::collector::ScoringCollector;
+use lucene_search::document::geo::{idx, set_doc};
+use lucene_search::document::{reader, DocumentQuery};
+use lucene_search::multi_segment::OpenSegment;
+use lucene_search::values_source::{DoubleValuesSource, ValuesContext};
+use lucene_search::{Error, Result};
 
 /// `CompositeSpatialStrategy`.
 #[derive(Clone)]
@@ -189,7 +189,7 @@ pub struct CompositeVerifyQuery {
 impl DocumentQuery for CompositeVerifyQuery {
     fn rewrite(&self, leaves: &[OpenSegment<'_>]) -> Result<Option<Box<dyn DocumentQuery>>> {
         Ok(
-            crate::document::rewrite(&*self.index_query, leaves)?.map(|index_query| {
+            lucene_search::document::rewrite(&*self.index_query, leaves)?.map(|index_query| {
                 Box::new(CompositeVerifyQuery {
                     index_query,
                     predicate: self.predicate.clone(),

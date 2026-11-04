@@ -26,10 +26,10 @@ use self::query::{
 };
 use super::util::{PointPrefixTreeFieldCacheProvider, ShapeFieldCacheDistanceValueSource};
 use super::{check_field_name, Fields, SpatialStrategy};
-use crate::document::DocumentQuery;
-use crate::multi_segment::OpenSegment;
-use crate::values_source::DoubleValuesSource;
-use crate::{Error, Result};
+use lucene_search::document::DocumentQuery;
+use lucene_search::multi_segment::OpenSegment;
+use lucene_search::values_source::DoubleValuesSource;
+use lucene_search::{Error, Result};
 
 /// `PrefixTreeStrategy.FIELD_TYPE`: indexed (`DOCS`), tokenized, not
 /// stored, norms omitted.

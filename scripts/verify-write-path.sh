@@ -428,7 +428,7 @@ CASES=(
   # field written wrongly in a way no answer reflects (a token no query
   # visits) -- `every_spatial_strategy_makes_the_fields_lucene_makes`
   # compares every field's tokens and values byte for byte instead.
-  "lucene-search|write_spatial_strategies_fixture|spatial-strategies|VerifySpatialExtras|fixtures/data/spatial_strategies"
+  "lucene-spatial-extras|write_spatial_strategies_fixture|spatial-strategies|VerifySpatialExtras|fixtures/data/spatial_strategies"
   # Document blocks through merges: two seeded streams of block
   # adds, updateDocuments, whole-block deletes, commits and natural merges
   # with the parent field `_parent`, one of them index-sorted (whole blocks

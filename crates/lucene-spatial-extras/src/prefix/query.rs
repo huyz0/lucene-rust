@@ -32,11 +32,11 @@ use lucene_util::spatial_extras::prefix_tree::{
     Cell, CellIterator, QuadCellRelater, SpatialPrefixTree,
 };
 
-use crate::collector::ScoringCollector;
-use crate::document::geo::{check_walk, collect_bits, idx, set_doc};
-use crate::document::{collect_live, reader, DocumentQuery};
-use crate::multi_segment::OpenSegment;
-use crate::{Error, Result};
+use lucene_search::collector::ScoringCollector;
+use lucene_search::document::geo::{check_walk, collect_bits, idx, set_doc};
+use lucene_search::document::{collect_live, reader, DocumentQuery};
+use lucene_search::multi_segment::OpenSegment;
+use lucene_search::{Error, Result};
 
 /// `AbstractPrefixTreeQuery`'s fields.
 #[derive(Clone)]
@@ -1581,7 +1581,7 @@ impl DocumentQuery for PrefixTreeTermQuery {
         let idf = if doc_freq == 0 {
             0.0
         } else {
-            crate::similarity::idf(doc_freq, doc_count)
+            lucene_search::similarity::idf(doc_freq, doc_count)
         };
         let avgdl = if doc_count == 0 {
             1.0
@@ -1614,13 +1614,13 @@ impl DocumentQuery for PrefixTreeTermQuery {
             return Ok(());
         };
         let weight = boost * idf;
-        let norm_inverse = crate::similarity::norm_inverse(
+        let norm_inverse = lucene_search::similarity::norm_inverse(
             1.0,
             avgdl,
-            crate::similarity::DEFAULT_K1,
-            crate::similarity::DEFAULT_B,
+            lucene_search::similarity::DEFAULT_K1,
+            lucene_search::similarity::DEFAULT_B,
         );
-        let score = crate::similarity::do_score(weight, 1.0, norm_inverse);
+        let score = lucene_search::similarity::do_score(weight, 1.0, norm_inverse);
         let max_doc = reader(leaf)?.max_doc;
         for doc in postings.docs {
             if doc < 0 || doc >= max_doc {

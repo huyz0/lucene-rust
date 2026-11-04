@@ -3,11 +3,11 @@
 
 use lucene_util::fixed_bit_set::FixedBitSet;
 
-use crate::collector::ScoringCollector;
-use crate::document::geo::{collect_bits, idx, set_doc};
-use crate::document::{reader, DocumentQuery};
-use crate::multi_segment::OpenSegment;
-use crate::Result;
+use lucene_search::collector::ScoringCollector;
+use lucene_search::document::geo::{collect_bits, idx, set_doc};
+use lucene_search::document::{reader, DocumentQuery};
+use lucene_search::multi_segment::OpenSegment;
+use lucene_search::Result;
 
 /// A `BooleanQuery` (or one clause): what matches, per segment.
 #[derive(Debug)]
