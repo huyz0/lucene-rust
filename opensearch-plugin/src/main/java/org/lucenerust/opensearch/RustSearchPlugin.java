@@ -23,8 +23,8 @@ import org.opensearch.index.IndexModule;
 import org.opensearch.index.IndexSettings;
 import org.opensearch.index.engine.EngineFactory;
 import org.opensearch.core.common.breaker.CircuitBreaker;
+import org.opensearch.indices.IndexingMemoryController;
 import org.opensearch.indices.breaker.BreakerSettings;
-import org.opensearch.monitor.jvm.JvmInfo;
 import org.opensearch.index.analysis.AnalyzerProvider;
 import org.opensearch.index.analysis.TokenizerFactory;
 import org.opensearch.indices.analysis.AnalysisModule;
@@ -173,14 +173,17 @@ public class RustSearchPlugin extends Plugin implements
 
     /**
      * The breaker the Rust writers' buffers are accounted to -- native memory the JVM's own breakers
-     * cannot see. {@code breaker.lucene_rust_writer.limit} sets it (default: 20% of the heap, the
-     * same order as OpenSearch's own indexing buffer). It trips on its own limit. The parent
-     * breaker adds it in only with {@code indices.breaker.total.use_real_memory: false}; with the
-     * default real-memory parent, native bytes are outside the heap it measures.
+     * cannot see. {@code breaker.lucene_rust_writer.limit} sets it. The default is three times
+     * {@code indices.memory.index_buffer_size} (30% of the heap by default): a writer stalls
+     * indexing once its buffered and flushing bytes pass twice its RAM buffer, as Lucene's does, so
+     * under steady load the buffer sits near that bound, and the breaker must sit above it. It trips
+     * on its own limit. The parent breaker adds it in only with
+     * {@code indices.breaker.total.use_real_memory: false}; with the default real-memory parent,
+     * native bytes are outside the heap it measures.
      */
     @Override
     public BreakerSettings getCircuitBreaker(Settings settings) {
-        long defaultLimit = JvmInfo.jvmInfo().getMem().getHeapMax().getBytes() / 5;
+        long defaultLimit = 3 * indexBufferBytes(settings);
         return BreakerSettings.updateFromSettings(
             new BreakerSettings(
                 RustEngineSupport.BREAKER_NAME,
@@ -191,6 +194,20 @@ public class RustSearchPlugin extends Plugin implements
             ),
             settings
         );
+    }
+
+    /** {@code indices.memory.index_buffer_size} in bytes, clamped as IndexingMemoryController clamps a percentage. */
+    static long indexBufferBytes(Settings settings) {
+        long bytes = IndexingMemoryController.INDEX_BUFFER_SIZE_SETTING.get(settings).getBytes();
+        String raw = settings.get(IndexingMemoryController.INDEX_BUFFER_SIZE_SETTING.getKey());
+        if (raw == null || raw.endsWith("%")) {
+            bytes = Math.max(bytes, IndexingMemoryController.MIN_INDEX_BUFFER_SIZE_SETTING.get(settings).getBytes());
+            long max = IndexingMemoryController.MAX_INDEX_BUFFER_SIZE_SETTING.get(settings).getBytes();
+            if (max >= 0) {
+                bytes = Math.min(bytes, max);
+            }
+        }
+        return bytes;
     }
 
     @Override

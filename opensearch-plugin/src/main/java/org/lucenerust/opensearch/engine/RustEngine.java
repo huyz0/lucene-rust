@@ -1058,7 +1058,7 @@ public class RustEngine extends Engine {
          */
         index.parsedDoc().updateSeqID(index.seqNo(), index.primaryTerm());
         index.parsedDoc().version().setLongValue(plan.version);
-        try {
+        try (Releasable refusable = RustIndexWriter.refusableIf(index.origin() == Operation.Origin.PRIMARY)) {
             if (plan.addStaleOpToEngine) {
                 addStaleDocs(index.docs(), documentIndexWriter, index.uid());
             } else if (plan.useUpdateDocument) {

@@ -244,6 +244,14 @@ def derive_engine(src: str) -> str:
         "        return documentIndexWriter.hasUncommittedChanges() || super.refreshNeeded();",
     )
 
+    # Only a primary's index operation may be refused by the writer's breaker (a document failure);
+    # anywhere else a refusal would fail the shard.
+    p.sub(
+        "        index.parsedDoc().version().setLongValue(plan.version);\n        try {\n",
+        "        index.parsedDoc().version().setLongValue(plan.version);\n"
+        "        try (Releasable refusable = RustIndexWriter.refusableIf(index.origin() == Operation.Origin.PRIMARY)) {\n",
+    )
+
     # A no-op's tombstone goes to the writer like any other document.
     p.sub("                        documentIndexWriter.getAccumulatingIndexWriter().addDocument(doc);",
           "                        ((RustIndexWriter) documentIndexWriter).addDocument(doc);")
