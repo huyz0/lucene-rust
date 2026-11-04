@@ -121,6 +121,10 @@ pub(crate) enum Bulk<'a> {
     /// OR-ed into a window's bits, as `DenseConjunctionBulkScorer` unions a
     /// dense `COMPLETE_NO_SCORES` disjunction. See [`union_score`].
     Union(Vec<TermLeg<'a>>),
+    /// `DenseConjunctionBulkScorer`: a conjunction of terms whose scores
+    /// nobody reads, dense enough that each window is the AND of its legs'
+    /// bits. See [`dense_conjunction_score`].
+    DenseConjunction(Vec<TermLeg<'a>>),
     /// A scored `CombinedFieldQuery` of one or two members, a window at a
     /// time. See [`super::extended::CombinedWindow`].
     Combined(Box<super::extended::CombinedWindow<'a>>),
@@ -167,9 +171,9 @@ impl<'a> Bulk<'a> {
         match self {
             Bulk::Scorer(s, _) => s.cost(),
             Bulk::Term(leg, _) => leg.cost,
-            Bulk::Conjunction(legs, _) | Bulk::ReqOpt(legs, _, _) => {
-                min(legs.iter().map(|l| l.cost))
-            }
+            Bulk::Conjunction(legs, _)
+            | Bulk::ReqOpt(legs, _, _)
+            | Bulk::DenseConjunction(legs) => min(legs.iter().map(|l| l.cost)),
             Bulk::FilteredTerm(leg, filter, _) | Bulk::TwoPhaseTerm(leg, filter, _) => {
                 leg.cost.min(filter.cost())
             }
@@ -226,6 +230,7 @@ impl<'a> Bulk<'a> {
             Bulk::ReqExcl(..) => "req_excl",
             Bulk::DisMax(..) => "dismax",
             Bulk::Union(..) => "union",
+            Bulk::DenseConjunction(..) => "dense_conjunction",
             Bulk::Combined(..) => "combined",
             Bulk::BlockJoin(..) => "block_join",
             Bulk::DisMaxOf(..) => "dismax_of",
@@ -307,6 +312,9 @@ impl<'a> Bulk<'a> {
             }
             Bulk::DisMax(legs, state) => state.score(legs, live_docs, collector, min, max),
             Bulk::Union(legs) => union_score(legs, live_docs, collector, min, max),
+            Bulk::DenseConjunction(legs) => {
+                dense_conjunction_score(legs, live_docs, collector, min, max)
+            }
             Bulk::Combined(c) => c.score(live_docs, collector, min, max),
             Bulk::BlockJoin(j) => j.score(live_docs, collector, min, max),
             Bulk::DisMaxOf(d) => d.score(mode, live_docs, collector, min, max),
@@ -408,6 +416,112 @@ fn req_scorer_opt_score<C: ScoringCollector + ?Sized>(
         doc = req.next_doc()?;
     }
     Ok(doc)
+}
+
+/// `DenseConjunctionBulkScorer.WINDOW_SIZE`: the documents
+/// [`dense_conjunction_score`] intersects at once.
+const DENSE_WINDOW: i32 = 4096;
+
+/// Marks `leg`'s documents in `[base, end)` in `words` (bit `i` is document
+/// `base + i`, `end - base <= DENSE_WINDOW`), a decoded block at a time, and
+/// leaves the leg on its first document at or past `end`.
+fn fill_window(
+    leg: &mut TermLeg<'_>,
+    base: i32,
+    end: i32,
+    words: &mut [u64; (DENSE_WINDOW / 64) as usize],
+    batch: &mut DocScores,
+) -> Result<()> {
+    if leg.doc_id() < base {
+        leg.advance(base)?;
+    }
+    while leg.doc_id() < end {
+        leg.next_docs_and_scores(end, None, batch)?;
+        if batch.docs.is_empty() {
+            break;
+        }
+        for &doc in &batch.docs {
+            // ARITH: base <= doc < end <= base + DENSE_WINDOW.
+            let i = ((doc - base) as usize) & (DENSE_WINDOW as usize - 1);
+            words[i >> 6] |= 1u64 << (i & 63);
+        }
+    }
+    Ok(())
+}
+
+/// [`Bulk::DenseConjunction`]: `DenseConjunctionBulkScorer` over term legs.
+/// Each window of [`DENSE_WINDOW`] documents, starting where every leg could
+/// match, is the AND of the legs' bits (the lead's first, cheapest first),
+/// masked by the live documents; a counting collector takes it by popcount,
+/// any other collector its set bits in order with a score of 0. The same
+/// documents as the leapfrog, so the same hits and the same count.
+fn dense_conjunction_score<C: ScoringCollector + ?Sized>(
+    legs: &mut [TermLeg<'_>],
+    live_docs: Option<&FixedBitSet>,
+    collector: &mut C,
+    min: i32,
+    max: i32,
+) -> Result<i32> {
+    const WORDS: usize = (DENSE_WINDOW / 64) as usize;
+    let mut words = [0u64; WORDS];
+    let mut other = [0u64; WORDS];
+    let mut batch = DocScores::default();
+    let count_only = collector.add_hits(0);
+    loop {
+        // The first document every leg may share.
+        let mut base = min;
+        for leg in legs.iter() {
+            base = base.max(leg.doc_id());
+        }
+        if base >= max {
+            return Ok(legs[0].doc_id().max(base));
+        }
+        let end = base.saturating_add(DENSE_WINDOW).min(max);
+        fill_window(&mut legs[0], base, end, &mut words, &mut batch)?;
+        for leg in legs[1..].iter_mut() {
+            if words.iter().all(|&w| w == 0) {
+                break;
+            }
+            fill_window(leg, base, end, &mut other, &mut batch)?;
+            for (w, o) in words.iter_mut().zip(other.iter_mut()) {
+                *w &= std::mem::take(o);
+            }
+        }
+        if let Some(live) = live_docs {
+            for (w, word) in words.iter_mut().enumerate() {
+                if *word != 0 {
+                    // ARITH: w < WORDS, so the offset stays below `end`.
+                    *word &= live_word(live, base + (w * 64) as i32);
+                }
+            }
+        }
+        if count_only {
+            let n: u64 = words
+                .iter_mut()
+                .map(|w| u64::from(std::mem::take(w).count_ones()))
+                .sum();
+            collector.add_hits(n);
+        } else {
+            for (w, word) in words.iter_mut().enumerate() {
+                let mut bits = std::mem::take(word);
+                while bits != 0 {
+                    // ARITH: a bit below `end - base`.
+                    let doc = base + (w * 64) as i32 + bits.trailing_zeros() as i32;
+                    bits &= bits - 1;
+                    collector.collect(doc, 0.0);
+                }
+            }
+        }
+        // Every leg is now at or past `end`; the next window starts at the
+        // first document they may all share.
+        if end >= max {
+            let mut next = end;
+            for leg in legs.iter() {
+                next = next.max(leg.doc_id());
+            }
+            return Ok(next);
+        }
+    }
 }
 
 /// [`Bulk::Union`]: the documents of any leg in `[min, max)`, live ones
@@ -1305,8 +1419,25 @@ pub(crate) fn bulk_boolean_own<'a>(
                 .map(|(c, _)| c.into_leg())
                 .collect();
             legs.sort_by_key(|l| l.cost);
-            let state = ConjunctionBulk::new(legs.len(), segment_max_doc(ctx));
-            Some(Bulk::Conjunction(legs, state))
+            let max_doc = segment_max_doc(ctx);
+            // `requiredBulkScorer`'s `DenseConjunctionBulkScorer` choice: no
+            // scores, a segment of at least a window, and a lead matching at
+            // least one document in 32.
+            #[cfg(test)]
+            let forced = super::tests::FORCE_DENSE_CONJUNCTION.with(std::cell::Cell::get);
+            #[cfg(not(test))]
+            let forced = false;
+            if !mode.needs_scores()
+                && (forced
+                    || (max_doc != NO_MORE_DOCS
+                        && max_doc >= DENSE_WINDOW
+                        && legs[0].cost >= i64::from(max_doc / 32)))
+            {
+                Some(Bulk::DenseConjunction(legs))
+            } else {
+                let state = ConjunctionBulk::new(legs.len(), max_doc);
+                Some(Bulk::Conjunction(legs, state))
+            }
         } else if mode.needs_scores()
             && must.len() == 1
             && all_legs(&must)
@@ -1704,6 +1835,15 @@ impl BulkLeg for ScorerLeg<'_> {
     ) -> Result<()> {
         super::Scorer::next_docs_and_scores_exact(&mut *self.s, up_to, live_docs, out)
     }
+    /// The scorer's own cheap membership test, which for a two-phase
+    /// scorer would answer for the approximation, not the exact view.
+    #[inline]
+    fn advance_exact_cheap(&mut self, target: i32) -> Option<bool> {
+        if self.s.two_phase() {
+            return None;
+        }
+        super::Scorer::advance_exact_cheap(&mut *self.s, target)
+    }
 }
 
 impl MaxScoreLeg for ScorerLeg<'_> {
@@ -1753,6 +1893,13 @@ impl crate::bulk_scorer::BulkLeg for BoxScorer<'_> {
     ) -> Result<()> {
         debug_assert!(!self.two_phase());
         super::Scorer::next_docs_and_scores(&mut **self, up_to, live_docs, out)
+    }
+    #[inline]
+    fn advance_exact_cheap(&mut self, target: i32) -> Option<bool> {
+        if self.two_phase() {
+            return None;
+        }
+        super::Scorer::advance_exact_cheap(&mut **self, target)
     }
 }
 
