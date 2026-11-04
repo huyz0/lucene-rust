@@ -1,6 +1,6 @@
 //! `lucene-expressions`: compiling JavaScript-like expressions over named
 //! variables and using them as [`DoubleValuesSource`]s -- to sort by, to
-//! rescore with, to score a [`crate::function::FunctionScoreQuery`] with.
+//! rescore with, to score a [`lucene_search::function::FunctionScoreQuery`] with.
 //!
 //! * [`js`] is the language: [`js::compile`] (`JavascriptCompiler`), the
 //!   [`js::Expression`] it makes, the function table
@@ -27,11 +27,11 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use crate::explain::Explanation;
-use crate::rescorer::{Rescorer, SortRescorer};
-use crate::top_docs::TopDocs;
-use crate::top_field::SortField;
-use crate::values_source::{
+use lucene_search::explain::Explanation;
+use lucene_search::rescorer::{Rescorer, SortRescorer};
+use lucene_search::top_docs::TopDocs;
+use lucene_search::top_field::SortField;
+use lucene_search::values_source::{
     constant, double_sort_field, BoxDoubleValues, DoubleValues, DoubleValuesSource, ValuesContext,
 };
 
@@ -63,7 +63,7 @@ impl Expression {
     pub fn double_values_source(
         self: &Arc<Self>,
         bindings: &dyn Bindings,
-    ) -> crate::Result<Arc<dyn DoubleValuesSource>> {
+    ) -> lucene_search::Result<Arc<dyn DoubleValuesSource>> {
         Ok(Arc::new(ExpressionValueSource::new(
             bindings,
             self.clone(),
@@ -78,7 +78,7 @@ impl Expression {
         self: &Arc<Self>,
         bindings: &dyn Bindings,
         reverse: bool,
-    ) -> crate::Result<SortField> {
+    ) -> lucene_search::Result<SortField> {
         Ok(double_sort_field(
             self.double_values_source(bindings)?,
             reverse,
@@ -93,7 +93,7 @@ impl Expression {
     pub fn rescorer(
         self: &Arc<Self>,
         bindings: &dyn Bindings,
-    ) -> crate::Result<ExpressionRescorer> {
+    ) -> lucene_search::Result<ExpressionRescorer> {
         ExpressionRescorer::new(self.clone(), bindings)
     }
 }
@@ -104,7 +104,10 @@ pub trait Bindings {
     ///
     /// # Errors
     /// An unbound `name` (`IllegalArgumentException`).
-    fn double_values_source(&self, name: &str) -> crate::Result<Arc<dyn DoubleValuesSource>>;
+    fn double_values_source(
+        &self,
+        name: &str,
+    ) -> lucene_search::Result<Arc<dyn DoubleValuesSource>>;
 }
 
 enum Binding {
@@ -140,9 +143,9 @@ impl SimpleBindings {
         &self,
         name: &str,
         against: &dyn Bindings,
-    ) -> crate::Result<Arc<dyn DoubleValuesSource>> {
+    ) -> lucene_search::Result<Arc<dyn DoubleValuesSource>> {
         match self.map.get(name) {
-            None => Err(crate::Error::IllegalArgument(format!(
+            None => Err(lucene_search::Error::IllegalArgument(format!(
                 "Invalid reference '{name}'"
             ))),
             Some(Binding::Source(s)) => Ok(s.clone()),
@@ -154,7 +157,7 @@ impl SimpleBindings {
     ///
     /// # Errors
     /// An unbound reference, or a cycle (`IllegalArgumentException`).
-    pub fn validate(&self) -> crate::Result<()> {
+    pub fn validate(&self) -> lucene_search::Result<()> {
         // in name order, so the error reported is the same from run to run
         let mut names: Vec<&String> = self.map.keys().collect();
         names.sort();
@@ -174,7 +177,10 @@ impl Bindings for SimpleBindings {
     /// Resolved through the cycle detector: a cycle among bindings never
     /// validated is `validate`'s error (Java's recursion ends in a
     /// `StackOverflowError`; Rust's would abort the process).
-    fn double_values_source(&self, name: &str) -> crate::Result<Arc<dyn DoubleValuesSource>> {
+    fn double_values_source(
+        &self,
+        name: &str,
+    ) -> lucene_search::Result<Arc<dyn DoubleValuesSource>> {
         let detect = CycleDetection {
             bindings: self,
             seen: vec![name.to_string()],
@@ -190,16 +196,19 @@ struct CycleDetection<'a> {
 }
 
 impl Bindings for CycleDetection<'_> {
-    fn double_values_source(&self, name: &str) -> crate::Result<Arc<dyn DoubleValuesSource>> {
+    fn double_values_source(
+        &self,
+        name: &str,
+    ) -> lucene_search::Result<Arc<dyn DoubleValuesSource>> {
         if self.seen.iter().any(|s| s == name) {
             // `LinkedHashSet.toString()`
-            return Err(crate::Error::IllegalArgument(format!(
+            return Err(lucene_search::Error::IllegalArgument(format!(
                 "Recursion error: Cycle detected [{}]->{name}",
                 self.seen.join(", ")
             )));
         }
         if !self.bindings.map.contains_key(name) {
-            return Err(crate::Error::IllegalArgument(format!(
+            return Err(lucene_search::Error::IllegalArgument(format!(
                 "Invalid reference '{name}'"
             )));
         }
@@ -218,11 +227,11 @@ impl Bindings for CycleDetection<'_> {
 struct Shared<'c>(Rc<RefCell<SharedValues<'c>>>);
 
 impl DoubleValues for Shared<'_> {
-    fn advance_exact(&mut self, doc: i32) -> crate::Result<bool> {
+    fn advance_exact(&mut self, doc: i32) -> lucene_search::Result<bool> {
         self.0.borrow_mut().values.advance_exact(doc)
     }
 
-    fn double_value(&mut self) -> crate::Result<f64> {
+    fn double_value(&mut self) -> lucene_search::Result<f64> {
         self.0.borrow_mut().values.double_value()
     }
 
@@ -237,7 +246,7 @@ impl DoubleValues for Shared<'_> {
         scores: &[f32],
         out: &mut [f64],
         has: &mut [bool],
-    ) -> crate::Result<()> {
+    ) -> lucene_search::Result<()> {
         self.0.borrow_mut().fill_batch(docs, scores, out, has)
     }
 }
@@ -271,7 +280,7 @@ struct ExpressionFunctionValues<'c> {
 }
 
 impl DoubleValues for ExpressionFunctionValues<'_> {
-    fn advance_exact(&mut self, doc: i32) -> crate::Result<bool> {
+    fn advance_exact(&mut self, doc: i32) -> lucene_search::Result<bool> {
         if self.current_doc != doc {
             self.current_doc = doc;
             self.computed = false;
@@ -279,7 +288,7 @@ impl DoubleValues for ExpressionFunctionValues<'_> {
         Ok(true)
     }
 
-    fn double_value(&mut self) -> crate::Result<f64> {
+    fn double_value(&mut self) -> lucene_search::Result<f64> {
         if !self.computed {
             self.current_value = self
                 .expression
@@ -301,7 +310,7 @@ impl DoubleValues for ExpressionFunctionValues<'_> {
         scores: &[f32],
         out: &mut [f64],
         has: &mut [bool],
-    ) -> crate::Result<()> {
+    ) -> lucene_search::Result<()> {
         let n = docs.len();
         self.columns.resize(self.function_values.len() * n, 0.0);
         self.column_has.resize(n, false);
@@ -344,7 +353,10 @@ impl ExpressionValueSource {
     ///
     /// # Errors
     /// A variable `bindings` does not bind.
-    pub fn new(bindings: &dyn Bindings, expression: Arc<Expression>) -> crate::Result<Self> {
+    pub fn new(
+        bindings: &dyn Bindings,
+        expression: Arc<Expression>,
+    ) -> lucene_search::Result<Self> {
         Self::build(bindings, expression, false)
     }
 
@@ -352,7 +364,10 @@ impl ExpressionValueSource {
     ///
     /// # Errors
     /// As [`Self::new`].
-    pub fn caching(bindings: &dyn Bindings, expression: Arc<Expression>) -> crate::Result<Self> {
+    pub fn caching(
+        bindings: &dyn Bindings,
+        expression: Arc<Expression>,
+    ) -> lucene_search::Result<Self> {
         Self::build(bindings, expression, true)
     }
 
@@ -360,7 +375,7 @@ impl ExpressionValueSource {
         bindings: &dyn Bindings,
         expression: Arc<Expression>,
         caching: bool,
-    ) -> crate::Result<Self> {
+    ) -> lucene_search::Result<Self> {
         let mut variables = Vec::with_capacity(expression.variables.len());
         let mut needs_scores = false;
         for name in &expression.variables {
@@ -382,7 +397,7 @@ impl ExpressionValueSource {
         leaf: usize,
         scores: &Option<Rc<RefCell<SharedValues<'c>>>>,
         cache: &mut ValuesCache<'c>,
-    ) -> crate::Result<BoxDoubleValues<'c>> {
+    ) -> lucene_search::Result<BoxDoubleValues<'c>> {
         let mut external: Vec<VarSlot<'c>> = Vec::with_capacity(self.variables.len());
         for (name, source) in self.expression.variables.iter().zip(&self.variables) {
             let slot = match cache.get(name) {
@@ -441,7 +456,7 @@ impl DoubleValuesSource for ExpressionValueSource {
         ctx: &ValuesContext<'c>,
         leaf: usize,
         scores: Option<BoxDoubleValues<'c>>,
-    ) -> crate::Result<BoxDoubleValues<'c>> {
+    ) -> lucene_search::Result<BoxDoubleValues<'c>> {
         let scores = scores.map(|s| Rc::new(RefCell::new(SharedValues::new(s))));
         self.values_with_cache(ctx, leaf, &scores, &mut HashMap::new())
     }
@@ -472,7 +487,7 @@ impl DoubleValuesSource for ExpressionValueSource {
         leaf: usize,
         doc: i32,
         score_explanation: &Explanation,
-    ) -> crate::Result<Explanation> {
+    ) -> lucene_search::Result<Explanation> {
         let scores = constant(score_explanation.double_value()).get_values(ctx, leaf, None)?;
         let mut dv = self.get_values(ctx, leaf, Some(scores))?;
         if !dv.advance_exact(doc)? {
@@ -505,8 +520,8 @@ impl DoubleValuesSource for ExpressionValueSource {
 
     fn rewrite(
         &self,
-        top: &crate::function::TopLevel<'_>,
-    ) -> crate::Result<Option<Arc<dyn DoubleValuesSource>>> {
+        top: &lucene_search::function::TopLevel<'_>,
+    ) -> lucene_search::Result<Option<Arc<dyn DoubleValuesSource>>> {
         let mut changed = false;
         let mut rewritten = Vec::with_capacity(self.variables.len());
         for v in &self.variables {
@@ -542,7 +557,10 @@ impl ExpressionRescorer {
     ///
     /// # Errors
     /// A variable `bindings` does not bind.
-    pub fn new(expression: Arc<Expression>, bindings: &dyn Bindings) -> crate::Result<Self> {
+    pub fn new(
+        expression: Arc<Expression>,
+        bindings: &dyn Bindings,
+    ) -> lucene_search::Result<Self> {
         let source = expression.double_values_source(bindings)?;
         let field = double_sort_field(source.clone(), true, 0.0);
         Ok(Self {
@@ -564,7 +582,7 @@ impl Rescorer for ExpressionRescorer {
         ctx: &ValuesContext<'_>,
         first_pass: &TopDocs,
         top_n: usize,
-    ) -> crate::Result<TopDocs> {
+    ) -> lucene_search::Result<TopDocs> {
         self.sort.rescore(ctx, first_pass, top_n)
     }
 
@@ -573,11 +591,11 @@ impl Rescorer for ExpressionRescorer {
         ctx: &ValuesContext<'_>,
         first_pass: &Explanation,
         doc: i32,
-    ) -> crate::Result<Explanation> {
+    ) -> lucene_search::Result<Explanation> {
         let super_explanation = self.sort.explain(ctx, first_pass, doc)?;
         let searcher = ctx.searcher()?;
         let leaf = searcher.segment_of(doc).ok_or_else(|| {
-            crate::Error::IllegalState(format!(
+            lucene_search::Error::IllegalState(format!(
                 "hit docId={doc} is not in any leaf of the searcher"
             ))
         })?;
@@ -600,7 +618,7 @@ mod tests {
         Arc::new(compile(src).unwrap())
     }
 
-    fn message(r: crate::Result<()>) -> String {
+    fn message(r: lucene_search::Result<()>) -> String {
         r.unwrap_err().to_string()
     }
 
@@ -665,7 +683,7 @@ mod tests {
     #[test]
     fn a_source_needs_scores_when_a_variable_does() {
         let mut b = SimpleBindings::new();
-        b.add_source("s", crate::values_source::scores());
+        b.add_source("s", lucene_search::values_source::scores());
         b.add_source("c", constant(1.0));
         let with = ExpressionValueSource::new(&b, expr("s + c")).unwrap();
         let without = ExpressionValueSource::new(&b, expr("c * 2")).unwrap();
@@ -695,13 +713,13 @@ mod tests {
     }
 
     impl DoubleValues for ProbeValues {
-        fn advance_exact(&mut self, doc: i32) -> crate::Result<bool> {
+        fn advance_exact(&mut self, doc: i32) -> lucene_search::Result<bool> {
             self.doc = doc;
             Ok(doc % 2 == 0)
         }
-        fn double_value(&mut self) -> crate::Result<f64> {
+        fn double_value(&mut self) -> lucene_search::Result<f64> {
             if self.doc == self.fail_at && !self.failed.swap(true, Relaxed) {
-                return Err(crate::Error::IllegalState("probe".into()));
+                return Err(lucene_search::Error::IllegalState("probe".into()));
             }
             self.reads.fetch_add(1, Relaxed);
             Ok(f64::from(self.doc))
@@ -715,11 +733,11 @@ mod tests {
     struct BatchScores(i32);
 
     impl DoubleValues for BatchScores {
-        fn advance_exact(&mut self, doc: i32) -> crate::Result<bool> {
+        fn advance_exact(&mut self, doc: i32) -> lucene_search::Result<bool> {
             self.0 = doc;
             Ok(true)
         }
-        fn double_value(&mut self) -> crate::Result<f64> {
+        fn double_value(&mut self) -> lucene_search::Result<f64> {
             Ok(f64::from(-self.0))
         }
         fn batch_capable(&self) -> bool {
@@ -731,7 +749,7 @@ mod tests {
             scores: &[f32],
             out: &mut [f64],
             has: &mut [bool],
-        ) -> crate::Result<()> {
+        ) -> lucene_search::Result<()> {
             for ((o, h), &s) in out.iter_mut().zip(has.iter_mut()).zip(scores) {
                 *o = f64::from(s);
                 *h = true;
@@ -754,12 +772,12 @@ mod tests {
                 failed: failed.clone(),
             }),
         );
-        b.add_source("_score", crate::values_source::scores());
+        b.add_source("_score", lucene_search::values_source::scores());
         b.add_source("c", constant(3.0));
         // a caching nested source, whose `p` a caching outer one shares
         let twice = ExpressionValueSource::caching(&b, expr("p + p + _score")).unwrap();
         b.add_source("twice", Arc::new(twice));
-        let searcher = crate::index_searcher::IndexSearcher::new(&[], &[]).unwrap();
+        let searcher = lucene_search::index_searcher::IndexSearcher::new(&[], &[]).unwrap();
         let ctx = ValuesContext::new(&searcher);
         let scores = || Some(Box::new(BatchScores(-1)) as BoxDoubleValues<'_>);
         let docs: Vec<i32> = (0..40).collect();
@@ -830,7 +848,7 @@ mod tests {
             _ctx: &ValuesContext<'c>,
             _leaf: usize,
             _scores: Option<BoxDoubleValues<'c>>,
-        ) -> crate::Result<BoxDoubleValues<'c>> {
+        ) -> lucene_search::Result<BoxDoubleValues<'c>> {
             Ok(Box::new(ProbeValues {
                 reads: self.reads.clone(),
                 fail_at: self.fail_at,
@@ -863,7 +881,7 @@ mod tests {
             }),
         );
         b.add_expression("twice", expr("p + p"));
-        let searcher = crate::index_searcher::IndexSearcher::new(&[], &[]).unwrap();
+        let searcher = lucene_search::index_searcher::IndexSearcher::new(&[], &[]).unwrap();
         let ctx = ValuesContext::new(&searcher);
         for caching in [false, true] {
             reads.store(0, Relaxed);

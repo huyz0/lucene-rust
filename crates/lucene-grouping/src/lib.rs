@@ -19,10 +19,10 @@
 //!   per group; [`TermGroupFacetCollector`]: facet counts that count each
 //!   group once.
 //!
-//! Every collector is a [`SegmentCollector`], reading each segment's doc
+//! Every collector is a [`SegmentCollector`](lucene_search::leaf_collector::SegmentCollector), reading each segment's doc
 //! values as the search reaches it, and a manager runs one per slice
 //! ([`search_manager`]); sorts are [`Sort`]s of
-//! [`crate::top_field::SortField`] keys.
+//! [`lucene_search::top_field::SortField`] keys.
 //!
 //! # What differs from Java
 //!
@@ -52,12 +52,12 @@ mod search;
 mod selector;
 pub mod sort;
 
-pub use block::{BlockGroupingCollector, BlockSegmentCollectorManager};
+pub use block::{BlockGroupingCollector, BlockGroupingCollectorManager};
 pub use collectors::{
     AllGroupHeadsCollector, AllGroupHeadsCollectorManager, AllGroupsCollector,
     AllGroupsCollectorManager, CollectorsReducer, DistinctValuesCollector,
     DistinctValuesCollectorManager, DistinctValuesReducer, FirstPassGroupingCollector,
-    FirstPassSegmentCollectorManager, GroupCount, GroupHead, GroupHeadsResult, GroupTopDocs,
+    FirstPassGroupingCollectorManager, GroupCount, GroupHead, GroupHeadsResult, GroupTopDocs,
     SecondPassGroupingCollector, TopGroupsCollector, TopGroupsCollectorManager,
 };
 pub use facet::{FacetEntry, GroupedFacetResult, TermGroupFacetCollector};
@@ -73,12 +73,12 @@ use std::collections::HashMap;
 use std::fmt;
 use std::hash::Hash;
 
-use crate::collector::{TotalHits, TotalHitsRelation};
-use crate::leaf_collector::{search_manager, SegmentCollectorManager};
-use crate::multi_segment::OpenSegment;
-use crate::top_field::SortField;
-pub(crate) use crate::tree_set::TreeSet;
-use crate::{Error, Result};
+use lucene_search::collector::{TotalHits, TotalHitsRelation};
+use lucene_search::leaf_collector::{search_manager, SegmentCollectorManager};
+use lucene_search::multi_segment::OpenSegment;
+use lucene_search::top_field::SortField;
+pub(crate) use lucene_search::tree_set::TreeSet;
+use lucene_search::{Error, Result};
 
 /// `GroupSelector.State`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -310,7 +310,7 @@ pub(crate) fn non_nan_max(a: f32, b: f32) -> f32 {
     } else if b.is_nan() {
         a
     } else {
-        crate::function::valuesource::functions::java_max_f32(a, b)
+        lucene_search::function::valuesource::functions::java_max_f32(a, b)
     }
 }
 

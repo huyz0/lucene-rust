@@ -214,13 +214,11 @@ mod exec;
 /// ([`LeafContext::for_spans`]).
 pub use exec::LeafContext;
 pub mod explain;
-pub mod expressions;
 pub mod extended_query;
 pub mod facets;
 pub mod field_norms;
 pub mod function;
 pub mod fuzzy_like_this;
-pub mod grouping;
 pub mod index_searcher;
 pub mod intervals;
 pub mod java_priority_queue;

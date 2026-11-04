@@ -16,11 +16,11 @@ use super::{
     GroupSelector, GroupState, IdIndex, ScoreMergeMode, SearchGroup, SegmentCollectorManager,
     TopGroups, TreeSet,
 };
-use crate::collector::{ScoreMode, TotalHits, TotalHitsRelation};
-use crate::function::valuesource::functions::java_max_f32;
-use crate::leaf_collector::SegmentCollector;
-use crate::multi_segment::OpenSegment;
-use crate::{Error, Result};
+use lucene_search::collector::{ScoreMode, TotalHits, TotalHitsRelation};
+use lucene_search::function::valuesource::functions::java_max_f32;
+use lucene_search::leaf_collector::SegmentCollector;
+use lucene_search::multi_segment::OpenSegment;
+use lucene_search::{Error, Result};
 
 /// `Float.MIN_VALUE`: the smallest positive float, where Java's max-score
 /// accumulators start.
@@ -379,9 +379,9 @@ impl<'a, S: GroupSelector<'a>> SegmentCollector<'a> for FirstPassGroupingCollect
     }
 }
 
-/// `FirstPassSegmentCollectorManager<T>`: a first pass of `groupOffset +
+/// `FirstPassGroupingCollectorManager<T>`: a first pass of `groupOffset +
 /// topNGroups` groups per slice, merged by [`SearchGroup::merge`].
-pub struct FirstPassSegmentCollectorManager<F> {
+pub struct FirstPassGroupingCollectorManager<F> {
     selector_factory: F,
     group_sort: Sort,
     group_offset: usize,
@@ -389,8 +389,8 @@ pub struct FirstPassSegmentCollectorManager<F> {
     ignore_docs_without_group_field: bool,
 }
 
-impl<F> FirstPassSegmentCollectorManager<F> {
-    /// `new FirstPassSegmentCollectorManager(groupSelectorFactory,
+impl<F> FirstPassGroupingCollectorManager<F> {
+    /// `new FirstPassGroupingCollectorManager(groupSelectorFactory,
     /// groupSort, groupOffset, topNGroups, ignoreDocsWithoutGroupField)`.
     ///
     /// # Errors
@@ -417,7 +417,7 @@ impl<F> FirstPassSegmentCollectorManager<F> {
     }
 }
 
-impl<'a, S, F> SegmentCollectorManager<'a> for FirstPassSegmentCollectorManager<F>
+impl<'a, S, F> SegmentCollectorManager<'a> for FirstPassGroupingCollectorManager<F>
 where
     S: GroupSelector<'a>,
     F: Fn() -> S,

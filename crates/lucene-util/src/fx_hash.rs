@@ -71,7 +71,7 @@ pub type FxHashMap<K, V> = HashMap<K, V, FxBuildHasher>;
 /// A `HashSet` hashed with [`FxHasher`].
 pub type FxHashSet<K> = HashSet<K, FxBuildHasher>;
 
-/// [`FxHasher`](super::FxHasher)'s word mixing with a final avalanche, for
+/// [`FxHasher`]'s word mixing with a final avalanche, for
 /// maps keyed by values whose distinguishing bytes may sit anywhere in a word.
 pub mod avalanche {
     use std::collections::HashMap;

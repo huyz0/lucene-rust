@@ -11,14 +11,14 @@
 use std::hint::black_box;
 use std::time::Duration;
 
-use lucene_search::directory_reader::DirectoryReader;
-use lucene_search::grouping::{
-    search_manager, DistinctValuesCollectorManager, FirstPassSegmentCollectorManager,
-    GroupingSearch, LongRangeFactory, LongRangeGroupSelector, Sort, TermGroupFacetCollector,
-    TermGroupSelector, TopGroups,
+use lucene_grouping::{
+    DistinctValuesCollectorManager, FirstPassGroupingCollectorManager, GroupingSearch,
+    LongRangeFactory, LongRangeGroupSelector, Sort, TermGroupFacetCollector, TermGroupSelector,
+    TopGroups,
 };
+use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::index_searcher::{IndexSearcher, SegmentNorms};
-use lucene_search::leaf_collector::search_segments;
+use lucene_search::leaf_collector::{search_manager, search_segments};
 use lucene_search::query::{BooleanQuery, Clause, TermQuery};
 use lucene_search::top_field::{SortField, SortType};
 use lucene_search::values_source;
@@ -162,7 +162,7 @@ pub fn bench_grouping(w: Duration, m: Duration, dir: &str) {
         let first = search_manager(
             &s,
             &q(word),
-            &FirstPassSegmentCollectorManager::new(
+            &FirstPassGroupingCollectorManager::new(
                 || TermGroupSelector::new("g"),
                 Sort::relevance(),
                 0,

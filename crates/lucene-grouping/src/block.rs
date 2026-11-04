@@ -9,12 +9,12 @@ use lucene_util::fixed_bit_set::FixedBitSet;
 use super::collectors::{GroupTopDocs, FLOAT_MIN_VALUE};
 use super::sort::{compare_all, GroupSortValue, LeafKeys, Sort};
 use super::{GroupDocs, SegmentCollectorManager, TopGroups};
-use crate::collector::{ScoreMode, TotalHits, TotalHitsRelation};
-use crate::function::valuesource::functions::java_max_f32;
-use crate::leaf_collector::SegmentCollector;
-use crate::multi_segment::OpenSegment;
-use crate::query::BooleanQuery;
-use crate::{Error, Result};
+use lucene_search::collector::{ScoreMode, TotalHits, TotalHitsRelation};
+use lucene_search::function::valuesource::functions::java_max_f32;
+use lucene_search::leaf_collector::SegmentCollector;
+use lucene_search::multi_segment::OpenSegment;
+use lucene_search::query::BooleanQuery;
+use lucene_search::{Error, Result};
 
 /// `BlockGroupingCollector.OneGroup`: a group that made the queue.
 struct OneGroup<'a> {
@@ -348,7 +348,8 @@ impl<'a> SegmentCollector<'a> for BlockGroupingCollector<'a> {
         self.pending_sub_docs.clear();
         self.pending_sub_scores.clear();
         self.doc_base = leaf.doc_base;
-        self.last_doc_per_group_bits = crate::join::query_bit_set(leaf, &self.last_doc_per_group)?;
+        self.last_doc_per_group_bits =
+            lucene_search::join::query_bit_set(leaf, &self.last_doc_per_group)?;
         self.group_end_doc_id = -1;
         self.current = Some((ord, OpenSegment { ..*leaf }));
         self.keys = Some(LeafKeys::open(&self.sort, leaf)?);
@@ -370,7 +371,7 @@ impl<'a> SegmentCollector<'a> for BlockGroupingCollector<'a> {
                 .ok()
                 .and_then(|d| bits.next_set_bit(d))
                 .and_then(|d| i32::try_from(d).ok())
-                .unwrap_or(crate::exec::NO_MORE_DOCS);
+                .unwrap_or(lucene_search::reader::NO_MORE_DOCS);
             self.pending_sub_docs.clear();
             self.pending_sub_scores.clear();
             self.group_competes = !self.queue_full;
@@ -412,10 +413,10 @@ impl<'a> SegmentCollector<'a> for BlockGroupingCollector<'a> {
     }
 }
 
-/// `BlockSegmentCollectorManager<T>`: a [`BlockGroupingCollector`] of
+/// `BlockGroupingCollectorManager<T>`: a [`BlockGroupingCollector`] of
 /// `groupOffset + topNGroups` groups per slice, merged by
 /// [`TopGroups::merge_block_groups`].
-pub struct BlockSegmentCollectorManager {
+pub struct BlockGroupingCollectorManager {
     group_sort: Sort,
     group_offset: usize,
     top_n_groups: usize,
@@ -426,8 +427,8 @@ pub struct BlockSegmentCollectorManager {
     max_docs_per_group: usize,
 }
 
-impl BlockSegmentCollectorManager {
-    /// `new BlockSegmentCollectorManager(groupSort, groupOffset,
+impl BlockGroupingCollectorManager {
+    /// `new BlockGroupingCollectorManager(groupSort, groupOffset,
     /// topNGroups, needsScores, lastDocPerGroup, withinGroupSort,
     /// withinGroupOffset, maxDocsPerGroup)`.
     ///
@@ -468,7 +469,7 @@ impl BlockSegmentCollectorManager {
     }
 }
 
-impl<'a> SegmentCollectorManager<'a> for BlockSegmentCollectorManager {
+impl<'a> SegmentCollectorManager<'a> for BlockGroupingCollectorManager {
     type Collector = BlockGroupingCollector<'a>;
     type Output = TopGroups<()>;
 

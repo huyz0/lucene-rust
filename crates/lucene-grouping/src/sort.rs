@@ -3,7 +3,7 @@
 //! Pruning.NONE)`: `copy`, `compare`, `setBottom`, `compareBottom`, `value`,
 //! `compareValues`).
 //!
-//! A key is a [`SortField`] of [`crate::top_field`]: the score
+//! A key is a [`SortField`] of [`lucene_search::top_field`]: the score
 //! (`RelevanceComparator`), the document (`DocComparator`), a numeric
 //! doc-values field (`LONG`/`INT`/`DOUBLE`/`FLOAT` through `NUMERIC` or
 //! `SORTED_NUMERIC` doc values and the key's selector, as
@@ -21,12 +21,12 @@
 use std::cmp::Ordering;
 
 use super::FxHashMap;
-use crate::multi_segment::OpenSegment;
-use crate::reader::doc_values::{self as dv, SortedOrds};
-use crate::reader::{NumericDocValues, SortedNumericDocValues, SortedSetDocValues};
-use crate::top_field::{Selector, SortField, SortType};
-use crate::{Error, Result};
 use lucene_codecs::field_infos::DocValuesType;
+use lucene_search::multi_segment::OpenSegment;
+use lucene_search::reader::doc_values::{self as dv, SortedOrds};
+use lucene_search::reader::{NumericDocValues, SortedNumericDocValues, SortedSetDocValues};
+use lucene_search::top_field::{Selector, SortField, SortType};
+use lucene_search::{Error, Result};
 
 /// `Sort`: the keys, in priority order. `Sort.RELEVANCE` is
 /// [`Sort::relevance`], which [`TopGroupsCollector`](super::TopGroupsCollector)
@@ -278,7 +278,11 @@ enum StrValues<'a> {
 
 impl StrValues<'_> {
     /// The ordinal the key's selector picks for `doc`, if it has one.
-    fn doc_ord(&mut self, doc: i32, selector: crate::top_field::Selector) -> Result<Option<i64>> {
+    fn doc_ord(
+        &mut self,
+        doc: i32,
+        selector: lucene_search::top_field::Selector,
+    ) -> Result<Option<i64>> {
         match self {
             StrValues::Single(v) => Ok(v.ord(doc)?.map(i64::from)),
             StrValues::Set(v, buf) => {

@@ -5,19 +5,19 @@
 
 use lucene_util::fixed_bit_set::FixedBitSet;
 
-use super::block::BlockSegmentCollectorManager;
+use super::block::BlockGroupingCollectorManager;
 use super::collectors::{
     AllGroupHeadsCollector, AllGroupsCollector, FirstPassGroupingCollector, TopGroupsCollector,
 };
 use super::sort::Sort;
 use super::{search_manager, GroupSelector, TopGroups};
-use crate::collector::{ScoreMode, ScoringCollector};
-use crate::collectors::{CachingCollector, NoOpCollector};
-use crate::index_searcher::IndexSearcher;
-use crate::leaf_collector::{search_segments, PerSegment, SegmentCollector};
-use crate::multi_segment::OpenSegment;
-use crate::query::BooleanQuery;
-use crate::{Error, Result};
+use lucene_search::collector::{ScoreMode, ScoringCollector};
+use lucene_search::collectors::{CachingCollector, NoOpCollector};
+use lucene_search::index_searcher::IndexSearcher;
+use lucene_search::leaf_collector::{search_segments, PerSegment, SegmentCollector};
+use lucene_search::multi_segment::OpenSegment;
+use lucene_search::query::BooleanQuery;
+use lucene_search::{Error, Result};
 
 /// What a [`GroupingSearch`] groups by.
 enum Grouper<F> {
@@ -163,7 +163,7 @@ impl<F> GroupingSearch<F> {
     }
 
     /// `search(searcher, query, groupOffset, groupLimit)` for grouping by
-    /// blocks (`groupByDocBlock`): a [`BlockSegmentCollectorManager`] run
+    /// blocks (`groupByDocBlock`): a [`BlockGroupingCollectorManager`] run
     /// per slice.
     ///
     /// # Errors
@@ -181,7 +181,7 @@ impl<F> GroupingSearch<F> {
                 "Either groupField, groupFunction or groupEndDocs must be set.".into(),
             ));
         };
-        let manager = BlockSegmentCollectorManager::new(
+        let manager = BlockGroupingCollectorManager::new(
             self.group_sort.clone(),
             group_offset,
             group_limit,

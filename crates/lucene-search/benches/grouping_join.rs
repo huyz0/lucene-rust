@@ -37,13 +37,13 @@ mod support;
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use std::sync::Arc;
 
+use lucene_grouping::{GroupingSearch, Sort, TermGroupSelector};
 use lucene_index::document::{
     Document, NumericDocValuesField, SortedSetDocValuesField, Store, StringField,
 };
 use lucene_index::index_writer::IndexWriter;
 use lucene_index::merge_policy::upgrade::LATEST;
 use lucene_search::directory_reader::DirectoryReader;
-use lucene_search::grouping::{GroupingSearch, Sort, TermGroupSelector};
 use lucene_search::index_searcher::IndexSearcher;
 use lucene_search::join::{
     create_global_ordinals_join_query, create_join_query, create_numeric_join_query, ordinal_map,
