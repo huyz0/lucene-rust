@@ -282,7 +282,7 @@ impl<O: FstOutputs> FstOutputs for ListOfOutputs<O> {
             return Ok(ListOutput::One(O::read(input)?));
         }
         let count = usize::try_from(count)
-            .map_err(|_| FstReadError(format!("negative output count {count}")))?;
+            .map_err(|_| FstReadError(format!("negative output count {count}").into()))?;
         // The count comes off disk: grow as values are read, not up front.
         let mut list = Vec::new();
         for _ in 0..count {

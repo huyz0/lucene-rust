@@ -49,7 +49,8 @@ pub const END_LABEL: i32 = -1;
 
 type Result<T> = std::result::Result<T, FstReadError>;
 
-fn corrupt(msg: impl Into<String>) -> FstReadError {
+#[cold]
+fn corrupt(msg: impl Into<Box<str>>) -> FstReadError {
     FstReadError(msg.into())
 }
 
