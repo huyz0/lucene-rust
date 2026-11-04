@@ -17,14 +17,12 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::time::Duration;
 
-use lucene_search::directory_reader::DirectoryReader;
-use lucene_search::facets::range::{
-    DoubleRange, DoubleRangeFacetCounts, LongRange, LongRangeFacetCounts,
-};
-use lucene_search::facets::{
+use lucene_facet::range::{DoubleRange, DoubleRangeFacetCounts, LongRange, LongRangeFacetCounts};
+use lucene_facet::{
     Facets, FacetsCollectorManager, LongValueFacetCounts, StringDocValuesReaderState,
     StringValueFacetCounts,
 };
+use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::field_norms::FieldNorms;
 use lucene_search::index_searcher::{IndexSearcher, SegmentNorms};
 use lucene_search::query::{BooleanQuery, Clause, MatchAllDocsQuery};

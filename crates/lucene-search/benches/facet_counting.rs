@@ -1,11 +1,11 @@
 //! Facet counting over a multi-segment index (the facets/grouping/join
 //! perf pass):
 //!
-//! - `ffi/*`: the FFI-facing per-segment primitives in `facets.rs`
-//!   ([`facets::facet_counts`] over a sparse multi-valued SORTED_SET,
-//!   [`facets::range_facet_counts_with_total`] over a sparse and a dense
+//! - `ffi/*`: the FFI-facing per-segment primitives in `lucene-facet`
+//!   ([`lucene_facet::facet_counts`] over a sparse multi-valued SORTED_SET,
+//!   [`lucene_facet::range_facet_counts_with_total`] over a sparse and a dense
 //!   NUMERIC with 4 / 32 / 256 ranges, and
-//!   [`facets::multi_valued_range_facet_counts`] over a SORTED_NUMERIC),
+//!   [`lucene_facet::multi_valued_range_facet_counts`] over a SORTED_NUMERIC),
 //!   every segment of an 8-segment index, all documents (or every 10th)
 //!   as candidates;
 //! - `sorted_set/*`: `SortedSetDocValuesFacetCounts` and
@@ -41,25 +41,25 @@ mod support;
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use lucene_codecs::doc_values::SortedSetKind;
+use lucene_facet::range::{LongRange, LongRangeFacetCounts};
+use lucene_facet::taxonomy::{
+    AssociationAggregationFunction, DirectoryTaxonomyReader, DirectoryTaxonomyWriter,
+    FastTaxonomyFacetCounts, TaxonomyFacetFloatAssociations, TaxonomyWriter,
+};
+use lucene_facet::{
+    self, ConcurrentSortedSetDocValuesFacetCounts, DefaultSortedSetDocValuesReaderState,
+    FacetsCollectorManager, LongValueFacetCounts, NumericRange, SortedSetDocValuesFacetCounts,
+    SortedSetDocValuesFacetField, StringDocValuesReaderState, StringValueFacetCounts,
+};
+use lucene_facet::{
+    FacetEntry, FacetField, FacetValue, Facets, FacetsConfig, OrdAndValue, TopOrdAndNumberQueue,
+};
 use lucene_index::document::{
     Document, NumericDocValuesField, SortedNumericDocValuesField, Store, StringField,
 };
 use lucene_index::index_writer::IndexWriter;
 use lucene_index::merge_policy::upgrade::LATEST;
 use lucene_search::directory_reader::DirectoryReader;
-use lucene_search::facets::range::{LongRange, LongRangeFacetCounts};
-use lucene_search::facets::taxonomy::{
-    AssociationAggregationFunction, DirectoryTaxonomyReader, DirectoryTaxonomyWriter,
-    FastTaxonomyFacetCounts, TaxonomyFacetFloatAssociations, TaxonomyWriter,
-};
-use lucene_search::facets::{
-    self, ConcurrentSortedSetDocValuesFacetCounts, DefaultSortedSetDocValuesReaderState,
-    FacetsCollectorManager, LongValueFacetCounts, NumericRange, SortedSetDocValuesFacetCounts,
-    SortedSetDocValuesFacetField, StringDocValuesReaderState, StringValueFacetCounts,
-};
-use lucene_search::facets::{
-    FacetEntry, FacetField, FacetValue, Facets, FacetsConfig, OrdAndValue, TopOrdAndNumberQueue,
-};
 use lucene_search::index_searcher::IndexSearcher;
 use lucene_search::query::{BooleanQuery, Clause, MatchAllDocsQuery, TermQuery};
 use lucene_search::top_field::{SortField, SortType};
@@ -103,7 +103,7 @@ fn bench_ffi(c: &mut Criterion) {
                     else {
                         panic!("tags is multi-valued")
                     };
-                    let counts = facets::facet_counts(data, ords, terms, docs).unwrap();
+                    let counts = lucene_facet::facet_counts(data, ords, terms, docs).unwrap();
                     total += counts.iter().sum::<u64>();
                 }
                 black_box(total)
@@ -120,8 +120,8 @@ fn bench_ffi(c: &mut Criterion) {
                         let n = field(s, field_name);
                         let (meta, data) = s.doc_values_for_field(n).unwrap();
                         let entry = meta.numeric_entry(n).unwrap();
-                        let r =
-                            facets::range_facet_counts_with_total(data, entry, &rs, docs).unwrap();
+                        let r = lucene_facet::range_facet_counts_with_total(data, entry, &rs, docs)
+                            .unwrap();
                         total += r.total_count;
                     }
                     black_box(total)
@@ -138,8 +138,8 @@ fn bench_ffi(c: &mut Criterion) {
                     let n = field(s, "nums");
                     let (meta, data) = s.doc_values_for_field(n).unwrap();
                     let entry = meta.sorted_numeric_entry(n).unwrap();
-                    let r =
-                        facets::multi_valued_range_facet_counts(data, entry, &rs, docs).unwrap();
+                    let r = lucene_facet::multi_valued_range_facet_counts(data, entry, &rs, docs)
+                        .unwrap();
                     total += r.total_count;
                 }
                 black_box(total)

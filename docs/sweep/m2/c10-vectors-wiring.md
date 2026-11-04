@@ -631,7 +631,7 @@ Java counterparts: `java.util.SplittableRandom`,
 37. **[MISSING, recorded]** *The `NumericUtils` long/double halves are still
     duplicated.* `lucene-index/src/segment_info.rs` has its own
     `float_to_sortable_int`/`double_to_sortable_long`, and
-    `lucene-search/src/facets.rs` its own `doubleToSortableLong`/
+    `lucene-facet/src/lib.rs` its own `doubleToSortableLong`/
     `sortableDoubleBits`. Both should point at `lucene_util::numeric_utils`, and
     the `*ToSortableBytes` pair used by `points.rs` and `points_query.rs`
     belongs there too. Not done here: neither file is this batch's, and
@@ -994,7 +994,7 @@ runs `CheckIndex`, so it needs only the same `KnnFloatVectorQuery` assertions
       other format would still address the original doc ids. See
       `docs/sweep/m2/c17-index-sort.md` findings 5 and 16.
 - [ ] **`NumericUtils` deduplication** (finding 37): point
-      `lucene-index/src/segment_info.rs` and `lucene-search/src/facets.rs` at
+      `lucene-index/src/segment_info.rs` and `lucene-facet/src/lib.rs` at
       `lucene_util::numeric_utils`, and move the `*ToSortableBytes` pair there
       too. Owners: whoever holds those files.
 - [ ] **`ConcurrentHnswMerger`** (finding 35) and `SparseFixedBitSet` for the

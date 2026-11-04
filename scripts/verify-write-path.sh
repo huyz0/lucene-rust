@@ -458,7 +458,7 @@ CASES=(
   # (every ordinal kept, the epoch too) and pass CheckIndex again. What it
   # cannot catch: a defect both readers share -- the Java-written fixtures of
   # `taxonomy_fixtures.rs` read through this port's reader cover that side.
-  "lucene-search|write_taxonomy_fixture|taxonomy|VerifyTaxonomy"
+  "lucene-facet|write_taxonomy_fixture|taxonomy|VerifyTaxonomy"
 )
 
 echo "verify-write-path: compiling verifiers"

@@ -182,7 +182,7 @@ recorded with reasons, both blocked on files owned by other batches.
 
 ---
 
-## `crates/lucene-search/src/facets.rs`
+## `crates/lucene-facet/src/lib.rs`
 
 Java counterparts (`lucene/facet/src/java/org/apache/lucene/facet/`):
 - `Facets.java`, `FacetResult.java`, `LabelAndValue.java`, `FacetsCollector.java`, `TopOrdAndIntQueue.java`

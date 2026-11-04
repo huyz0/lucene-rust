@@ -209,13 +209,14 @@ pub mod directory_reader;
 pub mod doc_value_query;
 pub mod docid_set;
 pub mod document;
+pub mod drill_sideways_query;
+mod drill_sideways_scorer;
 mod exec;
 /// One segment's readers as the query executor reads them
 /// ([`LeafContext::for_spans`]).
 pub use exec::LeafContext;
 pub mod explain;
 pub mod extended_query;
-pub mod facets;
 pub mod field_norms;
 pub mod function;
 pub mod fuzzy_like_this;

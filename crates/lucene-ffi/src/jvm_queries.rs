@@ -24,6 +24,7 @@
 
 use std::sync::Arc;
 
+use lucene_sandbox::search::{ByteRange, CoveringQuery, SortedSetDocValuesMultiRangeQuery};
 use lucene_search::document::geo::LatLonPointDistanceFeatureQuery;
 use lucene_search::document::{
     DocValuesTermInSetQuery, DocumentQuery, LongDistanceFeatureQuery,
@@ -36,7 +37,6 @@ use lucene_search::extended_query::{
 use lucene_search::query::Clause;
 use lucene_search::reader::doc_values::get_sorted_numeric;
 use lucene_search::reader::SortedNumericDocValues;
-use lucene_search::sandbox::search::{ByteRange, CoveringQuery, SortedSetDocValuesMultiRangeQuery};
 use lucene_search::values_source::{
     long_constant, BoxDoubleValues, BoxLongValues, LongValues, LongValuesSource, ValuesContext,
 };

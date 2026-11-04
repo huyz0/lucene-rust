@@ -9,8 +9,8 @@
 //! that stands in for `RamUsageTester` (there is no reflective heap walk in
 //! Rust): each implementation measures its own allocation from the outside.
 
+use lucene_facet::DocIdSet;
 use lucene_search::docid_set::RoaringDocIdSet;
-use lucene_search::facets::DocIdSet;
 use lucene_search::reader::{DocIdSetIterator, NO_MORE_DOCS};
 use lucene_util::bits::{BitSet, Bits};
 use lucene_util::fixed_bit_set::FixedBitSet;

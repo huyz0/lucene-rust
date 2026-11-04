@@ -51,7 +51,7 @@ import java.util.stream.Stream;
 
 /**
  * lucene-sandbox's scoring queries, recorded from Lucene 10.5.0 for
- * crates/lucene-search/tests/sandbox_query_fixtures.rs. Written to {@code sandbox_queries/}:
+ * crates/lucene-sandbox/tests/sandbox_query_fixtures.rs. Written to {@code sandbox_queries/}:
  *
  * <pre>
  *   index/         three segments (90, 60, 30 documents) with deletions: body, title (text),
