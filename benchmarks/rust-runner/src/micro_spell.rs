@@ -15,11 +15,11 @@ use lucene_index::index_writer::IndexWriter;
 use lucene_index::merge_policy::upgrade::LATEST;
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::query_visitor::Term;
-use lucene_search::spell::direct::DirectSpellChecker;
-use lucene_search::spell::plain_text::PlainTextDictionary;
-use lucene_search::spell::spell_checker::SpellChecker;
-use lucene_search::spell::word_break::WordBreakSpellChecker;
 use lucene_store::ByteBuffersDirectory;
+use lucene_suggest::spell::direct::DirectSpellChecker;
+use lucene_suggest::spell::plain_text::PlainTextDictionary;
+use lucene_suggest::spell::spell_checker::SpellChecker;
+use lucene_suggest::spell::word_break::WordBreakSpellChecker;
 
 use super::measure;
 

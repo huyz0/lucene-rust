@@ -321,7 +321,7 @@ impl DocumentQuery for FieldExists {
 }
 
 /// The leaf's reader, which every document query needs.
-pub(crate) fn reader<'a>(leaf: &OpenSegment<'a>) -> Result<&'a SegmentReader> {
+pub fn reader<'a>(leaf: &OpenSegment<'a>) -> Result<&'a SegmentReader> {
     leaf.reader
         .ok_or_else(|| Error::DocumentQuery("a document query needs the segment's reader".into()))
 }
@@ -337,7 +337,7 @@ pub(crate) fn field_info<'a>(leaf: &OpenSegment<'a>, field: &str) -> Result<Opti
 
 /// Collects `doc` at `score` when it is live.
 #[inline]
-pub(crate) fn collect_live(
+pub fn collect_live(
     leaf: &OpenSegment<'_>,
     doc: i32,
     score: f32,

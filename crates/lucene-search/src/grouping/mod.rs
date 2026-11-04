@@ -146,7 +146,7 @@ pub struct CollectedSearchGroup<V> {
 /// group value per collected document, where SipHash's DoS resistance buys
 /// nothing (stage 3: SipHash was a tenth of a term grouping's time).
 #[derive(Debug, Default, Clone, Copy)]
-pub(crate) struct FxHasher(u64);
+pub struct FxHasher(u64);
 
 impl std::hash::Hasher for FxHasher {
     /// The state through a final avalanche (`fmix64`'s first half): a
@@ -201,7 +201,7 @@ impl FxHasher {
 }
 
 /// A `HashMap` under [`FxHasher`].
-pub(crate) type FxHashMap<K, V> = HashMap<K, V, std::hash::BuildHasherDefault<FxHasher>>;
+pub type FxHashMap<K, V> = HashMap<K, V, std::hash::BuildHasherDefault<FxHasher>>;
 
 /// A `HashSet` under [`FxHasher`].
 pub(crate) type FxHashSet<K> =

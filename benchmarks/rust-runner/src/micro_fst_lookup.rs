@@ -9,10 +9,10 @@ use std::collections::{BTreeSet, HashSet};
 use std::hint::black_box;
 use std::time::Duration;
 
-use lucene_search::suggest::fst_completion::FstCompletionLookup;
-use lucene_search::suggest::input::InputIterator;
-use lucene_search::suggest::lookup::Lookup;
-use lucene_search::suggest::wfst::WfstCompletionLookup;
+use lucene_suggest::fst_completion::FstCompletionLookup;
+use lucene_suggest::input::InputIterator;
+use lucene_suggest::lookup::Lookup;
+use lucene_suggest::wfst::WfstCompletionLookup;
 
 use super::measure;
 

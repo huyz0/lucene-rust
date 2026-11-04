@@ -16,8 +16,8 @@ use lucene_index::document::{Document, Store, TextField};
 use lucene_index::index_writer::IndexWriter;
 use lucene_index::segment_info::LuceneVersion;
 use lucene_search::directory_reader::DirectoryReader;
-use lucene_search::suggest::suggest_field::SuggestField;
 use lucene_store::{FsDirectory, MmapDirectory};
+use lucene_suggest::suggest_field::SuggestField;
 use lucene_util::test_support::TempDir;
 
 const DOCS: usize = 60_000;

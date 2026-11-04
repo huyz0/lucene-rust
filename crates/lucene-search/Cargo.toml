@@ -41,6 +41,7 @@ asserting = []
 lucene-queryparser = { path = "../lucene-queryparser" }
 lucene-monitor = { path = "../lucene-monitor" }
 lucene-highlighter = { path = "../lucene-highlighter" }
+lucene-suggest = { path = "../lucene-suggest" }
 # The shared RAII scratch-directory guard (`lucene_util::test_support::TempDir`).
 # A `[dev-dependencies]` edge, so resolver-2 feature unification keeps the
 # module out of this crate's production build.
