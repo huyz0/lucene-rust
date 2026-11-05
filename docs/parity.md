@@ -94,7 +94,7 @@ Milestones (M1-M12, task ids such as T9.4) are [`docs/roadmap.md`](roadmap.md)'s
 | [ffi.md](parity/ffi.md) | `lucene-ffi`: handles, errors and the analysis entry points | 7 |
 | [plugin.md](parity/plugin.md) | `lucene-ffi`: the OpenSearch plugin boundary (JVM reader, FFM, query phase), M10 query shapes, M13 term ranges and completion-field indexes (suggester/highlighter execution deferred: `NamedRegistry` forbids replacing them) | 16 |
 | [plugin-geo.md](parity/plugin-geo.md) | OpenSearch plugin: geo queries and geo sorting (M9 T9.6) | 7 |
-| [engine.md](parity/engine.md) | The OpenSearch engine (M5): writer features it needed | 12 |
+| [engine.md](parity/engine.md) | The OpenSearch engine (M5): writer features it needed | 13 |
 
 ## Supported, in one paragraph
 

@@ -2297,6 +2297,9 @@ impl std::fmt::Debug for TermVectorsMeta {
     }
 }
 
+/// Per segment, each field's norms.
+pub type SegmentNorms<'a> = Vec<HashMap<String, crate::field_norms::FieldNorms<'a>>>;
+
 /// `DirectoryReader.open(Directory)`-equivalent: reads the latest
 /// `segments_N`, opens every listed segment (whichever files it actually
 /// has), and computes each segment's `doc_base` automatically as the running
@@ -2817,6 +2820,69 @@ impl DirectoryReader {
                 Ok(norms)
             })
             .collect()
+    }
+
+    /// [`Self::field_norms_by_field`] for a search over these segments and
+    /// documents outside them whose statistics `extra` gives per field
+    /// (`sumTotalTermFreq`, `docCount`): each field's average length is
+    /// over both. Also returns each field's average, for the other
+    /// documents' norms. The averages change with the other documents, so
+    /// nothing here is cached.
+    pub fn field_norms_by_field_with(
+        &self,
+        fields: &[String],
+        extra: &dyn Fn(&str) -> Option<(i64, i64)>,
+    ) -> Result<(SegmentNorms<'_>, HashMap<String, f32>)> {
+        let mut plans = Vec::new();
+        let mut averages = HashMap::new();
+        for field in fields {
+            let mut sum_total_term_freq = 0i64;
+            let mut doc_count = 0i64;
+            let mut seen = false;
+            for seg in &self.segments {
+                if let Some((stf, dc)) = seg.field_stats(field)? {
+                    seen = true;
+                    sum_total_term_freq = sum_total_term_freq.saturating_add(stf);
+                    doc_count = doc_count.saturating_add(i64::from(dc));
+                }
+            }
+            if let Some((stf, dc)) = extra(field) {
+                seen = true;
+                sum_total_term_freq = sum_total_term_freq.saturating_add(stf);
+                doc_count = doc_count.saturating_add(dc);
+            }
+            if !seen {
+                continue;
+            }
+            let avg = crate::field_norms::avg_field_length(sum_total_term_freq, doc_count);
+            averages.insert(field.clone(), avg);
+            let table = crate::field_norms::inverse_table(avg);
+            let sources = self
+                .segments
+                .iter()
+                .map(|seg| seg.norm_source(field))
+                .collect::<Result<Vec<_>>>()?;
+            plans.push((field, avg, table, sources));
+        }
+        let per_segment = self
+            .segments
+            .iter()
+            .enumerate()
+            .map(|(i, seg)| {
+                let mut norms = HashMap::new();
+                for (field, avg, table, sources) in &plans {
+                    if let Some(source) = sources.get(i).copied().flatten() {
+                        if let Some(values) =
+                            seg.norms_from_source(field, source, *avg, table.clone())?
+                        {
+                            norms.insert((*field).clone(), values);
+                        }
+                    }
+                }
+                Ok(norms)
+            })
+            .collect::<Result<_>>()?;
+        Ok((per_segment, averages))
     }
 
     /// Opens the per-segment `DocInput`/`PosInput`/`PayInput` values needed

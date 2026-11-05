@@ -113,7 +113,9 @@ use crate::stall_control::DocumentsWriterStallControl;
 use lucene_codecs::field_infos::FieldInfo;
 
 mod live;
-pub use live::{LiveBuffer, LiveBufferField, LiveFieldRequest, LiveRequest, LiveSnapshot};
+pub use live::{
+    LiveBuffer, LiveBufferField, LiveFieldRequest, LiveRequest, LiveSnapshot, LiveView, ViewBuffer,
+};
 
 /// One indexing slot's buffer -- `DocumentsWriterPerThread`, before its flush.
 #[derive(Default)]
