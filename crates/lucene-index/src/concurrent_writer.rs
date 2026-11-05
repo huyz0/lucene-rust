@@ -102,7 +102,7 @@ use crate::index_writer::packed_fields::{PackedFields, StreamedStored};
 use crate::index_writer::pending_postings::PendingPostings;
 use crate::index_writer::{
     buffer_node, custom_freq_terms_ram_bytes, document_ram_bytes, DeleteNode, DocumentBuffer,
-    DocumentVector, ExplicitDocument, ExplicitFields, FlushDeletes, IndexWriter, IndexingConfig,
+    DocumentVector, ExplicitDocs, ExplicitDocument, FlushDeletes, IndexWriter, IndexingConfig,
     InvertedTerms, Result, SegmentTicket, DISABLE_AUTO_FLUSH,
 };
 use crate::merge_policy::MergeTrigger;
@@ -1261,7 +1261,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
         &self,
         ticket: &SegmentTicket,
         mut docs: Vec<Document>,
-        (mut custom_freq_terms, mut vectors, packed, postings): Buffered,
+        (mut custom_freq_terms, mut vectors, mut packed, postings): Buffered,
         stored: Option<StreamedStored>,
         has_blocks: bool,
         mut private: BufferedUpdates,
@@ -1280,18 +1280,26 @@ impl<'d> ConcurrentIndexWriter<'d> {
                 ));
             }
         }
-        let mut explicit = if explicit_docs {
-            packed.unpack()?
+        // An index sort permutes whole documents, so their fields are
+        // unpacked; otherwise the flush reads them packed, a document at a
+        // time.
+        let mut unpacked = if explicit_docs && cfg.sorts_documents() {
+            std::mem::take(&mut packed).unpack()?
         } else {
-            vec![ExplicitFields::default(); docs.len()]
+            Vec::new()
         };
         let sort_map = cfg.sort_buffer(
             &mut docs,
             &mut custom_freq_terms,
             &mut vectors,
-            &mut explicit,
+            &mut unpacked,
             has_blocks,
         )?;
+        let explicit = if explicit_docs && !cfg.sorts_documents() {
+            ExplicitDocs::Packed(&packed)
+        } else {
+            ExplicitDocs::Fields(&unpacked)
+        };
         // The postings hold insertion-order doc ids; `sort_map` is
         // `new_to_old`.
         let old_to_new = sort_map.as_ref().map(|new_to_old| {
@@ -1311,7 +1319,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
             docs: &docs,
             custom_freq_terms: &custom_freq_terms,
             vectors: &vectors,
-            explicit: &explicit,
+            explicit,
             postings: postings.as_ref(),
             old_to_new: old_to_new.as_deref(),
             has_blocks,

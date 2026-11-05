@@ -111,6 +111,11 @@ impl TermHash {
         self.hashes.len()
     }
 
+    /// The bytes of every term held.
+    pub(crate) fn term_bytes(&self) -> usize {
+        self.arena.len()
+    }
+
     pub(crate) fn term(&self, id: u32) -> &[u8] {
         let (a, b) = (
             self.starts[id as usize],

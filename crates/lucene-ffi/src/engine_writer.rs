@@ -1638,6 +1638,10 @@ mod tests {
     }
 
     fn open_with_max_docs(tmp: &TempDir, fault_injection: u8, max_docs: i32) -> u64 {
+        open_with(tmp, 16.0, fault_injection, max_docs)
+    }
+
+    fn open_with(tmp: &TempDir, ram_mb: f64, fault_injection: u8, max_docs: i32) -> u64 {
         let path = tmp.path().to_str().unwrap();
         let mut h = 0;
         // SAFETY: live string and out-pointer.
@@ -1645,7 +1649,7 @@ mod tests {
             ffi_engine_writer_open(
                 path.as_ptr() as *const c_char,
                 path.len(),
-                16.0,
+                ram_mb,
                 fault_injection,
                 max_docs,
                 &mut h,
@@ -1768,13 +1772,15 @@ mod tests {
         check(&tmp);
     }
 
-    /// A buffered document is charged for its postings, its compressed
-    /// stored values and its packed fields, not for the structs it arrived
-    /// in (about 750 bytes each for this shape before they were packed).
+    /// A buffered document is charged for the heap its postings, compressed
+    /// stored values and packed fields hold: 70 positions with offsets come
+    /// to a few bytes each in the postings' byte slices (about 1.8 KB a
+    /// document when they were kept as ints and structs).
     #[test]
     fn a_buffered_document_charges_its_packed_size() {
         let tmp = empty_index("engine-writer-ram-per-doc");
-        let h = open(&tmp, 0);
+        // a buffer large enough that nothing flushes
+        let h = open_with(&tmp, 1024.0, 0, i32::MAX);
         let f = setup(h);
         let vocab: Vec<String> = (0..20000).map(|i| format!("t{i:x}")).collect();
         let mut x: u64 = 7;
@@ -1826,8 +1832,9 @@ mod tests {
             assert_eq!(apply(h, &b.0), 0, "{}", crate::error::last_error());
         }
         let s = stats(h);
+        assert_eq!(s[STAT_SEGMENTS], 0, "nothing flushed");
         let per_doc = s[STAT_RAM_BYTES] / n;
-        assert!(per_doc < 400, "{per_doc} bytes per document");
+        assert!(per_doc < 850, "{per_doc} bytes per document");
         ffi_engine_writer_close(h);
     }
 
