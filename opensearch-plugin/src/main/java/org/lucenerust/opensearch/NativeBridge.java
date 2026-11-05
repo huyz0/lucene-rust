@@ -1318,13 +1318,25 @@ public final class NativeBridge {
     public static final int STAT_SEGMENTS = 5;
     public static final int STAT_COUNT = 6;
 
+    /** {@link #writerOpen}'s flags. */
+    public static final int OPEN_FAULT_INJECTION = 1;
+    public static final int OPEN_SPARSE = 2;
+
     /**
      * Opens a shard's writer over the index at {@code path}, which must already hold a commit. Commit
      * points are dropped only through {@link #writerDeleteCommits}. {@code faultInjection} allows the
-     * test-only panic operation. {@code maxDocs} is {@code IndexWriter.getActualMaxDocs()}, which
-     * Lucene's tests lower.
+     * test-only panic operation; {@code sparse} writes the segments of an {@code index.sparse} index,
+     * with neural-search's codec and clustered postings. {@code maxDocs} is {@code
+     * IndexWriter.getActualMaxDocs()}, which Lucene's tests lower.
      */
-    public static int writerOpen(byte[] indexPathUtf8, double ramBufferMb, boolean faultInjection, int maxDocs, long[] outHandle) {
+    public static int writerOpen(
+        byte[] indexPathUtf8,
+        double ramBufferMb,
+        boolean faultInjection,
+        boolean sparse,
+        int maxDocs,
+        long[] outHandle
+    ) {
         if (indexPathUtf8 == null) {
             return nullArgument("path");
         }
@@ -1334,7 +1346,7 @@ public final class NativeBridge {
                 s.bytes(indexPathUtf8),
                 (long) indexPathUtf8.length,
                 ramBufferMb,
-                (byte) (faultInjection ? 1 : 0),
+                (byte) ((faultInjection ? OPEN_FAULT_INJECTION : 0) | (sparse ? OPEN_SPARSE : 0)),
                 maxDocs,
                 out
             );

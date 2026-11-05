@@ -33,6 +33,11 @@ import org.opensearch.plugins.AnalysisPlugin;
 import org.opensearch.plugins.CircuitBreakerPlugin;
 import org.opensearch.plugins.EnginePlugin;
 import org.opensearch.plugins.IndexStorePlugin;
+import org.opensearch.plugins.MapperPlugin;
+import org.opensearch.index.mapper.Mapper;
+import org.lucenerust.opensearch.sparse.NeuralSparseQueryBuilder;
+import org.lucenerust.opensearch.sparse.SparseSettings;
+import org.lucenerust.opensearch.sparse.SparseVectorFieldMapper;
 import org.opensearch.plugins.Plugin;
 import org.opensearch.plugins.SearchPlugin;
 import org.opensearch.rest.RestController;
@@ -68,7 +73,8 @@ public class RustSearchPlugin extends Plugin implements
     EnginePlugin,
     CircuitBreakerPlugin,
     AnalysisPlugin,
-    IndexStorePlugin {
+    IndexStorePlugin,
+    MapperPlugin {
     /**
      * Whether this node serves Rust-engine indices with the Rust writer; {@code false} serves them
      * with OpenSearch's own engine -- a mixed cluster, one index.
@@ -340,9 +346,22 @@ public class RustSearchPlugin extends Plugin implements
             LocalKeySource.KEY,
             LocalKeySource.KEY_ID,
             NODE_LAZY_DECRYPT,
-            NODE_DECRYPT_CACHE
+            NODE_DECRYPT_CACHE,
+            SparseSettings.SPARSE_INDEX
         ));
         return settings;
+    }
+
+    /** neural-search's {@code sparse_vector} field, which the Rust engine clusters and searches. */
+    @Override
+    public Map<String, Mapper.TypeParser> getMappers() {
+        return Map.of(SparseVectorFieldMapper.CONTENT_TYPE, new SparseVectorFieldMapper.TypeParser());
+    }
+
+    /** neural-search's {@code neural_sparse} query, by {@code query_tokens}. */
+    @Override
+    public List<QuerySpec<?>> getQueries() {
+        return List.of(new QuerySpec<>(NeuralSparseQueryBuilder.NAME, NeuralSparseQueryBuilder::new, NeuralSparseQueryBuilder::fromXContent));
     }
 
     @Override

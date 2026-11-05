@@ -138,6 +138,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
         Path indexPath,
         double ramBufferMb,
         boolean faultInjection,
+        boolean sparse,
         int maxDocs,
         Analyzer analyzer,
         Similarity similarity,
@@ -155,6 +156,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
             org.lucenerust.opensearch.store.RustEncryptedDirectory.nativePath(indexPath).getBytes(StandardCharsets.UTF_8),
             ramBufferMb,
             faultInjection,
+            sparse,
             maxDocs,
             out
         );

@@ -1066,3 +1066,228 @@ fn a_dense_skipper_primary_sort_with_blocks_is_not_a_doc_id_range() {
         }
     }
 }
+
+/// Scores the feature only on segments of at least two documents.
+#[derive(Debug)]
+struct LargeSegmentsOnly(FeatureQuery);
+
+impl DocumentQuery for LargeSegmentsOnly {
+    fn scores_leaf(&self, leaf: &OpenSegment<'_>) -> Result<bool> {
+        Ok(leaf.max_doc.is_some_and(|n| n >= 2))
+    }
+
+    fn constant_score(&self) -> bool {
+        self.0.constant_score()
+    }
+
+    fn score_leaf(
+        &self,
+        leaf: &OpenSegment<'_>,
+        boost: f32,
+        collector: &mut dyn ScoringCollector,
+    ) -> Result<()> {
+        self.0.score_leaf(leaf, boost, collector)
+    }
+}
+
+/// A document clause's filter restricts its matches (a filter matching
+/// nothing leaves the query unfiltered), and its fallback runs on the
+/// segments the query does not score.
+#[test]
+fn document_clause_filter_and_fallback() {
+    use crate::extended_query::DocumentClause;
+    use crate::index_searcher::{IndexSearcher, SegmentNorms};
+    use crate::query::{BooleanQuery, Clause, ConstantScoreQuery, TermQuery};
+    use std::sync::Arc;
+
+    let tmp = TempDir::new("doc-clause-filter");
+    let doc = |tag: &str, x: f32| {
+        vec![
+            b(d::StringField::new("tag", tag, Store::No)),
+            b(d::FeatureField::new("f", "x", x).unwrap()),
+        ]
+    };
+    let r = index(
+        &tmp,
+        vec![
+            vec![doc("a", 2.0), doc("b", 4.0), doc("a", 8.0)],
+            vec![doc("a", 3.0)],
+        ],
+    );
+    let opened = r.open_segments().unwrap();
+    let leaves = opened.as_open_segments();
+    let norms: Vec<SegmentNorms<'_, '_>> = leaves.iter().map(|_| None).collect();
+    let searcher = IndexSearcher::new(&leaves, &norms).unwrap();
+    let feature = || {
+        Arc::new(LargeSegmentsOnly(FeatureQuery::new(
+            "f",
+            "x",
+            FeatureFunction::Linear,
+        )))
+    };
+    let tag = |t: &str| Clause::from(TermQuery::new("tag", t.as_bytes().to_vec()));
+    let run = |clause: DocumentClause| {
+        let mut top = BooleanQuery::new();
+        top.must.push(clause.into());
+        searcher
+            .search(&top, 10)
+            .unwrap()
+            .score_docs
+            .iter()
+            .map(|h| (h.doc, h.score))
+            .collect::<Vec<_>>()
+    };
+    let value = |x: f32| d::FeatureField::decode_feature_value((x.to_bits() >> 15) as f32);
+
+    // No fallback: the small segment scores the feature too.
+    assert_eq!(
+        run(DocumentClause::new("all", feature())),
+        vec![
+            (2, value(8.0)),
+            (1, value(4.0)),
+            (3, value(3.0)),
+            (0, value(2.0))
+        ]
+    );
+    let fallback = Clause::from(ConstantScoreQuery::new(tag("a"), 0.5));
+    assert_eq!(
+        run(DocumentClause::new("filtered", feature())
+            .with_filter(tag("a"))
+            .with_fallback(fallback.clone())),
+        vec![(2, value(8.0)), (0, value(2.0)), (3, 0.5)]
+    );
+    assert_eq!(
+        run(DocumentClause::new("unfiltered", feature())
+            .with_filter(tag("zz"))
+            .with_fallback(fallback.clone())),
+        vec![(2, value(8.0)), (1, value(4.0)), (0, value(2.0)), (3, 0.5)]
+    );
+    let a = DocumentClause::new("k", feature()).with_filter(tag("a"));
+    assert_ne!(a, DocumentClause::new("k", feature()));
+    assert_ne!(a, a.clone().with_fallback(fallback.clone()));
+    assert_eq!(
+        format!("{:?}", a.with_fallback(fallback)),
+        r#"DocumentClause(k, filter Term(TermQuery { field: "tag", term: [97], doc_freq: None }), fallback ConstantScore(ConstantScoreQuery { inner: Term(TermQuery { field: "tag", term: [97], doc_freq: None }), score: 0.5 }))"#
+    );
+}
+
+/// Every match with its score, in collection order.
+#[derive(Default)]
+struct Hits(Vec<(i32, f32)>);
+
+impl ScoringCollector for Hits {
+    fn collect(&mut self, doc_id: i32, score: f32) {
+        self.0.push((doc_id, score));
+    }
+}
+
+/// A feature query runs as a term with impacts, alone or as boolean clauses,
+/// and keeps the scores and top hits of scoring every posting.
+#[test]
+// ARITH: the generator's arithmetic is wrapping, and doc ids stay under 3000.
+#[allow(clippy::arithmetic_side_effects)]
+fn feature_queries_prune_by_impacts() {
+    use crate::extended_query::DocumentClause;
+    use crate::index_searcher::{IndexSearcher, SegmentNorms};
+    use crate::query::{BooleanQuery, Clause};
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    let tmp = TempDir::new("feature-impacts");
+    let mut state = 0x9e37_79b9_u32;
+    let mut next = || {
+        state ^= state << 13;
+        state ^= state >> 17;
+        state ^= state << 5;
+        state
+    };
+    let docs: Vec<Vec<Box<dyn IndexableField>>> = (0..3000)
+        .map(|_| {
+            let mut fields = Vec::new();
+            for name in ["x", "y"] {
+                let r = next();
+                if r % 4 != 0 {
+                    let value = 0.01 + (r >> 8) as f32 / (1u32 << 24) as f32 * 50.0;
+                    fields.push(b(d::FeatureField::new("f", name, value).unwrap()));
+                }
+            }
+            fields
+        })
+        .collect();
+    let r = index(&tmp, vec![docs]);
+    let opened = r.open_segments().unwrap();
+    let leaves = opened.as_open_segments();
+    let norms: Vec<SegmentNorms<'_, '_>> = leaves.iter().map(|_| None).collect();
+    let searcher = IndexSearcher::new(&leaves, &norms).unwrap();
+    let clause = |q: Box<dyn DocumentQuery>, boost: f32| -> Clause {
+        let q: Arc<dyn DocumentQuery> = Arc::new(Boosted::new(q, boost));
+        DocumentClause::new(format!("{q:?}"), q).into()
+    };
+    let functions = [
+        FeatureFunction::Linear,
+        FeatureFunction::Log {
+            scaling_factor: 1.5,
+        },
+        FeatureFunction::Saturation { pivot: Some(7.0) },
+        FeatureFunction::Sigmoid { pivot: 7.0, a: 0.6 },
+    ];
+    for (i, function) in functions.into_iter().enumerate() {
+        let x = || Box::new(FeatureQuery::new("f", "x", function)) as Box<dyn DocumentQuery>;
+        let y = || {
+            Box::new(FeatureQuery::new("f", "y", FeatureFunction::Linear)) as Box<dyn DocumentQuery>
+        };
+        // Every posting scored, summed per document.
+        let mut want: HashMap<i32, f32> = HashMap::new();
+        for (q, boost) in [(x(), 2.0f32), (y(), 0.5)] {
+            let mut hits = Hits::default();
+            Boosted::new(q, boost)
+                .score_leaf(&leaves[0], 1.0, &mut hits)
+                .unwrap();
+            for (doc, score) in hits.0 {
+                *want.entry(doc).or_default() += score;
+            }
+        }
+        let mut want: Vec<(i32, f32)> = want.into_iter().collect();
+        want.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+        let mut both = BooleanQuery::new();
+        both.should.push(clause(x(), 2.0));
+        both.should.push(clause(y(), 0.5));
+        let got = searcher.search(&both, 10).unwrap();
+        let got: Vec<(i32, f32)> = got.score_docs.iter().map(|h| (h.doc, h.score)).collect();
+        assert_eq!(got.len(), 10, "function {i}");
+        for ((gd, gs), (wd, ws)) in got.iter().zip(&want) {
+            assert_eq!(gd, wd, "function {i}");
+            assert!(
+                (gs - ws).abs() <= ws.abs() * 1e-6,
+                "function {i}: {gs} vs {ws}"
+            );
+        }
+        // Alone: the exact scores, and every match counted without scores.
+        let mut alone = BooleanQuery::new();
+        alone.must.push(clause(x(), 2.0));
+        let mut hits = Hits::default();
+        Boosted::new(x(), 2.0)
+            .score_leaf(&leaves[0], 1.0, &mut hits)
+            .unwrap();
+        let mut each = hits.0;
+        each.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+        let got = searcher.search(&alone, 10).unwrap();
+        let got: Vec<(i32, f32)> = got.score_docs.iter().map(|h| (h.doc, h.score)).collect();
+        assert_eq!(got, each[..10].to_vec(), "function {i}");
+        assert_eq!(searcher.count(&alone).unwrap(), each.len() as u64);
+    }
+    // A missing feature or field matches nothing; an unrewritten saturation
+    // function keeps scoring every posting itself.
+    let mut none = BooleanQuery::new();
+    none.should.push(clause(
+        Box::new(FeatureQuery::new("f", "zz", FeatureFunction::Linear)),
+        1.0,
+    ));
+    none.should.push(clause(
+        Box::new(FeatureQuery::new("g", "x", FeatureFunction::Linear)),
+        1.0,
+    ));
+    assert!(searcher.search(&none, 10).unwrap().score_docs.is_empty());
+    let unrewritten = FeatureQuery::new("f", "x", FeatureFunction::Saturation { pivot: None });
+    assert!(unrewritten.sim_term(1.0).is_none());
+}

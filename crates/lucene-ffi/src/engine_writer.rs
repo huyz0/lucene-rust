@@ -460,8 +460,10 @@ fn decode_op(blob: &[u8]) -> Result<Op, FfiStatus> {
 /// u8 doc_values_type (0 none, 1 numeric, 2 binary, 3 sorted, 4 sorted_set,
 /// 5 sorted_numeric), u8 doc_values_skip_index, i32 point_dimension_count,
 /// i32 point_index_dimension_count, i32 point_num_bytes, i32 vector_dimension,
-/// u8 soft_deletes_field` -- Lucene's `FieldInfo` minus the attributes, which
-/// the writer sets per segment.
+/// u8 soft_deletes_field, i32 attribute count, then (i32 len, utf8) key and
+/// value pairs` -- Lucene's `FieldInfo`. The attributes are the field type's
+/// own (`FieldType.putAttribute`); the writer adds its per-field format ones
+/// per segment.
 fn decode_field(blob: &[u8]) -> Result<FieldInfo, FfiStatus> {
     let mut c = Cursor::new(blob);
     let name = c.string("field name")?;
@@ -502,6 +504,14 @@ fn decode_field(blob: &[u8]) -> Result<FieldInfo, FfiStatus> {
     let num_bytes = c.i32("point bytes")?;
     let vector_dimension = c.i32("vector dimension")?;
     let soft = flag(&mut c, "soft deletes")?;
+    let attributes = decode_user_data_pairs(
+        &mut c,
+        [
+            "field attribute count",
+            "field attribute key",
+            "field attribute value",
+        ],
+    )?;
     c.finish("trailing bytes after the field")?;
     let mut info = FieldInfo::new(name, 0)
         .with_index_options(index_options)
@@ -510,7 +520,8 @@ fn decode_field(blob: &[u8]) -> Result<FieldInfo, FfiStatus> {
         .with_store_payloads(store_payloads)
         .with_doc_values(doc_values_type, skip, -1)
         .with_points(dims, index_dims, num_bytes)
-        .with_soft_deletes_field(soft);
+        .with_soft_deletes_field(soft)
+        .with_attributes(attributes);
     if vector_dimension != 0 {
         info = info.with_vectors(
             vector_dimension,
@@ -524,14 +535,27 @@ fn decode_field(blob: &[u8]) -> Result<FieldInfo, FfiStatus> {
 /// `i32 count`, then `count` pairs of `(i32 len, utf8)` key and value.
 fn decode_user_data(blob: &[u8]) -> Result<Vec<(String, String)>, FfiStatus> {
     let mut c = Cursor::new(blob);
-    let n = c.count(8, "user data count")?;
+    let out = decode_user_data_pairs(
+        &mut c,
+        ["user data count", "user data key", "user data value"],
+    )?;
+    c.finish("trailing bytes after the user data")?;
+    Ok(out)
+}
+
+/// `i32 count`, then `count` pairs of `(i32 len, utf8)` key and value;
+/// `what` names the count, a key and a value in errors.
+fn decode_user_data_pairs(
+    c: &mut Cursor<'_>,
+    [count, key, value]: [&str; 3],
+) -> Result<Vec<(String, String)>, FfiStatus> {
+    let n = c.count(8, count)?;
     let mut out = try_with_capacity(n)?;
     for _ in 0..n {
-        let key = c.string("user data key")?;
-        let value = c.string("user data value")?;
-        out.push((key, value));
+        let k = c.string(key)?;
+        let v = c.string(value)?;
+        out.push((k, v));
     }
-    c.finish("trailing bytes after the user data")?;
     Ok(out)
 }
 
@@ -675,10 +699,16 @@ fn with_writer<T>(
     }
 }
 
+/// [`ffi_engine_writer_open`]'s flag allowing [`OP_PANIC`].
+pub const OPEN_FAULT_INJECTION: u8 = 1;
+/// [`ffi_engine_writer_open`]'s flag for an `index.sparse` index.
+pub const OPEN_SPARSE: u8 = 2;
+
 /// Opens the shard's writer over the index at `path`, which must already hold
 /// a commit (OpenSearch's `Store.createEmpty` or a recovered one).
-/// `ram_buffer_mb` is the flush threshold; `fault_injection != 0` allows the
-/// [`OP_PANIC`] operation.
+/// `ram_buffer_mb` is the flush threshold. `flags`: [`OPEN_FAULT_INJECTION`]
+/// allows the [`OP_PANIC`] operation; [`OPEN_SPARSE`] writes the segments of
+/// an `index.sparse` index ([`lucene_sparse::SparseCodec`]).
 ///
 /// # Safety
 /// `path` valid for `path_len` bytes; `out_handle` valid for one write.
@@ -687,7 +717,7 @@ pub unsafe extern "C" fn ffi_engine_writer_open(
     path: *const c_char,
     path_len: usize,
     ram_buffer_mb: f64,
-    fault_injection: u8,
+    flags: u8,
     max_docs: i32,
     out_handle: *mut u64,
 ) -> i32 {
@@ -720,7 +750,16 @@ pub unsafe extern "C" fn ffi_engine_writer_open(
         merges.set_default_max_merges_and_threads(false);
         merges.enable_auto_io_throttle();
         let open = || -> index_writer::Result<Arc<ConcurrentIndexWriter<'static>>> {
-            let mut writer = IndexWriter::open(dir_ref, Vec::new(), "Lucene104", VERSION)?;
+            let sparse = flags & OPEN_SPARSE != 0;
+            let codec = if sparse {
+                lucene_sparse::CODEC_NAME
+            } else {
+                "Lucene104"
+            };
+            let mut writer = IndexWriter::open(dir_ref, Vec::new(), codec, VERSION)?;
+            if sparse {
+                writer.set_codec(Some(Arc::new(lucene_sparse::SparseCodec)))?;
+            }
             writer.enable_explicit_documents()?;
             writer.set_deletion_policy(DeletionPolicy::KeepAll)?;
             writer.set_merge_policy(Some(MergePolicyConfig::default()));
@@ -752,7 +791,7 @@ pub unsafe extern "C" fn ffi_engine_writer_open(
                 next: 1,
             }),
             tragic: OnceLock::new(),
-            fault_injection: fault_injection != 0,
+            fault_injection: flags & OPEN_FAULT_INJECTION != 0,
         };
         let handle = lock_recovering(engine_writers()).insert_checked(Arc::new(engine))?;
         // SAFETY: caller contract.
@@ -1403,7 +1442,7 @@ mod tests {
     use lucene_util::test_support::TempDir;
 
     /// A little-endian blob builder mirroring the JVM side's.
-    #[derive(Default)]
+    #[derive(Default, Clone)]
     struct Blob(Vec<u8>);
 
     impl Blob {
@@ -1440,6 +1479,7 @@ mod tests {
             .i32(0)
             .i32(0)
             .u8(soft)
+            .i32(0)
             .0
     }
 
@@ -1625,6 +1665,85 @@ mod tests {
         for r in lucene_index::check_index::check_directory(&dir).unwrap() {
             assert!(r.all_passed(), "{}: {:?}", r.segment_name, r.failures());
         }
+    }
+
+    /// [`OPEN_SPARSE`]: segments record neural-search's codec and carry its
+    /// files, and a field keeps the attributes its spec gave it.
+    #[test]
+    fn a_sparse_writer_writes_neural_search_segments() {
+        let tmp = empty_index("engine-writer-sparse");
+        let h = open(&tmp, OPEN_SPARSE);
+        let f = setup(h);
+        // The spec less its empty attribute list, then one attribute.
+        let mut spec = field("emb", 2, 1, 2, 0);
+        spec.truncate(spec.len() - 4);
+        spec.extend_from_slice(
+            &Blob::default()
+                .i32(1)
+                .bytes(b"sparse_vector_field")
+                .bytes(b"true")
+                .0,
+        );
+        let emb = register(h, &spec).unwrap();
+        // `_id`, and `emb` as neural-search's mapper writes it: one
+        // `FeatureField` term per token, the forward index as binary doc values.
+        let freq = |v: f32| (v.to_bits() >> 15) as i32;
+        let mut forward = Vec::new();
+        for (t, v) in [(1i32, 0.5f32), (7, 2.0)] {
+            forward.extend_from_slice(&t.to_be_bytes());
+            forward.extend_from_slice(&v.to_be_bytes());
+        }
+        let add = Blob::default()
+            .u8(OP_ADD)
+            .i32(1)
+            .i32(1)
+            .i32(f.id)
+            .u8(1)
+            .bytes(b"a")
+            .i32(2)
+            .i32(f.id)
+            .u8(0)
+            .i32(1)
+            .bytes(b"a")
+            .i32(1)
+            .u8(0)
+            .i32(emb)
+            .u8(0)
+            .i32(2)
+            .bytes(b"1")
+            .i32(freq(0.5))
+            .u8(0)
+            .bytes(b"7")
+            .i32(freq(2.0))
+            .u8(0)
+            .i32(2)
+            .i32(f.seq)
+            .u8(0)
+            .i64(0)
+            .i32(emb)
+            .u8(1)
+            .bytes(&forward)
+            .i32(0);
+        assert_eq!(apply(h, &add.0), 0, "{}", crate::error::last_error());
+        commit(h, &[]);
+        ffi_engine_writer_close(h);
+        let dir = FsDirectory::open(tmp.path());
+        let reader = lucene_search::directory_reader::DirectoryReader::open(&dir).unwrap();
+        let seg = &reader.segment_readers()[0];
+        assert!(seg
+            .codec_file(lucene_sparse::postings::TERMS_EXTENSION)
+            .is_some());
+        let emb = seg
+            .field_infos()
+            .fields
+            .iter()
+            .find(|i| i.name == "emb")
+            .unwrap();
+        assert!(emb
+            .attributes
+            .iter()
+            .any(|(k, v)| k == "sparse_vector_field" && v == "true"));
+        check(&tmp);
     }
 
     /// `IndexWriter.tooManyDocs`: an add past the JVM's `maxDocs` fails that
@@ -2531,6 +2650,13 @@ mod tests {
             .i32(0)
             .i32(4)
             .u8(0);
+        let attributed = vector.clone().i32(1).bytes(b"k").bytes(b"v");
+        assert_eq!(
+            decode_field(&attributed.0).unwrap().attributes,
+            vec![("k".to_string(), "v".to_string())]
+        );
+        assert!(decode_field(&vector.clone().i32(1).bytes(b"k").0).is_err());
+        let vector = vector.i32(0);
         assert_eq!(decode_field(&vector.0).unwrap().vector_dimension, 4);
         assert!(decode_user_data(&Blob::default().i32(0).u8(0).0).is_err());
     }

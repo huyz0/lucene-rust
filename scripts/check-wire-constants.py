@@ -85,6 +85,13 @@ JAVA_ONLY = {
     ("LuceneChangesSnapshot.java", "MIN_SEQUENTIAL_ACCESS_BATCH_SIZE"): "derived OpenSearch engine code",
     ("RustIndexWriter.java", "BUFFER_BYTES_PER_BLOB_BYTE"): "the Java side's RAM accounting estimate",
     ("ExtendedEncoder.java", "MAX_REPEATS"): "Java refuses earlier than Rust's clause limit",
+    ("NeuralSparseQueryBuilder.java", "DEFAULT_TOP_N"): "neural-search's query default, resolved before encoding",
+    ("NeuralSparseQueryBuilder.java", "DEFAULT_K"): "neural-search's query default, resolved before encoding",
+    ("SparseMethod.java", "DEFAULT_N_POSTINGS"): "neural-search's mapping default, written as a field attribute",
+    ("SparseMethod.java", "DEFAULT_APPROXIMATE_THRESHOLD"): "neural-search's mapping default, written as a field attribute",
+    ("SparseMethod.java", "DEFAULT_CLUSTERING_BATCH_SIZE"): "neural-search's mapping default, written as a field attribute",
+    ("SparseMethod.java", "MIN_CLUSTERING_BATCH_SIZE"): "neural-search's mapping validation",
+    ("SparseMethod.java", "MAX_CLUSTERING_BATCH_SIZE"): "neural-search's mapping validation",
 }
 
 JAVA_CONST = re.compile(

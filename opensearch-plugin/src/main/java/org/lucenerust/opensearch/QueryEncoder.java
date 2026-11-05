@@ -430,6 +430,11 @@ public final class QueryEncoder {
         if (extended != ExtendedEncoder.NOT_EXTENDED) {
             return extended;
         }
+        // rank_feature and neural_sparse (SparseEncoder).
+        String sparse = SparseEncoder.node(q, out, c -> node(c, out, fieldOk, depth + 1, nodes));
+        if (sparse != SparseEncoder.NOT_SPARSE) {
+            return sparse;
+        }
         // The geo queries (GeoEncoder): written, or a geo reason to fall back.
         String geo = GeoEncoder.node(q, out);
         if (geo != GeoEncoder.NOT_GEO) {

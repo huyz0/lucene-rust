@@ -15,9 +15,13 @@
 //! | `34` long distance feature | `field`, `origin: i64`, `pivot: i64` | `LongDistanceFeatureQuery` (`distance_feature` on a `date`) |
 //! | `35` lat/lon distance feature | `field`, `lat: f64`, `lon: f64`, `pivot: f64` (metres) | `LatLonPointDistanceFeatureQuery` (`distance_feature` on a `geo_point`) |
 //! | `36` synonym | `field`, `count: i32`, each `term: bytes`, `boost: f32` bits as `i32` | `SynonymQuery` (a `match` whose analyzer stacks tokens: `hunspell`, `synonym_graph`, `keyword_repeat`) |
+//! | `37` feature | `field`, `feature: bytes`, `function: u8` (`0` linear; `1` log, then `scaling_factor: f32`; `2` saturation, then `pivot: f32`; `3` sigmoid, then `pivot: f32`, `exponent: f32`), each `f32` as `i32` bits | `FeatureField`'s `FeatureQuery` (`rank_feature`, `neural_sparse` on `rank_features`), its weight a boost node around it |
+//! | `38` sparse ANN | `field`, `count: i32`, each `token: i32`, `weight: f32` bits; `top_n: i32`, `k: i32`, `heap_factor: f32` bits, `has_filter: u8` and the filter (a node) when `1`, then the fallback (a node) | neural-search's `SparseVectorQuery` (`neural_sparse` with `method_parameters` on a `sparse_vector`) |
 //!
-//! The doc-values and distance-feature nodes become
+//! The doc-values, distance-feature, feature and sparse nodes become
 //! [`DocumentClause`]s keyed by their own wire bytes, as the geo nodes do.
+//! The sparse node's filter runs as `filter AND exists(field)`, as
+//! neural-search builds it.
 //! Every node is built through the constructor that checks what Java's
 //! checks; a count is bounded by the node limit or by the blob before it
 //! sizes anything.
@@ -27,19 +31,21 @@ use std::sync::Arc;
 use lucene_sandbox::search::{ByteRange, CoveringQuery, SortedSetDocValuesMultiRangeQuery};
 use lucene_search::document::geo::LatLonPointDistanceFeatureQuery;
 use lucene_search::document::{
-    DocValuesTermInSetQuery, DocumentQuery, LongDistanceFeatureQuery,
-    SortedNumericDocValuesRangeQuery, SortedNumericDocValuesSetQuery, SortedSetDocValuesRangeQuery,
+    DocValuesTermInSetQuery, DocumentQuery, FeatureFunction, FeatureQuery,
+    LongDistanceFeatureQuery, SortedNumericDocValuesRangeQuery, SortedNumericDocValuesSetQuery,
+    SortedSetDocValuesRangeQuery,
 };
 use lucene_search::extended_query::{
     AutomatonQuery, DocumentClause, ExtendedQuery, MultiTermQuery, MultiTermSource, RewriteMethod,
     SynonymQuery,
 };
-use lucene_search::query::Clause;
+use lucene_search::query::{BooleanQuery, Clause, FieldExistsQuery};
 use lucene_search::reader::doc_values::get_sorted_numeric;
 use lucene_search::reader::SortedNumericDocValues;
 use lucene_search::values_source::{
     long_constant, BoxDoubleValues, BoxLongValues, LongValues, LongValuesSource, ValuesContext,
 };
+use lucene_sparse::SparseAnnQuery;
 
 use crate::clauses::check_clause_count;
 use crate::error::FfiStatus;
@@ -57,9 +63,17 @@ pub(crate) const NODE_LONG_DISTANCE_FEATURE: u8 = 34;
 pub(crate) const NODE_GEO_DISTANCE_FEATURE: u8 = 35;
 /// `SynonymQuery`: `field`, `n: i32`, then `n` of `term: bytes`, `boost: f32`.
 pub(crate) const NODE_SYNONYM: u8 = 36;
+pub(crate) const NODE_FEATURE: u8 = 37;
+pub(crate) const NODE_SPARSE_ANN: u8 = 38;
 /// The first and last kinds this module decodes.
 pub(crate) const NODE_FIRST: u8 = NODE_MULTI_TERM;
-pub(crate) const NODE_LAST: u8 = NODE_SYNONYM;
+pub(crate) const NODE_LAST: u8 = NODE_SPARSE_ANN;
+
+/// The feature node's functions.
+const FEATURE_LINEAR: u8 = 0;
+const FEATURE_LOG: u8 = 1;
+const FEATURE_SATURATION: u8 = 2;
+const FEATURE_SIGMOID: u8 = 3;
 
 /// The multi-term node's rewrite methods.
 const REWRITE_CONSTANT_SCORE_BLENDED: u8 = 0;
@@ -80,7 +94,11 @@ fn utf8(b: &[u8]) -> Result<&str, FfiStatus> {
     std::str::from_utf8(b).map_err(|_| FfiStatus::InvalidUtf8)
 }
 
-/// A node of kinds 27-35, its kind byte read; `start` is the node's offset.
+fn f32(c: &mut Cursor<'_>) -> Result<f32, FfiStatus> {
+    Ok(f32::from_bits(c.i32()? as u32))
+}
+
+/// A node of kinds 27-38, its kind byte read; `start` is the node's offset.
 pub(crate) fn decode(
     c: &mut Cursor<'_>,
     kind: u8,
@@ -224,6 +242,76 @@ pub(crate) fn decode(
             let q = SynonymQuery::new(field, terms).map_err(|e| built("synonym query", e))?;
             return Ok(Clause::Extended(Box::new(ExtendedQuery::Synonym(q))));
         }
+        NODE_FEATURE => {
+            let field = field(c)?;
+            let feature = utf8(c.bytes()?)?.to_string();
+            let function = match c.u8()? {
+                FEATURE_LINEAR => FeatureFunction::Linear,
+                FEATURE_LOG => FeatureFunction::Log {
+                    scaling_factor: f32(c)?,
+                },
+                FEATURE_SATURATION => FeatureFunction::Saturation {
+                    pivot: Some(f32(c)?),
+                },
+                FEATURE_SIGMOID => FeatureFunction::Sigmoid {
+                    pivot: f32(c)?,
+                    a: f32(c)?,
+                },
+                other => {
+                    return Err(invalid(format!(
+                        "query tree: unknown feature function {other} (expected 0..=3)"
+                    )))
+                }
+            };
+            Arc::new(FeatureQuery::new(field, feature, function))
+        }
+        NODE_SPARSE_ANN => {
+            let field = field(c)?;
+            let count = c.len()?;
+            *nodes = nodes.saturating_add(count);
+            check_clause_count(*nodes)?;
+            let mut tokens = Vec::with_capacity(count); // alloc-ok: count is within the clause limit
+            for _ in 0..count {
+                let token = u32::try_from(c.i32()?)
+                    .map_err(|_| invalid("query tree: a negative sparse token"))?;
+                tokens.push((token, f32(c)?));
+            }
+            let positive = |what: &str, v: i32| {
+                usize::try_from(v).ok().filter(|&n| n > 0).ok_or_else(|| {
+                    invalid(format!("query tree: sparse {what} {v} is not positive"))
+                })
+            };
+            let top_n = positive("top_n", c.i32()?)?;
+            let k = positive("k", c.i32()?)?;
+            let heap_factor = f32(c)?;
+            let filter = match c.u8()? {
+                0 => None,
+                1 => Some(crate::jvm_reader::decode_node(c, depth + 1, nodes)?),
+                other => {
+                    return Err(invalid(format!(
+                        "query tree: sparse filter flag {other} (expected 0..=1)"
+                    )))
+                }
+            };
+            let fallback = crate::jvm_reader::decode_node(c, depth + 1, nodes)?;
+            let query = SparseAnnQuery {
+                field: field.clone(),
+                tokens,
+                top_n,
+                k,
+                heap_factor,
+            };
+            let mut clause =
+                DocumentClause::new(hex(c.since(start)), Arc::new(query)).with_fallback(fallback);
+            if let Some(filter) = filter {
+                let mut both = BooleanQuery::new();
+                both.filter.push(filter);
+                both.filter
+                    .push(Clause::Exists(FieldExistsQuery::new(field)));
+                clause = clause.with_filter(both.into());
+            }
+            return Ok(clause.into());
+        }
         NODE_GEO_DISTANCE_FEATURE => {
             let field = field(c)?;
             let (lat, lon, pivot) = (c.f64()?, c.f64()?, c.f64()?);
@@ -299,8 +387,8 @@ mod tests {
     use crate::jvm_nodes::tests::{fails, open, search, Blob, BODIES};
     use crate::jvm_reader::ffi_close_jvm_reader;
     use lucene_index::document::{
-        Document, LatLonDocValuesField, LatLonPoint, LongField, SortedNumericDocValuesField,
-        SortedSetDocValuesField, Store, StringField, TextField,
+        Document, FeatureField, LatLonDocValuesField, LatLonPoint, LongField,
+        SortedNumericDocValuesField, SortedSetDocValuesField, Store, StringField, TextField,
     };
     use lucene_index::index_writer::IndexWriter;
     use lucene_index::segment_info::LuceneVersion;
@@ -608,6 +696,192 @@ mod tests {
                 .f64(1.0),
         );
         assert!(e.contains("distance feature"), "{e}");
+        assert_eq!(ffi_close_jvm_reader(h), 0);
+    }
+
+    /// The seismic fixture (`fixtures/data/seismic/merged`, written by
+    /// OpenSearch with neural-search) copied into a temporary directory.
+    fn seismic_index(tag: &str) -> TempDir {
+        let tmp = TempDir::new(tag);
+        let from = format!(
+            "{}/../../fixtures/data/seismic/merged",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        for e in std::fs::read_dir(from).unwrap() {
+            let e = e.unwrap();
+            std::fs::copy(e.path(), tmp.path().join(e.file_name())).unwrap();
+        }
+        tmp
+    }
+
+    /// The fixture's cases: `(tokens, top_n, k, heap_factor, filter tag,
+    /// expected scores on the merged index)`.
+    #[allow(clippy::type_complexity)]
+    fn seismic_cases() -> Vec<(Vec<(i32, f32)>, i32, i32, f32, Option<String>, Vec<f32>)> {
+        let text = std::fs::read_to_string(format!(
+            "{}/../../fixtures/data/seismic/expected.tsv",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .unwrap();
+        let mut cases = Vec::new();
+        let mut current = None;
+        for line in text.lines() {
+            let cols: Vec<&str> = line.split('\t').collect();
+            match cols[0] {
+                "query" => {
+                    current = Some((
+                        Vec::new(),
+                        cols[1].parse().unwrap(),
+                        cols[2].parse().unwrap(),
+                        cols[3].parse().unwrap(),
+                        (cols[4] != "-").then(|| cols[4].to_string()),
+                        Vec::new(),
+                    ))
+                }
+                "tokens" => {
+                    current.as_mut().unwrap().0 = cols[1]
+                        .split(',')
+                        .map(|p| {
+                            let (t, w) = p.split_once(':').unwrap();
+                            (t.parse().unwrap(), w.parse().unwrap())
+                        })
+                        .collect()
+                }
+                "hits" if cols[1] == "merged" => {
+                    let mut case = current.take().unwrap();
+                    if cols.len() > 2 && !cols[2].is_empty() {
+                        case.5 = cols[2]
+                            .split(',')
+                            .map(|p| p.split_once(':').unwrap().1.parse().unwrap())
+                            .collect();
+                    }
+                    cases.push(case);
+                }
+                _ => {}
+            }
+        }
+        cases
+    }
+
+    fn sparse(
+        tokens: &[(i32, f32)],
+        top_n: i32,
+        k: i32,
+        heap_factor: f32,
+        filter: Option<&Blob>,
+        fallback: &Blob,
+    ) -> Blob {
+        let mut b = Blob::tree()
+            .u8(NODE_SPARSE_ANN)
+            .str("emb")
+            .i32(tokens.len() as i32);
+        for &(t, w) in tokens {
+            b = b.i32(t).f32(w);
+        }
+        b = b.i32(top_n).i32(k).f32(heap_factor);
+        b = match filter {
+            None => b.u8(0),
+            Some(f) => b.u8(1).raw(f),
+        };
+        b.raw(fallback)
+    }
+
+    fn feature(field: &str, feature: &str, function: &Blob) -> Blob {
+        Blob::default()
+            .u8(NODE_FEATURE)
+            .str(field)
+            .str(feature)
+            .raw(function)
+    }
+
+    #[test]
+    fn the_sparse_node_scores_as_neural_search_does() {
+        let tmp = seismic_index("jvm-queries-sparse");
+        let h = open(&tmp);
+        let none = Blob::default().u8(6);
+        let mut checked = 0;
+        for (tokens, top_n, k, heap_factor, tag, want) in seismic_cases() {
+            if want.len() > 20 {
+                continue;
+            }
+            let filter = tag.map(|t| Blob::default().term("tag", &t));
+            let q = sparse(&tokens, top_n, k, heap_factor, filter.as_ref(), &none);
+            let got: Vec<f32> = search(h, &q).0.into_iter().map(|(_, s)| s).collect();
+            assert_eq!(got, want, "{tokens:?} {top_n} {k} {heap_factor}");
+            checked += 1;
+        }
+        assert!(checked >= 30, "{checked}");
+        for (bad, what) in [
+            (
+                sparse(&[(-1, 1.0)], 1, 1, 1.0, None, &none),
+                "negative sparse token",
+            ),
+            (sparse(&[(1, 1.0)], 0, 1, 1.0, None, &none), "top_n 0"),
+            (sparse(&[(1, 1.0)], 1, -1, 1.0, None, &none), "k -1"),
+        ] {
+            let (_, e) = fails(h, &bad);
+            assert!(e.contains(what), "{e}");
+        }
+        let mut flag = sparse(&[(1, 1.0)], 1, 1, 1.0, None, &none);
+        let at = flag.0.len() - 2;
+        flag.0[at] = 2;
+        let (_, e) = fails(h, &flag);
+        assert!(e.contains("sparse filter flag 2"), "{e}");
+        assert_eq!(ffi_close_jvm_reader(h), 0);
+    }
+
+    #[test]
+    fn the_feature_node_scores_the_features_value() {
+        let tmp = TempDir::new("jvm-queries-feature");
+        let dir = FsDirectory::open(tmp.path());
+        let version = LuceneVersion {
+            major: 10,
+            minor: 5,
+            bugfix: 0,
+        };
+        let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", version).unwrap();
+        for v in [1.0f32, 4.0, 2.0] {
+            let mut d = Document::new();
+            d.add(FeatureField::new("f", "x", v).unwrap());
+            w.add_fields_document(&d).unwrap();
+        }
+        w.commit().unwrap();
+        drop(w);
+        let h = open(&tmp);
+        let value = |v: f32| FeatureField::decode_feature_value((v.to_bits() >> 15) as f32);
+        let linear = Blob::tree()
+            .u8(3)
+            .f32(2.0)
+            .raw(&feature("f", "x", &Blob::default().u8(0)));
+        assert_eq!(
+            search(h, &linear),
+            (
+                vec![
+                    (1, 2.0 * value(4.0)),
+                    (2, 2.0 * value(2.0)),
+                    (0, 2.0 * value(1.0))
+                ],
+                3
+            )
+        );
+        // Each function: the same documents, ordered alike.
+        for function in [
+            Blob::default().u8(1).f32(1.0),
+            Blob::default().u8(2).f32(1.0),
+            Blob::default().u8(3).f32(1.0).f32(0.5),
+        ] {
+            let (hits, n) = search(h, &Blob::tree().raw(&feature("f", "x", &function)));
+            assert_eq!(n, 3);
+            assert_eq!(hits.iter().map(|&(d, _)| d).collect::<Vec<_>>(), [1, 2, 0]);
+            assert!(hits.iter().all(|&(_, s)| s > 0.0));
+        }
+        let none = feature("f", "nope", &Blob::default().u8(0));
+        assert_eq!(search(h, &Blob::tree().raw(&none)).1, 0);
+        let (_, e) = fails(
+            h,
+            &Blob::tree().raw(&feature("f", "x", &Blob::default().u8(4))),
+        );
+        assert!(e.contains("unknown feature function 4"), "{e}");
         assert_eq!(ffi_close_jvm_reader(h), 0);
     }
 }
