@@ -145,6 +145,12 @@ pub(crate) use crate::sparse_docs_cache::DocsWithFieldCache;
 /// (re-)construct on demand -- see [`DirectoryReader::open_segments`].
 #[derive(Debug, Clone)]
 pub struct SegmentReader {
+    /// The files the segment's codec adds beside the native ones
+    /// ([`lucene_codecs::codecs::CodecFormats::extra_files`]), by extension.
+    codec_files: Arc<Vec<(&'static str, Arc<Input>)>>,
+    /// State other crates derive from this segment's core, one value per type
+    /// ([`Self::core_attachment`]), shared by every reopen that keeps the core.
+    attachments: Arc<Attachments>,
     /// The SimpleText codec's independently framed files and typed metadata.
     pub(crate) simpletext: Option<Arc<simpletext::SimpleTextCore>>,
     pub segment_name: String,
@@ -338,7 +344,65 @@ fn dv_per_field_suffix(field: &lucene_codecs::field_infos::FieldInfo) -> Option<
     Some(format!("{format}_{suffix}"))
 }
 
+/// [`SegmentReader::core_attachment`]'s values.
+#[derive(Default)]
+struct Attachments(
+    std::sync::Mutex<HashMap<std::any::TypeId, Arc<dyn std::any::Any + Send + Sync>>>,
+);
+
+impl std::fmt::Debug for Attachments {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Attachments")
+    }
+}
+
 impl SegmentReader {
+    /// The segment's file with extension `ext` that its codec adds beside the
+    /// native ones, when the codec declares it and the segment has it.
+    pub fn codec_file(&self, ext: &str) -> Option<&Arc<Input>> {
+        self.codec_files
+            .iter()
+            .find(|(e, _)| *e == ext)
+            .map(|(_, input)| input)
+    }
+
+    /// The value of type `T` derived from this segment's core: `init`'s, the
+    /// first time it succeeds, and the same `Arc` for every later call on this
+    /// reader or a reopen that keeps the core.
+    ///
+    /// # Errors
+    /// `init`'s error; nothing is kept then.
+    pub fn core_attachment<T, E>(
+        &self,
+        init: impl FnOnce(&Self) -> std::result::Result<T, E>,
+    ) -> std::result::Result<Arc<T>, E>
+    where
+        T: Send + Sync + 'static,
+    {
+        let key = std::any::TypeId::of::<T>();
+        let found = self
+            .attachments
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&key)
+            .cloned();
+        if let Some(found) = found.and_then(|v| v.downcast::<T>().ok()) {
+            return Ok(found);
+        }
+        let value = Arc::new(init(self)?);
+        let mut map = self
+            .attachments
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let kept = map
+            .entry(key)
+            .or_insert_with(|| value.clone() as Arc<dyn std::any::Any + Send + Sync>)
+            .clone();
+        Ok(kept.downcast::<T>().unwrap_or(value))
+    }
+
     /// A cheap in-memory copy of an already-open reader, used by
     /// [`DirectoryReader::open_at_reusing`] to reuse a segment without
     /// re-reading any files. Every heavyweight member -- the term dictionary,
@@ -877,7 +941,20 @@ impl SegmentReader {
             lucene_store::codec_util::check_whole_file_footer(meta, end)?;
         }
 
+        let mut codec_files = Vec::new();
+        if let Some(codec) = lucene_codecs::codecs::for_name(&commit.codec_name) {
+            for ext in codec.extra_files {
+                if let Some(input) =
+                    open_segment_file(dir, compound.as_ref(), &si.files, &format!(".{ext}"))?
+                {
+                    codec_files.push((*ext, input));
+                }
+            }
+        }
+
         Ok(SegmentReader {
+            codec_files: Arc::new(codec_files),
+            attachments: Arc::default(),
             simpletext: None,
             num_docs: crate::reader::num_docs_of(si.doc_count, live_docs.as_deref()),
             term_vectors,

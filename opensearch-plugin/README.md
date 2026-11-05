@@ -59,7 +59,14 @@ will refuse the call instead.
 The node loads the library and checks its ABI version at startup; a missing
 or mismatched library stops the node with one line saying which file and
 platform. OpenSearch accepts one `QueryPhaseSearcher` per node, so this plugin
-cannot be installed alongside `neural-search`.
+cannot be installed alongside `neural-search`. It serves neural-search's
+learned sparse search itself: the `sparse_vector` field (`seismic` method,
+`lucene` engine) on an `index.sparse` index, whose segments the Rust engine
+writes in neural-search's format (neural-search opens them unchanged), and the
+`neural_sparse` query by `query_tokens`, with `method_parameters` (`top_n`,
+`k`, `heap_factor`, `filter`), also on `rank_features` fields. `query_text`
+needs neural-search's model inference and is refused, as is the `native`
+sparse engine.
 
 ## Operate
 

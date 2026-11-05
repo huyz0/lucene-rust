@@ -149,6 +149,7 @@ where
     F: FnOnce() -> Result<(), FfiStatus> + std::panic::UnwindSafe,
 {
     install_panic_hook();
+    crate::register_codecs();
     ERROR_RECORDED.with(|c| c.set(false));
     CAPTURING_PANIC.with(|c| c.set(true));
     let outcome = std::panic::catch_unwind(body);

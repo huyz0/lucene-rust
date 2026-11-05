@@ -808,6 +808,7 @@ pub(crate) mod tests {
 
     /// The index opened as the plugin opens a searcher's reader.
     pub(crate) fn open(tmp: &TempDir) -> u64 {
+        crate::register_codecs();
         let dir = FsDirectory::open(tmp.path());
         let reader = lucene_search::directory_reader::DirectoryReader::open(&dir).unwrap();
         let name = std::fs::read_dir(tmp.path())

@@ -228,6 +228,12 @@ impl ExtendedQuery {
             ExtendedQuery::GlobalOrdinalsWithScore(q) => vec![q.to_query.as_ref()],
             ExtendedQuery::FunctionScore(q) => vec![q.in_query.as_ref()],
             ExtendedQuery::Covering(q) => q.queries.iter().collect(),
+            ExtendedQuery::Document(q) => q
+                .filter
+                .iter()
+                .chain(&q.fallback)
+                .map(AsRef::as_ref)
+                .collect(),
             #[cfg(any(test, feature = "asserting"))]
             ExtendedQuery::Test(q) => vec![q.query()],
             _ => Vec::new(),
@@ -1058,15 +1064,21 @@ pub fn inet_bytes(v: std::net::IpAddr) -> [u8; 16] {
 /// scorer does), every one scored the boost.
 ///
 /// `key` is the query's identity, which Java's `Query.equals` is: two
-/// clauses are equal exactly when their keys are, and the key is what
-/// [`std::fmt::Debug`] prints, so the query cache (which keys a clause by its
-/// debug form) tells two geo queries apart by it. The caller builds it from
+/// clauses are equal exactly when their keys, filters and fallbacks are, and
+/// those are what [`std::fmt::Debug`] prints, so the query cache (which keys
+/// a clause by its debug form) tells two geo queries apart by them. The caller builds it from
 /// everything the query depends on -- the FFI decoder uses the query's own
 /// wire bytes.
 #[derive(Clone)]
 pub struct DocumentClause {
     pub key: String,
     pub query: Arc<dyn crate::document::DocumentQuery>,
+    /// Documents the query is restricted to, as a KNN query's filter is: each
+    /// segment's live matches reach [`crate::document::DocumentQuery::score_leaf_filtered`].
+    pub filter: Option<Box<Clause>>,
+    /// What runs on a segment the query does not score itself
+    /// ([`crate::document::DocumentQuery::scores_leaf`]).
+    pub fallback: Option<Box<Clause>>,
 }
 
 impl DocumentClause {
@@ -1075,19 +1087,42 @@ impl DocumentClause {
         Self {
             key: key.into(),
             query,
+            filter: None,
+            fallback: None,
         }
+    }
+
+    /// This clause restricted to `filter`'s documents.
+    #[must_use]
+    pub fn with_filter(mut self, filter: Clause) -> Self {
+        self.filter = Some(Box::new(filter));
+        self
+    }
+
+    /// This clause running `fallback` on the segments its query does not score.
+    #[must_use]
+    pub fn with_fallback(mut self, fallback: Clause) -> Self {
+        self.fallback = Some(Box::new(fallback));
+        self
     }
 }
 
 impl std::fmt::Debug for DocumentClause {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "DocumentClause({})", self.key)
+        write!(f, "DocumentClause({}", self.key)?;
+        if let Some(filter) = &self.filter {
+            write!(f, ", filter {filter:?}")?;
+        }
+        if let Some(fallback) = &self.fallback {
+            write!(f, ", fallback {fallback:?}")?;
+        }
+        f.write_str(")")
     }
 }
 
 impl PartialEq for DocumentClause {
     fn eq(&self, other: &Self) -> bool {
-        self.key == other.key
+        self.key == other.key && self.filter == other.filter && self.fallback == other.fallback
     }
 }
 

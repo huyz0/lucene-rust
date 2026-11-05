@@ -2945,6 +2945,18 @@ fn merge_segments_mapped_inner(
         }
     }
 
+    let extra = crate::index_writer::write_codec_segment_files(
+        options.codec.as_deref(),
+        lucene_codecs::codec::SegmentWrite {
+            directory: dir,
+            segment: merged_segment_name,
+            id: &merged_segment_id,
+            max_doc: doc_count,
+            field_infos: &merged_fields,
+            files: &files,
+        },
+    )?;
+    files.extend(extra);
     // `Lucene99SegmentInfoFormat.write` does `si.addFile(fileName)` *before*
     // writing, so a real Lucene `.si` lists itself -- and `IndexFileDeleter`
     // reference-counts from exactly this set, so a merged `.si` absent from

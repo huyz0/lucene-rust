@@ -235,6 +235,7 @@ public final class EncryptedStoreTest {
                     root.toRealPath(),
                     16,
                     false,
+                    false,
                     IndexWriter.MAX_DOCS,
                     new StandardAnalyzer(),
                     new BM25Similarity(),

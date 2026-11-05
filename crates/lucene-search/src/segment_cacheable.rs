@@ -78,7 +78,9 @@ pub fn is_cacheable(clause: &Clause, reader: Option<&SegmentReader>) -> bool {
             }
             crate::extended_query::ExtendedQuery::ToParentBlockJoin(_)
             | crate::extended_query::ExtendedQuery::ToChildBlockJoin(_)
-            | crate::extended_query::ExtendedQuery::ParentsChildrenBlockJoin(_) => {
+            | crate::extended_query::ExtendedQuery::ParentsChildrenBlockJoin(_)
+            // A document clause's filter and fallback run inside its scorer.
+            | crate::extended_query::ExtendedQuery::Document(_) => {
                 e.children().into_iter().all(|c| is_cacheable(c, reader))
             }
             _ => true,

@@ -8,7 +8,9 @@ import org.apache.lucene.index.DocValuesType;
 import org.apache.lucene.index.IndexOptions;
 import org.apache.lucene.index.IndexableFieldType;
 
+import java.util.Map;
 import java.util.Objects;
+import java.util.TreeMap;
 
 /**
  * One field's schema as a document declares it: Lucene's {@code IndexingChain.FieldSchema}, which
@@ -28,6 +30,8 @@ final class FieldSchema {
     int pointNumBytes;
     int vectorDimension;
     boolean softDeletes;
+    /** The field types' own attributes ({@code FieldType.putAttribute}), as {@code IndexingChain} collects them. */
+    final Map<String, String> attributes = new TreeMap<>();
 
     FieldSchema(String name) {
         this.name = name;
@@ -68,6 +72,10 @@ final class FieldSchema {
         }
         if (type.vectorDimension() != 0) {
             vectorDimension = type.vectorDimension();
+        }
+        Map<String, String> a = type.getAttributes();
+        if (a != null) {
+            attributes.putAll(a);
         }
     }
 
@@ -139,7 +147,11 @@ final class FieldSchema {
         });
         b.bool(skipIndex != DocValuesSkipIndexType.NONE);
         b.i32(pointDimensionCount).i32(pointIndexDimensionCount).i32(pointNumBytes).i32(vectorDimension);
-        return b.bool(softDeletes).toArray();
+        b.bool(softDeletes).i32(attributes.size());
+        for (Map.Entry<String, String> a : attributes.entrySet()) {
+            b.string(a.getKey()).string(a.getValue());
+        }
+        return b.toArray();
     }
 
     @Override
@@ -155,7 +167,8 @@ final class FieldSchema {
                 && pointIndexDimensionCount == s.pointIndexDimensionCount
                 && pointNumBytes == s.pointNumBytes
                 && vectorDimension == s.vectorDimension
-                && softDeletes == s.softDeletes;
+                && softDeletes == s.softDeletes
+                && attributes.equals(s.attributes);
         }
         return false;
     }

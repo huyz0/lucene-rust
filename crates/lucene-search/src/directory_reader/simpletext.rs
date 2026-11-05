@@ -485,6 +485,8 @@ impl SegmentReader {
             num_docs: crate::reader::num_docs_of(core.info.doc_count, live_docs.as_deref()),
             field_infos: core.field_infos.clone(),
             simpletext: Some(core),
+            codec_files: Arc::default(),
+            attachments: Arc::default(),
             segment_name: commit.segment_name.clone(),
             segment_id: commit.segment_id,
             doc_base,
