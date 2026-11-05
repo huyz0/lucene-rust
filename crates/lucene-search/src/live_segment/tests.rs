@@ -493,37 +493,50 @@ fn the_writers_buffer_searches_like_its_committed_segment() {
     }
     w.delete_documents_by_term(&[gone]).unwrap();
 
-    for (q, wanted) in queries() {
-        let request = LiveRequest {
-            fields: ["body", "tag"]
-                .iter()
-                .map(|f| LiveFieldRequest {
-                    field: f.to_string(),
-                    terms: wanted.iter().map(|t| t.as_bytes().to_vec()).collect(),
-                    positions: true,
-                })
-                .collect(),
-        };
+    for (q, _) in queries() {
+        let request = super::live_request(&Clause::Boolean(Box::new(q.clone()))).unwrap();
         let snap = w.live_snapshot(&request, None).unwrap();
         assert_eq!(snap.buffers.len(), 1);
-        let b = snap.buffers.into_iter().next().unwrap();
-        assert!(!b.deleted.is_empty());
-        let fields: Vec<LiveField> = b
-            .fields
-            .into_iter()
-            .map(|f| LiveField {
-                info: f.info,
-                terms: f.terms,
-                norms: f.norms,
-                num_terms: f.num_terms,
-                sum_total_term_freq: f.sum_total_term_freq,
-                sum_doc_freq: f.sum_doc_freq,
-                doc_count: f.doc_count,
-            })
-            .collect();
-        let live = LiveSegment::build(&fields, b.max_doc, &b.deleted).unwrap();
+        assert!(!snap.buffers[0].deleted.is_empty());
+        let live = super::live_segments(snap).unwrap().pop().unwrap();
         let expected = hits(&s, &q);
         assert!(expected.0 > 0, "{q:?} matches nothing");
         assert_eq!(live_hits(&live, &q), expected, "{q:?}");
     }
+}
+
+/// A query's terms are read by field, with positions only for the fields a
+/// phrase reads; a clause the buffers cannot answer is refused.
+#[test]
+fn a_query_reads_its_terms_and_refuses_what_the_buffers_cannot_answer() {
+    let (q, _) = queries().swap_remove(3);
+    let mut b = q.clone();
+    b.should.push(term("tag", "t1"));
+    b.must_not.push(term("tag", "t0"));
+    let request = super::live_request(&Clause::Boolean(Box::new(b))).unwrap();
+    let fields: Vec<(String, Vec<Vec<u8>>, bool)> = request
+        .fields
+        .into_iter()
+        .map(|f| (f.field, f.terms, f.positions))
+        .collect();
+    assert_eq!(
+        fields,
+        [
+            (
+                "body".to_string(),
+                vec![b"w0".to_vec(), b"w1".to_vec()],
+                true
+            ),
+            (
+                "tag".to_string(),
+                vec![b"t0".to_vec(), b"t1".to_vec()],
+                false
+            ),
+        ]
+    );
+    let mut b = BooleanQuery::new();
+    b.should.push(term("body", "w0"));
+    b.filter
+        .push(Clause::Prefix(crate::query::PrefixQuery::new("body", "w")));
+    assert!(super::live_request(&Clause::Boolean(Box::new(b))).is_none());
 }
