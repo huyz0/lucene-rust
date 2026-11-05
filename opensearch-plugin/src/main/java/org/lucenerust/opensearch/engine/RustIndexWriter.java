@@ -107,11 +107,6 @@ final class RustIndexWriter implements DocumentIndexWriter {
     /** The newest commit generation whose readers' buffers {@link #releaseLive} let go; under {@link #liveLock}. */
     private long liveReleased = -1;
     private final Object liveLock = new Object();
-    /** Updates and deletes begun, and finished, since the writer opened. */
-    private final AtomicLong updatesBegun = new AtomicLong();
-    private final AtomicLong updatesDone = new AtomicLong();
-    /** Per recent commit generation, the updates done before it began: every one of them is in it. */
-    private final java.util.concurrent.ConcurrentSkipListMap<Long, Long> updatesBefore = new java.util.concurrent.ConcurrentSkipListMap<>();
     /** The leaf's field infos and the registry size they were built at; under {@link #liveLock}. */
     private org.apache.lucene.index.FieldInfos liveInfos;
     private int liveInfosSize = -1;
@@ -211,7 +206,6 @@ final class RustIndexWriter implements DocumentIndexWriter {
             synchronized (w.lock) {
                 w.liveCommitData = SegmentInfos.readLatestCommit(directory).getUserData().entrySet();
                 w.onNewCommits();
-                w.updatesBefore.put(w.latestGeneration, 0L);
             }
             success = true;
             return w;
@@ -402,12 +396,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
         Field... softDeletesField
     ) throws IOException {
         ensureOpen();
-        updatesBegun.incrementAndGet();
-        try {
-            apply(encoder.softUpdate(uid, docs, onlySoftDeletesField(softDeletesField)), docs.size());
-        } finally {
-            updatesDone.incrementAndGet();
-        }
+        apply(encoder.softUpdate(uid, docs, onlySoftDeletesField(softDeletesField)), docs.size());
     }
 
     @Override
@@ -415,12 +404,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
         throws IOException {
         ensureOpen();
         maybeInjectFault(doc);
-        updatesBegun.incrementAndGet();
-        try {
-            apply(encoder.softUpdate(uid, List.of(doc), onlySoftDeletesField(softDeletesField)), 1);
-        } finally {
-            updatesDone.incrementAndGet();
-        }
+        apply(encoder.softUpdate(uid, List.of(doc), onlySoftDeletesField(softDeletesField)), 1);
     }
 
     @Override
@@ -490,7 +474,6 @@ final class RustIndexWriter implements DocumentIndexWriter {
         // Adds counted from here on may or may not be in the commit; they stay counted until the
         // next one, so the pending count errs high, never low.
         long counted = docsSinceCommit.get();
-        long updated = updatesDone.get();
         Iterable<Map.Entry<String, String>> data = liveCommitData;
         committingData = data instanceof StagedCommitData staged ? staged.beforeFlush() : data;
         long[] out = new long[1];
@@ -515,10 +498,6 @@ final class RustIndexWriter implements DocumentIndexWriter {
             throw new IOException("evaluating the commit data failed", failure);
         }
         check(status, "commit");
-        updatesBefore.put(out[0], updated);
-        while (updatesBefore.size() > 64) {
-            updatesBefore.pollFirstEntry();
-        }
         docsSinceCommit.addAndGet(-counted);
         reconcileBreaker();
         onNewCommits();
@@ -773,16 +752,6 @@ final class RustIndexWriter implements DocumentIndexWriter {
                 indexing.readLock().unlock();
             }
         }
-    }
-
-    /**
-     * Whether an update or delete may have reached a document a reader of commit {@code
-     * generation} holds since that commit: the reader still shows the document, so a search of it
-     * and the buffers together would show it twice, or deleted.
-     */
-    boolean updatedSince(long generation) {
-        Long before = updatesBefore.get(generation);
-        return before == null || updatesBegun.get() != before;
     }
 
     /**
