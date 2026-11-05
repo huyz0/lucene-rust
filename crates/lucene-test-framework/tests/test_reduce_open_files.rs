@@ -48,7 +48,7 @@ fn log_policy() {
 fn tiered_policy() {
     let mut tmp = TieredMergePolicy::default();
     tmp.config.max_merge_at_once = 30;
-    tmp.config.segments_per_tier = 4;
+    tmp.config.segments_per_tier = 4.0;
     let live = LiveMergePolicy::new(PolicyKind::Tiered(tmp));
     reduce_open_files(&live, None);
     assert_eq!(no_cfs_ratio(&live), 1.0);
@@ -57,7 +57,7 @@ fn tiered_policy() {
     };
     assert_eq!(
         (tmp.config.max_merge_at_once, tmp.config.segments_per_tier),
-        (5, 4)
+        (5, 4.0)
     );
 }
 

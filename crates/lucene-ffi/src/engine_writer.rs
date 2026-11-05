@@ -1239,6 +1239,64 @@ pub extern "C" fn ffi_engine_writer_set_retention(
     })
 }
 
+/// `index.merge.policy.*` as OpenSearch's `TieredMergePolicyProvider` sets
+/// them on its `TieredMergePolicy`: merges at once, segments per tier, the
+/// largest merged segment and the floor size in bytes, the deletes
+/// percentage natural merges tolerate, and the one `forceMergeDeletes`
+/// tolerates. Applies to the merges proposed from the next flush on, and to
+/// the merge-on-flush policy the next time it is set. A writer with merges
+/// off keeps them off.
+#[no_mangle]
+pub extern "C" fn ffi_engine_writer_set_merge_policy(
+    handle: u64,
+    max_merge_at_once: i32,
+    segments_per_tier: f64,
+    max_merged_segment_bytes: i64,
+    floor_segment_bytes: i64,
+    deletes_pct_allowed: f64,
+    force_merge_deletes_pct_allowed: f64,
+) -> i32 {
+    guard(|| {
+        let invalid = |what: &str| {
+            set_last_error(format!("invalid merge policy setting: {what}"));
+            FfiStatus::InvalidArgument
+        };
+        let max_merge_at_once = usize::try_from(max_merge_at_once)
+            .ok()
+            .filter(|&n| n >= 2)
+            .ok_or_else(|| invalid("max_merge_at_once < 2"))?;
+        if segments_per_tier.is_nan() || segments_per_tier < 2.0 {
+            return Err(invalid("segments_per_tier < 2"));
+        }
+        let max_merged_segment_size = u64::try_from(max_merged_segment_bytes)
+            .map_err(|_| invalid("max_merged_segment < 0"))?;
+        let floor_segment_size =
+            u64::try_from(floor_segment_bytes).map_err(|_| invalid("floor_segment < 0"))?;
+        if !(5.0..=50.0).contains(&deletes_pct_allowed) {
+            return Err(invalid("deletes_pct_allowed outside [5, 50]"));
+        }
+        if !(0.0..=100.0).contains(&force_merge_deletes_pct_allowed) {
+            return Err(invalid("expunge_deletes_allowed outside [0, 100]"));
+        }
+        with_writer(handle, |w| {
+            w.writer().with_writer(|iw| {
+                // A writer with merges off keeps them off.
+                let Some(mut config) = iw.merge_policy().cloned() else {
+                    return;
+                };
+                config.max_merge_at_once = max_merge_at_once;
+                config.segments_per_tier = segments_per_tier;
+                config.max_merged_segment_size = max_merged_segment_size;
+                config.floor_segment_size = floor_segment_size;
+                config.deletes_pct_allowed = deletes_pct_allowed;
+                config.force_merge_deletes_pct_allowed = force_merge_deletes_pct_allowed;
+                iw.set_merge_policy(Some(config));
+            });
+            Ok(())
+        })
+    })
+}
+
 /// Merge-on-commit/refresh as OpenSearch's `NativeLuceneIndexWriterFactory`
 /// configures it from `index.merge_on_flush.*`: commits and refreshes wait
 /// up to `wait_millis` for the merges the policy asks of the segments they
@@ -1256,7 +1314,8 @@ pub extern "C" fn ffi_engine_writer_set_merge_on_flush(
             w.writer().with_writer(|iw| {
                 iw.set_max_full_flush_merge_wait_millis(wait_millis);
                 let policy = (merge_on_flush_policy != 0).then(|| {
-                    let inner = TieredMergePolicy::new(MergePolicyConfig::default());
+                    let inner =
+                        TieredMergePolicy::new(iw.merge_policy().cloned().unwrap_or_default());
                     Arc::new(MergeOnFlushMergePolicy::new(Box::new(inner))) as Arc<dyn MergePolicy>
                 });
                 iw.set_full_flush_merge_policy(policy);
@@ -1709,6 +1768,69 @@ mod tests {
         check(&tmp);
     }
 
+    /// A buffered document is charged for its postings, its compressed
+    /// stored values and its packed fields, not for the structs it arrived
+    /// in (about 750 bytes each for this shape before they were packed).
+    #[test]
+    fn a_buffered_document_charges_its_packed_size() {
+        let tmp = empty_index("engine-writer-ram-per-doc");
+        let h = open(&tmp, 0);
+        let f = setup(h);
+        let vocab: Vec<String> = (0..20000).map(|i| format!("t{i:x}")).collect();
+        let mut x: u64 = 7;
+        let n = 20000;
+        let source = "x".repeat(400);
+        for d in 0..n {
+            let mut words = Vec::new();
+            for _ in 0..70 {
+                x = x
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                let r = (x >> 33) as f64 / (1u64 << 31) as f64;
+                words.push(vocab[((r * r * r) * 20000.0) as usize].as_str());
+            }
+            let id = format!("{d}");
+            let b = Blob::default()
+                .u8(OP_ADD)
+                .i32(1)
+                .i32(1)
+                .i32(f.id)
+                .u8(1)
+                .bytes(source.as_bytes())
+                .i32(2)
+                .i32(f.id)
+                .u8(0)
+                .i32(1)
+                .bytes(id.as_bytes())
+                .i32(1)
+                .u8(0);
+            let mut terms: std::collections::BTreeMap<&str, Vec<i32>> = Default::default();
+            for (p, w) in words.iter().enumerate() {
+                terms.entry(w).or_default().push(p as i32);
+            }
+            let mut b = b
+                .i32(f.body)
+                .u8(1)
+                .i64(words.len() as i64)
+                .i32(terms.len() as i32);
+            for (w, ps) in &terms {
+                b = b.bytes(w.as_bytes()).i32(ps.len() as i32).u8(3);
+                for &p in ps {
+                    b = b.i32(p);
+                }
+                for &p in ps {
+                    b = b.i32(p * 4).i32(p * 4 + 3);
+                }
+            }
+            let b = b.i32(1).i32(f.seq).u8(0).i64(d).i32(0);
+            assert_eq!(apply(h, &b.0), 0, "{}", crate::error::last_error());
+        }
+        let s = stats(h);
+        let per_doc = s[STAT_RAM_BYTES] / n;
+        assert!(per_doc < 400, "{per_doc} bytes per document");
+        ffi_engine_writer_close(h);
+    }
+
     /// The engine keeps the commits it has always written: merge-on-commit
     /// off (as OpenSearch configures Lucene) and loose segment files, set
     /// explicitly rather than inherited from `IndexWriter`'s defaults.
@@ -1720,6 +1842,55 @@ mod tests {
         engine.writer().with_writer(|w| {
             assert_eq!(w.max_full_flush_merge_wait_millis(), 0);
             assert!(!w.use_compound_file());
+        });
+        ffi_engine_writer_close(h);
+    }
+
+    /// `index.merge.policy.*` reaches the writer's tiered policy, and the
+    /// merge-on-flush policy set afterwards wraps those settings; values
+    /// OpenSearch's settings would refuse are refused.
+    #[test]
+    fn the_shard_merge_policy_settings_reach_the_writer() {
+        let tmp = empty_index("engine-writer-merge-policy");
+        let h = open(&tmp, 0);
+        let mb = 1024 * 1024;
+        assert_eq!(
+            ffi_engine_writer_set_merge_policy(h, 30, 10.0, 5 * 1024 * mb, 16 * mb, 20.0, 10.0),
+            0
+        );
+        lookup(h).unwrap().writer().with_writer(|w| {
+            let p = w.merge_policy().unwrap();
+            assert_eq!(p.max_merge_at_once, 30);
+            assert_eq!(p.segments_per_tier, 10.0);
+            assert_eq!(p.max_merged_segment_size, 5 * 1024 * mb as u64);
+            assert_eq!(p.floor_segment_size, 16 * mb as u64);
+            assert_eq!(p.deletes_pct_allowed, 20.0);
+            assert_eq!(p.force_merge_deletes_pct_allowed, 10.0);
+        });
+        assert_eq!(ffi_engine_writer_set_merge_on_flush(h, 1000, 1), 0);
+        let bad = FfiStatus::InvalidArgument.code();
+        assert_eq!(
+            ffi_engine_writer_set_merge_policy(h, 1, 10.0, mb, mb, 20.0, 10.0),
+            bad
+        );
+        assert_eq!(
+            ffi_engine_writer_set_merge_policy(h, 10, 1.5, mb, mb, 20.0, 10.0),
+            bad
+        );
+        assert_eq!(
+            ffi_engine_writer_set_merge_policy(h, 10, f64::NAN, mb, mb, 20.0, 10.0),
+            bad
+        );
+        assert_eq!(
+            ffi_engine_writer_set_merge_policy(h, 10, 10.0, -1, mb, 20.0, 10.0),
+            bad
+        );
+        assert_eq!(
+            ffi_engine_writer_set_merge_policy(h, 10, 10.0, mb, mb, 60.0, 10.0),
+            bad
+        );
+        lookup(h).unwrap().writer().with_writer(|w| {
+            assert_eq!(w.merge_policy().unwrap().max_merge_at_once, 30);
         });
         ffi_engine_writer_close(h);
     }

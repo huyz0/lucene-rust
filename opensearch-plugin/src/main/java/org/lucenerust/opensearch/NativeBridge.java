@@ -38,7 +38,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code jvm_reader.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 60;
+    public static final int EXPECTED_ABI_VERSION = 61;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -263,6 +263,10 @@ public final class NativeBridge {
         static final MethodHandle WRITER_SET_MERGE_SCHEDULER = bind(
             "ffi_engine_writer_set_merge_scheduler",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_BYTE, JAVA_DOUBLE)
+        );
+        static final MethodHandle WRITER_SET_MERGE_POLICY = bind(
+            "ffi_engine_writer_set_merge_policy",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_DOUBLE, JAVA_LONG, JAVA_LONG, JAVA_DOUBLE, JAVA_DOUBLE)
         );
         static final MethodHandle WRITER_COMMIT_GENERATIONS = bind(
             "ffi_engine_writer_commit_generations",
@@ -1525,6 +1529,34 @@ public final class NativeBridge {
                 maxThreadCount,
                 (byte) (autoThrottle ? 1 : 0),
                 maxForceMergeMbPerSec
+            );
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * {@code index.merge.policy.*}: the writer's {@code TieredMergePolicy} settings, sizes in bytes and
+     * deletes as percentages.
+     */
+    public static int writerSetMergePolicy(
+        long handle,
+        int maxMergeAtOnce,
+        double segmentsPerTier,
+        long maxMergedSegmentBytes,
+        long floorSegmentBytes,
+        double deletesPctAllowed,
+        double forceMergeDeletesPctAllowed
+    ) {
+        try {
+            return (int) H.WRITER_SET_MERGE_POLICY.invokeExact(
+                handle,
+                maxMergeAtOnce,
+                segmentsPerTier,
+                maxMergedSegmentBytes,
+                floorSegmentBytes,
+                deletesPctAllowed,
+                forceMergeDeletesPctAllowed
             );
         } catch (Throwable t) {
             throw rethrow(t);

@@ -88,7 +88,7 @@ fn parse_manifest(text: &str) -> Vec<Scenario> {
         // deletesPctAllowed,forceMergeDeletesPctAllowed,targetSearchConcurrency
         let cfg: Vec<&str> = get(&format!("{p}config")).split(',').collect();
         assert_eq!(cfg.len(), 6, "scenario {name}: bad config line");
-        let segs_per_tier: usize = cfg[2].parse().unwrap();
+        let segs_per_tier: f64 = cfg[2].parse().unwrap();
         let config = MergePolicyConfig {
             max_merged_segment_size: cfg[0].parse().unwrap(),
             floor_segment_size: cfg[1].parse().unwrap(),

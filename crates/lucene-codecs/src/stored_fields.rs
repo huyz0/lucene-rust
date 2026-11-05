@@ -1451,6 +1451,37 @@ impl StoredFieldsWriter {
         }
     }
 
+    /// The heap this writer holds: the compressed `.fdt` so far and the
+    /// chunk being buffered -- what `Lucene90CompressingStoredFieldsWriter`
+    /// accounts in `ramBytesUsed`, with the `.fdt` in memory instead of on
+    /// disk.
+    pub fn ram_bytes(&self) -> usize {
+        let longs = self
+            .docs_values
+            .capacity()
+            .saturating_add(self.start_pointers_values.capacity())
+            .saturating_add(self.lengths.capacity())
+            .saturating_add(self.num_stored_fields.capacity())
+            .saturating_mul(8);
+        self.fdt
+            .capacity()
+            .saturating_add(self.chunk_buf.capacity())
+            .saturating_add(longs)
+    }
+
+    /// Gives the segment its id after documents were added: rewrites the id
+    /// in the `.fdt` header already written, and the one `.fdx` and `.fdm`
+    /// get at [`Self::finish`]. A buffer streams its documents in before
+    /// the flush names its segment.
+    pub fn set_segment_id(&mut self, segment_id: &[u8; ID_LENGTH]) {
+        // `CodecUtil.writeIndexHeader`: the codec header, then the id.
+        let start = codec_util::header_length(self.mode.data_codec());
+        if let Some(id) = self.fdt.get_mut(start..start.saturating_add(ID_LENGTH)) {
+            id.copy_from_slice(segment_id);
+        }
+        self.segment_id = *segment_id;
+    }
+
     /// `getChunkSize()` -- a bulk chunk copy is only legal from a reader
     /// that agrees with this.
     pub fn chunk_size(&self) -> i32 {

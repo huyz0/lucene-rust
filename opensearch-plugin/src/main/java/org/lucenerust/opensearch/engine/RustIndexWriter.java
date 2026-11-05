@@ -13,6 +13,7 @@ import org.apache.lucene.index.IndexableField;
 import org.apache.lucene.index.LiveIndexWriterConfig;
 import org.apache.lucene.index.SegmentInfos;
 import org.apache.lucene.index.Term;
+import org.apache.lucene.index.TieredMergePolicy;
 import org.apache.lucene.search.similarities.Similarity;
 import org.apache.lucene.store.AlreadyClosedException;
 import org.apache.lucene.store.Directory;
@@ -34,6 +35,7 @@ import java.lang.invoke.MethodType;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
@@ -101,6 +103,14 @@ final class RustIndexWriter implements DocumentIndexWriter {
     private long accounted;
     private boolean faultInjection;
     private boolean policyInitialized;
+    /** The merge policy settings last sent to the writer; under {@link #lock}. */
+    private double[] mergePolicySettings;
+    /**
+     * The merge-on-flush wait last set, or -1 while no {@code MergeOnFlushMergePolicy} wraps the
+     * merge policy; under {@link #lock}. The wrapper copies the policy's settings when it is set, so
+     * a change to them sets it again.
+     */
+    private long mergeOnFlushPolicyWait = -1;
     private volatile long lastCommitMaxDoc;
     private volatile long latestGeneration;
 
@@ -549,11 +559,54 @@ final class RustIndexWriter implements DocumentIndexWriter {
     }
 
     /**
+     * The merge policy's settings, as {@code IndexWriterConfig.setMergePolicy} hands the shard's
+     * {@code TieredMergePolicy} to {@code IndexWriter}; sent again only when one changed.
+     */
+    void setMergePolicy(TieredMergePolicy policy) throws IOException {
+        double[] settings = {
+            policy.getMaxMergeAtOnce(),
+            policy.getSegmentsPerTier(),
+            policy.getMaxMergedSegmentMB(),
+            policy.getFloorSegmentMB(),
+            policy.getDeletesPctAllowed(),
+            policy.getForceMergeDeletesPctAllowed() };
+        synchronized (lock) {
+            if (Arrays.equals(settings, mergePolicySettings)) {
+                return;
+            }
+            check(
+                NativeBridge.writerSetMergePolicy(
+                    handle,
+                    policy.getMaxMergeAtOnce(),
+                    policy.getSegmentsPerTier(),
+                    megabytes(policy.getMaxMergedSegmentMB()),
+                    megabytes(policy.getFloorSegmentMB()),
+                    policy.getDeletesPctAllowed(),
+                    policy.getForceMergeDeletesPctAllowed()
+                ),
+                "setting the merge policy"
+            );
+            mergePolicySettings = settings;
+            if (mergeOnFlushPolicyWait >= 0) {
+                check(NativeBridge.writerSetMergeOnFlush(handle, mergeOnFlushPolicyWait, true), "setting merge-on-flush");
+            }
+        }
+    }
+
+    /** {@code TieredMergePolicy}'s own MB-to-bytes conversion, capped as its setters cap it. */
+    private static long megabytes(double mb) {
+        return mb > Long.MAX_VALUE / 1024 / 1024 ? Long.MAX_VALUE : (long) (mb * 1024 * 1024);
+    }
+
+    /**
      * {@code IndexWriterConfig.setMaxFullFlushMergeWaitMillis}, with the merge policy wrapped in
      * {@code MergeOnFlushMergePolicy} when {@code mergeOnFlushPolicy}.
      */
     void setMergeOnFlush(long waitMillis, boolean mergeOnFlushPolicy) throws IOException {
-        check(NativeBridge.writerSetMergeOnFlush(handle, waitMillis, mergeOnFlushPolicy), "setting merge-on-flush");
+        synchronized (lock) {
+            check(NativeBridge.writerSetMergeOnFlush(handle, waitMillis, mergeOnFlushPolicy), "setting merge-on-flush");
+            mergeOnFlushPolicyWait = mergeOnFlushPolicy ? waitMillis : -1;
+        }
     }
 
     private void applyRetention() throws IOException {
