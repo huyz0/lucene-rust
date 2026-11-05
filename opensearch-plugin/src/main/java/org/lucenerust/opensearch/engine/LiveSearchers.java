@@ -94,7 +94,7 @@ final class LiveSearchers {
         LiveView view = LiveView.of(handle.id(), handle.blob());
         // After the view: every field of its documents is registered by now.
         FieldInfos infos = writer.liveFieldInfos();
-        if (view.maxDoc() == 0 || infos == null || writer.updatedSince(generation)) {
+        if (view.maxDoc() == 0 || infos == null) {
             view.close();
             return null;
         }

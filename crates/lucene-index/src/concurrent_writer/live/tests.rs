@@ -368,15 +368,94 @@ fn released_buffers_go_when_their_last_view_closes() {
     assert_eq!(view.buffers.len(), 1);
     w.rollback();
     assert!(lock(&w.core).live.retained.is_empty());
-    assert!(matches!(
-        w.live_snapshot(&req, Some(gens[2])),
-        Err(Error::LiveSearch(_))
-    ));
+    // Back at that commit: its reader holds every document.
+    assert!(w
+        .live_snapshot(&req, Some(gens[2]))
+        .unwrap()
+        .buffers
+        .is_empty());
     assert_eq!(
         deleted_ids(&w.live_view_snapshot(&view, &req).unwrap()),
         [vec![0]]
     );
     w.close_live_view(&view);
+}
+
+/// A view of a commit names the deletes its reader lacks, those issued
+/// after the commit whether handed to the segments yet or not; a delete by
+/// query refuses it, and a release drops the deletes no reader needs.
+#[test]
+fn a_view_of_a_commit_carries_the_deletes_issued_since() {
+    let tmp = TempDir::new("live-commit-deletes");
+    let dir = FsDirectory::open(tmp.path());
+    let (w, f) = open(&dir, 1, true);
+    let generation = || w.with_writer(|iw| iw.segment_infos().generation);
+    let deletes = |g: i64| {
+        let view = w.open_live_view(Some(g)).unwrap();
+        w.close_live_view(&view);
+        let ids: Vec<String> = view
+            .commit_deletes
+            .iter()
+            .map(|t| {
+                assert_eq!(t.field, "_id");
+                String::from_utf8(t.bytes.clone()).unwrap()
+            })
+            .collect();
+        ids
+    };
+    for i in 0..3 {
+        w.add_explicit_documents(vec![doc(&f, i)]).unwrap();
+    }
+    // Before the commit: its segments have it applied.
+    w.delete_documents_by_term(&[id(0)]).unwrap();
+    w.commit().unwrap();
+    let g0 = generation();
+    assert!(deletes(g0).is_empty());
+
+    w.soft_update_explicit_documents(id(1), vec![doc(&f, 1)], &[soft_delete(1)])
+        .unwrap();
+    w.delete_documents_by_term(&[id(2)]).unwrap();
+    assert_eq!(deletes(g0), ["d1", "d2"]);
+    // Handed to the published segments, they are still the reader's.
+    flush(&w);
+    assert_eq!(deletes(g0), ["d1", "d2"]);
+    assert!(deletes_none(&w));
+
+    w.commit().unwrap();
+    let g1 = generation();
+    w.soft_update_explicit_documents(id(1), vec![doc(&f, 1)], &[soft_delete(1)])
+        .unwrap();
+    assert_eq!(deletes(g1), ["d1"]);
+    assert_eq!(deletes(g0), ["d1", "d2", "d1"]);
+
+    // No reader of the first commit is left.
+    w.release_live(g1).unwrap();
+    assert!(w.open_live_view(Some(g0)).is_err());
+    assert_eq!(deletes(g1), ["d1"]);
+    let history = lock(&w.core).live.history.len();
+    assert_eq!(history, 0, "the deletes before the second commit went");
+    assert_eq!(lock(&w.core).live.history_bytes, 0);
+
+    w.delete_documents_by_query(&[DeleteQuery::Term(id(1))])
+        .unwrap();
+    assert!(matches!(
+        w.open_live_view(Some(g1)),
+        Err(Error::LiveSearch(_))
+    ));
+    assert!(
+        lock(&w.core).live.pins.is_empty(),
+        "a refused view keeps nothing"
+    );
+    // A rollback goes back to the last commit, which can be viewed again.
+    w.rollback();
+    assert!(deletes(g1).is_empty());
+}
+
+/// A view of the buffers alone names no deletes: no reader needs them.
+fn deletes_none(w: &ConcurrentIndexWriter<'_>) -> bool {
+    let view = w.open_live_view(None).unwrap();
+    w.close_live_view(&view);
+    view.commit_deletes.is_empty()
 }
 
 /// A view holds its buffers' documents and deletes as of its opening, and

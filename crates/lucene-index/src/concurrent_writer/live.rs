@@ -42,7 +42,7 @@ use lucene_codecs::postings_writer::TermPostings;
 use lucene_codecs::stored_fields::{FieldValue, StoredField};
 
 use super::{lock, ConcurrentIndexWriter};
-use crate::buffered_updates::DocValuesUpdate;
+use crate::buffered_updates::{DocValuesUpdate, Term};
 use crate::index_writer::pending_postings::{LiveFieldStats, PendingPostings};
 use crate::index_writer::ExplicitFields;
 use crate::index_writer::{DeleteNode, Error, IndexingConfig, Result};
@@ -342,12 +342,32 @@ pub(super) struct LiveFlushes {
     pub(super) retained: BTreeMap<u64, Flushing>,
     /// Buffers published so far: the next publish number.
     pub(super) published: u64,
-    /// Recent commits: generation, and how many publishes it holds.
-    commits: VecDeque<(i64, u64)>,
+    /// Recent commits, oldest first.
+    commits: VecDeque<Commit>,
     /// Open views per buffer id: a published buffer a view reads is kept.
     pins: HashMap<u64, usize>,
     /// Publishes below this number go once no view reads them.
     released: u64,
+    /// The deletes handed over to the published segments
+    /// ([`ConcurrentIndexWriter::hand_over`]), in log order, from the log
+    /// position `history_base` on: those after a commit's
+    /// [`Commit::handed`] are the ones its reader lacks. Kept only with
+    /// live search on.
+    history: VecDeque<Arc<DeleteNode>>,
+    history_base: usize,
+    keeps_history: bool,
+    /// What [`Self::history`]'s entries hold.
+    history_bytes: usize,
+}
+
+/// A commit this writer made.
+#[derive(Debug, Clone, Copy)]
+struct Commit {
+    generation: i64,
+    /// How many publishes it holds.
+    held: u64,
+    /// The log position up to which its segments had every delete.
+    handed: usize,
 }
 
 /// How many commits [`LiveFlushes::commits`] remembers.
@@ -364,35 +384,108 @@ impl LiveFlushes {
         }
     }
 
-    /// A commit at `generation` holds every publish so far.
-    pub(super) fn committed(&mut self, generation: i64) {
-        if self.commits.back().is_some_and(|&(g, _)| g == generation) {
+    /// A commit at `generation` holds every publish so far, and every
+    /// delete up to log position `handed`. A commit that wrote nothing new
+    /// keeps the generation, and the position, of the one before.
+    pub(super) fn committed(&mut self, generation: i64, handed: usize) {
+        if self
+            .commits
+            .back()
+            .is_some_and(|c| c.generation == generation)
+        {
             return;
         }
         if self.commits.len() == COMMITS_KEPT {
             // No view can name the forgotten commit any more.
-            if let Some((_, held)) = self.commits.pop_front() {
-                self.release(held);
+            if let Some(c) = self.commits.pop_front() {
+                self.release(c.held);
             }
         }
-        self.commits.push_back((generation, self.published));
+        self.commits.push_back(Commit {
+            generation,
+            held: self.published,
+            handed,
+        });
+    }
+
+    /// Keeps the deletes handed over from now on, the next of them at log
+    /// position `handed`.
+    pub(super) fn keep_history(&mut self, handed: usize) {
+        if !self.keeps_history {
+            self.keeps_history = true;
+            self.history.clear();
+            self.history_bytes = 0;
+            self.history_base = handed;
+        }
+    }
+
+    /// `nodes`, the log's next entries, were handed over.
+    pub(super) fn handed(&mut self, nodes: &[Arc<DeleteNode>]) {
+        if self.keeps_history {
+            for node in nodes {
+                self.history_bytes = self.history_bytes.saturating_add(node.ram_bytes());
+                self.history.push_back(Arc::clone(node));
+            }
+        }
     }
 
     /// Drops the published buffers below `held` no view reads, now and as
-    /// the views reading the others close.
+    /// the views reading the others close, and the deletes every reader
+    /// still searched has.
     fn release(&mut self, held: u64) {
         self.released = self.released.max(held);
         let (released, pins) = (self.released, &self.pins);
         self.retained
             .retain(|&n, f| n >= released || pins.contains_key(&f.columns.id));
+        let end = self.history_base.saturating_add(self.history.len());
+        let needed = self
+            .commits
+            .iter()
+            .find(|c| c.held >= self.released)
+            .map_or(end, |c| c.handed);
+        while self.history_base < needed {
+            let Some(node) = self.history.pop_front() else {
+                break;
+            };
+            self.history_bytes = self.history_bytes.saturating_sub(node.ram_bytes());
+            self.history_base = self.history_base.saturating_add(1);
+        }
     }
 
     /// Every buffer goes: `rollback` or `delete_all` discarded their
-    /// documents. A view of one reads it as all deleted.
-    pub(super) fn discard(&mut self) {
+    /// documents, and the log, now at position `handed`. A view of one
+    /// reads it as all deleted; no earlier commit can be viewed, its
+    /// segments having lost documents no delete names.
+    pub(super) fn discard(&mut self, handed: usize) {
         self.flushing.clear();
         self.retained.clear();
         self.released = self.published;
+        self.commits.clear();
+        self.history.clear();
+        self.history_bytes = 0;
+        self.history_base = handed;
+    }
+
+    /// The deletes the reader of `commit` lacks: the handed ones after it,
+    /// then `unhanded`, in log order. `None` when the history no longer
+    /// reaches back to it.
+    fn deletes_after(
+        &self,
+        commit: &Commit,
+        unhanded: &[Arc<DeleteNode>],
+    ) -> Option<Vec<Arc<DeleteNode>>> {
+        if !self.keeps_history || commit.handed < self.history_base {
+            return None;
+        }
+        let skip = commit.handed.saturating_sub(self.history_base);
+        Some(
+            self.history
+                .iter()
+                .skip(skip)
+                .chain(unhanded)
+                .cloned()
+                .collect(),
+        )
     }
 
     /// Whether every publish from `from` on is still kept.
@@ -409,12 +502,12 @@ impl LiveFlushes {
         })
     }
 
-    /// How many publishes the commit at `generation` holds.
-    fn held_by(&self, generation: i64) -> Result<u64> {
+    /// The commit at `generation`.
+    fn commit(&self, generation: i64) -> Result<Commit> {
         self.commits
             .iter()
-            .find(|&&(g, _)| g == generation)
-            .map(|&(_, p)| p)
+            .find(|c| c.generation == generation)
+            .copied()
             .ok_or_else(|| {
                 Error::LiveSearch(format!(
                     "commit generation {generation} is not one this writer made"
@@ -430,6 +523,37 @@ impl LiveFlushes {
     pub(super) fn buffers_mut(&mut self) -> impl Iterator<Item = &mut Flushing> {
         self.flushing.values_mut().chain(self.retained.values_mut())
     }
+}
+
+/// The terms `nodes` delete by, in order: hard deletes, and soft deletes
+/// through `soft_field`. `None` when one of them is anything else that
+/// changes which documents are live: a delete by query, or a soft delete
+/// taken back.
+fn delete_terms(nodes: &[Arc<DeleteNode>], soft_field: Option<&str>) -> Option<Vec<Term>> {
+    let mut out = Vec::new();
+    for node in nodes {
+        match node.as_ref() {
+            DeleteNode::Terms(terms) => out.extend(terms.iter().map(|t| Term::clone(t))),
+            DeleteNode::Queries(queries) => {
+                if !queries.is_empty() {
+                    return None;
+                }
+            }
+            DeleteNode::DocValuesUpdates(updates) => {
+                for u in updates {
+                    let DocValuesUpdate::Numeric { term, field, value } = u else {
+                        continue;
+                    };
+                    if Some(field.as_str()) != soft_field {
+                        continue;
+                    }
+                    value.as_ref()?;
+                    out.push(term.clone());
+                }
+            }
+        }
+    }
+    Some(out)
 }
 
 /// A request field resolved against the schema.
@@ -449,6 +573,11 @@ pub struct LiveView {
     pub buffers: Vec<ViewBuffer>,
     /// See [`LiveSnapshot::published`].
     pub published: u64,
+    /// For a view of a commit, the delete terms issued since, in the order
+    /// they were issued: each deletes every document of that commit's
+    /// segments it matches, as its reader does not know yet. A later view
+    /// of the same commit lists the same terms first.
+    pub commit_deletes: Vec<Term>,
 }
 
 /// One buffer of a [`LiveView`].
@@ -558,6 +687,9 @@ impl ConcurrentIndexWriter<'_> {
                 "live search must be enabled before the first document".into(),
             ));
         }
+        let mut core = lock(&self.core);
+        let handed = lock(&self.log).handed;
+        core.live.keep_history(handed);
         self.live.store(true, Ordering::Release);
         Ok(())
     }
@@ -572,8 +704,9 @@ impl ConcurrentIndexWriter<'_> {
     }
 
     /// The heap live search holds beyond the RAM buffer's charge: every
-    /// buffer's columns and stored fields, and the postings of published
-    /// buffers still kept.
+    /// buffer's columns and stored fields, the postings of published
+    /// buffers still kept, and the deletes kept for readers of older
+    /// commits.
     pub fn live_bytes(&self) -> usize {
         let slots = self
             .slots
@@ -591,6 +724,7 @@ impl ConcurrentIndexWriter<'_> {
             .buffers()
             .map(|f| f.columns.ram_bytes())
             .fold(retained, usize::saturating_add)
+            .saturating_add(core.live.history_bytes)
     }
 
     /// Stops reading the published buffers the commit at `generation` holds,
@@ -598,7 +732,7 @@ impl ConcurrentIndexWriter<'_> {
     /// older commit. Their memory goes.
     pub fn release_live(&self, generation: i64) -> Result<()> {
         let mut core = lock(&self.core);
-        let held = core.live.held_by(generation)?;
+        let held = core.live.commit(generation)?.held;
         core.live.release(held);
         Ok(())
     }
@@ -626,13 +760,12 @@ impl ConcurrentIndexWriter<'_> {
         let cfg = self.check_live()?;
         let slots: Vec<_> = self.slots.iter().map(lock).collect();
         let mut core = lock(&self.core);
-        let from = match commit {
-            Some(generation) => core.live.held_by(generation)?,
-            None => core.live.published,
-        };
+        let commit = commit.map(|g| core.live.commit(g)).transpose()?;
+        let from = commit.map_or(core.live.published, |c| c.held);
         if !core.live.keeps_from(from) {
             return Err(Error::LiveSearch(format!(
-                "the buffers published after commit {commit:?} were released"
+                "the buffers published after commit {:?} were released",
+                commit.map(|c| c.generation)
             )));
         }
         let (slot_tails, flushing_tail) = {
@@ -640,9 +773,19 @@ impl ConcurrentIndexWriter<'_> {
             let tails: Vec<_> = slots.iter().map(|d| log.since(d.slice)).collect();
             (tails, log.since(log.handed))
         };
+        let commit_nodes = match &commit {
+            Some(c) => Some(core.live.deletes_after(c, &flushing_tail).ok_or_else(|| {
+                Error::LiveSearch(format!(
+                    "the deletes since commit {} are no longer kept",
+                    c.generation
+                ))
+            })?),
+            None => None,
+        };
         let mut out = LiveView {
             buffers: Vec::new(),
             published: core.live.published,
+            commit_deletes: Vec::new(),
         };
         for (dwpt, tail) in slots.iter().zip(&slot_tails) {
             if dwpt.docs.is_empty() {
@@ -667,6 +810,20 @@ impl ConcurrentIndexWriter<'_> {
         for b in &out.buffers {
             let pins = core.live.pins.entry(b.id).or_insert(0);
             *pins = pins.saturating_add(1);
+        }
+        drop(core);
+        drop(slots);
+        if let Some(nodes) = commit_nodes {
+            let soft = cfg.soft_deletes_field().map(|f| f.name.as_str());
+            match delete_terms(&nodes, soft) {
+                Some(terms) => out.commit_deletes = terms,
+                None => {
+                    self.close_live_view(&out);
+                    return Err(Error::LiveSearch(
+                        "a delete since the commit is not by term".into(),
+                    ));
+                }
+            }
         }
         Ok(out)
     }

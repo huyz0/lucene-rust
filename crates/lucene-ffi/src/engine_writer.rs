@@ -2861,6 +2861,96 @@ mod tests {
         assert_eq!(crate::jvm_reader::ffi_close_jvm_reader(all), 0);
     }
 
+    /// A reader's documents updated or deleted since its commit are hidden
+    /// from a search with a view, and the new versions found in the buffers.
+    #[test]
+    fn a_view_hides_the_readers_updated_documents() {
+        use crate::live::{ffi_engine_writer_live_view_open, ffi_live_view_close};
+        let tmp = empty_index("engine-writer-live-updates");
+        let h = open_with(&tmp, 64.0, OPEN_LIVE_SEARCH, i32::MAX);
+        let f = setup(h);
+        let words = ["alpha", "beta", "gamma", "delta"];
+        for i in 0..20usize {
+            let text: Vec<&str> = (0..1 + i % 4).map(|j| words[(i + j) % 4]).collect();
+            let b = doc(
+                Blob::default().u8(OP_ADD).i32(1),
+                &f,
+                &format!("d{i}"),
+                &text,
+                i as i64,
+                false,
+            );
+            assert_eq!(apply(h, &b.0), 0, "{}", crate::error::last_error());
+        }
+        let gen = commit_settled(h);
+        let reader = open_reader(&tmp, gen);
+        let soft_update = |id: &str, text: &[&str], seq: i64, tombstone: bool| {
+            let b = doc(
+                Blob::default()
+                    .u8(OP_SOFT_UPDATE)
+                    .bytes(b"_id")
+                    .bytes(id.as_bytes())
+                    .bytes(b"__soft_deletes")
+                    .i64(1)
+                    .i32(1),
+                &f,
+                id,
+                text,
+                seq,
+                tombstone,
+            );
+            assert_eq!(apply(h, &b.0), 0, "{}", crate::error::last_error());
+        };
+        // d2 holds gamma; its new version does not. d3 goes.
+        soft_update("d2", &["zeta"], 20, false);
+        soft_update("d3", &[], 21, true);
+
+        let (mut view, mut ptr, mut len) = (0u64, std::ptr::null_mut(), 0usize);
+        // SAFETY: live out-pointers.
+        let rc = unsafe { ffi_engine_writer_live_view_open(h, gen, &mut view, &mut ptr, &mut len) };
+        assert_eq!(rc, 0, "{}", crate::error::last_error());
+        // SAFETY: the buffer the call gave, freed once.
+        unsafe { crate::ffm_bridge::ffi_jvm_free_bytes(ptr, len) };
+        let gamma = crate::jvm_reader::tests::term_blob("body", "gamma");
+        let zeta = crate::jvm_reader::tests::term_blob("body", "zeta");
+        let (gamma_hits, gamma_total) = search_live(reader, view, &gamma).unwrap();
+        // Twice: the second search reads the masks the first one built.
+        assert_eq!(search_live(reader, view, &gamma).unwrap().1, gamma_total);
+        let (zeta_hits, zeta_total) = search_live(reader, view, &zeta).unwrap();
+
+        let total = |r: u64, q: &[u8]| {
+            let (mut docs, mut scores) = ([0i32; 64], [0f32; 64]);
+            let (mut n, mut total, mut lower) = (0usize, 0i64, false);
+            // SAFETY: live buffers of 64 and out-pointers.
+            let rc = unsafe {
+                crate::jvm_reader::ffi_jvm_reader_search(
+                    r,
+                    q.as_ptr(),
+                    q.len(),
+                    64,
+                    i64::MAX,
+                    docs.as_mut_ptr(),
+                    scores.as_mut_ptr(),
+                    64,
+                    &mut n,
+                    &mut total,
+                    &mut lower,
+                )
+            };
+            assert_eq!(rc, 0, "{}", crate::error::last_error());
+            total
+        };
+        // The reader alone still has d2 and d3.
+        assert_eq!(gamma_total, total(reader, &gamma) - 2);
+        assert_eq!(zeta_total, 1);
+        assert!(gamma_hits.iter().all(|&(d, _)| d != 2 && d != 3));
+        assert_eq!(zeta_hits.len(), 1);
+        assert!(zeta_hits[0].0 >= 20);
+
+        assert_eq!(ffi_live_view_close(view), 0);
+        assert_eq!(crate::jvm_reader::ffi_close_jvm_reader(reader), 0);
+    }
+
     /// The 1M OpenSearch bench's documents (`bench_nodes.py gen`), mapped as
     /// OpenSearch maps them, buffered by four threads, then one refresh
     /// timed. `FLUSH_DOCS` sets how many (default 500 000).
