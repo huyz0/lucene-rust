@@ -212,7 +212,7 @@ public final class RustEngineSupport {
             indexPath(store),
             config.getIndexingBufferSize().getMbFrac(),
             FAULT_INJECTION.get(config.getIndexSettings().getSettings()),
-            config.getIndexSettings().getValue(org.lucenerust.opensearch.sparse.SparseSettings.SPARSE_INDEX),
+            org.lucenerust.opensearch.sparse.SparseSettings.SPARSE_INDEX.get(config.getIndexSettings().getSettings()),
             maxDocs,
             config.getAnalyzer(),
             config.getSimilarity(),
