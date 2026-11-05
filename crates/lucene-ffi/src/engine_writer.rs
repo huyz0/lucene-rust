@@ -118,6 +118,13 @@ pub struct EngineWriter {
     /// `IndexWriter.getTragicException()`: once set, every call fails.
     tragic: OnceLock<String>,
     fault_injection: bool,
+    /// SPIKE: the searchable copy of what was indexed since the last refresh.
+    pub(crate) live: crate::live::Live,
+}
+
+/// SPIKE: the engine writer behind `handle`, for [`crate::live`].
+pub(crate) fn live_of(handle: u64) -> Result<Arc<EngineWriter>, FfiStatus> {
+    lookup(handle)
 }
 
 /// Files pinned by [`ffi_engine_writer_hold_commit`], by hold id.
@@ -792,6 +799,7 @@ pub unsafe extern "C" fn ffi_engine_writer_open(
             }),
             tragic: OnceLock::new(),
             fault_injection: flags & OPEN_FAULT_INJECTION != 0,
+            live: crate::live::Live::default(),
         };
         let handle = lock_recovering(engine_writers()).insert_checked(Arc::new(engine))?;
         // SAFETY: caller contract.
@@ -837,13 +845,17 @@ fn apply_op(handle: u64, op: Op) -> Result<(), FfiStatus> {
     with_writer(handle, |w| {
         let writer = w.writer();
         match op {
-            Op::Add(docs) => writer.add_explicit_documents(docs).map_err(writer_error)?,
+            Op::Add(docs) => {
+                w.live.add(&docs, None);
+                writer.add_explicit_documents(docs).map_err(writer_error)?
+            }
             Op::SoftUpdate {
                 term,
                 soft_field,
                 soft_value,
                 docs,
             } => {
+                w.live.add(&docs, Some(&term.bytes));
                 let soft = DocValuesUpdate::Numeric {
                     term: term.clone(),
                     field: soft_field,

@@ -78,6 +78,7 @@ import org.opensearch.common.lease.Releasables;
 import org.opensearch.common.lucene.Lucene;
 import org.opensearch.common.lucene.index.DerivedSourceDirectoryReader;
 import org.opensearch.common.lucene.index.OpenSearchDirectoryReader;
+import org.lucenerust.opensearch.NativeBridge;
 import org.opensearch.common.lucene.search.Queries;
 import org.opensearch.common.lucene.uid.Versions;
 import org.opensearch.common.lucene.uid.VersionsAndSeqNoResolver;
@@ -348,6 +349,9 @@ public class RustEngine extends Engine {
             this.lastRefreshedCheckpointListener = new LastRefreshedCheckpointListener(localCheckpointTracker);
             this.internalReaderManager.addListener(lastRefreshedCheckpointListener);
             internalReaderManager.addListener(documentIndexWriter);
+            if (RustIndexWriter.REALTIME && documentIndexWriter instanceof RustIndexWriter rw) {
+                startVisibilityPublisher(rw);
+            }
             maxSeqNoOfUpdatesOrDeletes = new AtomicLong(
                 SequenceNumbers.max(localCheckpointTracker.getMaxSeqNo(), translogManager.getMaxSeqNo())
             );
@@ -503,6 +507,11 @@ public class RustEngine extends Engine {
 
         @Override
         protected OpenSearchDirectoryReader refreshIfNeeded(OpenSearchDirectoryReader referenceToRefresh) throws IOException {
+            if (VISIBILITY_ONLY.get()) {
+                // SPIKE: only tells the refresh listeners (refresh=wait_for) that what was written
+                // is visible; the live buffer already shows it.
+                return null;
+            }
             // we simply run a blocking refresh on the internal reference manager and then steal it's reader
             // it's a save operation since we acquire the reader which incs it's reference but then down the road
             // steal it by calling incRef on the "stolen" reader
@@ -2617,6 +2626,72 @@ public class RustEngine extends Engine {
         }
         // remove live entries in the version map
         refresh("restore_version_map_and_checkpoint_tracker", SearcherScope.INTERNAL, true);
+    }
+
+
+    // ---- SPIKE: real-time search through the live buffer ----
+
+    /** Set while a refresh only publishes visibility (see {@link ExternalReaderManager#refreshIfNeeded}). */
+    private static final ThreadLocal<Boolean> VISIBILITY_ONLY = ThreadLocal.withInitial(() -> false);
+    private volatile long lastAppliedNanos;
+
+    private void startVisibilityPublisher(RustIndexWriter rw) {
+        rw.onApplied = () -> lastAppliedNanos = System.nanoTime();
+        Thread t = new Thread(() -> {
+            while (isClosed.get() == false) {
+                java.util.concurrent.locks.LockSupport.parkNanos(1_000_000L);
+                if (System.nanoTime() - lastAppliedNanos > 200_000_000L) {
+                    continue;
+                }
+                VISIBILITY_ONLY.set(true);
+                try {
+                    externalReaderManager.maybeRefresh();
+                } catch (Exception e) {
+                    // closing
+                } finally {
+                    VISIBILITY_ONLY.set(false);
+                }
+            }
+        }, "lucene-rust-visibility[" + shardId + "]");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    @Override
+    public SearcherSupplier acquireSearcherSupplier(java.util.function.Function<Searcher, Searcher> wrapper, SearcherScope scope)
+        throws EngineException {
+        if (RustIndexWriter.REALTIME == false || scope != SearcherScope.EXTERNAL || !(documentIndexWriter instanceof RustIndexWriter rw)) {
+            return super.acquireSearcherSupplier(wrapper, scope);
+        }
+        return super.acquireSearcherSupplier(s -> wrapper.apply(withLive(rw, s)), scope);
+    }
+
+    /** {@code s} plus a snapshot of the live buffer of the commit its reader is on. */
+    private Searcher withLive(RustIndexWriter rw, Searcher s) {
+        try {
+            OpenSearchDirectoryReader reader = (OpenSearchDirectoryReader) s.getDirectoryReader();
+            long generation = RustReaderManager.generation(reader);
+            long buffer = rw.liveBufferFor(generation);
+            if (buffer == 0) {
+                return s;
+            }
+            int visible = NativeBridge.liveVisible(buffer);
+            if (visible <= 0) {
+                return s;
+            }
+            org.lucenerust.opensearch.LiveLeafReader leaf = new org.lucenerust.opensearch.LiveLeafReader(buffer, visible, rw.liveFieldInfos());
+            org.apache.lucene.index.DirectoryReader withLive = org.lucenerust.opensearch.LiveDirectoryReader.of(reader.getDelegate(), leaf);
+            OpenSearchDirectoryReader wrapped = OpenSearchDirectoryReader.wrap(withLive, shardId);
+            return new Searcher(s.source(), wrapped, s.getSimilarity(), s.getQueryCache(), s.getQueryCachingPolicy(), () -> {
+                try {
+                    wrapped.close();
+                } finally {
+                    s.close();
+                }
+            });
+        } catch (IOException e) {
+            throw new java.io.UncheckedIOException(e);
+        }
     }
 
 }

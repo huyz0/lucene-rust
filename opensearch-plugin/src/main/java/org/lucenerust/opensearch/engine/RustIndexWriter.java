@@ -114,6 +114,19 @@ final class RustIndexWriter implements DocumentIndexWriter {
     private volatile long lastCommitMaxDoc;
     private volatile long latestGeneration;
 
+    // ---- SPIKE: the live buffer (real-time study) ----
+    /** Whether the live buffer is on: {@code -Dlucene_rust.realtime=true}. */
+    static final boolean REALTIME = Boolean.getBoolean("lucene_rust.realtime");
+    private final String softDeletesFieldName;
+    private volatile int liveIdField = -1;
+    private volatile int liveSoftField = -1;
+    /** Commit generation -> the pinned buffer holding the documents after it. */
+    private final java.util.concurrent.ConcurrentSkipListMap<Long, Long> liveByGeneration = new java.util.concurrent.ConcurrentSkipListMap<>();
+    private volatile org.apache.lucene.index.FieldInfos liveInfos;
+    private volatile int liveInfosSize = -1;
+    /** Called after every applied operation (the engine's visibility publisher). */
+    volatile Runnable onApplied;
+
     private RustIndexWriter(
         Directory directory,
         long handle,
@@ -127,6 +140,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
         this.directory = directory;
         this.handle = handle;
         this.registry = new FieldRegistry(this::register);
+        this.softDeletesFieldName = softDeletesField;
         this.encoder = new DocumentEncoder(registry, analyzer, similarity, indexCreatedVersionMajor, softDeletesField, formats);
         this.config = new IndexWriterConfig(analyzer).setSimilarity(similarity).setSoftDeletesField(softDeletesField);
         if (codec != null) {
@@ -235,6 +249,14 @@ final class RustIndexWriter implements DocumentIndexWriter {
         synchronized (lock) {
             ensureOpen();
             check(NativeBridge.writerRegisterField(handle, schema.encode(), out), "registering field [" + schema.name + "]");
+            if (REALTIME) {
+                if (schema.name.equals("_id")) {
+                    liveIdField = out[0];
+                } else if (schema.name.equals(softDeletesFieldName)) {
+                    liveSoftField = out[0];
+                }
+                NativeBridge.liveConfigure(handle, liveIdField, liveSoftField);
+            }
         }
         return out[0];
     }
@@ -307,6 +329,10 @@ final class RustIndexWriter implements DocumentIndexWriter {
                 check(NativeBridge.writerApply(handle, op.array(), op.length()), "indexing");
             }
             docsSinceCommit.addAndGet(docs);
+            Runnable r = onApplied;
+            if (r != null) {
+                r.run();
+            }
         } finally {
             if (prepared != 0) {
                 NativeBridge.preparedFree(prepared);
@@ -469,9 +495,23 @@ final class RustIndexWriter implements DocumentIndexWriter {
         int status;
         commitDataFailure = null;
         COMMITTING.set(this);
+        long newLive = 0;
+        if (REALTIME) {
+            // SPIKE: no add between the commit and the new buffer, so a buffer holds exactly the
+            // documents after one commit.
+            indexing.writeLock().lock();
+        }
         try {
             status = NativeBridge.writerCommit(handle, handle, out);
+            if (REALTIME && status == NativeBridge.OK) {
+                NativeBridge.liveReset(handle);
+                long[] acq = NativeBridge.liveAcquire(handle);
+                newLive = acq == null ? 0 : acq[0];
+            }
         } finally {
+            if (REALTIME) {
+                indexing.writeLock().unlock();
+            }
             COMMITTING.remove();
             committingData = null;
         }
@@ -490,6 +530,16 @@ final class RustIndexWriter implements DocumentIndexWriter {
         docsSinceCommit.addAndGet(-counted);
         reconcileBreaker();
         onNewCommits();
+        if (newLive != 0) {
+            Long old = liveByGeneration.put(latestGeneration, newLive);
+            if (old != null) {
+                NativeBridge.liveRelease(old);
+            }
+            while (liveByGeneration.size() > 8) {
+                var e = liveByGeneration.pollFirstEntry();
+                NativeBridge.liveRelease(e.getValue());
+            }
+        }
         return out[0];
     }
 
@@ -694,6 +744,76 @@ final class RustIndexWriter implements DocumentIndexWriter {
                 NativeBridge.writerReleaseHold(handle, hold);
             }
         }
+    }
+
+    // ---- SPIKE: live buffer access ----
+
+    /**
+     * The pinned buffer holding the documents after commit {@code generation}, or 0. The newest
+     * commit with no buffer recorded yet (the first one, or a merge commit) gets the current one.
+     */
+    long liveBufferFor(long generation) {
+        if (REALTIME == false) {
+            return 0;
+        }
+        Long id = liveByGeneration.get(generation);
+        if (id != null) {
+            return id;
+        }
+        synchronized (lock) {
+            if (generation != latestGeneration) {
+                return 0;
+            }
+            id = liveByGeneration.get(generation);
+            if (id == null) {
+                long[] acq = NativeBridge.liveAcquire(handle);
+                if (acq == null) {
+                    return 0;
+                }
+                id = acq[0];
+                liveByGeneration.put(generation, id);
+            }
+            return id;
+        }
+    }
+
+    /** The registered fields as Lucene field infos, for the live leaf. */
+    org.apache.lucene.index.FieldInfos liveFieldInfos() {
+        int size = registry.size();
+        org.apache.lucene.index.FieldInfos infos = liveInfos;
+        if (infos != null && liveInfosSize == size) {
+            return infos;
+        }
+        List<org.apache.lucene.index.FieldInfo> list = new ArrayList<>();
+        for (FieldRegistry.Entry e : registry.entries()) {
+            FieldSchema f = e.schema();
+            list.add(
+                new org.apache.lucene.index.FieldInfo(
+                    f.name,
+                    e.number(),
+                    false,
+                    f.omitNorms,
+                    false,
+                    f.indexOptions,
+                    f.docValuesType,
+                    f.skipIndex,
+                    -1,
+                    new HashMap<>(f.attributes),
+                    f.pointDimensionCount,
+                    f.pointIndexDimensionCount,
+                    f.pointNumBytes,
+                    0,
+                    org.apache.lucene.index.VectorEncoding.FLOAT32,
+                    org.apache.lucene.index.VectorSimilarityFunction.EUCLIDEAN,
+                    f.softDeletes,
+                    false
+                )
+            );
+        }
+        infos = new org.apache.lucene.index.FieldInfos(list.toArray(new org.apache.lucene.index.FieldInfo[0]));
+        liveInfos = infos;
+        liveInfosSize = size;
+        return infos;
     }
 
     // ---- merges ----
