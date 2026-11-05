@@ -60,7 +60,9 @@ fn open_with(
         )
         .unwrap();
     let w = ConcurrentIndexWriter::new(w, slots).unwrap();
-    let w = if live { w.with_live_search() } else { w };
+    if live {
+        w.enable_live_search().unwrap();
+    }
     (w, Fields { id, body, soft })
 }
 
@@ -413,6 +415,10 @@ fn what_the_buffers_cannot_answer_is_refused() {
     let (w, f) = open(&dir, 1, false);
     w.add_explicit_documents(vec![doc(&f, 0)]).unwrap();
     assert!(!w.live_search());
+    assert!(
+        matches!(w.enable_live_search(), Err(Error::LiveSearch(_))),
+        "too late once a document is buffered"
+    );
     assert!(matches!(
         w.live_snapshot(&body(false, &["common"]), None),
         Err(Error::LiveSearch(_))

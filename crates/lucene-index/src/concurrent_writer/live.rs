@@ -1,7 +1,7 @@
 //! Searching documents still in the writer's buffers, with no flush and no
 //! refresh.
 //!
-//! A writer built with [`ConcurrentIndexWriter::with_live_search`] keeps,
+//! A writer built with [`ConcurrentIndexWriter::enable_live_search`] keeps,
 //! per buffer, what a search reads besides the postings: each field's norms
 //! as a column by document, each document's stored fields, and which
 //! documents are deleted. Deletes are resolved as they arrive, against the
@@ -34,6 +34,7 @@
 //! them.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use lucene_codecs::field_infos::{FieldInfo, IndexOptions};
@@ -512,16 +513,26 @@ struct Source<'a> {
 
 impl ConcurrentIndexWriter<'_> {
     /// Keeps what live search reads ([`Self::open_live_view`]) as documents
-    /// arrive. Set before the first add: a buffer filled without it cannot
-    /// be read.
-    pub fn with_live_search(mut self) -> Self {
-        self.live = true;
-        self
+    /// arrive, from now on. Fails once a document is buffered: a buffer
+    /// filled without it cannot be read.
+    pub fn enable_live_search(&self) -> Result<()> {
+        let slots: Vec<_> = self.slots.iter().map(lock).collect();
+        if slots.iter().any(|d| !d.docs.is_empty()) {
+            return Err(Error::LiveSearch(
+                "live search must be enabled before the first document".into(),
+            ));
+        }
+        self.live.store(true, Ordering::Release);
+        Ok(())
     }
 
     /// Whether this writer keeps what live search reads.
     pub fn live_search(&self) -> bool {
-        self.live
+        self.live()
+    }
+
+    pub(super) fn live(&self) -> bool {
+        self.live.load(Ordering::Acquire)
     }
 
     /// The heap live search holds beyond the RAM buffer's charge: every
@@ -561,7 +572,7 @@ impl ConcurrentIndexWriter<'_> {
 
     fn check_live(&self) -> Result<Arc<IndexingConfig>> {
         let cfg = self.cfg();
-        if !self.live || !cfg.takes_explicit() {
+        if !self.live() || !cfg.takes_explicit() {
             return Err(Error::LiveSearch(
                 "the writer keeps no live-search columns".into(),
             ));
@@ -573,7 +584,7 @@ impl ConcurrentIndexWriter<'_> {
     /// `commit` lacks (with `None`, the documents in no published segment):
     /// see the module doc. Close it with [`Self::close_live_view`].
     ///
-    /// Fails for a writer without [`Self::with_live_search`], for one that
+    /// Fails for a writer without [`Self::enable_live_search`], for one that
     /// takes no explicit documents (only those are inverted as they arrive),
     /// for a commit this writer did not make or no longer remembers, for one
     /// whose buffers [`Self::release_live`] dropped, and when a delete by

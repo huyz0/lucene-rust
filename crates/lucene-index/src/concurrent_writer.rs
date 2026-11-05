@@ -143,7 +143,7 @@ struct Dwpt {
     /// current -- `DeleteSlice.sliceTail`.
     slice: usize,
     /// Norms and deletes for live search, kept only by a writer that has it
-    /// ([`ConcurrentIndexWriter::with_live_search`]).
+    /// ([`ConcurrentIndexWriter::enable_live_search`]).
     live: live::LiveColumns,
 }
 
@@ -327,8 +327,8 @@ pub struct ConcurrentIndexWriter<'d> {
     segment_docs: AtomicUsize,
     /// [`IndexWriter::set_max_docs`]' limit, frozen with the configuration.
     max_docs: usize,
-    /// [`Self::with_live_search`].
-    live: bool,
+    /// [`Self::enable_live_search`].
+    live: AtomicBool,
     /// The next buffer's id for live search, from 1.
     next_buffer_id: AtomicU64,
 }
@@ -458,7 +458,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
             buffered_docs: AtomicUsize::new(0),
             segment_docs: AtomicUsize::new(segment_docs),
             max_docs,
-            live: false,
+            live: AtomicBool::new(false),
             next_buffer_id: AtomicU64::new(1),
         })
     }
@@ -921,7 +921,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
         for node in nodes {
             buffer_node(&mut dwpt.private, node, limit);
         }
-        if self.live && !nodes.is_empty() {
+        if self.live() && !nodes.is_empty() {
             dwpt.live.apply(nodes, limit, &dwpt.postings, &self.cfg());
         }
         dwpt.slice = end;
@@ -1059,7 +1059,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
         let streamed = cfg.streamed_stored_mode();
         let count = docs.len();
         let live = self
-            .live
+            .live()
             .then(|| cfg.soft_deletes_field().map(|f| f.number));
         self.add_with(delete, count, move |_| {
             Ok(Box::new(move |dwpt: &mut Dwpt| {
@@ -1138,7 +1138,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
                 }
             };
             dwpt.ram_bytes = dwpt.ram_bytes.saturating_add(added);
-            if self.live && dwpt.live.id == 0 {
+            if self.live() && dwpt.live.id == 0 {
                 dwpt.live.id = self.next_buffer_id.fetch_add(1, Ordering::Relaxed);
             }
             let (nodes, end, seq_no, delete_bytes) = {
@@ -1232,7 +1232,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
         core.next_ticket = core.next_ticket.saturating_add(1);
         let postings = Arc::new(std::mem::take(&mut dwpt.postings));
         let columns = std::mem::take(&mut dwpt.live);
-        if self.live {
+        if self.live() {
             let flushing = live::Flushing {
                 postings: Arc::clone(&postings),
                 columns,

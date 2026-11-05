@@ -485,9 +485,8 @@ fn the_writers_buffer_searches_like_its_committed_segment() {
     let s = IndexSearcher::new(&segments, &norms).unwrap();
 
     let buffered = ByteBuffersDirectory::new();
-    let w = ConcurrentIndexWriter::new(open(&buffered), 1)
-        .unwrap()
-        .with_live_search();
+    let w = ConcurrentIndexWriter::new(open(&buffered), 1).unwrap();
+    w.enable_live_search().unwrap();
     for d in &docs {
         w.add_explicit_documents(vec![explicit(d)]).unwrap();
     }
