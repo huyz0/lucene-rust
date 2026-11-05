@@ -361,6 +361,25 @@ impl IndexingConfig {
         self.explicit
     }
 
+    /// The stored-fields mode a buffer compresses its explicit documents'
+    /// stored values in as they arrive, or `None` when its flush needs them
+    /// as documents: an index sort reorders them, and an installed
+    /// stored-fields writer writes them itself.
+    pub(crate) fn streamed_stored_mode(&self) -> Option<lucene_codecs::stored_fields::Mode> {
+        if !self.explicit || self.index_sort.is_some() {
+            return None;
+        }
+        let codec = self.codec.as_deref();
+        if codec.is_some_and(|c| c.stored_fields_writer_factory().is_some()) {
+            return None;
+        }
+        Some(
+            codec.map_or(lucene_codecs::stored_fields::Mode::BestSpeed, |c| {
+                c.stored_fields_mode()
+            }),
+        )
+    }
+
     /// Checks an add of explicit documents against the registered schema and
     /// returns, per document and inverted field, the field's index options
     /// (`None` for a field with no terms).
@@ -713,6 +732,9 @@ impl IndexingConfig {
             for v in doc_vectors {
                 present.insert(self.explicit_vector_field(&v.field_name)?.number);
             }
+        }
+        if let Some(stored) = buf.stored {
+            stored.fields.iter().for_each(|&n| present.insert(n));
         }
         for (doc, fields) in buf.docs.iter().zip(explicit) {
             doc.fields
@@ -1102,7 +1124,12 @@ impl IndexingConfig {
             buf.docs,
             buf.has_blocks,
             self.codec.as_deref(),
-            None,
+            buf.stored.and_then(|s| {
+                s.bytes
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take()
+            }),
         )?;
         let mut record = |names: Vec<String>| {
             flushed.info.files.extend(names);

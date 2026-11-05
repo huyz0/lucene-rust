@@ -778,7 +778,7 @@ mod tests {
     fn full_flush_merges_keep_only_small_inputs() {
         let ctx = BasicMergeContext::default();
         let mut config = MergePolicyConfig {
-            segments_per_tier: 2,
+            segments_per_tier: 2.0,
             max_merge_at_once: 2,
             floor_segment_size: 1000,
             ..MergePolicyConfig::default()

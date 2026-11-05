@@ -88,7 +88,7 @@ fn run(seed: u64, sorted: bool, ops: usize) -> usize {
         w.set_max_buffered_docs(5 + rng.below(30) as i32).unwrap();
         w.set_merge_policy(Some(MergePolicyConfig {
             max_merge_at_once: 2 + rng.below(3) as usize,
-            segments_per_tier: 2,
+            segments_per_tier: 2.0,
             floor_segment_size: 1,
             ..MergePolicyConfig::default()
         }));

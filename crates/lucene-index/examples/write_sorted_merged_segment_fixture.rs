@@ -187,7 +187,7 @@ fn main() {
     // one, which is what the verifier asserts (`reader.leaves().size() == 1`).
     writer.set_merge_policy(Some(MergePolicyConfig {
         max_merge_at_once: 16,
-        segments_per_tier: 2,
+        segments_per_tier: 2.0,
         floor_segment_size: 1 << 30,
         max_merged_segment_size: 1 << 40,
         ..MergePolicyConfig::default()

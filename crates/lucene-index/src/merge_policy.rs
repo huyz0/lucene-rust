@@ -224,7 +224,7 @@ pub struct MergePolicyConfig {
     pub max_merge_at_once: usize,
     /// Real Lucene's `segsPerTier` (`setSegmentsPerTier`, default 8.0).
     /// Clamped to `>= 2` (Java rejects anything smaller outright).
-    pub segments_per_tier: usize,
+    pub segments_per_tier: f64,
     /// Real Lucene's `maxMergedSegmentBytes` (`setMaxMergedSegmentMB`,
     /// default 5 GB). Note the exclusion rule is `size > this / 2`, not
     /// `size >= this` -- see [`find_merges_excluding`].
@@ -285,7 +285,7 @@ impl Default for MergePolicyConfig {
             // maxMergeAtOnce = 10 (mergeFactor is then min(10, 8.0) = 8).
             max_merge_at_once: 10,
             // segsPerTier = 8.0
-            segments_per_tier: 8,
+            segments_per_tier: 8.0,
             // maxMergedSegmentBytes = 5 * 1024 * 1024 * 1024L (5 GiB, NOT
             // 5000 MiB -- setMaxMergedSegmentMB(5000) would be a different
             // number).
@@ -313,7 +313,7 @@ impl MergePolicyConfig {
     /// [`find_merges_excluding`] (which subtracts `segs_per_tier * levelSize`
     /// per iteration and would never terminate at 0).
     fn segs_per_tier(&self) -> f64 {
-        (self.segments_per_tier as f64).max(2.0)
+        self.segments_per_tier.max(2.0)
     }
 
     /// Java's `mergeFactor = (int) Math.min(maxMergeAtOnce, segsPerTier)` --
@@ -1236,7 +1236,7 @@ mod tests {
     fn small_config() -> MergePolicyConfig {
         MergePolicyConfig {
             max_merge_at_once: 3,
-            segments_per_tier: 3,
+            segments_per_tier: 3.0,
             max_merged_segment_size: 1_000_000,
             floor_segment_size: 0,
             ..MergePolicyConfig::default()
@@ -1249,7 +1249,7 @@ mod tests {
         // TieredMergePolicy field initialisers, Lucene 10.5.0.
         assert_eq!(config.max_merged_segment_size, 5 * 1024 * 1024 * 1024);
         assert_eq!(config.floor_segment_size, 16 * 1024 * 1024);
-        assert_eq!(config.segments_per_tier, 8);
+        assert_eq!(config.segments_per_tier, 8.0);
         assert_eq!(config.max_merge_at_once, 10);
         // mergeFactor = (int) Math.min(maxMergeAtOnce, segsPerTier)
         assert_eq!(config.merge_factor(), 8);
@@ -1328,7 +1328,7 @@ mod tests {
         // index stays eligible so its deletes can be reclaimed.
         let config = MergePolicyConfig {
             max_merge_at_once: 3,
-            segments_per_tier: 3,
+            segments_per_tier: 3.0,
             max_merged_segment_size: 1_000_000,
             floor_segment_size: 0,
             deletes_pct_allowed: 20.0,
@@ -1399,7 +1399,7 @@ mod tests {
         // soft mergeFactor cap is what binds.
         let config = MergePolicyConfig {
             max_merge_at_once: 10,
-            segments_per_tier: 4,
+            segments_per_tier: 4.0,
             max_merged_segment_size: 1_000_000,
             floor_segment_size: 0,
             ..MergePolicyConfig::default()
@@ -1442,7 +1442,7 @@ mod tests {
     fn max_merge_at_once_is_a_hard_cap_below_the_floor() {
         let config = MergePolicyConfig {
             max_merge_at_once: 10,
-            segments_per_tier: 2,
+            segments_per_tier: 2.0,
             max_merged_segment_size: 1_000_000,
             // Every candidate stays far below the floor, so only the hard
             // cap can stop the packing loop.
@@ -1470,7 +1470,7 @@ mod tests {
         // group to three 300-byte segments.
         let config = MergePolicyConfig {
             max_merge_at_once: 10,
-            segments_per_tier: 10,
+            segments_per_tier: 10.0,
             max_merged_segment_size: 1000,
             floor_segment_size: 0,
             ..MergePolicyConfig::default()
@@ -1497,7 +1497,7 @@ mod tests {
     fn growth_guard_config() -> MergePolicyConfig {
         MergePolicyConfig {
             max_merge_at_once: 2,
-            segments_per_tier: 2,
+            segments_per_tier: 2.0,
             max_merged_segment_size: 1_000_000,
             floor_segment_size: 0,
             ..MergePolicyConfig::default()
@@ -1553,7 +1553,7 @@ mod tests {
         // Java keeps merging until the delete budget is met.
         let config = MergePolicyConfig {
             max_merge_at_once: 10,
-            segments_per_tier: 10,
+            segments_per_tier: 10.0,
             max_merged_segment_size: 1_000_000,
             floor_segment_size: 0,
             deletes_pct_allowed: 20.0,
@@ -1580,7 +1580,7 @@ mod tests {
         // segments) binds well before the merge factor (10) does.
         let config = MergePolicyConfig {
             max_merge_at_once: 10,
-            segments_per_tier: 10,
+            segments_per_tier: 10.0,
             max_merged_segment_size: 10_000_000,
             floor_segment_size: 0,
             target_search_concurrency: 4,
@@ -1687,7 +1687,7 @@ mod tests {
         let config = MergePolicyConfig {
             floor_segment_size: 0,
             reclaim_weight: 2.0,
-            segments_per_tier: 8,
+            segments_per_tier: 8.0,
             ..MergePolicyConfig::default()
         };
         // Two clean segments, sizes 400 and 100 (raw == pro-rated).
@@ -2100,7 +2100,7 @@ mod tests {
     #[test]
     fn segments_per_tier_below_two_is_clamped() {
         let config = MergePolicyConfig {
-            segments_per_tier: 0,
+            segments_per_tier: 0.0,
             ..small_config()
         };
         assert_eq!(config.segs_per_tier(), 2.0);

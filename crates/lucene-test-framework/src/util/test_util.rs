@@ -1019,7 +1019,7 @@ pub fn reduce_open_files(
             }
             PolicyKind::Tiered(tmp) => {
                 tmp.config.max_merge_at_once = tmp.config.max_merge_at_once.min(5);
-                tmp.config.segments_per_tier = tmp.config.segments_per_tier.min(5);
+                tmp.config.segments_per_tier = tmp.config.segments_per_tier.min(5.0);
             }
             _ => {}
         }

@@ -176,6 +176,7 @@ mod block_tests;
 mod explicit;
 mod inverted_terms;
 mod lifecycle;
+pub(crate) mod packed_fields;
 pub(crate) mod pending_postings;
 mod pluggable_merge;
 mod try_modify;
@@ -1211,6 +1212,17 @@ pub(crate) struct DocumentBuffer<'b> {
     /// already permuted.
     pub(crate) old_to_new: Option<&'b [usize]>,
     pub(crate) has_blocks: bool,
+    /// The stored fields, already compressed as the documents arrived; the
+    /// documents in `docs` then hold no values.
+    pub(crate) stored: Option<&'b FinishedStored>,
+}
+
+/// A buffer's stored fields, finished for its segment, and the field numbers
+/// they hold.
+pub(crate) struct FinishedStored {
+    pub(crate) fields: std::collections::BTreeSet<i32>,
+    /// Taken by the one write of the segment's stored fields.
+    pub(crate) bytes: std::sync::Mutex<Option<segment_writer::StoredFieldsBytes>>,
 }
 
 impl DocumentBuffer<'_> {
@@ -5469,8 +5481,8 @@ impl<'d> IndexWriter<'d> {
         self.merges_by_caller = on;
     }
 
-    /// The merge policy, for a caller running merges itself.
-    pub(crate) fn merge_policy(&self) -> Option<&MergePolicyConfig> {
+    /// The natural merge policy's settings, `None` when merges are off.
+    pub fn merge_policy(&self) -> Option<&MergePolicyConfig> {
         self.merge_policy.as_ref()
     }
 
@@ -5482,49 +5494,51 @@ impl<'d> IndexWriter<'d> {
         Ok(())
     }
 
-    /// The next merge `config` proposes among the committed segments that are
-    /// not already being merged (`merging`) -- `MergePolicy.findMerges`
-    /// over `IndexWriter.getMergingSegments()`'s complement.
+    /// The first merge `config` proposes, the segments in `merging` counted
+    /// in the index total but never candidates -- `MergePolicy.findMerges`
+    /// with `IndexWriter.getMergingSegments()` as its context.
     pub(crate) fn next_merge(
         &self,
         config: &MergePolicyConfig,
         merging: &std::collections::HashSet<String>,
     ) -> Result<Option<Vec<String>>> {
-        Ok(self
-            .next_merge_sized(config, merging)?
-            .map(|(names, _)| names))
+        let stats = self.segment_stats()?;
+        Ok(merge_policy::find_merges_excluding(&stats, merging, config)
+            .into_iter()
+            .next())
     }
 
-    /// [`Self::next_merge`], with the merge's `OneMerge.estimatedMergeBytes`:
-    /// the sources' sizes pro-rated by their live documents, as
-    /// `IndexWriter.registerMerge` estimates it.
-    pub(crate) fn next_merge_sized(
+    /// `TieredMergePolicy.findMerges` over every segment, the ones in
+    /// `merging` included as Java's `MergeContext.getMergingSegments` counts
+    /// them (their bytes in the index total, never as candidates): each
+    /// proposed merge with its `OneMerge.estimatedMergeBytes`, the sources'
+    /// sizes pro-rated by their live documents.
+    pub(crate) fn find_merges_sized(
         &self,
         config: &MergePolicyConfig,
         merging: &std::collections::HashSet<String>,
-    ) -> Result<Option<(Vec<String>, u64)>> {
-        let stats: Vec<merge_policy::SegmentStat> = self
-            .segment_stats()?
+    ) -> Result<Vec<(Vec<String>, u64)>> {
+        let stats = self.segment_stats()?;
+        let merges = merge_policy::find_merges_excluding(&stats, merging, config);
+        Ok(merges
             .into_iter()
-            .filter(|s| !merging.contains(&s.name))
-            .collect();
-        let Some(names) = merge_policy::find_merges(&stats, config).into_iter().next() else {
-            return Ok(None);
-        };
-        let estimated = stats
-            .iter()
-            .filter(|s| names.contains(&s.name))
-            .map(|s| {
-                let live = f64::from(s.doc_count.saturating_sub(s.del_count).max(0));
-                let ratio = if s.doc_count > 0 {
-                    live / f64::from(s.doc_count)
-                } else {
-                    0.0
-                };
-                (s.size_bytes as f64 * ratio) as u64
+            .map(|names| {
+                let estimated = stats
+                    .iter()
+                    .filter(|s| names.contains(&s.name))
+                    .map(|s| {
+                        let live = f64::from(s.doc_count.saturating_sub(s.del_count).max(0));
+                        let ratio = if s.doc_count > 0 {
+                            live / f64::from(s.doc_count)
+                        } else {
+                            0.0
+                        };
+                        (s.size_bytes as f64 * ratio) as u64
+                    })
+                    .fold(0u64, u64::saturating_add);
+                (names, estimated)
             })
-            .fold(0u64, u64::saturating_add);
-        Ok(Some((names, estimated)))
+            .collect())
     }
 
     /// The configuration every segment is built with, shared.
@@ -5546,6 +5560,7 @@ impl<'d> IndexWriter<'d> {
             postings: Some(postings),
             old_to_new: None,
             has_blocks: self.pending_has_blocks,
+            stored: None,
         }
     }
 
@@ -14246,7 +14261,7 @@ pub(crate) mod tests {
     fn tight_merge_policy() -> MergePolicyConfig {
         MergePolicyConfig {
             max_merge_at_once: 10,
-            segments_per_tier: 2,
+            segments_per_tier: 2.0,
             max_merged_segment_size: 1_000_000,
             reclaim_weight: 1.0,
             // Above every segment these tests flush, mirroring real Lucene's

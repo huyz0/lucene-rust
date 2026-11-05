@@ -150,7 +150,7 @@ mod tiered {
                 c.deletes_pct_allowed
             );
 
-            let segs_per_tier = c.segments_per_tier as f64;
+            let segs_per_tier = c.segments_per_tier;
             let tsc = c.target_search_concurrency;
             let mut level_size_bytes = min_segment_bytes.max(c.floor_segment_size as i64);
             let mut bytes_left = total_bytes;
@@ -226,7 +226,7 @@ mod tiered {
         // Gate rule #10: forty equal segments, each pair mergeable, under a
         // policy allowing a handful.
         let mut tmp = TieredMergePolicy::default();
-        tmp.config.segments_per_tier = 2;
+        tmp.config.segments_per_tier = 2.0;
         tmp.config.target_search_concurrency = 1;
         let infos: Vec<MergeSegment> = (0..40)
             .map(|i| MergeSegment::new(format!("_{i}"), 100, 0, 1 << 20))
@@ -237,7 +237,7 @@ mod tiered {
         assert!(caught.is_err());
         let mut deleted = infos.clone();
         deleted[0].del_count = 99;
-        tmp.config.segments_per_tier = 50;
+        tmp.config.segments_per_tier = 50.0;
         tmp.config.deletes_pct_allowed = 0.0;
         let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             Suite.assert_segment_infos(&tmp, &deleted)
