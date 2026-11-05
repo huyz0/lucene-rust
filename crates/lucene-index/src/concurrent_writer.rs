@@ -1977,7 +1977,7 @@ impl<'d> crate::nrt::NrtSource for ConcurrentIndexWriter<'d> {
         _apply_all_deletes: bool,
         _write_all_deletes: bool,
     ) -> Result<crate::nrt::NrtSnapshot> {
-        let _full_flush = lock(&self.full_flush);
+        let full_flush = lock(&self.full_flush);
         self.flush_all(false)?;
         let mut core = lock(&self.core);
         // Java's `segmentInfos` holds what was just flushed, so merges see
@@ -2026,9 +2026,18 @@ impl<'d> crate::nrt::NrtSource for ConcurrentIndexWriter<'d> {
             writer.merge_on_full_flush(MergeTrigger::GetReader, merging)?;
         }
         drop(core);
+        let Some((names, until)) = waiting else {
+            let snapshot = lock(&self.core).writer.nrt_snapshot_of_live_view();
+            drop(full_flush);
+            self.schedule_merges(MergeTrigger::GetReader)?;
+            return snapshot;
+        };
+        // The wait holds no full flush, as Java awaits the merges outside
+        // `fullFlushLock`: commits and other refreshes go on meanwhile.
+        drop(full_flush);
         self.schedule_merges(MergeTrigger::GetReader)?;
-        let mut core = lock(&self.core);
-        if let Some((names, until)) = waiting {
+        {
+            let mut core = lock(&self.core);
             while names.iter().any(|name| core.merging.contains(name)) {
                 let now = std::time::Instant::now();
                 if now >= until {
@@ -2041,7 +2050,10 @@ impl<'d> crate::nrt::NrtSource for ConcurrentIndexWriter<'d> {
                     .0;
             }
         }
-        core.writer.nrt_snapshot_of_live_view()
+        // No flush half-published under the snapshot: take it between full
+        // flushes.
+        let _full_flush = lock(&self.full_flush);
+        lock(&self.core).writer.nrt_snapshot_of_live_view()
     }
 
     fn nrt_is_current(&self, infos: &crate::segment_infos::SegmentInfos) -> Result<bool> {
