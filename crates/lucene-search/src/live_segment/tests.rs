@@ -504,7 +504,7 @@ fn the_writers_buffer_searches_like_its_committed_segment() {
                 })
                 .collect(),
         };
-        let snap = w.live_snapshot(&request).unwrap();
+        let snap = w.live_snapshot(&request, None).unwrap();
         assert_eq!(snap.buffers.len(), 1);
         let b = snap.buffers.into_iter().next().unwrap();
         assert!(!b.deleted.is_empty());

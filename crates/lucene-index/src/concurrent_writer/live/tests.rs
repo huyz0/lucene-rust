@@ -140,7 +140,7 @@ fn buffered_documents_are_read_with_their_statistics() {
         w.add_explicit_documents(vec![doc(&f, i)]).unwrap();
     }
     let snap = w
-        .live_snapshot(&body(false, &["rare", "absent", "rare"]))
+        .live_snapshot(&body(false, &["rare", "absent", "rare"]), None)
         .unwrap();
     assert_eq!(snap.published, 0);
     assert_eq!(snap.buffers.len(), 1);
@@ -175,7 +175,7 @@ fn buffered_documents_are_read_with_their_statistics() {
         .enumerate()
         .all(|(d, &n)| n == if d % 3 == 0 { 3 } else { 1 }));
 
-    let snap = w.live_snapshot(&body(true, &["rare"])).unwrap();
+    let snap = w.live_snapshot(&body(true, &["rare"]), None).unwrap();
     let field = &snap.buffers[0].fields[0];
     assert_eq!(
         field.info.index_options,
@@ -190,7 +190,7 @@ fn buffered_documents_are_read_with_their_statistics() {
             positions: true,
         }],
     };
-    let snap = w.live_snapshot(&ids).unwrap();
+    let snap = w.live_snapshot(&ids, None).unwrap();
     let field = &snap.buffers[0].fields[0];
     assert_eq!(field.terms[0].docs, [(4, 1)]);
     assert!(field.norms.is_none(), "the field omits norms");
@@ -227,7 +227,7 @@ fn updates_tombstones_and_deletes_hide_buffered_documents() {
     });
     w.add_explicit_documents(vec![tombstone]).unwrap();
 
-    let snap = w.live_snapshot(&body(false, &["common"])).unwrap();
+    let snap = w.live_snapshot(&body(false, &["common"]), None).unwrap();
     let max_docs: Vec<i32> = snap.buffers.iter().map(|b| b.max_doc).collect();
     assert_eq!(max_docs, [7, 6]);
     // Slot 0: d0 d2 d4 d6 d8 d2' tombstone; slot 1: d1 d3 d5 d7 d9 d4'.
@@ -236,18 +236,20 @@ fn updates_tombstones_and_deletes_hide_buffered_documents() {
     // Once each slot adds again it has applied every delete itself.
     w.add_explicit_documents(vec![doc(&f, 200)]).unwrap();
     w.add_explicit_documents(vec![doc(&f, 201)]).unwrap();
-    let snap = w.live_snapshot(&body(false, &["common"])).unwrap();
+    let snap = w.live_snapshot(&body(false, &["common"]), None).unwrap();
     assert_eq!(deleted_ids(&snap), [vec![1, 2, 6], vec![2]]);
 }
 
 /// A buffer taken for a flush is read until its segment is published,
 /// and a delete issued meanwhile reaches it; then it is gone from the cut
-/// and counted as published.
+/// unless the reader's commit lacks it, until a commit holding it is
+/// released.
 #[test]
 fn a_buffer_being_flushed_stays_readable_until_published() {
     let tmp = TempDir::new("live-flushing");
     let dir = FsDirectory::open(tmp.path());
     let (w, f) = open(&dir, 1, true);
+    let start = w.with_writer(|iw| iw.segment_infos().generation);
     for i in 0..5 {
         w.add_explicit_documents(vec![doc(&f, i)]).unwrap();
     }
@@ -257,7 +259,7 @@ fn a_buffer_being_flushed_stays_readable_until_published() {
     };
     w.add_explicit_documents(vec![doc(&f, 5)]).unwrap();
     w.delete_documents_by_term(&[id(1)]).unwrap();
-    let snap = w.live_snapshot(&body(false, &["common"])).unwrap();
+    let snap = w.live_snapshot(&body(false, &["common"]), None).unwrap();
     let max_docs: Vec<i32> = snap.buffers.iter().map(|b| b.max_doc).collect();
     assert_eq!(max_docs, [1, 5], "the slot, then the buffer being flushed");
     assert_eq!(deleted_ids(&snap), [vec![], vec![1]]);
@@ -265,14 +267,45 @@ fn a_buffer_being_flushed_stays_readable_until_published() {
 
     // Another add leaves the cut's deletes as they were.
     w.add_explicit_documents(vec![doc(&f, 6)]).unwrap();
-    let snap = w.live_snapshot(&body(false, &["common"])).unwrap();
+    let snap = w.live_snapshot(&body(false, &["common"]), None).unwrap();
     assert_eq!(deleted_ids(&snap), [vec![], vec![1]]);
 
     w.complete_flush(batch).unwrap();
-    let snap = w.live_snapshot(&body(false, &["common"])).unwrap();
+    let snap = w.live_snapshot(&body(false, &["common"]), None).unwrap();
     assert_eq!(snap.published, 1);
     let max_docs: Vec<i32> = snap.buffers.iter().map(|b| b.max_doc).collect();
     assert_eq!(max_docs, [2]);
+
+    // A reader of the commit before it still lacks the published buffer,
+    // and reads it, with the deletes that reach it after publishing.
+    w.delete_documents_by_term(&[id(3)]).unwrap();
+    let snap = w
+        .live_snapshot(&body(false, &["common"]), Some(start))
+        .unwrap();
+    let max_docs: Vec<i32> = snap.buffers.iter().map(|b| b.max_doc).collect();
+    assert_eq!(max_docs, [2, 5], "the slot, then the published buffer");
+    assert_eq!(deleted_ids(&snap), [vec![], vec![1, 3]]);
+
+    // A commit holds every buffer; once released, an older reader is
+    // refused rather than answered without them.
+    w.commit().unwrap();
+    let generation = w.with_writer(|iw| iw.segment_infos().generation);
+    let snap = w
+        .live_snapshot(&body(false, &["common"]), Some(generation))
+        .unwrap();
+    assert!(snap.buffers.is_empty());
+    assert!(w
+        .live_snapshot(&body(false, &["common"]), Some(start))
+        .is_ok());
+    w.release_live(generation).unwrap();
+    assert!(matches!(
+        w.live_snapshot(&body(false, &["common"]), Some(start)),
+        Err(Error::LiveSearch(_))
+    ));
+    assert!(matches!(
+        w.live_snapshot(&body(false, &["common"]), Some(generation + 7)),
+        Err(Error::LiveSearch(_))
+    ));
 }
 
 /// A writer that keeps no live-search columns, and a buffer a delete by
@@ -285,7 +318,7 @@ fn what_the_buffers_cannot_answer_is_refused() {
     w.add_explicit_documents(vec![doc(&f, 0)]).unwrap();
     assert!(!w.live_search());
     assert!(matches!(
-        w.live_snapshot(&body(false, &["common"])),
+        w.live_snapshot(&body(false, &["common"]), None),
         Err(Error::LiveSearch(_))
     ));
 
@@ -297,7 +330,7 @@ fn what_the_buffers_cannot_answer_is_refused() {
     w.delete_documents_by_query(&[DeleteQuery::Term(id(0))])
         .unwrap();
     assert!(matches!(
-        w.live_snapshot(&body(false, &["common"])),
+        w.live_snapshot(&body(false, &["common"]), None),
         Err(Error::LiveSearch(_))
     ));
 }
@@ -330,7 +363,7 @@ fn live_search_cost() {
             let rounds = 20;
             let t0 = std::time::Instant::now();
             for _ in 0..rounds {
-                std::hint::black_box(w.live_snapshot(&req).unwrap());
+                std::hint::black_box(w.live_snapshot(&req, None).unwrap());
             }
             let us = t0.elapsed().as_micros() as f64 / f64::from(rounds);
             println!("snapshot term={t} positions={positions} us={us:.0}");

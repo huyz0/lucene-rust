@@ -6,21 +6,26 @@
 //! as a column by document, and which documents are deleted. Deletes are
 //! resolved as they arrive, against the buffer's own postings (a delete term
 //! is a term lookup), so a search only applies the deletes issued since the
-//! buffer's last add. A buffer taken for a flush stays readable until its
-//! segment is published, and the deletes issued meanwhile reach it as they
-//! reach the published segments.
+//! buffer's last add. A buffer taken for a flush stays readable after its
+//! segment is published, until [`ConcurrentIndexWriter::release_live`] says
+//! no reader lacks that segment any more: a reader of an older commit gets
+//! it from the buffer. The deletes issued meanwhile reach it as they reach
+//! the published segments.
 //!
 //! A snapshot holds every slot's lock, the control lock and the log's for
 //! as long as it copies, so it is one cut through the operations: an update's
 //! delete and its new document are both in it or both not, and a buffer is
 //! either still buffered, being flushed, or published (counted by
-//! [`LiveSnapshot::published`]), never two of these. Indexing waits for the
+//! [`LiveSnapshot::published`]), never two of these. Commits are known by
+//! generation, each holding the publishes before it. Indexing waits for the
 //! copy, which costs what the requested terms' postings cost to decode.
 //!
-//! The extra columns are not charged to the RAM buffer, so a writer with
-//! live search flushes after the same documents as one without.
+//! The extra columns, and the published buffers kept, are not charged to
+//! the RAM buffer, so a writer with live search flushes after the same
+//! documents as one without; [`ConcurrentIndexWriter::live_bytes`] reports
+//! them.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::Arc;
 
 use lucene_codecs::field_infos::{FieldInfo, IndexOptions};
@@ -299,8 +304,9 @@ impl Deletes {
     }
 }
 
-/// A buffer taken for a flush and not yet published: readable by live
-/// search until it is.
+/// A buffer taken for a flush: readable by live search until it is
+/// published, and after, until a commit holding it is released
+/// ([`ConcurrentIndexWriter::release_live`]).
 pub(super) struct Flushing {
     pub(super) postings: Arc<PendingPostings>,
     pub(super) columns: LiveColumns,
@@ -310,9 +316,62 @@ pub(super) struct Flushing {
 /// The live-search state the control lock guards.
 #[derive(Default)]
 pub(super) struct LiveFlushes {
-    /// By ticket.
+    /// Being built, by ticket.
     pub(super) flushing: BTreeMap<u64, Flushing>,
+    /// Published, by publish number, until a released commit holds them.
+    pub(super) retained: BTreeMap<u64, Flushing>,
+    /// Buffers published so far: the next publish number.
     pub(super) published: u64,
+    /// Recent commits: generation, and how many publishes it holds.
+    commits: VecDeque<(i64, u64)>,
+}
+
+/// How many commits [`LiveFlushes::commits`] remembers.
+const COMMITS_KEPT: usize = 64;
+
+impl LiveFlushes {
+    /// A buffer taken for a flush published (`published` set) or dropped.
+    pub(super) fn finish(&mut self, ticket: u64, published: bool) {
+        if let Some(f) = self.flushing.remove(&ticket) {
+            if published {
+                self.retained.insert(self.published, f);
+                self.published = self.published.saturating_add(1);
+            }
+        }
+    }
+
+    /// A commit at `generation` holds every publish so far.
+    pub(super) fn committed(&mut self, generation: i64) {
+        if self.commits.back().is_some_and(|&(g, _)| g == generation) {
+            return;
+        }
+        if self.commits.len() == COMMITS_KEPT {
+            self.commits.pop_front();
+        }
+        self.commits.push_back((generation, self.published));
+    }
+
+    /// How many publishes the commit at `generation` holds.
+    fn held_by(&self, generation: i64) -> Result<u64> {
+        self.commits
+            .iter()
+            .find(|&&(g, _)| g == generation)
+            .map(|&(_, p)| p)
+            .ok_or_else(|| {
+                Error::LiveSearch(format!(
+                    "commit generation {generation} is not one this writer made"
+                ))
+            })
+    }
+
+    /// Every buffer still read: being built, then published.
+    fn buffers(&self) -> impl Iterator<Item = &Flushing> {
+        self.flushing.values().chain(self.retained.values())
+    }
+
+    pub(super) fn buffers_mut(&mut self) -> impl Iterator<Item = &mut Flushing> {
+        self.flushing.values_mut().chain(self.retained.values_mut())
+    }
 }
 
 /// A request field resolved against the schema.
@@ -336,31 +395,53 @@ impl ConcurrentIndexWriter<'_> {
         self.live
     }
 
-    /// The heap the live-search columns hold, beyond the RAM buffer's
-    /// charge.
+    /// The heap live search holds beyond the RAM buffer's charge: every
+    /// buffer's columns, and the postings of published buffers still
+    /// retained.
     pub fn live_bytes(&self) -> usize {
         let slots = self
             .slots
             .iter()
             .map(|s| lock(s).live.ram_bytes())
             .fold(0usize, usize::saturating_add);
-        lock(&self.core)
+        let core = lock(&self.core);
+        let retained = core
             .live
-            .flushing
+            .retained
             .values()
+            .map(|f| f.postings.bytes())
+            .fold(slots, usize::saturating_add);
+        core.live
+            .buffers()
             .map(|f| f.columns.ram_bytes())
-            .fold(slots, usize::saturating_add)
+            .fold(retained, usize::saturating_add)
     }
 
-    /// The requested fields and terms of every buffered document not yet in
-    /// a published segment, with each buffer's norms, deletes and field
-    /// statistics: see the module doc. Fields the schema does not know, and
-    /// terms no buffer holds, are left out.
+    /// Stops reading the published buffers the commit at `generation` holds:
+    /// call it once no search reads from an older commit. Their memory goes.
+    pub fn release_live(&self, generation: i64) -> Result<()> {
+        let mut core = lock(&self.core);
+        let held = core.live.held_by(generation)?;
+        core.live.retained.retain(|&n, _| n >= held);
+        Ok(())
+    }
+
+    /// The requested fields and terms of every buffered document a reader of
+    /// the commit at `commit` lacks, with each buffer's norms, deletes and
+    /// field statistics: see the module doc. With `None`, the documents in no
+    /// published segment. Fields the schema does not know, and terms no
+    /// buffer holds, are left out.
     ///
     /// Fails for a writer without [`Self::with_live_search`], for one that
     /// takes no explicit documents (only those are inverted as they arrive),
-    /// and when a delete by query reached a buffer.
-    pub fn live_snapshot(&self, request: &LiveRequest) -> Result<LiveSnapshot> {
+    /// for a commit this writer did not make or no longer remembers, for one
+    /// whose buffers [`Self::release_live`] dropped while a later commit was
+    /// released, and when a delete by query reached a buffer.
+    pub fn live_snapshot(
+        &self,
+        request: &LiveRequest,
+        commit: Option<i64>,
+    ) -> Result<LiveSnapshot> {
         let cfg = self.cfg();
         if !self.live || !cfg.takes_explicit() {
             return Err(Error::LiveSearch(
@@ -384,6 +465,16 @@ impl ConcurrentIndexWriter<'_> {
             .collect();
         let slots: Vec<_> = self.slots.iter().map(lock).collect();
         let core = lock(&self.core);
+        let from = match commit {
+            Some(generation) => core.live.held_by(generation)?,
+            None => core.live.published,
+        };
+        if core.live.retained.keys().next().is_none_or(|&n| n > from) && from < core.live.published
+        {
+            return Err(Error::LiveSearch(format!(
+                "the buffers published after commit {commit:?} were released"
+            )));
+        }
         let (slot_tails, flushing_tail) = {
             let log = lock(&self.log);
             let tails: Vec<_> = slots.iter().map(|d| log.since(d.slice)).collect();
@@ -407,7 +498,8 @@ impl ConcurrentIndexWriter<'_> {
                 &cfg,
             )?);
         }
-        for f in core.live.flushing.values() {
+        let published = core.live.retained.range(from..).map(|(_, f)| f);
+        for f in core.live.flushing.values().chain(published) {
             out.buffers.push(view(
                 &f.postings,
                 &f.columns,

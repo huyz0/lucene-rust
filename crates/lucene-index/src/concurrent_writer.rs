@@ -418,6 +418,8 @@ impl<'d> ConcurrentIndexWriter<'d> {
             ..DeleteLog::default()
         };
         let segment_docs = writer.segment_doc_total()?;
+        let mut live = live::LiveFlushes::default();
+        live.committed(writer.segment_infos().generation);
         let max_docs = writer.max_docs_limit();
         Ok(ConcurrentIndexWriter {
             dir: writer.dir(),
@@ -428,7 +430,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
                 next_publish: 0,
                 barrier: None,
                 merging: HashSet::new(),
-                live: live::LiveFlushes::default(),
+                live,
             }),
             changed: Condvar::new(),
             slots: (0..slots).map(|_| Mutex::new(Dwpt::default())).collect(),
@@ -893,9 +895,9 @@ impl<'d> ConcurrentIndexWriter<'d> {
         }
         // They reach the buffers being flushed once published; live search
         // sees them there now.
-        if !nodes.is_empty() && !core.live.flushing.is_empty() {
+        if !nodes.is_empty() && core.live.buffers_mut().next().is_some() {
             let cfg = core.writer.shared_config();
-            for f in core.live.flushing.values_mut() {
+            for f in core.live.buffers_mut() {
                 f.columns.apply(nodes, f.max_doc, &f.postings, &cfg);
             }
         }
@@ -1462,11 +1464,6 @@ impl<'d> ConcurrentIndexWriter<'d> {
             )
         }));
         let mut core = self.wait_turn(ticket_no);
-        // Published or abandoned below, under this same lock: live search
-        // reads the documents from the segment from now on, or not at all.
-        if core.live.flushing.remove(&ticket_no).is_some() {
-            core.live.published = core.live.published.saturating_add(1);
-        }
         let outcome = catch_unwind(AssertUnwindSafe(|| match built {
             Ok(Ok(built)) => {
                 let name = built.sci.segment_name.clone();
@@ -1490,6 +1487,9 @@ impl<'d> ConcurrentIndexWriter<'d> {
                 Err(panic)
             }
         }));
+        // Published or abandoned, under the lock it happened under.
+        core.live
+            .finish(ticket_no, matches!(outcome, Ok(Ok(Ok(())))));
         self.retire(core);
         // Published or abandoned, its buffer is gone either way
         // (`doAfterFlush`), panics included. Published documents are now in
@@ -1636,6 +1636,8 @@ impl<'d> ConcurrentIndexWriter<'d> {
             } = &mut *core;
             writer.prepare_commit_excluding(merging)?;
             writer.finish_commit()?;
+            let generation = writer.segment_infos().generation;
+            core.live.committed(generation);
             last_seq
         };
         self.schedule_merges(MergeTrigger::FullFlush)?;
