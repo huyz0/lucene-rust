@@ -62,7 +62,6 @@ default-members = [
     "crates/lucene-sandbox",
     "crates/lucene-facet",
     "crates/lucene-sparse",
-    "crates/lucene-sparse",
     "crates/lucene-expressions",
     "crates/lucene-grouping",
     "crates/lucene-classification",

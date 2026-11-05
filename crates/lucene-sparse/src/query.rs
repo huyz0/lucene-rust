@@ -54,10 +54,16 @@ fn forward_vectors(
 ) -> lucene_search::Result<Option<Arc<ForwardVectors>>> {
     let cache =
         reader.core_attachment(|_| Ok::<_, lucene_search::Error>(SegmentForward::default()))?;
-    let mut map = cache.0.lock().unwrap_or_else(PoisonError::into_inner);
-    if let Some(found) = map.get(&field.number) {
+    if let Some(found) = cache
+        .0
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(&field.number)
+    {
         return Ok(Some(Arc::clone(found)));
     }
+    // Read without the lock, so a query on another field of the segment
+    // does not wait on this one's read; the first read kept wins.
     let Some((data, entry)) = reader
         .doc_values_for_field(field.number)
         .and_then(|(meta, data)| meta.binary_entry(field.number).map(|e| (data, e)))
@@ -67,8 +73,8 @@ fn forward_vectors(
     let read = Arc::new(
         ForwardVectors::read(data, entry, reader.max_doc, field.ceiling_ingest).map_err(error)?,
     );
-    map.insert(field.number, Arc::clone(&read));
-    Ok(Some(read))
+    let mut map = cache.0.lock().unwrap_or_else(PoisonError::into_inner);
+    Ok(Some(Arc::clone(map.entry(field.number).or_insert(read))))
 }
 
 /// `neural_sparse` with `method_parameters` on a `sparse_vector` field.

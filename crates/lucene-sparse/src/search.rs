@@ -394,7 +394,7 @@ pub fn search(
 
     // `SeismicBaseScorer.searchUpfront`.
     let max_doc = usize::try_from(segment.max_doc).unwrap_or(0);
-    let mut visited = vec![false; max_doc];
+    let mut visited = FixedBitSet::new(max_doc);
     let mut skip_heap = ScoreHeap::new(SKIP_HEAP_SIZE);
     let mut results = ScoreHeap::new(query.k);
     for token in &query.top_tokens {
@@ -416,13 +416,10 @@ pub fn search(
                 if segment.live_docs.is_some_and(|l| d >= l.len() || !l.get(d)) {
                     continue;
                 }
-                let Some(seen) = visited.get_mut(d) else {
-                    continue;
-                };
-                if *seen {
+                if d >= visited.len() || visited.get(d) {
                     continue;
                 }
-                *seen = true;
+                visited.set(d);
                 let Some(s) = dot(doc) else { continue };
                 skip_heap.add(doc, s);
                 results.add(doc, s);

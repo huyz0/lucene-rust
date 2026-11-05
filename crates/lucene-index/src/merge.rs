@@ -2945,12 +2945,6 @@ fn merge_segments_mapped_inner(
         }
     }
 
-    // `Lucene99SegmentInfoFormat.write` does `si.addFile(fileName)` *before*
-    // writing, so a real Lucene `.si` lists itself -- and `IndexFileDeleter`
-    // reference-counts from exactly this set, so a merged `.si` absent from
-    // its own file list is a file nothing holds a reference to (and a
-    // `CheckIndex` failure: `si.files_lists_itself`). The flush path
-    // (`segment_writer`) already did this; the merge did not.
     let extra = crate::index_writer::write_codec_segment_files(
         options.codec.as_deref(),
         lucene_codecs::codec::SegmentWrite {
@@ -2963,6 +2957,12 @@ fn merge_segments_mapped_inner(
         },
     )?;
     files.extend(extra);
+    // `Lucene99SegmentInfoFormat.write` does `si.addFile(fileName)` *before*
+    // writing, so a real Lucene `.si` lists itself -- and `IndexFileDeleter`
+    // reference-counts from exactly this set, so a merged `.si` absent from
+    // its own file list is a file nothing holds a reference to (and a
+    // `CheckIndex` failure: `si.files_lists_itself`). The flush path
+    // (`segment_writer`) already did this; the merge did not.
     let si_name = format!("{merged_segment_name}.si");
     files.push(si_name.clone());
 
