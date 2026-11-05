@@ -111,6 +111,18 @@ impl TermHash {
         self.hashes.len()
     }
 
+    /// Heap bytes held: the term bytes, their starts and hashes, the table.
+    pub(crate) fn ram_bytes(&self) -> usize {
+        [
+            self.arena.capacity(),
+            self.starts.capacity().saturating_mul(4),
+            self.hashes.capacity().saturating_mul(8),
+            self.table.capacity().saturating_mul(8),
+        ]
+        .into_iter()
+        .fold(0, usize::saturating_add)
+    }
+
     pub(crate) fn term(&self, id: u32) -> &[u8] {
         let (a, b) = (
             self.starts[id as usize],
