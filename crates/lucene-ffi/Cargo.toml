@@ -26,6 +26,7 @@ lucene-index = { path = "../lucene-index" }
 lucene-search = { path = "../lucene-search" }
 lucene-facet = { path = "../lucene-facet" }
 lucene-sandbox = { path = "../lucene-sandbox" }
+lucene-sparse = { path = "../lucene-sparse" }
 lucene-util = { path = "../lucene-util" }
 lucene-analysis = { path = "../lucene-analysis" }
 # ICU's Thai dictionary word iterator, which `ThaiTokenizer` (the `thai`

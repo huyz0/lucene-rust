@@ -2619,7 +2619,26 @@ impl IndexingConfig {
         // that error means adding a `SegmentFormat` variant whose two
         // exhaustive `match`es then force this method to open it.
         let source_names: Vec<&str> = plan.names.iter().map(|s| s.as_str()).collect();
-        let source_files: Vec<&[String]> = opened.iter().map(|o| o.files.as_slice()).collect();
+        // The codec's own files are written afresh for the merged segment.
+        let codec_extensions = self
+            .codec
+            .as_deref()
+            .and_then(|c| c.segment_files_writer())
+            .map_or(&[][..], |w| w.extensions());
+        let format_files: Vec<Vec<String>> = opened
+            .iter()
+            .map(|o| {
+                o.files
+                    .iter()
+                    .filter(|f| {
+                        !f.rsplit_once('.')
+                            .is_some_and(|(_, ext)| codec_extensions.contains(&ext))
+                    })
+                    .cloned()
+                    .collect()
+            })
+            .collect();
+        let source_files: Vec<&[String]> = format_files.iter().map(Vec::as_slice).collect();
         let postings_opened: Vec<bool> = opened_postings.iter().map(Option::is_some).collect();
         merge::check_format_coverage(&source_names, &source_files, &sources, &postings_opened)?;
 
@@ -3786,6 +3805,18 @@ impl IndexingConfig {
         if let Some(sort) = &self.index_sort {
             flushed.info.index_sort = Some(sort.clone());
         }
+        let extra = write_codec_segment_files(
+            self.codec.as_deref(),
+            lucene_codecs::codec::SegmentWrite {
+                directory: dir,
+                segment: segment_name,
+                id: &segment_id,
+                max_doc: flushed.info.doc_count,
+                field_infos: &fnm_fields,
+                files: &flushed.info.files,
+            },
+        )?;
+        flushed.info.files.extend(extra);
         if self.use_compound_file {
             // Before the `.si`, so the `.si` records the compound layout and
             // is not itself packed.
@@ -4926,6 +4957,18 @@ pub(crate) fn check_doc_values(
             .check_doc_values(write)
             .map_err(lucene_store::Error::Io),
         None => Ok(()),
+    }
+}
+
+/// [`Lucene104Codec::segment_files_writer`](lucene_codecs::codec::Lucene104Codec::segment_files_writer)
+/// of the writer's codec, if any: the names of the files it adds to `segment`.
+pub(crate) fn write_codec_segment_files(
+    codec: Option<&dyn lucene_codecs::codec::Lucene104Codec>,
+    segment: lucene_codecs::codec::SegmentWrite<'_>,
+) -> std::result::Result<Vec<String>, lucene_store::Error> {
+    match codec.and_then(|c| c.segment_files_writer()) {
+        Some(writer) => writer.write(segment).map_err(lucene_store::Error::Io),
+        None => Ok(Vec::new()),
     }
 }
 

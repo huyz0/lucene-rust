@@ -1156,6 +1156,18 @@ impl IndexingConfig {
         if let Some(sort) = &self.index_sort {
             flushed.info.index_sort = Some(sort.clone());
         }
+        let extra = super::write_codec_segment_files(
+            self.codec.as_deref(),
+            lucene_codecs::codec::SegmentWrite {
+                directory: dir,
+                segment: segment_name,
+                id: &segment_id,
+                max_doc: flushed.info.doc_count,
+                field_infos: &fnm_fields,
+                files: &flushed.info.files,
+            },
+        )?;
+        flushed.info.files.extend(extra);
         if self.use_compound_file {
             super::before_write(
                 self.codec.as_deref(),
@@ -1404,7 +1416,9 @@ impl<'d> IndexWriter<'d> {
         let mut info = info;
         info.number = number;
         info.doc_values_gen = -1;
-        info.attributes.clear();
+        // A field type's own attributes (`FieldType.putAttribute`) reach
+        // every segment's `.fnm`; the per-field format ones are the writer's.
+        info.attributes.retain(|(k, _)| !k.starts_with("PerField"));
         self.cfg_mut().push_field(info);
         Ok(number)
     }

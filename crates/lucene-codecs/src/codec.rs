@@ -134,6 +134,49 @@ pub trait Lucene104Codec: Send + Sync + fmt::Debug {
     fn check_doc_values(&self, _write: &DocValuesWrite<'_>) -> std::io::Result<()> {
         Ok(())
     }
+
+    /// The writer of files a `FilterCodec`'s wrapping format adds to every
+    /// flushed and merged segment besides the native ones (neural-search's
+    /// `SparsePostingsFormat` adds `.sit`/`.sip`). `None` adds nothing.
+    fn segment_files_writer(&self) -> Option<&dyn SegmentFilesWriter> {
+        None
+    }
+}
+
+/// A flushed or merged segment as [`SegmentFilesWriter::write`] is shown it:
+/// every native file is written, and the compound file and `.si` are not yet.
+#[derive(Clone, Copy)]
+pub struct SegmentWrite<'a> {
+    pub directory: &'a dyn lucene_store::Directory,
+    pub segment: &'a str,
+    pub id: &'a [u8; lucene_store::codec_util::ID_LENGTH],
+    pub max_doc: i32,
+    /// The segment's fields, as its `.fnm` records them.
+    pub field_infos: &'a [crate::field_infos::FieldInfo],
+    /// The segment's files written so far.
+    pub files: &'a [String],
+}
+
+impl fmt::Debug for SegmentWrite<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SegmentWrite")
+            .field("segment", &self.segment)
+            .field("max_doc", &self.max_doc)
+            .finish_non_exhaustive()
+    }
+}
+
+/// See [`Lucene104Codec::segment_files_writer`].
+pub trait SegmentFilesWriter: Send + Sync + fmt::Debug {
+    /// The extensions of the files [`Self::write`] writes. A merge writes
+    /// them afresh for the merged segment rather than merging the sources'.
+    fn extensions(&self) -> &'static [&'static str];
+
+    /// Writes this format's files for `segment` and returns their names.
+    ///
+    /// # Errors
+    /// A file cannot be read or written.
+    fn write(&self, segment: SegmentWrite<'_>) -> std::io::Result<Vec<String>>;
 }
 
 /// One doc-values instance's files, as [`Lucene104Codec::check_doc_values`]
@@ -206,6 +249,7 @@ mod tests {
         assert!(c.points_writer_factory().is_none());
         assert!(c.postings_writer_factory().is_none());
         assert!(c.term_vectors_writer_factory().is_none());
+        assert!(c.segment_files_writer().is_none());
         assert!(!c.knn_vectors_format_is_direct());
         assert!(c.before_write(WritePoint::SegmentInfo).is_ok());
         assert_eq!(
