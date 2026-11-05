@@ -86,7 +86,7 @@
 use std::collections::{HashSet, VecDeque};
 use std::ops::DerefMut;
 use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, RwLock, Weak};
 use std::time::Duration;
 
@@ -329,6 +329,8 @@ pub struct ConcurrentIndexWriter<'d> {
     max_docs: usize,
     /// [`Self::with_live_search`].
     live: bool,
+    /// The next buffer's id for live search, from 1.
+    next_buffer_id: AtomicU64,
 }
 
 /// The scheduler this writer hands its pending merges to, and the writer
@@ -457,6 +459,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
             segment_docs: AtomicUsize::new(segment_docs),
             max_docs,
             live: false,
+            next_buffer_id: AtomicU64::new(1),
         })
     }
 
@@ -1067,6 +1070,9 @@ impl<'d> ConcurrentIndexWriter<'d> {
                 let mut added = 0usize;
                 for (mut doc, options) in docs.into_iter().zip(options) {
                     let stored = Document { fields: doc.stored };
+                    if live.is_some() {
+                        dwpt.live.record_stored(&stored.fields);
+                    }
                     if let Some(mode) = streamed {
                         let streamed = dwpt.stored.get_or_insert_with(|| StreamedStored::new(mode));
                         added = added
@@ -1132,6 +1138,9 @@ impl<'d> ConcurrentIndexWriter<'d> {
                 }
             };
             dwpt.ram_bytes = dwpt.ram_bytes.saturating_add(added);
+            if self.live && dwpt.live.id == 0 {
+                dwpt.live.id = self.next_buffer_id.fetch_add(1, Ordering::Relaxed);
+            }
             let (nodes, end, seq_no, delete_bytes) = {
                 let mut log = lock(&self.log);
                 if let Some(node) = delete {

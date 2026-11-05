@@ -1,24 +1,32 @@
 //! Searching documents still in the writer's buffers, with no flush and no
-//! refresh: what [`ConcurrentIndexWriter::live_snapshot`] reads.
+//! refresh.
 //!
 //! A writer built with [`ConcurrentIndexWriter::with_live_search`] keeps,
 //! per buffer, what a search reads besides the postings: each field's norms
-//! as a column by document, and which documents are deleted. Deletes are
-//! resolved as they arrive, against the buffer's own postings (a delete term
-//! is a term lookup), so a search only applies the deletes issued since the
-//! buffer's last add. A buffer taken for a flush stays readable after its
-//! segment is published, until [`ConcurrentIndexWriter::release_live`] says
-//! no reader lacks that segment any more: a reader of an older commit gets
-//! it from the buffer. The deletes issued meanwhile reach it as they reach
-//! the published segments.
+//! as a column by document, each document's stored fields, and which
+//! documents are deleted. Deletes are resolved as they arrive, against the
+//! buffer's own postings (a delete term is a term lookup), so a search only
+//! applies the deletes issued since the buffer's last add. A buffer taken
+//! for a flush stays readable after its segment is published, until
+//! [`ConcurrentIndexWriter::release_live`] says no reader lacks that segment
+//! any more: a reader of an older commit gets it from the buffer. The
+//! deletes issued meanwhile reach it as they reach the published segments.
 //!
-//! A snapshot holds every slot's lock, the control lock and the log's for
-//! as long as it copies, so it is one cut through the operations: an update's
-//! delete and its new document are both in it or both not, and a buffer is
-//! either still buffered, being flushed, or published (counted by
-//! [`LiveSnapshot::published`]), never two of these. Commits are known by
-//! generation, each holding the publishes before it. Indexing waits for the
-//! copy, which costs what the requested terms' postings cost to decode.
+//! A searcher opens a [`LiveView`]: each buffer's document count and
+//! deletes as of then. Its queries read the terms they need
+//! ([`ConcurrentIndexWriter::live_view_snapshot`]) and its fetches the
+//! stored fields ([`ConcurrentIndexWriter::live_document`]) of those
+//! documents only, so every phase of a search sees the same documents. A
+//! view keeps its buffers until it is closed.
+//!
+//! Opening a view holds every slot's lock, the control lock and the log's,
+//! so it is one cut through the operations: an update's delete and its new
+//! document are both in it or both not, and a buffer is either still
+//! buffered, being flushed, or published (counted by
+//! [`LiveView::published`]), never two of these. Commits are known by
+//! generation, each holding the publishes before it. Reading a view's
+//! terms holds the slots' locks while it decodes them: indexing waits for
+//! what the requested terms' postings cost to decode.
 //!
 //! The extra columns, and the published buffers kept, are not charged to
 //! the RAM buffer, so a writer with live search flushes after the same
@@ -30,10 +38,11 @@ use std::sync::Arc;
 
 use lucene_codecs::field_infos::{FieldInfo, IndexOptions};
 use lucene_codecs::postings_writer::TermPostings;
+use lucene_codecs::stored_fields::{FieldValue, StoredField};
 
 use super::{lock, ConcurrentIndexWriter};
 use crate::buffered_updates::DocValuesUpdate;
-use crate::index_writer::pending_postings::PendingPostings;
+use crate::index_writer::pending_postings::{LiveFieldStats, PendingPostings};
 use crate::index_writer::ExplicitFields;
 use crate::index_writer::{DeleteNode, Error, IndexingConfig, Result};
 
@@ -168,11 +177,15 @@ impl NormColumn {
     }
 }
 
-/// A buffer's norms and deletes, kept for live search.
+/// A buffer's norms, deletes and stored fields, kept for live search.
 #[derive(Debug, Clone, Default)]
 pub(super) struct LiveColumns {
+    /// Names the buffer from its first document on; `0` while it holds
+    /// none.
+    pub(super) id: u64,
     norms: HashMap<i32, NormColumn>,
     deletes: Deletes,
+    stored: StoredArena,
 }
 
 /// A buffer's deleted documents.
@@ -189,6 +202,11 @@ struct Deletes {
 }
 
 impl LiveColumns {
+    /// Records the next document's stored fields.
+    pub(super) fn record_stored(&mut self, stored: &[StoredField]) {
+        self.stored.push(stored);
+    }
+
     /// Records document `doc`'s norms, and whether it arrives soft-deleted
     /// (`soft` is the soft-deletes field's number).
     pub(super) fn record(&mut self, doc: i32, fields: &ExplicitFields, soft: Option<i32>) {
@@ -227,6 +245,7 @@ impl LiveColumns {
             .map(NormColumn::ram_bytes)
             .fold(self.deletes.hard.ram_bytes(), usize::saturating_add)
             .saturating_add(self.deletes.soft.ram_bytes())
+            .saturating_add(self.stored.ram_bytes())
     }
 }
 
@@ -324,6 +343,8 @@ pub(super) struct LiveFlushes {
     pub(super) published: u64,
     /// Recent commits: generation, and how many publishes it holds.
     commits: VecDeque<(i64, u64)>,
+    /// Open views per buffer id: a published buffer a view reads is kept.
+    pins: HashMap<u64, usize>,
 }
 
 /// How many commits [`LiveFlushes::commits`] remembers.
@@ -381,8 +402,116 @@ struct Wanted<'a> {
     positions: bool,
 }
 
+/// The buffers one searcher reads, fixed when it opens
+/// ([`ConcurrentIndexWriter::open_live_view`]): each buffer's documents and
+/// deletes as of then. Later documents, and later deletes, are not in it.
+/// Its buffers stay readable until it is closed
+/// ([`ConcurrentIndexWriter::close_live_view`]).
+#[derive(Debug, Clone, Default)]
+pub struct LiveView {
+    pub buffers: Vec<ViewBuffer>,
+    /// See [`LiveSnapshot::published`].
+    pub published: u64,
+}
+
+/// One buffer of a [`LiveView`].
+#[derive(Debug, Clone, Default)]
+pub struct ViewBuffer {
+    /// The buffer, across its moves from a slot to a flush and a publish.
+    pub id: u64,
+    pub max_doc: i32,
+    /// Deleted documents, ascending.
+    pub deleted: Vec<i32>,
+    /// Every field's statistics as of the view, by field number.
+    stats: HashMap<i32, LiveFieldStats>,
+}
+
+/// A buffered document's stored fields, in the order they were added.
+#[derive(Debug, Clone, Default)]
+pub(super) struct StoredArena {
+    bytes: Vec<u8>,
+    /// Document `d`'s fields end at `ends[d]`.
+    ends: Vec<usize>,
+}
+
+const LONG: u8 = 0;
+const INT: u8 = 1;
+const FLOAT: u8 = 2;
+const DOUBLE: u8 = 3;
+const BINARY: u8 = 4;
+const STRING: u8 = 5;
+
+impl StoredArena {
+    fn push(&mut self, fields: &[StoredField]) {
+        let out = &mut self.bytes;
+        for f in fields {
+            out.extend_from_slice(&f.field_number.to_le_bytes());
+            let (tag, bytes): (u8, &[u8]) = match &f.value {
+                FieldValue::Long(v) => (LONG, &v.to_le_bytes()),
+                FieldValue::Int(v) => (INT, &v.to_le_bytes()),
+                FieldValue::Float(v) => (FLOAT, &v.to_bits().to_le_bytes()),
+                FieldValue::Double(v) => (DOUBLE, &v.to_bits().to_le_bytes()),
+                FieldValue::Binary(b) => (BINARY, b.as_slice()),
+                FieldValue::String(s) => (STRING, s.as_bytes()),
+            };
+            out.push(tag);
+            out.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
+            out.extend_from_slice(bytes);
+        }
+        self.ends.push(out.len());
+    }
+
+    fn document(&self, doc: usize) -> Option<Vec<StoredField>> {
+        let end = *self.ends.get(doc)?;
+        let start = doc.checked_sub(1).map_or(0, |p| self.ends[p]);
+        let mut r = self.bytes.get(start..end)?;
+        let mut out = Vec::new();
+        let take = |n: usize, r: &mut &[u8]| -> Option<Vec<u8>> {
+            let (head, rest) = r.split_at_checked(n)?;
+            *r = rest;
+            Some(head.to_vec())
+        };
+        while !r.is_empty() {
+            let number = i32::from_le_bytes(take(4, &mut r)?.try_into().ok()?);
+            let tag = take(1, &mut r)?[0];
+            let len = u64::from_le_bytes(take(8, &mut r)?.try_into().ok()?);
+            let bytes = take(usize::try_from(len).ok()?, &mut r)?;
+            let value = match tag {
+                LONG => FieldValue::Long(i64::from_le_bytes(bytes.try_into().ok()?)),
+                INT => FieldValue::Int(i32::from_le_bytes(bytes.try_into().ok()?)),
+                FLOAT => {
+                    FieldValue::Float(f32::from_bits(u32::from_le_bytes(bytes.try_into().ok()?)))
+                }
+                DOUBLE => {
+                    FieldValue::Double(f64::from_bits(u64::from_le_bytes(bytes.try_into().ok()?)))
+                }
+                BINARY => FieldValue::Binary(bytes),
+                STRING => FieldValue::String(String::from_utf8(bytes).ok()?),
+                _ => return None,
+            };
+            out.push(StoredField {
+                field_number: number,
+                value,
+            });
+        }
+        Some(out)
+    }
+
+    fn ram_bytes(&self) -> usize {
+        self.bytes
+            .capacity()
+            .saturating_add(self.ends.capacity().saturating_mul(8))
+    }
+}
+
+/// Where a buffer is: its postings and columns.
+struct Source<'a> {
+    postings: &'a PendingPostings,
+    columns: &'a LiveColumns,
+}
+
 impl ConcurrentIndexWriter<'_> {
-    /// Keeps what live search reads ([`Self::live_snapshot`]) as documents
+    /// Keeps what live search reads ([`Self::open_live_view`]) as documents
     /// arrive. Set before the first add: a buffer filled without it cannot
     /// be read.
     pub fn with_live_search(mut self) -> Self {
@@ -396,8 +525,8 @@ impl ConcurrentIndexWriter<'_> {
     }
 
     /// The heap live search holds beyond the RAM buffer's charge: every
-    /// buffer's columns, and the postings of published buffers still
-    /// retained.
+    /// buffer's columns and stored fields, and the postings of published
+    /// buffers still kept.
     pub fn live_bytes(&self) -> usize {
         let slots = self
             .slots
@@ -417,37 +546,129 @@ impl ConcurrentIndexWriter<'_> {
             .fold(retained, usize::saturating_add)
     }
 
-    /// Stops reading the published buffers the commit at `generation` holds:
-    /// call it once no search reads from an older commit. Their memory goes.
+    /// Stops reading the published buffers the commit at `generation` holds,
+    /// once no open view reads them: call it once no search reads from an
+    /// older commit. Their memory goes.
     pub fn release_live(&self, generation: i64) -> Result<()> {
         let mut core = lock(&self.core);
         let held = core.live.held_by(generation)?;
-        core.live.retained.retain(|&n, _| n >= held);
+        let live = &mut core.live;
+        let pins = &live.pins;
+        live.retained
+            .retain(|&n, f| n >= held || pins.contains_key(&f.columns.id));
         Ok(())
     }
 
-    /// The requested fields and terms of every buffered document a reader of
-    /// the commit at `commit` lacks, with each buffer's norms, deletes and
-    /// field statistics: see the module doc. With `None`, the documents in no
-    /// published segment. Fields the schema does not know, and terms no
-    /// buffer holds, are left out.
-    ///
-    /// Fails for a writer without [`Self::with_live_search`], for one that
-    /// takes no explicit documents (only those are inverted as they arrive),
-    /// for a commit this writer did not make or no longer remembers, for one
-    /// whose buffers [`Self::release_live`] dropped while a later commit was
-    /// released, and when a delete by query reached a buffer.
-    pub fn live_snapshot(
-        &self,
-        request: &LiveRequest,
-        commit: Option<i64>,
-    ) -> Result<LiveSnapshot> {
+    fn check_live(&self) -> Result<Arc<IndexingConfig>> {
         let cfg = self.cfg();
         if !self.live || !cfg.takes_explicit() {
             return Err(Error::LiveSearch(
                 "the writer keeps no live-search columns".into(),
             ));
         }
+        Ok(cfg)
+    }
+
+    /// Opens a view of every buffered document a reader of the commit at
+    /// `commit` lacks (with `None`, the documents in no published segment):
+    /// see the module doc. Close it with [`Self::close_live_view`].
+    ///
+    /// Fails for a writer without [`Self::with_live_search`], for one that
+    /// takes no explicit documents (only those are inverted as they arrive),
+    /// for a commit this writer did not make or no longer remembers, for one
+    /// whose buffers [`Self::release_live`] dropped, and when a delete by
+    /// query reached a buffer.
+    pub fn open_live_view(&self, commit: Option<i64>) -> Result<LiveView> {
+        let cfg = self.check_live()?;
+        let slots: Vec<_> = self.slots.iter().map(lock).collect();
+        let mut core = lock(&self.core);
+        let from = match commit {
+            Some(generation) => core.live.held_by(generation)?,
+            None => core.live.published,
+        };
+        if from < core.live.published && core.live.retained.keys().next().is_none_or(|&n| n > from)
+        {
+            return Err(Error::LiveSearch(format!(
+                "the buffers published after commit {commit:?} were released"
+            )));
+        }
+        let (slot_tails, flushing_tail) = {
+            let log = lock(&self.log);
+            let tails: Vec<_> = slots.iter().map(|d| log.since(d.slice)).collect();
+            (tails, log.since(log.handed))
+        };
+        let mut out = LiveView {
+            buffers: Vec::new(),
+            published: core.live.published,
+        };
+        for (dwpt, tail) in slots.iter().zip(&slot_tails) {
+            if dwpt.docs.is_empty() {
+                continue;
+            }
+            let max_doc = i32::try_from(dwpt.docs.len()).unwrap_or(i32::MAX);
+            let source = Source {
+                postings: &dwpt.postings,
+                columns: &dwpt.live,
+            };
+            out.buffers.push(view_buffer(&source, tail, max_doc, &cfg)?);
+        }
+        let published = core.live.retained.range(from..).map(|(_, f)| f);
+        for f in core.live.flushing.values().chain(published) {
+            let source = Source {
+                postings: &f.postings,
+                columns: &f.columns,
+            };
+            out.buffers
+                .push(view_buffer(&source, &flushing_tail, f.max_doc, &cfg)?);
+        }
+        for b in &out.buffers {
+            let pins = core.live.pins.entry(b.id).or_insert(0);
+            *pins = pins.saturating_add(1);
+        }
+        Ok(out)
+    }
+
+    /// Lets the buffers `view` read go once no other view reads them.
+    pub fn close_live_view(&self, view: &LiveView) {
+        let mut core = lock(&self.core);
+        for b in &view.buffers {
+            if let Some(n) = core.live.pins.get_mut(&b.id) {
+                *n = n.saturating_sub(1);
+                if *n == 0 {
+                    core.live.pins.remove(&b.id);
+                }
+            }
+        }
+    }
+
+    /// Runs `f` on buffer `id`'s postings and columns, wherever it is now.
+    fn with_buffer<T>(&self, id: u64, f: impl Fn(Option<&Source<'_>>) -> T) -> T {
+        let slots: Vec<_> = self.slots.iter().map(lock).collect();
+        if let Some(d) = slots.iter().find(|d| d.live.id == id) {
+            return f(Some(&Source {
+                postings: &d.postings,
+                columns: &d.live,
+            }));
+        }
+        let core = lock(&self.core);
+        let found = core.live.buffers().find(|b| b.columns.id == id);
+        f(found
+            .map(|b| Source {
+                postings: &b.postings,
+                columns: &b.columns,
+            })
+            .as_ref())
+    }
+
+    /// The requested fields and terms of `view`'s documents, with each
+    /// buffer's norms, deletes and field statistics as of the view. Fields
+    /// the schema does not know, and terms no buffer holds, are left out.
+    pub fn live_view_snapshot(
+        &self,
+        view: &LiveView,
+        request: &LiveRequest,
+    ) -> Result<LiveSnapshot> {
+        let cfg = self.check_live()?;
         let wanted: Vec<Wanted<'_>> = request
             .fields
             .iter()
@@ -465,71 +686,89 @@ impl ConcurrentIndexWriter<'_> {
             .collect();
         let slots: Vec<_> = self.slots.iter().map(lock).collect();
         let core = lock(&self.core);
-        let from = match commit {
-            Some(generation) => core.live.held_by(generation)?,
-            None => core.live.published,
-        };
-        if core.live.retained.keys().next().is_none_or(|&n| n > from) && from < core.live.published
-        {
-            return Err(Error::LiveSearch(format!(
-                "the buffers published after commit {commit:?} were released"
-            )));
-        }
-        let (slot_tails, flushing_tail) = {
-            let log = lock(&self.log);
-            let tails: Vec<_> = slots.iter().map(|d| log.since(d.slice)).collect();
-            (tails, log.since(log.handed))
-        };
         let mut out = LiveSnapshot {
-            buffers: Vec::new(),
-            published: core.live.published,
+            buffers: Vec::with_capacity(view.buffers.len()),
+            published: view.published,
         };
-        for (dwpt, tail) in slots.iter().zip(&slot_tails) {
-            if dwpt.docs.is_empty() {
+        for b in &view.buffers {
+            let source = slots
+                .iter()
+                .find(|d| d.live.id == b.id)
+                .map(|d| Source {
+                    postings: &d.postings,
+                    columns: &d.live,
+                })
+                .or_else(|| {
+                    core.live
+                        .buffers()
+                        .find(|f| f.columns.id == b.id)
+                        .map(|f| Source {
+                            postings: &f.postings,
+                            columns: &f.columns,
+                        })
+                });
+            // A buffer `delete_all` or `rollback` dropped: none of its
+            // documents is live any more.
+            let Some(source) = source else {
+                out.buffers.push(LiveBuffer {
+                    max_doc: b.max_doc,
+                    deleted: (0..b.max_doc).collect(),
+                    fields: Vec::new(),
+                });
                 continue;
-            }
-            let max_doc = i32::try_from(dwpt.docs.len()).unwrap_or(i32::MAX);
-            out.buffers.push(view(
-                &dwpt.postings,
-                &dwpt.live,
-                tail,
-                max_doc,
-                &wanted,
-                &cfg,
-            )?);
-        }
-        let published = core.live.retained.range(from..).map(|(_, f)| f);
-        for f in core.live.flushing.values().chain(published) {
-            out.buffers.push(view(
-                &f.postings,
-                &f.columns,
-                &flushing_tail,
-                f.max_doc,
-                &wanted,
-                &cfg,
-            )?);
+            };
+            out.buffers.push(read_buffer(&source, b, &wanted)?);
         }
         Ok(out)
     }
+
+    /// The stored fields of document `doc` of `view`'s buffer `buffer`.
+    pub fn live_document(
+        &self,
+        view: &LiveView,
+        buffer: usize,
+        doc: i32,
+    ) -> Result<Vec<StoredField>> {
+        let missing =
+            || Error::LiveSearch(format!("no buffered document {doc} in buffer {buffer}"));
+        let b = view.buffers.get(buffer).ok_or_else(missing)?;
+        if doc < 0 || doc >= b.max_doc {
+            return Err(missing());
+        }
+        let doc = usize::try_from(doc).map_err(|_| missing())?;
+        self.with_buffer(b.id, |s| s.and_then(|s| s.columns.stored.document(doc)))
+            .ok_or_else(missing)
+    }
+
+    /// [`Self::open_live_view`], [`Self::live_view_snapshot`] and
+    /// [`Self::close_live_view`] in one: the requested terms of every
+    /// buffered document a reader of the commit at `commit` lacks.
+    pub fn live_snapshot(
+        &self,
+        request: &LiveRequest,
+        commit: Option<i64>,
+    ) -> Result<LiveSnapshot> {
+        let view = self.open_live_view(commit)?;
+        let out = self.live_view_snapshot(&view, request);
+        self.close_live_view(&view);
+        out
+    }
 }
 
-/// One buffer as a [`LiveBuffer`], with `tail` (delete-log entries it has
-/// not applied, all issued after its documents) applied to a copy of its
-/// deletes.
-fn view(
-    postings: &PendingPostings,
-    columns: &LiveColumns,
+/// One buffer's documents and deletes as of now, with `tail` (delete-log
+/// entries it has not applied, all issued after its documents) applied.
+fn view_buffer(
+    source: &Source<'_>,
     tail: &[Arc<DeleteNode>],
     max_doc: i32,
-    wanted: &[Wanted<'_>],
     cfg: &IndexingConfig,
-) -> Result<LiveBuffer> {
+) -> Result<ViewBuffer> {
     let with_tail;
     let deletes = if tail.is_empty() {
-        &columns.deletes
+        &source.columns.deletes
     } else {
-        let mut d = columns.deletes.clone();
-        d.apply(tail, max_doc, postings, cfg);
+        let mut d = source.columns.deletes.clone();
+        d.apply(tail, max_doc, source.postings, cfg);
         with_tail = d;
         &with_tail
     };
@@ -538,20 +777,38 @@ fn view(
             "a delete by query reached a buffered document".into(),
         ));
     }
-    let max = usize::try_from(max_doc).unwrap_or(0);
-    let deleted = deletes.docs(max_doc);
+    Ok(ViewBuffer {
+        id: source.columns.id,
+        max_doc,
+        deleted: deletes.docs(max_doc),
+        stats: source.postings.live_stats_all(),
+    })
+}
+
+/// The requested terms of `view`'s documents of one buffer.
+fn read_buffer(
+    source: &Source<'_>,
+    view: &ViewBuffer,
+    wanted: &[Wanted<'_>],
+) -> Result<LiveBuffer> {
+    let max = usize::try_from(view.max_doc).unwrap_or(0);
     let mut fields = Vec::new();
     for w in wanted {
-        let Some(runs) = postings.live_field(w.info.number) else {
+        let (Some(runs), Some(stats)) = (
+            source.postings.live_field(w.info.number),
+            view.stats.get(&w.info.number),
+        ) else {
             continue;
         };
         let mut terms = Vec::new();
         for t in &w.terms {
-            if let Some(p) = runs.live_term(t, w.positions)? {
-                terms.push(p);
+            if let Some(mut p) = runs.live_term(t, w.positions)? {
+                truncate(&mut p, view.max_doc);
+                if !p.docs.is_empty() {
+                    terms.push(p);
+                }
             }
         }
-        let stats = runs.live_stats();
         let mut info = w.info.clone();
         if w.positions {
             info.store_payloads = runs.has_payloads();
@@ -560,7 +817,7 @@ fn view(
             info.store_payloads = false;
         }
         let freqs = !matches!(info.index_options, IndexOptions::Docs | IndexOptions::None);
-        let norms = columns.norms.get(&w.info.number);
+        let norms = source.columns.norms.get(&w.info.number);
         let norms =
             (!w.info.omit_norms).then(|| norms.map_or_else(|| vec![0; max], |c| c.to_vec(max)));
         fields.push(LiveBufferField {
@@ -578,10 +835,30 @@ fn view(
         });
     }
     Ok(LiveBuffer {
-        max_doc,
-        deleted,
+        max_doc: view.max_doc,
+        deleted: view.deleted.clone(),
         fields,
     })
+}
+
+/// Drops `p`'s documents from `max_doc` on, with their occurrences.
+fn truncate(p: &mut TermPostings, max_doc: i32) {
+    let keep = p.docs.partition_point(|&(d, _)| d < max_doc);
+    if keep == p.docs.len() {
+        return;
+    }
+    if !p.payload_lengths.is_empty() {
+        let occurrences: usize = p.positions[..keep].iter().map(Vec::len).sum();
+        let bytes: usize = p.payload_lengths[..occurrences]
+            .iter()
+            .map(|&l| l as usize)
+            .sum();
+        p.payload_lengths.truncate(occurrences);
+        p.payload_bytes.truncate(bytes);
+    }
+    p.docs.truncate(keep);
+    p.positions.truncate(keep);
+    p.offsets.truncate(keep);
 }
 
 #[cfg(test)]

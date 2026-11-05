@@ -34,6 +34,7 @@ use super::Result;
 use crate::inverter::{hash_bytes, TermHash};
 
 mod live;
+pub(crate) use live::LiveFieldStats;
 
 /// Bytes per full pool block: `ByteBlockPool.BYTE_BLOCK_SIZE`. A field's
 /// first blocks are smaller (1, 2, 4, 8 and 16 KB), so a field with few

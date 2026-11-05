@@ -91,6 +91,14 @@ impl PendingPostings {
     pub(crate) fn live_field(&self, number: i32) -> Option<&FieldRuns> {
         self.fields.get(&number)
     }
+
+    /// Every field's [`FieldRuns::live_stats`], by field number.
+    pub(crate) fn live_stats_all(&self) -> std::collections::HashMap<i32, LiveFieldStats> {
+        self.fields
+            .iter()
+            .map(|(&n, f)| (n, f.live_stats()))
+            .collect()
+    }
 }
 
 #[cfg(test)]

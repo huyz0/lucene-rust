@@ -83,7 +83,16 @@ fn doc(f: &Fields, i: i64) -> ExplicitDocument {
     }
     let length = body.iter().map(|t| i64::from(t.freq)).sum();
     ExplicitDocument {
-        stored: Vec::new(),
+        stored: vec![
+            StoredField {
+                field_number: f.id,
+                value: FieldValue::String(format!("d{i}")),
+            },
+            StoredField {
+                field_number: f.body,
+                value: FieldValue::Long(i),
+            },
+        ],
         fields: ExplicitFields {
             inverted: vec![
                 InvertedField {
@@ -306,6 +315,93 @@ fn a_buffer_being_flushed_stays_readable_until_published() {
         w.live_snapshot(&body(false, &["common"]), Some(generation + 7)),
         Err(Error::LiveSearch(_))
     ));
+}
+
+/// A view holds its buffers' documents and deletes as of its opening, and
+/// its stored fields, through a flush, a publish and a release, until it is
+/// closed.
+#[test]
+fn a_view_reads_its_buffers_as_of_its_opening() {
+    let tmp = TempDir::new("live-view");
+    let dir = FsDirectory::open(tmp.path());
+    let (w, f) = open(&dir, 1, true);
+    for i in 0..9 {
+        w.add_explicit_documents(vec![doc(&f, i)]).unwrap();
+    }
+    w.delete_documents_by_term(&[id(4)]).unwrap();
+    let view = w.open_live_view(None).unwrap();
+    assert_eq!(view.buffers.len(), 1);
+    assert_eq!(view.buffers[0].deleted, [4]);
+
+    // Later documents and deletes are not in it.
+    for i in 9..20 {
+        w.add_explicit_documents(vec![doc(&f, i)]).unwrap();
+    }
+    w.delete_documents_by_term(&[id(5)]).unwrap();
+    let snap = w
+        .live_view_snapshot(&view, &body(true, &["rare", "common"]))
+        .unwrap();
+    let b = &snap.buffers[0];
+    assert_eq!((b.max_doc, b.deleted.clone()), (9, vec![4]));
+    let field = &b.fields[0];
+    assert_eq!(field.terms[0].docs.len(), 9, "common");
+    assert_eq!(field.terms[1].docs, [(0, 2), (3, 2), (6, 2)], "rare");
+    assert_eq!(field.terms[1].positions.len(), 3);
+    assert_eq!(field.norms.as_ref().unwrap().len(), 9);
+    assert_eq!(field.doc_count, 9, "statistics as of the view");
+
+    let stored = w.live_document(&view, 0, 7).unwrap();
+    assert_eq!(stored[0].value, FieldValue::String("d7".into()));
+    assert_eq!(stored[1].value, FieldValue::Long(7));
+    assert!(w.live_document(&view, 0, 9).is_err(), "past the view");
+    assert!(w.live_document(&view, 1, 0).is_err());
+
+    // Committed and released, the buffer stays while the view is open.
+    let start = w.with_writer(|iw| iw.segment_infos().generation);
+    let old = w.open_live_view(Some(start)).unwrap();
+    w.commit().unwrap();
+    let generation = w.with_writer(|iw| iw.segment_infos().generation);
+    w.release_live(generation).unwrap();
+    let snap = w
+        .live_view_snapshot(&view, &body(false, &["common"]))
+        .unwrap();
+    assert_eq!(snap.buffers[0].fields[0].terms[0].docs.len(), 9);
+    assert_eq!(
+        w.live_document(&old, 0, 19).unwrap()[0].value,
+        FieldValue::String("d19".into())
+    );
+    w.close_live_view(&view);
+    w.close_live_view(&old);
+    w.release_live(generation).unwrap();
+    assert!(w.live_document(&view, 0, 7).is_err(), "released");
+    let snap = w
+        .live_view_snapshot(&view, &body(false, &["common"]))
+        .unwrap();
+    assert_eq!(
+        snap.buffers[0].deleted.len(),
+        9,
+        "a dropped buffer reads as deleted"
+    );
+    assert!(w.live_bytes() < 1024);
+}
+
+/// Truncating a term's postings at a view's last document keeps its
+/// occurrences and payloads in step.
+#[test]
+fn truncated_postings_keep_occurrences_and_payloads_in_step() {
+    let mut p = TermPostings {
+        term: b"t".to_vec(),
+        docs: vec![(0, 2), (3, 1), (5, 1)],
+        positions: vec![vec![1, 2], vec![4], vec![6]],
+        offsets: Vec::new(),
+        payload_bytes: b"abcdef".to_vec(),
+        payload_lengths: vec![1, 2, 0, 3],
+    };
+    truncate(&mut p, 4);
+    assert_eq!(p.docs, [(0, 2), (3, 1)]);
+    assert_eq!(p.positions, [vec![1, 2], vec![4]]);
+    assert_eq!(p.payload_lengths, [1, 2, 0]);
+    assert_eq!(p.payload_bytes, b"abc");
 }
 
 /// A writer that keeps no live-search columns, and a buffer a delete by
