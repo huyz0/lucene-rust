@@ -361,6 +361,11 @@ impl IndexingConfig {
         self.explicit
     }
 
+    /// Whether a flush sorts the buffered documents.
+    pub(crate) fn sorts_documents(&self) -> bool {
+        self.index_sort.is_some()
+    }
+
     /// The stored-fields mode a buffer compresses its explicit documents'
     /// stored values in as they arrive, or `None` when its flush needs them
     /// as documents: an index sort reorders them, and an installed
@@ -736,15 +741,30 @@ impl IndexingConfig {
         if let Some(stored) = buf.stored {
             stored.fields.iter().for_each(|&n| present.insert(n));
         }
-        for (doc, fields) in buf.docs.iter().zip(explicit) {
-            doc.fields
-                .iter()
-                .for_each(|f| present.insert(f.field_number));
+        // One pass over the documents' fields, one document at a time:
+        // the fields present, the norms, and whether any term vectors are
+        // written (`TermVectorsConsumer.hasVectors`: some document inverts a
+        // field that stores them, even one that produced no term).
+        let mut norm_values: BTreeMap<i32, Vec<Option<i64>>> = BTreeMap::new();
+        let mut has_vectors = false;
+        explicit.for_each(|i, fields| {
+            if let Some(doc) = buf.docs.get(i) {
+                doc.fields
+                    .iter()
+                    .for_each(|f| present.insert(f.field_number));
+            }
             let roles = [&fields.doc_values, &fields.points];
-            fields
-                .inverted
-                .iter()
-                .for_each(|f| present.insert(f.field_number));
+            for inv in &fields.inverted {
+                present.insert(inv.field_number);
+                if let Some(norm) = inv.norm {
+                    norm_values
+                        .entry(inv.field_number)
+                        .or_insert_with(|| vec![None; max_doc])[i] = Some(norm);
+                }
+                has_vectors |= self
+                    .explicit_field(inv.field_number)
+                    .is_ok_and(|info| info.store_term_vectors);
+            }
             roles
                 .into_iter()
                 .flatten()
@@ -753,8 +773,10 @@ impl IndexingConfig {
                 .term_vectors
                 .iter()
                 .for_each(|f| present.insert(f.field_number));
+            has_vectors |= !fields.term_vectors.is_empty();
             fields.registered.iter().for_each(|&n| present.insert(n));
-        }
+            Ok(())
+        })?;
 
         // Postings: one term dictionary per field, terms in byte order. The
         // writer inverted them as each document was buffered
@@ -765,14 +787,15 @@ impl IndexingConfig {
             Some(p) => p,
             None => {
                 let mut p = PendingPostings::default();
-                for (doc_id, fields) in explicit.iter().enumerate() {
+                explicit.for_each(|doc_id, fields| {
                     let doc_id = i32::try_from(doc_id)
                         .map_err(|_| explicit_error("too many buffered documents"))?;
                     for inv in &fields.inverted {
                         let options = self.explicit_field(inv.field_number)?.index_options;
                         p.add_field(doc_id, inv, options)?;
                     }
-                }
+                    Ok(())
+                })?;
                 inverted_here = p.into_flushed(buf.old_to_new)?;
                 &inverted_here
             }
@@ -782,16 +805,6 @@ impl IndexingConfig {
         // carries a payload length, zero where it has none -- what
         // `FreqProxTermsWriterPerField.writeProx` records once the flag is on.
         let payload_fields: BTreeSet<i32> = pending.payload_fields().collect();
-        let mut norm_values: BTreeMap<i32, Vec<Option<i64>>> = BTreeMap::new();
-        for (doc_id, fields) in explicit.iter().enumerate() {
-            for inv in &fields.inverted {
-                if let Some(norm) = inv.norm {
-                    norm_values
-                        .entry(inv.field_number)
-                        .or_insert_with(|| vec![None; max_doc])[doc_id] = Some(norm);
-                }
-            }
-        }
         // A present norms field still owns an empty sparse column when no
         // document supplied a value, as Java's norms flush does.
         for field in &self.fields {
@@ -886,11 +899,9 @@ impl IndexingConfig {
             norms_output = build_norms()?;
         }
 
-        // Doc values and points through the native builders, each
-        // document's values read in place.
-        let in_place = |pick: fn(&ExplicitFields) -> &[StoredField]| -> Vec<&[StoredField]> {
-            explicit.iter().map(pick).collect()
-        };
+        // Doc values and points through the native builders, a role at a
+        // time: each document's values read in place, or taken out of the
+        // packed documents for that role alone and dropped once written.
         let dv_configs: Vec<DocValuesFieldConfig> = self
             .fields
             .iter()
@@ -911,8 +922,9 @@ impl IndexingConfig {
                 .filter(|f| present.contains(&f.number))
                 .map(|f| f.name.as_str())
                 .collect();
+            let role = explicit.role(|f| &mut f.doc_values)?;
             Some(self.build_doc_values_groups(
-                &in_place(|f| &f.doc_values),
+                &role.per_doc(|f| &f.doc_values),
                 &dv_configs,
                 &names,
                 &segment_id,
@@ -939,9 +951,10 @@ impl IndexingConfig {
         let points_output = if point_configs.is_empty() {
             None
         } else {
+            let role = explicit.role(|f| &mut f.points)?;
             IndexWriter::build_points_output(
                 self,
-                &in_place(|f| &f.points),
+                &role.per_doc(|f| &f.points),
                 &point_configs,
                 &segment_id,
                 dir,
@@ -1013,31 +1026,25 @@ impl IndexingConfig {
         // name). Written when some document inverts a field that stores term
         // vectors, even one that produced no term: that is when
         // `TermVectorsConsumer.hasVectors` opens the writer.
-        let has_vectors = explicit.iter().any(|f| {
-            !f.term_vectors.is_empty()
-                || f.inverted.iter().any(|inv| {
-                    self.explicit_field(inv.field_number)
-                        .is_ok_and(|info| info.store_term_vectors)
-                })
-        });
         let term_vectors_output = if !has_vectors {
             None
         } else {
-            let docs = explicit
-                .iter()
-                .map(|f| {
-                    let mut fields = f.term_vectors.clone();
-                    let mut named = Vec::with_capacity(fields.len());
-                    for tv in fields.drain(..) {
-                        named.push((self.explicit_field(tv.field_number)?.name.as_str(), tv));
-                    }
-                    // `String.compareTo`: UTF-16 code units, not bytes.
-                    named.sort_by(|a, b| a.0.encode_utf16().cmp(b.0.encode_utf16()));
-                    Ok(TermVectorsDocument {
-                        fields: named.into_iter().map(|(_, tv)| tv).collect(),
-                    })
-                })
-                .collect::<Result<Vec<_>>>()?;
+            let mut docs = Vec::with_capacity(max_doc);
+            explicit.for_each(|_, f| {
+                let mut named = Vec::with_capacity(f.term_vectors.len());
+                for tv in &f.term_vectors {
+                    named.push((
+                        self.explicit_field(tv.field_number)?.name.as_str(),
+                        tv.clone(),
+                    ));
+                }
+                // `String.compareTo`: UTF-16 code units, not bytes.
+                named.sort_by(|a, b| a.0.encode_utf16().cmp(b.0.encode_utf16()));
+                docs.push(TermVectorsDocument {
+                    fields: named.into_iter().map(|(_, tv)| tv).collect(),
+                });
+                Ok(())
+            })?;
             Some(self.write_term_vectors_output(
                 &docs,
                 &segment_fields,

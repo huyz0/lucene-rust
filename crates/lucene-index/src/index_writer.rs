@@ -1200,7 +1200,7 @@ pub(crate) struct DocumentBuffer<'b> {
     pub(crate) vectors: &'b [Vec<DocumentVector>],
     /// Aligned with `docs` when the writer takes explicit documents; read only
     /// then.
-    pub(crate) explicit: &'b [ExplicitFields],
+    pub(crate) explicit: ExplicitDocs<'b>,
     /// The explicit documents' postings, inverted as they were buffered and
     /// laid out in the flush's doc order; their `InvertedField`s then hold
     /// no terms. `None` for a buffer whose `explicit` still carries every
@@ -1215,6 +1215,101 @@ pub(crate) struct DocumentBuffer<'b> {
     /// The stored fields, already compressed as the documents arrived; the
     /// documents in `docs` then hold no values.
     pub(crate) stored: Option<&'b FinishedStored>,
+}
+
+/// A buffer's explicit document fields: as structs, or packed as the
+/// concurrent writer buffers them.
+#[derive(Clone, Copy)]
+pub(crate) enum ExplicitDocs<'b> {
+    Fields(&'b [ExplicitFields]),
+    Packed(&'b packed_fields::PackedFields),
+}
+
+impl ExplicitDocs<'_> {
+    pub(crate) fn len(&self) -> usize {
+        match self {
+            ExplicitDocs::Fields(f) => f.len(),
+            ExplicitDocs::Packed(p) => p.len(),
+        }
+    }
+
+    fn ram_bytes(&self) -> usize {
+        match self {
+            ExplicitDocs::Fields(f) => f
+                .iter()
+                .map(ExplicitFields::ram_bytes)
+                .fold(0, usize::saturating_add),
+            ExplicitDocs::Packed(p) => p.ram_bytes(),
+        }
+    }
+
+    /// Calls `f` with each document's fields in order. Packed fields are
+    /// decoded one document at a time into a reused struct.
+    pub(crate) fn for_each(
+        &self,
+        mut f: impl FnMut(usize, &ExplicitFields) -> Result<()>,
+    ) -> Result<()> {
+        match self {
+            ExplicitDocs::Fields(fields) => {
+                fields.iter().enumerate().try_for_each(|(i, d)| f(i, d))
+            }
+            ExplicitDocs::Packed(p) => p.for_each(|i, d| f(i, d)),
+        }
+    }
+
+    /// One role's values per document, `pick` choosing the role: borrowed
+    /// from the structs, or taken out of packed documents one at a time into
+    /// one flat list.
+    pub(crate) fn role(
+        &self,
+        pick: fn(&mut ExplicitFields) -> &mut Vec<lucene_codecs::stored_fields::StoredField>,
+    ) -> Result<RoleValues<'_>> {
+        match self {
+            ExplicitDocs::Fields(fields) => Ok(RoleValues::Borrowed(fields)),
+            ExplicitDocs::Packed(p) => {
+                let mut values = Vec::new();
+                let mut ends = Vec::with_capacity(p.len());
+                p.for_each(|_, d| {
+                    values.append(pick(d));
+                    ends.push(values.len());
+                    Ok(())
+                })?;
+                Ok(RoleValues::Flat { values, ends })
+            }
+        }
+    }
+}
+
+/// One role's values per document: see [`ExplicitDocs::role`].
+pub(crate) enum RoleValues<'b> {
+    Borrowed(&'b [ExplicitFields]),
+    Flat {
+        values: Vec<lucene_codecs::stored_fields::StoredField>,
+        /// Per document, where its values end.
+        ends: Vec<usize>,
+    },
+}
+
+impl RoleValues<'_> {
+    /// Each document's values; `pick` names the role for borrowed fields.
+    pub(crate) fn per_doc(
+        &self,
+        pick: fn(&ExplicitFields) -> &[lucene_codecs::stored_fields::StoredField],
+    ) -> Vec<&[lucene_codecs::stored_fields::StoredField]> {
+        match self {
+            RoleValues::Borrowed(fields) => fields.iter().map(pick).collect(),
+            RoleValues::Flat { values, ends } => {
+                let mut from = 0;
+                ends.iter()
+                    .map(|&end| {
+                        let s = values.get(from..end).unwrap_or_default();
+                        from = end;
+                        s
+                    })
+                    .collect()
+            }
+        }
+    }
 }
 
 /// A buffer's stored fields, finished for its segment, and the field numbers
@@ -1233,7 +1328,7 @@ impl DocumentBuffer<'_> {
             .docs
             .iter()
             .map(document_ram_bytes)
-            .chain(self.explicit.iter().map(ExplicitFields::ram_bytes))
+            .chain(std::iter::once(self.explicit.ram_bytes()))
             .chain(
                 self.postings
                     .map(pending_postings::FlushedPostings::ram_bytes),
@@ -5556,7 +5651,7 @@ impl<'d> IndexWriter<'d> {
             docs: &self.pending_docs,
             custom_freq_terms: &self.pending_custom_freq_terms,
             vectors: &self.pending_vectors,
-            explicit: &self.pending_explicit,
+            explicit: ExplicitDocs::Fields(&self.pending_explicit),
             postings: Some(postings),
             old_to_new: None,
             has_blocks: self.pending_has_blocks,
