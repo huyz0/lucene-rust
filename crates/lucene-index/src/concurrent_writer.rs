@@ -98,13 +98,14 @@ use crate::buffered_updates::{
 };
 use crate::deletes;
 use crate::flush_policy::{FlushByRamOrCountsPolicy, FlushControl, FlushPolicy};
+use crate::index_writer::packed_fields::{PackedFields, StreamedStored};
 use crate::index_writer::pending_postings::PendingPostings;
 use crate::index_writer::{
     buffer_node, custom_freq_terms_ram_bytes, document_ram_bytes, DeleteNode, DocumentBuffer,
-    DocumentVector, ExplicitDocument, ExplicitFields, FlushDeletes, IndexWriter, IndexingConfig,
-    InvertedTerms, Result, SegmentTicket, DISABLE_AUTO_FLUSH,
+    DocumentVector, ExplicitDocument, ExplicitFields, FinishedStored, FlushDeletes, IndexWriter,
+    IndexingConfig, InvertedTerms, Result, SegmentTicket, DISABLE_AUTO_FLUSH,
 };
-use crate::merge_policy::{MergePolicyConfig, MergeTrigger};
+use crate::merge_policy::MergeTrigger;
 use crate::merge_rate_limiter::MergeRateLimiter;
 use crate::merge_scheduler::{MergeScheduler, MergeSource, PendingMerges, ScheduledMerge};
 use crate::segment_infos::SegmentCommitInfo;
@@ -122,8 +123,12 @@ struct Dwpt {
     /// ([`ConcurrentIndexWriter::add_document_with_vectors`]).
     vectors: Vec<Vec<DocumentVector>>,
     /// Parallel to `docs` in a writer that takes explicit documents: each
-    /// document's indexed fields, their terms moved into `postings`.
-    explicit: Vec<ExplicitFields>,
+    /// document's indexed fields, their terms moved into `postings`, packed.
+    explicit: PackedFields,
+    /// The explicit documents' stored values, compressed as they are added
+    /// ([`IndexingConfig::streamed_stored_mode`]); `docs` then holds empty
+    /// documents.
+    stored: Option<StreamedStored>,
     /// The explicit documents' postings, inverted as they are added.
     postings: PendingPostings,
     has_blocks: bool,
@@ -213,7 +218,7 @@ struct Entry {
 type Buffered = (
     Vec<Vec<(String, i32)>>,
     Vec<Vec<DocumentVector>>,
-    Vec<ExplicitFields>,
+    PackedFields,
     PendingPostings,
 );
 
@@ -227,7 +232,8 @@ struct FlushBatch {
     docs: Vec<Document>,
     custom_freq_terms: Vec<Vec<(String, i32)>>,
     vectors: Vec<Vec<DocumentVector>>,
-    explicit: Vec<ExplicitFields>,
+    explicit: PackedFields,
+    stored: Option<StreamedStored>,
     postings: PendingPostings,
     has_blocks: bool,
     private: BufferedUpdates,
@@ -281,7 +287,6 @@ pub struct ConcurrentIndexWriter<'d> {
     rotate_slots: std::sync::atomic::AtomicBool,
     max_buffered_docs: Option<usize>,
     ram_buffer_bytes: Option<usize>,
-    merge_policy: Option<MergePolicyConfig>,
     /// Set by [`Self::stop_merges`]: no merge is registered any more.
     merges_stopped: AtomicBool,
     /// `DocumentsWriterFlushControl`'s accounting -- RAM in the slots and in
@@ -392,7 +397,6 @@ impl<'d> ConcurrentIndexWriter<'d> {
         writer.flush()?;
         writer.set_merges_by_caller(true);
         let slots = slots.max(1);
-        let merge_policy = writer.merge_policy().cloned();
         let max_buffered_docs = usize::try_from(writer.max_buffered_docs())
             .ok()
             .filter(|_| writer.max_buffered_docs() != DISABLE_AUTO_FLUSH);
@@ -424,7 +428,6 @@ impl<'d> ConcurrentIndexWriter<'d> {
             rotate_slots: std::sync::atomic::AtomicBool::new(false),
             max_buffered_docs,
             ram_buffer_bytes,
-            merge_policy,
             merges_stopped: AtomicBool::new(false),
             ram: Mutex::new(FlushControl::new(slots)),
             policy: FlushByRamOrCountsPolicy {
@@ -446,13 +449,13 @@ impl<'d> ConcurrentIndexWriter<'d> {
     /// proposes among segments not already merging -- claiming their
     /// segments -- for the scheduler to take. Nothing without a policy.
     fn register_merges(&self, core: &mut Core<'_>) -> Result<()> {
-        let Some(policy) = &self.merge_policy else {
+        let Some(policy) = core.writer.merge_policy().cloned() else {
             return Ok(());
         };
         if self.merges_stopped.load(Ordering::Acquire) {
             return Ok(());
         }
-        while let Some((names, estimated)) = core.writer.next_merge_sized(policy, &core.merging)? {
+        for (names, estimated) in core.writer.find_merges_sized(&policy, &core.merging)? {
             core.merging.extend(names.iter().cloned());
             self.pending_merges
                 .push(Arc::new(ScheduledMerge::new(names, estimated)));
@@ -1024,6 +1027,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
         // Every fallible lookup runs before anything is buffered, so a
         // refused document leaves nothing behind.
         let options = cfg.explicit_add_options(&docs)?;
+        let streamed = cfg.streamed_stored_mode();
         let count = docs.len();
         self.add_with(delete, count, move |_| {
             Ok(Box::new(move |dwpt: &mut Dwpt| {
@@ -1034,8 +1038,16 @@ impl<'d> ConcurrentIndexWriter<'d> {
                 let mut added = 0usize;
                 for (mut doc, options) in docs.into_iter().zip(options) {
                     let stored = Document { fields: doc.stored };
-                    added = added.saturating_add(document_ram_bytes(&stored));
-                    dwpt.docs.push(stored);
+                    if let Some(mode) = streamed {
+                        let streamed = dwpt.stored.get_or_insert_with(|| StreamedStored::new(mode));
+                        added = added
+                            .saturating_add(streamed.add(&stored))
+                            .saturating_add(std::mem::size_of::<Document>());
+                        dwpt.docs.push(Document::default());
+                    } else {
+                        added = added.saturating_add(document_ram_bytes(&stored));
+                        dwpt.docs.push(stored);
+                    }
                     dwpt.custom_freq_terms.push(Vec::new());
                     dwpt.vectors.push(Vec::new());
                     let doc_id =
@@ -1050,8 +1062,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
                         // the postings hold them now; the document keeps its norm
                         inv.terms = InvertedTerms::default();
                     }
-                    added = added.saturating_add(doc.fields.ram_bytes());
-                    dwpt.explicit.push(doc.fields);
+                    added = added.saturating_add(dwpt.explicit.push(doc.fields));
                 }
                 let grown = dwpt.postings.bytes().saturating_sub(postings_before);
                 Ok(added.saturating_add(grown))
@@ -1186,6 +1197,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
             custom_freq_terms: std::mem::take(&mut dwpt.custom_freq_terms),
             vectors: std::mem::take(&mut dwpt.vectors),
             explicit: std::mem::take(&mut dwpt.explicit),
+            stored: dwpt.stored.take(),
             postings: std::mem::take(&mut dwpt.postings),
             has_blocks: std::mem::take(&mut dwpt.has_blocks),
             private: std::mem::take(&mut dwpt.private),
@@ -1244,11 +1256,13 @@ impl<'d> ConcurrentIndexWriter<'d> {
 
     /// Builds a batch's segment and resolves its own deletes -- everything a
     /// flush does before the publish, with no lock held.
+    #[allow(clippy::too_many_arguments)]
     fn build(
         &self,
         ticket: &SegmentTicket,
         mut docs: Vec<Document>,
-        (mut custom_freq_terms, mut vectors, mut explicit, postings): Buffered,
+        (mut custom_freq_terms, mut vectors, packed, postings): Buffered,
+        stored: Option<StreamedStored>,
         has_blocks: bool,
         mut private: BufferedUpdates,
         tracking: &TrackingDirectory<'_>,
@@ -1256,9 +1270,11 @@ impl<'d> ConcurrentIndexWriter<'d> {
         let cfg = self.cfg();
         // Native documents carry no explicit fields.
         let explicit_docs = cfg.takes_explicit();
-        if !explicit_docs {
-            explicit = vec![ExplicitFields::default(); docs.len()];
-        }
+        let mut explicit = if explicit_docs {
+            packed.unpack()?
+        } else {
+            vec![ExplicitFields::default(); docs.len()]
+        };
         let sort_map = cfg.sort_buffer(
             &mut docs,
             &mut custom_freq_terms,
@@ -1280,6 +1296,10 @@ impl<'d> ConcurrentIndexWriter<'d> {
         } else {
             None
         };
+        let stored = stored.map(|s| FinishedStored {
+            fields: s.fields().clone(),
+            bytes: Mutex::new(Some(s.finish(&ticket.segment_id))),
+        });
         let buffer = DocumentBuffer {
             docs: &docs,
             custom_freq_terms: &custom_freq_terms,
@@ -1288,6 +1308,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
             postings: postings.as_ref(),
             old_to_new: old_to_new.as_deref(),
             has_blocks,
+            stored: stored.as_ref(),
         };
         // This segment's own deletes are resolved here, with no lock held --
         // `DocumentsWriterPerThread.flush`'s `applyDeletes` -- so the publish,
@@ -1362,6 +1383,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
             custom_freq_terms,
             vectors,
             explicit,
+            stored,
             postings,
             has_blocks,
             private,
@@ -1374,6 +1396,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
                 &ticket,
                 docs,
                 (custom_freq_terms, vectors, explicit, postings),
+                stored,
                 has_blocks,
                 private,
                 &tracking,
@@ -1571,14 +1594,14 @@ impl<'d> ConcurrentIndexWriter<'d> {
             self.schedule_merges(MergeTrigger::Explicit)?;
             return Ok(0);
         }
-        let Some(policy) = &self.merge_policy else {
-            return Ok(0);
-        };
         let mut merged = 0usize;
         loop {
             let plan = {
                 let mut core = lock(&self.core);
-                let Some(names) = core.writer.next_merge(policy, &core.merging)? else {
+                let Some(policy) = core.writer.merge_policy().cloned() else {
+                    return Ok(merged);
+                };
+                let Some(names) = core.writer.next_merge(&policy, &core.merging)? else {
                     break;
                 };
                 let plan = core.writer.begin_merge(&names)?;
@@ -1996,6 +2019,8 @@ mod tests {
 
     use std::collections::BTreeMap;
 
+    use crate::merge_policy::MergePolicyConfig;
+
     use lucene_codecs::field_infos::{FieldInfo, IndexOptions};
     use lucene_codecs::stored_fields::{self, FieldValue, StoredField};
     use lucene_store::FsDirectory;
@@ -2053,7 +2078,7 @@ mod tests {
         w.set_ram_buffer_size_mb(DISABLE_AUTO_FLUSH_MB).unwrap();
         w.set_merge_policy(Some(MergePolicyConfig {
             max_merge_at_once: 4,
-            segments_per_tier: 3,
+            segments_per_tier: 3.0,
             floor_segment_size: 1 << 30,
             ..MergePolicyConfig::default()
         }));
@@ -2344,7 +2369,7 @@ mod tests {
         single.set_index_sort(None).unwrap();
         single.set_merge_policy(Some(MergePolicyConfig {
             max_merge_at_once: 2,
-            segments_per_tier: 2,
+            segments_per_tier: 2.0,
             floor_segment_size: 1 << 30,
             ..MergePolicyConfig::default()
         }));
@@ -2375,7 +2400,10 @@ mod tests {
             let mut core = lock(&w.core);
             let names = core
                 .writer
-                .next_merge(w.merge_policy.as_ref().unwrap(), &HashSet::new())
+                .next_merge(
+                    &core.writer.merge_policy().cloned().unwrap(),
+                    &HashSet::new(),
+                )
                 .unwrap()
                 .unwrap();
             core.writer.begin_merge(&names).unwrap()
@@ -2416,7 +2444,10 @@ mod tests {
             let mut core = lock(&w.core);
             let names = core
                 .writer
-                .next_merge(w.merge_policy.as_ref().unwrap(), &HashSet::new())
+                .next_merge(
+                    &core.writer.merge_policy().cloned().unwrap(),
+                    &HashSet::new(),
+                )
                 .unwrap()
                 .unwrap();
             core.writer.begin_merge(&names).unwrap()
@@ -2592,7 +2623,7 @@ mod tests {
         let mut single = sorted_writer(&dir);
         single.set_merge_policy(Some(MergePolicyConfig {
             max_merge_at_once: 2,
-            segments_per_tier: 2,
+            segments_per_tier: 2.0,
             floor_segment_size: 1 << 30,
             ..MergePolicyConfig::default()
         }));

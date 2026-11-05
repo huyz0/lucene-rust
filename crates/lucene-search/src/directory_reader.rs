@@ -4442,7 +4442,7 @@ mod tests {
         fn tight_merge_policy() -> MergePolicyConfig {
             MergePolicyConfig {
                 max_merge_at_once: 10,
-                segments_per_tier: 2,
+                segments_per_tier: 2.0,
                 ..MergePolicyConfig::default()
             }
         }

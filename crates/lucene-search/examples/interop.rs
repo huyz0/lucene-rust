@@ -198,7 +198,7 @@ fn write_concurrent(path: &str, num_docs: i64, docs_per_segment: i32, threads: i
     writer.set_ram_buffer_size_mb(4096.0).expect("ram buffer");
     writer.set_merge_policy(Some(MergePolicyConfig {
         max_merge_at_once: 4,
-        segments_per_tier: 4,
+        segments_per_tier: 4.0,
         floor_segment_size: 1 << 40,
         ..MergePolicyConfig::default()
     }));
@@ -247,7 +247,7 @@ fn merge(path: &str) {
     let before = writer.segment_infos().segments.len();
     writer.set_merge_policy(Some(MergePolicyConfig {
         max_merge_at_once: 100,
-        segments_per_tier: 2,
+        segments_per_tier: 2.0,
         max_merged_segment_size: u64::MAX / 4,
         floor_segment_size: 1 << 40,
         ..MergePolicyConfig::default()

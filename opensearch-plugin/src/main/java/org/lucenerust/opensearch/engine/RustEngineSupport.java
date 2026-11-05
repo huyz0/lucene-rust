@@ -7,8 +7,11 @@ import org.apache.lucene.codecs.Codec;
 import org.apache.lucene.codecs.perfield.PerFieldDocValuesFormat;
 import org.apache.lucene.codecs.perfield.PerFieldPostingsFormat;
 import org.apache.lucene.index.DocValuesType;
+import org.apache.lucene.index.FilterMergePolicy;
 import org.apache.lucene.index.IndexDeletionPolicy;
 import org.apache.lucene.index.IndexOptions;
+import org.apache.lucene.index.MergePolicy;
+import org.apache.lucene.index.TieredMergePolicy;
 import org.opensearch.common.settings.Setting;
 import org.opensearch.core.common.breaker.CircuitBreaker;
 import org.opensearch.index.IndexSettings;
@@ -228,6 +231,7 @@ public final class RustEngineSupport {
         long wait = indexSettings.isMergeOnFlushEnabled() ? indexSettings.getMaxFullFlushMergeWaitTime().millis() : 0;
         boolean success = false;
         try {
+            refreshMergePolicy(writer, config);
             writer.setMergeOnFlush(Math.max(wait, 0), wait > 0 && indexSettings.getMergeOnFlushPolicy().isPresent());
             refreshMergeScheduler(writer, config);
             success = true;
@@ -244,6 +248,7 @@ public final class RustEngineSupport {
      * the shard's current {@code index.merge.scheduler.*} settings.
      */
     static void refreshMergeScheduler(DocumentIndexWriter writer, EngineConfig config) {
+        refreshMergePolicy(writer, config);
         if (writer instanceof RustIndexWriter rust) {
             IndexSettings indexSettings = config.getIndexSettings();
             MergeSchedulerConfig merges = indexSettings.getMergeSchedulerConfig();
@@ -257,6 +262,26 @@ public final class RustEngineSupport {
                 );
             } catch (IOException e) {
                 throw new java.io.UncheckedIOException(e);
+            }
+        }
+    }
+
+    /**
+     * The shard's {@code index.merge.policy.*} for the Rust writer: the {@code TieredMergePolicy}
+     * OpenSearch's provider keeps (and updates in place when the settings change), under its wrappers.
+     */
+    static void refreshMergePolicy(DocumentIndexWriter writer, EngineConfig config) {
+        if (writer instanceof RustIndexWriter rust) {
+            MergePolicy policy = config.getMergePolicy();
+            while (policy instanceof FilterMergePolicy filter) {
+                policy = filter.unwrap();
+            }
+            if (policy instanceof TieredMergePolicy tiered) {
+                try {
+                    rust.setMergePolicy(tiered);
+                } catch (IOException e) {
+                    throw new java.io.UncheckedIOException(e);
+                }
             }
         }
     }
