@@ -89,20 +89,13 @@ pub unsafe extern "C" fn ffi_engine_writer_live_view_open(
         let w = engine_writer::lookup(writer)?;
         let commit = (commit_generation >= 0).then_some(commit_generation);
         let view = w.writer().open_live_view(commit).map_err(live_error)?;
-        let mut blob = Vec::new();
-        blob.extend_from_slice(
-            &i64::try_from(view.published)
-                .unwrap_or(i64::MAX)
-                .to_le_bytes(),
-        );
-        blob.extend_from_slice(&len_i32(view.buffers.len())?.to_le_bytes());
-        for b in &view.buffers {
-            blob.extend_from_slice(&b.max_doc.to_le_bytes());
-            blob.extend_from_slice(&len_i32(b.deleted.len())?.to_le_bytes());
-            for d in &b.deleted {
-                blob.extend_from_slice(&d.to_le_bytes());
+        let blob = match view_blob(&view) {
+            Ok(b) => b,
+            Err(e) => {
+                w.writer().close_live_view(&view);
+                return Err(e);
             }
-        }
+        };
         let id = NEXT_VIEW.fetch_add(1, Ordering::Relaxed);
         views()
             .lock()
@@ -115,6 +108,24 @@ pub unsafe extern "C" fn ffi_engine_writer_live_view_open(
         }
         Ok(())
     })
+}
+
+fn view_blob(view: &LiveView) -> Result<Vec<u8>, FfiStatus> {
+    let mut blob = Vec::new();
+    blob.extend_from_slice(
+        &i64::try_from(view.published)
+            .unwrap_or(i64::MAX)
+            .to_le_bytes(),
+    );
+    blob.extend_from_slice(&len_i32(view.buffers.len())?.to_le_bytes());
+    for b in &view.buffers {
+        blob.extend_from_slice(&b.max_doc.to_le_bytes());
+        blob.extend_from_slice(&len_i32(b.deleted.len())?.to_le_bytes());
+        for d in &b.deleted {
+            blob.extend_from_slice(&d.to_le_bytes());
+        }
+    }
+    Ok(blob)
 }
 
 fn len_i32(n: usize) -> Result<i32, FfiStatus> {

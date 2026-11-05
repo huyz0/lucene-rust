@@ -814,6 +814,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
             log.take_seq()
         };
         self.update_ram(|c| c.set_delete_bytes_used(0));
+        core.live.discard();
         let deleted = core.writer.delete_all();
         // Every slot was emptied above and no flush is in flight.
         self.buffered_docs.store(0, Ordering::Release);
@@ -1903,6 +1904,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
             log.unhanded_bytes = 0;
         }
         self.update_ram(|c| c.set_delete_bytes_used(0));
+        core.live.discard();
         core.writer.rollback();
         self.buffered_docs.store(0, Ordering::Release);
         self.refresh_segment_docs(&mut core);

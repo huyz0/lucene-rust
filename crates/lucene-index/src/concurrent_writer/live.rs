@@ -346,6 +346,8 @@ pub(super) struct LiveFlushes {
     commits: VecDeque<(i64, u64)>,
     /// Open views per buffer id: a published buffer a view reads is kept.
     pins: HashMap<u64, usize>,
+    /// Publishes below this number go once no view reads them.
+    released: u64,
 }
 
 /// How many commits [`LiveFlushes::commits`] remembers.
@@ -368,9 +370,43 @@ impl LiveFlushes {
             return;
         }
         if self.commits.len() == COMMITS_KEPT {
-            self.commits.pop_front();
+            // No view can name the forgotten commit any more.
+            if let Some((_, held)) = self.commits.pop_front() {
+                self.release(held);
+            }
         }
         self.commits.push_back((generation, self.published));
+    }
+
+    /// Drops the published buffers below `held` no view reads, now and as
+    /// the views reading the others close.
+    fn release(&mut self, held: u64) {
+        self.released = self.released.max(held);
+        let (released, pins) = (self.released, &self.pins);
+        self.retained
+            .retain(|&n, f| n >= released || pins.contains_key(&f.columns.id));
+    }
+
+    /// Every buffer goes: `rollback` or `delete_all` discarded their
+    /// documents. A view of one reads it as all deleted.
+    pub(super) fn discard(&mut self) {
+        self.flushing.clear();
+        self.retained.clear();
+        self.released = self.published;
+    }
+
+    /// Whether every publish from `from` on is still kept.
+    fn keeps_from(&self, from: u64) -> bool {
+        let kept = self.retained.range(from..).count() as u64;
+        kept == self.published.saturating_sub(from)
+    }
+
+    /// Buffer `id`, if it is being flushed or kept after its publish.
+    fn find(&self, id: u64) -> Option<Source<'_>> {
+        self.buffers().find(|f| f.columns.id == id).map(|f| Source {
+            postings: &f.postings,
+            columns: &f.columns,
+        })
     }
 
     /// How many publishes the commit at `generation` holds.
@@ -563,10 +599,7 @@ impl ConcurrentIndexWriter<'_> {
     pub fn release_live(&self, generation: i64) -> Result<()> {
         let mut core = lock(&self.core);
         let held = core.live.held_by(generation)?;
-        let live = &mut core.live;
-        let pins = &live.pins;
-        live.retained
-            .retain(|&n, f| n >= held || pins.contains_key(&f.columns.id));
+        core.live.release(held);
         Ok(())
     }
 
@@ -597,8 +630,7 @@ impl ConcurrentIndexWriter<'_> {
             Some(generation) => core.live.held_by(generation)?,
             None => core.live.published,
         };
-        if from < core.live.published && core.live.retained.keys().next().is_none_or(|&n| n > from)
-        {
+        if !core.live.keeps_from(from) {
             return Err(Error::LiveSearch(format!(
                 "the buffers published after commit {commit:?} were released"
             )));
@@ -650,25 +682,25 @@ impl ConcurrentIndexWriter<'_> {
                 }
             }
         }
+        let released = core.live.released;
+        core.live.release(released);
     }
 
     /// Runs `f` on buffer `id`'s postings and columns, wherever it is now.
+    /// A buffer only moves from a slot to the control lock, so looking in
+    /// the slots one at a time, then there, cannot miss it.
     fn with_buffer<T>(&self, id: u64, f: impl Fn(Option<&Source<'_>>) -> T) -> T {
-        let slots: Vec<_> = self.slots.iter().map(lock).collect();
-        if let Some(d) = slots.iter().find(|d| d.live.id == id) {
-            return f(Some(&Source {
-                postings: &d.postings,
-                columns: &d.live,
-            }));
+        for slot in &self.slots {
+            let d = lock(slot);
+            if d.live.id == id {
+                return f(Some(&Source {
+                    postings: &d.postings,
+                    columns: &d.live,
+                }));
+            }
         }
         let core = lock(&self.core);
-        let found = core.live.buffers().find(|b| b.columns.id == id);
-        f(found
-            .map(|b| Source {
-                postings: &b.postings,
-                columns: &b.columns,
-            })
-            .as_ref())
+        f(core.live.find(id).as_ref())
     }
 
     /// The requested fields and terms of `view`'s documents, with each
@@ -709,15 +741,7 @@ impl ConcurrentIndexWriter<'_> {
                     postings: &d.postings,
                     columns: &d.live,
                 })
-                .or_else(|| {
-                    core.live
-                        .buffers()
-                        .find(|f| f.columns.id == b.id)
-                        .map(|f| Source {
-                            postings: &f.postings,
-                            columns: &f.columns,
-                        })
-                });
+                .or_else(|| core.live.find(b.id));
             // A buffer `delete_all` or `rollback` dropped: none of its
             // documents is live any more.
             let Some(source) = source else {

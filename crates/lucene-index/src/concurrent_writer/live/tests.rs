@@ -319,6 +319,66 @@ fn a_buffer_being_flushed_stays_readable_until_published() {
     ));
 }
 
+/// Flushes slot 0 and publishes it.
+fn flush(w: &ConcurrentIndexWriter<'_>) {
+    let batch = {
+        let mut slot = lock(&w.slots[0]);
+        w.begin_flush(0, &mut slot).unwrap()
+    };
+    w.complete_flush(batch).unwrap();
+}
+
+/// A release keeps a buffer only while a view reads it, a reader whose
+/// buffers are not all kept is refused, and a rollback drops every buffer.
+#[test]
+fn released_buffers_go_when_their_last_view_closes() {
+    let tmp = TempDir::new("live-release");
+    let dir = FsDirectory::open(tmp.path());
+    let (w, f) = open(&dir, 1, true);
+    let generation = || w.with_writer(|iw| iw.segment_infos().generation);
+    let req = body(false, &["common"]);
+    let mut gens = Vec::new();
+    for i in 0..2 {
+        w.add_explicit_documents(vec![doc(&f, i)]).unwrap();
+        flush(&w);
+        w.commit().unwrap();
+        gens.push(generation());
+    }
+    // Reads the second publish only.
+    let view = w.open_live_view(Some(gens[0])).unwrap();
+    w.add_explicit_documents(vec![doc(&f, 2)]).unwrap();
+    flush(&w);
+    w.commit().unwrap();
+    gens.push(generation());
+    w.release_live(gens[2]).unwrap();
+    // The second publish is kept for the view, the third is not: a reader
+    // of the first commit would miss documents.
+    assert!(matches!(
+        w.live_snapshot(&req, Some(gens[0])),
+        Err(Error::LiveSearch(_))
+    ));
+    assert_eq!(w.live_view_snapshot(&view, &req).unwrap().buffers.len(), 1);
+    assert_eq!(lock(&w.core).live.retained.len(), 1);
+    w.close_live_view(&view);
+    assert!(lock(&w.core).live.retained.is_empty());
+
+    w.add_explicit_documents(vec![doc(&f, 3)]).unwrap();
+    flush(&w);
+    let view = w.open_live_view(Some(gens[2])).unwrap();
+    assert_eq!(view.buffers.len(), 1);
+    w.rollback();
+    assert!(lock(&w.core).live.retained.is_empty());
+    assert!(matches!(
+        w.live_snapshot(&req, Some(gens[2])),
+        Err(Error::LiveSearch(_))
+    ));
+    assert_eq!(
+        deleted_ids(&w.live_view_snapshot(&view, &req).unwrap()),
+        [vec![0]]
+    );
+    w.close_live_view(&view);
+}
+
 /// A view holds its buffers' documents and deletes as of its opening, and
 /// its stored fields, through a flush, a publish and a release, until it is
 /// closed.
