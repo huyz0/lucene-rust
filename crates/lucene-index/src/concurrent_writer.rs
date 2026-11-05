@@ -102,8 +102,8 @@ use crate::index_writer::packed_fields::{PackedFields, StreamedStored};
 use crate::index_writer::pending_postings::PendingPostings;
 use crate::index_writer::{
     buffer_node, custom_freq_terms_ram_bytes, document_ram_bytes, DeleteNode, DocumentBuffer,
-    DocumentVector, ExplicitDocument, ExplicitFields, FinishedStored, FlushDeletes, IndexWriter,
-    IndexingConfig, InvertedTerms, Result, SegmentTicket, DISABLE_AUTO_FLUSH,
+    DocumentVector, ExplicitDocument, ExplicitFields, FlushDeletes, IndexWriter, IndexingConfig,
+    InvertedTerms, Result, SegmentTicket, DISABLE_AUTO_FLUSH,
 };
 use crate::merge_policy::MergeTrigger;
 use crate::merge_rate_limiter::MergeRateLimiter;
@@ -1270,6 +1270,16 @@ impl<'d> ConcurrentIndexWriter<'d> {
         let cfg = self.cfg();
         // Native documents carry no explicit fields.
         let explicit_docs = cfg.takes_explicit();
+        // The stored values were compressed as the documents arrived, in the
+        // mode the configuration asked for then; a sort or a codec installed
+        // since would need them as documents, which they no longer are.
+        if let Some(s) = &stored {
+            if cfg.streamed_stored_mode() != Some(s.mode()) {
+                return Err(crate::index_writer::explicit_error(
+                    "the index sort or codec changed while stored fields were buffered",
+                ));
+            }
+        }
         let mut explicit = if explicit_docs {
             packed.unpack()?
         } else {
@@ -1296,10 +1306,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
         } else {
             None
         };
-        let stored = stored.map(|s| FinishedStored {
-            fields: s.fields().clone(),
-            bytes: Mutex::new(Some(s.finish(&ticket.segment_id))),
-        });
+        let stored = stored.map(|s| s.finish(&ticket.segment_id));
         let buffer = DocumentBuffer {
             docs: &docs,
             custom_freq_terms: &custom_freq_terms,

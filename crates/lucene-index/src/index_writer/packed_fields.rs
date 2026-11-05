@@ -26,11 +26,9 @@ use std::collections::BTreeSet;
 use lucene_codecs::stored_fields::{self, Document, FieldValue, StoredField};
 use lucene_store::codec_util::ID_LENGTH;
 
-use crate::segment_writer::StoredFieldsBytes;
-
 use super::explicit::{ExplicitFields, InvertedField};
 use super::inverted_terms::InvertedTerms;
-use super::{explicit_error, Error, Result};
+use super::{explicit_error, Error, FinishedStored, Result};
 
 /// Bytes per block, the size `ByteBlockPool` allocates its blocks in.
 const BLOCK: usize = 32 * 1024;
@@ -126,6 +124,7 @@ impl PackedFields {
 /// A buffer's stored fields, compressed as its documents arrive.
 pub(crate) struct StreamedStored {
     writer: stored_fields::StoredFieldsWriter,
+    mode: stored_fields::Mode,
     fields: BTreeSet<i32>,
 }
 
@@ -137,6 +136,7 @@ impl StreamedStored {
                 &[0; ID_LENGTH],
                 mode.segment_suffix(),
             ),
+            mode,
             fields: BTreeSet::new(),
         }
     }
@@ -152,15 +152,19 @@ impl StreamedStored {
         self.writer.ram_bytes().saturating_sub(before)
     }
 
-    /// The field numbers any document stored.
-    pub(crate) fn fields(&self) -> &BTreeSet<i32> {
-        &self.fields
+    /// The stored-fields mode the documents were compressed in.
+    pub(crate) fn mode(&self) -> stored_fields::Mode {
+        self.mode
     }
 
-    /// The `.fdt`, `.fdx` and `.fdm` bytes for the segment `segment_id`.
-    pub(crate) fn finish(mut self, segment_id: &[u8; ID_LENGTH]) -> StoredFieldsBytes {
+    /// The `.fdt`, `.fdx` and `.fdm` bytes for the segment `segment_id`,
+    /// with the field numbers any document stored.
+    pub(crate) fn finish(mut self, segment_id: &[u8; ID_LENGTH]) -> FinishedStored {
         self.writer.set_segment_id(segment_id);
-        self.writer.finish()
+        FinishedStored {
+            fields: self.fields,
+            bytes: std::sync::Mutex::new(Some(self.writer.finish())),
+        }
     }
 }
 

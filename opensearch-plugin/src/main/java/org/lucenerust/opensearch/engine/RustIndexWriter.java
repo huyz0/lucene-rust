@@ -105,6 +105,12 @@ final class RustIndexWriter implements DocumentIndexWriter {
     private boolean policyInitialized;
     /** The merge policy settings last sent to the writer; under {@link #lock}. */
     private double[] mergePolicySettings;
+    /**
+     * The merge-on-flush wait last set, or -1 while no {@code MergeOnFlushMergePolicy} wraps the
+     * merge policy; under {@link #lock}. The wrapper copies the policy's settings when it is set, so
+     * a change to them sets it again.
+     */
+    private long mergeOnFlushPolicyWait = -1;
     private volatile long lastCommitMaxDoc;
     private volatile long latestGeneration;
 
@@ -581,6 +587,9 @@ final class RustIndexWriter implements DocumentIndexWriter {
                 "setting the merge policy"
             );
             mergePolicySettings = settings;
+            if (mergeOnFlushPolicyWait >= 0) {
+                check(NativeBridge.writerSetMergeOnFlush(handle, mergeOnFlushPolicyWait, true), "setting merge-on-flush");
+            }
         }
     }
 
@@ -594,7 +603,10 @@ final class RustIndexWriter implements DocumentIndexWriter {
      * {@code MergeOnFlushMergePolicy} when {@code mergeOnFlushPolicy}.
      */
     void setMergeOnFlush(long waitMillis, boolean mergeOnFlushPolicy) throws IOException {
-        check(NativeBridge.writerSetMergeOnFlush(handle, waitMillis, mergeOnFlushPolicy), "setting merge-on-flush");
+        synchronized (lock) {
+            check(NativeBridge.writerSetMergeOnFlush(handle, waitMillis, mergeOnFlushPolicy), "setting merge-on-flush");
+            mergeOnFlushPolicyWait = mergeOnFlushPolicy ? waitMillis : -1;
+        }
     }
 
     private void applyRetention() throws IOException {

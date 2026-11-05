@@ -5494,28 +5494,18 @@ impl<'d> IndexWriter<'d> {
         Ok(())
     }
 
-    /// The next merge `config` proposes among the committed segments that are
-    /// not already being merged (`merging`) -- `MergePolicy.findMerges`
-    /// over `IndexWriter.getMergingSegments()`'s complement.
+    /// The first merge `config` proposes, the segments in `merging` counted
+    /// in the index total but never candidates -- `MergePolicy.findMerges`
+    /// with `IndexWriter.getMergingSegments()` as its context.
     pub(crate) fn next_merge(
         &self,
         config: &MergePolicyConfig,
         merging: &std::collections::HashSet<String>,
     ) -> Result<Option<Vec<String>>> {
-        Ok(self
-            .next_merge_sized(config, merging)?
-            .map(|(names, _)| names))
-    }
-
-    /// [`Self::next_merge`], with the merge's `OneMerge.estimatedMergeBytes`:
-    /// the sources' sizes pro-rated by their live documents, as
-    /// `IndexWriter.registerMerge` estimates it.
-    pub(crate) fn next_merge_sized(
-        &self,
-        config: &MergePolicyConfig,
-        merging: &std::collections::HashSet<String>,
-    ) -> Result<Option<(Vec<String>, u64)>> {
-        Ok(self.find_merges_sized(config, merging)?.into_iter().next())
+        let stats = self.segment_stats()?;
+        Ok(merge_policy::find_merges_excluding(&stats, merging, config)
+            .into_iter()
+            .next())
     }
 
     /// `TieredMergePolicy.findMerges` over every segment, the ones in

@@ -1244,7 +1244,8 @@ pub extern "C" fn ffi_engine_writer_set_retention(
 /// largest merged segment and the floor size in bytes, the deletes
 /// percentage natural merges tolerate, and the one `forceMergeDeletes`
 /// tolerates. Applies to the merges proposed from the next flush on, and to
-/// the merge-on-flush policy the next time it is set.
+/// the merge-on-flush policy the next time it is set. A writer with merges
+/// off keeps them off.
 #[no_mangle]
 pub extern "C" fn ffi_engine_writer_set_merge_policy(
     handle: u64,
@@ -1279,7 +1280,10 @@ pub extern "C" fn ffi_engine_writer_set_merge_policy(
         }
         with_writer(handle, |w| {
             w.writer().with_writer(|iw| {
-                let mut config = iw.merge_policy().cloned().unwrap_or_default();
+                // A writer with merges off keeps them off.
+                let Some(mut config) = iw.merge_policy().cloned() else {
+                    return;
+                };
                 config.max_merge_at_once = max_merge_at_once;
                 config.segments_per_tier = segments_per_tier;
                 config.max_merged_segment_size = max_merged_segment_size;
