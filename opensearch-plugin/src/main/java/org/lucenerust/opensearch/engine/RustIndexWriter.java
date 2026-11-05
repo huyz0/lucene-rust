@@ -702,7 +702,8 @@ final class RustIndexWriter implements DocumentIndexWriter {
     /**
      * Flushes what is buffered and pins the writer's live segment list for a reader: returns its
      * {@code segments_N} bytes; {@code out[0]} is the hold to {@link #releaseHold} when the reader
-     * closes, {@code out[1]} the last commit's generation. Adds go on meanwhile.
+     * closes, {@code out[1]} the last commit's generation. Adds go on meanwhile. The flushed buffers
+     * leave the circuit breaker.
      */
     byte[] acquireNrt(long[] out) throws IOException {
         indexing.readLock().lock();
@@ -712,6 +713,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
             check(NativeBridge.writerNrtSnapshot(handle, out, bytes), "opening a near-real-time view");
             return bytes[0];
         } finally {
+            reconcileBreaker();
             indexing.readLock().unlock();
         }
     }
