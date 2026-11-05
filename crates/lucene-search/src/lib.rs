@@ -226,6 +226,7 @@ pub mod java_priority_queue;
 pub mod join;
 pub mod knn_collectors;
 pub mod leaf_collector;
+pub mod live_segment;
 pub mod matches;
 pub mod memory;
 pub mod mlt;

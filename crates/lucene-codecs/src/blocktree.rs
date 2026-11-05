@@ -3566,6 +3566,25 @@ impl FieldTerms {
 }
 
 impl BlockTreeFields {
+    /// Replaces field `name`'s statistics (no-op for an absent field): for a
+    /// dictionary that holds a subset of a field's terms and must report the
+    /// whole field's, such as a search's view of the writer's buffer.
+    pub fn set_field_stats(
+        &mut self,
+        name: &str,
+        num_terms: i64,
+        sum_total_term_freq: i64,
+        sum_doc_freq: i64,
+        doc_count: i32,
+    ) {
+        if let Some((_, f)) = self.fields.iter_mut().find(|(n, _)| n == name) {
+            f.num_terms = num_terms;
+            f.sum_total_term_freq = sum_total_term_freq;
+            f.sum_doc_freq = sum_doc_freq;
+            f.doc_count = doc_count;
+        }
+    }
+
     pub fn field(&self, name: &str) -> Option<&FieldTerms> {
         self.fields.iter().find(|(n, _)| n == name).map(|(_, f)| f)
     }
