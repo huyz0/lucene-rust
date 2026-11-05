@@ -349,7 +349,7 @@ public class RustEngine extends Engine {
             this.lastRefreshedCheckpointListener = new LastRefreshedCheckpointListener(localCheckpointTracker);
             this.internalReaderManager.addListener(lastRefreshedCheckpointListener);
             internalReaderManager.addListener(documentIndexWriter);
-            if (RustIndexWriter.REALTIME && documentIndexWriter instanceof RustIndexWriter rw) {
+            if (RustIndexWriter.REALTIME && documentIndexWriter instanceof RustIndexWriter rw && Boolean.getBoolean("lucene_rust.realtime.nopublish") == false) {
                 startVisibilityPublisher(rw);
             }
             maxSeqNoOfUpdatesOrDeletes = new AtomicLong(
@@ -2671,16 +2671,27 @@ public class RustEngine extends Engine {
         try {
             OpenSearchDirectoryReader reader = (OpenSearchDirectoryReader) s.getDirectoryReader();
             long generation = RustReaderManager.generation(reader);
-            long buffer = rw.liveBufferFor(generation);
-            if (buffer == 0) {
+            long[] buffers = rw.liveBuffersFrom(generation);
+            java.util.List<org.apache.lucene.index.LeafReader> leaves = new java.util.ArrayList<>();
+            org.apache.lucene.index.FieldInfos infos = rw.liveFieldInfos();
+            for (long buffer : buffers) {
+                int stripes = NativeBridge.liveStripes(buffer);
+                for (int st = 0; st < stripes; st++) {
+                    long stripe = NativeBridge.liveStripe(buffer, st);
+                    try {
+                        int visible = NativeBridge.liveVisible(stripe);
+                        if (visible > 0) {
+                            leaves.add(new org.lucenerust.opensearch.LiveLeafReader(stripe, visible, infos));
+                        }
+                    } finally {
+                        NativeBridge.liveRelease(stripe);
+                    }
+                }
+            }
+            if (leaves.isEmpty()) {
                 return s;
             }
-            int visible = NativeBridge.liveVisible(buffer);
-            if (visible <= 0) {
-                return s;
-            }
-            org.lucenerust.opensearch.LiveLeafReader leaf = new org.lucenerust.opensearch.LiveLeafReader(buffer, visible, rw.liveFieldInfos());
-            org.apache.lucene.index.DirectoryReader withLive = org.lucenerust.opensearch.LiveDirectoryReader.of(reader.getDelegate(), leaf);
+            org.apache.lucene.index.DirectoryReader withLive = org.lucenerust.opensearch.LiveDirectoryReader.of(reader.getDelegate(), leaves);
             OpenSearchDirectoryReader wrapped = OpenSearchDirectoryReader.wrap(withLive, shardId);
             return new Searcher(s.source(), wrapped, s.getSimilarity(), s.getQueryCache(), s.getQueryCachingPolicy(), () -> {
                 try {

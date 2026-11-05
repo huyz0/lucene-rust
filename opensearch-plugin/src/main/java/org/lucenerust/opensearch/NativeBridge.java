@@ -1179,6 +1179,8 @@ public final class NativeBridge {
         static final MethodHandle PIN = bind("ffi_live_pin", FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS));
         static final MethodHandle VISIBLE = bind("ffi_live_visible", FunctionDescriptor.of(JAVA_INT, JAVA_LONG));
         static final MethodHandle RELEASE = bind("ffi_live_release", FunctionDescriptor.of(JAVA_INT, JAVA_LONG));
+        static final MethodHandle STRIPES = bind("ffi_live_stripes", FunctionDescriptor.of(JAVA_INT, JAVA_LONG));
+        static final MethodHandle STRIPE = bind("ffi_live_stripe", FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_INT, ADDRESS));
         static final MethodHandle POSTINGS = bind(
             "ffi_live_postings",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_INT, ADDRESS, JAVA_LONG, JAVA_INT, ADDRESS, ADDRESS)
@@ -1224,6 +1226,25 @@ public final class NativeBridge {
         try (Scratch s = Scratch.open()) {
             MemorySegment out = s.alloc(Long.BYTES);
             int rc = (int) LiveH.PIN.invokeExact(id, out);
+            return rc == OK ? out.get(JAVA_LONG, 0) : 0;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    public static int liveStripes(long id) {
+        try {
+            return (int) LiveH.STRIPES.invokeExact(id);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** Pins one stripe of a pinned buffer; 0 on failure. */
+    public static long liveStripe(long id, int stripe) {
+        try (Scratch s = Scratch.open()) {
+            MemorySegment out = s.alloc(Long.BYTES);
+            int rc = (int) LiveH.STRIPE.invokeExact(id, stripe, out);
             return rc == OK ? out.get(JAVA_LONG, 0) : 0;
         } catch (Throwable t) {
             throw rethrow(t);

@@ -58,12 +58,12 @@ public final class LiveDirectoryReader extends DirectoryReader {
     }
 
     /** {@code base}'s leaves plus {@code live}; {@code base} is incRef'd and released on close. */
-    public static LiveDirectoryReader of(DirectoryReader base, LeafReader live) throws IOException {
+    public static LiveDirectoryReader of(DirectoryReader base, List<LeafReader> live) throws IOException {
         List<LeafReader> leaves = new ArrayList<>();
         for (LeafReaderContext ctx : base.leaves()) {
             leaves.add(ctx.reader());
         }
-        leaves.add(live);
+        leaves.addAll(live);
         base.incRef();
         return new LiveDirectoryReader(base.directory(), leaves.toArray(new LeafReader[0]), base);
     }

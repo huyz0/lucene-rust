@@ -9,9 +9,9 @@
 //!
 //! A search takes a snapshot: the buffer and its visible document count at
 //! that moment ([`ffi_live_acquire`]). Documents are only appended, so every
-//! read below the snapshot's count is stable. This spike guards the buffer
-//! with one `RwLock`; the design in `research/realtime-index.md` makes each
-//! indexing thread's buffer single-writer and lock-free instead.
+//! read below the snapshot's count is stable. Each indexing thread
+//! writes one stripe (one leaf), so threads on different stripes never
+//! contend; the design makes each stripe single-writer and lock-free.
 #![allow(clippy::arithmetic_side_effects)]
 
 use std::collections::HashMap;
@@ -37,17 +37,39 @@ struct Inner {
     numeric: HashMap<i32, Vec<(u32, i64)>>,
     /// Field number -> `[sum_total_term_freq, sum_doc_freq, doc_count]`.
     stats: HashMap<i32, [i64; 3]>,
-    /// Deleted docs (replaced by a later version, or soft-deleted on arrival).
-    deleted: Vec<u32>,
-    /// `_id` term -> its newest doc in this buffer.
-    by_id: HashMap<Vec<u8>, u32>,
 }
 
-/// One buffer: the documents since the last refresh.
+/// One stripe: the documents one group of indexing threads added since the
+/// last refresh. Each stripe is its own leaf, so indexing threads on
+/// different stripes never contend (the design's per-DWPT buffers).
 #[derive(Default)]
-pub(crate) struct LiveBuffer {
+pub(crate) struct Stripe {
     inner: RwLock<Inner>,
     visible: AtomicU32,
+}
+
+/// One buffer generation: the stripes plus the `_id` map and deletes, which
+/// span stripes.
+pub(crate) struct LiveBuffer {
+    stripes: Vec<Stripe>,
+    ids: Mutex<HashMap<Vec<u8>, (u32, u32)>>,
+    deleted: Mutex<Vec<(u32, u32)>>,
+}
+
+impl Default for LiveBuffer {
+    fn default() -> Self {
+        let n = std::thread::available_parallelism().map_or(1, |n| n.get());
+        LiveBuffer {
+            stripes: (0..n).map(|_| Stripe::default()).collect(),
+            ids: Mutex::default(),
+            deleted: Mutex::default(),
+        }
+    }
+}
+
+static NEXT_STRIPE: AtomicU32 = AtomicU32::new(0);
+thread_local! {
+    static MY_STRIPE: u32 = NEXT_STRIPE.fetch_add(1, Ordering::Relaxed);
 }
 
 /// The shard's live state, held by its engine writer.
@@ -111,72 +133,87 @@ impl Live {
             .read()
             .unwrap_or_else(PoisonError::into_inner)
             .clone();
-        let mut inner = buffer.inner.write().unwrap_or_else(PoisonError::into_inner);
-        if let Some(id) = replaces {
-            if let Some(&old) = inner.by_id.get(id) {
-                inner.deleted.push(old);
-            }
-        }
-        for (d, b) in docs.iter().zip(blobs) {
-            let doc = inner.stored.len() as u32;
-            inner.stored.push(b);
-            let mut soft_deleted = false;
-            for f in &d.fields.inverted {
-                let mut ttf = 0i64;
-                let mut df = 0i64;
-                {
-                    let field = inner.postings.entry(f.field_number).or_default();
-                    for t in f.terms.iter() {
-                        let freq = t.freq.max(1) as u32;
-                        match field.get_mut(t.term) {
-                            Some(list) => list.push(u64::from(doc) << 32 | u64::from(freq)),
-                            None => {
-                                field.insert(t.term.to_vec(), vec![u64::from(doc) << 32 | u64::from(freq)]);
+        let si = MY_STRIPE.with(|s| *s) % buffer.stripes.len() as u32;
+        let stripe = &buffer.stripes[si as usize];
+        let mut added: Vec<(u32, Option<Vec<u8>>, bool)> = Vec::with_capacity(docs.len());
+        {
+            let mut inner = stripe.inner.write().unwrap_or_else(PoisonError::into_inner);
+            for (d, b) in docs.iter().zip(blobs) {
+                let doc = inner.stored.len() as u32;
+                inner.stored.push(b);
+                let mut soft_deleted = false;
+                let mut id = None;
+                for f in &d.fields.inverted {
+                    let mut ttf = 0i64;
+                    let mut df = 0i64;
+                    {
+                        let field = inner.postings.entry(f.field_number).or_default();
+                        for t in f.terms.iter() {
+                            let freq = t.freq.max(1) as u32;
+                            match field.get_mut(t.term) {
+                                Some(list) => list.push(u64::from(doc) << 32 | u64::from(freq)),
+                                None => {
+                                    field.insert(t.term.to_vec(), vec![u64::from(doc) << 32 | u64::from(freq)]);
+                                }
                             }
-                        }
-                        ttf += i64::from(freq);
-                        df += 1;
-                    }
-                }
-                if f.field_number == id_field {
-                    if let Some(t) = f.terms.iter().next() {
-                        let id = t.term.to_vec();
-                        if let Some(old) = inner.by_id.insert(id, doc) {
-                            if replaces.is_none() {
-                                inner.deleted.push(old);
-                            }
+                            ttf += i64::from(freq);
+                            df += 1;
                         }
                     }
-                }
-                let s = inner.stats.entry(f.field_number).or_default();
-                s[0] += ttf;
-                s[1] += df;
-                s[2] += 1;
-                if let Some(n) = f.norm {
-                    inner.norms.entry(f.field_number).or_default().push((doc, n));
-                }
-            }
-            for dv in &d.fields.doc_values {
-                if let FieldValue::Long(v) = dv.value {
-                    if dv.field_number == soft_field {
-                        soft_deleted = true;
+                    if f.field_number == id_field {
+                        id = f.terms.iter().next().map(|t| t.term.to_vec());
                     }
-                    inner.numeric.entry(dv.field_number).or_default().push((doc, v));
+                    let s = inner.stats.entry(f.field_number).or_default();
+                    s[0] += ttf;
+                    s[1] += df;
+                    s[2] += 1;
+                    if let Some(n) = f.norm {
+                        inner.norms.entry(f.field_number).or_default().push((doc, n));
+                    }
                 }
-            }
-            if soft_deleted {
-                inner.deleted.push(doc);
+                for dv in &d.fields.doc_values {
+                    if let FieldValue::Long(v) = dv.value {
+                        if dv.field_number == soft_field {
+                            soft_deleted = true;
+                        }
+                        inner.numeric.entry(dv.field_number).or_default().push((doc, v));
+                    }
+                }
+                added.push((doc, id, soft_deleted));
             }
         }
-        let n = inner.stored.len() as u32;
-        buffer.visible.store(n, Ordering::Release);
+        {
+            let mut ids = buffer.ids.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut deleted = buffer.deleted.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some(id) = replaces {
+                if let Some(old) = ids.remove(id) {
+                    deleted.push(old);
+                }
+            }
+            for (doc, id, soft_deleted) in added {
+                if let Some(id) = id {
+                    if let Some(old) = ids.insert(id, (si, doc)) {
+                        deleted.push(old);
+                    }
+                }
+                if soft_deleted {
+                    deleted.push((si, doc));
+                }
+            }
+        }
+        let n = stripe.inner.read().unwrap_or_else(PoisonError::into_inner).stored.len() as u32;
+        stripe.visible.fetch_max(n, Ordering::Release);
     }
 }
 
-static SNAPSHOTS: LazyLock<Mutex<HashMap<u64, Arc<LiveBuffer>>>> = LazyLock::new(Default::default);
+/// A pinned buffer, and the stripe it names (`WHOLE` for the buffer itself).
+type Snap = (Arc<LiveBuffer>, u32);
+const WHOLE: u32 = u32::MAX;
+
+static SNAPSHOTS: LazyLock<Mutex<HashMap<u64, Snap>>> = LazyLock::new(Default::default);
 static NEXT: AtomicU64 = AtomicU64::new(1);
 
-fn snapshot(id: u64) -> Result<Arc<LiveBuffer>, FfiStatus> {
+fn snapshot(id: u64) -> Result<Snap, FfiStatus> {
     SNAPSHOTS
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
@@ -238,9 +275,9 @@ pub unsafe extern "C" fn ffi_live_acquire(handle: u64, out_id: *mut u64, out_vis
         let w = crate::engine_writer::live_of(handle)?;
         let live = &w.live;
         let buffer = live.current.read().unwrap_or_else(PoisonError::into_inner).clone();
-        let visible = buffer.visible.load(Ordering::Acquire);
+        let visible: u32 = buffer.stripes.iter().map(|s| s.visible.load(Ordering::Acquire)).sum();
         let id = NEXT.fetch_add(1, Ordering::Relaxed);
-        SNAPSHOTS.lock().unwrap_or_else(PoisonError::into_inner).insert(id, buffer);
+        SNAPSHOTS.lock().unwrap_or_else(PoisonError::into_inner).insert(id, (buffer, WHOLE));
         // SAFETY: caller contract.
         unsafe {
             *out_id = id;
@@ -250,12 +287,57 @@ pub unsafe extern "C" fn ffi_live_acquire(handle: u64, out_id: *mut u64, out_vis
     })
 }
 
-/// The visible count of a pinned buffer now (it keeps growing until the next reset).
+/// The visible count of a pinned stripe (or the sum over a whole buffer's
+/// stripes) now; it keeps growing until the next reset.
 #[no_mangle]
 pub extern "C" fn ffi_live_visible(id: u64) -> i32 {
     match snapshot(id) {
-        Ok(b) => b.visible.load(Ordering::Acquire) as i32,
+        Ok((b, WHOLE)) => b.stripes.iter().map(|s| s.visible.load(Ordering::Acquire)).sum::<u32>() as i32,
+        Ok((b, s)) => b.stripes[s as usize].visible.load(Ordering::Acquire) as i32,
         Err(_) => -1,
+    }
+}
+
+/// The number of stripes in a pinned buffer.
+#[no_mangle]
+pub extern "C" fn ffi_live_stripes(id: u64) -> i32 {
+    match snapshot(id) {
+        Ok((b, _)) => b.stripes.len() as i32,
+        Err(_) => -1,
+    }
+}
+
+/// Pins stripe `stripe` of the buffer `id` pins, under a new id; the postings,
+/// column, deleted and document calls read one stripe.
+///
+/// # Safety
+/// `out_id` valid for one write.
+#[no_mangle]
+pub unsafe extern "C" fn ffi_live_stripe(id: u64, stripe: i32, out_id: *mut u64) -> i32 {
+    guard(|| {
+        if out_id.is_null() {
+            return Err(FfiStatus::NullPointer);
+        }
+        let (b, _) = snapshot(id)?;
+        let Some(si) = u32::try_from(stripe).ok().filter(|&s| (s as usize) < b.stripes.len()) else {
+            set_last_error(format!("live: no stripe {stripe}"));
+            return Err(FfiStatus::InvalidArgument);
+        };
+        let new = NEXT.fetch_add(1, Ordering::Relaxed);
+        SNAPSHOTS.lock().unwrap_or_else(PoisonError::into_inner).insert(new, (b, si));
+        // SAFETY: caller contract.
+        unsafe { *out_id = new };
+        Ok(())
+    })
+}
+
+fn stripe_of(id: u64) -> Result<(Arc<LiveBuffer>, usize), FfiStatus> {
+    match snapshot(id)? {
+        (_, WHOLE) => {
+            set_last_error("live: snapshot is a whole buffer, not a stripe".to_string());
+            Err(FfiStatus::InvalidArgument)
+        }
+        (b, s) => Ok((b, s as usize)),
     }
 }
 
@@ -304,8 +386,8 @@ pub unsafe extern "C" fn ffi_live_postings(
     guard(|| {
         // SAFETY: caller contract.
         let term = unsafe { bytes_from_raw(term, term_len)? };
-        let b = snapshot(id)?;
-        let inner = b.inner.read().unwrap_or_else(PoisonError::into_inner);
+        let (b, si) = stripe_of(id)?;
+        let inner = b.stripes[si].inner.read().unwrap_or_else(PoisonError::into_inner);
         let mut out = Vec::new();
         if let Some(list) = inner.postings.get(&field).and_then(|f| f.get(term)) {
             out.reserve(list.len() * 8);
@@ -335,8 +417,8 @@ pub unsafe extern "C" fn ffi_live_field_stats(id: u64, field: i32, out: *mut i64
         if out.is_null() {
             return Err(FfiStatus::NullPointer);
         }
-        let b = snapshot(id)?;
-        let s = b
+        let (b, si) = stripe_of(id)?;
+        let s = b.stripes[si]
             .inner
             .read()
             .unwrap_or_else(PoisonError::into_inner)
@@ -365,8 +447,8 @@ pub unsafe extern "C" fn ffi_live_column(
     out_len: *mut usize,
 ) -> i32 {
     guard(|| {
-        let b = snapshot(id)?;
-        let inner = b.inner.read().unwrap_or_else(PoisonError::into_inner);
+        let (b, si) = stripe_of(id)?;
+        let inner = b.stripes[si].inner.read().unwrap_or_else(PoisonError::into_inner);
         let col = if kind == 0 { inner.norms.get(&field) } else { inner.numeric.get(&field) };
         let mut out = Vec::new();
         if let Some(col) = col {
@@ -396,15 +478,15 @@ pub unsafe extern "C" fn ffi_live_deleted(
     out_len: *mut usize,
 ) -> i32 {
     guard(|| {
-        let b = snapshot(id)?;
-        let inner = b.inner.read().unwrap_or_else(PoisonError::into_inner);
+        let (b, si) = stripe_of(id)?;
+        let deleted = b.deleted.lock().unwrap_or_else(PoisonError::into_inner);
         let mut out = Vec::new();
-        for &d in &inner.deleted {
-            if (d as i32) < max_doc {
+        for &(s, d) in deleted.iter() {
+            if s as usize == si && (d as i32) < max_doc {
                 out.extend_from_slice(&d.to_le_bytes());
             }
         }
-        drop(inner);
+        drop(deleted);
         // SAFETY: caller contract.
         unsafe { give(out, out_ptr, out_len) }
     })
@@ -417,8 +499,8 @@ pub unsafe extern "C" fn ffi_live_deleted(
 #[no_mangle]
 pub unsafe extern "C" fn ffi_live_document(id: u64, doc: i32, out_ptr: *mut *mut u8, out_len: *mut usize) -> i32 {
     guard(|| {
-        let b = snapshot(id)?;
-        let inner = b.inner.read().unwrap_or_else(PoisonError::into_inner);
+        let (b, si) = stripe_of(id)?;
+        let inner = b.stripes[si].inner.read().unwrap_or_else(PoisonError::into_inner);
         let Some(blob) = usize::try_from(doc).ok().and_then(|d| inner.stored.get(d)) else {
             set_last_error(format!("live: no document {doc}"));
             return Err(FfiStatus::InvalidArgument);

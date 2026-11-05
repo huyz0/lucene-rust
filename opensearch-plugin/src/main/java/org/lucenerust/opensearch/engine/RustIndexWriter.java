@@ -255,7 +255,9 @@ final class RustIndexWriter implements DocumentIndexWriter {
                 } else if (schema.name.equals(softDeletesFieldName)) {
                     liveSoftField = out[0];
                 }
-                NativeBridge.liveConfigure(handle, liveIdField, liveSoftField);
+                if (Boolean.getBoolean("lucene_rust.realtime.noadd") == false) {
+                    NativeBridge.liveConfigure(handle, liveIdField, liveSoftField);
+                }
             }
         }
         return out[0];
@@ -496,7 +498,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
         commitDataFailure = null;
         COMMITTING.set(this);
         long newLive = 0;
-        if (REALTIME) {
+        if (REALTIME && Boolean.getBoolean("lucene_rust.realtime.nolock") == false) {
             // SPIKE: no add between the commit and the new buffer, so a buffer holds exactly the
             // documents after one commit.
             indexing.writeLock().lock();
@@ -509,7 +511,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
                 newLive = acq == null ? 0 : acq[0];
             }
         } finally {
-            if (REALTIME) {
+            if (REALTIME && Boolean.getBoolean("lucene_rust.realtime.nolock") == false) {
                 indexing.writeLock().unlock();
             }
             COMMITTING.remove();
@@ -535,7 +537,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
             if (old != null) {
                 NativeBridge.liveRelease(old);
             }
-            while (liveByGeneration.size() > 8) {
+            while (liveByGeneration.size() > 64) {
                 var e = liveByGeneration.pollFirstEntry();
                 NativeBridge.liveRelease(e.getValue());
             }
@@ -775,6 +777,20 @@ final class RustIndexWriter implements DocumentIndexWriter {
             }
             return id;
         }
+    }
+
+    /**
+     * Every pinned buffer from commit {@code generation} on, oldest first: a reader on an older
+     * commit (the external reader lags the internal one when only the indexing-memory controller
+     * refreshed) needs the buffers of every commit after its own too, since each holds exactly the
+     * documents between two commits.
+     */
+    long[] liveBuffersFrom(long generation) {
+        if (REALTIME == false) {
+            return new long[0];
+        }
+        liveBufferFor(latestGeneration);
+        return liveByGeneration.tailMap(generation, true).values().stream().mapToLong(Long::longValue).toArray();
     }
 
     /** The registered fields as Lucene field infos, for the live leaf. */
