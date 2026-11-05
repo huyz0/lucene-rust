@@ -270,6 +270,15 @@ pub(crate) const HARD_MAX_BYTES_PER_SLOT: usize = 1945 * 1024 * 1024;
 /// starts from the log's end.
 const EMPTY_SLOT: usize = usize::MAX;
 
+/// Hands each [`ConcurrentIndexWriter`] its `id`.
+static NEXT_WRITER_ID: AtomicUsize = AtomicUsize::new(0);
+
+thread_local! {
+    /// The writer and slot this thread last added to: see
+    /// [`ConcurrentIndexWriter::acquire_slot`].
+    static LAST_SLOT: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((usize::MAX, 0)) };
+}
+
 /// See the module documentation.
 pub struct ConcurrentIndexWriter<'d> {
     dir: &'d dyn Directory,
@@ -292,6 +301,9 @@ pub struct ConcurrentIndexWriter<'d> {
     full_flush: Mutex<()>,
     /// Which slot to wait on when every slot is taken.
     next_slot: AtomicUsize,
+    /// Tells this writer's slots apart from another writer's in a thread's
+    /// [`LAST_SLOT`].
+    id: usize,
     /// Tests: every add takes the next slot in rotation, so one thread can
     /// fill several buffers.
     #[cfg(test)]
@@ -438,6 +450,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
             }),
             changed: Condvar::new(),
             slots: (0..slots).map(|_| Mutex::new(Dwpt::default())).collect(),
+            id: NEXT_WRITER_ID.fetch_add(1, Ordering::Relaxed),
             slices: (0..slots).map(|_| AtomicUsize::new(EMPTY_SLOT)).collect(),
             log: Mutex::new(log),
             full_flush: Mutex::new(()),
@@ -932,9 +945,12 @@ impl<'d> ConcurrentIndexWriter<'d> {
         self.slices[i].store(end, Ordering::Release);
     }
 
-    /// Locks a free slot -- `DocumentsWriterPerThreadPool.getAndLock`. Free
-    /// slots are tried lowest first, so a thread indexing alone keeps filling
-    /// one buffer and `k` threads fill `k` buffers, as Java hands out a free
+    /// Locks a free slot -- `DocumentsWriterPerThreadPool.getAndLock`. A
+    /// thread goes back to the slot it last filled while that slot is free,
+    /// so `k` threads indexing at once fill `k` buffers evenly and a refresh
+    /// builds `k` segments of about the same size, in parallel. Otherwise
+    /// free slots are tried lowest first, so a thread indexing alone keeps
+    /// filling one buffer, as Java hands out a free
     /// `DocumentsWriterPerThread` before it creates another. With every slot
     /// taken, it waits on one, picked in rotation.
     fn acquire_slot(&self) -> (usize, MutexGuard<'_, Dwpt>) {
@@ -947,8 +963,15 @@ impl<'d> ConcurrentIndexWriter<'d> {
                 .unwrap_or(0);
             return (i, lock(&self.slots[i]));
         }
+        let (writer, last) = LAST_SLOT.get();
+        if writer == self.id {
+            if let Some(Ok(guard)) = self.slots.get(last).map(Mutex::try_lock) {
+                return (last, guard);
+            }
+        }
         for (i, slot) in self.slots.iter().enumerate() {
             if let Ok(guard) = slot.try_lock() {
+                LAST_SLOT.set((self.id, i));
                 return (i, guard);
             }
         }
@@ -959,6 +982,9 @@ impl<'d> ConcurrentIndexWriter<'d> {
             .fetch_add(1, Ordering::Relaxed)
             .checked_rem(self.slots.len())
             .unwrap_or(0);
+        // Not recorded as this thread's slot: it was only the one waited on
+        // (another thread's, or every slot held by a commit), so the thread
+        // keeps going back to its own once slots free up.
         (wait, lock(&self.slots[wait]))
     }
 
@@ -2318,6 +2344,32 @@ mod tests {
         }
         assert_eq!(docs, expected);
         assert_clean(&dir);
+    }
+
+    #[test]
+    fn a_thread_goes_back_to_the_slot_it_last_filled() {
+        // The main thread holds slot 0, so the other thread's first add takes
+        // slot 1; with every slot free again, its next add goes back there
+        // rather than to the lowest free slot.
+        let tmp = TempDir::new("concurrent-affinity");
+        let dir = FsDirectory::open(&tmp);
+        let w = ConcurrentIndexWriter::new(writer(&dir, 1000), 2).unwrap();
+        let (added, released) = (std::sync::mpsc::channel(), std::sync::mpsc::channel());
+        let mut held = Some(lock(&w.slots[0]));
+        std::thread::scope(|s| {
+            let (added_tx, released_rx, w) = (added.0, released.1, &w);
+            s.spawn(move || {
+                w.add_document(doc("a", 0)).unwrap();
+                added_tx.send(()).unwrap();
+                released_rx.recv().unwrap();
+                w.add_document(doc("b", 1)).unwrap();
+            });
+            added.1.recv().unwrap();
+            held.take();
+            released.0.send(()).unwrap();
+        });
+        assert_eq!(lock(&w.slots[0]).docs.len(), 0);
+        assert_eq!(lock(&w.slots[1]).docs.len(), 2);
     }
 
     #[test]
