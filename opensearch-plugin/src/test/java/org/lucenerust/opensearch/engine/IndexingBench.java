@@ -223,7 +223,9 @@ public final class IndexingBench {
                             break;
                         }
                         if (rw != null) {
-                            rw.releaseHold(rw.acquireLatest()[1]);
+                            long[] nrt2 = new long[2];
+                            rw.acquireNrt(nrt2);
+                            rw.releaseHold(nrt2[0]);
                         } else {
                             var newer = org.apache.lucene.index.DirectoryReader.openIfChanged(nrt);
                             if (newer != null) {

@@ -38,7 +38,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code jvm_reader.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 62;
+    public static final int EXPECTED_ABI_VERSION = 63;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -279,6 +279,10 @@ public final class NativeBridge {
         static final MethodHandle WRITER_HOLD_COMMIT = bind(
             "ffi_engine_writer_hold_commit",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG, ADDRESS)
+        );
+        static final MethodHandle WRITER_NRT_SNAPSHOT = bind(
+            "ffi_engine_writer_nrt_snapshot",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, ADDRESS, ADDRESS, ADDRESS)
         );
         static final MethodHandle WRITER_RELEASE_HOLD = bind(
             "ffi_engine_writer_release_hold",
@@ -1630,6 +1634,36 @@ public final class NativeBridge {
         }
         try (Scratch s = Scratch.open()) {
             return (int) H.WRITER_DELETE_COMMITS.invokeExact(handle, s.longs(generations), (long) generations.length);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * Flushes the writer's buffers and puts its live segment list, uncommitted, in {@code
+     * bytes[0]} as {@code segments_N} bytes; its files stay pinned under {@code out[0]} until
+     * {@link #writerReleaseHold}, and {@code out[1]} is the last commit's generation, which the
+     * bytes' header names. Returns the status.
+     */
+    public static int writerNrtSnapshot(long handle, long[] out, byte[][] bytes) {
+        try (Scratch s = Scratch.open()) {
+            MemorySegment slot = ownedSlot(s);
+            MemorySegment hold = s.alloc(Long.BYTES);
+            MemorySegment gen = s.alloc(Long.BYTES);
+            int rc = (int) H.WRITER_NRT_SNAPSHOT.invokeExact(handle, ptrOf(slot), lenOf(slot), hold, gen);
+            if (rc != OK) {
+                return rc;
+            }
+            long id = hold.get(JAVA_LONG, 0);
+            byte[] infos = take(slot);
+            if (infos == null) {
+                writerReleaseHold(handle, id);
+                return tooLarge("the segment list");
+            }
+            out[0] = id;
+            out[1] = gen.get(JAVA_LONG, 0);
+            bytes[0] = infos;
+            return OK;
         } catch (Throwable t) {
             throw rethrow(t);
         }
