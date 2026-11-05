@@ -47,7 +47,7 @@ fn policy(min_natural: i32, field: &str) -> BpReorderingMergePolicy {
         .compound_file_settings_mut()
         .set_no_cfs_ratio(0.0)
         .unwrap();
-    tiered.config.segments_per_tier = 2;
+    tiered.config.segments_per_tier = 2.0;
     tiered.config.floor_segment_size = 1048;
     let mut policy = BpReorderingMergePolicy::new(Box::new(tiered), reorderer);
     policy.set_min_natural_merge_num_docs(min_natural).unwrap();

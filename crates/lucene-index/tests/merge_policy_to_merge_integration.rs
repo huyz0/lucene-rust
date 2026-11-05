@@ -108,7 +108,7 @@ fn find_merges_output_feeds_directly_into_merge_execution() {
         .collect();
     let config = MergePolicyConfig {
         max_merge_at_once: 3,
-        segments_per_tier: 1,
+        segments_per_tier: 1.0,
         max_merged_segment_size: 1_000_000,
         reclaim_weight: 1.0,
         // Above every one of these synthetic segments, mirroring real

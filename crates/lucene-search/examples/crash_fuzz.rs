@@ -278,7 +278,7 @@ fn open_writer<'d>(
     writer.set_ram_buffer_size_mb(4096.0)?;
     writer.set_merge_policy(Some(MergePolicyConfig {
         max_merge_at_once: stream.max_merge_at_once,
-        segments_per_tier: stream.segments_per_tier,
+        segments_per_tier: stream.segments_per_tier as f64,
         max_merged_segment_size: 1 << 30,
         floor_segment_size: stream.floor_segment_size,
         ..MergePolicyConfig::default()

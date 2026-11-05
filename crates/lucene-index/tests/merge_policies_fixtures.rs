@@ -124,7 +124,7 @@ fn build(spec: &str, ranges: &HashMap<String, SegmentDateRange>) -> Box<dyn Merg
                 config.floor_segment_size = v.parse().unwrap();
             }
             if let Some(v) = kv.get("segsPerTier") {
-                config.segments_per_tier = v.parse::<f64>().unwrap() as usize;
+                config.segments_per_tier = v.parse::<f64>().unwrap();
             }
             let mut p = TieredMergePolicy::new(config);
             if let Some(v) = kv.get("noCFSRatio") {

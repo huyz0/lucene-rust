@@ -212,7 +212,7 @@ fn main() {
     // merge of all three.
     writer.set_merge_policy(Some(MergePolicyConfig {
         max_merge_at_once: 10,
-        segments_per_tier: 2,
+        segments_per_tier: 2.0,
         max_merged_segment_size: u64::MAX / 4,
         floor_segment_size: 1 << 30,
         ..MergePolicyConfig::default()

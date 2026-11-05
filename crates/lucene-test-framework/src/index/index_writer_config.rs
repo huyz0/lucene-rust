@@ -359,7 +359,7 @@ pub fn new_tiered_merge_policy(d: &mut Draws<'_>) -> TieredMergePolicy {
         d.next_int(2, 20)
     } else {
         d.next_int(10, 50)
-    } as usize;
+    } as f64;
     tmp.config.target_search_concurrency = if d.rarely() {
         d.next_int(10, 50)
     } else {
@@ -736,7 +736,7 @@ pub fn maybe_change_live_index_writer_config(
                         d.next_int(2, 20)
                     } else {
                         d.next_int(10, 50)
-                    } as usize;
+                    } as f64;
                     configure_random(d, tmp);
                     tmp.config.deletes_pct_allowed = 20.0 + d.ctx().next_double() * 30.0;
                 }

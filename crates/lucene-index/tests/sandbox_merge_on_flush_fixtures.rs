@@ -107,7 +107,7 @@ fn run(dir: &FsDirectory, wait_millis: i64) -> Vec<String> {
     let fields = vec![stored_field("id", 0), stored_field("big", 1)];
     let mut w = IndexWriter::open(dir, fields, "Lucene104", version).unwrap();
     let mut tmp = TieredMergePolicy::new(MergePolicyConfig {
-        segments_per_tier: 50,
+        segments_per_tier: 50.0,
         max_merge_at_once: 50,
         ..MergePolicyConfig::default()
     });
