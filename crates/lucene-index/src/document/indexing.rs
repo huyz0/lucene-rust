@@ -919,6 +919,10 @@ impl IndexWriter<'_> {
             Ok(inverted) => inverted,
             Err(e) => {
                 self.pending_postings.rollback(checkpoint);
+                // The pool keeps the blocks the undone documents took: they
+                // are still heap the buffer holds, so they are still charged.
+                let kept = self.pending_postings.bytes().saturating_sub(before);
+                self.charge_ram_bytes(kept, true);
                 return Err(e);
             }
         };
@@ -927,10 +931,12 @@ impl IndexWriter<'_> {
         let added = buffer(self, explicit, vectors);
         // `buffer` takes the whole block or none of it (its refusals all come
         // before the first document is buffered), so a failure leaves either
-        // nothing to undo or nothing undone.
+        // nothing to undo or nothing undone. Only what the rollback freed is
+        // taken off the charge.
         if added.is_err() && self.pending_doc_id_upto() == base {
             self.pending_postings.rollback(checkpoint);
-            self.charge_ram_bytes(grown, false);
+            let kept = self.pending_postings.bytes().saturating_sub(before);
+            self.charge_ram_bytes(grown.saturating_sub(kept), false);
         }
         added
     }
