@@ -60,10 +60,13 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  * IndexWriter.commit} iterates its live commit data after {@code flushAllThreads} -- so the maximum
  * sequence number it records covers every operation the commit holds.
  *
- * <p><b>Refresh is a commit.</b> Java readers open commits ({@link #acquireLatest}), so making new
- * documents visible publishes a {@code segments_N} with the live commit data. Every commit is
- * therefore a complete recovery point. The writer's merges run on its merge threads ({@code
- * index.merge.scheduler.*}) over committed segments, and a merged segment is in the next commit.
+ * <p><b>Refresh is not a commit.</b> A refresh flushes the buffers into segments and opens a Java
+ * reader on the writer's live segment list ({@link #acquireNrt}), as {@code IndexWriter.getReader}
+ * does; nothing is synced. Only {@link #commit} (an OpenSearch flush) writes a {@code segments_N}
+ * with the live commit data, so every commit is a complete recovery point and the translog covers
+ * the rest. With live search on, a refresh is a commit ({@link #acquireLatest}): live views are
+ * keyed by commit generation. The writer's merges run on its merge threads ({@code
+ * index.merge.scheduler.*}); a merged segment is in the next reader and the next commit.
  *
  * <p><b>Commit points are OpenSearch's to drop.</b> After every commit the deletion policy the
  * engine passes (its {@code CombinedDeletionPolicy}) sees the full list, exactly as Lucene's {@code
@@ -678,9 +681,10 @@ final class RustIndexWriter implements DocumentIndexWriter {
     }
 
     /**
-     * Makes every buffered change visible: commits it if there is any, then pins the newest commit's
-     * files for a reader. Returns {@code {generation, hold}}; release the hold with {@link
-     * #releaseHold} once the reader is closed.
+     * Makes every buffered change visible through a commit: commits it if there is any, then pins
+     * the newest commit's files for a reader. Returns {@code {generation, hold}}; release the hold
+     * with {@link #releaseHold} once the reader is closed. Live search keys the buffers it reads by
+     * that commit's generation, so a writer with live search refreshes this way.
      */
     long[] acquireLatest() throws IOException {
         synchronized (lock) {
@@ -692,6 +696,25 @@ final class RustIndexWriter implements DocumentIndexWriter {
             long[] hold = new long[1];
             check(NativeBridge.writerHoldCommit(handle, gen, hold), "holding commit " + gen);
             return new long[] { gen, hold[0] };
+        }
+    }
+
+    /**
+     * Flushes what is buffered and pins the writer's live segment list for a reader: returns its
+     * {@code segments_N} bytes; {@code out[0]} is the hold to {@link #releaseHold} when the reader
+     * closes, {@code out[1]} the last commit's generation. Adds go on meanwhile. The flushed buffers
+     * leave the circuit breaker.
+     */
+    byte[] acquireNrt(long[] out) throws IOException {
+        indexing.readLock().lock();
+        try {
+            ensureOpen();
+            byte[][] bytes = new byte[1][];
+            check(NativeBridge.writerNrtSnapshot(handle, out, bytes), "opening a near-real-time view");
+            return bytes[0];
+        } finally {
+            reconcileBreaker();
+            indexing.readLock().unlock();
         }
     }
 
