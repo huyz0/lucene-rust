@@ -125,11 +125,13 @@ final class NativeStoredFieldsReader extends FilterDirectoryReader {
     static final class Leaf extends SequentialStoredFieldsLeafReader {
         private final Shared shared;
         private final int ord;
+        private final boolean live;
 
         Leaf(LeafReader in, Shared shared, int ord) {
             super(in);
             this.shared = shared;
             this.ord = ord;
+            this.live = LiveLeafReader.unwrap(in) != null;
         }
 
         @Override
@@ -201,6 +203,10 @@ final class NativeStoredFieldsReader extends FilterDirectoryReader {
 
         /** Document {@code docID} replayed into {@code visitor} from the native reader; false when it cannot be. */
         private boolean nativeDocument(int docID, StoredFieldVisitor visitor, boolean sequential) throws IOException {
+            if (live) {
+                // The writer's buffered documents: the leaf reads them from its view itself.
+                return false;
+            }
             long h = shared.handle();
             if (h == 0) {
                 return false;

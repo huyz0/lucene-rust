@@ -128,7 +128,7 @@ struct Holds {
 }
 
 impl EngineWriter {
-    fn writer(&self) -> &ConcurrentIndexWriter<'static> {
+    pub(crate) fn writer(&self) -> &ConcurrentIndexWriter<'static> {
         &self.handle.writer
     }
 
@@ -572,6 +572,7 @@ fn writer_error(e: index_writer::Error) -> FfiStatus {
         | index_writer::Error::PreparedCommitPending(_)
         | index_writer::Error::ConcurrentUnsupported(_)
         | index_writer::Error::Explicit(_)
+        | index_writer::Error::LiveSearch(_)
         | index_writer::Error::Document(_)
         | index_writer::Error::ZeroNorm(_)
         | index_writer::Error::MergeHook(_)
@@ -661,7 +662,7 @@ fn writer_error(e: index_writer::Error) -> FfiStatus {
     status
 }
 
-fn lookup(handle: u64) -> Result<Arc<EngineWriter>, FfiStatus> {
+pub(crate) fn lookup(handle: u64) -> Result<Arc<EngineWriter>, FfiStatus> {
     read_recovering(engine_writers())
         .get(handle)
         .cloned()
@@ -703,12 +704,16 @@ fn with_writer<T>(
 pub const OPEN_FAULT_INJECTION: u8 = 1;
 /// [`ffi_engine_writer_open`]'s flag for an `index.sparse` index.
 pub const OPEN_SPARSE: u8 = 2;
+/// [`ffi_engine_writer_open`]'s flag for an index searched without a refresh
+/// (`crate::live`).
+pub const OPEN_LIVE_SEARCH: u8 = 4;
 
 /// Opens the shard's writer over the index at `path`, which must already hold
 /// a commit (OpenSearch's `Store.createEmpty` or a recovered one).
 /// `ram_buffer_mb` is the flush threshold. `flags`: [`OPEN_FAULT_INJECTION`]
 /// allows the [`OP_PANIC`] operation; [`OPEN_SPARSE`] writes the segments of
-/// an `index.sparse` index ([`lucene_sparse::SparseCodec`]).
+/// an `index.sparse` index ([`lucene_sparse::SparseCodec`]);
+/// [`OPEN_LIVE_SEARCH`] keeps what a search of the buffers reads.
 ///
 /// # Safety
 /// `path` valid for `path_len` bytes; `out_handle` valid for one write.
@@ -780,6 +785,9 @@ pub unsafe extern "C" fn ffi_engine_writer_open(
             ConcurrentIndexWriter::with_merge_scheduler(writer, slots, Arc::new(merges.clone()))
         };
         let writer = open().map_err(writer_error)?;
+        if flags & OPEN_LIVE_SEARCH != 0 {
+            writer.enable_live_search().map_err(writer_error)?;
+        }
         let engine = EngineWriter {
             handle: WriterHandle {
                 writer,
@@ -2670,6 +2678,187 @@ mod tests {
         let vector = vector.i32(0);
         assert_eq!(decode_field(&vector.0).unwrap().vector_dimension, 4);
         assert!(decode_user_data(&Blob::default().i32(0).u8(0).0).is_err());
+    }
+
+    /// Opens a JVM reader of commit `gen`, every segment fully live.
+    fn open_reader(tmp: &TempDir, gen: i64) -> u64 {
+        let name = lucene_store::directory::segments_file_name(gen).unwrap();
+        let infos_bytes = std::fs::read(tmp.path().join(&name)).unwrap();
+        let infos = lucene_index::segment_infos::parse(&infos_bytes, gen).unwrap();
+        let max_docs: Vec<i32> = infos
+            .segments
+            .iter()
+            .map(|s| {
+                let si = std::fs::read(tmp.path().join(format!("{}.si", s.segment_name)));
+                lucene_index::segment_info::parse(&si.unwrap(), &s.segment_id)
+                    .unwrap()
+                    .doc_count
+            })
+            .collect();
+        let path = tmp.path().to_str().unwrap();
+        let mut reader = 0u64;
+        // SAFETY: live slices and out-pointer; no live-docs words.
+        let rc = unsafe {
+            crate::jvm_reader::ffi_open_jvm_reader(
+                path.as_ptr().cast(),
+                path.len(),
+                infos_bytes.as_ptr(),
+                infos_bytes.len(),
+                gen,
+                0,
+                max_docs.as_ptr(),
+                max_docs.len(),
+                std::ptr::null(),
+                std::ptr::null(),
+                &mut reader,
+            )
+        };
+        assert_eq!(rc, 0, "{}", crate::error::last_error());
+        reader
+    }
+
+    /// `(doc, score)` hits and the total of `query` over `reader` and
+    /// `view`'s buffers; `None` when the buffers cannot answer it.
+    fn search_live(reader: u64, view: u64, query: &[u8]) -> Option<(Vec<(i32, f32)>, i64)> {
+        let (mut docs, mut scores) = ([0i32; 64], [0f32; 64]);
+        let (mut n, mut total, mut lower, mut supported) = (0usize, 0i64, false, false);
+        // SAFETY: live buffers of 64 and out-pointers.
+        let rc = unsafe {
+            crate::live::ffi_jvm_reader_search_live(
+                reader,
+                view,
+                query.as_ptr(),
+                query.len(),
+                64,
+                i64::MAX,
+                docs.as_mut_ptr(),
+                scores.as_mut_ptr(),
+                64,
+                &mut n,
+                &mut total,
+                &mut lower,
+                &mut supported,
+            )
+        };
+        assert_eq!(rc, 0, "{}", crate::error::last_error());
+        supported.then(|| {
+            (
+                docs[..n]
+                    .iter()
+                    .copied()
+                    .zip(scores[..n].iter().copied())
+                    .collect(),
+                total,
+            )
+        })
+    }
+
+    /// [`OPEN_LIVE_SEARCH`]: a reader of the last commit and a view of the
+    /// buffers together find and score what a reader of a commit of
+    /// everything does, and a buffered hit's stored fields read back.
+    #[test]
+    fn a_view_searches_the_buffers_beside_a_reader() {
+        use crate::live::{
+            ffi_engine_writer_live_view_open, ffi_engine_writer_release_live, ffi_live_view_close,
+            ffi_live_view_document_alloc,
+        };
+        let tmp = empty_index("engine-writer-live-view");
+        let h = open_with(&tmp, 64.0, OPEN_LIVE_SEARCH, i32::MAX);
+        let f = setup(h);
+        let words = ["alpha", "beta", "gamma", "delta"];
+        let add = |from: usize, to: usize| {
+            for i in from..to {
+                let text: Vec<&str> = (0..1 + i % 4).map(|j| words[(i + j) % 4]).collect();
+                let id = format!("d{i}");
+                let b = doc(
+                    Blob::default().u8(OP_ADD).i32(1),
+                    &f,
+                    &id,
+                    &text,
+                    i as i64,
+                    false,
+                );
+                assert_eq!(apply(h, &b.0), 0, "{}", crate::error::last_error());
+            }
+        };
+        add(0, 40);
+        let gen = commit_settled(h);
+        let reader = open_reader(&tmp, gen);
+        add(40, 70);
+
+        let (mut view, mut ptr, mut len) = (0u64, std::ptr::null_mut(), 0usize);
+        // SAFETY: live out-pointers.
+        let rc = unsafe { ffi_engine_writer_live_view_open(h, gen, &mut view, &mut ptr, &mut len) };
+        assert_eq!(rc, 0, "{}", crate::error::last_error());
+        // SAFETY: the buffer the call just gave.
+        let blob = unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec();
+        // SAFETY: the buffer the call gave, freed once.
+        unsafe { crate::ffm_bridge::ffi_jvm_free_bytes(ptr, len) };
+        let count = i32::from_le_bytes(blob[8..12].try_into().unwrap());
+        let mut at = 12;
+        let mut buffered = 0;
+        for _ in 0..count {
+            buffered += i32::from_le_bytes(blob[at..at + 4].try_into().unwrap());
+            assert_eq!(
+                i32::from_le_bytes(blob[at + 4..at + 8].try_into().unwrap()),
+                0
+            );
+            at += 8;
+        }
+        assert_eq!((buffered, at), (30, blob.len()));
+
+        let query = crate::jvm_reader::tests::term_blob("body", "gamma");
+        let (live, live_total) = search_live(reader, view, &query).unwrap();
+        let all_gen = commit_settled(h);
+        let all = open_reader(&tmp, all_gen);
+        let (mut docs, mut scores) = ([0i32; 64], [0f32; 64]);
+        let (mut n, mut want_total, mut lower) = (0usize, 0i64, false);
+        // SAFETY: live buffers of 64 and out-pointers.
+        let rc = unsafe {
+            crate::jvm_reader::ffi_jvm_reader_search(
+                all,
+                query.as_ptr(),
+                query.len(),
+                64,
+                i64::MAX,
+                docs.as_mut_ptr(),
+                scores.as_mut_ptr(),
+                64,
+                &mut n,
+                &mut want_total,
+                &mut lower,
+            )
+        };
+        assert_eq!(rc, 0, "{}", crate::error::last_error());
+        let want: Vec<(i32, f32)> = docs[..n]
+            .iter()
+            .copied()
+            .zip(scores[..n].iter().copied())
+            .collect();
+        assert_eq!(live_total, want_total);
+        let mut got: Vec<f32> = live.iter().map(|h| h.1).collect();
+        let mut exp: Vec<f32> = want.iter().map(|h| h.1).collect();
+        got.sort_by(f32::total_cmp);
+        exp.sort_by(f32::total_cmp);
+        assert_eq!(got, exp);
+
+        let (doc, _) = *live.iter().find(|h| h.0 >= 40).unwrap();
+        let (mut ptr, mut len) = (std::ptr::null_mut(), 0usize);
+        // SAFETY: live out-pointers.
+        let rc = unsafe { ffi_live_view_document_alloc(view, 0, doc - 40, &mut ptr, &mut len) };
+        assert_eq!(rc, 0, "{}", crate::error::last_error());
+        // SAFETY: the buffer the call just gave.
+        let stored = unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec();
+        // SAFETY: the buffer the call gave, freed once.
+        unsafe { crate::ffm_bridge::ffi_jvm_free_bytes(ptr, len) };
+        let id = format!("d{doc}");
+        assert!(stored.windows(id.len()).any(|w| w == id.as_bytes()));
+
+        assert_eq!(ffi_live_view_close(view), 0);
+        assert_ne!(ffi_live_view_close(view), 0);
+        assert_eq!(ffi_engine_writer_release_live(h, gen), 0);
+        assert_eq!(crate::jvm_reader::ffi_close_jvm_reader(reader), 0);
+        assert_eq!(crate::jvm_reader::ffi_close_jvm_reader(all), 0);
     }
 
     /// The 1M OpenSearch bench's documents (`bench_nodes.py gen`), mapped as

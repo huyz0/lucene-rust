@@ -99,12 +99,14 @@ public final class NativeReaders {
      * handful of documents.
      */
     public long peek(IndexReader reader) {
+        reader = segmentsOf(reader);
         IndexReader.CacheHelper helper = reader.getReaderCacheHelper();
         Acquired cached = helper == null ? null : byReader.get(helper.getKey());
         return cached == null ? 0 : cached.handle();
     }
 
-    public Acquired acquire(IndexReader reader) {
+    public Acquired acquire(IndexReader searched) {
+        IndexReader reader = segmentsOf(searched);
         IndexReader.CacheHelper helper = reader.getReaderCacheHelper();
         if (helper == null) {
             return new Acquired(0, "reader_uncacheable");
@@ -130,6 +132,16 @@ public final class NativeReaders {
             }
             return a;
         });
+    }
+
+    /**
+     * The reader whose segments {@code reader} searches: the engine reader under a view of the
+     * writer's buffers ({@link LiveDirectoryReader}), whose native reader every such view shares, or
+     * {@code reader} itself.
+     */
+    private static IndexReader segmentsOf(IndexReader reader) {
+        IndexReader base = LiveDirectoryReader.baseOf(reader);
+        return base == null ? reader : base;
     }
 
     private void onClosed(IndexReader.CacheKey key) {
