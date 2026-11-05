@@ -38,7 +38,6 @@ mod jvm_nodes;
 mod jvm_queries;
 mod jvm_reader;
 mod jvm_similarity;
-mod live;
 mod raw;
 mod registry;
 mod store;

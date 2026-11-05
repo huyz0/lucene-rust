@@ -47,9 +47,4 @@ final class FieldRegistry {
     int size() {
         return fields.size();
     }
-
-    /** SPIKE: every registered field. */
-    java.util.Collection<Entry> entries() {
-        return fields.values();
-    }
 }
