@@ -28,7 +28,17 @@ struct Fields {
 }
 
 fn open(dir: &FsDirectory, slots: usize, live: bool) -> (ConcurrentIndexWriter<'_>, Fields) {
+    open_with(dir, slots, live, 16.0)
+}
+
+fn open_with(
+    dir: &FsDirectory,
+    slots: usize,
+    live: bool,
+    ram_mb: f64,
+) -> (ConcurrentIndexWriter<'_>, Fields) {
     let mut w = IndexWriter::open(dir, Vec::new(), "Lucene104", VERSION).unwrap();
+    w.set_ram_buffer_size_mb(ram_mb).unwrap();
     w.enable_explicit_documents().unwrap();
     let id = w
         .register_field(
@@ -290,4 +300,40 @@ fn what_the_buffers_cannot_answer_is_refused() {
         w.live_snapshot(&body(false, &["common"])),
         Err(Error::LiveSearch(_))
     ));
+}
+
+/// What live search costs (`--ignored --nocapture`, release): adds with
+/// and without its columns, and a snapshot of a frequent and a rare term.
+#[test]
+#[ignore]
+fn live_search_cost() {
+    const N: i64 = 200_000;
+    for live in [false, true] {
+        let tmp = TempDir::new("live-cost");
+        let dir = FsDirectory::open(tmp.path());
+        let (w, f) = open_with(&dir, 1, live, 4096.0);
+        let docs: Vec<ExplicitDocument> = (0..N).map(|i| doc(&f, i)).collect();
+        let t0 = std::time::Instant::now();
+        for d in docs {
+            w.add_explicit_documents(vec![d]).unwrap();
+        }
+        let add_ns = t0.elapsed().as_nanos() as f64 / N as f64;
+        println!(
+            "live={live} add_ns_per_doc={add_ns:.0} live_bytes={}",
+            w.live_bytes()
+        );
+        if !live {
+            continue;
+        }
+        for (t, positions) in [("common", false), ("rare", false), ("rare", true)] {
+            let req = body(positions, &[t]);
+            let rounds = 20;
+            let t0 = std::time::Instant::now();
+            for _ in 0..rounds {
+                std::hint::black_box(w.live_snapshot(&req).unwrap());
+            }
+            let us = t0.elapsed().as_micros() as f64 / f64::from(rounds);
+            println!("snapshot term={t} positions={positions} us={us:.0}");
+        }
+    }
 }

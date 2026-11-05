@@ -470,7 +470,8 @@ fn the_writers_buffer_searches_like_its_committed_segment() {
         for d in &docs {
             w.add_explicit_documents(vec![explicit(d)]).unwrap();
         }
-        w.delete_documents_by_term(std::slice::from_ref(&gone)).unwrap();
+        w.delete_documents_by_term(std::slice::from_ref(&gone))
+            .unwrap();
         w.commit().unwrap();
     }
     let reader = DirectoryReader::open(&committed).unwrap();
