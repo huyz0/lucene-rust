@@ -46,6 +46,13 @@ fn policy_error(e: merge_policy::api::Error) -> Error {
     Error::Explicit(format!("merge policy: {e}"))
 }
 
+/// The merges a full flush runs, each with its estimated merge bytes, and how
+/// long the flush waits for them.
+pub(crate) type FullFlushMerges = (
+    Vec<(merge_policy::api::RunnableMerge, u64)>,
+    std::time::Duration,
+);
+
 impl IndexWriter<'_> {
     /// `IndexWriterConfig.setMergePolicy(policy)`: from here on the writer's
     /// merges -- after every commit, and in [`IndexWriter::force_merge`] --
@@ -210,47 +217,15 @@ impl IndexWriter<'_> {
         trigger: MergeTrigger,
         merging: &HashSet<String>,
     ) -> Result<usize> {
-        self.write_pending_try_changes()?;
-        let wait = self.max_full_flush_merge_wait_millis;
-        if wait <= 0 {
+        let Some((merges, deadline)) = self.full_flush_merges(trigger, merging)? else {
             return Ok(0);
-        }
-        let policy: Arc<dyn MergePolicy> = match (
-            &self.full_flush_merge_policy,
-            &self.pluggable_merge_policy,
-            &self.merge_policy,
-        ) {
-            (Some(policy), _, _) | (None, Some(policy), _) => Arc::clone(policy),
-            (None, None, Some(config)) => {
-                Arc::new(merge_policy::TieredMergePolicy::new(config.clone()))
-            }
-            (None, None, None) => return Ok(0),
         };
         let start = std::time::Instant::now();
-        let deadline = std::time::Duration::from_millis(u64::try_from(wait).unwrap_or(0));
-        // Java's `segmentInfos` already holds every flushed segment; this
-        // writer keeps them apart until a commit folds them in, so fold them
-        // in now -- in memory, as the merges below are published.
-        if !self.flushed_segments.is_empty() {
-            let flushed = std::mem::take(&mut self.flushed_segments);
-            self.segment_infos.segments.extend(flushed);
-        }
-        let (infos, mut ctx) = self.merge_inputs()?;
-        ctx.merging = merging.clone();
-        let Some(spec) = policy
-            .find_full_flush_merges(trigger, &infos, &ctx)
-            .map_err(policy_error)?
-        else {
-            return Ok(0);
-        };
         let by_caller = self.merges_by_caller;
         self.merges_by_caller = true;
         let mut ran = 0usize;
         let mut result = Ok(());
-        for (group, hooks) in spec.runnable() {
-            if group.iter().any(|name| merging.contains(name)) {
-                continue;
-            }
+        for ((group, hooks), _) in merges {
             if start.elapsed() >= deadline {
                 break;
             }
@@ -262,6 +237,69 @@ impl IndexWriter<'_> {
         }
         self.merges_by_caller = by_caller;
         result.map(|()| ran)
+    }
+
+    /// Moves the segments flushed since the last commit into `segment_infos`,
+    /// in memory: Java's `segmentInfos` holds every flushed segment, so its
+    /// merge policy sees them before any commit names them.
+    pub(crate) fn fold_flushed_segments(&mut self) {
+        if !self.flushed_segments.is_empty() {
+            let flushed = std::mem::take(&mut self.flushed_segments);
+            self.segment_infos.segments.extend(flushed);
+        }
+    }
+
+    /// `preparePointInTimeMerge`'s selection: the merges
+    /// `findFullFlushMerges` specifies over every flushed segment, each with
+    /// its estimated merge bytes, and how long merge-on-commit/refresh waits
+    /// for them (`maxFullFlushMergeWaitMillis`). `None` with a wait of `0` or
+    /// no policy. A merge including a segment in `merging` is left out, as
+    /// `registerMerge` rejects it.
+    pub(crate) fn full_flush_merges(
+        &mut self,
+        trigger: MergeTrigger,
+        merging: &HashSet<String>,
+    ) -> Result<Option<FullFlushMerges>> {
+        self.write_pending_try_changes()?;
+        let wait = self.max_full_flush_merge_wait_millis;
+        if wait <= 0 {
+            return Ok(None);
+        }
+        let policy: Arc<dyn MergePolicy> = match (
+            &self.full_flush_merge_policy,
+            &self.pluggable_merge_policy,
+            &self.merge_policy,
+        ) {
+            (Some(policy), _, _) | (None, Some(policy), _) => Arc::clone(policy),
+            (None, None, Some(config)) => {
+                Arc::new(merge_policy::TieredMergePolicy::new(config.clone()))
+            }
+            (None, None, None) => return Ok(None),
+        };
+        let deadline = std::time::Duration::from_millis(u64::try_from(wait).unwrap_or(0));
+        self.fold_flushed_segments();
+        let (infos, mut ctx) = self.merge_inputs()?;
+        ctx.merging = merging.clone();
+        let Some(spec) = policy
+            .find_full_flush_merges(trigger, &infos, &ctx)
+            .map_err(policy_error)?
+        else {
+            return Ok(Some((Vec::new(), deadline)));
+        };
+        let merges = spec
+            .runnable()
+            .into_iter()
+            .filter(|(group, _)| !group.iter().any(|name| merging.contains(name)))
+            .map(|merge| {
+                let bytes = infos
+                    .iter()
+                    .filter(|i| merge.0.contains(&i.name))
+                    .map(|i| u64::try_from(i.size_in_bytes).unwrap_or(0))
+                    .fold(0u64, u64::saturating_add);
+                (merge, bytes)
+            })
+            .collect();
+        Ok(Some((merges, deadline)))
     }
 
     /// `IndexWriter.forceMergeDeletes()` under a pluggable policy: one round

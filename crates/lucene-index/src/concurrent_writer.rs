@@ -1977,18 +1977,71 @@ impl<'d> crate::nrt::NrtSource for ConcurrentIndexWriter<'d> {
         _apply_all_deletes: bool,
         _write_all_deletes: bool,
     ) -> Result<crate::nrt::NrtSnapshot> {
-        let snapshot = {
-            let _full_flush = lock(&self.full_flush);
-            self.flush_all(false)?;
-            let mut core = lock(&self.core);
+        let _full_flush = lock(&self.full_flush);
+        self.flush_all(false)?;
+        let mut core = lock(&self.core);
+        // Java's `segmentInfos` holds what was just flushed, so merges see
+        // it before any commit does.
+        core.writer.fold_flushed_segments();
+        let scheduled = !self.merges_stopped.load(Ordering::Acquire)
+            && self
+                .scheduler
+                .as_ref()
+                .is_some_and(|hook| hook.source.strong_count() > 0);
+        let mut waiting: Option<(Vec<String>, std::time::Instant)> = None;
+        if scheduled {
+            // `maybeMerge(SEGMENT_FLUSH)`, which Java's indexing threads run
+            // as each flushed segment publishes: natural merges take the new
+            // segments first, so the full-flush merges below seldom find one
+            // left to wait for.
+            self.register_merges(&mut core)?;
+            let Core {
+                writer, merging, ..
+            } = &mut *core;
+            match writer.full_flush_merges(MergeTrigger::GetReader, merging)? {
+                Some((merges, wait)) if merges.iter().all(|((_, hooks), _)| hooks.is_none()) => {
+                    // `IndexWriter.getReader` with `maxFullFlushMergeWaitMillis`:
+                    // the merges run on the merge threads, and the reader
+                    // waits for them up to the wait.
+                    let mut names = Vec::new();
+                    for ((group, _), bytes) in merges {
+                        merging.extend(group.iter().cloned());
+                        names.extend(group.iter().cloned());
+                        self.pending_merges
+                            .push(Arc::new(ScheduledMerge::new(group, bytes)));
+                    }
+                    let now = std::time::Instant::now();
+                    waiting = Some((names, now.checked_add(wait).unwrap_or(now)));
+                }
+                Some(_) => {
+                    // Merges with hooks run here, as `merge_on_full_flush` runs them.
+                    writer.merge_on_full_flush(MergeTrigger::GetReader, merging)?;
+                }
+                None => {}
+            }
+        } else {
             let Core {
                 writer, merging, ..
             } = &mut *core;
             writer.merge_on_full_flush(MergeTrigger::GetReader, merging)?;
-            writer.nrt_snapshot_of_live_view()?
-        };
+        }
+        drop(core);
         self.schedule_merges(MergeTrigger::GetReader)?;
-        Ok(snapshot)
+        let mut core = lock(&self.core);
+        if let Some((names, until)) = waiting {
+            while names.iter().any(|name| core.merging.contains(name)) {
+                let now = std::time::Instant::now();
+                if now >= until {
+                    break;
+                }
+                core = self
+                    .changed
+                    .wait_timeout(core, until.saturating_duration_since(now))
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .0;
+            }
+        }
+        core.writer.nrt_snapshot_of_live_view()
     }
 
     fn nrt_is_current(&self, infos: &crate::segment_infos::SegmentInfos) -> Result<bool> {
@@ -3450,6 +3503,39 @@ mod tests {
             .expect("no merge thread still holds the writer");
         let mut single = w.into_writer().unwrap();
         single.commit().unwrap();
+    }
+
+    /// Refreshes without a commit: the merge scheduler merges the segments
+    /// they flush, as Java's `segmentInfos` holds them, and with a full-flush
+    /// wait a refresh's own merges run on the merge threads.
+    #[test]
+    fn refreshes_without_commits_are_merged_by_the_scheduler() {
+        use crate::nrt::NrtSource;
+        for wait in [0, 10_000] {
+            let tmp = TempDir::new("concurrent-nrt-merges");
+            let dir = static_dir(&tmp);
+            let cms = crate::merge_scheduler::ConcurrentMergeScheduler::new();
+            cms.set_max_merges_and_threads(3, 2).unwrap();
+            let mut iw = writer(dir, 1000);
+            iw.set_max_full_flush_merge_wait_millis(wait);
+            let w =
+                ConcurrentIndexWriter::with_merge_scheduler(iw, 2, Arc::new(cms.clone())).unwrap();
+            for i in 0..300 {
+                w.add_document(doc(&format!("d{i}"), 0)).unwrap();
+                if i % 3 == 2 {
+                    w.nrt_snapshot(true, false).unwrap();
+                }
+            }
+            w.close_merges().unwrap();
+            let segments = lock(&w.core).writer.segment_count();
+            assert!(
+                segments < 30,
+                "wait {wait}: {segments} segments after 100 refreshes"
+            );
+            w.commit().unwrap();
+            assert_eq!(live_documents(dir).0.len(), 300);
+            assert_clean(dir);
+        }
     }
 
     /// `SerialMergeScheduler` behind the writer: a commit's merges run on the
