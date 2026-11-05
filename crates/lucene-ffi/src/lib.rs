@@ -43,3 +43,11 @@ mod registry;
 mod store;
 
 pub use error::FfiStatus;
+
+/// Makes the codecs beyond Lucene's own readable: segments of an
+/// `index.sparse` index record [`lucene_sparse::CODEC_NAME`]. Every exported
+/// function's [`error::guard`] runs it once.
+fn register_codecs() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(lucene_sparse::register_codec);
+}

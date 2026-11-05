@@ -368,6 +368,7 @@ public final class EngineWriterDiffTest {
                 rustPath,
                 16,
                 false,
+                false,
                 IndexWriter.MAX_DOCS,
                 analyzer,
                 similarity,
@@ -433,6 +434,13 @@ public final class EngineWriterDiffTest {
                 }
                 java.commit();
                 rust.commit();
+                // A background merge that finishes after the commit leaves the writer with
+                // uncommitted changes again, as IndexWriter's merges do; committing settles it.
+                long deadline = System.nanoTime() + 30_000_000_000L;
+                while (rust.hasUncommittedChanges() && System.nanoTime() < deadline) {
+                    Thread.sleep(10);
+                    rust.commit();
+                }
             }
             check(rust.hasUncommittedChanges() == false, "seed " + seed + ": nothing left uncommitted");
             rust.close();
@@ -747,6 +755,7 @@ public final class EngineWriterDiffTest {
                 dir,
                 root,
                 16,
+                false,
                 false,
                 IndexWriter.MAX_DOCS,
                 new TestAnalyzer(),
