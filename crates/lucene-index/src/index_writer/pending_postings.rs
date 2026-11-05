@@ -235,10 +235,7 @@ impl BytePool {
         }
         let (b, o) = locate(from);
         let len = to.wrapping_sub(from) as usize;
-        self.blocks
-            .get(b)
-            .and_then(|block| block.get(o..o.saturating_add(len)))
-            .unwrap_or_default()
+        &self.blocks[b][o..o.saturating_add(len)]
     }
 
     /// Cuts a stream back to `pos`: the rest of its slice is cleared and

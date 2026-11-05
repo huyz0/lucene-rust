@@ -1201,15 +1201,15 @@ pub(crate) struct DocumentBuffer<'b> {
     /// Aligned with `docs` when the writer takes explicit documents; read only
     /// then.
     pub(crate) explicit: ExplicitDocs<'b>,
-    /// The explicit documents' postings, inverted as they were buffered and
-    /// laid out in the flush's doc order; their `InvertedField`s then hold
-    /// no terms. `None` for a buffer whose `explicit` still carries every
-    /// term.
+    /// The explicit documents' postings, inverted as they were buffered, in
+    /// insertion-order doc ids (the flush renumbers them by `old_to_new`);
+    /// their `InvertedField`s then hold no terms. `None` for a buffer whose
+    /// `explicit` still carries every term.
     pub(crate) postings: Option<&'b pending_postings::PendingPostings>,
     /// Under an index sort, the flush's permutation: `old_to_new[d]` is
     /// where buffered document `d` lands -- what the insertion-order doc
-    /// ids of terms still in `explicit` are remapped by. `explicit` is
-    /// already permuted.
+    /// ids of `postings`, or of terms still in `explicit`, are remapped by.
+    /// `explicit` is already permuted.
     pub(crate) old_to_new: Option<&'b [usize]>,
     pub(crate) has_blocks: bool,
     /// The stored fields, already compressed as the documents arrived; the
@@ -5674,7 +5674,7 @@ impl<'d> IndexWriter<'d> {
     }
 
     /// This writer's pending documents, as the buffer a segment is built
-    /// from, with their postings laid out for the flush.
+    /// from, with their buffered postings.
     fn document_buffer<'a>(
         &'a self,
         postings: &'a pending_postings::PendingPostings,

@@ -382,12 +382,7 @@ impl IndexingConfig {
                 .map(|f| f.name.clone())
         };
         let format_for = |name: &str| self.postings_format_for(name);
-        let installed = self
-            .codec
-            .as_deref()
-            .and_then(|c| c.postings_writer_factory())
-            .is_some();
-        if !installed {
+        if !self.has_installed_postings_writer() {
             let specs: Vec<per_field_postings::StreamedFieldSpec> = fields
                 .iter()
                 .map(|(f, options)| per_field_postings::StreamedFieldSpec {
@@ -429,6 +424,15 @@ impl IndexingConfig {
             })
             .collect();
         self.write_postings_groups(&inputs, norms, state)
+    }
+
+    /// Whether the codec installs its own postings writer, which writes to
+    /// the directory and takes every field laid out whole.
+    fn has_installed_postings_writer(&self) -> bool {
+        self.codec
+            .as_deref()
+            .and_then(|c| c.postings_writer_factory())
+            .is_some()
     }
 
     /// Whether a flush sorts the buffered documents.
@@ -1002,12 +1006,7 @@ impl IndexingConfig {
                 },
             )?))
         };
-        let postings_beside = !postings_fields.is_empty()
-            && self
-                .codec
-                .as_deref()
-                .and_then(|c| c.postings_writer_factory())
-                .is_none();
+        let postings_beside = !postings_fields.is_empty() && !self.has_installed_postings_writer();
         let (doc_values_output, points_output, vectors_output, postings_output) =
             std::thread::scope(|scope| -> Result<_> {
                 let postings = postings_beside.then(|| scope.spawn(build_postings));
@@ -1043,6 +1042,9 @@ impl IndexingConfig {
                         &segment_id,
                     )?)
                 };
+                // Each role's values are freed once written, not held while
+                // the points, vectors and postings builds run.
+                drop(dv_role);
                 let point_configs: Vec<PointsFieldConfig> = self
                     .fields
                     .iter()
@@ -1067,6 +1069,7 @@ impl IndexingConfig {
                         segment_name,
                     )?
                 };
+                drop(points_role);
 
                 let vector_configs: Vec<super::VectorFieldConfig> = self
                     .fields
@@ -1105,7 +1108,6 @@ impl IndexingConfig {
                     postings_output,
                 ))
             })?;
-        drop((dv_role, points_role));
         let dv_suffix = |number: i32| {
             doc_values_output
                 .as_deref()
