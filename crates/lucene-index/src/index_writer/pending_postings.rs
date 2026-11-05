@@ -33,10 +33,53 @@ use super::explicit::{explicit_error, InvertedField};
 use super::Result;
 use crate::inverter::{hash_bytes, TermHash};
 
-/// Bytes per pool block: `ByteBlockPool.BYTE_BLOCK_SIZE`.
+/// Bytes per full pool block: `ByteBlockPool.BYTE_BLOCK_SIZE`. A field's
+/// first blocks are smaller (1, 2, 4, 8 and 16 KB), so a field with few
+/// terms does not hold a whole block: Lucene shares one pool across a
+/// buffer's fields, this port keeps one per field.
 const BLOCK_SHIFT: u32 = 15;
 const BLOCK_SIZE: usize = 1 << BLOCK_SHIFT;
 const BLOCK_MASK: u32 = (1 << BLOCK_SHIFT) - 1;
+const FIRST_SHIFT: u32 = 10;
+const SMALL_BLOCKS: usize = (BLOCK_SHIFT - FIRST_SHIFT) as usize;
+/// Bytes the small blocks span: `BLOCK_SIZE - 2^FIRST_SHIFT`.
+const SMALL_SPAN: u32 = (1 << BLOCK_SHIFT) - (1 << FIRST_SHIFT);
+
+/// Block `b`'s size.
+fn block_size(b: usize) -> usize {
+    if b < SMALL_BLOCKS {
+        1usize << (FIRST_SHIFT as usize).saturating_add(b)
+    } else {
+        BLOCK_SIZE
+    }
+}
+
+/// Block `b`'s first address.
+fn block_start(b: usize) -> usize {
+    if b < SMALL_BLOCKS {
+        ((1usize << b).saturating_sub(1)) << FIRST_SHIFT
+    } else {
+        (SMALL_SPAN as usize).saturating_add(b.saturating_sub(SMALL_BLOCKS) << BLOCK_SHIFT)
+    }
+}
+
+/// The block holding address `at`, and the offset in it.
+#[inline]
+fn locate(at: u32) -> (usize, usize) {
+    if at < SMALL_SPAN {
+        // block b spans [(2^b - 1) KB, (2^(b+1) - 1) KB)
+        let q = (at >> FIRST_SHIFT).wrapping_add(1);
+        let b = 31u32.wrapping_sub(q.leading_zeros());
+        let start = ((1u32 << b).wrapping_sub(1)) << FIRST_SHIFT;
+        (b as usize, at.wrapping_sub(start) as usize)
+    } else {
+        let rel = at.wrapping_sub(SMALL_SPAN);
+        (
+            SMALL_BLOCKS.wrapping_add((rel >> BLOCK_SHIFT) as usize),
+            (rel & BLOCK_MASK) as usize,
+        )
+    }
+}
 
 /// Bytes per slice at each level: `ByteSlicePool.LEVEL_SIZE_ARRAY`. A
 /// slice's last byte marks its end (`16 | level`) until the stream outgrows
@@ -79,27 +122,39 @@ struct SlicePos {
 impl BytePool {
     #[inline]
     fn byte(&self, at: u32) -> u8 {
-        self.blocks[(at >> BLOCK_SHIFT) as usize][(at & BLOCK_MASK) as usize]
+        let (b, o) = locate(at);
+        self.blocks[b][o]
     }
 
     #[inline]
-    fn set(&mut self, at: u32, b: u8) {
-        self.blocks[(at >> BLOCK_SHIFT) as usize][(at & BLOCK_MASK) as usize] = b;
+    fn set(&mut self, at: u32, v: u8) {
+        let (b, o) = locate(at);
+        self.blocks[b][o] = v;
     }
 
     fn ram_bytes(&self) -> usize {
-        self.blocks.len().saturating_mul(BLOCK_SIZE)
+        self.blocks
+            .iter()
+            .map(|b| b.len())
+            .fold(0, usize::saturating_add)
     }
 
-    /// Room for a slice of `size` bytes, zeroed, never across blocks.
+    /// Room for a slice of `size` bytes, zeroed, never across blocks. A
+    /// buffer flushes long before a field's pool nears 4 GB
+    /// (`HARD_MAX_BYTES_PER_SLOT`), so addresses fit a `u32`.
     fn alloc(&mut self, size: u32) -> u32 {
         let size = size as usize;
-        if self.blocks.is_empty() || self.used.saturating_add(size) > BLOCK_SIZE {
-            self.blocks.push(vec![0u8; BLOCK_SIZE].into_boxed_slice());
+        let full = self
+            .blocks
+            .last()
+            .is_none_or(|b| self.used.saturating_add(size) > b.len());
+        if full {
+            let len = block_size(self.blocks.len());
+            self.blocks.push(vec![0u8; len].into_boxed_slice());
             self.used = 0;
         }
         let block = self.blocks.len().saturating_sub(1);
-        let at = (block << BLOCK_SHIFT) | self.used;
+        let at = block_start(block).saturating_add(self.used);
         self.used = self.used.saturating_add(size);
         to_u32(at)
     }
@@ -190,8 +245,9 @@ impl BytePool {
     /// Starts loading the block bytes at `at`.
     #[inline]
     fn prefetch(&self, at: u32) {
-        if let Some(block) = self.blocks.get((at >> BLOCK_SHIFT) as usize) {
-            lucene_util::simd::prefetch(block, (at & BLOCK_MASK) as usize);
+        let (b, o) = locate(at);
+        if let Some(block) = self.blocks.get(b) {
+            lucene_util::simd::prefetch(block, o);
         }
     }
 }
@@ -1339,6 +1395,26 @@ mod tests {
         let empty = pool.new_slice();
         assert!(pool.reader(empty, empty).eof());
         assert!(pool.reader(NONE, NONE).eof());
+    }
+
+    /// Every address maps into the block that holds it, small blocks first.
+    #[test]
+    fn addresses_locate_their_blocks() {
+        let mut at = 0usize;
+        for b in 0..12 {
+            assert_eq!(block_start(b), at);
+            assert_eq!(locate(at as u32), (b, 0));
+            let end = at + block_size(b) - 1;
+            assert_eq!(locate(end as u32), (b, block_size(b) - 1));
+            at += block_size(b);
+        }
+        let mut p = PendingPostings::default();
+        add(&mut p, 0, 0, IndexOptions::Docs, vec![term("a", &[], &[])]);
+        assert!(
+            p.bytes() < 16 * 1024,
+            "a one-term field holds {}",
+            p.bytes()
+        );
     }
 
     /// A term's documents and occurrences cost bytes, not structs: a frequent

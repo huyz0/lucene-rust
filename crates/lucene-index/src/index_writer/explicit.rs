@@ -922,13 +922,8 @@ impl IndexingConfig {
                 .filter(|f| present.contains(&f.number))
                 .map(|f| f.name.as_str())
                 .collect();
-            let role = explicit.role(|f| &mut f.doc_values)?;
-            Some(self.build_doc_values_groups(
-                &role.per_doc(|f| &f.doc_values),
-                &dv_configs,
-                &names,
-                &segment_id,
-            )?)
+            let role = explicit.role(super::Role::DocValues)?;
+            Some(self.build_doc_values_groups(&role.per_doc(), &dv_configs, &names, &segment_id)?)
         };
         let dv_suffix = |number: i32| {
             doc_values_output
@@ -951,10 +946,10 @@ impl IndexingConfig {
         let points_output = if point_configs.is_empty() {
             None
         } else {
-            let role = explicit.role(|f| &mut f.points)?;
+            let role = explicit.role(super::Role::Points)?;
             IndexWriter::build_points_output(
                 self,
-                &role.per_doc(|f| &f.points),
+                &role.per_doc(),
                 &point_configs,
                 &segment_id,
                 dir,

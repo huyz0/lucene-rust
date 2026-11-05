@@ -1257,20 +1257,16 @@ impl ExplicitDocs<'_> {
         }
     }
 
-    /// One role's values per document, `pick` choosing the role: borrowed
-    /// from the structs, or taken out of packed documents one at a time into
-    /// one flat list.
-    pub(crate) fn role(
-        &self,
-        pick: fn(&mut ExplicitFields) -> &mut Vec<lucene_codecs::stored_fields::StoredField>,
-    ) -> Result<RoleValues<'_>> {
+    /// One role's values per document: borrowed from the structs, or taken
+    /// out of packed documents one at a time into one flat list.
+    pub(crate) fn role(&self, role: Role) -> Result<RoleValues<'_>> {
         match self {
-            ExplicitDocs::Fields(fields) => Ok(RoleValues::Borrowed(fields)),
+            ExplicitDocs::Fields(fields) => Ok(RoleValues::Borrowed(fields, role)),
             ExplicitDocs::Packed(p) => {
                 let mut values = Vec::new();
                 let mut ends = Vec::with_capacity(p.len());
                 p.for_each(|_, d| {
-                    values.append(pick(d));
+                    values.append(role.values_mut(d));
                     ends.push(values.len());
                     Ok(())
                 })?;
@@ -1280,9 +1276,35 @@ impl ExplicitDocs<'_> {
     }
 }
 
+/// Which per-document values [`ExplicitDocs::role`] reads.
+#[derive(Clone, Copy)]
+pub(crate) enum Role {
+    DocValues,
+    Points,
+}
+
+impl Role {
+    fn values(self, f: &ExplicitFields) -> &[lucene_codecs::stored_fields::StoredField] {
+        match self {
+            Role::DocValues => &f.doc_values,
+            Role::Points => &f.points,
+        }
+    }
+
+    fn values_mut(
+        self,
+        f: &mut ExplicitFields,
+    ) -> &mut Vec<lucene_codecs::stored_fields::StoredField> {
+        match self {
+            Role::DocValues => &mut f.doc_values,
+            Role::Points => &mut f.points,
+        }
+    }
+}
+
 /// One role's values per document: see [`ExplicitDocs::role`].
 pub(crate) enum RoleValues<'b> {
-    Borrowed(&'b [ExplicitFields]),
+    Borrowed(&'b [ExplicitFields], Role),
     Flat {
         values: Vec<lucene_codecs::stored_fields::StoredField>,
         /// Per document, where its values end.
@@ -1291,13 +1313,10 @@ pub(crate) enum RoleValues<'b> {
 }
 
 impl RoleValues<'_> {
-    /// Each document's values; `pick` names the role for borrowed fields.
-    pub(crate) fn per_doc(
-        &self,
-        pick: fn(&ExplicitFields) -> &[lucene_codecs::stored_fields::StoredField],
-    ) -> Vec<&[lucene_codecs::stored_fields::StoredField]> {
+    /// Each document's values.
+    pub(crate) fn per_doc(&self) -> Vec<&[lucene_codecs::stored_fields::StoredField]> {
         match self {
-            RoleValues::Borrowed(fields) => fields.iter().map(pick).collect(),
+            RoleValues::Borrowed(fields, role) => fields.iter().map(|f| role.values(f)).collect(),
             RoleValues::Flat { values, ends } => {
                 let mut from = 0;
                 ends.iter()
