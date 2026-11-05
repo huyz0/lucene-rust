@@ -1225,7 +1225,7 @@ pub extern "C" fn ffi_engine_writer_set_merge_policy(
             .ok()
             .filter(|&n| n >= 2)
             .ok_or_else(|| invalid("max_merge_at_once < 2"))?;
-        if !(segments_per_tier >= 2.0) {
+        if segments_per_tier.is_nan() || segments_per_tier < 2.0 {
             return Err(invalid("segments_per_tier < 2"));
         }
         let max_merged_segment_size = u64::try_from(max_merged_segment_bytes)
@@ -1643,6 +1643,69 @@ mod tests {
         assert_eq!(stats(h)[STAT_SEGMENTS], 1);
         ffi_engine_writer_close(h);
         check(&tmp);
+    }
+
+    /// A buffered document is charged for its postings, its compressed
+    /// stored values and its packed fields, not for the structs it arrived
+    /// in (about 750 bytes each for this shape before they were packed).
+    #[test]
+    fn a_buffered_document_charges_its_packed_size() {
+        let tmp = empty_index("engine-writer-ram-per-doc");
+        let h = open(&tmp, 0);
+        let f = setup(h);
+        let vocab: Vec<String> = (0..20000).map(|i| format!("t{i:x}")).collect();
+        let mut x: u64 = 7;
+        let n = 20000;
+        let source = "x".repeat(400);
+        for d in 0..n {
+            let mut words = Vec::new();
+            for _ in 0..70 {
+                x = x
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                let r = (x >> 33) as f64 / (1u64 << 31) as f64;
+                words.push(vocab[((r * r * r) * 20000.0) as usize].as_str());
+            }
+            let id = format!("{d}");
+            let b = Blob::default()
+                .u8(OP_ADD)
+                .i32(1)
+                .i32(1)
+                .i32(f.id)
+                .u8(1)
+                .bytes(source.as_bytes())
+                .i32(2)
+                .i32(f.id)
+                .u8(0)
+                .i32(1)
+                .bytes(id.as_bytes())
+                .i32(1)
+                .u8(0);
+            let mut terms: std::collections::BTreeMap<&str, Vec<i32>> = Default::default();
+            for (p, w) in words.iter().enumerate() {
+                terms.entry(w).or_default().push(p as i32);
+            }
+            let mut b = b
+                .i32(f.body)
+                .u8(1)
+                .i64(words.len() as i64)
+                .i32(terms.len() as i32);
+            for (w, ps) in &terms {
+                b = b.bytes(w.as_bytes()).i32(ps.len() as i32).u8(3);
+                for &p in ps {
+                    b = b.i32(p);
+                }
+                for &p in ps {
+                    b = b.i32(p * 4).i32(p * 4 + 3);
+                }
+            }
+            let b = b.i32(1).i32(f.seq).u8(0).i64(d).i32(0);
+            assert_eq!(apply(h, &b.0), 0, "{}", crate::error::last_error());
+        }
+        let s = stats(h);
+        let per_doc = s[STAT_RAM_BYTES] / n;
+        assert!(per_doc < 400, "{per_doc} bytes per document");
+        ffi_engine_writer_close(h);
     }
 
     /// The engine keeps the commits it has always written: merge-on-commit

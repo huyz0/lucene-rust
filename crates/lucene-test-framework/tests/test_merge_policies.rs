@@ -150,7 +150,7 @@ mod tiered {
                 c.deletes_pct_allowed
             );
 
-            let segs_per_tier = c.segments_per_tier as f64;
+            let segs_per_tier = c.segments_per_tier;
             let tsc = c.target_search_concurrency;
             let mut level_size_bytes = min_segment_bytes.max(c.floor_segment_size as i64);
             let mut bytes_left = total_bytes;

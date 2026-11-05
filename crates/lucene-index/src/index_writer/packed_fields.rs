@@ -284,7 +284,7 @@ fn zigzag(v: i64) -> u64 {
 }
 
 fn unzigzag(v: u64) -> i64 {
-    ((v >> 1) as i64) ^ -((v & 1) as i64)
+    ((v >> 1) as i64) ^ (v & 1).wrapping_neg() as i64
 }
 
 fn write_len(out: &mut Vec<u8>, n: usize) {
@@ -345,6 +345,10 @@ impl<'a> Reader<'a> {
 
 #[cfg(test)]
 mod tests {
+    // The arithmetic gate is about values read off disk; a test's `i - 3` is
+    // not one. See docs/arithmetic-gate.md.
+    #![allow(clippy::arithmetic_side_effects)]
+
     use super::*;
     use lucene_codecs::term_vectors::TermVectorField;
 

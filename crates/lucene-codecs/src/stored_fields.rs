@@ -1456,11 +1456,13 @@ impl StoredFieldsWriter {
     /// accounts in `ramBytesUsed`, with the `.fdt` in memory instead of on
     /// disk.
     pub fn ram_bytes(&self) -> usize {
-        let longs = (self.docs_values.capacity()
-            + self.start_pointers_values.capacity()
-            + self.lengths.capacity()
-            + self.num_stored_fields.capacity())
-        .saturating_mul(8);
+        let longs = self
+            .docs_values
+            .capacity()
+            .saturating_add(self.start_pointers_values.capacity())
+            .saturating_add(self.lengths.capacity())
+            .saturating_add(self.num_stored_fields.capacity())
+            .saturating_mul(8);
         self.fdt
             .capacity()
             .saturating_add(self.chunk_buf.capacity())
