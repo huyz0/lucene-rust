@@ -1363,22 +1363,14 @@ impl<'d> ConcurrentIndexWriter<'d> {
             }
             old_to_new
         });
-        let postings = if explicit_docs {
-            // A buffer live search still reads is laid out without freeing it.
-            Some(match Arc::try_unwrap(postings) {
-                Ok(p) => p.into_flushed(old_to_new.as_deref())?,
-                Err(p) => p.flushed(old_to_new.as_deref())?,
-            })
-        } else {
-            None
-        };
+        let postings = explicit_docs.then_some(&*postings);
         let stored = stored.map(|s| s.finish(&ticket.segment_id));
         let buffer = DocumentBuffer {
             docs: &docs,
             custom_freq_terms: &custom_freq_terms,
             vectors: &vectors,
             explicit,
-            postings: postings.as_ref(),
+            postings,
             old_to_new: old_to_new.as_deref(),
             has_blocks,
             stored: stored.as_ref(),

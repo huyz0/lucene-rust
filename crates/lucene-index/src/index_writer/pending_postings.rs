@@ -213,19 +213,32 @@ impl BytePool {
     /// The stream from `start` to `end` (its write position).
     fn reader(&self, start: u32, end: u32) -> SliceReader<'_> {
         let first = level_size(0);
-        let limit = if start == NONE || start.saturating_add(first) >= end {
-            end
+        let (upto, limit) = if start == NONE {
+            (end, end)
+        } else if start.saturating_add(first) >= end {
+            (start, end)
         } else {
-            start.wrapping_add(first).wrapping_sub(4)
+            (start, start.wrapping_add(first).wrapping_sub(4))
         };
         SliceReader {
             pool: self,
-            upto: if start == NONE { end } else { start },
+            cur: self.span(upto, limit),
             limit,
             end,
             level: 0,
             slice_start: start,
         }
+    }
+
+    /// The bytes `[from, to)`, which never cross a block: one slice's.
+    #[inline]
+    fn span(&self, from: u32, to: u32) -> &[u8] {
+        if from >= to {
+            return &[];
+        }
+        let (b, o) = locate(from);
+        let len = to.wrapping_sub(from) as usize;
+        &self.blocks[b][o..o.saturating_add(len)]
     }
 
     /// Cuts a stream back to `pos`: the rest of its slice is cleared and
@@ -258,7 +271,8 @@ impl BytePool {
 /// `ByteSliceReader`: a stream's bytes in order, following its links.
 struct SliceReader<'a> {
     pool: &'a BytePool,
-    upto: u32,
+    /// The current slice's bytes still to read, up to `limit`.
+    cur: &'a [u8],
     /// Where this slice's bytes stop: the link, or the stream's end.
     limit: u32,
     end: u32,
@@ -267,13 +281,17 @@ struct SliceReader<'a> {
 }
 
 impl SliceReader<'_> {
+    fn upto(&self) -> u32 {
+        self.limit.wrapping_sub(self.cur.len() as u32)
+    }
+
     fn eof(&self) -> bool {
-        self.upto == self.end
+        self.cur.is_empty() && self.limit == self.end
     }
 
     fn pos(&self) -> SlicePos {
         SlicePos {
-            upto: self.upto,
+            upto: self.upto(),
             slice_start: self.slice_start,
             level: self.level,
         }
@@ -281,34 +299,52 @@ impl SliceReader<'_> {
 
     #[inline]
     fn read_byte(&mut self) -> u8 {
-        if self.upto == self.limit {
+        if self.cur.is_empty() {
             self.next_slice();
         }
-        let b = self.pool.byte(self.upto);
-        self.upto = self.upto.wrapping_add(1);
-        b
+        match self.cur.split_first() {
+            Some((&b, rest)) => {
+                self.cur = rest;
+                b
+            }
+            None => 0,
+        }
     }
 
     #[cold]
     fn next_slice(&mut self) {
         let mut link = [0u8; 4];
-        for (i, b) in link.iter_mut().enumerate() {
-            *b = self.pool.byte(self.limit.wrapping_add(i as u32));
-        }
+        link.copy_from_slice(
+            self.pool
+                .span(self.limit, self.limit.wrapping_add(4))
+                .get(..4)
+                .unwrap_or(&[0; 4]),
+        );
         let next = u32::from_le_bytes(link);
         self.level = next_level(self.level);
         let size = level_size(self.level);
         self.slice_start = next;
-        self.upto = next;
         self.limit = if next.saturating_add(size) >= self.end {
             self.end
         } else {
             next.wrapping_add(size).wrapping_sub(4)
         };
+        self.cur = self.pool.span(next, self.limit);
     }
 
+    /// A vLong; read in place when the slice holds the longest one.
     #[inline]
     fn read_vlong(&mut self) -> u64 {
+        if let Some(head) = self.cur.get(..10) {
+            let mut v = 0u64;
+            for (i, &b) in head.iter().enumerate() {
+                v |= u64::from(b & 0x7f) << 7u32.wrapping_mul(i as u32);
+                if b < 0x80 {
+                    self.cur = self.cur.get(i.wrapping_add(1)..).unwrap_or_default();
+                    return v;
+                }
+            }
+        }
         let mut v = 0u64;
         let mut shift = 0u32;
         loop {
@@ -411,6 +447,12 @@ const PREFETCH_TERMS: usize = 8;
 /// starts loading a term's run and starts, and (half as far) its bytes and
 /// streams.
 const LAYOUT_PREFETCH: usize = 16;
+
+/// A streamed flush hands the writer a batch once it holds this many terms,
+/// or [`STREAM_ENTRIES`] documents or positions: small enough to stay in
+/// cache, large enough that a batch's fixed cost does not show.
+const STREAM_TERMS: usize = 1024;
+const STREAM_ENTRIES: usize = 1 << 15;
 
 /// One occurrence's decoded parts.
 #[derive(Debug, Clone, Copy, Default)]
@@ -847,7 +889,6 @@ impl FieldRuns {
         let mut out = FlushedField {
             number,
             doc_count: self.doc_count,
-            payloads: self.payloads,
             term_bytes: Vec::with_capacity(term_bytes),
             terms: Vec::with_capacity(ids.len()),
             cols: Columns {
@@ -864,23 +905,68 @@ impl FieldRuns {
         // loading a term's run and stream starts a few terms ahead, and its
         // bytes and streams' first bytes once those are in cache.
         for (i, &id) in ids.iter().enumerate() {
-            if let Some(&ahead) = ids.get(i.saturating_add(LAYOUT_PREFETCH)) {
-                lucene_util::simd::prefetch(&self.runs, ahead as usize);
-                lucene_util::simd::prefetch(&self.starts, ahead as usize);
-                self.terms.prefetch_start(ahead);
-            }
-            if let Some(&near) = ids.get(i.saturating_add(LAYOUT_PREFETCH / 2)) {
-                self.terms.prefetch_term(near);
-                if let Some(&[docs, prox]) = self.starts.get(near as usize) {
-                    self.pool.prefetch(docs);
-                    if self.positions {
-                        self.pool.prefetch(prox);
-                    }
-                }
-            }
+            self.prefetch_layout(&ids, i);
             self.lay_out(id, old_to_new, &mut scratch, &mut out)?;
         }
         Ok(out)
+    }
+
+    /// The field's terms in byte order, laid out a batch at a time into one
+    /// reused [`FlushedField`] and handed to `write` as views: the flush
+    /// never holds the whole field decoded.
+    fn stream(
+        &self,
+        old_to_new: Option<&[usize]>,
+        write: &mut dyn FnMut(&[TermView<'_>]) -> Result<()>,
+    ) -> Result<()> {
+        let ids: Vec<u32> = self
+            .terms
+            .sorted_ids()
+            .into_iter()
+            .filter(|&id| self.runs[id as usize].doc_count > 0)
+            .collect();
+        let mut out = FlushedField {
+            number: 0,
+            doc_count: self.doc_count,
+            term_bytes: Vec::new(),
+            terms: Vec::new(),
+            cols: Columns::default(),
+        };
+        let mut scratch = Scratch::default();
+        for (i, &id) in ids.iter().enumerate() {
+            self.prefetch_layout(&ids, i);
+            self.lay_out(id, old_to_new, &mut scratch, &mut out)?;
+            if out.terms.len() >= STREAM_TERMS
+                || out.cols.docs.len().max(out.cols.positions.len()) >= STREAM_ENTRIES
+            {
+                write(&out.views())?;
+                out.clear();
+            }
+        }
+        if !out.terms.is_empty() {
+            write(&out.views())?;
+        }
+        Ok(())
+    }
+
+    /// Starts loading what laying out `ids[i]`'s successors reads: see
+    /// [`Self::flushed`].
+    #[inline]
+    fn prefetch_layout(&self, ids: &[u32], i: usize) {
+        if let Some(&ahead) = ids.get(i.saturating_add(LAYOUT_PREFETCH)) {
+            lucene_util::simd::prefetch(&self.runs, ahead as usize);
+            lucene_util::simd::prefetch(&self.starts, ahead as usize);
+            self.terms.prefetch_start(ahead);
+        }
+        if let Some(&near) = ids.get(i.saturating_add(LAYOUT_PREFETCH / 2)) {
+            self.terms.prefetch_term(near);
+            if let Some(&[docs, prox]) = self.starts.get(near as usize) {
+                self.pool.prefetch(docs);
+                if self.positions {
+                    self.pool.prefetch(prox);
+                }
+            }
+        }
     }
 
     /// `document`'s occurrences of `id`, as [`InvertedField`] holds them:
@@ -1128,6 +1214,33 @@ impl PendingPostings {
             .map(|(&n, _)| n)
     }
 
+    /// The fields a flush writes postings for, field ascending.
+    pub(crate) fn fields_to_flush(&self) -> Vec<FieldToFlush> {
+        self.fields
+            .iter()
+            .filter(|(_, f)| f.doc_count > 0)
+            .map(|(&number, f)| FieldToFlush {
+                number,
+                doc_count: f.doc_count,
+                payloads: f.payloads,
+            })
+            .collect()
+    }
+
+    /// Field `number`'s postings handed to `write` in term order, a batch
+    /// at a time, renumbered by `old_to_new` as [`Self::flushed`] does.
+    pub(crate) fn stream_field(
+        &self,
+        number: i32,
+        old_to_new: Option<&[usize]>,
+        write: &mut dyn FnMut(&[TermView<'_>]) -> Result<()>,
+    ) -> Result<()> {
+        match self.fields.get(&number) {
+            Some(f) if f.doc_count > 0 => f.stream(old_to_new, write),
+            _ => Ok(()),
+        }
+    }
+
     /// Every field's postings laid out for the postings writer, documents
     /// renumbered by `old_to_new` (buffered doc id to sorted) under an index
     /// sort. The buffer is left as it was.
@@ -1137,17 +1250,6 @@ impl PendingPostings {
             .iter()
             .filter(|(_, f)| f.doc_count > 0)
             .map(|(&n, f)| f.flushed(n, old_to_new))
-            .collect::<Result<_>>()?;
-        Ok(FlushedPostings { fields })
-    }
-
-    /// [`Self::flushed`], freeing each field's buffer once it is laid out.
-    pub(crate) fn into_flushed(self, old_to_new: Option<&[usize]>) -> Result<FlushedPostings> {
-        let fields = self
-            .fields
-            .into_iter()
-            .filter(|(_, f)| f.doc_count > 0)
-            .map(|(n, f)| f.flushed(n, old_to_new))
             .collect::<Result<_>>()?;
         Ok(FlushedPostings { fields })
     }
@@ -1176,6 +1278,16 @@ impl PendingPostings {
     }
 }
 
+/// A field with buffered postings: [`PendingPostings::fields_to_flush`].
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct FieldToFlush {
+    pub(crate) number: i32,
+    /// `docsSeen`.
+    pub(crate) doc_count: i32,
+    /// `storePayloads`.
+    pub(crate) payloads: bool,
+}
+
 /// One term's place in a [`FlushedField`]'s columns.
 #[derive(Debug, Clone, Copy)]
 struct TermSpan {
@@ -1195,10 +1307,43 @@ struct TermSpan {
 struct FlushedField {
     number: i32,
     doc_count: i32,
-    payloads: bool,
     term_bytes: Vec<u8>,
     terms: Vec<TermSpan>,
     cols: Columns,
+}
+
+impl FlushedField {
+    /// Every term's postings as the writer reads them, in place.
+    fn views(&self) -> Vec<TermView<'_>> {
+        let mut term_start = 0usize;
+        self.terms
+            .iter()
+            .map(|s| {
+                let range = |(a, b): (u32, u32)| a as usize..b as usize;
+                let term = &self.term_bytes[term_start..s.term_end as usize];
+                term_start = s.term_end as usize;
+                let docs = range(s.docs);
+                let positions = range(s.positions);
+                let c = &self.cols;
+                TermView {
+                    term,
+                    docs: &c.docs[docs.clone()],
+                    ends: c.ends.get(docs).unwrap_or_default(),
+                    positions: &c.positions[positions.clone()],
+                    offsets: c.offsets.get(positions).unwrap_or_default(),
+                    payload_lengths: &c.payload_lengths[range(s.payload_lengths)],
+                    payload_bytes: &c.payload_bytes[range(s.payload_bytes)],
+                }
+            })
+            .collect()
+    }
+
+    /// Empties the field, keeping its capacity.
+    fn clear(&mut self) {
+        self.term_bytes.clear();
+        self.terms.clear();
+        self.cols.clear();
+    }
 }
 
 /// The buffered postings laid out for a flush: [`PendingPostings::flushed`].
@@ -1208,65 +1353,13 @@ pub(crate) struct FlushedPostings {
 }
 
 impl FlushedPostings {
-    /// The fields that store payloads.
-    pub(crate) fn payload_fields(&self) -> impl Iterator<Item = i32> + '_ {
-        self.fields.iter().filter(|f| f.payloads).map(|f| f.number)
-    }
-
     /// Every field's postings as the writer takes them, `(field, docCount,
     /// terms in byte order)`, field ascending.
     pub(crate) fn term_lists(&self) -> Vec<(i32, i32, Vec<TermView<'_>>)> {
         self.fields
             .iter()
-            .map(|f| {
-                let mut term_start = 0usize;
-                let terms = f
-                    .terms
-                    .iter()
-                    .map(|s| {
-                        let range = |(a, b): (u32, u32)| a as usize..b as usize;
-                        let term = &f.term_bytes[term_start..s.term_end as usize];
-                        term_start = s.term_end as usize;
-                        let docs = range(s.docs);
-                        let positions = range(s.positions);
-                        let c = &f.cols;
-                        TermView {
-                            term,
-                            docs: &c.docs[docs.clone()],
-                            ends: c.ends.get(docs).unwrap_or_default(),
-                            positions: &c.positions[positions.clone()],
-                            offsets: c.offsets.get(positions).unwrap_or_default(),
-                            payload_lengths: &c.payload_lengths[range(s.payload_lengths)],
-                            payload_bytes: &c.payload_bytes[range(s.payload_bytes)],
-                        }
-                    })
-                    .collect();
-                (f.number, f.doc_count, terms)
-            })
+            .map(|f| (f.number, f.doc_count, f.views()))
             .collect()
-    }
-
-    /// Heap bytes held.
-    pub(crate) fn ram_bytes(&self) -> usize {
-        self.fields
-            .iter()
-            .map(|f| {
-                [
-                    f.term_bytes.capacity(),
-                    f.terms
-                        .capacity()
-                        .saturating_mul(std::mem::size_of::<TermSpan>()),
-                    f.cols.docs.capacity().saturating_mul(8),
-                    f.cols.ends.capacity().saturating_mul(4),
-                    f.cols.positions.capacity().saturating_mul(4),
-                    f.cols.offsets.capacity().saturating_mul(8),
-                    f.cols.payload_lengths.capacity().saturating_mul(4),
-                    f.cols.payload_bytes.capacity(),
-                ]
-                .into_iter()
-                .fold(0, usize::saturating_add)
-            })
-            .fold(0, usize::saturating_add)
     }
 }
 

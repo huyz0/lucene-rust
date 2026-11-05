@@ -2860,4 +2860,235 @@ mod tests {
         assert_eq!(crate::jvm_reader::ffi_close_jvm_reader(reader), 0);
         assert_eq!(crate::jvm_reader::ffi_close_jvm_reader(all), 0);
     }
+
+    /// The 1M OpenSearch bench's documents (`bench_nodes.py gen`), mapped as
+    /// OpenSearch maps them, buffered by four threads, then one refresh
+    /// timed. `FLUSH_DOCS` sets how many (default 500 000).
+    #[test]
+    #[ignore = "timing; run with --release --ignored --nocapture"]
+    fn refresh_of_the_bench_corpus_timing() {
+        fn spec(name: &str, io: u8, omit_norms: u8, dv: u8, dims: i32, bytes: i32) -> Vec<u8> {
+            Blob::default()
+                .bytes(name.as_bytes())
+                .u8(io)
+                .u8(omit_norms)
+                .u8(0)
+                .u8(0)
+                .u8(dv)
+                .u8(0)
+                .i32(dims)
+                .i32(dims)
+                .i32(bytes)
+                .i32(0)
+                .u8(0)
+                .i32(0)
+                .0
+        }
+        fn b36(mut n: usize) -> String {
+            let d = b"0123456789abcdefghijklmnopqrstuvwxyz";
+            let mut s = Vec::new();
+            loop {
+                s.push(d[n % 36]);
+                n /= 36;
+                if n == 0 {
+                    break;
+                }
+            }
+            s.reverse();
+            String::from_utf8(s).unwrap()
+        }
+        fn zipf_cum(n: usize) -> Vec<f64> {
+            let mut acc = 0.0;
+            (1..=n)
+                .map(|r| {
+                    acc += 1.0 / (r as f64).powf(1.07);
+                    acc
+                })
+                .collect()
+        }
+        struct Rng(u64);
+        impl Rng {
+            fn next(&mut self) -> u64 {
+                self.0 ^= self.0 << 13;
+                self.0 ^= self.0 >> 7;
+                self.0 ^= self.0 << 17;
+                self.0
+            }
+            fn unit(&mut self) -> f64 {
+                (self.next() >> 11) as f64 / (1u64 << 53) as f64
+            }
+            fn pick(&mut self, cum: &[f64]) -> usize {
+                let x = self.unit() * cum[cum.len() - 1];
+                cum.partition_point(|&c| c < x).min(cum.len() - 1)
+            }
+            fn range(&mut self, lo: u64, hi: u64) -> u64 {
+                lo + self.next() % (hi - lo)
+            }
+        }
+        fn text(b: Blob, field: i32, words: &[&str]) -> Blob {
+            let mut terms: std::collections::BTreeMap<&str, Vec<i32>> = Default::default();
+            for (p, w) in words.iter().enumerate() {
+                terms.entry(w).or_default().push(p as i32);
+            }
+            let mut b = b
+                .i32(field)
+                .u8(1)
+                .i64(words.len() as i64)
+                .i32(terms.len() as i32);
+            for (w, ps) in &terms {
+                b = b.bytes(w.as_bytes()).i32(ps.len() as i32).u8(1);
+                for &p in ps {
+                    b = b.i32(p);
+                }
+            }
+            b
+        }
+        fn keyword(b: Blob, field: i32, v: &str) -> Blob {
+            b.i32(field).u8(0).i32(1).bytes(v.as_bytes()).i32(1).u8(0)
+        }
+        fn point(v: i64) -> [u8; 8] {
+            ((v as u64) ^ (1 << 63)).to_be_bytes()
+        }
+
+        let docs: usize = std::env::var("FLUSH_DOCS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(500_000);
+        let tmp = TempDir::new("refresh-timing");
+        let h = open_with(&tmp, 4096.0, 0, i32::MAX);
+        let id = register(h, &spec("_id", 1, 1, 0, 0, 0)).unwrap();
+        let source = register(h, &spec("_source", 0, 1, 0, 0, 0)).unwrap();
+        let body = register(h, &spec("body", 3, 0, 0, 0, 0)).unwrap();
+        let title = register(h, &spec("title", 3, 0, 0, 0, 0)).unwrap();
+        let tag = register(h, &spec("tag", 1, 1, 4, 0, 0)).unwrap();
+        let category = register(h, &spec("category", 1, 1, 4, 0, 0)).unwrap();
+        let num = register(h, &spec("num", 0, 1, 5, 1, 8)).unwrap();
+        let price = register(h, &spec("price", 0, 1, 5, 1, 8)).unwrap();
+        let ts = register(h, &spec("ts", 0, 1, 5, 1, 8)).unwrap();
+        let seq = register(h, &spec("_seq_no", 0, 1, 1, 1, 8)).unwrap();
+        let term = register(h, &spec("_primary_term", 0, 1, 1, 0, 0)).unwrap();
+        let version = register(h, &spec("_version", 0, 1, 1, 0, 0)).unwrap();
+        let words: Vec<String> = (0..200_000).map(|i| format!("t{}", b36(i))).collect();
+        let cum = zipf_cum(words.len());
+        let tag_cum = zipf_cum(1000);
+        let threads = 4;
+        let start = std::time::Instant::now();
+        std::thread::scope(|s| {
+            for t in 0..threads {
+                let (words, cum, tag_cum) = (&words, &cum, &tag_cum);
+                s.spawn(move || {
+                    let mut rng = Rng(0x9e37_79b9_7f4a_7c15 ^ (t as u64 + 1));
+                    for i in (t..docs).step_by(threads) {
+                        let body_words: Vec<&str> = (0..rng.range(20, 121))
+                            .map(|_| words[rng.pick(cum)].as_str())
+                            .collect();
+                        let title_words: Vec<&str> = (0..rng.range(2, 9))
+                            .map(|_| words[rng.pick(cum)].as_str())
+                            .collect();
+                        let tag_v = format!("g{}", b36(rng.pick(tag_cum)));
+                        let cat_v = format!("c{}", rng.range(0, 50));
+                        let (n, p, when) = (
+                            rng.range(0, 1_000_000) as i64,
+                            rng.unit() * 1000.0,
+                            1_700_000_000_000 + rng.range(0, 365 * 24 * 60) as i64 * 60_000,
+                        );
+                        let id_v = i.to_string();
+                        let src = format!(
+                            r#"{{"body":"{}","title":"{}","tag":"{tag_v}","category":"{cat_v}","num":{n},"price":{p:.2},"ts":{when}}}"#,
+                            body_words.join(" "),
+                            title_words.join(" ")
+                        );
+                        let b = Blob::default()
+                            .u8(OP_ADD)
+                            .i32(1)
+                            .i32(2)
+                            .i32(id)
+                            .u8(1)
+                            .bytes(id_v.as_bytes())
+                            .i32(source)
+                            .u8(1)
+                            .bytes(src.as_bytes())
+                            .i32(5);
+                        let b = keyword(b, id, &id_v);
+                        let b = text(b, body, &body_words);
+                        let b = text(b, title, &title_words);
+                        let b = keyword(b, tag, &tag_v);
+                        let b = keyword(b, category, &cat_v);
+                        let pd = (p * 100.0).round() as i64;
+                        let b = b
+                            .i32(8)
+                            .i32(tag)
+                            .u8(1)
+                            .bytes(tag_v.as_bytes())
+                            .i32(category)
+                            .u8(1)
+                            .bytes(cat_v.as_bytes())
+                            .i32(num)
+                            .u8(0)
+                            .i64(n)
+                            .i32(price)
+                            .u8(0)
+                            .i64(pd)
+                            .i32(ts)
+                            .u8(0)
+                            .i64(when)
+                            .i32(seq)
+                            .u8(0)
+                            .i64(i as i64)
+                            .i32(term)
+                            .u8(0)
+                            .i64(1)
+                            .i32(version)
+                            .u8(0)
+                            .i64(1)
+                            .i32(4)
+                            .i32(num)
+                            .bytes(&point(n))
+                            .i32(price)
+                            .bytes(&point(pd))
+                            .i32(ts)
+                            .bytes(&point(when))
+                            .i32(seq)
+                            .bytes(&point(i as i64));
+                        assert_eq!(apply(h, &b.0), 0, "{}", crate::error::last_error());
+                    }
+                });
+            }
+        });
+        let buffered = start.elapsed();
+        let s = stats(h);
+        fn cpu_ticks() -> u64 {
+            let stat = std::fs::read_to_string("/proc/self/stat").unwrap_or_default();
+            let fields: Vec<&str> = stat
+                .rsplit(')')
+                .next()
+                .unwrap_or("")
+                .split_whitespace()
+                .collect();
+            fields
+                .get(11..13)
+                .map_or(0, |f| f.iter().map(|v| v.parse::<u64>().unwrap_or(0)).sum())
+        }
+        let cpu = cpu_ticks();
+        let refresh = std::time::Instant::now();
+        commit(h, &[]);
+        let took = refresh.elapsed();
+        let cpu = cpu_ticks() - cpu;
+        let after = stats(h);
+        eprintln!(
+            "docs {docs}: buffered in {buffered:?}, {} MB charged; refresh {took:?} ({} cpu ticks), {} segments",
+            s[STAT_RAM_BYTES] >> 20,
+            cpu,
+            after[STAT_SEGMENTS]
+        );
+        let mut fdt: Vec<u64> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".fdt"))
+            .map(|e| e.metadata().unwrap().len() >> 20)
+            .collect();
+        fdt.sort_unstable();
+        eprintln!("stored MB per segment: {fdt:?}");
+        ffi_engine_writer_close(h);
+    }
 }

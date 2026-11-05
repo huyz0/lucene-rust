@@ -1205,15 +1205,15 @@ pub(crate) struct DocumentBuffer<'b> {
     /// Aligned with `docs` when the writer takes explicit documents; read only
     /// then.
     pub(crate) explicit: ExplicitDocs<'b>,
-    /// The explicit documents' postings, inverted as they were buffered and
-    /// laid out in the flush's doc order; their `InvertedField`s then hold
-    /// no terms. `None` for a buffer whose `explicit` still carries every
-    /// term.
-    pub(crate) postings: Option<&'b pending_postings::FlushedPostings>,
+    /// The explicit documents' postings, inverted as they were buffered, in
+    /// insertion-order doc ids (the flush renumbers them by `old_to_new`);
+    /// their `InvertedField`s then hold no terms. `None` for a buffer whose
+    /// `explicit` still carries every term.
+    pub(crate) postings: Option<&'b pending_postings::PendingPostings>,
     /// Under an index sort, the flush's permutation: `old_to_new[d]` is
     /// where buffered document `d` lands -- what the insertion-order doc
-    /// ids of terms still in `explicit` are remapped by. `explicit` is
-    /// already permuted.
+    /// ids of `postings`, or of terms still in `explicit`, are remapped by.
+    /// `explicit` is already permuted.
     pub(crate) old_to_new: Option<&'b [usize]>,
     pub(crate) has_blocks: bool,
     /// The stored fields, already compressed as the documents arrived; the
@@ -1261,26 +1261,42 @@ impl ExplicitDocs<'_> {
         }
     }
 
-    /// One role's values per document: borrowed from the structs, or taken
-    /// out of packed documents one at a time into one flat list.
-    pub(crate) fn role(&self, role: Role) -> Result<RoleValues<'_>> {
+    /// [`Self::for_each`], gathering each document's doc values and points
+    /// on the way: borrowed from the structs, or taken out of packed
+    /// documents into one flat list per role, so the packed documents are
+    /// read once.
+    pub(crate) fn for_each_with_roles(
+        &self,
+        mut f: impl FnMut(usize, &ExplicitFields) -> Result<()>,
+    ) -> Result<[RoleValues<'_>; 2]> {
         match self {
-            ExplicitDocs::Fields(fields) => Ok(RoleValues::Borrowed(fields, role)),
+            ExplicitDocs::Fields(fields) => {
+                fields.iter().enumerate().try_for_each(|(i, d)| f(i, d))?;
+                Ok([
+                    RoleValues::Borrowed(fields, Role::DocValues),
+                    RoleValues::Borrowed(fields, Role::Points),
+                ])
+            }
             ExplicitDocs::Packed(p) => {
-                let mut values = Vec::new();
-                let mut ends = Vec::with_capacity(p.len());
-                p.for_each(|_, d| {
-                    values.append(role.values_mut(d));
-                    ends.push(values.len());
+                let mut roles = [Role::DocValues, Role::Points]
+                    .map(|_| (Vec::new(), Vec::with_capacity(p.len())));
+                p.for_each(|i, d| {
+                    f(i, d)?;
+                    for ((values, ends), role) in
+                        roles.iter_mut().zip([Role::DocValues, Role::Points])
+                    {
+                        values.append(role.values_mut(d));
+                        ends.push(values.len());
+                    }
                     Ok(())
                 })?;
-                Ok(RoleValues::Flat { values, ends })
+                Ok(roles.map(|(values, ends)| RoleValues::Flat { values, ends }))
             }
         }
     }
 }
 
-/// Which per-document values [`ExplicitDocs::role`] reads.
+/// Which per-document values a [`RoleValues`] holds.
 #[derive(Clone, Copy)]
 pub(crate) enum Role {
     DocValues,
@@ -1306,7 +1322,7 @@ impl Role {
     }
 }
 
-/// One role's values per document: see [`ExplicitDocs::role`].
+/// One role's values per document: see [`ExplicitDocs::for_each_with_roles`].
 pub(crate) enum RoleValues<'b> {
     Borrowed(&'b [ExplicitFields], Role),
     Flat {
@@ -1352,10 +1368,7 @@ impl DocumentBuffer<'_> {
             .iter()
             .map(document_ram_bytes)
             .chain(std::iter::once(self.explicit.ram_bytes()))
-            .chain(
-                self.postings
-                    .map(pending_postings::FlushedPostings::ram_bytes),
-            )
+            .chain(self.postings.map(pending_postings::PendingPostings::bytes))
             .fold(0usize, usize::saturating_add);
         u64::try_from(docs).unwrap_or(u64::MAX)
     }
@@ -5670,10 +5683,10 @@ impl<'d> IndexWriter<'d> {
     }
 
     /// This writer's pending documents, as the buffer a segment is built
-    /// from, with their postings laid out for the flush.
+    /// from, with their buffered postings.
     fn document_buffer<'a>(
         &'a self,
-        postings: &'a pending_postings::FlushedPostings,
+        postings: &'a pending_postings::PendingPostings,
     ) -> DocumentBuffer<'a> {
         DocumentBuffer {
             docs: &self.pending_docs,
@@ -8350,21 +8363,16 @@ impl IndexWriter<'_> {
             old_to_new
         });
         let created = crate::created_outputs::CreatedOutputs::new(self.dir);
-        let written = self
-            .pending_postings
-            .flushed(old_to_new.as_deref())
-            .and_then(|postings| {
-                self.cfg.build_and_write_segment(
-                    &created,
-                    &DocumentBuffer {
-                        old_to_new: old_to_new.as_deref(),
-                        ..self.document_buffer(&postings)
-                    },
-                    &segment_name,
-                    segment_id,
-                    None,
-                )
-            });
+        let written = self.cfg.build_and_write_segment(
+            &created,
+            &DocumentBuffer {
+                old_to_new: old_to_new.as_deref(),
+                ..self.document_buffer(&self.pending_postings)
+            },
+            &segment_name,
+            segment_id,
+            None,
+        );
 
         let (sci, si_files) = match written {
             Ok(pair) => pair,

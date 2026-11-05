@@ -92,6 +92,7 @@ use crate::segment_writer;
 use lucene_codecs::field_infos::{DocValuesSkipIndexType, DocValuesType, FieldInfo, IndexOptions};
 use lucene_codecs::norms;
 use lucene_codecs::per_field_doc_values;
+use lucene_codecs::per_field_postings;
 use lucene_codecs::postings_writer::{self, FieldPostingsInput};
 use lucene_codecs::stored_fields::{Document, FieldValue, StoredField};
 use lucene_codecs::term_vectors::{TermVectorField, TermVectorsDocument};
@@ -359,6 +360,79 @@ impl IndexingConfig {
     /// Whether this configuration takes explicit documents.
     pub(crate) fn takes_explicit(&self) -> bool {
         self.explicit
+    }
+
+    /// `FreqProxTermsWriter.flush`: the buffered postings' files. A
+    /// block-tree segment takes each field's terms a batch at a time,
+    /// straight from the buffer ([`PendingPostings::stream_field`]); an
+    /// installed postings writer or another terms dictionary needs every
+    /// field laid out first.
+    fn write_pending_postings(
+        &self,
+        pending: &PendingPostings,
+        fields: &[(super::pending_postings::FieldToFlush, IndexOptions)],
+        old_to_new: Option<&[usize]>,
+        norms: &[postings_writer::FieldNorms<'_>],
+        state: lucene_codecs::postings_consumer::PostingsWriteState<'_>,
+    ) -> Result<super::PostingsGroups> {
+        let name_of = |n: i32| {
+            self.fields
+                .iter()
+                .find(|f| f.number == n)
+                .map(|f| f.name.clone())
+        };
+        let format_for = |name: &str| self.postings_format_for(name);
+        if !self.has_installed_postings_writer() {
+            let specs: Vec<per_field_postings::StreamedFieldSpec> = fields
+                .iter()
+                .map(|(f, options)| per_field_postings::StreamedFieldSpec {
+                    field_number: f.number,
+                    index_options: *options,
+                    has_payloads: f.payloads,
+                })
+                .collect();
+            let streamed = per_field_postings::write_streaming::<Error>(
+                &specs,
+                state.field_infos,
+                &name_of,
+                &format_for,
+                state.id,
+                &mut |i, writer| {
+                    let (field, _) = fields[i];
+                    pending.stream_field(field.number, old_to_new, &mut |terms| {
+                        writer.add_terms(terms, norms)?;
+                        Ok(())
+                    })?;
+                    Ok(field.doc_count)
+                },
+            )?;
+            if let Some(groups) = streamed {
+                return Ok(groups);
+            }
+        }
+        let flushed = pending.flushed(old_to_new)?;
+        let term_lists = flushed.term_lists();
+        let inputs: Vec<FieldPostingsInput<'_, _>> = term_lists
+            .iter()
+            .zip(fields)
+            .map(|((n, docs, terms), (f, options))| FieldPostingsInput {
+                field_number: *n,
+                index_options: *options,
+                doc_count: *docs,
+                has_payloads: f.payloads,
+                terms,
+            })
+            .collect();
+        self.write_postings_groups(&inputs, norms, state)
+    }
+
+    /// Whether the codec installs its own postings writer, which writes to
+    /// the directory and takes every field laid out whole.
+    fn has_installed_postings_writer(&self) -> bool {
+        self.codec
+            .as_deref()
+            .and_then(|c| c.postings_writer_factory())
+            .is_some()
     }
 
     /// Whether a flush sorts the buffered documents.
@@ -747,7 +821,7 @@ impl IndexingConfig {
         // field that stores them, even one that produced no term).
         let mut norm_values: BTreeMap<i32, Vec<Option<i64>>> = BTreeMap::new();
         let mut has_vectors = false;
-        explicit.for_each(|i, fields| {
+        let [dv_role, points_role] = explicit.for_each_with_roles(|i, fields| {
             if let Some(doc) = buf.docs.get(i) {
                 doc.fields
                     .iter()
@@ -796,15 +870,24 @@ impl IndexingConfig {
                     }
                     Ok(())
                 })?;
-                inverted_here = p.into_flushed(buf.old_to_new)?;
+                inverted_here = p;
                 &inverted_here
             }
         };
+        let postings_fields: Vec<(super::pending_postings::FieldToFlush, IndexOptions)> = pending
+            .fields_to_flush()
+            .into_iter()
+            .map(|f| Ok((f, self.explicit_field(f.number)?.index_options)))
+            .collect::<Result<_>>()?;
         // `FieldInfo.setStorePayloads`: the fields a document of this segment
         // gave a non-empty payload. Every occurrence of such a field then
         // carries a payload length, zero where it has none -- what
         // `FreqProxTermsWriterPerField.writeProx` records once the flag is on.
-        let payload_fields: BTreeSet<i32> = pending.payload_fields().collect();
+        let payload_fields: BTreeSet<i32> = postings_fields
+            .iter()
+            .filter(|(f, _)| f.payloads)
+            .map(|(f, _)| f.number)
+            .collect();
         // A present norms field still owns an empty sparse column when no
         // document supplied a value, as Java's norms flush does.
         for field in &self.fields {
@@ -822,15 +905,8 @@ impl IndexingConfig {
             .into_iter()
             .map(|(number, values)| (number, super::NormsColumn::from_values(values)))
             .collect();
-        let term_lists: Vec<(i32, IndexOptions, i32, Vec<_>)> = pending
-            .term_lists()
-            .into_iter()
-            .map(|(n, docs, terms)| {
-                let options = self.explicit_field(n).map(|f| f.index_options)?;
-                Ok((n, options, docs, terms))
-            })
-            .collect::<Result<_>>()?;
-        let postings_fields: BTreeSet<i32> = term_lists.iter().map(|(n, ..)| *n).collect();
+        let postings_field_numbers: BTreeSet<i32> =
+            postings_fields.iter().map(|(f, _)| f.number).collect();
         // This segment's FieldInfos before the per-field attributes: the
         // present fields, with the payloads this segment holds. `.psm` frames
         // `.pos`/`.pay` from them, and the `.fnm` below is written from them.
@@ -899,101 +975,14 @@ impl IndexingConfig {
             norms_output = build_norms()?;
         }
 
-        // Doc values and points through the native builders, a role at a
-        // time: each document's values read in place, or taken out of the
-        // packed documents for that role alone and dropped once written.
-        let dv_configs: Vec<DocValuesFieldConfig> = self
-            .fields
-            .iter()
-            .filter(|f| present.contains(&f.number) && f.doc_values_type != DocValuesType::None)
-            .map(|f| DocValuesFieldConfig {
-                name: f.name.clone(),
-                field_number: f.number,
-                doc_values_type: f.doc_values_type,
-                skip_index: f.doc_values_skip_index_type != DocValuesSkipIndexType::None,
-            })
-            .collect();
-        let doc_values_output = if dv_configs.is_empty() {
-            None
-        } else {
-            let names: Vec<&str> = self
-                .fields
-                .iter()
-                .filter(|f| present.contains(&f.number))
-                .map(|f| f.name.as_str())
-                .collect();
-            let role = explicit.role(super::Role::DocValues)?;
-            Some(self.build_doc_values_groups(&role.per_doc(), &dv_configs, &names, &segment_id)?)
-        };
-        let dv_suffix = |number: i32| {
-            doc_values_output
-                .as_deref()
-                .and_then(|groups| groups.iter().find(|g| g.field_numbers.contains(&number)))
-                .map(|g| (g.format_name, g.suffix))
-        };
-        let point_configs: Vec<PointsFieldConfig> = self
-            .fields
-            .iter()
-            .filter(|f| present.contains(&f.number) && f.point_dimension_count > 0)
-            .map(|f| PointsFieldConfig {
-                name: f.name.clone(),
-                field_number: f.number,
-                num_dims: f.point_dimension_count,
-                num_index_dims: f.point_index_dimension_count,
-                bytes_per_dim: f.point_num_bytes,
-            })
-            .collect();
-        let points_output = if point_configs.is_empty() {
-            None
-        } else {
-            let role = explicit.role(super::Role::Points)?;
-            IndexWriter::build_points_output(
-                self,
-                &role.per_doc(),
-                &point_configs,
-                &segment_id,
-                dir,
-                segment_name,
-            )?
-        };
-
-        let vector_configs: Vec<super::VectorFieldConfig> = self
-            .fields
-            .iter()
-            .filter(|f| present.contains(&f.number) && f.vector_dimension > 0)
-            .map(|f| super::VectorFieldConfig {
-                name: f.name.clone(),
-                field_number: f.number,
-                dimension: f.vector_dimension,
-                encoding: f.vector_encoding,
-                similarity: f.vector_similarity_function,
-            })
-            .collect();
-        let vectors_output = if vector_configs.is_empty() {
-            None
-        } else {
-            IndexWriter::build_vectors_output(
-                buf.vectors,
-                &vector_configs,
-                i32::try_from(max_doc).map_err(|_| explicit_error("too many documents"))?,
-                &|name: &str| self.knn_vectors_format_for(name),
-                self.knn_vectors_direct(),
-                &segment_id,
-            )?
-        };
-        let postings_output = if term_lists.is_empty() {
-            None
-        } else {
-            let inputs: Vec<FieldPostingsInput<'_, _>> = term_lists
-                .iter()
-                .map(|(n, options, docs, terms)| FieldPostingsInput {
-                    field_number: *n,
-                    index_options: *options,
-                    doc_count: *docs,
-                    has_payloads: payload_fields.contains(n),
-                    terms,
-                })
-                .collect();
+        // The postings are the segment's largest build and need nothing
+        // the doc values, points and vectors builds make: when they are
+        // encoded in memory (no installed postings writer touches the
+        // directory) they are built beside those on a thread of their own.
+        let build_postings = || -> Result<Option<super::PostingsGroups>> {
+            if postings_fields.is_empty() {
+                return Ok(None);
+            }
             let norms_for_impacts: Vec<postings_writer::FieldNorms<'_>> = norm_columns
                 .iter()
                 .map(|(n, column)| postings_writer::FieldNorms {
@@ -1001,8 +990,10 @@ impl IndexingConfig {
                     values: &column.dense,
                 })
                 .collect();
-            Some(self.write_postings_groups(
-                &inputs,
+            Ok(Some(self.write_pending_postings(
+                pending,
+                &postings_fields,
+                buf.old_to_new,
                 &norms_for_impacts,
                 lucene_codecs::postings_consumer::PostingsWriteState {
                     directory: dir,
@@ -1013,7 +1004,115 @@ impl IndexingConfig {
                     field_infos: &segment_fields,
                     format: lucene_codecs::per_field_postings::Lucene104PostingsFormat::default(),
                 },
-            )?)
+            )?))
+        };
+        let postings_beside = !postings_fields.is_empty() && !self.has_installed_postings_writer();
+        let (doc_values_output, points_output, vectors_output, postings_output) =
+            std::thread::scope(|scope| -> Result<_> {
+                let postings = postings_beside.then(|| scope.spawn(build_postings));
+                // Doc values and points through the native builders, a role at a
+                // time: each document's values read in place, or taken out of the
+                // packed documents for that role alone and dropped once written.
+                let dv_configs: Vec<DocValuesFieldConfig> = self
+                    .fields
+                    .iter()
+                    .filter(|f| {
+                        present.contains(&f.number) && f.doc_values_type != DocValuesType::None
+                    })
+                    .map(|f| DocValuesFieldConfig {
+                        name: f.name.clone(),
+                        field_number: f.number,
+                        doc_values_type: f.doc_values_type,
+                        skip_index: f.doc_values_skip_index_type != DocValuesSkipIndexType::None,
+                    })
+                    .collect();
+                let doc_values_output = if dv_configs.is_empty() {
+                    None
+                } else {
+                    let names: Vec<&str> = self
+                        .fields
+                        .iter()
+                        .filter(|f| present.contains(&f.number))
+                        .map(|f| f.name.as_str())
+                        .collect();
+                    Some(self.build_doc_values_groups(
+                        &dv_role.per_doc(),
+                        &dv_configs,
+                        &names,
+                        &segment_id,
+                    )?)
+                };
+                // Each role's values are freed once written, not held while
+                // the points, vectors and postings builds run.
+                drop(dv_role);
+                let point_configs: Vec<PointsFieldConfig> = self
+                    .fields
+                    .iter()
+                    .filter(|f| present.contains(&f.number) && f.point_dimension_count > 0)
+                    .map(|f| PointsFieldConfig {
+                        name: f.name.clone(),
+                        field_number: f.number,
+                        num_dims: f.point_dimension_count,
+                        num_index_dims: f.point_index_dimension_count,
+                        bytes_per_dim: f.point_num_bytes,
+                    })
+                    .collect();
+                let points_output = if point_configs.is_empty() {
+                    None
+                } else {
+                    IndexWriter::build_points_output(
+                        self,
+                        &points_role.per_doc(),
+                        &point_configs,
+                        &segment_id,
+                        dir,
+                        segment_name,
+                    )?
+                };
+                drop(points_role);
+
+                let vector_configs: Vec<super::VectorFieldConfig> = self
+                    .fields
+                    .iter()
+                    .filter(|f| present.contains(&f.number) && f.vector_dimension > 0)
+                    .map(|f| super::VectorFieldConfig {
+                        name: f.name.clone(),
+                        field_number: f.number,
+                        dimension: f.vector_dimension,
+                        encoding: f.vector_encoding,
+                        similarity: f.vector_similarity_function,
+                    })
+                    .collect();
+                let vectors_output = if vector_configs.is_empty() {
+                    None
+                } else {
+                    IndexWriter::build_vectors_output(
+                        buf.vectors,
+                        &vector_configs,
+                        i32::try_from(max_doc).map_err(|_| explicit_error("too many documents"))?,
+                        &|name: &str| self.knn_vectors_format_for(name),
+                        self.knn_vectors_direct(),
+                        &segment_id,
+                    )?
+                };
+                let postings_output = match postings {
+                    Some(job) => job
+                        .join()
+                        .unwrap_or_else(|panic| std::panic::resume_unwind(panic))?,
+                    None => build_postings()?,
+                };
+                Ok((
+                    doc_values_output,
+                    points_output,
+                    vectors_output,
+                    postings_output,
+                ))
+            })?;
+        let dv_suffix = |number: i32| {
+            doc_values_output
+                .as_deref()
+                .and_then(|groups| groups.iter().find(|g| g.field_numbers.contains(&number)))
+                .map(|g| (g.format_name, g.suffix))
         };
 
         // Term vectors: each document's fields in name order
@@ -1074,7 +1173,7 @@ impl IndexingConfig {
                         .map(|g| (g.format_name, g.suffix))
                 });
                 if let (true, Some((format_name, suffix))) =
-                    (postings_fields.contains(&f.number), postings_suffix)
+                    (postings_field_numbers.contains(&f.number), postings_suffix)
                 {
                     f.attributes.push((
                         "PerFieldPostingsFormat.format".to_string(),
