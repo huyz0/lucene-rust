@@ -372,5 +372,8 @@ impl LiveSegment {
     }
 }
 
+mod request;
+pub use request::{live_request, live_segments};
+
 #[cfg(test)]
 mod tests;

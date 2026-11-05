@@ -49,6 +49,7 @@ public final class RestStatsAction extends BaseRestHandler {
             b.field("library", libraryPath);
             b.field("abi_version", NativeBridge.abiVersion());
             b.field("native_queries", stats.nativeCount());
+            b.field("live_queries", stats.liveCount());
             b.field("native_errors", stats.errorCount());
             b.field("native_fetches", stats.fetchCount());
             b.field("native_sequential_fetches", stats.sequentialFetchCount());

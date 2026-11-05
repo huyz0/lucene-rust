@@ -286,6 +286,17 @@ def derive_engine(src: str) -> str:
     p.sub("        return primaryOperationPolicy.planDelete(deletionStrategyPlanner, delete);",
           "        return deletionStrategyPlanner.planOperationAsPrimary(delete);")
 
+    # Live search: a searcher supplier that also reads the writer's buffers.
+    p.sub(
+        "    @Override\n    protected final ReferenceManager<OpenSearchDirectoryReader> getReferenceManager(SearcherScope scope) {",
+        "    /** External searchers also read the writer's buffered documents when the index asks for it (LiveSearchers). */\n"
+        "    @Override\n"
+        "    public SearcherSupplier acquireSearcherSupplier(java.util.function.Function<Searcher, Searcher> wrapper, SearcherScope scope) throws EngineException {\n"
+        "        return LiveSearchers.supplier(documentIndexWriter, wrapper, scope, super::acquireSearcherSupplier);\n"
+        "    }\n\n"
+        "    @Override\n    protected final ReferenceManager<OpenSearchDirectoryReader> getReferenceManager(SearcherScope scope) {",
+    )
+
     # Package-private in Engine: not overridable from this package.
     p.drop_block("    final boolean assertSearcherIsWarmedUp(String source, SearcherScope scope) {")
     return NOTICE + p.text

@@ -4,6 +4,7 @@
 package org.lucenerust.opensearch.engine;
 
 import java.io.IOException;
+import java.util.Collection;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -46,5 +47,10 @@ final class FieldRegistry {
 
     int size() {
         return fields.size();
+    }
+
+    /** Every registered field. */
+    Collection<Entry> entries() {
+        return fields.values();
     }
 }

@@ -79,6 +79,11 @@ final class RustReaderManager extends ReferenceManager<OpenSearchDirectoryReader
             }
             DirectoryReader std = StandardDirectoryReader.open(directory, infos, old, leafSorter, null);
             std.getReaderCacheHelper().addClosedListener(key -> writer.releaseHold(hold));
+            if (previous != null) {
+                // Searches move to this commit: what the previous one's readers read from the
+                // buffers is in the segments of both.
+                writer.releaseLive(generation(previous));
+            }
             success = true;
             return OpenSearchDirectoryReader.wrap(new SoftDeletesReader(std, Lucene.SOFT_DELETES_FIELD), shardId);
         } finally {

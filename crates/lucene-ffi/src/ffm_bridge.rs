@@ -34,7 +34,7 @@ use crate::raw::bytes_from_raw;
 ///
 /// # Safety
 /// `out_ptr` and `out_len` must be valid for one write each.
-unsafe fn give(bytes: Vec<u8>, out_ptr: *mut *mut u8, out_len: *mut usize) {
+pub(crate) unsafe fn give(bytes: Vec<u8>, out_ptr: *mut *mut u8, out_len: *mut usize) {
     let (ptr, len) = if bytes.is_empty() {
         (std::ptr::null_mut(), 0)
     } else {
@@ -53,7 +53,10 @@ unsafe fn give(bytes: Vec<u8>, out_ptr: *mut *mut u8, out_len: *mut usize) {
 ///
 /// # Safety
 /// Non-null `out_ptr`/`out_len` must be valid for one write each.
-unsafe fn clear_out(out_ptr: *mut *mut u8, out_len: *mut usize) -> Result<(), FfiStatus> {
+pub(crate) unsafe fn clear_out(
+    out_ptr: *mut *mut u8,
+    out_len: *mut usize,
+) -> Result<(), FfiStatus> {
     if out_ptr.is_null() || out_len.is_null() {
         return Err(FfiStatus::NullPointer);
     }
