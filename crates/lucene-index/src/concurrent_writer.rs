@@ -112,6 +112,9 @@ use crate::segment_infos::SegmentCommitInfo;
 use crate::stall_control::DocumentsWriterStallControl;
 use lucene_codecs::field_infos::FieldInfo;
 
+mod live;
+pub use live::{LiveBuffer, LiveBufferField, LiveFieldRequest, LiveRequest, LiveSnapshot};
+
 /// One indexing slot's buffer -- `DocumentsWriterPerThread`, before its flush.
 #[derive(Default)]
 struct Dwpt {
@@ -139,6 +142,9 @@ struct Dwpt {
     /// The absolute position in the delete log up to which `private` is
     /// current -- `DeleteSlice.sliceTail`.
     slice: usize,
+    /// Norms and deletes for live search, kept only by a writer that has it
+    /// ([`ConcurrentIndexWriter::with_live_search`]).
+    live: live::LiveColumns,
 }
 
 /// Every delete issued, for the buffers to read their slices of and for the
@@ -204,6 +210,8 @@ struct Core<'d> {
     barrier: Option<u64>,
     /// Segments a merge has claimed and not yet finished.
     merging: HashSet<String>,
+    /// Buffers being flushed, readable by live search until published.
+    live: live::LiveFlushes,
 }
 
 /// One document a thread adds, with what rides alongside it.
@@ -219,7 +227,7 @@ type Buffered = (
     Vec<Vec<(String, i32)>>,
     Vec<Vec<DocumentVector>>,
     PackedFields,
-    PendingPostings,
+    Arc<PendingPostings>,
 );
 
 /// Buffers an add's documents into a slot, returning the RAM they take.
@@ -234,7 +242,8 @@ struct FlushBatch {
     vectors: Vec<Vec<DocumentVector>>,
     explicit: PackedFields,
     stored: Option<StreamedStored>,
-    postings: PendingPostings,
+    /// Shared with live search while the batch builds.
+    postings: Arc<PendingPostings>,
     has_blocks: bool,
     private: BufferedUpdates,
     /// The slot's `ram_bytes` when it was taken: what this flush counts
@@ -318,6 +327,8 @@ pub struct ConcurrentIndexWriter<'d> {
     segment_docs: AtomicUsize,
     /// [`IndexWriter::set_max_docs`]' limit, frozen with the configuration.
     max_docs: usize,
+    /// [`Self::with_live_search`].
+    live: bool,
 }
 
 /// The scheduler this writer hands its pending merges to, and the writer
@@ -417,6 +428,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
                 next_publish: 0,
                 barrier: None,
                 merging: HashSet::new(),
+                live: live::LiveFlushes::default(),
             }),
             changed: Condvar::new(),
             slots: (0..slots).map(|_| Mutex::new(Dwpt::default())).collect(),
@@ -442,6 +454,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
             buffered_docs: AtomicUsize::new(0),
             segment_docs: AtomicUsize::new(segment_docs),
             max_docs,
+            live: false,
         })
     }
 
@@ -878,6 +891,14 @@ impl<'d> ConcurrentIndexWriter<'d> {
         for node in nodes {
             core.writer.buffer_global_delete(node);
         }
+        // They reach the buffers being flushed once published; live search
+        // sees them there now.
+        if !nodes.is_empty() && !core.live.flushing.is_empty() {
+            let cfg = core.writer.shared_config();
+            for f in core.live.flushing.values_mut() {
+                f.columns.apply(nodes, f.max_doc, &f.postings, &cfg);
+            }
+        }
     }
 
     /// Applies `nodes` -- the log from `dwpt.slice` up to `end` -- to slot
@@ -894,6 +915,9 @@ impl<'d> ConcurrentIndexWriter<'d> {
         let limit = i32::try_from(limit).unwrap_or(i32::MAX);
         for node in nodes {
             buffer_node(&mut dwpt.private, node, limit);
+        }
+        if self.live && !nodes.is_empty() {
+            dwpt.live.apply(nodes, limit, &dwpt.postings, &self.cfg());
         }
         dwpt.slice = end;
         self.slices[i].store(end, Ordering::Release);
@@ -1029,6 +1053,9 @@ impl<'d> ConcurrentIndexWriter<'d> {
         let options = cfg.explicit_add_options(&docs)?;
         let streamed = cfg.streamed_stored_mode();
         let count = docs.len();
+        let live = self
+            .live
+            .then(|| cfg.soft_deletes_field().map(|f| f.number));
         self.add_with(delete, count, move |_| {
             Ok(Box::new(move |dwpt: &mut Dwpt| {
                 // The postings count what they grew by, as `bytesUsed` counts
@@ -1061,6 +1088,9 @@ impl<'d> ConcurrentIndexWriter<'d> {
                         dwpt.postings.add_field(doc_id, inv, options)?;
                         // the postings hold them now; the document keeps its norm
                         inv.terms = InvertedTerms::default();
+                    }
+                    if let Some(soft) = live {
+                        dwpt.live.record(doc_id, &doc.fields, soft);
                     }
                     added = added.saturating_add(dwpt.explicit.push(doc.fields));
                 }
@@ -1189,6 +1219,16 @@ impl<'d> ConcurrentIndexWriter<'d> {
         let ticket = core.writer.begin_segment();
         let ticket_no = core.next_ticket;
         core.next_ticket = core.next_ticket.saturating_add(1);
+        let postings = Arc::new(std::mem::take(&mut dwpt.postings));
+        let columns = std::mem::take(&mut dwpt.live);
+        if self.live {
+            let flushing = live::Flushing {
+                postings: Arc::clone(&postings),
+                columns,
+                max_doc: i32::try_from(dwpt.docs.len()).unwrap_or(i32::MAX),
+            };
+            core.live.flushing.insert(ticket_no, flushing);
+        }
         drop(core);
         let batch = FlushBatch {
             ticket,
@@ -1198,7 +1238,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
             vectors: std::mem::take(&mut dwpt.vectors),
             explicit: std::mem::take(&mut dwpt.explicit),
             stored: dwpt.stored.take(),
-            postings: std::mem::take(&mut dwpt.postings),
+            postings,
             has_blocks: std::mem::take(&mut dwpt.has_blocks),
             private: std::mem::take(&mut dwpt.private),
             ram_bytes: dwpt.ram_bytes,
@@ -1310,7 +1350,11 @@ impl<'d> ConcurrentIndexWriter<'d> {
             old_to_new
         });
         let postings = if explicit_docs {
-            Some(postings.into_flushed(old_to_new.as_deref())?)
+            // A buffer live search still reads is laid out without freeing it.
+            Some(match Arc::try_unwrap(postings) {
+                Ok(p) => p.into_flushed(old_to_new.as_deref())?,
+                Err(p) => p.flushed(old_to_new.as_deref())?,
+            })
         } else {
             None
         };
@@ -1418,6 +1462,11 @@ impl<'d> ConcurrentIndexWriter<'d> {
             )
         }));
         let mut core = self.wait_turn(ticket_no);
+        // Published or abandoned below, under this same lock: live search
+        // reads the documents from the segment from now on, or not at all.
+        if core.live.flushing.remove(&ticket_no).is_some() {
+            core.live.published = core.live.published.saturating_add(1);
+        }
         let outcome = catch_unwind(AssertUnwindSafe(|| match built {
             Ok(Ok(built)) => {
                 let name = built.sci.segment_name.clone();

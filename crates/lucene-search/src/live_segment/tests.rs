@@ -433,3 +433,96 @@ fn deletes_and_norms_outside_the_contract_are_refused() {
     fields[1].info.omit_norms = true;
     assert!(LiveSegment::build(&fields, 10, &[]).is_err());
 }
+
+/// The writer's buffer, read through a live snapshot, searches like the
+/// committed segment of the same documents and deletes.
+#[test]
+fn the_writers_buffer_searches_like_its_committed_segment() {
+    use lucene_index::buffered_updates::Term;
+    use lucene_index::concurrent_writer::{ConcurrentIndexWriter, LiveFieldRequest, LiveRequest};
+
+    let docs = corpus(700);
+    let explicit = |d: &Doc| ExplicitDocument {
+        stored: Vec::new(),
+        fields: ExplicitFields {
+            inverted: d
+                .iter()
+                .enumerate()
+                .map(|(i, (_, toks))| inverted(i as i32, toks, i == 0))
+                .collect(),
+            ..ExplicitFields::default()
+        },
+    };
+    let gone = Term::new("tag", b"t4".to_vec());
+    fn open(dir: &ByteBuffersDirectory) -> IndexWriter<'_> {
+        let mut w = IndexWriter::open(dir, Vec::new(), "Lucene104", LATEST).unwrap();
+        w.set_use_compound_file(false);
+        w.enable_explicit_documents().unwrap();
+        for info in infos() {
+            w.register_field(info).unwrap();
+        }
+        w
+    }
+
+    let committed = ByteBuffersDirectory::new();
+    {
+        let mut w = open(&committed);
+        for d in &docs {
+            w.add_explicit_documents(vec![explicit(d)]).unwrap();
+        }
+        w.delete_documents_by_term(std::slice::from_ref(&gone)).unwrap();
+        w.commit().unwrap();
+    }
+    let reader = DirectoryReader::open(&committed).unwrap();
+    let mut opened = reader.open_segments().unwrap();
+    opened.open_points().unwrap();
+    let segments = opened.as_open_segments();
+    let owned = reader
+        .field_norms_by_field(&["body".to_string(), "tag".to_string()])
+        .unwrap();
+    let norms: Vec<SegmentNorms<'_, '_>> = owned.iter().map(Some).collect();
+    let s = IndexSearcher::new(&segments, &norms).unwrap();
+
+    let buffered = ByteBuffersDirectory::new();
+    let w = ConcurrentIndexWriter::new(open(&buffered), 1)
+        .unwrap()
+        .with_live_search();
+    for d in &docs {
+        w.add_explicit_documents(vec![explicit(d)]).unwrap();
+    }
+    w.delete_documents_by_term(&[gone]).unwrap();
+
+    for (q, wanted) in queries() {
+        let request = LiveRequest {
+            fields: ["body", "tag"]
+                .iter()
+                .map(|f| LiveFieldRequest {
+                    field: f.to_string(),
+                    terms: wanted.iter().map(|t| t.as_bytes().to_vec()).collect(),
+                    positions: true,
+                })
+                .collect(),
+        };
+        let snap = w.live_snapshot(&request).unwrap();
+        assert_eq!(snap.buffers.len(), 1);
+        let b = snap.buffers.into_iter().next().unwrap();
+        assert!(!b.deleted.is_empty());
+        let fields: Vec<LiveField> = b
+            .fields
+            .into_iter()
+            .map(|f| LiveField {
+                info: f.info,
+                terms: f.terms,
+                norms: f.norms,
+                num_terms: f.num_terms,
+                sum_total_term_freq: f.sum_total_term_freq,
+                sum_doc_freq: f.sum_doc_freq,
+                doc_count: f.doc_count,
+            })
+            .collect();
+        let live = LiveSegment::build(&fields, b.max_doc, &b.deleted).unwrap();
+        let expected = hits(&s, &q);
+        assert!(expected.0 > 0, "{q:?} matches nothing");
+        assert_eq!(live_hits(&live, &q), expected, "{q:?}");
+    }
+}

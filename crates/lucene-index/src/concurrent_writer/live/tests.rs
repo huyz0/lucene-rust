@@ -1,0 +1,293 @@
+// Test arithmetic on small constants; see docs/arithmetic-gate.md.
+#![allow(clippy::arithmetic_side_effects)]
+
+use std::sync::atomic::Ordering;
+
+use lucene_codecs::field_infos::{DocValuesSkipIndexType, DocValuesType, FieldInfo, IndexOptions};
+use lucene_codecs::stored_fields::{FieldValue, StoredField};
+use lucene_store::FsDirectory;
+use lucene_util::test_support::TempDir;
+
+use super::*;
+use crate::buffered_updates::{DeleteQuery, Term};
+use crate::index_writer::{
+    ExplicitDocument, ExplicitFields, IndexWriter, InvertedField, InvertedTerm,
+};
+use crate::segment_info::LuceneVersion;
+
+const VERSION: LuceneVersion = LuceneVersion {
+    major: 10,
+    minor: 5,
+    bugfix: 0,
+};
+
+struct Fields {
+    id: i32,
+    body: i32,
+    soft: i32,
+}
+
+fn open(dir: &FsDirectory, slots: usize, live: bool) -> (ConcurrentIndexWriter<'_>, Fields) {
+    let mut w = IndexWriter::open(dir, Vec::new(), "Lucene104", VERSION).unwrap();
+    w.enable_explicit_documents().unwrap();
+    let id = w
+        .register_field(
+            FieldInfo::new("_id", 0)
+                .with_index_options(IndexOptions::Docs)
+                .with_omit_norms(true),
+        )
+        .unwrap();
+    let body = w
+        .register_field(
+            FieldInfo::new("body", 0).with_index_options(IndexOptions::DocsAndFreqsAndPositions),
+        )
+        .unwrap();
+    let soft = w
+        .register_field(
+            FieldInfo::new("__soft_deletes", 0)
+                .with_doc_values(DocValuesType::Numeric, DocValuesSkipIndexType::None, -1)
+                .with_soft_deletes_field(true),
+        )
+        .unwrap();
+    let w = ConcurrentIndexWriter::new(w, slots).unwrap();
+    let w = if live { w.with_live_search() } else { w };
+    (w, Fields { id, body, soft })
+}
+
+fn term(t: &str, positions: &[i32]) -> InvertedTerm {
+    InvertedTerm {
+        term: t.as_bytes().to_vec(),
+        freq: i32::try_from(positions.len().max(1)).unwrap(),
+        positions: positions.to_vec(),
+        offsets: Vec::new(),
+        payloads: Vec::new(),
+    }
+}
+
+/// Document `i`: `_id` "d{i}", `body` "common" at 0 and, in every third
+/// document, "rare" at 1 and 2. Its norm is its length.
+fn doc(f: &Fields, i: i64) -> ExplicitDocument {
+    let mut body = vec![term("common", &[0])];
+    if i % 3 == 0 {
+        body.push(term("rare", &[1, 2]));
+    }
+    let length = body.iter().map(|t| i64::from(t.freq)).sum();
+    ExplicitDocument {
+        stored: Vec::new(),
+        fields: ExplicitFields {
+            inverted: vec![
+                InvertedField {
+                    field_number: f.id,
+                    terms: vec![term(&format!("d{i}"), &[])].into(),
+                    norm: None,
+                },
+                InvertedField {
+                    field_number: f.body,
+                    terms: body.into(),
+                    norm: Some(length),
+                },
+            ],
+            ..ExplicitFields::default()
+        },
+    }
+}
+
+fn id(i: i64) -> Term {
+    Term::new("_id", format!("d{i}").into_bytes())
+}
+
+fn soft_delete(i: i64) -> DocValuesUpdate {
+    DocValuesUpdate::Numeric {
+        term: id(i),
+        field: "__soft_deletes".to_string(),
+        value: Some(1),
+    }
+}
+
+fn body(positions: bool, terms: &[&str]) -> LiveRequest {
+    LiveRequest {
+        fields: vec![LiveFieldRequest {
+            field: "body".to_string(),
+            terms: terms.iter().map(|t| t.as_bytes().to_vec()).collect(),
+            positions,
+        }],
+    }
+}
+
+/// Every buffered document's id, by buffer.
+fn deleted_ids(snap: &LiveSnapshot) -> Vec<Vec<i32>> {
+    snap.buffers.iter().map(|b| b.deleted.clone()).collect()
+}
+
+/// Buffered documents are read with the whole buffer's statistics, their
+/// norms, and their occurrences only when asked for.
+#[test]
+fn buffered_documents_are_read_with_their_statistics() {
+    let tmp = TempDir::new("live-read");
+    let dir = FsDirectory::open(tmp.path());
+    let (w, f) = open(&dir, 1, true);
+    for i in 0..30 {
+        w.add_explicit_documents(vec![doc(&f, i)]).unwrap();
+    }
+    let snap = w
+        .live_snapshot(&body(false, &["rare", "absent", "rare"]))
+        .unwrap();
+    assert_eq!(snap.published, 0);
+    assert_eq!(snap.buffers.len(), 1);
+    let b = &snap.buffers[0];
+    assert_eq!(b.max_doc, 30);
+    assert!(b.deleted.is_empty());
+    let field = &b.fields[0];
+    assert_eq!(field.info.name, "body");
+    assert_eq!(field.info.index_options, IndexOptions::DocsAndFreqs);
+    assert_eq!(
+        field.terms.len(),
+        1,
+        "a repeated term once, an absent one not"
+    );
+    let rare = &field.terms[0];
+    let want: Vec<(i32, i32)> = (0..30).step_by(3).map(|d| (d, 2)).collect();
+    assert_eq!(rare.docs, want);
+    assert!(rare.positions.is_empty());
+    assert_eq!(
+        (
+            field.num_terms,
+            field.sum_doc_freq,
+            field.sum_total_term_freq,
+            field.doc_count
+        ),
+        (2, 40, 50, 30)
+    );
+    let norms = field.norms.as_ref().unwrap();
+    assert_eq!(norms.len(), 30);
+    assert!(norms
+        .iter()
+        .enumerate()
+        .all(|(d, &n)| n == if d % 3 == 0 { 3 } else { 1 }));
+
+    let snap = w.live_snapshot(&body(true, &["rare"])).unwrap();
+    let field = &snap.buffers[0].fields[0];
+    assert_eq!(
+        field.info.index_options,
+        IndexOptions::DocsAndFreqsAndPositions
+    );
+    assert_eq!(field.terms[0].positions, vec![vec![1, 2]; 10]);
+
+    let ids = LiveRequest {
+        fields: vec![LiveFieldRequest {
+            field: "_id".to_string(),
+            terms: vec![b"d4".to_vec()],
+            positions: true,
+        }],
+    };
+    let snap = w.live_snapshot(&ids).unwrap();
+    let field = &snap.buffers[0].fields[0];
+    assert_eq!(field.terms[0].docs, [(4, 1)]);
+    assert!(field.norms.is_none(), "the field omits norms");
+    assert_eq!(field.sum_total_term_freq, field.sum_doc_freq);
+}
+
+/// A soft update hides the copy it replaces, in its own buffer or in
+/// another; a document added soft-deleted (a tombstone) and a delete by
+/// term hide theirs. Each document is in the cut once.
+#[test]
+fn updates_tombstones_and_deletes_hide_buffered_documents() {
+    let tmp = TempDir::new("live-deletes");
+    let dir = FsDirectory::open(tmp.path());
+    let (w, f) = open(&dir, 2, true);
+    w.rotate_slots.store(true, Ordering::Relaxed);
+    // Slot 0 takes the even adds, slot 1 the odd ones.
+    for i in 0..10 {
+        w.add_explicit_documents(vec![doc(&f, i)]).unwrap();
+    }
+    // d2 is in slot 0 (doc 1); its update lands in slot 0 (add 10).
+    w.soft_update_explicit_documents(id(2), vec![doc(&f, 2)], &[soft_delete(2)])
+        .unwrap();
+    // d4 is in slot 0 (doc 2); its update lands in slot 1 (add 11), and
+    // slot 0 has not applied it yet.
+    w.soft_update_explicit_documents(id(4), vec![doc(&f, 4)], &[soft_delete(4)])
+        .unwrap();
+    // d5 is in slot 1 (doc 2).
+    w.delete_documents_by_term(&[id(5)]).unwrap();
+    // A tombstone, in slot 0 (add 12).
+    let mut tombstone = doc(&f, 100);
+    tombstone.fields.doc_values.push(StoredField {
+        field_number: f.soft,
+        value: FieldValue::Long(1),
+    });
+    w.add_explicit_documents(vec![tombstone]).unwrap();
+
+    let snap = w.live_snapshot(&body(false, &["common"])).unwrap();
+    let max_docs: Vec<i32> = snap.buffers.iter().map(|b| b.max_doc).collect();
+    assert_eq!(max_docs, [7, 6]);
+    // Slot 0: d0 d2 d4 d6 d8 d2' tombstone; slot 1: d1 d3 d5 d7 d9 d4'.
+    assert_eq!(deleted_ids(&snap), [vec![1, 2, 6], vec![2]]);
+
+    // Once each slot adds again it has applied every delete itself.
+    w.add_explicit_documents(vec![doc(&f, 200)]).unwrap();
+    w.add_explicit_documents(vec![doc(&f, 201)]).unwrap();
+    let snap = w.live_snapshot(&body(false, &["common"])).unwrap();
+    assert_eq!(deleted_ids(&snap), [vec![1, 2, 6], vec![2]]);
+}
+
+/// A buffer taken for a flush is read until its segment is published,
+/// and a delete issued meanwhile reaches it; then it is gone from the cut
+/// and counted as published.
+#[test]
+fn a_buffer_being_flushed_stays_readable_until_published() {
+    let tmp = TempDir::new("live-flushing");
+    let dir = FsDirectory::open(tmp.path());
+    let (w, f) = open(&dir, 1, true);
+    for i in 0..5 {
+        w.add_explicit_documents(vec![doc(&f, i)]).unwrap();
+    }
+    let batch = {
+        let mut slot = lock(&w.slots[0]);
+        w.begin_flush(0, &mut slot).unwrap()
+    };
+    w.add_explicit_documents(vec![doc(&f, 5)]).unwrap();
+    w.delete_documents_by_term(&[id(1)]).unwrap();
+    let snap = w.live_snapshot(&body(false, &["common"])).unwrap();
+    let max_docs: Vec<i32> = snap.buffers.iter().map(|b| b.max_doc).collect();
+    assert_eq!(max_docs, [1, 5], "the slot, then the buffer being flushed");
+    assert_eq!(deleted_ids(&snap), [vec![], vec![1]]);
+    assert_eq!(snap.buffers[1].fields[0].terms[0].docs.len(), 5);
+
+    // Another add leaves the cut's deletes as they were.
+    w.add_explicit_documents(vec![doc(&f, 6)]).unwrap();
+    let snap = w.live_snapshot(&body(false, &["common"])).unwrap();
+    assert_eq!(deleted_ids(&snap), [vec![], vec![1]]);
+
+    w.complete_flush(batch).unwrap();
+    let snap = w.live_snapshot(&body(false, &["common"])).unwrap();
+    assert_eq!(snap.published, 1);
+    let max_docs: Vec<i32> = snap.buffers.iter().map(|b| b.max_doc).collect();
+    assert_eq!(max_docs, [2]);
+}
+
+/// A writer that keeps no live-search columns, and a buffer a delete by
+/// query reached, are refused rather than answered wrongly.
+#[test]
+fn what_the_buffers_cannot_answer_is_refused() {
+    let tmp = TempDir::new("live-refused");
+    let dir = FsDirectory::open(tmp.path());
+    let (w, f) = open(&dir, 1, false);
+    w.add_explicit_documents(vec![doc(&f, 0)]).unwrap();
+    assert!(!w.live_search());
+    assert!(matches!(
+        w.live_snapshot(&body(false, &["common"])),
+        Err(Error::LiveSearch(_))
+    ));
+
+    let tmp = TempDir::new("live-by-query");
+    let dir = FsDirectory::open(tmp.path());
+    let (w, f) = open(&dir, 1, true);
+    w.add_explicit_documents(vec![doc(&f, 0)]).unwrap();
+    assert!(w.live_bytes() > 0);
+    w.delete_documents_by_query(&[DeleteQuery::Term(id(0))])
+        .unwrap();
+    assert!(matches!(
+        w.live_snapshot(&body(false, &["common"])),
+        Err(Error::LiveSearch(_))
+    ));
+}
