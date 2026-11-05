@@ -252,9 +252,47 @@ struct ForwardIndex<'a> {
 }
 
 impl ForwardIndex<'_> {
-    fn read(&self, doc: i32) -> Result<Option<SparseVector>> {
-        Ok(doc_values::binary_value(self.data, self.entry, doc)?
-            .map(|bytes| SparseVector::quantized(&vector::decode_forward(bytes), self.ceiling)))
+    /// The dot product of `doc`'s quantized vector with the dense query,
+    /// `None` when the document has no vector. Scored straight from the
+    /// stored pairs; a document with two tokens that fold together (or one
+    /// token twice) is built as a [`SparseVector`] first, which resolves them.
+    /// `seen` is all zero on entry and on return, one bit per folded token.
+    fn dot(&self, doc: i32, dense: &[u8], seen: &mut [u64]) -> Result<Option<i32>> {
+        let Some(bytes) = doc_values::binary_value(self.data, self.entry, doc)? else {
+            return Ok(None);
+        };
+        let pairs = bytes.chunks_exact(8);
+        let mut score = 0i32;
+        let mut clash = false;
+        for c in pairs.clone() {
+            let token = i32::from_be_bytes([c[0], c[1], c[2], c[3]]) as u32 % TOKEN_MODULUS;
+            let (word, bit) = ((token / 64) as usize, 1u64 << (token % 64));
+            let Some(w) = seen.get_mut(word) else {
+                continue;
+            };
+            if *w & bit != 0 {
+                clash = true;
+                break;
+            }
+            *w |= bit;
+            if let Some(&q) = dense.get(token as usize) {
+                let value = f32::from_be_bytes([c[4], c[5], c[6], c[7]]);
+                let weight = vector::quantize(value, self.ceiling);
+                // At most 255 * 255; the sum wraps as Java's int does.
+                score = score.wrapping_add(i32::from(weight).wrapping_mul(i32::from(q)));
+            }
+        }
+        for c in pairs {
+            let token = i32::from_be_bytes([c[0], c[1], c[2], c[3]]) as u32 % TOKEN_MODULUS;
+            if let Some(w) = seen.get_mut((token / 64) as usize) {
+                *w = 0;
+            }
+        }
+        if clash {
+            let v = SparseVector::quantized(&vector::decode_forward(bytes), self.ceiling);
+            return Ok(Some(v.dot(dense)));
+        }
+        Ok(Some(score))
     }
 }
 
@@ -284,9 +322,10 @@ pub fn search(
         entry,
         ceiling: field.ceiling_ingest,
     });
-    let read = |doc: i32| -> Result<Option<SparseVector>> {
+    let mut seen = vec![0u64; (TOKEN_MODULUS / 64) as usize];
+    let mut dot = |doc: i32| -> Result<Option<i32>> {
         match &forward {
-            Some(f) => f.read(doc),
+            Some(f) => f.dot(doc, &query.dense, &mut seen),
             None => Ok(None),
         }
     };
@@ -301,7 +340,7 @@ pub fn search(
             while let Some(d) = doc {
                 let d32 =
                     i32::try_from(d).map_err(|_| Error::Corrupted("doc id overflow".into()))?;
-                let s = read(d32)?.map_or(0, |v| v.dot(&query.dense));
+                let s = dot(d32)?.unwrap_or(0);
                 hits.push((d32, score(s)));
                 doc = filter.next_set_bit(d.saturating_add(1));
             }
@@ -340,8 +379,7 @@ pub fn search(
                     continue;
                 }
                 *seen = true;
-                let Some(v) = read(doc)? else { continue };
-                let s = v.dot(&query.dense);
+                let Some(s) = dot(doc)? else { continue };
                 skip_heap.add(doc, s);
                 results.add(doc, s);
             }

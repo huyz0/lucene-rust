@@ -23,7 +23,7 @@ check = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(check)
 
 VOCAB, SEED, INDEX = 30000, 20261104, "bench"
-PARAMS = {"approximate_threshold": 10000}
+PARAMS = {"approximate_threshold": 10000, "n_postings": 2000}
 BATCH, CLIENTS = 1000, 4
 
 
@@ -96,7 +96,7 @@ def index(port, docs, rust):
 
 def segments(port):
     segs = check.req(port, "GET", f"/{INDEX}/_segments")["indices"][INDEX]["shards"]["0"][0]["segments"]
-    return len(segs)
+    return sum(1 for v in segs.values() if v["search"])
 
 
 def run_queries(port, qs, mp, passes):
