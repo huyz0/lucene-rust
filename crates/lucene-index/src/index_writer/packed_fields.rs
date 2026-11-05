@@ -10,8 +10,10 @@
 //! `PointValuesWriter`), so its buffer, and the RAM it charges against
 //! `ramBufferSizeMB`, grows by about that few dozen bytes per document. These
 //! blocks keep this writer's charge near Lucene's, and so its flushes as
-//! frequent as Lucene's; the flush unpacks them back into fields, one buffer
-//! at a time.
+//! frequent as Lucene's. The flush reads them back one document at a time
+//! ([`PackedFields::for_each`]), a role per pass, so it never holds every
+//! document's fields as structs at once; only an index sort, which permutes
+//! whole documents, unpacks them all.
 //!
 //! A document whose inverted fields still hold terms, or that carries term
 //! vectors, is kept as it is: those are rare and their shape is deep.
@@ -54,9 +56,50 @@ pub(crate) struct PackedFields {
 
 impl PackedFields {
     /// How many documents' fields are buffered.
-    #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.len
+    }
+
+    /// Heap bytes held.
+    pub(crate) fn ram_bytes(&self) -> usize {
+        self.blocks
+            .iter()
+            .map(Vec::capacity)
+            .chain(self.kept.iter().map(ExplicitFields::ram_bytes))
+            .fold(0, usize::saturating_add)
+    }
+
+    /// Calls `f` with each document's fields in the order they were added,
+    /// decoded one at a time into the same struct: `f` may take what it
+    /// needs out of it.
+    pub(crate) fn for_each(
+        &self,
+        mut f: impl FnMut(usize, &mut ExplicitFields) -> Result<()>,
+    ) -> Result<()> {
+        let mut doc = ExplicitFields::default();
+        let mut kept = self.kept.iter();
+        let mut i = 0usize;
+        for block in &self.blocks {
+            let mut r = Reader {
+                bytes: block,
+                pos: 0,
+            };
+            while r.pos < block.len() {
+                match r.byte()? {
+                    PACKED => decode_into(&mut r, &mut doc)?,
+                    KEPT => doc.clone_from(kept.next().ok_or_else(|| {
+                        explicit_error("packed fields: a kept document is missing")
+                    })?),
+                    _ => return Err(corrupt()),
+                }
+                f(i, &mut doc)?;
+                i = i.saturating_add(1);
+            }
+        }
+        if i != self.len {
+            return Err(corrupt());
+        }
+        Ok(())
     }
 
     /// Appends one document's fields and returns the bytes this allocated:
@@ -225,8 +268,17 @@ fn encode(fields: &ExplicitFields, out: &mut Vec<u8>) {
 }
 
 fn decode(r: &mut Reader<'_>) -> Result<ExplicitFields> {
+    let mut out = ExplicitFields::default();
+    decode_into(r, &mut out)?;
+    Ok(out)
+}
+
+/// Decodes one packed record over `out`, reusing its vectors.
+fn decode_into(r: &mut Reader<'_>, out: &mut ExplicitFields) -> Result<()> {
     let n = r.len()?;
-    let mut inverted = Vec::with_capacity(n);
+    let inverted = &mut out.inverted;
+    inverted.clear();
+    inverted.reserve(n);
     for _ in 0..n {
         let field_number = r.i32()?;
         let norm = match r.byte()? {
@@ -240,10 +292,10 @@ fn decode(r: &mut Reader<'_>) -> Result<ExplicitFields> {
             norm,
         });
     }
-    let mut roles = [Vec::new(), Vec::new()];
-    for values in &mut roles {
+    for values in [&mut out.doc_values, &mut out.points] {
+        values.clear();
         let n = r.len()?;
-        values.reserve_exact(n);
+        values.reserve(n);
         for _ in 0..n {
             let field_number = r.i32()?;
             let value = match r.byte()? {
@@ -269,18 +321,13 @@ fn decode(r: &mut Reader<'_>) -> Result<ExplicitFields> {
         }
     }
     let n = r.len()?;
-    let mut registered = Vec::with_capacity(n);
+    out.registered.clear();
+    out.registered.reserve(n);
     for _ in 0..n {
-        registered.push(r.i32()?);
+        out.registered.push(r.i32()?);
     }
-    let [doc_values, points] = roles;
-    Ok(ExplicitFields {
-        inverted,
-        doc_values,
-        points,
-        registered,
-        term_vectors: Vec::new(),
-    })
+    out.term_vectors.clear();
+    Ok(())
 }
 
 fn zigzag(v: i64) -> u64 {
@@ -433,6 +480,18 @@ mod tests {
         assert_eq!(packed.len(), 5000);
         assert!(packed.blocks.len() > 1, "the records span several blocks");
         assert!(allocated >= packed.blocks.len() * BLOCK);
+        // one document at a time, in order, each over the last
+        let mut seen = 0;
+        packed
+            .for_each(|i, f| {
+                same(f, &expected[i]);
+                assert_eq!(i, seen);
+                seen += 1;
+                f.doc_values.clear();
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(seen, expected.len());
         let unpacked = packed.unpack().unwrap();
         assert_eq!(unpacked.len(), expected.len());
         for (a, b) in unpacked.iter().zip(&expected) {
