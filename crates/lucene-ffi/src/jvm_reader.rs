@@ -498,6 +498,7 @@ pub unsafe extern "C" fn ffi_open_jvm_reader(
             reader,
             live_docs,
             deleted,
+            commit_live: std::sync::Mutex::new(None),
         }))?;
         // SAFETY: caller contract.
         unsafe { *out_handle = handle };

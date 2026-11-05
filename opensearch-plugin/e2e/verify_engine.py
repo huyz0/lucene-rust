@@ -474,11 +474,23 @@ def realtime():
             must("POST", f"/{rt}/_refresh")
     after = must("GET", "/_plugins/lucene_rust/stats").get("live_queries", 0)
     check(after - before >= 12, f"realtime: live searches counted ({after - before})")
-    # An update of a refreshed document: found once, never twice.
-    must("POST", f"/{rt}/_doc/r5", {"body": "fox fox fox", "tag": "t3"})
-    out = must("POST", f"/{rt}/_search", {"query": {"match": {"body": "fox"}}, "size": 10000})
-    ids = [h["_id"] for h in out["hits"]["hits"]]
-    check(ids.count("r5") <= 1, "realtime: an updated document is not found twice")
+    # Updates and deletes of refreshed documents, and of buffered ones: the live search sees the
+    # new versions only, as a refreshed index does.
+    for idx in (rt, ref):
+        must("POST", f"/{idx}/_doc/r5", {"body": "fox fox fox", "tag": "t3"})
+        must("POST", f"/{idx}/_doc/r700", {"body": "fox alpha", "tag": "t3"})
+        must("DELETE", f"/{idx}/_doc/r6")
+        must("DELETE", f"/{idx}/_doc/r701")
+    must("POST", f"/{ref}/_refresh")
+    before = must("GET", "/_plugins/lucene_rust/stats").get("live_queries", 0)
+    for q in queries:
+        a, b = scored(rt, q), scored(ref, q)
+        check(a[0] == b[0], f"realtime after updates: total {q}: {a[0]} vs {b[0]}")
+        check(a[1] == b[1], f"realtime after updates: scored hits {q}: {a[1][:2]} vs {b[1][:2]}")
+        ids = [h[1] for h in a[1]]
+        check(ids.count("r5") <= 1 and "r6" not in ids, f"realtime after updates: {q} finds r5 once, r6 never")
+    after = must("GET", "/_plugins/lucene_rust/stats").get("live_queries", 0)
+    check(after - before >= 4, f"realtime: searches after updates stay live ({after - before})")
     for idx in (rt, ref):
         must("DELETE", f"/{idx}")
 

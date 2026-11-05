@@ -423,7 +423,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
         };
         let segment_docs = writer.segment_doc_total()?;
         let mut live = live::LiveFlushes::default();
-        live.committed(writer.segment_infos().generation);
+        live.committed(writer.segment_infos().generation, 0);
         let max_docs = writer.max_docs_limit();
         Ok(ConcurrentIndexWriter {
             dir: writer.dir(),
@@ -804,17 +804,17 @@ impl<'d> ConcurrentIndexWriter<'d> {
                 .wait(core)
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
         }
-        let seq_no = {
+        let (seq_no, end) = {
             let mut log = lock(&self.log);
             let end = log.end();
             log.nodes.clear();
             log.base = end;
             log.handed = end;
             log.unhanded_bytes = 0;
-            log.take_seq()
+            (log.take_seq(), end)
         };
         self.update_ram(|c| c.set_delete_bytes_used(0));
-        core.live.discard();
+        core.live.discard(end);
         let deleted = core.writer.delete_all();
         // Every slot was emptied above and no flush is in flight.
         self.buffered_docs.store(0, Ordering::Release);
@@ -899,6 +899,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
         for node in nodes {
             core.writer.buffer_global_delete(node);
         }
+        core.live.handed(nodes);
         // They reach the buffers being flushed once published; live search
         // sees them there now.
         if !nodes.is_empty() && core.live.buffers_mut().next().is_some() {
@@ -1551,8 +1552,8 @@ impl<'d> ConcurrentIndexWriter<'d> {
     /// inverting is the build's own work. Returns once the cut is published,
     /// and so every ticket before it, with the sequence number of the last
     /// operation before the cut.
-    fn flush_all(&self, barrier: bool) -> Result<SeqNo> {
-        let (batches, cut, packet, last_seq) = {
+    fn flush_all(&self, barrier: bool) -> Result<(SeqNo, usize)> {
+        let (batches, cut, packet, last_seq, handed) = {
             let mut slots: Vec<MutexGuard<'_, Dwpt>> = self.slots.iter().map(lock).collect();
             let batches: Vec<FlushBatch> = slots
                 .iter_mut()
@@ -1560,10 +1561,10 @@ impl<'d> ConcurrentIndexWriter<'d> {
                 .filter_map(|(i, dwpt)| self.begin_flush(i, dwpt))
                 .collect();
             let mut core = lock(&self.core);
-            let (nodes, last_seq) = {
+            let (nodes, last_seq, handed) = {
                 let mut log = lock(&self.log);
                 let nodes = Self::take_unhanded(&mut log);
-                (nodes, log.next_seq.saturating_sub(1))
+                (nodes, log.next_seq.saturating_sub(1), log.handed)
             };
             Self::hand_over(&mut core, &nodes);
             let packet = core.writer.begin_deletes_ticket();
@@ -1572,7 +1573,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
             if barrier {
                 core.barrier = Some(cut.saturating_add(1));
             }
-            (batches, cut, packet, last_seq)
+            (batches, cut, packet, last_seq, handed)
         };
         std::thread::scope(|scope| {
             let builds: Vec<_> = batches
@@ -1586,7 +1587,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
             }
             result
         })?;
-        Ok(last_seq)
+        Ok((last_seq, handed))
     }
 
     /// Flushes every slot's buffer to a segment and waits until every segment
@@ -1630,7 +1631,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
         let last_seq = {
             let _full_flush = lock(&self.full_flush);
             let _barrier = BarrierGuard(self);
-            let last_seq = self.flush_all(true)?;
+            let (last_seq, handed) = self.flush_all(true)?;
             before_commit()?;
             let mut core = lock(&self.core);
             // Merge-on-commit leaves the segments this writer's merge
@@ -1641,7 +1642,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
             writer.prepare_commit_excluding(merging)?;
             writer.finish_commit()?;
             let generation = writer.segment_infos().generation;
-            core.live.committed(generation);
+            core.live.committed(generation, handed);
             last_seq
         };
         self.schedule_merges(MergeTrigger::FullFlush)?;
@@ -1887,17 +1888,21 @@ impl<'d> ConcurrentIndexWriter<'d> {
                 .wait(core)
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
         }
-        {
+        let end = {
             let mut log = lock(&self.log);
             let end = log.end();
             log.nodes.clear();
             log.base = end;
             log.handed = end;
             log.unhanded_bytes = 0;
-        }
+            end
+        };
         self.update_ram(|c| c.set_delete_bytes_used(0));
-        core.live.discard();
+        core.live.discard(end);
         core.writer.rollback();
+        // Back at its last commit, whose readers now hold every document.
+        let generation = core.writer.segment_infos().generation;
+        core.live.committed(generation, end);
         self.buffered_docs.store(0, Ordering::Release);
         self.refresh_segment_docs(&mut core);
         drop(core);

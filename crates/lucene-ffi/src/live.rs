@@ -21,12 +21,17 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use lucene_codecs::stored_fields::FieldValue;
+use lucene_index::buffered_updates::Term;
 use lucene_index::concurrent_writer::LiveView;
+use lucene_search::collector::VecCollector;
 use lucene_search::live_segment::{live_request, live_segments};
 use lucene_search::multi_segment::OpenSegment;
-use lucene_search::query::Clause;
+use lucene_search::query::{Clause, TermQuery};
 use lucene_search::similarities::Similarity;
-use lucene_search::{search_boolean_query_multi_segment_maxscore_counting, TotalHitsRelation};
+use lucene_search::{
+    search_boolean_query_multi_segment_maxscore_counting, search_term_query, TotalHitsRelation,
+};
+use lucene_util::fixed_bit_set::FixedBitSet;
 
 use crate::clauses::map_search_error;
 use crate::engine_writer::{self, EngineWriter};
@@ -34,11 +39,27 @@ use crate::error::{guard, set_last_error, FfiStatus};
 use crate::jvm_fetch::{BINARY, DOUBLE, FLOAT, INT, LONG, STRING};
 use crate::jvm_reader::{boolean_of, decode_request, lookup};
 use crate::raw::bytes_from_raw;
+use crate::registry::JvmReaderHandle;
 
 /// An open view and the writer it reads.
 struct ViewHandle {
     writer: Arc<EngineWriter>,
     view: LiveView,
+}
+
+/// Per segment, the documents live once the deletes since the commit are
+/// applied; `None` when every document is.
+type Masks = Vec<Option<Arc<FixedBitSet>>>;
+
+/// A reader's [`Masks`] after the first `applied` of the delete terms its
+/// views list ([`LiveView::commit_deletes`]): every view of one commit
+/// lists the same terms first, so the next search applies only the new
+/// ones. `last` is the last of them, to tell a list that does not extend
+/// these.
+pub(crate) struct CommitLive {
+    applied: usize,
+    last: Term,
+    masks: Arc<Masks>,
 }
 
 fn views() -> &'static Mutex<HashMap<u64, Arc<ViewHandle>>> {
@@ -300,16 +321,15 @@ pub unsafe extern "C" fn ffi_jvm_reader_search_live(
             FfiStatus::Decode
         })?;
         let sim = sim.as_ref();
-        let mut segments: Vec<OpenSegment<'_>> = opened
-            .as_open_segments()
-            .into_iter()
-            .zip(&h.live_docs)
-            .map(|(mut s, live)| {
-                s.live_docs = live.as_ref();
-                s.similarity = sim.map(|p| p as &dyn Similarity);
-                s
-            })
-            .collect();
+        let mut segments: Vec<OpenSegment<'_>> = opened.as_open_segments();
+        let masks = commit_masks(&v.view.commit_deletes, &h, &segments)?;
+        for (i, s) in segments.iter_mut().enumerate() {
+            s.live_docs = match &masks {
+                Some(m) => m.get(i).and_then(Option::as_deref),
+                None => h.live_docs.get(i).and_then(Option::as_ref),
+            };
+            s.similarity = sim.map(|p| p as &dyn Similarity);
+        }
         let mut doc_base = h.reader.max_doc();
         for (l, i) in live.iter().zip(&inputs) {
             let mut s = l.segment(i, doc_base);
@@ -376,4 +396,76 @@ pub unsafe extern "C" fn ffi_jvm_reader_search_live(
         }
         Ok(())
     })
+}
+
+/// The reader's live documents with `terms` (a view's
+/// [`LiveView::commit_deletes`]) applied to `segments`, its segments; `None`
+/// when there are none to apply. Kept on the reader for the next search.
+fn commit_masks(
+    terms: &[Term],
+    h: &JvmReaderHandle,
+    segments: &[OpenSegment<'_>],
+) -> Result<Option<Arc<Masks>>, FfiStatus> {
+    let Some(last) = terms.last() else {
+        return Ok(None);
+    };
+    let mut cached = h
+        .commit_live
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let extends = cached.as_ref().filter(|c| {
+        c.applied <= terms.len()
+            && c.applied
+                .checked_sub(1)
+                .and_then(|i| terms.get(i))
+                .is_some_and(|t| *t == c.last)
+    });
+    let (from, mut masks) = match extends {
+        Some(c) if c.applied == terms.len() => return Ok(Some(Arc::clone(&c.masks))),
+        Some(c) => (c.applied, Masks::clone(&c.masks)),
+        None => (
+            0,
+            h.live_docs
+                .iter()
+                .map(|l| l.clone().map(Arc::new))
+                .collect(),
+        ),
+    };
+    let mut hits = VecCollector::default();
+    for t in &terms[from..] {
+        let query = TermQuery::new(t.field.as_str(), t.bytes.as_slice());
+        for (seg, mask) in segments.iter().zip(masks.iter_mut()) {
+            hits.docs.clear();
+            search_term_query(seg.fields, seg.doc_in, None, &query, &mut hits)
+                .map_err(map_search_error)?;
+            if hits.docs.is_empty() {
+                continue;
+            }
+            let max_doc = usize::try_from(seg.max_doc.unwrap_or(0)).unwrap_or(0);
+            let mask = mask.get_or_insert_with(|| {
+                let mut all = FixedBitSet::new(max_doc);
+                all.set_range(0, max_doc);
+                Arc::new(all)
+            });
+            let mask = Arc::make_mut(mask);
+            let len = mask.len();
+            for &d in &hits.docs {
+                if let Ok(d) = usize::try_from(d) {
+                    if d < len {
+                        mask.clear(d);
+                    }
+                }
+            }
+        }
+    }
+    let masks = Arc::new(masks);
+    // A view older than the cached masks keeps its own.
+    if cached.as_ref().is_none_or(|c| c.applied <= terms.len()) {
+        *cached = Some(CommitLive {
+            applied: terms.len(),
+            last: last.clone(),
+            masks: Arc::clone(&masks),
+        });
+    }
+    Ok(Some(masks))
 }
