@@ -436,6 +436,10 @@ impl Columns {
     }
 }
 
+/// A term's fixed charge: its `ParallelPostingsArray` entries, its hash
+/// slot's share, its start and hash.
+const TERM_BYTES: usize = 24 + 4 + 4 + 8;
+
 impl FieldRuns {
     fn new(index_options: IndexOptions) -> Self {
         FieldRuns {
@@ -452,20 +456,17 @@ impl FieldRuns {
         }
     }
 
-    /// Heap bytes the field holds: its blocks, its per-term arrays and its
-    /// dictionary, as `bytesUsed` counts them.
+    /// The field's share of the RAM buffer, as `bytesUsed` counts it: the
+    /// pool blocks it took, and per term [`TERM_BYTES`] plus the term's
+    /// bytes. The run and dictionary arrays' spare capacity is not charged,
+    /// as Java charges its postings arrays by entry, so a buffer flushes
+    /// after the documents Java's would.
     fn ram_bytes(&self) -> usize {
-        [
-            self.pool.ram_bytes(),
-            self.runs
-                .capacity()
-                .saturating_mul(std::mem::size_of::<TermRun>()),
-            self.starts.capacity().saturating_mul(8),
-            self.last_offsets.capacity().saturating_mul(4),
-            self.terms.ram_bytes(),
-        ]
-        .into_iter()
-        .fold(0, usize::saturating_add)
+        self.runs
+            .len()
+            .saturating_mul(TERM_BYTES)
+            .saturating_add(self.terms.term_bytes())
+            .saturating_add(self.pool.ram_bytes())
     }
 
     /// Starts loading what adding the terms after `i` will read: for the
