@@ -649,7 +649,8 @@ impl FieldRuns {
                 }
             }
             seen = seen.saturating_add(freq);
-            out.ends.push(to_u32(out.positions.len().saturating_sub(pos_from)));
+            out.ends
+                .push(to_u32(out.positions.len().saturating_sub(pos_from)));
         }
         // A document's positions are as many as its frequency.
         if seen != run.occurrences || !r.eof() {
@@ -1328,7 +1329,10 @@ mod tests {
             }
             let mut r = pool.reader(sa, c);
             assert!((0..keep).all(|i| r.read_vlong() == i), "{keep}");
-            assert_eq!([r.read_vlong(), r.read_vlong(), r.read_vlong()], [9_999, 1, 300]);
+            assert_eq!(
+                [r.read_vlong(), r.read_vlong(), r.read_vlong()],
+                [9_999, 1, 300]
+            );
             assert!(r.eof(), "{keep}");
             a = c;
         }
@@ -1344,7 +1348,13 @@ mod tests {
         let mut p = PendingPostings::default();
         let opts = IndexOptions::DocsAndFreqsAndPositions;
         for doc in 0..200_000 {
-            add(&mut p, 0, doc, opts, vec![term("a", &[0, 2, 3], &[]), term("b", &[1], &[])]);
+            add(
+                &mut p,
+                0,
+                doc,
+                opts,
+                vec![term("a", &[0, 2, 3], &[]), term("b", &[1], &[])],
+            );
         }
         let per_doc = p.bytes() / 200_000;
         assert!(per_doc <= 8, "{per_doc} bytes per document");
