@@ -196,6 +196,10 @@ pub enum Error {
     /// accept -- see `index_writer/explicit.rs`.
     #[error("explicit document: {0}")]
     Explicit(String),
+    /// A search over the writer's buffers that the buffers cannot answer --
+    /// see [`crate::concurrent_writer::ConcurrentIndexWriter::live_snapshot`].
+    #[error("live search: {0}")]
+    LiveSearch(String),
     /// A [`crate::document::Document`] the document API refuses -- Java's
     /// `IllegalArgumentException` from `IndexingChain` or a field.
     #[error("document: {0}")]
@@ -1396,6 +1400,11 @@ impl IndexingConfig {
             .by_name
             .get(name)
             .and_then(|&at| self.fields.get(at))
+    }
+
+    /// The configured soft-deletes field, if any.
+    pub(crate) fn soft_deletes_field(&self) -> Option<&FieldInfo> {
+        self.fields.iter().find(|f| f.soft_deletes_field)
     }
 
     /// The configured field numbered `number`.

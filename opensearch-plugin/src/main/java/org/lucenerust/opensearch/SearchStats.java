@@ -22,6 +22,17 @@ public final class SearchStats {
         nativeQueries.increment();
     }
 
+    private final LongAdder liveQueries = new LongAdder();
+
+    /** A native search that read the writer's buffered documents too; also counted as native. */
+    public void liveQuery() {
+        liveQueries.increment();
+    }
+
+    public long liveCount() {
+        return liveQueries.sum();
+    }
+
     /** A native search that failed and was re-run on Lucene; also counted as a fallback. */
     public void nativeError() {
         nativeErrors.increment();

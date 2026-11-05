@@ -204,6 +204,31 @@ impl TermHash {
         (id, true)
     }
 
+    /// The id of `bytes`, if held; adds nothing.
+    pub(crate) fn find(&self, bytes: &[u8]) -> Option<u32> {
+        let h = hash_bytes(bytes);
+        let mask = self.table.len().wrapping_sub(1);
+        let mut slot = home_slot(h, self.table.len());
+        loop {
+            let entry = *self.table.get(slot)?;
+            if entry == 0 {
+                return None;
+            }
+            if entry >> 32 == tag(h) {
+                let id = (entry as u32).wrapping_sub(1);
+                if self.term(id) == bytes {
+                    return Some(id);
+                }
+            }
+            slot = slot.wrapping_add(1) & mask;
+        }
+    }
+
+    /// How many terms are held.
+    pub(crate) fn count(&self) -> usize {
+        self.len()
+    }
+
     fn grow(&mut self) {
         self.rehash(self.table.len().saturating_mul(2));
     }

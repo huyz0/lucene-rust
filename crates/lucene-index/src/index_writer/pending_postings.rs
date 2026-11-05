@@ -33,6 +33,9 @@ use super::explicit::{explicit_error, InvertedField};
 use super::Result;
 use crate::inverter::{hash_bytes, TermHash};
 
+mod live;
+pub(crate) use live::LiveFieldStats;
+
 /// Bytes per full pool block: `ByteBlockPool.BYTE_BLOCK_SIZE`. A field's
 /// first blocks are smaller (1, 2, 4, 8 and 16 KB), so a field with few
 /// terms does not hold a whole block: Lucene shares one pool across a
@@ -429,6 +432,10 @@ pub(crate) struct FieldRuns {
     /// `docCount`.
     doc_count: i32,
     last_doc: i32,
+    /// The field's `sumDocFreq` and `sumTotalTermFreq` so far, kept as
+    /// documents arrive for a search over the buffer.
+    sum_doc_freq: i64,
+    sum_total_term_freq: i64,
 }
 
 /// How many terms ahead of the one being added [`FieldRuns::prefetch_ahead`]
@@ -495,6 +502,8 @@ impl FieldRuns {
             payloads: false,
             doc_count: 0,
             last_doc: -1,
+            sum_doc_freq: 0,
+            sum_total_term_freq: 0,
         }
     }
 
@@ -597,6 +606,8 @@ impl FieldRuns {
         run.freq = freq;
         run.last_pos = 0;
         run.doc_count = run.doc_count.saturating_add(1);
+        self.sum_doc_freq = self.sum_doc_freq.saturating_add(1);
+        self.sum_total_term_freq = self.sum_total_term_freq.saturating_add(i64::from(freq));
         if let Some(o) = self.last_offsets.get_mut(id) {
             *o = 0;
         }
@@ -622,6 +633,10 @@ impl FieldRuns {
     pub(crate) fn set_freq(&mut self, slot: TermSlot, freq: i32) {
         let run = &mut self.runs[slot.id as usize];
         if run.doc_count > 0 {
+            self.sum_total_term_freq = self
+                .sum_total_term_freq
+                .saturating_add(i64::from(freq))
+                .saturating_sub(i64::from(run.freq));
             run.freq = freq;
         }
     }
@@ -1081,6 +1096,8 @@ struct FieldMark {
     doc_count: i32,
     last_doc: i32,
     payloads: bool,
+    /// `sumDocFreq` and `sumTotalTermFreq`.
+    sums: [i64; 2],
 }
 
 /// Every field's buffered postings: see the module doc.
@@ -1150,6 +1167,7 @@ impl PendingPostings {
                         doc_count: f.doc_count,
                         last_doc: f.last_doc,
                         payloads: f.payloads,
+                        sums: [f.sum_doc_freq, f.sum_total_term_freq],
                     };
                     (n, mark)
                 })
@@ -1182,6 +1200,7 @@ impl PendingPostings {
                 }
             }
             (f.doc_count, f.last_doc, f.payloads) = (mark.doc_count, mark.last_doc, mark.payloads);
+            [f.sum_doc_freq, f.sum_total_term_freq] = mark.sums;
             true
         });
     }

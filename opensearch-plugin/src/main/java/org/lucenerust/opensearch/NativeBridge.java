@@ -38,7 +38,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code jvm_reader.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 61;
+    public static final int EXPECTED_ABI_VERSION = 62;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -301,6 +301,38 @@ public final class NativeBridge {
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG)
         );
         static final MethodHandle WRITER_CLOSE = bind("ffi_engine_writer_close", FunctionDescriptor.of(JAVA_INT, JAVA_LONG));
+        static final MethodHandle LIVE_VIEW_OPEN = bind(
+            "ffi_engine_writer_live_view_open",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG, ADDRESS, ADDRESS, ADDRESS)
+        );
+        static final MethodHandle LIVE_VIEW_CLOSE = bind("ffi_live_view_close", FunctionDescriptor.of(JAVA_INT, JAVA_LONG));
+        static final MethodHandle WRITER_RELEASE_LIVE = bind(
+            "ffi_engine_writer_release_live",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG)
+        );
+        static final MethodHandle LIVE_DOCUMENT = bind(
+            "ffi_live_view_document_alloc",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_INT, ADDRESS, ADDRESS)
+        );
+        static final MethodHandle SEARCH_LIVE = bind(
+            "ffi_jvm_reader_search_live",
+            FunctionDescriptor.of(
+                JAVA_INT,
+                JAVA_LONG,
+                JAVA_LONG,
+                ADDRESS,
+                JAVA_LONG,
+                JAVA_LONG,
+                JAVA_LONG,
+                ADDRESS,
+                ADDRESS,
+                JAVA_LONG,
+                ADDRESS,
+                ADDRESS,
+                ADDRESS,
+                ADDRESS
+            )
+        );
     }
 
     /** A {@code MethodHandle.invokeExact} failure: only an error the JVM raised, never a status. */
@@ -1321,12 +1353,14 @@ public final class NativeBridge {
     /** {@link #writerOpen}'s flags. */
     public static final int OPEN_FAULT_INJECTION = 1;
     public static final int OPEN_SPARSE = 2;
+    public static final int OPEN_LIVE_SEARCH = 4;
 
     /**
      * Opens a shard's writer over the index at {@code path}, which must already hold a commit. Commit
      * points are dropped only through {@link #writerDeleteCommits}. {@code faultInjection} allows the
      * test-only panic operation; {@code sparse} writes the segments of an {@code index.sparse} index,
-     * with neural-search's codec and clustered postings. {@code maxDocs} is {@code
+     * with neural-search's codec and clustered postings; {@code liveSearch} keeps what a search of the
+     * buffered documents reads ({@link #liveViewOpen}). {@code maxDocs} is {@code
      * IndexWriter.getActualMaxDocs()}, which Lucene's tests lower.
      */
     public static int writerOpen(
@@ -1334,6 +1368,7 @@ public final class NativeBridge {
         double ramBufferMb,
         boolean faultInjection,
         boolean sparse,
+        boolean liveSearch,
         int maxDocs,
         long[] outHandle
     ) {
@@ -1346,7 +1381,8 @@ public final class NativeBridge {
                 s.bytes(indexPathUtf8),
                 (long) indexPathUtf8.length,
                 ramBufferMb,
-                (byte) ((faultInjection ? OPEN_FAULT_INJECTION : 0) | (sparse ? OPEN_SPARSE : 0)),
+                (byte) ((faultInjection ? OPEN_FAULT_INJECTION : 0) | (sparse ? OPEN_SPARSE : 0)
+                    | (liveSearch ? OPEN_LIVE_SEARCH : 0)),
                 maxDocs,
                 out
             );
@@ -1691,6 +1727,140 @@ public final class NativeBridge {
     public static int writerClose(long handle) {
         try {
             return (int) H.WRITER_CLOSE.invokeExact(handle);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    // ---- Live search of the writer's buffers (live.rs). ----
+
+    /**
+     * Opens a view of the documents buffered in writer {@code writer} that a reader of commit
+     * {@code commitGeneration} lacks: its handle into {@code outView[0]}, its blob ({@code published:
+     * i64}, {@code count: i32}, then per buffer {@code maxDoc: i32}, {@code deleted: i32} and that many
+     * deleted documents, little-endian) into {@code outBlob[0]}. {@link #INVALID_ARGUMENT} when the
+     * buffers cannot be read for that commit; the caller then searches the reader alone.
+     */
+    public static int liveViewOpen(long writer, long commitGeneration, long[] outView, byte[][] outBlob) {
+        if (outView == null || outView.length < 1 || outBlob == null || outBlob.length < 1) {
+            return fail(INVALID_ARGUMENT, "outView and outBlob need a slot each");
+        }
+        try (Scratch s = Scratch.open()) {
+            MemorySegment view = s.alloc(Long.BYTES);
+            MemorySegment blob = ownedSlot(s);
+            int rc = (int) H.LIVE_VIEW_OPEN.invokeExact(writer, commitGeneration, view, ptrOf(blob), lenOf(blob));
+            if (rc == OK) {
+                long id = view.get(JAVA_LONG, 0);
+                byte[] bytes = take(blob);
+                if (bytes == null) {
+                    liveViewClose(id);
+                    return tooLarge("the live view");
+                }
+                outView[0] = id;
+                outBlob[0] = bytes;
+            }
+            return rc;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** Closes a view: its buffers may go once nothing else reads them. */
+    public static int liveViewClose(long view) {
+        try {
+            return (int) H.LIVE_VIEW_CLOSE.invokeExact(view);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** Lets go of the buffers a reader of commit {@code generation} already has, once no view reads them. */
+    public static int writerReleaseLive(long writer, long generation) {
+        try {
+            return (int) H.WRITER_RELEASE_LIVE.invokeExact(writer, generation);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * Document {@code doc} of buffer {@code buffer} of {@code view}: its stored fields encoded as
+     * {@link #document} encodes them, into {@code out[0]}.
+     */
+    public static int liveDocument(long view, int buffer, int doc, byte[][] out) {
+        if (out == null || out.length < 1) {
+            return fail(INVALID_ARGUMENT, "out holds no slot");
+        }
+        try (Scratch s = Scratch.open()) {
+            MemorySegment result = ownedSlot(s);
+            int rc = (int) H.LIVE_DOCUMENT.invokeExact(view, buffer, doc, ptrOf(result), lenOf(result));
+            if (rc == OK) {
+                byte[] encoded = take(result);
+                if (encoded == null) {
+                    return tooLarge("the document");
+                }
+                out[0] = encoded;
+            }
+            return rc;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * {@link #search} over reader {@code handle} and the buffers of {@code view} together, a
+     * buffered hit numbered after the reader's {@code maxDoc}. {@code outCounts} as for {@link
+     * #search}, with a fourth slot 1 when the buffers could answer the query and 0 when they could
+     * not, in which case nothing else is written.
+     */
+    public static int searchLive(
+        long handle,
+        long view,
+        byte[] query,
+        int topN,
+        long countLimit,
+        int[] outDocs,
+        float[] outScores,
+        long[] outCounts
+    ) {
+        int refused = checkSearch(query, topN, outDocs, outScores, outCounts, 4);
+        if (refused != OK) {
+            return refused;
+        }
+        try (Scratch s = Scratch.open()) {
+            MemorySegment docs = s.room(JAVA_INT, topN);
+            MemorySegment scores = s.room(JAVA_FLOAT, topN);
+            MemorySegment counts = s.alloc(4 * Long.BYTES);
+            int rc = (int) H.SEARCH_LIVE.invokeExact(
+                handle,
+                view,
+                s.bytes(query),
+                (long) query.length,
+                (long) topN,
+                countLimit,
+                docs,
+                scores,
+                (long) topN,
+                counts,
+                counts.asSlice(Long.BYTES),
+                counts.asSlice(2 * Long.BYTES),
+                counts.asSlice(3 * Long.BYTES)
+            );
+            if (rc != OK) {
+                return rc;
+            }
+            boolean supported = counts.get(JAVA_BOOLEAN, 3 * Long.BYTES);
+            outCounts[3] = supported ? 1 : 0;
+            if (supported == false) {
+                return OK;
+            }
+            int n = Math.toIntExact(counts.get(JAVA_LONG, 0));
+            MemorySegment.copy(docs, JAVA_INT, 0, outDocs, 0, n);
+            MemorySegment.copy(scores, JAVA_FLOAT, 0, outScores, 0, n);
+            outCounts[0] = n;
+            outCounts[1] = counts.get(JAVA_LONG, Long.BYTES);
+            outCounts[2] = counts.get(JAVA_BOOLEAN, 2 * Long.BYTES) ? 1 : 0;
+            return OK;
         } catch (Throwable t) {
             throw rethrow(t);
         }
