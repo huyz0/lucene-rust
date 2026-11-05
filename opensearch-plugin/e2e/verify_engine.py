@@ -168,14 +168,14 @@ def source(r, i):
     return doc
 
 
-def create(index, rust, extra=None):
+def create(index, rust, extra=None, mapping=None):
     # Explicit both ways: on a node whose lucene_rust.engine.default is true, an index that says
     # nothing is a Rust one.
     settings = {"number_of_shards": 2, "number_of_replicas": 0, "refresh_interval": -1,
                 "index.lucene_rust.engine": bool(rust)}
     settings["analysis"] = ANALYSIS
     settings.update(extra or {})
-    must("PUT", f"/{index}", {"settings": settings, "mappings": MAPPING})
+    must("PUT", f"/{index}", {"settings": settings, "mappings": mapping or MAPPING})
 
 
 def comparable_item(item):
@@ -427,6 +427,59 @@ def insert_only_scoring():
         must("POST", f"/{idx}/_refresh")
     compare_searches("insert-only (merged)", scores=True, exact_scores=True, java="score_java", rust="score_rust")
     for idx in ("score_java", "score_rust"):
+        must("DELETE", f"/{idx}")
+
+
+def realtime():
+    """index.lucene_rust.realtime_search: a plain scored search sees what was indexed before it,
+    with no refresh, and scores it as a refreshed index scores the same documents; a request the
+    buffers cannot answer sees the last refresh."""
+    rt, ref = "rt_live", "rt_ref"
+    for idx in (rt, ref):
+        req("DELETE", f"/{idx}")
+    # Nested documents stay on the last refresh: no nested field here.
+    flat = {"properties": {k: v for k, v in MAPPING["properties"].items() if v.get("type") != "nested"}}
+    create(rt, True, {"index.lucene_rust.realtime_search": True}, flat)
+    create(ref, True, None, flat)
+    wait_green(f"{rt},{ref}")
+    before = must("GET", "/_plugins/lucene_rust/stats").get("live_queries", 0)
+    r = random.Random(11)
+    queries = [{"match": {"body": "fox"}}, {"match": {"title": "quick dogs"}},
+               {"bool": {"must": [{"match": {"body": "alpha"}}], "should": [{"term": {"tag": "t3"}}]}},
+               {"match_phrase": {"body": "quick brown"}}, {"term": {"tag": "t3"}}]
+
+    def scored(index, q):
+        out = must("POST", f"/{index}/_search?request_cache=false", {"query": q, "size": 10000, "track_total_hits": True})
+        return out["hits"]["total"]["value"], sorted((round(h["_score"], 4), h["_id"], json.dumps(h["_source"], sort_keys=True))
+                                                      for h in out["hits"]["hits"])
+
+    for rnd in range(3):
+        lines = []
+        for i in range(300):
+            n = rnd * 300 + i
+            lines += [{"index": {"_id": f"r{n}"}}, source(r, n)]
+        body = "\n".join(json.dumps(l) for l in lines) + "\n"
+        must("POST", f"/{rt}/_bulk", body, ndjson=True)
+        must("POST", f"/{ref}/_bulk", body, ndjson=True)
+        must("POST", f"/{ref}/_refresh")
+        for q in queries:
+            a, b = scored(rt, q), scored(ref, q)
+            check(a[0] == b[0], f"realtime round {rnd}: total {q}: {a[0]} vs {b[0]}")
+            check(a[1] == b[1], f"realtime round {rnd}: scored hits {q}: {a[1][:2]} vs {b[1][:2]}")
+        # Aggregations read the last refresh only.
+        aggs = must("POST", f"/{rt}/_search", {"size": 0, "track_total_hits": True, "aggs": {"t": {"terms": {"field": "tag"}}}})
+        refreshed = 600 if rnd == 2 else 0
+        check(aggs["hits"]["total"]["value"] == refreshed, f"realtime round {rnd}: aggregations see the last refresh")
+        if rnd == 1:
+            must("POST", f"/{rt}/_refresh")
+    after = must("GET", "/_plugins/lucene_rust/stats").get("live_queries", 0)
+    check(after - before >= 12, f"realtime: live searches counted ({after - before})")
+    # An update of a refreshed document: found once, never twice.
+    must("POST", f"/{rt}/_doc/r5", {"body": "fox fox fox", "tag": "t3"})
+    out = must("POST", f"/{rt}/_search", {"query": {"match": {"body": "fox"}}, "size": 10000})
+    ids = [h["_id"] for h in out["hits"]["hits"]]
+    check(ids.count("r5") <= 1, "realtime: an updated document is not found twice")
+    for idx in (rt, ref):
         must("DELETE", f"/{idx}")
 
 
@@ -687,6 +740,7 @@ def main():
     restart(a.container, kill=True)
     compare_all("after SIGKILL", stream.ids)
     insert_only_scoring()
+    realtime()
     fault_containment()
     breaker()
     unsupported()

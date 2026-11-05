@@ -53,6 +53,17 @@ public final class RustEngineSupport {
     );
 
     /**
+     * Whether searches read the documents still in the writer's buffers, without a refresh: a
+     * plain scored query sees every document indexed before it started.
+     */
+    public static final Setting<Boolean> REALTIME_SEARCH = Setting.boolSetting(
+        "index.lucene_rust.realtime_search",
+        false,
+        Setting.Property.IndexScope,
+        Setting.Property.Final
+    );
+
+    /**
      * Test-only: a document with a {@code __lucene_rust_panic} field makes the writer panic inside
      * its lock, for the "a panic fails exactly one shard" check. Never set on a real index.
      */
@@ -216,6 +227,7 @@ public final class RustEngineSupport {
             config.getIndexingBufferSize().getMbFrac(),
             FAULT_INJECTION.get(config.getIndexSettings().getSettings()),
             org.lucenerust.opensearch.sparse.SparseSettings.SPARSE_INDEX.get(config.getIndexSettings().getSettings()),
+            REALTIME_SEARCH.get(config.getIndexSettings().getSettings()),
             maxDocs,
             config.getAnalyzer(),
             config.getSimilarity(),

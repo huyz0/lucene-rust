@@ -102,6 +102,19 @@ final class RustIndexWriter implements DocumentIndexWriter {
     /** Bytes of the Rust writer's buffer currently accounted to {@link #breaker}; under {@link #accounting}. */
     private long accounted;
     private boolean faultInjection;
+    /** Whether searches read the buffered documents ({@code index.lucene_rust.realtime_search}). */
+    private boolean liveSearch;
+    /** The newest commit generation whose readers' buffers {@link #releaseLive} let go; under {@link #liveLock}. */
+    private long liveReleased = -1;
+    private final Object liveLock = new Object();
+    /** Updates and deletes begun, and finished, since the writer opened. */
+    private final AtomicLong updatesBegun = new AtomicLong();
+    private final AtomicLong updatesDone = new AtomicLong();
+    /** Per recent commit generation, the updates done before it began: every one of them is in it. */
+    private final java.util.concurrent.ConcurrentSkipListMap<Long, Long> updatesBefore = new java.util.concurrent.ConcurrentSkipListMap<>();
+    /** The leaf's field infos and the registry size they were built at; under {@link #liveLock}. */
+    private org.apache.lucene.index.FieldInfos liveInfos;
+    private int liveInfosSize = -1;
     private boolean policyInitialized;
     /** The merge policy settings last sent to the writer; under {@link #lock}. */
     private double[] mergePolicySettings;
@@ -145,6 +158,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
         double ramBufferMb,
         boolean faultInjection,
         boolean sparse,
+        boolean liveSearch,
         int maxDocs,
         Analyzer analyzer,
         Similarity similarity,
@@ -163,6 +177,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
             ramBufferMb,
             faultInjection,
             sparse,
+            liveSearch,
             maxDocs,
             out
         );
@@ -185,6 +200,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
             w.minRetainedSeqNo = minRetainedSeqNo;
             w.breaker = breaker;
             w.faultInjection = faultInjection;
+            w.liveSearch = liveSearch;
             // IndexWriterConfig.setSoftDeletesField: the writer knows the field before any document
             // carries it, so the first soft update -- which may be the first use -- has a field to
             // land on.
@@ -195,6 +211,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
             synchronized (w.lock) {
                 w.liveCommitData = SegmentInfos.readLatestCommit(directory).getUserData().entrySet();
                 w.onNewCommits();
+                w.updatesBefore.put(w.latestGeneration, 0L);
             }
             success = true;
             return w;
@@ -385,7 +402,12 @@ final class RustIndexWriter implements DocumentIndexWriter {
         Field... softDeletesField
     ) throws IOException {
         ensureOpen();
-        apply(encoder.softUpdate(uid, docs, onlySoftDeletesField(softDeletesField)), docs.size());
+        updatesBegun.incrementAndGet();
+        try {
+            apply(encoder.softUpdate(uid, docs, onlySoftDeletesField(softDeletesField)), docs.size());
+        } finally {
+            updatesDone.incrementAndGet();
+        }
     }
 
     @Override
@@ -393,7 +415,12 @@ final class RustIndexWriter implements DocumentIndexWriter {
         throws IOException {
         ensureOpen();
         maybeInjectFault(doc);
-        apply(encoder.softUpdate(uid, List.of(doc), onlySoftDeletesField(softDeletesField)), 1);
+        updatesBegun.incrementAndGet();
+        try {
+            apply(encoder.softUpdate(uid, List.of(doc), onlySoftDeletesField(softDeletesField)), 1);
+        } finally {
+            updatesDone.incrementAndGet();
+        }
     }
 
     @Override
@@ -463,6 +490,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
         // Adds counted from here on may or may not be in the commit; they stay counted until the
         // next one, so the pending count errs high, never low.
         long counted = docsSinceCommit.get();
+        long updated = updatesDone.get();
         Iterable<Map.Entry<String, String>> data = liveCommitData;
         committingData = data instanceof StagedCommitData staged ? staged.beforeFlush() : data;
         long[] out = new long[1];
@@ -487,6 +515,10 @@ final class RustIndexWriter implements DocumentIndexWriter {
             throw new IOException("evaluating the commit data failed", failure);
         }
         check(status, "commit");
+        updatesBefore.put(out[0], updated);
+        while (updatesBefore.size() > 64) {
+            updatesBefore.pollFirstEntry();
+        }
         docsSinceCommit.addAndGet(-counted);
         reconcileBreaker();
         onNewCommits();
@@ -686,6 +718,120 @@ final class RustIndexWriter implements DocumentIndexWriter {
 
     long latestGeneration() {
         return latestGeneration;
+    }
+
+    // ---- live search ----
+
+    /** Whether searches read the buffered documents. */
+    boolean liveSearch() {
+        return liveSearch;
+    }
+
+    /**
+     * A view of the documents buffered after commit {@code generation}: its handle and blob ({@link
+     * NativeBridge#liveViewOpen}), or null when the buffers cannot be read for that commit (they were
+     * let go, a delete by query reached them, the writer is closed); the reader is then searched
+     * alone.
+     */
+    LiveViewHandle openLiveView(long generation) {
+        if (liveSearch == false || indexing.readLock().tryLock() == false) {
+            return null;
+        }
+        try {
+            if (closed || nativeClosed) {
+                return null;
+            }
+            long[] view = new long[1];
+            byte[][] blob = new byte[1][];
+            if (NativeBridge.liveViewOpen(handle, generation, view, blob) != NativeBridge.OK) {
+                return null;
+            }
+            return new LiveViewHandle(view[0], blob[0]);
+        } finally {
+            indexing.readLock().unlock();
+        }
+    }
+
+    /** An open view: {@link NativeBridge#liveViewClose} it once nothing reads it. */
+    record LiveViewHandle(long id, byte[] blob) {}
+
+    /**
+     * Lets go of the buffered documents a reader of commit {@code generation} already has, once no
+     * view reads them: every new search reads that commit or a newer one.
+     */
+    void releaseLive(long generation) {
+        synchronized (liveLock) {
+            if (liveSearch == false || generation <= liveReleased) {
+                return;
+            }
+            indexing.readLock().lock();
+            try {
+                if (nativeClosed == false && NativeBridge.writerReleaseLive(handle, generation) == NativeBridge.OK) {
+                    liveReleased = generation;
+                }
+            } finally {
+                indexing.readLock().unlock();
+            }
+        }
+    }
+
+    /**
+     * Whether an update or delete may have reached a document a reader of commit {@code
+     * generation} holds since that commit: the reader still shows the document, so a search of it
+     * and the buffers together would show it twice, or deleted.
+     */
+    boolean updatedSince(long generation) {
+        Long before = updatesBefore.get(generation);
+        return before == null || updatesBegun.get() != before;
+    }
+
+    /**
+     * The registered fields as Lucene field infos, for the leaf of buffered documents: the schema
+     * every segment writes, so the leaf agrees with the segments' field infos. Null when a field
+     * carries vectors, whose encoding the registry does not keep.
+     */
+    org.apache.lucene.index.FieldInfos liveFieldInfos() {
+        synchronized (liveLock) {
+            int size = registry.size();
+            if (size != liveInfosSize) {
+                liveInfos = buildLiveFieldInfos();
+                liveInfosSize = size;
+            }
+            return liveInfos;
+        }
+    }
+
+    private org.apache.lucene.index.FieldInfos buildLiveFieldInfos() {
+        List<org.apache.lucene.index.FieldInfo> list = new ArrayList<>();
+        for (FieldRegistry.Entry e : registry.entries()) {
+            FieldSchema f = e.schema();
+            if (f.vectorDimension != 0) {
+                return null;
+            }
+            list.add(
+                new org.apache.lucene.index.FieldInfo(
+                    f.name,
+                    e.number(),
+                    f.storeTermVectors,
+                    f.omitNorms,
+                    false,
+                    f.indexOptions,
+                    f.docValuesType,
+                    f.skipIndex,
+                    -1,
+                    new HashMap<>(f.attributes),
+                    f.pointDimensionCount,
+                    f.pointIndexDimensionCount,
+                    f.pointNumBytes,
+                    0,
+                    org.apache.lucene.index.VectorEncoding.FLOAT32,
+                    org.apache.lucene.index.VectorSimilarityFunction.EUCLIDEAN,
+                    f.softDeletes,
+                    false
+                )
+            );
+        }
+        return new org.apache.lucene.index.FieldInfos(list.toArray(new org.apache.lucene.index.FieldInfo[0]));
     }
 
     void releaseHold(long hold) {

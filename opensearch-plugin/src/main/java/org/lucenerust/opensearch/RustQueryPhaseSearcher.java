@@ -270,7 +270,19 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             } else if (hasTimeout && deadlinePassed(ctx)) {
                 reason = "timeout";
             } else {
-                reason = searchNative(ctx, acquired.handle(), blob, hitsBlob, sortBlob, collapseBlob, rescores, sort, scoreDocs, aggs, tree);
+                // The writer's buffered documents too, when the searcher has a view of them and
+                // the request is one the buffers answer; otherwise the reader's documents alone.
+                LiveDirectoryReader live = LiveDirectoryReader.find(searcher.getIndexReader());
+                boolean plain = blob == hitsBlob && aggs == null && tree == null && sortBlob == null && collapseBlob == null
+                    && rescores == null && sort == null && terminateAfter == 0;
+                if (live == null) {
+                    reason = searchNative(ctx, acquired.handle(), blob, hitsBlob, sortBlob, collapseBlob, rescores, sort, scoreDocs, aggs, tree);
+                } else if (plain == false || liveIneligible(ctx) != null || searchLive(ctx, acquired.handle(), live, blob) == false) {
+                    // The native per-segment passes number the searcher's leaves, the view's
+                    // among them; Lucene sees its documents as deleted and answers from the
+                    // reader's.
+                    reason = "realtime_view";
+                }
             }
             if (reason == null) {
                 stats.nativeQuery();
@@ -287,6 +299,85 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         boolean rescore = fallback.searchWith(ctx, searcher, query, collectors, hasFilterCollector, hasTimeout);
         stats.luceneTime(System.nanoTime() - luceneStart);
         return rescore;
+    }
+
+    /**
+     * Why a plain scored search cannot read the writer's buffered documents, or null when it can:
+     * what the buffers do not hold for the fetch phase (doc values, versions, highlighting), a query
+     * that expanded over the reader's terms alone, nested documents, a scroll or {@code
+     * search_after} page, {@code min_score}, or a concurrent count's per-slice early termination.
+     */
+    static String liveIneligible(SearchContext ctx) {
+        if (ctx.minimumScore() != null) return "min_score";
+        if (ctx.scrollContext() != null || ctx.searchAfter() != null) return "paging";
+        if (ctx.size() == 0 && ctx.shouldUseConcurrentSearch()) return "concurrent_count";
+        if (ctx.version() || ctx.seqNoAndPrimaryTerm() || ctx.explain()) return "fetch_metadata";
+        if (ctx.docValuesContext() != null || ctx.highlight() != null || ctx.hasScriptFields() || ctx.innerHits() != null
+            && ctx.innerHits().getInnerHits().isEmpty() == false) return "fetch_doc_values";
+        // Nested documents: the view has no parent filter to tell them apart.
+        if (ctx.mapperService().hasNested()) return "nested";
+        boolean[] expands = new boolean[1];
+        ctx.query().visit(new org.apache.lucene.search.QueryVisitor() {
+            @Override
+            public void visitLeaf(Query query) {
+                if (query instanceof org.apache.lucene.search.MultiTermQuery) {
+                    expands[0] = true;
+                }
+            }
+
+            @Override
+            public void consumeTermsMatching(
+                Query query,
+                String field,
+                java.util.function.Supplier<org.apache.lucene.util.automaton.ByteRunAutomaton> automaton
+            ) {
+                expands[0] = true;
+            }
+
+            @Override
+            public org.apache.lucene.search.QueryVisitor getSubVisitor(org.apache.lucene.search.BooleanClause.Occur occur, Query parent) {
+                return this;
+            }
+        });
+        return expands[0] ? "multi_term" : null;
+    }
+
+    /**
+     * A plain scored search over the reader's segments and the writer's buffered documents of
+     * {@code live}: the hits and total the reader and the buffers give together, a buffered hit
+     * numbered after the reader's documents. False when the buffers cannot answer the query, or the
+     * native search failed; nothing is stored then.
+     */
+    private boolean searchLive(SearchContext ctx, long handle, LiveDirectoryReader live, byte[] blob) {
+        int size = ctx.size();
+        int numDocs = size == 0 ? 0
+            : Math.min(ctx.from() + size, Math.max(1, ctx.searcher().getIndexReader().numDocs() + live.view().maxDoc()));
+        int trackUpTo = ctx.trackTotalHitsUpTo();
+        long countLimit = trackUpTo == SearchContext.TRACK_TOTAL_HITS_DISABLED ? 0
+            : trackUpTo == SearchContext.TRACK_TOTAL_HITS_ACCURATE ? Long.MAX_VALUE
+            : Math.max(trackUpTo, numDocs);
+        int[] docs = new int[numDocs];
+        float[] scores = new float[numDocs];
+        long[] counts = new long[4];
+        int rc = NativeBridge.searchLive(handle, live.view().id(), blob, numDocs, countLimit, docs, scores, counts);
+        if (rc != NativeBridge.OK) {
+            stats.nativeError();
+            logger.warn("lucene-rust: live search failed ({}), searching the reader alone: {}", rc, NativeBridge.lastError());
+            return false;
+        }
+        if (counts[3] == 0) {
+            return false;
+        }
+        int n = (int) counts[0];
+        ScoreDoc[] hits = new ScoreDoc[n];
+        for (int i = 0; i < n; i++) {
+            hits[i] = new ScoreDoc(docs[i], scores[i]);
+        }
+        TotalHits total = countLimit == 0 ? new TotalHits(0, TotalHits.Relation.GREATER_THAN_OR_EQUAL_TO)
+            : new TotalHits(counts[1], counts[2] != 0 ? TotalHits.Relation.GREATER_THAN_OR_EQUAL_TO : TotalHits.Relation.EQUAL_TO);
+        store(ctx, new TopDocsAndMaxScore(new TopDocs(total, hits), n == 0 ? Float.NaN : scores[0]), null);
+        stats.liveQuery();
+        return true;
     }
 
     /** Why this request cannot run native, or null when it can. */

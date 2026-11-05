@@ -189,6 +189,7 @@ public final class IndexingBench {
                     256,
                     false,
                     false,
+                    false,
                     IndexWriter.MAX_DOCS,
                     analyzer,
                     similarity,
