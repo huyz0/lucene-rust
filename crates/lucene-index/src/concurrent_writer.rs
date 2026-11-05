@@ -982,7 +982,9 @@ impl<'d> ConcurrentIndexWriter<'d> {
             .fetch_add(1, Ordering::Relaxed)
             .checked_rem(self.slots.len())
             .unwrap_or(0);
-        LAST_SLOT.set((self.id, wait));
+        // Not recorded as this thread's slot: it was only the one waited on
+        // (another thread's, or every slot held by a commit), so the thread
+        // keeps going back to its own once slots free up.
         (wait, lock(&self.slots[wait]))
     }
 
