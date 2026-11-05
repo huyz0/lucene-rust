@@ -275,12 +275,15 @@ impl ForwardVectors {
         };
         let mut seen = vec![0u64; (TOKEN_MODULUS / 64) as usize];
         let mut items: Vec<(u16, u8)> = Vec::new();
+        let mut values = doc_values::BinaryReader::new(data, entry);
         for (d, doc) in (0..max_doc).enumerate() {
             out.starts.push(out.tokens.len());
-            let Some(bytes) = doc_values::binary_value(data, entry, doc)? else {
+            let Some(bytes) = values.value(doc)? else {
                 continue;
             };
-            out.present.set(d);
+            if d < out.present.len() {
+                out.present.set(d);
+            }
             // Without two tokens folding together (or one token twice), the
             // vector is its pairs folded, quantized and sorted; otherwise
             // `SparseVector` resolves them as Java does.
