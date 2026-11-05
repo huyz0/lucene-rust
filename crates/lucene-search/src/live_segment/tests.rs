@@ -439,7 +439,7 @@ fn deletes_and_norms_outside_the_contract_are_refused() {
 #[test]
 fn the_writers_buffer_searches_like_its_committed_segment() {
     use lucene_index::buffered_updates::Term;
-    use lucene_index::concurrent_writer::{ConcurrentIndexWriter, LiveFieldRequest, LiveRequest};
+    use lucene_index::concurrent_writer::ConcurrentIndexWriter;
 
     let docs = corpus(700);
     let explicit = |d: &Doc| ExplicitDocument {
