@@ -120,10 +120,14 @@ pub struct EngineWriter {
     fault_injection: bool,
 }
 
-/// Files pinned by [`ffi_engine_writer_hold_commit`], by hold id.
+/// Files pinned by [`ffi_engine_writer_hold_commit`] and
+/// [`ffi_engine_writer_nrt_snapshot`], by hold id (one id space).
 #[derive(Default)]
 struct Holds {
     files: HashMap<u64, Vec<String>>,
+    /// Near-real-time snapshots' pins: dropping one hands its files back to
+    /// the writer, which releases them at its next flush or commit.
+    nrt: HashMap<u64, Arc<lucene_index::nrt::NrtFileHold>>,
     next: u64,
 }
 
@@ -796,6 +800,7 @@ pub unsafe extern "C" fn ffi_engine_writer_open(
             },
             maintenance: Mutex::new(Holds {
                 files: HashMap::new(),
+                nrt: HashMap::new(),
                 next: 1,
             }),
             tragic: OnceLock::new(),
@@ -1206,12 +1211,61 @@ pub unsafe extern "C" fn ffi_engine_writer_hold_commit(
     })
 }
 
+/// A near-real-time view without a commit (`IndexWriter.getReader`): flushes
+/// every buffer into a segment, applies every buffered delete, and returns
+/// the live segment list as `segments_N` bytes (`SegmentInfos.write`), with
+/// the last commit's generation (`*out_generation`, which the bytes' header
+/// names) and user data. Its files stay pinned under `*out_hold` until
+/// [`ffi_engine_writer_release_hold`]. Nothing is synced: the segments become
+/// durable at the next commit.
+///
+/// # Safety
+/// Out pointers valid for one write each; the bytes go back through
+/// `ffi_jvm_free_bytes`.
+#[no_mangle]
+pub unsafe extern "C" fn ffi_engine_writer_nrt_snapshot(
+    handle: u64,
+    out_ptr: *mut *mut u8,
+    out_len: *mut usize,
+    out_hold: *mut u64,
+    out_generation: *mut i64,
+) -> i32 {
+    guard(|| {
+        if out_ptr.is_null() || out_len.is_null() || out_hold.is_null() || out_generation.is_null()
+        {
+            return Err(FfiStatus::NullPointer);
+        }
+        let (bytes, id, generation) = with_writer(handle, |w| {
+            use lucene_index::nrt::NrtSource;
+            // Not under the maintenance lock: a forced merge holds it for
+            // its whole run, and a refresh must not wait for that.
+            let snapshot = w.writer().nrt_snapshot(true, true).map_err(writer_error)?;
+            let bytes = lucene_index::segment_infos::to_bytes(&snapshot.segment_infos);
+            let mut holds = w.maintenance();
+            let id = holds.next;
+            holds.next = holds.next.saturating_add(1);
+            holds.nrt.insert(id, snapshot.hold);
+            Ok((bytes, id, snapshot.segment_infos.generation))
+        })?;
+        // SAFETY: caller contract.
+        unsafe {
+            crate::ffm_bridge::give(bytes, out_ptr, out_len);
+            *out_hold = id;
+            *out_generation = generation;
+        }
+        Ok(())
+    })
+}
+
 /// Releases a [`ffi_engine_writer_hold_commit`] pin.
 #[no_mangle]
 pub extern "C" fn ffi_engine_writer_release_hold(handle: u64, hold: u64) -> i32 {
     guard(|| {
         with_writer(handle, |w| {
             let mut holds = w.maintenance();
+            if holds.nrt.remove(&hold).is_some() {
+                return Ok(());
+            }
             let Some(files) = holds.files.remove(&hold) else {
                 set_last_error(format!("engine writer: no hold {hold}"));
                 return Err(FfiStatus::InvalidArgument);
@@ -2364,6 +2418,56 @@ mod tests {
             unsafe { ffi_engine_writer_hold_commit(h, 999, &mut hold) },
             FfiStatus::InvalidArgument.code()
         );
+        check(&tmp);
+        assert_eq!(ffi_engine_writer_close(h), 0);
+    }
+
+    #[test]
+    fn an_nrt_snapshot_shows_buffered_documents_without_a_commit() {
+        let tmp = empty_index("engine-writer-nrt");
+        let h = open(&tmp, 0);
+        let f = setup(h);
+        let add = |i: i64, id: &str| {
+            let op = doc(Blob::default().u8(OP_ADD).i32(1), &f, id, &["w"], i, false);
+            assert_eq!(apply(h, &op.0), 0);
+        };
+        add(0, "a");
+        commit(h, &[]);
+        let committed = generations(h);
+        add(1, "b");
+        add(2, "c");
+
+        let (mut ptr, mut len, mut hold, mut gen) = (std::ptr::null_mut(), 0usize, 0u64, 0i64);
+        // SAFETY: live out-pointers.
+        let rc =
+            unsafe { ffi_engine_writer_nrt_snapshot(h, &mut ptr, &mut len, &mut hold, &mut gen) };
+        assert_eq!(rc, 0, "{}", crate::error::last_error());
+        // SAFETY: the buffer the call just gave.
+        let bytes = unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec();
+        // SAFETY: the buffer the call gave, freed once.
+        unsafe { crate::ffm_bridge::ffi_jvm_free_bytes(ptr, len) };
+
+        assert_eq!(generations(h), committed, "a snapshot writes no commit");
+        assert_eq!(Some(&gen), committed.last());
+        let infos = lucene_index::segment_infos::parse(&bytes, gen).unwrap();
+        let docs: i32 = infos
+            .segments
+            .iter()
+            .map(|s| {
+                let si = std::fs::read(tmp.path().join(format!("{}.si", s.segment_name)));
+                lucene_index::segment_info::parse(&si.unwrap(), &s.segment_id)
+                    .unwrap()
+                    .doc_count
+            })
+            .sum();
+        assert_eq!(docs, 3, "the snapshot holds the buffered documents");
+
+        assert_eq!(ffi_engine_writer_release_hold(h, hold), 0);
+        assert_eq!(
+            ffi_engine_writer_release_hold(h, hold),
+            FfiStatus::InvalidArgument.code()
+        );
+        commit(h, &[]);
         check(&tmp);
         assert_eq!(ffi_engine_writer_close(h), 0);
     }
