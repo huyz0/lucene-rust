@@ -14,7 +14,7 @@
 use lucene_codecs::stored_fields::FieldValue;
 use lucene_index::compound_reader::CompoundReader;
 use lucene_search::directory_reader::{DirectoryReader, SegmentReader};
-use lucene_sparse::search::SegmentView;
+use lucene_sparse::search::{ForwardVectors, SegmentView};
 use lucene_sparse::{postings, ClusteredPostings, SeismicField, SeismicQuery};
 use lucene_store::directory::MmapDirectory;
 use lucene_store::Directory;
@@ -192,10 +192,12 @@ fn seismic_hits_match_neural_search() {
                 assert!(field.is_seismic_segment(seg.max_doc));
                 let (meta, data) = seg.doc_values_for_field(field.number).unwrap();
                 let entry = meta.binary_entry(field.number).unwrap();
+                let forward =
+                    ForwardVectors::read(data, entry, seg.max_doc, field.ceiling_ingest).unwrap();
                 let view = SegmentView {
                     max_doc: seg.max_doc,
                     live_docs: seg.live_docs(),
-                    doc_values: Some((data, entry)),
+                    forward: Some(&forward),
                     postings: &s.postings,
                 };
                 // The fixture's `tag` is "even" for d0, d2, ...: the filter

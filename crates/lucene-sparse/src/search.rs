@@ -244,55 +244,104 @@ impl ScoreHeap {
     }
 }
 
-/// The forward index: a field's BINARY doc values, decoded and quantized.
-struct ForwardIndex<'a> {
-    data: &'a [u8],
-    entry: &'a doc_values::BinaryEntry,
-    ceiling: f32,
+/// The forward index of a field in one segment, quantized: each document's
+/// folded tokens, ascending, with their weights, as the `SparseVector` Java
+/// reads for it. Read once per segment core, as neural-search's forward-index
+/// cache keeps them.
+pub struct ForwardVectors {
+    /// Where each document's tokens start; `starts[max_doc]` is the end.
+    starts: Vec<usize>,
+    /// The documents that have a vector.
+    present: FixedBitSet,
+    tokens: Vec<u16>,
+    weights: Vec<u8>,
 }
 
-impl ForwardIndex<'_> {
-    /// The dot product of `doc`'s quantized vector with the dense query,
-    /// `None` when the document has no vector. Scored straight from the
-    /// stored pairs; a document with two tokens that fold together (or one
-    /// token twice) is built as a [`SparseVector`] first, which resolves them.
-    /// `seen` is all zero on entry and on return, one bit per folded token.
-    fn dot(&self, doc: i32, dense: &[u8], seen: &mut [u64]) -> Result<Option<i32>> {
-        let Some(bytes) = doc_values::binary_value(self.data, self.entry, doc)? else {
-            return Ok(None);
+impl ForwardVectors {
+    /// Reads every document's vector from the field's BINARY doc values
+    /// (`data` and `entry`), quantized at `ceiling`.
+    pub fn read(
+        data: &[u8],
+        entry: &doc_values::BinaryEntry,
+        max_doc: i32,
+        ceiling: f32,
+    ) -> Result<Self> {
+        let docs = usize::try_from(max_doc).unwrap_or(0);
+        let mut out = ForwardVectors {
+            starts: Vec::with_capacity(docs.saturating_add(1)),
+            present: FixedBitSet::new(docs),
+            tokens: Vec::new(),
+            weights: Vec::new(),
         };
-        let pairs = bytes.chunks_exact(8);
-        let mut score = 0i32;
-        let mut clash = false;
-        for c in pairs.clone() {
-            let token = i32::from_be_bytes([c[0], c[1], c[2], c[3]]) as u32 % TOKEN_MODULUS;
-            let (word, bit) = ((token / 64) as usize, 1u64 << (token % 64));
-            let Some(w) = seen.get_mut(word) else {
+        let mut seen = vec![0u64; (TOKEN_MODULUS / 64) as usize];
+        let mut items: Vec<(u16, u8)> = Vec::new();
+        for (d, doc) in (0..max_doc).enumerate() {
+            out.starts.push(out.tokens.len());
+            let Some(bytes) = doc_values::binary_value(data, entry, doc)? else {
                 continue;
             };
-            if *w & bit != 0 {
-                clash = true;
-                break;
-            }
-            *w |= bit;
-            if let Some(&q) = dense.get(token as usize) {
+            out.present.set(d);
+            // Without two tokens folding together (or one token twice), the
+            // vector is its pairs folded, quantized and sorted; otherwise
+            // `SparseVector` resolves them as Java does.
+            items.clear();
+            let mut clash = false;
+            for c in bytes.chunks_exact(8) {
+                let token = u32::from_be_bytes([c[0], c[1], c[2], c[3]]) % TOKEN_MODULUS;
+                let (word, bit) = ((token / 64) as usize, 1u64 << (token % 64));
+                if let Some(w) = seen.get_mut(word) {
+                    clash |= *w & bit != 0;
+                    *w |= bit;
+                }
                 let value = f32::from_be_bytes([c[4], c[5], c[6], c[7]]);
-                let weight = vector::quantize(value, self.ceiling);
-                // At most 255 * 255; the sum wraps as Java's int does.
-                score = score.wrapping_add(i32::from(weight).wrapping_mul(i32::from(q)));
+                // Folded tokens are below 32768, so they fit.
+                items.push((token as u16, vector::quantize(value, ceiling)));
+            }
+            for &(token, _) in &items {
+                if let Some(w) = seen.get_mut(usize::from(token / 64)) {
+                    *w = 0;
+                }
+            }
+            if clash {
+                let v = SparseVector::quantized(&vector::decode_forward(bytes), ceiling);
+                out.tokens.extend_from_slice(v.tokens());
+                out.weights.extend_from_slice(v.weights());
+            } else {
+                items.sort_unstable_by_key(|&(t, _)| t);
+                out.tokens.extend(items.iter().map(|&(t, _)| t));
+                out.weights.extend(items.iter().map(|&(_, w)| w));
             }
         }
-        for c in pairs {
-            let token = i32::from_be_bytes([c[0], c[1], c[2], c[3]]) as u32 % TOKEN_MODULUS;
-            if let Some(w) = seen.get_mut((token / 64) as usize) {
-                *w = 0;
-            }
+        out.starts.push(out.tokens.len());
+        Ok(out)
+    }
+
+    /// `SparseVector.dotProduct` of `doc`'s vector with the dense query,
+    /// `None` when the document has no vector.
+    fn dot(&self, doc: usize, dense: &[u8]) -> Option<i32> {
+        if doc >= self.present.len() || !self.present.get(doc) {
+            return None;
         }
-        if clash {
-            let v = SparseVector::quantized(&vector::decode_forward(bytes), self.ceiling);
-            return Ok(Some(v.dot(dense)));
+        let (Some(&start), Some(&end)) =
+            (self.starts.get(doc), self.starts.get(doc.saturating_add(1)))
+        else {
+            return None;
+        };
+        let (Some(tokens), Some(weights)) =
+            (self.tokens.get(start..end), self.weights.get(start..end))
+        else {
+            return None;
+        };
+        let mut score = 0i32;
+        for (&t, &w) in tokens.iter().zip(weights) {
+            // Tokens ascend, so the first one past the query ends the scan.
+            let Some(&q) = dense.get(usize::from(t)) else {
+                break;
+            };
+            // At most 255 * 255; the sum wraps as Java's int does.
+            score = score.wrapping_add(i32::from(w).wrapping_mul(i32::from(q)));
         }
-        Ok(Some(score))
+        Some(score)
     }
 }
 
@@ -300,8 +349,8 @@ impl ForwardIndex<'_> {
 pub struct SegmentView<'a> {
     pub max_doc: i32,
     pub live_docs: Option<&'a FixedBitSet>,
-    /// The segment's `.dvd` and the field's BINARY entry in it.
-    pub doc_values: Option<(&'a [u8], &'a doc_values::BinaryEntry)>,
+    /// The field's forward index, when the segment has its doc values.
+    pub forward: Option<&'a ForwardVectors>,
     pub postings: &'a ClusteredPostings,
 }
 
@@ -317,17 +366,9 @@ pub fn search(
     query: &SeismicQuery,
     filter: Option<&FixedBitSet>,
 ) -> Result<Vec<(i32, f32)>> {
-    let forward = segment.doc_values.map(|(data, entry)| ForwardIndex {
-        data,
-        entry,
-        ceiling: field.ceiling_ingest,
-    });
-    let mut seen = vec![0u64; (TOKEN_MODULUS / 64) as usize];
-    let mut dot = |doc: i32| -> Result<Option<i32>> {
-        match &forward {
-            Some(f) => f.dot(doc, &query.dense, &mut seen),
-            None => Ok(None),
-        }
+    let dot = |doc: i32| -> Option<i32> {
+        let doc = usize::try_from(doc).ok()?;
+        segment.forward.and_then(|f| f.dot(doc, &query.dense))
     };
     let score = |raw: i32| query.score_scale * raw as f32;
 
@@ -340,7 +381,7 @@ pub fn search(
             while let Some(d) = doc {
                 let d32 =
                     i32::try_from(d).map_err(|_| Error::Corrupted("doc id overflow".into()))?;
-                let s = dot(d32)?.unwrap_or(0);
+                let s = dot(d32).unwrap_or(0);
                 hits.push((d32, score(s)));
                 doc = filter.next_set_bit(d.saturating_add(1));
             }
@@ -379,7 +420,7 @@ pub fn search(
                     continue;
                 }
                 *seen = true;
-                let Some(s) = dot(doc)? else { continue };
+                let Some(s) = dot(doc) else { continue };
                 skip_heap.add(doc, s);
                 results.add(doc, s);
             }
@@ -522,7 +563,7 @@ mod tests {
         let view = SegmentView {
             max_doc: 2,
             live_docs: Some(&live),
-            doc_values: None,
+            forward: None,
             postings: &postings,
         };
         let q = SeismicQuery::new(&[(2, 1.0), (5, 0.5)], 2, 10, 1.0, 1.0, &f).unwrap();

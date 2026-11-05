@@ -40,14 +40,14 @@ EXACT = {"approximate_threshold": 100, "n_postings": 100000, "cluster_ratio": 0.
 FALLBACK = {"approximate_threshold": 100000}
 
 
-def req(port, method, path, body=None, ndjson=False):
+def req(port, method, path, body=None, ndjson=False, timeout=120):
     data = None
     if body is not None:
         data = body.encode() if ndjson else json.dumps(body).encode()
     r = urllib.request.Request(f"http://localhost:{port}{path}", data=data, method=method,
                                headers={"Content-Type": "application/x-ndjson" if ndjson else "application/json"})
     try:
-        with urllib.request.urlopen(r, timeout=120) as resp:
+        with urllib.request.urlopen(r, timeout=timeout) as resp:
             return json.loads(resp.read() or b"null")
     except urllib.error.HTTPError as e:
         raise RuntimeError(f"{method} {path}: {e.code} {e.read().decode()[:2000]}") from None

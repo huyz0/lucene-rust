@@ -17,7 +17,7 @@ use lucene_index::index_writer::{
 };
 use lucene_index::segment_info::LuceneVersion;
 use lucene_search::directory_reader::{DirectoryReader, SegmentReader};
-use lucene_sparse::search::SegmentView;
+use lucene_sparse::search::{ForwardVectors, SegmentView};
 use lucene_sparse::{postings, ClusteredPostings, SeismicField, SeismicQuery, SparseVector};
 use lucene_store::directory::FsDirectory;
 use lucene_store::Directory;
@@ -214,10 +214,11 @@ fn check(dir: &FsDirectory, all: &[Vec<(u32, f32)>]) -> usize {
         }
         let (meta, data) = seg.doc_values_for_field(field.number).unwrap();
         let entry = meta.binary_entry(field.number).unwrap();
+        let forward = ForwardVectors::read(data, entry, seg.max_doc, field.ceiling_ingest).unwrap();
         let view = SegmentView {
             max_doc: seg.max_doc,
             live_docs: seg.live_docs(),
-            doc_values: Some((data, entry)),
+            forward: Some(&forward),
             postings: &p,
         };
         // With `SEISMIC_PRINT` set, appends each default-parameter query's hits

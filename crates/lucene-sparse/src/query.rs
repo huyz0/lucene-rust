@@ -10,13 +10,14 @@
 //! `FeatureField` postings give the exact scores.
 
 use crate::postings::{self, ClusteredPostings};
-use crate::search::{SegmentView, SeismicField, SeismicQuery};
+use crate::search::{ForwardVectors, SegmentView, SeismicField, SeismicQuery};
 use lucene_search::collector::ScoringCollector;
 use lucene_search::directory_reader::SegmentReader;
 use lucene_search::document::DocumentQuery;
 use lucene_search::multi_segment::OpenSegment;
 use lucene_util::fixed_bit_set::FixedBitSet;
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, PoisonError};
 
 fn error(e: impl std::fmt::Display) -> lucene_search::Error {
     lucene_search::Error::DocumentQuery(e.to_string())
@@ -38,6 +39,36 @@ fn clustered_postings(reader: &SegmentReader) -> lucene_search::Result<Arc<Segme
             .map(|p| SegmentPostings(Some(p)))
             .map_err(error)
     })
+}
+
+/// A segment's quantized forward indexes, by field number, each read the
+/// first time a query scores the field there.
+#[derive(Default)]
+struct SegmentForward(Mutex<HashMap<i32, Arc<ForwardVectors>>>);
+
+/// The forward index of `field` in `reader`'s segment, `None` when the
+/// segment has no doc values for it.
+fn forward_vectors(
+    reader: &SegmentReader,
+    field: &SeismicField,
+) -> lucene_search::Result<Option<Arc<ForwardVectors>>> {
+    let cache =
+        reader.core_attachment(|_| Ok::<_, lucene_search::Error>(SegmentForward::default()))?;
+    let mut map = cache.0.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(found) = map.get(&field.number) {
+        return Ok(Some(Arc::clone(found)));
+    }
+    let Some((data, entry)) = reader
+        .doc_values_for_field(field.number)
+        .and_then(|(meta, data)| meta.binary_entry(field.number).map(|e| (data, e)))
+    else {
+        return Ok(None);
+    };
+    let read = Arc::new(
+        ForwardVectors::read(data, entry, reader.max_doc, field.ceiling_ingest).map_err(error)?,
+    );
+    map.insert(field.number, Arc::clone(&read));
+    Ok(Some(read))
 }
 
 /// `neural_sparse` with `method_parameters` on a `sparse_vector` field.
@@ -136,13 +167,11 @@ impl DocumentQuery for SparseAnnQuery {
         let Some(postings) = &postings.0 else {
             return Ok(());
         };
-        let doc_values = reader
-            .doc_values_for_field(field.number)
-            .and_then(|(meta, data)| meta.binary_entry(field.number).map(|e| (data, e)));
+        let forward = forward_vectors(reader, &field)?;
         let view = SegmentView {
             max_doc: reader.max_doc,
             live_docs: reader.live_docs(),
-            doc_values,
+            forward: forward.as_deref(),
             postings,
         };
         let query = SeismicQuery::new(

@@ -82,15 +82,15 @@ def index(port, docs, rust):
         bodies.append("\n".join(lines) + "\n")
 
     def bulk(body):
-        r = check.req(port, "POST", "/_bulk", body, ndjson=True)
+        r = check.req(port, "POST", "/_bulk", body, ndjson=True, timeout=3600)
         assert not r["errors"], json.dumps(r)[:2000]
 
     start = time.perf_counter()
     with ThreadPoolExecutor(CLIENTS) as pool:
         list(pool.map(bulk, bodies))
-    check.req(port, "POST", f"/{INDEX}/_refresh")
+    check.req(port, "POST", f"/{INDEX}/_refresh", timeout=3600)
     elapsed = time.perf_counter() - start
-    check.req(port, "POST", f"/{INDEX}/_flush")
+    check.req(port, "POST", f"/{INDEX}/_flush", timeout=3600)
     return len(docs) / elapsed
 
 
@@ -157,8 +157,8 @@ def main():
     for layout in layouts:
         if layout == "merged":
             for _, port in nodes.values():
-                check.req(port, "POST", f"/{INDEX}/_forcemerge?max_num_segments=1")
-                check.req(port, "POST", f"/{INDEX}/_refresh")
+                check.req(port, "POST", f"/{INDEX}/_forcemerge?max_num_segments=1", timeout=3600)
+                check.req(port, "POST", f"/{INDEX}/_refresh", timeout=3600)
         for mp in settings:
             row = {}
             for name, (_, port) in nodes.items():
