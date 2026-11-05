@@ -304,3 +304,132 @@ fn build_cost() {
         }
     }
 }
+
+/// The flushed segments of `docs`, one per `split` chunk.
+fn flushed_in(docs: &[Doc], split: usize) -> (ByteBuffersDirectory, DirectoryReader) {
+    let dir = ByteBuffersDirectory::new();
+    {
+        let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", LATEST).unwrap();
+        w.set_use_compound_file(false);
+        w.enable_explicit_documents().unwrap();
+        for info in infos() {
+            w.register_field(info).unwrap();
+        }
+        for chunk in docs.chunks(split) {
+            let explicit: Vec<ExplicitDocument> = chunk
+                .iter()
+                .map(|d| ExplicitDocument {
+                    stored: Vec::new(),
+                    fields: ExplicitFields {
+                        inverted: d
+                            .iter()
+                            .enumerate()
+                            .map(|(i, (_, toks))| inverted(i as i32, toks, i == 0))
+                            .collect(),
+                        ..ExplicitFields::default()
+                    },
+                })
+                .collect();
+            w.add_explicit_documents(explicit).unwrap();
+            w.commit().unwrap();
+        }
+    }
+    let reader = DirectoryReader::open(&dir).unwrap();
+    (dir, reader)
+}
+
+#[test]
+fn searched_beside_flushed_segments_it_scores_as_once_flushed() {
+    let docs = corpus(700);
+    // All 700 flushed, as two segments of 400 and 300.
+    let (_all_dir, all) = flushed_in(&docs, 400);
+    let mut all_opened = all.open_segments().unwrap();
+    all_opened.open_points().unwrap();
+    let all_segments = all_opened.as_open_segments();
+    assert_eq!(all_segments.len(), 2);
+    let all_owned = all
+        .field_norms_by_field(&["body".to_string(), "tag".to_string()])
+        .unwrap();
+    let all_norms: Vec<SegmentNorms<'_, '_>> = all_owned.iter().map(Some).collect();
+    let expected_searcher = IndexSearcher::new(&all_segments, &all_norms).unwrap();
+    // The first 400 flushed, the last 300 in the buffer.
+    let (_dir, flushed) = flushed_in(&docs[..400], 400);
+    let mut opened = flushed.open_segments().unwrap();
+    opened.open_points().unwrap();
+    for (q, wanted) in queries() {
+        let mut segments = opened.as_open_segments();
+        let expected = hits(&expected_searcher, &q);
+        let live = LiveSegment::build(&live_fields(&docs[400..], Some(&wanted)), 300, &[]).unwrap();
+        let inputs = live.inputs().unwrap();
+        segments.push(live.segment(&inputs, 400));
+        // One average length over flushed and buffered documents, for every
+        // segment.
+        let average = |field: &str| {
+            let flushed = segments[0].fields.field(field)?;
+            let [_, ttf, _, dc] = live.field_stats(field)?;
+            Some(crate::field_norms::avg_field_length(
+                flushed.sum_total_term_freq + ttf,
+                i64::from(flushed.doc_count) + dc,
+            ))
+        };
+        let flushed_owned = flushed
+            .field_norms_by_field(&["body".to_string(), "tag".to_string()])
+            .unwrap();
+        let flushed_norms: std::collections::HashMap<String, crate::field_norms::FieldNorms<'_>> =
+            flushed_owned[0]
+                .iter()
+                .map(|(f, n)| {
+                    (
+                        f.clone(),
+                        crate::field_norms::FieldNorms::with_avg_field_length(
+                            n.data,
+                            n.entry,
+                            average(f).unwrap(),
+                        ),
+                    )
+                })
+                .collect();
+        let live_norms = live.norms_with_average(&average);
+        let norms: [SegmentNorms<'_, '_>; 2] = [Some(&flushed_norms), Some(&live_norms)];
+        let s = IndexSearcher::new(&segments, &norms).unwrap();
+        assert_eq!(hits(&s, &q), expected, "{q:?}");
+    }
+}
+
+#[test]
+fn a_field_without_positions_or_norms_searches_like_the_flushed_segment() {
+    let docs = corpus(400);
+    let (_dir, reader) = flushed(&docs);
+    let mut opened = reader.open_segments().unwrap();
+    opened.open_points().unwrap();
+    let segments = opened.as_open_segments();
+    let owned = reader
+        .field_norms_by_field(&["body".to_string(), "tag".to_string()])
+        .unwrap();
+    let norms: Vec<SegmentNorms<'_, '_>> = owned.iter().map(Some).collect();
+    let s = IndexSearcher::new(&segments, &norms).unwrap();
+    // Scored clauses on the body without positions; the tag only filters,
+    // so its norms are not read.
+    let mut q = BooleanQuery::new();
+    q.should.push(term("body", "w3"));
+    q.should.push(term("body", "w9"));
+    q.filter.push(term("tag", "t1"));
+    let mut fields = live_fields(&docs, Some(&["w3", "w9", "t1"]));
+    fields[0].info.index_options = IndexOptions::DocsAndFreqs;
+    for t in &mut fields[0].terms {
+        t.positions.clear();
+    }
+    fields[1].norms = None;
+    let live = LiveSegment::build(&fields, 400, &[]).unwrap();
+    assert_eq!(live_hits(&live, &q), hits(&s, &q));
+}
+
+#[test]
+fn deletes_and_norms_outside_the_contract_are_refused() {
+    let docs = corpus(10);
+    assert!(LiveSegment::build(&live_fields(&docs, None), 10, &[10]).is_err());
+    assert!(LiveSegment::build(&live_fields(&docs, None), 10, &[-1]).is_err());
+    let mut fields = live_fields(&docs, None);
+    fields[1].info.omit_norms = true;
+    assert!(LiveSegment::build(&fields, 10, &[]).is_err());
+}
