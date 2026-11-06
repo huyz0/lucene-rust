@@ -20,6 +20,7 @@ import org.opensearch.index.engine.DefaultPrimaryOperationPolicy;
 import org.opensearch.index.engine.DocumentIndexWriter;
 import org.opensearch.index.engine.EngineConfig;
 import org.opensearch.index.store.Store;
+import org.lucenerust.opensearch.NativeBridge;
 
 import java.io.IOException;
 import java.util.List;
@@ -73,7 +74,6 @@ public final class RustEngineSupport {
         Setting.Property.Final
     );
 
-    /** The codecs whose formats are the ones the Rust writer lays out. */
     /**
      * The {@code index.codec} values the Rust writer writes, and the stored fields each takes: the
      * default codec's LZ4, {@code best_compression}'s DEFLATE, and the custom-codecs plugin's
