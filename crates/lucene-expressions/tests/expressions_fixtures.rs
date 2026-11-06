@@ -223,3 +223,65 @@ fn variable_contexts_equal_lucenes() {
     );
     assert!(checked > 20, "{checked} rows");
 }
+
+/// Every backend evaluates every fixture expression to Lucene's bits, one
+/// document at a time and over a batch of the four value sets.
+#[test]
+fn every_backend_equals_lucene() {
+    use lucene_expressions::Backend;
+    let want = fs::read_to_string(dir().join("expressions.tsv")).unwrap();
+    let (defaults, custom) = (default_functions(), custom());
+    let mut backends = vec![Backend::Closure, Backend::Vector];
+    if cfg!(feature = "jit") {
+        backends.push(Backend::Jit);
+    }
+    let mut bad = Vec::new();
+    let mut checked = 0;
+    for row in want.lines().filter(|r| r.starts_with("E\t")) {
+        let c: Vec<&str> = row.split('\t').collect();
+        if c[3] != "OK" {
+            continue;
+        }
+        let functions = if c[1] == "D" { &defaults } else { &custom };
+        let text = unesc(c[2]);
+        let base = compile_with(&text, functions).unwrap();
+        let expected: Vec<&str> = c[5].split(',').collect();
+        let nv = base.variables.len();
+        let n = SETS.len();
+        let mut cols = vec![0.0; nv * n];
+        for i in 0..nv {
+            for (k, set) in SETS.iter().enumerate() {
+                cols[i * n + k] = set[(i + k) % set.len()];
+            }
+        }
+        for &b in &backends {
+            let e = base.with_backend(b);
+            checked += 1;
+            let mut out = vec![0.0; n];
+            e.evaluate_columns(&cols, &mut out).unwrap();
+            for (k, set) in SETS.iter().enumerate() {
+                let mut vals: Vec<BoxDoubleValues<'_>> = (0..nv)
+                    .map(|i| {
+                        Box::new(ConstantDoubleValues(set[(i + k) % set.len()]))
+                            as BoxDoubleValues<'_>
+                    })
+                    .collect();
+                let one = format!("{:x}", bits(e.evaluate(&mut vals).unwrap()));
+                let batch = format!("{:x}", bits(out[k]));
+                if one != expected[k] || batch != expected[k] {
+                    bad.push(format!(
+                        "{b:?} {text:?} set {k}: doc {one} batch {batch} want {}",
+                        expected[k]
+                    ));
+                    break;
+                }
+            }
+        }
+    }
+    assert!(
+        bad.is_empty(),
+        "{} of {checked} differ:\n{}",
+        bad.len(),
+        bad.iter().take(20).cloned().collect::<Vec<_>>().join("\n")
+    );
+}

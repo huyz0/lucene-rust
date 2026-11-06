@@ -7,7 +7,7 @@
 use std::hint::black_box;
 use std::time::Duration;
 
-use lucene_expressions::compile;
+use lucene_expressions::{compile, set_default_backend, Backend};
 use lucene_search::values_source::{BoxDoubleValues, DoubleValues};
 
 use super::measure;
@@ -44,6 +44,13 @@ impl DoubleValues for ArrayValues {
 }
 
 pub fn bench_expressions(w: Duration, m: Duration) {
+    // BENCH_EXPR_BACKEND=vector|jit times another backend (jit needs the
+    // runner's `expr-jit` feature)
+    match std::env::var("BENCH_EXPR_BACKEND").as_deref() {
+        Ok("vector") => set_default_backend(Backend::Vector),
+        Ok("jit") => set_default_backend(Backend::Jit),
+        _ => {}
+    }
     let texts: Vec<String> = std::fs::read_to_string("fixtures/corpus/expressions.txt")
         .unwrap()
         .lines()

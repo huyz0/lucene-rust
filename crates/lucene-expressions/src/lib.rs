@@ -39,8 +39,9 @@ pub mod js;
 pub mod variable_context;
 
 pub use js::{
-    compile, compile_with, compile_with_max_nesting_depth, default_functions, ExprFunction,
-    Expression, ParseException, DEFAULT_MAX_NESTING_DEPTH,
+    compile, compile_with, compile_with_max_nesting_depth, default_backend, default_functions,
+    set_default_backend, Backend, ExprFunction, Expression, ParseException,
+    DEFAULT_MAX_NESTING_DEPTH,
 };
 use js::{SharedValues, VarSlot, VarValues};
 
