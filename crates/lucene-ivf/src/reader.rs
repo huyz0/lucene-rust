@@ -12,6 +12,7 @@ use lucene_util::{simd, vector_util};
 use lucene_vector_quant::{Quantizer, QuantizerRegistry, QueryScorer};
 
 use crate::calibrate::Calibration;
+use crate::kmeans::NO_CLUSTER;
 use crate::{
     similarity_from_ordinal, Error, Result, Similarity, VectorEncoding, META_CODEC, POSTINGS_CODEC,
     VECTORS_CODEC, VERSION_BLOCK_LAYOUT, VERSION_CALIBRATION, VERSION_CURRENT,
@@ -440,6 +441,11 @@ impl IvfField {
     /// When `c` is not below [`IvfField::clusters`].
     pub fn centroid(&self, c: usize) -> &[f32] {
         crate::kmeans::row(&self.centroids, self.dimension, c)
+    }
+
+    /// Every centroid, `clusters * dimension` floats.
+    pub(crate) fn centroids(&self) -> &[f32] {
+        &self.centroids
     }
 
     /// Cluster `c`'s centroid as the quantizer encodes and scores against it
@@ -1236,6 +1242,59 @@ impl IvfReader {
         #[allow(clippy::arithmetic_side_effects)]
         let len = f.count * f.vector_len();
         self.vectors.read(f.vectors_offset, len)
+    }
+
+    /// Each slot's cluster, as a [`crate::kmeans::reuse`] hint:
+    /// `[primary, NO_CLUSTER]` where the field records the primary cluster
+    /// (a residual encoding stores the clusters' own vector counts, and
+    /// without spilling a cluster's entries are its own vectors), otherwise
+    /// the one or two clusters whose postings hold the slot, read from
+    /// `.ivp` in one range.
+    ///
+    /// # Errors
+    ///
+    /// An unknown field, a read failure, or postings that do not hold every
+    /// slot once or twice.
+    // ARITH: prefix sums are ascending and end at the vector count; block
+    // ranges were checked to fit the postings at open.
+    #[allow(clippy::arithmetic_side_effects)]
+    pub(crate) fn slot_clusters(&self, field: i32) -> Result<Vec<[u32; 2]>> {
+        let f = self.field_or_err(field)?;
+        let own = if !f.primary_starts.is_empty() {
+            Some(&f.primary_starts)
+        } else if f.entries() == f.count {
+            Some(&f.starts)
+        } else {
+            None
+        };
+        if let Some(starts) = own {
+            let mut out = Vec::with_capacity(f.count);
+            for (c, w) in starts.windows(2).enumerate() {
+                out.resize(w[1], [c as u32, NO_CLUSTER]);
+            }
+            return Ok(out);
+        }
+        let mut out = vec![[NO_CLUSTER; 2]; f.count];
+        let len = f.block_starts.last().copied().unwrap_or(0);
+        let bytes = self.postings.read(f.postings_offset, len)?;
+        for c in 0..f.clusters() {
+            let from = f.block_starts[c];
+            for s in bytes[from..from + f.cluster_size(c) * 4].chunks_exact(4) {
+                let slot = le_i32(s, 0) as u32 as usize;
+                let Some(entry) = out.get_mut(slot) else {
+                    return corrupt(format!("slot {slot} out of range"));
+                };
+                let free = entry.iter_mut().find(|e| **e == NO_CLUSTER);
+                let Some(free) = free else {
+                    return corrupt(format!("slot {slot} in more than two clusters"));
+                };
+                *free = c as u32;
+            }
+        }
+        if out.iter().any(|e| e[0] == NO_CLUSTER) {
+            return corrupt("a slot in no cluster");
+        }
+        Ok(out)
     }
 
     /// The field's documents (ascending) and the slot of each one's vector.

@@ -9,9 +9,13 @@
 //!    This is the recall a full rerank of the probed clusters would reach,
 //!    kept halfway between the target and 1 so a short rerank can reach the
 //!    target.
-//! 2. **rerank**: the fewest candidates per hit, from 1 up to
-//!    [`MULTIPLES`]'s last, whose exact rerank at that nprobe reaches
-//!    `target` recall over the sample (the most when none does).
+//! 2. **rerank**: a cap on the candidates per hit, from [`MULTIPLES`], for
+//!    a rerank with early stop at that nprobe (as `Rerank::Bounded`, which
+//!    `Rerank::Auto` searches with). The smallest cap reaching `target`
+//!    recall over the sample (the largest when none does) is raised to the
+//!    largest cap whose rerank work, after the early stop, stays within a
+//!    quarter more: a generous cap costs little where the quantizer's error
+//!    bounds are tight, and keeps the recall the early stop would find.
 //!
 //! Both are recorded relative to the field, nprobe as a fraction of its
 //! clusters and rerank as a multiple of `k`, so they carry over to any `k`
@@ -21,7 +25,7 @@
 use rayon::prelude::*;
 
 use crate::kmeans::{self, SplitMix64};
-use crate::reader::{IvfField, RangeSource, SearchStats};
+use crate::reader::{Candidate, IvfField, RangeSource, SearchStats};
 use crate::Result;
 
 /// A field's calibrated search depth.
@@ -148,11 +152,12 @@ pub(crate) fn calibrate(
         nprobe = (nprobe * 2).min(nlist);
     }
 
-    // rerank: hits at each multiple's depth, summed over the queries.
+    // rerank: per cap, the hits and the candidates reranked of a bounded
+    // rerank (as `Rerank::Bounded`), summed over the queries.
     let longest = depth(MULTIPLES[MULTIPLES.len() - 1], k);
-    let per_query: Vec<Vec<usize>> = truths
+    let per_query: Vec<Vec<(usize, usize)>> = truths
         .par_iter()
-        .map(|t| -> Result<Vec<usize>> {
+        .map(|t| -> Result<Vec<(usize, usize)>> {
             let q = kmeans::row(vectors, dim, t.query);
             let probes = field.probe_order(q, nprobe);
             let own = t.query as i32;
@@ -163,39 +168,93 @@ pub(crate) fn calibrate(
                 &probes,
                 longest,
                 Some(&accept),
-                false,
+                true,
                 None,
                 &mut SearchStats::default(),
             )?;
-            // The exact top `k` of each prefix of the candidates.
-            let mut best: Vec<(f32, u32)> = Vec::with_capacity(k + 1);
-            let mut at = 0usize;
-            let mut hits = Vec::with_capacity(MULTIPLES.len());
-            for &m in &MULTIPLES {
-                let stop = depth(m, k).min(candidates.len());
-                for c in &candidates[at.min(stop)..stop] {
-                    let v = kmeans::row(vectors, dim, c.doc as usize);
-                    let s = similarity.score(q, v);
-                    let pos = best.partition_point(|b| b.0 >= s);
-                    if pos < k {
-                        best.insert(pos, (s, c.doc as u32));
-                        best.truncate(k);
-                    }
-                }
-                at = at.max(stop);
-                hits.push(best.iter().filter(|b| t.neighbours.contains(&b.1)).count());
-            }
-            Ok(hits)
+            let exact: Vec<f32> = candidates
+                .iter()
+                .map(|c| similarity.score(q, kmeans::row(vectors, dim, c.doc as usize)))
+                .collect();
+            Ok(MULTIPLES
+                .iter()
+                .map(|&m| {
+                    let cap = depth(m, k).min(candidates.len());
+                    bounded(&candidates[..cap], &exact, k, &t.neighbours)
+                })
+                .collect())
         })
         .collect::<Result<_>>()?;
+    let sums: Vec<(usize, usize)> = (0..MULTIPLES.len())
+        .map(|m| {
+            per_query
+                .iter()
+                .fold((0, 0), |(h, w), q| (h + q[m].0, w + q[m].1))
+        })
+        .collect();
     let goal = f64::from(target) * total as f64;
-    let rerank_multiple = (0..MULTIPLES.len())
-        .find(|&m| per_query.iter().map(|h| h[m]).sum::<usize>() as f64 >= goal)
-        .map_or(MULTIPLES[MULTIPLES.len() - 1], |m| MULTIPLES[m]);
+    let reached = sums
+        .iter()
+        .position(|&(hits, _)| hits as f64 >= goal)
+        .unwrap_or(MULTIPLES.len() - 1);
+    // A deeper cap costs only what the early stop lets through: take the
+    // deepest whose work stays within `GENEROUS` of the first that reaches
+    // the target.
+    let budget = sums[reached].1 as f64 * GENEROUS;
+    let chosen = (reached..MULTIPLES.len())
+        .take_while(|&m| sums[m].1 as f64 <= budget)
+        .last()
+        .unwrap_or(reached);
     Ok(Some(Calibration {
         probe_fraction: nprobe as f32 / nlist as f32,
-        rerank_multiple,
+        rerank_multiple: MULTIPLES[chosen],
     }))
+}
+
+/// How much more rerank work than the shallowest cap reaching the target a
+/// deeper cap may cost and still be chosen.
+const GENEROUS: f64 = 1.25;
+
+/// The hits among `neighbours` and the candidates reranked of a bounded
+/// rerank of `candidates` (best estimate first, `exact` their exact scores)
+/// for `k` hits: in order, stopping once the `k`-th exact score beats every
+/// remaining estimate plus margin, skipping a candidate whose own cannot.
+// ARITH: indices are below `candidates.len()`.
+#[allow(clippy::arithmetic_side_effects)]
+fn bounded(
+    candidates: &[Candidate],
+    exact: &[f32],
+    k: usize,
+    neighbours: &[u32],
+) -> (usize, usize) {
+    let mut reach = vec![f32::NEG_INFINITY; candidates.len()];
+    let mut most = f32::NEG_INFINITY;
+    for (r, c) in reach.iter_mut().zip(candidates).rev() {
+        most = most.max(c.score + c.bound);
+        *r = most;
+    }
+    let mut best: Vec<(f32, u32)> = Vec::with_capacity(k + 1);
+    let mut reranked = 0;
+    for (i, c) in candidates.iter().enumerate() {
+        if best.len() == k {
+            let floor = best[k - 1].0;
+            if reach[i] < floor {
+                break;
+            }
+            if c.score + c.bound < floor {
+                continue;
+            }
+        }
+        reranked += 1;
+        let s = exact[i];
+        let pos = best.partition_point(|b| b.0 >= s);
+        if pos < k {
+            best.insert(pos, (s, c.doc as u32));
+            best.truncate(k);
+        }
+    }
+    let hits = best.iter().filter(|b| neighbours.contains(&b.1)).count();
+    (hits, reranked)
 }
 
 #[cfg(test)]

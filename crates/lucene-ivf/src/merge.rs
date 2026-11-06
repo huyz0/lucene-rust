@@ -1,13 +1,51 @@
-//! Merging IVF fields: the merged segment's vectors are re-clustered and
-//! re-quantized from scratch, never patched in place. Segments are
-//! immutable, so a merge is where the clusters adapt to the data that
-//! arrived since the inputs were written.
+//! Merging IVF fields: the merged segment's vectors are re-quantized and
+//! written afresh, never patched in place. Their clusters either come from
+//! a full re-clustering, or, when one input segment holds most of the
+//! merged vectors, from that segment's clusters rebalanced locally
+//! ([`MergeClustering::ReuseLargest`], [`kmeans::reuse`]): re-clustering a
+//! segment of millions of vectors costs a few full Lloyd rounds of
+//! `n * k * dim`, while the clusters of the large input already fit most of
+//! its data.
 
 use lucene_vector_quant::QuantizerFactory;
 
-use crate::reader::IvfReader;
+use crate::kmeans::{self, NO_CLUSTER};
+use crate::reader::{IvfField, IvfReader};
 use crate::writer::{FieldVectors, IvfParams, IvfWriter};
 use crate::{Error, Result};
+
+/// How a merge finds the merged segment's clusters
+/// ([`IvfParams::merge_clustering`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum MergeClustering {
+    /// Cluster every live vector from scratch, as a fresh build does.
+    Recluster,
+    /// Start from the clusters of the source with the most live vectors when
+    /// it holds at least `min_fraction` of the merged ones and has two or
+    /// more clusters: its vectors keep their cluster, the others go to their
+    /// nearest one, and the partition is rebalanced with `refine_rounds`
+    /// neighbourhood rounds, splits and dissolves ([`kmeans::reuse`]).
+    /// Otherwise [`MergeClustering::Recluster`].
+    ReuseLargest {
+        /// The least share of the merged live vectors, in `0.0..=1.0`, the
+        /// largest source must hold.
+        min_fraction: f32,
+        /// Neighbourhood Lloyd rounds over the clusters that received
+        /// vectors and their neighbours.
+        refine_rounds: usize,
+    },
+}
+
+impl Default for MergeClustering {
+    /// [`MergeClustering::ReuseLargest`] for a source of at least half the
+    /// vectors, with one refinement round.
+    fn default() -> Self {
+        MergeClustering::ReuseLargest {
+            min_fraction: 0.5,
+            refine_rounds: 1,
+        }
+    }
+}
 
 /// One merged segment's field: its reader and how its documents map into
 /// the merged segment (`None` for a deleted document).
@@ -26,11 +64,46 @@ impl std::fmt::Debug for MergeSource<'_> {
     }
 }
 
+/// The source whose clusters `policy` reuses for the `live` (new doc,
+/// source, slot) vectors of field `number`, if any: its index, its field
+/// and the refinement rounds.
+// ARITH: `counts` has one entry per source and the counts sum to `live.len()`.
+#[allow(clippy::arithmetic_side_effects)]
+fn reused_source<'a>(
+    policy: MergeClustering,
+    number: i32,
+    sources: &[MergeSource<'a>],
+    live: &[(i32, usize, u32)],
+) -> Option<(usize, &'a IvfField, usize)> {
+    let MergeClustering::ReuseLargest {
+        min_fraction,
+        refine_rounds,
+    } = policy
+    else {
+        return None;
+    };
+    let mut counts = vec![0usize; sources.len()];
+    for &(_, s, _) in live {
+        counts[s] += 1;
+    }
+    // The first of equally large sources.
+    let (largest, &count) = counts
+        .iter()
+        .enumerate()
+        .max_by_key(|&(i, &c)| (c, std::cmp::Reverse(i)))?;
+    let field = sources[largest].reader.field(number)?;
+    (count > 0
+        && field.clusters() > 1
+        && count as f64 >= f64::from(min_fraction) * live.len() as f64)
+        .then_some((largest, field, refine_rounds))
+}
+
 /// Writes field `number` of the merged segment into `writer`: the live
 /// vectors of every source that has the field, under their new document
-/// numbers, clustered and quantized afresh with `factory`. Sources may store
-/// their vectors in any [`crate::VectorEncoding`]; they are decoded, and
-/// written in `params.rerank_encoding`.
+/// numbers, clustered as `params.merge_clustering` says and quantized
+/// afresh with `factory`. Sources may store their vectors in any
+/// [`crate::VectorEncoding`]; they are decoded, and written in
+/// `params.rerank_encoding`.
 ///
 /// # Errors
 ///
@@ -94,15 +167,40 @@ pub fn merge_field(
             );
         }
     }
-    writer.add_field(
-        &FieldVectors {
-            number,
-            similarity,
+    let field = FieldVectors {
+        number,
+        similarity,
+        dimension,
+        docs: &docs,
+        vectors: &vectors,
+    };
+    let Some((base, base_field, refine_rounds)) =
+        reused_source(params.merge_clustering, number, sources, &live)
+    else {
+        return writer.add_field(&field, factory, params);
+    };
+    let slots = sources[base].reader.slot_clusters(number)?;
+    let hints: Vec<[u32; 2]> = live
+        .iter()
+        .map(|&(_, s, slot)| {
+            if s == base {
+                slots[slot as usize]
+            } else {
+                [NO_CLUSTER; 2]
+            }
+        })
+        .collect();
+    let centroids = base_field.centroids();
+    writer.add_clustered(&field, factory, params, &mut |prepared, metric| {
+        kmeans::reuse(
+            prepared,
             dimension,
-            docs: &docs,
-            vectors: &vectors,
-        },
-        factory,
-        params,
-    )
+            centroids,
+            &hints,
+            params.target_cluster_size,
+            &params.kmeans,
+            refine_rounds,
+            metric,
+        )
+    })
 }
