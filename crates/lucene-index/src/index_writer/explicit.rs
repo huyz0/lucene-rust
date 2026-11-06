@@ -1238,6 +1238,7 @@ impl IndexingConfig {
             self.codec.as_deref(),
             lucene_codecs::codec::WritePoint::FieldInfos,
         )?;
+        let fnm_fields = self.partition_fields(fnm_fields, buf.partition);
         let mut flushed = segment_writer::write_stored_only_segment_files_with_codec(
             dir,
             segment_name,
@@ -1330,6 +1331,7 @@ impl IndexingConfig {
             self.codec.as_deref(),
             lucene_codecs::codec::WritePoint::SegmentInfo,
         )?;
+        self.partition_segment(&mut flushed.info.attributes, buf.partition);
         segment_writer::seal_flushed_segment(dir, segment_name, flushed).map_err(Error::from)
     }
 }
