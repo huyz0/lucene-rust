@@ -61,7 +61,7 @@ class Profiled:
         sh(c["container"], f"{JDK}jcmd {c['jpid']} JFR.start name=p settings=profile filename=/tmp/{self.name}.jfr")
         self.perf = None
         if c["perf"]:
-            self.perf = subprocess.Popen([c["perf"], "record", "-F", "499", "-g", "-p", c["hpid"],
+            self.perf = subprocess.Popen([c["perf"], "record", "-F", "499", "-g", "-a",
                                           "-o", f"/tmp/{self.name}.perf"],
                                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return self
@@ -156,9 +156,10 @@ def run(base, container, label, out, settings_extra, tenants, ndocs, perf):
         engine = json.dumps(bt.req("GET", "/_plugins/lucene_rust/stats").get("engines"))
     except RuntimeError:
         engine = "stock"
-    t = time.perf_counter()
-    bt.send_all(bt.bulk_bodies("shared", docs))
-    load_s = time.perf_counter() - t
+    with Profiled(ctx, "load"):
+        t = time.perf_counter()
+        bt.send_all(bt.bulk_bodies("shared", docs))
+        load_s = time.perf_counter() - t
     t = time.perf_counter()
     bt.req("POST", "/_refresh")
     refresh_s = time.perf_counter() - t
@@ -175,7 +176,7 @@ def run(base, container, label, out, settings_extra, tenants, ndocs, perf):
     with open(os.path.join(out, f"{label}-histo.txt"), "w") as fh:
         fh.write(sh(container, f"{JDK}jcmd {ctx['jpid']} GC.class_histogram | head -45"))
 
-    wraps = ["term", "bool"] if "lucene_rust.partition_field" in settings else ["term"]
+    wraps = ["term", "bool"] if "lucene_rust.partition_field" in settings or "sort.field" in settings else ["term"]
     result["search"] = time_shapes(sizes, 5, wraps)
     for cls, ks in bt.classes(sizes).items():
         b = {"query": filtered(ks[0], SHAPES[0][1], "bool"), "profile": True}

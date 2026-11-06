@@ -891,15 +891,26 @@ const PARTITIONED_SLOTS: usize = 1024;
 /// [`OPEN_LIVE_SEARCH`] keeps what a search of the buffers reads;
 /// [`OPEN_ADAPTIVE_DOC_VALUES`] writes doc values in the `RustAdaptive`
 /// format; [`OPEN_PARTITIONED`] keeps partitions in segments of their own.
+/// `index_sort` is the index's sort as a `.si` encodes it
+/// ([`lucene_index::segment_info::parse_index_sort`]; empty for none):
+/// every segment is written in that order, as `IndexWriterConfig.setIndexSort`
+/// has it. `parent_field` (empty for none) names the field that marks the
+/// last document of each block (`IndexWriterConfig.setParentField`).
 ///
 /// # Safety
-/// `path` valid for `path_len` bytes; `out_handle` valid for one write.
+/// `path` valid for `path_len` bytes, `index_sort` for `index_sort_len`,
+/// `parent_field` for `parent_field_len`; `out_handle` valid for one write.
 #[no_mangle]
+#[allow(clippy::too_many_arguments)]
 pub unsafe extern "C" fn ffi_engine_writer_open(
     path: *const c_char,
     path_len: usize,
     ram_buffer_mb: f64,
     flags: u8,
+    index_sort: *const u8,
+    index_sort_len: usize,
+    parent_field: *const c_char,
+    parent_field_len: usize,
     max_docs: i32,
     out_handle: *mut u64,
 ) -> i32 {
@@ -909,6 +920,24 @@ pub unsafe extern "C" fn ffi_engine_writer_open(
         }
         // SAFETY: caller contract.
         let path = unsafe { str_from_raw(path, path_len)? };
+        // SAFETY: caller contract.
+        let index_sort = unsafe { bytes_from_raw(index_sort, index_sort_len)? };
+        let index_sort = if index_sort.is_empty() {
+            None
+        } else {
+            lucene_index::segment_info::parse_index_sort(index_sort).map_err(|e| {
+                set_last_error(format!("engine writer: index sort: {e}"));
+                FfiStatus::InvalidArgument
+            })?
+        };
+        // SAFETY: caller contract.
+        let parent_field = unsafe { str_from_raw(parent_field, parent_field_len)? };
+        // A search of the buffers reads documents in arrival order, which a
+        // sorted flush renumbers.
+        if index_sort.is_some() && flags & OPEN_LIVE_SEARCH != 0 {
+            set_last_error("engine writer: a search of the buffers does not support an index sort");
+            return Err(FfiStatus::InvalidArgument);
+        }
         // Mapped, not read onto the heap: a merge opens every source file of
         // every merged segment, and Lucene's own `MMapDirectory` -- what
         // OpenSearch writes with -- maps them too. Segment files are written
@@ -948,6 +977,12 @@ pub unsafe extern "C" fn ffi_engine_writer_open(
                 );
             }
             writer.enable_explicit_documents()?;
+            if !parent_field.is_empty() {
+                writer.set_parent_field(Some(parent_field))?;
+            }
+            if index_sort.is_some() {
+                writer.set_index_sort(index_sort.as_deref())?;
+            }
             writer.set_deletion_policy(DeletionPolicy::KeepAll)?;
             writer.set_merge_policy(Some(MergePolicyConfig::default()));
             // `OpenSearchTieredMergePolicy`: forced merges have no merged-size
@@ -2384,6 +2419,10 @@ mod tests {
                 path.len(),
                 ram_mb,
                 fault_injection,
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
                 max_docs,
                 &mut h,
             )
@@ -4203,6 +4242,10 @@ mod tests {
                     1,
                     16.0,
                     0,
+                    std::ptr::null(),
+                    0,
+                    std::ptr::null(),
+                    0,
                     i32::MAX,
                     std::ptr::null_mut()
                 ),
@@ -4234,6 +4277,10 @@ mod tests {
                 path.as_ptr() as *const c_char,
                 path.len(),
                 -2.0,
+                0,
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
                 0,
                 i32::MAX,
                 &mut h2,
