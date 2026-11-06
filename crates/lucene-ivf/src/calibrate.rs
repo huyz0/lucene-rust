@@ -25,7 +25,7 @@
 use rayon::prelude::*;
 
 use crate::kmeans::{self, SplitMix64};
-use crate::reader::{reach, Candidate, IvfField, RangeSource, SearchStats};
+use crate::reader::{reach, Candidate, IvfField, Order, RangeSource, SearchStats};
 use crate::Result;
 
 /// A field's calibrated search depth.
@@ -167,6 +167,7 @@ pub(crate) fn calibrate(
                 Some(&accept),
                 true,
                 None,
+                Order::Score,
                 &mut SearchStats::default(),
             )?;
             let exact: Vec<f32> = candidates

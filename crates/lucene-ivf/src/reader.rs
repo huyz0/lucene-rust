@@ -977,6 +977,111 @@ impl TopN {
     }
 }
 
+/// The best `size` candidates of a cluster scan, gathered in a buffer of
+/// twice that and cut back to the best `size` whenever it fills: cheaper
+/// than a heap when many candidates are offered, as a scan offers each code
+/// that beats the cut-off. Holds the same candidates [`TopN`] would, except
+/// that a NaN score never enters.
+struct Shortlist {
+    size: usize,
+    buffer: Vec<Candidate>,
+    /// The worst score kept at the last cut; lower scores cannot enter.
+    cutoff: f32,
+}
+
+impl Shortlist {
+    fn new(size: usize) -> Self {
+        Shortlist {
+            size,
+            buffer: Vec::with_capacity(size.saturating_mul(2)),
+            cutoff: f32::NEG_INFINITY,
+        }
+    }
+
+    #[inline]
+    fn competitive(&self, score: f32) -> bool {
+        self.size > 0 && score >= self.cutoff
+    }
+
+    #[inline]
+    fn offer(&mut self, c: Candidate) {
+        self.buffer.push(c);
+        if self.buffer.len() >= self.size.saturating_mul(2) {
+            self.cut();
+        }
+    }
+
+    // ARITH: `cut` runs only with `size > 0` candidates held.
+    #[allow(clippy::arithmetic_side_effects)]
+    fn cut(&mut self) {
+        let last = self.size - 1;
+        self.buffer.select_nth_unstable_by(last, |a, b| b.cmp(a));
+        self.buffer.truncate(self.size);
+        self.cutoff = self.buffer[last].score;
+    }
+
+    fn into_sorted(mut self) -> Vec<Candidate> {
+        self.buffer.sort_unstable_by(|a, b| b.cmp(a));
+        self.buffer.truncate(self.size);
+        self.buffer
+    }
+
+    /// The best `size`, in no particular order.
+    fn into_best(mut self) -> Vec<Candidate> {
+        if self.buffer.len() > self.size {
+            self.cut();
+        }
+        self.buffer
+    }
+}
+
+/// The order a scan returns its candidates in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Order {
+    /// Best estimate first.
+    Score,
+    /// By slot: the order of the vectors in the file, so a rerank of all of
+    /// them reads it front to back.
+    Slot,
+}
+
+/// A scan's candidates: a [`Shortlist`], or a [`TopN`] when spilled
+/// vectors must be kept once.
+enum Gather {
+    List(Shortlist),
+    Heap(TopN),
+}
+
+impl Gather {
+    #[inline]
+    fn competitive(&self, score: f32) -> bool {
+        match self {
+            Gather::List(l) => l.competitive(score),
+            Gather::Heap(h) => h.competitive(score),
+        }
+    }
+
+    #[inline]
+    fn offer(&mut self, c: Candidate) {
+        match self {
+            Gather::List(l) => l.offer(c),
+            Gather::Heap(h) => h.offer(c),
+        }
+    }
+
+    fn into_order(self, order: Order) -> Vec<Candidate> {
+        let mut v = match (self, order) {
+            (Gather::List(l), Order::Score) => return l.into_sorted(),
+            (Gather::List(l), Order::Slot) => l.into_best(),
+            (Gather::Heap(h), _) => h.into_sorted(),
+        };
+        if order == Order::Slot {
+            v.sort_unstable_by_key(|c| c.slot);
+        }
+        v
+    }
+}
+
 /// For each position of `candidates`, the most any candidate from there on
 /// can score: the suffix maximum of estimate plus margin.
 pub(crate) fn reach(candidates: &[Candidate]) -> Vec<f32> {
@@ -1055,7 +1160,7 @@ impl IvfField {
     }
 
     /// Scores the codes of the clusters `probes` for `query` (prepared) and
-    /// returns the best `size` candidates by estimate, best first, among the
+    /// returns the best `size` candidates by estimate, in `order`, among the
     /// documents `accept` lets through. With `bounds`, each candidate
     /// carries the quantizer's error margin (infinite when it has none).
     /// Clusters that cannot beat `shared` are skipped.
@@ -1071,6 +1176,7 @@ impl IvfField {
         accept: Option<&dyn Fn(i32) -> bool>,
         bounds: bool,
         shared: Option<&SharedThreshold>,
+        order: Order,
         stats: &mut SearchStats,
     ) -> Result<Vec<Candidate>> {
         let mut scorer = self.quantizer.query_scorer(query);
@@ -1078,7 +1184,12 @@ impl IvfField {
         if !uses_centroid {
             self.target(scorer.as_mut(), 0);
         }
-        let mut top = TopN::new(size.min(self.entries()), self.entries() > self.count);
+        let size = size.min(self.entries());
+        let mut top = if self.entries() > self.count {
+            Gather::Heap(TopN::new(size, true))
+        } else {
+            Gather::List(Shortlist::new(size))
+        };
         let query_norm = simd::dot_f32(query, query).sqrt();
         let mut scores = Vec::new();
         // Margins only for the codes kept; off for good once unknown.
@@ -1129,7 +1240,7 @@ impl IvfField {
                 });
             }
         }
-        let candidates = top.into_sorted();
+        let candidates = top.into_order(order);
         stats.candidates = candidates.len();
         Ok(candidates)
     }
@@ -1271,6 +1382,27 @@ impl IvfReader {
         out.resize(f.dimension, 0.0);
         f.encoding.decode(&bytes, f.slot_centroid(slot), out);
         Ok(())
+    }
+
+    /// The exact score of `query` against slot `slot`'s vector, decoded
+    /// into `scratch` unless it is stored as aligned floats to score in
+    /// place.
+    fn exact_score(
+        &self,
+        f: &IvfField,
+        slot: usize,
+        query: &[f32],
+        scratch: &mut Vec<f32>,
+    ) -> Result<f32> {
+        let bytes = self.vectors.read(f.vector_offset(slot), f.vector_len())?;
+        if f.encoding == VectorEncoding::F32 {
+            if let Some(v) = vector_util::le_f32s(&bytes) {
+                return Ok(f.similarity.score(query, v));
+            }
+        }
+        scratch.resize(f.dimension, 0.0);
+        f.encoding.decode(&bytes, f.slot_centroid(slot), scratch);
+        Ok(f.similarity.score(query, scratch))
     }
 
     /// Every vector of `field` in slot order, as stored (`IvfField::encoding`,
@@ -1474,6 +1606,12 @@ impl IvfReader {
             accept,
             early_stop && rerank > 0,
             shared,
+            // A fixed rerank reads every candidate whatever the order.
+            if rerank > 0 && !early_stop {
+                Order::Slot
+            } else {
+                Order::Score
+            },
             &mut stats,
         )?;
         let hits = if rerank == 0 {
@@ -1491,8 +1629,9 @@ impl IvfReader {
         Ok(SearchOutput { hits, stats })
     }
 
-    /// The best `k` of `candidates` (best estimate first) by exact score.
-    /// Candidates go in order; once the `k`-th exact score so far, or the
+    /// The best `k` of `candidates` by exact score. Candidates go in order
+    /// (best estimate first, unless none has a margin and the order does
+    /// not matter); once the `k`-th exact score so far, or the
     /// shared threshold, is above every remaining candidate's optimistic
     /// score (estimate plus margin), the rest are dropped, and a candidate
     /// whose own optimistic score is below it is skipped.
@@ -1535,12 +1674,9 @@ impl IvfReader {
                 }
             }
             ahead(candidates.get(i + AHEAD));
-            self.read_vector(f, c.slot as usize, &mut v)?;
+            let score = self.exact_score(f, c.slot as usize, query, &mut v)?;
             stats.reranked += 1;
-            exact.offer(Candidate {
-                score: f.similarity.score(query, &v),
-                ..*c
-            });
+            exact.offer(Candidate { score, ..*c });
             // Only `k` real hits bound the shared top `k`.
             if let (Some(shared), Some(floor), true) = (shared, exact.floor(), exact.size == k) {
                 shared.raise(floor);
@@ -1578,9 +1714,8 @@ impl IvfReader {
             if accept.is_some_and(|a| !a(doc)) {
                 continue;
             }
-            self.read_vector(f, slot as usize, &mut v)?;
             top.offer(Candidate {
-                score: f.similarity.score(&query, &v),
+                score: self.exact_score(f, slot as usize, &query, &mut v)?,
                 doc,
                 slot,
                 bound: 0.0,

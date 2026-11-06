@@ -21,3 +21,7 @@ criterion.workspace = true
 [[bench]]
 name = "routing"
 harness = false
+
+[[bench]]
+name = "ivf_path"
+harness = false

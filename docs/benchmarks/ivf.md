@@ -276,3 +276,63 @@ cargo bench -p lucene-ivf --bench routing
 The flat int8 scan at 27k x 300 reads 8.6 MB of codes per query, so it is
 bound by memory bandwidth (the kernel alone runs at about 21 GB/s here);
 beyond that, the tree is what helps.
+
+## Search and build path micro-benchmark
+
+`benches/ivf_path.rs` (Criterion) covers the rest of the path on synthetic
+clusters of 100 (Cosine) and 300 (Euclidean) dimensions: one query against
+one 384-vector cluster for each quantizer (`set_centroid`, `score_block`,
+`error_bounds`); whole searches of a 60k-vector field by rerank encoding
+and by fixed, bounded and calibrated depth; four segments with and without
+a shared threshold; and writing a field and merging two segments.
+
+```
+cargo bench -p lucene-ivf --bench ivf_path
+```
+
+Per probed cluster, before and after (300d Euclidean):
+
+| quantizer | set_centroid | score_block (384 codes) |
+|---|---|---|
+| bbq | 1095 -> 293 ns | 1071 -> 957 ns |
+| osq2 | 1314 -> 307 ns | 1780 -> 1464 ns |
+| rbbq | 1098 -> 258 ns | 1009 -> 868 ns |
+| erq4 | 587 -> 270 ns | 3321 -> 2389 ns |
+
+Setting a centroid (quantizing the query's residual against it and building
+the lookup tables) cost as much as scoring the cluster's codes. The fixes:
+
+- **`simd::residual_stats` and `simd::quantize_residual`**: AVX2 kernels for
+  the two passes over `query - centroid` (range, mean, norm and the
+  dot-product correction in one pass, then the levels and error). The
+  autovectorized loops kept scalar conversions with saturation checks.
+- **`simd::nibble_luts`**: all 16 entries of two groups' tables per three
+  shuffles and masks, instead of entry by entry; higher bit planes are the
+  first plane shifted. Extended RaBitQ uses the same kernel.
+- **Fast-scan accumulation** (`simd::lut16_accumulate32`): looked-up byte
+  pairs are added as 16-bit words and separated once at the end (Faiss's
+  trick), and the final reduction is vectorized.
+- **Candidates in a buffer, cut back by selection** rather than a heap:
+  a scan offers every code that beats the cut-off.
+- **Rerank**: f32 vectors are scored in place (no copy), and a fixed-depth
+  rerank reads its candidates in file order.
+- **Build**: the neighbourhood refine rounds score each cluster's members
+  against its neighbours with the tiled full-assignment kernel, measured
+  from the own centroid so Euclidean keeps its precision.
+
+End to end (`ivf_bench`, one query at a time, same index settings, recall
+unchanged to the fourth decimal):
+
+| data | quantizer | nprobe / rerank | latency before -> after |
+|---|---|---|---|
+| GloVe-100 | bbq | 32 / 100 | 89 -> 76 µs |
+| GloVe-100 | bbq | 128 / auto | 290 -> 233 µs |
+| GloVe-100 | osq2 | 128 / 100 | 319 -> 253 µs |
+| GloVe-100 | erq4 | 128 / 100 | 479 -> 420 µs |
+| fastText-300 | bbq | 128 / 100 | 553 -> 417 µs |
+| fastText-300 | erq4 | 128 / auto | 1481 -> 1136 µs |
+
+Builds got 4-14% faster (fastText bbq 83.6 -> 74.3 s). What remains in a
+build is mostly Lucene's document quantization (`OptimizedScalarQuantizer`,
+kept bit-exact with Java) and the full Lloyd rounds, which already use the
+tiled kernel.
