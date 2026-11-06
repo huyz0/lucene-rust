@@ -145,6 +145,9 @@ pub struct PageCacheStats {
     pub download_window: u64,
     /// RAM held by the disk tier's page records.
     pub disk_metadata_bytes: u64,
+    /// Disk the tier's slots take (each page in the smallest slot size that
+    /// holds it), which [`PageCacheConfig::disk_budget`] bounds.
+    pub disk_footprint_bytes: u64,
 }
 
 #[derive(Default)]
@@ -428,6 +431,7 @@ impl PageCache {
             read_ahead_pages: c.read_ahead_pages.load(Ordering::Relaxed),
             download_window: self.download_window() as u64,
             disk_metadata_bytes: self.disk.as_ref().map_or(0, |d| d.metadata_bytes() as u64),
+            disk_footprint_bytes: self.disk.as_ref().map_or(0, DiskTier::footprint),
         }
     }
 
@@ -820,8 +824,8 @@ mod tests {
             page_size: 100,
             download_window: Some(100),
             disk_dir: Some(tmp.path().join("cache")),
-            // Three slots (a 100-byte page takes an 8 KiB slot).
-            disk_budget: 3 * 8192,
+            // Three slots (a 100-byte page takes the smallest, 4 KiB).
+            disk_budget: 3 * 4096,
             ..PageCacheConfig::default()
         })
         .unwrap();

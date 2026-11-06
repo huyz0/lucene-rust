@@ -70,6 +70,14 @@ pub trait BlobStore: Send + Sync {
         Ok(bytes[start..end].to_vec())
     }
 
+    /// Every object name with its length, when the store's listing carries
+    /// lengths (S3's `ListObjectsV2`, Azure's and GCS's lists do): a reader
+    /// then opens files without asking for each length. `None`, the
+    /// default, when it does not.
+    fn list_with_sizes(&self) -> Result<Option<Vec<(String, u64)>>> {
+        Ok(None)
+    }
+
     /// An object's length. The default downloads it; a real store answers
     /// from metadata (`HEAD`).
     fn size(&self, name: &str) -> Result<u64> {
@@ -309,6 +317,15 @@ impl BlobStore for InMemoryBlobStore {
             .min(bytes.len());
         let end = start.saturating_add(len).min(bytes.len());
         Ok(bytes[start..end].to_vec())
+    }
+
+    fn list_with_sizes(&self) -> Result<Option<Vec<(String, u64)>>> {
+        Ok(Some(
+            lock_ignoring_poison(&self.objects)
+                .iter()
+                .map(|(name, bytes)| (name.clone(), bytes.len() as u64))
+                .collect(),
+        ))
     }
 
     fn size(&self, name: &str) -> Result<u64> {

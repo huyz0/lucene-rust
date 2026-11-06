@@ -4,7 +4,8 @@
 //!
 //! - Writes, listing, renames and deletes go to the store as
 //!   [`BlobDirectory`] sends them.
-//! - Opening a file asks the store for its length only. Its bytes come in
+//! - Opening a file asks the store for its length only, and not even that
+//!   when the store's listing carries lengths ([`BlobStore::list_with_sizes`]). Its bytes come in
 //!   fixed pages on first touch ([`crate::paged_input`], Linux
 //!   `userfaultfd`) or ahead of the reads through [`Input::will_need`], each
 //!   page from the cache's disk tier when it holds it, else by ranged reads
@@ -23,6 +24,7 @@
 //! ranged reads, uploads, deletes.
 
 use std::collections::{BTreeSet, HashMap};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 use crate::blob_directory::{BlobDirectory, BlobStore};
@@ -45,7 +47,21 @@ pub struct CachedBlobDirectory<S: BlobStore + 'static> {
     /// Files deleted while open: removed from the store once no input
     /// over them is left, since an open file's pages are fetched from it.
     pending: Mutex<BTreeSet<String>>,
+    /// File lengths, from the store's listing or a length request: files
+    /// are written once, so a length holds until the name is deleted or
+    /// written again.
+    sizes: Mutex<HashMap<String, u64>>,
+    /// Codecs built by a prefetch, with the stored length they were built
+    /// for, taken by the open that follows so a decoder (an encrypted
+    /// file's header and data key) runs once per file.
+    codecs: Mutex<HashMap<String, Built>>,
+    /// Bumped by every [`Self::forget`]: a listing that started before one
+    /// does not put back the lengths it read.
+    forgets: AtomicU64,
 }
+
+/// A codec and the stored length it was built for.
+type Built = (u64, Arc<dyn PageCodec>);
 
 /// A file open now: shared by later opens of the same bytes.
 struct Opened {
@@ -88,6 +104,9 @@ impl<S: BlobStore + 'static> CachedBlobDirectory<S> {
             namespace: Arc::from(namespace),
             open: Mutex::new(HashMap::new()),
             pending: Mutex::new(BTreeSet::new()),
+            sizes: Mutex::new(HashMap::new()),
+            codecs: Mutex::new(HashMap::new()),
+            forgets: AtomicU64::new(0),
         }
     }
 
@@ -107,8 +126,23 @@ impl<S: BlobStore + 'static> CachedBlobDirectory<S> {
 
     /// Drops what is cached of `name`.
     fn forget(&self, name: &str) {
+        // Bumped before the length goes, so a listing holding the lengths'
+        // lock either sees the bump or is done before the removal.
+        self.forgets.fetch_add(1, Ordering::AcqRel);
         lock_ignoring_poison(&self.open).remove(name);
+        lock_ignoring_poison(&self.sizes).remove(name);
+        lock_ignoring_poison(&self.codecs).remove(name);
         self.cache.forget_prefix(&self.key_prefix(name));
+    }
+
+    /// `name`'s stored length, asked of the store only when not known.
+    fn stored_len(&self, name: &str) -> Result<u64> {
+        if let Some(&len) = lock_ignoring_poison(&self.sizes).get(name) {
+            return Ok(len);
+        }
+        let len = self.store.size(name)?;
+        lock_ignoring_poison(&self.sizes).insert(name.to_string(), len);
+        Ok(len)
     }
 
     /// Whether an input over `name` is open now.
@@ -159,7 +193,7 @@ impl<S: BlobStore + 'static> CachedBlobDirectory<S> {
         codec: Option<&dyn Fn(u64) -> Result<Arc<dyn PageCodec>>>,
     ) -> Result<Input> {
         self.refuse_pending(name)?;
-        let stored_len = self.store.size(name)?;
+        let stored_len = self.stored_len(name)?;
         let decoded = codec.is_some();
         if let Some(o) = lock_ignoring_poison(&self.open).get(name) {
             if o.stored_len == stored_len && o.decoded == decoded {
@@ -169,7 +203,10 @@ impl<S: BlobStore + 'static> CachedBlobDirectory<S> {
             }
         }
         let codec = match codec {
-            Some(build) => Some(build(stored_len)?),
+            Some(build) => match lock_ignoring_poison(&self.codecs).remove(name) {
+                Some((len, built)) if len == stored_len => Some(built),
+                _ => Some(build(stored_len)?),
+            },
             None => None,
         };
         let (file, pinned) = self.cached_file(name, stored_len, codec)?;
@@ -224,20 +261,62 @@ impl<S: BlobStore + 'static> CachedBlobDirectory<S> {
         Ok((file, pinned))
     }
 
-    /// What opening `name` undecoded reads: a pinned or one-page file
-    /// whole, otherwise its first and last pages (header and footer).
-    fn prefetch_file(&self, name: &str) -> Result<()> {
+    /// What opening `name` reads, undecoded or through `decoder`: a pinned
+    /// or two-page file whole, otherwise its first and last pages (header
+    /// and footer). A decoder's codec is kept for the open that follows.
+    fn prefetch_file(&self, name: &str, decoder: Option<&dyn PageDecoder>) -> Result<()> {
         if self.is_pending(name) || self.is_open(name) {
             return Ok(());
         }
-        let stored_len = self.store.size(name)?;
-        let (file, pinned) = self.cached_file(name, stored_len, None)?;
+        let stored_len = self.stored_len(name)?;
+        let codec = match decoder {
+            Some(d) => {
+                let codec = d.codec(name, stored_len, self)?;
+                lock_ignoring_poison(&self.codecs)
+                    .insert(name.to_string(), (stored_len, Arc::clone(&codec)));
+                Some(codec)
+            }
+            None => None,
+        };
+        let (file, pinned) = self.cached_file(name, stored_len, codec)?;
         let pages: Vec<u64> = if pinned || file.geom.pages <= 2 {
             (0..file.geom.pages).collect()
         } else {
             vec![0, file.geom.pages.saturating_sub(1)]
         };
         file.pages(&pages).map(|_| ())
+    }
+
+    /// [`Self::prefetch_file`] of every name at once, `concurrency` files at
+    /// a time; the first error.
+    fn prefetch_all(&self, names: &[String], decoder: Option<&dyn PageDecoder>) -> Result<()> {
+        if !self.cache.has_disk() {
+            return Ok(());
+        }
+        let threads = self.cache.config().concurrency.max(1);
+        let mut first = Ok(());
+        for batch in names.chunks(threads) {
+            let results: Vec<Result<()>> = std::thread::scope(|s| {
+                let handles: Vec<_> = batch
+                    .iter()
+                    .map(|name| s.spawn(move || self.prefetch_file(name, decoder)))
+                    .collect();
+                handles
+                    .into_iter()
+                    .map(|h| {
+                        h.join().unwrap_or_else(|_| {
+                            Err(Error::Io(std::io::Error::other("a prefetch panicked")))
+                        })
+                    })
+                    .collect()
+            });
+            for r in results {
+                if first.is_ok() {
+                    first = r;
+                }
+            }
+        }
+        first
     }
 
     #[cfg(target_os = "linux")]
@@ -338,7 +417,24 @@ impl<S: BlobStore + 'static> PageFiller for CachedFile<S> {
 impl<S: BlobStore + 'static> Directory for CachedBlobDirectory<S> {
     fn list_all(&self) -> Result<Vec<String>> {
         self.delete_pending()?;
-        let mut names = self.blob.list_all()?;
+        let forgets = self.forgets.load(Ordering::Acquire);
+        let mut names = match self.store.list_with_sizes()? {
+            Some(listed) => {
+                let mut sizes = lock_ignoring_poison(&self.sizes);
+                let current = self.forgets.load(Ordering::Acquire) == forgets;
+                let mut names = Vec::with_capacity(listed.len());
+                for (name, len) in listed {
+                    if current {
+                        sizes.entry(name.clone()).or_insert(len);
+                    }
+                    names.push(name);
+                }
+                names.sort_unstable();
+                names.dedup();
+                names
+            }
+            None => self.blob.list_all()?,
+        };
         let pending = lock_ignoring_poison(&self.pending);
         names.retain(|n| !pending.contains(n));
         Ok(names)
@@ -357,33 +453,14 @@ impl<S: BlobStore + 'static> Directory for CachedBlobDirectory<S> {
     /// `names` undecoded will read. Without a disk tier nothing would keep
     /// the pages, so nothing is fetched.
     fn prefetch_files(&self, names: &[String]) -> Result<()> {
-        if !self.cache.has_disk() {
-            return Ok(());
-        }
-        let threads = self.cache.config().concurrency.max(1);
-        let mut first = Ok(());
-        for batch in names.chunks(threads) {
-            let results: Vec<Result<()>> = std::thread::scope(|s| {
-                let handles: Vec<_> = batch
-                    .iter()
-                    .map(|name| s.spawn(move || self.prefetch_file(name)))
-                    .collect();
-                handles
-                    .into_iter()
-                    .map(|h| {
-                        h.join().unwrap_or_else(|_| {
-                            Err(Error::Io(std::io::Error::other("a prefetch panicked")))
-                        })
-                    })
-                    .collect()
-            });
-            for r in results {
-                if first.is_ok() {
-                    first = r;
-                }
-            }
-        }
-        first
+        self.prefetch_all(names, None)
+    }
+
+    /// [`Directory::prefetch_files`] for files opened through `decoder`:
+    /// each file's header (read by the decoder) and then its first and last
+    /// decoded pages, every file at once.
+    fn prefetch_files_decoded(&self, names: &[String], decoder: &dyn PageDecoder) -> Result<()> {
+        self.prefetch_all(names, Some(decoder))
     }
 
     fn read_at(&self, name: &str, offset: u64, len: usize) -> Result<Vec<u8>> {
@@ -393,7 +470,7 @@ impl<S: BlobStore + 'static> Directory for CachedBlobDirectory<S> {
 
     fn file_length(&self, name: &str) -> Result<u64> {
         self.refuse_pending(name)?;
-        self.store.size(name)
+        self.stored_len(name)
     }
 
     fn create_output(&self, name: &str) -> Result<FsIndexOutput> {
@@ -476,6 +553,7 @@ mod tests {
         inner: InMemoryBlobStore,
         ranges: Arc<AtomicUsize>,
         wholes: Arc<AtomicUsize>,
+        sizes: Arc<AtomicUsize>,
     }
 
     impl BlobStore for Counting {
@@ -491,7 +569,11 @@ mod tests {
             self.inner.get_range(name, offset, len)
         }
         fn size(&self, name: &str) -> Result<u64> {
+            self.sizes.fetch_add(1, Ordering::Relaxed);
             self.inner.size(name)
+        }
+        fn list_with_sizes(&self) -> Result<Option<Vec<(String, u64)>>> {
+            self.inner.list_with_sizes()
         }
         fn put(&self, name: &str, bytes: Vec<u8>) -> Result<()> {
             self.inner.put(name, bytes)
@@ -595,6 +677,34 @@ mod tests {
         assert!(d.prefetch_files(&["nope".to_string()]).is_err());
         d.prefetch_files(&names).unwrap();
         assert_eq!(store.ranges.load(Ordering::Relaxed), fetched);
+    }
+
+    #[test]
+    fn lengths_come_from_the_listing_and_a_prefetched_codec_serves_the_open() {
+        let (d, store, _tmp) = dir("cached-blob-lengths", 16 * 1024);
+        let plain = data(150_000, 9);
+        put(&d, "_0.fdt", &encode(&plain));
+        put(&d, "_0.si", &data(100, 5));
+        assert_eq!(d.list_all().unwrap(), ["_0.fdt", "_0.si"]);
+        let sizes = store.sizes.load(Ordering::Relaxed);
+        d.prefetch_files_decoded(&["_0.fdt".to_string()], &XorDecoder)
+            .unwrap();
+        let fetched = store.ranges.load(Ordering::Relaxed);
+        // The codec the prefetch built (its header read once) and both
+        // decoded ends: opening the file and reading them asks the store
+        // for nothing more.
+        let input = d.open_decoded("_0.fdt", &XorDecoder).unwrap().unwrap();
+        assert!(input[..16] == plain[..16]);
+        assert!(input[plain.len() - 16..] == plain[plain.len() - 16..]);
+        assert_eq!(d.file_length("_0.si").unwrap(), 100);
+        assert_eq!(store.ranges.load(Ordering::Relaxed), fetched);
+        assert_eq!(store.sizes.load(Ordering::Relaxed), sizes, "lengths listed");
+        // A name written again is not served its old length.
+        d.delete_file("_0.si").unwrap();
+        put(&d, "_0.si", &data(300, 6));
+        assert_eq!(d.file_length("_0.si").unwrap(), 300);
+        assert_eq!(d.read_at("_0.si", 0, 400).unwrap(), data(300, 6));
+        assert_eq!(d.read_at("_0.si", 290, 400).unwrap(), data(300, 6)[290..]);
     }
 
     #[test]

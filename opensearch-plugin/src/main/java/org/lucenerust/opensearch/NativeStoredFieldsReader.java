@@ -9,6 +9,10 @@ import org.apache.lucene.codecs.StoredFieldsReader;
 import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.FieldInfo;
 import org.apache.lucene.index.FilterDirectoryReader;
+import org.apache.lucene.index.FilterLeafReader;
+import org.apache.lucene.index.IndexReader;
+import org.apache.lucene.index.LeafReaderContext;
+import org.apache.lucene.index.ReaderUtil;
 import org.apache.lucene.index.LeafReader;
 import org.apache.lucene.index.FieldInfos;
 import org.apache.lucene.index.StoredFieldDataInput;
@@ -22,6 +26,7 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import java.util.List;
 import java.util.function.BooleanSupplier;
 
@@ -201,6 +206,22 @@ final class NativeStoredFieldsReader extends FilterDirectoryReader {
             shared.stats.fetchTime(false, System.nanoTime() - start);
         }
 
+        /** Announces that {@code docs} (segment-local, sorted) are about to be read natively. */
+        void prefetchNative(int[] docs) {
+            if (live || docs.length == 0 || shared.enabled.getAsBoolean() == false) {
+                return;
+            }
+            long h = shared.handle();
+            if (h == 0) {
+                return;
+            }
+            int rc = NativeBridge.prefetchDocuments(h, ord, docs);
+            if (rc != NativeBridge.OK) {
+                // Only a hint: the reads that follow fetch what they need and report their own errors.
+                logger.debug("lucene-rust: native stored-fields prefetch failed ({}): {}", rc, NativeBridge.lastError());
+            }
+        }
+
         /** Document {@code docID} replayed into {@code visitor} from the native reader; false when it cannot be. */
         private boolean nativeDocument(int docID, StoredFieldVisitor visitor, boolean sequential) throws IOException {
             if (live) {
@@ -232,6 +253,56 @@ final class NativeStoredFieldsReader extends FilterDirectoryReader {
         @Override
         public CacheHelper getReaderCacheHelper() {
             return in.getReaderCacheHelper();
+        }
+    }
+
+    /**
+     * The fetch phase's documents announced before it reads them one at a time
+     * ({@code SearchOperationListener.onPreFetchPhase}): the global {@code docIds} grouped by the
+     * leaf of {@code reader} that holds them, each group handed to that leaf's native reader in one
+     * call, so a segment read by range fetches their stored fields together. Leaves not read
+     * natively are skipped.
+     */
+    static void prefetch(IndexReader reader, int[] docIds, int from, int size) {
+        if (size <= 0) {
+            return;
+        }
+        int[] docs = Arrays.copyOfRange(docIds, from, from + size);
+        Arrays.sort(docs);
+        List<LeafReaderContext> leaves = reader.leaves();
+        int at = 0;
+        while (at < docs.length) {
+            int index = ReaderUtil.subIndex(docs[at], leaves);
+            LeafReaderContext ctx = leaves.get(index);
+            int end = ctx.docBase + ctx.reader().maxDoc();
+            int stop = at;
+            while (stop < docs.length && docs[stop] < end) {
+                stop++;
+            }
+            Leaf leaf = unwrapLeaf(ctx.reader());
+            if (leaf != null) {
+                int[] local = new int[stop - at];
+                for (int i = 0; i < local.length; i++) {
+                    local[i] = docs[at + i] - ctx.docBase;
+                }
+                leaf.prefetchNative(local);
+            }
+            at = Math.max(stop, at + 1);
+        }
+    }
+
+    /** This reader's leaf under {@code reader}'s filter wrappers, or null when it has none. */
+    private static Leaf unwrapLeaf(LeafReader reader) {
+        LeafReader r = reader;
+        while (true) {
+            if (r instanceof Leaf leaf) {
+                return leaf;
+            }
+            if (r instanceof FilterLeafReader f) {
+                r = f.getDelegate();
+            } else {
+                return null;
+            }
         }
     }
 
