@@ -2659,6 +2659,46 @@ impl DirectoryReader {
         }
     }
 
+    /// This reader's segments, then those of `extra` opened from `dir`, as
+    /// one reader under a new cache key: the writer's buffered documents,
+    /// written as segments into memory, searched after the reader's own.
+    /// The extra segments are not part of [`Self::segment_infos`].
+    pub fn with_segments_appended(
+        &self,
+        dir: &dyn Directory,
+        extra: &[segment_infos::SegmentCommitInfo],
+    ) -> Result<Self> {
+        let mut segments: Vec<SegmentReader> = self
+            .segments
+            .iter()
+            .map(SegmentReader::clone_reader)
+            .collect();
+        for sci in extra {
+            segments.push(SegmentReader::open(dir, sci, 0)?);
+        }
+        let mut doc_base = 0i64;
+        for reader in &mut segments {
+            reader.doc_base = i32::try_from(doc_base).unwrap_or(i32::MAX);
+            doc_base = doc_base.saturating_add(i64::from(reader.max_doc));
+            let limit = crate::reader::multi_reader::MAX_DOCS;
+            if doc_base > limit {
+                return Err(Error::Store(lucene_store::Error::Corrupted(format!(
+                    "Too many documents: an index cannot exceed {limit} with the buffered ones"
+                ))));
+            }
+        }
+        Ok(DirectoryReader {
+            segment_infos: self.segment_infos.clone(),
+            segments,
+            global_ords: std::sync::Mutex::default(),
+            norm_tables: std::sync::Mutex::default(),
+            norms_plans: std::sync::Mutex::default(),
+            nrt_hold: self.nrt_hold.clone(),
+            reader_cache: crate::reader::CacheHelper::new(),
+            soft_deletes: self.soft_deletes.clone(),
+        })
+    }
+
     pub(crate) fn with_segment_order(&self, order: &[usize]) -> Self {
         debug_assert_eq!(order.len(), self.segments.len());
         let mut doc_base = 0i32;

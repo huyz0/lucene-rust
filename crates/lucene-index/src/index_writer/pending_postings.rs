@@ -782,17 +782,69 @@ impl FieldRuns {
         &self,
         id: u32,
         old_to_new: Option<&[usize]>,
+        limit: Option<i32>,
         scratch: &mut Scratch,
         out: &mut FlushedField,
     ) -> Result<()> {
         let docs_from = out.cols.docs.len();
         let pos_from = out.cols.positions.len();
+        let offsets_from = out.cols.offsets.len();
         let len_from = out.cols.payload_lengths.len();
         let bytes_from = out.cols.payload_bytes.len();
         match old_to_new {
             None => {
                 // `ends` are relative to the term's first position.
                 self.decode(id, &mut out.cols)?;
+                if let Some(limit) = limit {
+                    let added = out.cols.docs.get(docs_from..).unwrap_or_default();
+                    let keep = added.partition_point(|&(d, _)| d < limit);
+                    if keep < added.len() {
+                        let kept_docs = docs_from.saturating_add(keep);
+                        let occurrences = if self.positions {
+                            keep.checked_sub(1)
+                                .and_then(|last| out.cols.ends.get(docs_from.saturating_add(last)))
+                                .map_or(0, |&e| e as usize)
+                        } else {
+                            0
+                        };
+                        let payload_bytes = out
+                            .cols
+                            .payload_lengths
+                            .get(len_from..len_from.saturating_add(occurrences))
+                            .unwrap_or_default()
+                            .iter()
+                            .fold(0usize, |a, &l| a.saturating_add(l as usize));
+                        out.cols.docs.truncate(kept_docs);
+                        if self.positions {
+                            out.cols.ends.truncate(kept_docs);
+                            out.cols
+                                .positions
+                                .truncate(pos_from.saturating_add(occurrences));
+                        }
+                        if self.offsets {
+                            out.cols
+                                .offsets
+                                .truncate(offsets_from.saturating_add(occurrences));
+                        }
+                        if self.payloads {
+                            out.cols
+                                .payload_lengths
+                                .truncate(len_from.saturating_add(occurrences));
+                            out.cols
+                                .payload_bytes
+                                .truncate(bytes_from.saturating_add(payload_bytes));
+                        }
+                        if keep == 0 {
+                            // No document below the limit holds the term.
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+            Some(_) if limit.is_some() => {
+                return Err(explicit_error(
+                    "a document limit applies to unsorted buffers only",
+                ));
             }
             Some(map) => {
                 let t = &mut scratch.cols;
@@ -868,7 +920,12 @@ impl FieldRuns {
     }
 
     /// The field laid out for the postings writer: [`PendingPostings::flushed`].
-    fn flushed(&self, number: i32, old_to_new: Option<&[usize]>) -> Result<FlushedField> {
+    fn flushed(
+        &self,
+        number: i32,
+        old_to_new: Option<&[usize]>,
+        limit: Option<i32>,
+    ) -> Result<FlushedField> {
         let ids: Vec<u32> = self
             .terms
             .sorted_ids()
@@ -906,7 +963,7 @@ impl FieldRuns {
         // bytes and streams' first bytes once those are in cache.
         for (i, &id) in ids.iter().enumerate() {
             self.prefetch_layout(&ids, i);
-            self.lay_out(id, old_to_new, &mut scratch, &mut out)?;
+            self.lay_out(id, old_to_new, limit, &mut scratch, &mut out)?;
         }
         Ok(out)
     }
@@ -917,6 +974,7 @@ impl FieldRuns {
     fn stream(
         &self,
         old_to_new: Option<&[usize]>,
+        limit: Option<i32>,
         write: &mut dyn FnMut(&[TermView<'_>]) -> Result<()>,
     ) -> Result<()> {
         let ids: Vec<u32> = self
@@ -935,7 +993,7 @@ impl FieldRuns {
         let mut scratch = Scratch::default();
         for (i, &id) in ids.iter().enumerate() {
             self.prefetch_layout(&ids, i);
-            self.lay_out(id, old_to_new, &mut scratch, &mut out)?;
+            self.lay_out(id, old_to_new, limit, &mut scratch, &mut out)?;
             if out.terms.len() >= STREAM_TERMS
                 || out.cols.docs.len().max(out.cols.positions.len()) >= STREAM_ENTRIES
             {
@@ -1228,15 +1286,19 @@ impl PendingPostings {
     }
 
     /// Field `number`'s postings handed to `write` in term order, a batch
-    /// at a time, renumbered by `old_to_new` as [`Self::flushed`] does.
-    pub(crate) fn stream_field(
+    /// at a time, renumbered by `old_to_new` as [`Self::flushed_below`] does.
+    ///
+    /// With `limit` (unsorted buffers only), the documents below it alone:
+    /// the postings a flush of the buffer's first `limit` documents writes.
+    pub(crate) fn stream_field_below(
         &self,
         number: i32,
         old_to_new: Option<&[usize]>,
+        limit: Option<i32>,
         write: &mut dyn FnMut(&[TermView<'_>]) -> Result<()>,
     ) -> Result<()> {
         match self.fields.get(&number) {
-            Some(f) if f.doc_count > 0 => f.stream(old_to_new, write),
+            Some(f) if f.doc_count > 0 => f.stream(old_to_new, limit, write),
             _ => Ok(()),
         }
     }
@@ -1244,12 +1306,24 @@ impl PendingPostings {
     /// Every field's postings laid out for the postings writer, documents
     /// renumbered by `old_to_new` (buffered doc id to sorted) under an index
     /// sort. The buffer is left as it was.
+    #[cfg(test)]
     pub(crate) fn flushed(&self, old_to_new: Option<&[usize]>) -> Result<FlushedPostings> {
+        self.flushed_below(old_to_new, None)
+    }
+
+    /// Every field's postings laid out (see `flushed`), for the documents
+    /// below `limit` only when given (see [`Self::stream_field_below`]). Each field's `doc_count` stays
+    /// the whole buffer's: the caller knows its own.
+    pub(crate) fn flushed_below(
+        &self,
+        old_to_new: Option<&[usize]>,
+        limit: Option<i32>,
+    ) -> Result<FlushedPostings> {
         let fields = self
             .fields
             .iter()
             .filter(|(_, f)| f.doc_count > 0)
-            .map(|(&n, f)| f.flushed(n, old_to_new))
+            .map(|(&n, f)| f.flushed(n, old_to_new, limit))
             .collect::<Result<_>>()?;
         Ok(FlushedPostings { fields })
     }

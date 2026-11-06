@@ -1401,6 +1401,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
             old_to_new: old_to_new.as_deref(),
             has_blocks,
             stored: stored.as_ref(),
+            limit: None,
         };
         // This segment's own deletes are resolved here, with no lock held --
         // `DocumentsWriterPerThread.flush`'s `applyDeletes` -- so the publish,

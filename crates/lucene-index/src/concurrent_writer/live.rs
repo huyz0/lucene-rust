@@ -828,6 +828,81 @@ impl ConcurrentIndexWriter<'_> {
         Ok(out)
     }
 
+    /// Writes `view`'s buffers into `dir` as segments, one per buffer and
+    /// in the view's order, as their flush would write them, without
+    /// taking them from the writer: what a search needing whole segments
+    /// (doc values, points, every term) reads them through. Each holds its
+    /// buffer's first [`ViewBuffer::max_doc`] documents, those of the view;
+    /// the caller treats [`ViewBuffer::deleted`] as deleted. Stored fields
+    /// are not written ([`Self::live_document`] reads them).
+    ///
+    /// Each buffer's slot is locked while its segment is written. Fails
+    /// when a buffer has left its slot (taken for a flush since), and under
+    /// an index sort, which would renumber the documents.
+    pub fn live_view_segments(
+        &self,
+        view: &LiveView,
+        dir: &dyn lucene_store::Directory,
+    ) -> Result<Vec<crate::segment_infos::SegmentCommitInfo>> {
+        let cfg = self.check_live()?;
+        if cfg.sorts_documents() {
+            return Err(Error::LiveSearch(
+                "an index sort renumbers the buffered documents".into(),
+            ));
+        }
+        // Every buffer still in a slot, or none written: a buffer leaves its
+        // slot only to be flushed, and does not come back.
+        if let Some(b) = view
+            .buffers
+            .iter()
+            .find(|b| !self.slots.iter().any(|d| lock(d).live.id == b.id))
+        {
+            return Err(Error::LiveSearch(format!(
+                "buffer {} is no longer buffered",
+                b.id
+            )));
+        }
+        let mut out = Vec::with_capacity(view.buffers.len());
+        for (i, b) in view.buffers.iter().enumerate() {
+            let slot = self
+                .slots
+                .iter()
+                .map(lock)
+                .find(|d| d.live.id == b.id && !d.docs.is_empty())
+                .ok_or_else(|| {
+                    Error::LiveSearch(format!("buffer {} is no longer buffered", b.id))
+                })?;
+            // The documents as of the view: the buffer may have grown since.
+            let n = usize::try_from(b.max_doc).unwrap_or(0).min(slot.docs.len());
+            let limit = crate::index_writer::BufferLimit {
+                docs: b.max_doc,
+                doc_counts: b.stats.iter().map(|(&f, s)| (f, s.doc_count)).collect(),
+            };
+            let grown = n < slot.docs.len();
+            let buffer = crate::index_writer::DocumentBuffer {
+                docs: slot.docs.get(..n).unwrap_or_default(),
+                custom_freq_terms: slot.custom_freq_terms.get(..n).unwrap_or_default(),
+                vectors: slot.vectors.get(..n).unwrap_or_default(),
+                explicit: crate::index_writer::ExplicitDocs::PackedPrefix(&slot.explicit, n),
+                postings: Some(&slot.postings),
+                old_to_new: None,
+                has_blocks: slot.has_blocks,
+                stored: None,
+                limit: grown.then_some(&limit),
+            };
+            let name = format!("_live{i}");
+            let (sci, _) = cfg.build_and_write_segment(
+                dir,
+                &buffer,
+                &name,
+                lucene_util::string_helper::random_id(),
+                None,
+            )?;
+            out.push(sci);
+        }
+        Ok(out)
+    }
+
     /// Lets the buffers `view` read go once no other view reads them.
     pub fn close_live_view(&self, view: &LiveView) {
         let mut core = lock(&self.core);
