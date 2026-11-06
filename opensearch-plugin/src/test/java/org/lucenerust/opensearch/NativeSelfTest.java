@@ -127,6 +127,8 @@ public final class NativeSelfTest {
         NativeLibrary.load(Path.of("."));
         check(NativeBridge.abiVersion() == NativeBridge.EXPECTED_ABI_VERSION, "ABI handshake");
 
+        realtimePrimary();
+
         // The analysis bridge first: quick, and SELFTEST_ONLY=analysis runs it alone.
         NativeSelfTestAnalysis.run(new Random(23), (ok, what) -> check(ok, what));
         check(NativeSelfTestAnalysis.described >= 48, "analyzers described: " + NativeSelfTestAnalysis.described);
@@ -248,6 +250,31 @@ public final class NativeSelfTest {
         );
         if (failures > 0) {
             System.exit(1);
+        }
+    }
+
+    /** Which realtime indices RealtimePrimaryFilter sends to their primaries. */
+    private static void realtimePrimary() {
+        record Case(boolean realtime, int replicas, String type, boolean remote, boolean primary) {}
+        Case[] cases = {
+            new Case(true, 1, "SEGMENT", false, true),
+            new Case(true, 1, "SEGMENT", true, true),
+            new Case(true, 1, "DOCUMENT", false, false),
+            new Case(true, 0, "SEGMENT", false, false),
+            new Case(false, 1, "SEGMENT", false, false) };
+        for (Case c : cases) {
+            org.opensearch.common.settings.Settings settings = org.opensearch.common.settings.Settings.builder()
+                .put(org.opensearch.cluster.metadata.IndexMetadata.SETTING_VERSION_CREATED, org.opensearch.Version.CURRENT)
+                .put(org.opensearch.cluster.metadata.IndexMetadata.SETTING_NUMBER_OF_SHARDS, 1)
+                .put(org.opensearch.cluster.metadata.IndexMetadata.SETTING_NUMBER_OF_REPLICAS, c.replicas())
+                .put(org.opensearch.cluster.metadata.IndexMetadata.SETTING_REPLICATION_TYPE, c.type())
+                .put(org.opensearch.cluster.metadata.IndexMetadata.SETTING_REMOTE_STORE_ENABLED, c.remote())
+                .put(org.lucenerust.opensearch.engine.RustEngineSupport.REALTIME_SEARCH.getKey(), c.realtime())
+                .build();
+            org.opensearch.cluster.metadata.IndexMetadata index = org.opensearch.cluster.metadata.IndexMetadata.builder("rt")
+                .settings(settings)
+                .build();
+            check(RealtimePrimaryFilter.segmentCopies(index) == c.primary(), "realtime primary routing: " + c);
         }
     }
 

@@ -120,6 +120,9 @@ public class RustSearchPlugin extends Plugin implements
 
     private static final Logger logger = LogManager.getLogger(RustSearchPlugin.class);
 
+    private final SetOnce<org.opensearch.cluster.service.ClusterService> clusterService = new SetOnce<>();
+    private final SetOnce<IndexNameExpressionResolver> resolver = new SetOnce<>();
+
     private final NativeReaders readers = new NativeReaders();
     private final SearchStats stats = new SearchStats();
     private final String libraryPath;
@@ -365,6 +368,30 @@ public class RustSearchPlugin extends Plugin implements
     @Override
     public List<QuerySpec<?>> getQueries() {
         return List.of(new QuerySpec<>(NeuralSparseQueryBuilder.NAME, NeuralSparseQueryBuilder::new, NeuralSparseQueryBuilder::fromXContent));
+    }
+
+    @Override
+    public java.util.Collection<Object> createComponents(
+        org.opensearch.transport.client.Client client,
+        org.opensearch.cluster.service.ClusterService clusterService,
+        org.opensearch.threadpool.ThreadPool threadPool,
+        org.opensearch.watcher.ResourceWatcherService resourceWatcherService,
+        org.opensearch.script.ScriptService scriptService,
+        org.opensearch.core.xcontent.NamedXContentRegistry xContentRegistry,
+        org.opensearch.env.Environment environment,
+        org.opensearch.env.NodeEnvironment nodeEnvironment,
+        org.opensearch.core.common.io.stream.NamedWriteableRegistry namedWriteableRegistry,
+        IndexNameExpressionResolver indexNameExpressionResolver,
+        Supplier<org.opensearch.repositories.RepositoriesService> repositoriesServiceSupplier
+    ) {
+        this.clusterService.set(clusterService);
+        this.resolver.set(indexNameExpressionResolver);
+        return List.of();
+    }
+
+    @Override
+    public List<org.opensearch.action.support.ActionFilter> getActionFilters() {
+        return List.of(new RealtimePrimaryFilter(clusterService::get, resolver::get));
     }
 
     @Override
