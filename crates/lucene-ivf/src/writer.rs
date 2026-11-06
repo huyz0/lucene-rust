@@ -46,6 +46,7 @@ use lucene_store::DataOutput;
 use lucene_vector_quant::QuantizerFactory;
 
 use crate::kmeans::{self, KMeansParams, SplitMix64};
+use crate::merge::MergeClustering;
 use crate::{
     similarity_ordinal, Error, Result, Similarity, VectorEncoding, META_CODEC, POSTINGS_CODEC,
     VECTORS_CODEC, VERSION_CURRENT,
@@ -73,6 +74,9 @@ pub struct IvfParams {
     /// search read: `f32` exactly, or `f16`, `bf16` or 8 bits for a half or
     /// about a quarter of the bytes per reranked candidate.
     pub rerank_encoding: VectorEncoding,
+    /// How [`crate::merge_field`] clusters a merged segment: afresh, or from
+    /// the clusters of its largest source.
+    pub merge_clustering: MergeClustering,
 }
 
 impl Default for IvfParams {
@@ -83,6 +87,7 @@ impl Default for IvfParams {
             training_sample: 25_000,
             spill: None,
             rerank_encoding: VectorEncoding::F32,
+            merge_clustering: MergeClustering::default(),
         }
     }
 }
@@ -138,6 +143,35 @@ fn prepared_vectors(field: &FieldVectors<'_>) -> Vec<f32> {
 /// Whether a field's vectors are unit length and clustered spherically.
 pub(crate) fn spherical(similarity: Similarity) -> bool {
     matches!(similarity, Similarity::Cosine | Similarity::DotProduct)
+}
+
+/// `clustering` checked against a field of `n` vectors of dimension `dim`,
+/// with clusters that hold no vector dropped.
+fn checked_clustering(
+    clustering: kmeans::Clustering,
+    n: usize,
+    dim: usize,
+) -> Result<kmeans::Clustering> {
+    let bad = |m: &str| Err(Error::IllegalArgument(format!("clustering: {m}")));
+    if !clustering.centroids.len().is_multiple_of(dim) {
+        return bad("centroids are not whole vectors");
+    }
+    if clustering.centroids.iter().any(|x| !x.is_finite()) {
+        return bad("centroids must be finite");
+    }
+    let k = clustering.len(dim);
+    if clustering.assignments.len() != n {
+        return bad("not one assignment per vector");
+    }
+    if clustering.assignments.iter().any(|&a| a as usize >= k) {
+        return bad("an assignment names no centroid");
+    }
+    Ok(kmeans::compact(
+        clustering.centroids,
+        clustering.assignments,
+        dim,
+        k,
+    ))
 }
 
 /// Zero-pads `out` to a multiple of four bytes.
@@ -228,15 +262,62 @@ impl IvfWriter {
     /// documents out of order, a non-finite value, or a value the rerank
     /// encoding cannot hold (beyond `f16`'s range); the quantizer's
     /// training errors.
-    // ARITH: every index and count below is bounded by the field's vector
-    // count (checked to fit a u32) times its dimension, which is the length
-    // of an existing buffer; offsets are lengths of in-memory buffers.
-    #[allow(clippy::arithmetic_side_effects)]
     pub fn add_field(
         &mut self,
         field: &FieldVectors<'_>,
         factory: &dyn QuantizerFactory,
         params: &IvfParams,
+    ) -> Result<()> {
+        self.add_clustered(field, factory, params, &mut |vectors, metric| {
+            kmeans::cluster(
+                vectors,
+                field.dimension,
+                params.target_cluster_size,
+                &params.kmeans,
+                metric,
+            )
+        })
+    }
+
+    /// Like [`IvfWriter::add_field`], but with the clusters given instead of
+    /// found by k-means: `clustering` holds the centroids and each vector's
+    /// cluster, in `field`'s document order. Clusters with no vector are
+    /// dropped. Quantizer training, spilling and encoding are as for
+    /// [`IvfWriter::add_field`]; `params.target_cluster_size` and
+    /// `params.kmeans` are not used.
+    ///
+    /// The centroids are stored as given and probed by the field's metric:
+    /// Euclidean distance, or the inner product with the unit centroid for
+    /// `Cosine` and `DotProduct`, whose clusters should be spherical (see
+    /// [`kmeans::Metric::InnerProduct`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`IvfWriter::add_field`], and [`Error::IllegalArgument`] for
+    /// centroids that are not whole vectors or not finite, or assignments
+    /// that are not one per vector or name no centroid.
+    pub fn add_field_with_clustering(
+        &mut self,
+        field: &FieldVectors<'_>,
+        clustering: &kmeans::Clustering,
+        factory: &dyn QuantizerFactory,
+        params: &IvfParams,
+    ) -> Result<()> {
+        self.add_clustered(field, factory, params, &mut |_, _| clustering.clone())
+    }
+
+    /// Checks `field`, clusters its prepared vectors (unit-normalized for
+    /// `Cosine`) with `clusterer`, then quantizes and writes it.
+    // ARITH: every index and count below is bounded by the field's vector
+    // count (checked to fit a u32) times its dimension, which is the length
+    // of an existing buffer; offsets are lengths of in-memory buffers.
+    #[allow(clippy::arithmetic_side_effects)]
+    pub(crate) fn add_clustered(
+        &mut self,
+        field: &FieldVectors<'_>,
+        factory: &dyn QuantizerFactory,
+        params: &IvfParams,
+        clusterer: &mut dyn FnMut(&[f32], kmeans::Metric) -> kmeans::Clustering,
     ) -> Result<()> {
         self.check(field)?;
         let dim = field.dimension;
@@ -247,13 +328,7 @@ impl IvfWriter {
         } else {
             kmeans::Metric::L2
         };
-        let clustering = kmeans::cluster(
-            &vectors,
-            dim,
-            params.target_cluster_size,
-            &params.kmeans,
-            metric,
-        );
+        let clustering = checked_clustering(clusterer(&vectors, metric), n, dim)?;
         let nlist = clustering.len(dim);
         // Encoded before anything is written, so a refused field leaves the
         // writer as it was; int8 encodes the residual from the primary

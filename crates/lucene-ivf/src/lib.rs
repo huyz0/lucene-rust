@@ -11,8 +11,9 @@
 //! reranks the best estimates with the full-precision vectors.
 //!
 //! The index is written once per segment ([`writer`]) and never updated; a
-//! merge re-clusters the merged segment's vectors from scratch
-//! ([`merge::merge_field`]).
+//! merge writes the merged segment's vectors afresh, clustered from scratch
+//! or, when one input holds most of them, from that input's clusters
+//! rebalanced locally ([`merge::merge_field`], [`MergeClustering`]).
 //!
 //! # Files
 //!
@@ -42,7 +43,7 @@ pub mod reader;
 pub mod writer;
 
 pub use encoding::VectorEncoding;
-pub use merge::{merge_field, MergeSource};
+pub use merge::{merge_field, MergeClustering, MergeSource};
 pub use reader::{IvfField, IvfReader, RangeSource, ScoredDoc, SearchParams};
 pub use writer::{FieldVectors, IvfFiles, IvfParams, IvfWriter};
 
