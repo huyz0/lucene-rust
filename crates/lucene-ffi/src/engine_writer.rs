@@ -4742,6 +4742,8 @@ mod tests {
                 0,
                 std::ptr::null(),
                 0,
+                std::ptr::null(),
+                0,
                 &mut whole,
             )
         };
@@ -4753,6 +4755,8 @@ mod tests {
                 ffi_live_view_reader(
                     reader,
                     view,
+                    std::ptr::null(),
+                    0,
                     std::ptr::null(),
                     0,
                     std::ptr::null(),
@@ -4812,6 +4816,8 @@ mod tests {
                     q.len(),
                     std::ptr::null(),
                     0,
+                    std::ptr::null(),
+                    0,
                     &mut lean,
                 )
             };
@@ -4867,6 +4873,8 @@ mod tests {
                 0,
                 std::ptr::null(),
                 0,
+                std::ptr::null(),
+                0,
                 &mut again,
             )
         };
@@ -4900,6 +4908,8 @@ mod tests {
             ffi_live_view_reader(
                 reader,
                 view,
+                std::ptr::null(),
+                0,
                 std::ptr::null(),
                 0,
                 std::ptr::null(),
@@ -5020,6 +5030,8 @@ mod tests {
                     0,
                     std::ptr::null(),
                     0,
+                    std::ptr::null(),
+                    0,
                     &mut whole,
                 )
             };
@@ -5133,6 +5145,8 @@ mod tests {
                         q.len(),
                         tree.as_ptr(),
                         tree.len(),
+                        std::ptr::null(),
+                        0,
                         &mut lean,
                     )
                 };
@@ -5176,6 +5190,67 @@ mod tests {
                 );
                 assert_eq!(total, want as i64);
             }
+            // A prefix query reads the buffered terms it matches; a
+            // rescore's query, given with the request, its own terms.
+            let lean_of = |q: &[u8], extra: &[u8]| {
+                let mut lean = 0u64;
+                // SAFETY: live slices and out-pointer.
+                let rc = unsafe {
+                    ffi_live_view_reader(
+                        reader,
+                        view,
+                        q.as_ptr(),
+                        q.len(),
+                        std::ptr::null(),
+                        0,
+                        extra.as_ptr(),
+                        extra.len(),
+                        &mut lean,
+                    )
+                };
+                assert_eq!(rc, 0, "{}", crate::error::last_error());
+                assert_ne!(lean, whole, "round {round}: a handle of its own");
+                lean
+            };
+            let held = |lean: u64| {
+                let l = crate::jvm_reader::lookup(lean, "test").unwrap();
+                let mut held = std::collections::BTreeSet::new();
+                for r in &l.reader.segment_readers()[base..] {
+                    if let Some(terms) = r.terms("body").unwrap() {
+                        let mut te = terms.iterator().unwrap();
+                        while let Some(t) = te.next().unwrap() {
+                            held.insert(String::from_utf8(t.to_vec()).unwrap());
+                        }
+                    }
+                }
+                held
+            };
+            for prefix in ["d", "ga", "e", "zz"] {
+                let q = crate::jvm_reader::tests::prefix_blob("body", prefix);
+                let lean = lean_of(&q, &[]);
+                assert_eq!(
+                    scored_hits(lean, &q),
+                    scored_hits(whole, &q),
+                    "round {round}: {prefix}*"
+                );
+                assert!(
+                    held(lean).iter().all(|t| t.starts_with(prefix)),
+                    "round {round}: {prefix}* holds {:?}",
+                    held(lean)
+                );
+            }
+            let (q, rescore) = (
+                crate::jvm_reader::tests::term_blob("body", words[round % 5]),
+                crate::jvm_reader::tests::term_blob("body", words[(round + 2) % 5]),
+            );
+            let mut extra = (rescore.len() as i32).to_le_bytes().to_vec();
+            extra.extend_from_slice(&rescore);
+            let lean = lean_of(&q, &extra);
+            assert_eq!(
+                scored_hits(lean, &rescore),
+                scored_hits(whole, &rescore),
+                "round {round}: the rescore's query"
+            );
             // A term of one chunk: the others have its field but not it,
             // and count in its statistics all the same.
             let q = crate::jvm_reader::tests::term_blob("_id", &ids[added - 1]);
@@ -5187,6 +5262,8 @@ mod tests {
                     view,
                     q.as_ptr(),
                     q.len(),
+                    std::ptr::null(),
+                    0,
                     std::ptr::null(),
                     0,
                     &mut lean,
@@ -5228,6 +5305,8 @@ mod tests {
                 0,
                 std::ptr::null(),
                 0,
+                std::ptr::null(),
+                0,
                 &mut whole,
             )
         };
@@ -5246,6 +5325,8 @@ mod tests {
             ffi_live_view_reader(
                 reader,
                 unwritten,
+                std::ptr::null(),
+                0,
                 std::ptr::null(),
                 0,
                 std::ptr::null(),
@@ -5326,6 +5407,8 @@ mod tests {
                 ffi_live_view_reader(
                     reader,
                     view,
+                    std::ptr::null(),
+                    0,
                     std::ptr::null(),
                     0,
                     std::ptr::null(),
@@ -5587,6 +5670,8 @@ mod tests {
                     ffi_live_view_reader(
                         reader,
                         view,
+                        std::ptr::null(),
+                        0,
                         std::ptr::null(),
                         0,
                         std::ptr::null(),
