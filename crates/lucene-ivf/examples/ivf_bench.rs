@@ -5,7 +5,7 @@
 //!   --base N         use the first N base vectors (ground truth must match: default all)
 //!   --queries N      queries to run (default 1000)
 //!   --target N       IVF vectors per cluster (default 384)
-//!   --quantizers L   comma list of bbq,osq2,osq4,osq7,sq7,sq4 (default bbq,osq4,sq7)
+//!   --quantizers L   comma list of bbq,osq2,osq4,osq7,sq7,sq4,erq2..erq8 (default bbq,osq4,sq7)
 //!   --nprobe L       comma list of probe counts (default 4,8,16,32,64,128)
 //!   --rerank L       comma list of candidates reranked (default 0,50,100)
 //!   --refine N       k-means neighbourhood rounds; --full N  full Lloyd rounds
@@ -33,6 +33,7 @@ use lucene_codecs::{hnsw, hnsw_concurrent, hnsw_vectors};
 use lucene_ivf::{FieldVectors, IvfParams, IvfReader, IvfWriter, SearchParams, Similarity};
 use lucene_util::quantization::ScalarEncoding;
 use lucene_vector_quant::osq::OsqFactory;
+use lucene_vector_quant::rabitq::ExRabitqFactory;
 use lucene_vector_quant::scalar::ScalarFactory;
 use lucene_vector_quant::{QuantizerFactory, QuantizerRegistry};
 
@@ -62,6 +63,10 @@ fn factory(name: &str) -> Box<dyn QuantizerFactory> {
         "osq7" => Box::new(OsqFactory::new(ScalarEncoding::SevenBit)),
         "sq7" => Box::new(ScalarFactory::int7()),
         "sq4" => Box::new(ScalarFactory::int4()),
+        erq if erq.starts_with("erq") => match erq[3..].parse() {
+            Ok(bits @ 2..=8) => Box::new(ExRabitqFactory::new(bits)),
+            _ => panic!("unknown quantizer {erq}: erq takes 2..=8 bits"),
+        },
         other => panic!("unknown quantizer {other}"),
     }
 }

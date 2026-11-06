@@ -22,18 +22,20 @@
 //! the same scale as [`Similarity::score`] on the original vectors, so an
 //! index can rerank the best estimates with exact scores and compare the two.
 //!
-//! Two families are built in:
+//! Three families are built in:
 //!
 //! | name | quantizer | codes |
 //! |---|---|---|
 //! | `osq` | [`osq::OsqQuantizer`]: Lucene's optimized scalar quantization (`Lucene104ScalarQuantizedVectorsFormat`), per vector, centred on the partition centroid. [`osq::OsqFactory::bbq`] is the 1-bit document / 4-bit query encoding of Lucene's BBQ. | 1, 2, 4, 7 or 8 bits per dimension plus 16 bytes of corrective terms |
 //! | `sq` | [`scalar::ScalarQuantizer`]: Lucene99-style global min/max (quantile) scalar quantization, int7 or packed int4 | 1 or 1/2 byte per dimension plus a 4-byte offset |
+//! | `erq` | [`rabitq::ExRabitqQuantizer`]: Extended RaBitQ (Gao et al., SIGMOD 2025), per vector, centred on the partition centroid, after a random rotation | 2..=8 bits per padded dimension plus 12 bytes of corrective terms |
 //!
-//! A new quantizer (Extended RaBitQ, product quantization) implements
+//! A new quantizer (product quantization, say) implements
 //! [`QuantizerFactory`], [`Quantizer`] and [`QueryScorer`] and registers its
 //! factory; nothing in the index changes.
 
 pub mod osq;
+pub mod rabitq;
 pub mod scalar;
 
 use std::sync::Arc;
@@ -202,11 +204,12 @@ impl QuantizerRegistry {
         Self::default()
     }
 
-    /// A registry holding the built-in quantizers (`osq`, `sq`).
+    /// A registry holding the built-in quantizers (`osq`, `sq`, `erq`).
     pub fn with_builtins() -> Self {
         let mut r = Self::new();
         r.register(Arc::new(osq::OsqFactory::bbq()));
         r.register(Arc::new(scalar::ScalarFactory::int7()));
+        r.register(Arc::new(rabitq::ExRabitqFactory::new(4)));
         r
     }
 
@@ -283,14 +286,14 @@ mod tests {
     #[test]
     fn registry_finds_replaces_and_rejects() {
         let mut r = QuantizerRegistry::with_builtins();
-        assert_eq!(r.names(), vec!["osq", "sq"]);
+        assert_eq!(r.names(), vec!["osq", "sq", "erq"]);
         assert!(r.get("osq").is_ok());
         assert_eq!(
             r.get("rabitq").unwrap_err(),
             Error::UnknownQuantizer("rabitq".into())
         );
         r.register(Arc::new(osq::OsqFactory::bbq()));
-        assert_eq!(r.names(), vec!["sq", "osq"]);
+        assert_eq!(r.names(), vec!["sq", "erq", "osq"]);
         assert!(QuantizerRegistry::new().names().is_empty());
     }
 
