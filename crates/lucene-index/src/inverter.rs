@@ -254,7 +254,14 @@ impl TermHash {
     /// terms differing there without touching the arena, and compares full
     /// bytes only within a run of equal prefixes.
     pub(crate) fn sorted_ids(&self) -> Vec<u32> {
+        self.sorted_ids_where(|_| true)
+    }
+
+    /// [`Self::sorted_ids`] of the terms `keep` takes, the others not
+    /// sorted at all.
+    pub(crate) fn sorted_ids_where(&self, keep: impl Fn(u32) -> bool) -> Vec<u32> {
         let mut keyed: Vec<(u64, u32)> = (0..self.len() as u32)
+            .filter(|&id| keep(id))
             .map(|id| (prefix_key(self.term(id)), id))
             .collect();
         keyed.sort_unstable();

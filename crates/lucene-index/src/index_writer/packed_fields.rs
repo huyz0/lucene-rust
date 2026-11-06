@@ -49,6 +49,9 @@ const STRING: u8 = 5;
 #[derive(Default)]
 pub(crate) struct PackedFields {
     blocks: Vec<Vec<u8>>,
+    /// Per block, its first document and how many kept documents come
+    /// before it: where a read from a document on starts.
+    block_starts: Vec<(usize, usize)>,
     kept: Vec<ExplicitFields>,
     len: usize,
     scratch: Vec<u8>,
@@ -76,20 +79,26 @@ impl PackedFields {
         &self,
         f: impl FnMut(usize, &mut ExplicitFields) -> Result<()>,
     ) -> Result<()> {
-        self.for_each_upto(self.len, f)
+        self.for_each_range(0, self.len, f)
     }
 
-    /// [`Self::for_each`] over the first `limit` documents only.
-    pub(crate) fn for_each_upto(
+    /// [`Self::for_each`] over documents `start..limit` only, numbered
+    /// from `start`: document `start` is `f`'s 0.
+    pub(crate) fn for_each_range(
         &self,
+        start: usize,
         limit: usize,
         mut f: impl FnMut(usize, &mut ExplicitFields) -> Result<()>,
     ) -> Result<()> {
         let limit = limit.min(self.len);
+        let first = self
+            .block_starts
+            .partition_point(|&(d, _)| d <= start)
+            .saturating_sub(1);
+        let (mut i, kept_before) = self.block_starts.get(first).copied().unwrap_or((0, 0));
         let mut doc = ExplicitFields::default();
-        let mut kept = self.kept.iter();
-        let mut i = 0usize;
-        for block in &self.blocks {
+        let mut kept = self.kept.get(kept_before..).unwrap_or_default().iter();
+        for block in self.blocks.get(first..).unwrap_or_default() {
             let mut r = Reader {
                 bytes: block,
                 pos: 0,
@@ -100,12 +109,19 @@ impl PackedFields {
                 }
                 match r.byte()? {
                     PACKED => decode_into(&mut r, &mut doc)?,
-                    KEPT => doc.clone_from(kept.next().ok_or_else(|| {
-                        explicit_error("packed fields: a kept document is missing")
-                    })?),
+                    KEPT => {
+                        let k = kept.next().ok_or_else(|| {
+                            explicit_error("packed fields: a kept document is missing")
+                        })?;
+                        if i >= start {
+                            doc.clone_from(k);
+                        }
+                    }
                     _ => return Err(corrupt()),
                 }
-                f(i, &mut doc)?;
+                if i >= start {
+                    f(i.wrapping_sub(start), &mut doc)?;
+                }
                 i = i.saturating_add(1);
             }
         }
@@ -132,12 +148,18 @@ impl PackedFields {
             scratch.push(PACKED);
             encode(&fields, &mut scratch);
         }
-        allocated = allocated.saturating_add(self.append(&scratch));
+        let at = (
+            self.len.saturating_sub(1),
+            self.kept.len().saturating_sub(usize::from(keep)),
+        );
+        allocated = allocated.saturating_add(self.append(&scratch, at));
         self.scratch = scratch;
         allocated
     }
 
-    fn append(&mut self, record: &[u8]) -> usize {
+    /// Appends one document's record; `at` is that document's number and
+    /// the kept documents before it.
+    fn append(&mut self, record: &[u8], at: (usize, usize)) -> usize {
         if let Some(block) = self.blocks.last_mut() {
             if block.capacity().saturating_sub(block.len()) >= record.len() {
                 block.extend_from_slice(record);
@@ -148,6 +170,7 @@ impl PackedFields {
         block.extend_from_slice(record);
         let allocated = block.capacity();
         self.blocks.push(block);
+        self.block_starts.push(at);
         allocated
     }
 
@@ -505,6 +528,18 @@ mod tests {
             })
             .unwrap();
         assert_eq!(seen, expected.len());
+        // a range, from the block holding its first document
+        for (start, end) in [(0, 1), (996, 998), (1500, 4100), (4999, 5000), (2000, 2000)] {
+            let mut seen = Vec::new();
+            packed
+                .for_each_range(start, end, |i, f| {
+                    same(f, &expected[start + i]);
+                    seen.push(i);
+                    Ok(())
+                })
+                .unwrap();
+            assert_eq!(seen, (0..end - start).collect::<Vec<_>>());
+        }
         let unpacked = packed.unpack().unwrap();
         assert_eq!(unpacked.len(), expected.len());
         for (a, b) in unpacked.iter().zip(&expected) {

@@ -372,7 +372,7 @@ impl IndexingConfig {
         pending: &PendingPostings,
         fields: &[(super::pending_postings::FieldToFlush, IndexOptions)],
         old_to_new: Option<&[usize]>,
-        limit: Option<i32>,
+        range: Option<(i32, i32)>,
         norms: &[postings_writer::FieldNorms<'_>],
         state: lucene_codecs::postings_consumer::PostingsWriteState<'_>,
     ) -> Result<super::PostingsGroups> {
@@ -400,7 +400,7 @@ impl IndexingConfig {
                 state.id,
                 &mut |i, writer| {
                     let (field, _) = fields[i];
-                    pending.stream_field_below(field.number, old_to_new, limit, &mut |terms| {
+                    pending.stream_field_below(field.number, old_to_new, range, &mut |terms| {
                         writer.add_terms(terms, norms)?;
                         Ok(())
                     })?;
@@ -411,7 +411,7 @@ impl IndexingConfig {
                 return Ok(groups);
             }
         }
-        let flushed = pending.flushed_below(old_to_new, limit)?;
+        let flushed = pending.flushed_below(old_to_new, range)?;
         let term_lists = flushed.term_lists();
         let inputs: Vec<FieldPostingsInput<'_, _>> = term_lists
             .iter()
@@ -419,7 +419,7 @@ impl IndexingConfig {
                 let (f, options) = fields.iter().find(|(f, _)| f.number == *n)?;
                 Some((
                     n,
-                    if limit.is_some() { &f.doc_count } else { docs },
+                    if range.is_some() { &f.doc_count } else { docs },
                     terms,
                     f,
                     options,
@@ -886,7 +886,7 @@ impl IndexingConfig {
         };
         let mut flush_fields = pending.fields_to_flush();
         if let Some(limit) = buf.limit {
-            // The fields as the buffer's first documents hold them.
+            // The fields as the documents written hold them.
             flush_fields.retain_mut(|f| {
                 f.doc_count = limit.doc_counts.get(&f.number).copied().unwrap_or(0);
                 f.doc_count > 0
@@ -1012,7 +1012,7 @@ impl IndexingConfig {
                 pending,
                 &postings_fields,
                 buf.old_to_new,
-                buf.limit.map(|l| l.docs),
+                buf.limit.map(|l| (l.start, l.docs)),
                 &norms_for_impacts,
                 lucene_codecs::postings_consumer::PostingsWriteState {
                     directory: dir,
