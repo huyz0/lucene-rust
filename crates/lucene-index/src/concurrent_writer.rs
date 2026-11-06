@@ -481,17 +481,17 @@ impl<'d> ConcurrentIndexWriter<'d> {
     /// `IndexWriter.updatePendingMerges`: registers every merge the policy
     /// proposes among segments not already merging -- claiming their
     /// segments -- for the scheduler to take. Nothing without a policy.
-    fn register_merges(&self, core: &mut Core<'_>) -> Result<()> {
-        let Some(policy) = core.writer.merge_policy().cloned() else {
-            return Ok(());
-        };
+    fn register_merges(&self, core: &mut Core<'_>, trigger: MergeTrigger) -> Result<()> {
         if self.merges_stopped.load(Ordering::Acquire) {
             return Ok(());
         }
-        for (names, estimated) in core.writer.find_merges_sized(&policy, &core.merging)? {
+        for ((names, hooks), estimated) in
+            core.writer.find_scheduled_merges(trigger, &core.merging)?
+        {
             core.merging.extend(names.iter().cloned());
-            self.pending_merges
-                .push(Arc::new(ScheduledMerge::new(names, estimated)));
+            self.pending_merges.push(Arc::new(
+                ScheduledMerge::new(names, estimated).with_hooks(hooks),
+            ));
         }
         Ok(())
     }
@@ -506,7 +506,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
         let Some(source) = hook.source.upgrade() else {
             return Ok(());
         };
-        self.register_merges(&mut lock(&self.core))?;
+        self.register_merges(&mut lock(&self.core), trigger)?;
         hook.scheduler.merge(&source, trigger)
     }
 
@@ -528,7 +528,11 @@ impl<'d> ConcurrentIndexWriter<'d> {
         let plan = {
             let mut core = lock(&self.core);
             match core.writer.begin_merge(&merge.segments) {
-                Ok(plan) => plan,
+                Ok(mut plan) => {
+                    core.writer
+                        .attach_merge_hooks(&mut plan, merge.hooks.clone());
+                    plan
+                }
                 Err(e) => {
                     release(&mut core);
                     drop(core);
@@ -548,7 +552,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
             Ok(Ok(outcome)) => {
                 let finished = core.writer.finish_merge(plan, outcome);
                 self.refresh_segment_docs(&mut core);
-                finished.and_then(|_| self.register_merges(&mut core))
+                finished.and_then(|_| self.register_merges(&mut core, MergeTrigger::MergeFinished))
             }
             Ok(Err(e)) => {
                 let _ = core.writer.abort_merge(plan);
@@ -1695,13 +1699,16 @@ impl<'d> ConcurrentIndexWriter<'d> {
         loop {
             let plan = {
                 let mut core = lock(&self.core);
-                let Some(policy) = core.writer.merge_policy().cloned() else {
-                    return Ok(merged);
-                };
-                let Some(names) = core.writer.next_merge(&policy, &core.merging)? else {
+                let Some(((names, hooks), _)) = core
+                    .writer
+                    .find_scheduled_merges(MergeTrigger::Explicit, &core.merging)?
+                    .into_iter()
+                    .next()
+                else {
                     break;
                 };
-                let plan = core.writer.begin_merge(&names)?;
+                let mut plan = core.writer.begin_merge(&names)?;
+                core.writer.attach_merge_hooks(&mut plan, hooks);
                 core.merging.extend(names);
                 plan
             };
@@ -1994,7 +2001,7 @@ impl<'d> crate::nrt::NrtSource for ConcurrentIndexWriter<'d> {
             // as each flushed segment publishes: natural merges take the new
             // segments first, so the full-flush merges below seldom find one
             // left to wait for.
-            self.register_merges(&mut core)?;
+            self.register_merges(&mut core, MergeTrigger::SegmentFlush)?;
             let Core {
                 writer, merging, ..
             } = &mut *core;
@@ -3837,5 +3844,192 @@ mod tests {
             single.committed_doc_count().unwrap()
         );
         assert_eq!(single.committed_doc_count().unwrap(), 4 - refused);
+    }
+
+    /// `OneMerge.reorder` reversing every merge, and a diagnostic saying it ran.
+    #[derive(Debug)]
+    struct ReverseHooks;
+
+    impl crate::merge_policy::MergeHooks for ReverseHooks {
+        fn prepare(
+            &self,
+            dir: &dyn lucene_store::Directory,
+            sources: &crate::segment_infos::SegmentInfos,
+            may_reorder: bool,
+        ) -> std::result::Result<crate::merge_policy::PreparedMerge, String> {
+            let mut total = 0i32;
+            for sci in &sources.segments {
+                let si = dir
+                    .open(&format!("{}.si", sci.segment_name))
+                    .map_err(|e| e.to_string())?;
+                total += segment_info::parse(&si, &sci.segment_id)
+                    .map_err(|e| e.to_string())?
+                    .doc_count;
+            }
+            Ok(crate::merge_policy::PreparedMerge {
+                live_docs: vec![None; sources.segments.len()],
+                new_to_old: may_reorder.then(|| (0..total).rev().collect()),
+                diagnostics: vec![("test.reversed".to_string(), "true".to_string())],
+            })
+        }
+    }
+
+    /// A tiered policy whose natural merges carry [`ReverseHooks`].
+    #[derive(Debug)]
+    struct Reversing(crate::merge_policy::TieredMergePolicy);
+
+    impl crate::merge_policy::MergePolicy for Reversing {
+        fn find_merges(
+            &self,
+            trigger: MergeTrigger,
+            infos: &[crate::merge_policy::MergeSegment],
+            ctx: &dyn crate::merge_policy::MergeContext,
+        ) -> crate::merge_policy::api::Result<Option<crate::merge_policy::MergeSpecification>>
+        {
+            let Some(spec) = self.0.find_merges(trigger, infos, ctx)? else {
+                return Ok(None);
+            };
+            let hooks: Arc<dyn crate::merge_policy::MergeHooks> = Arc::new(ReverseHooks);
+            let mut out = crate::merge_policy::MergeSpecification::new();
+            for merge in spec.merges {
+                out.add(merge.with_hooks(hooks.clone()));
+            }
+            Ok(Some(out))
+        }
+
+        fn find_forced_merges(
+            &self,
+            infos: &[crate::merge_policy::MergeSegment],
+            max_segment_count: i32,
+            segments_to_merge: &std::collections::HashMap<String, bool>,
+            ctx: &dyn crate::merge_policy::MergeContext,
+        ) -> crate::merge_policy::api::Result<Option<crate::merge_policy::MergeSpecification>>
+        {
+            self.0
+                .find_forced_merges(infos, max_segment_count, segments_to_merge, ctx)
+        }
+
+        fn find_forced_deletes_merges(
+            &self,
+            infos: &[crate::merge_policy::MergeSegment],
+            ctx: &dyn crate::merge_policy::MergeContext,
+        ) -> crate::merge_policy::api::Result<Option<crate::merge_policy::MergeSpecification>>
+        {
+            self.0.find_forced_deletes_merges(infos, ctx)
+        }
+
+        fn compound_file_settings(&self) -> crate::merge_policy::CompoundFileSettings {
+            self.0.compound_file_settings()
+        }
+
+        fn compound_file_settings_mut(&mut self) -> &mut crate::merge_policy::CompoundFileSettings {
+            self.0.compound_file_settings_mut()
+        }
+    }
+
+    fn reversing_writer(dir: &FsDirectory) -> IndexWriter<'_> {
+        let mut iw = writer(dir, 7);
+        let mut tiered =
+            crate::merge_policy::TieredMergePolicy::new(iw.merge_policy().cloned().unwrap());
+        crate::merge_policy::MergePolicy::compound_file_settings_mut(&mut tiered)
+            .set_no_cfs_ratio(0.0)
+            .unwrap();
+        iw.set_pluggable_merge_policy(Some(Arc::new(Reversing(tiered))));
+        iw
+    }
+
+    /// Each committed segment's stored ids in doc-id order, and whether its
+    /// `.si` records [`ReverseHooks`].
+    fn segments_and_hooks(dir: &FsDirectory) -> Vec<(Vec<String>, bool)> {
+        let infos = segment_infos::read_latest(dir).unwrap();
+        infos
+            .segments
+            .iter()
+            .map(|sci| {
+                let name = &sci.segment_name;
+                let si =
+                    segment_info::parse(&dir.open(&format!("{name}.si")).unwrap(), &sci.segment_id)
+                        .unwrap();
+                let fdt = dir.open(&format!("{name}.fdt")).unwrap();
+                let fdx = dir.open(&format!("{name}.fdx")).unwrap();
+                let fdm = dir.open(&format!("{name}.fdm")).unwrap();
+                let reader = stored_fields::open(&fdt, &fdx, &fdm, &sci.segment_id, "").unwrap();
+                let ids = (0..reader.max_doc())
+                    .map(|d| match &reader.document(d).unwrap().fields[0].value {
+                        FieldValue::String(s) => s.clone(),
+                        other => panic!("{other:?}"),
+                    })
+                    .collect();
+                let hooked = si
+                    .diagnostics
+                    .iter()
+                    .any(|(k, v)| k == "test.reversed" && v == "true");
+                (ids, hooked)
+            })
+            .collect()
+    }
+
+    /// A merged segment of documents that were indexed in id order, holding
+    /// them in descending order: the hooks reordered it.
+    fn assert_reversed_merges(dir: &FsDirectory, docs: usize) {
+        let segments = segments_and_hooks(dir);
+        assert_eq!(
+            segments.iter().map(|(ids, _)| ids.len()).sum::<usize>(),
+            docs
+        );
+        let merged: Vec<_> = segments.iter().filter(|(_, hooked)| *hooked).collect();
+        assert!(!merged.is_empty(), "no merge ran the hooks: {segments:?}");
+        assert!(
+            merged
+                .iter()
+                .any(|(ids, _)| ids.windows(2).any(|w| w[0] > w[1])),
+            "no hooked merge reordered its documents: {merged:?}"
+        );
+        assert_clean(dir);
+    }
+
+    /// The merge scheduler's merges come from the pluggable policy and run
+    /// its hooks: reordered, with the hook's diagnostics in the merged `.si`.
+    #[test]
+    fn scheduled_merges_run_the_pluggable_policys_hooks() {
+        let tmp = TempDir::new("concurrent-cms-hooks");
+        let dir = static_dir(&tmp);
+        let cms = crate::merge_scheduler::ConcurrentMergeScheduler::new();
+        cms.set_max_merges_and_threads(3, 2).unwrap();
+        let w = ConcurrentIndexWriter::with_merge_scheduler(
+            reversing_writer(dir),
+            1,
+            Arc::new(cms.clone()),
+        )
+        .unwrap();
+        for i in 0..120 {
+            w.add_document(doc(&format!("d{i:04}"), 0)).unwrap();
+            if i % 7 == 6 {
+                w.commit().unwrap();
+            }
+        }
+        w.commit().unwrap();
+        w.close_merges().unwrap();
+        w.commit().unwrap();
+        assert_reversed_merges(dir, 120);
+    }
+
+    /// Without a scheduler, [`ConcurrentIndexWriter::maybe_merge`] runs the
+    /// pluggable policy's merges, hooks included.
+    #[test]
+    fn maybe_merge_runs_the_pluggable_policys_hooks() {
+        let tmp = TempDir::new("concurrent-maybe-merge-hooks");
+        let dir = FsDirectory::open(&tmp);
+        let w = ConcurrentIndexWriter::new(reversing_writer(&dir), 1).unwrap();
+        for i in 0..120 {
+            w.add_document(doc(&format!("d{i:04}"), 0)).unwrap();
+            if i % 7 == 6 {
+                w.commit().unwrap();
+            }
+        }
+        w.commit().unwrap();
+        assert!(w.maybe_merge().unwrap() > 0);
+        w.commit().unwrap();
+        assert_reversed_merges(&dir, 120);
     }
 }

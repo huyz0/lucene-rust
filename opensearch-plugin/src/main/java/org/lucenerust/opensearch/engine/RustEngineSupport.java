@@ -289,14 +289,27 @@ public final class RustEngineSupport {
             while (policy instanceof FilterMergePolicy filter) {
                 policy = filter.unwrap();
             }
-            if (policy instanceof TieredMergePolicy tiered) {
-                try {
+            try {
+                if (policy instanceof TieredMergePolicy tiered) {
                     rust.setMergePolicy(tiered);
-                } catch (IOException e) {
-                    throw new java.io.UncheckedIOException(e);
                 }
+                rust.setBpReorder(bpReorder(config.getIndexSettings()));
+            } catch (IOException e) {
+                throw new java.io.UncheckedIOException(e);
             }
         }
+    }
+
+    /**
+     * The shard's {@code index.lucene_rust.bp_reorder.*}. A sparse index has its own segment layout,
+     * which BP reordering does not support, so it is never reordered.
+     */
+    static BpReorderSettings.Values bpReorder(IndexSettings indexSettings) {
+        BpReorderSettings.Values values = BpReorderSettings.Values.of(indexSettings.getSettings());
+        if (values.enabled() && org.lucenerust.opensearch.sparse.SparseSettings.SPARSE_INDEX.get(indexSettings.getSettings())) {
+            return BpReorderSettings.Values.of(org.opensearch.common.settings.Settings.EMPTY);
+        }
+        return values;
     }
 
     /**

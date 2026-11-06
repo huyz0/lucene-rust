@@ -38,7 +38,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code jvm_reader.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 63;
+    public static final int EXPECTED_ABI_VERSION = 64;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -295,6 +295,23 @@ public final class NativeBridge {
         static final MethodHandle WRITER_SET_MERGE_ON_FLUSH = bind(
             "ffi_engine_writer_set_merge_on_flush",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG, JAVA_BYTE)
+        );
+        static final MethodHandle WRITER_SET_BP_REORDER = bind(
+            "ffi_engine_writer_set_bp_reorder",
+            FunctionDescriptor.of(
+                JAVA_INT,
+                JAVA_LONG,
+                JAVA_BYTE,
+                JAVA_INT,
+                JAVA_FLOAT,
+                JAVA_INT,
+                JAVA_INT,
+                JAVA_DOUBLE,
+                JAVA_INT,
+                JAVA_FLOAT,
+                ADDRESS,
+                JAVA_LONG
+            )
         );
         static final MethodHandle WRITER_FORCE_MERGE = bind(
             "ffi_engine_writer_force_merge",
@@ -1713,6 +1730,44 @@ public final class NativeBridge {
     public static int writerSetMergeOnFlush(long handle, long waitMillis, boolean mergeOnFlushPolicy) {
         try {
             return (int) H.WRITER_SET_MERGE_ON_FLUSH.invokeExact(handle, waitMillis, (byte) (mergeOnFlushPolicy ? 1 : 0));
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * {@code BPReorderingMergePolicy} around the shard's merge policy, or off when {@code enabled} is
+     * false: merges of at least {@code max(minMergeDocs, minMergeRatio * biggest segment)} documents,
+     * and every forced merge, renumber their documents with {@code BPIndexReorderer}. {@code fields}
+     * empty means every indexed field.
+     */
+    public static int writerSetBpReorder(
+        long handle,
+        boolean enabled,
+        int minDocFreq,
+        float maxDocFreq,
+        int minPartitionSize,
+        int maxIters,
+        double ramBudgetMb,
+        int minMergeDocs,
+        float minMergeRatio,
+        java.util.List<String> fields
+    ) {
+        byte[] names = String.join("\0", fields).getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        try (Scratch s = Scratch.open()) {
+            return (int) H.WRITER_SET_BP_REORDER.invokeExact(
+                handle,
+                (byte) (enabled ? 1 : 0),
+                minDocFreq,
+                maxDocFreq,
+                minPartitionSize,
+                maxIters,
+                ramBudgetMb,
+                minMergeDocs,
+                minMergeRatio,
+                s.bytes(names),
+                (long) names.length
+            );
         } catch (Throwable t) {
             throw rethrow(t);
         }

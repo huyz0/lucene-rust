@@ -3143,6 +3143,96 @@ mod tests {
         ));
     }
 
+    /// Merge hooks that keep every document the sources' hard deletes keep,
+    /// as hooks reading the sources through a reader do.
+    #[derive(Debug)]
+    struct KeepHardLive;
+
+    impl crate::merge_policy::MergeHooks for KeepHardLive {
+        fn prepare(
+            &self,
+            dir: &dyn Directory,
+            sources: &crate::segment_infos::SegmentInfos,
+            _may_reorder: bool,
+        ) -> std::result::Result<crate::merge_policy::PreparedMerge, String> {
+            let mut live_docs = Vec::new();
+            for sci in &sources.segments {
+                let si = dir
+                    .open(&format!("{}.si", sci.segment_name))
+                    .map_err(|e| e.to_string())?;
+                let max_doc = crate::segment_info::parse(&si, &sci.segment_id)
+                    .map_err(|e| e.to_string())?
+                    .doc_count;
+                let mut bits =
+                    lucene_util::fixed_bit_set::FixedBitSet::new(usize::try_from(max_doc).unwrap());
+                bits.set_range(0, bits.len());
+                live_docs.push(Some(bits));
+            }
+            Ok(crate::merge_policy::PreparedMerge {
+                live_docs,
+                new_to_old: None,
+                diagnostics: vec![("test.hooked".to_string(), "yes".to_string())],
+            })
+        }
+    }
+
+    /// A merge with hooks still drops the soft-deleted history retention no
+    /// longer keeps, though the hooks' own live documents keep it.
+    #[test]
+    fn hooked_merges_still_drop_unretained_soft_deletes() {
+        let tmp = TempDir::new("explicit-retention-hooks");
+        let dir = FsDirectory::open(tmp.path());
+        let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", VERSION).unwrap();
+        let f = register(&mut w);
+        w.set_max_buffered_docs(4).unwrap();
+        for i in 0..10 {
+            w.add_explicit_documents(vec![doc(&f, i)]).unwrap();
+        }
+        w.commit().unwrap();
+        for i in 0..6 {
+            w.soft_update_explicit_documents(
+                id_term(i),
+                vec![doc_at(&f, i, 100 + i)],
+                &[soft_delete(i)],
+            )
+            .unwrap();
+        }
+        assert_eq!(counts(&mut w), (16, 6));
+        w.set_soft_deletes_retention(Some(SoftDeletesRetention {
+            seq_no_field: "_seq_no".to_string(),
+            min_retained_seq_no: 3,
+            prune_postings_field: None,
+            prune_recovery_source_field: None,
+        }));
+        let names: Vec<String> = w
+            .commit()
+            .unwrap()
+            .segments
+            .iter()
+            .map(|s| s.segment_name.clone())
+            .collect();
+        w.execute_merge_hooked(&names, Some(std::sync::Arc::new(KeepHardLive)))
+            .unwrap();
+        assert_eq!(counts(&mut w), (13, 3));
+        let infos = w.commit().unwrap().clone();
+        assert_eq!(infos.segments.len(), 1);
+        let sci = &infos.segments[0];
+        let si = crate::segment_info::parse(
+            &dir.open(&format!("{}.si", sci.segment_name)).unwrap(),
+            &sci.segment_id,
+        )
+        .unwrap();
+        assert!(si
+            .diagnostics
+            .iter()
+            .any(|(k, v)| k == "test.hooked" && v == "yes"));
+        assert!(si
+            .diagnostics
+            .iter()
+            .any(|(k, v)| k == "source" && v == "merge"));
+        check(&dir);
+    }
+
     /// The `_id` document frequency of each of `terms` in the index's only
     /// segment, or `None` when that segment writes no `_id` terms at all.
     fn id_doc_freqs(

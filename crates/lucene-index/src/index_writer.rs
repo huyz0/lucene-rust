@@ -2191,6 +2191,7 @@ impl IndexingConfig {
         // `merge.reorder(mergedView)` -- unless an index sort is configured,
         // or blocks cannot be identified by a parent field.
         let mut reorder: Option<Vec<i32>> = None;
+        let mut hook_diagnostics: Vec<(String, String)> = Vec::new();
         if let Some((hooks, infos)) = &plan.hooks {
             let blocks_without_parent = opened.iter().any(|o| o.has_blocks)
                 && opened
@@ -2208,19 +2209,36 @@ impl IndexingConfig {
                     opened.len()
                 )));
             }
+            // The hooks read the sources with their hard deletes only, so a
+            // document they keep may still be one soft-deletes retention
+            // drops: a document is carried over when both keep it.
             // A live-docs length other than the source's `maxDoc` is caught
             // by the merge itself (`LiveDocsLengthMismatch`).
             for (o, live) in opened.iter_mut().zip(prepared.live_docs) {
-                if let (Some(postings_live), Some(bits)) = (o.postings_live.as_mut(), &live) {
+                let Some(bits) = live else {
+                    continue;
+                };
+                if let Some(postings_live) = o.postings_live.as_mut() {
                     for doc in 0..bits.len().min(postings_live.len()) {
                         if !bits.get(doc) {
                             postings_live.clear(doc);
                         }
                     }
                 }
-                o.live_docs = live;
+                match o.live_docs.as_mut() {
+                    Some(own) if own.len() == bits.len() => {
+                        for doc in 0..bits.len() {
+                            // FBS: `doc < bits.len() == own.len()`.
+                            if !bits.get(doc) {
+                                own.clear(doc);
+                            }
+                        }
+                    }
+                    _ => o.live_docs = Some(bits),
+                }
             }
             reorder = may_reorder.then_some(prepared.new_to_old).flatten();
+            hook_diagnostics = prepared.diagnostics;
         }
         if let Some(bad) = opened
             .iter()
@@ -2892,6 +2910,7 @@ impl IndexingConfig {
                 reorder,
                 sorted_numeric_remap: plan.sorted_numeric_remap.clone(),
                 kind: plan.kind,
+                extra_diagnostics: hook_diagnostics,
             },
             &plan.merged_name,
             plan.merged_id,
@@ -5633,6 +5652,7 @@ impl<'d> IndexWriter<'d> {
     /// The first merge `config` proposes, the segments in `merging` counted
     /// in the index total but never candidates -- `MergePolicy.findMerges`
     /// with `IndexWriter.getMergingSegments()` as its context.
+    #[cfg(test)]
     pub(crate) fn next_merge(
         &self,
         config: &MergePolicyConfig,
@@ -10687,6 +10707,20 @@ impl IndexWriter<'_> {
             .map(|_| ())
     }
 
+    /// Makes `plan` run `hooks` (`OneMerge.wrapForMerge`/`reorder`) over its
+    /// sources, as they were when the merge began.
+    pub(crate) fn attach_merge_hooks(
+        &self,
+        plan: &mut MergePlan,
+        hooks: Option<std::sync::Arc<dyn crate::merge_policy::MergeHooks>>,
+    ) {
+        if let Some(hooks) = hooks {
+            let mut infos = self.segment_infos.clone();
+            infos.segments = plan.sources.clone();
+            plan.hooks = Some((hooks, infos));
+        }
+    }
+
     /// [`Self::execute_merge_hooked`], with SORTED_NUMERIC values rewritten
     /// through `remap`, as `addIndexes(CodecReader...)`'s merge when
     /// `add_indexes`: whether the merge was published.
@@ -10703,11 +10737,7 @@ impl IndexWriter<'_> {
         if add_indexes {
             plan.kind = merge::MergeKind::AddIndexes;
         }
-        if let Some(hooks) = hooks {
-            let mut infos = self.segment_infos.clone();
-            infos.segments = plan.sources.clone();
-            plan.hooks = Some((hooks, infos));
-        }
+        self.attach_merge_hooks(&mut plan, hooks);
         let cfg = std::sync::Arc::clone(&self.cfg);
         match cfg.run_merge(self.dir, &plan) {
             Ok(outcome) => self.finish_merge(plan, outcome),

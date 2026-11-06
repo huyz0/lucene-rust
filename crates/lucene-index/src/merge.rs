@@ -2977,7 +2977,17 @@ fn merge_segments_mapped_inner(
         // `IndexWriter.mergeMiddle`: the merged segment holds blocks iff any
         // source did -- see [`MergeSource::has_blocks`].
         has_blocks: sources.iter().any(|s| s.has_blocks),
-        diagnostics: options.kind.diagnostics(sources.len(), lucene_version),
+        diagnostics: {
+            let mut diagnostics = options.kind.diagnostics(sources.len(), lucene_version);
+            for (key, value) in &options.extra_diagnostics {
+                // `SegmentInfo.addDiagnostics`: a later value replaces an earlier one.
+                match diagnostics.iter_mut().find(|(k, _)| k == key) {
+                    Some(slot) => slot.1.clone_from(value),
+                    None => diagnostics.push((key.clone(), value.clone())),
+                }
+            }
+            diagnostics
+        },
         files: files.clone(),
         attributes: crate::segment_writer::stored_fields_mode_attribute(stored_mode),
         // The merged segment claims the sort exactly when this merge produced
@@ -4305,6 +4315,9 @@ pub struct MergeOptions {
     pub sorted_numeric_remap: Option<std::sync::Arc<SortedNumericRemap>>,
     /// What the merged `.si`'s diagnostics say produced it.
     pub kind: MergeKind,
+    /// Diagnostics the merge's hooks add to the merged `.si`
+    /// (`OneMerge.setMergeInfo`), after the writer's own.
+    pub extra_diagnostics: Vec<(String, String)>,
 }
 
 /// The writer operation a merge carries out, as the merged segment's
@@ -4450,6 +4463,7 @@ impl Default for MergeOptions {
             reorder: None,
             sorted_numeric_remap: None,
             kind: MergeKind::default(),
+            extra_diagnostics: Vec::new(),
         }
     }
 }

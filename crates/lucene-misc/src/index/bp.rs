@@ -197,16 +197,15 @@ impl BpIndexReorderer {
             Some(field) => Some(parent_bits(reader, field, n)?),
             None => None,
         };
-        let mut task = Task {
+        let ctx = Ctx {
             reorderer: self,
             forward: &forward,
-            left_freqs: vec![0; forward.num_terms],
-            right_freqs: vec![0; forward.num_terms],
-            biases: vec![0.0; n],
             parents: parents.as_ref(),
-            docs: &mut docs,
+            scratch: std::sync::Mutex::new(Vec::new()),
         };
-        task.run(0, n, 0)?;
+        let mut biases = vec![0f32; n];
+        let mut scratch = ctx.take_scratch();
+        ctx.run(&mut docs, &mut biases, &mut scratch, 0)?;
         Ok(DocMap::from_new_to_old(docs)?)
     }
 
@@ -224,19 +223,60 @@ impl BpIndexReorderer {
     }
 
     /// `writePostings` and `buildForwardIndex`: each document's matching term
-    /// ids, ascending.
+    /// ids, ascending. The matching terms' postings are read twice -- once
+    /// to count each document's terms, once to place them -- so the forward
+    /// index is built in its final, flat layout with no per-document vectors
+    /// and no copy.
     fn build_forward_index(
         &self,
         reader: &dyn CodecReader,
         fields: &[String],
     ) -> std::result::Result<Forward, ReorderError> {
+        let n = usize::try_from(reader.max_doc()).unwrap_or(0);
+        let mut counts = vec![0usize; n + 1];
+        let num_terms = self.for_each_posting(reader, fields, |_, doc| {
+            counts[doc] += 1;
+        })?;
+        // `starts[d]` is where document `d`'s terms begin; `counts` becomes
+        // each document's write cursor.
+        let mut starts = Vec::with_capacity(n + 1);
+        let mut total = 0usize;
+        for c in counts.iter_mut().take(n) {
+            starts.push(total);
+            let here = *c;
+            *c = total;
+            total += here;
+        }
+        starts.push(total);
+        let mut term_ids = vec![0u32; total];
+        // Terms are visited in ascending id order, so each document's ids
+        // land ascending.
+        self.for_each_posting(reader, fields, |term_id, doc| {
+            term_ids[counts[doc]] = term_id;
+            counts[doc] += 1;
+        })?;
+        Ok(Forward {
+            starts,
+            term_ids,
+            num_terms: num_terms as usize,
+        })
+    }
+
+    /// Every `(term id, doc)` of the matching terms of `fields`, term ids
+    /// assigned in field then term order; how many terms matched.
+    fn for_each_posting(
+        &self,
+        reader: &dyn CodecReader,
+        fields: &[String],
+        mut visit: impl FnMut(u32, usize),
+    ) -> std::result::Result<i64, ReorderError> {
         let max_doc = reader.max_doc();
         let n = usize::try_from(max_doc).unwrap_or(0);
+        let threads = rayon::current_num_threads().max(1) as f64;
         let max_num_terms = ((self.ram_budget_mb * 1024.0 * 1024.0 - doc_ram_requirements(max_doc))
-            / 1.0
+            / threads
             / TERM_RAM_PER_THREAD_PER_TERM as f64) as i32;
         let max_doc_freq = (f64::from(self.max_doc_freq) * f64::from(max_doc)) as i32;
-        let mut per_doc: Vec<Vec<u32>> = vec![Vec::new(); n];
         let mut num_terms: i64 = 0;
         for field in fields {
             let Some(terms) = reader.terms(field)? else {
@@ -274,25 +314,19 @@ impl BpIndexReorderer {
                     if doc == NO_MORE_DOCS {
                         break;
                     }
-                    per_doc[usize::try_from(doc).map_err(|_| {
-                        Error::IllegalState(format!("negative document {doc} in postings"))
-                    })?]
-                    .push(term_id);
+                    let d = usize::try_from(doc)
+                        .ok()
+                        .filter(|&d| d < n)
+                        .ok_or_else(|| {
+                            Error::IllegalState(format!(
+                                "document {doc} in postings is out of range"
+                            ))
+                        })?;
+                    visit(term_id, d);
                 }
             }
         }
-        let mut starts = Vec::with_capacity(n + 1);
-        let mut term_ids = Vec::new();
-        for terms in &per_doc {
-            starts.push(term_ids.len());
-            term_ids.extend_from_slice(terms);
-        }
-        starts.push(term_ids.len());
-        Ok(Forward {
-            starts,
-            term_ids,
-            num_terms: num_terms as usize,
-        })
+        Ok(num_terms)
     }
 }
 
@@ -359,18 +393,48 @@ pub fn fast_log2(i: i32) -> f32 {
     floor_log2 as f32 + log2_table()[table_index as usize]
 }
 
-/// One level of the recursion over `docs[lo..hi]`.
-struct Task<'a> {
+/// Partitions at least this long split their two halves across threads, as
+/// Java's `FORK_THRESHOLD`.
+const FORK_THRESHOLD: usize = 8192;
+
+/// Bias chunks per thread when a large partition computes its biases.
+const BIAS_CHUNK: usize = 4096;
+
+/// What every level of the recursion shares.
+struct Ctx<'a> {
     reorderer: &'a BpIndexReorderer,
     forward: &'a Forward,
-    left_freqs: Vec<i32>,
-    right_freqs: Vec<i32>,
-    biases: Vec<f32>,
     parents: Option<&'a FixedBitSet>,
-    docs: &'a mut Vec<i32>,
+    /// Document-frequency arrays no running task holds, for the next fork.
+    scratch: std::sync::Mutex<Vec<Scratch>>,
 }
 
-impl Task<'_> {
+/// One task's per-term document frequencies on either side of its split.
+struct Scratch {
+    left_freqs: Vec<i32>,
+    right_freqs: Vec<i32>,
+}
+
+impl Ctx<'_> {
+    fn take_scratch(&self) -> Scratch {
+        let pooled = self
+            .scratch
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .pop();
+        pooled.unwrap_or_else(|| Scratch {
+            left_freqs: vec![0; self.forward.num_terms],
+            right_freqs: vec![0; self.forward.num_terms],
+        })
+    }
+
+    fn give_scratch(&self, scratch: Scratch) {
+        self.scratch
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(scratch);
+    }
+
     fn next_parent(&self, doc: i32) -> Result<i32> {
         let parents = self.parents.expect("only called with parents");
         parents
@@ -379,72 +443,101 @@ impl Task<'_> {
             .ok_or_else(|| Error::IllegalState(format!("no parent document at or after {doc}")))
     }
 
-    fn doc_freqs(&self, from: usize, to: usize, freqs: &mut [i32]) {
+    fn doc_freqs(&self, docs: &[i32], freqs: &mut [i32]) {
         freqs.fill(0);
-        for &doc in &self.docs[from..to] {
+        for &doc in docs {
             for &t in self.forward.terms(doc) {
                 freqs[t as usize] += 1;
             }
         }
     }
 
-    /// `IndexReorderingTask.call`.
-    fn run(&mut self, lo: usize, hi: usize, depth: u32) -> Result<()> {
+    /// `IndexReorderingTask.call` over `docs`, with `biases` the same length.
+    fn run(
+        &self,
+        docs: &mut [i32],
+        biases: &mut [f32],
+        scratch: &mut Scratch,
+        depth: u32,
+    ) -> Result<()> {
         if depth > 0 {
-            self.docs[lo..hi].sort_unstable();
+            docs.sort_unstable();
         }
-        let len = hi - lo;
+        let len = docs.len();
         let half = len / 2;
         if (half as i64) < i64::from(self.reorderer.min_partition_size) {
             return Ok(());
         }
-        let mid = lo + half;
+        let mid = half;
 
-        let mut left_freqs = std::mem::take(&mut self.left_freqs);
-        let mut right_freqs = std::mem::take(&mut self.right_freqs);
-        self.doc_freqs(lo, mid, &mut left_freqs);
-        self.doc_freqs(mid, hi, &mut right_freqs);
-        self.left_freqs = left_freqs;
-        self.right_freqs = right_freqs;
+        {
+            let (left, right) = docs.split_at(mid);
+            let Scratch {
+                left_freqs,
+                right_freqs,
+            } = scratch;
+            if len >= FORK_THRESHOLD {
+                rayon::join(
+                    || self.doc_freqs(left, left_freqs),
+                    || self.doc_freqs(right, right_freqs),
+                );
+            } else {
+                self.doc_freqs(left, left_freqs);
+                self.doc_freqs(right, right_freqs);
+            }
+        }
 
         for iter in 0..self.reorderer.max_iters {
-            if !self.shuffle(lo, hi, mid, iter)? {
+            if !self.shuffle(docs, biases, scratch, mid, iter)? {
                 break;
             }
         }
 
-        let (mut left, mut right) = ((lo, mid), (mid, hi));
+        let mut split = mid;
         if let Some(parents) = self.parents {
             // Make sure we split just after a parent doc.
-            let last_left = i64::from(self.docs[mid - 1]);
-            let next = i64::from(self.next_parent(self.docs[mid - 1])?);
-            let mut split = mid as i64 + next - last_left;
-            if split == hi as i64 {
+            let last_left = i64::from(docs[mid - 1]);
+            let next = i64::from(self.next_parent(docs[mid - 1])?);
+            let mut at = mid as i64 + next - last_left;
+            if at == len as i64 {
                 // No good split on the right side, look on the left side then.
                 let prev = parents
                     .prev_set_bit(last_left as usize)
                     .map_or(-1, |p| p as i64);
-                split = mid as i64 - (last_left - prev);
-                if split == lo as i64 {
+                at = mid as i64 - (last_left - prev);
+                if at == 0 {
                     // A single parent document: no reordering is possible.
                     return Ok(());
                 }
             }
-            let split = split as usize;
-            left = (lo, split);
-            right = (split, hi);
+            split = at as usize;
         }
 
-        self.run(left.0, left.1, depth + 1)?;
-        self.run(right.0, right.1, depth + 1)
+        let (left_docs, right_docs) = docs.split_at_mut(split);
+        let (left_biases, right_biases) = biases.split_at_mut(split);
+        if len >= FORK_THRESHOLD {
+            let (l, r) = rayon::join(
+                || self.run(left_docs, left_biases, scratch, depth + 1),
+                || {
+                    let mut own = self.take_scratch();
+                    let r = self.run(right_docs, right_biases, &mut own, depth + 1);
+                    self.give_scratch(own);
+                    r
+                },
+            );
+            l.and(r)
+        } else {
+            self.run(left_docs, left_biases, scratch, depth + 1)?;
+            self.run(right_docs, right_biases, scratch, depth + 1)
+        }
     }
 
     /// `computeBias`: negative when a document is attracted to the left.
-    fn bias(&self, doc: i32) -> f32 {
+    fn bias(&self, scratch: &Scratch, doc: i32) -> f32 {
         let mut bias = 0f64;
         for &t in self.forward.terms(doc) {
-            let from = self.left_freqs[t as usize];
-            let to = self.right_freqs[t as usize];
+            let from = scratch.left_freqs[t as usize];
+            let to = scratch.right_freqs[t as usize];
             let a: f32 = if to == 0 { 0.0 } else { fast_log2(to) };
             let b: f32 = if from == 0 { 0.0 } else { fast_log2(from) };
             bias += f64::from(a - b);
@@ -452,34 +545,53 @@ impl Task<'_> {
         bias as f32
     }
 
-    /// `shuffle`: swaps documents across the halves; whether any moved.
-    fn shuffle(&mut self, lo: usize, hi: usize, mid: usize, iter: i32) -> Result<bool> {
-        for i in lo..hi {
-            self.biases[i] = self.bias(self.docs[i]);
+    /// `shuffle`: swaps documents across the halves at `mid`; whether any
+    /// moved.
+    fn shuffle(
+        &self,
+        docs: &mut [i32],
+        biases: &mut [f32],
+        scratch: &mut Scratch,
+        mid: usize,
+        iter: i32,
+    ) -> Result<bool> {
+        if docs.len() >= FORK_THRESHOLD {
+            use rayon::prelude::*;
+            let shared = &*scratch;
+            biases
+                .par_chunks_mut(BIAS_CHUNK)
+                .zip(docs.par_chunks(BIAS_CHUNK))
+                .for_each(|(b, d)| {
+                    for (slot, &doc) in b.iter_mut().zip(d) {
+                        *slot = self.bias(shared, doc);
+                    }
+                });
+        } else {
+            for (slot, &doc) in biases.iter_mut().zip(docs.iter()) {
+                *slot = self.bias(scratch, doc);
+            }
         }
 
         if self.parents.is_some() {
-            let mut i = lo;
-            while i < hi {
-                let first_child = self.docs[i];
+            let mut i = 0;
+            while i < docs.len() {
+                let first_child = docs[i];
                 let num_children = (self.next_parent(first_child)? - first_child) as usize;
                 let mut cumulative = 0f64;
                 for j in 0..=num_children {
-                    cumulative += f64::from(self.biases[i + j]);
+                    cumulative += f64::from(biases[i + j]);
                 }
                 // Every document of a block gets the block's summed bias, so the
                 // sort below keeps the block together.
-                self.biases[i..=i + num_children].fill(cumulative as f32);
+                biases[i..=i + num_children].fill(cumulative as f32);
                 i += num_children + 1;
             }
         }
 
-        let max_left = self.biases[lo..mid]
+        let max_left = biases[..mid]
             .iter()
             .fold(f32::NEG_INFINITY, |m, &b| m.max(b));
-        let min_right = self.biases[mid..hi]
-            .iter()
-            .fold(f32::INFINITY, |m, &b| m.min(b));
+        let min_right = biases[mid..].iter().fold(f32::INFINITY, |m, &b| m.min(b));
         let gain = max_left - min_right;
         // Simulated annealing: the gain of swapping the left document most
         // attracted to the right with the right one most attracted to the left
@@ -488,68 +600,78 @@ impl Task<'_> {
             return Ok(false);
         }
 
+        let len = docs.len();
         let mut selector = Selector {
-            task: self,
+            forward: self.forward,
+            docs,
+            biases,
+            scratch,
             mid,
             pivot_doc: 0,
             pivot_bias: 0.0,
         };
-        if selector.task.parents.is_none() {
+        if self.parents.is_none() {
             let mut random = SplittableRandom::new(0);
-            intro_select(&mut selector, lo, hi, mid, &mut random);
+            intro_select(&mut selector, 0, len, mid, &mut random);
         } else {
             // With parents a full sort is needed so the block structure holds.
-            intro_sort(&mut selector, lo, hi);
+            intro_sort(&mut selector, 0, len);
         }
         Ok(true)
     }
 }
 
-/// `shuffle`'s `Selector`: orders `docs[lo..hi]` by bias, ties by doc id,
-/// keeping both halves' document frequencies current when a swap crosses
-/// the midpoint.
-struct Selector<'t, 'a> {
-    task: &'t mut Task<'a>,
+/// `shuffle`'s `Selector`: orders `docs` by bias, ties by doc id, keeping
+/// both halves' document frequencies current when a swap crosses the
+/// midpoint.
+struct Selector<'s> {
+    forward: &'s Forward,
+    docs: &'s mut [i32],
+    biases: &'s mut [f32],
+    scratch: &'s mut Scratch,
     mid: usize,
     pivot_doc: i32,
     pivot_bias: f32,
 }
 
-impl IntroTarget for Selector<'_, '_> {
+impl IntroTarget for Selector<'_> {
     fn swap(&mut self, i: usize, j: usize) {
-        let t = &mut *self.task;
-        t.biases.swap(i, j);
+        self.biases.swap(i, j);
         if (i < self.mid) == (j < self.mid) {
-            t.docs.swap(i, j);
+            self.docs.swap(i, j);
         } else {
             // A swap across the halves: keep the cached doc freqs up to date,
             // which is much cheaper than recomputing them next round.
             let (left, right) = (i.min(j), i.max(j));
-            let left_doc = t.docs[left];
-            let right_doc = t.docs[right];
-            for &term in t.forward.terms(left_doc) {
-                t.left_freqs[term as usize] -= 1;
-                t.right_freqs[term as usize] += 1;
+            let left_doc = self.docs[left];
+            let right_doc = self.docs[right];
+            let Scratch {
+                left_freqs,
+                right_freqs,
+            } = &mut *self.scratch;
+            for &term in self.forward.terms(left_doc) {
+                left_freqs[term as usize] -= 1;
+                right_freqs[term as usize] += 1;
             }
-            for &term in t.forward.terms(right_doc) {
-                t.left_freqs[term as usize] += 1;
-                t.right_freqs[term as usize] -= 1;
+            for &term in self.forward.terms(right_doc) {
+                left_freqs[term as usize] += 1;
+                right_freqs[term as usize] -= 1;
             }
-            t.docs[left] = right_doc;
-            t.docs[right] = left_doc;
+            self.docs[left] = right_doc;
+            self.docs[right] = left_doc;
         }
     }
 
     fn set_pivot(&mut self, i: usize) {
-        self.pivot_doc = self.task.docs[i];
-        self.pivot_bias = self.task.biases[i];
+        self.pivot_doc = self.docs[i];
+        self.pivot_bias = self.biases[i];
     }
 
     fn compare_pivot(&mut self, j: usize) -> i32 {
         // `Float.compare`, then the doc id to keep doc id order where it can.
-        let cmp = self.pivot_bias.total_cmp(&self.task.biases[j]) as i32;
+        let cmp = self.pivot_bias.total_cmp(&self.biases[j]) as i32;
         if cmp == 0 {
-            self.pivot_doc.wrapping_sub(self.task.docs[j])
+            self.pivot_doc.wrapping_sub(self.docs[j])
         } else {
             cmp
         }
