@@ -114,7 +114,8 @@ use lucene_codecs::field_infos::FieldInfo;
 
 mod live;
 pub use live::{
-    LiveBuffer, LiveBufferField, LiveFieldRequest, LiveRequest, LiveSnapshot, LiveView, ViewBuffer,
+    LiveBuffer, LiveBufferField, LiveFieldRequest, LiveRequest, LiveSnapshot, LiveView,
+    LiveViewSegment, ViewBuffer,
 };
 
 /// One indexing slot's buffer -- `DocumentsWriterPerThread`, before its flush.
@@ -1309,6 +1310,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
                 postings: Arc::clone(&postings),
                 columns,
                 max_doc: i32::try_from(dwpt.docs.len()).unwrap_or(i32::MAX),
+                segment: None,
             };
             core.live.flushing.insert(ticket_no, flushing);
         }
@@ -1443,6 +1445,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
             old_to_new: old_to_new.as_deref(),
             has_blocks,
             stored: stored.as_ref(),
+            limit: None,
         };
         // This segment's own deletes are resolved here, with no lock held --
         // `DocumentsWriterPerThread.flush`'s `applyDeletes` -- so the publish,
@@ -1537,9 +1540,13 @@ impl<'d> ConcurrentIndexWriter<'d> {
             )
         }));
         let mut core = self.wait_turn(ticket_no);
+        let mut segment = None;
         let outcome = catch_unwind(AssertUnwindSafe(|| match built {
             Ok(Ok(built)) => {
                 let name = built.sci.segment_name.clone();
+                if self.live() && !built.fully_deleted {
+                    segment = Some(built.sci.clone());
+                }
                 Ok(core
                     .writer
                     .publish_segment_with(ticket, built.sci, built.si_files, None, None, false)
@@ -1562,7 +1569,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
         }));
         // Published or abandoned, under the lock it happened under.
         core.live
-            .finish(ticket_no, matches!(outcome, Ok(Ok(Ok(())))));
+            .finish(ticket_no, matches!(outcome, Ok(Ok(Ok(())))), segment);
         self.retire(core);
         // Published or abandoned, its buffer is gone either way
         // (`doAfterFlush`), panics included. Published documents are now in

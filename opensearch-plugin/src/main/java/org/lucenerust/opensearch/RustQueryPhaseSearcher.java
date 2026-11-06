@@ -276,12 +276,25 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
                 boolean plain = blob == hitsBlob && aggs == null && tree == null && sortBlob == null && collapseBlob == null
                     && rescores == null && sort == null && terminateAfter == 0;
                 if (live == null) {
-                    reason = searchNative(ctx, acquired.handle(), blob, hitsBlob, sortBlob, collapseBlob, rescores, sort, scoreDocs, aggs, tree);
-                } else if (plain == false || liveIneligible(ctx) != null || searchLive(ctx, acquired.handle(), live, blob) == false) {
-                    // The native per-segment passes number the searcher's leaves, the view's
-                    // among them; Lucene sees its documents as deleted and answers from the
-                    // reader's.
+                    reason = searchNative(ctx, acquired.handle(), blob, hitsBlob, sortBlob, collapseBlob, rescores, sort, scoreDocs, aggs, tree, false);
+                } else if (liveIneligible(ctx) != null) {
+                    // Lucene sees the view's documents as deleted and answers from the reader's.
                     reason = "realtime_view";
+                } else if (plain == false || plainIneligible(ctx) || searchLive(ctx, acquired.handle(), live, blob) == false) {
+                    // Everything else reads the buffers written as segments, one per leaf of the
+                    // view: aggregations, sorts, collapse, rescore, and what the plain path's
+                    // buffers cannot answer.
+                    long[] whole = new long[1];
+                    int rc = NativeBridge.liveViewReader(acquired.handle(), live.view().id(), whole);
+                    if (rc != NativeBridge.OK) {
+                        logger.debug("lucene-rust: the buffers cannot be read as segments ({}): {}", rc, NativeBridge.lastError());
+                        reason = "realtime_view";
+                    } else {
+                        reason = searchNative(ctx, whole[0], blob, hitsBlob, sortBlob, collapseBlob, rescores, sort, scoreDocs, aggs, tree, true);
+                        if (reason == null) {
+                            stats.liveQuery();
+                        }
+                    }
                 }
             }
             if (reason == null) {
@@ -302,15 +315,13 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
     }
 
     /**
-     * Why a plain scored search cannot read the writer's buffered documents, or null when it can:
-     * what the buffers do not hold for the fetch phase (doc values, versions, highlighting), a query
-     * that expanded over the reader's terms alone, nested documents, a scroll or {@code
-     * search_after} page, {@code min_score}, or a concurrent count's per-slice early termination.
+     * Why a search cannot read the writer's buffered documents, or null when it can: what the
+     * buffers do not hold for the fetch phase (doc values, versions, highlighting), a query that
+     * was expanded or given term statistics over the reader's terms alone, nested documents, or a
+     * scroll or {@code search_after} page.
      */
     static String liveIneligible(SearchContext ctx) {
-        if (ctx.minimumScore() != null) return "min_score";
         if (ctx.scrollContext() != null || ctx.searchAfter() != null) return "paging";
-        if (ctx.size() == 0 && ctx.shouldUseConcurrentSearch()) return "concurrent_count";
         if (ctx.version() || ctx.seqNoAndPrimaryTerm() || ctx.explain()) return "fetch_metadata";
         if (ctx.docValuesContext() != null || ctx.highlight() != null || ctx.hasScriptFields() || ctx.innerHits() != null
             && ctx.innerHits().getInnerHits().isEmpty() == false) return "fetch_doc_values";
@@ -321,6 +332,15 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             @Override
             public void visitLeaf(Query query) {
                 if (query instanceof org.apache.lucene.search.MultiTermQuery) {
+                    expands[0] = true;
+                }
+            }
+
+            @Override
+            public void consumeTerms(Query query, org.apache.lucene.index.Term... terms) {
+                // Statistics a blended query computed from the reader's terms: the buffers' are not in them.
+                if (query instanceof org.opensearch.lucene.queries.BlendedTermQuery
+                    || query instanceof org.apache.lucene.search.TermQuery tq && tq.getTermStates() != null) {
                     expands[0] = true;
                 }
             }
@@ -340,6 +360,15 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             }
         });
         return expands[0] ? "multi_term" : null;
+    }
+
+    /**
+     * Whether a plain scored search goes to the buffers written as segments rather than the view's
+     * own postings: {@code min_score}, and a concurrent count's per-slice early termination, which
+     * the view's search does not do.
+     */
+    private static boolean plainIneligible(SearchContext ctx) {
+        return ctx.minimumScore() != null || ctx.size() == 0 && ctx.shouldUseConcurrentSearch();
     }
 
     /**
@@ -641,7 +670,8 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         Sort sort,
         boolean scoreDocs,
         NativeAggregations.Plan aggs,
-        NativeAggregationTree.Tree tree
+        NativeAggregationTree.Tree tree,
+        boolean live
     ) {
         int size = ctx.size();
         ScrollContext scroll = ctx.scrollContext();
@@ -652,8 +682,10 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         }
         // A scroll page is "size" hits whatever "from" says, and counts them on its first page only
         // (TopDocsCollectorContext.createTopDocsCollectorContext).
+        // With the buffers (live), the searcher's reader counts none of their documents.
+        int readerDocs = live ? ctx.searcher().getIndexReader().maxDoc() : ctx.searcher().getIndexReader().numDocs();
         int numDocs = size == 0 ? 0
-            : Math.min(scroll != null ? size : ctx.from() + size, Math.max(1, ctx.searcher().getIndexReader().numDocs()));
+            : Math.min(scroll != null ? size : ctx.from() + size, Math.max(1, readerDocs));
         // A rescored search collects at least each rescorer's window
         // (createTopDocsCollectorContext).
         if (rescores != null) {
@@ -680,7 +712,10 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         Term shortcutTerm = null;
         // TopDocsCollectorContext: "hasFilterCollector ? -1 : shortcutTotalHitCount(...)".
         // (A collapsed search counts every match itself, whatever track_total_hits says.)
+        // The shortcuts read the searcher's reader, to which the buffered documents are deleted:
+        // with them (live), every total is counted.
         if (trackUpTo != SearchContext.TRACK_TOTAL_HITS_DISABLED
+            && live == false
             && collapseBlob == null
             && ctx.parsedPostFilter() == null
             && terminating == false

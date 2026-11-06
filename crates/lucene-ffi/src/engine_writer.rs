@@ -3874,6 +3874,192 @@ mod tests {
         assert_eq!(crate::jvm_reader::ffi_close_jvm_reader(reader), 0);
     }
 
+    /// [`crate::live::ffi_live_view_reader`]: a reader handle over the
+    /// reader and the view's buffers as segments finds what the live search
+    /// finds, numbered alike, reads the buffered documents' doc values, and
+    /// leaves out what was added or deleted after the view opened.
+    #[test]
+    fn a_view_reader_holds_the_buffers_as_segments() {
+        use crate::live::{
+            ffi_engine_writer_live_view_open, ffi_live_view_close, ffi_live_view_reader,
+        };
+        use lucene_search::reader::LeafReader;
+        let tmp = empty_index("engine-writer-live-reader");
+        let h = open_with(&tmp, 64.0, OPEN_LIVE_SEARCH, i32::MAX);
+        let f = setup(h);
+        let words = ["alpha", "beta", "gamma", "delta"];
+        let add = |i: usize| {
+            let text: Vec<&str> = (0..1 + i % 4).map(|j| words[(i + j) % 4]).collect();
+            let b = doc(
+                Blob::default().u8(OP_ADD).i32(1),
+                &f,
+                &format!("d{i}"),
+                &text,
+                i as i64,
+                false,
+            );
+            assert_eq!(apply(h, &b.0), 0, "{}", crate::error::last_error());
+        };
+        let update = |id: &str, text: &[&str], seq: i64| {
+            let b = doc(
+                Blob::default()
+                    .u8(OP_SOFT_UPDATE)
+                    .bytes(b"_id")
+                    .bytes(id.as_bytes())
+                    .bytes(b"__soft_deletes")
+                    .i64(1)
+                    .i32(1),
+                &f,
+                id,
+                text,
+                seq,
+                false,
+            );
+            assert_eq!(apply(h, &b.0), 0, "{}", crate::error::last_error());
+        };
+        (0..20).for_each(add);
+        let gen = commit_settled(h);
+        let reader = open_reader(&tmp, gen);
+        (20..30).for_each(add);
+        update("d2", &["zeta"], 30);
+        update("d21", &["zeta"], 31);
+
+        let (mut view, mut ptr, mut len) = (0u64, std::ptr::null_mut(), 0usize);
+        // SAFETY: live out-pointers.
+        let rc = unsafe { ffi_engine_writer_live_view_open(h, gen, &mut view, &mut ptr, &mut len) };
+        assert_eq!(rc, 0, "{}", crate::error::last_error());
+        // SAFETY: the buffer the call gave, freed once.
+        unsafe { crate::ffm_bridge::ffi_jvm_free_bytes(ptr, len) };
+        // After the view: in no search through it.
+        update("d22", &["zeta"], 32);
+        add(40);
+
+        let mut whole = 0u64;
+        // SAFETY: a live out-pointer.
+        let rc = unsafe { ffi_live_view_reader(reader, view, &mut whole) };
+        assert_eq!(rc, 0, "{}", crate::error::last_error());
+        let mut again = 0u64;
+        // SAFETY: a live out-pointer.
+        assert_eq!(unsafe { ffi_live_view_reader(reader, view, &mut again) }, 0);
+        assert_eq!(again, whole, "one reader per view");
+
+        let total = |r: u64, q: &[u8]| {
+            let (mut docs, mut scores) = ([0i32; 64], [0f32; 64]);
+            let (mut n, mut total, mut lower) = (0usize, 0i64, false);
+            // SAFETY: live buffers of 64 and out-pointers.
+            let rc = unsafe {
+                crate::jvm_reader::ffi_jvm_reader_search(
+                    r,
+                    q.as_ptr(),
+                    q.len(),
+                    64,
+                    i64::MAX,
+                    docs.as_mut_ptr(),
+                    scores.as_mut_ptr(),
+                    64,
+                    &mut n,
+                    &mut total,
+                    &mut lower,
+                )
+            };
+            assert_eq!(rc, 0, "{}", crate::error::last_error());
+            let mut hits: Vec<(i32, u32)> = docs[..n]
+                .iter()
+                .copied()
+                .zip(scores[..n].iter().map(|s| s.to_bits()))
+                .collect();
+            hits.sort_unstable();
+            (hits, total)
+        };
+        for term in ["gamma", "zeta", "alpha"] {
+            let q = crate::jvm_reader::tests::term_blob("body", term);
+            let (mut live, live_total) = search_live(reader, view, &q).unwrap();
+            live.sort_by_key(|&(d, _)| d);
+            let (hits, got) = total(whole, &q);
+            assert_eq!(got, live_total, "{term}");
+            let live: Vec<(i32, u32)> = live.iter().map(|&(d, s)| (d, s.to_bits())).collect();
+            assert_eq!(hits, live, "{term}: the same hits, scored alike");
+        }
+        // zeta: d2' and d21' only; d22' came after the view.
+        assert_eq!(
+            total(whole, &crate::jvm_reader::tests::term_blob("body", "zeta")).1,
+            2
+        );
+
+        {
+            let w = crate::jvm_reader::lookup(whole, "test").unwrap();
+            let readers = w.reader.segment_readers();
+            let base = crate::jvm_reader::lookup(reader, "test")
+                .unwrap()
+                .live_docs
+                .len();
+            // One segment per buffer, holding the documents of the view.
+            assert_eq!(readers.len(), base + 1);
+            assert_eq!(readers[base].max_doc, 12);
+            let mut found = Vec::new();
+            for (r, live) in readers.iter().zip(&w.live_docs).skip(base) {
+                let mut dv = r.numeric_doc_values("_seq_no").unwrap().unwrap();
+                for d in 0..r.max_doc {
+                    if live.as_ref().is_none_or(|l| l.get(d as usize))
+                        && dv.advance_exact(d).unwrap()
+                    {
+                        found.push(dv.long_value());
+                    }
+                }
+            }
+            found.sort_unstable();
+            let mut want: Vec<i64> = (20..30).filter(|&i| i != 21).collect();
+            want.extend([30, 31]);
+            assert_eq!(found, want);
+        }
+
+        assert_eq!(ffi_live_view_close(view), 0);
+        assert_ne!(
+            crate::jvm_reader::ffi_close_jvm_reader(whole),
+            0,
+            "closed with the view"
+        );
+        // SAFETY: a live out-pointer.
+        let rc = unsafe { ffi_live_view_reader(reader, view, &mut again) };
+        assert_ne!(rc, 0, "a closed view makes no reader");
+
+        // A view whose buffers were published since reads their segments,
+        // and finds what it found before they were.
+        // SAFETY: live out-pointers.
+        let rc = unsafe { ffi_engine_writer_live_view_open(h, gen, &mut view, &mut ptr, &mut len) };
+        assert_eq!(rc, 0, "{}", crate::error::last_error());
+        // SAFETY: the buffer the call gave, freed once.
+        unsafe { crate::ffm_bridge::ffi_jvm_free_bytes(ptr, len) };
+        let terms = ["gamma", "zeta", "alpha"];
+        let before: Vec<i64> = terms
+            .iter()
+            .map(|t| {
+                search_live(
+                    reader,
+                    view,
+                    &crate::jvm_reader::tests::term_blob("body", t),
+                )
+                .unwrap()
+                .1
+            })
+            .collect();
+        commit_settled(h);
+        // SAFETY: a live out-pointer.
+        let rc = unsafe { ffi_live_view_reader(reader, view, &mut whole) };
+        assert_eq!(rc, 0, "{}", crate::error::last_error());
+        for (t, want) in terms.iter().zip(before) {
+            let q = crate::jvm_reader::tests::term_blob("body", t);
+            assert_eq!(total(whole, &q).1, want, "{t}");
+        }
+        // zeta: d2', d21' and d22', each once.
+        assert_eq!(
+            total(whole, &crate::jvm_reader::tests::term_blob("body", "zeta")).1,
+            3
+        );
+        assert_eq!(ffi_live_view_close(view), 0);
+        assert_eq!(crate::jvm_reader::ffi_close_jvm_reader(reader), 0);
+    }
+
     /// The 1M OpenSearch bench's documents (`bench_nodes.py gen`), mapped as
     /// OpenSearch maps them, buffered by four threads, then one refresh
     /// timed. `FLUSH_DOCS` sets how many (default 500 000).

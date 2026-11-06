@@ -364,7 +364,7 @@ impl IndexingConfig {
 
     /// `FreqProxTermsWriter.flush`: the buffered postings' files. A
     /// block-tree segment takes each field's terms a batch at a time,
-    /// straight from the buffer ([`PendingPostings::stream_field`]); an
+    /// straight from the buffer ([`PendingPostings::stream_field_below`]); an
     /// installed postings writer or another terms dictionary needs every
     /// field laid out first.
     fn write_pending_postings(
@@ -372,6 +372,7 @@ impl IndexingConfig {
         pending: &PendingPostings,
         fields: &[(super::pending_postings::FieldToFlush, IndexOptions)],
         old_to_new: Option<&[usize]>,
+        limit: Option<i32>,
         norms: &[postings_writer::FieldNorms<'_>],
         state: lucene_codecs::postings_consumer::PostingsWriteState<'_>,
     ) -> Result<super::PostingsGroups> {
@@ -399,7 +400,7 @@ impl IndexingConfig {
                 state.id,
                 &mut |i, writer| {
                     let (field, _) = fields[i];
-                    pending.stream_field(field.number, old_to_new, &mut |terms| {
+                    pending.stream_field_below(field.number, old_to_new, limit, &mut |terms| {
                         writer.add_terms(terms, norms)?;
                         Ok(())
                     })?;
@@ -410,12 +411,21 @@ impl IndexingConfig {
                 return Ok(groups);
             }
         }
-        let flushed = pending.flushed(old_to_new)?;
+        let flushed = pending.flushed_below(old_to_new, limit)?;
         let term_lists = flushed.term_lists();
         let inputs: Vec<FieldPostingsInput<'_, _>> = term_lists
             .iter()
-            .zip(fields)
-            .map(|((n, docs, terms), (f, options))| FieldPostingsInput {
+            .filter_map(|(n, docs, terms)| {
+                let (f, options) = fields.iter().find(|(f, _)| f.number == *n)?;
+                Some((
+                    n,
+                    if limit.is_some() { &f.doc_count } else { docs },
+                    terms,
+                    f,
+                    options,
+                ))
+            })
+            .map(|(n, docs, terms, f, options)| FieldPostingsInput {
                 field_number: *n,
                 index_options: *options,
                 doc_count: *docs,
@@ -874,11 +884,19 @@ impl IndexingConfig {
                 &inverted_here
             }
         };
-        let postings_fields: Vec<(super::pending_postings::FieldToFlush, IndexOptions)> = pending
-            .fields_to_flush()
-            .into_iter()
-            .map(|f| Ok((f, self.explicit_field(f.number)?.index_options)))
-            .collect::<Result<_>>()?;
+        let mut flush_fields = pending.fields_to_flush();
+        if let Some(limit) = buf.limit {
+            // The fields as the buffer's first documents hold them.
+            flush_fields.retain_mut(|f| {
+                f.doc_count = limit.doc_counts.get(&f.number).copied().unwrap_or(0);
+                f.doc_count > 0
+            });
+        }
+        let postings_fields: Vec<(super::pending_postings::FieldToFlush, IndexOptions)> =
+            flush_fields
+                .into_iter()
+                .map(|f| Ok((f, self.explicit_field(f.number)?.index_options)))
+                .collect::<Result<_>>()?;
         // `FieldInfo.setStorePayloads`: the fields a document of this segment
         // gave a non-empty payload. Every occurrence of such a field then
         // carries a payload length, zero where it has none -- what
@@ -994,6 +1012,7 @@ impl IndexingConfig {
                 pending,
                 &postings_fields,
                 buf.old_to_new,
+                buf.limit.map(|l| l.docs),
                 &norms_for_impacts,
                 lucene_codecs::postings_consumer::PostingsWriteState {
                     directory: dir,
