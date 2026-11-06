@@ -3460,6 +3460,10 @@ impl lucene_codecs::points::IntersectVisitor for CountInBuckets<'_> {
         let (Some(a), Some(b)) = (self.decode.decode(min), self.decode.decode(max)) else {
             return Relation::CellCrossesQuery;
         };
+        let below = |v: i64| self.starts.first().is_none_or(|&s| v < s);
+        if below(b) || a >= self.end {
+            return Relation::CellOutsideQuery;
+        }
         match (self.bucket_of(a), self.bucket_of(b)) {
             (Some(x), Some(y)) if x == y => {
                 self.current = Some(x);
@@ -3499,9 +3503,10 @@ enum PointCounts {
     Fixed(Vec<u64>),
 }
 
-/// At most this many `date_histogram` buckets are counted from the points
-/// in one segment; past it the segment is read document by document.
-const MAX_POINT_BUCKETS: usize = 1024;
+/// At most this many `date_histogram` buckets, empty ones included, are
+/// counted from the points in one segment's walk; past it the segment is
+/// read document by document.
+const MAX_POINT_BUCKETS: usize = 1 << 16;
 
 /// What [`count_from_points`] needs of a segment to count `node` from its
 /// points: a top-level `date_histogram` or `range` without sub-aggregations
@@ -3589,24 +3594,37 @@ fn count_from_points(node: &AggNode, seg: &OpenSegment<'_>) -> Result<Option<Poi
             // its size, a leaf crossing a boundary value by value, each leaf
             // decoded once (as OpenSearch's filter rewrite walks the tree once
             // for all its ranges).
+            // Only buckets that `hard_bounds` keep: those starting below the
+            // lower bound are dropped below, those at or past the upper one
+            // never built, and cells outside them never decoded.
+            let first = hard_bounds.0.map_or(min, |m| min.max(m));
             let mut starts = Vec::new();
-            let mut ends = Vec::new();
-            let mut at = min;
-            while at <= max {
+            let mut end = i64::MIN;
+            let mut at = first;
+            while at <= max && !hard_bounds.1.is_some_and(|m| at >= m) {
                 let Some((from, to)) = rounding.bucket(at) else {
                     return Ok(None);
                 };
-                if starts.len() >= MAX_POINT_BUCKETS || to <= from || from > at {
+                // Back to back: every bucket after the first starts where the
+                // last one ended.
+                if starts.len() >= MAX_POINT_BUCKETS
+                    || to <= from
+                    || from > at
+                    || (!starts.is_empty() && from != at)
+                {
                     return Ok(None);
                 }
                 starts.push(from);
-                ends.push(to);
+                end = to;
                 at = to;
+            }
+            if starts.is_empty() {
+                return Ok(Some(PointCounts::Keyed(Vec::new())));
             }
             let mut v = CountInBuckets {
                 decode,
                 starts: &starts,
-                end: ends.last().copied().unwrap_or(i64::MIN),
+                end,
                 current: None,
                 counts: vec![0; starts.len()],
             };
@@ -5536,6 +5554,73 @@ mod tests {
                     got,
                     want.into_iter().collect::<Vec<_>>(),
                     "interval {interval} bounds {bounds:?}"
+                );
+            }
+        }
+    }
+
+    /// Months differ in length and a zone shifts their edges: the one walk
+    /// still counts what bucketing each value counts, and hard bounds that
+    /// keep a few months out of years decode nothing outside them.
+    #[test]
+    fn counting_month_buckets_in_a_zone_from_points_matches_bucketing_each_value() {
+        use lucene_index::document::{Document, LongPoint};
+        use lucene_index::index_writer::IndexWriter;
+        use lucene_index::merge_policy::upgrade::LATEST;
+
+        const DAY: i64 = 86_400_000;
+        let dir = lucene_store::ByteBuffersDirectory::new();
+        let mut values = Vec::new();
+        {
+            let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", LATEST).unwrap();
+            w.set_ram_buffer_size_mb(1024.0).unwrap();
+            for i in 0..20_000i64 {
+                // About three years from 2020, some on month edges.
+                let v =
+                    1_577_836_800_000 + (i * 7919) % (1100 * DAY) + if i % 11 == 0 { 0 } else { 1 };
+                values.push(v);
+                let mut d = Document::new();
+                d.add(LongPoint::new("ts", &[v]).unwrap());
+                w.add_fields_document(&d).unwrap();
+            }
+            w.commit().unwrap();
+        }
+        let reader = DirectoryReader::open(&dir).unwrap();
+        let mut opened = reader.open_segments().unwrap();
+        opened.open_points().unwrap();
+        let segments = opened.as_open_segments();
+        for zone_ms in [0i64, 19_800_000, -18_000_000] {
+            let rounding = DateRounding {
+                kind: RoundingKind::Unit(DateUnit::Month),
+                zone_ms,
+                offset: 0,
+            };
+            let mid = rounding.round(values[5000]);
+            for bounds in [(None, None), (Some(mid), Some(mid + 90 * DAY))] {
+                let node = AggNode::DateHistogram {
+                    missing: None,
+                    field: "ts".to_string(),
+                    rounding,
+                    hard_bounds: bounds,
+                    subs: vec![],
+                };
+                let mut want: std::collections::BTreeMap<i64, u64> =
+                    std::collections::BTreeMap::new();
+                for &v in &values {
+                    let k = rounding.round(v);
+                    if bounds.0.is_some_and(|m| k < m) || bounds.1.is_some_and(|m| k >= m) {
+                        continue;
+                    }
+                    *want.entry(k).or_default() += 1;
+                }
+                let Some(PointCounts::Keyed(got)) = count_from_points(&node, &segments[0]).unwrap()
+                else {
+                    panic!("zone {zone_ms}: not counted from the points")
+                };
+                assert_eq!(
+                    got,
+                    want.into_iter().collect::<Vec<_>>(),
+                    "zone {zone_ms} bounds {bounds:?}"
                 );
             }
         }
