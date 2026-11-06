@@ -1,0 +1,18 @@
+[package]
+name = "lucene-ivf"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+lucene-util = { path = "../lucene-util" }
+lucene-store = { path = "../lucene-store" }
+lucene-vector-quant = { path = "../lucene-vector-quant" }
+rayon.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+lucene-codecs = { path = "../lucene-codecs" }
