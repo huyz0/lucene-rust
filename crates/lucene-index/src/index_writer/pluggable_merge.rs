@@ -101,8 +101,8 @@ impl IndexWriter<'_> {
         };
         let (infos, mut ctx) = self.merge_inputs()?;
         ctx.merging = merging.clone();
-        let Some(spec) = policy
-            .find_merges(trigger, &infos, &ctx)
+        let Some(spec) = self
+            .per_partition_spec(&infos, |part| policy.find_merges(trigger, part, &ctx))?
             .map_err(policy_error)?
         else {
             return Ok(Vec::new());
@@ -224,8 +224,10 @@ impl IndexWriter<'_> {
         let mut last: Option<Vec<Vec<String>>> = None;
         loop {
             let (infos, ctx) = self.merge_inputs()?;
-            let Some(spec) = policy
-                .find_merges(MergeTrigger::FullFlush, &infos, &ctx)
+            let Some(spec) = self
+                .per_partition_spec(&infos, |part| {
+                    policy.find_merges(MergeTrigger::FullFlush, part, &ctx)
+                })?
                 .map_err(policy_error)?
             else {
                 return Ok(());
@@ -352,8 +354,10 @@ impl IndexWriter<'_> {
         self.fold_flushed_segments();
         let (infos, mut ctx) = self.merge_inputs()?;
         ctx.merging = merging.clone();
-        let Some(spec) = policy
-            .find_full_flush_merges(trigger, &infos, &ctx)
+        let Some(spec) = self
+            .per_partition_spec(&infos, |part| {
+                policy.find_full_flush_merges(trigger, part, &ctx)
+            })?
             .map_err(policy_error)?
         else {
             return Ok(Some((Vec::new(), deadline)));
@@ -381,8 +385,8 @@ impl IndexWriter<'_> {
         policy: &Arc<dyn MergePolicy>,
     ) -> Result<()> {
         let (infos, ctx) = self.merge_inputs()?;
-        let Some(spec) = policy
-            .find_forced_deletes_merges(&infos, &ctx)
+        let Some(spec) = self
+            .per_partition_spec(&infos, |part| policy.find_forced_deletes_merges(part, &ctx))?
             .map_err(policy_error)?
         else {
             return Ok(());
@@ -411,8 +415,10 @@ impl IndexWriter<'_> {
         let mut last: Option<Vec<Vec<String>>> = None;
         loop {
             let (infos, ctx) = self.merge_inputs()?;
-            let Some(spec) = policy
-                .find_forced_merges(&infos, max_segment_count, &to_merge, &ctx)
+            let Some(spec) = self
+                .per_partition_spec(&infos, |part| {
+                    policy.find_forced_merges(part, max_segment_count, &to_merge, &ctx)
+                })?
                 .map_err(policy_error)?
             else {
                 return Ok(());
