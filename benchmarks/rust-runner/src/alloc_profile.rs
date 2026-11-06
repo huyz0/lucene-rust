@@ -146,6 +146,10 @@ extern "C" {
         path_len: usize,
         ram_buffer_mb: f64,
         fault_injection: u8,
+        index_sort: *const u8,
+        index_sort_len: usize,
+        parent_field: *const c_char,
+        parent_field_len: usize,
         max_docs: i32,
         out_handle: *mut u64,
     ) -> i32;
@@ -384,7 +388,18 @@ fn main() {
     // SAFETY: live string and out-pointer.
     check(
         unsafe {
-            ffi_engine_writer_open(path.as_ptr().cast(), path.len(), 64.0, 0, i32::MAX, &mut h)
+            ffi_engine_writer_open(
+                path.as_ptr().cast(),
+                path.len(),
+                64.0,
+                0,
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
+                i32::MAX,
+                &mut h,
+            )
         },
         "open writer",
     );

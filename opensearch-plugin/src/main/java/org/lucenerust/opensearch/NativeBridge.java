@@ -38,7 +38,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code jvm_reader.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 76;
+    public static final int EXPECTED_ABI_VERSION = 77;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -236,7 +236,9 @@ public final class NativeBridge {
 
         static final MethodHandle WRITER_OPEN = bind(
             "ffi_engine_writer_open",
-            FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, JAVA_DOUBLE, JAVA_BYTE, JAVA_INT, ADDRESS)
+            FunctionDescriptor.of(
+                JAVA_INT, ADDRESS, JAVA_LONG, JAVA_DOUBLE, JAVA_BYTE, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, JAVA_INT, ADDRESS
+            )
         );
         static final MethodHandle WRITER_REGISTER_FIELD = bind(
             "ffi_engine_writer_register_field",
@@ -1428,6 +1430,8 @@ public final class NativeBridge {
      * buffered documents reads ({@link #liveViewOpen}); {@code adaptiveDocValues} writes doc values in
      * the {@code RustAdaptive} format; with {@code partitioned} every segment holds one partition
      * (the value of the index's partition field) and records it, and merges never mix partitions.
+     * {@code indexSort} is the index sort as a {@code .si} encodes it (null or empty for none), and
+     * {@code parentFieldUtf8} the field marking each block's last document (null or empty for none).
      * {@code maxDocs} is {@code IndexWriter.getActualMaxDocs()}, which Lucene's tests lower.
      */
     public static int writerOpen(
@@ -1438,12 +1442,16 @@ public final class NativeBridge {
         boolean liveSearch,
         boolean adaptiveDocValues,
         boolean partitioned,
+        byte[] indexSort,
+        byte[] parentFieldUtf8,
         int maxDocs,
         long[] outHandle
     ) {
         if (indexPathUtf8 == null) {
             return nullArgument("path");
         }
+        byte[] sort = indexSort == null ? new byte[0] : indexSort;
+        byte[] parent = parentFieldUtf8 == null ? new byte[0] : parentFieldUtf8;
         try (Scratch s = Scratch.open()) {
             MemorySegment out = s.alloc(Long.BYTES);
             int rc = (int) H.WRITER_OPEN.invokeExact(
@@ -1453,6 +1461,10 @@ public final class NativeBridge {
                 (byte) ((faultInjection ? OPEN_FAULT_INJECTION : 0) | (sparse ? OPEN_SPARSE : 0)
                     | (liveSearch ? OPEN_LIVE_SEARCH : 0) | (adaptiveDocValues ? OPEN_ADAPTIVE_DOC_VALUES : 0)
                     | (partitioned ? OPEN_PARTITIONED : 0)),
+                s.bytes(sort),
+                (long) sort.length,
+                s.bytes(parent),
+                (long) parent.length,
                 maxDocs,
                 out
             );

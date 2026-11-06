@@ -79,12 +79,23 @@ shards and their memory.
 - OpenSearch's own context-aware setting (`index.context_aware.enabled`, with a
   `context_aware_grouping` script) is still refused.
 
+## Index sorting
+
+`index.sort.*` is served natively: every segment is flushed and merged in the
+sort's order, with OpenSearch's parent field (`__nested_parent`) keeping each
+nested block whole, so the segments are those OpenSearch's own writer would
+write. Sorting by a keyword partition field (`index.sort.field: tenant`) puts
+each partition's documents side by side: a `term` filter on the sort's first
+field is then matched as that run of doc ids, checked against the term's
+postings, and the other clauses skip straight to it.
+
 ## What it refuses
 
 When an index is created:
 
 - a codec other than `default` or `lucene_default`
-- index sorting
+- index sorting on an index created before 3.2.0 (whose nested blocks have no
+  parent field), or together with `index.lucene_rust.realtime_search`
 - context-aware segments
 - remote-backed storage (remote-store indices or nodes)
 

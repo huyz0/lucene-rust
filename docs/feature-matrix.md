@@ -117,7 +117,7 @@ code, so they fall back (`field_similarity`), as does
 | segment replication | ✅ | Rust primary; replicas run OpenSearch's `NRTReplicationEngine` |
 | mixed clusters (some nodes with `lucene_rust.engine.node_enabled: false`) | ✅ | shards relocate and recover between the engines both ways |
 | field types | ✅ for what the Rust writer accepts | tested as the field types OpenSearch's own REST YAML suites index, which pass with every index on the Rust engine (`scripts/verify-opensearch.sh --engine --yaml`); a type those suites do not cover is not separately verified. Refused per document (400): term vectors, vector fields, `completion`, payloads, custom term frequencies, any other per-field postings or doc-values format |
-| index settings | | refused at creation: a codec other than `default`/`lucene_default`, index sorting, context-aware segments, remote-backed storage |
+| index settings | | refused at creation: a codec other than `default`/`lucene_default`, index sorting on indices created before 3.2.0 or with realtime search, context-aware segments, remote-backed storage |
 | `index.merge.policy.*`, `index.merge_on_flush` | ✗ | the writer's own merge policy; merges run inside commits, not reported in `_stats` merges |
 | compound segments | ✗ | writes non-compound segments only (reads compound ones) |
 
