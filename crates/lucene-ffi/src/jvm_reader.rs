@@ -6002,6 +6002,11 @@ pub(crate) mod tests {
         }
     }
 
+    /// A prefix query's blob.
+    pub(crate) fn prefix_blob(field: &str, prefix: &str) -> Vec<u8> {
+        tree(N::Pre(field, prefix))
+    }
+
     fn tree(n: N<'_>) -> Vec<u8> {
         let mut b = vec![QUERY_TREE];
         enc(&n, &mut b);

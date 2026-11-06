@@ -351,7 +351,7 @@ public final class NativeBridge {
         static final MethodHandle LIVE_VIEW_CLOSE = bind("ffi_live_view_close", FunctionDescriptor.of(JAVA_INT, JAVA_LONG));
         static final MethodHandle LIVE_VIEW_READER = bind(
             "ffi_live_view_reader",
-            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS)
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS)
         );
         static final MethodHandle WRITER_RELEASE_LIVE = bind(
             "ffi_engine_writer_release_live",
@@ -2043,12 +2043,13 @@ public final class NativeBridge {
      * caller must not. {@link #INVALID_ARGUMENT} when the buffers cannot be written (one was taken
      * for a flush since the view opened); the caller then searches the reader alone.
      * <p>
-     * With {@code query} (a query blob) and {@code tree} (an aggregation tree blob, or null), the
-     * buffers are written without their postings and the handle holds only the terms that request
-     * reads: it serves searches of that request alone, much cheaper to build. With a null
-     * {@code query}, or a request whose terms cannot be named up front, it holds every term.
+     * With {@code query} (a query blob), {@code tree} (an aggregation tree blob, or null) and
+     * {@code extra} (the other queries the search runs, a rescore's, or null), the buffers are
+     * written without their postings and the handle holds only the terms that request reads: it
+     * serves searches of that request alone, much cheaper to build. With a null {@code query}, or a
+     * request whose terms cannot be named up front, it holds every term.
      */
-    public static int liveViewReader(long handle, long view, byte[] query, byte[] tree, long[] out) {
+    public static int liveViewReader(long handle, long view, byte[] query, byte[] tree, byte[][] extra, long[] out) {
         if (out == null || out.length < 1) {
             return fail(INVALID_ARGUMENT, "out needs a slot");
         }
@@ -2056,6 +2057,8 @@ public final class NativeBridge {
             MemorySegment id = s.alloc(Long.BYTES);
             MemorySegment q = query == null || query.length == 0 ? MemorySegment.NULL : s.bytes(query);
             MemorySegment t = query == null || tree == null || tree.length == 0 ? MemorySegment.NULL : s.bytes(tree);
+            byte[] listed = query == null ? null : lengthPrefixed(extra);
+            MemorySegment e = listed == null ? MemorySegment.NULL : s.bytes(listed);
             int rc = (int) H.LIVE_VIEW_READER.invokeExact(
                 handle,
                 view,
@@ -2063,6 +2066,8 @@ public final class NativeBridge {
                 q == MemorySegment.NULL ? 0L : (long) query.length,
                 t,
                 t == MemorySegment.NULL ? 0L : (long) tree.length,
+                e,
+                e == MemorySegment.NULL ? 0L : (long) listed.length,
                 id
             );
             if (rc == OK) {
@@ -2072,6 +2077,22 @@ public final class NativeBridge {
         } catch (Throwable t) {
             throw rethrow(t);
         }
+    }
+
+    /** {@code blobs} one after another, each after its length as a little-endian int; null when none. */
+    private static byte[] lengthPrefixed(byte[][] blobs) {
+        if (blobs == null || blobs.length == 0) {
+            return null;
+        }
+        int size = 0;
+        for (byte[] b : blobs) {
+            size = Math.addExact(size, Math.addExact(Integer.BYTES, b.length));
+        }
+        java.nio.ByteBuffer out = java.nio.ByteBuffer.allocate(size).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        for (byte[] b : blobs) {
+            out.putInt(b.length).put(b);
+        }
+        return out.array();
     }
 
     /** Closes a view: its buffers may go once nothing else reads them. */

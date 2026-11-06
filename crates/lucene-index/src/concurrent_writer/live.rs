@@ -64,6 +64,28 @@ pub struct LiveFieldRequest {
     /// as indexing documents and frequencies only, which is all a search
     /// with no phrase, span or interval clause on it reads.
     pub positions: bool,
+    /// Read every buffered term any of these match too.
+    pub patterns: Vec<LivePattern>,
+}
+
+/// A set of terms named by a pattern ([`LiveFieldRequest::patterns`]).
+#[derive(Debug, Clone)]
+pub enum LivePattern {
+    /// A wildcard (or prefix) pattern.
+    Wildcard(lucene_codecs::wildcard::WildcardPattern),
+    /// A regexp with a compiled automaton
+    /// ([`lucene_codecs::regexp::RegexpPattern::dfa_matches`]); one without
+    /// matches nothing here.
+    Regexp(lucene_codecs::regexp::RegexpPattern),
+}
+
+impl LivePattern {
+    fn matches(&self, term: &[u8]) -> bool {
+        match self {
+            LivePattern::Wildcard(p) => p.matches(term),
+            LivePattern::Regexp(p) => p.dfa_matches(term).unwrap_or(false),
+        }
+    }
 }
 
 /// A consistent cut through the writer's buffers: see the module doc.
@@ -571,6 +593,7 @@ fn delete_terms(nodes: &[Arc<DeleteNode>], soft_field: Option<&str>) -> Option<V
 struct Wanted<'a> {
     info: &'a FieldInfo,
     terms: Vec<&'a [u8]>,
+    patterns: &'a [LivePattern],
     positions: bool,
 }
 
@@ -1056,6 +1079,7 @@ impl ConcurrentIndexWriter<'_> {
                 Some(Wanted {
                     info,
                     terms,
+                    patterns: &r.patterns,
                     positions: r.positions && info.index_options.subsumes_positions(),
                 })
             })
@@ -1169,8 +1193,19 @@ fn read_buffer(
         ) else {
             continue;
         };
+        let matched: Vec<&[u8]>;
+        let names: &[&[u8]] = if w.patterns.is_empty() {
+            &w.terms
+        } else {
+            let mut all = w.terms.clone();
+            all.extend(runs.live_matching(|t| w.patterns.iter().any(|p| p.matches(t))));
+            all.sort_unstable();
+            all.dedup();
+            matched = all;
+            &matched
+        };
         let mut terms = Vec::new();
-        for t in &w.terms {
+        for &t in names {
             if let Some(mut p) = runs.live_term(t, w.positions)? {
                 truncate(&mut p, view.max_doc);
                 if !p.docs.is_empty() {
