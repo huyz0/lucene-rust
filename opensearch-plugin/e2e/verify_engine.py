@@ -750,6 +750,10 @@ def main():
     # title (english), body (standard), note and code (custom) are all Lucene components.
     check(analyzed.get("native", 0) > a.ops // 2, f"text values analyzed in Rust: {analyzed}")
     compare_all("after the stream", stream.ids)
+    # Merges run in the Rust writer and are reported back, as OpenSearch's merge scheduler reports them.
+    merges = must("GET", f"/{RUST}/_stats/merge")["_all"]["primaries"]["merges"]
+    check(merges["total"] > 0 and merges["total_docs"] > 0 and merges["total_size_in_bytes"] > 0,
+          f"merge stats are populated: {merges}")
     # Recovery: a graceful restart replays nothing; SIGKILL replays the translog into the writer.
     run_stream(600, seed=43)
     restart(a.container, kill=False)

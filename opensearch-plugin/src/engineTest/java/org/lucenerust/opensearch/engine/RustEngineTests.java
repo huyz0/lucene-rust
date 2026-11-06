@@ -6801,7 +6801,6 @@ public class RustEngineTests extends RustEngineTestCase {
         }
     }
 
-    @org.junit.Ignore("merges run inside the Rust writer's commit, so no merge scheduler reports a big merge to flush after")
     public void testShouldPeriodicallyFlushAfterMerge() throws Exception {
         engine.close();
         // Do not use MockRandomMergePolicy as it can cause a force merge performing two merges.

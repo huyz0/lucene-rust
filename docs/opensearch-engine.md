@@ -138,20 +138,20 @@ Remote-backed storage stays refused, because its upload listener asks for an
   read document counts off the unwrapped `SegmentReader`, which here does not
   have the soft deletes applied, as on `NRTReplicationEngine` replicas.
   Index-level `docs.count` and `docs.deleted` are exact.
-- **Merges.** The Rust writer's merge policy uses its defaults, and
-  `index.merge.policy.*` and `index.merge_on_flush` are not honoured. Merges
-  run on the Rust writer's own merge threads, so `_stats` reports no merge
-  activity, and a finished merge becomes visible at the next refresh. When
-  merges fall behind, the writer stalls the indexing thread, as Lucene's
-  `ConcurrentMergeScheduler` does, and OpenSearch's indexing throttle does not
-  engage.
+- **Merges run in the Rust writer.** Its merge threads take the
+  `index.merge.policy.*`, `index.merge.scheduler.*` and `index.merge_on_flush.*`
+  settings, and report each merge to the engine as OpenSearch's merge
+  scheduler does: `_stats` merge counts and times, the indexing throttle once
+  more than `max_merge_count` merges are in flight, the flush after a big merge
+  or once merges finish on an idle shard, and a failed merge failing the
+  shard. A finished merge becomes visible at the next refresh.
 - **No infoStream.** Lucene's `IndexWriter` debug log has no counterpart.
 
 ## How it is verified
 
 | What | Where |
 |---|---|
-| OpenSearch's own `InternalEngineTests`, derived to build `RustEngine` | `scripts/opensearch-engine-tests.sh`. 117 pass. The 34 skipped are each listed with a reason in `opensearch-plugin/tools/derive_engine_tests.py`: the refusals above, failure injection through a Java `IndexWriter` or in-memory `Directory`, and the differences above. |
+| OpenSearch's own `InternalEngineTests`, derived to build `RustEngine` | `scripts/opensearch-engine-tests.sh`. 118 pass. The 33 skipped are each listed with a reason in `opensearch-plugin/tools/derive_engine_tests.py`: the refusals above, failure injection through a Java `IndexWriter` or in-memory `Directory`, and the differences above. |
 | The Rust writer against Lucene's `IndexWriter` on the same operations | `EngineWriterDiffTest` (`gradle -p opensearch-plugin check`) |
 | One node, the Rust engine against OpenSearch's, operation for operation: bulk results, OCC, get, search, scores, aggregations; then restart, SIGKILL, a panic, the breaker, the refusals | `scripts/verify-opensearch.sh --engine` (`opensearch-plugin/e2e/verify_engine.py`) |
 | OpenSearch's REST YAML suites with every index on the Rust engine, against a stock node | `scripts/verify-opensearch.sh --engine --yaml` |

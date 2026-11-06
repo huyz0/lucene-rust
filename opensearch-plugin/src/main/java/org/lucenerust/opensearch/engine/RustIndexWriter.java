@@ -171,6 +171,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
         org.apache.lucene.codecs.Codec codec
     ) throws IOException {
         installCommitDataUpcall();
+        RustMergeScheduler.installUpcall();
         long[] out = new long[1];
         int status = NativeBridge.writerOpen(
             org.lucenerust.opensearch.store.RustEncryptedDirectory.nativePath(indexPath).getBytes(StandardCharsets.UTF_8),
@@ -909,7 +910,25 @@ final class RustIndexWriter implements DocumentIndexWriter {
 
     @Override
     public boolean hasPendingMerges() {
-        return false;
+        if (closed) {
+            return false;
+        }
+        boolean[] pending = new boolean[1];
+        return NativeBridge.writerMergeState(handle, pending, new double[1]) == NativeBridge.OK && pending[0];
+    }
+
+    /** The merge scheduler's IO rate limit in MB/s, infinite when merges are not throttled. */
+    double mergeIoRateMbPerSec() {
+        double[] rate = { Double.POSITIVE_INFINITY };
+        if (closed == false) {
+            NativeBridge.writerMergeState(handle, new boolean[1], rate);
+        }
+        return rate[0];
+    }
+
+    /** The native writer's handle. */
+    long handle() {
+        return handle;
     }
 
     // ---- state ----
@@ -985,6 +1004,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
                 if (nativeClosed == false) {
                     nativeClosed = true;
                     NativeBridge.writerClose(handle);
+                    RustMergeScheduler.detach(handle);
                 }
             } finally {
                 indexing.writeLock().unlock();

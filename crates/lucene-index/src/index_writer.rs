@@ -4335,6 +4335,44 @@ pub const FORCE_MERGE_DELETES_PCT_ALLOWED: i64 = 10;
 /// or a Java `IndexWriter` -- ever modify one index at once.
 pub const WRITE_LOCK_NAME: &str = "write.lock";
 
+/// One merge as a [`MergeListener`] sees it: `OneMerge` as
+/// `OpenSearchConcurrentMergeScheduler.doMerge` reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MergeEvent {
+    /// Unique among this process's merges (`OnGoingMerge.getId`).
+    pub id: u64,
+    /// The merged segments' names, in merge order.
+    pub segments: Vec<String>,
+    /// `OneMerge.totalNumDocs()`: the sources' `maxDoc`s summed.
+    pub total_docs: i64,
+    /// `OneMerge.totalBytesSize()`: the sources' sizes on disk summed.
+    pub total_bytes: i64,
+    /// `OneMerge.maxNumSegments`: `-1` for a natural merge.
+    pub max_num_segments: i32,
+}
+
+/// How long a finished merge took and how long it was held back
+/// (`OneMergeProgress.getPauseTimes`), in milliseconds.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MergeTimes {
+    pub took_ms: u64,
+    pub stopped_ms: u64,
+    pub throttled_ms: u64,
+}
+
+/// `OpenSearchConcurrentMergeScheduler.beforeMerge`/`afterMerge` (and
+/// `handleMergeException`): told about every merge the writer runs, on the
+/// thread running it, before it starts and after it ends -- `failure` set
+/// when it failed. Called without the writer's lock only for merges a merge
+/// scheduler runs; an inline merge (`force_merge`) calls it under the lock,
+/// so a listener must not call back into the writer.
+pub trait MergeListener: Send + Sync {
+    fn before_merge(&self, merge: &MergeEvent);
+    fn after_merge(&self, merge: &MergeEvent, times: MergeTimes, failure: Option<&Error>);
+}
+
+static NEXT_MERGE_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 pub struct IndexWriter<'d> {
     dir: &'d dyn Directory,
     /// What every segment this writer builds is built with -- see
@@ -4385,6 +4423,8 @@ pub struct IndexWriter<'d> {
     /// ([`IndexWriter::set_shuffle_forced_merges`]): recorded in its
     /// diagnostics.
     merge_shuffled: bool,
+    /// See [`IndexWriter::set_merge_listener`].
+    merge_listener: Option<std::sync::Arc<dyn MergeListener>>,
     /// The merged-size cap forced merges use in place of the policy's
     /// `max_merged_segment_size`; see
     /// [`IndexWriter::set_forced_merge_max_segment_size`].
@@ -5489,6 +5529,50 @@ impl<'d> IndexWriter<'d> {
         self.cfg.shuffle_forced_merges
     }
 
+    /// Tells `listener` about every merge from now on (`None`: no one).
+    pub fn set_merge_listener(&mut self, listener: Option<std::sync::Arc<dyn MergeListener>>) {
+        self.merge_listener = listener;
+    }
+
+    /// See [`IndexWriter::set_merge_listener`].
+    pub fn merge_listener(&self) -> Option<std::sync::Arc<dyn MergeListener>> {
+        self.merge_listener.clone()
+    }
+
+    /// The [`MergeEvent`] for `plan`, when a listener wants one: `None` for an
+    /// `addIndexes` merge, which no merge scheduler runs.
+    pub(crate) fn merge_event(
+        &self,
+        plan: &MergePlan,
+    ) -> Option<(std::sync::Arc<dyn MergeListener>, MergeEvent)> {
+        let listener = self.merge_listener.clone()?;
+        let merge::MergeKind::Merge {
+            max_num_segments, ..
+        } = plan.kind
+        else {
+            return None;
+        };
+        let mut total_docs = 0i64;
+        let mut total_bytes = 0i64;
+        for sci in &plan.sources {
+            // A source whose `.si` cannot be read counts as empty here; the
+            // merge itself reports the failure.
+            if let Ok(si) = self.cfg.reader_pool.segment_info(self.dir, sci) {
+                total_docs = total_docs.saturating_add(i64::from(si.doc_count));
+                let bytes = merge_policy::commit_byte_size(self.dir, sci, &si);
+                total_bytes = total_bytes.saturating_add(i64::try_from(bytes).unwrap_or(i64::MAX));
+            }
+        }
+        let event = MergeEvent {
+            id: NEXT_MERGE_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            segments: plan.names.clone(),
+            total_docs,
+            total_bytes,
+            max_num_segments,
+        };
+        Some((listener, event))
+    }
+
     /// The merged-size cap [`IndexWriter::force_merge`] uses in place of the
     /// [`MergePolicyConfig`]'s `max_merged_segment_size`: OpenSearch's
     /// `OpenSearchTieredMergePolicy` forces with an unlimited one
@@ -5932,6 +6016,7 @@ impl<'d> IndexWriter<'d> {
             merges_by_caller: false,
             merge_max_num_segments: -1,
             merge_shuffled: false,
+            merge_listener: None,
             forced_merge_max_segment_size: None,
             max_full_flush_merge_wait_millis: DEFAULT_MAX_FULL_FLUSH_MERGE_WAIT_MILLIS,
             commit_on_close: true,
@@ -10774,14 +10859,27 @@ impl IndexWriter<'_> {
             plan.hooks = Some((hooks, infos));
         }
         let cfg = std::sync::Arc::clone(&self.cfg);
-        match cfg.run_merge(self.dir, &plan) {
+        let listened = self.merge_event(&plan);
+        if let Some((listener, event)) = &listened {
+            listener.before_merge(event);
+        }
+        let started = std::time::Instant::now();
+        let result = match cfg.run_merge(self.dir, &plan) {
             Ok(outcome) => self.finish_merge(plan, outcome),
             Err(e) => {
                 // Its own failure must not mask the merge's.
                 let _ = self.abort_merge(plan);
                 Err(e)
             }
+        };
+        if let Some((listener, event)) = &listened {
+            let times = MergeTimes {
+                took_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                ..MergeTimes::default()
+            };
+            listener.after_merge(event, times, result.as_ref().err());
         }
+        result
     }
 
     /// `IndexWriter.forceMerge(maxNumSegments)` over the committed segments.

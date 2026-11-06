@@ -106,7 +106,7 @@ use crate::index_writer::{
     InvertedTerms, Result, SegmentTicket, DISABLE_AUTO_FLUSH,
 };
 use crate::merge_policy::MergeTrigger;
-use crate::merge_rate_limiter::MergeRateLimiter;
+use crate::merge_rate_limiter::{MergeRateLimiter, PauseReason};
 use crate::merge_scheduler::{MergeScheduler, MergeSource, PendingMerges, ScheduledMerge};
 use crate::segment_infos::SegmentCommitInfo;
 use crate::stall_control::DocumentsWriterStallControl;
@@ -525,10 +525,13 @@ impl<'d> ConcurrentIndexWriter<'d> {
                 core.merging.remove(name);
             }
         };
-        let plan = {
+        let (plan, listened) = {
             let mut core = lock(&self.core);
             match core.writer.begin_merge(&merge.segments) {
-                Ok(plan) => plan,
+                Ok(plan) => {
+                    let listened = core.writer.merge_event(&plan);
+                    (plan, listened)
+                }
                 Err(e) => {
                     release(&mut core);
                     drop(core);
@@ -536,6 +539,24 @@ impl<'d> ConcurrentIndexWriter<'d> {
                     self.changed.notify_all();
                     return Err(e);
                 }
+            }
+        };
+        // `OpenSearchConcurrentMergeScheduler.doMerge`: the listener hears of
+        // the merge before it runs and after it ends, without the lock.
+        let started = std::time::Instant::now();
+        if let Some((listener, event)) = &listened {
+            listener.before_merge(event);
+        }
+        let after = |failure: Option<&crate::index_writer::Error>| {
+            if let Some((listener, event)) = &listened {
+                let ms = |ns: u64| ns / 1_000_000;
+                let progress = merge.progress();
+                let times = crate::index_writer::MergeTimes {
+                    took_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                    stopped_ms: ms(progress.pause_time_ns(PauseReason::Stopped)),
+                    throttled_ms: ms(progress.pause_time_ns(PauseReason::Paused)),
+                };
+                listener.after_merge(event, times, failure);
             }
         };
         let tracking = TrackingDirectory::new(self.dir);
@@ -560,11 +581,21 @@ impl<'d> ConcurrentIndexWriter<'d> {
                 let _ = core.writer.delete_new_files(&tracking.created());
                 drop(core);
                 self.changed.notify_all();
+                after(Some(&crate::index_writer::Error::MergeThreadPanicked(
+                    "a merge panicked".to_string(),
+                )));
                 resume_unwind(panic);
             }
         };
         drop(core);
         self.changed.notify_all();
+        // An aborted merge is not a failure (`MergeAbortedException`).
+        after(
+            result
+                .as_ref()
+                .err()
+                .filter(|e| !matches!(e, crate::index_writer::Error::MergeAborted)),
+        );
         result
     }
 
@@ -633,6 +664,12 @@ impl<'d> ConcurrentIndexWriter<'d> {
     pub fn set_check_pending_flush_on_update(&self, check: bool) {
         self.check_pending_flush_on_update
             .store(check, Ordering::Relaxed);
+    }
+
+    /// `IndexWriter.hasPendingMerges`: whether merges are registered that no
+    /// merge thread has taken yet. Takes only the queue's own lock.
+    pub fn has_pending_merges(&self) -> bool {
+        !self.pending_merges.is_empty()
     }
 
     /// See [`Self::set_check_pending_flush_on_update`].
@@ -3600,6 +3637,76 @@ mod tests {
         assert_eq!(w.maybe_merge().unwrap(), 0);
         w.close_merges().unwrap();
         assert_eq!(lock(&w.core).writer.segment_infos().segments.len(), 4);
+    }
+
+    /// Records what a [`crate::index_writer::MergeListener`] hears.
+    #[derive(Default)]
+    struct Heard {
+        events: Mutex<Vec<(bool, crate::index_writer::MergeEvent, bool)>>,
+    }
+
+    impl crate::index_writer::MergeListener for Heard {
+        fn before_merge(&self, merge: &crate::index_writer::MergeEvent) {
+            self.events
+                .lock()
+                .unwrap()
+                .push((true, merge.clone(), false));
+        }
+
+        fn after_merge(
+            &self,
+            merge: &crate::index_writer::MergeEvent,
+            _times: crate::index_writer::MergeTimes,
+            failure: Option<&Error>,
+        ) {
+            self.events
+                .lock()
+                .unwrap()
+                .push((false, merge.clone(), failure.is_some()));
+        }
+    }
+
+    /// `OpenSearchConcurrentMergeScheduler.beforeMerge`/`afterMerge`: the
+    /// listener hears every scheduled merge and every forced one, each before
+    /// and after, with the sources' documents summed.
+    #[test]
+    fn a_merge_listener_hears_every_merge_before_and_after() {
+        let tmp = TempDir::new("concurrent-listener");
+        let dir = static_dir(&tmp);
+        let heard = Arc::new(Heard::default());
+        let mut iw = writer(dir, 5);
+        iw.set_merge_listener(Some(heard.clone()));
+        assert!(iw.merge_listener().is_some());
+        let w = ConcurrentIndexWriter::with_merge_scheduler(
+            iw,
+            1,
+            Arc::new(crate::merge_scheduler::SerialMergeScheduler::new()),
+        )
+        .unwrap();
+        for i in 0..60 {
+            w.add_document(doc(&format!("d{i}"), 0)).unwrap();
+            if i % 5 == 4 {
+                w.commit().unwrap();
+            }
+        }
+        assert!(!w.has_pending_merges());
+        let natural = heard.events.lock().unwrap().len();
+        assert!(natural >= 2, "no merge was heard");
+        lock(&w.core).writer.force_merge(1).unwrap();
+        let events = heard.events.lock().unwrap().clone();
+        assert!(events.len() > natural, "the forced merge was not heard");
+        assert_eq!(events.len() % 2, 0);
+        for pair in events.chunks(2) {
+            let ((before, b, _), (after, a, failed)) = (&pair[0], &pair[1]);
+            assert!(*before && !*after && !*failed);
+            assert_eq!(a, b);
+            assert!(b.total_docs > 0 && b.total_bytes > 0);
+            assert_eq!(b.total_docs as usize % 5, 0, "{b:?}");
+        }
+        let (_, last, _) = events.last().unwrap();
+        assert_eq!(last.max_num_segments, 1);
+        assert_eq!(last.total_docs, 60);
+        assert!(events[0].1.id < last.id);
     }
 
     /// `onMergeFinished` releases a merge the scheduler took but will not

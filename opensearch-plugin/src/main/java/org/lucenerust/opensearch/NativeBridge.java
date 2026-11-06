@@ -38,7 +38,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code jvm_reader.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 64;
+    public static final int EXPECTED_ABI_VERSION = 65;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -303,6 +303,11 @@ public final class NativeBridge {
         static final MethodHandle WRITER_FORCE_MERGE = bind(
             "ffi_engine_writer_force_merge",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_BYTE, ADDRESS)
+        );
+        static final MethodHandle SET_MERGE_UPCALL = bind("ffi_engine_set_merge_upcall", FunctionDescriptor.of(JAVA_INT, ADDRESS));
+        static final MethodHandle WRITER_MERGE_STATE = bind(
+            "ffi_engine_writer_merge_state",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, ADDRESS)
         );
         static final MethodHandle WRITER_STATS = bind(
             "ffi_engine_writer_stats",
@@ -1781,6 +1786,51 @@ public final class NativeBridge {
             int rc = (int) H.WRITER_STATS.invokeExact(handle, stats, (long) n);
             if (rc == OK) {
                 MemorySegment.copy(stats, JAVA_LONG, 0, out, 0, n);
+            }
+            return rc;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** The merge upcall's events and failure kinds ({@code MERGE_*} in {@code engine_writer.rs}). */
+    public static final int MERGE_EVENT_BEFORE = 0;
+    public static final int MERGE_EVENT_AFTER = 1;
+    public static final int MERGE_OK = 0;
+    public static final int MERGE_FAILED_IO = 1;
+    public static final int MERGE_FAILED_OTHER = 2;
+
+    /**
+     * Registers the merge upcall that hears every merge of writers opened afterwards, before and after
+     * it runs; those writers' merge schedulers no longer stall indexing threads.
+     */
+    public static int setMergeUpcall(MemorySegment upcall) {
+        try {
+            return (int) H.SET_MERGE_UPCALL.invokeExact(upcall);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * Whether merges are waiting for a merge thread ({@code IndexWriter.hasPendingMerges}) into
+     * {@code outPending[0]}, and the merge scheduler's IO rate in MB/s into {@code outMbPerSec[0]}.
+     * Safe to call from the merge upcall.
+     */
+    public static int writerMergeState(long handle, boolean[] outPending, double[] outMbPerSec) {
+        if (outPending == null || outPending.length < 1) {
+            return nullArgument("outPending");
+        }
+        if (outMbPerSec == null || outMbPerSec.length < 1) {
+            return nullArgument("outMbPerSec");
+        }
+        try (Scratch s = Scratch.open()) {
+            MemorySegment pending = s.alloc(1);
+            MemorySegment rate = s.alloc(Double.BYTES);
+            int rc = (int) H.WRITER_MERGE_STATE.invokeExact(handle, pending, rate);
+            if (rc == OK) {
+                outPending[0] = pending.get(JAVA_BYTE, 0) != 0;
+                outMbPerSec[0] = rate.get(JAVA_DOUBLE, 0);
             }
             return rc;
         } catch (Throwable t) {

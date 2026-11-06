@@ -62,8 +62,8 @@ use lucene_index::buffered_updates::{DocValuesUpdate, Term};
 use lucene_index::concurrent_writer::ConcurrentIndexWriter;
 use lucene_index::index_file_deleter::DeletionPolicy;
 use lucene_index::index_writer::{
-    self, ExplicitDocument, ExplicitFields, IndexWriter, InvertedField, InvertedTerms,
-    MergePolicyConfig, SoftDeletesRetention,
+    self, ExplicitDocument, ExplicitFields, IndexWriter, InvertedField, InvertedTerms, MergeEvent,
+    MergeListener, MergePolicyConfig, MergeTimes, SoftDeletesRetention,
 };
 use lucene_index::merge_policy::{
     CompoundFileSettings, MergeOnFlushMergePolicy, MergePolicy, TieredMergePolicy,
@@ -812,6 +812,17 @@ pub unsafe extern "C" fn ffi_engine_writer_open(
             fault_injection: flags & OPEN_FAULT_INJECTION != 0,
         };
         let handle = lock_recovering(engine_writers()).insert_checked(Arc::new(engine))?;
+        if let Some(&upcall) = MERGE_UPCALL.get() {
+            // OpenSearch's engine hears of every merge, and throttles indexing
+            // itself when merges fall behind instead of the scheduler stalling.
+            with_writer(handle, |w| {
+                w.handle.merges.set_stall_producers(false);
+                let listener = Arc::new(MergeUpcallListener { handle, upcall });
+                w.writer()
+                    .with_writer(|iw| iw.set_merge_listener(Some(listener)));
+                Ok(())
+            })?;
+        }
         // SAFETY: caller contract.
         unsafe { *out_handle = handle };
         Ok(())
@@ -987,6 +998,158 @@ pub unsafe extern "C" fn ffi_engine_set_commit_data_upcall(
     guard(|| {
         let upcall = upcall.ok_or(FfiStatus::NullPointer)?;
         let _ = COMMIT_DATA_UPCALL.set(upcall);
+        Ok(())
+    })
+}
+
+/// The JVM's merge upcall, `OpenSearchConcurrentMergeScheduler`'s
+/// `beforeMerge`/`afterMerge` for the Rust writer's merges: `(writer handle,
+/// event, merge id, total docs, total bytes, maxNumSegments, took ms, stopped
+/// ms, throttled ms, failure kind, segment names, their length, failure
+/// message, its length)`. `event` is [`MERGE_EVENT_BEFORE`] or
+/// [`MERGE_EVENT_AFTER`]. The segment names are UTF-8, one per line. After a
+/// failed merge the failure kind is [`MERGE_FAILED_IO`] or
+/// [`MERGE_FAILED_OTHER`] and the message is UTF-8; otherwise the kind is
+/// [`MERGE_OK`] and the message null. Called on the thread
+/// running the merge -- a Rust merge thread, or the caller of
+/// [`ffi_engine_writer_force_merge`] while it holds the writer -- so the JVM
+/// side must not call back into the writer except for
+/// [`ffi_engine_writer_merge_state`].
+pub type MergeUpcall = unsafe extern "C" fn(
+    u64,
+    i32,
+    i64,
+    i64,
+    i64,
+    i32,
+    i64,
+    i64,
+    i64,
+    i32,
+    *const u8,
+    usize,
+    *const u8,
+    usize,
+);
+/// A merge is about to run.
+pub const MERGE_EVENT_BEFORE: i32 = 0;
+/// A merge ended, successfully or not.
+pub const MERGE_EVENT_AFTER: i32 = 1;
+/// The merge did not fail (or has not ended).
+pub const MERGE_OK: i32 = 0;
+/// The merge failed reading or writing files (`IOException`).
+pub const MERGE_FAILED_IO: i32 = 1;
+/// The merge failed some other way.
+pub const MERGE_FAILED_OTHER: i32 = 2;
+
+static MERGE_UPCALL: OnceLock<MergeUpcall> = OnceLock::new();
+
+/// Registers the merge upcall ([`MergeUpcall`]), once per process; later
+/// registrations are ignored. Writers opened before it hear nothing.
+///
+/// # Safety
+/// `upcall` must have [`MergeUpcall`]'s contract and stay callable for the
+/// life of the process.
+#[no_mangle]
+pub unsafe extern "C" fn ffi_engine_set_merge_upcall(upcall: Option<MergeUpcall>) -> i32 {
+    guard(|| {
+        let upcall = upcall.ok_or(FfiStatus::NullPointer)?;
+        let _ = MERGE_UPCALL.set(upcall);
+        Ok(())
+    })
+}
+
+/// Hands one writer's merges to the merge upcall.
+struct MergeUpcallListener {
+    handle: u64,
+    upcall: MergeUpcall,
+}
+
+impl MergeUpcallListener {
+    fn send(
+        &self,
+        event: i32,
+        merge: &MergeEvent,
+        times: MergeTimes,
+        failure: Option<&index_writer::Error>,
+    ) {
+        let ms = |v: u64| i64::try_from(v).unwrap_or(i64::MAX);
+        let names = merge.segments.join("\n");
+        let kind = match failure {
+            None => MERGE_OK,
+            Some(index_writer::Error::Store(lucene_store::Error::Io(_))) => MERGE_FAILED_IO,
+            Some(_) => MERGE_FAILED_OTHER,
+        };
+        let message = failure.map(|e| e.to_string());
+        let (ptr, len) = message
+            .as_deref()
+            .map_or((std::ptr::null(), 0), |f| (f.as_ptr(), f.len()));
+        // SAFETY: `ffi_engine_set_merge_upcall`'s contract; `names` and
+        // `message` outlive the call.
+        unsafe {
+            (self.upcall)(
+                self.handle,
+                event,
+                i64::try_from(merge.id).unwrap_or(i64::MAX),
+                merge.total_docs,
+                merge.total_bytes,
+                merge.max_num_segments,
+                ms(times.took_ms),
+                ms(times.stopped_ms),
+                ms(times.throttled_ms),
+                kind,
+                names.as_ptr(),
+                names.len(),
+                ptr,
+                len,
+            );
+        }
+    }
+}
+
+impl MergeListener for MergeUpcallListener {
+    fn before_merge(&self, merge: &MergeEvent) {
+        self.send(MERGE_EVENT_BEFORE, merge, MergeTimes::default(), None);
+    }
+
+    fn after_merge(
+        &self,
+        merge: &MergeEvent,
+        times: MergeTimes,
+        failure: Option<&index_writer::Error>,
+    ) {
+        self.send(MERGE_EVENT_AFTER, merge, times, failure);
+    }
+}
+
+/// Writes whether merges are registered that no merge thread has taken yet
+/// (`IndexWriter.hasPendingMerges`, `0`/`1`) and the merge scheduler's IO
+/// rate in MB/s (`getIORateLimitMBPerSec`). Takes no lock the writer holds
+/// while merging, so the merge upcall may call it.
+///
+/// # Safety
+/// `out_pending` and `out_mb_per_sec` valid for one write each.
+#[no_mangle]
+pub unsafe extern "C" fn ffi_engine_writer_merge_state(
+    handle: u64,
+    out_pending: *mut u8,
+    out_mb_per_sec: *mut f64,
+) -> i32 {
+    guard(|| {
+        if out_pending.is_null() || out_mb_per_sec.is_null() {
+            return Err(FfiStatus::NullPointer);
+        }
+        let (pending, rate) = with_writer(handle, |w| {
+            Ok((
+                w.writer().has_pending_merges(),
+                w.handle.merges.io_rate_limit_mb_per_sec(),
+            ))
+        })?;
+        // SAFETY: caller contract.
+        unsafe {
+            *out_pending = u8::from(pending);
+            *out_mb_per_sec = rate;
+        }
         Ok(())
     })
 }
@@ -1960,6 +2123,103 @@ mod tests {
             assert_eq!(w.max_full_flush_merge_wait_millis(), 0);
             assert!(!w.use_compound_file());
         });
+        ffi_engine_writer_close(h);
+    }
+
+    /// What the test merge upcall heard: `(handle, event, docs, max segments,
+    /// failure kind, names)`.
+    type HeardMerge = (u64, i32, i64, i32, i32, String);
+    static HEARD: Mutex<Vec<HeardMerge>> = Mutex::new(Vec::new());
+
+    unsafe extern "C" fn record_merge(
+        handle: u64,
+        event: i32,
+        _id: i64,
+        docs: i64,
+        _bytes: i64,
+        max_segments: i32,
+        _took: i64,
+        _stopped: i64,
+        _throttled: i64,
+        kind: i32,
+        names: *const u8,
+        names_len: usize,
+        _failure: *const u8,
+        _failure_len: usize,
+    ) {
+        // SAFETY: the upcall's contract.
+        let names = unsafe { std::slice::from_raw_parts(names, names_len) };
+        let names = String::from_utf8(names.to_vec()).unwrap();
+        HEARD
+            .lock()
+            .unwrap()
+            .push((handle, event, docs, max_segments, kind, names));
+    }
+
+    /// The merge upcall hears a forced merge before and after, with its
+    /// sources; the writer's merge scheduler stops stalling producers, and
+    /// the merge state reads without the writer's lock.
+    #[test]
+    fn the_merge_upcall_hears_merges_and_the_merge_state_reads() {
+        // SAFETY: `record_merge` has the upcall's contract and lives forever.
+        assert_eq!(
+            unsafe { ffi_engine_set_merge_upcall(Some(record_merge)) },
+            0
+        );
+        // SAFETY: a null upcall is refused.
+        assert_eq!(
+            unsafe { ffi_engine_set_merge_upcall(None) },
+            FfiStatus::NullPointer.code()
+        );
+        let tmp = empty_index("engine-writer-merge-upcall");
+        let h = open(&tmp, 0);
+        assert!(!lookup(h).unwrap().handle.merges.stall_producers());
+        let f = setup(h);
+        for (i, id) in ["a", "b", "c"].into_iter().enumerate() {
+            let d = doc(
+                Blob::default().u8(OP_ADD).i32(1),
+                &f,
+                id,
+                &["x"],
+                i as i64,
+                false,
+            );
+            assert_eq!(apply(h, &d.0), 0);
+            commit(h, &[]);
+        }
+        let mut gen = 0;
+        // SAFETY: live out-pointer.
+        assert_eq!(
+            unsafe { ffi_engine_writer_force_merge(h, 1, 0, &mut gen) },
+            0
+        );
+        let heard: Vec<_> = HEARD
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|e| e.0 == h)
+            .cloned()
+            .collect();
+        let forced: Vec<_> = heard.iter().filter(|e| e.3 == 1).collect();
+        assert_eq!(forced.len(), 2, "{heard:?}");
+        assert_eq!(forced[0].1, MERGE_EVENT_BEFORE);
+        assert_eq!(forced[1].1, MERGE_EVENT_AFTER);
+        assert_eq!(forced[1].2, 3);
+        assert_eq!(forced[1].4, MERGE_OK);
+        assert_eq!(forced[1].5.lines().count(), 3);
+        let (mut pending, mut rate) = (9u8, 0.0);
+        // SAFETY: live out-pointers.
+        assert_eq!(
+            unsafe { ffi_engine_writer_merge_state(h, &mut pending, &mut rate) },
+            0
+        );
+        assert_eq!(pending, 0);
+        assert!(rate > 0.0);
+        // SAFETY: null out-pointers are refused before any write.
+        assert_eq!(
+            unsafe { ffi_engine_writer_merge_state(h, std::ptr::null_mut(), &mut rate) },
+            FfiStatus::NullPointer.code()
+        );
         ffi_engine_writer_close(h);
     }
 
