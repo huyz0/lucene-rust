@@ -10,6 +10,7 @@ lucene-store = { path = "../lucene-store" }
 lucene-codecs = { path = "../lucene-codecs" }
 lucene-index = { path = "../lucene-index" }
 lucene-search = { path = "../lucene-search" }
+rayon.workspace = true
 
 [dev-dependencies]
 lucene-util = { path = "../lucene-util", features = ["test-support"] }

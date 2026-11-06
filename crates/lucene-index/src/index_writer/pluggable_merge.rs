@@ -77,6 +77,71 @@ impl IndexWriter<'_> {
         self.pluggable_merge_policy.as_ref()
     }
 
+    /// `IndexWriter.updatePendingMerges(trigger)`'s selection for a writer
+    /// whose merges run on merge threads: every merge the installed policy
+    /// specifies that takes no segment in `merging`, with its hooks and its
+    /// `OneMerge.estimatedMergeBytes` (the sources' sizes pro-rated by their
+    /// live documents). The pluggable policy decides when one is installed,
+    /// else `TieredMergePolicy` over the [`super::MergePolicyConfig`]; with
+    /// neither there is nothing to merge.
+    pub(crate) fn find_scheduled_merges(
+        &self,
+        trigger: MergeTrigger,
+        merging: &HashSet<String>,
+    ) -> Result<Vec<(merge_policy::api::RunnableMerge, u64)>> {
+        let Some(policy) = self.pluggable_merge_policy.clone() else {
+            let Some(config) = self.merge_policy.clone() else {
+                return Ok(Vec::new());
+            };
+            return Ok(self
+                .find_merges_sized(&config, merging)?
+                .into_iter()
+                .map(|(names, bytes)| ((names, None), bytes))
+                .collect());
+        };
+        let (infos, mut ctx) = self.merge_inputs()?;
+        ctx.merging = merging.clone();
+        let Some(spec) = policy
+            .find_merges(trigger, &infos, &ctx)
+            .map_err(policy_error)?
+        else {
+            return Ok(Vec::new());
+        };
+        // `registerMerge`: a merge taking a segment already merging, or one an
+        // earlier merge of this spec takes, is refused.
+        let mut claimed: HashSet<String> = HashSet::new();
+        Ok(spec
+            .runnable()
+            .into_iter()
+            .filter(|(group, _)| {
+                let free = !group.is_empty()
+                    && !group
+                        .iter()
+                        .any(|n| merging.contains(n) || claimed.contains(n));
+                if free {
+                    claimed.extend(group.iter().cloned());
+                }
+                free
+            })
+            .map(|merge| {
+                let bytes = infos
+                    .iter()
+                    .filter(|i| merge.0.contains(&i.name))
+                    .map(|i| {
+                        let live = f64::from(i.max_doc.saturating_sub(i.del_count).max(0));
+                        let ratio = if i.max_doc > 0 {
+                            live / f64::from(i.max_doc)
+                        } else {
+                            0.0
+                        };
+                        (i.size_in_bytes.max(0) as f64 * ratio) as u64
+                    })
+                    .fold(0u64, u64::saturating_add);
+                (merge, bytes)
+            })
+            .collect())
+    }
+
     /// The committed segments as a policy sees them, and the context that
     /// answers for them.
     pub(super) fn merge_inputs(&self) -> Result<(Vec<MergeSegment>, WriterContext)> {
@@ -488,10 +553,12 @@ mod tests {
                 Answer::Readers(k) => Ok(crate::merge_policy::PreparedMerge {
                     live_docs: vec![None; *k],
                     new_to_old: None,
+                    diagnostics: Vec::new(),
                 }),
                 Answer::Order(o) => Ok(crate::merge_policy::PreparedMerge {
                     live_docs: vec![None; n],
                     new_to_old: Some(o.clone()),
+                    diagnostics: Vec::new(),
                 }),
                 Answer::HideFirst => {
                     let mut live = lucene_util::fixed_bit_set::FixedBitSet::new(1);
@@ -504,6 +571,7 @@ mod tests {
                     Ok(crate::merge_policy::PreparedMerge {
                         live_docs: all,
                         new_to_old: Some((0..n as i32).rev().collect()),
+                        diagnostics: Vec::new(),
                     })
                 }
             }

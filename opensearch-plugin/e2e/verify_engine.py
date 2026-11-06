@@ -525,6 +525,49 @@ def realtime():
         must("DELETE", f"/{idx}")
 
 
+def bp_reorder():
+    """index.lucene_rust.bp_reorder.*: a forced merge renumbers the documents, and searches find and
+    score the same documents as on an index merged in order."""
+    bp, ref = "bp_on", "bp_ref"
+    for idx in (bp, ref):
+        req("DELETE", f"/{idx}")
+    flat = {"properties": {k: v for k, v in MAPPING["properties"].items() if v.get("type") != "nested"}}
+    create(bp, True, {"index.lucene_rust.bp_reorder.enabled": True, "index.lucene_rust.bp_reorder.min_doc_freq": 2,
+                      "index.lucene_rust.bp_reorder.min_partition_size": 4,
+                      "index.lucene_rust.bp_reorder.min_merge_docs": 1}, flat)
+    create(ref, True, None, flat)
+    wait_green(f"{bp},{ref}")
+    r = random.Random(23)
+    for rnd in range(4):
+        lines = []
+        for i in range(400):
+            n = rnd * 400 + i
+            lines += [{"index": {"_id": f"b{n}"}}, source(r, n)]
+        body = "\n".join(json.dumps(l) for l in lines) + "\n"
+        for idx in (bp, ref):
+            must("POST", f"/{idx}/_bulk", body, ndjson=True)
+            must("POST", f"/{idx}/_refresh")
+    for idx in (bp, ref):
+        must("POST", f"/{idx}/_forcemerge?max_num_segments=1")
+        must("POST", f"/{idx}/_refresh")
+    queries = [{"match": {"body": "fox"}}, {"match": {"title": "quick dogs"}}, {"match_phrase": {"body": "quick brown"}},
+               {"bool": {"must": [{"match": {"body": "alpha"}}], "filter": [{"term": {"tag": "t3"}}]}}]
+    for q in queries:
+        a = must("POST", f"/{bp}/_search?request_cache=false", {"query": q, "size": 10000, "track_total_hits": True})
+        b = must("POST", f"/{ref}/_search?request_cache=false", {"query": q, "size": 10000, "track_total_hits": True})
+        check(a["hits"]["total"]["value"] == b["hits"]["total"]["value"], f"bp_reorder: total {q}")
+        hits = lambda out: sorted((round(h["_score"], 4), h["_id"]) for h in out["hits"]["hits"])
+        check(hits(a) == hits(b), f"bp_reorder: scored hits {q}")
+    order = lambda idx: [h["_id"] for h in must("POST", f"/{idx}/_search?request_cache=false",
+                                                    {"size": 10000, "sort": ["_doc"], "query": {"match_all": {}}})["hits"]["hits"]]
+    on, off = order(bp), order(ref)
+    check(sorted(on) == sorted(off) and len(on) == 1600, "bp_reorder: every document survives the merge")
+    check(on != off, "bp_reorder: the forced merge renumbered the documents")
+    must("PUT", f"/{bp}/_settings", {"index.lucene_rust.bp_reorder.enabled": False})
+    for idx in (bp, ref):
+        must("DELETE", f"/{idx}")
+
+
 def wait_green(index, timeout=180):
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -789,6 +832,7 @@ def main():
     compare_all("after SIGKILL", stream.ids)
     insert_only_scoring()
     realtime()
+    bp_reorder()
     fault_containment()
     breaker()
     unsupported()

@@ -124,6 +124,8 @@ final class RustIndexWriter implements DocumentIndexWriter {
      * a change to them sets it again.
      */
     private long mergeOnFlushPolicyWait = -1;
+    /** The BP reordering settings last sent to the writer; under {@link #lock}. */
+    private BpReorderSettings.Values bpReorder;
     private volatile long lastCommitMaxDoc;
     private volatile long latestGeneration;
 
@@ -626,6 +628,34 @@ final class RustIndexWriter implements DocumentIndexWriter {
                 "setting the writer options"
             );
             writerOptions = options;
+        }
+    }
+
+    /**
+     * {@code BPReorderingMergePolicy} around the merge policy, as {@code index.lucene_rust.bp_reorder.*}
+     * describes it; sent again only when a value changed.
+     */
+    void setBpReorder(BpReorderSettings.Values values) throws IOException {
+        synchronized (lock) {
+            if (values.equals(bpReorder) || (bpReorder == null && values.enabled() == false)) {
+                return;
+            }
+            check(
+                NativeBridge.writerSetBpReorder(
+                    handle,
+                    values.enabled(),
+                    values.minDocFreq(),
+                    values.maxDocFreq(),
+                    values.minPartitionSize(),
+                    values.maxIters(),
+                    values.ramBudgetMb(),
+                    values.minMergeDocs(),
+                    values.minMergeRatio(),
+                    values.fields()
+                ),
+                "setting bp_reorder"
+            );
+            bpReorder = values;
         }
     }
 
