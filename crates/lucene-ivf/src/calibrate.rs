@@ -66,12 +66,10 @@ fn depth(multiple: f32, k: usize) -> usize {
     (f64::from(multiple) * k as f64).ceil() as usize
 }
 
-/// One sampled query's exact neighbours and, for each, the rank in the
-/// query's probe order of the first cluster holding it.
+/// One sampled query and its exact neighbours.
 struct Truth {
     query: usize,
     neighbours: Vec<u32>,
-    ranks: Vec<usize>,
 }
 
 /// The calibrated depth of `field`, written in memory with its postings in
@@ -113,24 +111,9 @@ pub(crate) fn calibrate(
                 scored.select_nth_unstable_by(k, by_score);
                 scored.truncate(k);
             }
-            let mut rank = vec![usize::MAX; nlist];
-            for (r, c) in field.probe_order(q, nlist).into_iter().enumerate() {
-                rank[c] = r;
-            }
-            let ranks = scored
-                .iter()
-                .map(|&(_, j)| {
-                    clusters_of[j as usize]
-                        .iter()
-                        .filter_map(|&c| rank.get(c as usize).copied())
-                        .min()
-                        .unwrap_or(usize::MAX)
-                })
-                .collect();
             Truth {
                 query: qi,
                 neighbours: scored.into_iter().map(|(_, j)| j).collect(),
-                ranks,
             }
         })
         .collect();
@@ -141,11 +124,25 @@ pub(crate) fn calibrate(
     let needed = f64::from((1.0 + target) / 2.0) * total as f64;
     let mut nprobe = 1usize;
     loop {
-        let held = truths
-            .iter()
-            .flat_map(|t| &t.ranks)
-            .filter(|&&r| r < nprobe)
-            .count();
+        // Probed as searches probe (through the field's routing tree, if
+        // any), not by exact centroid rank.
+        let held: usize = truths
+            .par_iter()
+            .map(|t| {
+                let mut probed = vec![false; nlist];
+                for c in field.probe_order(kmeans::row(vectors, dim, t.query), nprobe) {
+                    probed[c] = true;
+                }
+                t.neighbours
+                    .iter()
+                    .filter(|&&j| {
+                        clusters_of[j as usize]
+                            .iter()
+                            .any(|&c| probed.get(c as usize).copied().unwrap_or(false))
+                    })
+                    .count()
+            })
+            .sum();
         if nprobe >= nlist || held as f64 >= needed {
             break;
         }

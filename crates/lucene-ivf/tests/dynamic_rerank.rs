@@ -671,7 +671,13 @@ fn version_two_fields_have_no_radii_or_calibration() {
         out
     };
     let v2 = lucene_ivf::VERSION_VECTOR_ENCODING;
-    let meta = rewrite(&files.meta, lucene_ivf::META_CODEC, v2, clusters * 4 + 9);
+    // Radii, calibration, and the zero routing parent count.
+    let meta = rewrite(
+        &files.meta,
+        lucene_ivf::META_CODEC,
+        v2,
+        clusters * 4 + 9 + 1,
+    );
     let postings = rewrite(&files.postings, lucene_ivf::POSTINGS_CODEC, v2, 0);
     let vectors = rewrite(&files.vectors, lucene_ivf::VECTORS_CODEC, v2, 0);
     let old = IvfReader::open(
@@ -734,8 +740,10 @@ fn corrupt_radii_and_calibration_are_rejected() {
         )
     };
     edit(&|_| {}).unwrap();
-    let flag_at = |p: &Vec<u8>| p.len() - 9;
-    let radius_at = |p: &Vec<u8>| p.len() - 9 - clusters * 4;
+    // The payload ends with the calibration (9 bytes) and a zero routing
+    // parent count (1).
+    let flag_at = |p: &Vec<u8>| p.len() - 10;
+    let radius_at = |p: &Vec<u8>| p.len() - 10 - clusters * 4;
     let set_f32 = |p: &mut Vec<u8>, at: usize, x: f32| {
         p[at..at + 4].copy_from_slice(&x.to_le_bytes());
     };
@@ -772,6 +780,7 @@ fn corrupt_radii_and_calibration_are_rejected() {
         let at = flag_at(p);
         p[at] = 0;
         p.truncate(at + 1);
+        p.push(0);
     })
     .unwrap();
     assert_eq!(r.field(1).unwrap().calibration(), None);

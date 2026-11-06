@@ -19,6 +19,7 @@
 //!   --spill X        SOAR spill with lambda X (default: no spilling)
 //!   --rerank-encoding E  f32|f16|bf16|int8: how .ivv stores the rerank
 //!                    vectors (default f32); vectors_mb is that file's size
+//!   --routing L      comma list of exact, int8, tree<cover>, auto (default auto)
 //!   --hnsw           also build and search Lucene104 HNSW + BBQ (M 16, beam 100)
 //!   --ef L           HNSW candidate counts (default 10,20,40,80,160,320)
 //! ```
@@ -40,8 +41,8 @@ use lucene_codecs::scalar_quantized_vectors::{
 };
 use lucene_codecs::{hnsw, hnsw_concurrent, hnsw_vectors};
 use lucene_ivf::{
-    FieldVectors, IvfParams, IvfReader, IvfWriter, Probes, Rerank, SearchParams, Similarity,
-    VectorEncoding,
+    FieldVectors, IvfParams, IvfReader, IvfWriter, Probes, Rerank, Routing, SearchParams,
+    Similarity, VectorEncoding,
 };
 use lucene_util::quantization::ScalarEncoding;
 use lucene_vector_quant::osq::OsqFactory;
@@ -194,7 +195,7 @@ fn main() {
         let build = t.elapsed().as_secs_f64();
         let pinned = (files.meta.len() + files.postings.len()) as f64 / 1e6;
         let vectors_mb = files.vectors.len() as f64 / 1e6;
-        let r = IvfReader::open(
+        let mut r = IvfReader::open(
             &files.meta,
             Arc::new(files.postings),
             Arc::new(files.vectors),
@@ -214,41 +215,59 @@ fn main() {
                 c.rerank_multiple
             );
         }
-        for &nprobe in &nprobes {
-            for &rerank in &reranks {
-                let params = SearchParams {
-                    k: K,
-                    nprobe,
-                    rerank,
-                };
-                let mut found = 0;
-                let mut reranked = 0;
-                let t = Instant::now();
-                for q in 0..nq {
-                    let out = r
-                        .search_with(0, &queries[q * dim..(q + 1) * dim], &params, None, None)
-                        .unwrap();
-                    found += recall(out.hits.iter().map(|h| h.doc), truth(q));
-                    reranked += out.stats.reranked;
-                }
-                let secs = t.elapsed().as_secs_f64();
-                let nprobe = match nprobe {
-                    Probes::Fixed(n) => n.to_string(),
-                    Probes::Auto => format!("auto({})", field.auto_nprobe()),
-                };
-                let rerank = match rerank {
-                    Rerank::Fixed(n) => n.to_string(),
-                    Rerank::Auto => format!("auto({})", field.auto_rerank(K)),
-                    Rerank::Bounded { cap } => format!("b{cap}"),
-                };
-                println!(
-                    "ivf-{qname},clusters={clusters} entries={entries} nprobe={nprobe} rerank={rerank} enc={},{build:.1},{:.4},{:.0},{:.0},{pinned:.1},{vectors_mb:.1},{:.1}",
+        let routings = opt("--routing").unwrap_or_else(|| "auto".into());
+        for rname in routings.split(',') {
+            let routing = match rname {
+                "auto" => Routing::Auto,
+                "exact" => Routing::Exact,
+                "int8" => Routing::Quantized,
+                t => Routing::Tree {
+                    cover: t
+                        .strip_prefix("tree")
+                        .and_then(|c| c.parse().ok())
+                        .expect("--routing"),
+                },
+            };
+            let t_route = Instant::now();
+            r.set_routing(routing);
+            eprintln!("routing {routing:?} built in {:?}", t_route.elapsed());
+            let field = r.field(0).unwrap();
+            for &nprobe in &nprobes {
+                for &rerank in &reranks {
+                    let params = SearchParams {
+                        k: K,
+                        nprobe,
+                        rerank,
+                    };
+                    let mut found = 0;
+                    let mut reranked = 0;
+                    let t = Instant::now();
+                    for q in 0..nq {
+                        let out = r
+                            .search_with(0, &queries[q * dim..(q + 1) * dim], &params, None, None)
+                            .unwrap();
+                        found += recall(out.hits.iter().map(|h| h.doc), truth(q));
+                        reranked += out.stats.reranked;
+                    }
+                    let secs = t.elapsed().as_secs_f64();
+                    let nprobe = match nprobe {
+                        Probes::Fixed(n) => n.to_string(),
+                        Probes::Auto => format!("auto({})", field.auto_nprobe()),
+                    };
+                    let rerank = match rerank {
+                        Rerank::Fixed(n) => n.to_string(),
+                        Rerank::Auto => format!("auto({})", field.auto_rerank(K)),
+                        Rerank::Bounded { cap } => format!("b{cap}"),
+                    };
+                    println!(
+                    "ivf-{qname},clusters={clusters} entries={entries} routing={rname} nprobe={nprobe} rerank={rerank} enc={},{build:.1},{:.4},{:.0},{:.0},{pinned:.1},{vectors_mb:.1},{:.1}",
                     encoding.name(),
                     found as f64 / (nq * K) as f64,
                     secs / nq as f64 * 1e6,
                     nq as f64 / secs,
                     reranked as f64 / nq as f64
                 );
+                }
             }
         }
     }
