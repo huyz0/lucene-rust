@@ -107,10 +107,22 @@ impl IndexWriter<'_> {
         else {
             return Ok(Vec::new());
         };
+        // `registerMerge`: a merge taking a segment already merging, or one an
+        // earlier merge of this spec takes, is refused.
+        let mut claimed: HashSet<String> = HashSet::new();
         Ok(spec
             .runnable()
             .into_iter()
-            .filter(|(group, _)| !group.is_empty() && !group.iter().any(|n| merging.contains(n)))
+            .filter(|(group, _)| {
+                let free = !group.is_empty()
+                    && !group
+                        .iter()
+                        .any(|n| merging.contains(n) || claimed.contains(n));
+                if free {
+                    claimed.extend(group.iter().cloned());
+                }
+                free
+            })
             .map(|merge| {
                 let bytes = infos
                     .iter()

@@ -1916,11 +1916,7 @@ fn write_scattered_stored_fields(
                 )?,
             }
         }
-        let per_doc = arena
-            .len()
-            .checked_div(entries.len())
-            .unwrap_or(1)
-            .max(1);
+        let per_doc = arena.len().checked_div(entries.len()).unwrap_or(1).max(1);
         window = SCATTERED_WINDOW_BYTES
             .checked_div(per_doc)
             .unwrap_or(1024)

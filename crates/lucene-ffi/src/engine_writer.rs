@@ -152,10 +152,8 @@ struct BpSettings {
 /// threads instead of the refreshing one. A writer with merges off keeps
 /// them off.
 fn install_merge_policies(iw: &mut IndexWriter<'_>, policies: &MergePolicies) {
-    let Some(config) = iw.merge_policy().cloned() else {
-        iw.set_pluggable_merge_policy(None);
-        return;
-    };
+    let merges_on = iw.merge_policy().is_some();
+    let config = iw.merge_policy().cloned().unwrap_or_default();
     let compound = iw.use_compound_file();
     let tiered = || {
         let mut t = TieredMergePolicy::new(config.clone());
@@ -167,13 +165,13 @@ fn install_merge_policies(iw: &mut IndexWriter<'_>, policies: &MergePolicies) {
     };
     let full_flush: Option<Arc<dyn MergePolicy>> = if policies.merge_on_flush {
         Some(Arc::new(MergeOnFlushMergePolicy::new(Box::new(tiered()))))
-    } else if policies.bp.is_some() {
+    } else if merges_on && policies.bp.is_some() {
         Some(Arc::new(tiered()))
     } else {
         None
     };
     iw.set_full_flush_merge_policy(full_flush);
-    let pluggable = policies.bp.as_ref().map(|bp| {
+    let pluggable = policies.bp.as_ref().filter(|_| merges_on).map(|bp| {
         let mut policy = BpReorderingMergePolicy::new(Box::new(tiered()), bp.reorderer.clone());
         // Both checked when the settings came in.
         let _ = policy.set_min_natural_merge_num_docs(bp.min_merge_docs);
