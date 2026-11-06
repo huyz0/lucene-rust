@@ -16,8 +16,10 @@
 //!
 //! `.ivp`, from the field's postings offset, one block per cluster in order:
 //! the cluster's entries as vector slots (`u32` LE, ascending), then their
-//! codes (`Quantizer::code_len` bytes each, in the same order, encoded
-//! relative to this cluster's centroid). A cluster's entries are its own
+//! codes, in the same order and encoded relative to this cluster's centroid,
+//! as one block in the quantizer's layout (`Quantizer::write_block`,
+//! `Quantizer::block_len` bytes: end to end by default, 32 codes interleaved
+//! per block for OSQ's 1- and 2-bit encodings). A cluster's entries are its own
 //! vectors and, with spilling, the vectors spilled into it from their
 //! primary cluster; every vector has one primary entry and at most one
 //! spilled one.
@@ -314,12 +316,14 @@ impl IvfWriter {
 
         let postings_offset = self.postings.len();
         let mut at = 0usize;
+        let mut block = Vec::new();
         for e in &entries {
             for slot in e {
                 self.postings.write_bytes(&slot.to_le_bytes());
             }
-            self.postings
-                .write_bytes(&codes[at * code_len..(at + e.len()) * code_len]);
+            block.clear();
+            quantizer.write_block(&codes[at * code_len..(at + e.len()) * code_len], &mut block);
+            self.postings.write_bytes(&block);
             at += e.len();
         }
 
