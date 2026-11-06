@@ -35,7 +35,7 @@ import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
- * One buffer of a {@link LiveView} as a leaf after the reader's, so its hits have doc IDs the fetch
+ * One chunk of a buffer of a {@link LiveView} (consecutive documents of it) as a leaf after the reader's, so its hits have doc IDs the fetch
  * phase reads. Only the native searches find them ({@code ffi_jvm_reader_search_live}, or any search
  * of the reader handle {@code ffi_live_view_reader} makes, whose segments match these leaves): to
  * Lucene every one of them is deleted and the leaf holds no terms, points or values, so a search
@@ -45,8 +45,8 @@ import java.util.concurrent.CopyOnWriteArrayList;
 public final class LiveLeafReader extends SequentialStoredFieldsLeafReader {
     private final Core core;
 
-    LiveLeafReader(LiveView view, int buffer, FieldInfos infos) {
-        this(new Core(view, buffer, infos));
+    LiveLeafReader(LiveView view, int buffer, int start, int maxDoc, FieldInfos infos) {
+        this(new Core(view, buffer, start, maxDoc, infos));
     }
 
     private LiveLeafReader(Core core) {
@@ -126,6 +126,9 @@ public final class LiveLeafReader extends SequentialStoredFieldsLeafReader {
     private static final class Core extends LeafReader {
         private final LiveView view;
         private final int buffer;
+        /** The leaf's first document, in its buffer. */
+        private final int start;
+        private final int maxDoc;
         private final FieldInfos infos;
         private final Bits none;
         private final IndexReader.CacheKey key = CacheKeys.newKey();
@@ -142,11 +145,13 @@ public final class LiveLeafReader extends SequentialStoredFieldsLeafReader {
             }
         };
 
-        Core(LiveView view, int buffer, FieldInfos infos) {
+        Core(LiveView view, int buffer, int start, int maxDoc, FieldInfos infos) {
             this.view = view;
             this.buffer = buffer;
+            this.start = start;
+            this.maxDoc = maxDoc;
             this.infos = infos;
-            this.none = new Bits.MatchNoBits(view.bufferMaxDoc(buffer));
+            this.none = new Bits.MatchNoBits(maxDoc);
         }
 
         /**
@@ -160,7 +165,7 @@ public final class LiveLeafReader extends SequentialStoredFieldsLeafReader {
 
         void document(int docID, StoredFieldVisitor visitor) throws IOException {
             byte[][] out = new byte[1][];
-            int rc = NativeBridge.liveDocument(view.id(), buffer, docID, out);
+            int rc = NativeBridge.liveDocument(view.id(), buffer, start + docID, out);
             if (rc != NativeBridge.OK) {
                 throw new IOException("buffered document " + docID + ": " + NativeBridge.lastError());
             }
@@ -268,7 +273,7 @@ public final class LiveLeafReader extends SequentialStoredFieldsLeafReader {
 
         @Override
         public int maxDoc() {
-            return view.bufferMaxDoc(buffer);
+            return maxDoc;
         }
 
         @Override

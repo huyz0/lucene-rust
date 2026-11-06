@@ -14,7 +14,18 @@
 //!
 //! Little-endian: `published: i64`, `count: i32`, then per buffer `max_doc:
 //! i32`, `deleted: i32` and that many deleted document numbers (`i32`,
-//! ascending).
+//! ascending), then `chunks: i32` and each chunk's end (`i32`, ascending,
+//! the last `max_doc`): the parts of the buffer [`ffi_live_view_reader`]
+//! makes a segment each, one leaf each.
+//!
+//! # Chunks
+//!
+//! A buffer still taking documents grows between views. Its segments are
+//! kept per writer and buffer ([`Chunks`]) as consecutive document ranges,
+//! so a view writes only the documents added since the last one written,
+//! as one more chunk: when that chunk would be at least half the size of
+//! the one before, they are written as one instead, and so on back, so a
+//! buffer holds a few chunks and each document is written a few times.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -40,12 +51,15 @@ use crate::jvm_fetch::{BINARY, DOUBLE, FLOAT, INT, LONG, STRING};
 use crate::jvm_reader::{boolean_of, decode_request, lookup};
 use crate::raw::bytes_from_raw;
 use crate::registry::JvmReaderHandle;
-use lucene_index::concurrent_writer::LiveViewSegment;
+use lucene_index::concurrent_writer::ViewBuffer;
+use lucene_search::directory_reader::SegmentReader;
 
 /// An open view and the writer it reads.
 struct ViewHandle {
     writer: Arc<EngineWriter>,
     view: LiveView,
+    /// Per buffer of the view, its chunks.
+    plans: Vec<Vec<Planned>>,
     /// The reader handle [`ffi_live_view_reader`] made over a reader and
     /// this view's buffers, closed with the view.
     whole: Mutex<Whole>,
@@ -61,6 +75,140 @@ enum Whole {
     Failed(String),
     /// The view is closed.
     Closed,
+}
+
+/// A buffer's documents `start..end` as a segment.
+pub(crate) struct Chunk {
+    start: i32,
+    end: i32,
+    /// [`ViewBuffer::doc_counts`] of a view of `end` documents.
+    counts: Arc<HashMap<i32, i32>>,
+    reader: SegmentReader,
+}
+
+/// Per buffer id, the chunks written of a buffer still in its slot:
+/// consecutive, the first from document 0.
+pub(crate) type Chunks = HashMap<u64, Vec<Arc<Chunk>>>;
+
+/// One chunk of a view's buffer: documents `start..end`, with the
+/// [`ViewBuffer::doc_counts`] of views of `start` and `end` documents.
+#[derive(Clone)]
+struct Planned {
+    start: i32,
+    end: i32,
+    start_counts: Arc<HashMap<i32, i32>>,
+    end_counts: Arc<HashMap<i32, i32>>,
+}
+
+/// A chunk written after `acc` new documents absorbs a previous one of at
+/// most this many times `acc`'s size.
+const ABSORB: i32 = 2;
+
+/// `b`'s chunks: those of `chunks` its documents cover, then the documents
+/// past them, absorbing the last chunks while they are small beside them.
+/// A buffer no longer in its slot, or with no chunk written yet, is one.
+fn plan(chunks: &Chunks, b: &ViewBuffer) -> Vec<Planned> {
+    let counts = Arc::new(b.doc_counts());
+    let chain: Vec<&Arc<Chunk>> = match chunks.get(&b.id) {
+        Some(c) if b.in_slot => c.iter().take_while(|c| c.end <= b.max_doc).collect(),
+        _ => Vec::new(),
+    };
+    let mut kept = chain.len();
+    let covered = chain.last().map_or(0, |c| c.end);
+    if covered < b.max_doc {
+        let mut acc = b.max_doc.saturating_sub(covered);
+        while let Some(last) = kept.checked_sub(1).and_then(|i| chain.get(i)) {
+            let size = last.end.saturating_sub(last.start);
+            if size > acc.saturating_mul(ABSORB) {
+                break;
+            }
+            acc = acc.saturating_add(size);
+            kept -= 1;
+        }
+    }
+    let mut out = Vec::new();
+    let mut from = Arc::new(HashMap::new());
+    for c in chain.iter().take(kept) {
+        out.push(Planned {
+            start: c.start,
+            end: c.end,
+            start_counts: Arc::clone(&from),
+            end_counts: Arc::clone(&c.counts),
+        });
+        from = Arc::clone(&c.counts);
+    }
+    let start = out.last().map_or(0, |p| p.end);
+    if start < b.max_doc || out.is_empty() {
+        out.push(Planned {
+            start,
+            end: b.max_doc,
+            start_counts: from,
+            end_counts: counts,
+        });
+    }
+    out
+}
+
+/// Adds `chunk` to `chain` after the chunk it follows, dropping those it
+/// overlaps. A chunk that follows none is not kept, nor one the chain
+/// already reaches past (an older view's, written late): the chain's
+/// chunks are the later views'.
+fn keep_chunk(chain: &mut Vec<Arc<Chunk>>, chunk: Arc<Chunk>) {
+    let follows = chunk.start == 0 || chain.iter().any(|c| c.end == chunk.start);
+    if !follows || chain.last().is_some_and(|c| c.end >= chunk.end) {
+        return;
+    }
+    let (start, end) = (chunk.start, chunk.end);
+    let after: Vec<Arc<Chunk>> = chain.iter().filter(|c| c.start >= end).cloned().collect();
+    chain.retain(|c| c.end <= start);
+    chain.push(chunk);
+    let mut at = end;
+    for c in after {
+        if c.start != at {
+            break;
+        }
+        at = c.end;
+        chain.push(c);
+    }
+}
+
+/// Drops `w`'s chunks of the buffers no open view of it reads, unless
+/// `keep` says the buffer may still be in its slot.
+fn prune_chunks(w: &Arc<EngineWriter>, keep: impl Fn(u64) -> bool) {
+    let read: std::collections::HashSet<u64> = views()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .values()
+        .filter(|h| Arc::ptr_eq(&h.writer, w))
+        .flat_map(|h| h.view.buffers.iter().map(|b| b.id))
+        .collect();
+    let candidates: Vec<u64> = w
+        .live_chunks()
+        .keys()
+        .copied()
+        .filter(|id| !read.contains(id))
+        .collect();
+    let gone: Vec<u64> = candidates.into_iter().filter(|&id| !keep(id)).collect();
+    if !gone.is_empty() {
+        let mut chunks = w.live_chunks();
+        for id in gone {
+            chunks.remove(&id);
+        }
+    }
+}
+
+/// Per field, how many of documents `p.start..p.end` have it.
+fn range_counts(p: &Planned) -> HashMap<i32, i32> {
+    p.end_counts
+        .iter()
+        .map(|(&f, &n)| {
+            (
+                f,
+                n.saturating_sub(p.start_counts.get(&f).copied().unwrap_or(0)),
+            )
+        })
+        .filter(|&(_, n)| n > 0)
+        .collect()
 }
 
 /// Per segment, the documents live once the deletes since the commit are
@@ -126,7 +274,15 @@ pub unsafe extern "C" fn ffi_engine_writer_live_view_open(
         let w = engine_writer::lookup(writer)?;
         let commit = (commit_generation >= 0).then_some(commit_generation);
         let view = w.writer().open_live_view(commit).map_err(live_error)?;
-        let blob = match view_blob(&view) {
+        let plans: Vec<Vec<Planned>> = {
+            let chunks = w.live_chunks();
+            view.buffers.iter().map(|b| plan(&chunks, b)).collect()
+        };
+        // A buffer gone from its slot is read as one segment by later views.
+        prune_chunks(&w, |id| {
+            view.buffers.iter().any(|b| b.in_slot && b.id == id)
+        });
+        let blob = match view_blob(&view, &plans) {
             Ok(b) => b,
             Err(e) => {
                 w.writer().close_live_view(&view);
@@ -142,6 +298,7 @@ pub unsafe extern "C" fn ffi_engine_writer_live_view_open(
                 Arc::new(ViewHandle {
                     writer: w,
                     view,
+                    plans,
                     whole: Mutex::new(Whole::None),
                 }),
             );
@@ -154,7 +311,7 @@ pub unsafe extern "C" fn ffi_engine_writer_live_view_open(
     })
 }
 
-fn view_blob(view: &LiveView) -> Result<Vec<u8>, FfiStatus> {
+fn view_blob(view: &LiveView, plans: &[Vec<Planned>]) -> Result<Vec<u8>, FfiStatus> {
     let mut blob = Vec::new();
     blob.extend_from_slice(
         &i64::try_from(view.published)
@@ -162,11 +319,15 @@ fn view_blob(view: &LiveView) -> Result<Vec<u8>, FfiStatus> {
             .to_le_bytes(),
     );
     blob.extend_from_slice(&len_i32(view.buffers.len())?.to_le_bytes());
-    for b in &view.buffers {
+    for (b, plan) in view.buffers.iter().zip(plans) {
         blob.extend_from_slice(&b.max_doc.to_le_bytes());
         blob.extend_from_slice(&len_i32(b.deleted.len())?.to_le_bytes());
         for d in &b.deleted {
             blob.extend_from_slice(&d.to_le_bytes());
+        }
+        blob.extend_from_slice(&len_i32(plan.len())?.to_le_bytes());
+        for p in plan {
+            blob.extend_from_slice(&p.end.to_le_bytes());
         }
     }
     Ok(blob)
@@ -192,6 +353,8 @@ pub extern "C" fn ffi_live_view_close(view: u64) -> i32 {
                 FfiStatus::InvalidHandle
             })?;
         h.writer.writer().close_live_view(&h.view);
+        let writer = h.writer.writer();
+        prune_chunks(&h.writer, |id| writer.live_published_segment(id).is_none());
         let whole = std::mem::replace(
             &mut *h
                 .whole
@@ -253,26 +416,42 @@ pub unsafe extern "C" fn ffi_live_view_reader(
             }
         }
         let h = lookup(handle, "ffi_live_view_reader: unknown or closed reader")?;
-        let dir = lucene_store::ByteBuffersDirectory::new();
-        let infos = match v.writer.writer().live_view_segments(&v.view, &dir) {
-            Ok(infos) => infos,
-            Err(e @ lucene_index::index_writer::Error::LiveSearch(_)) => {
-                let msg = format!("live search: {e}");
-                *whole = Whole::Failed(msg.clone());
-                set_last_error(msg);
-                return Err(FfiStatus::InvalidArgument);
+        let mut extra = Vec::new();
+        let mut masks = Vec::new();
+        for (b, plan) in v.view.buffers.iter().zip(&v.plans) {
+            let parts = match buffer_segments(&v.writer, b, plan) {
+                Ok(parts) => parts,
+                Err(e @ lucene_index::index_writer::Error::LiveSearch(_)) => {
+                    let msg = format!("live search: {e}");
+                    *whole = Whole::Failed(msg.clone());
+                    set_last_error(msg);
+                    return Err(FfiStatus::InvalidArgument);
+                }
+                Err(e) => return Err(live_error(e)),
+            };
+            for (p, r) in plan.iter().zip(parts) {
+                let len = p.end.saturating_sub(p.start);
+                if r.max_doc < len {
+                    set_last_error(format!(
+                        "live view: a buffer of {} documents became a segment of {}",
+                        len, r.max_doc
+                    ));
+                    return Err(FfiStatus::Decode);
+                }
+                let lo = b.deleted.partition_point(|&d| d < p.start);
+                let hi = b.deleted.partition_point(|&d| d < p.end);
+                let deleted: Vec<i32> = b
+                    .deleted
+                    .get(lo..hi)
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|&d| d.saturating_sub(p.start))
+                    .collect();
+                masks.push(buffer_mask(len, &deleted, r.max_doc));
+                extra.push(r);
             }
-            Err(e) => return Err(live_error(e)),
-        };
-        let writer_dir = v.writer.writer().directory();
-        let extra: Vec<(&dyn lucene_store::Directory, &_)> = infos
-            .iter()
-            .map(|s| match s {
-                LiveViewSegment::Written(sci) => (&dir as &dyn lucene_store::Directory, sci),
-                LiveViewSegment::Published(sci) => (writer_dir, sci),
-            })
-            .collect();
-        let reader = h.reader.with_segments_appended(&extra).map_err(|e| {
+        }
+        let reader = h.reader.with_readers_appended(extra).map_err(|e| {
             set_last_error(format!("opening the buffered documents: {e}"));
             FfiStatus::Decode
         })?;
@@ -289,18 +468,8 @@ pub unsafe extern "C" fn ffi_live_view_reader(
                 None => h.live_docs.clone(),
             }
         };
+        live_docs.extend(masks);
         let readers = reader.segment_readers();
-        let first = h.live_docs.len();
-        for (b, r) in v.view.buffers.iter().zip(readers.iter().skip(first)) {
-            if r.max_doc < b.max_doc {
-                set_last_error(format!(
-                    "live view: a buffer of {} documents became a segment of {}",
-                    b.max_doc, r.max_doc
-                ));
-                return Err(FfiStatus::Decode);
-            }
-            live_docs.push(buffer_mask(b.max_doc, &b.deleted, r.max_doc));
-        }
         let deleted = readers
             .iter()
             .zip(&live_docs)
@@ -323,6 +492,67 @@ pub unsafe extern "C" fn ffi_live_view_reader(
         unsafe { *out_handle = id };
         Ok(())
     })
+}
+
+/// Buffer `b`'s chunks as segments, in `plan`'s order: the segment it was
+/// published as when it is one chunk (and published), else each chunk's
+/// from [`Chunks`], written when it is not there.
+fn buffer_segments(
+    w: &EngineWriter,
+    b: &ViewBuffer,
+    plan: &[Planned],
+) -> lucene_index::index_writer::Result<Vec<SegmentReader>> {
+    let writer = w.writer();
+    if let [only] = plan {
+        if only.start == 0 {
+            if let Some(sci) = writer.live_published_segment(b.id) {
+                return Ok(vec![
+                    SegmentReader::open_one(writer.directory(), &sci).map_err(open_error)?
+                ]);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for p in plan {
+        let cached = w.live_chunks().get(&b.id).and_then(|c| {
+            c.iter()
+                .find(|c| c.start == p.start && c.end == p.end)
+                .cloned()
+        });
+        if let Some(c) = cached {
+            out.push(c.reader.clone());
+            continue;
+        }
+        let dir = lucene_store::ByteBuffersDirectory::new();
+        let name = format!("_live{}_{}", p.start, p.end);
+        let starts: Vec<i32> = plan.iter().map(|p| p.end).collect();
+        let sci = writer.live_buffer_segment(
+            b.id,
+            p.start..p.end,
+            range_counts(p),
+            &starts,
+            &dir,
+            &name,
+        )?;
+        let reader = SegmentReader::open_one(&dir, &sci).map_err(open_error)?;
+        if b.in_slot {
+            let chunk = Arc::new(Chunk {
+                start: p.start,
+                end: p.end,
+                counts: Arc::clone(&p.end_counts),
+                reader: reader.clone(),
+            });
+            keep_chunk(w.live_chunks().entry(b.id).or_default(), chunk);
+        }
+        out.push(reader);
+    }
+    Ok(out)
+}
+
+fn open_error(e: lucene_search::directory_reader::Error) -> lucene_index::index_writer::Error {
+    lucene_index::index_writer::Error::Store(lucene_store::Error::Corrupted(format!(
+        "opening the buffered documents: {e}"
+    )))
 }
 
 /// A buffer segment's live documents: the first `max_doc` of the
