@@ -639,6 +639,11 @@ impl<'d> ConcurrentIndexWriter<'d> {
             .store(check, Ordering::Relaxed);
     }
 
+    /// See [`Self::set_check_pending_flush_on_update`].
+    pub fn check_pending_flush_on_update(&self) -> bool {
+        self.check_pending_flush_on_update.load(Ordering::Relaxed)
+    }
+
     /// `DocumentsWriterFlushControl.nextPendingFlush` + `doFlush`: takes one
     /// buffer the flush policy marked, whose slot is free, and flushes it on
     /// this thread. Returns whether it flushed one.

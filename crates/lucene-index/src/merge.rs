@@ -4462,6 +4462,10 @@ pub struct MergeOptions {
     pub extra_diagnostics: Vec<(String, String)>,
 }
 
+/// The diagnostics key OpenSearch's `ShuffleForcedMergePolicy` marks an
+/// interleaved merged segment with (`isInterleavedSegment`).
+pub const SHUFFLE_MERGE_KEY: &str = "opensearch.shuffle_merge";
+
 /// The writer operation a merge carries out, as the merged segment's
 /// diagnostics record it (`IndexWriter.setDiagnostics`' source and details).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4469,7 +4473,13 @@ pub enum MergeKind {
     /// A `OneMerge` (`_mergeInit`): source `merge`, with `mergeFactor` (the
     /// number of sources) and `mergeMaxNumSegments` (`OneMerge.maxNumSegments`:
     /// `forceMerge`'s argument for a forced merge, `-1` otherwise).
-    Merge { max_num_segments: i32 },
+    ///
+    /// `shuffled`: OpenSearch's `ShuffleForcedMergePolicy` interleaved the
+    /// sources, which the diagnostics record as `opensearch.shuffle_merge`.
+    Merge {
+        max_num_segments: i32,
+        shuffled: bool,
+    },
     /// `addIndexes(CodecReader...)`'s merge: source
     /// `addIndexes(CodecReader...)`, no details.
     AddIndexes,
@@ -4479,6 +4489,7 @@ impl Default for MergeKind {
     fn default() -> Self {
         MergeKind::Merge {
             max_num_segments: -1,
+            shuffled: false,
         }
     }
 }
@@ -4488,14 +4499,23 @@ impl MergeKind {
     /// sources.
     pub fn diagnostics(self, merge_factor: usize, version: LuceneVersion) -> Vec<(String, String)> {
         match self {
-            MergeKind::Merge { max_num_segments } => segment_info::writer_diagnostics(
-                segment_info::SOURCE_MERGE,
-                version,
-                &[
-                    ("mergeMaxNumSegments", max_num_segments.to_string()),
-                    ("mergeFactor", merge_factor.to_string()),
-                ],
-            ),
+            MergeKind::Merge {
+                max_num_segments,
+                shuffled,
+            } => {
+                let mut diagnostics = segment_info::writer_diagnostics(
+                    segment_info::SOURCE_MERGE,
+                    version,
+                    &[
+                        ("mergeMaxNumSegments", max_num_segments.to_string()),
+                        ("mergeFactor", merge_factor.to_string()),
+                    ],
+                );
+                if shuffled {
+                    diagnostics.push((SHUFFLE_MERGE_KEY.to_string(), String::new()));
+                }
+                diagnostics
+            }
             MergeKind::AddIndexes => segment_info::writer_diagnostics(
                 segment_info::SOURCE_ADDINDEXES_READERS,
                 version,

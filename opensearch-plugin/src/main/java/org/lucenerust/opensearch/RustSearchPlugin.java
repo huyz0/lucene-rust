@@ -228,6 +228,15 @@ public class RustSearchPlugin extends Plugin implements
     @Override
     public void onIndexModule(IndexModule indexModule) {
         RustIndexerFactory.install(indexModule);
+        // The fuzzy-set _id postings format is refused at creation (RustEngineSupport.unsupported); the
+        // setting is dynamic, so turning it on later is refused too, rather than ignored.
+        if (RustEngineSupport.servedByRust(indexModule.getSettings())) {
+            indexModule.addSettingsUpdateConsumer(IndexSettings.INDEX_DOC_ID_FUZZY_SET_ENABLED_SETTING, enabled -> {}, enabled -> {
+                if (enabled) {
+                    throw new IllegalArgumentException(RustEngineSupport.FUZZY_SET_REFUSED);
+                }
+            });
+        }
         // Every searcher OpenSearch hands out for the index -- the fetch
         // phase's, the get API's -- reads stored fields natively while
         // index.lucene_rust.fetch.enabled is on, and with Lucene otherwise
