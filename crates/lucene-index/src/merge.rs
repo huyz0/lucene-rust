@@ -4415,16 +4415,18 @@ impl MergeOptions {
 
     /// The doc-values format `field` is routed to.
     fn doc_values_format_for(&self, field: &str) -> per_field_doc_values::Lucene90DocValuesFormat {
-        let routed = self
+        // A field routed explicitly keeps its format, even the default one.
+        if let Some((_, format)) = self
             .doc_values_formats
             .iter()
             .find(|(name, _)| name == field)
-            .map(|(_, format)| *format)
-            .or_else(|| {
-                self.codec
-                    .as_ref()
-                    .map(|c| c.doc_values_format_for_field(field))
-            })
+        {
+            return *format;
+        }
+        let routed = self
+            .codec
+            .as_ref()
+            .map(|c| c.doc_values_format_for_field(field))
             .unwrap_or_default();
         if routed == per_field_doc_values::Lucene90DocValuesFormat::default() {
             self.default_doc_values_format

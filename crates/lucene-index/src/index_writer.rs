@@ -3242,16 +3242,18 @@ impl IndexingConfig {
         &self,
         name: &str,
     ) -> per_field_doc_values::Lucene90DocValuesFormat {
-        let routed = self
+        // A field routed explicitly keeps its format, even the default one.
+        if let Some((_, format)) = self
             .doc_values_formats
             .iter()
             .find(|(field, _)| field == name)
-            .map(|(_, format)| *format)
-            .or_else(|| {
-                self.codec
-                    .as_ref()
-                    .map(|c| c.doc_values_format_for_field(name))
-            })
+        {
+            return *format;
+        }
+        let routed = self
+            .codec
+            .as_ref()
+            .map(|c| c.doc_values_format_for_field(name))
             .unwrap_or_default();
         if routed == per_field_doc_values::Lucene90DocValuesFormat::default() {
             self.default_doc_values_format
@@ -5563,7 +5565,7 @@ impl<'d> IndexWriter<'d> {
     /// [`Self::set_doc_values_format_for_field`] nor by the codec to anything
     /// else. Flushes and merges after this call write it; existing segments
     /// keep theirs until merged. [`Lucene90DocValuesFormat::rust_adaptive`]
-    /// here is the plugin's `index.rust.doc_values.adaptive`; setting the
+    /// here is the plugin's `index.lucene_rust.adaptive_doc_values`; setting the
     /// default back restores stock-readable segments from then on.
     ///
     /// [`Lucene90DocValuesFormat::rust_adaptive`]: per_field_doc_values::Lucene90DocValuesFormat::rust_adaptive

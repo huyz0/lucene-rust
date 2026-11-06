@@ -501,8 +501,8 @@ pub fn get_one(block: &[u8], index: usize) -> Result<i64, Error> {
 }
 
 /// Unpacks `out.len()` values of `B` bits from `packed`, which holds
-/// `ceil(len / 8) * B + 8` bytes: eight values fill exactly `B` bytes, so
-/// with `B` a constant each group of eight unrolls to fixed loads and shifts.
+/// [`fixed_unpack_len`] bytes: eight values fill exactly `B` bytes, so with
+/// `B` a constant each group of eight unrolls to fixed loads and shifts.
 #[inline(always)]
 fn unpack_fixed<const B: usize>(packed: &[u8], out: &mut [i64]) {
     let mask = (1u64 << B).wrapping_sub(1);
@@ -543,6 +543,22 @@ fn seq_macro_unpack(packed: &[u8], bpv: u8, out: &mut [i64]) {
         29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56)
 }
 
+/// The bytes [`unpack_fixed`] reads for `n` values of `bpv` bits: each full
+/// group of eight loads up to 8 bytes past its `bpv` bytes, and the trailing
+/// partial group's last value loads 8 bytes from its first byte. This stays
+/// within the stream's end plus 8, so a final, partial block reads no further
+/// than its [`PADDING`].
+fn fixed_unpack_len(n: usize, bpv: usize) -> usize {
+    let groups = n / 8;
+    let rest = n % 8;
+    let tail = if rest == 0 {
+        8
+    } else {
+        (rest.wrapping_sub(1).wrapping_mul(bpv) >> 3).wrapping_add(8)
+    };
+    groups.wrapping_mul(bpv).wrapping_add(tail)
+}
+
 fn unpack_into(packed: &[u8], bpv: u8, out: &mut [i64]) -> Result<(), Error> {
     if bpv == 0 || out.is_empty() {
         out.fill(0);
@@ -550,13 +566,7 @@ fn unpack_into(packed: &[u8], bpv: u8, out: &mut [i64]) -> Result<(), Error> {
     }
     if bpv <= 56 {
         let packed = packed
-            .get(
-                ..out
-                    .len()
-                    .div_ceil(8)
-                    .wrapping_mul(usize::from(bpv))
-                    .wrapping_add(8),
-            )
+            .get(..fixed_unpack_len(out.len(), usize::from(bpv)))
             .ok_or_else(eof)?;
         seq_macro_unpack(packed, bpv, out);
     } else {
@@ -704,6 +714,20 @@ mod tests {
         round_trip(&v);
         let v: Vec<i64> = (0..500).map(|i| sortable(-(i as f64) * 0.25)).collect();
         round_trip(&v);
+    }
+
+    #[test]
+    fn a_short_last_block_of_wide_values_decodes() {
+        // A last block of a few wide values sits right before the padding:
+        // decoding it must not read past it.
+        let mut r = Rng(5);
+        for tail in 1..BLOCK_SIZE {
+            for bpv in [17u32, 40, 56] {
+                let mut v = vec![5i64; BLOCK_SIZE];
+                v.extend((0..tail).map(|_| (r.next() >> (64 - bpv)) as i64));
+                round_trip(&v);
+            }
+        }
     }
 
     #[test]

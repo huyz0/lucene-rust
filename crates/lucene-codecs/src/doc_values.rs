@@ -246,7 +246,9 @@ impl AdaptiveEntry {
         if num_values < 0 {
             return Err(Error::InvalidTableSize(ADAPTIVE_TABLE_SIZE));
         }
-        let num_blocks = num_values.saturating_add(crate::adaptive_values::BLOCK_SIZE as i64).saturating_sub(1)
+        let num_blocks = num_values
+            .saturating_add(crate::adaptive_values::BLOCK_SIZE as i64)
+            .saturating_sub(1)
             >> crate::adaptive_values::BLOCK_SHIFT;
         let meta = direct_monotonic::load_meta(
             &mut input,
@@ -2104,6 +2106,12 @@ fn adaptive_value(
     cache: &mut Option<Box<AdaptiveBlock>>,
 ) -> Result<i64> {
     use crate::adaptive_values::{self as av, BLOCK_SHIFT};
+    if ordinal < 0 || ordinal >= entry.num_values {
+        return Err(Error::DocOutOfRange(
+            i32::try_from(ordinal).unwrap_or(i32::MAX),
+            entry.num_values,
+        ));
+    }
     let block = ordinal >> BLOCK_SHIFT;
     let within = (ordinal & low_bits_mask(BLOCK_SHIFT)) as usize;
     // A second read in the block last read, or a read in the block after it,
@@ -2208,7 +2216,17 @@ fn adaptive_run(
 /// GCD-delta transform to get the final value.
 fn decode_value(data: &[u8], entry: &NumericEntry, ordinal: i64) -> Result<i64> {
     if let Some(adaptive) = &entry.adaptive {
-        return adaptive_value(data, entry, adaptive, ordinal, &mut None);
+        // One value, no reader to keep a block for: decode just it.
+        use crate::adaptive_values::{self as av, BLOCK_SHIFT};
+        if ordinal < 0 || ordinal >= entry.num_values {
+            return Err(Error::DocOutOfRange(
+                i32::try_from(ordinal).unwrap_or(i32::MAX),
+                entry.num_values,
+            ));
+        }
+        let (bytes, _) = adaptive_block(data, entry, adaptive, ordinal >> BLOCK_SHIFT)?;
+        let within = (ordinal & low_bits_mask(BLOCK_SHIFT)) as usize;
+        return Ok(av::get_one(bytes, within)?);
     }
     if let Some(shift) = entry.block_shift {
         return decode_value_varying_bpv(data, entry, shift, ordinal);

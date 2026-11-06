@@ -711,7 +711,7 @@ pub const OPEN_SPARSE: u8 = 2;
 /// [`ffi_engine_writer_open`]'s flag for an index searched without a refresh
 /// (`crate::live`).
 pub const OPEN_LIVE_SEARCH: u8 = 4;
-/// [`ffi_engine_writer_open`]'s flag for `index.rust.doc_values.adaptive`:
+/// [`ffi_engine_writer_open`]'s flag for `index.lucene_rust.adaptive_doc_values`:
 /// new segments write their doc values in the `RustAdaptive` format
 /// ([`lucene_codecs::doc_values::Lucene90DocValuesFormat::rust_adaptive`]).
 pub const OPEN_ADAPTIVE_DOC_VALUES: u8 = 32;

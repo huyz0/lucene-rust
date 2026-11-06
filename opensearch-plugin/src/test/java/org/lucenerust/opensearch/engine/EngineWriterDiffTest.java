@@ -454,6 +454,18 @@ public final class EngineWriterDiffTest {
             checkSkippers("seed " + seed, rustDir);
             int adaptiveFields = adaptiveFields(rustDir);
             check(adaptive ? adaptiveFields > 0 : adaptiveFields == 0, "seed " + seed + ": " + adaptiveFields + " RustAdaptive doc-values fields");
+            if (adaptive) {
+                // A Java writer on the Rust index: a doc-values update to a RustAdaptive field is
+                // written under that format's name, then everything still reads and checks.
+                try (IndexWriter java = new IndexWriter(rustDir, new IndexWriterConfig(analyzer).setSoftDeletesField(SOFT))) {
+                    java.updateNumericDocValue(new Term("_id", "d0"), "_version", 7L);
+                    java.commit();
+                }
+                checkIndex("seed " + seed + " after a Java doc-values update", rustDir);
+                try (DirectoryReader reader = DirectoryReader.open(rustDir)) {
+                    check(reader.numDocs() > 0, "seed " + seed + ": the updated index opens");
+                }
+            }
         } finally {
             try (Stream<Path> s = Files.walk(root)) {
                 s.sorted(Comparator.reverseOrder()).forEach(p -> p.toFile().delete());

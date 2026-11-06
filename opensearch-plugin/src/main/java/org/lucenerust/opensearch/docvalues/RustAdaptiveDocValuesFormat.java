@@ -13,13 +13,15 @@ import org.apache.lucene.index.SegmentWriteState;
 
 /**
  * The {@code RustAdaptive} doc-values format the Rust engine writes under {@code
- * index.rust.doc_values.adaptive}: {@code Lucene90DocValuesFormat}'s files, in which a NUMERIC or
+ * index.lucene_rust.adaptive_doc_values}: {@code Lucene90DocValuesFormat}'s files, in which a NUMERIC or
  * SORTED_NUMERIC field's values may be stored as adaptive blocks (delta, offset, GCD and decimal
  * transforms, then bit-packing; {@code lucene-codecs/src/adaptive_values.rs}). Every other field,
  * the skip indexes and the checksums are Lucene90's own, read by Lucene90's producer.
  *
- * <p>Read-only: only the native engine writes it. A Java writer (a merge of these segments outside
- * the Rust engine) writes its own codec's formats, so merging rewrites the fields stock-readable.
+ * <p>Java writes it as plain Lucene90 (adaptive blocks are optional per field): a doc-values update
+ * generation on a RustAdaptive field, which Lucene writes under the field's existing format name,
+ * stays readable. A Java merge writes its own codec's formats, so it rewrites the fields
+ * stock-readable.
  */
 public final class RustAdaptiveDocValuesFormat extends DocValuesFormat {
     /** {@code Lucene90DocValuesFormat::RUST_ADAPTIVE_NAME} in {@code doc_values.rs}. */
@@ -33,7 +35,7 @@ public final class RustAdaptiveDocValuesFormat extends DocValuesFormat {
 
     @Override
     public DocValuesConsumer fieldsConsumer(SegmentWriteState state) throws IOException {
-        throw new UnsupportedOperationException("the RustAdaptive doc-values format is written by the native engine only");
+        return lucene90.fieldsConsumer(state);
     }
 
     @Override
