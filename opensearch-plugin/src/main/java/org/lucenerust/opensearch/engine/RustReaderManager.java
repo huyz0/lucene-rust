@@ -49,6 +49,16 @@ final class RustReaderManager extends ReferenceManager<OpenSearchDirectoryReader
         this.current = open(null);
     }
 
+    /**
+     * Searches moved on from {@code previous} (the external reader before the one now searched):
+     * what its readers read from the writer's buffers is in the segments of the newer one. Not
+     * called for a refresh of the internal reader alone (a flush of the indexing buffer), which
+     * external searches, still on the older commit, do not see.
+     */
+    void searchesLeft(OpenSearchDirectoryReader previous) {
+        writer.releaseLive(generation(previous));
+    }
+
     /** The generation of the last commit {@code reader}'s segment list names. */
     static long generation(OpenSearchDirectoryReader reader) {
         return standard(reader).getSegmentInfos().getGeneration();
@@ -112,11 +122,6 @@ final class RustReaderManager extends ReferenceManager<OpenSearchDirectoryReader
             }
             DirectoryReader std = StandardDirectoryReader.open(directory, infos, old, leafSorter, null);
             std.getReaderCacheHelper().addClosedListener(key -> writer.releaseHold(hold));
-            if (previous != null) {
-                // Searches move to this commit: what the previous one's readers read from the
-                // buffers is in the segments of both.
-                writer.releaseLive(generation(previous));
-            }
             success = true;
             return OpenSearchDirectoryReader.wrap(new SoftDeletesReader(std, Lucene.SOFT_DELETES_FIELD), shardId);
         } finally {

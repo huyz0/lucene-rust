@@ -4003,7 +4003,10 @@ mod tests {
 
     /// The 1M OpenSearch bench's documents (`bench_nodes.py gen`), mapped as
     /// OpenSearch maps them, buffered by four threads, then one refresh
-    /// timed. `FLUSH_DOCS` sets how many (default 500 000).
+    /// timed. `FLUSH_DOCS` sets how many (default 500 000), `THREADS` the
+    /// buffering threads (default 4). With `LIVE_ROUNDS` set, live search is
+    /// on and that many views' readers are timed instead, `LIVE_STEP` more
+    /// documents (default 2000) buffered between them.
     #[test]
     #[ignore = "timing; run with --release --ignored --nocapture"]
     fn refresh_of_the_bench_corpus_timing() {
@@ -4095,7 +4098,16 @@ mod tests {
             .and_then(|v| v.parse().ok())
             .unwrap_or(500_000);
         let tmp = TempDir::new("refresh-timing");
-        let h = open_with(&tmp, 4096.0, 0, i32::MAX);
+        let live_rounds: usize = std::env::var("LIVE_ROUNDS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+        let h = open_with(
+            &tmp,
+            4096.0,
+            if live_rounds > 0 { OPEN_LIVE_SEARCH } else { 0 },
+            i32::MAX,
+        );
         let id = register(h, &spec("_id", 1, 1, 0, 0, 0)).unwrap();
         let source = register(h, &spec("_source", 0, 1, 0, 0, 0)).unwrap();
         let body = register(h, &spec("body", 3, 0, 0, 0, 0)).unwrap();
@@ -4111,14 +4123,17 @@ mod tests {
         let words: Vec<String> = (0..200_000).map(|i| format!("t{}", b36(i))).collect();
         let cum = zipf_cum(words.len());
         let tag_cum = zipf_cum(1000);
-        let threads = 4;
-        let start = std::time::Instant::now();
-        std::thread::scope(|s| {
-            for t in 0..threads {
-                let (words, cum, tag_cum) = (&words, &cum, &tag_cum);
-                s.spawn(move || {
-                    let mut rng = Rng(0x9e37_79b9_7f4a_7c15 ^ (t as u64 + 1));
-                    for i in (t..docs).step_by(threads) {
+        let threads: usize = std::env::var("THREADS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(4);
+        let buffer = |from: usize, to: usize| {
+            std::thread::scope(|s| {
+                for t in 0..threads {
+                    let (words, cum, tag_cum) = (&words, &cum, &tag_cum);
+                    s.spawn(move || {
+                    let mut rng = Rng(0x9e37_79b9_7f4a_7c15 ^ (t as u64 + 1 + from as u64));
+                    for i in (from + t..to).step_by(threads) {
                         let body_words: Vec<&str> = (0..rng.range(20, 121))
                             .map(|_| words[rng.pick(cum)].as_str())
                             .collect();
@@ -4193,8 +4208,47 @@ mod tests {
                         assert_eq!(apply(h, &b.0), 0, "{}", crate::error::last_error());
                     }
                 });
+                }
+            });
+        };
+        if live_rounds > 0 {
+            use crate::live::{
+                ffi_engine_writer_live_view_open, ffi_live_view_close, ffi_live_view_reader,
+            };
+            let gen = commit_settled(h);
+            let reader = open_reader(&tmp, gen);
+            let step: usize = std::env::var("LIVE_STEP")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(2000);
+            let mut n = 0;
+            buffer(0, docs);
+            n += docs;
+            for round in 0..live_rounds {
+                let (mut view, mut ptr, mut len) = (0u64, std::ptr::null_mut(), 0usize);
+                // SAFETY: live out-pointers.
+                let rc = unsafe {
+                    ffi_engine_writer_live_view_open(h, gen, &mut view, &mut ptr, &mut len)
+                };
+                assert_eq!(rc, 0, "{}", crate::error::last_error());
+                // SAFETY: the buffer the call gave, freed once.
+                unsafe { crate::ffm_bridge::ffi_jvm_free_bytes(ptr, len) };
+                let t = std::time::Instant::now();
+                let mut whole = 0u64;
+                // SAFETY: a live out-pointer.
+                let rc = unsafe { ffi_live_view_reader(reader, view, &mut whole) };
+                assert_eq!(rc, 0, "{}", crate::error::last_error());
+                eprintln!("round {round} ({n} docs): reader {:?}", t.elapsed());
+                assert_eq!(ffi_live_view_close(view), 0);
+                buffer(n, n + step);
+                n += step;
             }
-        });
+            assert_eq!(crate::jvm_reader::ffi_close_jvm_reader(reader), 0);
+            ffi_engine_writer_close(h);
+            return;
+        }
+        let start = std::time::Instant::now();
+        buffer(0, docs);
         let buffered = start.elapsed();
         let s = stats(h);
         fn cpu_ticks() -> u64 {

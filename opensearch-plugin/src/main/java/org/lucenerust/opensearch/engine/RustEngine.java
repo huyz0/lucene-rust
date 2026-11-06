@@ -528,6 +528,7 @@ public class RustEngine extends Engine {
                 internalReaderManager.release(newReader);
                 return null;
             } else {
+                internalReaderManager.searchesLeft(referenceToRefresh);
                 return newReader; // steal the reference
             }
         }
@@ -1520,7 +1521,10 @@ public class RustEngine extends Engine {
 
     @Override
     public void writeIndexingBuffer() throws EngineException {
-        refresh("write indexing buffer", SearcherScope.INTERNAL, false);
+        // Realtime searches see the buffered documents already, so moving them to the new segments
+        // changes no result, and lets the writer drop the buffers the new segments hold.
+        boolean live = documentIndexWriter instanceof RustIndexWriter w && w.liveSearch();
+        refresh("write indexing buffer", live ? SearcherScope.EXTERNAL : SearcherScope.INTERNAL, false);
     }
 
     @Override

@@ -3,6 +3,8 @@
  */
 package org.lucenerust.opensearch.engine;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.apache.lucene.analysis.Analyzer;
 import org.apache.lucene.document.Field;
 import org.apache.lucene.index.IndexCommit;
@@ -78,6 +80,8 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  * it, which is how the engine knows to fail the shard.
  */
 final class RustIndexWriter implements DocumentIndexWriter {
+    private static final Logger LOGGER = LogManager.getLogger(RustIndexWriter.class);
+
     private final Directory directory;
     private final long handle;
     private final FieldRegistry registry;
@@ -778,6 +782,9 @@ final class RustIndexWriter implements DocumentIndexWriter {
             long[] view = new long[1];
             byte[][] blob = new byte[1][];
             if (NativeBridge.liveViewOpen(handle, generation, view, blob) != NativeBridge.OK) {
+                if (LOGGER.isDebugEnabled()) {
+                    LOGGER.debug("lucene-rust: no view of the buffers for commit {}: {}", generation, NativeBridge.lastError());
+                }
                 return null;
             }
             return new LiveViewHandle(view[0], blob[0]);
