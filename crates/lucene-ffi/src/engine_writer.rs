@@ -1352,8 +1352,18 @@ pub extern "C" fn ffi_engine_writer_release_hold(handle: u64, hold: u64) -> i32 
     guard(|| {
         with_writer(handle, |w| {
             let mut holds = w.maintenance();
-            if holds.nrt.remove(&hold).is_some() {
-                return Ok(());
+            if let Some(nrt) = holds.nrt.remove(&hold) {
+                // The last reference hands the files back to the writer;
+                // release them now, as Java's reader close does, rather than
+                // at the next flush or snapshot -- an index that goes idle
+                // after a merge would otherwise keep the merged-away segments
+                // on disk.
+                drop(holds);
+                drop(nrt);
+                return w
+                    .writer()
+                    .with_writer(|iw| iw.release_nrt_holds())
+                    .map_err(writer_error);
             }
             let Some(files) = holds.files.remove(&hold) else {
                 set_last_error(format!("engine writer: no hold {hold}"));
@@ -2948,6 +2958,68 @@ mod tests {
             FfiStatus::InvalidArgument.code()
         );
         commit(h, &[]);
+        check(&tmp);
+        assert_eq!(ffi_engine_writer_close(h), 0);
+    }
+
+    /// Closing the last reader over merged-away segments deletes their files
+    /// at once, with no write, flush or refresh after it: an index that goes
+    /// idle after a force merge must not keep both copies on disk.
+    #[test]
+    fn releasing_an_nrt_hold_deletes_merged_away_files_at_once() {
+        let tmp = empty_index("engine-writer-nrt-release");
+        let h = open(&tmp, 0);
+        let f = setup(h);
+        for (i, id) in ["a", "b", "c"].iter().enumerate() {
+            let add = doc(
+                Blob::default().u8(OP_ADD).i32(1),
+                &f,
+                id,
+                &["w"],
+                i as i64,
+                false,
+            );
+            assert_eq!(apply(h, &add.0), 0);
+            commit(h, &[]);
+        }
+        let snapshot = |h: u64| {
+            let (mut ptr, mut len, mut hold, mut gen) = (std::ptr::null_mut(), 0usize, 0u64, 0i64);
+            // SAFETY: live out-pointers.
+            let rc = unsafe {
+                ffi_engine_writer_nrt_snapshot(h, &mut ptr, &mut len, &mut hold, &mut gen)
+            };
+            assert_eq!(rc, 0, "{}", crate::error::last_error());
+            // SAFETY: the buffer the call gave, freed once.
+            unsafe { crate::ffm_bridge::ffi_jvm_free_bytes(ptr, len) };
+            hold
+        };
+        let old = snapshot(h);
+        let mut gen = 0;
+        // SAFETY: live out-pointer.
+        assert_eq!(
+            unsafe { ffi_engine_writer_force_merge(h, 1, 0, &mut gen) },
+            0
+        );
+        let gens = generations(h);
+        let older: Vec<i64> = gens.iter().copied().filter(|&g| g != gen).collect();
+        // SAFETY: live slice.
+        assert_eq!(
+            unsafe { ffi_engine_writer_delete_commits(h, older.as_ptr(), older.len()) },
+            0
+        );
+        let new = snapshot(h);
+        let dir = FsDirectory::open(tmp.path());
+        assert!(
+            dir.list_all().unwrap().iter().any(|n| n.starts_with("_0.")),
+            "the open reader keeps the merged-away segment"
+        );
+        assert_eq!(ffi_engine_writer_release_hold(h, old), 0);
+        let after = dir.list_all().unwrap();
+        assert!(
+            !after.iter().any(|n| n.starts_with("_0.")),
+            "the released segment's files are gone: {after:?}"
+        );
+        assert_eq!(ffi_engine_writer_release_hold(h, new), 0);
         check(&tmp);
         assert_eq!(ffi_engine_writer_close(h), 0);
     }

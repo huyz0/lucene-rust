@@ -227,8 +227,11 @@ impl IndexWriter<'_> {
     }
 
     /// Releases every pin a dropped NRT reader handed back
-    /// (`StandardDirectoryReader.doClose`'s `decRefDeleter`).
-    pub(crate) fn release_nrt_holds(&mut self) -> Result<()> {
+    /// (`StandardDirectoryReader.doClose`'s `decRefDeleter`), deleting the
+    /// files nothing else references. The writer also does this at its next
+    /// flush, commit or snapshot; call it after closing a reader to reclaim
+    /// the disk without waiting for one.
+    pub fn release_nrt_holds(&mut self) -> Result<()> {
         self.write_pending_try_changes()?;
         let returned: Vec<Vec<String>> =
             std::mem::take(&mut *self.nrt.returned.lock().unwrap_or_else(|p| p.into_inner()));
