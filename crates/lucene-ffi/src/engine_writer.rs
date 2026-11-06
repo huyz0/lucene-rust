@@ -3836,7 +3836,7 @@ mod tests {
         // A view whose buffers were published since reads their segments,
         // and finds what it found before they were. (Enough documents that
         // the buffer is one chunk again: see `a_growing_buffer_is_read_as_chunks`.)
-        (41..47).for_each(add);
+        (41..70).for_each(add);
         // SAFETY: live out-pointers.
         let rc = unsafe { ffi_engine_writer_live_view_open(h, gen, &mut view, &mut ptr, &mut len) };
         assert_eq!(rc, 0, "{}", crate::error::last_error());
@@ -4370,6 +4370,7 @@ mod tests {
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(2000);
             let mut n = 0;
+            let mut total = std::time::Duration::ZERO;
             buffer(0, docs);
             n += docs;
             for round in 0..live_rounds {
@@ -4386,11 +4387,18 @@ mod tests {
                 // SAFETY: a live out-pointer.
                 let rc = unsafe { ffi_live_view_reader(reader, view, &mut whole) };
                 assert_eq!(rc, 0, "{}", crate::error::last_error());
-                eprintln!("round {round} ({n} docs): reader {:?}", t.elapsed());
+                let took = t.elapsed();
+                total += took;
+                let w = crate::jvm_reader::lookup(whole, "test").unwrap();
+                eprintln!(
+                    "round {round} ({n} docs): reader {took:?}, {} leaves",
+                    w.reader.segment_readers().len()
+                );
                 assert_eq!(ffi_live_view_close(view), 0);
                 buffer(n, n + step);
                 n += step;
             }
+            eprintln!("views' readers took {total:?} in all");
             assert_eq!(crate::jvm_reader::ffi_close_jvm_reader(reader), 0);
             ffi_engine_writer_close(h);
             return;

@@ -117,6 +117,23 @@ public final class SearchStats {
         return nativeNanos.sum();
     }
 
+    private final LongAdder liveReaderNanos = new LongAdder();
+    private final LongAdder liveReaders = new LongAdder();
+
+    /** Time spent building a realtime view's reader (its buffers written as segments). */
+    public void liveReaderTime(long nanos) {
+        liveReaderNanos.add(nanos);
+        liveReaders.increment();
+    }
+
+    public long liveReaderNanos() {
+        return liveReaderNanos.sum();
+    }
+
+    public long liveReaderCount() {
+        return liveReaders.sum();
+    }
+
     public long luceneNanos() {
         return luceneNanos.sum();
     }

@@ -101,8 +101,10 @@ struct Planned {
 }
 
 /// A chunk written after `acc` new documents absorbs a previous one of at
-/// most this many times `acc`'s size.
-const ABSORB: i32 = 2;
+/// most this many times `acc`'s size. At 1 the chunks pair up like a binary
+/// counter's bits: a document is rewritten about log2(buffer / new) times,
+/// and a buffer is about as many chunks.
+const ABSORB: i32 = 1;
 
 /// `b`'s chunks: those of `chunks` its documents cover, then the documents
 /// past them, absorbing the last chunks while they are small beside them.
