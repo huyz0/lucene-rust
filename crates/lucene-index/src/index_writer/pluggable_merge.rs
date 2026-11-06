@@ -340,7 +340,7 @@ impl IndexWriter<'_> {
         Ok(Some((merges, deadline)))
     }
 
-    /// `IndexWriter.updatePendingMerges(NATURAL)` under a pluggable policy:
+    /// `IndexWriter.updatePendingMerges(trigger)` under a pluggable policy:
     /// `findMerges` over every segment, those in `merging` reported as
     /// merging, each proposed merge with its estimated bytes (the sources'
     /// sizes pro-rated by their live documents). A merge with hooks is left
@@ -349,11 +349,12 @@ impl IndexWriter<'_> {
         &self,
         policy: &Arc<dyn MergePolicy>,
         merging: &HashSet<String>,
+        trigger: MergeTrigger,
     ) -> Result<Vec<(Vec<String>, u64)>> {
         let (infos, mut ctx) = self.merge_inputs()?;
         ctx.merging = merging.clone();
         let Some(spec) = policy
-            .find_merges(MergeTrigger::SegmentFlush, &infos, &ctx)
+            .find_merges(trigger, &infos, &ctx)
             .map_err(policy_error)?
         else {
             return Ok(Vec::new());
@@ -369,13 +370,11 @@ impl IndexWriter<'_> {
                     .iter()
                     .filter(|i| group.contains(&i.name))
                     .map(|i| {
-                        let live = f64::from(i.max_doc.saturating_sub(i.del_count).max(0));
-                        let ratio = if i.max_doc > 0 {
-                            live / f64::from(i.max_doc)
-                        } else {
-                            0.0
-                        };
-                        (i.size_in_bytes.max(0) as f64 * ratio) as u64
+                        super::live_pro_rated_bytes(
+                            u64::try_from(i.size_in_bytes).unwrap_or(0),
+                            i.max_doc,
+                            i.del_count,
+                        )
                     })
                     .fold(0u64, u64::saturating_add);
                 (group, estimated)

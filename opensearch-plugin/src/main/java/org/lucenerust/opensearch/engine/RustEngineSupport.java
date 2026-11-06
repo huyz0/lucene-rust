@@ -328,7 +328,8 @@ public final class RustEngineSupport {
                     rust.setMergePolicy(tiered);
                     rust.setPluggableMergePolicy(null);
                 } else {
-                    // log_byte_size, or index.merge.enabled: false.
+                    // log_byte_size, or index.merge.enabled: false. No OpenSearch setting yields any
+                    // other policy; one a test passes in directly merges with the tiered defaults.
                     rust.setPluggableMergePolicy(policy);
                 }
                 // NativeLuceneIndexWriterFactory's setUseCompoundFile and setCheckPendingFlushUpdate,

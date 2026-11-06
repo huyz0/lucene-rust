@@ -106,7 +106,7 @@ use crate::index_writer::{
     InvertedTerms, Result, SegmentTicket, DISABLE_AUTO_FLUSH,
 };
 use crate::merge_policy::MergeTrigger;
-use crate::merge_rate_limiter::{MergeRateLimiter, PauseReason};
+use crate::merge_rate_limiter::MergeRateLimiter;
 use crate::merge_scheduler::{MergeScheduler, MergeSource, PendingMerges, ScheduledMerge};
 use crate::segment_infos::SegmentCommitInfo;
 use crate::stall_control::DocumentsWriterStallControl;
@@ -481,15 +481,20 @@ impl<'d> ConcurrentIndexWriter<'d> {
 
     /// `IndexWriter.updatePendingMerges`: registers every merge the policy
     /// proposes among segments not already merging -- claiming their
-    /// segments -- for the scheduler to take. Nothing without a policy.
-    fn register_merges(&self, core: &mut Core<'_>) -> Result<()> {
-        let Some(policy) = core.writer.merge_policy().cloned() else {
+    /// segments -- for the scheduler to take. Nothing without a policy,
+    /// tiered or pluggable.
+    fn register_merges(&self, core: &mut Core<'_>, trigger: MergeTrigger) -> Result<()> {
+        if core.writer.merge_policy().is_none() && core.writer.pluggable_merge_policy().is_none() {
             return Ok(());
-        };
+        }
         if self.merges_stopped.load(Ordering::Acquire) {
             return Ok(());
         }
-        for (names, estimated) in core.writer.find_merges_sized(&policy, &core.merging)? {
+        let policy = core.writer.merge_policy().cloned().unwrap_or_default();
+        for (names, estimated) in core
+            .writer
+            .find_merges_sized(&policy, &core.merging, trigger)?
+        {
             core.merging.extend(names.iter().cloned());
             self.pending_merges
                 .push(Arc::new(ScheduledMerge::new(names, estimated)));
@@ -507,7 +512,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
         let Some(source) = hook.source.upgrade() else {
             return Ok(());
         };
-        self.register_merges(&mut lock(&self.core))?;
+        self.register_merges(&mut lock(&self.core), trigger)?;
         hook.scheduler.merge(&source, trigger)
     }
 
@@ -544,22 +549,8 @@ impl<'d> ConcurrentIndexWriter<'d> {
         };
         // `OpenSearchConcurrentMergeScheduler.doMerge`: the listener hears of
         // the merge before it runs and after it ends, without the lock.
-        let started = std::time::Instant::now();
-        if let Some((listener, event)) = &listened {
-            listener.before_merge(event);
-        }
-        let after = |failure: Option<&crate::index_writer::Error>| {
-            if let Some((listener, event)) = &listened {
-                let ms = |ns: u64| ns / 1_000_000;
-                let progress = merge.progress();
-                let times = crate::index_writer::MergeTimes {
-                    took_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
-                    stopped_ms: ms(progress.pause_time_ns(PauseReason::Stopped)),
-                    throttled_ms: ms(progress.pause_time_ns(PauseReason::Paused)),
-                };
-                listener.after_merge(event, times, failure);
-            }
-        };
+        let report =
+            crate::index_writer::MergeReport::start(listened, Some(Arc::clone(merge.progress())));
         let tracking = TrackingDirectory::new(self.dir);
         let outcome = catch_unwind(AssertUnwindSafe(|| {
             self.cfg().run_merge_limited(&tracking, &plan, limiter)
@@ -570,7 +561,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
             Ok(Ok(outcome)) => {
                 let finished = core.writer.finish_merge(plan, outcome);
                 self.refresh_segment_docs(&mut core);
-                finished.and_then(|_| self.register_merges(&mut core))
+                finished.and_then(|_| self.register_merges(&mut core, MergeTrigger::MergeFinished))
             }
             Ok(Err(e)) => {
                 let _ = core.writer.abort_merge(plan);
@@ -582,21 +573,13 @@ impl<'d> ConcurrentIndexWriter<'d> {
                 let _ = core.writer.delete_new_files(&tracking.created());
                 drop(core);
                 self.changed.notify_all();
-                after(Some(&crate::index_writer::Error::MergeThreadPanicked(
-                    "a merge panicked".to_string(),
-                )));
+                drop(report);
                 resume_unwind(panic);
             }
         };
         drop(core);
         self.changed.notify_all();
-        // An aborted merge is not a failure (`MergeAbortedException`).
-        after(
-            result
-                .as_ref()
-                .err()
-                .filter(|e| !matches!(e, crate::index_writer::Error::MergeAborted)),
-        );
+        report.finish(&result);
         result
     }
 
@@ -2043,7 +2026,7 @@ impl<'d> crate::nrt::NrtSource for ConcurrentIndexWriter<'d> {
             // as each flushed segment publishes: natural merges take the new
             // segments first, so the full-flush merges below seldom find one
             // left to wait for.
-            self.register_merges(&mut core)?;
+            self.register_merges(&mut core, MergeTrigger::SegmentFlush)?;
             let Core {
                 writer, merging, ..
             } = &mut *core;
@@ -3714,6 +3697,27 @@ mod tests {
         assert_eq!(last.max_num_segments, 1);
         assert_eq!(last.total_docs, 60);
         assert!(events[0].1.id < last.id);
+    }
+
+    /// A merge that unwinds before it reports its end is heard as failed.
+    #[test]
+    fn a_merge_that_unwinds_is_heard_as_failed() {
+        let heard = Arc::new(Heard::default());
+        let event = crate::index_writer::MergeEvent {
+            id: 1,
+            segments: vec!["_0".to_string()],
+            total_docs: 1,
+            total_bytes: 1,
+            max_num_segments: -1,
+        };
+        let listener: Arc<dyn crate::index_writer::MergeListener> = heard.clone();
+        drop(crate::index_writer::MergeReport::start(
+            Some((listener, event)),
+            None,
+        ));
+        let events = heard.events.lock().unwrap();
+        assert_eq!(events.len(), 2);
+        assert!(events[0].0 && !events[1].0 && events[1].2);
     }
 
     /// A pluggable policy picks the merges the scheduler runs, and its

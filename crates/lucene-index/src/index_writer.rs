@@ -4421,6 +4421,72 @@ pub trait MergeListener: Send + Sync {
 
 static NEXT_MERGE_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
+/// One merge as its [`MergeListener`] hears it
+/// (`OpenSearchConcurrentMergeScheduler.doMerge`): `before_merge` when
+/// started, `after_merge` when finished -- with its pause times when it ran
+/// under a rate limiter -- and, should the merge unwind instead, `after_merge`
+/// as failed, so the listener never keeps a merge that ended.
+pub(crate) struct MergeReport {
+    listened: Option<(std::sync::Arc<dyn MergeListener>, MergeEvent)>,
+    progress: Option<std::sync::Arc<crate::merge_rate_limiter::OneMergeProgress>>,
+    started: std::time::Instant,
+}
+
+impl MergeReport {
+    pub(crate) fn start(
+        listened: Option<(std::sync::Arc<dyn MergeListener>, MergeEvent)>,
+        progress: Option<std::sync::Arc<crate::merge_rate_limiter::OneMergeProgress>>,
+    ) -> Self {
+        if let Some((listener, event)) = &listened {
+            listener.before_merge(event);
+        }
+        MergeReport {
+            listened,
+            progress,
+            started: std::time::Instant::now(),
+        }
+    }
+
+    /// The merge ended with `result`; an aborted merge is not a failure
+    /// (`MergeAbortedException`).
+    pub(crate) fn finish<T>(mut self, result: &Result<T>) {
+        let failure = result
+            .as_ref()
+            .err()
+            .filter(|e| !matches!(e, Error::MergeAborted));
+        self.send(failure);
+    }
+
+    fn send(&mut self, failure: Option<&Error>) {
+        let Some((listener, event)) = self.listened.take() else {
+            return;
+        };
+        let ms = |ns: u64| ns / 1_000_000;
+        let (stopped_ms, throttled_ms) = self.progress.as_ref().map_or((0, 0), |p| {
+            (
+                ms(p.pause_time_ns(crate::merge_rate_limiter::PauseReason::Stopped)),
+                ms(p.pause_time_ns(crate::merge_rate_limiter::PauseReason::Paused)),
+            )
+        });
+        let times = MergeTimes {
+            took_ms: u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX),
+            stopped_ms,
+            throttled_ms,
+        };
+        listener.after_merge(&event, times, failure);
+    }
+}
+
+impl Drop for MergeReport {
+    fn drop(&mut self) {
+        if self.listened.is_some() {
+            self.send(Some(&Error::MergeThreadPanicked(
+                "a merge panicked".to_string(),
+            )));
+        }
+    }
+}
+
 pub struct IndexWriter<'d> {
     dir: &'d dyn Directory,
     /// What every segment this writer builds is built with -- see
@@ -5847,9 +5913,10 @@ impl<'d> IndexWriter<'d> {
         &self,
         config: &MergePolicyConfig,
         merging: &std::collections::HashSet<String>,
+        trigger: merge_policy::MergeTrigger,
     ) -> Result<Vec<(Vec<String>, u64)>> {
         if let Some(policy) = self.pluggable_merge_policy.clone() {
-            return self.find_merges_pluggable(&policy, merging);
+            return self.find_merges_pluggable(&policy, merging, trigger);
         }
         let stats = self.segment_stats()?;
         let merges = merge_policy::find_merges_excluding(&stats, merging, config);
@@ -5859,15 +5926,7 @@ impl<'d> IndexWriter<'d> {
                 let estimated = stats
                     .iter()
                     .filter(|s| names.contains(&s.name))
-                    .map(|s| {
-                        let live = f64::from(s.doc_count.saturating_sub(s.del_count).max(0));
-                        let ratio = if s.doc_count > 0 {
-                            live / f64::from(s.doc_count)
-                        } else {
-                            0.0
-                        };
-                        (s.size_bytes as f64 * ratio) as u64
-                    })
+                    .map(|s| live_pro_rated_bytes(s.size_bytes, s.doc_count, s.del_count))
                     .fold(0u64, u64::saturating_add);
                 (names, estimated)
             })
@@ -10912,11 +10971,7 @@ impl IndexWriter<'_> {
             plan.hooks = Some((hooks, infos));
         }
         let cfg = std::sync::Arc::clone(&self.cfg);
-        let listened = self.merge_event(&plan);
-        if let Some((listener, event)) = &listened {
-            listener.before_merge(event);
-        }
-        let started = std::time::Instant::now();
+        let report = MergeReport::start(self.merge_event(&plan), None);
         let result = match cfg.run_merge(self.dir, &plan) {
             Ok(outcome) => self.finish_merge(plan, outcome),
             Err(e) => {
@@ -10925,18 +10980,7 @@ impl IndexWriter<'_> {
                 Err(e)
             }
         };
-        if let Some((listener, event)) = &listened {
-            let times = MergeTimes {
-                took_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
-                ..MergeTimes::default()
-            };
-            // An aborted merge is not a failure (`MergeAbortedException`).
-            let failure = result
-                .as_ref()
-                .err()
-                .filter(|e| !matches!(e, Error::MergeAborted));
-            listener.after_merge(event, times, failure);
-        }
+        report.finish(&result);
         result
     }
 
@@ -13037,6 +13081,16 @@ fn apply_merge_changes(
         out.insert(0, m);
     }
     *segments = out;
+}
+
+/// `OneMerge.estimatedMergeBytes`'s share for one source: its size on disk
+/// pro-rated by its live documents.
+pub(crate) fn live_pro_rated_bytes(size_bytes: u64, max_doc: i32, del_count: i32) -> u64 {
+    if max_doc <= 0 {
+        return 0;
+    }
+    let live = f64::from(max_doc.saturating_sub(del_count).max(0));
+    (size_bytes as f64 * (live / f64::from(max_doc))) as u64
 }
 
 /// `ShuffleForcedMergePolicy.interleaveList`: the sources sorted by name
