@@ -1024,6 +1024,11 @@ pub(crate) struct MergePlan {
     sorted_numeric_remap: Option<std::sync::Arc<merge::SortedNumericRemap>>,
     /// What the merged segment's diagnostics record.
     pub(crate) kind: merge::MergeKind,
+    /// With a merged-segment warmer, the compound-file decision is made on
+    /// the merge thread, before the warmer sees the segment (`mergeMiddle`):
+    /// `Some(None)` when the segment cannot be compound. `None` leaves it to
+    /// [`IndexWriter::finish_merge`].
+    early_compound: Option<Option<pluggable_merge::CompoundFileDecider>>,
 }
 
 /// `SoftDeletesRetentionMergePolicy` with OpenSearch's retention query,
@@ -1194,6 +1199,8 @@ pub(crate) enum MergeOutcome {
         merged: Box<merge::MergedSegment>,
         /// Each source's live documents as the merge read them.
         source_live: Vec<Option<FixedBitSet>>,
+        /// Whether the merge thread already made the compound-file decision.
+        compound_decided: bool,
     },
 }
 
@@ -2908,13 +2915,29 @@ impl IndexingConfig {
             &self.codec_name,
             self.lucene_version,
         )?;
-        // `mergeMiddle`: `mergedSegmentWarmer.warm(reader)` before
-        // `commitMerge`, outside the writer's lock.
+        // `mergeMiddle`: the compound file, then
+        // `mergedSegmentWarmer.warm(reader)`, before `commitMerge`, outside
+        // the writer's lock.
+        let mut merged = merged;
+        if let Some(Some(decider)) = &plan.early_compound {
+            if decider.decide(dir, &merged)? {
+                before_write(
+                    self.codec.as_deref(),
+                    lucene_codecs::codec::WritePoint::Compound,
+                )?;
+                merged.files = segment_writer::convert_to_compound(
+                    dir,
+                    &merged.info.segment_name,
+                    &merged.info.segment_id,
+                )?;
+            }
+        }
         if let Some(warmer) = &self.merged_segment_warmer {
             warmer.warm(dir, &merged.info)?;
         }
 
         Ok(MergeOutcome::Merged {
+            compound_decided: plan.early_compound.is_some(),
             source_live: opened.iter().map(|o| o.live_docs.clone()).collect(),
             merged: Box::new(merged),
         })
@@ -11102,8 +11125,13 @@ impl IndexWriter<'_> {
                     .clone()
             })
             .collect::<Vec<SegmentCommitInfo>>();
+        let early_compound = match self.cfg.merged_segment_warmer {
+            Some(_) => Some(self.compound_file_decider()?),
+            None => None,
+        };
         let held = self.deleter.hold_segment_files(&sources)?;
         Ok(MergePlan {
+            early_compound,
             names: names.to_vec(),
             sources,
             merged_name,
@@ -11161,7 +11189,7 @@ impl IndexWriter<'_> {
 
     fn finish_merge_holding(&mut self, plan: MergePlan, outcome: MergeOutcome) -> Result<bool> {
         let source_names: Vec<&str> = plan.names.iter().map(|s| s.as_str()).collect();
-        let (merged, source_live) = match outcome {
+        let (merged, source_live, compound_decided) = match outcome {
             MergeOutcome::AllDeleted => {
                 self.drop_merge(&source_names)?;
                 return Ok(true);
@@ -11169,13 +11197,14 @@ impl IndexWriter<'_> {
             MergeOutcome::Merged {
                 merged,
                 source_live,
-            } => (*merged, source_live),
+                compound_decided,
+            } => (*merged, source_live, compound_decided),
         };
         let mut merged = merged;
         // `IndexWriter.mergeMiddle`: `mergePolicy.useCompoundFile(segmentInfos,
         // merge.info, this)`, then `createCompoundFile` -- before deletes that
         // arrived during the merge are carried over, as there.
-        if self.merged_segment_uses_compound_file(&merged)? {
+        if !compound_decided && self.merged_segment_uses_compound_file(&merged)? {
             before_write(
                 self.cfg.codec.as_deref(),
                 lucene_codecs::codec::WritePoint::Compound,

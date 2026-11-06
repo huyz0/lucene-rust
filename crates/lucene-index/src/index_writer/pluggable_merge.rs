@@ -17,6 +17,37 @@ use super::{Error, IndexWriter, Result};
 use crate::merge_policy::{self, MergeContext, MergePolicy, MergeSegment, MergeTrigger};
 use crate::segment_info;
 
+/// A merge policy's `useCompoundFile` with the segments it measures a merged
+/// segment against, taken when the merge started, so the merge thread can
+/// decide before it warms the merged segment, as `mergeMiddle` does.
+pub(crate) struct CompoundFileDecider {
+    policy: Arc<dyn MergePolicy>,
+    infos: Vec<MergeSegment>,
+    ctx: WriterContext,
+}
+
+impl CompoundFileDecider {
+    pub(crate) fn decide(
+        &self,
+        dir: &dyn lucene_store::directory::Directory,
+        merged: &crate::merge::MergedSegment,
+    ) -> Result<bool> {
+        let name = &merged.info.segment_name;
+        let si_bytes = dir.open(&format!("{name}.si"))?.to_vec();
+        let si = segment_info::parse(&si_bytes, &merged.info.segment_id)?;
+        let size = merge_policy::segment_byte_size(dir, &si);
+        let segment = MergeSegment::new(
+            name.clone(),
+            si.doc_count,
+            0,
+            i64::try_from(size).unwrap_or(i64::MAX),
+        );
+        self.policy
+            .use_compound_file(&self.infos, &segment, &self.ctx)
+            .map_err(policy_error)
+    }
+}
+
 /// The writer's answers to a policy's `MergeContext` questions, computed once
 /// per consultation.
 pub(super) struct WriterContext {
@@ -120,34 +151,34 @@ impl IndexWriter<'_> {
         &self,
         merged: &crate::merge::MergedSegment,
     ) -> Result<bool> {
+        match self.compound_file_decider()? {
+            Some(decider) => decider.decide(self.dir, merged),
+            None => Ok(false),
+        }
+    }
+
+    /// What [`Self::merged_segment_uses_compound_file`] decides with, taken
+    /// now: the policy and the segments it measures against. `None` when no
+    /// merged segment can be compound.
+    pub(super) fn compound_file_decider(&self) -> Result<Option<CompoundFileDecider>> {
         if self.pluggable_merge_policy.is_none()
             && self.cfg.merge_compound_file.is_none()
             && !self.cfg.use_compound_file
         {
-            return Ok(false);
+            return Ok(None);
         }
-        let name = &merged.info.segment_name;
-        let si_bytes = self.dir.open(&format!("{name}.si"))?.to_vec();
-        let si = segment_info::parse(&si_bytes, &merged.info.segment_id)?;
-        let size = merge_policy::segment_byte_size(self.dir, &si);
-        let segment = MergeSegment::new(
-            name.clone(),
-            si.doc_count,
-            0,
-            i64::try_from(size).unwrap_or(i64::MAX),
-        );
-        let (infos, ctx) = self.merge_inputs()?;
-        let decision = match &self.pluggable_merge_policy {
-            Some(policy) => policy.use_compound_file(&infos, &segment, &ctx),
+        let policy = match &self.pluggable_merge_policy {
+            Some(policy) => Arc::clone(policy),
             None => {
                 let mut tiered = merge_policy::TieredMergePolicy::default();
                 if let Some(settings) = self.cfg.merge_compound_file {
                     *tiered.compound_file_settings_mut() = settings;
                 }
-                tiered.use_compound_file(&infos, &segment, &ctx)
+                Arc::new(tiered) as Arc<dyn MergePolicy>
             }
         };
-        decision.map_err(policy_error)
+        let (infos, ctx) = self.merge_inputs()?;
+        Ok(Some(CompoundFileDecider { policy, infos, ctx }))
     }
 
     /// `IndexWriter.maybeMerge(FULL_FLUSH)` under a pluggable policy: runs

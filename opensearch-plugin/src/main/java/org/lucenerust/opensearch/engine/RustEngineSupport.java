@@ -273,6 +273,13 @@ public final class RustEngineSupport {
             refreshMergePolicy(writer, config);
             writer.setMergeOnFlush(Math.max(wait, 0), wait > 0 && indexSettings.getMergeOnFlushPolicy().isPresent());
             refreshMergeScheduler(writer, config);
+            // NativeLuceneIndexWriterFactory: merged segments are warmed (pre-copied to replicas) on
+            // segment-replication indices.
+            if (indexSettings.isDocumentReplication() == false
+                && (indexSettings.isSegRepLocalEnabled() || indexSettings.isRemoteStoreEnabled())
+                && config.getIndexReaderWarmer() != null) {
+                writer.setMergedSegmentWarmer(config.getIndexReaderWarmer());
+            }
             success = true;
         } finally {
             if (success == false) {

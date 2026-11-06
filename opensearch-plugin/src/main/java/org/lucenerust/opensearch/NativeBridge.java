@@ -308,6 +308,11 @@ public final class NativeBridge {
             "ffi_engine_writer_set_pluggable_merge_policy",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_DOUBLE, JAVA_LONG)
         );
+        static final MethodHandle SET_WARM_UPCALL = bind("ffi_engine_set_warm_upcall", FunctionDescriptor.of(JAVA_INT, ADDRESS));
+        static final MethodHandle WRITER_SET_MERGED_SEGMENT_WARMER = bind(
+            "ffi_engine_writer_set_merged_segment_warmer",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_BYTE)
+        );
         static final MethodHandle SET_MERGE_UPCALL = bind("ffi_engine_set_merge_upcall", FunctionDescriptor.of(JAVA_INT, ADDRESS));
         static final MethodHandle WRITER_MERGE_STATE = bind(
             "ffi_engine_writer_merge_state",
@@ -1831,6 +1836,28 @@ public final class NativeBridge {
                 noCfsRatio,
                 maxCfsSegmentBytes
             );
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** The warm upcall's answers: {@code WARM_OK} in {@code engine_writer.rs}, and any other value fails the merge. */
+    public static final int WARM_OK = 0;
+    public static final int WARM_FAILED = 1;
+
+    /** Registers the upcall that warms the merged segments of writers given a warmer. */
+    public static int setWarmUpcall(MemorySegment upcall) {
+        try {
+            return (int) H.SET_WARM_UPCALL.invokeExact(upcall);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** {@code IndexWriterConfig.setMergedSegmentWarmer}: whether merged segments go to the warm upcall. */
+    public static int writerSetMergedSegmentWarmer(long handle, boolean on) {
+        try {
+            return (int) H.WRITER_SET_MERGED_SEGMENT_WARMER.invokeExact(handle, (byte) (on ? 1 : 0));
         } catch (Throwable t) {
             throw rethrow(t);
         }

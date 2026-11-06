@@ -9,11 +9,11 @@ import org.apache.lucene.index.IndexCommit;
 import org.apache.lucene.index.IndexDeletionPolicy;
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexWriterConfig;
-import org.apache.lucene.index.NoMergePolicy;
-import org.apache.lucene.index.MergePolicy;
-import org.apache.lucene.index.LogByteSizeMergePolicy;
 import org.apache.lucene.index.IndexableField;
 import org.apache.lucene.index.LiveIndexWriterConfig;
+import org.apache.lucene.index.LogByteSizeMergePolicy;
+import org.apache.lucene.index.MergePolicy;
+import org.apache.lucene.index.NoMergePolicy;
 import org.apache.lucene.index.SegmentInfos;
 import org.apache.lucene.index.Term;
 import org.apache.lucene.index.TieredMergePolicy;
@@ -83,6 +83,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
 final class RustIndexWriter implements DocumentIndexWriter {
     private final Directory directory;
     private final long handle;
+    private final int indexCreatedVersionMajor;
     private final FieldRegistry registry;
     private final DocumentEncoder encoder;
     private final IndexWriterConfig config;
@@ -144,6 +145,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
     ) {
         this.directory = directory;
         this.handle = handle;
+        this.indexCreatedVersionMajor = indexCreatedVersionMajor;
         this.registry = new FieldRegistry(this::register);
         this.encoder = new DocumentEncoder(registry, analyzer, similarity, indexCreatedVersionMajor, softDeletesField, formats);
         this.config = new IndexWriterConfig(analyzer).setSimilarity(similarity).setSoftDeletesField(softDeletesField);
@@ -981,6 +983,17 @@ final class RustIndexWriter implements DocumentIndexWriter {
         return rate[0];
     }
 
+    /**
+     * {@code IndexWriterConfig.setMergedSegmentWarmer}: {@code warmer} gets every merged segment
+     * before its merge is published.
+     */
+    void setMergedSegmentWarmer(IndexWriter.IndexReaderWarmer warmer) {
+        synchronized (lock) {
+            ensureOpen();
+            RustMergedSegmentWarmer.install(handle, directory, indexCreatedVersionMajor, warmer);
+        }
+    }
+
     /** The native writer's handle. */
     long handle() {
         return handle;
@@ -1060,6 +1073,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
                     nativeClosed = true;
                     NativeBridge.writerClose(handle);
                     RustMergeScheduler.detach(handle);
+                    RustMergedSegmentWarmer.remove(handle);
                 }
             } finally {
                 indexing.writeLock().unlock();

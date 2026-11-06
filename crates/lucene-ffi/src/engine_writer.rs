@@ -63,7 +63,7 @@ use lucene_index::concurrent_writer::ConcurrentIndexWriter;
 use lucene_index::index_file_deleter::DeletionPolicy;
 use lucene_index::index_writer::{
     self, ExplicitDocument, ExplicitFields, IndexWriter, InvertedField, InvertedTerms, MergeEvent,
-    MergeListener, MergePolicyConfig, MergeTimes, SoftDeletesRetention,
+    MergeListener, MergePolicyConfig, MergeTimes, MergedSegmentWarmer, SoftDeletesRetention,
 };
 use lucene_index::merge_policy::log::LogByteSizeMergePolicy;
 use lucene_index::merge_policy::{
@@ -1167,6 +1167,90 @@ impl MergeListener for MergeUpcallListener {
     ) {
         self.send(MERGE_EVENT_AFTER, merge, times, failure);
     }
+}
+
+/// The JVM's merged-segment warmer (`IndexWriter.IndexReaderWarmer`):
+/// `(writer handle, segment name, its length, segment id)` with the id's
+/// [`lucene_store::codec_util::ID_LENGTH`] bytes, called on the merge
+/// thread once the merged segment's files are written and before the merge
+/// is published. Returns [`WARM_OK`], or anything else to fail the merge.
+pub type WarmUpcall = unsafe extern "C" fn(u64, *const u8, usize, *const u8) -> i32;
+/// The merged segment was warmed.
+pub const WARM_OK: i32 = 0;
+/// Warming failed; the merge fails.
+pub const WARM_FAILED: i32 = 1;
+
+static WARM_UPCALL: OnceLock<WarmUpcall> = OnceLock::new();
+
+/// Registers the merged-segment warmer upcall ([`WarmUpcall`]), once per
+/// process; later registrations are ignored.
+///
+/// # Safety
+/// `upcall` must have [`WarmUpcall`]'s contract and stay callable for the
+/// life of the process.
+#[no_mangle]
+pub unsafe extern "C" fn ffi_engine_set_warm_upcall(upcall: Option<WarmUpcall>) -> i32 {
+    guard(|| {
+        let upcall = upcall.ok_or(FfiStatus::NullPointer)?;
+        let _ = WARM_UPCALL.set(upcall);
+        Ok(())
+    })
+}
+
+/// Hands one writer's merged segments to the warm upcall.
+struct UpcallWarmer {
+    handle: u64,
+    upcall: WarmUpcall,
+}
+
+impl MergedSegmentWarmer for UpcallWarmer {
+    fn warm(
+        &self,
+        _dir: &dyn Directory,
+        segment: &lucene_index::segment_infos::SegmentCommitInfo,
+    ) -> index_writer::Result<()> {
+        let name = &segment.segment_name;
+        // SAFETY: `ffi_engine_set_warm_upcall`'s contract; `name` and the id
+        // outlive the call.
+        let status = unsafe {
+            (self.upcall)(
+                self.handle,
+                name.as_ptr(),
+                name.len(),
+                segment.segment_id.as_ptr(),
+            )
+        };
+        if status == WARM_OK {
+            return Ok(());
+        }
+        Err(index_writer::Error::Store(lucene_store::Error::Io(
+            std::io::Error::other(format!("warming merged segment {name} failed")),
+        )))
+    }
+}
+
+/// `IndexWriterConfig.setMergedSegmentWarmer`: with `on != 0`, every merged
+/// segment goes to the warm upcall before its merge is published, and the
+/// compound-file decision is made before it; `0` warms nothing. Refused
+/// before [`ffi_engine_set_warm_upcall`].
+#[no_mangle]
+pub extern "C" fn ffi_engine_writer_set_merged_segment_warmer(handle: u64, on: u8) -> i32 {
+    guard(|| {
+        let warmer = if on != 0 {
+            let Some(&upcall) = WARM_UPCALL.get() else {
+                set_last_error("no warm upcall is registered".to_string());
+                return Err(FfiStatus::InvalidArgument);
+            };
+            Some(Arc::new(UpcallWarmer { handle, upcall }) as Arc<dyn MergedSegmentWarmer>)
+        } else {
+            None
+        };
+        with_writer(handle, |w| {
+            w.writer()
+                .with_writer(|iw| iw.set_merged_segment_warmer(warmer));
+            Ok(())
+        })
+    })
 }
 
 /// Writes whether merges are registered that no merge thread has taken yet
@@ -2453,6 +2537,86 @@ mod tests {
             assert_eq!(w.merge_policy().unwrap().max_merged_segment_size, 1);
         });
         check(&tmp);
+        ffi_engine_writer_close(h);
+    }
+
+    /// The segments the test warm upcall saw, and whether it fails them.
+    static WARMED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    static WARM_FAILS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+    unsafe extern "C" fn record_warm(
+        _handle: u64,
+        name: *const u8,
+        len: usize,
+        id: *const u8,
+    ) -> i32 {
+        // SAFETY: the upcall's contract.
+        let (name, id) = unsafe {
+            (
+                std::slice::from_raw_parts(name, len),
+                std::slice::from_raw_parts(id, lucene_store::codec_util::ID_LENGTH),
+            )
+        };
+        assert!(id.iter().any(|&b| b != 0));
+        WARMED
+            .lock()
+            .unwrap()
+            .push(String::from_utf8(name.to_vec()).unwrap());
+        i32::from(WARM_FAILS.load(std::sync::atomic::Ordering::Relaxed))
+    }
+
+    /// The merged-segment warmer upcall sees a forced merge's segment before
+    /// it is published, and a warmer failure fails the merge.
+    #[test]
+    fn the_warm_upcall_sees_merged_segments() {
+        // SAFETY: `record_warm` has the upcall's contract and lives forever.
+        assert_eq!(unsafe { ffi_engine_set_warm_upcall(Some(record_warm)) }, 0);
+        // SAFETY: a null upcall is refused.
+        assert_eq!(
+            unsafe { ffi_engine_set_warm_upcall(None) },
+            FfiStatus::NullPointer.code()
+        );
+        let tmp = empty_index("engine-writer-warm");
+        let h = open(&tmp, 0);
+        let f = setup(h);
+        let add = |ids: &[&str]| {
+            for (i, id) in ids.iter().enumerate() {
+                let d = doc(
+                    Blob::default().u8(OP_ADD).i32(1),
+                    &f,
+                    id,
+                    &["x"],
+                    i as i64,
+                    false,
+                );
+                assert_eq!(apply(h, &d.0), 0);
+                commit(h, &[]);
+            }
+        };
+        add(&["a", "b", "c"]);
+        assert_eq!(ffi_engine_writer_set_merged_segment_warmer(h, 1), 0);
+        let mut gen = 0;
+        // SAFETY: live out-pointer.
+        assert_eq!(
+            unsafe { ffi_engine_writer_force_merge(h, 1, 0, &mut gen) },
+            0
+        );
+        let dir = FsDirectory::open(tmp.path());
+        let infos = lucene_index::segment_infos::read_latest(&dir).unwrap();
+        assert_eq!(infos.segments.len(), 1);
+        assert!(WARMED
+            .lock()
+            .unwrap()
+            .contains(&infos.segments[0].segment_name));
+        add(&["d"]);
+        WARM_FAILS.store(true, std::sync::atomic::Ordering::Relaxed);
+        // SAFETY: live out-pointer.
+        let failed = unsafe { ffi_engine_writer_force_merge(h, 1, 0, &mut gen) };
+        WARM_FAILS.store(false, std::sync::atomic::Ordering::Relaxed);
+        assert_ne!(failed, 0, "a failed warm fails the merge");
+        ffi_engine_writer_close(h);
+        let h = open(&tmp, 0);
+        assert_eq!(ffi_engine_writer_set_merged_segment_warmer(h, 0), 0);
         ffi_engine_writer_close(h);
     }
 

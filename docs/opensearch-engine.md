@@ -115,12 +115,6 @@ Remote-backed storage stays refused, because its upload listener asks for an
 
 ## Where it behaves differently
 
-- **No merged-segment pre-copy.** With
-  `indices.replication.merges.warmer.enabled` (default false), OpenSearch's
-  engine pushes a merged segment to segment-replication replicas before the
-  merge commits. The Rust writer runs no merge warmer. Replicas fetch the merged segment at the next refresh: replication
-  stays correct, and that refresh copies more.
-
 - **Refresh is a commit.** Every refreshed operation is already in the last
   Lucene commit. A restart therefore replays only what was never refreshed.
   The safe commit also advances more often, so history retention (which is
@@ -144,7 +138,10 @@ Remote-backed storage stays refused, because its upload listener asks for an
   scheduler does: `_stats` merge counts and times, the indexing throttle once
   more than `max_merge_count` merges are in flight, the flush after a big merge
   or once merges finish on an idle shard, and a failed merge failing the
-  shard. A finished merge becomes visible at the next refresh.
+  shard. On segment-replication indices each merged segment goes to
+  OpenSearch's merged-segment warmer before the merge is published
+  (`indices.replication.merges.warmer.enabled`). A finished merge becomes
+  visible at the next refresh.
 - **No infoStream.** Lucene's `IndexWriter` debug log has no counterpart.
 
 ## How it is verified
