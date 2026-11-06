@@ -6,6 +6,7 @@ package org.lucenerust.opensearch.engine;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.lucene.search.ReferenceManager;
+import org.apache.lucene.store.AlreadyClosedException;
 import org.opensearch.common.unit.TimeValue;
 import org.opensearch.index.engine.EngineConfig;
 import org.opensearch.index.shard.RefreshListeners;
@@ -14,32 +15,42 @@ import org.opensearch.threadpool.ThreadPool;
 
 import java.io.Closeable;
 import java.io.IOException;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * {@code refresh=wait_for} on an index whose searches read the writer's buffered documents: a write
  * is searchable once acknowledged, so the shard's refresh listeners waiting on it are released
- * without a refresh. Every {@link #INTERVAL} the shard's {@link RefreshListeners} are checked; when
- * one waits, they are told a refresh up to the translog's last write location happened, which
- * releases every listener at or before it. A real refresh between the two calls only moves that
- * location on, since every write before it is searchable too.
+ * without a refresh. One task per node looks at every such shard's {@link RefreshListeners} every
+ * {@link #INTERVAL}; when one waits, they are told a refresh up to the translog's last write
+ * location happened, which releases every listener at or before it. A real refresh running at the
+ * same time may set the location it read instead: every write before either is searchable, so a
+ * listener is never released early, at worst on the next look.
  */
 final class LiveWaitFor implements Closeable {
     private static final Logger logger = LogManager.getLogger(LiveWaitFor.class);
-    /** How often waiting listeners are looked for: the most a {@code wait_for} write waits. */
+    /** How often waiting listeners are looked for. */
     static final TimeValue INTERVAL = TimeValue.timeValueMillis(5);
+
+    /** Per node (thread pool): the shards looked at, and the task looking while there are any. */
+    private static final Map<ThreadPool, Node> NODES = new HashMap<>();
+
+    private static final class Node {
+        final Set<LiveWaitFor> shards = ConcurrentHashMap.newKeySet();
+        Scheduler.Cancellable task;
+    }
 
     private final RefreshListeners listeners;
     private final ThreadPool threadPool;
     private final AtomicBoolean releasing = new AtomicBoolean();
-    private final Scheduler.Cancellable task;
+    private volatile boolean closed;
 
     private LiveWaitFor(RefreshListeners listeners, ThreadPool threadPool) {
         this.listeners = listeners;
         this.threadPool = threadPool;
-        // The check on the scheduler thread: a volatile read; the release, which answers the
-        // waiting requests, on the refresh pool.
-        this.task = threadPool.scheduleWithFixedDelay(this::check, INTERVAL, ThreadPool.Names.SAME);
     }
 
     /** Releases {@code config}'s waiting refresh listeners as above, or null when the index has none to release. */
@@ -49,16 +60,33 @@ final class LiveWaitFor implements Closeable {
         }
         for (ReferenceManager.RefreshListener l : config.getExternalRefreshListener()) {
             if (l instanceof RefreshListeners listeners) {
-                return new LiveWaitFor(listeners, config.getThreadPool());
+                ThreadPool pool = config.getThreadPool();
+                LiveWaitFor shard = new LiveWaitFor(listeners, pool);
+                synchronized (NODES) {
+                    Node node = NODES.computeIfAbsent(pool, p -> new Node());
+                    node.shards.add(shard);
+                    if (node.task == null) {
+                        // The look on the scheduler thread, a volatile read per shard; the release,
+                        // which answers the waiting requests, on the generic pool.
+                        node.task = pool.scheduleWithFixedDelay(() -> checkAll(node), INTERVAL, ThreadPool.Names.SAME);
+                    }
+                }
+                return shard;
             }
         }
         return null;
     }
 
+    private static void checkAll(Node node) {
+        for (LiveWaitFor shard : node.shards) {
+            shard.check();
+        }
+    }
+
     private void check() {
-        if (listeners.refreshNeeded() && releasing.compareAndSet(false, true)) {
+        if (closed == false && listeners.refreshNeeded() && releasing.compareAndSet(false, true)) {
             try {
-                threadPool.executor(ThreadPool.Names.REFRESH).execute(this::release);
+                threadPool.generic().execute(this::release);
             } catch (RuntimeException e) {
                 releasing.set(false);
                 logger.debug("lucene-rust: could not release wait_for listeners", e);
@@ -68,8 +96,12 @@ final class LiveWaitFor implements Closeable {
 
     private void release() {
         try {
-            listeners.beforeRefresh();
-            listeners.afterRefresh(true);
+            if (closed == false) {
+                listeners.beforeRefresh();
+                listeners.afterRefresh(true);
+            }
+        } catch (AlreadyClosedException e) {
+            logger.debug("lucene-rust: the shard closed while releasing wait_for listeners", e);
         } catch (IOException | RuntimeException e) {
             logger.warn("lucene-rust: releasing wait_for listeners failed", e);
         } finally {
@@ -79,6 +111,13 @@ final class LiveWaitFor implements Closeable {
 
     @Override
     public void close() {
-        task.cancel();
+        closed = true;
+        synchronized (NODES) {
+            Node node = NODES.get(threadPool);
+            if (node != null && node.shards.remove(this) && node.shards.isEmpty()) {
+                node.task.cancel();
+                NODES.remove(threadPool);
+            }
+        }
     }
 }
