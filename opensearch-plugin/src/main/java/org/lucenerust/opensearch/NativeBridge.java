@@ -38,7 +38,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code jvm_reader.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 70;
+    public static final int EXPECTED_ABI_VERSION = 72;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -333,7 +333,7 @@ public final class NativeBridge {
         static final MethodHandle LIVE_VIEW_CLOSE = bind("ffi_live_view_close", FunctionDescriptor.of(JAVA_INT, JAVA_LONG));
         static final MethodHandle LIVE_VIEW_READER = bind(
             "ffi_live_view_reader",
-            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG, ADDRESS)
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS)
         );
         static final MethodHandle WRITER_RELEASE_LIVE = bind(
             "ffi_engine_writer_release_live",
@@ -1898,14 +1898,29 @@ public final class NativeBridge {
      * documents as the leaves of the view number them. It belongs to the view, which closes it; the
      * caller must not. {@link #INVALID_ARGUMENT} when the buffers cannot be written (one was taken
      * for a flush since the view opened); the caller then searches the reader alone.
+     * <p>
+     * With {@code query} (a query blob) and {@code tree} (an aggregation tree blob, or null), the
+     * buffers are written without their postings and the handle holds only the terms that request
+     * reads: it serves searches of that request alone, much cheaper to build. With a null
+     * {@code query}, or a request whose terms cannot be named up front, it holds every term.
      */
-    public static int liveViewReader(long handle, long view, long[] out) {
+    public static int liveViewReader(long handle, long view, byte[] query, byte[] tree, long[] out) {
         if (out == null || out.length < 1) {
             return fail(INVALID_ARGUMENT, "out needs a slot");
         }
         try (Scratch s = Scratch.open()) {
             MemorySegment id = s.alloc(Long.BYTES);
-            int rc = (int) H.LIVE_VIEW_READER.invokeExact(handle, view, id);
+            MemorySegment q = query == null || query.length == 0 ? MemorySegment.NULL : s.bytes(query);
+            MemorySegment t = query == null || tree == null || tree.length == 0 ? MemorySegment.NULL : s.bytes(tree);
+            int rc = (int) H.LIVE_VIEW_READER.invokeExact(
+                handle,
+                view,
+                q,
+                q == MemorySegment.NULL ? 0L : (long) query.length,
+                t,
+                t == MemorySegment.NULL ? 0L : (long) tree.length,
+                id
+            );
             if (rc == OK) {
                 out[0] = id.get(JAVA_LONG, 0);
             }
