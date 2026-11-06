@@ -368,6 +368,7 @@ impl<D: Directory> Directory for EncryptedDirectory<D> {
         }
         let decoder = crate::pages::EncryptedDecoder {
             keys: self.keys.as_ref(),
+            header_lens: &self.header_lens,
         };
         if let Some(opened) = self.inner.open_decoded(name, &decoder) {
             return opened;
@@ -384,6 +385,21 @@ impl<D: Directory> Directory for EncryptedDirectory<D> {
         let shared = Arc::new(plain);
         self.cache.put(name, sealed_len, &shared);
         Input::slice_of(&shared, 0, shared.len())
+    }
+
+    /// Plain files are hinted as they are; encrypted ones with the decoder
+    /// their opens use, so their headers and first and last decoded pages
+    /// come in the batch.
+    fn prefetch_files(&self, names: &[String]) -> Result<()> {
+        let (plain, sealed): (Vec<String>, Vec<String>) =
+            names.iter().cloned().partition(|n| self.is_plain(n));
+        let decoder = crate::pages::EncryptedDecoder {
+            keys: self.keys.as_ref(),
+            header_lens: &self.header_lens,
+        };
+        let plain_result = self.inner.prefetch_files(&plain);
+        self.inner.prefetch_files_decoded(&sealed, &decoder)?;
+        plain_result
     }
 
     fn file_length(&self, name: &str) -> Result<u64> {
