@@ -64,8 +64,15 @@ shards and their memory.
   `_seq_no`), and merges are chosen per partition, as
   `CriteriaBasedMergePolicy` does. OpenSearch's own engine therefore reads
   and merges these segments alike, and stock Lucene reads them as any other.
+- A document's partition is the smallest value when it has several. Bytes
+  that are not UTF-8 (an ip's) are recorded as `0x` and hex. A value held
+  only as analyzed text is refused.
 - A document may move to another partition on update: the earlier version is
   soft deleted wherever it is.
+- The default partition is recorded as `-2`, as OpenSearch records it, so a
+  partition whose value is `-2` shares segments with it.
+- An index served by OpenSearch's engine (a fallback, or
+  `lucene_rust.engine.node_enabled: false`) ignores the setting.
 - OpenSearch's own context-aware setting (`index.context_aware.enabled`, with a
   `context_aware_grouping` script) is still refused.
 

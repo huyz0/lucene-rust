@@ -190,12 +190,6 @@ final class DocumentEncoder {
      * {@code softUpdateDocuments(term, docs, softDeletes)}: live documents matching {@code term} get
      * {@code softDeletes}' value, and {@code docs} are added, atomically.
      */
-    Blob softUpdate(Term term, List<? extends Iterable<? extends IndexableField>> docs, IndexableField softDeletes)
-        throws IOException {
-        return softUpdate(null, term, docs, softDeletes);
-    }
-
-    /** {@link #softUpdate(Term, List, IndexableField)}, the new documents in {@code partition} when it is not null. */
     Blob softUpdate(String partition, Term term, List<? extends Iterable<? extends IndexableField>> docs, IndexableField softDeletes)
         throws IOException {
         if (softDeletes.name().equals(softDeletesField) == false || softDeletes.numericValue() == null) {

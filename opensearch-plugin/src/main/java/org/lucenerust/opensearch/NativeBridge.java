@@ -1392,26 +1392,9 @@ public final class NativeBridge {
      * test-only panic operation; {@code sparse} writes the segments of an {@code index.sparse} index,
      * with neural-search's codec and clustered postings; {@code liveSearch} keeps what a search of the
      * buffered documents reads ({@link #liveViewOpen}); {@code adaptiveDocValues} writes doc values in
-     * the {@code RustAdaptive} format. {@code maxDocs} is {@code
-     * IndexWriter.getActualMaxDocs()}, which Lucene's tests lower.
-     */
-    public static int writerOpen(
-        byte[] indexPathUtf8,
-        double ramBufferMb,
-        boolean faultInjection,
-        boolean sparse,
-        boolean liveSearch,
-        boolean adaptiveDocValues,
-        int maxDocs,
-        long[] outHandle
-    ) {
-        return writerOpen(indexPathUtf8, ramBufferMb, faultInjection, sparse, liveSearch, adaptiveDocValues, false, maxDocs, outHandle);
-    }
-
-    /**
-     * {@link #writerOpen(byte[], double, boolean, boolean, boolean, boolean, int, long[])}, and with
-     * {@code partitioned} every segment holds one partition (the value of the index's partition
-     * field) and records it, and merges never mix partitions.
+     * the {@code RustAdaptive} format; with {@code partitioned} every segment holds one partition
+     * (the value of the index's partition field) and records it, and merges never mix partitions.
+     * {@code maxDocs} is {@code IndexWriter.getActualMaxDocs()}, which Lucene's tests lower.
      */
     public static int writerOpen(
         byte[] indexPathUtf8,
