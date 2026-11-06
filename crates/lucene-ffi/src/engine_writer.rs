@@ -2161,8 +2161,9 @@ mod tests {
     }
 
     /// A buffer writes its stored fields to its segment's `.fdt` as they
-    /// arrive, so they are not charged as buffered RAM; the commit reads
-    /// them back whole, and a close that discards the buffer deletes the file.
+    /// arrive, so they are not charged as buffered RAM; a sweep for
+    /// unreferenced files leaves that file alone, the commit reads them back
+    /// whole, and a close that discards the buffer deletes the file.
     #[test]
     fn a_buffer_writes_its_stored_fields_to_disk_as_it_fills() {
         let fdt_files = |tmp: &TempDir| -> Vec<String> {
@@ -2223,6 +2224,12 @@ mod tests {
             !fdt_files(&tmp).is_empty(),
             "the .fdt is on disk before the flush"
         );
+        // A sweep for unreferenced files leaves the buffer's file alone.
+        lookup(h)
+            .unwrap()
+            .writer()
+            .with_writer(|iw| iw.delete_unused_files())
+            .unwrap();
         commit(h, &[]);
         let stored: Vec<String> = stored_ids_and_bp(&tmp)
             .into_iter()

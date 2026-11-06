@@ -8535,6 +8535,12 @@ impl IndexWriter<'_> {
         (segment_name, segment_id)
     }
 
+    /// Pins files a buffer writes before its segment exists against the
+    /// deleter's sweeps, until [`Self::release_files`].
+    pub(crate) fn hold_new_files(&mut self, files: &[String]) {
+        self.deleter.hold_files(files);
+    }
+
     /// A ticket whose segment could not be built: its frozen packet still
     /// joins the stream, since the segments already written owe it regardless.
     pub(crate) fn abandon_segment(&mut self, ticket: SegmentTicket) {

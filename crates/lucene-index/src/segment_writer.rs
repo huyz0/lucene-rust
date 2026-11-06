@@ -407,10 +407,11 @@ fn write_stored_only_segment_files_inner(
             vec![cfs_name, cfe_name]
         } else {
             // An empty `.fdt` was written to its file as the buffer filled.
-            for (name, bytes) in [(&fdt_name, &fdt), (&fdx_name, &fdx), (&fdm_name, &fdm)] {
-                if !bytes.is_empty() {
-                    write_file(dir, name, bytes)?;
-                }
+            if !fdt.is_empty() {
+                write_file(dir, &fdt_name, &fdt)?;
+            }
+            for (name, bytes) in [(&fdx_name, &fdx), (&fdm_name, &fdm)] {
+                write_file(dir, name, bytes)?;
             }
             write_file(dir, &fnm_name, &fnm)?;
             vec![fdt_name, fdx_name, fdm_name, fnm_name]

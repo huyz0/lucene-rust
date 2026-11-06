@@ -207,8 +207,8 @@ pub(crate) struct StreamedStored {
     writer: stored_fields::StoredFieldsWriter,
     mode: stored_fields::Mode,
     fields: BTreeSet<i32>,
-    /// The segment name and id reserved for the buffer when its `.fdt` goes
-    /// to that segment's file as it fills ([`Self::on_disk`]).
+    /// The segment name and id reserved for the buffer once its `.fdt` goes
+    /// to that segment's file ([`Self::move_to_disk`]).
     reserved: Option<(String, [u8; ID_LENGTH])>,
 }
 
@@ -226,29 +226,33 @@ impl StreamedStored {
         }
     }
 
+    /// Whether the buffered `.fdt` has grown enough to go to disk
+    /// ([`Self::move_to_disk`]).
+    pub(crate) fn wants_disk(&self) -> bool {
+        self.reserved.is_none() && self.writer.buffered_fdt_bytes() >= stored_fields::SPILL_BYTES
+    }
+
+    /// The `.fdt` of the segment `segment_name` in this buffer's mode.
+    pub(crate) fn fdt_name(&self, segment_name: &str) -> String {
+        super::segment_file_name(segment_name, self.mode.segment_suffix(), "fdt")
+    }
+
     /// Writes the `.fdt` to `out`, the file of the segment `segment_name`
-    /// with id `segment_id` the buffer will flush to, a chunk at a time as
-    /// documents arrive -- as Lucene's `StoredFieldsConsumer` writes it
-    /// through the buffer's segment -- so the buffer holds about a chunk of
-    /// stored fields rather than all of them.
-    pub(crate) fn on_disk(
-        mode: stored_fields::Mode,
+    /// with id `segment_id` the buffer will flush to: what is buffered now,
+    /// then a chunk at a time as documents arrive, so the buffer holds about
+    /// a chunk of stored fields rather than all of them.
+    pub(crate) fn move_to_disk(
+        &mut self,
         out: lucene_store::FsIndexOutput,
         segment_name: String,
         segment_id: [u8; ID_LENGTH],
-    ) -> Self {
-        let mut writer =
-            stored_fields::StoredFieldsWriter::new(mode, &segment_id, mode.segment_suffix());
-        writer.stream_to(out);
-        Self {
-            writer,
-            mode,
-            fields: BTreeSet::new(),
-            reserved: Some((segment_name, segment_id)),
-        }
+    ) {
+        self.writer.set_segment_id(&segment_id);
+        self.writer.stream_to(out);
+        self.reserved = Some((segment_name, segment_id));
     }
 
-    /// The segment name and id [`Self::on_disk`] reserved.
+    /// The segment name and id [`Self::move_to_disk`] reserved.
     pub(crate) fn reserved(&self) -> Option<&(String, [u8; ID_LENGTH])> {
         self.reserved.as_ref()
     }
@@ -270,8 +274,8 @@ impl StreamedStored {
     }
 
     /// The `.fdt`, `.fdx` and `.fdm` bytes for the segment `segment_id`,
-    /// with the field numbers any document stored. An [`Self::on_disk`]
-    /// buffer finishes and closes its file, and hands back an empty `.fdt`.
+    /// with the field numbers any document stored. A buffer moved to disk
+    /// finishes and closes its file, and hands back an empty `.fdt`.
     ///
     /// # Errors
     /// Closing the `.fdt` file.
@@ -293,14 +297,12 @@ impl StreamedStored {
         })
     }
 
-    /// Drops a buffer that will never flush, deleting its `.fdt` file.
-    pub(crate) fn discard(self, dir: &dyn lucene_store::Directory) {
-        let Some((name, _)) = &self.reserved else {
-            return;
-        };
-        let fdt = super::segment_file_name(name, self.mode.segment_suffix(), "fdt");
+    /// Drops a buffer that will never flush, returning the `.fdt` file it
+    /// was writing, for the caller to release.
+    pub(crate) fn discard(self) -> Option<String> {
+        let name = self.reserved.as_ref().map(|(name, _)| self.fdt_name(name));
         drop(self.writer);
-        let _ = dir.delete_file(&fdt);
+        name
     }
 }
 
