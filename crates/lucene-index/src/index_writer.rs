@@ -1223,6 +1223,20 @@ pub(crate) struct DocumentBuffer<'b> {
     /// The stored fields, already compressed as the documents arrived; the
     /// documents in `docs` then hold no values.
     pub(crate) stored: Option<&'b FinishedStored>,
+    /// Writes only the buffer's first documents: see [`BufferLimit`].
+    pub(crate) limit: Option<&'b BufferLimit>,
+}
+
+/// A flush of a buffer's first `docs` documents only, the buffer having
+/// grown since (unsorted buffers; `docs`, `explicit` and the per-document
+/// slices of the [`DocumentBuffer`] already hold just those): the postings
+/// beyond them are left out, and each field's document count is
+/// `doc_counts`'s.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct BufferLimit {
+    pub(crate) docs: i32,
+    /// By field number: how many of those documents have the field.
+    pub(crate) doc_counts: std::collections::HashMap<i32, i32>,
 }
 
 /// A buffer's explicit document fields: as structs, or packed as the
@@ -1231,6 +1245,8 @@ pub(crate) struct DocumentBuffer<'b> {
 pub(crate) enum ExplicitDocs<'b> {
     Fields(&'b [ExplicitFields]),
     Packed(&'b packed_fields::PackedFields),
+    /// The first documents of a packed buffer that grew since.
+    PackedPrefix(&'b packed_fields::PackedFields, usize),
 }
 
 impl ExplicitDocs<'_> {
@@ -1238,6 +1254,7 @@ impl ExplicitDocs<'_> {
         match self {
             ExplicitDocs::Fields(f) => f.len(),
             ExplicitDocs::Packed(p) => p.len(),
+            ExplicitDocs::PackedPrefix(p, n) => p.len().min(*n),
         }
     }
 
@@ -1247,7 +1264,7 @@ impl ExplicitDocs<'_> {
                 .iter()
                 .map(ExplicitFields::ram_bytes)
                 .fold(0, usize::saturating_add),
-            ExplicitDocs::Packed(p) => p.ram_bytes(),
+            ExplicitDocs::Packed(p) | ExplicitDocs::PackedPrefix(p, _) => p.ram_bytes(),
         }
     }
 
@@ -1262,6 +1279,7 @@ impl ExplicitDocs<'_> {
                 fields.iter().enumerate().try_for_each(|(i, d)| f(i, d))
             }
             ExplicitDocs::Packed(p) => p.for_each(|i, d| f(i, d)),
+            ExplicitDocs::PackedPrefix(p, n) => p.for_each_upto(*n, |i, d| f(i, d)),
         }
     }
 
@@ -1281,22 +1299,29 @@ impl ExplicitDocs<'_> {
                     RoleValues::Borrowed(fields, Role::Points),
                 ])
             }
-            ExplicitDocs::Packed(p) => {
-                let mut roles = [Role::DocValues, Role::Points]
-                    .map(|_| (Vec::new(), Vec::with_capacity(p.len())));
-                p.for_each(|i, d| {
-                    f(i, d)?;
-                    for ((values, ends), role) in
-                        roles.iter_mut().zip([Role::DocValues, Role::Points])
-                    {
-                        values.append(role.values_mut(d));
-                        ends.push(values.len());
-                    }
-                    Ok(())
-                })?;
-                Ok(roles.map(|(values, ends)| RoleValues::Flat { values, ends }))
-            }
+            ExplicitDocs::Packed(p) => Self::packed_roles(p, p.len(), f),
+            ExplicitDocs::PackedPrefix(p, n) => Self::packed_roles(p, *n, f),
         }
+    }
+
+    /// [`Self::for_each_with_roles`] over a packed buffer's first `n`
+    /// documents.
+    fn packed_roles<'b>(
+        p: &'b packed_fields::PackedFields,
+        n: usize,
+        mut f: impl FnMut(usize, &ExplicitFields) -> Result<()>,
+    ) -> Result<[RoleValues<'b>; 2]> {
+        let mut roles = [Role::DocValues, Role::Points]
+            .map(|_| (Vec::new(), Vec::with_capacity(p.len().min(n))));
+        p.for_each_upto(n, |i, d| {
+            f(i, d)?;
+            for ((values, ends), role) in roles.iter_mut().zip([Role::DocValues, Role::Points]) {
+                values.append(role.values_mut(d));
+                ends.push(values.len());
+            }
+            Ok(())
+        })?;
+        Ok(roles.map(|(values, ends)| RoleValues::Flat { values, ends }))
     }
 }
 
@@ -5726,6 +5751,7 @@ impl<'d> IndexWriter<'d> {
             old_to_new: None,
             has_blocks: self.pending_has_blocks,
             stored: None,
+            limit: None,
         }
     }
 
