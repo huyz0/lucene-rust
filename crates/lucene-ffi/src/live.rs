@@ -168,15 +168,81 @@ pub(crate) struct Warmer {
     /// since [`epoch_ms`]'s epoch.
     last_lean: AtomicU64,
     running: std::sync::atomic::AtomicBool,
+    /// The chunks being written now, by any thread.
+    writing: Mutex<Vec<Writing>>,
+    /// Notified when a chunk of `writing` is done (kept or not).
+    written: std::sync::Condvar,
+}
+
+/// A chunk of buffer `buffer`'s documents `start..end` being written.
+#[derive(Clone)]
+struct Writing {
+    buffer: u64,
+    start: i32,
+    end: i32,
+    postings: bool,
+    end_totals: Totals,
+}
+
+/// Takes its chunk off [`Warmer::writing`] when dropped.
+struct WritingGuard<'a> {
+    warmer: &'a Warmer,
+    key: (u64, i32, i32, bool),
+}
+
+impl Drop for WritingGuard<'_> {
+    fn drop(&mut self) {
+        let mut writing = self
+            .warmer
+            .writing
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        writing.retain(|x| (x.buffer, x.start, x.end, x.postings) != self.key);
+        drop(writing);
+        self.warmer.written.notify_all();
+    }
 }
 
 impl Warmer {
     fn running(&self) -> bool {
         self.running.load(Ordering::Acquire)
     }
+
+    fn writing(&self) -> Vec<Writing> {
+        self.writing
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Waits while buffer `buffer`'s chunk `start..end` is being written.
+    fn wait_written(&self, buffer: u64, start: i32, end: i32) {
+        let mut writing = self
+            .writing
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        while writing
+            .iter()
+            .any(|x| x.buffer == buffer && x.start == start && x.end == end)
+        {
+            writing = self
+                .written
+                .wait(writing)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+    }
+
+    fn start_writing(&self, w: Writing) -> WritingGuard<'_> {
+        let key = (w.buffer, w.start, w.end, w.postings);
+        self.writing
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(w);
+        WritingGuard { warmer: self, key }
+    }
 }
 
-const WARM_EVERY: std::time::Duration = std::time::Duration::from_millis(20);
+const WARM_EVERY: std::time::Duration = std::time::Duration::from_millis(5);
 const WARM_IDLE: u64 = 1000;
 /// Fewer new documents than this are left for the next search to write.
 const WARM_MIN_DOCS: i32 = 256;
@@ -239,7 +305,7 @@ fn warm(w: &EngineWriter) -> lucene_index::index_writer::Result<()> {
     // with the warmer marked running.
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         view.buffers.iter().filter(|b| b.in_slot).try_for_each(|b| {
-            let plan = plan(&w.live_chunks(), b, i32::MAX);
+            let plan = plan(&w.live_chunks(), b, i32::MAX, &[]);
             let tail = plan.last().map_or(0, |p| p.end.saturating_sub(p.start));
             if tail < WARM_MIN_DOCS || writes_nothing(w, b, &plan, false) {
                 return Ok(());
@@ -253,6 +319,26 @@ fn warm(w: &EngineWriter) -> lucene_index::index_writer::Result<()> {
             "warming the buffers panicked".into(),
         ))
     })
+}
+
+/// The chunk the next view of `w`'s first buffer would write last, and
+/// that chunk marked as being written until the guard is dropped.
+#[cfg(test)]
+pub(crate) fn hold_tail(w: &EngineWriter) -> Option<(i32, i32, impl Drop + '_)> {
+    let view = w.writer().open_live_view(None).ok()?;
+    let tail = view.buffers.first().filter(|b| b.in_slot).and_then(|b| {
+        let plan = plan(&w.live_chunks(), b, i32::MAX, &[]);
+        plan.last().filter(|p| p.chunk.is_none()).map(|p| Writing {
+            buffer: b.id,
+            start: p.start,
+            end: p.end,
+            postings: true,
+            end_totals: Arc::clone(&p.end_totals),
+        })
+    });
+    w.writer().close_live_view(&view);
+    let tail = tail?;
+    Some((tail.start, tail.end, w.live_warmer().start_writing(tail)))
 }
 
 /// The most handles of requests' terms a view keeps; a request past them
@@ -321,7 +407,7 @@ const SEARCH_ABSORB_DOCS: i32 = 4096;
 /// past them, absorbing the last chunks while they are small beside them
 /// and the documents absorbed stay within `absorb_docs`. A buffer no longer
 /// in its slot, or with no chunk written yet, is one.
-fn plan(chunks: &Chunks, b: &ViewBuffer, absorb_docs: i32) -> Vec<Planned> {
+fn plan(chunks: &Chunks, b: &ViewBuffer, absorb_docs: i32, writing: &[Writing]) -> Vec<Planned> {
     let totals = Arc::new(b.field_totals());
     let chain_of = |postings: bool| -> Vec<&Arc<Chunk>> {
         match chunks.get(&(b.id, postings)) {
@@ -338,7 +424,20 @@ fn plan(chunks: &Chunks, b: &ViewBuffer, absorb_docs: i32) -> Vec<Planned> {
     };
     let mut kept = chain.len();
     let covered = chain.last().map_or(0, |c| c.end);
-    if covered < b.max_doc {
+    // A chunk being written from one of the chain's boundaries is planned
+    // as it is: the view waits for it and writes only what follows.
+    let pending = writing.iter().find(|x| {
+        x.buffer == b.id
+            && x.end > covered
+            && x.end < b.max_doc
+            && (x.start == covered || chain.iter().any(|c| c.start == x.start))
+    });
+    if let Some(x) = pending {
+        kept = chain
+            .iter()
+            .position(|c| c.start == x.start)
+            .unwrap_or(chain.len());
+    } else if covered < b.max_doc {
         let mut acc = b.max_doc.saturating_sub(covered);
         while let Some(last) = kept.checked_sub(1).and_then(|i| chain.get(i)) {
             let size = last.end.saturating_sub(last.start);
@@ -360,6 +459,16 @@ fn plan(chunks: &Chunks, b: &ViewBuffer, absorb_docs: i32) -> Vec<Planned> {
             chunk: Some(Arc::clone(c)),
         });
         from = Arc::clone(&c.totals);
+    }
+    if let Some(x) = pending {
+        out.push(Planned {
+            start: x.start,
+            end: x.end,
+            start_totals: from,
+            end_totals: Arc::clone(&x.end_totals),
+            chunk: None,
+        });
+        from = Arc::clone(&x.end_totals);
     }
     let start = out.last().map_or(0, |p| p.end);
     if start < b.max_doc || out.is_empty() {
@@ -504,6 +613,7 @@ pub unsafe extern "C" fn ffi_engine_writer_live_view_open(
         let commit = (commit_generation >= 0).then_some(commit_generation);
         let view = w.writer().open_live_view(commit).map_err(live_error)?;
         let plans: Vec<Vec<Planned>> = {
+            let writing = w.live_warmer().writing();
             let chunks = w.live_chunks();
             let absorb = if w.live_warmer().running() {
                 SEARCH_ABSORB_DOCS
@@ -512,7 +622,7 @@ pub unsafe extern "C" fn ffi_engine_writer_live_view_open(
             };
             view.buffers
                 .iter()
-                .map(|b| plan(&chunks, b, absorb))
+                .map(|b| plan(&chunks, b, absorb, &writing))
                 .collect()
         };
         // A buffer gone from its slot is read as one segment by later views.
@@ -920,6 +1030,7 @@ fn buffer_segments(
             out.push((c.reader.clone(), !c.postings));
             continue;
         }
+        w.live_warmer().wait_written(b.id, p.start, p.end);
         let cached = w.live_chunks().get(&(b.id, postings)).and_then(|c| {
             c.iter()
                 .find(|c| c.start == p.start && c.end == p.end)
@@ -929,6 +1040,15 @@ fn buffer_segments(
             out.push((c.reader.clone(), !c.postings));
             continue;
         }
+        let _writing = b.in_slot.then(|| {
+            w.live_warmer().start_writing(Writing {
+                buffer: b.id,
+                start: p.start,
+                end: p.end,
+                postings,
+                end_totals: Arc::clone(&p.end_totals),
+            })
+        });
         let dir = lucene_store::ByteBuffersDirectory::new();
         let name = format!("_live{}_{}", p.start, p.end);
         let starts: Vec<i32> = plan.iter().map(|p| p.end).collect();

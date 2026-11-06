@@ -5008,7 +5008,17 @@ mod tests {
         let mut ids: Vec<String> = Vec::new();
         let mut leaves_seen = Vec::new();
         for round in 0..24usize {
-            for _ in 0..1 + round % 5 {
+            // Every third view opens while a chunk of the documents before
+            // its last one is still being written: it reads that chunk as it
+            // is and writes only the documents after it.
+            let ew = lookup(h).unwrap();
+            let hold = round % 3 == 2;
+            let mut held = None;
+            let n = 1 + round % 5 + usize::from(hold);
+            for k in 0..n {
+                if hold && k + 1 == n {
+                    held = crate::live::hold_tail(&ew);
+                }
                 let id = if added % 7 == 6 {
                     ids[added / 2].clone()
                 } else {
@@ -5027,6 +5037,10 @@ mod tests {
             let blob = unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec();
             // SAFETY: the buffer the call gave, freed once.
             unsafe { crate::ffm_bridge::ffi_jvm_free_bytes(ptr, len) };
+            let held = held.map(|(start, end, guard)| {
+                drop(guard);
+                (start, end)
+            });
             let mut whole = 0u64;
             // SAFETY: a live out-pointer.
             let rc = unsafe {
@@ -5069,6 +5083,19 @@ mod tests {
             }
             assert_eq!(at, blob.len());
             assert_eq!(sizes, readers.iter().map(|r| r.max_doc).collect::<Vec<_>>());
+            if let Some((start, end)) = held {
+                let ends: Vec<i32> = sizes
+                    .iter()
+                    .scan(0, |at, n| {
+                        *at += n;
+                        Some(*at)
+                    })
+                    .collect();
+                assert!(
+                    ends.contains(&end),
+                    "round {round}: {ends:?} lack {start}..{end}"
+                );
+            }
             leaves_seen.push(readers.len());
 
             // Every live document's postings, by sequence number.
