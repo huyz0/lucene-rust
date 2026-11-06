@@ -104,13 +104,15 @@ impl Whole {
 /// reads the handle of every term.
 const REQUEST_HANDLES: usize = 16;
 
-/// A request's blobs as one key: the query's length, the query, the tree.
-fn request_key(query: &[u8], tree: Option<&[u8]>) -> Vec<u8> {
+/// A request's blobs as one key: each but the last after its length.
+fn request_key(query: &[u8], tree: Option<&[u8]>, extra: Option<&[u8]>) -> Vec<u8> {
     let tree = tree.unwrap_or_default();
     let mut key = Vec::new();
-    key.extend_from_slice(&(query.len() as u64).to_le_bytes());
-    key.extend_from_slice(query);
-    key.extend_from_slice(tree);
+    for part in [query, tree] {
+        key.extend_from_slice(&(part.len() as u64).to_le_bytes());
+        key.extend_from_slice(part);
+    }
+    key.extend_from_slice(extra.unwrap_or_default());
     key
 }
 
@@ -438,16 +440,17 @@ pub extern "C" fn ffi_live_view_close(view: u64) -> i32 {
 /// the buffers' own, are its deleted documents. The handle belongs to the
 /// view: closing the view closes it, and the caller must not.
 ///
-/// With a request (`query` as [`decode_request`] reads it, and `tree` an
-/// aggregation tree or empty), the buffers are written without their
-/// postings and the handle holds only the terms the request reads: it
-/// serves searches of that request alone. Without one (`query_len` 0), or
-/// for a request reading what that cannot give, the handle holds every
-/// term.
+/// With a request (`query` as [`decode_request`] reads it, `tree` an
+/// aggregation tree or empty, and `extra` more queries the search runs, a
+/// rescore's, each an `i32` length then the blob, or empty), the buffers
+/// are written without their postings and the handle holds only the terms
+/// the request reads: it serves searches of that request alone. Without
+/// one (`query_len` 0), or for a request reading what that cannot give,
+/// the handle holds every term.
 ///
 /// # Safety
-/// `out_handle` valid for one write; `query`/`tree` readable for their
-/// lengths when non-zero.
+/// `out_handle` valid for one write; `query`/`tree`/`extra` readable for
+/// their lengths when non-zero.
 #[no_mangle]
 pub unsafe extern "C" fn ffi_live_view_reader(
     handle: u64,
@@ -456,6 +459,8 @@ pub unsafe extern "C" fn ffi_live_view_reader(
     query_len: usize,
     tree: *const u8,
     tree_len: usize,
+    extra: *const u8,
+    extra_len: usize,
     out_handle: *mut u64,
 ) -> i32 {
     guard(|| {
@@ -463,6 +468,10 @@ pub unsafe extern "C" fn ffi_live_view_reader(
             return Err(FfiStatus::NullPointer);
         }
         let v = view(view_id)?;
+        // SAFETY: caller contract.
+        let extra = (extra_len > 0)
+            .then(|| unsafe { bytes_from_raw(extra, extra_len) })
+            .transpose()?;
         // SAFETY: caller contract.
         let query = (query_len > 0)
             .then(|| unsafe { bytes_from_raw(query, query_len) })
@@ -472,13 +481,13 @@ pub unsafe extern "C" fn ffi_live_view_reader(
             .then(|| unsafe { bytes_from_raw(tree, tree_len) })
             .transpose()?;
         let mut request = match query {
-            Some(q) => overlay_request(q, tree)?,
+            Some(q) => overlay_request(q, tree, extra)?,
             None => None,
         };
         let mut key = request
             .as_ref()
             .zip(query)
-            .map(|(_, q)| request_key(q, tree));
+            .map(|(_, q)| request_key(q, tree, extra));
         {
             let whole = v
                 .whole
@@ -750,13 +759,34 @@ fn buffer_segments(
 /// The terms the request in `blob` reads from the buffers when it runs
 /// over chunks without postings: its query's (`blob` as
 /// [`decode_request`] reads it), then an aggregation tree's filter and
-/// global queries (when `tree` holds one). `None` when it reads what the
-/// buffers cannot give that way (a multi-term query, among others).
-fn overlay_request(query: &[u8], tree: Option<&[u8]>) -> Result<Option<LiveRequest>, FfiStatus> {
+/// global queries (when `tree` holds one), and `extra`'s queries (as
+/// [`ffi_live_view_reader`] lists them). `None` when it reads what the
+/// buffers cannot give that way (a fuzzy or span query, among others).
+fn overlay_request(
+    query: &[u8],
+    tree: Option<&[u8]>,
+    extra: Option<&[u8]>,
+) -> Result<Option<LiveRequest>, FfiStatus> {
     let (query, _, _) = decode_request(query)?;
     let main = Clause::Boolean(Box::new(boolean_of(&query)));
     let decoded = tree.map(crate::jvm_aggs::decode_tree).transpose()?;
     let mut clauses = vec![main];
+    let mut rest = extra.unwrap_or_default();
+    while !rest.is_empty() {
+        let len = rest
+            .get(..4)
+            .map(|b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+            .and_then(|n| usize::try_from(n).ok())
+            .filter(|&n| n <= rest.len().saturating_sub(4))
+            .ok_or_else(|| {
+                set_last_error("live view: a request query of a bad length");
+                FfiStatus::Decode
+            })?;
+        let blob = rest.get(4..4 + len).unwrap_or_default();
+        let (q, _, _) = decode_request(blob)?;
+        clauses.push(Clause::Boolean(Box::new(boolean_of(&q))));
+        rest = rest.get(4 + len..).unwrap_or_default();
+    }
     if let Some(t) = &decoded {
         let mut filters = Vec::new();
         for n in t

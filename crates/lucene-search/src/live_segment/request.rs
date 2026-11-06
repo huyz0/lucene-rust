@@ -5,7 +5,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use lucene_codecs::postings_writer::TermPostings;
 use lucene_index::concurrent_writer::{
-    FieldTotals, LiveBuffer, LiveBufferField, LiveFieldRequest, LiveRequest, LiveSnapshot,
+    FieldTotals, LiveBuffer, LiveBufferField, LiveFieldRequest, LivePattern, LiveRequest,
+    LiveSnapshot,
 };
 
 use super::{LiveField, LiveSegment};
@@ -16,7 +17,7 @@ use crate::Result;
 /// positions; `None` when it has a clause the buffers cannot answer yet
 /// (multi-term, points, doc values, spans and other extended queries).
 pub fn live_request(clause: &Clause) -> Option<LiveRequest> {
-    let mut fields: BTreeMap<&str, (BTreeSet<&[u8]>, bool)> = BTreeMap::new();
+    let mut fields = Fields::new();
     collect(clause, &mut fields, false)?;
     Some(request_of(fields))
 }
@@ -24,9 +25,10 @@ pub fn live_request(clause: &Clause) -> Option<LiveRequest> {
 /// The terms `clauses` read, as [`live_request`], for searching segments
 /// that hold the documents' doc values and points but none of their terms
 /// ([`crate::directory_reader::SegmentReader::with_postings`]): a points
-/// clause reads nothing from the buffers then.
+/// clause reads nothing from the buffers then, and a prefix, wildcard or
+/// regexp clause reads the buffered terms it matches.
 pub fn whole_request(clauses: &[&Clause]) -> Option<LiveRequest> {
-    let mut fields: BTreeMap<&str, (BTreeSet<&[u8]>, bool)> = BTreeMap::new();
+    let mut fields = Fields::new();
     for c in clauses {
         collect(c, &mut fields, true)?;
     }
@@ -37,24 +39,39 @@ fn request_of(fields: Fields<'_>) -> LiveRequest {
     LiveRequest {
         fields: fields
             .into_iter()
-            .map(|(field, (terms, positions))| LiveFieldRequest {
+            .map(|(field, f)| LiveFieldRequest {
                 field: field.to_string(),
-                terms: terms.into_iter().map(<[u8]>::to_vec).collect(),
-                positions,
+                terms: f.terms.into_iter().map(<[u8]>::to_vec).collect(),
+                positions: f.positions,
+                patterns: f.patterns,
             })
             .collect(),
     }
 }
 
-type Fields<'a> = BTreeMap<&'a str, (BTreeSet<&'a [u8]>, bool)>;
+/// What a request reads of one field.
+#[derive(Default)]
+struct Field<'a> {
+    terms: BTreeSet<&'a [u8]>,
+    positions: bool,
+    patterns: Vec<LivePattern>,
+}
+
+type Fields<'a> = BTreeMap<&'a str, Field<'a>>;
 
 fn add<'a>(fields: &mut Fields<'a>, field: &'a str, term: &'a [u8], positions: bool) {
     let e = fields.entry(field).or_default();
-    e.0.insert(term);
-    e.1 |= positions;
+    e.terms.insert(term);
+    e.positions |= positions;
 }
 
-fn collect<'a>(clause: &'a Clause, fields: &mut Fields<'a>, points: bool) -> Option<()> {
+fn add_pattern<'a>(fields: &mut Fields<'a>, field: &'a str, pattern: LivePattern) {
+    fields.entry(field).or_default().patterns.push(pattern);
+}
+
+/// With `lean`, for segments holding doc values and points but no terms:
+/// points clauses read nothing and multi-term clauses read patterns.
+fn collect<'a>(clause: &'a Clause, fields: &mut Fields<'a>, lean: bool) -> Option<()> {
     match clause {
         Clause::Term(t) => add(fields, &t.field, &t.term, false),
         Clause::TermInSet(q) => {
@@ -80,18 +97,35 @@ fn collect<'a>(clause: &'a Clause, fields: &mut Fields<'a>, points: bool) -> Opt
                 .chain(&b.should)
                 .chain(&b.must_not)
             {
-                collect(c, fields, points)?;
+                collect(c, fields, lean)?;
             }
         }
         Clause::DisjunctionMax(d) => {
             for c in &d.disjuncts {
-                collect(c, fields, points)?;
+                collect(c, fields, lean)?;
             }
         }
-        Clause::ConstantScore(c) => collect(&c.inner, fields, points)?,
-        Clause::Boost(b) => collect(&b.inner, fields, points)?,
+        Clause::ConstantScore(c) => collect(&c.inner, fields, lean)?,
+        Clause::Boost(b) => collect(&b.inner, fields, lean)?,
         Clause::MatchAllDocs(_) | Clause::MatchNoDocs(_) => {}
-        Clause::PointsRange(_) if points => {}
+        Clause::PointsRange(_) if lean => {}
+        Clause::Prefix(q) if lean => add_pattern(
+            fields,
+            &q.field,
+            LivePattern::Wildcard(lucene_codecs::wildcard::WildcardPattern::prefix(&q.prefix)),
+        ),
+        Clause::Wildcard(q) if lean => add_pattern(
+            fields,
+            &q.field,
+            LivePattern::Wildcard(lucene_codecs::wildcard::WildcardPattern::new(&q.pattern)),
+        ),
+        Clause::Regexp(q) if lean => add_pattern(
+            fields,
+            &q.field,
+            LivePattern::Regexp(
+                lucene_codecs::regexp::RegexpPattern::new(q.pattern.as_bytes()).ok()?,
+            ),
+        ),
         _ => return None,
     }
     Some(())
