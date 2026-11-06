@@ -829,35 +829,54 @@ impl QueryScorer for ExRabitqQueryScorer<'_> {
             self.q.block_len(scores.len()),
             "codes must hold one code per score"
         );
-        let euclidean = similarity == Similarity::Euclidean;
-        let tan = TAN_CEILING[usize::from(self.q.bits)];
-        let doc = tan * self.z_norm / (self.q.dims as f32).sqrt();
-        let query = self.step * (1.0 + tan * tan).sqrt() / 12f32.sqrt();
-        let per_r = crate::BOUND_CONFIDENCE
-            * (doc * doc + query * query).sqrt()
-            * if euclidean { 2.0 } else { 1.0 };
-        let (planes, block_bytes, code_len) =
-            (self.q.planes(), self.q.block_bytes(), self.q.code_len());
-        let terms_at = usize::from(self.q.bits) * self.q.groups() * 16;
+        let per_r = self.margin_per_r();
         for (j, (b, &s)) in bounds.iter_mut().zip(scores).enumerate() {
-            let at = if planes {
-                (j / BLOCK) * block_bytes + terms_at + (2 * BLOCK + j % BLOCK) * 4
-            } else {
-                j * code_len + self.q.packed() + 8
-            };
-            let extra = f32_at(codes, at);
-            let r2 = if euclidean {
-                extra
-            } else {
-                1.0 - 2.0 * extra - self.centroid_norm2
-            };
-            *b = crate::score_margin(similarity, s, per_r * r2.max(0.0).sqrt());
+            *b = self.margin(codes, j, s, per_r);
         }
         true
+    }
+
+    fn error_bound(&self, codes: &[u8], index: usize, score: f32) -> Option<f32> {
+        (self.q.similarity != Similarity::MaximumInnerProduct)
+            .then(|| self.margin(codes, index, score, self.margin_per_r()))
     }
 }
 
 impl ExRabitqQueryScorer<'_> {
+    /// The raw error margin per unit of `|r|` (see
+    /// [`QueryScorer::error_bounds`]).
+    fn margin_per_r(&self) -> f32 {
+        let tan = TAN_CEILING[usize::from(self.q.bits)];
+        let doc = tan * self.z_norm / (self.q.dims as f32).sqrt();
+        let query = self.step * (1.0 + tan * tan).sqrt() / 12f32.sqrt();
+        let deviation = (doc * doc + query * query).sqrt();
+        if self.q.similarity == Similarity::Euclidean {
+            2.0 * crate::BOUND_CONFIDENCE * deviation
+        } else {
+            crate::BOUND_CONFIDENCE * deviation
+        }
+    }
+
+    /// The error margin of code `j` of the block `codes`, estimated `score`.
+    // ARITH: callers pass a `j` inside `codes`, so every offset is too.
+    #[allow(clippy::arithmetic_side_effects)]
+    #[inline]
+    fn margin(&self, codes: &[u8], j: usize, score: f32, per_r: f32) -> f32 {
+        let at = if self.q.planes() {
+            let terms = usize::from(self.q.bits) * self.q.groups() * 16;
+            (j / BLOCK) * self.q.block_bytes() + terms + (2 * BLOCK + j % BLOCK) * 4
+        } else {
+            j * self.q.code_len() + self.q.packed() + 8
+        };
+        let extra = f32_at(codes, at);
+        let r2 = if self.q.similarity == Similarity::Euclidean {
+            extra
+        } else {
+            1.0 - 2.0 * extra - self.centroid_norm2
+        };
+        crate::score_margin(self.q.similarity, score, per_r * r2.max(0.0).sqrt())
+    }
+
     /// The estimate of `<r, z>` from the integer dot product `<u, v>` and a
     /// code's `f` and `g`.
     #[inline]

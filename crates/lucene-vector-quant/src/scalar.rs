@@ -272,6 +272,36 @@ impl Quantizer for ScalarQuantizer {
     }
 }
 
+impl ScalarQueryScorer<'_> {
+    /// The bound on an inner product's error (see
+    /// [`QueryScorer::error_bounds`]).
+    fn dot_error(&self) -> f32 {
+        let dims = self.q.dimension as f32;
+        let alpha = self.q.alpha();
+        let interval = &self.q.interval;
+        let largest = interval
+            .lower_quantile()
+            .abs()
+            .max(interval.upper_quantile().abs());
+        alpha / 2.0 * (dims * largest + self.query_abs_sum) + dims * alpha * alpha / 4.0
+    }
+
+    /// The margin of an estimated `score`.
+    #[inline]
+    fn margin(&self, score: f32, dot_error: f32) -> f32 {
+        let similarity = self.q.similarity;
+        let raw_error = if similarity == Similarity::Euclidean {
+            let (dims, alpha) = (self.q.dimension as f32, self.q.alpha());
+            // A zero score is an infinite distance.
+            let d = (1.0 / score - 1.0).max(0.0).sqrt();
+            alpha * (2.0 * dims.sqrt() * d + dims * alpha)
+        } else {
+            dot_error
+        };
+        crate::score_margin(similarity, score, raw_error)
+    }
+}
+
 /// A query quantized once with the field's interval.
 #[derive(Debug)]
 struct ScalarQueryScorer<'q> {
@@ -300,27 +330,15 @@ impl QueryScorer for ScalarQueryScorer<'_> {
             self.q.code_len().checked_mul(scores.len()),
             "codes must hold one code per score"
         );
-        let similarity = self.q.similarity;
-        let dims = self.q.dimension as f32;
-        let alpha = self.q.alpha();
-        let interval = &self.q.interval;
-        let largest = interval
-            .lower_quantile()
-            .abs()
-            .max(interval.upper_quantile().abs());
-        let dot_error =
-            alpha / 2.0 * (dims * largest + self.query_abs_sum) + dims * alpha * alpha / 4.0;
+        let dot_error = self.dot_error();
         for (b, &s) in bounds.iter_mut().zip(scores) {
-            let raw_error = if similarity == Similarity::Euclidean {
-                // A zero score is an infinite distance.
-                let d = (1.0 / s - 1.0).max(0.0).sqrt();
-                alpha * (2.0 * dims.sqrt() * d + dims * alpha)
-            } else {
-                dot_error
-            };
-            *b = crate::score_margin(similarity, s, raw_error);
+            *b = self.margin(s, dot_error);
         }
         true
+    }
+
+    fn error_bound(&self, _codes: &[u8], _index: usize, score: f32) -> Option<f32> {
+        Some(self.margin(score, self.dot_error()))
     }
 
     fn score(&self, code: &[u8]) -> f32 {

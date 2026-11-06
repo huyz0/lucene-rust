@@ -155,10 +155,8 @@ impl QueryScorer for NoisyScorer<'_> {
         });
         exact - margin * 0.9 * ((hash >> 40) as f32 / (1u64 << 24) as f32)
     }
-    fn error_bounds(&self, _: &[u8], scores: &[f32], bounds: &mut [f32]) -> bool {
-        assert_eq!(scores.len(), bounds.len());
-        bounds.fill(self.q.noisy.margin);
-        self.q.noisy.report
+    fn error_bound(&self, _: &[u8], _: usize, _: f32) -> Option<f32> {
+        self.q.noisy.report.then_some(self.q.noisy.margin)
     }
 }
 

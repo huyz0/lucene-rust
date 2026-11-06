@@ -545,38 +545,14 @@ impl QueryScorer for OsqQueryScorer<'_> {
             self.q.block_len(scores.len()),
             "codes must hold one code per score"
         );
-        let terms = self.terms();
-        let similarity = self.q.similarity;
-        let raw_scale = crate::BOUND_CONFIDENCE
-            * if similarity == Similarity::Euclidean {
-                2.0
-            } else {
-                1.0
-            };
-        let fast = self.q.fast_scan_planes() > 0;
-        let (block_bytes, nibbles) = (self.q.fast_scan_block_bytes(), self.luts.len());
-        let code_len = self.q.code_len();
         for (j, (b, &s)) in bounds.iter_mut().zip(scores).enumerate() {
-            let at = if fast {
-                let (block, lane) = (j / FAST_SCAN_BLOCK, j % FAST_SCAN_BLOCK);
-                [
-                    block * block_bytes + nibbles + lane * 4,
-                    block * block_bytes + nibbles + (FAST_SCAN_BLOCK + lane) * 4,
-                ]
-            } else {
-                [
-                    j * code_len + self.q.packed,
-                    j * code_len + self.q.packed + 4,
-                ]
-            };
-            let (ax, bx) = (f32_at(codes, at[0]), f32_at(codes, at[1]));
-            let half_lx = (bx - ax).abs() * terms.scale / 2.0;
-            let doc = self.residual_norm * half_lx;
-            let query = ax.abs().max(bx.abs()) * self.query_error;
-            let sigma = (doc * doc + query * query).sqrt();
-            *b = crate::score_margin(similarity, s, raw_scale * sigma);
+            *b = self.margin(codes, j, s);
         }
         true
+    }
+
+    fn error_bound(&self, codes: &[u8], index: usize, score: f32) -> Option<f32> {
+        Some(self.margin(codes, index, score))
     }
 }
 
@@ -682,6 +658,34 @@ impl OsqQueryScorer<'_> {
                 }
             }
         }
+    }
+
+    /// The error margin of code `j` of the block `codes`, estimated `score`
+    /// (see [`QueryScorer::error_bounds`]).
+    // ARITH: callers pass a `j` inside `codes`, so every offset is too.
+    #[allow(clippy::arithmetic_side_effects)]
+    #[inline]
+    fn margin(&self, codes: &[u8], j: usize, score: f32) -> f32 {
+        let at = if self.q.fast_scan_planes() > 0 {
+            let (block, lane) = (j / FAST_SCAN_BLOCK, j % FAST_SCAN_BLOCK);
+            let terms = block * self.q.fast_scan_block_bytes() + self.luts.len();
+            [terms + lane * 4, terms + (FAST_SCAN_BLOCK + lane) * 4]
+        } else {
+            let tail = j * self.q.code_len() + self.q.packed;
+            [tail, tail + 4]
+        };
+        let (ax, bx) = (f32_at(codes, at[0]), f32_at(codes, at[1]));
+        let scale = SCALE_LUT[usize::from(self.q.encoding.bits()).saturating_sub(1)];
+        let doc = self.residual_norm * (bx - ax).abs() * scale / 2.0;
+        let query = ax.abs().max(bx.abs()) * self.query_error;
+        let sigma = (doc * doc + query * query).sqrt();
+        let similarity = self.q.similarity;
+        let raw_scale = if similarity == Similarity::Euclidean {
+            2.0 * crate::BOUND_CONFIDENCE
+        } else {
+            crate::BOUND_CONFIDENCE
+        };
+        crate::score_margin(similarity, score, raw_scale * sigma)
     }
 
     /// `Lucene104ScalarQuantizedVectorScorer.quantizedScore`: the integer dot

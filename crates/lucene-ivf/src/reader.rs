@@ -1050,7 +1050,8 @@ impl IvfField {
         }
         let mut top = TopN::new(size.min(self.entries()), self.entries() > self.count);
         let query_norm = simd::dot_f32(query, query).sqrt();
-        let (mut scores, mut margins) = (Vec::new(), Vec::new());
+        let mut scores = Vec::new();
+        // Margins only for the codes kept; off for good once unknown.
         let mut bounded = bounds;
         for &c in probes {
             if let Some(floor) = shared.and_then(SharedThreshold::floor) {
@@ -1069,10 +1070,6 @@ impl IvfField {
             }
             scores.resize(size, 0f32);
             scorer.score_block(codes, &mut scores);
-            if bounded {
-                margins.resize(size, 0f32);
-                bounded = scorer.error_bounds(codes, &scores, &mut margins);
-            }
             for (i, &score) in scores.iter().enumerate() {
                 if !top.competitive(score) {
                     continue;
@@ -1084,8 +1081,14 @@ impl IvfField {
                 if accept.is_some_and(|a| !a(doc)) {
                     continue;
                 }
-                let bound = match margins.get(i) {
-                    Some(&b) if bounded && !b.is_nan() => b.max(0.0),
+                let margin = if bounded {
+                    scorer.error_bound(codes, i, score)
+                } else {
+                    None
+                };
+                bounded = margin.is_some();
+                let bound = match margin {
+                    Some(b) if !b.is_nan() => b.max(0.0),
                     _ => f32::INFINITY,
                 };
                 top.offer(Candidate {

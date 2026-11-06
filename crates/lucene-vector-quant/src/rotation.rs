@@ -576,6 +576,10 @@ impl QueryScorer for RotatedQueryScorer<'_> {
     fn error_bounds(&self, codes: &[u8], scores: &[f32], bounds: &mut [f32]) -> bool {
         self.inner.error_bounds(codes, scores, bounds)
     }
+
+    fn error_bound(&self, codes: &[u8], index: usize, score: f32) -> Option<f32> {
+        self.inner.error_bound(codes, index, score)
+    }
 }
 
 #[cfg(test)]

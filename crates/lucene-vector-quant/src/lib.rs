@@ -221,6 +221,20 @@ pub trait QueryScorer {
         let _ = (codes, scores, bounds);
         false
     }
+
+    /// [`QueryScorer::error_bounds`] for one code: the margin of the code at
+    /// `index` of the block `codes` (laid out as for
+    /// [`QueryScorer::score_block`]), whose estimate is `score`, or `None`
+    /// (the default) when the scorer cannot bound its error. For an index
+    /// that needs margins only for the few codes it keeps.
+    ///
+    /// # Panics
+    ///
+    /// When `codes` holds no code at `index`.
+    fn error_bound(&self, codes: &[u8], index: usize, score: f32) -> Option<f32> {
+        let _ = (codes, index, score);
+        None
+    }
 }
 
 /// The standard deviations of estimate error a probabilistic error bound
@@ -545,7 +559,12 @@ mod tests {
             s.score_block(&block, &mut est);
             let mut bounds = vec![0f32; n];
             if !s.error_bounds(&block, &est, &mut bounds) {
+                assert_eq!(s.error_bound(&block, 0, est[0]), None);
                 return None;
+            }
+            // One code's margin is the block's.
+            for j in [0, 31, 32, n - 1] {
+                assert_eq!(s.error_bound(&block, j, est[j]), Some(bounds[j]));
             }
             for ((v, &e), &b) in data.chunks_exact(dim).zip(&est).zip(&bounds) {
                 assert!(b >= 0.0 && b.is_finite(), "{} {sim:?}: bound {b}", q.name());
@@ -626,6 +645,7 @@ mod tests {
     #[test]
     fn bounds_are_unknown_by_default() {
         assert!(!Constant.error_bounds(&[0; 4], &[1.0; 2], &mut [0.0; 2]));
+        assert_eq!(Constant.error_bound(&[0; 4], 1, 1.0), None);
     }
 
     #[test]
