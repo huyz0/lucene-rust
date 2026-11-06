@@ -1511,9 +1511,14 @@ impl StoredFieldsWriter {
             scratch: {
                 let mut scratch = Compressor::default();
                 if let Mode::Zstd(z) = mode {
-                    // Checked where a zstd mode is configured; an invalid
-                    // level is a programming error here.
-                    scratch.set_zstd_level(z.level).expect("a valid zstd level");
+                    // Out-of-range levels clamp to zstd's own range, as
+                    // libzstd itself does; `ZstdLucene104Codec::new` rejects
+                    // them up front.
+                    let levels = lucene_zstd::levels();
+                    let level = z.level.clamp(*levels.start(), *levels.end());
+                    scratch
+                        .set_zstd_level(level)
+                        .expect("a level inside zstd's range");
                 }
                 scratch
             },

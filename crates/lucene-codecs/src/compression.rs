@@ -151,8 +151,21 @@ impl Compressor {
             Compression::Dummy => out.write_bytes(payload),
             Compression::Lz4WithPreset => write_preset(Preset::Lz4, self, out, payload),
             Compression::DeflateWithPreset => write_preset(Preset::Deflate, self, out, payload),
-            Compression::Zstd => write_zstd(self.zstd(), out, payload, true),
-            Compression::ZstdNoDict => write_zstd(self.zstd(), out, payload, false),
+            Compression::Zstd | Compression::ZstdNoDict => {
+                let z = self.zstd.get_or_insert_with(|| {
+                    Box::new(
+                        lucene_zstd::Compressor::new(lucene_zstd::DEFAULT_LEVEL)
+                            .expect("the default level is valid"),
+                    )
+                });
+                write_zstd(
+                    z,
+                    &mut self.compressed,
+                    out,
+                    payload,
+                    compression == Compression::Zstd,
+                );
+            }
         }
     }
 
@@ -167,15 +180,6 @@ impl Compressor {
         }
         self.zstd = Some(Box::new(lucene_zstd::Compressor::new(level)?));
         Ok(())
-    }
-
-    fn zstd(&mut self) -> &mut lucene_zstd::Compressor {
-        self.zstd.get_or_insert_with(|| {
-            Box::new(
-                lucene_zstd::Compressor::new(lucene_zstd::DEFAULT_LEVEL)
-                    .expect("the default level is valid"),
-            )
-        })
     }
 }
 
@@ -744,7 +748,13 @@ const ZSTD_DICT_SIZE_FACTOR: usize = 6;
 // `len - dict_length` non-negative, the loop keeps `start < len` and
 // `start + l <= len`.
 #[allow(clippy::arithmetic_side_effects)]
-fn write_zstd(z: &mut lucene_zstd::Compressor, out: &mut Vec<u8>, payload: &[u8], dict: bool) {
+fn write_zstd(
+    z: &mut lucene_zstd::Compressor,
+    frame: &mut Vec<u8>,
+    out: &mut Vec<u8>,
+    payload: &[u8],
+    dict: bool,
+) {
     let len = payload.len();
     let dict_length = if dict {
         len / (NUM_SUB_BLOCKS * ZSTD_DICT_SIZE_FACTOR)
@@ -758,30 +768,32 @@ fn write_zstd(z: &mut lucene_zstd::Compressor, out: &mut Vec<u8>, payload: &[u8]
     out.write_vint(block_length as i32);
     let dictionary = &payload[..dict_length];
     if dict {
-        write_zstd_frame(out, |out| z.compress(dictionary, out), dict_length);
+        write_zstd_frame(out, frame, |f| z.compress(dictionary, f), dict_length);
     }
     // Java prepares the dictionary once per unit (`ZstdDictCompress`); so
     // does this, when there is one.
-    let prepared = (dict_length > 0)
-        .then(|| lucene_zstd::EncoderDictionary::new(dictionary, z.level()).ok())
-        .flatten();
+    let prepared = (dict_length > 0).then(|| {
+        lucene_zstd::EncoderDictionary::new(dictionary, z.level())
+            .expect("the compressor's own level is valid")
+    });
     let mut start = dict_length;
     while start < len {
         let l = block_length.min(len - start);
         let block = &payload[start..start + l];
         match &prepared {
-            Some(d) => write_zstd_frame(out, |out| z.compress_with_prepared(d, block, out), l),
-            None => write_zstd_frame(out, |out| z.compress(block, out), l),
+            Some(d) => write_zstd_frame(out, frame, |f| z.compress_with_prepared(d, block, f), l),
+            None => write_zstd_frame(out, frame, |f| z.compress(block, f), l),
         }
         start += l;
     }
 }
 
 /// One `vint compressedLength, frame` pair, or the vint `0` for no bytes.
-/// The length's slot is reserved first and the frame compressed straight
-/// into `out` behind it.
+/// The frame's length precedes it as a vint, so it is compressed into the
+/// writer's reusable `frame` buffer first and then copied behind the length.
 fn write_zstd_frame(
     out: &mut Vec<u8>,
+    frame: &mut Vec<u8>,
     compress: impl FnOnce(&mut Vec<u8>) -> lucene_zstd::Result<usize>,
     plain_len: usize,
 ) {
@@ -789,27 +801,11 @@ fn write_zstd_frame(
         out.write_vint(0);
         return;
     }
-    let mut frame = take_frame_buffer();
     frame.clear();
     // A valid level never fails; the levels are checked where they are set.
-    let n = compress(&mut frame).expect("zstd compression at a valid level");
+    let n = compress(frame).expect("zstd compression at a valid level");
     out.write_vint(n as i32);
-    out.extend_from_slice(&frame);
-    put_frame_buffer(frame);
-}
-
-thread_local! {
-    /// [`write_zstd_frame`]'s staging buffer: the frame's length precedes it
-    /// as a vint, so it is compressed aside first.
-    static FRAME: std::cell::Cell<Vec<u8>> = const { std::cell::Cell::new(Vec::new()) };
-}
-
-fn take_frame_buffer() -> Vec<u8> {
-    FRAME.with(std::cell::Cell::take)
-}
-
-fn put_frame_buffer(buf: Vec<u8>) {
-    FRAME.with(|cell| cell.set(buf));
+    out.extend_from_slice(frame);
 }
 
 /// Appends bytes `offset..offset + length` of one zstd unit (see
@@ -857,19 +853,22 @@ fn decompress_zstd(
     } else {
         &[]
     };
-    // The dictionary's buffer is this thread's, reused across units.
-    let mut dictionary = DictBuffer(ZSTD_DICT.with(std::cell::Cell::take));
-    dictionary.0.clear();
-    let dictionary = &mut dictionary.0;
+    // The dictionary goes into this thread's reusable scratch buffer, as
+    // the preset-dictionary modes' does.
+    let mut scratch = take_scratch(dict_length);
+    let dictionary = &mut scratch[..dict_length];
     let mut dict_ready = dict_length == 0;
-    let mut ensure_dict = |dictionary: &mut Vec<u8>| -> Result<()> {
+    let mut ensure_dict = |dictionary: &mut [u8]| -> Result<()> {
         if !dict_ready {
-            zstd_frame(
-                dict_frame,
-                lucene_zstd::Dictionary::None,
-                dict_length,
-                dictionary,
-            )?;
+            let n = lucene_zstd::with_decompressor(|d| {
+                d.decompress_to_slice(dict_frame, lucene_zstd::Dictionary::None, dictionary)
+            })
+            .map_err(|e| lucene_store::Error::Corrupted(format!("zstd stored fields unit: {e}")))?;
+            if n != dict_length {
+                return Err(lucene_store::Error::Corrupted(format!(
+                    "zstd dictionary frame holds {n} bytes, expected {dict_length}"
+                )));
+            }
             dict_ready = true;
         }
         Ok(())
@@ -902,21 +901,6 @@ fn decompress_zstd(
         plain += this_len;
     }
     Ok(())
-}
-
-thread_local! {
-    /// [`decompress_zstd`]'s dictionary buffer.
-    static ZSTD_DICT: std::cell::Cell<Vec<u8>> = const { std::cell::Cell::new(Vec::new()) };
-}
-
-/// Hands [`ZSTD_DICT`]'s buffer back when a unit is done, error or not.
-struct DictBuffer(Vec<u8>);
-
-impl Drop for DictBuffer {
-    fn drop(&mut self) {
-        let buf = std::mem::take(&mut self.0);
-        ZSTD_DICT.with(|cell| cell.set(buf));
-    }
 }
 
 /// One zstd frame of exactly `plain_len` bytes appended to `out`, on this

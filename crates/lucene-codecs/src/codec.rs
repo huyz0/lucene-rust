@@ -243,9 +243,7 @@ impl ZstdLucene104Codec {
     /// # Errors
     /// `mode.level` is not a zstd level.
     pub fn new(mode: crate::stored_fields::ZstdMode) -> Result<Self, lucene_zstd::Error> {
-        if !lucene_zstd::levels().contains(&mode.level) {
-            return Err(lucene_zstd::Error::Level(mode.level));
-        }
+        lucene_zstd::check_level(mode.level)?;
         Ok(Self { mode })
     }
 

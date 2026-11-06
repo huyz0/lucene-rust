@@ -666,6 +666,9 @@ def codecs(container):
              ("codec_rust_zstd_nd", True, {"index.codec": "zstd_no_dict", "index.codec.compression_level": 6},
               "ZSTDNODICT104"),
              ("codec_rust_best", True, {"index.codec": "best_compression"}, "Lucene104"))
+    # The stored fields mode each segment's .si records: what tells best_compression from default.
+    modes = {"codec_plain": "BEST_SPEED", "codec_java_zstd": "ZSTD", "codec_rust_zstd": "ZSTD",
+             "codec_rust_zstd_nd": "ZSTD_NO_DICT", "codec_rust_best": "BEST_COMPRESSION"}
     for idx, rust, extra, _ in names:
         req("DELETE", f"/{idx}")
         create(idx, rust, extra)
@@ -704,6 +707,12 @@ def codecs(container):
         out = subprocess.run(["docker", "exec", container, "sh", "-c", script],
                              capture_output=True, text=True, errors="replace").stdout.split()
         check(len(out) == 2 and all(int(c) > 0 for c in out), f"{idx}: every shard's commit names {codec}: {out}")
+        script = (f"cd /usr/share/opensearch/data/nodes/0/indices/{uuid} && "
+                  f"for d in */index; do grep -l -a -- '{modes[idx]}' \"$d\"/*.si | wc -l; done")
+        out = subprocess.run(["docker", "exec", container, "sh", "-c", script],
+                             capture_output=True, text=True, errors="replace").stdout.split()
+        check(len(out) == 2 and all(int(c) > 0 for c in out),
+              f"{idx}: every shard's segment records stored fields mode {modes[idx]}: {out}")
     stats = must("GET", "/_plugins/lucene_rust/stats")
     check(stats.get("native_errors", 0) == 0, f"no native errors on codec indices: {stats.get('native_errors')}")
     for idx, _, _, _ in names:

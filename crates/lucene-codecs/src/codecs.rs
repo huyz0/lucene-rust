@@ -206,7 +206,8 @@ static REGISTERED: RwLock<Vec<&'static CodecFormats>> = RwLock::new(Vec::new());
 /// framework's `Asserting`, `CheapBastard`, ...) readable by its name. Such a
 /// codec composes formats this port reads already; `formats` says which
 /// generation, as the built-in entries do. A later registration under a name
-/// replaces the earlier one; a built-in name cannot be replaced.
+/// replaces the earlier one; a built-in name, or one of
+/// [`OPENSEARCH_ZSTD_CODECS`], cannot be replaced.
 pub fn register(formats: CodecFormats) {
     if CODECS
         .iter()

@@ -111,7 +111,11 @@ impl std::fmt::Debug for DecoderDictionary {
     }
 }
 
-fn check_level(level: i32) -> Result<()> {
+/// Checks that `level` is one of [`levels`].
+///
+/// # Errors
+/// `level` is outside [`levels`].
+pub fn check_level(level: i32) -> Result<()> {
     if levels().contains(&level) {
         Ok(())
     } else {
