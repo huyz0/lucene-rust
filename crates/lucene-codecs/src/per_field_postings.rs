@@ -544,6 +544,7 @@ pub struct StreamedFieldSpec {
 /// # Errors
 /// What [`write()`] rejects, and what `fill` fails with.
 pub fn write_streaming<E: From<postings_writer::Error>>(
+    sink: Option<(&dyn lucene_store::Directory, &str)>,
     fields: &[StreamedFieldSpec],
     segment_fields: &[FieldInfo],
     name_of: &dyn Fn(i32) -> Option<String>,
@@ -585,6 +586,26 @@ pub fn write_streaming<E: From<postings_writer::Error>>(
             ..format.write_options()
         };
         let mut writer = StreamingFieldsWriter::new(&options, segment_id, &codec_suffix)?;
+        let file_name = |segment: &str, ext: &str| {
+            if codec_suffix.is_empty() {
+                format!("{segment}.{ext}")
+            } else {
+                format!("{segment}_{codec_suffix}.{ext}")
+            }
+        };
+        if let Some((dir, segment)) = sink {
+            let create = |ext: &str| -> Result<lucene_store::FsIndexOutput, E> {
+                dir.create_output(&file_name(segment, ext))
+                    .map_err(|e| E::from(postings_writer::Error::Store(e)))
+            };
+            let pos = if has_prox { Some(create("pos")?) } else { None };
+            let pay = if has_payloads_or_offsets {
+                Some(create("pay")?)
+            } else {
+                None
+            };
+            writer.stream_to(create("doc")?, pos, pay);
+        }
         for &i in &members {
             let field = fields[i];
             writer.start_field(field.field_number, field.index_options, field.has_payloads)?;
@@ -592,8 +613,35 @@ pub fn write_streaming<E: From<postings_writer::Error>>(
             writer.finish_field(doc_count)?;
         }
         let output = writer.finish()?;
+        let mut written_files = Vec::new();
+        if let Some((dir, segment)) = sink {
+            // `.doc`/`.pos`/`.pay` went out as they were written; the
+            // dictionary and `.psm` are small and written whole now.
+            written_files.push(file_name(segment, "doc"));
+            for (ext, bytes) in [
+                ("psm", &output.psm),
+                ("tim", &output.tim),
+                ("tip", &output.tip),
+                ("tmd", &output.tmd),
+            ] {
+                let name = file_name(segment, ext);
+                let mut file = dir
+                    .create_output(&name)
+                    .map_err(|e| E::from(postings_writer::Error::Store(e)))?;
+                lucene_store::DataOutput::write_bytes(&mut file, bytes);
+                file.close()
+                    .map_err(|e| E::from(postings_writer::Error::Store(e)))?;
+                written_files.push(name);
+            }
+            if has_prox {
+                written_files.push(file_name(segment, "pos"));
+            }
+            if has_payloads_or_offsets {
+                written_files.push(file_name(segment, "pay"));
+            }
+        }
         out.push(GroupOutput {
-            written_files: Vec::new(),
+            written_files,
             format_name: format.name(),
             suffix,
             field_numbers: members.iter().map(|&i| fields[i].field_number).collect(),
