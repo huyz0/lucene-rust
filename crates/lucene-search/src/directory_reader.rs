@@ -2659,22 +2659,21 @@ impl DirectoryReader {
         }
     }
 
-    /// This reader's segments, then those of `extra` opened from `dir`, as
-    /// one reader under a new cache key: the writer's buffered documents,
-    /// written as segments into memory, searched after the reader's own.
+    /// This reader's segments, then those of `extra`, each opened from its
+    /// directory, as one reader under a new cache key: the writer's buffered
+    /// documents as segments, searched after the reader's own.
     /// The extra segments are not part of [`Self::segment_infos`].
     pub fn with_segments_appended(
         &self,
-        dir: &dyn Directory,
-        extra: &[segment_infos::SegmentCommitInfo],
+        extra: &[(&dyn Directory, &segment_infos::SegmentCommitInfo)],
     ) -> Result<Self> {
         let mut segments: Vec<SegmentReader> = self
             .segments
             .iter()
             .map(SegmentReader::clone_reader)
             .collect();
-        for sci in extra {
-            segments.push(SegmentReader::open(dir, sci, 0)?);
+        for (dir, sci) in extra {
+            segments.push(SegmentReader::open(*dir, sci, 0)?);
         }
         let mut doc_base = 0i64;
         for reader in &mut segments {

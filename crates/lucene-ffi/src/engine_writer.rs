@@ -3204,24 +3204,39 @@ mod tests {
         let rc = unsafe { ffi_live_view_reader(reader, view, &mut again) };
         assert_ne!(rc, 0, "a closed view makes no reader");
 
-        // A view whose buffer was flushed since cannot be written, and says
-        // so again without trying.
+        // A view whose buffers were published since reads their segments,
+        // and finds what it found before they were.
         // SAFETY: live out-pointers.
         let rc = unsafe { ffi_engine_writer_live_view_open(h, gen, &mut view, &mut ptr, &mut len) };
         assert_eq!(rc, 0, "{}", crate::error::last_error());
         // SAFETY: the buffer the call gave, freed once.
         unsafe { crate::ffm_bridge::ffi_jvm_free_bytes(ptr, len) };
+        let terms = ["gamma", "zeta", "alpha"];
+        let before: Vec<i64> = terms
+            .iter()
+            .map(|t| {
+                search_live(
+                    reader,
+                    view,
+                    &crate::jvm_reader::tests::term_blob("body", t),
+                )
+                .unwrap()
+                .1
+            })
+            .collect();
         commit_settled(h);
-        for _ in 0..2 {
-            // SAFETY: a live out-pointer.
-            let rc = unsafe { ffi_live_view_reader(reader, view, &mut again) };
-            assert_ne!(rc, 0);
-            assert!(
-                crate::error::last_error().contains("no longer buffered"),
-                "{}",
-                crate::error::last_error()
-            );
+        // SAFETY: a live out-pointer.
+        let rc = unsafe { ffi_live_view_reader(reader, view, &mut whole) };
+        assert_eq!(rc, 0, "{}", crate::error::last_error());
+        for (t, want) in terms.iter().zip(before) {
+            let q = crate::jvm_reader::tests::term_blob("body", t);
+            assert_eq!(total(whole, &q).1, want, "{t}");
         }
+        // zeta: d2', d21' and d22', each once.
+        assert_eq!(
+            total(whole, &crate::jvm_reader::tests::term_blob("body", "zeta")).1,
+            3
+        );
         assert_eq!(ffi_live_view_close(view), 0);
         assert_eq!(crate::jvm_reader::ffi_close_jvm_reader(reader), 0);
     }

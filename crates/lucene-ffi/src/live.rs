@@ -40,6 +40,7 @@ use crate::jvm_fetch::{BINARY, DOUBLE, FLOAT, INT, LONG, STRING};
 use crate::jvm_reader::{boolean_of, decode_request, lookup};
 use crate::raw::bytes_from_raw;
 use crate::registry::JvmReaderHandle;
+use lucene_index::concurrent_writer::LiveViewSegment;
 
 /// An open view and the writer it reads.
 struct ViewHandle {
@@ -263,7 +264,15 @@ pub unsafe extern "C" fn ffi_live_view_reader(
             }
             Err(e) => return Err(live_error(e)),
         };
-        let reader = h.reader.with_segments_appended(&dir, &infos).map_err(|e| {
+        let writer_dir = v.writer.writer().directory();
+        let extra: Vec<(&dyn lucene_store::Directory, &_)> = infos
+            .iter()
+            .map(|s| match s {
+                LiveViewSegment::Written(sci) => (&dir as &dyn lucene_store::Directory, sci),
+                LiveViewSegment::Published(sci) => (writer_dir, sci),
+            })
+            .collect();
+        let reader = h.reader.with_segments_appended(&extra).map_err(|e| {
             set_last_error(format!("opening the buffered documents: {e}"));
             FfiStatus::Decode
         })?;
@@ -283,6 +292,13 @@ pub unsafe extern "C" fn ffi_live_view_reader(
         let readers = reader.segment_readers();
         let first = h.live_docs.len();
         for (b, r) in v.view.buffers.iter().zip(readers.iter().skip(first)) {
+            if r.max_doc < b.max_doc {
+                set_last_error(format!(
+                    "live view: a buffer of {} documents became a segment of {}",
+                    b.max_doc, r.max_doc
+                ));
+                return Err(FfiStatus::Decode);
+            }
             live_docs.push(buffer_mask(b.max_doc, &b.deleted, r.max_doc));
         }
         let deleted = readers

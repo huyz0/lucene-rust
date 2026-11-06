@@ -21,7 +21,7 @@
 //!
 //! The flush decodes each field's streams into contiguous columns, terms in
 //! byte order and documents renumbered into an index sort's order when there
-//! is one ([`PendingPostings::flushed`]), and hands the postings writer a
+//! is one ([`PendingPostings::flushed_below`]), and hands the postings writer a
 //! [`TermView`] of each term, read in place.
 
 use std::collections::BTreeMap;
@@ -919,7 +919,7 @@ impl FieldRuns {
         Ok(())
     }
 
-    /// The field laid out for the postings writer: [`PendingPostings::flushed`].
+    /// The field laid out for the postings writer: [`PendingPostings::flushed_below`].
     fn flushed(
         &self,
         number: i32,
@@ -1420,7 +1420,7 @@ impl FlushedField {
     }
 }
 
-/// The buffered postings laid out for a flush: [`PendingPostings::flushed`].
+/// The buffered postings laid out for a flush: [`PendingPostings::flushed_below`].
 #[derive(Debug)]
 pub(crate) struct FlushedPostings {
     fields: Vec<FlushedField>,

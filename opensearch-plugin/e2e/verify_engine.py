@@ -494,6 +494,11 @@ def realtime():
             check(a[0] == b[0], f"realtime round {rnd}: total {q}: {a[0]} vs {b[0]}")
             check(a[1] == b[1], f"realtime round {rnd}: scored hits {q}: {a[1][:2]} vs {b[1][:2]}")
         same_views(f"realtime round {rnd}")
+        if rnd == 0:
+            # A flush publishes the buffers without refreshing the searcher: its view reads
+            # them as their segments.
+            must("POST", f"/{rt}/_flush")
+            same_views("realtime after a flush")
         if rnd == 1:
             must("POST", f"/{rt}/_refresh")
     after = must("GET", "/_plugins/lucene_rust/stats").get("live_queries", 0)

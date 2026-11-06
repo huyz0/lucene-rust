@@ -331,6 +331,20 @@ pub(super) struct Flushing {
     pub(super) postings: Arc<PendingPostings>,
     pub(super) columns: LiveColumns,
     pub(super) max_doc: i32,
+    /// The segment it was published as, as flushed: its documents in the
+    /// buffer's order. `None` until then, and for a segment dropped as
+    /// fully deleted.
+    pub(super) segment: Option<crate::segment_infos::SegmentCommitInfo>,
+}
+
+/// A buffer of a view as a segment ([`ConcurrentIndexWriter::live_view_segments`]).
+#[derive(Debug, Clone)]
+pub enum LiveViewSegment {
+    /// Written into the directory given, holding the view's documents.
+    Written(crate::segment_infos::SegmentCommitInfo),
+    /// The segment the buffer was published as, in the writer's directory:
+    /// every document of the buffer, which grows no more.
+    Published(crate::segment_infos::SegmentCommitInfo),
 }
 
 /// The live-search state the control lock guards.
@@ -374,10 +388,17 @@ struct Commit {
 const COMMITS_KEPT: usize = 64;
 
 impl LiveFlushes {
-    /// A buffer taken for a flush published (`published` set) or dropped.
-    pub(super) fn finish(&mut self, ticket: u64, published: bool) {
-        if let Some(f) = self.flushing.remove(&ticket) {
+    /// A buffer taken for a flush published (`published` set, with the
+    /// segment it was published as) or dropped.
+    pub(super) fn finish(
+        &mut self,
+        ticket: u64,
+        published: bool,
+        segment: Option<crate::segment_infos::SegmentCommitInfo>,
+    ) {
+        if let Some(mut f) = self.flushing.remove(&ticket) {
             if published {
+                f.segment = segment;
                 self.retained.insert(self.published, f);
                 self.published = self.published.saturating_add(1);
             }
@@ -843,35 +864,51 @@ impl ConcurrentIndexWriter<'_> {
         &self,
         view: &LiveView,
         dir: &dyn lucene_store::Directory,
-    ) -> Result<Vec<crate::segment_infos::SegmentCommitInfo>> {
+    ) -> Result<Vec<LiveViewSegment>> {
         let cfg = self.check_live()?;
         if cfg.sorts_documents() {
             return Err(Error::LiveSearch(
                 "an index sort renumbers the buffered documents".into(),
             ));
         }
-        // Every buffer still in a slot, or none written: a buffer leaves its
-        // slot only to be flushed, and does not come back.
-        if let Some(b) = view
-            .buffers
-            .iter()
-            .find(|b| !self.slots.iter().any(|d| lock(d).live.id == b.id))
+        // Every buffer still in a slot or published, or none written: a
+        // buffer leaves its slot only to be flushed, and a published one
+        // stays while the view pins it.
+        let mut flushed = HashMap::new();
         {
+            let core = lock(&self.core);
+            for b in &view.buffers {
+                if let Some(seg) = core
+                    .live
+                    .retained
+                    .values()
+                    .find(|f| f.columns.id == b.id)
+                    .and_then(|f| f.segment.clone())
+                {
+                    flushed.insert(b.id, seg);
+                }
+            }
+        }
+        if let Some(b) = view.buffers.iter().find(|b| {
+            !flushed.contains_key(&b.id) && !self.slots.iter().any(|d| lock(d).live.id == b.id)
+        }) {
             return Err(Error::LiveSearch(format!(
-                "buffer {} is no longer buffered",
+                "buffer {} is being flushed",
                 b.id
             )));
         }
         let mut out = Vec::with_capacity(view.buffers.len());
         for (i, b) in view.buffers.iter().enumerate() {
+            if let Some(seg) = flushed.remove(&b.id) {
+                out.push(LiveViewSegment::Published(seg));
+                continue;
+            }
             let slot = self
                 .slots
                 .iter()
                 .map(lock)
                 .find(|d| d.live.id == b.id && !d.docs.is_empty())
-                .ok_or_else(|| {
-                    Error::LiveSearch(format!("buffer {} is no longer buffered", b.id))
-                })?;
+                .ok_or_else(|| Error::LiveSearch(format!("buffer {} is being flushed", b.id)))?;
             // The documents as of the view: the buffer may have grown since.
             let n = usize::try_from(b.max_doc).unwrap_or(0).min(slot.docs.len());
             let limit = crate::index_writer::BufferLimit {
@@ -898,9 +935,14 @@ impl ConcurrentIndexWriter<'_> {
                 lucene_util::string_helper::random_id(),
                 None,
             )?;
-            out.push(sci);
+            out.push(LiveViewSegment::Written(sci));
         }
         Ok(out)
+    }
+
+    /// The directory the writer's segments are in.
+    pub fn directory(&self) -> &dyn lucene_store::Directory {
+        self.dir
     }
 
     /// Lets the buffers `view` read go once no other view reads them.
