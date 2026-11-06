@@ -92,6 +92,8 @@ fn index_and_verify_n(dir: &dyn Directory, n: usize) {
 
     let mut ids = Vec::new();
     for seg in reader.segment_readers() {
+        let every: Vec<i32> = (0..seg.max_doc).collect();
+        seg.prefetch_stored_documents(&every).unwrap();
         for doc in 0..seg.max_doc {
             if seg.live_docs().is_some_and(|l| !l.get_doc(doc)) {
                 continue;

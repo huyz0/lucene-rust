@@ -822,6 +822,11 @@ fn open_postings_file(
 }
 
 impl<'a> DocInput<'a> {
+    /// The file's bytes, header to footer.
+    pub fn bytes(&self) -> &'a [u8] {
+        self.buf
+    }
+
     /// A buffer [`DocInput::open`] has already accepted: no header or footer is
     /// read again. For a reader that validates a segment's postings once and
     /// opens them per search. The generation is re-read from the header's
@@ -1511,6 +1516,11 @@ pub struct PosInput<'a> {
 }
 
 impl<'a> PosInput<'a> {
+    /// The file's bytes, header to footer.
+    pub fn bytes(&self) -> &'a [u8] {
+        self.buf
+    }
+
     /// A buffer [`PosInput::open`] has already accepted: no header or footer is
     /// read again. For a reader that validates a segment's postings once and
     /// opens them per search.
