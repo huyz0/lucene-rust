@@ -444,6 +444,14 @@ impl RegexpPattern {
     /// ([`crate::automaton::CompiledDfa`]) and cached -- on this pattern for
     /// every segment, and process-wide by pattern text for later queries.
     /// `None` when the pattern is too large to determinize.
+    /// Whether `term` matches, by the compiled automaton a term dictionary
+    /// expands this pattern with ([`crate::blocktree::FieldTerms::regexp_intersect_states`]);
+    /// `None` when the pattern is too large to compile, which a dictionary
+    /// then expands otherwise.
+    pub fn dfa_matches(&self, term: &[u8]) -> Option<bool> {
+        self.compiled().map(|c| c.dfa.run(term))
+    }
+
     pub(crate) fn compiled(&self) -> Option<std::sync::Arc<crate::automaton::CompiledDfa>> {
         self.compiled
             .cell

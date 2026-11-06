@@ -26,6 +26,15 @@ impl FieldRuns {
         }
     }
 
+    /// The buffered terms `matches` takes, in no order.
+    pub(crate) fn live_matching(&self, matches: impl Fn(&[u8]) -> bool) -> Vec<&[u8]> {
+        let n = u32::try_from(self.terms.count()).unwrap_or(u32::MAX);
+        (0..n)
+            .map(|id| self.terms.term(id))
+            .filter(|t| matches(t))
+            .collect()
+    }
+
     /// Whether some occurrence of the field carried a payload.
     pub(crate) fn has_payloads(&self) -> bool {
         self.payloads

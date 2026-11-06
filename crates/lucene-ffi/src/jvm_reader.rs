@@ -57,7 +57,7 @@ use std::sync::Arc;
 /// stale `.so` must not get as far as reading an index.
 ///
 /// Bump it on any change a Java caller could observe.
-pub const JVM_ABI_VERSION: u32 = 74;
+pub const JVM_ABI_VERSION: u32 = 75;
 
 /// Blob tag for a single `TermQuery`.
 pub const QUERY_TERM: u8 = 0;
@@ -6000,6 +6000,11 @@ pub(crate) mod tests {
                 }
             }
         }
+    }
+
+    /// A prefix query's blob.
+    pub(crate) fn prefix_blob(field: &str, prefix: &str) -> Vec<u8> {
+        tree(N::Pre(field, prefix))
     }
 
     fn tree(n: N<'_>) -> Vec<u8> {
