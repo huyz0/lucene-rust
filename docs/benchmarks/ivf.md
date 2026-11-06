@@ -175,3 +175,68 @@ vectors join their nearest centroid, and only clusters that overflow or
 empty are split or dissolved. GloVe, 90% + 10% segments, BBQ, nprobe 64,
 rerank 100: merge 1.43 s and recall 0.871, against 4.80 s and 0.876 for a
 full re-cluster.
+
+## Centroid routing
+
+Picking the clusters to probe means scoring the query against every
+centroid. At 6k-27k centroids that f32 scan dominates a search
+(fastText, 27k centroids: about 2 ms of a 2.2 ms query). `routing.rs` cuts it
+two ways: 8-bit centroid codes with an exact rescore of the best candidates
+(`Routing::Quantized`, always on), and from 8192 clusters a stored two-level
+routing tree, k-means over the centroids into parents of about 64
+(`Routing::Auto`). Same machine and method as above (one thread, 1000
+queries, BBQ codes, rerank 100). The small-cluster runs use `--full 0` to
+build tens of thousands of clusters quickly; they stand in for large merged
+segments (24k clusters of 16 vectors is the shape of a 9M-vector segment at the
+default 384 per cluster).
+
+```
+cargo run --release -p lucene-ivf --example ivf_bench -- /tmp/data/fasttext300 l2 \
+  --target 96 --full 0 --quantizers bbq --nprobe 16,32,64,128 --rerank 100 \
+  --routing exact,int8,auto,tree64
+cargo run --release -p lucene-ivf --example routing_bench -- /tmp/data/glove100 cosine
+```
+
+fastText-300, 27 438 clusters (recall@10 / µs per query):
+
+| nprobe | exact f32 | int8 | auto (tree, cover 32) | tree, cover 64 |
+|---|---|---|---|---|
+| 16 | 0.687 / 2123 | 0.687 / 1028 | 0.664 / 220 | 0.681 / 246 |
+| 32 | 0.777 / 2210 | 0.777 / 974 | 0.766 / 308 | 0.774 / 347 |
+| 64 | 0.856 / 2228 | 0.856 / 1067 | 0.851 / 500 | 0.855 / 574 |
+| 128 | 0.910 / 2286 | 0.910 / 1370 | 0.909 / 794 | 0.910 / 944 |
+
+GloVe-100, 24 203 clusters:
+
+| nprobe | exact f32 | int8 | auto | tree, cover 64 |
+|---|---|---|---|---|
+| 32 | 0.725 / 650 | 0.725 / 413 | 0.710 / 133 | 0.719 / 151 |
+| 64 | 0.800 / 709 | 0.800 / 471 | 0.793 / 197 | 0.797 / 245 |
+| 128 | 0.853 / 804 | 0.853 / 582 | 0.848 / 337 | 0.852 / 443 |
+| 256 | 0.887 / 972 | 0.887 / 764 | 0.885 / 611 | 0.886 / 791 |
+
+fastText-300 at the default 384 per cluster (6 437 clusters, no tree):
+
+| nprobe | exact f32 | int8 |
+|---|---|---|
+| 8 | 0.693 / 488 | 0.693 / 279 |
+| 16 | 0.794 / 502 | 0.794 / 335 |
+| 32 | 0.868 / 628 | 0.868 / 439 |
+| 64 | 0.920 / 784 | 0.920 / 617 |
+
+- **8-bit centroids are free recall-wise**: the same recall in every row,
+  for 1.3-2.2x less latency. They cost one byte per centroid dimension in
+  memory beyond the f32 centroids, which the rescore and the quantizers still
+  need.
+- **The tree** gives 3-7x less latency than exact routing at large cluster
+  counts. At a fixed nprobe it loses up to 0.02 recall at small nprobe and
+  0.001-0.005 from nprobe 64 up. Per unit of latency it wins: at 24k-27k
+  clusters it reaches a given recall at roughly half the latency of int8
+  routing. Calibration (`Probes::Auto`) searches through the tree, so the
+  stored probe count already accounts for it. At 3-7k clusters (GloVe
+  `--target 192/96`) the tree was only 0-1.4x better at equal recall, hence
+  the 8192 threshold.
+- **Cost**: the parent list is one vint per centroid in `.ivm`. Opening
+  rebuilds the parent means and codes, 60 ms for 27k x 300 centroids. Building
+  the tree at write is a k-means over the centroids, small next to clustering
+  the vectors.
