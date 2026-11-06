@@ -279,7 +279,11 @@ mod tests {
             let seen = warmer.0.lock().unwrap();
             assert!(!seen.is_empty());
             for (name, bytes) in seen.iter() {
-                assert_eq!(&dir.open(name).unwrap().to_vec(), bytes, "{name} (no_cfs_ratio {ratio})");
+                assert_eq!(
+                    &dir.open(name).unwrap().to_vec(),
+                    bytes,
+                    "{name} (no_cfs_ratio {ratio})"
+                );
             }
         }
     }
