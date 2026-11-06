@@ -33,6 +33,7 @@
 //! [`QuantizerFactory`], [`Quantizer`] and [`QueryScorer`] and registers its
 //! factory; nothing in the index changes.
 
+pub mod lloydmax;
 pub mod osq;
 pub mod scalar;
 

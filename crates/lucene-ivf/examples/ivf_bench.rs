@@ -32,6 +32,7 @@ use lucene_codecs::scalar_quantized_vectors::{
 use lucene_codecs::{hnsw, hnsw_concurrent, hnsw_vectors};
 use lucene_ivf::{FieldVectors, IvfParams, IvfReader, IvfWriter, SearchParams, Similarity};
 use lucene_util::quantization::ScalarEncoding;
+use lucene_vector_quant::lloydmax::LloydMaxFactory;
 use lucene_vector_quant::osq::OsqFactory;
 use lucene_vector_quant::scalar::ScalarFactory;
 use lucene_vector_quant::{QuantizerFactory, QuantizerRegistry};
@@ -62,9 +63,17 @@ fn factory(name: &str) -> Box<dyn QuantizerFactory> {
         "osq7" => Box::new(OsqFactory::new(ScalarEncoding::SevenBit)),
         "sq7" => Box::new(ScalarFactory::int7()),
         "sq4" => Box::new(ScalarFactory::int4()),
+        "lm1" => Box::new(LloydMaxFactory::new(1, true)),
+        "lm2" => Box::new(LloydMaxFactory::new(2, true)),
+        "lm4" => Box::new(LloydMaxFactory::new(4, true)),
+        "tq2" => Box::new(LloydMaxFactory::new(2, false)),
+        "tq4" => Box::new(LloydMaxFactory::new(4, false)),
         other => panic!("unknown quantizer {other}"),
     }
 }
+
+#[path = "support/rotate.rs"]
+mod rotate;
 
 fn recall(hits: impl Iterator<Item = i32>, truth: &[i32]) -> usize {
     hits.filter(|d| truth[..K].contains(d)).count()
@@ -110,13 +119,26 @@ fn main() {
     let nprobes = list(&opt("--nprobe").unwrap_or_else(|| "4,8,16,32,64,128".into()));
     let reranks = list(&opt("--rerank").unwrap_or_else(|| "0,50,100".into()));
     let efs = list(&opt("--ef").unwrap_or_else(|| "10,20,40,80,160,320".into()));
-    let base = &base[..n * dim];
+    let rotation = opt("--rotate").unwrap_or_else(|| "none".into());
+    let rot = rotate::Rotation::new(&rotation, dim, 42);
+    let t = Instant::now();
+    let base: Vec<f32> = rot.apply_all(&base[..n * dim]);
+    let rot_build = t.elapsed().as_secs_f64();
+    let t = Instant::now();
+    let queries: Vec<f32> = queries[..nq * dim]
+        .chunks_exact(dim)
+        .flat_map(|q| rot.apply(q))
+        .collect();
+    let rot_query_us = t.elapsed().as_secs_f64() / nq as f64 * 1e6;
+    eprintln!("rotation {rotation}: base {rot_build:.2}s, {rot_query_us:.2}us/query");
+    let base = &base[..];
     let docs: Vec<i32> = (0..n as i32).collect();
     let truth = |q: usize| &gt[q * gt_k..(q + 1) * gt_k];
     eprintln!("{prefix}: {n} x {dim}, {nq} queries, {:?}", similarity);
     println!("index,config,build_s,recall@10,latency_us,qps,pinned_mb,vectors_mb");
 
-    let registry = QuantizerRegistry::with_builtins();
+    let mut registry = QuantizerRegistry::with_builtins();
+    registry.register(Arc::new(LloydMaxFactory::new(2, true)));
     for qname in quantizers.split(',') {
         let f = factory(qname);
         let t = Instant::now();
@@ -166,7 +188,7 @@ fn main() {
                 }
                 let secs = t.elapsed().as_secs_f64();
                 println!(
-                    "ivf-{qname},clusters={clusters} entries={entries} nprobe={nprobe} rerank={rerank},{build:.1},{:.4},{:.0},{:.0},{pinned:.1},{vectors_mb:.1}",
+                    "ivf-{qname}@{rotation},clusters={clusters} entries={entries} nprobe={nprobe} rerank={rerank},{build:.1},{:.4},{:.0},{:.0},{pinned:.1},{vectors_mb:.1}",
                     found as f64 / (nq * K) as f64,
                     secs / nq as f64 * 1e6,
                     nq as f64 / secs
