@@ -288,7 +288,8 @@ pub(crate) fn write_stored_only_segment_files_with_codec(
     )
 }
 
-/// The native stored-fields writer's `(.fdt, .fdx, .fdm)` bytes.
+/// The native stored-fields writer's `(.fdt, .fdx, .fdm)` bytes; an empty
+/// `.fdt` is already in its file.
 pub(crate) type StoredFieldsBytes = (Vec<u8>, Vec<u8>, Vec<u8>);
 
 /// The bytes [`write_stored_only_segment_files_with_codec`] would build with
@@ -389,6 +390,7 @@ fn write_stored_only_segment_files_inner(
 
     let files = if let Some((fdt, fdx, fdm)) = native {
         if use_compound_file {
+            debug_assert!(!fdt.is_empty(), "a compound flush builds the .fdt itself");
             // Compound entries are file names without the segment name.
             let member = |ext| crate::index_writer::segment_file_name("", suffix, ext);
             let sub_files = vec![
@@ -404,8 +406,11 @@ fn write_stored_only_segment_files_inner(
             write_file(dir, &cfe_name, &cfe)?;
             vec![cfs_name, cfe_name]
         } else {
+            // An empty `.fdt` was written to its file as the buffer filled.
             for (name, bytes) in [(&fdt_name, &fdt), (&fdx_name, &fdx), (&fdm_name, &fdm)] {
-                write_file(dir, name, bytes)?;
+                if !bytes.is_empty() {
+                    write_file(dir, name, bytes)?;
+                }
             }
             write_file(dir, &fnm_name, &fnm)?;
             vec![fdt_name, fdx_name, fdm_name, fnm_name]

@@ -90,7 +90,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, RwLock, Weak};
 use std::time::Duration;
 
-use lucene_codecs::stored_fields::Document;
+use lucene_codecs::stored_fields::{self, Document};
 use lucene_store::{Directory, FsIndexOutput, Input};
 
 use crate::buffered_updates::{
@@ -802,6 +802,9 @@ impl<'d> ConcurrentIndexWriter<'d> {
         let _full_flush = lock(&self.full_flush);
         let mut slots: Vec<MutexGuard<'_, Dwpt>> = self.slots.iter().map(lock).collect();
         for (i, dwpt) in slots.iter_mut().enumerate() {
+            if let Some(stored) = dwpt.stored.take() {
+                stored.discard(self.dir);
+            }
             *dwpt.deref_mut() = Dwpt::default();
             self.update_ram(|c| {
                 let bytes = c.checkout_for_flush(i);
@@ -1095,7 +1098,10 @@ impl<'d> ConcurrentIndexWriter<'d> {
         let live = self
             .live()
             .then(|| cfg.soft_deletes_field().map(|f| f.number));
-        self.add_with(delete, count, move |_| {
+        self.add_with(delete, count, move |dwpt| {
+            if let Some(mode) = streamed {
+                self.stored_on_disk(dwpt, mode)?;
+            }
             Ok(Box::new(move |dwpt: &mut Dwpt| {
                 // The postings count what they grew by, as `bytesUsed` counts
                 // `TermsHashPerField`'s pools; the documents' own inverted
@@ -1145,11 +1151,27 @@ impl<'d> ConcurrentIndexWriter<'d> {
     /// The shared tail of every add: `check` validates against the slot
     /// (nothing buffered yet) and returns what buffers the documents; then
     /// the delete, the slice and the flush decision.
+    /// Opens an empty buffer's stored fields on the file of a segment
+    /// reserved for it, so its `.fdt` goes to disk as documents arrive (as
+    /// a Lucene `DocumentsWriterPerThread` names its segment when it starts)
+    /// instead of waiting in memory for the flush, and counting against the
+    /// RAM buffer meanwhile.
+    fn stored_on_disk(&self, dwpt: &mut Dwpt, mode: stored_fields::Mode) -> Result<()> {
+        if dwpt.stored.is_some() {
+            return Ok(());
+        }
+        let (name, id) = lock(&self.core).writer.reserve_segment();
+        let fdt = crate::index_writer::segment_file_name(&name, mode.segment_suffix(), "fdt");
+        let out = self.dir.create_output(&fdt)?;
+        dwpt.stored = Some(StreamedStored::on_disk(mode, out, name, id));
+        Ok(())
+    }
+
     fn add_with(
         &self,
         delete: Option<DeleteNode>,
         count: usize,
-        check: impl FnOnce(&Dwpt) -> Result<Fill>,
+        check: impl FnOnce(&mut Dwpt) -> Result<Fill>,
     ) -> Result<SeqNo> {
         // BLOCK-GUARD: refused before anything is buffered, as
         // `DocumentsWriterPerThread.updateDocuments` refuses it; a buffered
@@ -1159,7 +1181,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
         let (seq_no, batch) = {
             let (i, mut dwpt) = self.acquire_slot();
             let before = dwpt.docs.len();
-            let fill = check(&dwpt)?;
+            let fill = check(&mut dwpt)?;
             self.reserve_docs(count)?;
             if count > 1 {
                 dwpt.has_blocks = true;
@@ -1261,7 +1283,9 @@ impl<'d> ConcurrentIndexWriter<'d> {
         };
         self.apply_slice(i, dwpt, &slot_nodes, end, dwpt.docs.len());
         Self::hand_over(&mut core, &global_nodes);
-        let ticket = core.writer.begin_segment();
+        let ticket = core
+            .writer
+            .begin_segment(dwpt.stored.as_ref().and_then(StreamedStored::reserved));
         let ticket_no = core.next_ticket;
         core.next_ticket = core.next_ticket.saturating_add(1);
         let postings = Arc::new(std::mem::take(&mut dwpt.postings));
@@ -1396,7 +1420,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
             old_to_new
         });
         let postings = explicit_docs.then_some(&*postings);
-        let stored = stored.map(|s| s.finish(&ticket.segment_id));
+        let stored = stored.map(|s| s.finish(&ticket.segment_id)).transpose()?;
         let buffer = DocumentBuffer {
             docs: &docs,
             custom_freq_terms: &custom_freq_terms,
@@ -1488,6 +1512,12 @@ impl<'d> ConcurrentIndexWriter<'d> {
             ram_bytes,
         } = batch;
         let doc_count = docs.len();
+        // Written as the buffer filled, outside the build's tracking.
+        let reserved_fdt = stored.as_ref().and_then(|s| {
+            s.reserved().map(|(name, _)| {
+                crate::index_writer::segment_file_name(name, s.mode().segment_suffix(), "fdt")
+            })
+        });
         let tracking = TrackingDirectory::new(self.dir);
         let built = catch_unwind(AssertUnwindSafe(|| {
             self.build(
@@ -1520,11 +1550,11 @@ impl<'d> ConcurrentIndexWriter<'d> {
                     }))
             }
             Ok(Err(e)) => {
-                Self::abandon(&mut core, ticket, &tracking);
+                Self::abandon(&mut core, ticket, &tracking, reserved_fdt.as_deref());
                 Ok(Err(e))
             }
             Err(panic) => {
-                Self::abandon(&mut core, ticket, &tracking);
+                Self::abandon(&mut core, ticket, &tracking, reserved_fdt.as_deref());
                 Err(panic)
             }
         }));
@@ -1550,7 +1580,12 @@ impl<'d> ConcurrentIndexWriter<'d> {
     /// `DocumentsWriterPerThread.abort`, in the ticket's turn: the batch's
     /// files go, and the published segments still get what its ticket froze.
     /// Errors here are secondary to the build's own and are dropped.
-    fn abandon(core: &mut Core<'_>, ticket: SegmentTicket, tracking: &TrackingDirectory<'_>) {
+    fn abandon(
+        core: &mut Core<'_>,
+        ticket: SegmentTicket,
+        tracking: &TrackingDirectory<'_>,
+        reserved_fdt: Option<&str>,
+    ) {
         // The batch held operations already acknowledged to their callers,
         // and they are gone. Java treats such an abort as a tragic event and
         // closes the writer; this writer goes on, but its next commit must
@@ -1558,7 +1593,9 @@ impl<'d> ConcurrentIndexWriter<'d> {
         // would hide a failing directory behind an `Ok`).
         core.writer.changed();
         core.writer.abandon_segment(ticket);
-        let _ = core.writer.delete_new_files(&tracking.created());
+        let mut created = tracking.created();
+        created.extend(reserved_fdt.map(str::to_string));
+        let _ = core.writer.delete_new_files(&created);
         let _ = core.writer.apply_pending_packets();
     }
 
@@ -1908,6 +1945,9 @@ impl<'d> ConcurrentIndexWriter<'d> {
         let _full_flush = lock(&self.full_flush);
         let mut slots: Vec<MutexGuard<'_, Dwpt>> = self.slots.iter().map(lock).collect();
         for (i, dwpt) in slots.iter_mut().enumerate() {
+            if let Some(stored) = dwpt.stored.take() {
+                stored.discard(self.dir);
+            }
             *dwpt.deref_mut() = Dwpt::default();
             self.update_ram(|c| {
                 let bytes = c.checkout_for_flush(i);

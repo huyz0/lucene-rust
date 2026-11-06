@@ -8421,7 +8421,7 @@ impl IndexWriter<'_> {
         // the global packet first and only then reads `nextGen` for the new
         // segment, which is exactly what keeps the new segment out of the
         // packets that predate it (`FrozenBufferedUpdates.applies_to`).
-        let ticket = self.begin_segment();
+        let ticket = self.begin_segment(None);
         let (segment_name, segment_id) = (ticket.segment_name.clone(), ticket.segment_id);
 
         // Installed consumers can create and write files during the build.
@@ -8509,15 +8509,30 @@ impl IndexWriter<'_> {
     /// *later* ticket, so it gets a higher generation than this segment and
     /// applies to it. Pushed here instead, it would sort below this segment
     /// and skip it.
-    pub(crate) fn begin_segment(&mut self) -> SegmentTicket {
+    ///
+    /// `reserved` is a name and id [`Self::reserve_segment`] handed out
+    /// earlier, for a buffer that started writing its segment's files.
+    pub(crate) fn begin_segment(
+        &mut self,
+        reserved: Option<&(String, [u8; ID_LENGTH])>,
+    ) -> SegmentTicket {
         let global = self.delete_queue.freeze_global_buffer();
-        let segment_name = self.new_segment_name();
-        let segment_id = generate_segment_id(self.segment_infos.counter);
+        let (segment_name, segment_id) = match reserved {
+            Some((name, id)) => (name.clone(), *id),
+            None => self.reserve_segment(),
+        };
         SegmentTicket {
             segment_name,
             segment_id,
             global,
         }
+    }
+
+    /// A new segment's name and id, taken now for a segment written later.
+    pub(crate) fn reserve_segment(&mut self) -> (String, [u8; ID_LENGTH]) {
+        let segment_name = self.new_segment_name();
+        let segment_id = generate_segment_id(self.segment_infos.counter);
+        (segment_name, segment_id)
     }
 
     /// A ticket whose segment could not be built: its frozen packet still
