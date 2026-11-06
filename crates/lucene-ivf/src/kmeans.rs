@@ -358,7 +358,13 @@ fn split_down(
 
 /// One neighbourhood Lloyd assignment: every vector (or, with `active`,
 /// every vector of an active cluster) moves to the nearest centroid among
-/// its own and that cluster's `neighbors`.
+/// its own and that cluster's `neighbors`. A cluster's members share their
+/// candidates, so they are scored together with the tiled kernel of
+/// [`full_assign`], and as there a winner replaces the own centroid only
+/// when the exact [`Metric::cost`] says it is strictly nearer.
+// ARITH: cluster ids are below `k`, member indices below `n`, and row
+// offsets below the padded lengths.
+#[allow(clippy::arithmetic_side_effects)]
 fn refine_round(
     data: &[f32],
     dim: usize,
@@ -368,27 +374,117 @@ fn refine_round(
     metric: Metric,
     active: Option<&[bool]>,
 ) -> Vec<u32> {
-    assignments
-        .par_iter()
-        .enumerate()
-        .map(|(i, &own)| {
-            let own = own as usize;
-            if active.is_some_and(|a| !a[own]) {
-                return own as u32;
+    let k = centroids.len() / dim;
+    let groups = dim.div_ceil(LANES);
+    let mut padded = Vec::new();
+    if metric == Metric::InnerProduct {
+        pad_rows(centroids, dim, groups, &mut padded);
+    }
+    // Members of each cluster, in vector order (a counting sort).
+    let mut starts = vec![0usize; k + 1];
+    for &a in assignments {
+        starts[a as usize + 1] += 1;
+    }
+    for c in 0..k {
+        starts[c + 1] += starts[c];
+    }
+    let mut members = vec![0u32; assignments.len()];
+    let mut next = starts.clone();
+    for (i, &a) in assignments.iter().enumerate() {
+        members[next[a as usize]] = i as u32;
+        next[a as usize] += 1;
+    }
+    let moves: Vec<Vec<(u32, u32)>> = (0..k)
+        .into_par_iter()
+        .map(|own| {
+            let mine = &members[starts[own]..starts[own + 1]];
+            if mine.is_empty() || active.is_some_and(|a| !a[own]) {
+                return Vec::new();
             }
-            let v = row(data, dim, i);
-            let mut best = (own, metric.cost(v, row(centroids, dim, own)));
-            for &c in &neighbors[own] {
-                let d = metric.cost(v, row(centroids, dim, c as usize));
-                // Ties keep the vector where it is, so duplicates cut apart
-                // by size stay apart.
-                if d < best.1 {
-                    best = (c as usize, d);
+            // Own centroid first: ties keep a vector where it is.
+            let mut ids: Vec<usize> = Vec::with_capacity(neighbors[own].len() + 1);
+            ids.push(own);
+            ids.extend(neighbors[own].iter().map(|&c| c as usize));
+            let last = ids.len() - 1;
+            let tiles = ids.len().div_ceil(TILE_CENTROIDS);
+            // Euclidean ranks by `x . c - |c|^2 / 2`, which loses precision
+            // far from the origin: measure from the own centroid instead,
+            // which every candidate is near.
+            let origin = match metric {
+                Metric::L2 => Some(row(centroids, dim, own)),
+                Metric::InnerProduct => None,
+            };
+            let shifted = |x: &[f32], out: &mut Vec<f32>| match origin {
+                Some(o) => out.extend(x.iter().zip(o).map(|(a, b)| a - b)),
+                None => out.extend_from_slice(x),
+            };
+            let mut rows = Vec::with_capacity(mine.len() * dim);
+            for &m in mine {
+                shifted(row(data, dim, m as usize), &mut rows);
+            }
+            let mut vecs = Vec::new();
+            pad_rows(&rows, dim, groups, &mut vecs);
+            // The candidates' padded rows and biases, from the same origin.
+            let (local, bias) = if origin.is_some() {
+                let mut cs = Vec::with_capacity(ids.len() * dim);
+                for &c in &ids {
+                    shifted(row(centroids, dim, c), &mut cs);
+                }
+                let bias: Vec<f32> = cs
+                    .chunks_exact(dim)
+                    .map(|c| -0.5 * simd::dot_f32(c, c))
+                    .collect();
+                let mut p = Vec::new();
+                pad_rows(&cs, dim, groups, &mut p);
+                (Some(p), bias)
+            } else {
+                (None, vec![0f32; ids.len()])
+            };
+            // Candidate `j` of `ids`.
+            let centroid = |j: usize| match &local {
+                Some(p) => &p[j * groups..][..groups],
+                None => &padded[ids[j] * groups..][..groups],
+            };
+            let mut out = Vec::new();
+            for base in (0..mine.len()).step_by(TILE_VECTORS) {
+                let live = (mine.len() - base).min(TILE_VECTORS);
+                let v: [&[Padded]; TILE_VECTORS] =
+                    std::array::from_fn(|r| &vecs[(base + r.min(live - 1)) * groups..][..groups]);
+                let mut tb = [(f32::NEG_INFINITY, own); TILE_VECTORS];
+                for t in 0..tiles {
+                    // A repeat of the last candidate pads the tile; it never
+                    // wins, as only a strictly higher score replaces.
+                    let at: [usize; TILE_CENTROIDS] =
+                        std::array::from_fn(|q| (t * TILE_CENTROIDS + q).min(last));
+                    let dots = dot_tile(v, at.map(centroid));
+                    for (r, best) in tb.iter_mut().enumerate() {
+                        for (q, &j) in at.iter().enumerate() {
+                            let s = dots[r][q] + bias[j];
+                            if s > best.0 {
+                                *best = (s, ids[j]);
+                            }
+                        }
+                    }
+                }
+                for (r, &(_, won)) in tb.iter().enumerate().take(live) {
+                    let i = mine[base + r] as usize;
+                    let v = row(data, dim, i);
+                    if won != own
+                        && metric.cost(v, row(centroids, dim, won))
+                            < metric.cost(v, row(centroids, dim, own))
+                    {
+                        out.push((i as u32, won as u32));
+                    }
                 }
             }
-            best.0 as u32
+            out
         })
-        .collect()
+        .collect();
+    let mut result = assignments.to_vec();
+    for (i, c) in moves.into_iter().flatten() {
+        result[i as usize] = c;
+    }
+    result
 }
 
 /// Clusters the `data.len() / dim` vectors of `data` into leaves of at most

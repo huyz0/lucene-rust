@@ -65,33 +65,12 @@ fn quantize_query(
     bits: u8,
     similarity: Similarity,
     out: &mut [u8],
-) -> (QuantizationResult, f32, f32) {
+) -> QueryQuantization {
     let dims = query.len() as f64;
-    // Eight independent lanes, so the loop vectorizes; sums in `f64`, as
-    // the variance below subtracts two of them.
-    let (mut sum, mut sq) = ([0f64; 8], [0f64; 8]);
-    let (mut lo, mut hi) = ([f32::MAX; 8], [-f32::MAX; 8]);
-    let mut lane = |j: usize, r: f32| {
-        sum[j] += f64::from(r);
-        sq[j] += f64::from(r) * f64::from(r);
-        lo[j] = lo[j].min(r);
-        hi[j] = hi[j].max(r);
-    };
-    let (qs, qt) = query.split_at(query.len() - query.len() % 8);
-    let (cs, ct) = centroid.split_at(qs.len());
-    for (q8, c8) in qs.chunks_exact(8).zip(cs.chunks_exact(8)) {
-        for j in 0..8 {
-            lane(j, q8[j] - c8[j]);
-        }
-    }
-    for (j, (&q, &c)) in qt.iter().zip(ct).enumerate() {
-        lane(j, q - c);
-    }
-    let norm2: f64 = sq.iter().sum();
-    let min = lo.iter().fold(f32::MAX, |m, &x| m.min(x));
-    let max = hi.iter().fold(-f32::MAX, |m, &x| m.max(x));
-    let mean = sum.iter().sum::<f64>() / dims;
-    let std = (norm2 / dims - mean * mean).max(0.0).sqrt();
+    let stats = simd::residual_stats(query, centroid);
+    let (min, max) = (stats.min, stats.max);
+    let mean = stats.sum / dims;
+    let std = (stats.sum_sq / dims - mean * mean).max(0.0).sqrt();
     let grid = MINIMUM_MSE_GRID[usize::from(bits) - 1];
     let clamp = |x: f64| x.clamp(f64::from(min), f64::from(max)) as f32;
     let a = clamp(f64::from(grid[0]) * std + mean);
@@ -99,29 +78,35 @@ fn quantize_query(
     let steps = ((1u32 << bits) - 1) as f32;
     let step_inv = if b > a { steps / (b - a) } else { 0.0 };
     let step = if b > a { (b - a) / steps } else { 0.0 };
-    let mut component_sum = 0i32;
-    let mut error2 = 0f32;
-    for ((o, &q), &c) in out.iter_mut().zip(query).zip(centroid) {
-        let x = (q - c).clamp(a, b);
-        let level = ((x - a) * step_inv + 0.5).floor();
-        let e = q - c - (a + level * step);
-        error2 += e * e;
-        // `level` is in 0..=steps (at most 255).
-        let level = level as u8;
-        component_sum += i32::from(level);
-        *o = level;
-    }
-    let corrections = QuantizationResult {
-        lower_interval: a,
-        upper_interval: b,
-        additional_correction: if similarity == Similarity::Euclidean {
-            norm2 as f32
-        } else {
-            simd::dot_f32(query, centroid)
+    let (component_sum, error2) =
+        simd::quantize_residual(query, centroid, [a, b], step_inv, step, out);
+    QueryQuantization {
+        corrections: QuantizationResult {
+            lower_interval: a,
+            upper_interval: b,
+            // `(query - centroid) . centroid` is `query . centroid` less the
+            // centroid's squared norm, the inner products' correction.
+            additional_correction: if similarity == Similarity::Euclidean {
+                stats.sum_sq as f32
+            } else {
+                stats.dot_centroid
+            },
+            quantized_component_sum: component_sum,
         },
-        quantized_component_sum: component_sum,
-    };
-    (corrections, norm2 as f32, error2)
+        norm2: stats.sum_sq as f32,
+        error2,
+    }
+}
+
+/// A query quantized against one centroid.
+struct QueryQuantization {
+    /// The corrective terms; for the dot-product similarities the additional
+    /// correction is `(query - centroid) . centroid`.
+    corrections: QuantizationResult,
+    /// `|query - centroid|^2`.
+    norm2: f32,
+    /// The squared norm of the quantization error, clipping included.
+    error2: f32,
 }
 
 /// Bytes of corrective terms after each code: three floats and an int.
@@ -342,7 +327,6 @@ impl Quantizer for OsqQuantizer {
                 additional_correction: 0.0,
                 quantized_component_sum: 0,
             },
-            centroid_dp: 0.0,
             residual_norm: 0.0,
             query_error: 0.0,
             luts: vec![0u8; self.fast_scan_groups().saturating_mul(16)],
@@ -427,14 +411,13 @@ const REVERSE_NIBBLE: [u8; 16] = [0, 8, 4, 12, 2, 10, 6, 14, 1, 9, 5, 13, 3, 11,
 // four 4-bit values, doubled at most once.
 #[allow(clippy::arithmetic_side_effects)]
 fn fill_luts(query: &[u8], luts: &mut [u8]) {
-    let groups = query.len() / 4;
-    for (i, lut) in luts.chunks_exact_mut(16).enumerate() {
-        let (plane, g) = (i / groups, i % groups);
-        let q = &query[4 * g..4 * g + 4];
-        lut[0] = 0;
-        for v in 1..16usize {
-            let low = v.trailing_zeros() as usize;
-            lut[v] = lut[v & (v - 1)] + (q[low] << plane);
+    let plane_len = query.len() * 4;
+    let (first, rest) = luts.split_at_mut(plane_len);
+    simd::nibble_luts(query, first);
+    // Higher planes weigh the same sums by their bit.
+    for (plane, lut) in rest.chunks_exact_mut(plane_len).enumerate() {
+        for (e, &x) in lut.iter_mut().zip(first.iter()) {
+            *e = x << (plane + 1);
         }
     }
 }
@@ -471,7 +454,6 @@ struct OsqQueryScorer<'q> {
     query: Vec<f32>,
     unpacked: Vec<u8>,
     corrections: QuantizationResult,
-    centroid_dp: f32,
     /// `|query - centroid|`.
     residual_norm: f32,
     /// The norm of the quantized residual's error, clipping included.
@@ -486,21 +468,16 @@ impl QueryScorer for OsqQueryScorer<'_> {
     fn set_centroid(&mut self, centroid: &[f32]) {
         assert_eq!(centroid.len(), self.q.dimension, "centroid dimension");
         let encoding = self.q.encoding;
-        let (corrections, norm2, error2) = quantize_query(
+        let quantized = quantize_query(
             &self.query,
             centroid,
             encoding.query_bits(),
             self.q.similarity,
             &mut self.unpacked,
         );
-        self.corrections = corrections;
-        self.residual_norm = norm2.sqrt();
-        self.query_error = error2.sqrt();
-        self.centroid_dp = if self.q.similarity == Similarity::Euclidean {
-            0.0
-        } else {
-            simd::dot_f32(centroid, centroid)
-        };
+        self.corrections = quantized.corrections;
+        self.residual_norm = quantized.norm2.sqrt();
+        self.query_error = quantized.error2.sqrt();
         if self.q.fast_scan_planes() > 0 {
             fill_luts(&self.unpacked, &mut self.luts);
         }
@@ -585,11 +562,7 @@ impl OsqQueryScorer<'_> {
             ay_dims: ay * self.q.dimension as f32,
             ly_y1: ly * q.quantized_component_sum as f32,
             scale: SCALE_LUT[usize::from(encoding.bits()).saturating_sub(1)],
-            additional: if self.q.similarity == Similarity::Euclidean {
-                q.additional_correction
-            } else {
-                q.additional_correction - self.centroid_dp
-            },
+            additional: q.additional_correction,
         }
     }
 

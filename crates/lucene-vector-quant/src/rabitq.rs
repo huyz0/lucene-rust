@@ -581,7 +581,6 @@ impl Quantizer for ExRabitqQuantizer {
         Box::new(ExRabitqQueryScorer {
             q: self,
             rotated,
-            z: vec![0f32; self.dims],
             values: vec![0u8; self.dims],
             luts: if self.planes() {
                 vec![0u8; self.groups().saturating_mul(16)]
@@ -655,8 +654,6 @@ struct ExRabitqQueryScorer<'q> {
     q: &'q ExRabitqQuantizer,
     /// `P q`, of the code dimension.
     rotated: Vec<f32>,
-    /// `z = P q - P c`.
-    z: Vec<f32>,
     /// `z` quantized to 6 bits for fast scan, else 8: `z_i ~ lower + step *
     /// v_i`.
     values: Vec<u8>,
@@ -688,63 +685,45 @@ impl QueryScorer for ExRabitqQueryScorer<'_> {
     #[allow(clippy::arithmetic_side_effects)]
     fn set_prepared_centroid(&mut self, prepared: &[f32]) {
         assert_eq!(prepared.len(), self.q.dims, "centroid dimension");
-        for ((z, &q), &c) in self.z.iter_mut().zip(&self.rotated).zip(prepared) {
-            *z = q - c;
-        }
-        // Eight independent lanes, so the loop vectorizes; the code
-        // dimension is a multiple of 8.
-        let (mut lo, mut hi, mut sq) = ([f32::MAX; 8], [-f32::MAX; 8], [0f32; 8]);
-        for z8 in self.z.chunks_exact(8) {
-            for j in 0..8 {
-                lo[j] = lo[j].min(z8[j]);
-                hi[j] = hi[j].max(z8[j]);
-                sq[j] += z8[j] * z8[j];
-            }
-        }
-        let lo = lo.iter().fold(f32::MAX, |m, &x| m.min(x));
-        let hi = hi.iter().fold(-f32::MAX, |m, &x| m.max(x));
-        let norm2: f32 = sq.iter().sum();
+        // `z = P q - P c`, its range and norm in one pass, then its levels.
+        let stats = simd::residual_stats(&self.rotated, prepared);
+        let (lo, hi, norm2) = (stats.min, stats.max, stats.sum_sq as f32);
         let top = self.q.query_top();
         let inv = if hi > lo {
             f32::from(top) / (hi - lo)
         } else {
             0.0
         };
-        let mut sum = 0u32;
-        for (v, &z) in self.values.iter_mut().zip(&self.z) {
-            // In 0..=top by construction; the cast saturates rounding noise.
-            *v = ((z - lo) * inv + 0.5) as u8;
-            sum += u32::from(*v);
-        }
-        self.lower = lo;
-        self.step = if hi > lo {
+        let step = if hi > lo {
             (hi - lo) / f32::from(top)
         } else {
             0.0
         };
+        // Every `z` is in `[lo, hi]`, so each level is in `0..=top`.
+        let (sum, _) = simd::quantize_residual(
+            &self.rotated,
+            prepared,
+            [lo, hi],
+            inv,
+            step,
+            &mut self.values,
+        );
+        let sum = sum as u32;
+        self.lower = lo;
+        self.step = step;
         let center = f64::from((1u16 << self.q.bits) - 1) / 2.0;
         let n = self.q.dims as f64;
         self.offset_sum =
             (center * (f64::from(lo) * n + f64::from(self.step) * f64::from(sum))) as f32;
+        self.centroid_norm2 = simd::dot_f32(prepared, prepared);
         self.query_extra = if self.q.similarity == Similarity::Euclidean {
             norm2
         } else {
             simd::dot_f32(&self.rotated, prepared)
         };
         self.z_norm = norm2.sqrt();
-        self.centroid_norm2 = simd::dot_f32(prepared, prepared);
-        for (q, lut) in self
-            .values
-            .chunks_exact(4)
-            .zip(self.luts.chunks_exact_mut(16))
-        {
-            lut[..4].copy_from_slice(&[0, q[0], q[1], q[0] + q[1]]);
-            for m in 0..4 {
-                lut[4 + m] = lut[m] + q[2];
-            }
-            for m in 0..8 {
-                lut[8 + m] = lut[m] + q[3];
-            }
+        if !self.luts.is_empty() {
+            simd::nibble_luts(&self.values, &mut self.luts);
         }
     }
 
