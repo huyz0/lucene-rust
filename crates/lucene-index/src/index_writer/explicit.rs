@@ -3723,6 +3723,122 @@ mod tests {
         check(&dir);
     }
 
+    /// The latest commit's segments, each with its parsed `.si`.
+    fn committed_infos(dir: &FsDirectory) -> Vec<crate::segment_info::SegmentInfo> {
+        crate::segment_infos::read_latest(dir)
+            .unwrap()
+            .segments
+            .iter()
+            .map(|sci| {
+                let si = dir.open(&format!("{}.si", sci.segment_name)).unwrap();
+                crate::segment_info::parse(&si, &sci.segment_id).unwrap()
+            })
+            .collect()
+    }
+
+    /// Four committed segments of 1, 2, 3 and 4 documents.
+    fn four_segments(w: &mut IndexWriter<'_>, f: &Fields) {
+        let mut next = 0;
+        for n in 1..=4 {
+            let docs: Vec<ExplicitDocument> = (next..next + n).map(|i| doc(f, i)).collect();
+            next += n;
+            w.add_explicit_documents(docs).unwrap();
+            w.commit().unwrap();
+        }
+    }
+
+    /// With a merge policy set, `forceMergeDeletes` is the policy's
+    /// `findForcedDeletesMerges`, with its `forceMergeDeletesPctAllowed`.
+    #[test]
+    fn force_merge_deletes_takes_the_policys_pct_allowed() {
+        let tmp = TempDir::new("explicit-expunge-policy-pct");
+        let dir = FsDirectory::open(tmp.path());
+        let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", VERSION).unwrap();
+        w.set_merge_policy(Some(crate::merge_policy::MergePolicyConfig {
+            force_merge_deletes_pct_allowed: 20.0,
+            ..Default::default()
+        }));
+        let f = register(&mut w);
+        let docs: Vec<ExplicitDocument> = (0..20).map(|i| doc(&f, i)).collect();
+        w.add_explicit_documents(docs).unwrap();
+        w.commit().unwrap();
+        w.set_soft_deletes_retention(Some(SoftDeletesRetention {
+            seq_no_field: "_seq_no".to_string(),
+            min_retained_seq_no: i64::MAX,
+            prune_postings_field: None,
+            prune_recovery_source_field: None,
+        }));
+        for i in 0..3 {
+            w.soft_update_explicit_documents(id_term(i), Vec::new(), &[soft_delete(i)])
+                .unwrap();
+        }
+        w.commit().unwrap();
+        let before = w.commit_generations();
+        w.force_merge_deletes().unwrap();
+        assert_eq!(w.commit_generations(), before, "3 of 20 is not above 20%");
+        for i in 3..5 {
+            w.soft_update_explicit_documents(id_term(i), Vec::new(), &[soft_delete(i)])
+                .unwrap();
+        }
+        w.commit().unwrap();
+        w.force_merge_deletes().unwrap();
+        assert_eq!(counts(&mut w), (15, 0), "5 of 20 is above it");
+        check(&dir);
+    }
+
+    /// `ShuffleForcedMergePolicy`: a forced merge takes its sources
+    /// interleaved and says so in the merged segment's diagnostics; without
+    /// it the merged segment carries no such key.
+    #[test]
+    fn a_shuffled_forced_merge_is_marked_in_its_diagnostics() {
+        for shuffle in [false, true] {
+            let tmp = TempDir::new("explicit-shuffle");
+            let dir = FsDirectory::open(tmp.path());
+            let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", VERSION).unwrap();
+            w.set_merge_policy(Some(crate::merge_policy::MergePolicyConfig::default()));
+            w.set_shuffle_forced_merges(shuffle);
+            assert_eq!(w.shuffle_forced_merges(), shuffle);
+            let f = register(&mut w);
+            four_segments(&mut w, &f);
+            w.force_merge(1).unwrap();
+            let infos = committed_infos(&dir);
+            assert_eq!(infos.len(), 1);
+            let marked = infos[0]
+                .diagnostics
+                .iter()
+                .any(|(k, v)| k == crate::merge::SHUFFLE_MERGE_KEY && v.is_empty());
+            assert_eq!(marked, shuffle);
+            assert_eq!(w.committed_doc_count().unwrap(), 10);
+            check(&dir);
+        }
+    }
+
+    /// The merge policy's `noCFSRatio` decides whether a merged segment is
+    /// compound, whatever `use_compound_file` (flushed segments only) says.
+    #[test]
+    fn the_merge_compound_file_settings_decide_merged_segments() {
+        for (ratio, compound) in [(1.0, true), (0.0, false)] {
+            let tmp = TempDir::new("explicit-merge-cfs");
+            let dir = FsDirectory::open(tmp.path());
+            let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", VERSION).unwrap();
+            w.set_merge_policy(Some(crate::merge_policy::MergePolicyConfig::default()));
+            w.set_use_compound_file(!compound);
+            let settings = crate::merge_policy::CompoundFileSettings::new(ratio, i64::MAX);
+            w.set_merge_compound_file_settings(Some(settings));
+            assert_eq!(w.merge_compound_file_settings(), Some(settings));
+            let f = register(&mut w);
+            four_segments(&mut w, &f);
+            assert!(committed_infos(&dir)
+                .iter()
+                .all(|si| si.is_compound_file == !compound));
+            w.force_merge(1).unwrap();
+            let infos = committed_infos(&dir);
+            assert_eq!(infos.len(), 1);
+            assert_eq!(infos[0].is_compound_file, compound, "noCFSRatio {ratio}");
+            check(&dir);
+        }
+    }
+
     /// A soft-deleted document with no sequence number is never retained.
     #[test]
     fn a_soft_deleted_document_without_a_seq_no_is_not_retained() {

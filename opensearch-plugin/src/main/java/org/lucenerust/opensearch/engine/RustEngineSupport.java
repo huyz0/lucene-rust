@@ -91,6 +91,27 @@ public final class RustEngineSupport {
     /** The codecs whose formats are the ones the Rust writer lays out. */
     private static final Set<String> CODECS = Set.of("default", "lucene_default");
 
+    /** {@code NativeLuceneIndexWriterFactory}'s {@code opensearch.shuffle_forced_merge}, read as it reads it. */
+    private static final boolean SHUFFLE_FORCED_MERGE = org.opensearch.common.Booleans.parseBoolean(
+        System.getProperty("opensearch.shuffle_forced_merge", Boolean.TRUE.toString())
+    );
+
+    /** Why an index with a fuzzy-set {@code _id} postings format cannot be served. */
+    public static final String FUZZY_SET_REFUSED = "the Rust engine does not support index.optimize_doc_id_lookup.fuzzy_set.enabled";
+
+    /**
+     * Whether an index with these settings is served by the Rust engine: it asked for it, or it
+     * inherits the node default and none of its static settings sends it to OpenSearch's engine.
+     */
+    public static boolean servedByRust(org.opensearch.common.settings.Settings settings) {
+        if (ENGINE_ENABLED.get(settings) == false) {
+            return false;
+        }
+        return ENGINE_ENABLED.exists(settings)
+            || (CODECS.contains(EngineConfig.INDEX_CODEC_SETTING.get(settings))
+                && org.opensearch.index.IndexSortConfig.INDEX_SORT_FIELD_SETTING.exists(settings) == false);
+    }
+
     /** The circuit breaker the plugin registers for the writers' buffers. */
     public static final String BREAKER_NAME = "lucene_rust_writer";
 
@@ -153,6 +174,11 @@ public final class RustEngineSupport {
         }
         if (indexSorted) {
             return "the Rust engine does not support index sorting";
+        }
+        // The codec then gives _id a FuzzyFilterPostingsFormat (a bloom filter beside the terms),
+        // which the Rust writer does not lay out.
+        if (settings.isEnableFuzzySetForDocId()) {
+            return FUZZY_SET_REFUSED;
         }
         if (settings.isContextAwareEnabled()) {
             return "the Rust engine does not support context-aware segments";
@@ -308,6 +334,15 @@ public final class RustEngineSupport {
                 if (policy instanceof TieredMergePolicy tiered) {
                     rust.setMergePolicy(tiered);
                 }
+                // NativeLuceneIndexWriterFactory's setUseCompoundFile and setCheckPendingFlushUpdate,
+                // the policy's compound-file ratio and cap, and its ShuffleForcedMergePolicy wrapper.
+                rust.setOptions(
+                    config.useCompoundFile(),
+                    policy.getNoCFSRatio(),
+                    policy.getMaxCFSSegmentSizeMB(),
+                    config.getIndexSettings().isCheckPendingFlushEnabled(),
+                    SHUFFLE_FORCED_MERGE
+                );
                 rust.setBpReorder(bpReorder(config.getIndexSettings()));
             } catch (IOException e) {
                 throw new java.io.UncheckedIOException(e);
