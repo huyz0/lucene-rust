@@ -226,6 +226,8 @@ public class RustEngine extends Engine {
     private final CounterMetric numDocAppends = new CounterMetric();
     private final CounterMetric numDocUpdates = new CounterMetric();
     private final LastRefreshedCheckpointListener lastRefreshedCheckpointListener;
+    /** Releases {@code wait_for} writes without a refresh when searches read the buffers; null otherwise. */
+    private volatile LiveWaitFor liveWaitFor;
     private final boolean isContextAwareEnabled;
 
     private final CompletionStatsCache completionStatsCache;
@@ -392,6 +394,7 @@ public class RustEngine extends Engine {
                 this::incrementVersionLookup
             );
             this.primaryOperationPolicy = engineConfig.getPrimaryOperationPolicy();
+            this.liveWaitFor = LiveWaitFor.start(engineConfig, documentIndexWriter);
             success = true;
         } finally {
             if (success == false) {
@@ -2045,6 +2048,9 @@ public class RustEngine extends Engine {
             assert (isWriteLockHeld()) || failEngineLock.isHeldByCurrentThread()
                 : "Either the write lock must be held or the engine must be currently be failing itself";
             try {
+                if (liveWaitFor != null) {
+                    liveWaitFor.close();
+                }
                 this.versionMap.clear();
                 if (internalReaderManager != null) {
                     internalReaderManager.removeListener(versionMap);
@@ -2083,6 +2089,33 @@ public class RustEngine extends Engine {
 
     private boolean isWriteLockHeld() {
         return rwl.isWriteLockedByCurrentThread() && documentIndexWriter.isWriteLockedByCurrentThread();
+    }
+
+    /**
+     * A searcher taken on its own (segment stats, a point in time's segment list, a get) reads the
+     * reader alone, as a refresh left it: the buffered documents are for search requests, which take
+     * a {@link #acquireSearcherSupplier supplier}.
+     */
+    @Override
+    public Searcher acquireSearcher(String source, SearcherScope scope, java.util.function.Function<Searcher, Searcher> wrapper)
+        throws EngineException {
+        SearcherSupplier supplier = super.acquireSearcherSupplier(wrapper, scope);
+        Searcher searcher = null;
+        try {
+            searcher = supplier.acquireSearcher(source);
+            Searcher acquired = searcher;
+            return new Searcher(
+                source,
+                acquired.getDirectoryReader(),
+                acquired.getSimilarity(),
+                acquired.getQueryCache(),
+                acquired.getQueryCachingPolicy(),
+                () -> org.opensearch.common.lease.Releasables.close(acquired, supplier)
+            );
+        } catch (RuntimeException e) {
+            org.opensearch.common.lease.Releasables.closeWhileHandlingException(searcher, supplier);
+            throw e;
+        }
     }
 
     /** External searchers also read the writer's buffered documents when the index asks for it (LiveSearchers). */

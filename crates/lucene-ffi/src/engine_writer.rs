@@ -784,13 +784,19 @@ pub const OPEN_SPARSE: u8 = 2;
 /// [`ffi_engine_writer_open`]'s flag for an index searched without a refresh
 /// (`crate::live`).
 pub const OPEN_LIVE_SEARCH: u8 = 4;
+/// [`ffi_engine_writer_open`]'s flag for `index.lucene_rust.adaptive_doc_values`:
+/// new segments write their doc values in the `RustAdaptive` format
+/// ([`lucene_codecs::doc_values::Lucene90DocValuesFormat::rust_adaptive`]).
+pub const OPEN_ADAPTIVE_DOC_VALUES: u8 = 32;
 
 /// Opens the shard's writer over the index at `path`, which must already hold
 /// a commit (OpenSearch's `Store.createEmpty` or a recovered one).
 /// `ram_buffer_mb` is the flush threshold. `flags`: [`OPEN_FAULT_INJECTION`]
 /// allows the [`OP_PANIC`] operation; [`OPEN_SPARSE`] writes the segments of
 /// an `index.sparse` index ([`lucene_sparse::SparseCodec`]);
-/// [`OPEN_LIVE_SEARCH`] keeps what a search of the buffers reads.
+/// [`OPEN_LIVE_SEARCH`] keeps what a search of the buffers reads;
+/// [`OPEN_ADAPTIVE_DOC_VALUES`] writes doc values in the `RustAdaptive`
+/// format.
 ///
 /// # Safety
 /// `path` valid for `path_len` bytes; `out_handle` valid for one write.
@@ -841,6 +847,11 @@ pub unsafe extern "C" fn ffi_engine_writer_open(
             let mut writer = IndexWriter::open(dir_ref, Vec::new(), codec, VERSION)?;
             if sparse {
                 writer.set_codec(Some(Arc::new(lucene_sparse::SparseCodec)))?;
+            }
+            if flags & OPEN_ADAPTIVE_DOC_VALUES != 0 {
+                writer.set_default_doc_values_format(
+                    lucene_codecs::doc_values::Lucene90DocValuesFormat::rust_adaptive(),
+                );
             }
             writer.enable_explicit_documents()?;
             writer.set_deletion_policy(DeletionPolicy::KeepAll)?;
@@ -1957,6 +1968,80 @@ mod tests {
         for r in lucene_index::check_index::check_directory(&dir).unwrap() {
             assert!(r.all_passed(), "{}: {:?}", r.segment_name, r.failures());
         }
+    }
+
+    /// [`OPEN_ADAPTIVE_DOC_VALUES`]: numeric doc values land in `RustAdaptive`
+    /// files, read back value for value, survive a merge, and pass
+    /// `CheckIndex`.
+    #[test]
+    fn an_adaptive_writer_writes_rust_adaptive_doc_values() {
+        let tmp = empty_index("engine-writer-adaptive");
+        let h = open(&tmp, OPEN_ADAPTIVE_DOC_VALUES);
+        let f = setup(h);
+        let n = 600i64;
+        for round in 0..2 {
+            for i in 0..n / 2 {
+                let seq = round * n / 2 + i;
+                let id = format!("d{seq}");
+                let b = doc(
+                    Blob::default().u8(OP_ADD).i32(1),
+                    &f,
+                    &id,
+                    &["w"],
+                    seq * 3,
+                    false,
+                );
+                assert_eq!(apply(h, &b.0), 0, "{}", crate::error::last_error());
+            }
+            commit(h, &[]);
+        }
+        let read_seq_nos = |tmp: &TempDir| {
+            let dir = FsDirectory::open(tmp.path());
+            let reader = lucene_search::directory_reader::DirectoryReader::open(&dir).unwrap();
+            let mut all = Vec::new();
+            for seg in reader.segment_readers() {
+                let number = seg
+                    .field_infos()
+                    .fields
+                    .iter()
+                    .find(|fi| fi.name == "_seq_no")
+                    .unwrap()
+                    .number;
+                let (meta, data) = seg.doc_values_for_field(number).unwrap();
+                let entry = meta.numeric_entry(number).unwrap();
+                assert!(entry.adaptive.is_some());
+                let mut r = lucene_codecs::doc_values::NumericReader::new(data, entry);
+                for d in 0..seg.max_doc {
+                    all.push(r.value(d).unwrap().unwrap());
+                }
+            }
+            all.sort_unstable();
+            all
+        };
+        let want: Vec<i64> = (0..n).map(|s| s * 3).collect();
+        assert_eq!(read_seq_nos(&tmp), want);
+        let names: Vec<String> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        assert!(
+            names.iter().any(|n| n.contains("_RustAdaptive_0.dvd")),
+            "{names:?}"
+        );
+        assert!(
+            !names.iter().any(|n| n.contains("_Lucene90_0.dv")),
+            "{names:?}"
+        );
+        check(&tmp);
+        // A forced merge rewrites both segments in the same format.
+        let mut gen = 0;
+        // SAFETY: a live handle and out-pointer.
+        let rc = unsafe { ffi_engine_writer_force_merge(h, 1, 0, &mut gen) };
+        assert_eq!(rc, 0, "{}", crate::error::last_error());
+        commit_settled(h);
+        ffi_engine_writer_close(h);
+        assert_eq!(read_seq_nos(&tmp), want);
+        check(&tmp);
     }
 
     /// [`OPEN_SPARSE`]: segments record neural-search's codec and carry its

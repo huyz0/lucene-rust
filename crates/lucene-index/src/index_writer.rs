@@ -966,6 +966,10 @@ pub(crate) struct IndexingConfig {
     /// `Lucene90DocValuesFormat()` -- see
     /// [`IndexWriter::set_doc_values_format_for_field`].
     doc_values_formats: Vec<(String, per_field_doc_values::Lucene90DocValuesFormat)>,
+    /// The format a field gets when neither [`Self::doc_values_formats`] nor
+    /// the codec routes it anywhere but the default `Lucene90DocValuesFormat()`
+    /// -- see [`IndexWriter::set_default_doc_values_format`].
+    default_doc_values_format: per_field_doc_values::Lucene90DocValuesFormat,
     /// `PerFieldKnnVectorsFormat.getKnnVectorsFormatForField`: the fields
     /// routed to a KNN format other than the default
     /// `Lucene99HnswVectorsFormat(hnsw_m, hnsw_beam_width)` -- see
@@ -2940,6 +2944,7 @@ impl IndexingConfig {
                 hnsw_beam_width: self.hnsw_beam_width,
                 postings_formats: self.postings_formats.clone(),
                 doc_values_formats: self.doc_values_formats.clone(),
+                default_doc_values_format: self.default_doc_values_format,
                 knn_vectors_formats: self.knn_vectors_formats.clone(),
                 codec: self.codec.clone(),
                 reorder,
@@ -3291,16 +3296,24 @@ impl IndexingConfig {
         &self,
         name: &str,
     ) -> per_field_doc_values::Lucene90DocValuesFormat {
-        self.doc_values_formats
+        // A field routed explicitly keeps its format, even the default one.
+        if let Some((_, format)) = self
+            .doc_values_formats
             .iter()
             .find(|(field, _)| field == name)
-            .map(|(_, format)| *format)
-            .or_else(|| {
-                self.codec
-                    .as_ref()
-                    .map(|c| c.doc_values_format_for_field(name))
-            })
-            .unwrap_or_default()
+        {
+            return *format;
+        }
+        let routed = self
+            .codec
+            .as_ref()
+            .map(|c| c.doc_values_format_for_field(name))
+            .unwrap_or_default();
+        if routed == per_field_doc_values::Lucene90DocValuesFormat::default() {
+            self.default_doc_values_format
+        } else {
+            routed
+        }
     }
 
     /// `IndexingChain.writeDocValues` through `PerFieldDocValuesFormat`: the
@@ -5652,6 +5665,22 @@ impl<'d> IndexWriter<'d> {
         formats.push((field.to_string(), format));
     }
 
+    /// The doc-values format of every field that would otherwise get the
+    /// default `Lucene90DocValuesFormat()` -- neither routed by
+    /// [`Self::set_doc_values_format_for_field`] nor by the codec to anything
+    /// else. Flushes and merges after this call write it; existing segments
+    /// keep theirs until merged. [`Lucene90DocValuesFormat::rust_adaptive`]
+    /// here is the plugin's `index.lucene_rust.adaptive_doc_values`; setting the
+    /// default back restores stock-readable segments from then on.
+    ///
+    /// [`Lucene90DocValuesFormat::rust_adaptive`]: per_field_doc_values::Lucene90DocValuesFormat::rust_adaptive
+    pub fn set_default_doc_values_format(
+        &mut self,
+        format: per_field_doc_values::Lucene90DocValuesFormat,
+    ) {
+        self.cfg_mut().default_doc_values_format = format;
+    }
+
     /// Buffers `node` for the segments already published only -- a
     /// [`crate::concurrent_writer::ConcurrentIndexWriter`] keeps each
     /// in-RAM buffer's own share of it with that buffer.
@@ -5960,6 +5989,7 @@ impl<'d> IndexWriter<'d> {
                 shuffle_forced_merges: false,
                 postings_formats: Vec::new(),
                 doc_values_formats: Vec::new(),
+                default_doc_values_format: Default::default(),
                 knn_vectors_formats: Vec::new(),
                 codec: None,
                 reader_pool: std::sync::Arc::default(),

@@ -161,6 +161,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
         boolean faultInjection,
         boolean sparse,
         boolean liveSearch,
+        boolean adaptiveDocValues,
         int maxDocs,
         Analyzer analyzer,
         Similarity similarity,
@@ -180,6 +181,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
             faultInjection,
             sparse,
             liveSearch,
+            adaptiveDocValues,
             maxDocs,
             out
         );
