@@ -44,60 +44,74 @@ pub const TREE_MIN_CLUSTERS: usize = 8192;
 /// Centroids per parent in the routing tree.
 pub const TREE_FANOUT: usize = 64;
 
-/// How a field's similarity ranks centroids: `score = w * dot(q, c) + b`
-/// per centroid, larger is nearer.
-fn weights(similarity: Similarity, centroids: &[f32], dim: usize) -> (Vec<f32>, Vec<f32>) {
-    let n = centroids.len().checked_div(dim).unwrap_or(0);
-    match similarity {
-        // -|q - c|^2 = 2 q.c - |c|^2 - |q|^2; the last term is the same for
-        // every centroid.
-        Similarity::Euclidean => (
-            vec![2.0; n],
-            centroids
-                .chunks_exact(dim)
-                .map(|c| -simd::dot_f32(c, c))
-                .collect(),
-        ),
-        // Spherically clustered fields rank by the cosine with the centroid.
-        s if crate::writer::spherical(s) => (
-            centroids
-                .chunks_exact(dim)
-                .map(|c| {
-                    let norm = simd::dot_f32(c, c).sqrt();
-                    if norm > 0.0 {
-                        1.0 / norm
-                    } else {
-                        0.0
-                    }
-                })
-                .collect(),
-            vec![0.0; n],
-        ),
-        _ => (vec![1.0; n], vec![0.0; n]),
+/// A centroid's exact routing score, larger is nearer: minus the squared
+/// distance for Euclidean, the dot product times `1 / |c|` for the
+/// spherically clustered Cosine and DotProduct, and the dot product for
+/// MaximumInnerProduct, whose score is the dot product itself.
+#[derive(Debug, Clone)]
+struct ExactScore {
+    euclidean: bool,
+    /// Per centroid, the factor on the dot product (not for Euclidean).
+    scale: Vec<f32>,
+}
+
+impl ExactScore {
+    fn new(similarity: Similarity, centroids: &[f32], dim: usize) -> Self {
+        let euclidean = similarity == Similarity::Euclidean;
+        let scale = if euclidean {
+            Vec::new()
+        } else if crate::writer::spherical(similarity) {
+            centroids.chunks_exact(dim).map(inverse_norm).collect()
+        } else {
+            let n = centroids.len().checked_div(dim).unwrap_or(0);
+            vec![1.0; n]
+        };
+        ExactScore { euclidean, scale }
+    }
+
+    fn score(&self, centroids: &[f32], dim: usize, q: &[f32], c: usize) -> f32 {
+        let row = kmeans::row(centroids, dim, c);
+        if self.euclidean {
+            -simd::square_distance_f32(q, row)
+        } else {
+            simd::dot_f32(q, row) * self.scale.get(c).copied().unwrap_or(1.0)
+        }
     }
 }
 
-/// Signed 8-bit codes of `rows` after subtracting `mean`, one scale per row:
-/// `row - mean ~= scale * code`.
-// ARITH: indices stay inside `rows`, which is a whole number of `dim` rows.
-#[allow(clippy::arithmetic_side_effects)]
-fn encode(rows: &[f32], dim: usize, mean: &[f32]) -> (Vec<u8>, Vec<f32>) {
-    let n = rows.len() / dim;
-    let mut codes = vec![0u8; n * dim];
-    let mut scales = Vec::with_capacity(n);
-    for (row, out) in rows.chunks_exact(dim).zip(codes.chunks_exact_mut(dim)) {
-        let max = row
-            .iter()
-            .zip(mean)
-            .fold(0f32, |m, (&x, &u)| m.max((x - u).abs()));
-        let scale = max / 127.0;
-        let inv = if max > 0.0 { 127.0 / max } else { 0.0 };
-        for ((o, &x), &u) in out.iter_mut().zip(row).zip(mean) {
-            *o = ((x - u) * inv).round().clamp(-127.0, 127.0) as i8 as u8;
-        }
-        scales.push(scale);
+fn inverse_norm(c: &[f32]) -> f32 {
+    let norm = simd::dot_f32(c, c).sqrt();
+    if norm > 0.0 {
+        1.0 / norm
+    } else {
+        0.0
     }
-    (codes, scales)
+}
+
+/// Signed 8-bit code of `row - mean` into `out`, and its scale:
+/// `row - mean ~= scale * code`.
+fn encode_row(row: &[f32], mean: Option<&[f32]>, out: &mut [u8]) -> f32 {
+    let at = |i: usize, x: f32| mean.map_or(x, |m| x - m[i]);
+    let max = row
+        .iter()
+        .enumerate()
+        .fold(0f32, |m, (i, &x)| m.max(at(i, x).abs()));
+    let inv = if max > 0.0 { 127.0 / max } else { 0.0 };
+    for (i, (o, &x)) in out.iter_mut().zip(row).enumerate() {
+        *o = (at(i, x) * inv).round().clamp(-127.0, 127.0) as i8 as u8;
+    }
+    max / 127.0
+}
+
+/// How a [`Level`] turns an 8-bit dot product into a score.
+#[derive(Debug, Clone)]
+enum LevelScore {
+    /// `-|q - c|^2 + |q - m|^2 = 2 (q - m).(c - m) - |c - m|^2`, all in
+    /// coordinates centred on the level's mean `m`, which keeps far from the
+    /// origin data well conditioned. Holds `-|c - m|^2` per row.
+    Euclidean(Vec<f32>),
+    /// `w * q.c = w * (q.(c - m) + q.m)`. Holds `w` per row.
+    Dot(Vec<f32>),
 }
 
 /// A set of centroids scored through 8-bit codes.
@@ -108,15 +122,26 @@ struct Level {
     /// their range on what tells the rows apart.
     mean: Vec<f32>,
     codes: Vec<u8>,
-    /// Per row: `w * scale`, what an 8-bit dot is multiplied by.
+    /// Per row: what an 8-bit dot product (times the query's scale) is
+    /// multiplied by.
     code_weight: Vec<f32>,
-    /// Per row: the score weight `w` and offset `b`.
-    w: Vec<f32>,
-    b: Vec<f32>,
+    kind: LevelScore,
+}
+
+/// A query's 8-bit code, reused across the levels of one routing.
+#[derive(Debug, Default)]
+struct QueryCode {
+    centred: Vec<f32>,
+    codes: Vec<u8>,
+    scale: f32,
 }
 
 impl Level {
-    fn new(rows: &[f32], dim: usize, similarity: Similarity) -> Self {
+    /// `rows` scored as Euclidean distances, or (`weights` given) as their
+    /// dot products with the query times `weights`.
+    // ARITH: indices stay inside `rows`, a whole number of `dim` rows.
+    #[allow(clippy::arithmetic_side_effects)]
+    fn new(rows: &[f32], dim: usize, weights: Option<Vec<f32>>) -> Self {
         let n = rows.len().checked_div(dim).unwrap_or(0);
         let mut mean = vec![0f32; dim];
         for r in rows.chunks_exact(dim) {
@@ -128,58 +153,82 @@ impl Level {
             let inv = 1.0 / n as f32;
             mean.iter_mut().for_each(|m| *m *= inv);
         }
-        let (codes, scales) = encode(rows, dim, &mean);
-        let (w, b) = weights(similarity, rows, dim);
-        let code_weight = w.iter().zip(&scales).map(|(&w, &s)| w * s).collect();
+        let mut codes = vec![0u8; n * dim];
+        let scales: Vec<f32> = rows
+            .chunks_exact(dim)
+            .zip(codes.chunks_exact_mut(dim))
+            .map(|(r, out)| encode_row(r, Some(&mean), out))
+            .collect();
+        let (code_weight, kind) = match weights {
+            None => (
+                scales.iter().map(|&s| 2.0 * s).collect(),
+                LevelScore::Euclidean(
+                    rows.chunks_exact(dim)
+                        .map(|r| -simd::square_distance_f32(r, &mean))
+                        .collect(),
+                ),
+            ),
+            Some(w) => (
+                scales.iter().zip(&w).map(|(&s, &w)| s * w).collect(),
+                LevelScore::Dot(w),
+            ),
+        };
         Level {
             dim,
             mean,
             codes,
             code_weight,
-            w,
-            b,
+            kind,
         }
     }
 
     fn len(&self) -> usize {
-        self.w.len()
+        self.code_weight.len()
+    }
+
+    /// Encodes `q` as this level scores it.
+    fn encode(&self, q: &[f32], code: &mut QueryCode) {
+        code.codes.resize(q.len(), 0);
+        code.scale = match self.kind {
+            LevelScore::Euclidean(_) => {
+                code.centred.clear();
+                code.centred
+                    .extend(q.iter().zip(&self.mean).map(|(&x, &m)| x - m));
+                encode_row(&code.centred, None, &mut code.codes)
+            }
+            LevelScore::Dot(_) => encode_row(q, None, &mut code.codes),
+        };
     }
 
     /// Approximate scores of rows `rows` (indices into this level) or of
     /// every row, appended to `out` as `(score, row)`.
     // ARITH: row indices are below `len()`; code offsets stay in `codes`.
     #[allow(clippy::arithmetic_side_effects)]
-    fn score(&self, q: &QueryCode, rows: Option<&[u32]>, out: &mut Vec<(f32, u32)>) {
-        let qm = simd::dot_f32(&q.raw, &self.mean);
+    fn score(
+        &self,
+        q: &[f32],
+        code: &mut QueryCode,
+        rows: Option<&[u32]>,
+        out: &mut Vec<(f32, u32)>,
+    ) {
+        self.encode(q, code);
+        let qm = match self.kind {
+            LevelScore::Euclidean(_) => 0.0,
+            LevelScore::Dot(_) => simd::dot_f32(q, &self.mean),
+        };
         let mut one = |r: usize| {
-            let code = &self.codes[r * self.dim..(r + 1) * self.dim];
-            let dot = vector_util::dot_product_i8(&q.codes, code) as f32;
-            let s = self.code_weight[r] * q.scale * dot + self.w[r] * qm + self.b[r];
+            let c = &self.codes[r * self.dim..(r + 1) * self.dim];
+            let dot = vector_util::dot_product_i8(&code.codes, c) as f32;
+            let s = self.code_weight[r] * code.scale * dot;
+            let s = match &self.kind {
+                LevelScore::Euclidean(b) => s + b[r],
+                LevelScore::Dot(w) => s + w[r] * qm,
+            };
             out.push((s, r as u32));
         };
         match rows {
             Some(rows) => rows.iter().for_each(|&r| one(r as usize)),
             None => (0..self.len()).for_each(one),
-        }
-    }
-}
-
-/// A query's 8-bit code: `raw ~= scale * codes`.
-#[derive(Debug)]
-struct QueryCode {
-    raw: Vec<f32>,
-    codes: Vec<u8>,
-    scale: f32,
-}
-
-impl QueryCode {
-    fn new(q: &[f32]) -> Self {
-        let zero = vec![0f32; q.len()];
-        let (codes, scales) = encode(q, q.len(), &zero);
-        QueryCode {
-            raw: q.to_vec(),
-            codes,
-            scale: scales[0],
         }
     }
 }
@@ -193,25 +242,24 @@ struct Tree {
     children: Vec<u32>,
 }
 
-/// What the tree clusters and compares: unit centroids unless the field
-/// is Euclidean.
-fn tree_input(centroids: &[f32], dim: usize, similarity: Similarity) -> (Vec<f32>, Similarity) {
+/// What the tree clusters: unit centroids unless the field is Euclidean.
+fn tree_input(centroids: &[f32], dim: usize, similarity: Similarity) -> Vec<f32> {
     let mut rows = centroids.to_vec();
-    if similarity == Similarity::Euclidean {
-        return (rows, similarity);
+    if similarity != Similarity::Euclidean {
+        for c in rows.chunks_exact_mut(dim) {
+            let _ = vector_util::l2normalize(c, false);
+        }
     }
-    for c in rows.chunks_exact_mut(dim) {
-        let _ = vector_util::l2normalize(c, false);
-    }
-    (rows, Similarity::Cosine)
+    rows
 }
 
 /// Each centroid's parent in a routing tree over `centroids`: k-means over
-/// the centroids into groups of about [`TREE_FANOUT`]. Parents are numbered
-/// from zero, and every parent has at least one centroid.
+/// the centroids (unit centroids unless Euclidean) into groups of about
+/// [`TREE_FANOUT`]. Parents are numbered densely from zero: every parent
+/// below [`parent_count`] has a centroid.
 pub fn tree_parents(centroids: &[f32], dim: usize, similarity: Similarity) -> Vec<u32> {
-    let (input, routed) = tree_input(centroids, dim, similarity);
-    let metric = if routed == Similarity::Euclidean {
+    let input = tree_input(centroids, dim, similarity);
+    let metric = if similarity == Similarity::Euclidean {
         Metric::L2
     } else {
         Metric::InnerProduct
@@ -224,46 +272,82 @@ pub fn tree_parents(centroids: &[f32], dim: usize, similarity: Similarity) -> Ve
     kmeans::cluster(&input, dim, TREE_FANOUT, &params, metric).assignments
 }
 
+/// The number of parents `parents` names: one more than the largest.
+pub fn parent_count(parents: &[u32]) -> usize {
+    parents
+        .iter()
+        .map(|&p| (p as usize).saturating_add(1))
+        .max()
+        .unwrap_or(0)
+}
+
 impl Tree {
-    /// The tree whose centroid `c` has parent `parents[c]`; parents are the
-    /// means of their centroids (unit centroids unless Euclidean).
-    // ARITH: parent numbers are small (checked by the reader), and rows
-    // index `centroids`.
+    /// The tree whose centroid `c` has parent `parents[c]`, or `None` unless
+    /// there is one parent per centroid and the parents are dense (as
+    /// [`tree_parents`] returns and the reader checks). A parent is the mean
+    /// of its centroids (unit centroids unless Euclidean). Dot-scored
+    /// parents rank by the cosine with that mean, times, for
+    /// MaximumInnerProduct, the largest norm among its centroids, since the
+    /// raw dot product ranks the centroids themselves.
+    // ARITH: parents are checked below `nlist`, and rows index `centroids`.
     #[allow(clippy::arithmetic_side_effects)]
-    fn new(centroids: &[f32], dim: usize, similarity: Similarity, parents: &[u32]) -> Tree {
-        let (input, routed) = tree_input(centroids, dim, similarity);
-        let count = parents.iter().map(|&p| p as usize + 1).max().unwrap_or(0);
+    fn new(centroids: &[f32], dim: usize, similarity: Similarity, parents: &[u32]) -> Option<Tree> {
+        let nlist = centroids.len().checked_div(dim).unwrap_or(0);
+        let count = parent_count(parents);
+        if parents.len() != nlist || count > nlist {
+            return None;
+        }
+        let input = tree_input(centroids, dim, similarity);
         let mut starts = vec![0usize; count + 1];
         let mut means = vec![0f32; count * dim];
+        let mut max_norm = vec![0f32; count];
         for (c, &p) in parents.iter().enumerate() {
             let p = p as usize;
             starts[p + 1] += 1;
-            let row = kmeans::row(&input, dim, c);
-            for (m, &x) in means[p * dim..(p + 1) * dim].iter_mut().zip(row) {
+            for (m, &x) in means[p * dim..(p + 1) * dim]
+                .iter_mut()
+                .zip(kmeans::row(&input, dim, c))
+            {
                 *m += x;
             }
+            let row = kmeans::row(centroids, dim, c);
+            max_norm[p] = max_norm[p].max(simd::dot_f32(row, row).sqrt());
+        }
+        if starts[1..].contains(&0) {
+            return None;
         }
         for p in 0..count {
-            let size = starts[p + 1];
-            if size > 0 {
-                let inv = 1.0 / size as f32;
-                means[p * dim..(p + 1) * dim]
-                    .iter_mut()
-                    .for_each(|m| *m *= inv);
-            }
+            let inv = 1.0 / starts[p + 1] as f32;
+            means[p * dim..(p + 1) * dim]
+                .iter_mut()
+                .for_each(|m| *m *= inv);
             starts[p + 1] += starts[p];
         }
         let mut fill = starts.clone();
-        let mut children = vec![0u32; parents.len()];
+        let mut children = vec![0u32; nlist];
         for (c, &p) in parents.iter().enumerate() {
             children[fill[p as usize]] = c as u32;
             fill[p as usize] += 1;
         }
-        Tree {
-            parents: Level::new(&means, dim, routed),
+        let weights = (similarity != Similarity::Euclidean).then(|| {
+            means
+                .chunks_exact(dim)
+                .zip(&max_norm)
+                .map(|(m, &norm)| {
+                    let w = inverse_norm(m);
+                    if similarity == Similarity::MaximumInnerProduct {
+                        w * norm
+                    } else {
+                        w
+                    }
+                })
+                .collect()
+        });
+        Some(Tree {
+            parents: Level::new(&means, dim, weights),
             starts,
             children,
-        }
+        })
     }
 }
 
@@ -271,8 +355,10 @@ impl Tree {
 #[derive(Debug, Clone)]
 pub struct Router {
     dim: usize,
-    exact: bool,
-    leaves: Level,
+    nlist: usize,
+    exact: ExactScore,
+    /// The centroids' 8-bit codes; `None` for [`Routing::Exact`].
+    leaves: Option<Level>,
     tree: Option<Tree>,
     /// Through a tree, how many centroids are scored per probe.
     cover: usize,
@@ -303,7 +389,8 @@ impl Router {
     /// A router over `centroids` (`nlist * dim` floats). `parents` is the
     /// routing tree stored with the field, if any (see [`tree_parents`]):
     /// [`Routing::Auto`] uses it when present and never clusters at open;
-    /// [`Routing::Tree`] clusters the centroids when it is absent.
+    /// [`Routing::Tree`] clusters the centroids when it is absent. Parents
+    /// that do not describe a tree over these centroids are ignored.
     pub fn new(
         centroids: &[f32],
         dim: usize,
@@ -312,28 +399,28 @@ impl Router {
         parents: Option<&[u32]>,
     ) -> Self {
         let nlist = centroids.len().checked_div(dim).unwrap_or(0);
-        let leaves = Level::new(centroids, dim, similarity);
-        let (exact, tree, cover) = match routing {
-            Routing::Exact => (true, None, 1),
-            Routing::Quantized => (false, None, 1),
+        let stored = || parents.and_then(|p| Tree::new(centroids, dim, similarity, p));
+        let (tree, cover) = match routing {
+            Routing::Exact | Routing::Quantized => (None, 1),
             Routing::Tree { cover } => {
-                let tree = match parents {
-                    Some(p) => Some(Tree::new(centroids, dim, similarity, p)),
-                    None => (nlist >= 2 * TREE_FANOUT).then(|| {
+                let tree = stored().or_else(|| {
+                    (nlist >= TREE_FANOUT.saturating_mul(2)).then(|| {
                         let p = tree_parents(centroids, dim, similarity);
                         Tree::new(centroids, dim, similarity, &p)
-                    }),
-                };
-                (false, tree, cover.max(1))
+                    })?
+                });
+                (tree, cover.max(1))
             }
-            Routing::Auto => (
-                false,
-                parents.map(|p| Tree::new(centroids, dim, similarity, p)),
-                TREE_COVER,
-            ),
+            Routing::Auto => (stored(), TREE_COVER),
         };
+        let exact = ExactScore::new(similarity, centroids, dim);
+        let leaves = (routing != Routing::Exact).then(|| {
+            let weights = (!exact.euclidean).then(|| exact.scale.clone());
+            Level::new(centroids, dim, weights)
+        });
         Router {
             dim,
+            nlist,
             exact,
             leaves,
             tree,
@@ -343,7 +430,7 @@ impl Router {
 
     /// The number of clusters.
     pub fn len(&self) -> usize {
-        self.leaves.len()
+        self.nlist
     }
 
     /// Whether there are no clusters.
@@ -356,12 +443,6 @@ impl Router {
         self.tree.is_some()
     }
 
-    /// The exact score of centroid `c` (see [`weights`]).
-    fn exact(&self, centroids: &[f32], q: &[f32], c: usize) -> f32 {
-        let row = kmeans::row(centroids, self.dim, c);
-        self.leaves.w[c] * simd::dot_f32(q, row) + self.leaves.b[c]
-    }
-
     /// The `nprobe` clusters nearest to `q`, nearest first. `centroids` are
     /// the f32 centroids the router was built from, used to rescore the
     /// best approximate candidates exactly.
@@ -372,43 +453,43 @@ impl Router {
         if nprobe == 0 {
             return Vec::new();
         }
-        // A full order (as calibration asks for) is exact anyway.
-        if self.exact || nprobe == self.len() {
-            let mut all: Vec<(f32, u32)> = (0..self.len())
-                .map(|c| (self.exact(centroids, q, c), c as u32))
-                .collect();
-            keep_best(&mut all, nprobe);
-            all.sort_unstable_by(by_score);
-            return all.into_iter().map(|(_, c)| c as usize).collect();
-        }
-        let code = QueryCode::new(q);
+        let exact = |c: usize| self.exact.score(centroids, self.dim, q, c);
+        let leaves = match &self.leaves {
+            // A full order is exact anyway.
+            Some(leaves) if nprobe < self.len() => leaves,
+            _ => {
+                let mut all: Vec<(f32, u32)> =
+                    (0..self.len()).map(|c| (exact(c), c as u32)).collect();
+                keep_best(&mut all, nprobe);
+                all.sort_unstable_by(by_score);
+                return all.into_iter().map(|(_, c)| c as usize).collect();
+            }
+        };
+        let mut code = QueryCode::default();
         let mut cand = Vec::new();
         match &self.tree {
-            None => self.leaves.score(&code, None, &mut cand),
+            None => leaves.score(q, &mut code, None, &mut cand),
             Some(tree) => {
                 let mut parents = Vec::with_capacity(tree.parents.len());
-                tree.parents.score(&code, None, &mut parents);
+                tree.parents.score(q, &mut code, None, &mut parents);
                 parents.sort_unstable_by(by_score);
-                // Cover a few times more centroids than are probed: a
+                // Cover several times more centroids than are probed: a
                 // probe's nearest centroids can sit under several parents.
                 let want = nprobe.saturating_mul(self.cover).max(rescored(nprobe));
-                let mut covered = 0usize;
-                let mut rows = Vec::with_capacity(want.saturating_mul(2));
+                let mut rows = Vec::with_capacity(want.saturating_add(TREE_FANOUT * 2));
                 for (i, &(_, p)) in parents.iter().enumerate() {
-                    if covered >= want && i >= 4 {
+                    if rows.len() >= want && i >= 4 {
                         break;
                     }
                     let p = p as usize;
-                    let kids = &tree.children[tree.starts[p]..tree.starts[p + 1]];
-                    rows.extend_from_slice(kids);
-                    covered = covered.saturating_add(kids.len());
+                    rows.extend_from_slice(&tree.children[tree.starts[p]..tree.starts[p + 1]]);
                 }
-                self.leaves.score(&code, Some(&rows), &mut cand);
+                leaves.score(q, &mut code, Some(&rows), &mut cand);
             }
         }
         keep_best(&mut cand, rescored(nprobe));
         for c in &mut cand {
-            c.0 = self.exact(centroids, q, c.1 as usize);
+            c.0 = exact(c.1 as usize);
         }
         keep_best(&mut cand, nprobe);
         cand.sort_unstable_by(by_score);
@@ -425,15 +506,7 @@ pub fn exact_route(
     q: &[f32],
     nprobe: usize,
 ) -> Vec<usize> {
-    let (w, b) = weights(similarity, centroids, dim);
-    let mut scored: Vec<(f32, u32)> = centroids
-        .chunks_exact(dim)
-        .enumerate()
-        .map(|(c, row)| (w[c] * simd::dot_f32(q, row) + b[c], c as u32))
-        .collect();
-    keep_best(&mut scored, nprobe);
-    scored.sort_unstable_by(by_score);
-    scored.into_iter().map(|(_, c)| c as usize).collect()
+    Router::new(centroids, dim, similarity, Routing::Exact, None).route(centroids, q, nprobe)
 }
 
 #[cfg(test)]
@@ -500,7 +573,7 @@ mod tests {
         for s in SIMILARITIES {
             let r = Router::new(&centroids, dim, s, Routing::Tree { cover: 32 }, None);
             assert!(r.has_tree());
-            let (w, b) = weights(s, &centroids, dim);
+            let exact = ExactScore::new(s, &centroids, dim);
             let mut found = 0;
             for q in queries.chunks_exact(dim) {
                 let got = r.route(&centroids, q, 20);
@@ -509,8 +582,7 @@ mod tests {
                 seen.sort_unstable();
                 seen.dedup();
                 assert_eq!(seen.len(), 20);
-                let score =
-                    |c: usize| w[c] * simd::dot_f32(q, kmeans::row(&centroids, dim, c)) + b[c];
+                let score = |c: usize| exact.score(&centroids, dim, q, c);
                 assert!(got.windows(2).all(|p| score(p[0]) >= score(p[1])));
                 let want = exact_route(&centroids, dim, s, q, 20);
                 found += got.iter().filter(|c| want.contains(c)).count();
@@ -559,5 +631,82 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn euclidean_routing_far_from_the_origin() {
+        let dim = 32;
+        let s = Similarity::Euclidean;
+        // How many of the exact 16 nearest centroids each routing finds, with
+        // every coordinate shifted by `offset`.
+        let found = |offset: f32| {
+            let mut centroids = random(2000, dim, 9);
+            let mut queries = random(40, dim, 10);
+            for x in centroids.iter_mut().chain(queries.iter_mut()) {
+                *x += offset;
+            }
+            // The exact path is the f32 squared distance itself.
+            let r = Router::new(&centroids, dim, s, Routing::Exact, None);
+            for q in queries.chunks_exact(dim) {
+                let got = r.route(&centroids, q, 8);
+                let d = |c: usize| simd::square_distance_f32(q, kmeans::row(&centroids, dim, c));
+                let best = (0..2000).map(d).fold(f32::INFINITY, f32::min);
+                assert_eq!(d(got[0]), best);
+            }
+            [Routing::Quantized, Routing::Tree { cover: 32 }].map(|routing| {
+                let r = Router::new(&centroids, dim, s, routing, None);
+                queries
+                    .chunks_exact(dim)
+                    .map(|q| {
+                        let want = exact_route(&centroids, dim, s, q, 16);
+                        let got = r.route(&centroids, q, 16);
+                        got.iter().filter(|c| want.contains(c)).count()
+                    })
+                    .sum::<usize>()
+            })
+        };
+        let near = found(0.0);
+        let far = found(1000.0);
+        // The codes are centred, so routing far from the origin is as good
+        // as near it (the tree is weak on structureless data either way).
+        assert!(far[0] * 10 >= 9 * 40 * 16, "{far:?}");
+        assert!(far[1] * 20 >= near[1] * 19, "{near:?} {far:?}");
+    }
+
+    #[test]
+    fn bad_parents_are_ignored() {
+        let dim = 8;
+        let centroids = random(300, dim, 11);
+        let good = tree_parents(&centroids, dim, Similarity::Euclidean);
+        assert_eq!(parent_count(&good), {
+            let mut p = good.clone();
+            p.sort_unstable();
+            p.dedup();
+            p.len()
+        });
+        let short = &good[..299];
+        let mut gap = good.clone();
+        gap.iter_mut().for_each(|p| *p *= 2);
+        let mut huge = good.clone();
+        huge[0] = u32::MAX;
+        for parents in [short, &gap[..], &huge[..]] {
+            let r = Router::new(
+                &centroids,
+                dim,
+                Similarity::Euclidean,
+                Routing::Auto,
+                Some(parents),
+            );
+            assert!(!r.has_tree());
+            assert_eq!(r.route(&centroids, &centroids[..dim], 5)[0], 0);
+        }
+        let r = Router::new(
+            &centroids,
+            dim,
+            Similarity::Euclidean,
+            Routing::Auto,
+            Some(&good),
+        );
+        assert!(r.has_tree());
     }
 }

@@ -614,8 +614,7 @@ impl IvfWriter {
         }
         match &tree {
             Some(parents) => {
-                let count = parents.iter().map(|&p| p as usize + 1).max().unwrap_or(0);
-                write_count(m, count)?;
+                write_count(m, routing::parent_count(parents))?;
                 for &p in parents {
                     write_count(m, p as usize)?;
                 }
