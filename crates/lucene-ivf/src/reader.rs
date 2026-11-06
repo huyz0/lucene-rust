@@ -13,10 +13,11 @@ use lucene_vector_quant::{Quantizer, QuantizerRegistry, QueryScorer};
 
 use crate::calibrate::Calibration;
 use crate::kmeans::NO_CLUSTER;
+use crate::routing::{Router, Routing};
 use crate::{
     similarity_from_ordinal, Error, Result, Similarity, VectorEncoding, META_CODEC, POSTINGS_CODEC,
     VECTORS_CODEC, VERSION_BLOCK_LAYOUT, VERSION_CALIBRATION, VERSION_CURRENT,
-    VERSION_VECTOR_ENCODING,
+    VERSION_ROUTING_TREE, VERSION_VECTOR_ENCODING,
 };
 
 /// A file read by byte range: a memory-mapped or in-memory file, or a blob
@@ -281,11 +282,10 @@ pub struct IvfField {
     /// once at open; empty when the quantizer uses centroids as they are.
     prepared: Vec<f32>,
     prepared_len: usize,
-    /// How a query ranks centroids: by `1 / |c|` times the inner product
-    /// for a spherically clustered field (one factor per centroid), by
-    /// inner product for `MaximumInnerProduct`, by Euclidean distance
-    /// otherwise (both empty).
-    centroid_scale: Vec<f32>,
+    /// Ranks the centroids for a query.
+    router: Router,
+    /// Each centroid's parent in the routing tree stored with the field.
+    tree_parents: Option<Vec<u32>>,
     /// `cluster count + 1` prefix sums of the clusters' entry counts:
     /// cluster `c`'s entries are `starts[c]..starts[c + 1]`.
     starts: Vec<usize>,
@@ -344,7 +344,8 @@ impl IvfField {
             quantizer,
             prepared,
             prepared_len,
-            centroid_scale: centroid_scale(similarity, &centroids, dimension),
+            router: Router::new(&centroids, dimension, similarity, Routing::Exact, None),
+            tree_parents: None,
             centroids,
             starts,
             primary_starts: Vec::new(),
@@ -760,6 +761,33 @@ fn read_field(
             b => return corrupt(format!("field {number}: calibration flag {b}")),
         }
     }
+    let mut tree_parents = None;
+    if version >= VERSION_ROUTING_TREE {
+        let parent_count = read_count(input, "routing tree parents")?;
+        if parent_count > 0 {
+            // Each centroid's parent takes at least a byte of what is left.
+            if parent_count > nlist || nlist > input.remaining() {
+                return corrupt(format!(
+                    "field {number}: {parent_count} routing parents for {nlist} clusters"
+                ));
+            }
+            let mut parents = Vec::with_capacity(nlist);
+            let mut used = vec![false; parent_count];
+            for _ in 0..nlist {
+                let p = read_count(input, "routing parent")?;
+                let Some(u) = used.get_mut(p) else {
+                    return corrupt(format!("field {number}: routing parent {p} out of range"));
+                };
+                *u = true;
+                // `p < parent_count <= nlist`, which fits a u32 (vint).
+                parents.push(p as u32);
+            }
+            if used.contains(&false) {
+                return corrupt(format!("field {number}: empty routing parent"));
+            }
+            tree_parents = Some(parents);
+        }
+    }
     let (block_starts, postings_bytes) = block_layout(quantizer.as_ref(), &starts)?;
     if add(postings_offset, postings_bytes, "postings")? > postings_end {
         return corrupt(format!("field {number}: postings past the end of .ivp"));
@@ -787,7 +815,14 @@ fn read_field(
         quantizer,
         prepared,
         prepared_len,
-        centroid_scale: centroid_scale(similarity, &centroids, dimension),
+        router: Router::new(
+            &centroids,
+            dimension,
+            similarity,
+            Routing::Auto,
+            tree_parents.as_deref(),
+        ),
+        tree_parents,
         centroids,
         starts,
         primary_starts,
@@ -799,24 +834,6 @@ fn read_field(
         radii,
         calibration,
     })
-}
-
-/// How a query ranks a field's centroids (see `IvfField::centroid_scale`).
-fn centroid_scale(similarity: Similarity, centroids: &[f32], dimension: usize) -> Vec<f32> {
-    if !crate::writer::spherical(similarity) {
-        return Vec::new();
-    }
-    centroids
-        .chunks_exact(dimension.max(1))
-        .map(|c| {
-            let norm = simd::dot_f32(c, c).sqrt();
-            if norm > 0.0 {
-                1.0 / norm
-            } else {
-                0.0
-            }
-        })
-        .collect()
 }
 
 /// The `cluster count + 1` prefix sums of the posting block lengths of
@@ -982,34 +999,33 @@ fn higher(a: Option<f32>, b: Option<f32>) -> Option<f32> {
 }
 
 impl IvfField {
-    /// The `nprobe` clusters nearest to `query`, nearest first: by L2 for
-    /// Euclidean, by dot with the unit centroid for the spherically
-    /// clustered Cosine and DotProduct (see `centroid_scale`), and by raw
-    /// dot for MaximumInnerProduct, whose score is the dot product itself.
+    /// The `nprobe` clusters nearest to `query`, nearest first (see
+    /// [`Router::route`]).
     pub(crate) fn probe_order(&self, query: &[f32], nprobe: usize) -> Vec<usize> {
-        let euclidean = self.similarity == Similarity::Euclidean;
-        let mut scored: Vec<(f32, usize)> = self
-            .centroids
-            .chunks_exact(self.dimension)
-            .enumerate()
-            .map(|(c, centroid)| {
-                let s = if euclidean {
-                    -simd::square_distance_f32(query, centroid)
-                } else {
-                    let scale = self.centroid_scale.get(c).copied().unwrap_or(1.0);
-                    simd::dot_f32(query, centroid) * scale
-                };
-                (s, c)
-            })
-            .collect();
-        let by_score = |a: &(f32, usize), b: &(f32, usize)| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1));
-        let n = nprobe.min(scored.len());
-        if n < scored.len() {
-            scored.select_nth_unstable_by(n, by_score);
-            scored.truncate(n);
-        }
-        scored.sort_unstable_by(by_score);
-        scored.into_iter().map(|(_, c)| c).collect()
+        self.router.route(&self.centroids, query, nprobe)
+    }
+
+    /// Rebuilds the router (the default is [`Routing::Auto`]).
+    pub fn set_routing(&mut self, routing: Routing) {
+        self.router = Router::new(
+            &self.centroids,
+            self.dimension,
+            self.similarity,
+            routing,
+            self.tree_parents.as_deref(),
+        );
+    }
+
+    /// Routes with the tree whose centroid `c` has parent `parents[c]`, as
+    /// [`Routing::Auto`] (calibration at write time searches this way).
+    pub(crate) fn set_tree(&mut self, parents: Option<Vec<u32>>) {
+        self.tree_parents = parents;
+        self.set_routing(Routing::Auto);
+    }
+
+    /// Whether the field stores a routing tree.
+    pub fn has_routing_tree(&self) -> bool {
+        self.tree_parents.is_some()
     }
 
     /// An upper bound on the exact score of every entry of cluster `c` for
@@ -1194,6 +1210,13 @@ impl IvfReader {
             codec_util::check_whole_file_footer(&all, end)?;
         }
         Ok(())
+    }
+
+    /// Rebuilds every field's router (the default is [`Routing::Auto`]).
+    pub fn set_routing(&mut self, routing: Routing) {
+        for f in &mut self.fields {
+            f.set_routing(routing);
+        }
     }
 
     /// The fields, in the order written.
