@@ -226,6 +226,8 @@ public class RustEngine extends Engine {
     private final CounterMetric numDocAppends = new CounterMetric();
     private final CounterMetric numDocUpdates = new CounterMetric();
     private final LastRefreshedCheckpointListener lastRefreshedCheckpointListener;
+    /** Releases {@code wait_for} writes without a refresh when searches read the buffers; null otherwise. */
+    private volatile LiveWaitFor liveWaitFor;
     private final boolean isContextAwareEnabled;
 
     private final CompletionStatsCache completionStatsCache;
@@ -392,6 +394,7 @@ public class RustEngine extends Engine {
                 this::incrementVersionLookup
             );
             this.primaryOperationPolicy = engineConfig.getPrimaryOperationPolicy();
+            this.liveWaitFor = LiveWaitFor.start(engineConfig, documentIndexWriter);
             success = true;
         } finally {
             if (success == false) {
@@ -2045,6 +2048,9 @@ public class RustEngine extends Engine {
             assert (isWriteLockHeld()) || failEngineLock.isHeldByCurrentThread()
                 : "Either the write lock must be held or the engine must be currently be failing itself";
             try {
+                if (liveWaitFor != null) {
+                    liveWaitFor.close();
+                }
                 this.versionMap.clear();
                 if (internalReaderManager != null) {
                     internalReaderManager.removeListener(versionMap);

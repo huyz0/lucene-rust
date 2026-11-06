@@ -519,6 +519,17 @@ def realtime():
         ids = [h[1] for h in a[1]]
         check(ids.count("r5") <= 1 and "r6" not in ids, f"realtime after updates: {q} finds r5 once, r6 never")
     same_views("realtime after updates")
+    # refresh=wait_for answers once the write is searchable, with no refresh: none is scheduled.
+    must("PUT", f"/{rt}/_settings", {"index": {"refresh_interval": "-1"}})
+    start = time.time()
+    must("PUT", f"/{rt}/_doc/w1?refresh=wait_for", {"body": "zebra wait", "tag": "t1"})
+    lines = [{"index": {"_id": f"w{i}"}} if i % 2 == 0 else {"body": "zebra bulk", "tag": "t2"} for i in range(2, 42)]
+    out = must("POST", f"/{rt}/_bulk?refresh=wait_for", "\n".join(json.dumps(l) for l in lines) + "\n", ndjson=True)
+    took = time.time() - start
+    check(out.get("errors") is False, "realtime: wait_for bulk indexed")
+    check(took < 5, f"realtime: wait_for answered without a refresh ({took:.2f}s)")
+    zebra = must("POST", f"/{rt}/_search?request_cache=false", {"query": {"match": {"body": "zebra"}}, "track_total_hits": True})
+    check(zebra["hits"]["total"]["value"] == 21, f"realtime: wait_for writes are searchable ({zebra['hits']['total']})")
     after = must("GET", "/_plugins/lucene_rust/stats").get("live_queries", 0)
     check(after - before >= 4 + len(queries) + 1 + len(sorts), f"realtime: searches after updates stay live ({after - before})")
     for idx in (rt, ref):
