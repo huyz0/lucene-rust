@@ -11,8 +11,8 @@ use lucene_util::{simd, vector_util};
 use lucene_vector_quant::{Quantizer, QuantizerRegistry};
 
 use crate::{
-    similarity_from_ordinal, Error, Result, Similarity, META_CODEC, POSTINGS_CODEC, VECTORS_CODEC,
-    VERSION_BLOCK_LAYOUT, VERSION_CURRENT,
+    similarity_from_ordinal, Error, Result, Similarity, VectorEncoding, META_CODEC, POSTINGS_CODEC,
+    VECTORS_CODEC, VERSION_BLOCK_LAYOUT, VERSION_CURRENT, VERSION_VECTOR_ENCODING,
 };
 
 /// A file read by byte range: a memory-mapped or in-memory file, or a blob
@@ -107,8 +107,11 @@ impl SearchParams {
 pub struct IvfField {
     number: i32,
     similarity: Similarity,
+    encoding: VectorEncoding,
     dimension: usize,
     count: usize,
+    /// Bytes of one stored vector in `encoding`.
+    vector_bytes: usize,
     quantizer: Box<dyn Quantizer>,
     centroids: Vec<f32>,
     /// How a query ranks centroids: by `1 / |c|` times the inner product
@@ -119,6 +122,10 @@ pub struct IvfField {
     /// `cluster count + 1` prefix sums of the clusters' entry counts:
     /// cluster `c`'s entries are `starts[c]..starts[c + 1]`.
     starts: Vec<usize>,
+    /// For a residual encoding, `cluster count + 1` prefix sums of the
+    /// clusters' own vector counts: cluster `c`'s vectors are the slots
+    /// `primary_starts[c]..primary_starts[c + 1]`. Empty otherwise.
+    primary_starts: Vec<usize>,
     /// `cluster count + 1` prefix sums of the clusters' posting block
     /// lengths in bytes (slots, then the quantizer's block of codes), from
     /// the field's postings offset.
@@ -140,6 +147,11 @@ impl IvfField {
     /// The similarity.
     pub fn similarity(&self) -> Similarity {
         self.similarity
+    }
+
+    /// How `.ivv` stores the field's full-precision vectors.
+    pub fn encoding(&self) -> VectorEncoding {
+        self.encoding
     }
 
     /// The dimension.
@@ -189,12 +201,9 @@ impl IvfField {
         size
     }
 
-    /// Bytes of one full-precision vector.
-    fn vector_len(&self) -> usize {
-        // ARITH: bounded when the field was opened.
-        #[allow(clippy::arithmetic_side_effects)]
-        let len = self.dimension * 4;
-        len
+    /// Bytes of one stored full-precision vector.
+    pub(crate) fn vector_len(&self) -> usize {
+        self.vector_bytes
     }
 
     /// The byte range of cluster `c`'s posting block in `.ivp`.
@@ -206,6 +215,20 @@ impl IvfField {
             self.postings_offset + self.block_starts[c],
             self.block_starts[c + 1] - self.block_starts[c],
         )
+    }
+
+    /// The centroid slot `s`'s vector is stored relative to: its primary
+    /// cluster's for a residual encoding, none otherwise.
+    pub(crate) fn slot_centroid(&self, s: usize) -> &[f32] {
+        if self.primary_starts.is_empty() {
+            return &[];
+        }
+        // ARITH: `primary_starts[0] == 0 <= s`, so the partition point is
+        // at least 1; `s < count == primary_starts[clusters]` keeps it a
+        // cluster.
+        #[allow(clippy::arithmetic_side_effects)]
+        let c = self.primary_starts.partition_point(|&start| start <= s) - 1;
+        self.centroid(c)
     }
 
     /// The byte offset of slot `s`'s vector in `.ivv`.
@@ -254,13 +277,13 @@ fn read_f32(input: &mut SliceInput<'_>) -> Result<f32> {
 }
 
 /// Checks a range-read file's header and the shape of its footer, and
-/// returns where its payload ends.
+/// returns its format version and where its payload ends.
 fn check_source(
     source: &dyn RangeSource,
     codec: &str,
     segment_id: &[u8; ID_LENGTH],
     suffix: &str,
-) -> Result<usize> {
+) -> Result<(i32, usize)> {
     let header_len = codec_util::index_header_length(codec, suffix);
     let Some(payload_end) = source.len().checked_sub(FOOTER_LENGTH) else {
         return corrupt(format!(
@@ -275,7 +298,7 @@ fn check_source(
         ));
     }
     let header = source.read(0, header_len)?;
-    codec_util::check_index_header(
+    let header = codec_util::check_index_header(
         &mut SliceInput::new(&header),
         codec,
         VERSION_BLOCK_LAYOUT,
@@ -285,7 +308,7 @@ fn check_source(
     )?;
     let footer = source.read(payload_end, FOOTER_LENGTH)?;
     codec_util::retrieve_checksum(&footer)?;
-    Ok(payload_end)
+    Ok((header.version, payload_end))
 }
 
 /// `a * b`, or a corruption error naming `what`.
@@ -303,6 +326,7 @@ fn add(a: usize, b: usize, what: &str) -> Result<usize> {
 /// Reads one field's meta entry and checks its regions against the files.
 fn read_field(
     input: &mut SliceInput<'_>,
+    version: i32,
     registry: &QuantizerRegistry,
     postings_end: usize,
     vectors_end: usize,
@@ -313,6 +337,15 @@ fn read_field(
     let ordinal = input.read_byte()?;
     let Some(similarity) = similarity_from_ordinal(ordinal) else {
         return corrupt(format!("field {number}: unknown similarity {ordinal}"));
+    };
+    let encoding = if version >= VERSION_VECTOR_ENCODING {
+        let ordinal = input.read_byte()?;
+        let Some(encoding) = VectorEncoding::from_ordinal(ordinal) else {
+            return corrupt(format!("field {number}: unknown vector encoding {ordinal}"));
+        };
+        encoding
+    } else {
+        VectorEncoding::F32
     };
     let dimension = read_count(input, "dimension")?;
     if dimension == 0 {
@@ -365,6 +398,30 @@ fn read_field(
             "field {number}: {total} entries for {count} vectors"
         ));
     }
+    let mut primary_starts = Vec::new();
+    if encoding.residual() {
+        primary_starts.reserve(starts.len());
+        primary_starts.push(0);
+        let mut total = 0usize;
+        for w in starts.windows(2) {
+            let size = read_count(input, "primary cluster size")?;
+            // ARITH: `starts` ascend.
+            #[allow(clippy::arithmetic_side_effects)]
+            let entries = w[1] - w[0];
+            if size > entries {
+                return corrupt(format!(
+                    "field {number}: {size} vectors in a cluster of {entries} entries"
+                ));
+            }
+            total = add(total, size, "primary cluster sizes")?;
+            primary_starts.push(total);
+        }
+        if total != count {
+            return corrupt(format!(
+                "field {number}: {total} primary entries for {count} vectors"
+            ));
+        }
+    }
     let mut block_starts = Vec::with_capacity(starts.len());
     let mut postings_bytes = 0usize;
     block_starts.push(0);
@@ -383,7 +440,10 @@ fn read_field(
     if add(postings_offset, postings_bytes, "postings")? > postings_end {
         return corrupt(format!("field {number}: postings past the end of .ivp"));
     }
-    let vectors_bytes = mul(mul(count, dimension, "vectors")?, 4, "vectors")?;
+    let vector_bytes = encoding
+        .vector_bytes(dimension)
+        .map_or_else(|| corrupt("vector length overflows"), Ok)?;
+    let vectors_bytes = mul(count, vector_bytes, "vectors")?;
     if !vectors_offset.is_multiple_of(4)
         || add(vectors_offset, vectors_bytes, "vectors")? > doc_table_offset
         || add(doc_table_offset, mul(count, 8, "doc table")?, "doc table")? > vectors_end
@@ -395,8 +455,10 @@ fn read_field(
     Ok(IvfField {
         number,
         similarity,
+        encoding,
         dimension,
         count,
+        vector_bytes,
         quantizer,
         centroid_scale: if crate::writer::spherical(similarity) {
             centroids
@@ -415,6 +477,7 @@ fn read_field(
         },
         centroids,
         starts,
+        primary_starts,
         block_starts,
         slot_docs: Vec::new(),
         postings_offset,
@@ -556,21 +619,30 @@ impl IvfReader {
         suffix: &str,
         registry: &QuantizerRegistry,
     ) -> Result<Self> {
-        let postings_end = check_source(postings.as_ref(), POSTINGS_CODEC, segment_id, suffix)?;
-        let vectors_end = check_source(vectors.as_ref(), VECTORS_CODEC, segment_id, suffix)?;
+        let (postings_version, postings_end) =
+            check_source(postings.as_ref(), POSTINGS_CODEC, segment_id, suffix)?;
+        let (vectors_version, vectors_end) =
+            check_source(vectors.as_ref(), VECTORS_CODEC, segment_id, suffix)?;
         let mut input = SliceInput::new(meta);
-        codec_util::check_index_header(
+        let version = codec_util::check_index_header(
             &mut input,
             META_CODEC,
             VERSION_BLOCK_LAYOUT,
             VERSION_CURRENT,
             segment_id,
             suffix,
-        )?;
+        )?
+        .version;
+        if postings_version != version || vectors_version != version {
+            return corrupt(format!(
+                "format versions differ: meta {version}, postings {postings_version}, \
+                 vectors {vectors_version}"
+            ));
+        }
         let field_count = read_count(&mut input, "field count")?;
         let mut fields: Vec<IvfField> = Vec::new();
         for _ in 0..field_count {
-            let mut field = read_field(&mut input, registry, postings_end, vectors_end)?;
+            let mut field = read_field(&mut input, version, registry, postings_end, vectors_end)?;
             if fields.iter().any(|f| f.number == field.number) {
                 return corrupt(format!("field {} recorded twice", field.number));
             }
@@ -645,23 +717,18 @@ impl IvfReader {
         Ok((docs, codes.to_vec()))
     }
 
-    /// The full-precision vector in `slot` (unit-normalized for `Cosine`).
+    /// The full-precision vector in `slot` (unit-normalized for `Cosine`),
+    /// decoded from the field's encoding.
     fn read_vector(&self, f: &IvfField, slot: usize, out: &mut Vec<f32>) -> Result<()> {
         let bytes = self.vectors.read(f.vector_offset(slot), f.vector_len())?;
-        out.clear();
-        match vector_util::le_f32s(&bytes) {
-            Some(v) => out.extend_from_slice(v),
-            None => out.extend(
-                bytes
-                    .chunks_exact(4)
-                    .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])),
-            ),
-        }
+        out.resize(f.dimension, 0.0);
+        f.encoding.decode(&bytes, f.slot_centroid(slot), out);
         Ok(())
     }
 
-    /// Every vector of `field` in slot order, little-endian `f32`s, in one
-    /// range read: what a merge streams through.
+    /// Every vector of `field` in slot order, as stored (`IvfField::encoding`,
+    /// `IvfField::vector_len` bytes each), in one range read: what a merge
+    /// streams through.
     pub(crate) fn slot_vectors(&self, field: i32) -> Result<Cow<'_, [u8]>> {
         let f = self.field_or_err(field)?;
         // ARITH: the vectors region was checked to fit at open.

@@ -11,6 +11,8 @@
 //!   --refine N       k-means neighbourhood rounds; --full N  full Lloyd rounds
 //!   --iters N        Lloyd iterations per split
 //!   --spill X        SOAR spill with lambda X (default: no spilling)
+//!   --rerank-encoding E  f32|f16|bf16|int8: how .ivv stores the rerank
+//!                    vectors (default f32); vectors_mb is that file's size
 //!   --hnsw           also build and search Lucene104 HNSW + BBQ (M 16, beam 100)
 //!   --ef L           HNSW candidate counts (default 10,20,40,80,160,320)
 //! ```
@@ -30,7 +32,9 @@ use lucene_codecs::scalar_quantized_vectors::{
     ScalarQuantizedVectorsReader, ScalarQuantizedVectorsWriter,
 };
 use lucene_codecs::{hnsw, hnsw_concurrent, hnsw_vectors};
-use lucene_ivf::{FieldVectors, IvfParams, IvfReader, IvfWriter, SearchParams, Similarity};
+use lucene_ivf::{
+    FieldVectors, IvfParams, IvfReader, IvfWriter, SearchParams, Similarity, VectorEncoding,
+};
 use lucene_util::quantization::ScalarEncoding;
 use lucene_vector_quant::osq::OsqFactory;
 use lucene_vector_quant::scalar::ScalarFactory;
@@ -96,6 +100,9 @@ fn main() {
         .min(nq_all);
     let target = opt("--target").map_or(384, |s| s.parse().unwrap());
     let spill: Option<f32> = opt("--spill").map(|s| s.parse().unwrap());
+    let encoding = opt("--rerank-encoding").map_or(VectorEncoding::F32, |s| {
+        VectorEncoding::from_name(&s).unwrap_or_else(|| panic!("unknown rerank encoding {s}"))
+    });
     let mut kmeans = lucene_ivf::kmeans::KMeansParams::default();
     if let Some(r) = opt("--refine") {
         kmeans.refine_rounds = r.parse().unwrap();
@@ -134,6 +141,7 @@ fn main() {
                 target_cluster_size: target,
                 spill,
                 kmeans,
+                rerank_encoding: encoding,
                 ..IvfParams::default()
             },
         )
@@ -166,7 +174,8 @@ fn main() {
                 }
                 let secs = t.elapsed().as_secs_f64();
                 println!(
-                    "ivf-{qname},clusters={clusters} entries={entries} nprobe={nprobe} rerank={rerank},{build:.1},{:.4},{:.0},{:.0},{pinned:.1},{vectors_mb:.1}",
+                    "ivf-{qname},clusters={clusters} entries={entries} nprobe={nprobe} rerank={rerank} enc={},{build:.1},{:.4},{:.0},{:.0},{pinned:.1},{vectors_mb:.1}",
+                    encoding.name(),
                     found as f64 / (nq * K) as f64,
                     secs / nq as f64 * 1e6,
                     nq as f64 / secs
