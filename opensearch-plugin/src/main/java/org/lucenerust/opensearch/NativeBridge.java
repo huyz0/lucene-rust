@@ -38,7 +38,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code jvm_reader.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 63;
+    public static final int EXPECTED_ABI_VERSION = 64;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -310,6 +310,10 @@ public final class NativeBridge {
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG, ADDRESS, ADDRESS, ADDRESS)
         );
         static final MethodHandle LIVE_VIEW_CLOSE = bind("ffi_live_view_close", FunctionDescriptor.of(JAVA_INT, JAVA_LONG));
+        static final MethodHandle LIVE_VIEW_READER = bind(
+            "ffi_live_view_reader",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG, ADDRESS)
+        );
         static final MethodHandle WRITER_RELEASE_LIVE = bind(
             "ffi_engine_writer_release_live",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG)
@@ -1792,6 +1796,29 @@ public final class NativeBridge {
                 }
                 outView[0] = id;
                 outBlob[0] = bytes;
+            }
+            return rc;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * A reader handle over the reader at {@code handle} and {@code view}'s buffers as segments after
+     * its own, one per buffer, into {@code out[0]}: every native search of it reads the buffered
+     * documents as the leaves of the view number them. It belongs to the view, which closes it; the
+     * caller must not. {@link #INVALID_ARGUMENT} when the buffers cannot be written (one was taken
+     * for a flush since the view opened); the caller then searches the reader alone.
+     */
+    public static int liveViewReader(long handle, long view, long[] out) {
+        if (out == null || out.length < 1) {
+            return fail(INVALID_ARGUMENT, "out needs a slot");
+        }
+        try (Scratch s = Scratch.open()) {
+            MemorySegment id = s.alloc(Long.BYTES);
+            int rc = (int) H.LIVE_VIEW_READER.invokeExact(handle, view, id);
+            if (rc == OK) {
+                out[0] = id.get(JAVA_LONG, 0);
             }
             return rc;
         } catch (Throwable t) {

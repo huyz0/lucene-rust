@@ -5,13 +5,13 @@ package org.lucenerust.opensearch;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
-import java.util.Arrays;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * One searcher's view of the documents still in the Rust writer's buffers ({@link
- * NativeBridge#liveViewOpen}): how many documents each buffer held when the view opened. Its documents are numbered buffer after buffer; {@link LiveLeafReader} gives them
- * to the searcher after the reader's own. Closing it lets its buffers go.
+ * NativeBridge#liveViewOpen}): how many documents each buffer held when the view opened. Its
+ * documents are numbered buffer after buffer; a {@link LiveLeafReader} per buffer gives them to the
+ * searcher after the reader's own. Closing it lets its buffers go.
  */
 public final class LiveView implements AutoCloseable {
     private final long id;
@@ -54,22 +54,14 @@ public final class LiveView implements AutoCloseable {
         return starts[starts.length - 1];
     }
 
-    /** The buffer holding view document {@code doc}. */
-    public int buffer(int doc) {
-        int i = Arrays.binarySearch(starts, doc);
-        // An exact match is a buffer's first document; empty buffers share it, so take the last.
-        if (i >= 0) {
-            while (i + 1 < starts.length - 1 && starts[i + 1] == doc) {
-                i++;
-            }
-            return i;
-        }
-        return -i - 2;
+    /** How many buffers the view reads. */
+    public int buffers() {
+        return starts.length - 1;
     }
 
-    /** View document {@code doc}'s number within its buffer. */
-    public int local(int doc) {
-        return doc - starts[buffer(doc)];
+    /** Buffer {@code i}'s documents, deleted ones included. */
+    public int bufferMaxDoc(int i) {
+        return starts[i + 1] - starts[i];
     }
 
     @Override

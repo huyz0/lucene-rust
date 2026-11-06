@@ -40,11 +40,27 @@ use crate::jvm_fetch::{BINARY, DOUBLE, FLOAT, INT, LONG, STRING};
 use crate::jvm_reader::{boolean_of, decode_request, lookup};
 use crate::raw::bytes_from_raw;
 use crate::registry::JvmReaderHandle;
+use lucene_index::concurrent_writer::LiveViewSegment;
 
 /// An open view and the writer it reads.
 struct ViewHandle {
     writer: Arc<EngineWriter>,
     view: LiveView,
+    /// The reader handle [`ffi_live_view_reader`] made over a reader and
+    /// this view's buffers, closed with the view.
+    whole: Mutex<Whole>,
+}
+
+/// What [`ffi_live_view_reader`] made of a view.
+enum Whole {
+    /// Nothing yet.
+    None,
+    /// The reader's handle, then the new one's.
+    Open(u64, u64),
+    /// Why its buffers cannot be written: they will not come back.
+    Failed(String),
+    /// The view is closed.
+    Closed,
 }
 
 /// Per segment, the documents live once the deletes since the commit are
@@ -121,7 +137,14 @@ pub unsafe extern "C" fn ffi_engine_writer_live_view_open(
         views()
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(id, Arc::new(ViewHandle { writer: w, view }));
+            .insert(
+                id,
+                Arc::new(ViewHandle {
+                    writer: w,
+                    view,
+                    whole: Mutex::new(Whole::None),
+                }),
+            );
         // SAFETY: caller contract.
         unsafe {
             *out_view = id;
@@ -169,8 +192,156 @@ pub extern "C" fn ffi_live_view_close(view: u64) -> i32 {
                 FfiStatus::InvalidHandle
             })?;
         h.writer.writer().close_live_view(&h.view);
+        let whole = std::mem::replace(
+            &mut *h
+                .whole
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            Whole::Closed,
+        );
+        if let Whole::Open(_, whole) = whole {
+            crate::jvm_reader::ffi_close_jvm_reader(whole);
+        }
         Ok(())
     })
+}
+
+/// A reader handle over the reader at `handle` and `view`'s buffers as
+/// segments after its own, into `*out_handle`: every search the JVM reader
+/// takes ([`crate::jvm_reader`], aggregations, sorts) then reads the
+/// buffered documents too, numbered as [`ffi_jvm_reader_search_live`]
+/// numbers them. The buffers are written into memory as their flush would
+/// write them, once per view; the deletes since the reader's commit, and
+/// the buffers' own, are its deleted documents. The handle belongs to the
+/// view: closing the view closes it, and the caller must not.
+///
+/// # Safety
+/// `out_handle` valid for one write.
+#[no_mangle]
+pub unsafe extern "C" fn ffi_live_view_reader(
+    handle: u64,
+    view_id: u64,
+    out_handle: *mut u64,
+) -> i32 {
+    guard(|| {
+        if out_handle.is_null() {
+            return Err(FfiStatus::NullPointer);
+        }
+        let v = view(view_id)?;
+        let mut whole = v
+            .whole
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match &*whole {
+            Whole::None => {}
+            Whole::Open(base, id) => {
+                if *base != handle {
+                    set_last_error("live view: its reader handle is over another reader");
+                    return Err(FfiStatus::InvalidArgument);
+                }
+                // SAFETY: caller contract.
+                unsafe { *out_handle = *id };
+                return Ok(());
+            }
+            Whole::Failed(e) => {
+                set_last_error(e.clone());
+                return Err(FfiStatus::InvalidArgument);
+            }
+            Whole::Closed => {
+                set_last_error("live view: unknown or already-closed handle");
+                return Err(FfiStatus::InvalidHandle);
+            }
+        }
+        let h = lookup(handle, "ffi_live_view_reader: unknown or closed reader")?;
+        let dir = lucene_store::ByteBuffersDirectory::new();
+        let infos = match v.writer.writer().live_view_segments(&v.view, &dir) {
+            Ok(infos) => infos,
+            Err(e @ lucene_index::index_writer::Error::LiveSearch(_)) => {
+                let msg = format!("live search: {e}");
+                *whole = Whole::Failed(msg.clone());
+                set_last_error(msg);
+                return Err(FfiStatus::InvalidArgument);
+            }
+            Err(e) => return Err(live_error(e)),
+        };
+        let writer_dir = v.writer.writer().directory();
+        let extra: Vec<(&dyn lucene_store::Directory, &_)> = infos
+            .iter()
+            .map(|s| match s {
+                LiveViewSegment::Written(sci) => (&dir as &dyn lucene_store::Directory, sci),
+                LiveViewSegment::Published(sci) => (writer_dir, sci),
+            })
+            .collect();
+        let reader = h.reader.with_segments_appended(&extra).map_err(|e| {
+            set_last_error(format!("opening the buffered documents: {e}"));
+            FfiStatus::Decode
+        })?;
+        let mut live_docs: Vec<Option<FixedBitSet>> = if v.view.commit_deletes.is_empty() {
+            h.live_docs.clone()
+        } else {
+            let opened = h.reader.open_segments().map_err(|e| {
+                set_last_error(format!("opening segment postings: {e}"));
+                FfiStatus::Decode
+            })?;
+            let segments = opened.as_open_segments();
+            match commit_masks(&v.view.commit_deletes, &h, &segments)? {
+                Some(m) => m.iter().map(|l| l.as_deref().cloned()).collect(),
+                None => h.live_docs.clone(),
+            }
+        };
+        let readers = reader.segment_readers();
+        let first = h.live_docs.len();
+        for (b, r) in v.view.buffers.iter().zip(readers.iter().skip(first)) {
+            if r.max_doc < b.max_doc {
+                set_last_error(format!(
+                    "live view: a buffer of {} documents became a segment of {}",
+                    b.max_doc, r.max_doc
+                ));
+                return Err(FfiStatus::Decode);
+            }
+            live_docs.push(buffer_mask(b.max_doc, &b.deleted, r.max_doc));
+        }
+        let deleted = readers
+            .iter()
+            .zip(&live_docs)
+            .map(|(r, l)| {
+                l.as_ref().map_or(0, |l| {
+                    i64::from(r.max_doc).saturating_sub(i64::try_from(l.cardinality()).unwrap_or(0))
+                })
+            })
+            .collect();
+        let id = crate::registry::lock_recovering(crate::registry::jvm_readers()).insert_checked(
+            Arc::new(JvmReaderHandle {
+                reader,
+                live_docs,
+                deleted,
+                commit_live: Mutex::new(None),
+            }),
+        )?;
+        *whole = Whole::Open(handle, id);
+        // SAFETY: caller contract.
+        unsafe { *out_handle = id };
+        Ok(())
+    })
+}
+
+/// A buffer segment's live documents: the first `max_doc` of the
+/// `written`, less `deleted`; `None` when that is all of them.
+fn buffer_mask(max_doc: i32, deleted: &[i32], written: i32) -> Option<FixedBitSet> {
+    if deleted.is_empty() && max_doc >= written {
+        return None;
+    }
+    let len = usize::try_from(written).unwrap_or(0);
+    let mut bits = FixedBitSet::new(len);
+    bits.set_range(0, usize::try_from(max_doc).unwrap_or(0).min(len));
+    for &d in deleted {
+        if let Ok(d) = usize::try_from(d) {
+            if d < bits.len() {
+                bits.clear(d);
+            }
+        }
+    }
+    Some(bits)
 }
 
 /// Stops keeping the published buffers the commit at `generation` holds,
