@@ -10,7 +10,7 @@
 //!   --rerank L       comma list of candidates reranked (default 0,50,100)
 //!   --refine N       k-means neighbourhood rounds; --full N  full Lloyd rounds
 //!   --iters N        Lloyd iterations per split
-//!   --spill X       SOAR spill with lambda X (default: no spilling)
+//!   --spill X        SOAR spill with lambda X (default: no spilling)
 //!   --hnsw           also build and search Lucene104 HNSW + BBQ (M 16, beam 100)
 //!   --ef L           HNSW candidate counts (default 10,20,40,80,160,320)
 //! ```

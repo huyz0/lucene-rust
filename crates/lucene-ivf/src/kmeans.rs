@@ -378,14 +378,8 @@ pub fn cluster(
         }
     }
     let k = leaves.len();
-    let (mut centroids, _) = means(
-        data,
-        dim,
-        &all_members(n),
-        &assignments,
-        k,
-        &vec![0f32; k * dim],
-    );
+    let everyone = all_members(n);
+    let (mut centroids, _) = means(data, dim, &everyone, &assignments, k, &vec![0f32; k * dim]);
     metric.adjust(&mut centroids, dim);
     if k > 1 {
         for _ in 0..params.refine_rounds {
@@ -407,17 +401,17 @@ pub fn cluster(
                     best.0 as u32
                 })
                 .collect();
-            centroids = means(data, dim, &all_members(n), &assignments, k, &centroids).0;
+            centroids = means(data, dim, &everyone, &assignments, k, &centroids).0;
             metric.adjust(&mut centroids, dim);
         }
         for _ in 0..params.full_rounds {
             assignments = full_assign(data, dim, &centroids, &assignments, metric);
-            centroids = means(data, dim, &all_members(n), &assignments, k, &centroids).0;
+            centroids = means(data, dim, &everyone, &assignments, k, &centroids).0;
             metric.adjust(&mut centroids, dim);
         }
     }
     if metric == Metric::InnerProduct {
-        centroids = means(data, dim, &all_members(n), &assignments, k, &centroids).0;
+        centroids = means(data, dim, &everyone, &assignments, k, &centroids).0;
     }
     compact(centroids, assignments, dim, k)
 }
@@ -450,6 +444,17 @@ fn pad_rows(src: &[f32], dim: usize, groups: usize, out: &mut Vec<Padded>) {
     }
 }
 
+/// `a * b + c`, fused only where the target has the instruction: without
+/// it `f32::mul_add` is a software `fmaf` call per element.
+#[inline(always)]
+fn fmadd(a: f32, b: f32, c: f32) -> f32 {
+    if cfg!(any(target_feature = "fma", target_arch = "aarch64")) {
+        a.mul_add(b, c)
+    } else {
+        a * b + c
+    }
+}
+
 /// The dot products of [`TILE_VECTORS`] vectors with [`TILE_CENTROIDS`]
 /// centroids, all padded to the same number of lane groups.
 #[inline(always)]
@@ -469,7 +474,7 @@ fn dot_tile(
         for (ar, x) in acc.iter_mut().zip(&vg) {
             for (a, cl) in ar.iter_mut().zip(&cg) {
                 for l in 0..LANES {
-                    a[l] = x[l].mul_add(cl[l], a[l]);
+                    a[l] = fmadd(x[l], cl[l], a[l]);
                 }
             }
         }
@@ -478,8 +483,10 @@ fn dot_tile(
 }
 
 /// Each vector's nearest centroid among all of `centroids`, by `metric`.
-/// A vector whose `current` centroid ties with the nearest stays put, so
-/// duplicates cut apart by size stay apart.
+/// The kernel's winner replaces the `current` centroid only when the exact
+/// [`Metric::cost`] says it is strictly nearer: Euclidean scores are ranked
+/// as `x . c - |c|^2 / 2`, which loses precision for large norms, and a tie
+/// keeps the vector where it is, so duplicates cut apart by size stay apart.
 // ARITH: offsets are below `n * groups` and `k * groups`; `k < u32::MAX`
 // (one centroid per leaf, fewer leaves than vectors).
 #[allow(clippy::arithmetic_side_effects)]
@@ -513,7 +520,6 @@ fn full_assign(
             let mut vecs = Vec::new();
             pad_rows(rows, dim, groups, &mut vecs);
             let mut best = vec![(f32::NEG_INFINITY, 0usize); count];
-            let mut own = vec![f32::NEG_INFINITY; count];
             // Centroids in cache-sized runs, each against the whole block
             // of vectors, so a run is read from memory once per block.
             for run in (0..tiles).step_by(BLOCK_TILES) {
@@ -524,9 +530,6 @@ fn full_assign(
                         &vecs[(base + r.min(live - 1)) * groups..][..groups]
                     });
                     let mut tb = [(f32::NEG_INFINITY, 0usize); TILE_VECTORS];
-                    let mut to = [f32::NEG_INFINITY; TILE_VECTORS];
-                    let tc: [usize; TILE_VECTORS] =
-                        std::array::from_fn(|r| cur[base + r.min(live - 1)] as usize);
                     for t in run..run_end {
                         let ids: [usize; TILE_CENTROIDS] =
                             std::array::from_fn(|q| (t * TILE_CENTROIDS + q).min(k - 1));
@@ -537,26 +540,26 @@ fn full_assign(
                                 if s > tb[r].0 {
                                     tb[r] = (s, id);
                                 }
-                                if id == tc[r] {
-                                    to[r] = s;
-                                }
                             }
                         }
                     }
-                    for r in 0..live {
-                        let i = base + r;
-                        if tb[r].0 > best[i].0 {
-                            best[i] = tb[r];
+                    for (b, t) in best[base..base + live].iter_mut().zip(tb) {
+                        if t.0 > b.0 {
+                            *b = t;
                         }
-                        own[i] = own[i].max(to[r]);
                     }
                 }
             }
             (0..count).map(move |i| {
-                if own[i] >= best[i].0 {
-                    cur[i]
+                let v = row(rows, dim, i);
+                let (own, won) = (cur[i] as usize, best[i].1);
+                if won != own
+                    && metric.cost(v, row(centroids, dim, won))
+                        < metric.cost(v, row(centroids, dim, own))
+                {
+                    won as u32
                 } else {
-                    best[i].1 as u32
+                    cur[i]
                 }
             })
         })
