@@ -38,7 +38,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code jvm_reader.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 63;
+    public static final int EXPECTED_ABI_VERSION = 66;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -1358,13 +1358,15 @@ public final class NativeBridge {
     public static final int OPEN_FAULT_INJECTION = 1;
     public static final int OPEN_SPARSE = 2;
     public static final int OPEN_LIVE_SEARCH = 4;
+    public static final int OPEN_ADAPTIVE_DOC_VALUES = 32;
 
     /**
      * Opens a shard's writer over the index at {@code path}, which must already hold a commit. Commit
      * points are dropped only through {@link #writerDeleteCommits}. {@code faultInjection} allows the
      * test-only panic operation; {@code sparse} writes the segments of an {@code index.sparse} index,
      * with neural-search's codec and clustered postings; {@code liveSearch} keeps what a search of the
-     * buffered documents reads ({@link #liveViewOpen}). {@code maxDocs} is {@code
+     * buffered documents reads ({@link #liveViewOpen}); {@code adaptiveDocValues} writes doc values in
+     * the {@code RustAdaptive} format. {@code maxDocs} is {@code
      * IndexWriter.getActualMaxDocs()}, which Lucene's tests lower.
      */
     public static int writerOpen(
@@ -1373,6 +1375,7 @@ public final class NativeBridge {
         boolean faultInjection,
         boolean sparse,
         boolean liveSearch,
+        boolean adaptiveDocValues,
         int maxDocs,
         long[] outHandle
     ) {
@@ -1386,7 +1389,7 @@ public final class NativeBridge {
                 (long) indexPathUtf8.length,
                 ramBufferMb,
                 (byte) ((faultInjection ? OPEN_FAULT_INJECTION : 0) | (sparse ? OPEN_SPARSE : 0)
-                    | (liveSearch ? OPEN_LIVE_SEARCH : 0)),
+                    | (liveSearch ? OPEN_LIVE_SEARCH : 0) | (adaptiveDocValues ? OPEN_ADAPTIVE_DOC_VALUES : 0)),
                 maxDocs,
                 out
             );

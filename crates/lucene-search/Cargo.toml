@@ -95,6 +95,10 @@ harness = false
 name = "point_range"
 harness = false
 
+[[bench]]
+name = "skipper"
+harness = false
+
 # A sloppy phrase as a filter: the first match against the full sloppy
 # frequency -- see the bench's own module doc.
 [[bench]]

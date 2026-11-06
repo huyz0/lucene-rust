@@ -4286,6 +4286,10 @@ pub struct MergeOptions {
     /// ([`crate::index_writer::IndexWriter::set_doc_values_format_for_field`]);
     /// regrouped on write like `postings_formats`.
     pub doc_values_formats: Vec<(String, per_field_doc_values::Lucene90DocValuesFormat)>,
+    /// What replaces the default `Lucene90DocValuesFormat()` for a field
+    /// nothing else routes
+    /// ([`crate::index_writer::IndexWriter::set_default_doc_values_format`]).
+    pub default_doc_values_format: per_field_doc_values::Lucene90DocValuesFormat,
     /// The fields routed to a KNN vectors format other than the default
     /// `Lucene99HnswVectorsFormat(hnsw_m, hnsw_beam_width)`
     /// ([`crate::index_writer::IndexWriter::set_knn_vectors_format_for_field`]).
@@ -4411,7 +4415,8 @@ impl MergeOptions {
 
     /// The doc-values format `field` is routed to.
     fn doc_values_format_for(&self, field: &str) -> per_field_doc_values::Lucene90DocValuesFormat {
-        self.doc_values_formats
+        let routed = self
+            .doc_values_formats
             .iter()
             .find(|(name, _)| name == field)
             .map(|(_, format)| *format)
@@ -4420,7 +4425,12 @@ impl MergeOptions {
                     .as_ref()
                     .map(|c| c.doc_values_format_for_field(field))
             })
-            .unwrap_or_default()
+            .unwrap_or_default();
+        if routed == per_field_doc_values::Lucene90DocValuesFormat::default() {
+            self.default_doc_values_format
+        } else {
+            routed
+        }
     }
 
     /// The postings format `field` is routed to.
@@ -4445,6 +4455,7 @@ impl Default for MergeOptions {
             hnsw_beam_width: hnsw::DEFAULT_BEAM_WIDTH,
             postings_formats: Vec::new(),
             doc_values_formats: Vec::new(),
+            default_doc_values_format: Default::default(),
             knn_vectors_formats: Vec::new(),
             codec: None,
             reorder: None,
