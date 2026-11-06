@@ -362,7 +362,7 @@ impl StUniformSplitPostingsFormat {
         }
         let (ustb, ustd) = terms.finish_merge(&docs_seen)?;
         Ok(UniformSplitOutput {
-            postings: postings.finish(),
+            postings: postings.finish()?,
             ustb,
             ustd,
         })

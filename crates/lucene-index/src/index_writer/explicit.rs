@@ -393,6 +393,7 @@ impl IndexingConfig {
                 })
                 .collect();
             let streamed = per_field_postings::write_streaming::<Error>(
+                None,
                 &specs,
                 state.field_infos,
                 &name_of,
