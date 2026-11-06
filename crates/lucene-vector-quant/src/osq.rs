@@ -163,6 +163,11 @@ impl crate::QuantizerFactory for OsqFactory {
         NAME
     }
 
+    /// The discretized dimension: a multiple of 64 at 4 bits and under.
+    fn code_dimension(&self, dimension: usize) -> usize {
+        discrete_dimensions(self.encoding, dimension)
+    }
+
     fn train(
         &self,
         dimension: usize,

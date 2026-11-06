@@ -713,7 +713,7 @@ fn rotated_centroids_are_prepared_once_at_open() {
     let factories: [(Box<dyn QuantizerFactory>, Option<usize>); 3] = [
         (
             Box::new(RotatedFactory::new(Arc::new(OsqFactory::bbq()))),
-            Some(32),
+            Some(64),
         ),
         (
             Box::new(RotatedFactory::new(Arc::new(ScalarFactory::int7()))),

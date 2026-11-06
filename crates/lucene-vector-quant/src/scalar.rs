@@ -63,6 +63,16 @@ impl crate::QuantizerFactory for ScalarFactory {
         NAME
     }
 
+    /// The dimension rounded up to even at 4 bits, whose codes pack two
+    /// dimensions per byte.
+    fn code_dimension(&self, dimension: usize) -> usize {
+        if self.bits <= 4 {
+            dimension.checked_next_multiple_of(2).unwrap_or(dimension)
+        } else {
+            dimension
+        }
+    }
+
     fn train(
         &self,
         dimension: usize,

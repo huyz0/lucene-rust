@@ -32,8 +32,8 @@
 //! |---|---|---|
 //! | `osq` | [`osq::OsqQuantizer`]: Lucene's optimized scalar quantization (`Lucene104ScalarQuantizedVectorsFormat`), per vector, centred on the partition centroid. [`osq::OsqFactory::bbq`] is the 1-bit document / 4-bit query encoding of Lucene's BBQ. | 1, 2, 4, 7 or 8 bits per dimension plus 16 bytes of corrective terms |
 //! | `sq` | [`scalar::ScalarQuantizer`]: Lucene99-style global min/max (quantile) scalar quantization, int7 or packed int4 | 1 or 1/2 byte per dimension plus a 4-byte offset |
-//! | `erq` | [`rabitq::ExRabitqQuantizer`]: Extended RaBitQ (Gao et al., SIGMOD 2025), per vector, centred on the partition centroid, after a random rotation | 2 to 6 bits per padded dimension (one byte at 7 and 8) plus 12 bytes of corrective terms |
-//! | `rot-osq`, `rot-sq` | [`rotation::RotatedQuantizer`]: the inner quantizer on vectors zero-padded to the next power of two and rotated by a seeded randomized Hadamard transform (RaBitQ's rotation), built by [`rotation::RotatedFactory`] around any factory as `rot-<inner name>` | the inner quantizer's at the padded dimension |
+//! | `erq` | [`rabitq::ExRabitqQuantizer`]: Extended RaBitQ (Gao et al., SIGMOD 2025), per vector, centred on the partition centroid, after a random rotation | 2 to 6 bits per dimension padded to a multiple of 32, or to a power of two of at least 8 up to 32 (one byte at 7 and 8) plus 12 bytes of corrective terms |
+//! | `rot-osq`, `rot-sq` | [`rotation::RotatedQuantizer`]: the inner quantizer on vectors zero-padded to its code dimension ([`QuantizerFactory::code_dimension`], a multiple of 64 for OSQ at 4 bits and under) and rotated there by a seeded randomized Hadamard transform (RaBitQ's rotation), built by [`rotation::RotatedFactory`] around any factory as `rot-<inner name>` | the inner quantizer's, no longer than without the rotation |
 //!
 //! A new quantizer (product quantization, say) implements
 //! [`QuantizerFactory`], [`Quantizer`] and [`QueryScorer`] and registers its
@@ -205,6 +205,14 @@ pub trait QuantizerFactory: Send + Sync + std::fmt::Debug {
     /// The name an index records, and [`QuantizerRegistry::get`] finds this
     /// factory by.
     fn name(&self) -> &str;
+
+    /// The dimension the codes of `dimension`-dimensional vectors are
+    /// padded to: zero coordinates up to it cost no code bytes, so a
+    /// rotation in front of the quantizer can spread a vector's energy into
+    /// them. By default `dimension`.
+    fn code_dimension(&self, dimension: usize) -> usize {
+        dimension
+    }
 
     /// Trains a quantizer on `sample`: vectors of `dimension` floats laid end
     /// to end, as indexed.

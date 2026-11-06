@@ -5,7 +5,8 @@
 //!
 //! Vectors and centroids are rotated by a random orthogonal matrix `P` (the
 //! seeded randomized Hadamard transform of [`crate::rotation::Rotation`],
-//! zero-padded to `n` dimensions, a power of two and at least 8); a
+//! zero-padded to `n` dimensions: the dimension rounded up to a multiple of
+//! 32, or up to 32 to a power of two, at least 8); a
 //! centroid is rotated once, by [`Quantizer::prepare_centroid`]. A
 //! vector's rotated residual `P r = P o - P c` is snapped to the codebook of
 //! `B`-bit vectors `y = u - (2^B - 1) / 2`, `u` in `0..2^B` per dimension:
@@ -64,6 +65,24 @@ const CORRECTIONS_BYTES: usize = 12;
 /// stays below `2^31`.
 const MAX_PADDED_DIMENSION: usize = 1 << 15;
 
+/// Above this many dimensions the code dimension is a multiple of it.
+const CODE_ALIGN: usize = 32;
+
+/// The code dimension of `dimension`-dimensional vectors: the dimension
+/// rounded up to a multiple of [`CODE_ALIGN`], or up to it the next power
+/// of two, at least 8. Either way bit planes are whole bytes and fast-scan
+/// groups of four dimensions whole, and the padding the rotation spreads
+/// energy into is small.
+fn code_dimension(dimension: usize) -> usize {
+    if dimension <= CODE_ALIGN {
+        dimension.next_power_of_two().max(8)
+    } else {
+        dimension
+            .checked_next_multiple_of(CODE_ALIGN)
+            .unwrap_or(dimension)
+    }
+}
+
 /// The widest codes stored as bit planes and scored by fast scan.
 const MAX_PLANE_BITS: u8 = 6;
 
@@ -114,6 +133,12 @@ impl crate::QuantizerFactory for ExRabitqFactory {
         NAME
     }
 
+    /// The dimension rounded up to a multiple of 32, or to a power of two
+    /// (at least 8) up to 32.
+    fn code_dimension(&self, dimension: usize) -> usize {
+        code_dimension(dimension)
+    }
+
     fn train(
         &self,
         dimension: usize,
@@ -158,7 +183,7 @@ pub struct ExRabitqQuantizer {
     similarity: Similarity,
     bits: u8,
     rotation: Rotation,
-    /// The code dimension `n`: the rotation's padded dimension, at least 8.
+    /// The code dimension `n`, the rotation's width: [`code_dimension`].
     dims: usize,
 }
 
@@ -181,13 +206,13 @@ impl ExRabitqQuantizer {
                 "erq dimension must be at most {MAX_PADDED_DIMENSION}, got {dimension}"
             )));
         }
-        let rotation = Rotation::new(dimension, seed, ROUNDS)?;
+        let dims = code_dimension(dimension);
         Ok(ExRabitqQuantizer {
             dimension,
             similarity,
             bits,
-            dims: rotation.padded_dimension().max(8),
-            rotation,
+            rotation: Rotation::new(dimension, dims, seed, ROUNDS)?,
+            dims,
         })
     }
 
@@ -241,9 +266,7 @@ impl ExRabitqQuantizer {
     /// `x` (of the field's dimension) rotated into `out` (of the code
     /// dimension).
     fn rotate(&self, x: &[f32], out: &mut [f32]) {
-        let (head, tail) = out.split_at_mut(self.rotation.padded_dimension());
-        self.rotation.rotate(x, head);
-        tail.fill(0.0);
+        self.rotation.rotate(x, out);
     }
 }
 
@@ -481,9 +504,7 @@ impl Quantizer for ExRabitqQuantizer {
             // The prepared vector, before the rotation, lands in `abs`.
             let normalized = &mut s.abs[..self.dimension];
             prepare_vector(self.similarity, vector, normalized);
-            let (head, tail) = s.rotated.split_at_mut(self.rotation.padded_dimension());
-            self.rotation.rotate(normalized, head);
-            tail.fill(0.0);
+            self.rotation.rotate(normalized, &mut s.rotated);
             let extra = if self.similarity == Similarity::Euclidean {
                 0.0
             } else {
@@ -1068,21 +1089,31 @@ mod tests {
                 let q = ExRabitqFactory::new(4).train(dim, sim, &[]).unwrap();
                 assert_eq!((q.name(), q.dimension(), q.similarity()), (NAME, dim, sim));
                 assert!(q.uses_centroid());
-                let padded = dim.next_power_of_two().max(8);
+                let padded = code_dimension(dim);
+                assert_eq!(
+                    padded,
+                    if dim <= 32 {
+                        dim.next_power_of_two().max(8)
+                    } else {
+                        dim.next_multiple_of(32)
+                    }
+                );
                 assert_eq!(q.code_len(), padded / 2 + CORRECTIONS_BYTES);
             }
         }
     }
 
+    /// One dimension is rotated over eight code dimensions and estimated
+    /// to within a percent at 2 bits.
     #[test]
-    fn dimension_one_is_exact_up_to_query_rounding() {
+    fn dimension_one_estimates_closely() {
         let q = ExRabitqQuantizer::new(1, Similarity::Euclidean, 2, 1).unwrap();
         let mut code = vec![0u8; q.code_len()];
         q.encode(&[3.0], &[1.0], &mut code);
         let mut s = q.query_scorer(&[-1.0]);
         s.set_centroid(&[1.0]);
         let d2 = raw(Similarity::Euclidean, s.score(&code));
-        assert!((d2 - 16.0).abs() < 0.1, "{d2}");
+        assert!((d2 - 16.0).abs() < 0.16, "{d2}");
     }
 
     #[test]
