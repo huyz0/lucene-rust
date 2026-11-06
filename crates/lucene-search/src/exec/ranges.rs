@@ -483,6 +483,11 @@ pub(crate) fn index_sort_range<'a>(
     ))
 }
 
+/// Every document in `min..max` (`min < max`) as a constant-scored leaf.
+pub(crate) fn doc_range<'a>(min: i32, max: i32, boost: f32, mode: Mode) -> Option<BoxScorer<'a>> {
+    constant(Box::new(DocRange { doc: -1, min, max }), boost, mode)
+}
+
 /// `DocIdSetIterator.range(min, max)`: every document in `min..max`
 /// (`min < max`).
 struct DocRange {

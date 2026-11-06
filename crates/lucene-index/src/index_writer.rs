@@ -1500,13 +1500,13 @@ impl IndexingConfig {
         Ok(())
     }
 
-    /// Whether this configuration takes [`ExplicitDocument`]s or has a
-    /// parent field: what the concurrent writer, which builds native
-    /// documents only, refuses.
+    /// What the concurrent writer refuses of this configuration: a parent
+    /// field for native documents, whose building threads have no parent
+    /// marker to give them. Explicit documents carry theirs
+    /// (`ConcurrentIndexWriter::add_explicit`).
     pub(crate) fn concurrent_unsupported(&self) -> Option<&'static str> {
-        self.parent_field
-            .is_some()
-            .then_some("a parent field (set_parent_field)")
+        (self.parent_field.is_some() && !self.explicit)
+            .then_some("a parent field (set_parent_field) without explicit documents")
     }
 
     /// `IndexWriter._mergeInit`'s `estimatedMergeBytes`: each source's

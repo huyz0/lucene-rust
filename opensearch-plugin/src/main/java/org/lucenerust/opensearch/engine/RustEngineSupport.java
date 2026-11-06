@@ -123,7 +123,8 @@ public final class RustEngineSupport {
         }
         return ENGINE_ENABLED.exists(settings)
             || (CODECS.contains(EngineConfig.INDEX_CODEC_SETTING.get(settings))
-                && org.opensearch.index.IndexSortConfig.INDEX_SORT_FIELD_SETTING.exists(settings) == false);
+                && (org.opensearch.index.IndexSortConfig.INDEX_SORT_FIELD_SETTING.exists(settings) == false
+                    || unsupportedSort(settings) == null));
     }
 
     /** The circuit breaker the plugin registers for the writers' buffers. */
@@ -186,8 +187,8 @@ public final class RustEngineSupport {
         if (CODECS.contains(codec) == false) {
             return "the Rust engine writes the default codec only, and index.codec is [" + codec + "]";
         }
-        if (indexSorted) {
-            return "the Rust engine does not support index sorting";
+        if (indexSorted && unsupportedSort(settings.getSettings()) != null) {
+            return unsupportedSort(settings.getSettings());
         }
         // The codec then gives _id a FuzzyFilterPostingsFormat (a bloom filter beside the terms),
         // which the Rust writer does not lay out.
@@ -272,6 +273,32 @@ public final class RustEngineSupport {
         return field.isEmpty() ? null : field;
     }
 
+    /**
+     * Why the Rust writer cannot sort an index with these settings, or {@code null} when it can.
+     * Before 3.2.0 OpenSearch sets no parent field under an index sort (see {@link #parentField}),
+     * which the writer needs to keep nested blocks whole; a search of the buffers reads documents
+     * in arrival order, which a sorted flush renumbers.
+     */
+    static String unsupportedSort(org.opensearch.common.settings.Settings settings) {
+        if (org.opensearch.cluster.metadata.IndexMetadata.SETTING_INDEX_VERSION_CREATED.get(settings)
+            .before(org.opensearch.Version.V_3_2_0)) {
+            return "the Rust engine supports index sorting on indices created on 3.2.0 or later";
+        }
+        if (REALTIME_SEARCH.get(settings)) {
+            return "index.lucene_rust.realtime_search does not support index sorting";
+        }
+        return null;
+    }
+
+    /**
+     * The parent field {@code NativeLuceneIndexWriterFactory} sets under an index sort, which marks
+     * each nested block's last document ({@link #unsupportedSort} refuses the indices it does not
+     * set it on).
+     */
+    static String parentField(EngineConfig config) {
+        return config.getIndexSort() != null ? org.opensearch.common.lucene.Lucene.PARENT_FIELD : null;
+    }
+
     static RustIndexWriter openWriter(
         EngineConfig config,
         Store store,
@@ -290,6 +317,8 @@ public final class RustEngineSupport {
             REALTIME_SEARCH.get(config.getIndexSettings().getSettings()),
             ADAPTIVE_DOC_VALUES.get(config.getIndexSettings().getSettings()),
             partitionField(config.getIndexSettings().getSettings()),
+            config.getIndexSort(),
+            parentField(config),
             maxDocs,
             config.getAnalyzer(),
             config.getSimilarity(),
