@@ -11,13 +11,13 @@
 //! orthogonal, so dot products, norms and Euclidean distances, and so every
 //! similarity's score, are unchanged. The inner quantizer is trained on,
 //! encodes and scores the rotated vectors at the padded dimension; codes,
-//! blocks and scores are its own.
+//! blocks and scores are its own. [`Quantizer::prepare_centroid`] returns
+//! the rotated centroid, so an index that keeps it rotates each centroid
+//! once rather than per vector encoded or per partition probed.
 //!
 //! The state is the seed (`u64` LE), the round count (one byte), then the
 //! inner quantizer's state.
 
-use std::cell::RefCell;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use crate::{check_sample, Error, Quantizer, QuantizerFactory, QueryScorer, Result, Similarity};
@@ -308,29 +308,16 @@ impl QuantizerFactory for RotatedFactory {
     }
 }
 
-/// Distinguishes quantizers in the per-thread centroid cache.
-static NEXT_ID: AtomicU64 = AtomicU64::new(1);
-
-/// The centroid a thread last encoded against, and its rotation.
-#[derive(Default)]
-struct CentroidCache {
-    owner: u64,
-    centroid: Vec<f32>,
-    rotated: Vec<f32>,
-}
-
-thread_local! {
-    static CENTROID: RefCell<CentroidCache> = RefCell::default();
-}
-
 /// A quantizer of rotated vectors: rotates what it is given and hands the
 /// result to the inner quantizer.
 #[derive(Debug)]
 pub struct RotatedQuantizer {
     name: String,
-    id: u64,
     rotation: Rotation,
     inner: Box<dyn Quantizer>,
+    /// The padded dimension's zero vector: the centroid handed to an inner
+    /// quantizer that ignores centroids.
+    zeros: Vec<f32>,
 }
 
 impl RotatedQuantizer {
@@ -348,7 +335,7 @@ impl RotatedQuantizer {
         );
         RotatedQuantizer {
             name,
-            id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
+            zeros: vec![0f32; rotation.padded_dimension()],
             rotation,
             inner,
         }
@@ -362,6 +349,16 @@ impl RotatedQuantizer {
     /// The quantizer of the rotated vectors.
     pub fn inner(&self) -> &dyn Quantizer {
         self.inner.as_ref()
+    }
+
+    /// What the inner quantizer gets for a prepared centroid: `prepared`
+    /// itself, or zeros when it ignores centroids.
+    fn inner_centroid<'a>(&'a self, prepared: &'a [f32]) -> &'a [f32] {
+        if self.inner.uses_centroid() {
+            prepared
+        } else {
+            &self.zeros
+        }
     }
 }
 
@@ -386,42 +383,38 @@ impl Quantizer for RotatedQuantizer {
         self.inner.uses_centroid()
     }
 
-    fn encode(&self, vector: &[f32], centroid: &[f32], out: &mut [u8]) {
+    /// The rotated centroid, prepared in turn by the inner quantizer; `None`
+    /// when the inner quantizer ignores centroids.
+    fn prepare_centroid(&self, centroid: &[f32]) -> Option<Vec<f32>> {
         assert_eq!(centroid.len(), self.dimension(), "centroid dimension");
+        if !self.inner.uses_centroid() {
+            return None;
+        }
+        let mut rotated = vec![0f32; self.rotation.padded_dimension()];
+        self.rotation.rotate(centroid, &mut rotated);
+        Some(self.inner.prepare_centroid(&rotated).unwrap_or(rotated))
+    }
+
+    fn encode(&self, vector: &[f32], centroid: &[f32], out: &mut [u8]) {
+        match self.prepare_centroid(centroid) {
+            Some(prepared) => self.encode_prepared(vector, &prepared, out),
+            None => self.encode_prepared(vector, centroid, out),
+        }
+    }
+
+    fn encode_prepared(&self, vector: &[f32], prepared: &[f32], out: &mut [u8]) {
         let mut rotated = vec![0f32; self.rotation.padded_dimension()];
         self.rotation.rotate(vector, &mut rotated);
-        // Consecutive vectors of a partition share its centroid: rotate it
-        // once per thread, not once per vector. The cache is taken out of
-        // the thread-local while the inner quantizer runs, so a nested
-        // rotated quantizer finds it empty rather than borrowed.
-        let mut cache = CENTROID.take();
-        let hit = cache.owner == self.id
-            && cache.centroid.len() == centroid.len()
-            && cache
-                .centroid
-                .iter()
-                .zip(centroid)
-                .all(|(a, b)| a.to_bits() == b.to_bits());
-        if !hit {
-            cache.owner = self.id;
-            cache.centroid.clear();
-            cache.centroid.extend_from_slice(centroid);
-            cache.rotated.resize(self.rotation.padded_dimension(), 0.0);
-            self.rotation.rotate(centroid, &mut cache.rotated);
-        }
-        self.inner.encode(&rotated, &cache.rotated, out);
-        CENTROID.set(cache);
+        self.inner
+            .encode_prepared(&rotated, self.inner_centroid(prepared), out);
     }
 
     fn query_scorer(&self, query: &[f32]) -> Box<dyn QueryScorer + '_> {
-        let padded = self.rotation.padded_dimension();
-        let mut rotated = vec![0f32; padded];
+        let mut rotated = vec![0f32; self.rotation.padded_dimension()];
         self.rotation.rotate(query, &mut rotated);
         Box::new(RotatedQueryScorer {
-            rotation: &self.rotation,
-            uses_centroid: self.inner.uses_centroid(),
+            q: self,
             inner: self.inner.query_scorer(&rotated),
-            centroid: vec![0f32; padded],
         })
     }
 
@@ -445,24 +438,21 @@ impl Quantizer for RotatedQuantizer {
 
 /// A rotated query in front of the inner quantizer's scorer.
 struct RotatedQueryScorer<'q> {
-    rotation: &'q Rotation,
-    uses_centroid: bool,
+    q: &'q RotatedQuantizer,
     inner: Box<dyn QueryScorer + 'q>,
-    /// The rotated centroid, or zeros when the inner quantizer ignores it.
-    centroid: Vec<f32>,
 }
 
 impl QueryScorer for RotatedQueryScorer<'_> {
     fn set_centroid(&mut self, centroid: &[f32]) {
-        assert_eq!(
-            centroid.len(),
-            self.rotation.dimension(),
-            "centroid dimension"
-        );
-        if self.uses_centroid {
-            self.rotation.rotate(centroid, &mut self.centroid);
+        match self.q.prepare_centroid(centroid) {
+            Some(prepared) => self.set_prepared_centroid(&prepared),
+            None => self.set_prepared_centroid(centroid),
         }
-        self.inner.set_centroid(&self.centroid);
+    }
+
+    fn set_prepared_centroid(&mut self, prepared: &[f32]) {
+        self.inner
+            .set_prepared_centroid(self.q.inner_centroid(prepared));
     }
 
     fn score(&self, code: &[u8]) -> f32 {
@@ -554,7 +544,7 @@ mod tests {
     #[test]
     fn rotation_is_orthogonal() {
         for dim in [1, 7, 64, 100, 300] {
-            for rounds in [1, DEFAULT_ROUNDS, MAX_ROUNDS] {
+            for rounds in [1, 2, 3, MAX_ROUNDS] {
                 let r = Rotation::new(dim, 42, rounds).unwrap();
                 assert_eq!(r.dimension(), dim);
                 assert_eq!(r.padded_dimension(), dim.next_power_of_two());
@@ -759,6 +749,60 @@ mod tests {
         }
     }
 
+    /// Mean absolute estimate error of BBQ behind a rotation of `rounds`,
+    /// over four seeds, on data whose variance sits in a few dimensions.
+    fn skewed_bbq_error(dim: usize, sim: Similarity, rounds: u8) -> f64 {
+        let n = 200;
+        let mut total = 0f64;
+        for seed in 0..4u64 {
+            let mut data = vectors(n, dim, 100 + seed);
+            let mut queries = vectors(5, dim, 200 + seed);
+            for v in data
+                .chunks_exact_mut(dim)
+                .chain(queries.chunks_exact_mut(dim))
+            {
+                for (i, x) in v.iter_mut().enumerate() {
+                    *x *= (-(i as f32) / 6.0).exp() * 4.0 + 0.05;
+                }
+            }
+            let mut centroid = vec![0f32; dim];
+            for v in data.chunks_exact(dim) {
+                for (c, x) in centroid.iter_mut().zip(v) {
+                    *c += x / n as f32;
+                }
+            }
+            let q = rot_bbq()
+                .with_seed(seed * 7 + 1)
+                .with_rounds(rounds)
+                .train(dim, sim, &data)
+                .unwrap();
+            let prepared = q.prepare_centroid(&centroid).unwrap();
+            let mut code = vec![0u8; q.code_len()];
+            for query in queries.chunks_exact(dim) {
+                let mut s = q.query_scorer(query);
+                s.set_prepared_centroid(&prepared);
+                for v in data.chunks_exact(dim) {
+                    q.encode_prepared(v, &prepared, &mut code);
+                    total += (sim.score(query, v) - s.score(&code)).abs() as f64;
+                }
+            }
+        }
+        total / (4 * 5 * n) as f64
+    }
+
+    /// A second round clearly lowers the estimate error and a third lowers
+    /// it a little further (a few percent), so three is the default: with
+    /// centroids prepared once, a round costs one transform per vector
+    /// encoded and per query.
+    #[test]
+    fn rounds_lower_the_estimate_error() {
+        for sim in [Similarity::Euclidean, Similarity::MaximumInnerProduct] {
+            let [one, two, three] = [1, 2, 3].map(|r| skewed_bbq_error(128, sim, r));
+            assert!(two < 0.75 * one, "{sim:?}: one {one} two {two}");
+            assert!(three < two, "{sim:?}: two {two} three {three}");
+        }
+    }
+
     /// On data whose variance sits in a few dimensions, rotated BBQ
     /// estimates scores with clearly less error than plain BBQ.
     #[test]
@@ -807,10 +851,11 @@ mod tests {
         }
     }
 
-    /// The per-thread centroid cache never serves one quantizer's or one
-    /// centroid's rotation to another, nested rotations included.
+    /// Encoding is the inner quantizer's encoding of the rotated vector
+    /// against the rotated centroid, and a prepared centroid encodes and
+    /// scores as the centroid does, nested rotations included.
     #[test]
-    fn encoding_against_alternating_centroids_and_quantizers() {
+    fn encoding_and_scoring_against_prepared_centroids() {
         let dim = 30;
         let docs = vectors(6, dim, 31);
         let centroids = vectors(2, dim, 32);
@@ -845,9 +890,20 @@ mod tests {
         let mut code_back = vec![0u8; c.code_len()];
         for (i, d) in docs.chunks_exact(dim).enumerate() {
             let centroid = &centroids[(i % 2) * dim..][..dim];
-            for q in [&a, &b] {
+            for q in [&a, &b, &c] {
                 q.encode(d, centroid, &mut code);
-                assert_eq!(code, expected(q.as_ref(), d, centroid));
+                if !std::ptr::eq(q, &c) {
+                    assert_eq!(code, expected(q.as_ref(), d, centroid));
+                }
+                let prepared = q.prepare_centroid(centroid).unwrap();
+                assert_eq!(prepared.len(), 32);
+                q.encode_prepared(d, &prepared, &mut code_back);
+                assert_eq!(code, code_back);
+                let mut s = q.query_scorer(&docs[..dim]);
+                s.set_centroid(centroid);
+                let plain = s.score(&code);
+                s.set_prepared_centroid(&prepared);
+                assert_eq!(plain.to_bits(), s.score(&code).to_bits());
             }
             let mut nested_code = vec![0u8; c.code_len()];
             c.encode(d, centroid, &mut nested_code);
@@ -864,12 +920,18 @@ mod tests {
             .train(dim, Similarity::Euclidean, &data)
             .unwrap();
         assert!(!q.uses_centroid());
+        assert_eq!(q.prepare_centroid(&data[dim..2 * dim]), None);
         let mut code = vec![0u8; q.code_len()];
         q.encode(&data[..dim], &data[dim..2 * dim], &mut code);
+        let mut other = vec![0u8; q.code_len()];
+        q.encode_prepared(&data[..dim], &data[2 * dim..3 * dim], &mut other);
+        assert_eq!(code, other);
         let mut s = q.query_scorer(&data[..dim]);
         s.set_centroid(&data[dim..2 * dim]);
         let self_score = s.score(&code);
         assert!(self_score > 0.9, "{self_score}");
+        s.set_prepared_centroid(&data[2 * dim..3 * dim]);
+        assert_eq!(s.score(&code).to_bits(), self_score.to_bits());
     }
 
     #[test]

@@ -13,6 +13,10 @@
 //!   [`QueryScorer::set_centroid`] re-targets it at the next partition and
 //!   [`QueryScorer::score_block`] scores a partition's codes in one call, so
 //!   the dynamic dispatch is paid once per partition, not once per vector.
+//!   A quantizer that works in another space than the vectors' (a rotation)
+//!   maps each centroid once with [`Quantizer::prepare_centroid`]; the index
+//!   keeps the result and passes it to [`Quantizer::encode_prepared`] and
+//!   [`QueryScorer::set_prepared_centroid`].
 //! - [`Quantizer::state`] is whatever the quantizer learned at training
 //!   time (empty for the per-vector quantizers). The index writes it beside
 //!   the quantizer's [`Quantizer::name`]; reading the index looks the name up
@@ -100,6 +104,34 @@ pub trait Quantizer: Send + Sync + std::fmt::Debug {
     /// What [`QuantizerFactory::read`] needs to rebuild this quantizer.
     fn state(&self) -> Vec<u8>;
 
+    /// `centroid` (of [`Quantizer::dimension`] floats) mapped into the space
+    /// this quantizer encodes and scores in, when that is not the original
+    /// space: `None` (the default) means the centroid is used as it is. An
+    /// index computes this once per partition and passes the result, or the
+    /// centroid itself on `None`, to [`Quantizer::encode_prepared`] and
+    /// [`QueryScorer::set_prepared_centroid`], so the mapping is not paid
+    /// per vector or per probe. A quantizer returns `None` for every
+    /// centroid or `Some` of one length for every centroid.
+    ///
+    /// # Panics
+    ///
+    /// On a wrong-length `centroid`.
+    fn prepare_centroid(&self, centroid: &[f32]) -> Option<Vec<f32>> {
+        let _ = centroid;
+        None
+    }
+
+    /// [`Quantizer::encode`] against a centroid already passed through
+    /// [`Quantizer::prepare_centroid`] (or the centroid itself when that
+    /// returned `None`). By default the same as `encode`.
+    ///
+    /// # Panics
+    ///
+    /// On a wrong-length `vector`, `prepared` or `out`.
+    fn encode_prepared(&self, vector: &[f32], prepared: &[f32], out: &mut [u8]) {
+        self.encode(vector, prepared, out);
+    }
+
     /// Bytes that `n` codes take laid out as a block for
     /// [`QueryScorer::score_block`]: by default the codes end to end.
     fn block_len(&self, n: usize) -> usize {
@@ -129,6 +161,13 @@ pub trait Quantizer: Send + Sync + std::fmt::Debug {
 pub trait QueryScorer {
     /// Targets the codes encoded relative to `centroid`.
     fn set_centroid(&mut self, centroid: &[f32]);
+
+    /// [`QueryScorer::set_centroid`] with a centroid already passed through
+    /// [`Quantizer::prepare_centroid`] (or the centroid itself when that
+    /// returned `None`). By default the same as `set_centroid`.
+    fn set_prepared_centroid(&mut self, prepared: &[f32]) {
+        self.set_centroid(prepared);
+    }
 
     /// The estimated score of one code.
     fn score(&self, code: &[u8]) -> f32;
@@ -301,6 +340,25 @@ mod tests {
         r.register(Arc::new(osq::OsqFactory::bbq()));
         assert_eq!(r.names(), vec!["sq", "rot-osq", "rot-sq", "osq"]);
         assert!(QuantizerRegistry::new().names().is_empty());
+    }
+
+    #[test]
+    fn centroids_are_prepared_as_they_are_by_default() {
+        let q = osq::OsqFactory::bbq()
+            .train(4, Similarity::Euclidean, &[])
+            .unwrap();
+        let (v, c) = ([1.0, -2.0, 0.5, 3.0], [0.25, 0.0, -1.0, 1.0]);
+        assert_eq!(q.prepare_centroid(&c), None);
+        let (mut a, mut b) = (vec![0u8; q.code_len()], vec![0u8; q.code_len()]);
+        q.encode(&v, &c, &mut a);
+        q.encode_prepared(&v, &c, &mut b);
+        assert_eq!(a, b);
+        let mut s = q.query_scorer(&v);
+        s.set_centroid(&c);
+        let plain = s.score(&a);
+        s.set_centroid(&[0.0; 4]);
+        s.set_prepared_centroid(&c);
+        assert_eq!(s.score(&a).to_bits(), plain.to_bits());
     }
 
     #[test]

@@ -8,7 +8,7 @@ use std::sync::Arc;
 use lucene_store::codec_util::{self, FOOTER_LENGTH, ID_LENGTH};
 use lucene_store::{DataInput, SliceInput};
 use lucene_util::{simd, vector_util};
-use lucene_vector_quant::{Quantizer, QuantizerRegistry};
+use lucene_vector_quant::{Quantizer, QuantizerRegistry, QueryScorer};
 
 use crate::{
     similarity_from_ordinal, Error, Result, Similarity, META_CODEC, POSTINGS_CODEC, VECTORS_CODEC,
@@ -111,6 +111,11 @@ pub struct IvfField {
     count: usize,
     quantizer: Box<dyn Quantizer>,
     centroids: Vec<f32>,
+    /// The centroids as the quantizer encodes and scores against them
+    /// (`Quantizer::prepare_centroid`), `prepared_len` floats each, mapped
+    /// once at open; empty when the quantizer uses centroids as they are.
+    prepared: Vec<f32>,
+    prepared_len: usize,
     /// How a query ranks centroids: by `1 / |c|` times the inner product
     /// for a spherically clustered field (one factor per centroid), by
     /// inner product for `MaximumInnerProduct`, by Euclidean distance
@@ -169,6 +174,30 @@ impl IvfField {
     /// When `c` is not below [`IvfField::clusters`].
     pub fn centroid(&self, c: usize) -> &[f32] {
         crate::kmeans::row(&self.centroids, self.dimension, c)
+    }
+
+    /// Cluster `c`'s centroid as the quantizer encodes and scores against it
+    /// (`Quantizer::prepare_centroid`), or `None` when the quantizer uses
+    /// [`IvfField::centroid`] as it is.
+    ///
+    /// # Panics
+    ///
+    /// When `c` is not below [`IvfField::clusters`].
+    pub fn prepared_centroid(&self, c: usize) -> Option<&[f32]> {
+        if self.prepared_len == 0 {
+            assert!(c < self.clusters(), "cluster {c} out of range");
+            return None;
+        }
+        Some(crate::kmeans::row(&self.prepared, self.prepared_len, c))
+    }
+
+    /// Points `scorer` at cluster `c`'s codes, through the prepared centroid
+    /// when there is one.
+    fn target(&self, scorer: &mut dyn QueryScorer, c: usize) {
+        match self.prepared_centroid(c) {
+            Some(prepared) => scorer.set_prepared_centroid(prepared),
+            None => scorer.set_centroid(self.centroid(c)),
+        }
     }
 
     /// Posting entries over all clusters: the vector count, plus the
@@ -300,6 +329,24 @@ fn add(a: usize, b: usize, what: &str) -> Result<usize> {
         .map_or_else(|| corrupt(format!("{what} overflows")), Ok)
 }
 
+/// `centroids` (rows of `dimension` floats) through
+/// `Quantizer::prepare_centroid`, laid end to end, and the length of one; empty
+/// and 0 unless the quantizer prepares every centroid to one non-zero length.
+fn prepare_centroids(
+    quantizer: &dyn Quantizer,
+    centroids: &[f32],
+    dimension: usize,
+) -> (Vec<f32>, usize) {
+    let rows = centroids.chunks_exact(dimension.max(1));
+    let clusters = rows.len();
+    let prepared: Vec<Vec<f32>> = rows.map_while(|c| quantizer.prepare_centroid(c)).collect();
+    let len = prepared.first().map_or(0, Vec::len);
+    if len == 0 || prepared.len() != clusters || prepared.iter().any(|p| p.len() != len) {
+        return (Vec::new(), 0);
+    }
+    (prepared.concat(), len)
+}
+
 /// Reads one field's meta entry and checks its regions against the files.
 fn read_field(
     input: &mut SliceInput<'_>,
@@ -392,12 +439,15 @@ fn read_field(
             "field {number}: vectors or doc table out of bounds"
         ));
     }
+    let (prepared, prepared_len) = prepare_centroids(quantizer.as_ref(), &centroids, dimension);
     Ok(IvfField {
         number,
         similarity,
         dimension,
         count,
         quantizer,
+        prepared,
+        prepared_len,
         centroid_scale: if crate::writer::spherical(similarity) {
             centroids
                 .chunks_exact(dimension)
@@ -771,7 +821,7 @@ impl IvfReader {
         let mut scorer = f.quantizer.query_scorer(&query);
         let uses_centroid = f.quantizer.uses_centroid();
         if !uses_centroid {
-            scorer.set_centroid(f.centroid(0));
+            f.target(scorer.as_mut(), 0);
         }
         let mut top = TopN::new(
             params.k.max(params.rerank).min(f.entries()),
@@ -784,7 +834,7 @@ impl IvfReader {
             let size = f.cluster_size(c);
             let (slots, codes) = block.split_at(size * 4);
             if uses_centroid {
-                scorer.set_centroid(f.centroid(c));
+                f.target(scorer.as_mut(), c);
             }
             scores.resize(size, 0f32);
             scorer.score_block(codes, &mut scores);
