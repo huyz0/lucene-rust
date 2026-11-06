@@ -317,7 +317,8 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
     /**
      * Why a search cannot read the writer's buffered documents, or null when it can: what the
      * buffers do not hold for the fetch phase (doc values, versions, highlighting), a query that
-     * was expanded or given term statistics over the reader's terms alone, or nested documents.
+     * was expanded or given term statistics over the reader's terms alone (a multi-term query under
+     * a scoring rewrite, a fuzzy query, a blended {@code multi_match}), or nested documents.
      */
     static String liveIneligible(SearchContext ctx) {
         if (ctx.version() || ctx.seqNoAndPrimaryTerm() || ctx.explain()) return "fetch_metadata";
@@ -326,14 +327,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         // Nested documents: the view has no parent filter to tell them apart.
         if (ctx.mapperService().hasNested()) return "nested";
         boolean[] expands = new boolean[1];
-        ctx.query().visit(new org.apache.lucene.search.QueryVisitor() {
-            @Override
-            public void visitLeaf(Query query) {
-                if (query instanceof org.apache.lucene.search.MultiTermQuery) {
-                    expands[0] = true;
-                }
-            }
-
+        org.apache.lucene.search.QueryVisitor visitor = new org.apache.lucene.search.QueryVisitor() {
             @Override
             public void consumeTerms(Query query, org.apache.lucene.index.Term... terms) {
                 // Statistics a blended query computed from the reader's terms: the buffers' are not in them.
@@ -349,15 +343,32 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
                 String field,
                 java.util.function.Supplier<org.apache.lucene.util.automaton.ByteRunAutomaton> automaton
             ) {
-                expands[0] = true;
+                // A multi-term query the native search expands over every segment, the buffers'
+                // too; one a rewrite expands over the reader's terms alone is not.
+                if (!(query instanceof org.apache.lucene.search.MultiTermQuery m) || expandsNatively(m) == false) {
+                    expands[0] = true;
+                }
             }
 
             @Override
             public org.apache.lucene.search.QueryVisitor getSubVisitor(org.apache.lucene.search.BooleanClause.Occur occur, Query parent) {
                 return this;
             }
-        });
+        };
+        // The query as parsed too: a scoring rewrite expanded its terms already, maybe to nothing.
+        if (ctx.parsedQuery() != null) {
+            ctx.parsedQuery().query().visit(visitor);
+        }
+        ctx.query().visit(visitor);
         return expands[0] ? "multi_term" : null;
+    }
+
+    /** Whether {@code q}'s rewrite leaves its terms to the search: a constant-score or doc-values one. */
+    private static boolean expandsNatively(org.apache.lucene.search.MultiTermQuery q) {
+        org.apache.lucene.search.MultiTermQuery.RewriteMethod m = q.getRewriteMethod();
+        return m == org.apache.lucene.search.MultiTermQuery.CONSTANT_SCORE_REWRITE
+            || m == org.apache.lucene.search.MultiTermQuery.CONSTANT_SCORE_BLENDED_REWRITE
+            || m == org.apache.lucene.search.MultiTermQuery.DOC_VALUES_REWRITE;
     }
 
     /**

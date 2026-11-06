@@ -446,7 +446,9 @@ def realtime():
     r = random.Random(11)
     queries = [{"match": {"body": "fox"}}, {"match": {"title": "quick dogs"}},
                {"bool": {"must": [{"match": {"body": "alpha"}}], "should": [{"term": {"tag": "t3"}}]}},
-               {"match_phrase": {"body": "quick brown"}}, {"term": {"tag": "t3"}}]
+               {"match_phrase": {"body": "quick brown"}}, {"term": {"tag": "t3"}},
+               # Expanded natively, over the buffers' terms too.
+               {"prefix": {"title": "qu"}}, {"wildcard": {"tag": "t1*"}}]
 
     def scored(index, q):
         out = must("POST", f"/{index}/_search?request_cache=false", {"query": q, "size": 10000, "track_total_hits": True})
