@@ -11,6 +11,7 @@ use lucene_ivf::{
 };
 use lucene_util::quantization::ScalarEncoding;
 use lucene_vector_quant::osq::OsqFactory;
+use lucene_vector_quant::rotation::RotatedFactory;
 use lucene_vector_quant::scalar::ScalarFactory;
 use lucene_vector_quant::{QuantizerFactory, QuantizerRegistry};
 
@@ -111,6 +112,8 @@ fn every_quantizer_and_similarity_finds_the_neighbours() {
         Box::new(OsqFactory::new(ScalarEncoding::SevenBit)),
         Box::new(ScalarFactory::int7()),
         Box::new(ScalarFactory::int4()),
+        Box::new(RotatedFactory::new(Arc::new(OsqFactory::bbq()))),
+        Box::new(RotatedFactory::new(Arc::new(ScalarFactory::int7()))),
     ];
     for sim in SIMS {
         let data = dataset(n, dim, 20, sim, 11);

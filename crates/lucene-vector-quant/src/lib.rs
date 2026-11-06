@@ -22,18 +22,20 @@
 //! the same scale as [`Similarity::score`] on the original vectors, so an
 //! index can rerank the best estimates with exact scores and compare the two.
 //!
-//! Two families are built in:
+//! Two families are built in, and a rotation that wraps either:
 //!
 //! | name | quantizer | codes |
 //! |---|---|---|
 //! | `osq` | [`osq::OsqQuantizer`]: Lucene's optimized scalar quantization (`Lucene104ScalarQuantizedVectorsFormat`), per vector, centred on the partition centroid. [`osq::OsqFactory::bbq`] is the 1-bit document / 4-bit query encoding of Lucene's BBQ. | 1, 2, 4, 7 or 8 bits per dimension plus 16 bytes of corrective terms |
 //! | `sq` | [`scalar::ScalarQuantizer`]: Lucene99-style global min/max (quantile) scalar quantization, int7 or packed int4 | 1 or 1/2 byte per dimension plus a 4-byte offset |
+//! | `rot-osq`, `rot-sq` | [`rotation::RotatedQuantizer`]: the inner quantizer on vectors zero-padded to the next power of two and rotated by a seeded randomized Hadamard transform (RaBitQ's rotation), built by [`rotation::RotatedFactory`] around any factory as `rot-<inner name>` | the inner quantizer's at the padded dimension |
 //!
 //! A new quantizer (Extended RaBitQ, product quantization) implements
 //! [`QuantizerFactory`], [`Quantizer`] and [`QueryScorer`] and registers its
 //! factory; nothing in the index changes.
 
 pub mod osq;
+pub mod rotation;
 pub mod scalar;
 
 use std::sync::Arc;
@@ -202,11 +204,17 @@ impl QuantizerRegistry {
         Self::default()
     }
 
-    /// A registry holding the built-in quantizers (`osq`, `sq`).
+    /// A registry holding the built-in quantizers (`osq`, `sq`) and their
+    /// rotated forms (`rot-osq`, `rot-sq`). A factory reads every encoding
+    /// or bit width of its family back, so one entry per family suffices.
     pub fn with_builtins() -> Self {
         let mut r = Self::new();
-        r.register(Arc::new(osq::OsqFactory::bbq()));
-        r.register(Arc::new(scalar::ScalarFactory::int7()));
+        let osq: Arc<dyn QuantizerFactory> = Arc::new(osq::OsqFactory::bbq());
+        let sq: Arc<dyn QuantizerFactory> = Arc::new(scalar::ScalarFactory::int7());
+        r.register(Arc::clone(&osq));
+        r.register(Arc::clone(&sq));
+        r.register(Arc::new(rotation::RotatedFactory::new(osq)));
+        r.register(Arc::new(rotation::RotatedFactory::new(sq)));
         r
     }
 
@@ -283,14 +291,15 @@ mod tests {
     #[test]
     fn registry_finds_replaces_and_rejects() {
         let mut r = QuantizerRegistry::with_builtins();
-        assert_eq!(r.names(), vec!["osq", "sq"]);
+        assert_eq!(r.names(), vec!["osq", "sq", "rot-osq", "rot-sq"]);
         assert!(r.get("osq").is_ok());
+        assert!(r.get("rot-sq").is_ok());
         assert_eq!(
             r.get("rabitq").unwrap_err(),
             Error::UnknownQuantizer("rabitq".into())
         );
         r.register(Arc::new(osq::OsqFactory::bbq()));
-        assert_eq!(r.names(), vec!["sq", "osq"]);
+        assert_eq!(r.names(), vec!["sq", "rot-osq", "rot-sq", "osq"]);
         assert!(QuantizerRegistry::new().names().is_empty());
     }
 
