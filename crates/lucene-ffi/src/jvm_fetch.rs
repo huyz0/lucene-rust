@@ -183,6 +183,56 @@ pub unsafe extern "C" fn ffi_jvm_reader_document(
     })
 }
 
+/// `StoredFields.prefetch` for a page of hits: the stored-fields chunks of
+/// segment `segment`'s documents `docs` (segment-local) of `handle`'s
+/// reader, fetched together where the segment is read by range
+/// ([`lucene_search::directory_reader::SegmentReader::prefetch_stored_documents`]);
+/// nothing to do over files in memory or mapped. The plugin calls it before
+/// its fetch phase reads the documents one at a time.
+pub(crate) fn prefetch_documents(handle: u64, segment: i32, docs: &[i32]) -> Result<(), FfiStatus> {
+    let h = jvm_reader::lookup(
+        handle,
+        "ffi_jvm_reader_prefetch_documents: unknown or already-closed handle",
+    )?;
+    let readers = h.reader.segment_readers();
+    let Some(reader) = usize::try_from(segment).ok().and_then(|s| readers.get(s)) else {
+        set_last_error(format!(
+            "ffi_jvm_reader_prefetch_documents: segment {segment} of {}",
+            readers.len()
+        ));
+        return Err(FfiStatus::InvalidArgument);
+    };
+    reader.prefetch_stored_documents(docs).map_err(|e| {
+        set_last_error(format!("prefetching stored fields: {e}"));
+        FfiStatus::Decode
+    })
+}
+
+/// [`prefetch_documents`] of the `count` documents at `docs`.
+///
+/// # Safety
+/// `docs` must be valid for `count` `i32` reads (null when 0).
+#[no_mangle]
+pub unsafe extern "C" fn ffi_jvm_reader_prefetch_documents(
+    handle: u64,
+    segment: i32,
+    docs: *const i32,
+    count: usize,
+) -> i32 {
+    crate::error::guard(|| {
+        if docs.is_null() && count > 0 {
+            return Err(FfiStatus::NullPointer);
+        }
+        let docs: &[i32] = if count == 0 {
+            &[]
+        } else {
+            // SAFETY: caller contract, non-null checked above.
+            unsafe { std::slice::from_raw_parts(docs, count) }
+        };
+        prefetch_documents(handle, segment, docs)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -272,6 +322,28 @@ mod tests {
         }
         assert_eq!(at, blob.len());
         fields
+    }
+
+    #[test]
+    fn prefetching_documents_checks_its_arguments_and_reads_the_same_documents() {
+        let (_tmp, h) = open_copy(|_, _| {});
+        let before = document_blob(h, 0, 0).unwrap();
+        let docs = [0, 1, 2];
+        // SAFETY: `docs` holds three `i32`s.
+        let rc = unsafe { ffi_jvm_reader_prefetch_documents(h, 0, docs.as_ptr(), docs.len()) };
+        assert_eq!(rc, 0);
+        assert_eq!(document_blob(h, 0, 0).unwrap(), before);
+        // SAFETY: a null pointer with no documents is allowed.
+        assert_eq!(
+            unsafe { ffi_jvm_reader_prefetch_documents(h, 0, std::ptr::null(), 0) },
+            0
+        );
+        // SAFETY: as above; the null with a count is refused.
+        let rc = unsafe { ffi_jvm_reader_prefetch_documents(h, 0, std::ptr::null(), 1) };
+        assert_eq!(rc, FfiStatus::NullPointer.code());
+        assert!(prefetch_documents(h, 9, &docs).is_err());
+        assert!(prefetch_documents(u64::MAX, 0, &docs).is_err());
+        crate::jvm_reader::ffi_close_jvm_reader(h);
     }
 
     #[test]

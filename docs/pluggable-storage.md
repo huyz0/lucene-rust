@@ -49,9 +49,17 @@ let dir = CachedBlobDirectory::new(MyS3Store::new("bucket", "idx/"), cache, "buc
   window, each kept and evicted as its own page. The window is sized from
   measured latency times throughput (a power of two between one page and
   `max_request`), or fixed with `PageCacheConfig::download_window`.
-- The disk tier keeps pages in fixed slots of a few large slab files,
-  evicted by CLOCK; it holds about 12 bytes of RAM per page (2 TB of 256 KiB
-  pages: about 100 MB). `PageCacheStats` reports it.
+- The disk tier keeps pages in slots of a few large slab files, evicted by
+  CLOCK. Slots come in size classes from 4 KiB doubling up to a full page,
+  so a small file or a file's short last page takes the smallest class that
+  holds it; the budget counts the slots in use, and an evicted slot's space
+  is given back to the file system (hole punching on Linux). It holds about
+  24 bytes of RAM per page (2 TB of 256 KiB pages: about 200 MB).
+  `PageCacheStats` reports it, with `disk_footprint_bytes`.
+- File lengths come from the store's listing when it carries them
+  (`BlobStore::list_with_sizes`, as S3's `ListObjectsV2` does), so opening a
+  file sends no length request. Lucene writes each file once, so a length
+  is kept until the file is deleted, written or renamed.
 - Files read whole at open or on every query (metadata, terms index, norms,
   the stored-fields and points indexes, live docs) are pinned on disk and
   held in memory. Other files are mapped and filled on first touch (Linux
@@ -70,14 +78,21 @@ let dir = CachedBlobDirectory::new(MyS3Store::new("bucket", "idx/"), cache, "buc
 - With `EncryptedDirectory` on top, pages are whole 64 KiB chunks after the
   header: the disk tier holds ciphertext, and a page is authenticated and
   decrypted once each time it is brought into memory. Only the header is
-  read when a file opens. Encryption stays opt-in; without it, pages are
-  copied through with no crypto.
+  read when a file opens, once, and a segment open fetches every encrypted
+  file's header and decoded first and last pages together
+  (`Directory::prefetch_files_decoded`). Encryption stays opt-in; without
+  it, pages are copied through with no crypto.
+- In OpenSearch, the fetch phase reads its hits one at a time. The plugin
+  announces them first (`SearchOperationListener.onPreFetchPhase`), so a
+  segment read by range fetches the stored fields of the page of hits
+  together, as `prefetch_stored_documents` does.
 
 `cargo run --release -p lucene-search --example cold_range_reads` counts the
 requests and round trips of cold queries over a store with injected latency.
 At 30 ms and 100 MB/s per request, over one 1M-document segment, elapsed
-time in round trips (transfer included): opening it about 3.5 (19 without
-the open hint), a term or boolean query about 2.5, a phrase 3.5 to 5.5, and
+time in round trips (transfer included, length requests and listings
+costed as one round trip each): opening it about 4.5 in 19 requests (8.6 in
+34 when the listing carries no lengths), a term or boolean query about 2.5, a phrase 3.5 to 5.5, and
 fetching the top 10 hits' stored fields 2.5 to 5 (5 to 23 one hit at a
 time).
 

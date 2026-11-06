@@ -6,7 +6,8 @@
 //! and each page is authenticated and decrypted on its own when it is
 //! brought into memory. Only the header is read when the file opens.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use lucene_store::{Directory, Error, PageCodec, PageDecoder, Result, UnitLayout};
 
@@ -38,6 +39,9 @@ pub(crate) fn read_header(dir: &dyn Directory, name: &str) -> Result<(Header, Ve
 /// directory: unwraps the file's data key and decrypts pages of chunks.
 pub(crate) struct EncryptedDecoder<'a> {
     pub(crate) keys: &'a dyn KeyProvider,
+    /// The directory's header lengths, filled as headers are read so its
+    /// [`Directory::file_length`] does not read them again.
+    pub(crate) header_lens: &'a Mutex<HashMap<String, (u64, u32)>>,
 }
 
 impl PageDecoder for EncryptedDecoder<'_> {
@@ -50,6 +54,10 @@ impl PageDecoder for EncryptedDecoder<'_> {
         let (header, header_bytes) = read_header(dir, name)?;
         let data_key = self.keys.unwrap_key(&header.key_id, &header.wrapped_key)?;
         let header_len = header_bytes.len() as u64;
+        self.header_lens
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(name.to_string(), (header_len, header.chunk_size));
         let cipher = ChunkCipher::new(&data_key, header_bytes)?;
         let corrupt = || Error::Corrupted(format!("encrypted file {name}: malformed length"));
         let body = stored_len.checked_sub(header_len).ok_or_else(corrupt)?;
