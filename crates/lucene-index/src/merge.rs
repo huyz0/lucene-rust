@@ -2802,7 +2802,7 @@ fn merge_segments_mapped_inner(
         };
         if let Some(groups) = streamed {
             for group in &groups {
-                files.extend(group.written_files.iter().cloned());
+                files.extend(group.streamed_files.iter().cloned());
                 for (ext, bytes) in group.files() {
                     let name = group.file_name(merged_segment_name, ext);
                     write_file(dir, &name, bytes)?;
@@ -5901,8 +5901,8 @@ const POSTINGS_PER_MERGE_RANGE: i64 = 1 << 20;
 /// an unused placeholder for "from the first term", and range `i` covers the
 /// terms in `ranges[i]..ranges[i + 1]` (the last one to the end).
 ///
-/// The split terms are evenly spaced terms of the source with the most
-/// terms, taken in one walk of its dictionary. Ranges are disjoint and
+/// The split terms are taken in one walk of the dictionary of the source
+/// with the most postings, evenly spaced in its postings. Ranges are disjoint and
 /// cover every term of every source, so merging them independently and
 /// concatenating the results in order is the single merge.
 fn term_ranges(per_source_field: &[Option<&SourcePostings<'_>>]) -> Result<Vec<Vec<u8>>> {
@@ -5912,24 +5912,24 @@ fn term_ranges(per_source_field: &[Option<&SourcePostings<'_>>]) -> Result<Vec<V
         .map(|pf| pf.field_terms.num_terms.max(0))
         .sum();
     let threads = rayon::current_num_threads();
-    let largest = per_source_field
-        .iter()
-        .flatten()
-        .max_by_key(|pf| pf.field_terms.num_terms);
-    let (Some(largest), true) = (largest, threads > 1 && total >= PARALLEL_MERGE_MIN_TERMS) else {
-        return Ok(vec![Vec::new()]);
-    };
-    // Four ranges per thread: ranges differ in how many sources and
-    // postings they hold, so finer ranges balance better. A large field gets
-    // more, so that the window `merge_field_runs` decodes at a time (one
-    // range per thread) stays a small part of it: by terms, and by postings
-    // (documents plus positions), which is what a range's run holds.
+    // Documents plus positions: what a range's run holds.
     let postings = |pf: &SourcePostings<'_>| {
         pf.field_terms
             .sum_doc_freq
             .max(0)
             .saturating_add(pf.field_terms.sum_total_term_freq.max(0))
     };
+    let largest = per_source_field
+        .iter()
+        .flatten()
+        .max_by_key(|pf| (postings(pf), pf.field_terms.num_terms));
+    let (Some(largest), true) = (largest, threads > 1 && total >= PARALLEL_MERGE_MIN_TERMS) else {
+        return Ok(vec![Vec::new()]);
+    };
+    // Four ranges per thread: ranges differ in how many sources and
+    // postings they hold, so finer ranges balance better. A large field gets
+    // more, so that the window `merge_field_runs` decodes at a time (one
+    // range per thread) stays a small part of it, by terms and by postings.
     let total_postings: i64 = per_source_field
         .iter()
         .flatten()

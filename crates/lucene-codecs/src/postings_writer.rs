@@ -1603,8 +1603,9 @@ pub(crate) struct PostingsWriter<'a> {
 }
 
 /// Buffered postings bytes a [`PostingsWriter::stream_to`] writer keeps
-/// before handing them to its outputs.
-pub const SPILL_BYTES: usize = 1 << 20;
+/// before handing them to its outputs (a few KB in unit tests, so that they
+/// spill many times).
+pub const SPILL_BYTES: usize = if cfg!(test) { 1 << 12 } else { 1 << 20 };
 
 /// [`PostingsWriter::stream_to`]'s outputs and how much each has taken.
 struct PostingsSpill {
@@ -1913,8 +1914,8 @@ impl<'a> PostingsWriter<'a> {
     ) {
         let mut spill = PostingsSpill {
             doc,
-            pos: pos.filter(|_| self.any_positions),
-            pay: pay.filter(|_| self.any_offsets_or_payloads),
+            pos,
+            pay,
             doc_bytes: 0,
             pos_bytes: 0,
             pay_bytes: 0,
@@ -1958,11 +1959,10 @@ impl<'a> PostingsWriter<'a> {
         // The files' lengths, footers included, for `.psm`.
         let (doc_len, pos_len, pay_len) = if let Some(mut spill) = spill {
             spill.write(&mut doc, &mut pos, &mut pay);
+            // Empty, and without the capacity a large batch grew them to.
+            (doc, pos, pay) = (Vec::new(), Vec::new(), Vec::new());
             let footer = |out: &mut FsIndexOutput| {
-                out.write_bytes(&codec_util::FOOTER_MAGIC.to_be_bytes());
-                out.write_bytes(&0u32.to_be_bytes());
-                let checksum = out.checksum();
-                out.write_bytes(&checksum.to_be_bytes());
+                codec_util::write_footer_to(out);
                 out.file_pointer()
             };
             let doc_len = footer(&mut spill.doc);
@@ -2872,9 +2872,9 @@ fn write_position_tail<T: TermSource>(
                 &offset_lengths[start..end],
             );
         }
-        pos_block_fp.push(pos_base + pos_out.len() as u64);
+        pos_block_fp.push(pos_base.saturating_add(pos_out.len() as u64));
         if has_offsets_or_payloads {
-            pay_block_fp.push(pay_base + pay_out.len() as u64);
+            pay_block_fp.push(pay_base.saturating_add(pay_out.len() as u64));
         }
         start = end;
     }
@@ -6957,6 +6957,49 @@ mod tests {
                 ("tmd", &got.tmd, &expected.tmd),
             ] {
                 assert!(a == b, "batch {batch}: .{name} differs");
+            }
+        }
+        // Streamed to files, the same bytes, the dictionary's pointers
+        // rebased over what already went out.
+        use lucene_store::Directory;
+        assert!(expected.doc.len() + expected.pos.len() > 8 * SPILL_BYTES);
+        for batch in [1usize, 7, usize::MAX] {
+            let root = lucene_util::test_support::TempDir::new("postings-spill");
+            let dir = lucene_store::FsDirectory::open(root.path());
+            let mut w = StreamingFieldsWriter::new(&options, &id, "Lucene104_0").unwrap();
+            w.stream_to(
+                dir.create_output("_0.doc").unwrap(),
+                Some(dir.create_output("_0.pos").unwrap()),
+                Some(dir.create_output("_0.pay").unwrap()),
+            );
+            for input in &inputs {
+                w.start_field(input.field_number, input.index_options, input.has_payloads)
+                    .unwrap();
+                for chunk in input.terms.chunks(batch.min(input.terms.len())) {
+                    w.add_terms(chunk, &norms).unwrap();
+                }
+                w.finish_field(input.doc_count).unwrap();
+            }
+            let got = w.finish().unwrap();
+            assert!(got.doc.is_empty() && got.pos.is_empty() && got.pay.is_empty());
+            for (name, a, b) in [
+                ("psm", &got.psm, &expected.psm),
+                ("tim", &got.tim, &expected.tim),
+                ("tip", &got.tip, &expected.tip),
+                ("tmd", &got.tmd, &expected.tmd),
+            ] {
+                assert!(a == b, "streamed, batch {batch}: .{name} differs");
+            }
+            for (ext, b) in [
+                ("doc", &expected.doc),
+                ("pos", &expected.pos),
+                ("pay", &expected.pay),
+            ] {
+                let file = dir.open(&format!("_0.{ext}")).unwrap();
+                assert!(
+                    file.as_ref() == b.as_slice(),
+                    "streamed, batch {batch}: .{ext} differs"
+                );
             }
         }
     }
