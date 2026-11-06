@@ -17,8 +17,8 @@ import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * A searcher's reader with a view of the writer's buffers: the leaves of {@code base} (one of the
- * engine's readers, kept open as long as this one), then a {@link LiveLeafReader} per buffer of the
- * view.
+ * engine's readers, kept open as long as this one), then a {@link LiveLeafReader} per chunk of the
+ * view's buffers.
  * Its own cache key, so nothing cached for {@code base} answers for it; the native reader is
  * {@code base}'s ({@link #baseOf}), whose segments are the same. Closing it closes the view.
  */
@@ -55,9 +55,9 @@ public final class LiveDirectoryReader extends FilterDirectoryReader {
         throws IOException {
         base.incRef();
         try {
-            LiveLeafReader[] leaves = new LiveLeafReader[view.buffers()];
-            for (int i = 0; i < leaves.length; i++) {
-                leaves[i] = new LiveLeafReader(view, i, infos);
+            LiveLeafReader[] leaves = new LiveLeafReader[view.chunks()];
+            for (int c = 0; c < leaves.length; c++) {
+                leaves[c] = new LiveLeafReader(view, view.chunkBuffer(c), view.chunkStart(c), view.chunkMaxDoc(c), infos);
             }
             return OpenSearchDirectoryReader.wrap(new LiveDirectoryReader(base, view, leaves), base.shardId());
         } catch (IOException | RuntimeException e) {

@@ -4,6 +4,7 @@ memory, and REST latency per request shape.
 Usage:
   bench_nodes.py gen DIR DOCS          writes the corpus as bulk bodies (DIR/bulk-*.ndjson)
   bench_nodes.py run BASE CONTAINER DIR LABEL OUT [--rounds N] [--java-too]
+  bench_nodes.py visibility BASE CONTAINER DIR LABEL OUT SETTINGS_JSON
 
 `run` creates index `bench` (one shard, no replica), sends the bulk bodies
 with CLIENTS parallel clients, refreshes, then times each request shape:
@@ -238,6 +239,114 @@ def run(base, container, corpus, label, out, rounds, java_too):
     print(f"{label}: wrote {out}")
 
 
+def cpu_seconds(container):
+    """The node process's CPU time so far, in seconds, as the node reports it."""
+    nodes = req("GET", "/_nodes/stats/process")["nodes"]
+    return next(iter(nodes.values()))["process"]["cpu"]["total_in_millis"] / 1000
+
+
+def pct(values, p):
+    values = sorted(values)
+    return round(values[min(len(values) - 1, int(len(values) * p))], 1) if values else None
+
+
+def visibility(base, container, corpus, label, out, settings):
+    """Bulk-loads the corpus with CLIENTS clients while a probe indexes one document every
+    PROBE_EVERY seconds and searches for it until it is found (the time from the write's
+    acknowledgement to the first search that finds it), and a searcher runs a few request shapes
+    in a loop. Index `bench` takes `settings` (JSON) beside one shard and no replica."""
+    global BASE
+    BASE = base
+    files = sorted(glob.glob(os.path.join(corpus, "bulk-*.ndjson")))
+    try:
+        req("DELETE", "/bench")
+    except RuntimeError:
+        pass
+    s = {"number_of_shards": 1, "number_of_replicas": 0}
+    s.update(settings)
+    req("PUT", "/bench", {"settings": s, "mappings": MAPPING})
+    every = float(os.environ.get("PROBE_EVERY", "0.2"))
+    done = [False]
+    seen, missed, errors = [], [0], []
+    searched = {}
+    wanted = {"term, frequent (t0)", "match OR, 2 frequent", "terms agg on tag, filtered", "match, sort by price"}
+    pairs = [(n, b) for n, b in shapes() if n in wanted]
+
+    def probe_once(n):
+        req("PUT", f"/bench/_doc/probe-{n}", {"body": f"probe{n}", "tag": "probe"})
+        t0 = time.perf_counter()
+        q = {"query": {"term": {"body": f"probe{n}"}}}
+        while True:
+            if req("POST", "/bench/_search?request_cache=false", q)["hits"]["total"]["value"] >= 1:
+                seen.append((time.perf_counter() - t0) * 1000)
+                return
+            if time.perf_counter() - t0 > 30:
+                missed[0] += 1
+                return
+            time.sleep(0.002)
+
+    def probe():
+        n = 0
+        while not done[0]:
+            n += 1
+            try:
+                probe_once(n)
+            except (RuntimeError, OSError) as e:
+                errors.append(f"probe {n}: {e}")
+            time.sleep(every)
+
+    def search():
+        i = 0
+        while not done[0]:
+            name, body = pairs[i % len(pairs)]
+            t = time.perf_counter()
+            try:
+                req("POST", "/bench/_search?request_cache=false", body)
+                searched.setdefault(name, []).append((time.perf_counter() - t) * 1000)
+            except (RuntimeError, OSError) as e:
+                errors.append(f"{name}: {e}")
+            i += 1
+
+    cpu0 = cpu_seconds(container)
+    t0 = time.perf_counter()
+    with concurrent.futures.ThreadPoolExecutor(2) as side:
+        tasks = [side.submit(probe), side.submit(search)]
+        try:
+            def send(path):
+                with open(path, "rb") as fh:
+                    res = req("POST", "/bench/_bulk", fh.read(), ndjson=True)
+                if res["errors"]:
+                    raise RuntimeError(f"bulk {path} had errors")
+            with concurrent.futures.ThreadPoolExecutor(CLIENTS) as ex:
+                list(ex.map(send, files))
+        finally:
+            done[0] = True
+            for t in tasks:
+                t.result()
+    indexed = time.perf_counter() - t0
+    cpu = cpu_seconds(container) - cpu0
+    docs = 0
+    for f in files:
+        with open(f, "rb") as fh:
+            docs += sum(1 for _ in fh) // 2
+    result = {
+        "label": label, "settings": settings, "docs": docs, "index_seconds": round(indexed, 2),
+        "docs_per_second": round(docs / indexed), "cpu_seconds": round(cpu, 1),
+        "probes": len(seen), "probes_missed": missed[0], "request_errors": errors[:20], "request_error_count": len(errors),
+        "visible_ms": {"p50": pct(seen, 0.5), "p90": pct(seen, 0.9), "p99": pct(seen, 0.99), "max": pct(seen, 1.0)},
+        "search_ms_during_load": {n: {"p50": pct(v, 0.5), "p90": pct(v, 0.9), "n": len(v)} for n, v in searched.items()},
+        "memory_after_load": node_snapshot(container),
+    }
+    print(f"{label}: {result['docs_per_second']} docs/s, {result['cpu_seconds']} CPU-s, visible p50/p99 "
+          f"{result['visible_ms']['p50']}/{result['visible_ms']['p99']} ms ({len(seen)} probes, {missed[0]} missed, "
+          f"{len(errors)} request errors)",
+          flush=True)
+    for n, v in result["search_ms_during_load"].items():
+        print(f"  {n:32s} p50 {v['p50']} ms, p90 {v['p90']} ms ({v['n']} searches)", flush=True)
+    with open(out, "w") as fh:
+        json.dump(result, fh, indent=1)
+
+
 if __name__ == "__main__":
     if sys.argv[1] == "gen":
         gen(sys.argv[2], int(sys.argv[3]))
@@ -247,5 +356,8 @@ if __name__ == "__main__":
         if "--rounds" in a:
             rounds = int(a[a.index("--rounds") + 1])
         run(a[0], a[1], a[2], a[3], a[4], rounds, "--java-too" in a)
+    elif sys.argv[1] == "visibility":
+        a = sys.argv[2:]
+        visibility(a[0], a[1], a[2], a[3], a[4], json.loads(a[5]))
     else:
         sys.exit(__doc__)

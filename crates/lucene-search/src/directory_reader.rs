@@ -431,8 +431,10 @@ impl SegmentReader {
 }
 
 impl SegmentReader {
-    /// One segment of `dir` on its own, at document base 0.
-    pub(crate) fn open_one(
+    /// One segment of `dir` on its own, at document base 0 (for
+    /// [`DirectoryReader::with_readers_appended`]): it reads what it needs
+    /// as it opens, so it outlives `dir`'s handle.
+    pub fn open_one(
         dir: &dyn Directory,
         commit: &segment_infos::SegmentCommitInfo,
     ) -> Result<Self> {
@@ -2659,22 +2661,18 @@ impl DirectoryReader {
         }
     }
 
-    /// This reader's segments, then those of `extra`, each opened from its
-    /// directory, as one reader under a new cache key: the writer's buffered
-    /// documents as segments, searched after the reader's own.
-    /// The extra segments are not part of [`Self::segment_infos`].
-    pub fn with_segments_appended(
-        &self,
-        extra: &[(&dyn Directory, &segment_infos::SegmentCommitInfo)],
-    ) -> Result<Self> {
+    /// This reader's segments, then `extra` (segments opened on their own:
+    /// [`SegmentReader::open_one`]), renumbered after them, as one reader
+    /// under a new cache key: the writer's buffered documents as segments,
+    /// searched after the reader's own. The extra segments are not part of
+    /// [`Self::segment_infos`].
+    pub fn with_readers_appended(&self, extra: Vec<SegmentReader>) -> Result<Self> {
         let mut segments: Vec<SegmentReader> = self
             .segments
             .iter()
             .map(SegmentReader::clone_reader)
+            .chain(extra)
             .collect();
-        for (dir, sci) in extra {
-            segments.push(SegmentReader::open(*dir, sci, 0)?);
-        }
         let mut doc_base = 0i64;
         for reader in &mut segments {
             reader.doc_base = i32::try_from(doc_base).unwrap_or(i32::MAX);
