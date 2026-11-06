@@ -49,6 +49,13 @@ pub trait MergeReaderHooks: Send + Sync {
     fn reorder(&self, _reader: &dyn CodecReader) -> Result<Option<DocMap>> {
         Ok(None)
     }
+
+    /// `setMergeInfo(info)`'s `addDiagnostics`: entries for the merged
+    /// segment's `.si`, given whether `reorder` renumbered the merge (none
+    /// by default).
+    fn diagnostics(&self, _reordered: bool) -> Vec<(String, String)> {
+        Vec::new()
+    }
 }
 
 /// The hooks a plain `OneMerge` has: none.
@@ -164,6 +171,7 @@ impl lucene_index::merge_policy::MergeHooks for SegmentMergeHooks {
                 !may_reorder,
             )?;
             let live_docs = wrapped.iter().map(|r| r.live_docs().cloned()).collect();
+            let diagnostics = self.hooks.diagnostics(merge.reorder_doc_maps.is_some());
             let new_to_old = merge.reorder_doc_maps.map(|maps| {
                 // `maps[i][d]` is input `i`'s document `d`'s new id.
                 let total: usize = maps.iter().map(Vec::len).sum();
@@ -185,6 +193,7 @@ impl lucene_index::merge_policy::MergeHooks for SegmentMergeHooks {
             Ok(lucene_index::merge_policy::PreparedMerge {
                 live_docs,
                 new_to_old,
+                diagnostics,
             })
         };
         run().map_err(|e| e.to_string())
