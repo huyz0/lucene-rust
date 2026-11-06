@@ -362,7 +362,13 @@ impl IvfWriter {
         let vector_bytes = encoding
             .vector_bytes(dim)
             .ok_or_else(|| Error::IllegalArgument("dimension too large".into()))?;
-        let mut encoded = vec![0u8; n * vector_bytes];
+        // `f32` vectors are written straight from `vectors` (whose values
+        // `check` found finite) rather than copied into a second buffer.
+        let mut encoded = if encoding == VectorEncoding::F32 {
+            Vec::new()
+        } else {
+            vec![0u8; n * vector_bytes]
+        };
         let representable = encoded
             .par_chunks_mut(vector_bytes)
             .zip(vectors.par_chunks(dim))
@@ -484,8 +490,14 @@ impl IvfWriter {
         let vectors_offset = self.vectors.len();
         for &i in &order {
             let i = i as usize;
-            self.vectors
-                .write_bytes(&encoded[i * vector_bytes..(i + 1) * vector_bytes]);
+            if encoding == VectorEncoding::F32 {
+                for x in kmeans::row(&vectors, dim, i) {
+                    self.vectors.write_bytes(&x.to_le_bytes());
+                }
+            } else {
+                self.vectors
+                    .write_bytes(&encoded[i * vector_bytes..(i + 1) * vector_bytes]);
+            }
         }
         let doc_table_offset = self.vectors.len();
         for d in field.docs {

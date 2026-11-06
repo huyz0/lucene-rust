@@ -237,25 +237,34 @@ impl Rotation {
             return;
         }
         let second = self.width.saturating_sub(self.block);
-        let mut before = vec![0f32; self.width];
-        for ((signs, last_signs), perm) in self
-            .signs
-            .chunks_exact(self.width)
-            .zip(self.last_signs.chunks_exact(self.block))
-            .zip(self.perms.chunks_exact(self.width))
-        {
-            before.copy_from_slice(out);
-            for ((o, s), &p) in out.iter_mut().zip(signs).zip(perm) {
-                *o = before[p as usize] * s;
+        // A buffer per thread rather than per call: encoding rotates every
+        // vector of a field.
+        BEFORE.with_borrow_mut(|before| {
+            before.resize(self.width, 0.0);
+            for ((signs, last_signs), perm) in self
+                .signs
+                .chunks_exact(self.width)
+                .zip(self.last_signs.chunks_exact(self.block))
+                .zip(self.perms.chunks_exact(self.width))
+            {
+                before.copy_from_slice(out);
+                for ((o, s), &p) in out.iter_mut().zip(signs).zip(perm) {
+                    *o = before[p as usize] * s;
+                }
+                fwht(&mut out[..self.block]);
+                let last = &mut out[second..];
+                for (o, s) in last.iter_mut().zip(last_signs) {
+                    *o *= s;
+                }
+                fwht(last);
             }
-            fwht(&mut out[..self.block]);
-            let last = &mut out[second..];
-            for (o, s) in last.iter_mut().zip(last_signs) {
-                *o *= s;
-            }
-            fwht(last);
-        }
+        });
     }
+}
+
+thread_local! {
+    /// [`Rotation::rotate`]'s copy of a round's input, for the permutation.
+    static BEFORE: std::cell::RefCell<Vec<f32>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// `n` random signs drawn from `state`, sign `i` of magnitude

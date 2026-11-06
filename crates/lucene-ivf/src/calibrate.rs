@@ -25,7 +25,7 @@
 use rayon::prelude::*;
 
 use crate::kmeans::{self, SplitMix64};
-use crate::reader::{Candidate, IvfField, RangeSource, SearchStats};
+use crate::reader::{reach, Candidate, IvfField, RangeSource, SearchStats};
 use crate::Result;
 
 /// A field's calibrated search depth.
@@ -227,12 +227,7 @@ fn bounded(
     k: usize,
     neighbours: &[u32],
 ) -> (usize, usize) {
-    let mut reach = vec![f32::NEG_INFINITY; candidates.len()];
-    let mut most = f32::NEG_INFINITY;
-    for (r, c) in reach.iter_mut().zip(candidates).rev() {
-        most = most.max(c.score + c.bound);
-        *r = most;
-    }
+    let reach = reach(candidates);
     let mut best: Vec<(f32, u32)> = Vec::with_capacity(k + 1);
     let mut reranked = 0;
     for (i, c) in candidates.iter().enumerate() {

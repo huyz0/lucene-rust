@@ -133,13 +133,19 @@ impl VectorEncoding {
             }
             VectorEncoding::Int8 => {
                 assert_eq!(centroid.len(), v.len());
-                let residual: Vec<f32> = v.iter().zip(centroid).map(|(x, c)| x - c).collect();
-                let finite = residual.iter().all(|r| r.is_finite());
+                // The residual is recomputed where needed rather than
+                // collected: every vector of a field is encoded.
+                let residual = || v.iter().zip(centroid).map(|(x, c)| x - c);
+                let finite = residual().all(f32::is_finite);
                 // Adding the centroid back can still overflow.
-                finite && encode_int8(&residual, out) && {
-                    let mut decoded = vec![0f32; v.len()];
-                    self.decode(out, centroid, &mut decoded);
-                    decoded.iter().all(|x| x.is_finite())
+                finite && encode_int8(residual, out) && {
+                    let (head, codes) = out.split_at(INT8_HEADER);
+                    let offset = f32::from_le_bytes([head[0], head[1], head[2], head[3]]);
+                    let scale = f32::from_le_bytes([head[4], head[5], head[6], head[7]]);
+                    codes
+                        .iter()
+                        .zip(centroid)
+                        .all(|(&q, &c)| (c + (offset + scale * f32::from(q))).is_finite())
                 }
             }
         }
@@ -189,10 +195,10 @@ impl VectorEncoding {
 /// Per-vector min/max quantization of `v` (a residual): offset, scale,
 /// then one code per component, rounded to the nearest level. `false` when
 /// the top level does not decode to a finite value.
-fn encode_int8(v: &[f32], out: &mut [u8]) -> bool {
+fn encode_int8<I: Iterator<Item = f32>>(v: impl Fn() -> I, out: &mut [u8]) -> bool {
     let (head, codes) = out.split_at_mut(INT8_HEADER);
-    let min = v.iter().copied().fold(f32::INFINITY, f32::min);
-    let max = v.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    let min = v().fold(f32::INFINITY, f32::min);
+    let max = v().fold(f32::NEG_INFINITY, f32::max);
     // In f64 so a range wider than `f32::MAX` does not overflow.
     let range = f64::from(max) - f64::from(min);
     #[allow(clippy::cast_possible_truncation)]
@@ -205,7 +211,7 @@ fn encode_int8(v: &[f32], out: &mut [u8]) -> bool {
     head[4..].copy_from_slice(&scale.to_le_bytes());
     if scale > 0.0 {
         let scale = f64::from(scale);
-        for (c, &x) in codes.iter_mut().zip(v) {
+        for (c, x) in codes.iter_mut().zip(v()) {
             let level = ((f64::from(x) - f64::from(min)) / scale).round();
             // Clamped to a code: the cast cannot truncate.
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]

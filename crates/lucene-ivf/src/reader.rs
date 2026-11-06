@@ -384,8 +384,10 @@ impl IvfField {
             .map_or(DEFAULT_PROBE_FRACTION, |c| c.probe_fraction);
         let clusters = self.clusters();
         // The calibrated fraction is a whole number of clusters over this
-        // count; the slack keeps float rounding from adding one.
-        let n = (f64::from(fraction) * clusters as f64 - 1e-6).ceil();
+        // count; the slack, relative as the `f32` fraction's rounding is,
+        // keeps that rounding from adding one.
+        let x = f64::from(fraction) * clusters as f64;
+        let n = (x - 1e-6 * x.max(1.0)).ceil();
         (n.max(1.0) as usize).min(clusters.max(1))
     }
 
@@ -958,6 +960,18 @@ impl TopN {
     }
 }
 
+/// For each position of `candidates`, the most any candidate from there on
+/// can score: the suffix maximum of estimate plus margin.
+pub(crate) fn reach(candidates: &[Candidate]) -> Vec<f32> {
+    let mut reach = vec![f32::NEG_INFINITY; candidates.len()];
+    let mut most = f32::NEG_INFINITY;
+    for (r, c) in reach.iter_mut().zip(candidates).rev() {
+        most = most.max(c.score + c.bound);
+        *r = most;
+    }
+    reach
+}
+
 /// The higher of two optional floors.
 fn higher(a: Option<f32>, b: Option<f32>) -> Option<f32> {
     match (a, b) {
@@ -1471,13 +1485,7 @@ impl IvfReader {
         stats: &mut SearchStats,
     ) -> Result<Vec<ScoredDoc>> {
         let mut exact = TopN::new(k.min(f.count), false);
-        // `reach[i]`: the most any candidate from `i` on can score.
-        let mut reach = vec![f32::NEG_INFINITY; candidates.len()];
-        let mut most = f32::NEG_INFINITY;
-        for (r, c) in reach.iter_mut().zip(candidates).rev() {
-            most = most.max(c.score + c.bound);
-            *r = most;
-        }
+        let reach = reach(candidates);
         let mut v = Vec::with_capacity(f.dimension);
         // Candidates' vectors are scattered over the file: ask for a few
         // ahead so their cache misses overlap.
@@ -1497,6 +1505,9 @@ impl IvfReader {
                     break;
                 }
                 if c.score + c.bound < floor {
+                    // Keep the window full: the candidate `AHEAD` on was
+                    // asked for by nobody yet.
+                    ahead(candidates.get(i + AHEAD));
                     continue;
                 }
             }
