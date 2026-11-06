@@ -25,10 +25,16 @@ const RANDOM_READS: usize = 100_000;
 fn modes() -> Vec<(String, Mode)> {
     let mut m = vec![
         ("lz4 (default)".to_string(), Mode::BestSpeed),
-        ("deflate (best_compression)".to_string(), Mode::BestCompression),
+        (
+            "deflate (best_compression)".to_string(),
+            Mode::BestCompression,
+        ),
     ];
     for level in [1, 3, 6] {
-        m.push((format!("zstd level {level}"), Mode::Zstd(ZstdMode::zstd(level))));
+        m.push((
+            format!("zstd level {level}"),
+            Mode::Zstd(ZstdMode::zstd(level)),
+        ));
     }
     for level in [1, 3, 6] {
         m.push((
@@ -41,7 +47,10 @@ fn modes() -> Vec<(String, Mode)> {
 
 fn main() {
     let files: Vec<String> = std::env::args().skip(1).collect();
-    assert!(!files.is_empty(), "usage: stored_fields_compression FILE...");
+    assert!(
+        !files.is_empty(),
+        "usage: stored_fields_compression FILE..."
+    );
     for file in files {
         let text = std::fs::read_to_string(&file).unwrap();
         let docs: Vec<Document> = text

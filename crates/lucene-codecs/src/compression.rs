@@ -857,7 +857,10 @@ fn decompress_zstd(
     } else {
         &[]
     };
-    let mut dictionary = Vec::new();
+    // The dictionary's buffer is this thread's, reused across units.
+    let mut dictionary = DictBuffer(ZSTD_DICT.with(std::cell::Cell::take));
+    dictionary.0.clear();
+    let dictionary = &mut dictionary.0;
     let mut dict_ready = dict_length == 0;
     let mut ensure_dict = |dictionary: &mut Vec<u8>| -> Result<()> {
         if !dict_ready {
@@ -872,7 +875,7 @@ fn decompress_zstd(
         Ok(())
     };
     if length > 0 && offset < dict_length {
-        ensure_dict(&mut dictionary)?;
+        ensure_dict(dictionary)?;
         out.extend_from_slice(&dictionary[offset..dict_length.min(want_end)]);
     }
 
@@ -885,9 +888,9 @@ fn decompress_zstd(
         if length > 0 && lo < hi {
             let at = input.position();
             let frame = input.slice(at, at.saturating_add(n))?;
-            ensure_dict(&mut dictionary)?;
+            ensure_dict(dictionary)?;
             let d = if dict_length > 0 {
-                lucene_zstd::Dictionary::Bytes(&dictionary)
+                lucene_zstd::Dictionary::Bytes(dictionary)
             } else {
                 lucene_zstd::Dictionary::None
             };
@@ -899,6 +902,21 @@ fn decompress_zstd(
         plain += this_len;
     }
     Ok(())
+}
+
+thread_local! {
+    /// [`decompress_zstd`]'s dictionary buffer.
+    static ZSTD_DICT: std::cell::Cell<Vec<u8>> = const { std::cell::Cell::new(Vec::new()) };
+}
+
+/// Hands [`ZSTD_DICT`]'s buffer back when a unit is done, error or not.
+struct DictBuffer(Vec<u8>);
+
+impl Drop for DictBuffer {
+    fn drop(&mut self) {
+        let buf = std::mem::take(&mut self.0);
+        ZSTD_DICT.with(|cell| cell.set(buf));
+    }
 }
 
 /// One zstd frame of exactly `plain_len` bytes appended to `out`, on this

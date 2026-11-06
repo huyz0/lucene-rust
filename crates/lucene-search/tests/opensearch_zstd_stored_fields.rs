@@ -184,7 +184,7 @@ fn document(docs: &mut Docs, i: u64, f: &Fields) -> ExplicitDocument {
             value,
         })
     };
-    if i % 113 != 0 {
+    if !i.is_multiple_of(113) {
         let title_len = 10 + docs.next(150);
         add(f.title, FieldValue::String(docs.text(title_len)));
         let body_len = if i == 777 { 1_300_000 } else { docs.next(3000) };

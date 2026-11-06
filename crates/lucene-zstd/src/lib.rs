@@ -13,7 +13,7 @@
 //!   against a dictionary: either bytes passed per call (a *raw-content*
 //!   dictionary, such as a chunk's own first bytes), or a prepared
 //!   [`EncoderDictionary`]/[`DecoderDictionary`] built once and reused, for
-//!   example one [trained](train_dictionary) on sample blocks.
+//!   example one trained (`train_dictionary`, feature `dict-builder`) on sample blocks.
 //! - Decompression always states the plain length it expects and fails on
 //!   any other, so a length read off disk can never make it write past what
 //!   the caller planned for.
