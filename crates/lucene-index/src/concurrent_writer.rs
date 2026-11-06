@@ -114,7 +114,8 @@ use lucene_codecs::field_infos::FieldInfo;
 
 mod live;
 pub use live::{
-    LiveBuffer, LiveBufferField, LiveFieldRequest, LiveRequest, LiveSnapshot, LiveView, ViewBuffer,
+    FieldTotals, LiveBuffer, LiveBufferField, LiveFieldRequest, LiveRequest, LiveSnapshot,
+    LiveView, ViewBuffer,
 };
 
 /// One indexing slot's buffer -- `DocumentsWriterPerThread`, before its flush.
@@ -159,6 +160,9 @@ struct Dwpt {
     /// Norms and deletes for live search, kept only by a writer that has it
     /// ([`ConcurrentIndexWriter::enable_live_search`]).
     live: live::LiveColumns,
+    /// The partition every buffered document was added under
+    /// ([`IndexWriter::set_segment_partitioning`]); `None` while empty.
+    partition: Option<Arc<str>>,
 }
 
 /// Pads `list` to `n` entries when any document has an entry, or when a
@@ -293,6 +297,8 @@ struct FlushBatch {
     /// The slot's `ram_bytes` when it was taken: what this flush counts
     /// toward `flushBytes` until it is published.
     ram_bytes: usize,
+    /// The partition the documents were added under.
+    partition: Option<Arc<str>>,
 }
 
 /// What [`ConcurrentIndexWriter::build`] hands to the publish.
@@ -1111,6 +1117,52 @@ impl<'d> ConcurrentIndexWriter<'d> {
         (wait, lock(&self.slots[wait]))
     }
 
+    /// [`Self::acquire_slot`] for a document of `partition`, in a
+    /// partitioning writer: a free slot that is empty or already holds
+    /// `partition` -- this thread's last one first, then one holding the
+    /// partition, then an empty one -- else any free slot, which the caller
+    /// flushes before using, else (every slot taken) the one waited on in
+    /// rotation.
+    fn acquire_slot_for(&self, partition: Option<&str>) -> (usize, MutexGuard<'_, Dwpt>) {
+        let (writer, last) = LAST_SLOT.get();
+        if writer == self.id {
+            if let Some(Ok(guard)) = self.slots.get(last).map(Mutex::try_lock) {
+                if !guard.has_docs() || guard.partition.as_deref() == partition {
+                    return (last, guard);
+                }
+            }
+        }
+        let mut empty = None;
+        let mut other = None;
+        for (i, slot) in self.slots.iter().enumerate() {
+            let Ok(guard) = slot.try_lock() else {
+                continue;
+            };
+            if !guard.has_docs() {
+                empty.get_or_insert(i);
+            } else if guard.partition.as_deref() == partition {
+                LAST_SLOT.set((self.id, i));
+                return (i, guard);
+            } else {
+                other.get_or_insert(i);
+            }
+        }
+        // Released above, so the slot may have been taken or filled since:
+        // whatever it holds now, the caller flushes it if it must.
+        for i in empty.into_iter().chain(other) {
+            if let Ok(guard) = self.slots[i].try_lock() {
+                LAST_SLOT.set((self.id, i));
+                return (i, guard);
+            }
+        }
+        let wait = self
+            .next_slot
+            .fetch_add(1, Ordering::Relaxed)
+            .checked_rem(self.slots.len())
+            .unwrap_or(0);
+        (wait, lock(&self.slots[wait]))
+    }
+
     /// `DocumentsWriterPerThread.updateDocuments` + `finishDocuments`: the
     /// documents go into the slot first, then -- still under the slot's lock
     /// -- the delete (if any) is appended to the log and the slot applies
@@ -1133,7 +1185,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
     fn add_entries(&self, delete: Option<DeleteNode>, docs: Vec<Entry>) -> Result<SeqNo> {
         let cfg = self.cfg();
         let count = docs.len();
-        self.add_with(delete, count, |dwpt| {
+        self.add_with(delete, None, count, |dwpt| {
             let before = dwpt.num_docs();
             for (k, entry) in docs.iter().enumerate() {
                 cfg.validate_document_vectors(before.saturating_add(k), &entry.vectors)?;
@@ -1176,7 +1228,19 @@ impl<'d> ConcurrentIndexWriter<'d> {
     /// ([`IndexWriter::add_explicit_documents`]), from any thread: each
     /// document is inverted into its slot's postings as it is buffered.
     pub fn add_explicit_documents(&self, docs: Vec<ExplicitDocument>) -> Result<SeqNo> {
-        self.add_explicit(None, docs)
+        self.add_explicit(None, None, docs)
+    }
+
+    /// [`Self::add_explicit_documents`] under `partition`
+    /// ([`IndexWriter::set_segment_partitioning`]): the documents go to a
+    /// buffer holding only that partition, so the segment they flush to
+    /// records it. Without partitioning `partition` is ignored.
+    pub fn add_explicit_documents_in(
+        &self,
+        partition: Option<Arc<str>>,
+        docs: Vec<ExplicitDocument>,
+    ) -> Result<SeqNo> {
+        self.add_explicit(partition, None, docs)
     }
 
     /// `IndexWriter.softUpdateDocuments(term, docs, softDeletes...)` for
@@ -1185,6 +1249,19 @@ impl<'d> ConcurrentIndexWriter<'d> {
     /// them gets `soft_deletes`.
     pub fn soft_update_explicit_documents(
         &self,
+        term: Term,
+        docs: Vec<ExplicitDocument>,
+        soft_deletes: &[DocValuesUpdate],
+    ) -> Result<SeqNo> {
+        self.soft_update_explicit_documents_in(None, term, docs, soft_deletes)
+    }
+
+    /// [`Self::soft_update_explicit_documents`] under `partition`, as
+    /// [`Self::add_explicit_documents_in`]. The earlier documents matching
+    /// `term` get `soft_deletes` whatever partition they are in.
+    pub fn soft_update_explicit_documents_in(
+        &self,
+        partition: Option<Arc<str>>,
         term: Term,
         docs: Vec<ExplicitDocument>,
         soft_deletes: &[DocValuesUpdate],
@@ -1202,11 +1279,12 @@ impl<'d> ConcurrentIndexWriter<'d> {
             .iter()
             .map(|u| crate::index_writer::retarget_update(u, &term))
             .collect();
-        self.add_explicit(Some(DeleteNode::DocValuesUpdates(updates)), docs)
+        self.add_explicit(partition, Some(DeleteNode::DocValuesUpdates(updates)), docs)
     }
 
     fn add_explicit(
         &self,
+        partition: Option<Arc<str>>,
         delete: Option<DeleteNode>,
         docs: Vec<ExplicitDocument>,
     ) -> Result<SeqNo> {
@@ -1219,7 +1297,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
         let live = self
             .live()
             .then(|| cfg.soft_deletes_field().map(|f| f.number));
-        self.add_with(delete, count, move |_| {
+        self.add_with(delete, partition, count, move |_| {
             Ok(Box::new(move |dwpt: &mut Dwpt| {
                 // The postings count what they grew by, as `bytesUsed` counts
                 // `TermsHashPerField`'s pools; the documents' own inverted
@@ -1334,6 +1412,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
     fn add_with(
         &self,
         delete: Option<DeleteNode>,
+        partition: Option<Arc<str>>,
         count: usize,
         check: impl FnOnce(&Dwpt) -> Result<Fill>,
     ) -> Result<SeqNo> {
@@ -1342,11 +1421,28 @@ impl<'d> ConcurrentIndexWriter<'d> {
         // block could never be flushed.
         self.cfg().check_block(count)?;
         let mut flushed = self.pre_update()?;
+        let partitioned = self.cfg().partitions_segments();
+        let mut evicted = None;
         let (seq_no, batch) = {
-            let (i, mut dwpt) = self.acquire_slot();
+            let (i, mut dwpt) = if partitioned {
+                self.acquire_slot_for(partition.as_deref())
+            } else {
+                self.acquire_slot()
+            };
+            // A buffer holds one partition: one holding another is flushed
+            // first (its build runs once the slot is released), and the slot
+            // starts over for this partition.
+            if partitioned && dwpt.has_docs() && dwpt.partition != partition {
+                evicted = self.begin_flush(i, &mut dwpt);
+            }
             let before = dwpt.num_docs();
-            let fill = check(&dwpt)?;
-            self.reserve_docs(count)?;
+            let fill = match check(&dwpt).and_then(|fill| self.reserve_docs(count).map(|()| fill)) {
+                Ok(fill) => fill,
+                Err(e) => {
+                    drop(dwpt);
+                    return Err(self.fail_after_eviction(evicted, e));
+                }
+            };
             if count > 1 {
                 dwpt.has_blocks = true;
             }
@@ -1354,9 +1450,13 @@ impl<'d> ConcurrentIndexWriter<'d> {
                 Ok(added) => added,
                 Err(e) => {
                     self.buffered_docs.fetch_sub(count, Ordering::AcqRel);
-                    return Err(e);
+                    drop(dwpt);
+                    return Err(self.fail_after_eviction(evicted, e));
                 }
             };
+            if partitioned {
+                dwpt.partition = partition;
+            }
             dwpt.ram_bytes = dwpt.ram_bytes.saturating_add(added);
             self.move_stored_to_disk(&mut dwpt);
             if self.live() && dwpt.live.id == 0 {
@@ -1411,6 +1511,10 @@ impl<'d> ConcurrentIndexWriter<'d> {
             };
             (seq_no, batch)
         };
+        if let Some(evicted) = evicted {
+            self.complete_flush(evicted)?;
+            flushed = true;
+        }
         // `DocumentsWriter.postUpdate`. The deletes are applied after this
         // thread's own flush publishes: their ticket comes after its ticket,
         // and Java's ticket queue does not make the applying thread wait for
@@ -1426,6 +1530,24 @@ impl<'d> ConcurrentIndexWriter<'d> {
             self.schedule_merges(MergeTrigger::SegmentFlush)?;
         }
         Ok(seq_no)
+    }
+
+    /// An add refused after its slot's buffer of another partition was taken
+    /// for a flush: that flush still completes (its documents were
+    /// acknowledged, and later tickets wait for its turn), and the add's own
+    /// error is the one returned.
+    fn fail_after_eviction(
+        &self,
+        evicted: Option<FlushBatch>,
+        error: crate::index_writer::Error,
+    ) -> crate::index_writer::Error {
+        if let Some(evicted) = evicted {
+            // A failed build is recorded by `complete_flush` itself (its
+            // ticket retired, its files deleted); the add's error says why
+            // this call failed.
+            let _ = self.complete_flush(evicted);
+        }
+        error
     }
 
     /// Takes slot `i`'s buffer for a segment, with a ticket -- under the slot's
@@ -1478,6 +1600,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
             has_blocks: std::mem::take(&mut dwpt.has_blocks),
             private: std::mem::take(&mut dwpt.private),
             ram_bytes: dwpt.ram_bytes,
+            partition: dwpt.partition.take(),
         };
         dwpt.ram_bytes = 0;
         dwpt.stored_charged = 0;
@@ -1542,6 +1665,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
         stored: Option<StreamedStored>,
         has_blocks: bool,
         mut private: BufferedUpdates,
+        partition: Option<&str>,
         tracking: &TrackingDirectory<'_>,
     ) -> Result<Built> {
         let cfg = self.cfg();
@@ -1602,6 +1726,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
             has_blocks,
             stored: stored.as_ref(),
             limit: None,
+            partition,
         };
         // This segment's own deletes are resolved here, with no lock held --
         // `DocumentsWriterPerThread.flush`'s `applyDeletes` -- so the publish,
@@ -1681,6 +1806,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
             has_blocks,
             private,
             ram_bytes,
+            partition,
         } = batch;
         let doc_count = docs.len();
         // Written as the buffer filled, outside the build's tracking.
@@ -1696,6 +1822,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
                 stored,
                 has_blocks,
                 private,
+                partition.as_deref(),
                 &tracking,
             )
         }));
@@ -2391,6 +2518,9 @@ impl Directory for TrackingDirectory<'_> {
 }
 
 #[cfg(test)]
+mod partition_tests;
+
+#[cfg(test)]
 mod tests {
     // The arithmetic gate is about values read off disk; a test's `i + 1` is
     // not one. See docs/arithmetic-gate.md.
@@ -2645,8 +2775,8 @@ mod tests {
             held.take();
             released.0.send(()).unwrap();
         });
-        assert_eq!(lock(&w.slots[0]).docs.len(), 0);
-        assert_eq!(lock(&w.slots[1]).docs.len(), 2);
+        assert_eq!(lock(&w.slots[0]).num_docs(), 0);
+        assert_eq!(lock(&w.slots[1]).num_docs(), 2);
     }
 
     #[test]
