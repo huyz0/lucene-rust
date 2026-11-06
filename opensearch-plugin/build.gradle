@@ -241,6 +241,9 @@ tasks.register('indexingBench', JavaExec) {
     mainClass = 'org.lucenerust.opensearch.engine.IndexingBench'
     systemProperty 'lucene_rust.library.path', nativeLib.absolutePath
     jvmArgs nativeAccess, '-Xms4g', '-Xmx4g'
+    systemProperty 'refresh.ms', findProperty('refreshMs') ?: '1000'
+    systemProperty 'merge_on_flush.ms', findProperty('mergeOnFlushMs') ?: '10000'
+    systemProperty 'force_merge', findProperty('forceMerge') ?: 'false'
     args findProperty('docs') ?: '200000', findProperty('threads') ?: '4', findProperty('modes') ?: 'encode,prepare,rust,lucene', findProperty('rounds') ?: '2'
 }
 
