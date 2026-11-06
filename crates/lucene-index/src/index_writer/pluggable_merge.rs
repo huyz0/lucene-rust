@@ -185,7 +185,10 @@ impl IndexWriter<'_> {
         &self,
         merged: &crate::merge::MergedSegment,
     ) -> Result<bool> {
-        if self.pluggable_merge_policy.is_none() && !self.cfg.use_compound_file {
+        if self.pluggable_merge_policy.is_none()
+            && self.cfg.merge_compound_file.is_none()
+            && !self.cfg.use_compound_file
+        {
             return Ok(false);
         }
         let name = &merged.info.segment_name;
@@ -202,7 +205,11 @@ impl IndexWriter<'_> {
         let decision = match &self.pluggable_merge_policy {
             Some(policy) => policy.use_compound_file(&infos, &segment, &ctx),
             None => {
-                merge_policy::TieredMergePolicy::default().use_compound_file(&infos, &segment, &ctx)
+                let mut tiered = merge_policy::TieredMergePolicy::default();
+                if let Some(settings) = self.cfg.merge_compound_file {
+                    *tiered.compound_file_settings_mut() = settings;
+                }
+                tiered.use_compound_file(&infos, &segment, &ctx)
             }
         };
         decision.map_err(policy_error)

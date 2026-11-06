@@ -3,6 +3,8 @@
  */
 package org.lucenerust.opensearch.engine;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.apache.lucene.analysis.Analyzer;
 import org.apache.lucene.document.Field;
 import org.apache.lucene.index.IndexCommit;
@@ -78,6 +80,8 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  * it, which is how the engine knows to fail the shard.
  */
 final class RustIndexWriter implements DocumentIndexWriter {
+    private static final Logger LOGGER = LogManager.getLogger(RustIndexWriter.class);
+
     private final Directory directory;
     private final long handle;
     private final FieldRegistry registry;
@@ -116,6 +120,8 @@ final class RustIndexWriter implements DocumentIndexWriter {
     private boolean policyInitialized;
     /** The merge policy settings last sent to the writer; under {@link #lock}. */
     private double[] mergePolicySettings;
+    /** The writer options last sent ({@link #setOptions}); under {@link #lock}. */
+    private double[] writerOptions;
     /**
      * The merge-on-flush wait last set, or -1 while no {@code MergeOnFlushMergePolicy} wraps the
      * merge policy; under {@link #lock}. The wrapper copies the policy's settings when it is set, so
@@ -612,6 +618,26 @@ final class RustIndexWriter implements DocumentIndexWriter {
     }
 
     /**
+     * {@code IndexWriterConfig.setUseCompoundFile}, the merge policy's {@code setNoCFSRatio} and
+     * {@code setMaxCFSSegmentSizeMB}, {@code setCheckPendingFlushUpdate}, and OpenSearch's
+     * {@code ShuffleForcedMergePolicy}; sent again only when one changed.
+     */
+    void setOptions(boolean useCompoundFile, double noCfsRatio, double maxCfsSegmentMb, boolean checkPendingFlush, boolean shuffle)
+        throws IOException {
+        double[] options = { useCompoundFile ? 1 : 0, noCfsRatio, maxCfsSegmentMb, checkPendingFlush ? 1 : 0, shuffle ? 1 : 0 };
+        synchronized (lock) {
+            if (Arrays.equals(options, writerOptions)) {
+                return;
+            }
+            check(
+                NativeBridge.writerSetOptions(handle, useCompoundFile, noCfsRatio, megabytes(maxCfsSegmentMb), checkPendingFlush, shuffle),
+                "setting the writer options"
+            );
+            writerOptions = options;
+        }
+    }
+
+    /**
      * {@code BPReorderingMergePolicy} around the merge policy, as {@code index.lucene_rust.bp_reorder.*}
      * describes it; sent again only when a value changed.
      */
@@ -778,6 +804,9 @@ final class RustIndexWriter implements DocumentIndexWriter {
             long[] view = new long[1];
             byte[][] blob = new byte[1][];
             if (NativeBridge.liveViewOpen(handle, generation, view, blob) != NativeBridge.OK) {
+                if (LOGGER.isDebugEnabled()) {
+                    LOGGER.debug("lucene-rust: no view of the buffers for commit {}: {}", generation, NativeBridge.lastError());
+                }
                 return null;
             }
             return new LiveViewHandle(view[0], blob[0]);
