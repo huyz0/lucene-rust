@@ -123,7 +123,10 @@ final class RustMergedSegmentWarmer {
     }
 
     private void warm(String segment, byte[] segmentId) throws Exception {
-        SegmentInfo info = Codec.getDefault().segmentInfoFormat().read(directory, segment, segmentId, IOContext.DEFAULT);
+        Codec codec = Codec.getDefault();
+        SegmentInfo info = codec.segmentInfoFormat().read(directory, segment, segmentId, IOContext.DEFAULT);
+        // The codec is the commit's, not the .si's: SegmentInfos.readCommit sets it the same way.
+        info.setCodec(codec);
         SegmentCommitInfo commitInfo = new SegmentCommitInfo(info, 0, 0, -1, -1, -1, StringHelper.randomId());
         try (LeafReader reader = SEGMENT_READER.newInstance(commitInfo, indexCreatedVersionMajor, IOContext.DEFAULT)) {
             warmer.warm(reader);
