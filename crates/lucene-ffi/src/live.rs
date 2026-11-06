@@ -66,17 +66,52 @@ struct ViewHandle {
 }
 
 /// What [`ffi_live_view_reader`] made of a view.
-enum Whole {
-    /// Nothing yet.
-    None,
-    /// The reader's handle, then the new ones' by what they hold: the
-    /// buffers' every term (`None`), or a request's terms (the hash of its
-    /// blobs).
-    Open(u64, Vec<(Option<u64>, u64)>),
+#[derive(Default)]
+struct Whole {
+    /// The reader handle the handles were made over.
+    base: Option<u64>,
+    /// The handles made, by what they hold: the buffers' every term
+    /// (`None`), or a request's terms (its blobs, [`request_key`]).
+    handles: Vec<(Option<Vec<u8>>, u64)>,
     /// Why its buffers cannot be written: they will not come back.
-    Failed(String),
-    /// The view is closed.
-    Closed,
+    failed: Option<String>,
+    closed: bool,
+}
+
+impl Whole {
+    /// The handle made for `key`, or why none can be.
+    fn find(&self, handle: u64, key: Option<&[u8]>) -> Result<Option<u64>, FfiStatus> {
+        if self.closed {
+            set_last_error("live view: unknown or already-closed handle");
+            return Err(FfiStatus::InvalidHandle);
+        }
+        if self.base.is_some_and(|b| b != handle) {
+            set_last_error("live view: its reader handle is over another reader");
+            return Err(FfiStatus::InvalidArgument);
+        }
+        if let Some((_, id)) = self.handles.iter().find(|(k, _)| k.as_deref() == key) {
+            return Ok(Some(*id));
+        }
+        if let Some(e) = &self.failed {
+            set_last_error(e.clone());
+            return Err(FfiStatus::InvalidArgument);
+        }
+        Ok(None)
+    }
+}
+
+/// The most handles of requests' terms a view keeps; a request past them
+/// reads the handle of every term.
+const REQUEST_HANDLES: usize = 16;
+
+/// A request's blobs as one key: the query's length, the query, the tree.
+fn request_key(query: &[u8], tree: Option<&[u8]>) -> Vec<u8> {
+    let tree = tree.unwrap_or_default();
+    let mut key = Vec::with_capacity(8 + query.len() + tree.len());
+    key.extend_from_slice(&(query.len() as u64).to_le_bytes());
+    key.extend_from_slice(query);
+    key.extend_from_slice(tree);
+    key
 }
 
 /// A buffer's documents `start..end` as a segment.
@@ -114,14 +149,24 @@ struct Planned {
 /// and a buffer is about as many chunks.
 const ABSORB: i32 = 1;
 
-/// `b`'s chunks: those of `chunks` its documents cover, then the documents
+/// `b`'s chunks: those of `chunks` its documents cover (of the chain with
+/// postings or the one without, whichever covers more), then the documents
 /// past them, absorbing the last chunks while they are small beside them.
 /// A buffer no longer in its slot, or with no chunk written yet, is one.
 fn plan(chunks: &Chunks, b: &ViewBuffer) -> Vec<Planned> {
     let totals = Arc::new(b.field_totals());
-    let chain: Vec<&Arc<Chunk>> = match chunks.get(&(b.id, false)) {
-        Some(c) if b.in_slot => c.iter().take_while(|c| c.end <= b.max_doc).collect(),
-        _ => Vec::new(),
+    let chain_of = |postings: bool| -> Vec<&Arc<Chunk>> {
+        match chunks.get(&(b.id, postings)) {
+            Some(c) if b.in_slot => c.iter().take_while(|c| c.end <= b.max_doc).collect(),
+            _ => Vec::new(),
+        }
+    };
+    let (lean, full) = (chain_of(false), chain_of(true));
+    let reach = |c: &[&Arc<Chunk>]| c.last().map_or(0, |c| c.end);
+    let chain = if reach(&full) > reach(&lean) {
+        full
+    } else {
+        lean
     };
     let mut kept = chain.len();
     let covered = chain.last().map_or(0, |c| c.end);
@@ -313,7 +358,7 @@ pub unsafe extern "C" fn ffi_engine_writer_live_view_open(
                     writer: w,
                     view,
                     plans,
-                    whole: Mutex::new(Whole::None),
+                    whole: Mutex::new(Whole::default()),
                 }),
             );
         // SAFETY: caller contract.
@@ -369,17 +414,16 @@ pub extern "C" fn ffi_live_view_close(view: u64) -> i32 {
         h.writer.writer().close_live_view(&h.view);
         let writer = h.writer.writer();
         prune_chunks(&h.writer, |id| writer.live_published_segment(id).is_none());
-        let whole = std::mem::replace(
-            &mut *h
+        let handles = {
+            let mut whole = h
                 .whole
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-            Whole::Closed,
-        );
-        if let Whole::Open(_, handles) = whole {
-            for (_, h) in handles {
-                crate::jvm_reader::ffi_close_jvm_reader(h);
-            }
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            whole.closed = true;
+            std::mem::take(&mut whole.handles)
+        };
+        for (_, h) in handles {
+            crate::jvm_reader::ffi_close_jvm_reader(h);
         }
         Ok(())
     })
@@ -427,180 +471,209 @@ pub unsafe extern "C" fn ffi_live_view_reader(
         let tree = (tree_len > 0)
             .then(|| unsafe { bytes_from_raw(tree, tree_len) })
             .transpose()?;
-        let request = match query {
+        let mut request = match query {
             Some(q) => overlay_request(q, tree)?,
             None => None,
         };
-        let key = request.as_ref().map(|_| {
-            use std::hash::{Hash, Hasher};
-            let mut hasher = std::collections::hash_map::DefaultHasher::new();
-            query.hash(&mut hasher);
-            tree.hash(&mut hasher);
-            hasher.finish()
-        });
+        let mut key = request
+            .as_ref()
+            .zip(query)
+            .map(|(_, q)| request_key(q, tree));
+        {
+            let whole = v
+                .whole
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut found = whole.find(handle, key.as_deref())?;
+            if found.is_none()
+                && key.is_some()
+                && whole.handles.iter().filter(|(k, _)| k.is_some()).count() >= REQUEST_HANDLES
+            {
+                (request, key) = (None, None);
+                found = whole.find(handle, None)?;
+            }
+            if let Some(id) = found {
+                // SAFETY: caller contract.
+                unsafe { *out_handle = id };
+                return Ok(());
+            }
+        }
+        let id = build_view_reader(handle, &v, request.as_ref())?;
         let mut whole = v
             .whole
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        match &*whole {
-            Whole::None => {}
-            Whole::Open(base, handles) => {
-                if *base != handle {
-                    set_last_error("live view: its reader handle is over another reader");
-                    return Err(FfiStatus::InvalidArgument);
-                }
-                if let Some((_, id)) = handles.iter().find(|(k, _)| *k == key) {
-                    // SAFETY: caller contract.
-                    unsafe { *out_handle = *id };
-                    return Ok(());
-                }
-            }
-            Whole::Failed(e) => {
-                set_last_error(e.clone());
-                return Err(FfiStatus::InvalidArgument);
-            }
-            Whole::Closed => {
-                set_last_error("live view: unknown or already-closed handle");
-                return Err(FfiStatus::InvalidHandle);
-            }
-        }
-        let h = lookup(handle, "ffi_live_view_reader: unknown or closed reader")?;
-        let mut extra = Vec::new();
-        let mut masks = Vec::new();
-        // Each buffer's chunks are written under that buffer's own slot
-        // lock: the buffers with chunks to write are written side by side,
-        // one on this thread and the others on threads of their own.
-        let w: &EngineWriter = &v.writer;
-        let postings = request.is_none();
-        let built = std::thread::scope(|s| {
-            let mut inline_used = false;
-            let jobs: Vec<_> = v
-                .view
-                .buffers
-                .iter()
-                .zip(&v.plans)
-                .map(|(b, plan)| {
-                    let writes = !writes_nothing(w, b, plan, postings);
-                    if !writes || !inline_used {
-                        inline_used |= writes;
-                        return Err((b, plan));
-                    }
-                    std::thread::Builder::new()
-                        .name("live-view".into())
-                        .spawn_scoped(s, move || buffer_segments(w, b, plan, postings))
-                        .map_err(|_| (b, plan))
-                })
-                .collect();
-            jobs.into_iter()
-                .map(|job| match job {
-                    Ok(handle) => handle
-                        .join()
-                        .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
-                    Err((b, plan)) => buffer_segments(w, b, plan, postings),
-                })
-                .collect::<Vec<_>>()
-        });
-        let snapshot = match &request {
-            Some(r) => Some(
-                v.writer
-                    .writer()
-                    .live_view_snapshot(&v.view, r)
-                    .map_err(live_error)?,
-            ),
-            None => None,
-        };
-        if snapshot
-            .as_ref()
-            .is_some_and(|s| s.buffers.len() != v.view.buffers.len())
-        {
-            set_last_error("live view: a snapshot of other than the view's buffers");
-            return Err(FfiStatus::Decode);
-        }
-        for (i, ((b, plan), parts)) in v.view.buffers.iter().zip(&v.plans).zip(built).enumerate() {
-            let parts = match parts {
-                Ok(parts) => parts,
-                Err(e @ lucene_index::index_writer::Error::LiveSearch(_)) => {
-                    let msg = format!("live search: {e}");
-                    // Its buffers will not come back; handles made before
-                    // stay the view's.
-                    if matches!(*whole, Whole::None) {
-                        *whole = Whole::Failed(msg.clone());
-                    }
-                    set_last_error(msg);
-                    return Err(FfiStatus::InvalidArgument);
-                }
-                Err(e) => return Err(live_error(e)),
-            };
-            let parts = match snapshot.as_ref().and_then(|s| s.buffers.get(i)) {
-                Some(buffer) => overlaid(parts, plan, buffer)?,
-                None => parts.into_iter().map(|(r, _)| r).collect(),
-            };
-            for (p, r) in plan.iter().zip(parts) {
-                let len = p.end.saturating_sub(p.start);
-                if r.max_doc < len {
-                    set_last_error(format!(
-                        "live view: a buffer of {} documents became a segment of {}",
-                        len, r.max_doc
-                    ));
-                    return Err(FfiStatus::Decode);
-                }
-                let lo = b.deleted.partition_point(|&d| d < p.start);
-                let hi = b.deleted.partition_point(|&d| d < p.end);
-                let deleted: Vec<i32> = b
-                    .deleted
-                    .get(lo..hi)
-                    .unwrap_or_default()
-                    .iter()
-                    .map(|&d| d.saturating_sub(p.start))
-                    .collect();
-                masks.push(buffer_mask(len, &deleted, r.max_doc));
-                extra.push(r);
-            }
-        }
-        let reader = h.reader.with_readers_appended(extra).map_err(|e| {
-            set_last_error(format!("opening the buffered documents: {e}"));
-            FfiStatus::Decode
-        })?;
-        let mut live_docs: Vec<Option<FixedBitSet>> = if v.view.commit_deletes.is_empty() {
-            h.live_docs.clone()
+        // The view may have closed, or another search made the same handle,
+        // meanwhile.
+        let found = if whole.closed {
+            set_last_error("live view: unknown or already-closed handle");
+            Err(FfiStatus::InvalidHandle)
         } else {
-            let opened = h.reader.open_segments().map_err(|e| {
-                set_last_error(format!("opening segment postings: {e}"));
-                FfiStatus::Decode
-            })?;
-            let segments = opened.as_open_segments();
-            match commit_masks(&v.view.commit_deletes, &h, &segments)? {
-                Some(m) => m.iter().map(|l| l.as_deref().cloned()).collect(),
-                None => h.live_docs.clone(),
-            }
+            Ok(whole
+                .handles
+                .iter()
+                .find(|(k, _)| *k == key)
+                .map(|&(_, id)| id))
         };
-        live_docs.extend(masks);
-        let readers = reader.segment_readers();
-        let deleted = readers
-            .iter()
-            .zip(&live_docs)
-            .map(|(r, l)| {
-                l.as_ref().map_or(0, |l| {
-                    i64::from(r.max_doc).saturating_sub(i64::try_from(l.cardinality()).unwrap_or(0))
-                })
-            })
-            .collect();
-        let id = crate::registry::lock_recovering(crate::registry::jvm_readers()).insert_checked(
-            Arc::new(JvmReaderHandle {
-                reader,
-                live_docs,
-                deleted,
-                commit_live: Mutex::new(None),
-            }),
-        )?;
-        match &mut *whole {
-            Whole::Open(_, handles) => handles.push((key, id)),
-            other => *other = Whole::Open(handle, vec![(key, id)]),
+        if !matches!(found, Ok(None)) {
+            drop(whole);
+            crate::jvm_reader::ffi_close_jvm_reader(id);
+            let found = found?.unwrap_or_default();
+            // SAFETY: caller contract.
+            unsafe { *out_handle = found };
+            return Ok(());
         }
+        whole.base = Some(handle);
+        whole.handles.push((key, id));
         // SAFETY: caller contract.
         unsafe { *out_handle = id };
         Ok(())
     })
+}
+
+/// A new reader handle over the reader at `handle` and `v`'s buffers as
+/// [`ffi_live_view_reader`] describes it: every term without `request`,
+/// else only `request`'s.
+fn build_view_reader(
+    handle: u64,
+    v: &ViewHandle,
+    request: Option<&LiveRequest>,
+) -> Result<u64, FfiStatus> {
+    let h = lookup(handle, "ffi_live_view_reader: unknown or closed reader")?;
+    let mut extra = Vec::new();
+    let mut masks = Vec::new();
+    // Each buffer's chunks are written under that buffer's own slot
+    // lock: the buffers with chunks to write are written side by side,
+    // one on this thread and the others on threads of their own.
+    let w: &EngineWriter = &v.writer;
+    let postings = request.is_none();
+    let built = std::thread::scope(|s| {
+        let mut inline_used = false;
+        let jobs: Vec<_> = v
+            .view
+            .buffers
+            .iter()
+            .zip(&v.plans)
+            .map(|(b, plan)| {
+                let writes = !writes_nothing(w, b, plan, postings);
+                if !writes || !inline_used {
+                    inline_used |= writes;
+                    return Err((b, plan));
+                }
+                std::thread::Builder::new()
+                    .name("live-view".into())
+                    .spawn_scoped(s, move || buffer_segments(w, b, plan, postings))
+                    .map_err(|_| (b, plan))
+            })
+            .collect();
+        jobs.into_iter()
+            .map(|job| match job {
+                Ok(handle) => handle
+                    .join()
+                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
+                Err((b, plan)) => buffer_segments(w, b, plan, postings),
+            })
+            .collect::<Vec<_>>()
+    });
+    let lean = built.iter().any(|parts| {
+        parts
+            .as_ref()
+            .is_ok_and(|p| p.iter().any(|&(_, lean)| lean))
+    });
+    let snapshot = match request.filter(|_| lean) {
+        Some(r) => Some(
+            v.writer
+                .writer()
+                .live_view_snapshot(&v.view, r)
+                .map_err(live_error)?,
+        ),
+        None => None,
+    };
+    if snapshot
+        .as_ref()
+        .is_some_and(|s| s.buffers.len() != v.view.buffers.len())
+    {
+        set_last_error("live view: a snapshot of other than the view's buffers");
+        return Err(FfiStatus::Decode);
+    }
+    for (i, ((b, plan), parts)) in v.view.buffers.iter().zip(&v.plans).zip(built).enumerate() {
+        let parts = match parts {
+            Ok(parts) => parts,
+            Err(e @ lucene_index::index_writer::Error::LiveSearch(_)) => {
+                let msg = format!("live search: {e}");
+                // Its buffers will not come back; handles made before
+                // stay the view's.
+                v.whole
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .failed = Some(msg.clone());
+                set_last_error(msg);
+                return Err(FfiStatus::InvalidArgument);
+            }
+            Err(e) => return Err(live_error(e)),
+        };
+        let parts = match snapshot.as_ref().and_then(|s| s.buffers.get(i)) {
+            Some(buffer) => overlaid(parts, plan, buffer)?,
+            None => parts.into_iter().map(|(r, _)| r).collect(),
+        };
+        for (p, r) in plan.iter().zip(parts) {
+            let len = p.end.saturating_sub(p.start);
+            if r.max_doc < len {
+                set_last_error(format!(
+                    "live view: a buffer of {} documents became a segment of {}",
+                    len, r.max_doc
+                ));
+                return Err(FfiStatus::Decode);
+            }
+            let lo = b.deleted.partition_point(|&d| d < p.start);
+            let hi = b.deleted.partition_point(|&d| d < p.end);
+            let deleted: Vec<i32> = b
+                .deleted
+                .get(lo..hi)
+                .unwrap_or_default()
+                .iter()
+                .map(|&d| d.saturating_sub(p.start))
+                .collect();
+            masks.push(buffer_mask(len, &deleted, r.max_doc));
+            extra.push(r);
+        }
+    }
+    let reader = h.reader.with_readers_appended(extra).map_err(|e| {
+        set_last_error(format!("opening the buffered documents: {e}"));
+        FfiStatus::Decode
+    })?;
+    let mut live_docs: Vec<Option<FixedBitSet>> = if v.view.commit_deletes.is_empty() {
+        h.live_docs.clone()
+    } else {
+        let opened = h.reader.open_segments().map_err(|e| {
+            set_last_error(format!("opening segment postings: {e}"));
+            FfiStatus::Decode
+        })?;
+        let segments = opened.as_open_segments();
+        match commit_masks(&v.view.commit_deletes, &h, &segments)? {
+            Some(m) => m.iter().map(|l| l.as_deref().cloned()).collect(),
+            None => h.live_docs.clone(),
+        }
+    };
+    live_docs.extend(masks);
+    let readers = reader.segment_readers();
+    let deleted = readers
+        .iter()
+        .zip(&live_docs)
+        .map(|(r, l)| {
+            l.as_ref().map_or(0, |l| {
+                i64::from(r.max_doc).saturating_sub(i64::try_from(l.cardinality()).unwrap_or(0))
+            })
+        })
+        .collect();
+    crate::registry::lock_recovering(crate::registry::jvm_readers()).insert_checked(Arc::new(
+        JvmReaderHandle {
+            reader,
+            live_docs,
+            deleted,
+            commit_live: Mutex::new(None),
+        },
+    ))
 }
 
 /// Whether [`buffer_segments`] writes nothing for buffer `b`: it is one

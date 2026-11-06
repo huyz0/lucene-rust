@@ -98,8 +98,8 @@ pub struct LivePostings {
     pub doc: Vec<u8>,
     pub pos: Vec<u8>,
     pub pay: Vec<u8>,
-    /// By field, `(sumTotalTermFreq, docCount)`.
-    pub field_stats: HashMap<String, (i64, i32)>,
+    /// By field, `(sumTotalTermFreq, sumDocFreq, docCount)`.
+    pub field_stats: HashMap<String, (i64, i64, i32)>,
 }
 
 /// The opened postings files of a [`LiveSegment`], which an [`OpenSegment`]
@@ -297,7 +297,7 @@ impl LiveSegment {
     }
 
     /// The terms dictionary and the postings files, with every field's
-    /// `(sumTotalTermFreq, docCount)`: what
+    /// `(sumTotalTermFreq, sumDocFreq, docCount)`: what
     /// [`crate::directory_reader::SegmentReader::with_postings`] puts in a
     /// segment's place.
     pub fn into_postings(self) -> LivePostings {
@@ -308,7 +308,7 @@ impl LiveSegment {
                 .map(|(name, s)| {
                     (
                         name.clone(),
-                        (s[1], i32::try_from(s[3]).unwrap_or(i32::MAX)),
+                        (s[1], s[2], i32::try_from(s[3]).unwrap_or(i32::MAX)),
                     )
                 })
                 .collect(),

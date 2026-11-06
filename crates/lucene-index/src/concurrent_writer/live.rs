@@ -607,12 +607,6 @@ pub struct ViewBuffer {
 }
 
 impl ViewBuffer {
-    /// By field number, how many of the view's documents of the buffer
-    /// have the field, deleted ones included.
-    pub fn doc_counts(&self) -> HashMap<i32, i32> {
-        self.stats.iter().map(|(&f, s)| (f, s.doc_count)).collect()
-    }
-
     /// By field number, the statistics of the view's documents of the
     /// buffer, deleted ones included.
     pub fn field_totals(&self) -> HashMap<i32, FieldTotals> {
@@ -905,7 +899,7 @@ impl ConcurrentIndexWriter<'_> {
     /// needing whole segments (doc values, points, every term) reads a
     /// view's buffers through. `doc_counts` is, by field number, how many
     /// of those documents have the field: the difference of the
-    /// [`ViewBuffer::doc_counts`] of views of `end` and of `start`
+    /// `doc_count`s of the [`ViewBuffer::field_totals`] of views of `end` and of `start`
     /// documents. Stored fields are not written ([`Self::live_document`]
     /// reads them); deletes are the caller's.
     ///

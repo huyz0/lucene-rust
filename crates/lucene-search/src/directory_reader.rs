@@ -135,6 +135,9 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// address and the set's offset in it.
 pub(crate) use crate::sparse_docs_cache::DocsWithFieldCache;
 
+/// By field, `(sumTotalTermFreq, sumDocFreq, docCount)`.
+type FieldStats = HashMap<String, (i64, i64, i32)>;
+
 /// One opened segment: everything [`OpenSegment`] needs, already decoded/
 /// validated, plus the bookkeeping ([`SegmentReader::doc_base`]) real
 /// `SegmentReader.docBase` carries. `fields`/`live_docs` are owned outright
@@ -258,9 +261,9 @@ pub struct SegmentReader {
     /// been validated: later searches open them without reading either again.
     postings_validated: Arc<std::sync::atomic::AtomicBool>,
     /// For postings put in by [`Self::with_postings`]: every requested
-    /// field's `(sumTotalTermFreq, docCount)` over the segment, also for a
-    /// field none of whose requested terms it holds.
-    postings_stats: Option<Arc<HashMap<String, (i64, i32)>>>,
+    /// field's `(sumTotalTermFreq, sumDocFreq, docCount)` over the
+    /// segment, also for a field none of whose requested terms it holds.
+    postings_stats: Option<Arc<FieldStats>>,
     /// The segment's parsed `.dvm` (per-field entries -- `NumericEntry`,
     /// `SortedEntry`, etc., each already carrying whichever of the
     /// dense/sparse shapes `doc_values.rs`'s write side actually produced;
@@ -1710,7 +1713,20 @@ impl SegmentReader {
             .fields
             .field(field)
             .map(|terms| (terms.sum_total_term_freq, terms.doc_count))
-            .or_else(|| self.postings_stats.as_ref()?.get(field).copied()))
+            .or_else(|| {
+                let &(ttf, _, dc) = self.postings_stats.as_ref()?.get(field)?;
+                Some((ttf, dc))
+            }))
+    }
+
+    /// `(sumTotalTermFreq, sumDocFreq, docCount)` of a field these postings
+    /// ([`Self::with_postings`]) hold no term of, though its documents do:
+    /// what the reader-wide statistics count of this segment for it.
+    pub fn termless_field_stats(&self, field: &str) -> Option<(i64, i64, i32)> {
+        if self.fields.field(field).is_some() {
+            return None;
+        }
+        self.postings_stats.as_ref()?.get(field).copied()
     }
 
     /// This segment with `live`'s postings in place of its own: the same

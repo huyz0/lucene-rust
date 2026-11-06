@@ -4014,6 +4014,37 @@ mod tests {
     /// chunks, written once and read again by later views, which together
     /// hold the documents, positions, offsets and statistics of the view,
     /// less its deletes, as a search of the buffers finds them.
+    /// Every hit of the query in `q` over the reader at `r`, with its
+    /// score's bits, by document, and the total.
+    fn scored_hits(r: u64, q: &[u8]) -> (Vec<(i32, u32)>, i64) {
+        let (mut docs, mut scores) = ([0i32; 256], [0f32; 256]);
+        let (mut n, mut total, mut lower) = (0usize, 0i64, false);
+        // SAFETY: live buffers of 256 and out-pointers.
+        let rc = unsafe {
+            crate::jvm_reader::ffi_jvm_reader_search(
+                r,
+                q.as_ptr(),
+                q.len(),
+                256,
+                i64::MAX,
+                docs.as_mut_ptr(),
+                scores.as_mut_ptr(),
+                256,
+                &mut n,
+                &mut total,
+                &mut lower,
+            )
+        };
+        assert_eq!(rc, 0, "{}", crate::error::last_error());
+        let mut hits: Vec<(i32, u32)> = docs[..n]
+            .iter()
+            .copied()
+            .zip(scores[..n].iter().map(|s| s.to_bits()))
+            .collect();
+        hits.sort_unstable();
+        (hits, total)
+    }
+
     #[test]
     fn a_growing_buffer_is_read_as_chunks() {
         use crate::live::{
@@ -4210,6 +4241,11 @@ mod tests {
                         }
                     }
                 }
+                assert_eq!(
+                    scored_hits(lean, &q),
+                    scored_hits(whole, &q),
+                    "round {round}: {term} scores"
+                );
                 let aggs = |r: u64| crate::jvm_aggs::aggregate_tree_blobs(r, &q, &tree).unwrap();
                 assert_eq!(aggs(lean), aggs(whole), "round {round}: {term} aggs");
                 let sort = crate::jvm_reader::tests::sort_blob_terms(
@@ -4229,6 +4265,26 @@ mod tests {
                 );
                 assert_eq!(total, want as i64);
             }
+            // A term of one chunk: the others have its field but not it,
+            // and count in its statistics all the same.
+            let q = crate::jvm_reader::tests::term_blob("_id", &ids[added - 1]);
+            let mut lean = 0u64;
+            // SAFETY: live slices and out-pointer.
+            let rc = unsafe {
+                ffi_live_view_reader(
+                    reader,
+                    view,
+                    q.as_ptr(),
+                    q.len(),
+                    std::ptr::null(),
+                    0,
+                    &mut lean,
+                )
+            };
+            assert_eq!(rc, 0, "{}", crate::error::last_error());
+            let (hits, total) = scored_hits(lean, &q);
+            assert_eq!(total, 1, "round {round}");
+            assert_eq!((hits, total), scored_hits(whole, &q), "round {round}");
             assert_eq!(ffi_live_view_close(view), 0);
         }
         // A few chunks per buffer, not one per view.
