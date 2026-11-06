@@ -74,8 +74,18 @@ impl PackedFields {
     /// needs out of it.
     pub(crate) fn for_each(
         &self,
+        f: impl FnMut(usize, &mut ExplicitFields) -> Result<()>,
+    ) -> Result<()> {
+        self.for_each_upto(self.len, f)
+    }
+
+    /// [`Self::for_each`] over the first `limit` documents only.
+    pub(crate) fn for_each_upto(
+        &self,
+        limit: usize,
         mut f: impl FnMut(usize, &mut ExplicitFields) -> Result<()>,
     ) -> Result<()> {
+        let limit = limit.min(self.len);
         let mut doc = ExplicitFields::default();
         let mut kept = self.kept.iter();
         let mut i = 0usize;
@@ -85,6 +95,9 @@ impl PackedFields {
                 pos: 0,
             };
             while r.pos < block.len() {
+                if i == limit {
+                    return Ok(());
+                }
                 match r.byte()? {
                     PACKED => decode_into(&mut r, &mut doc)?,
                     KEPT => doc.clone_from(kept.next().ok_or_else(|| {
@@ -96,7 +109,7 @@ impl PackedFields {
                 i = i.saturating_add(1);
             }
         }
-        if i != self.len {
+        if i != limit {
             return Err(corrupt());
         }
         Ok(())

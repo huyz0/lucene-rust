@@ -432,8 +432,8 @@ def insert_only_scoring():
 
 def realtime():
     """index.lucene_rust.realtime_search: a plain scored search sees what was indexed before it,
-    with no refresh, and scores it as a refreshed index scores the same documents; a request the
-    buffers cannot answer sees the last refresh."""
+    with no refresh, and scores it as a refreshed index scores the same documents. Aggregations
+    and sorted searches see the same documents too, through the buffers written as segments."""
     rt, ref = "rt_live", "rt_ref"
     for idx in (rt, ref):
         req("DELETE", f"/{idx}")
@@ -453,6 +453,33 @@ def realtime():
         return out["hits"]["total"]["value"], sorted((round(h["_score"], 4), h["_id"], json.dumps(h["_source"], sort_keys=True))
                                                       for h in out["hits"]["hits"])
 
+    aggs = {"tags": {"terms": {"field": "tag", "size": 20}},
+            "n": {"stats": {"field": "n"}},
+            "range": {"range": {"field": "n", "ranges": [{"to": 0}, {"from": 0, "to": 50000}, {"from": 50000}]}},
+            "obj": {"terms": {"field": "obj.a"}, "aggs": {"b": {"avg": {"field": "obj.b"}}}},
+            "price": {"histogram": {"field": "price", "interval": 100}},
+            "when": {"date_histogram": {"field": "d", "calendar_interval": "month"}}}
+    sorts = [[{"n": "desc"}, {"@timestamp": "asc"}], [{"price": "asc"}, {"@timestamp": "asc"}],
+             [{"tag": "asc"}, {"d": "desc"}, {"@timestamp": "asc"}]]
+
+    def same_views(where):
+        """Aggregations and sorted searches on the realtime index equal the refreshed index's."""
+        for q in queries + [{"match_all": {}}]:
+            body = {"query": q, "size": 0, "track_total_hits": True, "aggs": aggs}
+            a = must("POST", f"/{rt}/_search?request_cache=false", body)
+            b = must("POST", f"/{ref}/_search?request_cache=false", body)
+            check(a["hits"]["total"]["value"] == b["hits"]["total"]["value"], f"{where}: aggregation total {q}")
+            check(json.dumps(a["aggregations"], sort_keys=True) == json.dumps(b["aggregations"], sort_keys=True),
+                  f"{where}: aggregations {q}: {json.dumps(a['aggregations'])[:300]} vs {json.dumps(b['aggregations'])[:300]}")
+        for sort in sorts:
+            body = {"query": {"match": {"body": "fox"}}, "size": 50, "sort": sort, "track_total_hits": True}
+            a = must("POST", f"/{rt}/_search?request_cache=false", body)
+            b = must("POST", f"/{ref}/_search?request_cache=false", body)
+            ha = [(h["_id"], h["sort"]) for h in a["hits"]["hits"]]
+            hb = [(h["_id"], h["sort"]) for h in b["hits"]["hits"]]
+            check(a["hits"]["total"]["value"] == b["hits"]["total"]["value"], f"{where}: sorted total {sort}")
+            check(ha == hb, f"{where}: sorted hits {sort}: {ha[:3]} vs {hb[:3]}")
+
     for rnd in range(3):
         lines = []
         for i in range(300):
@@ -466,14 +493,16 @@ def realtime():
             a, b = scored(rt, q), scored(ref, q)
             check(a[0] == b[0], f"realtime round {rnd}: total {q}: {a[0]} vs {b[0]}")
             check(a[1] == b[1], f"realtime round {rnd}: scored hits {q}: {a[1][:2]} vs {b[1][:2]}")
-        # Aggregations read the last refresh only.
-        aggs = must("POST", f"/{rt}/_search", {"size": 0, "track_total_hits": True, "aggs": {"t": {"terms": {"field": "tag"}}}})
-        refreshed = 600 if rnd == 2 else 0
-        check(aggs["hits"]["total"]["value"] == refreshed, f"realtime round {rnd}: aggregations see the last refresh")
+        same_views(f"realtime round {rnd}")
+        if rnd == 0:
+            # A flush publishes the buffers without refreshing the searcher: its view reads
+            # them as their segments.
+            must("POST", f"/{rt}/_flush")
+            same_views("realtime after a flush")
         if rnd == 1:
             must("POST", f"/{rt}/_refresh")
     after = must("GET", "/_plugins/lucene_rust/stats").get("live_queries", 0)
-    check(after - before >= 12, f"realtime: live searches counted ({after - before})")
+    check(after - before >= 12 + 3 * (len(queries) + 1 + len(sorts)), f"realtime: live searches counted ({after - before})")
     # Updates and deletes of refreshed documents, and of buffered ones: the live search sees the
     # new versions only, as a refreshed index does.
     for idx in (rt, ref):
@@ -489,8 +518,9 @@ def realtime():
         check(a[1] == b[1], f"realtime after updates: scored hits {q}: {a[1][:2]} vs {b[1][:2]}")
         ids = [h[1] for h in a[1]]
         check(ids.count("r5") <= 1 and "r6" not in ids, f"realtime after updates: {q} finds r5 once, r6 never")
+    same_views("realtime after updates")
     after = must("GET", "/_plugins/lucene_rust/stats").get("live_queries", 0)
-    check(after - before >= 4, f"realtime: searches after updates stay live ({after - before})")
+    check(after - before >= 4 + len(queries) + 1 + len(sorts), f"realtime: searches after updates stay live ({after - before})")
     for idx in (rt, ref):
         must("DELETE", f"/{idx}")
 
