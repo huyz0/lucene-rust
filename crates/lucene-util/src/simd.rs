@@ -497,7 +497,9 @@ pub fn quantize_residual_scalar(
     for (i, ((o, &q), &c)) in out.iter_mut().zip(query).zip(centroid).enumerate() {
         let r = q - c;
         let x = r.max(lower).min(upper);
-        // `max` first, so a NaN level becomes 0, as the vector path's.
+        // `max` first, so a NaN level becomes 0, as the vector path's
+        // (`clamp` would keep the NaN).
+        #[allow(clippy::manual_clamp)]
         let level = ((x - lower) * step_inv + 0.5).floor().max(0.0).min(255.0);
         let e = r - (lower + level * step);
         errors[i % L] += e * e;
