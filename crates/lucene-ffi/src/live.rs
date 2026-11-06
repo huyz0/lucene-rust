@@ -445,8 +445,8 @@ pub extern "C" fn ffi_live_view_close(view: u64) -> i32 {
 /// rescore's, each an `i32` length then the blob, or empty), the buffers
 /// are written without their postings and the handle holds only the terms
 /// the request reads: it serves searches of that request alone. Without
-/// one (`query_len` 0), or for a request reading what that cannot give,
-/// the handle holds every term.
+/// one (`query_len` 0, when `extra` is not read), or for a request reading
+/// what that cannot give, the handle holds every term.
 ///
 /// # Safety
 /// `out_handle` valid for one write; `query`/`tree`/`extra` readable for
@@ -469,7 +469,7 @@ pub unsafe extern "C" fn ffi_live_view_reader(
         }
         let v = view(view_id)?;
         // SAFETY: caller contract.
-        let extra = (extra_len > 0)
+        let extra = (extra_len > 0 && query_len > 0)
             .then(|| unsafe { bytes_from_raw(extra, extra_len) })
             .transpose()?;
         // SAFETY: caller contract.
@@ -783,7 +783,11 @@ fn overlay_request(
                 FfiStatus::Decode
             })?;
         let blob = rest.get(4..4 + len).unwrap_or_default();
-        let (q, _, _) = decode_request(blob)?;
+        // One that does not decode leaves the search to a handle of every
+        // term, which its own run reports on.
+        let Ok((q, _, _)) = decode_request(blob) else {
+            return Ok(None);
+        };
         clauses.push(Clause::Boolean(Box::new(boolean_of(&q))));
         rest = rest.get(4 + len..).unwrap_or_default();
     }

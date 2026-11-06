@@ -119,13 +119,13 @@ fn collect<'a>(clause: &'a Clause, fields: &mut Fields<'a>, lean: bool) -> Optio
             &q.field,
             LivePattern::Wildcard(lucene_codecs::wildcard::WildcardPattern::new(&q.pattern)),
         ),
-        Clause::Regexp(q) if lean => add_pattern(
-            fields,
-            &q.field,
-            LivePattern::Regexp(
-                lucene_codecs::regexp::RegexpPattern::new(q.pattern.as_bytes()).ok()?,
-            ),
-        ),
+        Clause::Regexp(q) if lean => {
+            // Only one the dictionaries expand with a compiled automaton:
+            // the buffers' terms are picked by the same one.
+            let p = lucene_codecs::regexp::RegexpPattern::new(q.pattern.as_bytes()).ok()?;
+            p.dfa_matches(b"")?;
+            add_pattern(fields, &q.field, LivePattern::Regexp(p));
+        }
         _ => return None,
     }
     Some(())

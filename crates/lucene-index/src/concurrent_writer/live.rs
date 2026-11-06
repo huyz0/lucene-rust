@@ -73,6 +73,9 @@ pub struct LiveFieldRequest {
 pub enum LivePattern {
     /// A wildcard (or prefix) pattern.
     Wildcard(lucene_codecs::wildcard::WildcardPattern),
+    /// A regexp with a compiled automaton
+    /// ([`lucene_codecs::regexp::RegexpPattern::dfa_matches`]); one without
+    /// matches nothing here.
     Regexp(lucene_codecs::regexp::RegexpPattern),
 }
 
@@ -80,7 +83,7 @@ impl LivePattern {
     fn matches(&self, term: &[u8]) -> bool {
         match self {
             LivePattern::Wildcard(p) => p.matches(term),
-            LivePattern::Regexp(p) => p.matches(term),
+            LivePattern::Regexp(p) => p.dfa_matches(term).unwrap_or(false),
         }
     }
 }
@@ -1190,14 +1193,19 @@ fn read_buffer(
         ) else {
             continue;
         };
-        let mut names: Vec<&[u8]> = w.terms.clone();
-        if !w.patterns.is_empty() {
-            names.extend(runs.live_matching(|t| w.patterns.iter().any(|p| p.matches(t))));
-            names.sort_unstable();
-            names.dedup();
-        }
+        let matched: Vec<&[u8]>;
+        let names: &[&[u8]] = if w.patterns.is_empty() {
+            &w.terms
+        } else {
+            let mut all = w.terms.clone();
+            all.extend(runs.live_matching(|t| w.patterns.iter().any(|p| p.matches(t))));
+            all.sort_unstable();
+            all.dedup();
+            matched = all;
+            &matched
+        };
         let mut terms = Vec::new();
-        for t in names {
+        for &t in names {
             if let Some(mut p) = runs.live_term(t, w.positions)? {
                 truncate(&mut p, view.max_doc);
                 if !p.docs.is_empty() {
