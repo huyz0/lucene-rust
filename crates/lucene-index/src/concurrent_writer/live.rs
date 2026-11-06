@@ -729,7 +729,7 @@ impl ConcurrentIndexWriter<'_> {
     /// filled without it cannot be read.
     pub fn enable_live_search(&self) -> Result<()> {
         let slots: Vec<_> = self.slots.iter().map(lock).collect();
-        if slots.iter().any(|d| !d.docs.is_empty()) {
+        if slots.iter().any(|d| d.has_docs()) {
             return Err(Error::LiveSearch(
                 "live search must be enabled before the first document".into(),
             ));
@@ -835,10 +835,10 @@ impl ConcurrentIndexWriter<'_> {
             commit_deletes: Vec::new(),
         };
         for (dwpt, tail) in slots.iter().zip(&slot_tails) {
-            if dwpt.docs.is_empty() {
+            if !dwpt.has_docs() {
                 continue;
             }
-            let max_doc = i32::try_from(dwpt.docs.len()).unwrap_or(i32::MAX);
+            let max_doc = i32::try_from(dwpt.num_docs()).unwrap_or(i32::MAX);
             let source = Source {
                 postings: &dwpt.postings,
                 columns: &dwpt.live,
@@ -933,16 +933,16 @@ impl ConcurrentIndexWriter<'_> {
         }
         let slot = self
             .slot_of(id)
-            .filter(|d| !d.docs.is_empty())
+            .filter(|d| d.has_docs())
             .ok_or_else(|| Error::LiveSearch(format!("buffer {id} is being flushed")))?;
         let (Ok(start), Ok(end)) = (usize::try_from(range.start), usize::try_from(range.end))
         else {
             return Err(Error::LiveSearch("a negative document range".into()));
         };
-        if start >= end || end > slot.docs.len() {
+        if start >= end || end > slot.num_docs() {
             return Err(Error::LiveSearch(format!(
                 "documents {start}..{end} of a buffer of {}",
-                slot.docs.len()
+                slot.num_docs()
             )));
         }
         let limit = crate::index_writer::BufferLimit {
@@ -951,10 +951,14 @@ impl ConcurrentIndexWriter<'_> {
             doc_counts,
             postings,
         };
+        // Documents counted but not held (`Dwpt::stored_docs`) are empty.
+        let docs = padded(&slot.docs, start, end);
+        let custom_freq_terms = padded_or_empty(&slot.custom_freq_terms, start, end);
+        let vectors = padded_or_empty(&slot.vectors, start, end);
         let buffer = crate::index_writer::DocumentBuffer {
-            docs: slot.docs.get(start..end).unwrap_or_default(),
-            custom_freq_terms: slot.custom_freq_terms.get(start..end).unwrap_or_default(),
-            vectors: slot.vectors.get(start..end).unwrap_or_default(),
+            docs: &docs,
+            custom_freq_terms: &custom_freq_terms,
+            vectors: &vectors,
             explicit: crate::index_writer::ExplicitDocs::PackedRange(&slot.explicit, start, end),
             postings: Some(&slot.postings),
             old_to_new: None,
@@ -1204,6 +1208,31 @@ fn read_buffer(
         deleted: view.deleted.clone(),
         fields,
     })
+}
+
+/// `list[start..end]`, with default entries for the documents past the end of `list`.
+fn padded<T: Clone + Default>(list: &[T], start: usize, end: usize) -> std::borrow::Cow<'_, [T]> {
+    match list.get(start..end) {
+        Some(held) => held.into(),
+        None => {
+            let mut out = list.get(start..).unwrap_or_default().to_vec();
+            out.resize_with(end.saturating_sub(start), T::default);
+            out.into()
+        }
+    }
+}
+
+/// Like [`padded`], but an empty list (no document has an entry) stays empty.
+fn padded_or_empty<T: Clone + Default>(
+    list: &[T],
+    start: usize,
+    end: usize,
+) -> std::borrow::Cow<'_, [T]> {
+    if list.is_empty() {
+        list.into()
+    } else {
+        padded(list, start, end)
+    }
 }
 
 /// Drops `p`'s documents from `max_doc` on, with their occurrences.
