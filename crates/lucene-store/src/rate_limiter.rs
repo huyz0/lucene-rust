@@ -26,6 +26,13 @@ pub trait RateLimiter: Send + Sync {
     /// `getMinPauseCheckBytes()`: how many bytes a caller may write between
     /// calls to [`RateLimiter::pause`].
     fn min_pause_check_bytes(&self) -> u64;
+
+    /// Whether the writes this limiter throttles should stop: an output
+    /// throttled by it latches an error at its next write, which its `close`
+    /// returns (Java's `pause` throwing `MergeAbortedException`).
+    fn is_aborted(&self) -> bool {
+        false
+    }
 }
 
 /// `SimpleRateLimiter.MIN_PAUSE_CHECK_MSEC`.
