@@ -41,6 +41,7 @@ The writer side works like this:
 | `lucene_rust.engine.node_enabled` | node | `false` makes the plugin build OpenSearch's own engine for Rust-engine indices on this node, for a mixed cluster during a rollout or rollback. Rust-written segments are ordinary Lucene 10.5 segments, so either engine takes over a shard from the other. |
 | `index.lucene_rust.engine.fault_injection` | index, final | Test only: a document with a `__lucene_rust_panic` field makes the writer panic. |
 | `index.lucene_rust.partition_field` | index, final | Names a field whose value is each document's partition, like a partitioned table's partition key: see [Partitions](#partitions). Empty (the default) partitions nothing. |
+| `index.lucene_rust.partition_pool_docs` | index, final | A partition gets segments of its own once it holds this many documents; until then its documents share the default partition's segments. Default `10000`; `0` gives every partition its own segments from its first document. |
 
 `GET /_plugins/lucene_rust/stats` counts the engines built, as
 `engines.rust`, `engines.java` and `engines.nrt_replica`.
@@ -55,8 +56,18 @@ shards and their memory.
 
 - A document's partition is the field's value on the document (on the root
   of a nested block): a keyword's or ip's value, or a numeric's or date's.
-  Documents without a value, and delete tombstones, share the default
-  partition.
+  Documents without a value, documents with several values, and delete
+  tombstones share the default partition.
+- Small partitions share the default partition too, until they hold
+  `index.lucene_rust.partition_pool_docs` documents (10000 by default);
+  later documents go to segments of their own. Documents already in the
+  default partition stay there. The count is kept per shard and rebuilt
+  from the partition's own segments when the shard opens.
+- A search with a `term` filter on a keyword partition field skips the
+  segments of other partitions, and in a segment of that partition drops
+  the filter, which every document there matches. A `must_not` on it skips
+  that partition's segments. The default partition's segments are searched
+  as usual.
 - The writer keeps one indexing buffer per partition in flight, up to 1024
   of them, all under the shard's indexing buffer: when that fills, the
   largest is flushed, and a refresh flushes them all, one segment per
@@ -67,9 +78,8 @@ shards and their memory.
   `_seq_no`), and merges are chosen per partition, as
   `CriteriaBasedMergePolicy` does. OpenSearch's own engine therefore reads
   and merges these segments alike, and stock Lucene reads them as any other.
-- A document's partition is the smallest value when it has several. Bytes
-  that are not UTF-8 (an ip's) are recorded as `0x` and hex. A value held
-  only as analyzed text is refused.
+- Bytes that are not UTF-8 (an ip's) are recorded as `0x` and hex. A value
+  held only as analyzed text is refused.
 - A document may move to another partition on update: the earlier version is
   soft deleted wherever it is.
 - The default partition is recorded as `-2`, as OpenSearch records it, so a

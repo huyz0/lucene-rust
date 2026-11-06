@@ -891,15 +891,28 @@ const PARTITIONED_SLOTS: usize = 1024;
 /// [`OPEN_LIVE_SEARCH`] keeps what a search of the buffers reads;
 /// [`OPEN_ADAPTIVE_DOC_VALUES`] writes doc values in the `RustAdaptive`
 /// format; [`OPEN_PARTITIONED`] keeps partitions in segments of their own.
+/// `partition_field` (UTF-8, `partition_field_len` bytes, empty for none) is
+/// the field a partitioned writer's partitions are the values of: the
+/// segments of one partition record it, so a search can tell what a term on
+/// it matches there ([`SegmentPartitioning::field`]). The caller must then
+/// add a document under a partition only when that field has exactly that
+/// one value in it. A partition gets segments of its own once it has
+/// `partition_pool_docs` documents; smaller ones share the default partition
+/// ([`SegmentPartitioning::pool_below_docs`]; `0` or less: every partition
+/// from its first document).
 ///
 /// # Safety
-/// `path` valid for `path_len` bytes; `out_handle` valid for one write.
+/// `path` valid for `path_len` bytes, `partition_field` for
+/// `partition_field_len`; `out_handle` valid for one write.
 #[no_mangle]
 pub unsafe extern "C" fn ffi_engine_writer_open(
     path: *const c_char,
     path_len: usize,
     ram_buffer_mb: f64,
     flags: u8,
+    partition_field: *const c_char,
+    partition_field_len: usize,
+    partition_pool_docs: i64,
     max_docs: i32,
     out_handle: *mut u64,
 ) -> i32 {
@@ -909,6 +922,12 @@ pub unsafe extern "C" fn ffi_engine_writer_open(
         }
         // SAFETY: caller contract.
         let path = unsafe { str_from_raw(path, path_len)? };
+        let partition_field = if partition_field_len == 0 {
+            None
+        } else {
+            // SAFETY: caller contract.
+            Some(unsafe { str_from_raw(partition_field, partition_field_len)? }.to_string())
+        };
         // Mapped, not read onto the heap: a merge opens every source file of
         // every merged segment, and Lucene's own `MMapDirectory` -- what
         // OpenSearch writes with -- maps them too. Segment files are written
@@ -968,7 +987,11 @@ pub unsafe extern "C" fn ffi_engine_writer_open(
             // One buffer per thread that can index at once.
             let mut slots = std::thread::available_parallelism().map_or(1, |n| n.get());
             if flags & OPEN_PARTITIONED != 0 {
-                writer.set_segment_partitioning(Some(SegmentPartitioning::opensearch()));
+                writer.set_segment_partitioning(Some(SegmentPartitioning {
+                    pool_below_docs: usize::try_from(partition_pool_docs).unwrap_or(0),
+                    field: partition_field.clone(),
+                    ..SegmentPartitioning::opensearch()
+                }));
                 slots = slots.max(PARTITIONED_SLOTS);
             }
             ConcurrentIndexWriter::with_merge_scheduler(writer, slots, Arc::new(merges.clone()))
@@ -2384,6 +2407,9 @@ mod tests {
                 path.len(),
                 ram_mb,
                 fault_injection,
+                std::ptr::null(),
+                0,
+                0,
                 max_docs,
                 &mut h,
             )
@@ -4203,6 +4229,9 @@ mod tests {
                     1,
                     16.0,
                     0,
+                    std::ptr::null(),
+                    0,
+                    0,
                     i32::MAX,
                     std::ptr::null_mut()
                 ),
@@ -4234,6 +4263,9 @@ mod tests {
                 path.as_ptr() as *const c_char,
                 path.len(),
                 -2.0,
+                0,
+                std::ptr::null(),
+                0,
                 0,
                 i32::MAX,
                 &mut h2,

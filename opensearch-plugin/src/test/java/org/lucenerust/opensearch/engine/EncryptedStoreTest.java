@@ -239,6 +239,7 @@ public final class EncryptedStoreTest {
                     false,
                     false,
                     null,
+                    0,
                     IndexWriter.MAX_DOCS,
                     new StandardAnalyzer(),
                     new BM25Similarity(),

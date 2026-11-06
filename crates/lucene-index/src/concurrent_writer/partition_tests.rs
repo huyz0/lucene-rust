@@ -345,3 +345,62 @@ fn many_interleaved_partitions_each_keep_one_buffer() {
     assert_eq!(per.len(), 40);
     assert!(per.values().all(|&n| n == 1), "{per:?}");
 }
+
+#[test]
+fn small_partitions_share_the_default_until_they_grow() {
+    let tmp = TempDir::new("partitions-pool");
+    let dir = FsDirectory::open(&tmp);
+    let w = open(
+        &dir,
+        8,
+        Some(SegmentPartitioning {
+            pool_below_docs: 10,
+            ..SegmentPartitioning::opensearch()
+        }),
+    );
+    // p0 grows past the threshold; p1 and p2 stay small.
+    for i in 0..30 {
+        w.add_explicit_documents_in(partition(0), vec![doc(0, i)])
+            .unwrap();
+        if i < 4 {
+            w.add_explicit_documents_in(partition(1), vec![doc(1, i)])
+                .unwrap();
+            w.add_explicit_documents_in(partition(2), vec![doc(2, i)])
+                .unwrap();
+        }
+    }
+    w.commit().unwrap();
+    let mut seen: Vec<(Option<String>, Vec<String>)> = segments(&dir)
+        .into_iter()
+        .map(|s| (s.bucket, s.prefixes))
+        .collect();
+    seen.sort();
+    assert_eq!(
+        seen,
+        [
+            (
+                Some("-2".into()),
+                vec!["p0".into(), "p1".into(), "p2".into()]
+            ),
+            (Some("p0".into()), vec!["p0".into()]),
+        ]
+    );
+    // A reopened writer remembers that p0 left the pool.
+    drop(w);
+    let w = open(
+        &dir,
+        8,
+        Some(SegmentPartitioning {
+            pool_below_docs: 10,
+            ..SegmentPartitioning::opensearch()
+        }),
+    );
+    w.add_explicit_documents_in(partition(0), vec![doc(0, 100)])
+        .unwrap();
+    w.commit().unwrap();
+    let p0 = segments(&dir)
+        .into_iter()
+        .filter(|s| s.bucket.as_deref() == Some("p0"))
+        .count();
+    assert_eq!(p0, 2);
+}

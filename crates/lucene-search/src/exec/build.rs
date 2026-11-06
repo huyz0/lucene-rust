@@ -945,6 +945,38 @@ pub(crate) fn build_clauses<'a, 'q>(
                 }
                 continue;
             }
+            // A term on the segment's partition field, in a segment that
+            // holds one partition: its outcome is known for every document.
+            if g == 1 || g == 3 {
+                if let Some(holds) = partition_term(ctx, c) {
+                    let child = match (g, holds) {
+                        // A filter every document passes: dropped while another
+                        // clause is required, else it matches everything.
+                        (1, true)
+                            if !q.must.is_empty()
+                                || q.filter
+                                    .iter()
+                                    .any(|f| partition_term(ctx, f) != Some(true)) =>
+                        {
+                            None
+                        }
+                        (1, true) => {
+                            let all = Clause::MatchAllDocs(crate::query::MatchAllDocsQuery::new(
+                                i32::MAX,
+                            ));
+                            child(ctx, &all, boost, *m, false)?
+                        }
+                        // A filter no document passes, or an exclusion every
+                        // document hits.
+                        (1, false) | (_, true) => return Ok(None),
+                        // An exclusion no document hits.
+                        _ => None,
+                    };
+                    costs[g].push(child.as_ref().map(Child::cost));
+                    built[g].push(child);
+                    continue;
+                }
+            }
             let child = child(ctx, c, boost, *m, *top)?;
             if child.is_none() && *required {
                 return Ok(None);
@@ -1037,6 +1069,19 @@ pub(crate) fn build_clauses<'a, 'q>(
         should_pairs,
         pair(must_not, &q.must_not),
     )))
+}
+
+/// Whether every document of the segment holds term clause `c`, when `c`
+/// is a term on the field the segment's one partition is the value of
+/// ([`crate::directory_reader::SegmentReader::partition`]): every document
+/// then holds exactly that term of the field, so `c` holds for all of them
+/// or none. `None` for any other clause or segment.
+fn partition_term(ctx: &LeafContext<'_>, c: &Clause) -> Option<bool> {
+    let Clause::Term(t) = c else {
+        return None;
+    };
+    let (field, value) = ctx.reader?.partition()?;
+    (t.field == field).then(|| t.term == value.as_bytes())
 }
 
 /// [`child`] with the lead cost an `IndexOrDocValuesQuery` clause is built

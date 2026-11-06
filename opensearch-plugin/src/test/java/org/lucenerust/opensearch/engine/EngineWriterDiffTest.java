@@ -376,6 +376,7 @@ public final class EngineWriterDiffTest {
                 false,
                 adaptive,
                 null,
+                0,
                 IndexWriter.MAX_DOCS,
                 analyzer,
                 similarity,
@@ -796,6 +797,7 @@ public final class EngineWriterDiffTest {
                 false,
                 false,
                 null,
+                0,
                 IndexWriter.MAX_DOCS,
                 new TestAnalyzer(),
                 new BM25Similarity(),
@@ -856,6 +858,7 @@ public final class EngineWriterDiffTest {
                 false,
                 false,
                 "tenant",
+                0,
                 IndexWriter.MAX_DOCS,
                 new TestAnalyzer(),
                 new BM25Similarity(),
@@ -891,7 +894,11 @@ public final class EngineWriterDiffTest {
             ParseContext.Document several = new ParseContext.Document();
             several.add(new SortedSetDocValuesField("tenant", new BytesRef("z")));
             several.add(new SortedSetDocValuesField("tenant", new BytesRef("m")));
-            check("m".equals(w.partition(List.of(several))), "with several values, the smallest");
+            check(w.partition(List.of(several)) == null, "with several values, the default partition");
+            ParseContext.Document twice = new ParseContext.Document();
+            twice.add(new SortedSetDocValuesField("tenant", new BytesRef("m")));
+            twice.add(new SortedSetDocValuesField("tenant", new BytesRef("m")));
+            check("m".equals(w.partition(List.of(twice))), "one value given twice is that value");
             ParseContext.Document ip = new ParseContext.Document();
             ip.add(new SortedSetDocValuesField("tenant", new BytesRef(new byte[] { 10, 0, 0, (byte) 200 })));
             check("0x0a0000c8".equals(w.partition(List.of(ip))), "bytes that are not UTF-8 as hex: " + w.partition(List.of(ip)));
@@ -906,6 +913,11 @@ public final class EngineWriterDiffTest {
                     org.apache.lucene.index.SegmentReader segment = (org.apache.lucene.index.SegmentReader) leaf.reader();
                     String bucket = segment.getSegmentInfo().info.getAttribute("bucket");
                     check(bucket != null, "every segment records its partition");
+                    String field = segment.getSegmentInfo().info.getAttribute("lucene_rust.partition_field");
+                    check(
+                        "-2".equals(bucket) ? field == null : "tenant".equals(field),
+                        "a partition's own segment, and only one, records the partition field: " + bucket + " " + field
+                    );
                     StoredFields stored = segment.storedFields();
                     for (int doc = 0; doc < segment.maxDoc(); doc++) {
                         String id = stored.document(doc).get("id");

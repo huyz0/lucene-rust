@@ -92,6 +92,20 @@ public final class RustEngineSupport {
     );
 
     /**
+     * With {@link #PARTITION_FIELD}: a partition gets segments of its own once it has this many
+     * documents; smaller ones share the default partition's segments, as an unpartitioned index
+     * would, so a refresh writes a few segments rather than one per small partition. {@code 0} gives
+     * every partition its own segments from its first document.
+     */
+    public static final Setting<Integer> PARTITION_POOL_DOCS = Setting.intSetting(
+        "index.lucene_rust.partition_pool_docs",
+        10_000,
+        0,
+        Setting.Property.IndexScope,
+        Setting.Property.Final
+    );
+
+    /**
      * Test-only: a document with a {@code __lucene_rust_panic} field makes the writer panic inside
      * its lock, for the "a panic fails exactly one shard" check. Never set on a real index.
      */
@@ -290,6 +304,7 @@ public final class RustEngineSupport {
             REALTIME_SEARCH.get(config.getIndexSettings().getSettings()),
             ADAPTIVE_DOC_VALUES.get(config.getIndexSettings().getSettings()),
             partitionField(config.getIndexSettings().getSettings()),
+            PARTITION_POOL_DOCS.get(config.getIndexSettings().getSettings()),
             maxDocs,
             config.getAnalyzer(),
             config.getSimilarity(),

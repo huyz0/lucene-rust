@@ -174,6 +174,12 @@ pub struct SegmentReader {
     /// read when the reader was opened, so it stays readable after the file
     /// is deleted.
     diagnostics: Arc<Vec<(String, String)>>,
+    /// The field and value the segment records as its one partition
+    /// ([`lucene_index::index_writer::PARTITION_FIELD_ATTRIBUTE`]), and
+    /// whether every document holds that value as a term of the field,
+    /// checked on first use.
+    partition: Option<Arc<(String, String)>>,
+    partition_held: Arc<std::sync::OnceLock<bool>>,
     /// Each doc-values format instance's `.dvs`, with its codec suffix and
     /// the `.dvm` that locates its fields' skip indexes in it: every field's
     /// doc-values skip index, parsed on first use into
@@ -361,6 +367,21 @@ impl std::fmt::Debug for Attachments {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("Attachments")
     }
+}
+
+/// A segment's partition field and value, from its `.si` attributes.
+fn partition_of(attributes: &[(String, String)]) -> Option<Arc<(String, String)>> {
+    use lucene_index::index_writer::{PARTITION_FIELD_ATTRIBUTE, PARTITION_VALUE_ATTRIBUTE};
+    let get = |key: &str| {
+        attributes
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.clone())
+    };
+    Some(Arc::new((
+        get(PARTITION_FIELD_ATTRIBUTE)?,
+        get(PARTITION_VALUE_ATTRIBUTE)?,
+    )))
 }
 
 impl SegmentReader {
@@ -981,6 +1002,8 @@ impl SegmentReader {
             index_sort: si.index_sort.clone().map(Arc::new),
             has_blocks: si.has_blocks,
             diagnostics: Arc::new(si.diagnostics.clone()),
+            partition: partition_of(&si.attributes),
+            partition_held: Arc::default(),
             dvs,
             skip_indexes: Arc::default(),
             docs_with_field: Arc::default(),
@@ -1561,6 +1584,21 @@ impl SegmentReader {
     /// `SegmentReader.getSegmentInfo().info.getDiagnostics()`.
     pub fn diagnostics(&self) -> &[(String, String)] {
         &self.diagnostics
+    }
+
+    /// The field and value every document of this segment holds as its
+    /// partition, and no other value of that field: a partitioned writer's
+    /// segment of one partition. `None` unless every document, deleted ones
+    /// included, holds the value as a term of the field, which leaves out
+    /// segments with nested documents and fields whose term is not the
+    /// recorded value (a numeric's, a boolean's, an ip's).
+    pub fn partition(&self) -> Option<(&str, &str)> {
+        let (field, value) = self.partition.as_deref()?;
+        let held = *self.partition_held.get_or_init(|| {
+            self.doc_freq(field, value.as_bytes())
+                .is_ok_and(|n| n == self.max_doc)
+        });
+        held.then_some((field.as_str(), value.as_str()))
     }
 
     /// This segment's hard-deletions bitset (`.liv`), or `None` when it has no

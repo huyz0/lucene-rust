@@ -181,7 +181,9 @@ pub(crate) mod pending_postings;
 mod pluggable_merge;
 mod segment_partitions;
 pub(crate) use segment_partitions::set_attribute;
-pub use segment_partitions::SegmentPartitioning;
+pub use segment_partitions::{
+    SegmentPartitioning, PARTITION_FIELD_ATTRIBUTE, PARTITION_VALUE_ATTRIBUTE,
+};
 mod try_modify;
 pub(crate) use explicit::explicit_error;
 pub use explicit::{ExplicitDocument, ExplicitFields, InvertedField, InvertedTerm};

@@ -177,6 +177,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
         boolean liveSearch,
         boolean adaptiveDocValues,
         String partitionField,
+        int partitionPoolDocs,
         int maxDocs,
         Analyzer analyzer,
         Similarity similarity,
@@ -198,7 +199,8 @@ final class RustIndexWriter implements DocumentIndexWriter {
             sparse,
             liveSearch,
             adaptiveDocValues,
-            partitionField != null,
+            partitionField,
+            partitionPoolDocs,
             maxDocs,
             out
         );
@@ -418,19 +420,21 @@ final class RustIndexWriter implements DocumentIndexWriter {
      * The partition of a block of documents: the value of the partition field on its root document,
      * which OpenSearch puts last (nested documents before their parent). A keyword's value is its
      * doc-values bytes (UTF-8, or {@code 0x} and hex for bytes that are not, such as an ip's); a
-     * numeric's or date's is its long; with several values, the smallest. Null -- the shard's default
-     * partition -- without a partition field or a value. A value the field holds only as analyzed
-     * text is refused: a partition is one exact value.
+     * numeric's or date's is its long. Null -- the shard's default partition -- without a partition
+     * field, without a value, or with more than one value: a partition's own segments hold only
+     * documents whose one value is the partition, which lets a search on the field skip them or
+     * drop its filter there. A value the field holds only as analyzed text is refused: a partition
+     * is one exact value.
      */
     String partition(List<? extends Iterable<? extends IndexableField>> docs) {
         if (partitionField == null || docs.isEmpty()) {
             return null;
         }
         BytesRef bytes = null;
-        boolean numeric = false;
-        long number = Long.MAX_VALUE;
+        Long number = null;
         BytesRef indexed = null;
         boolean text = false;
+        boolean several = false;
         for (IndexableField f : docs.get(docs.size() - 1)) {
             if (f.name().equals(partitionField) == false) {
                 continue;
@@ -438,13 +442,13 @@ final class RustIndexWriter implements DocumentIndexWriter {
             switch (f.fieldType().docValuesType()) {
                 case SORTED, SORTED_SET -> {
                     BytesRef v = f.binaryValue();
-                    if (bytes == null || v.compareTo(bytes) < 0) {
-                        bytes = v;
-                    }
+                    several |= bytes != null && bytes.equals(v) == false;
+                    bytes = v;
                 }
                 case NUMERIC, SORTED_NUMERIC -> {
-                    numeric = true;
-                    number = Math.min(number, f.numericValue().longValue());
+                    long v = f.numericValue().longValue();
+                    several |= number != null && number != v;
+                    number = v;
                 }
                 default -> {
                     if (f.fieldType().indexOptions() == org.apache.lucene.index.IndexOptions.NONE) {
@@ -452,17 +456,21 @@ final class RustIndexWriter implements DocumentIndexWriter {
                     }
                     if (f.fieldType().tokenized()) {
                         text = true;
-                    } else if (f.binaryValue() != null && (indexed == null || f.binaryValue().compareTo(indexed) < 0)) {
+                    } else if (f.binaryValue() != null) {
                         // A keyword without doc values: its indexed term.
+                        several |= indexed != null && indexed.equals(f.binaryValue()) == false;
                         indexed = f.binaryValue();
                     }
                 }
             }
         }
+        if (several) {
+            return null;
+        }
         if (bytes != null) {
             return partitionString(bytes);
         }
-        if (numeric) {
+        if (number != null) {
             return Long.toString(number);
         }
         if (indexed != null) {
