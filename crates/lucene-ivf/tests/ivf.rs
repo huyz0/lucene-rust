@@ -4,10 +4,10 @@
 use std::borrow::Cow;
 use std::sync::Arc;
 
-use lucene_ivf::kmeans::KMeansParams;
+use lucene_ivf::kmeans::{Clustering, KMeansParams};
 use lucene_ivf::{
-    merge_field, Error, FieldVectors, IvfParams, IvfReader, IvfWriter, MergeSource, RangeSource,
-    ScoredDoc, SearchParams, Similarity, VectorEncoding,
+    merge_field, Error, FieldVectors, IvfParams, IvfReader, IvfWriter, MergeClustering,
+    MergeSource, RangeSource, ScoredDoc, SearchParams, Similarity, VectorEncoding,
 };
 use lucene_util::quantization::ScalarEncoding;
 use lucene_vector_quant::osq::OsqFactory;
@@ -319,6 +319,7 @@ fn merge_reclusters_live_vectors_under_new_numbers() {
     assert!(format!("{:?}", sources[0]).contains("MergeSource"));
     let p = IvfParams {
         target_cluster_size: 100,
+        merge_clustering: MergeClustering::Recluster,
         ..IvfParams::default()
     };
     merge_field(&mut w, 3, &sources, &f, &p).unwrap();
@@ -554,6 +555,7 @@ fn clustering_params_are_honoured() {
             training_sample: 10,
             spill: None,
             rerank_encoding: VectorEncoding::F32,
+            merge_clustering: MergeClustering::Recluster,
         },
     )
     .unwrap();
@@ -1147,5 +1149,498 @@ fn int8_residuals_with_spilling_and_bad_primary_counts() {
             Err(Error::Corrupted(m)) => assert!(m.contains(message), "{m}"),
             other => panic!("{other:?}"),
         }
+    }
+}
+
+fn segment(sim: Similarity, dim: usize, data: &[f32], params: &IvfParams) -> IvfReader {
+    let docs: Vec<i32> = (0..(data.len() / dim) as i32).collect();
+    let mut w = IvfWriter::new(&ID, "");
+    w.add_field(
+        &FieldVectors {
+            number: 1,
+            similarity: sim,
+            dimension: dim,
+            docs: &docs,
+            vectors: data,
+        },
+        &OsqFactory::bbq(),
+        params,
+    )
+    .unwrap();
+    open(&w.finish())
+}
+
+fn merge_with(
+    sources: &[MergeSource<'_>],
+    params: &IvfParams,
+) -> lucene_ivf::Result<lucene_ivf::IvfFiles> {
+    let mut w = IvfWriter::new(&ID, "");
+    merge_field(&mut w, 1, sources, &OsqFactory::bbq(), params)?;
+    Ok(w.finish())
+}
+
+fn reuse(min_fraction: f32) -> MergeClustering {
+    MergeClustering::ReuseLargest {
+        min_fraction,
+        refine_rounds: 1,
+    }
+}
+
+/// Mean recall@10 at `nprobe` of each reader's field 1, over noisy copies
+/// of every 13th vector of `data`, against the exact search of the first:
+/// the readers hold the same documents and vectors.
+fn merged_recall(readers: [&IvfReader; 2], data: &[f32], dim: usize, nprobe: usize) -> (f64, f64) {
+    let mut rng = Rng(99);
+    let mut total = [0.0; 2];
+    let queries: Vec<Vec<f32>> = data
+        .chunks_exact(dim)
+        .step_by(13)
+        .map(|v| v.iter().map(|x| x + rng.next() * 0.5).collect())
+        .collect();
+    for q in &queries {
+        let truth = readers[0].exact_search(1, q, 10, None).unwrap();
+        for (t, r) in total.iter_mut().zip(readers) {
+            let hits = r
+                .search(1, q, &SearchParams::new(10, nprobe, 50), None)
+                .unwrap();
+            *t += recall(&hits, &truth) / queries.len() as f64;
+        }
+    }
+    (total[0], total[1])
+}
+
+fn sizes(r: &IvfReader) -> Vec<usize> {
+    let f = r.field(1).unwrap();
+    (0..f.clusters()).map(|c| f.cluster_size(c)).collect()
+}
+
+#[test]
+fn merge_reuses_the_largest_source_only_when_it_dominates() {
+    let dim = 8;
+    let sim = Similarity::Euclidean;
+    let data = dataset(2000, dim, 20, sim, 61);
+    let p = IvfParams {
+        target_cluster_size: 50,
+        ..IvfParams::default()
+    };
+    let a = segment(sim, dim, &data[..1800 * dim], &p);
+    let b = segment(sim, dim, &data[1800 * dim..], &p);
+    let same = |d: i32| Some(d);
+    let after = |d: i32| Some(1800 + d);
+    let none_field = open(&IvfWriter::new(&ID, "").finish());
+    let sources = [
+        MergeSource {
+            reader: &a,
+            doc_map: &same,
+        },
+        MergeSource {
+            reader: &b,
+            doc_map: &after,
+        },
+        // A source without the field.
+        MergeSource {
+            reader: &none_field,
+            doc_map: &same,
+        },
+    ];
+    let with = |m: MergeClustering| {
+        merge_with(
+            &sources,
+            &IvfParams {
+                merge_clustering: m,
+                ..p
+            },
+        )
+        .unwrap()
+    };
+    let fresh = with(MergeClustering::Recluster);
+    assert_eq!(p.merge_clustering, reuse(0.5));
+    let reused = with(MergeClustering::default());
+    assert_ne!(reused, fresh);
+    // 90% of the vectors: reused at 0.9, not at 0.95; never with no vectors.
+    assert_eq!(with(reuse(0.9)), reused);
+    assert_eq!(with(reuse(0.95)), fresh);
+    assert_eq!(with(reuse(f32::NAN)), fresh);
+    let none = |_: i32| None;
+    let empty = |m: MergeClustering| {
+        merge_with(
+            &[MergeSource {
+                reader: &a,
+                doc_map: &none,
+            }],
+            &IvfParams {
+                merge_clustering: m,
+                ..p
+            },
+        )
+        .unwrap()
+    };
+    assert_eq!(empty(reuse(0.0)), empty(MergeClustering::Recluster));
+    // A source of one cluster has nothing to reuse.
+    let flat = segment(
+        sim,
+        dim,
+        &data[..1800 * dim],
+        &IvfParams {
+            target_cluster_size: 5000,
+            ..p
+        },
+    );
+    let sources = [
+        MergeSource {
+            reader: &flat,
+            doc_map: &same,
+        },
+        MergeSource {
+            reader: &b,
+            doc_map: &after,
+        },
+    ];
+    let merged = |m: MergeClustering| {
+        merge_with(
+            &sources,
+            &IvfParams {
+                merge_clustering: m,
+                ..p
+            },
+        )
+        .unwrap()
+    };
+    assert_eq!(merged(reuse(0.5)), merged(MergeClustering::Recluster));
+}
+
+/// Recall@10 at 6 probes of a merge reusing `a`'s clusters and of one
+/// re-clustering, after deleting every seventh document of `a`, over a
+/// dataset of 4000 vectors. Checks the merged vectors, the cluster sizes and
+/// that the reusing merge is deterministic.
+fn reuse_and_recluster_recall(sim: Similarity, seed: u64) -> (f64, f64) {
+    let (dim, n, split) = (16, 4000, 3600);
+    let data = dataset(n, dim, 4, sim, seed);
+    let p = IvfParams {
+        target_cluster_size: 50,
+        ..IvfParams::default()
+    };
+    let a = segment(sim, dim, &data[..split * dim], &p);
+    let b = segment(sim, dim, &data[split * dim..], &p);
+    let map_a = |d: i32| (d % 7 != 0).then(|| d - d / 7 - 1);
+    let live_a = split as i32 - (split as i32 + 6) / 7;
+    let map_b = move |d: i32| Some(live_a + d);
+    let sources = [
+        MergeSource {
+            reader: &a,
+            doc_map: &map_a,
+        },
+        MergeSource {
+            reader: &b,
+            doc_map: &map_b,
+        },
+    ];
+    let live: Vec<f32> = data
+        .chunks_exact(dim)
+        .enumerate()
+        .filter(|(i, _)| *i >= split || i % 7 != 0)
+        .flat_map(|(_, v)| v.iter().copied())
+        .collect();
+    let fresh = open(
+        &merge_with(
+            &sources,
+            &IvfParams {
+                merge_clustering: MergeClustering::Recluster,
+                ..p
+            },
+        )
+        .unwrap(),
+    );
+    let files = merge_with(&sources, &p).unwrap();
+    assert_eq!(files, merge_with(&sources, &p).unwrap(), "{sim:?}");
+    let reused = open(&files);
+    assert_eq!(reused.field(1).unwrap().count(), live.len() / dim);
+    assert!(sizes(&reused).iter().all(|&s| s <= 100), "{sim:?}");
+    for (doc, source, old) in [(0, &a, 1), (live_a - 1, &a, 3599), (live_a + 5, &b, 5)] {
+        assert_eq!(
+            reused.vector(1, doc).unwrap(),
+            source.vector(1, old).unwrap(),
+            "{sim:?}"
+        );
+    }
+    merged_recall([&reused, &fresh], &live, dim, 6)
+}
+
+#[test]
+fn reusing_merge_recalls_like_reclustering() {
+    // Averaged over seeds: on this small dataset two clusterings differ by
+    // a few points of recall either way, by up to 0.1 for
+    // MaximumInnerProduct, whose probes favour large centroids.
+    for sim in SIMS {
+        let (mut got, mut want) = (0.0, 0.0);
+        for seed in 71..77 {
+            let (g, w) = reuse_and_recluster_recall(sim, seed);
+            got += g / 6.0;
+            want += w / 6.0;
+        }
+        assert!(got >= want - 0.02, "{sim:?}: {got} against {want}");
+    }
+}
+
+#[test]
+fn reusing_merge_splits_and_dissolves() {
+    let dim = 8;
+    let sim = Similarity::Euclidean;
+    let data = dataset(2000, dim, 10, sim, 81);
+    let p = IvfParams {
+        target_cluster_size: 50,
+        ..IvfParams::default()
+    };
+    let a = segment(sim, dim, &data, &p);
+    // 900 new vectors around one of `a`'s.
+    let mut rng = Rng(5);
+    let crowd: Vec<f32> = (0..900)
+        .flat_map(|_| data[..dim].to_vec())
+        .map(|x| x + rng.next() * 0.01)
+        .collect();
+    let b = segment(sim, dim, &crowd, &p);
+    let same = |d: i32| Some(d);
+    let after = |d: i32| Some(2000 + d);
+    let r = open(
+        &merge_with(
+            &[
+                MergeSource {
+                    reader: &a,
+                    doc_map: &same,
+                },
+                MergeSource {
+                    reader: &b,
+                    doc_map: &after,
+                },
+            ],
+            &p,
+        )
+        .unwrap(),
+    );
+    let s = sizes(&r);
+    assert_eq!(s.iter().sum::<usize>(), 2900);
+    assert!(s.iter().all(|&x| x <= 100), "{s:?}");
+    let hits = r
+        .search(1, &crowd[..dim], &SearchParams::new(1, 2, 10), None)
+        .unwrap();
+    assert_eq!(hits[0].doc, 2000);
+    // Deleting all but three of one centre's vectors leaves no cluster
+    // under a quarter of the target.
+    let thin = |d: i32| (d % 10 != 0 || d < 30).then_some(d);
+    let r = open(
+        &merge_with(
+            &[MergeSource {
+                reader: &a,
+                doc_map: &thin,
+            }],
+            &p,
+        )
+        .unwrap(),
+    );
+    let s = sizes(&r);
+    assert_eq!(s.iter().sum::<usize>(), 1803);
+    assert!(s.iter().all(|&x| (12..=100).contains(&x)), "{s:?}");
+}
+
+#[test]
+fn reusing_merge_reads_spilled_sources() {
+    let dim = 8;
+    let sim = Similarity::Euclidean;
+    let data = dataset(2000, dim, 15, sim, 91);
+    for encoding in [VectorEncoding::F32, VectorEncoding::Int8] {
+        let p = IvfParams {
+            target_cluster_size: 50,
+            spill: Some(1.0),
+            rerank_encoding: encoding,
+            ..IvfParams::default()
+        };
+        let a = segment(sim, dim, &data[..1700 * dim], &p);
+        let b = segment(sim, dim, &data[1700 * dim..], &p);
+        let same = |d: i32| Some(d);
+        let after = |d: i32| Some(1700 + d);
+        let sources = [
+            MergeSource {
+                reader: &a,
+                doc_map: &same,
+            },
+            MergeSource {
+                reader: &b,
+                doc_map: &after,
+            },
+        ];
+        let reused = open(&merge_with(&sources, &p).unwrap());
+        let fresh = open(
+            &merge_with(
+                &sources,
+                &IvfParams {
+                    merge_clustering: MergeClustering::Recluster,
+                    ..p
+                },
+            )
+            .unwrap(),
+        );
+        let f = reused.field(1).unwrap();
+        assert!(f.entries() > f.count() && f.count() == 2000);
+        // int8 residuals are re-encoded against the merged centroid.
+        let (got, want) = (
+            reused.vector(1, 1900).unwrap().unwrap(),
+            b.vector(1, 200).unwrap().unwrap(),
+        );
+        assert!(got.iter().zip(&want).all(|(x, y)| (x - y).abs() < 0.02));
+        let (got, want) = merged_recall([&reused, &fresh], &data, dim, 4);
+        assert!(got >= want - 0.02, "{encoding:?}: {got} against {want}");
+    }
+}
+
+#[test]
+fn reusing_merge_rejects_postings_that_lose_or_repeat_slots() {
+    let dim = 4;
+    let n = 400;
+    let sim = Similarity::Euclidean;
+    // Every vector spills but the 40 copies of one point, which sit on
+    // their centroid.
+    let mut data = dataset(n - 40, dim, 6, sim, 17);
+    data.extend(std::iter::repeat_n(100.0, 40 * dim));
+    let docs: Vec<i32> = (0..n as i32).collect();
+    let mut w = IvfWriter::new(&ID, "");
+    w.add_field(
+        &FieldVectors {
+            number: 1,
+            similarity: sim,
+            dimension: dim,
+            docs: &docs,
+            vectors: &data,
+        },
+        &OsqFactory::bbq(),
+        &IvfParams {
+            target_cluster_size: 40,
+            spill: Some(1.0),
+            ..IvfParams::default()
+        },
+    )
+    .unwrap();
+    let files = w.finish();
+    let r = open(&files);
+    let f = r.field(1).unwrap();
+    let slot_of: std::collections::HashMap<i32, u32> =
+        r.doc_table(1).unwrap().into_iter().collect();
+    // Each cluster's slots, and where its block starts in `.ivp`.
+    let mut at = lucene_store::codec_util::index_header_length(lucene_ivf::POSTINGS_CODEC, "");
+    let mut blocks = Vec::new();
+    let mut seen = std::collections::HashMap::<u32, usize>::new();
+    for c in 0..f.clusters() {
+        let slots: Vec<u32> = r
+            .cluster(1, c)
+            .unwrap()
+            .0
+            .iter()
+            .map(|d| slot_of[d])
+            .collect();
+        for &s in &slots {
+            *seen.entry(s).or_default() += 1;
+        }
+        blocks.push((at, slots));
+        at += f.cluster_size(c) * 4 + f.quantizer().block_len(f.cluster_size(c));
+    }
+    let registry = QuantizerRegistry::with_builtins();
+    let merge_postings = |postings: Vec<u8>| {
+        let r = IvfReader::open(
+            &files.meta,
+            Arc::new(postings),
+            Arc::new(files.vectors.clone()),
+            &ID,
+            "",
+            &registry,
+        )
+        .unwrap();
+        let same = |d: i32| Some(d);
+        merge_with(
+            &[MergeSource {
+                reader: &r,
+                doc_map: &same,
+            }],
+            &IvfParams {
+                target_cluster_size: 40,
+                ..IvfParams::default()
+            },
+        )
+    };
+    assert!(merge_postings(files.postings.clone()).is_ok());
+    let edit = |pos: usize, slot: u32| {
+        let mut p = files.postings.clone();
+        p[pos..pos + 4].copy_from_slice(&slot.to_le_bytes());
+        merge_postings(p)
+    };
+    let spilled = *seen.iter().find(|(_, &k)| k == 2).unwrap().0;
+    let lonely: Vec<(usize, u32)> = blocks
+        .iter()
+        .flat_map(|(at, slots)| slots.iter().enumerate().map(move |(i, &s)| (at + 4 * i, s)))
+        .filter(|(_, s)| seen[s] == 1)
+        .collect();
+    assert!(lonely.len() >= 2);
+    for result in [
+        edit(blocks[0].0, u32::MAX),
+        // A third entry for a spilled slot.
+        edit(lonely[0].0, spilled),
+        // A slot's only entry naming another slot.
+        edit(lonely[0].0, lonely[1].1),
+    ] {
+        assert!(matches!(result, Err(Error::Corrupted(_))), "{result:?}");
+    }
+}
+
+#[test]
+fn writer_takes_a_given_clustering() {
+    let dim = 2;
+    let data = [0.0, 0.0, 1.0, 0.0, 10.0, 0.0, 11.0, 0.0];
+    let docs = [0, 1, 2, 3];
+    let field = FieldVectors {
+        number: 1,
+        similarity: Similarity::Euclidean,
+        dimension: dim,
+        docs: &docs,
+        vectors: &data,
+    };
+    let f = OsqFactory::bbq();
+    let p = IvfParams::default();
+    let mut w = IvfWriter::new(&ID, "");
+    // The empty middle cluster is dropped.
+    let given = Clustering {
+        centroids: vec![0.5, 0.0, 99.0, 0.0, 10.5, 0.0],
+        assignments: vec![0, 0, 2, 2],
+    };
+    w.add_field_with_clustering(&field, &given, &f, &p).unwrap();
+    let r = open(&w.finish());
+    let field_r = r.field(1).unwrap();
+    assert_eq!(field_r.clusters(), 2);
+    assert_eq!(field_r.centroid(1), &[10.5, 0.0]);
+    assert_eq!(r.cluster(1, 1).unwrap().0, vec![2, 3]);
+    let bad = [
+        Clustering {
+            centroids: vec![0.5],
+            ..given.clone()
+        },
+        Clustering {
+            centroids: vec![f32::NAN, 0.0],
+            assignments: vec![0; 4],
+        },
+        Clustering {
+            assignments: vec![0; 3],
+            ..given.clone()
+        },
+        Clustering {
+            assignments: vec![0, 0, 3, 2],
+            ..given.clone()
+        },
+    ];
+    for c in bad {
+        let mut w = IvfWriter::new(&ID, "");
+        assert!(
+            matches!(
+                w.add_field_with_clustering(&field, &c, &f, &p),
+                Err(Error::IllegalArgument(_))
+            ),
+            "{c:?}"
+        );
     }
 }
