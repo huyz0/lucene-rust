@@ -34,6 +34,13 @@ pub trait RangeSource: Send + Sync {
     ///
     /// A range past the end, or the source's own read failure.
     fn read(&self, offset: usize, len: usize) -> Result<Cow<'_, [u8]>>;
+
+    /// A hint that `len` bytes from `offset` will be read soon. In-memory
+    /// sources start loading them into the CPU cache; by default nothing
+    /// happens.
+    fn prefetch(&self, offset: usize, len: usize) {
+        let _ = (offset, len);
+    }
 }
 
 impl<T> RangeSource for T
@@ -55,6 +62,13 @@ where
                     <[u8]>::len(self)
                 ))
             })
+    }
+
+    fn prefetch(&self, offset: usize, len: usize) {
+        let stop = offset.saturating_add(len).min(<[u8]>::len(self));
+        for at in (offset..stop).step_by(64) {
+            simd::prefetch(self, at);
+        }
     }
 }
 
@@ -105,6 +119,10 @@ pub struct IvfField {
     /// `cluster count + 1` prefix sums of the clusters' entry counts:
     /// cluster `c`'s entries are `starts[c]..starts[c + 1]`.
     starts: Vec<usize>,
+    /// `cluster count + 1` prefix sums of the clusters' posting block
+    /// lengths in bytes (slots, then the quantizer's block of codes), from
+    /// the field's postings offset.
+    block_starts: Vec<usize>,
     /// Each slot's document, from the doc table, kept in memory: posting
     /// entries name slots, and a filter or a hit needs the document.
     slot_docs: Vec<i32>,
@@ -171,14 +189,6 @@ impl IvfField {
         size
     }
 
-    /// Bytes of one posting: a slot and a code.
-    fn posting_len(&self) -> usize {
-        // ARITH: bounded when the field was opened (`posting_bytes`).
-        #[allow(clippy::arithmetic_side_effects)]
-        let len = 4 + self.quantizer.code_len();
-        len
-    }
-
     /// Bytes of one full-precision vector.
     fn vector_len(&self) -> usize {
         // ARITH: bounded when the field was opened.
@@ -192,10 +202,9 @@ impl IvfField {
     // when it was opened, and every block lies inside it.
     #[allow(clippy::arithmetic_side_effects)]
     fn block_range(&self, c: usize) -> (usize, usize) {
-        let p = self.posting_len();
         (
-            self.postings_offset + self.starts[c] * p,
-            self.cluster_size(c) * p,
+            self.postings_offset + self.block_starts[c],
+            self.block_starts[c + 1] - self.block_starts[c],
         )
     }
 
@@ -356,8 +365,21 @@ fn read_field(
             "field {number}: {total} entries for {count} vectors"
         ));
     }
-    let posting = add(4, quantizer.code_len(), "posting length")?;
-    let postings_bytes = mul(total, posting, "postings")?;
+    let mut block_starts = Vec::with_capacity(starts.len());
+    let mut postings_bytes = 0usize;
+    block_starts.push(0);
+    for w in starts.windows(2) {
+        // ARITH: `starts` ascend (checked sums of non-zero sizes).
+        #[allow(clippy::arithmetic_side_effects)]
+        let size = w[1] - w[0];
+        let block = add(
+            mul(size, 4, "slots")?,
+            quantizer.block_len(size),
+            "postings",
+        )?;
+        postings_bytes = add(postings_bytes, block, "postings")?;
+        block_starts.push(postings_bytes);
+    }
     if add(postings_offset, postings_bytes, "postings")? > postings_end {
         return corrupt(format!("field {number}: postings past the end of .ivp"));
     }
@@ -393,6 +415,7 @@ fn read_field(
         },
         centroids,
         starts,
+        block_starts,
         slot_docs: Vec::new(),
         postings_offset,
         vectors_offset,
@@ -593,7 +616,8 @@ impl IvfReader {
     }
 
     /// Cluster `c`'s entries, as the documents of their vectors (in slot
-    /// order), and their codes, as stored.
+    /// order), and their codes as stored: one block in the quantizer's
+    /// layout (`Quantizer::write_block`), `Quantizer::block_len` bytes.
     ///
     /// # Errors
     ///
@@ -791,11 +815,24 @@ impl IvfReader {
         }
         let mut exact = TopN::new(params.k.min(f.count), false);
         let mut v = Vec::with_capacity(f.dimension);
-        for c in candidates {
+        // Candidates' vectors are scattered over the file: ask for a few
+        // ahead so their cache misses overlap.
+        const AHEAD: usize = 8;
+        let ahead = |c: Option<&Candidate>| {
+            if let Some(c) = c {
+                self.vectors
+                    .prefetch(f.vector_offset(c.slot as usize), f.vector_len());
+            }
+        };
+        for c in candidates.iter().take(AHEAD) {
+            ahead(Some(c));
+        }
+        for (i, c) in candidates.iter().enumerate() {
+            ahead(candidates.get(i + AHEAD));
             self.read_vector(f, c.slot as usize, &mut v)?;
             exact.offer(Candidate {
                 score: f.similarity.score(&query, &v),
-                ..c
+                ..*c
             });
         }
         Ok(exact

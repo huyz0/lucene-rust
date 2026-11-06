@@ -210,7 +210,7 @@ fn small_fields_are_one_cluster_and_search_exactly() {
     assert_eq!(f.number(), 2);
     let (cdocs, codes) = r.cluster(2, 0).unwrap();
     assert_eq!(cdocs, docs);
-    assert_eq!(codes.len(), 50 * f.quantizer().code_len());
+    assert_eq!(codes.len(), f.quantizer().block_len(50));
     let q = &data[3 * dim..4 * dim];
     let hits = r.search(2, q, &SearchParams::new(5, 1, 50), None).unwrap();
     assert_eq!(hits, r.exact_search(2, q, 5, None).unwrap());
@@ -595,7 +595,7 @@ fn spilled_entries_are_searched_once() {
     assert_eq!(hits, exact);
     let (cdocs, codes) = r.cluster(1, 0).unwrap();
     assert_eq!(cdocs.len(), f.cluster_size(0));
-    assert_eq!(codes.len(), cdocs.len() * f.quantizer().code_len());
+    assert_eq!(codes.len(), f.quantizer().block_len(cdocs.len()));
 }
 
 #[test]

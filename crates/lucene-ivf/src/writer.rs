@@ -314,12 +314,14 @@ impl IvfWriter {
 
         let postings_offset = self.postings.len();
         let mut at = 0usize;
+        let mut block = Vec::new();
         for e in &entries {
             for slot in e {
                 self.postings.write_bytes(&slot.to_le_bytes());
             }
-            self.postings
-                .write_bytes(&codes[at * code_len..(at + e.len()) * code_len]);
+            block.clear();
+            quantizer.write_block(&codes[at * code_len..(at + e.len()) * code_len], &mut block);
+            self.postings.write_bytes(&block);
             at += e.len();
         }
 

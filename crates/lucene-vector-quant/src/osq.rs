@@ -66,20 +66,31 @@ fn quantize_query(
     out: &mut [u8],
 ) -> QuantizationResult {
     let dims = query.len() as f64;
-    let (mut sum, mut sum_sq) = (0f64, 0f64);
-    let (mut min, mut max) = (f32::MAX, -f32::MAX);
-    let (mut norm2, mut centroid_dot) = (0f32, 0f32);
-    for (&q, &c) in query.iter().zip(centroid) {
-        let r = q - c;
-        centroid_dot += q * c;
-        norm2 += r * r;
-        min = min.min(r);
-        max = max.max(r);
-        sum += f64::from(r);
-        sum_sq += f64::from(r) * f64::from(r);
+    // Eight independent lanes, so the loop vectorizes.
+    let (mut sum, mut sq) = ([0f32; 8], [0f32; 8]);
+    let (mut lo, mut hi) = ([f32::MAX; 8], [-f32::MAX; 8]);
+    let mut lane = |j: usize, r: f32| {
+        sum[j] += r;
+        sq[j] += r * r;
+        lo[j] = lo[j].min(r);
+        hi[j] = hi[j].max(r);
+    };
+    let (qs, qt) = query.split_at(query.len() - query.len() % 8);
+    let (cs, ct) = centroid.split_at(qs.len());
+    for (q8, c8) in qs.chunks_exact(8).zip(cs.chunks_exact(8)) {
+        for j in 0..8 {
+            lane(j, q8[j] - c8[j]);
+        }
     }
-    let mean = sum / dims;
-    let std = (sum_sq / dims - mean * mean).max(0.0).sqrt();
+    for (j, (&q, &c)) in qt.iter().zip(ct).enumerate() {
+        lane(j, q - c);
+    }
+    let centroid_dot = simd::dot_f32(query, centroid);
+    let norm2: f32 = sq.iter().sum();
+    let min = lo.iter().fold(f32::MAX, |m, &x| m.min(x));
+    let max = hi.iter().fold(-f32::MAX, |m, &x| m.max(x));
+    let mean = f64::from(sum.iter().sum::<f32>()) / dims;
+    let std = (f64::from(norm2) / dims - mean * mean).max(0.0).sqrt();
     let grid = MINIMUM_MSE_GRID[usize::from(bits) - 1];
     let clamp = |x: f64| x.clamp(f64::from(min), f64::from(max)) as f32;
     let a = clamp(f64::from(grid[0]) * std + mean);
@@ -229,37 +240,25 @@ fn discrete_dimensions(encoding: ScalarEncoding, dimension: usize) -> usize {
     }
 }
 
-/// The 4-bit query's four bit planes (`transpose_half_byte`, each
-/// `d.len()` bytes) against a 1-bit document stripe, both whole 64-bit
-/// words: `sum(q[i] * d[i])`.
-#[inline]
-fn bit_planes_dot(q: &[u8], d: &[u8]) -> u32 {
-    let n = d.len();
-    let (q0, rest) = q.split_at(n);
-    let (q1, rest) = rest.split_at(n);
-    let (q2, q3) = rest.split_at(n);
-    let word = |b: &[u8]| {
-        let mut w = [0u8; 8];
-        w.copy_from_slice(b);
-        u64::from_le_bytes(w)
-    };
-    let (mut s0, mut s1, mut s2, mut s3) = (0u32, 0u32, 0u32, 0u32);
-    for ((((dw, a), b), c), e) in d
-        .chunks_exact(8)
-        .zip(q0.chunks_exact(8))
-        .zip(q1.chunks_exact(8))
-        .zip(q2.chunks_exact(8))
-        .zip(q3.chunks_exact(8))
-    {
-        let w = word(dw);
-        s0 = s0.wrapping_add((word(a) & w).count_ones());
-        s1 = s1.wrapping_add((word(b) & w).count_ones());
-        s2 = s2.wrapping_add((word(c) & w).count_ones());
-        s3 = s3.wrapping_add((word(e) & w).count_ones());
+/// The integer dot product of a query's codes (`query`, one per
+/// discretized dimension) with a document's bit planes (`doc`, plane `p`
+/// weighted `2^p`), each plane packed as Lucene packs binary codes:
+/// dimension `d` in bit `7 - d % 8` of byte `d / 8`.
+// ARITH: plane weights are at most 2 and sums at most 2 * 15 * 3 * dims.
+#[allow(clippy::arithmetic_side_effects)]
+fn bit_planes_dot(query: &[u8], doc: &[u8]) -> u32 {
+    let plane_len = query.len() / 8;
+    let mut sum = 0u32;
+    for (p, plane) in doc.chunks_exact(plane_len.max(1)).enumerate() {
+        let mut s = 0u32;
+        for (q8, &bits) in query.chunks_exact(8).zip(plane) {
+            for (k, &q) in q8.iter().enumerate() {
+                s += u32::from(q) * u32::from((bits >> (7 - k)) & 1);
+            }
+        }
+        sum += s << p;
     }
-    s0.wrapping_add(s1 << 1)
-        .wrapping_add(s2 << 2)
-        .wrapping_add(s3 << 3)
+    sum
 }
 
 /// Packs one code per discretized dimension (`unpacked`) into `packed` as
@@ -329,7 +328,7 @@ impl Quantizer for OsqQuantizer {
             codes: vec![
                 0u8;
                 if self.encoding.is_asymmetric() {
-                    self.encoding.query_packed_length(self.discrete)
+                    0
                 } else {
                     self.discrete
                 }
@@ -341,12 +340,122 @@ impl Quantizer for OsqQuantizer {
                 quantized_component_sum: 0,
             },
             centroid_dp: 0.0,
+            luts: vec![0u8; self.fast_scan_groups().saturating_mul(16)],
         })
     }
 
     fn state(&self) -> Vec<u8> {
         // Wire numbers are 0..=4.
         vec![u8::try_from(self.encoding.wire_number()).unwrap_or(u8::MAX)]
+    }
+
+    fn block_len(&self, n: usize) -> usize {
+        if self.fast_scan_planes() == 0 {
+            return self.code_len().saturating_mul(n);
+        }
+        n.div_ceil(FAST_SCAN_BLOCK)
+            .saturating_mul(self.fast_scan_block_bytes())
+    }
+
+    // ARITH: offsets are below the code length, groups below the discretized
+    // dimension; `codes` is checked to be whole codes.
+    #[allow(clippy::arithmetic_side_effects)]
+    fn write_block(&self, codes: &[u8], out: &mut Vec<u8>) {
+        let code_len = self.code_len();
+        assert_eq!(codes.len() % code_len, 0, "codes must be whole codes");
+        let planes = self.fast_scan_planes();
+        if planes == 0 {
+            out.extend_from_slice(codes);
+            return;
+        }
+        let plane_len = self.discrete / 8;
+        let groups = self.discrete / 4;
+        for block in codes.chunks(FAST_SCAN_BLOCK * code_len) {
+            let code = |j: usize| block.get(j * code_len..(j + 1) * code_len);
+            // Sub-code `g` of plane `p`: the bits of dimensions 4g..4g+4,
+            // dimension 4g + k in bit k. Packed planes hold dimension `d` in
+            // bit `7 - d % 8` of byte `d / 8`.
+            let nibble = |j: usize, p: usize, g: usize| -> u8 {
+                code(j).map_or(0, |c| {
+                    let byte = c[p * plane_len + g / 2];
+                    let half = if g.is_multiple_of(2) {
+                        byte >> 4
+                    } else {
+                        byte & 15
+                    };
+                    REVERSE_NIBBLE[usize::from(half)]
+                })
+            };
+            for p in 0..planes {
+                for g in 0..groups {
+                    for j in 0..16 {
+                        out.push(nibble(j, p, g) | (nibble(j + 16, p, g) << 4));
+                    }
+                }
+            }
+            // The corrective terms, one array of 32 per term.
+            for at in [0, 4, 8, 12] {
+                for j in 0..FAST_SCAN_BLOCK {
+                    match code(j) {
+                        Some(c) => {
+                            out.extend_from_slice(&c[self.packed + at..self.packed + at + 4])
+                        }
+                        None => out.extend_from_slice(&[0; 4]),
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Codes per fast-scan block.
+const FAST_SCAN_BLOCK: usize = simd::FAST_SCAN_BLOCK;
+
+/// `REVERSE_NIBBLE[x]` is `x` with its four bits in reverse order.
+const REVERSE_NIBBLE: [u8; 16] = [0, 8, 4, 12, 2, 10, 6, 14, 1, 9, 5, 13, 3, 11, 7, 15];
+
+/// Fills one 16-entry table per bit plane and group of four dimensions:
+/// entry `v` of group `g` is the sum of `query[4g + k]` over the bits `k`
+/// set in `v`, shifted left by the plane. `query` holds one code of at most
+/// 4 bits per discretized dimension, so an entry is at most `2 * 60`.
+// ARITH: table indices are below `luts.len()`; entries are sums of at most
+// four 4-bit values, doubled at most once.
+#[allow(clippy::arithmetic_side_effects)]
+fn fill_luts(query: &[u8], luts: &mut [u8]) {
+    let groups = query.len() / 4;
+    for (i, lut) in luts.chunks_exact_mut(16).enumerate() {
+        let (plane, g) = (i / groups, i % groups);
+        let q = &query[4 * g..4 * g + 4];
+        lut[0] = 0;
+        for v in 1..16usize {
+            let low = v.trailing_zeros() as usize;
+            lut[v] = lut[v & (v - 1)] + (q[low] << plane);
+        }
+    }
+}
+
+impl OsqQuantizer {
+    /// Bit planes of a document code scored by fast scan: 1 for BBQ, 2 for
+    /// the 2-bit encoding, 0 for the encodings scored code by code.
+    fn fast_scan_planes(&self) -> usize {
+        match self.encoding {
+            ScalarEncoding::SingleBitQueryNibble => 1,
+            ScalarEncoding::DibitQueryNibble => 2,
+            _ => 0,
+        }
+    }
+
+    /// Fast-scan table groups: four dimensions per group, per plane.
+    fn fast_scan_groups(&self) -> usize {
+        self.fast_scan_planes().saturating_mul(self.discrete / 4)
+    }
+
+    /// Bytes of one fast-scan block: 16 per group, then four corrective
+    /// terms for each of its 32 codes.
+    // ARITH: groups are bounded by the dimension.
+    #[allow(clippy::arithmetic_side_effects)]
+    fn fast_scan_block_bytes(&self) -> usize {
+        self.fast_scan_groups() * 16 + FAST_SCAN_BLOCK * CORRECTIONS_BYTES
     }
 }
 
@@ -356,11 +465,15 @@ struct OsqQueryScorer<'q> {
     q: &'q OsqQuantizer,
     query: Vec<f32>,
     unpacked: Vec<u8>,
-    /// The query codes as the kernel takes them: unpacked, or transposed
-    /// into four bit planes for the asymmetric encodings.
+    /// The query codes as the symmetric encodings' kernels take them (empty
+    /// for the asymmetric ones, which read `unpacked` and the tables).
     codes: Vec<u8>,
     corrections: QuantizationResult,
     centroid_dp: f32,
+    /// For the fast-scan layout, one 16-entry table per bit plane and group
+    /// of four dimensions: the query's dot product with every 4-bit pattern
+    /// of document bits, weighted by the plane.
+    luts: Vec<u8>,
 }
 
 impl QueryScorer for OsqQueryScorer<'_> {
@@ -374,9 +487,7 @@ impl QueryScorer for OsqQueryScorer<'_> {
             self.q.similarity,
             &mut self.unpacked,
         );
-        if encoding.is_asymmetric() {
-            quantization::transpose_half_byte(&self.unpacked, &mut self.codes);
-        } else {
+        if !encoding.is_asymmetric() {
             self.codes.copy_from_slice(&self.unpacked);
         }
         self.centroid_dp = if self.q.similarity == Similarity::Euclidean {
@@ -384,6 +495,9 @@ impl QueryScorer for OsqQueryScorer<'_> {
         } else {
             simd::dot_f32(centroid, centroid)
         };
+        if self.q.fast_scan_planes() > 0 {
+            fill_luts(&self.unpacked, &mut self.luts);
+        }
     }
 
     fn score(&self, code: &[u8]) -> f32 {
@@ -391,6 +505,10 @@ impl QueryScorer for OsqQueryScorer<'_> {
     }
 
     fn score_block(&self, codes: &[u8], scores: &mut [f32]) {
+        if self.q.fast_scan_planes() > 0 {
+            self.fast_scan(codes, scores);
+            return;
+        }
         let code_len = self.q.code_len();
         assert_eq!(
             Some(codes.len()),
@@ -441,6 +559,73 @@ impl OsqQueryScorer<'_> {
         }
     }
 
+    /// Scores a fast-scan block layout: per block of 32 codes, the integer
+    /// dot products come from table lookups, then each code's corrective
+    /// terms finish its score exactly as [`OsqQueryScorer::score_code`] does.
+    // ARITH: block offsets are below `codes.len()`, checked against the
+    // layout's length up front.
+    #[allow(clippy::arithmetic_side_effects)]
+    fn fast_scan(&self, codes: &[u8], scores: &mut [f32]) {
+        assert_eq!(
+            codes.len(),
+            self.q.block_len(scores.len()),
+            "codes must hold one code per score"
+        );
+        let terms = self.terms();
+        let nibbles = self.luts.len();
+        let block_bytes = self.q.fast_scan_block_bytes();
+        for (block, out) in codes
+            .chunks_exact(block_bytes)
+            .zip(scores.chunks_mut(FAST_SCAN_BLOCK))
+        {
+            let (nibble_bytes, term_bytes) = block.split_at(nibbles);
+            let mut dots = [0u32; FAST_SCAN_BLOCK];
+            simd::lut16_accumulate32(&self.luts, nibble_bytes, &mut dots);
+            // The four corrective terms, one array of 32 each.
+            let mut t = [[0u32; FAST_SCAN_BLOCK]; 4];
+            for (row, bytes) in t
+                .iter_mut()
+                .zip(term_bytes.chunks_exact(4 * FAST_SCAN_BLOCK))
+            {
+                for (x, b) in row.iter_mut().zip(bytes.chunks_exact(4)) {
+                    *x = u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
+                }
+            }
+            // `finish`, one step at a time over all 32 codes so each step
+            // vectorizes; the operations and their order are `finish`'s.
+            let mut score = [0f32; FAST_SCAN_BLOCK];
+            let mut corrections = [0f32; FAST_SCAN_BLOCK];
+            for j in 0..FAST_SCAN_BLOCK {
+                let ax = f32::from_bits(t[0][j]);
+                let lx = (f32::from_bits(t[1][j]) - ax) * terms.scale;
+                let x1 = t[3][j] as i32 as f32;
+                score[j] = ax * terms.ay_dims
+                    + terms.ay * lx * x1
+                    + ax * terms.ly_y1
+                    + lx * terms.ly * dots[j] as f32;
+                corrections[j] = terms.additional + f32::from_bits(t[2][j]);
+            }
+            let k = out.len();
+            match self.q.similarity {
+                Similarity::Euclidean => {
+                    for ((s, &x), &c) in out.iter_mut().zip(&score[..k]).zip(&corrections[..k]) {
+                        *s = 1.0 / (1.0 + (c - 2.0 * x).max(0.0));
+                    }
+                }
+                Similarity::MaximumInnerProduct => {
+                    for ((s, &x), &c) in out.iter_mut().zip(&score[..k]).zip(&corrections[..k]) {
+                        *s = quantization::scale_max_inner_product_score(x + c);
+                    }
+                }
+                Similarity::DotProduct | Similarity::Cosine => {
+                    for ((s, &x), &c) in out.iter_mut().zip(&score[..k]).zip(&corrections[..k]) {
+                        *s = ((1.0 + x + c) / 2.0).max(0.0);
+                    }
+                }
+            }
+        }
+    }
+
     /// `Lucene104ScalarQuantizedVectorScorer.quantizedScore`: the integer dot
     /// product of the codes, with both quantizations undone through their
     /// corrective terms.
@@ -453,19 +638,33 @@ impl OsqQueryScorer<'_> {
             ScalarEncoding::PackedNibble => {
                 vector_util::int4_dot_product_single_packed(&self.codes, doc) as f32
             }
-            ScalarEncoding::SingleBitQueryNibble => bit_planes_dot(&self.codes, doc) as f32,
-            ScalarEncoding::DibitQueryNibble => {
-                let (lower, upper) = doc.split_at(doc.len() / 2);
-                let low = bit_planes_dot(&self.codes, lower);
-                let high = bit_planes_dot(&self.codes, upper);
-                (low as f32) + 2.0 * (high as f32)
+            ScalarEncoding::SingleBitQueryNibble | ScalarEncoding::DibitQueryNibble => {
+                bit_planes_dot(&self.unpacked, doc) as f32
             }
         };
-        let ax = f32_at(tail, 0);
-        let lx = (f32_at(tail, 4) - ax) * t.scale;
-        let x1 = i32_at(tail, 12) as f32;
+        self.finish(
+            [f32_at(tail, 0), f32_at(tail, 4), f32_at(tail, 8)],
+            i32_at(tail, 12),
+            qc_dist,
+            t,
+        )
+    }
+
+    /// The corrected score from a document's corrective terms (lower and
+    /// upper interval, additional correction; component sum) and the integer
+    /// dot product of the codes.
+    #[inline]
+    fn finish(
+        &self,
+        [ax, upper, additional]: [f32; 3],
+        x1: i32,
+        qc_dist: f32,
+        t: &QueryTerms,
+    ) -> f32 {
+        let lx = (upper - ax) * t.scale;
+        let x1 = x1 as f32;
         let score = ax * t.ay_dims + t.ay * lx * x1 + ax * t.ly_y1 + lx * t.ly * qc_dist;
-        let corrections = t.additional + f32_at(tail, 8);
+        let corrections = t.additional + additional;
         match self.q.similarity {
             Similarity::Euclidean => 1.0 / (1.0 + (corrections - 2.0 * score).max(0.0)),
             Similarity::MaximumInnerProduct => {
@@ -551,6 +750,9 @@ mod tests {
                 for (v, out) in data.iter().zip(codes.chunks_exact_mut(q.code_len())) {
                     q.encode(v, &centroid, out);
                 }
+                let mut block = Vec::new();
+                q.write_block(&codes, &mut block);
+                let codes = block;
                 let mut err = 0f64;
                 for query in &queries {
                     let mut s = q.query_scorer(query);
@@ -635,5 +837,45 @@ mod tests {
     fn set_centroid_checks_length() {
         let q = OsqQuantizer::new(8, Similarity::Euclidean, ScalarEncoding::UnsignedByte);
         q.query_scorer(&[0.0; 8]).set_centroid(&[0.0; 4]);
+    }
+
+    /// The fast-scan block layout scores every code exactly as scoring it
+    /// alone does, for partial and whole blocks.
+    #[test]
+    fn fast_scan_blocks_score_like_single_codes() {
+        for encoding in [
+            ScalarEncoding::SingleBitQueryNibble,
+            ScalarEncoding::DibitQueryNibble,
+            ScalarEncoding::PackedNibble,
+        ] {
+            for sim in SIMS {
+                for dim in [5, 100, 300] {
+                    let q = OsqQuantizer::new(dim, sim, encoding);
+                    let centroid = vectors(1, dim, 99).remove(0);
+                    for n in [0, 1, 31, 32, 33, 70] {
+                        let docs = vectors(n, dim, 7 + n as u64);
+                        let mut codes = vec![0u8; n * q.code_len()];
+                        for (d, c) in docs.iter().zip(codes.chunks_exact_mut(q.code_len())) {
+                            q.encode(d, &centroid, c);
+                        }
+                        let mut block = Vec::new();
+                        q.write_block(&codes, &mut block);
+                        assert_eq!(block.len(), q.block_len(n));
+                        let query = vectors(1, dim, 1234).remove(0);
+                        let mut scorer = q.query_scorer(&query);
+                        scorer.set_centroid(&centroid);
+                        let mut scores = vec![0f32; n];
+                        scorer.score_block(&block, &mut scores);
+                        for (i, c) in codes.chunks_exact(q.code_len()).enumerate() {
+                            assert_eq!(
+                                scores[i].to_bits(),
+                                scorer.score(c).to_bits(),
+                                "{encoding:?} {sim:?} dim {dim} n {n} code {i}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 }
