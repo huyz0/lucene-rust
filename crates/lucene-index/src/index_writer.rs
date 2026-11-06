@@ -179,6 +179,9 @@ mod lifecycle;
 pub(crate) mod packed_fields;
 pub(crate) mod pending_postings;
 mod pluggable_merge;
+mod segment_partitions;
+pub(crate) use segment_partitions::set_attribute;
+pub use segment_partitions::SegmentPartitioning;
 mod try_modify;
 pub(crate) use explicit::explicit_error;
 pub use explicit::{ExplicitDocument, ExplicitFields, InvertedField, InvertedTerm};
@@ -953,6 +956,8 @@ pub(crate) struct IndexingConfig {
     /// their sources, oldest with newest. See
     /// [`IndexWriter::set_shuffle_forced_merges`].
     shuffle_forced_merges: bool,
+    /// See [`IndexWriter::set_segment_partitioning`].
+    segment_partitioning: Option<SegmentPartitioning>,
     /// `IndexWriterConfig.getSimilarity()`, as far as the writer reads it
     /// (`computeNorm`): `None` is Lucene's default, `BM25Similarity`. See
     /// [`IndexWriter::set_similarity`].
@@ -1028,6 +1033,9 @@ pub(crate) struct MergePlan {
     sorted_numeric_remap: Option<std::sync::Arc<merge::SortedNumericRemap>>,
     /// What the merged segment's diagnostics record.
     pub(crate) kind: merge::MergeKind,
+    /// `.si` attributes the merged segment records besides the writer's own:
+    /// its sources' common group ([`IndexWriter::set_segment_partitioning`]).
+    attributes: Vec<(String, String)>,
 }
 
 /// `SoftDeletesRetentionMergePolicy` with OpenSearch's retention query,
@@ -1235,6 +1243,9 @@ pub(crate) struct DocumentBuffer<'b> {
     pub(crate) stored: Option<&'b FinishedStored>,
     /// Writes only some of the buffer's documents: see [`BufferLimit`].
     pub(crate) limit: Option<&'b BufferLimit>,
+    /// The group the documents were added under
+    /// ([`IndexWriter::set_segment_partitioning`]).
+    pub(crate) partition: Option<&'b str>,
 }
 
 /// A flush of a buffer's documents `start..docs` only, numbered from
@@ -1248,6 +1259,10 @@ pub(crate) struct BufferLimit {
     pub(crate) docs: i32,
     /// By field number: how many of those documents have the field.
     pub(crate) doc_counts: std::collections::HashMap<i32, i32>,
+    /// Whether the postings are written: without them the segment has every
+    /// field's norms, doc values, points and stored fields but no terms,
+    /// for a caller that reads the documents' terms elsewhere.
+    pub(crate) postings: bool,
 }
 
 /// A buffer's explicit document fields: as structs, or packed as the
@@ -1598,27 +1613,44 @@ impl IndexingConfig {
     /// held to that rate, as `IndexWriter.mergeMiddle` writes through its
     /// rate-limited merge directory.
     pub(crate) fn run_merge(&self, dir: &dyn Directory, plan: &MergePlan) -> Result<MergeOutcome> {
+        let progress = std::sync::Arc::new(crate::merge_rate_limiter::OneMergeProgress::new());
+        self.run_merge_with_progress(dir, plan, &progress)
+    }
+
+    /// [`Self::run_merge`], aborted through `progress`: a throttled merge
+    /// stops at its next write, an unthrottled one (no rate to check against)
+    /// once its writes are done. Either way an aborted merge fails with
+    /// [`Error::MergeAborted`].
+    pub(crate) fn run_merge_with_progress(
+        &self,
+        dir: &dyn Directory,
+        plan: &MergePlan,
+        progress: &std::sync::Arc<crate::merge_rate_limiter::OneMergeProgress>,
+    ) -> Result<MergeOutcome> {
         // Every file of the merge is written under one
         // `IOContext(merge.getStoreMergeInfo())`.
         let estimate = Self::estimated_merge_bytes(dir, plan);
-        let Some(mb_per_sec) = self.merge_mb_per_sec else {
-            return self
-                .run_merge_unthrottled(&lucene_store::EstimatedWrites::new(dir, estimate), plan);
+        let outcome = match self.merge_mb_per_sec {
+            None => {
+                self.run_merge_unthrottled(&lucene_store::EstimatedWrites::new(dir, estimate), plan)
+            }
+            Some(mb_per_sec) => {
+                let limiter =
+                    std::sync::Arc::new(crate::merge_rate_limiter::MergeRateLimiter::new(
+                        std::sync::Arc::clone(progress),
+                    ));
+                lucene_store::RateLimiter::set_mb_per_sec(&*limiter, mb_per_sec);
+                let merge_dir = crate::merge_rate_limiter::MergeDirectory::new(dir, limiter);
+                self.run_merge_unthrottled(
+                    &lucene_store::EstimatedWrites::new(&merge_dir, estimate),
+                    plan,
+                )
+            }
         };
-        let progress = std::sync::Arc::new(crate::merge_rate_limiter::OneMergeProgress::new());
-        let limiter = std::sync::Arc::new(crate::merge_rate_limiter::MergeRateLimiter::new(
-            std::sync::Arc::clone(&progress),
-        ));
-        lucene_store::RateLimiter::set_mb_per_sec(&*limiter, mb_per_sec);
-        let merge_dir = crate::merge_rate_limiter::MergeDirectory::new(dir, limiter);
-        let outcome = self.run_merge_unthrottled(
-            &lucene_store::EstimatedWrites::new(&merge_dir, estimate),
-            plan,
-        )?;
         if progress.is_aborted() {
             return Err(Error::MergeAborted);
         }
-        Ok(outcome)
+        outcome
     }
 
     /// The postings format `field` is routed to.
@@ -1678,17 +1710,19 @@ impl IndexingConfig {
         )?)
     }
 
-    /// [`Self::run_merge`], with every output written through `limiter` when
-    /// a merge scheduler supplies one (`MergeScheduler.wrapForMerge`) instead
-    /// of the writer's own configured rate.
+    /// [`Self::run_merge_with_progress`], with every output written through
+    /// `limiter` when a merge scheduler supplies one
+    /// (`MergeScheduler.wrapForMerge`) instead of the writer's own configured
+    /// rate. A supplied limiter carries its own progress.
     pub(crate) fn run_merge_limited(
         &self,
         dir: &dyn Directory,
         plan: &MergePlan,
         limiter: Option<std::sync::Arc<crate::merge_rate_limiter::MergeRateLimiter>>,
+        progress: &std::sync::Arc<crate::merge_rate_limiter::OneMergeProgress>,
     ) -> Result<MergeOutcome> {
         let Some(limiter) = limiter else {
-            return self.run_merge(dir, plan);
+            return self.run_merge_with_progress(dir, plan, progress);
         };
         // The same `IOContext(merge.getStoreMergeInfo())` as `run_merge`.
         let estimate = Self::estimated_merge_bytes(dir, plan);
@@ -1697,11 +1731,11 @@ impl IndexingConfig {
         let outcome = self.run_merge_unthrottled(
             &lucene_store::EstimatedWrites::new(&merge_dir, estimate),
             plan,
-        )?;
+        );
         if progress.is_aborted() {
             return Err(Error::MergeAborted);
         }
-        Ok(outcome)
+        outcome
     }
 
     /// [`Self::run_merge`] with no rate limit.
@@ -2957,6 +2991,7 @@ impl IndexingConfig {
                 sorted_numeric_remap: plan.sorted_numeric_remap.clone(),
                 kind: plan.kind,
                 extra_diagnostics: hook_diagnostics,
+                extra_attributes: plan.attributes.clone(),
             },
             &plan.merged_name,
             plan.merged_id,
@@ -3923,18 +3958,21 @@ impl IndexingConfig {
             };
         }
 
-        let fnm_fields = self.fields_with_per_field_attributes(
-            postings_output.as_ref(),
-            doc_values_output.as_deref(),
-            norms_output.is_some(),
-            vectors_output
-                .as_ref()
-                .map(|o| o.written.as_slice())
-                .unwrap_or(&[]),
-            points_output
-                .as_ref()
-                .map(|o| o.written_fields.as_slice())
-                .unwrap_or(&[]),
+        let fnm_fields = self.partition_fields(
+            self.fields_with_per_field_attributes(
+                postings_output.as_ref(),
+                doc_values_output.as_deref(),
+                norms_output.is_some(),
+                vectors_output
+                    .as_ref()
+                    .map(|o| o.written.as_slice())
+                    .unwrap_or(&[]),
+                points_output
+                    .as_ref()
+                    .map(|o| o.written_fields.as_slice())
+                    .unwrap_or(&[]),
+            ),
+            buf.partition,
         );
 
         // The inner closure the previous shape needed to collect `?`s is
@@ -4051,6 +4089,7 @@ impl IndexingConfig {
             self.codec.as_deref(),
             lucene_codecs::codec::WritePoint::SegmentInfo,
         )?;
+        self.partition_segment(&mut flushed.info.attributes, buf.partition);
         segment_writer::seal_flushed_segment(dir, segment_name, flushed).map_err(Error::from)
     }
 
@@ -5780,7 +5819,10 @@ impl<'d> IndexWriter<'d> {
         merging: &std::collections::HashSet<String>,
     ) -> Result<Option<Vec<String>>> {
         let stats = self.segment_stats()?;
-        Ok(merge_policy::find_merges_excluding(&stats, merging, config)
+        Ok(self
+            .per_partition_stats(&stats, |s| {
+                merge_policy::find_merges_excluding(s, merging, config)
+            })?
             .into_iter()
             .next())
     }
@@ -5796,7 +5838,9 @@ impl<'d> IndexWriter<'d> {
         merging: &std::collections::HashSet<String>,
     ) -> Result<Vec<(Vec<String>, u64)>> {
         let stats = self.segment_stats()?;
-        let merges = merge_policy::find_merges_excluding(&stats, merging, config);
+        let merges = self.per_partition_stats(&stats, |s| {
+            merge_policy::find_merges_excluding(s, merging, config)
+        })?;
         Ok(merges
             .into_iter()
             .map(|names| {
@@ -5839,6 +5883,7 @@ impl<'d> IndexWriter<'d> {
             has_blocks: self.pending_has_blocks,
             stored: None,
             limit: None,
+            partition: None,
         }
     }
 
@@ -5993,6 +6038,7 @@ impl<'d> IndexWriter<'d> {
                 use_compound_file: false,
                 merge_compound_file: None,
                 shuffle_forced_merges: false,
+                segment_partitioning: None,
                 postings_formats: Vec::new(),
                 doc_values_formats: Vec::new(),
                 default_doc_values_format: Default::default(),
@@ -8486,7 +8532,7 @@ impl IndexWriter<'_> {
         // the global packet first and only then reads `nextGen` for the new
         // segment, which is exactly what keeps the new segment out of the
         // packets that predate it (`FrozenBufferedUpdates.applies_to`).
-        let ticket = self.begin_segment();
+        let ticket = self.begin_segment(None);
         let (segment_name, segment_id) = (ticket.segment_name.clone(), ticket.segment_id);
 
         // Installed consumers can create and write files during the build.
@@ -8574,15 +8620,36 @@ impl IndexWriter<'_> {
     /// *later* ticket, so it gets a higher generation than this segment and
     /// applies to it. Pushed here instead, it would sort below this segment
     /// and skip it.
-    pub(crate) fn begin_segment(&mut self) -> SegmentTicket {
+    ///
+    /// `reserved` is a name and id [`Self::reserve_segment`] handed out
+    /// earlier, for a buffer that started writing its segment's files.
+    pub(crate) fn begin_segment(
+        &mut self,
+        reserved: Option<&(String, [u8; ID_LENGTH])>,
+    ) -> SegmentTicket {
         let global = self.delete_queue.freeze_global_buffer();
-        let segment_name = self.new_segment_name();
-        let segment_id = generate_segment_id(self.segment_infos.counter);
+        let (segment_name, segment_id) = match reserved {
+            Some((name, id)) => (name.clone(), *id),
+            None => self.reserve_segment(),
+        };
         SegmentTicket {
             segment_name,
             segment_id,
             global,
         }
+    }
+
+    /// A new segment's name and id, taken now for a segment written later.
+    pub(crate) fn reserve_segment(&mut self) -> (String, [u8; ID_LENGTH]) {
+        let segment_name = self.new_segment_name();
+        let segment_id = generate_segment_id(self.segment_infos.counter);
+        (segment_name, segment_id)
+    }
+
+    /// Pins files a buffer writes before its segment exists against the
+    /// deleter's sweeps, until [`Self::release_files`].
+    pub(crate) fn hold_new_files(&mut self, files: &[String]) {
+        self.deleter.hold_files(files);
     }
 
     /// A ticket whose segment could not be built: its frozen packet still
@@ -10705,7 +10772,8 @@ impl IndexWriter<'_> {
 
         loop {
             let stats = self.segment_stats()?;
-            let groups = merge_policy::find_merges(&stats, &config);
+            let groups =
+                self.per_partition_stats(&stats, |s| merge_policy::find_merges(s, &config))?;
             if groups.is_empty() {
                 break;
             }
@@ -10915,36 +10983,35 @@ impl IndexWriter<'_> {
                 merge_policy::find_forced_merges(stats, max_num_segments, &config)
             });
         }
+        // Every partition on its own: multi-segment merges until none is
+        // left, then each single segment with deletes merged once.
         loop {
-            let mut stats = self.segment_stats()?;
-            if stats.len() <= max_num_segments {
-                if let [only] = stats.as_slice() {
-                    if max_num_segments == 1 && self.num_deletes_to_merge(only)? > 0 {
-                        self.execute_merge(std::slice::from_ref(&only.name))?;
-                    }
-                }
-                return Ok(());
-            }
-            if max_num_segments == 1 {
-                // `findForcedMerges` itself, whose merge-down-to-one case
-                // has no size cap: every segment in one merge, largest
-                // first -- the merged segment's document order.
-                let config = merge_policy::MergePolicyConfig::default();
-                let names: Vec<String> = merge_policy::find_forced_merges(&stats, 1, &config)
+            let stats = self.segment_stats()?;
+            let picks = self.per_partition_stats(&stats, |part| {
+                fallback_forced_merge(part, max_num_segments)
                     .into_iter()
-                    .flatten()
-                    .collect();
-                self.execute_merge(&names)?;
-                continue;
+                    .collect()
+            })?;
+            if picks.is_empty() {
+                break;
             }
-            stats.sort_by_key(|s| s.size_bytes);
-            // ARITH: `stats.len() > max_num_segments >= 1` here, so the
-            // difference is at least 1 and the `+ 1` at most `stats.len()`.
-            #[allow(clippy::arithmetic_side_effects)]
-            let take = stats.len() - max_num_segments + 1;
-            let names: Vec<String> = stats.into_iter().take(take).map(|s| s.name).collect();
-            self.execute_merge(&names)?;
+            for names in picks {
+                self.execute_merge(&names)?;
+            }
         }
+        if max_num_segments == 1 {
+            let stats = self.segment_stats()?;
+            let singles = self.per_partition_stats(&stats, |part| match part {
+                [only] => vec![only.clone()],
+                _ => Vec::new(),
+            })?;
+            for only in singles {
+                if self.num_deletes_to_merge(&only)? > 0 {
+                    self.execute_merge(std::slice::from_ref(&only.name))?;
+                }
+            }
+        }
+        Ok(())
     }
 
     /// [`IndexWriter::segment_stats`] with each `del_count` the deletes a
@@ -10967,7 +11034,7 @@ impl IndexWriter<'_> {
     ) -> Result<()> {
         loop {
             let stats = self.reclaimable_segment_stats()?;
-            let groups = find(&stats);
+            let groups = self.per_partition_stats(&stats, &find)?;
             if groups.is_empty() {
                 return Ok(());
             }
@@ -11087,8 +11154,10 @@ impl IndexWriter<'_> {
                     .clone()
             })
             .collect::<Vec<SegmentCommitInfo>>();
+        let attributes = self.merged_partition_attributes(&sources)?;
         let held = self.deleter.hold_segment_files(&sources)?;
         Ok(MergePlan {
+            attributes,
             names: names.to_vec(),
             sources,
             merged_name,
@@ -12967,6 +13036,35 @@ fn apply_merge_changes(
         out.insert(0, m);
     }
     *segments = out;
+}
+
+/// The forced merge `IndexWriter.forceMerge` runs without a merge policy
+/// over `stats`, while they number more than `max_num_segments`: down to one,
+/// every segment in one merge, largest first (`findForcedMerges`' merge-down
+/// case, no size cap); else the smallest segments, enough to reach the count.
+fn fallback_forced_merge(
+    stats: &[merge_policy::SegmentStat],
+    max_num_segments: usize,
+) -> Option<Vec<String>> {
+    if stats.len() <= max_num_segments {
+        return None;
+    }
+    if max_num_segments == 1 {
+        let config = merge_policy::MergePolicyConfig::default();
+        return Some(
+            merge_policy::find_forced_merges(stats, 1, &config)
+                .into_iter()
+                .flatten()
+                .collect(),
+        );
+    }
+    let mut stats = stats.to_vec();
+    stats.sort_by_key(|s| s.size_bytes);
+    // ARITH: `stats.len() > max_num_segments >= 1` here, so the difference
+    // is at least 1 and the `+ 1` at most `stats.len()`.
+    #[allow(clippy::arithmetic_side_effects)]
+    let take = stats.len() - max_num_segments + 1;
+    Some(stats.into_iter().take(take).map(|s| s.name).collect())
 }
 
 /// `ShuffleForcedMergePolicy.interleaveList`: the sources sorted by name

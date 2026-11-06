@@ -97,6 +97,30 @@ pub trait Quantizer: Send + Sync + std::fmt::Debug {
 
     /// What [`QuantizerFactory::read`] needs to rebuild this quantizer.
     fn state(&self) -> Vec<u8>;
+
+    /// Bytes that `n` codes take laid out as a block for
+    /// [`QueryScorer::score_block`]: by default the codes end to end.
+    fn block_len(&self, n: usize) -> usize {
+        self.code_len().saturating_mul(n)
+    }
+
+    /// Appends `codes` (whole codes end to end, as [`Quantizer::encode`]
+    /// wrote them) to `out` in the layout [`QueryScorer::score_block`] reads,
+    /// [`Quantizer::block_len`] bytes for their count. By default the codes
+    /// are copied as they are; a quantizer can interleave them instead, so a
+    /// block scores many codes per instruction.
+    ///
+    /// # Panics
+    ///
+    /// When `codes` is not a whole number of codes.
+    fn write_block(&self, codes: &[u8], out: &mut Vec<u8>) {
+        assert_eq!(
+            codes.len().checked_rem(self.code_len()).unwrap_or(0),
+            0,
+            "codes must be whole codes"
+        );
+        out.extend_from_slice(codes);
+    }
 }
 
 /// A query prepared against a [`Quantizer`]'s codes.
@@ -107,12 +131,14 @@ pub trait QueryScorer {
     /// The estimated score of one code.
     fn score(&self, code: &[u8]) -> f32;
 
-    /// The estimated scores of `codes`, a whole number of codes laid end to
-    /// end, into `scores` (one per code).
+    /// The estimated scores of a block of `scores.len()` codes, laid out as
+    /// [`Quantizer::write_block`] wrote them (by default end to end), into
+    /// `scores`.
     ///
     /// # Panics
     ///
-    /// When `codes` is not `scores.len()` codes long.
+    /// When `block` is not [`Quantizer::block_len`] bytes for `scores.len()`
+    /// codes.
     fn score_block(&self, codes: &[u8], scores: &mut [f32]) {
         let code_len = codes.len().checked_div(scores.len()).unwrap_or(0);
         assert_eq!(

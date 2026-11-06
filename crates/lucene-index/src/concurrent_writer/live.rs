@@ -607,11 +607,36 @@ pub struct ViewBuffer {
 }
 
 impl ViewBuffer {
-    /// By field number, how many of the view's documents of the buffer
-    /// have the field, deleted ones included.
-    pub fn doc_counts(&self) -> HashMap<i32, i32> {
-        self.stats.iter().map(|(&f, s)| (f, s.doc_count)).collect()
+    /// By field number, the statistics of the view's documents of the
+    /// buffer, deleted ones included.
+    pub fn field_totals(&self) -> HashMap<i32, FieldTotals> {
+        self.stats
+            .iter()
+            .map(|(&f, s)| {
+                (
+                    f,
+                    FieldTotals {
+                        num_terms: s.num_terms,
+                        sum_total_term_freq: s.sum_total_term_freq,
+                        sum_doc_freq: s.sum_doc_freq,
+                        doc_count: s.doc_count,
+                    },
+                )
+            })
+            .collect()
     }
+}
+
+/// A field's statistics over a buffer's first documents: see
+/// [`ViewBuffer::field_totals`]. Those of documents `a..b` are the
+/// difference of the totals at `b` and at `a`, but for `num_terms` (the
+/// distinct terms, which do not subtract).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FieldTotals {
+    pub num_terms: i64,
+    pub sum_total_term_freq: i64,
+    pub sum_doc_freq: i64,
+    pub doc_count: i32,
 }
 
 /// A buffered document's stored fields, in the order they were added.
@@ -874,25 +899,29 @@ impl ConcurrentIndexWriter<'_> {
     /// needing whole segments (doc values, points, every term) reads a
     /// view's buffers through. `doc_counts` is, by field number, how many
     /// of those documents have the field: the difference of the
-    /// [`ViewBuffer::doc_counts`] of views of `end` and of `start`
+    /// `doc_count`s of the [`ViewBuffer::field_totals`] of views of `end` and of `start`
     /// documents. Stored fields are not written ([`Self::live_document`]
     /// reads them); deletes are the caller's.
     ///
     /// A range starting where an earlier one ended reads the buffered
     /// postings from there on; `next_starts` names the documents ranges
     /// may start at next (the ends of the ranges kept), and where other
-    /// ranges ended is forgotten.
+    /// ranges ended is forgotten. Without `postings` the segment has no
+    /// terms (norms, doc values and points only), for a search that reads
+    /// the terms it needs through [`Self::live_view_snapshot`].
     ///
     /// The buffer's slot is locked while the segment is written. Fails when
     /// the buffer has left its slot (taken for a flush since), when it
     /// holds fewer than `end` documents, and under an index sort, which
     /// would renumber the documents.
+    #[allow(clippy::too_many_arguments)]
     pub fn live_buffer_segment(
         &self,
         id: u64,
         range: std::ops::Range<i32>,
         doc_counts: HashMap<i32, i32>,
         next_starts: &[i32],
+        postings: bool,
         dir: &dyn lucene_store::Directory,
         name: &str,
     ) -> Result<crate::segment_infos::SegmentCommitInfo> {
@@ -920,6 +949,7 @@ impl ConcurrentIndexWriter<'_> {
             start: range.start,
             docs: range.end,
             doc_counts,
+            postings,
         };
         let buffer = crate::index_writer::DocumentBuffer {
             docs: slot.docs.get(start..end).unwrap_or_default(),
@@ -931,6 +961,7 @@ impl ConcurrentIndexWriter<'_> {
             has_blocks: slot.has_blocks,
             stored: None,
             limit: Some(&limit),
+            partition: slot.partition.as_deref(),
         };
         let (sci, _) = cfg.build_and_write_segment(
             dir,
@@ -939,7 +970,9 @@ impl ConcurrentIndexWriter<'_> {
             lucene_util::string_helper::random_id(),
             None,
         )?;
-        slot.postings.keep_cursors_at(next_starts);
+        if postings {
+            slot.postings.keep_cursors_at(next_starts);
+        }
         Ok(sci)
     }
 

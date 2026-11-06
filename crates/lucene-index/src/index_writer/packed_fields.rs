@@ -20,8 +20,10 @@
 //!
 //! Stored fields go further, as Lucene's `StoredFieldsConsumer` streams each
 //! document into its buffer's stored-fields writer: [`StreamedStored`]
-//! compresses them a chunk at a time as documents arrive, and the flush
-//! writes the finished bytes.
+//! compresses them a chunk at a time as documents arrive and, in a
+//! concurrent writer, writes the chunks to the `.fdt` of the segment the
+//! buffer reserved, so stored values neither wait in memory nor count
+//! against the RAM buffer.
 
 use std::collections::BTreeSet;
 
@@ -205,6 +207,9 @@ pub(crate) struct StreamedStored {
     writer: stored_fields::StoredFieldsWriter,
     mode: stored_fields::Mode,
     fields: BTreeSet<i32>,
+    /// The segment name and id reserved for the buffer once its `.fdt` goes
+    /// to that segment's file ([`Self::move_to_disk`]).
+    reserved: Option<(String, [u8; ID_LENGTH])>,
 }
 
 impl StreamedStored {
@@ -217,7 +222,39 @@ impl StreamedStored {
             ),
             mode,
             fields: BTreeSet::new(),
+            reserved: None,
         }
+    }
+
+    /// Whether the buffered `.fdt` has grown enough to go to disk
+    /// ([`Self::move_to_disk`]).
+    pub(crate) fn wants_disk(&self) -> bool {
+        self.reserved.is_none() && self.writer.buffered_fdt_bytes() >= stored_fields::SPILL_BYTES
+    }
+
+    /// The `.fdt` of the segment `segment_name` in this buffer's mode.
+    pub(crate) fn fdt_name(&self, segment_name: &str) -> String {
+        super::segment_file_name(segment_name, self.mode.segment_suffix(), "fdt")
+    }
+
+    /// Writes the `.fdt` to `out`, the file of the segment `segment_name`
+    /// with id `segment_id` the buffer will flush to: what is buffered now,
+    /// then a chunk at a time as documents arrive, so the buffer holds about
+    /// a chunk of stored fields rather than all of them.
+    pub(crate) fn move_to_disk(
+        &mut self,
+        out: lucene_store::FsIndexOutput,
+        segment_name: String,
+        segment_id: [u8; ID_LENGTH],
+    ) {
+        self.writer.set_segment_id(&segment_id);
+        self.writer.stream_to(out);
+        self.reserved = Some((segment_name, segment_id));
+    }
+
+    /// The segment name and id [`Self::move_to_disk`] reserved.
+    pub(crate) fn reserved(&self) -> Option<&(String, [u8; ID_LENGTH])> {
+        self.reserved.as_ref()
     }
 
     /// Adds the next document's stored values and returns how many bytes the
@@ -237,13 +274,35 @@ impl StreamedStored {
     }
 
     /// The `.fdt`, `.fdx` and `.fdm` bytes for the segment `segment_id`,
-    /// with the field numbers any document stored.
-    pub(crate) fn finish(mut self, segment_id: &[u8; ID_LENGTH]) -> FinishedStored {
-        self.writer.set_segment_id(segment_id);
-        FinishedStored {
+    /// with the field numbers any document stored. A buffer moved to disk
+    /// finishes and closes its file, and hands back an empty `.fdt`.
+    ///
+    /// # Errors
+    /// Closing the `.fdt` file.
+    pub(crate) fn finish(mut self, segment_id: &[u8; ID_LENGTH]) -> Result<FinishedStored> {
+        let bytes = if let Some((_, reserved)) = &self.reserved {
+            debug_assert_eq!(reserved, segment_id, "the segment the buffer reserved");
+            let (out, fdx, fdm) = self.writer.finish_streamed();
+            if let Some(out) = out {
+                out.close()?;
+            }
+            (Vec::new(), fdx, fdm)
+        } else {
+            self.writer.set_segment_id(segment_id);
+            self.writer.finish()
+        };
+        Ok(FinishedStored {
             fields: self.fields,
-            bytes: std::sync::Mutex::new(Some(self.writer.finish())),
-        }
+            bytes: std::sync::Mutex::new(Some(bytes)),
+        })
+    }
+
+    /// Drops a buffer that will never flush, returning the `.fdt` file it
+    /// was writing, for the caller to release.
+    pub(crate) fn discard(self) -> Option<String> {
+        let name = self.reserved.as_ref().map(|(name, _)| self.fdt_name(name));
+        drop(self.writer);
+        name
     }
 }
 
