@@ -260,8 +260,8 @@ impl PluggablePolicy {
 #[derive(Default)]
 struct Holds {
     files: HashMap<u64, Vec<String>>,
-    /// Near-real-time snapshots' pins: dropping one hands its files back to
-    /// the writer, which releases them at its next flush or commit.
+    /// Near-real-time snapshots' pins: releasing the last reference to one
+    /// releases its files at once.
     nrt: HashMap<u64, Arc<lucene_index::nrt::NrtFileHold>>,
     next: u64,
 }
@@ -1666,7 +1666,18 @@ pub extern "C" fn ffi_engine_writer_release_hold(handle: u64, hold: u64) -> i32 
     guard(|| {
         with_writer(handle, |w| {
             let mut holds = w.maintenance();
-            if holds.nrt.remove(&hold).is_some() {
+            if let Some(nrt) = holds.nrt.remove(&hold) {
+                drop(holds);
+                // The last reference hands the files back to the writer;
+                // release them now, as Java's reader close does, rather than
+                // at the next flush or snapshot -- an index that goes idle
+                // after a merge would otherwise keep the merged-away segments
+                // on disk. A failed delete is not the writer's failure (Java's
+                // close listener ignores it): the file is unreferenced and the
+                // deleter's next sweep removes it.
+                if Arc::into_inner(nrt).is_some() {
+                    let _ = w.writer().with_writer(|iw| iw.release_nrt_holds());
+                }
                 return Ok(());
             }
             let Some(files) = holds.files.remove(&hold) else {
@@ -2042,7 +2053,7 @@ pub unsafe extern "C" fn ffi_engine_writer_force_merge(
         let generation = with_writer(handle, |w| {
             let _maintenance = w.maintenance();
             w.writer()
-                .with_writer(|iw| {
+                .with_writer_merges_aborted(|iw| {
                     if only_deletes != 0 {
                         iw.force_merge_deletes()
                     } else {
@@ -2599,6 +2610,95 @@ mod tests {
         let per_doc = s[STAT_RAM_BYTES] / n;
         assert!(per_doc < 850, "{per_doc} bytes per document");
         ffi_engine_writer_close(h);
+    }
+
+    /// A buffer writes its stored fields to its segment's `.fdt` as they
+    /// arrive, so they are not charged as buffered RAM; a sweep for
+    /// unreferenced files leaves that file alone, the commit reads them back
+    /// whole, and a close that discards the buffer deletes the file.
+    #[test]
+    fn a_buffer_writes_its_stored_fields_to_disk_as_it_fills() {
+        let fdt_files = |tmp: &TempDir| -> Vec<String> {
+            FsDirectory::open(tmp.path())
+                .list_all()
+                .unwrap()
+                .into_iter()
+                .filter(|n| n.ends_with(".fdt"))
+                .collect()
+        };
+        let add_docs = |h: u64, f: &Numbers, n: usize| {
+            let mut x: u64 = 0x2545_f491_4f6c_dd1d;
+            for d in 0..n {
+                let source: Vec<u8> = (0..2000)
+                    .map(|_| {
+                        x ^= x << 13;
+                        x ^= x >> 7;
+                        x ^= x << 17;
+                        b'a' + (x % 26) as u8
+                    })
+                    .collect();
+                let id = format!("{d}");
+                let b = Blob::default()
+                    .u8(OP_ADD)
+                    .i32(1)
+                    .i32(1)
+                    .i32(f.id)
+                    .u8(1)
+                    .bytes(&source)
+                    .i32(1)
+                    .i32(f.id)
+                    .u8(0)
+                    .i32(1)
+                    .bytes(id.as_bytes())
+                    .i32(1)
+                    .u8(0)
+                    .i32(1)
+                    .i32(f.seq)
+                    .u8(0)
+                    .i64(d as i64)
+                    .i32(0);
+                assert_eq!(apply(h, &b.0), 0, "{}", crate::error::last_error());
+            }
+        };
+        let n = 3000;
+        let tmp = empty_index("engine-writer-stored-on-disk");
+        let h = open_with(&tmp, 1024.0, 0, i32::MAX);
+        let f = setup(h);
+        add_docs(h, &f, n);
+        let s = stats(h);
+        assert_eq!(s[STAT_SEGMENTS], 0, "nothing flushed");
+        assert!(
+            s[STAT_RAM_BYTES] / (n as i64) < 1000,
+            "{} bytes per document",
+            s[STAT_RAM_BYTES] / (n as i64)
+        );
+        assert!(
+            !fdt_files(&tmp).is_empty(),
+            "the .fdt is on disk before the flush"
+        );
+        // A sweep for unreferenced files leaves the buffer's file alone.
+        lookup(h)
+            .unwrap()
+            .writer()
+            .with_writer(|iw| iw.delete_unused_files())
+            .unwrap();
+        commit(h, &[]);
+        let stored: Vec<String> = stored_ids_and_bp(&tmp)
+            .into_iter()
+            .flat_map(|(values, _)| values)
+            .collect();
+        assert_eq!(stored.len(), n);
+        assert!(stored.iter().all(|v| v.len() == 2000));
+        check(&tmp);
+        ffi_engine_writer_close(h);
+
+        let tmp = empty_index("engine-writer-stored-discarded");
+        let h = open_with(&tmp, 1024.0, 0, i32::MAX);
+        let f = setup(h);
+        add_docs(h, &f, n);
+        assert!(!fdt_files(&tmp).is_empty());
+        ffi_engine_writer_close(h);
+        assert!(fdt_files(&tmp).is_empty(), "{:?}", fdt_files(&tmp));
     }
 
     /// The ids stored in the newest commit's segments, in doc-id order, and
@@ -3778,6 +3878,72 @@ mod tests {
         assert_eq!(ffi_engine_writer_close(h), 0);
     }
 
+    /// Closing the last reader over merged-away segments deletes their files
+    /// at once, with no write, flush or refresh after it: an index that goes
+    /// idle after a force merge must not keep both copies on disk.
+    #[test]
+    fn releasing_an_nrt_hold_deletes_merged_away_files_at_once() {
+        let tmp = empty_index("engine-writer-nrt-release");
+        let h = open(&tmp, 0);
+        let f = setup(h);
+        for (i, id) in ["a", "b", "c"].iter().enumerate() {
+            let add = doc(
+                Blob::default().u8(OP_ADD).i32(1),
+                &f,
+                id,
+                &["w"],
+                i as i64,
+                false,
+            );
+            assert_eq!(apply(h, &add.0), 0);
+            commit(h, &[]);
+        }
+        let snapshot = |h: u64| {
+            let (mut ptr, mut len, mut hold, mut gen) = (std::ptr::null_mut(), 0usize, 0u64, 0i64);
+            // SAFETY: live out-pointers.
+            let rc = unsafe {
+                ffi_engine_writer_nrt_snapshot(h, &mut ptr, &mut len, &mut hold, &mut gen)
+            };
+            assert_eq!(rc, 0, "{}", crate::error::last_error());
+            // SAFETY: the buffer the call gave, freed once.
+            unsafe { crate::ffm_bridge::ffi_jvm_free_bytes(ptr, len) };
+            hold
+        };
+        let old = snapshot(h);
+        let mut gen = 0;
+        // SAFETY: live out-pointer.
+        assert_eq!(
+            unsafe { ffi_engine_writer_force_merge(h, 1, 0, &mut gen) },
+            0
+        );
+        let gens = generations(h);
+        let older: Vec<i64> = gens.iter().copied().filter(|&g| g != gen).collect();
+        // SAFETY: live slice.
+        assert_eq!(
+            unsafe { ffi_engine_writer_delete_commits(h, older.as_ptr(), older.len()) },
+            0
+        );
+        let new = snapshot(h);
+        let dir = FsDirectory::open(tmp.path());
+        let merged_away = |n: &String| ["_0.", "_1.", "_2."].iter().any(|p| n.starts_with(p));
+        let before = dir.list_all().unwrap();
+        for p in ["_0.", "_1.", "_2."] {
+            assert!(
+                before.iter().any(|n| n.starts_with(p)),
+                "the open reader keeps {p}*: {before:?}"
+            );
+        }
+        assert_eq!(ffi_engine_writer_release_hold(h, old), 0);
+        let after = dir.list_all().unwrap();
+        assert!(
+            !after.iter().any(merged_away),
+            "the released segments' files are gone: {after:?}"
+        );
+        assert_eq!(ffi_engine_writer_release_hold(h, new), 0);
+        check(&tmp);
+        assert_eq!(ffi_engine_writer_close(h), 0);
+    }
+
     #[test]
     fn a_refused_document_is_not_tragic_but_a_panic_is() {
         let tmp = empty_index("engine-writer-failures");
@@ -4514,7 +4680,7 @@ mod tests {
         // A view whose buffers were published since reads their segments,
         // and finds what it found before they were. (Enough documents that
         // the buffer is one chunk again: see `a_growing_buffer_is_read_as_chunks`.)
-        (41..47).for_each(add);
+        (41..70).for_each(add);
         // SAFETY: live out-pointers.
         let rc = unsafe { ffi_engine_writer_live_view_open(h, gen, &mut view, &mut ptr, &mut len) };
         assert_eq!(rc, 0, "{}", crate::error::last_error());
@@ -5048,6 +5214,7 @@ mod tests {
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(2000);
             let mut n = 0;
+            let mut total = std::time::Duration::ZERO;
             buffer(0, docs);
             n += docs;
             for round in 0..live_rounds {
@@ -5064,11 +5231,18 @@ mod tests {
                 // SAFETY: a live out-pointer.
                 let rc = unsafe { ffi_live_view_reader(reader, view, &mut whole) };
                 assert_eq!(rc, 0, "{}", crate::error::last_error());
-                eprintln!("round {round} ({n} docs): reader {:?}", t.elapsed());
+                let took = t.elapsed();
+                total += took;
+                let w = crate::jvm_reader::lookup(whole, "test").unwrap();
+                eprintln!(
+                    "round {round} ({n} docs): reader {took:?}, {} leaves",
+                    w.reader.segment_readers().len()
+                );
                 assert_eq!(ffi_live_view_close(view), 0);
                 buffer(n, n + step);
                 n += step;
             }
+            eprintln!("views' readers took {total:?} in all");
             assert_eq!(crate::jvm_reader::ffi_close_jvm_reader(reader), 0);
             ffi_engine_writer_close(h);
             return;

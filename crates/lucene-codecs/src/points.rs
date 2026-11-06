@@ -1208,6 +1208,14 @@ pub trait IntersectVisitor {
     fn grow(&mut self, count: usize) {
         let _ = count;
     }
+    /// A subtree of `count` points entirely inside the query, which
+    /// [`PointsReader::count_points`] counts by its size without visiting a
+    /// document. The cell is the one the last [`Self::compare`] saw, so a
+    /// visitor counting several intervals in one walk can tell which one the
+    /// points fall in. Ignored by default.
+    fn visit_inside_count(&mut self, count: i64) {
+        let _ = count;
+    }
 }
 
 /// One inner node's split descriptor, decoded the way
@@ -1905,7 +1913,11 @@ fn count_node<V: IntersectVisitor>(
 ) -> Result<i64> {
     match visitor.compare(&ctx.min, &ctx.max) {
         Relation::CellOutsideQuery => Ok(0),
-        Relation::CellInsideQuery => ctx.field.subtree_size(node_id),
+        Relation::CellInsideQuery => {
+            let count = ctx.field.subtree_size(node_id)?;
+            visitor.visit_inside_count(count);
+            Ok(count)
+        }
         Relation::CellCrossesQuery if node_id >= ctx.field.num_leaves => {
             let mut kdd_input = SliceInput::new(ctx.kdd);
             seek_leaf_block(&mut kdd_input, fp)?;

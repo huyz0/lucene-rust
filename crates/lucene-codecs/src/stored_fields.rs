@@ -38,6 +38,7 @@ use std::sync::Arc;
 use lucene_store::codec_util::{self, ID_LENGTH};
 use lucene_store::data_input::{DataInput, SliceInput};
 use lucene_store::data_output::DataOutput;
+use lucene_store::index_output::FsIndexOutput;
 
 use crate::compression::{self, CompressingFormat, Compression, Compressor};
 use crate::direct_monotonic;
@@ -1333,6 +1334,10 @@ pub fn write_best_speed(
     writer.finish()
 }
 
+/// How many buffered `.fdt` bytes a [`StoredFieldsWriter::stream_to`]
+/// writer keeps before handing them to its output.
+pub const SPILL_BYTES: usize = 1 << 20;
+
 /// Lucene's per-mode chunking parameters, from the two
 /// `Lucene90CompressingStoredFieldsFormat` constructions in
 /// `Lucene90StoredFieldsFormat.fieldsFormat`: a chunk closes as soon as its
@@ -1376,6 +1381,11 @@ pub struct StoredFieldsWriter {
     segment_id: [u8; ID_LENGTH],
     segment_suffix: String,
     fdt: Vec<u8>,
+    /// `.fdt` bytes already handed to an output by [`Self::spill_fdt`]; `fdt`
+    /// holds what follows them.
+    fdt_spilled: u64,
+    /// Where [`Self::stream_to`] sends the `.fdt`, if anywhere.
+    fdt_out: Option<FsIndexOutput>,
     /// Cumulative doc counts, one per chunk written so far, seeded with `0`
     /// -- `write_index_and_meta` appends nothing, so the last entry doubles
     /// as `.fdx`'s trailing `maxDoc` sentinel.
@@ -1439,6 +1449,8 @@ impl StoredFieldsWriter {
             segment_id: *segment_id,
             segment_suffix: segment_suffix.to_string(),
             fdt,
+            fdt_spilled: 0,
+            fdt_out: None,
             docs_values: vec![0],
             start_pointers_values: vec![start],
             num_dirty_chunks: 0,
@@ -1474,6 +1486,12 @@ impl StoredFieldsWriter {
     /// get at [`Self::finish`]. A buffer streams its documents in before
     /// the flush names its segment.
     pub fn set_segment_id(&mut self, segment_id: &[u8; ID_LENGTH]) {
+        // Once spilled, the header is on disk and the buffer's start is chunk
+        // data, not the id.
+        debug_assert_eq!(self.fdt_spilled, 0, "set_segment_id after a spill");
+        if self.fdt_spilled > 0 {
+            return;
+        }
         // `CodecUtil.writeIndexHeader`: the codec header, then the id.
         let start = codec_util::header_length(self.mode.data_codec());
         if let Some(id) = self.fdt.get_mut(start..start.saturating_add(ID_LENGTH)) {
@@ -1618,7 +1636,75 @@ impl StoredFieldsWriter {
     /// and after the last chunk is `maxPointer`).
     fn record_chunk(&mut self) {
         self.docs_values.push(self.doc_base as i64);
-        self.start_pointers_values.push(self.fdt.len() as i64);
+        self.start_pointers_values.push(self.fdt_pointer());
+        if self.fdt.len() >= SPILL_BYTES {
+            self.spill_fdt();
+        }
+    }
+
+    /// The `.fdt` bytes held in memory.
+    pub fn buffered_fdt_bytes(&self) -> usize {
+        self.fdt.len()
+    }
+
+    /// The `.fdt` file pointer: bytes spilled plus bytes buffered.
+    fn fdt_pointer(&self) -> i64 {
+        // ARITH: a file length, far below `i64::MAX`.
+        #[allow(clippy::arithmetic_side_effects)]
+        let pointer = self.fdt_spilled + self.fdt.len() as u64;
+        pointer as i64
+    }
+
+    /// Streams the `.fdt` to `out` from here on: whenever a chunk leaves
+    /// more than [`SPILL_BYTES`] buffered, the buffer goes to `out`, so a long
+    /// write (a merge) holds about a chunk's worth instead of the whole file.
+    /// Finish with [`Self::finish_streamed`]. [`Self::set_segment_id`] must
+    /// come before: the header it rewrites leaves with the first spill.
+    pub fn stream_to(&mut self, out: FsIndexOutput) {
+        self.fdt_out = Some(out);
+    }
+
+    fn spill_fdt(&mut self) {
+        if let Some(out) = self.fdt_out.as_mut() {
+            out.write_bytes(&self.fdt);
+            // ARITH: a file length.
+            #[allow(clippy::arithmetic_side_effects)]
+            {
+                self.fdt_spilled += self.fdt.len() as u64;
+            }
+            self.fdt.clear();
+        }
+    }
+
+    /// [`Self::finish`] for a writer set to [`Self::stream_to`]: writes the
+    /// rest of the `.fdt` and its footer to the output and hands it back for
+    /// the caller to close, with `.fdx` and `.fdm`. A writer that was never
+    /// streamed returns `None` for the output and its whole `.fdt` is lost, so
+    /// callers only use this after [`Self::stream_to`].
+    pub fn finish_streamed(mut self) -> (Option<FsIndexOutput>, Vec<u8>, Vec<u8>) {
+        if self.num_buffered_docs() > 0 {
+            self.flush(true);
+        }
+        let max_doc = self.doc_base;
+        let max_pointer = self.fdt_pointer();
+        self.spill_fdt();
+        let Some(mut out) = self.fdt_out.take() else {
+            return (None, Vec::new(), Vec::new());
+        };
+        codec_util::write_footer_to(&mut out);
+        let (fdx, fdm) = write_index_and_meta(
+            &self.segment_id,
+            &self.segment_suffix,
+            max_doc,
+            &self.docs_values,
+            &self.start_pointers_values,
+            max_pointer,
+            self.chunk_size as i32,
+            self.mode.block_shift() as u32,
+            self.num_dirty_chunks,
+            self.num_dirty_docs,
+        );
+        (Some(out), fdx, fdm)
     }
 
     /// VISITOR path: serialize and buffer one parsed document.
@@ -1894,6 +1980,10 @@ impl StoredFieldsWriter {
             self.flush(true);
         }
         let max_doc = self.doc_base;
+        debug_assert!(
+            self.fdt_out.is_none(),
+            "a streamed writer finishes streamed"
+        );
         let max_pointer = self.fdt.len() as i64;
         codec_util::write_footer(&mut self.fdt);
         let (fdx, fdm) = write_index_and_meta(
@@ -4241,6 +4331,67 @@ mod tests {
         // Every chunk was copied, so nothing was recompressed: the merged
         // `.fdt` is the two sources' chunk bodies plus rebased headers.
         assert_eq!(merged.num_chunks(), ra.num_chunks() + rb.num_chunks());
+    }
+
+    #[test]
+    fn a_streamed_fdt_is_byte_for_byte_the_buffered_one() {
+        use lucene_store::Directory;
+        // Incompressible values, so the `.fdt` passes `SPILL_BYTES` several
+        // times and the chunk pointers cross spills.
+        let mut x: u64 = 0x9e37_79b9_7f4a_7c15;
+        let docs: Vec<Document> = (0..3000)
+            .map(|i| {
+                let bytes: Vec<u8> = (0..1500)
+                    .map(|_| {
+                        x ^= x << 13;
+                        x ^= x >> 7;
+                        x ^= x << 17;
+                        x as u8
+                    })
+                    .collect();
+                Document {
+                    fields: vec![
+                        StoredField {
+                            field_number: 0,
+                            value: FieldValue::Binary(bytes),
+                        },
+                        StoredField {
+                            field_number: 1,
+                            value: FieldValue::Long(i),
+                        },
+                    ],
+                }
+            })
+            .collect();
+        for mode in [Mode::BestSpeed, Mode::BestCompression] {
+            let mut buffered = StoredFieldsWriter::new(mode, &id_write(), "");
+            for d in &docs {
+                buffered.add_document(d);
+            }
+            let (fdt, fdx, fdm) = buffered.finish();
+            assert!(fdt.len() > 3 * SPILL_BYTES, "{} bytes", fdt.len());
+
+            let root = lucene_util::test_support::TempDir::new("stored-spill");
+            let dir = lucene_store::FsDirectory::open(root.path());
+            let mut streamed = StoredFieldsWriter::new(mode, &id_write(), "");
+            streamed.stream_to(dir.create_output("_0.fdt").unwrap());
+            for d in &docs {
+                streamed.add_document(d);
+            }
+            let (out, sfdx, sfdm) = streamed.finish_streamed();
+            out.expect("streamed").close().unwrap();
+            let sfdt = dir.open("_0.fdt").unwrap();
+            assert!(sfdt.as_ref() == fdt.as_slice(), "{mode:?} .fdt differs");
+            assert_eq!((sfdx, sfdm), (fdx.clone(), fdm.clone()), "{mode:?}");
+            let reader = open(&fdt, &fdx, &fdm, &id_write(), "").unwrap();
+            assert_eq!(reader.max_doc(), 3000);
+            let last = reader.document(2999).unwrap();
+            assert!(matches!(last.fields[1].value, FieldValue::Long(2999)));
+            match (&last.fields[0].value, &docs[2999].fields[0].value) {
+                (FieldValue::Binary(a), FieldValue::Binary(b)) => assert_eq!(a, b),
+                other => panic!("{other:?}"),
+            }
+        }
     }
 
     #[test]

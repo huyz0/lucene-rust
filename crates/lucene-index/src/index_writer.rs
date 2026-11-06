@@ -1605,27 +1605,44 @@ impl IndexingConfig {
     /// held to that rate, as `IndexWriter.mergeMiddle` writes through its
     /// rate-limited merge directory.
     pub(crate) fn run_merge(&self, dir: &dyn Directory, plan: &MergePlan) -> Result<MergeOutcome> {
+        let progress = std::sync::Arc::new(crate::merge_rate_limiter::OneMergeProgress::new());
+        self.run_merge_with_progress(dir, plan, &progress)
+    }
+
+    /// [`Self::run_merge`], aborted through `progress`: a throttled merge
+    /// stops at its next write, an unthrottled one (no rate to check against)
+    /// once its writes are done. Either way an aborted merge fails with
+    /// [`Error::MergeAborted`].
+    pub(crate) fn run_merge_with_progress(
+        &self,
+        dir: &dyn Directory,
+        plan: &MergePlan,
+        progress: &std::sync::Arc<crate::merge_rate_limiter::OneMergeProgress>,
+    ) -> Result<MergeOutcome> {
         // Every file of the merge is written under one
         // `IOContext(merge.getStoreMergeInfo())`.
         let estimate = Self::estimated_merge_bytes(dir, plan);
-        let Some(mb_per_sec) = self.merge_mb_per_sec else {
-            return self
-                .run_merge_unthrottled(&lucene_store::EstimatedWrites::new(dir, estimate), plan);
+        let outcome = match self.merge_mb_per_sec {
+            None => {
+                self.run_merge_unthrottled(&lucene_store::EstimatedWrites::new(dir, estimate), plan)
+            }
+            Some(mb_per_sec) => {
+                let limiter =
+                    std::sync::Arc::new(crate::merge_rate_limiter::MergeRateLimiter::new(
+                        std::sync::Arc::clone(progress),
+                    ));
+                lucene_store::RateLimiter::set_mb_per_sec(&*limiter, mb_per_sec);
+                let merge_dir = crate::merge_rate_limiter::MergeDirectory::new(dir, limiter);
+                self.run_merge_unthrottled(
+                    &lucene_store::EstimatedWrites::new(&merge_dir, estimate),
+                    plan,
+                )
+            }
         };
-        let progress = std::sync::Arc::new(crate::merge_rate_limiter::OneMergeProgress::new());
-        let limiter = std::sync::Arc::new(crate::merge_rate_limiter::MergeRateLimiter::new(
-            std::sync::Arc::clone(&progress),
-        ));
-        lucene_store::RateLimiter::set_mb_per_sec(&*limiter, mb_per_sec);
-        let merge_dir = crate::merge_rate_limiter::MergeDirectory::new(dir, limiter);
-        let outcome = self.run_merge_unthrottled(
-            &lucene_store::EstimatedWrites::new(&merge_dir, estimate),
-            plan,
-        )?;
         if progress.is_aborted() {
             return Err(Error::MergeAborted);
         }
-        Ok(outcome)
+        outcome
     }
 
     /// The postings format `field` is routed to.
@@ -1685,17 +1702,19 @@ impl IndexingConfig {
         )?)
     }
 
-    /// [`Self::run_merge`], with every output written through `limiter` when
-    /// a merge scheduler supplies one (`MergeScheduler.wrapForMerge`) instead
-    /// of the writer's own configured rate.
+    /// [`Self::run_merge_with_progress`], with every output written through
+    /// `limiter` when a merge scheduler supplies one
+    /// (`MergeScheduler.wrapForMerge`) instead of the writer's own configured
+    /// rate. A supplied limiter carries its own progress.
     pub(crate) fn run_merge_limited(
         &self,
         dir: &dyn Directory,
         plan: &MergePlan,
         limiter: Option<std::sync::Arc<crate::merge_rate_limiter::MergeRateLimiter>>,
+        progress: &std::sync::Arc<crate::merge_rate_limiter::OneMergeProgress>,
     ) -> Result<MergeOutcome> {
         let Some(limiter) = limiter else {
-            return self.run_merge(dir, plan);
+            return self.run_merge_with_progress(dir, plan, progress);
         };
         // The same `IOContext(merge.getStoreMergeInfo())` as `run_merge`.
         let estimate = Self::estimated_merge_bytes(dir, plan);
@@ -1704,11 +1723,11 @@ impl IndexingConfig {
         let outcome = self.run_merge_unthrottled(
             &lucene_store::EstimatedWrites::new(&merge_dir, estimate),
             plan,
-        )?;
+        );
         if progress.is_aborted() {
             return Err(Error::MergeAborted);
         }
-        Ok(outcome)
+        outcome
     }
 
     /// [`Self::run_merge`] with no rate limit.
@@ -8652,7 +8671,7 @@ impl IndexWriter<'_> {
         // the global packet first and only then reads `nextGen` for the new
         // segment, which is exactly what keeps the new segment out of the
         // packets that predate it (`FrozenBufferedUpdates.applies_to`).
-        let ticket = self.begin_segment();
+        let ticket = self.begin_segment(None);
         let (segment_name, segment_id) = (ticket.segment_name.clone(), ticket.segment_id);
 
         // Installed consumers can create and write files during the build.
@@ -8740,15 +8759,36 @@ impl IndexWriter<'_> {
     /// *later* ticket, so it gets a higher generation than this segment and
     /// applies to it. Pushed here instead, it would sort below this segment
     /// and skip it.
-    pub(crate) fn begin_segment(&mut self) -> SegmentTicket {
+    ///
+    /// `reserved` is a name and id [`Self::reserve_segment`] handed out
+    /// earlier, for a buffer that started writing its segment's files.
+    pub(crate) fn begin_segment(
+        &mut self,
+        reserved: Option<&(String, [u8; ID_LENGTH])>,
+    ) -> SegmentTicket {
         let global = self.delete_queue.freeze_global_buffer();
-        let segment_name = self.new_segment_name();
-        let segment_id = generate_segment_id(self.segment_infos.counter);
+        let (segment_name, segment_id) = match reserved {
+            Some((name, id)) => (name.clone(), *id),
+            None => self.reserve_segment(),
+        };
         SegmentTicket {
             segment_name,
             segment_id,
             global,
         }
+    }
+
+    /// A new segment's name and id, taken now for a segment written later.
+    pub(crate) fn reserve_segment(&mut self) -> (String, [u8; ID_LENGTH]) {
+        let segment_name = self.new_segment_name();
+        let segment_id = generate_segment_id(self.segment_infos.counter);
+        (segment_name, segment_id)
+    }
+
+    /// Pins files a buffer writes before its segment exists against the
+    /// deleter's sweeps, until [`Self::release_files`].
+    pub(crate) fn hold_new_files(&mut self, files: &[String]) {
+        self.deleter.hold_files(files);
     }
 
     /// A ticket whose segment could not be built: its frozen packet still

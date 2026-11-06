@@ -41,7 +41,7 @@ use crate::segment_infos::{SegmentCommitInfo, SegmentInfos};
 
 /// Files an NRT reader pins against deletion. Dropping it hands them back
 /// to the writer that pinned them, which releases them at its next
-/// operation.
+/// operation or at [`IndexWriter::release_nrt_holds`].
 pub struct NrtFileHold {
     files: Vec<String>,
     returned: Arc<Mutex<Vec<Vec<String>>>>,
@@ -227,15 +227,23 @@ impl IndexWriter<'_> {
     }
 
     /// Releases every pin a dropped NRT reader handed back
-    /// (`StandardDirectoryReader.doClose`'s `decRefDeleter`).
-    pub(crate) fn release_nrt_holds(&mut self) -> Result<()> {
+    /// (`StandardDirectoryReader.doClose`'s `decRefDeleter`), deleting the
+    /// files nothing else references. The writer also does this at its next
+    /// flush, commit or snapshot; call it after closing a reader to reclaim
+    /// the disk without waiting for one.
+    pub fn release_nrt_holds(&mut self) -> Result<()> {
         self.write_pending_try_changes()?;
         let returned: Vec<Vec<String>> =
             std::mem::take(&mut *self.nrt.returned.lock().unwrap_or_else(|p| p.into_inner()));
+        // Every group is released even when one fails: the dropped readers'
+        // pins are gone either way, and stopping would leak the rest.
+        let mut first = None;
         for files in returned {
-            self.release_files(&files)?;
+            if let Err(e) = self.release_files(&files) {
+                first.get_or_insert(e);
+            }
         }
-        Ok(())
+        first.map_or(Ok(()), Err)
     }
 }
 
