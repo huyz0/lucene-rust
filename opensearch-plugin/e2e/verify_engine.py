@@ -577,6 +577,17 @@ def realtime():
     check(after - before >= 4 + len(queries) + 1 + len(sorts), f"realtime: searches after updates stay live ({after - before})")
     for idx in (rt, ref):
         must("DELETE", f"/{idx}")
+    # Segment replication: replicas copy segments and have no buffers, so searches go to the
+    # primary (the replica here is unassigned: the search must still answer from the primary).
+    seg = "rt_segrep"
+    req("DELETE", f"/{seg}")
+    create(seg, True, {"index.lucene_rust.realtime_search": True, "index.replication.type": "SEGMENT",
+                       "number_of_replicas": 1}, flat)
+    must("GET", f"/_cluster/health/{seg}?wait_for_status=yellow&timeout=60s")
+    must("PUT", f"/{seg}/_doc/s1", {"body": "segrep fox", "tag": "t1"})
+    out = must("POST", f"/{seg}/_search?request_cache=false", {"query": {"match": {"body": "segrep"}}, "track_total_hits": True})
+    check(out["hits"]["total"]["value"] == 1, f"realtime under segment replication: {out['hits']['total']}")
+    must("DELETE", f"/{seg}")
 
 
 def wait_green(index, timeout=180):
