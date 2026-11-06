@@ -14,6 +14,25 @@
 //! merge re-clusters the merged segment's vectors from scratch
 //! ([`merge::merge_field`]).
 //!
+//! # Search depth
+//!
+//! [`SearchParams`] fixes the clusters probed and the candidates reranked
+//! ([`Probes::Fixed`], [`Rerank::Fixed`]), or leaves them to the field
+//! ([`Probes::Auto`], [`Rerank::Auto`]). Writing a field calibrates its
+//! depth for a target recall on a sample of its own vectors ([`calibrate`])
+//! and records it as a share of its clusters and a multiple of `k`. An
+//! automatic rerank also stops early: candidates go in estimate order, and
+//! once the `k`-th exact score beats every remaining candidate's estimate
+//! plus the quantizer's error margin
+//! (`lucene_vector_quant::QueryScorer::error_bounds`), the rest are
+//! skipped ([`Rerank::Bounded`] does the same up to a fixed cap).
+//!
+//! A search over several segments can share its running `k`-th exact score
+//! ([`SharedThreshold`], [`IvfReader::search_with`]): each probed cluster's
+//! radius bounds its entries' exact scores, so a segment skips the clusters
+//! (and candidates) that cannot enter the shared top `k`; and
+//! [`segment_nprobe`] splits a probe budget by the segments' sizes.
+//!
 //! # Files
 //!
 //! Three files, each with a Lucene index header (segment id and suffix) and
@@ -21,7 +40,7 @@
 //!
 //! | file | holds | access |
 //! |---|---|---|
-//! | `.ivm` meta | per field: similarity, rerank vector encoding, dimension, the quantizer's name and state, every centroid and cluster size | read whole at open; small enough to keep in memory |
+//! | `.ivm` meta | per field: similarity, rerank vector encoding, dimension, the quantizer's name and state, every centroid, cluster size and radius, the calibrated search depth | read whole at open; small enough to keep in memory |
 //! | `.ivp` postings | per cluster, contiguous: its slots (`u32` LE, ascending) then its codes as one block in the quantizer's layout (`Quantizer::write_block`: interleaved 32 at a time for fast scan with BBQ) | one range read per probed cluster |
 //! | `.ivv` vectors | full-precision vectors in cluster order, in the field's [`VectorEncoding`] (`f32`, `f16`, `bf16`, or 8-bit residuals from the cluster centroid with a per-vector scale; [`IvfParams::rerank_encoding`]), then a document-to-slot table | one small range read per reranked candidate |
 //!
@@ -35,15 +54,20 @@
 //! Readers take the postings and vectors files as a [`RangeSource`], which a
 //! caching blob reader can implement directly.
 
+pub mod calibrate;
 pub mod encoding;
 pub mod kmeans;
 pub mod merge;
 pub mod reader;
 pub mod writer;
 
+pub use calibrate::{Calibration, DEFAULT_CALIBRATION_RECALL};
 pub use encoding::VectorEncoding;
 pub use merge::{merge_field, MergeSource};
-pub use reader::{IvfField, IvfReader, RangeSource, ScoredDoc, SearchParams};
+pub use reader::{
+    segment_nprobe, IvfField, IvfReader, Probes, RangeSource, Rerank, ScoredDoc, SearchOutput,
+    SearchParams, SearchStats, SharedThreshold, DEFAULT_PROBE_FRACTION, DEFAULT_RERANK_MULTIPLE,
+};
 pub use writer::{FieldVectors, IvfFiles, IvfParams, IvfWriter};
 
 pub use lucene_vector_quant::Similarity;
@@ -68,8 +92,12 @@ pub const VERSION_BLOCK_LAYOUT: i32 = 1;
 /// A per-field rerank vector encoding byte in `.ivm`
 /// ([`VectorEncoding`]). Version 1 fields are read as `f32`.
 pub const VERSION_VECTOR_ENCODING: i32 = 2;
+/// Per-field cluster radii and calibrated search depth in `.ivm`
+/// ([`IvfField::radius`], [`IvfField::calibration`]). Version 1 and 2
+/// fields are read with neither.
+pub const VERSION_CALIBRATION: i32 = 3;
 /// The current format version.
-pub const VERSION_CURRENT: i32 = VERSION_VECTOR_ENCODING;
+pub const VERSION_CURRENT: i32 = VERSION_CALIBRATION;
 
 /// Errors building or reading an IVF index.
 #[derive(Debug, thiserror::Error)]

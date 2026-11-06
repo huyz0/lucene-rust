@@ -462,6 +462,12 @@ impl QueryScorer for RotatedQueryScorer<'_> {
     fn score_block(&self, codes: &[u8], scores: &mut [f32]) {
         self.inner.score_block(codes, scores);
     }
+
+    /// The inner scorer's bounds: the rotation keeps every norm and inner
+    /// product, so they hold for the original vectors too.
+    fn error_bounds(&self, codes: &[u8], scores: &[f32], bounds: &mut [f32]) -> bool {
+        self.inner.error_bounds(codes, scores, bounds)
+    }
 }
 
 #[cfg(test)]

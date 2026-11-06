@@ -17,6 +17,9 @@
 //!   maps each centroid once with [`Quantizer::prepare_centroid`]; the index
 //!   keeps the result and passes it to [`Quantizer::encode_prepared`] and
 //!   [`QueryScorer::set_prepared_centroid`].
+//! - [`QueryScorer::error_bounds`] gives each estimate a margin the exact
+//!   score stays under (with high probability; see each quantizer), so an
+//!   index can stop reranking once no remaining estimate can matter.
 //! - [`Quantizer::state`] is whatever the quantizer learned at training
 //!   time (empty for the per-vector quantizers). The index writes it beside
 //!   the quantizer's [`Quantizer::name`]; reading the index looks the name up
@@ -196,6 +199,74 @@ pub trait QueryScorer {
         for (s, code) in scores.iter_mut().zip(codes.chunks_exact(code_len)) {
             *s = self.score(code);
         }
+    }
+
+    /// Error margins of a block's estimates: for each code of `codes` (laid
+    /// out as for [`QueryScorer::score_block`]), whose estimate is the same
+    /// position of `scores`, writes into `bounds` a margin `b >= 0` such that
+    /// the code's exact score is at most `score + b`, in score space. Returns
+    /// `false` (the default) when the scorer cannot bound its error, leaving
+    /// `bounds` unspecified.
+    ///
+    /// The margins of the built-in quantizers are confidence bounds, not
+    /// guarantees (see each module): a margin is [`BOUND_CONFIDENCE`]
+    /// standard deviations of the estimate's error, or a worst case that
+    /// assumes no value fell outside its quantization interval.
+    ///
+    /// # Panics
+    ///
+    /// When `bounds` and `scores` differ in length, or `codes` is not a
+    /// block of that many codes.
+    fn error_bounds(&self, codes: &[u8], scores: &[f32], bounds: &mut [f32]) -> bool {
+        let _ = (codes, scores, bounds);
+        false
+    }
+}
+
+/// The standard deviations of estimate error a probabilistic error bound
+/// ([`QueryScorer::error_bounds`]) spans: RaBitQ's `epsilon_0` (Gao & Long,
+/// SIGMOD 2024), which its authors found to keep nearly every true neighbour
+/// above the bound.
+pub const BOUND_CONFIDENCE: f32 = 1.9;
+
+/// The margin to add to `score`, an estimate under `similarity`, when the
+/// similarity's raw quantity may be off by `raw_error` in the favourable
+/// direction: the squared distance `raw_error` smaller for `Euclidean`, the
+/// inner product `raw_error` larger otherwise. The raw estimate is recovered
+/// from the score, so a clamped score (zero for `DotProduct` and `Cosine`)
+/// is taken at the clamp. Never negative; infinite for a NaN `raw_error`,
+/// and for an infinite one except under `Euclidean`, whose score is at
+/// most 1.
+pub fn score_margin(similarity: Similarity, score: f32, raw_error: f32) -> f32 {
+    if raw_error.is_nan() {
+        return f32::INFINITY;
+    }
+    let upper = match similarity {
+        Similarity::Euclidean => {
+            let d2 = if score > 0.0 {
+                1.0 / score - 1.0
+            } else {
+                f32::INFINITY
+            };
+            1.0 / (1.0 + (d2.max(0.0) - raw_error).max(0.0))
+        }
+        Similarity::DotProduct | Similarity::Cosine => {
+            ((1.0 + (2.0 * score - 1.0) + raw_error) / 2.0).max(0.0)
+        }
+        Similarity::MaximumInnerProduct => {
+            let raw = if score < 1.0 {
+                1.0 - 1.0 / score
+            } else {
+                score - 1.0
+            };
+            lucene_util::quantization::scale_max_inner_product_score(raw + raw_error)
+        }
+    };
+    let margin = upper - score;
+    if margin.is_nan() {
+        f32::INFINITY
+    } else {
+        margin.max(0.0)
     }
 }
 
@@ -383,6 +454,147 @@ mod tests {
         assert_eq!(out, [0.0, 0.0]);
     }
 
+    #[test]
+    fn score_margins() {
+        use Similarity::*;
+        // Euclidean: score 0.5 is d^2 = 1; 0.5 closer is score 1 / 1.5.
+        assert!((score_margin(Euclidean, 0.5, 0.5) - (1.0 / 1.5 - 0.5)).abs() < 1e-6);
+        assert_eq!(score_margin(Euclidean, 0.5, f32::INFINITY), 0.5);
+        assert_eq!(score_margin(Euclidean, 0.0, 1.0), 0.0);
+        for sim in [DotProduct, Cosine] {
+            assert!((score_margin(sim, 0.75, 0.2) - 0.1).abs() < 1e-6);
+            // A clamped score is taken at the clamp, raw -1.
+            assert!((score_margin(sim, 0.0, 0.5) - 0.25).abs() < 1e-6);
+            assert_eq!(score_margin(sim, 0.5, f32::INFINITY), f32::INFINITY);
+        }
+        // MIP: raw 1 scores 2, raw 1.5 scores 2.5; raw -1 scores 0.5.
+        assert!((score_margin(MaximumInnerProduct, 2.0, 0.5) - 0.5).abs() < 1e-6);
+        assert!((score_margin(MaximumInnerProduct, 0.5, 2.0) - 1.5).abs() < 1e-6);
+        assert_eq!(score_margin(DotProduct, 0.5, f32::NAN), f32::INFINITY);
+        assert_eq!(score_margin(DotProduct, 0.5, -1.0), 0.0);
+        assert_eq!(score_margin(DotProduct, f32::NAN, 0.1), f32::INFINITY);
+    }
+
+    fn gaussian_vectors(n: usize, dim: usize, sim: Similarity, seed: u64) -> Vec<f32> {
+        let mut s = seed;
+        let mut next = || {
+            s = s
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((s >> 40) as f32 / (1u64 << 24) as f32) - 0.5
+        };
+        let mut out = Vec::with_capacity(n * dim);
+        for _ in 0..n {
+            let mut v: Vec<f32> = (0..dim)
+                .map(|d| {
+                    let g = next() + next() + next() + next();
+                    0.3 + g * if d % 5 == 0 { 3.0 } else { 1.0 }
+                })
+                .collect();
+            if matches!(sim, Similarity::DotProduct | Similarity::Cosine) {
+                let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+                v.iter_mut().for_each(|x| *x /= norm);
+            }
+            out.extend(v);
+        }
+        out
+    }
+
+    /// The share of codes whose exact score exceeds estimate plus margin,
+    /// and the mean margin, of `factory` over clustered data; `None` when
+    /// the scorer has no bounds.
+    fn bound_misses(
+        factory: &dyn QuantizerFactory,
+        sim: Similarity,
+        dim: usize,
+    ) -> Option<(f64, f64)> {
+        let n = 600;
+        let data = gaussian_vectors(n, dim, sim, 5);
+        let queries = gaussian_vectors(12, dim, sim, 6);
+        let q = factory.train(dim, sim, &data).unwrap();
+        let mut centroid = vec![0f32; dim];
+        for v in data.chunks_exact(dim) {
+            for (c, x) in centroid.iter_mut().zip(v) {
+                *c += x / n as f32;
+            }
+        }
+        let prepared = q.prepare_centroid(&centroid);
+        let target = prepared.as_deref().unwrap_or(&centroid);
+        let mut codes = vec![0u8; q.code_len() * n];
+        for (v, out) in data
+            .chunks_exact(dim)
+            .zip(codes.chunks_exact_mut(q.code_len()))
+        {
+            q.encode_prepared(v, target, out);
+        }
+        let mut block = Vec::new();
+        q.write_block(&codes, &mut block);
+        let (mut misses, mut total, mut margin) = (0usize, 0usize, 0f64);
+        for query in queries.chunks_exact(dim) {
+            let mut s = q.query_scorer(query);
+            s.set_prepared_centroid(target);
+            let mut est = vec![0f32; n];
+            s.score_block(&block, &mut est);
+            let mut bounds = vec![0f32; n];
+            if !s.error_bounds(&block, &est, &mut bounds) {
+                return None;
+            }
+            for ((v, &e), &b) in data.chunks_exact(dim).zip(&est).zip(&bounds) {
+                assert!(b >= 0.0 && b.is_finite(), "{} {sim:?}: bound {b}", q.name());
+                let exact = sim.score(query, v);
+                misses += usize::from(exact > e + b + 1e-6);
+                total += 1;
+                margin += f64::from(b);
+            }
+        }
+        Some((misses as f64 / total as f64, margin / total as f64))
+    }
+
+    #[test]
+    fn error_bounds_cover_the_exact_scores() {
+        use lucene_util::quantization::ScalarEncoding as E;
+        let factories: Vec<(Box<dyn QuantizerFactory>, f64)> = vec![
+            (Box::new(osq::OsqFactory::bbq()), 0.03),
+            (Box::new(osq::OsqFactory::new(E::DibitQueryNibble)), 0.03),
+            (Box::new(osq::OsqFactory::new(E::PackedNibble)), 0.03),
+            (Box::new(osq::OsqFactory::new(E::SevenBit)), 0.03),
+            (Box::new(osq::OsqFactory::new(E::UnsignedByte)), 0.03),
+            (Box::new(scalar::ScalarFactory::int7()), 0.01),
+            (Box::new(scalar::ScalarFactory::int4()), 0.01),
+            (Box::new(rabitq::ExRabitqFactory::new(2)), 0.03),
+            (Box::new(rabitq::ExRabitqFactory::new(4)), 0.03),
+            (Box::new(rabitq::ExRabitqFactory::new(7)), 0.03),
+            (
+                Box::new(rotation::RotatedFactory::new(Arc::new(
+                    osq::OsqFactory::bbq(),
+                ))),
+                0.03,
+            ),
+        ];
+        for sim in [
+            Similarity::Euclidean,
+            Similarity::DotProduct,
+            Similarity::Cosine,
+            Similarity::MaximumInnerProduct,
+        ] {
+            for (f, allowed) in &factories {
+                for dim in [37, 128] {
+                    let got = bound_misses(f.as_ref(), sim, dim);
+                    match got {
+                        Some((share, _)) => assert!(
+                            share <= *allowed,
+                            "{} {sim:?} {dim}: {share} of exact scores above the bound",
+                            f.name()
+                        ),
+                        None => assert!(
+                            f.name() == rabitq::NAME && sim == Similarity::MaximumInnerProduct
+                        ),
+                    }
+                }
+            }
+        }
+    }
+
     #[derive(Debug)]
     struct Constant;
     impl QueryScorer for Constant {
@@ -401,6 +613,11 @@ mod tests {
         assert_eq!(scores, [0.0; 3]);
         let mut none: [f32; 0] = [];
         Constant.score_block(&[], &mut none);
+    }
+
+    #[test]
+    fn bounds_are_unknown_by_default() {
+        assert!(!Constant.error_bounds(&[0; 4], &[1.0; 2], &mut [0.0; 2]));
     }
 
     #[test]

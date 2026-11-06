@@ -15,7 +15,11 @@
 //!   cluster entry counts (cluster count x vint),
 //!   for the int8 encoding, each cluster's own (primary) vector count
 //!   (cluster count x vint): cluster c's vectors are the slots from the sum
-//!   of the counts before it
+//!   of the counts before it,
+//!   from VERSION_CALIBRATION: cluster radii (cluster count x f32 LE: the
+//!   largest distance from the centroid of an entry's stored vector,
+//!   unit-normalized for Cosine), byte calibrated (0 or 1), and when 1:
+//!   f32 probe fraction, f32 rerank multiple (`Calibration`)
 //! Footer
 //! ```
 //!
@@ -45,7 +49,9 @@ use lucene_store::codec_util::{self, ID_LENGTH};
 use lucene_store::DataOutput;
 use lucene_vector_quant::QuantizerFactory;
 
+use crate::calibrate::{self, DEFAULT_CALIBRATION_RECALL};
 use crate::kmeans::{self, KMeansParams, SplitMix64};
+use crate::reader::IvfField;
 use crate::{
     similarity_ordinal, Error, Result, Similarity, VectorEncoding, META_CODEC, POSTINGS_CODEC,
     VECTORS_CODEC, VERSION_CURRENT,
@@ -73,6 +79,15 @@ pub struct IvfParams {
     /// search read: `f32` exactly, or `f16`, `bf16` or 8 bits for a half or
     /// about a quarter of the bytes per reranked candidate.
     pub rerank_encoding: VectorEncoding,
+    /// Calibrate the field's search depth for this recall at 10 hits
+    /// ([`crate::calibrate`]), in `(0, 1]`, and record it for
+    /// [`crate::Probes::Auto`] and [`crate::Rerank::Auto`] searches; `None`
+    /// records none, and those searches fall back to
+    /// [`crate::DEFAULT_PROBE_FRACTION`] and
+    /// [`crate::DEFAULT_RERANK_MULTIPLE`]. Calibration searches a sample of
+    /// 64 of the field's own vectors, a small fraction of the clustering's
+    /// cost.
+    pub calibration_recall: Option<f32>,
 }
 
 impl Default for IvfParams {
@@ -83,6 +98,7 @@ impl Default for IvfParams {
             training_sample: 25_000,
             spill: None,
             rerank_encoding: VectorEncoding::F32,
+            calibration_recall: Some(DEFAULT_CALIBRATION_RECALL),
         }
     }
 }
@@ -223,8 +239,8 @@ impl IvfWriter {
     ///
     /// # Errors
     ///
-    /// [`Error::IllegalArgument`] for a field written twice, a zero
-    /// dimension, a vector count that does not match the documents,
+    /// [`Error::IllegalArgument`] for a calibration recall outside `(0, 1]`,
+    /// a field written twice, a zero dimension, a vector count that does not match the documents,
     /// documents out of order, a non-finite value, or a value the rerank
     /// encoding cannot hold (beyond `f16`'s range); the quantizer's
     /// training errors.
@@ -238,6 +254,15 @@ impl IvfWriter {
         factory: &dyn QuantizerFactory,
         params: &IvfParams,
     ) -> Result<()> {
+        if params
+            .calibration_recall
+            .is_some_and(|t| !(t > 0.0 && t <= 1.0))
+        {
+            return Err(Error::IllegalArgument(format!(
+                "calibration recall {:?} is not in (0, 1]",
+                params.calibration_recall
+            )));
+        }
         self.check(field)?;
         let dim = field.dimension;
         let n = field.docs.len();
@@ -315,6 +340,12 @@ impl IvfWriter {
             entries.push((first as u32..(first + size) as u32).collect());
             first += size;
         }
+        // Each vector's primary and spilled cluster.
+        let mut clusters_of: Vec<[u32; 2]> = clustering
+            .assignments
+            .iter()
+            .map(|&a| [a, u32::MAX])
+            .collect();
         if let Some(lambda) = params.spill {
             // Spill by the metric search probes with: for unit vectors the
             // distance to a unit centroid ranks clusters as their dot does.
@@ -325,6 +356,7 @@ impl IvfWriter {
                 if c != u32::MAX {
                     entries[c as usize].push(slot_of[i]);
                 }
+                clusters_of[i][1] = c;
             }
             for e in &mut entries {
                 e.sort_unstable();
@@ -388,14 +420,72 @@ impl IvfWriter {
             self.vectors.write_bytes(&s.to_le_bytes());
         }
 
+        // Each cluster's radius over its entries' vectors as search decodes
+        // them, for the score bounds of shared-threshold searches.
+        let cosine = field.similarity == Similarity::Cosine;
+        let radii: Vec<f32> = entries
+            .par_iter()
+            .enumerate()
+            .map(|(c, e)| {
+                let centroid = kmeans::row(&clustering.centroids, dim, c);
+                let mut decoded = vec![0f32; dim];
+                let mut r2 = 0f32;
+                for &slot in e {
+                    let i = order[slot as usize] as usize;
+                    let v = if encoding == VectorEncoding::F32 {
+                        kmeans::row(&vectors, dim, i)
+                    } else {
+                        let primary = clustering.assignments[i] as usize;
+                        encoding.decode(
+                            &encoded[i * vector_bytes..(i + 1) * vector_bytes],
+                            kmeans::row(&clustering.centroids, dim, primary),
+                            &mut decoded,
+                        );
+                        if cosine {
+                            let _ = lucene_util::vector_util::l2normalize(&mut decoded, false);
+                        }
+                        &decoded
+                    };
+                    r2 = r2.max(lucene_util::simd::square_distance_f32(v, centroid));
+                }
+                r2.sqrt()
+            })
+            .collect();
+
+        let name = quantizer.name().to_string();
+        let state = quantizer.state();
+        let calibration = match params.calibration_recall {
+            Some(target) => {
+                let sizes: Vec<usize> = entries.iter().map(Vec::len).collect();
+                let probe = IvfField::in_memory(
+                    field.number,
+                    field.similarity,
+                    dim,
+                    quantizer,
+                    clustering.centroids.clone(),
+                    &sizes,
+                    postings_offset,
+                    order.iter().map(|&i| i as i32).collect(),
+                )?;
+                calibrate::calibrate(
+                    &probe,
+                    &self.postings,
+                    &vectors,
+                    &clusters_of,
+                    target,
+                    params.kmeans.seed ^ 0xca1_1b8a_7e5e_ed00,
+                )?
+            }
+            None => None,
+        };
+
         let m = &mut self.fields;
         m.write_bytes(&field.number.to_le_bytes());
         m.write_byte(similarity_ordinal(field.similarity));
         m.write_byte(encoding.ordinal());
         write_count(m, dim)?;
         write_count(m, n)?;
-        m.write_string(quantizer.name());
-        let state = quantizer.state();
+        m.write_string(&name);
         write_count(m, state.len())?;
         m.write_bytes(&state);
         write_count(m, nlist)?;
@@ -412,6 +502,17 @@ impl IvfWriter {
             for &size in &sizes {
                 write_count(m, size)?;
             }
+        }
+        for r in &radii {
+            m.write_bytes(&r.to_le_bytes());
+        }
+        match calibration {
+            Some(c) => {
+                m.write_byte(1);
+                m.write_bytes(&c.probe_fraction.to_le_bytes());
+                m.write_bytes(&c.rerank_multiple.to_le_bytes());
+            }
+            None => m.write_byte(0),
         }
         self.field_numbers.push(field.number);
         Ok(())

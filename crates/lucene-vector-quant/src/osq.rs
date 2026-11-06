@@ -47,7 +47,8 @@ const MINIMUM_MSE_GRID: [[f32; 2]; 8] = [
 ];
 
 /// Quantizes `query - centroid` to `bits` per dimension into `out` (whose
-/// tail past the dimension stays zero) and returns its corrective terms.
+/// tail past the dimension stays zero) and returns its corrective terms, the
+/// residual's squared norm and the squared norm of its quantization error.
 ///
 /// This is `OptimizedScalarQuantizer.scalarQuantize` without the interval
 /// refinement: Lucene refines a query's interval as it does a document's,
@@ -64,7 +65,7 @@ fn quantize_query(
     bits: u8,
     similarity: Similarity,
     out: &mut [u8],
-) -> QuantizationResult {
+) -> (QuantizationResult, f32, f32) {
     let dims = query.len() as f64;
     // Eight independent lanes, so the loop vectorizes; sums in `f64`, as
     // the variance below subtracts two of them.
@@ -97,16 +98,20 @@ fn quantize_query(
     let b = clamp(f64::from(grid[1]) * std + mean);
     let steps = ((1u32 << bits) - 1) as f32;
     let step_inv = if b > a { steps / (b - a) } else { 0.0 };
+    let step = if b > a { (b - a) / steps } else { 0.0 };
     let mut component_sum = 0i32;
+    let mut error2 = 0f32;
     for ((o, &q), &c) in out.iter_mut().zip(query).zip(centroid) {
         let x = (q - c).clamp(a, b);
         let level = ((x - a) * step_inv + 0.5).floor();
+        let e = q - c - (a + level * step);
+        error2 += e * e;
         // `level` is in 0..=steps (at most 255).
         let level = level as u8;
         component_sum += i32::from(level);
         *o = level;
     }
-    QuantizationResult {
+    let corrections = QuantizationResult {
         lower_interval: a,
         upper_interval: b,
         additional_correction: if similarity == Similarity::Euclidean {
@@ -115,7 +120,8 @@ fn quantize_query(
             simd::dot_f32(query, centroid)
         },
         quantized_component_sum: component_sum,
-    }
+    };
+    (corrections, norm2 as f32, error2)
 }
 
 /// Bytes of corrective terms after each code: three floats and an int.
@@ -332,6 +338,8 @@ impl Quantizer for OsqQuantizer {
                 quantized_component_sum: 0,
             },
             centroid_dp: 0.0,
+            residual_norm: 0.0,
+            query_error: 0.0,
             luts: vec![0u8; self.fast_scan_groups().saturating_mul(16)],
         })
     }
@@ -459,6 +467,10 @@ struct OsqQueryScorer<'q> {
     unpacked: Vec<u8>,
     corrections: QuantizationResult,
     centroid_dp: f32,
+    /// `|query - centroid|`.
+    residual_norm: f32,
+    /// The norm of the quantized residual's error, clipping included.
+    query_error: f32,
     /// For the fast-scan layout, one 16-entry table per bit plane and group
     /// of four dimensions: the query's dot product with every 4-bit pattern
     /// of document bits, weighted by the plane.
@@ -469,13 +481,16 @@ impl QueryScorer for OsqQueryScorer<'_> {
     fn set_centroid(&mut self, centroid: &[f32]) {
         assert_eq!(centroid.len(), self.q.dimension, "centroid dimension");
         let encoding = self.q.encoding;
-        self.corrections = quantize_query(
+        let (corrections, norm2, error2) = quantize_query(
             &self.query,
             centroid,
             encoding.query_bits(),
             self.q.similarity,
             &mut self.unpacked,
         );
+        self.corrections = corrections;
+        self.residual_norm = norm2.sqrt();
+        self.query_error = error2.sqrt();
         self.centroid_dp = if self.q.similarity == Similarity::Euclidean {
             0.0
         } else {
@@ -505,6 +520,58 @@ impl QueryScorer for OsqQueryScorer<'_> {
         for (s, code) in scores.iter_mut().zip(codes.chunks_exact(code_len)) {
             *s = self.score_code(code, &terms);
         }
+    }
+
+    /// Margins from both quantizations' errors. A document dimension in its
+    /// interval is off by at most half its step `lx`; the query's error
+    /// vector `e` is known exactly. Taking each as a random direction to the
+    /// other side, the inner product of the residuals is off by a deviation
+    /// of `sqrt((|y| lx / 2)^2 + (|x'| |e| / sqrt(dim))^2)`, `y` the query's
+    /// residual and `|x'| <= sqrt(dim) max(|lower|, |upper|)` the decoded
+    /// document's. The margin is [`crate::BOUND_CONFIDENCE`] such deviations
+    /// (twice that in squared distance for `Euclidean`).
+    // ARITH: `j` is below the block's code count, so every offset is inside
+    // `codes`, whose length the layout check fixes.
+    #[allow(clippy::arithmetic_side_effects)]
+    fn error_bounds(&self, codes: &[u8], scores: &[f32], bounds: &mut [f32]) -> bool {
+        assert_eq!(scores.len(), bounds.len(), "one bound per score");
+        assert_eq!(
+            codes.len(),
+            self.q.block_len(scores.len()),
+            "codes must hold one code per score"
+        );
+        let terms = self.terms();
+        let similarity = self.q.similarity;
+        let raw_scale = crate::BOUND_CONFIDENCE
+            * if similarity == Similarity::Euclidean {
+                2.0
+            } else {
+                1.0
+            };
+        let fast = self.q.fast_scan_planes() > 0;
+        let (block_bytes, nibbles) = (self.q.fast_scan_block_bytes(), self.luts.len());
+        let code_len = self.q.code_len();
+        for (j, (b, &s)) in bounds.iter_mut().zip(scores).enumerate() {
+            let at = if fast {
+                let (block, lane) = (j / FAST_SCAN_BLOCK, j % FAST_SCAN_BLOCK);
+                [
+                    block * block_bytes + nibbles + lane * 4,
+                    block * block_bytes + nibbles + (FAST_SCAN_BLOCK + lane) * 4,
+                ]
+            } else {
+                [
+                    j * code_len + self.q.packed,
+                    j * code_len + self.q.packed + 4,
+                ]
+            };
+            let (ax, bx) = (f32_at(codes, at[0]), f32_at(codes, at[1]));
+            let half_lx = (bx - ax).abs() * terms.scale / 2.0;
+            let doc = self.residual_norm * half_lx;
+            let query = ax.abs().max(bx.abs()) * self.query_error;
+            let sigma = (doc * doc + query * query).sqrt();
+            *b = crate::score_margin(similarity, s, raw_scale * sigma);
+        }
+        true
     }
 }
 

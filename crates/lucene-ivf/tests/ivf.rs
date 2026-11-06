@@ -554,6 +554,7 @@ fn clustering_params_are_honoured() {
             training_sample: 10,
             spill: None,
             rerank_encoding: VectorEncoding::F32,
+            calibration_recall: None,
         },
     )
     .unwrap();
@@ -928,6 +929,14 @@ fn rewrite(file: &[u8], codec: &str, version: i32, edit: impl FnOnce(&mut Vec<u8
     out
 }
 
+/// The bytes `VERSION_CALIBRATION` appends to the last field's meta entry:
+/// its radii and calibration.
+fn calibration_tail(files: &lucene_ivf::IvfFiles, field: i32) -> usize {
+    let r = open(files);
+    let f = r.field(field).unwrap();
+    f.clusters() * 4 + if f.calibration().is_some() { 9 } else { 1 }
+}
+
 /// In a one-field meta payload: field count (1 byte), field number (4),
 /// similarity (1), then the encoding byte.
 const ENCODING_AT: usize = 6;
@@ -940,7 +949,9 @@ fn version_one_files_read_as_f32() {
     let docs: Vec<i32> = (0..600).map(|d| d * 2).collect();
     let files = build_encoded(sim, dim, &docs, &data, VectorEncoding::F32);
     let v1 = lucene_ivf::VERSION_BLOCK_LAYOUT;
+    let tail = calibration_tail(&files, 1);
     let meta = rewrite(&files.meta, lucene_ivf::META_CODEC, v1, |p| {
+        p.truncate(p.len() - tail);
         p.remove(ENCODING_AT);
     });
     let postings = rewrite(&files.postings, lucene_ivf::POSTINGS_CODEC, v1, |_| {});
@@ -1114,10 +1125,12 @@ fn int8_residuals_with_spilling_and_bad_primary_counts() {
         .unwrap();
     assert_eq!(hits[0].doc, 0);
 
-    // One cluster: the last vint before the footer is its primary count.
+    // One cluster: the last vint before the radii and calibration is its
+    // primary count.
     let small = dataset(90, dim, 3, sim, 82);
     let docs: Vec<i32> = (0..90).collect();
     let files = build_encoded(sim, dim, &docs, &small, VectorEncoding::Int8);
+    let tail = calibration_tail(&files, 1);
     let registry = QuantizerRegistry::with_builtins();
     let with_primary = |count: u8| {
         rewrite(
@@ -1125,7 +1138,7 @@ fn int8_residuals_with_spilling_and_bad_primary_counts() {
             lucene_ivf::META_CODEC,
             lucene_ivf::VERSION_CURRENT,
             |p| {
-                let at = p.len() - 1;
+                let at = p.len() - 1 - tail;
                 assert_eq!(p[at], 90);
                 p[at] = count;
             },

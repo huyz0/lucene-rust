@@ -164,6 +164,11 @@ impl ScalarQuantizer {
         &self.interval
     }
 
+    /// The quantization step.
+    fn alpha(&self) -> f32 {
+        self.interval.constant_multiplier().sqrt()
+    }
+
     fn packed(&self) -> bool {
         self.interval.bits() <= 4
     }
@@ -236,10 +241,16 @@ impl Quantizer for ScalarQuantizer {
         assert_eq!(query.len(), self.dimension, "query dimension");
         let mut values = vec![0u8; self.unpacked_len()];
         let offset = self.quantize(query, &mut values);
+        let (lower, alpha) = (self.interval.lower_quantile(), self.alpha());
+        let query_abs_sum = values[..self.dimension]
+            .iter()
+            .map(|&v| (lower + alpha * f32::from(v)).abs())
+            .sum();
         Box::new(ScalarQueryScorer {
             q: self,
             values,
             offset,
+            query_abs_sum,
         })
     }
 
@@ -257,10 +268,50 @@ struct ScalarQueryScorer<'q> {
     q: &'q ScalarQuantizer,
     values: Vec<u8>,
     offset: f32,
+    /// `sum(|q'_i|)` over the dequantized query `q'`.
+    query_abs_sum: f32,
 }
 
 impl QueryScorer for ScalarQueryScorer<'_> {
     fn set_centroid(&mut self, _centroid: &[f32]) {}
+
+    /// Worst-case margins from the step `a`, assuming every value fell in
+    /// the interval `[lower, upper]` (the quantiles clip the rest, whose
+    /// error is not bounded). Each dequantized value is within `a / 2` of
+    /// the original. An inner product `<q, x>` is then within `a / 2
+    /// (sum|x'_i| + sum|q'_i|) + dim a^2 / 4` of the dequantized one, with
+    /// `sum|x'_i| <= dim max(|lower|, |upper|)`; a squared distance `d^2`
+    /// is above `d'^2 - a (2 sqrt(dim) d' + dim a)`, each coordinate of the
+    /// difference being within `a`.
+    fn error_bounds(&self, codes: &[u8], scores: &[f32], bounds: &mut [f32]) -> bool {
+        assert_eq!(scores.len(), bounds.len(), "one bound per score");
+        assert_eq!(
+            Some(codes.len()),
+            self.q.code_len().checked_mul(scores.len()),
+            "codes must hold one code per score"
+        );
+        let similarity = self.q.similarity;
+        let dims = self.q.dimension as f32;
+        let alpha = self.q.alpha();
+        let interval = &self.q.interval;
+        let largest = interval
+            .lower_quantile()
+            .abs()
+            .max(interval.upper_quantile().abs());
+        let dot_error =
+            alpha / 2.0 * (dims * largest + self.query_abs_sum) + dims * alpha * alpha / 4.0;
+        for (b, &s) in bounds.iter_mut().zip(scores) {
+            let raw_error = if similarity == Similarity::Euclidean {
+                // A zero score is an infinite distance.
+                let d = (1.0 / s - 1.0).max(0.0).sqrt();
+                alpha * (2.0 * dims.sqrt() * d + dims * alpha)
+            } else {
+                dot_error
+            };
+            *b = crate::score_margin(similarity, s, raw_error);
+        }
+        true
+    }
 
     fn score(&self, code: &[u8]) -> f32 {
         let (stored, tail) = code.split_at(self.q.value_bytes);

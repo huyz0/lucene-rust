@@ -290,6 +290,14 @@ const SEARCH_WINDOW: [[f32; 2]; 9] = [
     [0.75, 1.1],
 ];
 
+/// A ceiling on `tan` of the angle between a code `y` and the rotated
+/// residual `P r` it encodes, per bit width. After the rotation a residual's
+/// coordinates are near Gaussian whatever the data, so the angle depends on
+/// little but the bit width: over isotropic and skewed residuals of 25 to
+/// 1024 dimensions the largest values seen were 0.48, 0.32, 0.16, 0.085,
+/// 0.045, 0.025 and 0.011 at 2 to 8 bits.
+const TAN_CEILING: [f32; 9] = [1.0, 1.0, 0.5, 0.33, 0.17, 0.09, 0.05, 0.027, 0.012];
+
 /// Every rescaling factor.
 const FULL_WINDOW: [f32; 2] = [0.0, f32::INFINITY];
 
@@ -563,6 +571,8 @@ impl Quantizer for ExRabitqQuantizer {
             step: 0.0,
             offset_sum: 0.0,
             query_extra: 0.0,
+            z_norm: 0.0,
+            centroid_norm2: 0.0,
         })
     }
 
@@ -639,6 +649,10 @@ struct ExRabitqQueryScorer<'q> {
     offset_sum: f32,
     /// `|z|^2` for Euclidean, `<P c, P q>` otherwise.
     query_extra: f32,
+    /// `|z|`.
+    z_norm: f32,
+    /// `|c|^2`.
+    centroid_norm2: f32,
 }
 
 impl QueryScorer for ExRabitqQueryScorer<'_> {
@@ -696,6 +710,8 @@ impl QueryScorer for ExRabitqQueryScorer<'_> {
         } else {
             simd::dot_f32(&self.rotated, prepared)
         };
+        self.z_norm = norm2.sqrt();
+        self.centroid_norm2 = simd::dot_f32(prepared, prepared);
         for (q, lut) in self
             .values
             .chunks_exact(4)
@@ -765,6 +781,58 @@ impl QueryScorer for ExRabitqQueryScorer<'_> {
             return;
         }
         self.fast_scan(codes, scores);
+    }
+
+    /// RaBitQ's bound. The estimate of `<r, z>` is off by `<e, z>` for the
+    /// code's error `e = f y - P r`, `|e| = |r| tan(theta)`, plus `f <y, d>`
+    /// for the query's rounding `d` (at most half a step per dimension);
+    /// with the rotation making `e` a random direction to `z`, their
+    /// deviation is `|r| sqrt((tan(theta) |z|)^2 / n + step^2 / (12
+    /// cos(theta)^2))`, with `tan(theta)` at the bit width's ceiling. `|r|^2`
+    /// is the stored `extra` for `Euclidean` and `1 - 2 extra - |c|^2` for
+    /// `Cosine` and `DotProduct`, whose vectors are unit length; with no way
+    /// to recover `|r|` for `MaximumInnerProduct`, its error is unknown. The
+    /// margin is [`crate::BOUND_CONFIDENCE`] deviations (twice that in
+    /// squared distance for `Euclidean`).
+    // ARITH: `j` is below the block's code count, so every offset is inside
+    // `codes`, whose length the layout check fixes.
+    #[allow(clippy::arithmetic_side_effects)]
+    fn error_bounds(&self, codes: &[u8], scores: &[f32], bounds: &mut [f32]) -> bool {
+        let similarity = self.q.similarity;
+        if similarity == Similarity::MaximumInnerProduct {
+            return false;
+        }
+        assert_eq!(scores.len(), bounds.len(), "one bound per score");
+        assert_eq!(
+            codes.len(),
+            self.q.block_len(scores.len()),
+            "codes must hold one code per score"
+        );
+        let euclidean = similarity == Similarity::Euclidean;
+        let tan = TAN_CEILING[usize::from(self.q.bits)];
+        let doc = tan * self.z_norm / (self.q.dims as f32).sqrt();
+        let query = self.step * (1.0 + tan * tan).sqrt() / 12f32.sqrt();
+        let per_r = crate::BOUND_CONFIDENCE
+            * (doc * doc + query * query).sqrt()
+            * if euclidean { 2.0 } else { 1.0 };
+        let (planes, block_bytes, code_len) =
+            (self.q.planes(), self.q.block_bytes(), self.q.code_len());
+        let terms_at = usize::from(self.q.bits) * self.q.groups() * 16;
+        for (j, (b, &s)) in bounds.iter_mut().zip(scores).enumerate() {
+            let at = if planes {
+                (j / BLOCK) * block_bytes + terms_at + (2 * BLOCK + j % BLOCK) * 4
+            } else {
+                j * code_len + self.q.packed() + 8
+            };
+            let extra = f32_at(codes, at);
+            let r2 = if euclidean {
+                extra
+            } else {
+                1.0 - 2.0 * extra - self.centroid_norm2
+            };
+            *b = crate::score_margin(similarity, s, per_r * r2.max(0.0).sqrt());
+        }
+        true
     }
 }
 

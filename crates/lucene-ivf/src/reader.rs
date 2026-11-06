@@ -3,6 +3,7 @@
 use std::borrow::Cow;
 use std::cmp::{Ordering, Reverse};
 use std::collections::BinaryHeap;
+use std::sync::atomic::{AtomicU32, Ordering as AtomicOrdering};
 use std::sync::Arc;
 
 use lucene_store::codec_util::{self, FOOTER_LENGTH, ID_LENGTH};
@@ -10,9 +11,11 @@ use lucene_store::{DataInput, SliceInput};
 use lucene_util::{simd, vector_util};
 use lucene_vector_quant::{Quantizer, QuantizerRegistry, QueryScorer};
 
+use crate::calibrate::Calibration;
 use crate::{
     similarity_from_ordinal, Error, Result, Similarity, VectorEncoding, META_CODEC, POSTINGS_CODEC,
-    VECTORS_CODEC, VERSION_BLOCK_LAYOUT, VERSION_CURRENT, VERSION_VECTOR_ENCODING,
+    VECTORS_CODEC, VERSION_BLOCK_LAYOUT, VERSION_CALIBRATION, VERSION_CURRENT,
+    VERSION_VECTOR_ENCODING,
 };
 
 /// A file read by byte range: a memory-mapped or in-memory file, or a blob
@@ -82,24 +85,182 @@ pub struct ScoredDoc {
     pub score: f32,
 }
 
+/// How many clusters a search scans.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Probes {
+    /// This many clusters (at least one).
+    Fixed(usize),
+    /// The field's calibrated share of its clusters
+    /// ([`IvfField::auto_nprobe`]).
+    Auto,
+}
+
+/// How many candidates, by estimated score, a search reranks with the
+/// full-precision vectors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Rerank {
+    /// Exactly the best `n` candidates (at least `k` are kept). Zero returns
+    /// estimated scores without reading any vector.
+    Fixed(usize),
+    /// Up to the field's calibrated depth ([`IvfField::auto_rerank`]),
+    /// stopping early as [`Rerank::Bounded`] does.
+    Auto,
+    /// Up to `cap` candidates (at least `k`), in estimate order, stopping
+    /// once no remaining candidate's optimistic score (its estimate plus the
+    /// quantizer's error margin,
+    /// [`lucene_vector_quant::QueryScorer::error_bounds`]) can beat the
+    /// `k`-th exact score so far, and skipping each candidate whose own
+    /// optimistic score cannot. Without margins from the quantizer this is
+    /// [`Rerank::Fixed`]`(cap)`. A `cap` of zero returns estimates.
+    Bounded {
+        /// The most candidates reranked.
+        cap: usize,
+    },
+}
+
 /// How a search trades recall for work.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SearchParams {
     /// Hits to return.
     pub k: usize,
     /// Clusters to scan.
-    pub nprobe: usize,
-    /// Candidates, by estimated score, to rerank with the full-precision
-    /// vectors (at least `k` are kept). Zero returns estimated scores
-    /// without reading any vector.
-    pub rerank: usize,
+    pub nprobe: Probes,
+    /// Candidates to rerank.
+    pub rerank: Rerank,
 }
 
 impl SearchParams {
-    /// `k` hits from `nprobe` clusters, reranking `rerank` candidates.
+    /// `k` hits from `nprobe` clusters, reranking `rerank` candidates: fixed
+    /// work whatever the field.
     pub fn new(k: usize, nprobe: usize, rerank: usize) -> Self {
-        SearchParams { k, nprobe, rerank }
+        SearchParams {
+            k,
+            nprobe: Probes::Fixed(nprobe),
+            rerank: Rerank::Fixed(rerank),
+        }
     }
+
+    /// `k` hits at each field's calibrated depth: [`Probes::Auto`] and
+    /// [`Rerank::Auto`].
+    pub fn auto(k: usize) -> Self {
+        SearchParams {
+            k,
+            nprobe: Probes::Auto,
+            rerank: Rerank::Auto,
+        }
+    }
+}
+
+/// The share of its clusters [`Probes::Auto`] scans in a field written
+/// without calibration.
+pub const DEFAULT_PROBE_FRACTION: f32 = 0.05;
+
+/// The most candidates per hit [`Rerank::Auto`] reranks in a field written
+/// without calibration.
+pub const DEFAULT_RERANK_MULTIPLE: f32 = 10.0;
+
+/// The clusters one segment probes when a search spreads `nprobe` probes
+/// over segments holding `total_vectors` vectors in all: the segment's share
+/// by its `segment_vectors`, rounded up, and at least one. Clusters hold a
+/// similar number of vectors in every segment, so the segments together
+/// probe about the clusters one index of all the vectors would.
+pub fn segment_nprobe(nprobe: usize, total_vectors: usize, segment_vectors: usize) -> usize {
+    if total_vectors == 0 {
+        return nprobe.max(1);
+    }
+    // ARITH: a u128 holds the product of two usizes; the divisor is non-zero.
+    #[allow(clippy::arithmetic_side_effects)]
+    let share = (nprobe as u128 * segment_vectors.min(total_vectors) as u128)
+        .div_ceil(total_vectors as u128);
+    usize::try_from(share).unwrap_or(usize::MAX).max(1)
+}
+
+/// The `k`-th best exact score found so far by a search over several fields
+/// or segments, shared by their searches (across threads too) and only ever
+/// raised. Each search raises it once it holds `k` exact hits, and skips the
+/// clusters and candidates that cannot beat it, so later searches do less
+/// work. Each search still returns its best hits that can enter the shared
+/// top `k`; merging every search's hits gives the result.
+#[derive(Debug)]
+pub struct SharedThreshold {
+    /// The score as a key that orders as scores do.
+    key: AtomicU32,
+}
+
+impl Default for SharedThreshold {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SharedThreshold {
+    /// A threshold every score beats.
+    pub fn new() -> Self {
+        SharedThreshold {
+            key: AtomicU32::new(Self::key(f32::NEG_INFINITY)),
+        }
+    }
+
+    /// The highest score raised so far, or negative infinity.
+    pub fn get(&self) -> f32 {
+        Self::score(self.key.load(AtomicOrdering::Relaxed))
+    }
+
+    /// Raises the threshold to `score` when that is higher; NaN is ignored.
+    pub fn raise(&self, score: f32) {
+        if !score.is_nan() {
+            self.key
+                .fetch_max(Self::key(score), AtomicOrdering::Relaxed);
+        }
+    }
+
+    /// `score`'s bits, mapped so unsigned order is score order.
+    fn key(score: f32) -> u32 {
+        let bits = score.to_bits();
+        if bits & 0x8000_0000 == 0 {
+            bits | 0x8000_0000
+        } else {
+            !bits
+        }
+    }
+
+    /// The score of a key.
+    fn score(key: u32) -> f32 {
+        if key & 0x8000_0000 == 0 {
+            f32::from_bits(!key)
+        } else {
+            f32::from_bits(key & 0x7fff_ffff)
+        }
+    }
+
+    /// The threshold, or `None` while every score beats it.
+    fn floor(&self) -> Option<f32> {
+        let t = self.get();
+        (t > f32::NEG_INFINITY).then_some(t)
+    }
+}
+
+/// The work one search did.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SearchStats {
+    /// Clusters whose codes were scored.
+    pub clusters_scanned: usize,
+    /// Probed clusters skipped because none of their vectors could beat the
+    /// shared threshold.
+    pub clusters_skipped: usize,
+    /// Candidates kept by estimated score for rerank.
+    pub candidates: usize,
+    /// Candidates whose full-precision vectors were read and scored.
+    pub reranked: usize,
+}
+
+/// A search's hits, best first, and the work it took.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SearchOutput {
+    /// The hits.
+    pub hits: Vec<ScoredDoc>,
+    /// The work.
+    pub stats: SearchStats,
 }
 
 /// One field of an IVF index.
@@ -141,9 +302,102 @@ pub struct IvfField {
     postings_offset: usize,
     vectors_offset: usize,
     doc_table_offset: usize,
+    /// Per cluster, the largest distance from its centroid of an entry's
+    /// stored vector (unit-normalized for `Cosine`); empty before
+    /// `VERSION_CALIBRATION`.
+    radii: Vec<f32>,
+    calibration: Option<Calibration>,
 }
 
 impl IvfField {
+    /// A field over the postings of `postings_offset` being written, with
+    /// no vectors file: what calibration searches. `slot_docs` names each
+    /// slot's document; `entry_sizes` are the clusters' entry counts.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn in_memory(
+        number: i32,
+        similarity: Similarity,
+        dimension: usize,
+        quantizer: Box<dyn Quantizer>,
+        centroids: Vec<f32>,
+        entry_sizes: &[usize],
+        postings_offset: usize,
+        slot_docs: Vec<i32>,
+    ) -> Result<Self> {
+        let mut starts = Vec::with_capacity(entry_sizes.len().saturating_add(1));
+        starts.push(0);
+        let mut total = 0usize;
+        for &size in entry_sizes {
+            total = add(total, size, "cluster sizes")?;
+            starts.push(total);
+        }
+        let (block_starts, _) = block_layout(quantizer.as_ref(), &starts)?;
+        let (prepared, prepared_len) = prepare_centroids(quantizer.as_ref(), &centroids, dimension);
+        Ok(IvfField {
+            number,
+            similarity,
+            encoding: VectorEncoding::F32,
+            dimension,
+            count: slot_docs.len(),
+            vector_bytes: 0,
+            quantizer,
+            prepared,
+            prepared_len,
+            centroid_scale: centroid_scale(similarity, &centroids, dimension),
+            centroids,
+            starts,
+            primary_starts: Vec::new(),
+            block_starts,
+            slot_docs,
+            postings_offset,
+            vectors_offset: 0,
+            doc_table_offset: 0,
+            radii: Vec::new(),
+            calibration: None,
+        })
+    }
+
+    /// The search depth calibrated when the field was written, if it was.
+    pub fn calibration(&self) -> Option<Calibration> {
+        self.calibration
+    }
+
+    /// Cluster `c`'s radius: the largest distance from its centroid of an
+    /// entry's stored vector (unit-normalized for `Cosine`), or `None` in a
+    /// field written before radii were recorded.
+    ///
+    /// # Panics
+    ///
+    /// When `c` is not below [`IvfField::clusters`].
+    pub fn radius(&self, c: usize) -> Option<f32> {
+        assert!(c < self.clusters(), "cluster {c} out of range");
+        self.radii.get(c).copied()
+    }
+
+    /// The clusters [`Probes::Auto`] scans: the calibrated share of the
+    /// field's clusters ([`DEFAULT_PROBE_FRACTION`] without calibration),
+    /// rounded up, and at least one.
+    pub fn auto_nprobe(&self) -> usize {
+        let fraction = self
+            .calibration
+            .map_or(DEFAULT_PROBE_FRACTION, |c| c.probe_fraction);
+        let clusters = self.clusters();
+        // The calibrated fraction is a whole number of clusters over this
+        // count; the slack keeps float rounding from adding one.
+        let n = (f64::from(fraction) * clusters as f64 - 1e-6).ceil();
+        (n.max(1.0) as usize).min(clusters.max(1))
+    }
+
+    /// The most candidates [`Rerank::Auto`] reranks for `k` hits: the
+    /// calibrated multiple of `k` ([`DEFAULT_RERANK_MULTIPLE`] without
+    /// calibration), rounded up.
+    pub fn auto_rerank(&self, k: usize) -> usize {
+        let multiple = self
+            .calibration
+            .map_or(DEFAULT_RERANK_MULTIPLE, |c| c.rerank_multiple);
+        // The cast saturates.
+        ((f64::from(multiple) * k as f64 - 1e-6).ceil() as usize).max(k)
+    }
     /// The field number.
     pub fn number(&self) -> i32 {
         self.number
@@ -469,21 +723,36 @@ fn read_field(
             ));
         }
     }
-    let mut block_starts = Vec::with_capacity(starts.len());
-    let mut postings_bytes = 0usize;
-    block_starts.push(0);
-    for w in starts.windows(2) {
-        // ARITH: `starts` ascend (checked sums of non-zero sizes).
-        #[allow(clippy::arithmetic_side_effects)]
-        let size = w[1] - w[0];
-        let block = add(
-            mul(size, 4, "slots")?,
-            quantizer.block_len(size),
-            "postings",
-        )?;
-        postings_bytes = add(postings_bytes, block, "postings")?;
-        block_starts.push(postings_bytes);
+    let mut radii = Vec::new();
+    let mut calibration = None;
+    if version >= VERSION_CALIBRATION {
+        if mul(nlist, 4, "radii")? > input.remaining() {
+            return corrupt(format!("field {number}: radii past the end"));
+        }
+        radii.reserve(nlist);
+        for _ in 0..nlist {
+            let r = read_f32(input)?;
+            if !(r >= 0.0 && r.is_finite()) {
+                return corrupt(format!("field {number}: cluster radius {r}"));
+            }
+            radii.push(r);
+        }
+        match input.read_byte()? {
+            0 => {}
+            1 => {
+                let c = Calibration {
+                    probe_fraction: read_f32(input)?,
+                    rerank_multiple: read_f32(input)?,
+                };
+                if !c.is_valid() {
+                    return corrupt(format!("field {number}: calibration {c:?}"));
+                }
+                calibration = Some(c);
+            }
+            b => return corrupt(format!("field {number}: calibration flag {b}")),
+        }
     }
+    let (block_starts, postings_bytes) = block_layout(quantizer.as_ref(), &starts)?;
     if add(postings_offset, postings_bytes, "postings")? > postings_end {
         return corrupt(format!("field {number}: postings past the end of .ivp"));
     }
@@ -510,21 +779,7 @@ fn read_field(
         quantizer,
         prepared,
         prepared_len,
-        centroid_scale: if crate::writer::spherical(similarity) {
-            centroids
-                .chunks_exact(dimension)
-                .map(|c| {
-                    let norm = simd::dot_f32(c, c).sqrt();
-                    if norm > 0.0 {
-                        1.0 / norm
-                    } else {
-                        0.0
-                    }
-                })
-                .collect()
-        } else {
-            Vec::new()
-        },
+        centroid_scale: centroid_scale(similarity, &centroids, dimension),
         centroids,
         starts,
         primary_starts,
@@ -533,7 +788,48 @@ fn read_field(
         postings_offset,
         vectors_offset,
         doc_table_offset,
+        radii,
+        calibration,
     })
+}
+
+/// How a query ranks a field's centroids (see `IvfField::centroid_scale`).
+fn centroid_scale(similarity: Similarity, centroids: &[f32], dimension: usize) -> Vec<f32> {
+    if !crate::writer::spherical(similarity) {
+        return Vec::new();
+    }
+    centroids
+        .chunks_exact(dimension.max(1))
+        .map(|c| {
+            let norm = simd::dot_f32(c, c).sqrt();
+            if norm > 0.0 {
+                1.0 / norm
+            } else {
+                0.0
+            }
+        })
+        .collect()
+}
+
+/// The `cluster count + 1` prefix sums of the posting block lengths of
+/// clusters whose entries start at `starts`, and their total.
+fn block_layout(quantizer: &dyn Quantizer, starts: &[usize]) -> Result<(Vec<usize>, usize)> {
+    let mut block_starts = Vec::with_capacity(starts.len());
+    let mut postings_bytes = 0usize;
+    block_starts.push(0);
+    for w in starts.windows(2) {
+        // ARITH: `starts` ascend (checked sums of sizes).
+        #[allow(clippy::arithmetic_side_effects)]
+        let size = w[1] - w[0];
+        let block = add(
+            mul(size, 4, "slots")?,
+            quantizer.block_len(size),
+            "postings",
+        )?;
+        postings_bytes = add(postings_bytes, block, "postings")?;
+        block_starts.push(postings_bytes);
+    }
+    Ok((block_starts, postings_bytes))
 }
 
 /// Reads a field's doc table and inverts it: each slot's document. Checks
@@ -561,12 +857,14 @@ fn slot_docs(vectors: &dyn RangeSource, f: &IvfField) -> Result<Vec<i32>> {
 }
 
 /// A candidate: higher scores are better, and of equal scores the lower
-/// document.
+/// document. `bound` is the margin its exact score may exceed `score` by
+/// (infinite when unknown); it takes no part in the order.
 #[derive(Debug, Clone, Copy)]
-struct Candidate {
-    score: f32,
-    doc: i32,
-    slot: u32,
+pub(crate) struct Candidate {
+    pub(crate) score: f32,
+    pub(crate) doc: i32,
+    pub(crate) slot: u32,
+    pub(crate) bound: f32,
 }
 
 impl PartialEq for Candidate {
@@ -613,6 +911,15 @@ impl TopN {
         self.heap.len() < self.size || self.heap.peek().is_some_and(|w| score >= w.0.score)
     }
 
+    /// The worst score held once the heap is full.
+    #[inline]
+    fn floor(&self) -> Option<f32> {
+        if self.heap.len() < self.size {
+            return None;
+        }
+        self.heap.peek().map(|w| w.0.score)
+    }
+
     #[inline]
     fn offer(&mut self, c: Candidate) {
         if let Some(held) = &mut self.held {
@@ -642,6 +949,150 @@ impl TopN {
         let mut v: Vec<Candidate> = self.heap.into_iter().map(|r| r.0).collect();
         v.sort_unstable_by(|a, b| b.cmp(a));
         v
+    }
+}
+
+/// The higher of two optional floors.
+fn higher(a: Option<f32>, b: Option<f32>) -> Option<f32> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(a.max(b)),
+        (a, None) => a,
+        (None, b) => b,
+    }
+}
+
+impl IvfField {
+    /// The `nprobe` clusters nearest to `query`, nearest first: by L2 for
+    /// Euclidean, by dot with the unit centroid for the spherically
+    /// clustered Cosine and DotProduct (see `centroid_scale`), and by raw
+    /// dot for MaximumInnerProduct, whose score is the dot product itself.
+    pub(crate) fn probe_order(&self, query: &[f32], nprobe: usize) -> Vec<usize> {
+        let euclidean = self.similarity == Similarity::Euclidean;
+        let mut scored: Vec<(f32, usize)> = self
+            .centroids
+            .chunks_exact(self.dimension)
+            .enumerate()
+            .map(|(c, centroid)| {
+                let s = if euclidean {
+                    -simd::square_distance_f32(query, centroid)
+                } else {
+                    let scale = self.centroid_scale.get(c).copied().unwrap_or(1.0);
+                    simd::dot_f32(query, centroid) * scale
+                };
+                (s, c)
+            })
+            .collect();
+        let by_score = |a: &(f32, usize), b: &(f32, usize)| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1));
+        let n = nprobe.min(scored.len());
+        if n < scored.len() {
+            scored.select_nth_unstable_by(n, by_score);
+            scored.truncate(n);
+        }
+        scored.sort_unstable_by(by_score);
+        scored.into_iter().map(|(_, c)| c).collect()
+    }
+
+    /// An upper bound on the exact score of every entry of cluster `c` for
+    /// `query` (prepared, of norm `query_norm`), from the cluster's radius
+    /// `r`: an entry is within `r` of the centroid `m`, so its squared
+    /// distance is at least `max(0, |q - m| - r)^2` and its inner product at
+    /// most `<q, m> + |q| r`. A small slack covers the rounding of these
+    /// sums and of the exact score's. Infinite without radii.
+    fn cluster_bound(&self, query: &[f32], query_norm: f32, c: usize) -> f32 {
+        let Some(&r) = self.radii.get(c) else {
+            return f32::INFINITY;
+        };
+        let centroid = self.centroid(c);
+        if self.similarity == Similarity::Euclidean {
+            let d = simd::square_distance_f32(query, centroid).sqrt();
+            let gap = (d - r - (1e-4 * (d + r) + 1e-6)).max(0.0);
+            return 1.0 / (1.0 + gap * gap);
+        }
+        let m = simd::dot_f32(centroid, centroid).sqrt();
+        let raw =
+            simd::dot_f32(query, centroid) + query_norm * r + (1e-4 * query_norm * (m + r) + 1e-6);
+        if self.similarity == Similarity::MaximumInnerProduct {
+            lucene_util::quantization::scale_max_inner_product_score(raw)
+        } else {
+            ((1.0 + raw) / 2.0).max(0.0)
+        }
+    }
+
+    /// Scores the codes of the clusters `probes` for `query` (prepared) and
+    /// returns the best `size` candidates by estimate, best first, among the
+    /// documents `accept` lets through. With `bounds`, each candidate
+    /// carries the quantizer's error margin (infinite when it has none).
+    /// Clusters that cannot beat `shared` are skipped.
+    // ARITH: cluster sizes and slot offsets are bounded by the field's
+    // checked regions; `scores` is resized to each block's size.
+    #[allow(clippy::arithmetic_side_effects, clippy::too_many_arguments)]
+    pub(crate) fn scan(
+        &self,
+        postings: &dyn RangeSource,
+        query: &[f32],
+        probes: &[usize],
+        size: usize,
+        accept: Option<&dyn Fn(i32) -> bool>,
+        bounds: bool,
+        shared: Option<&SharedThreshold>,
+        stats: &mut SearchStats,
+    ) -> Result<Vec<Candidate>> {
+        let mut scorer = self.quantizer.query_scorer(query);
+        let uses_centroid = self.quantizer.uses_centroid();
+        if !uses_centroid {
+            self.target(scorer.as_mut(), 0);
+        }
+        let mut top = TopN::new(size.min(self.entries()), self.entries() > self.count);
+        let query_norm = simd::dot_f32(query, query).sqrt();
+        let (mut scores, mut margins) = (Vec::new(), Vec::new());
+        let mut bounded = bounds;
+        for &c in probes {
+            if let Some(floor) = shared.and_then(SharedThreshold::floor) {
+                if self.cluster_bound(query, query_norm, c) < floor {
+                    stats.clusters_skipped += 1;
+                    continue;
+                }
+            }
+            stats.clusters_scanned += 1;
+            let (offset, len) = self.block_range(c);
+            let block = postings.read(offset, len)?;
+            let size = self.cluster_size(c);
+            let (slots, codes) = block.split_at(size * 4);
+            if uses_centroid {
+                self.target(scorer.as_mut(), c);
+            }
+            scores.resize(size, 0f32);
+            scorer.score_block(codes, &mut scores);
+            if bounded {
+                margins.resize(size, 0f32);
+                bounded = scorer.error_bounds(codes, &scores, &mut margins);
+            }
+            for (i, &score) in scores.iter().enumerate() {
+                if !top.competitive(score) {
+                    continue;
+                }
+                let slot = le_i32(slots, i * 4) as u32;
+                let Some(&doc) = self.slot_docs.get(slot as usize) else {
+                    return corrupt(format!("cluster {c}: slot {slot} out of range"));
+                };
+                if accept.is_some_and(|a| !a(doc)) {
+                    continue;
+                }
+                let bound = match margins.get(i) {
+                    Some(&b) if bounded && !b.is_nan() => b.max(0.0),
+                    _ => f32::INFINITY,
+                };
+                top.offer(Candidate {
+                    score,
+                    doc,
+                    slot,
+                    bound,
+                });
+            }
+        }
+        let candidates = top.into_sorted();
+        stats.candidates = candidates.len();
+        Ok(candidates)
     }
 }
 
@@ -864,14 +1315,11 @@ impl IvfReader {
     }
 
     /// The approximate `params.k` nearest documents to `query` among those
-    /// `accept` lets through (all when `None`).
+    /// `accept` lets through.
     ///
     /// # Errors
     ///
     /// An unknown field, a query of the wrong dimension, or a read failure.
-    // ARITH: cluster sizes, block lengths and slot numbers are bounded by the
-    // field's checked regions; `scores` is resized to each block's size.
-    #[allow(clippy::arithmetic_side_effects)]
     pub fn search(
         &self,
         field: i32,
@@ -879,58 +1327,95 @@ impl IvfReader {
         params: &SearchParams,
         accept: Option<&dyn Fn(i32) -> bool>,
     ) -> Result<Vec<ScoredDoc>> {
+        Ok(self.search_with(field, query, params, accept, None)?.hits)
+    }
+
+    /// [`IvfReader::search`], also reporting the work done, and sharing the
+    /// `k`-th best exact score with searches of other fields or segments
+    /// through `shared` (see [`SharedThreshold`]): clusters and, with
+    /// [`Rerank::Auto`] or [`Rerank::Bounded`], candidates that cannot beat
+    /// it are skipped, and once this search holds `k` exact hits it raises
+    /// it. Without `shared`, the hits are [`IvfReader::search`]'s.
+    ///
+    /// # Errors
+    ///
+    /// An unknown field, a query of the wrong dimension, or a read failure.
+    pub fn search_with(
+        &self,
+        field: i32,
+        query: &[f32],
+        params: &SearchParams,
+        accept: Option<&dyn Fn(i32) -> bool>,
+        shared: Option<&SharedThreshold>,
+    ) -> Result<SearchOutput> {
         let f = self.field_or_err(field)?;
         let query = self.prepare_query(f, query)?;
+        let mut stats = SearchStats::default();
         if params.k == 0 || f.count == 0 {
-            return Ok(Vec::new());
+            return Ok(SearchOutput {
+                hits: Vec::new(),
+                stats,
+            });
         }
-        let probes = self.probe_order(f, &query, params.nprobe.max(1));
-        let mut scorer = f.quantizer.query_scorer(&query);
-        let uses_centroid = f.quantizer.uses_centroid();
-        if !uses_centroid {
-            f.target(scorer.as_mut(), 0);
-        }
-        let mut top = TopN::new(
-            params.k.max(params.rerank).min(f.entries()),
-            f.entries() > f.count,
-        );
-        let mut scores = Vec::new();
-        for c in probes {
-            let (offset, len) = f.block_range(c);
-            let block = self.postings.read(offset, len)?;
-            let size = f.cluster_size(c);
-            let (slots, codes) = block.split_at(size * 4);
-            if uses_centroid {
-                f.target(scorer.as_mut(), c);
-            }
-            scores.resize(size, 0f32);
-            scorer.score_block(codes, &mut scores);
-            for (i, &score) in scores.iter().enumerate() {
-                if !top.competitive(score) {
-                    continue;
-                }
-                let slot = le_i32(slots, i * 4) as u32;
-                let Some(&doc) = f.slot_docs.get(slot as usize) else {
-                    return corrupt(format!("cluster {c}: slot {slot} out of range"));
-                };
-                if accept.is_some_and(|a| !a(doc)) {
-                    continue;
-                }
-                top.offer(Candidate { score, doc, slot });
-            }
-        }
-        let candidates = top.into_sorted();
-        if params.rerank == 0 {
-            return Ok(candidates
+        let nprobe = match params.nprobe {
+            Probes::Fixed(n) => n.max(1),
+            Probes::Auto => f.auto_nprobe(),
+        };
+        let (rerank, early_stop) = match params.rerank {
+            Rerank::Fixed(n) => (n, false),
+            Rerank::Bounded { cap } => (cap, true),
+            Rerank::Auto => (f.auto_rerank(params.k), true),
+        };
+        let probes = f.probe_order(&query, nprobe);
+        let candidates = f.scan(
+            self.postings.as_ref(),
+            &query,
+            &probes,
+            params.k.max(rerank),
+            accept,
+            early_stop && rerank > 0,
+            shared,
+            &mut stats,
+        )?;
+        let hits = if rerank == 0 {
+            candidates
                 .into_iter()
                 .take(params.k)
                 .map(|c| ScoredDoc {
                     doc: c.doc,
                     score: c.score,
                 })
-                .collect());
+                .collect()
+        } else {
+            self.rerank(f, &query, &candidates, params.k, shared, &mut stats)?
+        };
+        Ok(SearchOutput { hits, stats })
+    }
+
+    /// The best `k` of `candidates` (best estimate first) by exact score.
+    /// Candidates go in order; once the `k`-th exact score so far, or the
+    /// shared threshold, is above every remaining candidate's optimistic
+    /// score (estimate plus margin), the rest are dropped, and a candidate
+    /// whose own optimistic score is below it is skipped.
+    // ARITH: candidate indices are below `candidates.len()`.
+    #[allow(clippy::arithmetic_side_effects)]
+    fn rerank(
+        &self,
+        f: &IvfField,
+        query: &[f32],
+        candidates: &[Candidate],
+        k: usize,
+        shared: Option<&SharedThreshold>,
+        stats: &mut SearchStats,
+    ) -> Result<Vec<ScoredDoc>> {
+        let mut exact = TopN::new(k.min(f.count), false);
+        // `reach[i]`: the most any candidate from `i` on can score.
+        let mut reach = vec![f32::NEG_INFINITY; candidates.len()];
+        let mut most = f32::NEG_INFINITY;
+        for (r, c) in reach.iter_mut().zip(candidates).rev() {
+            most = most.max(c.score + c.bound);
+            *r = most;
         }
-        let mut exact = TopN::new(params.k.min(f.count), false);
         let mut v = Vec::with_capacity(f.dimension);
         // Candidates' vectors are scattered over the file: ask for a few
         // ahead so their cache misses overlap.
@@ -945,12 +1430,25 @@ impl IvfReader {
             ahead(Some(c));
         }
         for (i, c) in candidates.iter().enumerate() {
+            if let Some(floor) = higher(exact.floor(), shared.and_then(SharedThreshold::floor)) {
+                if reach[i] < floor {
+                    break;
+                }
+                if c.score + c.bound < floor {
+                    continue;
+                }
+            }
             ahead(candidates.get(i + AHEAD));
             self.read_vector(f, c.slot as usize, &mut v)?;
+            stats.reranked += 1;
             exact.offer(Candidate {
-                score: f.similarity.score(&query, &v),
+                score: f.similarity.score(query, &v),
                 ..*c
             });
+            // Only `k` real hits bound the shared top `k`.
+            if let (Some(shared), Some(floor), true) = (shared, exact.floor(), exact.size == k) {
+                shared.raise(floor);
+            }
         }
         Ok(exact
             .into_sorted()
@@ -989,6 +1487,7 @@ impl IvfReader {
                 score: f.similarity.score(&query, &v),
                 doc,
                 slot,
+                bound: 0.0,
             });
         }
         Ok(top
@@ -1017,35 +1516,5 @@ impl IvfReader {
             let _ = vector_util::l2normalize(&mut q, false);
         }
         Ok(q)
-    }
-
-    /// The `nprobe` clusters nearest to `query`, nearest first: by L2 for
-    /// Euclidean, by dot with the unit centroid for the spherically
-    /// clustered Cosine and DotProduct (see `centroid_scale`), and by raw
-    /// dot for MaximumInnerProduct, whose score is the dot product itself.
-    fn probe_order(&self, f: &IvfField, query: &[f32], nprobe: usize) -> Vec<usize> {
-        let euclidean = f.similarity == Similarity::Euclidean;
-        let mut scored: Vec<(f32, usize)> = f
-            .centroids
-            .chunks_exact(f.dimension)
-            .enumerate()
-            .map(|(c, centroid)| {
-                let s = if euclidean {
-                    -simd::square_distance_f32(query, centroid)
-                } else {
-                    let scale = f.centroid_scale.get(c).copied().unwrap_or(1.0);
-                    simd::dot_f32(query, centroid) * scale
-                };
-                (s, c)
-            })
-            .collect();
-        let by_score = |a: &(f32, usize), b: &(f32, usize)| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1));
-        let n = nprobe.min(scored.len());
-        if n < scored.len() {
-            scored.select_nth_unstable_by(n, by_score);
-            scored.truncate(n);
-        }
-        scored.sort_unstable_by(by_score);
-        scored.into_iter().map(|(_, c)| c).collect()
     }
 }
