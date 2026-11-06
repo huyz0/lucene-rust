@@ -521,6 +521,7 @@ impl SegmentReader {
             vectors: Vec::new(),
             completion: Vec::new(),
             postings_validated: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            postings_stats: None,
         })
     }
 }
