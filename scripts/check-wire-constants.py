@@ -80,6 +80,7 @@ RENAMES = {
 
 # Constants with no Rust counterpart, and why.
 JAVA_ONLY = {
+    ("NativeBridge.java", "WARM_FAILED"): "any answer but WARM_OK fails the merge; Rust names none",
     ("QueryEncoder.java", "REGEXP_CACHE_SIZE"): "the Java side's parsed-regexp cache",
     ("LuceneChangesSnapshot.java", "DEFAULT_BATCH_SIZE"): "derived OpenSearch engine code",
     ("LuceneChangesSnapshot.java", "MIN_SEQUENTIAL_ACCESS_BATCH_SIZE"): "derived OpenSearch engine code",

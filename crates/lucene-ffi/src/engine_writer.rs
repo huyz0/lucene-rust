@@ -1177,8 +1177,6 @@ impl MergeListener for MergeUpcallListener {
 pub type WarmUpcall = unsafe extern "C" fn(u64, *const u8, usize, *const u8) -> i32;
 /// The merged segment was warmed.
 pub const WARM_OK: i32 = 0;
-/// Warming failed; the merge fails.
-pub const WARM_FAILED: i32 = 1;
 
 static WARM_UPCALL: OnceLock<WarmUpcall> = OnceLock::new();
 
