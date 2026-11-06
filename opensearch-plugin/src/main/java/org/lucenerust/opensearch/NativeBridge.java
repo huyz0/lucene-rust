@@ -38,7 +38,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code jvm_reader.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 74;
+    public static final int EXPECTED_ABI_VERSION = 76;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -203,6 +203,10 @@ public final class NativeBridge {
         static final MethodHandle DOCUMENT = bind(
             "ffi_jvm_reader_document_alloc",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_INT, ADDRESS, ADDRESS)
+        );
+        static final MethodHandle PREFETCH_DOCUMENTS = bind(
+            "ffi_jvm_reader_prefetch_documents",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_INT, ADDRESS, JAVA_LONG)
         );
         static final MethodHandle COUNT_TERMINATES = bind(
             "ffi_jvm_reader_count_terminates",
@@ -1240,6 +1244,22 @@ public final class NativeBridge {
                 out[0] = encoded;
             }
             return rc;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * {@code StoredFields.prefetch} for the documents {@code docs} (segment-local) of segment {@code
+     * segment}: their stored-fields chunks fetched together where the segment is read by range, so
+     * the fetch phase's reads one at a time find them local. Nothing to do for files on local disk.
+     */
+    public static int prefetchDocuments(long handle, int segment, int[] docs) {
+        if (docs == null) {
+            return nullArgument("docs");
+        }
+        try (Scratch s = Scratch.open()) {
+            return (int) H.PREFETCH_DOCUMENTS.invokeExact(handle, segment, s.ints(docs), (long) docs.length);
         } catch (Throwable t) {
             throw rethrow(t);
         }

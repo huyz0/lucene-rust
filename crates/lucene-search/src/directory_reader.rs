@@ -2462,17 +2462,21 @@ impl DirectoryReader {
         let mut last_gen = -1i64;
         let mut first_err = None;
         loop {
-            let gen = dir
+            // One listing names the commit to open: a directory over an
+            // object store pays a round trip per listing.
+            let latest = dir
                 .list_all()
-                .and_then(|files| lucene_store::directory::last_commit_generation(&files))
-                .unwrap_or(-1);
+                .and_then(|files| lucene_store::directory::last_commit_generation(&files));
+            let gen = *latest.as_ref().unwrap_or(&-1);
             if gen <= last_gen {
                 if let Some(e) = first_err {
                     return Err(e);
                 }
             }
-            let opened = segment_infos::read_latest(dir)
+            let opened = latest
+                .and_then(|gen| Ok((gen, lucene_store::directory::open_commit_file(dir, gen)?)))
                 .map_err(Error::from)
+                .and_then(|(gen, bytes)| segment_infos::parse(&bytes, gen).map_err(Error::from))
                 .and_then(|segment_infos| Self::open_at(dir, segment_infos));
             match opened {
                 Ok(reader) => return Ok(reader),
