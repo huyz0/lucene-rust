@@ -9,6 +9,9 @@ import org.apache.lucene.index.IndexCommit;
 import org.apache.lucene.index.IndexDeletionPolicy;
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexWriterConfig;
+import org.apache.lucene.index.NoMergePolicy;
+import org.apache.lucene.index.MergePolicy;
+import org.apache.lucene.index.LogByteSizeMergePolicy;
 import org.apache.lucene.index.IndexableField;
 import org.apache.lucene.index.LiveIndexWriterConfig;
 import org.apache.lucene.index.SegmentInfos;
@@ -116,6 +119,8 @@ final class RustIndexWriter implements DocumentIndexWriter {
     private boolean policyInitialized;
     /** The merge policy settings last sent to the writer; under {@link #lock}. */
     private double[] mergePolicySettings;
+    /** What {@link #setPluggableMergePolicy} last sent; under {@link #lock}. */
+    private double[] pluggableMergePolicySettings;
     /** The writer options last sent ({@link #setOptions}); under {@link #lock}. */
     private double[] writerOptions;
     /**
@@ -604,6 +609,56 @@ final class RustIndexWriter implements DocumentIndexWriter {
                 "setting the merge policy"
             );
             mergePolicySettings = settings;
+            if (mergeOnFlushPolicyWait >= 0) {
+                check(NativeBridge.writerSetMergeOnFlush(handle, mergeOnFlushPolicyWait, true), "setting merge-on-flush");
+            }
+        }
+    }
+
+    /**
+     * The shard's merge policy when it is not a {@code TieredMergePolicy}: a {@code
+     * LogByteSizeMergePolicy}'s settings, {@code NoMergePolicy}, or ({@code null}) the tiered policy
+     * {@link #setMergePolicy} configures; sent again only when one changed.
+     */
+    void setPluggableMergePolicy(MergePolicy policy) throws IOException {
+        int kind = NativeBridge.MERGE_POLICY_TIERED;
+        LogByteSizeMergePolicy log = null;
+        if (policy instanceof LogByteSizeMergePolicy l) {
+            kind = NativeBridge.MERGE_POLICY_LOG_BYTE_SIZE;
+            log = l;
+        } else if (policy instanceof NoMergePolicy) {
+            kind = NativeBridge.MERGE_POLICY_NONE;
+        }
+        double[] settings = log == null
+            ? new double[] { kind }
+            : new double[] {
+                kind,
+                log.getMergeFactor(),
+                log.getMinMergeMB(),
+                log.getMaxMergeMB(),
+                log.getMaxMergeMBForForcedMerge(),
+                log.getMaxMergeDocs(),
+                log.getNoCFSRatio(),
+                log.getMaxCFSSegmentSizeMB() };
+        synchronized (lock) {
+            if (Arrays.equals(settings, pluggableMergePolicySettings)) {
+                return;
+            }
+            check(
+                NativeBridge.writerSetPluggableMergePolicy(
+                    handle,
+                    kind,
+                    log == null ? 0 : log.getMergeFactor(),
+                    log == null ? 0 : megabytes(log.getMinMergeMB()),
+                    log == null ? 0 : megabytes(log.getMaxMergeMB()),
+                    log == null ? 0 : megabytes(log.getMaxMergeMBForForcedMerge()),
+                    log == null ? 0 : log.getMaxMergeDocs(),
+                    log == null ? 0 : log.getNoCFSRatio(),
+                    log == null ? 0 : megabytes(log.getMaxCFSSegmentSizeMB())
+                ),
+                "setting the merge policy"
+            );
+            pluggableMergePolicySettings = settings;
             if (mergeOnFlushPolicyWait >= 0) {
                 check(NativeBridge.writerSetMergeOnFlush(handle, mergeOnFlushPolicyWait, true), "setting merge-on-flush");
             }

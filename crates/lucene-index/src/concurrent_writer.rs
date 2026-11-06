@@ -3709,6 +3709,57 @@ mod tests {
         assert!(events[0].1.id < last.id);
     }
 
+    /// A pluggable policy picks the merges the scheduler runs, and its
+    /// forced merges interleave their sources when shuffling is on.
+    #[test]
+    fn a_pluggable_policy_picks_the_scheduled_and_forced_merges() {
+        let tmp = TempDir::new("concurrent-pluggable");
+        let dir = static_dir(&tmp);
+        let mut iw = writer(dir, 5);
+        let mut log = crate::merge_policy::log::LogByteSizeMergePolicy::new();
+        log.set_merge_factor(2).unwrap();
+        log.min_merge_size = 0;
+        iw.set_pluggable_merge_policy(Some(Arc::new(log)));
+        iw.set_shuffle_forced_merges(true);
+        let w = ConcurrentIndexWriter::with_merge_scheduler(
+            iw,
+            1,
+            Arc::new(crate::merge_scheduler::SerialMergeScheduler::new()),
+        )
+        .unwrap();
+        for i in 0..40 {
+            w.add_document(doc(&format!("d{i}"), 0)).unwrap();
+            if i % 5 == 4 {
+                w.commit().unwrap();
+            }
+        }
+        let segments = || lock(&w.core).writer.segment_infos().segments.len();
+        assert!(segments() < 8, "no scheduled merge ran: {}", segments());
+        // Merges wait for the forced one from here on.
+        lock(&w.core)
+            .writer
+            .set_pluggable_merge_policy(Some(Arc::new(
+                crate::merge_policy::log::LogByteSizeMergePolicy::new(),
+            )));
+        for i in 40..50 {
+            w.add_document(doc(&format!("d{i}"), 0)).unwrap();
+            if i % 5 == 4 {
+                w.commit().unwrap();
+            }
+        }
+        assert!(segments() >= 2);
+        lock(&w.core).writer.force_merge(1).unwrap();
+        assert_eq!(segments(), 1);
+        let core = lock(&w.core);
+        let sci = &core.writer.segment_infos().segments[0];
+        let si = dir.open(&format!("{}.si", sci.segment_name)).unwrap();
+        let si = crate::segment_info::parse(&si, &sci.segment_id).unwrap();
+        assert!(si
+            .diagnostics
+            .iter()
+            .any(|(k, _)| k == crate::merge::SHUFFLE_MERGE_KEY));
+    }
+
     /// `onMergeFinished` releases a merge the scheduler took but will not
     /// run, and a writer with no scheduler has nothing to close.
     #[test]

@@ -304,6 +304,10 @@ public final class NativeBridge {
             "ffi_engine_writer_force_merge",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_BYTE, ADDRESS)
         );
+        static final MethodHandle WRITER_SET_PLUGGABLE_MERGE_POLICY = bind(
+            "ffi_engine_writer_set_pluggable_merge_policy",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_DOUBLE, JAVA_LONG)
+        );
         static final MethodHandle SET_MERGE_UPCALL = bind("ffi_engine_set_merge_upcall", FunctionDescriptor.of(JAVA_INT, ADDRESS));
         static final MethodHandle WRITER_MERGE_STATE = bind(
             "ffi_engine_writer_merge_state",
@@ -1788,6 +1792,45 @@ public final class NativeBridge {
                 MemorySegment.copy(stats, JAVA_LONG, 0, out, 0, n);
             }
             return rc;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** Merge policy kinds for {@link #writerSetPluggableMergePolicy} ({@code MERGE_POLICY_*} in {@code engine_writer.rs}). */
+    public static final int MERGE_POLICY_TIERED = 0;
+    public static final int MERGE_POLICY_LOG_BYTE_SIZE = 1;
+    public static final int MERGE_POLICY_NONE = 2;
+
+    /**
+     * The shard's merge policy when it is not tiered: {@link #MERGE_POLICY_LOG_BYTE_SIZE} with its
+     * merge factor, merged-size bounds in bytes (smallest, largest, largest when forced), most merged
+     * documents and compound-file ratio and cap in bytes; {@link #MERGE_POLICY_NONE} (the rest
+     * ignored) for no merges; {@link #MERGE_POLICY_TIERED} back to the tiered policy.
+     */
+    public static int writerSetPluggableMergePolicy(
+        long handle,
+        int kind,
+        int mergeFactor,
+        long minMergeBytes,
+        long maxMergeBytes,
+        long maxForcedMergeBytes,
+        int maxMergeDocs,
+        double noCfsRatio,
+        long maxCfsSegmentBytes
+    ) {
+        try {
+            return (int) H.WRITER_SET_PLUGGABLE_MERGE_POLICY.invokeExact(
+                handle,
+                kind,
+                mergeFactor,
+                minMergeBytes,
+                maxMergeBytes,
+                maxForcedMergeBytes,
+                maxMergeDocs,
+                noCfsRatio,
+                maxCfsSegmentBytes
+            );
         } catch (Throwable t) {
             throw rethrow(t);
         }

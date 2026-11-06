@@ -306,8 +306,9 @@ public final class RustEngineSupport {
     }
 
     /**
-     * The shard's {@code index.merge.policy.*} for the Rust writer: the {@code TieredMergePolicy}
-     * OpenSearch's provider keeps (and updates in place when the settings change), under its wrappers.
+     * The shard's merge policy for the Rust writer, under its wrappers: the {@code TieredMergePolicy}
+     * or {@code LogByteSizeMergePolicy} OpenSearch's provider keeps (and updates in place when the
+     * settings change), or {@code NoMergePolicy} when merges are off.
      */
     static void refreshMergePolicy(DocumentIndexWriter writer, EngineConfig config) {
         if (writer instanceof RustIndexWriter rust) {
@@ -318,6 +319,10 @@ public final class RustEngineSupport {
             try {
                 if (policy instanceof TieredMergePolicy tiered) {
                     rust.setMergePolicy(tiered);
+                    rust.setPluggableMergePolicy(null);
+                } else {
+                    // log_byte_size, or index.merge.enabled: false.
+                    rust.setPluggableMergePolicy(policy);
                 }
                 // NativeLuceneIndexWriterFactory's setUseCompoundFile and setCheckPendingFlushUpdate,
                 // the policy's compound-file ratio and cap, and its ShuffleForcedMergePolicy wrapper.

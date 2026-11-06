@@ -139,8 +139,8 @@ Remote-backed storage stays refused, because its upload listener asks for an
   have the soft deletes applied, as on `NRTReplicationEngine` replicas.
   Index-level `docs.count` and `docs.deleted` are exact.
 - **Merges run in the Rust writer.** Its merge threads take the
-  `index.merge.policy.*`, `index.merge.scheduler.*` and `index.merge_on_flush.*`
-  settings, and report each merge to the engine as OpenSearch's merge
+  `index.merge.policy.*` (tiered or `log_byte_size`, and `index.merge.enabled`),
+  `index.merge.scheduler.*` and `index.merge_on_flush.*` settings, and report each merge to the engine as OpenSearch's merge
   scheduler does: `_stats` merge counts and times, the indexing throttle once
   more than `max_merge_count` merges are in flight, the flush after a big merge
   or once merges finish on an idle shard, and a failed merge failing the

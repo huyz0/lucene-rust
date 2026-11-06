@@ -65,8 +65,9 @@ use lucene_index::index_writer::{
     self, ExplicitDocument, ExplicitFields, IndexWriter, InvertedField, InvertedTerms, MergeEvent,
     MergeListener, MergePolicyConfig, MergeTimes, SoftDeletesRetention,
 };
+use lucene_index::merge_policy::log::LogByteSizeMergePolicy;
 use lucene_index::merge_policy::{
-    CompoundFileSettings, MergeOnFlushMergePolicy, MergePolicy, TieredMergePolicy,
+    CompoundFileSettings, MergeOnFlushMergePolicy, MergePolicy, NoMergePolicy, TieredMergePolicy,
 };
 use lucene_index::merge_scheduler::ConcurrentMergeScheduler;
 use lucene_index::segment_info::LuceneVersion;
@@ -120,6 +121,51 @@ pub struct EngineWriter {
     /// `IndexWriter.getTragicException()`: once set, every call fails.
     tragic: OnceLock<String>,
     fault_injection: bool,
+    /// The policy [`ffi_engine_writer_set_pluggable_merge_policy`] installed
+    /// in place of the tiered one, if any.
+    pluggable_policy: Mutex<Option<PluggablePolicy>>,
+}
+
+/// A merge policy other than `TieredMergePolicy`, as OpenSearch configures it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum PluggablePolicy {
+    /// `LogByteSizeMergePolicy` (`index.merge.policy: log_byte_size`).
+    LogByteSize {
+        merge_factor: i32,
+        min_merge_bytes: i64,
+        max_merge_bytes: i64,
+        max_forced_merge_bytes: i64,
+        max_merge_docs: i32,
+        compound: CompoundFileSettings,
+    },
+    /// `NoMergePolicy` (`index.merge.enabled: false`).
+    NoMerges,
+}
+
+impl PluggablePolicy {
+    fn build(&self) -> Box<dyn MergePolicy> {
+        match *self {
+            PluggablePolicy::LogByteSize {
+                merge_factor,
+                min_merge_bytes,
+                max_merge_bytes,
+                max_forced_merge_bytes,
+                max_merge_docs,
+                compound,
+            } => {
+                let mut p = LogByteSizeMergePolicy::new();
+                // Checked by the caller: at least 2.
+                let _ = p.set_merge_factor(merge_factor);
+                p.min_merge_size = min_merge_bytes;
+                p.max_merge_size = max_merge_bytes;
+                p.max_merge_size_for_forced_merge = max_forced_merge_bytes;
+                p.max_merge_docs = max_merge_docs;
+                *p.compound_file_settings_mut() = compound;
+                Box::new(p)
+            }
+            PluggablePolicy::NoMerges => Box::new(NoMergePolicy::default()),
+        }
+    }
 }
 
 /// Files pinned by [`ffi_engine_writer_hold_commit`] and
@@ -810,6 +856,7 @@ pub unsafe extern "C" fn ffi_engine_writer_open(
             }),
             tragic: OnceLock::new(),
             fault_injection: flags & OPEN_FAULT_INJECTION != 0,
+            pluggable_policy: Mutex::new(None),
         };
         let handle = lock_recovering(engine_writers()).insert_checked(Arc::new(engine))?;
         if let Some(&upcall) = MERGE_UPCALL.get() {
@@ -1527,6 +1574,90 @@ pub extern "C" fn ffi_engine_writer_set_merge_policy(
     })
 }
 
+/// No pluggable policy: [`ffi_engine_writer_set_merge_policy`]'s tiered one decides.
+pub const MERGE_POLICY_TIERED: i32 = 0;
+/// `LogByteSizeMergePolicy`.
+pub const MERGE_POLICY_LOG_BYTE_SIZE: i32 = 1;
+/// `NoMergePolicy`.
+pub const MERGE_POLICY_NONE: i32 = 2;
+
+/// The shard's merge policy when it is not `TieredMergePolicy`: `kind` is
+/// [`MERGE_POLICY_LOG_BYTE_SIZE`] with `index.merge.log_byte_size_policy.*`
+/// (merge factor, smallest and largest merged segment in bytes, the largest
+/// for forced merges, the most documents a merged segment may hold, and the
+/// policy's `noCFSRatio` and `maxCFSSegmentSize` in bytes), or
+/// [`MERGE_POLICY_NONE`] for `index.merge.enabled: false`, whose other
+/// arguments are ignored; [`MERGE_POLICY_TIERED`] goes back to the tiered
+/// policy. It decides natural, forced and forced-deletes merges from the next
+/// one on, and the merge-on-flush policy the next time that is set.
+#[no_mangle]
+pub extern "C" fn ffi_engine_writer_set_pluggable_merge_policy(
+    handle: u64,
+    kind: i32,
+    merge_factor: i32,
+    min_merge_bytes: i64,
+    max_merge_bytes: i64,
+    max_forced_merge_bytes: i64,
+    max_merge_docs: i32,
+    no_cfs_ratio: f64,
+    max_cfs_segment_bytes: i64,
+) -> i32 {
+    guard(|| {
+        let invalid = |what: String| {
+            set_last_error(format!("invalid merge policy setting: {what}"));
+            FfiStatus::InvalidArgument
+        };
+        let policy = match kind {
+            MERGE_POLICY_TIERED => None,
+            MERGE_POLICY_NONE => Some(PluggablePolicy::NoMerges),
+            MERGE_POLICY_LOG_BYTE_SIZE => {
+                if merge_factor < 2 {
+                    return Err(invalid(format!("merge_factor {merge_factor} < 2")));
+                }
+                if min_merge_bytes < 0 || max_merge_bytes < 0 || max_forced_merge_bytes < 0 {
+                    return Err(invalid("a merge size < 0".to_string()));
+                }
+                if max_merge_docs < 0 {
+                    return Err(invalid(format!("max_merged_docs {max_merge_docs} < 0")));
+                }
+                let mut compound = CompoundFileSettings::default();
+                compound
+                    .set_no_cfs_ratio(no_cfs_ratio)
+                    .map_err(|e| invalid(e.to_string()))?;
+                if max_cfs_segment_bytes < 0 {
+                    return Err(invalid(format!(
+                        "maxCFSSegmentSize {max_cfs_segment_bytes} < 0"
+                    )));
+                }
+                compound.max_cfs_segment_size = max_cfs_segment_bytes;
+                Some(PluggablePolicy::LogByteSize {
+                    merge_factor,
+                    min_merge_bytes,
+                    max_merge_bytes,
+                    max_forced_merge_bytes,
+                    max_merge_docs,
+                    compound,
+                })
+            }
+            other => return Err(invalid(format!("unknown merge policy kind {other}"))),
+        };
+        with_writer(handle, |w| {
+            let mut current = w
+                .pluggable_policy
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if *current == policy {
+                return Ok(());
+            }
+            w.writer().with_writer(|iw| {
+                iw.set_pluggable_merge_policy(policy.map(|p| Arc::from(p.build())));
+            });
+            *current = policy;
+            Ok(())
+        })
+    })
+}
+
 /// The writer options OpenSearch's `NativeLuceneIndexWriterFactory` sets
 /// beside the merge policy: whether flushed segments are compound
 /// (`index.use_compound_file`); the merge policy's `noCFSRatio`
@@ -1584,12 +1715,22 @@ pub extern "C" fn ffi_engine_writer_set_merge_on_flush(
 ) -> i32 {
     guard(|| {
         with_writer(handle, |w| {
+            let pluggable = *w
+                .pluggable_policy
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
             w.writer().with_writer(|iw| {
                 iw.set_max_full_flush_merge_wait_millis(wait_millis);
                 let policy = (merge_on_flush_policy != 0).then(|| {
-                    let inner =
-                        TieredMergePolicy::new(iw.merge_policy().cloned().unwrap_or_default());
-                    Arc::new(MergeOnFlushMergePolicy::new(Box::new(inner))) as Arc<dyn MergePolicy>
+                    let inner = pluggable.map_or_else(
+                        || {
+                            Box::new(TieredMergePolicy::new(
+                                iw.merge_policy().cloned().unwrap_or_default(),
+                            )) as Box<dyn MergePolicy>
+                        },
+                        |p| p.build(),
+                    );
+                    Arc::new(MergeOnFlushMergePolicy::new(inner)) as Arc<dyn MergePolicy>
                 });
                 iw.set_full_flush_merge_policy(policy);
             });
@@ -2311,6 +2452,122 @@ mod tests {
         lookup(h).unwrap().writer().with_writer(|w| {
             assert_eq!(w.merge_policy().unwrap().max_merged_segment_size, 1);
         });
+        check(&tmp);
+        ffi_engine_writer_close(h);
+    }
+
+    /// `index.merge.enabled: false` stops every merge, forced ones included;
+    /// `log_byte_size` then decides them, and the tiered policy again once
+    /// set back. Settings OpenSearch would refuse are refused.
+    #[test]
+    fn a_pluggable_merge_policy_decides_the_shards_merges() {
+        let tmp = empty_index("engine-writer-pluggable-policy");
+        let h = open(&tmp, 0);
+        let f = setup(h);
+        for (i, id) in ["a", "b", "c", "d"].into_iter().enumerate() {
+            let d = doc(
+                Blob::default().u8(OP_ADD).i32(1),
+                &f,
+                id,
+                &["x"],
+                i as i64,
+                false,
+            );
+            assert_eq!(apply(h, &d.0), 0);
+            commit(h, &[]);
+        }
+        let set = |kind, factor, ratio| {
+            ffi_engine_writer_set_pluggable_merge_policy(
+                h,
+                kind,
+                factor,
+                0,
+                i64::MAX,
+                i64::MAX,
+                i32::MAX,
+                ratio,
+                i64::MAX,
+            )
+        };
+        let dir = FsDirectory::open(tmp.path());
+        let segments = || {
+            lucene_index::segment_infos::read_latest(&dir)
+                .unwrap()
+                .segments
+                .len()
+        };
+        let before = segments();
+        assert!(before >= 2, "{before} segments");
+        assert_eq!(set(MERGE_POLICY_NONE, 0, 0.0), 0);
+        let mut gen = 0;
+        // SAFETY: live out-pointer.
+        assert_eq!(
+            unsafe { ffi_engine_writer_force_merge(h, 1, 0, &mut gen) },
+            0
+        );
+        assert_eq!(segments(), before, "merges are off");
+        assert_eq!(set(MERGE_POLICY_LOG_BYTE_SIZE, 2, 0.1), 0);
+        assert_eq!(set(MERGE_POLICY_LOG_BYTE_SIZE, 2, 0.1), 0, "unchanged");
+        assert_eq!(ffi_engine_writer_set_merge_on_flush(h, 500, 1), 0);
+        lookup(h).unwrap().writer().with_writer(|w| {
+            assert!(w.pluggable_merge_policy().is_some());
+        });
+        // SAFETY: live out-pointer.
+        assert_eq!(
+            unsafe { ffi_engine_writer_force_merge(h, 1, 0, &mut gen) },
+            0
+        );
+        assert_eq!(segments(), 1);
+        assert_eq!(set(MERGE_POLICY_TIERED, 0, 0.0), 0);
+        lookup(h).unwrap().writer().with_writer(|w| {
+            assert!(w.pluggable_merge_policy().is_none());
+        });
+        let invalid = FfiStatus::InvalidArgument.code();
+        assert_eq!(set(MERGE_POLICY_LOG_BYTE_SIZE, 1, 0.1), invalid);
+        assert_eq!(set(MERGE_POLICY_LOG_BYTE_SIZE, 2, 1.5), invalid);
+        assert_eq!(set(9, 2, 0.1), invalid);
+        assert_eq!(
+            ffi_engine_writer_set_pluggable_merge_policy(
+                h,
+                MERGE_POLICY_LOG_BYTE_SIZE,
+                2,
+                -1,
+                0,
+                0,
+                0,
+                0.1,
+                0
+            ),
+            invalid
+        );
+        assert_eq!(
+            ffi_engine_writer_set_pluggable_merge_policy(
+                h,
+                MERGE_POLICY_LOG_BYTE_SIZE,
+                2,
+                0,
+                0,
+                0,
+                -1,
+                0.1,
+                0
+            ),
+            invalid
+        );
+        assert_eq!(
+            ffi_engine_writer_set_pluggable_merge_policy(
+                h,
+                MERGE_POLICY_LOG_BYTE_SIZE,
+                2,
+                0,
+                0,
+                0,
+                0,
+                0.1,
+                -1
+            ),
+            invalid
+        );
         check(&tmp);
         ffi_engine_writer_close(h);
     }

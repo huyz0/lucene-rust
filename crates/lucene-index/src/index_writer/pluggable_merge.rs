@@ -309,6 +309,49 @@ impl IndexWriter<'_> {
         Ok(Some((merges, deadline)))
     }
 
+    /// `IndexWriter.updatePendingMerges(NATURAL)` under a pluggable policy:
+    /// `findMerges` over every segment, those in `merging` reported as
+    /// merging, each proposed merge with its estimated bytes (the sources'
+    /// sizes pro-rated by their live documents). A merge with hooks is left
+    /// out: a merge scheduler runs merges by segment names alone.
+    pub(crate) fn find_merges_pluggable(
+        &self,
+        policy: &Arc<dyn MergePolicy>,
+        merging: &HashSet<String>,
+    ) -> Result<Vec<(Vec<String>, u64)>> {
+        let (infos, mut ctx) = self.merge_inputs()?;
+        ctx.merging = merging.clone();
+        let Some(spec) = policy
+            .find_merges(MergeTrigger::SegmentFlush, &infos, &ctx)
+            .map_err(policy_error)?
+        else {
+            return Ok(Vec::new());
+        };
+        Ok(spec
+            .runnable()
+            .into_iter()
+            .filter(|(group, hooks)| {
+                hooks.is_none() && !group.iter().any(|name| merging.contains(name))
+            })
+            .map(|(group, _)| {
+                let estimated = infos
+                    .iter()
+                    .filter(|i| group.contains(&i.name))
+                    .map(|i| {
+                        let live = f64::from(i.max_doc.saturating_sub(i.del_count).max(0));
+                        let ratio = if i.max_doc > 0 {
+                            live / f64::from(i.max_doc)
+                        } else {
+                            0.0
+                        };
+                        (i.size_in_bytes.max(0) as f64 * ratio) as u64
+                    })
+                    .fold(0u64, u64::saturating_add);
+                (group, estimated)
+            })
+            .collect())
+    }
+
     /// `IndexWriter.forceMergeDeletes()` under a pluggable policy: one round
     /// of `findForcedDeletesMerges`, every merge it specifies run.
     pub(super) fn force_merge_deletes_pluggable(
@@ -357,8 +400,17 @@ impl IndexWriter<'_> {
                 return Ok(());
             }
             let before: HashSet<String> = infos.into_iter().map(|i| i.name).collect();
+            // `ShuffleForcedMergePolicy` wraps the merges a policy forces.
+            let stats = if self.cfg.shuffle_forced_merges {
+                self.segment_stats()?
+            } else {
+                Vec::new()
+            };
             for (group, hooks) in spec.runnable() {
-                self.execute_merge_hooked(&group, hooks)?;
+                match hooks {
+                    None => self.execute_forced_merge(group, &stats)?,
+                    Some(_) => self.execute_merge_hooked(&group, hooks)?,
+                }
             }
             // `IndexWriter.updatePendingMerges`: a merged segment replaces its
             // sources in `segmentsToMerge`, marked "not original".

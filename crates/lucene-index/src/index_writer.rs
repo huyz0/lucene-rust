@@ -5793,12 +5793,16 @@ impl<'d> IndexWriter<'d> {
     /// `merging` included as Java's `MergeContext.getMergingSegments` counts
     /// them (their bytes in the index total, never as candidates): each
     /// proposed merge with its `OneMerge.estimatedMergeBytes`, the sources'
-    /// sizes pro-rated by their live documents.
+    /// sizes pro-rated by their live documents. An installed pluggable policy
+    /// decides instead ([`IndexWriter::find_merges_pluggable`]).
     pub(crate) fn find_merges_sized(
         &self,
         config: &MergePolicyConfig,
         merging: &std::collections::HashSet<String>,
     ) -> Result<Vec<(Vec<String>, u64)>> {
+        if let Some(policy) = self.pluggable_merge_policy.clone() {
+            return self.find_merges_pluggable(&policy, merging);
+        }
         let stats = self.segment_stats()?;
         let merges = merge_policy::find_merges_excluding(&stats, merging, config);
         Ok(merges
