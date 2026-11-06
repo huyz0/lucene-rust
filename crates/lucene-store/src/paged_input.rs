@@ -101,6 +101,8 @@ const FAULT_RETRIES: [u64; 12] = [
     50, 100, 250, 500, 1000, 2000, 4000, 8000, 8000, 10000, 10000, 15000,
 ];
 
+static GLOBAL: OnceLock<Option<&'static Pager>> = OnceLock::new();
+
 /// The process-wide fault handler: one `userfaultfd`, its handler threads,
 /// every registered file, and the resident budget.
 pub struct Pager {
@@ -145,27 +147,143 @@ impl ExternalBytes for PagedBytes {
     }
 
     fn will_need(&self, offset: usize, len: usize) -> Result<()> {
-        let f = &self.file;
-        let end = offset.saturating_add(len).min(f.len);
-        if offset >= end {
-            return Ok(());
-        }
-        let first = offset.checked_div(f.page).unwrap_or(0);
-        let last = end.saturating_sub(1).checked_div(f.page).unwrap_or(0);
-        let missing: Vec<u64> = (first..=last)
-            .filter(|&p| !f.live[p].load(Ordering::Acquire))
-            .map(|p| p as u64)
-            .collect();
-        if missing.is_empty() {
-            return Ok(());
-        }
-        let filled = f.filler.fill(&missing)?;
-        for (&page, bytes) in missing.iter().zip(&filled) {
-            f.pager.install(&self.file, page as usize, bytes);
-        }
-        f.pager.evict();
+        let missing = self.file.missing(&[(offset, len)]);
+        self.file.fill(&missing)?;
+        self.file.pager.evict();
         Ok(())
     }
+}
+
+impl File {
+    /// The pages of `ranges` (offsets in the file) not resident now.
+    fn missing(&self, ranges: &[(usize, usize)]) -> Vec<u64> {
+        let mut pages = Vec::new();
+        for &(offset, len) in ranges {
+            let end = offset.saturating_add(len).min(self.len);
+            if offset >= end {
+                continue;
+            }
+            let first = offset.checked_div(self.page).unwrap_or(0);
+            let last = end.saturating_sub(1).checked_div(self.page).unwrap_or(0);
+            pages.extend(
+                (first..=last)
+                    .filter(|&p| !self.live[p].load(Ordering::Acquire))
+                    .map(|p| p as u64),
+            );
+        }
+        pages.sort_unstable();
+        pages.dedup();
+        pages
+    }
+
+    /// Fetches `pages` (sorted, distinct) in one batch and installs them.
+    fn fill(self: &Arc<Self>, pages: &[u64]) -> Result<()> {
+        if pages.is_empty() {
+            return Ok(());
+        }
+        let filled = self.filler.fill(pages)?;
+        for (&page, bytes) in pages.iter().zip(&filled) {
+            self.pager.install(self, page as usize, bytes);
+        }
+        Ok(())
+    }
+}
+
+/// `IndexInput.prefetch` by address: brings in every page of `ranges` that
+/// lies in a demand-filled file of the global [`Pager`] and is not resident,
+/// all files' pages fetched at once, and returns the first fetch error.
+/// Ranges anywhere else (heap, `mmap`) are skipped without a system call.
+pub fn prefetch(ranges: &[&[u8]]) -> Result<()> {
+    let Some(pager) = Pager::started() else {
+        return Ok(());
+    };
+    // Each file touched, with its ranges as (offset, len).
+    type Spans = Vec<(usize, usize)>;
+    let mut wanted: Vec<(Arc<File>, Spans)> = Vec::new();
+    {
+        let files = match pager.files.read() {
+            Ok(files) => files,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if files.is_empty() {
+            return Ok(());
+        }
+        for range in ranges {
+            let addr = range.as_ptr() as usize;
+            let Some((_, weak)) = files.range(..=addr).next_back() else {
+                continue;
+            };
+            let Some(file) = weak.upgrade() else {
+                continue;
+            };
+            let offset = addr.wrapping_sub(file.base);
+            if offset >= file.len {
+                continue;
+            }
+            let span = (offset, range.len().max(1));
+            match wanted.iter_mut().find(|(f, _)| Arc::ptr_eq(f, &file)) {
+                Some((_, spans)) => spans.push(span),
+                None => wanted.push((file, vec![span])),
+            }
+        }
+    }
+    let work: Vec<(Arc<File>, Vec<u64>)> = wanted
+        .into_iter()
+        .map(|(file, spans)| {
+            let missing = file.missing(&spans);
+            (file, missing)
+        })
+        .filter(|(_, missing)| !missing.is_empty())
+        .collect();
+    let result = match work.as_slice() {
+        [] => Ok(()),
+        [(file, missing)] => file.fill(missing),
+        // A bounded number of files at a time: a query over many segments
+        // must not start a thread per file.
+        _ => {
+            let mut first = Ok(());
+            for batch in work.chunks(HANDLER_THREADS) {
+                std::thread::scope(|scope| {
+                    let handles: Vec<_> = batch
+                        .iter()
+                        .map(|(file, missing)| scope.spawn(move || file.fill(missing)))
+                        .collect();
+                    for handle in handles {
+                        let r = handle.join().unwrap_or_else(|_| {
+                            Err(Error::Io(std::io::Error::other(
+                                "a prefetch thread panicked",
+                            )))
+                        });
+                        if first.is_ok() {
+                            first = r;
+                        }
+                    }
+                });
+            }
+            first
+        }
+    };
+    pager.evict();
+    result
+}
+
+/// Whether `bytes` starts in a demand-filled file of the global [`Pager`]:
+/// what a reader asks before spending work on a [`prefetch`] that would
+/// otherwise find nothing to fetch.
+pub fn is_paged(bytes: &[u8]) -> bool {
+    let Some(pager) = Pager::started() else {
+        return false;
+    };
+    let files = match pager.files.read() {
+        Ok(files) => files,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    let addr = bytes.as_ptr() as usize;
+    files
+        .range(..=addr)
+        .next_back()
+        .and_then(|(_, weak)| weak.upgrade())
+        .is_some_and(|file| addr.wrapping_sub(file.base) < file.map_len.max(1))
 }
 
 impl Drop for PagedBytes {
@@ -214,8 +332,12 @@ impl Pager {
     /// The process's pager, started on first use; `None` when
     /// `userfaultfd` is unavailable.
     pub fn global() -> Option<&'static Pager> {
-        static PAGER: OnceLock<Option<&'static Pager>> = OnceLock::new();
-        *PAGER.get_or_init(|| Pager::spawn(false))
+        *GLOBAL.get_or_init(|| Pager::spawn(false))
+    }
+
+    /// [`Pager::global`] if it has been started, without starting it.
+    fn started() -> Option<&'static Pager> {
+        GLOBAL.get().copied().flatten()
     }
 
     /// Starts a pager and its handler threads. Both live for the rest of
@@ -571,6 +693,7 @@ mod tests {
         len: usize,
         page: usize,
         fills: AtomicUsize,
+        calls: AtomicUsize,
         fail_first: AtomicUsize,
     }
 
@@ -585,6 +708,7 @@ mod tests {
                 return Err(Error::Io(std::io::Error::other("transient")));
             }
             self.fills.fetch_add(pages.len(), Ordering::Relaxed);
+            self.calls.fetch_add(1, Ordering::Relaxed);
             Ok(pages
                 .iter()
                 .map(|&p| {
@@ -601,6 +725,7 @@ mod tests {
             len,
             page,
             fills: AtomicUsize::new(0),
+            calls: AtomicUsize::new(0),
             fail_first: AtomicUsize::new(0),
         })
     }
@@ -671,6 +796,33 @@ mod tests {
         assert_eq!(p.fills.load(Ordering::Relaxed), before);
         assert!(input.will_need(200_000, 10).is_ok());
         assert!(input.will_need(5, 0).is_ok());
+    }
+
+    #[test]
+    fn prefetch_by_address_fetches_each_file_s_ranges_in_one_batch() {
+        let Some(pager) = Pager::global() else {
+            return;
+        };
+        let page = 16 * 1024;
+        let (a, b) = (pattern(200_000, page), pattern(200_000, page));
+        let fa = pager.open(200_000, page, a.clone(), "a").unwrap();
+        let fb = pager.open(200_000, page, b.clone(), "b").unwrap();
+        let (x, y) = (fa.bytes(), fb.bytes());
+        let heap = vec![1u8; 10];
+        assert!(is_paged(x) && is_paged(&y[100..]));
+        assert!(!is_paged(&heap) && !is_paged(&[]));
+        prefetch(&[&x[..1], &x[100_000..150_000], &y[190_000..], &heap, &[]]).unwrap();
+        // Pages 0 and 6..=9 of `a`, 11..=12 of `b`: one fill call each.
+        assert_eq!(a.fills.load(Ordering::Relaxed), 5);
+        assert_eq!(a.calls.load(Ordering::Relaxed), 1);
+        assert_eq!(b.fills.load(Ordering::Relaxed), 2);
+        assert_eq!(b.calls.load(Ordering::Relaxed), 1);
+        assert_eq!(x[120_000], byte(120_000));
+        assert_eq!(y[199_999], byte(199_999));
+        // A fetch error comes back to the caller.
+        b.fail_first.store(1, Ordering::Relaxed);
+        assert!(prefetch(&[&y[50_000..50_001]]).is_err());
+        assert_eq!(y[50_000], byte(50_000));
     }
 
     #[test]
