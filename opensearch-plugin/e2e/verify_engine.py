@@ -758,10 +758,9 @@ def breaker():
 
 
 def merge_policies():
-    """index.merge.policy: log_byte_size and index.merge.enabled: false decide the Rust writer's
-    merges as they decide Lucene's: with merges off a force merge leaves every segment."""
-    for index, extra, merged in (("lbs_rust", {"index.merge.policy": "log_byte_size"}, True),
-                                 ("nomerge_rust", {"index.merge.enabled": False}, False)):
+    """index.merge.policy: log_byte_size decides the Rust writer's merges as it decides Lucene's.
+    (index.merge.enabled is a private setting a REST client cannot set.)"""
+    for index, extra, merged in (("lbs_rust", {"index.merge.policy": "log_byte_size"}, True),):
         create(index, True, {"number_of_shards": 1, **extra})
         for batch in range(4):
             lines = []
