@@ -60,6 +60,7 @@ pub mod encoding;
 pub mod kmeans;
 pub mod merge;
 pub mod reader;
+pub mod routing;
 pub mod writer;
 
 pub use calibrate::{Calibration, DEFAULT_CALIBRATION_RECALL};
@@ -69,6 +70,7 @@ pub use reader::{
     segment_nprobe, IvfField, IvfReader, Probes, RangeSource, Rerank, ScoredDoc, SearchOutput,
     SearchParams, SearchStats, SharedThreshold, DEFAULT_PROBE_FRACTION, DEFAULT_RERANK_MULTIPLE,
 };
+pub use routing::Routing;
 pub use writer::{FieldVectors, IvfFiles, IvfParams, IvfWriter};
 
 pub use lucene_vector_quant::Similarity;
@@ -97,8 +99,11 @@ pub const VERSION_VECTOR_ENCODING: i32 = 2;
 /// ([`IvfField::radius`], [`IvfField::calibration`]). Version 1 and 2
 /// fields are read with neither.
 pub const VERSION_CALIBRATION: i32 = 3;
+/// A per-field centroid routing tree in `.ivm` (`routing::tree_parents`).
+/// Version 1 to 3 fields are read without one.
+pub const VERSION_ROUTING_TREE: i32 = 4;
 /// The current format version.
-pub const VERSION_CURRENT: i32 = VERSION_CALIBRATION;
+pub const VERSION_CURRENT: i32 = VERSION_ROUTING_TREE;
 
 /// Errors building or reading an IVF index.
 #[derive(Debug, thiserror::Error)]

@@ -931,12 +931,14 @@ fn rewrite(file: &[u8], codec: &str, version: i32, edit: impl FnOnce(&mut Vec<u8
     out
 }
 
-/// The bytes `VERSION_CALIBRATION` appends to the last field's meta entry:
-/// its radii and calibration.
+/// The bytes `VERSION_CALIBRATION` and `VERSION_ROUTING_TREE` append to
+/// the last field's meta entry: its radii, calibration and (for a field too
+/// small for a routing tree) a zero parent count.
 fn calibration_tail(files: &lucene_ivf::IvfFiles, field: i32) -> usize {
     let r = open(files);
     let f = r.field(field).unwrap();
-    f.clusters() * 4 + if f.calibration().is_some() { 9 } else { 1 }
+    assert!(!f.has_routing_tree());
+    f.clusters() * 4 + if f.calibration().is_some() { 9 } else { 1 } + 1
 }
 
 /// In a one-field meta payload: field count (1 byte), field number (4),

@@ -19,7 +19,10 @@
 //!   from VERSION_CALIBRATION: cluster radii (cluster count x f32 LE: the
 //!   largest distance from the centroid of an entry's stored vector,
 //!   unit-normalized for Cosine), byte calibrated (0 or 1), and when 1:
-//!   f32 probe fraction, f32 rerank multiple (`Calibration`)
+//!   f32 probe fraction, f32 rerank multiple (`Calibration`),
+//!   from VERSION_ROUTING_TREE: vint routing parent count (0 for none:
+//!   fields below `routing::TREE_MIN_CLUSTERS` clusters), and when not 0,
+//!   each cluster's parent (cluster count x vint, every parent used)
 //! Footer
 //! ```
 //!
@@ -53,6 +56,7 @@ use crate::calibrate::{self, DEFAULT_CALIBRATION_RECALL};
 use crate::kmeans::{self, KMeansParams, SplitMix64};
 use crate::merge::MergeClustering;
 use crate::reader::IvfField;
+use crate::routing;
 use crate::{
     similarity_ordinal, Error, Result, Similarity, VectorEncoding, META_CODEC, POSTINGS_CODEC,
     VECTORS_CODEC, VERSION_CURRENT,
@@ -92,6 +96,9 @@ pub struct IvfParams {
     /// How [`crate::merge_field`] clusters a merged segment: afresh, or from
     /// the clusters of its largest source.
     pub merge_clustering: MergeClustering,
+    /// Store a centroid routing tree ([`crate::routing`]) from this many
+    /// clusters on; `usize::MAX` stores none.
+    pub routing_tree_min: usize,
 }
 
 impl Default for IvfParams {
@@ -104,6 +111,7 @@ impl Default for IvfParams {
             rerank_encoding: VectorEncoding::F32,
             calibration_recall: Some(DEFAULT_CALIBRATION_RECALL),
             merge_clustering: MergeClustering::default(),
+            routing_tree_min: routing::TREE_MIN_CLUSTERS,
         }
     }
 }
@@ -541,10 +549,12 @@ impl IvfWriter {
 
         let name = quantizer.name().to_string();
         let state = quantizer.state();
+        let tree = (nlist >= params.routing_tree_min.max(2))
+            .then(|| routing::tree_parents(&clustering.centroids, dim, field.similarity));
         let calibration = match params.calibration_recall {
             Some(target) => {
                 let sizes: Vec<usize> = entries.iter().map(Vec::len).collect();
-                let probe = IvfField::in_memory(
+                let mut probe = IvfField::in_memory(
                     field.number,
                     field.similarity,
                     dim,
@@ -554,6 +564,7 @@ impl IvfWriter {
                     postings_offset,
                     order.iter().map(|&i| i as i32).collect(),
                 )?;
+                probe.set_tree(tree.clone());
                 calibrate::calibrate(
                     &probe,
                     &self.postings,
@@ -600,6 +611,16 @@ impl IvfWriter {
                 m.write_bytes(&c.rerank_multiple.to_le_bytes());
             }
             None => m.write_byte(0),
+        }
+        match &tree {
+            Some(parents) => {
+                let count = parents.iter().map(|&p| p as usize + 1).max().unwrap_or(0);
+                write_count(m, count)?;
+                for &p in parents {
+                    write_count(m, p as usize)?;
+                }
+            }
+            None => write_count(m, 0)?,
         }
         self.field_numbers.push(field.number);
         Ok(())
