@@ -1697,11 +1697,11 @@ impl IndexingConfig {
         let outcome = self.run_merge_unthrottled(
             &lucene_store::EstimatedWrites::new(&merge_dir, estimate),
             plan,
-        )?;
+        );
         if progress.is_aborted() {
             return Err(Error::MergeAborted);
         }
-        Ok(outcome)
+        outcome
     }
 
     /// [`Self::run_merge`] with no rate limit.

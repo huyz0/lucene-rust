@@ -8,9 +8,11 @@
 //! - **Abort.** Java's `pause` throws `MergeAbortedException` out of the
 //!   write that hit it. [`lucene_store::RateLimiter::pause`] cannot fail --
 //!   `DataOutput` writes are infallible here -- so an aborted merge's pause
-//!   returns at once instead, and the merge learns it was aborted from
-//!   [`OneMergeProgress::is_aborted`] (the writer checks it when the merge's
-//!   writes are done, [`crate::index_writer::Error::MergeAborted`]).
+//!   returns at once instead, its outputs latch an error at their next write
+//!   (returned by their `close`), and [`MergeDirectory`] refuses new outputs.
+//!   The writer turns the failure into
+//!   [`crate::index_writer::Error::MergeAborted`] by checking
+//!   [`OneMergeProgress::is_aborted`].
 //! - **The clock.** Java starts `lastNS` at `0` on `System.nanoTime()`, whose
 //!   origin is far in the past (boot, on Linux), so a first write never
 //!   pauses while a rate of zero stops at once. [`MergeRateLimiter`] keeps
@@ -288,6 +290,10 @@ impl RateLimiter for MergeRateLimiter {
     fn min_pause_check_bytes(&self) -> u64 {
         self.min_pause_check_bytes.load(Ordering::SeqCst)
     }
+
+    fn is_aborted(&self) -> bool {
+        self.merge_progress.is_aborted()
+    }
 }
 
 /// `IndexWriter.addMergeRateLimiters`' merge directory: `dir`, with every
@@ -311,6 +317,17 @@ impl<'a> MergeDirectory<'a> {
         out.set_rate_limiter(self.limiter.clone());
         out
     }
+
+    /// Refuses a new output once the merge is aborted, so an aborted merge
+    /// stops at its next file instead of writing the rest of it.
+    fn check_aborted(&self, name: &str) -> lucene_store::Result<()> {
+        if self.limiter.merge_progress().is_aborted() {
+            return Err(lucene_store::Error::Io(std::io::Error::other(format!(
+                "merge aborted before writing {name}"
+            ))));
+        }
+        Ok(())
+    }
 }
 
 impl Directory for MergeDirectory<'_> {
@@ -324,6 +341,7 @@ impl Directory for MergeDirectory<'_> {
         self.inner.file_length(name)
     }
     fn create_output(&self, name: &str) -> lucene_store::Result<FsIndexOutput> {
+        self.check_aborted(name)?;
         Ok(self.throttled(self.inner.create_output(name)?))
     }
     fn create_temp_output(
@@ -331,6 +349,7 @@ impl Directory for MergeDirectory<'_> {
         prefix: &str,
         suffix: &str,
     ) -> lucene_store::Result<FsIndexOutput> {
+        self.check_aborted(prefix)?;
         Ok(self.throttled(self.inner.create_temp_output(prefix, suffix)?))
     }
     fn create_output_with_estimate(
@@ -338,6 +357,7 @@ impl Directory for MergeDirectory<'_> {
         name: &str,
         estimated_bytes: Option<u64>,
     ) -> lucene_store::Result<FsIndexOutput> {
+        self.check_aborted(name)?;
         Ok(self.throttled(
             self.inner
                 .create_output_with_estimate(name, estimated_bytes)?,

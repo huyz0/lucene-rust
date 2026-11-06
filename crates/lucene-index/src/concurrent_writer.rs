@@ -106,7 +106,7 @@ use crate::index_writer::{
     InvertedTerms, Result, SegmentTicket, DISABLE_AUTO_FLUSH,
 };
 use crate::merge_policy::MergeTrigger;
-use crate::merge_rate_limiter::MergeRateLimiter;
+use crate::merge_rate_limiter::{MergeRateLimiter, OneMergeProgress};
 use crate::merge_scheduler::{MergeScheduler, MergeSource, PendingMerges, ScheduledMerge};
 use crate::segment_infos::SegmentCommitInfo;
 use crate::stall_control::DocumentsWriterStallControl;
@@ -212,6 +212,9 @@ struct Core<'d> {
     barrier: Option<u64>,
     /// Segments a merge has claimed and not yet finished.
     merging: HashSet<String>,
+    /// The progress of every scheduled merge running now, through which
+    /// [`ConcurrentIndexWriter::with_writer_merges_aborted`] aborts them.
+    running: Vec<Arc<OneMergeProgress>>,
     /// Buffers being flushed, readable by live search until published.
     live: live::LiveFlushes,
 }
@@ -388,7 +391,49 @@ impl<'d> ConcurrentIndexWriter<'d> {
     /// and holds, soft-deletes retention, force merges). The buffers are not
     /// flushed first; the configuration snapshot is refreshed after.
     pub fn with_writer<T>(&self, body: impl FnOnce(&mut IndexWriter<'d>) -> T) -> T {
+        self.run_on_writer(lock(&self.core), body)
+    }
+
+    /// [`Self::with_writer`] once no merge is running: merges not started yet
+    /// are dropped and running scheduled ones aborted, and `body` runs after
+    /// every merge has let go of its segments. For a force merge, which
+    /// merges those segments itself: a throttled natural merge of them would
+    /// only keep their files on disk until it finished, to be merged again
+    /// after. Merges a caller runs itself ([`Self::maybe_merge`]) cannot be
+    /// aborted and are waited for. The policy registers merges again on the
+    /// next flush or merge request.
+    pub fn with_writer_merges_aborted<T>(&self, body: impl FnOnce(&mut IndexWriter<'d>) -> T) -> T {
         let mut core = lock(&self.core);
+        loop {
+            // A merge that finishes registers its cascade, and a merge thread
+            // may start a merge it took before: both are dropped or aborted on
+            // the next round.
+            while let Some(merge) = self.pending_merges.pop() {
+                for name in &merge.segments {
+                    core.merging.remove(name);
+                }
+            }
+            for progress in &core.running {
+                progress.abort();
+            }
+            if core.merging.is_empty() {
+                break;
+            }
+            // Timed: a merge starting while this waits notifies no one.
+            core = self
+                .changed
+                .wait_timeout(core, Duration::from_millis(10))
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .0;
+        }
+        self.run_on_writer(core, body)
+    }
+
+    fn run_on_writer<T>(
+        &self,
+        mut core: MutexGuard<'_, Core<'d>>,
+        body: impl FnOnce(&mut IndexWriter<'d>) -> T,
+    ) -> T {
         let out = body(&mut core.writer);
         *self
             .cfg
@@ -446,6 +491,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
                 next_publish: 0,
                 barrier: None,
                 merging: HashSet::new(),
+                running: Vec::new(),
                 live,
             }),
             changed: Condvar::new(),
@@ -524,6 +570,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
             for name in &merge.segments {
                 core.merging.remove(name);
             }
+            core.running.retain(|p| !Arc::ptr_eq(p, merge.progress()));
         };
         let plan = {
             let mut core = lock(&self.core);
@@ -531,6 +578,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
                 Ok(mut plan) => {
                     core.writer
                         .attach_merge_hooks(&mut plan, merge.hooks.clone());
+                    core.running.push(Arc::clone(merge.progress()));
                     plan
                 }
                 Err(e) => {
@@ -3650,6 +3698,51 @@ mod tests {
         let dir2 = FsDirectory::open(&tmp2);
         let plain = ConcurrentIndexWriter::new(writer(&dir2, 5), 1).unwrap();
         plain.close_merges().unwrap();
+    }
+
+    /// A force merge aborts a scheduled merge of the same segments -- here
+    /// one stopped by a zero rate, which would otherwise never finish -- and
+    /// merges them itself, leaving no file of the aborted merge behind.
+    #[test]
+    fn a_force_merge_aborts_a_running_scheduled_merge() {
+        use lucene_store::RateLimiter as _;
+        let tmp = TempDir::new("concurrent-force-aborts");
+        let dir = static_dir(&tmp);
+        let w = ConcurrentIndexWriter::with_merge_scheduler(
+            writer(dir, 5),
+            1,
+            Arc::new(crate::merge_scheduler::NoMergeScheduler),
+        )
+        .unwrap();
+        for i in 0..40 {
+            w.add_document(doc(&format!("d{i}"), 0)).unwrap();
+            if i % 5 == 4 {
+                w.commit().unwrap();
+            }
+        }
+        let merge = w.next_merge().expect("a registered merge");
+        let limiter = Arc::new(MergeRateLimiter::new(Arc::clone(merge.progress())));
+        limiter.set_mb_per_sec(0.0);
+        std::thread::scope(|scope| {
+            let stuck = scope.spawn(|| w.merge(&merge, Some(limiter)));
+            // Once the merge holds the control lock's `running` entry, or
+            // before it starts: either way it is aborted.
+            while lock(&w.core).running.is_empty() && !stuck.is_finished() {
+                std::thread::yield_now();
+            }
+            w.with_writer_merges_aborted(|iw| iw.force_merge(1))
+                .unwrap();
+            assert!(matches!(stuck.join().unwrap(), Err(Error::MergeAborted)));
+        });
+        assert!(merge.is_aborted());
+        assert!(lock(&w.core).running.is_empty());
+        assert!(lock(&w.core).merging.is_empty());
+        assert!(!w.has_pending_merges());
+        w.commit().unwrap();
+        let (docs, segments) = live_documents(dir);
+        assert_eq!(docs.len(), 40);
+        assert_eq!(segments, 1);
+        assert_clean(dir);
     }
 
     /// Merge-on-commit (`maxFullFlushMergeWaitMillis`) leaves the segments

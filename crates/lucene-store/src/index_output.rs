@@ -469,6 +469,12 @@ impl FsIndexOutput {
         for chunk in b.chunks(CHUNK_SIZE) {
             if let Some(rate_limit) = self.rate_limit.as_deref_mut() {
                 rate_limit.check_rate(chunk.len());
+                if rate_limit.limiter.is_aborted() {
+                    if self.pending_err.is_none() {
+                        self.pending_err = Some(std::io::Error::other("write aborted"));
+                    }
+                    return;
+                }
             }
             self.write_unlimited(chunk);
         }
@@ -921,6 +927,38 @@ mod tests {
             crate::Directory::file_length(&mem, "limited").unwrap(),
             111 + CHUNK_SIZE as u64 * 2 + 5
         );
+    }
+
+    /// An aborted limiter stops the output: the write that sees the abort
+    /// and every later one write nothing, and `close` fails.
+    #[test]
+    fn an_aborted_rate_limiter_fails_the_output() {
+        struct Aborting(std::sync::atomic::AtomicBool);
+        impl RateLimiter for Aborting {
+            fn set_mb_per_sec(&self, _mb_per_sec: f64) {}
+            fn mb_per_sec(&self) -> f64 {
+                1.0
+            }
+            fn pause(&self, _bytes: u64) -> u64 {
+                0
+            }
+            fn min_pause_check_bytes(&self) -> u64 {
+                1
+            }
+            fn is_aborted(&self) -> bool {
+                self.0.load(std::sync::atomic::Ordering::SeqCst)
+            }
+        }
+        let dir = tempdir();
+        let mut out = FsIndexOutput::create(&dir, "aborted").unwrap();
+        let limiter = Arc::new(Aborting(std::sync::atomic::AtomicBool::new(false)));
+        out.set_rate_limiter(limiter.clone());
+        out.write_bytes(&[1u8; 10]);
+        limiter.0.store(true, std::sync::atomic::Ordering::SeqCst);
+        out.write_bytes(&[2u8; 10]);
+        out.write_byte(3);
+        assert_eq!(out.file_pointer(), 10);
+        assert!(out.close().is_err());
     }
 
     /// Fails the `fail_at`-th write after keeping `keep` of its bytes, and

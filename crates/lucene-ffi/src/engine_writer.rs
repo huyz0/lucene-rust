@@ -1657,7 +1657,7 @@ pub unsafe extern "C" fn ffi_engine_writer_force_merge(
         let generation = with_writer(handle, |w| {
             let _maintenance = w.maintenance();
             w.writer()
-                .with_writer(|iw| {
+                .with_writer_merges_aborted(|iw| {
                     if only_deletes != 0 {
                         iw.force_merge_deletes()
                     } else {
