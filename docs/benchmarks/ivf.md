@@ -201,34 +201,34 @@ fastText-300, 27 438 clusters (recall@10 / µs per query):
 
 | nprobe | exact f32 | int8 | auto (tree, cover 32) | tree, cover 64 |
 |---|---|---|---|---|
-| 16 | 0.687 / 2123 | 0.687 / 1028 | 0.664 / 220 | 0.681 / 246 |
-| 32 | 0.777 / 2210 | 0.777 / 974 | 0.766 / 308 | 0.774 / 347 |
-| 64 | 0.856 / 2228 | 0.856 / 1067 | 0.851 / 500 | 0.855 / 574 |
-| 128 | 0.910 / 2286 | 0.910 / 1370 | 0.909 / 794 | 0.910 / 944 |
+| 16 | 0.687 / 1844 | 0.687 / 611 | 0.663 / 195 | 0.681 / 203 |
+| 32 | 0.777 / 1852 | 0.777 / 772 | 0.766 / 256 | 0.774 / 297 |
+| 64 | 0.856 / 1997 | 0.856 / 846 | 0.851 / 408 | 0.855 / 472 |
+| 128 | 0.910 / 2087 | 0.910 / 1108 | 0.908 / 694 | 0.910 / 771 |
 
 GloVe-100, 24 203 clusters:
 
 | nprobe | exact f32 | int8 | auto | tree, cover 64 |
 |---|---|---|---|---|
-| 32 | 0.725 / 650 | 0.725 / 413 | 0.710 / 133 | 0.719 / 151 |
-| 64 | 0.800 / 709 | 0.800 / 471 | 0.793 / 197 | 0.797 / 245 |
-| 128 | 0.853 / 804 | 0.853 / 582 | 0.848 / 337 | 0.852 / 443 |
-| 256 | 0.887 / 972 | 0.887 / 764 | 0.885 / 611 | 0.886 / 791 |
+| 32 | 0.725 / 624 | 0.725 / 352 | 0.710 / 121 | 0.719 / 137 |
+| 64 | 0.800 / 675 | 0.800 / 486 | 0.793 / 187 | 0.797 / 211 |
+| 128 | 0.853 / 751 | 0.853 / 512 | 0.848 / 302 | 0.852 / 360 |
+| 256 | 0.887 / 870 | 0.887 / 714 | 0.884 / 560 | 0.886 / 752 |
 
 fastText-300 at the default 384 per cluster (6 437 clusters, no tree):
 
 | nprobe | exact f32 | int8 |
 |---|---|---|
-| 8 | 0.693 / 488 | 0.693 / 279 |
-| 16 | 0.794 / 502 | 0.794 / 335 |
-| 32 | 0.868 / 628 | 0.868 / 439 |
-| 64 | 0.920 / 784 | 0.920 / 617 |
+| 8 | 0.693 / 495 | 0.693 / 228 |
+| 16 | 0.794 / 582 | 0.794 / 288 |
+| 32 | 0.868 / 602 | 0.868 / 378 |
+| 64 | 0.920 / 812 | 0.920 / 564 |
 
 - **8-bit centroids are free recall-wise**: the same recall in every row,
-  for 1.3-2.2x less latency. They cost one byte per centroid dimension in
+  for 1.2-3.0x less latency. They cost one byte per centroid dimension in
   memory beyond the f32 centroids, which the rescore and the quantizers still
   need.
-- **The tree** gives 3-7x less latency than exact routing at large cluster
+- **The tree** gives 3-9x less latency than exact routing at large cluster
   counts. At a fixed nprobe it loses up to 0.02 recall at small nprobe and
   0.001-0.005 from nprobe 64 up. Per unit of latency it wins: at 24k-27k
   clusters it reaches a given recall at roughly half the latency of int8
@@ -240,3 +240,39 @@ fastText-300 at the default 384 per cluster (6 437 clusters, no tree):
   rebuilds the parent means and codes, 60 ms for 27k x 300 centroids. Building
   the tree at write is a k-means over the centroids, small next to clustering
   the vectors.
+
+### Routing micro-benchmark
+
+`benches/routing.rs` (Criterion) times one routing of nprobe 64 over
+synthetic clustered centroids, and the 8-bit scan kernel alone:
+
+```
+cargo bench -p lucene-ivf --bench routing
+```
+
+| centroids | exact f32 | int8 | tree (cover 32) |
+|---|---|---|---|
+| 6.4k x 300 | 349 µs | 133 µs | 43 µs |
+| 27k x 300 | 1572 µs | 552 µs | 62 µs |
+| 24k x 100 | 569 µs | 256 µs | 42 µs |
+
+(Euclidean; Cosine is within a few percent.) What makes the 8-bit path fast:
+
+- **A u7 x i8 kernel** (`simd::dot_u7_i8`): the query is coded in 7 bits
+  plus an offset of 64, so AVX2 multiplies 32 byte pairs per `maddubs`
+  with no sign handling and no saturation, and NEON widens with
+  `vmull_s8`/`vmlal_high_s8`. Each row's stored code sum undoes the
+  offset. A four-row variant shares the query loads and horizontal sums.
+- **A thresholded top-n**: scores below the worst of the current best are
+  dropped before they reach a buffer, instead of collecting every score and
+  selecting.
+- **Branch-free row scoring**: one multiply-add per row with per-row
+  constants, the same for Euclidean and dot-product levels.
+- **Leaf codes in tree order**: each parent's children are one contiguous
+  run of code rows, so the tree scans a few sequential ranges with the
+  four-row kernel instead of gathering rows (27k tree route: 145 µs before,
+  62 µs after).
+
+The flat int8 scan at 27k x 300 reads 8.6 MB of codes per query, so it is
+bound by memory bandwidth (the kernel alone runs at about 21 GB/s here);
+beyond that, the tree is what helps.

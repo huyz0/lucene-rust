@@ -992,6 +992,230 @@ pub fn prefetch<T>(slice: &[T], i: usize) {
     let _ = (slice, i);
 }
 
+/// `sum(q[i] * c[i])` over the common prefix of `q` and `c`, with `q` read
+/// as unsigned bytes no greater than 127 and `c` as signed bytes: the
+/// 8-bit dot product a coarse ranker scores many codes with. Keeping the
+/// query to 7 bits lets AVX2 multiply 32 pairs per `maddubs` without
+/// saturating (two products sum to at most `2 * 127 * 128 < 2^15`); NEON
+/// widens pairs of products into 16 bits the same way.
+///
+/// Query bytes above 127 give unspecified (but memory-safe) results.
+#[inline]
+pub fn dot_u7_i8(q: &[u8], c: &[u8]) -> i32 {
+    let n = q.len().min(c.len());
+    let (q, c) = (&q[..n], &c[..n]);
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+    {
+        // SAFETY: AVX2 is enabled for this whole build; both slices have
+        // length `n`.
+        unsafe { dot_u7_i8_avx2(q, c) }
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        // SAFETY: NEON is part of the aarch64 baseline; both slices have
+        // length `n`.
+        unsafe { dot_u7_i8_neon(q, c) }
+    }
+    #[cfg(not(any(
+        all(target_arch = "x86_64", target_feature = "avx2"),
+        target_arch = "aarch64"
+    )))]
+    dot_u7_i8_scalar(q, c)
+}
+
+/// The specification [`dot_u7_i8`] matches for query bytes up to 127.
+pub fn dot_u7_i8_scalar(q: &[u8], c: &[u8]) -> i32 {
+    q.iter().zip(c).fold(0i32, |s, (&x, &y)| {
+        s.wrapping_add(i32::from(x) * i32::from(y as i8))
+    })
+}
+
+/// # Safety
+///
+/// AVX2 must be available and `q.len() == c.len()`.
+#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+#[target_feature(enable = "avx2")]
+unsafe fn dot_u7_i8_avx2(q: &[u8], c: &[u8]) -> i32 {
+    use std::arch::x86_64::*;
+    let n = q.len();
+    let (pq, pc) = (q.as_ptr(), c.as_ptr());
+    let ones = _mm256_set1_epi16(1);
+    let (mut a0, mut a1) = (_mm256_setzero_si256(), _mm256_setzero_si256());
+    let mut i = 0;
+    // SAFETY (every load): `i + 32 <= n` (or `i + 64 <= n`) keeps the loads
+    // inside both slices.
+    while i + 64 <= n {
+        let (x0, y0, x1, y1) = unsafe {
+            (
+                _mm256_loadu_si256(pq.add(i) as *const __m256i),
+                _mm256_loadu_si256(pc.add(i) as *const __m256i),
+                _mm256_loadu_si256(pq.add(i + 32) as *const __m256i),
+                _mm256_loadu_si256(pc.add(i + 32) as *const __m256i),
+            )
+        };
+        a0 = _mm256_add_epi32(a0, _mm256_madd_epi16(_mm256_maddubs_epi16(x0, y0), ones));
+        a1 = _mm256_add_epi32(a1, _mm256_madd_epi16(_mm256_maddubs_epi16(x1, y1), ones));
+        i += 64;
+    }
+    if i + 32 <= n {
+        let (x, y) = unsafe {
+            (
+                _mm256_loadu_si256(pq.add(i) as *const __m256i),
+                _mm256_loadu_si256(pc.add(i) as *const __m256i),
+            )
+        };
+        a0 = _mm256_add_epi32(a0, _mm256_madd_epi16(_mm256_maddubs_epi16(x, y), ones));
+        i += 32;
+    }
+    let acc = _mm256_add_epi32(a0, a1);
+    let s = _mm_add_epi32(
+        _mm256_castsi256_si128(acc),
+        _mm256_extracti128_si256(acc, 1),
+    );
+    let s = _mm_add_epi32(s, _mm_shuffle_epi32(s, 0b01_00_11_10));
+    let s = _mm_add_epi32(s, _mm_shuffle_epi32(s, 0b10_11_00_01));
+    _mm_cvtsi128_si32(s).wrapping_add(dot_u7_i8_scalar(&q[i..], &c[i..]))
+}
+
+/// # Safety
+///
+/// `q.len() == c.len()`.
+#[cfg(target_arch = "aarch64")]
+unsafe fn dot_u7_i8_neon(q: &[u8], c: &[u8]) -> i32 {
+    use std::arch::aarch64::*;
+    let n = q.len();
+    let (pq, pc) = (q.as_ptr(), c.as_ptr());
+    let (mut a0, mut a1) = (vdupq_n_s32(0), vdupq_n_s32(0));
+    let mut i = 0;
+    // SAFETY (every load): `i + 32 <= n` (or `i + 16 <= n`) keeps the loads
+    // inside both slices.
+    while i + 32 <= n {
+        let (x0, y0, x1, y1) = unsafe {
+            (
+                vreinterpretq_s8_u8(vld1q_u8(pq.add(i))),
+                vld1q_s8(pc.add(i) as *const i8),
+                vreinterpretq_s8_u8(vld1q_u8(pq.add(i + 16))),
+                vld1q_s8(pc.add(i + 16) as *const i8),
+            )
+        };
+        // Query bytes are at most 127, so they read the same as `i8`; two
+        // products of at most 127 * 128 fit an `i16`.
+        let p0 = vmlal_high_s8(vmull_s8(vget_low_s8(x0), vget_low_s8(y0)), x0, y0);
+        let p1 = vmlal_high_s8(vmull_s8(vget_low_s8(x1), vget_low_s8(y1)), x1, y1);
+        a0 = vpadalq_s16(a0, p0);
+        a1 = vpadalq_s16(a1, p1);
+        i += 32;
+    }
+    if i + 16 <= n {
+        let (x, y) = unsafe {
+            (
+                vreinterpretq_s8_u8(vld1q_u8(pq.add(i))),
+                vld1q_s8(pc.add(i) as *const i8),
+            )
+        };
+        a0 = vpadalq_s16(
+            a0,
+            vmlal_high_s8(vmull_s8(vget_low_s8(x), vget_low_s8(y)), x, y),
+        );
+        i += 16;
+    }
+    vaddvq_s32(vaddq_s32(a0, a1)).wrapping_add(dot_u7_i8_scalar(&q[i..], &c[i..]))
+}
+
+/// [`dot_u7_i8`] of one query against four code rows at once, sharing the
+/// query loads and the final horizontal sums. Each row uses its common
+/// prefix with `q`.
+#[inline]
+pub fn dot_u7_i8_x4(q: &[u8], c: [&[u8]; 4]) -> [i32; 4] {
+    let n = c.iter().fold(q.len(), |n, r| n.min(r.len()));
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+    {
+        // SAFETY: AVX2 is enabled for this whole build; the kernel reads
+        // only the first `n` bytes of each slice, all at least `n` long.
+        unsafe { dot_u7_i8_x4_avx2(q, c, n) }
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        // SAFETY: NEON is part of the aarch64 baseline; as above for the
+        // bounds.
+        unsafe { dot_u7_i8_x4_neon(q, c, n) }
+    }
+    #[cfg(not(any(
+        all(target_arch = "x86_64", target_feature = "avx2"),
+        target_arch = "aarch64"
+    )))]
+    c.map(|r| dot_u7_i8_scalar(&q[..n], &r[..n]))
+}
+
+/// # Safety
+///
+/// AVX2 must be available, and `q` and every row at least `n` bytes long.
+#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+#[target_feature(enable = "avx2")]
+unsafe fn dot_u7_i8_x4_avx2(q: &[u8], c: [&[u8]; 4], n: usize) -> [i32; 4] {
+    use std::arch::x86_64::*;
+    let pq = q.as_ptr();
+    let p = c.map(<[u8]>::as_ptr);
+    let ones = _mm256_set1_epi16(1);
+    let mut acc = [_mm256_setzero_si256(); 4];
+    let mut i = 0;
+    while i + 32 <= n {
+        // SAFETY: `i + 32 <= n` keeps every load inside its slice.
+        let x = unsafe { _mm256_loadu_si256(pq.add(i) as *const __m256i) };
+        for (a, &pr) in acc.iter_mut().zip(&p) {
+            // SAFETY: as above.
+            let y = unsafe { _mm256_loadu_si256(pr.add(i) as *const __m256i) };
+            *a = _mm256_add_epi32(*a, _mm256_madd_epi16(_mm256_maddubs_epi16(x, y), ones));
+        }
+        i += 32;
+    }
+    // Lanes 0..4 of `h` hold rows 0..4's sums over the low halves, lanes
+    // 4..8 over the high halves.
+    let h = _mm256_hadd_epi32(
+        _mm256_hadd_epi32(acc[0], acc[1]),
+        _mm256_hadd_epi32(acc[2], acc[3]),
+    );
+    let s = _mm_add_epi32(_mm256_castsi256_si128(h), _mm256_extracti128_si256(h, 1));
+    let mut out = [0i32; 4];
+    // SAFETY: `out` is 16 bytes.
+    unsafe { _mm_storeu_si128(out.as_mut_ptr() as *mut __m128i, s) };
+    for (o, r) in out.iter_mut().zip(c) {
+        *o = o.wrapping_add(dot_u7_i8_scalar(&q[i..n], &r[i..n]));
+    }
+    out
+}
+
+/// # Safety
+///
+/// `q` and every row at least `n` bytes long.
+#[cfg(target_arch = "aarch64")]
+unsafe fn dot_u7_i8_x4_neon(q: &[u8], c: [&[u8]; 4], n: usize) -> [i32; 4] {
+    use std::arch::aarch64::*;
+    let pq = q.as_ptr();
+    let p = c.map(<[u8]>::as_ptr);
+    let mut acc = [vdupq_n_s32(0); 4];
+    let mut i = 0;
+    while i + 16 <= n {
+        // SAFETY: `i + 16 <= n` keeps every load inside its slice.
+        let x = unsafe { vreinterpretq_s8_u8(vld1q_u8(pq.add(i))) };
+        let xl = vget_low_s8(x);
+        for (a, &pr) in acc.iter_mut().zip(&p) {
+            // SAFETY: as above.
+            let y = unsafe { vld1q_s8(pr.add(i) as *const i8) };
+            *a = vpadalq_s16(*a, vmlal_high_s8(vmull_s8(xl, vget_low_s8(y)), x, y));
+        }
+        i += 16;
+    }
+    let s = vpaddq_s32(vpaddq_s32(acc[0], acc[1]), vpaddq_s32(acc[2], acc[3]));
+    let mut out = [0i32; 4];
+    // SAFETY: `out` is 16 bytes.
+    unsafe { vst1q_s32(out.as_mut_ptr(), s) };
+    for (o, r) in out.iter_mut().zip(c) {
+        *o = o.wrapping_add(dot_u7_i8_scalar(&q[i..n], &r[i..n]));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1248,5 +1472,45 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn dot_u7_i8_matches_scalar() {
+        let mut state = 0x1234_5678_9abc_def0u64;
+        let mut byte = || {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (state >> 56) as u8
+        };
+        for n in [
+            0, 1, 15, 16, 17, 31, 32, 33, 63, 64, 65, 100, 128, 300, 1000,
+        ] {
+            let q: Vec<u8> = (0..n).map(|_| byte() & 0x7f).collect();
+            let c: Vec<u8> = (0..n).map(|_| byte()).collect();
+            assert_eq!(dot_u7_i8(&q, &c), dot_u7_i8_scalar(&q, &c), "{n}");
+        }
+        // Extremes: every product at its largest magnitude.
+        let q = vec![127u8; 1000];
+        for v in [0x80u8, 0x7f] {
+            let c = vec![v; 1000];
+            assert_eq!(dot_u7_i8(&q, &c), dot_u7_i8_scalar(&q, &c));
+        }
+        assert_eq!(dot_u7_i8(&q, &[0x80; 1000]), -127 * 128 * 1000);
+        // Unequal lengths use the common prefix.
+        assert_eq!(dot_u7_i8(&[2, 3, 5], &[1, 0xff]), 2 - 3);
+        // Four rows at once match one at a time.
+        for n in [0, 5, 16, 31, 32, 48, 100, 320] {
+            let q: Vec<u8> = (0..n).map(|_| byte() & 0x7f).collect();
+            let rows: Vec<Vec<u8>> = (0..4)
+                .map(|_| (0..n + 3).map(|_| byte()).collect())
+                .collect();
+            let got = dot_u7_i8_x4(&q, [&rows[0], &rows[1], &rows[2], &rows[3]]);
+            for (g, r) in got.iter().zip(&rows) {
+                assert_eq!(*g, dot_u7_i8_scalar(&q, &r[..n]), "{n}");
+            }
+        }
+        let short = [1u8, 0xff];
+        assert_eq!(dot_u7_i8_x4(&[2, 3, 5], [&short; 4]), [-1; 4]);
     }
 }

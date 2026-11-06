@@ -103,29 +103,54 @@ fn encode_row(row: &[f32], mean: Option<&[f32]>, out: &mut [u8]) -> f32 {
     max / 127.0
 }
 
-/// How a [`Level`] turns an 8-bit dot product into a score.
-#[derive(Debug, Clone)]
-enum LevelScore {
-    /// `-|q - c|^2 + |q - m|^2 = 2 (q - m).(c - m) - |c - m|^2`, all in
-    /// coordinates centred on the level's mean `m`, which keeps far from the
-    /// origin data well conditioned. Holds `-|c - m|^2` per row.
-    Euclidean(Vec<f32>),
-    /// `w * q.c = w * (q.(c - m) + q.m)`. Holds `w` per row.
-    Dot(Vec<f32>),
+/// The query side of [`simd::dot_u7_i8`]: `q ~= scale * (code - 64)`, each
+/// code in `1..=127`, padded with 64 (zero) to `out`'s length.
+fn encode_query(q: &[f32], out: &mut [u8]) -> f32 {
+    let max = q.iter().fold(0f32, |m, &x| m.max(x.abs()));
+    let inv = if max > 0.0 { 63.0 / max } else { 0.0 };
+    out.fill(QUERY_ZERO);
+    for (o, &x) in out.iter_mut().zip(q) {
+        // ARITH: the rounded value is in -63..=63.
+        #[allow(clippy::arithmetic_side_effects)]
+        let v = (x * inv).round().clamp(-63.0, 63.0) as i8 + QUERY_ZERO as i8;
+        *o = v as u8;
+    }
+    max / 63.0
 }
 
+/// The query code of zero (see [`encode_query`]).
+const QUERY_ZERO: u8 = 64;
+
+/// Code rows are padded to whole 32-byte vectors for the scan kernel.
+const CODE_ALIGN: usize = 32;
+
 /// A set of centroids scored through 8-bit codes.
+///
+/// A row's score is `code_weight * scale * dot + add * a`, where `dot` is
+/// the 8-bit dot product and `scale` the query code's scale. Euclidean rows
+/// score `-|q - c|^2 + |q - m|^2 = 2 (q - m).(c - m) - |c - m|^2`, all in
+/// coordinates centred on the level's mean `m`, which keeps data far from
+/// the origin well conditioned: `add` is `-|c - m|^2` and `a` is 1.
+/// Dot-scored rows score `w * q.c = w * (q.(c - m) + q.m)`: `add` is `w`
+/// and `a` is `q.m`.
 #[derive(Debug, Clone)]
 struct Level {
-    dim: usize,
+    /// Bytes per code row: the dimension rounded up to [`CODE_ALIGN`].
+    stride: usize,
     /// The mean of the rows, subtracted before encoding so the codes spend
     /// their range on what tells the rows apart.
     mean: Vec<f32>,
+    /// One zero-padded row of signed codes per centroid.
     codes: Vec<u8>,
+    /// Per row: the sum of its codes, which undoes the query codes' offset
+    /// of [`QUERY_ZERO`].
+    code_sums: Vec<i32>,
     /// Per row: what an 8-bit dot product (times the query's scale) is
     /// multiplied by.
     code_weight: Vec<f32>,
-    kind: LevelScore,
+    /// Per row: the score's term outside the dot product.
+    add: Vec<f32>,
+    euclidean: bool,
 }
 
 /// A query's 8-bit code, reused across the levels of one routing.
@@ -137,14 +162,17 @@ struct QueryCode {
 }
 
 impl Level {
-    /// `rows` scored as Euclidean distances, or (`weights` given) as their
-    /// dot products with the query times `weights`.
+    /// `rows` scored as Euclidean distances, or (`weights` given, one per
+    /// level row) as their dot products with the query times `weights`.
+    /// With `order`, level row `i` is `rows` row `order[i]`.
     // ARITH: indices stay inside `rows`, a whole number of `dim` rows.
     #[allow(clippy::arithmetic_side_effects)]
-    fn new(rows: &[f32], dim: usize, weights: Option<Vec<f32>>) -> Self {
-        let n = rows.len().checked_div(dim).unwrap_or(0);
+    fn new(rows: &[f32], dim: usize, order: Option<&[u32]>, weights: Option<Vec<f32>>) -> Self {
+        let n = order.map_or(rows.len().checked_div(dim).unwrap_or(0), <[u32]>::len);
+        let row = |i: usize| kmeans::row(rows, dim, order.map_or(i, |o| o[i] as usize));
+        let rows = || (0..n).map(row);
         let mut mean = vec![0f32; dim];
-        for r in rows.chunks_exact(dim) {
+        for r in rows() {
             for (m, &x) in mean.iter_mut().zip(r) {
                 *m += x;
             }
@@ -153,32 +181,34 @@ impl Level {
             let inv = 1.0 / n as f32;
             mean.iter_mut().for_each(|m| *m *= inv);
         }
-        let mut codes = vec![0u8; n * dim];
-        let scales: Vec<f32> = rows
-            .chunks_exact(dim)
-            .zip(codes.chunks_exact_mut(dim))
-            .map(|(r, out)| encode_row(r, Some(&mean), out))
+        let stride = dim.next_multiple_of(CODE_ALIGN);
+        let mut codes = vec![0u8; n * stride];
+        let scales: Vec<f32> = rows()
+            .zip(codes.chunks_exact_mut(stride))
+            .map(|(r, out)| encode_row(r, Some(&mean), &mut out[..dim]))
             .collect();
-        let (code_weight, kind) = match weights {
+        let code_sums = codes
+            .chunks_exact(stride)
+            .map(|c| c.iter().map(|&b| i32::from(b as i8)).sum())
+            .collect();
+        let euclidean = weights.is_none();
+        let (code_weight, add) = match weights {
             None => (
                 scales.iter().map(|&s| 2.0 * s).collect(),
-                LevelScore::Euclidean(
-                    rows.chunks_exact(dim)
-                        .map(|r| -simd::square_distance_f32(r, &mean))
-                        .collect(),
-                ),
+                rows()
+                    .map(|r| -simd::square_distance_f32(r, &mean))
+                    .collect(),
             ),
-            Some(w) => (
-                scales.iter().zip(&w).map(|(&s, &w)| s * w).collect(),
-                LevelScore::Dot(w),
-            ),
+            Some(w) => (scales.iter().zip(&w).map(|(&s, &w)| s * w).collect(), w),
         };
         Level {
-            dim,
+            stride,
             mean,
             codes,
+            code_sums,
             code_weight,
-            kind,
+            add,
+            euclidean,
         }
     }
 
@@ -188,47 +218,60 @@ impl Level {
 
     /// Encodes `q` as this level scores it.
     fn encode(&self, q: &[f32], code: &mut QueryCode) {
-        code.codes.resize(q.len(), 0);
-        code.scale = match self.kind {
-            LevelScore::Euclidean(_) => {
-                code.centred.clear();
-                code.centred
-                    .extend(q.iter().zip(&self.mean).map(|(&x, &m)| x - m));
-                encode_row(&code.centred, None, &mut code.codes)
-            }
-            LevelScore::Dot(_) => encode_row(q, None, &mut code.codes),
+        code.codes.resize(self.stride, QUERY_ZERO);
+        code.scale = if self.euclidean {
+            code.centred.clear();
+            code.centred
+                .extend(q.iter().zip(&self.mean).map(|(&x, &m)| x - m));
+            encode_query(&code.centred, &mut code.codes)
+        } else {
+            encode_query(q, &mut code.codes)
         };
     }
 
-    /// Approximate scores of rows `rows` (indices into this level) or of
-    /// every row, appended to `out` as `(score, row)`.
+    /// Approximate scores of the rows in `ranges` (row index ranges of
+    /// this level) or of every row, offered to `out` as `(score, row)`.
     // ARITH: row indices are below `len()`; code offsets stay in `codes`.
     #[allow(clippy::arithmetic_side_effects)]
     fn score(
         &self,
         q: &[f32],
         code: &mut QueryCode,
-        rows: Option<&[u32]>,
-        out: &mut Vec<(f32, u32)>,
+        ranges: Option<&[std::ops::Range<usize>]>,
+        out: &mut Best,
     ) {
         self.encode(q, code);
-        let qm = match self.kind {
-            LevelScore::Euclidean(_) => 0.0,
-            LevelScore::Dot(_) => simd::dot_f32(q, &self.mean),
+        let a = if self.euclidean {
+            1.0
+        } else {
+            simd::dot_f32(q, &self.mean)
         };
-        let mut one = |r: usize| {
-            let c = &self.codes[r * self.dim..(r + 1) * self.dim];
-            let dot = vector_util::dot_product_i8(&code.codes, c) as f32;
-            let s = self.code_weight[r] * code.scale * dot;
-            let s = match &self.kind {
-                LevelScore::Euclidean(b) => s + b[r],
-                LevelScore::Dot(w) => s + w[r] * qm,
-            };
-            out.push((s, r as u32));
+        let zero = i32::from(QUERY_ZERO);
+        let scale = code.scale;
+        let qc = &code.codes[..];
+        let row = |r: usize| &self.codes[r * self.stride..(r + 1) * self.stride];
+        let mut finish = |r: usize, dot: i32| {
+            let dot = (dot - zero * self.code_sums[r]) as f32;
+            out.offer(
+                self.code_weight[r] * scale * dot + self.add[r] * a,
+                r as u32,
+            );
         };
-        match rows {
-            Some(rows) => rows.iter().for_each(|&r| one(r as usize)),
-            None => (0..self.len()).for_each(one),
+        let mut scan = |range: std::ops::Range<usize>| {
+            let whole = range.start + range.len() / 4 * 4;
+            for r in (range.start..whole).step_by(4) {
+                let dots = simd::dot_u7_i8_x4(qc, [row(r), row(r + 1), row(r + 2), row(r + 3)]);
+                for (i, d) in dots.into_iter().enumerate() {
+                    finish(r + i, d);
+                }
+            }
+            for r in whole..range.end {
+                finish(r, simd::dot_u7_i8(qc, row(r)));
+            }
+        };
+        match ranges {
+            Some(ranges) => ranges.iter().for_each(|r| scan(r.clone())),
+            None => scan(0..self.len()),
         }
     }
 }
@@ -237,7 +280,9 @@ impl Level {
 #[derive(Debug, Clone)]
 struct Tree {
     parents: Level,
-    /// `children[starts[p]..starts[p + 1]]` are parent `p`'s centroids.
+    /// `children[starts[p]..starts[p + 1]]` are parent `p`'s centroids. The
+    /// leaf codes are stored in this order, so a parent's children are one
+    /// contiguous run of rows.
     starts: Vec<usize>,
     children: Vec<u32>,
 }
@@ -344,7 +389,7 @@ impl Tree {
                 .collect()
         });
         Some(Tree {
-            parents: Level::new(&means, dim, weights),
+            parents: Level::new(&means, dim, None, weights),
             starts,
             children,
         })
@@ -357,7 +402,8 @@ pub struct Router {
     dim: usize,
     nlist: usize,
     exact: ExactScore,
-    /// The centroids' 8-bit codes; `None` for [`Routing::Exact`].
+    /// The centroids' 8-bit codes, in the tree's child order when there is
+    /// a tree; `None` for [`Routing::Exact`].
     leaves: Option<Level>,
     tree: Option<Tree>,
     /// Through a tree, how many centroids are scored per probe.
@@ -372,9 +418,51 @@ fn rescored(nprobe: usize) -> usize {
     nprobe.saturating_mul(2).max(nprobe.saturating_add(32))
 }
 
-/// Ties by cluster number, so the order is deterministic.
+/// Ties by row number, so the order is deterministic.
 fn by_score(a: &(f32, u32), b: &(f32, u32)) -> std::cmp::Ordering {
     b.0.total_cmp(&a.0).then(a.1.cmp(&b.1))
+}
+
+/// Collects the `n` best of many `(score, row)` offers. Offers below the
+/// worst of the best `n` seen at the last compaction are dropped on sight,
+/// so most of a large scan never reaches the buffer.
+#[derive(Debug)]
+struct Best {
+    n: usize,
+    floor: f32,
+    items: Vec<(f32, u32)>,
+}
+
+impl Best {
+    /// The best `n` of at most `offers` offers.
+    fn new(n: usize, offers: usize) -> Self {
+        Best {
+            n,
+            floor: f32::NEG_INFINITY,
+            items: Vec::with_capacity(n.saturating_mul(4).max(16).min(offers.max(n))),
+        }
+    }
+
+    #[inline]
+    fn offer(&mut self, score: f32, row: u32) {
+        if score < self.floor {
+            return;
+        }
+        if self.items.len() == self.items.capacity() {
+            keep_best(&mut self.items, self.n);
+            self.floor = self.items.iter().fold(f32::INFINITY, |m, &(s, _)| m.min(s));
+            if score < self.floor {
+                return;
+            }
+        }
+        self.items.push((score, row));
+    }
+
+    /// The best `n`, unordered.
+    fn into_items(mut self) -> Vec<(f32, u32)> {
+        keep_best(&mut self.items, self.n);
+        self.items
+    }
 }
 
 /// Keeps the `n` best of `v`, unordered.
@@ -414,9 +502,20 @@ impl Router {
             Routing::Auto => (stored(), TREE_COVER),
         };
         let exact = ExactScore::new(similarity, centroids, dim);
-        let leaves = (routing != Routing::Exact).then(|| {
-            let weights = (!exact.euclidean).then(|| exact.scale.clone());
-            Level::new(centroids, dim, weights)
+        let leaves = (routing != Routing::Exact).then(|| match &tree {
+            None => {
+                let weights = (!exact.euclidean).then(|| exact.scale.clone());
+                Level::new(centroids, dim, None, weights)
+            }
+            Some(tree) => {
+                let weights = (!exact.euclidean).then(|| {
+                    tree.children
+                        .iter()
+                        .map(|&c| exact.scale[c as usize])
+                        .collect()
+                });
+                Level::new(centroids, dim, Some(&tree.children), weights)
+            }
         });
         Router {
             dim,
@@ -465,30 +564,43 @@ impl Router {
                 return all.into_iter().map(|(_, c)| c as usize).collect();
             }
         };
+        assert_eq!(q.len(), self.dim, "query dimension");
         let mut code = QueryCode::default();
-        let mut cand = Vec::new();
+        let n = rescored(nprobe);
+        let mut best;
         match &self.tree {
-            None => leaves.score(q, &mut code, None, &mut cand),
+            None => {
+                best = Best::new(n, leaves.len());
+                leaves.score(q, &mut code, None, &mut best);
+            }
             Some(tree) => {
-                let mut parents = Vec::with_capacity(tree.parents.len());
+                let count = tree.parents.len();
+                let mut parents = Best::new(count, count);
                 tree.parents.score(q, &mut code, None, &mut parents);
+                let mut parents = parents.into_items();
                 parents.sort_unstable_by(by_score);
                 // Cover several times more centroids than are probed: a
                 // probe's nearest centroids can sit under several parents.
                 let want = nprobe.saturating_mul(self.cover).max(rescored(nprobe));
-                let mut rows = Vec::with_capacity(want.saturating_add(TREE_FANOUT * 2));
+                let mut ranges = Vec::new();
+                let mut covered = 0;
                 for (i, &(_, p)) in parents.iter().enumerate() {
-                    if rows.len() >= want && i >= 4 {
+                    if covered >= want && i >= 4 {
                         break;
                     }
                     let p = p as usize;
-                    rows.extend_from_slice(&tree.children[tree.starts[p]..tree.starts[p + 1]]);
+                    covered += tree.starts[p + 1] - tree.starts[p];
+                    ranges.push(tree.starts[p]..tree.starts[p + 1]);
                 }
-                leaves.score(q, &mut code, Some(&rows), &mut cand);
+                best = Best::new(n, covered);
+                leaves.score(q, &mut code, Some(&ranges), &mut best);
             }
         }
-        keep_best(&mut cand, rescored(nprobe));
+        let mut cand = best.into_items();
         for c in &mut cand {
+            if let Some(tree) = &self.tree {
+                c.1 = tree.children[c.1 as usize];
+            }
             c.0 = exact(c.1 as usize);
         }
         keep_best(&mut cand, nprobe);
