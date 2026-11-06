@@ -26,6 +26,9 @@ with its Rust counterpart and fails when the values differ:
     listed in `JAVA_ONLY`, so a new wire constant cannot go unpaired by
     accident.
 
+The encrypted store's (`lucene-store-crypto`) and the RustAdaptive doc-values
+format's (`lucene-codecs`) constants pair the same way.
+
 Run from anywhere: `python3 scripts/check-wire-constants.py`. `--list` prints
 every pairing.
 """
@@ -41,6 +44,9 @@ RUST_DIR = os.path.join(ROOT, "crates", "lucene-ffi", "src")
 # The encrypted store's file format, which the plugin's store/Lrse.java reads
 # and writes too.
 CRYPTO_DIR = os.path.join(ROOT, "crates", "lucene-store-crypto", "src")
+# The RustAdaptive doc-values format, which the plugin's docvalues/ package
+# reads (lucene-codecs' doc_values.rs and adaptive_values.rs).
+CODECS_DIR = os.path.join(ROOT, "crates", "lucene-codecs", "src")
 
 # Rust files a Java file encodes for without naming them.
 EXTRA_FILES = {
@@ -60,6 +66,7 @@ PREFIXES = {
     "NativeAggregations.java": "METRIC_",
     "SortEncoder.java": "SORT_",
     "NativeCollapse.java": "COLLAPSE_",
+    "RustAdaptiveDocValuesProducer.java": "DOC_VALUES_TYPE_",
 }
 
 # (Java file, Java name) -> (Rust file, Rust name), where the names differ by
@@ -120,7 +127,7 @@ def snake(camel):
 
 def load_rust():
     consts = {}
-    for d, name in [(d, n) for d in (RUST_DIR, CRYPTO_DIR) for n in sorted(os.listdir(d))]:
+    for d, name in [(d, n) for d in (RUST_DIR, CRYPTO_DIR, CODECS_DIR) for n in sorted(os.listdir(d))]:
         if not name.endswith(".rs") or name in consts:
             continue
         with open(os.path.join(d, name), encoding="utf-8") as f:

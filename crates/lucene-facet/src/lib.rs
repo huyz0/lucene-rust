@@ -3162,6 +3162,7 @@ mod tests {
             values_length: 1,
             block_shift: None,
             value_jump_table_offset: 0,
+            adaptive: None,
         };
         let ranges = vec![NumericRange::new_double("r", 0.0, true, 1.0, true).unwrap()];
         let err = double_range_facet_counts(&[], &entry, &ranges, &[0]).unwrap_err();
@@ -3395,6 +3396,7 @@ mod tests {
             values_length: 1,
             block_shift: None,
             value_jump_table_offset: 0,
+            adaptive: None,
         };
         numeric.bits_per_value = 8;
         let entry = SortedNumericEntry {
@@ -3701,6 +3703,7 @@ mod tests {
             values_length: 1,
             block_shift: None,
             value_jump_table_offset: 0,
+            adaptive: None,
         };
         entry.bits_per_value = 8;
         let ranges = vec![NumericRange {
