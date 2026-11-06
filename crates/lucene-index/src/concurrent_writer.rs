@@ -315,6 +315,9 @@ pub struct ConcurrentIndexWriter<'d> {
     ram_buffer_bytes: Option<usize>,
     /// Set by [`Self::stop_merges`]: no merge is registered any more.
     merges_stopped: AtomicBool,
+    /// How many [`Self::with_writer_merges_aborted`] calls are under way: no
+    /// merge is registered or started by the caller meanwhile.
+    merges_paused: AtomicUsize,
     /// `DocumentsWriterFlushControl`'s accounting -- RAM in the slots and in
     /// buffers being built, each slot's `flushPending` -- updated together
     /// with the flush policy's decision and the stall decision, as Java's is
@@ -403,30 +406,57 @@ impl<'d> ConcurrentIndexWriter<'d> {
     /// aborted and are waited for. The policy registers merges again on the
     /// next flush or merge request.
     pub fn with_writer_merges_aborted<T>(&self, body: impl FnOnce(&mut IndexWriter<'d>) -> T) -> T {
-        let mut core = lock(&self.core);
-        loop {
-            // A merge that finishes registers its cascade, and a merge thread
-            // may start a merge it took before: both are dropped or aborted on
-            // the next round.
-            while let Some(merge) = self.pending_merges.pop() {
-                for name in &merge.segments {
-                    core.merging.remove(name);
-                }
+        struct Paused<'a>(&'a AtomicUsize);
+        impl Drop for Paused<'_> {
+            fn drop(&mut self) {
+                self.0.fetch_sub(1, Ordering::AcqRel);
             }
+        }
+        self.merges_paused.fetch_add(1, Ordering::AcqRel);
+        let _paused = Paused(&self.merges_paused);
+        let mut core = lock(&self.core);
+        self.abort_merges(&mut core);
+        let core = self.wait_for_merges(core);
+        self.run_on_writer(core, body)
+    }
+
+    /// Whether no merge may be registered now.
+    fn merges_blocked(&self) -> bool {
+        self.merges_stopped.load(Ordering::Acquire)
+            || self.merges_paused.load(Ordering::Acquire) > 0
+    }
+
+    /// `IndexWriter.abortMerges`' first half: drops the registered merges no
+    /// merge thread has taken yet, releasing their segments, and aborts the
+    /// running scheduled ones. [`Self::wait_for_merges`] waits for them.
+    fn abort_merges(&self, core: &mut Core<'_>) {
+        while let Some(merge) = self.pending_merges.pop() {
+            for name in &merge.segments {
+                core.merging.remove(name);
+            }
+        }
+        for progress in &core.running {
+            progress.abort();
+        }
+    }
+
+    /// Waits until no merge holds a segment, aborting each scheduled merge
+    /// that starts meanwhile -- one a merge thread took before
+    /// [`Self::abort_merges`] ran.
+    fn wait_for_merges<'g>(
+        &'g self,
+        mut core: MutexGuard<'g, Core<'d>>,
+    ) -> MutexGuard<'g, Core<'d>> {
+        while !core.merging.is_empty() {
+            core = self
+                .changed
+                .wait(core)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             for progress in &core.running {
                 progress.abort();
             }
-            if core.merging.is_empty() {
-                break;
-            }
-            // Timed: a merge starting while this waits notifies no one.
-            core = self
-                .changed
-                .wait_timeout(core, Duration::from_millis(10))
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .0;
         }
-        self.run_on_writer(core, body)
+        core
     }
 
     fn run_on_writer<T>(
@@ -506,6 +536,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
             max_buffered_docs,
             ram_buffer_bytes,
             merges_stopped: AtomicBool::new(false),
+            merges_paused: AtomicUsize::new(0),
             ram: Mutex::new(FlushControl::new(slots)),
             policy: FlushByRamOrCountsPolicy {
                 max_buffered_docs,
@@ -528,7 +559,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
     /// proposes among segments not already merging -- claiming their
     /// segments -- for the scheduler to take. Nothing without a policy.
     fn register_merges(&self, core: &mut Core<'_>, trigger: MergeTrigger) -> Result<()> {
-        if self.merges_stopped.load(Ordering::Acquire) {
+        if self.merges_blocked() {
             return Ok(());
         }
         for ((names, hooks), estimated) in
@@ -579,6 +610,9 @@ impl<'d> ConcurrentIndexWriter<'d> {
                     core.writer
                         .attach_merge_hooks(&mut plan, merge.hooks.clone());
                     core.running.push(Arc::clone(merge.progress()));
+                    // A pending abort waits for merges to start, too.
+                    drop(core);
+                    self.changed.notify_all();
                     plan
                 }
                 Err(e) => {
@@ -592,7 +626,8 @@ impl<'d> ConcurrentIndexWriter<'d> {
         };
         let tracking = TrackingDirectory::new(self.dir);
         let outcome = catch_unwind(AssertUnwindSafe(|| {
-            self.cfg().run_merge_limited(&tracking, &plan, limiter)
+            self.cfg()
+                .run_merge_limited(&tracking, &plan, limiter, merge.progress())
         }));
         let mut core = lock(&self.core);
         release(&mut core);
@@ -849,7 +884,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
     /// (`DocumentsWriter.lockAndAbortAll`): the slots' buffers and their
     /// deletes are discarded, every flush already ticketed publishes first
     /// (`waitForFlush`), merges not yet started are dropped and running ones
-    /// finish first (`abortMerges` waits for them too), and every delete
+    /// aborted and waited for (`abortMerges`), and every delete
     /// buffered so far is cleared. Returns the operation's sequence number.
     pub fn delete_all(&self) -> Result<SeqNo> {
         let _full_flush = lock(&self.full_flush);
@@ -863,16 +898,15 @@ impl<'d> ConcurrentIndexWriter<'d> {
             self.slices[i].store(EMPTY_SLOT, Ordering::Release);
         }
         let mut core = lock(&self.core);
-        while let Some(merge) = self.pending_merges.pop() {
-            for name in &merge.segments {
-                core.merging.remove(name);
-            }
-        }
+        self.abort_merges(&mut core);
         while core.next_publish != core.next_ticket || !core.merging.is_empty() {
             core = self
                 .changed
                 .wait(core)
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
+            for progress in &core.running {
+                progress.abort();
+            }
         }
         let (seq_no, end) = {
             let mut log = lock(&self.log);
@@ -1758,6 +1792,9 @@ impl<'d> ConcurrentIndexWriter<'d> {
         loop {
             let plan = {
                 let mut core = lock(&self.core);
+                if self.merges_blocked() {
+                    break;
+                }
                 let Some(((names, hooks), _)) = core
                     .writer
                     .find_scheduled_merges(MergeTrigger::Explicit, &core.merging)?
@@ -1956,7 +1993,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
     /// yet committed and takes the wrapped writer back to its last commit,
     /// as [`Self::delete_all`] takes every slot: flushes already ticketed
     /// publish first, merges not started are dropped and running ones
-    /// finish.
+    /// aborted and waited for.
     pub fn rollback(&self) {
         let _full_flush = lock(&self.full_flush);
         let mut slots: Vec<MutexGuard<'_, Dwpt>> = self.slots.iter().map(lock).collect();
@@ -1969,16 +2006,15 @@ impl<'d> ConcurrentIndexWriter<'d> {
             self.slices[i].store(EMPTY_SLOT, Ordering::Release);
         }
         let mut core = lock(&self.core);
-        while let Some(merge) = self.pending_merges.pop() {
-            for name in &merge.segments {
-                core.merging.remove(name);
-            }
-        }
+        self.abort_merges(&mut core);
         while core.next_publish != core.next_ticket || !core.merging.is_empty() {
             core = self
                 .changed
                 .wait(core)
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
+            for progress in &core.running {
+                progress.abort();
+            }
         }
         let end = {
             let mut log = lock(&self.log);
@@ -2049,7 +2085,7 @@ impl<'d> crate::nrt::NrtSource for ConcurrentIndexWriter<'d> {
         // Java's `segmentInfos` holds what was just flushed, so merges see
         // it before any commit does.
         core.writer.fold_flushed_segments();
-        let scheduled = !self.merges_stopped.load(Ordering::Acquire)
+        let scheduled = !self.merges_blocked()
             && self
                 .scheduler
                 .as_ref()
@@ -3742,6 +3778,41 @@ mod tests {
         let (docs, segments) = live_documents(dir);
         assert_eq!(docs.len(), 40);
         assert_eq!(segments, 1);
+        assert_clean(dir);
+    }
+
+    /// `delete_all` aborts a running scheduled merge instead of waiting for
+    /// it: one stopped by a zero rate would otherwise never let it return.
+    #[test]
+    fn delete_all_aborts_a_running_scheduled_merge() {
+        use lucene_store::RateLimiter as _;
+        let tmp = TempDir::new("concurrent-delete-all-aborts");
+        let dir = static_dir(&tmp);
+        let w = ConcurrentIndexWriter::with_merge_scheduler(
+            writer(dir, 5),
+            1,
+            Arc::new(crate::merge_scheduler::NoMergeScheduler),
+        )
+        .unwrap();
+        for i in 0..40 {
+            w.add_document(doc(&format!("d{i}"), 0)).unwrap();
+            if i % 5 == 4 {
+                w.commit().unwrap();
+            }
+        }
+        let merge = w.next_merge().expect("a registered merge");
+        let limiter = Arc::new(MergeRateLimiter::new(Arc::clone(merge.progress())));
+        limiter.set_mb_per_sec(0.0);
+        std::thread::scope(|scope| {
+            let stuck = scope.spawn(|| w.merge(&merge, Some(limiter)));
+            while lock(&w.core).running.is_empty() && !stuck.is_finished() {
+                std::thread::yield_now();
+            }
+            w.delete_all().unwrap();
+            assert!(matches!(stuck.join().unwrap(), Err(Error::MergeAborted)));
+        });
+        w.commit().unwrap();
+        assert_eq!(live_documents(dir).0.len(), 0);
         assert_clean(dir);
     }
 

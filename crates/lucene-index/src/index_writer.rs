@@ -1598,27 +1598,44 @@ impl IndexingConfig {
     /// held to that rate, as `IndexWriter.mergeMiddle` writes through its
     /// rate-limited merge directory.
     pub(crate) fn run_merge(&self, dir: &dyn Directory, plan: &MergePlan) -> Result<MergeOutcome> {
+        let progress = std::sync::Arc::new(crate::merge_rate_limiter::OneMergeProgress::new());
+        self.run_merge_with_progress(dir, plan, &progress)
+    }
+
+    /// [`Self::run_merge`], aborted through `progress`: a throttled merge
+    /// stops at its next write, an unthrottled one (no rate to check against)
+    /// once its writes are done. Either way an aborted merge fails with
+    /// [`Error::MergeAborted`].
+    pub(crate) fn run_merge_with_progress(
+        &self,
+        dir: &dyn Directory,
+        plan: &MergePlan,
+        progress: &std::sync::Arc<crate::merge_rate_limiter::OneMergeProgress>,
+    ) -> Result<MergeOutcome> {
         // Every file of the merge is written under one
         // `IOContext(merge.getStoreMergeInfo())`.
         let estimate = Self::estimated_merge_bytes(dir, plan);
-        let Some(mb_per_sec) = self.merge_mb_per_sec else {
-            return self
-                .run_merge_unthrottled(&lucene_store::EstimatedWrites::new(dir, estimate), plan);
+        let outcome = match self.merge_mb_per_sec {
+            None => {
+                self.run_merge_unthrottled(&lucene_store::EstimatedWrites::new(dir, estimate), plan)
+            }
+            Some(mb_per_sec) => {
+                let limiter =
+                    std::sync::Arc::new(crate::merge_rate_limiter::MergeRateLimiter::new(
+                        std::sync::Arc::clone(progress),
+                    ));
+                lucene_store::RateLimiter::set_mb_per_sec(&*limiter, mb_per_sec);
+                let merge_dir = crate::merge_rate_limiter::MergeDirectory::new(dir, limiter);
+                self.run_merge_unthrottled(
+                    &lucene_store::EstimatedWrites::new(&merge_dir, estimate),
+                    plan,
+                )
+            }
         };
-        let progress = std::sync::Arc::new(crate::merge_rate_limiter::OneMergeProgress::new());
-        let limiter = std::sync::Arc::new(crate::merge_rate_limiter::MergeRateLimiter::new(
-            std::sync::Arc::clone(&progress),
-        ));
-        lucene_store::RateLimiter::set_mb_per_sec(&*limiter, mb_per_sec);
-        let merge_dir = crate::merge_rate_limiter::MergeDirectory::new(dir, limiter);
-        let outcome = self.run_merge_unthrottled(
-            &lucene_store::EstimatedWrites::new(&merge_dir, estimate),
-            plan,
-        )?;
         if progress.is_aborted() {
             return Err(Error::MergeAborted);
         }
-        Ok(outcome)
+        outcome
     }
 
     /// The postings format `field` is routed to.
@@ -1678,17 +1695,19 @@ impl IndexingConfig {
         )?)
     }
 
-    /// [`Self::run_merge`], with every output written through `limiter` when
-    /// a merge scheduler supplies one (`MergeScheduler.wrapForMerge`) instead
-    /// of the writer's own configured rate.
+    /// [`Self::run_merge_with_progress`], with every output written through
+    /// `limiter` when a merge scheduler supplies one
+    /// (`MergeScheduler.wrapForMerge`) instead of the writer's own configured
+    /// rate. A supplied limiter carries its own progress.
     pub(crate) fn run_merge_limited(
         &self,
         dir: &dyn Directory,
         plan: &MergePlan,
         limiter: Option<std::sync::Arc<crate::merge_rate_limiter::MergeRateLimiter>>,
+        progress: &std::sync::Arc<crate::merge_rate_limiter::OneMergeProgress>,
     ) -> Result<MergeOutcome> {
         let Some(limiter) = limiter else {
-            return self.run_merge(dir, plan);
+            return self.run_merge_with_progress(dir, plan, progress);
         };
         // The same `IOContext(merge.getStoreMergeInfo())` as `run_merge`.
         let estimate = Self::estimated_merge_bytes(dir, plan);

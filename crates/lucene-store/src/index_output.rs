@@ -468,13 +468,13 @@ impl FsIndexOutput {
         // rest in lumps. A check per `CHUNK_SIZE` keeps Java's granularity.
         for chunk in b.chunks(CHUNK_SIZE) {
             if let Some(rate_limit) = self.rate_limit.as_deref_mut() {
-                rate_limit.check_rate(chunk.len());
                 if rate_limit.limiter.is_aborted() {
                     if self.pending_err.is_none() {
                         self.pending_err = Some(std::io::Error::other("write aborted"));
                     }
                     return;
                 }
+                rate_limit.check_rate(chunk.len());
             }
             self.write_unlimited(chunk);
         }

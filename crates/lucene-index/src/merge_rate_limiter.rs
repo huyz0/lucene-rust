@@ -369,6 +369,7 @@ impl Directory for MergeDirectory<'_> {
         suffix: &str,
         estimated_bytes: Option<u64>,
     ) -> lucene_store::Result<FsIndexOutput> {
+        self.check_aborted(prefix)?;
         Ok(self.throttled(self.inner.create_temp_output_with_estimate(
             prefix,
             suffix,
