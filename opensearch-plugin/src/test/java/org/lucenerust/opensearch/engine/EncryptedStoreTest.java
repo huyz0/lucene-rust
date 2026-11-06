@@ -238,6 +238,8 @@ public final class EncryptedStoreTest {
                     false,
                     false,
                     IndexWriter.MAX_DOCS,
+                    org.lucenerust.opensearch.NativeBridge.STORED_FIELDS_BEST_SPEED,
+                    3,
                     new StandardAnalyzer(),
                     new BM25Similarity(),
                     10,

@@ -318,12 +318,19 @@ pub(crate) fn build_native_stored_fields(
 }
 
 /// `Lucene90StoredFieldsFormat.fieldsWriter`'s `.si` attribute naming its
-/// mode; a `CompressingCodec` format records none.
+/// mode, or OpenSearch custom-codecs' `Lucene104CustomStoredFieldsFormat`
+/// one; a `CompressingCodec` format records none.
 pub(crate) fn stored_fields_mode_attribute(mode: stored_fields::Mode) -> Vec<(String, String)> {
     let value = match mode {
         stored_fields::Mode::BestSpeed => "BEST_SPEED",
         stored_fields::Mode::BestCompression => "BEST_COMPRESSION",
         stored_fields::Mode::Compressing(_) => return Vec::new(),
+        stored_fields::Mode::Zstd(z) => {
+            return vec![(
+                "Lucene104CustomStoredFieldsFormat.mode".to_string(),
+                z.mode_name().to_string(),
+            )]
+        }
     };
     vec![(
         "Lucene90StoredFieldsFormat.mode".to_string(),

@@ -158,6 +158,8 @@ final class RustIndexWriter implements DocumentIndexWriter {
         boolean sparse,
         boolean liveSearch,
         int maxDocs,
+        int storedFields,
+        int compressionLevel,
         Analyzer analyzer,
         Similarity similarity,
         int indexCreatedVersionMajor,
@@ -177,6 +179,8 @@ final class RustIndexWriter implements DocumentIndexWriter {
             sparse,
             liveSearch,
             maxDocs,
+            storedFields,
+            compressionLevel,
             out
         );
         if (status != NativeBridge.OK) {

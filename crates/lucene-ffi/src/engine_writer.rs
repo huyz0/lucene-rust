@@ -730,6 +730,51 @@ pub unsafe extern "C" fn ffi_engine_writer_open(
     max_docs: i32,
     out_handle: *mut u64,
 ) -> i32 {
+    // SAFETY: the same contract.
+    unsafe {
+        ffi_engine_writer_open_codec(
+            path,
+            path_len,
+            ram_buffer_mb,
+            flags,
+            max_docs,
+            STORED_FIELDS_BEST_SPEED,
+            0,
+            out_handle,
+        )
+    }
+}
+
+/// [`ffi_engine_writer_open`]'s stored fields: `Lucene104` with
+/// `BEST_SPEED` (`index.codec: default`).
+pub const STORED_FIELDS_BEST_SPEED: u8 = 0;
+/// `Lucene104` with `BEST_COMPRESSION` (`index.codec: best_compression`).
+pub const STORED_FIELDS_BEST_COMPRESSION: u8 = 1;
+/// OpenSearch custom-codecs' `ZSTD104` (`index.codec: zstd`).
+pub const STORED_FIELDS_ZSTD: u8 = 2;
+/// OpenSearch custom-codecs' `ZSTDNODICT104` (`index.codec: zstd_no_dict`).
+pub const STORED_FIELDS_ZSTD_NO_DICT: u8 = 3;
+
+/// [`ffi_engine_writer_open`] writing the stored fields `stored_fields`
+/// names (`STORED_FIELDS_*`), the zstd ones at `compression_level`
+/// (`index.codec.compression_level`; ignored by the others). An
+/// `index.sparse` index ([`OPEN_SPARSE`]) takes the default stored fields
+/// only.
+///
+/// # Safety
+/// As [`ffi_engine_writer_open`].
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn ffi_engine_writer_open_codec(
+    path: *const c_char,
+    path_len: usize,
+    ram_buffer_mb: f64,
+    flags: u8,
+    max_docs: i32,
+    stored_fields: u8,
+    compression_level: i32,
+    out_handle: *mut u64,
+) -> i32 {
     guard(|| {
         if out_handle.is_null() {
             return Err(FfiStatus::NullPointer);
@@ -758,8 +803,15 @@ pub unsafe extern "C" fn ffi_engine_writer_open(
         let merges = ConcurrentMergeScheduler::new();
         merges.set_default_max_merges_and_threads(false);
         merges.enable_auto_io_throttle();
+        let sparse = flags & OPEN_SPARSE != 0;
+        let stored_codec = stored_fields_codec(stored_fields, compression_level)?;
+        if sparse && stored_codec.is_some() {
+            set_last_error(
+                "an index.sparse index takes the default stored fields only".to_string(),
+            );
+            return Err(FfiStatus::InvalidArgument);
+        }
         let open = || -> index_writer::Result<Arc<ConcurrentIndexWriter<'static>>> {
-            let sparse = flags & OPEN_SPARSE != 0;
             let codec = if sparse {
                 lucene_sparse::CODEC_NAME
             } else {
@@ -768,6 +820,8 @@ pub unsafe extern "C" fn ffi_engine_writer_open(
             let mut writer = IndexWriter::open(dir_ref, Vec::new(), codec, VERSION)?;
             if sparse {
                 writer.set_codec(Some(Arc::new(lucene_sparse::SparseCodec)))?;
+            } else if let Some(codec) = stored_codec.clone() {
+                writer.set_codec(Some(codec))?;
             }
             writer.enable_explicit_documents()?;
             writer.set_deletion_policy(DeletionPolicy::KeepAll)?;
@@ -811,6 +865,33 @@ pub unsafe extern "C" fn ffi_engine_writer_open(
         unsafe { *out_handle = handle };
         Ok(())
     })
+}
+
+/// The codec [`ffi_engine_writer_open_codec`]'s `stored_fields` names, or
+/// `None` for the default one.
+fn stored_fields_codec(
+    stored_fields: u8,
+    level: i32,
+) -> Result<Option<Arc<dyn lucene_codecs::codec::Lucene104Codec>>, FfiStatus> {
+    use lucene_codecs::codec::{BestCompressionLucene104Codec, ZstdLucene104Codec};
+    use lucene_codecs::stored_fields::ZstdMode;
+    let zstd = |mode: ZstdMode| -> Result<Option<Arc<dyn lucene_codecs::codec::Lucene104Codec>>, FfiStatus> {
+        let codec = ZstdLucene104Codec::new(mode).map_err(|e| {
+            set_last_error(format!("index.codec.compression_level: {e}"));
+            FfiStatus::InvalidArgument
+        })?;
+        Ok(Some(Arc::new(codec)))
+    };
+    match stored_fields {
+        STORED_FIELDS_BEST_SPEED => Ok(None),
+        STORED_FIELDS_BEST_COMPRESSION => Ok(Some(Arc::new(BestCompressionLucene104Codec))),
+        STORED_FIELDS_ZSTD => zstd(ZstdMode::zstd(level)),
+        STORED_FIELDS_ZSTD_NO_DICT => zstd(ZstdMode::zstd_no_dict(level)),
+        other => {
+            set_last_error(format!("unknown stored fields format {other}"));
+            Err(FfiStatus::InvalidArgument)
+        }
+    }
 }
 
 /// Registers a field ([`decode_field`]) and writes its global number.
@@ -1734,6 +1815,141 @@ mod tests {
         let dir = FsDirectory::open(tmp.path());
         for r in lucene_index::check_index::check_directory(&dir).unwrap() {
             assert!(r.all_passed(), "{}: {:?}", r.segment_name, r.failures());
+        }
+    }
+
+    /// [`ffi_engine_writer_open_codec`]: each stored-fields choice records
+    /// the codec and `.si` mode stock OpenSearch records for that
+    /// `index.codec`, flushed and merged, and reads back.
+    #[test]
+    fn the_stored_fields_codec_is_opensearchs() {
+        for (stored, level, codec, mode) in [
+            (STORED_FIELDS_BEST_SPEED, 0, "Lucene104", "BEST_SPEED"),
+            (
+                STORED_FIELDS_BEST_COMPRESSION,
+                0,
+                "Lucene104",
+                "BEST_COMPRESSION",
+            ),
+            (STORED_FIELDS_ZSTD, 3, "ZSTD104", "ZSTD"),
+            (
+                STORED_FIELDS_ZSTD_NO_DICT,
+                -1,
+                "ZSTDNODICT104",
+                "ZSTD_NO_DICT",
+            ),
+        ] {
+            let tmp = empty_index("engine-writer-codec");
+            let path = tmp.path().to_str().unwrap();
+            let mut h = 0;
+            // SAFETY: live string and out-pointer.
+            let rc = unsafe {
+                ffi_engine_writer_open_codec(
+                    path.as_ptr() as *const c_char,
+                    path.len(),
+                    16.0,
+                    0,
+                    i32::MAX,
+                    stored,
+                    level,
+                    &mut h,
+                )
+            };
+            assert_eq!(rc, 0, "{}", crate::error::last_error());
+            let f = setup(h);
+            for round in 0..2 {
+                let mut b = Blob::default().u8(OP_ADD).i32(50);
+                for i in 0..50 {
+                    b = doc(
+                        b,
+                        &f,
+                        &format!("d{round}-{i}"),
+                        &["some", "text"],
+                        i64::from(round * 50 + i),
+                        false,
+                    );
+                }
+                assert_eq!(apply(h, &b.0), 0, "{}", crate::error::last_error());
+                commit(h, &[]);
+            }
+            let mut generation = 0;
+            // SAFETY: a live handle.
+            assert_eq!(
+                unsafe { ffi_engine_writer_force_merge(h, 1, 0, &mut generation) },
+                0,
+                "{}",
+                crate::error::last_error()
+            );
+            commit(h, &[]);
+            ffi_engine_writer_close(h);
+            let dir = FsDirectory::open(tmp.path());
+            let infos = lucene_index::segment_infos::read_latest(&dir).unwrap();
+            assert_eq!(infos.segments.len(), 1);
+            let seg = &infos.segments[0];
+            assert_eq!(seg.codec_name, codec);
+            let si = dir.open(&format!("{}.si", seg.segment_name)).unwrap();
+            let si = lucene_index::segment_info::parse(&si, &seg.segment_id).unwrap();
+            assert!(
+                si.attributes
+                    .iter()
+                    .any(|(k, v)| k.ends_with("StoredFieldsFormat.mode") && v == mode),
+                "{codec}: {:?}",
+                si.attributes
+            );
+            let reader = lucene_search::directory_reader::DirectoryReader::open(&dir).unwrap();
+            let seg = &reader.segment_readers()[0];
+            assert_eq!(seg.max_doc, 100);
+            let mut ids: Vec<_> = (0..100)
+                .map(
+                    |d| match &seg.stored_document(d).unwrap().unwrap().fields[0].value {
+                        lucene_codecs::stored_fields::FieldValue::Binary(b) => {
+                            String::from_utf8(b.clone()).unwrap()
+                        }
+                        v => panic!("{v:?}"),
+                    },
+                )
+                .collect();
+            ids.sort();
+            let mut want: Vec<_> = (0..2)
+                .flat_map(|r| (0..50).map(move |i| format!("d{r}-{i}")))
+                .collect();
+            want.sort();
+            assert_eq!(ids, want, "{codec}");
+            check(&tmp);
+        }
+    }
+
+    /// A bad level or stored-fields code, or a sparse index asking for other
+    /// stored fields, is refused before anything opens.
+    #[test]
+    fn a_stored_fields_codec_it_cannot_write_is_refused() {
+        let tmp = empty_index("engine-writer-codec-bad");
+        let path = tmp.path().to_str().unwrap();
+        for (flags, stored, level, msg) in [
+            (0, STORED_FIELDS_ZSTD, 1000, "compression_level"),
+            (0, 9, 0, "unknown stored fields"),
+            (OPEN_SPARSE, STORED_FIELDS_ZSTD, 3, "index.sparse"),
+        ] {
+            let mut h = 0;
+            // SAFETY: live string and out-pointer.
+            let rc = unsafe {
+                ffi_engine_writer_open_codec(
+                    path.as_ptr() as *const c_char,
+                    path.len(),
+                    16.0,
+                    flags,
+                    i32::MAX,
+                    stored,
+                    level,
+                    &mut h,
+                )
+            };
+            assert_eq!(rc, FfiStatus::InvalidArgument as i32);
+            assert!(
+                crate::error::last_error().contains(msg),
+                "{}",
+                crate::error::last_error()
+            );
         }
     }
 

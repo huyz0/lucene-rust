@@ -10,6 +10,10 @@
 //! - `BEST_SPEED` and `BEST_COMPRESSION` (`LZ4WithPresetDictCompressionMode`,
 //!   `DeflateWithPresetDictCompressionMode`): a dictionary plus ten sub-blocks
 //!   that may refer back into it, each skippable by its recorded length.
+//! - OpenSearch custom-codecs' `ZstdCompressionMode` (`index.codec: zstd`):
+//!   the same dictionary-plus-ten-sub-blocks shape in zstd frames, and
+//!   `ZstdNoDictCompressionMode` (`zstd_no_dict`): ten independent zstd
+//!   frames.
 //!
 //! [`decompress`] always leaves its input at the end of the unit, so a sliced
 //! chunk's units can be read back to back. Java's plain-LZ4 decompressor stops
@@ -40,6 +44,10 @@ pub enum Compression {
     DeflateWithPreset,
     /// `LZ4WithPresetDictCompressionMode` (`Mode.BEST_SPEED`).
     Lz4WithPreset,
+    /// OpenSearch custom-codecs' `ZstdCompressionMode`.
+    Zstd,
+    /// OpenSearch custom-codecs' `ZstdNoDictCompressionMode`.
+    ZstdNoDict,
 }
 
 impl Compression {
@@ -50,6 +58,7 @@ impl Compression {
             Self::Fast | Self::FastDecompression | Self::Lz4WithPreset => LZ4_MAX_EXPANSION,
             Self::HighCompression | Self::DeflateWithPreset => DEFLATE_MAX_EXPANSION,
             Self::Dummy => 1,
+            Self::Zstd | Self::ZstdNoDict => ZSTD_MAX_EXPANSION,
         }
     }
 }
@@ -64,6 +73,8 @@ impl fmt::Display for Compression {
             Self::Dummy => "DUMMY",
             Self::DeflateWithPreset => "BEST_COMPRESSION",
             Self::Lz4WithPreset => "BEST_SPEED",
+            Self::Zstd => "ZSTD",
+            Self::ZstdNoDict => "ZSTD_NO_DICT",
         })
     }
 }
@@ -140,7 +151,31 @@ impl Compressor {
             Compression::Dummy => out.write_bytes(payload),
             Compression::Lz4WithPreset => write_preset(Preset::Lz4, self, out, payload),
             Compression::DeflateWithPreset => write_preset(Preset::Deflate, self, out, payload),
+            Compression::Zstd => write_zstd(self.zstd(), out, payload, true),
+            Compression::ZstdNoDict => write_zstd(self.zstd(), out, payload, false),
         }
+    }
+
+    /// The zstd level [`Compression::Zstd`] and [`Compression::ZstdNoDict`]
+    /// units are written at (`index.codec.compression_level`).
+    ///
+    /// # Errors
+    /// `level` is not a zstd level.
+    pub fn set_zstd_level(&mut self, level: i32) -> std::result::Result<(), lucene_zstd::Error> {
+        if self.zstd.as_ref().is_some_and(|z| z.level() == level) {
+            return Ok(());
+        }
+        self.zstd = Some(Box::new(lucene_zstd::Compressor::new(level)?));
+        Ok(())
+    }
+
+    fn zstd(&mut self) -> &mut lucene_zstd::Compressor {
+        self.zstd.get_or_insert_with(|| {
+            Box::new(
+                lucene_zstd::Compressor::new(lucene_zstd::DEFAULT_LEVEL)
+                    .expect("the default level is valid"),
+            )
+        })
     }
 }
 
@@ -275,6 +310,10 @@ pub fn decompress(
         Compression::DeflateWithPreset => {
             decompress_preset(Preset::Deflate, input, original_length, offset, length, out)?
         }
+        Compression::Zstd => decompress_zstd(true, input, original_length, offset, length, out)?,
+        Compression::ZstdNoDict => {
+            decompress_zstd(false, input, original_length, offset, length, out)?
+        }
     }
     Ok(())
 }
@@ -291,6 +330,12 @@ const LZ4_MAX_EXPANSION: usize = 255;
 /// Deliberately the loose end of the range -- this is a ceiling that must
 /// never reject a file a DEFLATE mode actually wrote.
 const DEFLATE_MAX_EXPANSION: usize = 1032;
+
+/// zstd's worst-case expansion ratio: a frame is at least a 4-byte magic,
+/// a 2-byte header and a 3-byte block header, and one RLE block of one byte
+/// expands to at most 128 KiB (`ZSTD_BLOCKSIZE_MAX`), with each further block
+/// costing 4 bytes. 128 KiB / 4 bounds every frame.
+const ZSTD_MAX_EXPANSION: usize = (128 << 10) / 4;
 
 /// `NUM_SUB_BLOCKS` in both `LZ4WithPresetDictCompressionMode` and
 /// `DeflateWithPresetDictCompressionMode`: every chunk is framed as a
@@ -321,6 +366,9 @@ pub struct Compressor {
     /// for the writer's life: zlib's window
     /// and chain state survive `reset()`, and the bytes depend on them.
     deflater: Option<Box<Deflater>>,
+    /// The zstd context, created with the first zstd unit or by
+    /// [`Compressor::set_zstd_level`].
+    zstd: Option<Box<lucene_zstd::Compressor>>,
 }
 
 /// Appends one preset-dictionary compression unit for `payload`
@@ -679,19 +727,207 @@ fn decompress_preset(
     Ok(())
 }
 
+/// `ZstdCompressionMode.DICT_SIZE_FACTOR`: the dictionary is about 6x smaller
+/// than a sub-block, as for DEFLATE.
+const ZSTD_DICT_SIZE_FACTOR: usize = 6;
+
+/// Appends one `ZstdCompressionMode` (`dict`) or `ZstdNoDictCompressionMode`
+/// unit for `payload`.
+///
+/// With a dictionary: `vint dictLength, vint blockLength`, then the
+/// dictionary as a plain frame and each of up to [`NUM_SUB_BLOCKS`]
+/// sub-blocks as a frame compressed against it, each frame preceded by its
+/// vint length (a zero-length dictionary is just the vint `0`). Without:
+/// `vint blockLength`, then the sub-blocks the same way. The geometry is
+/// Java's to the byte, so Java reads these units and this port reads Java's.
+// ARITH: `len` is a slice length; `dict_length <= len / 60` keeps
+// `len - dict_length` non-negative, the loop keeps `start < len` and
+// `start + l <= len`.
+#[allow(clippy::arithmetic_side_effects)]
+fn write_zstd(z: &mut lucene_zstd::Compressor, out: &mut Vec<u8>, payload: &[u8], dict: bool) {
+    let len = payload.len();
+    let dict_length = if dict {
+        len / (NUM_SUB_BLOCKS * ZSTD_DICT_SIZE_FACTOR)
+    } else {
+        0
+    };
+    let block_length = (len - dict_length).div_ceil(NUM_SUB_BLOCKS);
+    if dict {
+        out.write_vint(dict_length as i32);
+    }
+    out.write_vint(block_length as i32);
+    let dictionary = &payload[..dict_length];
+    if dict {
+        write_zstd_frame(out, |out| z.compress(dictionary, out), dict_length);
+    }
+    // Java prepares the dictionary once per unit (`ZstdDictCompress`); so
+    // does this, when there is one.
+    let prepared = (dict_length > 0)
+        .then(|| lucene_zstd::EncoderDictionary::new(dictionary, z.level()).ok())
+        .flatten();
+    let mut start = dict_length;
+    while start < len {
+        let l = block_length.min(len - start);
+        let block = &payload[start..start + l];
+        match &prepared {
+            Some(d) => write_zstd_frame(out, |out| z.compress_with_prepared(d, block, out), l),
+            None => write_zstd_frame(out, |out| z.compress(block, out), l),
+        }
+        start += l;
+    }
+}
+
+/// One `vint compressedLength, frame` pair, or the vint `0` for no bytes.
+/// The length's slot is reserved first and the frame compressed straight
+/// into `out` behind it.
+fn write_zstd_frame(
+    out: &mut Vec<u8>,
+    compress: impl FnOnce(&mut Vec<u8>) -> lucene_zstd::Result<usize>,
+    plain_len: usize,
+) {
+    if plain_len == 0 {
+        out.write_vint(0);
+        return;
+    }
+    let mut frame = take_frame_buffer();
+    frame.clear();
+    // A valid level never fails; the levels are checked where they are set.
+    let n = compress(&mut frame).expect("zstd compression at a valid level");
+    out.write_vint(n as i32);
+    out.extend_from_slice(&frame);
+    put_frame_buffer(frame);
+}
+
+thread_local! {
+    /// [`write_zstd_frame`]'s staging buffer: the frame's length precedes it
+    /// as a vint, so it is compressed aside first.
+    static FRAME: std::cell::Cell<Vec<u8>> = const { std::cell::Cell::new(Vec::new()) };
+}
+
+fn take_frame_buffer() -> Vec<u8> {
+    FRAME.with(std::cell::Cell::take)
+}
+
+fn put_frame_buffer(buf: Vec<u8>) {
+    FRAME.with(|cell| cell.set(buf));
+}
+
+/// Appends bytes `offset..offset + length` of one zstd unit (see
+/// [`write_zstd`]) to `out`, skipping the sub-blocks the range does not
+/// touch by their recorded lengths, and leaves `input` at the end of the
+/// unit. The dictionary frame is decompressed only when a wanted sub-block
+/// needs it.
+// ARITH: framing values are checked against `original_length` before use,
+// exactly as in `decompress_preset`; `plain` advances by
+// `min(block_length, original_length - plain)` so never passes
+// `original_length`, and `lo - plain`, `hi - plain` lie in `0..=this_len`.
+#[allow(clippy::arithmetic_side_effects)]
+fn decompress_zstd(
+    dict: bool,
+    input: &mut SliceInput,
+    original_length: usize,
+    offset: usize,
+    length: usize,
+    out: &mut Vec<u8>,
+) -> Result<()> {
+    let dict_length = if dict { input.read_vint()? as usize } else { 0 };
+    let block_length = input.read_vint()? as usize;
+    if dict_length > original_length
+        || block_length > original_length
+        || (block_length == 0 && dict_length < original_length)
+    {
+        return Err(lucene_store::Error::Corrupted(format!(
+            "invalid zstd unit framing: dictLength={dict_length}, blockLength={block_length}, originalLength={original_length}"
+        )));
+    }
+    let num_blocks = (original_length - dict_length).div_ceil(block_length.max(1));
+    let want_end = offset + length;
+
+    let dict_frame = if dict {
+        let n = read_compressed_length(input)?;
+        if (n == 0) != (dict_length == 0) {
+            return Err(lucene_store::Error::Corrupted(format!(
+                "zstd dictionary of {dict_length} bytes in a {n} byte frame"
+            )));
+        }
+        let at = input.position();
+        let frame = input.slice(at, at.saturating_add(n))?;
+        input.skip(n)?;
+        frame
+    } else {
+        &[]
+    };
+    let mut dictionary = Vec::new();
+    let mut dict_ready = dict_length == 0;
+    let mut ensure_dict = |dictionary: &mut Vec<u8>| -> Result<()> {
+        if !dict_ready {
+            zstd_frame(
+                dict_frame,
+                lucene_zstd::Dictionary::None,
+                dict_length,
+                dictionary,
+            )?;
+            dict_ready = true;
+        }
+        Ok(())
+    };
+    if length > 0 && offset < dict_length {
+        ensure_dict(&mut dictionary)?;
+        out.extend_from_slice(&dictionary[offset..dict_length.min(want_end)]);
+    }
+
+    let mut plain = dict_length;
+    for _ in 0..num_blocks {
+        let this_len = block_length.min(original_length - plain);
+        let n = read_compressed_length(input)?;
+        let lo = offset.max(plain);
+        let hi = want_end.min(plain + this_len);
+        if length > 0 && lo < hi {
+            let at = input.position();
+            let frame = input.slice(at, at.saturating_add(n))?;
+            ensure_dict(&mut dictionary)?;
+            let d = if dict_length > 0 {
+                lucene_zstd::Dictionary::Bytes(&dictionary)
+            } else {
+                lucene_zstd::Dictionary::None
+            };
+            let start = out.len();
+            zstd_frame(frame, d, this_len, out)?;
+            keep_range(out, start, lo - plain, hi - plain);
+        }
+        input.skip(n)?;
+        plain += this_len;
+    }
+    Ok(())
+}
+
+/// One zstd frame of exactly `plain_len` bytes appended to `out`, on this
+/// thread's reusable decompression context.
+fn zstd_frame(
+    frame: &[u8],
+    dict: lucene_zstd::Dictionary<'_>,
+    plain_len: usize,
+    out: &mut Vec<u8>,
+) -> Result<()> {
+    lucene_zstd::with_decompressor(|d| d.decompress(frame, dict, plain_len, out))
+        .map_err(|e| lucene_store::Error::Corrupted(format!("zstd stored fields unit: {e}")))
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::arithmetic_side_effects)]
 
     use super::*;
 
-    const ALL: [Compression; 6] = [
+    const ALL: [Compression; 8] = [
         Compression::Fast,
         Compression::FastDecompression,
         Compression::HighCompression,
         Compression::Dummy,
         Compression::DeflateWithPreset,
         Compression::Lz4WithPreset,
+        Compression::Zstd,
+        Compression::ZstdNoDict,
     ];
 
     fn payload(len: usize) -> Vec<u8> {
@@ -751,7 +987,9 @@ mod tests {
                 "HIGH_COMPRESSION",
                 "DUMMY",
                 "BEST_COMPRESSION",
-                "BEST_SPEED"
+                "BEST_SPEED",
+                "ZSTD",
+                "ZSTD_NO_DICT"
             ]
         );
     }

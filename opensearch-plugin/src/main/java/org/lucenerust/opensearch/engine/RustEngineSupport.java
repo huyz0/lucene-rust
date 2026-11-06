@@ -24,7 +24,6 @@ import org.opensearch.index.store.Store;
 import java.io.IOException;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.function.LongSupplier;
 
 /**
@@ -75,7 +74,24 @@ public final class RustEngineSupport {
     );
 
     /** The codecs whose formats are the ones the Rust writer lays out. */
-    private static final Set<String> CODECS = Set.of("default", "lucene_default");
+    /**
+     * The {@code index.codec} values the Rust writer writes, and the stored fields each takes: the
+     * default codec's LZ4, {@code best_compression}'s DEFLATE, and the custom-codecs plugin's
+     * {@code zstd} and {@code zstd_no_dict}, in the plugin's own format and under its codec names, so
+     * either engine opens the other's segments.
+     */
+    private static final Map<String, Integer> CODECS = Map.of(
+        "default",
+        NativeBridge.STORED_FIELDS_BEST_SPEED,
+        "lucene_default",
+        NativeBridge.STORED_FIELDS_BEST_SPEED,
+        "best_compression",
+        NativeBridge.STORED_FIELDS_BEST_COMPRESSION,
+        "zstd",
+        NativeBridge.STORED_FIELDS_ZSTD,
+        "zstd_no_dict",
+        NativeBridge.STORED_FIELDS_ZSTD_NO_DICT
+    );
 
     /** The circuit breaker the plugin registers for the writers' buffers. */
     public static final String BREAKER_NAME = "lucene_rust_writer";
@@ -134,8 +150,12 @@ public final class RustEngineSupport {
      */
     public static String unsupported(IndexSettings settings, boolean indexSorted) {
         String codec = settings.getValue(EngineConfig.INDEX_CODEC_SETTING);
-        if (CODECS.contains(codec) == false) {
-            return "the Rust engine writes the default codec only, and index.codec is [" + codec + "]";
+        if (CODECS.containsKey(codec) == false) {
+            return "the Rust engine writes the codecs " + new java.util.TreeSet<>(CODECS.keySet()) + " only, and index.codec is [" + codec + "]";
+        }
+        if (CODECS.get(codec) != NativeBridge.STORED_FIELDS_BEST_SPEED
+            && org.lucenerust.opensearch.sparse.SparseSettings.SPARSE_INDEX.get(settings.getSettings())) {
+            return "the Rust engine writes an index.sparse index with the default codec only, and index.codec is [" + codec + "]";
         }
         if (indexSorted) {
             return "the Rust engine does not support index sorting";
@@ -229,6 +249,8 @@ public final class RustEngineSupport {
             org.lucenerust.opensearch.sparse.SparseSettings.SPARSE_INDEX.get(config.getIndexSettings().getSettings()),
             REALTIME_SEARCH.get(config.getIndexSettings().getSettings()),
             maxDocs,
+            CODECS.getOrDefault(config.getIndexSettings().getValue(EngineConfig.INDEX_CODEC_SETTING), NativeBridge.STORED_FIELDS_BEST_SPEED),
+            config.getIndexSettings().getValue(EngineConfig.INDEX_CODEC_COMPRESSION_LEVEL_SETTING),
             config.getAnalyzer(),
             config.getSimilarity(),
             config.getIndexSettings().getIndexVersionCreated().luceneVersion.major,

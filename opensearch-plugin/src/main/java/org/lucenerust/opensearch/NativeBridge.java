@@ -38,7 +38,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code jvm_reader.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 63;
+    public static final int EXPECTED_ABI_VERSION = 65;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -231,8 +231,8 @@ public final class NativeBridge {
         );
 
         static final MethodHandle WRITER_OPEN = bind(
-            "ffi_engine_writer_open",
-            FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, JAVA_DOUBLE, JAVA_BYTE, JAVA_INT, ADDRESS)
+            "ffi_engine_writer_open_codec",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, JAVA_DOUBLE, JAVA_BYTE, JAVA_INT, JAVA_BYTE, JAVA_INT, ADDRESS)
         );
         static final MethodHandle WRITER_REGISTER_FIELD = bind(
             "ffi_engine_writer_register_field",
@@ -1359,13 +1359,20 @@ public final class NativeBridge {
     public static final int OPEN_SPARSE = 2;
     public static final int OPEN_LIVE_SEARCH = 4;
 
+    /** {@link #writerOpen}'s stored fields, one per {@code index.codec} the Rust writer writes. */
+    public static final int STORED_FIELDS_BEST_SPEED = 0;
+    public static final int STORED_FIELDS_BEST_COMPRESSION = 1;
+    public static final int STORED_FIELDS_ZSTD = 2;
+    public static final int STORED_FIELDS_ZSTD_NO_DICT = 3;
+
     /**
      * Opens a shard's writer over the index at {@code path}, which must already hold a commit. Commit
      * points are dropped only through {@link #writerDeleteCommits}. {@code faultInjection} allows the
      * test-only panic operation; {@code sparse} writes the segments of an {@code index.sparse} index,
      * with neural-search's codec and clustered postings; {@code liveSearch} keeps what a search of the
      * buffered documents reads ({@link #liveViewOpen}). {@code maxDocs} is {@code
-     * IndexWriter.getActualMaxDocs()}, which Lucene's tests lower.
+     * IndexWriter.getActualMaxDocs()}, which Lucene's tests lower. {@code storedFields} is one of the
+     * {@code STORED_FIELDS_*} codes, the zstd ones written at {@code compressionLevel}.
      */
     public static int writerOpen(
         byte[] indexPathUtf8,
@@ -1374,6 +1381,8 @@ public final class NativeBridge {
         boolean sparse,
         boolean liveSearch,
         int maxDocs,
+        int storedFields,
+        int compressionLevel,
         long[] outHandle
     ) {
         if (indexPathUtf8 == null) {
@@ -1388,6 +1397,8 @@ public final class NativeBridge {
                 (byte) ((faultInjection ? OPEN_FAULT_INJECTION : 0) | (sparse ? OPEN_SPARSE : 0)
                     | (liveSearch ? OPEN_LIVE_SEARCH : 0)),
                 maxDocs,
+                (byte) storedFields,
+                compressionLevel,
                 out
             );
             if (rc == OK) {

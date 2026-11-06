@@ -7,6 +7,7 @@ members = [
     "crates/lucene-util",
     "crates/lucene-store",
     "crates/lucene-store-crypto",
+    "crates/lucene-zstd",
     "crates/lucene-codecs",
     "crates/lucene-index",
     "crates/lucene-analysis",
@@ -99,6 +100,11 @@ crc32fast = "1"
 libc = "0.2"
 lz4_flex = "0.11"
 miniz_oxide = "0.9"
+# Zstandard, through the C library zstd-jni wraps on the JVM: the `zstd` and
+# `zstd_no_dict` stored fields of OpenSearch's custom-codecs plugin
+# (`lucene-zstd`). `default-features = false` drops the legacy and
+# multithreaded-compression parts nothing here uses.
+zstd-safe = { version = "7", default-features = false, features = ["std"] }
 unicode-segmentation = "1"
 rayon = "1"
 proptest = "1"
