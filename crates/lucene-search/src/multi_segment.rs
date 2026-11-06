@@ -544,6 +544,7 @@ pub(crate) fn global_term_stats(
     for seg in segments {
         stats.add_segment(seg);
         let Some(ft) = seg.fields.field(field) else {
+            seen |= stats.add_termless(seg, field);
             continue;
         };
         seen = true;
@@ -571,10 +572,27 @@ impl FieldSums {
     }
 
     fn add_field(&mut self, ft: &lucene_codecs::blocktree::FieldTerms) {
+        self.add_stats(ft.sum_total_term_freq, ft.sum_doc_freq, ft.doc_count);
+    }
+
+    fn add_stats(&mut self, sum_total_term_freq: i64, sum_doc_freq: i64, doc_count: i32) {
         let s = &mut self.0;
-        s.doc_count = s.doc_count.saturating_add(i64::from(ft.doc_count));
-        s.sum_total_term_freq = s.sum_total_term_freq.saturating_add(ft.sum_total_term_freq);
-        s.sum_doc_freq = s.sum_doc_freq.saturating_add(ft.sum_doc_freq);
+        s.doc_count = s.doc_count.saturating_add(i64::from(doc_count));
+        s.sum_total_term_freq = s.sum_total_term_freq.saturating_add(sum_total_term_freq);
+        s.sum_doc_freq = s.sum_doc_freq.saturating_add(sum_doc_freq);
+    }
+
+    /// A segment holding none of the field's terms here though its
+    /// documents have the field ([`crate::directory_reader::SegmentReader::termless_field_stats`]):
+    /// its statistics count all the same. Whether it had any.
+    fn add_termless(&mut self, seg: &OpenSegment<'_>, field: &str) -> bool {
+        match seg.reader.and_then(|r| r.termless_field_stats(field)) {
+            Some((ttf, sdf, dc)) => {
+                self.add_stats(ttf, sdf, dc);
+                true
+            }
+            None => false,
+        }
     }
 
     fn add_term(&mut self, doc_freq: i32, total_term_freq: i64) {
@@ -601,6 +619,7 @@ pub(crate) fn global_term_stats_states(
     for seg in segments {
         stats.add_segment(seg);
         let Some(ft) = seg.fields.field(field) else {
+            seen |= stats.add_termless(seg, field);
             continue;
         };
         seen = true;
@@ -632,12 +651,16 @@ pub fn global_avg_field_length(segments: &[OpenSegment<'_>], field: &str) -> Opt
     let mut doc_count = 0i64;
     let mut seen = false;
     for seg in segments {
-        let Some(ft) = seg.fields.field(field) else {
-            continue;
+        let (ttf, dc) = match seg.fields.field(field) {
+            Some(ft) => (ft.sum_total_term_freq, ft.doc_count),
+            None => match seg.reader.and_then(|r| r.termless_field_stats(field)) {
+                Some((ttf, _, dc)) => (ttf, dc),
+                None => continue,
+            },
         };
         seen = true;
-        sum_total_term_freq += ft.sum_total_term_freq;
-        doc_count += ft.doc_count as i64;
+        sum_total_term_freq += ttf;
+        doc_count += dc as i64;
     }
     seen.then(|| crate::field_norms::avg_field_length(sum_total_term_freq, doc_count))
 }

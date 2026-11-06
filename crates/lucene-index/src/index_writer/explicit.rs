@@ -887,6 +887,9 @@ impl IndexingConfig {
         };
         let mut flush_fields = pending.fields_to_flush();
         if let Some(limit) = buf.limit {
+            if !limit.postings {
+                flush_fields.clear();
+            }
             // The fields as the documents written hold them.
             flush_fields.retain_mut(|f| {
                 f.doc_count = limit.doc_counts.get(&f.number).copied().unwrap_or(0);

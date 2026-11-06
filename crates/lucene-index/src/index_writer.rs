@@ -1259,6 +1259,10 @@ pub(crate) struct BufferLimit {
     pub(crate) docs: i32,
     /// By field number: how many of those documents have the field.
     pub(crate) doc_counts: std::collections::HashMap<i32, i32>,
+    /// Whether the postings are written: without them the segment has every
+    /// field's norms, doc values, points and stored fields but no terms,
+    /// for a caller that reads the documents' terms elsewhere.
+    pub(crate) postings: bool,
 }
 
 /// A buffer's explicit document fields: as structs, or packed as the
