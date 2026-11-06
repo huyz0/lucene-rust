@@ -6,6 +6,9 @@ license = "Apache-2.0"
 publish = false
 
 [dependencies]
+# The allocator the plugin library ships with (lucene-ffi feature `mimalloc`),
+# so allocation costs here are the ones the engine pays in production.
+mimalloc = { version = "0.1.52", default-features = false, features = ["no_thp"] }
 lucene-store = { path = "../../crates/lucene-store" }
 lucene-search = { path = "../../crates/lucene-search", features = ["test-support"] }
 lucene-replicator = { path = "../../crates/lucene-replicator" }
