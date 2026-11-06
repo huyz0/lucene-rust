@@ -101,15 +101,18 @@ public final class EngineWriterDiffTest {
     public static void main(String[] args) throws Exception {
         NativeLibrary.load(Path.of("."));
         for (long seed : new long[] { 1, 2, 3 }) {
-            run(seed, 1500, new TestAnalyzer());
+            run(seed, 1500, new TestAnalyzer(), false);
         }
         // TestAnalyzer's own filters keep its analysis in Java.
         check(DocumentEncoder.ANALYZED_NATIVELY.get() == 0, "custom filters are analyzed in Java");
         // Analyzers made of Lucene's own components are analyzed and inverted in Rust: the
         // segments must still be Lucene's own, byte for byte where compare() looks.
         for (long seed : new long[] { 4, 5 }) {
-            run(seed, 1500, nativeAnalyzer());
+            run(seed, 1500, nativeAnalyzer(), false);
         }
+        // Under index.lucene_rust.adaptive_doc_values: the same documents read back through the
+        // RustAdaptive doc-values format's producer, from merged segments large enough for it.
+        run(6, 4000, nativeAnalyzer(), true);
         check(DocumentEncoder.ANALYZED_NATIVELY.get() > 3000, "field values analyzed in Rust: " + DocumentEncoder.ANALYZED_NATIVELY.get());
         check(payloadsSeen > 0, "payloads were indexed and compared");
         refusals();
@@ -350,7 +353,7 @@ public final class EngineWriterDiffTest {
         return new org.apache.lucene.analysis.miscellaneous.PerFieldAnalyzerWrapper(plain, Map.of("body", english));
     }
 
-    private static void run(long seed, int ops, Analyzer analyzer) throws Exception {
+    private static void run(long seed, int ops, Analyzer analyzer, boolean adaptive) throws Exception {
         Path root = Files.createTempDirectory("engine-writer-diff");
         Path javaPath = root.resolve("java");
         Path rustPath = root.resolve("rust");
@@ -370,6 +373,7 @@ public final class EngineWriterDiffTest {
                 false,
                 false,
                 false,
+                adaptive,
                 IndexWriter.MAX_DOCS,
                 analyzer,
                 similarity,
@@ -448,11 +452,40 @@ public final class EngineWriterDiffTest {
             compare("seed " + seed, javaDir, rustDir);
             checkIndex("seed " + seed, rustDir);
             checkSkippers("seed " + seed, rustDir);
+            int adaptiveFields = adaptiveFields(rustDir);
+            check(adaptive ? adaptiveFields > 0 : adaptiveFields == 0, "seed " + seed + ": " + adaptiveFields + " RustAdaptive doc-values fields");
+            if (adaptive) {
+                // A Java writer on the Rust index: a doc-values update to a RustAdaptive field is
+                // written under that format's name, then everything still reads and checks.
+                try (IndexWriter java = new IndexWriter(rustDir, new IndexWriterConfig(analyzer).setSoftDeletesField(SOFT))) {
+                    java.updateNumericDocValue(new Term("_id", "d0"), "_version", 7L);
+                    java.commit();
+                }
+                checkIndex("seed " + seed + " after a Java doc-values update", rustDir);
+                try (DirectoryReader reader = DirectoryReader.open(rustDir)) {
+                    check(reader.numDocs() > 0, "seed " + seed + ": the updated index opens");
+                }
+            }
         } finally {
             try (Stream<Path> s = Files.walk(root)) {
                 s.sorted(Comparator.reverseOrder()).forEach(p -> p.toFile().delete());
             }
         }
+    }
+
+    /** How many segment fields the Rust index stores under the RustAdaptive doc-values format. */
+    private static int adaptiveFields(FSDirectory dir) throws IOException {
+        int n = 0;
+        try (DirectoryReader reader = DirectoryReader.open(dir)) {
+            for (org.apache.lucene.index.LeafReaderContext ctx : reader.leaves()) {
+                for (FieldInfo fi : ctx.reader().getFieldInfos()) {
+                    if ("RustAdaptive".equals(fi.getAttribute("PerFieldDocValuesFormat.format"))) {
+                        n++;
+                    }
+                }
+            }
+        }
+        return n;
     }
 
     private static void checkIndex(String where, FSDirectory dir) throws IOException {
@@ -756,6 +789,7 @@ public final class EngineWriterDiffTest {
                 dir,
                 root,
                 16,
+                false,
                 false,
                 false,
                 false,
