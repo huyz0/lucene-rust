@@ -378,6 +378,16 @@ pub trait Directory: Send + Sync {
         None
     }
 
+    /// A hint that `names` are about to be opened, as a reader opening a
+    /// commit's segments knows: a directory that fetches files by range
+    /// ([`crate::CachedBlobDirectory`]) fetches what those opens will read,
+    /// all files at once, rather than one round trip after another. A
+    /// failure here is only a missed hint; the opens report their own.
+    fn prefetch_files(&self, names: &[String]) -> Result<()> {
+        let _ = names;
+        Ok(())
+    }
+
     /// `dir instanceof FSDirectory ? dir.getDirectory() : null`: the
     /// filesystem path a [`crate::fs_lock_factory::FsLockFactory`] puts its
     /// lock file in. `None` for anything that is not a filesystem directory.
@@ -509,6 +519,9 @@ macro_rules! forward_directory {
             ) -> Option<Result<Input>> {
                 (**self).open_decoded(name, decoder)
             }
+            fn prefetch_files(&self, names: &[String]) -> Result<()> {
+                (**self).prefetch_files(names)
+            }
             fn copy_from(&self, from: &dyn Directory, src: &str, dest: &str) -> Result<()> {
                 (**self).copy_from(from, src, dest)
             }
@@ -612,6 +625,9 @@ impl Directory for EstimatedWrites<'_> {
         decoder: &dyn crate::page_cache::PageDecoder,
     ) -> Option<Result<Input>> {
         self.inner.open_decoded(name, decoder)
+    }
+    fn prefetch_files(&self, names: &[String]) -> Result<()> {
+        self.inner.prefetch_files(names)
     }
 }
 

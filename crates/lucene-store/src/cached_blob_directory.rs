@@ -172,26 +172,9 @@ impl<S: BlobStore + 'static> CachedBlobDirectory<S> {
             Some(build) => Some(build(stored_len)?),
             None => None,
         };
-        let tag = if decoded { 'd' } else { 'p' };
-        let key: Arc<str> = Arc::from(format!("{}{stored_len}\u{0}{tag}", self.key_prefix(name)));
-        let page_size = self.cache.config().page_size;
-        let geom = match &codec {
-            None => Geometry::plain(Arc::clone(&key), stored_len, page_size),
-            Some(c) => Geometry::units(Arc::clone(&key), stored_len, c.layout(), page_size, name)?,
-        };
-        let len = usize::try_from(geom.plain_len)
+        let (file, pinned) = self.cached_file(name, stored_len, codec)?;
+        let len = usize::try_from(file.geom.plain_len)
             .map_err(|_| Error::Corrupted(format!("{name}: too large to open")))?;
-        let file = Arc::new(CachedFile {
-            store: Arc::clone(&self.store),
-            cache: Arc::clone(&self.cache),
-            geom,
-            codec,
-            name: name.to_string(),
-        });
-        let pinned = self.cache.is_pinned_name(name);
-        if pinned {
-            self.cache.pin(&key);
-        }
         let input = if pinned || file.geom.pages <= 1 {
             Input::Owned(file.read_whole()?)
         } else {
@@ -212,6 +195,51 @@ impl<S: BlobStore + 'static> CachedBlobDirectory<S> {
         Input::slice_of(&shared, 0, shared.len())
     }
 
+    /// `name`'s pages as stored at `stored_len` bytes, decoded by `codec`
+    /// when there is one, and whether the file is pinned (pinning it).
+    fn cached_file(
+        &self,
+        name: &str,
+        stored_len: u64,
+        codec: Option<Arc<dyn PageCodec>>,
+    ) -> Result<(Arc<CachedFile<S>>, bool)> {
+        let tag = if codec.is_some() { 'd' } else { 'p' };
+        let key: Arc<str> = Arc::from(format!("{}{stored_len}\u{0}{tag}", self.key_prefix(name)));
+        let page_size = self.cache.config().page_size;
+        let geom = match &codec {
+            None => Geometry::plain(Arc::clone(&key), stored_len, page_size),
+            Some(c) => Geometry::units(Arc::clone(&key), stored_len, c.layout(), page_size, name)?,
+        };
+        let pinned = self.cache.is_pinned_name(name);
+        if pinned {
+            self.cache.pin(&key);
+        }
+        let file = Arc::new(CachedFile {
+            store: Arc::clone(&self.store),
+            cache: Arc::clone(&self.cache),
+            geom,
+            codec,
+            name: name.to_string(),
+        });
+        Ok((file, pinned))
+    }
+
+    /// What opening `name` undecoded reads: a pinned or one-page file
+    /// whole, otherwise its first and last pages (header and footer).
+    fn prefetch_file(&self, name: &str) -> Result<()> {
+        if self.is_pending(name) || self.is_open(name) {
+            return Ok(());
+        }
+        let stored_len = self.store.size(name)?;
+        let (file, pinned) = self.cached_file(name, stored_len, None)?;
+        let pages: Vec<u64> = if pinned || file.geom.pages <= 2 {
+            (0..file.geom.pages).collect()
+        } else {
+            vec![0, file.geom.pages.saturating_sub(1)]
+        };
+        file.pages(&pages).map(|_| ())
+    }
+
     #[cfg(target_os = "linux")]
     fn demand_filled(&self, file: Arc<CachedFile<S>>, len: usize) -> Result<Input> {
         let page = usize::try_from(file.geom.plain_page).unwrap_or(usize::MAX);
@@ -219,7 +247,17 @@ impl<S: BlobStore + 'static> CachedBlobDirectory<S> {
             Some(pager) => {
                 let name = file.name.clone();
                 let filler: Arc<dyn PageFiller> = file;
-                Ok(Input::external_bytes(pager.open(len, page, filler, &name)?))
+                let paged = pager.open(len, page, filler, &name)?;
+                // Lucene's readers check a file's header and footer as they
+                // open it: both ends come in one batch, not two round trips.
+                let bytes = crate::directory::ExternalBytes::bytes(&paged);
+                let footer = bytes.len().saturating_sub(crate::codec_util::FOOTER_LENGTH);
+                // Only a hint: a page it could not fetch is retried on fault.
+                let _ = crate::paged_input::prefetch(&[
+                    bytes.get(..1).unwrap_or(&[]),
+                    &bytes[footer..],
+                ]);
+                Ok(Input::external_bytes(paged))
             }
             None => Ok(Input::Owned(file.read_whole()?)),
         }
@@ -313,6 +351,39 @@ impl<S: BlobStore + 'static> Directory for CachedBlobDirectory<S> {
     fn open_decoded(&self, name: &str, decoder: &dyn PageDecoder) -> Option<Result<Input>> {
         let build = |len: u64| decoder.codec(name, len, self);
         Some(self.open_paged(name, Some(&build)))
+    }
+
+    /// Fetches into the disk tier, every file at once, what opening each of
+    /// `names` undecoded will read. Without a disk tier nothing would keep
+    /// the pages, so nothing is fetched.
+    fn prefetch_files(&self, names: &[String]) -> Result<()> {
+        if !self.cache.has_disk() {
+            return Ok(());
+        }
+        let threads = self.cache.config().concurrency.max(1);
+        let mut first = Ok(());
+        for batch in names.chunks(threads) {
+            let results: Vec<Result<()>> = std::thread::scope(|s| {
+                let handles: Vec<_> = batch
+                    .iter()
+                    .map(|name| s.spawn(move || self.prefetch_file(name)))
+                    .collect();
+                handles
+                    .into_iter()
+                    .map(|h| {
+                        h.join().unwrap_or_else(|_| {
+                            Err(Error::Io(std::io::Error::other("a prefetch panicked")))
+                        })
+                    })
+                    .collect()
+            });
+            for r in results {
+                if first.is_ok() {
+                    first = r;
+                }
+            }
+        }
+        first
     }
 
     fn read_at(&self, name: &str, offset: u64, len: usize) -> Result<Vec<u8>> {
@@ -499,6 +570,31 @@ mod tests {
         assert!(d.cache().stats().disk_hits > 0);
         assert!(format!("{d:?}").contains("idx"));
         assert_eq!(d.store().list().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn prefetched_files_open_without_further_requests() {
+        let (d, store, _tmp) = dir("cached-blob-prefetch", 64 * 1024);
+        let big = data(1_000_000, 3);
+        put(&d, "_0.doc", &big);
+        put(&d, "_0.tip", &data(70_000, 4));
+        put(&d, "_0.si", &data(100, 5));
+        let names = ["_0.doc", "_0.tip", "_0.si"].map(String::from);
+        d.prefetch_files(&names).unwrap();
+        let fetched = store.ranges.load(Ordering::Relaxed);
+        assert!(fetched > 0);
+        // Header and footer of the large file, the pinned and the small
+        // files whole: opening them and reading both ends asks for nothing.
+        let doc = d.open("_0.doc").unwrap();
+        assert_eq!(doc[..16], big[..16]);
+        assert_eq!(doc[big.len() - 16..], big[big.len() - 16..]);
+        assert_eq!(d.open("_0.tip").unwrap()[..], data(70_000, 4)[..]);
+        assert_eq!(d.open("_0.si").unwrap()[..], data(100, 5)[..]);
+        assert_eq!(store.ranges.load(Ordering::Relaxed), fetched);
+        // A missing file is an error; an open one is skipped.
+        assert!(d.prefetch_files(&["nope".to_string()]).is_err());
+        d.prefetch_files(&names).unwrap();
+        assert_eq!(store.ranges.load(Ordering::Relaxed), fetched);
     }
 
     #[test]

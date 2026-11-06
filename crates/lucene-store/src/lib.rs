@@ -17,6 +17,7 @@ pub mod lock;
 pub mod lock_wrappers;
 pub mod nrt_caching_directory;
 pub mod page_cache;
+mod page_disk;
 #[cfg(target_os = "linux")]
 pub mod paged_input;
 pub mod rate_limiter;
@@ -45,3 +46,31 @@ pub use store_registry::{
     register_store_type, register_store_wrapper, StoreProvider, StoreSettings, StoreSpec,
     StoreWrapper,
 };
+
+/// `IndexInput.prefetch` for readers that hold plain byte slices: announces
+/// that each of `ranges` is about to be read, so the pages of a file read
+/// by range ([`CachedBlobDirectory`]) are fetched together, in parallel,
+/// instead of one round trip per page fault. Returns the first fetch error,
+/// which a fault could only abort on. Slices of any other memory are left
+/// alone, at the cost of one map lookup.
+pub fn prefetch(ranges: &[&[u8]]) -> Result<()> {
+    #[cfg(target_os = "linux")]
+    return paged_input::prefetch(ranges);
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = ranges;
+        Ok(())
+    }
+}
+
+/// Whether `bytes` lies in a file read by range, whose reads a [`prefetch`]
+/// can batch. Readers ask before doing extra work to find what to prefetch.
+pub fn is_prefetchable(bytes: &[u8]) -> bool {
+    #[cfg(target_os = "linux")]
+    return paged_input::is_paged(bytes);
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = bytes;
+        false
+    }
+}
