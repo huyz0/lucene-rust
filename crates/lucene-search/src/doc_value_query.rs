@@ -1502,6 +1502,7 @@ mod tests {
             values_length: 0,
             block_shift: None,
             value_jump_table_offset: 0,
+            adaptive: None,
         }
     }
 
@@ -2063,6 +2064,7 @@ mod tests {
             values_length: 1,
             block_shift: None,
             value_jump_table_offset: 0,
+            adaptive: None,
         };
         let entry = SortedNumericEntry {
             field_number: 0,

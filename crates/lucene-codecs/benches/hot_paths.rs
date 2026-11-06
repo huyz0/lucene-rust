@@ -832,6 +832,7 @@ fn bench_sparse_numeric_reader(c: &mut Criterion) {
             values_length: 0,
             block_shift: None,
             value_jump_table_offset: 0,
+            adaptive: None,
         };
         // A forward walk over every present doc, construction included.
         group.bench_function(format!("forward/n{n}"), |b| {
@@ -939,6 +940,105 @@ fn bench_sorted_numeric_varying_bpv(c: &mut Criterion) {
             black_box(n)
         })
     });
+}
+
+/// A dense NUMERIC field under Lucene90's encoding and under `RustAdaptive`'s
+/// blocks: a full in-order scan (`for_each_value`, as an aggregation over
+/// all documents), 512-document windows (`fill_window`) and scattered
+/// single-document reads (`value`, as a sort's competitive check), for
+/// timestamps (delta blocks) and two-decimal prices (decimal blocks).
+fn bench_adaptive_numeric(c: &mut Criterion) {
+    use lucene_codecs::field_infos::{
+        DocValuesSkipIndexType, DocValuesType, FieldInfo, FieldInfos,
+    };
+    const DOCS: usize = 1 << 20;
+    let mut x = 0x2545_F491_4F6C_DD1Du64;
+    let mut rnd = move || {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        x
+    };
+    let mut t = 1_700_000_000_000i64;
+    let timestamps: Vec<i64> = (0..DOCS)
+        .map(|_| {
+            t += (rnd() % 3000) as i64;
+            t
+        })
+        .collect();
+    let prices: Vec<i64> = (0..DOCS)
+        .map(|_| {
+            let bits = ((rnd() % 100_000) as f64 / 100.0).to_bits() as i64;
+            bits ^ ((bits >> 63) & 0x7fff_ffff_ffff_ffff)
+        })
+        .collect();
+    let fis = FieldInfos {
+        fields: vec![FieldInfo::new("f", 0).with_doc_values(
+            DocValuesType::Numeric,
+            DocValuesSkipIndexType::None,
+            -1,
+        )],
+    };
+    let id = [4u8; 16];
+    let mut group = c.benchmark_group("doc_values/adaptive");
+    group.sample_size(20);
+    for (column, values) in [("timestamp", &timestamps), ("price", &prices)] {
+        for format in [
+            ndv::Lucene90DocValuesFormat::default(),
+            ndv::Lucene90DocValuesFormat::rust_adaptive(),
+        ] {
+            let suffix = format!("{}_0", format.name());
+            let fields = [ndv::DenseField::Numeric(0, values)];
+            let (dvm, dvd, _) =
+                ndv::write_fields_with_format(&fields, &[], DOCS as i32, &id, &suffix, format)
+                    .unwrap();
+            let (_, meta) = ndv::parse_meta(&dvm, &id, &suffix, &fis).unwrap();
+            let entry = meta.numeric_entry(0).unwrap().clone();
+            assert_eq!(entry.adaptive.is_some(), format.is_adaptive());
+            let name = format.name();
+            group.bench_function(format!("{column}/{name}/scan"), |b| {
+                b.iter(|| {
+                    let mut sum = 0i64;
+                    ndv::NumericReader::new(&dvd, &entry)
+                        .for_each_value(0, DOCS as i32, |_, v| sum = sum.wrapping_add(v))
+                        .unwrap();
+                    black_box(sum)
+                })
+            });
+            group.bench_function(format!("{column}/{name}/fill_window_512"), |b| {
+                let mut window = vec![0i64; 512];
+                let mut present = vec![0u64; 8];
+                b.iter(|| {
+                    let mut r = ndv::NumericReader::new(&dvd, &entry);
+                    let mut sum = 0i64;
+                    for start in (0..DOCS).step_by(512) {
+                        r.fill_window(start as i32, &mut window, &mut present)
+                            .unwrap();
+                        sum = sum.wrapping_add(window[511]);
+                    }
+                    black_box(sum)
+                })
+            });
+            group.bench_function(format!("{column}/{name}/random_value_64k"), |b| {
+                let mut y = 7u64;
+                let docs: Vec<i32> = (0..65_536)
+                    .map(|_| {
+                        y = y.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+                        ((y >> 33) % DOCS as u64) as i32
+                    })
+                    .collect();
+                b.iter(|| {
+                    let mut r = ndv::NumericReader::new(&dvd, &entry);
+                    let mut sum = 0i64;
+                    for &d in &docs {
+                        sum = sum.wrapping_add(r.value(d).unwrap().unwrap());
+                    }
+                    black_box(sum)
+                })
+            });
+        }
+    }
+    group.finish();
 }
 
 /// Flushing a dense NUMERIC field whose values share a large GCD (timestamps
@@ -1624,6 +1724,7 @@ criterion_group!(
     bench_bkd_merge_1d,
     bench_postings_write,
     bench_numeric_write_gcd,
+    bench_adaptive_numeric,
     bench_sorted_numeric_varying_bpv,
     bench_direct_monotonic_get,
     bench_stored_fields_document,
