@@ -77,6 +77,11 @@ public final class RustEngineSupport {
     /** The codecs whose formats are the ones the Rust writer lays out. */
     private static final Set<String> CODECS = Set.of("default", "lucene_default");
 
+    /** {@code NativeLuceneIndexWriterFactory}'s {@code opensearch.shuffle_forced_merge}, read as it reads it. */
+    private static final boolean SHUFFLE_FORCED_MERGE = org.opensearch.common.Booleans.parseBoolean(
+        System.getProperty("opensearch.shuffle_forced_merge", Boolean.TRUE.toString())
+    );
+
     /** The circuit breaker the plugin registers for the writers' buffers. */
     public static final String BREAKER_NAME = "lucene_rust_writer";
 
@@ -139,6 +144,11 @@ public final class RustEngineSupport {
         }
         if (indexSorted) {
             return "the Rust engine does not support index sorting";
+        }
+        // The codec then gives _id a FuzzyFilterPostingsFormat (a bloom filter beside the terms),
+        // which the Rust writer does not lay out.
+        if (settings.isEnableFuzzySetForDocId()) {
+            return "the Rust engine does not support index.optimize_doc_id_lookup.fuzzy_set.enabled";
         }
         if (settings.isContextAwareEnabled()) {
             return "the Rust engine does not support context-aware segments";
@@ -289,12 +299,21 @@ public final class RustEngineSupport {
             while (policy instanceof FilterMergePolicy filter) {
                 policy = filter.unwrap();
             }
-            if (policy instanceof TieredMergePolicy tiered) {
-                try {
+            try {
+                if (policy instanceof TieredMergePolicy tiered) {
                     rust.setMergePolicy(tiered);
-                } catch (IOException e) {
-                    throw new java.io.UncheckedIOException(e);
                 }
+                // NativeLuceneIndexWriterFactory's setUseCompoundFile and setCheckPendingFlushUpdate,
+                // the policy's compound-file ratio and cap, and its ShuffleForcedMergePolicy wrapper.
+                rust.setOptions(
+                    config.useCompoundFile(),
+                    policy.getNoCFSRatio(),
+                    policy.getMaxCFSSegmentSizeMB(),
+                    config.getIndexSettings().isCheckPendingFlushEnabled(),
+                    SHUFFLE_FORCED_MERGE
+                );
+            } catch (IOException e) {
+                throw new java.io.UncheckedIOException(e);
             }
         }
     }

@@ -943,6 +943,16 @@ pub(crate) struct IndexingConfig {
     /// packed into `.cfs`/`.cfe`. See [`IndexWriter::set_use_compound_file`]
     /// for why this writer's default is `false` where Java's is `true`.
     use_compound_file: bool,
+    /// The merge policy's `noCFSRatio`/`maxCFSSegmentSize` for merges under
+    /// the [`merge_policy::MergePolicyConfig`] policy; `None` keeps
+    /// [`IndexWriter::use_compound_file`] as the switch, with
+    /// `TieredMergePolicy`'s defaults. See
+    /// [`IndexWriter::set_merge_compound_file_settings`].
+    merge_compound_file: Option<merge_policy::CompoundFileSettings>,
+    /// `ShuffleForcedMergePolicy` (OpenSearch): forced merges interleave
+    /// their sources, oldest with newest. See
+    /// [`IndexWriter::set_shuffle_forced_merges`].
+    shuffle_forced_merges: bool,
     /// `IndexWriterConfig.getSimilarity()`, as far as the writer reads it
     /// (`computeNorm`): `None` is Lucene's default, `BM25Similarity`. See
     /// [`IndexWriter::set_similarity`].
@@ -4374,6 +4384,10 @@ pub struct IndexWriter<'d> {
     /// `IndexWriter.mergeMaxNumSegments`: [`IndexWriter::force_merge`]'s
     /// argument while it runs, which its merges record as
     /// `OneMerge.maxNumSegments`; `-1` otherwise.
+    /// Whether the merge being planned interleaves its sources
+    /// ([`IndexWriter::set_shuffle_forced_merges`]): recorded in its
+    /// diagnostics.
+    merge_shuffled: bool,
     merge_max_num_segments: i32,
     /// `LiveIndexWriterConfig.maxFullFlushMergeWaitMillis` -- see
     /// [`IndexWriter::set_max_full_flush_merge_wait_millis`].
@@ -5437,6 +5451,38 @@ impl<'d> IndexWriter<'d> {
         self.cfg.use_compound_file
     }
 
+    /// `MergePolicy.setNoCFSRatio`/`setMaxCFSSegmentSizeMB` for the
+    /// [`merge_policy::MergePolicyConfig`] policy: with `Some`, a merged
+    /// segment is compound exactly when `TieredMergePolicy.useCompoundFile`
+    /// under these settings says so, whatever
+    /// [`IndexWriter::use_compound_file`] (which, as in Java, then governs
+    /// flushed segments only). `None` restores this writer's default.
+    pub fn set_merge_compound_file_settings(
+        &mut self,
+        settings: Option<merge_policy::CompoundFileSettings>,
+    ) {
+        self.cfg_mut().merge_compound_file = settings;
+    }
+
+    /// See [`IndexWriter::set_merge_compound_file_settings`].
+    pub fn merge_compound_file_settings(&self) -> Option<merge_policy::CompoundFileSettings> {
+        self.cfg.merge_compound_file
+    }
+
+    /// OpenSearch's `ShuffleForcedMergePolicy` around the
+    /// [`merge_policy::MergePolicyConfig`] policy: each forced merge (and
+    /// forced-deletes merge) takes its sources sorted by name, then
+    /// interleaved oldest with newest, the smaller of each pair first, and
+    /// its segment's diagnostics carry `opensearch.shuffle_merge`.
+    pub fn set_shuffle_forced_merges(&mut self, shuffle: bool) {
+        self.cfg_mut().shuffle_forced_merges = shuffle;
+    }
+
+    /// See [`IndexWriter::set_shuffle_forced_merges`].
+    pub fn shuffle_forced_merges(&self) -> bool {
+        self.cfg.shuffle_forced_merges
+    }
+
     /// `PerFieldPostingsFormat.getPostingsFormatForField` for one field: from
     /// the next flush and merge on, `field`'s postings go to `format`'s files
     /// (every field on the same format shares one set, under the suffix
@@ -5849,6 +5895,8 @@ impl<'d> IndexWriter<'d> {
                 merge_mb_per_sec: None,
                 similarity: None,
                 use_compound_file: false,
+                merge_compound_file: None,
+                shuffle_forced_merges: false,
                 postings_formats: Vec::new(),
                 doc_values_formats: Vec::new(),
                 knn_vectors_formats: Vec::new(),
@@ -5868,6 +5916,7 @@ impl<'d> IndexWriter<'d> {
             full_flush_merge_policy: None,
             merges_by_caller: false,
             merge_max_num_segments: -1,
+            merge_shuffled: false,
             max_full_flush_merge_wait_millis: DEFAULT_MAX_FULL_FLUSH_MERGE_WAIT_MILLIS,
             commit_on_close: true,
             pending_custom_freq_terms: Vec::new(),
@@ -10748,6 +10797,20 @@ impl IndexWriter<'_> {
         if let Some(policy) = self.pluggable_merge_policy.clone() {
             return self.force_merge_pluggable(&policy, max_num_segments);
         }
+        if let Some(config) = self.merge_policy.clone() {
+            // `IndexWriter.forceMerge` under `TieredMergePolicy`: ask
+            // `findForcedMerges` until it proposes nothing.
+            loop {
+                let stats = self.reclaimable_segment_stats()?;
+                let groups = merge_policy::find_forced_merges(&stats, max_num_segments, &config);
+                if groups.is_empty() {
+                    return Ok(());
+                }
+                for group in groups {
+                    self.execute_forced_merge(group, &stats)?;
+                }
+            }
+        }
         loop {
             let mut stats = self.segment_stats()?;
             if stats.len() <= max_num_segments {
@@ -10778,6 +10841,34 @@ impl IndexWriter<'_> {
             let names: Vec<String> = stats.into_iter().take(take).map(|s| s.name).collect();
             self.execute_merge(&names)?;
         }
+    }
+
+    /// [`IndexWriter::segment_stats`] with each `del_count` the deletes a
+    /// merge would reclaim ([`IndexWriter::num_deletes_to_merge`]), as
+    /// `TieredMergePolicy`'s forced-merge selection counts them.
+    fn reclaimable_segment_stats(&self) -> Result<Vec<merge_policy::SegmentStat>> {
+        let mut stats = self.segment_stats()?;
+        for stat in &mut stats {
+            stat.del_count = self.num_deletes_to_merge(stat)?;
+        }
+        Ok(stats)
+    }
+
+    /// Runs one forced merge of `group`, interleaved first when
+    /// [`IndexWriter::set_shuffle_forced_merges`] is on.
+    fn execute_forced_merge(
+        &mut self,
+        group: Vec<String>,
+        stats: &[merge_policy::SegmentStat],
+    ) -> Result<()> {
+        if !self.cfg.shuffle_forced_merges {
+            return self.execute_merge(&group);
+        }
+        let names = shuffle_interleave(group, stats);
+        let outer = std::mem::replace(&mut self.merge_shuffled, true);
+        let merged = self.execute_merge(&names);
+        self.merge_shuffled = outer;
+        merged
     }
 
     /// `MergePolicy.numDeletesToMerge` under this writer's retention policy:
@@ -10815,6 +10906,21 @@ impl IndexWriter<'_> {
         self.write_pending_try_changes()?;
         if let Some(policy) = self.pluggable_merge_policy.clone() {
             return self.force_merge_deletes_pluggable(&policy);
+        }
+        if let Some(config) = self.merge_policy.clone() {
+            // `TieredMergePolicy.findForcedDeletesMerges`: its
+            // `forceMergeDeletesPctAllowed` and `maxMergeAtOnce`, until it
+            // proposes nothing.
+            loop {
+                let stats = self.reclaimable_segment_stats()?;
+                let groups = merge_policy::find_forced_delete_merges(&stats, &config);
+                if groups.is_empty() {
+                    return Ok(());
+                }
+                for group in groups {
+                    self.execute_forced_merge(group, &stats)?;
+                }
+            }
         }
         let mut names: Vec<String> = Vec::new();
         for stat in self.segment_stats()? {
@@ -10877,6 +10983,7 @@ impl IndexWriter<'_> {
             sorted_numeric_remap: None,
             kind: merge::MergeKind::Merge {
                 max_num_segments: self.merge_max_num_segments,
+                shuffled: self.merge_shuffled,
             },
         })
     }
@@ -12746,6 +12853,44 @@ fn apply_merge_changes(
     *segments = out;
 }
 
+/// `ShuffleForcedMergePolicy.interleaveList`: the sources sorted by name
+/// (Java's `String` order, older first), then taken from both ends at once,
+/// oldest with newest, the smaller of each pair (by `sizeInBytes`) first.
+fn shuffle_interleave(mut names: Vec<String>, stats: &[merge_policy::SegmentStat]) -> Vec<String> {
+    let bytes_of = |name: &str| {
+        stats
+            .iter()
+            .find(|s| s.name == name)
+            .map_or(0, |s| s.size_bytes)
+    };
+    // Java's `String.compareTo` is UTF-16 order; segment names are ASCII,
+    // where it is byte order.
+    names.sort();
+    let mut out = Vec::with_capacity(names.len());
+    let (mut left, mut right) = (0usize, names.len());
+    while left < right {
+        // ARITH: `right > left >= 0`, so `right - 1` does not underflow.
+        #[allow(clippy::arithmetic_side_effects)]
+        let last = right - 1;
+        if left == last {
+            out.push(names[left].clone());
+        } else if bytes_of(&names[left]) < bytes_of(&names[last]) {
+            out.push(names[left].clone());
+            out.push(names[last].clone());
+        } else {
+            out.push(names[last].clone());
+            out.push(names[left].clone());
+        }
+        // ARITH: `left < right <= names.len()`, so neither overflows.
+        #[allow(clippy::arithmetic_side_effects)]
+        {
+            left += 1;
+            right = last;
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     // The arithmetic gate is about values read off disk; a fixture builder's
@@ -12753,6 +12898,38 @@ pub(crate) mod tests {
     #![allow(clippy::arithmetic_side_effects)]
 
     use super::*;
+
+    /// `ShuffleForcedMergePolicy.interleaveList`: by name, then oldest with
+    /// newest, the smaller of each pair first; a middle one alone.
+    #[test]
+    fn shuffle_interleave_pairs_oldest_with_newest() {
+        let stat = |name: &str, size| merge_policy::SegmentStat {
+            name: name.to_string(),
+            doc_count: 1,
+            del_count: 0,
+            size_bytes: size,
+        };
+        let stats = [
+            stat("_0", 50),
+            stat("_1", 10),
+            stat("_2", 30),
+            stat("_3", 20),
+            stat("_4", 5),
+        ];
+        let names = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            super::shuffle_interleave(names(&["_3", "_0", "_4", "_2", "_1"]), &stats),
+            names(&["_4", "_0", "_1", "_3", "_2"])
+        );
+        // Equal sizes: the newer first, as Java's `<` test leaves it.
+        let even = [stat("_a", 1), stat("_b", 1)];
+        assert_eq!(
+            super::shuffle_interleave(names(&["_a", "_b"]), &even),
+            names(&["_b", "_a"])
+        );
+        assert!(super::shuffle_interleave(Vec::new(), &even).is_empty());
+    }
+
     use crate::segment_info::IndexSortField;
     use lucene_codecs::blocktree;
     use lucene_codecs::field_infos::{

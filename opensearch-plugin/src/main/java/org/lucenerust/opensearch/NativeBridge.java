@@ -38,7 +38,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code jvm_reader.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 63;
+    public static final int EXPECTED_ABI_VERSION = 64;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -267,6 +267,10 @@ public final class NativeBridge {
         static final MethodHandle WRITER_SET_MERGE_POLICY = bind(
             "ffi_engine_writer_set_merge_policy",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_DOUBLE, JAVA_LONG, JAVA_LONG, JAVA_DOUBLE, JAVA_DOUBLE)
+        );
+        static final MethodHandle WRITER_SET_OPTIONS = bind(
+            "ffi_engine_writer_set_options",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_BYTE, JAVA_DOUBLE, JAVA_LONG, JAVA_BYTE, JAVA_BYTE)
         );
         static final MethodHandle WRITER_COMMIT_GENERATIONS = bind(
             "ffi_engine_writer_commit_generations",
@@ -1700,6 +1704,33 @@ public final class NativeBridge {
     public static int writerSetRetention(long handle, boolean enabled, long minRetainedSeqNo) {
         try {
             return (int) H.WRITER_SET_RETENTION.invokeExact(handle, (byte) (enabled ? 1 : 0), minRetainedSeqNo);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * The writer options beside its merge policy: compound flushed segments, the merge policy's
+     * {@code noCFSRatio} and {@code maxCFSSegmentSize} (bytes) for merged ones, whether indexing threads
+     * help with pending flushes, and whether forced merges interleave their sources.
+     */
+    public static int writerSetOptions(
+        long handle,
+        boolean useCompoundFile,
+        double noCfsRatio,
+        long maxCfsSegmentBytes,
+        boolean checkPendingFlush,
+        boolean shuffleForcedMerges
+    ) {
+        try {
+            return (int) H.WRITER_SET_OPTIONS.invokeExact(
+                handle,
+                (byte) (useCompoundFile ? 1 : 0),
+                noCfsRatio,
+                maxCfsSegmentBytes,
+                (byte) (checkPendingFlush ? 1 : 0),
+                (byte) (shuffleForcedMerges ? 1 : 0)
+            );
         } catch (Throwable t) {
             throw rethrow(t);
         }
