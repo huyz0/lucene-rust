@@ -13,6 +13,10 @@
 //!   [`QueryScorer::set_centroid`] re-targets it at the next partition and
 //!   [`QueryScorer::score_block`] scores a partition's codes in one call, so
 //!   the dynamic dispatch is paid once per partition, not once per vector.
+//!   A quantizer that works in another space than the vectors' (a rotation)
+//!   maps each centroid once with [`Quantizer::prepare_centroid`]; the index
+//!   keeps the result and passes it to [`Quantizer::encode_prepared`] and
+//!   [`QueryScorer::set_prepared_centroid`].
 //! - [`Quantizer::state`] is whatever the quantizer learned at training
 //!   time (empty for the per-vector quantizers). The index writes it beside
 //!   the quantizer's [`Quantizer::name`]; reading the index looks the name up
@@ -22,13 +26,14 @@
 //! the same scale as [`Similarity::score`] on the original vectors, so an
 //! index can rerank the best estimates with exact scores and compare the two.
 //!
-//! Three families are built in:
+//! Three families are built in, and a rotation that wraps any of them:
 //!
 //! | name | quantizer | codes |
 //! |---|---|---|
 //! | `osq` | [`osq::OsqQuantizer`]: Lucene's optimized scalar quantization (`Lucene104ScalarQuantizedVectorsFormat`), per vector, centred on the partition centroid. [`osq::OsqFactory::bbq`] is the 1-bit document / 4-bit query encoding of Lucene's BBQ. | 1, 2, 4, 7 or 8 bits per dimension plus 16 bytes of corrective terms |
 //! | `sq` | [`scalar::ScalarQuantizer`]: Lucene99-style global min/max (quantile) scalar quantization, int7 or packed int4 | 1 or 1/2 byte per dimension plus a 4-byte offset |
 //! | `erq` | [`rabitq::ExRabitqQuantizer`]: Extended RaBitQ (Gao et al., SIGMOD 2025), per vector, centred on the partition centroid, after a random rotation | 2..=8 bits per padded dimension plus 12 bytes of corrective terms |
+//! | `rot-osq`, `rot-sq` | [`rotation::RotatedQuantizer`]: the inner quantizer on vectors zero-padded to the next power of two and rotated by a seeded randomized Hadamard transform (RaBitQ's rotation), built by [`rotation::RotatedFactory`] around any factory as `rot-<inner name>` | the inner quantizer's at the padded dimension |
 //!
 //! A new quantizer (product quantization, say) implements
 //! [`QuantizerFactory`], [`Quantizer`] and [`QueryScorer`] and registers its
@@ -36,6 +41,7 @@
 
 pub mod osq;
 pub mod rabitq;
+pub mod rotation;
 pub mod scalar;
 
 use std::sync::Arc;
@@ -100,6 +106,34 @@ pub trait Quantizer: Send + Sync + std::fmt::Debug {
     /// What [`QuantizerFactory::read`] needs to rebuild this quantizer.
     fn state(&self) -> Vec<u8>;
 
+    /// `centroid` (of [`Quantizer::dimension`] floats) mapped into the space
+    /// this quantizer encodes and scores in, when that is not the original
+    /// space: `None` (the default) means the centroid is used as it is. An
+    /// index computes this once per partition and passes the result, or the
+    /// centroid itself on `None`, to [`Quantizer::encode_prepared`] and
+    /// [`QueryScorer::set_prepared_centroid`], so the mapping is not paid
+    /// per vector or per probe. A quantizer returns `None` for every
+    /// centroid or `Some` of one length for every centroid.
+    ///
+    /// # Panics
+    ///
+    /// On a wrong-length `centroid`.
+    fn prepare_centroid(&self, centroid: &[f32]) -> Option<Vec<f32>> {
+        let _ = centroid;
+        None
+    }
+
+    /// [`Quantizer::encode`] against a centroid already passed through
+    /// [`Quantizer::prepare_centroid`] (or the centroid itself when that
+    /// returned `None`). By default the same as `encode`.
+    ///
+    /// # Panics
+    ///
+    /// On a wrong-length `vector`, `prepared` or `out`.
+    fn encode_prepared(&self, vector: &[f32], prepared: &[f32], out: &mut [u8]) {
+        self.encode(vector, prepared, out);
+    }
+
     /// Bytes that `n` codes take laid out as a block for
     /// [`QueryScorer::score_block`]: by default the codes end to end.
     fn block_len(&self, n: usize) -> usize {
@@ -129,6 +163,13 @@ pub trait Quantizer: Send + Sync + std::fmt::Debug {
 pub trait QueryScorer {
     /// Targets the codes encoded relative to `centroid`.
     fn set_centroid(&mut self, centroid: &[f32]);
+
+    /// [`QueryScorer::set_centroid`] with a centroid already passed through
+    /// [`Quantizer::prepare_centroid`] (or the centroid itself when that
+    /// returned `None`). By default the same as `set_centroid`.
+    fn set_prepared_centroid(&mut self, prepared: &[f32]) {
+        self.set_centroid(prepared);
+    }
 
     /// The estimated score of one code.
     fn score(&self, code: &[u8]) -> f32;
@@ -204,12 +245,19 @@ impl QuantizerRegistry {
         Self::default()
     }
 
-    /// A registry holding the built-in quantizers (`osq`, `sq`, `erq`).
+    /// A registry holding the built-in quantizers (`osq`, `sq`, `erq`) and the
+    /// rotated forms of the first two
+    /// (`rot-osq`, `rot-sq`). A factory reads every encoding
+    /// or bit width of its family back, so one entry per family suffices.
     pub fn with_builtins() -> Self {
         let mut r = Self::new();
-        r.register(Arc::new(osq::OsqFactory::bbq()));
-        r.register(Arc::new(scalar::ScalarFactory::int7()));
+        let osq: Arc<dyn QuantizerFactory> = Arc::new(osq::OsqFactory::bbq());
+        let sq: Arc<dyn QuantizerFactory> = Arc::new(scalar::ScalarFactory::int7());
+        r.register(Arc::clone(&osq));
+        r.register(Arc::clone(&sq));
         r.register(Arc::new(rabitq::ExRabitqFactory::new(4)));
+        r.register(Arc::new(rotation::RotatedFactory::new(osq)));
+        r.register(Arc::new(rotation::RotatedFactory::new(sq)));
         r
     }
 
@@ -286,15 +334,35 @@ mod tests {
     #[test]
     fn registry_finds_replaces_and_rejects() {
         let mut r = QuantizerRegistry::with_builtins();
-        assert_eq!(r.names(), vec!["osq", "sq", "erq"]);
+        assert_eq!(r.names(), vec!["osq", "sq", "erq", "rot-osq", "rot-sq"]);
         assert!(r.get("osq").is_ok());
+        assert!(r.get("rot-sq").is_ok());
         assert_eq!(
             r.get("rabitq").unwrap_err(),
             Error::UnknownQuantizer("rabitq".into())
         );
         r.register(Arc::new(osq::OsqFactory::bbq()));
-        assert_eq!(r.names(), vec!["sq", "erq", "osq"]);
+        assert_eq!(r.names(), vec!["sq", "erq", "rot-osq", "rot-sq", "osq"]);
         assert!(QuantizerRegistry::new().names().is_empty());
+    }
+
+    #[test]
+    fn centroids_are_prepared_as_they_are_by_default() {
+        let q = osq::OsqFactory::bbq()
+            .train(4, Similarity::Euclidean, &[])
+            .unwrap();
+        let (v, c) = ([1.0, -2.0, 0.5, 3.0], [0.25, 0.0, -1.0, 1.0]);
+        assert_eq!(q.prepare_centroid(&c), None);
+        let (mut a, mut b) = (vec![0u8; q.code_len()], vec![0u8; q.code_len()]);
+        q.encode(&v, &c, &mut a);
+        q.encode_prepared(&v, &c, &mut b);
+        assert_eq!(a, b);
+        let mut s = q.query_scorer(&v);
+        s.set_centroid(&c);
+        let plain = s.score(&a);
+        s.set_centroid(&[0.0; 4]);
+        s.set_prepared_centroid(&c);
+        assert_eq!(s.score(&a).to_bits(), plain.to_bits());
     }
 
     #[test]

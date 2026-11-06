@@ -12,6 +12,7 @@ use lucene_ivf::{
 use lucene_util::quantization::ScalarEncoding;
 use lucene_vector_quant::osq::OsqFactory;
 use lucene_vector_quant::rabitq::ExRabitqFactory;
+use lucene_vector_quant::rotation::RotatedFactory;
 use lucene_vector_quant::scalar::ScalarFactory;
 use lucene_vector_quant::{QuantizerFactory, QuantizerRegistry};
 
@@ -114,6 +115,8 @@ fn every_quantizer_and_similarity_finds_the_neighbours() {
         Box::new(ScalarFactory::int4()),
         Box::new(ExRabitqFactory::new(2)),
         Box::new(ExRabitqFactory::new(5)),
+        Box::new(RotatedFactory::new(Arc::new(OsqFactory::bbq()))),
+        Box::new(RotatedFactory::new(Arc::new(ScalarFactory::int7()))),
     ];
     for sim in SIMS {
         let data = dataset(n, dim, 20, sim, 11);
@@ -698,4 +701,69 @@ fn huge_k_and_rerank_are_capped_and_vectors_found_by_doc() {
         assert!(r.vector(0, doc + 1).unwrap().is_none());
     }
     assert!(r.vector(0, -1).unwrap().is_none());
+}
+
+#[test]
+fn rotated_centroids_are_prepared_once_at_open() {
+    let dim = 24;
+    let n = 1500;
+    let data = dataset(n, dim, 10, Similarity::Euclidean, 5);
+    let docs: Vec<i32> = (0..n as i32).collect();
+    let factories: [(Box<dyn QuantizerFactory>, Option<usize>); 3] = [
+        (
+            Box::new(RotatedFactory::new(Arc::new(OsqFactory::bbq()))),
+            Some(32),
+        ),
+        (
+            Box::new(RotatedFactory::new(Arc::new(ScalarFactory::int7()))),
+            None,
+        ),
+        (Box::new(OsqFactory::bbq()), None),
+    ];
+    for (factory, prepared_len) in &factories {
+        let files = build(
+            2,
+            Similarity::Euclidean,
+            dim,
+            &docs,
+            &data,
+            factory.as_ref(),
+            64,
+        );
+        let r = open(&files);
+        let f = r.field(2).unwrap();
+        assert!(f.clusters() > 1);
+        for c in 0..f.clusters() {
+            let prepared = f.prepared_centroid(c);
+            assert_eq!(prepared.map(<[f32]>::len), *prepared_len);
+            assert_eq!(
+                prepared.map(<[f32]>::to_vec),
+                f.quantizer().prepare_centroid(f.centroid(c))
+            );
+        }
+        let q = &data[..dim];
+        let hits = r.search(2, q, &SearchParams::new(10, 4, 0), None).unwrap();
+        let truth = r.exact_search(2, q, 10, None).unwrap();
+        assert!(recall(&hits, &truth) >= 0.5, "{factory:?}");
+    }
+}
+
+#[test]
+#[should_panic(expected = "out of range")]
+fn prepared_centroid_checks_the_cluster() {
+    let dim = 8;
+    let data = dataset(200, dim, 4, Similarity::Euclidean, 6);
+    let docs: Vec<i32> = (0..200).collect();
+    let files = build(
+        1,
+        Similarity::Euclidean,
+        dim,
+        &docs,
+        &data,
+        &OsqFactory::bbq(),
+        50,
+    );
+    let r = open(&files);
+    let f = r.field(1).unwrap();
+    let _ = f.prepared_centroid(f.clusters());
 }

@@ -5,7 +5,9 @@
 //!   --base N         use the first N base vectors (ground truth must match: default all)
 //!   --queries N      queries to run (default 1000)
 //!   --target N       IVF vectors per cluster (default 384)
-//!   --quantizers L   comma list of bbq,osq2,osq4,osq7,sq7,sq4,erq2..erq8 (default bbq,osq4,sq7)
+//!   --quantizers L   comma list of bbq,osq2,osq4,osq7,sq7,sq4,erq2..erq8, or any
+//!                    osq/sq name prefixed r for its randomly rotated form
+//!                    (rbbq, rosq2, ...) (default bbq,osq4,sq7)
 //!   --nprobe L       comma list of probe counts (default 4,8,16,32,64,128)
 //!   --rerank L       comma list of candidates reranked (default 0,50,100)
 //!   --refine N       k-means neighbourhood rounds; --full N  full Lloyd rounds
@@ -34,6 +36,7 @@ use lucene_ivf::{FieldVectors, IvfParams, IvfReader, IvfWriter, SearchParams, Si
 use lucene_util::quantization::ScalarEncoding;
 use lucene_vector_quant::osq::OsqFactory;
 use lucene_vector_quant::rabitq::ExRabitqFactory;
+use lucene_vector_quant::rotation::RotatedFactory;
 use lucene_vector_quant::scalar::ScalarFactory;
 use lucene_vector_quant::{QuantizerFactory, QuantizerRegistry};
 
@@ -56,6 +59,9 @@ fn list(s: &str) -> Vec<usize> {
 }
 
 fn factory(name: &str) -> Box<dyn QuantizerFactory> {
+    if let Some(inner) = name.strip_prefix('r') {
+        return Box::new(RotatedFactory::new(Arc::from(factory(inner))));
+    }
     match name {
         "bbq" => Box::new(OsqFactory::bbq()),
         "osq2" => Box::new(OsqFactory::new(ScalarEncoding::DibitQueryNibble)),

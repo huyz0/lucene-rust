@@ -302,15 +302,26 @@ impl IvfWriter {
             .collect();
         let mut codes = vec![0u8; flat.len() * code_len];
         if code_len > 0 {
+            // Each centroid as the quantizer encodes against it, mapped once
+            // per cluster rather than once per vector.
+            let prepared: Vec<Option<Vec<f32>>> = clustering
+                .centroids
+                .par_chunks(dim)
+                .map(|c| quantizer.prepare_centroid(c))
+                .collect();
             codes
                 .par_chunks_mut(code_len)
                 .zip(flat.par_iter())
                 .for_each(|(out, &(c, slot))| {
-                    quantizer.encode(
-                        kmeans::row(&vectors, dim, order[slot as usize] as usize),
-                        kmeans::row(&clustering.centroids, dim, c as usize),
-                        out,
-                    );
+                    let vector = kmeans::row(&vectors, dim, order[slot as usize] as usize);
+                    match &prepared[c as usize] {
+                        Some(p) => quantizer.encode_prepared(vector, p, out),
+                        None => quantizer.encode(
+                            vector,
+                            kmeans::row(&clustering.centroids, dim, c as usize),
+                            out,
+                        ),
+                    }
                 });
         }
 
