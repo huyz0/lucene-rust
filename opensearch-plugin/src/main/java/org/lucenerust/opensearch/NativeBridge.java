@@ -38,7 +38,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code jvm_reader.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 70;
+    public static final int EXPECTED_ABI_VERSION = 72;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -1384,6 +1384,7 @@ public final class NativeBridge {
     public static final int OPEN_SPARSE = 2;
     public static final int OPEN_LIVE_SEARCH = 4;
     public static final int OPEN_ADAPTIVE_DOC_VALUES = 32;
+    public static final int OPEN_PARTITIONED = 64;
 
     /**
      * Opens a shard's writer over the index at {@code path}, which must already hold a commit. Commit
@@ -1404,6 +1405,25 @@ public final class NativeBridge {
         int maxDocs,
         long[] outHandle
     ) {
+        return writerOpen(indexPathUtf8, ramBufferMb, faultInjection, sparse, liveSearch, adaptiveDocValues, false, maxDocs, outHandle);
+    }
+
+    /**
+     * {@link #writerOpen(byte[], double, boolean, boolean, boolean, boolean, int, long[])}, and with
+     * {@code partitioned} every segment holds one partition (the value of the index's partition
+     * field) and records it, and merges never mix partitions.
+     */
+    public static int writerOpen(
+        byte[] indexPathUtf8,
+        double ramBufferMb,
+        boolean faultInjection,
+        boolean sparse,
+        boolean liveSearch,
+        boolean adaptiveDocValues,
+        boolean partitioned,
+        int maxDocs,
+        long[] outHandle
+    ) {
         if (indexPathUtf8 == null) {
             return nullArgument("path");
         }
@@ -1414,7 +1434,8 @@ public final class NativeBridge {
                 (long) indexPathUtf8.length,
                 ramBufferMb,
                 (byte) ((faultInjection ? OPEN_FAULT_INJECTION : 0) | (sparse ? OPEN_SPARSE : 0)
-                    | (liveSearch ? OPEN_LIVE_SEARCH : 0) | (adaptiveDocValues ? OPEN_ADAPTIVE_DOC_VALUES : 0)),
+                    | (liveSearch ? OPEN_LIVE_SEARCH : 0) | (adaptiveDocValues ? OPEN_ADAPTIVE_DOC_VALUES : 0)
+                    | (partitioned ? OPEN_PARTITIONED : 0)),
                 maxDocs,
                 out
             );

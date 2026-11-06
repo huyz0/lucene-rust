@@ -55,6 +55,9 @@ import java.util.concurrent.atomic.AtomicLong;
 final class DocumentEncoder {
     static final int OP_ADD = 0;
     static final int OP_SOFT_UPDATE = 1;
+    /** {@link #OP_ADD} and {@link #OP_SOFT_UPDATE} carrying the documents' partition after the kind. */
+    static final int OP_ADD_PARTITIONED = 2;
+    static final int OP_SOFT_UPDATE_PARTITIONED = 3;
     static final int OP_PANIC = 0xFF;
 
     /** Answers whether the Rust writer lays out this field's formats; null means yes. */
@@ -169,7 +172,17 @@ final class DocumentEncoder {
 
     /** An add of {@code docs} as one block. */
     Blob add(List<? extends Iterable<? extends IndexableField>> docs) throws IOException {
-        Blob b = blob(docs.size(), 16).u8(OP_ADD);
+        return add(null, docs);
+    }
+
+    /** An add of {@code docs} as one block, in {@code partition} when it is not null. */
+    Blob add(String partition, List<? extends Iterable<? extends IndexableField>> docs) throws IOException {
+        Blob b = blob(docs.size(), 16);
+        if (partition == null) {
+            b.u8(OP_ADD);
+        } else {
+            b.u8(OP_ADD_PARTITIONED).string(partition);
+        }
         return sized(documents(b, docs), docs.size());
     }
 
@@ -179,10 +192,21 @@ final class DocumentEncoder {
      */
     Blob softUpdate(Term term, List<? extends Iterable<? extends IndexableField>> docs, IndexableField softDeletes)
         throws IOException {
+        return softUpdate(null, term, docs, softDeletes);
+    }
+
+    /** {@link #softUpdate(Term, List, IndexableField)}, the new documents in {@code partition} when it is not null. */
+    Blob softUpdate(String partition, Term term, List<? extends Iterable<? extends IndexableField>> docs, IndexableField softDeletes)
+        throws IOException {
         if (softDeletes.name().equals(softDeletesField) == false || softDeletes.numericValue() == null) {
             throw new IllegalArgumentException("a soft update needs a numeric [" + softDeletesField + "] value");
         }
-        Blob b = blob(docs.size(), 64).u8(OP_SOFT_UPDATE);
+        Blob b = blob(docs.size(), 64);
+        if (partition == null) {
+            b.u8(OP_SOFT_UPDATE);
+        } else {
+            b.u8(OP_SOFT_UPDATE_PARTITIONED).string(partition);
+        }
         b.string(term.field()).bytes(term.bytes());
         b.string(softDeletes.name()).i64(softDeletes.numericValue().longValue());
         return sized(documents(b, docs), docs.size());

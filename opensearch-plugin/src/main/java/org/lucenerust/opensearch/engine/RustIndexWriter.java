@@ -111,6 +111,8 @@ final class RustIndexWriter implements DocumentIndexWriter {
     private boolean faultInjection;
     /** Whether searches read the buffered documents ({@code index.lucene_rust.realtime_search}). */
     private boolean liveSearch;
+    /** The field whose value is a document's partition ({@code index.lucene_rust.partition_field}), or null. */
+    private String partitionField;
     /** The newest commit generation whose readers' buffers {@link #releaseLive} let go; under {@link #liveLock}. */
     private long liveReleased = -1;
     private final Object liveLock = new Object();
@@ -177,6 +179,54 @@ final class RustIndexWriter implements DocumentIndexWriter {
         CircuitBreaker breaker,
         org.apache.lucene.codecs.Codec codec
     ) throws IOException {
+        return open(
+            directory,
+            indexPath,
+            ramBufferMb,
+            faultInjection,
+            sparse,
+            liveSearch,
+            adaptiveDocValues,
+            null,
+            maxDocs,
+            analyzer,
+            similarity,
+            indexCreatedVersionMajor,
+            softDeletesField,
+            formats,
+            deletionPolicy,
+            minRetainedSeqNo,
+            breaker,
+            codec
+        );
+    }
+
+    /**
+     * {@link #open(Directory, Path, double, boolean, boolean, boolean, boolean, int, Analyzer, Similarity, int, String,
+     * DocumentEncoder.FormatCheck, IndexDeletionPolicy, LongSupplier, CircuitBreaker, org.apache.lucene.codecs.Codec)},
+     * partitioned by {@code partitionField} when it is not null: each document goes to the segments of
+     * its partition, the field's value.
+     */
+    static RustIndexWriter open(
+        Directory directory,
+        Path indexPath,
+        double ramBufferMb,
+        boolean faultInjection,
+        boolean sparse,
+        boolean liveSearch,
+        boolean adaptiveDocValues,
+        String partitionField,
+        int maxDocs,
+        Analyzer analyzer,
+        Similarity similarity,
+        int indexCreatedVersionMajor,
+        String softDeletesField,
+        DocumentEncoder.FormatCheck formats,
+        IndexDeletionPolicy deletionPolicy,
+        LongSupplier minRetainedSeqNo,
+        CircuitBreaker breaker,
+        org.apache.lucene.codecs.Codec codec
+    ) throws IOException {
         installCommitDataUpcall();
         long[] out = new long[1];
         int status = NativeBridge.writerOpen(
@@ -186,6 +236,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
             sparse,
             liveSearch,
             adaptiveDocValues,
+            partitionField != null,
             maxDocs,
             out
         );
@@ -209,6 +260,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
             w.breaker = breaker;
             w.faultInjection = faultInjection;
             w.liveSearch = liveSearch;
+            w.partitionField = partitionField;
             // IndexWriterConfig.setSoftDeletesField: the writer knows the field before any document
             // carries it, so the first soft update -- which may be the first use -- has a field to
             // land on.
@@ -382,14 +434,15 @@ final class RustIndexWriter implements DocumentIndexWriter {
     public long addDocument(ParseContext.Document doc, Term uid) throws IOException {
         ensureOpen();
         maybeInjectFault(doc);
-        apply(encoder.add(List.of(doc)), 1);
+        List<ParseContext.Document> docs = List.of(doc);
+        apply(encoder.add(partition(docs), docs), 1);
         return 0;
     }
 
     @Override
     public long addDocuments(List<ParseContext.Document> docs, Term uid) throws IOException {
         ensureOpen();
-        apply(encoder.add(docs), docs.size());
+        apply(encoder.add(partition(docs), docs), docs.size());
         return 0;
     }
 
@@ -397,6 +450,43 @@ final class RustIndexWriter implements DocumentIndexWriter {
     void addDocument(Iterable<? extends IndexableField> doc) throws IOException {
         ensureOpen();
         apply(encoder.add(List.of(doc)), 1);
+    }
+
+    /**
+     * The partition of a block of documents: the value of the partition field on its root document,
+     * which OpenSearch puts last (nested documents before their parent). A keyword's or ip's value
+     * as its doc-values bytes, a numeric's or date's as its long; null (the shard's default
+     * partition) without a partition field or a value.
+     */
+    String partition(List<? extends Iterable<? extends IndexableField>> docs) {
+        if (partitionField == null || docs.isEmpty()) {
+            return null;
+        }
+        Iterable<? extends IndexableField> root = docs.get(docs.size() - 1);
+        IndexableField indexed = null;
+        for (IndexableField f : root) {
+            if (f.name().equals(partitionField) == false) {
+                continue;
+            }
+            switch (f.fieldType().docValuesType()) {
+                case SORTED, SORTED_SET -> {
+                    return f.binaryValue().utf8ToString();
+                }
+                case NUMERIC, SORTED_NUMERIC -> {
+                    return Long.toString(f.numericValue().longValue());
+                }
+                default -> {
+                    // A keyword without doc values: its indexed term.
+                    if (indexed == null
+                        && f.fieldType().indexOptions() != org.apache.lucene.index.IndexOptions.NONE
+                        && f.fieldType().tokenized() == false
+                        && f.binaryValue() != null) {
+                        indexed = f;
+                    }
+                }
+            }
+        }
+        return indexed == null ? null : indexed.binaryValue().utf8ToString();
     }
 
     @Override
@@ -409,7 +499,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
         Field... softDeletesField
     ) throws IOException {
         ensureOpen();
-        apply(encoder.softUpdate(uid, docs, onlySoftDeletesField(softDeletesField)), docs.size());
+        apply(encoder.softUpdate(partition(docs), uid, docs, onlySoftDeletesField(softDeletesField)), docs.size());
     }
 
     @Override
@@ -417,7 +507,8 @@ final class RustIndexWriter implements DocumentIndexWriter {
         throws IOException {
         ensureOpen();
         maybeInjectFault(doc);
-        apply(encoder.softUpdate(uid, List.of(doc), onlySoftDeletesField(softDeletesField)), 1);
+        List<ParseContext.Document> docs = List.of(doc);
+        apply(encoder.softUpdate(partition(docs), uid, docs, onlySoftDeletesField(softDeletesField)), 1);
     }
 
     @Override
