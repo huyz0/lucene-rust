@@ -25,7 +25,7 @@
 
 use std::cmp::Ordering;
 
-use lucene_store::codec_util::{self, FOOTER_LENGTH, FOOTER_MAGIC};
+use lucene_store::codec_util::{self, FOOTER_LENGTH};
 use lucene_store::data_input::SliceInput;
 use lucene_store::data_output::DataOutput;
 use lucene_store::directory::Directory;
@@ -102,14 +102,6 @@ pub fn write_byte_sequence(out: &mut impl DataOutput, bytes: &[u8]) -> Result<()
     out.write_bytes(&(bytes.len() as u16).to_le_bytes());
     out.write_bytes(bytes);
     Ok(())
-}
-
-/// `CodecUtil.writeFooter` on a streaming output.
-fn write_footer(out: &mut FsIndexOutput) {
-    out.write_bytes(&FOOTER_MAGIC.to_be_bytes());
-    out.write_bytes(&0u32.to_be_bytes());
-    let checksum = out.checksum();
-    out.write_bytes(&checksum.to_be_bytes());
 }
 
 /// `ByteSequencesReader` over a whole file whose footer has been checked.
@@ -320,7 +312,7 @@ impl<'d> OfflineSorter<'d> {
                 let mut out = self.create_temp_output()?;
                 let name = out.name().to_string();
                 created.push(name.clone());
-                write_footer(&mut out);
+                codec_util::write_footer_to(&mut out);
                 out.close()?;
                 name
             }
@@ -396,7 +388,7 @@ impl<'d> OfflineSorter<'d> {
         for i in order {
             write_byte_sequence(&mut out, part.get(i))?;
         }
-        write_footer(&mut out);
+        codec_util::write_footer_to(&mut out);
         out.close()?;
         Ok(name)
     }
@@ -475,7 +467,7 @@ impl<'d> OfflineSorter<'d> {
                 i = m;
             }
         }
-        write_footer(&mut out);
+        codec_util::write_footer_to(&mut out);
         out.close()?;
         drop(readers);
         drop(inputs);
@@ -529,7 +521,7 @@ mod tests {
         for i in items {
             write_byte_sequence(&mut out, i).unwrap();
         }
-        write_footer(&mut out);
+        codec_util::write_footer_to(&mut out);
         out.close().unwrap();
     }
 
