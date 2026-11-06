@@ -60,6 +60,9 @@ pub struct ScheduledMerge {
     progress: Arc<OneMergeProgress>,
     /// `OneMerge.mergeStartNS`, `-1` until the merge starts.
     start_ns: AtomicI64,
+    /// The `OneMerge` subclass's `wrapForMerge`/`reorder`, `None` for a
+    /// plain merge.
+    pub hooks: Option<Arc<dyn crate::merge_policy::MergeHooks>>,
 }
 
 impl fmt::Debug for ScheduledMerge {
@@ -68,6 +71,7 @@ impl fmt::Debug for ScheduledMerge {
             .field("segments", &self.segments)
             .field("estimated_merge_bytes", &self.estimated_merge_bytes)
             .field("max_num_segments", &self.max_num_segments)
+            .field("hooks", &self.hooks.is_some())
             .field("aborted", &self.is_aborted())
             .finish()
     }
@@ -83,7 +87,14 @@ impl ScheduledMerge {
             max_num_segments: -1,
             progress: Arc::new(OneMergeProgress::new()),
             start_ns: AtomicI64::new(-1),
+            hooks: None,
         }
+    }
+
+    /// The same merge, run with `hooks`.
+    pub fn with_hooks(mut self, hooks: Option<Arc<dyn crate::merge_policy::MergeHooks>>) -> Self {
+        self.hooks = hooks;
+        self
     }
 
     /// The same merge, as part of `forceMerge(max_num_segments)`.

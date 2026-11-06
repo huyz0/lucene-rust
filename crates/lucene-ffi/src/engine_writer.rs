@@ -71,6 +71,7 @@ use lucene_index::merge_policy::{
 };
 use lucene_index::merge_scheduler::ConcurrentMergeScheduler;
 use lucene_index::segment_info::LuceneVersion;
+use lucene_misc::index::{BpIndexReorderer, BpReorderingMergePolicy};
 use lucene_store::directory::Directory;
 
 use crate::error::{guard, set_last_error, FfiStatus};
@@ -121,9 +122,93 @@ pub struct EngineWriter {
     /// `IndexWriter.getTragicException()`: once set, every call fails.
     tragic: OnceLock<String>,
     fault_injection: bool,
-    /// The policy [`ffi_engine_writer_set_pluggable_merge_policy`] installed
-    /// in place of the tiered one, if any.
-    pluggable_policy: Mutex<Option<PluggablePolicy>>,
+    /// Which merge policies wrap the shard's `TieredMergePolicy`.
+    policies: Mutex<MergePolicies>,
+    /// Whether the shard's codec is the sparse one, which BP reordering
+    /// does not support.
+    sparse: bool,
+}
+
+/// The policies [`install_merge_policies`] builds around the writer's
+/// [`MergePolicyConfig`].
+#[derive(Debug, Clone, Default)]
+struct MergePolicies {
+    /// `index.merge_on_flush.policy: merge-on-flush`.
+    merge_on_flush: bool,
+    /// `BPReorderingMergePolicy`'s settings, when reordering is on.
+    bp: Option<BpSettings>,
+    /// The shard's policy when it is not the tiered one
+    /// ([`ffi_engine_writer_set_pluggable_merge_policy`]).
+    other: Option<PluggablePolicy>,
+}
+
+/// `BPReorderingMergePolicy` with its `BPIndexReorderer`.
+#[derive(Debug, Clone)]
+struct BpSettings {
+    reorderer: BpIndexReorderer,
+    min_merge_docs: i32,
+    min_merge_ratio: f32,
+}
+
+/// Rebuilds the policies `policies` names over the writer's current
+/// [`MergePolicyConfig`]: merge-on-flush's `MergeOnFlushMergePolicy`, and
+/// `BPReorderingMergePolicy` deciding every other merge, each around the
+/// shard's own policy (tiered, or [`PluggablePolicy`]). With BP on, a
+/// commit or refresh still picks its merges with the plain tiered policy:
+/// the segments it merges are small, and its merges then run on the merge
+/// threads instead of the refreshing one. A writer with merges off keeps
+/// them off.
+fn install_merge_policies(iw: &mut IndexWriter<'_>, policies: &MergePolicies) {
+    let merges_on = iw.merge_policy().is_some();
+    let config = iw.merge_policy().cloned().unwrap_or_default();
+    let compound = iw.use_compound_file();
+    let merged_compound = iw.merge_compound_file_settings();
+    let tiered = || {
+        let mut t = TieredMergePolicy::new(config.clone());
+        if let Some(settings) = merged_compound {
+            // `index.compound_format`, as the writer's own merges use it.
+            *t.compound_file_settings_mut() = settings;
+        } else if !compound {
+            // Merged segments stay loose files, as without a policy.
+            let _ = t.compound_file_settings_mut().set_no_cfs_ratio(0.0);
+        }
+        t
+    };
+    // The shard's own policy: tiered, or `log_byte_size`/no merges.
+    let base = || -> Box<dyn MergePolicy> {
+        match &policies.other {
+            Some(other) => other.build(),
+            None => Box::new(tiered()),
+        }
+    };
+    let full_flush: Option<Arc<dyn MergePolicy>> = if policies.merge_on_flush {
+        Some(Arc::new(MergeOnFlushMergePolicy::new(base())))
+    } else if merges_on && policies.bp.is_some() {
+        Some(Arc::from(base()))
+    } else {
+        None
+    };
+    iw.set_full_flush_merge_policy(full_flush);
+    let pluggable = match policies.bp.as_ref().filter(|_| merges_on) {
+        Some(bp) => {
+            let mut policy = BpReorderingMergePolicy::new(base(), bp.reorderer.clone());
+            // Both checked when the settings came in.
+            let _ = policy.set_min_natural_merge_num_docs(bp.min_merge_docs);
+            let _ = policy.set_min_natural_merge_ratio_from_biggest_segment(bp.min_merge_ratio);
+            Some(Arc::new(policy) as Arc<dyn MergePolicy>)
+        }
+        None => policies
+            .other
+            .as_ref()
+            .map(|other| Arc::from(other.build())),
+    };
+    iw.set_pluggable_merge_policy(pluggable);
+}
+
+impl EngineWriter {
+    fn policies(&self) -> MutexGuard<'_, MergePolicies> {
+        self.policies.lock().unwrap_or_else(PoisonError::into_inner)
+    }
 }
 
 /// A merge policy other than `TieredMergePolicy`, as OpenSearch configures it.
@@ -856,7 +941,8 @@ pub unsafe extern "C" fn ffi_engine_writer_open(
             }),
             tragic: OnceLock::new(),
             fault_injection: flags & OPEN_FAULT_INJECTION != 0,
-            pluggable_policy: Mutex::new(None),
+            policies: Mutex::new(MergePolicies::default()),
+            sparse: flags & OPEN_SPARSE != 0,
         };
         let handle = lock_recovering(engine_writers()).insert_checked(Arc::new(engine))?;
         if let Some(&upcall) = MERGE_UPCALL.get() {
@@ -1638,6 +1724,7 @@ pub extern "C" fn ffi_engine_writer_set_merge_policy(
             return Err(invalid("expunge_deletes_allowed outside [0, 100]"));
         }
         with_writer(handle, |w| {
+            let policies = w.policies();
             w.writer().with_writer(|iw| {
                 // A writer with merges off keeps them off.
                 let Some(mut config) = iw.merge_policy().cloned() else {
@@ -1650,6 +1737,7 @@ pub extern "C" fn ffi_engine_writer_set_merge_policy(
                 config.deletes_pct_allowed = deletes_pct_allowed;
                 config.force_merge_deletes_pct_allowed = force_merge_deletes_pct_allowed;
                 iw.set_merge_policy(Some(config));
+                install_merge_policies(iw, &policies);
             });
             Ok(())
         })
@@ -1724,17 +1812,13 @@ pub extern "C" fn ffi_engine_writer_set_pluggable_merge_policy(
             other => return Err(invalid(format!("unknown merge policy kind {other}"))),
         };
         with_writer(handle, |w| {
-            let mut current = w
-                .pluggable_policy
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
-            if *current == policy {
+            let mut policies = w.policies();
+            if policies.other == policy {
                 return Ok(());
             }
-            w.writer().with_writer(|iw| {
-                iw.set_pluggable_merge_policy(policy.map(|p| Arc::from(p.build())));
-            });
-            *current = policy;
+            policies.other = policy;
+            w.writer()
+                .with_writer(|iw| install_merge_policies(iw, &policies));
             Ok(())
         })
     })
@@ -1770,12 +1854,16 @@ pub extern "C" fn ffi_engine_writer_set_options(
             return Err(FfiStatus::InvalidArgument);
         }
         with_writer(handle, |w| {
+            let policies = w.policies();
             w.writer().with_writer(|iw| {
                 iw.set_use_compound_file(use_compound_file != 0);
                 compound.max_cfs_segment_size = max_cfs_segment_bytes;
                 iw.set_merge_compound_file_settings(Some(compound));
                 iw.set_shuffle_forced_merges(shuffle_forced_merges != 0);
+                // The wrapping policies decide merged segments' compound files too.
+                install_merge_policies(iw, &policies);
             });
+            drop(policies);
             w.writer()
                 .set_check_pending_flush_on_update(check_pending_flush != 0);
             Ok(())
@@ -1797,25 +1885,110 @@ pub extern "C" fn ffi_engine_writer_set_merge_on_flush(
 ) -> i32 {
     guard(|| {
         with_writer(handle, |w| {
-            let pluggable = *w
-                .pluggable_policy
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
+            let mut policies = w.policies();
+            policies.merge_on_flush = merge_on_flush_policy != 0;
             w.writer().with_writer(|iw| {
                 iw.set_max_full_flush_merge_wait_millis(wait_millis);
-                let policy = (merge_on_flush_policy != 0).then(|| {
-                    let inner = pluggable.map_or_else(
-                        || {
-                            Box::new(TieredMergePolicy::new(
-                                iw.merge_policy().cloned().unwrap_or_default(),
-                            )) as Box<dyn MergePolicy>
-                        },
-                        |p| p.build(),
-                    );
-                    Arc::new(MergeOnFlushMergePolicy::new(inner)) as Arc<dyn MergePolicy>
-                });
-                iw.set_full_flush_merge_policy(policy);
+                install_merge_policies(iw, &policies);
             });
+            Ok(())
+        })
+    })
+}
+
+/// `BPReorderingMergePolicy` around the shard's merge policy
+/// (`index.lucene_rust.bp_reorder.*`), or off when `enabled == 0`: merges of
+/// at least `max(min_merge_docs, min_merge_ratio * the biggest segment's
+/// maxDoc)` live documents, and every forced merge, renumber their documents
+/// with `BPIndexReorderer` so documents sharing terms sit together. The
+/// merged segments are ordinary Lucene segments. `fields` is the reorderer's
+/// fields as NUL-separated UTF-8 names, every indexed field when empty; the
+/// other values are `BPIndexReorderer`'s setters'. Not available on a sparse
+/// shard, and a no-op for a sorted index, which keeps its sort.
+///
+/// # Safety
+/// `fields` valid for `fields_len` bytes (or null with `fields_len == 0`).
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn ffi_engine_writer_set_bp_reorder(
+    handle: u64,
+    enabled: u8,
+    min_doc_freq: i32,
+    max_doc_freq: f32,
+    min_partition_size: i32,
+    max_iters: i32,
+    ram_budget_mb: f64,
+    min_merge_docs: i32,
+    min_merge_ratio: f32,
+    fields: *const u8,
+    fields_len: usize,
+) -> i32 {
+    guard(|| {
+        let invalid = |what: String| {
+            set_last_error(format!("invalid bp_reorder setting: {what}"));
+            FfiStatus::InvalidArgument
+        };
+        // SAFETY: caller contract.
+        let fields = unsafe { bytes_from_raw(fields, fields_len)? };
+        let bp = if enabled == 0 {
+            None
+        } else {
+            let mut reorderer = BpIndexReorderer::new();
+            reorderer
+                .set_min_doc_freq(min_doc_freq)
+                .map_err(|e| invalid(e.to_string()))?;
+            reorderer
+                .set_max_doc_freq(max_doc_freq)
+                .map_err(|e| invalid(e.to_string()))?;
+            reorderer
+                .set_min_partition_size(min_partition_size)
+                .map_err(|e| invalid(e.to_string()))?;
+            reorderer
+                .set_max_iters(max_iters)
+                .map_err(|e| invalid(e.to_string()))?;
+            if !(ram_budget_mb.is_finite() && ram_budget_mb > 0.0) {
+                return Err(invalid(format!(
+                    "ram_budget_mb must be positive, got {ram_budget_mb}"
+                )));
+            }
+            reorderer.set_ram_budget_mb(ram_budget_mb);
+            if fields.is_empty() {
+                reorderer.set_fields(None);
+            } else {
+                let names = std::str::from_utf8(fields)
+                    .map_err(|_| invalid("fields are not UTF-8".to_string()))?
+                    .split('\0')
+                    .filter(|f| !f.is_empty())
+                    .map(str::to_string)
+                    .collect();
+                reorderer.set_fields(Some(names));
+            }
+            // The policy's own checks, before anything changes.
+            let mut probe = BpReorderingMergePolicy::new(
+                Box::new(TieredMergePolicy::default()),
+                reorderer.clone(),
+            );
+            probe
+                .set_min_natural_merge_num_docs(min_merge_docs)
+                .map_err(|e| invalid(e.to_string()))?;
+            probe
+                .set_min_natural_merge_ratio_from_biggest_segment(min_merge_ratio)
+                .map_err(|e| invalid(e.to_string()))?;
+            Some(BpSettings {
+                reorderer,
+                min_merge_docs,
+                min_merge_ratio,
+            })
+        };
+        with_writer(handle, |w| {
+            if bp.is_some() && w.sparse {
+                set_last_error("bp_reorder is not supported on a sparse index");
+                return Err(FfiStatus::InvalidArgument);
+            }
+            let mut policies = w.policies();
+            policies.bp = bp;
+            w.writer()
+                .with_writer(|iw| install_merge_policies(iw, &policies));
             Ok(())
         })
     })
@@ -2331,6 +2504,226 @@ mod tests {
         assert_eq!(s[STAT_SEGMENTS], 0, "nothing flushed");
         let per_doc = s[STAT_RAM_BYTES] / n;
         assert!(per_doc < 850, "{per_doc} bytes per document");
+        ffi_engine_writer_close(h);
+    }
+
+    /// The ids stored in the newest commit's segments, in doc-id order, and
+    /// each segment's `bp.reordered` diagnostic.
+    fn stored_ids_and_bp(tmp: &TempDir) -> Vec<(Vec<String>, Option<String>)> {
+        let dir = FsDirectory::open(tmp.path());
+        let infos = lucene_index::segment_infos::read_latest(&dir).unwrap();
+        infos
+            .segments
+            .iter()
+            .map(|sci| {
+                let name = &sci.segment_name;
+                let si = lucene_index::segment_info::parse(
+                    &dir.open(&format!("{name}.si")).unwrap(),
+                    &sci.segment_id,
+                )
+                .unwrap();
+                let fdt = dir.open(&format!("{name}.fdt")).unwrap();
+                let fdx = dir.open(&format!("{name}.fdx")).unwrap();
+                let fdm = dir.open(&format!("{name}.fdm")).unwrap();
+                let reader =
+                    lucene_codecs::stored_fields::open(&fdt, &fdx, &fdm, &sci.segment_id, "")
+                        .unwrap();
+                let ids = (0..reader.max_doc())
+                    .map(|d| match &reader.document(d).unwrap().fields[0].value {
+                        FieldValue::String(s) => s.clone(),
+                        FieldValue::Binary(b) => String::from_utf8(b.clone()).unwrap(),
+                        other => panic!("{other:?}"),
+                    })
+                    .collect();
+                let bp = si
+                    .diagnostics
+                    .iter()
+                    .find(|(k, _)| k == "bp.reordered")
+                    .map(|(_, v)| v.clone());
+                (ids, bp)
+            })
+            .collect()
+    }
+
+    /// `index.lucene_rust.bp_reorder.*`: a forced merge renumbers the
+    /// documents so the ones sharing terms sit together, and records it in
+    /// the merged segment's diagnostics; turned off, a forced merge keeps
+    /// the documents' order again.
+    #[test]
+    fn bp_reordering_clusters_the_documents_of_a_forced_merge() {
+        let tmp = empty_index("engine-writer-bp");
+        let h = open(&tmp, 0);
+        let f = setup(h);
+        let set_bp = |enabled: u8, fields: &[u8]| {
+            // SAFETY: a live slice.
+            unsafe {
+                ffi_engine_writer_set_bp_reorder(
+                    h,
+                    enabled,
+                    1,
+                    1.0,
+                    2,
+                    20,
+                    64.0,
+                    1,
+                    0.0,
+                    fields.as_ptr(),
+                    fields.len(),
+                )
+            }
+        };
+        let force_merge = || {
+            let mut generation = 0i64;
+            // SAFETY: a live out-pointer.
+            let rc = unsafe { ffi_engine_writer_force_merge(h, 1, 0, &mut generation) };
+            assert_eq!(rc, 0, "{}", crate::error::last_error());
+        };
+        // Two topics, scattered.
+        let topic_of = |i: usize| (i.wrapping_mul(2_654_435_761) >> 9) % 2;
+        let add = |i: usize| {
+            let (words, prefix): (&[&str], &str) = if topic_of(i) == 0 {
+                (&["apple", "banana", "cherry"], "a")
+            } else {
+                (&["xenon", "yttrium", "zinc"], "x")
+            };
+            let id = format!("{prefix}{i:03}");
+            let b = doc(
+                Blob::default().u8(OP_ADD).i32(1),
+                &f,
+                &id,
+                words,
+                i as i64,
+                false,
+            );
+            assert_eq!(apply(h, &b.0), 0, "{}", crate::error::last_error());
+        };
+        for i in 0..256 {
+            add(i);
+            if i % 64 == 63 {
+                commit(h, &[]);
+            }
+        }
+        assert_eq!(stats(h)[STAT_SEGMENTS], 4);
+        assert_eq!(set_bp(1, b"body"), 0, "{}", crate::error::last_error());
+        force_merge();
+        let segments = stored_ids_and_bp(&tmp);
+        assert_eq!(segments.len(), 1);
+        let (ids, bp) = &segments[0];
+        assert_eq!(bp.as_deref(), Some("true"));
+        assert_eq!(ids.len(), 256);
+        let switches = |ids: &[String]| ids.windows(2).filter(|w| w[0][..1] != w[1][..1]).count();
+        let before = (0..256).map(topic_of).collect::<Vec<_>>();
+        let before = before.windows(2).filter(|w| w[0] != w[1]).count();
+        assert!(before > 64, "{before} switches before: a weak test");
+        assert!(
+            switches(ids) < 8,
+            "{} topic switches: not clustered",
+            switches(ids)
+        );
+        check(&tmp);
+
+        // Off again: the next forced merge concatenates in order.
+        assert_eq!(set_bp(0, b""), 0);
+        for i in 256..320 {
+            add(i);
+        }
+        commit(h, &[]);
+        force_merge();
+        let segments = stored_ids_and_bp(&tmp);
+        assert_eq!(segments.len(), 1);
+        let (ids, bp) = &segments[0];
+        assert_eq!(*bp, None);
+        assert_eq!(ids.len(), 320);
+        check(&tmp);
+
+        // Refused settings change nothing.
+        let bad = FfiStatus::InvalidArgument.code();
+        // SAFETY: no fields.
+        let refuse = |min_doc_freq: i32,
+                      max_doc_freq: f32,
+                      ram: f64,
+                      min_merge_docs: i32,
+                      ratio: f32| unsafe {
+            ffi_engine_writer_set_bp_reorder(
+                h,
+                1,
+                min_doc_freq,
+                max_doc_freq,
+                32,
+                20,
+                ram,
+                min_merge_docs,
+                ratio,
+                std::ptr::null(),
+                0,
+            )
+        };
+        assert_eq!(refuse(0, 1.0, 64.0, 1, 0.0), bad);
+        assert_eq!(refuse(1, 0.0, 64.0, 1, 0.0), bad);
+        assert_eq!(refuse(1, 1.0, 0.0, 1, 0.0), bad);
+        assert_eq!(refuse(1, 1.0, f64::NAN, 1, 0.0), bad);
+        assert_eq!(refuse(1, 1.0, 64.0, 0, 0.0), bad);
+        assert_eq!(refuse(1, 1.0, 64.0, 1, 1.0), bad);
+        assert_eq!(set_bp(1, &[0xff, 0xfe]), bad);
+        lookup(h).unwrap().writer().with_writer(|w| {
+            assert!(w.pluggable_merge_policy().is_none());
+        });
+        ffi_engine_writer_close(h);
+    }
+
+    /// A sparse shard refuses BP reordering; turning it off is still fine.
+    #[test]
+    fn a_sparse_writer_refuses_bp_reordering() {
+        let tmp = empty_index("engine-writer-sparse-bp");
+        let h = open(&tmp, OPEN_SPARSE);
+        // SAFETY: no fields.
+        let set = |enabled: u8| unsafe {
+            ffi_engine_writer_set_bp_reorder(
+                h,
+                enabled,
+                1,
+                1.0,
+                2,
+                20,
+                64.0,
+                1,
+                0.0,
+                std::ptr::null(),
+                0,
+            )
+        };
+        assert_eq!(set(1), FfiStatus::InvalidArgument.code());
+        assert!(crate::error::last_error().contains("sparse"));
+        assert_eq!(set(0), 0);
+        ffi_engine_writer_close(h);
+    }
+
+    /// With BP on, the merge policy settings and merge-on-flush rebuild the
+    /// policies around the new settings, and a refresh's merges are picked
+    /// without reordering.
+    #[test]
+    fn bp_reordering_follows_the_merge_policy_settings() {
+        let tmp = empty_index("engine-writer-bp-policy");
+        let h = open(&tmp, 0);
+        // SAFETY: no fields.
+        let rc = unsafe {
+            ffi_engine_writer_set_bp_reorder(h, 1, 1, 1.0, 2, 20, 64.0, 1, 0.0, std::ptr::null(), 0)
+        };
+        assert_eq!(rc, 0);
+        lookup(h).unwrap().writer().with_writer(|w| {
+            assert!(w.pluggable_merge_policy().is_some());
+        });
+        let mb = 1024 * 1024;
+        assert_eq!(
+            ffi_engine_writer_set_merge_policy(h, 30, 10.0, 5 * 1024 * mb, 16 * mb, 20.0, 10.0),
+            0
+        );
+        assert_eq!(ffi_engine_writer_set_merge_on_flush(h, 1000, 0), 0);
+        assert_eq!(ffi_engine_writer_set_merge_on_flush(h, 1000, 1), 0);
+        lookup(h).unwrap().writer().with_writer(|w| {
+            assert!(w.pluggable_merge_policy().is_some());
+            assert_eq!(w.merge_policy().unwrap().max_merge_at_once, 30);
+        });
         ffi_engine_writer_close(h);
     }
 
