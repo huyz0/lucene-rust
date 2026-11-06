@@ -774,6 +774,9 @@ pub unsafe extern "C" fn ffi_engine_writer_open(
             writer.enable_explicit_documents()?;
             writer.set_deletion_policy(DeletionPolicy::KeepAll)?;
             writer.set_merge_policy(Some(MergePolicyConfig::default()));
+            // `OpenSearchTieredMergePolicy`: forced merges have no merged-size
+            // cap; forced-deletes merges keep the policy's.
+            writer.set_forced_merge_max_segment_size(Some(u64::MAX));
             // Merge-on-commit/refresh stays off until the engine passes
             // the shard's `index.merge_on_flush.*` settings
             // (`ffi_engine_writer_set_merge_on_flush`).
@@ -1379,12 +1382,11 @@ pub extern "C" fn ffi_engine_writer_set_options(
     shuffle_forced_merges: u8,
 ) -> i32 {
     guard(|| {
-        if !(0.0..=1.0).contains(&no_cfs_ratio) {
-            set_last_error(format!(
-                "noCFSRatio must be 0.0 to 1.0 inclusive; got {no_cfs_ratio}"
-            ));
-            return Err(FfiStatus::InvalidArgument);
-        }
+        let mut compound = CompoundFileSettings::default();
+        compound.set_no_cfs_ratio(no_cfs_ratio).map_err(|e| {
+            set_last_error(e.to_string());
+            FfiStatus::InvalidArgument
+        })?;
         if max_cfs_segment_bytes < 0 {
             set_last_error(format!(
                 "maxCFSSegmentSize must be >= 0; got {max_cfs_segment_bytes}"
@@ -1394,10 +1396,8 @@ pub extern "C" fn ffi_engine_writer_set_options(
         with_writer(handle, |w| {
             w.writer().with_writer(|iw| {
                 iw.set_use_compound_file(use_compound_file != 0);
-                iw.set_merge_compound_file_settings(Some(CompoundFileSettings::new(
-                    no_cfs_ratio,
-                    max_cfs_segment_bytes,
-                )));
+                compound.max_cfs_segment_size = max_cfs_segment_bytes;
+                iw.set_merge_compound_file_settings(Some(compound));
                 iw.set_shuffle_forced_merges(shuffle_forced_merges != 0);
             });
             w.writer()
@@ -1465,21 +1465,10 @@ pub unsafe extern "C" fn ffi_engine_writer_force_merge(
             w.writer()
                 .with_writer(|iw| {
                     if only_deletes != 0 {
-                        return iw.force_merge_deletes();
+                        iw.force_merge_deletes()
+                    } else {
+                        iw.force_merge(max)
                     }
-                    // `OpenSearchTieredMergePolicy`: forced merges run under a
-                    // copy of the policy whose merged segments have no size
-                    // cap; forced-deletes merges keep the regular one.
-                    let regular = iw.merge_policy().cloned();
-                    if let Some(mut forced) = regular.clone() {
-                        forced.max_merged_segment_size = u64::MAX;
-                        iw.set_merge_policy(Some(forced));
-                    }
-                    let merged = iw.force_merge(max);
-                    if regular.is_some() {
-                        iw.set_merge_policy(regular);
-                    }
-                    merged
                 })
                 .map_err(writer_error)?;
             // The merged segments become durable with a commit.

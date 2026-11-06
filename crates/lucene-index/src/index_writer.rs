@@ -943,8 +943,8 @@ pub(crate) struct IndexingConfig {
     /// packed into `.cfs`/`.cfe`. See [`IndexWriter::set_use_compound_file`]
     /// for why this writer's default is `false` where Java's is `true`.
     use_compound_file: bool,
-    /// The merge policy's `noCFSRatio`/`maxCFSSegmentSize` for merges under
-    /// the [`merge_policy::MergePolicyConfig`] policy; `None` keeps
+    /// The merge policy's `noCFSRatio`/`maxCFSSegmentSize` for every merge
+    /// not decided by a pluggable policy; `None` keeps
     /// [`IndexWriter::use_compound_file`] as the switch, with
     /// `TieredMergePolicy`'s defaults. See
     /// [`IndexWriter::set_merge_compound_file_settings`].
@@ -4381,13 +4381,17 @@ pub struct IndexWriter<'d> {
     full_flush_merge_policy: Option<std::sync::Arc<dyn merge_policy::MergePolicy>>,
     /// See [`IndexWriter::set_merges_by_caller`].
     merges_by_caller: bool,
-    /// `IndexWriter.mergeMaxNumSegments`: [`IndexWriter::force_merge`]'s
-    /// argument while it runs, which its merges record as
-    /// `OneMerge.maxNumSegments`; `-1` otherwise.
     /// Whether the merge being planned interleaves its sources
     /// ([`IndexWriter::set_shuffle_forced_merges`]): recorded in its
     /// diagnostics.
     merge_shuffled: bool,
+    /// The merged-size cap forced merges use in place of the policy's
+    /// `max_merged_segment_size`; see
+    /// [`IndexWriter::set_forced_merge_max_segment_size`].
+    forced_merge_max_segment_size: Option<u64>,
+    /// `IndexWriter.mergeMaxNumSegments`: [`IndexWriter::force_merge`]'s
+    /// argument while it runs, which its merges record as
+    /// `OneMerge.maxNumSegments`; `-1` otherwise.
     merge_max_num_segments: i32,
     /// `LiveIndexWriterConfig.maxFullFlushMergeWaitMillis` -- see
     /// [`IndexWriter::set_max_full_flush_merge_wait_millis`].
@@ -5440,8 +5444,10 @@ impl<'d> IndexWriter<'d> {
     /// would change the layout under all of them; a caller that wants Java's
     /// behaviour says so. A merged segment is compound when the merge
     /// policy's `useCompoundFile` says so (`noCFSRatio`,
-    /// `maxCFSSegmentSizeMB`) -- the installed pluggable policy's, or, with
-    /// none installed and this flag on, `TieredMergePolicy`'s defaults.
+    /// `maxCFSSegmentSizeMB`) -- the installed pluggable policy's; with none
+    /// installed, `TieredMergePolicy`'s under
+    /// [`IndexWriter::set_merge_compound_file_settings`] when set, else its
+    /// defaults when this flag is on.
     pub fn set_use_compound_file(&mut self, use_compound_file: bool) {
         self.cfg_mut().use_compound_file = use_compound_file;
     }
@@ -5451,8 +5457,8 @@ impl<'d> IndexWriter<'d> {
         self.cfg.use_compound_file
     }
 
-    /// `MergePolicy.setNoCFSRatio`/`setMaxCFSSegmentSizeMB` for the
-    /// [`merge_policy::MergePolicyConfig`] policy: with `Some`, a merged
+    /// `MergePolicy.setNoCFSRatio`/`setMaxCFSSegmentSizeMB` for the merges
+    /// no pluggable policy decides: with `Some`, a merged
     /// segment is compound exactly when `TieredMergePolicy.useCompoundFile`
     /// under these settings says so, whatever
     /// [`IndexWriter::use_compound_file`] (which, as in Java, then governs
@@ -5481,6 +5487,15 @@ impl<'d> IndexWriter<'d> {
     /// See [`IndexWriter::set_shuffle_forced_merges`].
     pub fn shuffle_forced_merges(&self) -> bool {
         self.cfg.shuffle_forced_merges
+    }
+
+    /// The merged-size cap [`IndexWriter::force_merge`] uses in place of the
+    /// [`MergePolicyConfig`]'s `max_merged_segment_size`: OpenSearch's
+    /// `OpenSearchTieredMergePolicy` forces with an unlimited one
+    /// (`Some(u64::MAX)`). `None`, the default, keeps the policy's.
+    /// `force_merge_deletes` always keeps the policy's, as there.
+    pub fn set_forced_merge_max_segment_size(&mut self, cap: Option<u64>) {
+        self.forced_merge_max_segment_size = cap;
     }
 
     /// `PerFieldPostingsFormat.getPostingsFormatForField` for one field: from
@@ -5917,6 +5932,7 @@ impl<'d> IndexWriter<'d> {
             merges_by_caller: false,
             merge_max_num_segments: -1,
             merge_shuffled: false,
+            forced_merge_max_segment_size: None,
             max_full_flush_merge_wait_millis: DEFAULT_MAX_FULL_FLUSH_MERGE_WAIT_MILLIS,
             commit_on_close: true,
             pending_custom_freq_terms: Vec::new(),
@@ -10769,11 +10785,13 @@ impl IndexWriter<'_> {
     }
 
     /// `IndexWriter.forceMerge(maxNumSegments)` over the committed segments.
-    /// Down to one segment it is `TieredMergePolicy.findForcedMerges`
-    /// itself: every segment merged at once, largest first (which fixes the
-    /// merged document order). Otherwise it is that function's outcome
-    /// without its size cap: while more than `max_num_segments` remain, the
-    /// smallest are merged into one. A lone segment left with hard deletes
+    /// With a [`MergePolicyConfig`] set it asks `TieredMergePolicy.findForcedMerges`
+    /// until nothing is proposed, its merged-size cap replaced by
+    /// [`IndexWriter::set_forced_merge_max_segment_size`]'s when one is set;
+    /// down to one segment that is every segment merged at once, largest
+    /// first (which fixes the merged document order). Without a policy, while
+    /// more than `max_num_segments` remain, the smallest are merged into one.
+    /// A lone segment left with hard deletes
     /// is rewritten when `max_num_segments` is 1. Each merge publishes its
     /// own commit carrying the current commit data. Buffered and
     /// flushed-but-uncommitted documents are not part of it -- commit
@@ -10797,19 +10815,13 @@ impl IndexWriter<'_> {
         if let Some(policy) = self.pluggable_merge_policy.clone() {
             return self.force_merge_pluggable(&policy, max_num_segments);
         }
-        if let Some(config) = self.merge_policy.clone() {
-            // `IndexWriter.forceMerge` under `TieredMergePolicy`: ask
-            // `findForcedMerges` until it proposes nothing.
-            loop {
-                let stats = self.reclaimable_segment_stats()?;
-                let groups = merge_policy::find_forced_merges(&stats, max_num_segments, &config);
-                if groups.is_empty() {
-                    return Ok(());
-                }
-                for group in groups {
-                    self.execute_forced_merge(group, &stats)?;
-                }
+        if let Some(mut config) = self.merge_policy.clone() {
+            if let Some(cap) = self.forced_merge_max_segment_size {
+                config.max_merged_segment_size = cap;
             }
+            return self.run_forced_merges(|stats| {
+                merge_policy::find_forced_merges(stats, max_num_segments, &config)
+            });
         }
         loop {
             let mut stats = self.segment_stats()?;
@@ -10854,6 +10866,25 @@ impl IndexWriter<'_> {
         Ok(stats)
     }
 
+    /// The forced-merge loop under a [`MergePolicyConfig`]: asks `find` for
+    /// merges over the segments' reclaimable-delete stats and runs them, until
+    /// it proposes none.
+    fn run_forced_merges(
+        &mut self,
+        find: impl Fn(&[merge_policy::SegmentStat]) -> Vec<Vec<String>>,
+    ) -> Result<()> {
+        loop {
+            let stats = self.reclaimable_segment_stats()?;
+            let groups = find(&stats);
+            if groups.is_empty() {
+                return Ok(());
+            }
+            for group in groups {
+                self.execute_forced_merge(group, &stats)?;
+            }
+        }
+    }
+
     /// Runs one forced merge of `group`, interleaved first when
     /// [`IndexWriter::set_shuffle_forced_merges`] is on.
     fn execute_forced_merge(
@@ -10888,6 +10919,7 @@ impl IndexWriter<'_> {
             .segments
             .iter()
             .find(|s| s.segment_name == stat.name)
+            .filter(|s| s.soft_del_count > 0)
         else {
             return Ok(stat.del_count);
         };
@@ -10896,31 +10928,23 @@ impl IndexWriter<'_> {
         Ok(stat.del_count.saturating_add(reclaimable))
     }
 
-    /// `IndexWriter.forceMergeDeletes()` under `TieredMergePolicy.findForcedDeletesMerges`:
-    /// every committed segment whose reclaimable deletes --
-    /// [`IndexWriter::num_deletes_to_merge`], so soft deletes retention still
-    /// keeps do not count -- exceed [`FORCE_MERGE_DELETES_PCT_ALLOWED`]% of its
-    /// documents is merged, in one merge. A no-op, writing no commit, when no
-    /// segment qualifies.
+    /// `IndexWriter.forceMergeDeletes()` under `TieredMergePolicy.findForcedDeletesMerges`.
+    /// With a [`MergePolicyConfig`] set it asks that function, with the
+    /// policy's `force_merge_deletes_pct_allowed` and caps, until nothing is
+    /// proposed. Without one, every committed segment whose reclaimable
+    /// deletes -- [`IndexWriter::num_deletes_to_merge`], so soft deletes
+    /// retention still keeps do not count -- exceed
+    /// [`FORCE_MERGE_DELETES_PCT_ALLOWED`]% of its documents is merged, in one
+    /// merge. A no-op, writing no commit, when no segment qualifies.
     pub fn force_merge_deletes(&mut self) -> Result<()> {
         self.write_pending_try_changes()?;
         if let Some(policy) = self.pluggable_merge_policy.clone() {
             return self.force_merge_deletes_pluggable(&policy);
         }
         if let Some(config) = self.merge_policy.clone() {
-            // `TieredMergePolicy.findForcedDeletesMerges`: its
-            // `forceMergeDeletesPctAllowed` and `maxMergeAtOnce`, until it
-            // proposes nothing.
-            loop {
-                let stats = self.reclaimable_segment_stats()?;
-                let groups = merge_policy::find_forced_delete_merges(&stats, &config);
-                if groups.is_empty() {
-                    return Ok(());
-                }
-                for group in groups {
-                    self.execute_forced_merge(group, &stats)?;
-                }
-            }
+            return self.run_forced_merges(|stats| {
+                merge_policy::find_forced_delete_merges(stats, &config)
+            });
         }
         let mut names: Vec<String> = Vec::new();
         for stat in self.segment_stats()? {

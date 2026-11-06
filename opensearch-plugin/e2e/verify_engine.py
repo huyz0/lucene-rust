@@ -633,6 +633,10 @@ def unsupported():
             must("DELETE", f"/{index}")
         else:
             check(named in json.dumps(out), f"{index}: the refusal names [{named}]: {out}")
+    create("fuzzy_later", True)
+    status, out = req("PUT", "/fuzzy_later/_settings", {"index.optimize_doc_id_lookup.fuzzy_set.enabled": True})
+    check(status == 400 and "fuzzy_set" in json.dumps(out), f"turning fuzzy_set on later is refused: {status} {out}")
+    must("DELETE", "/fuzzy_later")
     create("tv_rust", True)
     must("PUT", "/tv_rust/_mapping", {"properties": {"tv": {"type": "text", "term_vector": "with_positions"}}})
     status, out = req("PUT", "/tv_rust/_doc/1", {"tv": "some text"})

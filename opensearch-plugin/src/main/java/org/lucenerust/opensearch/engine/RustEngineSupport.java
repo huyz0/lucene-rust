@@ -82,6 +82,22 @@ public final class RustEngineSupport {
         System.getProperty("opensearch.shuffle_forced_merge", Boolean.TRUE.toString())
     );
 
+    /** Why an index with a fuzzy-set {@code _id} postings format cannot be served. */
+    public static final String FUZZY_SET_REFUSED = "the Rust engine does not support index.optimize_doc_id_lookup.fuzzy_set.enabled";
+
+    /**
+     * Whether an index with these settings is served by the Rust engine: it asked for it, or it
+     * inherits the node default and none of its static settings sends it to OpenSearch's engine.
+     */
+    public static boolean servedByRust(org.opensearch.common.settings.Settings settings) {
+        if (ENGINE_ENABLED.get(settings) == false) {
+            return false;
+        }
+        return ENGINE_ENABLED.exists(settings)
+            || (CODECS.contains(EngineConfig.INDEX_CODEC_SETTING.get(settings))
+                && org.opensearch.index.IndexSortConfig.INDEX_SORT_FIELD_SETTING.exists(settings) == false);
+    }
+
     /** The circuit breaker the plugin registers for the writers' buffers. */
     public static final String BREAKER_NAME = "lucene_rust_writer";
 
@@ -148,7 +164,7 @@ public final class RustEngineSupport {
         // The codec then gives _id a FuzzyFilterPostingsFormat (a bloom filter beside the terms),
         // which the Rust writer does not lay out.
         if (settings.isEnableFuzzySetForDocId()) {
-            return "the Rust engine does not support index.optimize_doc_id_lookup.fuzzy_set.enabled";
+            return FUZZY_SET_REFUSED;
         }
         if (settings.isContextAwareEnabled()) {
             return "the Rust engine does not support context-aware segments";
