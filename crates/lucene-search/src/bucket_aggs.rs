@@ -3427,6 +3427,71 @@ impl lucene_codecs::points::IntersectVisitor for CountIn<'_> {
     }
 }
 
+/// Counts the points per bucket of back-to-back intervals in one walk:
+/// bucket `i` is `starts[i]..starts[i + 1]` (the last ends at `end`).
+struct CountInBuckets<'b> {
+    decode: PointDecode,
+    starts: &'b [i64],
+    end: i64,
+    /// The bucket the last cell `compare` found inside one bucket falls in.
+    current: Option<usize>,
+    counts: Vec<u64>,
+}
+
+impl CountInBuckets<'_> {
+    fn bucket_of(&self, v: i64) -> Option<usize> {
+        if v >= self.end {
+            return None;
+        }
+        self.starts.partition_point(|&s| s <= v).checked_sub(1)
+    }
+
+    fn add(&mut self, bucket: Option<usize>, n: u64) {
+        if let Some(c) = bucket.and_then(|b| self.counts.get_mut(b)) {
+            *c = c.saturating_add(n);
+        }
+    }
+}
+
+impl lucene_codecs::points::IntersectVisitor for CountInBuckets<'_> {
+    fn compare(&mut self, min: &[u8], max: &[u8]) -> lucene_codecs::points::Relation {
+        use lucene_codecs::points::Relation;
+        self.current = None;
+        let (Some(a), Some(b)) = (self.decode.decode(min), self.decode.decode(max)) else {
+            return Relation::CellCrossesQuery;
+        };
+        match (self.bucket_of(a), self.bucket_of(b)) {
+            (Some(x), Some(y)) if x == y => {
+                self.current = Some(x);
+                Relation::CellInsideQuery
+            }
+            _ => Relation::CellCrossesQuery,
+        }
+    }
+
+    fn visit(&mut self, _doc_id: i32) {
+        self.add(self.current, 1);
+    }
+
+    fn visit_many(&mut self, doc_ids: &[i32]) {
+        self.add(self.current, doc_ids.len() as u64);
+    }
+
+    fn visit_inside_count(&mut self, count: i64) {
+        self.add(self.current, u64::try_from(count).unwrap_or(0));
+    }
+
+    fn visit_with_value(&mut self, _doc_id: i32, packed: &[u8]) {
+        let bucket = self.decode.decode(packed).and_then(|v| self.bucket_of(v));
+        self.add(bucket, 1);
+    }
+
+    fn visit_run(&mut self, doc_ids: &[i32], packed: &[u8]) {
+        let bucket = self.decode.decode(packed).and_then(|v| self.bucket_of(v));
+        self.add(bucket, doc_ids.len() as u64);
+    }
+}
+
 /// What [`count_from_points`] counted: a `date_histogram`'s non-empty
 /// buckets by key, or a `range`'s every range.
 enum PointCounts {
@@ -3519,33 +3584,43 @@ fn count_from_points(node: &AggNode, seg: &OpenSegment<'_>) -> Result<Option<Poi
             ) else {
                 return Ok(None);
             };
-            let mut out = Vec::new();
+            // The buckets cover `min..=max` back to back, so one walk of the
+            // tree counts them all: a cell inside one bucket is counted by
+            // its size, a leaf crossing a boundary value by value, each leaf
+            // decoded once (as OpenSearch's filter rewrite walks the tree once
+            // for all its ranges).
+            let mut starts = Vec::new();
+            let mut ends = Vec::new();
             let mut at = min;
             while at <= max {
                 let Some((from, to)) = rounding.bucket(at) else {
                     return Ok(None);
                 };
-                if out.len() >= MAX_POINT_BUCKETS || to <= from {
+                if starts.len() >= MAX_POINT_BUCKETS || to <= from || from > at {
                     return Ok(None);
                 }
-                let contained = !hard_bounds.1.is_some_and(|m| from >= m)
-                    && !hard_bounds.0.is_some_and(|m| from < m);
-                if contained {
-                    let n = count(&|v: i64| {
-                        if v < from {
-                            std::cmp::Ordering::Less
-                        } else if v < to {
-                            std::cmp::Ordering::Equal
-                        } else {
-                            std::cmp::Ordering::Greater
-                        }
-                    })?;
-                    if n > 0 {
-                        out.push((from, n));
-                    }
-                }
+                starts.push(from);
+                ends.push(to);
                 at = to;
             }
+            let mut v = CountInBuckets {
+                decode,
+                starts: &starts,
+                end: ends.last().copied().unwrap_or(i64::MIN),
+                current: None,
+                counts: vec![0; starts.len()],
+            };
+            reader.count_points(num, &mut v)?;
+            let out = starts
+                .iter()
+                .zip(v.counts)
+                .filter(|&(&from, n)| {
+                    n > 0
+                        && !hard_bounds.1.is_some_and(|m| from >= m)
+                        && !hard_bounds.0.is_some_and(|m| from < m)
+                })
+                .map(|(&from, n)| (from, n))
+                .collect();
             Ok(Some(PointCounts::Keyed(out)))
         }
         AggNode::Range { ranges, .. } => {
@@ -5393,6 +5468,76 @@ mod tests {
                 },
                 "{field}"
             );
+        }
+    }
+
+    /// One walk over a tree of many leaves counts every bucket exactly:
+    /// leaves inside one bucket by size, leaves crossing bucket boundaries
+    /// value by value (runs of equal values included), with and without hard
+    /// bounds -- the same counts as bucketing each value.
+    #[test]
+    fn counting_buckets_from_points_matches_bucketing_each_value() {
+        use lucene_index::document::{Document, LongPoint};
+        use lucene_index::index_writer::IndexWriter;
+        use lucene_index::merge_policy::upgrade::LATEST;
+
+        let dir = lucene_store::ByteBuffersDirectory::new();
+        let mut values = Vec::new();
+        {
+            let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", LATEST).unwrap();
+            w.set_ram_buffer_size_mb(1024.0).unwrap();
+            for i in 0..20_000i64 {
+                // Spread over ~40 buckets of 1000, with runs of one value.
+                let v = if i % 7 == 0 {
+                    12_345
+                } else {
+                    (i * 7919) % 40_000 - 300
+                };
+                values.push(v);
+                let mut d = Document::new();
+                d.add(LongPoint::new("ts", &[v]).unwrap());
+                w.add_fields_document(&d).unwrap();
+            }
+            w.commit().unwrap();
+        }
+        let reader = DirectoryReader::open(&dir).unwrap();
+        let mut opened = reader.open_segments().unwrap();
+        opened.open_points().unwrap();
+        let segments = opened.as_open_segments();
+        assert_eq!(segments.len(), 1);
+        for interval in [1000i64, 397, 50_000] {
+            let rounding = DateRounding {
+                kind: RoundingKind::Interval(interval),
+                zone_ms: 0,
+                offset: 3,
+            };
+            for bounds in [(None, None), (Some(0), Some(20_000))] {
+                let node = AggNode::DateHistogram {
+                    missing: None,
+                    field: "ts".to_string(),
+                    rounding,
+                    hard_bounds: bounds,
+                    subs: vec![],
+                };
+                let mut want: std::collections::BTreeMap<i64, u64> =
+                    std::collections::BTreeMap::new();
+                for &v in &values {
+                    let k = rounding.round(v);
+                    if bounds.0.is_some_and(|m| k < m) || bounds.1.is_some_and(|m| k >= m) {
+                        continue;
+                    }
+                    *want.entry(k).or_default() += 1;
+                }
+                let Some(PointCounts::Keyed(got)) = count_from_points(&node, &segments[0]).unwrap()
+                else {
+                    panic!("interval {interval}: not counted from the points")
+                };
+                assert_eq!(
+                    got,
+                    want.into_iter().collect::<Vec<_>>(),
+                    "interval {interval} bounds {bounds:?}"
+                );
+            }
         }
     }
 
