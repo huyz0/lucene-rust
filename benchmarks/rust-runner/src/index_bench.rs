@@ -322,11 +322,11 @@ fn main() {
         elapsed.as_nanos() as f64 / n_docs as f64,
         n_docs
     );
-    // Memory, on the same line format: baseline (corpus only), peak, and the
-    // writer's own contribution.
+    // Memory as a `#` comment line, which the report skips: baseline (corpus
+    // only), peak, and the writer's own contribution.
     let peak = peak_rss_kb();
     println!(
-        "index-mem\tbaseline_rss_kb={baseline_rss_kb}\tpeak_rss_kb={peak}\twriter_peak_kb={}\tsegments={}",
+        "#index-mem\tbaseline_rss_kb={baseline_rss_kb}\tpeak_rss_kb={peak}\twriter_peak_kb={}\tsegments={}",
         peak.saturating_sub(baseline_rss_kb),
         writer.segment_infos().segments.len()
     );

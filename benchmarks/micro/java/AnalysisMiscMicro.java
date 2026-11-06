@@ -161,14 +161,18 @@ public class AnalysisMiscMicro {
     "янв.", "февр.", "мар.", "апр.", "мая", "июн.", "июл.", "авг.", "сент.", "окт.", "нояб.", "дек."
   };
 
-  /** 20000 single-term documents: Russian {@code d MMM y 'г'.} dates and words. */
+  /**
+   * 20000 single-term documents: words and Russian dates in the ru default pattern, {@code d MMM
+   * y\u202F'г'.}, with its narrow no-break space. JDK 21 matches that separator only exactly, so a
+   * plain space would recognize no dates.
+   */
   static List<String> russianDateDocs() {
     SweepMicro.Rng r = new SweepMicro.Rng(0x0DA7_E0E0_5255_5353L);
     List<String> docs = new ArrayList<>();
     for (int d = 0; d < 20000; d++) {
       long x = r.next();
       if ((x & 1) == 0) {
-        docs.add((1 + rem(x >>> 16, 28)) + " " + RU_MONTHS[(int) rem(x >>> 8, 12)] + " " + (1900 + rem(x >>> 24, 200)) + " г.");
+        docs.add((1 + rem(x >>> 16, 28)) + " " + RU_MONTHS[(int) rem(x >>> 8, 12)] + " " + (1900 + rem(x >>> 24, 200)) + "\u202Fг.");
       } else {
         docs.add("t" + Long.toString(rem(x >>> 8, 50000), 36));
       }
