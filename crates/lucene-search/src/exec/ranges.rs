@@ -80,9 +80,9 @@ impl Column<'_> {
 
 /// A two-phase leaf over every document of the segment: the approximation
 /// visits each one, `matches` asks `accept`. `DocValuesRangeIterator`'s
-/// shape without a skipper (this port's `SegmentReader` opens no `.dvs`), so
-/// its approximation is the whole segment where Java's is the column's
-/// documents -- the same matches, found by asking more documents.
+/// shape for a field without a skip index, except that its approximation is
+/// the whole segment where Java's is the column's documents -- the same
+/// matches, found by asking more documents.
 struct TwoPhaseDocs<F> {
     doc: i32,
     max_doc: i32,

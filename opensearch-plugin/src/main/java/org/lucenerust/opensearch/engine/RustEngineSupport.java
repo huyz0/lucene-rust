@@ -64,6 +64,20 @@ public final class RustEngineSupport {
     );
 
     /**
+     * Whether the Rust engine writes doc values in the {@code RustAdaptive} format: numeric and
+     * date columns as adaptive blocks (delta, GCD, decimal and bit-packing per 128 values), several
+     * times smaller for timestamps and decimal doubles. Off by default, which writes stock
+     * Lucene90 doc values. Only nodes with this plugin read {@code RustAdaptive} segments; to go
+     * back, close the index, set this to false, reopen it and force-merge, which rewrites every
+     * segment stock-readable.
+     */
+    public static final Setting<Boolean> ADAPTIVE_DOC_VALUES = Setting.boolSetting(
+        "index.lucene_rust.adaptive_doc_values",
+        false,
+        Setting.Property.IndexScope
+    );
+
+    /**
      * Test-only: a document with a {@code __lucene_rust_panic} field makes the writer panic inside
      * its lock, for the "a panic fails exactly one shard" check. Never set on a real index.
      */
@@ -254,6 +268,7 @@ public final class RustEngineSupport {
             FAULT_INJECTION.get(config.getIndexSettings().getSettings()),
             org.lucenerust.opensearch.sparse.SparseSettings.SPARSE_INDEX.get(config.getIndexSettings().getSettings()),
             REALTIME_SEARCH.get(config.getIndexSettings().getSettings()),
+            ADAPTIVE_DOC_VALUES.get(config.getIndexSettings().getSettings()),
             maxDocs,
             config.getAnalyzer(),
             config.getSimilarity(),
