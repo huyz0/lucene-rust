@@ -124,6 +124,8 @@ pub struct EngineWriter {
     /// Whether the shard's codec is the sparse one, which BP reordering
     /// does not support.
     sparse: bool,
+    /// The buffers' segments live views read ([`crate::live`]).
+    live_chunks: Mutex<crate::live::Chunks>,
 }
 
 /// The policies [`install_merge_policies`] builds around the writer's
@@ -201,6 +203,12 @@ struct Holds {
 impl EngineWriter {
     pub(crate) fn writer(&self) -> &ConcurrentIndexWriter<'static> {
         &self.handle.writer
+    }
+
+    pub(crate) fn live_chunks(&self) -> MutexGuard<'_, crate::live::Chunks> {
+        self.live_chunks
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 
     fn maintenance(&self) -> MutexGuard<'_, Holds> {
@@ -885,6 +893,7 @@ pub unsafe extern "C" fn ffi_engine_writer_open(
             fault_injection: flags & OPEN_FAULT_INJECTION != 0,
             policies: Mutex::new(MergePolicies::default()),
             sparse: flags & OPEN_SPARSE != 0,
+            live_chunks: Mutex::default(),
         };
         let handle = lock_recovering(engine_writers()).insert_checked(Arc::new(engine))?;
         // SAFETY: caller contract.
@@ -3378,7 +3387,8 @@ mod tests {
                 i32::from_le_bytes(blob[at + 4..at + 8].try_into().unwrap()),
                 0
             );
-            at += 8;
+            let chunks = i32::from_le_bytes(blob[at + 8..at + 12].try_into().unwrap());
+            at += 12 + 4 * chunks as usize;
         }
         assert_eq!((buffered, at), (30, blob.len()));
 
@@ -3676,7 +3686,9 @@ mod tests {
         assert_ne!(rc, 0, "a closed view makes no reader");
 
         // A view whose buffers were published since reads their segments,
-        // and finds what it found before they were.
+        // and finds what it found before they were. (Enough documents that
+        // the buffer is one chunk again: see `a_growing_buffer_is_read_as_chunks`.)
+        (41..47).for_each(add);
         // SAFETY: live out-pointers.
         let rc = unsafe { ffi_engine_writer_live_view_open(h, gen, &mut view, &mut ptr, &mut len) };
         assert_eq!(rc, 0, "{}", crate::error::last_error());
@@ -3709,6 +3721,206 @@ mod tests {
             3
         );
         assert_eq!(ffi_live_view_close(view), 0);
+        assert_eq!(crate::jvm_reader::ffi_close_jvm_reader(reader), 0);
+    }
+
+    /// Views of a growing buffer: each view's reader holds the buffer as
+    /// chunks, written once and read again by later views, which together
+    /// hold the documents, positions, offsets and statistics of the view,
+    /// less its deletes, as a search of the buffers finds them.
+    #[test]
+    fn a_growing_buffer_is_read_as_chunks() {
+        use crate::live::{
+            ffi_engine_writer_live_view_open, ffi_live_view_close, ffi_live_view_reader,
+        };
+        use lucene_search::reader::{LeafReader, PostingsFlags};
+        let tmp = empty_index("engine-writer-live-chunks");
+        let h = open_with(&tmp, 64.0, OPEN_LIVE_SEARCH, i32::MAX);
+        let f = setup(h);
+        let words = ["alpha", "beta", "gamma", "delta", "eps"];
+        let text = |i: usize| -> Vec<&str> { (0..1 + i % 4).map(|j| words[(i + j) % 5]).collect() };
+        let add = |i: usize, id: &str| {
+            let b = doc(
+                Blob::default()
+                    .u8(OP_SOFT_UPDATE)
+                    .bytes(b"_id")
+                    .bytes(id.as_bytes())
+                    .bytes(b"__soft_deletes")
+                    .i64(1)
+                    .i32(1),
+                &f,
+                id,
+                &text(i),
+                i as i64,
+                false,
+            );
+            assert_eq!(apply(h, &b.0), 0, "{}", crate::error::last_error());
+        };
+        let gen = commit_settled(h);
+        let reader = open_reader(&tmp, gen);
+        let mut added = 0usize;
+        // Each document's id; an update gives an id a new document.
+        let mut ids: Vec<String> = Vec::new();
+        let mut leaves_seen = Vec::new();
+        for round in 0..24usize {
+            for _ in 0..1 + round % 5 {
+                let id = if added % 7 == 6 {
+                    ids[added / 2].clone()
+                } else {
+                    format!("d{added}")
+                };
+                add(added, &id);
+                ids.push(id);
+                added += 1;
+            }
+            let (mut view, mut ptr, mut len) = (0u64, std::ptr::null_mut(), 0usize);
+            // SAFETY: live out-pointers.
+            let rc =
+                unsafe { ffi_engine_writer_live_view_open(h, gen, &mut view, &mut ptr, &mut len) };
+            assert_eq!(rc, 0, "{}", crate::error::last_error());
+            // SAFETY: the buffer the call gave, freed once.
+            let blob = unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec();
+            // SAFETY: the buffer the call gave, freed once.
+            unsafe { crate::ffm_bridge::ffi_jvm_free_bytes(ptr, len) };
+            let mut whole = 0u64;
+            // SAFETY: a live out-pointer.
+            let rc = unsafe { ffi_live_view_reader(reader, view, &mut whole) };
+            assert_eq!(rc, 0, "{}", crate::error::last_error());
+
+            // The blob's chunk ends are the segments' sizes.
+            let w = crate::jvm_reader::lookup(whole, "test").unwrap();
+            let base = crate::jvm_reader::lookup(reader, "test")
+                .unwrap()
+                .live_docs
+                .len();
+            let readers = &w.reader.segment_readers()[base..];
+            let count = i32::from_le_bytes(blob[8..12].try_into().unwrap());
+            let mut at = 12;
+            let mut sizes = Vec::new();
+            for _ in 0..count {
+                let deleted = i32::from_le_bytes(blob[at + 4..at + 8].try_into().unwrap());
+                at += 8 + 4 * deleted as usize;
+                let chunks = i32::from_le_bytes(blob[at..at + 4].try_into().unwrap());
+                at += 4;
+                let mut from = 0;
+                for _ in 0..chunks {
+                    let end = i32::from_le_bytes(blob[at..at + 4].try_into().unwrap());
+                    sizes.push(end - from);
+                    from = end;
+                    at += 4;
+                }
+            }
+            assert_eq!(at, blob.len());
+            assert_eq!(sizes, readers.iter().map(|r| r.max_doc).collect::<Vec<_>>());
+            leaves_seen.push(readers.len());
+
+            // Every live document's postings, by sequence number.
+            let mut got = Vec::new();
+            let (mut doc_count, mut sum_doc_freq) = (0i64, 0i64);
+            for (r, live) in readers.iter().zip(&w.live_docs[base..]) {
+                let mut seq = Vec::new();
+                let mut dv = r.numeric_doc_values("_seq_no").unwrap().unwrap();
+                for d in 0..r.max_doc {
+                    seq.push(dv.advance_exact(d).unwrap().then(|| dv.long_value()));
+                }
+                let Some(terms) = r.terms("body").unwrap() else {
+                    continue;
+                };
+                doc_count += i64::from(terms.doc_count());
+                sum_doc_freq += terms.sum_doc_freq();
+                let mut te = terms.iterator().unwrap();
+                while let Some(term) = te.next().unwrap() {
+                    let term = String::from_utf8(term.to_vec()).unwrap();
+                    let mut pe = te.postings(PostingsFlags::All).unwrap();
+                    loop {
+                        let d = pe.next_doc().unwrap();
+                        if d == lucene_search::reader::NO_MORE_DOCS {
+                            break;
+                        }
+                        let p = pe.next_position().unwrap();
+                        assert_eq!(pe.freq(), 1);
+                        if live.as_ref().is_none_or(|l| l.get(d as usize)) {
+                            got.push((
+                                seq[d as usize].unwrap(),
+                                term.clone(),
+                                p,
+                                pe.start_offset(),
+                                pe.end_offset(),
+                            ));
+                        }
+                    }
+                }
+            }
+            got.sort();
+            let mut want = Vec::new();
+            for i in 0..added {
+                if ids[i + 1..].contains(&ids[i]) {
+                    continue;
+                }
+                for (p, word) in text(i).iter().enumerate() {
+                    let p = p as i32;
+                    want.push((i as i64, word.to_string(), p, p * 4, p * 4 + 3));
+                }
+            }
+            want.sort();
+            assert_eq!(got, want, "round {round}");
+            assert_eq!(
+                doc_count, added as i64,
+                "round {round}: deleted ones included"
+            );
+            assert_eq!(
+                sum_doc_freq,
+                (0..added).map(|i| text(i).len() as i64).sum::<i64>()
+            );
+            for term in words {
+                let q = crate::jvm_reader::tests::term_blob("body", term);
+                let (_, live_total) = search_live(reader, view, &q).unwrap();
+                let want = (0..added)
+                    .filter(|&i| !ids[i + 1..].contains(&ids[i]) && text(i).contains(&term))
+                    .count();
+                assert_eq!(live_total, want as i64, "round {round}: {term}");
+            }
+            assert_eq!(ffi_live_view_close(view), 0);
+        }
+        // A few chunks per buffer, not one per view.
+        assert!(leaves_seen.iter().all(|&n| n <= 8), "{leaves_seen:?}");
+        assert!(leaves_seen.iter().any(|&n| n > 1), "{leaves_seen:?}");
+
+        // A buffer published after views of it opened: one whose chunks
+        // were all written reads them; one whose last chunk was not cannot.
+        let open = || {
+            let (mut view, mut ptr, mut len) = (0u64, std::ptr::null_mut(), 0usize);
+            // SAFETY: live out-pointers.
+            let rc =
+                unsafe { ffi_engine_writer_live_view_open(h, gen, &mut view, &mut ptr, &mut len) };
+            assert_eq!(rc, 0, "{}", crate::error::last_error());
+            // SAFETY: the buffer the call gave, freed once.
+            unsafe { crate::ffm_bridge::ffi_jvm_free_bytes(ptr, len) };
+            view
+        };
+        let written = open();
+        add(added, "last");
+        let unwritten = open();
+        commit_settled(h);
+        let mut whole = 0u64;
+        // SAFETY: a live out-pointer.
+        let rc = unsafe { ffi_live_view_reader(reader, written, &mut whole) };
+        assert_eq!(rc, 0, "{}", crate::error::last_error());
+        let w = crate::jvm_reader::lookup(whole, "test").unwrap();
+        let base = crate::jvm_reader::lookup(reader, "test")
+            .unwrap()
+            .live_docs
+            .len();
+        assert_eq!(
+            w.reader.segment_readers().len(),
+            base + leaves_seen.last().unwrap()
+        );
+        // SAFETY: a live out-pointer.
+        let rc = unsafe { ffi_live_view_reader(reader, unwritten, &mut whole) };
+        assert_ne!(rc, 0);
+        assert!(crate::error::last_error().contains("being flushed"));
+        assert_eq!(ffi_live_view_close(written), 0);
+        assert_eq!(ffi_live_view_close(unwritten), 0);
         assert_eq!(crate::jvm_reader::ffi_close_jvm_reader(reader), 0);
     }
 
