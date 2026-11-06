@@ -180,6 +180,7 @@ pub(crate) mod packed_fields;
 pub(crate) mod pending_postings;
 mod pluggable_merge;
 mod segment_partitions;
+pub(crate) use segment_partitions::set_attribute;
 pub use segment_partitions::SegmentPartitioning;
 mod try_modify;
 pub(crate) use explicit::explicit_error;
@@ -10978,36 +10979,35 @@ impl IndexWriter<'_> {
                 merge_policy::find_forced_merges(stats, max_num_segments, &config)
             });
         }
+        // Every partition on its own: multi-segment merges until none is
+        // left, then each single segment with deletes merged once.
         loop {
-            let mut stats = self.segment_stats()?;
-            if stats.len() <= max_num_segments {
-                if let [only] = stats.as_slice() {
-                    if max_num_segments == 1 && self.num_deletes_to_merge(only)? > 0 {
-                        self.execute_merge(std::slice::from_ref(&only.name))?;
-                    }
-                }
-                return Ok(());
-            }
-            if max_num_segments == 1 {
-                // `findForcedMerges` itself, whose merge-down-to-one case
-                // has no size cap: every segment in one merge, largest
-                // first -- the merged segment's document order.
-                let config = merge_policy::MergePolicyConfig::default();
-                let names: Vec<String> = merge_policy::find_forced_merges(&stats, 1, &config)
+            let stats = self.segment_stats()?;
+            let picks = self.per_partition_stats(&stats, |part| {
+                fallback_forced_merge(part, max_num_segments)
                     .into_iter()
-                    .flatten()
-                    .collect();
-                self.execute_merge(&names)?;
-                continue;
+                    .collect()
+            })?;
+            if picks.is_empty() {
+                break;
             }
-            stats.sort_by_key(|s| s.size_bytes);
-            // ARITH: `stats.len() > max_num_segments >= 1` here, so the
-            // difference is at least 1 and the `+ 1` at most `stats.len()`.
-            #[allow(clippy::arithmetic_side_effects)]
-            let take = stats.len() - max_num_segments + 1;
-            let names: Vec<String> = stats.into_iter().take(take).map(|s| s.name).collect();
-            self.execute_merge(&names)?;
+            for names in picks {
+                self.execute_merge(&names)?;
+            }
         }
+        if max_num_segments == 1 {
+            let stats = self.segment_stats()?;
+            let singles = self.per_partition_stats(&stats, |part| match part {
+                [only] => vec![only.clone()],
+                _ => Vec::new(),
+            })?;
+            for only in singles {
+                if self.num_deletes_to_merge(&only)? > 0 {
+                    self.execute_merge(std::slice::from_ref(&only.name))?;
+                }
+            }
+        }
+        Ok(())
     }
 
     /// [`IndexWriter::segment_stats`] with each `del_count` the deletes a
@@ -13032,6 +13032,35 @@ fn apply_merge_changes(
         out.insert(0, m);
     }
     *segments = out;
+}
+
+/// The forced merge `IndexWriter.forceMerge` runs without a merge policy
+/// over `stats`, while they number more than `max_num_segments`: down to one,
+/// every segment in one merge, largest first (`findForcedMerges`' merge-down
+/// case, no size cap); else the smallest segments, enough to reach the count.
+fn fallback_forced_merge(
+    stats: &[merge_policy::SegmentStat],
+    max_num_segments: usize,
+) -> Option<Vec<String>> {
+    if stats.len() <= max_num_segments {
+        return None;
+    }
+    if max_num_segments == 1 {
+        let config = merge_policy::MergePolicyConfig::default();
+        return Some(
+            merge_policy::find_forced_merges(stats, 1, &config)
+                .into_iter()
+                .flatten()
+                .collect(),
+        );
+    }
+    let mut stats = stats.to_vec();
+    stats.sort_by_key(|s| s.size_bytes);
+    // ARITH: `stats.len() > max_num_segments >= 1` here, so the difference
+    // is at least 1 and the `+ 1` at most `stats.len()`.
+    #[allow(clippy::arithmetic_side_effects)]
+    let take = stats.len() - max_num_segments + 1;
+    Some(stats.into_iter().take(take).map(|s| s.name).collect())
 }
 
 /// `ShuffleForcedMergePolicy.interleaveList`: the sources sorted by name

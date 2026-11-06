@@ -3130,10 +3130,7 @@ fn merge_segments_mapped_inner(
         attributes: {
             let mut attributes = crate::segment_writer::stored_fields_mode_attribute(stored_mode);
             for (key, value) in &options.extra_attributes {
-                match attributes.iter_mut().find(|(k, _)| k == key) {
-                    Some(slot) => slot.1.clone_from(value),
-                    None => attributes.push((key.clone(), value.clone())),
-                }
+                crate::index_writer::set_attribute(&mut attributes, key, value);
             }
             attributes
         },
@@ -4412,7 +4409,7 @@ impl<'a> SourceVectors<'a> {
 
     /// The group that holds `field_number` (the first, for a field no group
     /// has -- its lookups then fail as they always did).
-    fn partition_of(&self, field_number: i32) -> VectorGroup<'a> {
+    fn group_of(&self, field_number: i32) -> VectorGroup<'a> {
         self.groups
             .iter()
             .find(|g| g.flat.field(field_number).is_some())
@@ -4734,7 +4731,7 @@ fn merge_vectors(
                 continue;
             }
             let ord_to_doc = source_ord_to_doc(
-                source_vectors.partition_of(original_number).flat,
+                source_vectors.group_of(original_number).flat,
                 original_number,
                 merged_field.vector_encoding,
             )?;
@@ -4852,7 +4849,7 @@ fn merge_vector_group(
             let source_vectors = sources[fs.source_index]
                 .vectors
                 .expect("only sources with a flat reader are planned");
-            let group = source_vectors.partition_of(fs.original_field_number);
+            let group = source_vectors.group_of(fs.original_field_number);
             let values = match encoding {
                 VectorEncoding::Float32 => vectors::MergeSourceValues::Float32(
                     group.flat.float_vector_values(fs.original_field_number)?,
@@ -4902,7 +4899,7 @@ fn merge_vector_group(
                 let group = source
                     .vectors
                     .expect("only sources with a flat reader are planned")
-                    .partition_of(fs.original_field_number);
+                    .group_of(fs.original_field_number);
                 let values = group.flat.float_vector_values(fs.original_field_number)?;
                 let mut all = Vec::new();
                 for ord in 0..values.size() {
@@ -4984,7 +4981,7 @@ fn merge_vector_group(
                 let source_vectors = sources[fs.source_index]
                     .vectors
                     .expect("only sources with a flat reader are planned");
-                let graph = match source_vectors.partition_of(fs.original_field_number).graph {
+                let graph = match source_vectors.group_of(fs.original_field_number).graph {
                     Some(reader) if reader.field(fs.original_field_number).is_some() => {
                         reader.graph(fs.original_field_number)?
                     }

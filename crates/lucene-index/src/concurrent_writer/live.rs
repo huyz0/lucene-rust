@@ -931,7 +931,7 @@ impl ConcurrentIndexWriter<'_> {
             has_blocks: slot.has_blocks,
             stored: None,
             limit: Some(&limit),
-            partition: None,
+            partition: slot.partition.as_deref(),
         };
         let (sci, _) = cfg.build_and_write_segment(
             dir,

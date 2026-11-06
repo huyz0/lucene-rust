@@ -1380,8 +1380,13 @@ impl<'d> ConcurrentIndexWriter<'d> {
                 evicted = self.begin_flush(i, &mut dwpt);
             }
             let before = dwpt.docs.len();
-            let fill = check(&dwpt)?;
-            self.reserve_docs(count)?;
+            let fill = match check(&dwpt).and_then(|fill| self.reserve_docs(count).map(|()| fill)) {
+                Ok(fill) => fill,
+                Err(e) => {
+                    drop(dwpt);
+                    return Err(self.fail_after_eviction(evicted, e));
+                }
+            };
             if count > 1 {
                 dwpt.has_blocks = true;
             }
@@ -1390,10 +1395,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
                 Err(e) => {
                     self.buffered_docs.fetch_sub(count, Ordering::AcqRel);
                     drop(dwpt);
-                    if let Some(evicted) = evicted {
-                        self.complete_flush(evicted)?;
-                    }
-                    return Err(e);
+                    return Err(self.fail_after_eviction(evicted, e));
                 }
             };
             if partitioned {
@@ -1472,6 +1474,24 @@ impl<'d> ConcurrentIndexWriter<'d> {
             self.schedule_merges(MergeTrigger::SegmentFlush)?;
         }
         Ok(seq_no)
+    }
+
+    /// An add refused after its slot's buffer of another partition was taken
+    /// for a flush: that flush still completes (its documents were
+    /// acknowledged, and later tickets wait for its turn), and the add's own
+    /// error is the one returned.
+    fn fail_after_eviction(
+        &self,
+        evicted: Option<FlushBatch>,
+        error: crate::index_writer::Error,
+    ) -> crate::index_writer::Error {
+        if let Some(evicted) = evicted {
+            // A failed build is recorded by `complete_flush` itself (its
+            // ticket retired, its files deleted); the add's error says why
+            // this call failed.
+            let _ = self.complete_flush(evicted);
+        }
+        error
     }
 
     /// Takes slot `i`'s buffer for a segment, with a ticket -- under the slot's

@@ -60,11 +60,15 @@ impl IndexingConfig {
         self.segment_partitioning.is_some()
     }
 
-    /// The partition a buffer flushed for `partition` records.
-    fn recorded_partition<'a>(&'a self, partition: Option<&'a str>) -> Option<(&'a str, &'a str)> {
+    /// The partitioning, and the partition a buffer flushed for `partition`
+    /// records.
+    fn recorded_partition<'a>(
+        &'a self,
+        partition: Option<&'a str>,
+    ) -> Option<(&'a SegmentPartitioning, &'a str)> {
         let partitioning = self.segment_partitioning.as_ref()?;
         let value = partition.or(partitioning.default_partition.as_deref())?;
-        Some((partitioning.attribute.as_str(), value))
+        Some((partitioning, value))
     }
 
     /// Stamps a flushed segment's partition onto its `.fnm` fields.
@@ -73,15 +77,11 @@ impl IndexingConfig {
         mut fields: Vec<FieldInfo>,
         partition: Option<&str>,
     ) -> Vec<FieldInfo> {
-        let Some((key, value)) = self.recorded_partition(partition) else {
-            return fields;
-        };
-        let Some(partitioning) = &self.segment_partitioning else {
-            return fields;
-        };
-        for f in &mut fields {
-            if partitioning.field_attributes.contains(&f.name) {
-                set_attribute(&mut f.attributes, key, value);
+        if let Some((partitioning, value)) = self.recorded_partition(partition) {
+            for f in &mut fields {
+                if partitioning.field_attributes.contains(&f.name) {
+                    set_attribute(&mut f.attributes, &partitioning.attribute, value);
+                }
             }
         }
         fields
@@ -93,13 +93,14 @@ impl IndexingConfig {
         attributes: &mut Vec<(String, String)>,
         partition: Option<&str>,
     ) {
-        if let Some((key, value)) = self.recorded_partition(partition) {
-            set_attribute(attributes, key, value);
+        if let Some((partitioning, value)) = self.recorded_partition(partition) {
+            set_attribute(attributes, &partitioning.attribute, value);
         }
     }
 }
 
-fn set_attribute(attributes: &mut Vec<(String, String)>, key: &str, value: &str) {
+/// Sets `key` in `attributes`, replacing its value if present.
+pub(crate) fn set_attribute(attributes: &mut Vec<(String, String)>, key: &str, value: &str) {
     match attributes.iter_mut().find(|(k, _)| k == key) {
         Some(slot) => value.clone_into(&mut slot.1),
         None => attributes.push((key.to_string(), value.to_string())),

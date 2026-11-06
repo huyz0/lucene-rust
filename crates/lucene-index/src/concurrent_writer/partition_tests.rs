@@ -283,3 +283,49 @@ fn many_threads_keep_partitions_apart() {
     let per = assert_one_partition_each(&dir);
     assert_eq!(per.len(), 5);
 }
+
+#[test]
+fn a_forced_merge_without_a_merge_policy_keeps_partitions_apart() {
+    let tmp = TempDir::new("partitions-forced-no-policy");
+    let dir = FsDirectory::open(&tmp);
+    let w = many_segments(&dir);
+    w.with_writer_merges_aborted(|iw| {
+        iw.set_merge_policy(None);
+        iw.force_merge(1)
+    })
+    .unwrap();
+    w.commit().unwrap();
+    let per = assert_one_partition_each(&dir);
+    assert_eq!(per.values().copied().collect::<Vec<_>>(), [1, 1, 1]);
+}
+
+#[test]
+fn an_add_refused_after_its_slot_was_flushed_keeps_the_flushed_documents() {
+    let tmp = TempDir::new("partitions-refused-add");
+    let dir = FsDirectory::open(&tmp);
+    let mut iw = IndexWriter::open(&dir, Vec::new(), "Lucene104", VERSION).unwrap();
+    iw.enable_explicit_documents().unwrap();
+    iw.register_field(
+        FieldInfo::new("_id", 0)
+            .with_index_options(IndexOptions::Docs)
+            .with_omit_norms(true),
+    )
+    .unwrap();
+    iw.set_segment_partitioning(Some(SegmentPartitioning::opensearch()));
+    iw.set_max_docs(2);
+    let w = ConcurrentIndexWriter::new(iw, 1).unwrap();
+    w.add_explicit_documents_in(partition(0), vec![doc(0, 0)])
+        .unwrap();
+    w.add_explicit_documents_in(partition(0), vec![doc(0, 1)])
+        .unwrap();
+    // The one slot holds partition 0: it is flushed, then the add is over
+    // the document limit.
+    assert!(w
+        .add_explicit_documents_in(partition(1), vec![doc(1, 0)])
+        .is_err());
+    w.commit().unwrap();
+    let per = assert_one_partition_each(&dir);
+    assert_eq!(per, BTreeMap::from([("p0".into(), 1)]));
+    let infos = segment_infos::read_latest(&dir).unwrap();
+    assert_eq!(infos.segments.len(), 1);
+}
