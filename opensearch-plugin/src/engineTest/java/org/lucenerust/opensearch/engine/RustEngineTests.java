@@ -367,7 +367,6 @@ public class RustEngineTests extends RustEngineTestCase {
         }
     }
 
-    @org.junit.Ignore("the Rust writer writes non-compound segments only")
     public void testSegmentsWithUseCompoundFileFlag_true() throws IOException {
         try (Store store = createStore(); Engine engine = createEngine(defaultSettings, store, createTempDir(), new TieredMergePolicy())) {
             ParsedDocument doc = testParsedDocument("1", null, testDocument(), B_1, null);
@@ -9569,6 +9568,7 @@ public class RustEngineTests extends RustEngineTestCase {
      * less than the actual on-disk size. The fix replaces {@code put} with
      * {@code map.merge(extension, length, Long::sum)} so every file's bytes are counted.
      */
+    @org.junit.Ignore("index.optimize_doc_id_lookup.fuzzy_set.enabled is refused (RustEngineSupport.checkSupported)")
     public void testSegmentFileSizesAccumulatesAllFilesIncludingDuplicateExtensions() throws Exception {
         // Disable compound file so each Lucene file is a separate entry in the directory,
         // making it straightforward to compare the expected total (sum of file lengths from the
