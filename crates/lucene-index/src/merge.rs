@@ -3127,7 +3127,13 @@ fn merge_segments_mapped_inner(
             diagnostics
         },
         files: files.clone(),
-        attributes: crate::segment_writer::stored_fields_mode_attribute(stored_mode),
+        attributes: {
+            let mut attributes = crate::segment_writer::stored_fields_mode_attribute(stored_mode);
+            for (key, value) in &options.extra_attributes {
+                crate::index_writer::set_attribute(&mut attributes, key, value);
+            }
+            attributes
+        },
         // The merged segment claims the sort exactly when this merge produced
         // it. A concatenating merge must not claim one (it would describe an
         // order the bytes do not have); the k-way merge genuinely preserves
@@ -4460,6 +4466,9 @@ pub struct MergeOptions {
     /// Diagnostics the merge's hooks add to the merged `.si`
     /// (`OneMerge.setMergeInfo`), after the writer's own.
     pub extra_diagnostics: Vec<(String, String)>,
+    /// `.si` attributes the merged segment records after the writer's own,
+    /// a later value for a key replacing an earlier one.
+    pub extra_attributes: Vec<(String, String)>,
 }
 
 /// The diagnostics key OpenSearch's `ShuffleForcedMergePolicy` marks an
@@ -4635,6 +4644,7 @@ impl Default for MergeOptions {
             sorted_numeric_remap: None,
             kind: MergeKind::default(),
             extra_diagnostics: Vec::new(),
+            extra_attributes: Vec::new(),
         }
     }
 }
