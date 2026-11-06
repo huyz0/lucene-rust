@@ -319,6 +319,78 @@ fn split(
     (centroids, labels)
 }
 
+/// Splits `members` with [`split`] until every part holds at most `target`
+/// vectors (`target >= 1`), appending the parts to `leaves`.
+// ARITH: `target >= 1`, so `parts >= 2` after the clamp; labels are `< parts`.
+#[allow(clippy::arithmetic_side_effects, clippy::too_many_arguments)]
+fn split_down(
+    data: &[f32],
+    dim: usize,
+    members: Vec<u32>,
+    target: usize,
+    params: &KMeansParams,
+    metric: Metric,
+    rng: &mut SplitMix64,
+    leaves: &mut Vec<Vec<u32>>,
+) {
+    let mut pending = vec![members];
+    while let Some(members) = pending.pop() {
+        if members.len() <= target {
+            leaves.push(members);
+            continue;
+        }
+        let parts = members.len().div_ceil(target).clamp(2, MAX_BRANCHING);
+        let (_, labels) = split(data, dim, &members, parts, params, metric, rng);
+        let mut groups = vec![Vec::new(); parts];
+        for (&m, &l) in members.iter().zip(&labels) {
+            groups[l as usize].push(m);
+        }
+        let largest = groups.iter().map(Vec::len).max().unwrap_or(0);
+        if largest == members.len() {
+            // Identical vectors cannot be split by distance: cut them in
+            // order instead.
+            leaves.extend(members.chunks(target).map(<[u32]>::to_vec));
+            continue;
+        }
+        pending.extend(groups.into_iter().filter(|g| !g.is_empty()));
+    }
+}
+
+/// One neighbourhood Lloyd assignment: every vector (or, with `active`,
+/// every vector of an active cluster) moves to the nearest centroid among
+/// its own and that cluster's `neighbors`.
+fn refine_round(
+    data: &[f32],
+    dim: usize,
+    centroids: &[f32],
+    assignments: &[u32],
+    neighbors: &[Vec<u32>],
+    metric: Metric,
+    active: Option<&[bool]>,
+) -> Vec<u32> {
+    assignments
+        .par_iter()
+        .enumerate()
+        .map(|(i, &own)| {
+            let own = own as usize;
+            if active.is_some_and(|a| !a[own]) {
+                return own as u32;
+            }
+            let v = row(data, dim, i);
+            let mut best = (own, metric.cost(v, row(centroids, dim, own)));
+            for &c in &neighbors[own] {
+                let d = metric.cost(v, row(centroids, dim, c as usize));
+                // Ties keep the vector where it is, so duplicates cut apart
+                // by size stay apart.
+                if d < best.1 {
+                    best = (c as usize, d);
+                }
+            }
+            best.0 as u32
+        })
+        .collect()
+}
+
 /// Clusters the `data.len() / dim` vectors of `data` into leaves of at most
 /// `target_size` vectors (one cluster when there are no more than that).
 /// An empty input has no clusters.
@@ -348,29 +420,17 @@ pub fn cluster(
         };
     }
     let mut rng = SplitMix64::new(params.seed);
-    let all: Vec<u32> = (0..n as u32).collect();
-    let mut pending = vec![all];
     let mut leaves: Vec<Vec<u32>> = Vec::new();
-    while let Some(members) = pending.pop() {
-        if members.len() <= target {
-            leaves.push(members);
-            continue;
-        }
-        let parts = members.len().div_ceil(target).clamp(2, MAX_BRANCHING);
-        let (_, labels) = split(data, dim, &members, parts, params, metric, &mut rng);
-        let mut groups = vec![Vec::new(); parts];
-        for (&m, &l) in members.iter().zip(&labels) {
-            groups[l as usize].push(m);
-        }
-        let largest = groups.iter().map(Vec::len).max().unwrap_or(0);
-        if largest == members.len() {
-            // Identical vectors cannot be split by distance: cut them in
-            // order instead.
-            leaves.extend(members.chunks(target).map(<[u32]>::to_vec));
-            continue;
-        }
-        pending.extend(groups.into_iter().filter(|g| !g.is_empty()));
-    }
+    split_down(
+        data,
+        dim,
+        all_members(n),
+        target,
+        params,
+        metric,
+        &mut rng,
+        &mut leaves,
+    );
     let mut assignments = vec![0u32; n];
     for (c, leaf) in leaves.iter().enumerate() {
         for &m in leaf {
@@ -384,23 +444,15 @@ pub fn cluster(
     if k > 1 {
         for _ in 0..params.refine_rounds {
             let neighbors = neighbor_lists(&centroids, dim, REFINE_NEIGHBORS);
-            assignments = (0..n)
-                .into_par_iter()
-                .map(|i| {
-                    let own = assignments[i] as usize;
-                    let v = row(data, dim, i);
-                    let mut best = (own, metric.cost(v, row(&centroids, dim, own)));
-                    for &c in &neighbors[own] {
-                        let d = metric.cost(v, row(&centroids, dim, c as usize));
-                        // Ties keep the vector where it is, so duplicates
-                        // cut apart by size stay apart.
-                        if d < best.1 {
-                            best = (c as usize, d);
-                        }
-                    }
-                    best.0 as u32
-                })
-                .collect();
+            assignments = refine_round(
+                data,
+                dim,
+                &centroids,
+                &assignments,
+                &neighbors,
+                metric,
+                None,
+            );
             centroids = means(data, dim, &everyone, &assignments, k, &centroids).0;
             metric.adjust(&mut centroids, dim);
         }
@@ -414,6 +466,232 @@ pub fn cluster(
         centroids = means(data, dim, &everyone, &assignments, k, &centroids).0;
     }
     compact(centroids, assignments, dim, k)
+}
+
+/// Clusters larger than this many times the target size are split by
+/// [`reuse`].
+pub const REUSE_SPLIT_FACTOR: usize = 2;
+/// Clusters smaller than the target size divided by this are dissolved by
+/// [`reuse`].
+pub const REUSE_DISSOLVE_DIVISOR: usize = 4;
+
+/// No cluster: a [`reuse`] hint for a vector to place.
+pub const NO_CLUSTER: u32 = u32::MAX;
+
+/// Clusters `data` starting from an existing partition (SPFresh-style
+/// incremental rebalancing), instead of clustering it afresh.
+///
+/// `centroids` are the existing clusters' plain means (as [`cluster`]
+/// returns them) and `hints` gives each vector's place: `[c, NO_CLUSTER]`
+/// keeps it in cluster `c`, `[a, b]` puts it in the nearer of the two (a
+/// vector stored in its primary cluster and spilled into another, when the
+/// two cannot be told apart), and `[NO_CLUSTER, _]` puts it in its nearest
+/// cluster by the full-assignment kernel. Then:
+///
+/// 1. the means are recomputed and `refine_rounds` neighbourhood Lloyd
+///    rounds run over the clusters that received new vectors and the
+///    clusters next to them ([`REFINE_NEIGHBORS`]);
+/// 2. clusters below `target_size / REUSE_DISSOLVE_DIVISOR` vectors (left
+///    small by deletions) are dissolved, their vectors moving to the nearest
+///    remaining cluster;
+/// 3. clusters above `REUSE_SPLIT_FACTOR * target_size` are split with the
+///    same sampled k-means as [`cluster`] down to the target size.
+///
+/// No cluster ends larger than `REUSE_SPLIT_FACTOR * target_size` or, when
+/// there are two or more, smaller than `target_size / REUSE_DISSOLVE_DIVISOR`
+/// unless a split made it. The cost is `n * REFINE_NEIGHBORS` comparisons
+/// and `k * k` between centroids per round, plus the placed and dissolved
+/// vectors against every centroid, against `n * k` per full Lloyd round
+/// for [`cluster`]. With no existing clusters this is
+/// [`cluster`]. Centroids are compared as [`cluster`] compares them
+/// (normalized for [`Metric::InnerProduct`]) and returned as plain means.
+/// Deterministic for a given input and `params.seed`.
+///
+/// # Panics
+///
+/// When `dim` is zero, `data` or `centroids` is not a whole number of
+/// vectors, `hints` is not one per vector, or a hint names no cluster.
+// ARITH: counts are bounded by the number of vectors (`< u32::MAX`, asserted)
+// and cluster ids by the cluster count, which never exceeds the vector count
+// plus the existing clusters.
+#[allow(clippy::arithmetic_side_effects, clippy::too_many_arguments)]
+pub fn reuse(
+    data: &[f32],
+    dim: usize,
+    centroids: &[f32],
+    hints: &[[u32; 2]],
+    target_size: usize,
+    params: &KMeansParams,
+    refine_rounds: usize,
+    metric: Metric,
+) -> Clustering {
+    assert!(dim > 0, "dimension must be positive");
+    assert!(data.len().is_multiple_of(dim), "ragged vector data");
+    assert!(centroids.len().is_multiple_of(dim), "ragged centroids");
+    let n = data.len() / dim;
+    assert!(n < u32::MAX as usize, "too many vectors to cluster");
+    assert_eq!(hints.len(), n, "one hint per vector");
+    let mut k = centroids.len() / dim;
+    assert!(
+        hints
+            .iter()
+            .flatten()
+            .all(|&c| c == NO_CLUSTER || (c as usize) < k),
+        "hint names no cluster"
+    );
+    if k == 0 || n == 0 {
+        return cluster(data, dim, target_size, params, metric);
+    }
+    let target = target_size.max(1);
+    let mut work = centroids.to_vec();
+    metric.adjust(&mut work, dim);
+    let mut assignments: Vec<u32> = hints
+        .par_iter()
+        .enumerate()
+        .map(|(i, &[a, b])| {
+            if a == NO_CLUSTER || b == NO_CLUSTER {
+                return a;
+            }
+            let v = row(data, dim, i);
+            if metric.cost(v, row(&work, dim, b as usize))
+                < metric.cost(v, row(&work, dim, a as usize))
+            {
+                b
+            } else {
+                a
+            }
+        })
+        .collect();
+    let placed: Vec<u32> = (0..n as u32)
+        .filter(|&i| assignments[i as usize] == NO_CLUSTER)
+        .collect();
+    let mut touched = vec![false; k];
+    for (&m, &c) in placed
+        .iter()
+        .zip(&nearest_of(data, dim, &placed, &work, metric))
+    {
+        assignments[m as usize] = c;
+        touched[c as usize] = true;
+    }
+    let everyone = all_members(n);
+    let mut means_now = means(data, dim, &everyone, &assignments, k, centroids).0;
+    if k > 1 && touched.contains(&true) {
+        for _ in 0..refine_rounds {
+            work.clone_from(&means_now);
+            metric.adjust(&mut work, dim);
+            let neighbors = neighbor_lists(&work, dim, REFINE_NEIGHBORS);
+            let active: Vec<bool> = neighbors
+                .iter()
+                .enumerate()
+                .map(|(c, ns)| touched[c] || ns.iter().any(|&o| touched[o as usize]))
+                .collect();
+            assignments = refine_round(
+                data,
+                dim,
+                &work,
+                &assignments,
+                &neighbors,
+                metric,
+                Some(&active),
+            );
+            means_now = means(data, dim, &everyone, &assignments, k, &means_now).0;
+        }
+    }
+    work.clone_from(&means_now);
+    metric.adjust(&mut work, dim);
+
+    // Dissolve the small clusters into the nearest of the others.
+    let mut counts = vec![0usize; k];
+    for &a in &assignments {
+        counts[a as usize] += 1;
+    }
+    let min_size = (target / REUSE_DISSOLVE_DIVISOR).max(1);
+    let mut keep: Vec<bool> = counts.iter().map(|&c| c >= min_size).collect();
+    if !keep.contains(&true) {
+        let largest = (0..k)
+            .max_by_key(|&c| (counts[c], std::cmp::Reverse(c)))
+            .unwrap_or(0);
+        keep[largest] = true;
+    }
+    let survivors: Vec<u32> = (0..k as u32).filter(|&c| keep[c as usize]).collect();
+    let orphans: Vec<u32> = (0..n as u32)
+        .filter(|&i| !keep[assignments[i as usize] as usize])
+        .collect();
+    if !orphans.is_empty() {
+        let mut kept = Vec::with_capacity(survivors.len() * dim);
+        for &c in &survivors {
+            kept.extend_from_slice(row(&work, dim, c as usize));
+        }
+        for (&m, &c) in orphans
+            .iter()
+            .zip(&nearest_of(data, dim, &orphans, &kept, metric))
+        {
+            let to = survivors[c as usize];
+            assignments[m as usize] = to;
+            counts[to as usize] += 1;
+        }
+    }
+
+    // Split the large ones: the first part keeps the cluster's id.
+    let max_size = target.saturating_mul(REUSE_SPLIT_FACTOR);
+    let large: Vec<usize> = (0..k)
+        .filter(|&c| keep[c] && counts[c] > max_size)
+        .collect();
+    if !large.is_empty() {
+        let mut members: Vec<Vec<u32>> = vec![Vec::new(); k];
+        for (i, &a) in assignments.iter().enumerate() {
+            if counts[a as usize] > max_size {
+                members[a as usize].push(i as u32);
+            }
+        }
+        let mut rng = SplitMix64::new(params.seed ^ 0x5b11_7c1a_55e5);
+        for c in large {
+            let mut leaves = Vec::new();
+            split_down(
+                data,
+                dim,
+                std::mem::take(&mut members[c]),
+                target,
+                params,
+                metric,
+                &mut rng,
+                &mut leaves,
+            );
+            for (j, leaf) in leaves.iter().enumerate() {
+                let id = if j == 0 {
+                    c as u32
+                } else {
+                    k += 1;
+                    (k - 1) as u32
+                };
+                for &m in leaf {
+                    assignments[m as usize] = id;
+                }
+            }
+        }
+        means_now.resize(k * dim, 0.0);
+    }
+    let centroids = means(data, dim, &everyone, &assignments, k, &means_now).0;
+    compact(centroids, assignments, dim, k)
+}
+
+/// The nearest of `centroids` (non-empty) to each of `members`, by the
+/// full-assignment kernel over a copy of their vectors.
+fn nearest_of(
+    data: &[f32],
+    dim: usize,
+    members: &[u32],
+    centroids: &[f32],
+    metric: Metric,
+) -> Vec<u32> {
+    if members.is_empty() {
+        return Vec::new();
+    }
+    let mut rows = Vec::with_capacity(members.len().saturating_mul(dim));
+    for &m in members {
+        rows.extend_from_slice(row(data, dim, m as usize));
+    }
+    full_assign(&rows, dim, centroids, &vec![0; members.len()], metric)
 }
 
 /// Lanes of the full-assignment kernel.
@@ -574,7 +852,12 @@ fn all_members(n: usize) -> Vec<u32> {
 /// Drops clusters the refinement emptied and renumbers the rest.
 // ARITH: cluster ids are `< k` and `next <= k`.
 #[allow(clippy::arithmetic_side_effects)]
-fn compact(centroids: Vec<f32>, mut assignments: Vec<u32>, dim: usize, k: usize) -> Clustering {
+pub(crate) fn compact(
+    centroids: Vec<f32>,
+    mut assignments: Vec<u32>,
+    dim: usize,
+    k: usize,
+) -> Clustering {
     let mut counts = vec![0usize; k];
     for &a in &assignments {
         counts[a as usize] += 1;
@@ -893,6 +1176,205 @@ mod tests {
             assert!(*b == usize::MAX || *b == i / 30, "cluster {a} mixes blobs");
             *b = i / 30;
         }
+    }
+
+    fn sizes(c: &Clustering, dim: usize) -> Vec<usize> {
+        let mut out = vec![0; c.len(dim)];
+        for &a in &c.assignments {
+            out[a as usize] += 1;
+        }
+        out
+    }
+
+    /// Each blob's mean, as `cluster` would compute it.
+    fn blob_means(data: &[f32], dim: usize, blobs: usize, per: usize) -> Vec<f32> {
+        let labels: Vec<u32> = (0..blobs * per).map(|i| (i / per) as u32).collect();
+        let members = all_members(blobs * per);
+        means(data, dim, &members, &labels, blobs, &vec![0.0; blobs * dim]).0
+    }
+
+    #[test]
+    fn reuse_keeps_hinted_vectors_and_places_the_rest() {
+        let dim = 4;
+        let data = blobs(6, 40, dim);
+        let centroids = blob_means(&data, dim, 5, 40);
+        // Blobs 0..5 keep their cluster; blob 5 is new.
+        let hints: Vec<[u32; 2]> = (0..240)
+            .map(|i| {
+                if i < 200 {
+                    [(i / 40) as u32, NO_CLUSTER]
+                } else {
+                    [NO_CLUSTER; 2]
+                }
+            })
+            .collect();
+        for (rounds, metric) in [(0, Metric::L2), (2, Metric::L2), (1, Metric::InnerProduct)] {
+            let p = KMeansParams::default();
+            let c = reuse(&data, dim, &centroids, &hints, 40, &p, rounds, metric);
+            assert_eq!(
+                c,
+                reuse(&data, dim, &centroids, &hints, 40, &p, rounds, metric)
+            );
+            if metric == Metric::InnerProduct {
+                continue;
+            }
+            assert_eq!(c.len(dim), 5, "{rounds}");
+            for i in 0..200 {
+                assert_eq!(c.assignments[i], (i / 40) as u32);
+            }
+            // Blob 5 sits nearest blob 1 and joins it whole (80 is not over
+            // twice the target).
+            assert!(c.assignments[200..].iter().all(|&a| a == 1));
+            assert_eq!(sizes(&c, dim), vec![40, 80, 40, 40, 40]);
+            // Centroids are the clusters' means.
+            assert_eq!(&c.centroids[..dim], &centroids[..dim]);
+        }
+    }
+
+    #[test]
+    fn reuse_splits_large_clusters() {
+        let dim = 4;
+        let data = blobs(6, 40, dim);
+        let centroids = blob_means(&data, dim, 2, 40);
+        let hints = vec![[NO_CLUSTER; 2]; 240];
+        let c = reuse(
+            &data,
+            dim,
+            &centroids,
+            &hints,
+            40,
+            &KMeansParams::default(),
+            1,
+            Metric::L2,
+        );
+        let s = sizes(&c, dim);
+        assert_eq!(s.iter().sum::<usize>(), 240);
+        assert!(s.iter().all(|&x| x <= 80), "{s:?}");
+        assert!(s.len() >= 3, "{s:?}");
+        // Identical vectors over the limit are cut in order.
+        let same = vec![1.0f32; 2 * 25];
+        let c = reuse(
+            &same,
+            2,
+            &[1.0, 1.0],
+            &[[0, NO_CLUSTER]; 25],
+            10,
+            &KMeansParams::default(),
+            0,
+            Metric::L2,
+        );
+        assert_eq!(sizes(&c, 2), vec![10, 10, 5]);
+    }
+
+    #[test]
+    fn reuse_dissolves_small_clusters() {
+        let dim = 4;
+        let all = blobs(6, 40, dim);
+        let centroids = blob_means(&all, dim, 6, 40);
+        // Blob 5 lost all but five vectors.
+        let data = &all[..205 * dim];
+        let hints: Vec<[u32; 2]> = (0..205).map(|i| [(i / 40) as u32, NO_CLUSTER]).collect();
+        let p = KMeansParams::default();
+        let c = reuse(data, dim, &centroids, &hints, 40, &p, 1, Metric::L2);
+        assert_eq!(sizes(&c, dim), vec![40, 45, 40, 40, 40]);
+        assert!(c.assignments[200..].iter().all(|&a| a == 1));
+        // When every cluster is small the largest one takes everything.
+        let c = reuse(
+            &[0.0, 1.0, 10.0, 11.0, 20.0],
+            1,
+            &[0.5, 10.5, 20.0],
+            &[
+                [0, 1],
+                [0, NO_CLUSTER],
+                [1, NO_CLUSTER],
+                [1, 0],
+                [2, NO_CLUSTER],
+            ],
+            100,
+            &p,
+            1,
+            Metric::L2,
+        );
+        assert_eq!(c.assignments, vec![0; 5]);
+        assert_eq!(c.centroids, vec![8.4]);
+    }
+
+    #[test]
+    fn refinement_moves_only_vectors_of_active_clusters() {
+        let data = [4.0, 6.0];
+        let centroids = [0.0, 10.0];
+        let neighbors = neighbor_lists(&centroids, 1, 1);
+        let r = |active: Option<&[bool]>| {
+            refine_round(
+                &data,
+                1,
+                &centroids,
+                &[1, 0],
+                &neighbors,
+                Metric::L2,
+                active,
+            )
+        };
+        assert_eq!(r(None), vec![0, 1]);
+        assert_eq!(r(Some(&[true, false])), vec![1, 1]);
+    }
+
+    #[test]
+    fn reuse_picks_the_nearer_of_two_hinted_clusters() {
+        let c = reuse(
+            &[9.0, 0.0, 1.0, 0.0],
+            2,
+            &[0.0, 0.0, 10.0, 0.0],
+            &[[0, 1], [1, 0]],
+            1,
+            &KMeansParams::default(),
+            0,
+            Metric::L2,
+        );
+        assert_eq!(c.assignments, vec![1, 0]);
+        assert_eq!(c.centroids, vec![1.0, 0.0, 9.0, 0.0]);
+    }
+
+    #[test]
+    fn reuse_without_clusters_or_vectors_clusters_afresh() {
+        let data = blobs(3, 20, 2);
+        let p = KMeansParams::default();
+        let hints = vec![[NO_CLUSTER; 2]; 60];
+        assert_eq!(
+            reuse(&data, 2, &[], &hints, 20, &p, 1, Metric::L2),
+            cluster(&data, 2, 20, &p, Metric::L2)
+        );
+        assert!(reuse(&[], 2, &[1.0, 2.0], &[], 20, &p, 1, Metric::L2).is_empty());
+    }
+
+    #[test]
+    #[should_panic(expected = "hint names no cluster")]
+    fn reuse_rejects_a_hint_past_the_clusters() {
+        reuse(
+            &[1.0],
+            1,
+            &[1.0],
+            &[[1, NO_CLUSTER]],
+            4,
+            &KMeansParams::default(),
+            0,
+            Metric::L2,
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "one hint per vector")]
+    fn reuse_needs_one_hint_per_vector() {
+        reuse(
+            &[1.0],
+            1,
+            &[1.0],
+            &[],
+            4,
+            &KMeansParams::default(),
+            0,
+            Metric::L2,
+        );
     }
 
     #[test]

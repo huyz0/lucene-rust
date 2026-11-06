@@ -109,3 +109,69 @@ and builds in 84 s.
   least. Without rerank, int7 and 4-bit OSQ give the best estimates.
 - **SOAR spilling** (`IvfParams::spill`) gave no recall gain per entry
   scanned on GloVe, so it is off by default.
+
+## Quantizer options, search depth and merges
+
+Same machine and setup. Recall@10 over 1000 queries.
+
+**Rotation and Extended RaBitQ.** `rot-<quantizer>` rotates vectors with a
+seeded randomized Hadamard transform into the inner quantizer's own code
+width, so it adds no code bytes; `erq` is Extended RaBitQ (2 to 8 bits).
+
+| set | index | nprobe | rerank 0 | rerank 100 | rerank 300 | pinned MB |
+|---|---|---|---|---|---|---|
+| GloVe-100 | BBQ | 64 | 0.464 | 0.876 | 0.937 | 15.6 |
+| GloVe-100 | rotated BBQ | 64 | 0.506 | 0.900 | 0.946 | 15.6 |
+| GloVe-100 | BBQ | 128 | 0.465 | 0.888 | 0.955 | 15.6 |
+| GloVe-100 | rotated BBQ | 128 | 0.509 | 0.915 | 0.968 | 15.6 |
+| GloVe-100 | OSQ 2-bit | 64 | 0.679 | 0.951 | 0.955 | 22.3 |
+| GloVe-100 | erq 2-bit | 64 | 0.717 | 0.954 | 0.955 | 20.6 |
+| GloVe-100 | OSQ 4-bit | 64 | 0.848 | 0.955 | 0.955 | 33.4 |
+| GloVe-100 | erq 4-bit | 64 | 0.887 | 0.955 | 0.955 | 33.9 |
+| fastText-300 | BBQ | 64 | 0.641 | 0.920 | 0.929 | 73.5 |
+| fastText-300 | rotated BBQ | 64 | 0.681 | 0.926 | | 73.5 |
+| fastText-300 | OSQ 2-bit | 64 | 0.763 | 0.929 | 0.930 | 117.6 |
+| fastText-300 | erq 2-bit | 64 | 0.811 | 0.930 | | 113.2 |
+
+With rerank, every quantizer reaches the partitions' recall ceiling; the
+options trade pinned bytes against rerank depth. Rotation and erq pay off
+most without rerank or with a shallow one.
+
+**Rerank vector encoding** (`IvfParams::rerank_encoding`). f16 halves the
+`.ivv` file (GloVe 159 to 81 MB, fastText 1196 to 602 MB) for under 0.001
+recall; int8 (residual from the cluster centroid, per-vector scale) takes it
+to 28% for about 0.005. Top-10 overlap of exact search over the rounded
+vectors with exact search over f32, as the set grows (a worst case: rerank
+only rescores candidates):
+
+| encoding | GloVe 50k | 100k | 200k | 390k | fastText 100k | 250k | 500k |
+|---|---|---|---|---|---|---|---|
+| f16 | 0.9994 | 0.9996 | 0.9994 | 0.9990 | 0.9995 | 0.9998 | 0.9997 |
+| bf16 | 0.9959 | 0.9942 | 0.9948 | 0.9938 | 0.9975 | 0.9979 | 0.9981 |
+| int8 | 0.9921 | 0.9902 | 0.9903 | 0.9896 | 0.9948 | 0.9939 | 0.9960 |
+
+int8 loses about 0.001 per doubling on GloVe; f16 does not move.
+
+**Search depth** (`Probes::Auto`, `Rerank::Auto`). Each field is calibrated
+at write and merge on 64 of its own vectors; search uses the stored probe
+fraction and rerank cap, and stops reranking once no remaining candidate's
+estimate plus error bound can beat the k-th exact score. GloVe, calibrated
+nprobe 129 of 1693:
+
+| index | rerank | recall@10 | latency µs | reranked |
+|---|---|---|---|---|
+| BBQ | fixed 300 | 0.955 | 391-421 | 300 |
+| BBQ | auto | 0.955 | 396-427 | 264 |
+| rotated BBQ | fixed 300 | 0.968 | 391-428 | 300 |
+| rotated BBQ | auto | 0.968 | 399-451 | 248 |
+| erq 4-bit | fixed 300 | 0.983 | 716-772 | 300 |
+| erq 4-bit | auto | 0.983 | 635-684 | 17 |
+
+BBQ's error bounds are loose, so early stop trims little; erq's are tight.
+
+**Merges** (`MergeClustering::ReuseLargest`, the default). When one source
+holds at least half of the live vectors, its clusters are kept, the others'
+vectors join their nearest centroid, and only clusters that overflow or
+empty are split or dissolved. GloVe, 90% + 10% segments, BBQ, nprobe 64,
+rerank 100: merge 1.43 s and recall 0.871, against 4.80 s and 0.876 for a
+full re-cluster.

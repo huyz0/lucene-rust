@@ -36,5 +36,9 @@ Builds use every core; searches run one query at a time on one thread.
 avoid remote reads (IVF: meta and postings; HNSW: 1-bit codes and level-0
 adjacency; Faiss: the serialized index without its refine store);
 `vectors_mb` is the full-precision vectors, read only for reranking.
+`ivf_bench` adds `avg_reranked`, the full-precision vectors a query read
+(with `--rerank auto` or `bN`, fewer than the cap once the error bounds
+stop the rerank early); `--nprobe auto` probes the field's calibrated share
+of its clusters.
 
 Results: [`docs/benchmarks/ivf.md`](../../docs/benchmarks/ivf.md).
