@@ -23,6 +23,44 @@ open an `MmapDirectory`; `niofs` and `simplefs` an `FsDirectory`.
 `encryption.key_provider` (a name given to `register_key_provider`) and
 optionally `encryption.chunk_size`.
 
+## Reading an object store by page
+
+`CachedBlobDirectory` reads the same `BlobStore` by range
+(`BlobStore::get_range`) through a `PageCache`, so a node holds the pages its
+queries touch, not whole files. The backend supplies only the `BlobStore`
+(list, whole and ranged reads, uploads, deletes); the cache is built in.
+
+```rust
+use std::sync::Arc;
+use lucene_store::{CachedBlobDirectory, PageCache, PageCacheConfig};
+
+let cache = Arc::new(PageCache::new(PageCacheConfig {
+    disk_dir: Some("/nvme/lucene-cache".into()),   // emptied on start
+    disk_budget: 200 << 30,
+    ..PageCacheConfig::default()                    // 1 MiB pages, 8 MiB requests
+})?);
+let dir = CachedBlobDirectory::new(MyS3Store::new("bucket", "idx/"), cache, "bucket/idx");
+```
+
+- Pages are fixed and whole: a read fetches every page it touches, adjacent
+  misses merged into one ranged read; the cache never keeps part of a page.
+  Concurrent misses on a page send one request.
+- Files read whole at open or on every query (metadata, terms index, norms,
+  the stored-fields and points indexes, live docs) are pinned on disk and
+  held in memory. Other files are mapped and filled on first touch (Linux
+  `userfaultfd`), within a process-wide memory budget
+  (`lucene_store::paged_input::Pager::set_budget`); elsewhere they are read
+  whole.
+- `Input::will_need(offset, len)` (Lucene's `IndexInput.prefetch`) fetches a
+  range ahead of the reads and returns the fetch error. A fault that still
+  cannot be filled after retries aborts the process, since a memory read
+  cannot fail.
+- With `EncryptedDirectory` on top, pages are whole 64 KiB chunks after the
+  header: the disk tier holds ciphertext, and a page is authenticated and
+  decrypted once each time it is brought into memory. Only the header is
+  read when a file opens. Encryption stays opt-in; without it, pages are
+  copied through with no crypto.
+
 ## Example: BYOK on an object store
 
 ```rust

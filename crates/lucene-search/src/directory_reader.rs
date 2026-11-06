@@ -135,6 +135,9 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// address and the set's offset in it.
 pub(crate) use crate::sparse_docs_cache::DocsWithFieldCache;
 
+/// By field, `(sumTotalTermFreq, sumDocFreq, docCount)`.
+type FieldStats = HashMap<String, (i64, i64, i32)>;
+
 /// One opened segment: everything [`OpenSegment`] needs, already decoded/
 /// validated, plus the bookkeeping ([`SegmentReader::doc_base`]) real
 /// `SegmentReader.docBase` carries. `fields`/`live_docs` are owned outright
@@ -257,6 +260,10 @@ pub struct SegmentReader {
     /// Set once this segment's `.doc`/`.pos`/`.pay` headers and footers have
     /// been validated: later searches open them without reading either again.
     postings_validated: Arc<std::sync::atomic::AtomicBool>,
+    /// For postings put in by [`Self::with_postings`]: every requested
+    /// field's `(sumTotalTermFreq, sumDocFreq, docCount)` over the
+    /// segment, also for a field none of whose requested terms it holds.
+    postings_stats: Option<Arc<FieldStats>>,
     /// The segment's parsed `.dvm` (per-field entries -- `NumericEntry`,
     /// `SortedEntry`, etc., each already carrying whichever of the
     /// dense/sparse shapes `doc_values.rs`'s write side actually produced;
@@ -996,6 +1003,7 @@ impl SegmentReader {
             // A multi-format segment's postings were validated format by
             // format as they were opened and concatenated.
             postings_validated: Arc::new(std::sync::atomic::AtomicBool::new(multi_format)),
+            postings_stats: None,
             dv_meta,
             dv_generations,
             norms_meta,
@@ -1704,7 +1712,58 @@ impl SegmentReader {
         Ok(self
             .fields
             .field(field)
-            .map(|terms| (terms.sum_total_term_freq, terms.doc_count)))
+            .map(|terms| (terms.sum_total_term_freq, terms.doc_count))
+            .or_else(|| {
+                let &(ttf, _, dc) = self.postings_stats.as_ref()?.get(field)?;
+                Some((ttf, dc))
+            }))
+    }
+
+    /// `(sumTotalTermFreq, sumDocFreq, docCount)` of a field these postings
+    /// ([`Self::with_postings`]) hold no term of, though its documents do:
+    /// what the reader-wide statistics count of this segment for it.
+    pub fn termless_field_stats(&self, field: &str) -> Option<(i64, i64, i32)> {
+        if self.fields.field(field).is_some() {
+            return None;
+        }
+        self.postings_stats.as_ref()?.get(field).copied()
+    }
+
+    /// This segment with `live`'s postings in place of its own: the same
+    /// documents, doc values, points, norms and stored fields, and only the
+    /// terms `live` encoded, with `live`'s field statistics. For a segment
+    /// written without postings whose documents' terms are read elsewhere
+    /// (the writer's buffers), one search at a time. `live` must number
+    /// the same documents.
+    ///
+    /// # Errors
+    /// When `live` holds other than this segment's number of documents, or
+    /// its postings files do not open.
+    pub fn with_postings(
+        &self,
+        live: crate::live_segment::LiveSegment,
+    ) -> crate::Result<SegmentReader> {
+        if live.max_doc() != self.max_doc {
+            return Err(crate::Error::IllegalArgument(format!(
+                "postings of {} documents for segment {} of {}",
+                live.max_doc(),
+                self.segment_name,
+                self.max_doc
+            )));
+        }
+        live.inputs()?;
+        let parts = live.into_postings();
+        let owned = |bytes: Vec<u8>| (!bytes.is_empty()).then(|| Arc::new(Input::Owned(bytes)));
+        let mut reader = self.clone();
+        reader.fields = Arc::new(parts.terms);
+        reader.doc_buf = owned(parts.doc);
+        reader.pos_buf = owned(parts.pos);
+        reader.pay_buf = owned(parts.pay);
+        reader.postings_files = Vec::new();
+        reader.postings_validated = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        reader.query_cache = Arc::default();
+        reader.postings_stats = Some(Arc::new(parts.field_stats));
+        Ok(reader)
     }
 
     /// The name of this segment's soft-deletes field, if its `.fnm` marks one

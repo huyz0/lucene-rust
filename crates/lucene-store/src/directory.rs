@@ -63,8 +63,10 @@ pub enum Input {
     /// blob store's downloaded object kept in a pooled buffer, a decrypted
     /// file in an anonymous mapping, a local cache file's mapping. Opening
     /// costs whatever the directory chose; reading is a slice like every
-    /// other input. Build it with [`Input::external`].
-    External(Box<dyn AsRef<[u8]> + Send + Sync>),
+    /// other input. Build it with [`Input::external`], or with
+    /// [`Input::external_bytes`] for bytes that act on
+    /// [`Input::will_need`] (a demand-filled mapping).
+    External(Box<dyn ExternalBytes>),
     /// Another input held open by a test harness (feature `test-util`): the
     /// guard is dropped with the bytes, which is how the test framework's
     /// `MockDirectoryWrapper` sees an input "closed".
@@ -127,10 +129,36 @@ impl Deref for Input {
             // In bounds: `slice_of` checked `start + len <= base.len()`, and
             // `base` cannot change length behind the `Arc`.
             Input::Slice { base, start, len } => &base[*start..][..*len],
-            Input::External(bytes) => (**bytes).as_ref(),
+            Input::External(bytes) => bytes.bytes(),
             #[cfg(any(test, feature = "test-util"))]
             Input::Tracked(t) => &t.input,
         }
+    }
+}
+
+/// The bytes behind an [`Input::External`]: a slice, plus a hint that a
+/// range will be read soon.
+pub trait ExternalBytes: Send + Sync {
+    /// The bytes.
+    fn bytes(&self) -> &[u8];
+
+    /// Makes `offset..offset + len` resident before it is read, returning
+    /// any error fetching it. The default does nothing: the bytes are
+    /// already in memory. A demand-filled input fetches the range here, so
+    /// a failed download reaches the caller as an error instead of at a
+    /// later page fault.
+    fn will_need(&self, offset: usize, len: usize) -> Result<()> {
+        let _ = (offset, len);
+        Ok(())
+    }
+}
+
+/// [`Input::external`]'s plain bytes: nothing to fetch.
+struct PlainBytes<T>(T);
+
+impl<T: AsRef<[u8]> + Send + Sync> ExternalBytes for PlainBytes<T> {
+    fn bytes(&self) -> &[u8] {
+        self.0.as_ref()
     }
 }
 
@@ -138,7 +166,41 @@ impl Input {
     /// An [`Input::External`] over `bytes`, which the input owns and drops
     /// when it is closed.
     pub fn external(bytes: impl AsRef<[u8]> + Send + Sync + 'static) -> Input {
+        Input::External(Box::new(PlainBytes(bytes)))
+    }
+
+    /// An [`Input::External`] over bytes that act on [`Input::will_need`].
+    pub fn external_bytes(bytes: impl ExternalBytes + 'static) -> Input {
         Input::External(Box::new(bytes))
+    }
+
+    /// Hints that `offset..offset + len` (clamped to the input) will be read
+    /// soon: Lucene's `IndexInput.prefetch`. A mapping is advised
+    /// `MADV_WILLNEED`; a demand-filled input ([`ExternalBytes`]) fetches
+    /// the range now and reports a failure to fetch it. Bytes already in
+    /// memory ignore it.
+    pub fn will_need(&self, offset: usize, len: usize) -> Result<()> {
+        let end = offset.saturating_add(len).min(self.len());
+        if offset >= end {
+            return Ok(());
+        }
+        let len = end.saturating_sub(offset);
+        match self {
+            Input::Owned(_) | Input::Shared(_) => Ok(()),
+            #[cfg(unix)]
+            Input::Mapped(m) => {
+                // Advice only: a failure (an old kernel) changes nothing a
+                // reader can see.
+                let _ = m.advise_range(memmap2::Advice::WillNeed, offset, len);
+                Ok(())
+            }
+            #[cfg(not(unix))]
+            Input::Mapped(_) => Ok(()),
+            Input::Slice { base, start, .. } => base.will_need(start.saturating_add(offset), len),
+            Input::External(bytes) => bytes.will_need(offset, len),
+            #[cfg(any(test, feature = "test-util"))]
+            Input::Tracked(t) => t.input.will_need(offset, len),
+        }
     }
 
     /// `len` bytes of `base` from `start`, sharing `base` rather than copying
@@ -291,6 +353,31 @@ pub trait Directory: Send + Sync {
         Ok(BTreeSet::new())
     }
 
+    /// `len` bytes of `name` from `offset` (fewer at the end of the file),
+    /// without opening the whole file: what a wrapper reads a header with.
+    /// The default opens the file; a remote directory reads only the range.
+    fn read_at(&self, name: &str, offset: u64, len: usize) -> Result<Vec<u8>> {
+        let input = self.open(name)?;
+        let start = usize::try_from(offset)
+            .unwrap_or(usize::MAX)
+            .min(input.len());
+        let end = start.saturating_add(len).min(input.len());
+        Ok(input[start..end].to_vec())
+    }
+
+    /// Opens `name` decoded page by page by `decoder` (an encrypting
+    /// wrapper's decryption), when this directory fetches and caches pages
+    /// itself ([`crate::CachedBlobDirectory`]). `None` (the default) means it
+    /// does not, and the caller decodes [`Directory::open`]'s bytes.
+    fn open_decoded(
+        &self,
+        name: &str,
+        decoder: &dyn crate::page_cache::PageDecoder,
+    ) -> Option<Result<Input>> {
+        let _ = (name, decoder);
+        None
+    }
+
     /// `dir instanceof FSDirectory ? dir.getDirectory() : null`: the
     /// filesystem path a [`crate::fs_lock_factory::FsLockFactory`] puts its
     /// lock file in. `None` for anything that is not a filesystem directory.
@@ -412,6 +499,16 @@ macro_rules! forward_directory {
             fn fs_directory_path(&self) -> Option<&Path> {
                 (**self).fs_directory_path()
             }
+            fn read_at(&self, name: &str, offset: u64, len: usize) -> Result<Vec<u8>> {
+                (**self).read_at(name, offset, len)
+            }
+            fn open_decoded(
+                &self,
+                name: &str,
+                decoder: &dyn crate::page_cache::PageDecoder,
+            ) -> Option<Result<Input>> {
+                (**self).open_decoded(name, decoder)
+            }
             fn copy_from(&self, from: &dyn Directory, src: &str, dest: &str) -> Result<()> {
                 (**self).copy_from(from, src, dest)
             }
@@ -505,6 +602,16 @@ impl Directory for EstimatedWrites<'_> {
     }
     fn fs_directory_path(&self) -> Option<&Path> {
         self.inner.fs_directory_path()
+    }
+    fn read_at(&self, name: &str, offset: u64, len: usize) -> Result<Vec<u8>> {
+        self.inner.read_at(name, offset, len)
+    }
+    fn open_decoded(
+        &self,
+        name: &str,
+        decoder: &dyn crate::page_cache::PageDecoder,
+    ) -> Option<Result<Input>> {
+        self.inner.open_decoded(name, decoder)
     }
 }
 

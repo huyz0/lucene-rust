@@ -887,6 +887,9 @@ impl IndexingConfig {
         };
         let mut flush_fields = pending.fields_to_flush();
         if let Some(limit) = buf.limit {
+            if !limit.postings {
+                flush_fields.clear();
+            }
             // The fields as the documents written hold them.
             flush_fields.retain_mut(|f| {
                 f.doc_count = limit.doc_counts.get(&f.number).copied().unwrap_or(0);
@@ -1235,6 +1238,7 @@ impl IndexingConfig {
             self.codec.as_deref(),
             lucene_codecs::codec::WritePoint::FieldInfos,
         )?;
+        let fnm_fields = self.partition_fields(fnm_fields, buf.partition);
         let mut flushed = segment_writer::write_stored_only_segment_files_with_codec(
             dir,
             segment_name,
@@ -1327,6 +1331,7 @@ impl IndexingConfig {
             self.codec.as_deref(),
             lucene_codecs::codec::WritePoint::SegmentInfo,
         )?;
+        self.partition_segment(&mut flushed.info.attributes, buf.partition);
         segment_writer::seal_flushed_segment(dir, segment_name, flushed).map_err(Error::from)
     }
 }
