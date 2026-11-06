@@ -15,6 +15,12 @@
 //! document's fields as structs at once; only an index sort, which permutes
 //! whole documents, unpacks them all.
 //!
+//! A document's record is its shape (which fields, which kinds of value)
+//! followed by its values. Documents of one index mostly share a shape, so a
+//! record shaped like the block's previous packed one leaves the shape out;
+//! each block's first packed record states it, so a read can start at any
+//! block.
+//!
 //! A document whose inverted fields still hold terms, or that carries term
 //! vectors, is kept as it is: those are rare and their shape is deep.
 //!
