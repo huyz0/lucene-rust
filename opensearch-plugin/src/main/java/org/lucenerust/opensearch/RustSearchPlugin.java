@@ -350,6 +350,7 @@ public class RustSearchPlugin extends Plugin implements
             NODE_DECRYPT_CACHE,
             SparseSettings.SPARSE_INDEX
         ));
+        settings.addAll(org.lucenerust.opensearch.engine.BpReorderSettings.settings());
         return settings;
     }
 

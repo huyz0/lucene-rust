@@ -48,6 +48,10 @@ impl MergeReaderHooks for BpHooks {
             Err(ReorderError::Failed(e)) => Err(e),
         }
     }
+
+    fn diagnostics(&self, reordered: bool) -> Vec<(String, String)> {
+        vec![(REORDERED.to_string(), reordered.to_string())]
+    }
 }
 
 impl BpReorderingMergePolicy {
