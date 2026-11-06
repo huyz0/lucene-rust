@@ -10877,7 +10877,12 @@ impl IndexWriter<'_> {
                 took_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
                 ..MergeTimes::default()
             };
-            listener.after_merge(event, times, result.as_ref().err());
+            // An aborted merge is not a failure (`MergeAbortedException`).
+            let failure = result
+                .as_ref()
+                .err()
+                .filter(|e| !matches!(e, Error::MergeAborted));
+            listener.after_merge(event, times, failure);
         }
         result
     }
