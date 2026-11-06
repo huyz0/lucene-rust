@@ -430,11 +430,12 @@ unsafe fn residual_stats_avx2(query: &[f32], centroid: &[f32]) -> ResidualStats 
 
 /// Scalar-quantizes `r = query - centroid` over their common prefix into
 /// `out` (which must be at least that long): `r_i` clamped to
-/// `[lower, upper]`, level `floor((r_i - lower) * step_inv + 0.5)` (at most
-/// 255 for a well-formed interval), and returns the levels' sum and the
-/// squared norm of the error `r_i - (lower + level * step)`. Sums run in
-/// eight lanes, so the error matches [`quantize_residual_scalar`] only to
-/// rounding; levels match exactly.
+/// `[lower, upper]`, level `floor((r_i - lower) * step_inv + 0.5)` clamped
+/// to `0..=255` (a NaN level is 0), and returns the levels' sum and the
+/// squared norm of the error `r_i - (lower + level * step)`. The vector path
+/// fuses the multiply-add, so a level exactly at a half step may round the
+/// other way than in [`quantize_residual_scalar`], and its error sum runs in
+/// another order.
 ///
 /// # Panics
 ///
@@ -496,12 +497,14 @@ pub fn quantize_residual_scalar(
     for (i, ((o, &q), &c)) in out.iter_mut().zip(query).zip(centroid).enumerate() {
         let r = q - c;
         let x = r.max(lower).min(upper);
-        let level = ((x - lower) * step_inv + 0.5).floor();
+        // `max` first, so a NaN level becomes 0, as the vector path's.
+        let level = ((x - lower) * step_inv + 0.5).floor().max(0.0).min(255.0);
         let e = r - (lower + level * step);
         errors[i % L] += e * e;
+        // In 0..=255: exact as an integer.
         let level = level as i32;
         levels = levels.wrapping_add(level);
-        *o = level.clamp(0, 255) as u8;
+        *o = level as u8;
     }
     (levels, errors.iter().sum())
 }
@@ -534,6 +537,7 @@ unsafe fn quantize_residual_avx2(
         _mm256_set1_ps(step),
         _mm256_set1_ps(0.5),
     );
+    let (zero, top) = (_mm256_setzero_ps(), _mm256_set1_ps(255.0));
     let mut err = _mm256_setzero_ps();
     let mut sum = _mm256_setzero_si256();
     let mut i = 0;
@@ -544,7 +548,9 @@ unsafe fn quantize_residual_avx2(
         // `max` then `min`, as the scalar path, so a NaN residual becomes
         // `lower` in both.
         let x = _mm256_min_ps(_mm256_max_ps(r, a), b);
+        // Clamped to 0..=255; `max` returns its second operand, 0, for NaN.
         let level = _mm256_floor_ps(_mm256_fmadd_ps(_mm256_sub_ps(x, a), inv, half));
+        let level = _mm256_min_ps(_mm256_max_ps(level, zero), top);
         let e = _mm256_sub_ps(r, _mm256_fmadd_ps(level, st, a));
         err = _mm256_fmadd_ps(e, e, err);
         let li = _mm256_cvttps_epi32(level);

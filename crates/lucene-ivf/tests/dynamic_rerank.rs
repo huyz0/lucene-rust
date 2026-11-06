@@ -247,7 +247,7 @@ fn fixed_rerank_is_an_exact_rerank_of_the_best_estimates() {
                     .iter()
                     .map(|e| ScoredDoc {
                         doc: e.doc,
-                        score: stored_score(sim, true, &qq, &r.vector(1, e.doc).unwrap().unwrap()),
+                        score: sim.score(&qq, &r.vector(1, e.doc).unwrap().unwrap()),
                     })
                     .collect();
                 exact.sort_by(|a, b| b.score.total_cmp(&a.score).then(a.doc.cmp(&b.doc)));
@@ -822,15 +822,4 @@ fn shared_thresholds_only_rise() {
         rerank_multiple: 2.0,
     };
     assert_eq!(c, c);
-}
-
-/// The exact score a search reports: a `Cosine` field's stored floats and
-/// its prepared query are unit length, so their cosine is scored as their
-/// dot product; decoded lossy vectors keep the full cosine.
-fn stored_score(sim: Similarity, stored_f32: bool, q: &[f32], v: &[f32]) -> f32 {
-    if sim == Similarity::Cosine && stored_f32 {
-        Similarity::DotProduct.score(q, v)
-    } else {
-        sim.score(q, v)
-    }
 }

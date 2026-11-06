@@ -143,7 +143,7 @@ fn every_quantizer_and_similarity_finds_the_neighbours() {
                     if sim == Similarity::Cosine {
                         lucene_util::vector_util::l2normalize(&mut qq, false).unwrap();
                     }
-                    assert_eq!(h.score, stored_score(sim, true, &qq, &v));
+                    assert_eq!(h.score, sim.score(&qq, &v));
                 }
                 total += recall(&hits, &truth);
                 let est = r.search(5, q, &SearchParams::new(10, 8, 0), None).unwrap();
@@ -830,8 +830,7 @@ fn rerank_encodings_round_trip_and_rank_like_f32() {
                 }
                 for h in &hits {
                     let v = r.vector(1, h.doc).unwrap().unwrap();
-                    let f32_stored = encoding == VectorEncoding::F32;
-                    assert_eq!(h.score, stored_score(sim, f32_stored, &qq, &v));
+                    assert_eq!(h.score, sim.score(&qq, &v));
                 }
                 total += recall(&hits, &want);
                 let all = r.exact_search(1, q, 10, None).unwrap();
@@ -1659,16 +1658,5 @@ fn writer_takes_a_given_clustering() {
             ),
             "{c:?}"
         );
-    }
-}
-
-/// The exact score a search reports: a `Cosine` field's stored floats and
-/// its prepared query are unit length, so their cosine is scored as their
-/// dot product; decoded lossy vectors keep the full cosine.
-fn stored_score(sim: Similarity, stored_f32: bool, q: &[f32], v: &[f32]) -> f32 {
-    if sim == Similarity::Cosine && stored_f32 {
-        Similarity::DotProduct.score(q, v)
-    } else {
-        sim.score(q, v)
     }
 }

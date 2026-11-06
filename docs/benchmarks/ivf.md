@@ -314,9 +314,8 @@ the lookup tables) cost as much as scoring the cluster's codes. The fixes:
   trick), and the final reduction is vectorized.
 - **Candidates in a buffer, cut back by selection** rather than a heap:
   a scan offers every code that beats the cut-off.
-- **Rerank**: f32 vectors are scored in place (no copy), Cosine's stored
-  unit vectors by dot product, and a fixed-depth rerank reads its
-  candidates in file order.
+- **Rerank**: f32 vectors are scored in place (no copy), and a fixed-depth
+  rerank reads its candidates in file order.
 - **Build**: the neighbourhood refine rounds score each cluster's members
   against its neighbours with the tiled full-assignment kernel, measured
   from the own centroid so Euclidean keeps its precision.
@@ -326,8 +325,8 @@ unchanged to the fourth decimal):
 
 | data | quantizer | nprobe / rerank | latency before -> after |
 |---|---|---|---|
-| GloVe-100 | bbq | 32 / 100 | 89 -> 69 µs |
-| GloVe-100 | bbq | 128 / auto | 290 -> 211 µs |
+| GloVe-100 | bbq | 32 / 100 | 89 -> 76 µs |
+| GloVe-100 | bbq | 128 / auto | 290 -> 233 µs |
 | GloVe-100 | osq2 | 128 / 100 | 319 -> 253 µs |
 | GloVe-100 | erq4 | 128 / 100 | 479 -> 420 µs |
 | fastText-300 | bbq | 128 / 100 | 553 -> 417 µs |

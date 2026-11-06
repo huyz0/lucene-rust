@@ -716,11 +716,10 @@ impl QueryScorer for ExRabitqQueryScorer<'_> {
         self.offset_sum =
             (center * (f64::from(lo) * n + f64::from(self.step) * f64::from(sum))) as f32;
         self.centroid_norm2 = simd::dot_f32(prepared, prepared);
-        // `<P q, P c>` is `<z, P c> + |P c|^2`.
         self.query_extra = if self.q.similarity == Similarity::Euclidean {
             norm2
         } else {
-            stats.dot_centroid + self.centroid_norm2
+            simd::dot_f32(&self.rotated, prepared)
         };
         self.z_norm = norm2.sqrt();
         if !self.luts.is_empty() {

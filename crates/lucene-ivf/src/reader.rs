@@ -980,7 +980,8 @@ impl TopN {
 /// The best `size` candidates of a cluster scan, gathered in a buffer of
 /// twice that and cut back to the best `size` whenever it fills: cheaper
 /// than a heap when many candidates are offered, as a scan offers each code
-/// that beats the cut-off. Holds the same candidates [`TopN`] would.
+/// that beats the cut-off. Holds the same candidates [`TopN`] would, except
+/// that a NaN score never enters.
 struct Shortlist {
     size: usize,
     buffer: Vec<Candidate>,
@@ -1385,8 +1386,7 @@ impl IvfReader {
 
     /// The exact score of `query` against slot `slot`'s vector, decoded
     /// into `scratch` unless it is stored as aligned floats to score in
-    /// place. Stored `Cosine` floats and the prepared query are both unit
-    /// length, so their cosine is their dot product.
+    /// place.
     fn exact_score(
         &self,
         f: &IvfField,
@@ -1397,11 +1397,7 @@ impl IvfReader {
         let bytes = self.vectors.read(f.vector_offset(slot), f.vector_len())?;
         if f.encoding == VectorEncoding::F32 {
             if let Some(v) = vector_util::le_f32s(&bytes) {
-                let similarity = match f.similarity {
-                    Similarity::Cosine => Similarity::DotProduct,
-                    s => s,
-                };
-                return Ok(similarity.score(query, v));
+                return Ok(f.similarity.score(query, v));
             }
         }
         scratch.resize(f.dimension, 0.0);
