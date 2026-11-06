@@ -116,6 +116,7 @@ public final class EngineWriterDiffTest {
         check(DocumentEncoder.ANALYZED_NATIVELY.get() > 3000, "field values analyzed in Rust: " + DocumentEncoder.ANALYZED_NATIVELY.get());
         check(payloadsSeen > 0, "payloads were indexed and compared");
         refusals();
+        partitions();
         mappingFallback();
         System.out.printf("EngineWriterDiffTest: %d checks, %d failures%n", checks, failures);
         if (failures > 0) {
@@ -374,6 +375,7 @@ public final class EngineWriterDiffTest {
                 false,
                 false,
                 adaptive,
+                null,
                 IndexWriter.MAX_DOCS,
                 analyzer,
                 similarity,
@@ -793,6 +795,7 @@ public final class EngineWriterDiffTest {
                 false,
                 false,
                 false,
+                null,
                 IndexWriter.MAX_DOCS,
                 new TestAnalyzer(),
                 new BM25Similarity(),
@@ -825,6 +828,99 @@ public final class EngineWriterDiffTest {
             check(w.getPendingNumDocs() == 2, "two documents indexed, got " + w.getPendingNumDocs());
             w.close();
             checkIndex("refusals", dir);
+        } finally {
+            try (Stream<Path> s = Files.walk(root)) {
+                s.sorted(Comparator.reverseOrder()).forEach(p -> p.toFile().delete());
+            }
+        }
+    }
+
+    /**
+     * index.lucene_rust.partition_field: each document lands in the segments of its partition (a
+     * keyword's value, a long's), every segment records it as OpenSearch's context-aware {@code bucket}
+     * attribute, documents without a value share the default partition, and a forced merge leaves one
+     * segment per partition that Lucene reads.
+     */
+    private static void partitions() throws Exception {
+        Path root = Files.createTempDirectory("engine-writer-partitions");
+        try (FSDirectory dir = FSDirectory.open(root)) {
+            try (IndexWriter empty = new IndexWriter(dir, new IndexWriterConfig())) {
+                empty.commit();
+            }
+            RustIndexWriter w = RustIndexWriter.open(
+                dir,
+                root,
+                16,
+                false,
+                false,
+                false,
+                false,
+                "tenant",
+                IndexWriter.MAX_DOCS,
+                new TestAnalyzer(),
+                new BM25Similarity(),
+                10,
+                SOFT,
+                null,
+                new KeepOnlyLastCommitDeletionPolicy(),
+                null,
+                null,
+                null
+            );
+            w.setLiveCommitData(Map.<String, String>of().entrySet());
+            String[] partitions = { "a", "b", "c" };
+            for (int round = 0; round < 3; round++) {
+                for (int i = 0; i < 30; i++) {
+                    ParseContext.Document d = new ParseContext.Document();
+                    String p = partitions[i % 3];
+                    d.add(new StringField("id", p + "-" + round + "-" + i, Field.Store.YES));
+                    d.add(new StringField("tenant", p, Field.Store.NO));
+                    d.add(new SortedSetDocValuesField("tenant", new BytesRef(p)));
+                    check(p.equals(w.partition(List.of(d))), "a keyword's value is its partition");
+                    w.addDocument(d, null);
+                }
+                ParseContext.Document none = new ParseContext.Document();
+                none.add(new StringField("id", "none-" + round, Field.Store.YES));
+                check(w.partition(List.of(none)) == null, "no value, no partition");
+                w.addDocument(none, null);
+                w.commit();
+            }
+            ParseContext.Document numeric = new ParseContext.Document();
+            numeric.add(new SortedNumericDocValuesField("tenant", 42));
+            check("42".equals(w.partition(List.of(numeric))), "a long's value is its partition");
+            ParseContext.Document several = new ParseContext.Document();
+            several.add(new SortedSetDocValuesField("tenant", new BytesRef("z")));
+            several.add(new SortedSetDocValuesField("tenant", new BytesRef("m")));
+            check("m".equals(w.partition(List.of(several))), "with several values, the smallest");
+            ParseContext.Document ip = new ParseContext.Document();
+            ip.add(new SortedSetDocValuesField("tenant", new BytesRef(new byte[] { 10, 0, 0, (byte) 200 })));
+            check("0x0a0000c8".equals(w.partition(List.of(ip))), "bytes that are not UTF-8 as hex: " + w.partition(List.of(ip)));
+            ParseContext.Document text = new ParseContext.Document();
+            text.add(new TextField("tenant", "a b", Field.Store.NO));
+            check(refused(w, text, "must be a keyword"), "an analyzed value is refused");
+            w.forceMerge(1, true);
+            w.commit();
+            Map<String, Integer> docsPerBucket = new TreeMap<>();
+            try (DirectoryReader reader = DirectoryReader.open(dir)) {
+                for (LeafReaderContext leaf : reader.leaves()) {
+                    org.apache.lucene.index.SegmentReader segment = (org.apache.lucene.index.SegmentReader) leaf.reader();
+                    String bucket = segment.getSegmentInfo().info.getAttribute("bucket");
+                    check(bucket != null, "every segment records its partition");
+                    StoredFields stored = segment.storedFields();
+                    for (int doc = 0; doc < segment.maxDoc(); doc++) {
+                        String id = stored.document(doc).get("id");
+                        String expected = id.startsWith("none-") ? "-2" : id.substring(0, 1);
+                        check(expected.equals(bucket), "document " + id + " is in segment of partition " + bucket);
+                    }
+                    check(docsPerBucket.put(bucket, segment.maxDoc()) == null, "one segment per partition after a forced merge");
+                }
+            }
+            check(
+                docsPerBucket.equals(Map.of("a", 30, "b", 30, "c", 30, "-2", 3)),
+                "documents per partition: " + docsPerBucket
+            );
+            w.close();
+            checkIndex("partitions", dir);
         } finally {
             try (Stream<Path> s = Files.walk(root)) {
                 s.sorted(Comparator.reverseOrder()).forEach(p -> p.toFile().delete());

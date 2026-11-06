@@ -62,11 +62,13 @@ use lucene_index::buffered_updates::{DocValuesUpdate, Term};
 use lucene_index::concurrent_writer::ConcurrentIndexWriter;
 use lucene_index::index_file_deleter::DeletionPolicy;
 use lucene_index::index_writer::{
-    self, ExplicitDocument, ExplicitFields, IndexWriter, InvertedField, InvertedTerms,
-    MergePolicyConfig, SoftDeletesRetention,
+    self, ExplicitDocument, ExplicitFields, IndexWriter, InvertedField, InvertedTerms, MergeEvent,
+    MergeListener, MergePolicyConfig, MergeTimes, MergedSegmentWarmer, SegmentPartitioning,
+    SoftDeletesRetention,
 };
+use lucene_index::merge_policy::log::LogByteSizeMergePolicy;
 use lucene_index::merge_policy::{
-    CompoundFileSettings, MergeOnFlushMergePolicy, MergePolicy, TieredMergePolicy,
+    CompoundFileSettings, MergeOnFlushMergePolicy, MergePolicy, NoMergePolicy, TieredMergePolicy,
 };
 use lucene_index::merge_scheduler::ConcurrentMergeScheduler;
 use lucene_index::segment_info::LuceneVersion;
@@ -98,6 +100,11 @@ const RECOVERY_SOURCE_FIELD: &str = "_recovery_source";
 /// Operation kinds of [`decode_op`].
 const OP_ADD: u8 = 0;
 const OP_SOFT_UPDATE: u8 = 1;
+/// [`OP_ADD`] and [`OP_SOFT_UPDATE`] whose documents belong to a partition
+/// (the value of the index's partition field): the kind is followed by the
+/// partition (`i32 len, utf8`), then the operation as without one.
+const OP_ADD_PARTITIONED: u8 = 2;
+const OP_SOFT_UPDATE_PARTITIONED: u8 = 3;
 /// Panics inside the writer -- the fault the "a panic fails exactly one
 /// shard" test injects. Refused unless the handle was opened with fault
 /// injection enabled.
@@ -138,6 +145,9 @@ struct MergePolicies {
     merge_on_flush: bool,
     /// `BPReorderingMergePolicy`'s settings, when reordering is on.
     bp: Option<BpSettings>,
+    /// The shard's policy when it is not the tiered one
+    /// ([`ffi_engine_writer_set_pluggable_merge_policy`]).
+    other: Option<PluggablePolicy>,
 }
 
 /// `BPReorderingMergePolicy` with its `BPIndexReorderer`.
@@ -150,7 +160,8 @@ struct BpSettings {
 
 /// Rebuilds the policies `policies` names over the writer's current
 /// [`MergePolicyConfig`]: merge-on-flush's `MergeOnFlushMergePolicy`, and
-/// `BPReorderingMergePolicy` deciding every other merge. With BP on, a
+/// `BPReorderingMergePolicy` deciding every other merge, each around the
+/// shard's own policy (tiered, or [`PluggablePolicy`]). With BP on, a
 /// commit or refresh still picks its merges with the plain tiered policy:
 /// the segments it merges are small, and its merges then run on the merge
 /// threads instead of the refreshing one. A writer with merges off keeps
@@ -171,27 +182,82 @@ fn install_merge_policies(iw: &mut IndexWriter<'_>, policies: &MergePolicies) {
         }
         t
     };
+    // The shard's own policy: tiered, or `log_byte_size`/no merges.
+    let base = || -> Box<dyn MergePolicy> {
+        match &policies.other {
+            Some(other) => other.build(),
+            None => Box::new(tiered()),
+        }
+    };
     let full_flush: Option<Arc<dyn MergePolicy>> = if policies.merge_on_flush {
-        Some(Arc::new(MergeOnFlushMergePolicy::new(Box::new(tiered()))))
+        Some(Arc::new(MergeOnFlushMergePolicy::new(base())))
     } else if merges_on && policies.bp.is_some() {
-        Some(Arc::new(tiered()))
+        Some(Arc::from(base()))
     } else {
         None
     };
     iw.set_full_flush_merge_policy(full_flush);
-    let pluggable = policies.bp.as_ref().filter(|_| merges_on).map(|bp| {
-        let mut policy = BpReorderingMergePolicy::new(Box::new(tiered()), bp.reorderer.clone());
-        // Both checked when the settings came in.
-        let _ = policy.set_min_natural_merge_num_docs(bp.min_merge_docs);
-        let _ = policy.set_min_natural_merge_ratio_from_biggest_segment(bp.min_merge_ratio);
-        Arc::new(policy) as Arc<dyn MergePolicy>
-    });
+    let pluggable = match policies.bp.as_ref().filter(|_| merges_on) {
+        Some(bp) => {
+            let mut policy = BpReorderingMergePolicy::new(base(), bp.reorderer.clone());
+            // Both checked when the settings came in.
+            let _ = policy.set_min_natural_merge_num_docs(bp.min_merge_docs);
+            let _ = policy.set_min_natural_merge_ratio_from_biggest_segment(bp.min_merge_ratio);
+            Some(Arc::new(policy) as Arc<dyn MergePolicy>)
+        }
+        None => policies
+            .other
+            .as_ref()
+            .map(|other| Arc::from(other.build())),
+    };
     iw.set_pluggable_merge_policy(pluggable);
 }
 
 impl EngineWriter {
     fn policies(&self) -> MutexGuard<'_, MergePolicies> {
         self.policies.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// A merge policy other than `TieredMergePolicy`, as OpenSearch configures it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum PluggablePolicy {
+    /// `LogByteSizeMergePolicy` (`index.merge.policy: log_byte_size`).
+    LogByteSize {
+        merge_factor: i32,
+        min_merge_bytes: i64,
+        max_merge_bytes: i64,
+        max_forced_merge_bytes: i64,
+        max_merge_docs: i32,
+        compound: CompoundFileSettings,
+    },
+    /// `NoMergePolicy` (`index.merge.enabled: false`).
+    NoMerges,
+}
+
+impl PluggablePolicy {
+    fn build(&self) -> Box<dyn MergePolicy> {
+        match *self {
+            PluggablePolicy::LogByteSize {
+                merge_factor,
+                min_merge_bytes,
+                max_merge_bytes,
+                max_forced_merge_bytes,
+                max_merge_docs,
+                compound,
+            } => {
+                let mut p = LogByteSizeMergePolicy::new();
+                // Checked by the caller: at least 2.
+                let _ = p.set_merge_factor(merge_factor);
+                p.min_merge_size = min_merge_bytes;
+                p.max_merge_size = max_merge_bytes;
+                p.max_merge_size_for_forced_merge = max_forced_merge_bytes;
+                p.max_merge_docs = max_merge_docs;
+                *p.compound_file_settings_mut() = compound;
+                Box::new(p)
+            }
+            PluggablePolicy::NoMerges => Box::new(NoMergePolicy::default()),
+        }
     }
 }
 
@@ -482,8 +548,12 @@ fn document(c: &mut Cursor<'_>) -> Result<ExplicitDocument, FfiStatus> {
 
 /// An operation blob, decoded.
 enum Op {
-    Add(Vec<ExplicitDocument>),
+    Add {
+        partition: Option<Arc<str>>,
+        docs: Vec<ExplicitDocument>,
+    },
     SoftUpdate {
+        partition: Option<Arc<str>>,
         term: Term,
         soft_field: String,
         soft_value: i64,
@@ -506,8 +576,13 @@ fn decode_op(blob: &[u8]) -> Result<Op, FfiStatus> {
     let kind = c.u8("op kind")?;
     let op = match kind {
         OP_PANIC => Op::Panic,
-        OP_ADD | OP_SOFT_UPDATE => {
-            let update = if kind == OP_SOFT_UPDATE {
+        OP_ADD | OP_SOFT_UPDATE | OP_ADD_PARTITIONED | OP_SOFT_UPDATE_PARTITIONED => {
+            let partition = if matches!(kind, OP_ADD_PARTITIONED | OP_SOFT_UPDATE_PARTITIONED) {
+                Some(Arc::<str>::from(c.string("partition")?))
+            } else {
+                None
+            };
+            let update = if matches!(kind, OP_SOFT_UPDATE | OP_SOFT_UPDATE_PARTITIONED) {
                 let field = c.string("term field")?;
                 let bytes = c.bytes("term bytes")?.to_vec();
                 let soft_field = c.string("soft-deletes field")?;
@@ -525,8 +600,9 @@ fn decode_op(blob: &[u8]) -> Result<Op, FfiStatus> {
                 docs.push(document(&mut c)?);
             }
             match update {
-                None => Op::Add(docs),
+                None => Op::Add { partition, docs },
                 Some((term, soft_field, soft_value)) => Op::SoftUpdate {
+                    partition,
                     term,
                     soft_field,
                     soft_value,
@@ -796,6 +872,15 @@ pub const OPEN_LIVE_SEARCH: u8 = 4;
 /// new segments write their doc values in the `RustAdaptive` format
 /// ([`lucene_codecs::doc_values::Lucene90DocValuesFormat::rust_adaptive`]).
 pub const OPEN_ADAPTIVE_DOC_VALUES: u8 = 32;
+/// [`ffi_engine_writer_open`]'s flag for an index with a partition field
+/// (`index.lucene_rust.partition_field`): every segment holds one partition
+/// and records it, and merges never mix partitions
+/// ([`lucene_index::index_writer::SegmentPartitioning::opensearch`]).
+pub const OPEN_PARTITIONED: u8 = 64;
+/// Indexing buffers per indexing thread in a partitioned writer: a buffer
+/// holds one partition, so several partitions in flight on one thread each
+/// keep their own instead of flushing one another's.
+const PARTITIONED_SLOTS_PER_THREAD: usize = 4;
 
 /// Opens the shard's writer over the index at `path`, which must already hold
 /// a commit (OpenSearch's `Store.createEmpty` or a recovered one).
@@ -804,7 +889,7 @@ pub const OPEN_ADAPTIVE_DOC_VALUES: u8 = 32;
 /// an `index.sparse` index ([`lucene_sparse::SparseCodec`]);
 /// [`OPEN_LIVE_SEARCH`] keeps what a search of the buffers reads;
 /// [`OPEN_ADAPTIVE_DOC_VALUES`] writes doc values in the `RustAdaptive`
-/// format.
+/// format; [`OPEN_PARTITIONED`] keeps partitions in segments of their own.
 ///
 /// # Safety
 /// `path` valid for `path_len` bytes; `out_handle` valid for one write.
@@ -880,7 +965,11 @@ pub unsafe extern "C" fn ffi_engine_writer_open(
             // Java's limit lowers this one too.
             writer.set_max_docs(usize::try_from(max_docs).unwrap_or(0));
             // One buffer per thread that can index at once.
-            let slots = std::thread::available_parallelism().map_or(1, |n| n.get());
+            let mut slots = std::thread::available_parallelism().map_or(1, |n| n.get());
+            if flags & OPEN_PARTITIONED != 0 {
+                writer.set_segment_partitioning(Some(SegmentPartitioning::opensearch()));
+                slots = slots.saturating_mul(PARTITIONED_SLOTS_PER_THREAD);
+            }
             ConcurrentIndexWriter::with_merge_scheduler(writer, slots, Arc::new(merges.clone()))
         };
         let writer = open().map_err(writer_error)?;
@@ -905,6 +994,17 @@ pub unsafe extern "C" fn ffi_engine_writer_open(
             live_chunks: Mutex::default(),
         };
         let handle = lock_recovering(engine_writers()).insert_checked(Arc::new(engine))?;
+        if let Some(&upcall) = MERGE_UPCALL.get() {
+            // OpenSearch's engine hears of every merge, and throttles indexing
+            // itself when merges fall behind instead of the scheduler stalling.
+            with_writer(handle, |w| {
+                w.handle.merges.set_stall_producers(false);
+                let listener = Arc::new(MergeUpcallListener { handle, upcall });
+                w.writer()
+                    .with_writer(|iw| iw.set_merge_listener(Some(listener)));
+                Ok(())
+            })?;
+        }
         // SAFETY: caller contract.
         unsafe { *out_handle = handle };
         Ok(())
@@ -948,8 +1048,11 @@ fn apply_op(handle: u64, op: Op) -> Result<(), FfiStatus> {
     with_writer(handle, |w| {
         let writer = w.writer();
         match op {
-            Op::Add(docs) => writer.add_explicit_documents(docs).map_err(writer_error)?,
+            Op::Add { partition, docs } => writer
+                .add_explicit_documents_in(partition, docs)
+                .map_err(writer_error)?,
             Op::SoftUpdate {
+                partition,
                 term,
                 soft_field,
                 soft_value,
@@ -961,7 +1064,7 @@ fn apply_op(handle: u64, op: Op) -> Result<(), FfiStatus> {
                     value: Some(soft_value),
                 };
                 writer
-                    .soft_update_explicit_documents(term, docs, &[soft])
+                    .soft_update_explicit_documents_in(partition, term, docs, &[soft])
                     .map_err(writer_error)?
             }
             Op::Panic => {
@@ -1080,6 +1183,240 @@ pub unsafe extern "C" fn ffi_engine_set_commit_data_upcall(
     guard(|| {
         let upcall = upcall.ok_or(FfiStatus::NullPointer)?;
         let _ = COMMIT_DATA_UPCALL.set(upcall);
+        Ok(())
+    })
+}
+
+/// The JVM's merge upcall, `OpenSearchConcurrentMergeScheduler`'s
+/// `beforeMerge`/`afterMerge` for the Rust writer's merges: `(writer handle,
+/// event, merge id, total docs, total bytes, maxNumSegments, took ms, stopped
+/// ms, throttled ms, failure kind, segment names, their length, failure
+/// message, its length)`. `event` is [`MERGE_EVENT_BEFORE`] or
+/// [`MERGE_EVENT_AFTER`]. The segment names are UTF-8, one per line. After a
+/// failed merge the failure kind is [`MERGE_FAILED_IO`] or
+/// [`MERGE_FAILED_OTHER`] and the message is UTF-8; otherwise the kind is
+/// [`MERGE_OK`] and the message null. Called on the thread
+/// running the merge -- a Rust merge thread, or the caller of
+/// [`ffi_engine_writer_force_merge`] while it holds the writer -- so the JVM
+/// side must not call back into the writer except for
+/// [`ffi_engine_writer_merge_state`].
+pub type MergeUpcall = unsafe extern "C" fn(
+    u64,
+    i32,
+    i64,
+    i64,
+    i64,
+    i32,
+    i64,
+    i64,
+    i64,
+    i32,
+    *const u8,
+    usize,
+    *const u8,
+    usize,
+);
+/// A merge is about to run.
+pub const MERGE_EVENT_BEFORE: i32 = 0;
+/// A merge ended, successfully or not.
+pub const MERGE_EVENT_AFTER: i32 = 1;
+/// The merge did not fail (or has not ended).
+pub const MERGE_OK: i32 = 0;
+/// The merge failed reading or writing files (`IOException`).
+pub const MERGE_FAILED_IO: i32 = 1;
+/// The merge failed some other way.
+pub const MERGE_FAILED_OTHER: i32 = 2;
+
+static MERGE_UPCALL: OnceLock<MergeUpcall> = OnceLock::new();
+
+/// Registers the merge upcall ([`MergeUpcall`]), once per process; later
+/// registrations are ignored. Writers opened before it hear nothing.
+///
+/// # Safety
+/// `upcall` must have [`MergeUpcall`]'s contract and stay callable for the
+/// life of the process.
+#[no_mangle]
+pub unsafe extern "C" fn ffi_engine_set_merge_upcall(upcall: Option<MergeUpcall>) -> i32 {
+    guard(|| {
+        let upcall = upcall.ok_or(FfiStatus::NullPointer)?;
+        let _ = MERGE_UPCALL.set(upcall);
+        Ok(())
+    })
+}
+
+/// Hands one writer's merges to the merge upcall.
+struct MergeUpcallListener {
+    handle: u64,
+    upcall: MergeUpcall,
+}
+
+impl MergeUpcallListener {
+    fn send(
+        &self,
+        event: i32,
+        merge: &MergeEvent,
+        times: MergeTimes,
+        failure: Option<&index_writer::Error>,
+    ) {
+        let ms = |v: u64| i64::try_from(v).unwrap_or(i64::MAX);
+        let names = merge.segments.join("\n");
+        let kind = match failure {
+            None => MERGE_OK,
+            Some(index_writer::Error::Store(lucene_store::Error::Io(_))) => MERGE_FAILED_IO,
+            Some(_) => MERGE_FAILED_OTHER,
+        };
+        let message = failure.map(|e| e.to_string());
+        let (ptr, len) = message
+            .as_deref()
+            .map_or((std::ptr::null(), 0), |f| (f.as_ptr(), f.len()));
+        // SAFETY: `ffi_engine_set_merge_upcall`'s contract; `names` and
+        // `message` outlive the call.
+        unsafe {
+            (self.upcall)(
+                self.handle,
+                event,
+                i64::try_from(merge.id).unwrap_or(i64::MAX),
+                merge.total_docs,
+                merge.total_bytes,
+                merge.max_num_segments,
+                ms(times.took_ms),
+                ms(times.stopped_ms),
+                ms(times.throttled_ms),
+                kind,
+                names.as_ptr(),
+                names.len(),
+                ptr,
+                len,
+            );
+        }
+    }
+}
+
+impl MergeListener for MergeUpcallListener {
+    fn before_merge(&self, merge: &MergeEvent) {
+        self.send(MERGE_EVENT_BEFORE, merge, MergeTimes::default(), None);
+    }
+
+    fn after_merge(
+        &self,
+        merge: &MergeEvent,
+        times: MergeTimes,
+        failure: Option<&index_writer::Error>,
+    ) {
+        self.send(MERGE_EVENT_AFTER, merge, times, failure);
+    }
+}
+
+/// The JVM's merged-segment warmer (`IndexWriter.IndexReaderWarmer`):
+/// `(writer handle, segment name, its length, segment id)` with the id's
+/// [`lucene_store::codec_util::ID_LENGTH`] bytes, called on the merge
+/// thread once the merged segment's files are written and before the merge
+/// is published. Returns [`WARM_OK`], or anything else to fail the merge.
+pub type WarmUpcall = unsafe extern "C" fn(u64, *const u8, usize, *const u8) -> i32;
+/// The merged segment was warmed.
+pub const WARM_OK: i32 = 0;
+
+static WARM_UPCALL: OnceLock<WarmUpcall> = OnceLock::new();
+
+/// Registers the merged-segment warmer upcall ([`WarmUpcall`]), once per
+/// process; later registrations are ignored.
+///
+/// # Safety
+/// `upcall` must have [`WarmUpcall`]'s contract and stay callable for the
+/// life of the process.
+#[no_mangle]
+pub unsafe extern "C" fn ffi_engine_set_warm_upcall(upcall: Option<WarmUpcall>) -> i32 {
+    guard(|| {
+        let upcall = upcall.ok_or(FfiStatus::NullPointer)?;
+        let _ = WARM_UPCALL.set(upcall);
+        Ok(())
+    })
+}
+
+/// Hands one writer's merged segments to the warm upcall.
+struct UpcallWarmer {
+    handle: u64,
+    upcall: WarmUpcall,
+}
+
+impl MergedSegmentWarmer for UpcallWarmer {
+    fn warm(
+        &self,
+        _dir: &dyn Directory,
+        segment: &lucene_index::segment_infos::SegmentCommitInfo,
+    ) -> index_writer::Result<()> {
+        let name = &segment.segment_name;
+        // SAFETY: `ffi_engine_set_warm_upcall`'s contract; `name` and the id
+        // outlive the call.
+        let status = unsafe {
+            (self.upcall)(
+                self.handle,
+                name.as_ptr(),
+                name.len(),
+                segment.segment_id.as_ptr(),
+            )
+        };
+        if status == WARM_OK {
+            return Ok(());
+        }
+        Err(index_writer::Error::Store(lucene_store::Error::Io(
+            std::io::Error::other(format!("warming merged segment {name} failed")),
+        )))
+    }
+}
+
+/// `IndexWriterConfig.setMergedSegmentWarmer`: with `on != 0`, every merged
+/// segment goes to the warm upcall before its merge is published, and the
+/// compound-file decision is made before it; `0` warms nothing. Refused
+/// before [`ffi_engine_set_warm_upcall`].
+#[no_mangle]
+pub extern "C" fn ffi_engine_writer_set_merged_segment_warmer(handle: u64, on: u8) -> i32 {
+    guard(|| {
+        let warmer = if on != 0 {
+            let Some(&upcall) = WARM_UPCALL.get() else {
+                set_last_error("no warm upcall is registered".to_string());
+                return Err(FfiStatus::InvalidArgument);
+            };
+            Some(Arc::new(UpcallWarmer { handle, upcall }) as Arc<dyn MergedSegmentWarmer>)
+        } else {
+            None
+        };
+        with_writer(handle, |w| {
+            w.writer()
+                .with_writer(|iw| iw.set_merged_segment_warmer(warmer));
+            Ok(())
+        })
+    })
+}
+
+/// Writes whether merges are registered that no merge thread has taken yet
+/// (`IndexWriter.hasPendingMerges`, `0`/`1`) and the merge scheduler's IO
+/// rate in MB/s (`getIORateLimitMBPerSec`). Takes no lock the writer holds
+/// while merging, so the merge upcall may call it.
+///
+/// # Safety
+/// `out_pending` and `out_mb_per_sec` valid for one write each.
+#[no_mangle]
+pub unsafe extern "C" fn ffi_engine_writer_merge_state(
+    handle: u64,
+    out_pending: *mut u8,
+    out_mb_per_sec: *mut f64,
+) -> i32 {
+    guard(|| {
+        if out_pending.is_null() || out_mb_per_sec.is_null() {
+            return Err(FfiStatus::NullPointer);
+        }
+        let (pending, rate) = with_writer(handle, |w| {
+            Ok((
+                w.writer().has_pending_merges(),
+                w.handle.merges.io_rate_limit_mb_per_sec(),
+            ))
+        })?;
+        // SAFETY: caller contract.
+        unsafe {
+            *out_pending = u8::from(pending);
+            *out_mb_per_sec = rate;
+        }
         Ok(())
     })
 }
@@ -1465,6 +1802,86 @@ pub extern "C" fn ffi_engine_writer_set_merge_policy(
                 iw.set_merge_policy(Some(config));
                 install_merge_policies(iw, &policies);
             });
+            Ok(())
+        })
+    })
+}
+
+/// No pluggable policy: [`ffi_engine_writer_set_merge_policy`]'s tiered one decides.
+pub const MERGE_POLICY_TIERED: i32 = 0;
+/// `LogByteSizeMergePolicy`.
+pub const MERGE_POLICY_LOG_BYTE_SIZE: i32 = 1;
+/// `NoMergePolicy`.
+pub const MERGE_POLICY_NONE: i32 = 2;
+
+/// The shard's merge policy when it is not `TieredMergePolicy`: `kind` is
+/// [`MERGE_POLICY_LOG_BYTE_SIZE`] with `index.merge.log_byte_size_policy.*`
+/// (merge factor, smallest and largest merged segment in bytes, the largest
+/// for forced merges, the most documents a merged segment may hold, and the
+/// policy's `noCFSRatio` and `maxCFSSegmentSize` in bytes), or
+/// [`MERGE_POLICY_NONE`] for `index.merge.enabled: false`, whose other
+/// arguments are ignored; [`MERGE_POLICY_TIERED`] goes back to the tiered
+/// policy. It decides natural, forced and forced-deletes merges from the next
+/// one on, and the merge-on-flush policy the next time that is set.
+#[no_mangle]
+pub extern "C" fn ffi_engine_writer_set_pluggable_merge_policy(
+    handle: u64,
+    kind: i32,
+    merge_factor: i32,
+    min_merge_bytes: i64,
+    max_merge_bytes: i64,
+    max_forced_merge_bytes: i64,
+    max_merge_docs: i32,
+    no_cfs_ratio: f64,
+    max_cfs_segment_bytes: i64,
+) -> i32 {
+    guard(|| {
+        let invalid = |what: String| {
+            set_last_error(format!("invalid merge policy setting: {what}"));
+            FfiStatus::InvalidArgument
+        };
+        let policy = match kind {
+            MERGE_POLICY_TIERED => None,
+            MERGE_POLICY_NONE => Some(PluggablePolicy::NoMerges),
+            MERGE_POLICY_LOG_BYTE_SIZE => {
+                if merge_factor < 2 {
+                    return Err(invalid(format!("merge_factor {merge_factor} < 2")));
+                }
+                if min_merge_bytes < 0 || max_merge_bytes < 0 || max_forced_merge_bytes < 0 {
+                    return Err(invalid("a merge size < 0".to_string()));
+                }
+                if max_merge_docs < 0 {
+                    return Err(invalid(format!("max_merged_docs {max_merge_docs} < 0")));
+                }
+                let mut compound = CompoundFileSettings::default();
+                compound
+                    .set_no_cfs_ratio(no_cfs_ratio)
+                    .map_err(|e| invalid(e.to_string()))?;
+                if max_cfs_segment_bytes < 0 {
+                    return Err(invalid(format!(
+                        "maxCFSSegmentSize {max_cfs_segment_bytes} < 0"
+                    )));
+                }
+                compound.max_cfs_segment_size = max_cfs_segment_bytes;
+                Some(PluggablePolicy::LogByteSize {
+                    merge_factor,
+                    min_merge_bytes,
+                    max_merge_bytes,
+                    max_forced_merge_bytes,
+                    max_merge_docs,
+                    compound,
+                })
+            }
+            other => return Err(invalid(format!("unknown merge policy kind {other}"))),
+        };
+        with_writer(handle, |w| {
+            let mut policies = w.policies();
+            if policies.other == policy {
+                return Ok(());
+            }
+            policies.other = policy;
+            w.writer()
+                .with_writer(|iw| install_merge_policies(iw, &policies));
             Ok(())
         })
     })
@@ -2143,6 +2560,118 @@ mod tests {
         check(&tmp);
     }
 
+    /// A partitioned writer: each operation's partition decides the
+    /// segment, every segment records its partition (OpenSearch's `bucket`,
+    /// on the `.si` and on `_id`), an update's earlier version is soft
+    /// deleted whatever partition holds it, and a forced merge leaves one
+    /// segment per partition.
+    #[test]
+    fn a_partitioned_writer_keeps_each_partition_in_its_own_segments() {
+        let tmp = empty_index("engine-writer-partitioned");
+        let h = open_with(&tmp, 16.0, OPEN_PARTITIONED, i32::MAX);
+        let f = setup(h);
+        let add = |p: &str, id: &str, seq: i64| {
+            doc(
+                Blob::default()
+                    .u8(OP_ADD_PARTITIONED)
+                    .bytes(p.as_bytes())
+                    .i32(1),
+                &f,
+                id,
+                &["x"],
+                seq,
+                false,
+            )
+        };
+        for (seq, (p, id)) in [("a", "1"), ("b", "2"), ("a", "3"), ("c", "4"), ("b", "5")]
+            .into_iter()
+            .enumerate()
+        {
+            assert_eq!(
+                apply(h, &add(p, id, seq as i64).0),
+                0,
+                "{}",
+                crate::error::last_error()
+            );
+        }
+        commit(h, &[]);
+        // "1" moves from partition a to c: the old one is soft deleted.
+        let update = doc(
+            Blob::default()
+                .u8(OP_SOFT_UPDATE_PARTITIONED)
+                .bytes(b"c")
+                .bytes(b"_id")
+                .bytes(b"1")
+                .bytes(b"__soft_deletes")
+                .i64(1)
+                .i32(1),
+            &f,
+            "1",
+            &["y"],
+            5,
+            false,
+        );
+        assert_eq!(apply(h, &update.0), 0, "{}", crate::error::last_error());
+        commit(h, &[]);
+        let buckets = || {
+            let dir = FsDirectory::open(tmp.path());
+            let infos = lucene_index::segment_infos::read_latest(&dir).unwrap();
+            let mut out: Vec<(String, i32, i32)> = infos
+                .segments
+                .iter()
+                .map(|sci| {
+                    let name = &sci.segment_name;
+                    let si = lucene_index::segment_info::parse(
+                        &dir.open(&format!("{name}.si")).unwrap(),
+                        &sci.segment_id,
+                    )
+                    .unwrap();
+                    let fnm = lucene_codecs::field_infos::parse(
+                        &dir.open(&format!("{name}.fnm")).unwrap(),
+                        &sci.segment_id,
+                        "",
+                    )
+                    .unwrap();
+                    let bucket = |a: &[(String, String)]| {
+                        a.iter()
+                            .find(|(k, _)| k == "bucket")
+                            .map(|(_, v)| v.clone())
+                    };
+                    let on_id = fnm.field_by_name("_id").and_then(|f| bucket(&f.attributes));
+                    let on_si = bucket(&si.attributes).unwrap();
+                    assert_eq!(on_id.as_deref(), Some(on_si.as_str()));
+                    (on_si, si.doc_count, sci.soft_del_count)
+                })
+                .collect();
+            out.sort();
+            out
+        };
+        let before = buckets();
+        assert!(before
+            .iter()
+            .all(|(b, _, _)| ["a", "b", "c"].contains(&b.as_str())));
+        let soft: i32 = before.iter().map(|(_, _, s)| s).sum();
+        assert_eq!(soft, 1, "the first version of 1, in partition a");
+        let mut gen = 0;
+        // SAFETY: live out-pointer.
+        assert_eq!(
+            unsafe { ffi_engine_writer_force_merge(h, 1, 0, &mut gen) },
+            0
+        );
+        let after: Vec<(String, i32)> = buckets().into_iter().map(|(b, n, _)| (b, n)).collect();
+        assert_eq!(
+            after,
+            [
+                ("a".to_string(), 2),
+                ("b".to_string(), 2),
+                ("c".to_string(), 2)
+            ],
+            "soft-deleted documents are kept without a retention policy"
+        );
+        ffi_engine_writer_close(h);
+        check(&tmp);
+    }
+
     /// `IndexWriter.tooManyDocs`: an add past the JVM's `maxDocs` fails that
     /// operation only -- Java's `IllegalArgumentException` -- and the writer
     /// carries on.
@@ -2551,6 +3080,103 @@ mod tests {
         ffi_engine_writer_close(h);
     }
 
+    /// What the test merge upcall heard: `(handle, event, docs, max segments,
+    /// failure kind, names)`.
+    type HeardMerge = (u64, i32, i64, i32, i32, String);
+    static HEARD: Mutex<Vec<HeardMerge>> = Mutex::new(Vec::new());
+
+    unsafe extern "C" fn record_merge(
+        handle: u64,
+        event: i32,
+        _id: i64,
+        docs: i64,
+        _bytes: i64,
+        max_segments: i32,
+        _took: i64,
+        _stopped: i64,
+        _throttled: i64,
+        kind: i32,
+        names: *const u8,
+        names_len: usize,
+        _failure: *const u8,
+        _failure_len: usize,
+    ) {
+        // SAFETY: the upcall's contract.
+        let names = unsafe { std::slice::from_raw_parts(names, names_len) };
+        let names = String::from_utf8(names.to_vec()).unwrap();
+        HEARD
+            .lock()
+            .unwrap()
+            .push((handle, event, docs, max_segments, kind, names));
+    }
+
+    /// The merge upcall hears a forced merge before and after, with its
+    /// sources; the writer's merge scheduler stops stalling producers, and
+    /// the merge state reads without the writer's lock.
+    #[test]
+    fn the_merge_upcall_hears_merges_and_the_merge_state_reads() {
+        // SAFETY: `record_merge` has the upcall's contract and lives forever.
+        assert_eq!(
+            unsafe { ffi_engine_set_merge_upcall(Some(record_merge)) },
+            0
+        );
+        // SAFETY: a null upcall is refused.
+        assert_eq!(
+            unsafe { ffi_engine_set_merge_upcall(None) },
+            FfiStatus::NullPointer.code()
+        );
+        let tmp = empty_index("engine-writer-merge-upcall");
+        let h = open(&tmp, 0);
+        assert!(!lookup(h).unwrap().handle.merges.stall_producers());
+        let f = setup(h);
+        for (i, id) in ["a", "b", "c"].into_iter().enumerate() {
+            let d = doc(
+                Blob::default().u8(OP_ADD).i32(1),
+                &f,
+                id,
+                &["x"],
+                i as i64,
+                false,
+            );
+            assert_eq!(apply(h, &d.0), 0);
+            commit(h, &[]);
+        }
+        let mut gen = 0;
+        // SAFETY: live out-pointer.
+        assert_eq!(
+            unsafe { ffi_engine_writer_force_merge(h, 1, 0, &mut gen) },
+            0
+        );
+        let heard: Vec<_> = HEARD
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|e| e.0 == h)
+            .cloned()
+            .collect();
+        let forced: Vec<_> = heard.iter().filter(|e| e.3 == 1).collect();
+        assert_eq!(forced.len(), 2, "{heard:?}");
+        assert_eq!(forced[0].1, MERGE_EVENT_BEFORE);
+        assert_eq!(forced[1].1, MERGE_EVENT_AFTER);
+        assert_eq!(forced[1].2, 3);
+        assert_eq!(forced[1].4, MERGE_OK);
+        assert_eq!(forced[1].5.lines().count(), 3);
+        let (mut pending, mut rate) = (9u8, 0.0);
+        // SAFETY: live out-pointers.
+        assert_eq!(
+            unsafe { ffi_engine_writer_merge_state(h, &mut pending, &mut rate) },
+            0
+        );
+        assert_eq!(pending, 0);
+        assert!(rate > 0.0);
+        // SAFETY: null out-pointers are refused before any write.
+        assert_eq!(
+            unsafe { ffi_engine_writer_merge_state(h, std::ptr::null_mut(), &mut rate) },
+            FfiStatus::NullPointer.code()
+        );
+        ffi_engine_writer_close(h);
+    }
+
     /// `index.use_compound_file`, `index.compound_format`,
     /// `index.check_pending_flush.enabled` and the shuffled forced merge reach
     /// the writer; a ratio or cap OpenSearch would refuse is refused.
@@ -2639,6 +3265,202 @@ mod tests {
         lookup(h).unwrap().writer().with_writer(|w| {
             assert_eq!(w.merge_policy().unwrap().max_merged_segment_size, 1);
         });
+        check(&tmp);
+        ffi_engine_writer_close(h);
+    }
+
+    /// The segments the test warm upcall saw, and whether it fails them.
+    static WARMED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    static WARM_FAILS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+    unsafe extern "C" fn record_warm(
+        _handle: u64,
+        name: *const u8,
+        len: usize,
+        id: *const u8,
+    ) -> i32 {
+        // SAFETY: the upcall's contract.
+        let (name, id) = unsafe {
+            (
+                std::slice::from_raw_parts(name, len),
+                std::slice::from_raw_parts(id, lucene_store::codec_util::ID_LENGTH),
+            )
+        };
+        assert!(id.iter().any(|&b| b != 0));
+        WARMED
+            .lock()
+            .unwrap()
+            .push(String::from_utf8(name.to_vec()).unwrap());
+        i32::from(WARM_FAILS.load(std::sync::atomic::Ordering::Relaxed))
+    }
+
+    /// The merged-segment warmer upcall sees a forced merge's segment before
+    /// it is published, and a warmer failure fails the merge.
+    #[test]
+    fn the_warm_upcall_sees_merged_segments() {
+        // SAFETY: `record_warm` has the upcall's contract and lives forever.
+        assert_eq!(unsafe { ffi_engine_set_warm_upcall(Some(record_warm)) }, 0);
+        // SAFETY: a null upcall is refused.
+        assert_eq!(
+            unsafe { ffi_engine_set_warm_upcall(None) },
+            FfiStatus::NullPointer.code()
+        );
+        let tmp = empty_index("engine-writer-warm");
+        let h = open(&tmp, 0);
+        let f = setup(h);
+        let add = |ids: &[&str]| {
+            for (i, id) in ids.iter().enumerate() {
+                let d = doc(
+                    Blob::default().u8(OP_ADD).i32(1),
+                    &f,
+                    id,
+                    &["x"],
+                    i as i64,
+                    false,
+                );
+                assert_eq!(apply(h, &d.0), 0);
+                commit(h, &[]);
+            }
+        };
+        add(&["a", "b", "c"]);
+        assert_eq!(ffi_engine_writer_set_merged_segment_warmer(h, 1), 0);
+        let mut gen = 0;
+        // SAFETY: live out-pointer.
+        assert_eq!(
+            unsafe { ffi_engine_writer_force_merge(h, 1, 0, &mut gen) },
+            0
+        );
+        let dir = FsDirectory::open(tmp.path());
+        let infos = lucene_index::segment_infos::read_latest(&dir).unwrap();
+        assert_eq!(infos.segments.len(), 1);
+        assert!(WARMED
+            .lock()
+            .unwrap()
+            .contains(&infos.segments[0].segment_name));
+        add(&["d"]);
+        WARM_FAILS.store(true, std::sync::atomic::Ordering::Relaxed);
+        // SAFETY: live out-pointer.
+        let failed = unsafe { ffi_engine_writer_force_merge(h, 1, 0, &mut gen) };
+        WARM_FAILS.store(false, std::sync::atomic::Ordering::Relaxed);
+        assert_ne!(failed, 0, "a failed warm fails the merge");
+        ffi_engine_writer_close(h);
+        let h = open(&tmp, 0);
+        assert_eq!(ffi_engine_writer_set_merged_segment_warmer(h, 0), 0);
+        ffi_engine_writer_close(h);
+    }
+
+    /// `index.merge.enabled: false` stops every merge, forced ones included;
+    /// `log_byte_size` then decides them, and the tiered policy again once
+    /// set back. Settings OpenSearch would refuse are refused.
+    #[test]
+    fn a_pluggable_merge_policy_decides_the_shards_merges() {
+        let tmp = empty_index("engine-writer-pluggable-policy");
+        let h = open(&tmp, 0);
+        let f = setup(h);
+        for (i, id) in ["a", "b", "c", "d"].into_iter().enumerate() {
+            let d = doc(
+                Blob::default().u8(OP_ADD).i32(1),
+                &f,
+                id,
+                &["x"],
+                i as i64,
+                false,
+            );
+            assert_eq!(apply(h, &d.0), 0);
+            commit(h, &[]);
+        }
+        let set = |kind, factor, ratio| {
+            ffi_engine_writer_set_pluggable_merge_policy(
+                h,
+                kind,
+                factor,
+                0,
+                i64::MAX,
+                i64::MAX,
+                i32::MAX,
+                ratio,
+                i64::MAX,
+            )
+        };
+        let dir = FsDirectory::open(tmp.path());
+        let segments = || {
+            lucene_index::segment_infos::read_latest(&dir)
+                .unwrap()
+                .segments
+                .len()
+        };
+        let before = segments();
+        assert!(before >= 2, "{before} segments");
+        assert_eq!(set(MERGE_POLICY_NONE, 0, 0.0), 0);
+        let mut gen = 0;
+        // SAFETY: live out-pointer.
+        assert_eq!(
+            unsafe { ffi_engine_writer_force_merge(h, 1, 0, &mut gen) },
+            0
+        );
+        assert_eq!(segments(), before, "merges are off");
+        assert_eq!(set(MERGE_POLICY_LOG_BYTE_SIZE, 2, 0.1), 0);
+        assert_eq!(set(MERGE_POLICY_LOG_BYTE_SIZE, 2, 0.1), 0, "unchanged");
+        assert_eq!(ffi_engine_writer_set_merge_on_flush(h, 500, 1), 0);
+        lookup(h).unwrap().writer().with_writer(|w| {
+            assert!(w.pluggable_merge_policy().is_some());
+        });
+        // SAFETY: live out-pointer.
+        assert_eq!(
+            unsafe { ffi_engine_writer_force_merge(h, 1, 0, &mut gen) },
+            0
+        );
+        assert_eq!(segments(), 1);
+        assert_eq!(set(MERGE_POLICY_TIERED, 0, 0.0), 0);
+        lookup(h).unwrap().writer().with_writer(|w| {
+            assert!(w.pluggable_merge_policy().is_none());
+        });
+        let invalid = FfiStatus::InvalidArgument.code();
+        assert_eq!(set(MERGE_POLICY_LOG_BYTE_SIZE, 1, 0.1), invalid);
+        assert_eq!(set(MERGE_POLICY_LOG_BYTE_SIZE, 2, 1.5), invalid);
+        assert_eq!(set(9, 2, 0.1), invalid);
+        assert_eq!(
+            ffi_engine_writer_set_pluggable_merge_policy(
+                h,
+                MERGE_POLICY_LOG_BYTE_SIZE,
+                2,
+                -1,
+                0,
+                0,
+                0,
+                0.1,
+                0
+            ),
+            invalid
+        );
+        assert_eq!(
+            ffi_engine_writer_set_pluggable_merge_policy(
+                h,
+                MERGE_POLICY_LOG_BYTE_SIZE,
+                2,
+                0,
+                0,
+                0,
+                -1,
+                0.1,
+                0
+            ),
+            invalid
+        );
+        assert_eq!(
+            ffi_engine_writer_set_pluggable_merge_policy(
+                h,
+                MERGE_POLICY_LOG_BYTE_SIZE,
+                2,
+                0,
+                0,
+                0,
+                0,
+                0.1,
+                -1
+            ),
+            invalid
+        );
         check(&tmp);
         ffi_engine_writer_close(h);
     }
@@ -3466,7 +4288,7 @@ mod tests {
                 .chain(d.0)
                 .collect::<Vec<_>>(),
         );
-        let Ok(Op::Add(docs)) = op else {
+        let Ok(Op::Add { docs, .. }) = op else {
             panic!("decoded");
         };
         let doc = &docs[0];
