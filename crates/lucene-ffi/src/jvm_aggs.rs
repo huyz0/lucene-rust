@@ -1243,6 +1243,17 @@ pub(crate) mod tests {
         string(b, field);
     }
 
+    /// `terms(field, size)` alone.
+    pub(crate) fn terms_tree(field: &str, size: i32) -> Vec<u8> {
+        let mut b = vec![1u8, AGG_TERMS];
+        string(&mut b, field);
+        b.extend_from_slice(&size.to_le_bytes());
+        b.extend_from_slice(&[0, 0, 0]);
+        b.push(0);
+        b.extend_from_slice(&0i32.to_le_bytes());
+        b
+    }
+
     /// `histogram(field, interval) > filters(filter, other) > count(field)`
     /// next to a top-level `count(field)`.
     pub(crate) fn histogram_of_filters(field: &str, interval: f64, filter: &[u8]) -> Vec<u8> {

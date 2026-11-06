@@ -135,6 +135,8 @@ pub struct EngineWriter {
     sparse: bool,
     /// The buffers' segments live views read ([`crate::live`]).
     live_chunks: Mutex<crate::live::Chunks>,
+    /// Writes those segments ahead of the searches ([`crate::live`]).
+    live_warmer: crate::live::Warmer,
 }
 
 /// The policies [`install_merge_policies`] builds around the writer's
@@ -281,6 +283,10 @@ impl EngineWriter {
         self.live_chunks
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    pub(crate) fn live_warmer(&self) -> &crate::live::Warmer {
+        &self.live_warmer
     }
 
     fn maintenance(&self) -> MutexGuard<'_, Holds> {
@@ -992,6 +998,7 @@ pub unsafe extern "C" fn ffi_engine_writer_open(
             policies: Mutex::new(MergePolicies::default()),
             sparse: flags & OPEN_SPARSE != 0,
             live_chunks: Mutex::default(),
+            live_warmer: crate::live::Warmer::default(),
         };
         let handle = lock_recovering(engine_writers()).insert_checked(Arc::new(engine))?;
         if let Some(&upcall) = MERGE_UPCALL.get() {
@@ -5654,44 +5661,164 @@ mod tests {
             let mut total = std::time::Duration::ZERO;
             buffer(0, docs);
             n += docs;
-            for round in 0..live_rounds {
-                let (mut view, mut ptr, mut len) = (0u64, std::ptr::null_mut(), 0usize);
-                // SAFETY: live out-pointers.
-                let rc = unsafe {
-                    ffi_engine_writer_live_view_open(h, gen, &mut view, &mut ptr, &mut len)
-                };
-                assert_eq!(rc, 0, "{}", crate::error::last_error());
-                // SAFETY: the buffer the call gave, freed once.
-                unsafe { crate::ffm_bridge::ffi_jvm_free_bytes(ptr, len) };
+            // LIVE_SEARCH=1: each round also times the bench's request
+            // shapes over a handle made for each, by phase, and at the end
+            // over the same documents committed.
+            let searches = std::env::var("LIVE_SEARCH").is_ok_and(|v| v == "1");
+            let term_q = crate::jvm_reader::tests::term_blob("body", "t0");
+            let price = crate::jvm_reader::tests::sort_blob_terms(
+                &[(crate::jvm_reader::SORT_LONG, 0, "price", 0)],
+                None,
+            );
+            let tags = crate::jvm_aggs::tests::terms_tree("tag", 10);
+            let shapes = |r: u64| -> [std::time::Duration; 3] {
                 let t = std::time::Instant::now();
-                let mut whole = 0u64;
-                // SAFETY: a live out-pointer.
-                let rc = unsafe {
-                    ffi_live_view_reader(
-                        reader,
-                        view,
-                        std::ptr::null(),
-                        0,
-                        std::ptr::null(),
-                        0,
-                        std::ptr::null(),
-                        0,
-                        &mut whole,
-                    )
-                };
-                assert_eq!(rc, 0, "{}", crate::error::last_error());
-                let took = t.elapsed();
-                total += took;
-                let w = crate::jvm_reader::lookup(whole, "test").unwrap();
-                eprintln!(
-                    "round {round} ({n} docs): reader {took:?}, {} leaves",
-                    w.reader.segment_readers().len()
+                std::hint::black_box(super::tests::scored_hits(r, &term_q));
+                let term = t.elapsed();
+                let t = std::time::Instant::now();
+                let sorted =
+                    crate::jvm_reader::search_sorted_blobs(r, &term_q, &price, 10, 10_000).unwrap();
+                std::hint::black_box(sorted.total);
+                let sort = t.elapsed();
+                let t = std::time::Instant::now();
+                std::hint::black_box(
+                    crate::jvm_aggs::aggregate_tree_blobs(r, &term_q, &tags).unwrap(),
                 );
-                assert_eq!(ffi_live_view_close(view), 0);
-                buffer(n, n + step);
-                n += step;
-            }
+                [term, sort, t.elapsed()]
+            };
+            let mut sums = [std::time::Duration::ZERO; 9];
+            let mut builds: Vec<std::time::Duration> = Vec::new();
+            // LIVE_LOAD=1: documents keep arriving, LIVE_STEP at a time, while
+            // the views are read, as under the bench's bulk load.
+            let load = std::env::var("LIVE_LOAD").is_ok_and(|v| v == "1");
+            let stop = std::sync::atomic::AtomicBool::new(false);
+            let loaded = std::sync::atomic::AtomicUsize::new(0);
+            std::thread::scope(|s| {
+                if load {
+                    s.spawn(|| {
+                        let mut at = 10_000_000;
+                        while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                            buffer(at, at + step);
+                            at += step;
+                            loaded.fetch_add(step, std::sync::atomic::Ordering::Relaxed);
+                        }
+                    });
+                }
+                for round in 0..live_rounds {
+                    let (mut view, mut ptr, mut len) = (0u64, std::ptr::null_mut(), 0usize);
+                    // SAFETY: live out-pointers.
+                    let rc = unsafe {
+                        ffi_engine_writer_live_view_open(h, gen, &mut view, &mut ptr, &mut len)
+                    };
+                    assert_eq!(rc, 0, "{}", crate::error::last_error());
+                    // SAFETY: the buffer the call gave, freed once.
+                    unsafe { crate::ffm_bridge::ffi_jvm_free_bytes(ptr, len) };
+                    if !searches {
+                        let t = std::time::Instant::now();
+                        let mut whole = 0u64;
+                        // SAFETY: a live out-pointer.
+                        let rc = unsafe {
+                            ffi_live_view_reader(
+                                reader,
+                                view,
+                                std::ptr::null(),
+                                0,
+                                std::ptr::null(),
+                                0,
+                                std::ptr::null(),
+                                0,
+                                &mut whole,
+                            )
+                        };
+                        assert_eq!(rc, 0, "{}", crate::error::last_error());
+                        let took = t.elapsed();
+                        total += took;
+                        let w = crate::jvm_reader::lookup(whole, "test").unwrap();
+                        eprintln!(
+                            "round {round} ({n} docs): reader {took:?}, {} leaves",
+                            w.reader.segment_readers().len()
+                        );
+                    }
+                    if searches {
+                        crate::live::phases::take();
+                        let t = std::time::Instant::now();
+                        let mut lean = 0u64;
+                        // SAFETY: live slices and out-pointer.
+                        let rc = unsafe {
+                            ffi_live_view_reader(
+                                reader,
+                                view,
+                                term_q.as_ptr(),
+                                term_q.len(),
+                                tags.as_ptr(),
+                                tags.len(),
+                                std::ptr::null(),
+                                0,
+                                &mut lean,
+                            )
+                        };
+                        assert_eq!(rc, 0, "{}", crate::error::last_error());
+                        let build = t.elapsed();
+                        let phases = crate::live::phases::take();
+                        let [term, sort, agg] = shapes(lean);
+                        eprintln!(
+                        "round {round} ({n} docs): lean reader {build:?} ({}), term {term:?}, sort {sort:?}, agg {agg:?}",
+                        crate::live::phases::NAMES
+                            .iter()
+                            .zip(phases)
+                            .map(|(n, d)| format!("{n} {d:?}"))
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    );
+                        sums[0] += build;
+                        builds.push(build);
+                        for (s, d) in sums[1..6].iter_mut().zip(phases) {
+                            *s += d;
+                        }
+                        for (s, d) in sums[6..].iter_mut().zip([term, sort, agg]) {
+                            *s += d;
+                        }
+                    }
+                    assert_eq!(ffi_live_view_close(view), 0);
+                    // LIVE_PAUSE: milliseconds between searches.
+                    if let Some(ms) = std::env::var("LIVE_PAUSE")
+                        .ok()
+                        .and_then(|v| v.parse().ok())
+                    {
+                        std::thread::sleep(std::time::Duration::from_millis(ms));
+                    }
+                    if load {
+                        n = docs + loaded.load(std::sync::atomic::Ordering::Relaxed);
+                    } else {
+                        buffer(n, n + step);
+                        n += step;
+                    }
+                }
+                stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            });
             eprintln!("views' readers took {total:?} in all");
+            if searches && live_rounds > 0 {
+                let r = live_rounds as u32;
+                eprintln!(
+                    "mean over {r} rounds: lean reader {:?} (chunks {:?}, snapshot {:?}, overlay {:?}, append {:?}, live_docs {:?}), term {:?}, sort {:?}, agg {:?}",
+                    sums[0] / r, sums[1] / r, sums[2] / r, sums[3] / r, sums[4] / r, sums[5] / r,
+                    sums[6] / r, sums[7] / r, sums[8] / r
+                );
+                builds.sort_unstable();
+                let at = |q: f64| builds[((builds.len() as f64 - 1.0) * q).round() as usize];
+                eprintln!(
+                    "lean reader p50 {:?}, p90 {:?}, max {:?}",
+                    at(0.5),
+                    at(0.9),
+                    at(1.0)
+                );
+                let gen = commit_settled(h);
+                let committed = open_reader(&tmp, gen);
+                for pass in 0..3 {
+                    eprintln!("committed ({n} docs) pass {pass}: {:?}", shapes(committed));
+                }
+                assert_eq!(crate::jvm_reader::ffi_close_jvm_reader(committed), 0);
+            }
             assert_eq!(crate::jvm_reader::ffi_close_jvm_reader(reader), 0);
             ffi_engine_writer_close(h);
             return;
