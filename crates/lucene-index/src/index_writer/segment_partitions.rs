@@ -37,31 +37,7 @@ pub struct SegmentPartitioning {
     /// Fields whose `.fnm` entry records the partition under the same
     /// attribute.
     pub field_attributes: Vec<String>,
-    /// A partition with fewer documents than this (counted since the writer
-    /// opened, plus its own committed segments) is written to the default
-    /// partition, which small partitions share as an unpartitioned index
-    /// would; once it has this many its documents get segments of their
-    /// own. Its earlier documents stay where they were written, so a search
-    /// for it reads its own segments and the default partition's. `0` gives
-    /// every partition its own segments from the first document.
-    pub pool_below_docs: usize,
-    /// The field whose value is the partition, when the caller knows one
-    /// with a single exact value per document: segments of a partition
-    /// (not the default one) then record it under
-    /// [`PARTITION_FIELD_ATTRIBUTE`], and the partition under
-    /// [`PARTITION_VALUE_ATTRIBUTE`], which tell a search that every
-    /// document in the segment has that field equal to that value and no
-    /// other.
-    pub field: Option<String>,
 }
-
-/// The `.si` attribute naming the field every document of a partition's
-/// segment holds the partition in ([`SegmentPartitioning::field`]).
-pub const PARTITION_FIELD_ATTRIBUTE: &str = "lucene_rust.partition_field";
-
-/// The `.si` attribute holding the partition of a segment that records
-/// [`PARTITION_FIELD_ATTRIBUTE`].
-pub const PARTITION_VALUE_ATTRIBUTE: &str = "lucene_rust.partition_value";
 
 impl SegmentPartitioning {
     /// OpenSearch's context-aware segments: the `bucket` attribute on the
@@ -73,8 +49,6 @@ impl SegmentPartitioning {
             attribute: "bucket".to_string(),
             default_partition: Some("-2".to_string()),
             field_attributes: vec!["_id".to_string(), "_seq_no".to_string()],
-            pool_below_docs: 0,
-            field: None,
         }
     }
 }
@@ -84,11 +58,6 @@ impl IndexingConfig {
     /// ([`IndexWriter::set_segment_partitioning`]).
     pub(crate) fn partitions_segments(&self) -> bool {
         self.segment_partitioning.is_some()
-    }
-
-    /// See [`IndexWriter::set_segment_partitioning`].
-    pub(crate) fn partitioning(&self) -> Option<&SegmentPartitioning> {
-        self.segment_partitioning.as_ref()
     }
 
     /// The partitioning, and the partition a buffer flushed for `partition`
@@ -126,10 +95,6 @@ impl IndexingConfig {
     ) {
         if let Some((partitioning, value)) = self.recorded_partition(partition) {
             set_attribute(attributes, &partitioning.attribute, value);
-            if let (Some(_), Some(field)) = (partition, &partitioning.field) {
-                set_attribute(attributes, PARTITION_FIELD_ATTRIBUTE, field);
-                set_attribute(attributes, PARTITION_VALUE_ATTRIBUTE, value);
-            }
         }
     }
 }
@@ -171,32 +136,6 @@ impl IndexWriter<'_> {
             .map(|(_, v)| v.clone()))
     }
 
-    /// The documents each partition's own committed segments hold (the
-    /// default partition left out), for a reopened writer to know which
-    /// partitions already left the pool.
-    pub(crate) fn partition_doc_counts(&self) -> Result<HashMap<String, usize>> {
-        let mut counts = HashMap::new();
-        let Some(partitioning) = &self.cfg.segment_partitioning else {
-            return Ok(counts);
-        };
-        for sci in &self.segment_infos.segments {
-            let si = self.cfg.reader_pool.segment_info(self.dir, sci)?;
-            let Some((_, p)) = si
-                .attributes
-                .iter()
-                .find(|(k, _)| *k == partitioning.attribute)
-            else {
-                continue;
-            };
-            if partitioning.default_partition.as_deref() == Some(p.as_str()) {
-                continue;
-            }
-            let n = counts.entry(p.clone()).or_insert(0usize);
-            *n = n.saturating_add(usize::try_from(si.doc_count).unwrap_or(0));
-        }
-        Ok(counts)
-    }
-
     /// Every committed segment's partition, by name; `None` when the writer
     /// partitions nothing.
     fn partitions_by_name(&self) -> Result<Option<HashMap<String, Option<String>>>> {
@@ -220,39 +159,18 @@ impl IndexWriter<'_> {
             return Ok(Vec::new());
         };
         let mut common: Option<String> = None;
-        // The partition field survives only when every source records it.
-        let mut field: Option<Option<String>> = None;
         for (i, sci) in sources.iter().enumerate() {
-            let si = self.cfg.reader_pool.segment_info(self.dir, sci)?;
-            let attr = |key: &str| {
-                si.attributes
-                    .iter()
-                    .find(|(k, _)| k == key)
-                    .map(|(_, v)| v.clone())
-            };
-            let partition = attr(&partitioning.attribute);
+            let partition = self.partition_of(sci)?;
             match (i, partition) {
                 (_, None) => return Ok(Vec::new()),
                 (0, Some(g)) => common = Some(g),
                 (_, Some(g)) if common.as_deref() == Some(g.as_str()) => {}
                 _ => return Ok(Vec::new()),
             }
-            let f = attr(PARTITION_FIELD_ATTRIBUTE);
-            field = match field {
-                None => Some(f),
-                Some(prev) if prev == f => Some(prev),
-                Some(_) => Some(None),
-            };
         }
-        let Some(common) = common else {
-            return Ok(Vec::new());
-        };
-        let mut out = vec![(partitioning.attribute.clone(), common.clone())];
-        if let Some(Some(f)) = field {
-            out.push((PARTITION_FIELD_ATTRIBUTE.to_string(), f));
-            out.push((PARTITION_VALUE_ATTRIBUTE.to_string(), common));
-        }
-        Ok(out)
+        Ok(common
+            .map(|g| vec![(partitioning.attribute.clone(), g)])
+            .unwrap_or_default())
     }
 
     /// `find` asked about each partition's segments on its own

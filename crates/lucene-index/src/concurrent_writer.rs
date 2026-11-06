@@ -327,17 +327,6 @@ thread_local! {
     static LAST_SLOT: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((usize::MAX, 0)) };
 }
 
-/// What a partitioning writer knows of one partition.
-struct PartitionState {
-    /// The slot it last started a buffer in, so a document finds its
-    /// partition's buffer without a scan of every slot (`usize::MAX`: none).
-    /// A hint: the slot is checked under its lock.
-    slot: usize,
-    /// Its documents: added since the writer opened, plus those in its own
-    /// committed segments ([`crate::index_writer::SegmentPartitioning::pool_below_docs`]).
-    docs: usize,
-}
-
 /// See the module documentation.
 pub struct ConcurrentIndexWriter<'d> {
     dir: &'d dyn Directory,
@@ -360,11 +349,10 @@ pub struct ConcurrentIndexWriter<'d> {
     full_flush: Mutex<()>,
     /// Which slot to wait on when every slot is taken.
     next_slot: AtomicUsize,
-    /// A partitioning writer's partitions: see [`PartitionState`].
-    partitions: Mutex<HashMap<Arc<str>, PartitionState>>,
-    /// The slot the default partition last started a buffer in, as
-    /// [`PartitionState::slot`].
-    default_slot: AtomicUsize,
+    /// A partitioning writer: the slot each partition last started a buffer
+    /// in, so a document finds its partition's buffer without a scan of
+    /// every slot. A hint: the slot is checked under its lock.
+    partition_slots: Mutex<HashMap<Arc<str>, usize>>,
     /// Tells this writer's slots apart from another writer's in a thread's
     /// [`LAST_SLOT`].
     id: usize,
@@ -570,19 +558,6 @@ impl<'d> ConcurrentIndexWriter<'d> {
             ..DeleteLog::default()
         };
         let segment_docs = writer.segment_doc_total()?;
-        let partitions = writer
-            .partition_doc_counts()?
-            .into_iter()
-            .map(|(p, docs)| {
-                (
-                    Arc::from(p.as_str()),
-                    PartitionState {
-                        slot: usize::MAX,
-                        docs,
-                    },
-                )
-            })
-            .collect();
         let mut live = live::LiveFlushes::default();
         live.committed(writer.segment_infos().generation, 0);
         let max_docs = writer.max_docs_limit();
@@ -605,8 +580,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
             log: Mutex::new(log),
             full_flush: Mutex::new(()),
             next_slot: AtomicUsize::new(0),
-            partitions: Mutex::new(partitions),
-            default_slot: AtomicUsize::new(usize::MAX),
+            partition_slots: Mutex::new(HashMap::new()),
             #[cfg(test)]
             rotate_slots: std::sync::atomic::AtomicBool::new(false),
             max_buffered_docs,
@@ -1181,14 +1155,15 @@ impl<'d> ConcurrentIndexWriter<'d> {
                 }
             }
         }
-        let hint = match partition {
-            Some(p) => lock(&self.partitions).get(p).map_or(usize::MAX, |s| s.slot),
-            None => self.default_slot.load(Ordering::Relaxed),
-        };
-        if let Some(Ok(guard)) = self.slots.get(hint).map(Mutex::try_lock) {
-            if !guard.has_docs() || guard.partition.as_deref() == partition {
-                LAST_SLOT.set((self.id, hint));
-                return (hint, guard);
+        if let Some(p) = partition {
+            let hint = lock(&self.partition_slots).get(p).copied();
+            if let Some(i) = hint {
+                if let Some(Ok(guard)) = self.slots.get(i).map(Mutex::try_lock) {
+                    if !guard.has_docs() || guard.partition.as_deref() == partition {
+                        LAST_SLOT.set((self.id, i));
+                        return (i, guard);
+                    }
+                }
             }
         }
         let mut empty = None;
@@ -1341,28 +1316,6 @@ impl<'d> ConcurrentIndexWriter<'d> {
         self.add_explicit(partition, Some(DeleteNode::DocValuesUpdates(updates)), docs)
     }
 
-    /// The partition documents of `partition` are buffered under: the
-    /// default one while `partition` is below
-    /// [`crate::index_writer::SegmentPartitioning::pool_below_docs`], counting these `count`.
-    fn route(
-        &self,
-        cfg: &IndexingConfig,
-        partition: Option<Arc<str>>,
-        count: usize,
-    ) -> Option<Arc<str>> {
-        let p = partition?;
-        let Some(partitioning) = cfg.partitioning() else {
-            return Some(p);
-        };
-        let mut partitions = lock(&self.partitions);
-        let state = partitions.entry(Arc::clone(&p)).or_insert(PartitionState {
-            slot: usize::MAX,
-            docs: 0,
-        });
-        state.docs = state.docs.saturating_add(count);
-        (state.docs >= partitioning.pool_below_docs).then_some(p)
-    }
-
     fn add_explicit(
         &self,
         partition: Option<Arc<str>>,
@@ -1373,7 +1326,6 @@ impl<'d> ConcurrentIndexWriter<'d> {
         // Every fallible lookup runs before anything is buffered, so a
         // refused document leaves nothing behind.
         let options = cfg.explicit_add_options(&docs)?;
-        let partition = self.route(&cfg, partition, docs.len());
         let streamed = cfg.streamed_stored_mode();
         let count = docs.len();
         let live = self
@@ -1538,13 +1490,14 @@ impl<'d> ConcurrentIndexWriter<'d> {
             };
             if partitioned {
                 if before == 0 {
-                    match &partition {
-                        Some(p) => {
-                            if let Some(state) = lock(&self.partitions).get_mut(p) {
-                                state.slot = i;
-                            }
+                    if let Some(p) = &partition {
+                        let mut hints = lock(&self.partition_slots);
+                        // Stale hints for partitions no longer written are dropped
+                        // wholesale; a miss only costs one scan.
+                        if hints.len() >= self.slots.len().saturating_mul(4) {
+                            hints.clear();
                         }
-                        None => self.default_slot.store(i, Ordering::Relaxed),
+                        hints.insert(Arc::clone(p), i);
                     }
                 }
                 dwpt.partition = partition;
