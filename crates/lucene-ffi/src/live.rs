@@ -197,7 +197,13 @@ impl Drop for WritingGuard<'_> {
             .writing
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        writing.retain(|x| (x.buffer, x.start, x.end, x.postings) != self.key);
+        // Only this guard's entry: another thread may write the same chunk.
+        if let Some(i) = writing
+            .iter()
+            .position(|x| (x.buffer, x.start, x.end, x.postings) == self.key)
+        {
+            writing.remove(i);
+        }
         drop(writing);
         self.warmer.written.notify_all();
     }
@@ -215,23 +221,28 @@ impl Warmer {
             .clone()
     }
 
-    /// Waits while buffer `buffer`'s chunk `start..end` is being written.
-    fn wait_written(&self, buffer: u64, start: i32, end: i32) {
+    /// Waits while `w`'s chunk is being written (with postings or without,
+    /// as `w`), then marks it as being written, under one lock so two
+    /// threads do not both write it.
+    fn claim_writing(&self, w: Writing) -> WritingGuard<'_> {
+        let key = (w.buffer, w.start, w.end, w.postings);
         let mut writing = self
             .writing
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        while writing
-            .iter()
-            .any(|x| x.buffer == buffer && x.start == start && x.end == end)
-        {
+        while writing.iter().any(|x| {
+            x.buffer == w.buffer && x.start == w.start && x.end == w.end && x.postings == w.postings
+        }) {
             writing = self
                 .written
                 .wait(writing)
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
         }
+        writing.push(w);
+        WritingGuard { warmer: self, key }
     }
 
+    #[cfg(test)]
     fn start_writing(&self, w: Writing) -> WritingGuard<'_> {
         let key = (w.buffer, w.start, w.end, w.postings);
         self.writing
@@ -305,7 +316,8 @@ fn warm(w: &EngineWriter) -> lucene_index::index_writer::Result<()> {
     // with the warmer marked running.
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         view.buffers.iter().filter(|b| b.in_slot).try_for_each(|b| {
-            let plan = plan(&w.live_chunks(), b, i32::MAX, &[]);
+            let writing = w.live_warmer().writing();
+            let plan = plan(&w.live_chunks(), b, i32::MAX, &writing);
             let tail = plan.last().map_or(0, |p| p.end.saturating_sub(p.start));
             if tail < WARM_MIN_DOCS || writes_nothing(w, b, &plan, false) {
                 return Ok(());
@@ -427,7 +439,8 @@ fn plan(chunks: &Chunks, b: &ViewBuffer, absorb_docs: i32, writing: &[Writing]) 
     // A chunk being written from one of the chain's boundaries is planned
     // as it is: the view waits for it and writes only what follows.
     let pending = writing.iter().find(|x| {
-        x.buffer == b.id
+        b.in_slot
+            && x.buffer == b.id
             && x.end > covered
             && x.end < b.max_doc
             && (x.start == covered || chain.iter().any(|c| c.start == x.start))
@@ -1030,7 +1043,17 @@ fn buffer_segments(
             out.push((c.reader.clone(), !c.postings));
             continue;
         }
-        w.live_warmer().wait_written(b.id, p.start, p.end);
+        // Claimed before the cache is read: a chunk another thread is
+        // writing is waited for and then found there.
+        let _writing = b.in_slot.then(|| {
+            w.live_warmer().claim_writing(Writing {
+                buffer: b.id,
+                start: p.start,
+                end: p.end,
+                postings,
+                end_totals: Arc::clone(&p.end_totals),
+            })
+        });
         let cached = w.live_chunks().get(&(b.id, postings)).and_then(|c| {
             c.iter()
                 .find(|c| c.start == p.start && c.end == p.end)
@@ -1040,15 +1063,6 @@ fn buffer_segments(
             out.push((c.reader.clone(), !c.postings));
             continue;
         }
-        let _writing = b.in_slot.then(|| {
-            w.live_warmer().start_writing(Writing {
-                buffer: b.id,
-                start: p.start,
-                end: p.end,
-                postings,
-                end_totals: Arc::clone(&p.end_totals),
-            })
-        });
         let dir = lucene_store::ByteBuffersDirectory::new();
         let name = format!("_live{}_{}", p.start, p.end);
         let starts: Vec<i32> = plan.iter().map(|p| p.end).collect();
