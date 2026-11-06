@@ -12,7 +12,7 @@ use lucene_vector_quant::{Quantizer, QuantizerRegistry};
 
 use crate::{
     similarity_from_ordinal, Error, Result, Similarity, META_CODEC, POSTINGS_CODEC, VECTORS_CODEC,
-    VERSION_CURRENT, VERSION_START,
+    VERSION_BLOCK_LAYOUT, VERSION_CURRENT,
 };
 
 /// A file read by byte range: a memory-mapped or in-memory file, or a blob
@@ -278,7 +278,7 @@ fn check_source(
     codec_util::check_index_header(
         &mut SliceInput::new(&header),
         codec,
-        VERSION_START,
+        VERSION_BLOCK_LAYOUT,
         VERSION_CURRENT,
         segment_id,
         suffix,
@@ -562,7 +562,7 @@ impl IvfReader {
         codec_util::check_index_header(
             &mut input,
             META_CODEC,
-            VERSION_START,
+            VERSION_BLOCK_LAYOUT,
             VERSION_CURRENT,
             segment_id,
             suffix,
@@ -629,7 +629,7 @@ impl IvfReader {
         }
         let (offset, len) = f.block_range(c);
         let block = self.postings.read(offset, len)?;
-        // ARITH: a block is `size * (4 + code_len)` bytes.
+        // ARITH: a block is `size * 4` slot bytes, then the codes.
         #[allow(clippy::arithmetic_side_effects)]
         let (slots, codes) = block.split_at(f.cluster_size(c) * 4);
         let docs = slots

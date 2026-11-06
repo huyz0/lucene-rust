@@ -66,12 +66,13 @@ fn quantize_query(
     out: &mut [u8],
 ) -> QuantizationResult {
     let dims = query.len() as f64;
-    // Eight independent lanes, so the loop vectorizes.
-    let (mut sum, mut sq) = ([0f32; 8], [0f32; 8]);
+    // Eight independent lanes, so the loop vectorizes; sums in `f64`, as
+    // the variance below subtracts two of them.
+    let (mut sum, mut sq) = ([0f64; 8], [0f64; 8]);
     let (mut lo, mut hi) = ([f32::MAX; 8], [-f32::MAX; 8]);
     let mut lane = |j: usize, r: f32| {
-        sum[j] += r;
-        sq[j] += r * r;
+        sum[j] += f64::from(r);
+        sq[j] += f64::from(r) * f64::from(r);
         lo[j] = lo[j].min(r);
         hi[j] = hi[j].max(r);
     };
@@ -85,12 +86,11 @@ fn quantize_query(
     for (j, (&q, &c)) in qt.iter().zip(ct).enumerate() {
         lane(j, q - c);
     }
-    let centroid_dot = simd::dot_f32(query, centroid);
-    let norm2: f32 = sq.iter().sum();
+    let norm2: f64 = sq.iter().sum();
     let min = lo.iter().fold(f32::MAX, |m, &x| m.min(x));
     let max = hi.iter().fold(-f32::MAX, |m, &x| m.max(x));
-    let mean = f64::from(sum.iter().sum::<f32>()) / dims;
-    let std = (f64::from(norm2) / dims - mean * mean).max(0.0).sqrt();
+    let mean = sum.iter().sum::<f64>() / dims;
+    let std = (norm2 / dims - mean * mean).max(0.0).sqrt();
     let grid = MINIMUM_MSE_GRID[usize::from(bits) - 1];
     let clamp = |x: f64| x.clamp(f64::from(min), f64::from(max)) as f32;
     let a = clamp(f64::from(grid[0]) * std + mean);
@@ -110,9 +110,9 @@ fn quantize_query(
         lower_interval: a,
         upper_interval: b,
         additional_correction: if similarity == Similarity::Euclidean {
-            norm2
+            norm2 as f32
         } else {
-            centroid_dot
+            simd::dot_f32(query, centroid)
         },
         quantized_component_sum: component_sum,
     }
@@ -325,14 +325,6 @@ impl Quantizer for OsqQuantizer {
             q: self,
             query: normalized,
             unpacked: vec![0u8; self.discrete],
-            codes: vec![
-                0u8;
-                if self.encoding.is_asymmetric() {
-                    0
-                } else {
-                    self.discrete
-                }
-            ],
             corrections: QuantizationResult {
                 lower_interval: 0.0,
                 upper_interval: 0.0,
@@ -465,9 +457,6 @@ struct OsqQueryScorer<'q> {
     q: &'q OsqQuantizer,
     query: Vec<f32>,
     unpacked: Vec<u8>,
-    /// The query codes as the symmetric encodings' kernels take them (empty
-    /// for the asymmetric ones, which read `unpacked` and the tables).
-    codes: Vec<u8>,
     corrections: QuantizationResult,
     centroid_dp: f32,
     /// For the fast-scan layout, one 16-entry table per bit plane and group
@@ -487,9 +476,6 @@ impl QueryScorer for OsqQueryScorer<'_> {
             self.q.similarity,
             &mut self.unpacked,
         );
-        if !encoding.is_asymmetric() {
-            self.codes.copy_from_slice(&self.unpacked);
-        }
         self.centroid_dp = if self.q.similarity == Similarity::Euclidean {
             0.0
         } else {
@@ -633,10 +619,12 @@ impl OsqQueryScorer<'_> {
     fn score_code(&self, code: &[u8], t: &QueryTerms) -> f32 {
         let (doc, tail) = code.split_at(self.q.packed);
         let qc_dist = match self.q.encoding {
-            ScalarEncoding::UnsignedByte => vector_util::uint8_dot_product(&self.codes, doc) as f32,
-            ScalarEncoding::SevenBit => vector_util::dot_product_i8(&self.codes, doc) as f32,
+            ScalarEncoding::UnsignedByte => {
+                vector_util::uint8_dot_product(&self.unpacked, doc) as f32
+            }
+            ScalarEncoding::SevenBit => vector_util::dot_product_i8(&self.unpacked, doc) as f32,
             ScalarEncoding::PackedNibble => {
-                vector_util::int4_dot_product_single_packed(&self.codes, doc) as f32
+                vector_util::int4_dot_product_single_packed(&self.unpacked, doc) as f32
             }
             ScalarEncoding::SingleBitQueryNibble | ScalarEncoding::DibitQueryNibble => {
                 bit_planes_dot(&self.unpacked, doc) as f32
