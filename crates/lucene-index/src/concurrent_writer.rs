@@ -525,13 +525,14 @@ impl<'d> ConcurrentIndexWriter<'d> {
                 core.merging.remove(name);
             }
         };
-        let plan = {
+        let (plan, listened) = {
             let mut core = lock(&self.core);
             match core.writer.begin_merge(&merge.segments) {
                 Ok(mut plan) => {
                     core.writer
                         .attach_merge_hooks(&mut plan, merge.hooks.clone());
-                    plan
+                    let listened = core.writer.merge_event(&plan);
+                    (plan, listened)
                 }
                 Err(e) => {
                     release(&mut core);
@@ -542,6 +543,10 @@ impl<'d> ConcurrentIndexWriter<'d> {
                 }
             }
         };
+        // `OpenSearchConcurrentMergeScheduler.doMerge`: the listener hears of
+        // the merge before it runs and after it ends, without the lock.
+        let report =
+            crate::index_writer::MergeReport::start(listened, Some(Arc::clone(merge.progress())));
         let tracking = TrackingDirectory::new(self.dir);
         let outcome = catch_unwind(AssertUnwindSafe(|| {
             self.cfg().run_merge_limited(&tracking, &plan, limiter)
@@ -564,11 +569,13 @@ impl<'d> ConcurrentIndexWriter<'d> {
                 let _ = core.writer.delete_new_files(&tracking.created());
                 drop(core);
                 self.changed.notify_all();
+                drop(report);
                 resume_unwind(panic);
             }
         };
         drop(core);
         self.changed.notify_all();
+        report.finish(&result);
         result
     }
 
@@ -637,6 +644,12 @@ impl<'d> ConcurrentIndexWriter<'d> {
     pub fn set_check_pending_flush_on_update(&self, check: bool) {
         self.check_pending_flush_on_update
             .store(check, Ordering::Relaxed);
+    }
+
+    /// `IndexWriter.hasPendingMerges`: whether merges are registered that no
+    /// merge thread has taken yet. Takes only the queue's own lock.
+    pub fn has_pending_merges(&self) -> bool {
+        !self.pending_merges.is_empty()
     }
 
     /// See [`Self::set_check_pending_flush_on_update`].
@@ -3613,6 +3626,148 @@ mod tests {
         assert_eq!(w.maybe_merge().unwrap(), 0);
         w.close_merges().unwrap();
         assert_eq!(lock(&w.core).writer.segment_infos().segments.len(), 4);
+    }
+
+    /// Records what a [`crate::index_writer::MergeListener`] hears.
+    #[derive(Default)]
+    struct Heard {
+        events: Mutex<Vec<(bool, crate::index_writer::MergeEvent, bool)>>,
+    }
+
+    impl crate::index_writer::MergeListener for Heard {
+        fn before_merge(&self, merge: &crate::index_writer::MergeEvent) {
+            self.events
+                .lock()
+                .unwrap()
+                .push((true, merge.clone(), false));
+        }
+
+        fn after_merge(
+            &self,
+            merge: &crate::index_writer::MergeEvent,
+            _times: crate::index_writer::MergeTimes,
+            failure: Option<&Error>,
+        ) {
+            self.events
+                .lock()
+                .unwrap()
+                .push((false, merge.clone(), failure.is_some()));
+        }
+    }
+
+    /// `OpenSearchConcurrentMergeScheduler.beforeMerge`/`afterMerge`: the
+    /// listener hears every scheduled merge and every forced one, each before
+    /// and after, with the sources' documents summed.
+    #[test]
+    fn a_merge_listener_hears_every_merge_before_and_after() {
+        let tmp = TempDir::new("concurrent-listener");
+        let dir = static_dir(&tmp);
+        let heard = Arc::new(Heard::default());
+        let mut iw = writer(dir, 5);
+        iw.set_merge_listener(Some(heard.clone()));
+        assert!(iw.merge_listener().is_some());
+        let w = ConcurrentIndexWriter::with_merge_scheduler(
+            iw,
+            1,
+            Arc::new(crate::merge_scheduler::SerialMergeScheduler::new()),
+        )
+        .unwrap();
+        for i in 0..60 {
+            w.add_document(doc(&format!("d{i}"), 0)).unwrap();
+            if i % 5 == 4 {
+                w.commit().unwrap();
+            }
+        }
+        assert!(!w.has_pending_merges());
+        let natural = heard.events.lock().unwrap().len();
+        assert!(natural >= 2, "no merge was heard");
+        lock(&w.core).writer.force_merge(1).unwrap();
+        let events = heard.events.lock().unwrap().clone();
+        assert!(events.len() > natural, "the forced merge was not heard");
+        assert_eq!(events.len() % 2, 0);
+        for pair in events.chunks(2) {
+            let ((before, b, _), (after, a, failed)) = (&pair[0], &pair[1]);
+            assert!(*before && !*after && !*failed);
+            assert_eq!(a, b);
+            assert!(b.total_docs > 0 && b.total_bytes > 0);
+            assert_eq!(b.total_docs as usize % 5, 0, "{b:?}");
+        }
+        let (_, last, _) = events.last().unwrap();
+        assert_eq!(last.max_num_segments, 1);
+        assert_eq!(last.total_docs, 60);
+        assert!(events[0].1.id < last.id);
+    }
+
+    /// A merge that unwinds before it reports its end is heard as failed.
+    #[test]
+    fn a_merge_that_unwinds_is_heard_as_failed() {
+        let heard = Arc::new(Heard::default());
+        let event = crate::index_writer::MergeEvent {
+            id: 1,
+            segments: vec!["_0".to_string()],
+            total_docs: 1,
+            total_bytes: 1,
+            max_num_segments: -1,
+        };
+        let listener: Arc<dyn crate::index_writer::MergeListener> = heard.clone();
+        drop(crate::index_writer::MergeReport::start(
+            Some((listener, event)),
+            None,
+        ));
+        let events = heard.events.lock().unwrap();
+        assert_eq!(events.len(), 2);
+        assert!(events[0].0 && !events[1].0 && events[1].2);
+    }
+
+    /// A pluggable policy picks the merges the scheduler runs, and its
+    /// forced merges interleave their sources when shuffling is on.
+    #[test]
+    fn a_pluggable_policy_picks_the_scheduled_and_forced_merges() {
+        let tmp = TempDir::new("concurrent-pluggable");
+        let dir = static_dir(&tmp);
+        let mut iw = writer(dir, 5);
+        let mut log = crate::merge_policy::log::LogByteSizeMergePolicy::new();
+        log.set_merge_factor(2).unwrap();
+        log.min_merge_size = 0;
+        iw.set_pluggable_merge_policy(Some(Arc::new(log)));
+        iw.set_shuffle_forced_merges(true);
+        let w = ConcurrentIndexWriter::with_merge_scheduler(
+            iw,
+            1,
+            Arc::new(crate::merge_scheduler::SerialMergeScheduler::new()),
+        )
+        .unwrap();
+        for i in 0..40 {
+            w.add_document(doc(&format!("d{i}"), 0)).unwrap();
+            if i % 5 == 4 {
+                w.commit().unwrap();
+            }
+        }
+        let segments = || lock(&w.core).writer.segment_infos().segments.len();
+        assert!(segments() < 8, "no scheduled merge ran: {}", segments());
+        // Merges wait for the forced one from here on.
+        lock(&w.core)
+            .writer
+            .set_pluggable_merge_policy(Some(Arc::new(
+                crate::merge_policy::log::LogByteSizeMergePolicy::new(),
+            )));
+        for i in 40..50 {
+            w.add_document(doc(&format!("d{i}"), 0)).unwrap();
+            if i % 5 == 4 {
+                w.commit().unwrap();
+            }
+        }
+        assert!(segments() >= 2);
+        lock(&w.core).writer.force_merge(1).unwrap();
+        assert_eq!(segments(), 1);
+        let core = lock(&w.core);
+        let sci = &core.writer.segment_infos().segments[0];
+        let si = dir.open(&format!("{}.si", sci.segment_name)).unwrap();
+        let si = crate::segment_info::parse(&si, &sci.segment_id).unwrap();
+        assert!(si
+            .diagnostics
+            .iter()
+            .any(|(k, _)| k == crate::merge::SHUFFLE_MERGE_KEY));
     }
 
     /// `onMergeFinished` releases a merge the scheduler took but will not

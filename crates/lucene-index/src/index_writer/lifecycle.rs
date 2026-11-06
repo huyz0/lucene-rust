@@ -202,6 +202,41 @@ mod tests {
         w.rollback();
     }
 
+    /// Records whether each merged segment was compound when warmed.
+    #[derive(Default)]
+    struct CompoundRecorder(Mutex<Vec<bool>>);
+
+    impl MergedSegmentWarmer for CompoundRecorder {
+        fn warm(&self, dir: &dyn Directory, segment: &SegmentCommitInfo) -> Result<()> {
+            let cfs = dir.open(&format!("{}.cfs", segment.segment_name)).is_ok();
+            self.0.lock().unwrap().push(cfs);
+            Ok(())
+        }
+    }
+
+    /// `mergeMiddle` builds the compound file before it warms the merged
+    /// segment, so the warmer sees the files the segment is published with.
+    #[test]
+    fn the_warmer_sees_the_merged_segment_compound() {
+        let tmp = TempDir::new("warm-compound");
+        let dir = FsDirectory::open(&tmp);
+        let mut w = writer(&dir);
+        for i in 0..4 {
+            w.add_document(doc(i)).unwrap();
+            w.commit().unwrap();
+        }
+        let mut compound = crate::merge_policy::CompoundFileSettings::default();
+        compound.set_no_cfs_ratio(1.0).unwrap();
+        w.set_merge_compound_file_settings(Some(compound));
+        let warmer = Arc::new(CompoundRecorder::default());
+        w.set_merged_segment_warmer(Some(warmer.clone()));
+        w.force_merge(1).unwrap();
+        assert_eq!(*warmer.0.lock().unwrap(), vec![true]);
+        let sci = &w.segment_infos().segments[0];
+        assert!(dir.open(&format!("{}.cfs", sci.segment_name)).is_ok());
+        w.commit().unwrap();
+    }
+
     #[test]
     fn flush_next_buffer_flushes_only_when_something_is_buffered() {
         let tmp = TempDir::new("flush-next");

@@ -288,6 +288,13 @@ public final class RustEngineSupport {
             refreshMergePolicy(writer, config);
             writer.setMergeOnFlush(Math.max(wait, 0), wait > 0 && indexSettings.getMergeOnFlushPolicy().isPresent());
             refreshMergeScheduler(writer, config);
+            // NativeLuceneIndexWriterFactory: merged segments are warmed (pre-copied to replicas) on
+            // segment-replication indices.
+            if (indexSettings.isDocumentReplication() == false
+                && (indexSettings.isSegRepLocalEnabled() || indexSettings.isRemoteStoreEnabled())
+                && config.getIndexReaderWarmer() != null) {
+                writer.setMergedSegmentWarmer(config.getIndexReaderWarmer());
+            }
             success = true;
         } finally {
             if (success == false) {
@@ -321,8 +328,9 @@ public final class RustEngineSupport {
     }
 
     /**
-     * The shard's {@code index.merge.policy.*} for the Rust writer: the {@code TieredMergePolicy}
-     * OpenSearch's provider keeps (and updates in place when the settings change), under its wrappers.
+     * The shard's merge policy for the Rust writer, under its wrappers: the {@code TieredMergePolicy}
+     * or {@code LogByteSizeMergePolicy} OpenSearch's provider keeps (and updates in place when the
+     * settings change), or {@code NoMergePolicy} when merges are off.
      */
     static void refreshMergePolicy(DocumentIndexWriter writer, EngineConfig config) {
         if (writer instanceof RustIndexWriter rust) {
@@ -333,6 +341,11 @@ public final class RustEngineSupport {
             try {
                 if (policy instanceof TieredMergePolicy tiered) {
                     rust.setMergePolicy(tiered);
+                    rust.setPluggableMergePolicy(null);
+                } else {
+                    // log_byte_size, or index.merge.enabled: false. No OpenSearch setting yields any
+                    // other policy; one a test passes in directly merges with the tiered defaults.
+                    rust.setPluggableMergePolicy(policy);
                 }
                 // NativeLuceneIndexWriterFactory's setUseCompoundFile and setCheckPendingFlushUpdate,
                 // the policy's compound-file ratio and cap, and its ShuffleForcedMergePolicy wrapper.
