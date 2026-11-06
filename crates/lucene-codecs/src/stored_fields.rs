@@ -1338,6 +1338,11 @@ pub fn write_best_speed(
 /// gives its stored fields a file ([`StoredFieldsWriter::stream_to`]).
 pub const SPILL_BYTES: usize = 1 << 20;
 
+/// How many `.fdt` bytes a streaming writer gathers before handing them to
+/// its output: a few chunks, so the writes stay large while the buffer
+/// stays small.
+const STREAM_BYTES: usize = 64 << 10;
+
 /// Lucene's per-mode chunking parameters, from the two
 /// `Lucene90CompressingStoredFieldsFormat` constructions in
 /// `Lucene90StoredFieldsFormat.fieldsFormat`: a chunk closes as soon as its
@@ -1637,7 +1642,9 @@ impl StoredFieldsWriter {
     fn record_chunk(&mut self) {
         self.docs_values.push(self.doc_base as i64);
         self.start_pointers_values.push(self.fdt_pointer());
-        self.spill_fdt();
+        if self.fdt.len() >= STREAM_BYTES {
+            self.spill_fdt();
+        }
     }
 
     /// The `.fdt` bytes held in memory.
@@ -1653,10 +1660,9 @@ impl StoredFieldsWriter {
         pointer as i64
     }
 
-    /// Streams the `.fdt` to `out` from here on: each chunk goes to `out` as
-    /// it is written, as Lucene's writer writes it to its output, so a long
-    /// write (a merge, a big indexing buffer) holds about a chunk instead of
-    /// the whole file.
+    /// Streams the `.fdt` to `out` from here on: chunks go to `out` once
+    /// [`STREAM_BYTES`] of them are buffered, so a long write (a merge, a big
+    /// indexing buffer) holds about that much instead of the whole file.
     /// Finish with [`Self::finish_streamed`]. [`Self::set_segment_id`] must
     /// come before: the header it rewrites leaves with the first spill.
     pub fn stream_to(&mut self, out: FsIndexOutput) {
@@ -1666,6 +1672,7 @@ impl StoredFieldsWriter {
     fn spill_fdt(&mut self) {
         if let Some(out) = self.fdt_out.as_mut() {
             out.write_bytes(&self.fdt);
+            let first = self.fdt_spilled == 0;
             // ARITH: a file length.
             #[allow(clippy::arithmetic_side_effects)]
             {
@@ -1673,7 +1680,7 @@ impl StoredFieldsWriter {
             }
             self.fdt.clear();
             // What was buffered before streaming began is not needed again.
-            if self.fdt.capacity() > SPILL_BYTES / 4 {
+            if first && self.fdt.capacity() > 2 * STREAM_BYTES {
                 self.fdt = Vec::new();
             }
         }

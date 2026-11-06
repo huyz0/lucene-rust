@@ -178,10 +178,8 @@ impl PackedFields {
             scratch.push(SAME_SHAPE);
             encode_values(&fields, &mut scratch);
             if shape != self.last_shape || scratch.len() > room {
-                scratch.clear();
-                scratch.push(PACKED);
-                scratch.extend_from_slice(&shape);
-                encode_values(&fields, &mut scratch);
+                scratch[0] = PACKED;
+                scratch.splice(1..1, shape.iter().copied());
                 std::mem::swap(&mut self.last_shape, &mut shape);
             }
         }
@@ -426,6 +424,8 @@ struct Shape {
     doc_values: Vec<(i32, u8)>,
     points: Vec<(i32, u8)>,
     registered: Vec<i32>,
+    /// Whether a shape was read in the current block.
+    set: bool,
 }
 
 impl Shape {
@@ -434,6 +434,7 @@ impl Shape {
         self.doc_values.clear();
         self.points.clear();
         self.registered.clear();
+        self.set = false;
     }
 
     fn read(&mut self, r: &mut Reader<'_>) -> Result<()> {
@@ -463,11 +464,15 @@ impl Shape {
         for _ in 0..n {
             self.registered.push(r.i32()?);
         }
+        self.set = true;
         Ok(())
     }
 
     /// Decodes one document's values over `out`, reusing its vectors.
     fn decode_into(&self, r: &mut Reader<'_>, out: &mut ExplicitFields) -> Result<()> {
+        if !self.set {
+            return Err(corrupt());
+        }
         out.inverted.clear();
         out.inverted.reserve(self.inverted.len());
         for &(field_number, has_norm) in &self.inverted {

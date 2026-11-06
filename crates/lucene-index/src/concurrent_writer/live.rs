@@ -922,19 +922,13 @@ impl ConcurrentIndexWriter<'_> {
             doc_counts,
         };
         // Documents counted but not held (`Dwpt::stored_docs`) are empty.
-        let docs: std::borrow::Cow<'_, [lucene_codecs::stored_fields::Document]> =
-            match slot.docs.get(start..end) {
-                Some(held) => held.into(),
-                None => {
-                    let mut docs = slot.docs.get(start..).unwrap_or_default().to_vec();
-                    docs.resize_with(end.saturating_sub(start), Default::default);
-                    docs.into()
-                }
-            };
+        let docs = padded(&slot.docs, start, end);
+        let custom_freq_terms = padded_or_empty(&slot.custom_freq_terms, start, end);
+        let vectors = padded_or_empty(&slot.vectors, start, end);
         let buffer = crate::index_writer::DocumentBuffer {
             docs: &docs,
-            custom_freq_terms: slot.custom_freq_terms.get(start..end).unwrap_or_default(),
-            vectors: slot.vectors.get(start..end).unwrap_or_default(),
+            custom_freq_terms: &custom_freq_terms,
+            vectors: &vectors,
             explicit: crate::index_writer::ExplicitDocs::PackedRange(&slot.explicit, start, end),
             postings: Some(&slot.postings),
             old_to_new: None,
@@ -1181,6 +1175,31 @@ fn read_buffer(
         deleted: view.deleted.clone(),
         fields,
     })
+}
+
+/// `list[start..end]`, with default entries for the documents past the end of `list`.
+fn padded<T: Clone + Default>(list: &[T], start: usize, end: usize) -> std::borrow::Cow<'_, [T]> {
+    match list.get(start..end) {
+        Some(held) => held.into(),
+        None => {
+            let mut out = list.get(start..).unwrap_or_default().to_vec();
+            out.resize_with(end.saturating_sub(start), T::default);
+            out.into()
+        }
+    }
+}
+
+/// Like [`padded`], but an empty list (no document has an entry) stays empty.
+fn padded_or_empty<T: Clone + Default>(
+    list: &[T],
+    start: usize,
+    end: usize,
+) -> std::borrow::Cow<'_, [T]> {
+    if list.is_empty() {
+        list.into()
+    } else {
+        padded(list, start, end)
+    }
 }
 
 /// Drops `p`'s documents from `max_doc` on, with their occurrences.

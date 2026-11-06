@@ -161,6 +161,14 @@ struct Dwpt {
     live: live::LiveColumns,
 }
 
+/// Pads `list` to `n` entries when any document has an entry, or when a
+/// sort will permute it.
+fn pad_lists<T>(list: &mut Vec<Vec<T>>, n: usize, sorting: bool) {
+    if !list.is_empty() || sorting {
+        list.resize_with(n, Vec::new);
+    }
+}
+
 impl Dwpt {
     /// How many documents the buffer holds.
     fn num_docs(&self) -> usize {
@@ -1455,8 +1463,10 @@ impl<'d> ConcurrentIndexWriter<'d> {
         tracking: &TrackingDirectory<'_>,
     ) -> Result<Built> {
         let cfg = self.cfg();
-        custom_freq_terms.resize_with(docs.len(), Vec::new);
-        vectors.resize_with(docs.len(), Vec::new);
+        // Kept short when no document has any: nothing reads past them then
+        // but a sort, which permutes them.
+        pad_lists(&mut custom_freq_terms, docs.len(), cfg.sorts_documents());
+        pad_lists(&mut vectors, docs.len(), cfg.sorts_documents());
         // Native documents carry no explicit fields.
         let explicit_docs = cfg.takes_explicit();
         // The stored values were compressed as the documents arrived, in the
