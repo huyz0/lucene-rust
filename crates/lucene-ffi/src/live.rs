@@ -107,7 +107,7 @@ const REQUEST_HANDLES: usize = 16;
 /// A request's blobs as one key: the query's length, the query, the tree.
 fn request_key(query: &[u8], tree: Option<&[u8]>) -> Vec<u8> {
     let tree = tree.unwrap_or_default();
-    let mut key = Vec::with_capacity(8 + query.len() + tree.len());
+    let mut key = Vec::new();
     key.extend_from_slice(&(query.len() as u64).to_le_bytes());
     key.extend_from_slice(query);
     key.extend_from_slice(tree);
