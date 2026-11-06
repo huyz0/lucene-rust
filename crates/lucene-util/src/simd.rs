@@ -696,6 +696,161 @@ unsafe fn or_words_avx2(dst: &mut [u64], src: &[u64]) {
     }
 }
 
+/// Codes [`lut16_accumulate32`] scores per call.
+pub const FAST_SCAN_BLOCK: usize = 32;
+
+/// Groups [`lut16_accumulate32`] sums in 16-bit lanes before widening: 256
+/// table entries of at most 255 stay below `u16::MAX`.
+const FAST_SCAN_FLUSH: usize = 256;
+
+/// Fast-scan table lookup over a block of 32 codes of 4-bit sub-codes:
+/// `out[i] += luts[g][code_i[g]]` summed over the groups `g`.
+///
+/// `luts` holds one 16-entry table per group (`16 * groups` bytes). `codes`
+/// holds 16 bytes per group: byte `j` of group `g` carries code `j`'s
+/// sub-code `g` in its low nibble and code `j + 16`'s in its high nibble.
+/// The vector paths look up 32 entries per shuffle, one table held in a
+/// register, which is what makes scanning short codes cheaper than decoding
+/// them one at a time.
+///
+/// # Panics
+///
+/// When `luts` and `codes` are not the same whole number of 16-byte groups.
+#[inline]
+pub fn lut16_accumulate32(luts: &[u8], codes: &[u8], out: &mut [u32; FAST_SCAN_BLOCK]) {
+    assert!(
+        luts.len() == codes.len() && luts.len().is_multiple_of(16),
+        "lut16_accumulate32: {} table bytes for {} code bytes",
+        luts.len(),
+        codes.len()
+    );
+    for (l, c) in luts
+        .chunks(16 * FAST_SCAN_FLUSH)
+        .zip(codes.chunks(16 * FAST_SCAN_FLUSH))
+    {
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+        {
+            // SAFETY: AVX2 is enabled for this whole build; `l` and `c` are
+            // the same whole number of 16-byte groups (asserted above), and
+            // the kernel reads only whole groups inside them.
+            unsafe { lut16_accumulate32_avx2(l, c, out) }
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            // SAFETY: NEON is part of the aarch64 baseline; as above for the
+            // bounds.
+            unsafe { lut16_accumulate32_neon(l, c, out) }
+        }
+        #[cfg(not(any(
+            all(target_arch = "x86_64", target_feature = "avx2"),
+            target_arch = "aarch64"
+        )))]
+        lut16_accumulate32_scalar(l, c, out);
+    }
+}
+
+/// The specification [`lut16_accumulate32`] must match.
+///
+/// # Panics
+///
+/// As [`lut16_accumulate32`].
+pub fn lut16_accumulate32_scalar(luts: &[u8], codes: &[u8], out: &mut [u32; FAST_SCAN_BLOCK]) {
+    assert!(luts.len() == codes.len() && luts.len().is_multiple_of(16));
+    for (lut, group) in luts.chunks_exact(16).zip(codes.chunks_exact(16)) {
+        for (j, &b) in group.iter().enumerate() {
+            out[j] += u32::from(lut[usize::from(b & 15)]);
+            out[j + 16] += u32::from(lut[usize::from(b >> 4)]);
+        }
+    }
+}
+
+#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+#[target_feature(enable = "avx2")]
+unsafe fn lut16_accumulate32_avx2(luts: &[u8], codes: &[u8], out: &mut [u32; FAST_SCAN_BLOCK]) {
+    use std::arch::x86_64::*;
+    let groups = luts.len() / 16;
+    debug_assert!(groups <= FAST_SCAN_FLUSH);
+    let (pl, pc) = (luts.as_ptr(), codes.as_ptr());
+    let nibble = _mm256_set1_epi8(0x0f);
+    // 16-bit sums for codes 0..16 and 16..32.
+    let (mut lo, mut hi) = (_mm256_setzero_si256(), _mm256_setzero_si256());
+    let mut g = 0;
+    // SAFETY (every load): `g + 2 <= groups` keeps the 32 bytes at `16 * g`
+    // inside both slices.
+    while g + 2 <= groups {
+        let (t, c) = unsafe {
+            (
+                _mm256_loadu_si256(pl.add(16 * g) as *const __m256i),
+                _mm256_loadu_si256(pc.add(16 * g) as *const __m256i),
+            )
+        };
+        // Lane k of `t` is group g + k's table; the shuffle looks up within
+        // each 128-bit lane, so lane k of the results is group g + k's.
+        let a = _mm256_shuffle_epi8(t, _mm256_and_si256(c, nibble));
+        let b = _mm256_shuffle_epi8(t, _mm256_and_si256(_mm256_srli_epi16(c, 4), nibble));
+        lo = _mm256_add_epi16(lo, _mm256_cvtepu8_epi16(_mm256_castsi256_si128(a)));
+        lo = _mm256_add_epi16(lo, _mm256_cvtepu8_epi16(_mm256_extracti128_si256(a, 1)));
+        hi = _mm256_add_epi16(hi, _mm256_cvtepu8_epi16(_mm256_castsi256_si128(b)));
+        hi = _mm256_add_epi16(hi, _mm256_cvtepu8_epi16(_mm256_extracti128_si256(b, 1)));
+        g += 2;
+    }
+    if g < groups {
+        // SAFETY: group `g` is the last whole 16 bytes of both slices.
+        let (t, c) = unsafe {
+            (
+                _mm_loadu_si128(pl.add(16 * g) as *const __m128i),
+                _mm_loadu_si128(pc.add(16 * g) as *const __m128i),
+            )
+        };
+        let nibble = _mm_set1_epi8(0x0f);
+        let a = _mm_shuffle_epi8(t, _mm_and_si128(c, nibble));
+        let b = _mm_shuffle_epi8(t, _mm_and_si128(_mm_srli_epi16(c, 4), nibble));
+        lo = _mm256_add_epi16(lo, _mm256_cvtepu8_epi16(a));
+        hi = _mm256_add_epi16(hi, _mm256_cvtepu8_epi16(b));
+    }
+    // SAFETY: `__m256i` is sixteen `u16`s with no padding.
+    let (lo, hi): ([u16; 16], [u16; 16]) = unsafe {
+        (
+            std::mem::transmute::<__m256i, [u16; 16]>(lo),
+            std::mem::transmute::<__m256i, [u16; 16]>(hi),
+        )
+    };
+    for j in 0..16 {
+        out[j] += u32::from(lo[j]);
+        out[j + 16] += u32::from(hi[j]);
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn lut16_accumulate32_neon(luts: &[u8], codes: &[u8], out: &mut [u32; FAST_SCAN_BLOCK]) {
+    use std::arch::aarch64::*;
+    let groups = luts.len() / 16;
+    debug_assert!(groups <= FAST_SCAN_FLUSH);
+    let (pl, pc) = (luts.as_ptr(), codes.as_ptr());
+    let nibble = vdupq_n_u8(0x0f);
+    // 16-bit sums for codes 0..8, 8..16, 16..24 and 24..32.
+    let mut acc = [vdupq_n_u16(0); 4];
+    for g in 0..groups {
+        // SAFETY: group `g < groups` is 16 bytes inside both slices.
+        let (t, c) = unsafe { (vld1q_u8(pl.add(16 * g)), vld1q_u8(pc.add(16 * g))) };
+        let a = vqtbl1q_u8(t, vandq_u8(c, nibble));
+        let b = vqtbl1q_u8(t, vshrq_n_u8(c, 4));
+        acc[0] = vaddw_u8(acc[0], vget_low_u8(a));
+        acc[1] = vaddw_high_u8(acc[1], a);
+        acc[2] = vaddw_u8(acc[2], vget_low_u8(b));
+        acc[3] = vaddw_high_u8(acc[3], b);
+    }
+    for (k, v) in acc.iter().enumerate() {
+        let mut lanes = [0u16; 8];
+        // SAFETY: `lanes` is eight `u16`s.
+        unsafe { vst1q_u16(lanes.as_mut_ptr(), *v) };
+        for (j, x) in lanes.iter().enumerate() {
+            out[8 * k + j] += u32::from(*x);
+        }
+    }
+}
+
 /// For every byte value, the positions of its set bits, ascending, padded
 /// with zeros to eight.
 static BYTE_BITS: [[u8; 8]; 256] = {
@@ -1017,6 +1172,28 @@ mod tests {
         assert_eq!(expand_bitset(&[0b1011], 0, &mut []), 0);
         assert_eq!(expand_bitset_scalar(&[0b1011], 0, &mut []), 0);
         assert_eq!(out[255], 10 + 255);
+    }
+
+    /// The fast-scan lookup matches its scalar specification for every
+    /// group count around the two-group step and the 16-bit flush.
+    #[test]
+    fn lut16_accumulate32_matches_the_scalar_specification() {
+        let mut s = 0x1234_5678_9ABC_DEF0u64;
+        for groups in (0..40).chain([255, 256, 257, 600]) {
+            let luts: Vec<u8> = (0..16 * groups).map(|_| xorshift(&mut s) as u8).collect();
+            let codes: Vec<u8> = (0..16 * groups).map(|_| xorshift(&mut s) as u8).collect();
+            let mut fast = [7u32; FAST_SCAN_BLOCK];
+            let mut spec = [7u32; FAST_SCAN_BLOCK];
+            lut16_accumulate32(&luts, &codes, &mut fast);
+            lut16_accumulate32_scalar(&luts, &codes, &mut spec);
+            assert_eq!(fast, spec, "groups {groups}");
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "lut16_accumulate32")]
+    fn lut16_accumulate32_rejects_mismatched_lengths() {
+        lut16_accumulate32(&[0; 16], &[0; 32], &mut [0; FAST_SCAN_BLOCK]);
     }
 
     fn xorshift(s: &mut u64) -> u64 {

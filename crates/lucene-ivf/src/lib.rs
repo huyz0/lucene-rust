@@ -22,7 +22,7 @@
 //! | file | holds | access |
 //! |---|---|---|
 //! | `.ivm` meta | per field: similarity, dimension, the quantizer's name and state, every centroid and cluster size | read whole at open; small enough to keep in memory |
-//! | `.ivp` postings | per cluster, contiguous: its documents (`i32` LE, ascending) then its codes | one range read per probed cluster |
+//! | `.ivp` postings | per cluster, contiguous: its slots (`u32` LE, ascending) then its codes as one block in the quantizer's layout (`Quantizer::write_block`: interleaved 32 at a time for fast scan with BBQ) | one range read per probed cluster |
 //! | `.ivv` vectors | full-precision vectors (`f32` LE) in cluster order, then a document-to-slot table | one small range read per reranked candidate |
 //!
 //! The layout is chosen for both local block storage and blob storage behind
@@ -58,8 +58,11 @@ pub const POSTINGS_EXTENSION: &str = "ivp";
 pub const VECTORS_EXTENSION: &str = "ivv";
 /// The first format version.
 pub const VERSION_START: i32 = 0;
+/// Cluster codes in the quantizer's block layout (`Quantizer::write_block`)
+/// rather than end to end. Files of earlier versions are not read.
+pub const VERSION_BLOCK_LAYOUT: i32 = 1;
 /// The current format version.
-pub const VERSION_CURRENT: i32 = VERSION_START;
+pub const VERSION_CURRENT: i32 = VERSION_BLOCK_LAYOUT;
 
 /// Errors building or reading an IVF index.
 #[derive(Debug, thiserror::Error)]
