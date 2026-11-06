@@ -157,9 +157,13 @@ fn install_merge_policies(iw: &mut IndexWriter<'_>, policies: &MergePolicies) {
     let merges_on = iw.merge_policy().is_some();
     let config = iw.merge_policy().cloned().unwrap_or_default();
     let compound = iw.use_compound_file();
+    let merged_compound = iw.merge_compound_file_settings();
     let tiered = || {
         let mut t = TieredMergePolicy::new(config.clone());
-        if !compound {
+        if let Some(settings) = merged_compound {
+            // `index.compound_format`, as the writer's own merges use it.
+            *t.compound_file_settings_mut() = settings;
+        } else if !compound {
             // Merged segments stay loose files, as without a policy.
             let _ = t.compound_file_settings_mut().set_no_cfs_ratio(0.0);
         }
@@ -1465,12 +1469,16 @@ pub extern "C" fn ffi_engine_writer_set_options(
             return Err(FfiStatus::InvalidArgument);
         }
         with_writer(handle, |w| {
+            let policies = w.policies();
             w.writer().with_writer(|iw| {
                 iw.set_use_compound_file(use_compound_file != 0);
                 compound.max_cfs_segment_size = max_cfs_segment_bytes;
                 iw.set_merge_compound_file_settings(Some(compound));
                 iw.set_shuffle_forced_merges(shuffle_forced_merges != 0);
+                // The wrapping policies decide merged segments' compound files too.
+                install_merge_policies(iw, &policies);
             });
+            drop(policies);
             w.writer()
                 .set_check_pending_flush_on_update(check_pending_flush != 0);
             Ok(())
