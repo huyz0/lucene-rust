@@ -34,13 +34,13 @@ Each row is the fastest setting that reaches the recall shown.
 
 | index | setting | recall@10 | latency µs | build s | pinned MB |
 |---|---|---|---|---|---|
-| IVF-BBQ (1-bit) | nprobe 64, rerank 300 | 0.928 | 428 | 3.3 | 14.7 |
-| IVF-BBQ (1-bit) | nprobe 128, rerank 300 | 0.952 | 718 | 3.3 | 14.7 |
-| IVF-OSQ 2-bit | nprobe 64, rerank 100 | 0.944 | 520 | 3.2 | 21.0 |
-| IVF-OSQ 4-bit | nprobe 64, rerank 100 | 0.949 | 313 | 2.7 | 33.4 |
-| IVF-OSQ 4-bit | nprobe 128, rerank 100 | 0.981 | 617 | 2.7 | 33.4 |
-| IVF-SQ int7 | nprobe 64, rerank 100 | 0.949 | 288 | 2.3 | 42.8 |
-| IVF-SQ int4 | nprobe 64, rerank 100 | 0.949 | 334 | 2.7 | 23.3 |
+| IVF-BBQ (1-bit) | nprobe 64, rerank 300 | 0.937 | 234 | 5.6 | 15.6 |
+| IVF-BBQ (1-bit) | nprobe 128, rerank 300 | 0.955 | 354 | 5.6 | 15.6 |
+| IVF-OSQ 2-bit | nprobe 64, rerank 100 | 0.951 | 213 | 5.4 | 22.3 |
+| IVF-OSQ 4-bit | nprobe 64, rerank 100 | 0.955 | 327 | 5.0 | 33.4 |
+| IVF-OSQ 4-bit | nprobe 128, rerank 100 | 0.983 | 666 | 5.0 | 33.4 |
+| IVF-SQ int7 | nprobe 64, rerank 100 | 0.955 | 319 | 4.5 | 42.8 |
+| IVF-SQ int4 | nprobe 64, rerank 100 | 0.955 | 338 | 4.6 | 23.3 |
 | HNSW + BBQ (M 16, beam 100) | ef 320 | 0.798 | 939 | 36.0 | 44.6 |
 | HNSW + BBQ (M 16, beam 100) | ef 640 | 0.870 | 1843 | 36.0 | 44.6 |
 | Faiss IVF-Flat | nprobe 64 | 0.963 | 613 | 14.7 | 159.8 |
@@ -52,11 +52,12 @@ Each row is the fastest setting that reaches the recall shown.
 
 | index | setting | recall@10 | latency µs | build s | pinned MB |
 |---|---|---|---|---|---|
-| IVF-BBQ (1-bit) | nprobe 64, rerank 300 | 0.926 | 964 | 67.8 | 67.1 |
-| IVF-BBQ (1-bit) | nprobe 128, rerank 300 | 0.962 | 1692 | 67.8 | 67.1 |
-| IVF-OSQ 4-bit | nprobe 64, rerank 100 | 0.927 | 1056 | 52.6 | 185.9 |
-| IVF-OSQ 4-bit | nprobe 128, rerank 100 | 0.964 | 1642 | 52.6 | 185.9 |
-| IVF-SQ int4 | nprobe 128, rerank 100 | 0.964 | 1788 | 49.7 | 164.2 |
+| IVF-BBQ (1-bit) | nprobe 64, rerank 300 | 0.929 | 810 | 105.5 | 73.5 |
+| IVF-BBQ (1-bit) | nprobe 128, rerank 300 | 0.964 | 1091 | 105.5 | 73.5 |
+| IVF-OSQ 2-bit | nprobe 128, rerank 100 | 0.964 | 1235 | 92.0 | 117.6 |
+| IVF-OSQ 4-bit | nprobe 64, rerank 100 | 0.930 | 1025 | 90.7 | 185.9 |
+| IVF-OSQ 4-bit | nprobe 128, rerank 100 | 0.966 | 1636 | 90.7 | 185.9 |
+| IVF-SQ int4 | nprobe 128, rerank 100 | 0.965 | 2234 | 87.2 | 164.2 |
 | HNSW + BBQ (M 16, beam 100) | ef 640 | 0.880 | 2318 | 127.2 | 83.0 |
 | Faiss IVF-Flat | nprobe 64 | 0.946 | 2869 | 321.6 | 1203.7 |
 | Faiss IVF-SQ8 | nprobe 64, rerank 300 | 0.946 | 7520 | 331.0 | 312.7 |
@@ -67,29 +68,41 @@ Each row is the fastest setting that reaches the recall shown.
 
 ## Findings
 
+The 1- and 2-bit rows use fast scan: codes are stored 32 to a block and
+scored with 16-entry lookup tables held in SIMD registers, the technique
+behind Faiss's PQ fast-scan and RaBitQ. Reranking also prefetches candidate
+vectors 8 ahead.
+
+Clustering ends with two full Lloyd rounds (`KMeansParams::full_rounds`)
+that compare every vector with every centroid. The hierarchical tree and its
+neighbourhood refinement leave about one GloVe vector in ten away from its
+nearest centroid, and those rounds fix it. At a fixed number of probes,
+recall with exact distances rose from 0.949 to 0.955 on GloVe at nprobe 64,
+which matches Faiss's flat k-means for the same number of vectors scanned.
+They cost about 1 s per round on GloVe and 20 s per round on fastText.
+`full_rounds: 1` keeps most of the gain on fastText (0.964 at nprobe 128)
+and builds in 84 s.
+
 - **Against HNSW + BBQ.** IVF-BBQ reaches recall HNSW + BBQ does not reach
-  at any ef tried. At HNSW's best recall (0.87 to 0.88), IVF-BBQ is 2.7 to 5x
-  faster. It also builds 2 to 10x faster and pins a third to four fifths of
-  the memory. A probe is one sequential range read where an HNSW search
-  makes hundreds of dependent random reads, which matters more on blob
-  storage.
-- **Against Faiss IVF-RaBitQ**, the same 1-bit idea: IVF-BBQ is as fast or
-  faster at equal recall on both sets. Faiss's flat k-means
-  partitions give 0.015 to 0.02 more recall at a given nprobe (IVF-Flat
-  against reranked IVF). Builds are 5x faster here.
-- **Faiss PQ fast-scan** (4-bit PQ codes scored with in-register lookup
-  tables) is the fastest scan of the group:
-  - On GloVe it is about 2x faster than IVF at equal recall.
-  - On fastText it ties up to about 0.93 recall and is about 1.5x faster at
-    0.96.
-  - Most of the gap is the code scan itself. A SIMD bulk kernel for BBQ (or
-    a fast-scan quantizer behind the same trait) is the main open item.
+  at any ef tried. At HNSW's best recall (0.87 to 0.88) IVF-BBQ is 3 to 10x
+  faster, builds 1.2 to 6x faster and pins a third to nine tenths of the
+  memory. A probe is one sequential range read where an HNSW search makes
+  hundreds of dependent random reads, which matters more on blob storage.
+- **Against Faiss IVF-RaBitQ**, the same 1-bit idea: IVF-BBQ is faster at
+  equal recall on both sets, by 1.5 to 2.5x, and builds about 3x faster.
+- **Against Faiss PQ fast-scan:**
+  - On GloVe, 2-bit OSQ is level with it: 0.951 at 213 µs against 0.953 at
+    223 µs, pinning 22.3 MB against 14.2. IVF-BBQ needs nprobe 128 for the
+    same recall (354 µs), because its estimates need a deeper rerank.
+  - On fastText, IVF-BBQ is ahead: 0.929 at 810 µs against 0.929 at 1001,
+    and 0.964 at 1091 µs against 0.954 at 1110.
 - **Ranking centroids is a fixed cost.** On fastText, ranking 6437 centroids
   of 300 floats costs about 330 µs per query in both engines, because the
-  7.7 MB of centroids is read from memory every time. In batch mode Faiss
-  ranks them for all queries with one matrix multiply, which hides this
-  cost; the batch-mode numbers are not comparable, so they are not shown.
-  Reduced-precision centroids or a two-level centroid tree would cut it.
+  7.7 MB of centroids is read from memory every time. It is now a third of
+  IVF-BBQ's latency at 0.93. In batch mode Faiss ranks them for all queries
+  with one matrix multiply, which hides this cost; the batch-mode numbers
+  are not comparable, so they are not shown. Reduced-precision centroids or
+  a two-level centroid tree would cut it.
 - **Quantizer choice.** Once rerank is on, 2-bit, 4-bit and int7 codes all
   reach the partition's recall ceiling, so they trade pinned bytes for less
   rerank work. BBQ needs a deeper rerank (300) to get there and pins the
