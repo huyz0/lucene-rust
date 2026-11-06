@@ -63,7 +63,7 @@ use lucene_index::concurrent_writer::ConcurrentIndexWriter;
 use lucene_index::index_file_deleter::DeletionPolicy;
 use lucene_index::index_writer::{
     self, ExplicitDocument, ExplicitFields, IndexWriter, InvertedField, InvertedTerms,
-    MergePolicyConfig, SoftDeletesRetention,
+    MergePolicyConfig, SegmentPartitioning, SoftDeletesRetention,
 };
 use lucene_index::merge_policy::{
     CompoundFileSettings, MergeOnFlushMergePolicy, MergePolicy, TieredMergePolicy,
@@ -98,6 +98,11 @@ const RECOVERY_SOURCE_FIELD: &str = "_recovery_source";
 /// Operation kinds of [`decode_op`].
 const OP_ADD: u8 = 0;
 const OP_SOFT_UPDATE: u8 = 1;
+/// [`OP_ADD`] and [`OP_SOFT_UPDATE`] whose documents belong to a partition
+/// (the value of the index's partition field): the kind is followed by the
+/// partition (`i32 len, utf8`), then the operation as without one.
+const OP_ADD_PARTITIONED: u8 = 2;
+const OP_SOFT_UPDATE_PARTITIONED: u8 = 3;
 /// Panics inside the writer -- the fault the "a panic fails exactly one
 /// shard" test injects. Refused unless the handle was opened with fault
 /// injection enabled.
@@ -482,8 +487,12 @@ fn document(c: &mut Cursor<'_>) -> Result<ExplicitDocument, FfiStatus> {
 
 /// An operation blob, decoded.
 enum Op {
-    Add(Vec<ExplicitDocument>),
+    Add {
+        partition: Option<Arc<str>>,
+        docs: Vec<ExplicitDocument>,
+    },
     SoftUpdate {
+        partition: Option<Arc<str>>,
         term: Term,
         soft_field: String,
         soft_value: i64,
@@ -506,8 +515,13 @@ fn decode_op(blob: &[u8]) -> Result<Op, FfiStatus> {
     let kind = c.u8("op kind")?;
     let op = match kind {
         OP_PANIC => Op::Panic,
-        OP_ADD | OP_SOFT_UPDATE => {
-            let update = if kind == OP_SOFT_UPDATE {
+        OP_ADD | OP_SOFT_UPDATE | OP_ADD_PARTITIONED | OP_SOFT_UPDATE_PARTITIONED => {
+            let partition = if matches!(kind, OP_ADD_PARTITIONED | OP_SOFT_UPDATE_PARTITIONED) {
+                Some(Arc::<str>::from(c.string("partition")?))
+            } else {
+                None
+            };
+            let update = if matches!(kind, OP_SOFT_UPDATE | OP_SOFT_UPDATE_PARTITIONED) {
                 let field = c.string("term field")?;
                 let bytes = c.bytes("term bytes")?.to_vec();
                 let soft_field = c.string("soft-deletes field")?;
@@ -525,8 +539,9 @@ fn decode_op(blob: &[u8]) -> Result<Op, FfiStatus> {
                 docs.push(document(&mut c)?);
             }
             match update {
-                None => Op::Add(docs),
+                None => Op::Add { partition, docs },
                 Some((term, soft_field, soft_value)) => Op::SoftUpdate {
+                    partition,
                     term,
                     soft_field,
                     soft_value,
@@ -796,6 +811,15 @@ pub const OPEN_LIVE_SEARCH: u8 = 4;
 /// new segments write their doc values in the `RustAdaptive` format
 /// ([`lucene_codecs::doc_values::Lucene90DocValuesFormat::rust_adaptive`]).
 pub const OPEN_ADAPTIVE_DOC_VALUES: u8 = 32;
+/// [`ffi_engine_writer_open`]'s flag for an index with a partition field
+/// (`index.lucene_rust.partition_field`): every segment holds one partition
+/// and records it, and merges never mix partitions
+/// ([`lucene_index::index_writer::SegmentPartitioning::opensearch`]).
+pub const OPEN_PARTITIONED: u8 = 64;
+/// Indexing buffers per indexing thread in a partitioned writer: a buffer
+/// holds one partition, so several partitions in flight on one thread each
+/// keep their own instead of flushing one another's.
+const PARTITIONED_SLOTS_PER_THREAD: usize = 4;
 
 /// Opens the shard's writer over the index at `path`, which must already hold
 /// a commit (OpenSearch's `Store.createEmpty` or a recovered one).
@@ -804,7 +828,7 @@ pub const OPEN_ADAPTIVE_DOC_VALUES: u8 = 32;
 /// an `index.sparse` index ([`lucene_sparse::SparseCodec`]);
 /// [`OPEN_LIVE_SEARCH`] keeps what a search of the buffers reads;
 /// [`OPEN_ADAPTIVE_DOC_VALUES`] writes doc values in the `RustAdaptive`
-/// format.
+/// format; [`OPEN_PARTITIONED`] keeps partitions in segments of their own.
 ///
 /// # Safety
 /// `path` valid for `path_len` bytes; `out_handle` valid for one write.
@@ -880,7 +904,11 @@ pub unsafe extern "C" fn ffi_engine_writer_open(
             // Java's limit lowers this one too.
             writer.set_max_docs(usize::try_from(max_docs).unwrap_or(0));
             // One buffer per thread that can index at once.
-            let slots = std::thread::available_parallelism().map_or(1, |n| n.get());
+            let mut slots = std::thread::available_parallelism().map_or(1, |n| n.get());
+            if flags & OPEN_PARTITIONED != 0 {
+                writer.set_segment_partitioning(Some(SegmentPartitioning::opensearch()));
+                slots = slots.saturating_mul(PARTITIONED_SLOTS_PER_THREAD);
+            }
             ConcurrentIndexWriter::with_merge_scheduler(writer, slots, Arc::new(merges.clone()))
         };
         let writer = open().map_err(writer_error)?;
@@ -948,8 +976,11 @@ fn apply_op(handle: u64, op: Op) -> Result<(), FfiStatus> {
     with_writer(handle, |w| {
         let writer = w.writer();
         match op {
-            Op::Add(docs) => writer.add_explicit_documents(docs).map_err(writer_error)?,
+            Op::Add { partition, docs } => writer
+                .add_explicit_documents_in(partition, docs)
+                .map_err(writer_error)?,
             Op::SoftUpdate {
+                partition,
                 term,
                 soft_field,
                 soft_value,
@@ -961,7 +992,7 @@ fn apply_op(handle: u64, op: Op) -> Result<(), FfiStatus> {
                     value: Some(soft_value),
                 };
                 writer
-                    .soft_update_explicit_documents(term, docs, &[soft])
+                    .soft_update_explicit_documents_in(partition, term, docs, &[soft])
                     .map_err(writer_error)?
             }
             Op::Panic => {
@@ -2140,6 +2171,118 @@ mod tests {
             .attributes
             .iter()
             .any(|(k, v)| k == "sparse_vector_field" && v == "true"));
+        check(&tmp);
+    }
+
+    /// A partitioned writer: each operation's partition decides the
+    /// segment, every segment records its partition (OpenSearch's `bucket`,
+    /// on the `.si` and on `_id`), an update's earlier version is soft
+    /// deleted whatever partition holds it, and a forced merge leaves one
+    /// segment per partition.
+    #[test]
+    fn a_partitioned_writer_keeps_each_partition_in_its_own_segments() {
+        let tmp = empty_index("engine-writer-partitioned");
+        let h = open_with(&tmp, 16.0, OPEN_PARTITIONED, i32::MAX);
+        let f = setup(h);
+        let add = |p: &str, id: &str, seq: i64| {
+            doc(
+                Blob::default()
+                    .u8(OP_ADD_PARTITIONED)
+                    .bytes(p.as_bytes())
+                    .i32(1),
+                &f,
+                id,
+                &["x"],
+                seq,
+                false,
+            )
+        };
+        for (seq, (p, id)) in [("a", "1"), ("b", "2"), ("a", "3"), ("c", "4"), ("b", "5")]
+            .into_iter()
+            .enumerate()
+        {
+            assert_eq!(
+                apply(h, &add(p, id, seq as i64).0),
+                0,
+                "{}",
+                crate::error::last_error()
+            );
+        }
+        commit(h, &[]);
+        // "1" moves from partition a to c: the old one is soft deleted.
+        let update = doc(
+            Blob::default()
+                .u8(OP_SOFT_UPDATE_PARTITIONED)
+                .bytes(b"c")
+                .bytes(b"_id")
+                .bytes(b"1")
+                .bytes(b"__soft_deletes")
+                .i64(1)
+                .i32(1),
+            &f,
+            "1",
+            &["y"],
+            5,
+            false,
+        );
+        assert_eq!(apply(h, &update.0), 0, "{}", crate::error::last_error());
+        commit(h, &[]);
+        let buckets = || {
+            let dir = FsDirectory::open(tmp.path());
+            let infos = lucene_index::segment_infos::read_latest(&dir).unwrap();
+            let mut out: Vec<(String, i32, i32)> = infos
+                .segments
+                .iter()
+                .map(|sci| {
+                    let name = &sci.segment_name;
+                    let si = lucene_index::segment_info::parse(
+                        &dir.open(&format!("{name}.si")).unwrap(),
+                        &sci.segment_id,
+                    )
+                    .unwrap();
+                    let fnm = lucene_codecs::field_infos::parse(
+                        &dir.open(&format!("{name}.fnm")).unwrap(),
+                        &sci.segment_id,
+                        "",
+                    )
+                    .unwrap();
+                    let bucket = |a: &[(String, String)]| {
+                        a.iter()
+                            .find(|(k, _)| k == "bucket")
+                            .map(|(_, v)| v.clone())
+                    };
+                    let on_id = fnm.field_by_name("_id").and_then(|f| bucket(&f.attributes));
+                    let on_si = bucket(&si.attributes).unwrap();
+                    assert_eq!(on_id.as_deref(), Some(on_si.as_str()));
+                    (on_si, si.doc_count, sci.soft_del_count)
+                })
+                .collect();
+            out.sort();
+            out
+        };
+        let before = buckets();
+        assert!(before
+            .iter()
+            .all(|(b, _, _)| ["a", "b", "c"].contains(&b.as_str())));
+        let soft: i32 = before.iter().map(|(_, _, s)| s).sum();
+        assert_eq!(soft, 1, "the first version of 1, in partition a");
+        let mut gen = 0;
+        // SAFETY: live out-pointer.
+        assert_eq!(
+            unsafe { ffi_engine_writer_force_merge(h, 1, 0, &mut gen) },
+            0
+        );
+        let after: Vec<(String, i32)> = buckets().into_iter().map(|(b, n, _)| (b, n)).collect();
+        assert_eq!(
+            after,
+            [
+                ("a".to_string(), 2),
+                ("b".to_string(), 2),
+                ("c".to_string(), 2)
+            ],
+            "soft-deleted documents are kept without a retention policy"
+        );
+        ffi_engine_writer_close(h);
         check(&tmp);
     }
 
@@ -3466,7 +3609,7 @@ mod tests {
                 .chain(d.0)
                 .collect::<Vec<_>>(),
         );
-        let Ok(Op::Add(docs)) = op else {
+        let Ok(Op::Add { docs, .. }) = op else {
             panic!("decoded");
         };
         let doc = &docs[0];

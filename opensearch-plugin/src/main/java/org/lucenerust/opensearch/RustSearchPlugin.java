@@ -356,6 +356,7 @@ public class RustSearchPlugin extends Plugin implements
             RustEngineSupport.FAULT_INJECTION,
             RustEngineSupport.REALTIME_SEARCH,
             RustEngineSupport.ADAPTIVE_DOC_VALUES,
+            RustEngineSupport.PARTITION_FIELD,
             NODE_ENGINE_ENABLED,
             LocalKeySource.KEY,
             LocalKeySource.KEY_ID,
