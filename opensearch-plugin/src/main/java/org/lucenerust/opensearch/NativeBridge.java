@@ -38,7 +38,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code jvm_reader.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 73;
+    public static final int EXPECTED_ABI_VERSION = 74;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -1398,6 +1398,7 @@ public final class NativeBridge {
     public static final int OPEN_SPARSE = 2;
     public static final int OPEN_LIVE_SEARCH = 4;
     public static final int OPEN_ADAPTIVE_DOC_VALUES = 32;
+    public static final int OPEN_PARTITIONED = 64;
 
     /**
      * Opens a shard's writer over the index at {@code path}, which must already hold a commit. Commit
@@ -1405,8 +1406,9 @@ public final class NativeBridge {
      * test-only panic operation; {@code sparse} writes the segments of an {@code index.sparse} index,
      * with neural-search's codec and clustered postings; {@code liveSearch} keeps what a search of the
      * buffered documents reads ({@link #liveViewOpen}); {@code adaptiveDocValues} writes doc values in
-     * the {@code RustAdaptive} format. {@code maxDocs} is {@code
-     * IndexWriter.getActualMaxDocs()}, which Lucene's tests lower.
+     * the {@code RustAdaptive} format; with {@code partitioned} every segment holds one partition
+     * (the value of the index's partition field) and records it, and merges never mix partitions.
+     * {@code maxDocs} is {@code IndexWriter.getActualMaxDocs()}, which Lucene's tests lower.
      */
     public static int writerOpen(
         byte[] indexPathUtf8,
@@ -1415,6 +1417,7 @@ public final class NativeBridge {
         boolean sparse,
         boolean liveSearch,
         boolean adaptiveDocValues,
+        boolean partitioned,
         int maxDocs,
         long[] outHandle
     ) {
@@ -1428,7 +1431,8 @@ public final class NativeBridge {
                 (long) indexPathUtf8.length,
                 ramBufferMb,
                 (byte) ((faultInjection ? OPEN_FAULT_INJECTION : 0) | (sparse ? OPEN_SPARSE : 0)
-                    | (liveSearch ? OPEN_LIVE_SEARCH : 0) | (adaptiveDocValues ? OPEN_ADAPTIVE_DOC_VALUES : 0)),
+                    | (liveSearch ? OPEN_LIVE_SEARCH : 0) | (adaptiveDocValues ? OPEN_ADAPTIVE_DOC_VALUES : 0)
+                    | (partitioned ? OPEN_PARTITIONED : 0)),
                 maxDocs,
                 out
             );

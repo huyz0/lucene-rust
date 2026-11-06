@@ -78,6 +78,20 @@ public final class RustEngineSupport {
     );
 
     /**
+     * The field whose value is a document's partition, as a partitioned table's partition key: every
+     * segment of the shard holds the documents of one partition (a keyword's value, or a numeric's or
+     * date's), and merges never mix partitions, so each partition's documents stay together on disk.
+     * Documents without a value, and delete tombstones, share one default partition. Empty (the
+     * default) partitions nothing. Segments record their partition the way OpenSearch's context-aware
+     * segments do, so OpenSearch's own engine reads and merges them alike.
+     */
+    public static final Setting<String> PARTITION_FIELD = Setting.simpleString(
+        "index.lucene_rust.partition_field",
+        Setting.Property.IndexScope,
+        Setting.Property.Final
+    );
+
+    /**
      * Test-only: a document with a {@code __lucene_rust_panic} field makes the writer panic inside
      * its lock, for the "a panic fails exactly one shard" check. Never set on a real index.
      */
@@ -252,6 +266,12 @@ public final class RustEngineSupport {
         return null;
     }
 
+    /** {@link #PARTITION_FIELD}, or null when it names none. */
+    static String partitionField(org.opensearch.common.settings.Settings settings) {
+        String field = PARTITION_FIELD.get(settings);
+        return field.isEmpty() ? null : field;
+    }
+
     static RustIndexWriter openWriter(
         EngineConfig config,
         Store store,
@@ -269,6 +289,7 @@ public final class RustEngineSupport {
             org.lucenerust.opensearch.sparse.SparseSettings.SPARSE_INDEX.get(config.getIndexSettings().getSettings()),
             REALTIME_SEARCH.get(config.getIndexSettings().getSettings()),
             ADAPTIVE_DOC_VALUES.get(config.getIndexSettings().getSettings()),
+            partitionField(config.getIndexSettings().getSettings()),
             maxDocs,
             config.getAnalyzer(),
             config.getSimilarity(),

@@ -5,12 +5,20 @@
 //!   --base N         use the first N base vectors (ground truth must match: default all)
 //!   --queries N      queries to run (default 1000)
 //!   --target N       IVF vectors per cluster (default 384)
-//!   --quantizers L   comma list of bbq,osq2,osq4,osq7,sq7,sq4 (default bbq,osq4,sq7)
-//!   --nprobe L       comma list of probe counts (default 4,8,16,32,64,128)
-//!   --rerank L       comma list of candidates reranked (default 0,50,100)
+//!   --quantizers L   comma list of bbq,osq2,osq4,osq7,sq7,sq4,erq2..erq8, or any
+//!                    osq/sq name prefixed r for its randomly rotated form
+//!                    (rbbq, rosq2, ...) (default bbq,osq4,sq7)
+//!   --nprobe L       comma list of probe counts, or auto for the field's
+//!                    calibrated share of its clusters (default 4,8,16,32,64,128)
+//!   --rerank L       comma list of candidates reranked: a count, auto (the
+//!                    calibrated depth with error-bound early stop), or bN
+//!                    (early stop capped at N) (default 0,50,100)
+//!   --no-calibrate   write the field without a calibrated depth
 //!   --refine N       k-means neighbourhood rounds; --full N  full Lloyd rounds
 //!   --iters N        Lloyd iterations per split
 //!   --spill X        SOAR spill with lambda X (default: no spilling)
+//!   --rerank-encoding E  f32|f16|bf16|int8: how .ivv stores the rerank
+//!                    vectors (default f32); vectors_mb is that file's size
 //!   --hnsw           also build and search Lucene104 HNSW + BBQ (M 16, beam 100)
 //!   --ef L           HNSW candidate counts (default 10,20,40,80,160,320)
 //! ```
@@ -18,7 +26,8 @@
 //! `<prefix>` names `.base.fbin`, `.query.fbin` and `.gt.ibin` as
 //! `benchmarks/ivf/prepare.py` writes them. Builds use every core (rayon);
 //! searches run one query at a time on one thread, so QPS is single-thread
-//! QPS. Prints one CSV row per configuration.
+//! QPS. Prints one CSV row per configuration; `avg_reranked` is the mean
+//! number of candidates whose full-precision vectors a query read.
 #![allow(clippy::arithmetic_side_effects, clippy::too_many_arguments)]
 
 use std::sync::Arc;
@@ -30,9 +39,14 @@ use lucene_codecs::scalar_quantized_vectors::{
     ScalarQuantizedVectorsReader, ScalarQuantizedVectorsWriter,
 };
 use lucene_codecs::{hnsw, hnsw_concurrent, hnsw_vectors};
-use lucene_ivf::{FieldVectors, IvfParams, IvfReader, IvfWriter, SearchParams, Similarity};
+use lucene_ivf::{
+    FieldVectors, IvfParams, IvfReader, IvfWriter, Probes, Rerank, SearchParams, Similarity,
+    VectorEncoding,
+};
 use lucene_util::quantization::ScalarEncoding;
 use lucene_vector_quant::osq::OsqFactory;
+use lucene_vector_quant::rabitq::ExRabitqFactory;
+use lucene_vector_quant::rotation::RotatedFactory;
 use lucene_vector_quant::scalar::ScalarFactory;
 use lucene_vector_quant::{QuantizerFactory, QuantizerRegistry};
 
@@ -54,7 +68,31 @@ fn list(s: &str) -> Vec<usize> {
     s.split(',').map(|x| x.parse().expect("number")).collect()
 }
 
+fn probes(s: &str) -> Vec<Probes> {
+    s.split(',')
+        .map(|x| match x {
+            "auto" => Probes::Auto,
+            n => Probes::Fixed(n.parse().expect("number or auto")),
+        })
+        .collect()
+}
+
+fn reranks(s: &str) -> Vec<Rerank> {
+    s.split(',')
+        .map(|x| match x {
+            "auto" => Rerank::Auto,
+            b if b.starts_with('b') => Rerank::Bounded {
+                cap: b[1..].parse().expect("bN"),
+            },
+            n => Rerank::Fixed(n.parse().expect("number, auto or bN")),
+        })
+        .collect()
+}
+
 fn factory(name: &str) -> Box<dyn QuantizerFactory> {
+    if let Some(inner) = name.strip_prefix('r') {
+        return Box::new(RotatedFactory::new(Arc::from(factory(inner))));
+    }
     match name {
         "bbq" => Box::new(OsqFactory::bbq()),
         "osq2" => Box::new(OsqFactory::new(ScalarEncoding::DibitQueryNibble)),
@@ -62,6 +100,10 @@ fn factory(name: &str) -> Box<dyn QuantizerFactory> {
         "osq7" => Box::new(OsqFactory::new(ScalarEncoding::SevenBit)),
         "sq7" => Box::new(ScalarFactory::int7()),
         "sq4" => Box::new(ScalarFactory::int4()),
+        erq if erq.starts_with("erq") => match erq[3..].parse() {
+            Ok(bits @ 2..=8) => Box::new(ExRabitqFactory::new(bits)),
+            _ => panic!("unknown quantizer {erq}: erq takes 2..=8 bits"),
+        },
         other => panic!("unknown quantizer {other}"),
     }
 }
@@ -96,6 +138,9 @@ fn main() {
         .min(nq_all);
     let target = opt("--target").map_or(384, |s| s.parse().unwrap());
     let spill: Option<f32> = opt("--spill").map(|s| s.parse().unwrap());
+    let encoding = opt("--rerank-encoding").map_or(VectorEncoding::F32, |s| {
+        VectorEncoding::from_name(&s).unwrap_or_else(|| panic!("unknown rerank encoding {s}"))
+    });
     let mut kmeans = lucene_ivf::kmeans::KMeansParams::default();
     if let Some(r) = opt("--refine") {
         kmeans.refine_rounds = r.parse().unwrap();
@@ -107,14 +152,15 @@ fn main() {
         kmeans.iterations = r.parse().unwrap();
     }
     let quantizers = opt("--quantizers").unwrap_or_else(|| "bbq,osq4,sq7".into());
-    let nprobes = list(&opt("--nprobe").unwrap_or_else(|| "4,8,16,32,64,128".into()));
-    let reranks = list(&opt("--rerank").unwrap_or_else(|| "0,50,100".into()));
+    let nprobes = probes(&opt("--nprobe").unwrap_or_else(|| "4,8,16,32,64,128".into()));
+    let reranks = reranks(&opt("--rerank").unwrap_or_else(|| "0,50,100".into()));
+    let calibrate = !args.iter().any(|a| a == "--no-calibrate");
     let efs = list(&opt("--ef").unwrap_or_else(|| "10,20,40,80,160,320".into()));
     let base = &base[..n * dim];
     let docs: Vec<i32> = (0..n as i32).collect();
     let truth = |q: usize| &gt[q * gt_k..(q + 1) * gt_k];
     eprintln!("{prefix}: {n} x {dim}, {nq} queries, {:?}", similarity);
-    println!("index,config,build_s,recall@10,latency_us,qps,pinned_mb,vectors_mb");
+    println!("index,config,build_s,recall@10,latency_us,qps,pinned_mb,vectors_mb,avg_reranked");
 
     let registry = QuantizerRegistry::with_builtins();
     for qname in quantizers.split(',') {
@@ -134,6 +180,12 @@ fn main() {
                 target_cluster_size: target,
                 spill,
                 kmeans,
+                rerank_encoding: encoding,
+                calibration_recall: if calibrate {
+                    IvfParams::default().calibration_recall
+                } else {
+                    None
+                },
                 ..IvfParams::default()
             },
         )
@@ -151,25 +203,51 @@ fn main() {
             &registry,
         )
         .unwrap();
-        let clusters = r.field(0).unwrap().clusters();
-        let entries = r.field(0).unwrap().entries();
+        let field = r.field(0).unwrap();
+        let clusters = field.clusters();
+        let entries = field.entries();
+        if let Some(c) = field.calibration() {
+            eprintln!(
+                "ivf-{qname}: calibrated nprobe {} ({:.4} of {clusters} clusters), rerank {} per hit",
+                field.auto_nprobe(),
+                c.probe_fraction,
+                c.rerank_multiple
+            );
+        }
         for &nprobe in &nprobes {
             for &rerank in &reranks {
-                let params = SearchParams::new(K, nprobe, rerank);
+                let params = SearchParams {
+                    k: K,
+                    nprobe,
+                    rerank,
+                };
                 let mut found = 0;
+                let mut reranked = 0;
                 let t = Instant::now();
                 for q in 0..nq {
-                    let hits = r
-                        .search(0, &queries[q * dim..(q + 1) * dim], &params, None)
+                    let out = r
+                        .search_with(0, &queries[q * dim..(q + 1) * dim], &params, None, None)
                         .unwrap();
-                    found += recall(hits.iter().map(|h| h.doc), truth(q));
+                    found += recall(out.hits.iter().map(|h| h.doc), truth(q));
+                    reranked += out.stats.reranked;
                 }
                 let secs = t.elapsed().as_secs_f64();
+                let nprobe = match nprobe {
+                    Probes::Fixed(n) => n.to_string(),
+                    Probes::Auto => format!("auto({})", field.auto_nprobe()),
+                };
+                let rerank = match rerank {
+                    Rerank::Fixed(n) => n.to_string(),
+                    Rerank::Auto => format!("auto({})", field.auto_rerank(K)),
+                    Rerank::Bounded { cap } => format!("b{cap}"),
+                };
                 println!(
-                    "ivf-{qname},clusters={clusters} entries={entries} nprobe={nprobe} rerank={rerank},{build:.1},{:.4},{:.0},{:.0},{pinned:.1},{vectors_mb:.1}",
+                    "ivf-{qname},clusters={clusters} entries={entries} nprobe={nprobe} rerank={rerank} enc={},{build:.1},{:.4},{:.0},{:.0},{pinned:.1},{vectors_mb:.1},{:.1}",
+                    encoding.name(),
                     found as f64 / (nq * K) as f64,
                     secs / nq as f64 * 1e6,
-                    nq as f64 / secs
+                    nq as f64 / secs,
+                    reranked as f64 / nq as f64
                 );
             }
         }
@@ -279,10 +357,11 @@ fn hnsw_bbq(
         }
         let secs = t.elapsed().as_secs_f64();
         println!(
-            "hnsw-bbq,M=16 beam=100 ef={ef} rerank={ef},{build:.1},{:.4},{:.0},{:.0},{pinned:.1},{vectors_mb:.1}",
+            "hnsw-bbq,M=16 beam=100 ef={ef} rerank={ef},{build:.1},{:.4},{:.0},{:.0},{pinned:.1},{vectors_mb:.1},{}",
             found as f64 / (nq * K) as f64,
             secs / nq as f64 * 1e6,
-            nq as f64 / secs
+            nq as f64 / secs,
+            ef.max(K)
         );
     }
 }
