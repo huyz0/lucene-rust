@@ -57,8 +57,11 @@ shards and their memory.
   of a nested block): a keyword's or ip's value, or a numeric's or date's.
   Documents without a value, and delete tombstones, share the default
   partition.
-- The writer keeps one indexing buffer per partition in flight (four per
-  indexing thread), so a flush writes one segment per partition.
+- The writer keeps one indexing buffer per partition in flight, up to 1024
+  of them, all under the shard's indexing buffer: when that fills, the
+  largest is flushed, and a refresh flushes them all, one segment per
+  partition. Past 1024 partitions in flight, a buffer of another partition
+  is flushed to make room, so segments get small.
 - Each segment records its partition the way OpenSearch's context-aware
   segments do (the `bucket` attribute on the segment and on `_id` and
   `_seq_no`), and merges are chosen per partition, as

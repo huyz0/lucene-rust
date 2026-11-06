@@ -329,3 +329,19 @@ fn an_add_refused_after_its_slot_was_flushed_keeps_the_flushed_documents() {
     let infos = segment_infos::read_latest(&dir).unwrap();
     assert_eq!(infos.segments.len(), 1);
 }
+
+#[test]
+fn many_interleaved_partitions_each_keep_one_buffer() {
+    let tmp = TempDir::new("partitions-many");
+    let dir = FsDirectory::open(&tmp);
+    let w = open(&dir, 64, Some(SegmentPartitioning::opensearch()));
+    for i in 0..400 {
+        let p = i % 40;
+        w.add_explicit_documents_in(partition(p), vec![doc(p, i)])
+            .unwrap();
+    }
+    w.commit().unwrap();
+    let per = assert_one_partition_each(&dir);
+    assert_eq!(per.len(), 40);
+    assert!(per.values().all(|&n| n == 1), "{per:?}");
+}
