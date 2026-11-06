@@ -337,16 +337,6 @@ pub(super) struct Flushing {
     pub(super) segment: Option<crate::segment_infos::SegmentCommitInfo>,
 }
 
-/// A buffer of a view as a segment ([`ConcurrentIndexWriter::live_view_segments`]).
-#[derive(Debug, Clone)]
-pub enum LiveViewSegment {
-    /// Written into the directory given, holding the view's documents.
-    Written(crate::segment_infos::SegmentCommitInfo),
-    /// The segment the buffer was published as, in the writer's directory:
-    /// every document of the buffer, which grows no more.
-    Published(crate::segment_infos::SegmentCommitInfo),
-}
-
 /// The live-search state the control lock guards.
 #[derive(Default)]
 pub(super) struct LiveFlushes {
@@ -609,8 +599,19 @@ pub struct ViewBuffer {
     pub max_doc: i32,
     /// Deleted documents, ascending.
     pub deleted: Vec<i32>,
+    /// Whether the buffer was still taking documents when the view opened:
+    /// else it was being flushed, or published, and grows no more.
+    pub in_slot: bool,
     /// Every field's statistics as of the view, by field number.
     stats: HashMap<i32, LiveFieldStats>,
+}
+
+impl ViewBuffer {
+    /// By field number, how many of the view's documents of the buffer
+    /// have the field, deleted ones included.
+    pub fn doc_counts(&self) -> HashMap<i32, i32> {
+        self.stats.iter().map(|(&f, s)| (f, s.doc_count)).collect()
+    }
 }
 
 /// A buffered document's stored fields, in the order they were added.
@@ -817,7 +818,9 @@ impl ConcurrentIndexWriter<'_> {
                 postings: &dwpt.postings,
                 columns: &dwpt.live,
             };
-            out.buffers.push(view_buffer(&source, tail, max_doc, &cfg)?);
+            let mut buffer = view_buffer(&source, tail, max_doc, &cfg)?;
+            buffer.in_slot = true;
+            out.buffers.push(buffer);
         }
         let published = core.live.retained.range(from..).map(|(_, f)| f);
         for f in core.live.flushing.values().chain(published) {
@@ -849,95 +852,97 @@ impl ConcurrentIndexWriter<'_> {
         Ok(out)
     }
 
-    /// Writes `view`'s buffers into `dir` as segments, one per buffer and
-    /// in the view's order, as their flush would write them, without
-    /// taking them from the writer: what a search needing whole segments
-    /// (doc values, points, every term) reads them through. Each holds its
-    /// buffer's first [`ViewBuffer::max_doc`] documents, those of the view;
-    /// the caller treats [`ViewBuffer::deleted`] as deleted. Stored fields
-    /// are not written ([`Self::live_document`] reads them).
-    ///
-    /// Each buffer's slot is locked while its segment is written. Fails
-    /// when a buffer has left its slot (taken for a flush since), and under
-    /// an index sort, which would renumber the documents.
-    pub fn live_view_segments(
+    /// The segment buffer `id` was published as, in the writer's directory
+    /// ([`Self::directory`]): every document of the buffer, which grows no
+    /// more. `None` while it is buffered or being flushed, and once a view
+    /// no longer pins it.
+    pub fn live_published_segment(
         &self,
-        view: &LiveView,
+        id: u64,
+    ) -> Option<crate::segment_infos::SegmentCommitInfo> {
+        let core = lock(&self.core);
+        core.live
+            .retained
+            .values()
+            .find(|f| f.columns.id == id)
+            .and_then(|f| f.segment.clone())
+    }
+
+    /// Writes documents `start..end` of buffer `id` into `dir` as segment
+    /// `name`, numbered from `start`, as a flush of just those documents
+    /// would write them, without taking them from the writer: what a search
+    /// needing whole segments (doc values, points, every term) reads a
+    /// view's buffers through. `doc_counts` is, by field number, how many
+    /// of those documents have the field: the difference of the
+    /// [`ViewBuffer::doc_counts`] of views of `end` and of `start`
+    /// documents. Stored fields are not written ([`Self::live_document`]
+    /// reads them); deletes are the caller's.
+    ///
+    /// A range starting where an earlier one ended reads the buffered
+    /// postings from there on; `next_starts` names the documents ranges
+    /// may start at next (the ends of the ranges kept), and where other
+    /// ranges ended is forgotten.
+    ///
+    /// The buffer's slot is locked while the segment is written. Fails when
+    /// the buffer has left its slot (taken for a flush since), when it
+    /// holds fewer than `end` documents, and under an index sort, which
+    /// would renumber the documents.
+    pub fn live_buffer_segment(
+        &self,
+        id: u64,
+        range: std::ops::Range<i32>,
+        doc_counts: HashMap<i32, i32>,
+        next_starts: &[i32],
         dir: &dyn lucene_store::Directory,
-    ) -> Result<Vec<LiveViewSegment>> {
+        name: &str,
+    ) -> Result<crate::segment_infos::SegmentCommitInfo> {
         let cfg = self.check_live()?;
         if cfg.sorts_documents() {
             return Err(Error::LiveSearch(
                 "an index sort renumbers the buffered documents".into(),
             ));
         }
-        // Every buffer still in a slot or published, or none written: a
-        // buffer leaves its slot only to be flushed, and a published one
-        // stays while the view pins it.
-        let mut flushed = HashMap::new();
-        {
-            let core = lock(&self.core);
-            for b in &view.buffers {
-                if let Some(seg) = core
-                    .live
-                    .retained
-                    .values()
-                    .find(|f| f.columns.id == b.id)
-                    .and_then(|f| f.segment.clone())
-                {
-                    flushed.insert(b.id, seg);
-                }
-            }
-        }
-        if let Some(b) = view.buffers.iter().find(|b| {
-            !flushed.contains_key(&b.id) && !self.slots.iter().any(|d| lock(d).live.id == b.id)
-        }) {
+        let slot = self
+            .slots
+            .iter()
+            .map(lock)
+            .find(|d| d.live.id == id && !d.docs.is_empty())
+            .ok_or_else(|| Error::LiveSearch(format!("buffer {id} is being flushed")))?;
+        let (Ok(start), Ok(end)) = (usize::try_from(range.start), usize::try_from(range.end))
+        else {
+            return Err(Error::LiveSearch("a negative document range".into()));
+        };
+        if start >= end || end > slot.docs.len() {
             return Err(Error::LiveSearch(format!(
-                "buffer {} is being flushed",
-                b.id
+                "documents {start}..{end} of a buffer of {}",
+                slot.docs.len()
             )));
         }
-        let mut out = Vec::with_capacity(view.buffers.len());
-        for (i, b) in view.buffers.iter().enumerate() {
-            if let Some(seg) = flushed.remove(&b.id) {
-                out.push(LiveViewSegment::Published(seg));
-                continue;
-            }
-            let slot = self
-                .slots
-                .iter()
-                .map(lock)
-                .find(|d| d.live.id == b.id && !d.docs.is_empty())
-                .ok_or_else(|| Error::LiveSearch(format!("buffer {} is being flushed", b.id)))?;
-            // The documents as of the view: the buffer may have grown since.
-            let n = usize::try_from(b.max_doc).unwrap_or(0).min(slot.docs.len());
-            let limit = crate::index_writer::BufferLimit {
-                docs: b.max_doc,
-                doc_counts: b.stats.iter().map(|(&f, s)| (f, s.doc_count)).collect(),
-            };
-            let grown = n < slot.docs.len();
-            let buffer = crate::index_writer::DocumentBuffer {
-                docs: slot.docs.get(..n).unwrap_or_default(),
-                custom_freq_terms: slot.custom_freq_terms.get(..n).unwrap_or_default(),
-                vectors: slot.vectors.get(..n).unwrap_or_default(),
-                explicit: crate::index_writer::ExplicitDocs::PackedPrefix(&slot.explicit, n),
-                postings: Some(&slot.postings),
-                old_to_new: None,
-                has_blocks: slot.has_blocks,
-                stored: None,
-                limit: grown.then_some(&limit),
-            };
-            let name = format!("_live{i}");
-            let (sci, _) = cfg.build_and_write_segment(
-                dir,
-                &buffer,
-                &name,
-                lucene_util::string_helper::random_id(),
-                None,
-            )?;
-            out.push(LiveViewSegment::Written(sci));
-        }
-        Ok(out)
+        let limit = crate::index_writer::BufferLimit {
+            start: range.start,
+            docs: range.end,
+            doc_counts,
+        };
+        let buffer = crate::index_writer::DocumentBuffer {
+            docs: slot.docs.get(start..end).unwrap_or_default(),
+            custom_freq_terms: slot.custom_freq_terms.get(start..end).unwrap_or_default(),
+            vectors: slot.vectors.get(start..end).unwrap_or_default(),
+            explicit: crate::index_writer::ExplicitDocs::PackedRange(&slot.explicit, start, end),
+            postings: Some(&slot.postings),
+            old_to_new: None,
+            has_blocks: slot.has_blocks,
+            stored: None,
+            limit: Some(&limit),
+        };
+        let (sci, _) = cfg.build_and_write_segment(
+            dir,
+            &buffer,
+            name,
+            lucene_util::string_helper::random_id(),
+            None,
+        )?;
+        slot.postings.keep_cursors_at(next_starts);
+        Ok(sci)
     }
 
     /// The directory the writer's segments are in.
@@ -1090,6 +1095,7 @@ fn view_buffer(
         id: source.columns.id,
         max_doc,
         deleted: deletes.docs(max_doc),
+        in_slot: false,
         stats: source.postings.live_stats_all(),
     })
 }
