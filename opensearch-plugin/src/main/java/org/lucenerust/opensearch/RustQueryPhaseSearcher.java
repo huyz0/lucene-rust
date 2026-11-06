@@ -286,15 +286,16 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
                     // buffers cannot answer.
                     long[] whole = new long[1];
                     long built = System.nanoTime();
-                    // The request's terms only, unless a rescore reads queries of its own: the hits
-                    // query (the post_filter's terms with the query's) and the aggregation tree's.
-                    byte[] request = rescores == null ? hitsBlob : null;
+                    // The request's terms only: the hits query's (the post_filter's terms with the
+                    // query's), the rescore queries' and the aggregation tree's.
+                    byte[] request = hitsBlob;
+                    byte[][] rescoreBlobs = rescores == null ? null : rescores.stream().map(NativeRescore::blob).toArray(byte[][]::new);
                     int[][] treeSlices = tree == null ? null : NativeAggregations.slices(ctx);
                     byte[] treeBlob = treeSlices == null ? null : tree.blob(treeSlices);
                     if (tree != null && treeBlob == null) {
                         request = null;
                     }
-                    int rc = NativeBridge.liveViewReader(acquired.handle(), live.view().id(), request, treeBlob, whole);
+                    int rc = NativeBridge.liveViewReader(acquired.handle(), live.view().id(), request, treeBlob, rescoreBlobs, whole);
                     if (rc == NativeBridge.OK) {
                         stats.liveReaderTime(System.nanoTime() - built);
                     }

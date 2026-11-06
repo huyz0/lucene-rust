@@ -496,6 +496,47 @@ impl<'d> StoredFieldsReader<'d> {
         )?)
     }
 
+    /// `StoredFields.prefetch(docID)` for several documents at once: the
+    /// `.fdt` chunk holding each is announced in one
+    /// [`lucene_store::prefetch`], so a fetch phase over a file read by
+    /// range waits for one round trip rather than one per chunk. A no-op
+    /// over memory that is not read by range.
+    ///
+    /// # Errors
+    /// A chunk that could not be fetched, or a corrupt `.fdx` index.
+    pub fn prefetch(&self, docs: &[i32]) -> Result<()> {
+        if !lucene_store::is_prefetchable(self.fdt) {
+            return Ok(());
+        }
+        let docs_region = self.docs_region()?;
+        let mut ranges = Vec::with_capacity(docs.len());
+        for &doc in docs {
+            if doc < 0 || doc >= self.max_doc {
+                continue;
+            }
+            let block = direct_monotonic::floor_index(
+                docs_region,
+                &self.docs_meta,
+                0,
+                self.num_chunks,
+                i64::from(doc),
+            )?;
+            let start = self.block_start_pointer(block)?;
+            let end = match block.checked_add(1) {
+                Some(next) if next < self.num_chunks => self.block_start_pointer(next)?,
+                _ => self.max_pointer,
+            };
+            let start = usize::try_from(start).unwrap_or(usize::MAX);
+            let end = usize::try_from(end)
+                .unwrap_or(0)
+                .max(start.saturating_add(1));
+            if let Some(range) = self.fdt.get(start..end.min(self.fdt.len())) {
+                ranges.push(range);
+            }
+        }
+        Ok(lucene_store::prefetch(&ranges)?)
+    }
+
     /// Reads the given document's stored fields.
     ///
     /// A **random-access** read (see [`Self::serialized_document`]); a
@@ -1334,9 +1375,14 @@ pub fn write_best_speed(
     writer.finish()
 }
 
-/// How many buffered `.fdt` bytes a [`StoredFieldsWriter::stream_to`]
-/// writer keeps before handing them to its output.
+/// How many `.fdt` bytes an indexing buffer holds in memory before it
+/// gives its stored fields a file ([`StoredFieldsWriter::stream_to`]).
 pub const SPILL_BYTES: usize = 1 << 20;
+
+/// How many `.fdt` bytes a streaming writer gathers before handing them to
+/// its output: a few chunks, so the writes stay large while the buffer
+/// stays small.
+const STREAM_BYTES: usize = 64 << 10;
 
 /// Lucene's per-mode chunking parameters, from the two
 /// `Lucene90CompressingStoredFieldsFormat` constructions in
@@ -1637,7 +1683,7 @@ impl StoredFieldsWriter {
     fn record_chunk(&mut self) {
         self.docs_values.push(self.doc_base as i64);
         self.start_pointers_values.push(self.fdt_pointer());
-        if self.fdt.len() >= SPILL_BYTES {
+        if self.fdt.len() >= STREAM_BYTES {
             self.spill_fdt();
         }
     }
@@ -1655,9 +1701,9 @@ impl StoredFieldsWriter {
         pointer as i64
     }
 
-    /// Streams the `.fdt` to `out` from here on: whenever a chunk leaves
-    /// more than [`SPILL_BYTES`] buffered, the buffer goes to `out`, so a long
-    /// write (a merge) holds about a chunk's worth instead of the whole file.
+    /// Streams the `.fdt` to `out` from here on: chunks go to `out` once
+    /// [`STREAM_BYTES`] of them are buffered, so a long write (a merge, a big
+    /// indexing buffer) holds about that much instead of the whole file.
     /// Finish with [`Self::finish_streamed`]. [`Self::set_segment_id`] must
     /// come before: the header it rewrites leaves with the first spill.
     pub fn stream_to(&mut self, out: FsIndexOutput) {
@@ -1667,12 +1713,17 @@ impl StoredFieldsWriter {
     fn spill_fdt(&mut self) {
         if let Some(out) = self.fdt_out.as_mut() {
             out.write_bytes(&self.fdt);
+            let first = self.fdt_spilled == 0;
             // ARITH: a file length.
             #[allow(clippy::arithmetic_side_effects)]
             {
                 self.fdt_spilled += self.fdt.len() as u64;
             }
             self.fdt.clear();
+            // What was buffered before streaming began is not needed again.
+            if first && self.fdt.capacity() > 2 * STREAM_BYTES {
+                self.fdt = Vec::new();
+            }
         }
     }
 

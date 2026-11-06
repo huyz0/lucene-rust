@@ -470,6 +470,10 @@ impl SegmentReader {
         let si: SegmentInfo =
             segment_info::parse_for_codec(&si_bytes, &segment_id, &commit.codec_name)?;
 
+        // Every file the open below reads, fetched at once from a directory
+        // that reads by range. Only a hint: each open reports its own error.
+        let _ = dir.prefetch_files(&commit.files(&si.files));
+
         // Compound-file segments (`.cfs`/`.cfe`) pack every other codec file
         // into one archive -- see `open_segment_file`'s doc comment for how
         // every sub-file lookup below transparently reads from it instead of
@@ -1350,21 +1354,30 @@ impl SegmentReader {
         let Some(f) = self.stored.as_deref() else {
             return Ok(false);
         };
-        let meta = match f.meta.get() {
-            Some(m) => m,
-            None => {
-                let opened = lucene_codecs::stored_fields::open(
-                    &f.fdt,
-                    &f.fdx,
-                    &f.fdm,
-                    &self.segment_id,
-                    &f.suffix,
-                )?;
-                f.meta.get_or_init(|| opened.rebind(&[], &[]))
-            }
-        };
-        meta.rebind(&f.fdt, &f.fdx).visit_document(doc, visitor)?;
+        f.reader(&self.segment_id)?.visit_document(doc, visitor)?;
         Ok(true)
+    }
+
+    /// `StoredFields.prefetch(docID)` for each of `docs`: announces the
+    /// documents a fetch phase is about to read, so their chunks of a file
+    /// read by range arrive in one round trip ([`lucene_store::prefetch`]).
+    /// A no-op for files in memory or mapped, and for a segment without
+    /// stored fields.
+    ///
+    /// # Errors
+    /// A chunk that could not be fetched.
+    pub fn prefetch_stored_documents(&self, docs: &[i32]) -> Result<()> {
+        if self.simpletext.is_some() {
+            return Ok(());
+        }
+        let Some(f) = self.stored.as_deref() else {
+            return Ok(());
+        };
+        if !lucene_store::is_prefetchable(&f.fdt) {
+            return Ok(());
+        }
+        f.reader(&self.segment_id)?.prefetch(docs)?;
+        Ok(())
     }
 
     /// This segment's 16-byte id, needed by any codec reader opened directly
@@ -2333,6 +2346,29 @@ struct StoredFiles {
     /// rebinds it to `fdt`/`fdx` (the reader borrows its files, and these
     /// are owned beside it).
     meta: OnceLock<lucene_codecs::stored_fields::StoredFieldsReader<'static>>,
+}
+
+impl StoredFiles {
+    /// A reader over the files, the metadata parsed on first use and kept.
+    fn reader(
+        &self,
+        segment_id: &[u8; ID_LENGTH],
+    ) -> Result<lucene_codecs::stored_fields::StoredFieldsReader<'_>> {
+        let meta = match self.meta.get() {
+            Some(m) => m,
+            None => {
+                let opened = lucene_codecs::stored_fields::open(
+                    &self.fdt,
+                    &self.fdx,
+                    &self.fdm,
+                    segment_id,
+                    &self.suffix,
+                )?;
+                self.meta.get_or_init(|| opened.rebind(&[], &[]))
+            }
+        };
+        Ok(meta.rebind(&self.fdt, &self.fdx))
+    }
 }
 
 impl std::fmt::Debug for StoredFiles {

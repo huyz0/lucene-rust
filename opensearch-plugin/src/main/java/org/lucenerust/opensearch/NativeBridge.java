@@ -38,7 +38,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code jvm_reader.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 73;
+    public static final int EXPECTED_ABI_VERSION = 75;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -321,6 +321,20 @@ public final class NativeBridge {
             "ffi_engine_writer_force_merge",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_BYTE, ADDRESS)
         );
+        static final MethodHandle WRITER_SET_PLUGGABLE_MERGE_POLICY = bind(
+            "ffi_engine_writer_set_pluggable_merge_policy",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_DOUBLE, JAVA_LONG)
+        );
+        static final MethodHandle SET_WARM_UPCALL = bind("ffi_engine_set_warm_upcall", FunctionDescriptor.of(JAVA_INT, ADDRESS));
+        static final MethodHandle WRITER_SET_MERGED_SEGMENT_WARMER = bind(
+            "ffi_engine_writer_set_merged_segment_warmer",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_BYTE)
+        );
+        static final MethodHandle SET_MERGE_UPCALL = bind("ffi_engine_set_merge_upcall", FunctionDescriptor.of(JAVA_INT, ADDRESS));
+        static final MethodHandle WRITER_MERGE_STATE = bind(
+            "ffi_engine_writer_merge_state",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, ADDRESS)
+        );
         static final MethodHandle WRITER_STATS = bind(
             "ffi_engine_writer_stats",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG)
@@ -333,7 +347,7 @@ public final class NativeBridge {
         static final MethodHandle LIVE_VIEW_CLOSE = bind("ffi_live_view_close", FunctionDescriptor.of(JAVA_INT, JAVA_LONG));
         static final MethodHandle LIVE_VIEW_READER = bind(
             "ffi_live_view_reader",
-            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS)
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS)
         );
         static final MethodHandle WRITER_RELEASE_LIVE = bind(
             "ffi_engine_writer_release_live",
@@ -1854,6 +1868,112 @@ public final class NativeBridge {
         }
     }
 
+    /** Merge policy kinds for {@link #writerSetPluggableMergePolicy} ({@code MERGE_POLICY_*} in {@code engine_writer.rs}). */
+    public static final int MERGE_POLICY_TIERED = 0;
+    public static final int MERGE_POLICY_LOG_BYTE_SIZE = 1;
+    public static final int MERGE_POLICY_NONE = 2;
+
+    /**
+     * The shard's merge policy when it is not tiered: {@link #MERGE_POLICY_LOG_BYTE_SIZE} with its
+     * merge factor, merged-size bounds in bytes (smallest, largest, largest when forced), most merged
+     * documents and compound-file ratio and cap in bytes; {@link #MERGE_POLICY_NONE} (the rest
+     * ignored) for no merges; {@link #MERGE_POLICY_TIERED} back to the tiered policy.
+     */
+    public static int writerSetPluggableMergePolicy(
+        long handle,
+        int kind,
+        int mergeFactor,
+        long minMergeBytes,
+        long maxMergeBytes,
+        long maxForcedMergeBytes,
+        int maxMergeDocs,
+        double noCfsRatio,
+        long maxCfsSegmentBytes
+    ) {
+        try {
+            return (int) H.WRITER_SET_PLUGGABLE_MERGE_POLICY.invokeExact(
+                handle,
+                kind,
+                mergeFactor,
+                minMergeBytes,
+                maxMergeBytes,
+                maxForcedMergeBytes,
+                maxMergeDocs,
+                noCfsRatio,
+                maxCfsSegmentBytes
+            );
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** The warm upcall's answers: {@code WARM_OK} in {@code engine_writer.rs}, and any other value fails the merge. */
+    public static final int WARM_OK = 0;
+    public static final int WARM_FAILED = 1;
+
+    /** Registers the upcall that warms the merged segments of writers given a warmer. */
+    public static int setWarmUpcall(MemorySegment upcall) {
+        try {
+            return (int) H.SET_WARM_UPCALL.invokeExact(upcall);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** {@code IndexWriterConfig.setMergedSegmentWarmer}: whether merged segments go to the warm upcall. */
+    public static int writerSetMergedSegmentWarmer(long handle, boolean on) {
+        try {
+            return (int) H.WRITER_SET_MERGED_SEGMENT_WARMER.invokeExact(handle, (byte) (on ? 1 : 0));
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** The merge upcall's events and failure kinds ({@code MERGE_*} in {@code engine_writer.rs}). */
+    public static final int MERGE_EVENT_BEFORE = 0;
+    public static final int MERGE_EVENT_AFTER = 1;
+    public static final int MERGE_OK = 0;
+    public static final int MERGE_FAILED_IO = 1;
+    public static final int MERGE_FAILED_OTHER = 2;
+
+    /**
+     * Registers the merge upcall that hears every merge of writers opened afterwards, before and after
+     * it runs; those writers' merge schedulers no longer stall indexing threads.
+     */
+    public static int setMergeUpcall(MemorySegment upcall) {
+        try {
+            return (int) H.SET_MERGE_UPCALL.invokeExact(upcall);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * Whether merges are waiting for a merge thread ({@code IndexWriter.hasPendingMerges}) into
+     * {@code outPending[0]}, and the merge scheduler's IO rate in MB/s into {@code outMbPerSec[0]}.
+     * Safe to call from the merge upcall.
+     */
+    public static int writerMergeState(long handle, boolean[] outPending, double[] outMbPerSec) {
+        if (outPending == null || outPending.length < 1) {
+            return nullArgument("outPending");
+        }
+        if (outMbPerSec == null || outMbPerSec.length < 1) {
+            return nullArgument("outMbPerSec");
+        }
+        try (Scratch s = Scratch.open()) {
+            MemorySegment pending = s.alloc(1);
+            MemorySegment rate = s.alloc(Double.BYTES);
+            int rc = (int) H.WRITER_MERGE_STATE.invokeExact(handle, pending, rate);
+            if (rc == OK) {
+                outPending[0] = pending.get(JAVA_BYTE, 0) != 0;
+                outMbPerSec[0] = rate.get(JAVA_DOUBLE, 0);
+            }
+            return rc;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
     /** Closes without committing (Lucene's {@code rollback()}). */
     public static int writerClose(long handle) {
         try {
@@ -1903,12 +2023,13 @@ public final class NativeBridge {
      * caller must not. {@link #INVALID_ARGUMENT} when the buffers cannot be written (one was taken
      * for a flush since the view opened); the caller then searches the reader alone.
      * <p>
-     * With {@code query} (a query blob) and {@code tree} (an aggregation tree blob, or null), the
-     * buffers are written without their postings and the handle holds only the terms that request
-     * reads: it serves searches of that request alone, much cheaper to build. With a null
-     * {@code query}, or a request whose terms cannot be named up front, it holds every term.
+     * With {@code query} (a query blob), {@code tree} (an aggregation tree blob, or null) and
+     * {@code extra} (the other queries the search runs, a rescore's, or null), the buffers are
+     * written without their postings and the handle holds only the terms that request reads: it
+     * serves searches of that request alone, much cheaper to build. With a null {@code query}, or a
+     * request whose terms cannot be named up front, it holds every term.
      */
-    public static int liveViewReader(long handle, long view, byte[] query, byte[] tree, long[] out) {
+    public static int liveViewReader(long handle, long view, byte[] query, byte[] tree, byte[][] extra, long[] out) {
         if (out == null || out.length < 1) {
             return fail(INVALID_ARGUMENT, "out needs a slot");
         }
@@ -1916,6 +2037,8 @@ public final class NativeBridge {
             MemorySegment id = s.alloc(Long.BYTES);
             MemorySegment q = query == null || query.length == 0 ? MemorySegment.NULL : s.bytes(query);
             MemorySegment t = query == null || tree == null || tree.length == 0 ? MemorySegment.NULL : s.bytes(tree);
+            byte[] listed = query == null ? null : lengthPrefixed(extra);
+            MemorySegment e = listed == null ? MemorySegment.NULL : s.bytes(listed);
             int rc = (int) H.LIVE_VIEW_READER.invokeExact(
                 handle,
                 view,
@@ -1923,6 +2046,8 @@ public final class NativeBridge {
                 q == MemorySegment.NULL ? 0L : (long) query.length,
                 t,
                 t == MemorySegment.NULL ? 0L : (long) tree.length,
+                e,
+                e == MemorySegment.NULL ? 0L : (long) listed.length,
                 id
             );
             if (rc == OK) {
@@ -1932,6 +2057,22 @@ public final class NativeBridge {
         } catch (Throwable t) {
             throw rethrow(t);
         }
+    }
+
+    /** {@code blobs} one after another, each after its length as a little-endian int; null when none. */
+    private static byte[] lengthPrefixed(byte[][] blobs) {
+        if (blobs == null || blobs.length == 0) {
+            return null;
+        }
+        int size = 0;
+        for (byte[] b : blobs) {
+            size = Math.addExact(size, Math.addExact(Integer.BYTES, b.length));
+        }
+        java.nio.ByteBuffer out = java.nio.ByteBuffer.allocate(size).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        for (byte[] b : blobs) {
+            out.putInt(b.length).put(b);
+        }
+        return out.array();
     }
 
     /** Closes a view: its buffers may go once nothing else reads them. */

@@ -19,14 +19,15 @@
 //! and the others wait for its result. Pages of pinned files are never
 //! evicted from disk.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
 use crate::directory::Directory;
 use crate::error::{Error, Result};
 use crate::lock::lock_ignoring_poison;
+use crate::page_disk::DiskTier;
 
 /// How a stored file maps onto decoded bytes, unit by unit: stored unit `i`
 /// is `stored_unit` bytes at `origin + i * stored_unit` (the last one
@@ -63,8 +64,11 @@ pub trait PageDecoder: Send + Sync {
         -> Result<Arc<dyn PageCodec>>;
 }
 
-/// The default page: 1 MiB, a good request size for an object store.
-pub const DEFAULT_PAGE_SIZE: usize = 1 << 20;
+/// The default page: 256 KiB, small enough that cold pages waste little
+/// cache; requests are larger ([`PageCacheConfig::download_window`]).
+pub const DEFAULT_PAGE_SIZE: usize = 256 << 10;
+/// The download window before the tuner has measured the store: 1 MiB.
+pub const DEFAULT_DOWNLOAD_WINDOW: usize = 1 << 20;
 /// The default largest request: 8 MiB of adjacent pages.
 pub const DEFAULT_MAX_REQUEST: usize = 8 << 20;
 /// The default number of requests in flight for one read.
@@ -90,6 +94,12 @@ pub struct PageCacheConfig {
     /// The disk tier's budget in bytes; unpinned pages past it are evicted,
     /// least recently used first.
     pub disk_budget: u64,
+    /// The aligned window a miss fetches the missing pages of (read-ahead,
+    /// with a disk tier), in bytes. `None` (the default) tunes it from the
+    /// store's measured latency and throughput: the bytes one request
+    /// streams in its own first-byte wait, as a power of two between a page
+    /// and `max_request`.
+    pub download_window: Option<usize>,
     /// The largest ranged request, in bytes.
     pub max_request: usize,
     /// Requests in flight at once for one read.
@@ -105,6 +115,7 @@ impl Default for PageCacheConfig {
             page_size: DEFAULT_PAGE_SIZE,
             disk_dir: None,
             disk_budget: u64::MAX,
+            download_window: None,
             max_request: DEFAULT_MAX_REQUEST,
             concurrency: DEFAULT_CONCURRENCY,
             pinned_extensions: DEFAULT_PINNED_EXTENSIONS
@@ -128,6 +139,12 @@ pub struct PageCacheStats {
     pub fetched_bytes: u64,
     /// Pages a caller waited for while another caller fetched them.
     pub shared_fetches: u64,
+    /// Pages fetched by read-ahead, nobody having asked for them yet.
+    pub read_ahead_pages: u64,
+    /// The download window in bytes ([`PageCacheConfig::download_window`]).
+    pub download_window: u64,
+    /// RAM held by the disk tier's page records.
+    pub disk_metadata_bytes: u64,
 }
 
 #[derive(Default)]
@@ -137,6 +154,7 @@ struct Counters {
     requests: AtomicU64,
     fetched_bytes: AtomicU64,
     shared_fetches: AtomicU64,
+    read_ahead_pages: AtomicU64,
 }
 
 /// One file's pages in stored bytes, from its [`UnitLayout`].
@@ -298,6 +316,70 @@ pub struct PageCache {
     disk: Option<DiskTier>,
     inflight: Mutex<HashMap<PageKey, Arc<Slot>>>,
     counters: Counters,
+    tuner: Tuner,
+}
+
+/// Measures ranged requests to size the download window: request time is
+/// about `latency + bytes / throughput`, so small requests give the latency
+/// and large ones the throughput.
+#[derive(Default)]
+struct Tuner {
+    state: Mutex<TunerState>,
+}
+
+#[derive(Default, Clone, Copy)]
+struct TunerState {
+    /// Mean seconds of requests of at most two pages.
+    small_secs: Option<f64>,
+    small_bytes: f64,
+    /// Mean seconds and bytes of requests of four pages or more.
+    large_secs: Option<f64>,
+    large_bytes: f64,
+}
+
+impl Tuner {
+    /// Weight of a new sample in the running means.
+    const ALPHA: f64 = 0.2;
+
+    fn record(&self, bytes: usize, took: std::time::Duration, stored_page: u64) {
+        let secs = took.as_secs_f64();
+        let bytes_f = bytes as f64;
+        let page = stored_page as f64;
+        let mut st = lock_ignoring_poison(&self.state);
+        let mix =
+            |old: Option<f64>, new: f64| Some(old.map_or(new, |o| o + Self::ALPHA * (new - o)));
+        if bytes_f <= 2.0 * page {
+            st.small_bytes = st.small_secs.map_or(bytes_f, |_| {
+                st.small_bytes + Self::ALPHA * (bytes_f - st.small_bytes)
+            });
+            st.small_secs = mix(st.small_secs, secs);
+        } else if bytes_f >= 4.0 * page {
+            st.large_bytes = st.large_secs.map_or(bytes_f, |_| {
+                st.large_bytes + Self::ALPHA * (bytes_f - st.large_bytes)
+            });
+            st.large_secs = mix(st.large_secs, secs);
+        }
+    }
+
+    fn window(&self, page: usize, max: usize) -> usize {
+        let st = *lock_ignoring_poison(&self.state);
+        let lo = page.max(1);
+        let hi = max.max(lo);
+        let (Some(small), Some(large)) = (st.small_secs, st.large_secs) else {
+            return DEFAULT_DOWNLOAD_WINDOW.clamp(lo, hi);
+        };
+        let extra_secs = large - small;
+        let extra_bytes = st.large_bytes - st.small_bytes;
+        if extra_secs <= 0.0 || extra_bytes <= 0.0 {
+            // Larger requests cost no more: latency dominates.
+            return hi;
+        }
+        let throughput = extra_bytes / extra_secs;
+        // A small request's time less its own transfer.
+        let latency = (small - st.small_bytes / throughput).max(0.0);
+        let ideal = (latency * throughput).clamp(lo as f64, hi as f64) as usize;
+        ideal.next_power_of_two().clamp(lo, hi)
+    }
 }
 
 impl std::fmt::Debug for PageCache {
@@ -317,7 +399,7 @@ impl PageCache {
             ));
         }
         let disk = match &config.disk_dir {
-            Some(dir) => Some(DiskTier::open(dir, config.disk_budget)?),
+            Some(dir) => Some(DiskTier::open(dir, config.disk_budget, config.page_size)?),
             None => None,
         };
         Ok(PageCache {
@@ -325,6 +407,7 @@ impl PageCache {
             disk,
             inflight: Mutex::new(HashMap::new()),
             counters: Counters::default(),
+            tuner: Tuner::default(),
         })
     }
 
@@ -342,7 +425,15 @@ impl PageCache {
             requests: c.requests.load(Ordering::Relaxed),
             fetched_bytes: c.fetched_bytes.load(Ordering::Relaxed),
             shared_fetches: c.shared_fetches.load(Ordering::Relaxed),
+            read_ahead_pages: c.read_ahead_pages.load(Ordering::Relaxed),
+            download_window: self.download_window() as u64,
+            disk_metadata_bytes: self.disk.as_ref().map_or(0, |d| d.metadata_bytes() as u64),
         }
+    }
+
+    /// Whether the cache has a disk tier ([`PageCacheConfig::disk_dir`]).
+    pub fn has_disk(&self) -> bool {
+        self.disk.is_some()
     }
 
     /// Bytes held by the disk tier now.
@@ -376,7 +467,9 @@ impl PageCache {
     /// The stored bytes of `pages` (sorted, distinct) of the file `geom`,
     /// in order: from the disk tier where cached, else fetched through
     /// `fetch(offset, len)` (a ranged read of the stored file) in merged,
-    /// parallel requests.
+    /// parallel requests. With a disk tier, a miss also fetches the other
+    /// missing pages of its aligned download window, which are cached but
+    /// not returned (read-ahead).
     pub(crate) fn stored_pages(
         &self,
         geom: &Geometry,
@@ -384,7 +477,8 @@ impl PageCache {
         fetch: &(dyn Fn(u64, usize) -> Result<Vec<u8>> + Sync),
     ) -> Result<Vec<Arc<[u8]>>> {
         let mut out: Vec<Option<Arc<[u8]>>> = vec![None; pages.len()];
-        let mut mine: Vec<(usize, Arc<Slot>)> = Vec::new();
+        // Pages this call fetches: (page, where it goes in `out`, slot).
+        let mut mine: Vec<(u64, Option<usize>, Arc<Slot>)> = Vec::new();
         let mut theirs: Vec<(usize, Arc<Slot>)> = Vec::new();
         for (i, &page) in pages.iter().enumerate() {
             if let Some(bytes) = self.disk.as_ref().and_then(|d| d.get(&geom.key, page)) {
@@ -399,35 +493,36 @@ impl PageCache {
             } else {
                 let slot = Arc::new(Slot::default());
                 inflight.insert(key, Arc::clone(&slot));
-                mine.push((i, slot));
+                mine.push((page, Some(i), slot));
             }
         }
+        self.claim_read_ahead(geom, pages, &mut mine);
         // A panicking fetch must still release the pages it claimed, or
         // every later reader of them would wait forever.
         let fetched = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.fetch_runs(geom, pages, &mine, fetch)
+            self.fetch_runs(geom, &mine, fetch)
         }))
         .unwrap_or_else(|_| {
             let e = FetchError::of(&Error::Io(std::io::Error::other("page fetch panicked")));
             mine.iter().map(|_| Err(e.clone())).collect()
         });
         let mut first_error = None;
-        for ((i, slot), result) in mine.iter().zip(fetched) {
-            let page = pages[*i];
+        for ((page, at, slot), result) in mine.iter().zip(fetched) {
             match result {
                 Ok(bytes) => {
-                    if let Some(d) = &self.disk {
-                        d.put(&geom.key, page, &bytes);
-                    }
                     slot.fulfill(Ok(Arc::clone(&bytes)));
-                    out[*i] = Some(bytes);
+                    if let Some(i) = at {
+                        out[*i] = Some(bytes);
+                    }
                 }
                 Err(e) => {
                     slot.fulfill(Err(e.clone()));
-                    first_error.get_or_insert(e);
+                    if at.is_some() {
+                        first_error.get_or_insert(e);
+                    }
                 }
             }
-            lock_ignoring_poison(&self.inflight).remove(&(Arc::clone(&geom.key), page));
+            lock_ignoring_poison(&self.inflight).remove(&(Arc::clone(&geom.key), *page));
         }
         for (i, slot) in theirs {
             self.counters.shared_fetches.fetch_add(1, Ordering::Relaxed);
@@ -446,14 +541,78 @@ impl PageCache {
             .collect()
     }
 
-    /// Fetches the pages `mine` claimed, adjacent ones merged up to
+    /// The download window now, in bytes: the configured one, or the
+    /// tuned one.
+    pub fn download_window(&self) -> usize {
+        match self.config.download_window {
+            Some(w) => w,
+            None => self
+                .tuner
+                .window(self.config.page_size, self.config.max_request),
+        }
+    }
+
+    /// Adds to `mine` (kept sorted by page) the missing, unclaimed pages of
+    /// each claimed page's aligned download window. Only with a disk tier:
+    /// without one, pages nobody asked for would be dropped.
+    fn claim_read_ahead(
+        &self,
+        geom: &Geometry,
+        pages: &[u64],
+        mine: &mut Vec<(u64, Option<usize>, Arc<Slot>)>,
+    ) {
+        let Some(disk) = &self.disk else {
+            return;
+        };
+        if mine.is_empty() {
+            return;
+        }
+        let per_window = (self.download_window() as u64)
+            .checked_div(geom.stored_page)
+            .unwrap_or(1)
+            .max(1);
+        if per_window <= 1 {
+            return;
+        }
+        let mut windows: Vec<u64> = mine
+            .iter()
+            .filter_map(|(p, _, _)| p.checked_div(per_window))
+            .collect();
+        windows.dedup();
+        let mut extra = Vec::new();
+        for w in windows {
+            let start = w.saturating_mul(per_window);
+            let end = start.saturating_add(per_window).min(geom.pages);
+            for page in start..end {
+                if pages.binary_search(&page).is_ok() || disk.contains(&geom.key, page) {
+                    continue;
+                }
+                let key = (Arc::clone(&geom.key), page);
+                let mut inflight = lock_ignoring_poison(&self.inflight);
+                if inflight.contains_key(&key) {
+                    continue;
+                }
+                let slot = Arc::new(Slot::default());
+                inflight.insert(key, Arc::clone(&slot));
+                extra.push((page, None, slot));
+            }
+        }
+        if !extra.is_empty() {
+            self.counters
+                .read_ahead_pages
+                .fetch_add(extra.len() as u64, Ordering::Relaxed);
+            mine.extend(extra);
+            mine.sort_by_key(|(p, _, _)| *p);
+        }
+    }
+
+    /// Fetches the claimed pages (sorted), adjacent ones merged up to
     /// `max_request` bytes, `concurrency` requests at a time. One result per
     /// claimed page, in order.
     fn fetch_runs(
         &self,
         geom: &Geometry,
-        pages: &[u64],
-        mine: &[(usize, Arc<Slot>)],
+        mine: &[(u64, Option<usize>, Arc<Slot>)],
         fetch: &(dyn Fn(u64, usize) -> Result<Vec<u8>> + Sync),
     ) -> Vec<Fetched> {
         // Runs of claimed pages: (index into `mine` of the first, count).
@@ -462,11 +621,10 @@ impl PageCache {
             .checked_div(geom.stored_page)
             .unwrap_or(1)
             .max(1);
-        for (j, (i, _)) in mine.iter().enumerate() {
-            let page = pages[*i];
+        for (j, (page, _, _)) in mine.iter().enumerate() {
             if let Some((start, count)) = runs.last_mut() {
-                let prev = pages[mine[start.saturating_add(count.saturating_sub(1))].0];
-                if prev.checked_add(1) == Some(page) && (*count as u64) < max_pages {
+                let prev = mine[start.saturating_add(count.saturating_sub(1))].0;
+                if prev.checked_add(1) == Some(*page) && (*count as u64) < max_pages {
                     *count = count.saturating_add(1);
                     continue;
                 }
@@ -474,12 +632,13 @@ impl PageCache {
             runs.push((j, 1));
         }
         let fetch_run = |&(start, count): &(usize, usize)| -> Vec<Fetched> {
-            let first = pages[mine[start].0];
-            let last = pages[mine[start.saturating_add(count).saturating_sub(1)].0];
+            let first = mine[start].0;
+            let last = mine[start.saturating_add(count).saturating_sub(1)].0;
             let (from, _) = geom.stored_range(first);
             let (_, to) = geom.stored_range(last);
             let len = usize::try_from(to.saturating_sub(from)).unwrap_or(usize::MAX);
             self.counters.requests.fetch_add(1, Ordering::Relaxed);
+            let started = std::time::Instant::now();
             let fetched = fetch(from, len).and_then(|bytes| {
                 if bytes.len() == len {
                     Ok(bytes)
@@ -492,6 +651,8 @@ impl PageCache {
             });
             match fetched {
                 Ok(bytes) => {
+                    self.tuner
+                        .record(bytes.len(), started.elapsed(), geom.stored_page);
                     self.counters
                         .fetched_bytes
                         .fetch_add(bytes.len() as u64, Ordering::Relaxed);
@@ -500,11 +661,18 @@ impl PageCache {
                         .fetch_add(count as u64, Ordering::Relaxed);
                     (0..count)
                         .map(|k| {
-                            let page = pages[mine[start.saturating_add(k)].0];
+                            let page = mine[start.saturating_add(k)].0;
                             let (a, b) = geom.stored_range(page);
                             let a = usize::try_from(a.saturating_sub(from)).unwrap_or(0);
                             let b = usize::try_from(b.saturating_sub(from)).unwrap_or(0);
-                            Ok(Arc::<[u8]>::from(&bytes[a.min(b)..b.min(bytes.len())]))
+                            let page_bytes =
+                                Arc::<[u8]>::from(&bytes[a.min(b)..b.min(bytes.len())]);
+                            // Written here, on the run's own thread, so the
+                            // disk writes of parallel runs overlap too.
+                            if let Some(d) = &self.disk {
+                                d.put(&geom.key, page, &page_bytes);
+                            }
+                            Ok(page_bytes)
                         })
                         .collect()
                 }
@@ -540,228 +708,6 @@ impl PageCache {
             results
         };
         per_run.into_iter().flatten().collect()
-    }
-}
-
-/// The disk tier: one file per cached page under `root/{file id}/{page}`.
-struct DiskTier {
-    root: PathBuf,
-    budget: u64,
-    state: Mutex<DiskState>,
-    temp: AtomicU64,
-}
-
-#[derive(Default)]
-struct DiskState {
-    ids: HashMap<Arc<str>, u64>,
-    next_id: u64,
-    pinned: HashSet<u64>,
-    entries: HashMap<(u64, u64), Entry>,
-    lru: BTreeMap<u64, (u64, u64)>,
-    clock: u64,
-    used: u64,
-}
-
-#[derive(Clone, Copy)]
-struct Entry {
-    len: u64,
-    /// Which `put` stored it, so a failed read drops only the entry it saw.
-    generation: u64,
-    /// Its place in `lru`, or `None` for a pinned page.
-    stamp: Option<u64>,
-}
-
-impl DiskState {
-    fn id(&mut self, key: &Arc<str>) -> u64 {
-        if let Some(id) = self.ids.get(key) {
-            return *id;
-        }
-        let id = self.next_id;
-        self.next_id = self.next_id.saturating_add(1);
-        self.ids.insert(Arc::clone(key), id);
-        id
-    }
-
-    fn tick(&mut self) -> u64 {
-        self.clock = self.clock.saturating_add(1);
-        self.clock
-    }
-}
-
-impl DiskTier {
-    fn open(root: &Path, budget: u64) -> Result<DiskTier> {
-        match std::fs::remove_dir_all(root) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(Error::Io(e)),
-        }
-        std::fs::create_dir_all(root)?;
-        Ok(DiskTier {
-            root: root.to_path_buf(),
-            budget,
-            state: Mutex::new(DiskState::default()),
-            temp: AtomicU64::new(0),
-        })
-    }
-
-    fn used(&self) -> u64 {
-        lock_ignoring_poison(&self.state).used
-    }
-
-    fn path(&self, id: u64, page: u64) -> PathBuf {
-        self.root.join(id.to_string()).join(page.to_string())
-    }
-
-    fn get(&self, key: &Arc<str>, page: u64) -> Option<Arc<[u8]>> {
-        let (id, generation) = {
-            let mut st = lock_ignoring_poison(&self.state);
-            let id = *st.ids.get(key)?;
-            let entry = *st.entries.get(&(id, page))?;
-            if let Some(old) = entry.stamp {
-                let stamp = st.tick();
-                st.lru.remove(&old);
-                st.lru.insert(stamp, (id, page));
-                if let Some(e) = st.entries.get_mut(&(id, page)) {
-                    e.stamp = Some(stamp);
-                }
-            }
-            (id, entry.generation)
-        };
-        match std::fs::read(self.path(id, page)) {
-            Ok(bytes) => Some(Arc::from(bytes)),
-            Err(_) => {
-                self.remove(id, page, generation);
-                None
-            }
-        }
-    }
-
-    fn put(&self, key: &Arc<str>, page: u64, bytes: &[u8]) {
-        let id = lock_ignoring_poison(&self.state).id(key);
-        let dir = self.root.join(id.to_string());
-        let n = self.temp.fetch_add(1, Ordering::Relaxed);
-        let tmp = dir.join(format!("{page}.{n}.tmp"));
-        let written = std::fs::create_dir_all(&dir)
-            .and_then(|()| std::fs::write(&tmp, bytes))
-            .and_then(|()| std::fs::rename(&tmp, self.path(id, page)));
-        if written.is_err() {
-            // A full or failing disk only costs the cache entry.
-            let _ = std::fs::remove_file(&tmp);
-            return;
-        }
-        let mut evict = Vec::new();
-        {
-            let mut st = lock_ignoring_poison(&self.state);
-            if st.ids.get(key) != Some(&id) {
-                // The file was forgotten while this page was written.
-                drop(st);
-                let _ = std::fs::remove_file(self.path(id, page));
-                return;
-            }
-            let pinned = st.pinned.contains(&id);
-            let stamp = if pinned { None } else { Some(st.tick()) };
-            let generation = st.tick();
-            let len = bytes.len() as u64;
-            if let Some(old) = st.entries.insert(
-                (id, page),
-                Entry {
-                    len,
-                    generation,
-                    stamp,
-                },
-            ) {
-                st.used = st.used.saturating_sub(old.len);
-                if let Some(s) = old.stamp {
-                    st.lru.remove(&s);
-                }
-            }
-            st.used = st.used.saturating_add(len);
-            if let Some(s) = stamp {
-                st.lru.insert(s, (id, page));
-            }
-            while st.used > self.budget {
-                let Some((_, victim)) = st.lru.pop_first() else {
-                    break;
-                };
-                if let Some(e) = st.entries.remove(&victim) {
-                    st.used = st.used.saturating_sub(e.len);
-                }
-                evict.push(victim);
-            }
-        }
-        for (id, page) in evict {
-            let _ = std::fs::remove_file(self.path(id, page));
-        }
-    }
-
-    fn remove(&self, id: u64, page: u64, generation: u64) {
-        let mut st = lock_ignoring_poison(&self.state);
-        if st
-            .entries
-            .get(&(id, page))
-            .is_some_and(|e| e.generation == generation)
-        {
-            let Some(e) = st.entries.remove(&(id, page)) else {
-                return;
-            };
-            st.used = st.used.saturating_sub(e.len);
-            if let Some(s) = e.stamp {
-                st.lru.remove(&s);
-            }
-        }
-    }
-
-    fn pin(&self, key: &str) {
-        let key: Arc<str> = Arc::from(key);
-        let mut st = lock_ignoring_poison(&self.state);
-        let id = st.id(&key);
-        st.pinned.insert(id);
-        let stamps: Vec<u64> = st
-            .entries
-            .iter_mut()
-            .filter(|((fid, _), _)| *fid == id)
-            .filter_map(|(_, e)| e.stamp.take())
-            .collect();
-        for s in stamps {
-            st.lru.remove(&s);
-        }
-    }
-
-    fn forget_prefix(&self, prefix: &str) {
-        let ids: Vec<u64> = {
-            let mut st = lock_ignoring_poison(&self.state);
-            let gone: Vec<Arc<str>> = st
-                .ids
-                .keys()
-                .filter(|k| k.starts_with(prefix))
-                .cloned()
-                .collect();
-            let mut ids = Vec::new();
-            for k in gone {
-                if let Some(id) = st.ids.remove(&k) {
-                    st.pinned.remove(&id);
-                    ids.push(id);
-                }
-            }
-            let victims: Vec<(u64, u64)> = st
-                .entries
-                .keys()
-                .filter(|(fid, _)| ids.contains(fid))
-                .copied()
-                .collect();
-            for v in victims {
-                if let Some(e) = st.entries.remove(&v) {
-                    st.used = st.used.saturating_sub(e.len);
-                    if let Some(s) = e.stamp {
-                        st.lru.remove(&s);
-                    }
-                }
-            }
-            ids
-        };
-        for id in ids {
-            let _ = std::fs::remove_dir_all(self.root.join(id.to_string()));
-        }
     }
 }
 
@@ -840,6 +786,7 @@ mod tests {
         let cache = PageCache::new(PageCacheConfig {
             page_size: 100,
             max_request: 300,
+            download_window: Some(100),
             disk_dir: Some(tmp.path().join("cache")),
             ..PageCacheConfig::default()
         })
@@ -867,12 +814,14 @@ mod tests {
     }
 
     #[test]
-    fn the_disk_tier_evicts_least_recently_used_unpinned_pages() {
+    fn the_disk_tier_evicts_unpinned_pages_past_its_budget() {
         let tmp = lucene_util::test_support::TempDir::new("page-cache-evict");
         let cache = PageCache::new(PageCacheConfig {
             page_size: 100,
+            download_window: Some(100),
             disk_dir: Some(tmp.path().join("cache")),
-            disk_budget: 300,
+            // Three slots (a 100-byte page takes an 8 KiB slot).
+            disk_budget: 3 * 8192,
             ..PageCacheConfig::default()
         })
         .unwrap();
@@ -996,23 +945,74 @@ mod tests {
     }
 
     #[test]
-    fn a_disk_page_that_vanished_is_fetched_again() {
-        let tmp = lucene_util::test_support::TempDir::new("page-cache-vanish");
-        let root = tmp.path().join("cache");
+    fn a_miss_reads_ahead_its_download_window_in_one_request() {
+        let tmp = lucene_util::test_support::TempDir::new("page-cache-ahead");
         let cache = PageCache::new(PageCacheConfig {
             page_size: 100,
-            disk_dir: Some(root.clone()),
+            download_window: Some(400),
+            disk_dir: Some(tmp.path().join("cache")),
             ..PageCacheConfig::default()
         })
         .unwrap();
+        let data = bytes(1000);
         let calls = Arc::new(AtomicUsize::new(0));
-        let fetch = reader(bytes(1000), Arc::clone(&calls));
+        let fetch = reader(data.clone(), Arc::clone(&calls));
         let g = Geometry::plain(Arc::from("f"), 1000, 100);
-        cache.stored_pages(&g, &[0], &fetch).unwrap();
-        std::fs::remove_dir_all(&root).unwrap();
-        cache.stored_pages(&g, &[0], &fetch).unwrap();
-        assert_eq!(calls.load(Ordering::Relaxed), 2);
-        // The stale entry was dropped and the page cached again.
-        assert_eq!(cache.disk_bytes(), 100);
+        // Page 5 is in window 4..8: one request for all four pages.
+        let got = cache.stored_pages(&g, &[5], &fetch).unwrap();
+        assert_eq!(&got[0][..], &data[500..600]);
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+        assert_eq!(cache.stats().read_ahead_pages, 3);
+        assert_eq!(cache.stats().fetched_bytes, 400);
+        let again = cache.stored_pages(&g, &[4, 6, 7], &fetch).unwrap();
+        assert_eq!(&again[2][..], &data[700..800]);
+        assert_eq!(calls.load(Ordering::Relaxed), 1, "read ahead");
+        // The last window is cut at the file's end; cached pages are skipped.
+        cache.stored_pages(&g, &[9], &fetch).unwrap();
+        assert_eq!(cache.stats().fetched_bytes, 600);
+        assert_eq!(cache.stats().download_window, 400);
+        // Without a disk tier there is no read-ahead.
+        let bare = PageCache::new(PageCacheConfig {
+            page_size: 100,
+            download_window: Some(400),
+            ..PageCacheConfig::default()
+        })
+        .unwrap();
+        bare.stored_pages(&g, &[5], &fetch).unwrap();
+        assert_eq!(bare.stats().fetched_bytes, 100);
+    }
+
+    #[test]
+    fn the_tuned_window_is_latency_times_throughput() {
+        let t = Tuner::default();
+        let page = 256 << 10;
+        let max = 8 << 20;
+        // Unmeasured: the default.
+        assert_eq!(t.window(page, max), DEFAULT_DOWNLOAD_WINDOW);
+        // 30 ms latency, 100 MB/s: 3 MB, so 4 MiB.
+        let ms = |m: f64| std::time::Duration::from_secs_f64(m / 1000.0);
+        for _ in 0..20 {
+            t.record(page, ms(30.0 + 2.62), page as u64);
+            t.record(8 * page, ms(30.0 + 20.97), page as u64);
+            t.record(3 * page, ms(1.0), page as u64);
+        }
+        assert_eq!(t.window(page, max), 4 << 20);
+        // 0.5 ms latency, 1 GB/s (local disk): 0.5 MB, so 512 KiB.
+        let t = Tuner::default();
+        for _ in 0..20 {
+            t.record(page, ms(0.5 + 0.262), page as u64);
+            t.record(8 * page, ms(0.5 + 2.097), page as u64);
+        }
+        assert_eq!(t.window(page, max), 512 << 10);
+        // Large requests no slower: the largest window.
+        let t = Tuner::default();
+        t.record(page, ms(5.0), page as u64);
+        t.record(8 * page, ms(5.0), page as u64);
+        assert_eq!(t.window(page, max), max);
+        // Clamped to a page at least.
+        let t = Tuner::default();
+        t.record(page, ms(0.001), page as u64);
+        t.record(8 * page, ms(100.0), page as u64);
+        assert_eq!(t.window(page, max), page);
     }
 }

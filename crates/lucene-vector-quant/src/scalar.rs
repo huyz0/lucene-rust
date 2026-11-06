@@ -63,6 +63,16 @@ impl crate::QuantizerFactory for ScalarFactory {
         NAME
     }
 
+    /// The dimension rounded up to even at 4 bits, whose codes pack two
+    /// dimensions per byte.
+    fn code_dimension(&self, dimension: usize) -> usize {
+        if self.bits <= 4 {
+            dimension.checked_next_multiple_of(2).unwrap_or(dimension)
+        } else {
+            dimension
+        }
+    }
+
     fn train(
         &self,
         dimension: usize,
@@ -164,6 +174,11 @@ impl ScalarQuantizer {
         &self.interval
     }
 
+    /// The quantization step.
+    fn alpha(&self) -> f32 {
+        self.interval.constant_multiplier().sqrt()
+    }
+
     fn packed(&self) -> bool {
         self.interval.bits() <= 4
     }
@@ -236,10 +251,16 @@ impl Quantizer for ScalarQuantizer {
         assert_eq!(query.len(), self.dimension, "query dimension");
         let mut values = vec![0u8; self.unpacked_len()];
         let offset = self.quantize(query, &mut values);
+        let (lower, alpha) = (self.interval.lower_quantile(), self.alpha());
+        let query_abs_sum = values[..self.dimension]
+            .iter()
+            .map(|&v| (lower + alpha * f32::from(v)).abs())
+            .sum();
         Box::new(ScalarQueryScorer {
             q: self,
             values,
             offset,
+            query_abs_sum,
         })
     }
 
@@ -251,16 +272,74 @@ impl Quantizer for ScalarQuantizer {
     }
 }
 
+impl ScalarQueryScorer<'_> {
+    /// The bound on an inner product's error (see
+    /// [`QueryScorer::error_bounds`]).
+    fn dot_error(&self) -> f32 {
+        let dims = self.q.dimension as f32;
+        let alpha = self.q.alpha();
+        let interval = &self.q.interval;
+        let largest = interval
+            .lower_quantile()
+            .abs()
+            .max(interval.upper_quantile().abs());
+        alpha / 2.0 * (dims * largest + self.query_abs_sum) + dims * alpha * alpha / 4.0
+    }
+
+    /// The margin of an estimated `score`.
+    #[inline]
+    fn margin(&self, score: f32, dot_error: f32) -> f32 {
+        let similarity = self.q.similarity;
+        let raw_error = if similarity == Similarity::Euclidean {
+            let (dims, alpha) = (self.q.dimension as f32, self.q.alpha());
+            // A zero score is an infinite distance.
+            let d = (1.0 / score - 1.0).max(0.0).sqrt();
+            alpha * (2.0 * dims.sqrt() * d + dims * alpha)
+        } else {
+            dot_error
+        };
+        crate::score_margin(similarity, score, raw_error)
+    }
+}
+
 /// A query quantized once with the field's interval.
 #[derive(Debug)]
 struct ScalarQueryScorer<'q> {
     q: &'q ScalarQuantizer,
     values: Vec<u8>,
     offset: f32,
+    /// `sum(|q'_i|)` over the dequantized query `q'`.
+    query_abs_sum: f32,
 }
 
 impl QueryScorer for ScalarQueryScorer<'_> {
     fn set_centroid(&mut self, _centroid: &[f32]) {}
+
+    /// Worst-case margins from the step `a`, assuming every value fell in
+    /// the interval `[lower, upper]` (the quantiles clip the rest, whose
+    /// error is not bounded). Each dequantized value is within `a / 2` of
+    /// the original. An inner product `<q, x>` is then within `a / 2
+    /// (sum|x'_i| + sum|q'_i|) + dim a^2 / 4` of the dequantized one, with
+    /// `sum|x'_i| <= dim max(|lower|, |upper|)`; a squared distance `d^2`
+    /// is above `d'^2 - a (2 sqrt(dim) d' + dim a)`, each coordinate of the
+    /// difference being within `a`.
+    fn error_bounds(&self, codes: &[u8], scores: &[f32], bounds: &mut [f32]) -> bool {
+        assert_eq!(scores.len(), bounds.len(), "one bound per score");
+        assert_eq!(
+            Some(codes.len()),
+            self.q.code_len().checked_mul(scores.len()),
+            "codes must hold one code per score"
+        );
+        let dot_error = self.dot_error();
+        for (b, &s) in bounds.iter_mut().zip(scores) {
+            *b = self.margin(s, dot_error);
+        }
+        true
+    }
+
+    fn error_bound(&self, _codes: &[u8], _index: usize, score: f32) -> Option<f32> {
+        Some(self.margin(score, self.dot_error()))
+    }
 
     fn score(&self, code: &[u8]) -> f32 {
         let (stored, tail) = code.split_at(self.q.value_bytes);
