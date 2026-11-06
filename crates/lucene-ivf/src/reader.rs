@@ -636,6 +636,16 @@ impl IvfReader {
         Ok(())
     }
 
+    /// Every vector of `field` in slot order, little-endian `f32`s, in one
+    /// range read: what a merge streams through.
+    pub(crate) fn slot_vectors(&self, field: i32) -> Result<Cow<'_, [u8]>> {
+        let f = self.field_or_err(field)?;
+        // ARITH: the vectors region was checked to fit at open.
+        #[allow(clippy::arithmetic_side_effects)]
+        let len = f.count * f.vector_len();
+        self.vectors.read(f.vectors_offset, len)
+    }
+
     /// The field's documents (ascending) and the slot of each one's vector.
     ///
     /// # Errors
@@ -682,13 +692,34 @@ impl IvfReader {
     /// An unknown field, or a read failure.
     pub fn vector(&self, field: i32, doc: i32) -> Result<Option<Vec<f32>>> {
         let f = self.field_or_err(field)?;
-        let table = self.doc_table(field)?;
-        let Ok(i) = table.binary_search_by_key(&doc, |&(d, _)| d) else {
-            return Ok(None);
+        // Binary search over the doc table's sorted docs, a few 4-byte reads
+        // rather than the whole table.
+        let read_u32 = |offset: usize| -> Result<u32> {
+            let b = self.vectors.read(offset, 4)?;
+            Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
         };
-        let mut out = Vec::new();
-        self.read_vector(f, table[i].1 as usize, &mut out)?;
-        Ok(Some(out))
+        let (mut lo, mut hi) = (0usize, f.count);
+        // ARITH: `lo < hi <= count`, and the table's `count * 8` bytes were
+        // checked to fit at open.
+        #[allow(clippy::arithmetic_side_effects)]
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            let d = read_u32(f.doc_table_offset + mid * 4)? as i32;
+            match d.cmp(&doc) {
+                Ordering::Less => lo = mid + 1,
+                Ordering::Greater => hi = mid,
+                Ordering::Equal => {
+                    let slot = read_u32(f.doc_table_offset + (f.count + mid) * 4)? as usize;
+                    if slot >= f.count {
+                        return corrupt(format!("slot {slot} out of range"));
+                    }
+                    let mut out = Vec::with_capacity(f.dimension);
+                    self.read_vector(f, slot, &mut out)?;
+                    return Ok(Some(out));
+                }
+            }
+        }
+        Ok(None)
     }
 
     /// The approximate `params.k` nearest documents to `query` among those
@@ -718,7 +749,10 @@ impl IvfReader {
         if !uses_centroid {
             scorer.set_centroid(f.centroid(0));
         }
-        let mut top = TopN::new(params.k.max(params.rerank), f.entries() > f.count);
+        let mut top = TopN::new(
+            params.k.max(params.rerank).min(f.entries()),
+            f.entries() > f.count,
+        );
         let mut scores = Vec::new();
         for c in probes {
             let (offset, len) = f.block_range(c);
@@ -755,7 +789,7 @@ impl IvfReader {
                 })
                 .collect());
         }
-        let mut exact = TopN::new(params.k, false);
+        let mut exact = TopN::new(params.k.min(f.count), false);
         let mut v = Vec::with_capacity(f.dimension);
         for c in candidates {
             self.read_vector(f, c.slot as usize, &mut v)?;
@@ -790,7 +824,7 @@ impl IvfReader {
     ) -> Result<Vec<ScoredDoc>> {
         let f = self.field_or_err(field)?;
         let query = self.prepare_query(f, query)?;
-        let mut top = TopN::new(k, false);
+        let mut top = TopN::new(k.min(f.count), false);
         let mut v = Vec::with_capacity(f.dimension);
         for (doc, slot) in self.doc_table(field)? {
             if accept.is_some_and(|a| !a(doc)) {
@@ -831,8 +865,10 @@ impl IvfReader {
         Ok(q)
     }
 
-    /// The `nprobe` clusters nearest to `query`, nearest first, by the
-    /// metric vectors were assigned with (see `centroid_scale`).
+    /// The `nprobe` clusters nearest to `query`, nearest first: by L2 for
+    /// Euclidean, by dot with the unit centroid for the spherically
+    /// clustered Cosine and DotProduct (see `centroid_scale`), and by raw
+    /// dot for MaximumInnerProduct, whose score is the dot product itself.
     fn probe_order(&self, f: &IvfField, query: &[f32], nprobe: usize) -> Vec<usize> {
         let euclidean = f.similarity == Similarity::Euclidean;
         let mut scored: Vec<(f32, usize)> = f

@@ -197,7 +197,8 @@ impl IvfWriter {
         if field.vectors.iter().any(|x| !x.is_finite()) {
             return bad("vectors must be finite".into());
         }
-        if u32::try_from(field.docs.len()).is_err() {
+        // Slots are u32 and u32::MAX means "no cluster".
+        if field.docs.len() >= u32::MAX as usize {
             return bad("too many vectors".into());
         }
         Ok(())
@@ -278,7 +279,11 @@ impl IvfWriter {
             first += size;
         }
         if let Some(lambda) = params.spill {
-            let secondary = kmeans::soar_assign(&vectors, dim, &clustering, lambda);
+            // Spill by the metric search probes with: for unit vectors the
+            // distance to a unit centroid ranks clusters as their dot does.
+            let mut probe_space = clustering.clone();
+            metric.adjust(&mut probe_space.centroids, dim);
+            let secondary = kmeans::soar_assign(&vectors, dim, &probe_space, lambda);
             for (i, &c) in secondary.iter().enumerate() {
                 if c != u32::MAX {
                     entries[c as usize].push(slot_of[i]);

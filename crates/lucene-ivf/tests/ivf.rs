@@ -645,3 +645,53 @@ fn bad_slots_and_doc_tables_are_rejected() {
     ));
     assert!(r.cluster(1, 0).is_err());
 }
+
+#[test]
+fn huge_k_and_rerank_are_capped_and_vectors_found_by_doc() {
+    let dim = 8;
+    let n = 200;
+    let data = dataset(n, dim, 4, Similarity::Euclidean, 9);
+    let docs: Vec<i32> = (0..n as i32).map(|d| d * 3).collect();
+    let files = build(
+        0,
+        Similarity::Euclidean,
+        dim,
+        &docs,
+        &data,
+        &OsqFactory::bbq(),
+        50,
+    );
+    let registry = QuantizerRegistry::with_builtins();
+    let r = IvfReader::open(
+        &files.meta,
+        Arc::new(files.postings),
+        Arc::new(files.vectors),
+        &ID,
+        "",
+        &registry,
+    )
+    .unwrap();
+    let hits = r
+        .search(
+            0,
+            &data[..dim],
+            &SearchParams::new(usize::MAX, 4, usize::MAX),
+            None,
+        )
+        .unwrap();
+    assert!(!hits.is_empty() && hits.len() <= n);
+    assert_eq!(
+        r.exact_search(0, &data[..dim], usize::MAX, None)
+            .unwrap()
+            .len(),
+        n
+    );
+    for (i, &doc) in docs.iter().enumerate() {
+        assert_eq!(
+            r.vector(0, doc).unwrap().unwrap(),
+            &data[i * dim..(i + 1) * dim]
+        );
+        assert!(r.vector(0, doc + 1).unwrap().is_none());
+    }
+    assert!(r.vector(0, -1).unwrap().is_none());
+}

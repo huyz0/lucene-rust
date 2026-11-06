@@ -472,7 +472,7 @@ impl OsqQueryScorer<'_> {
                 quantization::scale_max_inner_product_score(score + corrections)
             }
             Similarity::DotProduct | Similarity::Cosine => {
-                (1.0 + (score + corrections).clamp(-1.0, 1.0)) / 2.0
+                ((1.0 + score + corrections) / 2.0).max(0.0)
             }
         }
     }

@@ -43,8 +43,9 @@ pub fn merge_field(
     params: &IvfParams,
 ) -> Result<()> {
     let mut shape = None;
-    let mut merged: Vec<(i32, Vec<f32>)> = Vec::new();
-    for source in sources {
+    // (new doc, source, slot) for every live vector.
+    let mut live: Vec<(i32, usize, u32)> = Vec::new();
+    for (i, source) in sources.iter().enumerate() {
         let Some(field) = source.reader.field(number) else {
             continue;
         };
@@ -56,21 +57,39 @@ pub fn merge_field(
         }
         for (doc, slot) in source.reader.doc_table(number)? {
             if let Some(new_doc) = (source.doc_map)(doc) {
-                merged.push((new_doc, source.reader.slot_vector(number, slot)?));
+                live.push((new_doc, i, slot));
             }
         }
     }
     let Some((similarity, dimension)) = shape else {
         return Ok(());
     };
-    merged.sort_unstable_by_key(|(d, _)| *d);
-    if merged.windows(2).any(|w| w[0].0 == w[1].0) {
+    live.sort_unstable_by_key(|&(d, _, _)| d);
+    if live.windows(2).any(|w| w[0].0 == w[1].0) {
         return Err(Error::IllegalArgument(format!(
             "field {number}: two sources map onto the same document"
         )));
     }
-    let docs: Vec<i32> = merged.iter().map(|(d, _)| *d).collect();
-    let vectors: Vec<f32> = merged.into_iter().flat_map(|(_, v)| v).collect();
+    let docs: Vec<i32> = live.iter().map(|&(d, _, _)| d).collect();
+    let mut vectors = vec![0f32; live.len().saturating_mul(dimension)];
+    // One sequential read per source rather than one per vector.
+    for (i, source) in sources.iter().enumerate() {
+        if source.reader.field(number).is_none() {
+            continue;
+        }
+        let bytes = source.reader.slot_vectors(number)?;
+        // ARITH: slots were checked against the field's count at open, so
+        // `slot * dimension + dimension` floats lie inside `bytes`, and
+        // `out` indexes `live`, whose length sized `vectors`.
+        #[allow(clippy::arithmetic_side_effects)]
+        for (out, _) in live.iter().enumerate().filter(|(_, l)| l.1 == i) {
+            let from = live[out].2 as usize * dimension * 4;
+            let dst = &mut vectors[out * dimension..(out + 1) * dimension];
+            for (x, b) in dst.iter_mut().zip(bytes[from..].chunks_exact(4)) {
+                *x = f32::from_le_bytes([b[0], b[1], b[2], b[3]]);
+            }
+        }
+    }
     writer.add_field(
         &FieldVectors {
             number,

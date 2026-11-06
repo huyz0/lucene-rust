@@ -49,7 +49,7 @@ pub enum Metric {
 
 impl Metric {
     /// Normalizes freshly computed means for spherical k-means.
-    fn adjust(self, centroids: &mut [f32], dim: usize) {
+    pub(crate) fn adjust(self, centroids: &mut [f32], dim: usize) {
         if self == Metric::InnerProduct {
             centroids.par_chunks_mut(dim).for_each(|c| {
                 // A zero mean stays zero.
@@ -284,11 +284,15 @@ fn split(
         metric.adjust(&mut centroids, dim);
         // An empty group takes half of the largest one: its centroid becomes
         // a perturbed copy of the largest group's.
+        let mut counts = counts;
         for c in 0..parts {
             if counts[c] > 0 {
                 continue;
             }
             let largest = (0..parts).max_by_key(|&i| counts[i]).unwrap_or(0);
+            let half = counts[largest] / 2;
+            counts[c] = half;
+            counts[largest] -= half;
             let (from, to) = (largest * dim, c * dim);
             for j in 0..dim {
                 let x = centroids[from + j];
