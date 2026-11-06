@@ -3823,11 +3823,34 @@ mod tests {
 
         let mut whole = 0u64;
         // SAFETY: a live out-pointer.
-        let rc = unsafe { ffi_live_view_reader(reader, view, &mut whole) };
+        let rc = unsafe {
+            ffi_live_view_reader(
+                reader,
+                view,
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
+                &mut whole,
+            )
+        };
         assert_eq!(rc, 0, "{}", crate::error::last_error());
         let mut again = 0u64;
         // SAFETY: a live out-pointer.
-        assert_eq!(unsafe { ffi_live_view_reader(reader, view, &mut again) }, 0);
+        assert_eq!(
+            unsafe {
+                ffi_live_view_reader(
+                    reader,
+                    view,
+                    std::ptr::null(),
+                    0,
+                    std::ptr::null(),
+                    0,
+                    &mut again,
+                )
+            },
+            0
+        );
         assert_eq!(again, whole, "one reader per view");
 
         let total = |r: u64, q: &[u8]| {
@@ -3866,6 +3889,24 @@ mod tests {
             assert_eq!(got, live_total, "{term}");
             let live: Vec<(i32, u32)> = live.iter().map(|&(d, s)| (d, s.to_bits())).collect();
             assert_eq!(hits, live, "{term}: the same hits, scored alike");
+            // A handle for this request alone: its buffers written without
+            // postings, the query's terms read from them.
+            let mut lean = 0u64;
+            // SAFETY: live slices and out-pointer.
+            let rc = unsafe {
+                ffi_live_view_reader(
+                    reader,
+                    view,
+                    q.as_ptr(),
+                    q.len(),
+                    std::ptr::null(),
+                    0,
+                    &mut lean,
+                )
+            };
+            assert_eq!(rc, 0, "{}", crate::error::last_error());
+            assert_ne!(lean, whole, "{term}: a handle of its own");
+            assert_eq!(total(lean, &q), (hits, got), "{term}: as with every term");
         }
         // zeta: d2' and d21' only; d22' came after the view.
         assert_eq!(
@@ -3907,7 +3948,17 @@ mod tests {
             "closed with the view"
         );
         // SAFETY: a live out-pointer.
-        let rc = unsafe { ffi_live_view_reader(reader, view, &mut again) };
+        let rc = unsafe {
+            ffi_live_view_reader(
+                reader,
+                view,
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
+                &mut again,
+            )
+        };
         assert_ne!(rc, 0, "a closed view makes no reader");
 
         // A view whose buffers were published since reads their segments,
@@ -3934,7 +3985,17 @@ mod tests {
             .collect();
         commit_settled(h);
         // SAFETY: a live out-pointer.
-        let rc = unsafe { ffi_live_view_reader(reader, view, &mut whole) };
+        let rc = unsafe {
+            ffi_live_view_reader(
+                reader,
+                view,
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
+                &mut whole,
+            )
+        };
         assert_eq!(rc, 0, "{}", crate::error::last_error());
         for (t, want) in terms.iter().zip(before) {
             let q = crate::jvm_reader::tests::term_blob("body", t);
@@ -4009,7 +4070,17 @@ mod tests {
             unsafe { crate::ffm_bridge::ffi_jvm_free_bytes(ptr, len) };
             let mut whole = 0u64;
             // SAFETY: a live out-pointer.
-            let rc = unsafe { ffi_live_view_reader(reader, view, &mut whole) };
+            let rc = unsafe {
+                ffi_live_view_reader(
+                    reader,
+                    view,
+                    std::ptr::null(),
+                    0,
+                    std::ptr::null(),
+                    0,
+                    &mut whole,
+                )
+            };
             assert_eq!(rc, 0, "{}", crate::error::last_error());
 
             // The blob's chunk ends are the segments' sizes.
@@ -4104,6 +4175,59 @@ mod tests {
                     .filter(|&i| !ids[i + 1..].contains(&ids[i]) && text(i).contains(&term))
                     .count();
                 assert_eq!(live_total, want as i64, "round {round}: {term}");
+
+                // A handle for the query and an aggregation filtering on
+                // another term: its chunks carry only those terms, and
+                // sorts and aggregations over it agree with `whole`.
+                let other = crate::jvm_reader::tests::term_blob("body", words[round % 5]);
+                let tree = crate::jvm_aggs::tests::histogram_of_filters("_seq_no", 5.0, &other);
+                let mut lean = 0u64;
+                // SAFETY: live slices and out-pointer.
+                let rc = unsafe {
+                    ffi_live_view_reader(
+                        reader,
+                        view,
+                        q.as_ptr(),
+                        q.len(),
+                        tree.as_ptr(),
+                        tree.len(),
+                        &mut lean,
+                    )
+                };
+                assert_eq!(rc, 0, "{}", crate::error::last_error());
+                {
+                    let l = crate::jvm_reader::lookup(lean, "test").unwrap();
+                    for r in &l.reader.segment_readers()[base..] {
+                        let Some(terms) = r.terms("body").unwrap() else {
+                            continue;
+                        };
+                        let mut te = terms.iterator().unwrap();
+                        while let Some(t) = te.next().unwrap() {
+                            assert!(
+                                [term, words[round % 5]].contains(&std::str::from_utf8(t).unwrap()),
+                                "round {round}: only the request's terms"
+                            );
+                        }
+                    }
+                }
+                let aggs = |r: u64| crate::jvm_aggs::aggregate_tree_blobs(r, &q, &tree).unwrap();
+                assert_eq!(aggs(lean), aggs(whole), "round {round}: {term} aggs");
+                let sort = crate::jvm_reader::tests::sort_blob_terms(
+                    &[(crate::jvm_reader::SORT_LONG, 1, "_seq_no", 0)],
+                    None,
+                );
+                let sorted = |r: u64| {
+                    let out =
+                        crate::jvm_reader::search_sorted_blobs(r, &q, &sort, 10, i64::MAX).unwrap();
+                    (out.hits, out.total)
+                };
+                let (hits, total) = sorted(lean);
+                assert_eq!(
+                    (hits.clone(), total),
+                    sorted(whole),
+                    "round {round}: {term}"
+                );
+                assert_eq!(total, want as i64);
             }
             assert_eq!(ffi_live_view_close(view), 0);
         }
@@ -4129,7 +4253,17 @@ mod tests {
         commit_settled(h);
         let mut whole = 0u64;
         // SAFETY: a live out-pointer.
-        let rc = unsafe { ffi_live_view_reader(reader, written, &mut whole) };
+        let rc = unsafe {
+            ffi_live_view_reader(
+                reader,
+                written,
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
+                &mut whole,
+            )
+        };
         assert_eq!(rc, 0, "{}", crate::error::last_error());
         let w = crate::jvm_reader::lookup(whole, "test").unwrap();
         let base = crate::jvm_reader::lookup(reader, "test")
@@ -4141,7 +4275,17 @@ mod tests {
             base + leaves_seen.last().unwrap()
         );
         // SAFETY: a live out-pointer.
-        let rc = unsafe { ffi_live_view_reader(reader, unwritten, &mut whole) };
+        let rc = unsafe {
+            ffi_live_view_reader(
+                reader,
+                unwritten,
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
+                &mut whole,
+            )
+        };
         assert_ne!(rc, 0);
         assert!(crate::error::last_error().contains("being flushed"));
         assert_eq!(ffi_live_view_close(written), 0);
@@ -4211,7 +4355,17 @@ mod tests {
             let t = std::time::Instant::now();
             let mut whole = 0u64;
             // SAFETY: a live out-pointer.
-            let rc = unsafe { ffi_live_view_reader(reader, view, &mut whole) };
+            let rc = unsafe {
+                ffi_live_view_reader(
+                    reader,
+                    view,
+                    std::ptr::null(),
+                    0,
+                    std::ptr::null(),
+                    0,
+                    &mut whole,
+                )
+            };
             assert_eq!(rc, 0, "{}", crate::error::last_error());
             let built = t.elapsed();
             let w = crate::jvm_reader::lookup(whole, "test").unwrap();
@@ -4462,7 +4616,17 @@ mod tests {
                 let t = std::time::Instant::now();
                 let mut whole = 0u64;
                 // SAFETY: a live out-pointer.
-                let rc = unsafe { ffi_live_view_reader(reader, view, &mut whole) };
+                let rc = unsafe {
+                    ffi_live_view_reader(
+                        reader,
+                        view,
+                        std::ptr::null(),
+                        0,
+                        std::ptr::null(),
+                        0,
+                        &mut whole,
+                    )
+                };
                 assert_eq!(rc, 0, "{}", crate::error::last_error());
                 let took = t.elapsed();
                 total += took;

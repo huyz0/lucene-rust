@@ -92,6 +92,16 @@ pub struct LiveSegment {
     max_doc: i32,
 }
 
+/// A [`LiveSegment`]'s postings: [`LiveSegment::into_postings`].
+pub struct LivePostings {
+    pub terms: BlockTreeFields,
+    pub doc: Vec<u8>,
+    pub pos: Vec<u8>,
+    pub pay: Vec<u8>,
+    /// By field, `(sumTotalTermFreq, docCount)`.
+    pub field_stats: HashMap<String, (i64, i32)>,
+}
+
 /// The opened postings files of a [`LiveSegment`], which an [`OpenSegment`]
 /// borrows.
 pub struct LiveInputs<'a> {
@@ -286,6 +296,29 @@ impl LiveSegment {
         self.live_docs.as_ref()
     }
 
+    /// The terms dictionary and the postings files, with every field's
+    /// `(sumTotalTermFreq, docCount)`: what
+    /// [`crate::directory_reader::SegmentReader::with_postings`] puts in a
+    /// segment's place.
+    pub fn into_postings(self) -> LivePostings {
+        LivePostings {
+            field_stats: self
+                .field_stats
+                .iter()
+                .map(|(name, s)| {
+                    (
+                        name.clone(),
+                        (s[1], i32::try_from(s[3]).unwrap_or(i32::MAX)),
+                    )
+                })
+                .collect(),
+            terms: self.terms,
+            doc: self.doc,
+            pos: self.pos,
+            pay: self.pay,
+        }
+    }
+
     /// Opens the postings files for [`Self::segment`].
     ///
     /// # Errors
@@ -373,7 +406,7 @@ impl LiveSegment {
 }
 
 mod request;
-pub use request::{live_request, live_segments};
+pub use request::{live_request, live_segments, range_segment, whole_request};
 
 #[cfg(test)]
 mod tests;
