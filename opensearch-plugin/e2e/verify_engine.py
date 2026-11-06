@@ -462,6 +462,47 @@ def realtime():
     sorts = [[{"n": "desc"}, {"@timestamp": "asc"}], [{"price": "asc"}, {"@timestamp": "asc"}],
              [{"tag": "asc"}, {"d": "desc"}, {"@timestamp": "asc"}]]
 
+    def pages(index, body, first):
+        """Every page of a scroll (first) or a point in time's search_after pages, as (id, sort)."""
+        out = []
+        if first == "scroll":
+            page = must("POST", f"/{index}/_search?scroll=1m&request_cache=false", body)
+            yield page
+            while page["hits"]["hits"]:
+                out += page["hits"]["hits"]
+                page = must("POST", "/_search/scroll", {"scroll": "1m", "scroll_id": page["_scroll_id"]})
+            req("DELETE", "/_search/scroll", {"scroll_id": page["_scroll_id"]})
+        else:
+            pit = must("POST", f"/{index}/_search/point_in_time?keep_alive=1m")["pit_id"]
+            b = dict(body, pit={"id": pit, "keep_alive": "1m"})
+            page = must("POST", "/_search?request_cache=false", b)
+            yield page
+            while page["hits"]["hits"]:
+                out += page["hits"]["hits"]
+                b["search_after"] = page["hits"]["hits"][-1]["sort"]
+                page = must("POST", "/_search?request_cache=false", b)
+            req("DELETE", "/_search/point_in_time", {"pit_id": [pit]})
+        yield [(h["_id"], h.get("sort")) for h in out]
+
+    def paged(where):
+        """A scroll and a point in time read the documents as of their first page, buffered ones
+        too: documents written meanwhile are in neither."""
+        body = {"query": {"match": {"body": "fox"}}, "size": 37, "sort": [{"n": "desc"}, {"@timestamp": "asc"}],
+                "track_total_hits": True}
+        for kind in ("scroll", "pit"):
+            a, b = pages(rt, body, kind), pages(ref, body, kind)
+            first_a, first_b = next(a), next(b)
+            check(first_a["hits"]["total"]["value"] == first_b["hits"]["total"]["value"], f"{where}: {kind} total")
+            for idx in (rt, ref):
+                lines = []
+                for i in range(20):
+                    lines += [{"index": {"_id": f"{kind}{i}"}}, {"body": "fox mid page", "n": 50000 + i, "@timestamp": i}]
+                must("POST", f"/{idx}/_bulk", "\n".join(json.dumps(l) for l in lines) + "\n", ndjson=True)
+            must("POST", f"/{ref}/_refresh")
+            got_a, got_b = next(a), next(b)
+            check(len(got_a) == first_a["hits"]["total"]["value"], f"{where}: {kind} pages hold the first page's total")
+            check(got_a == got_b, f"{where}: {kind} pages: {got_a[:3]} vs {got_b[:3]} ({len(got_a)} vs {len(got_b)})")
+
     def same_views(where):
         """Aggregations and sorted searches on the realtime index equal the refreshed index's."""
         for q in queries + [{"match_all": {}}]:
@@ -494,6 +535,8 @@ def realtime():
             check(a[0] == b[0], f"realtime round {rnd}: total {q}: {a[0]} vs {b[0]}")
             check(a[1] == b[1], f"realtime round {rnd}: scored hits {q}: {a[1][:2]} vs {b[1][:2]}")
         same_views(f"realtime round {rnd}")
+        if rnd == 2:
+            paged(f"realtime round {rnd}")
         if rnd == 0:
             # A flush publishes the buffers without refreshing the searcher: its view reads
             # them as their segments.

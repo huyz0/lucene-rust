@@ -317,11 +317,9 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
     /**
      * Why a search cannot read the writer's buffered documents, or null when it can: what the
      * buffers do not hold for the fetch phase (doc values, versions, highlighting), a query that
-     * was expanded or given term statistics over the reader's terms alone, nested documents, or a
-     * scroll or {@code search_after} page.
+     * was expanded or given term statistics over the reader's terms alone, or nested documents.
      */
     static String liveIneligible(SearchContext ctx) {
-        if (ctx.scrollContext() != null || ctx.searchAfter() != null) return "paging";
         if (ctx.version() || ctx.seqNoAndPrimaryTerm() || ctx.explain()) return "fetch_metadata";
         if (ctx.docValuesContext() != null || ctx.highlight() != null || ctx.hasScriptFields() || ctx.innerHits() != null
             && ctx.innerHits().getInnerHits().isEmpty() == false) return "fetch_doc_values";
@@ -364,11 +362,13 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
 
     /**
      * Whether a plain scored search goes to the buffers written as segments rather than the view's
-     * own postings: {@code min_score}, and a concurrent count's per-slice early termination, which
-     * the view's search does not do.
+     * own postings: {@code min_score}, a concurrent count's per-slice early termination, and a
+     * scroll or {@code search_after} page, which the view's search does not do. A scroll's or point
+     * in time's pages share one searcher supplier, so one view and one numbering of its documents.
      */
     private static boolean plainIneligible(SearchContext ctx) {
-        return ctx.minimumScore() != null || ctx.size() == 0 && ctx.shouldUseConcurrentSearch();
+        return ctx.minimumScore() != null || ctx.size() == 0 && ctx.shouldUseConcurrentSearch()
+            || ctx.scrollContext() != null || ctx.searchAfter() != null;
     }
 
     /**

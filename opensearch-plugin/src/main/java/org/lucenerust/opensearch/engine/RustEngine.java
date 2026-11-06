@@ -2091,6 +2091,33 @@ public class RustEngine extends Engine {
         return rwl.isWriteLockedByCurrentThread() && documentIndexWriter.isWriteLockedByCurrentThread();
     }
 
+    /**
+     * A searcher taken on its own (segment stats, a point in time's segment list, a get) reads the
+     * reader alone, as a refresh left it: the buffered documents are for search requests, which take
+     * a {@link #acquireSearcherSupplier supplier}.
+     */
+    @Override
+    public Searcher acquireSearcher(String source, SearcherScope scope, java.util.function.Function<Searcher, Searcher> wrapper)
+        throws EngineException {
+        SearcherSupplier supplier = super.acquireSearcherSupplier(wrapper, scope);
+        Searcher searcher = null;
+        try {
+            searcher = supplier.acquireSearcher(source);
+            Searcher acquired = searcher;
+            return new Searcher(
+                source,
+                acquired.getDirectoryReader(),
+                acquired.getSimilarity(),
+                acquired.getQueryCache(),
+                acquired.getQueryCachingPolicy(),
+                () -> org.opensearch.common.lease.Releasables.close(acquired, supplier)
+            );
+        } catch (RuntimeException e) {
+            org.opensearch.common.lease.Releasables.closeWhileHandlingException(searcher, supplier);
+            throw e;
+        }
+    }
+
     /** External searchers also read the writer's buffered documents when the index asks for it (LiveSearchers). */
     @Override
     public SearcherSupplier acquireSearcherSupplier(java.util.function.Function<Searcher, Searcher> wrapper, SearcherScope scope) throws EngineException {
