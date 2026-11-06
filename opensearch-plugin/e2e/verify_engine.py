@@ -757,6 +757,25 @@ def breaker():
     must("DELETE", "/breaker_rust")
 
 
+def merge_policies():
+    """index.merge.policy: log_byte_size decides the Rust writer's merges as it decides Lucene's.
+    (index.merge.enabled is a private setting a REST client cannot set.)"""
+    for index, extra, merged in (("lbs_rust", {"index.merge.policy": "log_byte_size"}, True),):
+        create(index, True, {"number_of_shards": 1, **extra})
+        for batch in range(4):
+            lines = []
+            for i in range(25):
+                lines.append(json.dumps({"index": {"_id": f"{batch}-{i}"}}))
+                lines.append(json.dumps({"title": f"doc {batch} {i}"}))
+            must("POST", f"/{index}/_bulk", "\n".join(lines) + "\n", ndjson=True)
+            must("POST", f"/{index}/_refresh")
+        must("POST", f"/{index}/_forcemerge?max_num_segments=1")
+        must("POST", f"/{index}/_refresh")
+        count = must("GET", f"/{index}/_stats/segments")["_all"]["primaries"]["segments"]["count"]
+        check((count == 1) == merged, f"{index}: {count} segments after a force merge")
+        must("DELETE", f"/{index}")
+
+
 def unsupported():
     """What the Rust writer cannot produce is refused, never written differently."""
     refused = (("bad_codec", {"index.codec": "best_compression"}, "default codec"),
@@ -890,6 +909,10 @@ def main():
     # title (english), body (standard), note and code (custom) are all Lucene components.
     check(analyzed.get("native", 0) > a.ops // 2, f"text values analyzed in Rust: {analyzed}")
     compare_all("after the stream", stream.ids)
+    # Merges run in the Rust writer and are reported back, as OpenSearch's merge scheduler reports them.
+    merges = must("GET", f"/{RUST}/_stats/merge")["_all"]["primaries"]["merges"]
+    check(merges["total"] > 0 and merges["total_docs"] > 0 and merges["total_size_in_bytes"] > 0,
+          f"merge stats are populated: {merges}")
     # Recovery: a graceful restart replays nothing; SIGKILL replays the translog into the writer.
     run_stream(600, seed=43)
     restart(a.container, kill=False)
@@ -902,6 +925,7 @@ def main():
     bp_reorder()
     fault_containment()
     breaker()
+    merge_policies()
     unsupported()
     encrypted(a.container)
     print(f"verify_engine: {CHECKS[0]} checks, {len(FAILURES)} failures", flush=True)

@@ -13,6 +13,9 @@ import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexWriterConfig;
 import org.apache.lucene.index.IndexableField;
 import org.apache.lucene.index.LiveIndexWriterConfig;
+import org.apache.lucene.index.LogByteSizeMergePolicy;
+import org.apache.lucene.index.MergePolicy;
+import org.apache.lucene.index.NoMergePolicy;
 import org.apache.lucene.index.SegmentInfos;
 import org.apache.lucene.index.Term;
 import org.apache.lucene.index.TieredMergePolicy;
@@ -84,6 +87,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
 
     private final Directory directory;
     private final long handle;
+    private final int indexCreatedVersionMajor;
     private final FieldRegistry registry;
     private final DocumentEncoder encoder;
     private final IndexWriterConfig config;
@@ -122,6 +126,8 @@ final class RustIndexWriter implements DocumentIndexWriter {
     private boolean policyInitialized;
     /** The merge policy settings last sent to the writer; under {@link #lock}. */
     private double[] mergePolicySettings;
+    /** What {@link #setPluggableMergePolicy} last sent; under {@link #lock}. */
+    private double[] pluggableMergePolicySettings;
     /** The writer options last sent ({@link #setOptions}); under {@link #lock}. */
     private double[] writerOptions;
     /**
@@ -147,6 +153,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
     ) {
         this.directory = directory;
         this.handle = handle;
+        this.indexCreatedVersionMajor = indexCreatedVersionMajor;
         this.registry = new FieldRegistry(this::register);
         this.encoder = new DocumentEncoder(registry, analyzer, similarity, indexCreatedVersionMajor, softDeletesField, formats);
         this.config = new IndexWriterConfig(analyzer).setSimilarity(similarity).setSoftDeletesField(softDeletesField);
@@ -182,6 +189,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
         org.apache.lucene.codecs.Codec codec
     ) throws IOException {
         installCommitDataUpcall();
+        RustMergeScheduler.installUpcall();
         long[] out = new long[1];
         int status = NativeBridge.writerOpen(
             org.lucenerust.opensearch.store.RustEncryptedDirectory.nativePath(indexPath).getBytes(StandardCharsets.UTF_8),
@@ -701,6 +709,56 @@ final class RustIndexWriter implements DocumentIndexWriter {
     }
 
     /**
+     * The shard's merge policy when it is not a {@code TieredMergePolicy}: a {@code
+     * LogByteSizeMergePolicy}'s settings, {@code NoMergePolicy}, or ({@code null}) the tiered policy
+     * {@link #setMergePolicy} configures; sent again only when one changed.
+     */
+    void setPluggableMergePolicy(MergePolicy policy) throws IOException {
+        int kind = NativeBridge.MERGE_POLICY_TIERED;
+        LogByteSizeMergePolicy log = null;
+        if (policy instanceof LogByteSizeMergePolicy l) {
+            kind = NativeBridge.MERGE_POLICY_LOG_BYTE_SIZE;
+            log = l;
+        } else if (policy instanceof NoMergePolicy) {
+            kind = NativeBridge.MERGE_POLICY_NONE;
+        }
+        double[] settings = log == null
+            ? new double[] { kind }
+            : new double[] {
+                kind,
+                log.getMergeFactor(),
+                log.getMinMergeMB(),
+                log.getMaxMergeMB(),
+                log.getMaxMergeMBForForcedMerge(),
+                log.getMaxMergeDocs(),
+                log.getNoCFSRatio(),
+                log.getMaxCFSSegmentSizeMB() };
+        synchronized (lock) {
+            if (Arrays.equals(settings, pluggableMergePolicySettings)) {
+                return;
+            }
+            check(
+                NativeBridge.writerSetPluggableMergePolicy(
+                    handle,
+                    kind,
+                    log == null ? 0 : log.getMergeFactor(),
+                    log == null ? 0 : megabytes(log.getMinMergeMB()),
+                    log == null ? 0 : megabytes(log.getMaxMergeMB()),
+                    log == null ? 0 : megabytes(log.getMaxMergeMBForForcedMerge()),
+                    log == null ? 0 : log.getMaxMergeDocs(),
+                    log == null ? 0 : log.getNoCFSRatio(),
+                    log == null ? 0 : megabytes(log.getMaxCFSSegmentSizeMB())
+                ),
+                "setting the merge policy"
+            );
+            pluggableMergePolicySettings = settings;
+            if (mergeOnFlushPolicyWait >= 0) {
+                check(NativeBridge.writerSetMergeOnFlush(handle, mergeOnFlushPolicyWait, true), "setting merge-on-flush");
+            }
+        }
+    }
+
+    /**
      * {@code IndexWriterConfig.setUseCompoundFile}, the merge policy's {@code setNoCFSRatio} and
      * {@code setMaxCFSSegmentSizeMB}, {@code setCheckPendingFlushUpdate}, and OpenSearch's
      * {@code ShuffleForcedMergePolicy}; sent again only when one changed.
@@ -1031,7 +1089,36 @@ final class RustIndexWriter implements DocumentIndexWriter {
 
     @Override
     public boolean hasPendingMerges() {
-        return false;
+        if (closed) {
+            return false;
+        }
+        boolean[] pending = new boolean[1];
+        return NativeBridge.writerMergeState(handle, pending, new double[1]) == NativeBridge.OK && pending[0];
+    }
+
+    /** The merge scheduler's IO rate limit in MB/s, infinite when merges are not throttled. */
+    double mergeIoRateMbPerSec() {
+        double[] rate = { Double.POSITIVE_INFINITY };
+        if (closed == false) {
+            NativeBridge.writerMergeState(handle, new boolean[1], rate);
+        }
+        return rate[0];
+    }
+
+    /**
+     * {@code IndexWriterConfig.setMergedSegmentWarmer}: {@code warmer} gets every merged segment
+     * before its merge is published.
+     */
+    void setMergedSegmentWarmer(IndexWriter.IndexReaderWarmer warmer) {
+        synchronized (lock) {
+            ensureOpen();
+            RustMergedSegmentWarmer.install(handle, directory, indexCreatedVersionMajor, warmer);
+        }
+    }
+
+    /** The native writer's handle. */
+    long handle() {
+        return handle;
     }
 
     // ---- state ----
@@ -1107,6 +1194,8 @@ final class RustIndexWriter implements DocumentIndexWriter {
                 if (nativeClosed == false) {
                     nativeClosed = true;
                     NativeBridge.writerClose(handle);
+                    RustMergeScheduler.detach(handle);
+                    RustMergedSegmentWarmer.remove(handle);
                 }
             } finally {
                 indexing.writeLock().unlock();
