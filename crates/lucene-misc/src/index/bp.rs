@@ -171,6 +171,16 @@ impl BpIndexReorderer {
         &self,
         reader: &dyn CodecReader,
     ) -> std::result::Result<DocMap, ReorderError> {
+        self.compute_doc_map_forking_at(reader, FORK_THRESHOLD)
+    }
+
+    /// [`Self::compute_doc_map`], forking partitions of at least
+    /// `fork_threshold` documents.
+    fn compute_doc_map_forking_at(
+        &self,
+        reader: &dyn CodecReader,
+        fork_threshold: usize,
+    ) -> std::result::Result<DocMap, ReorderError> {
         let max_doc = reader.max_doc();
         let doc_ram = doc_ram_requirements(max_doc);
         if doc_ram >= self.ram_budget_mb * 1024.0 * 1024.0 {
@@ -202,6 +212,7 @@ impl BpIndexReorderer {
             forward: &forward,
             parents: parents.as_ref(),
             scratch: std::sync::Mutex::new(Vec::new()),
+            fork_threshold,
         };
         let mut biases = vec![0f32; n];
         let mut scratch = ctx.take_scratch();
@@ -407,6 +418,8 @@ struct Ctx<'a> {
     parents: Option<&'a FixedBitSet>,
     /// Document-frequency arrays no running task holds, for the next fork.
     scratch: std::sync::Mutex<Vec<Scratch>>,
+    /// Partitions at least this long fork ([`FORK_THRESHOLD`]).
+    fork_threshold: usize,
 }
 
 /// One task's per-term document frequencies on either side of its split.
@@ -476,7 +489,7 @@ impl Ctx<'_> {
                 left_freqs,
                 right_freqs,
             } = scratch;
-            if len >= FORK_THRESHOLD {
+            if len >= self.fork_threshold {
                 rayon::join(
                     || self.doc_freqs(left, left_freqs),
                     || self.doc_freqs(right, right_freqs),
@@ -515,7 +528,7 @@ impl Ctx<'_> {
 
         let (left_docs, right_docs) = docs.split_at_mut(split);
         let (left_biases, right_biases) = biases.split_at_mut(split);
-        if len >= FORK_THRESHOLD {
+        if len >= self.fork_threshold {
             let (l, r) = rayon::join(
                 || self.run(left_docs, left_biases, scratch, depth + 1),
                 || {
@@ -555,7 +568,7 @@ impl Ctx<'_> {
         mid: usize,
         iter: i32,
     ) -> Result<bool> {
-        if docs.len() >= FORK_THRESHOLD {
+        if docs.len() >= self.fork_threshold {
             use rayon::prelude::*;
             let shared = &*scratch;
             biases
@@ -691,6 +704,95 @@ mod tests {
             let want = (f64::from(i)).log2() as f32;
             assert!((fast_log2(i) - want).abs() < 0.01, "{i}");
         }
+    }
+
+    /// Forking changes nothing: over an index big enough to fork at every
+    /// level, the doc map is the one the recursion computes on one thread.
+    #[test]
+    fn forked_doc_maps_equal_sequential_ones() {
+        use lucene_codecs::field_infos::FieldInfo;
+        use lucene_codecs::stored_fields::{Document, FieldValue, StoredField};
+        use lucene_index::index_writer::IndexWriter;
+        use lucene_index::segment_info::LuceneVersion;
+        use lucene_search::directory_reader::DirectoryReader;
+        use lucene_store::FsDirectory;
+        use lucene_util::test_support::TempDir;
+
+        let tmp = TempDir::new("bp-fork");
+        let dir = FsDirectory::open(tmp.path());
+        let fields = vec![
+            FieldInfo {
+                index_options: IndexOptions::Docs,
+                omit_norms: true,
+                ..FieldInfo::new("id", 0)
+            },
+            FieldInfo {
+                index_options: IndexOptions::DocsAndFreqs,
+                ..FieldInfo::new("body", 1)
+            },
+        ];
+        let version = LuceneVersion {
+            major: 10,
+            minor: 5,
+            bugfix: 0,
+        };
+        let mut w = IndexWriter::open(&dir, fields, "Lucene104", version).unwrap();
+        w.set_postings_field(Some("id")).unwrap();
+        w.add_postings_field("body").unwrap();
+        let mut x: u64 = 17;
+        let mut next = || {
+            x = x
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (x >> 33) as usize
+        };
+        for i in 0..20_000 {
+            let topic = next() % 16;
+            let words: Vec<String> = (0..6)
+                .map(|_| {
+                    let t = if next() % 5 == 0 {
+                        (topic + 1) % 16
+                    } else {
+                        topic
+                    };
+                    format!("w{t}_{}", next() % 8)
+                })
+                .collect();
+            w.add_document(Document {
+                fields: vec![
+                    StoredField {
+                        field_number: 0,
+                        value: FieldValue::String(format!("d{i}")),
+                    },
+                    StoredField {
+                        field_number: 1,
+                        value: FieldValue::String(words.join(" ")),
+                    },
+                ],
+            })
+            .unwrap();
+        }
+        w.commit().unwrap();
+        w.close().unwrap();
+        let reader = DirectoryReader::open(&dir).unwrap();
+        let leaf = &reader.segment_readers()[0];
+        assert_eq!(leaf.max_doc, 20_000);
+        let mut r = BpIndexReorderer::new();
+        r.set_min_doc_freq(2).unwrap();
+        r.set_fields(Some(vec!["body".to_string()]));
+        let order = |map: DocMap| {
+            (0..map.size())
+                .map(|d| map.new_to_old(d))
+                .collect::<Vec<_>>()
+        };
+        let forked = order(r.compute_doc_map(leaf).unwrap());
+        let sequential = order(r.compute_doc_map_forking_at(leaf, usize::MAX).unwrap());
+        assert_eq!(forked, sequential);
+        assert_ne!(
+            forked,
+            (0..20_000).collect::<Vec<_>>(),
+            "nothing was reordered"
+        );
     }
 
     #[test]

@@ -49,6 +49,12 @@ fn main() {
             map.size(),
             t.elapsed().as_secs_f64()
         );
+        if let Ok(path) = std::env::var("BP_DUMP") {
+            let out: String = (0..map.size())
+                .map(|d| format!("{}\n", map.new_to_old(d)))
+                .collect();
+            std::fs::write(path, out).expect("dump");
+        }
         return;
     }
 
