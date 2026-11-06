@@ -1334,8 +1334,8 @@ pub fn write_best_speed(
     writer.finish()
 }
 
-/// How many buffered `.fdt` bytes a [`StoredFieldsWriter::stream_to`]
-/// writer keeps before handing them to its output.
+/// How many `.fdt` bytes an indexing buffer holds in memory before it
+/// gives its stored fields a file ([`StoredFieldsWriter::stream_to`]).
 pub const SPILL_BYTES: usize = 1 << 20;
 
 /// Lucene's per-mode chunking parameters, from the two
@@ -1637,9 +1637,7 @@ impl StoredFieldsWriter {
     fn record_chunk(&mut self) {
         self.docs_values.push(self.doc_base as i64);
         self.start_pointers_values.push(self.fdt_pointer());
-        if self.fdt.len() >= SPILL_BYTES {
-            self.spill_fdt();
-        }
+        self.spill_fdt();
     }
 
     /// The `.fdt` bytes held in memory.
@@ -1655,9 +1653,10 @@ impl StoredFieldsWriter {
         pointer as i64
     }
 
-    /// Streams the `.fdt` to `out` from here on: whenever a chunk leaves
-    /// more than [`SPILL_BYTES`] buffered, the buffer goes to `out`, so a long
-    /// write (a merge) holds about a chunk's worth instead of the whole file.
+    /// Streams the `.fdt` to `out` from here on: each chunk goes to `out` as
+    /// it is written, as Lucene's writer writes it to its output, so a long
+    /// write (a merge, a big indexing buffer) holds about a chunk instead of
+    /// the whole file.
     /// Finish with [`Self::finish_streamed`]. [`Self::set_segment_id`] must
     /// come before: the header it rewrites leaves with the first spill.
     pub fn stream_to(&mut self, out: FsIndexOutput) {
@@ -1673,6 +1672,10 @@ impl StoredFieldsWriter {
                 self.fdt_spilled += self.fdt.len() as u64;
             }
             self.fdt.clear();
+            // What was buffered before streaming began is not needed again.
+            if self.fdt.capacity() > SPILL_BYTES / 4 {
+                self.fdt = Vec::new();
+            }
         }
     }
 

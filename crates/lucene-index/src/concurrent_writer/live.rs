@@ -704,7 +704,7 @@ impl ConcurrentIndexWriter<'_> {
     /// filled without it cannot be read.
     pub fn enable_live_search(&self) -> Result<()> {
         let slots: Vec<_> = self.slots.iter().map(lock).collect();
-        if slots.iter().any(|d| !d.docs.is_empty()) {
+        if slots.iter().any(|d| d.has_docs()) {
             return Err(Error::LiveSearch(
                 "live search must be enabled before the first document".into(),
             ));
@@ -810,10 +810,10 @@ impl ConcurrentIndexWriter<'_> {
             commit_deletes: Vec::new(),
         };
         for (dwpt, tail) in slots.iter().zip(&slot_tails) {
-            if dwpt.docs.is_empty() {
+            if !dwpt.has_docs() {
                 continue;
             }
-            let max_doc = i32::try_from(dwpt.docs.len()).unwrap_or(i32::MAX);
+            let max_doc = i32::try_from(dwpt.num_docs()).unwrap_or(i32::MAX);
             let source = Source {
                 postings: &dwpt.postings,
                 columns: &dwpt.live,
@@ -904,16 +904,16 @@ impl ConcurrentIndexWriter<'_> {
         }
         let slot = self
             .slot_of(id)
-            .filter(|d| !d.docs.is_empty())
+            .filter(|d| d.has_docs())
             .ok_or_else(|| Error::LiveSearch(format!("buffer {id} is being flushed")))?;
         let (Ok(start), Ok(end)) = (usize::try_from(range.start), usize::try_from(range.end))
         else {
             return Err(Error::LiveSearch("a negative document range".into()));
         };
-        if start >= end || end > slot.docs.len() {
+        if start >= end || end > slot.num_docs() {
             return Err(Error::LiveSearch(format!(
                 "documents {start}..{end} of a buffer of {}",
-                slot.docs.len()
+                slot.num_docs()
             )));
         }
         let limit = crate::index_writer::BufferLimit {
@@ -921,8 +921,18 @@ impl ConcurrentIndexWriter<'_> {
             docs: range.end,
             doc_counts,
         };
+        // Documents counted but not held (`Dwpt::stored_docs`) are empty.
+        let docs: std::borrow::Cow<'_, [lucene_codecs::stored_fields::Document]> =
+            match slot.docs.get(start..end) {
+                Some(held) => held.into(),
+                None => {
+                    let mut docs = slot.docs.get(start..).unwrap_or_default().to_vec();
+                    docs.resize_with(end.saturating_sub(start), Default::default);
+                    docs.into()
+                }
+            };
         let buffer = crate::index_writer::DocumentBuffer {
-            docs: slot.docs.get(start..end).unwrap_or_default(),
+            docs: &docs,
             custom_freq_terms: slot.custom_freq_terms.get(start..end).unwrap_or_default(),
             vectors: slot.vectors.get(start..end).unwrap_or_default(),
             explicit: crate::index_writer::ExplicitDocs::PackedRange(&slot.explicit, start, end),

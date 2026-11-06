@@ -120,12 +120,21 @@ pub use live::{
 /// One indexing slot's buffer -- `DocumentsWriterPerThread`, before its flush.
 #[derive(Default)]
 struct Dwpt {
+    /// The buffered documents, but for the last `stored_docs`.
     docs: Vec<Document>,
-    /// Parallel to `docs`: each document's custom-frequency terms
-    /// ([`ConcurrentIndexWriter::add_document_with_custom_freq_terms`]).
+    /// Documents after `docs` whose stored values went to `stored`, so they
+    /// would be empty in `docs`: counted instead of held, as Lucene keeps no
+    /// per-document object either. [`Dwpt::fill_docs`] makes them real
+    /// empty documents where a [`Document`] list is needed.
+    stored_docs: usize,
+    /// Each document's custom-frequency terms
+    /// ([`ConcurrentIndexWriter::add_document_with_custom_freq_terms`]),
+    /// parallel to `docs` once the flush pads it: explicit documents carry
+    /// none and add no entry, which saves an empty `Vec` per document.
     custom_freq_terms: Vec<Vec<(String, i32)>>,
-    /// Parallel to `docs`: each document's vectors
-    /// ([`ConcurrentIndexWriter::add_document_with_vectors`]).
+    /// Each document's vectors
+    /// ([`ConcurrentIndexWriter::add_document_with_vectors`]), short like
+    /// `custom_freq_terms`.
     vectors: Vec<Vec<DocumentVector>>,
     /// Parallel to `docs` in a writer that takes explicit documents: each
     /// document's indexed fields, their terms moved into `postings`, packed.
@@ -134,6 +143,9 @@ struct Dwpt {
     /// ([`IndexingConfig::streamed_stored_mode`]); `docs` then holds empty
     /// documents.
     stored: Option<StreamedStored>,
+    /// What `stored` counts toward `ram_bytes` now: its heap when last
+    /// measured, so the charge falls as its bytes go to disk.
+    stored_charged: usize,
     /// The explicit documents' postings, inverted as they are added.
     postings: PendingPostings,
     has_blocks: bool,
@@ -147,6 +159,25 @@ struct Dwpt {
     /// Norms and deletes for live search, kept only by a writer that has it
     /// ([`ConcurrentIndexWriter::enable_live_search`]).
     live: live::LiveColumns,
+}
+
+impl Dwpt {
+    /// How many documents the buffer holds.
+    fn num_docs(&self) -> usize {
+        self.docs.len().saturating_add(self.stored_docs)
+    }
+
+    fn has_docs(&self) -> bool {
+        self.num_docs() > 0
+    }
+
+    /// Turns the counted [`Dwpt::stored_docs`] into empty documents in
+    /// `docs`, for a document added after them or a flush.
+    fn fill_docs(&mut self) {
+        let n = self.num_docs();
+        self.docs.resize_with(n, Document::default);
+        self.stored_docs = 0;
+    }
 }
 
 /// Every delete issued, for the buffers to read their slices of and for the
@@ -1013,7 +1044,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
         let cfg = self.cfg();
         let count = docs.len();
         self.add_with(delete, count, |dwpt| {
-            let before = dwpt.docs.len();
+            let before = dwpt.num_docs();
             for (k, entry) in docs.iter().enumerate() {
                 cfg.validate_document_vectors(before.saturating_add(k), &entry.vectors)?;
             }
@@ -1037,6 +1068,11 @@ impl<'d> ConcurrentIndexWriter<'d> {
                                 .map(DocumentVector::ram_bytes)
                                 .fold(0usize, usize::saturating_add),
                         );
+                    // Explicit documents leave these short (see `Dwpt`).
+                    dwpt.fill_docs();
+                    let at = dwpt.docs.len();
+                    dwpt.custom_freq_terms.resize_with(at, Vec::new);
+                    dwpt.vectors.resize_with(at, Vec::new);
                     dwpt.docs.push(entry.doc);
                     dwpt.custom_freq_terms.push(entry.custom_freq_terms);
                     dwpt.vectors.push(entry.vectors);
@@ -1106,19 +1142,17 @@ impl<'d> ConcurrentIndexWriter<'d> {
                         dwpt.live.record_stored(&stored.fields);
                     }
                     if let Some(mode) = streamed {
-                        let streamed = dwpt.stored.get_or_insert_with(|| StreamedStored::new(mode));
-                        added = added
-                            .saturating_add(streamed.add(&stored))
-                            .saturating_add(std::mem::size_of::<Document>());
-                        dwpt.docs.push(Document::default());
+                        dwpt.stored
+                            .get_or_insert_with(|| StreamedStored::new(mode))
+                            .add(&stored);
+                        dwpt.stored_docs = dwpt.stored_docs.saturating_add(1);
                     } else {
                         added = added.saturating_add(document_ram_bytes(&stored));
+                        dwpt.fill_docs();
                         dwpt.docs.push(stored);
                     }
-                    dwpt.custom_freq_terms.push(Vec::new());
-                    dwpt.vectors.push(Vec::new());
                     let doc_id =
-                        i32::try_from(dwpt.docs.len().saturating_sub(1)).map_err(|_| {
+                        i32::try_from(dwpt.num_docs().saturating_sub(1)).map_err(|_| {
                             crate::index_writer::explicit_error("too many buffered documents")
                         })?;
                     for (inv, options) in doc.fields.inverted.iter_mut().zip(options) {
@@ -1135,9 +1169,22 @@ impl<'d> ConcurrentIndexWriter<'d> {
                     added = added.saturating_add(dwpt.explicit.push(doc.fields));
                 }
                 let grown = dwpt.postings.bytes().saturating_sub(postings_before);
-                Ok(added.saturating_add(grown))
+                Ok(added
+                    .saturating_add(grown)
+                    .saturating_add(Self::recharge_stored(dwpt)))
             }) as Fill)
         })
+    }
+
+    /// Brings `dwpt`'s charge for its streamed stored fields to their heap
+    /// now: returns what it grew by, and takes off what went to disk.
+    fn recharge_stored(dwpt: &mut Dwpt) -> usize {
+        let now = dwpt.stored.as_ref().map_or(0, StreamedStored::ram_bytes);
+        let before = std::mem::replace(&mut dwpt.stored_charged, now);
+        if now < before {
+            dwpt.ram_bytes = dwpt.ram_bytes.saturating_sub(before.saturating_sub(now));
+        }
+        now.saturating_sub(before)
     }
 
     /// Moves a buffer's stored fields to the `.fdt` of a segment reserved
@@ -1207,7 +1254,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
         let mut flushed = self.pre_update()?;
         let (seq_no, batch) = {
             let (i, mut dwpt) = self.acquire_slot();
-            let before = dwpt.docs.len();
+            let before = dwpt.num_docs();
             let fill = check(&dwpt)?;
             self.reserve_docs(count)?;
             if count > 1 {
@@ -1250,7 +1297,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
             // can mark it, so they are checked here without the accounting
             // lock.
             let full = if self.ram_buffer_bytes.is_some() {
-                let (num_docs, ram_bytes) = (dwpt.docs.len(), dwpt.ram_bytes);
+                let (num_docs, ram_bytes) = (dwpt.num_docs(), dwpt.ram_bytes);
                 self.update_ram(|c| {
                     c.commit_slot_bytes(i, num_docs, ram_bytes);
                     c.set_delete_bytes_used(delete_bytes);
@@ -1264,7 +1311,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
                 })
             } else {
                 // `hardMaxBytesPerDWPT` applies whatever the RAM setting.
-                self.max_buffered_docs.is_some_and(|m| dwpt.docs.len() >= m)
+                self.max_buffered_docs.is_some_and(|m| dwpt.num_docs() >= m)
                     || dwpt.ram_bytes > HARD_MAX_BYTES_PER_SLOT
             };
             let batch = if full {
@@ -1296,9 +1343,10 @@ impl<'d> ConcurrentIndexWriter<'d> {
     /// slice being closed and the ticket freezing the published segments'
     /// share.
     fn begin_flush(&self, i: usize, dwpt: &mut Dwpt) -> Option<FlushBatch> {
-        if dwpt.docs.is_empty() {
+        if !dwpt.has_docs() {
             return None;
         }
+        dwpt.fill_docs();
         let mut core = lock(&self.core);
         // One read of the log for both, so the slice and the published
         // segments' share end at the same entry. Every entry since the slot's
@@ -1342,6 +1390,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
             ram_bytes: dwpt.ram_bytes,
         };
         dwpt.ram_bytes = 0;
+        dwpt.stored_charged = 0;
         self.update_ram(|c| c.checkout_for_flush(i));
         self.slices[i].store(EMPTY_SLOT, Ordering::Release);
         Some(batch)
@@ -1406,6 +1455,8 @@ impl<'d> ConcurrentIndexWriter<'d> {
         tracking: &TrackingDirectory<'_>,
     ) -> Result<Built> {
         let cfg = self.cfg();
+        custom_freq_terms.resize_with(docs.len(), Vec::new);
+        vectors.resize_with(docs.len(), Vec::new);
         // Native documents carry no explicit fields.
         let explicit_docs = cfg.takes_explicit();
         // The stored values were compressed as the documents arrived, in the
@@ -1898,7 +1949,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
             .enumerate()
             .map(|(i, s)| {
                 let d = lock(s);
-                (i, (d.ram_bytes, d.docs.len()))
+                (i, (d.ram_bytes, d.num_docs()))
             })
             .filter(|(_, (_, docs))| *docs > 0)
             .max_by_key(|(_, size)| *size)
@@ -1920,7 +1971,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
 
     /// Documents buffered in every slot, not yet in a segment.
     pub fn pending_doc_count(&self) -> usize {
-        self.slots.iter().map(|s| lock(s).docs.len()).sum()
+        self.slots.iter().map(|s| lock(s).num_docs()).sum()
     }
 
     /// RAM held by the buffers, those being flushed included -- what the
@@ -3192,7 +3243,7 @@ mod tests {
         assert_eq!(w.pending_doc_count(), 9);
         w.add_document(doc("t1x09", 0)).unwrap();
         assert_eq!(w.pending_doc_count(), 6, "the four-document slot flushed");
-        let counts: Vec<usize> = w.slots.iter().map(|s| lock(s).docs.len()).collect();
+        let counts: Vec<usize> = w.slots.iter().map(|s| lock(s).num_docs()).collect();
         assert_eq!(counts, [0, 3, 3]);
         let ram = lock(&w.ram);
         assert_eq!(ram.flush_bytes(), 0, "the flush is done");
@@ -3231,7 +3282,7 @@ mod tests {
             w.add_document(doc("a", 0)).unwrap();
             w.add_document(big.clone()).unwrap();
             w.add_document(doc("c", 0)).unwrap();
-            let counts: Vec<usize> = w.slots.iter().map(|s| lock(s).docs.len()).collect();
+            let counts: Vec<usize> = w.slots.iter().map(|s| lock(s).num_docs()).collect();
             if check {
                 assert_eq!(counts, [1, 0, 1], "the adding thread flushed slot 1");
                 assert!(!w.any_pending());
@@ -3241,12 +3292,12 @@ mod tests {
                 // Slot 0 next: the marked RAM no longer counts, so nothing
                 // more is marked, and slot 1 still waits.
                 w.add_document(doc("d", 0)).unwrap();
-                let counts: Vec<usize> = w.slots.iter().map(|s| lock(s).docs.len()).collect();
+                let counts: Vec<usize> = w.slots.iter().map(|s| lock(s).num_docs()).collect();
                 assert_eq!(counts, [2, 1, 1]);
                 assert!(w.pending[1].load(Ordering::Acquire));
                 // Into slot 1: the thread indexing there flushes it.
                 w.add_document(doc("e", 0)).unwrap();
-                let counts: Vec<usize> = w.slots.iter().map(|s| lock(s).docs.len()).collect();
+                let counts: Vec<usize> = w.slots.iter().map(|s| lock(s).num_docs()).collect();
                 assert_eq!(counts, [2, 0, 1]);
                 assert!(!w.any_pending());
             }
@@ -3795,7 +3846,7 @@ mod tests {
         for i in 0..20 {
             w.add_document(doc(&format!("d{i}"), 0)).unwrap();
         }
-        let counts: Vec<usize> = w.slots.iter().map(|s| lock(s).docs.len()).collect();
+        let counts: Vec<usize> = w.slots.iter().map(|s| lock(s).num_docs()).collect();
         assert_eq!(counts, [20, 0, 0, 0]);
         w.commit().unwrap();
         assert_eq!(

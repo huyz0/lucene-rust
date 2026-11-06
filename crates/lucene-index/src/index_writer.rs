@@ -10245,10 +10245,11 @@ impl IndexWriter<'_> {
         direct: bool,
         segment_id: &[u8; ID_LENGTH],
     ) -> Result<Option<VectorsOutput>> {
-        debug_assert_eq!(
-            pending_vectors.len() as i32,
-            max_doc,
-            "pending_vectors must stay aligned 1:1 with pending_docs"
+        // A buffer of explicit documents, which carry no vectors, may hold
+        // fewer entries than documents: the missing ones are the last.
+        debug_assert!(
+            pending_vectors.len() as i32 <= max_doc,
+            "pending_vectors must stay aligned with pending_docs"
         );
         // `IndexingChain` calls `KnnVectorsWriter.addField` the first time a
         // document of the flush carries a field, and
