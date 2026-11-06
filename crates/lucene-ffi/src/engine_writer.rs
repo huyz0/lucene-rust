@@ -194,8 +194,8 @@ impl EngineWriter {
 #[derive(Default)]
 struct Holds {
     files: HashMap<u64, Vec<String>>,
-    /// Near-real-time snapshots' pins: dropping one hands its files back to
-    /// the writer, which releases them at its next flush or commit.
+    /// Near-real-time snapshots' pins: releasing the last reference to one
+    /// releases its files at once.
     nrt: HashMap<u64, Arc<lucene_index::nrt::NrtFileHold>>,
     next: u64,
 }
@@ -1353,17 +1353,18 @@ pub extern "C" fn ffi_engine_writer_release_hold(handle: u64, hold: u64) -> i32 
         with_writer(handle, |w| {
             let mut holds = w.maintenance();
             if let Some(nrt) = holds.nrt.remove(&hold) {
+                drop(holds);
                 // The last reference hands the files back to the writer;
                 // release them now, as Java's reader close does, rather than
                 // at the next flush or snapshot -- an index that goes idle
                 // after a merge would otherwise keep the merged-away segments
-                // on disk.
-                drop(holds);
-                drop(nrt);
-                return w
-                    .writer()
-                    .with_writer(|iw| iw.release_nrt_holds())
-                    .map_err(writer_error);
+                // on disk. A failed delete is not the writer's failure (Java's
+                // close listener ignores it): the file is unreferenced and the
+                // deleter's next sweep removes it.
+                if Arc::into_inner(nrt).is_some() {
+                    let _ = w.writer().with_writer(|iw| iw.release_nrt_holds());
+                }
+                return Ok(());
             }
             let Some(files) = holds.files.remove(&hold) else {
                 set_last_error(format!("engine writer: no hold {hold}"));
@@ -3009,15 +3010,19 @@ mod tests {
         );
         let new = snapshot(h);
         let dir = FsDirectory::open(tmp.path());
-        assert!(
-            dir.list_all().unwrap().iter().any(|n| n.starts_with("_0.")),
-            "the open reader keeps the merged-away segment"
-        );
+        let merged_away = |n: &String| ["_0.", "_1.", "_2."].iter().any(|p| n.starts_with(p));
+        let before = dir.list_all().unwrap();
+        for p in ["_0.", "_1.", "_2."] {
+            assert!(
+                before.iter().any(|n| n.starts_with(p)),
+                "the open reader keeps {p}*: {before:?}"
+            );
+        }
         assert_eq!(ffi_engine_writer_release_hold(h, old), 0);
         let after = dir.list_all().unwrap();
         assert!(
-            !after.iter().any(|n| n.starts_with("_0.")),
-            "the released segment's files are gone: {after:?}"
+            !after.iter().any(merged_away),
+            "the released segments' files are gone: {after:?}"
         );
         assert_eq!(ffi_engine_writer_release_hold(h, new), 0);
         check(&tmp);
