@@ -878,6 +878,11 @@ impl ConcurrentIndexWriter<'_> {
     /// documents. Stored fields are not written ([`Self::live_document`]
     /// reads them); deletes are the caller's.
     ///
+    /// A range starting where an earlier one ended reads the buffered
+    /// postings from there on; `next_starts` names the documents ranges
+    /// may start at next (the ends of the ranges kept), and where other
+    /// ranges ended is forgotten.
+    ///
     /// The buffer's slot is locked while the segment is written. Fails when
     /// the buffer has left its slot (taken for a flush since), when it
     /// holds fewer than `end` documents, and under an index sort, which
@@ -887,6 +892,7 @@ impl ConcurrentIndexWriter<'_> {
         id: u64,
         range: std::ops::Range<i32>,
         doc_counts: HashMap<i32, i32>,
+        next_starts: &[i32],
         dir: &dyn lucene_store::Directory,
         name: &str,
     ) -> Result<crate::segment_infos::SegmentCommitInfo> {
@@ -917,7 +923,6 @@ impl ConcurrentIndexWriter<'_> {
             docs: range.end,
             doc_counts,
         };
-        let whole = start == 0 && end == slot.docs.len();
         let buffer = crate::index_writer::DocumentBuffer {
             docs: slot.docs.get(start..end).unwrap_or_default(),
             custom_freq_terms: slot.custom_freq_terms.get(start..end).unwrap_or_default(),
@@ -927,7 +932,7 @@ impl ConcurrentIndexWriter<'_> {
             old_to_new: None,
             has_blocks: slot.has_blocks,
             stored: None,
-            limit: (!whole).then_some(&limit),
+            limit: Some(&limit),
         };
         let (sci, _) = cfg.build_and_write_segment(
             dir,
@@ -936,6 +941,7 @@ impl ConcurrentIndexWriter<'_> {
             lucene_util::string_helper::random_id(),
             None,
         )?;
+        slot.postings.keep_cursors_at(next_starts);
         Ok(sci)
     }
 

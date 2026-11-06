@@ -3924,6 +3924,83 @@ mod tests {
         assert_eq!(crate::jvm_reader::ffi_close_jvm_reader(reader), 0);
     }
 
+    /// How long a view's reader of a large growing buffer takes to build,
+    /// a few hundred documents after the last. `LIVE_DOCS` sets the
+    /// buffer's size (default 100 000).
+    #[test]
+    #[ignore = "timing; run with --release --ignored --nocapture"]
+    fn view_reader_of_a_growing_buffer_timing() {
+        use crate::live::{
+            ffi_engine_writer_live_view_open, ffi_live_view_close, ffi_live_view_reader,
+        };
+        let docs: usize = std::env::var("LIVE_DOCS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(100_000);
+        let tmp = empty_index("engine-writer-live-timing");
+        let h = open_with(&tmp, 2048.0, OPEN_LIVE_SEARCH, i32::MAX);
+        let f = setup(h);
+        let vocab: Vec<String> = (0..2000).map(|i| format!("w{i}")).collect();
+        let mut x = 7u64;
+        let mut add = |i: usize| {
+            let words: Vec<&str> = (0..15)
+                .map(|_| {
+                    x ^= x << 13;
+                    x ^= x >> 7;
+                    x ^= x << 17;
+                    // Skewed: low numbers far more often.
+                    let r = (x % 2000) as usize;
+                    vocab[r * r / 2000].as_str()
+                })
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect();
+            let b = doc(
+                Blob::default().u8(OP_ADD).i32(1),
+                &f,
+                &format!("d{i}"),
+                &words,
+                i as i64,
+                false,
+            );
+            assert_eq!(apply(h, &b.0), 0, "{}", crate::error::last_error());
+        };
+        let gen = commit_settled(h);
+        let reader = open_reader(&tmp, gen);
+        (0..docs).for_each(&mut add);
+        let mut n = docs;
+        for round in 0..25 {
+            for _ in 0..300 {
+                add(n);
+                n += 1;
+            }
+            let (mut view, mut ptr, mut len) = (0u64, std::ptr::null_mut(), 0usize);
+            let t = std::time::Instant::now();
+            // SAFETY: live out-pointers.
+            let rc =
+                unsafe { ffi_engine_writer_live_view_open(h, gen, &mut view, &mut ptr, &mut len) };
+            assert_eq!(rc, 0, "{}", crate::error::last_error());
+            let opened = t.elapsed();
+            // SAFETY: the buffer the call gave, freed once.
+            unsafe { crate::ffm_bridge::ffi_jvm_free_bytes(ptr, len) };
+            let t = std::time::Instant::now();
+            let mut whole = 0u64;
+            // SAFETY: a live out-pointer.
+            let rc = unsafe { ffi_live_view_reader(reader, view, &mut whole) };
+            assert_eq!(rc, 0, "{}", crate::error::last_error());
+            let built = t.elapsed();
+            let w = crate::jvm_reader::lookup(whole, "test").unwrap();
+            let sizes: Vec<i32> = w
+                .reader
+                .segment_readers()
+                .iter()
+                .map(|r| r.max_doc)
+                .collect();
+            eprintln!("round {round}: open {opened:?}, reader {built:?}, segments {sizes:?}");
+            assert_eq!(ffi_live_view_close(view), 0);
+        }
+    }
+
     /// The 1M OpenSearch bench's documents (`bench_nodes.py gen`), mapped as
     /// OpenSearch maps them, buffered by four threads, then one refresh
     /// timed. `FLUSH_DOCS` sets how many (default 500 000).

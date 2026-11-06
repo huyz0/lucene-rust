@@ -525,7 +525,15 @@ fn buffer_segments(
         }
         let dir = lucene_store::ByteBuffersDirectory::new();
         let name = format!("_live{}_{}", p.start, p.end);
-        let sci = writer.live_buffer_segment(b.id, p.start..p.end, range_counts(p), &dir, &name)?;
+        let starts: Vec<i32> = plan.iter().map(|p| p.end).collect();
+        let sci = writer.live_buffer_segment(
+            b.id,
+            p.start..p.end,
+            range_counts(p),
+            &starts,
+            &dir,
+            &name,
+        )?;
         let reader = SegmentReader::open_one(&dir, &sci).map_err(open_error)?;
         if b.in_slot {
             let chunk = Arc::new(Chunk {
