@@ -418,8 +418,40 @@ pub unsafe extern "C" fn ffi_live_view_reader(
         let h = lookup(handle, "ffi_live_view_reader: unknown or closed reader")?;
         let mut extra = Vec::new();
         let mut masks = Vec::new();
-        for (b, plan) in v.view.buffers.iter().zip(&v.plans) {
-            let parts = match buffer_segments(&v.writer, b, plan) {
+        // Each buffer's chunks are written under that buffer's own slot
+        // lock: the buffers with chunks to write are written side by side,
+        // one on this thread and the others on threads of their own.
+        let w: &EngineWriter = &v.writer;
+        let built = std::thread::scope(|s| {
+            let mut inline_used = false;
+            let jobs: Vec<_> = v
+                .view
+                .buffers
+                .iter()
+                .zip(&v.plans)
+                .map(|(b, plan)| {
+                    let writes = !writes_nothing(w, b, plan);
+                    if !writes || !inline_used {
+                        inline_used |= writes;
+                        return Err((b, plan));
+                    }
+                    std::thread::Builder::new()
+                        .name("live-view".into())
+                        .spawn_scoped(s, move || buffer_segments(w, b, plan))
+                        .map_err(|_| (b, plan))
+                })
+                .collect();
+            jobs.into_iter()
+                .map(|job| match job {
+                    Ok(handle) => handle
+                        .join()
+                        .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
+                    Err((b, plan)) => buffer_segments(w, b, plan),
+                })
+                .collect::<Vec<_>>()
+        });
+        for ((b, plan), parts) in v.view.buffers.iter().zip(&v.plans).zip(built) {
+            let parts = match parts {
                 Ok(parts) => parts,
                 Err(e @ lucene_index::index_writer::Error::LiveSearch(_)) => {
                     let msg = format!("live search: {e}");
@@ -492,6 +524,20 @@ pub unsafe extern "C" fn ffi_live_view_reader(
         unsafe { *out_handle = id };
         Ok(())
     })
+}
+
+/// Whether [`buffer_segments`] writes nothing for buffer `b`: it is one
+/// published segment, or every chunk `plan` names is in [`Chunks`].
+fn writes_nothing(w: &EngineWriter, b: &ViewBuffer, plan: &[Planned]) -> bool {
+    if let [only] = plan {
+        if only.start == 0 && w.writer().live_published_segment(b.id).is_some() {
+            return true;
+        }
+    }
+    let chunks = w.live_chunks();
+    let have = chunks.get(&b.id);
+    plan.iter()
+        .all(|p| have.is_some_and(|c| c.iter().any(|c| c.start == p.start && c.end == p.end)))
 }
 
 /// Buffer `b`'s chunks as segments, in `plan`'s order: the segment it was

@@ -337,6 +337,10 @@ def visibility(base, container, corpus, label, out, settings):
         "search_ms_during_load": {n: {"p50": pct(v, 0.5), "p90": pct(v, 0.9), "n": len(v)} for n, v in searched.items()},
         "memory_after_load": node_snapshot(container),
     }
+    try:
+        result["plugin_stats"] = req("GET", "/_plugins/lucene_rust/stats")
+    except Exception:  # optional: the stock node has no such endpoint
+        pass
     print(f"{label}: {result['docs_per_second']} docs/s, {result['cpu_seconds']} CPU-s, visible p50/p99 "
           f"{result['visible_ms']['p50']}/{result['visible_ms']['p99']} ms ({len(seen)} probes, {missed[0]} missed, "
           f"{len(errors)} request errors)",
