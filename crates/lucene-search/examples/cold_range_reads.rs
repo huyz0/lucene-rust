@@ -11,7 +11,7 @@
 //! count once.
 //!
 //! ```text
-//! cargo run --release -p lucene-search --example cold_range_reads -- [docs] [latency_ms] [MB/s per request] [--no-prefetch]
+//! cargo run --release -p lucene-search --example cold_range_reads -- [docs] [latency_ms] [MB/s per request] [--no-prefetch] [--no-listed-lengths]
 //! ```
 
 #![allow(clippy::arithmetic_side_effects)]
@@ -39,13 +39,17 @@ const VERSION: LuceneVersion = LuceneVersion {
 };
 
 /// A blob store that sleeps on every ranged read for its latency plus the
-/// transfer at a per-request throughput, and counts the requests by file
-/// extension.
+/// transfer at a per-request throughput, and on every length request and
+/// listing for its latency, and counts the requests by file extension
+/// (`HEAD` and `LIST` for those two).
 #[derive(Clone)]
 struct SlowStore {
     inner: InMemoryBlobStore,
     latency: Duration,
     bytes_per_sec: f64,
+    /// Whether the listing carries lengths (`--no-listed-lengths` turns it
+    /// off, as for a store whose listing does not).
+    lengths_listed: bool,
     requests: Arc<Mutex<BTreeMap<String, (u64, u64)>>>,
 }
 
@@ -53,10 +57,19 @@ impl SlowStore {
     fn take_counts(&self) -> BTreeMap<String, (u64, u64)> {
         std::mem::take(&mut *self.requests.lock().unwrap())
     }
+
+    fn count(&self, kind: String, bytes: usize) {
+        let mut counts = self.requests.lock().unwrap();
+        let entry = counts.entry(kind).or_default();
+        entry.0 += 1;
+        entry.1 += bytes as u64;
+    }
 }
 
 impl BlobStore for SlowStore {
     fn list(&self) -> Result<Vec<String>> {
+        self.count("LIST".into(), 0);
+        std::thread::sleep(self.latency);
         self.inner.list()
     }
     fn get(&self, name: &str) -> Result<Input> {
@@ -65,18 +78,23 @@ impl BlobStore for SlowStore {
     fn get_range(&self, name: &str, offset: u64, len: usize) -> Result<Vec<u8>> {
         let ext = name.rsplit('.').next().unwrap_or(name).to_string();
         let bytes = self.inner.get_range(name, offset, len)?;
-        {
-            let mut counts = self.requests.lock().unwrap();
-            let entry = counts.entry(ext).or_default();
-            entry.0 += 1;
-            entry.1 += bytes.len() as u64;
-        }
+        self.count(ext, bytes.len());
         let transfer = Duration::from_secs_f64(bytes.len() as f64 / self.bytes_per_sec);
         std::thread::sleep(self.latency + transfer);
         Ok(bytes)
     }
     fn size(&self, name: &str) -> Result<u64> {
+        self.count("HEAD".into(), 0);
+        std::thread::sleep(self.latency);
         self.inner.size(name)
+    }
+    fn list_with_sizes(&self) -> Result<Option<Vec<(String, u64)>>> {
+        if self.lengths_listed {
+            self.count("LIST".into(), 0);
+            std::thread::sleep(self.latency);
+            return self.inner.list_with_sizes();
+        }
+        Ok(None)
     }
     fn put(&self, name: &str, bytes: Vec<u8>) -> Result<()> {
         self.inner.put(name, bytes)
@@ -147,6 +165,7 @@ fn main() {
         inner,
         latency,
         bytes_per_sec: mb_per_sec * 1e6,
+        lengths_listed: !args.iter().any(|a| a == "--no-listed-lengths"),
         requests: Arc::default(),
     };
     let queries: Vec<(&str, BooleanQuery)> = vec![

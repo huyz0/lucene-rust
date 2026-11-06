@@ -388,6 +388,18 @@ pub trait Directory: Send + Sync {
         Ok(())
     }
 
+    /// [`Directory::prefetch_files`] for files an encrypting wrapper opens
+    /// through [`Directory::open_decoded`] with `decoder`: what those opens
+    /// will read, decoded pages included.
+    fn prefetch_files_decoded(
+        &self,
+        names: &[String],
+        decoder: &dyn crate::page_cache::PageDecoder,
+    ) -> Result<()> {
+        let _ = (names, decoder);
+        Ok(())
+    }
+
     /// `dir instanceof FSDirectory ? dir.getDirectory() : null`: the
     /// filesystem path a [`crate::fs_lock_factory::FsLockFactory`] puts its
     /// lock file in. `None` for anything that is not a filesystem directory.
@@ -522,6 +534,13 @@ macro_rules! forward_directory {
             fn prefetch_files(&self, names: &[String]) -> Result<()> {
                 (**self).prefetch_files(names)
             }
+            fn prefetch_files_decoded(
+                &self,
+                names: &[String],
+                decoder: &dyn crate::page_cache::PageDecoder,
+            ) -> Result<()> {
+                (**self).prefetch_files_decoded(names, decoder)
+            }
             fn copy_from(&self, from: &dyn Directory, src: &str, dest: &str) -> Result<()> {
                 (**self).copy_from(from, src, dest)
             }
@@ -628,6 +647,13 @@ impl Directory for EstimatedWrites<'_> {
     }
     fn prefetch_files(&self, names: &[String]) -> Result<()> {
         self.inner.prefetch_files(names)
+    }
+    fn prefetch_files_decoded(
+        &self,
+        names: &[String],
+        decoder: &dyn crate::page_cache::PageDecoder,
+    ) -> Result<()> {
+        self.inner.prefetch_files_decoded(names, decoder)
     }
 }
 
@@ -1297,10 +1323,15 @@ pub fn pending_segments_file_name(generation: i64) -> Option<String> {
 pub fn read_latest_commit(dir: &(impl Directory + ?Sized)) -> Result<(i64, Input)> {
     let files = dir.list_all()?;
     let generation = last_commit_generation(&files)?;
+    Ok((generation, open_commit_file(dir, generation)?))
+}
+
+/// Opens the `segments_N` file of commit `generation` (`-1`, no commit,
+/// is an error).
+pub fn open_commit_file(dir: &(impl Directory + ?Sized), generation: i64) -> Result<Input> {
     let name = segments_file_name(generation)
         .ok_or_else(|| Error::Corrupted("no segments_N commit file found".to_string()))?;
-    let bytes = dir.open(&name)?;
-    Ok((generation, bytes))
+    dir.open(&name)
 }
 
 #[cfg(test)]

@@ -22,6 +22,8 @@ import org.lucenerust.opensearch.store.StoreCrypto;
 import org.opensearch.index.IndexModule;
 import org.opensearch.index.IndexSettings;
 import org.opensearch.index.engine.EngineFactory;
+import org.opensearch.index.shard.SearchOperationListener;
+import org.opensearch.search.internal.SearchContext;
 import org.opensearch.core.common.breaker.CircuitBreaker;
 import org.opensearch.indices.IndexingMemoryController;
 import org.opensearch.indices.breaker.BreakerSettings;
@@ -246,6 +248,31 @@ public class RustSearchPlugin extends Plugin implements
             indexModule.addSettingsUpdateConsumer(FETCH_ENABLED, flag::set);
             try {
                 indexModule.setReaderWrapper(indexService -> reader -> NativeStoredFieldsReader.wrap(reader, readers, stats, flag::enabled));
+                // The fetch phase reads its hits one at a time; announcing them first lets a
+                // segment read by range fetch their stored fields together.
+                indexModule.addSearchOperationListener(new SearchOperationListener() {
+                    @Override
+                    public void onPreFetchPhase(SearchContext context) {
+                        if (flag.enabled() == false) {
+                            return;
+                        }
+                        // `stored_fields: _none_`: the fetch phase reads no stored fields.
+                        if (context.storedFieldsContext() != null && context.storedFieldsContext().fetchFields() == false) {
+                            return;
+                        }
+                        try {
+                            NativeStoredFieldsReader.prefetch(
+                                context.searcher().getIndexReader(),
+                                context.docIdsToLoad(),
+                                context.docIdsToLoadFrom(),
+                                context.docIdsToLoadSize()
+                            );
+                        } catch (RuntimeException e) {
+                            // Only a hint: the fetch phase reads every document itself.
+                            logger.debug("lucene-rust: stored-fields prefetch failed", e);
+                        }
+                    }
+                });
             } catch (SetOnce.AlreadySetException e) {
                 // Another plugin wrapped the index's readers first: its wrapper
                 // stays, Lucene reads.

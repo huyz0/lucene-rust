@@ -308,3 +308,84 @@ fn an_encrypted_index_read_through_the_page_cache_keeps_ciphertext_on_disk() {
     );
     assert!(DirectoryReader::open(&wrong).is_err());
 }
+
+/// A store that counts length requests and reads from offset 0 per file.
+#[derive(Clone, Default)]
+struct Counting {
+    inner: InMemoryBlobStore,
+    heads: Arc<std::sync::Mutex<std::collections::HashMap<String, usize>>>,
+    sizes: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl lucene_store::BlobStore for Counting {
+    fn list(&self) -> lucene_store::Result<Vec<String>> {
+        self.inner.list()
+    }
+    fn list_with_sizes(&self) -> lucene_store::Result<Option<Vec<(String, u64)>>> {
+        self.inner.list_with_sizes()
+    }
+    fn get(&self, name: &str) -> lucene_store::Result<lucene_store::Input> {
+        self.inner.get(name)
+    }
+    fn get_range(&self, name: &str, offset: u64, len: usize) -> lucene_store::Result<Vec<u8>> {
+        if offset == 0 {
+            *self
+                .heads
+                .lock()
+                .unwrap()
+                .entry(name.to_string())
+                .or_default() += 1;
+        }
+        self.inner.get_range(name, offset, len)
+    }
+    fn size(&self, name: &str) -> lucene_store::Result<u64> {
+        self.sizes
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.inner.size(name)
+    }
+    fn put(&self, name: &str, bytes: Vec<u8>) -> lucene_store::Result<()> {
+        self.inner.put(name, bytes)
+    }
+    fn delete(&self, name: &str) -> lucene_store::Result<()> {
+        self.inner.delete(name)
+    }
+}
+
+/// A cold open of an encrypted index over the page cache asks no file's
+/// length (the listing carries them) and reads each encrypted header once,
+/// whatever the open, the length and the decoded reads need.
+#[test]
+fn a_cold_encrypted_open_lists_lengths_and_reads_each_header_once() {
+    let store = Counting::default();
+    {
+        let tmp = TempDir::new("cold-encrypted-write");
+        let cached =
+            lucene_store::CachedBlobDirectory::new(store.clone(), page_cache(&tmp, true), "w");
+        let dir = EncryptedDirectory::new(cached, keys())
+            .with_chunk_size(4096)
+            .unwrap();
+        index_and_verify_n(&dir, 2_000);
+    }
+    store.heads.lock().unwrap().clear();
+    store.sizes.store(0, std::sync::atomic::Ordering::Relaxed);
+
+    let tmp = TempDir::new("cold-encrypted-read");
+    let cached = lucene_store::CachedBlobDirectory::new(store.clone(), page_cache(&tmp, true), "r");
+    let dir = EncryptedDirectory::new(cached, keys())
+        .with_chunk_size(4096)
+        .unwrap();
+    let reader = DirectoryReader::open(&dir).unwrap();
+    let opened = reader.open_segments().unwrap();
+    assert!(!opened.as_open_segments().is_empty());
+    for seg in reader.segment_readers() {
+        for doc in 0..seg.max_doc.min(5) {
+            seg.stored_document(doc).unwrap();
+        }
+    }
+    assert_eq!(store.sizes.load(std::sync::atomic::Ordering::Relaxed), 0);
+    let heads = store.heads.lock().unwrap();
+    assert!(!heads.is_empty());
+    for (name, n) in heads.iter() {
+        assert_eq!(*n, 1, "{name}'s header read {n} times");
+    }
+}
