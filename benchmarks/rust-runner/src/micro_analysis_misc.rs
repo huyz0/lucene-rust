@@ -234,6 +234,9 @@ const RU_MONTHS: [&str; 12] = [
 ];
 
 /// `AnalysisMiscMicro.russianDateDocs`.
+/// Dates in the ru default pattern, `d MMM y\u{202f}'г'.`, with its narrow
+/// no-break space: JDK 21 matches that separator only exactly, so a plain
+/// space would leave Lucene recognizing no dates at all.
 fn russian_date_docs() -> Vec<String> {
     let mut r = Rng(0x0DA7_E0E0_5255_5353);
     (0..20000)
@@ -241,7 +244,7 @@ fn russian_date_docs() -> Vec<String> {
             let x = r.next();
             if x & 1 == 0 {
                 format!(
-                    "{} {} {} г.",
+                    "{} {} {}\u{202f}г.",
                     1 + (x >> 16) % 28,
                     RU_MONTHS[((x >> 8) % 12) as usize],
                     1900 + (x >> 24) % 200
