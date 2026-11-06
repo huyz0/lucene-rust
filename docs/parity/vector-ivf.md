@@ -1,0 +1,19 @@
+# lucene-vector-quant, lucene-ivf -- IVF vector index with pluggable quantizers
+
+[Index](../parity.md). Not a Lucene module: an inverted-file (cluster-based)
+approximate nearest-neighbour index of this port's own design, for local and
+blob storage. Stock Lucene and OpenSearch cannot read its files; it is not
+wired into a codec or the OpenSearch plugin. The quantizers reuse Lucene's
+(`OptimizedScalarQuantizer`, `ScalarQuantizer`). Benchmarks:
+`crates/lucene-ivf/examples/ivf_bench.rs`, `benchmarks/ivf/`.
+
+| Java | Rust | Status |
+|---|---|---|
+| -- (quantizer abstraction) | `lucene-vector-quant/src/lib.rs::{Quantizer, QueryScorer, QuantizerFactory, QuantizerRegistry, Error}` | **rust-only**. Object-safe quantizer trait: fixed-length codes encoded relative to a centroid, a query scorer re-targeted per partition and scoring a block of codes per call, state written by name and read back through a registry (`osq`, `sq` built in). Tests: unit tests. |
+| `codecs.lucene104.Lucene104ScalarQuantizedVectorScorer` (scoring formula), `util.quantization.OptimizedScalarQuantizer` (reused) | `lucene-vector-quant/src/osq.rs::{OsqFactory, OsqQuantizer, NAME}` | **rust-only** (uses Lucene's OSQ). Every `ScalarEncoding` (BBQ 1-bit/4-bit query, 2, 4, 7, 8 bits) with Lucene104's record layout and corrected score, encoded per cluster centroid. Differs: dimensions padded to a multiple of 64 at 4 bits and under (whole-word kernels); the query interval is not refined (one quantization per probed cluster) and its mean/variance are plain sums. Tests: estimate error per encoding and similarity; state round trip. |
+| `codecs.lucene99.Lucene99ScalarQuantizedVectorsWriter` (training), `util.quantization.ScalarQuantizer`, `ScalarQuantizedVectorSimilarity` (reused) | `lucene-vector-quant/src/scalar.rs::{ScalarFactory, ScalarQuantizer, NAME}` | **rust-only** (uses Lucene's global quantile quantizer). int7 with the default confidence interval, int4 (nibble-packed, auto interval). Centroids ignored. Tests: estimate error; state round trip and corrupt states. |
+| -- | `lucene-ivf/src/lib.rs::{Error, META_CODEC, POSTINGS_CODEC, VECTORS_CODEC}` | **rust-only**. `.ivm`/`.ivp`/`.ivv` with Lucene index headers and CRC footers. Tests: `tests/ivf.rs`. |
+| -- (SOAR, Sun et al. 2023) | `lucene-ivf/src/kmeans.rs::{cluster, soar_assign, KMeansParams, Clustering}` | **rust-only**. Hierarchical k-means (splits of at most 64, sampled training) to clusters of a target size, then neighbourhood Lloyd refinement; optional SOAR spilling. Deterministic per seed. Measured: on GloVe-100 spilling gave no recall gain per entry scanned, so it is off by default. Tests: unit tests. |
+| -- | `lucene-ivf/src/writer.rs::{IvfWriter, IvfParams, FieldVectors, IvfFiles}` | **rust-only**. Clusters, trains the quantizer on a sample, writes each cluster's slots and codes contiguously (one range read per probe) and the full-precision vectors in cluster order. Tests: `tests/ivf.rs`. |
+| -- | `lucene-ivf/src/reader.rs::{IvfReader, IvfField, RangeSource, SearchParams, ScoredDoc}` | **rust-only**. Opens with header, footer-shape and bounds checks (full CRC in `check_integrity`); search ranks centroids, scans `nprobe` clusters' codes with an optional filter, reranks with exact scores; exact search for selective filters. Tests: recall over 4 similarities and 6 quantizers, filters, corruption, copying and unaligned range sources. |
+| -- | `lucene-ivf/src/merge.rs::{merge_field, MergeSource}` | **rust-only**. Merge re-clusters and re-quantizes the live vectors under their new document numbers. Tests: `merge_reclusters_live_vectors_under_new_numbers`. |

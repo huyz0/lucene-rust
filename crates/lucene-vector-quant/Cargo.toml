@@ -1,0 +1,12 @@
+[package]
+name = "lucene-vector-quant"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+lucene-util = { path = "../lucene-util" }
+thiserror.workspace = true
+
+[lints]
+workspace = true
