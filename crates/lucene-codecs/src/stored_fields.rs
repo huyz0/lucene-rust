@@ -496,6 +496,47 @@ impl<'d> StoredFieldsReader<'d> {
         )?)
     }
 
+    /// `StoredFields.prefetch(docID)` for several documents at once: the
+    /// `.fdt` chunk holding each is announced in one
+    /// [`lucene_store::prefetch`], so a fetch phase over a file read by
+    /// range waits for one round trip rather than one per chunk. A no-op
+    /// over memory that is not read by range.
+    ///
+    /// # Errors
+    /// A chunk that could not be fetched, or a corrupt `.fdx` index.
+    pub fn prefetch(&self, docs: &[i32]) -> Result<()> {
+        if !lucene_store::is_prefetchable(self.fdt) {
+            return Ok(());
+        }
+        let docs_region = self.docs_region()?;
+        let mut ranges = Vec::with_capacity(docs.len());
+        for &doc in docs {
+            if doc < 0 || doc >= self.max_doc {
+                continue;
+            }
+            let block = direct_monotonic::floor_index(
+                docs_region,
+                &self.docs_meta,
+                0,
+                self.num_chunks,
+                i64::from(doc),
+            )?;
+            let start = self.block_start_pointer(block)?;
+            let end = match block.checked_add(1) {
+                Some(next) if next < self.num_chunks => self.block_start_pointer(next)?,
+                _ => self.max_pointer,
+            };
+            let start = usize::try_from(start).unwrap_or(usize::MAX);
+            let end = usize::try_from(end)
+                .unwrap_or(0)
+                .max(start.saturating_add(1));
+            if let Some(range) = self.fdt.get(start..end.min(self.fdt.len())) {
+                ranges.push(range);
+            }
+        }
+        Ok(lucene_store::prefetch(&ranges)?)
+    }
+
     /// Reads the given document's stored fields.
     ///
     /// A **random-access** read (see [`Self::serialized_document`]); a

@@ -298,6 +298,8 @@ impl<'s, 'a> IndexSearcher<'s, 'a> {
     /// a timeout leaves the relation what the collector counted, as Java
     /// does -- [`Self::timed_out`] is the flag.
     pub fn search(&self, query: &BooleanQuery, n: usize) -> Result<TopDocs> {
+        // Only a hint: a page it could not fetch is retried by the read.
+        let _ = crate::prefetch::prefetch_query(self.segments, query);
         let sim = self.similarity.filter(|s| !s.is_default_bm25());
         if sim.is_some()
             || self.timeout.is_some()
@@ -347,6 +349,8 @@ impl<'s, 'a> IndexSearcher<'s, 'a> {
         query: &BooleanQuery,
         n: usize,
     ) -> Result<TopDocs> {
+        // Only a hint: a page it could not fetch is retried by the read.
+        let _ = crate::prefetch::prefetch_query(self.segments, query);
         let mut c =
             crate::collector::TopDocsCollector::with_total_hits_threshold(n, TOTAL_HITS_THRESHOLD)
                 .with_after(after);
@@ -376,6 +380,8 @@ impl<'s, 'a> IndexSearcher<'s, 'a> {
         sort: &[crate::top_field::SortField],
         after: Option<&crate::top_field::FieldDoc>,
     ) -> Result<crate::top_field::TopFieldDocs> {
+        // Only a hint: a page it could not fetch is retried by the read.
+        let _ = crate::prefetch::prefetch_query(self.segments, query);
         let norms: Vec<SegmentNorms<'s, 'a>> =
             (0..self.segments.len()).map(|i| self.norms(i)).collect();
         let rewritten = rewrite_structure(query.clone());
