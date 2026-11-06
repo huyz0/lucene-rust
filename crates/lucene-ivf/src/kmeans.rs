@@ -15,6 +15,14 @@
 //! centroid among its own leaf and those neighbours, recomputing the means
 //! after each round. That is `O(n * REFINE_NEIGHBORS * dim)` per round.
 //!
+//! Neighbouring centroids are not always where a vector's nearest centroid
+//! is: in a hundred or more dimensions about one vector in ten has its
+//! nearest centroid outside the leaf's 64 nearest. So the last few rounds
+//! are **full Lloyd rounds** that compare every vector with every centroid,
+//! using a register-tiled kernel (4 vectors by 3 centroids at a time). They
+//! cost `O(n * k * dim)` each, and on GloVe they lift recall at a fixed
+//! number of probes by about as much as flat k-means gains over the tree.
+//!
 //! Vectors go to the centroid nearest by a [`Metric`]: Euclidean distance,
 //! or the largest inner product, which callers use for angular and
 //! inner-product fields (their `Cosine` vectors normalized first). Centroids
@@ -78,6 +86,9 @@ pub struct KMeansParams {
     pub sample_per_centroid: usize,
     /// Neighbourhood refinement rounds over the leaves.
     pub refine_rounds: usize,
+    /// Full Lloyd rounds (every vector against every centroid) after the
+    /// neighbourhood rounds.
+    pub full_rounds: usize,
     /// The generator seed.
     pub seed: u64,
 }
@@ -88,6 +99,7 @@ impl Default for KMeansParams {
             iterations: 8,
             sample_per_centroid: 128,
             refine_rounds: 8,
+            full_rounds: 2,
             seed: 0x5eed_1f5e_ed1f_5eed,
         }
     }
@@ -398,11 +410,157 @@ pub fn cluster(
             centroids = means(data, dim, &all_members(n), &assignments, k, &centroids).0;
             metric.adjust(&mut centroids, dim);
         }
+        for _ in 0..params.full_rounds {
+            assignments = full_assign(data, dim, &centroids, &assignments, metric);
+            centroids = means(data, dim, &all_members(n), &assignments, k, &centroids).0;
+            metric.adjust(&mut centroids, dim);
+        }
     }
     if metric == Metric::InnerProduct {
         centroids = means(data, dim, &all_members(n), &assignments, k, &centroids).0;
     }
     compact(centroids, assignments, dim, k)
+}
+
+/// Lanes of the full-assignment kernel.
+const LANES: usize = 8;
+/// Rows of one kernel tile: vectors, and centroids.
+const TILE_VECTORS: usize = 4;
+const TILE_CENTROIDS: usize = 3;
+/// Vectors per parallel block of the full assignment.
+const BLOCK_VECTORS: usize = 256;
+/// Centroid tiles per cache-resident run.
+const BLOCK_TILES: usize = 32;
+
+/// A row zero-padded to whole [`LANES`] groups.
+type Padded = [f32; LANES];
+
+/// Copies `rows` rows of `dim` floats into `out`, each zero-padded to
+/// `groups` lanes groups.
+// ARITH: `i < rows`, `j < dim <= groups * LANES`.
+#[allow(clippy::arithmetic_side_effects)]
+fn pad_rows(src: &[f32], dim: usize, groups: usize, out: &mut Vec<Padded>) {
+    let rows = src.len() / dim;
+    out.clear();
+    out.resize(rows * groups, [0f32; LANES]);
+    for (i, r) in src.chunks_exact(dim).enumerate() {
+        for (j, &x) in r.iter().enumerate() {
+            out[i * groups + j / LANES][j % LANES] = x;
+        }
+    }
+}
+
+/// The dot products of [`TILE_VECTORS`] vectors with [`TILE_CENTROIDS`]
+/// centroids, all padded to the same number of lane groups.
+#[inline(always)]
+// ARITH: fixed-size array indices.
+#[allow(clippy::arithmetic_side_effects)]
+fn dot_tile(
+    v: [&[Padded]; TILE_VECTORS],
+    c: [&[Padded]; TILE_CENTROIDS],
+) -> [[f32; TILE_CENTROIDS]; TILE_VECTORS] {
+    let groups = c[0].len();
+    let c = c.map(|c| &c[..groups]);
+    let v = v.map(|v| &v[..groups]);
+    let mut acc = [[[0f32; LANES]; TILE_CENTROIDS]; TILE_VECTORS];
+    for g in 0..groups {
+        let cg = c.map(|c| c[g]);
+        let vg = v.map(|v| v[g]);
+        for (ar, x) in acc.iter_mut().zip(&vg) {
+            for (a, cl) in ar.iter_mut().zip(&cg) {
+                for l in 0..LANES {
+                    a[l] = x[l].mul_add(cl[l], a[l]);
+                }
+            }
+        }
+    }
+    acc.map(|row| row.map(|a| a.iter().sum()))
+}
+
+/// Each vector's nearest centroid among all of `centroids`, by `metric`.
+/// A vector whose `current` centroid ties with the nearest stays put, so
+/// duplicates cut apart by size stay apart.
+// ARITH: offsets are below `n * groups` and `k * groups`; `k < u32::MAX`
+// (one centroid per leaf, fewer leaves than vectors).
+#[allow(clippy::arithmetic_side_effects)]
+fn full_assign(
+    data: &[f32],
+    dim: usize,
+    centroids: &[f32],
+    current: &[u32],
+    metric: Metric,
+) -> Vec<u32> {
+    let groups = dim.div_ceil(LANES);
+    let k = centroids.len() / dim;
+    let mut padded = Vec::new();
+    pad_rows(centroids, dim, groups, &mut padded);
+    // Euclidean: the nearest centroid maximizes `x . c - |c|^2 / 2`.
+    let bias: Vec<f32> = match metric {
+        Metric::L2 => centroids
+            .chunks_exact(dim)
+            .map(|c| -0.5 * simd::dot_f32(c, c))
+            .collect(),
+        Metric::InnerProduct => vec![0f32; k],
+    };
+    let centroid = |c: usize| &padded[c * groups..][..groups];
+    // Pad the centroid count to whole tiles by repeating the last centroid:
+    // a repeat never wins, ties go to the lower index.
+    let tiles = k.div_ceil(TILE_CENTROIDS);
+    data.par_chunks(BLOCK_VECTORS * dim)
+        .zip(current.par_chunks(BLOCK_VECTORS))
+        .flat_map_iter(|(rows, cur)| {
+            let count = rows.len() / dim;
+            let mut vecs = Vec::new();
+            pad_rows(rows, dim, groups, &mut vecs);
+            let mut best = vec![(f32::NEG_INFINITY, 0usize); count];
+            let mut own = vec![f32::NEG_INFINITY; count];
+            // Centroids in cache-sized runs, each against the whole block
+            // of vectors, so a run is read from memory once per block.
+            for run in (0..tiles).step_by(BLOCK_TILES) {
+                let run_end = (run + BLOCK_TILES).min(tiles);
+                for base in (0..count).step_by(TILE_VECTORS) {
+                    let live = (count - base).min(TILE_VECTORS);
+                    let v: [&[Padded]; TILE_VECTORS] = std::array::from_fn(|r| {
+                        &vecs[(base + r.min(live - 1)) * groups..][..groups]
+                    });
+                    let mut tb = [(f32::NEG_INFINITY, 0usize); TILE_VECTORS];
+                    let mut to = [f32::NEG_INFINITY; TILE_VECTORS];
+                    let tc: [usize; TILE_VECTORS] =
+                        std::array::from_fn(|r| cur[base + r.min(live - 1)] as usize);
+                    for t in run..run_end {
+                        let ids: [usize; TILE_CENTROIDS] =
+                            std::array::from_fn(|q| (t * TILE_CENTROIDS + q).min(k - 1));
+                        let dots = dot_tile(v, ids.map(centroid));
+                        for r in 0..TILE_VECTORS {
+                            for (q, &id) in ids.iter().enumerate() {
+                                let s = dots[r][q] + bias[id];
+                                if s > tb[r].0 {
+                                    tb[r] = (s, id);
+                                }
+                                if id == tc[r] {
+                                    to[r] = s;
+                                }
+                            }
+                        }
+                    }
+                    for r in 0..live {
+                        let i = base + r;
+                        if tb[r].0 > best[i].0 {
+                            best[i] = tb[r];
+                        }
+                        own[i] = own[i].max(to[r]);
+                    }
+                }
+            }
+            (0..count).map(move |i| {
+                if own[i] >= best[i].0 {
+                    cur[i]
+                } else {
+                    best[i].1 as u32
+                }
+            })
+        })
+        .collect()
 }
 
 fn all_members(n: usize) -> Vec<u32> {
@@ -615,6 +773,7 @@ mod tests {
         let data = blobs(5, 30, 6);
         let p = KMeansParams {
             refine_rounds: 0,
+            full_rounds: 0,
             ..KMeansParams::default()
         };
         let c = cluster(&data, 6, 40, &p, Metric::L2);
@@ -669,6 +828,68 @@ mod tests {
         assert_eq!(n[0], vec![2, 3]);
         assert_eq!(n[1], vec![3, 2]);
         assert_eq!(neighbor_lists(&[0.0, 1.0], 1, 5)[0], vec![1]);
+    }
+
+    #[test]
+    fn full_assignment_matches_brute_force() {
+        let mut rng = SplitMix64::new(7);
+        let mut random = |len: usize| -> Vec<f32> {
+            (0..len)
+                .map(|_| rng.below(2001) as f32 / 1000.0 - 1.0)
+                .collect()
+        };
+        // Dimensions around the lane width; counts that leave partial
+        // tiles and partial blocks.
+        for dim in [1, 7, 8, 13] {
+            for (n, k) in [(1, 1), (5, 2), (300, 7), (517, 100)] {
+                let data = random(n * dim);
+                let centroids = random(k * dim);
+                let current = vec![0u32; n];
+                for metric in [Metric::L2, Metric::InnerProduct] {
+                    let got = full_assign(&data, dim, &centroids, &current, metric);
+                    for (i, &g) in got.iter().enumerate() {
+                        let v = row(&data, dim, i);
+                        let (want, best) = nearest(v, &centroids, dim, metric);
+                        let cost = metric.cost(v, row(&centroids, dim, g as usize));
+                        assert!(
+                            g as usize == want || (cost - best).abs() <= 1e-4 * (1.0 + best.abs()),
+                            "dim {dim} n {n} k {k} {metric:?} vector {i}: {g} vs {want}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn full_assignment_keeps_ties_in_place() {
+        // Two identical centroids: each vector stays with the one it has.
+        let centroids = [1.0, 0.0, 1.0, 0.0, -1.0, 0.0];
+        let data = [1.0, 0.0, 1.0, 0.0, 0.9, 0.1];
+        for metric in [Metric::L2, Metric::InnerProduct] {
+            assert_eq!(
+                full_assign(&data, 2, &centroids, &[1, 0, 2], metric),
+                vec![1, 0, 0]
+            );
+        }
+    }
+
+    #[test]
+    fn full_rounds_alone_partition() {
+        let data = blobs(6, 30, 3);
+        let p = KMeansParams {
+            refine_rounds: 0,
+            full_rounds: 3,
+            ..KMeansParams::default()
+        };
+        let c = cluster(&data, 3, 30, &p, Metric::L2);
+        // No cluster mixes blobs.
+        let mut blob_of = vec![usize::MAX; c.len(3)];
+        for (i, &a) in c.assignments.iter().enumerate() {
+            let b = &mut blob_of[a as usize];
+            assert!(*b == usize::MAX || *b == i / 30, "cluster {a} mixes blobs");
+            *b = i / 30;
+        }
     }
 
     #[test]

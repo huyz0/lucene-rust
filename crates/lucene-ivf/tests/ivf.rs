@@ -542,6 +542,7 @@ fn clustering_params_are_honoured() {
                 iterations: 2,
                 sample_per_centroid: 16,
                 refine_rounds: 0,
+                full_rounds: 0,
                 seed: 1,
             },
             training_sample: 10,

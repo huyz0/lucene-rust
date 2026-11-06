@@ -8,7 +8,8 @@
 //!   --quantizers L   comma list of bbq,osq2,osq4,osq7,sq7,sq4 (default bbq,osq4,sq7)
 //!   --nprobe L       comma list of probe counts (default 4,8,16,32,64,128)
 //!   --rerank L       comma list of candidates reranked (default 0,50,100)
-//!   --refine N      k-means refinement rounds; --iters N  Lloyd iterations per split
+//!   --refine N       k-means neighbourhood rounds; --full N  full Lloyd rounds
+//!   --iters N        Lloyd iterations per split
 //!   --spill X       SOAR spill with lambda X (default: no spilling)
 //!   --hnsw           also build and search Lucene104 HNSW + BBQ (M 16, beam 100)
 //!   --ef L           HNSW candidate counts (default 10,20,40,80,160,320)
@@ -98,6 +99,9 @@ fn main() {
     let mut kmeans = lucene_ivf::kmeans::KMeansParams::default();
     if let Some(r) = opt("--refine") {
         kmeans.refine_rounds = r.parse().unwrap();
+    }
+    if let Some(r) = opt("--full") {
+        kmeans.full_rounds = r.parse().unwrap();
     }
     if let Some(r) = opt("--iters") {
         kmeans.iterations = r.parse().unwrap();
