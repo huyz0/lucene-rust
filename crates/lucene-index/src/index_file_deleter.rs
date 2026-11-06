@@ -821,6 +821,13 @@ impl<'d> IndexFileDeleter<'d> {
         Ok(held)
     }
 
+    /// Holds a reference on files written before any segment names them
+    /// (a buffer's `.fdt`), so no sweep takes them; [`Self::release_files`]
+    /// drops it.
+    pub(crate) fn hold_files(&mut self, files: &[String]) {
+        self.inc_ref_all(files);
+    }
+
     /// Drops [`Self::hold_segment_files`]' references, deleting whatever
     /// nothing else still holds.
     pub(crate) fn release_files(&mut self, files: &[String]) -> Result<()> {

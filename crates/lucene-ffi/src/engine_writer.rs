@@ -2227,6 +2227,95 @@ mod tests {
         ffi_engine_writer_close(h);
     }
 
+    /// A buffer writes its stored fields to its segment's `.fdt` as they
+    /// arrive, so they are not charged as buffered RAM; a sweep for
+    /// unreferenced files leaves that file alone, the commit reads them back
+    /// whole, and a close that discards the buffer deletes the file.
+    #[test]
+    fn a_buffer_writes_its_stored_fields_to_disk_as_it_fills() {
+        let fdt_files = |tmp: &TempDir| -> Vec<String> {
+            FsDirectory::open(tmp.path())
+                .list_all()
+                .unwrap()
+                .into_iter()
+                .filter(|n| n.ends_with(".fdt"))
+                .collect()
+        };
+        let add_docs = |h: u64, f: &Numbers, n: usize| {
+            let mut x: u64 = 0x2545_f491_4f6c_dd1d;
+            for d in 0..n {
+                let source: Vec<u8> = (0..2000)
+                    .map(|_| {
+                        x ^= x << 13;
+                        x ^= x >> 7;
+                        x ^= x << 17;
+                        b'a' + (x % 26) as u8
+                    })
+                    .collect();
+                let id = format!("{d}");
+                let b = Blob::default()
+                    .u8(OP_ADD)
+                    .i32(1)
+                    .i32(1)
+                    .i32(f.id)
+                    .u8(1)
+                    .bytes(&source)
+                    .i32(1)
+                    .i32(f.id)
+                    .u8(0)
+                    .i32(1)
+                    .bytes(id.as_bytes())
+                    .i32(1)
+                    .u8(0)
+                    .i32(1)
+                    .i32(f.seq)
+                    .u8(0)
+                    .i64(d as i64)
+                    .i32(0);
+                assert_eq!(apply(h, &b.0), 0, "{}", crate::error::last_error());
+            }
+        };
+        let n = 3000;
+        let tmp = empty_index("engine-writer-stored-on-disk");
+        let h = open_with(&tmp, 1024.0, 0, i32::MAX);
+        let f = setup(h);
+        add_docs(h, &f, n);
+        let s = stats(h);
+        assert_eq!(s[STAT_SEGMENTS], 0, "nothing flushed");
+        assert!(
+            s[STAT_RAM_BYTES] / (n as i64) < 1000,
+            "{} bytes per document",
+            s[STAT_RAM_BYTES] / (n as i64)
+        );
+        assert!(
+            !fdt_files(&tmp).is_empty(),
+            "the .fdt is on disk before the flush"
+        );
+        // A sweep for unreferenced files leaves the buffer's file alone.
+        lookup(h)
+            .unwrap()
+            .writer()
+            .with_writer(|iw| iw.delete_unused_files())
+            .unwrap();
+        commit(h, &[]);
+        let stored: Vec<String> = stored_ids_and_bp(&tmp)
+            .into_iter()
+            .flat_map(|(values, _)| values)
+            .collect();
+        assert_eq!(stored.len(), n);
+        assert!(stored.iter().all(|v| v.len() == 2000));
+        check(&tmp);
+        ffi_engine_writer_close(h);
+
+        let tmp = empty_index("engine-writer-stored-discarded");
+        let h = open_with(&tmp, 1024.0, 0, i32::MAX);
+        let f = setup(h);
+        add_docs(h, &f, n);
+        assert!(!fdt_files(&tmp).is_empty());
+        ffi_engine_writer_close(h);
+        assert!(fdt_files(&tmp).is_empty(), "{:?}", fdt_files(&tmp));
+    }
+
     /// The ids stored in the newest commit's segments, in doc-id order, and
     /// each segment's `bp.reordered` diagnostic.
     fn stored_ids_and_bp(tmp: &TempDir) -> Vec<(Vec<String>, Option<String>)> {

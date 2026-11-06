@@ -1642,6 +1642,11 @@ impl StoredFieldsWriter {
         }
     }
 
+    /// The `.fdt` bytes held in memory.
+    pub fn buffered_fdt_bytes(&self) -> usize {
+        self.fdt.len()
+    }
+
     /// The `.fdt` file pointer: bytes spilled plus bytes buffered.
     fn fdt_pointer(&self) -> i64 {
         // ARITH: a file length, far below `i64::MAX`.
