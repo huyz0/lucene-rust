@@ -179,6 +179,8 @@ mod lifecycle;
 pub(crate) mod packed_fields;
 pub(crate) mod pending_postings;
 mod pluggable_merge;
+mod segment_partitions;
+pub use segment_partitions::SegmentPartitioning;
 mod try_modify;
 pub(crate) use explicit::explicit_error;
 pub use explicit::{ExplicitDocument, ExplicitFields, InvertedField, InvertedTerm};
@@ -953,6 +955,8 @@ pub(crate) struct IndexingConfig {
     /// their sources, oldest with newest. See
     /// [`IndexWriter::set_shuffle_forced_merges`].
     shuffle_forced_merges: bool,
+    /// See [`IndexWriter::set_segment_partitioning`].
+    segment_partitioning: Option<SegmentPartitioning>,
     /// `IndexWriterConfig.getSimilarity()`, as far as the writer reads it
     /// (`computeNorm`): `None` is Lucene's default, `BM25Similarity`. See
     /// [`IndexWriter::set_similarity`].
@@ -1028,6 +1032,9 @@ pub(crate) struct MergePlan {
     sorted_numeric_remap: Option<std::sync::Arc<merge::SortedNumericRemap>>,
     /// What the merged segment's diagnostics record.
     pub(crate) kind: merge::MergeKind,
+    /// `.si` attributes the merged segment records besides the writer's own:
+    /// its sources' common group ([`IndexWriter::set_segment_partitioning`]).
+    attributes: Vec<(String, String)>,
 }
 
 /// `SoftDeletesRetentionMergePolicy` with OpenSearch's retention query,
@@ -1235,6 +1242,9 @@ pub(crate) struct DocumentBuffer<'b> {
     pub(crate) stored: Option<&'b FinishedStored>,
     /// Writes only some of the buffer's documents: see [`BufferLimit`].
     pub(crate) limit: Option<&'b BufferLimit>,
+    /// The group the documents were added under
+    /// ([`IndexWriter::set_segment_partitioning`]).
+    pub(crate) partition: Option<&'b str>,
 }
 
 /// A flush of a buffer's documents `start..docs` only, numbered from
@@ -2976,6 +2986,7 @@ impl IndexingConfig {
                 sorted_numeric_remap: plan.sorted_numeric_remap.clone(),
                 kind: plan.kind,
                 extra_diagnostics: hook_diagnostics,
+                extra_attributes: plan.attributes.clone(),
             },
             &plan.merged_name,
             plan.merged_id,
@@ -3942,18 +3953,21 @@ impl IndexingConfig {
             };
         }
 
-        let fnm_fields = self.fields_with_per_field_attributes(
-            postings_output.as_ref(),
-            doc_values_output.as_deref(),
-            norms_output.is_some(),
-            vectors_output
-                .as_ref()
-                .map(|o| o.written.as_slice())
-                .unwrap_or(&[]),
-            points_output
-                .as_ref()
-                .map(|o| o.written_fields.as_slice())
-                .unwrap_or(&[]),
+        let fnm_fields = self.partition_fields(
+            self.fields_with_per_field_attributes(
+                postings_output.as_ref(),
+                doc_values_output.as_deref(),
+                norms_output.is_some(),
+                vectors_output
+                    .as_ref()
+                    .map(|o| o.written.as_slice())
+                    .unwrap_or(&[]),
+                points_output
+                    .as_ref()
+                    .map(|o| o.written_fields.as_slice())
+                    .unwrap_or(&[]),
+            ),
+            buf.partition,
         );
 
         // The inner closure the previous shape needed to collect `?`s is
@@ -4070,6 +4084,7 @@ impl IndexingConfig {
             self.codec.as_deref(),
             lucene_codecs::codec::WritePoint::SegmentInfo,
         )?;
+        self.partition_segment(&mut flushed.info.attributes, buf.partition);
         segment_writer::seal_flushed_segment(dir, segment_name, flushed).map_err(Error::from)
     }
 
@@ -5799,7 +5814,10 @@ impl<'d> IndexWriter<'d> {
         merging: &std::collections::HashSet<String>,
     ) -> Result<Option<Vec<String>>> {
         let stats = self.segment_stats()?;
-        Ok(merge_policy::find_merges_excluding(&stats, merging, config)
+        Ok(self
+            .per_partition_stats(&stats, |s| {
+                merge_policy::find_merges_excluding(s, merging, config)
+            })?
             .into_iter()
             .next())
     }
@@ -5815,7 +5833,9 @@ impl<'d> IndexWriter<'d> {
         merging: &std::collections::HashSet<String>,
     ) -> Result<Vec<(Vec<String>, u64)>> {
         let stats = self.segment_stats()?;
-        let merges = merge_policy::find_merges_excluding(&stats, merging, config);
+        let merges = self.per_partition_stats(&stats, |s| {
+            merge_policy::find_merges_excluding(s, merging, config)
+        })?;
         Ok(merges
             .into_iter()
             .map(|names| {
@@ -5858,6 +5878,7 @@ impl<'d> IndexWriter<'d> {
             has_blocks: self.pending_has_blocks,
             stored: None,
             limit: None,
+            partition: None,
         }
     }
 
@@ -6012,6 +6033,7 @@ impl<'d> IndexWriter<'d> {
                 use_compound_file: false,
                 merge_compound_file: None,
                 shuffle_forced_merges: false,
+                segment_partitioning: None,
                 postings_formats: Vec::new(),
                 doc_values_formats: Vec::new(),
                 default_doc_values_format: Default::default(),
@@ -10745,7 +10767,8 @@ impl IndexWriter<'_> {
 
         loop {
             let stats = self.segment_stats()?;
-            let groups = merge_policy::find_merges(&stats, &config);
+            let groups =
+                self.per_partition_stats(&stats, |s| merge_policy::find_merges(s, &config))?;
             if groups.is_empty() {
                 break;
             }
@@ -11007,7 +11030,7 @@ impl IndexWriter<'_> {
     ) -> Result<()> {
         loop {
             let stats = self.reclaimable_segment_stats()?;
-            let groups = find(&stats);
+            let groups = self.per_partition_stats(&stats, &find)?;
             if groups.is_empty() {
                 return Ok(());
             }
@@ -11127,8 +11150,10 @@ impl IndexWriter<'_> {
                     .clone()
             })
             .collect::<Vec<SegmentCommitInfo>>();
+        let attributes = self.merged_partition_attributes(&sources)?;
         let held = self.deleter.hold_segment_files(&sources)?;
         Ok(MergePlan {
+            attributes,
             names: names.to_vec(),
             sources,
             merged_name,

@@ -3127,7 +3127,16 @@ fn merge_segments_mapped_inner(
             diagnostics
         },
         files: files.clone(),
-        attributes: crate::segment_writer::stored_fields_mode_attribute(stored_mode),
+        attributes: {
+            let mut attributes = crate::segment_writer::stored_fields_mode_attribute(stored_mode);
+            for (key, value) in &options.extra_attributes {
+                match attributes.iter_mut().find(|(k, _)| k == key) {
+                    Some(slot) => slot.1.clone_from(value),
+                    None => attributes.push((key.clone(), value.clone())),
+                }
+            }
+            attributes
+        },
         // The merged segment claims the sort exactly when this merge produced
         // it. A concatenating merge must not claim one (it would describe an
         // order the bytes do not have); the k-way merge genuinely preserves
@@ -4403,7 +4412,7 @@ impl<'a> SourceVectors<'a> {
 
     /// The group that holds `field_number` (the first, for a field no group
     /// has -- its lookups then fail as they always did).
-    fn group_of(&self, field_number: i32) -> VectorGroup<'a> {
+    fn partition_of(&self, field_number: i32) -> VectorGroup<'a> {
         self.groups
             .iter()
             .find(|g| g.flat.field(field_number).is_some())
@@ -4460,6 +4469,9 @@ pub struct MergeOptions {
     /// Diagnostics the merge's hooks add to the merged `.si`
     /// (`OneMerge.setMergeInfo`), after the writer's own.
     pub extra_diagnostics: Vec<(String, String)>,
+    /// `.si` attributes the merged segment records after the writer's own,
+    /// a later value for a key replacing an earlier one.
+    pub extra_attributes: Vec<(String, String)>,
 }
 
 /// The diagnostics key OpenSearch's `ShuffleForcedMergePolicy` marks an
@@ -4635,6 +4647,7 @@ impl Default for MergeOptions {
             sorted_numeric_remap: None,
             kind: MergeKind::default(),
             extra_diagnostics: Vec::new(),
+            extra_attributes: Vec::new(),
         }
     }
 }
@@ -4721,7 +4734,7 @@ fn merge_vectors(
                 continue;
             }
             let ord_to_doc = source_ord_to_doc(
-                source_vectors.group_of(original_number).flat,
+                source_vectors.partition_of(original_number).flat,
                 original_number,
                 merged_field.vector_encoding,
             )?;
@@ -4839,7 +4852,7 @@ fn merge_vector_group(
             let source_vectors = sources[fs.source_index]
                 .vectors
                 .expect("only sources with a flat reader are planned");
-            let group = source_vectors.group_of(fs.original_field_number);
+            let group = source_vectors.partition_of(fs.original_field_number);
             let values = match encoding {
                 VectorEncoding::Float32 => vectors::MergeSourceValues::Float32(
                     group.flat.float_vector_values(fs.original_field_number)?,
@@ -4889,7 +4902,7 @@ fn merge_vector_group(
                 let group = source
                     .vectors
                     .expect("only sources with a flat reader are planned")
-                    .group_of(fs.original_field_number);
+                    .partition_of(fs.original_field_number);
                 let values = group.flat.float_vector_values(fs.original_field_number)?;
                 let mut all = Vec::new();
                 for ord in 0..values.size() {
@@ -4971,7 +4984,7 @@ fn merge_vector_group(
                 let source_vectors = sources[fs.source_index]
                     .vectors
                     .expect("only sources with a flat reader are planned");
-                let graph = match source_vectors.group_of(fs.original_field_number).graph {
+                let graph = match source_vectors.partition_of(fs.original_field_number).graph {
                     Some(reader) if reader.field(fs.original_field_number).is_some() => {
                         reader.graph(fs.original_field_number)?
                     }
