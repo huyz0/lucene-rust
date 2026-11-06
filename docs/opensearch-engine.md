@@ -40,9 +40,41 @@ The writer side works like this:
 | `lucene_rust.engine.default` | node | Sets the default of the index setting above, so every index without its own setting (system indices included) uses the Rust engine **where it can**. An index that only inherits this default is served by OpenSearch's engine instead if it needs something the Rust writer refuses: a refused index configuration, or a creation mapping with a field whose documents it refuses. |
 | `lucene_rust.engine.node_enabled` | node | `false` makes the plugin build OpenSearch's own engine for Rust-engine indices on this node, for a mixed cluster during a rollout or rollback. Rust-written segments are ordinary Lucene 10.5 segments, so either engine takes over a shard from the other. |
 | `index.lucene_rust.engine.fault_injection` | index, final | Test only: a document with a `__lucene_rust_panic` field makes the writer panic. |
+| `index.lucene_rust.partition_field` | index, final | Names a field whose value is each document's partition, like a partitioned table's partition key: see [Partitions](#partitions). Empty (the default) partitions nothing. |
 
 `GET /_plugins/lucene_rust/stats` counts the engines built, as
 `engines.rust`, `engines.java` and `engines.nrt_replica`.
+
+## Partitions
+
+With `index.lucene_rust.partition_field` set, every segment of a shard holds
+the documents of one partition, and merges never mix partitions, so a
+partition's documents stay together on disk however many partitions share
+the shard. Use it instead of an index per partition, which multiplies
+shards and their memory.
+
+- A document's partition is the field's value on the document (on the root
+  of a nested block): a keyword's or ip's value, or a numeric's or date's.
+  Documents without a value, and delete tombstones, share the default
+  partition.
+- The writer keeps one indexing buffer per partition in flight (four per
+  indexing thread), so a flush writes one segment per partition.
+- Each segment records its partition the way OpenSearch's context-aware
+  segments do (the `bucket` attribute on the segment and on `_id` and
+  `_seq_no`), and merges are chosen per partition, as
+  `CriteriaBasedMergePolicy` does. OpenSearch's own engine therefore reads
+  and merges these segments alike, and stock Lucene reads them as any other.
+- A document's partition is the smallest value when it has several. Bytes
+  that are not UTF-8 (an ip's) are recorded as `0x` and hex. A value held
+  only as analyzed text is refused.
+- A document may move to another partition on update: the earlier version is
+  soft deleted wherever it is.
+- The default partition is recorded as `-2`, as OpenSearch records it, so a
+  partition whose value is `-2` shares segments with it.
+- An index served by OpenSearch's engine (a fallback, or
+  `lucene_rust.engine.node_enabled: false`) ignores the setting.
+- OpenSearch's own context-aware setting (`index.context_aware.enabled`, with a
+  `context_aware_grouping` script) is still refused.
 
 ## What it refuses
 
