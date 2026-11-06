@@ -16,3 +16,8 @@ workspace = true
 
 [dev-dependencies]
 lucene-codecs = { path = "../lucene-codecs" }
+criterion.workspace = true
+
+[[bench]]
+name = "routing"
+harness = false
