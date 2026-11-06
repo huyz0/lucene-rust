@@ -83,7 +83,7 @@
 //! per segment; that is the cost the update benchmark pays. The merge policy's
 //! segment statistics are read from disk under the control lock too.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::ops::DerefMut;
 use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -349,6 +349,10 @@ pub struct ConcurrentIndexWriter<'d> {
     full_flush: Mutex<()>,
     /// Which slot to wait on when every slot is taken.
     next_slot: AtomicUsize,
+    /// A partitioning writer: the slot each partition last started a buffer
+    /// in, so a document finds its partition's buffer without a scan of
+    /// every slot. A hint: the slot is checked under its lock.
+    partition_slots: Mutex<HashMap<Arc<str>, usize>>,
     /// Tells this writer's slots apart from another writer's in a thread's
     /// [`LAST_SLOT`].
     id: usize,
@@ -576,6 +580,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
             log: Mutex::new(log),
             full_flush: Mutex::new(()),
             next_slot: AtomicUsize::new(0),
+            partition_slots: Mutex::new(HashMap::new()),
             #[cfg(test)]
             rotate_slots: std::sync::atomic::AtomicBool::new(false),
             max_buffered_docs,
@@ -754,8 +759,10 @@ impl<'d> ConcurrentIndexWriter<'d> {
         };
         let mut ram = lock(&self.ram);
         let out = change(&mut ram);
-        for (i, flag) in self.pending.iter().enumerate() {
-            flag.store(ram.is_flush_pending(i), Ordering::Release);
+        for i in ram.take_pending_changes() {
+            if let Some(flag) = self.pending.get(i) {
+                flag.store(ram.is_flush_pending(i), Ordering::Release);
+            }
         }
         let limit = buffer.saturating_mul(2);
         let (active, flushing) = (ram.active_bytes(), ram.flush_bytes());
@@ -1024,6 +1031,9 @@ impl<'d> ConcurrentIndexWriter<'d> {
     /// Drops the entries every slot has applied and the control plane has
     /// taken.
     fn trim(&self, log: &mut DeleteLog) {
+        if log.nodes.is_empty() {
+            return;
+        }
         let applied = self
             .slices
             .iter()
@@ -1142,6 +1152,17 @@ impl<'d> ConcurrentIndexWriter<'d> {
             if let Some(Ok(guard)) = self.slots.get(last).map(Mutex::try_lock) {
                 if !guard.has_docs() || guard.partition.as_deref() == partition {
                     return (last, guard);
+                }
+            }
+        }
+        if let Some(p) = partition {
+            let hint = lock(&self.partition_slots).get(p).copied();
+            if let Some(i) = hint {
+                if let Some(Ok(guard)) = self.slots.get(i).map(Mutex::try_lock) {
+                    if !guard.has_docs() || guard.partition.as_deref() == partition {
+                        LAST_SLOT.set((self.id, i));
+                        return (i, guard);
+                    }
                 }
             }
         }
@@ -1468,6 +1489,17 @@ impl<'d> ConcurrentIndexWriter<'d> {
                 }
             };
             if partitioned {
+                if before == 0 {
+                    if let Some(p) = &partition {
+                        let mut hints = lock(&self.partition_slots);
+                        // Stale hints for partitions no longer written are dropped
+                        // wholesale; a miss only costs one scan.
+                        if hints.len() >= self.slots.len().saturating_mul(4) {
+                            hints.clear();
+                        }
+                        hints.insert(Arc::clone(p), i);
+                    }
+                }
                 dwpt.partition = partition;
             }
             dwpt.ram_bytes = dwpt.ram_bytes.saturating_add(added);
