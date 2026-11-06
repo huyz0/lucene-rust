@@ -32,7 +32,7 @@
 //! |---|---|---|
 //! | `osq` | [`osq::OsqQuantizer`]: Lucene's optimized scalar quantization (`Lucene104ScalarQuantizedVectorsFormat`), per vector, centred on the partition centroid. [`osq::OsqFactory::bbq`] is the 1-bit document / 4-bit query encoding of Lucene's BBQ. | 1, 2, 4, 7 or 8 bits per dimension plus 16 bytes of corrective terms |
 //! | `sq` | [`scalar::ScalarQuantizer`]: Lucene99-style global min/max (quantile) scalar quantization, int7 or packed int4 | 1 or 1/2 byte per dimension plus a 4-byte offset |
-//! | `erq` | [`rabitq::ExRabitqQuantizer`]: Extended RaBitQ (Gao et al., SIGMOD 2025), per vector, centred on the partition centroid, after a random rotation | 2..=8 bits per padded dimension plus 12 bytes of corrective terms |
+//! | `erq` | [`rabitq::ExRabitqQuantizer`]: Extended RaBitQ (Gao et al., SIGMOD 2025), per vector, centred on the partition centroid, after a random rotation | 2 to 6 bits per padded dimension (one byte at 7 and 8) plus 12 bytes of corrective terms |
 //! | `rot-osq`, `rot-sq` | [`rotation::RotatedQuantizer`]: the inner quantizer on vectors zero-padded to the next power of two and rotated by a seeded randomized Hadamard transform (RaBitQ's rotation), built by [`rotation::RotatedFactory`] around any factory as `rot-<inner name>` | the inner quantizer's at the padded dimension |
 //!
 //! A new quantizer (product quantization, say) implements
