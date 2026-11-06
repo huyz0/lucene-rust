@@ -7,7 +7,7 @@ use std::sync::Arc;
 use lucene_ivf::kmeans::KMeansParams;
 use lucene_ivf::{
     merge_field, Error, FieldVectors, IvfParams, IvfReader, IvfWriter, MergeSource, RangeSource,
-    ScoredDoc, SearchParams, Similarity,
+    ScoredDoc, SearchParams, Similarity, VectorEncoding,
 };
 use lucene_util::quantization::ScalarEncoding;
 use lucene_vector_quant::osq::OsqFactory;
@@ -553,6 +553,7 @@ fn clustering_params_are_honoured() {
             },
             training_sample: 10,
             spill: None,
+            rerank_encoding: VectorEncoding::F32,
         },
     )
     .unwrap();
@@ -748,6 +749,98 @@ fn rotated_centroids_are_prepared_once_at_open() {
     }
 }
 
+fn build_encoded(
+    sim: Similarity,
+    dim: usize,
+    docs: &[i32],
+    vectors: &[f32],
+    encoding: VectorEncoding,
+) -> lucene_ivf::IvfFiles {
+    let mut w = IvfWriter::new(&ID, "");
+    w.add_field(
+        &FieldVectors {
+            number: 1,
+            similarity: sim,
+            dimension: dim,
+            docs,
+            vectors,
+        },
+        &OsqFactory::bbq(),
+        &IvfParams {
+            target_cluster_size: 100,
+            rerank_encoding: encoding,
+            ..IvfParams::default()
+        },
+    )
+    .unwrap();
+    w.finish()
+}
+
+#[test]
+fn rerank_encodings_round_trip_and_rank_like_f32() {
+    let dim = 32;
+    let n = 2000;
+    let docs: Vec<i32> = (0..n as i32).collect();
+    for sim in SIMS {
+        let data = dataset(n, dim, 20, sim, 41);
+        let queries = dataset(20, dim, 20, sim, 42);
+        let exact_files = build_encoded(sim, dim, &docs, &data, VectorEncoding::F32);
+        let exact = open(&exact_files);
+        for (encoding, tol, min_overlap) in [
+            (VectorEncoding::F16, 2f32.powi(-11), 1.0),
+            (VectorEncoding::Bf16, 2f32.powi(-8), 0.97),
+            (VectorEncoding::Int8, 1.0 / 255.0, 0.95),
+        ] {
+            let files = build_encoded(sim, dim, &docs, &data, encoding);
+            let stored = n * encoding.vector_bytes(dim).unwrap();
+            assert_eq!(
+                exact_files.vectors.len() - files.vectors.len(),
+                n * dim * 4 - stored
+            );
+            let r = open(&files);
+            r.check_integrity().unwrap();
+            let f = r.field(1).unwrap();
+            assert_eq!(f.encoding(), encoding);
+            // Decoded vectors are within the encoding's precision of the
+            // f32 ones, relative to the vector's largest component (int8:
+            // half a level of the vector's range).
+            for &doc in &docs {
+                let want = exact.vector(1, doc).unwrap().unwrap();
+                let got = r.vector(1, doc).unwrap().unwrap();
+                let max = want.iter().fold(0f32, |m, x| m.max(x.abs()));
+                for (a, b) in want.iter().zip(&got) {
+                    assert!((a - b).abs() <= max * tol, "{sim:?} {encoding:?} doc {doc}");
+                }
+            }
+            let mut total = 0.0;
+            for q in queries.chunks_exact(dim) {
+                let p = SearchParams::new(10, 8, 50);
+                let hits = r.search(1, q, &p, None).unwrap();
+                let want = exact.search(1, q, &p, None).unwrap();
+                assert_eq!(hits.len(), 10);
+                assert_eq!(hits[0].doc, want[0].doc, "{sim:?} {encoding:?}");
+                // Reranked scores are those of the decoded vectors.
+                let mut qq = q.to_vec();
+                if sim == Similarity::Cosine {
+                    lucene_util::vector_util::l2normalize(&mut qq, false).unwrap();
+                }
+                for h in &hits {
+                    let v = r.vector(1, h.doc).unwrap().unwrap();
+                    assert_eq!(h.score, sim.score(&qq, &v));
+                }
+                total += recall(&hits, &want);
+                let all = r.exact_search(1, q, 10, None).unwrap();
+                assert_eq!(all[0].doc, hits[0].doc);
+            }
+            let avg = total / 20.0;
+            assert!(
+                avg >= min_overlap,
+                "{sim:?} {encoding:?}: overlap with f32 {avg}"
+            );
+        }
+    }
+}
+
 #[test]
 #[should_panic(expected = "out of range")]
 fn prepared_centroid_checks_the_cluster() {
@@ -766,4 +859,293 @@ fn prepared_centroid_checks_the_cluster() {
     let r = open(&files);
     let f = r.field(1).unwrap();
     let _ = f.prepared_centroid(f.clusters());
+}
+
+#[test]
+fn merge_decodes_every_encoding() {
+    let dim = 12;
+    let sim = Similarity::Euclidean;
+    let a = dataset(500, dim, 6, sim, 51);
+    let b = dataset(400, dim, 6, sim, 52);
+    let docs_a: Vec<i32> = (0..500).collect();
+    let docs_b: Vec<i32> = (0..400).collect();
+    let ra = open(&build_encoded(sim, dim, &docs_a, &a, VectorEncoding::F16));
+    let rb = open(&build_encoded(sim, dim, &docs_b, &b, VectorEncoding::Int8));
+    let map_a = |d: i32| Some(d);
+    let map_b = |d: i32| Some(500 + d);
+    let sources = [
+        MergeSource {
+            reader: &ra,
+            doc_map: &map_a,
+        },
+        MergeSource {
+            reader: &rb,
+            doc_map: &map_b,
+        },
+    ];
+    for encoding in VectorEncoding::ALL {
+        let mut w = IvfWriter::new(&ID, "");
+        let p = IvfParams {
+            target_cluster_size: 100,
+            rerank_encoding: encoding,
+            ..IvfParams::default()
+        };
+        merge_field(&mut w, 1, &sources, &OsqFactory::bbq(), &p).unwrap();
+        let merged = open(&w.finish());
+        let field = merged.field(1).unwrap();
+        assert_eq!((field.count(), field.encoding()), (900, encoding));
+        for (doc, source, old) in [(3, &ra, 3), (499, &ra, 499), (500, &rb, 0), (777, &rb, 277)] {
+            let want = source.vector(1, old).unwrap().unwrap();
+            let got = merged.vector(1, doc).unwrap().unwrap();
+            if encoding == VectorEncoding::F32 {
+                // The decoded source vectors are carried over exactly.
+                assert_eq!(got, want);
+            } else {
+                let max = want.iter().fold(0f32, |m, x| m.max(x.abs()));
+                for (x, y) in want.iter().zip(&got) {
+                    assert!((x - y).abs() <= max / 200.0, "{encoding:?} doc {doc}");
+                }
+            }
+        }
+        let q = merged.vector(1, 777).unwrap().unwrap();
+        let hits = merged
+            .search(1, &q, &SearchParams::new(1, 4, 20), None)
+            .unwrap();
+        assert_eq!(hits[0].doc, 777);
+    }
+}
+
+/// `file` with its header rewritten at `version`, its payload (what
+/// follows the header) passed through `edit`, under a fresh footer.
+fn rewrite(file: &[u8], codec: &str, version: i32, edit: impl FnOnce(&mut Vec<u8>)) -> Vec<u8> {
+    let header = lucene_store::codec_util::index_header_length(codec, "");
+    let mut payload = file[header..file.len() - 16].to_vec();
+    edit(&mut payload);
+    let mut out = Vec::new();
+    lucene_store::codec_util::write_index_header(&mut out, codec, version, &ID, "");
+    out.extend_from_slice(&payload);
+    lucene_store::codec_util::write_footer(&mut out);
+    out
+}
+
+/// In a one-field meta payload: field count (1 byte), field number (4),
+/// similarity (1), then the encoding byte.
+const ENCODING_AT: usize = 6;
+
+#[test]
+fn version_one_files_read_as_f32() {
+    let dim = 8;
+    let sim = Similarity::Cosine;
+    let data = dataset(600, dim, 5, sim, 61);
+    let docs: Vec<i32> = (0..600).map(|d| d * 2).collect();
+    let files = build_encoded(sim, dim, &docs, &data, VectorEncoding::F32);
+    let v1 = lucene_ivf::VERSION_BLOCK_LAYOUT;
+    let meta = rewrite(&files.meta, lucene_ivf::META_CODEC, v1, |p| {
+        p.remove(ENCODING_AT);
+    });
+    let postings = rewrite(&files.postings, lucene_ivf::POSTINGS_CODEC, v1, |_| {});
+    let vectors = rewrite(&files.vectors, lucene_ivf::VECTORS_CODEC, v1, |_| {});
+    let registry = QuantizerRegistry::with_builtins();
+    let old = IvfReader::open(
+        &meta,
+        Arc::new(postings.clone()),
+        Arc::new(vectors.clone()),
+        &ID,
+        "",
+        &registry,
+    )
+    .unwrap();
+    old.check_integrity().unwrap();
+    let new = open(&files);
+    assert_eq!(old.field(1).unwrap().encoding(), VectorEncoding::F32);
+    let q = &data[5 * dim..6 * dim];
+    let p = SearchParams::new(10, 3, 30);
+    assert_eq!(
+        old.search(1, q, &p, None).unwrap(),
+        new.search(1, q, &p, None).unwrap()
+    );
+    assert_eq!(old.vector(1, 10).unwrap(), new.vector(1, 10).unwrap());
+    // Files of different versions are not one index.
+    for (m, pp, v) in [
+        (&meta, &files.postings, &vectors),
+        (&meta, &postings, &files.vectors),
+        (&files.meta, &postings, &vectors),
+    ] {
+        assert!(matches!(
+            IvfReader::open(
+                m,
+                Arc::new(pp.clone()),
+                Arc::new(v.clone()),
+                &ID,
+                "",
+                &registry
+            ),
+            Err(Error::Corrupted(_))
+        ));
+    }
+    // Version 0 is refused.
+    let v0 = |f: &[u8], codec| rewrite(f, codec, 0, |_| {});
+    assert!(IvfReader::open(
+        &v0(&meta, lucene_ivf::META_CODEC),
+        Arc::new(v0(&postings, lucene_ivf::POSTINGS_CODEC)),
+        Arc::new(v0(&vectors, lucene_ivf::VECTORS_CODEC)),
+        &ID,
+        "",
+        &registry
+    )
+    .is_err());
+}
+
+#[test]
+fn bad_encodings_are_rejected() {
+    let dim = 6;
+    let sim = Similarity::Euclidean;
+    let data = dataset(300, dim, 4, sim, 71);
+    let docs: Vec<i32> = (0..300).collect();
+    let files = build_encoded(sim, dim, &docs, &data, VectorEncoding::F16);
+    let registry = QuantizerRegistry::with_builtins();
+    let open_meta = |meta: &[u8]| {
+        IvfReader::open(
+            meta,
+            Arc::new(files.postings.clone()),
+            Arc::new(files.vectors.clone()),
+            &ID,
+            "",
+            &registry,
+        )
+    };
+    let with_encoding = |ordinal: u8| {
+        rewrite(
+            &files.meta,
+            lucene_ivf::META_CODEC,
+            lucene_ivf::VERSION_CURRENT,
+            |p| {
+                assert_eq!(p[ENCODING_AT], VectorEncoding::F16.ordinal());
+                p[ENCODING_AT] = ordinal;
+            },
+        )
+    };
+    open_meta(&with_encoding(VectorEncoding::F16.ordinal())).unwrap();
+    // An unknown encoding.
+    match open_meta(&with_encoding(9)) {
+        Err(Error::Corrupted(m)) => assert!(m.contains("encoding"), "{m}"),
+        other => panic!("{other:?}"),
+    }
+    // f32 vectors would run past the doc table of an f16 field.
+    match open_meta(&with_encoding(VectorEncoding::F32.ordinal())) {
+        Err(Error::Corrupted(m)) => assert!(m.contains("out of bounds"), "{m}"),
+        other => panic!("{other:?}"),
+    }
+
+    // A value f16 cannot hold is refused, and the writer is left usable.
+    let mut w = IvfWriter::new(&ID, "");
+    let big = [1.0, 2.0, 70_000.0, 4.0];
+    let field = FieldVectors {
+        number: 3,
+        similarity: sim,
+        dimension: 2,
+        docs: &[0, 1],
+        vectors: &big,
+    };
+    let f16 = IvfParams {
+        rerank_encoding: VectorEncoding::F16,
+        ..IvfParams::default()
+    };
+    match w.add_field(&field, &OsqFactory::bbq(), &f16) {
+        Err(Error::IllegalArgument(m)) => assert!(m.contains("f16"), "{m}"),
+        other => panic!("{other:?}"),
+    }
+    for encoding in [VectorEncoding::Bf16, VectorEncoding::Int8] {
+        let mut w = IvfWriter::new(&ID, "");
+        let p = IvfParams {
+            rerank_encoding: encoding,
+            ..IvfParams::default()
+        };
+        w.add_field(&field, &OsqFactory::bbq(), &p).unwrap();
+        let r = open(&w.finish());
+        let v = r.vector(3, 1).unwrap().unwrap();
+        assert!(
+            (v[0] - 70_000.0).abs() <= 70_000.0 / 128.0,
+            "{encoding:?} {v:?}"
+        );
+    }
+    w.add_field(&field, &OsqFactory::bbq(), &IvfParams::default())
+        .unwrap();
+    let r = open(&w.finish());
+    assert_eq!(r.vector(3, 1).unwrap().unwrap(), vec![70_000.0, 4.0]);
+}
+
+#[test]
+fn int8_residuals_with_spilling_and_bad_primary_counts() {
+    let dim = 8;
+    let sim = Similarity::Euclidean;
+    let data = dataset(1500, dim, 10, sim, 81);
+    let docs: Vec<i32> = (0..1500).collect();
+    let mut w = IvfWriter::new(&ID, "");
+    w.add_field(
+        &FieldVectors {
+            number: 1,
+            similarity: sim,
+            dimension: dim,
+            docs: &docs,
+            vectors: &data,
+        },
+        &OsqFactory::bbq(),
+        &IvfParams {
+            target_cluster_size: 100,
+            spill: Some(1.0),
+            rerank_encoding: VectorEncoding::Int8,
+            ..IvfParams::default()
+        },
+    )
+    .unwrap();
+    let r = open(&w.finish());
+    let f = r.field(1).unwrap();
+    assert!(f.entries() > f.count());
+    // Every vector decodes near its original, whichever cluster holds it.
+    for (i, v) in data.chunks_exact(dim).enumerate() {
+        let got = r.vector(1, i as i32).unwrap().unwrap();
+        for (a, b) in v.iter().zip(&got) {
+            assert!((a - b).abs() < 0.01, "doc {i}: {a} vs {b}");
+        }
+    }
+    let hits = r
+        .search(1, &data[..dim], &SearchParams::new(5, 4, 50), None)
+        .unwrap();
+    assert_eq!(hits[0].doc, 0);
+
+    // One cluster: the last vint before the footer is its primary count.
+    let small = dataset(90, dim, 3, sim, 82);
+    let docs: Vec<i32> = (0..90).collect();
+    let files = build_encoded(sim, dim, &docs, &small, VectorEncoding::Int8);
+    let registry = QuantizerRegistry::with_builtins();
+    let with_primary = |count: u8| {
+        rewrite(
+            &files.meta,
+            lucene_ivf::META_CODEC,
+            lucene_ivf::VERSION_CURRENT,
+            |p| {
+                let at = p.len() - 1;
+                assert_eq!(p[at], 90);
+                p[at] = count;
+            },
+        )
+    };
+    let open_meta = |meta: &[u8]| {
+        IvfReader::open(
+            meta,
+            Arc::new(files.postings.clone()),
+            Arc::new(files.vectors.clone()),
+            &ID,
+            "",
+            &registry,
+        )
+    };
+    open_meta(&with_primary(90)).unwrap();
+    for (count, message) in [(89, "primary entries"), (91, "vectors in a cluster")] {
+        match open_meta(&with_primary(count)) {
+            Err(Error::Corrupted(m)) => assert!(m.contains(message), "{m}"),
+            other => panic!("{other:?}"),
+        }
+    }
 }

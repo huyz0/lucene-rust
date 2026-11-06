@@ -28,7 +28,9 @@ impl std::fmt::Debug for MergeSource<'_> {
 
 /// Writes field `number` of the merged segment into `writer`: the live
 /// vectors of every source that has the field, under their new document
-/// numbers, clustered and quantized afresh with `factory`.
+/// numbers, clustered and quantized afresh with `factory`. Sources may store
+/// their vectors in any [`crate::VectorEncoding`]; they are decoded, and
+/// written in `params.rerank_encoding`.
 ///
 /// # Errors
 ///
@@ -74,20 +76,22 @@ pub fn merge_field(
     let mut vectors = vec![0f32; live.len().saturating_mul(dimension)];
     // One sequential read per source rather than one per vector.
     for (i, source) in sources.iter().enumerate() {
-        if source.reader.field(number).is_none() {
+        let Some(field) = source.reader.field(number) else {
             continue;
-        }
+        };
+        let (encoding, stride) = (field.encoding(), field.vector_len());
         let bytes = source.reader.slot_vectors(number)?;
         // ARITH: slots were checked against the field's count at open, so
-        // `slot * dimension + dimension` floats lie inside `bytes`, and
-        // `out` indexes `live`, whose length sized `vectors`.
+        // `(slot + 1) * stride` bytes lie inside `bytes`, and `out` indexes
+        // `live`, whose length sized `vectors`.
         #[allow(clippy::arithmetic_side_effects)]
-        for (out, _) in live.iter().enumerate().filter(|(_, l)| l.1 == i) {
-            let from = live[out].2 as usize * dimension * 4;
-            let dst = &mut vectors[out * dimension..(out + 1) * dimension];
-            for (x, b) in dst.iter_mut().zip(bytes[from..].chunks_exact(4)) {
-                *x = f32::from_le_bytes([b[0], b[1], b[2], b[3]]);
-            }
+        for (out, &(_, _, slot)) in live.iter().enumerate().filter(|(_, l)| l.1 == i) {
+            let from = slot as usize * stride;
+            encoding.decode(
+                &bytes[from..from + stride],
+                field.slot_centroid(slot as usize),
+                &mut vectors[out * dimension..(out + 1) * dimension],
+            );
         }
     }
     writer.add_field(

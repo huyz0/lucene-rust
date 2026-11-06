@@ -5,12 +5,17 @@
 //! IndexHeader(META_CODEC, version, segment id, suffix)
 //! vint field count
 //! for each field:
-//!   i32 field number, byte similarity ordinal, vint dimension, vint vector count,
+//!   i32 field number, byte similarity ordinal,
+//!   byte vector encoding ordinal (from VERSION_VECTOR_ENCODING),
+//!   vint dimension, vint vector count,
 //!   string quantizer name, vint state length, state bytes,
 //!   vint cluster count,
 //!   vlong postings offset, vlong vectors offset, vlong doc table offset,
 //!   centroids (cluster count x dimension f32 LE),
-//!   cluster entry counts (cluster count x vint)
+//!   cluster entry counts (cluster count x vint),
+//!   for the int8 encoding, each cluster's own (primary) vector count
+//!   (cluster count x vint): cluster c's vectors are the slots from the sum
+//!   of the counts before it
 //! Footer
 //! ```
 //!
@@ -25,10 +30,12 @@
 //! spilled one.
 //!
 //! `.ivv`, from the field's vectors offset (4-byte aligned): every vector
-//! (`dimension` `f32` LE) in primary-cluster order, then document order
-//! within a cluster; a vector's position is its slot. From the doc table
-//! offset: the field's documents ascending (`i32` LE) and, for each, its slot
-//! (`u32` LE).
+//! (`VectorEncoding::vector_bytes(dimension)` bytes in the field's
+//! encoding, int8 relative to its primary cluster's centroid; `f32` LE
+//! before `VERSION_VECTOR_ENCODING`) in primary-cluster order, then
+//! document order within a cluster; a vector's position is its slot. From
+//! the doc table offset: the field's documents ascending (`i32` LE) and, for
+//! each, its slot (`u32` LE).
 //!
 //! A `Cosine` field stores its vectors unit-normalized.
 
@@ -40,8 +47,8 @@ use lucene_vector_quant::QuantizerFactory;
 
 use crate::kmeans::{self, KMeansParams, SplitMix64};
 use crate::{
-    similarity_ordinal, Error, Result, Similarity, META_CODEC, POSTINGS_CODEC, VECTORS_CODEC,
-    VERSION_CURRENT,
+    similarity_ordinal, Error, Result, Similarity, VectorEncoding, META_CODEC, POSTINGS_CODEC,
+    VECTORS_CODEC, VERSION_CURRENT,
 };
 
 /// Build parameters.
@@ -62,6 +69,10 @@ pub struct IvfParams {
     /// codes (the full-precision vectors are stored once) and lets a search
     /// probe fewer clusters for the same recall.
     pub spill: Option<f32>,
+    /// How `.ivv` stores the full-precision vectors that rerank and exact
+    /// search read: `f32` exactly, or `f16`, `bf16` or 8 bits for a half or
+    /// about a quarter of the bytes per reranked candidate.
+    pub rerank_encoding: VectorEncoding,
 }
 
 impl Default for IvfParams {
@@ -71,6 +82,7 @@ impl Default for IvfParams {
             kmeans: KMeansParams::default(),
             training_sample: 25_000,
             spill: None,
+            rerank_encoding: VectorEncoding::F32,
         }
     }
 }
@@ -213,7 +225,8 @@ impl IvfWriter {
     ///
     /// [`Error::IllegalArgument`] for a field written twice, a zero
     /// dimension, a vector count that does not match the documents,
-    /// documents out of order, or a non-finite value; the quantizer's
+    /// documents out of order, a non-finite value, or a value the rerank
+    /// encoding cannot hold (beyond `f16`'s range); the quantizer's
     /// training errors.
     // ARITH: every index and count below is bounded by the field's vector
     // count (checked to fit a u32) times its dimension, which is the length
@@ -242,6 +255,28 @@ impl IvfWriter {
             metric,
         );
         let nlist = clustering.len(dim);
+        // Encoded before anything is written, so a refused field leaves the
+        // writer as it was; int8 encodes the residual from the primary
+        // centroid.
+        let encoding = params.rerank_encoding;
+        let vector_bytes = encoding
+            .vector_bytes(dim)
+            .ok_or_else(|| Error::IllegalArgument("dimension too large".into()))?;
+        let mut encoded = vec![0u8; n * vector_bytes];
+        let representable = encoded
+            .par_chunks_mut(vector_bytes)
+            .zip(vectors.par_chunks(dim))
+            .zip(clustering.assignments.par_iter())
+            .all(|((out, v), &a)| {
+                encoding.encode(v, kmeans::row(&clustering.centroids, dim, a as usize), out)
+            });
+        if !representable {
+            return Err(Error::IllegalArgument(format!(
+                "field {}: a vector is out of {}'s range",
+                field.number,
+                encoding.name()
+            )));
+        }
 
         let mut rng = SplitMix64::new(params.kmeans.seed ^ 0x7a11_0f5a_3b1e);
         let mut sample = Vec::new();
@@ -341,9 +376,9 @@ impl IvfWriter {
         align4(&mut self.vectors);
         let vectors_offset = self.vectors.len();
         for &i in &order {
-            for x in kmeans::row(&vectors, dim, i as usize) {
-                self.vectors.write_bytes(&x.to_le_bytes());
-            }
+            let i = i as usize;
+            self.vectors
+                .write_bytes(&encoded[i * vector_bytes..(i + 1) * vector_bytes]);
         }
         let doc_table_offset = self.vectors.len();
         for d in field.docs {
@@ -356,6 +391,7 @@ impl IvfWriter {
         let m = &mut self.fields;
         m.write_bytes(&field.number.to_le_bytes());
         m.write_byte(similarity_ordinal(field.similarity));
+        m.write_byte(encoding.ordinal());
         write_count(m, dim)?;
         write_count(m, n)?;
         m.write_string(quantizer.name());
@@ -371,6 +407,11 @@ impl IvfWriter {
         }
         for e in &entries {
             write_count(m, e.len())?;
+        }
+        if encoding.residual() {
+            for &size in &sizes {
+                write_count(m, size)?;
+            }
         }
         self.field_numbers.push(field.number);
         Ok(())

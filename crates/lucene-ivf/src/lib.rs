@@ -21,23 +21,27 @@
 //!
 //! | file | holds | access |
 //! |---|---|---|
-//! | `.ivm` meta | per field: similarity, dimension, the quantizer's name and state, every centroid and cluster size | read whole at open; small enough to keep in memory |
+//! | `.ivm` meta | per field: similarity, rerank vector encoding, dimension, the quantizer's name and state, every centroid and cluster size | read whole at open; small enough to keep in memory |
 //! | `.ivp` postings | per cluster, contiguous: its slots (`u32` LE, ascending) then its codes as one block in the quantizer's layout (`Quantizer::write_block`: interleaved 32 at a time for fast scan with BBQ) | one range read per probed cluster |
-//! | `.ivv` vectors | full-precision vectors (`f32` LE) in cluster order, then a document-to-slot table | one small range read per reranked candidate |
+//! | `.ivv` vectors | full-precision vectors in cluster order, in the field's [`VectorEncoding`] (`f32`, `f16`, `bf16`, or 8-bit residuals from the cluster centroid with a per-vector scale; [`IvfParams::rerank_encoding`]), then a document-to-slot table | one small range read per reranked candidate |
 //!
 //! The layout is chosen for both local block storage and blob storage behind
 //! a local cache: probing a cluster is one contiguous read, the codes file
 //! is a fraction of the vectors' size (1 bit per dimension plus 16 bytes per
 //! vector for BBQ) so it can be pinned in memory or on local NVMe, and the
 //! full-precision vectors are only touched for the few candidates reranked.
+//! Storing those in `f16`, `bf16` or 8 bits halves or quarters the bytes
+//! each reranked candidate reads.
 //! Readers take the postings and vectors files as a [`RangeSource`], which a
 //! caching blob reader can implement directly.
 
+pub mod encoding;
 pub mod kmeans;
 pub mod merge;
 pub mod reader;
 pub mod writer;
 
+pub use encoding::VectorEncoding;
 pub use merge::{merge_field, MergeSource};
 pub use reader::{IvfField, IvfReader, RangeSource, ScoredDoc, SearchParams};
 pub use writer::{FieldVectors, IvfFiles, IvfParams, IvfWriter};
@@ -61,8 +65,11 @@ pub const VERSION_START: i32 = 0;
 /// Cluster codes in the quantizer's block layout (`Quantizer::write_block`)
 /// rather than end to end. Files of earlier versions are not read.
 pub const VERSION_BLOCK_LAYOUT: i32 = 1;
+/// A per-field rerank vector encoding byte in `.ivm`
+/// ([`VectorEncoding`]). Version 1 fields are read as `f32`.
+pub const VERSION_VECTOR_ENCODING: i32 = 2;
 /// The current format version.
-pub const VERSION_CURRENT: i32 = VERSION_BLOCK_LAYOUT;
+pub const VERSION_CURRENT: i32 = VERSION_VECTOR_ENCODING;
 
 /// Errors building or reading an IVF index.
 #[derive(Debug, thiserror::Error)]
