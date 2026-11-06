@@ -877,10 +877,11 @@ pub const OPEN_ADAPTIVE_DOC_VALUES: u8 = 32;
 /// and records it, and merges never mix partitions
 /// ([`lucene_index::index_writer::SegmentPartitioning::opensearch`]).
 pub const OPEN_PARTITIONED: u8 = 64;
-/// Indexing buffers per indexing thread in a partitioned writer: a buffer
-/// holds one partition, so several partitions in flight on one thread each
-/// keep their own instead of flushing one another's.
-const PARTITIONED_SLOTS_PER_THREAD: usize = 4;
+/// Indexing buffers in a partitioned writer: a buffer holds one partition,
+/// so each partition in flight keeps its own until the RAM buffer flushes the
+/// largest or a refresh flushes them all. Past this many partitions in flight
+/// a buffer of another partition is flushed to make room.
+const PARTITIONED_SLOTS: usize = 1024;
 
 /// Opens the shard's writer over the index at `path`, which must already hold
 /// a commit (OpenSearch's `Store.createEmpty` or a recovered one).
@@ -968,7 +969,7 @@ pub unsafe extern "C" fn ffi_engine_writer_open(
             let mut slots = std::thread::available_parallelism().map_or(1, |n| n.get());
             if flags & OPEN_PARTITIONED != 0 {
                 writer.set_segment_partitioning(Some(SegmentPartitioning::opensearch()));
-                slots = slots.saturating_mul(PARTITIONED_SLOTS_PER_THREAD);
+                slots = slots.max(PARTITIONED_SLOTS);
             }
             ConcurrentIndexWriter::with_merge_scheduler(writer, slots, Arc::new(merges.clone()))
         };
