@@ -36,6 +36,7 @@ pub mod format;
 pub mod key_provider;
 #[cfg(target_os = "linux")]
 pub mod lazy;
+mod pages;
 
 use std::sync::Arc;
 

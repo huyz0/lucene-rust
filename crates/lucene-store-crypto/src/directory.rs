@@ -366,6 +366,12 @@ impl<D: Directory> Directory for EncryptedDirectory<D> {
         if self.is_plain(name) {
             return self.inner.open(name);
         }
+        let decoder = crate::pages::EncryptedDecoder {
+            keys: self.keys.as_ref(),
+        };
+        if let Some(opened) = self.inner.open_decoded(name, &decoder) {
+            return opened;
+        }
         let sealed_len = self.inner.file_length(name)?;
         if let Some(shared) = self.cache.get(name, sealed_len) {
             return Input::slice_of(&shared, 0, shared.len());
@@ -388,9 +394,8 @@ impl<D: Directory> Directory for EncryptedDirectory<D> {
         let (header_len, chunk_size) = match known {
             Some(k) => k,
             None => {
-                let file = self.inner.open(name)?;
-                let (header, len) = Header::decode(&file, name)?;
-                let entry = (len as u64, header.chunk_size);
+                let (header, bytes) = crate::pages::read_header(&self.inner, name)?;
+                let entry = (bytes.len() as u64, header.chunk_size);
                 self.header_lens().insert(name.to_string(), entry);
                 entry
             }
