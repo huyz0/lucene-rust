@@ -1084,32 +1084,29 @@ impl ConcurrentIndexWriter<'_> {
                 })
             })
             .collect();
-        let slots: Vec<_> = self.slots.iter().map(lock).collect();
-        let core = lock(&self.core);
         let mut out = LiveSnapshot {
             buffers: Vec::with_capacity(view.buffers.len()),
             published: view.published,
         };
+        // Each buffer is read under its own slot lock: the view fixed its
+        // documents and statistics, so the buffers need not be read at
+        // one instant, and indexing into the other slots goes on.
         for b in &view.buffers {
-            let source = slots
-                .iter()
-                .find(|d| d.live.id == b.id)
-                .map(|d| Source {
-                    postings: &d.postings,
-                    columns: &d.live,
-                })
-                .or_else(|| core.live.find(b.id));
-            // A buffer `delete_all` or `rollback` dropped: none of its
-            // documents is live any more.
-            let Some(source) = source else {
-                out.buffers.push(LiveBuffer {
-                    max_doc: b.max_doc,
-                    deleted: (0..b.max_doc).collect(),
-                    fields: Vec::new(),
-                });
-                continue;
-            };
-            out.buffers.push(read_buffer(&source, b, &wanted)?);
+            let read = self.with_buffer(b.id, |source| {
+                // A buffer `delete_all` or `rollback` dropped: none of its
+                // documents is live any more.
+                source.map_or_else(
+                    || {
+                        Ok(LiveBuffer {
+                            max_doc: b.max_doc,
+                            deleted: (0..b.max_doc).collect(),
+                            fields: Vec::new(),
+                        })
+                    },
+                    |source| read_buffer(source, b, &wanted),
+                )
+            });
+            out.buffers.push(read?);
         }
         Ok(out)
     }
