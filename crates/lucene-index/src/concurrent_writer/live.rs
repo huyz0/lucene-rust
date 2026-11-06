@@ -35,13 +35,13 @@
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
+use std::sync::{Arc, MutexGuard};
 
 use lucene_codecs::field_infos::{FieldInfo, IndexOptions};
 use lucene_codecs::postings_writer::TermPostings;
 use lucene_codecs::stored_fields::{FieldValue, StoredField};
 
-use super::{lock, ConcurrentIndexWriter};
+use super::{lock, ConcurrentIndexWriter, Dwpt};
 use crate::buffered_updates::{DocValuesUpdate, Term};
 use crate::index_writer::pending_postings::{LiveFieldStats, PendingPostings};
 use crate::index_writer::ExplicitFields;
@@ -903,10 +903,8 @@ impl ConcurrentIndexWriter<'_> {
             ));
         }
         let slot = self
-            .slots
-            .iter()
-            .map(lock)
-            .find(|d| d.live.id == id && !d.docs.is_empty())
+            .slot_of(id)
+            .filter(|d| !d.docs.is_empty())
             .ok_or_else(|| Error::LiveSearch(format!("buffer {id} is being flushed")))?;
         let (Ok(start), Ok(end)) = (usize::try_from(range.start), usize::try_from(range.end))
         else {
@@ -965,18 +963,37 @@ impl ConcurrentIndexWriter<'_> {
         core.live.release(released);
     }
 
+    /// The slot holding buffer `id`, locked. The free slots are looked at
+    /// first, so a slot another thread holds (writing one of its own chunks,
+    /// say) is waited for only when the buffer is in no free one. A buffer
+    /// never moves into a slot, so the second look cannot miss it.
+    fn slot_of(&self, id: u64) -> Option<MutexGuard<'_, Dwpt>> {
+        let mut busy = Vec::new();
+        for slot in &self.slots {
+            match slot.try_lock() {
+                Ok(d) if d.live.id == id => return Some(d),
+                Ok(_) => {}
+                Err(std::sync::TryLockError::Poisoned(p)) => {
+                    let d = p.into_inner();
+                    if d.live.id == id {
+                        return Some(d);
+                    }
+                }
+                Err(std::sync::TryLockError::WouldBlock) => busy.push(slot),
+            }
+        }
+        busy.into_iter().map(lock).find(|d| d.live.id == id)
+    }
+
     /// Runs `f` on buffer `id`'s postings and columns, wherever it is now.
     /// A buffer only moves from a slot to the control lock, so looking in
     /// the slots one at a time, then there, cannot miss it.
     fn with_buffer<T>(&self, id: u64, f: impl Fn(Option<&Source<'_>>) -> T) -> T {
-        for slot in &self.slots {
-            let d = lock(slot);
-            if d.live.id == id {
-                return f(Some(&Source {
-                    postings: &d.postings,
-                    columns: &d.live,
-                }));
-            }
+        if let Some(d) = self.slot_of(id) {
+            return f(Some(&Source {
+                postings: &d.postings,
+                columns: &d.live,
+            }));
         }
         let core = lock(&self.core);
         f(core.live.find(id).as_ref())
