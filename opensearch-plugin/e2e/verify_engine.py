@@ -759,18 +759,24 @@ def breaker():
 
 def unsupported():
     """What the Rust writer cannot produce is refused, never written differently."""
-    status, out = req("PUT", "/bad_codec", {"settings": {"index.lucene_rust.engine": True,
-                                                          "index.codec": "best_compression",
-                                                          "number_of_replicas": 0}})
-    if status in (200, 201):
-        time.sleep(3)
-        health = must("GET", "/_cluster/health/bad_codec?timeout=10s")
-        check(health["status"] == "red", f"an unsupported codec does not start: {health['status']}")
-        explain = must("GET", "/_cluster/allocation/explain", {"index": "bad_codec", "shard": 0, "primary": True})
-        check("default codec" in json.dumps(explain), "the refusal names the codec")
-        must("DELETE", "/bad_codec")
-    else:
-        check("codec" in json.dumps(out), f"the refusal names the codec: {out}")
+    refused = (("bad_codec", {"index.codec": "best_compression"}, "default codec"),
+               ("bad_fuzzy_set", {"index.optimize_doc_id_lookup.fuzzy_set.enabled": True}, "fuzzy_set"))
+    for index, extra, named in refused:
+        status, out = req("PUT", f"/{index}", {"settings": {"index.lucene_rust.engine": True,
+                                                            "number_of_replicas": 0, **extra}})
+        if status in (200, 201):
+            time.sleep(3)
+            health = must("GET", f"/_cluster/health/{index}?timeout=10s")
+            check(health["status"] == "red", f"{index}: an unsupported setting does not start: {health['status']}")
+            explain = must("GET", "/_cluster/allocation/explain", {"index": index, "shard": 0, "primary": True})
+            check(named in json.dumps(explain), f"{index}: the refusal names [{named}]")
+            must("DELETE", f"/{index}")
+        else:
+            check(named in json.dumps(out), f"{index}: the refusal names [{named}]: {out}")
+    create("fuzzy_later", True)
+    status, out = req("PUT", "/fuzzy_later/_settings", {"index.optimize_doc_id_lookup.fuzzy_set.enabled": True})
+    check(status == 400 and "fuzzy_set" in json.dumps(out), f"turning fuzzy_set on later is refused: {status} {out}")
+    must("DELETE", "/fuzzy_later")
     create("tv_rust", True)
     must("PUT", "/tv_rust/_mapping", {"properties": {"tv": {"type": "text", "term_vector": "with_positions"}}})
     status, out = req("PUT", "/tv_rust/_doc/1", {"tv": "some text"})

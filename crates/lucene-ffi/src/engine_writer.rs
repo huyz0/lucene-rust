@@ -65,7 +65,9 @@ use lucene_index::index_writer::{
     self, ExplicitDocument, ExplicitFields, IndexWriter, InvertedField, InvertedTerms,
     MergePolicyConfig, SoftDeletesRetention,
 };
-use lucene_index::merge_policy::{MergeOnFlushMergePolicy, MergePolicy, TieredMergePolicy};
+use lucene_index::merge_policy::{
+    CompoundFileSettings, MergeOnFlushMergePolicy, MergePolicy, TieredMergePolicy,
+};
 use lucene_index::merge_scheduler::ConcurrentMergeScheduler;
 use lucene_index::segment_info::LuceneVersion;
 use lucene_misc::index::{BpIndexReorderer, BpReorderingMergePolicy};
@@ -157,9 +159,13 @@ fn install_merge_policies(iw: &mut IndexWriter<'_>, policies: &MergePolicies) {
     let merges_on = iw.merge_policy().is_some();
     let config = iw.merge_policy().cloned().unwrap_or_default();
     let compound = iw.use_compound_file();
+    let merged_compound = iw.merge_compound_file_settings();
     let tiered = || {
         let mut t = TieredMergePolicy::new(config.clone());
-        if !compound {
+        if let Some(settings) = merged_compound {
+            // `index.compound_format`, as the writer's own merges use it.
+            *t.compound_file_settings_mut() = settings;
+        } else if !compound {
             // Merged segments stay loose files, as without a policy.
             let _ = t.compound_file_settings_mut().set_no_cfs_ratio(0.0);
         }
@@ -858,13 +864,16 @@ pub unsafe extern "C" fn ffi_engine_writer_open(
             writer.enable_explicit_documents()?;
             writer.set_deletion_policy(DeletionPolicy::KeepAll)?;
             writer.set_merge_policy(Some(MergePolicyConfig::default()));
+            // `OpenSearchTieredMergePolicy`: forced merges have no merged-size
+            // cap; forced-deletes merges keep the policy's.
+            writer.set_forced_merge_max_segment_size(Some(u64::MAX));
             // Merge-on-commit/refresh stays off until the engine passes
             // the shard's `index.merge_on_flush.*` settings
             // (`ffi_engine_writer_set_merge_on_flush`).
             writer.set_max_full_flush_merge_wait_millis(0);
-            // Loose segment files, as this engine has always written them.
-            // OpenSearch's default is compound (`index.compound_format`);
-            // the setting is not wired through the engine yet.
+            // Loose segment files until the engine passes the shard's
+            // `index.use_compound_file` and `index.compound_format`
+            // (`ffi_engine_writer_set_options`).
             writer.set_use_compound_file(false);
             writer.set_ram_buffer_size_mb(ram_buffer_mb)?;
             // The JVM's `IndexWriter.getActualMaxDocs()`, so a test lowering
@@ -1445,6 +1454,53 @@ pub extern "C" fn ffi_engine_writer_set_merge_policy(
                 iw.set_merge_policy(Some(config));
                 install_merge_policies(iw, &policies);
             });
+            Ok(())
+        })
+    })
+}
+
+/// The writer options OpenSearch's `NativeLuceneIndexWriterFactory` sets
+/// beside the merge policy: whether flushed segments are compound
+/// (`index.use_compound_file`); the merge policy's `noCFSRatio`
+/// (`index.compound_format`, `0.0..=1.0`) and `maxCFSSegmentSize` in bytes,
+/// which decide it for merged segments; whether indexing threads help with
+/// pending flushes (`index.check_pending_flush.enabled`); and whether forced
+/// merges interleave their sources (`ShuffleForcedMergePolicy`, on unless the
+/// JVM's `opensearch.shuffle_forced_merge` is false).
+#[no_mangle]
+pub extern "C" fn ffi_engine_writer_set_options(
+    handle: u64,
+    use_compound_file: u8,
+    no_cfs_ratio: f64,
+    max_cfs_segment_bytes: i64,
+    check_pending_flush: u8,
+    shuffle_forced_merges: u8,
+) -> i32 {
+    guard(|| {
+        let mut compound = CompoundFileSettings::default();
+        compound.set_no_cfs_ratio(no_cfs_ratio).map_err(|e| {
+            set_last_error(e.to_string());
+            FfiStatus::InvalidArgument
+        })?;
+        if max_cfs_segment_bytes < 0 {
+            set_last_error(format!(
+                "maxCFSSegmentSize must be >= 0; got {max_cfs_segment_bytes}"
+            ));
+            return Err(FfiStatus::InvalidArgument);
+        }
+        with_writer(handle, |w| {
+            let policies = w.policies();
+            w.writer().with_writer(|iw| {
+                iw.set_use_compound_file(use_compound_file != 0);
+                compound.max_cfs_segment_size = max_cfs_segment_bytes;
+                iw.set_merge_compound_file_settings(Some(compound));
+                iw.set_shuffle_forced_merges(shuffle_forced_merges != 0);
+                // The wrapping policies decide merged segments' compound files too.
+                install_merge_policies(iw, &policies);
+            });
+            drop(policies);
+            w.writer()
+                .set_check_pending_flush_on_update(check_pending_flush != 0);
             Ok(())
         })
     })
@@ -2392,6 +2448,98 @@ mod tests {
             assert_eq!(w.max_full_flush_merge_wait_millis(), 0);
             assert!(!w.use_compound_file());
         });
+        ffi_engine_writer_close(h);
+    }
+
+    /// `index.use_compound_file`, `index.compound_format`,
+    /// `index.check_pending_flush.enabled` and the shuffled forced merge reach
+    /// the writer; a ratio or cap OpenSearch would refuse is refused.
+    #[test]
+    fn the_shard_writer_options_reach_the_writer() {
+        let tmp = empty_index("engine-writer-options");
+        let h = open(&tmp, 0);
+        let mb = 1024 * 1024;
+        assert_eq!(ffi_engine_writer_set_options(h, 1, 0.1, 5 * mb, 0, 1), 0);
+        let engine = lookup(h).unwrap();
+        assert!(!engine.writer().check_pending_flush_on_update());
+        engine.writer().with_writer(|w| {
+            assert!(w.use_compound_file());
+            assert_eq!(
+                w.merge_compound_file_settings(),
+                Some(CompoundFileSettings::new(0.1, 5 * mb))
+            );
+            assert!(w.shuffle_forced_merges());
+        });
+        let bad = FfiStatus::InvalidArgument.code();
+        assert_eq!(ffi_engine_writer_set_options(h, 1, 1.5, mb, 1, 1), bad);
+        assert_eq!(ffi_engine_writer_set_options(h, 1, f64::NAN, mb, 1, 1), bad);
+        assert_eq!(ffi_engine_writer_set_options(h, 1, 0.1, -1, 1, 1), bad);
+        assert_eq!(ffi_engine_writer_set_options(h, 0, 0.0, 0, 1, 0), 0);
+        assert!(engine.writer().check_pending_flush_on_update());
+        engine.writer().with_writer(|w| {
+            assert!(!w.use_compound_file());
+            assert!(!w.shuffle_forced_merges());
+        });
+        drop(engine);
+        ffi_engine_writer_close(h);
+    }
+
+    /// `OpenSearchTieredMergePolicy`: a forced merge ignores the policy's
+    /// merged-size cap and leaves the policy as it found it; with the
+    /// shuffle on, the merged segment is marked interleaved.
+    #[test]
+    fn a_forced_merge_has_no_size_cap_and_restores_the_policy() {
+        let tmp = empty_index("engine-writer-forced-cap");
+        let h = open(&tmp, 0);
+        let f = setup(h);
+        for (i, id) in ["a", "b", "c", "d"].into_iter().enumerate() {
+            let d = doc(
+                Blob::default().u8(OP_ADD).i32(1),
+                &f,
+                id,
+                &["x"],
+                i as i64,
+                false,
+            );
+            assert_eq!(apply(h, &d.0), 0);
+            commit(h, &[]);
+        }
+        assert_eq!(
+            ffi_engine_writer_set_merge_policy(h, 10, 10.0, 1, 1, 20.0, 10.0),
+            0
+        );
+        assert_eq!(ffi_engine_writer_set_options(h, 0, 0.1, i64::MAX, 1, 1), 0);
+        let mut gen = 0;
+        // SAFETY: live out-pointer.
+        assert_eq!(
+            unsafe { ffi_engine_writer_force_merge(h, 2, 0, &mut gen) },
+            0
+        );
+        let dir = FsDirectory::open(tmp.path());
+        let infos = lucene_index::segment_infos::read_latest(&dir).unwrap();
+        assert!(
+            infos.segments.len() <= 2,
+            "{} segments",
+            infos.segments.len()
+        );
+        // SAFETY: live out-pointer.
+        assert_eq!(
+            unsafe { ffi_engine_writer_force_merge(h, 1, 0, &mut gen) },
+            0
+        );
+        let infos = lucene_index::segment_infos::read_latest(&dir).unwrap();
+        assert_eq!(infos.segments.len(), 1);
+        let sci = &infos.segments[0];
+        let si = dir.open(&format!("{}.si", sci.segment_name)).unwrap();
+        let si = lucene_index::segment_info::parse(&si, &sci.segment_id).unwrap();
+        assert!(si
+            .diagnostics
+            .iter()
+            .any(|(k, _)| k == lucene_index::merge::SHUFFLE_MERGE_KEY));
+        lookup(h).unwrap().writer().with_writer(|w| {
+            assert_eq!(w.merge_policy().unwrap().max_merged_segment_size, 1);
+        });
+        check(&tmp);
         ffi_engine_writer_close(h);
     }
 
