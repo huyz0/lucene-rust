@@ -18,6 +18,7 @@ pub mod numeric_utils;
 pub mod packed;
 pub mod packed_longs;
 pub mod point_values_relation;
+pub(crate) mod popcount;
 pub mod quantization;
 pub mod s2;
 pub mod simd;

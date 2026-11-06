@@ -88,52 +88,12 @@ pub fn next_clear_bit_in_words(words: &[u64], from: usize) -> usize {
     }
 }
 
-/// Total set bits of `words`. Four independent accumulators rather than one
-/// `map().sum()`: a single running sum serialises every `popcnt` behind the
-/// previous add, and the loop is then bound by that dependency chain rather
-/// than by the instruction's throughput.
+use crate::popcount::{self, Op};
+
+/// Total set bits of `words`.
 #[inline]
 fn popcount_words(words: &[u64]) -> usize {
-    let mut chunks = words.chunks_exact(4);
-    let (mut a, mut b, mut c, mut d) = (0usize, 0usize, 0usize, 0usize);
-    for w in &mut chunks {
-        a = a.wrapping_add(w[0].count_ones() as usize);
-        b = b.wrapping_add(w[1].count_ones() as usize);
-        c = c.wrapping_add(w[2].count_ones() as usize);
-        d = d.wrapping_add(w[3].count_ones() as usize);
-    }
-    let tail: usize = chunks
-        .remainder()
-        .iter()
-        .map(|w| w.count_ones() as usize)
-        .fold(0, usize::wrapping_add);
-    a.wrapping_add(b)
-        .wrapping_add(c)
-        .wrapping_add(d)
-        .wrapping_add(tail)
-}
-
-/// `sum(popcount(f(a[i], b[i])))` over two equal-length word slices, with
-/// the same four accumulators as [`popcount_words`].
-#[inline(always)]
-fn popcount_zip(a: &[u64], b: &[u64], f: impl Fn(u64, u64) -> u64) -> usize {
-    let n = a.len().min(b.len());
-    let (a, b) = (&a[..n], &b[..n]);
-    let mut ac = a.chunks_exact(4);
-    let mut bc = b.chunks_exact(4);
-    let mut acc = [0usize; 4];
-    for (x, y) in (&mut ac).zip(&mut bc) {
-        for k in 0..4 {
-            acc[k] = acc[k].wrapping_add(f(x[k], y[k]).count_ones() as usize);
-        }
-    }
-    let tail = ac
-        .remainder()
-        .iter()
-        .zip(bc.remainder())
-        .map(|(&x, &y)| f(x, y).count_ones() as usize)
-        .fold(0, usize::wrapping_add);
-    acc.iter().fold(tail, |s, v| s.wrapping_add(*v))
+    popcount::words(words)
 }
 
 #[derive(Debug, Clone)]
@@ -428,23 +388,7 @@ impl FixedBitSet {
     /// Port of `FixedBitSet.intersectionCount(a, b)`: the number of bits set
     /// in both, without materializing the intersection.
     pub fn intersection_count(a: &FixedBitSet, b: &FixedBitSet) -> usize {
-        let mut acc = [0usize; 4];
-        let n = a.words.len().min(b.words.len());
-        let (aw, bw) = (&a.words[..n], &b.words[..n]);
-        let mut ac = aw.chunks_exact(4);
-        let mut bc = bw.chunks_exact(4);
-        for (x, y) in (&mut ac).zip(&mut bc) {
-            for k in 0..4 {
-                acc[k] = acc[k].wrapping_add((x[k] & y[k]).count_ones() as usize);
-            }
-        }
-        let tail = ac
-            .remainder()
-            .iter()
-            .zip(bc.remainder())
-            .map(|(x, y)| (x & y).count_ones() as usize)
-            .fold(0, usize::wrapping_add);
-        acc.iter().fold(tail, |s, v| s.wrapping_add(*v))
+        popcount::zip(&a.words, &b.words, Op::And)
     }
 
     pub fn words(&self) -> &[u64] {
@@ -674,7 +618,7 @@ impl FixedBitSet {
     /// `FixedBitSet.unionCount(a, b)`.
     pub fn union_count(a: &FixedBitSet, b: &FixedBitSet) -> usize {
         let n = a.words.len().min(b.words.len());
-        popcount_zip(&a.words, &b.words, |x, y| x | y)
+        popcount::zip(&a.words, &b.words, Op::Or)
             + popcount_words(&a.words[n..])
             + popcount_words(&b.words[n..])
     }
@@ -682,7 +626,7 @@ impl FixedBitSet {
     /// `FixedBitSet.andNotCount(a, b)`.
     pub fn and_not_count(a: &FixedBitSet, b: &FixedBitSet) -> usize {
         let n = a.words.len().min(b.words.len());
-        popcount_zip(&a.words, &b.words, |x, y| x & !y) + popcount_words(&a.words[n..])
+        popcount::zip(&a.words, &b.words, Op::AndNot) + popcount_words(&a.words[n..])
     }
 
     /// `FixedBitSet.xor(FixedBitSet)`: `other` no longer than `self`.
