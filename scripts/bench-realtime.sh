@@ -11,7 +11,8 @@
 #   scripts/bench-realtime.sh [DOCS] [OUT_DIR]     # default 1000000, target/bench-realtime
 #
 # Needs what scripts/bench-opensearch.sh needs. HEAP (default 2g), CLIENTS
-# (default 4) bulk clients, PROBE_EVERY (default 0.2) seconds between probes.
+# (default 4) bulk clients, PROBE_EVERY (default 0.2) seconds between probes,
+# CONFIGS (default "stock plugin realtime realtime-30s") which configs run.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
@@ -37,7 +38,9 @@ docker build -q -t "$IMAGE" opensearch-plugin/docker >/dev/null
 printf 'FROM opensearchproject/opensearch:%s\nRUN rm -rf /usr/share/opensearch/plugins/*\n' "$VERSION" \
     | docker build -q -t "opensearch-stock-min:${VERSION}" - >/dev/null
 
+CONFIGS="${CONFIGS:-stock plugin realtime realtime-30s}"
 bench() { # name image label settings [docker-run args...]
+    [[ " $CONFIGS " == *" $3 "* ]] || return 0
     docker rm -f "$1" >/dev/null 2>&1 || true
     docker run -d --name "$1" -p "$PORT:9200" "${@:5}" \
         -e discovery.type=single-node -e DISABLE_SECURITY_PLUGIN=true \
