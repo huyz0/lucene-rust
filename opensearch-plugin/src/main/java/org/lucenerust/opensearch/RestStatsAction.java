@@ -69,6 +69,11 @@ public final class RestStatsAction extends BaseRestHandler {
             b.field("lucene", stats.luceneNanos());
             b.field("lucene_count", stats.luceneCount());
             b.endObject();
+            // Realtime views' readers built for aggregations, sorts and the like (SearchStats.liveReaderTime).
+            b.startObject("live_view_reader_nanos");
+            b.field("total", stats.liveReaderNanos());
+            b.field("count", stats.liveReaderCount());
+            b.endObject();
             // StoredFields.document's time per path (SearchStats.fetchTime).
             b.startObject("fetch_nanos");
             b.field("native", stats.fetchNativeNanos());

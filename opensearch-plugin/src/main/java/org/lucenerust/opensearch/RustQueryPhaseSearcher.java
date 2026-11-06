@@ -285,7 +285,11 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
                     // view: aggregations, sorts, collapse, rescore, and what the plain path's
                     // buffers cannot answer.
                     long[] whole = new long[1];
+                    long built = System.nanoTime();
                     int rc = NativeBridge.liveViewReader(acquired.handle(), live.view().id(), whole);
+                    if (rc == NativeBridge.OK) {
+                        stats.liveReaderTime(System.nanoTime() - built);
+                    }
                     if (rc != NativeBridge.OK) {
                         logger.debug("lucene-rust: the buffers cannot be read as segments ({}): {}", rc, NativeBridge.lastError());
                         reason = "realtime_view";
