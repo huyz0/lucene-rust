@@ -523,3 +523,20 @@ fn a_scheduled_merge_reports_its_shape() {
         "non-string panic payload"
     );
 }
+
+/// OpenSearch's `maybeStall` returns at once: with stalling off, a producer
+/// over `max_merge_count` running merges is never held.
+#[test]
+fn producers_do_not_stall_when_stalling_is_off() {
+    let cms = ConcurrentMergeScheduler::new();
+    assert!(cms.stall_producers());
+    cms.set_stall_producers(false);
+    assert!(!cms.stall_producers());
+    cms.set_max_merges_and_threads(1, 1).unwrap();
+    let source = TestSource::with(&[("a", 1), ("b", 1), ("c", 1)]);
+    let src = dyn_source(&source);
+    cms.merge(&src, MergeTrigger::Explicit).unwrap();
+    assert_eq!(cms.stall_waits(), 0, "a producer stalled");
+    source.release_everything();
+    cms.sync().unwrap();
+}

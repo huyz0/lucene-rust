@@ -13,6 +13,9 @@ import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexWriterConfig;
 import org.apache.lucene.index.IndexableField;
 import org.apache.lucene.index.LiveIndexWriterConfig;
+import org.apache.lucene.index.LogByteSizeMergePolicy;
+import org.apache.lucene.index.MergePolicy;
+import org.apache.lucene.index.NoMergePolicy;
 import org.apache.lucene.index.SegmentInfos;
 import org.apache.lucene.index.Term;
 import org.apache.lucene.index.TieredMergePolicy;
@@ -84,6 +87,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
 
     private final Directory directory;
     private final long handle;
+    private final int indexCreatedVersionMajor;
     private final FieldRegistry registry;
     private final DocumentEncoder encoder;
     private final IndexWriterConfig config;
@@ -111,6 +115,8 @@ final class RustIndexWriter implements DocumentIndexWriter {
     private boolean faultInjection;
     /** Whether searches read the buffered documents ({@code index.lucene_rust.realtime_search}). */
     private boolean liveSearch;
+    /** The field whose value is a document's partition ({@code index.lucene_rust.partition_field}), or null. */
+    private String partitionField;
     /** The newest commit generation whose readers' buffers {@link #releaseLive} let go; under {@link #liveLock}. */
     private long liveReleased = -1;
     private final Object liveLock = new Object();
@@ -120,6 +126,8 @@ final class RustIndexWriter implements DocumentIndexWriter {
     private boolean policyInitialized;
     /** The merge policy settings last sent to the writer; under {@link #lock}. */
     private double[] mergePolicySettings;
+    /** What {@link #setPluggableMergePolicy} last sent; under {@link #lock}. */
+    private double[] pluggableMergePolicySettings;
     /** The writer options last sent ({@link #setOptions}); under {@link #lock}. */
     private double[] writerOptions;
     /**
@@ -145,6 +153,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
     ) {
         this.directory = directory;
         this.handle = handle;
+        this.indexCreatedVersionMajor = indexCreatedVersionMajor;
         this.registry = new FieldRegistry(this::register);
         this.encoder = new DocumentEncoder(registry, analyzer, similarity, indexCreatedVersionMajor, softDeletesField, formats);
         this.config = new IndexWriterConfig(analyzer).setSimilarity(similarity).setSoftDeletesField(softDeletesField);
@@ -156,7 +165,8 @@ final class RustIndexWriter implements DocumentIndexWriter {
     /**
      * Opens the writer over {@code indexPath} (the store's directory, which must hold a commit), and
      * hands every existing commit to {@code deletionPolicy.onInit}, as {@code IndexWriter}'s
-     * constructor does.
+     * constructor does. With a {@code partitionField}, each document goes to the segments of its
+     * partition ({@link #partition}).
      */
     static RustIndexWriter open(
         Directory directory,
@@ -166,6 +176,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
         boolean sparse,
         boolean liveSearch,
         boolean adaptiveDocValues,
+        String partitionField,
         int maxDocs,
         Analyzer analyzer,
         Similarity similarity,
@@ -178,6 +189,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
         org.apache.lucene.codecs.Codec codec
     ) throws IOException {
         installCommitDataUpcall();
+        RustMergeScheduler.installUpcall();
         long[] out = new long[1];
         int status = NativeBridge.writerOpen(
             org.lucenerust.opensearch.store.RustEncryptedDirectory.nativePath(indexPath).getBytes(StandardCharsets.UTF_8),
@@ -186,6 +198,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
             sparse,
             liveSearch,
             adaptiveDocValues,
+            partitionField != null,
             maxDocs,
             out
         );
@@ -209,6 +222,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
             w.breaker = breaker;
             w.faultInjection = faultInjection;
             w.liveSearch = liveSearch;
+            w.partitionField = partitionField;
             // IndexWriterConfig.setSoftDeletesField: the writer knows the field before any document
             // carries it, so the first soft update -- which may be the first use -- has a field to
             // land on.
@@ -382,14 +396,15 @@ final class RustIndexWriter implements DocumentIndexWriter {
     public long addDocument(ParseContext.Document doc, Term uid) throws IOException {
         ensureOpen();
         maybeInjectFault(doc);
-        apply(encoder.add(List.of(doc)), 1);
+        List<ParseContext.Document> docs = List.of(doc);
+        apply(encoder.add(partition(docs), docs), 1);
         return 0;
     }
 
     @Override
     public long addDocuments(List<ParseContext.Document> docs, Term uid) throws IOException {
         ensureOpen();
-        apply(encoder.add(docs), docs.size());
+        apply(encoder.add(partition(docs), docs), docs.size());
         return 0;
     }
 
@@ -397,6 +412,81 @@ final class RustIndexWriter implements DocumentIndexWriter {
     void addDocument(Iterable<? extends IndexableField> doc) throws IOException {
         ensureOpen();
         apply(encoder.add(List.of(doc)), 1);
+    }
+
+    /**
+     * The partition of a block of documents: the value of the partition field on its root document,
+     * which OpenSearch puts last (nested documents before their parent). A keyword's value is its
+     * doc-values bytes (UTF-8, or {@code 0x} and hex for bytes that are not, such as an ip's); a
+     * numeric's or date's is its long; with several values, the smallest. Null -- the shard's default
+     * partition -- without a partition field or a value. A value the field holds only as analyzed
+     * text is refused: a partition is one exact value.
+     */
+    String partition(List<? extends Iterable<? extends IndexableField>> docs) {
+        if (partitionField == null || docs.isEmpty()) {
+            return null;
+        }
+        BytesRef bytes = null;
+        boolean numeric = false;
+        long number = Long.MAX_VALUE;
+        BytesRef indexed = null;
+        boolean text = false;
+        for (IndexableField f : docs.get(docs.size() - 1)) {
+            if (f.name().equals(partitionField) == false) {
+                continue;
+            }
+            switch (f.fieldType().docValuesType()) {
+                case SORTED, SORTED_SET -> {
+                    BytesRef v = f.binaryValue();
+                    if (bytes == null || v.compareTo(bytes) < 0) {
+                        bytes = v;
+                    }
+                }
+                case NUMERIC, SORTED_NUMERIC -> {
+                    numeric = true;
+                    number = Math.min(number, f.numericValue().longValue());
+                }
+                default -> {
+                    if (f.fieldType().indexOptions() == org.apache.lucene.index.IndexOptions.NONE) {
+                        continue;
+                    }
+                    if (f.fieldType().tokenized()) {
+                        text = true;
+                    } else if (f.binaryValue() != null && (indexed == null || f.binaryValue().compareTo(indexed) < 0)) {
+                        // A keyword without doc values: its indexed term.
+                        indexed = f.binaryValue();
+                    }
+                }
+            }
+        }
+        if (bytes != null) {
+            return partitionString(bytes);
+        }
+        if (numeric) {
+            return Long.toString(number);
+        }
+        if (indexed != null) {
+            return partitionString(indexed);
+        }
+        if (text) {
+            throw new IllegalArgumentException(
+                "the partition field [" + partitionField + "] must be a keyword, numeric, date or ip field, not text"
+            );
+        }
+        return null;
+    }
+
+    /** A partition value's bytes as the string the segment records: UTF-8, or {@code 0x} and hex. */
+    private static String partitionString(BytesRef v) {
+        try {
+            return StandardCharsets.UTF_8.newDecoder()
+                .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+                .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
+                .decode(java.nio.ByteBuffer.wrap(v.bytes, v.offset, v.length))
+                .toString();
+        } catch (java.nio.charset.CharacterCodingException e) {
+            return "0x" + java.util.HexFormat.of().formatHex(v.bytes, v.offset, v.offset + v.length);
+        }
     }
 
     @Override
@@ -409,7 +499,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
         Field... softDeletesField
     ) throws IOException {
         ensureOpen();
-        apply(encoder.softUpdate(uid, docs, onlySoftDeletesField(softDeletesField)), docs.size());
+        apply(encoder.softUpdate(partition(docs), uid, docs, onlySoftDeletesField(softDeletesField)), docs.size());
     }
 
     @Override
@@ -417,7 +507,8 @@ final class RustIndexWriter implements DocumentIndexWriter {
         throws IOException {
         ensureOpen();
         maybeInjectFault(doc);
-        apply(encoder.softUpdate(uid, List.of(doc), onlySoftDeletesField(softDeletesField)), 1);
+        List<ParseContext.Document> docs = List.of(doc);
+        apply(encoder.softUpdate(partition(docs), uid, docs, onlySoftDeletesField(softDeletesField)), 1);
     }
 
     @Override
@@ -611,6 +702,56 @@ final class RustIndexWriter implements DocumentIndexWriter {
                 "setting the merge policy"
             );
             mergePolicySettings = settings;
+            if (mergeOnFlushPolicyWait >= 0) {
+                check(NativeBridge.writerSetMergeOnFlush(handle, mergeOnFlushPolicyWait, true), "setting merge-on-flush");
+            }
+        }
+    }
+
+    /**
+     * The shard's merge policy when it is not a {@code TieredMergePolicy}: a {@code
+     * LogByteSizeMergePolicy}'s settings, {@code NoMergePolicy}, or ({@code null}) the tiered policy
+     * {@link #setMergePolicy} configures; sent again only when one changed.
+     */
+    void setPluggableMergePolicy(MergePolicy policy) throws IOException {
+        int kind = NativeBridge.MERGE_POLICY_TIERED;
+        LogByteSizeMergePolicy log = null;
+        if (policy instanceof LogByteSizeMergePolicy l) {
+            kind = NativeBridge.MERGE_POLICY_LOG_BYTE_SIZE;
+            log = l;
+        } else if (policy instanceof NoMergePolicy) {
+            kind = NativeBridge.MERGE_POLICY_NONE;
+        }
+        double[] settings = log == null
+            ? new double[] { kind }
+            : new double[] {
+                kind,
+                log.getMergeFactor(),
+                log.getMinMergeMB(),
+                log.getMaxMergeMB(),
+                log.getMaxMergeMBForForcedMerge(),
+                log.getMaxMergeDocs(),
+                log.getNoCFSRatio(),
+                log.getMaxCFSSegmentSizeMB() };
+        synchronized (lock) {
+            if (Arrays.equals(settings, pluggableMergePolicySettings)) {
+                return;
+            }
+            check(
+                NativeBridge.writerSetPluggableMergePolicy(
+                    handle,
+                    kind,
+                    log == null ? 0 : log.getMergeFactor(),
+                    log == null ? 0 : megabytes(log.getMinMergeMB()),
+                    log == null ? 0 : megabytes(log.getMaxMergeMB()),
+                    log == null ? 0 : megabytes(log.getMaxMergeMBForForcedMerge()),
+                    log == null ? 0 : log.getMaxMergeDocs(),
+                    log == null ? 0 : log.getNoCFSRatio(),
+                    log == null ? 0 : megabytes(log.getMaxCFSSegmentSizeMB())
+                ),
+                "setting the merge policy"
+            );
+            pluggableMergePolicySettings = settings;
             if (mergeOnFlushPolicyWait >= 0) {
                 check(NativeBridge.writerSetMergeOnFlush(handle, mergeOnFlushPolicyWait, true), "setting merge-on-flush");
             }
@@ -948,7 +1089,36 @@ final class RustIndexWriter implements DocumentIndexWriter {
 
     @Override
     public boolean hasPendingMerges() {
-        return false;
+        if (closed) {
+            return false;
+        }
+        boolean[] pending = new boolean[1];
+        return NativeBridge.writerMergeState(handle, pending, new double[1]) == NativeBridge.OK && pending[0];
+    }
+
+    /** The merge scheduler's IO rate limit in MB/s, infinite when merges are not throttled. */
+    double mergeIoRateMbPerSec() {
+        double[] rate = { Double.POSITIVE_INFINITY };
+        if (closed == false) {
+            NativeBridge.writerMergeState(handle, new boolean[1], rate);
+        }
+        return rate[0];
+    }
+
+    /**
+     * {@code IndexWriterConfig.setMergedSegmentWarmer}: {@code warmer} gets every merged segment
+     * before its merge is published.
+     */
+    void setMergedSegmentWarmer(IndexWriter.IndexReaderWarmer warmer) {
+        synchronized (lock) {
+            ensureOpen();
+            RustMergedSegmentWarmer.install(handle, directory, indexCreatedVersionMajor, warmer);
+        }
+    }
+
+    /** The native writer's handle. */
+    long handle() {
+        return handle;
     }
 
     // ---- state ----
@@ -1024,6 +1194,8 @@ final class RustIndexWriter implements DocumentIndexWriter {
                 if (nativeClosed == false) {
                     nativeClosed = true;
                     NativeBridge.writerClose(handle);
+                    RustMergeScheduler.detach(handle);
+                    RustMergedSegmentWarmer.remove(handle);
                 }
             } finally {
                 indexing.writeLock().unlock();

@@ -135,6 +135,9 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// address and the set's offset in it.
 pub(crate) use crate::sparse_docs_cache::DocsWithFieldCache;
 
+/// By field, `(sumTotalTermFreq, sumDocFreq, docCount)`.
+type FieldStats = HashMap<String, (i64, i64, i32)>;
+
 /// One opened segment: everything [`OpenSegment`] needs, already decoded/
 /// validated, plus the bookkeeping ([`SegmentReader::doc_base`]) real
 /// `SegmentReader.docBase` carries. `fields`/`live_docs` are owned outright
@@ -257,6 +260,10 @@ pub struct SegmentReader {
     /// Set once this segment's `.doc`/`.pos`/`.pay` headers and footers have
     /// been validated: later searches open them without reading either again.
     postings_validated: Arc<std::sync::atomic::AtomicBool>,
+    /// For postings put in by [`Self::with_postings`]: every requested
+    /// field's `(sumTotalTermFreq, sumDocFreq, docCount)` over the
+    /// segment, also for a field none of whose requested terms it holds.
+    postings_stats: Option<Arc<FieldStats>>,
     /// The segment's parsed `.dvm` (per-field entries -- `NumericEntry`,
     /// `SortedEntry`, etc., each already carrying whichever of the
     /// dense/sparse shapes `doc_values.rs`'s write side actually produced;
@@ -462,6 +469,10 @@ impl SegmentReader {
         // written by a `Lucene90`..`Lucene95` codec has no `hasBlocks` byte.
         let si: SegmentInfo =
             segment_info::parse_for_codec(&si_bytes, &segment_id, &commit.codec_name)?;
+
+        // Every file the open below reads, fetched at once from a directory
+        // that reads by range. Only a hint: each open reports its own error.
+        let _ = dir.prefetch_files(&commit.files(&si.files));
 
         // Compound-file segments (`.cfs`/`.cfe`) pack every other codec file
         // into one archive -- see `open_segment_file`'s doc comment for how
@@ -996,6 +1007,7 @@ impl SegmentReader {
             // A multi-format segment's postings were validated format by
             // format as they were opened and concatenated.
             postings_validated: Arc::new(std::sync::atomic::AtomicBool::new(multi_format)),
+            postings_stats: None,
             dv_meta,
             dv_generations,
             norms_meta,
@@ -1342,21 +1354,30 @@ impl SegmentReader {
         let Some(f) = self.stored.as_deref() else {
             return Ok(false);
         };
-        let meta = match f.meta.get() {
-            Some(m) => m,
-            None => {
-                let opened = lucene_codecs::stored_fields::open(
-                    &f.fdt,
-                    &f.fdx,
-                    &f.fdm,
-                    &self.segment_id,
-                    &f.suffix,
-                )?;
-                f.meta.get_or_init(|| opened.rebind(&[], &[]))
-            }
-        };
-        meta.rebind(&f.fdt, &f.fdx).visit_document(doc, visitor)?;
+        f.reader(&self.segment_id)?.visit_document(doc, visitor)?;
         Ok(true)
+    }
+
+    /// `StoredFields.prefetch(docID)` for each of `docs`: announces the
+    /// documents a fetch phase is about to read, so their chunks of a file
+    /// read by range arrive in one round trip ([`lucene_store::prefetch`]).
+    /// A no-op for files in memory or mapped, and for a segment without
+    /// stored fields.
+    ///
+    /// # Errors
+    /// A chunk that could not be fetched.
+    pub fn prefetch_stored_documents(&self, docs: &[i32]) -> Result<()> {
+        if self.simpletext.is_some() {
+            return Ok(());
+        }
+        let Some(f) = self.stored.as_deref() else {
+            return Ok(());
+        };
+        if !lucene_store::is_prefetchable(&f.fdt) {
+            return Ok(());
+        }
+        f.reader(&self.segment_id)?.prefetch(docs)?;
+        Ok(())
     }
 
     /// This segment's 16-byte id, needed by any codec reader opened directly
@@ -1704,7 +1725,58 @@ impl SegmentReader {
         Ok(self
             .fields
             .field(field)
-            .map(|terms| (terms.sum_total_term_freq, terms.doc_count)))
+            .map(|terms| (terms.sum_total_term_freq, terms.doc_count))
+            .or_else(|| {
+                let &(ttf, _, dc) = self.postings_stats.as_ref()?.get(field)?;
+                Some((ttf, dc))
+            }))
+    }
+
+    /// `(sumTotalTermFreq, sumDocFreq, docCount)` of a field these postings
+    /// ([`Self::with_postings`]) hold no term of, though its documents do:
+    /// what the reader-wide statistics count of this segment for it.
+    pub fn termless_field_stats(&self, field: &str) -> Option<(i64, i64, i32)> {
+        if self.fields.field(field).is_some() {
+            return None;
+        }
+        self.postings_stats.as_ref()?.get(field).copied()
+    }
+
+    /// This segment with `live`'s postings in place of its own: the same
+    /// documents, doc values, points, norms and stored fields, and only the
+    /// terms `live` encoded, with `live`'s field statistics. For a segment
+    /// written without postings whose documents' terms are read elsewhere
+    /// (the writer's buffers), one search at a time. `live` must number
+    /// the same documents.
+    ///
+    /// # Errors
+    /// When `live` holds other than this segment's number of documents, or
+    /// its postings files do not open.
+    pub fn with_postings(
+        &self,
+        live: crate::live_segment::LiveSegment,
+    ) -> crate::Result<SegmentReader> {
+        if live.max_doc() != self.max_doc {
+            return Err(crate::Error::IllegalArgument(format!(
+                "postings of {} documents for segment {} of {}",
+                live.max_doc(),
+                self.segment_name,
+                self.max_doc
+            )));
+        }
+        live.inputs()?;
+        let parts = live.into_postings();
+        let owned = |bytes: Vec<u8>| (!bytes.is_empty()).then(|| Arc::new(Input::Owned(bytes)));
+        let mut reader = self.clone();
+        reader.fields = Arc::new(parts.terms);
+        reader.doc_buf = owned(parts.doc);
+        reader.pos_buf = owned(parts.pos);
+        reader.pay_buf = owned(parts.pay);
+        reader.postings_files = Vec::new();
+        reader.postings_validated = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        reader.query_cache = Arc::default();
+        reader.postings_stats = Some(Arc::new(parts.field_stats));
+        Ok(reader)
     }
 
     /// The name of this segment's soft-deletes field, if its `.fnm` marks one
@@ -2274,6 +2346,29 @@ struct StoredFiles {
     /// rebinds it to `fdt`/`fdx` (the reader borrows its files, and these
     /// are owned beside it).
     meta: OnceLock<lucene_codecs::stored_fields::StoredFieldsReader<'static>>,
+}
+
+impl StoredFiles {
+    /// A reader over the files, the metadata parsed on first use and kept.
+    fn reader(
+        &self,
+        segment_id: &[u8; ID_LENGTH],
+    ) -> Result<lucene_codecs::stored_fields::StoredFieldsReader<'_>> {
+        let meta = match self.meta.get() {
+            Some(m) => m,
+            None => {
+                let opened = lucene_codecs::stored_fields::open(
+                    &self.fdt,
+                    &self.fdx,
+                    &self.fdm,
+                    segment_id,
+                    &self.suffix,
+                )?;
+                self.meta.get_or_init(|| opened.rebind(&[], &[]))
+            }
+        };
+        Ok(meta.rebind(&self.fdt, &self.fdx))
+    }
 }
 
 impl std::fmt::Debug for StoredFiles {

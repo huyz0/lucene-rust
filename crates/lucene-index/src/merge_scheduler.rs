@@ -238,6 +238,9 @@ struct CmsState {
     /// How many times a producer has waited in `maybeStall` (observability,
     /// and what the stall tests wait for).
     stall_waits: u64,
+    /// Whether `maybeStall` stalls producers; see
+    /// [`ConcurrentMergeScheduler::set_stall_producers`].
+    stall_producers: bool,
 }
 
 type Clock = Box<dyn Fn() -> i64 + Send + Sync>;
@@ -316,6 +319,7 @@ impl ConcurrentMergeScheduler {
                     force_merge_mb_per_sec: f64::INFINITY,
                     errors: Vec::new(),
                     stall_waits: 0,
+                    stall_producers: true,
                 }),
                 cond: Condvar::new(),
                 clock,
@@ -441,6 +445,19 @@ impl ConcurrentMergeScheduler {
             .iter()
             .filter(|t| t.thread != Some(current) && t.is_alive() && !t.merge.is_aborted())
             .count()
+    }
+
+    /// Whether producers stall while `max_merge_count` merges run (on by
+    /// default). OpenSearch's `OpenSearchConcurrentMergeScheduler.maybeStall`
+    /// never stalls: its engine throttles indexing itself.
+    pub fn set_stall_producers(&self, stall: bool) {
+        lock(&self.inner.state).stall_producers = stall;
+        self.inner.cond.notify_all();
+    }
+
+    /// See [`Self::set_stall_producers`].
+    pub fn stall_producers(&self) -> bool {
+        lock(&self.inner.state).stall_producers
     }
 
     /// How many times a producer thread has waited because too many merges
@@ -587,6 +604,9 @@ impl ConcurrentMergeScheduler {
         mut s: MutexGuard<'a, CmsState>,
         source: &Arc<dyn MergeSource>,
     ) -> (MutexGuard<'a, CmsState>, bool) {
+        if !s.stall_producers {
+            return (s, true);
+        }
         let current = std::thread::current().id();
         while source.has_pending_merges()
             && i64::try_from(Self::count_merge_threads(&s)).unwrap_or(i64::MAX)

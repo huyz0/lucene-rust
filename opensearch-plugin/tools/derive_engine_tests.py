@@ -68,7 +68,6 @@ SKIPPED: dict[str, str] = {
     "testMergeSegmentsOnCommit": "merges are the Rust writer's own policy, run at commit; index.merge_on_flush is not honoured",
     "testMergeSegmentsOnCommitDefault": "merges are the Rust writer's own policy, run at commit; index.merge_on_flush is not honoured",
     "testMergeSegmentsOnCommitIsDisabled": "merges are the Rust writer's own policy, run at commit; index.merge_on_flush is not honoured",
-    "testShouldPeriodicallyFlushAfterMerge": "merges run inside the Rust writer's commit, so no merge scheduler reports a big merge to flush after",
     "testNotWarmUpSearcherInEngineCtor": "asserts through Engine.assertSearcherIsWarmedUp, which is package-private and cannot be overridden from a plugin",
 }
 

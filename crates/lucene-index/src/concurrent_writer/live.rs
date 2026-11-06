@@ -64,6 +64,28 @@ pub struct LiveFieldRequest {
     /// as indexing documents and frequencies only, which is all a search
     /// with no phrase, span or interval clause on it reads.
     pub positions: bool,
+    /// Read every buffered term any of these match too.
+    pub patterns: Vec<LivePattern>,
+}
+
+/// A set of terms named by a pattern ([`LiveFieldRequest::patterns`]).
+#[derive(Debug, Clone)]
+pub enum LivePattern {
+    /// A wildcard (or prefix) pattern.
+    Wildcard(lucene_codecs::wildcard::WildcardPattern),
+    /// A regexp with a compiled automaton
+    /// ([`lucene_codecs::regexp::RegexpPattern::dfa_matches`]); one without
+    /// matches nothing here.
+    Regexp(lucene_codecs::regexp::RegexpPattern),
+}
+
+impl LivePattern {
+    fn matches(&self, term: &[u8]) -> bool {
+        match self {
+            LivePattern::Wildcard(p) => p.matches(term),
+            LivePattern::Regexp(p) => p.dfa_matches(term).unwrap_or(false),
+        }
+    }
 }
 
 /// A consistent cut through the writer's buffers: see the module doc.
@@ -571,6 +593,7 @@ fn delete_terms(nodes: &[Arc<DeleteNode>], soft_field: Option<&str>) -> Option<V
 struct Wanted<'a> {
     info: &'a FieldInfo,
     terms: Vec<&'a [u8]>,
+    patterns: &'a [LivePattern],
     positions: bool,
 }
 
@@ -607,11 +630,36 @@ pub struct ViewBuffer {
 }
 
 impl ViewBuffer {
-    /// By field number, how many of the view's documents of the buffer
-    /// have the field, deleted ones included.
-    pub fn doc_counts(&self) -> HashMap<i32, i32> {
-        self.stats.iter().map(|(&f, s)| (f, s.doc_count)).collect()
+    /// By field number, the statistics of the view's documents of the
+    /// buffer, deleted ones included.
+    pub fn field_totals(&self) -> HashMap<i32, FieldTotals> {
+        self.stats
+            .iter()
+            .map(|(&f, s)| {
+                (
+                    f,
+                    FieldTotals {
+                        num_terms: s.num_terms,
+                        sum_total_term_freq: s.sum_total_term_freq,
+                        sum_doc_freq: s.sum_doc_freq,
+                        doc_count: s.doc_count,
+                    },
+                )
+            })
+            .collect()
     }
+}
+
+/// A field's statistics over a buffer's first documents: see
+/// [`ViewBuffer::field_totals`]. Those of documents `a..b` are the
+/// difference of the totals at `b` and at `a`, but for `num_terms` (the
+/// distinct terms, which do not subtract).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FieldTotals {
+    pub num_terms: i64,
+    pub sum_total_term_freq: i64,
+    pub sum_doc_freq: i64,
+    pub doc_count: i32,
 }
 
 /// A buffered document's stored fields, in the order they were added.
@@ -704,7 +752,7 @@ impl ConcurrentIndexWriter<'_> {
     /// filled without it cannot be read.
     pub fn enable_live_search(&self) -> Result<()> {
         let slots: Vec<_> = self.slots.iter().map(lock).collect();
-        if slots.iter().any(|d| !d.docs.is_empty()) {
+        if slots.iter().any(|d| d.has_docs()) {
             return Err(Error::LiveSearch(
                 "live search must be enabled before the first document".into(),
             ));
@@ -810,10 +858,10 @@ impl ConcurrentIndexWriter<'_> {
             commit_deletes: Vec::new(),
         };
         for (dwpt, tail) in slots.iter().zip(&slot_tails) {
-            if dwpt.docs.is_empty() {
+            if !dwpt.has_docs() {
                 continue;
             }
-            let max_doc = i32::try_from(dwpt.docs.len()).unwrap_or(i32::MAX);
+            let max_doc = i32::try_from(dwpt.num_docs()).unwrap_or(i32::MAX);
             let source = Source {
                 postings: &dwpt.postings,
                 columns: &dwpt.live,
@@ -874,25 +922,29 @@ impl ConcurrentIndexWriter<'_> {
     /// needing whole segments (doc values, points, every term) reads a
     /// view's buffers through. `doc_counts` is, by field number, how many
     /// of those documents have the field: the difference of the
-    /// [`ViewBuffer::doc_counts`] of views of `end` and of `start`
+    /// `doc_count`s of the [`ViewBuffer::field_totals`] of views of `end` and of `start`
     /// documents. Stored fields are not written ([`Self::live_document`]
     /// reads them); deletes are the caller's.
     ///
     /// A range starting where an earlier one ended reads the buffered
     /// postings from there on; `next_starts` names the documents ranges
     /// may start at next (the ends of the ranges kept), and where other
-    /// ranges ended is forgotten.
+    /// ranges ended is forgotten. Without `postings` the segment has no
+    /// terms (norms, doc values and points only), for a search that reads
+    /// the terms it needs through [`Self::live_view_snapshot`].
     ///
     /// The buffer's slot is locked while the segment is written. Fails when
     /// the buffer has left its slot (taken for a flush since), when it
     /// holds fewer than `end` documents, and under an index sort, which
     /// would renumber the documents.
+    #[allow(clippy::too_many_arguments)]
     pub fn live_buffer_segment(
         &self,
         id: u64,
         range: std::ops::Range<i32>,
         doc_counts: HashMap<i32, i32>,
         next_starts: &[i32],
+        postings: bool,
         dir: &dyn lucene_store::Directory,
         name: &str,
     ) -> Result<crate::segment_infos::SegmentCommitInfo> {
@@ -904,33 +956,39 @@ impl ConcurrentIndexWriter<'_> {
         }
         let slot = self
             .slot_of(id)
-            .filter(|d| !d.docs.is_empty())
+            .filter(|d| d.has_docs())
             .ok_or_else(|| Error::LiveSearch(format!("buffer {id} is being flushed")))?;
         let (Ok(start), Ok(end)) = (usize::try_from(range.start), usize::try_from(range.end))
         else {
             return Err(Error::LiveSearch("a negative document range".into()));
         };
-        if start >= end || end > slot.docs.len() {
+        if start >= end || end > slot.num_docs() {
             return Err(Error::LiveSearch(format!(
                 "documents {start}..{end} of a buffer of {}",
-                slot.docs.len()
+                slot.num_docs()
             )));
         }
         let limit = crate::index_writer::BufferLimit {
             start: range.start,
             docs: range.end,
             doc_counts,
+            postings,
         };
+        // Documents counted but not held (`Dwpt::stored_docs`) are empty.
+        let docs = padded(&slot.docs, start, end);
+        let custom_freq_terms = padded_or_empty(&slot.custom_freq_terms, start, end);
+        let vectors = padded_or_empty(&slot.vectors, start, end);
         let buffer = crate::index_writer::DocumentBuffer {
-            docs: slot.docs.get(start..end).unwrap_or_default(),
-            custom_freq_terms: slot.custom_freq_terms.get(start..end).unwrap_or_default(),
-            vectors: slot.vectors.get(start..end).unwrap_or_default(),
+            docs: &docs,
+            custom_freq_terms: &custom_freq_terms,
+            vectors: &vectors,
             explicit: crate::index_writer::ExplicitDocs::PackedRange(&slot.explicit, start, end),
             postings: Some(&slot.postings),
             old_to_new: None,
             has_blocks: slot.has_blocks,
             stored: None,
             limit: Some(&limit),
+            partition: slot.partition.as_deref(),
         };
         let (sci, _) = cfg.build_and_write_segment(
             dir,
@@ -939,7 +997,9 @@ impl ConcurrentIndexWriter<'_> {
             lucene_util::string_helper::random_id(),
             None,
         )?;
-        slot.postings.keep_cursors_at(next_starts);
+        if postings {
+            slot.postings.keep_cursors_at(next_starts);
+        }
         Ok(sci)
     }
 
@@ -1019,6 +1079,7 @@ impl ConcurrentIndexWriter<'_> {
                 Some(Wanted {
                     info,
                     terms,
+                    patterns: &r.patterns,
                     positions: r.positions && info.index_options.subsumes_positions(),
                 })
             })
@@ -1132,8 +1193,19 @@ fn read_buffer(
         ) else {
             continue;
         };
+        let matched: Vec<&[u8]>;
+        let names: &[&[u8]] = if w.patterns.is_empty() {
+            &w.terms
+        } else {
+            let mut all = w.terms.clone();
+            all.extend(runs.live_matching(|t| w.patterns.iter().any(|p| p.matches(t))));
+            all.sort_unstable();
+            all.dedup();
+            matched = all;
+            &matched
+        };
         let mut terms = Vec::new();
-        for t in &w.terms {
+        for &t in names {
             if let Some(mut p) = runs.live_term(t, w.positions)? {
                 truncate(&mut p, view.max_doc);
                 if !p.docs.is_empty() {
@@ -1171,6 +1243,31 @@ fn read_buffer(
         deleted: view.deleted.clone(),
         fields,
     })
+}
+
+/// `list[start..end]`, with default entries for the documents past the end of `list`.
+fn padded<T: Clone + Default>(list: &[T], start: usize, end: usize) -> std::borrow::Cow<'_, [T]> {
+    match list.get(start..end) {
+        Some(held) => held.into(),
+        None => {
+            let mut out = list.get(start..).unwrap_or_default().to_vec();
+            out.resize_with(end.saturating_sub(start), T::default);
+            out.into()
+        }
+    }
+}
+
+/// Like [`padded`], but an empty list (no document has an entry) stays empty.
+fn padded_or_empty<T: Clone + Default>(
+    list: &[T],
+    start: usize,
+    end: usize,
+) -> std::borrow::Cow<'_, [T]> {
+    if list.is_empty() {
+        list.into()
+    } else {
+        padded(list, start, end)
+    }
 }
 
 /// Drops `p`'s documents from `max_doc` on, with their occurrences.

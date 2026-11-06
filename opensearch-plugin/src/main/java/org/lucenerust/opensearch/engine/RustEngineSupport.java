@@ -78,6 +78,20 @@ public final class RustEngineSupport {
     );
 
     /**
+     * The field whose value is a document's partition, as a partitioned table's partition key: every
+     * segment of the shard holds the documents of one partition (a keyword's value, or a numeric's or
+     * date's), and merges never mix partitions, so each partition's documents stay together on disk.
+     * Documents without a value, and delete tombstones, share one default partition. Empty (the
+     * default) partitions nothing. Segments record their partition the way OpenSearch's context-aware
+     * segments do, so OpenSearch's own engine reads and merges them alike.
+     */
+    public static final Setting<String> PARTITION_FIELD = Setting.simpleString(
+        "index.lucene_rust.partition_field",
+        Setting.Property.IndexScope,
+        Setting.Property.Final
+    );
+
+    /**
      * Test-only: a document with a {@code __lucene_rust_panic} field makes the writer panic inside
      * its lock, for the "a panic fails exactly one shard" check. Never set on a real index.
      */
@@ -252,6 +266,12 @@ public final class RustEngineSupport {
         return null;
     }
 
+    /** {@link #PARTITION_FIELD}, or null when it names none. */
+    static String partitionField(org.opensearch.common.settings.Settings settings) {
+        String field = PARTITION_FIELD.get(settings);
+        return field.isEmpty() ? null : field;
+    }
+
     static RustIndexWriter openWriter(
         EngineConfig config,
         Store store,
@@ -269,6 +289,7 @@ public final class RustEngineSupport {
             org.lucenerust.opensearch.sparse.SparseSettings.SPARSE_INDEX.get(config.getIndexSettings().getSettings()),
             REALTIME_SEARCH.get(config.getIndexSettings().getSettings()),
             ADAPTIVE_DOC_VALUES.get(config.getIndexSettings().getSettings()),
+            partitionField(config.getIndexSettings().getSettings()),
             maxDocs,
             config.getAnalyzer(),
             config.getSimilarity(),
@@ -288,6 +309,13 @@ public final class RustEngineSupport {
             refreshMergePolicy(writer, config);
             writer.setMergeOnFlush(Math.max(wait, 0), wait > 0 && indexSettings.getMergeOnFlushPolicy().isPresent());
             refreshMergeScheduler(writer, config);
+            // NativeLuceneIndexWriterFactory: merged segments are warmed (pre-copied to replicas) on
+            // segment-replication indices.
+            if (indexSettings.isDocumentReplication() == false
+                && (indexSettings.isSegRepLocalEnabled() || indexSettings.isRemoteStoreEnabled())
+                && config.getIndexReaderWarmer() != null) {
+                writer.setMergedSegmentWarmer(config.getIndexReaderWarmer());
+            }
             success = true;
         } finally {
             if (success == false) {
@@ -321,8 +349,9 @@ public final class RustEngineSupport {
     }
 
     /**
-     * The shard's {@code index.merge.policy.*} for the Rust writer: the {@code TieredMergePolicy}
-     * OpenSearch's provider keeps (and updates in place when the settings change), under its wrappers.
+     * The shard's merge policy for the Rust writer, under its wrappers: the {@code TieredMergePolicy}
+     * or {@code LogByteSizeMergePolicy} OpenSearch's provider keeps (and updates in place when the
+     * settings change), or {@code NoMergePolicy} when merges are off.
      */
     static void refreshMergePolicy(DocumentIndexWriter writer, EngineConfig config) {
         if (writer instanceof RustIndexWriter rust) {
@@ -333,6 +362,11 @@ public final class RustEngineSupport {
             try {
                 if (policy instanceof TieredMergePolicy tiered) {
                     rust.setMergePolicy(tiered);
+                    rust.setPluggableMergePolicy(null);
+                } else {
+                    // log_byte_size, or index.merge.enabled: false. No OpenSearch setting yields any
+                    // other policy; one a test passes in directly merges with the tiered defaults.
+                    rust.setPluggableMergePolicy(policy);
                 }
                 // NativeLuceneIndexWriterFactory's setUseCompoundFile and setCheckPendingFlushUpdate,
                 // the policy's compound-file ratio and cap, and its ShuffleForcedMergePolicy wrapper.

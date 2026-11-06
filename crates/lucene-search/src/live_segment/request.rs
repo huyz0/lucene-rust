@@ -3,8 +3,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use lucene_codecs::postings_writer::TermPostings;
 use lucene_index::concurrent_writer::{
-    LiveBufferField, LiveFieldRequest, LiveRequest, LiveSnapshot,
+    FieldTotals, LiveBuffer, LiveBufferField, LiveFieldRequest, LivePattern, LiveRequest,
+    LiveSnapshot,
 };
 
 use super::{LiveField, LiveSegment};
@@ -15,29 +17,61 @@ use crate::Result;
 /// positions; `None` when it has a clause the buffers cannot answer yet
 /// (multi-term, points, doc values, spans and other extended queries).
 pub fn live_request(clause: &Clause) -> Option<LiveRequest> {
-    let mut fields: BTreeMap<&str, (BTreeSet<&[u8]>, bool)> = BTreeMap::new();
-    collect(clause, &mut fields)?;
-    Some(LiveRequest {
-        fields: fields
-            .into_iter()
-            .map(|(field, (terms, positions))| LiveFieldRequest {
-                field: field.to_string(),
-                terms: terms.into_iter().map(<[u8]>::to_vec).collect(),
-                positions,
-            })
-            .collect(),
-    })
+    let mut fields = Fields::new();
+    collect(clause, &mut fields, false)?;
+    Some(request_of(fields))
 }
 
-type Fields<'a> = BTreeMap<&'a str, (BTreeSet<&'a [u8]>, bool)>;
+/// The terms `clauses` read, as [`live_request`], for searching segments
+/// that hold the documents' doc values and points but none of their terms
+/// ([`crate::directory_reader::SegmentReader::with_postings`]): a points
+/// clause reads nothing from the buffers then, and a prefix, wildcard or
+/// regexp clause reads the buffered terms it matches.
+pub fn whole_request(clauses: &[&Clause]) -> Option<LiveRequest> {
+    let mut fields = Fields::new();
+    for c in clauses {
+        collect(c, &mut fields, true)?;
+    }
+    Some(request_of(fields))
+}
+
+fn request_of(fields: Fields<'_>) -> LiveRequest {
+    LiveRequest {
+        fields: fields
+            .into_iter()
+            .map(|(field, f)| LiveFieldRequest {
+                field: field.to_string(),
+                terms: f.terms.into_iter().map(<[u8]>::to_vec).collect(),
+                positions: f.positions,
+                patterns: f.patterns,
+            })
+            .collect(),
+    }
+}
+
+/// What a request reads of one field.
+#[derive(Default)]
+struct Field<'a> {
+    terms: BTreeSet<&'a [u8]>,
+    positions: bool,
+    patterns: Vec<LivePattern>,
+}
+
+type Fields<'a> = BTreeMap<&'a str, Field<'a>>;
 
 fn add<'a>(fields: &mut Fields<'a>, field: &'a str, term: &'a [u8], positions: bool) {
     let e = fields.entry(field).or_default();
-    e.0.insert(term);
-    e.1 |= positions;
+    e.terms.insert(term);
+    e.positions |= positions;
 }
 
-fn collect<'a>(clause: &'a Clause, fields: &mut Fields<'a>) -> Option<()> {
+fn add_pattern<'a>(fields: &mut Fields<'a>, field: &'a str, pattern: LivePattern) {
+    fields.entry(field).or_default().patterns.push(pattern);
+}
+
+/// With `lean`, for segments holding doc values and points but no terms:
+/// points clauses read nothing and multi-term clauses read patterns.
+fn collect<'a>(clause: &'a Clause, fields: &mut Fields<'a>, lean: bool) -> Option<()> {
     match clause {
         Clause::Term(t) => add(fields, &t.field, &t.term, false),
         Clause::TermInSet(q) => {
@@ -63,17 +97,35 @@ fn collect<'a>(clause: &'a Clause, fields: &mut Fields<'a>) -> Option<()> {
                 .chain(&b.should)
                 .chain(&b.must_not)
             {
-                collect(c, fields)?;
+                collect(c, fields, lean)?;
             }
         }
         Clause::DisjunctionMax(d) => {
             for c in &d.disjuncts {
-                collect(c, fields)?;
+                collect(c, fields, lean)?;
             }
         }
-        Clause::ConstantScore(c) => collect(&c.inner, fields)?,
-        Clause::Boost(b) => collect(&b.inner, fields)?,
+        Clause::ConstantScore(c) => collect(&c.inner, fields, lean)?,
+        Clause::Boost(b) => collect(&b.inner, fields, lean)?,
         Clause::MatchAllDocs(_) | Clause::MatchNoDocs(_) => {}
+        Clause::PointsRange(_) if lean => {}
+        Clause::Prefix(q) if lean => add_pattern(
+            fields,
+            &q.field,
+            LivePattern::Wildcard(lucene_codecs::wildcard::WildcardPattern::prefix(&q.prefix)),
+        ),
+        Clause::Wildcard(q) if lean => add_pattern(
+            fields,
+            &q.field,
+            LivePattern::Wildcard(lucene_codecs::wildcard::WildcardPattern::new(&q.pattern)),
+        ),
+        Clause::Regexp(q) if lean => {
+            // Only one the dictionaries expand with a compiled automaton:
+            // the buffers' terms are picked by the same one.
+            let p = lucene_codecs::regexp::RegexpPattern::new(q.pattern.as_bytes()).ok()?;
+            p.dfa_matches(b"")?;
+            add_pattern(fields, &q.field, LivePattern::Regexp(p));
+        }
         _ => return None,
     }
     Some(())
@@ -103,4 +155,100 @@ pub fn live_segments(snapshot: LiveSnapshot) -> Result<Vec<LiveSegment>> {
             LiveSegment::build(&fields, b.max_doc, &b.deleted)
         })
         .collect()
+}
+
+/// Documents `start..end` of `buffer`'s requested terms as a segment of
+/// their own, numbered from `start`, for
+/// [`crate::directory_reader::SegmentReader::with_postings`] over the
+/// segment those documents were written to. Each field's statistics are
+/// those of the documents: `totals(field_number)` gives the buffer's at
+/// `start` and at `end`. No norms and no deletes: the segment has its own.
+///
+/// # Errors
+/// What [`LiveSegment::build`] reports.
+pub fn range_segment(
+    buffer: &LiveBuffer,
+    start: i32,
+    end: i32,
+    totals: &dyn Fn(i32) -> (FieldTotals, FieldTotals),
+) -> Result<LiveSegment> {
+    let fields: Vec<LiveField> = buffer
+        .fields
+        .iter()
+        .map(|f| {
+            let (from, to) = totals(f.info.number);
+            let terms: Vec<TermPostings> = f
+                .terms
+                .iter()
+                .filter_map(|t| range_of(t, start, end))
+                .collect();
+            LiveField {
+                info: f.info.clone(),
+                // The terms held, not the chunk's: a reader that takes a
+                // dictionary as complete when its size is the field's
+                // ordinal count must not take this one so.
+                num_terms: terms.len() as i64,
+                terms,
+                norms: None,
+                sum_total_term_freq: to
+                    .sum_total_term_freq
+                    .saturating_sub(from.sum_total_term_freq),
+                sum_doc_freq: to.sum_doc_freq.saturating_sub(from.sum_doc_freq),
+                doc_count: to.doc_count.saturating_sub(from.doc_count),
+            }
+        })
+        .collect();
+    LiveSegment::build(&fields, end.saturating_sub(start), &[])
+}
+
+/// `t`'s documents in `start..end`, renumbered from `start`; `None` when it
+/// has none there.
+fn range_of(t: &TermPostings, start: i32, end: i32) -> Option<TermPostings> {
+    let lo = t.docs.partition_point(|&(d, _)| d < start);
+    let hi = t.docs.partition_point(|&(d, _)| d < end);
+    if lo == hi {
+        return None;
+    }
+    // Payloads are one length per occurrence, the occurrences of every
+    // document in turn.
+    let occurrences = |docs: &[Vec<i32>]| docs.iter().map(Vec::len).sum::<usize>();
+    let (occ_lo, occ_hi) = if t.payload_lengths.is_empty() {
+        (0, 0)
+    } else {
+        let before = occurrences(t.positions.get(..lo).unwrap_or_default());
+        (
+            before,
+            before + occurrences(t.positions.get(lo..hi).unwrap_or_default()),
+        )
+    };
+    let byte = |occ: usize| -> usize {
+        t.payload_lengths
+            .get(..occ)
+            .unwrap_or_default()
+            .iter()
+            .map(|&l| l as usize)
+            .sum()
+    };
+    Some(TermPostings {
+        term: t.term.clone(),
+        docs: t.docs[lo..hi]
+            .iter()
+            .map(|&(d, f)| (d.saturating_sub(start), f))
+            .collect(),
+        positions: t.positions.get(lo..hi).unwrap_or_default().to_vec(),
+        offsets: t.offsets.get(lo..hi).unwrap_or_default().to_vec(),
+        payload_bytes: if t.payload_lengths.is_empty() {
+            Vec::new()
+        } else {
+            t.payload_bytes
+                .get(byte(occ_lo)..byte(occ_hi))
+                .unwrap_or_default()
+                .to_vec()
+        },
+        payload_lengths: t
+            .payload_lengths
+            .get(occ_lo..occ_hi)
+            .unwrap_or_default()
+            .to_vec(),
+    })
 }
