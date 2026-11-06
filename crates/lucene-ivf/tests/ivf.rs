@@ -557,6 +557,7 @@ fn clustering_params_are_honoured() {
             rerank_encoding: VectorEncoding::F32,
             calibration_recall: None,
             merge_clustering: MergeClustering::Recluster,
+            routing_tree_min: usize::MAX,
         },
     )
     .unwrap();

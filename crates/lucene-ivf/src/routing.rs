@@ -47,7 +47,7 @@ pub const TREE_FANOUT: usize = 64;
 /// How a field's similarity ranks centroids: `score = w * dot(q, c) + b`
 /// per centroid, larger is nearer.
 fn weights(similarity: Similarity, centroids: &[f32], dim: usize) -> (Vec<f32>, Vec<f32>) {
-    let n = centroids.len() / dim;
+    let n = centroids.len().checked_div(dim).unwrap_or(0);
     match similarity {
         // -|q - c|^2 = 2 q.c - |c|^2 - |q|^2; the last term is the same for
         // every centroid.
@@ -117,7 +117,7 @@ struct Level {
 
 impl Level {
     fn new(rows: &[f32], dim: usize, similarity: Similarity) -> Self {
-        let n = rows.len() / dim;
+        let n = rows.len().checked_div(dim).unwrap_or(0);
         let mut mean = vec![0f32; dim];
         for r in rows.chunks_exact(dim) {
             for (m, &x) in mean.iter_mut().zip(r) {
@@ -365,6 +365,8 @@ impl Router {
     /// The `nprobe` clusters nearest to `q`, nearest first. `centroids` are
     /// the f32 centroids the router was built from, used to rescore the
     /// best approximate candidates exactly.
+    // ARITH: parent numbers index `starts`, which has one more entry.
+    #[allow(clippy::arithmetic_side_effects)]
     pub fn route(&self, centroids: &[f32], q: &[f32], nprobe: usize) -> Vec<usize> {
         let nprobe = nprobe.min(self.len());
         if nprobe == 0 {
