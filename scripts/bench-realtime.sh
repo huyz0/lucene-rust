@@ -51,7 +51,7 @@ bench() { # name image label settings [docker-run args...]
         "$2" >/dev/null
     for _ in $(seq 1 90); do curl -sf "localhost:$PORT" >/dev/null && break; sleep 2; done
     python3 opensearch-plugin/e2e/bench_nodes.py visibility "http://localhost:$PORT" "$1" "$OUT/corpus-$DOCS" "$3" \
-        "$OUT/$3-$DOCS.json" "$4"
+        "$OUT/$3-$DOCS.json" "$4" || { docker logs "$1" >"$OUT/$3-$DOCS.log" 2>&1; return 1; }
     docker logs "$1" >"$OUT/$3-$DOCS.log" 2>&1
     docker rm -f "$1" >/dev/null
 }

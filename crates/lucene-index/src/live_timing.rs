@@ -36,9 +36,17 @@ pub enum Phase {
     ReaderAppend,
     /// A view reader's live documents.
     ReaderLiveDocs,
+    /// A plain search's chunks and tail made ready.
+    PlainPrepare,
+    /// A plain search's reader and postings opened.
+    PlainOpen,
+    /// A plain search's norms read.
+    PlainNorms,
+    /// A plain search's query run.
+    PlainQuery,
 }
 
-const NAMES: [&str; 13] = [
+const NAMES: [&str; 17] = [
     "view_open",
     "view_open_locks",
     "snapshot",
@@ -52,12 +60,16 @@ const NAMES: [&str; 13] = [
     "r_overlay",
     "r_append",
     "r_live_docs",
+    "p_prepare",
+    "p_open",
+    "p_norms",
+    "p_query",
 ];
 
 struct Sums {
-    count: [AtomicU64; 13],
-    nanos: [AtomicU64; 13],
-    max: [AtomicU64; 13],
+    count: [AtomicU64; 17],
+    nanos: [AtomicU64; 17],
+    max: [AtomicU64; 17],
     printing: AtomicBool,
     start: Instant,
     printed: AtomicU64,
@@ -139,6 +151,26 @@ impl Drop for Timer {
     fn drop(&mut self) {
         if let Some((phase, t)) = self.0 {
             record(phase, t.elapsed());
+        }
+    }
+}
+
+/// Times consecutive phases: each [`Laps::lap`] ends one.
+#[derive(Debug)]
+pub struct Laps(Option<Instant>);
+
+impl Laps {
+    /// Starts the first phase now.
+    pub fn start() -> Self {
+        Laps(enabled().then(Instant::now))
+    }
+
+    /// Ends `phase`, the next starting now.
+    pub fn lap(&mut self, phase: Phase) {
+        if let Some(at) = self.0 {
+            let now = Instant::now();
+            record(phase, now.saturating_duration_since(at));
+            self.0 = Some(now);
         }
     }
 }

@@ -1415,6 +1415,7 @@ pub unsafe extern "C" fn ffi_jvm_reader_search_live(
         )?;
         let v = view(view_id)?;
         searched_lean(&v.writer);
+        let mut laps = lucene_index::live_timing::Laps::start();
         // Each buffer is read as the chunks its view's plan starts with,
         // with this request's terms (their overlays kept on the chunks),
         // then a segment of the documents after them.
@@ -1496,6 +1497,7 @@ pub unsafe extern "C" fn ffi_jvm_reader_search_live(
                     .map_err(map_search_error)?,
             );
         }
+        laps.lap(lucene_index::live_timing::Phase::PlainPrepare);
         let inputs = live
             .iter()
             .map(|l| l.inputs())
@@ -1516,6 +1518,7 @@ pub unsafe extern "C" fn ffi_jvm_reader_search_live(
             set_last_error(format!("opening segment postings: {e}"));
             FfiStatus::Decode
         })?;
+        laps.lap(lucene_index::live_timing::Phase::PlainOpen);
         let sim = sim.as_ref();
         let committed = h.live_docs.len();
         let mut opened_segments: Vec<OpenSegment<'_>> = opened.as_open_segments();
@@ -1556,6 +1559,7 @@ pub unsafe extern "C" fn ffi_jvm_reader_search_live(
             .iter()
             .map(|l| l.norms_with_average(&|f| averages.get(f).copied()))
             .collect();
+        laps.lap(lucene_index::live_timing::Phase::PlainNorms);
         // In document order: the committed segments, then each buffer's
         // chunks and the segment after them.
         let mut segments: Vec<OpenSegment<'_>> = Vec::new();
@@ -1597,6 +1601,7 @@ pub unsafe extern "C" fn ffi_jvm_reader_search_live(
             threshold,
         )
         .map_err(map_search_error)?;
+        laps.lap(lucene_index::live_timing::Phase::PlainQuery);
         let hits = if top_n == 0 { Vec::new() } else { hits };
         let (total, lower_bound) = if count_limit <= 0 {
             (-1, false)
