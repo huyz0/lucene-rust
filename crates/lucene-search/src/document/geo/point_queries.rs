@@ -310,6 +310,10 @@ impl IntersectVisitor for InverseDistanceVisitor<'_> {
 }
 
 impl DocumentQuery for LatLonPointDistanceQuery {
+    fn reads_no_terms(&self) -> bool {
+        true
+    }
+
     fn equals(&self, other: &dyn DocumentQuery) -> bool {
         same_class::<Self>(other).is_some_and(|o| {
             self.field == o.field
@@ -881,6 +885,10 @@ impl SpatialVisitor for LatLonPointVisitor {
 }
 
 impl DocumentQuery for LatLonPointQuery {
+    fn reads_no_terms(&self) -> bool {
+        true
+    }
+
     /// `SpatialQuery.equals`.
     fn equals(&self, other: &dyn DocumentQuery) -> bool {
         same_class::<Self>(other).is_some_and(|o| {
@@ -993,6 +1001,10 @@ impl IntersectVisitor for XYVisitor<'_> {
 }
 
 impl DocumentQuery for XYPointInGeometryQuery {
+    fn reads_no_terms(&self) -> bool {
+        true
+    }
+
     fn equals(&self, other: &dyn DocumentQuery) -> bool {
         same_class::<Self>(other)
             .is_some_and(|o| self.field == o.field && self.geometries == o.geometries)

@@ -108,6 +108,10 @@ impl LatLonDocValuesBoxQuery {
 }
 
 impl DocumentQuery for LatLonDocValuesBoxQuery {
+    fn reads_no_terms(&self) -> bool {
+        true
+    }
+
     fn equals(&self, other: &dyn DocumentQuery) -> bool {
         same_class::<Self>(other).is_some_and(|o| self == o)
     }
@@ -235,6 +239,10 @@ impl LatLonDocValuesQuery {
 }
 
 impl DocumentQuery for LatLonDocValuesQuery {
+    fn reads_no_terms(&self) -> bool {
+        true
+    }
+
     fn equals(&self, other: &dyn DocumentQuery) -> bool {
         same_class::<Self>(other).is_some_and(|o| {
             self.field == o.field
@@ -281,6 +289,10 @@ impl XYDocValuesPointInGeometryQuery {
 }
 
 impl DocumentQuery for XYDocValuesPointInGeometryQuery {
+    fn reads_no_terms(&self) -> bool {
+        true
+    }
+
     fn equals(&self, other: &dyn DocumentQuery) -> bool {
         same_class::<Self>(other)
             .is_some_and(|o| self.field == o.field && self.geometries == o.geometries)

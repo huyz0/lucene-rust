@@ -22,10 +22,10 @@ ROUNDS="${ROUNDS:-50}"
 PORT=9250
 mkdir -p "$OUT"
 
-if [[ ! -f "$OUT/corpus-$DOCS/done" ]]; then
+if [[ ! -f "$OUT/corpus-$DOCS/done-geo" ]]; then
     rm -rf "$OUT/corpus-$DOCS"
     python3 opensearch-plugin/e2e/bench_nodes.py gen "$OUT/corpus-$DOCS" "$DOCS"
-    touch "$OUT/corpus-$DOCS/done"
+    touch "$OUT/corpus-$DOCS/done-geo"
 fi
 
 scripts/opensearch-dist.sh

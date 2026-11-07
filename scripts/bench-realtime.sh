@@ -6,13 +6,14 @@
 #   stock      stock OpenSearch, refresh_interval 1s
 #   plugin     the plugin's engine, refresh_interval 1s
 #   realtime   the plugin's engine with index.lucene_rust.realtime_search, refresh_interval 1s
+#   realtime-stale  realtime with index.lucene_rust.realtime_max_staleness 20ms
 #   realtime-30s  the same, refresh_interval 30s
 #
 #   scripts/bench-realtime.sh [DOCS] [OUT_DIR]     # default 1000000, target/bench-realtime
 #
 # Needs what scripts/bench-opensearch.sh needs. HEAP (default 2g), CLIENTS
 # (default 4) bulk clients, PROBE_EVERY (default 0.2) seconds between probes.
-# BENCH_ENV (one NAME=value) is passed to the node, and its log is kept
+# BENCH_ENV (NAME=value pairs, space-separated) is passed to the node, and its log is kept
 # beside the results.
 # CONFIGS (default "stock plugin realtime realtime-30s") which configs run.
 set -euo pipefail
@@ -26,10 +27,10 @@ HEAP="${HEAP:-2g}"
 PORT=9251
 mkdir -p "$OUT"
 
-if [[ ! -f "$OUT/corpus-$DOCS/done" ]]; then
+if [[ ! -f "$OUT/corpus-$DOCS/done-geo" ]]; then
     rm -rf "$OUT/corpus-$DOCS"
     python3 opensearch-plugin/e2e/bench_nodes.py gen "$OUT/corpus-$DOCS" "$DOCS"
-    touch "$OUT/corpus-$DOCS/done"
+    touch "$OUT/corpus-$DOCS/done-geo"
 fi
 
 scripts/opensearch-dist.sh
@@ -40,11 +41,13 @@ docker build -q -t "$IMAGE" opensearch-plugin/docker >/dev/null
 printf 'FROM opensearchproject/opensearch:%s\nRUN rm -rf /usr/share/opensearch/plugins/*\n' "$VERSION" \
     | docker build -q -t "opensearch-stock-min:${VERSION}" - >/dev/null
 
+BENCH_ENV_ARGS=()
+for e in ${BENCH_ENV:-}; do BENCH_ENV_ARGS+=(-e "$e"); done
 CONFIGS="${CONFIGS:-stock plugin realtime realtime-30s}"
 bench() { # name image label settings [docker-run args...]
     [[ " $CONFIGS " == *" $3 "* ]] || return 0
     docker rm -f "$1" >/dev/null 2>&1 || true
-    docker run -d --name "$1" -p "$PORT:9200" "${@:5}" ${BENCH_ENV:+-e "$BENCH_ENV"} \
+    docker run -d --name "$1" -p "$PORT:9200" "${@:5}" "${BENCH_ENV_ARGS[@]}" \
         -e discovery.type=single-node -e DISABLE_SECURITY_PLUGIN=true \
         -e cluster.routing.allocation.disk.threshold_enabled=false \
         -e DISABLE_INSTALL_DEMO_CONFIG=true -e OPENSEARCH_JAVA_OPTS="-Xms$HEAP -Xmx$HEAP" \
@@ -59,6 +62,8 @@ trap 'docker rm -f bench-rt >/dev/null 2>&1 || true' EXIT
 bench bench-rt "opensearch-stock-min:${VERSION}" stock '{"refresh_interval": "1s"}'
 bench bench-rt "$IMAGE" plugin '{"refresh_interval": "1s"}' -e lucene_rust.engine.default=true
 bench bench-rt "$IMAGE" realtime '{"refresh_interval": "1s", "index.lucene_rust.realtime_search": true}' \
+    -e lucene_rust.engine.default=true
+bench bench-rt "$IMAGE" realtime-stale '{"refresh_interval": "1s", "index.lucene_rust.realtime_search": true, "index.lucene_rust.realtime_max_staleness": "20ms"}' \
     -e lucene_rust.engine.default=true
 bench bench-rt "$IMAGE" realtime-30s '{"refresh_interval": "30s", "index.lucene_rust.realtime_search": true}' \
     -e lucene_rust.engine.default=true

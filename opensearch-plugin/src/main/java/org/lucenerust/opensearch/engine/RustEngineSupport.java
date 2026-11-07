@@ -65,6 +65,22 @@ public final class RustEngineSupport {
     );
 
     /**
+     * With {@link #REALTIME_SEARCH}, how old a view of the buffers a search may read: the writer
+     * opens one every few milliseconds with the buffers written ahead, and searches share it, and
+     * its readers, instead of each opening its own. A search then misses at most the writes of the
+     * last this long, and {@code refresh=wait_for} makes the searches after it read a fresh view.
+     * Zero, the default, gives every search a view of every write acknowledged before it.
+     */
+    public static final Setting<org.opensearch.common.unit.TimeValue> REALTIME_MAX_STALENESS = Setting.timeSetting(
+        "index.lucene_rust.realtime_max_staleness",
+        org.opensearch.common.unit.TimeValue.ZERO,
+        org.opensearch.common.unit.TimeValue.ZERO,
+        org.opensearch.common.unit.TimeValue.timeValueSeconds(1),
+        Setting.Property.IndexScope,
+        Setting.Property.Final
+    );
+
+    /**
      * Whether the Rust engine writes doc values in the {@code RustAdaptive} format: numeric and
      * date columns as adaptive blocks (delta, GCD, decimal and bit-packing per 128 values), several
      * times smaller for timestamps and decimal doubles. Off by default, which writes stock
@@ -497,6 +513,7 @@ public final class RustEngineSupport {
         long wait = indexSettings.isMergeOnFlushEnabled() ? indexSettings.getMaxFullFlushMergeWaitTime().millis() : 0;
         boolean success = false;
         try {
+            writer.setLiveStaleness(REALTIME_MAX_STALENESS.get(indexSettings.getSettings()));
             refreshMergePolicy(writer, config);
             writer.setMergeOnFlush(Math.max(wait, 0), wait > 0 && indexSettings.getMergeOnFlushPolicy().isPresent());
             refreshMergeScheduler(writer, config);

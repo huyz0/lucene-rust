@@ -204,6 +204,10 @@ impl IntersectVisitor for NearVisitor {
 }
 
 impl DocumentQuery for LatLonPointDistanceFeatureQuery {
+    fn reads_no_terms(&self) -> bool {
+        true
+    }
+
     /// `boost * pivot / (pivot + distance)`: at most `boost`.
     fn constant_score(&self) -> bool {
         false

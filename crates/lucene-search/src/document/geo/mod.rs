@@ -355,6 +355,10 @@ impl ScoringCollector for BitsCollector {
 }
 
 impl DocumentQuery for ConstantScoreBoolean {
+    fn reads_no_terms(&self) -> bool {
+        self.clauses.iter().all(|c| c.reads_no_terms())
+    }
+
     /// `ConstantScoreQuery.equals` over `BooleanQuery.equals`: the same
     /// occur and the same multiset of clauses.
     fn equals(&self, other: &dyn DocumentQuery) -> bool {
@@ -406,6 +410,10 @@ pub struct MustConjunction {
 }
 
 impl DocumentQuery for MustConjunction {
+    fn reads_no_terms(&self) -> bool {
+        self.clauses.iter().all(|c| c.reads_no_terms())
+    }
+
     fn equals(&self, other: &dyn DocumentQuery) -> bool {
         same_class::<Self>(other).is_some_and(|o| same_clauses(&self.clauses, &o.clauses))
     }
