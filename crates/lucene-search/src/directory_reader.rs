@@ -326,7 +326,19 @@ struct CodecFiles {
     meta: Arc<Input>,
     /// The HNSW graph's `.vem`, beside its `.vex` in [`Self::index`].
     graph_meta: Option<Arc<Input>>,
+    /// A `LuceneRustIvfVectorsFormat` instance's IVF index.
+    ivf: Option<IvfFiles>,
     suffix: String,
+}
+
+/// An IVF index's `.ivm`, `.ivp` and `.ivv`, and the reader over them,
+/// opened on first search and shared by every search after it.
+#[derive(Debug)]
+struct IvfFiles {
+    meta: Arc<Input>,
+    postings: Arc<Input>,
+    vectors: Arc<Input>,
+    reader: OnceLock<Arc<lucene_ivf::IvfReader>>,
 }
 
 /// One field's doc-values **update generation** -- the rewritten column
@@ -1022,6 +1034,7 @@ impl SegmentReader {
                     index: Some(index),
                     meta,
                     graph_meta: None,
+                    ivf: None,
                     suffix: codec_suffix_of(&name, &segment_name, ".tvd"),
                 }))
             }
@@ -1061,11 +1074,27 @@ impl SegmentReader {
                 )
             };
             if let (Some(data), Some(meta)) = (open(".vec")?, open(".vemf")?) {
+                let ivf = match (open(".ivm")?, open(".ivp")?, open(".ivv")?) {
+                    (Some(meta), Some(postings), Some(vectors)) => Some(IvfFiles {
+                        meta,
+                        postings,
+                        vectors,
+                        reader: OnceLock::new(),
+                    }),
+                    (None, None, None) => None,
+                    _ => {
+                        return Err(Error::Store(lucene_store::Error::Corrupted(format!(
+                            "segment {segment_name}: an IVF index without all of its \
+                             .ivm, .ivp and .ivv files"
+                        ))))
+                    }
+                };
                 vectors.push(Arc::new(CodecFiles {
                     data,
                     index: open(".vex")?,
                     meta,
                     graph_meta: open(".vem")?,
+                    ivf,
                     suffix,
                 }));
             }
@@ -1425,6 +1454,46 @@ impl SegmentReader {
                 _ => None,
             };
             return Ok(Some((flat, graph)));
+        }
+        Ok(None)
+    }
+
+    /// The IVF index of the instance field `field_number` was written with
+    /// (`LuceneRustIvfVectorsFormat`), opened once per segment; `None` when
+    /// that instance has none or the index does not hold the field (a byte
+    /// field).
+    ///
+    /// # Errors
+    /// IVF files that do not decode.
+    pub fn ivf_for(&self, field_number: i32) -> crate::Result<Option<Arc<lucene_ivf::IvfReader>>> {
+        // A field without per-field attributes (a codec whose format is the
+        // IVF one itself) is in whichever instance's index holds it.
+        let named = self.vectors_instance_of(field_number);
+        for f in self
+            .vectors
+            .iter()
+            .filter(|f| named.as_deref().is_none_or(|n| n == f.suffix))
+        {
+            let Some(ivf) = &f.ivf else {
+                continue;
+            };
+            let reader = match ivf.reader.get() {
+                Some(reader) => reader.clone(),
+                // A failed open is not kept: the next search tries again.
+                None => {
+                    let opened = Arc::new(lucene_index::ivf_vectors::open(
+                        &ivf.meta,
+                        ivf.postings.clone(),
+                        ivf.vectors.clone(),
+                        &self.segment_id,
+                        &f.suffix,
+                    )?);
+                    ivf.reader.get_or_init(|| opened).clone()
+                }
+            };
+            if reader.field(field_number).is_some() {
+                return Ok(Some(reader));
+            }
         }
         Ok(None)
     }

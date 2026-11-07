@@ -33,6 +33,12 @@ pub const PER_FIELD_FORMAT_KEY: &str = "PerFieldKnnVectorsFormat.format";
 pub const PER_FIELD_SUFFIX_KEY: &str = "PerFieldKnnVectorsFormat.suffix";
 /// `Lucene99HnswVectorsFormat`'s SPI name.
 pub const HNSW_NAME: &str = "Lucene99HnswVectorsFormat";
+/// [`KnnVectorsFormat::Ivf`]'s SPI name.
+pub const IVF_NAME: &str = "LuceneRustIvfVectorsFormat";
+
+/// [`KnnVectorsFormat::Ivf`]'s rerank vector encodings, by wire number:
+/// `f32`, `f16`, `bf16` and 8-bit residuals (`lucene_ivf::VectorEncoding`).
+pub const IVF_RERANK_ENCODINGS: [&str; 4] = ["f32", "f16", "bf16", "int8"];
 
 /// A KNN vectors format a field can be routed to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -60,6 +66,16 @@ pub enum KnnVectorsFormat {
     /// `Lucene104ScalarQuantizedVectorsFormat(encoding)`: the raw vectors and
     /// their codes, no graph (every search is exhaustive).
     ScalarQuantized { encoding: ScalarEncoding },
+    /// This engine's IVF index ([`IVF_NAME`], `lucene-ivf`): the raw vectors
+    /// as every format stores them, plus clusters of about
+    /// `target_cluster_size` vectors with 1-bit codes (`.ivm`/`.ivp`) and
+    /// the rerank vectors in cluster order (`.ivv`), encoded as
+    /// [`IVF_RERANK_ENCODINGS`]`[rerank_encoding]`. Float fields only; a
+    /// byte field gets the raw vectors alone.
+    Ivf {
+        target_cluster_size: u32,
+        rerank_encoding: u8,
+    },
     /// A format that wraps `format` without changing its files
     /// (`AssertingKnnVectorsFormat`'s `Asserting`): fields record `name` and
     /// the instance's files carry it (`_0_Asserting_0.vec`). Readers find
@@ -102,6 +118,37 @@ fn check_graph(max_conn: i32, beam_width: i32) -> Result<(), InvalidFormat> {
 }
 
 impl KnnVectorsFormat {
+    /// [`KnnVectorsFormat::Ivf`], checked: a cluster size of 16 to 65536
+    /// vectors and a known rerank encoding.
+    pub fn ivf(target_cluster_size: u32, rerank_encoding: u8) -> Result<Self, InvalidFormat> {
+        if !(16..=65_536).contains(&target_cluster_size) {
+            return Err(InvalidFormat(format!(
+                "target_cluster_size must be between 16 and 65536; got {target_cluster_size}"
+            )));
+        }
+        if usize::from(rerank_encoding) >= IVF_RERANK_ENCODINGS.len() {
+            return Err(InvalidFormat(format!(
+                "unknown IVF rerank encoding {rerank_encoding}"
+            )));
+        }
+        Ok(KnnVectorsFormat::Ivf {
+            target_cluster_size,
+            rerank_encoding,
+        })
+    }
+
+    /// The IVF parameters `(target_cluster_size, rerank_encoding)`, `None`
+    /// for any other format.
+    pub fn ivf_params(&self) -> Option<(u32, u8)> {
+        match *self.files_format() {
+            KnnVectorsFormat::Ivf {
+                target_cluster_size,
+                rerank_encoding,
+            } => Some((target_cluster_size, rerank_encoding)),
+            _ => None,
+        }
+    }
+
     /// `new Lucene99HnswVectorsFormat(maxConn, beamWidth)`.
     pub fn hnsw(max_conn: i32, beam_width: i32) -> Result<Self, InvalidFormat> {
         check_graph(max_conn, beam_width)?;
@@ -174,6 +221,7 @@ impl KnnVectorsFormat {
             KnnVectorsFormat::HnswHalfFloat { .. } => crate::vectors::HALF_FLOAT_FORMAT_NAME,
             KnnVectorsFormat::HnswScalarQuantized { .. } => scalar_quantized_vectors::HNSW_NAME,
             KnnVectorsFormat::ScalarQuantized { .. } => scalar_quantized_vectors::NAME,
+            KnnVectorsFormat::Ivf { .. } => IVF_NAME,
         }
     }
 
@@ -198,7 +246,9 @@ impl KnnVectorsFormat {
                 beam_width,
                 ..
             } => Some((max_conn, beam_width)),
-            KnnVectorsFormat::ScalarQuantized { .. } | KnnVectorsFormat::Named { .. } => None,
+            KnnVectorsFormat::ScalarQuantized { .. }
+            | KnnVectorsFormat::Ivf { .. }
+            | KnnVectorsFormat::Named { .. } => None,
         }
     }
 
@@ -208,6 +258,7 @@ impl KnnVectorsFormat {
             KnnVectorsFormat::Hnsw { .. }
             | KnnVectorsFormat::HnswHamming { .. }
             | KnnVectorsFormat::HnswHalfFloat { .. }
+            | KnnVectorsFormat::Ivf { .. }
             | KnnVectorsFormat::Named { .. } => None,
             KnnVectorsFormat::HnswScalarQuantized { encoding, .. }
             | KnnVectorsFormat::ScalarQuantized { encoding } => Some(encoding),
@@ -272,6 +323,10 @@ pub fn for_name(name: &str) -> Option<KnnVectorsFormat> {
         KnnVectorsFormat::HnswHalfFloat {
             max_conn: hnsw::DEFAULT_MAX_CONN,
             beam_width: hnsw::DEFAULT_BEAM_WIDTH,
+        },
+        KnnVectorsFormat::Ivf {
+            target_cluster_size: 384,
+            rerank_encoding: 1,
         },
     ];
     if let Some(format) = builtin.into_iter().find(|f| f.name() == name) {
