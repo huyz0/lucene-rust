@@ -34,6 +34,28 @@ final class KnnVectors {
         }
     }
 
+    /** {@code KNNValidationUtil.validateHalfFloatVectorValue}'s range check (finite values were checked already). */
+    static void checkHalfFloats(float[] v) {
+        for (float f : v) {
+            if (f < -65504f || f > 65504f) {
+                throw new IllegalArgumentException(
+                    "[data_type] field was set as HALF_FLOAT in index mapping. But, KNN vector values are not within in the half_float range [-65504.000000, 65504.000000]"
+                );
+            }
+        }
+    }
+
+    /** {@code KNNVectorAsCollectionOfHalfFloatsSerializer.floatToByteArray}: two little-endian bytes a component. */
+    static byte[] halfFloatBytes(float[] v) {
+        byte[] out = new byte[v.length * 2];
+        for (int i = 0; i < v.length; i++) {
+            short h = Float.floatToFloat16(v[i]);
+            out[2 * i] = (byte) h;
+            out[2 * i + 1] = (byte) (h >>> 8);
+        }
+        return out;
+    }
+
     static byte[] toBytes(List<Float> values) {
         byte[] v = new byte[values.size()];
         for (int i = 0; i < v.length; i++) {

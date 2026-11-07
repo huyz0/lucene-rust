@@ -390,11 +390,17 @@ impl std::fmt::Debug for Attachments {
 struct SegmentVectors<'r> {
     reader: &'r SegmentReader,
     doc: i32,
+    /// [`Self::first_child`], once found.
+    first_child: Option<Option<i32>>,
 }
 
 impl<'r> SegmentVectors<'r> {
     fn new(reader: &'r SegmentReader, doc: i32) -> Self {
-        Self { reader, doc }
+        Self {
+            reader,
+            doc,
+            first_child: None,
+        }
     }
 
     /// The document's vector of field `number`, by `read` from the field's flat vectors.
@@ -413,6 +419,78 @@ impl<'r> SegmentVectors<'r> {
         match flat {
             Some(flat) => read(&flat, self.doc).map_err(derived_error),
             None => Ok(None),
+        }
+    }
+}
+
+impl SegmentVectors<'_> {
+    /// The first nested child of the document, `None` when it has none: the document after the
+    /// previous parent, a parent being a document with a `_primary_term` value. Searched from
+    /// windows that grow back from the document, as `DerivedSourceLuceneHelper.getFirstChild`.
+    fn first_child(&mut self) -> lucene_codecs::stored_fields::Result<Option<i32>> {
+        if let Some(found) = self.first_child {
+            return Ok(found);
+        }
+        let found = self.find_first_child()?;
+        self.first_child = Some(found);
+        Ok(found)
+    }
+
+    fn find_first_child(&self) -> lucene_codecs::stored_fields::Result<Option<i32>> {
+        use crate::reader::{LeafReader, NO_MORE_DOCS};
+        let parent = self.doc;
+        if parent == 0 {
+            return Ok(None);
+        }
+        let mut last_start = -1;
+        for offset in [150, 1500, 6000, i32::MAX] {
+            let start = parent.saturating_sub(offset).max(0);
+            if start <= last_start {
+                break;
+            }
+            // Doc values iterate forward only: a wider window opens them again.
+            let Some(mut terms) = self
+                .reader
+                .numeric_doc_values("_primary_term")
+                .map_err(derived_error)?
+            else {
+                return Ok(None);
+            };
+            let mut previous = None;
+            let mut d = terms.advance(start).map_err(derived_error)?;
+            while d != NO_MORE_DOCS && d < parent {
+                previous = Some(d);
+                d = terms.next_doc().map_err(derived_error)?;
+            }
+            match previous {
+                Some(p) if parent - p <= 1 => return Ok(None),
+                Some(p) => return Ok(Some(p + 1)),
+                None if start == 0 => return Ok(Some(0)),
+                None => last_start = start,
+            }
+        }
+        Ok(None)
+    }
+
+    /// The vectors of field `number` held by the document's nested children, in document order.
+    fn children<T>(
+        &mut self,
+        number: i32,
+        read: impl Fn(
+            &lucene_codecs::vectors::FlatVectorsReader<'_>,
+            &mut dyn Iterator<Item = i32>,
+        ) -> lucene_codecs::vectors::Result<Vec<T>>,
+    ) -> lucene_codecs::stored_fields::Result<Vec<T>> {
+        let Some(first) = self.first_child()? else {
+            return Ok(Vec::new());
+        };
+        let flat = self
+            .reader
+            .flat_vectors_reader_for(number)
+            .map_err(derived_error)?;
+        match flat {
+            Some(flat) => read(&flat, &mut (first..self.doc)).map_err(derived_error),
+            None => Ok(Vec::new()),
         }
     }
 }
@@ -442,6 +520,40 @@ impl crate::derived_source::VectorSource for SegmentVectors<'_> {
             let ord = values.doc_to_ord()?.ordinal(doc)?;
             ord.map(|ord| values.vector(ord).map(|v| v.to_vec()))
                 .transpose()
+        })
+    }
+
+    fn child_float_vectors(
+        &mut self,
+        number: i32,
+    ) -> lucene_codecs::stored_fields::Result<Vec<Vec<f32>>> {
+        self.children(number, |flat, docs| {
+            let values = flat.float_vector_values(number)?;
+            let mut ords = values.doc_to_ord()?;
+            let mut out = Vec::new();
+            for doc in docs {
+                if let Some(ord) = ords.ordinal(doc)? {
+                    out.push(values.vector(ord)?);
+                }
+            }
+            Ok(out)
+        })
+    }
+
+    fn child_byte_vectors(
+        &mut self,
+        number: i32,
+    ) -> lucene_codecs::stored_fields::Result<Vec<Vec<u8>>> {
+        self.children(number, |flat, docs| {
+            let values = flat.byte_vector_values(number)?;
+            let mut ords = values.doc_to_ord()?;
+            let mut out = Vec::new();
+            for doc in docs {
+                if let Some(ord) = ords.ordinal(doc)? {
+                    out.push(values.vector(ord)?.to_vec());
+                }
+            }
+            Ok(out)
         })
     }
 }
@@ -1202,6 +1314,22 @@ impl SegmentReader {
         Ok(Some(meta.rebind(&f.data, index)))
     }
 
+    /// One instance's flat vectors, each field's similarity taken from this
+    /// segment's `FieldInfos` where its `.vemf` records none.
+    fn open_flat_vectors<'s>(
+        &'s self,
+        f: &'s CodecFiles,
+    ) -> crate::Result<lucene_codecs::vectors::FlatVectorsReader<'s>> {
+        let mut reader = lucene_codecs::vectors::FlatVectorsReader::open(
+            &f.meta,
+            &f.data,
+            &self.segment_id,
+            &f.suffix,
+        )?;
+        reader.resolve_similarities_from(&self.field_infos.fields)?;
+        Ok(reader)
+    }
+
     /// `SegmentReader.getVectorReader()`'s flat half: a reader over this
     /// segment's KNN vectors (`.vec`/`.vemf`), `None` when it has none.
     ///
@@ -1216,12 +1344,7 @@ impl SegmentReader {
         let Some(f) = self.vectors.first() else {
             return Ok(None);
         };
-        Ok(Some(lucene_codecs::vectors::FlatVectorsReader::open(
-            &f.meta,
-            &f.data,
-            &self.segment_id,
-            &f.suffix,
-        )?))
+        Ok(Some(self.open_flat_vectors(f)?))
     }
 
     /// `PerFieldKnnVectorsFormat.FieldsReader.getFieldReader`'s flat half:
@@ -1264,12 +1387,7 @@ impl SegmentReader {
             .filter(|f| named.as_deref().is_none_or(|n| n == f.suffix))
             .chain(self.vectors.iter());
         for f in ordered {
-            let reader = lucene_codecs::vectors::FlatVectorsReader::open(
-                &f.meta,
-                &f.data,
-                &self.segment_id,
-                &f.suffix,
-            )?;
+            let reader = self.open_flat_vectors(f)?;
             if reader.field(field_number).is_some() {
                 return Ok(Some(reader));
             }
@@ -1308,12 +1426,7 @@ impl SegmentReader {
             .filter(|f| named.as_deref().is_none_or(|n| n == f.suffix))
             .chain(self.vectors.iter());
         for f in ordered {
-            let flat = lucene_codecs::vectors::FlatVectorsReader::open(
-                &f.meta,
-                &f.data,
-                &self.segment_id,
-                &f.suffix,
-            )?;
+            let flat = self.open_flat_vectors(f)?;
             if flat.field(field_number).is_none() {
                 continue;
             }

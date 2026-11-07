@@ -9,9 +9,20 @@
 //! Request blob: `field` (`i32 len`, UTF-8), the target
 //! ([`crate::jvm_queries::decode_knn_target`]), `k: i32`, `candidates: i32`
 //! (the beam the search keeps before cutting to `k`, `max(k, ef_search)`),
-//! `has_filter: u8` and the filter (a query-tree node) when `1`.
+//! `has_filter: u8` and the filter (a query-tree node) when `1`, then
+//! `nested: u8`: when `1`, the field is nested and the parent filter (a
+//! query-tree node, whose bit sets are cached as a nested query's are) and
+//! `expand: u8` (`expand_nested_docs`) follow.
+//!
+//! A nested search keeps the best child of each of the best `k` parents; an
+//! expanded one returns every scored child of those parents, which can be
+//! more than `k`: when they do not fit the buffers, the call is
+//! [`FfiStatus::BufferTooSmall`] with the count it needs in `*out_count`.
 
-use lucene_search::knn_search::knn_top_hits;
+use std::sync::Arc;
+
+use lucene_search::join::BitSetProducer;
+use lucene_search::knn_search::{knn_top_hits, knn_top_hits_nested};
 use lucene_search::multi_segment::OpenSegment;
 
 use crate::clauses::map_search_error;
@@ -19,14 +30,16 @@ use crate::error::{guard, set_last_error, FfiStatus};
 use crate::jvm_reader::{lookup, Cursor};
 use crate::raw::bytes_from_raw;
 
-/// A decoded request: field, target, `k`, candidates, filter.
-type Request = (
-    String,
-    lucene_search::knn_search::KnnTarget,
-    usize,
-    usize,
-    Option<lucene_search::query::Clause>,
-);
+/// A decoded request.
+struct Request {
+    field: String,
+    target: lucene_search::knn_search::KnnTarget,
+    k: usize,
+    candidates: usize,
+    filter: Option<lucene_search::query::Clause>,
+    /// A nested field's parent filter and `expand_nested_docs`.
+    nested: Option<(Arc<dyn BitSetProducer>, bool)>,
+}
 
 fn invalid(message: &str) -> FfiStatus {
     set_last_error(format!("KNN request: {message}"));
@@ -53,10 +66,30 @@ fn decode(blob: &[u8]) -> Result<Request, FfiStatus> {
         1 => Some(crate::jvm_reader::decode_node(&mut c, 0, &mut nodes)?),
         _ => return Err(invalid("filter flag (expected 0..=1)")),
     };
+    let nested = match c.u8()? {
+        0 => None,
+        1 => {
+            let parents = crate::jvm_nodes::decode_parents(&mut c, 0, &mut nodes)?;
+            let expand = match c.u8()? {
+                0 => false,
+                1 => true,
+                _ => return Err(invalid("expand flag (expected 0..=1)")),
+            };
+            Some((parents, expand))
+        }
+        _ => return Err(invalid("nested flag (expected 0..=1)")),
+    };
     if c.remaining() != 0 {
         return Err(invalid("trailing bytes"));
     }
-    Ok((field, target, k, candidates, filter))
+    Ok(Request {
+        field,
+        target,
+        k,
+        candidates,
+        filter,
+        nested,
+    })
 }
 
 /// The reader's top `k` for the request in `request` ([module doc](self)):
@@ -66,6 +99,8 @@ fn decode(blob: &[u8]) -> Result<Request, FfiStatus> {
 /// # Safety
 /// `request` valid for `request_len` bytes; `out_docs`/`out_scores` for
 /// `buf_len` elements each, with `buf_len >= k`; `out_count` for one write.
+/// An expanded nested search may need more than `k` (see the
+/// [module doc](self)).
 #[no_mangle]
 pub unsafe extern "C" fn ffi_jvm_reader_knn(
     handle: u64,
@@ -82,7 +117,14 @@ pub unsafe extern "C" fn ffi_jvm_reader_knn(
         }
         // SAFETY: caller contract.
         let blob = unsafe { bytes_from_raw(request, request_len)? };
-        let (field, target, k, candidates, filter) = decode(blob)?;
+        let Request {
+            field,
+            target,
+            k,
+            candidates,
+            filter,
+            nested,
+        } = decode(blob)?;
         if buf_len < k {
             return Err(FfiStatus::BufferTooSmall);
         }
@@ -112,9 +154,30 @@ pub unsafe extern "C" fn ffi_jvm_reader_knn(
                 s
             })
             .collect();
-        let hits = knn_top_hits(&segments, &field, &target, k, candidates, filter.as_ref())
-            .map_err(map_search_error)?;
-        // SAFETY: caller contract; `hits.len() <= k <= buf_len`.
+        let hits = match &nested {
+            None => knn_top_hits(&segments, &field, &target, k, candidates, filter.as_ref()),
+            Some((parents, expand)) => knn_top_hits_nested(
+                &segments,
+                &field,
+                &target,
+                k,
+                candidates,
+                filter.as_ref(),
+                &**parents,
+                *expand,
+            ),
+        }
+        .map_err(map_search_error)?;
+        if hits.len() > buf_len {
+            // SAFETY: caller contract.
+            unsafe { *out_count = hits.len() };
+            set_last_error(format!(
+                "KNN request: {} hits do not fit {buf_len}",
+                hits.len()
+            ));
+            return Err(FfiStatus::BufferTooSmall);
+        }
+        // SAFETY: caller contract; `hits.len() <= buf_len`.
         unsafe {
             for (i, hit) in hits.iter().enumerate() {
                 *out_docs.add(i) = hit.doc_id;
@@ -131,6 +194,12 @@ mod tests {
     use super::*;
 
     fn request(k: i32, candidates: i32, filter: Option<&[u8]>) -> Vec<u8> {
+        let mut b = request_without_nested(k, candidates, filter);
+        b.push(0);
+        b
+    }
+
+    fn request_without_nested(k: i32, candidates: i32, filter: Option<&[u8]>) -> Vec<u8> {
         let mut b = Vec::new();
         b.extend_from_slice(&1i32.to_le_bytes());
         b.push(b'v');
@@ -152,19 +221,35 @@ mod tests {
 
     #[test]
     fn decodes_a_request_and_refuses_bad_ones() {
-        let (field, target, k, candidates, filter) = decode(&request(3, 10, None)).unwrap();
-        assert_eq!(field, "v");
+        let r = decode(&request(3, 10, None)).unwrap();
+        assert_eq!(r.field, "v");
         assert_eq!(
-            target,
+            r.target,
             lucene_search::knn_search::KnnTarget::Float(vec![1.0, 0.5])
         );
-        assert_eq!((k, candidates), (3, 10));
-        assert!(filter.is_none());
+        assert_eq!((r.k, r.candidates), (3, 10));
+        assert!(r.filter.is_none() && r.nested.is_none());
         assert!(decode(&request(0, 10, None)).is_err());
         assert!(decode(&request(3, 0, None)).is_err());
         let mut trailing = request(3, 10, None);
         trailing.push(0);
         assert!(decode(&trailing).is_err());
         assert!(decode(&request(3, 10, None)[..9]).is_err());
+        assert!(decode(&request_without_nested(3, 10, None)).is_err());
+    }
+
+    #[test]
+    fn decodes_a_nested_request() {
+        let mut b = request_without_nested(3, 10, None);
+        b.push(1);
+        b.push(5); // the parent filter: match_all
+        b.push(1);
+        let r = decode(&b).unwrap();
+        let (parents, expand) = r.nested.unwrap();
+        assert!(expand);
+        assert!(parents.key().starts_with("parents("));
+        b.pop();
+        b.push(2);
+        assert!(decode(&b).is_err());
     }
 }
