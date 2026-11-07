@@ -758,8 +758,12 @@ impl ConcurrentIndexWriter<'_> {
                 "live search must be enabled before the first document".into(),
             ));
         }
+        // Locked before the log, as `hand_over` holds it: a delete handed
+        // over meanwhile is either before `handed` or kept in the history.
+        let mut live = self.live_flushes();
         let handed = lock(&self.log).handed;
-        self.live_flushes().keep_history(handed);
+        live.keep_history(handed);
+        drop(live);
         self.live.store(true, Ordering::Release);
         Ok(())
     }
@@ -935,7 +939,9 @@ impl ConcurrentIndexWriter<'_> {
     /// terms (norms, doc values and points only), for a search that reads
     /// the terms it needs through [`Self::live_view_snapshot`].
     ///
-    /// The buffer's slot is locked while the segment is written. Fails when
+    /// The buffer's slot is held for reading while a segment with postings
+    /// is written; one without them copies the documents' columns out and
+    /// is written with the slot free. Fails when
     /// the buffer has left its slot (taken for a flush since), when it
     /// holds fewer than `end` documents, and under an index sort, which
     /// would renumber the documents.
@@ -1142,7 +1148,7 @@ impl ConcurrentIndexWriter<'_> {
     /// [`Self::live_view_snapshot`], each buffer's postings without
     /// positions only from its document in `from` on (by buffer; 0 past
     /// its end): a term's documents before are left out, its read starting
-    /// near there.
+    /// near there. A buffer read from its end on has no fields.
     pub fn live_view_snapshot_from(
         &self,
         view: &LiveView,
@@ -1276,6 +1282,15 @@ fn read_buffer(
     wanted: &[Wanted<'_>],
     from: i32,
 ) -> Result<LiveBuffer> {
+    if from >= view.max_doc {
+        // Nothing of it is asked for: neither its norms nor its positions
+        // are read.
+        return Ok(LiveBuffer {
+            max_doc: view.max_doc,
+            deleted: view.deleted.clone(),
+            fields: Vec::new(),
+        });
+    }
     let max = usize::try_from(view.max_doc).unwrap_or(0);
     let mut fields = Vec::new();
     for w in wanted {

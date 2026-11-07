@@ -479,19 +479,14 @@ fn plan(chunks: &Chunks, b: &ViewBuffer, absorb_docs: i32, writing: &[Writing]) 
     };
     let mut kept = chain.len();
     let covered = chain.last().map_or(0, |c| c.end);
-    // A chunk being written from the chain's end is planned as it is: the
-    // view waits for it and writes only what follows. One that absorbs
-    // chunks of the chain is not waited for: the chunks it replaces still
-    // serve this view.
+    // A chunk being written from the chain's end is planned as it is, after
+    // the whole chain: the view waits for it and writes only what follows.
+    // One that absorbs chunks of the chain is not waited for: the chunks it
+    // replaces still serve this view.
     let pending = writing.iter().find(|x| {
         b.in_slot && x.buffer == b.id && x.end > covered && x.end < b.max_doc && x.start == covered
     });
-    if let Some(x) = pending {
-        kept = chain
-            .iter()
-            .position(|c| c.start == x.start)
-            .unwrap_or(chain.len());
-    } else if covered < b.max_doc {
+    if pending.is_none() && covered < b.max_doc {
         let mut acc = b.max_doc.saturating_sub(covered);
         while let Some(last) = kept.checked_sub(1).and_then(|i| chain.get(i)) {
             let size = last.end.saturating_sub(last.start);
@@ -931,18 +926,27 @@ fn build_view_reader(
             .collect::<Vec<_>>()
     });
     phases.lap(phases::CHUNKS);
+    // The overlays found now are the ones used: one evicted later must not
+    // be rebuilt from a read that starts past its chunk.
+    let cached: Vec<Vec<Option<SegmentReader>>> = v
+        .plans
+        .iter()
+        .map(|plan| plan.iter().map(|p| cached_overlay(p, key)).collect())
+        .collect();
     // The buffers are read only for the chunks without postings that have
     // no overlay of this request yet, each from the first of them on.
     let from: Vec<Option<i32>> = built
         .iter()
         .zip(&v.plans)
-        .map(|(parts, plan)| {
+        .zip(&cached)
+        .map(|((parts, plan), cached)| {
             parts.as_ref().ok().and_then(|parts| {
                 parts
                     .iter()
                     .zip(plan)
-                    .find(|(&(_, lean), p)| lean && cached_overlay(p, key).is_none())
-                    .map(|(_, p)| p.start)
+                    .zip(cached)
+                    .find(|((&(_, lean), _), c)| lean && c.is_none())
+                    .map(|((_, p), _)| p.start)
             })
         })
         .collect();
@@ -970,7 +974,15 @@ fn build_view_reader(
         return Err(FfiStatus::Decode);
     }
     phases.lap(phases::SNAPSHOT);
-    for (i, ((b, plan), parts)) in v.view.buffers.iter().zip(&v.plans).zip(built).enumerate() {
+    for (i, (((b, plan), parts), cached)) in v
+        .view
+        .buffers
+        .iter()
+        .zip(&v.plans)
+        .zip(built)
+        .zip(cached)
+        .enumerate()
+    {
         let parts = match parts {
             Ok(parts) => parts,
             Err(e @ lucene_index::index_writer::Error::LiveSearch(_)) => {
@@ -987,7 +999,7 @@ fn build_view_reader(
             Err(e) => return Err(live_error(e)),
         };
         let buffer = snapshot.as_ref().and_then(|s| s.buffers.get(i));
-        let parts = overlaid(parts, plan, buffer, key)?;
+        let parts = overlaid(parts, plan, cached, buffer, key)?;
         for (p, r) in plan.iter().zip(parts) {
             let len = p.end.saturating_sub(p.start);
             if r.max_doc < len {
@@ -1207,30 +1219,38 @@ fn overlay_request(
     Ok(lucene_search::live_segment::whole_request(&refs))
 }
 
-/// `parts` (buffer `b`'s chunks, as [`buffer_segments`] gave them) with
-/// the terms of `buffer` (`b`'s in a snapshot for the request) put in each
-/// chunk that lacks its postings.
 /// The overlay of the request `key` names on `p`'s chunk, when that chunk
 /// keeps one.
 fn cached_overlay(p: &Planned, key: Option<&[u8]>) -> Option<SegmentReader> {
     key.zip(p.chunk.as_ref()).and_then(|(k, c)| c.overlay(k))
 }
 
+/// `parts` (buffer `b`'s chunks, as [`buffer_segments`] gave them) with
+/// the terms of `buffer` (`b`'s in a snapshot for the request) put in each
+/// chunk that lacks its postings. `cached` is, by chunk, the overlay of
+/// the request [`cached_overlay`] found before `buffer` was read: those
+/// are used as they are, and `buffer` covers every other chunk.
 fn overlaid(
     parts: Vec<(SegmentReader, bool)>,
     plan: &[Planned],
+    cached: Vec<Option<SegmentReader>>,
     buffer: Option<&lucene_index::concurrent_writer::LiveBuffer>,
     key: Option<&[u8]>,
 ) -> Result<Vec<SegmentReader>, FfiStatus> {
     let _timer = lucene_index::live_timing::start(lucene_index::live_timing::Phase::Overlay);
+    if cached.len() != plan.len() {
+        set_last_error("live view: overlays of other than the plan's chunks");
+        return Err(FfiStatus::Decode);
+    }
     parts
         .into_iter()
         .zip(plan)
-        .map(|((r, lean), p)| {
+        .zip(cached)
+        .map(|(((r, lean), p), cached)| {
             if !lean {
                 return Ok(r);
             }
-            if let Some(r) = cached_overlay(p, key) {
+            if let Some(r) = cached {
                 return Ok(r);
             }
             let Some(buffer) = buffer else {
@@ -1438,16 +1458,28 @@ pub unsafe extern "C" fn ffi_jvm_reader_search_live(
                 plan.get(..n).unwrap_or_default()
             })
             .collect();
+        // The overlays found now are the ones used: one evicted later must
+        // not be rebuilt from a read that starts past its chunk.
+        let cached: Vec<Vec<Option<SegmentReader>>> = prefixes
+            .iter()
+            .map(|prefix| {
+                prefix
+                    .iter()
+                    .map(|p| cached_overlay(p, Some(&key)))
+                    .collect()
+            })
+            .collect();
         // Each buffer is read from its first chunk without this request's
         // overlay, else from the documents after its chunks.
         let from: Vec<i32> = prefixes
             .iter()
-            .map(|prefix| {
-                let uncached = prefix.iter().find(|p| {
-                    p.chunk.as_ref().is_some_and(|c| !c.postings)
-                        && cached_overlay(p, Some(&key)).is_none()
-                });
-                uncached.map_or_else(|| prefix.last().map_or(0, |p| p.end), |p| p.start)
+            .zip(&cached)
+            .map(|(prefix, cached)| {
+                let uncached = prefix
+                    .iter()
+                    .zip(cached)
+                    .find(|(p, c)| p.chunk.as_ref().is_some_and(|c| !c.postings) && c.is_none());
+                uncached.map_or_else(|| prefix.last().map_or(0, |p| p.end), |(p, _)| p.start)
             })
             .collect();
         let snapshot = v
@@ -1459,18 +1491,21 @@ pub unsafe extern "C" fn ffi_jvm_reader_search_live(
         let mut chunk_masks = Vec::new();
         let mut chunk_docs = Vec::new();
         let mut live = Vec::new();
-        for ((b, prefix), buffer) in v.view.buffers.iter().zip(&prefixes).zip(snapshot.buffers) {
+        for ((prefix, cached), buffer) in prefixes.iter().zip(cached).zip(snapshot.buffers) {
             let parts: Vec<(SegmentReader, bool)> = prefix
                 .iter()
                 .filter_map(|p| p.chunk.as_ref().map(|c| (c.reader.clone(), !c.postings)))
                 .collect();
-            for (p, r) in prefix
-                .iter()
-                .zip(overlaid(parts, prefix, Some(&buffer), Some(&key))?)
+            for (p, r) in
+                prefix
+                    .iter()
+                    .zip(overlaid(parts, prefix, cached, Some(&buffer), Some(&key))?)
             {
-                let lo = b.deleted.partition_point(|&d| d < p.start);
-                let hi = b.deleted.partition_point(|&d| d < p.end);
-                let deleted: Vec<i32> = b
+                // The snapshot's deletes: every document of a buffer
+                // `delete_all` or `rollback` dropped since the view opened.
+                let lo = buffer.deleted.partition_point(|&d| d < p.start);
+                let hi = buffer.deleted.partition_point(|&d| d < p.end);
+                let deleted: Vec<i32> = buffer
                     .deleted
                     .get(lo..hi)
                     .unwrap_or_default()

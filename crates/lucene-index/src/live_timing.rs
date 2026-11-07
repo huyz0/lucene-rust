@@ -15,7 +15,7 @@ pub enum Phase {
     ViewOpenLocks,
     /// Reading the requested terms of a view's buffers.
     Snapshot,
-    /// Writing a chunk segment under its slot's lock.
+    /// Writing a chunk segment, its slot's lock waited for included.
     ChunkWrite,
     /// Building a view's reader for aggregations and sorts.
     ViewReader,

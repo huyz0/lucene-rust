@@ -5902,7 +5902,7 @@ mod tests {
             assert_eq!(ffi_live_view_close(view), 0);
         }
         // A few chunks per buffer, not one per view.
-        assert!(leaves_seen.iter().all(|&n| n <= 8), "{leaves_seen:?}");
+        assert!(leaves_seen.iter().all(|&n| n <= 12), "{leaves_seen:?}");
         assert!(leaves_seen.iter().any(|&n| n > 1), "{leaves_seen:?}");
 
         // A buffer published after views of it opened: one whose chunks

@@ -2454,11 +2454,15 @@ impl<'d> ConcurrentIndexWriter<'d> {
             end
         };
         self.update_ram(|c| c.set_delete_bytes_used(0));
-        self.live_flushes().discard(end);
+        // One hold of the live lock: nothing reads the buffers dropped but
+        // not yet the commit gone back to.
+        let mut live = self.live_flushes();
+        live.discard(end);
         core.writer.rollback();
         // Back at its last commit, whose readers now hold every document.
         let generation = core.writer.segment_infos().generation;
-        self.live_flushes().committed(generation, end);
+        live.committed(generation, end);
+        drop(live);
         self.buffered_docs.store(0, Ordering::Release);
         self.refresh_segment_docs(&mut core);
         drop(core);
