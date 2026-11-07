@@ -194,6 +194,9 @@ public final class KnnVectorFieldMapper extends ParametrizedFieldMapper {
     private final Settings indexSettings;
     private final KnnFieldConfig config;
     private final FieldType vectorType;
+    /** {@link #vectorType} marked for derived source, in an index that masks it. */
+    private final FieldType derivedType;
+    private Boolean derivedField;
 
     private KnnVectorFieldMapper(
         String simpleName,
@@ -228,8 +231,10 @@ public final class KnnVectorFieldMapper extends ParametrizedFieldMapper {
             ft.putAttribute(VectorsFormatSpec.ATTRIBUTE, config.format().attribute());
             ft.freeze();
             this.vectorType = ft;
+            this.derivedType = DerivedSource.forIndex(indexSettings) ? DerivedSource.marked(ft) : null;
         } else {
             this.vectorType = null;
+            this.derivedType = null;
         }
     }
 
@@ -290,13 +295,13 @@ public final class KnnVectorFieldMapper extends ParametrizedFieldMapper {
         if (config.dataType() == VectorEncoding.BYTE) {
             byte[] v = KnnVectors.toBytes(values);
             if (vectorType != null) {
-                context.doc().add(new KnnByteVectorField(name(), v, vectorType));
+                context.doc().add(new KnnByteVectorField(name(), v, vectorType(context)));
             }
             keep(context, v);
         } else {
             float[] v = KnnVectors.toFloats(values, config.spaceType());
             if (vectorType != null) {
-                context.doc().add(new KnnFloatVectorField(name(), v, vectorType));
+                context.doc().add(new KnnFloatVectorField(name(), v, vectorType(context)));
             }
             if (hasDocValues || stored) {
                 ByteBuffer bytes = ByteBuffer.allocate(v.length * Float.BYTES);
@@ -306,6 +311,17 @@ public final class KnnVectorFieldMapper extends ParametrizedFieldMapper {
                 keep(context, bytes.array());
             }
         }
+    }
+
+    /** The marked type for a root field derived source covers ({@code isDerivedEnabled}); nested ones keep their values. */
+    private FieldType vectorType(ParseContext context) {
+        if (derivedType == null || context.doc() != context.rootDoc()) {
+            return vectorType;
+        }
+        if (derivedField == null) {
+            derivedField = DerivedSource.forField(name(), context.docMapper());
+        }
+        return derivedField ? derivedType : vectorType;
     }
 
     private void keep(ParseContext context, byte[] serialized) {

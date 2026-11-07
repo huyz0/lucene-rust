@@ -51,9 +51,10 @@ import java.util.function.Function;
  * segments mark the fields with {@link #FIELD_ATTRIBUTE} instead. The stored fields themselves are
  * those of the codec {@link #DELEGATE_CODEC} names, or of the delegate when it names none.
  *
- * <p>Writing records the delegate's name and nothing else: this node's writers keep {@code _source}
- * whole, and a merge reads every document through {@link #fieldsReader}, so the merged segment holds
- * the vectors.
+ * <p>Writing records the delegate's name and nothing else: Lucene's writers here (OpenSearch's
+ * engine) keep {@code _source} whole, and a merge reads every document through {@link #fieldsReader},
+ * so the merged segment holds the vectors. The Rust engine masks its own writes
+ * ({@code knn.DerivedSource}) and lists the fields itself.
  */
 final class DerivedSourceStoredFieldsFormat extends StoredFieldsFormat {
     static final String DERIVED_VECTOR_FIELDS = "derived_vector_fields";
