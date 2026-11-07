@@ -208,6 +208,44 @@ def compare_sources(failures):
     return n
 
 
+def compare_fields(failures):
+    """`fields`, `docvalue_fields` and `stored_fields` of every mapping, on a knn index and a plain one,
+    by search: the hits' fields (or the error) as stock returns them."""
+    names = sorted(MAPPINGS)
+    requests = [{"fields": names}, {"fields": ["*"], "_source": False}, {"docvalue_fields": names},
+                {"docvalue_fields": [{"field": "plain", "format": "use_field_mapping"}]},
+                {"stored_fields": ["stored"]}, {"stored_fields": ["*"], "_source": False}]
+    requests += [{"docvalue_fields": [n]} for n in names] + [{"fields": [n]} for n in names]
+    requests += [{"sort": [{"plain": "asc"}]}, {"size": 0, "aggs": {"t": {"terms": {"field": "plain"}}}}]
+    n = 0
+    for index, knn in (("fields-knn", True), ("fields-plain", False)):
+        plain = ("plain", "space", "byte", "float", "stored", "half")
+        mappings = {"properties": {k: v for k, v in MAPPINGS.items() if knn or k in plain}}
+        for port in (OURS[1], STOCK[1]):
+            settings = {"knn": knn, "number_of_replicas": 0, **({"lucene_rust.engine": True} if port == OURS[1] else {})}
+            ck.req(port, "PUT", f"/{index}", {"settings": {"index": settings}, "mappings": mappings})
+            body = {k: v for k, v in values().items() if k in mappings["properties"]}
+            ck.req(port, "PUT", f"/{index}/_doc/1?refresh=true", body)
+        for r in requests:
+            got = []
+            for port in (OURS[1], STOCK[1]):
+                res = ck.req(port, "POST", f"/{index}/_search", {"query": {"match_all": {}}, **r}, ok_errors=True)
+                if "error" in res and "status" in res:
+                    e = (res["error"] or {}).get("error") or {}
+                    cause = (e.get("root_cause") or [{}])[0]
+                    got.append(("error", res["status"], cause.get("type"), cause.get("reason")))
+                else:
+                    hits = res["hits"]["hits"]
+                    failed = res.get("_shards", {}).get("failures")
+                    got.append(("failed", [f.get("reason", {}).get("type") for f in failed]) if failed
+                               else typed({k: hits[0].get(k) for k in ("fields", "_source") if k in hits[0]}) if hits
+                               else typed(res.get("aggregations")))
+            n += 1
+            if got[0] != got[1]:
+                failures.append(f"{index} {r}: ours {got[0]}, stock {got[1]}")
+    return n
+
+
 def close(a, b):
     """a == b, floats within a few ulps: stock's scalar kernels fuse multiply-adds only on CPUs
     with fast FMA (Lucene's HAS_FAST_SCALAR_FMA), so its scores move by an ulp across runners."""
@@ -327,8 +365,9 @@ def main():
         mappings = compare_mappings(failures)
         explains = compare_explain(failures)
         reads = compare_sources(failures)
+        fields = compare_fields(failures)
         print(f"{len(stats)} stats calls, {len(calls)} warmup/clear_cache/error calls, {mappings} mappings, "
-              f"{explains} explains, {reads} _source reads compared")
+              f"{explains} explains, {reads} _source reads, {fields} field fetches compared")
     finally:
         if not keep:
             for name in (OURS[0], STOCK[0]):

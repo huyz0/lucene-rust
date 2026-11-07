@@ -511,6 +511,21 @@ public class RustSearchPlugin extends Plugin implements
         );
     }
 
+    /** k-NN's {@code knn_vector} doc-value format, which a shard's {@code docvalue_fields} results carry. */
+    @Override
+    public List<org.opensearch.core.common.io.stream.NamedWriteableRegistry.Entry> getNamedWriteables() {
+        if (stockKnn) {
+            return List.of();
+        }
+        return List.of(
+            new org.opensearch.core.common.io.stream.NamedWriteableRegistry.Entry(
+                org.opensearch.search.DocValueFormat.class,
+                org.lucenerust.opensearch.knn.KnnVectorFieldData.Format.NAME,
+                org.lucenerust.opensearch.knn.KnnVectorFieldData.Format::fromStream
+            )
+        );
+    }
+
     /** neural-search's {@code neural_sparse} query, by {@code query_tokens}, and k-NN's {@code knn}. */
     @Override
     public List<QuerySpec<?>> getQueries() {
