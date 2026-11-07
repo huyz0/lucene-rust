@@ -1420,6 +1420,7 @@ public final class NativeBridge {
     public static final int OPEN_FAULT_INJECTION = 1;
     public static final int OPEN_SPARSE = 2;
     public static final int OPEN_LIVE_SEARCH = 4;
+    public static final int OPEN_MERGE_LZ4_HC = 8;
     public static final int OPEN_ADAPTIVE_DOC_VALUES = 32;
     public static final int OPEN_PARTITIONED = 64;
 
@@ -1435,7 +1436,8 @@ public final class NativeBridge {
      * test-only panic operation; {@code sparse} writes the segments of an {@code index.sparse} index,
      * with neural-search's codec and clustered postings; {@code liveSearch} keeps what a search of the
      * buffered documents reads ({@link #liveViewOpen}); {@code adaptiveDocValues} writes doc values in
-     * the {@code RustAdaptive} format; with {@code partitioned} every segment holds one partition
+     * the {@code RustAdaptive} format; {@code mergeLz4Hc} has merges write {@code BEST_SPEED} stored
+     * fields with the high-compression LZ4 match finder (stock-readable); with {@code partitioned} every segment holds one partition
      * (the value of the index's partition field) and records it, and merges never mix partitions.
      * {@code indexSort} is the index sort as a {@code .si} encodes it (null or empty for none), and
      * {@code parentFieldUtf8} the field marking each block's last document (null or empty for none).
@@ -1450,6 +1452,7 @@ public final class NativeBridge {
         boolean sparse,
         boolean liveSearch,
         boolean adaptiveDocValues,
+        boolean mergeLz4Hc,
         boolean partitioned,
         byte[] indexSort,
         byte[] parentFieldUtf8,
@@ -1471,7 +1474,7 @@ public final class NativeBridge {
                 ramBufferMb,
                 (byte) ((faultInjection ? OPEN_FAULT_INJECTION : 0) | (sparse ? OPEN_SPARSE : 0)
                     | (liveSearch ? OPEN_LIVE_SEARCH : 0) | (adaptiveDocValues ? OPEN_ADAPTIVE_DOC_VALUES : 0)
-                    | (partitioned ? OPEN_PARTITIONED : 0)),
+                    | (mergeLz4Hc ? OPEN_MERGE_LZ4_HC : 0) | (partitioned ? OPEN_PARTITIONED : 0)),
                 s.bytes(sort),
                 (long) sort.length,
                 s.bytes(parent),

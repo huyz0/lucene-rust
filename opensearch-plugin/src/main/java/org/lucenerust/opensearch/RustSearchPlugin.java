@@ -383,6 +383,7 @@ public class RustSearchPlugin extends Plugin implements
             RustEngineSupport.FAULT_INJECTION,
             RustEngineSupport.REALTIME_SEARCH,
             RustEngineSupport.ADAPTIVE_DOC_VALUES,
+            RustEngineSupport.MERGE_LZ4_HIGH_COMPRESSION,
             RustEngineSupport.PARTITION_FIELD,
             NODE_ENGINE_ENABLED,
             LocalKeySource.KEY,

@@ -78,6 +78,19 @@ public final class RustEngineSupport {
     );
 
     /**
+     * Whether merges write {@code index.codec: default} stored fields with a high-compression LZ4
+     * match finder: the same LZ4 format, which OpenSearch's own engine and stock Lucene read, about
+     * 10-30% smaller, and several times slower to compress. Flushes keep the fast compressor, and a
+     * segment already written this way is copied by later merges rather than compressed again. Off
+     * by default, like stock.
+     */
+    public static final Setting<Boolean> MERGE_LZ4_HIGH_COMPRESSION = Setting.boolSetting(
+        "index.lucene_rust.stored_fields.merge_lz4_high_compression",
+        false,
+        Setting.Property.IndexScope
+    );
+
+    /**
      * The field whose value is a document's partition, as a partitioned table's partition key: every
      * segment of the shard holds the documents of one partition (a keyword's value, or a numeric's or
      * date's), and merges never mix partitions, so each partition's documents stay together on disk.
@@ -336,6 +349,7 @@ public final class RustEngineSupport {
             org.lucenerust.opensearch.sparse.SparseSettings.SPARSE_INDEX.get(config.getIndexSettings().getSettings()),
             REALTIME_SEARCH.get(config.getIndexSettings().getSettings()),
             ADAPTIVE_DOC_VALUES.get(config.getIndexSettings().getSettings()),
+            MERGE_LZ4_HIGH_COMPRESSION.get(config.getIndexSettings().getSettings()),
             partitionField(config.getIndexSettings().getSettings()),
             config.getIndexSort(),
             parentField(config),
