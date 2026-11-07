@@ -408,6 +408,13 @@ public final class KnnQueryBuilder extends AbstractQueryBuilder<KnnQueryBuilder>
         }
         Query filterQuery = filterQuery(context);
         if (k != null) {
+            if (config.ivf()) {
+                // IVF sizes its own rerank from k; ef_search widens it only when asked for.
+                int candidates = efSearch == null ? k : Math.max(k, efSearch);
+                return new KnnTopVectorQuery(fieldName, target, k, candidates, filterQuery, parents, expand).withNprobes(
+                    nprobes == null ? 0 : nprobes
+                );
+            }
             int candidates = Math.max(k, efSearch == null ? defaultEfSearch(context) : efSearch);
             return new KnnTopVectorQuery(fieldName, target, k, candidates, filterQuery, parents, expand);
         }

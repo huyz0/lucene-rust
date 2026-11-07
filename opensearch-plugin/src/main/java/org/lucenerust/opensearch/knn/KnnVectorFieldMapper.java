@@ -3,6 +3,8 @@
  */
 package org.lucenerust.opensearch.knn;
 
+import org.opensearch.index.mapper.MapperParsingException;
+import org.lucenerust.opensearch.engine.RustEngineSupport;
 import org.apache.lucene.index.DocValuesType;
 import org.apache.lucene.document.BinaryDocValuesField;
 import org.apache.lucene.document.FieldType;
@@ -183,7 +185,14 @@ public final class KnnVectorFieldMapper extends ParametrizedFieldMapper {
         public Mapper.Builder<?> parse(String name, Map<String, Object> node, ParserContext parserContext) {
             Builder builder = new Builder(name, parserContext.getSettings());
             builder.parse(name, parserContext, node);
-            builder.config();
+            KnnFieldConfig config = builder.config();
+            Settings settings = parserContext.getSettings();
+            if (config.ivf() && RustEngineSupport.servedByRust(settings) == false) {
+                // OpenSearch's own engine would write the raw vectors alone, never the IVF index.
+                throw new MapperParsingException(
+                    "[" + CONTENT_TYPE + "] the [lucene_rust] engine's [ivf] needs an index on the Rust engine ([index.lucene_rust.engine: true])"
+                );
+            }
             return builder;
         }
     }
