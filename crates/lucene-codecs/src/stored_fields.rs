@@ -57,13 +57,28 @@ pub const DATA_CODEC_ZSTD_PAGED: &str = "RustZstdPagedStoredFieldsData";
 /// decode every chunk that starts there. A storage layer that caches whole
 /// pages should use this size or a multiple of it.
 ///
-/// Pages are counted from the start of the `.fdt`, so a segment packed into a
-/// compound file keeps its packing only relative to its own entry.
+/// Pages are counted from the start of the `.fdt`; a compound file places
+/// such an entry on a page boundary ([`crate::compound_format::write`]).
+/// Readers open the file with this size as its alignment hint
+/// ([`page_alignment`], `Directory::open_aligned`).
 pub const ZSTD_PAGED_PAGE_SIZE: usize = 16 << 10;
-// The storage layer's alignment rule: a page-aligned format's block is
-// 4 KiB times a power of two, so a page cache can always pick pages of a
-// multiple of it.
-const _: () = assert!(ZSTD_PAGED_PAGE_SIZE >= 4096 && ZSTD_PAGED_PAGE_SIZE.is_power_of_two());
+const _: () = assert!(lucene_store::alignment::is_valid_hint(ZSTD_PAGED_PAGE_SIZE));
+/// The `.si` attribute of a segment with [`Mode::ZstdPaged`] stored fields
+/// (value [`ZSTD_PAGED_MODE_VALUE`]); the plugin's Java format reads it to
+/// pick its reader.
+pub const ZSTD_PAGED_MODE_ATTRIBUTE: &str = "LuceneRustStoredFieldsFormat.mode";
+/// [`ZSTD_PAGED_MODE_ATTRIBUTE`]'s value.
+pub const ZSTD_PAGED_MODE_VALUE: &str = "ZSTD_PAGED";
+
+/// The alignment hint a segment's `.fdt` (or the `.cfs` holding it) is
+/// opened with, from the segment's `.si` attributes: [`ZSTD_PAGED_PAGE_SIZE`]
+/// for [`Mode::ZstdPaged`], `None` for every other mode.
+pub fn page_alignment(attributes: &[(String, String)]) -> Option<usize> {
+    attributes
+        .iter()
+        .any(|(k, v)| k == ZSTD_PAGED_MODE_ATTRIBUTE && v == ZSTD_PAGED_MODE_VALUE)
+        .then_some(ZSTD_PAGED_PAGE_SIZE)
+}
 /// [`Mode::ZstdPaged`]'s `chunkSize`: plain bytes per chunk, so one frame.
 const ZSTD_PAGED_CHUNK_SIZE: usize = 16 << 10;
 /// [`Mode::ZstdPaged`]'s `maxDocsPerChunk`.
