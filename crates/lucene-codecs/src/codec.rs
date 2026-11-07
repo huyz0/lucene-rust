@@ -216,6 +216,57 @@ pub enum WritePoint {
     Compound,
 }
 
+/// `new Lucene104Codec(Mode.BEST_COMPRESSION)` (`index.codec:
+/// best_compression`): DEFLATE stored fields under the `Lucene104` name.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct BestCompressionLucene104Codec;
+
+impl Lucene104Codec for BestCompressionLucene104Codec {
+    fn stored_fields_mode(&self) -> crate::stored_fields::Mode {
+        crate::stored_fields::Mode::BestCompression
+    }
+}
+
+/// OpenSearch custom-codecs' `Zstd104Codec` and `ZstdNoDict104Codec`
+/// (`index.codec: zstd`, `zstd_no_dict`): `Lucene104` with zstd stored
+/// fields, recorded as [`crate::codecs::ZSTD_CODEC`] or
+/// [`crate::codecs::ZSTD_NO_DICT_CODEC`] so a stock reader with the plugin
+/// installed opens it with the plugin's own codec.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ZstdLucene104Codec {
+    mode: crate::stored_fields::ZstdMode,
+}
+
+impl ZstdLucene104Codec {
+    /// The codec for `mode`.
+    ///
+    /// # Errors
+    /// `mode.level` is not a zstd level.
+    pub fn new(mode: crate::stored_fields::ZstdMode) -> Result<Self, lucene_zstd::Error> {
+        lucene_zstd::check_level(mode.level)?;
+        Ok(Self { mode })
+    }
+
+    /// The stored-fields settings.
+    pub fn mode(&self) -> crate::stored_fields::ZstdMode {
+        self.mode
+    }
+}
+
+impl Lucene104Codec for ZstdLucene104Codec {
+    fn name(&self) -> &str {
+        if self.mode.dictionary {
+            crate::codecs::ZSTD_CODEC
+        } else {
+            crate::codecs::ZSTD_NO_DICT_CODEC
+        }
+    }
+
+    fn stored_fields_mode(&self) -> crate::stored_fields::Mode {
+        crate::stored_fields::Mode::Zstd(self.mode)
+    }
+}
+
 /// `new Lucene104Codec()`: every field on the default formats.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct DefaultLucene104Codec;
@@ -237,6 +288,26 @@ mod tests {
                 KnnVectorsFormat::default()
             }
         }
+    }
+
+    #[test]
+    fn the_zstd_codecs_are_opensearchs() {
+        use crate::stored_fields::{Mode, ZstdMode};
+        let z = ZstdLucene104Codec::new(ZstdMode::zstd(3)).unwrap();
+        assert_eq!(z.name(), "ZSTD104");
+        assert_eq!(z.mode(), ZstdMode::zstd(3));
+        assert_eq!(z.stored_fields_mode(), Mode::Zstd(ZstdMode::zstd(3)));
+        assert!(z.compressing_format().is_none());
+        let n = ZstdLucene104Codec::new(ZstdMode::zstd_no_dict(6)).unwrap();
+        assert_eq!(n.name(), "ZSTDNODICT104");
+        assert_eq!(
+            n.stored_fields_mode().data_codec(),
+            "CustomStoredFieldsZstdNoDict"
+        );
+        assert!(ZstdLucene104Codec::new(ZstdMode::zstd(1000)).is_err());
+        let b = BestCompressionLucene104Codec;
+        assert_eq!(b.name(), "Lucene104");
+        assert_eq!(b.stored_fields_mode(), Mode::BestCompression);
     }
 
     #[test]

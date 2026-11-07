@@ -204,6 +204,8 @@ final class RustIndexWriter implements DocumentIndexWriter {
         org.apache.lucene.search.Sort indexSort,
         String parentField,
         int maxDocs,
+        int storedFields,
+        int compressionLevel,
         Analyzer analyzer,
         Similarity similarity,
         int indexCreatedVersionMajor,
@@ -228,6 +230,8 @@ final class RustIndexWriter implements DocumentIndexWriter {
             encodeIndexSort(indexSort),
             parentField == null ? null : parentField.getBytes(StandardCharsets.UTF_8),
             maxDocs,
+            storedFields,
+            compressionLevel,
             out
         );
         if (status != NativeBridge.OK) {
