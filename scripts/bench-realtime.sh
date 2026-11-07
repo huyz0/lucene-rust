@@ -11,7 +11,9 @@
 #   scripts/bench-realtime.sh [DOCS] [OUT_DIR]     # default 1000000, target/bench-realtime
 #
 # Needs what scripts/bench-opensearch.sh needs. HEAP (default 2g), CLIENTS
-# (default 4) bulk clients, PROBE_EVERY (default 0.2) seconds between probes,
+# (default 4) bulk clients, PROBE_EVERY (default 0.2) seconds between probes.
+# BENCH_ENV (one NAME=value) is passed to the node, and its log is kept
+# beside the results.
 # CONFIGS (default "stock plugin realtime realtime-30s") which configs run.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
@@ -42,14 +44,15 @@ CONFIGS="${CONFIGS:-stock plugin realtime realtime-30s}"
 bench() { # name image label settings [docker-run args...]
     [[ " $CONFIGS " == *" $3 "* ]] || return 0
     docker rm -f "$1" >/dev/null 2>&1 || true
-    docker run -d --name "$1" -p "$PORT:9200" "${@:5}" \
+    docker run -d --name "$1" -p "$PORT:9200" "${@:5}" ${BENCH_ENV:+-e "$BENCH_ENV"} \
         -e discovery.type=single-node -e DISABLE_SECURITY_PLUGIN=true \
         -e cluster.routing.allocation.disk.threshold_enabled=false \
         -e DISABLE_INSTALL_DEMO_CONFIG=true -e OPENSEARCH_JAVA_OPTS="-Xms$HEAP -Xmx$HEAP" \
         "$2" >/dev/null
     for _ in $(seq 1 90); do curl -sf "localhost:$PORT" >/dev/null && break; sleep 2; done
     python3 opensearch-plugin/e2e/bench_nodes.py visibility "http://localhost:$PORT" "$1" "$OUT/corpus-$DOCS" "$3" \
-        "$OUT/$3-$DOCS.json" "$4"
+        "$OUT/$3-$DOCS.json" "$4" || { docker logs "$1" >"$OUT/$3-$DOCS.log" 2>&1; return 1; }
+    docker logs "$1" >"$OUT/$3-$DOCS.log" 2>&1
     docker rm -f "$1" >/dev/null
 }
 trap 'docker rm -f bench-rt >/dev/null 2>&1 || true' EXIT

@@ -60,7 +60,9 @@ const STRING: u8 = 5;
 /// A buffer's [`ExplicitFields`], in the order they were added.
 #[derive(Default)]
 pub(crate) struct PackedFields {
-    blocks: Vec<Vec<u8>>,
+    /// Every block but the last is full and never changes, so a
+    /// [`Self::snapshot`] shares them.
+    blocks: Vec<std::sync::Arc<Vec<u8>>>,
     /// Per block, its first document and how many kept documents come
     /// before it: where a read from a document on starts.
     block_starts: Vec<(usize, usize)>,
@@ -82,7 +84,7 @@ impl PackedFields {
     pub(crate) fn ram_bytes(&self) -> usize {
         self.blocks
             .iter()
-            .map(Vec::capacity)
+            .map(|b| b.capacity())
             .chain(self.kept.iter().map(ExplicitFields::ram_bytes))
             .fold(0, usize::saturating_add)
     }
@@ -203,16 +205,35 @@ impl PackedFields {
     fn append(&mut self, record: &[u8], at: (usize, usize)) -> usize {
         if let Some(block) = self.blocks.last_mut() {
             if block.capacity().saturating_sub(block.len()) >= record.len() {
-                block.extend_from_slice(record);
+                // The last block is this buffer's alone: a snapshot copies it.
+                std::sync::Arc::make_mut(block).extend_from_slice(record);
                 return 0;
             }
         }
         let mut block = Vec::with_capacity(BLOCK.max(record.len()));
         block.extend_from_slice(record);
         let allocated = block.capacity();
-        self.blocks.push(block);
+        self.blocks.push(std::sync::Arc::new(block));
         self.block_starts.push(at);
         allocated
+    }
+
+    /// The documents buffered now, apart from this buffer: the full blocks
+    /// shared, the last one copied.
+    pub(crate) fn snapshot(&self) -> Self {
+        let mut blocks = self.blocks.clone();
+        if let Some(last) = blocks.last_mut() {
+            *last = std::sync::Arc::new(last.as_slice().to_vec());
+        }
+        PackedFields {
+            blocks,
+            block_starts: self.block_starts.clone(),
+            kept: self.kept.clone(),
+            len: self.len,
+            last_shape: Vec::new(),
+            shape: Vec::new(),
+            scratch: Vec::new(),
+        }
     }
 
     /// The fields back, in the order they were added.

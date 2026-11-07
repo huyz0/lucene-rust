@@ -147,6 +147,7 @@ pub fn with_wrapped_underlying_reader<R>(
             points: s.points,
             reader: s.reader,
             index_sort_prefix: s.index_sort_prefix,
+            termless: None,
             similarity: None,
         })
         .collect();
@@ -166,6 +167,7 @@ pub fn with_wrapped_underlying_reader<R>(
             points: None,
             reader: None,
             index_sort_prefix: false,
+            termless: None,
             similarity: None,
         });
         norms.push(None);

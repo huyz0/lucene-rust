@@ -4,7 +4,13 @@
 
 use lucene_codecs::postings_writer::TermPostings;
 
-use super::{Columns, FieldRuns, PendingPostings, Result};
+use super::{Columns, Cursor, FieldRuns, PendingPostings, Result};
+
+/// Terms with fewer documents are read from their start each search.
+const LIVE_CURSOR_DOCS: u32 = if cfg!(test) { 2 } else { 1024 };
+
+/// How many reads' ends a term keeps at most.
+const LIVE_CURSORS: usize = 16;
 
 /// A buffered field's statistics, as a flushed segment would report them.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -40,23 +46,63 @@ impl FieldRuns {
         self.payloads
     }
 
-    /// `term`'s `(doc, freq)` pairs, doc ascending, onto `out`; nothing when
-    /// the buffer does not hold the term.
-    pub(crate) fn live_docs_of(&self, term: &[u8], out: &mut Vec<(i32, i32)>) {
+    /// `term`'s `(doc, freq)` pairs from document `from` on, doc ascending,
+    /// onto `out`; nothing when the buffer does not hold the term. A term
+    /// of [`LIVE_CURSOR_DOCS`] documents or more is read from where an
+    /// earlier read ended before `from`, when one did.
+    pub(crate) fn live_docs_of(&self, term: &[u8], from: i32, out: &mut Vec<(i32, i32)>) {
         let Some(id) = self.terms.find(term) else {
             return;
         };
         let run = &self.runs[id as usize];
         let [docs_start, _] = self.starts[id as usize];
-        let mut r = self.pool.reader(docs_start, run.docs);
-        let mut doc = 0i32;
+        let cursored = run.doc_count >= LIVE_CURSOR_DOCS;
+        let lock = || {
+            self.live_cursors
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        };
+        let start = (cursored && from > 0)
+            .then(|| {
+                lock().get(&id).and_then(|cs| {
+                    cs.iter()
+                        .filter(|c| c.doc < from)
+                        .max_by_key(|c| c.doc)
+                        .copied()
+                })
+            })
+            .flatten();
+        let mut r = match start {
+            Some(c) => self.pool.resume(c.docs, run.docs),
+            None => self.pool.reader(docs_start, run.docs),
+        };
+        // The document the next code is a delta from: every document
+        // before where the read starts is at most it.
+        let mut doc = start.map_or(0, |c| c.doc);
         while !r.eof() {
             let code = r.read_vlong();
             doc = doc.wrapping_add((code >> 1) as u32 as i32);
             let freq = if code & 1 != 0 { 1 } else { r.read_i32() };
-            out.push((doc, freq));
+            if doc >= from {
+                out.push((doc, freq));
+            }
         }
-        if run.doc_count > 0 {
+        if cursored {
+            let end = Cursor {
+                docs: r.pos(),
+                prox: None,
+                doc,
+            };
+            let mut cursors = lock();
+            let cs = cursors.entry(id).or_default();
+            if !cs.iter().any(|c| c.doc == doc) {
+                if cs.len() >= LIVE_CURSORS {
+                    cs.remove(0);
+                }
+                cs.push(end);
+            }
+        }
+        if run.doc_count > 0 && run.last_doc >= from {
             out.push((run.last_doc, run.freq));
         }
     }
@@ -64,7 +110,12 @@ impl FieldRuns {
     /// `term`'s postings as a flush would write them, documents in buffered
     /// order; its occurrences only when `positions` is set and the field
     /// indexes them. `None` when the buffer does not hold the term.
-    pub(crate) fn live_term(&self, term: &[u8], positions: bool) -> Result<Option<TermPostings>> {
+    pub(crate) fn live_term(
+        &self,
+        term: &[u8],
+        positions: bool,
+        from: i32,
+    ) -> Result<Option<TermPostings>> {
         let Some(id) = self.terms.find(term) else {
             return Ok(None);
         };
@@ -73,7 +124,7 @@ impl FieldRuns {
             ..TermPostings::default()
         };
         if !(positions && self.positions) {
-            self.live_docs_of(term, &mut out.docs);
+            self.live_docs_of(term, from, &mut out.docs);
             return Ok(Some(out));
         }
         let mut cols = Columns::default();
@@ -172,7 +223,7 @@ mod tests {
                 .iter()
                 .find(|v| v.term() == t.as_bytes())
                 .unwrap();
-            let full = runs.live_term(t.as_bytes(), true).unwrap().unwrap();
+            let full = runs.live_term(t.as_bytes(), true, 0).unwrap().unwrap();
             assert_eq!(full.docs, want.docs(), "{t}");
             for (i, positions) in full.positions.iter().enumerate() {
                 assert_eq!(positions, want.positions(i), "{t} doc {i}");
@@ -180,11 +231,11 @@ mod tests {
             }
             assert_eq!(full.payload_lengths, want.payload_lengths(), "{t}");
             assert_eq!(full.payload_bytes, want.payload_bytes(), "{t}");
-            let docs = runs.live_term(t.as_bytes(), false).unwrap().unwrap();
+            let docs = runs.live_term(t.as_bytes(), false, 0).unwrap().unwrap();
             assert_eq!(docs.docs, want.docs(), "{t}");
             assert!(docs.positions.is_empty() && docs.payload_bytes.is_empty());
         }
-        assert!(runs.live_term(b"c", true).unwrap().is_none());
+        assert!(runs.live_term(b"c", true, 0).unwrap().is_none());
         assert!(runs.has_payloads());
     }
 
