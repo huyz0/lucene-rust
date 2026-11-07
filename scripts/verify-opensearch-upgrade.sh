@@ -76,7 +76,7 @@ keep_knn() { # base-image tag
 }
 keep_knn "opensearchproject/opensearch:${OLD_VERSION}" "$OLD_IMAGE"
 keep_knn "opensearchproject/opensearch:${VERSION}" "$STOCK_IMAGE"
-docker build -q --build-arg KEEP_PLUGINS=opensearch-knn -t "$PLUGIN_IMAGE" opensearch-plugin/docker >/dev/null
+docker build -q --build-arg KEEP_PLUGINS="opensearch-knn opensearch-custom-codecs" -t "$PLUGIN_IMAGE" opensearch-plugin/docker >/dev/null
 
 for v in "$VOL_OLD" "$VOL_STOCK" "$VOL_SNAP"; do
     docker volume create "$v" >/dev/null

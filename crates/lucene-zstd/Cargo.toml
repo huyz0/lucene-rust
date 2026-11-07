@@ -1,0 +1,16 @@
+[package]
+name = "lucene-zstd"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+zstd-safe.workspace = true
+thiserror.workspace = true
+
+[features]
+# `train_dictionary`: builds a dictionary from samples (libzstd's ZDICT).
+dict-builder = ["zstd-safe/zdict_builder"]
