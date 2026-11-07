@@ -193,10 +193,11 @@ def sources(docs_by_index, rename, failures):
             if set(seen) != set(want):
                 failures.append(f"{rename}{index} {how}: {len(seen)} documents, {len(want)} live")
                 continue
-            # A half_float field's derived source is its half floats, as stock's.
+            # A half_float field's derived source is its half floats, as stock's: within a half-float
+            # step of this script's, whose normalization rounds differently from VectorUtil's.
             spec = spec_of(index)
             bad = [i for i, v in want.items()
-                   if not same_vector(seen[i], v) and not same_vector(seen[i], ck.indexed(spec, v))]
+                   if not same_vector(seen[i], v) and not same_vector(seen[i], ck.indexed(spec, v), 1e-3)]
             checked += len(seen)
             if bad:
                 failures.append(f"{rename}{index} {how}: _source of {bad[:3]} is {seen[bad[0]]!r:.80}, "
@@ -210,10 +211,10 @@ def spec_of(index):
     return specs[max((n for n in specs if index.endswith(n)), key=len)]
 
 
-def same_vector(got, want):
+def same_vector(got, want, tol=1e-6):
     if not isinstance(got, list) or len(got) != len(want):
         return False
-    return all(isinstance(g, (int, float)) and abs(g - w) <= 1e-6 * max(1.0, abs(w)) for g, w in zip(got, want))
+    return all(isinstance(g, (int, float)) and abs(g - w) <= tol * max(1.0, abs(w)) for g, w in zip(got, want))
 
 
 def same_top(got, scan, eps=1e-5):
