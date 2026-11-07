@@ -48,7 +48,7 @@ pub(crate) fn document_blob(handle: u64, segment: i32, doc: i32) -> Result<Vec<u
         out: 0i32.to_le_bytes().to_vec(),
         count: 0,
     };
-    let stored = reader.visit_stored_document(doc, &mut blob).map_err(|e| {
+    let stored = reader.visit_source_document(doc, &mut blob).map_err(|e| {
         set_last_error(format!("reading stored fields: {e}"));
         FfiStatus::Decode
     })?;

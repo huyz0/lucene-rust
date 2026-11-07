@@ -23,6 +23,13 @@ exhaustive scan's top 10, and the two nodes' top 10 must overlap by MIN_RECALL.
 
 Every plugin search must run in Rust (its stats show no fallback).
 
+Stock writes its indexes with derived source on (index.knn.derived_source.enabled,
+its default): the stored _source leaves the vectors out, and the reader puts
+them back. Every live document's _source must hold its vector wherever it is
+read, through a search (the plugin's native fetch) and the multi-get API
+(Lucene's codec). After the plugin's writes and merge into stock's indexes,
+stock reads them again in place (stock -> plugin -> stock).
+
   scripts/check-knn-upgrade.py [--keep]
 
 Needs Docker and the plugin zip in opensearch-plugin/build/distributions
@@ -42,14 +49,15 @@ ADDED = 120
 STOCK_IMAGE = f"opensearchproject/opensearch:{ck.VERSION}"
 
 
-def start(image):
+def start(image, *env):
     subprocess.run(["docker", "rm", "-f", NODE[0]], capture_output=True)
     subprocess.run(["docker", "run", "-d", "--name", NODE[0], "-p", f"{NODE[1]}:9200",
                     "-v", f"{DATA}:/usr/share/opensearch/data", "-v", f"{REPO}:/usr/share/opensearch/repo",
                     "-e", "path.repo=/usr/share/opensearch/repo",
                     "-e", "discovery.type=single-node", "-e", "DISABLE_SECURITY_PLUGIN=true",
                     "-e", "DISABLE_INSTALL_DEMO_CONFIG=true", "-e", "OPENSEARCH_JAVA_OPTS=-Xms1g -Xmx1g",
-                    "-e", "cluster.routing.allocation.disk.threshold_enabled=false", image],
+                    "-e", "cluster.routing.allocation.disk.threshold_enabled=false",
+                    *[a for e in env for a in ("-e", e)], image],
                    check=True, capture_output=True)
     ck.wait(NODE[1])
 
@@ -100,8 +108,12 @@ def write(prefix, rust, plugin=True):
             rng = random.Random(f"{ck.SEED}-{name}")
             docs = [{"_id": f"d{i}", "tag": "even" if i % 2 == 0 else "odd", "n": i, "emb": ck.vector(rng, byte)}
                     for i in range(ck.DOCS)]
-            # Stock turns derived source on for every k-NN index; this node does not read it yet.
-            ck.create(NODE[1], index, spec, docs, rust, None if plugin else {"index.knn.derived_source.enabled": False})
+            ck.create(NODE[1], index, spec, docs, rust)
+            if not plugin:
+                # Stock turns derived source on for every k-NN index: its _source leaves the vectors out.
+                got = ck.req(NODE[1], "GET", f"/{index}/_settings/index.knn.derived_source.enabled?include_defaults=true")
+                flat = json.dumps(got[index])
+                assert '"enabled": "true"' in flat, f"{index}: stock wrote no derived source: {flat}"
             deleted = {f"d{i}" for i in rng.sample(range(ck.DOCS), DELETED)}
             lines = [json.dumps({"delete": {"_index": index, "_id": i}}) for i in sorted(deleted)]
             ck.req(NODE[1], "POST", "/_bulk", "\n".join(lines) + "\n", ndjson=True)
@@ -120,10 +132,12 @@ def snapshot(name, indices):
     assert r["snapshot"]["state"] == "SUCCESS", json.dumps(r)[:500]
 
 
-def restore(name, failures):
+def restore(name, failures, settings=None):
     ck.req(NODE[1], "PUT", "/_snapshot/repo", {"type": "fs", "settings": {"location": "/usr/share/opensearch/repo"}})
-    r = ck.req(NODE[1], "POST", f"/_snapshot/repo/{name}/_restore?wait_for_completion=true",
-               {"rename_pattern": "(.+)", "rename_replacement": "restored-$1", "include_global_state": False},
+    body = {"rename_pattern": "(.+)", "rename_replacement": "restored-$1", "include_global_state": False}
+    if settings:
+        body["index_settings"] = settings
+    r = ck.req(NODE[1], "POST", f"/_snapshot/repo/{name}/_restore?wait_for_completion=true", body,
                timeout=600, ok_errors=True)
     if "error" in r or r.get("snapshot", {}).get("shards", {}).get("failed", 0):
         failures.append(f"restore of {name} failed: {json.dumps(r)[:600]}")
@@ -166,6 +180,34 @@ def read(cases, rename, plugin_reads, failures):
     return checked
 
 
+def sources(docs_by_index, rename, failures):
+    """Every live document's _source vector, by search and by multi-get, against what was indexed."""
+    checked = 0
+    for index, docs in docs_by_index.items():
+        want = {d["_id"]: d["emb"] for d in docs}
+        r = ck.req(NODE[1], "POST", f"/{rename}{index}/_search",
+                   {"size": len(want) + 10, "query": {"match_all": {}}}, ok_errors=True)
+        got = {h["_id"]: h["_source"].get("emb") for h in r.get("hits", {}).get("hits", [])}
+        m = ck.req(NODE[1], "POST", f"/{rename}{index}/_mget", {"ids": sorted(want)}, ok_errors=True)
+        by_get = {d["_id"]: d.get("_source", {}).get("emb") for d in m.get("docs", []) if d.get("found")}
+        for how, seen in (("search", got), ("mget", by_get)):
+            if set(seen) != set(want):
+                failures.append(f"{rename}{index} {how}: {len(seen)} documents, {len(want)} live")
+                continue
+            bad = [i for i, v in want.items() if not same_vector(seen[i], v)]
+            checked += len(seen)
+            if bad:
+                failures.append(f"{rename}{index} {how}: _source of {bad[:3]} is {seen[bad[0]]!r:.80}, "
+                                f"indexed {want[bad[0]]!r:.80}")
+    return checked
+
+
+def same_vector(got, want):
+    if not isinstance(got, list) or len(got) != len(want):
+        return False
+    return all(isinstance(g, (int, float)) and abs(g - w) <= 1e-6 * max(1.0, abs(w)) for g, w in zip(got, want))
+
+
 def same_top(got, scan, eps=1e-5):
     """`got` (id, score) is the exhaustive `scan` (score, id), letting equal scores trade places."""
     if len(got) < len(scan):
@@ -180,10 +222,13 @@ def same_top(got, scan, eps=1e-5):
     return True
 
 
-def write_into(cases, failures):
-    """New documents and deletes into each old index, one merged segment, the exhaustive top k."""
+def write_into(cases, failures, live, rename=""):
+    """New documents and deletes into each old index, one merged segment, the exhaustive top k;
+    each index's live documents into `live`."""
     checked = 0
-    for index, (group, spec, alive, targets, _, rng) in cases.items():
+    for name, (group, spec, alive, targets, _, rng) in cases.items():
+        index = rename + name
+        rng = random.Random(f"{rng.random()}-{rename}")
         byte = spec.get("data_type") == "byte"
         added = [{"_id": f"a{i}", "tag": "even" if i % 2 == 0 else "odd", "n": i, "emb": ck.vector(rng, byte)}
                  for i in range(ADDED)]
@@ -200,6 +245,7 @@ def write_into(cases, failures):
         ck.req(NODE[1], "POST", f"/{index}/_forcemerge?max_num_segments=1", timeout=600)
         ck.req(NODE[1], "POST", f"/{index}/_refresh")
         now = [d for d in alive + added if d["_id"] not in gone]
+        live[index] = now
         for t in targets[:3]:
             # A beam wide enough that the merged graph's search is exhaustive.
             got = ck.search(NODE[1], index, {"size": 10, "query": ck.knn(
@@ -238,18 +284,39 @@ def main():
         cases = write("", False, plugin=False)
         snapshot("from-stock", list(cases))
         stop()
-        start(image)
+        # The stock indexes in place inherit the Rust engine; the restored ones take OpenSearch's.
+        start(image, "lucene_rust.engine.default=true")
         before = ck.req(NODE[1], "GET", "/_plugins/lucene_rust/stats")
         green(failures, "stock indexes in place")
         n = read(cases, "", True, failures)
-        restore("from-stock", failures)
+        restore("from-stock", failures, {"index.lucene_rust.engine": False})
         green(failures, "stock snapshot restored")
         n += read(cases, "restored-", True, failures)
-        n += write_into(cases, failures)
+        alive = {index: c[2] for index, c in cases.items()}
+        m = sources(alive, "", failures) + sources(alive, "restored-", failures)
+        live = {}
+        n += write_into(cases, failures, live)
+        n += write_into(cases, failures, live, "restored-")
+        m += sources(live, "", failures)
         ran, fell = fallbacks_since(before)
-        print(f"  {n} queries compared; {ran} shard queries in Rust, fallbacks {fell}")
+        after = ck.req(NODE[1], "GET", "/_plugins/lucene_rust/stats")
+        engines = after["engines"]
+        fetched = after["fetch_nanos"]["native_count"] - before["fetch_nanos"]["native_count"]
+        errors = after["native_errors"] - before["native_errors"]
+        print(f"  {n} queries compared, {m} sources; {ran} shard queries in Rust, fallbacks {fell}; "
+              f"engines {engines}; {fetched} documents fetched natively, {errors} native errors")
         if fell:
             failures.append(f"stock -> plugin: queries fell back to Java: {fell}")
+        if engines["rust"] < len(cases):
+            failures.append(f"stock -> plugin: the {len(cases)} indexes in place are not on the Rust engine: {engines}")
+        if errors or fetched == 0:
+            failures.append(f"stock -> plugin: native fetch read {fetched} documents with {errors} errors")
+        stop()
+
+        print("stock -> plugin -> stock")
+        start(STOCK_IMAGE)
+        green(failures, "plugin-merged stock indexes in place")
+        print(f"  {sources(live, '', failures)} sources")
         stop()
 
         print("plugin -> stock")
@@ -264,7 +331,9 @@ def main():
         restore("from-plugin", failures)
         green(failures, "plugin snapshot restored")
         n += read(cases, "restored-", False, failures)
-        print(f"  {n} queries compared")
+        alive = {index: c[2] for index, c in cases.items()}
+        m = sources(alive, "", failures) + sources(alive, "restored-", failures)
+        print(f"  {n} queries compared, {m} sources")
     finally:
         if failures:
             logs = subprocess.run(["docker", "logs", NODE[0]], capture_output=True, text=True)

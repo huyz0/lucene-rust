@@ -240,7 +240,7 @@ public final class EncryptedStoreTest {
                     false,
                     false,
                     false,
-                    null,
+                    null, false,
                     null,
                     null,
                     IndexWriter.MAX_DOCS,
