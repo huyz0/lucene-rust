@@ -544,8 +544,17 @@ impl SegmentReader {
         // into one archive -- see `open_segment_file`'s doc comment for how
         // every sub-file lookup below transparently reads from it instead of
         // `dir.open`-ing a loose file that wouldn't exist on disk.
+        // A page-aligned `.fdt` (paged zstd stored fields) is opened with its
+        // page size as the alignment hint, as is a `.cfs` holding one: the
+        // compound writer starts such an entry on a page boundary.
+        let stored_alignment = lucene_codecs::stored_fields::page_alignment(&si.attributes);
         let compound = if si.is_compound_file {
-            Some(CompoundArchive::open(dir, &segment_name, &segment_id)?)
+            Some(CompoundArchive::open(
+                dir,
+                &segment_name,
+                &segment_id,
+                stored_alignment,
+            )?)
         } else {
             None
         };
@@ -712,7 +721,7 @@ impl SegmentReader {
         // gives doc values their own codec suffix (`Lucene90_<n>`), independent
         // of the postings suffix.
         let stored = match (
-            open_segment_file(dir, compound.as_ref(), &si.files, ".fdt")?,
+            open_segment_file_aligned(dir, compound.as_ref(), &si.files, ".fdt", stored_alignment)?,
             open_segment_file(dir, compound.as_ref(), &si.files, ".fdx")?,
             open_segment_file(dir, compound.as_ref(), &si.files, ".fdm")?,
         ) {
@@ -2450,8 +2459,17 @@ struct CompoundArchive {
 }
 
 impl CompoundArchive {
-    fn open(dir: &dyn Directory, segment_name: &str, segment_id: &[u8; ID_LENGTH]) -> Result<Self> {
-        let cfs_bytes = Arc::new(dir.open(&format!("{segment_name}.cfs"))?);
+    fn open(
+        dir: &dyn Directory,
+        segment_name: &str,
+        segment_id: &[u8; ID_LENGTH],
+        alignment: Option<usize>,
+    ) -> Result<Self> {
+        let cfs_name = format!("{segment_name}.cfs");
+        let cfs_bytes = Arc::new(match alignment {
+            Some(alignment) => dir.open_aligned(&cfs_name, alignment)?,
+            None => dir.open(&cfs_name)?,
+        });
         let cfe_bytes = dir.open(&format!("{segment_name}.cfe"))?;
         let entries = compound_format::parse_entries(&cfe_bytes, segment_id)?;
         compound_format::check_data_header_footer(&cfs_bytes, segment_id, &entries)?;
@@ -2503,6 +2521,18 @@ fn open_segment_file(
     files: &[String],
     ext: &str,
 ) -> Result<Option<Arc<Input>>> {
+    open_segment_file_aligned(dir, compound, files, ext, None)
+}
+
+/// [`open_segment_file`], opening a loose file with `alignment` as its
+/// alignment hint (`Directory::open_aligned`) when one is given.
+fn open_segment_file_aligned(
+    dir: &dyn Directory,
+    compound: Option<&CompoundArchive>,
+    files: &[String],
+    ext: &str,
+    alignment: Option<usize>,
+) -> Result<Option<Arc<Input>>> {
     let name = match find_segment_file_name(files, compound, ext) {
         Some(name) => name,
         None => return Ok(None),
@@ -2519,7 +2549,10 @@ fn open_segment_file(
             let slice = Input::slice_of(&archive.data, entry.offset as usize, member.len())?;
             Ok(Some(Arc::new(slice)))
         }
-        None => Ok(Some(Arc::new(dir.open(&name)?))),
+        None => Ok(Some(Arc::new(match alignment {
+            Some(alignment) => dir.open_aligned(&name, alignment)?,
+            None => dir.open(&name)?,
+        }))),
     }
 }
 
