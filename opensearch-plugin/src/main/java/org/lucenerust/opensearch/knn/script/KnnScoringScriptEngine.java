@@ -72,25 +72,61 @@ public final class KnnScoringScriptEngine implements ScriptEngine {
             String field = param(params, "field").toString();
             String space = param(params, "space_type").toString();
             Object query = param(params, "query_value");
-            Scorer scorer = scorer(space, query, lookup.doc().mapperService().fieldType(field));
-            return new ScoreScript.LeafFactory() {
-                @Override
-                public boolean needs_score() {
-                    return false;
-                }
+            Prepared prepared = scorer(space, query, lookup.doc().mapperService().fieldType(field));
+            return new KnnLeafFactory(params, lookup, searcher, field, prepared);
+        }
+    }
 
+    /**
+     * What a native search needs to score a {@code knn_vector} space as this script does: the
+     * space ({@link #SPACES}), the field's data type ({@code 0} float, {@code 1} byte or binary,
+     * {@code 2} half_float), whether cosine is {@code (1 + cos) / 2}, and the query as floats or
+     * bytes.
+     */
+    public record Native(String field, byte space, byte dataType, boolean halfCosine, float[] floats, byte[] bytes) {}
+
+    /** The {@code knn_vector} spaces, by wire number. */
+    public static final List<String> SPACES = List.of("l2", "cosinesimil", "innerproduct", "l1", "linf", "hamming");
+
+    private record Prepared(Scorer scorer, Native nativeSpec) {}
+
+    /** {@code KNNScoreScriptLeafFactory}. */
+    public static final class KnnLeafFactory implements ScoreScript.LeafFactory {
+        private final Map<String, Object> params;
+        private final SearchLookup lookup;
+        private final IndexSearcher searcher;
+        private final String field;
+        private final Prepared prepared;
+
+        KnnLeafFactory(Map<String, Object> params, SearchLookup lookup, IndexSearcher searcher, String field, Prepared prepared) {
+            this.params = params;
+            this.lookup = lookup;
+            this.searcher = searcher;
+            this.field = field;
+            this.prepared = prepared;
+        }
+
+        /** The script as a native search scores it, or {@code null} for {@code hammingbit}. */
+        public Native nativeSpec() {
+            return prepared.nativeSpec();
+        }
+
+        @Override
+        public boolean needs_score() {
+            return false;
+        }
+
+        @Override
+        public ScoreScript newInstance(LeafReaderContext ctx) {
+            Scorer scorer = prepared.scorer();
+            return new ScoreScript(params, lookup, searcher, ctx) {
                 @Override
-                public ScoreScript newInstance(LeafReaderContext ctx) {
-                    return new ScoreScript(params, lookup, searcher, ctx) {
-                        @Override
-                        public double execute(ExplanationHolder explanation) {
-                            ScriptDocValues<?> values = (ScriptDocValues<?>) getDoc().get(field);
-                            if (values.isEmpty()) {
-                                return 0.0;
-                            }
-                            return scorer.score(values);
-                        }
-                    };
+                public double execute(ExplanationHolder explanation) {
+                    ScriptDocValues<?> values = (ScriptDocValues<?>) getDoc().get(field);
+                    if (values.isEmpty()) {
+                        return 0.0;
+                    }
+                    return scorer.score(values);
                 }
             };
         }
@@ -110,10 +146,10 @@ public final class KnnScoringScriptEngine implements ScriptEngine {
     }
 
     /** {@code KNNScoringSpaceFactory.create} and the space's scoring method. */
-    static Scorer scorer(String space, Object query, MappedFieldType fieldType) {
+    static Prepared scorer(String space, Object query, MappedFieldType fieldType) {
         String s = space.toLowerCase(Locale.ROOT);
         if (s.equals(HAMMING_BIT)) {
-            return hammingBit(query, fieldType);
+            return new Prepared(hammingBit(query, fieldType), null);
         }
         return switch (s) {
             case "hamming" -> vectorSpace(query, fieldType, "hamming", Set.of("binary"), null, (q, v) -> 1 / (1 + KnnScoring.hammingBit(q, v)));
@@ -192,7 +228,7 @@ public final class KnnScoringScriptEngine implements ScriptEngine {
     }
 
     /** A space over a {@code knn_vector} field: float queries scored by {@code floats}, byte ones by {@code bytes}. */
-    private static Scorer vectorSpace(
+    private static Prepared vectorSpace(
         Object query,
         MappedFieldType fieldType,
         String space,
@@ -203,15 +239,30 @@ public final class KnnScoringScriptEngine implements ScriptEngine {
         KnnVectorFieldType ft = vectorField(fieldType, space, types);
         String type = ft.config().dataTypeName();
         int length = ft.config().vectorDimension();
+        byte code = (byte) SPACES.indexOf(space.equals("l-inf") ? "linf" : space);
         if (type.equals("float") || type.equals("half_float")) {
             float[] q = floatQuery(query, length, type);
-            return values -> floats.score(q, (float[]) ((KnnScriptDocValues) values).getValue());
+            return new Prepared(
+                values -> floats.score(q, (float[]) ((KnnScriptDocValues) values).getValue()),
+                new Native(ft.name(), code, dataCode(type), false, q, null)
+            );
         }
         byte[] q = byteQuery(query, length, type);
-        return values -> bytes.score(q, (byte[]) ((KnnScriptDocValues) values).getValue());
+        return new Prepared(
+            values -> bytes.score(q, (byte[]) ((KnnScriptDocValues) values).getValue()),
+            new Native(ft.name(), code, dataCode(type), false, null, q)
+        );
     }
 
-    private static Scorer cosine(Object query, MappedFieldType fieldType) {
+    private static byte dataCode(String type) {
+        return switch (type) {
+            case "float" -> 0;
+            case "half_float" -> 2;
+            default -> 1;
+        };
+    }
+
+    private static Prepared cosine(Object query, MappedFieldType fieldType) {
         KnnVectorFieldType ft = vectorField(fieldType, "cosine", DEFAULT_TYPES);
         String type = ft.config().dataTypeName();
         int length = ft.config().vectorDimension();
@@ -224,14 +275,22 @@ public final class KnnScoringScriptEngine implements ScriptEngine {
             }
             float qNorm = norm;
             // Indexes created on 2.19 or later score cosine as Lucene does, (1 + cos) / 2.
-            if (ft.indexCreated().onOrAfter(Version.V_2_19_0)) {
-                return values -> Math.max((1 + KnnScoring.cosinesimilOptimized(q, (float[]) ((KnnScriptDocValues) values).getValue(), qNorm)) / 2.0F, 0);
+            boolean half = ft.indexCreated().onOrAfter(Version.V_2_19_0);
+            Native spec = new Native(ft.name(), (byte) 1, dataCode(type), half, q, null);
+            if (half) {
+                return new Prepared(
+                    values -> Math.max((1 + KnnScoring.cosinesimilOptimized(q, (float[]) ((KnnScriptDocValues) values).getValue(), qNorm)) / 2.0F, 0),
+                    spec
+                );
             }
-            return values -> 1 + KnnScoring.cosinesimilOptimized(q, (float[]) ((KnnScriptDocValues) values).getValue(), qNorm);
+            return new Prepared(values -> 1 + KnnScoring.cosinesimilOptimized(q, (float[]) ((KnnScriptDocValues) values).getValue(), qNorm), spec);
         }
         byte[] q = byteQuery(query, length, type);
         KnnScoring.checkNotZero(q);
-        return values -> 1 + KnnScoring.cosinesimil(q, (byte[]) ((KnnScriptDocValues) values).getValue());
+        return new Prepared(
+            values -> 1 + KnnScoring.cosinesimil(q, (byte[]) ((KnnScriptDocValues) values).getValue()),
+            new Native(ft.name(), (byte) 1, dataCode(type), false, null, q)
+        );
     }
 
     private static float[] floatQuery(Object query, int length, String type) {
