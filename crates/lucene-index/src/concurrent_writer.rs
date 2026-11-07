@@ -536,14 +536,16 @@ impl<'d> ConcurrentIndexWriter<'d> {
     /// had buffered is flushed first.
     ///
     /// # Errors
-    /// [`crate::index_writer::Error::ConcurrentUnsupported`] for a writer that takes explicit
-    /// documents or has a parent field: the building threads write native
-    /// documents only, with no explicit postings, doc values or parent
-    /// marker to give them.
+    /// [`crate::index_writer::Error::ConcurrentUnsupported`] for a writer
+    /// with a parent field that takes native documents: the building threads
+    /// have no parent marker to give them.
     pub fn new(mut writer: IndexWriter<'d>, slots: usize) -> Result<Self> {
         if let Some(what) = writer.shared_config().concurrent_unsupported() {
             return Err(crate::index_writer::Error::ConcurrentUnsupported(what));
         }
+        // The configuration is frozen from here: the parent field's number,
+        // which each add marks its last document with, is fixed now.
+        writer.register_parent_field()?;
         writer.validate_configured_term_vector_schema()?;
         writer.flush()?;
         writer.set_merges_by_caller(true);
@@ -1218,6 +1220,12 @@ impl<'d> ConcurrentIndexWriter<'d> {
 
     fn add_entries(&self, delete: Option<DeleteNode>, docs: Vec<Entry>) -> Result<SeqNo> {
         let cfg = self.cfg();
+        // The building threads have no parent marker for a native document.
+        if cfg.parent_field_number().is_some() {
+            return Err(crate::index_writer::Error::ConcurrentUnsupported(
+                "a native document under a parent field (set_parent_field)",
+            ));
+        }
         let count = docs.len();
         self.add_with(delete, None, count, |dwpt| {
             let before = dwpt.num_docs();
@@ -1262,7 +1270,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
     /// ([`IndexWriter::add_explicit_documents`]), from any thread: each
     /// document is inverted into its slot's postings as it is buffered.
     pub fn add_explicit_documents(&self, docs: Vec<ExplicitDocument>) -> Result<SeqNo> {
-        self.add_explicit(None, None, docs)
+        self.add_explicit(None, None, docs, None)
     }
 
     /// [`Self::add_explicit_documents`] under `partition`
@@ -1274,7 +1282,20 @@ impl<'d> ConcurrentIndexWriter<'d> {
         partition: Option<Arc<str>>,
         docs: Vec<ExplicitDocument>,
     ) -> Result<SeqNo> {
-        self.add_explicit(partition, None, docs)
+        self.add_explicit(partition, None, docs, None)
+    }
+
+    /// [`Self::add_explicit_documents_in`] with each document's KNN vectors
+    /// (`vectors[i]` is `docs[i]`'s, one per vector field it carries), as
+    /// `IndexingChain` takes a `KnnFloatVectorField` beside the document's
+    /// other fields.
+    pub fn add_explicit_documents_with_vectors_in(
+        &self,
+        partition: Option<Arc<str>>,
+        docs: Vec<ExplicitDocument>,
+        vectors: Vec<Vec<DocumentVector>>,
+    ) -> Result<SeqNo> {
+        self.add_explicit(partition, None, docs, Some(vectors))
     }
 
     /// `IndexWriter.softUpdateDocuments(term, docs, softDeletes...)` for
@@ -1300,6 +1321,30 @@ impl<'d> ConcurrentIndexWriter<'d> {
         docs: Vec<ExplicitDocument>,
         soft_deletes: &[DocValuesUpdate],
     ) -> Result<SeqNo> {
+        self.soft_update_explicit(partition, term, docs, None, soft_deletes)
+    }
+
+    /// [`Self::soft_update_explicit_documents_in`] with each document's KNN
+    /// vectors, as [`Self::add_explicit_documents_with_vectors_in`].
+    pub fn soft_update_explicit_documents_with_vectors_in(
+        &self,
+        partition: Option<Arc<str>>,
+        term: Term,
+        docs: Vec<ExplicitDocument>,
+        vectors: Vec<Vec<DocumentVector>>,
+        soft_deletes: &[DocValuesUpdate],
+    ) -> Result<SeqNo> {
+        self.soft_update_explicit(partition, term, docs, Some(vectors), soft_deletes)
+    }
+
+    fn soft_update_explicit(
+        &self,
+        partition: Option<Arc<str>>,
+        term: Term,
+        docs: Vec<ExplicitDocument>,
+        vectors: Option<Vec<Vec<DocumentVector>>>,
+        soft_deletes: &[DocValuesUpdate],
+    ) -> Result<SeqNo> {
         if soft_deletes.is_empty() {
             return Err(crate::index_writer::Error::NoSoftDeletesSupplied);
         }
@@ -1313,7 +1358,12 @@ impl<'d> ConcurrentIndexWriter<'d> {
             .iter()
             .map(|u| crate::index_writer::retarget_update(u, &term))
             .collect();
-        self.add_explicit(partition, Some(DeleteNode::DocValuesUpdates(updates)), docs)
+        self.add_explicit(
+            partition,
+            Some(DeleteNode::DocValuesUpdates(updates)),
+            docs,
+            vectors,
+        )
     }
 
     fn add_explicit(
@@ -1321,11 +1371,35 @@ impl<'d> ConcurrentIndexWriter<'d> {
         partition: Option<Arc<str>>,
         delete: Option<DeleteNode>,
         docs: Vec<ExplicitDocument>,
+        vectors: Option<Vec<Vec<DocumentVector>>>,
     ) -> Result<SeqNo> {
         let cfg = self.cfg();
         // Every fallible lookup runs before anything is buffered, so a
         // refused document leaves nothing behind.
         let options = cfg.explicit_add_options(&docs)?;
+        if let Some(vectors) = &vectors {
+            if vectors.len() != docs.len() {
+                return Err(crate::index_writer::explicit_error(
+                    "one vector list per document",
+                ));
+            }
+            for doc_vectors in vectors {
+                cfg.validate_explicit_vectors(doc_vectors)?;
+            }
+        }
+        // A list per document, empty for one without vectors.
+        let mut vectors = vectors.map(Vec::into_iter);
+        let mut docs = docs;
+        // `IndexingChain.processDocument(docId, doc, lastDocInBlock)`: the
+        // last document of the add is the parent, `-1` in the parent field.
+        if let (Some(parent), Some(last)) = (cfg.parent_field_number(), docs.last_mut()) {
+            last.fields
+                .doc_values
+                .push(lucene_codecs::stored_fields::StoredField {
+                    field_number: parent,
+                    value: lucene_codecs::stored_fields::FieldValue::Long(-1),
+                });
+        }
         let streamed = cfg.streamed_stored_mode();
         let count = docs.len();
         let live = self
@@ -1339,6 +1413,10 @@ impl<'d> ConcurrentIndexWriter<'d> {
                 let postings_before = dwpt.postings.bytes();
                 let mut added = 0usize;
                 for (mut doc, options) in docs.into_iter().zip(options) {
+                    let doc_vectors = vectors
+                        .as_mut()
+                        .and_then(Iterator::next)
+                        .unwrap_or_default();
                     let stored = Document { fields: doc.stored };
                     if live.is_some() {
                         dwpt.live.record_stored(&stored.fields);
@@ -1367,6 +1445,18 @@ impl<'d> ConcurrentIndexWriter<'d> {
                     }
                     if let Some(soft) = live {
                         dwpt.live.record(doc_id, &doc.fields, soft);
+                    }
+                    if !doc_vectors.is_empty() {
+                        // Short until a document has vectors (see `Dwpt`).
+                        added = added.saturating_add(
+                            doc_vectors
+                                .iter()
+                                .map(DocumentVector::ram_bytes)
+                                .fold(0usize, usize::saturating_add),
+                        );
+                        let at = usize::try_from(doc_id).unwrap_or(0);
+                        dwpt.vectors.resize_with(at, Vec::new);
+                        dwpt.vectors.push(doc_vectors);
                     }
                     added = added.saturating_add(dwpt.explicit.push(doc.fields));
                 }
@@ -3168,13 +3258,17 @@ mod tests {
         assert_clean(&dir);
     }
 
-    /// A writer with a parent field is refused up front: the building
-    /// threads have no parent marker to give its blocks.
+    /// A writer with a parent field and an index sort: each add marks its
+    /// last document as the parent, and a flush orders whole blocks by
+    /// their parent's key, as Java's `IndexingChain.maybeSortSegment` does.
     #[test]
-    fn a_parent_field_is_refused() {
-        let tmp = TempDir::new("concurrent-parent");
+    fn explicit_blocks_are_sorted_whole_by_their_parent() {
+        use crate::index_writer::{ExplicitDocument, ExplicitFields};
+        use lucene_codecs::field_infos::{DocValuesSkipIndexType, DocValuesType};
+        use lucene_codecs::stored_fields::{self, FieldValue, StoredField};
+        let tmp = TempDir::new("concurrent-parent-sort");
         let dir = FsDirectory::open(&tmp);
-        let mut parent = IndexWriter::open(
+        let mut w = IndexWriter::open(
             &dir,
             Vec::new(),
             "Lucene104",
@@ -3185,11 +3279,69 @@ mod tests {
             },
         )
         .unwrap();
-        parent.set_parent_field(Some("_parent")).unwrap();
-        assert!(matches!(
-            ConcurrentIndexWriter::new(parent, 1),
-            Err(Error::ConcurrentUnsupported(m)) if m.contains("parent")
-        ));
+        w.set_parent_field(Some("_parent")).unwrap();
+        let id = w.register_field(FieldInfo::new("id", 0)).unwrap();
+        let v = w
+            .register_field(FieldInfo::new("v", 0).with_doc_values(
+                DocValuesType::Numeric,
+                DocValuesSkipIndexType::None,
+                -1,
+            ))
+            .unwrap();
+        w.set_index_sort(Some(&[segment_info::IndexSortField::long(
+            "v", false, None,
+        )]))
+        .unwrap();
+        let w = ConcurrentIndexWriter::new(w, 2).unwrap();
+        let doc = |name: &str, key: Option<i64>| ExplicitDocument {
+            stored: vec![StoredField {
+                field_number: id,
+                value: FieldValue::String(name.to_string()),
+            }],
+            fields: ExplicitFields {
+                doc_values: key
+                    .map(|k| StoredField {
+                        field_number: v,
+                        value: FieldValue::Long(k),
+                    })
+                    .into_iter()
+                    .collect(),
+                ..ExplicitFields::default()
+            },
+        };
+        w.add_explicit_documents(vec![doc("c5", None), doc("b5", Some(5))])
+            .unwrap();
+        w.add_explicit_documents(vec![doc("s1", Some(1))]).unwrap();
+        w.add_explicit_documents(vec![doc("c3a", None), doc("c3b", None), doc("b3", Some(3))])
+            .unwrap();
+        w.commit().unwrap();
+        let infos = segment_infos::read_latest(&dir).unwrap();
+        assert_eq!(infos.segments.len(), 1);
+        let sci = &infos.segments[0];
+        let name = &sci.segment_name;
+        let si = segment_info::parse(&dir.open(&format!("{name}.si")).unwrap(), &sci.segment_id)
+            .unwrap();
+        assert!(si.has_blocks);
+        assert!(si.index_sort.is_some());
+        let fnm = lucene_codecs::field_infos::parse(
+            &dir.open(&format!("{name}.fnm")).unwrap(),
+            &sci.segment_id,
+            "",
+        )
+        .unwrap();
+        assert_eq!(fnm.parent_field(), Some("_parent"));
+        let fdt = dir.open(&format!("{name}.fdt")).unwrap();
+        let fdx = dir.open(&format!("{name}.fdx")).unwrap();
+        let fdm = dir.open(&format!("{name}.fdm")).unwrap();
+        let reader = stored_fields::open(&fdt, &fdx, &fdm, &sci.segment_id, "").unwrap();
+        let order: Vec<String> = (0..si.doc_count)
+            .map(|d| match &reader.document(d).unwrap().fields[0].value {
+                FieldValue::String(s) => s.clone(),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(order, ["s1", "c3a", "c3b", "b3", "c5", "b5"]);
+        assert_clean(&dir);
     }
 
     /// `DocumentsWriterPerThread.abort`: a buffer whose segment cannot be

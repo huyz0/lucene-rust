@@ -195,6 +195,10 @@ def selfTest = tasks.register('selfTest', JavaExec) {
     mainClass = 'org.lucenerust.opensearch.NativeSelfTest'
     systemProperty 'lucene_rust.library.path', nativeLib.absolutePath
     systemProperty 'lucene_rust.data_packs', dataPacks.absolutePath
+    // Rust's float kernels always fuse multiply-adds; Lucene's scalar kernels do
+    // only where Constants.HAS_FAST_SCALAR_FMA picks it for the CPU, so scores
+    // would differ in the last ulp on some runners.
+    systemProperty 'lucene.useScalarFMA', 'true'
     jvmArgs nativeAccess, '-ea'
     args "${repoRoot}/fixtures/data"
 }

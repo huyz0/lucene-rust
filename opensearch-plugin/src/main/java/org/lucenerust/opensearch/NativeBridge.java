@@ -38,7 +38,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code jvm_reader.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 76;
+    public static final int EXPECTED_ABI_VERSION = 80;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -117,6 +117,10 @@ public final class NativeBridge {
                 ADDRESS,
                 ADDRESS
             )
+        );
+        static final MethodHandle READER_KNN = bind(
+            "ffi_jvm_reader_knn",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS, JAVA_LONG, ADDRESS)
         );
         static final MethodHandle PARENT_CACHE_STATS = bind("ffi_jvm_parent_cache_stats", FunctionDescriptor.of(JAVA_INT, ADDRESS));
         static final MethodHandle DOC_FREQ = bind(
@@ -235,8 +239,11 @@ public final class NativeBridge {
         );
 
         static final MethodHandle WRITER_OPEN = bind(
-            "ffi_engine_writer_open",
-            FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, JAVA_DOUBLE, JAVA_BYTE, JAVA_INT, ADDRESS)
+            "ffi_engine_writer_open_codec",
+            FunctionDescriptor.of(
+                JAVA_INT, ADDRESS, JAVA_LONG, JAVA_DOUBLE, JAVA_BYTE, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, JAVA_INT, JAVA_BYTE,
+                JAVA_INT, ADDRESS
+            )
         );
         static final MethodHandle WRITER_REGISTER_FIELD = bind(
             "ffi_engine_writer_register_field",
@@ -804,6 +811,42 @@ public final class NativeBridge {
         outCounts[1] = counts.get(JAVA_LONG, Long.BYTES);
         outCounts[2] = counts.get(JAVA_BOOLEAN, 2 * Long.BYTES) ? 1 : 0;
         return OK;
+    }
+
+    /**
+     * The reader's top {@code k} for a KNN request ({@code jvm_knn.rs}): global doc ids into {@code
+     * outDocs}, scores into {@code outScores}, best first; returns the status, the hit count in
+     * {@code outCount[0]}.
+     */
+    public static int readerKnn(long handle, byte[] request, int k, int[] outDocs, float[] outScores, int[] outCount) {
+        if (request == null) {
+            return nullArgument("request");
+        }
+        if (k <= 0 || outDocs == null || outScores == null || Math.min(outDocs.length, outScores.length) < k) {
+            return fail(BUFFER_TOO_SMALL, "output arrays hold fewer than k=" + k + " hits");
+        }
+        if (outCount == null || outCount.length < 1) {
+            return fail(INVALID_ARGUMENT, "outCount holds no slot");
+        }
+        try (Scratch s = Scratch.open()) {
+            MemorySegment docs = s.room(JAVA_INT, k);
+            MemorySegment scores = s.room(JAVA_FLOAT, k);
+            MemorySegment count = s.alloc(Long.BYTES);
+            int rc;
+            try {
+                rc = (int) H.READER_KNN.invokeExact(handle, s.bytes(request), (long) request.length, docs, scores, (long) k, count);
+            } catch (Throwable t) {
+                throw rethrow(t);
+            }
+            if (rc != OK) {
+                return rc;
+            }
+            int n = Math.toIntExact(count.get(JAVA_LONG, 0));
+            MemorySegment.copy(docs, JAVA_INT, 0, outDocs, 0, n);
+            MemorySegment.copy(scores, JAVA_FLOAT, 0, outScores, 0, n);
+            outCount[0] = n;
+            return OK;
+        }
     }
 
     /**
@@ -1420,6 +1463,12 @@ public final class NativeBridge {
     public static final int OPEN_ADAPTIVE_DOC_VALUES = 32;
     public static final int OPEN_PARTITIONED = 64;
 
+    /** {@link #writerOpen}'s stored fields, one per {@code index.codec} the Rust writer writes. */
+    public static final int STORED_FIELDS_BEST_SPEED = 0;
+    public static final int STORED_FIELDS_BEST_COMPRESSION = 1;
+    public static final int STORED_FIELDS_ZSTD = 2;
+    public static final int STORED_FIELDS_ZSTD_NO_DICT = 3;
+
     /**
      * Opens a shard's writer over the index at {@code path}, which must already hold a commit. Commit
      * points are dropped only through {@link #writerDeleteCommits}. {@code faultInjection} allows the
@@ -1428,7 +1477,11 @@ public final class NativeBridge {
      * buffered documents reads ({@link #liveViewOpen}); {@code adaptiveDocValues} writes doc values in
      * the {@code RustAdaptive} format; with {@code partitioned} every segment holds one partition
      * (the value of the index's partition field) and records it, and merges never mix partitions.
+     * {@code indexSort} is the index sort as a {@code .si} encodes it (null or empty for none), and
+     * {@code parentFieldUtf8} the field marking each block's last document (null or empty for none).
      * {@code maxDocs} is {@code IndexWriter.getActualMaxDocs()}, which Lucene's tests lower.
+     * {@code storedFields} is one of the {@code STORED_FIELDS_*} codes, the zstd ones written at
+     * {@code compressionLevel}.
      */
     public static int writerOpen(
         byte[] indexPathUtf8,
@@ -1438,12 +1491,18 @@ public final class NativeBridge {
         boolean liveSearch,
         boolean adaptiveDocValues,
         boolean partitioned,
+        byte[] indexSort,
+        byte[] parentFieldUtf8,
         int maxDocs,
+        int storedFields,
+        int compressionLevel,
         long[] outHandle
     ) {
         if (indexPathUtf8 == null) {
             return nullArgument("path");
         }
+        byte[] sort = indexSort == null ? new byte[0] : indexSort;
+        byte[] parent = parentFieldUtf8 == null ? new byte[0] : parentFieldUtf8;
         try (Scratch s = Scratch.open()) {
             MemorySegment out = s.alloc(Long.BYTES);
             int rc = (int) H.WRITER_OPEN.invokeExact(
@@ -1453,7 +1512,13 @@ public final class NativeBridge {
                 (byte) ((faultInjection ? OPEN_FAULT_INJECTION : 0) | (sparse ? OPEN_SPARSE : 0)
                     | (liveSearch ? OPEN_LIVE_SEARCH : 0) | (adaptiveDocValues ? OPEN_ADAPTIVE_DOC_VALUES : 0)
                     | (partitioned ? OPEN_PARTITIONED : 0)),
+                s.bytes(sort),
+                (long) sort.length,
+                s.bytes(parent),
+                (long) parent.length,
                 maxDocs,
+                (byte) storedFields,
+                compressionLevel,
                 out
             );
             if (rc == OK) {

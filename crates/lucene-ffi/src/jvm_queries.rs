@@ -16,6 +16,8 @@
 //! | `35` lat/lon distance feature | `field`, `lat: f64`, `lon: f64`, `pivot: f64` (metres) | `LatLonPointDistanceFeatureQuery` (`distance_feature` on a `geo_point`) |
 //! | `36` synonym | `field`, `count: i32`, each `term: bytes`, `boost: f32` bits as `i32` | `SynonymQuery` (a `match` whose analyzer stacks tokens: `hunspell`, `synonym_graph`, `keyword_repeat`) |
 //! | `37` feature | `field`, `feature: bytes`, `function: u8` (`0` linear; `1` log, then `scaling_factor: f32`; `2` saturation, then `pivot: f32`; `3` sigmoid, then `pivot: f32`, `exponent: f32`), each `f32` as `i32` bits | `FeatureField`'s `FeatureQuery` (`rank_feature`, `neural_sparse` on `rank_features`), its weight a boost node around it |
+//! | `39` KNN | `field`, the target ([`decode_knn_target`]), `kind: u8` (`0` top `k`: `k: i32`, `ef_search: i32`; `1` radial: `min_score: f32` bits), `has_filter: u8` and the filter (a node) when `1` | the k-NN plugin's per-segment `knn` (`faiss` engine: `k` hits per segment; `min_score`/`max_distance`) |
+//! | `40` doc and score | `segments: i32`, each segment's `doc_base: i32` (ascending), then `count: i32`, each `doc: i32` (global), `score: f32` bits | `DocAndScoreQuery`: a whole-reader KNN search already run ([`crate::jvm_knn`]) |
 //! | `38` sparse ANN | `field`, `count: i32`, each `token: i32`, `weight: f32` bits; `top_n: i32`, `k: i32`, `heap_factor: f32` bits, `has_filter: u8` and the filter (a node) when `1`, then the fallback (a node) | neural-search's `SparseVectorQuery` (`neural_sparse` with `method_parameters` on a `sparse_vector`) |
 //!
 //! The doc-values, distance-feature, feature and sparse nodes become
@@ -65,9 +67,61 @@ pub(crate) const NODE_GEO_DISTANCE_FEATURE: u8 = 35;
 pub(crate) const NODE_SYNONYM: u8 = 36;
 pub(crate) const NODE_FEATURE: u8 = 37;
 pub(crate) const NODE_SPARSE_ANN: u8 = 38;
+pub(crate) const NODE_KNN: u8 = 39;
+pub(crate) const NODE_DOC_AND_SCORE: u8 = 40;
 /// The first and last kinds this module decodes.
 pub(crate) const NODE_FIRST: u8 = NODE_MULTI_TERM;
-pub(crate) const NODE_LAST: u8 = NODE_SPARSE_ANN;
+pub(crate) const NODE_LAST: u8 = NODE_DOC_AND_SCORE;
+
+/// The KNN node's kinds.
+pub(crate) const KNN_TOP_K: u8 = 0;
+const KNN_RADIAL: u8 = 1;
+/// A KNN target's encodings.
+pub(crate) const KNN_TARGET_FLOAT: u8 = 0;
+pub(crate) const KNN_TARGET_BYTE: u8 = 1;
+
+/// A KNN query vector: `encoding: u8` ([`KNN_TARGET_FLOAT`] or
+/// [`KNN_TARGET_BYTE`]), `dimension: i32`, then the components (`f32` bits
+/// as `i32` each, or one signed byte each).
+pub(crate) fn decode_knn_target(
+    c: &mut Cursor<'_>,
+) -> Result<lucene_search::knn_search::KnnTarget, FfiStatus> {
+    use lucene_search::knn_search::KnnTarget;
+    let encoding = c.u8()?;
+    let dim = usize::try_from(c.i32()?)
+        .ok()
+        .filter(|&d| d > 0 && d <= MAX_KNN_DIMENSION)
+        .ok_or_else(|| invalid("query tree: KNN target dimension out of range"))?;
+    Ok(match encoding {
+        KNN_TARGET_FLOAT => {
+            let mut v = Vec::with_capacity(dim); // alloc-ok: dim is bounded by MAX_KNN_DIMENSION
+            for _ in 0..dim {
+                let x = f32(c)?;
+                if !x.is_finite() {
+                    return Err(invalid("query tree: a KNN target component is not finite"));
+                }
+                v.push(x);
+            }
+            KnnTarget::Float(v)
+        }
+        KNN_TARGET_BYTE => {
+            let mut v = Vec::with_capacity(dim); // alloc-ok: dim is bounded by MAX_KNN_DIMENSION
+            for _ in 0..dim {
+                v.push(c.u8()?);
+            }
+            KnnTarget::Byte(v)
+        }
+        other => {
+            return Err(invalid(format!(
+                "query tree: KNN target encoding {other} (expected 0..=1)"
+            )))
+        }
+    })
+}
+
+/// The largest vector dimension a query may carry: the k-NN plugin's own
+/// limit (`KNNVectorFieldMapper.MAX_DIMENSION`, 16,000).
+pub(crate) const MAX_KNN_DIMENSION: usize = 16_000;
 
 /// The feature node's functions.
 const FEATURE_LINEAR: u8 = 0;
@@ -311,6 +365,67 @@ pub(crate) fn decode(
                 clause = clause.with_filter(both.into());
             }
             return Ok(clause.into());
+        }
+        NODE_KNN => {
+            use lucene_search::knn_search::{KnnLeafKind, KnnLeafQuery};
+            let field = field(c)?;
+            let target = decode_knn_target(c)?;
+            let kind = match c.u8()? {
+                KNN_TOP_K => {
+                    let k = usize::try_from(c.i32()?)
+                        .map_err(|_| invalid("query tree: a negative KNN k"))?;
+                    let ef_search = usize::try_from(c.i32()?)
+                        .map_err(|_| invalid("query tree: a negative KNN ef_search"))?;
+                    KnnLeafKind::TopK { k, ef_search }
+                }
+                KNN_RADIAL => KnnLeafKind::Radial { min_score: f32(c)? },
+                other => {
+                    return Err(invalid(format!(
+                        "query tree: KNN kind {other} (expected 0..=1)"
+                    )))
+                }
+            };
+            let filter = match c.u8()? {
+                0 => None,
+                1 => Some(crate::jvm_reader::decode_node(c, depth + 1, nodes)?),
+                other => {
+                    return Err(invalid(format!(
+                        "query tree: KNN filter flag {other} (expected 0..=1)"
+                    )))
+                }
+            };
+            let query =
+                KnnLeafQuery::new(field, target, kind).map_err(|e| built("KNN query", e))?;
+            let mut clause = DocumentClause::new(hex(c.since(start)), Arc::new(query));
+            if let Some(filter) = filter {
+                clause = clause.with_filter(filter);
+            }
+            return Ok(clause.into());
+        }
+        NODE_DOC_AND_SCORE => {
+            let segments = c.len()?;
+            let mut bases = Vec::with_capacity(segments.min(c.remaining() / 4)); // alloc-ok: bounded by the blob
+            for _ in 0..segments {
+                let base = c.i32()?;
+                if base < 0 || bases.last().is_some_and(|&b| b > base) {
+                    return Err(invalid("query tree: doc bases must ascend from 0"));
+                }
+                bases.push(base);
+            }
+            let count = c.len()?;
+            *nodes = nodes.saturating_add(count / 64);
+            check_clause_count(*nodes)?;
+            let mut hits = Vec::with_capacity(count.min(c.remaining() / 8)); // alloc-ok: bounded by the blob
+            for _ in 0..count {
+                let doc = c.i32()?;
+                if doc < 0 {
+                    return Err(invalid("query tree: a negative doc id"));
+                }
+                hits.push((doc, f32(c)?));
+            }
+            return Ok(Clause::Extended(Box::new(ExtendedQuery::DocAndScore(
+                lucene_search::extended_query::DocAndScoreQuery::new(hits, &bases),
+            ))));
         }
         NODE_GEO_DISTANCE_FEATURE => {
             let field = field(c)?;

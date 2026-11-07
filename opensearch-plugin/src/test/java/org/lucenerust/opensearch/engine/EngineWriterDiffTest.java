@@ -113,6 +113,15 @@ public final class EngineWriterDiffTest {
         // Under index.lucene_rust.adaptive_doc_values: the same documents read back through the
         // RustAdaptive doc-values format's producer, from merged segments large enough for it.
         run(6, 4000, nativeAnalyzer(), true);
+        // Under an index sort (a keyword, then a descending numeric), with OpenSearch's parent
+        // field: segments flushed and merged in the same order Lucene writes them.
+        org.apache.lucene.search.Sort sort = new org.apache.lucene.search.Sort(
+            new org.apache.lucene.search.SortedSetSortField("one", false),
+            new org.apache.lucene.search.SortedNumericSortField("@timestamp", org.apache.lucene.search.SortField.Type.LONG, true)
+        );
+        for (long seed : new long[] { 7, 8 }) {
+            run(seed, 2500, nativeAnalyzer(), false, sort);
+        }
         check(DocumentEncoder.ANALYZED_NATIVELY.get() > 3000, "field values analyzed in Rust: " + DocumentEncoder.ANALYZED_NATIVELY.get());
         check(payloadsSeen > 0, "payloads were indexed and compared");
         refusals();
@@ -138,7 +147,8 @@ public final class EngineWriterDiffTest {
         };
         check(scan.apply("{\"properties\":{\"a\":{\"type\":\"keyword\"},\"t\":{\"type\":\"text\",\"term_vector\":\"no\"}}}") == null, "plain mapping is served");
         check("s (completion)".equals(scan.apply("{\"properties\":{\"s\":{\"type\":\"completion\"}}}")), "completion falls back");
-        check("o.v (knn_vector)".equals(scan.apply("{\"properties\":{\"o\":{\"properties\":{\"v\":{\"type\":\"knn_vector\"}}}}}")), "nested object field falls back");
+        check("o.s (completion)".equals(scan.apply("{\"properties\":{\"o\":{\"properties\":{\"s\":{\"type\":\"completion\"}}}}}")), "nested object field falls back");
+        check(scan.apply("{\"properties\":{\"v\":{\"type\":\"knn_vector\",\"dimension\":4}}}") == null, "knn_vector is served");
         check("t.tv (term_vector)".equals(scan.apply("{\"properties\":{\"t\":{\"type\":\"text\",\"fields\":{\"tv\":{\"type\":\"text\",\"term_vector\":\"yes\"}}}}}")), "multi-field falls back");
         String dyn = scan.apply("{\"dynamic_templates\":[{\"sugg\":{\"match\":\"*_s\",\"mapping\":{\"type\":\"completion\"}}}]}");
         check(dyn != null && dyn.startsWith("dynamic template sugg"), "dynamic template falls back: " + dyn);
@@ -355,6 +365,11 @@ public final class EngineWriterDiffTest {
     }
 
     private static void run(long seed, int ops, Analyzer analyzer, boolean adaptive) throws Exception {
+        run(seed, ops, analyzer, adaptive, null);
+    }
+
+    private static void run(long seed, int ops, Analyzer analyzer, boolean adaptive, org.apache.lucene.search.Sort sort)
+        throws Exception {
         Path root = Files.createTempDirectory("engine-writer-diff");
         Path javaPath = root.resolve("java");
         Path rustPath = root.resolve("rust");
@@ -367,6 +382,10 @@ public final class EngineWriterDiffTest {
             IndexWriterConfig cfg = new IndexWriterConfig(analyzer).setSimilarity(similarity)
                 .setSoftDeletesField(SOFT)
                 .setMaxBufferedDocs(97);
+            String parent = sort == null ? null : org.opensearch.common.lucene.Lucene.PARENT_FIELD;
+            if (sort != null) {
+                cfg.setIndexSort(sort).setParentField(parent);
+            }
             RustIndexWriter rust = RustIndexWriter.open(
                 rustDir,
                 rustPath,
@@ -376,7 +395,11 @@ public final class EngineWriterDiffTest {
                 false,
                 adaptive,
                 null,
+                sort,
+                parent,
                 IndexWriter.MAX_DOCS,
+                org.lucenerust.opensearch.NativeBridge.STORED_FIELDS_BEST_SPEED,
+                3,
                 analyzer,
                 similarity,
                 10,
@@ -454,6 +477,15 @@ public final class EngineWriterDiffTest {
             compare("seed " + seed, javaDir, rustDir);
             checkIndex("seed " + seed, rustDir);
             checkSkippers("seed " + seed, rustDir);
+            if (sort != null) {
+                try (DirectoryReader reader = DirectoryReader.open(rustDir)) {
+                    int sorted = 0;
+                    for (org.apache.lucene.index.LeafReaderContext ctx : reader.leaves()) {
+                        sorted += sort.equals(ctx.reader().getMetaData().sort()) ? 1 : 0;
+                    }
+                    check(sorted == reader.leaves().size() && sorted > 0, "seed " + seed + ": " + sorted + " of " + reader.leaves().size() + " segments sorted");
+                }
+            }
             int adaptiveFields = adaptiveFields(rustDir);
             check(adaptive ? adaptiveFields > 0 : adaptiveFields == 0, "seed " + seed + ": " + adaptiveFields + " RustAdaptive doc-values fields");
             if (adaptive) {
@@ -796,7 +828,11 @@ public final class EngineWriterDiffTest {
                 false,
                 false,
                 null,
+                null,
+                null,
                 IndexWriter.MAX_DOCS,
+                org.lucenerust.opensearch.NativeBridge.STORED_FIELDS_BEST_SPEED,
+                3,
                 new TestAnalyzer(),
                 new BM25Similarity(),
                 10,
@@ -856,7 +892,11 @@ public final class EngineWriterDiffTest {
                 false,
                 false,
                 "tenant",
+                null,
+                null,
                 IndexWriter.MAX_DOCS,
+                org.lucenerust.opensearch.NativeBridge.STORED_FIELDS_BEST_SPEED,
+                3,
                 new TestAnalyzer(),
                 new BM25Similarity(),
                 10,

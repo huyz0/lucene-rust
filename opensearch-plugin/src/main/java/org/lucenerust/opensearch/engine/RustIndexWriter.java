@@ -163,10 +163,34 @@ final class RustIndexWriter implements DocumentIndexWriter {
     }
 
     /**
+     * {@code sort} as {@code Lucene99SegmentInfoFormat} writes it into a {@code .si}: the field
+     * count, then each field's {@code SortFieldProvider} name and body. Null for no sort.
+     */
+    static byte[] encodeIndexSort(org.apache.lucene.search.Sort sort) throws IOException {
+        if (sort == null) {
+            return null;
+        }
+        org.apache.lucene.store.ByteBuffersDataOutput out = new org.apache.lucene.store.ByteBuffersDataOutput();
+        org.apache.lucene.search.SortField[] fields = sort.getSort();
+        out.writeVInt(fields.length);
+        for (org.apache.lucene.search.SortField f : fields) {
+            org.apache.lucene.index.IndexSorter sorter = f.getIndexSorter();
+            if (sorter == null) {
+                throw new IllegalArgumentException("cannot serialize sort field " + f);
+            }
+            out.writeString(sorter.getProviderName());
+            org.apache.lucene.index.SortFieldProvider.write(f, out);
+        }
+        return out.toArrayCopy();
+    }
+
+    /**
      * Opens the writer over {@code indexPath} (the store's directory, which must hold a commit), and
      * hands every existing commit to {@code deletionPolicy.onInit}, as {@code IndexWriter}'s
      * constructor does. With a {@code partitionField}, each document goes to the segments of its
-     * partition ({@link #partition}).
+     * partition ({@link #partition}). With an {@code indexSort}, every segment is written in its
+     * order, and {@code parentField} (when not null) marks each block's last document, as
+     * {@code IndexWriterConfig.setIndexSort} and {@code setParentField} have it.
      */
     static RustIndexWriter open(
         Directory directory,
@@ -177,7 +201,11 @@ final class RustIndexWriter implements DocumentIndexWriter {
         boolean liveSearch,
         boolean adaptiveDocValues,
         String partitionField,
+        org.apache.lucene.search.Sort indexSort,
+        String parentField,
         int maxDocs,
+        int storedFields,
+        int compressionLevel,
         Analyzer analyzer,
         Similarity similarity,
         int indexCreatedVersionMajor,
@@ -199,7 +227,11 @@ final class RustIndexWriter implements DocumentIndexWriter {
             liveSearch,
             adaptiveDocValues,
             partitionField != null,
+            encodeIndexSort(indexSort),
+            parentField == null ? null : parentField.getBytes(StandardCharsets.UTF_8),
             maxDocs,
+            storedFields,
+            compressionLevel,
             out
         );
         if (status != NativeBridge.OK) {
@@ -223,6 +255,12 @@ final class RustIndexWriter implements DocumentIndexWriter {
             w.faultInjection = faultInjection;
             w.liveSearch = liveSearch;
             w.partitionField = partitionField;
+            if (indexSort != null) {
+                w.config.setIndexSort(indexSort);
+            }
+            if (parentField != null) {
+                w.config.setParentField(parentField);
+            }
             // IndexWriterConfig.setSoftDeletesField: the writer knows the field before any document
             // carries it, so the first soft update -- which may be the first use -- has a field to
             // land on.

@@ -677,6 +677,22 @@ fn sim_term<'a>(
     ))))
 }
 
+/// `t`'s term state in this segment: the statistics pass's seek when it
+/// made one here (`TermStates`), else a seek of its own.
+fn seek_term(
+    ctx: &LeafContext<'_>,
+    field_terms: &lucene_codecs::blocktree::FieldTerms,
+    t: &TermQuery,
+) -> Result<Option<lucene_codecs::blocktree::SeekedTerm>> {
+    match ctx
+        .global
+        .and_then(|g| g.term_state(&t.field, &t.term, ctx.fields))
+    {
+        Some(found) => Ok(found),
+        None => Ok(field_terms.seek_term_state(&t.term)?),
+    }
+}
+
 fn term<'a>(
     ctx: &LeafContext<'a>,
     t: &TermQuery,
@@ -693,15 +709,7 @@ fn term<'a>(
     let Some(field_terms) = ctx.fields.field(&t.field) else {
         return Ok(TermForm::Absent);
     };
-    // The statistics pass's seek, when it made one here (`TermStates`).
-    let seeked = match ctx
-        .global
-        .and_then(|g| g.term_state(&t.field, &t.term, ctx.fields))
-    {
-        Some(found) => found,
-        None => field_terms.seek_term_state(&t.term)?,
-    };
-    let Some(seeked) = seeked else {
+    let Some(seeked) = seek_term(ctx, field_terms, t)? else {
         return Ok(TermForm::Absent);
     };
     let stats = seeked.stats;
@@ -945,6 +953,24 @@ pub(crate) fn build_clauses<'a, 'q>(
                 }
                 continue;
             }
+            // A filter on the field a segment is sorted by first, where every
+            // document holds at most one term of it: its documents are one
+            // run of doc ids, matched without reading the postings.
+            if g == 1 {
+                if let Clause::Term(t) = c {
+                    if let Some(run) = sorted_term_run(ctx, t)? {
+                        let child = run.and_then(|(min, max)| {
+                            crate::exec::ranges::doc_range(min, max, boost, *m).map(Child::Scorer)
+                        });
+                        if child.is_none() {
+                            return Ok(None);
+                        }
+                        costs[g].push(child.as_ref().map(Child::cost));
+                        built[g].push(child);
+                        continue;
+                    }
+                }
+            }
             let child = child(ctx, c, boost, *m, *top)?;
             if child.is_none() && *required {
                 return Ok(None);
@@ -1037,6 +1063,61 @@ pub(crate) fn build_clauses<'a, 'q>(
         should_pairs,
         pair(must_not, &q.must_not),
     )))
+}
+
+/// The documents of term `t` as the run of doc ids `min..max` they fill,
+/// in a segment sorted first by `t`'s field as a string (a keyword's SORTED
+/// or SORTED_SET column), where a term's documents usually sit side by
+/// side. The run is checked, not assumed: the term's last posting must be
+/// `first + docFreq - 1`, which leaves no gap. `Some(None)`
+/// when the term is absent; `None` where there is no run, or a segment has
+/// document blocks, where only the parents follow the sort.
+fn sorted_term_run(ctx: &LeafContext<'_>, t: &TermQuery) -> Result<Option<Option<(i32, i32)>>> {
+    use lucene_index::segment_info::IndexSortKind;
+    let Some(reader) = ctx.reader else {
+        return Ok(None);
+    };
+    if reader.has_blocks() || reader.simpletext.is_some() {
+        return Ok(None);
+    }
+    let Some(sort) = reader.index_sort().and_then(|s| s.first()) else {
+        return Ok(None);
+    };
+    if sort.field != t.field
+        || !matches!(
+            sort.kind,
+            IndexSortKind::String(_) | IndexSortKind::SortedSet { .. }
+        )
+    {
+        return Ok(None);
+    }
+    let Some(doc_in) = ctx.doc_in else {
+        return Ok(None);
+    };
+    let Some(field_terms) = ctx.fields.field(&t.field) else {
+        return Ok(None);
+    };
+    let Some(seeked) = seek_term(ctx, field_terms, t)? else {
+        return Ok(Some(None));
+    };
+    let mut cursor = field_terms.lazy_postings_for(&seeked, doc_in, PostingsFlags::DocsOnly)?;
+    let first = cursor.next_doc()?;
+    let Some(end) = first.checked_add(seeked.stats.doc_freq) else {
+        return Ok(None);
+    };
+    if first < 0 || first == crate::exec::NO_MORE_DOCS || end > reader.max_doc {
+        return Ok(None);
+    }
+    // `docFreq` postings from `first` to `end - 1` and none past it fill
+    // every doc id between.
+    let last = end.saturating_sub(1);
+    if last > first && cursor.advance(last)? != last {
+        return Ok(None);
+    }
+    if cursor.next_doc()? != crate::exec::NO_MORE_DOCS {
+        return Ok(None);
+    }
+    Ok(Some(Some((first, end))))
 }
 
 /// [`child`] with the lead cost an `IndexOrDocValuesQuery` clause is built

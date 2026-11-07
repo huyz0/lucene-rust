@@ -20,11 +20,11 @@ import org.opensearch.index.engine.DefaultPrimaryOperationPolicy;
 import org.opensearch.index.engine.DocumentIndexWriter;
 import org.opensearch.index.engine.EngineConfig;
 import org.opensearch.index.store.Store;
+import org.lucenerust.opensearch.NativeBridge;
 
 import java.io.IOException;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.function.LongSupplier;
 
 /**
@@ -102,8 +102,24 @@ public final class RustEngineSupport {
         Setting.Property.Final
     );
 
-    /** The codecs whose formats are the ones the Rust writer lays out. */
-    private static final Set<String> CODECS = Set.of("default", "lucene_default");
+    /**
+     * The {@code index.codec} values the Rust writer writes, and the stored fields each takes: the
+     * default codec's LZ4, {@code best_compression}'s DEFLATE, and the custom-codecs plugin's
+     * {@code zstd} and {@code zstd_no_dict}, in the plugin's own format and under its codec names, so
+     * either engine opens the other's segments.
+     */
+    private static final Map<String, Integer> CODECS = Map.of(
+        "default",
+        NativeBridge.STORED_FIELDS_BEST_SPEED,
+        "lucene_default",
+        NativeBridge.STORED_FIELDS_BEST_SPEED,
+        "best_compression",
+        NativeBridge.STORED_FIELDS_BEST_COMPRESSION,
+        "zstd",
+        NativeBridge.STORED_FIELDS_ZSTD,
+        "zstd_no_dict",
+        NativeBridge.STORED_FIELDS_ZSTD_NO_DICT
+    );
 
     /** {@code NativeLuceneIndexWriterFactory}'s {@code opensearch.shuffle_forced_merge}, read as it reads it. */
     private static final boolean SHUFFLE_FORCED_MERGE = org.opensearch.common.Booleans.parseBoolean(
@@ -122,8 +138,9 @@ public final class RustEngineSupport {
             return false;
         }
         return ENGINE_ENABLED.exists(settings)
-            || (CODECS.contains(EngineConfig.INDEX_CODEC_SETTING.get(settings))
-                && org.opensearch.index.IndexSortConfig.INDEX_SORT_FIELD_SETTING.exists(settings) == false);
+            || (CODECS.containsKey(EngineConfig.INDEX_CODEC_SETTING.get(settings))
+                && (org.opensearch.index.IndexSortConfig.INDEX_SORT_FIELD_SETTING.exists(settings) == false
+                    || unsupportedSort(settings) == null));
     }
 
     /** The circuit breaker the plugin registers for the writers' buffers. */
@@ -183,11 +200,15 @@ public final class RustEngineSupport {
      */
     public static String unsupported(IndexSettings settings, boolean indexSorted) {
         String codec = settings.getValue(EngineConfig.INDEX_CODEC_SETTING);
-        if (CODECS.contains(codec) == false) {
-            return "the Rust engine writes the default codec only, and index.codec is [" + codec + "]";
+        if (CODECS.containsKey(codec) == false) {
+            return "the Rust engine writes the codecs " + new java.util.TreeSet<>(CODECS.keySet()) + " only, and index.codec is [" + codec + "]";
         }
-        if (indexSorted) {
-            return "the Rust engine does not support index sorting";
+        if (CODECS.get(codec) != NativeBridge.STORED_FIELDS_BEST_SPEED
+            && org.lucenerust.opensearch.sparse.SparseSettings.SPARSE_INDEX.get(settings.getSettings())) {
+            return "the Rust engine writes an index.sparse index with the default codec only, and index.codec is [" + codec + "]";
+        }
+        if (indexSorted && unsupportedSort(settings.getSettings()) != null) {
+            return unsupportedSort(settings.getSettings());
         }
         // The codec then gives _id a FuzzyFilterPostingsFormat (a bloom filter beside the terms),
         // which the Rust writer does not lay out.
@@ -213,10 +234,21 @@ public final class RustEngineSupport {
         return null;
     }
 
+    private static volatile boolean refuseKnnVector;
+
+    /**
+     * The stock k-NN plugin serves {@code knn_vector} on this node: its fields (its codec's formats)
+     * are left to OpenSearch's engine.
+     */
+    public static void refuseKnnVectorFields() {
+        refuseKnnVector = true;
+    }
+
     /**
      * The first field of {@code mapping} (a mapping's source, as parsed) whose documents the Rust
-     * writer would refuse -- completion fields (their postings format), term vectors, vector
-     * fields, in its properties or dynamic templates -- or {@code null}. An index that only inherits {@link #ENGINE_DEFAULT} and is created
+     * writer would refuse -- completion fields (their postings format), term vectors and, beside the
+     * stock k-NN plugin, its {@code knn_vector} fields, in its properties or dynamic templates -- or
+     * {@code null}. An index that only inherits {@link #ENGINE_DEFAULT} and is created
      * with such a mapping is served by OpenSearch's engine; one that asked for the Rust engine
      * refuses those documents one by one.
      */
@@ -241,7 +273,7 @@ public final class RustEngineSupport {
             for (Map.Entry<?, ?> e : props.entrySet()) {
                 if (e.getValue() instanceof Map<?, ?> field) {
                     Object type = field.get("type");
-                    if ("completion".equals(type) || "knn_vector".equals(type)) {
+                    if ("completion".equals(type) || (refuseKnnVector && "knn_vector".equals(type))) {
                         return e.getKey() + " (" + type + ")";
                     }
                     Object tv = field.get("term_vector");
@@ -272,6 +304,32 @@ public final class RustEngineSupport {
         return field.isEmpty() ? null : field;
     }
 
+    /**
+     * Why the Rust writer cannot sort an index with these settings, or {@code null} when it can.
+     * Before 3.2.0 OpenSearch sets no parent field under an index sort (see {@link #parentField}),
+     * which the writer needs to keep nested blocks whole; a search of the buffers reads documents
+     * in arrival order, which a sorted flush renumbers.
+     */
+    static String unsupportedSort(org.opensearch.common.settings.Settings settings) {
+        if (org.opensearch.cluster.metadata.IndexMetadata.SETTING_INDEX_VERSION_CREATED.get(settings)
+            .before(org.opensearch.Version.V_3_2_0)) {
+            return "the Rust engine supports index sorting on indices created on 3.2.0 or later";
+        }
+        if (REALTIME_SEARCH.get(settings)) {
+            return "index.lucene_rust.realtime_search does not support index sorting";
+        }
+        return null;
+    }
+
+    /**
+     * The parent field {@code NativeLuceneIndexWriterFactory} sets under an index sort, which marks
+     * each nested block's last document ({@link #unsupportedSort} refuses the indices it does not
+     * set it on).
+     */
+    static String parentField(EngineConfig config) {
+        return config.getIndexSort() != null ? org.opensearch.common.lucene.Lucene.PARENT_FIELD : null;
+    }
+
     static RustIndexWriter openWriter(
         EngineConfig config,
         Store store,
@@ -290,7 +348,11 @@ public final class RustEngineSupport {
             REALTIME_SEARCH.get(config.getIndexSettings().getSettings()),
             ADAPTIVE_DOC_VALUES.get(config.getIndexSettings().getSettings()),
             partitionField(config.getIndexSettings().getSettings()),
+            config.getIndexSort(),
+            parentField(config),
             maxDocs,
+            CODECS.getOrDefault(config.getIndexSettings().getValue(EngineConfig.INDEX_CODEC_SETTING), NativeBridge.STORED_FIELDS_BEST_SPEED),
+            config.getIndexSettings().getValue(EngineConfig.INDEX_CODEC_COMPRESSION_LEVEL_SETTING),
             config.getAnalyzer(),
             config.getSimilarity(),
             config.getIndexSettings().getIndexVersionCreated().luceneVersion.major,
