@@ -853,9 +853,11 @@ fn restore_vectors_formats(writer: &mut IndexWriter<'_>) {
 /// `0` the codec's default (`Lucene99HnswVectorsFormat()`), `1`
 /// `Lucene99HnswVectorsFormat(max_conn, beam_width)`, `2`
 /// `Lucene104HnswScalarQuantizedVectorsFormat(encoding, max_conn,
-/// beam_width)`, `3` `Lucene104ScalarQuantizedVectorsFormat(encoding)` or `4`
-/// `KNN9120HnswBinaryVectorsFormat(max_conn, beam_width)` (byte fields only);
-/// kinds `1`, `2` and `4` are followed by `i32 max_conn, i32 beam_width`,
+/// beam_width)`, `3` `Lucene104ScalarQuantizedVectorsFormat(encoding)`, `4`
+/// k-NN's `KNN9120HnswBinaryVectorsFormat(max_conn, beam_width)` (byte
+/// fields only; recorded as `KNN990HnswBinaryVectorsFormat`) or `5` k-NN's
+/// `KNN1040HnswHalfFloatVectorsFormat(max_conn, beam_width)` (float fields
+/// only); kinds `1`, `2`, `4` and `5` are followed by `i32 max_conn, i32 beam_width`,
 /// kinds `2` and `3` by `u8 scalar encoding` (`ScalarEncoding.getWireNumber`).
 fn decode_vector_schema(
     c: &mut Cursor<'_>,

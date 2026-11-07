@@ -890,8 +890,9 @@ impl<'a> FlatVectorsReader<'a> {
                 entry.dimension
             ));
         };
-        // k-NN normalizes half-float cosine vectors and scores them with its
-        // FP16 cosine kernel, `(1 + dot) / 2`: the dot-product score.
+        // k-NN normalizes half-float cosine vectors (and queries) before they
+        // get here, and scores them with its FP16 cosine kernel, `(1 + dot) /
+        // 2`: the dot-product score, which is the cosine one for unit vectors.
         let similarity = if self.half && entry.similarity == VectorSimilarityFunction::Cosine {
             VectorSimilarityFunction::DotProduct
         } else {
@@ -1594,7 +1595,11 @@ impl FlatVectorsWriter {
     pub fn new(max_doc: i32, segment_id: &[u8; ID_LENGTH], segment_suffix: &str) -> Self {
         let half = stores_half_floats(segment_suffix);
         let (meta_codec, data_codec, version) = if half {
-            (HALF_FLOAT_META_CODEC, HALF_FLOAT_DATA_CODEC, 0)
+            (
+                HALF_FLOAT_META_CODEC,
+                HALF_FLOAT_DATA_CODEC,
+                HALF_FLOAT_VERSION,
+            )
         } else {
             (META_CODEC, DATA_CODEC, VERSION_CURRENT)
         };

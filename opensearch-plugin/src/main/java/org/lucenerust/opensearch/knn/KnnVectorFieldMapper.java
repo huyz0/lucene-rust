@@ -3,8 +3,10 @@
  */
 package org.lucenerust.opensearch.knn;
 
+import org.apache.lucene.index.DocValuesType;
 import org.apache.lucene.document.BinaryDocValuesField;
 import org.apache.lucene.document.FieldType;
+import org.apache.lucene.document.Field;
 import org.apache.lucene.document.KnnByteVectorField;
 import org.apache.lucene.document.KnnFloatVectorField;
 import org.apache.lucene.document.StoredField;
@@ -192,6 +194,17 @@ public final class KnnVectorFieldMapper extends ParametrizedFieldMapper {
     final String compression;
     final boolean hasDocValues;
     final boolean stored;
+    /** {@code FlatVectorFieldMapper}'s half-float doc values: binary, the field marked {@code data_type: half_float}. */
+    private static final FieldType HALF_FLOAT_DOC_VALUES = halfFloatDocValues();
+
+    private static FieldType halfFloatDocValues() {
+        FieldType ft = new FieldType();
+        ft.setDocValuesType(DocValuesType.BINARY);
+        ft.putAttribute("data_type", "half_float");
+        ft.freeze();
+        return ft;
+    }
+
     private final Settings indexSettings;
     private final KnnFieldConfig config;
     private final FieldType vectorType;
@@ -317,7 +330,11 @@ public final class KnnVectorFieldMapper extends ParametrizedFieldMapper {
                 context.doc().add(masked(context) ? new DerivedSource.MaskedFloat(name(), v, type) : new KnnFloatVectorField(name(), v, type));
             }
             if (config.halfFloat()) {
-                // LuceneFieldStrategy: no doc values; stored as little-endian half floats.
+                // LuceneFieldStrategy: no doc values on a knn index; stored as little-endian half
+                // floats. FlatVectorFieldMapper (not a knn index): half-float doc values.
+                if (vectorType == null && hasDocValues) {
+                    context.doc().add(new Field(name(), new org.apache.lucene.util.BytesRef(KnnVectors.halfFloatBytes(v)), HALF_FLOAT_DOC_VALUES));
+                }
                 if (stored) {
                     context.doc().add(new StoredField(name(), KnnVectors.halfFloatBytes(v)));
                 }
