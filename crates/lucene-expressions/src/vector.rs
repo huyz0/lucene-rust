@@ -9,6 +9,7 @@
 //! functions. An expression calling a custom function is not compiled here.
 
 use super::{chain_kind, java_max, java_min, Bin, ChainKind, Fast, FunctionBody, Node};
+use lucene_util::strict_math;
 
 /// A register: an operand of an operation.
 #[derive(Clone, Copy, Debug)]
@@ -60,6 +61,8 @@ enum Op {
     F1(fn(f64) -> f64, u32, Src),
     F2(fn(f64, f64) -> f64, u32, Src, Src),
     F4(fn(f64, f64, f64, f64) -> f64, u32, [Src; 4]),
+    /// A function with a slice form that returns the scalar function's bits.
+    Slice(fn(&[f64], &mut [f64]), u32, Src),
     Abs(u32, Src),
     Sqrt(u32, Src),
     Floor(u32, Src),
@@ -175,6 +178,16 @@ impl Builder {
                             Fast::Ceil => Op::Ceil(r, x),
                             Fast::Max => Op::Max(r, x, y),
                             Fast::Min => Op::Min(r, x, y),
+                            Fast::Ln => Op::Slice(strict_math::log_slice, r, x),
+                            Fast::Exp => Op::Slice(strict_math::exp_slice, r, x),
+                            Fast::Sin => Op::Slice(strict_math::sin_slice, r, x),
+                            Fast::Cos => Op::Slice(strict_math::cos_slice, r, x),
+                            // `StrictMath.pow(x, 2.0)` is `x * x` after its NaN
+                            // check, and `x * x` keeps a NaN `x` as `x + 2.0` does.
+                            Fast::Pow if matches!(y, Src::Fc(c) if c == 2.0) => {
+                                Op::Arith(Bin::Mul, r, x, x)
+                            }
+                            Fast::Pow => Op::F2(strict_math::pow, r, x, y),
                         })
                     }
                     (FunctionBody::F1(g), None) => {
@@ -643,6 +656,17 @@ impl Program {
                     }
                 }
                 Op::F1(f, d, a) => map1(r.df(d), r.f(a), f),
+                Op::Slice(f, d, a) => {
+                    let d = r.df(d);
+                    match r.f(a) {
+                        Arg::S(a) => f(a, d),
+                        Arg::C(x) => {
+                            let mut v = [0.0];
+                            f(&[x], &mut v);
+                            d.fill(v[0]);
+                        }
+                    }
+                }
                 Op::F2(f, d, a, b) => {
                     let (d, a, b) = (r.df(d), r.f(a), r.f(b));
                     map2(d, a, b, f);

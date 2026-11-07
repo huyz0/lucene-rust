@@ -108,6 +108,11 @@ pub(crate) enum Fast {
     Ceil,
     Max,
     Min,
+    Ln,
+    Exp,
+    Sin,
+    Cos,
+    Pow,
 }
 
 impl ExprFunction {
@@ -221,6 +226,11 @@ fn build_defaults() -> HashMap<String, ExprFunction> {
         "ceil" => Some(Fast::Ceil),
         "max" => Some(Fast::Max),
         "min" => Some(Fast::Min),
+        "ln" => Some(Fast::Ln),
+        "exp" => Some(Fast::Exp),
+        "sin" => Some(Fast::Sin),
+        "cos" => Some(Fast::Cos),
+        "pow" => Some(Fast::Pow),
         _ => None,
     };
     let mut put1 = |name: &str, f: fn(f64) -> f64| {
