@@ -4,7 +4,7 @@
 //! segment's vector values, back in place of the masked value (`DerivedSourceVectorTransformer`).
 //!
 //! The `_source` is spliced, not re-serialized: everything but the replaced values keeps its bytes.
-//! A `_source` in another content type (SMILE, CBOR, YAML) is refused ([`Error::DerivedSource`]),
+//! A `_source` in another content type (SMILE, CBOR, YAML) is refused ([`stored_fields::Error::DerivedSource`]),
 //! so the caller reads the document through Lucene's codec, which handles every content type; one
 //! that is not content at all (a no-op tombstone's) is returned unchanged, as stock returns it.
 
