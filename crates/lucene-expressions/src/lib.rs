@@ -39,8 +39,9 @@ pub mod js;
 pub mod variable_context;
 
 pub use js::{
-    compile, compile_with, compile_with_max_nesting_depth, default_functions, ExprFunction,
-    Expression, ParseException, DEFAULT_MAX_NESTING_DEPTH,
+    compile, compile_with, compile_with_max_nesting_depth, default_backend, default_functions,
+    set_default_backend, Backend, ExprFunction, Expression, ParseException,
+    DEFAULT_MAX_NESTING_DEPTH,
 };
 use js::{SharedValues, VarSlot, VarValues};
 
@@ -277,6 +278,8 @@ struct ExpressionFunctionValues<'c> {
     /// `has` scratch.
     columns: Vec<f64>,
     column_has: Vec<bool>,
+    /// The batch backend's registers.
+    scratch: js::BatchScratch,
 }
 
 impl DoubleValues for ExpressionFunctionValues<'_> {
@@ -324,7 +327,7 @@ impl DoubleValues for ExpressionFunctionValues<'_> {
             }
         }
         self.expression
-            .evaluate_batch(&self.columns, &mut out[..n])?;
+            .evaluate_batch(&self.columns, &mut out[..n], &mut self.scratch)?;
         has[..n].fill(true);
         if let (Some(&doc), Some(&value)) = (docs.last(), out[..n].last()) {
             self.current_doc = doc;
@@ -446,6 +449,7 @@ impl ExpressionValueSource {
             batch,
             columns: Vec::new(),
             column_has: Vec::new(),
+            scratch: js::BatchScratch::default(),
         }))
     }
 }
