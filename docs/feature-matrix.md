@@ -162,8 +162,13 @@ Each is a counter under `fallbacks` in `GET /_plugins/lucene_rust/stats`.
   (OpenSearch 3.x cannot open them either), non-default postings formats
   (`completion`: `postings_format`), and segments the k-NN plugin wrote with
   `index.knn: true`, which name the plugin's codec (`KNN9120Codec` from 2.19)
-  and fall back as `native_open_failed`. The Rust engine refuses non-default
-  codecs.
+  and fall back as `native_open_failed`. The Rust engine writes `index.codec`
+  `default`, `lucene_default`, `best_compression`, and the bundled
+  custom-codecs plugin's `zstd` and `zstd_no_dict` (with
+  `index.codec.compression_level`) in that plugin's own format and codec names
+  (`ZSTD104`, `ZSTDNODICT104`), so OpenSearch's engine opens its segments and
+  native search reads OpenSearch's, back to the 2.9 names. It refuses other
+  codecs (`qat_*`), and any but the default on an `index.sparse` index.
 - **Remote-backed storage** (remote store, searchable snapshots): the Rust
   engine refuses it and native search falls back.
 - **Windows and macOS.**
