@@ -57,14 +57,15 @@ use lucene_codecs::field_infos::{
     DocValuesSkipIndexType, DocValuesType, FieldInfo, IndexOptions, VectorEncoding,
     VectorSimilarityFunction,
 };
+use lucene_codecs::per_field_knn_vectors::KnnVectorsFormat;
 use lucene_codecs::stored_fields::{FieldValue, StoredField};
 use lucene_index::buffered_updates::{DocValuesUpdate, Term};
 use lucene_index::concurrent_writer::ConcurrentIndexWriter;
 use lucene_index::index_file_deleter::DeletionPolicy;
 use lucene_index::index_writer::{
-    self, ExplicitDocument, ExplicitFields, IndexWriter, InvertedField, InvertedTerms, MergeEvent,
-    MergeListener, MergePolicyConfig, MergeTimes, MergedSegmentWarmer, SegmentPartitioning,
-    SoftDeletesRetention,
+    self, DocumentVector, ExplicitDocument, ExplicitFields, IndexWriter, InvertedField,
+    InvertedTerms, MergeEvent, MergeListener, MergePolicyConfig, MergeTimes, MergedSegmentWarmer,
+    SegmentPartitioning, SoftDeletesRetention,
 };
 use lucene_index::merge_policy::log::LogByteSizeMergePolicy;
 use lucene_index::merge_policy::{
@@ -74,6 +75,7 @@ use lucene_index::merge_scheduler::ConcurrentMergeScheduler;
 use lucene_index::segment_info::LuceneVersion;
 use lucene_misc::index::{BpIndexReorderer, BpReorderingMergePolicy};
 use lucene_store::directory::Directory;
+use lucene_util::quantization::ScalarEncoding;
 
 use crate::error::{guard, set_last_error, FfiStatus};
 use crate::raw::{bytes_from_raw, str_from_raw, try_with_capacity};
@@ -502,6 +504,8 @@ fn analyzed_field(c: &mut Cursor<'_>, field_number: i32) -> Result<InvertedField
 ///   here ([`analyzed_field`])
 /// - doc values: `i32 field, u8 kind (0 long, 1 bytes), i64 | (i32 len, bytes)`
 /// - points: `i32 field, i32 len, packed bytes`
+///
+/// A document's KNN vectors follow the operation's documents ([`decode_op`]).
 fn document(c: &mut Cursor<'_>) -> Result<ExplicitDocument, FfiStatus> {
     let n = c.count(9, "stored count")?;
     let mut stored = try_with_capacity(n)?;
@@ -552,11 +556,41 @@ fn document(c: &mut Cursor<'_>) -> Result<ExplicitDocument, FfiStatus> {
     })
 }
 
+/// One document's value of one vector field: `i32 len, utf8 field name,
+/// u8 encoding (0 float32, 1 byte), i32 dimension`, then the components
+/// (`f32` bits as `i32` each, or one byte each) -- a
+/// `KnnFloatVectorField`/`KnnByteVectorField`.
+fn document_vector(c: &mut Cursor<'_>) -> Result<DocumentVector, FfiStatus> {
+    let name = c.string("vector field name")?;
+    let encoding = c.u8("vector encoding")?;
+    let dim = usize::try_from(c.i32("vector dimension")?)
+        .map_err(|_| decode_error("vector dimension"))?;
+    Ok(match encoding {
+        0 => {
+            let raw = c.take(
+                dim.checked_mul(4)
+                    .ok_or_else(|| decode_error("vector dimension"))?,
+                "vector",
+            )?;
+            let mut v = try_with_capacity(dim)?;
+            v.extend(
+                raw.chunks_exact(4)
+                    .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])),
+            );
+            DocumentVector::float32(name, v)
+        }
+        1 => DocumentVector::byte(name, c.take(dim, "vector")?.to_vec()),
+        _ => return Err(decode_error("vector encoding")),
+    })
+}
+
 /// An operation blob, decoded.
 enum Op {
     Add {
         partition: Option<Arc<str>>,
         docs: Vec<ExplicitDocument>,
+        /// One list per document; `None` when no document has a vector.
+        vectors: Option<Vec<Vec<DocumentVector>>>,
     },
     SoftUpdate {
         partition: Option<Arc<str>>,
@@ -564,13 +598,16 @@ enum Op {
         soft_field: String,
         soft_value: i64,
         docs: Vec<ExplicitDocument>,
+        vectors: Option<Vec<Vec<DocumentVector>>>,
     },
     Panic,
 }
 
 /// `u8 kind`, then for a soft update `term field (i32 len, utf8), term bytes
 /// (i32 len, bytes), soft-deletes field (i32 len, utf8), i64 value`, then
-/// `i32 count` documents ([`document`]). The whole blob must be consumed.
+/// `i32 count` documents ([`document`]), then, when any of them has a KNN
+/// vector, per document `i32 n` and `n` vectors ([`document_vector`]). The
+/// whole blob must be consumed.
 ///
 /// A soft update is Lucene's `softUpdateDocuments(term, docs, softDeletes)`:
 /// every live document matching `term` gets `soft_field = soft_value` as a
@@ -605,14 +642,35 @@ fn decode_op(blob: &[u8]) -> Result<Op, FfiStatus> {
             for _ in 0..n {
                 docs.push(document(&mut c)?);
             }
+            // The documents' vectors, when any has one: per document a count
+            // and that many [`document_vector`]s.
+            let vectors = if c.remaining() > 0 {
+                let mut vectors: Vec<Vec<DocumentVector>> = try_with_capacity(n)?;
+                for _ in 0..n {
+                    let m = c.count(9, "vector count")?;
+                    let mut doc_vectors = try_with_capacity(m)?;
+                    for _ in 0..m {
+                        doc_vectors.push(document_vector(&mut c)?);
+                    }
+                    vectors.push(doc_vectors);
+                }
+                Some(vectors)
+            } else {
+                None
+            };
             match update {
-                None => Op::Add { partition, docs },
+                None => Op::Add {
+                    partition,
+                    docs,
+                    vectors,
+                },
                 Some((term, soft_field, soft_value)) => Op::SoftUpdate {
                     partition,
                     term,
                     soft_field,
                     soft_value,
                     docs,
+                    vectors,
                 },
             }
         }
@@ -627,11 +685,12 @@ fn decode_op(blob: &[u8]) -> Result<Op, FfiStatus> {
 /// u8 doc_values_type (0 none, 1 numeric, 2 binary, 3 sorted, 4 sorted_set,
 /// 5 sorted_numeric), u8 doc_values_skip_index, i32 point_dimension_count,
 /// i32 point_index_dimension_count, i32 point_num_bytes, i32 vector_dimension,
-/// u8 soft_deletes_field, i32 attribute count, then (i32 len, utf8) key and
+/// and for a vector field (a non-zero dimension) its [`decode_vector_schema`],
+/// then u8 soft_deletes_field, i32 attribute count, then (i32 len, utf8) key and
 /// value pairs` -- Lucene's `FieldInfo`. The attributes are the field type's
 /// own (`FieldType.putAttribute`); the writer adds its per-field format ones
 /// per segment.
-fn decode_field(blob: &[u8]) -> Result<FieldInfo, FfiStatus> {
+fn decode_field(blob: &[u8]) -> Result<(FieldInfo, Option<KnnVectorsFormat>), FfiStatus> {
     let mut c = Cursor::new(blob);
     let name = c.string("field name")?;
     let index_options = match c.u8("index options")? {
@@ -670,6 +729,11 @@ fn decode_field(blob: &[u8]) -> Result<FieldInfo, FfiStatus> {
     let index_dims = c.i32("point index dimensions")?;
     let num_bytes = c.i32("point bytes")?;
     let vector_dimension = c.i32("vector dimension")?;
+    let vector = if vector_dimension != 0 {
+        Some(decode_vector_schema(&mut c)?)
+    } else {
+        None
+    };
     let soft = flag(&mut c, "soft deletes")?;
     let attributes = decode_user_data_pairs(
         &mut c,
@@ -689,14 +753,133 @@ fn decode_field(blob: &[u8]) -> Result<FieldInfo, FfiStatus> {
         .with_points(dims, index_dims, num_bytes)
         .with_soft_deletes_field(soft)
         .with_attributes(attributes);
-    if vector_dimension != 0 {
-        info = info.with_vectors(
-            vector_dimension,
-            VectorEncoding::Float32,
-            VectorSimilarityFunction::Euclidean,
-        );
+    let format = match vector {
+        Some((encoding, similarity, format)) => {
+            info = info.with_vectors(vector_dimension, encoding, similarity);
+            format
+        }
+        None => None,
+    };
+    Ok((info, format))
+}
+
+/// The field attribute naming the `KnnVectorsFormat` the plugin's mapping
+/// chose for a vector field ([`parse_vectors_format`]), kept in the
+/// segments' `FieldInfos` so a writer reopened on the index merges the field
+/// in the same format before any document registers it again.
+pub(crate) const VECTORS_FORMAT_ATTRIBUTE: &str = "lucene_rust.knn_format";
+
+/// A [`VECTORS_FORMAT_ATTRIBUTE`] value: `hnsw:<max_conn>:<beam_width>`,
+/// `hnsw_sq:<scalar encoding wire number>:<max_conn>:<beam_width>` or
+/// `sq:<scalar encoding wire number>`; `None` for anything else.
+pub(crate) fn parse_vectors_format(value: &str) -> Option<KnnVectorsFormat> {
+    let parts: Vec<&str> = value.split(':').collect();
+    let int = |s: &str| s.parse::<i32>().ok();
+    match parts.as_slice() {
+        ["hnsw", m, beam] => KnnVectorsFormat::hnsw(int(m)?, int(beam)?).ok(),
+        ["hnsw_sq", e, m, beam] => KnnVectorsFormat::hnsw_scalar_quantized(
+            ScalarEncoding::from_wire_number(int(e)?)?,
+            int(m)?,
+            int(beam)?,
+        )
+        .ok(),
+        ["sq", e] => Some(KnnVectorsFormat::scalar_quantized(
+            ScalarEncoding::from_wire_number(int(e)?)?,
+        )),
+        _ => None,
     }
-    Ok(info)
+}
+
+/// Routes every vector field of `writer`'s existing segments to the format
+/// its [`VECTORS_FORMAT_ATTRIBUTE`] names.
+fn restore_vectors_formats(writer: &mut IndexWriter<'_>) {
+    let found: Vec<(String, KnnVectorsFormat)> = writer
+        .fields()
+        .iter()
+        .filter(|f| f.vector_dimension > 0)
+        .filter_map(|f| {
+            let value = f
+                .attributes
+                .iter()
+                .find(|(k, _)| k == VECTORS_FORMAT_ATTRIBUTE)
+                .map(|(_, v)| v)?;
+            Some((f.name.clone(), parse_vectors_format(value)?))
+        })
+        .collect();
+    for (name, format) in found {
+        writer.set_knn_vectors_format_for_field(&name, format);
+    }
+}
+
+/// A vector field's `u8 encoding (0 float32, 1 byte), u8 similarity
+/// (VectorSimilarityFunction ordinal: 0 euclidean, 1 dot product, 2 cosine,
+/// 3 maximum inner product)`, then its `KnnVectorsFormat`: `u8 kind` --
+/// `0` the codec's default (`Lucene99HnswVectorsFormat()`), `1`
+/// `Lucene99HnswVectorsFormat(max_conn, beam_width)`, `2`
+/// `Lucene104HnswScalarQuantizedVectorsFormat(encoding, max_conn,
+/// beam_width)` or `3` `Lucene104ScalarQuantizedVectorsFormat(encoding)`;
+/// kinds `1` and `2` are followed by `i32 max_conn, i32 beam_width`, kinds `2`
+/// and `3` by `u8 scalar encoding` (`ScalarEncoding.getWireNumber`).
+fn decode_vector_schema(
+    c: &mut Cursor<'_>,
+) -> Result<
+    (
+        VectorEncoding,
+        VectorSimilarityFunction,
+        Option<KnnVectorsFormat>,
+    ),
+    FfiStatus,
+> {
+    let encoding = match c.u8("vector encoding")? {
+        0 => VectorEncoding::Float32,
+        1 => VectorEncoding::Byte,
+        _ => return Err(decode_error("vector encoding")),
+    };
+    let similarity = match c.u8("vector similarity")? {
+        0 => VectorSimilarityFunction::Euclidean,
+        1 => VectorSimilarityFunction::DotProduct,
+        2 => VectorSimilarityFunction::Cosine,
+        3 => VectorSimilarityFunction::MaximumInnerProduct,
+        _ => return Err(decode_error("vector similarity")),
+    };
+    let kind = c.u8("vectors format")?;
+    let graph = |c: &mut Cursor<'_>| -> Result<(i32, i32), FfiStatus> {
+        Ok((c.i32("max conn")?, c.i32("beam width")?))
+    };
+    let scalar = |c: &mut Cursor<'_>| -> Result<ScalarEncoding, FfiStatus> {
+        ScalarEncoding::from_wire_number(i32::from(c.u8("scalar encoding")?))
+            .ok_or_else(|| decode_error("scalar encoding"))
+    };
+    let invalid = |e: lucene_codecs::per_field_knn_vectors::InvalidFormat| {
+        set_last_error(e.0);
+        FfiStatus::InvalidArgument
+    };
+    let format = match kind {
+        0 => None,
+        1 => {
+            let (m, beam) = graph(c)?;
+            Some(KnnVectorsFormat::hnsw(m, beam).map_err(invalid)?)
+        }
+        2 => {
+            let (m, beam) = graph(c)?;
+            let e = scalar(c)?;
+            Some(KnnVectorsFormat::hnsw_scalar_quantized(e, m, beam).map_err(invalid)?)
+        }
+        3 => Some(KnnVectorsFormat::scalar_quantized(scalar(c)?)),
+        _ => return Err(decode_error("vectors format")),
+    };
+    if format.as_ref().is_some_and(|f| {
+        encoding == VectorEncoding::Byte
+            && matches!(
+                f,
+                KnnVectorsFormat::HnswScalarQuantized { .. }
+                    | KnnVectorsFormat::ScalarQuantized { .. }
+            )
+    }) {
+        set_last_error("a byte vector field cannot be scalar quantized");
+        return Err(FfiStatus::InvalidArgument);
+    }
+    Ok((encoding, similarity, format))
 }
 
 /// `i32 count`, then `count` pairs of `(i32 len, utf8)` key and value.
@@ -1045,6 +1228,7 @@ pub unsafe extern "C" fn ffi_engine_writer_open_codec(
                 );
             }
             writer.enable_explicit_documents()?;
+            restore_vectors_formats(&mut writer);
             if !parent_field.is_empty() {
                 writer.set_parent_field(Some(parent_field))?;
             }
@@ -1160,14 +1344,23 @@ pub unsafe extern "C" fn ffi_engine_writer_register_field(
         }
         // SAFETY: caller contract.
         let spec = unsafe { bytes_from_raw(spec, spec_len)? };
-        let info = decode_field(spec)?;
+        let (info, format) = decode_field(spec)?;
         let number = with_writer(handle, |w| {
-            w.writer().register_field(info).map_err(|e| {
-                // A field the writer cannot index is the mapping's problem,
-                // not the writer's: document-level.
-                set_last_error(e.to_string());
-                FfiStatus::InvalidArgument
-            })
+            let name = info.name.clone();
+            w.writer()
+                .with_writer(|iw| {
+                    let number = iw.register_field(info)?;
+                    if let Some(format) = format {
+                        iw.set_knn_vectors_format_for_field(&name, format);
+                    }
+                    Ok::<_, lucene_index::index_writer::Error>(number)
+                })
+                .map_err(|e| {
+                    // A field the writer cannot index is the mapping's problem,
+                    // not the writer's: document-level.
+                    set_last_error(e.to_string());
+                    FfiStatus::InvalidArgument
+                })
         })?;
         // SAFETY: caller contract.
         unsafe { *out_number = number };
@@ -1180,24 +1373,43 @@ fn apply_op(handle: u64, op: Op) -> Result<(), FfiStatus> {
     with_writer(handle, |w| {
         let writer = w.writer();
         match op {
-            Op::Add { partition, docs } => writer
-                .add_explicit_documents_in(partition, docs)
-                .map_err(writer_error)?,
+            Op::Add {
+                partition,
+                docs,
+                vectors,
+            } => match vectors {
+                None => writer.add_explicit_documents_in(partition, docs),
+                Some(vectors) => {
+                    writer.add_explicit_documents_with_vectors_in(partition, docs, vectors)
+                }
+            }
+            .map_err(writer_error)?,
             Op::SoftUpdate {
                 partition,
                 term,
                 soft_field,
                 soft_value,
                 docs,
+                vectors,
             } => {
                 let soft = DocValuesUpdate::Numeric {
                     term: term.clone(),
                     field: soft_field,
                     value: Some(soft_value),
                 };
-                writer
-                    .soft_update_explicit_documents_in(partition, term, docs, &[soft])
-                    .map_err(writer_error)?
+                match vectors {
+                    None => {
+                        writer.soft_update_explicit_documents_in(partition, term, docs, &[soft])
+                    }
+                    Some(vectors) => writer.soft_update_explicit_documents_with_vectors_in(
+                        partition,
+                        term,
+                        docs,
+                        vectors,
+                        &[soft],
+                    ),
+                }
+                .map_err(writer_error)?
             }
             Op::Panic => {
                 if !w.fault_injection {
@@ -2330,6 +2542,9 @@ mod tests {
             let mut s = self.i32(b.len() as i32);
             s.0.extend_from_slice(b);
             s
+        }
+        fn f32(self, v: f32) -> Self {
+            self.i32(v.to_bits() as i32)
         }
     }
 
@@ -4675,15 +4890,97 @@ mod tests {
             .i32(0)
             .i32(0)
             .i32(4)
+            // float32, cosine, Lucene104HnswScalarQuantizedVectorsFormat(7 bits, 16, 100)
+            .u8(0)
+            .u8(2)
+            .u8(2)
+            .i32(16)
+            .i32(100)
+            .u8(2)
             .u8(0);
         let attributed = vector.clone().i32(1).bytes(b"k").bytes(b"v");
         assert_eq!(
-            decode_field(&attributed.0).unwrap().attributes,
+            decode_field(&attributed.0).unwrap().0.attributes,
             vec![("k".to_string(), "v".to_string())]
         );
         assert!(decode_field(&vector.clone().i32(1).bytes(b"k").0).is_err());
         let vector = vector.i32(0);
-        assert_eq!(decode_field(&vector.0).unwrap().vector_dimension, 4);
+        let (info, format) = decode_field(&vector.0).unwrap();
+        assert_eq!(info.vector_dimension, 4);
+        assert_eq!(info.vector_encoding, VectorEncoding::Float32);
+        assert_eq!(
+            info.vector_similarity_function,
+            VectorSimilarityFunction::Cosine
+        );
+        assert_eq!(
+            format,
+            Some(
+                KnnVectorsFormat::hnsw_scalar_quantized(ScalarEncoding::SevenBit, 16, 100).unwrap()
+            )
+        );
+        // A byte field is never quantized; a graph's bounds are Lucene's.
+        let schema = |encoding: u8, kind: u8, m: i32| {
+            let b = Blob::default()
+                .bytes(b"v")
+                .u8(0)
+                .u8(0)
+                .u8(0)
+                .u8(0)
+                .u8(0)
+                .u8(0)
+                .i32(0)
+                .i32(0)
+                .i32(0)
+                .i32(4)
+                .u8(encoding)
+                .u8(0)
+                .u8(kind);
+            let b = match kind {
+                1 => b.i32(m).i32(100),
+                2 => b.i32(m).i32(100).u8(2),
+                3 => b.u8(2),
+                _ => b,
+            };
+            b.u8(0).i32(0).0
+        };
+        assert!(decode_field(&schema(1, 2, 16)).is_err());
+        assert!(decode_field(&schema(1, 3, 16)).is_err());
+        assert!(decode_field(&schema(1, 1, 16)).is_ok());
+        assert!(decode_field(&schema(0, 1, 0)).is_err());
+        assert!(decode_field(&schema(0, 1, 513)).is_err());
+        assert_eq!(decode_field(&schema(0, 0, 0)).unwrap().1, None);
+        assert!(decode_field(&schema(0, 9, 0)).is_err());
+        assert_eq!(
+            parse_vectors_format("hnsw:16:100"),
+            Some(KnnVectorsFormat::hnsw(16, 100).unwrap())
+        );
+        assert_eq!(
+            parse_vectors_format("hnsw_sq:3:32:200"),
+            Some(
+                KnnVectorsFormat::hnsw_scalar_quantized(
+                    ScalarEncoding::SingleBitQueryNibble,
+                    32,
+                    200
+                )
+                .unwrap()
+            )
+        );
+        assert_eq!(
+            parse_vectors_format("sq:1"),
+            Some(KnnVectorsFormat::scalar_quantized(
+                ScalarEncoding::PackedNibble
+            ))
+        );
+        for bad in [
+            "",
+            "hnsw",
+            "hnsw:0:100",
+            "hnsw_sq:9:16:100",
+            "flat:1",
+            "hnsw:a:b",
+        ] {
+            assert_eq!(parse_vectors_format(bad), None, "{bad}");
+        }
         assert!(decode_user_data(&Blob::default().i32(0).u8(0).0).is_err());
     }
 
@@ -6167,5 +6464,171 @@ mod tests {
         fdt.sort_unstable();
         eprintln!("stored MB per segment: {fdt:?}");
         ffi_engine_writer_close(h);
+    }
+
+    fn knn_vector(i: usize) -> [f32; 4] {
+        let f = i as f32;
+        [
+            (f * 0.37).sin(),
+            (f * 0.11).cos(),
+            ((i * 7) % 13) as f32 / 13.0,
+            0.5,
+        ]
+    }
+
+    fn knn_score(a: &[f32], b: &[f32]) -> f32 {
+        let d: f32 = a.iter().zip(b).map(|(x, y)| (x - y) * (x - y)).sum();
+        1.0 / (1.0 + d)
+    }
+
+    /// **A vector field is written in its mapping's format and searched
+    /// natively.** The plugin's field spec (dimension, encoding, similarity,
+    /// HNSW parameters) and its documents' vectors section make two segments
+    /// of Lucene99 HNSW vectors that pass `CheckIndex`; the reader's
+    /// whole-index KNN ([`crate::jvm_knn::ffi_jvm_reader_knn`]) finds the
+    /// exact top `k`, and a per-segment KNN node (39) `k` per segment.
+    #[test]
+    fn a_vector_field_is_written_in_its_format_and_searched() {
+        let tmp = empty_index("engine-writer-knn");
+        let h = open(&tmp, 0);
+        let f = setup(h);
+        let spec = Blob::default()
+            .bytes(b"v")
+            .u8(0)
+            .u8(0)
+            .u8(0)
+            .u8(0)
+            .u8(0)
+            .u8(0)
+            .i32(0)
+            .i32(0)
+            .i32(0)
+            .i32(4)
+            .u8(0)
+            .u8(0)
+            .u8(1)
+            .i32(8)
+            .i32(50)
+            .u8(0)
+            .i32(1)
+            .bytes(VECTORS_FORMAT_ATTRIBUTE.as_bytes())
+            .bytes(b"hnsw:8:50")
+            .0;
+        register(h, &spec).unwrap();
+        let mut seq = 0;
+        for batch in 0..2 {
+            let ids: Vec<usize> = (batch * 60..batch * 60 + 60).collect();
+            let mut b = Blob::default().u8(OP_ADD).i32(ids.len() as i32);
+            for &i in &ids {
+                b = doc(b, &f, &format!("d{i}"), &["w"], seq, false);
+                seq += 1;
+            }
+            for &i in &ids {
+                b = b.i32(1).bytes(b"v").u8(0).i32(4);
+                for x in knn_vector(i) {
+                    b = b.f32(x);
+                }
+            }
+            assert_eq!(apply(h, &b.0), 0, "{}", crate::error::last_error());
+            commit(h, &[]);
+        }
+        let gen = commit_settled(h);
+        ffi_engine_writer_close(h);
+        check(&tmp);
+
+        let dir = FsDirectory::open(tmp.path());
+        let reader = lucene_search::directory_reader::DirectoryReader::open(&dir).unwrap();
+        assert_eq!(reader.segment_readers().len(), 2);
+        for seg in reader.segment_readers() {
+            let v = seg
+                .field_infos()
+                .fields
+                .iter()
+                .find(|i| i.name == "v")
+                .unwrap();
+            let attr = |k: &str| {
+                v.attributes
+                    .iter()
+                    .find(|(a, _)| a == k)
+                    .map(|(_, b)| b.as_str())
+            };
+            assert_eq!(attr(VECTORS_FORMAT_ATTRIBUTE), Some("hnsw:8:50"));
+            assert_eq!(
+                attr("PerFieldKnnVectorsFormat.format"),
+                Some("Lucene99HnswVectorsFormat")
+            );
+        }
+
+        let r = open_reader(&tmp, gen);
+        let target = [0.2f32, -0.4, 0.6, 0.5];
+        let mut exact: Vec<f32> = (0..120)
+            .map(|i| knn_score(&target, &knn_vector(i)))
+            .collect();
+        exact.sort_by(|a, b| b.total_cmp(a));
+
+        let mut request = Blob::default()
+            .bytes(b"v")
+            .u8(crate::jvm_queries::KNN_TARGET_FLOAT)
+            .i32(4);
+        for x in target {
+            request = request.f32(x);
+        }
+        let request = request.i32(5).i32(40).u8(0).0;
+        let (mut docs, mut scores, mut n) = ([0i32; 5], [0f32; 5], 0usize);
+        // SAFETY: live request and buffers of 5.
+        let rc = unsafe {
+            crate::jvm_knn::ffi_jvm_reader_knn(
+                r,
+                request.as_ptr(),
+                request.len(),
+                docs.as_mut_ptr(),
+                scores.as_mut_ptr(),
+                5,
+                &mut n,
+            )
+        };
+        assert_eq!(rc, 0, "{}", crate::error::last_error());
+        assert_eq!(n, 5);
+        for (got, want) in scores.iter().zip(&exact) {
+            assert!((got - want).abs() < 1e-6, "{got} vs {want}");
+        }
+
+        let mut tree = Blob::default()
+            .u8(crate::jvm_reader::QUERY_TREE)
+            .u8(crate::jvm_queries::NODE_KNN)
+            .bytes(b"v")
+            .u8(crate::jvm_queries::KNN_TARGET_FLOAT)
+            .i32(4);
+        for x in target {
+            tree = tree.f32(x);
+        }
+        let tree = tree
+            .u8(crate::jvm_queries::KNN_TOP_K)
+            .i32(3)
+            .i32(20)
+            .u8(0)
+            .0;
+        let (mut docs, mut scores) = ([0i32; 20], [0f32; 20]);
+        let (mut n, mut total, mut lower) = (0usize, 0i64, false);
+        // SAFETY: live buffers of 20 and out-pointers.
+        let rc = unsafe {
+            crate::jvm_reader::ffi_jvm_reader_search(
+                r,
+                tree.as_ptr(),
+                tree.len(),
+                20,
+                i64::MAX,
+                docs.as_mut_ptr(),
+                scores.as_mut_ptr(),
+                20,
+                &mut n,
+                &mut total,
+                &mut lower,
+            )
+        };
+        assert_eq!(rc, 0, "{}", crate::error::last_error());
+        assert_eq!((n, total), (6, 6), "three hits from each of two segments");
+        assert!((scores[0] - exact[0]).abs() < 1e-6);
+        crate::jvm_reader::ffi_close_jvm_reader(r);
     }
 }
