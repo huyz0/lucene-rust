@@ -368,10 +368,36 @@ impl std::fmt::Debug for Attachments {
     }
 }
 
-/// One document's vectors, for [`crate::derived_source::inject`].
+/// One document's vectors, for [`crate::derived_source::inject`]: each from the flat vectors
+/// alone (no graph is opened).
 struct SegmentVectors<'r> {
     reader: &'r SegmentReader,
     doc: i32,
+}
+
+impl<'r> SegmentVectors<'r> {
+    fn new(reader: &'r SegmentReader, doc: i32) -> Self {
+        Self { reader, doc }
+    }
+
+    /// The document's vector of field `number`, by `read` from the field's flat vectors.
+    fn vector<T>(
+        &self,
+        number: i32,
+        read: impl FnOnce(
+            &lucene_codecs::vectors::FlatVectorsReader<'_>,
+            i32,
+        ) -> lucene_codecs::vectors::Result<Option<T>>,
+    ) -> lucene_codecs::stored_fields::Result<Option<T>> {
+        let flat = self
+            .reader
+            .flat_vectors_reader_for(number)
+            .map_err(derived_error)?;
+        match flat {
+            Some(flat) => read(&flat, self.doc).map_err(derived_error),
+            None => Ok(None),
+        }
+    }
 }
 
 fn derived_error(e: impl std::fmt::Display) -> lucene_codecs::stored_fields::Error {
@@ -383,27 +409,23 @@ impl crate::derived_source::VectorSource for SegmentVectors<'_> {
         &mut self,
         number: i32,
     ) -> lucene_codecs::stored_fields::Result<Option<Vec<f32>>> {
-        let Some((flat, _)) = self.reader.knn_vectors_for(number).map_err(derived_error)? else {
-            return Ok(None);
-        };
-        let values = flat.float_vector_values(number).map_err(derived_error)?;
-        let mut cursor = values.doc_to_ord().map_err(derived_error)?;
-        match cursor.ordinal(self.doc).map_err(derived_error)? {
-            Some(ord) => Ok(Some(values.vector(ord).map_err(derived_error)?)),
-            None => Ok(None),
-        }
+        self.vector(number, |flat, doc| {
+            let values = flat.float_vector_values(number)?;
+            let ord = values.doc_to_ord()?.ordinal(doc)?;
+            ord.map(|ord| values.vector(ord)).transpose()
+        })
     }
 
-    fn byte_vector(&mut self, number: i32) -> lucene_codecs::stored_fields::Result<Option<Vec<u8>>> {
-        let Some((flat, _)) = self.reader.knn_vectors_for(number).map_err(derived_error)? else {
-            return Ok(None);
-        };
-        let values = flat.byte_vector_values(number).map_err(derived_error)?;
-        let mut cursor = values.doc_to_ord().map_err(derived_error)?;
-        match cursor.ordinal(self.doc).map_err(derived_error)? {
-            Some(ord) => Ok(Some(values.vector(ord).map_err(derived_error)?.to_vec())),
-            None => Ok(None),
-        }
+    fn byte_vector(
+        &mut self,
+        number: i32,
+    ) -> lucene_codecs::stored_fields::Result<Option<Vec<u8>>> {
+        self.vector(number, |flat, doc| {
+            let values = flat.byte_vector_values(number)?;
+            let ord = values.doc_to_ord()?.ordinal(doc)?;
+            ord.map(|ord| values.vector(ord).map(|v| v.to_vec()))
+                .transpose()
+        })
     }
 }
 
@@ -1482,21 +1504,39 @@ impl SegmentReader {
         let Some(f) = self.stored.as_deref() else {
             return Ok(false);
         };
-        let reader = f.reader(&self.segment_id)?;
-        match self.derived_source.as_deref() {
-            Some(fields) => {
-                let mut vectors = SegmentVectors { reader: self, doc };
-                reader.visit_document(
-                    doc,
-                    &mut crate::derived_source::InjectingVisitor {
-                        inner: visitor,
-                        fields,
-                        vectors: &mut vectors,
-                    },
-                )?;
-            }
-            None => reader.visit_document(doc, visitor)?,
-        }
+        f.reader(&self.segment_id)?.visit_document(doc, visitor)?;
+        Ok(true)
+    }
+
+    /// [`Self::visit_stored_document`] with `_source` as OpenSearch reads it: in a segment that
+    /// lists k-NN derived fields ([`crate::derived_source`]), with their vectors put back.
+    ///
+    /// # Errors
+    /// Those of [`Self::visit_stored_document`], and
+    /// [`lucene_codecs::stored_fields::Error::DerivedSource`] for a `_source` the vectors cannot
+    /// be spliced into, which Lucene's codec reads instead.
+    #[must_use = "`false` means the segment has no stored fields and the visitor saw nothing"]
+    pub fn visit_source_document(
+        &self,
+        doc: i32,
+        visitor: &mut dyn lucene_codecs::stored_fields::StoredFieldVisitor,
+    ) -> Result<bool> {
+        let (Some(fields), None, Some(f)) = (
+            self.derived_source.as_deref(),
+            &self.simpletext,
+            self.stored.as_deref(),
+        ) else {
+            return self.visit_stored_document(doc, visitor);
+        };
+        let mut vectors = SegmentVectors::new(self, doc);
+        f.reader(&self.segment_id)?.visit_document(
+            doc,
+            &mut crate::derived_source::InjectingVisitor {
+                inner: visitor,
+                fields,
+                vectors: &mut vectors,
+            },
+        )?;
         Ok(true)
     }
 

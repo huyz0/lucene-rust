@@ -963,6 +963,8 @@ pub(crate) struct IndexingConfig {
     segment_list_attributes: Vec<(String, Vec<String>)>,
     /// See [`IndexWriter::set_merge_union_attributes`].
     merge_union_attributes: Vec<String>,
+    /// See [`IndexWriter::set_segment_attribute`].
+    segment_attributes: Vec<(String, String)>,
     /// `IndexWriterConfig.getSimilarity()`, as far as the writer reads it
     /// (`computeNorm`): `None` is Lucene's default, `BM25Similarity`. See
     /// [`IndexWriter::set_similarity`].
@@ -6219,6 +6221,7 @@ impl<'d> IndexWriter<'d> {
                 segment_partitioning: None,
                 segment_list_attributes: Vec::new(),
                 merge_union_attributes: Vec::new(),
+                segment_attributes: Vec::new(),
                 postings_formats: Vec::new(),
                 doc_values_formats: Vec::new(),
                 default_doc_values_format: Default::default(),
@@ -11344,7 +11347,7 @@ impl IndexWriter<'_> {
             None => None,
         };
         let mut attributes = self.merged_partition_attributes(&sources)?;
-        attributes.extend(self.merged_union_attributes(&sources)?);
+        self.merged_segment_attributes(&sources, &mut attributes)?;
         let held = self.deleter.hold_segment_files(&sources)?;
         Ok(MergePlan {
             early_compound,

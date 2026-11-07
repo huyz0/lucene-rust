@@ -176,6 +176,8 @@ final class DerivedSourceStoredFieldsFormat extends StoredFieldsFormat {
         }
     }
 
+    private record Cursor(KnnVectorValues values, KnnVectorValues.DocIndexIterator it) {}
+
     private static final class Reader extends StoredFieldsReader {
         private final StoredFieldsReader delegate;
         private final List<FieldInfo> root;
@@ -183,6 +185,8 @@ final class DerivedSourceStoredFieldsFormat extends StoredFieldsFormat {
         private final FieldInfos fieldInfos;
         private final Readers readers;
         private final boolean owner;
+        /** Per field, the vectors read last; documents are mostly read in order. */
+        private final Map<String, Cursor> cursors = new HashMap<>();
 
         Reader(StoredFieldsReader delegate, List<FieldInfo> root, List<FieldInfo> nested, FieldInfos fieldInfos, Readers readers) {
             this(delegate, root, nested, fieldInfos, readers, true);
@@ -255,26 +259,24 @@ final class DerivedSourceStoredFieldsFormat extends StoredFieldsFormat {
             }
             Map<String, Function<Object, Object>> transforms = new HashMap<>();
             for (FieldInfo fi : root) {
-                KnnVectorValues values = values(fi);
-                KnnVectorValues.DocIndexIterator it = values == null ? null : values.iterator();
-                boolean present = it != null && it.advance(docID) == docID;
-                transforms.put(fi.name, v -> v == null || present == false ? v : vector(values, it));
+                Cursor c = cursor(fi, docID);
+                boolean present = c != null && advanceTo(c, docID) == docID;
+                transforms.put(fi.name, v -> v == null || present == false ? v : vector(c.values, c.it));
             }
             if (nested.isEmpty() == false) {
                 int first = firstChild(docID);
                 for (FieldInfo fi : nested) {
-                    KnnVectorValues values = values(fi);
-                    KnnVectorValues.DocIndexIterator it = values == null ? null : values.iterator();
-                    if (it != null && first >= 0) {
-                        it.advance(first);
+                    Cursor c = first < 0 ? null : cursor(fi, first);
+                    if (c != null) {
+                        advanceTo(c, first);
                     }
                     transforms.put(fi.name, v -> {
-                        if (v == null || it == null || first < 0 || it.docID() >= docID) {
+                        if (v == null || c == null || c.it.docID() >= docID) {
                             return v;
                         }
-                        Object vector = vector(values, it);
+                        Object vector = vector(c.values, c.it);
                         try {
-                            it.nextDoc();
+                            c.it.nextDoc();
                         } catch (IOException e) {
                             throw new UncheckedIOException(e);
                         }
@@ -295,13 +297,31 @@ final class DerivedSourceStoredFieldsFormat extends StoredFieldsFormat {
             return BytesReference.toBytes(out.bytes());
         }
 
-        private KnnVectorValues values(FieldInfo fi) throws IOException {
+        private static int advanceTo(Cursor c, int target) throws IOException {
+            return c.it.docID() < target ? c.it.advance(target) : c.it.docID();
+        }
+
+        /**
+         * Field {@code fi}'s vector cursor, positioned at or before {@code target}: the one kept from
+         * the last document read, or a new one when that has moved past it. Null when the field has
+         * no vectors in the segment.
+         */
+        private Cursor cursor(FieldInfo fi, int target) throws IOException {
             if (readers.vectors == null || fi.hasVectorValues() == false) {
                 return null;
             }
-            return fi.getVectorEncoding() == VectorEncoding.BYTE
-                ? readers.vectors.getByteVectorValues(fi.name)
-                : readers.vectors.getFloatVectorValues(fi.name);
+            Cursor c = cursors.get(fi.name);
+            if (c == null || c.it.docID() > target) {
+                KnnVectorValues values = fi.getVectorEncoding() == VectorEncoding.BYTE
+                    ? readers.vectors.getByteVectorValues(fi.name)
+                    : readers.vectors.getFloatVectorValues(fi.name);
+                if (values == null) {
+                    return null;
+                }
+                c = new Cursor(values, values.iterator());
+                cursors.put(fi.name, c);
+            }
+            return c;
         }
 
         private static Object vector(KnnVectorValues values, KnnVectorValues.DocIndexIterator it) {

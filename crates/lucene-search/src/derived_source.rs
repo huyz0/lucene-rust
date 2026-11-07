@@ -141,7 +141,9 @@ pub fn inject(
     vectors: &mut dyn VectorSource,
 ) -> stored_fields::Result<Vec<u8>> {
     if fields.nested {
-        return Err(refused("nested derived vector fields are read by the codec"));
+        return Err(refused(
+            "nested derived vector fields are read by the codec",
+        ));
     }
     match content_type(source) {
         Content::Json => {}
@@ -336,13 +338,22 @@ impl Scanner<'_> {
                         b't' => out.push(b'\t'),
                         b'u' => {
                             let hi = self.hex4()?;
-                            let code = if (0xD800..0xDC00).contains(&hi)
+                            let low = (0xD800..0xDC00).contains(&hi)
                                 && self.b.get(self.i..self.i + 2) == Some(b"\\u")
-                            {
+                                && self
+                                    .b
+                                    .get(self.i + 2..self.i + 6)
+                                    .and_then(|h| std::str::from_utf8(h).ok())
+                                    .and_then(|h| u16::from_str_radix(h, 16).ok())
+                                    .is_some_and(|lo| (0xDC00..0xE000).contains(&lo));
+                            let code = if low {
                                 self.i += 2;
                                 let lo = self.hex4()?;
-                                0x10000 + ((u32::from(hi) - 0xD800) << 10) + (u32::from(lo) - 0xDC00)
+                                0x10000
+                                    + ((u32::from(hi) - 0xD800) << 10)
+                                    + (u32::from(lo) - 0xDC00)
                             } else {
+                                // A lone surrogate is U+FFFD; what follows is read on its own.
                                 u32::from(hi)
                             };
                             let ch = char::from_u32(code).unwrap_or('\u{FFFD}');
@@ -516,7 +527,11 @@ mod tests {
 
     #[test]
     fn masked_values_get_the_vectors_back() {
-        let got = run(&[("emb", VectorEncoding::Float32)], r#"{"tag":"a","emb":1,"n":3}"#).unwrap();
+        let got = run(
+            &[("emb", VectorEncoding::Float32)],
+            r#"{"tag":"a","emb":1,"n":3}"#,
+        )
+        .unwrap();
         assert_eq!(got, r#"{"tag":"a","emb":[0.5,-1.0,1.0E-5],"n":3}"#);
         let got = run(&[("b", VectorEncoding::Byte)], r#"{ "b" : 1 }"#).unwrap();
         assert_eq!(got, r#"{ "b" : [1,-1] }"#);
@@ -547,10 +562,22 @@ mod tests {
         let paths = [("emb", VectorEncoding::Float32)];
         for src in [":)\n\u{3}", "---\nemb: 1", r#"{"emb":1"#, r#"{"emb":1} x"#] {
             assert!(
-                matches!(run(&paths, src), Err(stored_fields::Error::DerivedSource(_))),
+                matches!(
+                    run(&paths, src),
+                    Err(stored_fields::Error::DerivedSource(_))
+                ),
                 "{src}"
             );
         }
+    }
+
+    #[test]
+    fn a_lone_surrogate_in_a_key_does_not_hide_what_follows() {
+        let paths = [("\u{FFFD}A", VectorEncoding::Float32)];
+        assert_eq!(
+            run(&paths, r#"{"\ud800\u0041":1}"#).unwrap(),
+            r#"{"\ud800\u0041":[0.5,-1.0,1.0E-5]}"#
+        );
     }
 
     #[test]

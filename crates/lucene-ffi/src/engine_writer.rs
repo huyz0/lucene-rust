@@ -803,14 +803,14 @@ fn is_derived_source(info: &FieldInfo) -> bool {
         .any(|(k, v)| k == DERIVED_SOURCE_ATTRIBUTE && v == "true")
 }
 
-/// k-NN's derived-source `.si` lists: flushed segments list the derived fields, and a merge
-/// keeps every name its sources list, so masked `_source` values never lose their vectors.
+/// k-NN's derived-source `.si` lists, for a k-NN index ([`OPEN_KNN`]): flushed segments list the
+/// derived fields, and a merge keeps every name its sources list, so masked `_source` values
+/// never lose their vectors.
 fn derived_source_attributes(writer: &mut IndexWriter<'_>) {
     use lucene_search::derived_source::{DERIVED_VECTOR_FIELDS, NESTED_DERIVED_VECTOR_FIELDS};
     writer.set_merge_union_attributes(vec![
         DERIVED_VECTOR_FIELDS.to_string(),
         NESTED_DERIVED_VECTOR_FIELDS.to_string(),
-        KNN_DELEGATE_CODEC_ATTRIBUTE.to_string(),
     ]);
     let derived: Vec<String> = writer
         .fields()
@@ -1270,14 +1270,15 @@ pub unsafe extern "C" fn ffi_engine_writer_open_codec(
             if sparse {
                 writer.set_codec(Some(Arc::new(lucene_sparse::SparseCodec)))?;
             } else if knn {
-                let delegate: Arc<dyn lucene_codecs::codec::Lucene104Codec> = match stored_codec.clone() {
-                    Some(c) => c,
-                    None => Arc::new(lucene_codecs::codec::DefaultLucene104Codec),
-                };
-                writer.add_segment_list_value(KNN_DELEGATE_CODEC_ATTRIBUTE, delegate.name());
-                writer.set_codec(Some(Arc::new(lucene_codecs::codec::NamedLucene104Codec::new(
-                    KNN_CODEC, delegate,
-                ))))?;
+                let delegate: Arc<dyn lucene_codecs::codec::Lucene104Codec> =
+                    match stored_codec.clone() {
+                        Some(c) => c,
+                        None => Arc::new(lucene_codecs::codec::DefaultLucene104Codec),
+                    };
+                writer.set_segment_attribute(KNN_DELEGATE_CODEC_ATTRIBUTE, delegate.name());
+                writer.set_codec(Some(Arc::new(
+                    lucene_codecs::codec::NamedLucene104Codec::new(KNN_CODEC, delegate),
+                )))?;
             } else if let Some(codec) = stored_codec.clone() {
                 writer.set_codec(Some(codec))?;
             }
@@ -1288,7 +1289,9 @@ pub unsafe extern "C" fn ffi_engine_writer_open_codec(
             }
             writer.enable_explicit_documents()?;
             restore_vectors_formats(&mut writer);
-            derived_source_attributes(&mut writer);
+            if knn {
+                derived_source_attributes(&mut writer);
+            }
             if !parent_field.is_empty() {
                 writer.set_parent_field(Some(parent_field))?;
             }
@@ -1414,7 +1417,8 @@ pub unsafe extern "C" fn ffi_engine_writer_register_field(
                     if let Some(format) = format {
                         iw.set_knn_vectors_format_for_field(&name, format);
                     }
-                    if derived {
+                    // Only a k-NN index's codec reads the list back.
+                    if derived && iw.segment_attribute(KNN_DELEGATE_CODEC_ATTRIBUTE).is_some() {
                         iw.add_segment_list_value(
                             lucene_search::derived_source::DERIVED_VECTOR_FIELDS,
                             &name,
@@ -6632,7 +6636,9 @@ mod tests {
             for seg in reader.segment_readers() {
                 assert!(seg.derived_source().is_some(), "{}", seg.segment_name);
                 for d in 0..seg.max_doc {
-                    let doc = seg.stored_document(d).unwrap().unwrap();
+                    let mut visitor = lucene_codecs::stored_fields::DocumentVisitor::all();
+                    assert!(seg.visit_source_document(d, &mut visitor).unwrap());
+                    let doc = visitor.into_document();
                     let src = doc
                         .fields
                         .iter()
@@ -6666,7 +6672,11 @@ mod tests {
         let reader = lucene_search::directory_reader::DirectoryReader::open(&dir).unwrap();
         let name = &reader.segment_readers()[0].segment_name;
         let infos = lucene_index::segment_infos::read_latest(&dir).unwrap();
-        let sci = infos.segments.iter().find(|s| &s.segment_name == name).unwrap();
+        let sci = infos
+            .segments
+            .iter()
+            .find(|s| &s.segment_name == name)
+            .unwrap();
         let si = lucene_index::segment_info::parse(
             &std::fs::read(tmp.path().join(format!("{name}.si"))).unwrap(),
             &sci.segment_id,
