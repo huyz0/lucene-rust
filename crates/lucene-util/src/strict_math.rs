@@ -2117,3 +2117,6 @@ mod tests {
         }
     }
 }
+
+mod lanes;
+pub use lanes::{cos_slice, exp_slice, log_slice, sin_slice};
