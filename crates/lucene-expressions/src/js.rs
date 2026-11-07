@@ -95,6 +95,19 @@ type CustomFunction = Arc<dyn Fn(&[f64]) -> f64 + Send + Sync>;
 pub struct ExprFunction {
     arity: usize,
     call: FunctionBody,
+    /// A default function the batch backend runs as its own loop.
+    pub(crate) fast: Option<Fast>,
+}
+
+/// The default functions [`Backend::Vector`] evaluates inline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Fast {
+    Abs,
+    Sqrt,
+    Floor,
+    Ceil,
+    Max,
+    Min,
 }
 
 impl ExprFunction {
@@ -103,6 +116,7 @@ impl ExprFunction {
         Self {
             arity,
             call: FunctionBody::Any(Arc::new(call)),
+            fast: None,
         }
     }
 
@@ -200,9 +214,26 @@ fn defaults() -> &'static HashMap<String, ExprFunction> {
 
 fn build_defaults() -> HashMap<String, ExprFunction> {
     let mut m: HashMap<String, ExprFunction> = HashMap::new();
+    let fast = |name: &str| match name {
+        "abs" => Some(Fast::Abs),
+        "sqrt" => Some(Fast::Sqrt),
+        "floor" => Some(Fast::Floor),
+        "ceil" => Some(Fast::Ceil),
+        "max" => Some(Fast::Max),
+        "min" => Some(Fast::Min),
+        _ => None,
+    };
     let mut put1 = |name: &str, f: fn(f64) -> f64| {
         let call = FunctionBody::F1(f);
-        m.insert(name.to_string(), ExprFunction { arity: 1, call });
+        let fast = fast(name);
+        m.insert(
+            name.to_string(),
+            ExprFunction {
+                arity: 1,
+                call,
+                fast,
+            },
+        );
     };
     put1("abs", f64::abs);
     put1("acos", strict_math::acos);
@@ -225,7 +256,15 @@ fn build_defaults() -> HashMap<String, ExprFunction> {
     put1("tanh", strict_math::tanh);
     let mut put2 = |name: &str, f: fn(f64, f64) -> f64| {
         let call = FunctionBody::F2(f);
-        m.insert(name.to_string(), ExprFunction { arity: 2, call });
+        let fast = fast(name);
+        m.insert(
+            name.to_string(),
+            ExprFunction {
+                arity: 2,
+                call,
+                fast,
+            },
+        );
     };
     put2("atan2", strict_math::atan2);
     put2("logn", logn);
@@ -240,7 +279,15 @@ fn build_defaults() -> HashMap<String, ExprFunction> {
         ("haversinMeters", haversin_meters),
     ] {
         let call = FunctionBody::F4(f);
-        m.insert(name.to_string(), ExprFunction { arity: 4, call });
+        let fast = None;
+        m.insert(
+            name.to_string(),
+            ExprFunction {
+                arity: 4,
+                call,
+                fast,
+            },
+        );
     }
     m
 }
@@ -1667,9 +1714,20 @@ pub struct Expression {
     pub variables: Vec<String>,
     root: Compiled<f64>,
     node: Arc<Node>,
-    backend: Backend,
     vector: Option<Arc<vector::Program>>,
 }
+
+/// `node`'s batch program under `backend`.
+fn vector_program(node: &Node, backend: Backend) -> Option<Arc<vector::Program>> {
+    match backend {
+        Backend::Vector => vector::compile(node).map(Arc::new),
+        Backend::Closure => None,
+    }
+}
+
+/// Scratch space for evaluating batches, kept by the caller from batch to
+/// batch.
+pub(crate) use vector::Scratch as BatchScratch;
 
 /// How an [`Expression`] is evaluated. Every backend gives the same values;
 /// one that cannot compile an expression leaves it to the closures.
@@ -1699,10 +1757,6 @@ pub fn default_backend() -> Backend {
     }
 }
 
-thread_local! {
-    static VECTOR_SCRATCH: RefCell<vector::Scratch> = RefCell::new(vector::Scratch::default());
-}
-
 impl std::fmt::Debug for Expression {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Expression")
@@ -1715,34 +1769,33 @@ impl std::fmt::Debug for Expression {
 impl Expression {
     fn new(source_text: String, variables: Vec<String>, node: Node, backend: Backend) -> Self {
         let root = to_double(&node);
+        let vector = vector_program(&node, backend);
         Self {
             source_text,
             variables,
             root,
             node: Arc::new(node),
-            backend: Backend::Closure,
-            vector: None,
+            vector,
         }
-        .with_backend(backend)
     }
 
     /// The same expression, evaluated by `backend`.
     pub fn with_backend(&self, backend: Backend) -> Self {
-        let vector = match backend {
-            Backend::Vector => vector::compile(&self.node).map(Arc::new),
-            Backend::Closure => None,
-        };
         Self {
-            backend,
-            vector,
+            vector: vector_program(&self.node, backend),
             ..self.clone()
         }
     }
 
-    /// The backend asked for (an expression it cannot compile runs on the
-    /// closures).
+    /// The backend that evaluates a batch: [`Backend::Closure`] also where
+    /// [`Backend::Vector`] was asked for and the expression calls a custom
+    /// function.
     pub fn backend(&self) -> Backend {
-        self.backend
+        if self.vector.is_some() {
+            Backend::Vector
+        } else {
+            Backend::Closure
+        }
     }
 
     /// The values at each of a batch's `out.len()` documents, `cols[i * n +
@@ -1752,7 +1805,7 @@ impl Expression {
     /// As [`Self::evaluate_batch`].
     #[doc(hidden)]
     pub fn evaluate_columns(&self, cols: &[f64], out: &mut [f64]) -> lucene_search::Result<()> {
-        self.evaluate_batch(cols, out)
+        self.evaluate_batch(cols, out, &mut BatchScratch::default())
     }
 
     /// `evaluate(functionValues)`: `values[i]` are the values of
@@ -1806,6 +1859,7 @@ impl Expression {
         &self,
         cols: &[f64],
         out: &mut [f64],
+        scratch: &mut BatchScratch,
     ) -> lucene_search::Result<()> {
         let n = out.len();
         if cols.len() < self.variables.len() * n || i32::try_from(n).is_err() {
@@ -1817,7 +1871,7 @@ impl Expression {
             )));
         }
         if let Some(program) = &self.vector {
-            VECTOR_SCRATCH.with(|s| program.run(cols, out, &mut s.borrow_mut()));
+            program.run(cols, out, scratch);
             return Ok(());
         }
         let mut reads = Reads {

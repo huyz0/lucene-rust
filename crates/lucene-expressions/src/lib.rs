@@ -278,6 +278,8 @@ struct ExpressionFunctionValues<'c> {
     /// `has` scratch.
     columns: Vec<f64>,
     column_has: Vec<bool>,
+    /// The batch backend's registers.
+    scratch: js::BatchScratch,
 }
 
 impl DoubleValues for ExpressionFunctionValues<'_> {
@@ -325,7 +327,7 @@ impl DoubleValues for ExpressionFunctionValues<'_> {
             }
         }
         self.expression
-            .evaluate_batch(&self.columns, &mut out[..n])?;
+            .evaluate_batch(&self.columns, &mut out[..n], &mut self.scratch)?;
         has[..n].fill(true);
         if let (Some(&doc), Some(&value)) = (docs.last(), out[..n].last()) {
             self.current_doc = doc;
@@ -447,6 +449,7 @@ impl ExpressionValueSource {
             batch,
             columns: Vec::new(),
             column_has: Vec::new(),
+            scratch: js::BatchScratch::default(),
         }))
     }
 }

@@ -247,8 +247,11 @@ impl Rescorer for DoubleValuesSourceRescorer {
         let mut hits = first_pass.score_docs.clone();
         hits.sort_by_key(|h| h.doc);
         // Runs of hits in one leaf with strictly ascending documents: each
-        // read through one cursor (a cursor only moves forward), a batch at
-        // a time when the values can be read so.
+        // read through one cursor (a cursor only moves forward), in batches
+        // of up to `BATCH` hits when the values can be read so (a failed
+        // read then fails the rescore even where the per-document calls
+        // would not have read it, as a batch of `FunctionScoreQuery`'s).
+        const BATCH: usize = 512;
         let locals: Vec<(usize, i32)> = hits
             .iter()
             .map(|h| leaf_of(searcher, h.doc))
@@ -266,16 +269,18 @@ impl Rescorer for DoubleValuesSourceRescorer {
             let mut values = self.source.get_values(ctx, leaf, None)?;
             let run = &mut hits[start..end];
             if batch_ok && values.batch_capable() {
-                docs.clear();
-                docs.extend(locals[start..end].iter().map(|&(_, d)| d));
-                let n = docs.len();
-                scores.resize(n, 0.0);
-                out.resize(n, 0.0);
-                has.resize(n, false);
-                values.fill_batch(&docs, &scores, &mut out, &mut has)?;
-                for ((hit, &present), &value) in run.iter_mut().zip(&has).zip(&out) {
-                    let value = if present { value } else { 0.0 };
-                    hit.score = (self.combine)(hit.score, present, value);
+                for (hits, locals) in run.chunks_mut(BATCH).zip(locals[start..end].chunks(BATCH)) {
+                    docs.clear();
+                    docs.extend(locals.iter().map(|&(_, d)| d));
+                    let n = docs.len();
+                    scores.resize(n, 0.0);
+                    out.resize(n, 0.0);
+                    has.resize(n, false);
+                    values.fill_batch(&docs, &scores[..n], &mut out[..n], &mut has[..n])?;
+                    for ((hit, &present), &value) in hits.iter_mut().zip(&has).zip(&out) {
+                        let value = if present { value } else { 0.0 };
+                        hit.score = (self.combine)(hit.score, present, value);
+                    }
                 }
             } else {
                 for (hit, &(_, local)) in run.iter_mut().zip(&locals[start..end]) {

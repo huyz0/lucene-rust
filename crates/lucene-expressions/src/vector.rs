@@ -8,7 +8,7 @@
 //! values only where evaluation has no effects: column reads and the default
 //! functions. An expression calling a custom function is not compiled here.
 
-use super::{chain_kind, java_max, java_min, Bin, ChainKind, FunctionBody, Node};
+use super::{chain_kind, java_max, java_min, Bin, ChainKind, Fast, FunctionBody, Node};
 
 /// A register: an operand of an operation.
 #[derive(Clone, Copy, Debug)]
@@ -64,6 +64,8 @@ enum Op {
     Sqrt(u32, Src),
     Floor(u32, Src),
     Ceil(u32, Src),
+    Max(u32, Src, Src),
+    Min(u32, Src, Src),
 }
 
 /// The expression as operations over registers of a batch's length.
@@ -162,32 +164,32 @@ impl Builder {
             Node::Plus(e) => self.double(e)?,
             Node::Call(f, args) => {
                 let a: Vec<Src> = args.iter().map(|a| self.double(a)).collect::<Option<_>>()?;
-                match &f.call {
-                    FunctionBody::F1(g) => {
-                        let g = *g;
+                match (&f.call, f.fast) {
+                    (_, Some(fast)) => {
                         let x = a[0];
-                        let addr = g as usize;
-                        if addr == f64::abs as fn(f64) -> f64 as usize {
-                            self.op(Ty::F, &a, |r| Op::Abs(r, x))
-                        } else if addr == f64::sqrt as fn(f64) -> f64 as usize {
-                            self.op(Ty::F, &a, |r| Op::Sqrt(r, x))
-                        } else if addr == f64::floor as fn(f64) -> f64 as usize {
-                            self.op(Ty::F, &a, |r| Op::Floor(r, x))
-                        } else if addr == f64::ceil as fn(f64) -> f64 as usize {
-                            self.op(Ty::F, &a, |r| Op::Ceil(r, x))
-                        } else {
-                            self.op(Ty::F, &a, |r| Op::F1(g, r, x))
-                        }
+                        let y = a.get(1).copied().unwrap_or(x);
+                        self.op(Ty::F, &a, |r| match fast {
+                            Fast::Abs => Op::Abs(r, x),
+                            Fast::Sqrt => Op::Sqrt(r, x),
+                            Fast::Floor => Op::Floor(r, x),
+                            Fast::Ceil => Op::Ceil(r, x),
+                            Fast::Max => Op::Max(r, x, y),
+                            Fast::Min => Op::Min(r, x, y),
+                        })
                     }
-                    FunctionBody::F2(g) => {
+                    (FunctionBody::F1(g), None) => {
+                        let (g, x) = (*g, a[0]);
+                        self.op(Ty::F, &a, |r| Op::F1(g, r, x))
+                    }
+                    (FunctionBody::F2(g), None) => {
                         let (g, x, y) = (*g, a[0], a[1]);
                         self.op(Ty::F, &a, |r| Op::F2(g, r, x, y))
                     }
-                    FunctionBody::F4(g) => {
+                    (FunctionBody::F4(g), None) => {
                         let (g, xs) = (*g, [a[0], a[1], a[2], a[3]]);
                         self.op(Ty::F, &a, |r| Op::F4(g, r, xs))
                     }
-                    FunctionBody::Any(_) => return None,
+                    (FunctionBody::Any(_), None) => return None,
                 }
             }
             Node::Neg(e) => {
@@ -643,15 +645,10 @@ impl Program {
                 Op::F1(f, d, a) => map1(r.df(d), r.f(a), f),
                 Op::F2(f, d, a, b) => {
                     let (d, a, b) = (r.df(d), r.f(a), r.f(b));
-                    let addr = f as usize;
-                    if addr == java_max as fn(f64, f64) -> f64 as usize {
-                        map2(d, a, b, java_max);
-                    } else if addr == java_min as fn(f64, f64) -> f64 as usize {
-                        map2(d, a, b, java_min);
-                    } else {
-                        map2(d, a, b, f);
-                    }
+                    map2(d, a, b, f);
                 }
+                Op::Max(d, a, b) => map2(r.df(d), r.f(a), r.f(b), java_max),
+                Op::Min(d, a, b) => map2(r.df(d), r.f(a), r.f(b), java_min),
                 Op::F4(f, d, xs) => {
                     let d = r.df(d);
                     let [a, b, c, e] = xs.map(|s| r.f(s));

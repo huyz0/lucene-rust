@@ -69,12 +69,15 @@ fn rss_kb() -> u64 {
 
 fn main() {
     let backends = [("closure", Backend::Closure), ("vector", Backend::Vector)];
-    let texts: Vec<String> = std::fs::read_to_string("../../fixtures/corpus/expressions.txt")
-        .unwrap()
-        .lines()
-        .filter(|l| compile(l).is_ok())
-        .map(str::to_string)
-        .collect();
+    let texts: Vec<String> = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fixtures/corpus/expressions.txt"
+    ))
+    .unwrap()
+    .lines()
+    .filter(|l| compile(l).is_ok())
+    .map(str::to_string)
+    .collect();
     let parsed: Vec<_> = texts.iter().map(|t| compile(t).unwrap()).collect();
     println!("compile, {} expressions (us per expression):", texts.len());
     for (name, b) in &backends {
@@ -93,7 +96,7 @@ fn main() {
             .collect();
         println!(
             "  {name:8} resident memory {:.1} KB per compiled expression",
-            (rss_kb() - before) as f64 / kept.len() as f64
+            rss_kb().saturating_sub(before) as f64 / kept.len() as f64
         );
     }
     println!(

@@ -47,10 +47,6 @@ impl DoubleValues for ArrayValues {
 }
 
 pub fn bench_expressions(w: Duration, m: Duration) {
-    // BENCH_EXPR_BACKEND=vector times the column-at-a-time backend
-    if std::env::var("BENCH_EXPR_BACKEND").as_deref() == Ok("vector") {
-        set_default_backend(Backend::Vector);
-    }
     let texts: Vec<String> = std::fs::read_to_string("fixtures/corpus/expressions.txt")
         .unwrap()
         .lines()
@@ -66,6 +62,11 @@ pub fn bench_expressions(w: Duration, m: Duration) {
     let arrays: Vec<Vec<f64>> = (0..3)
         .map(|k| (0..DOCS).map(|doc| value(doc, k)).collect())
         .collect();
+    // BENCH_EXPR_BACKEND=vector times the column-at-a-time backend (set
+    // after `expr_compile`, which stays the closures' compile time)
+    if std::env::var("BENCH_EXPR_BACKEND").as_deref() == Ok("vector") {
+        set_default_backend(Backend::Vector);
+    }
     for (name, text) in EVAL {
         let e = compile(text).unwrap();
         let mut values: Vec<BoxDoubleValues<'static>> = e
