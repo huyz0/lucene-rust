@@ -144,7 +144,7 @@ fn float_text(v: &[f32]) -> String {
         if i > 0 {
             s.push(',');
         }
-        s.push_str(&lucene_analysis::attributes::java_float_to_string(*x));
+        lucene_analysis::attributes::push_java_float_string(&mut s, *x);
     }
     s.push(']');
     s
@@ -249,6 +249,19 @@ fn content_type(source: &[u8]) -> Content {
         // A CBOR map (major type 5), or the self-describe tag.
         Some(0xa0..=0xbf) | Some(0xd9) if first == Some(0) => Content::Other,
         _ => Content::None,
+    }
+}
+
+/// Whether [`inject`] would change `source`: `true` for JSON, `false` for a `_source` that is not
+/// content (returned unchanged).
+///
+/// # Errors
+/// [`stored_fields::Error::DerivedSource`] for another content type, which [`inject`] refuses.
+pub fn needs_injection(source: &[u8]) -> stored_fields::Result<bool> {
+    match content_type(source) {
+        Content::Json => Ok(true),
+        Content::Other => Err(refused("_source is not JSON")),
+        Content::None => Ok(false),
     }
 }
 

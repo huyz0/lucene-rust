@@ -38,7 +38,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code jvm_reader.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 88;
+    public static final int EXPECTED_ABI_VERSION = 90;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -206,6 +206,10 @@ public final class NativeBridge {
         );
         static final MethodHandle DOCUMENT = bind(
             "ffi_jvm_reader_document_alloc",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_INT, ADDRESS, ADDRESS)
+        );
+        static final MethodHandle DERIVED_SOURCE = bind(
+            "ffi_jvm_reader_derived_source_alloc",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_INT, ADDRESS, ADDRESS)
         );
         static final MethodHandle PREFETCH_DOCUMENTS = bind(
@@ -1334,6 +1338,30 @@ public final class NativeBridge {
                 byte[] encoded = take(result);
                 if (encoded == null) {
                     return tooLarge("the document");
+                }
+                out[0] = encoded;
+            }
+            return rc;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * The {@code _source} of segment {@code segment}'s document {@code doc} with its k-NN vectors put
+     * back, in {@code out[0]}: the value a {@code DERIVED_SOURCE} field of {@link #document} leaves out.
+     */
+    public static int derivedSource(long handle, int segment, int doc, byte[][] out) {
+        if (out == null || out.length < 1) {
+            return fail(INVALID_ARGUMENT, "out holds no slot");
+        }
+        try (Scratch s = Scratch.open()) {
+            MemorySegment result = ownedSlot(s);
+            int rc = (int) H.DERIVED_SOURCE.invokeExact(handle, segment, doc, ptrOf(result), lenOf(result));
+            if (rc == OK) {
+                byte[] encoded = take(result);
+                if (encoded == null) {
+                    return tooLarge("the _source");
                 }
                 out[0] = encoded;
             }

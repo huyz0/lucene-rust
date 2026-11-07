@@ -138,27 +138,48 @@ impl std::fmt::Display for AttrValue<'_> {
 /// prints `.63`, and `Float.MIN_VALUE` is `1.4E-45` where Rust's shortest
 /// is `1e-45`.
 pub fn java_float_to_string(v: f32) -> String {
+    let mut out = String::with_capacity(16);
+    push_java_float_string(&mut out, v);
+    out
+}
+
+/// [`java_float_to_string`] appended to `out`. Rust's shortest digits are Java's unless they are
+/// a single digit or `v` lies (nearly) halfway between two decimals of that length, the cases the
+/// exact expansion settles; every other value is printed without allocating.
+pub fn push_java_float_string(out: &mut String, v: f32) {
+    use std::fmt::Write as _;
     if v.is_nan() {
-        return "NaN".into();
+        out.push_str("NaN");
+        return;
     }
-    let mut out = String::from(if v.is_sign_negative() { "-" } else { "" });
+    if v.is_sign_negative() {
+        out.push('-');
+    }
     let a = v.abs();
     if a.is_infinite() {
         out.push_str("Infinity");
-        return out;
+        return;
     }
     if a == 0.0 {
         out.push_str("0.0");
-        return out;
+        return;
     }
-    let (mut digits, mut exp) = split_scientific(&format!("{a:e}"));
-    if let Some((d, e)) = closest_digits(a, digits.len().max(2)) {
-        digits = d;
-        exp = e;
+    let mut text = StackText::default();
+    // `{:e}` of an f32 is at most 15 bytes (`1.17549435e-38`), so it always fits.
+    let _ = write!(text, "{a:e}");
+    let mut digits = Digits::default();
+    let mut exp = digits.split_scientific(text.as_str());
+    if needs_exact_digits(a, digits.as_slice(), exp) {
+        if let Some((d, e)) = closest_digits(a, digits.len.max(2)) {
+            digits = Digits::default();
+            d.iter().for_each(|&b| digits.push(b));
+            exp = e;
+        }
     }
-    while digits.len() > 1 && digits.last() == Some(&b'0') {
-        digits.pop();
+    while digits.len > 1 && digits.as_slice().last() == Some(&b'0') {
+        digits.len -= 1;
     }
+    let digits = digits.as_slice();
     let digit = |i: usize| char::from(digits.get(i).copied().unwrap_or(b'0'));
     let all_from = |out: &mut String, from: usize| {
         (from..digits.len()).for_each(|i| out.push(digit(i)));
@@ -167,18 +188,18 @@ pub fn java_float_to_string(v: f32) -> String {
         out.push(digit(0));
         out.push('.');
         if digits.len() > 1 {
-            all_from(&mut out, 1);
+            all_from(out, 1);
         } else {
             out.push('0');
         }
         out.push('E');
-        out.push_str(&exp.to_string());
+        let _ = write!(out, "{exp}");
     } else if let Ok(int_len @ 1..) = usize::try_from(exp.saturating_add(1)) {
         // `exp` is in 0..=6.
         (0..int_len).for_each(|i| out.push(digit(i)));
         out.push('.');
         if digits.len() > int_len {
-            all_from(&mut out, int_len);
+            all_from(out, int_len);
         } else {
             out.push('0');
         }
@@ -186,9 +207,88 @@ pub fn java_float_to_string(v: f32) -> String {
         // `exp` is in -3..=-1.
         out.push_str("0.");
         (exp..-1).for_each(|_| out.push('0'));
-        all_from(&mut out, 0);
+        all_from(out, 0);
     }
-    out
+}
+
+/// Whether Java's digits for `a` may differ from Rust's shortest `digits` (exponent `exp`):
+/// Java prints at least two digits, and of the decimals of that length that round to `a` takes
+/// the closest, a tie to the even digit, where Rust rounds a tie up. Rust's digits are already
+/// the closest otherwise, so only a single digit or an `a` within a millionth of a step of the
+/// midpoint between two candidates (f64 error here is below 10^-7 of a step) needs the exact
+/// expansion.
+fn needs_exact_digits(a: f32, digits: &[u8], exp: i32) -> bool {
+    if digits.len() < 2 {
+        return true;
+    }
+    let t = digits
+        .iter()
+        .fold(0f64, |t, &d| t * 10.0 + f64::from(d - b'0'));
+    // ARITH: `digits.len()` is at most 9 and `exp` within -45..=38.
+    #[allow(
+        clippy::arithmetic_side_effects,
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap
+    )]
+    let scale = exp - (digits.len() as i32 - 1);
+    let r = f64::from(a) / 10f64.powi(scale);
+    let off = (r - t).abs();
+    (off - 0.5).abs() < 1e-6 || off > 0.5
+}
+
+/// A stack buffer `{:e}` writes into.
+#[derive(Default)]
+struct StackText {
+    buf: [u8; 32],
+    len: usize,
+}
+
+impl StackText {
+    fn as_str(&self) -> &str {
+        std::str::from_utf8(&self.buf[..self.len]).unwrap_or("")
+    }
+}
+
+impl std::fmt::Write for StackText {
+    fn write_str(&mut self, s: &str) -> std::fmt::Result {
+        let end = self.len.checked_add(s.len()).ok_or(std::fmt::Error)?;
+        self.buf
+            .get_mut(self.len..end)
+            .ok_or(std::fmt::Error)?
+            .copy_from_slice(s.as_bytes());
+        self.len = end;
+        Ok(())
+    }
+}
+
+/// Up to 32 decimal digits, on the stack.
+#[derive(Default)]
+struct Digits {
+    buf: [u8; 32],
+    len: usize,
+}
+
+impl Digits {
+    fn push(&mut self, d: u8) {
+        if let Some(slot) = self.buf.get_mut(self.len) {
+            *slot = d;
+            self.len += 1;
+        }
+    }
+
+    fn as_slice(&self) -> &[u8] {
+        &self.buf[..self.len]
+    }
+
+    /// The digits of Rust's `{:e}` rendering `s` into `self`, returning its exponent.
+    fn split_scientific(&mut self, s: &str) -> i32 {
+        let (mantissa, exp) = s.split_once('e').unwrap_or((s, "0"));
+        mantissa
+            .bytes()
+            .filter(u8::is_ascii_digit)
+            .for_each(|d| self.push(d));
+        exp.parse().unwrap_or(0)
+    }
 }
 
 /// The digits and decimal exponent of Rust's `{:e}` rendering
@@ -1260,6 +1360,70 @@ mod tests {
             assert_eq!(AttrValue::Float(v).to_string(), java);
         }
         assert_eq!(split_scientific("7"), (b"7".to_vec(), 0));
+    }
+
+    /// The fast path agrees with the exact expansion: for each value, the digits Java's rule
+    /// picks from the exact expansion, printed the same way.
+    #[test]
+    fn fast_float_digits_are_used_only_where_they_are_javas() {
+        fn exact(v: f32) -> String {
+            let a = v.abs();
+            let (digits, _) = split_scientific(&format!("{a:e}"));
+            let (mut d, e) = closest_digits(a, digits.len().max(2)).unwrap();
+            while d.len() > 1 && d.last() == Some(&b'0') {
+                d.pop();
+            }
+            // Render through the fast function's layout with the exact digits.
+            let text = format!(
+                "{}.{}e{e}",
+                char::from(d[0]),
+                std::str::from_utf8(&d[1..]).unwrap()
+            );
+            let back: f32 = text.parse().unwrap();
+            assert_eq!(back, a, "{text}");
+            String::from_utf8(d).unwrap()
+        }
+        let digits_of = |s: &str| -> String {
+            let m = s.split('E').next().unwrap().trim_start_matches('-');
+            let d: String = m.chars().filter(char::is_ascii_digit).collect();
+            let d = d.trim_start_matches('0').trim_end_matches('0');
+            if d.is_empty() {
+                "0".into()
+            } else {
+                d.into()
+            }
+        };
+        let mut x = 0x9e37_79b9_7f4a_7c15u64;
+        let check = |bits: u32| {
+            let v = f32::from_bits(bits);
+            if !v.is_finite() || v == 0.0 {
+                return;
+            }
+            let fast = java_float_to_string(v);
+            let want = exact(v);
+            let want = want.trim_end_matches('0');
+            assert_eq!(
+                digits_of(&fast),
+                if want.is_empty() { "0" } else { want },
+                "{bits:#x} {fast}"
+            );
+            assert_eq!(fast.parse::<f32>().unwrap(), v, "{bits:#x} {fast}");
+        };
+        for _ in 0..300_000 {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            check((x >> 32) as u32);
+        }
+        // Values from vectors: uniform in [-1, 1] at six decimals, and every float near 1.
+        for i in 0..200_000u32 {
+            check(((f64::from(i) / 100_000.0 - 1.0) as f32).to_bits());
+            check(0x3f80_0000 - 100_000 + i);
+        }
+        // Subnormals and ties.
+        for bits in (1..20_000).chain([0x4884_69f4, 0xc884_69f4]) {
+            check(bits);
+        }
     }
 
     #[test]

@@ -1680,6 +1680,19 @@ impl SegmentReader {
         Ok(true)
     }
 
+    /// The `_source` field number when [`Self::visit_source_document`] splices vectors into it
+    /// (a segment that lists k-NN derived fields), `None` when it reads `_source` as stored.
+    pub fn derived_source_number(&self) -> Option<i32> {
+        match (
+            self.derived_source.as_deref(),
+            &self.simpletext,
+            self.stored.as_deref(),
+        ) {
+            (Some(fields), None, Some(_)) => Some(fields.source_number()),
+            _ => None,
+        }
+    }
+
     /// The k-NN derived-source fields this segment lists, if any.
     pub fn derived_source(&self) -> Option<&crate::derived_source::DerivedFields> {
         self.derived_source.as_deref()
