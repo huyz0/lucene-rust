@@ -829,6 +829,7 @@ DS_MAPPING = {"properties": {
     "b": {"type": "boolean"}, "dt": {"type": "date"},
     "dtf": {"type": "date", "format": "yyyy-MM-dd HH:mm:ss"}, "ip": {"type": "ip"},
     "geo": {"type": "geo_point"}, "wc": {"type": "wildcard"}, "bin": {"type": "binary", "store": True},
+    "bdv": {"type": "binary", "doc_values": True, "store": True},
     "obj": {"properties": {"a": {"type": "keyword"}, "deep": {"properties": {"x": {"type": "double"}}}}},
 }}
 
@@ -842,7 +843,7 @@ def ds_doc(r, i):
            "dtf": f"2025-0{1 + r.randrange(9)}-2{r.randrange(9)} 1{r.randrange(10)}:00:00",
            "ip": f"10.{r.randrange(256)}.0.{r.randrange(256)}" if i % 5 else "2001:db8::7",
            "geo": {"lat": round(r.uniform(-60, 60), 4), "lon": round(r.uniform(-170, 170), 4)},
-           "wc": f"w-{r.randrange(10**6)}", "bin": "aGVsbG8=", "obj": {"a": f"a{r.randrange(5)}", "deep": {"x": r.random()}}}
+           "wc": f"w-{r.randrange(10**6)}", "bin": "aGVsbG8=", "bdv": "d29ybGQ=", "obj": {"a": f"a{r.randrange(5)}", "deep": {"x": r.random()}}}
     for k in ("txt", "ip", "geo", "obj"):
         if r.random() < 0.1:
             del doc[k]
@@ -875,7 +876,7 @@ def derived_source(container):
         {"query": {"match": {"txt": words(random.Random(1), 2)}}, "size": 20, "sort": [{"i": "desc"}]},
         {"query": {"range": {"l": {"gte": 0}}}, "size": 30, "sort": ["_id"], "_source": ["kw", "obj.*"]},
         {"query": {"match_all": {}}, "size": 25, "sort": [{"i": "asc"}], "_source": False,
-         "docvalue_fields": ["kw", "l", "d", "hf", "ul", "b", "dt", {"field": "dtf", "format": "epoch_millis"}, "ip", "geo", "wc"]},
+         "docvalue_fields": ["kw", "l", "d", "hf", "ul", "b", "dt", {"field": "dtf", "format": "epoch_millis"}, "ip", "geo", "wc", "bdv"]},
         {"query": {"match_all": {}}, "size": 0, "aggs": {"t": {"terms": {"field": "kw", "size": 3},
             "aggs": {"h": {"top_hits": {"size": 3, "sort": [{"l": "asc"}]}}}}}},
         # Adjacent documents: the fetch phase's sequential stored-fields reader.
@@ -942,6 +943,7 @@ def derived_source(container):
                                             "index.lucene_rust.engine": False, "index.derived_source.enabled": True},
                                "mappings": DS_MAPPING})
     wait_green(f"{rt},ds_rt_java")
+    live_before = must("GET", "/_plugins/lucene_rust/stats").get("live_queries", 0)
     r = random.Random(9)
     lines = []
     for i in range(400):
@@ -958,7 +960,7 @@ def derived_source(container):
         check(strip(a["hits"]) == strip(b["hits"]),
               f"derived source realtime: {json.dumps(q)[:120]}: {json.dumps(strip(a['hits']))[:300]} vs {json.dumps(strip(b['hits']))[:300]}")
     live = must("GET", "/_plugins/lucene_rust/stats").get("live_queries", 0)
-    check(live > 0, f"derived source realtime: the buffers were searched: {live}")
+    check(live > live_before, f"derived source realtime: the buffers were searched: {live_before} -> {live}")
     for idx in (java, rust, rt, "ds_rt_java"):
         req("DELETE", f"/{idx}")
     print("derived source: compared", flush=True)
