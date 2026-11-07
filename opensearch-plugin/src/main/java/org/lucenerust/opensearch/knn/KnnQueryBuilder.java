@@ -3,6 +3,7 @@
  */
 package org.lucenerust.opensearch.knn;
 
+import org.lucenerust.opensearch.knn.rest.KnnStats;
 import org.apache.lucene.index.VectorEncoding;
 import org.apache.lucene.search.MatchNoDocsQuery;
 import org.apache.lucene.search.Query;
@@ -342,6 +343,13 @@ public final class KnnQueryBuilder extends AbstractQueryBuilder<KnnQueryBuilder>
         if (knn.isIndexedForAnn() == false) {
             throw new IllegalArgumentException(String.format(Locale.ROOT, "Field '%s' is not built for ANN search.", fieldName));
         }
+        // Counted where the stock plugin counts: once the field is a knn one, before the vector is checked.
+        KnnStats.query(
+            k != null ? KnnStats.QueryKind.K
+                : maxDistance != null ? KnnStats.QueryKind.MAX_DISTANCE
+                : KnnStats.QueryKind.MIN_SCORE,
+            filter != null
+        );
         if (Boolean.TRUE.equals(expandNested)) {
             throw new IllegalArgumentException("[" + NAME + "] [expand_nested_docs] is not supported by this node yet");
         }
@@ -363,7 +371,6 @@ public final class KnnQueryBuilder extends AbstractQueryBuilder<KnnQueryBuilder>
             KnnVectors.checkFloats(vector, space);
             target = KnnTarget.of(vector.clone());
         }
-        org.lucenerust.opensearch.knn.rest.KnnStats.query(k != null ? 0 : maxDistance != null ? 2 : 1, filter != null);
         Query filterQuery = filter == null ? null : filter.toQuery(context);
         if (k != null) {
             return new KnnTopVectorQuery(fieldName, target, k, efSearch == null ? k : Math.max(k, efSearch), filterQuery);

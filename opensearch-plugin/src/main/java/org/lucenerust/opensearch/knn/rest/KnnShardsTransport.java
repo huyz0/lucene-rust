@@ -18,7 +18,6 @@ import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.common.inject.Inject;
 import org.opensearch.core.action.support.DefaultShardOperationFailedException;
 import org.opensearch.core.common.io.stream.StreamInput;
-import org.opensearch.core.xcontent.ToXContentObject;
 import org.opensearch.index.engine.Engine;
 import org.opensearch.index.shard.IndexShard;
 import org.opensearch.indices.IndicesService;
@@ -50,7 +49,7 @@ public final class KnnShardsTransport {
     }
 
     /** {@code KNNWarmupResponse} and {@code ClearCacheResponse}. */
-    public static final class Response extends BroadcastResponse implements ToXContentObject {
+    public static final class Response extends BroadcastResponse {
         public Response(StreamInput in) throws IOException {
             super(in);
         }

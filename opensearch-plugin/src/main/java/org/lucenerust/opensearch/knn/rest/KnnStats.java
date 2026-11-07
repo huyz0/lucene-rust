@@ -39,14 +39,18 @@ public final class KnnStats {
 
     private KnnStats() {}
 
-    /**
-     * Counts a shard's {@code knn} query: {@code kind} 0 for {@code k}, 1 for {@code min_score},
-     * 2 for {@code max_distance} ({@code VectorQueryType}).
-     */
-    public static void query(int kind, boolean filtered) {
-        QUERIES[kind * 2].increment();
+    /** A {@code knn} query's kind, as k-NN's {@code VectorQueryType}. */
+    public enum QueryKind {
+        K,
+        MIN_SCORE,
+        MAX_DISTANCE
+    }
+
+    /** Counts a shard's {@code knn} query. */
+    public static void query(QueryKind kind, boolean filtered) {
+        QUERIES[kind.ordinal() * 2].increment();
         if (filtered) {
-            QUERIES[kind * 2 + 1].increment();
+            QUERIES[kind.ordinal() * 2 + 1].increment();
         }
     }
 
@@ -118,7 +122,7 @@ public final class KnnStats {
         m.put("model_index_status", () -> null);
         m.put("graph_stats", KnnStats::graphStats);
         m.put("remote_vector_index_build_stats", KnnStats::remoteBuildStats);
-        return Map.copyOf(m);
+        return java.util.Collections.unmodifiableMap(m);
     }
 
     private static Map<String, Object> zeros(String... names) {

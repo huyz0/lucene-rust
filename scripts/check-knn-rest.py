@@ -138,7 +138,8 @@ def main():
                  "/_plugins/_knn/_all/stats/_all"]
         for path in stats:
             compare_stats(path, failures)
-        calls = [("GET", "/_plugins/_knn/stats/bogus"), ("GET", "/_plugins/_knn/stats/_all,hit_count"),
+        calls = [("GET", "/_plugins/_knn/stats/bogus"), ("GET", "/_plugins/_knn/stats/hit_coutn"),
+                 ("GET", "/_plugins/_knn/stats/_all,hit_count"),
                  ("GET", "/_plugins/_knn/warmup/vec-a"), ("GET", "/_plugins/_knn/warmup/vec-a,vec-b"),
                  ("GET", "/_plugins/_knn/warmup/vec-*"), ("GET", "/_plugins/_knn/warmup/plain"),
                  ("GET", "/_plugins/_knn/warmup/missing"), ("POST", "/_plugins/_knn/clear_cache/vec-a"),

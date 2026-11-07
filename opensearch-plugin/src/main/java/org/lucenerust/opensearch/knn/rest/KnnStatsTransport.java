@@ -140,7 +140,7 @@ public final class KnnStatsTransport {
         }
 
         public Response(StreamInput in) throws IOException {
-            super(new ClusterName(in), in.readList(NodeResponse::new), in.readList(FailedNodeException::new));
+            super(in);
             this.cluster = in.readMap();
         }
 

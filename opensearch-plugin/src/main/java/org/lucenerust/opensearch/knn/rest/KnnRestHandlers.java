@@ -3,6 +3,7 @@
  */
 package org.lucenerust.opensearch.knn.rest;
 
+import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.metadata.IndexNameExpressionResolver;
 import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.core.common.Strings;
@@ -76,7 +77,7 @@ public final class KnnRestHandlers {
                     }
                 }
                 if (invalid.isEmpty() == false) {
-                    throw new IllegalArgumentException(unrecognized(request, invalid, KnnStats.names(), "stat"));
+                    throw new IllegalArgumentException(unrecognized(request, invalid, r.wanted(), "stat"));
                 }
             }
             return channel -> client.execute(KnnStatsTransport.Action.INSTANCE, r, new RestActions.NodesResponseRestListener<>(channel));
@@ -110,10 +111,10 @@ public final class KnnRestHandlers {
         @Override
         protected RestChannelConsumer prepareRequest(RestRequest request, NodeClient client) {
             String[] names = Strings.splitStringByCommaToArray(request.param("index"));
-            ClusterService cluster = clusterService.get();
-            Index[] indices = resolver.concreteIndices(cluster.state(), strictExpandOpen(), names);
+            ClusterState state = clusterService.get().state();
+            Index[] indices = resolver.concreteIndices(state, strictExpandOpen(), names);
             List<String> invalid = Arrays.stream(indices)
-                .filter(i -> "true".equals(cluster.state().metadata().getIndexSafe(i).getSettings().get("index.knn")) == false)
+                .filter(i -> "true".equals(state.metadata().getIndexSafe(i).getSettings().get("index.knn")) == false)
                 .map(Index::getName)
                 .toList();
             if (invalid.isEmpty() == false) {
