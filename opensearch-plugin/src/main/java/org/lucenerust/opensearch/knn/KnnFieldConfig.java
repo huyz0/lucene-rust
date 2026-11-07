@@ -16,13 +16,11 @@ import java.util.Map;
  * format the Rust writer builds: Lucene's HNSW graph over float or byte vectors, quantized with a
  * Lucene104 scalar encoding when the method's encoder or the compression asks for one.
  *
- * <p>Both engines write Lucene's HNSW formats; the {@code engine} decides the search shape ({@code
- * lucene}: the shard's top {@code k}; {@code faiss}: {@code k} per segment, as the stock plugin
- * returns them). The search reads the raw vectors through the graph, so a quantized field's scores
- * are the exact ones the stock plugin rescores to.
+ * <p>A mapping without an engine uses {@code lucene}; {@code faiss} is refused. The search reads the
+ * raw vectors through the graph, so a quantized field's scores are the exact ones the stock plugin
+ * rescores to.
  *
  * @param encoding a {@link VectorsFormatSpec} scalar encoding wire number, {@code -1} for full precision
- * @param efSearch the mapping's {@code ef_search} ({@code faiss} method parameter), {@code null} for none
  */
 public record KnnFieldConfig(
     int dimension,
@@ -31,7 +29,6 @@ public record KnnFieldConfig(
     String engine,
     int m,
     int efConstruction,
-    Integer efSearch,
     int encoding,
     String mode,
     String compression
@@ -44,10 +41,6 @@ public record KnnFieldConfig(
     /** Lucene's {@code HnswGraphBuilder} limits. */
     static final int MAX_M = 512;
     static final int MAX_EF_CONSTRUCTION = 3200;
-
-    public boolean isFaiss() {
-        return FAISS.equals(engine);
-    }
 
     /** The format the Rust writer builds the field with. */
     public VectorsFormatSpec format() {
@@ -80,7 +73,8 @@ public record KnnFieldConfig(
                 String.format(Locale.ROOT, "Dimension value cannot be greater than %d for vector: %s", MAX_DIMENSION, field)
             );
         }
-        VectorEncoding encodingType = switch (dataType) {
+        // Stock parses data_type and engine names in any case, and persists data_type upper case.
+        VectorEncoding encodingType = switch (dataType.toLowerCase(Locale.ROOT)) {
             case "float" -> VectorEncoding.FLOAT32;
             case "byte" -> VectorEncoding.BYTE;
             case "binary" -> throw new MapperParsingException("[data_type] [binary] is not supported by this node's knn_vector fields");
@@ -126,16 +120,23 @@ public record KnnFieldConfig(
             level = encodingType == VectorEncoding.BYTE ? "1x" : "32x";
         }
 
-        String engine = pick(topEngine, methodEngine, "Engine", "undefined");
+        // Stock parses engine names in any case; the lucene engine is the default here, and faiss
+        // (whose .faiss files this plugin neither reads nor writes) is refused.
+        String engine = pick(lower(topEngine), lower(methodEngine), "Engine", "undefined");
         if (engine == null) {
-            engine = "4x".equals(level) ? LUCENE : FAISS;
+            engine = LUCENE;
         }
         switch (engine) {
-            case FAISS, LUCENE -> {}
+            case LUCENE -> {}
+            case FAISS -> throw new MapperParsingException(
+                "Engine [faiss] is not supported: this node's knn_vector fields use the [lucene] engine"
+            );
             case "nmslib" -> throw new MapperParsingException(
                 "nmslib engine is deprecated in OpenSearch and cannot be used for new index creation starting from version 3.0.0."
             );
-            default -> throw new MapperParsingException(String.format(Locale.ROOT, "Invalid engine type: %s", engine));
+            default -> throw new MapperParsingException(
+                String.format(Locale.ROOT, "Invalid engine type: %s", topEngine != null && topEngine.equalsIgnoreCase(engine) ? topEngine : methodEngine)
+            );
         }
 
         if (methodName.equals("hnsw") == false) {
@@ -148,22 +149,16 @@ public record KnnFieldConfig(
 
         int m = DEFAULT_M;
         int efConstruction = DEFAULT_EF_CONSTRUCTION;
-        Integer efSearch = null;
         int encoding = -1;
         boolean explicitEncoder = false;
         for (Map.Entry<String, Object> p : params.entrySet()) {
             switch (p.getKey()) {
                 case "m" -> m = positiveInt(p.getValue(), "m", MAX_M);
                 case "ef_construction" -> efConstruction = positiveInt(p.getValue(), "ef_construction", MAX_EF_CONSTRUCTION);
-                case "ef_search" -> {
-                    if (engine.equals(LUCENE)) {
-                        throw new MapperParsingException("Invalid parameter: ef_search for the lucene engine; set it in the query");
-                    }
-                    efSearch = positiveInt(p.getValue(), "ef_search", Integer.MAX_VALUE);
-                }
+                case "ef_search" -> throw new MapperParsingException("Invalid parameter: ef_search for the lucene engine; set it in the query");
                 case "encoder" -> {
                     explicitEncoder = true;
-                    encoding = encoder(engine, encodingType, map(p.getValue(), "encoder"));
+                    encoding = encoder(map(p.getValue(), "encoder"));
                 }
                 default -> throw new MapperParsingException(String.format(Locale.ROOT, "Invalid parameter for hnsw: %s", p.getKey()));
             }
@@ -187,80 +182,37 @@ public record KnnFieldConfig(
         if (encoding >= 0 && encodingType == VectorEncoding.BYTE) {
             throw new MapperParsingException("Quantization is only supported for [data_type] [float]");
         }
-        return new KnnFieldConfig(dimension, encodingType, spaceType, engine, m, efConstruction, efSearch, encoding, resolvedMode, level);
+        return new KnnFieldConfig(dimension, encodingType, spaceType, engine, m, efConstruction, encoding, resolvedMode, level);
     }
 
     /** The encoder's scalar encoding, {@code -1} for full precision. */
-    private static int encoder(String engine, VectorEncoding dataType, Map<String, Object> encoder) {
+    private static int encoder(Map<String, Object> encoder) {
         Object name = encoder.get("name");
         if (name == null) {
             throw new MapperParsingException("encoder name needs to be set");
         }
         Map<String, Object> p = map(encoder.get("parameters"), "encoder parameters");
         String n = name.toString();
-        if (engine.equals(LUCENE)) {
-            if (n.equals("sq") == false) {
-                throw new MapperParsingException(String.format(Locale.ROOT, "Invalid encoder for the lucene engine: %s", n));
-            }
-            for (String k : p.keySet()) {
-                if (k.equals("bits") == false && k.equals("confidence_interval") == false) {
-                    throw new MapperParsingException(String.format(Locale.ROOT, "Invalid parameter for sq: %s", k));
-                }
-            }
-            if (p.containsKey("bits") == false) {
-                throw new MapperParsingException(
-                    "Validation Failed: 1: Parameter [bits] is required for encoder [sq] on indices created with version 3.6.0 or later. Supported values: [7, 1, 2, 4];"
-                );
-            }
-            int bits = positiveInt(p.get("bits"), "bits", 8);
-            return switch (bits) {
-                case 7 -> VectorsFormatSpec.SEVEN_BIT;
-                case 4 -> VectorsFormatSpec.PACKED_NIBBLE;
-                case 2 -> VectorsFormatSpec.DIBIT;
-                case 1 -> VectorsFormatSpec.SINGLE_BIT;
-                default -> throw new MapperParsingException("Validation Failed: 1: Unsupported [bits] " + bits + " for encoder [sq]. Supported values: [7, 1, 2, 4];");
-            };
+        if (n.equals("sq") == false) {
+            throw new MapperParsingException(String.format(Locale.ROOT, "Invalid encoder for the lucene engine: %s", n));
         }
-        return switch (n) {
-            case "flat" -> -1;
-            case "sq" -> {
-                Object type = p.getOrDefault("type", "fp16");
-                for (String k : p.keySet()) {
-                    if (k.equals("type") == false && k.equals("clip") == false && k.equals("bits") == false) {
-                        throw new MapperParsingException(String.format(Locale.ROOT, "Invalid parameter for sq: %s", k));
-                    }
-                }
-                if (p.containsKey("bits") == false) {
-                    throw new MapperParsingException(
-                        "Validation Failed: 1: Parameter [bits] is required for encoder [sq] on indices created with version 3.6.0 or later. Supported values: [16, 1, 2, 4];"
-                    );
-                }
-                int bits = positiveInt(p.get("bits"), "bits", 16);
-                yield switch (bits) {
-                    case 1 -> VectorsFormatSpec.SINGLE_BIT;
-                    case 2 -> VectorsFormatSpec.DIBIT;
-                    case 4 -> VectorsFormatSpec.PACKED_NIBBLE;
-                    case 16 -> switch (type.toString()) {
-                        // Half precision keeps full-precision vectors here: the same search, more disk.
-                        case "fp16", "bf16" -> -1;
-                        default -> throw new MapperParsingException(String.format(Locale.ROOT, "Invalid sq type: %s", type));
-                    };
-                    default -> throw new MapperParsingException(
-                        "Validation Failed: 1: Unsupported [bits] " + bits + " for encoder [sq]. Supported values: [16, 1, 2, 4];"
-                    );
-                };
+        for (String k : p.keySet()) {
+            if (k.equals("bits") == false && k.equals("confidence_interval") == false) {
+                throw new MapperParsingException(String.format(Locale.ROOT, "Invalid parameter for sq: %s", k));
             }
-            case "binary" -> {
-                int bits = p.containsKey("bits") ? positiveInt(p.get("bits"), "bits", 4) : 1;
-                yield switch (bits) {
-                    case 1 -> VectorsFormatSpec.SINGLE_BIT;
-                    case 2 -> VectorsFormatSpec.DIBIT;
-                    case 4 -> VectorsFormatSpec.PACKED_NIBBLE;
-                    default -> throw new MapperParsingException("binary [bits] must be 1, 2 or 4");
-                };
-            }
-            case "pq" -> throw new MapperParsingException("[encoder] [pq] needs a trained model, which this node does not support");
-            default -> throw new MapperParsingException(String.format(Locale.ROOT, "Invalid encoder: %s", n));
+        }
+        if (p.containsKey("bits") == false) {
+            throw new MapperParsingException(
+                "Validation Failed: 1: Parameter [bits] is required for encoder [sq] on indices created with version 3.6.0 or later. Supported values: [7, 1, 2, 4];"
+            );
+        }
+        int bits = positiveInt(p.get("bits"), "bits", 8);
+        return switch (bits) {
+            case 7 -> VectorsFormatSpec.SEVEN_BIT;
+            case 4 -> VectorsFormatSpec.PACKED_NIBBLE;
+            case 2 -> VectorsFormatSpec.DIBIT;
+            case 1 -> VectorsFormatSpec.SINGLE_BIT;
+            default -> throw new MapperParsingException("Validation Failed: 1: Unsupported [bits] " + bits + " for encoder [sq]. Supported values: [7, 1, 2, 4];");
         };
     }
 
@@ -285,6 +237,10 @@ public record KnnFieldConfig(
             );
         }
         return t != null ? t : m;
+    }
+
+    private static String lower(String s) {
+        return s == null ? null : s.toLowerCase(Locale.ROOT);
     }
 
     private static String str(Object o) {
