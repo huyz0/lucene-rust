@@ -44,6 +44,11 @@ import java.util.Objects;
  * OSDiversifyingChildrenFloatKnnVectorQuery}: the best child of each of the best {@code k} parents;
  * with {@code expand} ({@code expand_nested_docs}, k-NN's {@code ExpandNestedDocsQuery}) every child
  * of those parents that passes the filter and has a vector, each scored.
+ *
+ * <p>{@code nprobes} ({@code method_parameters.nprobes}) is the clusters probed in each segment
+ * whose field has an IVF index ({@code LuceneRustIvfVectorsFormat}), {@code 0} for the depth each
+ * segment calibrated; other formats, and a nested search (which scans an IVF field exactly), ignore
+ * it.
  */
 public final class KnnTopVectorQuery extends Query {
     /** Searches a query natively over a searcher's reader: its hits, or null when the reader is not native. */
@@ -65,12 +70,26 @@ public final class KnnTopVectorQuery extends Query {
     private final Query filter;
     private final BitSetProducer parents;
     private final boolean expand;
+    private final int nprobes;
 
     public KnnTopVectorQuery(String field, KnnTarget target, int k, int candidates, Query filter) {
         this(field, target, k, candidates, filter, null, false);
     }
 
     public KnnTopVectorQuery(String field, KnnTarget target, int k, int candidates, Query filter, BitSetProducer parents, boolean expand) {
+        this(field, target, k, candidates, filter, parents, expand, 0);
+    }
+
+    private KnnTopVectorQuery(
+        String field,
+        KnnTarget target,
+        int k,
+        int candidates,
+        Query filter,
+        BitSetProducer parents,
+        boolean expand,
+        int nprobes
+    ) {
         if (k <= 0) {
             throw new IllegalArgumentException("k must be at least 1");
         }
@@ -84,6 +103,19 @@ public final class KnnTopVectorQuery extends Query {
         }
         this.parents = parents;
         this.expand = expand;
+        if (nprobes < 0) {
+            throw new IllegalArgumentException("nprobes must not be negative");
+        }
+        this.nprobes = nprobes;
+    }
+
+    /** This query probing {@code nprobes} IVF clusters per segment. */
+    public KnnTopVectorQuery withNprobes(int nprobes) {
+        return new KnnTopVectorQuery(field, target, k, candidates, filter, parents, expand, nprobes);
+    }
+
+    public int nprobes() {
+        return nprobes;
     }
 
     public String field() {
@@ -121,7 +153,7 @@ public final class KnnTopVectorQuery extends Query {
         if (filter != null) {
             Query f = searcher.rewrite(filter);
             if (f != filter) {
-                q = new KnnTopVectorQuery(field, target, k, candidates, f, parents, expand);
+                q = new KnnTopVectorQuery(field, target, k, candidates, f, parents, expand, nprobes);
             }
         }
         NativeSearch n = nativeSearch;
@@ -232,7 +264,7 @@ public final class KnnTopVectorQuery extends Query {
 
     @Override
     public String toString(String defaultField) {
-        return "KnnTopVectorQuery(" + field + ", k=" + k + ", candidates=" + candidates + (parents == null ? "" : ", nested") + (expand ? ", expand" : "") + ")";
+        return "KnnTopVectorQuery(" + field + ", k=" + k + ", candidates=" + candidates + (parents == null ? "" : ", nested") + (expand ? ", expand" : "") + (nprobes == 0 ? "" : ", nprobes=" + nprobes) + ")";
     }
 
     @Override
@@ -245,11 +277,12 @@ public final class KnnTopVectorQuery extends Query {
             && candidates == q.candidates
             && Objects.equals(filter, q.filter)
             && Objects.equals(parents, q.parents)
-            && expand == q.expand;
+            && expand == q.expand
+            && nprobes == q.nprobes;
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(classHash(), field, target, k, candidates, filter, parents, expand);
+        return Objects.hash(classHash(), field, target, k, candidates, filter, parents, expand, nprobes);
     }
 }

@@ -392,3 +392,27 @@ Reused clusters lose a little recall at the calibrated depth (0.968 to
 cargo run --release -p lucene-search --example knn_formats -- <prefix> cosine \
   --formats hnsw,ivf,ivf-f16 --nprobes 0,32 --segments 8 --merge
 ```
+
+## Through the OpenSearch plugin
+
+`benchmarks/ivf/plugin_knn_bench.py` loads GloVe-100 (390k, cosine) into one
+shard of a single node (2 GB heap), force-merges it to one segment and runs
+1000 `knn` queries (k = 10, `_source: false`) one at a time over REST. HNSW
+is the `lucene` engine (`m` 16, `ef_construction` 100, the default
+`ef_search` 100); IVF is the `lucene_rust` engine's `method: ivf`
+(`target_cluster_size` 384).
+
+| mapping | setting | load | merge | store | recall@10 | took | client |
+|---|---|---|---|---|---|---|---|
+| HNSW | ef 100 | 154 s (2.5k docs/s) | 28.7 s | 179 MB | 0.887 | 3.73 ms | 5.97 ms |
+| IVF half_float | calibrated | 25 s (15.4k docs/s) | 3.0 s | 257 MB | 0.947 | 2.26 ms | 4.19 ms |
+| IVF half_float | nprobes 32 | | | | 0.901 | 1.48 ms | 3.27 ms |
+| IVF float | calibrated | 25 s (15.5k docs/s) | 3.5 s | 335 MB | 0.972 | 2.21 ms | 3.64 ms |
+| IVF float | nprobes 32 | | | | 0.918 | 1.49 ms | 3.08 ms |
+
+IVF loads 6x faster and merges 9x faster. Most of `took` is a fixed cost
+that does not depend on the vectors. In a second run on a fresh copy of the
+float index, a `match_all` returning 10 hits took 2.10 ms, and an nprobes 32
+search took 2.07 ms. Nearly all of that is the fetch phase, at about 0.14 ms
+a hit; the plugin's query-phase timer puts the IVF search itself at about
+0.1 ms.
