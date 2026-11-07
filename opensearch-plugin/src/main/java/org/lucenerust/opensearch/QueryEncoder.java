@@ -181,6 +181,20 @@ public final class QueryEncoder {
         return new Encoded(out.toByteArray(), null, true);
     }
 
+    /**
+     * {@code query} as one query-tree node, as a filter inside another request ({@code
+     * jvm_knn.rs}): null when written, else the fallback reason. Its scores are not read, so every
+     * field is accepted.
+     */
+    static String encodeNode(Query query, ByteArrayOutputStream out, IndexReaderContext top) {
+        TOP.set(top);
+        try {
+            return node(unwrapUnitBoost(query), out, field -> true, 0, new int[1]);
+        } finally {
+            TOP.remove();
+        }
+    }
+
     /** The native decoder's depth limit ({@code MAX_CLAUSE_DEPTH} in {@code clauses.rs}). */
     private static final int MAX_DEPTH = 32;
 
@@ -434,6 +448,11 @@ public final class QueryEncoder {
         String sparse = SparseEncoder.node(q, out, c -> node(c, out, fieldOk, depth + 1, nodes));
         if (sparse != SparseEncoder.NOT_SPARSE) {
             return sparse;
+        }
+        // knn (KnnEncoder).
+        String knn = KnnEncoder.node(q, out, c -> node(c, out, fieldOk, depth + 1, nodes));
+        if (knn != KnnEncoder.NOT_KNN) {
+            return knn;
         }
         // The geo queries (GeoEncoder): written, or a geo reason to fall back.
         String geo = GeoEncoder.node(q, out);

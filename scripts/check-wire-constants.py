@@ -87,6 +87,15 @@ RENAMES = {
 
 # Constants with no Rust counterpart, and why.
 JAVA_ONLY = {
+    ("KnnFieldConfig.java", "DEFAULT_M"): "k-NN's mapping default, resolved into the field's format attribute",
+    ("KnnFieldConfig.java", "DEFAULT_EF_CONSTRUCTION"): "k-NN's mapping default, resolved into the field's format attribute",
+    ("KnnFieldConfig.java", "MAX_M"): "the mapping's validation, at Lucene's HnswGraphBuilder limit",
+    ("KnnFieldConfig.java", "MAX_EF_CONSTRUCTION"): "the mapping's validation, at Lucene's HnswGraphBuilder limit",
+    ("VectorsFormatSpec.java", "UNSIGNED_BYTE"): "ScalarEncoding::wire_number in quantization.rs, an enum's numbers",
+    ("VectorsFormatSpec.java", "PACKED_NIBBLE"): "ScalarEncoding::wire_number in quantization.rs, an enum's numbers",
+    ("VectorsFormatSpec.java", "SEVEN_BIT"): "ScalarEncoding::wire_number in quantization.rs, an enum's numbers",
+    ("VectorsFormatSpec.java", "SINGLE_BIT"): "ScalarEncoding::wire_number in quantization.rs, an enum's numbers",
+    ("VectorsFormatSpec.java", "DIBIT"): "ScalarEncoding::wire_number in quantization.rs, an enum's numbers",
     ("NativeBridge.java", "WARM_FAILED"): "any answer but WARM_OK fails the merge; Rust names none",
     ("QueryEncoder.java", "REGEXP_CACHE_SIZE"): "the Java side's parsed-regexp cache",
     ("LuceneChangesSnapshot.java", "DEFAULT_BATCH_SIZE"): "derived OpenSearch engine code",
