@@ -340,6 +340,16 @@ fn warm(w: &EngineWriter) -> lucene_index::index_writer::Result<()> {
     })
 }
 
+/// Waits for `w`'s warming thread to end, as it does once no lean search
+/// came for [`WARM_IDLE`]; the next lean search starts it again.
+#[cfg(test)]
+pub(crate) fn idle_warmer(w: &EngineWriter) {
+    w.live_warmer().last_lean.store(0, Ordering::Relaxed);
+    while w.live_warmer().running() {
+        std::thread::sleep(WARM_EVERY);
+    }
+}
+
 /// The documents of `w`'s first buffer after its chunks, as a chunk
 /// marked as being written until the guard is dropped.
 #[cfg(test)]
@@ -662,12 +672,14 @@ pub unsafe extern "C" fn ffi_engine_writer_live_view_open(
         let commit = (commit_generation >= 0).then_some(commit_generation);
         let view = w.writer().open_live_view(commit).map_err(live_error)?;
         let plans: Vec<Vec<Planned>> = {
-            let writing = w.live_warmer().writing();
             let chunks = w.live_chunks();
-            let absorb = if w.live_warmer().running() {
-                SEARCH_ABSORB_DOCS
+            // While the warmer runs, a search waits for none of its chunks:
+            // it writes the documents after its chain itself, and the
+            // warmer's chunk of them serves the views after.
+            let (absorb, writing) = if w.live_warmer().running() {
+                (SEARCH_ABSORB_DOCS, Vec::new())
             } else {
-                i32::MAX
+                (i32::MAX, w.live_warmer().writing())
             };
             view.buffers
                 .iter()
