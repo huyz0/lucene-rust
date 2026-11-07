@@ -1,2 +1,3 @@
 org.lucenerust.opensearch.knn.codec.KNN1040HnswScalarQuantizedVectorsFormat
 org.lucenerust.opensearch.knn.codec.KNN1040ScalarQuantizedVectorsFormat
+org.lucenerust.opensearch.knn.codec.KNN990HnswBinaryVectorsFormat

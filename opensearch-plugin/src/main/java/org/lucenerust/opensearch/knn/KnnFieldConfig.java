@@ -14,17 +14,22 @@ import java.util.Map;
  * A {@code knn_vector} mapping resolved as the stock k-NN plugin resolves it ({@code
  * KNNVectorFieldMapper.Builder} with its engine and mode/compression resolvers), into the vector
  * format the Rust writer builds: Lucene's HNSW graph over float or byte vectors, quantized with a
- * Lucene104 scalar encoding when the method's encoder or the compression asks for one.
+ * Lucene104 scalar encoding when the method's encoder or the compression asks for one, or k-NN's
+ * {@code KNN990HnswBinaryVectorsFormat} graph over packed bit vectors ({@code data_type: binary},
+ * {@code hamming} space).
  *
  * <p>A mapping without an engine uses {@code lucene}; {@code faiss} is refused. The search reads the
  * raw vectors through the graph, so a quantized field's scores are the exact ones the stock plugin
  * rescores to.
  *
+ * @param dimension the mapping's dimension: bits for a {@link #binary} field
+ * @param binary packed bit vectors, {@code dimension / 8} bytes each
  * @param encoding a {@link VectorsFormatSpec} scalar encoding wire number, {@code -1} for full precision
  */
 public record KnnFieldConfig(
     int dimension,
     VectorEncoding dataType,
+    boolean binary,
     SpaceType spaceType,
     String engine,
     int m,
@@ -42,8 +47,16 @@ public record KnnFieldConfig(
     static final int MAX_M = 512;
     static final int MAX_EF_CONSTRUCTION = 3200;
 
+    /** Elements per vector: the dimension, or its bytes for a {@link #binary} field. */
+    public int vectorDimension() {
+        return binary ? dimension / 8 : dimension;
+    }
+
     /** The format the Rust writer builds the field with. */
     public VectorsFormatSpec format() {
+        if (binary) {
+            return VectorsFormatSpec.hnswHamming(m, efConstruction);
+        }
         return encoding < 0 ? VectorsFormatSpec.hnsw(m, efConstruction) : VectorsFormatSpec.hnswQuantized(encoding, m, efConstruction);
     }
 
@@ -76,12 +89,12 @@ public record KnnFieldConfig(
         // Stock parses data_type and engine names in any case, and persists data_type upper case.
         VectorEncoding encodingType = switch (dataType.toLowerCase(Locale.ROOT)) {
             case "float" -> VectorEncoding.FLOAT32;
-            case "byte" -> VectorEncoding.BYTE;
-            case "binary" -> throw new MapperParsingException("[data_type] [binary] is not supported by this node's knn_vector fields");
+            case "byte", "binary" -> VectorEncoding.BYTE;
             default -> throw new MapperParsingException(
                 String.format(Locale.ROOT, "Invalid value provided for [data_type] field: [%s]. Supported values are [float, byte, binary]", dataType)
             );
         };
+        boolean binary = dataType.equalsIgnoreCase("binary");
 
         String methodName = "hnsw";
         String methodSpace = null;
@@ -104,7 +117,18 @@ public record KnnFieldConfig(
         }
 
         String space = pick(topSpace, methodSpace, "Space type", SpaceType.UNDEFINED);
-        SpaceType spaceType = SpaceType.of(space == null ? (indexSpace == null ? SpaceType.DEFAULT : indexSpace) : space);
+        SpaceType spaceType = SpaceType.of(
+            space == null ? (indexSpace == null ? (binary ? SpaceType.HAMMING.value() : SpaceType.DEFAULT) : indexSpace) : space
+        );
+        // SpaceType.validateVectorDataType: hamming is for binary vectors only, and binary vectors only for hamming.
+        if (binary != (spaceType == SpaceType.HAMMING)) {
+            throw new IllegalArgumentException(
+                String.format(Locale.ROOT, "Space type [%s] is not supported with [%s] data type", spaceType.value(), dataType.toLowerCase(Locale.ROOT))
+            );
+        }
+        if (binary && dimension % 8 != 0) {
+            throw new MapperParsingException("Validation Failed: 1: Dimension should be multiply of 8 for binary vector data type;");
+        }
 
         String resolvedMode = mode;
         if (resolvedMode != null && resolvedMode.equals("in_memory") == false && resolvedMode.equals("on_disk") == false) {
@@ -182,7 +206,7 @@ public record KnnFieldConfig(
         if (encoding >= 0 && encodingType == VectorEncoding.BYTE) {
             throw new MapperParsingException("Quantization is only supported for [data_type] [float]");
         }
-        return new KnnFieldConfig(dimension, encodingType, spaceType, engine, m, efConstruction, encoding, resolvedMode, level);
+        return new KnnFieldConfig(dimension, encodingType, binary, spaceType, engine, m, efConstruction, encoding, resolvedMode, level);
     }
 
     /** The encoder's scalar encoding, {@code -1} for full precision. */

@@ -13,6 +13,9 @@ answer the same queries. The Rust engine writes the plugin node's segments.
              top-k, filtered, ef_search, boosted and radial query must return
              the same hits with the same scores (1e-4), and the same hits as an
              exhaustive scan computed here.
+  binary     packed bit vectors in the hamming space: the same scores as
+             stock, each the hit's own Hamming score; distances tie often, so
+             hits are compared by id only above the last score.
   quantized  sq / on_disk mappings: the stock plugin scores quantized vectors
              (and rescores some); the plugin searches full precision. The check
              is that its top 10 are the exhaustive scan's, and that they
@@ -43,6 +46,7 @@ EXACT = {
     "lucene_cos": {"engine": "lucene", "space_type": "cosinesimil"},
     "lucene_ip": {"engine": "lucene", "space_type": "innerproduct"},
     "lucene_byte": {"engine": "lucene", "space_type": "l2", "data_type": "byte"},
+    "lucene_binary": {"engine": "lucene", "space_type": "hamming", "data_type": "binary", "dimension": 64},
 }
 QUANTIZED = {
     "lucene_sq": {"engine": "lucene", "space_type": "l2", "encoder": {"name": "sq", "parameters": {"bits": 7}}},
@@ -87,14 +91,27 @@ def wait(port):
     sys.exit(f"node on {port} did not start")
 
 
-def vector(rng, byte):
+def vector(rng, byte, binary_dim=0):
+    if binary_dim:
+        return [rng.randint(-128, 127) for _ in range(binary_dim // 8)]
     if byte:
         return [rng.randint(-20, 20) for _ in range(DIM)]
     return [round(rng.uniform(-1, 1), 4) for _ in range(DIM)]
 
 
+def vector_for(spec, rng):
+    """A random value for `spec`'s field: floats, bytes, or a binary field's dimension / 8 bytes."""
+    binary = spec.get("dimension", DIM) if spec.get("data_type") == "binary" else 0
+    return vector(rng, spec.get("data_type") == "byte", binary)
+
+
+def ties(spec):
+    """Hamming scores tie often: hits at the last score may trade places."""
+    return spec.get("space_type") == "hamming"
+
+
 def field_mapping(spec):
-    m = {"type": "knn_vector", "dimension": DIM}
+    m = {"type": "knn_vector", "dimension": spec.get("dimension", DIM)}
     for k in ("data_type", "mode", "compression_level"):
         if k in spec:
             m[k] = spec[k]
@@ -134,6 +151,8 @@ def score(space, a, b):
     """The Lucene similarity scores the k-NN plugin's translations equal."""
     if space == "l2":
         return 1 / (1 + sum((x - y) ** 2 for x, y in zip(a, b)))
+    if space == "hamming":
+        return 1 / (1 + sum(bin((x ^ y) & 0xFF).count("1") for x, y in zip(a, b)))
     dot = sum(x * y for x, y in zip(a, b))
     if space == "cosinesimil":
         return (1 + dot / math.sqrt(sum(x * x for x in a) * sum(y * y for y in b))) / 2
@@ -151,10 +170,16 @@ def search(port, index, body):
     return [(h["_id"], h["_score"]) for h in r["hits"]["hits"]]
 
 
-def same(got, want, tol=1e-4):
-    if [i for i, _ in got] != [i for i, _ in want]:
+def same(got, want, tol=1e-4, ties=False):
+    """The same hits and scores; with `ties`, hits scoring the last score may differ."""
+    if len(got) != len(want):
         return False
-    return all(abs(a - b) <= tol * max(1.0, abs(b)) for (_, a), (_, b) in zip(got, want))
+    if not all(abs(a - b) <= tol * max(1.0, abs(b)) for (_, a), (_, b) in zip(got, want)):
+        return False
+    if ties and got:
+        last = want[-1][1]
+        return [i for i, sc in got if sc > last] == [i for i, sc in want if sc > last]
+    return [i for i, _ in got] == [i for i, _ in want]
 
 
 def knn(target, **params):
@@ -182,15 +207,15 @@ def main():
         checked = 0
         for group, specs in (("exact", EXACT), ("quantized", QUANTIZED)):
             for index, spec in specs.items():
-                byte = spec.get("data_type") == "byte"
+                binary = ties(spec)
                 rng = random.Random(f"{SEED}-{index}")
-                docs = [{"_id": f"d{i}", "tag": "even" if i % 2 == 0 else "odd", "n": i, "emb": vector(rng, byte)}
-                        for i in range(DOCS)]
+                docs = [{"_id": f"d{i}", "tag": "even" if i % 2 == 0 else "odd", "n": i,
+                         "emb": vector_for(spec, rng)} for i in range(DOCS)]
                 ours = create(OURS[1], index, spec, docs, True)
                 stock = create(STOCK[1], index, spec, docs, False)
                 if ours != stock:
                     failures.append(f"{index}: segment sizes differ: {ours} vs {stock}")
-                targets = [vector(rng, byte) for _ in range(8)]
+                targets = [vector_for(spec, rng) for _ in range(8)]
                 if group == "quantized":
                     overlaps = []
                     for t in targets:
@@ -223,24 +248,32 @@ def main():
                         ("boost", {"size": 20, "query": knn(t, k=k, boost=2.0)}, None),
                         ("in bool", {"size": 20, "query": {"bool": {"must": [knn(t, k=k)],
                                                                     "filter": [{"term": {"tag": "odd"}}]}}}, None),
-                        ("min_score", {"size": 100, "query": knn(t, min_score=floor)}, None),
                     ]
-                    if spec["space_type"] != "innerproduct":
+                    if not binary:
+                        # Radial search is refused for binary vectors (checked under errors).
+                        bodies.append(("min_score", {"size": 100, "query": knn(t, min_score=floor)}, None))
+                    if spec["space_type"] in ("l2", "cosinesimil"):
                         dist = {"l2": lambda s: 1 / s - 1, "cosinesimil": lambda s: 2 - 2 * s}[spec["space_type"]](floor)
                         bodies.append(("max_distance", {"size": 100, "query": knn(t, max_distance=dist)}, None))
                     for label, body, keep_doc in bodies:
                         got = search(OURS[1], index, body)
                         want = search(STOCK[1], index, body)
                         checked += 1
-                        if not same(got, want):
+                        if not same(got, want, ties=binary):
                             first = next((i for i, (a, b) in enumerate(zip(got, want)) if a[0] != b[0]),
                                          min(len(got), len(want)))
                             failures.append(f"{index} {label} query {qi}: {len(got)} vs {len(want)} hits, first "
                                             f"difference at {first}: {got[first:first + 2]} vs {want[first:first + 2]}")
-                        if label in ("top k", "filtered", "range filter"):
+                        if binary:
+                            # Hamming graphs miss tied neighbours on both nodes; each score must be the hit's own.
+                            by_id = {d["_id"]: d["emb"] for d in docs}
+                            boost = 2.0 if label == "boost" else 1.0
+                            if any(abs(sc - boost * score("hamming", t, by_id[i])) > 1e-6 for i, sc in got):
+                                failures.append(f"{index} {label} query {qi}: scores are not the hits' Hamming scores")
+                        elif label in ("top k", "filtered", "range filter"):
                             kk = 5 if label == "range filter" else k
                             scan = exact_top(spec, docs, t, kk, keep_doc or (lambda d: True))
-                            if [i for i, _ in got] != [i for _, i in scan]:
+                            if not same(got, [(i, sc) for sc, i in scan], ties=binary):
                                 failures.append(f"{index} {label} query {qi}: not the exhaustive scan's top {kk}")
         print(f"compared {checked} queries")
 
@@ -252,6 +285,10 @@ def main():
             ("byte values", "lucene_byte", {"query": knn([0.5] * DIM, k=3)}),
             ("not knn", "lucene_l2", {"query": {"knn": {"tag": {"vector": [0.1] * DIM, "k": 3}}}}),
             ("min_score 0", "lucene_l2", {"query": knn([0.1] * DIM, min_score=0)}),
+            ("binary min_score", "lucene_binary", {"query": knn([1] * 8, min_score=0.1)}),
+            ("binary max_distance", "lucene_binary", {"query": knn([1] * 8, max_distance=3)}),
+            ("binary dimension", "lucene_binary", {"query": knn([1] * 7, k=3)}),
+            ("binary values", "lucene_binary", {"query": knn([200] * 8, k=3)}),
         ]
         for label, index, body in errors:
             a = req(OURS[1], "POST", f"/{index}/_search", body, ok_errors=True)
@@ -263,6 +300,12 @@ def main():
             ("nmslib", {"type": "knn_vector", "dimension": 4, "method": {"name": "hnsw", "engine": "nmslib"}}),
             ("no dimension", {"type": "knn_vector"}),
             ("bad space", {"type": "knn_vector", "dimension": 4, "space_type": "nope"}),
+            ("binary dimension", {"type": "knn_vector", "dimension": 12, "data_type": "binary"}),
+            ("binary l2", {"type": "knn_vector", "dimension": 16, "data_type": "binary", "space_type": "l2"}),
+            ("hamming float", {"type": "knn_vector", "dimension": 16, "space_type": "hamming"}),
+            ("binary sq", {"type": "knn_vector", "dimension": 16, "data_type": "binary",
+                           "method": {"name": "hnsw", "engine": "lucene",
+                                      "parameters": {"encoder": {"name": "sq", "parameters": {"bits": 7}}}}}),
         ]
         for label, m in bad_mappings:
             for port in (OURS[1], STOCK[1]):

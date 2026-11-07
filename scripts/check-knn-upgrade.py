@@ -104,9 +104,8 @@ def write(prefix, rust, plugin=True):
             if not plugin and not lucene_engine(spec):
                 continue
             index = prefix + name
-            byte = spec.get("data_type") == "byte"
             rng = random.Random(f"{ck.SEED}-{name}")
-            docs = [{"_id": f"d{i}", "tag": "even" if i % 2 == 0 else "odd", "n": i, "emb": ck.vector(rng, byte)}
+            docs = [{"_id": f"d{i}", "tag": "even" if i % 2 == 0 else "odd", "n": i, "emb": ck.vector_for(spec, rng)}
                     for i in range(ck.DOCS)]
             ck.create(NODE[1], index, spec, docs, rust)
             if not plugin:
@@ -119,7 +118,7 @@ def write(prefix, rust, plugin=True):
             ck.req(NODE[1], "POST", "/_bulk", "\n".join(lines) + "\n", ndjson=True)
             ck.req(NODE[1], "POST", f"/{index}/_flush")
             ck.req(NODE[1], "POST", f"/{index}/_refresh")
-            targets = [ck.vector(rng, byte) for _ in range(6)]
+            targets = [ck.vector_for(spec, rng) for _ in range(6)]
             recorded = [[ck.search(NODE[1], index, body) for _, body in queries(t)] for t in targets]
             cases[index] = (group, spec, [d for d in docs if d["_id"] not in deleted], targets, recorded, rng)
     return cases
@@ -164,7 +163,7 @@ def read(cases, rename, plugin_reads, failures):
                 got = [(h["_id"], h["_score"]) for h in r["hits"]["hits"]]
                 checked += 1
                 if group == "exact":
-                    if not ck.same(got, want):
+                    if not ck.same(got, want, ties=ck.ties(spec)):
                         failures.append(f"{rename}{index} {label} query {qi}: {got[:3]} vs writer's {want[:3]}")
                 elif label == "top k":
                     if plugin_reads:
@@ -229,8 +228,7 @@ def write_into(cases, failures, live, rename=""):
     for name, (group, spec, alive, targets, _, rng) in cases.items():
         index = rename + name
         rng = random.Random(f"{rng.random()}-{rename}")
-        byte = spec.get("data_type") == "byte"
-        added = [{"_id": f"a{i}", "tag": "even" if i % 2 == 0 else "odd", "n": i, "emb": ck.vector(rng, byte)}
+        added = [{"_id": f"a{i}", "tag": "even" if i % 2 == 0 else "odd", "n": i, "emb": ck.vector_for(spec, rng)}
                  for i in range(ADDED)]
         gone = {d["_id"] for d in rng.sample(alive, 20)}
         lines = []

@@ -770,6 +770,7 @@ fn decode_field(blob: &[u8]) -> Result<(FieldInfo, Option<KnnVectorsFormat>), Ff
 pub(crate) const VECTORS_FORMAT_ATTRIBUTE: &str = "lucene_rust.knn_format";
 
 /// A [`VECTORS_FORMAT_ATTRIBUTE`] value: `hnsw:<max_conn>:<beam_width>`,
+/// `hnsw_hamming:<max_conn>:<beam_width>`,
 /// `hnsw_sq:<scalar encoding wire number>:<max_conn>:<beam_width>` or
 /// `sq:<scalar encoding wire number>`; `None` for anything else.
 pub(crate) fn parse_vectors_format(value: &str) -> Option<KnnVectorsFormat> {
@@ -777,6 +778,7 @@ pub(crate) fn parse_vectors_format(value: &str) -> Option<KnnVectorsFormat> {
     let int = |s: &str| s.parse::<i32>().ok();
     match parts.as_slice() {
         ["hnsw", m, beam] => KnnVectorsFormat::hnsw(int(m)?, int(beam)?).ok(),
+        ["hnsw_hamming", m, beam] => KnnVectorsFormat::hnsw_hamming(int(m)?, int(beam)?).ok(),
         ["hnsw_sq", e, m, beam] => KnnVectorsFormat::hnsw_scalar_quantized(
             ScalarEncoding::from_wire_number(int(e)?)?,
             int(m)?,
@@ -850,9 +852,10 @@ fn restore_vectors_formats(writer: &mut IndexWriter<'_>) {
 /// `0` the codec's default (`Lucene99HnswVectorsFormat()`), `1`
 /// `Lucene99HnswVectorsFormat(max_conn, beam_width)`, `2`
 /// `Lucene104HnswScalarQuantizedVectorsFormat(encoding, max_conn,
-/// beam_width)` or `3` `Lucene104ScalarQuantizedVectorsFormat(encoding)`;
-/// kinds `1` and `2` are followed by `i32 max_conn, i32 beam_width`, kinds `2`
-/// and `3` by `u8 scalar encoding` (`ScalarEncoding.getWireNumber`).
+/// beam_width)`, `3` `Lucene104ScalarQuantizedVectorsFormat(encoding)` or `4`
+/// `KNN9120HnswBinaryVectorsFormat(max_conn, beam_width)` (byte fields only);
+/// kinds `1`, `2` and `4` are followed by `i32 max_conn, i32 beam_width`,
+/// kinds `2` and `3` by `u8 scalar encoding` (`ScalarEncoding.getWireNumber`).
 fn decode_vector_schema(
     c: &mut Cursor<'_>,
 ) -> Result<
@@ -899,8 +902,18 @@ fn decode_vector_schema(
             Some(KnnVectorsFormat::hnsw_scalar_quantized(e, m, beam).map_err(invalid)?)
         }
         3 => Some(KnnVectorsFormat::scalar_quantized(scalar(c)?)),
+        4 => {
+            let (m, beam) = graph(c)?;
+            Some(KnnVectorsFormat::hnsw_hamming(m, beam).map_err(invalid)?)
+        }
         _ => return Err(decode_error("vectors format")),
     };
+    if encoding == VectorEncoding::Float32
+        && matches!(format, Some(KnnVectorsFormat::HnswHamming { .. }))
+    {
+        set_last_error("a float vector field cannot be scored by Hamming distance");
+        return Err(FfiStatus::InvalidArgument);
+    }
     if format.as_ref().is_some_and(|f| {
         encoding == VectorEncoding::Byte
             && matches!(
@@ -5118,7 +5131,7 @@ mod tests {
                 .u8(0)
                 .u8(kind);
             let b = match kind {
-                1 => b.i32(m).i32(100),
+                1 | 4 => b.i32(m).i32(100),
                 2 => b.i32(m).i32(100).u8(2),
                 3 => b.u8(2),
                 _ => b,
@@ -5128,6 +5141,12 @@ mod tests {
         assert!(decode_field(&schema(1, 2, 16)).is_err());
         assert!(decode_field(&schema(1, 3, 16)).is_err());
         assert!(decode_field(&schema(1, 1, 16)).is_ok());
+        // Hamming scoring is for byte (packed bit) fields only.
+        assert_eq!(
+            decode_field(&schema(1, 4, 16)).unwrap().1,
+            Some(KnnVectorsFormat::hnsw_hamming(16, 100).unwrap())
+        );
+        assert!(decode_field(&schema(0, 4, 16)).is_err());
         assert!(decode_field(&schema(0, 1, 0)).is_err());
         assert!(decode_field(&schema(0, 1, 513)).is_err());
         assert_eq!(decode_field(&schema(0, 0, 0)).unwrap().1, None);
@@ -5146,6 +5165,10 @@ mod tests {
                 )
                 .unwrap()
             )
+        );
+        assert_eq!(
+            parse_vectors_format("hnsw_hamming:8:64"),
+            Some(KnnVectorsFormat::hnsw_hamming(8, 64).unwrap())
         );
         assert_eq!(
             parse_vectors_format("sq:1"),

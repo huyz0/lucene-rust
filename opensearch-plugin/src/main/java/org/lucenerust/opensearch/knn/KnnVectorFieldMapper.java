@@ -222,12 +222,12 @@ public final class KnnVectorFieldMapper extends ParametrizedFieldMapper {
         this.config = config;
         if (knnIndex) {
             FieldType ft = new FieldType();
-            ft.setVectorAttributes(config.dimension(), config.dataType(), config.spaceType().similarity());
+            ft.setVectorAttributes(config.vectorDimension(), config.dataType(), config.spaceType().similarity());
             ft.putAttribute(KNN_FIELD, "true");
             ft.putAttribute(DIMENSION, Integer.toString(config.dimension()));
             ft.putAttribute(SPACE_TYPE, config.spaceType().value());
             ft.putAttribute(KNN_ENGINE, config.engine());
-            ft.putAttribute(DATA_TYPE, config.dataType() == VectorEncoding.BYTE ? "byte" : "float");
+            ft.putAttribute(DATA_TYPE, config.binary() ? "binary" : config.dataType() == VectorEncoding.BYTE ? "byte" : "float");
             ft.putAttribute(VectorsFormatSpec.ATTRIBUTE, config.format().attribute());
             ft.freeze();
             this.vectorType = ft;
@@ -274,7 +274,7 @@ public final class KnnVectorFieldMapper extends ParametrizedFieldMapper {
         if (parser.currentToken() == XContentParser.Token.VALUE_NULL) {
             return;
         }
-        List<Float> values = new ArrayList<>(config.dimension());
+        List<Float> values = new ArrayList<>(config.vectorDimension());
         if (parser.currentToken() == XContentParser.Token.START_ARRAY) {
             for (XContentParser.Token t = parser.nextToken(); t != XContentParser.Token.END_ARRAY; t = parser.nextToken()) {
                 if (t != XContentParser.Token.VALUE_NUMBER && t != XContentParser.Token.VALUE_STRING) {
@@ -287,9 +287,9 @@ public final class KnnVectorFieldMapper extends ParametrizedFieldMapper {
         } else {
             throw new IllegalArgumentException("[" + CONTENT_TYPE + "] field [" + name() + "] takes an array of numbers, got " + parser.currentToken());
         }
-        if (values.size() != config.dimension()) {
+        if (values.size() != config.vectorDimension()) {
             throw new IllegalArgumentException(
-                String.format(Locale.ROOT, "Vector dimension mismatch. Expected: %d, Given: %d", config.dimension(), values.size())
+                String.format(Locale.ROOT, "Vector dimension mismatch. Expected: %d, Given: %d", config.vectorDimension(), values.size())
             );
         }
         if (config.dataType() == VectorEncoding.BYTE) {

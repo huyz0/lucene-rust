@@ -83,8 +83,16 @@ MAPPINGS = {
     "comp": {"type": "knn_vector", "dimension": 4, "compression_level": "4x"},
     "byte": {"type": "knn_vector", "dimension": 4, "data_type": "byte"},
     "float": {"type": "knn_vector", "dimension": 4, "data_type": "FLOAT"},
+    "binary": {"type": "knn_vector", "dimension": 16, "data_type": "binary"},
+    "binary_method": {"type": "knn_vector", "dimension": 16, "data_type": "binary",
+                      "method": {"name": "hnsw", "engine": "lucene", "space_type": "hamming"}},
     "stored": {"type": "knn_vector", "dimension": 4, "doc_values": False, "store": True},
 }
+
+
+def values():
+    """A document value for every mapping: a binary field takes dimension / 8 bytes."""
+    return {k: [-3, 120] if v.get("data_type") == "binary" else [1, 2, 3, 4] for k, v in MAPPINGS.items()}
 
 
 def stock_engine_to_lucene(spec, persisted):
@@ -102,7 +110,7 @@ def compare_mappings(failures):
     for port in (OURS[1], STOCK[1]):
         ck.req(port, "PUT", "/mappings", {"settings": {"index": {"knn": True, "number_of_replicas": 0}},
                                           "mappings": {"properties": MAPPINGS}})
-        ck.req(port, "PUT", "/mappings/_doc/1?refresh=true", {k: [1, 2, 3, 4] for k in MAPPINGS})
+        ck.req(port, "PUT", "/mappings/_doc/1?refresh=true", values())
         got[port] = ck.req(port, "GET", "/mappings/_mapping")["mappings"]["mappings"]["properties"]
         # The persisted mapping must parse again: an update repeating the request's mapping is no conflict.
         ck.req(port, "PUT", "/mappings/_mapping", {"properties": MAPPINGS})
@@ -132,7 +140,7 @@ def sources(port, index):
 
 def compare_sources(failures):
     doc = {"tag": "x", "secret": "s", "hidden": [5, 5, 5, 5], "nested_obj": {"inner": [9, 8, 7, 6]},
-           **{k: [1, 2, 3, 4] for k in MAPPINGS}}
+           **values()}
     props = {**MAPPINGS, "tag": {"type": "keyword"}, "secret": {"type": "keyword"},
              "hidden": {"type": "knn_vector", "dimension": 4},
              "nested_obj": {"properties": {"inner": {"type": "knn_vector", "dimension": 4}}}}

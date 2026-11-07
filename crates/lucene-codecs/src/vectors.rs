@@ -510,6 +510,31 @@ pub struct FlatFieldEntry {
 pub struct FlatVectorsReader<'a> {
     data: &'a [u8],
     fields: Vec<FlatFieldEntry>,
+    /// Byte vectors are scored by Hamming distance
+    /// ([`scores_hamming`]) whatever their recorded similarity.
+    hamming: bool,
+}
+
+/// The OpenSearch k-NN plugin's `KNN990HnswBinaryVectorsFormat`: the
+/// `Lucene99HnswVectorsFormat` files over packed bit vectors, scored by
+/// `KNN9120BinaryVectorScorer` as `1 / (1 + hamming distance)`. The fields
+/// record `EUCLIDEAN`, which nothing reads.
+pub const HAMMING_FORMAT_NAME: &str = "KNN990HnswBinaryVectorsFormat";
+
+/// Whether a per-field instance with codec suffix `segment_suffix`
+/// (`<format>_<n>`) is [`HAMMING_FORMAT_NAME`]'s, whose reader and writer
+/// score byte vectors by Hamming distance.
+pub fn scores_hamming(segment_suffix: &str) -> bool {
+    segment_suffix
+        .strip_prefix(HAMMING_FORMAT_NAME)
+        .and_then(|rest| rest.strip_prefix('_'))
+        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// `KNNVectorSimilarityFunction.HAMMING.compare`: `1 / (1 + popcount(a ^ b))`.
+#[inline]
+pub fn hamming_score(a: &[u8], b: &[u8]) -> f32 {
+    1.0 / (1.0 + lucene_util::vector_util::xor_bit_count(a, b) as f32)
 }
 
 impl<'a> FlatVectorsReader<'a> {
@@ -581,6 +606,7 @@ impl<'a> FlatVectorsReader<'a> {
         Ok(FlatVectorsReader {
             data: data_buf,
             fields,
+            hamming: scores_hamming(segment_suffix),
         })
     }
 
@@ -590,7 +616,11 @@ impl<'a> FlatVectorsReader<'a> {
     /// their own `.vem`. Every entry must already have passed
     /// [`check_vector_region`] against `data`.
     pub(crate) fn from_entries(data: &'a [u8], fields: Vec<FlatFieldEntry>) -> Self {
-        FlatVectorsReader { data, fields }
+        FlatVectorsReader {
+            data,
+            fields,
+            hamming: false,
+        }
     }
 
     /// `Lucene99FlatVectorsReader.checkIntegrity()`:
@@ -693,6 +723,7 @@ impl<'a> FlatVectorsReader<'a> {
             vector_bytes,
             size: entry.size,
             similarity: entry.similarity,
+            hamming: self.hamming && entry.encoding == VectorEncoding::Byte,
             ord_to_doc: entry.ord_to_doc.clone(),
         })
     }
@@ -859,10 +890,23 @@ struct RawVectorValues<'a> {
     vector_bytes: usize,
     size: i32,
     similarity: VectorSimilarityFunction,
+    /// Byte vectors scored by [`hamming_score`] instead of `similarity`.
+    hamming: bool,
     ord_to_doc: OrdToDoc,
 }
 
 impl RawVectorValues<'_> {
+    /// Two byte vectors' score under this field's scoring: its similarity,
+    /// or [`hamming_score`] for a [`HAMMING_FORMAT_NAME`] field.
+    #[inline]
+    fn score_bytes(&self, a: &[u8], b: &[u8]) -> f32 {
+        if self.hamming {
+            hamming_score(a, b)
+        } else {
+            self.similarity.score_bytes(a, b)
+        }
+    }
+
     /// One vector's bytes. `slice.len() == size * vector_bytes` is the
     /// identity `read_field_entry` enforced against `.vemf`, so an in-range
     /// ordinal always addresses a whole vector -- but the slice is taken with
@@ -1248,7 +1292,7 @@ impl ByteVectorValues<'_> {
         let mut heap = crate::hnsw::NeighborQueue::new(k, false);
         for ord in 0..self.values.size {
             let v = self.vector(ord)?;
-            heap.insert_with_overflow(ord, self.values.similarity.score_bytes(query, v));
+            heap.insert_with_overflow(ord, self.values.score_bytes(query, v));
         }
         collect_descending(heap, |ord| self.values.ord_to_doc(ord))
     }
@@ -1878,14 +1922,13 @@ impl crate::hnsw::UpdateableVectorScorer for FloatVectorScorer<'_> {
 #[derive(Debug, Clone)]
 pub struct ByteVectorScorer<'a> {
     values: ByteVectorValues<'a>,
-    similarity: VectorSimilarityFunction,
     query: Vec<u8>,
 }
 
 impl crate::hnsw::VectorScorer for ByteVectorScorer<'_> {
     fn score(&mut self, node: i32) -> Result<f32> {
         let candidate = self.values.vector(node)?;
-        Ok(self.similarity.score_bytes(&self.query, candidate))
+        Ok(self.values.values.score_bytes(&self.query, candidate))
     }
 
     fn max_ord(&self) -> i32 {
@@ -1953,7 +1996,6 @@ impl<'a> ByteVectorValues<'a> {
         }
         Ok(ByteVectorScorer {
             values: self.clone(),
-            similarity: self.values.similarity,
             query: query.to_vec(),
         })
     }
@@ -1962,7 +2004,6 @@ impl<'a> ByteVectorValues<'a> {
     pub fn ord_scorer(&self) -> ByteVectorScorer<'a> {
         ByteVectorScorer {
             values: self.clone(),
-            similarity: self.values.similarity,
             query: vec![0; self.values.dimension],
         }
     }
@@ -2475,6 +2516,7 @@ mod tests {
             vector_bytes: 4,
             size: 3,
             similarity: VectorSimilarityFunction::Euclidean,
+            hamming: false,
             ord_to_doc: OrdToDoc::Explicit(std::sync::Arc::from(vec![2, 5, 9])),
         };
         let mut out = Vec::new();

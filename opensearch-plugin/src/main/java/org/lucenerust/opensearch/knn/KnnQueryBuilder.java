@@ -7,6 +7,8 @@ import org.lucenerust.opensearch.knn.rest.KnnStats;
 import org.apache.lucene.index.VectorEncoding;
 import org.apache.lucene.search.MatchNoDocsQuery;
 import org.apache.lucene.search.Query;
+import org.opensearch.Version;
+import org.opensearch.common.settings.Settings;
 import org.opensearch.core.ParseField;
 import org.opensearch.core.common.ParsingException;
 import org.opensearch.core.common.io.stream.StreamInput;
@@ -354,9 +356,19 @@ public final class KnnQueryBuilder extends AbstractQueryBuilder<KnnQueryBuilder>
             throw new IllegalArgumentException("[" + NAME + "] [expand_nested_docs] is not supported by this node yet");
         }
         KnnFieldConfig config = knn.config();
-        if (vector.length != config.dimension()) {
+        if (config.binary() && k == null) {
+            throw new UnsupportedOperationException(
+                String.format(
+                    Locale.ROOT,
+                    "Radial search is not supported for this configuration: engine=LUCENE, data_type=BINARY, method=hnsw, compression=%s",
+                    config.compression() == null ? "1x" : config.compression()
+                )
+            );
+        }
+        int queryDimension = config.binary() ? vector.length * Byte.SIZE : vector.length;
+        if (queryDimension != config.dimension()) {
             throw new IllegalArgumentException(
-                String.format(Locale.ROOT, "Query vector has invalid dimension: %d. Dimension should be: %d", vector.length, config.dimension())
+                String.format(Locale.ROOT, "Query vector has invalid dimension: %d. Dimension should be: %d", queryDimension, config.dimension())
             );
         }
         SpaceType space = config.spaceType();
@@ -373,7 +385,7 @@ public final class KnnQueryBuilder extends AbstractQueryBuilder<KnnQueryBuilder>
         }
         Query filterQuery = filter == null ? null : filter.toQuery(context);
         if (k != null) {
-            return new KnnTopVectorQuery(fieldName, target, k, efSearch == null ? k : Math.max(k, efSearch), filterQuery);
+            return new KnnTopVectorQuery(fieldName, target, k, Math.max(k, efSearch == null ? defaultEfSearch(context) : efSearch), filterQuery);
         }
         float threshold;
         if (maxDistance != null) {
@@ -392,6 +404,18 @@ public final class KnnQueryBuilder extends AbstractQueryBuilder<KnnQueryBuilder>
             threshold = minScore;
         }
         return KnnLeafVectorQuery.radial(fieldName, target, threshold, filterQuery);
+    }
+
+    /**
+     * {@code IndexHyperParametersUtil.getHNSWEFSearchValue}: the index's {@code
+     * knn.algo_param.ef_search}, whose default is 512 for indexes created before 2.12.
+     */
+    private static int defaultEfSearch(QueryShardContext context) {
+        Settings settings = context.getIndexSettings().getSettings();
+        if (KnnSettings.EF_SEARCH.exists(settings) == false && context.indexVersionCreated().before(Version.V_2_12_0)) {
+            return 512;
+        }
+        return KnnSettings.EF_SEARCH.get(settings);
     }
 
     @Override
