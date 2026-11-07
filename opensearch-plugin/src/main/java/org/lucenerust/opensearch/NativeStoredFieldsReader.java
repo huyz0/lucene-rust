@@ -7,6 +7,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.lucene.codecs.StoredFieldsReader;
 import org.apache.lucene.index.DirectoryReader;
+import org.apache.lucene.index.DocValuesType;
 import org.apache.lucene.index.FieldInfo;
 import org.apache.lucene.index.FilterDirectoryReader;
 import org.apache.lucene.index.FilterLeafReader;
@@ -17,6 +18,8 @@ import org.apache.lucene.index.LeafReader;
 import org.apache.lucene.index.FieldInfos;
 import org.apache.lucene.index.StoredFieldDataInput;
 import org.apache.lucene.index.StoredFieldVisitor;
+import org.apache.lucene.index.SortedNumericDocValues;
+import org.apache.lucene.index.SortedSetDocValues;
 import org.apache.lucene.index.StoredFields;
 import org.apache.lucene.store.ByteArrayDataInput;
 
@@ -92,6 +95,23 @@ final class NativeStoredFieldsReader extends FilterDirectoryReader {
 
     private final Shared shared;
 
+    /**
+     * Per thread, how many fetch phases are running on it ({@link #fetchStarted}): their doc
+     * values ({@code docvalue_fields}) are read a document at a time natively.
+     */
+    private static final ThreadLocal<int[]> FETCHING = ThreadLocal.withInitial(() -> new int[1]);
+
+    /** A fetch phase starts on this thread. */
+    static void fetchStarted() {
+        FETCHING.get()[0]++;
+    }
+
+    /** A fetch phase ends on this thread, done or failed. */
+    static void fetchEnded() {
+        int[] n = FETCHING.get();
+        n[0] = Math.max(0, n[0] - 1);
+    }
+
     static DirectoryReader wrap(DirectoryReader in, NativeReaders readers, SearchStats stats, BooleanSupplier enabled)
         throws IOException {
         return wrap(in, readers, stats, enabled, false);
@@ -155,12 +175,54 @@ final class NativeStoredFieldsReader extends FilterDirectoryReader {
          * same thread asking for the same document again replays these bytes instead.
          */
         private volatile LastDocument last;
+        /** The leaf's doc values read a document at a time, natively ({@link #pointReads}). */
+        private final NativeDocValues.Batch docValues;
 
         Leaf(LeafReader in, Shared shared, int ord) {
             super(in);
             this.shared = shared;
             this.ord = ord;
             this.live = LiveLeafReader.unwrap(in) != null;
+            this.docValues = new NativeDocValues.Batch((doc, fields) -> {
+                byte[][] out = new byte[1][];
+                int rc = NativeBridge.docValues(shared.handle(), ord, doc, fields, out);
+                if (rc != NativeBridge.OK) {
+                    shared.stats.nativeError();
+                    throw new IOException("native doc values of document " + doc + " failed (" + rc + "): " + NativeBridge.lastError());
+                }
+                shared.stats.nativeDocValues();
+                return out[0];
+            });
+        }
+
+        /**
+         * Whether doc values are read a document at a time natively: in the fetch phase ({@link
+         * #FETCHING}) and wherever a derived-source index rebuilds {@code _source} -- its mappers
+         * read each field's values per hit -- once the searcher's reader is open natively.
+         */
+        private boolean pointReads() {
+            return live == false
+                && shared.enabled.getAsBoolean()
+                && (shared.derivedSource || FETCHING.get()[0] > 0)
+                && shared.handle() != 0;
+        }
+
+        @Override
+        public SortedNumericDocValues getSortedNumericDocValues(String field) throws IOException {
+            FieldInfo fi = pointReads() ? getFieldInfos().fieldInfo(field) : null;
+            if (fi == null || fi.getDocValuesType() != DocValuesType.SORTED_NUMERIC) {
+                return in.getSortedNumericDocValues(field);
+            }
+            return new NativeDocValues.Numbers(docValues, fi.number, () -> in.getSortedNumericDocValues(field));
+        }
+
+        @Override
+        public SortedSetDocValues getSortedSetDocValues(String field) throws IOException {
+            FieldInfo fi = pointReads() ? getFieldInfos().fieldInfo(field) : null;
+            if (fi == null || fi.getDocValuesType() != DocValuesType.SORTED_SET) {
+                return in.getSortedSetDocValues(field);
+            }
+            return new NativeDocValues.Terms(docValues, fi.number, () -> in.getSortedSetDocValues(field));
         }
 
         @Override

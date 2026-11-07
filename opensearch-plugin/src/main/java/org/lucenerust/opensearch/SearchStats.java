@@ -51,6 +51,17 @@ public final class SearchStats {
         }
     }
 
+    private final LongAdder nativeDocValues = new LongAdder();
+
+    /** A document's doc values read natively ({@link NativeDocValues}). */
+    public void nativeDocValues() {
+        nativeDocValues.increment();
+    }
+
+    public long docValuesCount() {
+        return nativeDocValues.sum();
+    }
+
     public long sequentialFetchCount() {
         return nativeSequentialFetches.sum();
     }

@@ -874,6 +874,8 @@ def derived_source(container):
         {"query": {"match_all": {}}, "size": 100, "sort": [{"l": "asc"}]},
         {"query": {"match": {"txt": words(random.Random(1), 2)}}, "size": 20, "sort": [{"i": "desc"}]},
         {"query": {"range": {"l": {"gte": 0}}}, "size": 30, "sort": ["_id"], "_source": ["kw", "obj.*"]},
+        {"query": {"match_all": {}}, "size": 25, "sort": [{"i": "asc"}], "_source": False,
+         "docvalue_fields": ["kw", "l", "d", "hf", "ul", "b", "dt", {"field": "dtf", "format": "epoch_millis"}, "ip", "geo", "wc"]},
         {"query": {"match_all": {}}, "size": 0, "aggs": {"t": {"terms": {"field": "kw", "size": 3},
             "aggs": {"h": {"top_hits": {"size": 3, "sort": [{"l": "asc"}]}}}}}},
         # Adjacent documents: the fetch phase's sequential stored-fields reader.
@@ -900,7 +902,10 @@ def derived_source(container):
         ids = {"ids": [f"d{i}" for i in range(0, 3000, 151)]}
         check(strip(must("POST", f"/{java}/_mget", ids)) == strip(must("POST", f"/{rust}/_mget", ids)), f"{label}: mget")
 
+    before = must("GET", "/_plugins/lucene_rust/stats").get("native_doc_values", 0)
     same("derived source")
+    after = must("GET", "/_plugins/lucene_rust/stats").get("native_doc_values", 0)
+    check(after > before, f"derived source: doc values read natively: {before} -> {after}")
     # Updates (partial ones read the derived _source), deletes, then a realtime get from the translog.
     for idx in (java, rust):
         for i in range(0, 3000, 13):

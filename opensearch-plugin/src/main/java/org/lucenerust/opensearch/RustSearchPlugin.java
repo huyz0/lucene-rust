@@ -334,6 +334,7 @@ public class RustSearchPlugin extends Plugin implements
                 indexModule.addSearchOperationListener(new SearchOperationListener() {
                     @Override
                     public void onPreFetchPhase(SearchContext context) {
+                        NativeStoredFieldsReader.fetchStarted();
                         if (flag.enabled() == false) {
                             return;
                         }
@@ -352,6 +353,16 @@ public class RustSearchPlugin extends Plugin implements
                             // Only a hint: the fetch phase reads every document itself.
                             logger.debug("lucene-rust: stored-fields prefetch failed", e);
                         }
+                    }
+
+                    @Override
+                    public void onFetchPhase(SearchContext context, long tookInNanos) {
+                        NativeStoredFieldsReader.fetchEnded();
+                    }
+
+                    @Override
+                    public void onFailedFetchPhase(SearchContext context) {
+                        NativeStoredFieldsReader.fetchEnded();
                     }
                 });
             } catch (SetOnce.AlreadySetException e) {
