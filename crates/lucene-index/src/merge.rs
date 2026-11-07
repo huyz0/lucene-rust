@@ -4446,6 +4446,10 @@ pub struct MergeOptions {
     /// nothing else routes
     /// ([`crate::index_writer::IndexWriter::set_default_doc_values_format`]).
     pub default_doc_values_format: per_field_doc_values::Lucene90DocValuesFormat,
+    /// What replaces the default `Lucene104PostingsFormat()` for a field
+    /// nothing else routes
+    /// ([`crate::index_writer::IndexWriter::set_default_postings_format`]).
+    pub default_postings_format: per_field_postings::Lucene104PostingsFormat,
     /// The fields routed to a KNN vectors format other than the default
     /// `Lucene99HnswVectorsFormat(hnsw_m, hnsw_beam_width)`
     /// ([`crate::index_writer::IndexWriter::set_knn_vectors_format_for_field`]).
@@ -4619,16 +4623,19 @@ impl MergeOptions {
 
     /// The postings format `field` is routed to.
     fn postings_format_for(&self, field: &str) -> per_field_postings::Lucene104PostingsFormat {
-        self.postings_formats
-            .iter()
-            .find(|(name, _)| name == field)
-            .map(|(_, format)| *format)
-            .or_else(|| {
-                self.codec
-                    .as_ref()
-                    .map(|c| c.postings_format_for_field(field))
-            })
-            .unwrap_or_default()
+        if let Some((_, format)) = self.postings_formats.iter().find(|(name, _)| name == field) {
+            return *format;
+        }
+        let routed = self
+            .codec
+            .as_ref()
+            .map(|c| c.postings_format_for_field(field))
+            .unwrap_or_default();
+        if routed == per_field_postings::Lucene104PostingsFormat::default() {
+            self.default_postings_format
+        } else {
+            routed
+        }
     }
 }
 
@@ -4640,6 +4647,7 @@ impl Default for MergeOptions {
             postings_formats: Vec::new(),
             doc_values_formats: Vec::new(),
             default_doc_values_format: Default::default(),
+            default_postings_format: Default::default(),
             knn_vectors_formats: Vec::new(),
             codec: None,
             reorder: None,

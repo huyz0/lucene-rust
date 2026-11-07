@@ -113,6 +113,9 @@ public final class EngineWriterDiffTest {
         // Under index.lucene_rust.adaptive_doc_values: the same documents read back through the
         // RustAdaptive doc-values format's producer, from merged segments large enough for it.
         run(6, 4000, nativeAnalyzer(), true);
+        // Under index.lucene_rust.zstd_terms: every terms dictionary read back through the
+        // RustZstd104 postings format's reader, zstd term blocks and trained dictionaries included.
+        run(9, 4000, nativeAnalyzer(), false, null, true);
         // Under an index sort (a keyword, then a descending numeric), with OpenSearch's parent
         // field: segments flushed and merged in the same order Lucene writes them.
         org.apache.lucene.search.Sort sort = new org.apache.lucene.search.Sort(
@@ -370,6 +373,17 @@ public final class EngineWriterDiffTest {
 
     private static void run(long seed, int ops, Analyzer analyzer, boolean adaptive, org.apache.lucene.search.Sort sort)
         throws Exception {
+        run(seed, ops, analyzer, adaptive, sort, false);
+    }
+
+    private static void run(
+        long seed,
+        int ops,
+        Analyzer analyzer,
+        boolean adaptive,
+        org.apache.lucene.search.Sort sort,
+        boolean zstdTerms
+    ) throws Exception {
         Path root = Files.createTempDirectory("engine-writer-diff");
         Path javaPath = root.resolve("java");
         Path rustPath = root.resolve("rust");
@@ -394,6 +408,7 @@ public final class EngineWriterDiffTest {
                 false,
                 false,
                 adaptive,
+                zstdTerms,
                 null,
                 sort,
                 parent,
@@ -486,6 +501,20 @@ public final class EngineWriterDiffTest {
                     check(sorted == reader.leaves().size() && sorted > 0, "seed " + seed + ": " + sorted + " of " + reader.leaves().size() + " segments sorted");
                 }
             }
+            int zstdFields = formatFields(rustDir, "PerFieldPostingsFormat.format", "RustZstd104");
+            check(zstdTerms ? zstdFields > 0 : zstdFields == 0, "seed " + seed + ": " + zstdFields + " RustZstd104 postings fields");
+            if (zstdTerms) {
+                // A Java merge rewrites the Rust index with Java's own postings format.
+                try (IndexWriter java = new IndexWriter(rustDir, new IndexWriterConfig(analyzer).setSoftDeletesField(SOFT))) {
+                    java.forceMerge(1);
+                    java.commit();
+                }
+                checkIndex("seed " + seed + " after a Java merge", rustDir);
+                check(
+                    formatFields(rustDir, "PerFieldPostingsFormat.format", "RustZstd104") == 0,
+                    "seed " + seed + ": the Java merge wrote stock postings"
+                );
+            }
             int adaptiveFields = adaptiveFields(rustDir);
             check(adaptive ? adaptiveFields > 0 : adaptiveFields == 0, "seed " + seed + ": " + adaptiveFields + " RustAdaptive doc-values fields");
             if (adaptive) {
@@ -505,6 +534,21 @@ public final class EngineWriterDiffTest {
                 s.sorted(Comparator.reverseOrder()).forEach(p -> p.toFile().delete());
             }
         }
+    }
+
+    /** How many segment fields of {@code dir} record {@code value} under the attribute {@code key}. */
+    private static int formatFields(FSDirectory dir, String key, String value) throws IOException {
+        int n = 0;
+        try (DirectoryReader reader = DirectoryReader.open(dir)) {
+            for (org.apache.lucene.index.LeafReaderContext ctx : reader.leaves()) {
+                for (FieldInfo fi : ctx.reader().getFieldInfos()) {
+                    if (value.equals(fi.getAttribute(key))) {
+                        n++;
+                    }
+                }
+            }
+        }
+        return n;
     }
 
     /** How many segment fields the Rust index stores under the RustAdaptive doc-values format. */
@@ -827,6 +871,7 @@ public final class EngineWriterDiffTest {
                 false,
                 false,
                 false,
+                false,
                 null,
                 null,
                 null,
@@ -887,6 +932,7 @@ public final class EngineWriterDiffTest {
                 dir,
                 root,
                 16,
+                false,
                 false,
                 false,
                 false,

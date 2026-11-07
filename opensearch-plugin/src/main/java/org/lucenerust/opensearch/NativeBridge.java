@@ -38,7 +38,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code jvm_reader.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 81;
+    public static final int EXPECTED_ABI_VERSION = 82;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -400,6 +400,18 @@ public final class NativeBridge {
                 ADDRESS,
                 ADDRESS
             )
+        );
+        static final MethodHandle ZSTD_TERMS_DICTIONARY_OPEN = bind(
+            "ffi_zstd_terms_dictionary_open",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS)
+        );
+        static final MethodHandle ZSTD_TERMS_DICTIONARY_CLOSE = bind(
+            "ffi_zstd_terms_dictionary_close",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG)
+        );
+        static final MethodHandle ZSTD_TERMS_DECOMPRESS = bind(
+            "ffi_zstd_terms_decompress",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG)
         );
     }
 
@@ -1532,6 +1544,7 @@ public final class NativeBridge {
     public static final int OPEN_FAULT_INJECTION = 1;
     public static final int OPEN_SPARSE = 2;
     public static final int OPEN_LIVE_SEARCH = 4;
+    public static final int OPEN_ZSTD_TERMS = 16;
     public static final int OPEN_ADAPTIVE_DOC_VALUES = 32;
     public static final int OPEN_PARTITIONED = 64;
 
@@ -1547,7 +1560,8 @@ public final class NativeBridge {
      * test-only panic operation; {@code sparse} writes the segments of an {@code index.sparse} index,
      * with neural-search's codec and clustered postings; {@code liveSearch} keeps what a search of the
      * buffered documents reads ({@link #liveViewOpen}); {@code adaptiveDocValues} writes doc values in
-     * the {@code RustAdaptive} format; with {@code partitioned} every segment holds one partition
+     * the {@code RustAdaptive} format; {@code zstdTerms} writes every field's terms in the {@code
+     * RustZstd104} postings format, with zstd term blocks; with {@code partitioned} every segment holds one partition
      * (the value of the index's partition field) and records it, and merges never mix partitions.
      * {@code indexSort} is the index sort as a {@code .si} encodes it (null or empty for none), and
      * {@code parentFieldUtf8} the field marking each block's last document (null or empty for none).
@@ -1562,6 +1576,7 @@ public final class NativeBridge {
         boolean sparse,
         boolean liveSearch,
         boolean adaptiveDocValues,
+        boolean zstdTerms,
         boolean partitioned,
         byte[] indexSort,
         byte[] parentFieldUtf8,
@@ -1583,7 +1598,7 @@ public final class NativeBridge {
                 ramBufferMb,
                 (byte) ((faultInjection ? OPEN_FAULT_INJECTION : 0) | (sparse ? OPEN_SPARSE : 0)
                     | (liveSearch ? OPEN_LIVE_SEARCH : 0) | (adaptiveDocValues ? OPEN_ADAPTIVE_DOC_VALUES : 0)
-                    | (partitioned ? OPEN_PARTITIONED : 0)),
+                    | (zstdTerms ? OPEN_ZSTD_TERMS : 0) | (partitioned ? OPEN_PARTITIONED : 0)),
                 s.bytes(sort),
                 (long) sort.length,
                 s.bytes(parent),
@@ -2328,6 +2343,61 @@ public final class NativeBridge {
             outCounts[1] = counts.get(JAVA_LONG, Long.BYTES);
             outCounts[2] = counts.get(JAVA_BOOLEAN, 2 * Long.BYTES) ? 1 : 0;
             return OK;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    // ---- RustZstd104 terms dictionaries (zstd_terms.rs). ----
+
+    /** Prepares a field's zstd term-block dictionary; its handle into {@code outHandle[0]}. */
+    public static int zstdTermsDictionaryOpen(byte[] dictionary, long[] outHandle) {
+        if (dictionary == null) {
+            return nullArgument("dictionary");
+        }
+        if (outHandle == null || outHandle.length < 1) {
+            return fail(INVALID_ARGUMENT, "outHandle holds no slot");
+        }
+        try (Scratch s = Scratch.open()) {
+            MemorySegment handle = s.alloc(Long.BYTES);
+            int rc = (int) H.ZSTD_TERMS_DICTIONARY_OPEN.invokeExact(s.bytes(dictionary), (long) dictionary.length, handle);
+            if (rc == OK) {
+                outHandle[0] = handle.get(JAVA_LONG, 0);
+            }
+            return rc;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** Releases a handle from {@link #zstdTermsDictionaryOpen}. */
+    public static int zstdTermsDictionaryClose(long handle) {
+        try {
+            return (int) H.ZSTD_TERMS_DICTIONARY_CLOSE.invokeExact(handle);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * Decodes the bare zstd frame {@code src[0..srcLen)} of a zstd term block, compressed against
+     * dictionary {@code handle} (0: none), into exactly {@code dst[0..dstLen)}.
+     */
+    public static int zstdTermsDecompress(long handle, byte[] src, int srcLen, byte[] dst, int dstLen) {
+        if (src == null || dst == null) {
+            return nullArgument(src == null ? "src" : "dst");
+        }
+        if (srcLen < 0 || srcLen > src.length || dstLen < 0 || dstLen > dst.length) {
+            return fail(INVALID_ARGUMENT, "src or dst is shorter than its length");
+        }
+        try (Scratch s = Scratch.open()) {
+            MemorySegment in = s.bytes(src, srcLen);
+            MemorySegment out = s.alloc(dstLen);
+            int rc = (int) H.ZSTD_TERMS_DECOMPRESS.invokeExact(handle, in, (long) srcLen, out, (long) dstLen);
+            if (rc == OK) {
+                MemorySegment.copy(out, JAVA_BYTE, 0, dst, 0, dstLen);
+            }
+            return rc;
         } catch (Throwable t) {
             throw rethrow(t);
         }

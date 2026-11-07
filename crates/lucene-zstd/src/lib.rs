@@ -29,6 +29,9 @@ use std::io::Cursor;
 
 use zstd_safe::{CCtx, CDict, DCtx, DDict};
 
+mod bare;
+pub use bare::{with_bare_decompressor, BareCompressor, BareDecompressor};
+
 /// libzstd's default level, and OpenSearch's `index.codec.compression_level`
 /// default.
 pub const DEFAULT_LEVEL: i32 = 3;
