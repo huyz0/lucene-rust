@@ -1101,10 +1101,12 @@ impl ConcurrentIndexWriter<'_> {
                 "an index sort renumbers the buffered documents".into(),
             ));
         }
+        let waiting = std::time::Instant::now();
         let slot = self
             .slot_of(id)
             .filter(|d| d.has_docs())
             .ok_or_else(|| Error::LiveSearch(format!("buffer {id} is being flushed")))?;
+        crate::live_timing::record(crate::live_timing::Phase::ChunkSlotWait, waiting.elapsed());
         let (Ok(start), Ok(end)) = (usize::try_from(range.start), usize::try_from(range.end))
         else {
             return Err(Error::LiveSearch("a negative document range".into()));
@@ -1206,7 +1208,14 @@ impl ConcurrentIndexWriter<'_> {
                 partition.as_deref(),
             )?
         };
-        crate::live_timing::record(crate::live_timing::Phase::ChunkWrite, started.elapsed());
+        crate::live_timing::record(
+            if lazy.is_some() {
+                crate::live_timing::Phase::ChunkLean
+            } else {
+                crate::live_timing::Phase::ChunkWrite
+            },
+            started.elapsed(),
+        );
         Ok((sci, lazy_doc_values))
     }
 
