@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use lucene_expressions::{compile, ExpressionValueSource, SimpleBindings};
+use lucene_expressions::{compile, Backend, ExpressionValueSource, SimpleBindings};
 use lucene_index::buffered_updates::Term;
 use lucene_index::document::{self as d, Document, IndexableField, Store};
 use lucene_index::index_writer::IndexWriter;
@@ -14,6 +14,7 @@ use lucene_search::explain::Explanation;
 use lucene_search::function::{FunctionMatchQuery, FunctionScoreQuery, TopLevel, ValueSource};
 use lucene_search::index_searcher::{IndexSearcher, SegmentNorms};
 use lucene_search::query::{BooleanQuery, Clause, TermQuery};
+use lucene_search::rescorer::{DoubleValuesSourceRescorer, Rescorer};
 use lucene_search::top_docs::TopDocs;
 use lucene_search::values_source::{
     self as dvs, BoxDoubleValues, DoubleValues, DoubleValuesSource, ValuesContext,
@@ -220,28 +221,60 @@ fn expressions_score_the_same_with_and_without_batches() {
     let norms: Vec<SegmentNorms<'_, '_>> = owned.iter().map(Some).collect();
     let searcher = IndexSearcher::new(&segments, &norms).unwrap();
 
-    let mut bindings = SimpleBindings::new();
-    bindings.add_source("i", dvs::from_int_field("i"));
-    bindings.add_source("g", dvs::from_float_field("g"));
-    bindings.add_source("_score", dvs::scores());
-    bindings.add_expression("nested", Arc::new(compile("i * _score + g").unwrap()));
-    let expr = |text: &str, caching: bool| -> Arc<dyn DoubleValuesSource> {
-        let e = Arc::new(compile(text).unwrap());
-        Arc::new(if caching {
-            ExpressionValueSource::caching(&bindings, e).unwrap()
-        } else {
-            ExpressionValueSource::new(&bindings, e).unwrap()
-        })
-    };
-    let per_doc = |text: &str, caching: bool| -> Arc<dyn DoubleValuesSource> {
-        Arc::new(PerDocument(expr(text, caching)))
-    };
-    for (q, p) in queries(&expr).iter().zip(queries(&per_doc).iter()) {
-        for n in [1, 10, 2000] {
-            let batched = run(&searcher, q, n);
-            let one_by_one = run(&searcher, p, n);
-            assert_eq!(batched, one_by_one, "{q:?} top {n}");
-            assert!(!batched.starts_with("error"), "{q:?}: {batched}");
+    for backend in [Backend::Closure, Backend::Vector] {
+        let compiled = |text: &str| Arc::new(compile(text).unwrap().with_backend(backend));
+        let mut bindings = SimpleBindings::new();
+        bindings.add_source("i", dvs::from_int_field("i"));
+        bindings.add_source("g", dvs::from_float_field("g"));
+        bindings.add_source("_score", dvs::scores());
+        bindings.add_expression("nested", compiled("i * _score + g"));
+        let expr = |text: &str, caching: bool| -> Arc<dyn DoubleValuesSource> {
+            let e = compiled(text);
+            Arc::new(if caching {
+                ExpressionValueSource::caching(&bindings, e).unwrap()
+            } else {
+                ExpressionValueSource::new(&bindings, e).unwrap()
+            })
+        };
+        let per_doc = |text: &str, caching: bool| -> Arc<dyn DoubleValuesSource> {
+            Arc::new(PerDocument(expr(text, caching)))
+        };
+        for (q, p) in queries(&expr).iter().zip(queries(&per_doc).iter()) {
+            for n in [1, 10, 2000] {
+                let batched = run(&searcher, q, n);
+                let one_by_one = run(&searcher, p, n);
+                assert_eq!(batched, one_by_one, "{backend:?} {q:?} top {n}");
+                assert!(!batched.starts_with("error"), "{q:?}: {batched}");
+            }
         }
+
+        // a rescorer reads the hits of each leaf as one batch
+        let first = searcher
+            .search(
+                &BooleanQuery {
+                    must: vec![term("c")],
+                    ..Default::default()
+                },
+                3000,
+            )
+            .unwrap();
+        let ctx = ValuesContext::new(&searcher);
+        let combine: Arc<lucene_search::rescorer::ValuesCombine> =
+            Arc::new(|s, present, v| if present { s + v as f32 } else { s });
+        let text = "ln(1 + abs(i)) * g + (g > 5 ? i : -g)";
+        let batched = DoubleValuesSourceRescorer::new(expr(text, false), Arc::clone(&combine))
+            .rescore(&ctx, &first, 500)
+            .unwrap();
+        let one_by_one = DoubleValuesSourceRescorer::new(per_doc(text, false), combine)
+            .rescore(&ctx, &first, 500)
+            .unwrap();
+        let bits = |t: &TopDocs| -> Vec<(i32, u32)> {
+            t.score_docs
+                .iter()
+                .map(|d| (d.doc, d.score.to_bits()))
+                .collect()
+        };
+        assert_eq!(bits(&batched), bits(&one_by_one), "{backend:?} rescore");
+        assert_eq!(batched.score_docs.len(), 500);
     }
 }
