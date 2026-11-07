@@ -1057,6 +1057,12 @@ pub const OPEN_SPARSE: u8 = 2;
 /// [`ffi_engine_writer_open`]'s flag for an index searched without a refresh
 /// (`crate::live`).
 pub const OPEN_LIVE_SEARCH: u8 = 4;
+/// [`ffi_engine_writer_open`]'s flag for
+/// `index.lucene_rust.stored_fields.merge_lz4_high_compression`: merges write
+/// `BEST_SPEED` stored fields with the high-compression LZ4 match finder,
+/// which stock Lucene reads
+/// ([`IndexWriter::set_merge_lz4_high_compression`]).
+pub const OPEN_MERGE_LZ4_HC: u8 = 8;
 /// [`ffi_engine_writer_open`]'s flag for `index.lucene_rust.adaptive_doc_values`:
 /// new segments write their doc values in the `RustAdaptive` format
 /// ([`lucene_codecs::doc_values::Lucene90DocValuesFormat::rust_adaptive`]).
@@ -1079,7 +1085,8 @@ const PARTITIONED_SLOTS: usize = 1024;
 /// an `index.sparse` index ([`lucene_sparse::SparseCodec`]);
 /// [`OPEN_LIVE_SEARCH`] keeps what a search of the buffers reads;
 /// [`OPEN_ADAPTIVE_DOC_VALUES`] writes doc values in the `RustAdaptive`
-/// format; [`OPEN_PARTITIONED`] keeps partitions in segments of their own.
+/// format; [`OPEN_PARTITIONED`] keeps partitions in segments of their own;
+/// [`OPEN_MERGE_LZ4_HC`] has merges compress stored fields harder.
 /// `index_sort` is the index's sort as a `.si` encodes it
 /// ([`lucene_index::segment_info::parse_index_sort`]; empty for none):
 /// every segment is written in that order, as `IndexWriterConfig.setIndexSort`
@@ -1131,6 +1138,10 @@ pub const STORED_FIELDS_BEST_COMPRESSION: u8 = 1;
 pub const STORED_FIELDS_ZSTD: u8 = 2;
 /// OpenSearch custom-codecs' `ZSTDNODICT104` (`index.codec: zstd_no_dict`).
 pub const STORED_FIELDS_ZSTD_NO_DICT: u8 = 3;
+/// The Rust engine's paged zstd stored fields, `LuceneRustZstdPaged104`
+/// (`index.lucene_rust.stored_fields.paged_zstd`): 16 KiB chunks packed into
+/// 16 KiB pages, with a dictionary trained at large merges.
+pub const STORED_FIELDS_ZSTD_PAGED: u8 = 4;
 
 /// [`ffi_engine_writer_open`] writing the stored fields `stored_fields`
 /// names (`STORED_FIELDS_*`), the zstd ones at `compression_level`
@@ -1222,6 +1233,9 @@ pub unsafe extern "C" fn ffi_engine_writer_open_codec(
             } else if let Some(codec) = stored_codec.clone() {
                 writer.set_codec(Some(codec))?;
             }
+            if flags & OPEN_MERGE_LZ4_HC != 0 {
+                writer.set_merge_lz4_high_compression(true);
+            }
             if flags & OPEN_ADAPTIVE_DOC_VALUES != 0 {
                 writer.set_default_doc_values_format(
                     lucene_codecs::doc_values::Lucene90DocValuesFormat::rust_adaptive(),
@@ -1306,7 +1320,9 @@ fn stored_fields_codec(
     stored_fields: u8,
     level: i32,
 ) -> Result<Option<Arc<dyn lucene_codecs::codec::Lucene104Codec>>, FfiStatus> {
-    use lucene_codecs::codec::{BestCompressionLucene104Codec, ZstdLucene104Codec};
+    use lucene_codecs::codec::{
+        BestCompressionLucene104Codec, ZstdLucene104Codec, ZstdPagedLucene104Codec,
+    };
     use lucene_codecs::stored_fields::ZstdMode;
     let zstd = |mode: ZstdMode| -> Result<Option<Arc<dyn lucene_codecs::codec::Lucene104Codec>>, FfiStatus> {
         let codec = ZstdLucene104Codec::new(mode).map_err(|e| {
@@ -1320,6 +1336,13 @@ fn stored_fields_codec(
         STORED_FIELDS_BEST_COMPRESSION => Ok(Some(Arc::new(BestCompressionLucene104Codec))),
         STORED_FIELDS_ZSTD => zstd(ZstdMode::zstd(level)),
         STORED_FIELDS_ZSTD_NO_DICT => zstd(ZstdMode::zstd_no_dict(level)),
+        STORED_FIELDS_ZSTD_PAGED => {
+            let codec = ZstdPagedLucene104Codec::new(level).map_err(|e| {
+                set_last_error(format!("index.codec.compression_level: {e}"));
+                FfiStatus::InvalidArgument
+            })?;
+            Ok(Some(Arc::new(codec)))
+        }
         other => {
             set_last_error(format!("unknown stored fields format {other}"));
             Err(FfiStatus::InvalidArgument)
@@ -2777,6 +2800,12 @@ mod tests {
                 -1,
                 "ZSTDNODICT104",
                 "ZSTD_NO_DICT",
+            ),
+            (
+                STORED_FIELDS_ZSTD_PAGED,
+                3,
+                "LuceneRustZstdPaged104",
+                "ZSTD_PAGED",
             ),
         ] {
             let tmp = empty_index("engine-writer-codec");
