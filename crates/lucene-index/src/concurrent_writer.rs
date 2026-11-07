@@ -1757,7 +1757,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
         let postings = Arc::new(std::mem::take(&mut dwpt.postings));
         let mut columns = std::mem::take(&mut dwpt.live);
         // Chunks are written only while the buffer is in its slot.
-        columns.drop_doc_values();
+        columns.drop_chunk_columns();
         if self.live() {
             let flushing = live::Flushing {
                 postings: Arc::clone(&postings),

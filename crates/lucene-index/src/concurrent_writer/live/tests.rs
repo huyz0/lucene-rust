@@ -613,3 +613,134 @@ fn live_search_cost() {
         }
     }
 }
+
+/// A chunk written from the buffer's columns holds the files the decoded
+/// documents give, for norms, doc values, points and field infos alike.
+#[test]
+fn chunks_from_columns_match_chunks_from_documents() {
+    let tmp = TempDir::new("live-chunk-columns");
+    let dir = FsDirectory::open(tmp.path());
+    let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", VERSION).unwrap();
+    w.enable_explicit_documents().unwrap();
+    let body = w
+        .register_field(
+            FieldInfo::new("body", 0).with_index_options(IndexOptions::DocsAndFreqs),
+        )
+        .unwrap();
+    let kw = w
+        .register_field(
+            FieldInfo::new("kw", 0)
+                .with_index_options(IndexOptions::Docs)
+                .with_omit_norms(true)
+                .with_doc_values(DocValuesType::SortedSet, DocValuesSkipIndexType::None, -1),
+        )
+        .unwrap();
+    let price = w
+        .register_field(
+            FieldInfo::new("price", 0)
+                .with_doc_values(DocValuesType::SortedNumeric, DocValuesSkipIndexType::None, -1)
+                .with_points(1, 1, 8),
+        )
+        .unwrap();
+    let loc = w
+        .register_field(FieldInfo::new("loc", 0).with_points(2, 2, 4))
+        .unwrap();
+    let w = ConcurrentIndexWriter::new(w, 1).unwrap();
+    w.enable_live_search().unwrap();
+    for i in 0..400i64 {
+        let mut fields = ExplicitFields {
+            inverted: vec![InvertedField {
+                field_number: body,
+                terms: vec![term("w", &[])].into(),
+                norm: Some(1 + i % 7),
+            }],
+            ..ExplicitFields::default()
+        };
+        if i % 4 != 0 {
+            let tag = format!("t{}", i % 9).into_bytes();
+            fields.inverted.push(InvertedField {
+                field_number: kw,
+                terms: vec![InvertedTerm {
+                    term: tag.clone(),
+                    ..term("", &[])
+                }]
+                .into(),
+                norm: None,
+            });
+            fields.doc_values.push(StoredField {
+                field_number: kw,
+                value: FieldValue::Binary(tag),
+            });
+        }
+        if i % 3 != 2 {
+            fields.doc_values.push(StoredField {
+                field_number: price,
+                value: FieldValue::Long(1000 - i),
+            });
+            fields.points.push(StoredField {
+                field_number: price,
+                value: FieldValue::Binary(
+                    (((1000 - i) as u64) ^ 0x8000_0000_0000_0000)
+                        .to_be_bytes()
+                        .to_vec(),
+                ),
+            });
+        }
+        if i % 5 == 0 {
+            let mut packed = ((i as u32) ^ 0x8000_0000).to_be_bytes().to_vec();
+            packed.extend_from_slice(&((7 * i as u32) ^ 0x8000_0000).to_be_bytes());
+            fields.points.push(StoredField {
+                field_number: loc,
+                value: FieldValue::Binary(packed),
+            });
+        }
+        w.add_explicit_documents(vec![ExplicitDocument {
+            stored: Vec::new(),
+            fields,
+        }])
+        .unwrap();
+    }
+    let id = w.live_slot_buffers()[0].id;
+    assert!(
+        read_slot(&w.slots[0]).live.chunk_columns(37, 301).is_some(),
+        "the run is kept as columns"
+    );
+    let chunk = |name: &str, decode: bool| {
+        DECODE_CHUNKS.with(|c| c.set(decode));
+        let sci = w
+            .live_buffer_segment(id, 37..301, HashMap::new(), &[], false, &dir, name)
+            .unwrap();
+        DECODE_CHUNKS.with(|c| c.set(false));
+        sci
+    };
+    let read = |sci: &crate::segment_infos::SegmentCommitInfo, name: &str| {
+        let mut files: Vec<(String, Vec<u8>)> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .filter(|f| f.starts_with(&format!("{name}.")) || f.starts_with(&format!("{name}_")))
+            .filter(|f| !f.ends_with(".si"))
+            .map(|f| {
+                let mut bytes = std::fs::read(tmp.path().join(&f)).unwrap();
+                // Headers carry the segment's random id, footers a checksum.
+                let n = bytes.len().saturating_sub(8);
+                bytes.truncate(n);
+                for at in 0..bytes.len().saturating_sub(15) {
+                    if bytes[at..at + 16] == sci.segment_id {
+                        bytes[at..at + 16].fill(0);
+                    }
+                }
+                (f[name.len()..].to_string(), bytes)
+            })
+            .collect();
+        files.sort();
+        files
+    };
+    let from_columns = chunk("_c1", false);
+    let decoded = chunk("_c2", true);
+    let (a, b) = (read(&from_columns, "_c1"), read(&decoded, "_c2"));
+    let names: Vec<&str> = a.iter().map(|(n, _)| n.as_str()).collect();
+    assert!(names.iter().any(|n| n.ends_with(".kdd")), "{names:?}");
+    assert!(names.iter().any(|n| n.ends_with(".dvd")), "{names:?}");
+    assert!(names.iter().any(|n| n.ends_with(".nvd")), "{names:?}");
+    assert_eq!(a, b);
+}

@@ -1288,10 +1288,41 @@ pub(crate) struct BufferLimit {
     /// field's norms, doc values, points and stored fields but no terms,
     /// for a caller that reads the documents' terms elsewhere.
     pub(crate) postings: bool,
-    /// The documents' doc values as columns, numbered from `start`, when
-    /// the caller kept them: written as they are instead of being read
-    /// from each document.
-    pub(crate) doc_values: Option<Vec<(i32, PrebuiltDocValues)>>,
+    /// The documents' fields as columns, numbered from `start`, when the
+    /// caller kept them: written as they are instead of being read from
+    /// each document.
+    pub(crate) columns: Option<ChunkColumns>,
+}
+
+/// A run of a buffer's documents as columns, for writing them without
+/// decoding each document.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ChunkColumns {
+    /// The fields some document has in any role but stored, and none
+    /// stores term vectors.
+    pub(crate) present: Vec<i32>,
+    /// Each norms field's norm by document, `None` where it has none.
+    pub(crate) norms: Vec<(i32, Vec<Option<i64>>)>,
+    pub(crate) doc_values: Vec<(i32, PrebuiltDocValues)>,
+    /// The points fields some document has.
+    pub(crate) points: Vec<lucene_codecs::points::PackedPointsField>,
+}
+
+/// Appends `value` as `info`'s packed point; `false` when it is not one.
+pub(crate) fn encode_live_point(info: &FieldInfo, value: &FieldValue, out: &mut Vec<u8>) -> bool {
+    let config = PointsFieldConfig {
+        name: String::new(),
+        field_number: info.number,
+        num_dims: info.point_dimension_count,
+        num_index_dims: info.point_index_dimension_count,
+        bytes_per_dim: info.point_num_bytes,
+    };
+    let len = out.len();
+    let ok = info.point_dimension_count > 0 && encode_point(&config, 0, value, out).is_ok();
+    if !ok {
+        out.truncate(len);
+    }
+    ok
 }
 
 /// One field's doc values for a run of documents, in the shape the
@@ -10974,6 +11005,66 @@ impl IndexWriter<'_> {
                 fields[slot].docs.push(doc_id as i32);
             }
         }
+        Self::write_points_fields(
+            config,
+            fields,
+            configs,
+            segment_id,
+            dir,
+            segment_name,
+            docs.len() as i32,
+        )
+    }
+
+    /// [`Self::build_points_output`] from each field's points already
+    /// packed, numbered within the segment; a field of `configs` absent
+    /// from `columns` has none.
+    fn build_prebuilt_points_output(
+        config: &IndexingConfig,
+        columns: &[lucene_codecs::points::PackedPointsField],
+        configs: &[PointsFieldConfig],
+        segment_id: &[u8; ID_LENGTH],
+        dir: &dyn Directory,
+        segment_name: &str,
+        max_doc: i32,
+    ) -> Result<Option<PointsOutput>> {
+        let fields = configs
+            .iter()
+            .map(|c| {
+                columns
+                    .iter()
+                    .find(|f| f.field_number == c.field_number)
+                    .cloned()
+                    .unwrap_or_else(|| lucene_codecs::points::PackedPointsField {
+                        field_number: c.field_number,
+                        num_dims: c.num_dims,
+                        num_index_dims: c.num_index_dims,
+                        bytes_per_dim: c.bytes_per_dim,
+                        ..Default::default()
+                    })
+            })
+            .collect();
+        Self::write_points_fields(
+            config,
+            fields,
+            configs,
+            segment_id,
+            dir,
+            segment_name,
+            max_doc,
+        )
+    }
+
+    /// Writes the points `fields` hold, one per field of `configs`.
+    fn write_points_fields(
+        config: &IndexingConfig,
+        mut fields: Vec<lucene_codecs::points::PackedPointsField>,
+        configs: &[PointsFieldConfig],
+        segment_id: &[u8; ID_LENGTH],
+        dir: &dyn Directory,
+        segment_name: &str,
+        max_doc: i32,
+    ) -> Result<Option<PointsOutput>> {
         let written_fields: Vec<String> = configs
             .iter()
             .zip(&fields)
@@ -11009,7 +11100,7 @@ impl IndexWriter<'_> {
                     segment: segment_name,
                     id: segment_id,
                     suffix: "",
-                    max_doc: docs.len() as i32,
+                    max_doc,
                 },
                 &config.fields,
                 fields,
@@ -11024,7 +11115,7 @@ impl IndexWriter<'_> {
         let (kdm, kdi, kdd) = lucene_codecs::points::write_packed(
             fields,
             MAX_POINTS_IN_LEAF_NODE,
-            docs.len() as i32,
+            max_doc,
             segment_id,
             "",
         )?;
