@@ -210,6 +210,8 @@ public final class KnnVectorFieldMapper extends ParametrizedFieldMapper {
     private final FieldType vectorType;
     /** {@link #vectorType} marked for derived source, in an index that masks it. */
     private final FieldType derivedType;
+    /** {@link #derivedType} for the field's values in nested documents. */
+    private final FieldType nestedDerivedType;
     private volatile Boolean derivedField;
 
     private KnnVectorFieldMapper(
@@ -248,10 +250,13 @@ public final class KnnVectorFieldMapper extends ParametrizedFieldMapper {
             ft.putAttribute(VectorsFormatSpec.ATTRIBUTE, config.format().attribute());
             ft.freeze();
             this.vectorType = ft;
-            this.derivedType = DerivedSource.forIndex(indexSettings) ? DerivedSource.marked(ft) : null;
+            boolean derived = DerivedSource.forIndex(indexSettings);
+            this.derivedType = derived ? DerivedSource.marked(ft, false) : null;
+            this.nestedDerivedType = derived ? DerivedSource.marked(ft, true) : null;
         } else {
             this.vectorType = null;
             this.derivedType = null;
+            this.nestedDerivedType = null;
         }
     }
 
@@ -348,14 +353,17 @@ public final class KnnVectorFieldMapper extends ParametrizedFieldMapper {
         }
     }
 
-    /** The marked type for every root field of a masking index; nested fields keep their values. */
+    /** The marked type for every field of a masking index: the nested one in a nested document. */
     private FieldType vectorType(ParseContext context) {
-        return derivedType == null || context.doc() != context.rootDoc() ? vectorType : derivedType;
+        if (derivedType == null) {
+            return vectorType;
+        }
+        return context.doc() == context.rootDoc() ? derivedType : nestedDerivedType;
     }
 
     /** Whether the field's value is masked in {@code _source} ({@code isDerivedEnabled}). */
     private boolean masked(ParseContext context) {
-        if (derivedType == null || context.doc() != context.rootDoc()) {
+        if (derivedType == null) {
             return false;
         }
         if (derivedField == null) {

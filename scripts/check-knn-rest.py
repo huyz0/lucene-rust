@@ -148,46 +148,61 @@ def compare_sources(failures):
              "hidden": {"type": "knn_vector", "dimension": 4},
              "nested_obj": {"properties": {"inner": {"type": "knn_vector", "dimension": 4}}}}
     n = 0
-    # Filtered and whole _source; a copy_to field, which stock leaves whole.
-    variants = (("sources", {"excludes": ["secret", "hidden"]}, {}),
+    # Filtered and whole _source; a copy_to field, which stock leaves whole; nested vectors, each
+    # value its child document's, after another block so the children do not start at 0.
+    nest = {"type": "nested", "properties": {"emb": {"type": "knn_vector", "dimension": 4},
+                                             "b": {"type": "knn_vector", "dimension": 4, "data_type": "byte"},
+                                             "t": {"type": "keyword"}}}
+    nest_body = {"nest": [{"emb": [1, 2, 3, 4.5], "b": [1, -2, 3, 4], "t": "a"}, {"t": "b"},
+                          {"emb": None, "b": [5, 6, 7, -8]}, {"emb": [0.25, 0, 0, 1]}]}
+    variants = (("sources", {"excludes": ["secret", "hidden"]}, {}, {}),
                 ("sources-whole", None, {"copied": {"type": "knn_vector", "dimension": 4, "copy_to": "copied_all"},
-                                         "copied_all": {"type": "knn_vector", "dimension": 4}}))
-    for index, source, extra in variants:
+                                         "copied_all": {"type": "knn_vector", "dimension": 4}},
+                 {"copied": [4, 3, 2, 1]}),
+                ("sources-nested", None, {"nest": nest}, nest_body))
+    for index, source, extra, more in variants:
         got = {}
         mappings = {"properties": {**props, **extra}}
         if source:
             mappings["_source"] = source
-        body = {**doc, **({"copied": [4, 3, 2, 1]} if extra else {})}
+        body = {**doc, **more}
         for port in (OURS[1], STOCK[1]):
             settings = {"knn": True, "number_of_replicas": 0, **({"lucene_rust.engine": True} if port == OURS[1] else {})}
             ck.req(port, "PUT", f"/{index}", {"settings": {"index": settings}, "mappings": mappings})
             setting = ck.req(port, "GET", f"/{index}/_settings/index.knn.derived_source.enabled")
             got[port] = {"setting": setting[index]["settings"]["index"]["knn"]["derived_source"]["enabled"]}
+            if more.get("nest"):
+                ck.req(port, "PUT", f"/{index}/_doc/0", {"nest": [{"emb": [9, 9, 9, 9]}, {"emb": [8, 8, 8, 8]}]})
             ck.req(port, "PUT", f"/{index}/_doc/1", body)
             got[port].update(sources(port, index))
         n += 3
         if typed(got[OURS[1]]) != typed(got[STOCK[1]]):
             failures.append(f"{index} _source: ours {got[OURS[1]]}, stock {got[STOCK[1]]}")
-    # Masking stores less: the same documents with derived source off take more room.
+    # Masking stores less: the same documents with derived source off take more room, for root
+    # and nested vectors.
     rng = random.Random(5)
+    vec = lambda: "[%s]" % ",".join(f"{rng.random():.6f}" for _ in range(64))
     lines = []
     for i in range(400):
         lines.append('{"index":{"_id":"%d"}}' % i)
-        lines.append('{"v":[%s]}' % ",".join(f"{rng.random():.6f}" for _ in range(64)))
+        lines.append('{"v":%s,"nest":[{"w":%s},{"w":%s}]}' % (vec(), vec(), vec()))
+    nested = {"type": "nested", "properties": {"w": {"type": "knn_vector", "dimension": 64}}}
     size = {}
     for index, derived in (("masked", True), ("whole", False)):
         ck.req(OURS[1], "PUT", f"/{index}", {"settings": {"index": {"knn": True, "number_of_replicas": 0,
                                                                     "lucene_rust.engine": True,
                                                                     "knn.derived_source.enabled": derived}},
-                                             "mappings": {"properties": {"v": {"type": "knn_vector", "dimension": 64}}}})
+                                             "mappings": {"properties": {"v": {"type": "knn_vector", "dimension": 64},
+                                                                         "nest": nested}}})
         ck.req(OURS[1], "POST", f"/{index}/_bulk?refresh=true", "\n".join(lines) + "\n", ndjson=True)
         ck.req(OURS[1], "POST", f"/{index}/_forcemerge?max_num_segments=1")
         size[index] = ck.req(OURS[1], "GET", f"/{index}/_stats/store")["_all"]["primaries"]["store"]["size_in_bytes"]
-        hit = ck.req(OURS[1], "GET", f"/{index}/_doc/7")["_source"]["v"]
-        if len(hit) != 64:
-            failures.append(f"{index}: _source vector {hit}")
-    if size["masked"] >= size["whole"]:
-        failures.append(f"masked index stores {size['masked']} bytes, not less than {size['whole']} unmasked")
+        hit = ck.req(OURS[1], "GET", f"/{index}/_doc/7")["_source"]
+        if len(hit["v"]) != 64 or [len(c["w"]) for c in hit["nest"]] != [64, 64]:
+            failures.append(f"{index}: _source vectors {hit}")
+    # Unmasked, the three vectors take over 6 bytes a number of _source text, compressed; masked, none.
+    if size["whole"] - size["masked"] < 400 * 3 * 64 * 4:
+        failures.append(f"masked index stores {size['masked']} bytes, not well below {size['whole']} unmasked")
     print(f"store: masked {size['masked']} bytes, whole {size['whole']}")
     return n
 

@@ -793,17 +793,25 @@ pub(crate) fn parse_vectors_format(value: &str) -> Option<KnnVectorsFormat> {
     }
 }
 
-/// The field attribute (`true`) marking a vector field whose `_source` value the plugin stores
-/// masked, as k-NN's derived source does: every segment flushed with the field lists it under
-/// [`lucene_search::derived_source::DERIVED_VECTOR_FIELDS`], so a reader (the plugin's or stock
-/// k-NN's) puts the vector back.
+/// The field attribute marking a vector field whose `_source` value the plugin stores masked, as
+/// k-NN's derived source does: `true` for a field of the root document, `nested` for one of nested
+/// documents. Every segment flushed with the field lists it under
+/// [`lucene_search::derived_source::DERIVED_VECTOR_FIELDS`] or
+/// [`lucene_search::derived_source::NESTED_DERIVED_VECTOR_FIELDS`], so a reader (the plugin's or
+/// stock k-NN's) puts the vector back.
 pub(crate) const DERIVED_SOURCE_ATTRIBUTE: &str = "lucene_rust.derived_source";
 
-/// Whether `info` carries [`DERIVED_SOURCE_ATTRIBUTE`].
-fn is_derived_source(info: &FieldInfo) -> bool {
+/// The `.si` list that names `info` when it carries [`DERIVED_SOURCE_ATTRIBUTE`].
+fn derived_source_list(info: &FieldInfo) -> Option<&'static str> {
+    use lucene_search::derived_source::{DERIVED_VECTOR_FIELDS, NESTED_DERIVED_VECTOR_FIELDS};
     info.attributes
         .iter()
-        .any(|(k, v)| k == DERIVED_SOURCE_ATTRIBUTE && v == "true")
+        .find(|(k, _)| k == DERIVED_SOURCE_ATTRIBUTE)
+        .and_then(|(_, v)| match v.as_str() {
+            "true" => Some(DERIVED_VECTOR_FIELDS),
+            "nested" => Some(NESTED_DERIVED_VECTOR_FIELDS),
+            _ => None,
+        })
 }
 
 /// k-NN's derived-source `.si` lists, for a k-NN index ([`OPEN_KNN`]): flushed segments list the
@@ -815,14 +823,13 @@ fn derived_source_attributes(writer: &mut IndexWriter<'_>) {
         DERIVED_VECTOR_FIELDS.to_string(),
         NESTED_DERIVED_VECTOR_FIELDS.to_string(),
     ]);
-    let derived: Vec<String> = writer
+    let derived: Vec<(&'static str, String)> = writer
         .fields()
         .iter()
-        .filter(|f| is_derived_source(f))
-        .map(|f| f.name.clone())
+        .filter_map(|f| derived_source_list(f).map(|list| (list, f.name.clone())))
         .collect();
-    for name in derived {
-        writer.add_segment_list_value(DERIVED_VECTOR_FIELDS, &name);
+    for (list, name) in derived {
+        writer.add_segment_list_value(list, &name);
     }
 }
 
@@ -1478,7 +1485,7 @@ pub unsafe extern "C" fn ffi_engine_writer_register_field(
         let (info, format) = decode_field(spec)?;
         let number = with_writer(handle, |w| {
             let name = info.name.clone();
-            let derived = is_derived_source(&info);
+            let derived = derived_source_list(&info);
             w.writer()
                 .with_writer(|iw| {
                     let number = iw.register_field(info)?;
@@ -1486,11 +1493,10 @@ pub unsafe extern "C" fn ffi_engine_writer_register_field(
                         iw.set_knn_vectors_format_for_field(&name, format);
                     }
                     // Only a k-NN index's codec reads the list back.
-                    if derived && iw.segment_attribute(KNN_DELEGATE_CODEC_ATTRIBUTE).is_some() {
-                        iw.add_segment_list_value(
-                            lucene_search::derived_source::DERIVED_VECTOR_FIELDS,
-                            &name,
-                        );
+                    if let Some(list) = derived {
+                        if iw.segment_attribute(KNN_DELEGATE_CODEC_ATTRIBUTE).is_some() {
+                            iw.add_segment_list_value(list, &name);
+                        }
                     }
                     Ok::<_, lucene_index::index_writer::Error>(number)
                 })
