@@ -12,6 +12,7 @@ import org.apache.lucene.index.IndexDeletionPolicy;
 import org.apache.lucene.index.IndexOptions;
 import org.apache.lucene.index.MergePolicy;
 import org.apache.lucene.index.TieredMergePolicy;
+import org.lucenerust.opensearch.NativeBridge;
 import org.opensearch.common.settings.Setting;
 import org.opensearch.core.common.breaker.CircuitBreaker;
 import org.opensearch.index.IndexSettings;
@@ -76,6 +77,50 @@ public final class RustEngineSupport {
         false,
         Setting.Property.IndexScope
     );
+
+    /**
+     * How the Rust engine reads this index's files from local disk. {@code mmap} (the default) maps
+     * them, as stock OpenSearch's {@code mmapfs} and {@code hybridfs} stores do. {@code page_cache}
+     * reads them through the plugin's own page cache instead: pages read on first touch with direct
+     * I/O, small hot files (terms index, norms, metadata) held whole, and every shard's pages within
+     * one node budget ({@code lucene_rust.store.page_cache.size}) rather than the kernel's page cache.
+     * {@code page_cache_vectors} reads only the vector formats' files (HNSW and IVF) that way and maps
+     * the rest. Needs Linux with {@code userfaultfd} permitted; elsewhere the index stays mapped. The
+     * files on disk are the same either way.
+     */
+    public static final Setting<String> STORE_MODE = new Setting<>(
+        "index.lucene_rust.store_mode",
+        "mmap",
+        RustEngineSupport::parseStoreMode,
+        Setting.Property.IndexScope
+    );
+
+    static String parseStoreMode(String value) {
+        if (value.equals("mmap") || value.equals("page_cache") || value.equals("page_cache_vectors")) {
+            return value;
+        }
+        throw new IllegalArgumentException(
+            "unknown value ["
+                + value
+                + "] for [index.lucene_rust.store_mode]: expected [mmap], [page_cache] or [page_cache_vectors]"
+        );
+    }
+
+    /**
+     * Binds or unbinds the shard's path to the native page cache by {@link #STORE_MODE}, before the
+     * engine's writer and readers open their directories there.
+     */
+    static void bindStoreMode(EngineConfig config, Store store) {
+        // The key the writer and the native readers look the binding up by.
+        String path = org.lucenerust.opensearch.store.RustEncryptedDirectory.nativePath(indexPath(store));
+        String mode = STORE_MODE.get(config.getIndexSettings().getSettings());
+        int rc = mode.equals("mmap")
+            ? NativeBridge.storeUnbindPageCache(path)
+            : NativeBridge.storeBindPageCache(path, 0, mode.equals("page_cache_vectors"));
+        if (rc != 0) {
+            throw new IllegalStateException("lucene-rust: cannot set the store mode of [" + path + "] (status " + rc + ")");
+        }
+    }
 
     /**
      * The field whose value is a document's partition, as a partitioned table's partition key: every
@@ -339,6 +384,7 @@ public final class RustEngineSupport {
         int maxDocs
     ) throws IOException {
         Codec codec = config.getCodec();
+        bindStoreMode(config, store);
         RustIndexWriter writer = RustIndexWriter.open(
             store.directory(),
             indexPath(store),

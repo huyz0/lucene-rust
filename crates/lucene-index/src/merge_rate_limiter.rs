@@ -337,6 +337,10 @@ impl Directory for MergeDirectory<'_> {
     fn open(&self, name: &str) -> lucene_store::Result<Input> {
         self.inner.open(name)
     }
+
+    fn open_aligned(&self, name: &str, alignment: usize) -> lucene_store::Result<Input> {
+        self.inner.open_aligned(name, alignment)
+    }
     fn file_length(&self, name: &str) -> lucene_store::Result<u64> {
         self.inner.file_length(name)
     }
