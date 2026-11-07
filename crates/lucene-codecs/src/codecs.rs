@@ -182,6 +182,23 @@ pub const OPENSEARCH_ZSTD_CODECS: &[(&str, &str)] = &[
     (ZSTD_NO_DICT_CODEC, "Lucene104"),
 ];
 
+/// The OpenSearch k-NN plugin's codecs, `(name, delegate)`: each is a
+/// `FilterCodec` over the named Lucene codec. With the lucene engine, a
+/// vector field's files are Lucene's own formats (some under k-NN format
+/// names, which name the same files), so an index the k-NN plugin wrote
+/// opens whichever version wrote it.
+pub const OPENSEARCH_KNN_CODECS: &[(&str, &str)] = &[
+    ("KNN910Codec", "Lucene91"),
+    ("KNN920Codec", "Lucene92"),
+    ("KNN940Codec", "Lucene94"),
+    ("KNN950Codec", "Lucene95"),
+    ("KNN990Codec", "Lucene99"),
+    ("KNN9120Codec", "Lucene912"),
+    ("KNN10010Codec", "Lucene101"),
+    ("KNN1030Codec", "Lucene103"),
+    ("KNN1040Codec", "Lucene104"),
+];
+
 /// The codec OpenSearch 3.x writes for `index.codec: zstd`.
 pub const ZSTD_CODEC: &str = "ZSTD104";
 /// The codec OpenSearch 3.x writes for `index.codec: zstd_no_dict`.
@@ -196,10 +213,11 @@ pub const ZSTD_PAGED_CODEC: &str = "LuceneRustZstdPaged104";
 /// [`OPENSEARCH_ZSTD_CODECS`].
 pub const RUST_CODECS: &[(&str, &str)] = &[(ZSTD_PAGED_CODEC, "Lucene104")];
 
-/// [`OPENSEARCH_ZSTD_CODECS`] and [`RUST_CODECS`] as readable codecs.
+/// [`OPENSEARCH_ZSTD_CODECS`], [`OPENSEARCH_KNN_CODECS`] and [`RUST_CODECS`] as readable codecs.
 static OPENSEARCH: std::sync::LazyLock<Vec<CodecFormats>> = std::sync::LazyLock::new(|| {
     OPENSEARCH_ZSTD_CODECS
         .iter()
+        .chain(OPENSEARCH_KNN_CODECS)
         .chain(RUST_CODECS)
         .filter_map(|&(name, delegate)| {
             CODECS
@@ -217,7 +235,7 @@ static REGISTERED: RwLock<Vec<&'static CodecFormats>> = RwLock::new(Vec::new());
 /// codec composes formats this port reads already; `formats` says which
 /// generation, as the built-in entries do. A later registration under a name
 /// replaces the earlier one; a built-in name, or one of
-/// [`OPENSEARCH_ZSTD_CODECS`], cannot be replaced.
+/// [`OPENSEARCH_ZSTD_CODECS`] or [`OPENSEARCH_KNN_CODECS`], cannot be replaced.
 pub fn register(formats: CodecFormats) {
     if CODECS
         .iter()
@@ -288,12 +306,16 @@ mod tests {
     }
 
     #[test]
-    fn opensearch_zstd_codecs_read_as_their_delegates() {
+    fn opensearch_codecs_read_as_their_delegates() {
         assert_eq!(
             OPENSEARCH.len(),
-            OPENSEARCH_ZSTD_CODECS.len() + RUST_CODECS.len()
+            OPENSEARCH_ZSTD_CODECS.len() + OPENSEARCH_KNN_CODECS.len() + RUST_CODECS.len()
         );
-        for &(name, delegate) in OPENSEARCH_ZSTD_CODECS.iter().chain(RUST_CODECS) {
+        for &(name, delegate) in OPENSEARCH_ZSTD_CODECS
+            .iter()
+            .chain(OPENSEARCH_KNN_CODECS)
+            .chain(RUST_CODECS)
+        {
             let c = for_name(name).unwrap();
             assert_eq!(renamed(c, delegate), *for_name(delegate).unwrap(), "{name}");
         }

@@ -175,6 +175,26 @@ impl KnnVectorsFormat {
     }
 }
 
+/// The OpenSearch k-NN plugin's names for Lucene104's scalar-quantized
+/// formats (its lucene engine's `sq` encoders and compression levels): the
+/// same files under another format name.
+const OPENSEARCH_KNN_FORMATS: [KnnVectorsFormat; 2] = [
+    KnnVectorsFormat::named(
+        "KNN1040HnswScalarQuantizedVectorsFormat",
+        &KnnVectorsFormat::HnswScalarQuantized {
+            encoding: ScalarEncoding::UnsignedByte,
+            max_conn: hnsw::DEFAULT_MAX_CONN,
+            beam_width: hnsw::DEFAULT_BEAM_WIDTH,
+        },
+    ),
+    KnnVectorsFormat::named(
+        "KNN1040ScalarQuantizedVectorsFormat",
+        &KnnVectorsFormat::ScalarQuantized {
+            encoding: ScalarEncoding::UnsignedByte,
+        },
+    ),
+];
+
 static WRAPPERS: std::sync::RwLock<Vec<KnnVectorsFormat>> = std::sync::RwLock::new(Vec::new());
 
 /// `KnnVectorsFormat`'s SPI for a [`KnnVectorsFormat::Named`] wrapper: makes
@@ -192,7 +212,8 @@ pub fn register_wrapper(format: KnnVectorsFormat) {
 
 /// `KnnVectorsFormat.forName(name)` among this release's formats: the three
 /// built-in ones (a default instance of each; a reader takes the settings
-/// from the files) and every registered wrapper ([`register_wrapper`]).
+/// from the files), the OpenSearch k-NN plugin's names for two of them, and
+/// every registered wrapper ([`register_wrapper`]).
 pub fn for_name(name: &str) -> Option<KnnVectorsFormat> {
     let builtin = [
         KnnVectorsFormat::default(),
@@ -207,6 +228,9 @@ pub fn for_name(name: &str) -> Option<KnnVectorsFormat> {
     ];
     if let Some(format) = builtin.into_iter().find(|f| f.name() == name) {
         return Some(format);
+    }
+    if let Some(format) = OPENSEARCH_KNN_FORMATS.iter().find(|f| f.name() == name) {
+        return Some(*format);
     }
     let wrappers = WRAPPERS.read().unwrap_or_else(|e| e.into_inner());
     wrappers.iter().copied().find(|w| w.name() == name)

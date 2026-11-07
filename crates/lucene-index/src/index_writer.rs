@@ -2204,8 +2204,15 @@ impl IndexingConfig {
                     // HNSW formats always write `.vem`/`.vex` (with
                     // `numLevels = 0` below `HNSW_GRAPH_THRESHOLD`).
                     vectors.push(RawVectorGroup {
-                        flat_quantized: suffix.rsplit_once('_').map(|(f, _)| f)
-                            == Some(lucene_codecs::scalar_quantized_vectors::NAME),
+                        flat_quantized: suffix
+                            .rsplit_once('_')
+                            .and_then(|(f, _)| per_field_knn_vectors::for_name(f))
+                            .is_some_and(|f| {
+                                matches!(
+                                    f.files_format(),
+                                    per_field_knn_vectors::KnnVectorsFormat::ScalarQuantized { .. }
+                                )
+                            }),
                         vec: seg_dir.open(&format!("{seg}.vec"))?,
                         vemf: seg_dir.open(&format!("{seg}.vemf"))?,
                         graph: pair("vem", "vex")?,

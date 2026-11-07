@@ -7,8 +7,8 @@ a stock one, which bundles opensearch-knn. Both get the same `index.knn`
 indexes -- one per mapping below, written in three flushed segments -- and
 answer the same queries. The Rust engine writes the plugin node's segments.
 
-  exact      full-precision mappings (lucene and faiss engines; l2,
-             cosinesimil, innerproduct; float and byte): the graphs are small
+  exact      full-precision lucene mappings (l2, cosinesimil,
+             innerproduct; float and byte): the graphs are small
              enough that HNSW finds the true neighbours on both nodes, so every
              top-k, filtered, ef_search, boosted and radial query must return
              the same hits with the same scores (1e-4), and the same hits as an
@@ -17,7 +17,8 @@ answer the same queries. The Rust engine writes the plugin node's segments.
              (and rescores some); the plugin searches full precision. The check
              is that its top 10 are the exhaustive scan's, and that they
              overlap stock's by at least MIN_RECALL on average.
-  errors     requests the stock plugin refuses are refused here too.
+  errors     requests the stock plugin refuses are refused here too; faiss
+             mappings, which stock accepts, are refused here.
 
 Every search must run in Rust (the plugin's stats show no fallback).
 
@@ -41,17 +42,11 @@ EXACT = {
     "lucene_l2": {"engine": "lucene", "space_type": "l2"},
     "lucene_cos": {"engine": "lucene", "space_type": "cosinesimil"},
     "lucene_ip": {"engine": "lucene", "space_type": "innerproduct"},
-    "faiss_l2": {"engine": "faiss", "space_type": "l2"},
-    "faiss_cos": {"engine": "faiss", "space_type": "cosinesimil"},
-    "faiss_ip": {"engine": "faiss", "space_type": "innerproduct"},
     "lucene_byte": {"engine": "lucene", "space_type": "l2", "data_type": "byte"},
-    "faiss_byte": {"engine": "faiss", "space_type": "l2", "data_type": "byte"},
 }
 QUANTIZED = {
     "lucene_sq": {"engine": "lucene", "space_type": "l2", "encoder": {"name": "sq", "parameters": {"bits": 7}}},
     "lucene_sq_1bit": {"engine": "lucene", "space_type": "l2", "encoder": {"name": "sq", "parameters": {"bits": 1}}},
-    "faiss_fp16": {"engine": "faiss", "space_type": "l2", "encoder": {"name": "sq", "parameters": {"type": "fp16", "bits": 16}}},
-    "faiss_sq_2bit": {"engine": "faiss", "space_type": "l2", "encoder": {"name": "sq", "parameters": {"bits": 2}}},
     "on_disk_32x": {"space_type": "l2", "mode": "on_disk"},
     "lucene_4x": {"space_type": "l2", "compression_level": "4x"},
 }
@@ -114,8 +109,8 @@ def field_mapping(spec):
     return m
 
 
-def create(port, index, spec, docs, rust):
-    settings = {"index.knn": True, "number_of_shards": 1, "number_of_replicas": 0, "refresh_interval": -1,
+def create(port, index, spec, docs, rust, extra=None):
+    settings = {**(extra or {}), "index.knn": True, "number_of_shards": 1, "number_of_replicas": 0, "refresh_interval": -1,
                 "index.merge.policy.max_merge_at_once": 100, "index.merge.policy.segments_per_tier": 100}
     if rust:
         settings["index.lucene_rust.engine"] = True
@@ -195,7 +190,6 @@ def main():
                 stock = create(STOCK[1], index, spec, docs, False)
                 if ours != stock:
                     failures.append(f"{index}: segment sizes differ: {ours} vs {stock}")
-                faiss = spec.get("engine", "faiss" if spec.get("compression_level") != "4x" else "lucene") == "faiss"
                 targets = [vector(rng, byte) for _ in range(8)]
                 if group == "quantized":
                     overlaps = []
@@ -243,7 +237,7 @@ def main():
                                          min(len(got), len(want)))
                             failures.append(f"{index} {label} query {qi}: {len(got)} vs {len(want)} hits, first "
                                             f"difference at {first}: {got[first:first + 2]} vs {want[first:first + 2]}")
-                        if label in ("top k", "filtered", "range filter") and not faiss:
+                        if label in ("top k", "filtered", "range filter"):
                             kk = 5 if label == "range filter" else k
                             scan = exact_top(spec, docs, t, kk, keep_doc or (lambda d: True))
                             if [i for i, _ in got] != [i for _, i in scan]:
@@ -277,6 +271,26 @@ def main():
                 if r.get("status", 200) != 400:
                     failures.append(f"mapping {label} accepted on port {port}: {json.dumps(r)[:200]}")
                     req(port, "DELETE", "/bad-mapping", ok_errors=True)
+        faiss_mappings = [
+            ("faiss", {"type": "knn_vector", "dimension": 4, "method": {"name": "hnsw", "engine": "faiss"}}),
+            ("top-level faiss", {"type": "knn_vector", "dimension": 4, "engine": "FAISS"}),
+        ]
+        for label, m in faiss_mappings:
+            r = req(OURS[1], "PUT", "/bad-mapping", {"settings": {"index.knn": True},
+                                                     "mappings": {"properties": {"v": m}}}, ok_errors=True)
+            if r.get("status", 200) != 400 or "faiss" not in json.dumps(r).lower():
+                failures.append(f"mapping {label} not refused: {json.dumps(r)[:200]}")
+                req(OURS[1], "DELETE", "/bad-mapping", ok_errors=True)
+        r = req(OURS[1], "PUT", "/no-engine", {"settings": {"index.knn": True},
+                                                "mappings": {"properties": {"v": {"type": "knn_vector", "dimension": 4}}}})
+        persisted = req(OURS[1], "GET", "/no-engine/_mapping")["no-engine"]["mappings"]["properties"]["v"]
+        if persisted.get("engine") != "lucene":
+            failures.append(f"a mapping without an engine persisted as {persisted}")
+        r = req(OURS[1], "PUT", "/no-engine/_mapping", {"properties": {"v": {"type": "knn_vector", "dimension": 4}}},
+                ok_errors=True)
+        if "error" in r:
+            failures.append(f"the same mapping again was refused: {json.dumps(r)[:300]}")
+        req(OURS[1], "DELETE", "/no-engine")
 
         after = req(OURS[1], "GET", "/_plugins/lucene_rust/stats")
         ran = after["native_queries"] - before["native_queries"]
