@@ -91,6 +91,10 @@ configurations {
 dependencies {
     compileOnly fileTree(dir: opensearchLib, include: '*.jar')
     testImplementation fileTree(dir: opensearchLib, include: '*.jar')
+    // Painless's SPI, which the k-NN allowlist (knn/script/KnnAllowlistExtension) implements.
+    def painlessSpi = files("${opensearchLib}/../modules/lang-painless/opensearch-scripting-painless-spi-${opensearchVersion}.jar")
+    compileOnly painlessSpi
+    testImplementation painlessSpi
     // kuromoji and nori, which OpenSearch ships as plugins rather than in lib/, at the
     // distribution's Lucene version: the self test describes their analyzers.
     def luceneVersion = providers.provider {
