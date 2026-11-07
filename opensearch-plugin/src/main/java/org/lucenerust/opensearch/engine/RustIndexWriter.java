@@ -115,6 +115,8 @@ final class RustIndexWriter implements DocumentIndexWriter {
     private boolean faultInjection;
     /** Whether searches read the buffered documents ({@code index.lucene_rust.realtime_search}). */
     private boolean liveSearch;
+    /** How old a view of the buffers a search may read ({@code index.lucene_rust.realtime_max_staleness}). */
+    private volatile long liveStalenessNanos;
     /** The field whose value is a document's partition ({@code index.lucene_rust.partition_field}), or null. */
     private String partitionField;
     /** The newest commit generation whose readers' buffers {@link #releaseLive} let go; under {@link #liveLock}. */
@@ -970,6 +972,42 @@ final class RustIndexWriter implements DocumentIndexWriter {
     /** Whether searches read the buffered documents. */
     boolean liveSearch() {
         return liveSearch;
+    }
+
+    /** How long, at most, a write takes to show in a search: zero when every search sees every write before it. */
+    long liveStalenessNanos() {
+        return liveStalenessNanos;
+    }
+
+    /** Lets searches read a view of the buffers up to {@code max} old ({@link NativeBridge#writerSetLiveStaleness}). */
+    void setLiveStaleness(org.opensearch.common.unit.TimeValue max) throws IOException {
+        if (liveSearch == false || max.millis() == 0) {
+            return;
+        }
+        synchronized (lock) {
+            ensureOpen();
+            check(NativeBridge.writerSetLiveStaleness(handle, max.millis()), "setting the realtime staleness");
+        }
+        liveStalenessNanos = max.nanos();
+    }
+
+    /**
+     * Makes every later search read a view of the buffers opened from now on; false when it could not
+     * (the writer busy with a force merge, or closed), to be tried again.
+     */
+    boolean refreshLiveShared() throws IOException {
+        if (indexing.readLock().tryLock() == false) {
+            return false;
+        }
+        try {
+            if (closed || nativeClosed) {
+                return false;
+            }
+            check(NativeBridge.writerLiveRefreshShared(handle), "refreshing the shared realtime view");
+            return true;
+        } finally {
+            indexing.readLock().unlock();
+        }
     }
 
     /**

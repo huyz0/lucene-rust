@@ -45,12 +45,14 @@ final class LiveWaitFor implements Closeable {
 
     private final RefreshListeners listeners;
     private final ThreadPool threadPool;
+    private final RustIndexWriter writer;
     private final AtomicBoolean releasing = new AtomicBoolean();
     private volatile boolean closed;
 
-    private LiveWaitFor(RefreshListeners listeners, ThreadPool threadPool) {
+    private LiveWaitFor(RefreshListeners listeners, ThreadPool threadPool, RustIndexWriter writer) {
         this.listeners = listeners;
         this.threadPool = threadPool;
+        this.writer = writer;
     }
 
     /** Releases {@code config}'s waiting refresh listeners as above, or null when the index has none to release. */
@@ -61,7 +63,7 @@ final class LiveWaitFor implements Closeable {
         for (ReferenceManager.RefreshListener l : config.getExternalRefreshListener()) {
             if (l instanceof RefreshListeners listeners) {
                 ThreadPool pool = config.getThreadPool();
-                LiveWaitFor shard = new LiveWaitFor(listeners, pool);
+                LiveWaitFor shard = new LiveWaitFor(listeners, pool, w);
                 synchronized (NODES) {
                     Node node = NODES.computeIfAbsent(pool, p -> new Node());
                     node.shards.add(shard);
@@ -94,11 +96,21 @@ final class LiveWaitFor implements Closeable {
         }
     }
 
+    /**
+     * Releases the waiting listeners. Under a staleness bound ({@link
+     * RustIndexWriter#liveStalenessNanos}) the translog's last write location is read first, then
+     * every later search is made to read a view opened after it ({@link
+     * RustIndexWriter#refreshLiveShared}), which holds the writes up to that location; when that cannot
+     * be done now, the listeners wait for the next look.
+     */
     private void release() {
         try {
             if (closed == false) {
                 listeners.beforeRefresh();
-                listeners.afterRefresh(true);
+                // Not refreshed, the listeners wait for the next look.
+                if (writer.liveStalenessNanos() == 0 || writer.refreshLiveShared()) {
+                    listeners.afterRefresh(true);
+                }
             }
         } catch (AlreadyClosedException e) {
             logger.debug("lucene-rust: the shard closed while releasing wait_for listeners", e);

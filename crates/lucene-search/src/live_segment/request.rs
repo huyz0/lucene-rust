@@ -25,8 +25,9 @@ pub fn live_request(clause: &Clause) -> Option<LiveRequest> {
 /// The terms `clauses` read, as [`live_request`], for searching segments
 /// that hold the documents' doc values and points but none of their terms
 /// ([`crate::directory_reader::SegmentReader::with_postings`]): a points
-/// clause reads nothing from the buffers then, and a prefix, wildcard or
-/// regexp clause reads the buffered terms it matches.
+/// or doc values clause (ranges, geo) reads nothing from the buffers then,
+/// and a prefix, wildcard or regexp clause reads the buffered terms it
+/// matches.
 pub fn whole_request(clauses: &[&Clause]) -> Option<LiveRequest> {
     let mut fields = Fields::new();
     for c in clauses {
@@ -70,7 +71,8 @@ fn add_pattern<'a>(fields: &mut Fields<'a>, field: &'a str, pattern: LivePattern
 }
 
 /// With `lean`, for segments holding doc values and points but no terms:
-/// points clauses read nothing and multi-term clauses read patterns.
+/// points and doc values clauses read nothing and multi-term clauses read
+/// patterns.
 fn collect<'a>(clause: &'a Clause, fields: &mut Fields<'a>, lean: bool) -> Option<()> {
     match clause {
         Clause::Term(t) => add(fields, &t.field, &t.term, false),
@@ -109,6 +111,24 @@ fn collect<'a>(clause: &'a Clause, fields: &mut Fields<'a>, lean: bool) -> Optio
         Clause::Boost(b) => collect(&b.inner, fields, lean)?,
         Clause::MatchAllDocs(_) | Clause::MatchNoDocs(_) => {}
         Clause::PointsRange(_) if lean => {}
+        Clause::Extended(e) if lean => match &**e {
+            crate::extended_query::ExtendedQuery::PointRange(_)
+            | crate::extended_query::ExtendedQuery::PointInSet(_)
+            | crate::extended_query::ExtendedQuery::NumericDocValuesRange(_) => {}
+            crate::extended_query::ExtendedQuery::IndexSortRange(q) => {
+                collect(&q.fallback, fields, lean)?;
+            }
+            crate::extended_query::ExtendedQuery::IndexOrDocValues(q) => {
+                collect(&q.index_query, fields, lean)?;
+                collect(&q.dv_query, fields, lean)?;
+            }
+            crate::extended_query::ExtendedQuery::Document(d) if d.query.reads_no_terms() => {
+                for c in d.filter.iter().chain(&d.fallback) {
+                    collect(c, fields, lean)?;
+                }
+            }
+            _ => return None,
+        },
         Clause::Prefix(q) if lean => add_pattern(
             fields,
             &q.field,
