@@ -12,7 +12,10 @@
 //! `has_filter: u8` and the filter (a query-tree node) when `1`, then
 //! `nested: u8`: when `1`, the field is nested and the parent filter (a
 //! query-tree node, whose bit sets are cached as a nested query's are) and
-//! `expand: u8` (`expand_nested_docs`) follow.
+//! `expand: u8` (`expand_nested_docs`) follow, and last `nprobes: i32`: the
+//! clusters probed in each segment whose field has an IVF index
+//! (`LuceneRustIvfVectorsFormat`; `method_parameters.nprobes`), `0` for the
+//! depth each segment calibrated.
 //!
 //! A nested search keeps the best child of each of the best `k` parents; an
 //! expanded one returns every scored child of those parents, which can be
@@ -22,7 +25,7 @@
 use std::sync::Arc;
 
 use lucene_search::join::BitSetProducer;
-use lucene_search::knn_search::{knn_top_hits, knn_top_hits_nested};
+use lucene_search::knn_search::{knn_top_hits_nested, knn_top_hits_with};
 use lucene_search::multi_segment::OpenSegment;
 
 use crate::clauses::map_search_error;
@@ -39,6 +42,7 @@ struct Request {
     filter: Option<lucene_search::query::Clause>,
     /// A nested field's parent filter and `expand_nested_docs`.
     nested: Option<(Arc<dyn BitSetProducer>, bool)>,
+    nprobes: usize,
 }
 
 fn invalid(message: &str) -> FfiStatus {
@@ -79,6 +83,7 @@ fn decode(blob: &[u8]) -> Result<Request, FfiStatus> {
         }
         _ => return Err(invalid("nested flag (expected 0..=1)")),
     };
+    let nprobes = usize::try_from(c.i32()?).map_err(|_| invalid("nprobes must not be negative"))?;
     if c.remaining() != 0 {
         return Err(invalid("trailing bytes"));
     }
@@ -89,6 +94,7 @@ fn decode(blob: &[u8]) -> Result<Request, FfiStatus> {
         candidates,
         filter,
         nested,
+        nprobes,
     })
 }
 
@@ -124,6 +130,7 @@ pub unsafe extern "C" fn ffi_jvm_reader_knn(
             candidates,
             filter,
             nested,
+            nprobes,
         } = decode(blob)?;
         if buf_len < k {
             return Err(FfiStatus::BufferTooSmall);
@@ -155,7 +162,15 @@ pub unsafe extern "C" fn ffi_jvm_reader_knn(
             })
             .collect();
         let hits = match &nested {
-            None => knn_top_hits(&segments, &field, &target, k, candidates, filter.as_ref()),
+            None => knn_top_hits_with(
+                &segments,
+                &field,
+                &target,
+                k,
+                candidates,
+                filter.as_ref(),
+                nprobes,
+            ),
             Some((parents, expand)) => knn_top_hits_nested(
                 &segments,
                 &field,
@@ -196,6 +211,7 @@ mod tests {
     fn request(k: i32, candidates: i32, filter: Option<&[u8]>) -> Vec<u8> {
         let mut b = request_without_nested(k, candidates, filter);
         b.push(0);
+        b.extend_from_slice(&0i32.to_le_bytes());
         b
     }
 
@@ -229,6 +245,13 @@ mod tests {
         );
         assert_eq!((r.k, r.candidates), (3, 10));
         assert!(r.filter.is_none() && r.nested.is_none());
+        assert_eq!(r.nprobes, 0);
+        let mut probed = request(3, 10, None);
+        let n = probed.len();
+        probed[n - 4..].copy_from_slice(&32i32.to_le_bytes());
+        assert_eq!(decode(&probed).unwrap().nprobes, 32);
+        probed[n - 4..].copy_from_slice(&(-1i32).to_le_bytes());
+        assert!(decode(&probed).is_err());
         assert!(decode(&request(0, 10, None)).is_err());
         assert!(decode(&request(3, 0, None)).is_err());
         let mut trailing = request(3, 10, None);
@@ -244,12 +267,14 @@ mod tests {
         b.push(1);
         b.push(5); // the parent filter: match_all
         b.push(1);
+        b.extend_from_slice(&0i32.to_le_bytes());
         let r = decode(&b).unwrap();
         let (parents, expand) = r.nested.unwrap();
         assert!(expand);
         assert!(parents.key().starts_with("parents("));
-        b.pop();
+        b.truncate(b.len() - 5);
         b.push(2);
+        b.extend_from_slice(&0i32.to_le_bytes());
         assert!(decode(&b).is_err());
     }
 }

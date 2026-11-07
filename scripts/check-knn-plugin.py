@@ -27,6 +27,15 @@ answer the same queries. The Rust engine writes the plugin node's segments.
              filters at the root and on the nested docs, and
              expand_nested_docs with inner hits, the same hits, scores and
              inner hits as stock.
+  ivf        the plugin's own opt-in `lucene_rust` engine (`method: ivf`, no
+             stock counterpart, so stock must refuse the mapping): every
+             hit scores its exact score (f32 and half-float rerank vectors);
+             probing every cluster, filtered or not, finds nearly all of the
+             exhaustive scan's top 10 (its rerank is still approximate), a
+             filter few documents pass returns exactly the scan's hits, all
+             of it flushed, after deletes and after a force merge; the
+             calibrated depth finds most of them; one probe finds fewer, so
+             the index is what is searched.
   errors     requests the stock plugin refuses are refused here too; faiss
              mappings, which stock accepts, are refused here.
 
@@ -331,6 +340,125 @@ def nested_check(failures):
     return checked
 
 
+IVF = {"space_type": "l2"}
+IVF_ALL = 100_000
+
+
+def ivf_mapping(**params):
+    return {"type": "knn_vector", "dimension": DIM,
+            "method": {"name": "ivf", "engine": "lucene_rust", "space_type": "l2",
+                       "parameters": {"target_cluster_size": 16, **params}}}
+
+
+def ivf_check(failures):
+    """The `lucene_rust` engine's IVF fields on the plugin node (see the module doc)."""
+    checked = 0
+    for index, params in (("ivf_f32", {"rerank_encoding": "float"}), ("ivf_f16", {"rerank_encoding": "half_float"})):
+        rng = random.Random(f"{SEED}-{index}")
+        docs = [{"_id": f"d{i}", "tag": "even" if i % 2 == 0 else "odd", "n": i, "emb": vector(rng, False)}
+                for i in range(DOCS)]
+        settings = {"index.knn": True, "index.lucene_rust.engine": True, "number_of_shards": 1,
+                    "number_of_replicas": 0, "refresh_interval": -1,
+                    "index.merge.policy.max_merge_at_once": 100, "index.merge.policy.segments_per_tier": 100}
+        mapping = {"properties": {"tag": {"type": "keyword"}, "n": {"type": "integer"}, "emb": ivf_mapping(**params)}}
+        r = req(STOCK[1], "PUT", f"/{index}", {"settings": {"index.knn": True}, "mappings": mapping}, ok_errors=True)
+        if r.get("status", 200) != 400:
+            failures.append(f"{index}: stock accepted the lucene_rust mapping: {json.dumps(r)[:200]}")
+            req(STOCK[1], "DELETE", f"/{index}", ok_errors=True)
+        req(OURS[1], "PUT", f"/{index}", {"settings": settings, "mappings": mapping})
+        persisted = req(OURS[1], "GET", f"/{index}/_mapping")[index]["mappings"]["properties"]["emb"]
+        if persisted.get("method", {}).get("engine") != "lucene_rust" or persisted["method"].get("name") != "ivf":
+            failures.append(f"{index}: persisted as {persisted}")
+        per = DOCS // SEGMENTS
+        for s in range(SEGMENTS):
+            lines = []
+            for d in docs[s * per:(s + 1) * per]:
+                lines.append(json.dumps({"index": {"_index": index, "_id": d["_id"]}}))
+                lines.append(json.dumps({"tag": d["tag"], "n": d["n"], "emb": d["emb"]}))
+            r = req(OURS[1], "POST", "/_bulk", "\n".join(lines) + "\n", ndjson=True)
+            assert not r["errors"], json.dumps(r)[:2000]
+            req(OURS[1], "POST", f"/{index}/_flush")
+        req(OURS[1], "POST", f"/{index}/_refresh")
+        targets = [vector(rng, False) for _ in range(8)]
+        live = list(docs)
+
+        def round_(stage):
+            nonlocal checked
+            found, one_probe = 0, 0
+            wide = {"all clusters": 0, "filtered": 0}
+            for qi, t in enumerate(targets):
+                cases = [
+                    ("all clusters", knn(t, k=10, method_parameters={"nprobes": IVF_ALL}), lambda d: True, 10),
+                    ("filtered", knn(t, k=10, filter={"term": {"tag": "even"}}, method_parameters={"nprobes": IVF_ALL}),
+                     lambda d: d["tag"] == "even", 10),
+                    # 40 documents pass: scanned exactly, whatever the probe count.
+                    ("rare filter", knn(t, k=10, filter={"range": {"n": {"gte": 100, "lt": 140}}},
+                         method_parameters={"nprobes": 1}),
+                     lambda d: 100 <= d["n"] < 140, 10),
+                ]
+                by_id = {d["_id"]: d["emb"] for d in live}
+                for label, query, keep_doc, k in cases:
+                    got = search(OURS[1], index, {"size": 50, "query": query})
+                    want = [(i, sc) for sc, i in exact_top(IVF, live, t, k, keep_doc)]
+                    checked += 1
+                    wrong = [(i, sc) for i, sc in got
+                             if i not in by_id or abs(sc - score("l2", t, by_id[i])) > 1e-4 * max(1.0, sc)]
+                    if wrong:
+                        failures.append(f"{index} {stage} {label} query {qi}: not exact scores or deleted docs {wrong[:3]}")
+                    if label == "rare filter":
+                        if not same(got, want):
+                            failures.append(f"{index} {stage} {label} query {qi}: {got[:3]} vs the scan's {want[:3]}")
+                    else:
+                        wide[label] += len({i for i, _ in got} & {i for i, _ in want})
+                        if len(got) != k or not all(keep_doc({"tag": "even" if int(i[1:]) % 2 == 0 else "odd"}) for i, _ in got):
+                            failures.append(f"{index} {stage} {label} query {qi}: {len(got)} hits or unfiltered ones")
+                truth = {i for _, i in exact_top(IVF, live, t, 10)}
+                found += len(truth & {i for i, _ in search(OURS[1], index, {"size": 10, "query": knn(t, k=10)})})
+                one_probe += len(truth & {i for i, _ in search(
+                    OURS[1], index, {"size": 10, "query": knn(t, k=10, method_parameters={"nprobes": 1})})})
+                checked += 2
+            recall, shallow = found / (10 * len(targets)), one_probe / (10 * len(targets))
+            print(f"{index} {stage}: recall@10 {recall:.3f} calibrated, {shallow:.3f} with one probe")
+            if recall < 0.9:
+                failures.append(f"{index} {stage}: calibrated recall {recall:.3f} < 0.9")
+            if shallow >= recall:
+                failures.append(f"{index} {stage}: one probe ({shallow:.3f}) is no worse than the calibrated depth")
+            for label, n in wide.items():
+                if n / (10 * len(targets)) < 0.95:
+                    failures.append(f"{index} {stage} {label}: recall@10 {n / (10 * len(targets)):.3f} < 0.95")
+
+        round_("flushed")
+        req(OURS[1], "POST", f"/{index}/_delete_by_query?refresh=true", {"query": {"range": {"n": {"lt": 100}}}})
+        live = [d for d in docs if d["n"] >= 100]
+        round_("after deletes")
+        req(OURS[1], "POST", f"/{index}/_forcemerge?max_num_segments=1")
+        req(OURS[1], "POST", f"/{index}/_refresh")
+        segs = req(OURS[1], "GET", f"/{index}/_segments")["indices"][index]["shards"]["0"][0]["segments"]
+        if len(segs) != 1:
+            failures.append(f"{index}: {len(segs)} segments after the force merge")
+        round_("merged")
+    bad = [
+        ("ivf byte", {**ivf_mapping(), "data_type": "byte"}),
+        ("ivf half_float", {**ivf_mapping(), "data_type": "half_float"}),
+        ("ivf small clusters", ivf_mapping(target_cluster_size=8)),
+        ("ivf rerank", ivf_mapping(rerank_encoding="int4")),
+        ("ivf quantizer", ivf_mapping(quantizer="pq")),
+        ("ivf unknown parameter", ivf_mapping(nlist=4)),
+        ("ivf on_disk", {**ivf_mapping(), "mode": "on_disk"}),
+        ("lucene_rust hnsw", {"type": "knn_vector", "dimension": DIM,
+                              "method": {"name": "hnsw", "engine": "lucene_rust", "space_type": "l2"}}),
+        ("lucene ivf", {"type": "knn_vector", "dimension": DIM,
+                        "method": {"name": "ivf", "engine": "lucene", "space_type": "l2"}}),
+    ]
+    for label, m in bad:
+        r = req(OURS[1], "PUT", "/bad-mapping", {"settings": {"index.knn": True},
+                                                 "mappings": {"properties": {"v": m}}}, ok_errors=True)
+        if r.get("status", 200) != 400:
+            failures.append(f"mapping {label} accepted: {json.dumps(r)[:200]}")
+            req(OURS[1], "DELETE", "/bad-mapping", ok_errors=True)
+    return checked
+
+
 def main():
     keep = "--keep" in sys.argv
     zips = glob.glob(os.path.join(ROOT, "opensearch-plugin", "build", "distributions", "lucene-rust-*.zip"))
@@ -421,6 +549,7 @@ def main():
                             if not same(got, [(i, sc) for sc, i in scan], ties=binary):
                                 failures.append(f"{index} {label} query {qi}: not the exhaustive scan's top {kk}")
         checked += nested_check(failures)
+        checked += ivf_check(failures)
         print(f"compared {checked} queries")
 
         errors = [
