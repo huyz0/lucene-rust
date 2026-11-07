@@ -360,14 +360,21 @@ pub unsafe extern "C" fn ffi_store_bind_page_cache(
     if page_size != 0 {
         config.page_size = page_size as usize;
     }
-    if !PagedFsDirectory::with_config("", config.clone()).is_paged() {
-        return FfiStatus::Ok.code();
-    }
     guard(move || {
         // SAFETY: caller contract.
         let path = unsafe { str_from_raw(path, path_len)? };
         if path.is_empty() {
             set_last_error("ffi_store_bind_page_cache: empty path");
+            return Err(FfiStatus::InvalidArgument);
+        }
+        if !PagedFsDirectory::open("").is_paged() {
+            // No pager here: the path stays mapped.
+            return Ok(());
+        }
+        if !PagedFsDirectory::with_config("", config.clone()).is_paged() {
+            set_last_error(format!(
+                "ffi_store_bind_page_cache: page size {page_size} is not a whole number of OS pages"
+            ));
             return Err(FfiStatus::InvalidArgument);
         }
         paged_paths()

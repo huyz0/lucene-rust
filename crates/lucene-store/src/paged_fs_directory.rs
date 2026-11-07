@@ -226,14 +226,15 @@ impl PagedFsDirectory {
         let Some(pager) = Pager::global() else {
             return Ok(None);
         };
+        self.inner.ensure_can_read(name)?;
         let path = self.root.join(name);
-        let stored = std::fs::metadata(&path)?.len();
+        let mut file = local::LocalFile::open(&path, self.config.direct_io)?;
         let budget = pager.budget();
-        let page = self.config.page_size_for(name, stored, budget);
+        let page = self.config.page_size_for(name, file.len(), budget);
         if !pager.supports(page) {
             return Ok(None);
         }
-        let file = local::LocalFile::open(&path, page, self.config.direct_io)?;
+        file.set_page(page);
         let len = usize::try_from(file.len())
             .map_err(|_| crate::error::Error::Corrupted(format!("{name}: too large to open")))?;
         if self.config.pins(name, file.len(), budget) || len <= page {
@@ -326,6 +327,7 @@ impl Directory for PagedFsDirectory {
 
     fn read_at(&self, name: &str, offset: u64, len: usize) -> Result<Vec<u8>> {
         use std::io::{Read, Seek, SeekFrom};
+        self.inner.ensure_can_read(name)?;
         let mut file = std::fs::File::open(self.root.join(name))?;
         file.seek(SeekFrom::Start(offset))?;
         let mut out = Vec::new();
@@ -364,12 +366,16 @@ mod local {
         len: u64,
         page: usize,
         direct: bool,
+        /// A buffered descriptor on the same file, opened the first time an
+        /// `O_DIRECT` read is refused and shared by every handle after.
+        buffered: Arc<OnceLock<std::fs::File>>,
     }
 
     impl LocalFile {
-        /// Opens `path` for page reads of `page` bytes, with `O_DIRECT` when
-        /// `direct` and the filesystem takes it.
-        pub(super) fn open(path: &Path, page: usize, direct: bool) -> Result<LocalFile> {
+        /// Opens `path` for page reads (of one OS page until
+        /// [`Self::set_page`]), with `O_DIRECT` when `direct` and the
+        /// filesystem takes it.
+        pub(super) fn open(path: &Path, direct: bool) -> Result<LocalFile> {
             let opened = if direct {
                 std::fs::OpenOptions::new()
                     .read(true)
@@ -387,13 +393,19 @@ mod local {
             Ok(LocalFile {
                 file,
                 len,
-                page,
+                page: ALIGN,
                 direct,
+                buffered: Arc::new(OnceLock::new()),
             })
         }
 
         pub(super) fn len(&self) -> u64 {
             self.len
+        }
+
+        /// Sets the bytes per page the pager fills.
+        pub(super) fn set_page(&mut self, page: usize) {
+            self.page = page;
         }
 
         /// Every byte of the file.
@@ -438,32 +450,34 @@ mod local {
                 }
             }
             let mut buf = vec![0u8; want];
-            if self.direct {
-                // The descriptor is O_DIRECT; read this range through a
-                // buffered one.
-                let plain = reopen_buffered(&self.file)?;
-                let n = read_full(&plain, &mut buf, offset)?;
-                if n < want {
-                    return Err(Error::Corrupted(format!(
-                        "short read: {n} of {want} bytes at {offset}"
-                    )));
+            // The descriptor is O_DIRECT; read this range through a buffered
+            // one, opened once.
+            let plain = if self.direct {
+                match self.buffered.get() {
+                    Some(f) => f,
+                    None => {
+                        let f = reopen_buffered(&self.file)?;
+                        self.buffered.get_or_init(|| f)
+                    }
                 }
             } else {
-                let n = read_full(&self.file, &mut buf, offset)?;
-                if n < want {
-                    return Err(Error::Corrupted(format!(
-                        "short read: {n} of {want} bytes at {offset}"
-                    )));
-                }
-                // SAFETY: a plain syscall on an open descriptor.
-                unsafe {
-                    libc::posix_fadvise(
-                        self.file.as_raw_fd(),
-                        i64::try_from(offset).unwrap_or(i64::MAX),
-                        i64::try_from(want).unwrap_or(i64::MAX),
-                        libc::POSIX_FADV_DONTNEED,
-                    );
-                }
+                &self.file
+            };
+            let n = read_full(plain, &mut buf, offset)?;
+            if n < want {
+                return Err(Error::Corrupted(format!(
+                    "short read: {n} of {want} bytes at {offset}"
+                )));
+            }
+            // The bytes are held in the budget: drop the kernel's copy.
+            // SAFETY: a plain syscall on an open descriptor.
+            unsafe {
+                libc::posix_fadvise(
+                    plain.as_raw_fd(),
+                    i64::try_from(offset).unwrap_or(i64::MAX),
+                    i64::try_from(want).unwrap_or(i64::MAX),
+                    libc::POSIX_FADV_DONTNEED,
+                );
             }
             sink(&buf);
             Ok(())
@@ -482,6 +496,7 @@ mod local {
                 len: self.len,
                 page: self.page,
                 direct: self.direct,
+                buffered: Arc::clone(&self.buffered),
             })
         }
 

@@ -1836,12 +1836,22 @@ impl crate::hnsw::VectorScorer for FloatVectorScorer<'_> {
 
     fn bulk_score(&mut self, nodes: &[i32], scores: &mut [f32]) -> Result<f32> {
         if self.paged && nodes.len() > 1 {
-            let ranges: Vec<&[u8]> = nodes
-                .iter()
-                .filter_map(|&n| self.values.values.bytes(n).ok())
-                .collect();
-            // Only a hint: a page it could not read faults in on its own.
-            let _ = lucene_store::prefetch(&ranges);
+            // A graph node's neighbours fit one stack batch; more go in
+            // several. Only a hint: a page it misses faults in on its own.
+            const BATCH: usize = 64;
+            let mut ranges: [&[u8]; BATCH] = [&[]; BATCH];
+            for chunk in nodes.chunks(BATCH) {
+                let mut count = 0usize;
+                for &n in chunk {
+                    if let (Ok(bytes), Some(slot)) =
+                        (self.values.values.bytes(n), ranges.get_mut(count))
+                    {
+                        *slot = bytes;
+                        count = count.saturating_add(1);
+                    }
+                }
+                let _ = lucene_store::prefetch(ranges.get(..count).unwrap_or(&[]));
+            }
         }
         let mut max = f32::NEG_INFINITY;
         for (i, &node) in nodes.iter().enumerate() {

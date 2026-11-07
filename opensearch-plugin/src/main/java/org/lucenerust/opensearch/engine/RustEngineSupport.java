@@ -111,7 +111,8 @@ public final class RustEngineSupport {
      * engine's writer and readers open their directories there.
      */
     static void bindStoreMode(EngineConfig config, Store store) {
-        String path = indexPath(store).toString();
+        // The key the writer and the native readers look the binding up by.
+        String path = org.lucenerust.opensearch.store.RustEncryptedDirectory.nativePath(indexPath(store));
         String mode = STORE_MODE.get(config.getIndexSettings().getSettings());
         int rc = mode.equals("mmap")
             ? NativeBridge.storeUnbindPageCache(path)

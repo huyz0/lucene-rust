@@ -1130,6 +1130,12 @@ impl MmapDirectory {
         }
     }
 
+    /// Refuses a read of `name` while it is pending delete, as
+    /// [`Directory::open`] does: for a wrapper that opens the file itself.
+    pub(crate) fn ensure_can_read(&self, name: &str) -> Result<()> {
+        self.core.ensure_can_read(name)
+    }
+
     /// `FSDirectory.getDirectory()`.
     pub fn directory(&self) -> &Path {
         &self.core.root

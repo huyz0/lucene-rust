@@ -1216,7 +1216,14 @@ impl IvfField {
         let mut scores = Vec::new();
         // Margins only for the codes kept; off for good once unknown.
         let mut bounded = bounds;
-        let blocks: Vec<(usize, usize)> = probes.iter().map(|&c| self.block_range(c)).collect();
+        // Not the clusters the shared floor already prunes: they are skipped
+        // below, and reading them would only push out pages still in use.
+        let floor = shared.and_then(SharedThreshold::floor);
+        let blocks: Vec<(usize, usize)> = probes
+            .iter()
+            .filter(|&&c| floor.is_none_or(|f| self.cluster_bound(query, query_norm, c) >= f))
+            .map(|&c| self.block_range(c))
+            .collect();
         postings.prefetch_ranges(&blocks);
         for &c in probes {
             if let Some(floor) = shared.and_then(SharedThreshold::floor) {
@@ -1682,9 +1689,14 @@ impl IvfReader {
                     .prefetch(f.vector_offset(c.slot as usize), f.vector_len());
             }
         };
+        // Not the candidates the shared floor already rules out: the loop
+        // below skips or stops before them.
+        let floor = shared.and_then(SharedThreshold::floor);
         let ranges: Vec<(usize, usize)> = candidates
             .iter()
-            .map(|c| (f.vector_offset(c.slot as usize), f.vector_len()))
+            .enumerate()
+            .filter(|&(i, c)| floor.is_none_or(|fl| reach[i] >= fl && c.score + c.bound >= fl))
+            .map(|(_, c)| (f.vector_offset(c.slot as usize), f.vector_len()))
             .collect();
         self.vectors.prefetch_ranges(&ranges);
         for c in candidates.iter().take(AHEAD) {
