@@ -62,10 +62,10 @@ pub fn bench_expressions(w: Duration, m: Duration) {
     let arrays: Vec<Vec<f64>> = (0..3)
         .map(|k| (0..DOCS).map(|doc| value(doc, k)).collect())
         .collect();
-    // BENCH_EXPR_BACKEND=vector times the column-at-a-time backend (set
-    // after `expr_compile`, which stays the closures' compile time)
-    if std::env::var("BENCH_EXPR_BACKEND").as_deref() == Ok("vector") {
-        set_default_backend(Backend::Vector);
+    // BENCH_EXPR_BACKEND=closure times the closure backend (set after
+    // `expr_compile`, which stays the default backend's compile time)
+    if std::env::var("BENCH_EXPR_BACKEND").as_deref() == Ok("closure") {
+        set_default_backend(Backend::Closure);
     }
     for (name, text) in EVAL {
         let e = compile(text).unwrap();
