@@ -38,7 +38,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code jvm_reader.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 81;
+    public static final int EXPECTED_ABI_VERSION = 83;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -365,6 +365,15 @@ public final class NativeBridge {
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG)
         );
         static final MethodHandle WRITER_CLOSE = bind("ffi_engine_writer_close", FunctionDescriptor.of(JAVA_INT, JAVA_LONG));
+        static final MethodHandle ZSTD_DICTIONARY_OPEN = bind(
+            "ffi_zstd_dictionary_open",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS)
+        );
+        static final MethodHandle ZSTD_DICTIONARY_CLOSE = bind("ffi_zstd_dictionary_close", FunctionDescriptor.of(JAVA_INT, JAVA_LONG));
+        static final MethodHandle ZSTD_PAGED_DECOMPRESS = bind(
+            "ffi_zstd_paged_decompress",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG)
+        );
         static final MethodHandle LIVE_VIEW_OPEN = bind(
             "ffi_engine_writer_live_view_open",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG, ADDRESS, ADDRESS, ADDRESS)
@@ -1532,6 +1541,7 @@ public final class NativeBridge {
     public static final int OPEN_FAULT_INJECTION = 1;
     public static final int OPEN_SPARSE = 2;
     public static final int OPEN_LIVE_SEARCH = 4;
+    public static final int OPEN_MERGE_LZ4_HC = 8;
     public static final int OPEN_ADAPTIVE_DOC_VALUES = 32;
     public static final int OPEN_PARTITIONED = 64;
 
@@ -1540,6 +1550,63 @@ public final class NativeBridge {
     public static final int STORED_FIELDS_BEST_COMPRESSION = 1;
     public static final int STORED_FIELDS_ZSTD = 2;
     public static final int STORED_FIELDS_ZSTD_NO_DICT = 3;
+    /** The Rust engine's paged zstd stored fields ({@code index.lucene_rust.stored_fields.paged_zstd}). */
+    public static final int STORED_FIELDS_ZSTD_PAGED = 4;
+
+    // ---- Paged zstd stored fields (zstd_dictionary.rs). ----
+
+    /** Prepares a segment's zstd dictionary; its handle into {@code outHandle[0]}. */
+    public static int zstdDictionaryOpen(byte[] dictionary, long[] outHandle) {
+        if (dictionary == null) {
+            return nullArgument("dictionary");
+        }
+        if (outHandle == null || outHandle.length < 1) {
+            return fail(INVALID_ARGUMENT, "outHandle holds no slot");
+        }
+        try (Scratch s = Scratch.open()) {
+            MemorySegment handle = s.alloc(Long.BYTES);
+            int rc = (int) H.ZSTD_DICTIONARY_OPEN.invokeExact(s.bytes(dictionary), (long) dictionary.length, handle);
+            if (rc == OK) {
+                outHandle[0] = handle.get(JAVA_LONG, 0);
+            }
+            return rc;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** Releases a handle from {@link #zstdDictionaryOpen}. */
+    public static int zstdDictionaryClose(long handle) {
+        try {
+            return (int) H.ZSTD_DICTIONARY_CLOSE.invokeExact(handle);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * Decodes the zstd frame {@code src[0..srcLen)}, compressed against dictionary {@code handle} (0:
+     * none), into exactly {@code dst[0..dstLen)}.
+     */
+    public static int zstdPagedDecompress(long handle, byte[] src, int srcLen, byte[] dst, int dstLen) {
+        if (src == null || dst == null) {
+            return nullArgument(src == null ? "src" : "dst");
+        }
+        if (srcLen < 0 || srcLen > src.length || dstLen < 0 || dstLen > dst.length) {
+            return fail(INVALID_ARGUMENT, "src or dst is shorter than its length");
+        }
+        try (Scratch s = Scratch.open()) {
+            MemorySegment in = s.bytes(src, srcLen);
+            MemorySegment out = s.alloc(dstLen);
+            int rc = (int) H.ZSTD_PAGED_DECOMPRESS.invokeExact(handle, in, (long) srcLen, out, (long) dstLen);
+            if (rc == OK) {
+                MemorySegment.copy(out, JAVA_BYTE, 0, dst, 0, dstLen);
+            }
+            return rc;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
 
     /**
      * Opens a shard's writer over the index at {@code path}, which must already hold a commit. Commit
@@ -1547,7 +1614,8 @@ public final class NativeBridge {
      * test-only panic operation; {@code sparse} writes the segments of an {@code index.sparse} index,
      * with neural-search's codec and clustered postings; {@code liveSearch} keeps what a search of the
      * buffered documents reads ({@link #liveViewOpen}); {@code adaptiveDocValues} writes doc values in
-     * the {@code RustAdaptive} format; with {@code partitioned} every segment holds one partition
+     * the {@code RustAdaptive} format; {@code mergeLz4Hc} has merges write {@code BEST_SPEED} stored
+     * fields with the high-compression LZ4 match finder (stock-readable); with {@code partitioned} every segment holds one partition
      * (the value of the index's partition field) and records it, and merges never mix partitions.
      * {@code indexSort} is the index sort as a {@code .si} encodes it (null or empty for none), and
      * {@code parentFieldUtf8} the field marking each block's last document (null or empty for none).
@@ -1562,6 +1630,7 @@ public final class NativeBridge {
         boolean sparse,
         boolean liveSearch,
         boolean adaptiveDocValues,
+        boolean mergeLz4Hc,
         boolean partitioned,
         byte[] indexSort,
         byte[] parentFieldUtf8,
@@ -1583,7 +1652,7 @@ public final class NativeBridge {
                 ramBufferMb,
                 (byte) ((faultInjection ? OPEN_FAULT_INJECTION : 0) | (sparse ? OPEN_SPARSE : 0)
                     | (liveSearch ? OPEN_LIVE_SEARCH : 0) | (adaptiveDocValues ? OPEN_ADAPTIVE_DOC_VALUES : 0)
-                    | (partitioned ? OPEN_PARTITIONED : 0)),
+                    | (mergeLz4Hc ? OPEN_MERGE_LZ4_HC : 0) | (partitioned ? OPEN_PARTITIONED : 0)),
                 s.bytes(sort),
                 (long) sort.length,
                 s.bytes(parent),

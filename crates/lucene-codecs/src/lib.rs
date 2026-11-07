@@ -54,6 +54,7 @@ pub mod live_docs;
 pub mod live_docs_writer;
 pub mod lowercase_ascii;
 pub mod lz4;
+pub mod lz4_hc;
 pub mod memory;
 pub mod monotonic_block_packed;
 pub mod norms;

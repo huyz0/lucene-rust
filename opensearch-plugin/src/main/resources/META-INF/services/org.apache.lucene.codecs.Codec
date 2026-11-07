@@ -1,1 +1,2 @@
 org.lucenerust.opensearch.sparse.SparseCodec
+org.lucenerust.opensearch.storedfields.ZstdPagedCodec
