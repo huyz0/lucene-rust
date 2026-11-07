@@ -12,8 +12,8 @@
 //!
 //! A segment's vectors are found through its reader
 //! ([`SegmentReader::knn_vectors_for`]): the flat vectors and, when the
-//! field has one, its HNSW graph. A field without a graph is searched
-//! exhaustively, as Java does.
+//! field has one, its HNSW graph or IVF index. A field with neither is
+//! searched exhaustively, as Java does.
 
 use lucene_util::fixed_bit_set::FixedBitSet;
 
@@ -200,6 +200,7 @@ impl DocumentQuery for KnnLeafQuery {
 struct LeafVectors<'r> {
     flat: lucene_codecs::vectors::FlatVectorsReader<'r>,
     graph: Option<lucene_codecs::hnsw_vectors::HnswVectorsReader<'r>>,
+    ivf: Option<std::sync::Arc<lucene_ivf::IvfReader>>,
 }
 
 impl<'r> LeafVectors<'r> {
@@ -214,7 +215,10 @@ impl<'r> LeafVectors<'r> {
     {
         VectorsInput {
             flat: self.flat.clone(),
-            hnsw: self.graph.clone().map(GraphReader::from),
+            hnsw: match &self.ivf {
+                Some(ivf) => Some(GraphReader::Ivf(ivf.clone())),
+                None => self.graph.clone().map(GraphReader::from),
+            },
             field_infos: reader.field_infos(),
             live_docs,
             filter,
@@ -234,9 +238,11 @@ fn open_leaf<'r>(reader: &'r SegmentReader, field: &str) -> Result<Option<LeafVe
     else {
         return Ok(None);
     };
-    Ok(reader
-        .knn_vectors_for(info.number)?
-        .map(|(flat, graph)| LeafVectors { flat, graph }))
+    let Some((flat, graph)) = reader.knn_vectors_for(info.number)? else {
+        return Ok(None);
+    };
+    let ivf = reader.ivf_for(info.number)?;
+    Ok(Some(LeafVectors { flat, graph, ivf }))
 }
 
 /// `KnnFloatVectorQuery(field, target, candidates, filter)` rewritten over
@@ -256,7 +262,34 @@ pub fn knn_top_hits(
     candidates: usize,
     filter: Option<&Clause>,
 ) -> Result<Vec<ScoreDoc>> {
-    top_hits(segments, field, target, k, candidates, filter, None)
+    top_hits(segments, field, target, k, candidates, filter, None, 0)
+}
+
+/// [`knn_top_hits`] probing `ivf_nprobes` clusters in each segment whose
+/// field has an IVF index (`LuceneRustIvfVectorsFormat`); `0` probes the
+/// depth each segment calibrated. Other formats ignore it.
+///
+/// # Errors
+/// As [`knn_top_hits`].
+pub fn knn_top_hits_with(
+    segments: &[OpenSegment<'_>],
+    field: &str,
+    target: &KnnTarget,
+    k: usize,
+    candidates: usize,
+    filter: Option<&Clause>,
+    ivf_nprobes: usize,
+) -> Result<Vec<ScoreDoc>> {
+    top_hits(
+        segments,
+        field,
+        target,
+        k,
+        candidates,
+        filter,
+        None,
+        ivf_nprobes,
+    )
 }
 
 /// [`knn_top_hits`] over a nested field (the `lucene` engine's
@@ -288,9 +321,11 @@ pub fn knn_top_hits_nested(
         candidates,
         filter,
         Some((parents, expand)),
+        0,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn top_hits(
     segments: &[OpenSegment<'_>],
     field: &str,
@@ -299,6 +334,7 @@ fn top_hits(
     candidates: usize,
     filter: Option<&Clause>,
     nested: Option<(&dyn BitSetProducer, bool)>,
+    ivf_nprobes: usize,
 ) -> Result<Vec<ScoreDoc>> {
     let filters = match filter {
         Some(f) => Some(vector_query::filter_bitsets(segments, f)?),
@@ -343,7 +379,8 @@ fn top_hits(
     let parents: Vec<Option<&FixedBitSet>> = parent_sets.iter().map(|b| b.as_deref()).collect();
     let mut hits = match (target, nested.is_some()) {
         (KnnTarget::Float(t), false) => {
-            let q = KnnFloatVectorQuery::new(field, t.clone(), candidates)?;
+            let q = KnnFloatVectorQuery::new(field, t.clone(), candidates)?
+                .with_ivf_nprobes(ivf_nprobes);
             vector_query::search_knn_float_vector_query_multi_segment(&knn, &q)?
         }
         (KnnTarget::Byte(t), false) => {
