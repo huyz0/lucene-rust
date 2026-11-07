@@ -79,6 +79,21 @@ public final class RustEngineSupport {
     );
 
     /**
+     * Whether the Rust engine writes terms dictionaries in the {@code RustZstd104} postings format:
+     * Lucene104's postings under a block-tree dictionary whose term blocks are zstd-compressed where
+     * that saves an eighth or more, a large field's against a dictionary trained on its own blocks
+     * (about a third smaller for text, more for keywords, ids and log fields). Off by default, which
+     * writes stock Lucene104 postings. Only nodes with this plugin read {@code RustZstd104}
+     * segments; to go back, close the index, set this to false, reopen it and force-merge, which
+     * rewrites every segment stock-readable.
+     */
+    public static final Setting<Boolean> ZSTD_TERMS = Setting.boolSetting(
+        "index.lucene_rust.zstd_terms",
+        false,
+        Setting.Property.IndexScope
+    );
+
+    /**
      * Whether merges write {@code index.codec: default} stored fields with a high-compression LZ4
      * match finder: the same LZ4 format, which OpenSearch's own engine and stock Lucene read, about
      * 8-33% smaller, and several times slower to compress. Flushes keep the fast compressor, and a
@@ -458,6 +473,7 @@ public final class RustEngineSupport {
             org.lucenerust.opensearch.sparse.SparseSettings.SPARSE_INDEX.get(config.getIndexSettings().getSettings()),
             REALTIME_SEARCH.get(config.getIndexSettings().getSettings()),
             ADAPTIVE_DOC_VALUES.get(config.getIndexSettings().getSettings()),
+            ZSTD_TERMS.get(config.getIndexSettings().getSettings()),
             MERGE_LZ4_HIGH_COMPRESSION.get(config.getIndexSettings().getSettings()),
             partitionField(config.getIndexSettings().getSettings()),
             knnIndex(config),

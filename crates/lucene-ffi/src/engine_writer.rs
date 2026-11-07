@@ -1100,12 +1100,20 @@ pub const OPEN_MERGE_LZ4_HC: u8 = 8;
 /// k-NN's codec name ([`KNN_CODEC`]) over the stored-fields codec, whose name they record under
 /// [`KNN_DELEGATE_CODEC_ATTRIBUTE`], as stock k-NN writes them; so k-NN's derived source reads
 /// back through that codec on any node.
-pub const OPEN_KNN: u8 = 16;
+pub const OPEN_KNN: u8 = 128;
 /// The codec name a k-NN index's segments record (`KNN1040Codec`).
 pub(crate) const KNN_CODEC: &str = "KNN1040Codec";
 /// The `.si` attribute naming the codec whose stored fields a k-NN segment holds
 /// (`KNN10010DerivedSourceStoredFieldsFormat.KNN_DELEGATE_CODEC_NAME`).
 pub(crate) const KNN_DELEGATE_CODEC_ATTRIBUTE: &str = "knn_delegate_stored_fields_codec_key";
+/// [`ffi_engine_writer_open`]'s flag for `index.lucene_rust.zstd_terms`: new
+/// segments write every field's terms in the `RustZstd104` postings format,
+/// whose term blocks are zstd-compressed
+/// ([`lucene_codecs::per_field_postings::Lucene104PostingsFormat::rust_zstd`]).
+pub const OPEN_ZSTD_TERMS: u8 = 16;
+/// The zstd level of [`OPEN_ZSTD_TERMS`]' term blocks. Blocks decode at the
+/// same speed whatever the level; higher ones only write slower.
+const ZSTD_TERMS_LEVEL: i32 = 3;
 /// [`ffi_engine_writer_open`]'s flag for `index.lucene_rust.adaptive_doc_values`:
 /// new segments write their doc values in the `RustAdaptive` format
 /// ([`lucene_codecs::doc_values::Lucene90DocValuesFormat::rust_adaptive`]).
@@ -1128,7 +1136,8 @@ const PARTITIONED_SLOTS: usize = 1024;
 /// an `index.sparse` index ([`lucene_sparse::SparseCodec`]);
 /// [`OPEN_LIVE_SEARCH`] keeps what a search of the buffers reads;
 /// [`OPEN_ADAPTIVE_DOC_VALUES`] writes doc values in the `RustAdaptive`
-/// format; [`OPEN_PARTITIONED`] keeps partitions in segments of their own;
+/// format; [`OPEN_ZSTD_TERMS`] writes terms dictionaries with zstd blocks;
+/// [`OPEN_PARTITIONED`] keeps partitions in segments of their own;
 /// [`OPEN_MERGE_LZ4_HC`] has merges compress stored fields harder.
 /// `index_sort` is the index's sort as a `.si` encodes it
 /// ([`lucene_index::segment_info::parse_index_sort`]; empty for none):
@@ -1300,6 +1309,16 @@ pub unsafe extern "C" fn ffi_engine_writer_open_codec(
                 writer.set_default_doc_values_format(
                     lucene_codecs::doc_values::Lucene90DocValuesFormat::rust_adaptive(),
                 );
+            }
+            if flags & OPEN_ZSTD_TERMS != 0 {
+                // A valid level, so this always builds the format.
+                if let Ok(format) =
+                    lucene_codecs::per_field_postings::Lucene104PostingsFormat::rust_zstd(
+                        ZSTD_TERMS_LEVEL,
+                    )
+                {
+                    writer.set_default_postings_format(format);
+                }
             }
             writer.enable_explicit_documents()?;
             restore_vectors_formats(&mut writer);
@@ -3072,6 +3091,69 @@ mod tests {
         commit_settled(h);
         ffi_engine_writer_close(h);
         assert_eq!(read_seq_nos(&tmp), want);
+        check(&tmp);
+    }
+
+    /// [`OPEN_ZSTD_TERMS`]: every postings field lands in `RustZstd104`, a
+    /// term lookup finds each document, and a forced merge keeps the format.
+    #[test]
+    fn a_zstd_terms_writer_writes_rust_zstd_postings() {
+        let tmp = empty_index("engine-writer-zstd-terms");
+        let h = open(&tmp, OPEN_ZSTD_TERMS);
+        let f = setup(h);
+        let n = 600i64;
+        for round in 0..2 {
+            for i in 0..n / 2 {
+                let seq = round * n / 2 + i;
+                let id = format!("d{seq}");
+                let b = doc(
+                    Blob::default().u8(OP_ADD).i32(1),
+                    &f,
+                    &id,
+                    &["w"],
+                    seq,
+                    false,
+                );
+                assert_eq!(apply(h, &b.0), 0, "{}", crate::error::last_error());
+            }
+            commit(h, &[]);
+        }
+        let files = |tmp: &TempDir| -> Vec<String> {
+            std::fs::read_dir(tmp.path())
+                .unwrap()
+                .map(|e| e.unwrap().file_name().into_string().unwrap())
+                .collect()
+        };
+        let ids_found = |tmp: &TempDir| {
+            let dir = FsDirectory::open(tmp.path());
+            let reader = lucene_search::directory_reader::DirectoryReader::open(&dir).unwrap();
+            (0..n)
+                .filter(|seq| {
+                    reader
+                        .doc_freq("_id", format!("d{seq}").as_bytes())
+                        .unwrap()
+                        == 1
+                })
+                .count()
+        };
+        assert_eq!(ids_found(&tmp), n as usize);
+        let names = files(&tmp);
+        assert!(
+            names.iter().any(|n| n.ends_with("_RustZstd104_0.tim")),
+            "{names:?}"
+        );
+        assert!(
+            !names.iter().any(|n| n.ends_with("_Lucene104_0.tim")),
+            "{names:?}"
+        );
+        check(&tmp);
+        let mut gen = 0;
+        // SAFETY: a live handle and out-pointer.
+        let rc = unsafe { ffi_engine_writer_force_merge(h, 1, 0, &mut gen) };
+        assert_eq!(rc, 0, "{}", crate::error::last_error());
+        commit_settled(h);
+        ffi_engine_writer_close(h);
+        assert_eq!(ids_found(&tmp), n as usize);
         check(&tmp);
     }
 
@@ -5692,6 +5774,11 @@ mod tests {
             let hold = round % 3 == 2;
             let mut held = None;
             let n = 1 + round % 5 + usize::from(hold);
+            if hold {
+                // A view waits for a chunk being written only while the
+                // warmer is idle: else it writes those documents itself.
+                crate::live::idle_warmer(&ew);
+            }
             for k in 0..n {
                 if hold && k + 1 == n {
                     held = crate::live::hold_tail(&ew);

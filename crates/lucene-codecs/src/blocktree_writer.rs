@@ -459,6 +459,30 @@ const COMPRESSION_NONE: u64 = 0x00;
 const COMPRESSION_LOWERCASE_ASCII: u64 = 0x01;
 /// `CompressionAlgorithm.LZ4.code`.
 const COMPRESSION_LZ4: u64 = 0x02;
+/// A zstd block (see [`BlockZstd`]); stock Lucene has no algorithm with
+/// this code and rejects it.
+pub(crate) const COMPRESSION_ZSTD: u64 = 0x03;
+
+/// What zstd does to one field's blocks.
+///
+/// A zstd block keeps the token (`vLong(suffixBytes << 3 | isLeaf << 2 |
+/// 3)`) and replaces everything after it with `vInt(plainLength)`,
+/// `vInt(frameLength)` and one bare zstd frame (`lucene_zstd::bare`) of
+/// `plainLength` bytes: the raw suffix bytes followed by the suffix-lengths,
+/// stats and metadata sections exactly as an ordinary block writes them. A
+/// block is written that way only when it is at least an eighth smaller.
+pub(crate) enum BlockZstd<'a, 'd> {
+    /// Compress blocks with this compressor.
+    Compress(&'a mut lucene_zstd::BareCompressor<'d>),
+    /// A dry run collecting training samples: every `stride`th block's
+    /// would-be zstd payload is appended to `samples`, its length to
+    /// `sizes`. Nothing is compressed.
+    Sample {
+        samples: &'a mut Vec<u8>,
+        sizes: &'a mut Vec<usize>,
+        stride: usize,
+    },
+}
 
 /// `StatsWriter`: `docFreq`/`totalTermFreq` per term, with runs of terms
 /// that occur once (`docFreq == 1`, and `totalTermFreq == 1` when freqs are
@@ -499,7 +523,7 @@ impl StatsWriter {
 }
 
 /// `TermsWriter`, for one field.
-struct TermsWriter<'t, 'o, F> {
+struct TermsWriter<'t, 'o, 'z, 'd, F> {
     terms: &'t [BlockTerm<'t>],
     has_freqs: bool,
     tim: &'o mut Vec<u8>,
@@ -517,6 +541,12 @@ struct TermsWriter<'t, 'o, F> {
     /// [`MAX_ITEMS_IN_BLOCK`] unless the format was built with others.
     min_items_in_block: usize,
     max_items_in_block: usize,
+    zstd: Option<BlockZstd<'z, 'd>>,
+    /// Blocks written so far, for [`BlockZstd::Sample`]'s stride.
+    blocks_written: usize,
+    /// The plain zstd payload and its frame, reused across blocks.
+    zstd_plain: Vec<u8>,
+    zstd_frame: Vec<u8>,
 }
 
 /// Writes one field's terms into `.tim` blocks and its trie into `.tip`,
@@ -527,7 +557,8 @@ struct TermsWriter<'t, 'o, F> {
 /// postings metadata of `terms[i]` for each `i` in `indices`, in order, as
 /// `PostingsWriterBase.encodeTerm` does with `absolute = true` for the first
 /// term and deltas after -- the block writer calls it once per block, with
-/// that block's own terms.
+/// that block's own terms. `zstd`, when given, may turn blocks into zstd
+/// blocks ([`BlockZstd`]); without it the output is Lucene's.
 pub(crate) fn write_field_terms<F>(
     tim: &mut Vec<u8>,
     tip: &mut Vec<u8>,
@@ -535,6 +566,7 @@ pub(crate) fn write_field_terms<F>(
     (min_items_in_block, max_items_in_block): (usize, usize),
     has_freqs: bool,
     encode_meta: F,
+    zstd: Option<BlockZstd<'_, '_>>,
 ) -> TrieLocation
 where
     F: FnMut(&mut Vec<u8>, &[usize]),
@@ -552,6 +584,10 @@ where
         compression_table: None,
         min_items_in_block,
         max_items_in_block,
+        zstd,
+        blocks_written: 0,
+        zstd_plain: Vec::new(),
+        zstd_frame: Vec::new(),
     };
     for (i, term) in terms.iter().enumerate() {
         w.push_term(term.bytes);
@@ -572,7 +608,7 @@ where
         .save(tip)
 }
 
-impl<'t, F> TermsWriter<'t, '_, F>
+impl<'t, F> TermsWriter<'t, '_, '_, '_, F>
 where
     F: FnMut(&mut Vec<u8>, &[usize]),
 {
@@ -780,12 +816,14 @@ where
             }
         }
         let token = ((suffixes.len() as u64) << 3) | if is_leaf { 0x04 } else { 0 } | compression;
+        let body_start = self.tim.len();
         self.tim.write_vlong(token as i64);
         if compression == COMPRESSION_NONE {
             self.tim.write_bytes(suffixes);
         } else {
             self.tim.write_bytes(spare);
         }
+        let sections_start = self.tim.len();
 
         let n = suffix_lengths.len();
         if suffix_lengths[1..].iter().all(|&b| b == suffix_lengths[0]) {
@@ -802,6 +840,10 @@ where
         (self.encode_meta)(meta, term_indices);
         self.tim.write_vint(meta.len() as i32);
         self.tim.write_bytes(meta);
+        if self.zstd.is_some() {
+            self.zstd_block(body_start, sections_start, suffixes, token & !0x03);
+        }
+        self.blocks_written += 1;
         self.scratch = scratch;
 
         if has_floor_lead {
@@ -817,6 +859,73 @@ where
             sub_indices,
         }
     }
+}
+
+impl<F> TermsWriter<'_, '_, '_, '_, F> {
+    /// Rewrites the block just written from `body_start` (its token) as a
+    /// zstd block when that is at least an eighth smaller, or samples it.
+    /// `sections_start` is where its suffix-lengths section starts and
+    /// `token` its token without a compression code.
+    // ARITH: positions within `tim`, which only grows; the size comparison
+    // multiplies lengths of one in-memory block by 7 or 8.
+    #[allow(clippy::arithmetic_side_effects)]
+    fn zstd_block(
+        &mut self,
+        body_start: usize,
+        sections_start: usize,
+        suffixes: &[u8],
+        token: u64,
+    ) {
+        let plain = &mut self.zstd_plain;
+        plain.clear();
+        plain.extend_from_slice(suffixes);
+        plain.extend_from_slice(&self.tim[sections_start..]);
+        match self.zstd.as_mut() {
+            None => {}
+            Some(BlockZstd::Sample {
+                samples,
+                sizes,
+                stride,
+            }) => {
+                if self.blocks_written.is_multiple_of((*stride).max(1)) {
+                    samples.extend_from_slice(plain);
+                    sizes.push(plain.len());
+                }
+            }
+            Some(BlockZstd::Compress(c)) => {
+                let frame = &mut self.zstd_frame;
+                frame.clear();
+                if c.compress(plain, frame).is_err() {
+                    return;
+                }
+                let token = token | COMPRESSION_ZSTD;
+                let zstd_len = vlong_len(token)
+                    + vlong_len(plain.len() as u64)
+                    + vlong_len(frame.len() as u64)
+                    + frame.len();
+                let lucene_len = self.tim.len() - body_start;
+                if zstd_len * 8 <= lucene_len * 7 {
+                    self.tim.truncate(body_start);
+                    self.tim.write_vlong(token as i64);
+                    self.tim.write_vint(plain.len() as i32);
+                    self.tim.write_vint(frame.len() as i32);
+                    self.tim.write_bytes(frame);
+                }
+            }
+        }
+    }
+}
+
+/// The bytes `write_vlong(v)` takes.
+// ARITH: at most 10 iterations of a shift and an increment.
+#[allow(clippy::arithmetic_side_effects)]
+fn vlong_len(mut v: u64) -> usize {
+    let mut n = 1;
+    while v >= 0x80 {
+        v >>= 7;
+        n += 1;
+    }
+    n
 }
 
 /// `PendingBlock.compileIndex`: builds the trie for a run of blocks written

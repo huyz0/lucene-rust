@@ -45,7 +45,8 @@ RUST_DIR = os.path.join(ROOT, "crates", "lucene-ffi", "src")
 # and writes too.
 CRYPTO_DIR = os.path.join(ROOT, "crates", "lucene-store-crypto", "src")
 # The RustAdaptive doc-values format, which the plugin's docvalues/ package
-# reads (lucene-codecs' doc_values.rs and adaptive_values.rs).
+# reads (lucene-codecs' doc_values.rs and adaptive_values.rs), and the
+# RustZstd104 terms dictionary its terms/ package reads (blocktree.rs).
 CODECS_DIR = os.path.join(ROOT, "crates", "lucene-codecs", "src")
 
 # Rust files a Java file encodes for without naming them.
@@ -83,6 +84,8 @@ RENAMES = {
     # format.rs re-exports these from backend.rs.
     ("Lrse.java", "NONCE_LEN"): ("backend.rs", "NONCE_LEN"),
     ("Lrse.java", "TAG_LEN"): ("backend.rs", "TAG_LEN"),
+    ("ZstdTermBlocks.java", "CODE"): ("blocktree_writer.rs", "COMPRESSION_ZSTD"),
+    ("ZstdTermBlocks.java", "SECTION_BYTES_PER_ENTRY"): ("blocktree.rs", "ZSTD_SECTION_BYTES_PER_ENTRY"),
 }
 
 # Constants with no Rust counterpart, and why.
@@ -109,6 +112,8 @@ JAVA_ONLY = {
     ("SparseMethod.java", "DEFAULT_CLUSTERING_BATCH_SIZE"): "neural-search's mapping default, written as a field attribute",
     ("SparseMethod.java", "MIN_CLUSTERING_BATCH_SIZE"): "neural-search's mapping validation",
     ("SparseMethod.java", "MAX_CLUSTERING_BATCH_SIZE"): "neural-search's mapping validation",
+    ("TrieReader.java", "NO_OUTPUT"): "Lucene's own trie reader's in-memory sentinel, not on disk",
+    ("TrieReader.java", "NO_FLOOR_DATA"): "Lucene's own trie reader's in-memory sentinel, not on disk",
 }
 
 JAVA_CONST = re.compile(

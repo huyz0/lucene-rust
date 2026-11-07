@@ -126,23 +126,29 @@ impl PackedFields {
                 if i == limit {
                     return Ok(());
                 }
+                let wanted = i >= start;
                 match r.byte()? {
                     PACKED => {
                         shape.read(&mut r)?;
-                        shape.decode_into(&mut r, &mut doc)?;
+                        if wanted {
+                            shape.decode_into(&mut r, &mut doc)?;
+                        } else {
+                            shape.skip(&mut r)?;
+                        }
                     }
-                    SAME_SHAPE => shape.decode_into(&mut r, &mut doc)?,
+                    SAME_SHAPE if wanted => shape.decode_into(&mut r, &mut doc)?,
+                    SAME_SHAPE => shape.skip(&mut r)?,
                     KEPT => {
                         let k = kept.next().ok_or_else(|| {
                             explicit_error("packed fields: a kept document is missing")
                         })?;
-                        if i >= start {
+                        if wanted {
                             doc.clone_from(k);
                         }
                     }
                     _ => return Err(corrupt()),
                 }
-                if i >= start {
+                if wanted {
                     f(i.wrapping_sub(start), &mut doc)?;
                 }
                 i = i.saturating_add(1);
@@ -489,6 +495,21 @@ impl Shape {
         Ok(())
     }
 
+    /// Moves `r` past one document's values, checked as
+    /// [`Self::decode_into`] checks them but not materialized.
+    fn skip(&self, r: &mut Reader<'_>) -> Result<()> {
+        if !self.set {
+            return Err(corrupt());
+        }
+        for _ in self.inverted.iter().filter(|&&(_, has_norm)| has_norm) {
+            r.vlong()?;
+        }
+        for &(_, kind) in self.doc_values.iter().chain(&self.points) {
+            read_value(r, kind)?;
+        }
+        Ok(())
+    }
+
     /// Decodes one document's values over `out`, reusing its vectors.
     fn decode_into(&self, r: &mut Reader<'_>, out: &mut ExplicitFields) -> Result<()> {
         if !self.set {
@@ -515,23 +536,13 @@ impl Shape {
             values.clear();
             values.reserve(shape.len());
             for &(field_number, kind) in shape {
-                let value = match kind {
-                    LONG => FieldValue::Long(unzigzag(r.vlong()?)),
-                    INT => {
-                        FieldValue::Int(i32::try_from(unzigzag(r.vlong()?)).map_err(|_| corrupt())?)
-                    }
-                    FLOAT => FieldValue::Float(f32::from_bits(u32::from_le_bytes(r.array()?))),
-                    DOUBLE => FieldValue::Double(f64::from_bits(u64::from_le_bytes(r.array()?))),
-                    BINARY => {
-                        let len = r.len()?;
-                        FieldValue::Binary(r.bytes(len)?.to_vec())
-                    }
-                    STRING => {
-                        let len = r.len()?;
-                        let s = std::str::from_utf8(r.bytes(len)?).map_err(|_| corrupt())?;
-                        FieldValue::String(s.to_string())
-                    }
-                    _ => return Err(corrupt()),
+                let value = match read_value(r, kind)? {
+                    Value::Long(x) => FieldValue::Long(x),
+                    Value::Int(x) => FieldValue::Int(x),
+                    Value::Float(x) => FieldValue::Float(x),
+                    Value::Double(x) => FieldValue::Double(x),
+                    Value::Binary(b) => FieldValue::Binary(b.to_vec()),
+                    Value::String(s) => FieldValue::String(s.to_string()),
                 };
                 values.push(StoredField {
                     field_number,
@@ -543,6 +554,35 @@ impl Shape {
         out.term_vectors.clear();
         Ok(())
     }
+}
+
+/// A packed value, its bytes borrowed from the block.
+enum Value<'a> {
+    Long(i64),
+    Int(i32),
+    Float(f32),
+    Double(f64),
+    Binary(&'a [u8]),
+    String(&'a str),
+}
+
+/// Reads one value of `kind`, as [`encode_values`] wrote it.
+fn read_value<'a>(r: &mut Reader<'a>, kind: u8) -> Result<Value<'a>> {
+    Ok(match kind {
+        LONG => Value::Long(unzigzag(r.vlong()?)),
+        INT => Value::Int(i32::try_from(unzigzag(r.vlong()?)).map_err(|_| corrupt())?),
+        FLOAT => Value::Float(f32::from_bits(u32::from_le_bytes(r.array()?))),
+        DOUBLE => Value::Double(f64::from_bits(u64::from_le_bytes(r.array()?))),
+        BINARY => {
+            let len = r.len()?;
+            Value::Binary(r.bytes(len)?)
+        }
+        STRING => {
+            let len = r.len()?;
+            Value::String(std::str::from_utf8(r.bytes(len)?).map_err(|_| corrupt())?)
+        }
+        _ => return Err(corrupt()),
+    })
 }
 
 fn zigzag(v: i64) -> u64 {
