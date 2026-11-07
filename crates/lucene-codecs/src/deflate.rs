@@ -14,22 +14,18 @@
 //! unlike LZ4's, which is batched with every other unit's up front -- see
 //! `stored_fields::decompress_unit`'s doc comment for both shapes.
 //!
-//! Built on `miniz_oxide::inflate::core`'s low-level `decompress` rather
-//! than its `decompress_to_vec*` convenience wrappers: those don't support
-//! a preset dictionary, whereas the low-level function decompresses into an
-//! arbitrary `out[out_pos..]` slice and allows back-references to look
-//! earlier in the same buffer -- exactly the "dictionary bytes already
-//! sitting before `d_off`" trick [`crate::lz4::decompress`] uses.
+//! Decoded by [`lucene_util::inflate`], which writes straight into
+//! `dest[d_off..]` and lets back-references reach the dictionary bytes
+//! already sitting before `d_off` -- the same trick [`crate::lz4::decompress`]
+//! uses.
 
 use lucene_store::data_input::{DataInput, SliceInput};
 use lucene_store::{Error, Result};
-use miniz_oxide::inflate::core::inflate_flags::TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF;
-use miniz_oxide::inflate::core::{decompress as tinfl_decompress, DecompressorOxide};
-use miniz_oxide::inflate::TINFLStatus;
+
+use lucene_util::inflate::Inflater;
 
 thread_local! {
-    static DECOMPRESSOR: std::cell::RefCell<Box<DecompressorOxide>> =
-        std::cell::RefCell::new(Box::default());
+    static INFLATER: std::cell::RefCell<Inflater> = std::cell::RefCell::new(Inflater::default());
 }
 
 /// Decompresses `compressed_len` raw-DEFLATE bytes from `input` into
@@ -83,25 +79,13 @@ pub(crate) fn decompress(
         return Ok(d_off);
     }
 
-    // One inflater state per thread, re-initialised per unit: Java resets
-    // one `Inflater` per decompressor rather than allocating ~11 KB of
-    // tables for every sub-block of every chunk.
-    let (status, _in_read, out_written) = DECOMPRESSOR.with(|cell| {
-        let mut decompressor = cell.borrow_mut();
-        decompressor.init();
-        tinfl_decompress(
-            &mut decompressor,
-            compressed,
-            dest,
-            d_off,
-            TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF,
-        )
-    });
-    if status != TINFLStatus::Done || out_written != decompressed_len {
-        return Err(Error::Corrupted(format!(
-            "deflate decompression failed: status={status:?}, wrote {out_written} of {decompressed_len} expected bytes"
-        )));
-    }
+    // One decoder per thread: its tables are rebuilt per block, never
+    // reallocated.
+    INFLATER.with(|cell| {
+        cell.borrow_mut()
+            .inflate(compressed, dest, d_off, decompressed_len)
+    })
+    .map_err(|e| Error::Corrupted(e.to_string()))?;
     Ok(dest_end)
 }
 
@@ -168,6 +152,33 @@ mod tests {
         assert_eq!(new_off, dict.len() + block.len());
         assert_eq!(&dest[..dict.len()], dict);
         assert_eq!(&dest[dict.len()..], block);
+    }
+
+    #[test]
+    fn lucene_deflater_streams_with_a_preset_dictionary() {
+        let words = ["stored ", "fields ", "{\"id\": ", "merge ", "1234 ", "segment "];
+        let mut raw = Vec::new();
+        let mut x = 7u32;
+        while raw.len() < 120_000 {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            raw.extend_from_slice(words[x as usize % words.len()].as_bytes());
+            raw.push((x >> 24) as u8);
+        }
+        let dict = &raw[..2000];
+        for block in [&raw[2000..2100], &raw[2000..50_000], &raw[2000..]] {
+            let mut d = crate::deflater::Deflater::new();
+            d.set_dictionary(dict);
+            let mut c = Vec::new();
+            d.compress(block, &mut c);
+            let mut dest = dict.to_vec();
+            dest.resize(dict.len() + block.len(), 0);
+            let mut input = SliceInput::new(&c);
+            let end = decompress(&mut input, c.len(), block.len(), &mut dest, dict.len()).unwrap();
+            assert_eq!(end, dest.len());
+            assert_eq!(&dest[dict.len()..], block);
+        }
     }
 
     #[test]
