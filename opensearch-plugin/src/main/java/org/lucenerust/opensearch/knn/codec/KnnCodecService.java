@@ -6,6 +6,8 @@ package org.lucenerust.opensearch.knn.codec;
 import org.apache.lucene.codecs.Codec;
 import org.apache.lucene.codecs.FilterCodec;
 import org.apache.lucene.codecs.KnnVectorsFormat;
+import org.apache.lucene.codecs.lucene104.Lucene104HnswScalarQuantizedVectorsFormat;
+import org.apache.lucene.codecs.lucene104.Lucene104ScalarQuantizedVectorsFormat;
 import org.apache.lucene.codecs.lucene99.Lucene99HnswVectorsFormat;
 import org.apache.lucene.codecs.perfield.PerFieldKnnVectorsFormat;
 import org.apache.lucene.util.quantization.QuantizedByteVectorValues.ScalarEncoding;
@@ -70,12 +72,15 @@ public final class KnnCodecService extends CodecService {
         }
     }
 
-    /** The Lucene format a {@link VectorsFormatSpec} names, under the k-NN plugin's format names. */
+    /**
+     * The format a {@link VectorsFormatSpec} names, under the names the Rust writer records: Lucene's
+     * own for the scalar-quantized formats (k-NN's {@code KNN1040} names read only some encodings).
+     */
     static KnnVectorsFormat format(VectorsFormatSpec spec) {
         return switch (spec.kind()) {
             case 1 -> new Lucene99HnswVectorsFormat(spec.maxConn(), spec.beamWidth());
-            case 2 -> new KNN1040HnswScalarQuantizedVectorsFormat(encoding(spec), spec.maxConn(), spec.beamWidth());
-            case 3 -> new KNN1040ScalarQuantizedVectorsFormat(encoding(spec));
+            case 2 -> new Lucene104HnswScalarQuantizedVectorsFormat(encoding(spec), spec.maxConn(), spec.beamWidth());
+            case 3 -> new Lucene104ScalarQuantizedVectorsFormat(encoding(spec));
             case 4 -> new KNN990HnswBinaryVectorsFormat(spec.maxConn(), spec.beamWidth());
             default -> new Lucene99HnswVectorsFormat();
         };
