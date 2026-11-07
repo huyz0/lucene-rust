@@ -479,6 +479,10 @@ pub(crate) struct FieldRuns {
     /// to ([`FieldRuns::lay_out_range`]), newest last: a range from one of
     /// them reads each term's streams from there on, not from the start.
     cursors: std::sync::Mutex<Vec<(i32, std::sync::Arc<Cursors>)>>,
+    /// By term id, where a search's read of the term's documents stream
+    /// ended, newest last ([`FieldRuns::live_docs_of`]): a later read of the
+    /// documents from past one of them starts there.
+    live_cursors: std::sync::Mutex<std::collections::HashMap<u32, Vec<Cursor>>>,
 }
 
 /// By term id, where its streams stood at a document.
@@ -583,6 +587,7 @@ impl FieldRuns {
             sum_doc_freq: 0,
             sum_total_term_freq: 0,
             cursors: std::sync::Mutex::default(),
+            live_cursors: std::sync::Mutex::default(),
         }
     }
 

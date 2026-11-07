@@ -35,7 +35,7 @@ use lucene_codecs::stored_fields::FieldValue;
 use lucene_index::buffered_updates::Term;
 use lucene_index::concurrent_writer::LiveView;
 use lucene_search::collector::VecCollector;
-use lucene_search::live_segment::{live_request, live_segments};
+use lucene_search::live_segment::live_request;
 use lucene_search::multi_segment::OpenSegment;
 use lucene_search::query::{Clause, TermQuery};
 use lucene_search::similarities::Similarity;
@@ -378,6 +378,42 @@ pub(crate) struct Chunk {
     /// Whether `reader` holds the documents' postings.
     postings: bool,
     reader: SegmentReader,
+    /// Without postings, `reader` with the terms of the last requests
+    /// ([`request_key`]) overlaid, newest last: the documents and their
+    /// statistics never change, so neither does a request's overlay.
+    overlays: Mutex<Vec<(Vec<u8>, SegmentReader)>>,
+}
+
+/// Leads the overlay key of a plain search's request ([`ffi_jvm_reader_search_live`]),
+/// apart from a view reader's of the same bytes.
+const PLAIN_KEY: u8 = 0xff;
+
+/// The most overlays a chunk keeps.
+const CHUNK_OVERLAYS: usize = 8;
+
+impl Chunk {
+    fn overlay(&self, key: &[u8]) -> Option<SegmentReader> {
+        self.overlays
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, r)| r.clone())
+    }
+
+    fn keep_overlay(&self, key: &[u8], reader: &SegmentReader) {
+        let mut overlays = self
+            .overlays
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if overlays.iter().any(|(k, _)| k == key) {
+            return;
+        }
+        if overlays.len() >= CHUNK_OVERLAYS {
+            overlays.remove(0);
+        }
+        overlays.push((key.to_vec(), reader.clone()));
+    }
 }
 
 /// By field number, a buffer's [`FieldTotals`] as of some document.
@@ -806,7 +842,7 @@ pub unsafe extern "C" fn ffi_live_view_reader(
                 return Ok(());
             }
         }
-        let id = build_view_reader(handle, &v, request.as_ref())?;
+        let id = build_view_reader(handle, &v, request.as_ref(), key.as_deref())?;
         let mut whole = v
             .whole
             .lock()
@@ -846,6 +882,7 @@ fn build_view_reader(
     handle: u64,
     v: &ViewHandle,
     request: Option<&LiveRequest>,
+    key: Option<&[u8]>,
 ) -> Result<u64, FfiStatus> {
     let h = lookup(handle, "ffi_live_view_reader: unknown or closed reader")?;
     let mut extra = Vec::new();
@@ -888,18 +925,35 @@ fn build_view_reader(
             .collect::<Vec<_>>()
     });
     phases.lap(phases::CHUNKS);
-    let lean = built.iter().any(|parts| {
-        parts
-            .as_ref()
-            .is_ok_and(|p| p.iter().any(|&(_, lean)| lean))
-    });
-    let snapshot = match request.filter(|_| lean) {
-        Some(r) => Some(
-            v.writer
-                .writer()
-                .live_view_snapshot(&v.view, r)
-                .map_err(live_error)?,
-        ),
+    // The buffers are read only for the chunks without postings that have
+    // no overlay of this request yet, each from the first of them on.
+    let from: Vec<Option<i32>> = built
+        .iter()
+        .zip(&v.plans)
+        .map(|(parts, plan)| {
+            parts.as_ref().ok().and_then(|parts| {
+                parts
+                    .iter()
+                    .zip(plan)
+                    .find(|(&(_, lean), p)| lean && cached_overlay(p, key).is_none())
+                    .map(|(_, p)| p.start)
+            })
+        })
+        .collect();
+    let snapshot = match request.filter(|_| from.iter().any(Option::is_some)) {
+        Some(r) => {
+            let from: Vec<i32> = from
+                .iter()
+                .zip(&v.view.buffers)
+                .map(|(f, b)| f.unwrap_or(b.max_doc))
+                .collect();
+            Some(
+                v.writer
+                    .writer()
+                    .live_view_snapshot_from(&v.view, r, &from)
+                    .map_err(live_error)?,
+            )
+        }
         None => None,
     };
     if snapshot
@@ -926,10 +980,8 @@ fn build_view_reader(
             }
             Err(e) => return Err(live_error(e)),
         };
-        let parts = match snapshot.as_ref().and_then(|s| s.buffers.get(i)) {
-            Some(buffer) => overlaid(parts, plan, buffer)?,
-            None => parts.into_iter().map(|(r, _)| r).collect(),
-        };
+        let buffer = snapshot.as_ref().and_then(|s| s.buffers.get(i));
+        let parts = overlaid(parts, plan, buffer, key)?;
         for (p, r) in plan.iter().zip(parts) {
             let len = p.end.saturating_sub(p.start);
             if r.max_doc < len {
@@ -1083,6 +1135,7 @@ fn buffer_segments(
                 totals: Arc::clone(&p.end_totals),
                 postings,
                 reader: reader.clone(),
+                overlays: Mutex::default(),
             });
             keep_chunk(w.live_chunks().entry((b.id, postings)).or_default(), chunk);
         }
@@ -1151,10 +1204,17 @@ fn overlay_request(
 /// `parts` (buffer `b`'s chunks, as [`buffer_segments`] gave them) with
 /// the terms of `buffer` (`b`'s in a snapshot for the request) put in each
 /// chunk that lacks its postings.
+/// The overlay of the request `key` names on `p`'s chunk, when that chunk
+/// keeps one.
+fn cached_overlay(p: &Planned, key: Option<&[u8]>) -> Option<SegmentReader> {
+    key.zip(p.chunk.as_ref()).and_then(|(k, c)| c.overlay(k))
+}
+
 fn overlaid(
     parts: Vec<(SegmentReader, bool)>,
     plan: &[Planned],
-    buffer: &lucene_index::concurrent_writer::LiveBuffer,
+    buffer: Option<&lucene_index::concurrent_writer::LiveBuffer>,
+    key: Option<&[u8]>,
 ) -> Result<Vec<SegmentReader>, FfiStatus> {
     parts
         .into_iter()
@@ -1163,13 +1223,28 @@ fn overlaid(
             if !lean {
                 return Ok(r);
             }
+            if let Some(r) = cached_overlay(p, key) {
+                return Ok(r);
+            }
+            let Some(buffer) = buffer else {
+                set_last_error("live view: a chunk without postings and no snapshot");
+                return Err(FfiStatus::Decode);
+            };
             let totals = |f: i32| {
                 let at = |t: &Totals| t.get(&f).copied().unwrap_or_default();
                 (at(&p.start_totals), at(&p.end_totals))
             };
             let live = lucene_search::live_segment::range_segment(buffer, p.start, p.end, &totals)
                 .map_err(map_search_error)?;
-            r.with_postings(live).map_err(map_search_error)
+            let r = r.with_postings(live).map_err(map_search_error)?;
+            // A planned chunk without postings is the one read here; a chunk
+            // written for this view is kept once a later view plans it.
+            if let (Some(k), Some(c)) = (key, p.chunk.as_ref()) {
+                if !c.postings {
+                    c.keep_overlay(k, &r);
+                }
+            }
+            Ok(r)
         })
         .collect()
 }
@@ -1330,38 +1405,124 @@ pub unsafe extern "C" fn ffi_jvm_reader_search_live(
             "ffi_jvm_reader_search_live: unknown or closed reader",
         )?;
         let v = view(view_id)?;
+        // Each buffer is read as the chunks its view's plan starts with,
+        // with this request's terms (their overlays kept on the chunks),
+        // then a segment of the documents after them.
+        let key = {
+            let mut k = vec![PLAIN_KEY];
+            k.extend(request_key(blob, None, None));
+            k
+        };
+        let prefixes: Vec<&[Planned]> = v
+            .view
+            .buffers
+            .iter()
+            .zip(&v.plans)
+            .map(|(b, plan)| {
+                let n = if b.in_slot {
+                    plan.iter().take_while(|p| p.chunk.is_some()).count()
+                } else {
+                    0
+                };
+                plan.get(..n).unwrap_or_default()
+            })
+            .collect();
+        // Each buffer is read from its first chunk without this request's
+        // overlay, else from the documents after its chunks.
+        let from: Vec<i32> = prefixes
+            .iter()
+            .map(|prefix| {
+                let uncached = prefix.iter().find(|p| {
+                    p.chunk.as_ref().is_some_and(|c| !c.postings)
+                        && cached_overlay(p, Some(&key)).is_none()
+                });
+                uncached.map_or_else(|| prefix.last().map_or(0, |p| p.end), |p| p.start)
+            })
+            .collect();
         let snapshot = v
             .writer
             .writer()
-            .live_view_snapshot(&v.view, &request)
+            .live_view_snapshot_from(&v.view, &request, &from)
             .map_err(live_error)?;
-        let live = live_segments(snapshot).map_err(map_search_error)?;
+        let mut chunk_readers = Vec::new();
+        let mut chunk_masks = Vec::new();
+        let mut chunk_docs = Vec::new();
+        let mut live = Vec::new();
+        for ((b, prefix), buffer) in v.view.buffers.iter().zip(&prefixes).zip(snapshot.buffers) {
+            let parts: Vec<(SegmentReader, bool)> = prefix
+                .iter()
+                .filter_map(|p| p.chunk.as_ref().map(|c| (c.reader.clone(), !c.postings)))
+                .collect();
+            for (p, r) in prefix
+                .iter()
+                .zip(overlaid(parts, prefix, Some(&buffer), Some(&key))?)
+            {
+                let lo = b.deleted.partition_point(|&d| d < p.start);
+                let hi = b.deleted.partition_point(|&d| d < p.end);
+                let deleted: Vec<i32> = b
+                    .deleted
+                    .get(lo..hi)
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|&d| d.saturating_sub(p.start))
+                    .collect();
+                chunk_masks.push(buffer_mask(
+                    p.end.saturating_sub(p.start),
+                    &deleted,
+                    r.max_doc,
+                ));
+                chunk_docs.push(r.max_doc);
+                chunk_readers.push(r);
+            }
+            let start = prefix.last().map_or(0, |p| p.end);
+            let at_start = |f: i32| {
+                prefix
+                    .last()
+                    .and_then(|p| p.end_totals.get(&f).copied())
+                    .unwrap_or_default()
+            };
+            live.push(
+                lucene_search::live_segment::tail_segment(buffer, start, &at_start)
+                    .map_err(map_search_error)?,
+            );
+        }
         let inputs = live
             .iter()
             .map(|l| l.inputs())
             .collect::<lucene_search::Result<Vec<_>>>()
             .map_err(map_search_error)?;
 
-        let opened = h.reader.open_segments().map_err(|e| {
+        let chunked;
+        let reader = if chunk_readers.is_empty() {
+            &h.reader
+        } else {
+            chunked = h.reader.with_readers_appended(chunk_readers).map_err(|e| {
+                set_last_error(format!("opening the buffered documents: {e}"));
+                FfiStatus::Decode
+            })?;
+            &chunked
+        };
+        let opened = reader.open_segments().map_err(|e| {
             set_last_error(format!("opening segment postings: {e}"));
             FfiStatus::Decode
         })?;
         let sim = sim.as_ref();
-        let mut segments: Vec<OpenSegment<'_>> = opened.as_open_segments();
-        let masks = commit_masks(&v.view.commit_deletes, &h, &segments)?;
-        for (i, s) in segments.iter_mut().enumerate() {
-            s.live_docs = match &masks {
-                Some(m) => m.get(i).and_then(Option::as_deref),
-                None => h.live_docs.get(i).and_then(Option::as_ref),
+        let committed = h.live_docs.len();
+        let mut opened_segments: Vec<OpenSegment<'_>> = opened.as_open_segments();
+        let masks = commit_masks(
+            &v.view.commit_deletes,
+            &h,
+            opened_segments.get(..committed).unwrap_or_default(),
+        )?;
+        for (i, s) in opened_segments.iter_mut().enumerate() {
+            s.live_docs = match i.checked_sub(committed) {
+                Some(c) => chunk_masks.get(c).and_then(Option::as_ref),
+                None => match &masks {
+                    Some(m) => m.get(i).and_then(Option::as_deref),
+                    None => h.live_docs.get(i).and_then(Option::as_ref),
+                },
             };
             s.similarity = sim.map(|p| p as &dyn Similarity);
-        }
-        let mut doc_base = h.reader.max_doc();
-        for (l, i) in live.iter().zip(&inputs) {
-            let mut s = l.segment(i, doc_base);
-            s.similarity = sim.map(|p| p as &dyn Similarity);
-            segments.push(s);
-            doc_base = doc_base.saturating_add(l.max_doc());
         }
 
         let fields: Vec<String> = crate::clauses::clause_field_names(&q)
@@ -1378,17 +1539,43 @@ pub unsafe extern "C" fn ffi_jvm_reader_search_live(
             }
             found
         };
-        let (reader_norms, averages) = h
-            .reader
+        let (reader_norms, averages) = reader
             .field_norms_by_field_with(&fields, &extra)
             .map_err(|e| map_search_error(e.into()))?;
         let live_norms: Vec<_> = live
             .iter()
             .map(|l| l.norms_with_average(&|f| averages.get(f).copied()))
             .collect();
-        let norms: Vec<_> = reader_norms
-            .iter()
-            .chain(&live_norms)
+        // In document order: the committed segments, then each buffer's
+        // chunks and the segment after them.
+        let mut segments: Vec<OpenSegment<'_>> = Vec::new();
+        let mut norms = Vec::new();
+        let mut opened_iter = opened_segments.into_iter().zip(reader_norms.iter());
+        for _ in 0..committed {
+            if let Some((s, n)) = opened_iter.next() {
+                segments.push(s);
+                norms.push(n);
+            }
+        }
+        let mut doc_base = h.reader.max_doc();
+        let mut chunk_docs = chunk_docs.into_iter();
+        for (((prefix, l), i), ln) in prefixes.iter().zip(&live).zip(&inputs).zip(&live_norms) {
+            for _ in 0..prefix.len() {
+                if let (Some((mut s, n)), Some(docs)) = (opened_iter.next(), chunk_docs.next()) {
+                    s.doc_base = doc_base;
+                    doc_base = doc_base.saturating_add(docs);
+                    segments.push(s);
+                    norms.push(n);
+                }
+            }
+            let mut s = l.segment(i, doc_base);
+            s.similarity = sim.map(|p| p as &dyn Similarity);
+            segments.push(s);
+            norms.push(ln);
+            doc_base = doc_base.saturating_add(l.max_doc());
+        }
+        let norms: Vec<_> = norms
+            .into_iter()
             .map(|m| (!m.is_empty()).then_some(m))
             .collect();
         let threshold = u64::try_from(count_limit).unwrap_or(0);

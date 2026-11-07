@@ -289,7 +289,7 @@ impl Deletes {
                 .field_by_name(field)
                 .and_then(|f| postings.live_field(f.number))
             {
-                runs.live_docs_of(bytes, docs);
+                runs.live_docs_of(bytes, 0, docs);
             }
             docs.iter()
                 .map(|&(d, _)| d)
@@ -1067,6 +1067,19 @@ impl ConcurrentIndexWriter<'_> {
         view: &LiveView,
         request: &LiveRequest,
     ) -> Result<LiveSnapshot> {
+        self.live_view_snapshot_from(view, request, &[])
+    }
+
+    /// [`Self::live_view_snapshot`], each buffer's postings without
+    /// positions only from its document in `from` on (by buffer; 0 past
+    /// its end): a term's documents before are left out, its read starting
+    /// near there.
+    pub fn live_view_snapshot_from(
+        &self,
+        view: &LiveView,
+        request: &LiveRequest,
+        from: &[i32],
+    ) -> Result<LiveSnapshot> {
         let cfg = self.check_live()?;
         let wanted: Vec<Wanted<'_>> = request
             .fields
@@ -1091,7 +1104,8 @@ impl ConcurrentIndexWriter<'_> {
         // Each buffer is read under its own slot lock: the view fixed its
         // documents and statistics, so the buffers need not be read at
         // one instant, and indexing into the other slots goes on.
-        for b in &view.buffers {
+        for (i, b) in view.buffers.iter().enumerate() {
+            let from = from.get(i).copied().unwrap_or(0);
             let read = self.with_buffer(b.id, |source| {
                 // A buffer `delete_all` or `rollback` dropped: none of its
                 // documents is live any more.
@@ -1103,7 +1117,7 @@ impl ConcurrentIndexWriter<'_> {
                             fields: Vec::new(),
                         })
                     },
-                    |source| read_buffer(source, b, &wanted),
+                    |source| read_buffer(source, b, &wanted, from),
                 )
             });
             out.buffers.push(read?);
@@ -1180,6 +1194,7 @@ fn read_buffer(
     source: &Source<'_>,
     view: &ViewBuffer,
     wanted: &[Wanted<'_>],
+    from: i32,
 ) -> Result<LiveBuffer> {
     let max = usize::try_from(view.max_doc).unwrap_or(0);
     let mut fields = Vec::new();
@@ -1203,7 +1218,7 @@ fn read_buffer(
         };
         let mut terms = Vec::new();
         for &t in names {
-            if let Some(mut p) = runs.live_term(t, w.positions)? {
+            if let Some(mut p) = runs.live_term(t, w.positions, from)? {
                 truncate(&mut p, view.max_doc);
                 if !p.docs.is_empty() {
                     terms.push(p);

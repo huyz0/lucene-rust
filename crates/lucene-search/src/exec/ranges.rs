@@ -1134,6 +1134,7 @@ pub(crate) fn document<'a>(
         points: ctx.points,
         reader: Some(reader),
         index_sort_prefix: false,
+        termless: None,
         similarity: None,
     };
     if let Some(fallback) = &q.fallback {
