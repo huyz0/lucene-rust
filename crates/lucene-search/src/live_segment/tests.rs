@@ -539,3 +539,48 @@ fn a_query_reads_its_terms_and_refuses_what_the_buffers_cannot_answer() {
         .push(Clause::Prefix(crate::query::PrefixQuery::new("body", "w")));
     assert!(super::live_request(&Clause::Boolean(Box::new(b))).is_none());
 }
+
+/// On segments holding points and doc values but no terms, a range or geo
+/// clause reads nothing from the buffers; a clause reading terms through
+/// the document package is still refused.
+#[test]
+fn points_and_doc_values_clauses_read_no_buffered_terms() {
+    use crate::extended_query::{
+        DocumentClause, ExtendedQuery, IndexOrDocValuesQuery, NumericDocValuesRangeQuery,
+        PointRangeQuery,
+    };
+    use std::sync::Arc;
+    let ext = |q: ExtendedQuery| Clause::Extended(Box::new(q));
+    let range = ext(ExtendedQuery::IndexOrDocValues(IndexOrDocValuesQuery::new(
+        ext(ExtendedQuery::PointRange(
+            PointRangeQuery::new("num", 1, vec![0; 8], vec![1; 8]).unwrap(),
+        )),
+        ext(ExtendedQuery::NumericDocValuesRange(
+            NumericDocValuesRangeQuery::new("num", 0, 1),
+        )),
+    )));
+    let geo = ext(ExtendedQuery::Document(DocumentClause::new(
+        "geo",
+        Arc::new(
+            crate::document::geo::LatLonPointDistanceQuery::new("loc", 10.0, 20.0, 5e5).unwrap(),
+        ),
+    )));
+    let mut b = BooleanQuery::new();
+    b.must.push(term("body", "w0"));
+    b.filter.push(range);
+    b.filter.push(geo);
+    let request = super::whole_request(&[&Clause::Boolean(Box::new(b.clone()))]).unwrap();
+    let fields: Vec<&str> = request.fields.iter().map(|f| f.field.as_str()).collect();
+    assert_eq!(fields, ["body"]);
+    let terms = ext(ExtendedQuery::Document(DocumentClause::new(
+        "term",
+        Arc::new(
+            crate::document::doc_values_queries::TermConstantScoreQuery {
+                field: "tag".into(),
+                term: b"t0".to_vec(),
+            },
+        ),
+    )));
+    b.filter.push(terms);
+    assert!(super::whole_request(&[&Clause::Boolean(Box::new(b))]).is_none());
+}

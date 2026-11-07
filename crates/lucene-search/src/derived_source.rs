@@ -128,8 +128,8 @@ fn refused(why: &str) -> stored_fields::Error {
     stored_fields::Error::DerivedSource(why.to_string())
 }
 
-/// `DerivedSourceVectorTransformer.injectVectors`: `source` with each derived field's non-null
-/// value replaced by the document's vector (`[f, ...]` for floats as Java's `Float.toString`
+/// `DerivedSourceVectorTransformer.injectVectors`: `source` with each derived field's masked
+/// value (the number `1`) replaced by the document's vector (`[f, ...]` for floats as Java's `Float.toString`
 /// prints them, `[i, ...]` for bytes, signed).
 ///
 /// # Errors
@@ -212,7 +212,7 @@ fn content_type(source: &[u8]) -> Content {
     }
 }
 
-/// The byte spans of the non-null values at `paths` (keys joined by `.`, objects only), in order,
+/// The byte spans of the masked values (the number `1`) at `paths` (keys joined by `.`, objects only), in order,
 /// with the index of the path each one is at.
 fn value_spans(source: &[u8], paths: &[&str]) -> stored_fields::Result<Vec<(usize, usize, usize)>> {
     let mut p = Scanner { b: source, i: 0 };
@@ -292,7 +292,8 @@ impl Scanner<'_> {
                 _ => {
                     self.skip_value(depth + 1)?;
                     if let Some(which) = paths.iter().position(|p| *p == path.as_str()) {
-                        if &self.b[start..self.i] != b"null" {
+                        // A value left whole (the field had `copy_to` when it was written) stays.
+                        if &self.b[start..self.i] == b"1" {
                             spans.push((start, self.i, which));
                         }
                     }
@@ -555,6 +556,13 @@ mod tests {
         let paths = [("emb", VectorEncoding::Float32)];
         assert_eq!(run(&paths, r#"{"emb":null}"#).unwrap(), r#"{"emb":null}"#);
         assert_eq!(run(&paths, r#"{"x":1}"#).unwrap(), r#"{"x":1}"#);
+    }
+
+    #[test]
+    fn a_value_left_whole_stays() {
+        let paths = [("emb", VectorEncoding::Float32)];
+        let src = r#"{"emb":[1,2,3]}"#;
+        assert_eq!(run(&paths, src).unwrap(), src);
     }
 
     #[test]

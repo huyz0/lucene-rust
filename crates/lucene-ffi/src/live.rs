@@ -60,19 +60,45 @@ struct ViewHandle {
     view: LiveView,
     /// Per buffer of the view, its chunks.
     plans: Vec<Vec<Planned>>,
+    /// What [`ffi_engine_writer_live_view_open`] gave the caller.
+    blob: Vec<u8>,
+    /// The commit generation it was opened for, and when.
+    commit: Option<i64>,
+    opened: std::time::Instant,
     /// The reader handle [`ffi_live_view_reader`] made over a reader and
     /// this view's buffers, closed with the view.
     whole: Mutex<Whole>,
 }
 
+impl Drop for ViewHandle {
+    /// Closes the view: its buffers may go once no other view reads them.
+    fn drop(&mut self) {
+        self.writer.writer().close_live_view(&self.view);
+        let writer = self.writer.writer();
+        prune_chunks(&self.writer, |id| {
+            writer.live_published_segment(id).is_none()
+        });
+        let handles = {
+            let mut whole = self
+                .whole
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            whole.closed = true;
+            std::mem::take(&mut whole.handles)
+        };
+        for (_, _, h) in handles {
+            crate::jvm_reader::ffi_close_jvm_reader(h);
+        }
+    }
+}
+
 /// What [`ffi_live_view_reader`] made of a view.
 #[derive(Default)]
 struct Whole {
-    /// The reader handle the handles were made over.
-    base: Option<u64>,
-    /// The handles made, by what they hold: the buffers' every term
-    /// (`None`), or a request's terms (its blobs, [`request_key`]).
-    handles: Vec<(Option<Vec<u8>>, u64)>,
+    /// The handles made, by the reader handle they were made over and what
+    /// they hold: the buffers' every term (`None`), or a request's terms
+    /// (its blobs, [`request_key`]).
+    handles: Vec<(u64, Option<Vec<u8>>, u64)>,
     /// Why its buffers cannot be written: they will not come back.
     failed: Option<String>,
     closed: bool,
@@ -85,11 +111,11 @@ impl Whole {
             set_last_error("live view: unknown or already-closed handle");
             return Err(FfiStatus::InvalidHandle);
         }
-        if self.base.is_some_and(|b| b != handle) {
-            set_last_error("live view: its reader handle is over another reader");
-            return Err(FfiStatus::InvalidArgument);
-        }
-        if let Some((_, id)) = self.handles.iter().find(|(k, _)| k.as_deref() == key) {
+        if let Some((_, _, id)) = self
+            .handles
+            .iter()
+            .find(|(b, k, _)| *b == handle && k.as_deref() == key)
+        {
             return Ok(Some(*id));
         }
         if let Some(e) = &self.failed {
@@ -182,6 +208,18 @@ pub(crate) struct Warmer {
     writing: Mutex<Vec<Writing>>,
     /// Notified when a chunk of `writing` is done (kept or not).
     written: std::sync::Condvar,
+    /// How old, in milliseconds, a view searches may share instead of
+    /// opening their own ([`ffi_engine_writer_set_live_staleness`]); 0, the
+    /// default, gives each search a view of every write acknowledged before
+    /// it.
+    max_staleness_ms: AtomicU64,
+    /// Under a staleness bound, the view searches share.
+    shared: Mutex<Option<Arc<ViewHandle>>>,
+    /// The commit the last search opened a view for: the warmer opens its
+    /// views for it.
+    asked: Mutex<Option<Option<i64>>>,
+    /// See [`Self::refresh_shared`].
+    fresh_from: Mutex<Option<std::time::Instant>>,
 }
 
 /// A chunk of buffer `buffer`'s documents `start..end` being written.
@@ -222,6 +260,167 @@ impl Drop for WritingGuard<'_> {
 }
 
 impl Warmer {
+    fn max_staleness(&self) -> Option<std::time::Duration> {
+        let ms = self.max_staleness_ms.load(Ordering::Relaxed);
+        (ms > 0).then(|| std::time::Duration::from_millis(ms))
+    }
+
+    /// The shared view of `commit`, while it is young enough.
+    fn shared_view(&self, commit: Option<i64>) -> Option<Arc<ViewHandle>> {
+        let max = self.max_staleness()?;
+        let mut shared = self
+            .shared
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if shared.as_ref().is_some_and(|h| h.opened.elapsed() > max) {
+            let old = shared.take();
+            drop(shared);
+            drop(old);
+            return None;
+        }
+        shared.as_ref().filter(|h| h.commit == commit).cloned()
+    }
+
+    /// Forgets a shared view of a commit before `generation`, which the
+    /// searches read no more.
+    fn unshare_before(&self, generation: i64) {
+        let mut shared = self
+            .shared
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let old = if shared
+            .as_ref()
+            .is_some_and(|h| h.commit.is_some_and(|c| c < generation))
+        {
+            shared.take()
+        } else {
+            None
+        };
+        drop(shared);
+        drop(old);
+        let mut asked = self
+            .asked
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if asked.is_some_and(|c| c.is_some_and(|c| c < generation)) {
+            *asked = None;
+        }
+    }
+
+    /// Makes `h` the view later searches share, under a staleness bound.
+    /// A view opened before [`Self::fresh_from`] is not shared.
+    fn share_view(&self, h: &Arc<ViewHandle>) {
+        if self.max_staleness().is_none() {
+            return;
+        }
+        let mut shared = self
+            .shared
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let fresh = *self
+            .fresh_from
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // A view of an older commit, or opened before the shared one, is
+        // not shared: searches would read writes they had seen go missing.
+        let newer = shared.as_ref().is_none_or(|s| match (s.commit, h.commit) {
+            (Some(a), Some(b)) if a != b => b > a,
+            _ => h.opened >= s.opened,
+        });
+        let old = if fresh.is_some_and(|f| h.opened < f) || !newer {
+            None
+        } else {
+            shared.replace(Arc::clone(h))
+        };
+        // The bound lifted meanwhile (the writer closing): nothing is kept,
+        // as a shared view holds the writer.
+        let lifted = if self.max_staleness().is_none() {
+            shared.take()
+        } else {
+            None
+        };
+        drop(shared);
+        // Closed, when no search reads it, outside the lock.
+        drop(old);
+        drop(lifted);
+    }
+
+    /// From now on searches read only views opened from now on: every write
+    /// acknowledged before is in them.
+    fn refresh_shared(&self) {
+        *self
+            .fresh_from
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(std::time::Instant::now());
+        self.unshare();
+    }
+
+    /// Whether the warmer should open a new shared view: the shared one is
+    /// missing, of another commit, half its bound old, or lacks documents
+    /// added since.
+    fn needs_view(&self, w: &EngineWriter, commit: Option<i64>) -> bool {
+        let Some(max) = self.max_staleness() else {
+            return false;
+        };
+        let shared = self
+            .shared
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let Some(h) = shared else {
+            return true;
+        };
+        if h.commit != commit || h.opened.elapsed() >= max / 2 {
+            return true;
+        }
+        let now = w.writer().live_slot_buffers();
+        now.iter().any(|b| {
+            !h.view
+                .buffers
+                .iter()
+                .any(|v| v.id == b.id && v.max_doc == b.max_doc)
+        })
+    }
+
+    fn asked(&self, commit: Option<i64>) {
+        if self.max_staleness().is_some() {
+            *self
+                .asked
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(commit);
+        }
+    }
+
+    /// Lifts the staleness bound: the shared view is forgotten and the
+    /// warmer writes chunks again.
+    pub(crate) fn stop_sharing(&self) {
+        self.max_staleness_ms.store(0, Ordering::Relaxed);
+        *self
+            .asked
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        self.unshare();
+    }
+
+    /// The buffers the shared view reads.
+    fn shared_buffers(&self) -> Vec<u64> {
+        self.shared
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .map_or_else(Vec::new, |h| h.view.buffers.iter().map(|b| b.id).collect())
+    }
+
+    /// Forgets the shared view: the writer is closing, or no search came.
+    pub(crate) fn unshare(&self) {
+        let old = self
+            .shared
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        drop(old);
+    }
+
     fn running(&self) -> bool {
         self.running.load(Ordering::Acquire)
     }
@@ -311,6 +510,7 @@ fn warm_loop(weak: &std::sync::Weak<EngineWriter>) {
             last == 0 || epoch_ms().saturating_sub(last) > WARM_IDLE
         };
         if idle() {
+            warmer.unshare();
             warmer.running.store(false, Ordering::Release);
             // A search between the check and the store found it running.
             if idle() || warmer.running.swap(true, Ordering::AcqRel) {
@@ -319,7 +519,24 @@ fn warm_loop(weak: &std::sync::Weak<EngineWriter>) {
         }
         // A buffer taken for a flush meanwhile, or a writer closed, is
         // tried again next time; idle, the thread ends.
-        let _ = warm(&w);
+        let asked = *warmer
+            .asked
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match asked {
+            // Under a staleness bound the warmer opens the view the searches
+            // share, its chunks written.
+            Some(commit) => {
+                if warmer.needs_view(&w, commit) {
+                    // A panic must not end the thread with the warmer marked
+                    // running.
+                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        drop(open_handle(&w, commit, true));
+                    }));
+                }
+            }
+            None => drop(warm(&w)),
+        }
     }
 }
 
@@ -581,13 +798,15 @@ fn keep_chunk(chain: &mut Vec<Arc<Chunk>>, chunk: Arc<Chunk>) {
 /// Drops `w`'s chunks of the buffers no open view of it reads, unless
 /// `keep` says the buffer may still be in its slot.
 fn prune_chunks(w: &Arc<EngineWriter>, keep: impl Fn(u64) -> bool) {
-    let read: std::collections::HashSet<u64> = views()
+    let mut read: std::collections::HashSet<u64> = views()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .values()
         .filter(|h| Arc::ptr_eq(&h.writer, w))
         .flat_map(|h| h.view.buffers.iter().map(|b| b.id))
         .collect();
+    // The shared view is read by searches to come.
+    read.extend(w.live_warmer().shared_buffers());
     let candidates: Vec<(u64, bool)> = w
         .live_chunks()
         .keys()
@@ -660,6 +879,44 @@ fn live_error(e: lucene_index::index_writer::Error) -> FfiStatus {
     FfiStatus::InvalidArgument
 }
 
+/// Lets searches of `writer`'s buffers read a view up to `millis`
+/// milliseconds old: the writer's warming thread opens one every few
+/// milliseconds, its chunks written, and the searches meanwhile share it,
+/// its readers and their caches, writing nothing themselves. A search then
+/// misses the writes of at most that long. 0 (the default) gives each search
+/// a view of every write acknowledged before it.
+#[no_mangle]
+pub extern "C" fn ffi_engine_writer_set_live_staleness(writer: u64, millis: i64) -> i32 {
+    guard(|| {
+        let w = engine_writer::lookup(writer)?;
+        let ms = u64::try_from(millis).map_err(|_| {
+            set_last_error("live staleness: negative");
+            FfiStatus::InvalidArgument
+        })?;
+        if ms == 0 {
+            w.live_warmer().stop_sharing();
+        } else {
+            w.live_warmer()
+                .max_staleness_ms
+                .store(ms, Ordering::Relaxed);
+        }
+        Ok(())
+    })
+}
+
+/// Under a staleness bound, makes every later search read a view opened
+/// from now on, so it holds every write acknowledged before this call:
+/// what lets `refresh=wait_for` answer at once.
+#[no_mangle]
+pub extern "C" fn ffi_engine_writer_live_refresh_shared(writer: u64) -> i32 {
+    guard(|| {
+        engine_writer::lookup(writer)?
+            .live_warmer()
+            .refresh_shared();
+        Ok(())
+    })
+}
+
 /// Opens a view of every buffered document a reader of the commit at
 /// `commit_generation` lacks (`-1`: the documents in no published segment),
 /// its handle into `*out_view` and its blob (see the module doc) as an owned
@@ -683,45 +940,25 @@ pub unsafe extern "C" fn ffi_engine_writer_live_view_open(
         unsafe { crate::ffm_bridge::clear_out(out_ptr, out_len)? };
         let w = engine_writer::lookup(writer)?;
         let commit = (commit_generation >= 0).then_some(commit_generation);
-        let view = w.writer().open_live_view(commit).map_err(live_error)?;
-        let plans: Vec<Vec<Planned>> = {
-            let chunks = w.live_chunks();
-            let warmer = w.live_warmer();
-            let absorb = if warmer.running() {
-                SEARCH_ABSORB_DOCS
-            } else {
-                i32::MAX
-            };
-            let writing = warmer.writing();
-            view.buffers
-                .iter()
-                .map(|b| plan(&chunks, b, absorb, &writing))
-                .collect()
-        };
-        // A buffer gone from its slot is read as one segment by later views.
-        prune_chunks(&w, |id| {
-            view.buffers.iter().any(|b| b.in_slot && b.id == id)
-        });
-        let blob = match view_blob(&view, &plans) {
-            Ok(b) => b,
-            Err(e) => {
-                w.writer().close_live_view(&view);
-                return Err(e);
+        let warmer = w.live_warmer();
+        if warmer.max_staleness().is_some() {
+            // The warmer opens the views searches share, and forgets the
+            // shared one once no search comes.
+            searched_lean(&w);
+        }
+        let h = match warmer.shared_view(commit) {
+            Some(h) => h,
+            None => {
+                warmer.asked(commit);
+                open_handle(&w, commit, false)?
             }
         };
+        let blob = h.blob.clone();
         let id = NEXT_VIEW.fetch_add(1, Ordering::Relaxed);
         views()
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(
-                id,
-                Arc::new(ViewHandle {
-                    writer: w,
-                    view,
-                    plans,
-                    whole: Mutex::new(Whole::default()),
-                }),
-            );
+            .insert(id, h);
         // SAFETY: caller contract.
         unsafe {
             *out_view = id;
@@ -729,6 +966,65 @@ pub unsafe extern "C" fn ffi_engine_writer_live_view_open(
         }
         Ok(())
     })
+}
+
+/// A view of `w`'s buffers for a reader of `commit`, its plans and blob.
+/// `warm`, its chunks are written first, so the views' readers find them
+/// all written.
+fn open_handle(
+    w: &Arc<EngineWriter>,
+    commit: Option<i64>,
+    warm: bool,
+) -> Result<Arc<ViewHandle>, FfiStatus> {
+    // Before the view's cut: the view is at least this old.
+    let opened = std::time::Instant::now();
+    let view = w.writer().open_live_view(commit).map_err(live_error)?;
+    let plan_all = |w: &EngineWriter| -> Vec<Vec<Planned>> {
+        let chunks = w.live_chunks();
+        let warmer = w.live_warmer();
+        let absorb = if warmer.running() {
+            SEARCH_ABSORB_DOCS
+        } else {
+            i32::MAX
+        };
+        let writing = warmer.writing();
+        view.buffers
+            .iter()
+            .map(|b| plan(&chunks, b, absorb, &writing))
+            .collect()
+    };
+    let mut plans = plan_all(w);
+    if warm {
+        for (b, plan) in view.buffers.iter().zip(&plans) {
+            if b.in_slot && !writes_nothing(w, b, plan, false) {
+                if let Err(e) = buffer_segments(w, b, plan, false, true) {
+                    w.writer().close_live_view(&view);
+                    return Err(live_error(e));
+                }
+            }
+        }
+        plans = plan_all(w);
+    }
+    // A buffer gone from its slot is read as one segment by later views.
+    prune_chunks(w, |id| view.buffers.iter().any(|b| b.in_slot && b.id == id));
+    let blob = match view_blob(&view, &plans) {
+        Ok(b) => b,
+        Err(e) => {
+            w.writer().close_live_view(&view);
+            return Err(e);
+        }
+    };
+    let h = Arc::new(ViewHandle {
+        writer: Arc::clone(w),
+        view,
+        plans,
+        blob,
+        commit,
+        opened,
+        whole: Mutex::new(Whole::default()),
+    });
+    w.live_warmer().share_view(&h);
+    Ok(h)
 }
 
 fn view_blob(view: &LiveView, plans: &[Vec<Planned>]) -> Result<Vec<u8>, FfiStatus> {
@@ -772,20 +1068,8 @@ pub extern "C" fn ffi_live_view_close(view: u64) -> i32 {
                 set_last_error("live view: unknown or already-closed handle");
                 FfiStatus::InvalidHandle
             })?;
-        h.writer.writer().close_live_view(&h.view);
-        let writer = h.writer.writer();
-        prune_chunks(&h.writer, |id| writer.live_published_segment(id).is_none());
-        let handles = {
-            let mut whole = h
-                .whole
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            whole.closed = true;
-            std::mem::take(&mut whole.handles)
-        };
-        for (_, h) in handles {
-            crate::jvm_reader::ffi_close_jvm_reader(h);
-        }
+        // The view closes when its last handle goes: see `ViewHandle`'s drop.
+        drop(h);
         Ok(())
     })
 }
@@ -844,6 +1128,7 @@ pub unsafe extern "C" fn ffi_live_view_reader(
             Some(q) => overlay_request(q, tree, extra)?,
             None => None,
         };
+
         let mut key = request
             .as_ref()
             .zip(query)
@@ -856,7 +1141,12 @@ pub unsafe extern "C" fn ffi_live_view_reader(
             let mut found = whole.find(handle, key.as_deref())?;
             if found.is_none()
                 && key.is_some()
-                && whole.handles.iter().filter(|(k, _)| k.is_some()).count() >= REQUEST_HANDLES
+                && whole
+                    .handles
+                    .iter()
+                    .filter(|(b, k, _)| *b == handle && k.is_some())
+                    .count()
+                    >= REQUEST_HANDLES
             {
                 (request, key) = (None, None);
                 found = whole.find(handle, None)?;
@@ -881,8 +1171,8 @@ pub unsafe extern "C" fn ffi_live_view_reader(
             Ok(whole
                 .handles
                 .iter()
-                .find(|(k, _)| *k == key)
-                .map(|&(_, id)| id))
+                .find(|(b, k, _)| *b == handle && *k == key)
+                .map(|&(_, _, id)| id))
         };
         if !matches!(found, Ok(None)) {
             drop(whole);
@@ -892,8 +1182,7 @@ pub unsafe extern "C" fn ffi_live_view_reader(
             unsafe { *out_handle = found };
             return Ok(());
         }
-        whole.base = Some(handle);
-        whole.handles.push((key, id));
+        whole.handles.push((handle, key, id));
         // SAFETY: caller contract.
         unsafe { *out_handle = id };
         Ok(())
@@ -1333,6 +1622,7 @@ fn buffer_mask(max_doc: i32, deleted: &[i32], written: i32) -> Option<FixedBitSe
 pub extern "C" fn ffi_engine_writer_release_live(writer: u64, generation: i64) -> i32 {
     guard(|| {
         let w = engine_writer::lookup(writer)?;
+        w.live_warmer().unshare_before(generation);
         w.writer().release_live(generation).map_err(live_error)
     })
 }

@@ -2645,6 +2645,8 @@ pub extern "C" fn ffi_engine_writer_close(handle: u64) -> i32 {
         // Another thread may still be inside a call; the last `Arc` drops the
         // writer. Holds die with it, as a JVM's readers' pins die with the JVM.
         let _maintenance = shared.maintenance();
+        // The shared live view holds the writer.
+        shared.live_warmer().stop_sharing();
         shared.writer().stop_merges();
         shared.writer().rollback();
         Ok(())
@@ -5480,6 +5482,63 @@ mod tests {
 
         assert_eq!(ffi_live_view_close(view), 0);
         assert_eq!(crate::jvm_reader::ffi_close_jvm_reader(reader), 0);
+    }
+
+    /// Under a staleness bound a view opened within it is shared, without
+    /// the writes since; without one each view holds every write before it.
+    #[test]
+    fn under_a_staleness_bound_searches_share_a_view() {
+        use crate::live::{
+            ffi_engine_writer_live_view_open, ffi_engine_writer_set_live_staleness,
+            ffi_live_view_close,
+        };
+        let tmp = empty_index("engine-writer-live-stale");
+        let h = open_with(&tmp, 64.0, OPEN_LIVE_SEARCH, i32::MAX);
+        let f = setup(h);
+        let add = |i: usize| {
+            let b = doc(
+                Blob::default().u8(OP_ADD).i32(1),
+                &f,
+                &format!("d{i}"),
+                &["alpha"],
+                i as i64,
+                false,
+            );
+            assert_eq!(apply(h, &b.0), 0, "{}", crate::error::last_error());
+        };
+        let open = || {
+            let (mut view, mut ptr, mut len) = (0u64, std::ptr::null_mut(), 0usize);
+            // SAFETY: live out-pointers.
+            let rc =
+                unsafe { ffi_engine_writer_live_view_open(h, -1, &mut view, &mut ptr, &mut len) };
+            assert_eq!(rc, 0, "{}", crate::error::last_error());
+            // SAFETY: the buffer the call gave, read then freed once.
+            let blob = unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec();
+            unsafe { crate::ffm_bridge::ffi_jvm_free_bytes(ptr, len) };
+            (view, blob)
+        };
+        (0..5).for_each(add);
+        assert_eq!(ffi_engine_writer_set_live_staleness(h, 60_000), 0);
+        let (a, first) = open();
+        add(5);
+        // Within the bound: the first view, without the later document.
+        let (b, second) = open();
+        assert_ne!(a, b);
+        assert_eq!(first, second);
+        // After a wait_for release: a view holding the write.
+        assert_eq!(crate::live::ffi_engine_writer_live_refresh_shared(h), 0);
+        let (r, refreshed) = open();
+        assert_ne!(first, refreshed);
+        assert_eq!(ffi_live_view_close(r), 0);
+        assert_eq!(ffi_live_view_close(a), 0);
+        assert_eq!(ffi_live_view_close(b), 0);
+        // Without one: every write before the view.
+        assert_eq!(ffi_engine_writer_set_live_staleness(h, 0), 0);
+        let (c, third) = open();
+        assert_ne!(first, third);
+        assert_eq!(ffi_live_view_close(c), 0);
+        assert_ne!(ffi_engine_writer_set_live_staleness(h, -1), 0);
+        assert_eq!(ffi_engine_writer_close(h), 0);
     }
 
     /// [`crate::live::ffi_live_view_reader`]: a reader handle over the

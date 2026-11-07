@@ -148,14 +148,13 @@ public final class DerivedSource {
 
     /**
      * {@code DerivedSourceIndexOperationListener}: before an index operation, the translog's source
-     * takes each marked field's vector as indexed, and the stored {@code _source} field the mask.
+     * takes each marked field's vector as indexed, and the stored {@code _source} field the mask. With a
+     * recovery source (a filtered {@code _source}) the translog keeps the request's source, and the
+     * stored one is still masked, as stock's codec writer masks it.
      */
     public static final class Listener implements IndexingOperationListener {
         @Override
         public Engine.Index preIndex(ShardId shardId, Engine.Index operation) {
-            if (operation.parsedDoc().rootDoc().getField(SourceFieldMapper.RECOVERY_SOURCE_NAME) != null) {
-                return operation;
-            }
             Map<String, Object> vectors = new HashMap<>();
             for (IndexableField f : operation.parsedDoc().rootDoc()) {
                 if (f instanceof MaskedFloat v) {
@@ -174,6 +173,7 @@ public final class DerivedSource {
                 inject.put(e.getKey(), o -> o == null ? null : vector);
                 mask.put(e.getKey(), o -> o == null ? null : MASK);
             }
+            boolean recovery = operation.parsedDoc().rootDoc().getField(SourceFieldMapper.RECOVERY_SOURCE_NAME) != null;
             BytesReference original = operation.parsedDoc().source();
             Tuple<? extends MediaType, Map<String, Object>> source = XContentHelper.convertToMap(
                 original,
@@ -181,15 +181,18 @@ public final class DerivedSource {
                 operation.parsedDoc().getMediaType()
             );
             MediaType type = source.v1();
-            operation.parsedDoc()
-                .setSource(
-                    write(type, XContentMapValues.transform(inject, true).apply(source.v2())),
-                    XContentType.valueOf(type.subtype().toUpperCase(Locale.ROOT))
-                );
+            if (recovery == false) {
+                // A copy: source.v2() stays the request's, for the mask below.
+                operation.parsedDoc()
+                    .setSource(
+                        write(type, XContentMapValues.transform(inject, false).apply(source.v2())),
+                        XContentType.valueOf(type.subtype().toUpperCase(Locale.ROOT))
+                    );
+            }
             IndexableField stored = operation.parsedDoc().rootDoc().getField(SourceFieldMapper.NAME);
             if (stored instanceof StoredField f && f.storedValue() != null) {
-                // The stored _source may be filtered (_source includes/excludes without a recovery
-                // source): mask what is stored, never the whole request source.
+                // The stored _source may be filtered (_source includes/excludes): mask what is
+                // stored, never the whole request source.
                 BytesRef bytes = f.binaryValue();
                 Map<String, Object> storedMap = bytes.bytesEquals(original.toBytesRef())
                     ? source.v2()

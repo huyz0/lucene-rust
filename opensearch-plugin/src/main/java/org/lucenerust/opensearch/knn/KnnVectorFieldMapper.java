@@ -197,7 +197,7 @@ public final class KnnVectorFieldMapper extends ParametrizedFieldMapper {
     private final FieldType vectorType;
     /** {@link #vectorType} marked for derived source, in an index that masks it. */
     private final FieldType derivedType;
-    private Boolean derivedField;
+    private volatile Boolean derivedField;
 
     private KnnVectorFieldMapper(
         String simpleName,
