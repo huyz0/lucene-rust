@@ -35,6 +35,12 @@ test-support = []
 asserting = []
 
 [dev-dependencies]
+# The local_store example reads page-cache residency with mincore.
+memmap2.workspace = true
+libc.workspace = true
+# The local_vectors example builds and reads an IVF index.
+lucene-ivf = { path = "../lucene-ivf" }
+lucene-vector-quant = { path = "../lucene-vector-quant" }
 # The modules split out of this crate, for the tests, benches and examples
 # that still exercise them together with lucene-search (a dev-dependency
 # cycle: these link the one lucene-search library).

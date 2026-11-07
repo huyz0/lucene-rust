@@ -12,6 +12,7 @@ import org.apache.lucene.index.IndexDeletionPolicy;
 import org.apache.lucene.index.IndexOptions;
 import org.apache.lucene.index.MergePolicy;
 import org.apache.lucene.index.TieredMergePolicy;
+import org.lucenerust.opensearch.NativeBridge;
 import org.opensearch.common.settings.Setting;
 import org.opensearch.core.common.breaker.CircuitBreaker;
 import org.opensearch.index.IndexSettings;
@@ -76,6 +77,79 @@ public final class RustEngineSupport {
         false,
         Setting.Property.IndexScope
     );
+
+    /**
+     * Whether merges write {@code index.codec: default} stored fields with a high-compression LZ4
+     * match finder: the same LZ4 format, which OpenSearch's own engine and stock Lucene read, about
+     * 8-33% smaller, and several times slower to compress. Flushes keep the fast compressor, and a
+     * segment already written this way is copied by later merges rather than compressed again. Off
+     * by default, like stock.
+     */
+    public static final Setting<Boolean> MERGE_LZ4_HIGH_COMPRESSION = Setting.boolSetting(
+        "index.lucene_rust.stored_fields.merge_lz4_high_compression",
+        false,
+        Setting.Property.IndexScope
+    );
+
+    /**
+     * Whether the Rust engine writes its paged zstd stored fields (codec {@code
+     * LuceneRustZstdPaged104}) instead of {@code index.codec}'s: 16 KiB chunks of one zstd frame each,
+     * packed so no chunk crosses a 16 KiB page, which a page cache then decodes page by page. A merge
+     * of more than 16 MiB of stored fields trains a dictionary for its segment. At {@code
+     * index.codec.compression_level} when {@code index.codec} is a zstd codec, level 3 otherwise.
+     * About as small as {@code zstd} and 3x faster to fetch a document from; only this plugin reads
+     * these segments.
+     */
+    public static final Setting<Boolean> PAGED_ZSTD_STORED_FIELDS = Setting.boolSetting(
+        "index.lucene_rust.stored_fields.paged_zstd",
+        false,
+        Setting.Property.IndexScope,
+        Setting.Property.Final
+    );
+
+    /**
+     * How the Rust engine reads this index's files from local disk. {@code mmap} (the default) maps
+     * them, as stock OpenSearch's {@code mmapfs} and {@code hybridfs} stores do. {@code page_cache}
+     * reads them through the plugin's own page cache instead: pages read on first touch with direct
+     * I/O, small hot files (terms index, norms, metadata) held whole, and every shard's pages within
+     * one node budget ({@code lucene_rust.store.page_cache.size}) rather than the kernel's page cache.
+     * {@code page_cache_vectors} reads only the vector formats' files (HNSW and IVF) that way and maps
+     * the rest. Needs Linux with {@code userfaultfd} permitted; elsewhere the index stays mapped. The
+     * files on disk are the same either way.
+     */
+    public static final Setting<String> STORE_MODE = new Setting<>(
+        "index.lucene_rust.store_mode",
+        "mmap",
+        RustEngineSupport::parseStoreMode,
+        Setting.Property.IndexScope
+    );
+
+    static String parseStoreMode(String value) {
+        if (value.equals("mmap") || value.equals("page_cache") || value.equals("page_cache_vectors")) {
+            return value;
+        }
+        throw new IllegalArgumentException(
+            "unknown value ["
+                + value
+                + "] for [index.lucene_rust.store_mode]: expected [mmap], [page_cache] or [page_cache_vectors]"
+        );
+    }
+
+    /**
+     * Binds or unbinds the shard's path to the native page cache by {@link #STORE_MODE}, before the
+     * engine's writer and readers open their directories there.
+     */
+    static void bindStoreMode(EngineConfig config, Store store) {
+        // The key the writer and the native readers look the binding up by.
+        String path = org.lucenerust.opensearch.store.RustEncryptedDirectory.nativePath(indexPath(store));
+        String mode = STORE_MODE.get(config.getIndexSettings().getSettings());
+        int rc = mode.equals("mmap")
+            ? NativeBridge.storeUnbindPageCache(path)
+            : NativeBridge.storeBindPageCache(path, 0, mode.equals("page_cache_vectors"));
+        if (rc != 0) {
+            throw new IllegalStateException("lucene-rust: cannot set the store mode of [" + path + "] (status " + rc + ")");
+        }
+    }
 
     /**
      * The field whose value is a document's partition, as a partitioned table's partition key: every
@@ -193,6 +267,28 @@ public final class RustEngineSupport {
             + "]";
     }
 
+    /** The {@code NativeBridge.STORED_FIELDS_*} the Rust writer writes for {@code settings}. */
+    static int storedFields(IndexSettings settings) {
+        if (PAGED_ZSTD_STORED_FIELDS.get(settings.getSettings())) {
+            return NativeBridge.STORED_FIELDS_ZSTD_PAGED;
+        }
+        return CODECS.getOrDefault(settings.getValue(EngineConfig.INDEX_CODEC_SETTING), NativeBridge.STORED_FIELDS_BEST_SPEED);
+    }
+
+    /**
+     * The zstd level: {@code index.codec.compression_level}, which OpenSearch only accepts with a zstd
+     * {@code index.codec}; paged zstd under any other codec takes zstd's default, 3.
+     */
+    static int compressionLevel(IndexSettings settings) {
+        int stored = CODECS.getOrDefault(settings.getValue(EngineConfig.INDEX_CODEC_SETTING), NativeBridge.STORED_FIELDS_BEST_SPEED);
+        if (PAGED_ZSTD_STORED_FIELDS.get(settings.getSettings())
+            && stored != NativeBridge.STORED_FIELDS_ZSTD
+            && stored != NativeBridge.STORED_FIELDS_ZSTD_NO_DICT) {
+            return 3;
+        }
+        return settings.getValue(EngineConfig.INDEX_CODEC_COMPRESSION_LEVEL_SETTING);
+    }
+
     /**
      * Why the Rust writer cannot serve an index configured like this, or {@code null} when it can.
      * An index that asks for the Rust engine gets this as its creation error; one that only
@@ -203,8 +299,13 @@ public final class RustEngineSupport {
         if (CODECS.containsKey(codec) == false) {
             return "the Rust engine writes the codecs " + new java.util.TreeSet<>(CODECS.keySet()) + " only, and index.codec is [" + codec + "]";
         }
-        if (CODECS.get(codec) != NativeBridge.STORED_FIELDS_BEST_SPEED
+        if ((CODECS.get(codec) != NativeBridge.STORED_FIELDS_BEST_SPEED || PAGED_ZSTD_STORED_FIELDS.get(settings.getSettings()))
             && org.lucenerust.opensearch.sparse.SparseSettings.SPARSE_INDEX.get(settings.getSettings())) {
+            if (PAGED_ZSTD_STORED_FIELDS.get(settings.getSettings())) {
+                return "the Rust engine writes an index.sparse index with the default stored fields only, and "
+                    + PAGED_ZSTD_STORED_FIELDS.getKey()
+                    + " is set";
+            }
             return "the Rust engine writes an index.sparse index with the default codec only, and index.codec is [" + codec + "]";
         }
         if (indexSorted && unsupportedSort(settings.getSettings()) != null) {
@@ -339,6 +440,7 @@ public final class RustEngineSupport {
         int maxDocs
     ) throws IOException {
         Codec codec = config.getCodec();
+        bindStoreMode(config, store);
         RustIndexWriter writer = RustIndexWriter.open(
             store.directory(),
             indexPath(store),
@@ -347,12 +449,13 @@ public final class RustEngineSupport {
             org.lucenerust.opensearch.sparse.SparseSettings.SPARSE_INDEX.get(config.getIndexSettings().getSettings()),
             REALTIME_SEARCH.get(config.getIndexSettings().getSettings()),
             ADAPTIVE_DOC_VALUES.get(config.getIndexSettings().getSettings()),
+            MERGE_LZ4_HIGH_COMPRESSION.get(config.getIndexSettings().getSettings()),
             partitionField(config.getIndexSettings().getSettings()),
             config.getIndexSort(),
             parentField(config),
             maxDocs,
-            CODECS.getOrDefault(config.getIndexSettings().getValue(EngineConfig.INDEX_CODEC_SETTING), NativeBridge.STORED_FIELDS_BEST_SPEED),
-            config.getIndexSettings().getValue(EngineConfig.INDEX_CODEC_COMPRESSION_LEVEL_SETTING),
+            storedFields(config.getIndexSettings()),
+            compressionLevel(config.getIndexSettings()),
             config.getAnalyzer(),
             config.getSimilarity(),
             config.getIndexSettings().getIndexVersionCreated().luceneVersion.major,

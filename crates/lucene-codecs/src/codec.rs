@@ -267,6 +267,34 @@ impl Lucene104Codec for ZstdLucene104Codec {
     }
 }
 
+/// [`crate::codecs::ZSTD_PAGED_CODEC`]: `Lucene104` with
+/// [`crate::stored_fields::Mode::ZstdPaged`] stored fields at a zstd level.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ZstdPagedLucene104Codec {
+    level: i32,
+}
+
+impl ZstdPagedLucene104Codec {
+    /// The codec at `level`.
+    ///
+    /// # Errors
+    /// `level` is not a zstd level.
+    pub fn new(level: i32) -> Result<Self, lucene_zstd::Error> {
+        lucene_zstd::check_level(level)?;
+        Ok(Self { level })
+    }
+}
+
+impl Lucene104Codec for ZstdPagedLucene104Codec {
+    fn name(&self) -> &str {
+        crate::codecs::ZSTD_PAGED_CODEC
+    }
+
+    fn stored_fields_mode(&self) -> crate::stored_fields::Mode {
+        crate::stored_fields::Mode::ZstdPaged(self.level)
+    }
+}
+
 /// `new Lucene104Codec()`: every field on the default formats.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct DefaultLucene104Codec;
