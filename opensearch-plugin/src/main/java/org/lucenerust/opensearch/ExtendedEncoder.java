@@ -21,6 +21,7 @@ import org.apache.lucene.search.Query;
 import org.apache.lucene.search.join.BitSetProducer;
 import org.apache.lucene.search.join.QueryBitSetProducer;
 import org.apache.lucene.search.join.ScoreMode;
+import org.apache.lucene.search.join.ToChildBlockJoinQuery;
 import org.apache.lucene.search.join.ToParentBlockJoinQuery;
 import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.automaton.Automaton;
@@ -83,6 +84,7 @@ final class ExtendedEncoder {
     static final byte NODE_INTERVAL = 22;
     static final byte NODE_COMBINED_FIELD = 23;
     static final byte NODE_FUNCTION_SCORE = 24;
+    static final byte NODE_TO_CHILD = 41;
 
     /** What {@link #node} returns for a query that is none of these. */
     static final String NOT_EXTENDED = "not_extended";
@@ -112,6 +114,9 @@ final class ExtendedEncoder {
             }
             if (q.getClass() == ToParentBlockJoinQuery.class) {
                 return toParent((ToParentBlockJoinQuery) q, out, child);
+            }
+            if (q.getClass() == ToChildBlockJoinQuery.class) {
+                return toChild((ToChildBlockJoinQuery) q, out, child);
             }
             if (q instanceof SpanQuery sq) {
                 out.write(NODE_SPAN);
@@ -153,8 +158,26 @@ final class ExtendedEncoder {
         return child.node(q.getChildQuery());
     }
 
+    private static String toChild(ToChildBlockJoinQuery q, ByteArrayOutputStream out, Child child)
+        throws ReflectiveOperationException {
+        Field parentsF = Reflect.declared(ToChildBlockJoinQuery.class, "parentsFilter");
+        if (parentsF == null) {
+            return "extended_reflect";
+        }
+        Query parents = parentsQuery((BitSetProducer) parentsF.get(q));
+        if (parents == null) {
+            return "join_parents";
+        }
+        out.write(NODE_TO_CHILD);
+        String reason = child.node(parents);
+        if (reason != null) {
+            return reason;
+        }
+        return child.node(q.getParentQuery());
+    }
+
     /** The query a parent filter's bit sets are built from, or null for a producer this cannot read. */
-    private static Query parentsQuery(BitSetProducer p) throws ReflectiveOperationException {
+    static Query parentsQuery(BitSetProducer p) throws ReflectiveOperationException {
         if (p instanceof QueryBitSetProducer qp) {
             return qp.getQuery();
         }

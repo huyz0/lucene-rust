@@ -108,6 +108,8 @@ pub const HALF_FLOAT_META_CODEC: &str = "KNN1040HalfFloatFlatVectorsFormatMeta";
 pub const HALF_FLOAT_DATA_CODEC: &str = "KNN1040HalfFloatFlatVectorsFormatData";
 /// `KNN1040HalfFloatFlatVectorsWriter.VECTOR_DATA_ALIGNMENT`.
 const HALF_FLOAT_ALIGNMENT: usize = 64;
+/// The half-float flat files' only version.
+const HALF_FLOAT_VERSION: i32 = 0;
 
 /// Whether `segment_suffix` (`<format>_<n>`) names a per-field instance of
 /// `format`.
@@ -651,7 +653,12 @@ impl<'a> FlatVectorsReader<'a> {
         // `KNN1040HalfFloatFlatVectorsFormat` has its own codec names, at
         // version 0 only.
         let (meta_codec, data_codec, start, current) = if half {
-            (HALF_FLOAT_META_CODEC, HALF_FLOAT_DATA_CODEC, 0, 0)
+            (
+                HALF_FLOAT_META_CODEC,
+                HALF_FLOAT_DATA_CODEC,
+                HALF_FLOAT_VERSION,
+                HALF_FLOAT_VERSION,
+            )
         } else {
             (META_CODEC, DATA_CODEC, VERSION_START, VERSION_CURRENT)
         };

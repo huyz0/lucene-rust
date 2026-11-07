@@ -23,6 +23,10 @@ answer the same queries. The Rust engine writes the plugin node's segments.
              (and rescores some); the plugin searches full precision. The check
              is that its top 10 are the exhaustive scan's, and that they
              overlap stock's by at least MIN_RECALL on average.
+  nested     a knn_vector under a nested field: the best child per parent,
+             filters at the root and on the nested docs, and
+             expand_nested_docs with inner hits, the same hits, scores and
+             inner hits as stock.
   errors     requests the stock plugin refuses are refused here too; faiss
              mappings, which stock accepts, are refused here.
 
@@ -234,6 +238,99 @@ def knn(target, **params):
     return {"knn": {"emb": {"vector": target, **params}}}
 
 
+def nested_check(failures):
+    """Nested knn on both nodes: returns the number of queries compared."""
+    index = "nested_l2"
+    rng = random.Random(f"{SEED}-{index}")
+    spec = {"engine": "lucene", "space_type": "l2"}
+    docs = []
+    for i in range(240):
+        kids = []
+        for j in range(rng.randint(1, 4)):
+            kid = {"color": rng.choice(["red", "blue"])}
+            if j != 1:
+                kid["emb"] = vector_for(spec, rng)
+            kids.append(kid)
+        docs.append({"_id": f"p{i}", "tag": "even" if i % 2 == 0 else "odd", "n": i, "nest": kids})
+    mapping = {"properties": {"tag": {"type": "keyword"}, "n": {"type": "integer"},
+                              "nest": {"type": "nested", "properties": {"color": {"type": "keyword"},
+                                                                       "emb": field_mapping(spec)}}}}
+    for port, rust in ((OURS[1], True), (STOCK[1], False)):
+        settings = {"index.knn": True, "number_of_shards": 1, "number_of_replicas": 0, "refresh_interval": -1,
+                    "index.merge.policy.max_merge_at_once": 100, "index.merge.policy.segments_per_tier": 100}
+        if rust:
+            settings["index.lucene_rust.engine"] = True
+        req(port, "PUT", f"/{index}", {"settings": settings, "mappings": mapping})
+        per = len(docs) // SEGMENTS
+        for s in range(SEGMENTS):
+            lines = []
+            for d in docs[s * per:(s + 1) * per]:
+                lines.append(json.dumps({"index": {"_index": index, "_id": d["_id"]}}))
+                lines.append(json.dumps({k: v for k, v in d.items() if k != "_id"}))
+            r = req(port, "POST", "/_bulk", "\n".join(lines) + "\n", ndjson=True)
+            assert not r["errors"], json.dumps(r)[:2000]
+            req(port, "POST", f"/{index}/_flush")
+        req(port, "POST", f"/{index}/_refresh")
+
+    def nested(inner, **extra):
+        return {"nested": {"path": "nest", "query": {"knn": {"nest.emb": inner}}, **extra}}
+
+    def hits(port, body):
+        r = req(port, "POST", f"/{index}/_search", body)
+        out = []
+        for h in r["hits"]["hits"]:
+            inner = h.get("inner_hits", {}).get("nest", {}).get("hits", {}).get("hits", [])
+            out.append((h["_id"], h["_score"], [(x["_nested"]["offset"], x["_score"]) for x in inner]))
+        return out
+
+    def agree(got, want):
+        if not same([(i, sc) for i, sc, _ in got], [(i, sc) for i, sc, _ in want]):
+            return False
+        for (_, _, a), (_, _, b) in zip(got, want):
+            if [o for o, _ in a] != [o for o, _ in b] or any(abs(x - y) > 1e-4 for (_, x), (_, y) in zip(a, b)):
+                return False
+        return True
+
+    checked = 0
+    for qi in range(6):
+        t = vector_for(spec, rng)
+        bodies = [
+            ("nested top k", {"size": 20, "query": nested({"vector": t, "k": 10})}),
+            ("nested ef_search", {"size": 20, "query": nested({"vector": t, "k": 5,
+                                                               "method_parameters": {"ef_search": 100}})}),
+            ("nested root filter", {"size": 20, "query": nested({"vector": t, "k": 10,
+                                                                 "filter": {"term": {"tag": "even"}}})}),
+            ("nested child filter", {"size": 20, "query": nested({"vector": t, "k": 10, "filter": {
+                "nested": {"path": "nest", "query": {"term": {"nest.color": "red"}}}}})}),
+            ("nested inner hits", {"size": 20, "query": nested({"vector": t, "k": 10},
+                                                                inner_hits={"size": 4})}),
+            ("expand", {"size": 20, "query": nested({"vector": t, "k": 10, "expand_nested_docs": True},
+                                                     inner_hits={"size": 4}, score_mode="max")}),
+            ("expand avg", {"size": 20, "query": nested({"vector": t, "k": 10, "expand_nested_docs": True},
+                                                         inner_hits={"size": 4})}),
+            ("expand filtered", {"size": 20, "query": nested({"vector": t, "k": 10, "expand_nested_docs": True,
+                                                              "filter": {"nested": {"path": "nest", "query": {
+                                                                  "term": {"nest.color": "blue"}}}}},
+                                                             inner_hits={"size": 4}, score_mode="max")}),
+        ]
+        for label, body in bodies:
+            got, want = hits(OURS[1], body), hits(STOCK[1], body)
+            checked += 1
+            if not agree(got, want):
+                failures.append(f"{index} {label} query {qi}: {got[:2]} vs {want[:2]}")
+        # The best child per parent, exhaustively: stock's graph is small enough to find it.
+        best = {}
+        for d in docs:
+            for kid in d["nest"]:
+                if "emb" in kid:
+                    best[d["_id"]] = max(best.get(d["_id"], 0), score("l2", t, kid["emb"]))
+        scan = sorted(best.items(), key=lambda x: (-x[1], x[0]))[:10]
+        got = hits(OURS[1], bodies[0][1])
+        if not same([(i, sc) for i, sc, _ in got], scan):
+            failures.append(f"{index} nested top k query {qi}: not the exhaustive scan's: {got[:2]} vs {scan[:2]}")
+    return checked
+
+
 def main():
     keep = "--keep" in sys.argv
     zips = glob.glob(os.path.join(ROOT, "opensearch-plugin", "build", "distributions", "lucene-rust-*.zip"))
@@ -323,6 +420,7 @@ def main():
                             scan = exact_top(spec, docs, t, kk, keep_doc or (lambda d: True))
                             if not same(got, [(i, sc) for sc, i in scan], ties=binary):
                                 failures.append(f"{index} {label} query {qi}: not the exhaustive scan's top {kk}")
+        checked += nested_check(failures)
         print(f"compared {checked} queries")
 
         errors = [
@@ -338,6 +436,7 @@ def main():
             ("binary dimension", "lucene_binary", {"query": knn([1] * 7, k=3)}),
             ("binary values", "lucene_binary", {"query": knn([200] * 8, k=3)}),
             ("half_float dimension", "lucene_half_l2", {"query": knn([0.1] * (DIM + 1), k=3)}),
+            ("expand not nested", "lucene_l2", {"query": knn([0.1] * DIM, k=3, expand_nested_docs=True)}),
         ]
         for label, index, body in errors:
             a = req(OURS[1], "POST", f"/{index}/_search", body, ok_errors=True)
