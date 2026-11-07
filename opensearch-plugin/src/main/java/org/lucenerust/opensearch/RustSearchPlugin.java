@@ -124,6 +124,18 @@ public class RustSearchPlugin extends Plugin implements
         Setting.Property.NodeScope
     );
 
+    /**
+     * Bytes the page cache keeps resident across every shard whose {@code index.lucene_rust.store_mode}
+     * is {@code page_cache}; pages past it are released and read again from disk on their next touch.
+     */
+    public static final Setting<ByteSizeValue> NODE_PAGE_CACHE_SIZE = Setting.byteSizeSetting(
+        "lucene_rust.store.page_cache.size",
+        new ByteSizeValue(1, ByteSizeUnit.GB),
+        new ByteSizeValue(1, ByteSizeUnit.MB),
+        new ByteSizeValue(Long.MAX_VALUE, ByteSizeUnit.BYTES),
+        Setting.Property.NodeScope
+    );
+
     private static final Logger logger = LogManager.getLogger(RustSearchPlugin.class);
 
     private final SetOnce<org.opensearch.cluster.service.ClusterService> clusterService = new SetOnce<>();
@@ -166,6 +178,17 @@ public class RustSearchPlugin extends Plugin implements
             logger.info("lucene-rust: encrypted store crypto is {}", StoreCrypto.get().description());
         }
         configureLazyDecrypt(settings);
+        configurePageCache(settings);
+    }
+
+    private static void configurePageCache(Settings settings) {
+        int rc = NativeBridge.storeSetPageCacheBudget(NODE_PAGE_CACHE_SIZE.get(settings).getBytes());
+        if (rc != 0) {
+            throw new IllegalStateException("lucene-rust: cannot configure the page cache (status " + rc + ")");
+        }
+        if (NativeBridge.storePageCacheAvailable() == false) {
+            logger.info("lucene-rust: userfaultfd is unavailable here; indices with store_mode [page_cache] stay mapped");
+        }
     }
 
     private static void configureLazyDecrypt(Settings settings) {
@@ -401,12 +424,14 @@ public class RustSearchPlugin extends Plugin implements
             RustEngineSupport.ADAPTIVE_DOC_VALUES,
             RustEngineSupport.MERGE_LZ4_HIGH_COMPRESSION,
             RustEngineSupport.PAGED_ZSTD_STORED_FIELDS,
+            RustEngineSupport.STORE_MODE,
             RustEngineSupport.PARTITION_FIELD,
             NODE_ENGINE_ENABLED,
             LocalKeySource.KEY,
             LocalKeySource.KEY_ID,
             NODE_LAZY_DECRYPT,
             NODE_DECRYPT_CACHE,
+            NODE_PAGE_CACHE_SIZE,
             SparseSettings.SPARSE_INDEX
         ));
         if (stockKnn == false) {
