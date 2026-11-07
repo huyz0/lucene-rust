@@ -1066,6 +1066,7 @@ fn writer_error(e: index_writer::Error) -> FfiStatus {
         | index_writer::Error::DocValues(_)
         | index_writer::Error::Norms(_)
         | index_writer::Error::Vectors(_)
+        | index_writer::Error::Ivf(_)
         | index_writer::Error::Points(_)
         | index_writer::Error::DocValuesRead(_)
         | index_writer::Error::NormsRead(_)

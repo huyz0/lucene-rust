@@ -434,6 +434,9 @@ pub enum Error {
     /// who sent a bad request (see `lucene_ffi::vectors`).
     #[error(transparent)]
     Vectors(#[from] lucene_codecs::vectors::Error),
+    /// The IVF index of a `LuceneRustIvfVectorsFormat` field.
+    #[error(transparent)]
+    Ivf(#[from] lucene_ivf::Error),
     /// A KNN query this segment cannot answer as asked -- Java's
     /// `IllegalArgumentException` from `AbstractKnnVectorQuery`'s constructor
     /// and its two subclasses' `approximateSearch`, carrying Java's own

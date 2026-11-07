@@ -74,6 +74,7 @@ fn reused_source<'a>(
     number: i32,
     sources: &[MergeSource<'a>],
     live: &[(i32, usize, u32)],
+    merged: usize,
 ) -> Option<(usize, &'a IvfField, usize)> {
     let MergeClustering::ReuseLargest {
         min_fraction,
@@ -92,9 +93,7 @@ fn reused_source<'a>(
         .enumerate()
         .max_by_key(|&(i, &c)| (c, std::cmp::Reverse(i)))?;
     let field = sources[largest].reader.field(number)?;
-    (count > 0
-        && field.clusters() > 1
-        && count as f64 >= f64::from(min_fraction) * live.len() as f64)
+    (count > 0 && field.clusters() > 1 && count as f64 >= f64::from(min_fraction) * merged as f64)
         .then_some((largest, field, refine_rounds))
 }
 
@@ -175,7 +174,7 @@ pub fn merge_field(
         vectors: &vectors,
     };
     let Some((base, base_field, refine_rounds)) =
-        reused_source(params.merge_clustering, number, sources, &live)
+        reused_source(params.merge_clustering, number, sources, &live, live.len())
     else {
         return writer.add_field(&field, factory, params);
     };
@@ -192,6 +191,85 @@ pub fn merge_field(
         .collect();
     let centroids = base_field.centroids();
     writer.add_clustered(&field, factory, params, &mut |prepared, metric| {
+        kmeans::reuse(
+            prepared,
+            dimension,
+            centroids,
+            &hints,
+            params.target_cluster_size,
+            &params.kmeans,
+            refine_rounds,
+            metric,
+        )
+    })
+}
+
+/// [`merge_field`] for a merged field whose vectors the caller already
+/// holds exactly (a codec's raw vectors, merged): `field` is written as
+/// given, and `sources` only lend their clusters. A document of `field`
+/// that no source maps to (its segment kept no IVF index for the field) is
+/// placed like any new vector; a source document `field` does not hold is
+/// ignored.
+///
+/// # Errors
+///
+/// A source whose similarity or dimension differs from `field`'s, a read
+/// failure, or the writer's own errors.
+pub fn merge_field_with_vectors(
+    writer: &mut IvfWriter,
+    field: &FieldVectors<'_>,
+    sources: &[MergeSource<'_>],
+    factory: &dyn QuantizerFactory,
+    params: &IvfParams,
+) -> Result<()> {
+    let number = field.number;
+    let mut live: Vec<(i32, usize, u32)> = Vec::new();
+    for (i, source) in sources.iter().enumerate() {
+        let Some(f) = source.reader.field(number) else {
+            continue;
+        };
+        if (f.similarity(), f.dimension()) != (field.similarity, field.dimension) {
+            return Err(Error::IllegalArgument(format!(
+                "field {number}: a source disagrees on similarity or dimension"
+            )));
+        }
+        for (doc, slot) in source.reader.doc_table(number)? {
+            if let Some(new_doc) = (source.doc_map)(doc) {
+                if field.docs.binary_search(&new_doc).is_ok() {
+                    live.push((new_doc, i, slot));
+                }
+            }
+        }
+    }
+    live.sort_unstable_by_key(|&(d, _, _)| d);
+    live.dedup_by_key(|l| l.0);
+    let Some((base, base_field, refine_rounds)) = reused_source(
+        params.merge_clustering,
+        number,
+        sources,
+        &live,
+        field.docs.len(),
+    ) else {
+        return writer.add_field(field, factory, params);
+    };
+    let slots = sources[base].reader.slot_clusters(number)?;
+    let mut hints = vec![[NO_CLUSTER; 2]; field.docs.len()];
+    let mut at = 0usize;
+    for &(doc, s, slot) in &live {
+        if s != base {
+            continue;
+        }
+        // Both lists ascend, so one forward walk finds every position.
+        while field.docs.get(at).is_some_and(|&d| d < doc) {
+            at = at.saturating_add(1);
+        }
+        if let Some(h) = hints.get_mut(at) {
+            *h = slots[slot as usize];
+        }
+    }
+    let centroids = base_field.centroids();
+    let dimension = field.dimension;
+    writer.add_clustered(field, factory, params, &mut |prepared, metric| {
         kmeans::reuse(
             prepared,
             dimension,
