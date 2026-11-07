@@ -83,6 +83,7 @@ public final class KnnCodecService extends CodecService {
             case 3 -> new Lucene104ScalarQuantizedVectorsFormat(encoding(spec));
             case 4 -> new KNN990HnswBinaryVectorsFormat(spec.maxConn(), spec.beamWidth());
             case 5 -> new KNN1040HnswHalfFloatVectorsFormat(spec.maxConn(), spec.beamWidth());
+            case 6 -> new LuceneRustIvfVectorsFormat();
             default -> new Lucene99HnswVectorsFormat();
         };
     }

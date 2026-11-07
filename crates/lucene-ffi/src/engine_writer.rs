@@ -771,8 +771,9 @@ pub(crate) const VECTORS_FORMAT_ATTRIBUTE: &str = "lucene_rust.knn_format";
 
 /// A [`VECTORS_FORMAT_ATTRIBUTE`] value: `hnsw:<max_conn>:<beam_width>`,
 /// `hnsw_hamming:<max_conn>:<beam_width>`, `hnsw_half:<max_conn>:<beam_width>`,
-/// `hnsw_sq:<scalar encoding wire number>:<max_conn>:<beam_width>` or
-/// `sq:<scalar encoding wire number>`; `None` for anything else.
+/// `hnsw_sq:<scalar encoding wire number>:<max_conn>:<beam_width>`,
+/// `sq:<scalar encoding wire number>` or
+/// `ivf:<target_cluster_size>:<rerank encoding>`; `None` for anything else.
 pub(crate) fn parse_vectors_format(value: &str) -> Option<KnnVectorsFormat> {
     let parts: Vec<&str> = value.split(':').collect();
     let int = |s: &str| s.parse::<i32>().ok();
@@ -789,6 +790,7 @@ pub(crate) fn parse_vectors_format(value: &str) -> Option<KnnVectorsFormat> {
         ["sq", e] => Some(KnnVectorsFormat::scalar_quantized(
             ScalarEncoding::from_wire_number(int(e)?)?,
         )),
+        ["ivf", size, e] => KnnVectorsFormat::ivf(size.parse().ok()?, e.parse().ok()?).ok(),
         _ => None,
     }
 }
@@ -864,8 +866,11 @@ fn restore_vectors_formats(writer: &mut IndexWriter<'_>) {
 /// k-NN's `KNN9120HnswBinaryVectorsFormat(max_conn, beam_width)` (byte
 /// fields only; recorded as `KNN990HnswBinaryVectorsFormat`) or `5` k-NN's
 /// `KNN1040HnswHalfFloatVectorsFormat(max_conn, beam_width)` (float fields
-/// only); kinds `1`, `2`, `4` and `5` are followed by `i32 max_conn, i32 beam_width`,
-/// kinds `2` and `3` by `u8 scalar encoding` (`ScalarEncoding.getWireNumber`).
+/// only) or `6` `LuceneRustIvfVectorsFormat(target_cluster_size,
+/// rerank_encoding)`; kinds `1`, `2`, `4` and `5` are followed by `i32 max_conn,
+/// i32 beam_width`, kinds `2` and `3` by `u8 scalar encoding`
+/// (`ScalarEncoding.getWireNumber`), kind `6` by `i32 target_cluster_size, u8
+/// rerank_encoding` (`0` f32, `1` f16, `2` bf16, `3` int8).
 fn decode_vector_schema(
     c: &mut Cursor<'_>,
 ) -> Result<
@@ -919,6 +924,12 @@ fn decode_vector_schema(
         5 => {
             let (m, beam) = graph(c)?;
             Some(KnnVectorsFormat::hnsw_half_float(m, beam).map_err(invalid)?)
+        }
+        6 => {
+            let size = u32::try_from(c.i32("target cluster size")?)
+                .map_err(|_| decode_error("target cluster size"))?;
+            let rerank = c.u8("rerank encoding")?;
+            Some(KnnVectorsFormat::ivf(size, rerank).map_err(invalid)?)
         }
         _ => return Err(decode_error("vectors format")),
     };
@@ -5157,10 +5168,22 @@ mod tests {
                 1 | 4 | 5 => b.i32(m).i32(100),
                 2 => b.i32(m).i32(100).u8(2),
                 3 => b.u8(2),
+                // `m` is the cluster size, the rerank encoding f16.
+                6 => b.i32(m).u8(1),
                 _ => b,
             };
             b.u8(0).i32(0).0
         };
+        // IVF: any field (a byte one keeps its raw vectors alone), a checked
+        // cluster size.
+        for encoding in [0, 1] {
+            assert_eq!(
+                decode_field(&schema(encoding, 6, 384)).unwrap().1,
+                Some(KnnVectorsFormat::ivf(384, 1).unwrap())
+            );
+        }
+        assert!(decode_field(&schema(0, 6, 8)).is_err());
+        assert!(decode_field(&schema(0, 6, -1)).is_err());
         assert!(decode_field(&schema(1, 2, 16)).is_err());
         assert!(decode_field(&schema(1, 3, 16)).is_err());
         assert!(decode_field(&schema(1, 1, 16)).is_ok());
@@ -5204,6 +5227,10 @@ mod tests {
             Some(KnnVectorsFormat::hnsw_half_float(8, 64).unwrap())
         );
         assert_eq!(
+            parse_vectors_format("ivf:384:1"),
+            Some(KnnVectorsFormat::ivf(384, 1).unwrap())
+        );
+        assert_eq!(
             parse_vectors_format("sq:1"),
             Some(KnnVectorsFormat::scalar_quantized(
                 ScalarEncoding::PackedNibble
@@ -5216,6 +5243,9 @@ mod tests {
             "hnsw_sq:9:16:100",
             "flat:1",
             "hnsw:a:b",
+            "ivf:8:0",
+            "ivf:384:4",
+            "ivf:384",
         ] {
             assert_eq!(parse_vectors_format(bad), None, "{bad}");
         }
@@ -7061,7 +7091,7 @@ mod tests {
         for x in target {
             request = request.f32(x);
         }
-        let request = request.i32(5).i32(40).u8(0).u8(0).0;
+        let request = request.i32(5).i32(40).u8(0).u8(0).i32(0).0;
         let (mut docs, mut scores, mut n) = ([0i32; 5], [0f32; 5], 0usize);
         // SAFETY: live request and buffers of 5.
         let rc = unsafe {
