@@ -22,6 +22,7 @@ zeroize = "1"
 # default so tests can install their own counting allocator.
 mimalloc = { version = "0.1", default-features = false, features = ["local_dynamic_tls", "no_thp"], optional = true }
 lucene-codecs = { path = "../lucene-codecs" }
+lucene-zstd = { path = "../lucene-zstd" }
 lucene-index = { path = "../lucene-index" }
 lucene-search = { path = "../lucene-search" }
 lucene-facet = { path = "../lucene-facet" }
