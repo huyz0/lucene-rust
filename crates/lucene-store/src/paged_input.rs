@@ -808,8 +808,13 @@ impl Pager {
         if index >= file.pages {
             return;
         }
-        if file.live[index].load(Ordering::Acquire) {
-            // Installed since the fault was raised.
+        // A page marked resident whose faulting OS page is present was
+        // installed since the fault was raised: waking is enough. One with
+        // that OS page missing is filled again: an eviction releasing it
+        // while an install was copying it in can leave holes under the
+        // mark, and only a new install fills them (the OS pages present are
+        // skipped). Waking the thread then would have it fault again, forever.
+        if file.live[index].load(Ordering::Acquire) && self.present(addr) {
             self.wake(addr);
             return;
         }
@@ -868,6 +873,23 @@ impl Pager {
         };
         // SAFETY: wakes waiters on pages of the registered mapping.
         unsafe { libc::ioctl(self.uffd.as_raw_fd(), UFFDIO_WAKE, &mut range) };
+    }
+
+    /// Whether the OS page holding `addr` is in memory now. `false` when
+    /// that cannot be told, so the caller fills it (a present page is then
+    /// skipped by the install).
+    fn present(&self, addr: usize) -> bool {
+        let mut vec = 0u8;
+        // SAFETY: one OS page of a registered mapping, and room for its one
+        // status byte.
+        let rc = unsafe {
+            libc::mincore(
+                (addr & !self.os_page.saturating_sub(1)) as *mut libc::c_void,
+                self.os_page,
+                &mut vec,
+            )
+        };
+        rc == 0 && vec & 1 != 0
     }
 
     /// Wakes the threads waiting on the OS page holding `addr`.
@@ -1138,6 +1160,45 @@ mod tests {
             fail_first: AtomicUsize::new(0),
             background: AtomicBool::new(false),
         })
+    }
+
+    #[test]
+    fn a_resident_page_with_a_hole_is_filled_again() {
+        let Some(pager) = Pager::spawn(false) else {
+            return;
+        };
+        let page = 16 * 1024;
+        let len = 4 * page;
+        let p = pattern(len, page);
+        let os = pager.os_page;
+        if os >= page {
+            // No room for a hole inside one page.
+            return;
+        }
+        let input = pager.open(len, page, p.clone(), "hole").unwrap();
+        let bytes = input.bytes();
+        assert_eq!(bytes[5], byte(5));
+        // The handler marks the page after the copy that woke this thread.
+        let waited = std::time::Instant::now();
+        while !input.file.live[0].load(Ordering::Acquire) {
+            assert!(
+                waited.elapsed() < Duration::from_secs(5),
+                "page 0 never marked"
+            );
+            std::thread::yield_now();
+        }
+        // What an eviction racing an install can leave: the page marked
+        // resident with one of its OS pages gone.
+        // SAFETY: drops one OS page inside the file's live mapping.
+        unsafe {
+            libc::madvise(
+                bytes.as_ptr().add(os) as *mut libc::c_void,
+                os,
+                libc::MADV_DONTNEED,
+            )
+        };
+        assert_eq!(bytes[os + 7], byte(os + 7));
+        assert!(bytes.iter().enumerate().all(|(i, b)| *b == byte(i)));
     }
 
     #[test]
