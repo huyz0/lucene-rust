@@ -311,11 +311,9 @@ fn warm_loop(weak: &std::sync::Weak<EngineWriter>) {
 /// Writes the newest documents of `w`'s buffers into chunks without
 /// postings, as the next search's plan would cut them.
 fn warm(w: &EngineWriter) -> lucene_index::index_writer::Result<()> {
-    let view = w.writer().open_live_view(None)?;
-    // A panic must neither leave the view's pins held nor end the thread
-    // with the warmer marked running.
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        view.buffers.iter().filter(|b| b.in_slot).try_for_each(|b| {
+    // A panic must not end the thread with the warmer marked running.
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        w.writer().live_slot_buffers().iter().try_for_each(|b| {
             let writing = w.live_warmer().writing();
             let plan = plan(&w.live_chunks(), b, i32::MAX, &writing);
             let tail = plan.last().map_or(0, |p| p.end.saturating_sub(p.start));
@@ -324,9 +322,8 @@ fn warm(w: &EngineWriter) -> lucene_index::index_writer::Result<()> {
             }
             buffer_segments(w, b, &plan, false).map(drop)
         })
-    }));
-    w.writer().close_live_view(&view);
-    result.unwrap_or_else(|_| {
+    }))
+    .unwrap_or_else(|_| {
         Err(lucene_index::index_writer::Error::LiveSearch(
             "warming the buffers panicked".into(),
         ))
@@ -799,6 +796,7 @@ pub unsafe extern "C" fn ffi_live_view_reader(
     out_handle: *mut u64,
 ) -> i32 {
     guard(|| {
+        let _timer = lucene_index::live_timing::start(lucene_index::live_timing::Phase::ViewReader);
         if out_handle.is_null() {
             return Err(FfiStatus::NullPointer);
         }
@@ -1216,6 +1214,7 @@ fn overlaid(
     buffer: Option<&lucene_index::concurrent_writer::LiveBuffer>,
     key: Option<&[u8]>,
 ) -> Result<Vec<SegmentReader>, FfiStatus> {
+    let _timer = lucene_index::live_timing::start(lucene_index::live_timing::Phase::Overlay);
     parts
         .into_iter()
         .zip(plan)
@@ -1374,6 +1373,8 @@ pub unsafe extern "C" fn ffi_jvm_reader_search_live(
     out_supported: *mut bool,
 ) -> i32 {
     guard(|| {
+        let _timer =
+            lucene_index::live_timing::start(lucene_index::live_timing::Phase::PlainSearch);
         if out_hit_count.is_null()
             || out_total.is_null()
             || out_total_is_lower_bound.is_null()
