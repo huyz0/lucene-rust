@@ -1496,44 +1496,14 @@ fn buffer_segments(
             continue;
         }
         // The last chunk of a search without postings, which a later view
-        // seldom ends at too: written for this search alone, its doc values
-        // encoded a field at a time as the search reads them, and its points
-        // only when the request reads points.
-        if let Some(points) = lean_tail.filter(|_| !postings && b.in_slot && i + 1 == plan.len()) {
-            let found = w.live_chunks().get(&(b.id, false)).and_then(|c| {
-                c.iter()
-                    .find(|c| c.start == p.start && c.end == p.end && !c.postings)
-                    .cloned()
-            });
-            if let Some(c) = found {
-                out.push((c.reader.clone(), !c.postings));
-                continue;
-            }
-            let dir = lucene_store::ByteBuffersDirectory::new();
-            let name = format!("_live{}_{}", p.start, p.end);
-            let starts: Vec<i32> = plan.iter().map(|p| p.end).collect();
-            let (sci, lazy) = writer.live_lean_segment(
-                b.id,
-                p.start..p.end,
-                range_counts(p),
-                &starts,
-                points,
-                &dir,
-                &name,
-            )?;
-            let reader = SegmentReader::open_one(&dir, &sci).map_err(open_error)?;
-            out.push((
-                match lazy {
-                    Some(lazy) => reader.with_lazy_doc_values(lazy),
-                    None => reader,
-                },
-                true,
-            ));
-            continue;
-        }
+        // seldom ends at too, is written for this search alone: its doc
+        // values encoded a field at a time as the search reads them, its
+        // points only when the request reads points, and without waiting
+        // for another thread writing the same documents.
+        let lean = lean_tail.filter(|_| !postings && b.in_slot && i + 1 == plan.len());
         // Claimed before the cache is read: a chunk another thread is
         // writing is waited for and then found there.
-        let _writing = b.in_slot.then(|| {
+        let _writing = (b.in_slot && lean.is_none()).then(|| {
             w.live_warmer().claim_writing(Writing {
                 buffer: b.id,
                 start: p.start,
@@ -1555,17 +1525,36 @@ fn buffer_segments(
         let dir = lucene_store::ByteBuffersDirectory::new();
         let name = format!("_live{}_{}", p.start, p.end);
         let starts: Vec<i32> = plan.iter().map(|p| p.end).collect();
-        let sci = writer.live_buffer_segment(
-            b.id,
-            p.start..p.end,
-            range_counts(p),
-            &starts,
-            postings,
-            &dir,
-            &name,
-        )?;
+        let range = p.start..p.end;
+        let (sci, lazy) = match lean {
+            Some(points) => writer.live_lean_segment(
+                b.id,
+                range,
+                range_counts(p),
+                &starts,
+                points,
+                &dir,
+                &name,
+            )?,
+            None => (
+                writer.live_buffer_segment(
+                    b.id,
+                    range,
+                    range_counts(p),
+                    &starts,
+                    postings,
+                    &dir,
+                    &name,
+                )?,
+                None,
+            ),
+        };
         let reader = SegmentReader::open_one(&dir, &sci).map_err(open_error)?;
-        if b.in_slot {
+        if let Some(lazy) = lazy {
+            out.push((reader.with_lazy_doc_values(lazy), true));
+            continue;
+        }
+        if b.in_slot && lean.is_none() {
             let chunk = Arc::new(Chunk {
                 start: p.start,
                 end: p.end,

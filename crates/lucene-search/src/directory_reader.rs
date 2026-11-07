@@ -332,9 +332,6 @@ struct CodecFiles {
     suffix: String,
 }
 
-/// One field's doc-values **update generation** -- the rewritten column
-/// `SegmentCommitInfo.docValuesGen`/`FieldInfo.docValuesGen` point at, held
-/// exactly like the base pair (`Arc`, so a reader reuse is a refcount bump).
 /// Doc values encoded a field at a time from a buffer's columns.
 struct LazyDocValues {
     source: lucene_index::index_writer::LazyDocValues,
@@ -349,6 +346,9 @@ impl std::fmt::Debug for LazyDocValues {
     }
 }
 
+/// One field's doc-values **update generation** -- the rewritten column
+/// `SegmentCommitInfo.docValuesGen`/`FieldInfo.docValuesGen` point at, held
+/// exactly like the base pair (`Arc`, so a reader reuse is a refcount bump).
 #[derive(Debug, Clone)]
 struct DocValuesGeneration {
     field_number: i32,
@@ -1724,14 +1724,18 @@ impl SegmentReader {
     }
 
     /// Field `field_number`'s doc values from `source`, `None` when it has
-    /// none or they do not encode (an in-memory write, which does not fail
-    /// short of a bug).
+    /// none. The writer gives a source only when every field's column
+    /// encodes as a written segment's would and no codec checks them, so the
+    /// in-memory encode and its parse fail only on a bug, which a debug
+    /// build stops at.
     fn encode_lazy(
         &self,
         source: &lucene_index::index_writer::LazyDocValues,
         field_number: i32,
     ) -> Option<DocValuesGeneration> {
-        let encoded = source.encode(field_number, &self.segment_id).ok()??;
+        let encoded = source.encode(field_number, &self.segment_id);
+        debug_assert!(encoded.is_ok(), "encoding buffered doc values: {encoded:?}");
+        let encoded = encoded.ok()??;
         let field = self
             .field_infos
             .fields
@@ -1740,13 +1744,14 @@ impl SegmentReader {
         let only = FieldInfos {
             fields: vec![field.clone()],
         };
-        let (_, meta) = doc_values::parse_meta(
+        let parsed = doc_values::parse_meta(
             &encoded.dvm,
             &self.segment_id,
             &encoded.segment_suffix,
             &only,
-        )
-        .ok()?;
+        );
+        debug_assert!(parsed.is_ok(), "parsing buffered doc values: {parsed:?}");
+        let (_, meta) = parsed.ok()?;
         Some(DocValuesGeneration {
             field_number,
             meta: Arc::new(meta),

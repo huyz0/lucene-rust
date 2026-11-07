@@ -6028,9 +6028,10 @@ mod tests {
                         let requested = got
                             .iter()
                             .all(|t| [term, words[round % 5]].contains(&t.as_str()));
-                        let reused = w.reader.segment_readers()[base..]
-                            .iter()
-                            .any(|c| c.segment_name == r.segment_name && body_terms(c) == got);
+                        // The very chunk `whole` holds (the same core).
+                        let reused = w.reader.segment_readers()[base..].iter().any(|c| {
+                            c.core_cache_helper().key_id() == r.core_cache_helper().key_id()
+                        });
                         assert!(
                             requested || reused,
                             "round {round}: only the request's terms in {}: {got:?}",
@@ -6091,13 +6092,9 @@ mod tests {
                 let w = crate::jvm_reader::lookup(whole, "test").unwrap();
                 let mut held = std::collections::BTreeSet::new();
                 for r in &l.reader.segment_readers()[base..] {
-                    let reused = w.reader.segment_readers()[base..].iter().any(|c| {
-                        c.segment_name == r.segment_name
-                            && c.max_doc == r.max_doc
-                            && r.terms("body").unwrap().map(|t| t.size())
-                                == c.terms("body").unwrap().map(|t| t.size())
-                            && c.terms("body").unwrap().is_some()
-                    });
+                    let reused = w.reader.segment_readers()[base..]
+                        .iter()
+                        .any(|c| c.core_cache_helper().key_id() == r.core_cache_helper().key_id());
                     if reused {
                         continue;
                     }

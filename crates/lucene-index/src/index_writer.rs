@@ -1339,6 +1339,7 @@ pub struct LazyDocValues {
 }
 
 /// One field's doc values as a `.dvm`/`.dvd` pair of their own.
+#[derive(Debug)]
 pub struct EncodedDocValues {
     pub dvm: Vec<u8>,
     pub dvd: Vec<u8>,
@@ -1347,6 +1348,27 @@ pub struct EncodedDocValues {
 }
 
 impl LazyDocValues {
+    /// Whether `columns` hold every doc-values field of `present` in its
+    /// own type, so that each encodes from its column as a written segment
+    /// would hold it; and the writer's codec checks no doc values (a check
+    /// would fail a read).
+    pub(crate) fn covers(
+        cfg: &IndexingConfig,
+        columns: &[(i32, PrebuiltDocValues)],
+        present: &[i32],
+    ) -> bool {
+        cfg.codec.is_none()
+            && cfg
+                .fields
+                .iter()
+                .filter(|f| present.contains(&f.number) && f.doc_values_type != DocValuesType::None)
+                .all(|f| {
+                    columns
+                        .iter()
+                        .any(|(n, c)| *n == f.number && c.doc_values_type() == f.doc_values_type)
+                })
+    }
+
     pub(crate) fn new(
         cfg: std::sync::Arc<IndexingConfig>,
         columns: Vec<(i32, PrebuiltDocValues)>,

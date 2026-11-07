@@ -1118,13 +1118,18 @@ impl ConcurrentIndexWriter<'_> {
         let mut columns = (!decode_chunks())
             .then(|| slot.live.chunk_columns(range.start, range.end))
             .flatten();
-        let lazy_doc_values = lazy.zip(columns.as_mut()).map(|(_, c)| {
-            crate::index_writer::LazyDocValues::new(
-                Arc::clone(&cfg),
-                std::mem::take(&mut c.doc_values),
-                range.end.saturating_sub(range.start),
-            )
-        });
+        let lazy_doc_values = lazy
+            .zip(columns.as_mut())
+            .filter(|(_, c)| {
+                crate::index_writer::LazyDocValues::covers(&cfg, &c.doc_values, &c.present)
+            })
+            .map(|(_, c)| {
+                crate::index_writer::LazyDocValues::new(
+                    Arc::clone(&cfg),
+                    std::mem::take(&mut c.doc_values),
+                    range.end.saturating_sub(range.start),
+                )
+            });
         let lean = lazy_doc_values.is_some();
         let limit = crate::index_writer::BufferLimit {
             start: range.start,

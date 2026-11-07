@@ -259,14 +259,10 @@ pub fn tail_segment(
                 terms,
                 norms: f.norms.as_ref().map(|n| {
                     let held = usize::try_from(f.norms_from).unwrap_or(0);
-                    let mut out = n
-                        .get(skip.saturating_sub(held)..)
-                        .unwrap_or_default()
-                        .to_vec();
+                    let kept = n.get(skip.saturating_sub(held)..).unwrap_or_default();
                     // Documents before `norms_from` were not read: 0.
-                    if held > skip {
-                        out.splice(0..0, std::iter::repeat_n(0, held - skip));
-                    }
+                    let mut out = vec![0; held.saturating_sub(skip)];
+                    out.extend_from_slice(kept);
                     out
                 }),
                 sum_total_term_freq: f.sum_total_term_freq.saturating_sub(if freqs {
