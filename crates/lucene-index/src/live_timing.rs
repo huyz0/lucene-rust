@@ -52,9 +52,13 @@ pub enum Phase {
     ChunkDocValuesDecoded,
     /// A chunk's points written.
     ChunkPoints,
+    /// Waiting for a buffer's slot to write a chunk of it.
+    ChunkSlotWait,
+    /// Writing a search's own chunk without doc values.
+    ChunkLean,
 }
 
-const PHASES: usize = 21;
+const PHASES: usize = 23;
 
 const NAMES: [&str; PHASES] = [
     "view_open",
@@ -78,6 +82,8 @@ const NAMES: [&str; PHASES] = [
     "c_dv_columns",
     "c_dv_decoded",
     "c_points",
+    "c_slot_wait",
+    "c_lean",
 ];
 
 struct Sums {

@@ -1267,8 +1267,11 @@ fn build_view_reader(
     let mut extra = Vec::new();
     let mut masks = Vec::new();
     // Each buffer's chunks are written under that buffer's own slot
-    // lock: the buffers with chunks to write are written side by side,
-    // one on this thread and the others on threads of their own.
+    // lock: with postings, the buffers with chunks to write are written
+    // side by side, one on this thread and the others on threads of their
+    // own. Without them each buffer has a small chunk at most, and they are
+    // written on this thread: under load, a thread per buffer makes the
+    // view wait for the slowest of them.
     let w: &EngineWriter = &v.writer;
     let postings = request.is_none();
     if !postings {
@@ -1284,7 +1287,7 @@ fn build_view_reader(
             .zip(&v.plans)
             .map(|(b, plan)| {
                 let writes = !writes_nothing(w, b, plan, postings);
-                if !writes || !inline_used {
+                if !writes || !inline_used || !postings {
                     inline_used |= writes;
                     return Err((b, plan));
                 }
