@@ -144,8 +144,8 @@ pub fn java_float_to_string(v: f32) -> String {
 }
 
 /// [`java_float_to_string`] appended to `out`: the shortest digits ([`crate::java_float`], Java's
-/// own choice) laid out as Java lays them out, without allocating; only a value whose shortest
-/// form is one digit takes the exact expansion, for Java's second digit.
+/// own choice) laid out as Java lays them out. Only a subnormal whose shortest form is one digit
+/// takes the (allocating) exact expansion, for Java's second digit.
 pub fn push_java_float_string(out: &mut String, v: f32) {
     if v.is_nan() {
         out.push_str("NaN");
@@ -173,8 +173,10 @@ pub fn push_java_float_string(out: &mut String, v: f32) {
         clippy::cast_possible_wrap
     )]
     let mut exp = low_exp + digits.len as i32 - 1;
-    if digits.len < 2 {
-        // Java prints at least two digits: the closest two-digit decimal that reads back.
+    if digits.len < 2 && !a.is_normal() {
+        // Java prints at least two digits: the closest two-digit decimal that reads back. For a
+        // normal value that is the one digit and a zero (its spacing is far below a tenth of the
+        // digit's step), stripped below; only a subnormal's may differ (`1.4E-45`).
         if let Some((d, e)) = closest_digits(a, 2) {
             digits = StackBuf::default();
             d.iter().for_each(|&b| digits.push(b));
@@ -217,7 +219,9 @@ pub fn push_java_float_string(out: &mut String, v: f32) {
         (exp..-1).for_each(|_| text.push(b'0'));
         digits.iter().for_each(|&d| text.push(d));
     }
-    out.push_str(std::str::from_utf8(text.as_slice()).unwrap_or_default());
+    debug_assert!(text.as_slice().is_ascii());
+    // Digits, `.`, `E` and `-` only: always UTF-8.
+    out.push_str(std::str::from_utf8(text.as_slice()).unwrap_or("?"));
 }
 
 /// Up to 32 digits on the stack (an f32 needs at most 9).
@@ -259,7 +263,7 @@ fn push_digits(digits: &mut StackBuf, mut n: u32) {
 
 /// The digits and decimal exponent of Rust's `{:e}` rendering
 /// (`"1.25e-3"` -> `(b"125", -3)`).
-fn split_scientific(s: &str) -> (Vec<u8>, i32) {
+pub(crate) fn split_scientific(s: &str) -> (Vec<u8>, i32) {
     let (mantissa, exp) = s.split_once('e').unwrap_or((s, "0"));
     let digits = mantissa.bytes().filter(u8::is_ascii_digit).collect();
     (digits, exp.parse().unwrap_or(0))

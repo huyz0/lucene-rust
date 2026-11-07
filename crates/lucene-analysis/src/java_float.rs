@@ -210,6 +210,7 @@ pub(crate) fn shortest(v: f32) -> (u32, i32) {
                 vr_trailing_zeros &= last_removed == 0;
                 last_removed = vr % 10;
                 vr /= 10;
+                // The reference divides `vp` too; nothing reads it past this point.
                 vm /= 10;
                 removed += 1;
             }
@@ -238,11 +239,12 @@ mod tests {
 
     /// The digits and exponent from Rust's own shortest rendering, `{:e}`.
     fn rust_shortest(v: f32) -> (u32, i32) {
-        let s = format!("{v:e}");
-        let (m, e) = s.split_once('e').unwrap();
-        let digits: String = m.chars().filter(char::is_ascii_digit).collect();
+        let (digits, e) = crate::attributes::split_scientific(&format!("{v:e}"));
         let n = digits.len() as i32;
-        (digits.parse().unwrap(), e.parse::<i32>().unwrap() - (n - 1))
+        (
+            std::str::from_utf8(&digits).unwrap().parse().unwrap(),
+            e - (n - 1),
+        )
     }
 
     fn normalize((mut d, mut e): (u32, i32)) -> (u32, i32) {
