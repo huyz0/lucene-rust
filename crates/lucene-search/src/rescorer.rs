@@ -246,22 +246,45 @@ impl Rescorer for DoubleValuesSourceRescorer {
         let searcher = ctx.searcher()?;
         let mut hits = first_pass.score_docs.clone();
         hits.sort_by_key(|h| h.doc);
-        let mut current: Option<(usize, crate::values_source::BoxDoubleValues<'_>)> = None;
-        let mut last_local = -1;
-        for hit in &mut hits {
-            let (leaf, local) = leaf_of(searcher, hit.doc)?;
-            // A fresh cursor per leaf, and per repeated document (a cursor
-            // only moves forward).
-            if current.as_ref().is_none_or(|(l, _)| *l != leaf) || local <= last_local {
-                current = Some((leaf, self.source.get_values(ctx, leaf, None)?));
+        // Runs of hits in one leaf with strictly ascending documents: each
+        // read through one cursor (a cursor only moves forward), a batch at
+        // a time when the values can be read so.
+        let locals: Vec<(usize, i32)> = hits
+            .iter()
+            .map(|h| leaf_of(searcher, h.doc))
+            .collect::<Result<_>>()?;
+        let batch_ok = !self.source.needs_scores();
+        let (mut docs, mut scores, mut out, mut has) =
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let mut start = 0;
+        while start < hits.len() {
+            let leaf = locals[start].0;
+            let mut end = start + 1;
+            while end < hits.len() && locals[end].0 == leaf && locals[end].1 > locals[end - 1].1 {
+                end += 1;
             }
-            last_local = local;
-            let Some((_, values)) = current.as_mut() else {
-                continue;
-            };
-            let present = values.advance_exact(local)?;
-            let value = if present { values.double_value()? } else { 0.0 };
-            hit.score = (self.combine)(hit.score, present, value);
+            let mut values = self.source.get_values(ctx, leaf, None)?;
+            let run = &mut hits[start..end];
+            if batch_ok && values.batch_capable() {
+                docs.clear();
+                docs.extend(locals[start..end].iter().map(|&(_, d)| d));
+                let n = docs.len();
+                scores.resize(n, 0.0);
+                out.resize(n, 0.0);
+                has.resize(n, false);
+                values.fill_batch(&docs, &scores, &mut out, &mut has)?;
+                for ((hit, &present), &value) in run.iter_mut().zip(&has).zip(&out) {
+                    let value = if present { value } else { 0.0 };
+                    hit.score = (self.combine)(hit.score, present, value);
+                }
+            } else {
+                for (hit, &(_, local)) in run.iter_mut().zip(&locals[start..end]) {
+                    let present = values.advance_exact(local)?;
+                    let value = if present { values.double_value()? } else { 0.0 };
+                    hit.score = (self.combine)(hit.score, present, value);
+                }
+            }
+            start = end;
         }
         Ok(TopDocs {
             total_hits: first_pass.total_hits,

@@ -14,13 +14,13 @@ use super::{chain_kind, java_max, java_min, Bin, ChainKind, FunctionBody, Node};
 #[derive(Clone, Copy, Debug)]
 enum Src {
     /// A `double` register.
-    F(u16),
+    F(u32),
     /// A `long` register.
-    L(u16),
+    L(u32),
     /// An `int` register.
-    I(u16),
+    I(u32),
     /// Variable `i`'s column.
-    Col(u16),
+    Col(u32),
     /// A `double` constant.
     Fc(f64),
     /// A `long` constant.
@@ -42,28 +42,28 @@ enum Conv {
 #[derive(Clone, Debug)]
 enum Op {
     /// `double` arithmetic into an `F`.
-    Arith(Bin, u16, Src, Src),
+    Arith(Bin, u32, Src, Src),
     /// A `double` comparison into an `I`.
-    Compare(Bin, u16, Src, Src),
+    Compare(Bin, u32, Src, Src),
     /// A shift of a `long` by an `int` count into an `L`.
-    Shift(Bin, u16, Src, Src),
+    Shift(Bin, u32, Src, Src),
     /// `long` bitwise into an `L`.
-    Bitwise(Bin, u16, Src, Src),
+    Bitwise(Bin, u32, Src, Src),
     /// `(a != 0) && (b != 0)` / `||` into an `I`.
-    Logic(bool, u16, Src, Src),
-    Not(u16, Src),
-    BwNot(u16, Src),
-    Neg(u16, Src),
-    Conv(Conv, u16, Src),
+    Logic(bool, u32, Src, Src),
+    Not(u32, Src),
+    BwNot(u32, Src),
+    Neg(u32, Src),
+    Conv(Conv, u32, Src),
     /// `c != 0 ? a : b` into the destination of `a`'s type.
-    Select(u16, Src, Src, Src),
-    F1(fn(f64) -> f64, u16, Src),
-    F2(fn(f64, f64) -> f64, u16, Src, Src),
-    F4(fn(f64, f64, f64, f64) -> f64, u16, [Src; 4]),
-    Abs(u16, Src),
-    Sqrt(u16, Src),
-    Floor(u16, Src),
-    Ceil(u16, Src),
+    Select(u32, Src, Src, Src),
+    F1(fn(f64) -> f64, u32, Src),
+    F2(fn(f64, f64) -> f64, u32, Src, Src),
+    F4(fn(f64, f64, f64, f64) -> f64, u32, [Src; 4]),
+    Abs(u32, Src),
+    Sqrt(u32, Src),
+    Floor(u32, Src),
+    Ceil(u32, Src),
 }
 
 /// The expression as operations over registers of a batch's length.
@@ -71,18 +71,18 @@ enum Op {
 pub(crate) struct Program {
     ops: Vec<Op>,
     result: Src,
-    regs: [u16; 3],
+    regs: [u32; 3],
 }
 
 /// Registers in use and free, of one type.
 #[derive(Default)]
 struct Pool {
-    count: u16,
-    free: Vec<u16>,
+    count: u32,
+    free: Vec<u32>,
 }
 
 impl Pool {
-    fn get(&mut self) -> u16 {
+    fn get(&mut self) -> u32 {
         self.free.pop().unwrap_or_else(|| {
             self.count += 1;
             self.count - 1
@@ -113,7 +113,7 @@ impl Builder {
         }
     }
 
-    fn reg(&mut self, ty: Ty) -> (u16, Src) {
+    fn reg(&mut self, ty: Ty) -> (u32, Src) {
         match ty {
             Ty::F => {
                 let r = self.pools[0].get();
@@ -132,7 +132,7 @@ impl Builder {
 
     /// An operation of `ty` over `args`: the destination is taken before
     /// the operands are freed, so it is never one of them.
-    fn op(&mut self, ty: Ty, args: &[Src], f: impl FnOnce(u16) -> Op) -> Src {
+    fn op(&mut self, ty: Ty, args: &[Src], f: impl FnOnce(u32) -> Op) -> Src {
         let (r, dst) = self.reg(ty);
         self.ops.push(f(r));
         for a in args {
@@ -158,7 +158,7 @@ impl Builder {
         Some(match node {
             Node::Integer(i) => Src::Fc(*i as f64),
             Node::Decimal(d) => Src::Fc(*d),
-            Node::Variable(i) => Src::Col(u16::try_from(*i).ok()?),
+            Node::Variable(i) => Src::Col(u32::try_from(*i).ok()?),
             Node::Plus(e) => self.double(e)?,
             Node::Call(f, args) => {
                 let a: Vec<Src> = args.iter().map(|a| self.double(a)).collect::<Option<_>>()?;
@@ -468,19 +468,19 @@ impl Regs<'_> {
     }
 
     #[allow(clippy::mut_from_ref)]
-    fn df(&self, r: u16) -> &mut [f64] {
+    fn df(&self, r: u32) -> &mut [f64] {
         // SAFETY: as `f`; the destination aliases no operand
         unsafe { std::slice::from_raw_parts_mut(self.f.add(r as usize * self.n), self.n) }
     }
 
     #[allow(clippy::mut_from_ref)]
-    fn dl(&self, r: u16) -> &mut [i64] {
+    fn dl(&self, r: u32) -> &mut [i64] {
         // SAFETY: as `df`
         unsafe { std::slice::from_raw_parts_mut(self.l.add(r as usize * self.n), self.n) }
     }
 
     #[allow(clippy::mut_from_ref)]
-    fn di(&self, r: u16) -> &mut [i32] {
+    fn di(&self, r: u32) -> &mut [i32] {
         // SAFETY: as `df`
         unsafe { std::slice::from_raw_parts_mut(self.i.add(r as usize * self.n), self.n) }
     }
@@ -531,6 +531,20 @@ fn map2<A: Copy, B: Copy, T: Copy>(
                 *o = f(x, y);
             }
         }
+    }
+}
+
+/// `c != 0 ? a : b` per document, branch-free where all three are slices.
+#[inline(always)]
+fn select<T: Copy>(out: &mut [T], c: Arg<'_, i32>, a: Arg<'_, T>, b: Arg<'_, T>) {
+    if let (Arg::S(c), Arg::S(a), Arg::S(b)) = (&c, &a, &b) {
+        for (((o, &c), &x), &y) in out.iter_mut().zip(*c).zip(*a).zip(*b) {
+            *o = if c != 0 { x } else { y };
+        }
+        return;
+    }
+    for (j, o) in out.iter_mut().enumerate() {
+        *o = if at(&c, j) != 0 { at(&a, j) } else { at(&b, j) };
     }
 }
 
@@ -621,24 +635,9 @@ impl Program {
                 Op::Select(d, c, a, b) => {
                     let c = r.i(c);
                     match a {
-                        Src::F(_) | Src::Col(_) | Src::Fc(_) => {
-                            let (d, a, b) = (r.df(d), r.f(a), r.f(b));
-                            for (j, o) in d.iter_mut().enumerate() {
-                                *o = if at(&c, j) != 0 { at(&a, j) } else { at(&b, j) };
-                            }
-                        }
-                        Src::L(_) | Src::Lc(_) => {
-                            let (d, a, b) = (r.dl(d), r.l(a), r.l(b));
-                            for (j, o) in d.iter_mut().enumerate() {
-                                *o = if at(&c, j) != 0 { at(&a, j) } else { at(&b, j) };
-                            }
-                        }
-                        Src::I(_) | Src::Ic(_) => {
-                            let (d, a, b) = (r.di(d), r.i(a), r.i(b));
-                            for (j, o) in d.iter_mut().enumerate() {
-                                *o = if at(&c, j) != 0 { at(&a, j) } else { at(&b, j) };
-                            }
-                        }
+                        Src::F(_) | Src::Col(_) | Src::Fc(_) => select(r.df(d), c, r.f(a), r.f(b)),
+                        Src::L(_) | Src::Lc(_) => select(r.dl(d), c, r.l(a), r.l(b)),
+                        Src::I(_) | Src::Ic(_) => select(r.di(d), c, r.i(a), r.i(b)),
                     }
                 }
                 Op::F1(f, d, a) => map1(r.df(d), r.f(a), f),

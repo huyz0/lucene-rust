@@ -231,10 +231,7 @@ fn every_backend_equals_lucene() {
     use lucene_expressions::Backend;
     let want = fs::read_to_string(dir().join("expressions.tsv")).unwrap();
     let (defaults, custom) = (default_functions(), custom());
-    let mut backends = vec![Backend::Closure, Backend::Vector];
-    if cfg!(feature = "jit") {
-        backends.push(Backend::Jit);
-    }
+    let backends = [Backend::Closure, Backend::Vector];
     let mut bad = Vec::new();
     let mut checked = 0;
     for row in want.lines().filter(|r| r.starts_with("E\t")) {

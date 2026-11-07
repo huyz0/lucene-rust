@@ -2,7 +2,9 @@
 //! Java twin): `expr_compile`, every expression of
 //! `fixtures/corpus/expressions.txt` that compiles with the default
 //! functions; `expr_<shape>`, one expression evaluated over 1,024 documents'
-//! values of `a`, `b` and `c`.
+//! values of `a`, `b` and `c`; `expr_<shape>_batch`, the same over batches
+//! of 128 documents' columns (what `ExpressionValueSource::fill_batch` hands
+//! the expression), against Java's only path, one document at a time.
 
 use std::hint::black_box;
 use std::time::Duration;
@@ -21,6 +23,7 @@ const EVAL: &[(&str, &str)] = &[
     ("expr_funcs", "max(a, b) * min(c, 1) + pow(b, 2) + floor(c)"),
 ];
 const DOCS: i32 = 1024;
+const BATCH: usize = 128;
 
 /// The value of variable `k` for `doc`, as the Java side computes it.
 fn value(doc: i32, k: i64) -> f64 {
@@ -44,12 +47,9 @@ impl DoubleValues for ArrayValues {
 }
 
 pub fn bench_expressions(w: Duration, m: Duration) {
-    // BENCH_EXPR_BACKEND=vector|jit times another backend (jit needs the
-    // runner's `expr-jit` feature)
-    match std::env::var("BENCH_EXPR_BACKEND").as_deref() {
-        Ok("vector") => set_default_backend(Backend::Vector),
-        Ok("jit") => set_default_backend(Backend::Jit),
-        _ => {}
+    // BENCH_EXPR_BACKEND=vector times the column-at-a-time backend
+    if std::env::var("BENCH_EXPR_BACKEND").as_deref() == Ok("vector") {
+        set_default_backend(Backend::Vector);
     }
     let texts: Vec<String> = std::fs::read_to_string("fixtures/corpus/expressions.txt")
         .unwrap()
@@ -63,6 +63,9 @@ pub fn bench_expressions(w: Duration, m: Duration) {
         }
         texts.len() as u64
     });
+    let arrays: Vec<Vec<f64>> = (0..3)
+        .map(|k| (0..DOCS).map(|doc| value(doc, k)).collect())
+        .collect();
     for (name, text) in EVAL {
         let e = compile(text).unwrap();
         let mut values: Vec<BoxDoubleValues<'static>> = e
@@ -83,6 +86,28 @@ pub fn bench_expressions(w: Duration, m: Duration) {
                     v.advance_exact(doc).unwrap();
                 }
                 sum += e.evaluate(&mut values).unwrap();
+            }
+            black_box(sum);
+            DOCS as u64
+        });
+        let columns: Vec<&[f64]> = e
+            .variables
+            .iter()
+            .map(|v| {
+                let k = usize::from(v.as_bytes()[0] - b'a');
+                &arrays[k][..]
+            })
+            .collect();
+        let mut cols = vec![0.0; columns.len() * BATCH];
+        let mut out = vec![0.0; BATCH];
+        measure(&format!("{name}_batch"), w, m, || {
+            let mut sum = 0.0;
+            for start in (0..DOCS as usize).step_by(BATCH) {
+                for (c, column) in cols.chunks_exact_mut(BATCH).zip(&columns) {
+                    c.copy_from_slice(&column[start..start + BATCH]);
+                }
+                e.evaluate_columns(&cols, &mut out).unwrap();
+                sum += out.iter().sum::<f64>();
             }
             black_box(sum);
             DOCS as u64

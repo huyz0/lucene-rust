@@ -1,7 +1,7 @@
 //! Times each [`Backend`] on the micro bench's expressions: compile latency,
 //! one document at a time (as `ExpressionsMicro.java` evaluates), and a
 //! batch at a time over columns. `cargo run --release --example backends
-//! [--features jit]`.
+//! `.
 
 use std::hint::black_box;
 use std::time::{Duration, Instant};
@@ -68,10 +68,7 @@ fn rss_kb() -> u64 {
 }
 
 fn main() {
-    let mut backends = vec![("closure", Backend::Closure), ("vector", Backend::Vector)];
-    if cfg!(feature = "jit") {
-        backends.push(("jit", Backend::Jit));
-    }
+    let backends = [("closure", Backend::Closure), ("vector", Backend::Vector)];
     let texts: Vec<String> = std::fs::read_to_string("../../fixtures/corpus/expressions.txt")
         .unwrap()
         .lines()

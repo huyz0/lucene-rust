@@ -35,9 +35,6 @@ use lucene_util::{sloppy_math, strict_math};
 
 use super::Error as ExprError;
 
-#[cfg(feature = "jit")]
-#[path = "jit.rs"]
-mod jit;
 #[path = "vector.rs"]
 mod vector;
 use lucene_search::values_source::BoxDoubleValues;
@@ -1672,8 +1669,6 @@ pub struct Expression {
     node: Arc<Node>,
     backend: Backend,
     vector: Option<Arc<vector::Program>>,
-    #[cfg(feature = "jit")]
-    jit: Option<Arc<jit::Code>>,
 }
 
 /// How an [`Expression`] is evaluated. Every backend gives the same values;
@@ -1687,9 +1682,6 @@ pub enum Backend {
     /// each a vectorised loop; a single document by the closures. An
     /// expression calling a custom function stays on the closures.
     Vector,
-    /// Native code generated with Cranelift, for single documents and
-    /// batches (the `jit` feature; without it, the closures).
-    Jit,
 }
 
 static DEFAULT_BACKEND: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
@@ -1703,7 +1695,6 @@ pub fn set_default_backend(backend: Backend) {
 pub fn default_backend() -> Backend {
     match DEFAULT_BACKEND.load(std::sync::atomic::Ordering::Relaxed) {
         1 => Backend::Vector,
-        2 => Backend::Jit,
         _ => Backend::Closure,
     }
 }
@@ -1724,35 +1715,28 @@ impl std::fmt::Debug for Expression {
 impl Expression {
     fn new(source_text: String, variables: Vec<String>, node: Node, backend: Backend) -> Self {
         let root = to_double(&node);
-        let vector = match backend {
-            Backend::Vector => vector::compile(&node).map(Arc::new),
-            _ => None,
-        };
-        #[cfg(feature = "jit")]
-        let jit = match backend {
-            Backend::Jit => jit::compile(&node),
-            _ => None,
-        };
         Self {
             source_text,
             variables,
             root,
             node: Arc::new(node),
-            backend,
-            vector,
-            #[cfg(feature = "jit")]
-            jit,
+            backend: Backend::Closure,
+            vector: None,
         }
+        .with_backend(backend)
     }
 
     /// The same expression, evaluated by `backend`.
     pub fn with_backend(&self, backend: Backend) -> Self {
-        Self::new(
-            self.source_text.clone(),
-            self.variables.clone(),
-            (*self.node).clone(),
+        let vector = match backend {
+            Backend::Vector => vector::compile(&self.node).map(Arc::new),
+            Backend::Closure => None,
+        };
+        Self {
             backend,
-        )
+            vector,
+            ..self.clone()
+        }
     }
 
     /// The backend asked for (an expression it cannot compile runs on the
@@ -1832,11 +1816,6 @@ impl Expression {
                 self.source_text
             )));
         }
-        #[cfg(feature = "jit")]
-        if let Some(code) = &self.jit {
-            code.batch(cols, out);
-            return Ok(());
-        }
         if let Some(program) = &self.vector {
             VECTOR_SCRATCH.with(|s| program.run(cols, out, &mut s.borrow_mut()));
             return Ok(());
@@ -1862,12 +1841,6 @@ impl Expression {
             doc,
             error: None,
         };
-        #[cfg(feature = "jit")]
-        let v = match &self.jit {
-            Some(code) => code.scalar(&mut reads),
-            None => (self.root)(&mut reads),
-        };
-        #[cfg(not(feature = "jit"))]
         let v = (self.root)(&mut reads);
         match reads.error {
             Some(e) => Err(e),

@@ -66,7 +66,3 @@ debug = true          # keep frame pointers/symbols for profiling (T1.4)
 # (lucene-search -> lucene-codecs -> lucene-store).
 lto = "fat"
 codegen-units = 1
-
-[features]
-# Times lucene-expressions' Cranelift backend (BENCH_EXPR_BACKEND=jit).
-expr-jit = ["lucene-expressions/jit"]
