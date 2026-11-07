@@ -185,6 +185,10 @@ impl IndexOrDocValuesQuery {
 }
 
 impl DocumentQuery for IndexOrDocValuesQuery {
+    fn reads_no_terms(&self) -> bool {
+        self.index_query.reads_no_terms() && self.dv_query.reads_no_terms()
+    }
+
     fn score_leaf(
         &self,
         leaf: &OpenSegment<'_>,

@@ -279,6 +279,9 @@ def visibility(base, container, corpus, label, out, settings):
     if os.environ.get("VIS_SHAPES"):
         wanted = set(os.environ["VIS_SHAPES"].split("|"))
     pairs = [(n, b) for n, b in shapes() if n in wanted]
+    unknown = wanted - {n for n, _ in pairs}
+    if unknown:
+        raise SystemExit(f"VIS_SHAPES: no such shape {sorted(unknown)}")
 
     def probe_once(n):
         req("PUT", f"/bench/_doc/probe-{n}", {"body": f"probe{n}", "tag": "probe"})

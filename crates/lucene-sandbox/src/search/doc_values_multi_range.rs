@@ -652,6 +652,10 @@ impl SortedSetDocValuesMultiRangeQuery {
 }
 
 impl DocumentQuery for SortedSetDocValuesMultiRangeQuery {
+    fn reads_no_terms(&self) -> bool {
+        true
+    }
+
     fn score_leaf(
         &self,
         leaf: &OpenSegment<'_>,

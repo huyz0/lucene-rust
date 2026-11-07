@@ -572,7 +572,6 @@ fn points_and_doc_values_clauses_read_no_buffered_terms() {
     let request = super::whole_request(&[&Clause::Boolean(Box::new(b.clone()))]).unwrap();
     let fields: Vec<&str> = request.fields.iter().map(|f| f.field.as_str()).collect();
     assert_eq!(fields, ["body"]);
-    assert!(super::live_request(&Clause::Boolean(Box::new(b.clone()))).is_none());
     let terms = ext(ExtendedQuery::Document(DocumentClause::new(
         "term",
         Arc::new(

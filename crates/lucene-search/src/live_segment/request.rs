@@ -115,6 +115,9 @@ fn collect<'a>(clause: &'a Clause, fields: &mut Fields<'a>, lean: bool) -> Optio
             crate::extended_query::ExtendedQuery::PointRange(_)
             | crate::extended_query::ExtendedQuery::PointInSet(_)
             | crate::extended_query::ExtendedQuery::NumericDocValuesRange(_) => {}
+            crate::extended_query::ExtendedQuery::IndexSortRange(q) => {
+                collect(&q.fallback, fields, lean)?;
+            }
             crate::extended_query::ExtendedQuery::IndexOrDocValues(q) => {
                 collect(&q.index_query, fields, lean)?;
                 collect(&q.dv_query, fields, lean)?;

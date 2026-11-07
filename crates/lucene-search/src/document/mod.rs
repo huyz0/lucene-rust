@@ -301,6 +301,10 @@ impl Boosted {
 }
 
 impl DocumentQuery for Boosted {
+    fn reads_no_terms(&self) -> bool {
+        self.query.reads_no_terms()
+    }
+
     fn equals(&self, other: &dyn DocumentQuery) -> bool {
         same_class::<Self>(other).is_some_and(|o| {
             self.boost.to_bits() == o.boost.to_bits() && self.query.equals(&*o.query)

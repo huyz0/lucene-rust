@@ -455,6 +455,10 @@ impl ShapeVisitor<'_> {
 }
 
 impl DocumentQuery for PointInGeo3DShapeQuery {
+    fn reads_no_terms(&self) -> bool {
+        true
+    }
+
     /// `visit`: a leaf on its field.
     fn field(&self) -> Option<&str> {
         Some(&self.field)
