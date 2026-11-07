@@ -184,6 +184,14 @@ impl NormColumn {
         }
     }
 
+    /// Document `doc`'s norm, `0` when it has none.
+    fn get(&self, doc: usize) -> Option<i64> {
+        match self {
+            NormColumn::Narrow(v) => v.get(doc).map(|&b| i64::from(b)),
+            NormColumn::Wide(v) => v.get(doc).copied(),
+        }
+    }
+
     fn to_vec(&self, max_doc: usize) -> Vec<i64> {
         let mut out: Vec<i64> = match self {
             NormColumn::Narrow(v) => v.iter().map(|&b| i64::from(b)).collect(),
@@ -210,6 +218,8 @@ pub(super) struct LiveColumns {
     norms: HashMap<i32, NormColumn>,
     deletes: Deletes,
     stored: StoredArena,
+    doc_values: doc_values::DocValuesColumns,
+    chunk: chunk_fields::ChunkFields,
 }
 
 /// A buffer's deleted documents.
@@ -233,10 +243,25 @@ impl LiveColumns {
 
     /// Records document `doc`'s norms, and whether it arrives soft-deleted
     /// (`soft` is the soft-deletes field's number).
-    pub(super) fn record(&mut self, doc: i32, fields: &ExplicitFields, soft: Option<i32>) {
+    pub(super) fn record(
+        &mut self,
+        doc: i32,
+        fields: &ExplicitFields,
+        soft: Option<i32>,
+        cfg: &IndexingConfig,
+    ) {
         let Ok(at) = usize::try_from(doc) else {
             return;
         };
+        self.doc_values.record(doc, &fields.doc_values, |n| {
+            cfg.field_by_number(n).map(|f| f.doc_values_type)
+        });
+        self.chunk.record(doc, fields, cfg);
+        if self.chunk.gave_up() || self.doc_values.refused() {
+            // Chunks are decoded from now on: neither set of columns is read.
+            self.chunk.give_up();
+            self.doc_values.refuse();
+        }
         for f in &fields.inverted {
             if let Some(norm) = f.norm {
                 self.norms
@@ -250,6 +275,41 @@ impl LiveColumns {
                 self.deletes.soft.set(at, true);
             }
         }
+    }
+
+    /// Frees the columns kept only for writing chunks.
+    pub(super) fn drop_chunk_columns(&mut self) {
+        self.doc_values = doc_values::DocValuesColumns::default();
+        self.chunk = chunk_fields::ChunkFields::default();
+    }
+
+    /// Documents `start..end` as columns, numbered from `start`; `None`
+    /// when they must be decoded to be written.
+    fn chunk_columns(&self, start: i32, end: i32) -> Option<crate::index_writer::ChunkColumns> {
+        let doc_values = self.doc_values.range(start, end)?;
+        let (present, points) = self.chunk.range(start, end)?;
+        let (from, to) = (usize::try_from(start).ok()?, usize::try_from(end).ok()?);
+        let norms = self
+            .norms
+            .iter()
+            .filter_map(|(&n, column)| {
+                let values: Vec<Option<i64>> = (from..to)
+                    .map(|d| {
+                        let doc = i32::try_from(d).unwrap_or(i32::MAX);
+                        self.chunk
+                            .has_norm(n, doc)
+                            .then(|| column.get(d).unwrap_or(0))
+                    })
+                    .collect();
+                values.iter().any(Option::is_some).then_some((n, values))
+            })
+            .collect();
+        Some(crate::index_writer::ChunkColumns {
+            present,
+            norms,
+            doc_values,
+            points,
+        })
     }
 
     /// See [`Deletes::apply`].
@@ -270,6 +330,13 @@ impl LiveColumns {
             .fold(self.deletes.hard.ram_bytes(), usize::saturating_add)
             .saturating_add(self.deletes.soft.ram_bytes())
             .saturating_add(self.stored.ram_bytes())
+    }
+
+    /// What the columns kept only for writing chunks hold.
+    pub(super) fn chunk_ram_bytes(&self) -> usize {
+        self.doc_values
+            .ram_bytes()
+            .saturating_add(self.chunk.ram_bytes())
     }
 }
 
@@ -982,6 +1049,9 @@ impl ConcurrentIndexWriter<'_> {
             docs: range.end,
             doc_counts,
             postings,
+            columns: (!decode_chunks())
+                .then(|| slot.live.chunk_columns(range.start, range.end))
+                .flatten(),
         };
         // Documents counted but not held (`Dwpt::stored_docs`) are empty.
         let docs = padded(&slot.docs, start, end);
@@ -1397,5 +1467,25 @@ fn truncate(p: &mut TermPostings, max_doc: i32) {
     p.offsets.truncate(keep);
 }
 
+mod chunk_fields;
+
+#[cfg(test)]
+thread_local! {
+    /// Chunks of this thread are written from their decoded documents.
+    static DECODE_CHUNKS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn decode_chunks() -> bool {
+    #[cfg(test)]
+    {
+        DECODE_CHUNKS.with(std::cell::Cell::get)
+    }
+    #[cfg(not(test))]
+    {
+        false
+    }
+}
+
+mod doc_values;
 #[cfg(test)]
 mod tests;
