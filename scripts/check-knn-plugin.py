@@ -109,8 +109,8 @@ def field_mapping(spec):
     return m
 
 
-def create(port, index, spec, docs, rust):
-    settings = {"index.knn": True, "number_of_shards": 1, "number_of_replicas": 0, "refresh_interval": -1,
+def create(port, index, spec, docs, rust, extra=None):
+    settings = {**(extra or {}), "index.knn": True, "number_of_shards": 1, "number_of_replicas": 0, "refresh_interval": -1,
                 "index.merge.policy.max_merge_at_once": 100, "index.merge.policy.segments_per_tier": 100}
     if rust:
         settings["index.lucene_rust.engine"] = True

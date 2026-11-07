@@ -100,7 +100,8 @@ def write(prefix, rust, plugin=True):
             rng = random.Random(f"{ck.SEED}-{name}")
             docs = [{"_id": f"d{i}", "tag": "even" if i % 2 == 0 else "odd", "n": i, "emb": ck.vector(rng, byte)}
                     for i in range(ck.DOCS)]
-            ck.create(NODE[1], index, spec, docs, rust)
+            # Stock turns derived source on for every k-NN index; this node does not read it yet.
+            ck.create(NODE[1], index, spec, docs, rust, None if plugin else {"index.knn.derived_source.enabled": False})
             deleted = {f"d{i}" for i in rng.sample(range(ck.DOCS), DELETED)}
             lines = [json.dumps({"delete": {"_index": index, "_id": i}}) for i in sorted(deleted)]
             ck.req(NODE[1], "POST", "/_bulk", "\n".join(lines) + "\n", ndjson=True)
