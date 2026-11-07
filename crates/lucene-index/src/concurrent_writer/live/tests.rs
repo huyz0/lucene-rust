@@ -614,13 +614,10 @@ fn live_search_cost() {
     }
 }
 
-/// A chunk written from the buffer's columns holds the files the decoded
-/// documents give, for norms, doc values, points and field infos alike.
-#[test]
-fn chunks_from_columns_match_chunks_from_documents() {
-    let tmp = TempDir::new("live-chunk-columns");
-    let dir = FsDirectory::open(tmp.path());
-    let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", VERSION).unwrap();
+/// A live writer of one slot holding 400 documents with norms, doc values
+/// and points, all kept as columns.
+fn columns_writer(dir: &FsDirectory) -> ConcurrentIndexWriter<'_> {
+    let mut w = IndexWriter::open(dir, Vec::new(), "Lucene104", VERSION).unwrap();
     w.enable_explicit_documents().unwrap();
     let body = w
         .register_field(FieldInfo::new("body", 0).with_index_options(IndexOptions::DocsAndFreqs))
@@ -702,6 +699,45 @@ fn chunks_from_columns_match_chunks_from_documents() {
         }])
         .unwrap();
     }
+    w
+}
+
+/// The files of segment `name` in `dir`, by extension, their segment ids
+/// zeroed and their footers cut.
+fn segment_files(
+    dir: &std::path::Path,
+    sci: &crate::segment_infos::SegmentCommitInfo,
+    name: &str,
+) -> Vec<(String, Vec<u8>)> {
+    let mut files: Vec<(String, Vec<u8>)> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .filter(|f| f.starts_with(&format!("{name}.")) || f.starts_with(&format!("{name}_")))
+        .filter(|f| !f.ends_with(".si"))
+        .map(|f| {
+            let mut bytes = std::fs::read(dir.join(&f)).unwrap();
+            // Headers carry the segment's random id, footers a checksum.
+            let n = bytes.len().saturating_sub(8);
+            bytes.truncate(n);
+            for at in 0..bytes.len().saturating_sub(15) {
+                if bytes[at..at + 16] == sci.segment_id {
+                    bytes[at..at + 16].fill(0);
+                }
+            }
+            (f[name.len()..].to_string(), bytes)
+        })
+        .collect();
+    files.sort();
+    files
+}
+
+/// A chunk written from the buffer's columns holds the files the decoded
+/// documents give, for norms, doc values, points and field infos alike.
+#[test]
+fn chunks_from_columns_match_chunks_from_documents() {
+    let tmp = TempDir::new("live-chunk-columns");
+    let dir = FsDirectory::open(tmp.path());
+    let w = columns_writer(&dir);
     let id = w.live_slot_buffers()[0].id;
     assert!(
         read_slot(&w.slots[0]).live.chunk_columns(37, 301).is_some(),
@@ -716,26 +752,7 @@ fn chunks_from_columns_match_chunks_from_documents() {
         sci
     };
     let read = |sci: &crate::segment_infos::SegmentCommitInfo, name: &str| {
-        let mut files: Vec<(String, Vec<u8>)> = std::fs::read_dir(tmp.path())
-            .unwrap()
-            .map(|e| e.unwrap().file_name().into_string().unwrap())
-            .filter(|f| f.starts_with(&format!("{name}.")) || f.starts_with(&format!("{name}_")))
-            .filter(|f| !f.ends_with(".si"))
-            .map(|f| {
-                let mut bytes = std::fs::read(tmp.path().join(&f)).unwrap();
-                // Headers carry the segment's random id, footers a checksum.
-                let n = bytes.len().saturating_sub(8);
-                bytes.truncate(n);
-                for at in 0..bytes.len().saturating_sub(15) {
-                    if bytes[at..at + 16] == sci.segment_id {
-                        bytes[at..at + 16].fill(0);
-                    }
-                }
-                (f[name.len()..].to_string(), bytes)
-            })
-            .collect();
-        files.sort();
-        files
+        segment_files(tmp.path(), sci, name)
     };
     let from_columns = chunk("_c1", false);
     let decoded = chunk("_c2", true);
@@ -745,4 +762,105 @@ fn chunks_from_columns_match_chunks_from_documents() {
     assert!(names.iter().any(|n| n.ends_with(".dvd")), "{names:?}");
     assert!(names.iter().any(|n| n.ends_with(".nvd")), "{names:?}");
     assert_eq!(a, b);
+}
+
+/// A buffer taken for a flush is written as chunks without postings as it
+/// was in its slot, until it is published and the views that read it as
+/// chunks are closed.
+#[test]
+fn a_flushing_buffer_is_written_as_lean_chunks_until_published() {
+    let tmp = TempDir::new("live-flushing-lean");
+    let dir = FsDirectory::open(tmp.path());
+    let w = columns_writer(&dir);
+    let id = w.live_slot_buffers()[0].id;
+    let lean = |name: &str| w.live_lean_segment(id, 37..301, HashMap::new(), &[], true, &dir, name);
+    let (in_slot, slot_dv) = lean("_s").unwrap();
+    let slot_view = w.open_live_view(None).unwrap();
+    let batch = {
+        let mut slot = super::write_slot(&w.slots[0]);
+        w.begin_flush(0, &mut slot).unwrap()
+    };
+    let view = w.open_live_view(None).unwrap();
+    assert!(view
+        .buffers
+        .iter()
+        .any(|b| b.id == id && !b.in_slot && b.chunks));
+    let (flushing, flushing_dv) = lean("_f").unwrap();
+    assert_eq!(
+        segment_files(tmp.path(), &in_slot, "_s"),
+        segment_files(tmp.path(), &flushing, "_f")
+    );
+    let (slot_dv, flushing_dv) = (slot_dv.unwrap(), flushing_dv.unwrap());
+    let fields: Vec<i32> = slot_dv.fields().collect();
+    assert!(!fields.is_empty());
+    assert_eq!(fields, flushing_dv.fields().collect::<Vec<_>>());
+    for f in fields {
+        let (a, b) = (
+            slot_dv.encode(f, &[0; 16]).unwrap().unwrap(),
+            flushing_dv.encode(f, &[0; 16]).unwrap().unwrap(),
+        );
+        assert_eq!((a.dvm, a.dvd), (b.dvm, b.dvd), "field {f}");
+    }
+
+    // Published, it is still written so while a view reading it as chunks
+    // is open: one that saw it flushing, or in its slot.
+    w.complete_flush(batch).unwrap();
+    assert!(w.live_published_segment(id).is_some());
+    lean("_p").unwrap();
+    let later = w.open_live_view(None).unwrap();
+    assert!(later.buffers.iter().all(|b| b.id != id || !b.chunks));
+    w.close_live_view(&view);
+    lean("_q").unwrap();
+    w.close_live_view(&slot_view);
+    assert!(
+        lean("_r").is_err(),
+        "read as its published segment from now on"
+    );
+    w.close_live_view(&later);
+}
+
+/// A published buffer a view reads keeps its segment's files after a
+/// merge replaced the segment and a commit dropped it, until the view is
+/// closed and a release lets the buffer go.
+#[test]
+fn a_published_buffer_keeps_its_files_while_a_view_reads_it() {
+    let tmp = TempDir::new("live-published-files");
+    let dir = FsDirectory::open(tmp.path());
+    let (w, f) = open(&dir, 1, true);
+    let start = w.with_writer(|iw| iw.segment_infos().generation);
+    let mut ids = Vec::new();
+    for i in 0..2 {
+        w.add_explicit_documents(vec![doc(&f, i)]).unwrap();
+        ids.push(w.live_slot_buffers()[0].id);
+        w.commit().unwrap();
+    }
+    let view = w.open_live_view(Some(start)).unwrap();
+    assert_eq!(view.buffers.len(), 2);
+    assert!(view.buffers.iter().all(|b| !b.chunks));
+    let files = |id| {
+        let name = w.live_published_segment(id).unwrap().segment_name;
+        std::fs::read_dir(tmp.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .filter(|f| f.starts_with(&format!("{name}.")) || f.starts_with(&format!("{name}_")))
+            .collect::<Vec<_>>()
+    };
+    let held: Vec<String> = ids.iter().flat_map(|&id| files(id)).collect();
+    assert!(!held.is_empty());
+    w.with_writer(|iw| iw.force_merge(1)).unwrap();
+    assert_eq!(w.with_writer(|iw| iw.segment_infos().segments.len()), 1);
+    w.commit().unwrap();
+    let generation = w.with_writer(|iw| iw.segment_infos().generation);
+    w.release_live(generation).unwrap();
+    for name in &held {
+        assert!(
+            tmp.path().join(name).exists(),
+            "{name} is pinned by the view"
+        );
+    }
+    w.close_live_view(&view);
+    assert!(w.live_flushes().retained.is_empty());
+    for name in &held {
+        assert!(!tmp.path().join(name).exists(), "{name} is unpinned");
+    }
 }
