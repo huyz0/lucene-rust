@@ -45,6 +45,11 @@ use crate::direct_monotonic;
 
 const DATA_CODEC_BEST_SPEED: &str = "Lucene90StoredFieldsFastData";
 const DATA_CODEC_BEST_COMPRESSION: &str = "Lucene90StoredFieldsHighData";
+/// OpenSearch custom-codecs' `CustomStoredFieldsZstd` and
+/// `CustomStoredFieldsZstdNoDict` formats (`index.codec: zstd` and
+/// `zstd_no_dict`).
+pub const DATA_CODEC_ZSTD: &str = "CustomStoredFieldsZstd";
+pub const DATA_CODEC_ZSTD_NO_DICT: &str = "CustomStoredFieldsZstdNoDict";
 const META_CODEC: &str = "Lucene90FieldsIndexMeta";
 const INDEX_CODEC: &str = "Lucene90FieldsIndexIdx";
 const VERSION_START: i32 = 1;
@@ -144,6 +149,48 @@ pub enum Mode {
     BestSpeed,
     BestCompression,
     Compressing(&'static CompressingFormat),
+    /// OpenSearch custom-codecs' `Lucene*CustomStoredFieldsFormat`: a
+    /// `Lucene90CompressingStoredFieldsFormat` named [`DATA_CODEC_ZSTD`] or
+    /// [`DATA_CODEC_ZSTD_NO_DICT`], with `BEST_COMPRESSION`'s geometry.
+    Zstd(ZstdMode),
+}
+
+/// The settings of a [`Mode::Zstd`] format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ZstdMode {
+    /// `zstd` (each chunk's first bytes as the sub-blocks' dictionary) rather
+    /// than `zstd_no_dict`.
+    pub dictionary: bool,
+    /// The zstd level (`index.codec.compression_level`). Readers ignore it.
+    pub level: i32,
+}
+
+impl ZstdMode {
+    /// `zstd` at `level`.
+    pub const fn zstd(level: i32) -> Self {
+        Self {
+            dictionary: true,
+            level,
+        }
+    }
+
+    /// `zstd_no_dict` at `level`.
+    pub const fn zstd_no_dict(level: i32) -> Self {
+        Self {
+            dictionary: false,
+            level,
+        }
+    }
+
+    /// The `Lucene104CustomCodec.Mode` name the segment records
+    /// (`ZSTD`, `ZSTD_NO_DICT`).
+    pub const fn mode_name(self) -> &'static str {
+        if self.dictionary {
+            "ZSTD"
+        } else {
+            "ZSTD_NO_DICT"
+        }
+    }
 }
 
 impl Mode {
@@ -153,12 +200,14 @@ impl Mode {
             Self::BestSpeed => DATA_CODEC_BEST_SPEED,
             Self::BestCompression => DATA_CODEC_BEST_COMPRESSION,
             Self::Compressing(format) => format.format_name,
+            Self::Zstd(z) if z.dictionary => DATA_CODEC_ZSTD,
+            Self::Zstd(_) => DATA_CODEC_ZSTD_NO_DICT,
         }
     }
     /// The files' segment suffix (empty for both `Lucene90` modes).
     pub fn segment_suffix(self) -> &'static str {
         match self {
-            Self::BestSpeed | Self::BestCompression => "",
+            Self::BestSpeed | Self::BestCompression | Self::Zstd(_) => "",
             Self::Compressing(format) => format.segment_suffix,
         }
     }
@@ -167,13 +216,15 @@ impl Mode {
             Self::BestSpeed => Compression::Lz4WithPreset,
             Self::BestCompression => Compression::DeflateWithPreset,
             Self::Compressing(format) => format.compression,
+            Self::Zstd(z) if z.dictionary => Compression::Zstd,
+            Self::Zstd(_) => Compression::ZstdNoDict,
         }
     }
     /// `chunkSize`: the buffered bytes that close a chunk.
     pub fn chunk_size(self) -> i32 {
         match self {
             Self::BestSpeed => BEST_SPEED_CHUNK_SIZE as i32,
-            Self::BestCompression => BEST_COMPRESSION_CHUNK_SIZE as i32,
+            Self::BestCompression | Self::Zstd(_) => BEST_COMPRESSION_CHUNK_SIZE as i32,
             Self::Compressing(format) => format.chunk_size,
         }
     }
@@ -181,14 +232,14 @@ impl Mode {
     pub fn max_docs_per_chunk(self) -> i32 {
         match self {
             Self::BestSpeed => BEST_SPEED_MAX_DOCS_PER_CHUNK as i32,
-            Self::BestCompression => BEST_COMPRESSION_MAX_DOCS_PER_CHUNK as i32,
+            Self::BestCompression | Self::Zstd(_) => BEST_COMPRESSION_MAX_DOCS_PER_CHUNK as i32,
             Self::Compressing(format) => format.max_docs_per_chunk,
         }
     }
     /// `blockShift` of the `.fdx` monotonic arrays.
     pub fn block_shift(self) -> i32 {
         match self {
-            Self::BestSpeed | Self::BestCompression => INDEX_BLOCK_SHIFT as i32,
+            Self::BestSpeed | Self::BestCompression | Self::Zstd(_) => INDEX_BLOCK_SHIFT as i32,
             Self::Compressing(format) => format.block_shift,
         }
     }
@@ -256,6 +307,16 @@ pub fn open<'d>(
         DATA_CODEC_BEST_COMPRESSION => (
             DATA_CODEC_BEST_COMPRESSION,
             Compression::DeflateWithPreset,
+            BEST_COMPRESSION_MAX_DOCS_PER_CHUNK as i32,
+        ),
+        DATA_CODEC_ZSTD => (
+            DATA_CODEC_ZSTD,
+            Compression::Zstd,
+            BEST_COMPRESSION_MAX_DOCS_PER_CHUNK as i32,
+        ),
+        DATA_CODEC_ZSTD_NO_DICT => (
+            DATA_CODEC_ZSTD_NO_DICT,
+            Compression::ZstdNoDict,
             BEST_COMPRESSION_MAX_DOCS_PER_CHUNK as i32,
         ),
         other => match compression::COMPRESSING_DATA_CODECS
@@ -1505,7 +1566,20 @@ impl StoredFieldsWriter {
             lengths: Vec::new(),
             num_stored_fields: Vec::new(),
             doc_base: 0,
-            scratch: Compressor::default(),
+            scratch: {
+                let mut scratch = Compressor::default();
+                if let Mode::Zstd(z) = mode {
+                    // Out-of-range levels clamp to zstd's own range, as
+                    // libzstd itself does; `ZstdLucene104Codec::new` rejects
+                    // them up front.
+                    let levels = lucene_zstd::levels();
+                    let level = z.level.clamp(*levels.start(), *levels.end());
+                    scratch
+                        .set_zstd_level(level)
+                        .expect("a level inside zstd's range");
+                }
+                scratch
+            },
         }
     }
 

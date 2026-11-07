@@ -5,10 +5,12 @@
 # QueryPhaseSearcher, and OpenSearch allows exactly one. An operator running
 # both must choose -- see docs/opensearch-native-queries.md. KEEP_PLUGINS
 # names bundled plugins to keep (space-separated; scripts/verify-opensearch-upgrade.sh
-# keeps opensearch-knn, which the upgraded 2.x index's knn_vector fields need).
+# keeps opensearch-knn, which the upgraded 2.x index's knn_vector fields need). The default keeps
+# opensearch-custom-codecs: it registers index.codec zstd and zstd_no_dict, which the Rust engine
+# writes in its format and under its codec names.
 ARG OPENSEARCH_VERSION=3.9.0
 FROM opensearchproject/opensearch:${OPENSEARCH_VERSION}
-ARG KEEP_PLUGINS=""
+ARG KEEP_PLUGINS="opensearch-custom-codecs"
 RUN cd /usr/share/opensearch/plugins && for p in *; do \
         case " ${KEEP_PLUGINS} " in *" $p "*) ;; *) rm -rf "$p" ;; esac; \
     done

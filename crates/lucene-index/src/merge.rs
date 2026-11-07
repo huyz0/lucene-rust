@@ -2586,10 +2586,12 @@ fn merge_segments_mapped_inner(
         .codec
         .as_deref()
         .and_then(|codec| codec.compressing_format());
-    let stored_mode = compressing.map_or(
-        stored_fields::Mode::BestSpeed,
-        stored_fields::Mode::Compressing,
-    );
+    let stored_mode = options
+        .codec
+        .as_deref()
+        .map_or(stored_fields::Mode::BestSpeed, |codec| {
+            codec.stored_fields_mode()
+        });
     // The high-compression match finder only changes LZ4 modes' bytes.
     let lz4_hc = options.stored_fields_lz4_high_compression
         && matches!(stored_mode, stored_fields::Mode::BestSpeed)
