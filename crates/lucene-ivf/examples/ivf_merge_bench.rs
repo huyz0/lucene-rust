@@ -127,11 +127,10 @@ fn main() {
             let mut current = segment(0, na);
             let mut deleted: HashSet<i32> = HashSet::new();
             let mut live: Vec<i32> = (0..na as i32).collect();
-            let chunk = (n - na).div_ceil(generations);
             let mut total = 0.0;
             for gen in 0..generations {
-                let from = na + gen * chunk;
-                let to = (from + chunk).min(n);
+                let from = na + (n - na) * gen / generations;
+                let to = na + (n - na) * (gen + 1) / generations;
                 let fresh = segment(from, to);
                 // Deletes spread over the live documents, a different set
                 // each generation.
