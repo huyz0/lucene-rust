@@ -191,7 +191,13 @@ pub struct Lucene104PostingsFormat {
     /// Distinguishes equal formats Java holds as separate instances; see
     /// [`Lucene104PostingsFormat::as_instance`].
     pub instance: u32,
+    /// [`WriteOptions::zstd_term_blocks`]; see
+    /// [`Lucene104PostingsFormat::rust_zstd`].
+    pub zstd_term_blocks: Option<i32>,
 }
+
+/// The name of [`Lucene104PostingsFormat::rust_zstd`]'s format.
+pub const RUST_ZSTD_FORMAT_NAME: &str = "RustZstd104";
 
 impl Default for Lucene104PostingsFormat {
     fn default() -> Self {
@@ -203,6 +209,7 @@ impl Default for Lucene104PostingsFormat {
             direct: false,
             wrapper_name: None,
             instance: 0,
+            zstd_term_blocks: None,
         }
     }
 }
@@ -221,6 +228,7 @@ impl Lucene104PostingsFormat {
             direct: false,
             wrapper_name: None,
             instance: 0,
+            zstd_term_blocks: None,
         };
         format.write_options().validate()?;
         Ok(format)
@@ -295,6 +303,24 @@ impl Lucene104PostingsFormat {
         }
     }
 
+    /// `RustZstd104`: `Lucene104PostingsFormat()`'s postings under a terms
+    /// dictionary whose blocks are zstd-compressed at `level` where that
+    /// pays, a large field's against a dictionary trained on its own blocks
+    /// ([`WriteOptions::zstd_term_blocks`]). Stock Lucene cannot read it;
+    /// the plugin's Java side reads it as `RustZstd104`.
+    ///
+    /// # Errors
+    /// `level` is not a zstd level.
+    pub fn rust_zstd(level: i32) -> postings_writer::Result<Self> {
+        let format = Lucene104PostingsFormat {
+            wrapper_name: Some(RUST_ZSTD_FORMAT_NAME),
+            zstd_term_blocks: Some(level),
+            ..Self::default()
+        };
+        format.write_options().validate()?;
+        Ok(format)
+    }
+
     /// This format as Java's `instance`th separate object with equal
     /// settings (`RandomCodec`'s two `Lucene104` candidates):
     /// `PerFieldPostingsFormat` groups by identity, so its fields get their
@@ -321,6 +347,7 @@ impl Lucene104PostingsFormat {
         WriteOptions {
             min_items_in_block: self.min_term_block_size,
             max_items_in_block: self.max_term_block_size,
+            zstd_term_blocks: self.zstd_term_blocks,
             ..WriteOptions::default()
         }
     }
