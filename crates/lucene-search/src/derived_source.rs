@@ -26,7 +26,6 @@ pub const SOURCE_FIELD: &str = "_source";
 pub struct DerivedFields {
     source_number: i32,
     fields: Vec<DerivedField>,
-    nested: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -34,6 +33,8 @@ struct DerivedField {
     path: String,
     number: i32,
     encoding: VectorEncoding,
+    /// A field of nested objects: its values are the block's child documents' vectors.
+    nested: bool,
 }
 
 impl DerivedFields {
@@ -50,17 +51,18 @@ impl DerivedFields {
         };
         let root = names(DERIVED_VECTOR_FIELDS);
         let nested = names(NESTED_DERIVED_VECTOR_FIELDS);
-        let resolved = |list: &[&str]| -> Vec<DerivedField> {
+        let resolved = |list: &[&str], nested: bool| -> Vec<DerivedField> {
             list.iter()
                 .filter_map(|name| field_info(infos, name))
                 .map(|f| DerivedField {
                     path: f.name.clone(),
                     number: f.number,
                     encoding: f.vector_encoding,
+                    nested,
                 })
                 .collect()
         };
-        let mut fields = resolved(&root);
+        let mut fields = resolved(&root, false);
         // `KNN9120Codec`'s segments mark the fields themselves.
         for f in &infos.fields {
             let marked = f
@@ -72,18 +74,24 @@ impl DerivedFields {
                     path: f.name.clone(),
                     number: f.number,
                     encoding: f.vector_encoding,
+                    nested: false,
                 });
             }
         }
-        let nested_fields = resolved(&nested);
-        if fields.is_empty() && nested_fields.is_empty() {
+        // A field both lists name reads as nested, as k-NN's reader applies the nested transform last.
+        for f in resolved(&nested, true) {
+            match fields.iter_mut().find(|d| d.number == f.number) {
+                Some(d) => d.nested = true,
+                None => fields.push(f),
+            }
+        }
+        if fields.is_empty() {
             return None;
         }
         let source_number = infos.field_by_name(SOURCE_FIELD)?.number;
         Some(Self {
             source_number,
             fields,
-            nested: !nested_fields.is_empty(),
         })
     }
 
@@ -122,6 +130,37 @@ pub trait VectorSource {
     fn float_vector(&mut self, number: i32) -> stored_fields::Result<Option<Vec<f32>>>;
     /// The byte vector of field `number` for the current document.
     fn byte_vector(&mut self, number: i32) -> stored_fields::Result<Option<Vec<u8>>>;
+    /// The float vectors of field `number` of the current document's children (the documents
+    /// of its block before it), in document order.
+    fn child_float_vectors(&mut self, number: i32) -> stored_fields::Result<Vec<Vec<f32>>>;
+    /// The byte vectors of field `number` of the current document's children.
+    fn child_byte_vectors(&mut self, number: i32) -> stored_fields::Result<Vec<Vec<u8>>>;
+}
+
+fn float_text(v: &[f32]) -> String {
+    let mut s = String::with_capacity(v.len() * 12 + 2);
+    s.push('[');
+    for (i, x) in v.iter().enumerate() {
+        if i > 0 {
+            s.push(',');
+        }
+        s.push_str(&lucene_analysis::attributes::java_float_to_string(*x));
+    }
+    s.push(']');
+    s
+}
+
+fn byte_text(v: &[u8]) -> String {
+    let mut s = String::with_capacity(v.len() * 4 + 2);
+    s.push('[');
+    for (i, b) in v.iter().enumerate() {
+        if i > 0 {
+            s.push(',');
+        }
+        s.push_str(&i32::from(*b as i8).to_string());
+    }
+    s.push(']');
+    s
 }
 
 fn refused(why: &str) -> stored_fields::Error {
@@ -130,21 +169,17 @@ fn refused(why: &str) -> stored_fields::Error {
 
 /// `DerivedSourceVectorTransformer.injectVectors`: `source` with each derived field's masked
 /// value (the number `1`) replaced by the document's vector (`[f, ...]` for floats as Java's `Float.toString`
-/// prints them, `[i, ...]` for bytes, signed).
+/// prints them, `[i, ...]` for bytes, signed). A nested field's masked values, through arrays of
+/// objects, take its child documents' vectors in order (`NestedPerFieldDerivedVectorTransformer`).
 ///
 /// # Errors
-/// [`stored_fields::Error::DerivedSource`] for a `_source` in another content type, a segment
-/// with nested derived fields, or a vector that cannot be read.
+/// [`stored_fields::Error::DerivedSource`] for a `_source` in another content type, or a vector
+/// that cannot be read.
 pub fn inject(
     fields: &DerivedFields,
     source: &[u8],
     vectors: &mut dyn VectorSource,
 ) -> stored_fields::Result<Vec<u8>> {
-    if fields.nested {
-        return Err(refused(
-            "nested derived vector fields are read by the codec",
-        ));
-    }
     match content_type(source) {
         Content::Json => {}
         Content::Other => return Err(refused("_source is not JSON")),
@@ -154,33 +189,38 @@ pub fn inject(
     let spans = value_spans(source, &paths)?;
     let mut out = Vec::with_capacity(source.len() + spans.len() * 64);
     let mut at = 0;
+    // Each nested field's child vectors, as text, and how many the spans took so far.
+    let mut children: Vec<Option<(Vec<String>, usize)>> = vec![None; fields.fields.len()];
     for (start, end, which) in spans {
         let field = &fields.fields[which];
-        let text = match field.encoding {
-            VectorEncoding::Float32 => vectors.float_vector(field.number)?.map(|v| {
-                let mut s = String::with_capacity(v.len() * 12 + 2);
-                s.push('[');
-                for (i, x) in v.iter().enumerate() {
-                    if i > 0 {
-                        s.push(',');
-                    }
-                    s.push_str(&lucene_analysis::attributes::java_float_to_string(*x));
+        let text = if field.nested {
+            if children[which].is_none() {
+                let texts = match field.encoding {
+                    VectorEncoding::Float32 => vectors
+                        .child_float_vectors(field.number)?
+                        .iter()
+                        .map(|v| float_text(v))
+                        .collect(),
+                    VectorEncoding::Byte => vectors
+                        .child_byte_vectors(field.number)?
+                        .iter()
+                        .map(|v| byte_text(v))
+                        .collect(),
+                };
+                children[which] = Some((texts, 0));
+            }
+            children[which].as_mut().and_then(|(texts, next)| {
+                let t = texts.get_mut(*next).map(std::mem::take);
+                *next = next.saturating_add(1);
+                t
+            })
+        } else {
+            match field.encoding {
+                VectorEncoding::Float32 => {
+                    vectors.float_vector(field.number)?.map(|v| float_text(&v))
                 }
-                s.push(']');
-                s
-            }),
-            VectorEncoding::Byte => vectors.byte_vector(field.number)?.map(|v| {
-                let mut s = String::with_capacity(v.len() * 4 + 2);
-                s.push('[');
-                for (i, b) in v.iter().enumerate() {
-                    if i > 0 {
-                        s.push(',');
-                    }
-                    s.push_str(&i32::from(*b as i8).to_string());
-                }
-                s.push(']');
-                s
-            }),
+                VectorEncoding::Byte => vectors.byte_vector(field.number)?.map(|v| byte_text(&v)),
+            }
         };
         let Some(text) = text else { continue };
         out.extend_from_slice(&source[at..start]);
@@ -231,6 +271,13 @@ fn value_spans(source: &[u8], paths: &[&str]) -> stored_fields::Result<Vec<(usiz
 }
 
 const MAX_DEPTH: usize = 512;
+
+/// Whether `path` is an object path above one of `paths`.
+fn is_prefix(path: &str, paths: &[&str]) -> bool {
+    paths
+        .iter()
+        .any(|p| p.len() > path.len() && p.starts_with(path) && p.as_bytes()[path.len()] == b'.')
+}
 
 struct Scanner<'a> {
     b: &'a [u8],
@@ -289,6 +336,9 @@ impl Scanner<'_> {
                 Some(b'{') if !paths.contains(&path.as_str()) => {
                     self.object(path, paths, spans, depth + 1)?;
                 }
+                Some(b'[') if is_prefix(path, paths) => {
+                    self.array(path, paths, spans, depth + 1)?;
+                }
                 _ => {
                     self.skip_value(depth + 1)?;
                     if let Some(which) = paths.iter().position(|p| *p == path.as_str()) {
@@ -304,6 +354,43 @@ impl Scanner<'_> {
             match self.peek() {
                 Some(b',') => self.i += 1,
                 Some(b'}') => {
+                    self.i += 1;
+                    return Ok(());
+                }
+                _ => return Err(refused("malformed JSON _source")),
+            }
+        }
+    }
+
+    /// An array at `path`, a prefix of some of `paths`: its objects are scanned like one at
+    /// `path` (nested objects), its other values skipped.
+    fn array(
+        &mut self,
+        path: &mut String,
+        paths: &[&str],
+        spans: &mut Vec<(usize, usize, usize)>,
+        depth: usize,
+    ) -> stored_fields::Result<()> {
+        if depth > MAX_DEPTH {
+            return Err(refused("_source nests too deep"));
+        }
+        self.eat(b'[')?;
+        self.ws();
+        if self.peek() == Some(b']') {
+            self.i += 1;
+            return Ok(());
+        }
+        loop {
+            self.ws();
+            match self.peek() {
+                Some(b'{') => self.object(path, paths, spans, depth + 1)?,
+                Some(b'[') => self.array(path, paths, spans, depth + 1)?,
+                _ => self.skip_value(depth + 1)?,
+            }
+            self.ws();
+            match self.peek() {
+                Some(b',') => self.i += 1,
+                Some(b']') => {
                     self.i += 1;
                     return Ok(());
                 }
@@ -494,13 +581,19 @@ impl StoredFieldVisitor for InjectingVisitor<'_> {
 mod tests {
     use super::*;
 
-    struct Fixed(Vec<f32>, Vec<u8>);
+    struct Fixed(Vec<f32>, Vec<u8>, Vec<Vec<f32>>);
     impl VectorSource for Fixed {
         fn float_vector(&mut self, _: i32) -> stored_fields::Result<Option<Vec<f32>>> {
             Ok(Some(self.0.clone()))
         }
         fn byte_vector(&mut self, _: i32) -> stored_fields::Result<Option<Vec<u8>>> {
             Ok(Some(self.1.clone()))
+        }
+        fn child_float_vectors(&mut self, _: i32) -> stored_fields::Result<Vec<Vec<f32>>> {
+            Ok(self.2.clone())
+        }
+        fn child_byte_vectors(&mut self, _: i32) -> stored_fields::Result<Vec<Vec<u8>>> {
+            Ok(Vec::new())
         }
     }
 
@@ -514,15 +607,15 @@ mod tests {
                     path: (*p).to_string(),
                     number: i as i32 + 1,
                     encoding: *e,
+                    nested: false,
                 })
                 .collect(),
-            nested: false,
         }
     }
 
     fn run(paths: &[(&str, VectorEncoding)], src: &str) -> stored_fields::Result<String> {
         let f = fields(paths);
-        let mut v = Fixed(vec![0.5, -1.0, 1e-5], vec![1, 255]);
+        let mut v = Fixed(vec![0.5, -1.0, 1e-5], vec![1, 255], Vec::new());
         inject(&f, src.as_bytes(), &mut v).map(|b| String::from_utf8(b).unwrap())
     }
 
@@ -549,6 +642,22 @@ mod tests {
             run(&paths, r#"{"o.emb":1,"s":"o.emb \" }"}"#).unwrap(),
             r#"{"o.emb":[0.5,-1.0,1.0E-5],"s":"o.emb \" }"}"#
         );
+    }
+
+    #[test]
+    fn nested_values_take_the_child_vectors_in_order() {
+        let mut f = fields(&[("n.emb", VectorEncoding::Float32)]);
+        f.fields[0].nested = true;
+        let mut v = Fixed(Vec::new(), Vec::new(), vec![vec![1.0], vec![2.0]]);
+        let src = r#"{"n":[{"emb":1,"t":"a"},{"t":"b"},{"emb":null},{"emb":1}],"emb":1}"#;
+        let got = String::from_utf8(inject(&f, src.as_bytes(), &mut v).unwrap()).unwrap();
+        assert_eq!(
+            got,
+            r#"{"n":[{"emb":[1.0],"t":"a"},{"t":"b"},{"emb":null},{"emb":[2.0]}],"emb":1}"#
+        );
+        let src = r#"{"n":{"emb":1}}"#;
+        let got = String::from_utf8(inject(&f, src.as_bytes(), &mut v).unwrap()).unwrap();
+        assert_eq!(got, r#"{"n":{"emb":[1.0]}}"#);
     }
 
     #[test]

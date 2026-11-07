@@ -85,6 +85,9 @@ RENAMES = {
     ("Lrse.java", "NONCE_LEN"): ("backend.rs", "NONCE_LEN"),
     ("Lrse.java", "TAG_LEN"): ("backend.rs", "TAG_LEN"),
     ("ZstdTermBlocks.java", "CODE"): ("blocktree_writer.rs", "COMPRESSION_ZSTD"),
+    ("ExtendedEncoder.java", "NODE_TO_CHILD"): ("jvm_queries.rs", "NODE_TO_CHILD"),
+    ("KNN1040HnswHalfFloatVectorsFormat.java", "VERSION"): ("vectors.rs", "HALF_FLOAT_VERSION"),
+    ("KNN1040HnswHalfFloatVectorsFormat.java", "ALIGNMENT"): ("vectors.rs", "HALF_FLOAT_ALIGNMENT"),
     ("ZstdTermBlocks.java", "SECTION_BYTES_PER_ENTRY"): ("blocktree.rs", "ZSTD_SECTION_BYTES_PER_ENTRY"),
 }
 

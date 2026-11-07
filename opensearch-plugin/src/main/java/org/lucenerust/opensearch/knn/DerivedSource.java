@@ -27,22 +27,27 @@ import org.opensearch.index.IndexSettings;
 import org.opensearch.index.engine.Engine;
 import org.opensearch.index.mapper.DocumentMapper;
 import org.opensearch.index.mapper.FieldMapper;
+import org.opensearch.index.mapper.ParseContext;
 import org.opensearch.index.mapper.SourceFieldMapper;
 import org.opensearch.index.shard.IndexingOperationListener;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.Iterator;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.function.Function;
 
 /**
- * k-NN's derived source on this node's writes: in an index that turns it on, each root vector
- * field's values are masked in the stored {@code _source} ({@link #MASK}) and read back from the
- * vector files. Every root vector field of such an index carries {@link #FIELD_ATTRIBUTE}, which
- * the Rust writer lists in the segment's {@code derived_vector_fields}, and {@link Listener} masks
+ * k-NN's derived source on this node's writes: in an index that turns it on, each vector field's
+ * values are masked in the stored {@code _source} ({@link #MASK}) and read back from the vector
+ * files, a nested field's from its child documents in order. Every vector field of such an index
+ * carries {@link #FIELD_ATTRIBUTE}, which the Rust writer lists in the segment's
+ * {@code derived_vector_fields} or {@code nested_derived_vector_fields}, and {@link Listener} masks
  * only listed fields ({@link MaskedFloat}, {@link MaskedByte}), so every reader -- this node's
  * native fetch and Lucene codec, and stock k-NN's -- puts the vectors back. A listed field left
  * whole (a {@code copy_to} source) reads back the same vector.
@@ -120,17 +125,17 @@ public final class DerivedSource {
         return out;
     }
 
-    /** {@code type} with {@link #FIELD_ATTRIBUTE}. */
-    static FieldType marked(FieldType type) {
+    /** {@code type} with {@link #FIELD_ATTRIBUTE}: {@code nested} for a field of nested documents, else {@code true}. */
+    static FieldType marked(FieldType type, boolean nested) {
         FieldType ft = new FieldType(type);
-        ft.putAttribute(FIELD_ATTRIBUTE, "true");
+        ft.putAttribute(FIELD_ATTRIBUTE, nested ? "nested" : "true");
         ft.freeze();
         return ft;
     }
 
     /**
-     * A root vector the listener masks. Its type always carries {@link #FIELD_ATTRIBUTE}: every root
-     * vector field of a masking index is marked, whatever its mapping says later, so the writer,
+     * A vector the listener masks. Its type always carries {@link #FIELD_ATTRIBUTE}: every vector
+     * field of a masking index is marked, whatever its mapping says later, so the writer,
      * which keeps a field's first attributes, lists every field a document may have masked.
      */
     static final class MaskedFloat extends KnnFloatVectorField {
@@ -155,12 +160,16 @@ public final class DerivedSource {
     public static final class Listener implements IndexingOperationListener {
         @Override
         public Engine.Index preIndex(ShardId shardId, Engine.Index operation) {
-            Map<String, Object> vectors = new HashMap<>();
-            for (IndexableField f : operation.parsedDoc().rootDoc()) {
-                if (f instanceof MaskedFloat v) {
-                    vectors.put(f.name(), v.vectorValue());
-                } else if (f instanceof MaskedByte v) {
-                    vectors.put(f.name(), signed(v.vectorValue()));
+            // Each field's vectors in document order: a nested field's are its child documents', in
+            // the order its values appear in _source.
+            Map<String, List<Object>> vectors = new HashMap<>();
+            for (ParseContext.Document doc : operation.parsedDoc().docs()) {
+                for (IndexableField f : doc) {
+                    if (f instanceof MaskedFloat v) {
+                        vectors.computeIfAbsent(f.name(), k -> new ArrayList<>()).add(v.vectorValue());
+                    } else if (f instanceof MaskedByte v) {
+                        vectors.computeIfAbsent(f.name(), k -> new ArrayList<>()).add(signed(v.vectorValue()));
+                    }
                 }
             }
             if (vectors.isEmpty()) {
@@ -168,9 +177,9 @@ public final class DerivedSource {
             }
             Map<String, Function<Object, Object>> inject = new HashMap<>();
             Map<String, Function<Object, Object>> mask = new HashMap<>();
-            for (Map.Entry<String, Object> e : vectors.entrySet()) {
-                Object vector = e.getValue();
-                inject.put(e.getKey(), o -> o == null ? null : vector);
+            for (Map.Entry<String, List<Object>> e : vectors.entrySet()) {
+                Iterator<Object> it = e.getValue().iterator();
+                inject.put(e.getKey(), o -> o == null || it.hasNext() == false ? o : it.next());
                 mask.put(e.getKey(), o -> o == null ? null : MASK);
             }
             boolean recovery = operation.parsedDoc().rootDoc().getField(SourceFieldMapper.RECOVERY_SOURCE_NAME) != null;
