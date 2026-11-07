@@ -282,6 +282,9 @@ pub struct SegmentReader {
     /// still correct for every field the update did not touch, which is why
     /// both are kept rather than one replacing the other.
     dv_generations: Vec<DocValuesGeneration>,
+    /// A realtime segment's doc values kept as the buffer's columns, each
+    /// field encoded when first read ([`Self::with_lazy_doc_values`]).
+    lazy_doc_values: Option<Arc<LazyDocValues>>,
     /// The segment's `.nvm`-parsed norms entries and `.nvd` bytes, when it has
     /// them.
     ///
@@ -327,6 +330,20 @@ struct CodecFiles {
     /// The HNSW graph's `.vem`, beside its `.vex` in [`Self::index`].
     graph_meta: Option<Arc<Input>>,
     suffix: String,
+}
+
+/// Doc values encoded a field at a time from a buffer's columns.
+struct LazyDocValues {
+    source: lucene_index::index_writer::LazyDocValues,
+    built: Vec<(i32, OnceLock<Option<DocValuesGeneration>>)>,
+}
+
+impl std::fmt::Debug for LazyDocValues {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LazyDocValues")
+            .field("fields", &self.built.len())
+            .finish()
+    }
 }
 
 /// One field's doc-values **update generation** -- the rewritten column
@@ -1203,6 +1220,7 @@ impl SegmentReader {
             postings_stats: None,
             dv_meta,
             dv_generations,
+            lazy_doc_values: None,
             norms_meta,
             norms_data,
         })
@@ -1788,6 +1806,11 @@ impl SegmentReader {
                 .built_doc_values()
                 .map(|form| (&form.meta, &*form.data));
         }
+        if let Some(lazy) = &self.lazy_doc_values {
+            let (_, built) = lazy.built.iter().find(|(n, _)| *n == field_number)?;
+            let gen = built.get_or_init(|| self.encode_lazy(&lazy.source, field_number));
+            return gen.as_ref().map(|g| (&*g.meta, &**g.data));
+        }
         if let Some(gen) = self
             .dv_generations
             .iter()
@@ -1799,6 +1822,54 @@ impl SegmentReader {
             (Some(meta), Some(data)) => Some((meta, &***data)),
             _ => None,
         }
+    }
+
+    /// This segment with its doc values taken from `source`, each field's
+    /// encoded when it is first read: a realtime segment written without
+    /// them, which most searches read a field or two of.
+    pub fn with_lazy_doc_values(
+        mut self,
+        source: lucene_index::index_writer::LazyDocValues,
+    ) -> Self {
+        let built = source.fields().map(|n| (n, OnceLock::new())).collect();
+        self.lazy_doc_values = Some(Arc::new(LazyDocValues { source, built }));
+        self
+    }
+
+    /// Field `field_number`'s doc values from `source`, `None` when it has
+    /// none. The writer gives a source only when every field's column
+    /// encodes as a written segment's would and no codec checks them, so the
+    /// in-memory encode and its parse fail only on a bug, which a debug
+    /// build stops at.
+    fn encode_lazy(
+        &self,
+        source: &lucene_index::index_writer::LazyDocValues,
+        field_number: i32,
+    ) -> Option<DocValuesGeneration> {
+        let encoded = source.encode(field_number, &self.segment_id);
+        debug_assert!(encoded.is_ok(), "encoding buffered doc values: {encoded:?}");
+        let encoded = encoded.ok()??;
+        let field = self
+            .field_infos
+            .fields
+            .iter()
+            .find(|f| f.number == field_number)?;
+        let only = FieldInfos {
+            fields: vec![field.clone()],
+        };
+        let parsed = doc_values::parse_meta(
+            &encoded.dvm,
+            &self.segment_id,
+            &encoded.segment_suffix,
+            &only,
+        );
+        debug_assert!(parsed.is_ok(), "parsing buffered doc values: {parsed:?}");
+        let (_, meta) = parsed.ok()?;
+        Some(DocValuesGeneration {
+            field_number,
+            meta: Arc::new(meta),
+            data: Arc::new(Input::Owned(encoded.dvd)),
+        })
     }
 
     /// `LeafReader.getDocValuesSkipper(field)`'s index: the field's
