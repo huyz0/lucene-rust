@@ -269,6 +269,14 @@ pub trait Directory: Send + Sync {
     /// Reads a whole file's bytes (`Directory.openInput`).
     fn open(&self, name: &str) -> Result<Input>;
 
+    /// [`Self::open`] for a file whose blocks start every `alignment`
+    /// bytes ([`crate::alignment`]): a directory reading whole pages uses
+    /// pages of a power-of-two multiple of it. Others ignore it.
+    fn open_aligned(&self, name: &str, alignment: usize) -> Result<Input> {
+        crate::alignment::check_hint(alignment)?;
+        self.open(name)
+    }
+
     /// Port of `Directory.fileLength(name)`. The default reads the file,
     /// which is correct for any implementation; the real ones override it.
     fn file_length(&self, name: &str) -> Result<u64> {
@@ -468,6 +476,9 @@ macro_rules! forward_directory {
             fn open(&self, name: &str) -> Result<Input> {
                 (**self).open(name)
             }
+            fn open_aligned(&self, name: &str, alignment: usize) -> Result<Input> {
+                (**self).open_aligned(name, alignment)
+            }
             fn file_length(&self, name: &str) -> Result<u64> {
                 (**self).file_length(name)
             }
@@ -581,6 +592,9 @@ impl Directory for EstimatedWrites<'_> {
     }
     fn open(&self, name: &str) -> Result<Input> {
         self.inner.open(name)
+    }
+    fn open_aligned(&self, name: &str, alignment: usize) -> Result<Input> {
+        self.inner.open_aligned(name, alignment)
     }
     fn file_length(&self, name: &str) -> Result<u64> {
         self.inner.file_length(name)
@@ -1128,6 +1142,12 @@ impl MmapDirectory {
             core: FsCore::new(root.into(), lock_factory),
             read_threshold: SMALL_FILE_READ_THRESHOLD,
         }
+    }
+
+    /// Refuses a read of `name` while it is pending delete, as
+    /// [`Directory::open`] does: for a wrapper that opens the file itself.
+    pub(crate) fn ensure_can_read(&self, name: &str) -> Result<()> {
+        self.core.ensure_can_read(name)
     }
 
     /// `FSDirectory.getDirectory()`.

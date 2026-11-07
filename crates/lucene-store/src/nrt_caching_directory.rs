@@ -155,6 +155,15 @@ impl<D: Directory> Directory for NrtCachingDirectory<D> {
         }
     }
 
+    fn open_aligned(&self, name: &str, alignment: usize) -> Result<Input> {
+        let _guard = lock_ignoring_poison(&self.guard);
+        if self.cache.file_exists(name) {
+            self.cache.open_aligned(name, alignment)
+        } else {
+            self.inner.open_aligned(name, alignment)
+        }
+    }
+
     fn file_length(&self, name: &str) -> Result<u64> {
         let _guard = lock_ignoring_poison(&self.guard);
         if self.cache.file_exists(name) {

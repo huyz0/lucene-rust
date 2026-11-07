@@ -353,6 +353,9 @@ mod tests {
         fn open(&self, name: &str) -> Result<Input> {
             self.inner.open(name)
         }
+        fn open_aligned(&self, name: &str, alignment: usize) -> Result<Input> {
+            self.inner.open_aligned(name, alignment)
+        }
         fn create_output(&self, name: &str) -> Result<FsIndexOutput> {
             self.inner.create_output(name)
         }

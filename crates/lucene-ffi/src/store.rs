@@ -24,6 +24,7 @@ use std::sync::{Arc, OnceLock, RwLock};
 use std::time::Duration;
 
 use lucene_store::directory::{Directory, MmapDirectory};
+use lucene_store::{PagedFsConfig, PagedFsDirectory};
 use lucene_store_crypto::{
     key_unavailable, CachingKeyProvider, DataKey, EncryptedDirectory, GeneratedKey, KeyProvider,
     PlaintextCache,
@@ -83,8 +84,17 @@ fn bindings() -> &'static RwLock<HashMap<String, Binding>> {
     BINDINGS.get_or_init(Default::default)
 }
 
+/// Shard paths read through the demand pager ([`PagedFsDirectory`]), with
+/// their page size.
+fn paged_paths() -> &'static RwLock<HashMap<String, PagedFsConfig>> {
+    static PAGED: OnceLock<RwLock<HashMap<String, PagedFsConfig>>> = OnceLock::new();
+    PAGED.get_or_init(Default::default)
+}
+
 /// The directory the engine opens at `path`: an [`EncryptedDirectory`] over
-/// the mapped directory when the path is bound, else the mapped directory.
+/// the mapped directory when the path is bound to the encrypted store, a
+/// [`PagedFsDirectory`] when it is bound to the page cache, else the mapped
+/// directory. An encrypted binding wins over a page-cache one.
 pub(crate) fn shard_directory(path: &str) -> lucene_store::Result<Box<dyn Directory>> {
     let binding = bindings()
         .read()
@@ -93,7 +103,17 @@ pub(crate) fn shard_directory(path: &str) -> lucene_store::Result<Box<dyn Direct
         .cloned();
     let mapped = MmapDirectory::open(path);
     Ok(match binding {
-        None => Box::new(mapped),
+        None => {
+            let paged = paged_paths()
+                .read()
+                .unwrap_or_else(|p| p.into_inner())
+                .get(path)
+                .cloned();
+            match paged {
+                Some(config) => Box::new(PagedFsDirectory::with_config(path, config)),
+                None => Box::new(mapped),
+            }
+        }
         Some(b) => Box::new(
             EncryptedDirectory::new(mapped, b.keys)
                 .with_chunk_size(b.chunk_size)?
@@ -294,6 +314,109 @@ pub unsafe extern "C" fn ffi_store_unbind(path: *const c_char, path_len: usize) 
             .remove(path);
         Ok(())
     })
+}
+
+/// Removes `path`'s page-cache binding ([`ffi_store_bind_page_cache`]), if
+/// any. Directories already open keep reading through the page cache.
+///
+/// # Safety
+/// `path` valid for `path_len` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn ffi_store_unbind_page_cache(path: *const c_char, path_len: usize) -> i32 {
+    guard(|| {
+        // SAFETY: caller contract.
+        let path = unsafe { str_from_raw(path, path_len)? };
+        paged_paths()
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(path);
+        Ok(())
+    })
+}
+
+/// Binds the shard path `path` to the page cache: from now on the engine's
+/// writers and readers at that path read its files through the process's
+/// demand pager in pages of `page_size` bytes (0: the default), within the
+/// budget [`ffi_store_set_page_cache_budget`] sets, instead of mapping them.
+/// With `vectors_only != 0`, only the vector formats' files go through the
+/// page cache ([`PagedFsConfig::vectors_only`]) and the rest stay mapped.
+/// Where the pager is unavailable ([`ffi_store_page_cache_available`] is 0)
+/// nothing is bound and the path stays mapped.
+///
+/// # Safety
+/// `path` valid for `path_len` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn ffi_store_bind_page_cache(
+    path: *const c_char,
+    path_len: usize,
+    page_size: u32,
+    vectors_only: i32,
+) -> i32 {
+    let mut config = if vectors_only != 0 {
+        PagedFsConfig::vectors_only()
+    } else {
+        PagedFsConfig::default()
+    };
+    if page_size != 0 {
+        config.page_size = page_size as usize;
+    }
+    guard(move || {
+        // SAFETY: caller contract.
+        let path = unsafe { str_from_raw(path, path_len)? };
+        if path.is_empty() {
+            set_last_error("ffi_store_bind_page_cache: empty path");
+            return Err(FfiStatus::InvalidArgument);
+        }
+        if !PagedFsDirectory::open("").is_paged() {
+            // No pager here: the path stays mapped.
+            return Ok(());
+        }
+        if !PagedFsDirectory::with_config("", config.clone()).is_paged() {
+            set_last_error(format!(
+                "ffi_store_bind_page_cache: page size {page_size} is not a whole number of OS pages"
+            ));
+            return Err(FfiStatus::InvalidArgument);
+        }
+        paged_paths()
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(path.to_string(), config);
+        Ok(())
+    })
+}
+
+/// 1 when shards can be read through the page cache (`userfaultfd` is
+/// available to this process), else 0.
+#[no_mangle]
+pub extern "C" fn ffi_store_page_cache_available() -> i32 {
+    i32::from(PagedFsDirectory::open("").is_paged())
+}
+
+/// Sets the bytes the page cache keeps resident across every shard bound
+/// to it ([`ffi_store_bind_page_cache`]); pages past it are released, least
+/// recently brought in first; 0 keeps the current budget. Does nothing where
+/// the pager is unavailable.
+#[no_mangle]
+pub extern "C" fn ffi_store_set_page_cache_budget(budget_bytes: u64) -> i32 {
+    #[cfg(target_os = "linux")]
+    if let Some(pager) = lucene_store::paged_input::Pager::global() {
+        if budget_bytes > 0 {
+            pager.set_budget(budget_bytes);
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = budget_bytes;
+    FfiStatus::Ok.code()
+}
+
+/// Bytes the page cache holds resident now, across every bound shard.
+#[no_mangle]
+pub extern "C" fn ffi_store_page_cache_resident_bytes() -> u64 {
+    #[cfg(target_os = "linux")]
+    if let Some(pager) = lucene_store::paged_input::Pager::global() {
+        return pager.resident_bytes();
+    }
+    0
 }
 
 /// Turns demand decryption of encrypted shards on (`enabled != 0`) or off

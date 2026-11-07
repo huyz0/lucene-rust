@@ -1822,12 +1822,43 @@ pub struct FloatVectorScorer<'a> {
     similarity: VectorSimilarityFunction,
     query: Vec<f32>,
     scratch: Vec<f32>,
+    /// Whether the `.vec` is read by page ([`lucene_store::is_prefetchable`]):
+    /// a bulk score then fetches every candidate's page in one batch before
+    /// scoring, rather than faulting them in one at a time.
+    paged: bool,
 }
 
 impl crate::hnsw::VectorScorer for FloatVectorScorer<'_> {
     fn score(&mut self, node: i32) -> Result<f32> {
         let candidate = self.values.vector_ref(node, &mut self.scratch)?;
         Ok(self.similarity.score(&self.query, candidate))
+    }
+
+    fn bulk_score(&mut self, nodes: &[i32], scores: &mut [f32]) -> Result<f32> {
+        if self.paged && nodes.len() > 1 {
+            // A graph node's neighbours fit one stack batch; more go in
+            // several. Only a hint: a page it misses faults in on its own.
+            const BATCH: usize = 64;
+            let mut ranges: [&[u8]; BATCH] = [&[]; BATCH];
+            for chunk in nodes.chunks(BATCH) {
+                let mut count = 0usize;
+                for &n in chunk {
+                    if let (Ok(bytes), Some(slot)) =
+                        (self.values.values.bytes(n), ranges.get_mut(count))
+                    {
+                        *slot = bytes;
+                        count = count.saturating_add(1);
+                    }
+                }
+                let _ = lucene_store::prefetch(ranges.get(..count).unwrap_or(&[]));
+            }
+        }
+        let mut max = f32::NEG_INFINITY;
+        for (i, &node) in nodes.iter().enumerate() {
+            scores[i] = self.score(node)?;
+            max = max.max(scores[i]);
+        }
+        Ok(max)
     }
 
     fn max_ord(&self) -> i32 {
@@ -1885,7 +1916,17 @@ impl<'a> FloatVectorValues<'a> {
             similarity: self.values.similarity,
             query: query.to_vec(),
             scratch: vec![0.0; self.values.dimension],
+            paged: self.is_paged(),
         })
+    }
+
+    /// Whether these vectors lie in a file read by page.
+    fn is_paged(&self) -> bool {
+        self.size() > 0
+            && self
+                .values
+                .bytes(0)
+                .is_ok_and(lucene_store::is_prefetchable)
     }
 
     /// `FlatVectorsScorer.getRandomVectorScorerSupplier(...).scorer()`: a
@@ -1896,6 +1937,7 @@ impl<'a> FloatVectorValues<'a> {
             similarity: self.values.similarity,
             query: vec![0.0; self.values.dimension],
             scratch: vec![0.0; self.values.dimension],
+            paged: self.is_paged(),
         }
     }
 }
