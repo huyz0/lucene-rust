@@ -11,7 +11,9 @@ import org.apache.lucene.search.DoubleValues;
  * The pairs (the Rust twin is {@code benchmarks/rust-runner/src/micro_expressions.rs}):
  * {@code expr_compile}, every expression of {@code fixtures/corpus/expressions.txt} that compiles
  * with the default functions (units: expressions); {@code expr_<shape>}, one expression evaluated
- * over 1,024 documents' values of {@code a}, {@code b} and {@code c} (units: evaluations). Output is
+ * over 1,024 documents' values of {@code a}, {@code b} and {@code c} (units: evaluations); {@code
+ * expr_<shape>_batch}, the same work, which Rust evaluates over 128-document columns and Lucene, having
+ * no batch path, one document at a time. Output is
  * {@code name\tns_per_unit\tunits}.
  */
 public class ExpressionsMicro {
@@ -83,6 +85,17 @@ public class ExpressionsMicro {
         values[i] = new ArrayValues(v);
       }
       SweepMicro.measure(c[0], () -> {
+        double sum = 0;
+        for (int doc = 0; doc < DOCS; doc++) {
+          for (DoubleValues v : values) {
+            v.advanceExact(doc);
+          }
+          sum += e.evaluate(values);
+        }
+        SweepMicro.sink += (long) sum;
+        return DOCS;
+      });
+      SweepMicro.measure(c[0] + "_batch", () -> {
         double sum = 0;
         for (int doc = 0; doc < DOCS; doc++) {
           for (DoubleValues v : values) {
