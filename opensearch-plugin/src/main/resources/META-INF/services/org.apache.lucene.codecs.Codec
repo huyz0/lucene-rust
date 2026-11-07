@@ -1,1 +1,11 @@
 org.lucenerust.opensearch.sparse.SparseCodec
+org.lucenerust.opensearch.knn.codec.KNN910Codec
+org.lucenerust.opensearch.knn.codec.KNN920Codec
+org.lucenerust.opensearch.knn.codec.KNN940Codec
+org.lucenerust.opensearch.knn.codec.KNN950Codec
+org.lucenerust.opensearch.knn.codec.KNN990Codec
+org.lucenerust.opensearch.knn.codec.KNN9120Codec
+org.lucenerust.opensearch.knn.codec.KNN10010Codec
+org.lucenerust.opensearch.knn.codec.KNN1030Codec
+org.lucenerust.opensearch.knn.codec.KNN1040Codec
+org.lucenerust.opensearch.storedfields.ZstdPagedCodec

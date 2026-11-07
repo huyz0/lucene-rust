@@ -770,6 +770,7 @@ fn decode_field(blob: &[u8]) -> Result<(FieldInfo, Option<KnnVectorsFormat>), Ff
 pub(crate) const VECTORS_FORMAT_ATTRIBUTE: &str = "lucene_rust.knn_format";
 
 /// A [`VECTORS_FORMAT_ATTRIBUTE`] value: `hnsw:<max_conn>:<beam_width>`,
+/// `hnsw_hamming:<max_conn>:<beam_width>`, `hnsw_half:<max_conn>:<beam_width>`,
 /// `hnsw_sq:<scalar encoding wire number>:<max_conn>:<beam_width>` or
 /// `sq:<scalar encoding wire number>`; `None` for anything else.
 pub(crate) fn parse_vectors_format(value: &str) -> Option<KnnVectorsFormat> {
@@ -777,6 +778,8 @@ pub(crate) fn parse_vectors_format(value: &str) -> Option<KnnVectorsFormat> {
     let int = |s: &str| s.parse::<i32>().ok();
     match parts.as_slice() {
         ["hnsw", m, beam] => KnnVectorsFormat::hnsw(int(m)?, int(beam)?).ok(),
+        ["hnsw_hamming", m, beam] => KnnVectorsFormat::hnsw_hamming(int(m)?, int(beam)?).ok(),
+        ["hnsw_half", m, beam] => KnnVectorsFormat::hnsw_half_float(int(m)?, int(beam)?).ok(),
         ["hnsw_sq", e, m, beam] => KnnVectorsFormat::hnsw_scalar_quantized(
             ScalarEncoding::from_wire_number(int(e)?)?,
             int(m)?,
@@ -787,6 +790,46 @@ pub(crate) fn parse_vectors_format(value: &str) -> Option<KnnVectorsFormat> {
             ScalarEncoding::from_wire_number(int(e)?)?,
         )),
         _ => None,
+    }
+}
+
+/// The field attribute marking a vector field whose `_source` value the plugin stores masked, as
+/// k-NN's derived source does: `true` for a field of the root document, `nested` for one of nested
+/// documents. Every segment flushed with the field lists it under
+/// [`lucene_search::derived_source::DERIVED_VECTOR_FIELDS`] or
+/// [`lucene_search::derived_source::NESTED_DERIVED_VECTOR_FIELDS`], so a reader (the plugin's or
+/// stock k-NN's) puts the vector back.
+pub(crate) const DERIVED_SOURCE_ATTRIBUTE: &str = "lucene_rust.derived_source";
+
+/// The `.si` list that names `info` when it carries [`DERIVED_SOURCE_ATTRIBUTE`].
+fn derived_source_list(info: &FieldInfo) -> Option<&'static str> {
+    use lucene_search::derived_source::{DERIVED_VECTOR_FIELDS, NESTED_DERIVED_VECTOR_FIELDS};
+    info.attributes
+        .iter()
+        .find(|(k, _)| k == DERIVED_SOURCE_ATTRIBUTE)
+        .and_then(|(_, v)| match v.as_str() {
+            "true" => Some(DERIVED_VECTOR_FIELDS),
+            "nested" => Some(NESTED_DERIVED_VECTOR_FIELDS),
+            _ => None,
+        })
+}
+
+/// k-NN's derived-source `.si` lists, for a k-NN index ([`OPEN_KNN`]): flushed segments list the
+/// derived fields, and a merge keeps every name its sources list, so masked `_source` values
+/// never lose their vectors.
+fn derived_source_attributes(writer: &mut IndexWriter<'_>) {
+    use lucene_search::derived_source::{DERIVED_VECTOR_FIELDS, NESTED_DERIVED_VECTOR_FIELDS};
+    writer.set_merge_union_attributes(vec![
+        DERIVED_VECTOR_FIELDS.to_string(),
+        NESTED_DERIVED_VECTOR_FIELDS.to_string(),
+    ]);
+    let derived: Vec<(&'static str, String)> = writer
+        .fields()
+        .iter()
+        .filter_map(|f| derived_source_list(f).map(|list| (list, f.name.clone())))
+        .collect();
+    for (list, name) in derived {
+        writer.add_segment_list_value(list, &name);
     }
 }
 
@@ -817,9 +860,12 @@ fn restore_vectors_formats(writer: &mut IndexWriter<'_>) {
 /// `0` the codec's default (`Lucene99HnswVectorsFormat()`), `1`
 /// `Lucene99HnswVectorsFormat(max_conn, beam_width)`, `2`
 /// `Lucene104HnswScalarQuantizedVectorsFormat(encoding, max_conn,
-/// beam_width)` or `3` `Lucene104ScalarQuantizedVectorsFormat(encoding)`;
-/// kinds `1` and `2` are followed by `i32 max_conn, i32 beam_width`, kinds `2`
-/// and `3` by `u8 scalar encoding` (`ScalarEncoding.getWireNumber`).
+/// beam_width)`, `3` `Lucene104ScalarQuantizedVectorsFormat(encoding)`, `4`
+/// k-NN's `KNN9120HnswBinaryVectorsFormat(max_conn, beam_width)` (byte
+/// fields only; recorded as `KNN990HnswBinaryVectorsFormat`) or `5` k-NN's
+/// `KNN1040HnswHalfFloatVectorsFormat(max_conn, beam_width)` (float fields
+/// only); kinds `1`, `2`, `4` and `5` are followed by `i32 max_conn, i32 beam_width`,
+/// kinds `2` and `3` by `u8 scalar encoding` (`ScalarEncoding.getWireNumber`).
 fn decode_vector_schema(
     c: &mut Cursor<'_>,
 ) -> Result<
@@ -866,8 +912,28 @@ fn decode_vector_schema(
             Some(KnnVectorsFormat::hnsw_scalar_quantized(e, m, beam).map_err(invalid)?)
         }
         3 => Some(KnnVectorsFormat::scalar_quantized(scalar(c)?)),
+        4 => {
+            let (m, beam) = graph(c)?;
+            Some(KnnVectorsFormat::hnsw_hamming(m, beam).map_err(invalid)?)
+        }
+        5 => {
+            let (m, beam) = graph(c)?;
+            Some(KnnVectorsFormat::hnsw_half_float(m, beam).map_err(invalid)?)
+        }
         _ => return Err(decode_error("vectors format")),
     };
+    if encoding == VectorEncoding::Byte
+        && matches!(format, Some(KnnVectorsFormat::HnswHalfFloat { .. }))
+    {
+        set_last_error("a byte vector field cannot be stored as half floats");
+        return Err(FfiStatus::InvalidArgument);
+    }
+    if encoding == VectorEncoding::Float32
+        && matches!(format, Some(KnnVectorsFormat::HnswHamming { .. }))
+    {
+        set_last_error("a float vector field cannot be scored by Hamming distance");
+        return Err(FfiStatus::InvalidArgument);
+    }
     if format.as_ref().is_some_and(|f| {
         encoding == VectorEncoding::Byte
             && matches!(
@@ -1000,6 +1066,7 @@ fn writer_error(e: index_writer::Error) -> FfiStatus {
         | index_writer::Error::DocValues(_)
         | index_writer::Error::Norms(_)
         | index_writer::Error::Vectors(_)
+        | index_writer::Error::Ivf(_)
         | index_writer::Error::Points(_)
         | index_writer::Error::DocValuesRead(_)
         | index_writer::Error::NormsRead(_)
@@ -1057,6 +1124,30 @@ pub const OPEN_SPARSE: u8 = 2;
 /// [`ffi_engine_writer_open`]'s flag for an index searched without a refresh
 /// (`crate::live`).
 pub const OPEN_LIVE_SEARCH: u8 = 4;
+/// [`ffi_engine_writer_open`]'s flag for
+/// `index.lucene_rust.stored_fields.merge_lz4_high_compression`: merges write
+/// `BEST_SPEED` stored fields with the high-compression LZ4 match finder,
+/// which stock Lucene reads
+/// ([`IndexWriter::set_merge_lz4_high_compression`]).
+pub const OPEN_MERGE_LZ4_HC: u8 = 8;
+/// [`ffi_engine_writer_open`]'s flag for an `index.knn` index: segments record OpenSearch
+/// k-NN's codec name ([`KNN_CODEC`]) over the stored-fields codec, whose name they record under
+/// [`KNN_DELEGATE_CODEC_ATTRIBUTE`], as stock k-NN writes them; so k-NN's derived source reads
+/// back through that codec on any node.
+pub const OPEN_KNN: u8 = 128;
+/// The codec name a k-NN index's segments record (`KNN1040Codec`).
+pub(crate) const KNN_CODEC: &str = "KNN1040Codec";
+/// The `.si` attribute naming the codec whose stored fields a k-NN segment holds
+/// (`KNN10010DerivedSourceStoredFieldsFormat.KNN_DELEGATE_CODEC_NAME`).
+pub(crate) const KNN_DELEGATE_CODEC_ATTRIBUTE: &str = "knn_delegate_stored_fields_codec_key";
+/// [`ffi_engine_writer_open`]'s flag for `index.lucene_rust.zstd_terms`: new
+/// segments write every field's terms in the `RustZstd104` postings format,
+/// whose term blocks are zstd-compressed
+/// ([`lucene_codecs::per_field_postings::Lucene104PostingsFormat::rust_zstd`]).
+pub const OPEN_ZSTD_TERMS: u8 = 16;
+/// The zstd level of [`OPEN_ZSTD_TERMS`]' term blocks. Blocks decode at the
+/// same speed whatever the level; higher ones only write slower.
+const ZSTD_TERMS_LEVEL: i32 = 3;
 /// [`ffi_engine_writer_open`]'s flag for `index.lucene_rust.adaptive_doc_values`:
 /// new segments write their doc values in the `RustAdaptive` format
 /// ([`lucene_codecs::doc_values::Lucene90DocValuesFormat::rust_adaptive`]).
@@ -1079,7 +1170,9 @@ const PARTITIONED_SLOTS: usize = 1024;
 /// an `index.sparse` index ([`lucene_sparse::SparseCodec`]);
 /// [`OPEN_LIVE_SEARCH`] keeps what a search of the buffers reads;
 /// [`OPEN_ADAPTIVE_DOC_VALUES`] writes doc values in the `RustAdaptive`
-/// format; [`OPEN_PARTITIONED`] keeps partitions in segments of their own.
+/// format; [`OPEN_ZSTD_TERMS`] writes terms dictionaries with zstd blocks;
+/// [`OPEN_PARTITIONED`] keeps partitions in segments of their own;
+/// [`OPEN_MERGE_LZ4_HC`] has merges compress stored fields harder.
 /// `index_sort` is the index's sort as a `.si` encodes it
 /// ([`lucene_index::segment_info::parse_index_sort`]; empty for none):
 /// every segment is written in that order, as `IndexWriterConfig.setIndexSort`
@@ -1131,6 +1224,10 @@ pub const STORED_FIELDS_BEST_COMPRESSION: u8 = 1;
 pub const STORED_FIELDS_ZSTD: u8 = 2;
 /// OpenSearch custom-codecs' `ZSTDNODICT104` (`index.codec: zstd_no_dict`).
 pub const STORED_FIELDS_ZSTD_NO_DICT: u8 = 3;
+/// The Rust engine's paged zstd stored fields, `LuceneRustZstdPaged104`
+/// (`index.lucene_rust.stored_fields.paged_zstd`): 16 KiB chunks packed into
+/// 16 KiB pages, with a dictionary trained at large merges.
+pub const STORED_FIELDS_ZSTD_PAGED: u8 = 4;
 
 /// [`ffi_engine_writer_open`] writing the stored fields `stored_fields`
 /// names (`STORED_FIELDS_*`), the zstd ones at `compression_level`
@@ -1210,25 +1307,58 @@ pub unsafe extern "C" fn ffi_engine_writer_open_codec(
             );
             return Err(FfiStatus::InvalidArgument);
         }
+        let knn = flags & OPEN_KNN != 0;
+        if sparse && knn {
+            set_last_error("an index.sparse index is not a k-NN index".to_string());
+            return Err(FfiStatus::InvalidArgument);
+        }
         let open = || -> index_writer::Result<Arc<ConcurrentIndexWriter<'static>>> {
             let codec = if sparse {
                 lucene_sparse::CODEC_NAME
+            } else if knn {
+                KNN_CODEC
             } else {
                 "Lucene104"
             };
             let mut writer = IndexWriter::open(dir_ref, Vec::new(), codec, VERSION)?;
             if sparse {
                 writer.set_codec(Some(Arc::new(lucene_sparse::SparseCodec)))?;
+            } else if knn {
+                let delegate: Arc<dyn lucene_codecs::codec::Lucene104Codec> =
+                    match stored_codec.clone() {
+                        Some(c) => c,
+                        None => Arc::new(lucene_codecs::codec::DefaultLucene104Codec),
+                    };
+                writer.set_segment_attribute(KNN_DELEGATE_CODEC_ATTRIBUTE, delegate.name());
+                writer.set_codec(Some(Arc::new(
+                    lucene_codecs::codec::NamedLucene104Codec::new(KNN_CODEC, delegate),
+                )))?;
             } else if let Some(codec) = stored_codec.clone() {
                 writer.set_codec(Some(codec))?;
+            }
+            if flags & OPEN_MERGE_LZ4_HC != 0 {
+                writer.set_merge_lz4_high_compression(true);
             }
             if flags & OPEN_ADAPTIVE_DOC_VALUES != 0 {
                 writer.set_default_doc_values_format(
                     lucene_codecs::doc_values::Lucene90DocValuesFormat::rust_adaptive(),
                 );
             }
+            if flags & OPEN_ZSTD_TERMS != 0 {
+                // A valid level, so this always builds the format.
+                if let Ok(format) =
+                    lucene_codecs::per_field_postings::Lucene104PostingsFormat::rust_zstd(
+                        ZSTD_TERMS_LEVEL,
+                    )
+                {
+                    writer.set_default_postings_format(format);
+                }
+            }
             writer.enable_explicit_documents()?;
             restore_vectors_formats(&mut writer);
+            if knn {
+                derived_source_attributes(&mut writer);
+            }
             if !parent_field.is_empty() {
                 writer.set_parent_field(Some(parent_field))?;
             }
@@ -1306,7 +1436,9 @@ fn stored_fields_codec(
     stored_fields: u8,
     level: i32,
 ) -> Result<Option<Arc<dyn lucene_codecs::codec::Lucene104Codec>>, FfiStatus> {
-    use lucene_codecs::codec::{BestCompressionLucene104Codec, ZstdLucene104Codec};
+    use lucene_codecs::codec::{
+        BestCompressionLucene104Codec, ZstdLucene104Codec, ZstdPagedLucene104Codec,
+    };
     use lucene_codecs::stored_fields::ZstdMode;
     let zstd = |mode: ZstdMode| -> Result<Option<Arc<dyn lucene_codecs::codec::Lucene104Codec>>, FfiStatus> {
         let codec = ZstdLucene104Codec::new(mode).map_err(|e| {
@@ -1320,6 +1452,13 @@ fn stored_fields_codec(
         STORED_FIELDS_BEST_COMPRESSION => Ok(Some(Arc::new(BestCompressionLucene104Codec))),
         STORED_FIELDS_ZSTD => zstd(ZstdMode::zstd(level)),
         STORED_FIELDS_ZSTD_NO_DICT => zstd(ZstdMode::zstd_no_dict(level)),
+        STORED_FIELDS_ZSTD_PAGED => {
+            let codec = ZstdPagedLucene104Codec::new(level).map_err(|e| {
+                set_last_error(format!("index.codec.compression_level: {e}"));
+                FfiStatus::InvalidArgument
+            })?;
+            Ok(Some(Arc::new(codec)))
+        }
         other => {
             set_last_error(format!("unknown stored fields format {other}"));
             Err(FfiStatus::InvalidArgument)
@@ -1347,11 +1486,18 @@ pub unsafe extern "C" fn ffi_engine_writer_register_field(
         let (info, format) = decode_field(spec)?;
         let number = with_writer(handle, |w| {
             let name = info.name.clone();
+            let derived = derived_source_list(&info);
             w.writer()
                 .with_writer(|iw| {
                     let number = iw.register_field(info)?;
                     if let Some(format) = format {
                         iw.set_knn_vectors_format_for_field(&name, format);
+                    }
+                    // Only a k-NN index's codec reads the list back.
+                    if let Some(list) = derived {
+                        if iw.segment_attribute(KNN_DELEGATE_CODEC_ATTRIBUTE).is_some() {
+                            iw.add_segment_list_value(list, &name);
+                        }
                     }
                     Ok::<_, lucene_index::index_writer::Error>(number)
                 })
@@ -1419,6 +1565,7 @@ fn apply_op(handle: u64, op: Op) -> Result<(), FfiStatus> {
                 panic!("injected fault: engine writer panic");
             }
         };
+        crate::live::after_add(w);
         Ok(())
     })
 }
@@ -2508,6 +2655,8 @@ pub extern "C" fn ffi_engine_writer_close(handle: u64) -> i32 {
         // Another thread may still be inside a call; the last `Arc` drops the
         // writer. Holds die with it, as a JVM's readers' pins die with the JVM.
         let _maintenance = shared.maintenance();
+        // The shared live view holds the writer.
+        shared.live_warmer().stop_sharing();
         shared.writer().stop_merges();
         shared.writer().rollback();
         Ok(())
@@ -2778,6 +2927,12 @@ mod tests {
                 "ZSTDNODICT104",
                 "ZSTD_NO_DICT",
             ),
+            (
+                STORED_FIELDS_ZSTD_PAGED,
+                3,
+                "LuceneRustZstdPaged104",
+                "ZSTD_PAGED",
+            ),
         ] {
             let tmp = empty_index("engine-writer-codec");
             let path = tmp.path().to_str().unwrap();
@@ -2972,6 +3127,69 @@ mod tests {
         commit_settled(h);
         ffi_engine_writer_close(h);
         assert_eq!(read_seq_nos(&tmp), want);
+        check(&tmp);
+    }
+
+    /// [`OPEN_ZSTD_TERMS`]: every postings field lands in `RustZstd104`, a
+    /// term lookup finds each document, and a forced merge keeps the format.
+    #[test]
+    fn a_zstd_terms_writer_writes_rust_zstd_postings() {
+        let tmp = empty_index("engine-writer-zstd-terms");
+        let h = open(&tmp, OPEN_ZSTD_TERMS);
+        let f = setup(h);
+        let n = 600i64;
+        for round in 0..2 {
+            for i in 0..n / 2 {
+                let seq = round * n / 2 + i;
+                let id = format!("d{seq}");
+                let b = doc(
+                    Blob::default().u8(OP_ADD).i32(1),
+                    &f,
+                    &id,
+                    &["w"],
+                    seq,
+                    false,
+                );
+                assert_eq!(apply(h, &b.0), 0, "{}", crate::error::last_error());
+            }
+            commit(h, &[]);
+        }
+        let files = |tmp: &TempDir| -> Vec<String> {
+            std::fs::read_dir(tmp.path())
+                .unwrap()
+                .map(|e| e.unwrap().file_name().into_string().unwrap())
+                .collect()
+        };
+        let ids_found = |tmp: &TempDir| {
+            let dir = FsDirectory::open(tmp.path());
+            let reader = lucene_search::directory_reader::DirectoryReader::open(&dir).unwrap();
+            (0..n)
+                .filter(|seq| {
+                    reader
+                        .doc_freq("_id", format!("d{seq}").as_bytes())
+                        .unwrap()
+                        == 1
+                })
+                .count()
+        };
+        assert_eq!(ids_found(&tmp), n as usize);
+        let names = files(&tmp);
+        assert!(
+            names.iter().any(|n| n.ends_with("_RustZstd104_0.tim")),
+            "{names:?}"
+        );
+        assert!(
+            !names.iter().any(|n| n.ends_with("_Lucene104_0.tim")),
+            "{names:?}"
+        );
+        check(&tmp);
+        let mut gen = 0;
+        // SAFETY: a live handle and out-pointer.
+        let rc = unsafe { ffi_engine_writer_force_merge(h, 1, 0, &mut gen) };
+        assert_eq!(rc, 0, "{}", crate::error::last_error());
+        commit_settled(h);
+        ffi_engine_writer_close(h);
+        assert_eq!(ids_found(&tmp), n as usize);
         check(&tmp);
     }
 
@@ -4936,7 +5154,7 @@ mod tests {
                 .u8(0)
                 .u8(kind);
             let b = match kind {
-                1 => b.i32(m).i32(100),
+                1 | 4 | 5 => b.i32(m).i32(100),
                 2 => b.i32(m).i32(100).u8(2),
                 3 => b.u8(2),
                 _ => b,
@@ -4946,6 +5164,18 @@ mod tests {
         assert!(decode_field(&schema(1, 2, 16)).is_err());
         assert!(decode_field(&schema(1, 3, 16)).is_err());
         assert!(decode_field(&schema(1, 1, 16)).is_ok());
+        // Hamming scoring is for byte (packed bit) fields only.
+        assert_eq!(
+            decode_field(&schema(1, 4, 16)).unwrap().1,
+            Some(KnnVectorsFormat::hnsw_hamming(16, 100).unwrap())
+        );
+        assert!(decode_field(&schema(0, 4, 16)).is_err());
+        // Half floats are for float fields only.
+        assert_eq!(
+            decode_field(&schema(0, 5, 16)).unwrap().1,
+            Some(KnnVectorsFormat::hnsw_half_float(16, 100).unwrap())
+        );
+        assert!(decode_field(&schema(1, 5, 16)).is_err());
         assert!(decode_field(&schema(0, 1, 0)).is_err());
         assert!(decode_field(&schema(0, 1, 513)).is_err());
         assert_eq!(decode_field(&schema(0, 0, 0)).unwrap().1, None);
@@ -4964,6 +5194,14 @@ mod tests {
                 )
                 .unwrap()
             )
+        );
+        assert_eq!(
+            parse_vectors_format("hnsw_hamming:8:64"),
+            Some(KnnVectorsFormat::hnsw_hamming(8, 64).unwrap())
+        );
+        assert_eq!(
+            parse_vectors_format("hnsw_half:8:64"),
+            Some(KnnVectorsFormat::hnsw_half_float(8, 64).unwrap())
         );
         assert_eq!(
             parse_vectors_format("sq:1"),
@@ -5254,6 +5492,63 @@ mod tests {
 
         assert_eq!(ffi_live_view_close(view), 0);
         assert_eq!(crate::jvm_reader::ffi_close_jvm_reader(reader), 0);
+    }
+
+    /// Under a staleness bound a view opened within it is shared, without
+    /// the writes since; without one each view holds every write before it.
+    #[test]
+    fn under_a_staleness_bound_searches_share_a_view() {
+        use crate::live::{
+            ffi_engine_writer_live_view_open, ffi_engine_writer_set_live_staleness,
+            ffi_live_view_close,
+        };
+        let tmp = empty_index("engine-writer-live-stale");
+        let h = open_with(&tmp, 64.0, OPEN_LIVE_SEARCH, i32::MAX);
+        let f = setup(h);
+        let add = |i: usize| {
+            let b = doc(
+                Blob::default().u8(OP_ADD).i32(1),
+                &f,
+                &format!("d{i}"),
+                &["alpha"],
+                i as i64,
+                false,
+            );
+            assert_eq!(apply(h, &b.0), 0, "{}", crate::error::last_error());
+        };
+        let open = || {
+            let (mut view, mut ptr, mut len) = (0u64, std::ptr::null_mut(), 0usize);
+            // SAFETY: live out-pointers.
+            let rc =
+                unsafe { ffi_engine_writer_live_view_open(h, -1, &mut view, &mut ptr, &mut len) };
+            assert_eq!(rc, 0, "{}", crate::error::last_error());
+            // SAFETY: the buffer the call gave, read then freed once.
+            let blob = unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec();
+            unsafe { crate::ffm_bridge::ffi_jvm_free_bytes(ptr, len) };
+            (view, blob)
+        };
+        (0..5).for_each(add);
+        assert_eq!(ffi_engine_writer_set_live_staleness(h, 60_000), 0);
+        let (a, first) = open();
+        add(5);
+        // Within the bound: the first view, without the later document.
+        let (b, second) = open();
+        assert_ne!(a, b);
+        assert_eq!(first, second);
+        // After a wait_for release: a view holding the write.
+        assert_eq!(crate::live::ffi_engine_writer_live_refresh_shared(h), 0);
+        let (r, refreshed) = open();
+        assert_ne!(first, refreshed);
+        assert_eq!(ffi_live_view_close(r), 0);
+        assert_eq!(ffi_live_view_close(a), 0);
+        assert_eq!(ffi_live_view_close(b), 0);
+        // Without one: every write before the view.
+        assert_eq!(ffi_engine_writer_set_live_staleness(h, 0), 0);
+        let (c, third) = open();
+        assert_ne!(first, third);
+        assert_eq!(ffi_live_view_close(c), 0);
+        assert_ne!(ffi_engine_writer_set_live_staleness(h, -1), 0);
+        assert_eq!(ffi_engine_writer_close(h), 0);
     }
 
     /// [`crate::live::ffi_live_view_reader`]: a reader handle over the
@@ -5592,6 +5887,11 @@ mod tests {
             let hold = round % 3 == 2;
             let mut held = None;
             let n = 1 + round % 5 + usize::from(hold);
+            if hold {
+                // A view waits for a chunk being written only while the
+                // warmer is idle: else it writes those documents itself.
+                crate::live::idle_warmer(&ew);
+            }
             for k in 0..n {
                 if hold && k + 1 == n {
                     held = crate::live::hold_tail(&ew);
@@ -5742,8 +6042,9 @@ mod tests {
                 assert_eq!(live_total, want as i64, "round {round}: {term}");
 
                 // A handle for the query and an aggregation filtering on
-                // another term: its chunks carry only those terms, and
-                // sorts and aggregations over it agree with `whole`.
+                // another term: the chunks it writes carry only those terms
+                // (one written with every term may be reused), and sorts and
+                // aggregations over it agree with `whole`.
                 let other = crate::jvm_reader::tests::term_blob("body", words[round % 5]);
                 let tree = crate::jvm_aggs::tests::histogram_of_filters("_seq_no", 5.0, &other);
                 let mut lean = 0u64;
@@ -5763,18 +6064,32 @@ mod tests {
                 };
                 assert_eq!(rc, 0, "{}", crate::error::last_error());
                 {
-                    let l = crate::jvm_reader::lookup(lean, "test").unwrap();
-                    for r in &l.reader.segment_readers()[base..] {
-                        let Some(terms) = r.terms("body").unwrap() else {
-                            continue;
-                        };
-                        let mut te = terms.iterator().unwrap();
-                        while let Some(t) = te.next().unwrap() {
-                            assert!(
-                                [term, words[round % 5]].contains(&std::str::from_utf8(t).unwrap()),
-                                "round {round}: only the request's terms"
-                            );
+                    let body_terms = |r: &lucene_search::directory_reader::SegmentReader| {
+                        let mut out = Vec::new();
+                        if let Some(terms) = r.terms("body").unwrap() {
+                            let mut te = terms.iterator().unwrap();
+                            while let Some(t) = te.next().unwrap() {
+                                out.push(String::from_utf8(t.to_vec()).unwrap());
+                            }
                         }
+                        out
+                    };
+                    let l = crate::jvm_reader::lookup(lean, "test").unwrap();
+                    let w = crate::jvm_reader::lookup(whole, "test").unwrap();
+                    for r in &l.reader.segment_readers()[base..] {
+                        let got = body_terms(r);
+                        let requested = got
+                            .iter()
+                            .all(|t| [term, words[round % 5]].contains(&t.as_str()));
+                        // The very chunk `whole` holds (the same core).
+                        let reused = w.reader.segment_readers()[base..].iter().any(|c| {
+                            c.core_cache_helper().key_id() == r.core_cache_helper().key_id()
+                        });
+                        assert!(
+                            requested || reused,
+                            "round {round}: only the request's terms in {}: {got:?}",
+                            r.segment_name
+                        );
                     }
                 }
                 assert_eq!(
@@ -5823,10 +6138,19 @@ mod tests {
                 assert_ne!(lean, whole, "round {round}: a handle of its own");
                 lean
             };
+            // The terms of the chunks a handle wrote: a chunk of `whole`'s,
+            // written with every term, may be reused.
             let held = |lean: u64| {
                 let l = crate::jvm_reader::lookup(lean, "test").unwrap();
+                let w = crate::jvm_reader::lookup(whole, "test").unwrap();
                 let mut held = std::collections::BTreeSet::new();
                 for r in &l.reader.segment_readers()[base..] {
+                    let reused = w.reader.segment_readers()[base..]
+                        .iter()
+                        .any(|c| c.core_cache_helper().key_id() == r.core_cache_helper().key_id());
+                    if reused {
+                        continue;
+                    }
                     if let Some(terms) = r.terms("body").unwrap() {
                         let mut te = terms.iterator().unwrap();
                         while let Some(t) = te.next().unwrap() {
@@ -5836,6 +6160,21 @@ mod tests {
                 }
                 held
             };
+            // A plain search reads the chunks the view planned (with their
+            // kept overlays from the second time) and the documents after:
+            // the same hits and scores as the reader with postings.
+            for word in ["alpha", "gamma", "eps", "zz"] {
+                let q = crate::jvm_reader::tests::term_blob("body", word);
+                for _ in 0..2 {
+                    let (hits, total) = search_live(reader, view, &q).unwrap();
+                    let mut hits: Vec<(i32, u32)> =
+                        hits.iter().map(|&(d, s)| (d, s.to_bits())).collect();
+                    hits.sort_unstable();
+                    let (mut want, want_total) = scored_hits(whole, &q);
+                    want.sort_unstable();
+                    assert_eq!((hits, total), (want, want_total), "round {round}: {word}");
+                }
+            }
             for prefix in ["d", "ga", "e", "zz"] {
                 let q = crate::jvm_reader::tests::prefix_blob("body", prefix);
                 let lean = lean_of(&q, &[]);
@@ -5887,7 +6226,7 @@ mod tests {
             assert_eq!(ffi_live_view_close(view), 0);
         }
         // A few chunks per buffer, not one per view.
-        assert!(leaves_seen.iter().all(|&n| n <= 8), "{leaves_seen:?}");
+        assert!(leaves_seen.iter().all(|&n| n <= 12), "{leaves_seen:?}");
         assert!(leaves_seen.iter().any(|&n| n > 1), "{leaves_seen:?}");
 
         // A buffer published after views of it opened: one whose chunks
@@ -6290,7 +6629,7 @@ mod tests {
                 );
                 [term, sort, t.elapsed()]
             };
-            let mut sums = [std::time::Duration::ZERO; 9];
+            let mut sums = [std::time::Duration::ZERO; 10];
             let mut builds: Vec<std::time::Duration> = Vec::new();
             // LIVE_LOAD=1: documents keep arriving, LIVE_STEP at a time, while
             // the views are read, as under the bench's bulk load.
@@ -6317,6 +6656,14 @@ mod tests {
                     assert_eq!(rc, 0, "{}", crate::error::last_error());
                     // SAFETY: the buffer the call gave, freed once.
                     unsafe { crate::ffm_bridge::ffi_jvm_free_bytes(ptr, len) };
+                    if searches {
+                        // The plain search of the term, as a scored query
+                        // with no sort or aggregation runs.
+                        let t = std::time::Instant::now();
+                        std::hint::black_box(super::tests::search_live(reader, view, &term_q));
+                        sums[9] += t.elapsed();
+                        let _ = crate::live::phases::take();
+                    }
                     if !searches {
                         let t = std::time::Instant::now();
                         let mut whole = 0u64;
@@ -6404,9 +6751,9 @@ mod tests {
             if searches && live_rounds > 0 {
                 let r = live_rounds as u32;
                 eprintln!(
-                    "mean over {r} rounds: lean reader {:?} (chunks {:?}, snapshot {:?}, overlay {:?}, append {:?}, live_docs {:?}), term {:?}, sort {:?}, agg {:?}",
+                    "mean over {r} rounds: lean reader {:?} (chunks {:?}, snapshot {:?}, overlay {:?}, append {:?}, live_docs {:?}), term {:?}, sort {:?}, agg {:?}, plain term {:?}",
                     sums[0] / r, sums[1] / r, sums[2] / r, sums[3] / r, sums[4] / r, sums[5] / r,
-                    sums[6] / r, sums[7] / r, sums[8] / r
+                    sums[6] / r, sums[7] / r, sums[8] / r, sums[9] / r
                 );
                 builds.sort_unstable();
                 let at = |q: f64| builds[((builds.len() as f64 - 1.0) * q).round() as usize];
@@ -6479,6 +6826,147 @@ mod tests {
     fn knn_score(a: &[f32], b: &[f32]) -> f32 {
         let d: f32 = a.iter().zip(b).map(|(x, y)| (x - y) * (x - y)).sum();
         1.0 / (1.0 + d)
+    }
+
+    /// **k-NN's derived source.** In a k-NN index ([`OPEN_KNN`]) a vector
+    /// field marked [`DERIVED_SOURCE_ATTRIBUTE`] makes every flushed segment
+    /// list it under `derived_vector_fields`, a forced merge keeps the list,
+    /// and a read of the masked `_source` gets the vector back, before and
+    /// after the merge; the segments record k-NN's codec over `Lucene104`.
+    #[test]
+    fn derived_source_fields_are_listed_kept_by_merges_and_read_back() {
+        use lucene_search::derived_source::DERIVED_VECTOR_FIELDS;
+        let tmp = empty_index("engine-writer-derived-source");
+        let h = open(&tmp, OPEN_KNN);
+        let f = setup(h);
+        let source = register(h, &field("_source", 0, 1, 0, 0)).unwrap();
+        let spec = Blob::default()
+            .bytes(b"v")
+            .u8(0)
+            .u8(0)
+            .u8(0)
+            .u8(0)
+            .u8(0)
+            .u8(0)
+            .i32(0)
+            .i32(0)
+            .i32(0)
+            .i32(4)
+            .u8(0)
+            .u8(0)
+            .u8(1)
+            .i32(8)
+            .i32(50)
+            .u8(0)
+            .i32(2)
+            .bytes(VECTORS_FORMAT_ATTRIBUTE.as_bytes())
+            .bytes(b"hnsw:8:50")
+            .bytes(DERIVED_SOURCE_ATTRIBUTE.as_bytes())
+            .bytes(b"true")
+            .0;
+        register(h, &spec).unwrap();
+        let mut seq = 0;
+        for batch in 0..2 {
+            let ids: Vec<usize> = (batch * 5..batch * 5 + 5).collect();
+            let mut b = Blob::default().u8(OP_ADD).i32(ids.len() as i32);
+            for &i in &ids {
+                let id = format!("d{i}");
+                let masked = format!(r#"{{"n":{i},"v":1}}"#);
+                b = b
+                    .i32(2)
+                    .i32(f.id)
+                    .u8(1)
+                    .bytes(id.as_bytes())
+                    .i32(source)
+                    .u8(1)
+                    .bytes(masked.as_bytes())
+                    .i32(1)
+                    .i32(f.id)
+                    .u8(0)
+                    .i32(1)
+                    .bytes(id.as_bytes())
+                    .i32(1)
+                    .u8(0)
+                    .i32(1)
+                    .i32(f.seq)
+                    .u8(0)
+                    .i64(seq)
+                    .i32(0);
+                seq += 1;
+            }
+            for &i in &ids {
+                b = b.i32(1).bytes(b"v").u8(0).i32(4);
+                for x in knn_vector(i) {
+                    b = b.f32(x);
+                }
+            }
+            assert_eq!(apply(h, &b.0), 0, "{}", crate::error::last_error());
+            commit(h, &[]);
+        }
+        commit_settled(h);
+        let read_all = |want_segments: usize| {
+            let dir = FsDirectory::open(tmp.path());
+            let reader = lucene_search::directory_reader::DirectoryReader::open(&dir).unwrap();
+            assert_eq!(reader.segment_readers().len(), want_segments);
+            let mut seen = 0;
+            for seg in reader.segment_readers() {
+                assert!(seg.derived_source().is_some(), "{}", seg.segment_name);
+                for d in 0..seg.max_doc {
+                    let mut visitor = lucene_codecs::stored_fields::DocumentVisitor::all();
+                    assert!(seg.visit_source_document(d, &mut visitor).unwrap());
+                    let doc = visitor.into_document();
+                    let src = doc
+                        .fields
+                        .iter()
+                        .find(|f| f.field_number == source)
+                        .unwrap();
+                    let lucene_codecs::stored_fields::FieldValue::Binary(bytes) = &src.value else {
+                        panic!("binary _source");
+                    };
+                    let text = String::from_utf8(bytes.clone()).unwrap();
+                    let n: usize = text[5..text.find(',').unwrap()].parse().unwrap();
+                    let want: Vec<String> = knn_vector(n)
+                        .iter()
+                        .map(|x| lucene_analysis::attributes::java_float_to_string(*x))
+                        .collect();
+                    assert_eq!(text, format!(r#"{{"n":{n},"v":[{}]}}"#, want.join(",")));
+                    seen += 1;
+                }
+            }
+            assert_eq!(seen, 10);
+        };
+        read_all(2);
+        let mut gen = 0;
+        // SAFETY: a live handle and out-pointer.
+        let rc = unsafe { ffi_engine_writer_force_merge(h, 1, 0, &mut gen) };
+        assert_eq!(rc, 0, "{}", crate::error::last_error());
+        commit_settled(h);
+        ffi_engine_writer_close(h);
+        check(&tmp);
+        read_all(1);
+        let dir = FsDirectory::open(tmp.path());
+        let reader = lucene_search::directory_reader::DirectoryReader::open(&dir).unwrap();
+        let name = &reader.segment_readers()[0].segment_name;
+        let infos = lucene_index::segment_infos::read_latest(&dir).unwrap();
+        let sci = infos
+            .segments
+            .iter()
+            .find(|s| &s.segment_name == name)
+            .unwrap();
+        let si = lucene_index::segment_info::parse(
+            &std::fs::read(tmp.path().join(format!("{name}.si"))).unwrap(),
+            &sci.segment_id,
+        )
+        .unwrap();
+        let attr = |key: &str| {
+            si.attributes
+                .iter()
+                .find(|(k, _)| k == key)
+                .map(|(_, v)| v.as_str())
+        };
+        assert_eq!(attr(DERIVED_VECTOR_FIELDS), Some("v"));
+        assert_eq!(attr(KNN_DELEGATE_CODEC_ATTRIBUTE), Some("Lucene104"));
+        assert_eq!(sci.codec_name, KNN_CODEC);
     }
 
     /// **A vector field is written in its mapping's format and searched
@@ -6573,7 +7061,7 @@ mod tests {
         for x in target {
             request = request.f32(x);
         }
-        let request = request.i32(5).i32(40).u8(0).0;
+        let request = request.i32(5).i32(40).u8(0).u8(0).0;
         let (mut docs, mut scores, mut n) = ([0i32; 5], [0f32; 5], 0usize);
         // SAFETY: live request and buffers of 5.
         let rc = unsafe {

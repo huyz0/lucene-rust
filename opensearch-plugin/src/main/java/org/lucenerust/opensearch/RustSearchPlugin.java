@@ -34,6 +34,8 @@ import org.opensearch.plugins.ActionPlugin;
 import org.opensearch.plugins.AnalysisPlugin;
 import org.opensearch.plugins.CircuitBreakerPlugin;
 import org.opensearch.plugins.EnginePlugin;
+import org.opensearch.index.codec.CodecServiceFactory;
+import org.lucenerust.opensearch.knn.codec.KnnCodecService;
 import org.opensearch.plugins.IndexStorePlugin;
 import org.opensearch.plugins.MapperPlugin;
 import org.opensearch.index.mapper.Mapper;
@@ -41,6 +43,14 @@ import org.lucenerust.opensearch.knn.KnnQueryBuilder;
 import org.lucenerust.opensearch.knn.KnnSettings;
 import org.lucenerust.opensearch.knn.KnnTopVectorQuery;
 import org.lucenerust.opensearch.knn.KnnVectorFieldMapper;
+import org.lucenerust.opensearch.knn.DerivedSource;
+import org.opensearch.index.TieredMergePolicyProvider;
+import org.opensearch.index.shard.IndexSettingProvider;
+import org.lucenerust.opensearch.knn.rest.KnnRestHandlers;
+import org.lucenerust.opensearch.knn.rest.KnnShardsTransport;
+import org.lucenerust.opensearch.knn.rest.KnnStatsTransport;
+import org.opensearch.action.ActionRequest;
+import org.opensearch.core.action.ActionResponse;
 import org.lucenerust.opensearch.sparse.NeuralSparseQueryBuilder;
 import org.lucenerust.opensearch.sparse.SparseSettings;
 import org.lucenerust.opensearch.sparse.SparseVectorFieldMapper;
@@ -58,6 +68,7 @@ import java.net.URISyntaxException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -265,10 +276,38 @@ public class RustSearchPlugin extends Plugin implements
         RustEngineSupport.setBreaker(circuitBreaker);
     }
 
+    /**
+     * k-NN's settings for a new knn index ({@code KNNPlugin.getAdditionalIndexSettingProviders}):
+     * derived source on, and gentler merges (vector merges are CPU heavy). The request's own
+     * settings still win.
+     */
+    @Override
+    public Collection<IndexSettingProvider> getAdditionalIndexSettingProviders() {
+        if (stockKnn) {
+            return List.of();
+        }
+        return List.of(new IndexSettingProvider() {
+            @Override
+            public Settings getAdditionalIndexSettings(String indexName, boolean isDataStreamIndex, Settings templateAndRequestSettings) {
+                if (templateAndRequestSettings.getAsBoolean(KnnSettings.KNN_INDEX.getKey(), false) == false) {
+                    return Settings.EMPTY;
+                }
+                return Settings.builder()
+                    .put(KnnSettings.DERIVED_SOURCE.getKey(), true)
+                    .put(TieredMergePolicyProvider.INDEX_MERGE_POLICY_MAX_MERGE_AT_ONCE_SETTING.getKey(), 10)
+                    .put(TieredMergePolicyProvider.INDEX_MERGE_POLICY_FLOOR_SEGMENT_SETTING.getKey(), new ByteSizeValue(2, ByteSizeUnit.MB))
+                    .build();
+            }
+        });
+    }
+
     /** Every shard of a Rust-engine index gets the indexer that lets it be a segment-replication primary. */
     @Override
     public void onIndexModule(IndexModule indexModule) {
         RustIndexerFactory.install(indexModule);
+        if (stockKnn == false && DerivedSource.forIndex(indexModule.getSettings())) {
+            indexModule.addIndexOperationListener(new DerivedSource.Listener());
+        }
         // The fuzzy-set _id postings format is refused at creation (RustEngineSupport.unsupported); the
         // setting is dynamic, so turning it on later is refused too, rather than ignored.
         if (RustEngineSupport.servedByRust(indexModule.getSettings())) {
@@ -344,6 +383,18 @@ public class RustSearchPlugin extends Plugin implements
         Setting.Property.IndexScope,
         Setting.Property.Dynamic
     );
+
+    /**
+     * {@code KNNPlugin.getCustomCodecServiceFactory}: OpenSearch's engine writes a k-NN index's
+     * vector fields in the formats their mappings resolve to, as the Rust writer does.
+     */
+    @Override
+    public Optional<CodecServiceFactory> getCustomCodecServiceFactory(IndexSettings indexSettings) {
+        if (stockKnn || KnnSettings.KNN_INDEX.get(indexSettings.getSettings()) == false) {
+            return Optional.empty();
+        }
+        return Optional.of(KnnCodecService::new);
+    }
 
     @Override
     public Optional<EngineFactory> getEngineFactory(IndexSettings indexSettings) {
@@ -421,7 +472,11 @@ public class RustSearchPlugin extends Plugin implements
             RustEngineSupport.ENGINE_DEFAULT,
             RustEngineSupport.FAULT_INJECTION,
             RustEngineSupport.REALTIME_SEARCH,
+            RustEngineSupport.REALTIME_MAX_STALENESS,
             RustEngineSupport.ADAPTIVE_DOC_VALUES,
+            RustEngineSupport.ZSTD_TERMS,
+            RustEngineSupport.MERGE_LZ4_HIGH_COMPRESSION,
+            RustEngineSupport.PAGED_ZSTD_STORED_FIELDS,
             RustEngineSupport.STORE_MODE,
             RustEngineSupport.PARTITION_FIELD,
             NODE_ENGINE_ENABLED,
@@ -453,6 +508,21 @@ public class RustSearchPlugin extends Plugin implements
             new SparseVectorFieldMapper.TypeParser(),
             KnnVectorFieldMapper.CONTENT_TYPE,
             new KnnVectorFieldMapper.TypeParser()
+        );
+    }
+
+    /** k-NN's {@code knn_vector} doc-value format, which a shard's {@code docvalue_fields} results carry. */
+    @Override
+    public List<org.opensearch.core.common.io.stream.NamedWriteableRegistry.Entry> getNamedWriteables() {
+        if (stockKnn) {
+            return List.of();
+        }
+        return List.of(
+            new org.opensearch.core.common.io.stream.NamedWriteableRegistry.Entry(
+                org.opensearch.search.DocValueFormat.class,
+                org.lucenerust.opensearch.knn.KnnVectorFieldData.Format.NAME,
+                org.lucenerust.opensearch.knn.KnnVectorFieldData.Format::fromStream
+            )
         );
     }
 
@@ -500,7 +570,24 @@ public class RustSearchPlugin extends Plugin implements
         IndexNameExpressionResolver indexNameExpressionResolver,
         Supplier<DiscoveryNodes> nodesInCluster
     ) {
-        return List.of(new RestStatsAction(stats, readers, libraryPath));
+        List<RestHandler> handlers = new ArrayList<>();
+        handlers.add(new RestStatsAction(stats, readers, libraryPath));
+        if (stockKnn == false) {
+            handlers.addAll(KnnRestHandlers.all(clusterService::get, indexNameExpressionResolver));
+        }
+        return handlers;
+    }
+
+    @Override
+    public List<ActionHandler<? extends ActionRequest, ? extends ActionResponse>> getActions() {
+        if (stockKnn) {
+            return List.of();
+        }
+        return List.of(
+            new ActionHandler<>(KnnStatsTransport.Action.INSTANCE, KnnStatsTransport.TransportAction.class),
+            new ActionHandler<>(KnnShardsTransport.WarmupAction.INSTANCE, KnnShardsTransport.WarmupTransportAction.class),
+            new ActionHandler<>(KnnShardsTransport.ClearCacheAction.INSTANCE, KnnShardsTransport.ClearCacheTransportAction.class)
+        );
     }
 
     @Override

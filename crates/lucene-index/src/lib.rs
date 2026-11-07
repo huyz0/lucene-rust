@@ -26,6 +26,8 @@ pub mod index_upgrader;
 pub mod index_writer;
 pub mod indexing_chain;
 pub mod inverter;
+pub mod ivf_vectors;
+pub mod live_timing;
 pub mod merge;
 pub mod merge_policy;
 pub mod merge_rate_limiter;

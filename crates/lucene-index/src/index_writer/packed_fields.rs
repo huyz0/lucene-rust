@@ -60,7 +60,9 @@ const STRING: u8 = 5;
 /// A buffer's [`ExplicitFields`], in the order they were added.
 #[derive(Default)]
 pub(crate) struct PackedFields {
-    blocks: Vec<Vec<u8>>,
+    /// Every block but the last is full and never changes, so a
+    /// [`Self::snapshot`] shares them.
+    blocks: Vec<std::sync::Arc<Vec<u8>>>,
     /// Per block, its first document and how many kept documents come
     /// before it: where a read from a document on starts.
     block_starts: Vec<(usize, usize)>,
@@ -82,7 +84,7 @@ impl PackedFields {
     pub(crate) fn ram_bytes(&self) -> usize {
         self.blocks
             .iter()
-            .map(Vec::capacity)
+            .map(|b| b.capacity())
             .chain(self.kept.iter().map(ExplicitFields::ram_bytes))
             .fold(0, usize::saturating_add)
     }
@@ -124,23 +126,29 @@ impl PackedFields {
                 if i == limit {
                     return Ok(());
                 }
+                let wanted = i >= start;
                 match r.byte()? {
                     PACKED => {
                         shape.read(&mut r)?;
-                        shape.decode_into(&mut r, &mut doc)?;
+                        if wanted {
+                            shape.decode_into(&mut r, &mut doc)?;
+                        } else {
+                            shape.skip(&mut r)?;
+                        }
                     }
-                    SAME_SHAPE => shape.decode_into(&mut r, &mut doc)?,
+                    SAME_SHAPE if wanted => shape.decode_into(&mut r, &mut doc)?,
+                    SAME_SHAPE => shape.skip(&mut r)?,
                     KEPT => {
                         let k = kept.next().ok_or_else(|| {
                             explicit_error("packed fields: a kept document is missing")
                         })?;
-                        if i >= start {
+                        if wanted {
                             doc.clone_from(k);
                         }
                     }
                     _ => return Err(corrupt()),
                 }
-                if i >= start {
+                if wanted {
                     f(i.wrapping_sub(start), &mut doc)?;
                 }
                 i = i.saturating_add(1);
@@ -203,16 +211,35 @@ impl PackedFields {
     fn append(&mut self, record: &[u8], at: (usize, usize)) -> usize {
         if let Some(block) = self.blocks.last_mut() {
             if block.capacity().saturating_sub(block.len()) >= record.len() {
-                block.extend_from_slice(record);
+                // The last block is this buffer's alone: a snapshot copies it.
+                std::sync::Arc::make_mut(block).extend_from_slice(record);
                 return 0;
             }
         }
         let mut block = Vec::with_capacity(BLOCK.max(record.len()));
         block.extend_from_slice(record);
         let allocated = block.capacity();
-        self.blocks.push(block);
+        self.blocks.push(std::sync::Arc::new(block));
         self.block_starts.push(at);
         allocated
+    }
+
+    /// The documents buffered now, apart from this buffer: the full blocks
+    /// shared, the last one copied.
+    pub(crate) fn snapshot(&self) -> Self {
+        let mut blocks = self.blocks.clone();
+        if let Some(last) = blocks.last_mut() {
+            *last = std::sync::Arc::new(last.as_slice().to_vec());
+        }
+        PackedFields {
+            blocks,
+            block_starts: self.block_starts.clone(),
+            kept: self.kept.clone(),
+            len: self.len,
+            last_shape: Vec::new(),
+            shape: Vec::new(),
+            scratch: Vec::new(),
+        }
     }
 
     /// The fields back, in the order they were added.
@@ -468,6 +495,21 @@ impl Shape {
         Ok(())
     }
 
+    /// Moves `r` past one document's values, checked as
+    /// [`Self::decode_into`] checks them but not materialized.
+    fn skip(&self, r: &mut Reader<'_>) -> Result<()> {
+        if !self.set {
+            return Err(corrupt());
+        }
+        for _ in self.inverted.iter().filter(|&&(_, has_norm)| has_norm) {
+            r.vlong()?;
+        }
+        for &(_, kind) in self.doc_values.iter().chain(&self.points) {
+            read_value(r, kind)?;
+        }
+        Ok(())
+    }
+
     /// Decodes one document's values over `out`, reusing its vectors.
     fn decode_into(&self, r: &mut Reader<'_>, out: &mut ExplicitFields) -> Result<()> {
         if !self.set {
@@ -494,23 +536,13 @@ impl Shape {
             values.clear();
             values.reserve(shape.len());
             for &(field_number, kind) in shape {
-                let value = match kind {
-                    LONG => FieldValue::Long(unzigzag(r.vlong()?)),
-                    INT => {
-                        FieldValue::Int(i32::try_from(unzigzag(r.vlong()?)).map_err(|_| corrupt())?)
-                    }
-                    FLOAT => FieldValue::Float(f32::from_bits(u32::from_le_bytes(r.array()?))),
-                    DOUBLE => FieldValue::Double(f64::from_bits(u64::from_le_bytes(r.array()?))),
-                    BINARY => {
-                        let len = r.len()?;
-                        FieldValue::Binary(r.bytes(len)?.to_vec())
-                    }
-                    STRING => {
-                        let len = r.len()?;
-                        let s = std::str::from_utf8(r.bytes(len)?).map_err(|_| corrupt())?;
-                        FieldValue::String(s.to_string())
-                    }
-                    _ => return Err(corrupt()),
+                let value = match read_value(r, kind)? {
+                    Value::Long(x) => FieldValue::Long(x),
+                    Value::Int(x) => FieldValue::Int(x),
+                    Value::Float(x) => FieldValue::Float(x),
+                    Value::Double(x) => FieldValue::Double(x),
+                    Value::Binary(b) => FieldValue::Binary(b.to_vec()),
+                    Value::String(s) => FieldValue::String(s.to_string()),
                 };
                 values.push(StoredField {
                     field_number,
@@ -522,6 +554,35 @@ impl Shape {
         out.term_vectors.clear();
         Ok(())
     }
+}
+
+/// A packed value, its bytes borrowed from the block.
+enum Value<'a> {
+    Long(i64),
+    Int(i32),
+    Float(f32),
+    Double(f64),
+    Binary(&'a [u8]),
+    String(&'a str),
+}
+
+/// Reads one value of `kind`, as [`encode_values`] wrote it.
+fn read_value<'a>(r: &mut Reader<'a>, kind: u8) -> Result<Value<'a>> {
+    Ok(match kind {
+        LONG => Value::Long(unzigzag(r.vlong()?)),
+        INT => Value::Int(i32::try_from(unzigzag(r.vlong()?)).map_err(|_| corrupt())?),
+        FLOAT => Value::Float(f32::from_bits(u32::from_le_bytes(r.array()?))),
+        DOUBLE => Value::Double(f64::from_bits(u64::from_le_bytes(r.array()?))),
+        BINARY => {
+            let len = r.len()?;
+            Value::Binary(r.bytes(len)?)
+        }
+        STRING => {
+            let len = r.len()?;
+            Value::String(std::str::from_utf8(r.bytes(len)?).map_err(|_| corrupt())?)
+        }
+        _ => return Err(corrupt()),
+    })
 }
 
 fn zigzag(v: i64) -> u64 {

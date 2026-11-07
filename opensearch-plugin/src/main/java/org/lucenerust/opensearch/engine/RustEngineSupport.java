@@ -65,6 +65,22 @@ public final class RustEngineSupport {
     );
 
     /**
+     * With {@link #REALTIME_SEARCH}, how old a view of the buffers a search may read: the writer
+     * opens one every few milliseconds with the buffers written ahead, and searches share it, and
+     * its readers, instead of each opening its own. A search then misses at most the writes of the
+     * last this long, and {@code refresh=wait_for} makes the searches after it read a fresh view.
+     * Zero, the default, gives every search a view of every write acknowledged before it.
+     */
+    public static final Setting<org.opensearch.common.unit.TimeValue> REALTIME_MAX_STALENESS = Setting.timeSetting(
+        "index.lucene_rust.realtime_max_staleness",
+        org.opensearch.common.unit.TimeValue.ZERO,
+        org.opensearch.common.unit.TimeValue.ZERO,
+        org.opensearch.common.unit.TimeValue.timeValueSeconds(1),
+        Setting.Property.IndexScope,
+        Setting.Property.Final
+    );
+
+    /**
      * Whether the Rust engine writes doc values in the {@code RustAdaptive} format: numeric and
      * date columns as adaptive blocks (delta, GCD, decimal and bit-packing per 128 values), several
      * times smaller for timestamps and decimal doubles. Off by default, which writes stock
@@ -76,6 +92,50 @@ public final class RustEngineSupport {
         "index.lucene_rust.adaptive_doc_values",
         false,
         Setting.Property.IndexScope
+    );
+
+    /**
+     * Whether the Rust engine writes terms dictionaries in the {@code RustZstd104} postings format:
+     * Lucene104's postings under a block-tree dictionary whose term blocks are zstd-compressed where
+     * that saves an eighth or more, a large field's against a dictionary trained on its own blocks
+     * (about a third smaller for text, more for keywords, ids and log fields). Off by default, which
+     * writes stock Lucene104 postings. Only nodes with this plugin read {@code RustZstd104}
+     * segments; to go back, close the index, set this to false, reopen it and force-merge, which
+     * rewrites every segment stock-readable.
+     */
+    public static final Setting<Boolean> ZSTD_TERMS = Setting.boolSetting(
+        "index.lucene_rust.zstd_terms",
+        false,
+        Setting.Property.IndexScope
+    );
+
+    /**
+     * Whether merges write {@code index.codec: default} stored fields with a high-compression LZ4
+     * match finder: the same LZ4 format, which OpenSearch's own engine and stock Lucene read, about
+     * 8-33% smaller, and several times slower to compress. Flushes keep the fast compressor, and a
+     * segment already written this way is copied by later merges rather than compressed again. Off
+     * by default, like stock.
+     */
+    public static final Setting<Boolean> MERGE_LZ4_HIGH_COMPRESSION = Setting.boolSetting(
+        "index.lucene_rust.stored_fields.merge_lz4_high_compression",
+        false,
+        Setting.Property.IndexScope
+    );
+
+    /**
+     * Whether the Rust engine writes its paged zstd stored fields (codec {@code
+     * LuceneRustZstdPaged104}) instead of {@code index.codec}'s: 16 KiB chunks of one zstd frame each,
+     * packed so no chunk crosses a 16 KiB page, which a page cache then decodes page by page. A merge
+     * of more than 16 MiB of stored fields trains a dictionary for its segment. At {@code
+     * index.codec.compression_level} when {@code index.codec} is a zstd codec, level 3 otherwise.
+     * About as small as {@code zstd} and 3x faster to fetch a document from; only this plugin reads
+     * these segments.
+     */
+    public static final Setting<Boolean> PAGED_ZSTD_STORED_FIELDS = Setting.boolSetting(
+        "index.lucene_rust.stored_fields.paged_zstd",
+        false,
+        Setting.Property.IndexScope,
+        Setting.Property.Final
     );
 
     /**
@@ -238,6 +298,28 @@ public final class RustEngineSupport {
             + "]";
     }
 
+    /** The {@code NativeBridge.STORED_FIELDS_*} the Rust writer writes for {@code settings}. */
+    static int storedFields(IndexSettings settings) {
+        if (PAGED_ZSTD_STORED_FIELDS.get(settings.getSettings())) {
+            return NativeBridge.STORED_FIELDS_ZSTD_PAGED;
+        }
+        return CODECS.getOrDefault(settings.getValue(EngineConfig.INDEX_CODEC_SETTING), NativeBridge.STORED_FIELDS_BEST_SPEED);
+    }
+
+    /**
+     * The zstd level: {@code index.codec.compression_level}, which OpenSearch only accepts with a zstd
+     * {@code index.codec}; paged zstd under any other codec takes zstd's default, 3.
+     */
+    static int compressionLevel(IndexSettings settings) {
+        int stored = CODECS.getOrDefault(settings.getValue(EngineConfig.INDEX_CODEC_SETTING), NativeBridge.STORED_FIELDS_BEST_SPEED);
+        if (PAGED_ZSTD_STORED_FIELDS.get(settings.getSettings())
+            && stored != NativeBridge.STORED_FIELDS_ZSTD
+            && stored != NativeBridge.STORED_FIELDS_ZSTD_NO_DICT) {
+            return 3;
+        }
+        return settings.getValue(EngineConfig.INDEX_CODEC_COMPRESSION_LEVEL_SETTING);
+    }
+
     /**
      * Why the Rust writer cannot serve an index configured like this, or {@code null} when it can.
      * An index that asks for the Rust engine gets this as its creation error; one that only
@@ -248,8 +330,13 @@ public final class RustEngineSupport {
         if (CODECS.containsKey(codec) == false) {
             return "the Rust engine writes the codecs " + new java.util.TreeSet<>(CODECS.keySet()) + " only, and index.codec is [" + codec + "]";
         }
-        if (CODECS.get(codec) != NativeBridge.STORED_FIELDS_BEST_SPEED
+        if ((CODECS.get(codec) != NativeBridge.STORED_FIELDS_BEST_SPEED || PAGED_ZSTD_STORED_FIELDS.get(settings.getSettings()))
             && org.lucenerust.opensearch.sparse.SparseSettings.SPARSE_INDEX.get(settings.getSettings())) {
+            if (PAGED_ZSTD_STORED_FIELDS.get(settings.getSettings())) {
+                return "the Rust engine writes an index.sparse index with the default stored fields only, and "
+                    + PAGED_ZSTD_STORED_FIELDS.getKey()
+                    + " is set";
+            }
             return "the Rust engine writes an index.sparse index with the default codec only, and index.codec is [" + codec + "]";
         }
         if (indexSorted && unsupportedSort(settings.getSettings()) != null) {
@@ -343,6 +430,15 @@ public final class RustEngineSupport {
         return null;
     }
 
+    /**
+     * Whether the index is a k-NN one ({@code index.knn}) whose {@code knn_vector} fields this node
+     * serves: its segments are written under the k-NN codec's name, which reads their derived source.
+     */
+    static boolean knnIndex(EngineConfig config) {
+        return refuseKnnVector == false
+            && org.lucenerust.opensearch.knn.KnnSettings.KNN_INDEX.get(config.getIndexSettings().getSettings());
+    }
+
     /** {@link #PARTITION_FIELD}, or null when it names none. */
     static String partitionField(org.opensearch.common.settings.Settings settings) {
         String field = PARTITION_FIELD.get(settings);
@@ -393,12 +489,15 @@ public final class RustEngineSupport {
             org.lucenerust.opensearch.sparse.SparseSettings.SPARSE_INDEX.get(config.getIndexSettings().getSettings()),
             REALTIME_SEARCH.get(config.getIndexSettings().getSettings()),
             ADAPTIVE_DOC_VALUES.get(config.getIndexSettings().getSettings()),
+            ZSTD_TERMS.get(config.getIndexSettings().getSettings()),
+            MERGE_LZ4_HIGH_COMPRESSION.get(config.getIndexSettings().getSettings()),
             partitionField(config.getIndexSettings().getSettings()),
+            knnIndex(config),
             config.getIndexSort(),
             parentField(config),
             maxDocs,
-            CODECS.getOrDefault(config.getIndexSettings().getValue(EngineConfig.INDEX_CODEC_SETTING), NativeBridge.STORED_FIELDS_BEST_SPEED),
-            config.getIndexSettings().getValue(EngineConfig.INDEX_CODEC_COMPRESSION_LEVEL_SETTING),
+            storedFields(config.getIndexSettings()),
+            compressionLevel(config.getIndexSettings()),
             config.getAnalyzer(),
             config.getSimilarity(),
             config.getIndexSettings().getIndexVersionCreated().luceneVersion.major,
@@ -414,6 +513,7 @@ public final class RustEngineSupport {
         long wait = indexSettings.isMergeOnFlushEnabled() ? indexSettings.getMaxFullFlushMergeWaitTime().millis() : 0;
         boolean success = false;
         try {
+            writer.setLiveStaleness(REALTIME_MAX_STALENESS.get(indexSettings.getSettings()));
             refreshMergePolicy(writer, config);
             writer.setMergeOnFlush(Math.max(wait, 0), wait > 0 && indexSettings.getMergeOnFlushPolicy().isPresent());
             refreshMergeScheduler(writer, config);

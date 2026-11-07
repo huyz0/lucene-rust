@@ -179,6 +179,7 @@ mod lifecycle;
 pub(crate) mod packed_fields;
 pub(crate) mod pending_postings;
 mod pluggable_merge;
+mod segment_attributes;
 mod segment_partitions;
 pub(crate) use segment_partitions::set_attribute;
 pub use segment_partitions::SegmentPartitioning;
@@ -316,6 +317,9 @@ pub enum Error {
     /// share one `Error` type, the way they share one on-disk format family.
     #[error(transparent)]
     Vectors(#[from] vectors::Error),
+    /// The IVF index of a `LuceneRustIvfVectorsFormat` instance.
+    #[error(transparent)]
+    Ivf(#[from] lucene_ivf::Error),
     #[error("set_vector_field: no field named {0:?} in this writer's field list")]
     UnknownVectorField(String),
     #[error(transparent)]
@@ -958,6 +962,12 @@ pub(crate) struct IndexingConfig {
     shuffle_forced_merges: bool,
     /// See [`IndexWriter::set_segment_partitioning`].
     segment_partitioning: Option<SegmentPartitioning>,
+    /// See [`IndexWriter::add_segment_list_value`].
+    segment_list_attributes: Vec<(String, Vec<String>)>,
+    /// See [`IndexWriter::set_merge_union_attributes`].
+    merge_union_attributes: Vec<String>,
+    /// See [`IndexWriter::set_segment_attribute`].
+    segment_attributes: Vec<(String, String)>,
     /// `IndexWriterConfig.getSimilarity()`, as far as the writer reads it
     /// (`computeNorm`): `None` is Lucene's default, `BM25Similarity`. See
     /// [`IndexWriter::set_similarity`].
@@ -975,6 +985,17 @@ pub(crate) struct IndexingConfig {
     /// the codec routes it anywhere but the default `Lucene90DocValuesFormat()`
     /// -- see [`IndexWriter::set_default_doc_values_format`].
     default_doc_values_format: per_field_doc_values::Lucene90DocValuesFormat,
+    /// The format a field gets when neither [`Self::postings_formats`] nor
+    /// the codec routes it anywhere but the default `Lucene104PostingsFormat()`
+    /// -- see [`IndexWriter::set_default_postings_format`].
+    default_postings_format: per_field_postings::Lucene104PostingsFormat,
+    /// Whether merges write `BEST_SPEED` stored fields with the
+    /// high-compression LZ4 match finder -- see
+    /// [`IndexWriter::set_merge_lz4_high_compression`].
+    merge_lz4_high_compression: bool,
+    /// The least source `.fdt` bytes for which a merge trains a paged zstd
+    /// dictionary -- see [`IndexWriter::set_zstd_dictionary_min_bytes`].
+    zstd_dictionary_min_bytes: u64,
     /// `PerFieldKnnVectorsFormat.getKnnVectorsFormatForField`: the fields
     /// routed to a KNN format other than the default
     /// `Lucene99HnswVectorsFormat(hnsw_m, hnsw_beam_width)` -- see
@@ -1270,6 +1291,175 @@ pub(crate) struct BufferLimit {
     /// field's norms, doc values, points and stored fields but no terms,
     /// for a caller that reads the documents' terms elsewhere.
     pub(crate) postings: bool,
+    /// The documents' fields as columns, numbered from `start`, when the
+    /// caller kept them: written as they are instead of being read from
+    /// each document.
+    pub(crate) columns: Option<ChunkColumns>,
+    /// Whether the doc values are written: without them a reader takes
+    /// them from [`LazyDocValues`], one field when it is first read.
+    pub(crate) doc_values: bool,
+    /// Whether the points are written.
+    pub(crate) points: bool,
+}
+
+/// A run of a buffer's documents as columns, for writing them without
+/// decoding each document.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ChunkColumns {
+    /// The fields some document has in any role but stored, and none
+    /// stores term vectors.
+    pub(crate) present: Vec<i32>,
+    /// Each norms field's norm by document, `None` where it has none.
+    pub(crate) norms: Vec<(i32, Vec<Option<i64>>)>,
+    pub(crate) doc_values: Vec<(i32, PrebuiltDocValues)>,
+    /// The points fields some document has.
+    pub(crate) points: Vec<lucene_codecs::points::PackedPointsField>,
+}
+
+/// Appends `value` as `info`'s packed point; `false` when it is not one.
+pub(crate) fn encode_live_point(info: &FieldInfo, value: &FieldValue, out: &mut Vec<u8>) -> bool {
+    let config = PointsFieldConfig {
+        name: String::new(),
+        field_number: info.number,
+        num_dims: info.point_dimension_count,
+        num_index_dims: info.point_index_dimension_count,
+        bytes_per_dim: info.point_num_bytes,
+    };
+    let len = out.len();
+    let ok = info.point_dimension_count > 0 && encode_point(&config, 0, value, out).is_ok();
+    if !ok {
+        out.truncate(len);
+    }
+    ok
+}
+
+/// A run of buffered documents' doc values, kept as columns and encoded a
+/// field at a time when a reader first reads that field.
+pub struct LazyDocValues {
+    cfg: std::sync::Arc<IndexingConfig>,
+    columns: Vec<(i32, PrebuiltDocValues)>,
+    max_doc: i32,
+}
+
+/// One field's doc values as a `.dvm`/`.dvd` pair of their own.
+#[derive(Debug)]
+pub struct EncodedDocValues {
+    pub dvm: Vec<u8>,
+    pub dvd: Vec<u8>,
+    /// The pair's codec suffix (`Lucene90_0`), for parsing the `.dvm`.
+    pub segment_suffix: String,
+}
+
+impl LazyDocValues {
+    /// Whether `columns` hold every doc-values field of `present` in its
+    /// own type, so that each encodes from its column as a written segment
+    /// would hold it; and the writer's codec checks no doc values (a check
+    /// would fail a read).
+    pub(crate) fn covers(
+        cfg: &IndexingConfig,
+        columns: &[(i32, PrebuiltDocValues)],
+        present: &[i32],
+    ) -> bool {
+        cfg.codec.is_none()
+            && cfg
+                .fields
+                .iter()
+                .filter(|f| present.contains(&f.number) && f.doc_values_type != DocValuesType::None)
+                .all(|f| {
+                    columns
+                        .iter()
+                        .any(|(n, c)| *n == f.number && c.doc_values_type() == f.doc_values_type)
+                })
+    }
+
+    pub(crate) fn new(
+        cfg: std::sync::Arc<IndexingConfig>,
+        columns: Vec<(i32, PrebuiltDocValues)>,
+        max_doc: i32,
+    ) -> Self {
+        Self {
+            cfg,
+            columns,
+            max_doc,
+        }
+    }
+
+    /// The fields with a column.
+    pub fn fields(&self) -> impl Iterator<Item = i32> + '_ {
+        self.columns.iter().map(|(n, _)| *n)
+    }
+
+    /// Field `field_number`'s doc values as a segment `segment_id` would
+    /// hold them, `None` when no document has it.
+    pub fn encode(
+        &self,
+        field_number: i32,
+        segment_id: &[u8; ID_LENGTH],
+    ) -> Result<Option<EncodedDocValues>> {
+        let Some(info) = self.cfg.fields.iter().find(|f| f.number == field_number) else {
+            return Ok(None);
+        };
+        let config = DocValuesFieldConfig {
+            name: info.name.clone(),
+            field_number,
+            doc_values_type: info.doc_values_type,
+            skip_index: info.doc_values_skip_index_type
+                != lucene_codecs::field_infos::DocValuesSkipIndexType::None,
+        };
+        let Some(groups) = self.cfg.build_prebuilt_doc_values_groups(
+            &self.columns,
+            self.max_doc,
+            std::slice::from_ref(&config),
+            &[info.name.as_str()],
+            segment_id,
+        ) else {
+            return Ok(None);
+        };
+        Ok(groups?.into_iter().next().map(|g| EncodedDocValues {
+            segment_suffix: format!("{}_{}", g.format_name, g.suffix),
+            dvm: g.dvm,
+            dvd: g.dvd,
+        }))
+    }
+}
+
+/// One field's doc values for a run of documents, in the shape the
+/// doc-values writer takes.
+#[derive(Debug, Clone)]
+pub(crate) enum PrebuiltDocValues {
+    Numeric(Vec<i64>),
+    SparseNumeric(Vec<(i32, i64)>),
+    SortedNumeric(doc_values::SortedNumericColumn),
+    Binary(doc_values::BinaryColumn),
+    Sorted(doc_values::SortedOrdsColumn),
+    SortedSet(doc_values::SortedSetOrdsColumn),
+}
+
+impl PrebuiltDocValues {
+    fn doc_values_type(&self) -> DocValuesType {
+        match self {
+            PrebuiltDocValues::Numeric(_) | PrebuiltDocValues::SparseNumeric(_) => {
+                DocValuesType::Numeric
+            }
+            PrebuiltDocValues::SortedNumeric(_) => DocValuesType::SortedNumeric,
+            PrebuiltDocValues::Binary(_) => DocValuesType::Binary,
+            PrebuiltDocValues::Sorted(_) => DocValuesType::Sorted,
+            PrebuiltDocValues::SortedSet(_) => DocValuesType::SortedSet,
+        }
+    }
+
+    fn as_dense_field(&self, n: i32) -> doc_values::DenseField<'_> {
+        match self {
+            PrebuiltDocValues::Numeric(v) => doc_values::DenseField::Numeric(n, v),
+            PrebuiltDocValues::SparseNumeric(v) => doc_values::DenseField::SparseNumeric(n, v),
+            PrebuiltDocValues::SortedNumeric(c) => {
+                doc_values::DenseField::SortedNumericColumn(n, c)
+            }
+            PrebuiltDocValues::Binary(c) => doc_values::DenseField::BinaryColumn(n, c),
+            PrebuiltDocValues::Sorted(c) => doc_values::DenseField::SortedOrds(n, c),
+            PrebuiltDocValues::SortedSet(c) => doc_values::DenseField::SortedSetOrds(n, c),
+        }
+    }
 }
 
 /// A buffer's explicit document fields: as structs, or packed as the
@@ -1665,16 +1855,12 @@ impl IndexingConfig {
         &self,
         field: &str,
     ) -> per_field_postings::Lucene104PostingsFormat {
-        self.postings_formats
-            .iter()
-            .find(|(name, _)| name == field)
-            .map(|(_, format)| *format)
-            .or_else(|| {
-                self.codec
-                    .as_ref()
-                    .map(|c| c.postings_format_for_field(field))
-            })
-            .unwrap_or_default()
+        crate::merge::route_postings_format(
+            field,
+            &self.postings_formats,
+            self.codec.as_deref(),
+            self.default_postings_format,
+        )
     }
 
     /// `PerFieldPostingsFormat.FieldsWriter.write`: this segment's postings,
@@ -1792,6 +1978,8 @@ impl IndexingConfig {
             vemf: Input,
             graph: Option<(Input, Input)>,
             quantized: Option<(Input, Input)>,
+            /// A `LuceneRustIvfVectorsFormat` group's `.ivm`, `.ivp`, `.ivv`.
+            ivf: Option<crate::ivf_vectors::IvfInputs>,
         }
         type RawVectorFiles = Vec<RawVectorGroup>;
         /// A retired (9.0-9.8) HNSW format's `.vem`/`.vec`/`.vex` triple,
@@ -1841,6 +2029,9 @@ impl IndexingConfig {
             field_infos: Vec<FieldInfo>,
             index_sort: Option<Vec<segment_info::IndexSortField>>,
             has_blocks: bool,
+            /// Whether the source's `.si` records
+            /// [`segment_writer::LZ4_HC_ATTRIBUTE`].
+            lz4_hc: bool,
             /// This source's `SegmentInfo.minVersion` -- Java's
             /// `LeafMetaData.minVersion()`, which `SegmentMerger` folds into
             /// the merged segment's.
@@ -2194,12 +2385,30 @@ impl IndexingConfig {
                     // HNSW formats always write `.vem`/`.vex` (with
                     // `numLevels = 0` below `HNSW_GRAPH_THRESHOLD`).
                     vectors.push(RawVectorGroup {
-                        flat_quantized: suffix.rsplit_once('_').map(|(f, _)| f)
-                            == Some(lucene_codecs::scalar_quantized_vectors::NAME),
+                        flat_quantized: suffix
+                            .rsplit_once('_')
+                            .and_then(|(f, _)| per_field_knn_vectors::for_name(f))
+                            .is_some_and(|f| {
+                                matches!(
+                                    f.files_format(),
+                                    per_field_knn_vectors::KnnVectorsFormat::ScalarQuantized { .. }
+                                )
+                            }),
                         vec: seg_dir.open(&format!("{seg}.vec"))?,
                         vemf: seg_dir.open(&format!("{seg}.vemf"))?,
                         graph: pair("vem", "vex")?,
                         quantized: pair("vemq", "veq")?,
+                        ivf: if listed("ivm") {
+                            Some(crate::ivf_vectors::IvfInputs {
+                                meta: seg_dir.open(&format!("{seg}.ivm"))?,
+                                postings: std::sync::Arc::new(seg_dir.open(&format!("{seg}.ivp"))?),
+                                vectors: std::sync::Arc::new(seg_dir.open(&format!("{seg}.ivv"))?),
+                                segment_id: sci.segment_id,
+                                suffix: suffix.clone(),
+                            })
+                        } else {
+                            None
+                        },
                         suffix,
                     });
                 }
@@ -2258,6 +2467,7 @@ impl IndexingConfig {
                 field_infos: own_field_infos,
                 index_sort: si.index_sort.clone(),
                 has_blocks: si.has_blocks,
+                lz4_hc: segment_writer::has_lz4_hc_attribute(&si.attributes),
                 min_version: si.min_version,
                 // `SegmentCommitInfo::files`, not `si.files`: a generational
                 // `.dvm`/`.dvd` is never listed in the `.si` (it did not
@@ -2676,6 +2886,7 @@ impl IndexingConfig {
             vectors::FlatVectorsReader<'a>,
             Option<hnsw_vectors::HnswVectorsReader<'a>>,
             Option<lucene_codecs::scalar_quantized_vectors::ScalarQuantizedVectorsReader<'a>>,
+            Option<&'a crate::ivf_vectors::IvfInputs>,
         );
         let opened_vector_groups: Vec<Vec<OpenedVectorGroup>> = opened
             .iter()
@@ -2683,12 +2894,13 @@ impl IndexingConfig {
                 o.vectors
                     .iter()
                     .map(|g| {
-                        let flat = vectors::FlatVectorsReader::open(
+                        let mut flat = vectors::FlatVectorsReader::open(
                             &g.vemf,
                             &g.vec,
                             &o.sci.segment_id,
                             &g.suffix,
                         )?;
+                        flat.resolve_similarities_from(&o.field_infos)?;
                         let graph = match &g.graph {
                             Some((vem, vex)) => Some(hnsw_vectors::HnswVectorsReader::open(
                                 vem,
@@ -2711,7 +2923,7 @@ impl IndexingConfig {
                             ),
                             _ => None,
                         };
-                        Ok::<_, Error>((flat, graph, quantized))
+                        Ok::<_, Error>((flat, graph, quantized, g.ivf.as_ref()))
                     })
                     .collect::<std::result::Result<Vec<_>, Error>>()
             })
@@ -2775,19 +2987,22 @@ impl IndexingConfig {
                         flat: r.flat(),
                         graph: None,
                         flat_quantized: None,
+                        ivf: None,
                     }),
-                    None => {
-                        groups.extend(current.iter().map(|(flat, graph, q)| merge::VectorGroup {
+                    None => groups.extend(current.iter().map(|(flat, graph, q, ivf)| {
+                        merge::VectorGroup {
                             flat,
                             graph: graph.as_ref(),
                             flat_quantized: q.as_ref(),
-                        }))
-                    }
+                            ivf: *ivf,
+                        }
+                    })),
                 }
                 groups.extend(quantized.iter().map(|q| merge::VectorGroup {
                     flat: q.flat(),
                     graph: q.graph(),
                     flat_quantized: None,
+                    ivf: None,
                 }));
                 (!groups.is_empty()).then_some(merge::SourceVectors { groups })
             })
@@ -2992,6 +3207,10 @@ impl IndexingConfig {
                 postings_formats: self.postings_formats.clone(),
                 doc_values_formats: self.doc_values_formats.clone(),
                 default_doc_values_format: self.default_doc_values_format,
+                default_postings_format: self.default_postings_format,
+                stored_fields_lz4_high_compression: self.merge_lz4_high_compression,
+                lz4_high_compression_sources: opened.iter().map(|o| o.lz4_hc).collect(),
+                zstd_dictionary_min_bytes: self.zstd_dictionary_min_bytes,
                 knn_vectors_formats: self.knn_vectors_formats.clone(),
                 codec: self.codec.clone(),
                 reorder,
@@ -3395,6 +3614,127 @@ impl IndexingConfig {
         segment_fields: &[&str],
         segment_id: &[u8; ID_LENGTH],
     ) -> Result<Vec<DocValuesGroupOutput>> {
+        self.doc_values_groups_with(
+            i32::try_from(docs.len()).unwrap_or(i32::MAX),
+            configs,
+            segment_fields,
+            segment_id,
+            |group_configs, suffix, format| {
+                IndexWriter::build_doc_values_output(
+                    docs,
+                    group_configs,
+                    segment_id,
+                    suffix,
+                    format,
+                )
+            },
+        )
+    }
+
+    /// [`Self::build_doc_values_groups`] from columns already built, one
+    /// per field of `configs` (by field number); `None` when one is missing
+    /// or of another type.
+    fn build_prebuilt_doc_values_groups(
+        &self,
+        columns: &[(i32, PrebuiltDocValues)],
+        max_doc: i32,
+        configs: &[DocValuesFieldConfig],
+        segment_fields: &[&str],
+        segment_id: &[u8; ID_LENGTH],
+    ) -> Option<Result<Vec<DocValuesGroupOutput>>> {
+        let column = |n: i32| columns.iter().find(|(f, _)| *f == n).map(|(_, c)| c);
+        let covered = configs.iter().all(|c| {
+            column(c.field_number).is_some_and(|col| col.doc_values_type() == c.doc_values_type)
+        });
+        if !covered {
+            return None;
+        }
+        Some(self.doc_values_groups_with(
+            max_doc,
+            configs,
+            segment_fields,
+            segment_id,
+            |group_configs, suffix, format| {
+                let skip_indexes: Vec<i32> = group_configs
+                    .iter()
+                    .filter(|c| c.skip_index)
+                    .map(|c| c.field_number)
+                    .collect();
+                let fields: Vec<doc_values::DenseField<'_>> = group_configs
+                    .iter()
+                    .filter_map(|c| {
+                        column(c.field_number).map(|col| col.as_dense_field(c.field_number))
+                    })
+                    .collect();
+                Ok(doc_values::write_fields_with_format(
+                    &fields,
+                    &skip_indexes,
+                    max_doc,
+                    segment_id,
+                    &format!("{}_{suffix}", format.name()),
+                    format,
+                )?)
+            },
+        ))
+    }
+
+    /// Every doc-values field's files for `docs`, written from each
+    /// document's values and from `columns`, as `(dvm, dvd, dvs)` per
+    /// group.
+    #[cfg(test)]
+    #[allow(clippy::type_complexity)]
+    pub(crate) fn doc_values_both_ways(
+        &self,
+        docs: &[&[lucene_codecs::stored_fields::StoredField]],
+        columns: &[(i32, PrebuiltDocValues)],
+    ) -> (
+        Vec<(Vec<u8>, Vec<u8>, Vec<u8>)>,
+        Vec<(Vec<u8>, Vec<u8>, Vec<u8>)>,
+    ) {
+        let configs: Vec<DocValuesFieldConfig> = self
+            .fields
+            .iter()
+            .filter(|f| f.doc_values_type != DocValuesType::None)
+            .map(|f| DocValuesFieldConfig {
+                name: f.name.clone(),
+                field_number: f.number,
+                doc_values_type: f.doc_values_type,
+                skip_index: f.doc_values_skip_index_type
+                    != lucene_codecs::field_infos::DocValuesSkipIndexType::None,
+            })
+            .collect();
+        let names: Vec<&str> = self.fields.iter().map(|f| f.name.as_str()).collect();
+        let id = [7u8; ID_LENGTH];
+        let files = |g: Vec<DocValuesGroupOutput>| {
+            g.into_iter()
+                .map(|g| (g.dvm, g.dvd, g.dvs))
+                .collect::<Vec<_>>()
+        };
+        let decoded = self
+            .build_doc_values_groups(docs, &configs, &names, &id)
+            .unwrap();
+        let max_doc = i32::try_from(docs.len()).unwrap();
+        let prebuilt = self
+            .build_prebuilt_doc_values_groups(columns, max_doc, &configs, &names, &id)
+            .expect("a column per field")
+            .unwrap();
+        (files(decoded), files(prebuilt))
+    }
+
+    /// Groups `configs` by doc-values format and writes each group with
+    /// `build`, checked against the installed codec.
+    fn doc_values_groups_with(
+        &self,
+        max_doc: i32,
+        configs: &[DocValuesFieldConfig],
+        segment_fields: &[&str],
+        segment_id: &[u8; ID_LENGTH],
+        build: impl Fn(
+            &[DocValuesFieldConfig],
+            u32,
+            per_field_doc_values::Lucene90DocValuesFormat,
+        ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)>,
+    ) -> Result<Vec<DocValuesGroupOutput>> {
         let walk = crate::indexing_chain::field_hash_order(segment_fields);
         let rank = |name: &str| {
             walk.iter()
@@ -3416,13 +3756,7 @@ impl IndexingConfig {
                     .filter(|c| group.field_numbers.contains(&c.field_number))
                     .map(|c| (*c).clone())
                     .collect();
-                let (dvm, dvd, dvs) = IndexWriter::build_doc_values_output(
-                    docs,
-                    &group_configs,
-                    segment_id,
-                    group.suffix,
-                    group.format,
-                )?;
+                let (dvm, dvd, dvs) = build(&group_configs, group.suffix, group.format)?;
                 let field_infos = lucene_codecs::field_infos::FieldInfos {
                     fields: self
                         .fields
@@ -3434,7 +3768,7 @@ impl IndexingConfig {
                 check_doc_values(
                     self.codec.as_deref(),
                     &lucene_codecs::codec::DocValuesWrite {
-                        max_doc: i32::try_from(docs.len()).unwrap_or(i32::MAX),
+                        max_doc,
                         segment_id,
                         segment_suffix: &group.codec_suffix(),
                         format_name: group.format.name(),
@@ -4113,6 +4447,7 @@ impl IndexingConfig {
             lucene_codecs::codec::WritePoint::SegmentInfo,
         )?;
         self.partition_segment(&mut flushed.info.attributes, buf.partition);
+        self.record_list_attributes(&mut flushed.info.attributes);
         segment_writer::seal_flushed_segment(dir, segment_name, flushed).map_err(Error::from)
     }
 
@@ -5899,6 +6234,46 @@ impl<'d> IndexWriter<'d> {
         self.cfg_mut().default_doc_values_format = format;
     }
 
+    /// The postings format of every field that would otherwise get the
+    /// default `Lucene104PostingsFormat()` -- neither routed by
+    /// [`Self::set_postings_format_for_field`] nor by the codec to anything
+    /// else. Flushes and merges after this call write it; existing segments
+    /// keep theirs until merged.
+    /// [`Lucene104PostingsFormat::rust_zstd`] here is the plugin's
+    /// `index.lucene_rust.zstd_terms`; setting the default back restores
+    /// stock-readable segments from then on.
+    ///
+    /// [`Lucene104PostingsFormat::rust_zstd`]: per_field_postings::Lucene104PostingsFormat::rust_zstd
+    pub fn set_default_postings_format(
+        &mut self,
+        format: per_field_postings::Lucene104PostingsFormat,
+    ) {
+        self.cfg_mut().default_postings_format = format;
+    }
+
+    /// Whether merged segments' `BEST_SPEED` stored fields are written with the
+    /// high-compression LZ4 match finder ([`lucene_codecs::lz4_hc`]): the
+    /// same LZ4 format, which stock Lucene reads, about 8-33% smaller and
+    /// several times slower to compress. Flushes keep the fast compressor.
+    /// A merged segment written this way records
+    /// [`segment_writer::LZ4_HC_ATTRIBUTE`], so a later merge copies its
+    /// chunks as they are instead of compressing them again; a source without
+    /// it is recompressed once. The plugin's
+    /// `index.lucene_rust.stored_fields.merge_lz4_high_compression`.
+    pub fn set_merge_lz4_high_compression(&mut self, on: bool) {
+        self.cfg_mut().merge_lz4_high_compression = on;
+    }
+
+    /// The least `.fdt` bytes, summed over a merge's sources, for which the
+    /// merged segment of a paged zstd codec
+    /// ([`lucene_codecs::stored_fields::Mode::ZstdPaged`]) gets a trained
+    /// dictionary. Defaults to
+    /// [`lucene_codecs::stored_fields::ZSTD_PAGED_DICTIONARY_MIN_BYTES`];
+    /// `u64::MAX` never trains one.
+    pub fn set_zstd_dictionary_min_bytes(&mut self, bytes: u64) {
+        self.cfg_mut().zstd_dictionary_min_bytes = bytes;
+    }
+
     /// Buffers `node` for the segments already published only -- a
     /// [`crate::concurrent_writer::ConcurrentIndexWriter`] keeps each
     /// in-RAM buffer's own share of it with that buffer.
@@ -6204,9 +6579,16 @@ impl<'d> IndexWriter<'d> {
                 merge_compound_file: None,
                 shuffle_forced_merges: false,
                 segment_partitioning: None,
+                segment_list_attributes: Vec::new(),
+                merge_union_attributes: Vec::new(),
+                segment_attributes: Vec::new(),
                 postings_formats: Vec::new(),
                 doc_values_formats: Vec::new(),
                 default_doc_values_format: Default::default(),
+                default_postings_format: Default::default(),
+                merge_lz4_high_compression: false,
+                zstd_dictionary_min_bytes:
+                    lucene_codecs::stored_fields::ZSTD_PAGED_DICTIONARY_MIN_BYTES,
                 knn_vectors_formats: Vec::new(),
                 codec: None,
                 reader_pool: std::sync::Arc::default(),
@@ -7683,6 +8065,12 @@ impl IndexWriter<'_> {
         )?;
         let infos = segment_infos::parse(&self.dir.open(&name)?, generation)?;
         Ok(self.deleter.hold_segment_files(&infos.segments)?)
+    }
+
+    /// Pins segment `sci`'s files, as [`IndexWriter::hold_commit`] pins a
+    /// commit's; hand them back to [`IndexWriter::release_files`] once.
+    pub(crate) fn hold_segment(&mut self, sci: &SegmentCommitInfo) -> Result<Vec<String>> {
+        Ok(self.deleter.hold_segment_files(std::slice::from_ref(sci))?)
     }
 
     /// Releases a [`IndexWriter::hold_commit`] pin, deleting whatever nothing
@@ -10615,6 +11003,25 @@ impl IndexWriter<'_> {
             files.push(("vemq", vemq));
         }
 
+        if let Some(mut ivf) = crate::ivf_vectors::IvfGroupWriter::new(format, segment_id, suffix)?
+        {
+            for field in flat_fields {
+                if let FieldVectorData::Float32(values) = &field.values {
+                    ivf.add(
+                        &crate::ivf_vectors::IvfField {
+                            number: field.field_number,
+                            similarity: field.similarity,
+                            dimension: usize::try_from(field.dimension).unwrap_or(0),
+                            docs: &field.docs,
+                            vectors: values,
+                        },
+                        &[],
+                    )?;
+                }
+            }
+            files.extend(ivf.finish().into_iter().flatten());
+        }
+
         if let Some((m, beam_width)) = format.graph() {
             // Reopen exactly the bytes just written, and build every graph
             // over *those* -- see this method's doc comment.
@@ -10624,8 +11031,17 @@ impl IndexWriter<'_> {
             // do not change. The first error in field order is returned.
             let graphs: Vec<Option<hnsw::OnHeapHnswGraph>> = {
                 use rayon::prelude::*;
-                let flat =
-                    vectors::FlatVectorsReader::open(&vemf_bytes, &vec_bytes, segment_id, suffix)?;
+                // A half-float instance's flush graph is built over the
+                // vectors as indexed, as `Lucene99HnswVectorsWriter` builds
+                // k-NN's from the field writer's `float[]`s: an in-memory
+                // full-precision copy, ordinal for ordinal.
+                let full;
+                let flat = if vectors::stores_half_floats(suffix) {
+                    full = vectors::write_flat_vectors(flat_fields, max_doc, segment_id, "")?;
+                    vectors::FlatVectorsReader::open(&full.1, &full.0, segment_id, "")?
+                } else {
+                    vectors::FlatVectorsReader::open(&vemf_bytes, &vec_bytes, segment_id, suffix)?
+                };
                 let build = |field: &FlatVectorsField| -> Result<Option<hnsw::OnHeapHnswGraph>> {
                     let count = field.docs.len() as i32;
                     // `Lucene99HnswVectorsWriter.shouldCreateGraph`: a segment
@@ -10727,6 +11143,66 @@ impl IndexWriter<'_> {
                 fields[slot].docs.push(doc_id as i32);
             }
         }
+        Self::write_points_fields(
+            config,
+            fields,
+            configs,
+            segment_id,
+            dir,
+            segment_name,
+            docs.len() as i32,
+        )
+    }
+
+    /// [`Self::build_points_output`] from each field's points already
+    /// packed, numbered within the segment; a field of `configs` absent
+    /// from `columns` has none.
+    fn build_prebuilt_points_output(
+        config: &IndexingConfig,
+        columns: &[lucene_codecs::points::PackedPointsField],
+        configs: &[PointsFieldConfig],
+        segment_id: &[u8; ID_LENGTH],
+        dir: &dyn Directory,
+        segment_name: &str,
+        max_doc: i32,
+    ) -> Result<Option<PointsOutput>> {
+        let fields = configs
+            .iter()
+            .map(|c| {
+                columns
+                    .iter()
+                    .find(|f| f.field_number == c.field_number)
+                    .cloned()
+                    .unwrap_or_else(|| lucene_codecs::points::PackedPointsField {
+                        field_number: c.field_number,
+                        num_dims: c.num_dims,
+                        num_index_dims: c.num_index_dims,
+                        bytes_per_dim: c.bytes_per_dim,
+                        ..Default::default()
+                    })
+            })
+            .collect();
+        Self::write_points_fields(
+            config,
+            fields,
+            configs,
+            segment_id,
+            dir,
+            segment_name,
+            max_doc,
+        )
+    }
+
+    /// Writes the points `fields` hold, one per field of `configs`.
+    fn write_points_fields(
+        config: &IndexingConfig,
+        mut fields: Vec<lucene_codecs::points::PackedPointsField>,
+        configs: &[PointsFieldConfig],
+        segment_id: &[u8; ID_LENGTH],
+        dir: &dyn Directory,
+        segment_name: &str,
+        max_doc: i32,
+    ) -> Result<Option<PointsOutput>> {
         let written_fields: Vec<String> = configs
             .iter()
             .zip(&fields)
@@ -10762,7 +11238,7 @@ impl IndexWriter<'_> {
                     segment: segment_name,
                     id: segment_id,
                     suffix: "",
-                    max_doc: docs.len() as i32,
+                    max_doc,
                 },
                 &config.fields,
                 fields,
@@ -10777,7 +11253,7 @@ impl IndexWriter<'_> {
         let (kdm, kdi, kdd) = lucene_codecs::points::write_packed(
             fields,
             MAX_POINTS_IN_LEAF_NODE,
-            docs.len() as i32,
+            max_doc,
             segment_id,
             "",
         )?;
@@ -11328,7 +11804,8 @@ impl IndexWriter<'_> {
             Some(_) => Some(self.compound_file_decider()?),
             None => None,
         };
-        let attributes = self.merged_partition_attributes(&sources)?;
+        let mut attributes = self.merged_partition_attributes(&sources)?;
+        self.merged_segment_attributes(&sources, &mut attributes)?;
         let held = self.deleter.hold_segment_files(&sources)?;
         Ok(MergePlan {
             early_compound,

@@ -33,6 +33,12 @@ pub const PER_FIELD_FORMAT_KEY: &str = "PerFieldKnnVectorsFormat.format";
 pub const PER_FIELD_SUFFIX_KEY: &str = "PerFieldKnnVectorsFormat.suffix";
 /// `Lucene99HnswVectorsFormat`'s SPI name.
 pub const HNSW_NAME: &str = "Lucene99HnswVectorsFormat";
+/// [`KnnVectorsFormat::Ivf`]'s SPI name.
+pub const IVF_NAME: &str = "LuceneRustIvfVectorsFormat";
+
+/// [`KnnVectorsFormat::Ivf`]'s rerank vector encodings, by wire number:
+/// `f32`, `f16`, `bf16` and 8-bit residuals (`lucene_ivf::VectorEncoding`).
+pub const IVF_RERANK_ENCODINGS: [&str; 4] = ["f32", "f16", "bf16", "int8"];
 
 /// A KNN vectors format a field can be routed to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -40,6 +46,15 @@ pub enum KnnVectorsFormat {
     /// `Lucene99HnswVectorsFormat(maxConn, beamWidth)`: raw vectors
     /// (`.vec`/`.vemf`) and an HNSW graph (`.vem`/`.vex`).
     Hnsw { max_conn: i32, beam_width: i32 },
+    /// The OpenSearch k-NN plugin's `KNN9120HnswBinaryVectorsFormat(maxConn,
+    /// beamWidth)` ([`crate::vectors::HAMMING_FORMAT_NAME`]): [`Self::Hnsw`]'s
+    /// files over packed bit vectors, whose graph and searches score by
+    /// Hamming distance.
+    HnswHamming { max_conn: i32, beam_width: i32 },
+    /// The OpenSearch k-NN plugin's `KNN1040HnswHalfFloatVectorsFormat(maxConn,
+    /// beamWidth)` ([`crate::vectors::HALF_FLOAT_FORMAT_NAME`]): an HNSW graph
+    /// over float vectors stored as half floats.
+    HnswHalfFloat { max_conn: i32, beam_width: i32 },
     /// `Lucene104HnswScalarQuantizedVectorsFormat(encoding, maxConn,
     /// beamWidth)`: the raw vectors, their scalar-quantized codes
     /// (`.veq`/`.vemq`, `FLOAT32` fields only) and a graph.
@@ -51,6 +66,16 @@ pub enum KnnVectorsFormat {
     /// `Lucene104ScalarQuantizedVectorsFormat(encoding)`: the raw vectors and
     /// their codes, no graph (every search is exhaustive).
     ScalarQuantized { encoding: ScalarEncoding },
+    /// This engine's IVF index ([`IVF_NAME`], `lucene-ivf`): the raw vectors
+    /// as every format stores them, plus clusters of about
+    /// `target_cluster_size` vectors with 1-bit codes (`.ivm`/`.ivp`) and
+    /// the rerank vectors in cluster order (`.ivv`), encoded as
+    /// [`IVF_RERANK_ENCODINGS`]`[rerank_encoding]`. Float fields only; a
+    /// byte field gets the raw vectors alone.
+    Ivf {
+        target_cluster_size: u32,
+        rerank_encoding: u8,
+    },
     /// A format that wraps `format` without changing its files
     /// (`AssertingKnnVectorsFormat`'s `Asserting`): fields record `name` and
     /// the instance's files carry it (`_0_Asserting_0.vec`). Readers find
@@ -93,10 +118,59 @@ fn check_graph(max_conn: i32, beam_width: i32) -> Result<(), InvalidFormat> {
 }
 
 impl KnnVectorsFormat {
+    /// [`KnnVectorsFormat::Ivf`], checked: a cluster size of 16 to 65536
+    /// vectors and a known rerank encoding.
+    pub fn ivf(target_cluster_size: u32, rerank_encoding: u8) -> Result<Self, InvalidFormat> {
+        if !(16..=65_536).contains(&target_cluster_size) {
+            return Err(InvalidFormat(format!(
+                "target_cluster_size must be between 16 and 65536; got {target_cluster_size}"
+            )));
+        }
+        if usize::from(rerank_encoding) >= IVF_RERANK_ENCODINGS.len() {
+            return Err(InvalidFormat(format!(
+                "unknown IVF rerank encoding {rerank_encoding}"
+            )));
+        }
+        Ok(KnnVectorsFormat::Ivf {
+            target_cluster_size,
+            rerank_encoding,
+        })
+    }
+
+    /// The IVF parameters `(target_cluster_size, rerank_encoding)`, `None`
+    /// for any other format.
+    pub fn ivf_params(&self) -> Option<(u32, u8)> {
+        match *self.files_format() {
+            KnnVectorsFormat::Ivf {
+                target_cluster_size,
+                rerank_encoding,
+            } => Some((target_cluster_size, rerank_encoding)),
+            _ => None,
+        }
+    }
+
     /// `new Lucene99HnswVectorsFormat(maxConn, beamWidth)`.
     pub fn hnsw(max_conn: i32, beam_width: i32) -> Result<Self, InvalidFormat> {
         check_graph(max_conn, beam_width)?;
         Ok(KnnVectorsFormat::Hnsw {
+            max_conn,
+            beam_width,
+        })
+    }
+
+    /// `new KNN9120HnswBinaryVectorsFormat(maxConn, beamWidth)`.
+    pub fn hnsw_hamming(max_conn: i32, beam_width: i32) -> Result<Self, InvalidFormat> {
+        check_graph(max_conn, beam_width)?;
+        Ok(KnnVectorsFormat::HnswHamming {
+            max_conn,
+            beam_width,
+        })
+    }
+
+    /// `new KNN1040HnswHalfFloatVectorsFormat(maxConn, beamWidth)`.
+    pub fn hnsw_half_float(max_conn: i32, beam_width: i32) -> Result<Self, InvalidFormat> {
+        check_graph(max_conn, beam_width)?;
+        Ok(KnnVectorsFormat::HnswHalfFloat {
             max_conn,
             beam_width,
         })
@@ -143,8 +217,11 @@ impl KnnVectorsFormat {
         match self {
             KnnVectorsFormat::Named { name, .. } => name,
             KnnVectorsFormat::Hnsw { .. } => HNSW_NAME,
+            KnnVectorsFormat::HnswHamming { .. } => crate::vectors::HAMMING_FORMAT_NAME,
+            KnnVectorsFormat::HnswHalfFloat { .. } => crate::vectors::HALF_FLOAT_FORMAT_NAME,
             KnnVectorsFormat::HnswScalarQuantized { .. } => scalar_quantized_vectors::HNSW_NAME,
             KnnVectorsFormat::ScalarQuantized { .. } => scalar_quantized_vectors::NAME,
+            KnnVectorsFormat::Ivf { .. } => IVF_NAME,
         }
     }
 
@@ -156,24 +233,58 @@ impl KnnVectorsFormat {
                 max_conn,
                 beam_width,
             }
+            | KnnVectorsFormat::HnswHamming {
+                max_conn,
+                beam_width,
+            }
+            | KnnVectorsFormat::HnswHalfFloat {
+                max_conn,
+                beam_width,
+            }
             | KnnVectorsFormat::HnswScalarQuantized {
                 max_conn,
                 beam_width,
                 ..
             } => Some((max_conn, beam_width)),
-            KnnVectorsFormat::ScalarQuantized { .. } | KnnVectorsFormat::Named { .. } => None,
+            KnnVectorsFormat::ScalarQuantized { .. }
+            | KnnVectorsFormat::Ivf { .. }
+            | KnnVectorsFormat::Named { .. } => None,
         }
     }
 
     /// The quantization, `None` for plain HNSW.
     pub fn quantization(&self) -> Option<ScalarEncoding> {
         match *self.files_format() {
-            KnnVectorsFormat::Hnsw { .. } | KnnVectorsFormat::Named { .. } => None,
+            KnnVectorsFormat::Hnsw { .. }
+            | KnnVectorsFormat::HnswHamming { .. }
+            | KnnVectorsFormat::HnswHalfFloat { .. }
+            | KnnVectorsFormat::Ivf { .. }
+            | KnnVectorsFormat::Named { .. } => None,
             KnnVectorsFormat::HnswScalarQuantized { encoding, .. }
             | KnnVectorsFormat::ScalarQuantized { encoding } => Some(encoding),
         }
     }
 }
+
+/// The OpenSearch k-NN plugin's names for Lucene104's scalar-quantized
+/// formats (its lucene engine's `sq` encoders and compression levels): the
+/// same files under another format name.
+const OPENSEARCH_KNN_FORMATS: [KnnVectorsFormat; 2] = [
+    KnnVectorsFormat::named(
+        "KNN1040HnswScalarQuantizedVectorsFormat",
+        &KnnVectorsFormat::HnswScalarQuantized {
+            encoding: ScalarEncoding::UnsignedByte,
+            max_conn: hnsw::DEFAULT_MAX_CONN,
+            beam_width: hnsw::DEFAULT_BEAM_WIDTH,
+        },
+    ),
+    KnnVectorsFormat::named(
+        "KNN1040ScalarQuantizedVectorsFormat",
+        &KnnVectorsFormat::ScalarQuantized {
+            encoding: ScalarEncoding::UnsignedByte,
+        },
+    ),
+];
 
 static WRAPPERS: std::sync::RwLock<Vec<KnnVectorsFormat>> = std::sync::RwLock::new(Vec::new());
 
@@ -192,7 +303,8 @@ pub fn register_wrapper(format: KnnVectorsFormat) {
 
 /// `KnnVectorsFormat.forName(name)` among this release's formats: the three
 /// built-in ones (a default instance of each; a reader takes the settings
-/// from the files) and every registered wrapper ([`register_wrapper`]).
+/// from the files), the OpenSearch k-NN plugin's names for two of them, and
+/// every registered wrapper ([`register_wrapper`]).
 pub fn for_name(name: &str) -> Option<KnnVectorsFormat> {
     let builtin = [
         KnnVectorsFormat::default(),
@@ -204,9 +316,24 @@ pub fn for_name(name: &str) -> Option<KnnVectorsFormat> {
         KnnVectorsFormat::ScalarQuantized {
             encoding: ScalarEncoding::UnsignedByte,
         },
+        KnnVectorsFormat::HnswHamming {
+            max_conn: hnsw::DEFAULT_MAX_CONN,
+            beam_width: hnsw::DEFAULT_BEAM_WIDTH,
+        },
+        KnnVectorsFormat::HnswHalfFloat {
+            max_conn: hnsw::DEFAULT_MAX_CONN,
+            beam_width: hnsw::DEFAULT_BEAM_WIDTH,
+        },
+        KnnVectorsFormat::Ivf {
+            target_cluster_size: 384,
+            rerank_encoding: 1,
+        },
     ];
     if let Some(format) = builtin.into_iter().find(|f| f.name() == name) {
         return Some(format);
+    }
+    if let Some(format) = OPENSEARCH_KNN_FORMATS.iter().find(|f| f.name() == name) {
+        return Some(*format);
     }
     let wrappers = WRAPPERS.read().unwrap_or_else(|e| e.into_inner());
     wrappers.iter().copied().find(|w| w.name() == name)

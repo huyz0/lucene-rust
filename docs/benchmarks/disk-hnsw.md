@@ -42,11 +42,11 @@ Files: `.dhn` 228 MB (7 records a page), `lean` 799 MB, stock `.vec` 156 MB,
 
 | budget MiB | disk | lean | stock-bbq | stock-bbq-pinned | stock-f32 | ivf |
 |---|---|---|---|---|---|---|
-| 8 | does not fit (15 MB pinned) | **63.9 rt, 32.9 ms** | 637 rt, 321 ms | does not fit (32 MB) | 182 rt, 92 ms | 96 rt, 48 ms (0.851) |
-| 16 | 63.9 rt, 33.0 ms | 63.9 rt, 32.9 ms | 542 rt, 273 ms | does not fit | 169 rt, 86 ms | 86 rt, 43 ms |
-| 32 | 63.0 rt, 32.6 ms | 63.6 rt, 32.7 ms | 183 rt, 94 ms | **2.0 rt, 2.6 ms** | 164 rt, 83 ms | 69 rt, 35 ms |
-| 64 | 60.5 rt, 31.3 ms | 63.0 rt, 32.4 ms | 48 rt, 25.5 ms | **1.0 rt, 2.3 ms** | 151 rt, 76 ms | 45 rt, 23 ms |
-| 128 | 48.4 rt, 25.3 ms | 61.3 rt, 31.7 ms | 1.2 rt, 2.4 ms | **1.0 rt, 2.0 ms** | 110 rt, 56 ms | 13 rt, 6.7 ms (0.889) |
+| 8 | does not fit (15 MB pinned) | 63.9 rt, 32.9 ms | 637 rt, 321 ms | does not fit (32 MB) | 182 rt, 92 ms | **2.0 rt, 1.1 ms** (0.850) |
+| 16 | 63.9 rt, 33.0 ms | 63.9 rt, 32.9 ms | 542 rt, 273 ms | does not fit | 169 rt, 86 ms | **2.0 rt, 1.1 ms** |
+| 32 | 63.0 rt, 32.6 ms | 63.6 rt, 32.7 ms | 183 rt, 94 ms | 2.0 rt, 2.6 ms | 164 rt, 83 ms | **2.0 rt, 1.1 ms** |
+| 64 | 60.5 rt, 31.3 ms | 63.0 rt, 32.4 ms | 48 rt, 25.5 ms | 1.0 rt, 2.3 ms | 151 rt, 76 ms | **1.7 rt, 0.95 ms** |
+| 128 | 48.4 rt, 25.3 ms | 61.3 rt, 31.7 ms | 1.2 rt, 2.4 ms | 1.0 rt, 2.0 ms | 110 rt, 56 ms | **1.0 rt, 0.71 ms** |
 | in memory | 1.02 ms (0.879) | 0.91 ms (0.880) | 1.60 ms (0.873) | 1.49 ms (0.873) | 0.84 ms (0.874) | 0.13 ms (0.851) |
 
 HNSW settings: disk and lean L 160, W 8 (recall 0.880); stock ef 320 (0.873),
@@ -59,13 +59,13 @@ Files: `.dhn` 1352 MB (3 records a page), `lean` 4055 MB, stock `.vec` 1188 MB,
 `.veq` + `.vex` 75 MB. This graph tops out near 0.82 recall@10 at ef/L 160
 for every HNSW variant (the runs stopped at 160), so the floor is 0.8:
 
-| budget MiB | disk | lean | stock-bbq | stock-bbq-pinned | ivf (0.872 at nprobe 32) |
+| budget MiB | disk | lean | stock-bbq | stock-bbq-pinned | ivf (0.874 at nprobe 32) |
 |---|---|---|---|---|---|
-| 32 | does not fit (61 MB pinned) | **11.2 rt, 6.3 ms** | 302 rt, 152 ms | does not fit (79 MB) | 107 rt, 54 ms |
-| 64 | 11.4 rt, 6.7 ms | **11.0 rt, 6.2 ms** | 234 rt, 118 ms | does not fit | 96 rt, 48 ms |
-| 128 | 10.6 rt, 6.2 ms | 10.6 rt, 5.9 ms | 26 rt, 14.1 ms | **1.0 rt, 1.8 ms** | 80 rt, 40 ms |
-| 256 | 9.6 rt, 5.7 ms | 10.1 rt, 5.8 ms | 1.5 rt, 2.2 ms | **1.0 rt, 1.8 ms** | 58 rt, 29 ms (0.925) |
-| 512 | 0.9 rt, 1.2 ms | 1.4 rt, 1.4 ms | 1.0 rt, 2.0 ms | 1.0 rt, 1.9 ms | 1.7 rt, 1.6 ms (0.955) |
+| 32 | does not fit (61 MB pinned) | 11.2 rt, 6.3 ms | 302 rt, 152 ms | does not fit (79 MB) | **2.0 rt, 1.4 ms** |
+| 64 | 11.4 rt, 6.7 ms | 11.0 rt, 6.2 ms | 234 rt, 118 ms | does not fit | **2.0 rt, 1.4 ms** |
+| 128 | 10.6 rt, 6.2 ms | 10.6 rt, 5.9 ms | 26 rt, 14.1 ms | 1.0 rt, 1.8 ms | **2.0 rt, 1.4 ms** |
+| 256 | 9.6 rt, 5.7 ms | 10.1 rt, 5.8 ms | 1.5 rt, 2.2 ms | 1.0 rt, 1.8 ms | **1.8 rt, 1.3 ms** |
+| 512 | 0.9 rt, 1.2 ms | 1.4 rt, 1.4 ms | 1.0 rt, 2.0 ms | 1.0 rt, 1.9 ms | **1.0 rt, 0.89 ms** |
 | in memory | 0.71 ms (0.824) | **0.67 ms** (0.824) | 1.54 ms (0.813) | 1.26 ms (0.813) | 0.38 ms |
 
 HNSW settings: disk and lean L 160, W 32 (W 8 in memory); stock ef 160.
@@ -96,10 +96,13 @@ HNSW settings: disk and lean L 160, W 32 (W 8 in memory); stock ef 160.
   round trips at W 8, 42.8 at W 16 and 34.8 at W 32, reading 6-9% more
   records for the same recall. For blob storage W 32 is the better default;
   for local NVMe W 8.
-- **IVF** reads one cluster at a time today, so it pays nprobe round trips
-  (45-107 here). Announcing all probed clusters with `prefetch` before the
-  scan would make that about 2 (one batch of clusters, one of rerank
-  vectors), which would put it ahead of every graph layout on blob storage.
+- **IVF** announces every probed cluster with `prefetch_ranges` before the
+  scan, and the rerank vectors before the rerank: 2 round trips a query at
+  any budget (1 once the clusters stay cached), against nprobe round trips
+  (45-111) when each cluster is read on its own. On GloVe at 16 MiB that is
+  1.1 ms against 43 ms at 500 us a round trip, and on fastText at 32 MiB
+  1.4 ms against 54 ms, ahead of every graph layout below the budget where
+  stock's pinned files fit, and still ahead when they fit.
 - **Page locality.** Breadth-first numbering puts 7 (GloVe) or 3 (fastText)
   records a page; at half the file cached (GloVe 128 MiB) 28% of expanded
   nodes still miss. A block-shuffling order (Starling, SIGMOD 2024) could

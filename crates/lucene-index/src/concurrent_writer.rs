@@ -87,7 +87,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::ops::DerefMut;
 use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, RwLock, Weak};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard, Weak};
 use std::time::Duration;
 
 use lucene_codecs::stored_fields::Document;
@@ -118,6 +118,20 @@ pub use live::{
     LiveSnapshot, LiveView, ViewBuffer,
 };
 
+/// A value only reached through `&mut`: a slot's buffer is read by
+/// several threads at once, while a part of it (a stored-fields stream)
+/// is not `Sync`. The mutex is never locked, only passed through.
+#[derive(Default)]
+struct Exclusive<T>(Mutex<T>);
+
+impl<T> Exclusive<T> {
+    fn get_mut(&mut self) -> &mut T {
+        self.0
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
 /// One indexing slot's buffer -- `DocumentsWriterPerThread`, before its flush.
 #[derive(Default)]
 struct Dwpt {
@@ -143,7 +157,7 @@ struct Dwpt {
     /// The explicit documents' stored values, compressed as they are added
     /// ([`IndexingConfig::streamed_stored_mode`]); `docs` then holds empty
     /// documents.
-    stored: Option<StreamedStored>,
+    stored: Exclusive<Option<StreamedStored>>,
     /// What `stored` counts toward `ram_bytes` now: its heap when last
     /// measured, so the charge falls as its bytes go to disk.
     stored_charged: usize,
@@ -258,8 +272,6 @@ struct Core<'d> {
     /// The progress of every scheduled merge running now, through which
     /// [`ConcurrentIndexWriter::with_writer_merges_aborted`] aborts them.
     running: Vec<Arc<OneMergeProgress>>,
-    /// Buffers being flushed, readable by live search until published.
-    live: live::LiveFlushes,
 }
 
 /// One document a thread adds, with what rides alongside it.
@@ -339,7 +351,7 @@ pub struct ConcurrentIndexWriter<'d> {
     core: Mutex<Core<'d>>,
     /// Signalled when a segment publishes or the index changes.
     changed: Condvar,
-    slots: Vec<Mutex<Dwpt>>,
+    slots: Vec<RwLock<Dwpt>>,
     /// Where each slot's slice stands ([`EMPTY_SLOT`] while it is empty),
     /// readable without its lock, so the log can be trimmed.
     slices: Vec<AtomicUsize>,
@@ -398,6 +410,11 @@ pub struct ConcurrentIndexWriter<'d> {
     max_docs: usize,
     /// [`Self::enable_live_search`].
     live: AtomicBool,
+    /// Buffers being flushed or published, readable by live search, under
+    /// a lock of their own: a view opens without waiting for a commit or a
+    /// publish that holds the control lock. Taken after the control lock
+    /// when both are held.
+    live_flushes: Mutex<live::LiveFlushes>,
     /// The next buffer's id for live search, from 1.
     next_buffer_id: AtomicU64,
 }
@@ -414,6 +431,17 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     // panic; later calls see it rather than a poison error. The writer's own
     // invariants are held by the operations themselves, not by the lock.
     m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// A slot's buffer to change: [`lock`]'s rules.
+fn write_slot(m: &RwLock<Dwpt>) -> RwLockWriteGuard<'_, Dwpt> {
+    m.write().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// A slot's buffer to read beside other readers -- a view opening, a
+/// chunk being written -- while indexing into it waits.
+fn read_slot(m: &RwLock<Dwpt>) -> RwLockReadGuard<'_, Dwpt> {
+    m.read().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// Lifts a commit's publish barrier however the commit ends, unwinding
@@ -573,10 +601,10 @@ impl<'d> ConcurrentIndexWriter<'d> {
                 barrier: None,
                 merging: HashSet::new(),
                 running: Vec::new(),
-                live,
             }),
+            live_flushes: Mutex::new(live),
             changed: Condvar::new(),
-            slots: (0..slots).map(|_| Mutex::new(Dwpt::default())).collect(),
+            slots: (0..slots).map(|_| RwLock::new(Dwpt::default())).collect(),
             id: NEXT_WRITER_ID.fetch_add(1, Ordering::Relaxed),
             slices: (0..slots).map(|_| AtomicUsize::new(EMPTY_SLOT)).collect(),
             log: Mutex::new(log),
@@ -802,7 +830,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
             if !flag.load(Ordering::Acquire) {
                 continue;
             }
-            let Ok(mut dwpt) = self.slots[j].try_lock() else {
+            let Ok(mut dwpt) = self.slots[j].try_write() else {
                 continue;
             };
             if !self.pending[j].load(Ordering::Acquire) {
@@ -838,8 +866,10 @@ impl<'d> ConcurrentIndexWriter<'d> {
         }
         let (ticket_no, packet) = {
             let mut core = lock(&self.core);
+            let mut live = self.live_flushes();
             let nodes = Self::take_unhanded(&mut lock(&self.log));
-            Self::hand_over(&mut core, &nodes);
+            Self::hand_over(&mut core, &mut live, &nodes);
+            drop(live);
             let packet = core.writer.begin_deletes_ticket();
             let ticket_no = core.next_ticket;
             core.next_ticket = ticket_no.saturating_add(1);
@@ -955,7 +985,8 @@ impl<'d> ConcurrentIndexWriter<'d> {
     /// buffered so far is cleared. Returns the operation's sequence number.
     pub fn delete_all(&self) -> Result<SeqNo> {
         let _full_flush = lock(&self.full_flush);
-        let mut slots: Vec<MutexGuard<'_, Dwpt>> = self.slots.iter().map(lock).collect();
+        let mut slots: Vec<RwLockWriteGuard<'_, Dwpt>> =
+            self.slots.iter().map(write_slot).collect();
         self.abort_slots(&mut slots);
         let mut core = lock(&self.core);
         self.abort_merges(&mut core);
@@ -978,8 +1009,13 @@ impl<'d> ConcurrentIndexWriter<'d> {
             (log.take_seq(), end)
         };
         self.update_ram(|c| c.set_delete_bytes_used(0));
-        core.live.discard(end);
+        let unpinned = {
+            let mut live = self.live_flushes();
+            live.discard(end);
+            live.take_unpinned()
+        };
         let deleted = core.writer.delete_all();
+        self.unpin_with(&mut core.writer, unpinned);
         // Every slot was emptied above and no flush is in flight.
         self.buffered_docs.store(0, Ordering::Release);
         self.refresh_segment_docs(&mut core);
@@ -1062,16 +1098,18 @@ impl<'d> ConcurrentIndexWriter<'d> {
     }
 
     /// Buffers `nodes` for the published segments.
-    fn hand_over(core: &mut Core<'_>, nodes: &[Arc<DeleteNode>]) {
+    /// `live` was locked before the log they were taken from, so a view
+    /// sees them either in the log or in the buffers being flushed.
+    fn hand_over(core: &mut Core<'_>, live: &mut live::LiveFlushes, nodes: &[Arc<DeleteNode>]) {
         for node in nodes {
             core.writer.buffer_global_delete(node);
         }
-        core.live.handed(nodes);
+        live.handed(nodes);
         // They reach the buffers being flushed once published; live search
         // sees them there now.
-        if !nodes.is_empty() && core.live.buffers_mut().next().is_some() {
+        if !nodes.is_empty() && live.buffers_mut().next().is_some() {
             let cfg = core.writer.shared_config();
-            for f in core.live.buffers_mut() {
+            for f in live.buffers_mut() {
                 f.columns.apply(nodes, f.max_doc, &f.postings, &cfg);
             }
         }
@@ -1107,7 +1145,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
     /// filling one buffer, as Java hands out a free
     /// `DocumentsWriterPerThread` before it creates another. With every slot
     /// taken, it waits on one, picked in rotation.
-    fn acquire_slot(&self) -> (usize, MutexGuard<'_, Dwpt>) {
+    fn acquire_slot(&self) -> (usize, RwLockWriteGuard<'_, Dwpt>) {
         #[cfg(test)]
         if self.rotate_slots.load(Ordering::Relaxed) {
             let i = self
@@ -1115,16 +1153,16 @@ impl<'d> ConcurrentIndexWriter<'d> {
                 .fetch_add(1, Ordering::Relaxed)
                 .checked_rem(self.slots.len())
                 .unwrap_or(0);
-            return (i, lock(&self.slots[i]));
+            return (i, write_slot(&self.slots[i]));
         }
         let (writer, last) = LAST_SLOT.get();
         if writer == self.id {
-            if let Some(Ok(guard)) = self.slots.get(last).map(Mutex::try_lock) {
+            if let Some(Ok(guard)) = self.slots.get(last).map(RwLock::try_write) {
                 return (last, guard);
             }
         }
         for (i, slot) in self.slots.iter().enumerate() {
-            if let Ok(guard) = slot.try_lock() {
+            if let Ok(guard) = slot.try_write() {
                 LAST_SLOT.set((self.id, i));
                 return (i, guard);
             }
@@ -1139,7 +1177,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
         // Not recorded as this thread's slot: it was only the one waited on
         // (another thread's, or every slot held by a commit), so the thread
         // keeps going back to its own once slots free up.
-        (wait, lock(&self.slots[wait]))
+        (wait, write_slot(&self.slots[wait]))
     }
 
     /// [`Self::acquire_slot`] for a document of `partition`, in a
@@ -1148,10 +1186,10 @@ impl<'d> ConcurrentIndexWriter<'d> {
     /// partition, then an empty one -- else any free slot, which the caller
     /// flushes before using, else (every slot taken) the one waited on in
     /// rotation.
-    fn acquire_slot_for(&self, partition: Option<&str>) -> (usize, MutexGuard<'_, Dwpt>) {
+    fn acquire_slot_for(&self, partition: Option<&str>) -> (usize, RwLockWriteGuard<'_, Dwpt>) {
         let (writer, last) = LAST_SLOT.get();
         if writer == self.id {
-            if let Some(Ok(guard)) = self.slots.get(last).map(Mutex::try_lock) {
+            if let Some(Ok(guard)) = self.slots.get(last).map(RwLock::try_write) {
                 if !guard.has_docs() || guard.partition.as_deref() == partition {
                     return (last, guard);
                 }
@@ -1160,7 +1198,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
         if let Some(p) = partition {
             let hint = lock(&self.partition_slots).get(p).copied();
             if let Some(i) = hint {
-                if let Some(Ok(guard)) = self.slots.get(i).map(Mutex::try_lock) {
+                if let Some(Ok(guard)) = self.slots.get(i).map(RwLock::try_write) {
                     if !guard.has_docs() || guard.partition.as_deref() == partition {
                         LAST_SLOT.set((self.id, i));
                         return (i, guard);
@@ -1171,7 +1209,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
         let mut empty = None;
         let mut other = None;
         for (i, slot) in self.slots.iter().enumerate() {
-            let Ok(guard) = slot.try_lock() else {
+            let Ok(guard) = slot.try_write() else {
                 continue;
             };
             if !guard.has_docs() {
@@ -1186,7 +1224,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
         // Released above, so the slot may have been taken or filled since:
         // whatever it holds now, the caller flushes it if it must.
         for i in empty.into_iter().chain(other) {
-            if let Ok(guard) = self.slots[i].try_lock() {
+            if let Ok(guard) = self.slots[i].try_write() {
                 LAST_SLOT.set((self.id, i));
                 return (i, guard);
             }
@@ -1196,7 +1234,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
             .fetch_add(1, Ordering::Relaxed)
             .checked_rem(self.slots.len())
             .unwrap_or(0);
-        (wait, lock(&self.slots[wait]))
+        (wait, write_slot(&self.slots[wait]))
     }
 
     /// `DocumentsWriterPerThread.updateDocuments` + `finishDocuments`: the
@@ -1405,12 +1443,15 @@ impl<'d> ConcurrentIndexWriter<'d> {
         let live = self
             .live()
             .then(|| cfg.soft_deletes_field().map(|f| f.number));
+        let live_cfg = Arc::clone(&cfg);
         self.add_with(delete, partition, count, move |_| {
             Ok(Box::new(move |dwpt: &mut Dwpt| {
                 // The postings count what they grew by, as `bytesUsed` counts
                 // `TermsHashPerField`'s pools; the documents' own inverted
                 // terms are dropped once they are in.
                 let postings_before = dwpt.postings.bytes();
+                // Chunk columns copy the documents' doc values and points.
+                let columns_before = dwpt.live.chunk_ram_bytes();
                 let mut added = 0usize;
                 for (mut doc, options) in docs.into_iter().zip(options) {
                     let doc_vectors = vectors
@@ -1423,6 +1464,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
                     }
                     if let Some(mode) = streamed {
                         dwpt.stored
+                            .get_mut()
                             .get_or_insert_with(|| StreamedStored::new(mode))
                             .add(&stored);
                         dwpt.stored_docs = dwpt.stored_docs.saturating_add(1);
@@ -1444,7 +1486,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
                         inv.terms = InvertedTerms::default();
                     }
                     if let Some(soft) = live {
-                        dwpt.live.record(doc_id, &doc.fields, soft);
+                        dwpt.live.record(doc_id, &doc.fields, soft, &live_cfg);
                     }
                     if !doc_vectors.is_empty() {
                         // Short until a document has vectors (see `Dwpt`).
@@ -1461,8 +1503,17 @@ impl<'d> ConcurrentIndexWriter<'d> {
                     added = added.saturating_add(dwpt.explicit.push(doc.fields));
                 }
                 let grown = dwpt.postings.bytes().saturating_sub(postings_before);
+                let columns_now = dwpt.live.chunk_ram_bytes();
+                if columns_now < columns_before {
+                    // The columns gave up: their charge goes back.
+                    dwpt.ram_bytes = dwpt
+                        .ram_bytes
+                        .saturating_sub(columns_before.saturating_sub(columns_now));
+                }
+                let columns = columns_now.saturating_sub(columns_before);
                 Ok(added
                     .saturating_add(grown)
+                    .saturating_add(columns)
                     .saturating_add(Self::recharge_stored(dwpt)))
             }) as Fill)
         })
@@ -1471,7 +1522,11 @@ impl<'d> ConcurrentIndexWriter<'d> {
     /// Brings `dwpt`'s charge for its streamed stored fields to their heap
     /// now: returns what it grew by, and takes off what went to disk.
     fn recharge_stored(dwpt: &mut Dwpt) -> usize {
-        let now = dwpt.stored.as_ref().map_or(0, StreamedStored::ram_bytes);
+        let now = dwpt
+            .stored
+            .get_mut()
+            .as_ref()
+            .map_or(0, StreamedStored::ram_bytes);
         let before = std::mem::replace(&mut dwpt.stored_charged, now);
         if now < before {
             dwpt.ram_bytes = dwpt.ram_bytes.saturating_sub(before.saturating_sub(now));
@@ -1489,7 +1544,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
     /// when it is busy (a commit syncing), the buffer stays in memory and
     /// tries again with its next document.
     fn move_stored_to_disk(&self, dwpt: &mut Dwpt) {
-        let Some(stored) = dwpt.stored.as_mut() else {
+        let Some(stored) = dwpt.stored.get_mut().as_mut() else {
             return;
         };
         if !stored.wants_disk() {
@@ -1512,10 +1567,10 @@ impl<'d> ConcurrentIndexWriter<'d> {
 
     /// Empties every slot (`delete_all`, `rollback`), releasing the files
     /// their stored fields were writing.
-    fn abort_slots(&self, slots: &mut [MutexGuard<'_, Dwpt>]) {
+    fn abort_slots(&self, slots: &mut [RwLockWriteGuard<'_, Dwpt>]) {
         let mut files = Vec::new();
         for (i, dwpt) in slots.iter_mut().enumerate() {
-            if let Some(stored) = dwpt.stored.take() {
+            if let Some(stored) = dwpt.stored.get_mut().take() {
                 files.extend(stored.discard());
             }
             *dwpt.deref_mut() = Dwpt::default();
@@ -1695,6 +1750,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
         }
         dwpt.fill_docs();
         let mut core = lock(&self.core);
+        let mut live = self.live_flushes();
         // One read of the log for both, so the slice and the published
         // segments' share end at the same entry. Every entry since the slot's
         // last add came after all of its documents.
@@ -1705,23 +1761,44 @@ impl<'d> ConcurrentIndexWriter<'d> {
             (slot_nodes, global_nodes, log.end())
         };
         self.apply_slice(i, dwpt, &slot_nodes, end, dwpt.docs.len());
-        Self::hand_over(&mut core, &global_nodes);
-        let ticket = core
-            .writer
-            .begin_segment(dwpt.stored.as_ref().and_then(StreamedStored::reserved));
+        Self::hand_over(&mut core, &mut live, &global_nodes);
+        let ticket = core.writer.begin_segment(
+            dwpt.stored
+                .get_mut()
+                .as_ref()
+                .and_then(StreamedStored::reserved),
+        );
         let ticket_no = core.next_ticket;
         core.next_ticket = core.next_ticket.saturating_add(1);
         let postings = Arc::new(std::mem::take(&mut dwpt.postings));
-        let columns = std::mem::take(&mut dwpt.live);
+        let mut columns = std::mem::take(&mut dwpt.live);
+        // Until it is published, a buffer whose documents are all in its
+        // columns and packed fields is still read as chunks without
+        // postings; any other goes as one segment once published.
+        let lean = (self.live()
+            && dwpt.vectors.is_empty()
+            && dwpt.custom_freq_terms.is_empty()
+            && dwpt.docs.iter().all(|d| d.fields.is_empty()))
+        .then(|| live::LeanSource {
+            explicit: dwpt.explicit.snapshot(),
+            has_blocks: dwpt.has_blocks,
+            partition: dwpt.partition.clone(),
+        });
+        if lean.is_none() {
+            columns.drop_chunk_columns();
+        }
         if self.live() {
             let flushing = live::Flushing {
                 postings: Arc::clone(&postings),
                 columns,
                 max_doc: i32::try_from(dwpt.docs.len()).unwrap_or(i32::MAX),
                 segment: None,
+                held_files: Vec::new(),
+                lean,
             };
-            core.live.flushing.insert(ticket_no, flushing);
+            live.flushing.insert(ticket_no, flushing);
         }
+        drop(live);
         drop(core);
         let batch = FlushBatch {
             ticket,
@@ -1730,7 +1807,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
             custom_freq_terms: std::mem::take(&mut dwpt.custom_freq_terms),
             vectors: std::mem::take(&mut dwpt.vectors),
             explicit: std::mem::take(&mut dwpt.explicit),
-            stored: dwpt.stored.take(),
+            stored: dwpt.stored.get_mut().take(),
             postings,
             has_blocks: std::mem::take(&mut dwpt.has_blocks),
             private: std::mem::take(&mut dwpt.private),
@@ -1755,6 +1832,11 @@ impl<'d> ConcurrentIndexWriter<'d> {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
         }
         core
+    }
+
+    /// The buffers live search reads beyond the slots'.
+    fn live_flushes(&self) -> MutexGuard<'_, live::LiveFlushes> {
+        lock(&self.live_flushes)
     }
 
     /// Re-reads the segments' `maxDoc` total after the segment lists
@@ -1994,9 +2076,21 @@ impl<'d> ConcurrentIndexWriter<'d> {
         if let Some(fdt) = reserved_fdt {
             let _ = core.writer.release_files(&[fdt]);
         }
-        // Published or abandoned, under the lock it happened under.
-        core.live
-            .finish(ticket_no, matches!(outcome, Ok(Ok(Ok(())))), segment);
+        // Published or abandoned, under the lock it happened under. A
+        // published buffer's files stay while views may read it.
+        let published = matches!(outcome, Ok(Ok(Ok(()))));
+        // A segment whose files cannot be pinned is still read while they
+        // last; a view that finds them gone fails and is answered without it.
+        let held = match segment.as_ref().filter(|_| published) {
+            Some(sci) => core.writer.hold_segment(sci).unwrap_or_default(),
+            None => Vec::new(),
+        };
+        let unpinned = {
+            let mut live = self.live_flushes();
+            live.finish(ticket_no, published, segment, held);
+            live.take_unpinned()
+        };
+        self.unpin_with(&mut core.writer, unpinned);
         self.retire(core);
         // Published or abandoned, its buffer is gone either way
         // (`doAfterFlush`), panics included. Published documents are now in
@@ -2056,19 +2150,22 @@ impl<'d> ConcurrentIndexWriter<'d> {
     /// operation before the cut.
     fn flush_all(&self, barrier: bool) -> Result<(SeqNo, usize)> {
         let (batches, cut, packet, last_seq, handed) = {
-            let mut slots: Vec<MutexGuard<'_, Dwpt>> = self.slots.iter().map(lock).collect();
+            let mut slots: Vec<RwLockWriteGuard<'_, Dwpt>> =
+                self.slots.iter().map(write_slot).collect();
             let batches: Vec<FlushBatch> = slots
                 .iter_mut()
                 .enumerate()
                 .filter_map(|(i, dwpt)| self.begin_flush(i, dwpt))
                 .collect();
             let mut core = lock(&self.core);
+            let mut live = self.live_flushes();
             let (nodes, last_seq, handed) = {
                 let mut log = lock(&self.log);
                 let nodes = Self::take_unhanded(&mut log);
                 (nodes, log.next_seq.saturating_sub(1), log.handed)
             };
-            Self::hand_over(&mut core, &nodes);
+            Self::hand_over(&mut core, &mut live, &nodes);
+            drop(live);
             let packet = core.writer.begin_deletes_ticket();
             let cut = core.next_ticket;
             core.next_ticket = cut.saturating_add(1);
@@ -2144,7 +2241,12 @@ impl<'d> ConcurrentIndexWriter<'d> {
             writer.prepare_commit_excluding(merging)?;
             writer.finish_commit()?;
             let generation = writer.segment_infos().generation;
-            core.live.committed(generation, handed);
+            let unpinned = {
+                let mut live = self.live_flushes();
+                live.committed(generation, handed);
+                live.take_unpinned()
+            };
+            self.unpin_with(writer, unpinned);
             last_seq
         };
         self.schedule_merges(MergeTrigger::FullFlush)?;
@@ -2260,8 +2362,12 @@ impl<'d> ConcurrentIndexWriter<'d> {
             .log
             .into_inner()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut live = self
+            .live_flushes
+            .into_inner()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let nodes = Self::take_unhanded(&mut log);
-        Self::hand_over(&mut core, &nodes);
+        Self::hand_over(&mut core, &mut live, &nodes);
         let mut writer = core.writer;
         writer.advance_sequence_numbers_to(log.next_seq);
         writer.set_merges_by_caller(false);
@@ -2305,7 +2411,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
             .iter()
             .enumerate()
             .map(|(i, s)| {
-                let d = lock(s);
+                let d = read_slot(s);
                 (i, (d.ram_bytes, d.num_docs()))
             })
             .filter(|(_, (_, docs))| *docs > 0)
@@ -2315,7 +2421,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
             return Ok(false);
         };
         let batch = {
-            let mut dwpt = lock(&self.slots[i]);
+            let mut dwpt = write_slot(&self.slots[i]);
             self.begin_flush(i, &mut dwpt)
         };
         let Some(batch) = batch else {
@@ -2328,7 +2434,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
 
     /// Documents buffered in every slot, not yet in a segment.
     pub fn pending_doc_count(&self) -> usize {
-        self.slots.iter().map(|s| lock(s).num_docs()).sum()
+        self.slots.iter().map(|s| read_slot(s).num_docs()).sum()
     }
 
     /// RAM held by the buffers, those being flushed included -- what the
@@ -2341,7 +2447,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
         }
         self.slots
             .iter()
-            .map(|s| lock(s).ram_bytes)
+            .map(|s| read_slot(s).ram_bytes)
             .fold(0, usize::saturating_add)
     }
 
@@ -2375,7 +2481,8 @@ impl<'d> ConcurrentIndexWriter<'d> {
     /// aborted and waited for.
     pub fn rollback(&self) {
         let _full_flush = lock(&self.full_flush);
-        let mut slots: Vec<MutexGuard<'_, Dwpt>> = self.slots.iter().map(lock).collect();
+        let mut slots: Vec<RwLockWriteGuard<'_, Dwpt>> =
+            self.slots.iter().map(write_slot).collect();
         self.abort_slots(&mut slots);
         let mut core = lock(&self.core);
         self.abort_merges(&mut core);
@@ -2398,11 +2505,17 @@ impl<'d> ConcurrentIndexWriter<'d> {
             end
         };
         self.update_ram(|c| c.set_delete_bytes_used(0));
-        core.live.discard(end);
+        // One hold of the live lock: nothing reads the buffers dropped but
+        // not yet the commit gone back to.
+        let mut live = self.live_flushes();
+        live.discard(end);
         core.writer.rollback();
         // Back at its last commit, whose readers now hold every document.
         let generation = core.writer.segment_infos().generation;
-        core.live.committed(generation, end);
+        live.committed(generation, end);
+        let unpinned = live.take_unpinned();
+        drop(live);
+        self.unpin_with(&mut core.writer, unpinned);
         self.buffered_docs.store(0, Ordering::Release);
         self.refresh_segment_docs(&mut core);
         drop(core);
@@ -2901,7 +3014,7 @@ mod tests {
         let dir = FsDirectory::open(&tmp);
         let w = ConcurrentIndexWriter::new(writer(&dir, 1000), 2).unwrap();
         let (added, released) = (std::sync::mpsc::channel(), std::sync::mpsc::channel());
-        let mut held = Some(lock(&w.slots[0]));
+        let mut held = Some(write_slot(&w.slots[0]));
         std::thread::scope(|s| {
             let (added_tx, released_rx, w) = (added.0, released.1, &w);
             s.spawn(move || {
@@ -2914,8 +3027,8 @@ mod tests {
             held.take();
             released.0.send(()).unwrap();
         });
-        assert_eq!(lock(&w.slots[0]).num_docs(), 0);
-        assert_eq!(lock(&w.slots[1]).num_docs(), 2);
+        assert_eq!(write_slot(&w.slots[0]).num_docs(), 0);
+        assert_eq!(write_slot(&w.slots[1]).num_docs(), 2);
     }
 
     #[test]
@@ -2932,7 +3045,7 @@ mod tests {
         let batch = batch.or_else(|| {
             // The document went to the other slot.
             let j = 1 - i;
-            let mut other = lock(&w.slots[j]);
+            let mut other = write_slot(&w.slots[j]);
             w.begin_flush(j, &mut other)
         });
         let batch = batch.expect("one slot held the document");
@@ -3007,14 +3120,14 @@ mod tests {
         let tmp = TempDir::new("concurrent-two-tickets");
         let dir = FsDirectory::open(&tmp);
         let w = ConcurrentIndexWriter::new(writer(&dir, 1000), 2).unwrap();
-        lock(&w.slots[0]).docs.push(doc("a", 0));
-        lock(&w.slots[1]).docs.push(doc("b", 0));
-        let first = w.begin_flush(0, &mut lock(&w.slots[0])).unwrap();
+        write_slot(&w.slots[0]).docs.push(doc("a", 0));
+        write_slot(&w.slots[1]).docs.push(doc("b", 0));
+        let first = w.begin_flush(0, &mut write_slot(&w.slots[0])).unwrap();
         w.delete_documents_by_term(&[Term::new("id", b"a".to_vec())])
             .unwrap();
         w.delete_documents_by_term(&[Term::new("id", b"b".to_vec())])
             .unwrap();
-        let second = w.begin_flush(1, &mut lock(&w.slots[1])).unwrap();
+        let second = w.begin_flush(1, &mut write_slot(&w.slots[1])).unwrap();
         std::thread::scope(|scope| {
             let later = scope.spawn(|| w.complete_flush(second));
             // Let the second build finish and wait for its turn.
@@ -3668,7 +3781,7 @@ mod tests {
         assert_eq!(w.pending_doc_count(), 9);
         w.add_document(doc("t1x09", 0)).unwrap();
         assert_eq!(w.pending_doc_count(), 6, "the four-document slot flushed");
-        let counts: Vec<usize> = w.slots.iter().map(|s| lock(s).num_docs()).collect();
+        let counts: Vec<usize> = w.slots.iter().map(|s| read_slot(s).num_docs()).collect();
         assert_eq!(counts, [0, 3, 3]);
         let ram = lock(&w.ram);
         assert_eq!(ram.flush_bytes(), 0, "the flush is done");
@@ -3707,7 +3820,7 @@ mod tests {
             w.add_document(doc("a", 0)).unwrap();
             w.add_document(big.clone()).unwrap();
             w.add_document(doc("c", 0)).unwrap();
-            let counts: Vec<usize> = w.slots.iter().map(|s| lock(s).num_docs()).collect();
+            let counts: Vec<usize> = w.slots.iter().map(|s| read_slot(s).num_docs()).collect();
             if check {
                 assert_eq!(counts, [1, 0, 1], "the adding thread flushed slot 1");
                 assert!(!w.any_pending());
@@ -3717,12 +3830,12 @@ mod tests {
                 // Slot 0 next: the marked RAM no longer counts, so nothing
                 // more is marked, and slot 1 still waits.
                 w.add_document(doc("d", 0)).unwrap();
-                let counts: Vec<usize> = w.slots.iter().map(|s| lock(s).num_docs()).collect();
+                let counts: Vec<usize> = w.slots.iter().map(|s| read_slot(s).num_docs()).collect();
                 assert_eq!(counts, [2, 1, 1]);
                 assert!(w.pending[1].load(Ordering::Acquire));
                 // Into slot 1: the thread indexing there flushes it.
                 w.add_document(doc("e", 0)).unwrap();
-                let counts: Vec<usize> = w.slots.iter().map(|s| lock(s).num_docs()).collect();
+                let counts: Vec<usize> = w.slots.iter().map(|s| read_slot(s).num_docs()).collect();
                 assert_eq!(counts, [2, 0, 1]);
                 assert!(!w.any_pending());
             }
@@ -4493,7 +4606,7 @@ mod tests {
         for i in 0..20 {
             w.add_document(doc(&format!("d{i}"), 0)).unwrap();
         }
-        let counts: Vec<usize> = w.slots.iter().map(|s| lock(s).num_docs()).collect();
+        let counts: Vec<usize> = w.slots.iter().map(|s| read_slot(s).num_docs()).collect();
         assert_eq!(counts, [20, 0, 0, 0]);
         w.commit().unwrap();
         assert_eq!(

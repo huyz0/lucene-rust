@@ -38,7 +38,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code jvm_reader.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 81;
+    public static final int EXPECTED_ABI_VERSION = 88;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -365,6 +365,15 @@ public final class NativeBridge {
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG)
         );
         static final MethodHandle WRITER_CLOSE = bind("ffi_engine_writer_close", FunctionDescriptor.of(JAVA_INT, JAVA_LONG));
+        static final MethodHandle ZSTD_DICTIONARY_OPEN = bind(
+            "ffi_zstd_dictionary_open",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS)
+        );
+        static final MethodHandle ZSTD_DICTIONARY_CLOSE = bind("ffi_zstd_dictionary_close", FunctionDescriptor.of(JAVA_INT, JAVA_LONG));
+        static final MethodHandle ZSTD_PAGED_DECOMPRESS = bind(
+            "ffi_zstd_paged_decompress",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG)
+        );
         static final MethodHandle LIVE_VIEW_OPEN = bind(
             "ffi_engine_writer_live_view_open",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG, ADDRESS, ADDRESS, ADDRESS)
@@ -373,6 +382,14 @@ public final class NativeBridge {
         static final MethodHandle LIVE_VIEW_READER = bind(
             "ffi_live_view_reader",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS)
+        );
+        static final MethodHandle WRITER_SET_LIVE_STALENESS = bind(
+            "ffi_engine_writer_set_live_staleness",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG)
+        );
+        static final MethodHandle WRITER_LIVE_REFRESH_SHARED = bind(
+            "ffi_engine_writer_live_refresh_shared",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG)
         );
         static final MethodHandle WRITER_RELEASE_LIVE = bind(
             "ffi_engine_writer_release_live",
@@ -400,6 +417,18 @@ public final class NativeBridge {
                 ADDRESS,
                 ADDRESS
             )
+        );
+        static final MethodHandle ZSTD_TERMS_DICTIONARY_OPEN = bind(
+            "ffi_zstd_terms_dictionary_open",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS)
+        );
+        static final MethodHandle ZSTD_TERMS_DICTIONARY_CLOSE = bind(
+            "ffi_zstd_terms_dictionary_close",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG)
+        );
+        static final MethodHandle ZSTD_TERMS_DECOMPRESS = bind(
+            "ffi_zstd_terms_decompress",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG)
         );
     }
 
@@ -828,37 +857,45 @@ public final class NativeBridge {
     }
 
     /**
-     * The reader's top {@code k} for a KNN request ({@code jvm_knn.rs}): global doc ids into {@code
-     * outDocs}, scores into {@code outScores}, best first; returns the status, the hit count in
-     * {@code outCount[0]}.
+     * The reader's top hits for a KNN request ({@code jvm_knn.rs}): global doc ids into {@code
+     * outDocs}, scores into {@code outScores}, best first, at most {@code room} of them; returns the
+     * status, the hit count in {@code outCount[0]}. An expanded nested search can find more than
+     * {@code room}: the status is then {@link #BUFFER_TOO_SMALL} and {@code outCount[0]} the room it
+     * needs.
      */
-    public static int readerKnn(long handle, byte[] request, int k, int[] outDocs, float[] outScores, int[] outCount) {
+    public static int readerKnn(long handle, byte[] request, int room, int[] outDocs, float[] outScores, int[] outCount) {
         if (request == null) {
             return nullArgument("request");
         }
-        if (k <= 0 || outDocs == null || outScores == null || Math.min(outDocs.length, outScores.length) < k) {
-            return fail(BUFFER_TOO_SMALL, "output arrays hold fewer than k=" + k + " hits");
+        if (room <= 0 || outDocs == null || outScores == null || Math.min(outDocs.length, outScores.length) < room) {
+            return fail(BUFFER_TOO_SMALL, "output arrays hold fewer than " + room + " hits");
         }
         if (outCount == null || outCount.length < 1) {
             return fail(INVALID_ARGUMENT, "outCount holds no slot");
         }
         try (Scratch s = Scratch.open()) {
-            MemorySegment docs = s.room(JAVA_INT, k);
-            MemorySegment scores = s.room(JAVA_FLOAT, k);
+            MemorySegment docs = s.room(JAVA_INT, room);
+            MemorySegment scores = s.room(JAVA_FLOAT, room);
             MemorySegment count = s.alloc(Long.BYTES);
+            count.set(JAVA_LONG, 0, 0L);
             int rc;
             try {
-                rc = (int) H.READER_KNN.invokeExact(handle, s.bytes(request), (long) request.length, docs, scores, (long) k, count);
+                rc = (int) H.READER_KNN.invokeExact(handle, s.bytes(request), (long) request.length, docs, scores, (long) room, count);
             } catch (Throwable t) {
                 throw rethrow(t);
+            }
+            long n = count.get(JAVA_LONG, 0);
+            if (rc == BUFFER_TOO_SMALL) {
+                outCount[0] = n > room && n <= Integer.MAX_VALUE - 8 ? (int) n : 0;
+                return rc;
             }
             if (rc != OK) {
                 return rc;
             }
-            int n = Math.toIntExact(count.get(JAVA_LONG, 0));
-            MemorySegment.copy(docs, JAVA_INT, 0, outDocs, 0, n);
-            MemorySegment.copy(scores, JAVA_FLOAT, 0, outScores, 0, n);
-            outCount[0] = n;
+            int hits = Math.toIntExact(n);
+            MemorySegment.copy(docs, JAVA_INT, 0, outDocs, 0, hits);
+            MemorySegment.copy(scores, JAVA_FLOAT, 0, outScores, 0, hits);
+            outCount[0] = hits;
             return OK;
         }
     }
@@ -1532,14 +1569,74 @@ public final class NativeBridge {
     public static final int OPEN_FAULT_INJECTION = 1;
     public static final int OPEN_SPARSE = 2;
     public static final int OPEN_LIVE_SEARCH = 4;
+    public static final int OPEN_MERGE_LZ4_HC = 8;
+    public static final int OPEN_ZSTD_TERMS = 16;
     public static final int OPEN_ADAPTIVE_DOC_VALUES = 32;
     public static final int OPEN_PARTITIONED = 64;
+    public static final int OPEN_KNN = 128;
 
     /** {@link #writerOpen}'s stored fields, one per {@code index.codec} the Rust writer writes. */
     public static final int STORED_FIELDS_BEST_SPEED = 0;
     public static final int STORED_FIELDS_BEST_COMPRESSION = 1;
     public static final int STORED_FIELDS_ZSTD = 2;
     public static final int STORED_FIELDS_ZSTD_NO_DICT = 3;
+    /** The Rust engine's paged zstd stored fields ({@code index.lucene_rust.stored_fields.paged_zstd}). */
+    public static final int STORED_FIELDS_ZSTD_PAGED = 4;
+
+    // ---- Paged zstd stored fields (zstd_dictionary.rs). ----
+
+    /** Prepares a segment's zstd dictionary; its handle into {@code outHandle[0]}. */
+    public static int zstdDictionaryOpen(byte[] dictionary, long[] outHandle) {
+        if (dictionary == null) {
+            return nullArgument("dictionary");
+        }
+        if (outHandle == null || outHandle.length < 1) {
+            return fail(INVALID_ARGUMENT, "outHandle holds no slot");
+        }
+        try (Scratch s = Scratch.open()) {
+            MemorySegment handle = s.alloc(Long.BYTES);
+            int rc = (int) H.ZSTD_DICTIONARY_OPEN.invokeExact(s.bytes(dictionary), (long) dictionary.length, handle);
+            if (rc == OK) {
+                outHandle[0] = handle.get(JAVA_LONG, 0);
+            }
+            return rc;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** Releases a handle from {@link #zstdDictionaryOpen}. */
+    public static int zstdDictionaryClose(long handle) {
+        try {
+            return (int) H.ZSTD_DICTIONARY_CLOSE.invokeExact(handle);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * Decodes the zstd frame {@code src[0..srcLen)}, compressed against dictionary {@code handle} (0:
+     * none), into exactly {@code dst[0..dstLen)}.
+     */
+    public static int zstdPagedDecompress(long handle, byte[] src, int srcLen, byte[] dst, int dstLen) {
+        if (src == null || dst == null) {
+            return nullArgument(src == null ? "src" : "dst");
+        }
+        if (srcLen < 0 || srcLen > src.length || dstLen < 0 || dstLen > dst.length) {
+            return fail(INVALID_ARGUMENT, "src or dst is shorter than its length");
+        }
+        try (Scratch s = Scratch.open()) {
+            MemorySegment in = s.bytes(src, srcLen);
+            MemorySegment out = s.alloc(dstLen);
+            int rc = (int) H.ZSTD_PAGED_DECOMPRESS.invokeExact(handle, in, (long) srcLen, out, (long) dstLen);
+            if (rc == OK) {
+                MemorySegment.copy(out, JAVA_BYTE, 0, dst, 0, dstLen);
+            }
+            return rc;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
 
     /**
      * Opens a shard's writer over the index at {@code path}, which must already hold a commit. Commit
@@ -1547,8 +1644,12 @@ public final class NativeBridge {
      * test-only panic operation; {@code sparse} writes the segments of an {@code index.sparse} index,
      * with neural-search's codec and clustered postings; {@code liveSearch} keeps what a search of the
      * buffered documents reads ({@link #liveViewOpen}); {@code adaptiveDocValues} writes doc values in
-     * the {@code RustAdaptive} format; with {@code partitioned} every segment holds one partition
-     * (the value of the index's partition field) and records it, and merges never mix partitions.
+     * the {@code RustAdaptive} format; {@code zstdTerms} writes every field's terms in the {@code
+     * RustZstd104} postings format, with zstd term blocks; {@code mergeLz4Hc} has merges write {@code BEST_SPEED} stored
+     * fields with the high-compression LZ4 match finder (stock-readable); with {@code partitioned} every segment holds one partition
+     * (the value of the index's partition field) and records it, and merges never mix partitions;
+     * {@code knn} writes a k-NN index's segments under the k-NN codec's name, listing the fields
+     * whose vectors {@code _source} leaves out (derived source).
      * {@code indexSort} is the index sort as a {@code .si} encodes it (null or empty for none), and
      * {@code parentFieldUtf8} the field marking each block's last document (null or empty for none).
      * {@code maxDocs} is {@code IndexWriter.getActualMaxDocs()}, which Lucene's tests lower.
@@ -1562,7 +1663,10 @@ public final class NativeBridge {
         boolean sparse,
         boolean liveSearch,
         boolean adaptiveDocValues,
+        boolean zstdTerms,
+        boolean mergeLz4Hc,
         boolean partitioned,
+        boolean knn,
         byte[] indexSort,
         byte[] parentFieldUtf8,
         int maxDocs,
@@ -1583,7 +1687,8 @@ public final class NativeBridge {
                 ramBufferMb,
                 (byte) ((faultInjection ? OPEN_FAULT_INJECTION : 0) | (sparse ? OPEN_SPARSE : 0)
                     | (liveSearch ? OPEN_LIVE_SEARCH : 0) | (adaptiveDocValues ? OPEN_ADAPTIVE_DOC_VALUES : 0)
-                    | (partitioned ? OPEN_PARTITIONED : 0)),
+                    | (zstdTerms ? OPEN_ZSTD_TERMS : 0) | (mergeLz4Hc ? OPEN_MERGE_LZ4_HC : 0)
+                    | (partitioned ? OPEN_PARTITIONED : 0) | (knn ? OPEN_KNN : 0)),
                 s.bytes(sort),
                 (long) sort.length,
                 s.bytes(parent),
@@ -2241,6 +2346,27 @@ public final class NativeBridge {
         }
     }
 
+    /**
+     * Lets searches of the writer's buffers share a view up to {@code millis} milliseconds old,
+     * which the writer opens ahead of them; 0 gives each search a view of every write before it.
+     */
+    public static int writerSetLiveStaleness(long writer, long millis) {
+        try {
+            return (int) H.WRITER_SET_LIVE_STALENESS.invokeExact(writer, millis);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** Makes every later search of the writer's buffers read a view opened from now on. */
+    public static int writerLiveRefreshShared(long writer) {
+        try {
+            return (int) H.WRITER_LIVE_REFRESH_SHARED.invokeExact(writer);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
     /** Lets go of the buffers a reader of commit {@code generation} already has, once no view reads them. */
     public static int writerReleaseLive(long writer, long generation) {
         try {
@@ -2328,6 +2454,61 @@ public final class NativeBridge {
             outCounts[1] = counts.get(JAVA_LONG, Long.BYTES);
             outCounts[2] = counts.get(JAVA_BOOLEAN, 2 * Long.BYTES) ? 1 : 0;
             return OK;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    // ---- RustZstd104 terms dictionaries (zstd_terms.rs). ----
+
+    /** Prepares a field's zstd term-block dictionary; its handle into {@code outHandle[0]}. */
+    public static int zstdTermsDictionaryOpen(byte[] dictionary, long[] outHandle) {
+        if (dictionary == null) {
+            return nullArgument("dictionary");
+        }
+        if (outHandle == null || outHandle.length < 1) {
+            return fail(INVALID_ARGUMENT, "outHandle holds no slot");
+        }
+        try (Scratch s = Scratch.open()) {
+            MemorySegment handle = s.alloc(Long.BYTES);
+            int rc = (int) H.ZSTD_TERMS_DICTIONARY_OPEN.invokeExact(s.bytes(dictionary), (long) dictionary.length, handle);
+            if (rc == OK) {
+                outHandle[0] = handle.get(JAVA_LONG, 0);
+            }
+            return rc;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** Releases a handle from {@link #zstdTermsDictionaryOpen}. */
+    public static int zstdTermsDictionaryClose(long handle) {
+        try {
+            return (int) H.ZSTD_TERMS_DICTIONARY_CLOSE.invokeExact(handle);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * Decodes the bare zstd frame {@code src[0..srcLen)} of a zstd term block, compressed against
+     * dictionary {@code handle} (0: none), into exactly {@code dst[0..dstLen)}.
+     */
+    public static int zstdTermsDecompress(long handle, byte[] src, int srcLen, byte[] dst, int dstLen) {
+        if (src == null || dst == null) {
+            return nullArgument(src == null ? "src" : "dst");
+        }
+        if (srcLen < 0 || srcLen > src.length || dstLen < 0 || dstLen > dst.length) {
+            return fail(INVALID_ARGUMENT, "src or dst is shorter than its length");
+        }
+        try (Scratch s = Scratch.open()) {
+            MemorySegment in = s.bytes(src, srcLen);
+            MemorySegment out = s.alloc(dstLen);
+            int rc = (int) H.ZSTD_TERMS_DECOMPRESS.invokeExact(handle, in, (long) srcLen, out, (long) dstLen);
+            if (rc == OK) {
+                MemorySegment.copy(out, JAVA_BYTE, 0, dst, 0, dstLen);
+            }
+            return rc;
         } catch (Throwable t) {
             throw rethrow(t);
         }

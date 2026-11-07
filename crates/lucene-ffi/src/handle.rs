@@ -26,6 +26,9 @@ pub enum RegistryTag {
     JvmReader = 12,
     /// A shard's index writer (`engine_writer.rs`).
     EngineWriter = 13,
+    ZstdDictionary = 14,
+    /// A zstd term-block dictionary (`zstd_terms.rs`).
+    ZstdTermsDictionary = 15,
 }
 
 /// The cap on simultaneously open handles in one registry: the 24-bit index

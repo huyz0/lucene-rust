@@ -61,6 +61,7 @@ def gen(out_dir, docs):
     words = ["t" + b36(i) for i in range(VOCAB)]
     cum = zipf_cum(VOCAB)
     tag_cum = zipf_cum(TAGS)
+    geo = random.Random(7)
     for f, start in enumerate(range(0, docs, PER_FILE)):
         lines = []
         for i in range(start, min(docs, start + PER_FILE)):
@@ -75,6 +76,8 @@ def gen(out_dir, docs):
                 "num": rnd.randrange(1_000_000),
                 "price": round(rnd.uniform(0, 1000), 2),
                 "ts": 1_700_000_000_000 + rnd.randrange(365 * 24 * 60) * 60_000,
+                # Its own stream, so the other fields stay those of corpora made before.
+                "loc": {"lat": round(geo.uniform(-60, 60), 5), "lon": round(geo.uniform(-180, 180), 5)},
             }, separators=(",", ":")))
         with open(os.path.join(out_dir, "bulk-%05d.ndjson" % f), "w") as fh:
             fh.write("\n".join(lines) + "\n")
@@ -107,6 +110,7 @@ MAPPING = {
         "num": {"type": "long"},
         "price": {"type": "double"},
         "ts": {"type": "date"},
+        "loc": {"type": "geo_point"},
     }
 }
 
@@ -134,6 +138,8 @@ def shapes():
         ("terms agg on tag, filtered", {"size": 0, "query": {"match": {"body": "t8"}}, "aggs": {"a": {"terms": {"field": "tag", "size": 20}}}}),
         ("date_histogram by month", {"size": 0, "aggs": {"a": {"date_histogram": {"field": "ts", "calendar_interval": "month"}}}}),
         ("stats on price", {"size": 0, "aggs": {"a": {"stats": {"field": "price"}}}}),
+        ("geo_distance filter", {"query": {"bool": {"filter": {"geo_distance": {"distance": "500km", "loc": {"lat": 10, "lon": 20}}}}}}),
+        ("geo_bounding_box filter", {"query": {"bool": {"filter": {"geo_bounding_box": {"loc": {"top_left": {"lat": 15, "lon": 10}, "bottom_right": {"lat": 5, "lon": 25}}}}}}}),
     ]
 
 
@@ -270,7 +276,12 @@ def visibility(base, container, corpus, label, out, settings):
     seen, missed, errors = [], [0], []
     searched = {}
     wanted = {"term, frequent (t0)", "match OR, 2 frequent", "terms agg on tag, filtered", "match, sort by price"}
+    if os.environ.get("VIS_SHAPES"):
+        wanted = set(os.environ["VIS_SHAPES"].split("|"))
     pairs = [(n, b) for n, b in shapes() if n in wanted]
+    unknown = wanted - {n for n, _ in pairs}
+    if unknown:
+        raise SystemExit(f"VIS_SHAPES: no such shape {sorted(unknown)}")
 
     def probe_once(n):
         req("PUT", f"/bench/_doc/probe-{n}", {"body": f"probe{n}", "tag": "probe"})
@@ -309,14 +320,16 @@ def visibility(base, container, corpus, label, out, settings):
 
     cpu0 = cpu_seconds(container)
     t0 = time.perf_counter()
-    with concurrent.futures.ThreadPoolExecutor(2) as side:
-        tasks = [side.submit(probe), side.submit(search)]
+    searchers = int(os.environ.get("SEARCHERS", "1"))
+    with concurrent.futures.ThreadPoolExecutor(1 + searchers) as side:
+        tasks = [side.submit(probe)] + [side.submit(search) for _ in range(searchers)]
         try:
             def send(path):
                 with open(path, "rb") as fh:
                     res = req("POST", "/bench/_bulk", fh.read(), ndjson=True)
                 if res["errors"]:
-                    raise RuntimeError(f"bulk {path} had errors")
+                    first = next((i for i in res["items"] if "error" in next(iter(i.values()))), None)
+                    raise RuntimeError(f"bulk {path} had errors, first: {json.dumps(first)[:2000]}")
             with concurrent.futures.ThreadPoolExecutor(CLIENTS) as ex:
                 list(ex.map(send, files))
         finally:
@@ -337,6 +350,26 @@ def visibility(base, container, corpus, label, out, settings):
         "search_ms_during_load": {n: {"p50": pct(v, 0.5), "p90": pct(v, 0.9), "n": len(v)} for n, v in searched.items()},
         "memory_after_load": node_snapshot(container),
     }
+    # SEARCH_ONLY=N: then N searches of each shape, one at a time, with no
+    # indexing: their CPU alone. The buffered documents stay as the load
+    # left them; nothing refreshes them first.
+    rounds = int(os.environ.get("SEARCH_ONLY", "0"))
+    if rounds:
+        took = {n: [] for n, _ in pairs}
+        cpu1 = cpu_seconds(container)
+        t1 = time.perf_counter()
+        for _ in range(rounds):
+            for name, body in pairs:
+                t = time.perf_counter()
+                req("POST", "/bench/_search?request_cache=false", body)
+                took[name].append((time.perf_counter() - t) * 1000)
+        result["search_only"] = {
+            "searches": rounds * len(pairs),
+            "seconds": round(time.perf_counter() - t1, 2),
+            "cpu_seconds": round(cpu_seconds(container) - cpu1, 2),
+            "ms": {n: {"p50": pct(v, 0.5), "avg": round(sum(v) / len(v), 2)} for n, v in took.items()},
+        }
+        print(f"  search only: {result['search_only']}", flush=True)
     try:
         result["plugin_stats"] = req("GET", "/_plugins/lucene_rust/stats")
     except Exception:  # optional: the stock node has no such endpoint

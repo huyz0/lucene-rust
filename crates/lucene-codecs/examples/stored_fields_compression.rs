@@ -9,6 +9,7 @@
 //! and a full in-order scan through a [`ChunkCursor`] (a merge or reindex).
 //!
 //! Run: `cargo run --release -p lucene-codecs --example stored_fields_compression -- FILE...`
+//! (`MODES=zstd_paged` runs only the modes whose name contains it).
 
 // Benchmark arithmetic on its own counters, not on index bytes.
 #![allow(clippy::arithmetic_side_effects)]
@@ -22,7 +23,9 @@ use lucene_codecs::stored_fields::{
 const ID: [u8; 16] = *b"zstd-bench-segid";
 const RANDOM_READS: usize = 100_000;
 
-fn modes() -> Vec<(String, Mode)> {
+/// `(name, mode, train)`: `train` gives a [`Mode::ZstdPaged`] writer a
+/// dictionary trained on the documents, as a merge does.
+fn modes() -> Vec<(String, Mode, bool)> {
     let mut m = vec![
         ("lz4 (default)".to_string(), Mode::BestSpeed),
         (
@@ -40,6 +43,19 @@ fn modes() -> Vec<(String, Mode)> {
         m.push((
             format!("zstd_no_dict level {level}"),
             Mode::Zstd(ZstdMode::zstd_no_dict(level)),
+        ));
+    }
+    let mut m: Vec<(String, Mode, bool)> = m.into_iter().map(|(n, m)| (n, m, false)).collect();
+    for level in [1, 3, 6] {
+        m.push((
+            format!("zstd_paged level {level}"),
+            Mode::ZstdPaged(level),
+            false,
+        ));
+        m.push((
+            format!("zstd_paged level {level} + dict"),
+            Mode::ZstdPaged(level),
+            true,
         ));
     }
     m
@@ -86,13 +102,37 @@ fn main() {
                 (state % docs.len() as u64) as i32
             })
             .collect();
-        for (name, mode) in modes() {
+        let mut dict = None;
+        // `MODES=paged` runs only the modes whose name contains it.
+        let filter = std::env::var("MODES").unwrap_or_default();
+        for (name, mode, train) in modes().into_iter().filter(|m| m.0.contains(&filter)) {
+            if train && dict.is_none() {
+                let mut w = StoredFieldsWriter::new(mode, &ID, "");
+                for d in &docs {
+                    w.add_document(d);
+                }
+                let (fdt, fdx, fdm) = w.finish();
+                let reader = stored_fields::open(&fdt, &fdx, &fdm, &ID, "").unwrap();
+                let t = Instant::now();
+                let trained = stored_fields::train_zstd_paged_dictionary(&[&reader])
+                    .unwrap()
+                    .expect("enough to train on");
+                println!(
+                    "(dictionary: {} bytes, trained in {:.1} ms)",
+                    trained.len(),
+                    t.elapsed().as_secs_f64() * 1e3
+                );
+                dict = Some(trained);
+            }
             // Best of three for each timing.
             let mut write_s = f64::MAX;
             let mut files = None;
             for _ in 0..3 {
                 let t = Instant::now();
                 let mut w = StoredFieldsWriter::new(mode, &ID, "");
+                if train {
+                    w.set_zstd_dictionary(dict.as_deref().unwrap());
+                }
                 for d in &docs {
                     w.add_document(d);
                 }

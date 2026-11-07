@@ -1,0 +1,223 @@
+//! Build time, size, recall and latency of one KNN field through the real
+//! index path (IndexWriter, segment reader, `knn_top_hits`) per vectors
+//! format: HNSW, scalar-quantized HNSW and `LuceneRustIvfVectorsFormat`.
+//!
+//! ```text
+//! cargo run --release -p lucene-search --example knn_formats -- <prefix> <l2|cosine> [options]
+//!   --formats L   comma list of hnsw, hnsw-int7, ivf, ivf-f16 (default all)
+//!   --queries N   measured queries (default 1000), after 200 warm-up ones
+//!   --segments N  flushed segments, force-merged to one when --merge is set (default 1)
+//!   --nprobes L   IVF probes per segment, 0 = calibrated (default 0)
+//!   --dir D       where the indexes are written (default a temporary directory)
+//! ```
+//!
+//! `<prefix>` names `.base.fbin`, `.query.fbin` and `.gt.ibin` as
+//! `benchmarks/ivf/prepare.py` writes them. Prints one CSV row per format
+//! and setting.
+#![allow(clippy::arithmetic_side_effects)]
+
+use std::time::Instant;
+
+use lucene_codecs::field_infos::{FieldInfo, VectorEncoding, VectorSimilarityFunction};
+use lucene_codecs::per_field_knn_vectors::KnnVectorsFormat;
+use lucene_codecs::stored_fields::{FieldValue, StoredField};
+use lucene_index::concurrent_writer::ConcurrentIndexWriter;
+use lucene_index::index_writer::{DocumentVector, ExplicitDocument, IndexWriter};
+use lucene_index::segment_info::LuceneVersion;
+use lucene_search::directory_reader::DirectoryReader;
+use lucene_search::knn_search::{knn_top_hits_with, KnnTarget};
+use lucene_store::FsDirectory;
+use lucene_util::quantization::ScalarEncoding;
+
+const K: usize = 10;
+
+fn read_bin<T: Copy>(path: &str, decode: fn([u8; 4]) -> T) -> (usize, usize, Vec<T>) {
+    let bytes = std::fs::read(path).unwrap_or_else(|e| panic!("{path}: {e}"));
+    let n = u32::from_le_bytes(bytes[0..4].try_into().unwrap()) as usize;
+    let d = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
+    let data = bytes[8..]
+        .chunks_exact(4)
+        .map(|c| decode(c.try_into().unwrap()))
+        .collect();
+    (n, d, data)
+}
+
+fn format(name: &str) -> KnnVectorsFormat {
+    match name {
+        "hnsw" => KnnVectorsFormat::hnsw(16, 100).unwrap(),
+        "hnsw-int7" => {
+            KnnVectorsFormat::hnsw_scalar_quantized(ScalarEncoding::SevenBit, 16, 100).unwrap()
+        }
+        "ivf" => KnnVectorsFormat::ivf(384, 0).unwrap(),
+        "ivf-f16" => KnnVectorsFormat::ivf(384, 1).unwrap(),
+        other => panic!("unknown format {other}"),
+    }
+}
+
+fn dir_size(path: &std::path::Path) -> u64 {
+    std::fs::read_dir(path)
+        .unwrap()
+        .filter_map(|e| e.ok()?.metadata().ok())
+        .map(|m| m.len())
+        .sum()
+}
+
+fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    let prefix = &args[1];
+    let similarity = match args[2].as_str() {
+        "l2" => VectorSimilarityFunction::Euclidean,
+        "cosine" => VectorSimilarityFunction::Cosine,
+        m => panic!("unknown metric {m}"),
+    };
+    let opt = |name: &str| {
+        args.iter()
+            .position(|a| a == name)
+            .map(|i| args[i + 1].clone())
+    };
+    let formats = opt("--formats").unwrap_or_else(|| "hnsw,hnsw-int7,ivf,ivf-f16".into());
+    let segments: usize = opt("--segments").map_or(1, |s| s.parse().unwrap());
+    let merge = args.iter().any(|a| a == "--merge");
+    let nprobes: Vec<usize> = opt("--nprobes")
+        .unwrap_or_else(|| "0".into())
+        .split(',')
+        .map(|s| s.parse().unwrap())
+        .collect();
+    let (n, dim, base) = read_bin(&format!("{prefix}.base.fbin"), f32::from_le_bytes);
+    let (nq_all, _, queries) = read_bin(&format!("{prefix}.query.fbin"), f32::from_le_bytes);
+    let (_, gt_k, gt) = read_bin(&format!("{prefix}.gt.ibin"), i32::from_le_bytes);
+    let nq = opt("--queries")
+        .map_or(1000, |s| s.parse().unwrap())
+        .min(nq_all.saturating_sub(200));
+    let root = opt("--dir").map_or_else(std::env::temp_dir, std::path::PathBuf::from);
+    eprintln!("{prefix}: {n} x {dim}, {nq} queries, {segments} segments, merge {merge}");
+    println!("format,setting,segments,build_s,index_mb,recall@{K},mean_us,p99_us");
+    for name in formats.split(',') {
+        let path = root.join(format!("knn-formats-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&path);
+        std::fs::create_dir_all(&path).unwrap();
+        let dir = FsDirectory::open(&path);
+        let t = Instant::now();
+        let mut w = IndexWriter::open(
+            &dir,
+            Vec::new(),
+            "Lucene104",
+            LuceneVersion {
+                major: 10,
+                minor: 5,
+                bugfix: 0,
+            },
+        )
+        .unwrap();
+        w.enable_explicit_documents().unwrap();
+        w.register_field(FieldInfo::new("id", 0)).unwrap();
+        w.register_field(FieldInfo::new("v", 0).with_vectors(
+            dim as i32,
+            VectorEncoding::Float32,
+            similarity,
+        ))
+        .unwrap();
+        w.set_knn_vectors_format_for_field("v", format(name));
+        w.set_ram_buffer_size_mb(4096.0).unwrap();
+        w.set_merge_policy(None);
+        let w = ConcurrentIndexWriter::new(w, 1).unwrap();
+        let per = n.div_ceil(segments);
+        for start in (0..n).step_by(per) {
+            let (docs, vectors): (Vec<_>, Vec<_>) = (start..(start + per).min(n))
+                .map(|i| {
+                    let mut d = ExplicitDocument::default();
+                    d.stored.push(StoredField {
+                        field_number: 0,
+                        value: FieldValue::Int(i as i32),
+                    });
+                    (
+                        d,
+                        vec![DocumentVector::float32(
+                            "v",
+                            base[i * dim..(i + 1) * dim].to_vec(),
+                        )],
+                    )
+                })
+                .unzip();
+            w.add_explicit_documents_with_vectors_in(None, docs, vectors)
+                .unwrap();
+            w.flush().unwrap();
+        }
+        w.commit().unwrap();
+        let mut w = w.into_writer().unwrap();
+        if merge {
+            w.force_merge(1).unwrap();
+            w.commit().unwrap();
+        }
+        w.close().unwrap();
+        let build = t.elapsed().as_secs_f64();
+        let size = dir_size(&path) as f64 / 1e6;
+        let reader = DirectoryReader::open(&dir).unwrap();
+        let opened = reader.open_segments().unwrap();
+        let segs = opened.as_open_segments();
+        // A merge may reorder documents: hits map back to base ordinals
+        // through the stored id.
+        let mut ids: Vec<i32> = Vec::with_capacity(n);
+        for seg in reader.segment_readers() {
+            for doc in 0..seg.max_doc {
+                let stored = seg.stored_document(doc).unwrap().unwrap();
+                match stored.fields[0].value {
+                    FieldValue::Int(id) => ids.push(id),
+                    ref other => panic!("id {other:?}"),
+                }
+            }
+        }
+        let probe_list: &[usize] = if name.starts_with("ivf") {
+            &nprobes
+        } else {
+            &[0]
+        };
+        // HNSW widens its beam to 100 candidates; IVF sizes its own rerank.
+        let candidates = if name.starts_with("ivf") { K } else { 100 };
+        for &nprobe in probe_list {
+            let search = |q: usize| {
+                knn_top_hits_with(
+                    &segs,
+                    "v",
+                    &KnnTarget::Float(queries[q * dim..(q + 1) * dim].to_vec()),
+                    K,
+                    candidates,
+                    None,
+                    nprobe,
+                )
+                .unwrap()
+            };
+            for q in nq..(nq + 200).min(nq_all) {
+                search(q);
+            }
+            let mut times = Vec::with_capacity(nq);
+            let mut found = 0usize;
+            for q in 0..nq {
+                let t = Instant::now();
+                let hits = search(q);
+                times.push(t.elapsed().as_secs_f64() * 1e6);
+                let truth = &gt[q * gt_k..q * gt_k + K];
+                found += hits
+                    .iter()
+                    .filter(|h| truth.contains(&ids[h.doc_id as usize]))
+                    .count();
+            }
+            times.sort_by(f64::total_cmp);
+            let mean = times.iter().sum::<f64>() / nq as f64;
+            let p99 = times[(nq * 99 / 100).min(nq - 1)];
+            let setting = if name.starts_with("ivf") {
+                format!("nprobes={nprobe}")
+            } else {
+                "ef=100".into()
+            };
+            println!(
+                "{name},{setting},{},{build:.1},{size:.1},{:.4},{mean:.0},{p99:.0}",
+                reader.segment_readers().len(),
+                found as f64 / (nq * K) as f64
+            );
+        }
+        drop(opened);
+        drop(reader);
+        let _ = std::fs::remove_dir_all(&path);
+    }
+}

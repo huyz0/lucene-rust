@@ -108,6 +108,11 @@ pub(crate) enum Fast {
     Ceil,
     Max,
     Min,
+    Ln,
+    Exp,
+    Sin,
+    Cos,
+    Pow,
 }
 
 impl ExprFunction {
@@ -221,6 +226,11 @@ fn build_defaults() -> HashMap<String, ExprFunction> {
         "ceil" => Some(Fast::Ceil),
         "max" => Some(Fast::Max),
         "min" => Some(Fast::Min),
+        "ln" => Some(Fast::Ln),
+        "exp" => Some(Fast::Exp),
+        "sin" => Some(Fast::Sin),
+        "cos" => Some(Fast::Cos),
+        "pow" => Some(Fast::Pow),
         _ => None,
     };
     let mut put1 = |name: &str, f: fn(f64) -> f64| {
@@ -1733,16 +1743,19 @@ pub(crate) use vector::Scratch as BatchScratch;
 /// one that cannot compile an expression leaves it to the closures.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Backend {
-    /// A tree of closures, one per operation (the default).
-    #[default]
+    /// A tree of closures, one per operation, for single documents and
+    /// batches alike.
     Closure,
     /// A batch evaluated one operation at a time over all its documents,
     /// each a vectorised loop; a single document by the closures. An
-    /// expression calling a custom function stays on the closures.
+    /// expression calling a custom function stays on the closures. The
+    /// default.
+    #[default]
     Vector,
 }
 
-static DEFAULT_BACKEND: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+static DEFAULT_BACKEND: std::sync::atomic::AtomicU8 =
+    std::sync::atomic::AtomicU8::new(Backend::Vector as u8);
 
 /// The [`Backend`] [`compile`] and its variants use from now on.
 pub fn set_default_backend(backend: Backend) {
@@ -1752,8 +1765,8 @@ pub fn set_default_backend(backend: Backend) {
 /// The [`Backend`] [`compile`] and its variants use.
 pub fn default_backend() -> Backend {
     match DEFAULT_BACKEND.load(std::sync::atomic::Ordering::Relaxed) {
-        1 => Backend::Vector,
-        _ => Backend::Closure,
+        0 => Backend::Closure,
+        _ => Backend::Vector,
     }
 }
 

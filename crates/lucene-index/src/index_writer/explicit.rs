@@ -832,36 +832,71 @@ impl IndexingConfig {
         // field that stores them, even one that produced no term).
         let mut norm_values: BTreeMap<i32, Vec<Option<i64>>> = BTreeMap::new();
         let mut has_vectors = false;
-        let [dv_role, points_role] = explicit.for_each_with_roles(|i, fields| {
-            if let Some(doc) = buf.docs.get(i) {
-                doc.fields
+        let decoding = std::time::Instant::now();
+        let columns = buf.limit.and_then(|l| l.columns.as_ref());
+        let decode = |present: &mut FieldNumberSet,
+                      norm_values: &mut BTreeMap<i32, Vec<Option<i64>>>,
+                      has_vectors: &mut bool| {
+            explicit.for_each_with_roles(|i, fields| {
+                if let Some(doc) = buf.docs.get(i) {
+                    doc.fields
+                        .iter()
+                        .for_each(|f| present.insert(f.field_number));
+                }
+                let roles = [&fields.doc_values, &fields.points];
+                for inv in &fields.inverted {
+                    present.insert(inv.field_number);
+                    if let Some(norm) = inv.norm {
+                        norm_values
+                            .entry(inv.field_number)
+                            .or_insert_with(|| vec![None; max_doc])[i] = Some(norm);
+                    }
+                    *has_vectors |= self
+                        .explicit_field(inv.field_number)
+                        .is_ok_and(|info| info.store_term_vectors);
+                }
+                roles
+                    .into_iter()
+                    .flatten()
+                    .for_each(|f| present.insert(f.field_number));
+                fields
+                    .term_vectors
                     .iter()
                     .for_each(|f| present.insert(f.field_number));
-            }
-            let roles = [&fields.doc_values, &fields.points];
-            for inv in &fields.inverted {
-                present.insert(inv.field_number);
-                if let Some(norm) = inv.norm {
-                    norm_values
-                        .entry(inv.field_number)
-                        .or_insert_with(|| vec![None; max_doc])[i] = Some(norm);
+                *has_vectors |= !fields.term_vectors.is_empty();
+                fields.registered.iter().for_each(|&n| present.insert(n));
+                Ok(())
+            })
+        };
+        // A run kept as columns is not decoded: its fields, norms, doc
+        // values and points are read from them.
+        let roles = match columns {
+            Some(c) => {
+                for doc in buf.docs {
+                    doc.fields
+                        .iter()
+                        .for_each(|f| present.insert(f.field_number));
                 }
-                has_vectors |= self
-                    .explicit_field(inv.field_number)
-                    .is_ok_and(|info| info.store_term_vectors);
+                c.present.iter().for_each(|&n| present.insert(n));
+                norm_values.extend(c.norms.iter().cloned());
+                None
             }
-            roles
-                .into_iter()
-                .flatten()
-                .for_each(|f| present.insert(f.field_number));
-            fields
-                .term_vectors
-                .iter()
-                .for_each(|f| present.insert(f.field_number));
-            has_vectors |= !fields.term_vectors.is_empty();
-            fields.registered.iter().for_each(|&n| present.insert(n));
-            Ok(())
-        })?;
+            None => {
+                let roles = decode(&mut present, &mut norm_values, &mut has_vectors)?;
+                if buf.limit.is_some() {
+                    crate::live_timing::record(
+                        crate::live_timing::Phase::ChunkDecode,
+                        decoding.elapsed(),
+                    );
+                }
+                Some(roles)
+            }
+        };
+        let (mut dv_role, points_role) = match roles {
+            Some([dv, points]) => (Some(dv), Some(points)),
+            None => (None, None),
+        };
+        let chunk = buf.limit.is_some();
 
         // Postings: one term dictionary per field, terms in byte order. The
         // writer inverted them as each document was buffered
@@ -1040,7 +1075,9 @@ impl IndexingConfig {
                     .fields
                     .iter()
                     .filter(|f| {
-                        present.contains(&f.number) && f.doc_values_type != DocValuesType::None
+                        buf.limit.is_none_or(|l| l.doc_values)
+                            && present.contains(&f.number)
+                            && f.doc_values_type != DocValuesType::None
                     })
                     .map(|f| DocValuesFieldConfig {
                         name: f.name.clone(),
@@ -1058,12 +1095,40 @@ impl IndexingConfig {
                         .filter(|f| present.contains(&f.number))
                         .map(|f| f.name.as_str())
                         .collect();
-                    Some(self.build_doc_values_groups(
-                        &dv_role.per_doc(),
-                        &dv_configs,
-                        &names,
-                        &segment_id,
-                    )?)
+                    let building = std::time::Instant::now();
+                    let prebuilt = columns.and_then(|c| {
+                        self.build_prebuilt_doc_values_groups(
+                            &c.doc_values,
+                            max_doc as i32,
+                            &dv_configs,
+                            &names,
+                            &segment_id,
+                        )
+                    });
+                    let (groups, phase) = match prebuilt {
+                        Some(groups) => (groups?, crate::live_timing::Phase::ChunkDocValuesColumns),
+                        None => {
+                            if dv_role.is_none() {
+                                let [dv, _] = explicit.for_each_with_roles(|_, _| Ok(()))?;
+                                dv_role = Some(dv);
+                            }
+                            let docs = dv_role
+                                .as_ref()
+                                .map(super::RoleValues::per_doc)
+                                .unwrap_or_default();
+                            let groups = self.build_doc_values_groups(
+                                &docs,
+                                &dv_configs,
+                                &names,
+                                &segment_id,
+                            )?;
+                            (groups, crate::live_timing::Phase::ChunkDocValuesDecoded)
+                        }
+                    };
+                    if chunk {
+                        crate::live_timing::record(phase, building.elapsed());
+                    }
+                    Some(groups)
                 };
                 // Each role's values are freed once written, not held while
                 // the points, vectors and postings builds run.
@@ -1071,7 +1136,11 @@ impl IndexingConfig {
                 let point_configs: Vec<PointsFieldConfig> = self
                     .fields
                     .iter()
-                    .filter(|f| present.contains(&f.number) && f.point_dimension_count > 0)
+                    .filter(|f| {
+                        buf.limit.is_none_or(|l| l.points)
+                            && present.contains(&f.number)
+                            && f.point_dimension_count > 0
+                    })
                     .map(|f| PointsFieldConfig {
                         name: f.name.clone(),
                         field_number: f.number,
@@ -1083,14 +1152,34 @@ impl IndexingConfig {
                 let points_output = if point_configs.is_empty() {
                     None
                 } else {
-                    IndexWriter::build_points_output(
-                        self,
-                        &points_role.per_doc(),
-                        &point_configs,
-                        &segment_id,
-                        dir,
-                        segment_name,
-                    )?
+                    let building = std::time::Instant::now();
+                    let out = match (columns, &points_role) {
+                        (_, Some(role)) => IndexWriter::build_points_output(
+                            self,
+                            &role.per_doc(),
+                            &point_configs,
+                            &segment_id,
+                            dir,
+                            segment_name,
+                        )?,
+                        (Some(c), None) => IndexWriter::build_prebuilt_points_output(
+                            self,
+                            &c.points,
+                            &point_configs,
+                            &segment_id,
+                            dir,
+                            segment_name,
+                            max_doc as i32,
+                        )?,
+                        (None, None) => None,
+                    };
+                    if chunk {
+                        crate::live_timing::record(
+                            crate::live_timing::Phase::ChunkPoints,
+                            building.elapsed(),
+                        );
+                    }
+                    out
                 };
                 drop(points_role);
 
@@ -1332,6 +1421,7 @@ impl IndexingConfig {
             lucene_codecs::codec::WritePoint::SegmentInfo,
         )?;
         self.partition_segment(&mut flushed.info.attributes, buf.partition);
+        self.record_list_attributes(&mut flushed.info.attributes);
         segment_writer::seal_flushed_segment(dir, segment_name, flushed).map_err(Error::from)
     }
 }

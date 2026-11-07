@@ -7,17 +7,28 @@ a stock one, which bundles opensearch-knn. Both get the same `index.knn`
 indexes -- one per mapping below, written in three flushed segments -- and
 answer the same queries. The Rust engine writes the plugin node's segments.
 
-  exact      full-precision mappings (lucene and faiss engines; l2,
-             cosinesimil, innerproduct; float and byte): the graphs are small
+  exact      full-precision lucene mappings (l2, cosinesimil,
+             innerproduct; float and byte): the graphs are small
              enough that HNSW finds the true neighbours on both nodes, so every
              top-k, filtered, ef_search, boosted and radial query must return
              the same hits with the same scores (1e-4), and the same hits as an
              exhaustive scan computed here.
+  half_float float vectors stored as half floats (cosine ones normalized
+             first, as stock does): checked as exact, against a scan over the
+             half-float values.
+  binary     packed bit vectors in the hamming space: the same scores as
+             stock, each the hit's own Hamming score; distances tie often, so
+             hits are compared by id only above the last score.
   quantized  sq / on_disk mappings: the stock plugin scores quantized vectors
              (and rescores some); the plugin searches full precision. The check
              is that its top 10 are the exhaustive scan's, and that they
              overlap stock's by at least MIN_RECALL on average.
-  errors     requests the stock plugin refuses are refused here too.
+  nested     a knn_vector under a nested field: the best child per parent,
+             filters at the root and on the nested docs, and
+             expand_nested_docs with inner hits, the same hits, scores and
+             inner hits as stock.
+  errors     requests the stock plugin refuses are refused here too; faiss
+             mappings, which stock accepts, are refused here.
 
 Every search must run in Rust (the plugin's stats show no fallback).
 
@@ -26,7 +37,7 @@ Every search must run in Rust (the plugin's stats show no fallback).
 Needs Docker and the plugin zip in opensearch-plugin/build/distributions
 (`gradle -p opensearch-plugin bundlePlugin`).
 """
-import glob, json, math, os, random, shutil, subprocess, sys, time, urllib.request
+import glob, json, math, os, random, shutil, struct, subprocess, sys, time, urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 VERSION = "3.9.0"
@@ -41,17 +52,14 @@ EXACT = {
     "lucene_l2": {"engine": "lucene", "space_type": "l2"},
     "lucene_cos": {"engine": "lucene", "space_type": "cosinesimil"},
     "lucene_ip": {"engine": "lucene", "space_type": "innerproduct"},
-    "faiss_l2": {"engine": "faiss", "space_type": "l2"},
-    "faiss_cos": {"engine": "faiss", "space_type": "cosinesimil"},
-    "faiss_ip": {"engine": "faiss", "space_type": "innerproduct"},
     "lucene_byte": {"engine": "lucene", "space_type": "l2", "data_type": "byte"},
-    "faiss_byte": {"engine": "faiss", "space_type": "l2", "data_type": "byte"},
+    "lucene_binary": {"engine": "lucene", "space_type": "hamming", "data_type": "binary", "dimension": 64},
+    "lucene_half_l2": {"engine": "lucene", "space_type": "l2", "data_type": "half_float"},
+    "lucene_half_cos": {"engine": "lucene", "space_type": "cosinesimil", "data_type": "half_float"},
 }
 QUANTIZED = {
     "lucene_sq": {"engine": "lucene", "space_type": "l2", "encoder": {"name": "sq", "parameters": {"bits": 7}}},
     "lucene_sq_1bit": {"engine": "lucene", "space_type": "l2", "encoder": {"name": "sq", "parameters": {"bits": 1}}},
-    "faiss_fp16": {"engine": "faiss", "space_type": "l2", "encoder": {"name": "sq", "parameters": {"type": "fp16", "bits": 16}}},
-    "faiss_sq_2bit": {"engine": "faiss", "space_type": "l2", "encoder": {"name": "sq", "parameters": {"bits": 2}}},
     "on_disk_32x": {"space_type": "l2", "mode": "on_disk"},
     "lucene_4x": {"space_type": "l2", "compression_level": "4x"},
 }
@@ -92,14 +100,27 @@ def wait(port):
     sys.exit(f"node on {port} did not start")
 
 
-def vector(rng, byte):
+def vector(rng, byte, binary_dim=0):
+    if binary_dim:
+        return [rng.randint(-128, 127) for _ in range(binary_dim // 8)]
     if byte:
         return [rng.randint(-20, 20) for _ in range(DIM)]
     return [round(rng.uniform(-1, 1), 4) for _ in range(DIM)]
 
 
+def vector_for(spec, rng):
+    """A random value for `spec`'s field: floats, bytes, or a binary field's dimension / 8 bytes."""
+    binary = spec.get("dimension", DIM) if spec.get("data_type") == "binary" else 0
+    return vector(rng, spec.get("data_type") == "byte", binary)
+
+
+def ties(spec):
+    """Hamming scores tie often: hits at the last score may trade places."""
+    return spec.get("space_type") == "hamming"
+
+
 def field_mapping(spec):
-    m = {"type": "knn_vector", "dimension": DIM}
+    m = {"type": "knn_vector", "dimension": spec.get("dimension", DIM)}
     for k in ("data_type", "mode", "compression_level"):
         if k in spec:
             m[k] = spec[k]
@@ -114,8 +135,8 @@ def field_mapping(spec):
     return m
 
 
-def create(port, index, spec, docs, rust):
-    settings = {"index.knn": True, "number_of_shards": 1, "number_of_replicas": 0, "refresh_interval": -1,
+def create(port, index, spec, docs, rust, extra=None):
+    settings = {**(extra or {}), "index.knn": True, "number_of_shards": 1, "number_of_replicas": 0, "refresh_interval": -1,
                 "index.merge.policy.max_merge_at_once": 100, "index.merge.policy.segments_per_tier": 100}
     if rust:
         settings["index.lucene_rust.engine"] = True
@@ -139,14 +160,44 @@ def score(space, a, b):
     """The Lucene similarity scores the k-NN plugin's translations equal."""
     if space == "l2":
         return 1 / (1 + sum((x - y) ** 2 for x, y in zip(a, b)))
+    if space == "hamming":
+        return 1 / (1 + sum(bin((x ^ y) & 0xFF).count("1") for x, y in zip(a, b)))
     dot = sum(x * y for x, y in zip(a, b))
     if space == "cosinesimil":
         return (1 + dot / math.sqrt(sum(x * x for x in a) * sum(y * y for y in b))) / 2
     return 1 / (1 - dot) if dot < 0 else dot + 1
 
 
+def indexed(spec, v):
+    """The vector a field indexes for `v`: a half_float field's half floats, normalized first for cosine."""
+    if spec.get("data_type") != "half_float":
+        return v
+    if spec["space_type"] == "cosinesimil":
+        v = normalized(v)
+    return [struct.unpack("<e", struct.pack("<e", x))[0] for x in v]
+
+
+def normalized(v):
+    """VectorUtil.l2normalize, in float32."""
+    f32 = lambda x: struct.unpack("<f", struct.pack("<f", x))[0]
+    norm = f32(math.sqrt(f32(sum(f32(x * x) for x in v))))
+    return [f32(x / norm) for x in v]
+
+
+def half_cosine(spec):
+    """k-NN scores half_float cosine fields' normalized vectors by its FP16 kernel, (1 + dot) / 2:
+    in float32 here, and on CPUs with AVX-512-FP16 by FP16 FMAs on stock, whose scores then differ
+    by up to a few 1e-4 and can swap near-equal hits."""
+    return spec.get("data_type") == "half_float" and spec["space_type"] == "cosinesimil"
+
+
 def exact_top(spec, docs, target, k, keep=lambda d: True):
-    scored = sorted(((score(spec["space_type"], target, d["emb"]), d["_id"]) for d in docs if keep(d)),
+    if half_cosine(spec):
+        q = normalized(target)
+        of = lambda d: (1 + sum(x * y for x, y in zip(q, indexed(spec, d["emb"])))) / 2
+    else:
+        of = lambda d: score(spec["space_type"], target, indexed(spec, d["emb"]))
+    scored = sorted(((of(d), d["_id"]) for d in docs if keep(d)),
                     key=lambda t: (-t[0], t[1]))
     return scored[:k]
 
@@ -156,14 +207,128 @@ def search(port, index, body):
     return [(h["_id"], h["_score"]) for h in r["hits"]["hits"]]
 
 
-def same(got, want, tol=1e-4):
-    if [i for i, _ in got] != [i for i, _ in want]:
+def same(got, want, tol=1e-4, ties=False):
+    """The same hits and scores; with `ties`, hits scoring the last score may differ."""
+    if len(got) != len(want):
         return False
-    return all(abs(a - b) <= tol * max(1.0, abs(b)) for (_, a), (_, b) in zip(got, want))
+    if not all(abs(a - b) <= tol * max(1.0, abs(b)) for (_, a), (_, b) in zip(got, want)):
+        return False
+    if ties and got:
+        last = want[-1][1]
+        return [i for i, sc in got if sc > last] == [i for i, sc in want if sc > last]
+    return [i for i, _ in got] == [i for i, _ in want]
+
+
+def close(got, want, tol=1e-3):
+    """Scores within `tol`; a hit missing from the other list scores within `tol` of its last."""
+    if len(got) != len(want):
+        return False
+    theirs, last = dict(want), (want[-1][1] if want else 0)
+    for (i, sc), (_, w) in zip(got, want):
+        if abs(sc - w) > tol * max(1.0, abs(w)):
+            return False
+        if i in theirs and abs(sc - theirs[i]) > tol * max(1.0, abs(w)):
+            return False
+        if i not in theirs and abs(sc - last) > tol * max(1.0, abs(last)):
+            return False
+    return True
 
 
 def knn(target, **params):
     return {"knn": {"emb": {"vector": target, **params}}}
+
+
+def nested_check(failures):
+    """Nested knn on both nodes: returns the number of queries compared."""
+    index = "nested_l2"
+    rng = random.Random(f"{SEED}-{index}")
+    spec = {"engine": "lucene", "space_type": "l2"}
+    docs = []
+    for i in range(240):
+        kids = []
+        for j in range(rng.randint(1, 4)):
+            kid = {"color": rng.choice(["red", "blue"])}
+            if j != 1:
+                kid["emb"] = vector_for(spec, rng)
+            kids.append(kid)
+        docs.append({"_id": f"p{i}", "tag": "even" if i % 2 == 0 else "odd", "n": i, "nest": kids})
+    mapping = {"properties": {"tag": {"type": "keyword"}, "n": {"type": "integer"},
+                              "nest": {"type": "nested", "properties": {"color": {"type": "keyword"},
+                                                                       "emb": field_mapping(spec)}}}}
+    for port, rust in ((OURS[1], True), (STOCK[1], False)):
+        settings = {"index.knn": True, "number_of_shards": 1, "number_of_replicas": 0, "refresh_interval": -1,
+                    "index.merge.policy.max_merge_at_once": 100, "index.merge.policy.segments_per_tier": 100}
+        if rust:
+            settings["index.lucene_rust.engine"] = True
+        req(port, "PUT", f"/{index}", {"settings": settings, "mappings": mapping})
+        per = len(docs) // SEGMENTS
+        for s in range(SEGMENTS):
+            lines = []
+            for d in docs[s * per:(s + 1) * per]:
+                lines.append(json.dumps({"index": {"_index": index, "_id": d["_id"]}}))
+                lines.append(json.dumps({k: v for k, v in d.items() if k != "_id"}))
+            r = req(port, "POST", "/_bulk", "\n".join(lines) + "\n", ndjson=True)
+            assert not r["errors"], json.dumps(r)[:2000]
+            req(port, "POST", f"/{index}/_flush")
+        req(port, "POST", f"/{index}/_refresh")
+
+    def nested(inner, **extra):
+        return {"nested": {"path": "nest", "query": {"knn": {"nest.emb": inner}}, **extra}}
+
+    def hits(port, body):
+        r = req(port, "POST", f"/{index}/_search", body)
+        out = []
+        for h in r["hits"]["hits"]:
+            inner = h.get("inner_hits", {}).get("nest", {}).get("hits", {}).get("hits", [])
+            out.append((h["_id"], h["_score"], [(x["_nested"]["offset"], x["_score"]) for x in inner]))
+        return out
+
+    def agree(got, want):
+        if not same([(i, sc) for i, sc, _ in got], [(i, sc) for i, sc, _ in want]):
+            return False
+        for (_, _, a), (_, _, b) in zip(got, want):
+            if [o for o, _ in a] != [o for o, _ in b] or any(abs(x - y) > 1e-4 for (_, x), (_, y) in zip(a, b)):
+                return False
+        return True
+
+    checked = 0
+    for qi in range(6):
+        t = vector_for(spec, rng)
+        bodies = [
+            ("nested top k", {"size": 20, "query": nested({"vector": t, "k": 10})}),
+            ("nested ef_search", {"size": 20, "query": nested({"vector": t, "k": 5,
+                                                               "method_parameters": {"ef_search": 100}})}),
+            ("nested root filter", {"size": 20, "query": nested({"vector": t, "k": 10,
+                                                                 "filter": {"term": {"tag": "even"}}})}),
+            ("nested child filter", {"size": 20, "query": nested({"vector": t, "k": 10, "filter": {
+                "nested": {"path": "nest", "query": {"term": {"nest.color": "red"}}}}})}),
+            ("nested inner hits", {"size": 20, "query": nested({"vector": t, "k": 10},
+                                                                inner_hits={"size": 4})}),
+            ("expand", {"size": 20, "query": nested({"vector": t, "k": 10, "expand_nested_docs": True},
+                                                     inner_hits={"size": 4}, score_mode="max")}),
+            ("expand avg", {"size": 20, "query": nested({"vector": t, "k": 10, "expand_nested_docs": True},
+                                                         inner_hits={"size": 4})}),
+            ("expand filtered", {"size": 20, "query": nested({"vector": t, "k": 10, "expand_nested_docs": True,
+                                                              "filter": {"nested": {"path": "nest", "query": {
+                                                                  "term": {"nest.color": "blue"}}}}},
+                                                             inner_hits={"size": 4}, score_mode="max")}),
+        ]
+        for label, body in bodies:
+            got, want = hits(OURS[1], body), hits(STOCK[1], body)
+            checked += 1
+            if not agree(got, want):
+                failures.append(f"{index} {label} query {qi}: {got[:2]} vs {want[:2]}")
+        # The best child per parent, exhaustively: stock's graph is small enough to find it.
+        best = {}
+        for d in docs:
+            for kid in d["nest"]:
+                if "emb" in kid:
+                    best[d["_id"]] = max(best.get(d["_id"], 0), score("l2", t, kid["emb"]))
+        scan = sorted(best.items(), key=lambda x: (-x[1], x[0]))[:10]
+        got = hits(OURS[1], bodies[0][1])
+        if not same([(i, sc) for i, sc, _ in got], scan):
+            failures.append(f"{index} nested top k query {qi}: not the exhaustive scan's: {got[:2]} vs {scan[:2]}")
+    return checked
 
 
 def main():
@@ -187,16 +352,15 @@ def main():
         checked = 0
         for group, specs in (("exact", EXACT), ("quantized", QUANTIZED)):
             for index, spec in specs.items():
-                byte = spec.get("data_type") == "byte"
+                binary = ties(spec)
                 rng = random.Random(f"{SEED}-{index}")
-                docs = [{"_id": f"d{i}", "tag": "even" if i % 2 == 0 else "odd", "n": i, "emb": vector(rng, byte)}
-                        for i in range(DOCS)]
+                docs = [{"_id": f"d{i}", "tag": "even" if i % 2 == 0 else "odd", "n": i,
+                         "emb": vector_for(spec, rng)} for i in range(DOCS)]
                 ours = create(OURS[1], index, spec, docs, True)
                 stock = create(STOCK[1], index, spec, docs, False)
                 if ours != stock:
                     failures.append(f"{index}: segment sizes differ: {ours} vs {stock}")
-                faiss = spec.get("engine", "faiss" if spec.get("compression_level") != "4x" else "lucene") == "faiss"
-                targets = [vector(rng, byte) for _ in range(8)]
+                targets = [vector_for(spec, rng) for _ in range(8)]
                 if group == "quantized":
                     overlaps = []
                     for t in targets:
@@ -229,25 +393,34 @@ def main():
                         ("boost", {"size": 20, "query": knn(t, k=k, boost=2.0)}, None),
                         ("in bool", {"size": 20, "query": {"bool": {"must": [knn(t, k=k)],
                                                                     "filter": [{"term": {"tag": "odd"}}]}}}, None),
-                        ("min_score", {"size": 100, "query": knn(t, min_score=floor)}, None),
                     ]
-                    if spec["space_type"] != "innerproduct":
+                    if not binary:
+                        # Radial search is refused for binary vectors (checked under errors).
+                        bodies.append(("min_score", {"size": 100, "query": knn(t, min_score=floor)}, None))
+                    if spec["space_type"] in ("l2", "cosinesimil"):
                         dist = {"l2": lambda s: 1 / s - 1, "cosinesimil": lambda s: 2 - 2 * s}[spec["space_type"]](floor)
                         bodies.append(("max_distance", {"size": 100, "query": knn(t, max_distance=dist)}, None))
                     for label, body, keep_doc in bodies:
                         got = search(OURS[1], index, body)
                         want = search(STOCK[1], index, body)
                         checked += 1
-                        if not same(got, want):
+                        if not (close(got, want) if half_cosine(spec) else same(got, want, ties=binary)):
                             first = next((i for i, (a, b) in enumerate(zip(got, want)) if a[0] != b[0]),
                                          min(len(got), len(want)))
                             failures.append(f"{index} {label} query {qi}: {len(got)} vs {len(want)} hits, first "
                                             f"difference at {first}: {got[first:first + 2]} vs {want[first:first + 2]}")
-                        if label in ("top k", "filtered", "range filter") and not faiss:
+                        if binary:
+                            # Hamming graphs miss tied neighbours on both nodes; each score must be the hit's own.
+                            by_id = {d["_id"]: d["emb"] for d in docs}
+                            boost = 2.0 if label == "boost" else 1.0
+                            if any(abs(sc - boost * score("hamming", t, by_id[i])) > 1e-6 for i, sc in got):
+                                failures.append(f"{index} {label} query {qi}: scores are not the hits' Hamming scores")
+                        elif label in ("top k", "filtered", "range filter"):
                             kk = 5 if label == "range filter" else k
                             scan = exact_top(spec, docs, t, kk, keep_doc or (lambda d: True))
-                            if [i for i, _ in got] != [i for _, i in scan]:
+                            if not same(got, [(i, sc) for sc, i in scan], ties=binary):
                                 failures.append(f"{index} {label} query {qi}: not the exhaustive scan's top {kk}")
+        checked += nested_check(failures)
         print(f"compared {checked} queries")
 
         errors = [
@@ -258,6 +431,12 @@ def main():
             ("byte values", "lucene_byte", {"query": knn([0.5] * DIM, k=3)}),
             ("not knn", "lucene_l2", {"query": {"knn": {"tag": {"vector": [0.1] * DIM, "k": 3}}}}),
             ("min_score 0", "lucene_l2", {"query": knn([0.1] * DIM, min_score=0)}),
+            ("binary min_score", "lucene_binary", {"query": knn([1] * 8, min_score=0.1)}),
+            ("binary max_distance", "lucene_binary", {"query": knn([1] * 8, max_distance=3)}),
+            ("binary dimension", "lucene_binary", {"query": knn([1] * 7, k=3)}),
+            ("binary values", "lucene_binary", {"query": knn([200] * 8, k=3)}),
+            ("half_float dimension", "lucene_half_l2", {"query": knn([0.1] * (DIM + 1), k=3)}),
+            ("expand not nested", "lucene_l2", {"query": knn([0.1] * DIM, k=3, expand_nested_docs=True)}),
         ]
         for label, index, body in errors:
             a = req(OURS[1], "POST", f"/{index}/_search", body, ok_errors=True)
@@ -269,6 +448,17 @@ def main():
             ("nmslib", {"type": "knn_vector", "dimension": 4, "method": {"name": "hnsw", "engine": "nmslib"}}),
             ("no dimension", {"type": "knn_vector"}),
             ("bad space", {"type": "knn_vector", "dimension": 4, "space_type": "nope"}),
+            ("binary dimension", {"type": "knn_vector", "dimension": 12, "data_type": "binary"}),
+            ("binary l2", {"type": "knn_vector", "dimension": 16, "data_type": "binary", "space_type": "l2"}),
+            ("hamming float", {"type": "knn_vector", "dimension": 16, "space_type": "hamming"}),
+            ("half_float hamming", {"type": "knn_vector", "dimension": 16, "data_type": "half_float", "space_type": "hamming"}),
+            ("half_float 4x", {"type": "knn_vector", "dimension": 16, "data_type": "half_float", "compression_level": "4x"}),
+            ("half_float sq", {"type": "knn_vector", "dimension": 16, "data_type": "half_float",
+                               "method": {"name": "hnsw", "engine": "lucene",
+                                          "parameters": {"encoder": {"name": "sq", "parameters": {"bits": 1}}}}}),
+            ("binary sq", {"type": "knn_vector", "dimension": 16, "data_type": "binary",
+                           "method": {"name": "hnsw", "engine": "lucene",
+                                      "parameters": {"encoder": {"name": "sq", "parameters": {"bits": 7}}}}}),
         ]
         for label, m in bad_mappings:
             for port in (OURS[1], STOCK[1]):
@@ -277,6 +467,31 @@ def main():
                 if r.get("status", 200) != 400:
                     failures.append(f"mapping {label} accepted on port {port}: {json.dumps(r)[:200]}")
                     req(port, "DELETE", "/bad-mapping", ok_errors=True)
+        for label, value in (("half_float range", [70000.0] * DIM), ("half_float nan", ["NaN"] * DIM)):
+            for port in (OURS[1], STOCK[1]):
+                r = req(port, "PUT", "/lucene_half_l2/_doc/bad", {"emb": value}, ok_errors=True)
+                if r.get("status", 200) != 400:
+                    failures.append(f"document {label} accepted on port {port}: {json.dumps(r)[:200]}")
+        faiss_mappings = [
+            ("faiss", {"type": "knn_vector", "dimension": 4, "method": {"name": "hnsw", "engine": "faiss"}}),
+            ("top-level faiss", {"type": "knn_vector", "dimension": 4, "engine": "FAISS"}),
+        ]
+        for label, m in faiss_mappings:
+            r = req(OURS[1], "PUT", "/bad-mapping", {"settings": {"index.knn": True},
+                                                     "mappings": {"properties": {"v": m}}}, ok_errors=True)
+            if r.get("status", 200) != 400 or "faiss" not in json.dumps(r).lower():
+                failures.append(f"mapping {label} not refused: {json.dumps(r)[:200]}")
+                req(OURS[1], "DELETE", "/bad-mapping", ok_errors=True)
+        r = req(OURS[1], "PUT", "/no-engine", {"settings": {"index.knn": True},
+                                                "mappings": {"properties": {"v": {"type": "knn_vector", "dimension": 4}}}})
+        persisted = req(OURS[1], "GET", "/no-engine/_mapping")["no-engine"]["mappings"]["properties"]["v"]
+        if persisted.get("engine") != "lucene":
+            failures.append(f"a mapping without an engine persisted as {persisted}")
+        r = req(OURS[1], "PUT", "/no-engine/_mapping", {"properties": {"v": {"type": "knn_vector", "dimension": 4}}},
+                ok_errors=True)
+        if "error" in r:
+            failures.append(f"the same mapping again was refused: {json.dumps(r)[:300]}")
+        req(OURS[1], "DELETE", "/no-engine")
 
         after = req(OURS[1], "GET", "/_plugins/lucene_rust/stats")
         ran = after["native_queries"] - before["native_queries"]

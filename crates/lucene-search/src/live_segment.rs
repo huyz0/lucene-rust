@@ -355,6 +355,7 @@ impl LiveSegment {
             points: None,
             reader: None,
             index_sort_prefix: false,
+            termless: Some(&self.field_stats),
             similarity: None,
         }
     }
@@ -406,7 +407,9 @@ impl LiveSegment {
 }
 
 mod request;
-pub use request::{live_request, live_segments, range_segment, whole_request};
+pub use request::{
+    live_request, live_segments, range_segment, reads_points, tail_segment, whole_request,
+};
 
 #[cfg(test)]
 mod tests;

@@ -113,6 +113,9 @@ public final class EngineWriterDiffTest {
         // Under index.lucene_rust.adaptive_doc_values: the same documents read back through the
         // RustAdaptive doc-values format's producer, from merged segments large enough for it.
         run(6, 4000, nativeAnalyzer(), true);
+        // Under index.lucene_rust.zstd_terms: every terms dictionary read back through the
+        // RustZstd104 postings format's reader, zstd term blocks and trained dictionaries included.
+        run(9, 4000, nativeAnalyzer(), false, null, true, org.lucenerust.opensearch.NativeBridge.STORED_FIELDS_BEST_SPEED);
         // Under an index sort (a keyword, then a descending numeric), with OpenSearch's parent
         // field: segments flushed and merged in the same order Lucene writes them.
         org.apache.lucene.search.Sort sort = new org.apache.lucene.search.Sort(
@@ -122,6 +125,9 @@ public final class EngineWriterDiffTest {
         for (long seed : new long[] { 7, 8 }) {
             run(seed, 2500, nativeAnalyzer(), false, sort);
         }
+        // Under index.lucene_rust.stored_fields.paged_zstd: the documents read back through the
+        // plugin's ZstdPagedCodec, from flushed and merged segments.
+        run(9, 2500, nativeAnalyzer(), false, null, false, org.lucenerust.opensearch.NativeBridge.STORED_FIELDS_ZSTD_PAGED);
         check(DocumentEncoder.ANALYZED_NATIVELY.get() > 3000, "field values analyzed in Rust: " + DocumentEncoder.ANALYZED_NATIVELY.get());
         check(payloadsSeen > 0, "payloads were indexed and compared");
         refusals();
@@ -370,6 +376,18 @@ public final class EngineWriterDiffTest {
 
     private static void run(long seed, int ops, Analyzer analyzer, boolean adaptive, org.apache.lucene.search.Sort sort)
         throws Exception {
+        run(seed, ops, analyzer, adaptive, sort, false, org.lucenerust.opensearch.NativeBridge.STORED_FIELDS_BEST_SPEED);
+    }
+
+    private static void run(
+        long seed,
+        int ops,
+        Analyzer analyzer,
+        boolean adaptive,
+        org.apache.lucene.search.Sort sort,
+        boolean zstdTerms,
+        int storedFields
+    ) throws Exception {
         Path root = Files.createTempDirectory("engine-writer-diff");
         Path javaPath = root.resolve("java");
         Path rustPath = root.resolve("rust");
@@ -394,11 +412,13 @@ public final class EngineWriterDiffTest {
                 false,
                 false,
                 adaptive,
-                null,
+                zstdTerms,
+                false,
+                null, false,
                 sort,
                 parent,
                 IndexWriter.MAX_DOCS,
-                org.lucenerust.opensearch.NativeBridge.STORED_FIELDS_BEST_SPEED,
+                storedFields,
                 3,
                 analyzer,
                 similarity,
@@ -466,17 +486,34 @@ public final class EngineWriterDiffTest {
                 rust.commit();
                 // A background merge that finishes after the commit leaves the writer with
                 // uncommitted changes again, as IndexWriter's merges do; committing settles it.
-                long deadline = System.nanoTime() + 30_000_000_000L;
-                while (rust.hasUncommittedChanges() && System.nanoTime() < deadline) {
-                    Thread.sleep(10);
-                    rust.commit();
+                // Settled means clean, with no merge queued, on three checks 100 ms apart: a
+                // running merge is not visible, so a single clean check can precede its finish.
+                long deadline = System.nanoTime() + 60_000_000_000L;
+                int clean = 0;
+                while (clean < 3 && System.nanoTime() < deadline) {
+                    Thread.sleep(100);
+                    if (rust.hasPendingMerges() || rust.hasUncommittedChanges()) {
+                        clean = 0;
+                        rust.commit();
+                    } else {
+                        clean++;
+                    }
                 }
+                check(rust.hasUncommittedChanges() == false, "seed " + seed + ": nothing left uncommitted");
             }
-            check(rust.hasUncommittedChanges() == false, "seed " + seed + ": nothing left uncommitted");
             rust.close();
             compare("seed " + seed, javaDir, rustDir);
             checkIndex("seed " + seed, rustDir);
             checkSkippers("seed " + seed, rustDir);
+            if (storedFields == org.lucenerust.opensearch.NativeBridge.STORED_FIELDS_ZSTD_PAGED) {
+                try (DirectoryReader reader = DirectoryReader.open(rustDir)) {
+                    for (org.apache.lucene.index.LeafReaderContext ctx : reader.leaves()) {
+                        String codec = ((org.apache.lucene.index.SegmentReader) ctx.reader()).getSegmentInfo().info.getCodec().getName();
+                        check(codec.equals("LuceneRustZstdPaged104"), "seed " + seed + ": paged zstd segment codec " + codec);
+                    }
+                    check(reader.leaves().isEmpty() == false, "seed " + seed + ": paged zstd segments");
+                }
+            }
             if (sort != null) {
                 try (DirectoryReader reader = DirectoryReader.open(rustDir)) {
                     int sorted = 0;
@@ -485,6 +522,20 @@ public final class EngineWriterDiffTest {
                     }
                     check(sorted == reader.leaves().size() && sorted > 0, "seed " + seed + ": " + sorted + " of " + reader.leaves().size() + " segments sorted");
                 }
+            }
+            int zstdFields = formatFields(rustDir, "PerFieldPostingsFormat.format", "RustZstd104");
+            check(zstdTerms ? zstdFields > 0 : zstdFields == 0, "seed " + seed + ": " + zstdFields + " RustZstd104 postings fields");
+            if (zstdTerms) {
+                // A Java merge rewrites the Rust index with Java's own postings format.
+                try (IndexWriter java = new IndexWriter(rustDir, new IndexWriterConfig(analyzer).setSoftDeletesField(SOFT))) {
+                    java.forceMerge(1);
+                    java.commit();
+                }
+                checkIndex("seed " + seed + " after a Java merge", rustDir);
+                check(
+                    formatFields(rustDir, "PerFieldPostingsFormat.format", "RustZstd104") == 0,
+                    "seed " + seed + ": the Java merge wrote stock postings"
+                );
             }
             int adaptiveFields = adaptiveFields(rustDir);
             check(adaptive ? adaptiveFields > 0 : adaptiveFields == 0, "seed " + seed + ": " + adaptiveFields + " RustAdaptive doc-values fields");
@@ -505,6 +556,21 @@ public final class EngineWriterDiffTest {
                 s.sorted(Comparator.reverseOrder()).forEach(p -> p.toFile().delete());
             }
         }
+    }
+
+    /** How many segment fields of {@code dir} record {@code value} under the attribute {@code key}. */
+    private static int formatFields(FSDirectory dir, String key, String value) throws IOException {
+        int n = 0;
+        try (DirectoryReader reader = DirectoryReader.open(dir)) {
+            for (org.apache.lucene.index.LeafReaderContext ctx : reader.leaves()) {
+                for (FieldInfo fi : ctx.reader().getFieldInfos()) {
+                    if (value.equals(fi.getAttribute(key))) {
+                        n++;
+                    }
+                }
+            }
+        }
+        return n;
     }
 
     /** How many segment fields the Rust index stores under the RustAdaptive doc-values format. */
@@ -827,7 +893,9 @@ public final class EngineWriterDiffTest {
                 false,
                 false,
                 false,
-                null,
+                false,
+                false,
+                null, false,
                 null,
                 null,
                 IndexWriter.MAX_DOCS,
@@ -891,7 +959,9 @@ public final class EngineWriterDiffTest {
                 false,
                 false,
                 false,
-                "tenant",
+                false,
+                false,
+                "tenant", false,
                 null,
                 null,
                 IndexWriter.MAX_DOCS,

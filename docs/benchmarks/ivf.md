@@ -176,6 +176,15 @@ empty are split or dissolved. GloVe, 90% + 10% segments, BBQ, nprobe 64,
 rerank 100: merge 1.43 s and recall 0.871, against 4.80 s and 0.876 for a
 full re-cluster.
 
+Repeated reuse does not drift. An update stream (`ivf_merge_bench
+--generations 10 --split 0.5 --delete 0.05`): GloVe starts from half its
+vectors, and each of 10 merges adds the next 5% and deletes 5% of the live
+documents. After the tenth merge, at nprobe 64, reuse holds recall 0.882 at
+117 us a query against 0.878 at 114 us for re-clustering every time, and spends
+9.0 s merging in all against 24.5 s. Reuse keeps fewer, larger clusters
+(823 of up to 758 vectors against 1183 of up to 668), which costs about 3% more
+search time at the same nprobe.
+
 ## Centroid routing
 
 Picking the clusters to probe means scoring the query against every
@@ -336,3 +345,50 @@ Builds got 4-14% faster (fastText bbq 83.6 -> 74.3 s). What remains in a
 build is mostly Lucene's document quantization (`OptimizedScalarQuantizer`,
 kept bit-exact with Java) and the full Lloyd rounds, which already use the
 tiled kernel.
+
+## Through the index: `LuceneRustIvfVectorsFormat`
+
+`knn_formats` (lucene-search example) writes one float field through
+`IndexWriter`, opens it with `DirectoryReader` and searches with
+`knn_top_hits`, so the numbers include segment opening, the per-segment
+collector and doc-id mapping. GloVe-100 (390k, cosine), one flushed segment,
+1000 queries after 200 warm-up ones, one thread, k = 10. HNSW is
+`Lucene99HnswVectorsFormat(16, 100)` searched with 100 candidates; IVF is
+`LuceneRustIvfVectorsFormat(384, encoding)` (BBQ codes) with its calibrated
+probe count (`nprobes=0`) or a fixed one.
+
+| format | setting | build | index | recall@10 | mean | p99 |
+|---|---|---|---|---|---|---|
+| HNSW | ef 100 | 174.2 s | 175.0 MB | 0.889 | 997 µs | 1410 µs |
+| HNSW int7 | ef 100 | 171.2 s | 220.2 MB | 0.889 | 1024 µs | 1917 µs |
+| IVF f32 | calibrated | 5.8 s | 330.7 MB | 0.968 | 314 µs | 445 µs |
+| IVF f32 | nprobes 32 | 5.8 s | 330.7 MB | 0.907 | 163 µs | 238 µs |
+| IVF f32 | nprobes 64 | 5.8 s | 330.7 MB | 0.947 | 222 µs | 315 µs |
+| IVF f16 | calibrated | 5.3 s | 252.7 MB | 0.968 | 360 µs | 523 µs |
+| IVF f16 | nprobes 32 | 5.3 s | 252.7 MB | 0.907 | 182 µs | 302 µs |
+
+IVF builds 30x faster and searches 3-6x faster at higher recall. Its index is
+larger because the rerank vectors (`.ivv`) sit beside the flat vectors
+(`.vec`) every format keeps; half-float rerank vectors cut that by a quarter
+and cost a little latency, since their hits are rescored on the raw vectors
+for exact scores.
+
+The same data flushed as 8 segments and force-merged to one (the merge
+reuses the largest source's clusters and reranks from the merged raw
+vectors):
+
+| format | setting | build + merge | index | recall@10 | mean | p99 |
+|---|---|---|---|---|---|---|
+| HNSW | ef 100 | 187.2 s | 174.3 MB | 0.886 | 1078 µs | 1540 µs |
+| IVF f32 | calibrated | 10.2 s | 332.3 MB | 0.955 | 314 µs | 405 µs |
+| IVF f32 | nprobes 32 | 10.2 s | 332.3 MB | 0.904 | 144 µs | 202 µs |
+| IVF f16 | calibrated | 9.7 s | 254.3 MB | 0.955 | 319 µs | 404 µs |
+| IVF f16 | nprobes 32 | 9.7 s | 254.3 MB | 0.904 | 147 µs | 208 µs |
+
+Reused clusters lose a little recall at the calibrated depth (0.968 to
+0.955), as in the merge-stream run above; HNSW pays a full graph rebuild.
+
+```text
+cargo run --release -p lucene-search --example knn_formats -- <prefix> cosine \
+  --formats hnsw,ivf,ivf-f16 --nprobes 0,32 --segments 8 --merge
+```

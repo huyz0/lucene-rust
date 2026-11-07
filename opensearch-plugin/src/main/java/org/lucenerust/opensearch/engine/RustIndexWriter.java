@@ -115,6 +115,8 @@ final class RustIndexWriter implements DocumentIndexWriter {
     private boolean faultInjection;
     /** Whether searches read the buffered documents ({@code index.lucene_rust.realtime_search}). */
     private boolean liveSearch;
+    /** How old a view of the buffers a search may read ({@code index.lucene_rust.realtime_max_staleness}). */
+    private volatile long liveStalenessNanos;
     /** The field whose value is a document's partition ({@code index.lucene_rust.partition_field}), or null. */
     private String partitionField;
     /** The newest commit generation whose readers' buffers {@link #releaseLive} let go; under {@link #liveLock}. */
@@ -200,7 +202,10 @@ final class RustIndexWriter implements DocumentIndexWriter {
         boolean sparse,
         boolean liveSearch,
         boolean adaptiveDocValues,
+        boolean zstdTerms,
+        boolean mergeLz4Hc,
         String partitionField,
+        boolean knn,
         org.apache.lucene.search.Sort indexSort,
         String parentField,
         int maxDocs,
@@ -226,7 +231,10 @@ final class RustIndexWriter implements DocumentIndexWriter {
             sparse,
             liveSearch,
             adaptiveDocValues,
+            zstdTerms,
+            mergeLz4Hc,
             partitionField != null,
+            knn,
             encodeIndexSort(indexSort),
             parentField == null ? null : parentField.getBytes(StandardCharsets.UTF_8),
             maxDocs,
@@ -343,7 +351,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
      * released as commits empty the buffer.
      */
     private void apply(Blob op, int docs) throws IOException {
-        long estimate = BUFFER_BYTES_PER_BLOB_BYTE * op.length();
+        long estimate = reservation(op.length());
         if (breaker != null) {
             if (REFUSABLE.get()) {
                 breaker.addEstimateBytesAndMaybeBreak(estimate, "lucene_rust_writer");
@@ -394,6 +402,20 @@ final class RustIndexWriter implements DocumentIndexWriter {
 
     /** A conservative ratio of buffered bytes to blob bytes, for the pre-operation reservation. */
     private static final long BUFFER_BYTES_PER_BLOB_BYTE = 4;
+
+    /** Past this many blob bytes, per-document overheads are paid: see {@link #reservation}. */
+    private static final long LARGE_BLOB_BYTES = 1L << 20;
+
+    /**
+     * The bytes an operation of {@code blobBytes} reserves before it is applied: {@link
+     * #BUFFER_BYTES_PER_BLOB_BYTE} per byte up to {@link #LARGE_BLOB_BYTES}, and half that past
+     * it, where the writer's fixed per-document and per-field costs are spent and what is left is
+     * one copy of the text and stored bytes plus their postings.
+     */
+    static long reservation(long blobBytes) {
+        long small = Math.min(blobBytes, LARGE_BLOB_BYTES);
+        return BUFFER_BYTES_PER_BLOB_BYTE * small + BUFFER_BYTES_PER_BLOB_BYTE / 2 * (blobBytes - small);
+    }
 
     /** Trues the breaker up to the writer's own count. */
     private void reconcileBreaker() {
@@ -964,6 +986,42 @@ final class RustIndexWriter implements DocumentIndexWriter {
     /** Whether searches read the buffered documents. */
     boolean liveSearch() {
         return liveSearch;
+    }
+
+    /** How long, at most, a write takes to show in a search: zero when every search sees every write before it. */
+    long liveStalenessNanos() {
+        return liveStalenessNanos;
+    }
+
+    /** Lets searches read a view of the buffers up to {@code max} old ({@link NativeBridge#writerSetLiveStaleness}). */
+    void setLiveStaleness(org.opensearch.common.unit.TimeValue max) throws IOException {
+        if (liveSearch == false || max.millis() == 0) {
+            return;
+        }
+        synchronized (lock) {
+            ensureOpen();
+            check(NativeBridge.writerSetLiveStaleness(handle, max.millis()), "setting the realtime staleness");
+        }
+        liveStalenessNanos = max.nanos();
+    }
+
+    /**
+     * Makes every later search read a view of the buffers opened from now on; false when it could not
+     * (the writer busy with a force merge, or closed), to be tried again.
+     */
+    boolean refreshLiveShared() throws IOException {
+        if (indexing.readLock().tryLock() == false) {
+            return false;
+        }
+        try {
+            if (closed || nativeClosed) {
+                return false;
+            }
+            check(NativeBridge.writerLiveRefreshShared(handle), "refreshing the shared realtime view");
+            return true;
+        } finally {
+            indexing.readLock().unlock();
+        }
     }
 
     /**

@@ -3,14 +3,18 @@
  */
 package org.lucenerust.opensearch.knn;
 
+import org.apache.lucene.index.DocValuesType;
 import org.apache.lucene.document.BinaryDocValuesField;
 import org.apache.lucene.document.FieldType;
+import org.apache.lucene.document.Field;
 import org.apache.lucene.document.KnnByteVectorField;
 import org.apache.lucene.document.KnnFloatVectorField;
 import org.apache.lucene.document.StoredField;
 import org.apache.lucene.index.VectorEncoding;
 import org.apache.lucene.search.FieldExistsQuery;
 import org.apache.lucene.search.Query;
+import org.apache.lucene.util.BytesRef;
+import org.apache.lucene.util.VectorUtil;
 import org.lucenerust.opensearch.engine.VectorsFormatSpec;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.common.xcontent.support.XContentMapValues;
@@ -25,14 +29,18 @@ import org.opensearch.index.mapper.SourceValueFetcher;
 import org.opensearch.index.mapper.TextSearchInfo;
 import org.opensearch.index.mapper.ValueFetcher;
 import org.opensearch.index.query.QueryShardContext;
+import org.opensearch.search.DocValueFormat;
 import org.opensearch.search.lookup.SearchLookup;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.time.ZoneId;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.function.Supplier;
 
 /**
@@ -56,6 +64,28 @@ public final class KnnVectorFieldMapper extends ParametrizedFieldMapper {
         return (KnnVectorFieldMapper) in;
     }
 
+    private static String engineOrDefault(String engine) {
+        return engine.equals("undefined") ? KnnFieldConfig.LUCENE : engine;
+    }
+
+    /**
+     * A method as persisted (engine, space type and parameters filled in) and as a request repeats
+     * it are the same method: keys only one names are the resolved defaults.
+     */
+    static boolean sameMethod(Map<String, Object> a, Map<String, Object> b) {
+        if (a == null || b == null) {
+            return a == b;
+        }
+        for (String k : List.of("engine", SPACE_TYPE, "name")) {
+            Object x = a.get(k), y = b.get(k);
+            if (x != null && y != null && String.valueOf(x).equalsIgnoreCase(String.valueOf(y)) == false) {
+                return false;
+            }
+        }
+        Object pa = a.getOrDefault("parameters", Map.of()), pb = b.getOrDefault("parameters", Map.of());
+        return Objects.equals(pa, pb);
+    }
+
     /** {@code KNNVectorFieldMapper.Builder}. */
     public static final class Builder extends ParametrizedFieldMapper.Builder {
         final Parameter<Integer> dimension = new Parameter<>(
@@ -65,9 +95,17 @@ public final class KnnVectorFieldMapper extends ParametrizedFieldMapper {
             (n, c, o) -> XContentMapValues.nodeIntegerValue(o),
             m -> toType(m).dimension
         );
-        final Parameter<String> dataType = Parameter.stringParam(DATA_TYPE, false, m -> toType(m).dataType, "float");
+        // Parsed in any case and persisted upper case, as stock's VectorDataType.
+        final Parameter<String> dataType = new Parameter<>(
+            DATA_TYPE,
+            false,
+            () -> "float",
+            (n, c, o) -> XContentMapValues.nodeStringValue(o, null).toLowerCase(Locale.ROOT),
+            m -> toType(m).dataType
+        ).setSerializer((b, n, v) -> b.field(n, v.toUpperCase(Locale.ROOT)), v -> v);
         final Parameter<String> spaceType = Parameter.stringParam(SPACE_TYPE, false, m -> toType(m).spaceType, SpaceType.UNDEFINED);
-        final Parameter<String> engine = Parameter.stringParam("engine", false, m -> toType(m).engine, "undefined");
+        final Parameter<String> engine = Parameter.stringParam("engine", false, m -> toType(m).engine, "undefined")
+            .setMergeValidator((a, b) -> engineOrDefault(a).equalsIgnoreCase(engineOrDefault(b)));
         final Parameter<Map<String, Object>> method = new Parameter<Map<String, Object>>(
             "method",
             false,
@@ -78,7 +116,7 @@ public final class KnnVectorFieldMapper extends ParametrizedFieldMapper {
             if (v != null) {
                 b.field(n, v);
             }
-        }, v -> String.valueOf(v));
+        }, v -> String.valueOf(v)).setMergeValidator(KnnVectorFieldMapper::sameMethod);
         final Parameter<String> mode = Parameter.stringParam("mode", false, m -> toType(m).mode, null).acceptsNull();
         final Parameter<String> compression = Parameter.stringParam("compression_level", false, m -> toType(m).compression, null)
             .acceptsNull();
@@ -121,6 +159,17 @@ public final class KnnVectorFieldMapper extends ParametrizedFieldMapper {
         public KnnVectorFieldMapper build(BuilderContext context) {
             boolean knnIndex = KnnSettings.KNN_INDEX.get(indexSettings);
             KnnFieldConfig config = config();
+            if (method.getValue() != null) {
+                // Persisted resolved, as stock does; the engine so a stock node, whose default is faiss, reads it as lucene.
+                Map<String, Object> resolved = new LinkedHashMap<>();
+                resolved.put("engine", config.engine());
+                resolved.put(SPACE_TYPE, config.spaceType().value());
+                resolved.put("name", method.getValue().get("name"));
+                resolved.put("parameters", method.getValue().getOrDefault("parameters", Map.of()));
+                method.setValue(resolved);
+            } else if (engine.isConfigured() == false) {
+                engine.setValue(config.engine());
+            }
             // The stock plugin's flat mapper keeps doc values by default.
             boolean dv = docValues.isConfigured() ? docValues.getValue() : knnIndex == false;
             KnnVectorFieldType ft = new KnnVectorFieldType(buildFullName(context), meta.getValue(), config, knnIndex, dv);
@@ -148,9 +197,25 @@ public final class KnnVectorFieldMapper extends ParametrizedFieldMapper {
     final String compression;
     final boolean hasDocValues;
     final boolean stored;
+    /** {@code FlatVectorFieldMapper}'s half-float doc values: binary, the field marked {@code data_type: half_float}. */
+    private static final FieldType HALF_FLOAT_DOC_VALUES = halfFloatDocValues();
+
+    private static FieldType halfFloatDocValues() {
+        FieldType ft = new FieldType();
+        ft.setDocValuesType(DocValuesType.BINARY);
+        ft.putAttribute("data_type", "half_float");
+        ft.freeze();
+        return ft;
+    }
+
     private final Settings indexSettings;
     private final KnnFieldConfig config;
     private final FieldType vectorType;
+    /** {@link #vectorType} marked for derived source, in an index that masks it. */
+    private final FieldType derivedType;
+    /** {@link #derivedType} for the field's values in nested documents. */
+    private final FieldType nestedDerivedType;
+    private volatile Boolean derivedField;
 
     private KnnVectorFieldMapper(
         String simpleName,
@@ -176,17 +241,25 @@ public final class KnnVectorFieldMapper extends ParametrizedFieldMapper {
         this.config = config;
         if (knnIndex) {
             FieldType ft = new FieldType();
-            ft.setVectorAttributes(config.dimension(), config.dataType(), config.spaceType().similarity());
+            ft.setVectorAttributes(config.vectorDimension(), config.dataType(), config.spaceType().similarity());
             ft.putAttribute(KNN_FIELD, "true");
             ft.putAttribute(DIMENSION, Integer.toString(config.dimension()));
             ft.putAttribute(SPACE_TYPE, config.spaceType().value());
             ft.putAttribute(KNN_ENGINE, config.engine());
-            ft.putAttribute(DATA_TYPE, config.dataType() == VectorEncoding.BYTE ? "byte" : "float");
+            ft.putAttribute(
+                DATA_TYPE,
+                config.binary() ? "binary" : config.halfFloat() ? "half_float" : config.dataType() == VectorEncoding.BYTE ? "byte" : "float"
+            );
             ft.putAttribute(VectorsFormatSpec.ATTRIBUTE, config.format().attribute());
             ft.freeze();
             this.vectorType = ft;
+            boolean derived = DerivedSource.forIndex(indexSettings);
+            this.derivedType = derived ? DerivedSource.marked(ft, false) : null;
+            this.nestedDerivedType = derived ? DerivedSource.marked(ft, true) : null;
         } else {
             this.vectorType = null;
+            this.derivedType = null;
+            this.nestedDerivedType = null;
         }
     }
 
@@ -226,7 +299,7 @@ public final class KnnVectorFieldMapper extends ParametrizedFieldMapper {
         if (parser.currentToken() == XContentParser.Token.VALUE_NULL) {
             return;
         }
-        List<Float> values = new ArrayList<>(config.dimension());
+        List<Float> values = new ArrayList<>(config.vectorDimension());
         if (parser.currentToken() == XContentParser.Token.START_ARRAY) {
             for (XContentParser.Token t = parser.nextToken(); t != XContentParser.Token.END_ARRAY; t = parser.nextToken()) {
                 if (t != XContentParser.Token.VALUE_NUMBER && t != XContentParser.Token.VALUE_STRING) {
@@ -239,23 +312,41 @@ public final class KnnVectorFieldMapper extends ParametrizedFieldMapper {
         } else {
             throw new IllegalArgumentException("[" + CONTENT_TYPE + "] field [" + name() + "] takes an array of numbers, got " + parser.currentToken());
         }
-        if (values.size() != config.dimension()) {
+        if (values.size() != config.vectorDimension()) {
             throw new IllegalArgumentException(
-                String.format(Locale.ROOT, "Vector dimension mismatch. Expected: %d, Given: %d", config.dimension(), values.size())
+                String.format(Locale.ROOT, "Vector dimension mismatch. Expected: %d, Given: %d", config.vectorDimension(), values.size())
             );
         }
         if (config.dataType() == VectorEncoding.BYTE) {
             byte[] v = KnnVectors.toBytes(values);
             if (vectorType != null) {
-                context.doc().add(new KnnByteVectorField(name(), v, vectorType));
+                FieldType type = vectorType(context);
+                context.doc().add(masked(context) ? new DerivedSource.MaskedByte(name(), v, type) : new KnnByteVectorField(name(), v, type));
             }
             keep(context, v);
         } else {
             float[] v = KnnVectors.toFloats(values, config.spaceType());
-            if (vectorType != null) {
-                context.doc().add(new KnnFloatVectorField(name(), v, vectorType));
+            if (config.halfFloat()) {
+                KnnVectors.checkHalfFloats(v);
+                // VectorTransformerFactory: k-NN normalizes half-float cosine vectors before storing them.
+                if (config.spaceType() == SpaceType.COSINESIMIL) {
+                    VectorUtil.l2normalize(v);
+                }
             }
-            if (hasDocValues || stored) {
+            if (vectorType != null) {
+                FieldType type = vectorType(context);
+                context.doc().add(masked(context) ? new DerivedSource.MaskedFloat(name(), v, type) : new KnnFloatVectorField(name(), v, type));
+            }
+            if (config.halfFloat()) {
+                // LuceneFieldStrategy: no doc values on a knn index; stored as little-endian half
+                // floats. FlatVectorFieldMapper (not a knn index): half-float doc values.
+                if (vectorType == null && hasDocValues) {
+                    context.doc().add(new Field(name(), new org.apache.lucene.util.BytesRef(KnnVectors.halfFloatBytes(v)), HALF_FLOAT_DOC_VALUES));
+                }
+                if (stored) {
+                    context.doc().add(new StoredField(name(), KnnVectors.halfFloatBytes(v)));
+                }
+            } else if (hasDocValues || stored) {
                 ByteBuffer bytes = ByteBuffer.allocate(v.length * Float.BYTES);
                 for (float f : v) {
                     bytes.putFloat(f);
@@ -263,6 +354,25 @@ public final class KnnVectorFieldMapper extends ParametrizedFieldMapper {
                 keep(context, bytes.array());
             }
         }
+    }
+
+    /** The marked type for every field of a masking index: the nested one in a nested document. */
+    private FieldType vectorType(ParseContext context) {
+        if (derivedType == null) {
+            return vectorType;
+        }
+        return context.doc() == context.rootDoc() ? derivedType : nestedDerivedType;
+    }
+
+    /** Whether the field's value is masked in {@code _source} ({@code isDerivedEnabled}). */
+    private boolean masked(ParseContext context) {
+        if (derivedType == null) {
+            return false;
+        }
+        if (derivedField == null) {
+            derivedField = DerivedSource.forField(name(), context.docMapper());
+        }
+        return derivedField;
     }
 
     private void keep(ParseContext context, byte[] serialized) {
@@ -318,7 +428,20 @@ public final class KnnVectorFieldMapper extends ParametrizedFieldMapper {
 
         @Override
         public IndexFieldData.Builder fielddataBuilder(String fullyQualifiedIndexName, Supplier<SearchLookup> searchLookup) {
-            throw new IllegalArgumentException("[" + CONTENT_TYPE + "] fields do not support sorting, scripting or aggregating yet");
+            return new KnnVectorFieldData.Builder(name(), config);
+        }
+
+        @Override
+        public DocValueFormat docValueFormat(String format, ZoneId timeZone) {
+            if (timeZone != null) {
+                throw new IllegalArgumentException("Field [" + name() + "] of type [" + typeName() + "] does not support custom time zones");
+            }
+            return KnnVectorFieldData.Format.of(format);
+        }
+
+        @Override
+        public Object valueForDisplay(Object value) {
+            return value instanceof BytesRef b ? KnnVectorFieldData.stored(b, config) : value;
         }
     }
 }
