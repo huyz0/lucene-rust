@@ -26,6 +26,7 @@ import org.opensearch.common.collect.Tuple;
 import org.opensearch.common.io.stream.BytesStreamOutput;
 import org.opensearch.common.xcontent.XContentHelper;
 import org.opensearch.common.xcontent.support.XContentMapValues;
+import org.lucenerust.opensearch.knn.DerivedSource;
 import org.opensearch.core.common.bytes.BytesArray;
 import org.opensearch.core.common.bytes.BytesReference;
 import org.opensearch.core.compress.NotXContentException;
@@ -46,14 +47,15 @@ import java.util.function.Function;
  * k-NN's derived source ({@code KNN10010DerivedSourceStoredFieldsFormat}): a segment whose {@code .si}
  * attribute {@link #DERIVED_VECTOR_FIELDS} (or {@link #NESTED_DERIVED_VECTOR_FIELDS}) lists vector
  * fields stores each document's {@code _source} with those fields' values masked. Reading puts each
- * field's vector, from the segment's vector values, back in place of every non-null value at its
- * path; a nested field's values are its child documents' vectors, in order. {@code KNN9120Codec}'s
+ * field's vector, from the segment's vector values, back in place of its masked value (the number
+ * stock masks with; a value left whole stays); a nested field's values are its child documents' vectors, in order. {@code KNN9120Codec}'s
  * segments mark the fields with {@link #FIELD_ATTRIBUTE} instead. The stored fields themselves are
  * those of the codec {@link #DELEGATE_CODEC} names, or of the delegate when it names none.
  *
- * <p>Writing records the delegate's name and nothing else: this node's writers keep {@code _source}
- * whole, and a merge reads every document through {@link #fieldsReader}, so the merged segment holds
- * the vectors.
+ * <p>Writing records the delegate's name and nothing else: Lucene's writers here (OpenSearch's
+ * engine) keep {@code _source} whole, and a merge reads every document through {@link #fieldsReader},
+ * so the merged segment holds the vectors. The Rust engine masks its own writes
+ * ({@code knn.DerivedSource}) and lists the fields itself.
  */
 final class DerivedSourceStoredFieldsFormat extends StoredFieldsFormat {
     static final String DERIVED_VECTOR_FIELDS = "derived_vector_fields";
@@ -261,7 +263,8 @@ final class DerivedSourceStoredFieldsFormat extends StoredFieldsFormat {
             for (FieldInfo fi : root) {
                 Cursor c = cursor(fi, docID);
                 boolean present = c != null && advanceTo(c, docID) == docID;
-                transforms.put(fi.name, v -> v == null || present == false ? v : vector(c.values, c.it));
+                // Only the mask is replaced: a value left whole (the field had copy_to) stays.
+                transforms.put(fi.name, v -> v instanceof Number == false || present == false ? v : vector(c.values, c.it));
             }
             if (nested.isEmpty() == false) {
                 int first = firstChild(docID);
@@ -330,12 +333,7 @@ final class DerivedSourceStoredFieldsFormat extends StoredFieldsFormat {
                 if (values instanceof FloatVectorValues f) {
                     return f.vectorValue(ord).clone();
                 }
-                byte[] b = ((ByteVectorValues) values).vectorValue(ord);
-                int[] out = new int[b.length];
-                for (int i = 0; i < b.length; i++) {
-                    out[i] = b[i];
-                }
-                return out;
+                return DerivedSource.signed(((ByteVectorValues) values).vectorValue(ord));
             } catch (IOException e) {
                 throw new UncheckedIOException(e);
             }
