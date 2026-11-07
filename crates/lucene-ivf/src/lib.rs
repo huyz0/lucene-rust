@@ -126,7 +126,7 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// `VectorSimilarityFunction`'s ordinal, as Lucene records it.
-pub(crate) fn similarity_ordinal(s: Similarity) -> u8 {
+pub fn similarity_ordinal(s: Similarity) -> u8 {
     match s {
         Similarity::Euclidean => 0,
         Similarity::DotProduct => 1,
@@ -136,7 +136,7 @@ pub(crate) fn similarity_ordinal(s: Similarity) -> u8 {
 }
 
 /// The similarity of a recorded ordinal.
-pub(crate) fn similarity_from_ordinal(o: u8) -> Option<Similarity> {
+pub fn similarity_from_ordinal(o: u8) -> Option<Similarity> {
     Some(match o {
         0 => Similarity::Euclidean,
         1 => Similarity::DotProduct,

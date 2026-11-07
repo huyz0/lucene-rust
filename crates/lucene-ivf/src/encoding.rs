@@ -104,7 +104,7 @@ impl VectorEncoding {
     ///
     /// When `out` is not `vector_bytes(v.len())` long, or a residual
     /// encoding's `centroid` is not `v.len()` long.
-    pub(crate) fn encode(self, v: &[f32], centroid: &[f32], out: &mut [u8]) -> bool {
+    pub fn encode(self, v: &[f32], centroid: &[f32], out: &mut [u8]) -> bool {
         assert_eq!(Some(out.len()), self.vector_bytes(v.len()));
         match self {
             VectorEncoding::F32 => {
@@ -158,7 +158,7 @@ impl VectorEncoding {
     ///
     /// When `bytes` is not `vector_bytes(out.len())` long, or a residual
     /// encoding's `centroid` is not `out.len()` long.
-    pub(crate) fn decode(self, bytes: &[u8], centroid: &[f32], out: &mut [f32]) {
+    pub fn decode(self, bytes: &[u8], centroid: &[f32], out: &mut [f32]) {
         assert_eq!(Some(bytes.len()), self.vector_bytes(out.len()));
         match self {
             VectorEncoding::F32 => match vector_util::le_f32s(bytes) {
