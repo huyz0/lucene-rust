@@ -46,6 +46,14 @@ pub trait RangeSource: Send + Sync {
     fn prefetch(&self, offset: usize, len: usize) {
         let _ = (offset, len);
     }
+
+    /// A hint that each of `ranges` (offset, length) will be read soon, all
+    /// together: a source that reads from storage by page fetches every
+    /// missing page at once. By default nothing happens; [`Self::prefetch`]
+    /// covers the CPU cache.
+    fn prefetch_ranges(&self, ranges: &[(usize, usize)]) {
+        let _ = ranges;
+    }
 }
 
 impl<T> RangeSource for T
@@ -74,6 +82,20 @@ where
         for at in (offset..stop).step_by(64) {
             simd::prefetch(self, at);
         }
+    }
+
+    /// Bytes in a file read by page ([`lucene_store::is_prefetchable`])
+    /// fetch every missing page of `ranges` in one batch. Only a hint: a
+    /// page it could not read faults in on its own read.
+    fn prefetch_ranges(&self, ranges: &[(usize, usize)]) {
+        if ranges.is_empty() || !lucene_store::is_prefetchable(self) {
+            return;
+        }
+        let slices: Vec<&[u8]> = ranges
+            .iter()
+            .filter_map(|&(offset, len)| self.get(offset..offset.checked_add(len)?))
+            .collect();
+        let _ = lucene_store::prefetch(&slices);
     }
 }
 
@@ -1194,6 +1216,8 @@ impl IvfField {
         let mut scores = Vec::new();
         // Margins only for the codes kept; off for good once unknown.
         let mut bounded = bounds;
+        let blocks: Vec<(usize, usize)> = probes.iter().map(|&c| self.block_range(c)).collect();
+        postings.prefetch_ranges(&blocks);
         for &c in probes {
             if let Some(floor) = shared.and_then(SharedThreshold::floor) {
                 if self.cluster_bound(query, query_norm, c) < floor {
@@ -1658,6 +1682,11 @@ impl IvfReader {
                     .prefetch(f.vector_offset(c.slot as usize), f.vector_len());
             }
         };
+        let ranges: Vec<(usize, usize)> = candidates
+            .iter()
+            .map(|c| (f.vector_offset(c.slot as usize), f.vector_len()))
+            .collect();
+        self.vectors.prefetch_ranges(&ranges);
         for c in candidates.iter().take(AHEAD) {
             ahead(Some(c));
         }

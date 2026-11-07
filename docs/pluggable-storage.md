@@ -96,6 +96,93 @@ costed as one round trip each): opening it about 4.5 in 19 requests (8.6 in
 fetching the top 10 hits' stored fields 2.5 to 5 (5 to 23 one hit at a
 time).
 
+## Reading local disk through the page cache
+
+`PagedFsDirectory` reads an index on local disk (EBS, NVMe) the way
+`CachedBlobDirectory` reads an object store: files open as anonymous
+mappings filled page by page (Linux `userfaultfd`), within the pager's
+process-wide budget, instead of `mmap`. The files are `MmapDirectory`'s, so
+either directory opens the same index.
+
+```rust
+use lucene_store::{PagedFsConfig, PagedFsDirectory};
+
+lucene_store::paged_input::Pager::global().unwrap().set_budget(2 << 30);
+let dir = PagedFsDirectory::open("/data/idx");                  // every file
+let dir = PagedFsDirectory::with_config("/data/idx", PagedFsConfig::vectors_only());
+```
+
+- Reads use `O_DIRECT` where the file system takes it, so a page is held
+  once, in the budget, not again in the kernel's page cache.
+- Pages are 64 KiB. A file larger than half the budget gets 4 KiB pages
+  (vector data) or 16 KiB pages (the rest), since it cannot stay resident
+  and a large page would bring in bytes nobody reads
+  (`PagedFsConfig::page_size_for`).
+- Metadata, the terms index, norms, the stored-fields and points indexes and
+  live docs are read whole at open, outside the budget, as on an object
+  store. So are the HNSW graph (`.vex`), quantized vectors (`.veq`) and IVF
+  codes (`.ivp`) when each is at most an eighth of the budget
+  (`PagedFsConfig::pins`).
+- Faults that run in sequence read ahead, doubling up to 1 MiB. A batch of
+  scattered pages (a prefetch) is read on 16 I/O threads, so the device sees
+  a queue instead of one read at a time. HNSW asks for each expanded node's
+  neighbours' vectors in one batch, IVF for its probed clusters and its
+  rerank candidates.
+- Past the budget, the oldest pages are released (CLOCK: a page a prefetch
+  announced again since eviction last passed it stays one more round).
+- In-flight reads and pinned files are outside the budget: leave headroom
+  under a hard memory limit (the bench needed about 15% at 256 MiB).
+
+In OpenSearch, `index.lucene_rust.store_mode` picks it per index: `mmap` (the
+default), `page_cache`, or `page_cache_vectors` (vector files only, the rest
+mapped). `lucene_rust.store.page_cache.size` (default 1 GB) is the node's
+budget. A node where `userfaultfd` is blocked keeps every index mapped and
+says so at startup.
+
+### Against `mmap`
+
+`lucene-search/examples/local_store.rs` (full-text, and `build-tenants`) and
+`local_vectors.rs` (IVF, HNSW) measure both directories on one index, cold
+(page cache dropped, first pass) and hot (third pass), each run in a memory
+cgroup when a limit is given. Mean latency per query, one thread, 4 vCPUs,
+virtio disk; raw results under `perf/paged-local-store/` in the project
+files.
+
+| workload | memory limit | `mmap` cold / hot (us) | page cache cold / hot (us) | memory held | read per pass |
+|---|---|---|---|---|---|
+| full-text, 3M docs, 1 GiB | none | 6976 / 5615 | 6650 / 5752 | 798 / 775 MiB | |
+| full-text | 400 MiB | 6650 / 6711 | 7043 / 6926 | 400 / 385 MiB | 960 / 690 MiB |
+| IVF, 2M x 128, 1.1 GiB | none | 352 / 61 | 417 / 62 | 958 / 927 MiB | |
+| IVF | 256 MiB | 886 / 935 | 951 / 987 | 256 / 176 MiB | 1.9 / 0.6 GiB |
+| HNSW, 500k x 128, 265 MiB | none | 235 / 167 | 302 / 164 | 278 / 288 MiB | |
+| HNSW | 128 MiB | 37527 / 38540 | 14676 / 14284 | 128 / 102 MiB | 14.3 / 1.0 GiB |
+| 2000 tenants, 3M docs, 90% of queries on 20 | 300 MiB | 204 / 93 | 251 / 94 | 300 / 207 MiB | |
+| tenants | 150 MiB | 282 / 245 | 327 / 309 | 150 / 145 MiB | 300 / 196 MiB |
+
+What it shows:
+
+- When the index fits, hot queries cost the same, and the page cache holds
+  no more than `mmap`'s page cache did, a third less with tenants, since it
+  reads ahead only within runs of faults. A cold first touch costs 5-30%
+  more on small queries: each fault is a round trip to a handler thread
+  (tens of microseconds), where a kernel fault on a cached page takes a few.
+- When the index does not fit, vector search wins. HNSW's graph walk under
+  `mmap` reads ahead around every random hop and re-reads the file over and
+  over; with 4 KiB pages, the graph pinned and each node's neighbours read
+  in one batch, it reads 14x less and runs 2.6x faster. IVF stays within
+  5% of `mmap` in a third less memory and a third of the reads.
+- Full-text under pressure is a little slower than `mmap` (3% at 400 MiB,
+  26% for tenants at 150 MiB): the kernel's LRU sees every access, while the
+  pager sees only faults and prefetch hints, so it keeps hot postings less
+  well. Hence `page_cache_vectors`, which leaves full-text on `mmap`.
+- With an index sorted by tenant, each tenant's postings and stored fields
+  are one run inside each file, so a hot tenant's pages stay resident and a
+  cold tenant's age out. A per-tenant prefetch hint was not tried: postings
+  are cut by term, not tenant, and the readers already announce the blocks
+  a query reads. IVF clusters group vectors by similarity, so a tenant's
+  vectors spread over every cluster and sorting by tenant does not make
+  them contiguous.
+
 ## Example: BYOK on an object store
 
 ```rust

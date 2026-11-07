@@ -18,6 +18,7 @@ pub mod lock_wrappers;
 pub mod nrt_caching_directory;
 pub mod page_cache;
 mod page_disk;
+pub mod paged_fs_directory;
 #[cfg(target_os = "linux")]
 pub mod paged_input;
 pub mod rate_limiter;
@@ -41,6 +42,7 @@ pub use nrt_caching_directory::NrtCachingDirectory;
 pub use page_cache::{
     PageCache, PageCacheConfig, PageCacheStats, PageCodec, PageDecoder, UnitLayout,
 };
+pub use paged_fs_directory::{PagedFsConfig, PagedFsDirectory};
 pub use rate_limiter::{RateLimitedIndexOutput, RateLimiter, SimpleRateLimiter};
 pub use store_registry::{
     register_store_type, register_store_wrapper, StoreProvider, StoreSettings, StoreSpec,

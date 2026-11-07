@@ -127,6 +127,14 @@ struct File {
     pager: &'static Pager,
     /// Pages resident now, so eviction never releases one twice.
     live: Vec<AtomicBool>,
+    /// Resident pages a prefetch announced since eviction last passed
+    /// them: they get a second chance before being released.
+    referenced: Vec<AtomicBool>,
+    /// The most pages a fault reads at once when faults run in sequence
+    /// (1: no read-ahead).
+    readahead_max: usize,
+    /// The page the last fault was on, and the read-ahead window it used.
+    last_fault: AtomicU64,
 }
 
 /// A demand-filled file, as [`ExternalBytes`].
@@ -165,11 +173,15 @@ impl File {
             }
             let first = offset.checked_div(self.page).unwrap_or(0);
             let last = end.saturating_sub(1).checked_div(self.page).unwrap_or(0);
-            pages.extend(
-                (first..=last)
-                    .filter(|&p| !self.live[p].load(Ordering::Acquire))
-                    .map(|p| p as u64),
-            );
+            for p in first..=last {
+                if self.live[p].load(Ordering::Acquire) {
+                    if !self.referenced[p].load(Ordering::Relaxed) {
+                        self.referenced[p].store(true, Ordering::Relaxed);
+                    }
+                } else {
+                    pages.push(p as u64);
+                }
+            }
         }
         pages.sort_unstable();
         pages.dedup();
@@ -210,6 +222,15 @@ pub fn prefetch(ranges: &[&[u8]]) -> Result<()> {
         }
         for range in ranges {
             let addr = range.as_ptr() as usize;
+            // Ranges of one batch mostly fall in one file: the last file
+            // found takes them without a lookup.
+            if let Some((file, spans)) = wanted.last_mut() {
+                let offset = addr.wrapping_sub(file.base);
+                if addr >= file.base && offset < file.len {
+                    spans.push((offset, range.len().max(1)));
+                    continue;
+                }
+            }
             let Some((_, weak)) = files.range(..=addr).next_back() else {
                 continue;
             };
@@ -413,6 +434,11 @@ impl Pager {
         self.budget.store(bytes, Ordering::Relaxed);
     }
 
+    /// The resident budget in bytes.
+    pub fn budget(&self) -> u64 {
+        self.budget.load(Ordering::Relaxed)
+    }
+
     /// Bytes resident now, across every file.
     pub fn resident_bytes(&self) -> u64 {
         self.resident_bytes.load(Ordering::Relaxed)
@@ -431,6 +457,21 @@ impl Pager {
         page_len: usize,
         filler: Arc<dyn PageFiller>,
         name: &str,
+    ) -> Result<PagedBytes> {
+        self.open_with_readahead(len, page_len, filler, name, 1)
+    }
+
+    /// [`Pager::open`] for a file whose faults read ahead: a fault on the
+    /// page after the previous fault's last page reads the next pages too,
+    /// twice as many as the previous one did, up to `readahead_max` pages,
+    /// as the kernel's read-ahead does for a mapped file read in sequence.
+    pub(crate) fn open_with_readahead(
+        &'static self,
+        len: usize,
+        page_len: usize,
+        filler: Arc<dyn PageFiller>,
+        name: &str,
+        readahead_max: usize,
     ) -> Result<PagedBytes> {
         if !self.supports(page_len) {
             return Err(Error::IllegalArgument(format!(
@@ -482,6 +523,9 @@ impl Pager {
             name: name.to_string(),
             pager: self,
             live: (0..pages).map(|_| AtomicBool::new(false)).collect(),
+            referenced: (0..pages).map(|_| AtomicBool::new(false)).collect(),
+            readahead_max: readahead_max.max(1),
+            last_fault: AtomicU64::new(u64::MAX),
         });
         if map_len > 0 {
             self.files
@@ -556,6 +600,12 @@ impl Pager {
         if index >= file.pages {
             return;
         }
+        if file.readahead_max > 1 && self.fill_ahead(&file, index) {
+            self.faults.fetch_add(1, Ordering::Relaxed);
+            self.wake(addr);
+            self.evict();
+            return;
+        }
         let mut attempt = 0usize;
         let bytes = loop {
             match file.filler.fill(&[index as u64]) {
@@ -582,14 +632,60 @@ impl Pager {
         if !self.install(&file, index, &bytes) {
             // Installed by another thread meanwhile: wake whoever waits on
             // the faulting page.
-            let mut range = UffdioRange {
-                start: (addr & !self.os_page.saturating_sub(1)) as u64,
-                len: self.os_page as u64,
-            };
-            // SAFETY: wakes waiters on a page of the registered mapping.
-            unsafe { libc::ioctl(self.uffd.as_raw_fd(), UFFDIO_WAKE, &mut range) };
+            self.wake(addr);
         }
         self.evict();
+    }
+
+    /// Wakes the threads waiting on the OS page holding `addr`.
+    fn wake(&self, addr: usize) {
+        let mut range = UffdioRange {
+            start: (addr & !self.os_page.saturating_sub(1)) as u64,
+            len: self.os_page as u64,
+        };
+        // SAFETY: wakes waiters on a page of the registered mapping.
+        unsafe { libc::ioctl(self.uffd.as_raw_fd(), UFFDIO_WAKE, &mut range) };
+    }
+
+    /// Fills the faulting page `index` with the read-ahead window after it
+    /// in one read, when the fault continues a run (the previous fault's
+    /// window ended right before it). Returns whether the page was filled;
+    /// `false` leaves it to the single-page path, which retries.
+    fn fill_ahead(&self, file: &Arc<File>, index: usize) -> bool {
+        // `last_fault` packs the previous window's next page (high 40 bits)
+        // and its size in pages (low 24 bits).
+        let prev = file.last_fault.load(Ordering::Relaxed);
+        let (next, size) = ((prev >> 24) as usize, (prev & 0xFF_FFFF) as usize);
+        let window = if prev != u64::MAX && next == index {
+            size.saturating_mul(2).clamp(2, file.readahead_max)
+        } else {
+            1
+        };
+        let end = index.saturating_add(window).min(file.pages);
+        let mut pages: Vec<u64> = vec![index as u64];
+        pages.extend(
+            (index.saturating_add(1)..end)
+                .filter(|&p| !file.live[p].load(Ordering::Acquire))
+                .map(|p| p as u64),
+        );
+        let packed = ((end as u64) << 24) | (end.saturating_sub(index) as u64 & 0xFF_FFFF);
+        file.last_fault.store(packed, Ordering::Relaxed);
+        if pages.len() == 1 && window == 1 {
+            return false;
+        }
+        let Ok(filled) = file.filler.fill(&pages) else {
+            return false;
+        };
+        if filled.len() != pages.len() {
+            return false;
+        }
+        // The pages ahead first: installing the faulting page wakes its
+        // thread, whose next read must not fault on a page still on its way.
+        for (&page, bytes) in pages.iter().zip(&filled).skip(1) {
+            self.install(file, page as usize, bytes);
+        }
+        self.install(file, index, &filled[0]);
+        true
     }
 
     /// Copies `bytes` (page `index`'s content) into the mapping, returning
@@ -645,6 +741,7 @@ impl Pager {
             }
         }
         if installed && !file.live[index].swap(true, Ordering::AcqRel) {
+            file.referenced[index].store(false, Ordering::Relaxed);
             self.resident_bytes
                 .fetch_add(file.page as u64, Ordering::Relaxed);
             lock_ignoring_poison(&self.resident).push_back((Arc::downgrade(file), index));
@@ -652,10 +749,17 @@ impl Pager {
         installed
     }
 
-    /// Releases the oldest resident pages until the budget holds.
+    /// Releases resident pages until the budget holds, oldest first (CLOCK):
+    /// a page a prefetch announced since it was last passed goes back to
+    /// the end of the queue once instead.
     fn evict(&self) {
         let budget = self.budget.load(Ordering::Relaxed);
+        if self.resident_bytes.load(Ordering::Relaxed) <= budget {
+            return;
+        }
         let mut q = lock_ignoring_poison(&self.resident);
+        // Each page can be passed over once per call, so the loop ends.
+        let mut second_chances = q.len();
         while self.resident_bytes.load(Ordering::Relaxed) > budget {
             let Some((w, index)) = q.pop_front() else {
                 break;
@@ -663,6 +767,14 @@ impl Pager {
             let Some(file) = w.upgrade() else {
                 continue;
             };
+            if !file.live[index].load(Ordering::Acquire) {
+                continue;
+            }
+            if second_chances > 0 && file.referenced[index].swap(false, Ordering::Relaxed) {
+                second_chances = second_chances.saturating_sub(1);
+                q.push_back((w, index));
+                continue;
+            }
             if !file.live[index].swap(false, Ordering::AcqRel) {
                 continue;
             }
@@ -774,6 +886,62 @@ mod tests {
             .iter()
             .any(|(_, p, _)| p.fills.load(Ordering::Relaxed) > 0));
         assert!(pager.faults() > 0 || files.iter().all(|(l, _, _)| *l == 0));
+    }
+
+    #[test]
+    fn sequential_faults_read_ahead_and_random_ones_do_not() {
+        let Some(pager) = Pager::global() else {
+            return;
+        };
+        let page = 16 * 1024;
+        let len = 64 * page;
+        let seq = pattern(len, page);
+        let input = pager
+            .open_with_readahead(len, page, seq.clone(), "seq", 8)
+            .unwrap();
+        let bytes = input.bytes();
+        // A scan in order: windows of 1, 2, 4, 8, 8, ... pages.
+        assert!(bytes.iter().enumerate().all(|(i, b)| *b == byte(i)));
+        let calls = seq.calls.load(Ordering::Relaxed);
+        assert!(calls <= 12, "{calls} fills for 64 pages read in order");
+        assert_eq!(seq.fills.load(Ordering::Relaxed), 64);
+        // Touches far apart never start a run: one page each.
+        let rnd = pattern(len, page);
+        let input = pager
+            .open_with_readahead(len, page, rnd.clone(), "rnd", 8)
+            .unwrap();
+        let bytes = input.bytes();
+        for p in [40usize, 3, 61, 17, 29] {
+            assert_eq!(bytes[p * page + 5], byte(p * page + 5));
+        }
+        assert_eq!(rnd.fills.load(Ordering::Relaxed), 5);
+    }
+
+    #[test]
+    fn a_page_announced_again_survives_eviction() {
+        let Some(pager) = Pager::spawn(false) else {
+            return;
+        };
+        let page = 16 * 1024;
+        let len = 16 * page;
+        let p = pattern(len, page);
+        let input = pager.open(len, page, p.clone(), "clock").unwrap();
+        pager.set_budget(4 * page as u64);
+        // Pages 0..4 resident, page 0 the oldest; announcing it again marks it.
+        input.will_need(0, 4 * page).unwrap();
+        input.will_need(0, 1).unwrap();
+        // Page 4 needs room: page 1, not the announced page 0, goes.
+        input.will_need(4 * page, 1).unwrap();
+        let before = p.fills.load(Ordering::Relaxed);
+        input.will_need(0, 1).unwrap();
+        assert_eq!(
+            p.fills.load(Ordering::Relaxed),
+            before,
+            "page 0 was evicted"
+        );
+        input.will_need(page, 1).unwrap();
+        assert_eq!(p.fills.load(Ordering::Relaxed), before + 1, "page 1 stayed");
+        assert!(input.bytes().iter().enumerate().all(|(i, b)| *b == byte(i)));
     }
 
     #[test]

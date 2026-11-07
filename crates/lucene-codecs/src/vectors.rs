@@ -1822,12 +1822,33 @@ pub struct FloatVectorScorer<'a> {
     similarity: VectorSimilarityFunction,
     query: Vec<f32>,
     scratch: Vec<f32>,
+    /// Whether the `.vec` is read by page ([`lucene_store::is_prefetchable`]):
+    /// a bulk score then fetches every candidate's page in one batch before
+    /// scoring, rather than faulting them in one at a time.
+    paged: bool,
 }
 
 impl crate::hnsw::VectorScorer for FloatVectorScorer<'_> {
     fn score(&mut self, node: i32) -> Result<f32> {
         let candidate = self.values.vector_ref(node, &mut self.scratch)?;
         Ok(self.similarity.score(&self.query, candidate))
+    }
+
+    fn bulk_score(&mut self, nodes: &[i32], scores: &mut [f32]) -> Result<f32> {
+        if self.paged && nodes.len() > 1 {
+            let ranges: Vec<&[u8]> = nodes
+                .iter()
+                .filter_map(|&n| self.values.values.bytes(n).ok())
+                .collect();
+            // Only a hint: a page it could not read faults in on its own.
+            let _ = lucene_store::prefetch(&ranges);
+        }
+        let mut max = f32::NEG_INFINITY;
+        for (i, &node) in nodes.iter().enumerate() {
+            scores[i] = self.score(node)?;
+            max = max.max(scores[i]);
+        }
+        Ok(max)
     }
 
     fn max_ord(&self) -> i32 {
@@ -1885,7 +1906,17 @@ impl<'a> FloatVectorValues<'a> {
             similarity: self.values.similarity,
             query: query.to_vec(),
             scratch: vec![0.0; self.values.dimension],
+            paged: self.is_paged(),
         })
+    }
+
+    /// Whether these vectors lie in a file read by page.
+    fn is_paged(&self) -> bool {
+        self.size() > 0
+            && self
+                .values
+                .bytes(0)
+                .is_ok_and(lucene_store::is_prefetchable)
     }
 
     /// `FlatVectorsScorer.getRandomVectorScorerSupplier(...).scorer()`: a
@@ -1896,6 +1927,7 @@ impl<'a> FloatVectorValues<'a> {
             similarity: self.values.similarity,
             query: vec![0.0; self.values.dimension],
             scratch: vec![0.0; self.values.dimension],
+            paged: self.is_paged(),
         }
     }
 }

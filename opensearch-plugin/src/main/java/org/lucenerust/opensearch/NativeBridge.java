@@ -38,7 +38,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code jvm_reader.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 77;
+    public static final int EXPECTED_ABI_VERSION = 78;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -229,6 +229,20 @@ public final class NativeBridge {
             FunctionDescriptor.of(JAVA_INT, JAVA_INT, JAVA_LONG)
         );
         static final MethodHandle STORE_LAZY_DECRYPT_ACTIVE = bind("ffi_store_lazy_decrypt_active", FunctionDescriptor.of(JAVA_INT));
+        static final MethodHandle STORE_BIND_PAGE_CACHE = bind(
+            "ffi_store_bind_page_cache",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, JAVA_INT, JAVA_INT)
+        );
+        static final MethodHandle STORE_UNBIND_PAGE_CACHE = bind(
+            "ffi_store_unbind_page_cache",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG)
+        );
+        static final MethodHandle STORE_PAGE_CACHE_AVAILABLE = bind("ffi_store_page_cache_available", FunctionDescriptor.of(JAVA_INT));
+        static final MethodHandle STORE_SET_PAGE_CACHE_BUDGET = bind(
+            "ffi_store_set_page_cache_budget",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG)
+        );
+        static final MethodHandle STORE_PAGE_CACHE_RESIDENT = bind("ffi_store_page_cache_resident_bytes", FunctionDescriptor.of(JAVA_LONG));
         static final MethodHandle ANALYZE = bind(
             "ffi_jvm_analyze_alloc",
             FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS)
@@ -1342,6 +1356,64 @@ public final class NativeBridge {
     public static boolean storeLazyDecryptActive() {
         try {
             return (int) H.STORE_LAZY_DECRYPT_ACTIVE.invokeExact() == 1;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * Binds the shard directory {@code path} to the page cache: the engine's writers and readers opened
+     * there from now on read its files in pages of {@code pageSize} bytes (0: the default) within the
+     * node's page cache budget; with {@code vectorsOnly}, only the vector formats' files, the rest
+     * staying mapped. Nothing is bound where {@link #storePageCacheAvailable} is false.
+     */
+    public static int storeBindPageCache(String path, int pageSize, boolean vectorsOnly) {
+        if (path == null) {
+            return nullArgument("path");
+        }
+        byte[] utf8 = path.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        try (Scratch s = Scratch.open()) {
+            return (int) H.STORE_BIND_PAGE_CACHE.invokeExact(s.bytes(utf8), (long) utf8.length, pageSize, vectorsOnly ? 1 : 0);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** Removes {@code path}'s page-cache binding; directories already open keep theirs. */
+    public static int storeUnbindPageCache(String path) {
+        if (path == null) {
+            return nullArgument("path");
+        }
+        byte[] utf8 = path.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        try (Scratch s = Scratch.open()) {
+            return (int) H.STORE_UNBIND_PAGE_CACHE.invokeExact(s.bytes(utf8), (long) utf8.length);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** Whether shards can be read through the page cache here ({@code userfaultfd} is permitted). */
+    public static boolean storePageCacheAvailable() {
+        try {
+            return (int) H.STORE_PAGE_CACHE_AVAILABLE.invokeExact() == 1;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** Sets the bytes the page cache keeps resident across every shard bound to it (0 keeps it). */
+    public static int storeSetPageCacheBudget(long budgetBytes) {
+        try {
+            return (int) H.STORE_SET_PAGE_CACHE_BUDGET.invokeExact(budgetBytes);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** Bytes the page cache holds resident now, across every bound shard. */
+    public static long storePageCacheResidentBytes() {
+        try {
+            return (long) H.STORE_PAGE_CACHE_RESIDENT.invokeExact();
         } catch (Throwable t) {
             throw rethrow(t);
         }
