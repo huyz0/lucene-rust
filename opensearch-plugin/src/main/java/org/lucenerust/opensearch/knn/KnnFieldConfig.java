@@ -80,7 +80,8 @@ public record KnnFieldConfig(
                 String.format(Locale.ROOT, "Dimension value cannot be greater than %d for vector: %s", MAX_DIMENSION, field)
             );
         }
-        VectorEncoding encodingType = switch (dataType) {
+        // Stock parses data_type and engine names in any case, and persists data_type upper case.
+        VectorEncoding encodingType = switch (dataType.toLowerCase(Locale.ROOT)) {
             case "float" -> VectorEncoding.FLOAT32;
             case "byte" -> VectorEncoding.BYTE;
             case "binary" -> throw new MapperParsingException("[data_type] [binary] is not supported by this node's knn_vector fields");
@@ -130,6 +131,7 @@ public record KnnFieldConfig(
         if (engine == null) {
             engine = "4x".equals(level) ? LUCENE : FAISS;
         }
+        engine = engine.toLowerCase(Locale.ROOT);
         switch (engine) {
             case FAISS, LUCENE -> {}
             case "nmslib" -> throw new MapperParsingException(

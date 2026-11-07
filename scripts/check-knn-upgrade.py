@@ -1,0 +1,265 @@
+#!/usr/bin/env python3
+"""lucene-engine knn_vector indexes moved between stock k-NN and the lucene-rust plugin, both ways.
+
+Stock k-NN's lucene engine writes Lucene's own vector formats, and so does the
+plugin; each must read what the other writes. Every lucene-engine mapping of
+scripts/check-knn-plugin.py is indexed (three flushed segments, some deletes)
+and searched on the writing node, and the answers are recorded. Then the other
+node must answer the same queries over the same files, two ways:
+
+  in place   the writing node stops and the other starts on its data directory;
+  snapshot   the other node restores the writer's snapshot of every index.
+
+Exact mappings must return the same hits and scores (1e-4). Quantized ones:
+the plugin searches full precision, so where it reads it must return the
+exhaustive scan's top 10, and the two nodes' top 10 must overlap by MIN_RECALL.
+
+  stock -> plugin   stock writes; the plugin reads, then takes new documents
+                    and deletes into the old index, force-merges it to one
+                    segment and still returns the exhaustive scan's top k.
+  plugin -> stock   the plugin writes, once with the Rust engine
+                    (index.lucene_rust.engine) and once with OpenSearch's;
+                    stock reads.
+
+Every plugin search must run in Rust (its stats show no fallback).
+
+  scripts/check-knn-upgrade.py [--keep]
+
+Needs Docker and the plugin zip in opensearch-plugin/build/distributions
+(`gradle -p opensearch-plugin bundlePlugin`).
+"""
+import glob, importlib.util, json, os, random, shutil, subprocess, sys
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_spec = importlib.util.spec_from_file_location("check_knn", os.path.join(ROOT, "scripts", "check-knn-plugin.py"))
+ck = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(ck)
+
+NODE = ("knn-upgrade", 19223)
+DATA, REPO = "knn-upgrade-data", "knn-upgrade-repo"
+DELETED = 40
+ADDED = 120
+STOCK_IMAGE = f"opensearchproject/opensearch:{ck.VERSION}"
+
+
+def start(image):
+    subprocess.run(["docker", "rm", "-f", NODE[0]], capture_output=True)
+    subprocess.run(["docker", "run", "-d", "--name", NODE[0], "-p", f"{NODE[1]}:9200",
+                    "-v", f"{DATA}:/usr/share/opensearch/data", "-v", f"{REPO}:/usr/share/opensearch/repo",
+                    "-e", "path.repo=/usr/share/opensearch/repo",
+                    "-e", "discovery.type=single-node", "-e", "DISABLE_SECURITY_PLUGIN=true",
+                    "-e", "DISABLE_INSTALL_DEMO_CONFIG=true", "-e", "OPENSEARCH_JAVA_OPTS=-Xms1g -Xmx1g",
+                    "-e", "cluster.routing.allocation.disk.threshold_enabled=false", image],
+                   check=True, capture_output=True)
+    ck.wait(NODE[1])
+
+
+def stop():
+    subprocess.run(["docker", "stop", "-t", "60", NODE[0]], check=True, capture_output=True)
+
+
+def fresh_volumes():
+    subprocess.run(["docker", "rm", "-f", NODE[0]], capture_output=True)
+    for v in (DATA, REPO):
+        subprocess.run(["docker", "volume", "rm", "-f", v], capture_output=True)
+        subprocess.run(["docker", "volume", "create", v], check=True, capture_output=True)
+    # The image runs as uid 1000; a new volume's root is root's.
+    subprocess.run(["docker", "run", "--rm", "-u", "0", "-v", f"{REPO}:/repo", "--entrypoint", "chown",
+                    STOCK_IMAGE, "1000:1000", "/repo"], check=True, capture_output=True)
+
+
+def queries(t):
+    k = 10
+    return [
+        ("top k", {"size": 50, "query": ck.knn(t, k=k)}),
+        ("filtered", {"size": 50, "query": ck.knn(t, k=k, filter={"term": {"tag": "even"}})}),
+        ("range filter", {"size": 50, "query": ck.knn(t, k=5, filter={"range": {"n": {"lt": 300}}})}),
+        ("ef_search", {"size": 50, "query": ck.knn(t, k=k, method_parameters={"ef_search": 200})}),
+        ("in bool", {"size": 20, "query": {"bool": {"must": [ck.knn(t, k=k)],
+                                                    "filter": [{"term": {"tag": "odd"}}]}}}),
+    ]
+
+
+def lucene_engine(spec):
+    """Stock k-NN writes Lucene's formats only for the lucene engine (faiss writes .faiss)."""
+    return spec.get("engine") == "lucene" or spec.get("compression_level") == "4x"
+
+
+def write(prefix, rust):
+    """Every lucene-engine mapping indexed and searched on the running node; the recorded cases."""
+    cases = {}
+    for group, specs in (("exact", ck.EXACT), ("quantized", ck.QUANTIZED)):
+        for name, spec in specs.items():
+            if not lucene_engine(spec):
+                continue
+            index = prefix + name
+            byte = spec.get("data_type") == "byte"
+            rng = random.Random(f"{ck.SEED}-{name}")
+            docs = [{"_id": f"d{i}", "tag": "even" if i % 2 == 0 else "odd", "n": i, "emb": ck.vector(rng, byte)}
+                    for i in range(ck.DOCS)]
+            ck.create(NODE[1], index, spec, docs, rust)
+            deleted = {f"d{i}" for i in rng.sample(range(ck.DOCS), DELETED)}
+            lines = [json.dumps({"delete": {"_index": index, "_id": i}}) for i in sorted(deleted)]
+            ck.req(NODE[1], "POST", "/_bulk", "\n".join(lines) + "\n", ndjson=True)
+            ck.req(NODE[1], "POST", f"/{index}/_flush")
+            ck.req(NODE[1], "POST", f"/{index}/_refresh")
+            targets = [ck.vector(rng, byte) for _ in range(6)]
+            recorded = [[ck.search(NODE[1], index, body) for _, body in queries(t)] for t in targets]
+            cases[index] = (group, spec, [d for d in docs if d["_id"] not in deleted], targets, recorded, rng)
+    return cases
+
+
+def snapshot(name, indices):
+    ck.req(NODE[1], "PUT", "/_snapshot/repo", {"type": "fs", "settings": {"location": "/usr/share/opensearch/repo"}})
+    r = ck.req(NODE[1], "PUT", f"/_snapshot/repo/{name}?wait_for_completion=true",
+               {"indices": ",".join(indices), "include_global_state": False}, timeout=600)
+    assert r["snapshot"]["state"] == "SUCCESS", json.dumps(r)[:500]
+
+
+def restore(name, failures):
+    ck.req(NODE[1], "PUT", "/_snapshot/repo", {"type": "fs", "settings": {"location": "/usr/share/opensearch/repo"}})
+    r = ck.req(NODE[1], "POST", f"/_snapshot/repo/{name}/_restore?wait_for_completion=true",
+               {"rename_pattern": "(.+)", "rename_replacement": "restored-$1", "include_global_state": False},
+               timeout=600, ok_errors=True)
+    if "error" in r or r.get("snapshot", {}).get("shards", {}).get("failed", 0):
+        failures.append(f"restore of {name} failed: {json.dumps(r)[:600]}")
+
+
+def green(failures, what):
+    health = ck.req(NODE[1], "GET", "/_cluster/health?wait_for_status=green&timeout=60s", ok_errors=True)
+    if health.get("status") != "green":
+        explain = ck.req(NODE[1], "GET", "/_cluster/allocation/explain", ok_errors=True)
+        failures.append(f"{what}: cluster {health.get('status')}: {json.dumps(explain)[:800]}")
+
+
+def read(cases, rename, plugin_reads, failures):
+    """The recorded queries answered by the running node over index `rename + index`; the count."""
+    checked = 0
+    for index, (group, spec, alive, targets, recorded, _) in cases.items():
+        overlaps = []
+        for qi, t in enumerate(targets):
+            for (label, body), want in zip(queries(t), recorded[qi]):
+                r = ck.req(NODE[1], "POST", f"/{rename}{index}/_search", body, ok_errors=True)
+                if "error" in r:
+                    failures.append(f"{rename}{index} {label}: {json.dumps(r['error'])[:300]}")
+                    continue
+                got = [(h["_id"], h["_score"]) for h in r["hits"]["hits"]]
+                checked += 1
+                if group == "exact":
+                    if not ck.same(got, want):
+                        failures.append(f"{rename}{index} {label} query {qi}: {got[:3]} vs writer's {want[:3]}")
+                elif label == "top k":
+                    if plugin_reads:
+                        scan = ck.exact_top(spec, alive, t, 10)
+                        if [i for i, _ in got[:10]] != [i for _, i in scan]:
+                            failures.append(f"{rename}{index}: top 10 is not the exhaustive scan's")
+                    overlaps.append(len({i for i, _ in got[:10]} & {i for i, _ in want[:10]}) / 10)
+        if overlaps:
+            recall = sum(overlaps) / len(overlaps)
+            print(f"  {rename}{index}: top 10 overlap the writer's by {recall:.3f}")
+            if recall < ck.MIN_RECALL:
+                failures.append(f"{rename}{index}: overlap with the writer's {recall:.3f} < {ck.MIN_RECALL}")
+    return checked
+
+
+def write_into(cases, failures):
+    """New documents and deletes into each old index, one merged segment, the exhaustive top k."""
+    checked = 0
+    for index, (group, spec, alive, targets, _, rng) in cases.items():
+        byte = spec.get("data_type") == "byte"
+        added = [{"_id": f"a{i}", "tag": "even" if i % 2 == 0 else "odd", "n": i, "emb": ck.vector(rng, byte)}
+                 for i in range(ADDED)]
+        gone = {d["_id"] for d in rng.sample(alive, 20)}
+        lines = []
+        for d in added:
+            lines.append(json.dumps({"index": {"_index": index, "_id": d["_id"]}}))
+            lines.append(json.dumps({"tag": d["tag"], "n": d["n"], "emb": d["emb"]}))
+        lines += [json.dumps({"delete": {"_index": index, "_id": i}}) for i in sorted(gone)]
+        r = ck.req(NODE[1], "POST", "/_bulk", "\n".join(lines) + "\n", ndjson=True, ok_errors=True)
+        if r.get("errors") or "error" in r:
+            failures.append(f"{index}: writes refused: {json.dumps(r)[:400]}")
+            continue
+        ck.req(NODE[1], "POST", f"/{index}/_forcemerge?max_num_segments=1", timeout=600)
+        ck.req(NODE[1], "POST", f"/{index}/_refresh")
+        now = [d for d in alive + added if d["_id"] not in gone]
+        for t in targets[:3]:
+            # A beam wide enough that the merged graph's search is exhaustive.
+            got = ck.search(NODE[1], index, {"size": 10, "query": ck.knn(
+                t, k=10, method_parameters={"ef_search": len(now)})})
+            scan = ck.exact_top(spec, now, t, 10)
+            checked += 1
+            if [i for i, _ in got] != [i for _, i in scan]:
+                failures.append(f"{index} after writes and merge: {[i for i, _ in got]} vs scan {[i for _, i in scan]}")
+    return checked
+
+
+def fallbacks_since(before):
+    after = ck.req(NODE[1], "GET", "/_plugins/lucene_rust/stats")
+    return after["native_queries"] - before["native_queries"], {
+        k: v - before.get("fallbacks", {}).get(k, 0) for k, v in after.get("fallbacks", {}).items()
+        if v != before.get("fallbacks", {}).get(k, 0)}
+
+
+def main():
+    keep = "--keep" in sys.argv
+    zips = glob.glob(os.path.join(ROOT, "opensearch-plugin", "build", "distributions", "lucene-rust-*.zip"))
+    if not zips:
+        sys.exit("no plugin zip: run gradle -p opensearch-plugin bundlePlugin")
+    docker_dir = os.path.join(ROOT, "opensearch-plugin", "docker")
+    for z in glob.glob(os.path.join(docker_dir, "*.zip")):
+        os.remove(z)
+    shutil.copy(zips[0], docker_dir)
+    image = f"lucene-rust-opensearch:{ck.VERSION}"
+    subprocess.run(["docker", "build", "-q", "-t", image, docker_dir], check=True, capture_output=True)
+
+    failures = []
+    try:
+        print("stock -> plugin")
+        fresh_volumes()
+        start(STOCK_IMAGE)
+        cases = write("", False)
+        snapshot("from-stock", list(cases))
+        stop()
+        start(image)
+        before = ck.req(NODE[1], "GET", "/_plugins/lucene_rust/stats")
+        green(failures, "stock indexes in place")
+        n = read(cases, "", True, failures)
+        restore("from-stock", failures)
+        green(failures, "stock snapshot restored")
+        n += read(cases, "restored-", True, failures)
+        n += write_into(cases, failures)
+        ran, fell = fallbacks_since(before)
+        print(f"  {n} queries compared; {ran} shard queries in Rust, fallbacks {fell}")
+        if fell:
+            failures.append(f"stock -> plugin: queries fell back to Java: {fell}")
+        stop()
+
+        print("plugin -> stock")
+        fresh_volumes()
+        start(image)
+        cases = {**write("rust-", True), **write("java-", False)}
+        snapshot("from-plugin", list(cases))
+        stop()
+        start(STOCK_IMAGE)
+        green(failures, "plugin indexes in place")
+        n = read(cases, "", False, failures)
+        restore("from-plugin", failures)
+        green(failures, "plugin snapshot restored")
+        n += read(cases, "restored-", False, failures)
+        print(f"  {n} queries compared")
+    finally:
+        if failures:
+            logs = subprocess.run(["docker", "logs", NODE[0]], capture_output=True, text=True)
+            print("\n".join(l for l in (logs.stdout + logs.stderr).splitlines()
+                            if "WARN" in l or "ERROR" in l or "Exception" in l)[-6000:])
+        if not keep:
+            subprocess.run(["docker", "rm", "-f", NODE[0]], capture_output=True)
+            for v in (DATA, REPO):
+                subprocess.run(["docker", "volume", "rm", "-f", v], capture_output=True)
+    for f in failures:
+        print("FAIL:", f)
+    sys.exit(1 if failures else 0)
+
+
+if __name__ == "__main__":
+    main()
