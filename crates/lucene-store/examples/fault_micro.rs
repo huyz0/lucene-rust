@@ -5,10 +5,18 @@
 //! `fault_micro <dir> <file> paged|mmap|pread <page_kb> <touches> [readahead_kb]`
 // Bench-harness arithmetic -- see `docs/arithmetic-gate.md`'s "Test code".
 #![allow(clippy::arithmetic_side_effects)]
+#[cfg(target_os = "linux")]
 use std::time::Instant;
 
+#[cfg(target_os = "linux")]
 use lucene_store::{Directory, MmapDirectory, PagedFsConfig, PagedFsDirectory};
 
+#[cfg(not(target_os = "linux"))]
+fn main() {
+    eprintln!("fault_micro needs Linux (userfaultfd)");
+}
+
+#[cfg(target_os = "linux")]
 fn main() {
     let a: Vec<String> = std::env::args().collect();
     let (dir, file, mode) = (&a[1], &a[2], a[3].as_str());
@@ -17,6 +25,7 @@ fn main() {
     let readahead: usize = a.get(6).map_or(0, |s| s.parse::<usize>().unwrap() << 10);
     let path = std::path::Path::new(dir).join(file);
     let len = std::fs::metadata(&path).unwrap().len() as usize;
+    assert!(len >= page, "the file is smaller than one page");
     let mut x: u64 = 0x9E37_79B9_7F4A_7C15;
     let pages: Vec<usize> = (0..n)
         .map(|_| {

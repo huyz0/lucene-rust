@@ -1,6 +1,5 @@
 //! lucene-store: Directory/IndexInput abstractions. See /PLAN.md.
 
-#[cfg(target_os = "linux")]
 pub mod alignment;
 pub mod blob_directory;
 pub mod byte_buffers_directory;
@@ -21,6 +20,7 @@ pub mod nrt_caching_directory;
 pub mod page_cache;
 mod page_disk;
 pub mod paged_fs_directory;
+#[cfg(target_os = "linux")]
 pub mod paged_input;
 pub mod rate_limiter;
 pub mod store_registry;

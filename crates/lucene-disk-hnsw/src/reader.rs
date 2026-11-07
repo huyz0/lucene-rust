@@ -735,13 +735,14 @@ impl DiskHnswReader {
             stats.rounds = stats.rounds.saturating_add(1);
             // The whole beam's records in one batch where the file is read
             // by page; into the CPU cache where it is in memory.
+            // Pages first: a CPU-cache prefetch of a page not yet present
+            // does nothing.
             ranges.clear();
-            for &node in &batch {
-                let (at, len) = f.record_range(node);
-                self.nodes.prefetch(at, len);
-                ranges.push((at, len));
-            }
+            ranges.extend(batch.iter().map(|&node| f.record_range(node)));
             self.nodes.prefetch_ranges(&ranges);
+            for &(at, len) in &ranges {
+                self.nodes.prefetch(at, len);
+            }
             for &node in &batch {
                 let (at, len) = f.record_range(node);
                 let record = self.nodes.read(at, len)?;

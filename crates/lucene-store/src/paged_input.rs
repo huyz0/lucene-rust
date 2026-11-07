@@ -262,9 +262,11 @@ impl ExternalBytes for PagedBytes {
 }
 
 impl File {
-    /// Whether every page is resident.
+    /// Whether every page is resident and nothing is about to be evicted,
+    /// so a prefetch has nothing to fetch and no page to mark in use.
     fn all_resident(&self) -> bool {
         self.live_count.load(Ordering::Relaxed) >= self.pages
+            && self.pager.resident_bytes() <= self.pager.budget()
     }
 
     /// The pages of `ranges` (offsets in the file) not resident now.
@@ -325,6 +327,11 @@ impl File {
         }
         for &p in &claimed {
             self.inflight[p as usize].store(false, Ordering::Release);
+        }
+        // A fault raised on one of them while it was claimed was left to
+        // the read that is not coming: wake it to fault again.
+        if let (Some(&first), Some(&last)) = (claimed.first(), claimed.last()) {
+            self.pager.wake_pages(self, first as usize, last as usize);
         }
         claimed
     }
@@ -1021,12 +1028,8 @@ impl Pager {
                 };
                 q.probation.push_back(entry);
             }
-            let (entry, protected) = match q.probation.pop_front() {
-                Some(e) => (e, false),
-                None => match q.pop_protected() {
-                    Some(e) => (e, true),
-                    None => break,
-                },
+            let Some(entry) = q.probation.pop_front().or_else(|| q.pop_protected()) else {
+                break;
             };
             let Some(file) = entry.0.upgrade() else {
                 continue;
@@ -1037,12 +1040,7 @@ impl Pager {
             }
             if second_chances > 0 && file.referenced[index].swap(false, Ordering::Relaxed) {
                 second_chances = second_chances.saturating_sub(1);
-                if protected {
-                    q.protected.push_back(entry);
-                    q.protected_bytes = q.protected_bytes.saturating_add(file.page as u64);
-                } else {
-                    q.protect(entry);
-                }
+                q.protect(entry);
                 continue;
             }
             if !file.live[index].swap(false, Ordering::AcqRel) {

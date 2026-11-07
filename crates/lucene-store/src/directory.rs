@@ -273,7 +273,7 @@ pub trait Directory: Send + Sync {
     /// bytes ([`crate::alignment`]): a directory reading whole pages uses
     /// pages of a power-of-two multiple of it. Others ignore it.
     fn open_aligned(&self, name: &str, alignment: usize) -> Result<Input> {
-        let _ = alignment;
+        crate::alignment::check_hint(alignment)?;
         self.open(name)
     }
 
@@ -592,6 +592,9 @@ impl Directory for EstimatedWrites<'_> {
     }
     fn open(&self, name: &str) -> Result<Input> {
         self.inner.open(name)
+    }
+    fn open_aligned(&self, name: &str, alignment: usize) -> Result<Input> {
+        self.inner.open_aligned(name, alignment)
     }
     fn file_length(&self, name: &str) -> Result<u64> {
         self.inner.file_length(name)

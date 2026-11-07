@@ -279,8 +279,7 @@ impl Directory for PagedFsDirectory {
         if let Some(input) = self.open_paged(name, Some(alignment))? {
             return Ok(input);
         }
-        let _ = alignment;
-        self.inner.open(name)
+        self.inner.open_aligned(name, alignment)
     }
 
     fn file_length(&self, name: &str) -> Result<u64> {
@@ -530,7 +529,12 @@ mod local {
             };
             let mut buf = match slot.take() {
                 Some(b) if b.len >= len => b,
-                _ => AlignedBuf::new(len)?,
+                kept => {
+                    // Too small for this read: keep it for the next one
+                    // unless the new buffer replaces it.
+                    *slot = kept;
+                    AlignedBuf::new(len)?
+                }
             };
             let r = f(&mut buf.as_mut()[..len]);
             if buf.len <= KEPT_SCRATCH {
