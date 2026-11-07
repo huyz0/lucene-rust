@@ -38,7 +38,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code jvm_reader.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 78;
+    public static final int EXPECTED_ABI_VERSION = 80;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -239,9 +239,10 @@ public final class NativeBridge {
         );
 
         static final MethodHandle WRITER_OPEN = bind(
-            "ffi_engine_writer_open",
+            "ffi_engine_writer_open_codec",
             FunctionDescriptor.of(
-                JAVA_INT, ADDRESS, JAVA_LONG, JAVA_DOUBLE, JAVA_BYTE, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, JAVA_INT, ADDRESS
+                JAVA_INT, ADDRESS, JAVA_LONG, JAVA_DOUBLE, JAVA_BYTE, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, JAVA_INT, JAVA_BYTE,
+                JAVA_INT, ADDRESS
             )
         );
         static final MethodHandle WRITER_REGISTER_FIELD = bind(
@@ -1462,6 +1463,12 @@ public final class NativeBridge {
     public static final int OPEN_ADAPTIVE_DOC_VALUES = 32;
     public static final int OPEN_PARTITIONED = 64;
 
+    /** {@link #writerOpen}'s stored fields, one per {@code index.codec} the Rust writer writes. */
+    public static final int STORED_FIELDS_BEST_SPEED = 0;
+    public static final int STORED_FIELDS_BEST_COMPRESSION = 1;
+    public static final int STORED_FIELDS_ZSTD = 2;
+    public static final int STORED_FIELDS_ZSTD_NO_DICT = 3;
+
     /**
      * Opens a shard's writer over the index at {@code path}, which must already hold a commit. Commit
      * points are dropped only through {@link #writerDeleteCommits}. {@code faultInjection} allows the
@@ -1473,6 +1480,8 @@ public final class NativeBridge {
      * {@code indexSort} is the index sort as a {@code .si} encodes it (null or empty for none), and
      * {@code parentFieldUtf8} the field marking each block's last document (null or empty for none).
      * {@code maxDocs} is {@code IndexWriter.getActualMaxDocs()}, which Lucene's tests lower.
+     * {@code storedFields} is one of the {@code STORED_FIELDS_*} codes, the zstd ones written at
+     * {@code compressionLevel}.
      */
     public static int writerOpen(
         byte[] indexPathUtf8,
@@ -1485,6 +1494,8 @@ public final class NativeBridge {
         byte[] indexSort,
         byte[] parentFieldUtf8,
         int maxDocs,
+        int storedFields,
+        int compressionLevel,
         long[] outHandle
     ) {
         if (indexPathUtf8 == null) {
@@ -1506,6 +1517,8 @@ public final class NativeBridge {
                 s.bytes(parent),
                 (long) parent.length,
                 maxDocs,
+                (byte) storedFields,
+                compressionLevel,
                 out
             );
             if (rc == OK) {

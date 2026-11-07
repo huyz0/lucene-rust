@@ -317,9 +317,12 @@ The rehearsal found two defects, both fixed before these numbers:
   update-heavy indices, scores can differ from OpenSearch's engine until a
   force merge. See
   [where it behaves differently](opensearch-engine.md#where-it-behaves-differently).
-- **Only Lucene 10.5's default codec** is read natively. Indices from older
-  Lucene majors, or with a custom per-field format, are answered by
-  OpenSearch.
+- **Only Lucene 10.5's default codec** is read natively, with any of its stored
+  fields: LZ4 (`default`), DEFLATE (`best_compression`), or the custom-codecs
+  plugin's `zstd` and `zstd_no_dict`. Indices from older Lucene majors, or
+  with a custom per-field format, are answered by OpenSearch. The Rust engine
+  writes those four codecs; `zstd` needs the bundled `opensearch-custom-codecs`
+  plugin installed, as it does for OpenSearch's own engine.
 
 ## Verifying a build
 
