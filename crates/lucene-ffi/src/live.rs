@@ -1405,6 +1405,7 @@ pub unsafe extern "C" fn ffi_jvm_reader_search_live(
             "ffi_jvm_reader_search_live: unknown or closed reader",
         )?;
         let v = view(view_id)?;
+        searched_lean(&v.writer);
         // Each buffer is read as the chunks its view's plan starts with,
         // with this request's terms (their overlays kept on the chunks),
         // then a segment of the documents after them.
