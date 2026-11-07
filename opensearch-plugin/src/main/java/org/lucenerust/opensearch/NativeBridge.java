@@ -38,7 +38,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code jvm_reader.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 83;
+    public static final int EXPECTED_ABI_VERSION = 85;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -382,6 +382,14 @@ public final class NativeBridge {
         static final MethodHandle LIVE_VIEW_READER = bind(
             "ffi_live_view_reader",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS)
+        );
+        static final MethodHandle WRITER_SET_LIVE_STALENESS = bind(
+            "ffi_engine_writer_set_live_staleness",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG)
+        );
+        static final MethodHandle WRITER_LIVE_REFRESH_SHARED = bind(
+            "ffi_engine_writer_live_refresh_shared",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG)
         );
         static final MethodHandle WRITER_RELEASE_LIVE = bind(
             "ffi_engine_writer_release_live",
@@ -2305,6 +2313,27 @@ public final class NativeBridge {
     public static int liveViewClose(long view) {
         try {
             return (int) H.LIVE_VIEW_CLOSE.invokeExact(view);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * Lets searches of the writer's buffers share a view up to {@code millis} milliseconds old,
+     * which the writer opens ahead of them; 0 gives each search a view of every write before it.
+     */
+    public static int writerSetLiveStaleness(long writer, long millis) {
+        try {
+            return (int) H.WRITER_SET_LIVE_STALENESS.invokeExact(writer, millis);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** Makes every later search of the writer's buffers read a view opened from now on. */
+    public static int writerLiveRefreshShared(long writer) {
+        try {
+            return (int) H.WRITER_LIVE_REFRESH_SHARED.invokeExact(writer);
         } catch (Throwable t) {
             throw rethrow(t);
         }
