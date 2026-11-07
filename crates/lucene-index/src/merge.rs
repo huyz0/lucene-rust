@@ -331,6 +331,9 @@ pub enum Error {
     /// share one `Error` type, the way they share one on-disk format family.
     #[error(transparent)]
     Vectors(#[from] lucene_codecs::vectors::Error),
+    /// The IVF index of a `LuceneRustIvfVectorsFormat` group.
+    #[error(transparent)]
+    Ivf(#[from] lucene_ivf::Error),
     #[error(transparent)]
     DocValuesWrite(#[from] lucene_codecs::doc_values::WriteError),
     #[error(transparent)]
@@ -984,10 +987,11 @@ impl SegmentFormat {
             SegmentFormat::Norms => &["nvd", "nvm"],
             SegmentFormat::Points => &["kdd", "kdi", "kdm"],
             // `.vemq`/`.veq` and `.vemb`/`.veb`: the retired quantized formats' codes
-            // (Lucene 9.9-10.3), which a merge reads past to the raw `.vec`.
-            SegmentFormat::KnnVectors => {
-                &["vec", "vemf", "vem", "vex", "vemq", "veq", "vemb", "veb"]
-            }
+            // (Lucene 9.9-10.3), which a merge reads past to the raw `.vec`;
+            // `.ivm`/`.ivp`/`.ivv`: `LuceneRustIvfVectorsFormat`'s IVF index.
+            SegmentFormat::KnnVectors => &[
+                "vec", "vemf", "vem", "vex", "vemq", "veq", "vemb", "veb", "ivm", "ivp", "ivv",
+            ],
         }
     }
 
@@ -4440,6 +4444,9 @@ pub struct VectorGroup<'a> {
     /// group -- the one reader `Lucene104ScalarQuantizedVectorsWriter
     /// .getCentroid` recognises, so the only centroids a merge reuses.
     pub flat_quantized: Option<&'a scalar_quantized_vectors::ScalarQuantizedVectorsReader<'a>>,
+    /// The IVF files of a `LuceneRustIvfVectorsFormat` group, whose
+    /// clusters a merge into that format reuses.
+    pub ivf: Option<&'a crate::ivf_vectors::IvfInputs>,
 }
 
 impl<'a> SourceVectors<'a> {
@@ -4453,6 +4460,7 @@ impl<'a> SourceVectors<'a> {
                 flat,
                 graph,
                 flat_quantized: None,
+                ivf: None,
             }],
         }
     }
@@ -5037,6 +5045,67 @@ fn merge_vector_group(
         let (veq, vemq) = writer.finish();
         files.push(("veq", veq));
         files.push(("vemq", vemq));
+    }
+
+    if let Some(mut ivf) =
+        crate::ivf_vectors::IvfGroupWriter::new(format, merged_segment_id, suffix)?
+    {
+        // Each source group's IVF index, opened once for every field it
+        // serves.
+        let mut readers: Vec<(*const crate::ivf_vectors::IvfInputs, lucene_ivf::IvfReader)> =
+            Vec::new();
+        for (merged_field, field_sources) in plan.iter().map(|p| (&p.0, &p.1)) {
+            if merged_field.vector_encoding != VectorEncoding::Float32 {
+                continue;
+            }
+            // The IVF reader keys fields by the source's own numbers; a
+            // source that numbered the field differently lends nothing.
+            let mut lent: Vec<(usize, *const crate::ivf_vectors::IvfInputs)> = Vec::new();
+            for fs in field_sources {
+                if fs.original_field_number != merged_field.number {
+                    continue;
+                }
+                let group = sources[fs.source_index]
+                    .vectors
+                    .expect("only sources with a flat reader are planned")
+                    .group_of(fs.original_field_number);
+                if let Some(inputs) = group.ivf {
+                    let key: *const crate::ivf_vectors::IvfInputs = inputs;
+                    if !readers.iter().any(|(k, _)| *k == key) {
+                        readers.push((key, inputs.open()?));
+                    }
+                    lent.push((fs.source_index, key));
+                }
+            }
+            let ivf_sources: Vec<crate::ivf_vectors::IvfSource<'_>> = lent
+                .iter()
+                .filter_map(|&(source, key)| {
+                    let reader = &readers.iter().find(|(k, _)| *k == key)?.1;
+                    Some(crate::ivf_vectors::IvfSource {
+                        reader,
+                        doc_map: &doc_id_maps[source],
+                    })
+                })
+                .collect();
+            let values = flat.float_vector_values(merged_field.number)?;
+            let mut docs = Vec::with_capacity(usize::try_from(values.size()).unwrap_or(0));
+            let mut merged = Vec::new();
+            for ord in 0..values.size() {
+                docs.push(values.ord_to_doc(ord)?);
+                merged.extend(values.vector(ord)?);
+            }
+            ivf.add(
+                &crate::ivf_vectors::IvfField {
+                    number: merged_field.number,
+                    similarity: merged_field.vector_similarity_function,
+                    dimension: usize::try_from(merged_field.vector_dimension).unwrap_or(0),
+                    docs: &docs,
+                    vectors: &merged,
+                },
+                &ivf_sources,
+            )?;
+        }
+        files.extend(ivf.finish().into_iter().flatten());
     }
 
     if let Some((m, beam_width)) = format.graph() {
