@@ -6,6 +6,8 @@ package org.lucenerust.opensearch.engine;
 import org.apache.lucene.index.DocValuesSkipIndexType;
 import org.apache.lucene.index.DocValuesType;
 import org.apache.lucene.index.IndexOptions;
+import org.apache.lucene.index.VectorEncoding;
+import org.apache.lucene.index.VectorSimilarityFunction;
 import org.apache.lucene.index.IndexableFieldType;
 
 import java.util.Map;
@@ -29,6 +31,8 @@ final class FieldSchema {
     int pointIndexDimensionCount;
     int pointNumBytes;
     int vectorDimension;
+    VectorEncoding vectorEncoding = VectorEncoding.FLOAT32;
+    VectorSimilarityFunction vectorSimilarity = VectorSimilarityFunction.EUCLIDEAN;
     boolean softDeletes;
     /** The field types' own attributes ({@code FieldType.putAttribute}), as {@code IndexingChain} collects them. */
     final Map<String, String> attributes = new TreeMap<>();
@@ -71,7 +75,15 @@ final class FieldSchema {
             }
         }
         if (type.vectorDimension() != 0) {
-            vectorDimension = type.vectorDimension();
+            if (vectorDimension == 0) {
+                vectorDimension = type.vectorDimension();
+                vectorEncoding = type.vectorEncoding();
+                vectorSimilarity = type.vectorSimilarityFunction();
+            } else {
+                same("vector dimension", vectorDimension, type.vectorDimension());
+                same("vector encoding", vectorEncoding, type.vectorEncoding());
+                same("vector similarity function", vectorSimilarity, type.vectorSimilarityFunction());
+            }
         }
         Map<String, String> a = type.getAttributes();
         if (a != null) {
@@ -87,6 +99,10 @@ final class FieldSchema {
         same("doc values type", registered.docValuesType, docValuesType);
         same("doc values skip index type", registered.skipIndex, skipIndex);
         same("vector dimension", registered.vectorDimension, vectorDimension);
+        if (vectorDimension != 0) {
+            same("vector encoding", registered.vectorEncoding, vectorEncoding);
+            same("vector similarity function", registered.vectorSimilarity, vectorSimilarity);
+        }
         same("point dimension", registered.pointDimensionCount, pointDimensionCount);
         same("point index dimension", registered.pointIndexDimensionCount, pointIndexDimensionCount);
         same("point num bytes", registered.pointNumBytes, pointNumBytes);
@@ -117,9 +133,6 @@ final class FieldSchema {
         if (storeTermVectors) {
             throw new IllegalArgumentException("field [" + name + "]: the Rust engine does not index term vectors");
         }
-        if (vectorDimension != 0) {
-            throw new IllegalArgumentException("field [" + name + "]: the Rust engine does not index vectors");
-        }
         if (indexOptions == IndexOptions.DOCS_AND_CUSTOM_FREQS) {
             throw new IllegalArgumentException("field [" + name + "]: the Rust engine does not index DOCS_AND_CUSTOM_FREQS");
         }
@@ -147,6 +160,11 @@ final class FieldSchema {
         });
         b.bool(skipIndex != DocValuesSkipIndexType.NONE);
         b.i32(pointDimensionCount).i32(pointIndexDimensionCount).i32(pointNumBytes).i32(vectorDimension);
+        if (vectorDimension != 0) {
+            b.u8(vectorEncoding == VectorEncoding.BYTE ? 1 : 0);
+            b.u8(vectorSimilarity.ordinal());
+            VectorsFormatSpec.of(attributes.get(VectorsFormatSpec.ATTRIBUTE)).encode(b);
+        }
         b.bool(softDeletes).i32(attributes.size());
         for (Map.Entry<String, String> a : attributes.entrySet()) {
             b.string(a.getKey()).string(a.getValue());
@@ -167,6 +185,8 @@ final class FieldSchema {
                 && pointIndexDimensionCount == s.pointIndexDimensionCount
                 && pointNumBytes == s.pointNumBytes
                 && vectorDimension == s.vectorDimension
+                && vectorEncoding == s.vectorEncoding
+                && vectorSimilarity == s.vectorSimilarity
                 && softDeletes == s.softDeletes
                 && attributes.equals(s.attributes);
         }

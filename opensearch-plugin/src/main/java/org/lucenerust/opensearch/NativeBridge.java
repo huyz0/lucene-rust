@@ -38,7 +38,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code jvm_reader.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 79;
+    public static final int EXPECTED_ABI_VERSION = 80;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -117,6 +117,10 @@ public final class NativeBridge {
                 ADDRESS,
                 ADDRESS
             )
+        );
+        static final MethodHandle READER_KNN = bind(
+            "ffi_jvm_reader_knn",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS, JAVA_LONG, ADDRESS)
         );
         static final MethodHandle PARENT_CACHE_STATS = bind("ffi_jvm_parent_cache_stats", FunctionDescriptor.of(JAVA_INT, ADDRESS));
         static final MethodHandle DOC_FREQ = bind(
@@ -807,6 +811,42 @@ public final class NativeBridge {
         outCounts[1] = counts.get(JAVA_LONG, Long.BYTES);
         outCounts[2] = counts.get(JAVA_BOOLEAN, 2 * Long.BYTES) ? 1 : 0;
         return OK;
+    }
+
+    /**
+     * The reader's top {@code k} for a KNN request ({@code jvm_knn.rs}): global doc ids into {@code
+     * outDocs}, scores into {@code outScores}, best first; returns the status, the hit count in
+     * {@code outCount[0]}.
+     */
+    public static int readerKnn(long handle, byte[] request, int k, int[] outDocs, float[] outScores, int[] outCount) {
+        if (request == null) {
+            return nullArgument("request");
+        }
+        if (k <= 0 || outDocs == null || outScores == null || Math.min(outDocs.length, outScores.length) < k) {
+            return fail(BUFFER_TOO_SMALL, "output arrays hold fewer than k=" + k + " hits");
+        }
+        if (outCount == null || outCount.length < 1) {
+            return fail(INVALID_ARGUMENT, "outCount holds no slot");
+        }
+        try (Scratch s = Scratch.open()) {
+            MemorySegment docs = s.room(JAVA_INT, k);
+            MemorySegment scores = s.room(JAVA_FLOAT, k);
+            MemorySegment count = s.alloc(Long.BYTES);
+            int rc;
+            try {
+                rc = (int) H.READER_KNN.invokeExact(handle, s.bytes(request), (long) request.length, docs, scores, (long) k, count);
+            } catch (Throwable t) {
+                throw rethrow(t);
+            }
+            if (rc != OK) {
+                return rc;
+            }
+            int n = Math.toIntExact(count.get(JAVA_LONG, 0));
+            MemorySegment.copy(docs, JAVA_INT, 0, outDocs, 0, n);
+            MemorySegment.copy(scores, JAVA_FLOAT, 0, outScores, 0, n);
+            outCount[0] = n;
+            return OK;
+        }
     }
 
     /**

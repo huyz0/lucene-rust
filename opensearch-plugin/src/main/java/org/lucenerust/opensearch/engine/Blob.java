@@ -86,6 +86,14 @@ final class Blob {
         return this;
     }
 
+    /** {@code b} as is, no length in front. */
+    Blob raw(byte[] b) {
+        ensure(b.length);
+        System.arraycopy(b, 0, buf, len, b.length);
+        len += b.length;
+        return this;
+    }
+
     Blob bytes(BytesRef b) {
         return bytes(b.bytes, b.offset, b.length);
     }
