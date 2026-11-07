@@ -143,11 +143,10 @@ pub fn java_float_to_string(v: f32) -> String {
     out
 }
 
-/// [`java_float_to_string`] appended to `out`. Rust's shortest digits are Java's unless they are
-/// a single digit or `v` lies (nearly) halfway between two decimals of that length, the cases the
-/// exact expansion settles; every other value is printed without allocating.
+/// [`java_float_to_string`] appended to `out`: the shortest digits ([`crate::java_float`], Java's
+/// own choice) laid out as Java lays them out, without allocating; only a value whose shortest
+/// form is one digit takes the exact expansion, for Java's second digit.
 pub fn push_java_float_string(out: &mut String, v: f32) {
-    use std::fmt::Write as _;
     if v.is_nan() {
         out.push_str("NaN");
         return;
@@ -164,13 +163,19 @@ pub fn push_java_float_string(out: &mut String, v: f32) {
         out.push_str("0.0");
         return;
     }
-    let mut text = StackBuf::default();
-    // `{:e}` of an f32 is at most 15 bytes (`1.17549435e-38`), so it always fits.
-    let _ = write!(text, "{a:e}");
+    let (shortest, low_exp) = crate::java_float::shortest(a);
     let mut digits = StackBuf::default();
-    let mut exp = split_scientific_into(text.as_str(), &mut digits);
-    if needs_exact_digits(a, digits.as_slice(), exp) {
-        if let Some((d, e)) = closest_digits(a, digits.len.max(2)) {
+    push_digits(&mut digits, shortest);
+    // ARITH: at most 9 digits, and `low_exp` within -45..=38.
+    #[allow(
+        clippy::arithmetic_side_effects,
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap
+    )]
+    let mut exp = low_exp + digits.len as i32 - 1;
+    if digits.len < 2 {
+        // Java prints at least two digits: the closest two-digit decimal that reads back.
+        if let Some((d, e)) = closest_digits(a, 2) {
             digits = StackBuf::default();
             d.iter().for_each(|&b| digits.push(b));
             exp = e;
@@ -180,65 +185,42 @@ pub fn push_java_float_string(out: &mut String, v: f32) {
         digits.len -= 1;
     }
     let digits = digits.as_slice();
-    let digit = |i: usize| char::from(digits.get(i).copied().unwrap_or(b'0'));
-    let all_from = |out: &mut String, from: usize| {
-        (from..digits.len()).for_each(|i| out.push(digit(i)));
-    };
+    let digit = |i: usize| digits.get(i).copied().unwrap_or(b'0');
+    // The whole number, laid out on the stack: at most 9 digits, a point, `0.00` and `E-45`.
+    let mut text = StackBuf::default();
     if !(1e-3..1e7).contains(&f64::from(a)) {
-        out.push(digit(0));
-        out.push('.');
+        text.push(digit(0));
+        text.push(b'.');
         if digits.len() > 1 {
-            all_from(out, 1);
+            digits[1..].iter().for_each(|&d| text.push(d));
         } else {
-            out.push('0');
+            text.push(b'0');
         }
-        out.push('E');
-        let _ = write!(out, "{exp}");
+        text.push(b'E');
+        if exp < 0 {
+            text.push(b'-');
+        }
+        push_digits(&mut text, exp.unsigned_abs());
     } else if let Ok(int_len @ 1..) = usize::try_from(exp.saturating_add(1)) {
         // `exp` is in 0..=6.
-        (0..int_len).for_each(|i| out.push(digit(i)));
-        out.push('.');
+        (0..int_len).for_each(|i| text.push(digit(i)));
+        text.push(b'.');
         if digits.len() > int_len {
-            all_from(out, int_len);
+            digits[int_len..].iter().for_each(|&d| text.push(d));
         } else {
-            out.push('0');
+            text.push(b'0');
         }
     } else {
         // `exp` is in -3..=-1.
-        out.push_str("0.");
-        (exp..-1).for_each(|_| out.push('0'));
-        all_from(out, 0);
+        text.push(b'0');
+        text.push(b'.');
+        (exp..-1).for_each(|_| text.push(b'0'));
+        digits.iter().for_each(|&d| text.push(d));
     }
+    out.push_str(std::str::from_utf8(text.as_slice()).unwrap_or_default());
 }
 
-/// Whether Java's digits for `a` may differ from Rust's shortest `digits` (exponent `exp`):
-/// Java prints at least two digits, and of the decimals of that length that round to `a` takes
-/// the closest, a tie to the even digit, where Rust rounds a tie up. Rust's digits are already
-/// the closest otherwise, so only a single digit or an `a` within 10^-4 of a step of the
-/// midpoint between two candidates needs the exact expansion. The f64 estimate of where `a` falls
-/// is off by at most a few 10^-6 of a step (nine digits, and `10^scale` a few ulps off when
-/// `|scale| > 22`), well inside that margin.
-fn needs_exact_digits(a: f32, digits: &[u8], exp: i32) -> bool {
-    if digits.len() < 2 {
-        return true;
-    }
-    let t = digits
-        .iter()
-        .fold(0f64, |t, &d| t * 10.0 + f64::from(d - b'0'));
-    // ARITH: `digits.len()` is at most 9 and `exp` within -45..=38.
-    #[allow(
-        clippy::arithmetic_side_effects,
-        clippy::cast_possible_truncation,
-        clippy::cast_possible_wrap
-    )]
-    let scale = exp - (digits.len() as i32 - 1);
-    let r = f64::from(a) / 10f64.powi(scale);
-    let off = (r - t).abs();
-    (off - 0.5).abs() < 1e-4 || off > 0.5
-}
-
-/// 32 bytes on the stack: `{:e}` of an f32 (at most 15) and its digits (at most 9, or the
-/// exact path's 9) both fit.
+/// Up to 32 digits on the stack (an f32 needs at most 9).
 #[derive(Default)]
 struct StackBuf {
     buf: [u8; 32],
@@ -257,32 +239,22 @@ impl StackBuf {
     fn as_slice(&self) -> &[u8] {
         &self.buf[..self.len]
     }
-
-    fn as_str(&self) -> &str {
-        std::str::from_utf8(self.as_slice()).unwrap_or("")
-    }
 }
 
-impl std::fmt::Write for StackBuf {
-    fn write_str(&mut self, s: &str) -> std::fmt::Result {
-        let end = self.len.checked_add(s.len()).ok_or(std::fmt::Error)?;
-        self.buf
-            .get_mut(self.len..end)
-            .ok_or(std::fmt::Error)?
-            .copy_from_slice(s.as_bytes());
-        self.len = end;
-        Ok(())
+/// `n`'s decimal digits into `digits`, most significant first.
+#[allow(clippy::arithmetic_side_effects, clippy::cast_possible_truncation)]
+fn push_digits(digits: &mut StackBuf, mut n: u32) {
+    let mut rev = [0u8; 10];
+    let mut len = 0;
+    loop {
+        rev[len] = b'0' + (n % 10) as u8;
+        len += 1;
+        n /= 10;
+        if n == 0 {
+            break;
+        }
     }
-}
-
-/// [`split_scientific`]'s digits into `digits`, returning the exponent.
-fn split_scientific_into(s: &str, digits: &mut StackBuf) -> i32 {
-    let (mantissa, exp) = s.split_once('e').unwrap_or((s, "0"));
-    mantissa
-        .bytes()
-        .filter(u8::is_ascii_digit)
-        .for_each(|d| digits.push(d));
-    exp.parse().unwrap_or(0)
+    rev[..len].iter().rev().for_each(|&d| digits.push(d));
 }
 
 /// The digits and decimal exponent of Rust's `{:e}` rendering
