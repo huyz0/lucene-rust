@@ -18,6 +18,11 @@ mapping and explain APIs, and the answers are compared:
                 default is faiss and the plugin persists lucene, so a stock
                 node reading the index sees the lucene field it is
   explain       a knn hit's explanation
+  _source       a document's _source by get (from the translog, then from the
+                index) and by search, numbers' types included, with derived
+                source on as stock turns it on for a knn index (the plugin's
+                index on the Rust engine, which masks the vectors); the masked
+                index must store less than one with derived source off
 
   scripts/check-knn-rest.py [--keep]
 
@@ -106,6 +111,74 @@ def compare_mappings(failures):
         if got[OURS[1]][name] != want:
             failures.append(f"mapping {name}: ours {got[OURS[1]][name]}, stock {got[STOCK[1]][name]}")
     return len(MAPPINGS)
+
+
+def typed(v):
+    """v with each number's JSON type kept: 1 and 1.0 differ."""
+    if isinstance(v, dict):
+        return {k: typed(x) for k, x in v.items()}
+    if isinstance(v, list):
+        return [typed(x) for x in v]
+    return (type(v).__name__, v)
+
+
+def sources(port, index):
+    out = {"get": ck.req(port, "GET", f"/{index}/_doc/1")["_source"]}
+    ck.req(port, "POST", f"/{index}/_refresh")
+    out["get_refreshed"] = ck.req(port, "GET", f"/{index}/_doc/1")["_source"]
+    out["search"] = ck.req(port, "POST", f"/{index}/_search", {"query": {"ids": {"values": ["1"]}}})["hits"]["hits"][0]["_source"]
+    return out
+
+
+def compare_sources(failures):
+    doc = {"tag": "x", "secret": "s", "hidden": [5, 5, 5, 5], "nested_obj": {"inner": [9, 8, 7, 6]},
+           **{k: [1, 2, 3, 4] for k in MAPPINGS}}
+    props = {**MAPPINGS, "tag": {"type": "keyword"}, "secret": {"type": "keyword"},
+             "hidden": {"type": "knn_vector", "dimension": 4},
+             "nested_obj": {"properties": {"inner": {"type": "knn_vector", "dimension": 4}}}}
+    n = 0
+    # Filtered and whole _source; a copy_to field, which stock leaves whole.
+    variants = (("sources", {"excludes": ["secret", "hidden"]}, {}),
+                ("sources-whole", None, {"copied": {"type": "knn_vector", "dimension": 4, "copy_to": "copied_all"},
+                                         "copied_all": {"type": "knn_vector", "dimension": 4}}))
+    for index, source, extra in variants:
+        got = {}
+        mappings = {"properties": {**props, **extra}}
+        if source:
+            mappings["_source"] = source
+        body = {**doc, **({"copied": [4, 3, 2, 1]} if extra else {})}
+        for port in (OURS[1], STOCK[1]):
+            settings = {"knn": True, "number_of_replicas": 0, **({"lucene_rust.engine": True} if port == OURS[1] else {})}
+            ck.req(port, "PUT", f"/{index}", {"settings": {"index": settings}, "mappings": mappings})
+            setting = ck.req(port, "GET", f"/{index}/_settings/index.knn.derived_source.enabled")
+            got[port] = {"setting": setting[index]["settings"]["index"]["knn"]["derived_source"]["enabled"]}
+            ck.req(port, "PUT", f"/{index}/_doc/1", body)
+            got[port].update(sources(port, index))
+        n += 3
+        if typed(got[OURS[1]]) != typed(got[STOCK[1]]):
+            failures.append(f"{index} _source: ours {got[OURS[1]]}, stock {got[STOCK[1]]}")
+    # Masking stores less: the same documents with derived source off take more room.
+    rng = random.Random(5)
+    lines = []
+    for i in range(400):
+        lines.append('{"index":{"_id":"%d"}}' % i)
+        lines.append('{"v":[%s]}' % ",".join(f"{rng.random():.6f}" for _ in range(64)))
+    size = {}
+    for index, derived in (("masked", True), ("whole", False)):
+        ck.req(OURS[1], "PUT", f"/{index}", {"settings": {"index": {"knn": True, "number_of_replicas": 0,
+                                                                    "lucene_rust.engine": True,
+                                                                    "knn.derived_source.enabled": derived}},
+                                             "mappings": {"properties": {"v": {"type": "knn_vector", "dimension": 64}}}})
+        ck.req(OURS[1], "POST", f"/{index}/_bulk?refresh=true", "\n".join(lines) + "\n", ndjson=True)
+        ck.req(OURS[1], "POST", f"/{index}/_forcemerge?max_num_segments=1")
+        size[index] = ck.req(OURS[1], "GET", f"/{index}/_stats/store")["_all"]["primaries"]["store"]["size_in_bytes"]
+        hit = ck.req(OURS[1], "GET", f"/{index}/_doc/7")["_source"]["v"]
+        if len(hit) != 64:
+            failures.append(f"{index}: _source vector {hit}")
+    if size["masked"] >= size["whole"]:
+        failures.append(f"masked index stores {size['masked']} bytes, not less than {size['whole']} unmasked")
+    print(f"store: masked {size['masked']} bytes, whole {size['whole']}")
+    return n
 
 
 def compare_explain(failures):
@@ -214,8 +287,9 @@ def main():
             same_answer(method, path, failures)
         mappings = compare_mappings(failures)
         explains = compare_explain(failures)
+        reads = compare_sources(failures)
         print(f"{len(stats)} stats calls, {len(calls)} warmup/clear_cache/error calls, {mappings} mappings, "
-              f"{explains} explains compared")
+              f"{explains} explains, {reads} _source reads compared")
     finally:
         if not keep:
             for name in (OURS[0], STOCK[0]):
