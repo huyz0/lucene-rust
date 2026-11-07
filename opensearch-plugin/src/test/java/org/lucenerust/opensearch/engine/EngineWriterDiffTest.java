@@ -147,7 +147,8 @@ public final class EngineWriterDiffTest {
         };
         check(scan.apply("{\"properties\":{\"a\":{\"type\":\"keyword\"},\"t\":{\"type\":\"text\",\"term_vector\":\"no\"}}}") == null, "plain mapping is served");
         check("s (completion)".equals(scan.apply("{\"properties\":{\"s\":{\"type\":\"completion\"}}}")), "completion falls back");
-        check("o.v (knn_vector)".equals(scan.apply("{\"properties\":{\"o\":{\"properties\":{\"v\":{\"type\":\"knn_vector\"}}}}}")), "nested object field falls back");
+        check("o.s (completion)".equals(scan.apply("{\"properties\":{\"o\":{\"properties\":{\"s\":{\"type\":\"completion\"}}}}}")), "nested object field falls back");
+        check(scan.apply("{\"properties\":{\"v\":{\"type\":\"knn_vector\",\"dimension\":4}}}") == null, "knn_vector is served");
         check("t.tv (term_vector)".equals(scan.apply("{\"properties\":{\"t\":{\"type\":\"text\",\"fields\":{\"tv\":{\"type\":\"text\",\"term_vector\":\"yes\"}}}}}")), "multi-field falls back");
         String dyn = scan.apply("{\"dynamic_templates\":[{\"sugg\":{\"match\":\"*_s\",\"mapping\":{\"type\":\"completion\"}}}]}");
         check(dyn != null && dyn.startsWith("dynamic template sugg"), "dynamic template falls back: " + dyn);
@@ -397,6 +398,8 @@ public final class EngineWriterDiffTest {
                 sort,
                 parent,
                 IndexWriter.MAX_DOCS,
+                org.lucenerust.opensearch.NativeBridge.STORED_FIELDS_BEST_SPEED,
+                3,
                 analyzer,
                 similarity,
                 10,
@@ -828,6 +831,8 @@ public final class EngineWriterDiffTest {
                 null,
                 null,
                 IndexWriter.MAX_DOCS,
+                org.lucenerust.opensearch.NativeBridge.STORED_FIELDS_BEST_SPEED,
+                3,
                 new TestAnalyzer(),
                 new BM25Similarity(),
                 10,
@@ -890,6 +895,8 @@ public final class EngineWriterDiffTest {
                 null,
                 null,
                 IndexWriter.MAX_DOCS,
+                org.lucenerust.opensearch.NativeBridge.STORED_FIELDS_BEST_SPEED,
+                3,
                 new TestAnalyzer(),
                 new BM25Similarity(),
                 10,

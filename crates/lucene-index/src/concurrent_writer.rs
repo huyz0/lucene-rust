@@ -1303,7 +1303,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
     /// ([`IndexWriter::add_explicit_documents`]), from any thread: each
     /// document is inverted into its slot's postings as it is buffered.
     pub fn add_explicit_documents(&self, docs: Vec<ExplicitDocument>) -> Result<SeqNo> {
-        self.add_explicit(None, None, docs)
+        self.add_explicit(None, None, docs, None)
     }
 
     /// [`Self::add_explicit_documents`] under `partition`
@@ -1315,7 +1315,20 @@ impl<'d> ConcurrentIndexWriter<'d> {
         partition: Option<Arc<str>>,
         docs: Vec<ExplicitDocument>,
     ) -> Result<SeqNo> {
-        self.add_explicit(partition, None, docs)
+        self.add_explicit(partition, None, docs, None)
+    }
+
+    /// [`Self::add_explicit_documents_in`] with each document's KNN vectors
+    /// (`vectors[i]` is `docs[i]`'s, one per vector field it carries), as
+    /// `IndexingChain` takes a `KnnFloatVectorField` beside the document's
+    /// other fields.
+    pub fn add_explicit_documents_with_vectors_in(
+        &self,
+        partition: Option<Arc<str>>,
+        docs: Vec<ExplicitDocument>,
+        vectors: Vec<Vec<DocumentVector>>,
+    ) -> Result<SeqNo> {
+        self.add_explicit(partition, None, docs, Some(vectors))
     }
 
     /// `IndexWriter.softUpdateDocuments(term, docs, softDeletes...)` for
@@ -1341,6 +1354,30 @@ impl<'d> ConcurrentIndexWriter<'d> {
         docs: Vec<ExplicitDocument>,
         soft_deletes: &[DocValuesUpdate],
     ) -> Result<SeqNo> {
+        self.soft_update_explicit(partition, term, docs, None, soft_deletes)
+    }
+
+    /// [`Self::soft_update_explicit_documents_in`] with each document's KNN
+    /// vectors, as [`Self::add_explicit_documents_with_vectors_in`].
+    pub fn soft_update_explicit_documents_with_vectors_in(
+        &self,
+        partition: Option<Arc<str>>,
+        term: Term,
+        docs: Vec<ExplicitDocument>,
+        vectors: Vec<Vec<DocumentVector>>,
+        soft_deletes: &[DocValuesUpdate],
+    ) -> Result<SeqNo> {
+        self.soft_update_explicit(partition, term, docs, Some(vectors), soft_deletes)
+    }
+
+    fn soft_update_explicit(
+        &self,
+        partition: Option<Arc<str>>,
+        term: Term,
+        docs: Vec<ExplicitDocument>,
+        vectors: Option<Vec<Vec<DocumentVector>>>,
+        soft_deletes: &[DocValuesUpdate],
+    ) -> Result<SeqNo> {
         if soft_deletes.is_empty() {
             return Err(crate::index_writer::Error::NoSoftDeletesSupplied);
         }
@@ -1354,7 +1391,12 @@ impl<'d> ConcurrentIndexWriter<'d> {
             .iter()
             .map(|u| crate::index_writer::retarget_update(u, &term))
             .collect();
-        self.add_explicit(partition, Some(DeleteNode::DocValuesUpdates(updates)), docs)
+        self.add_explicit(
+            partition,
+            Some(DeleteNode::DocValuesUpdates(updates)),
+            docs,
+            vectors,
+        )
     }
 
     fn add_explicit(
@@ -1362,11 +1404,24 @@ impl<'d> ConcurrentIndexWriter<'d> {
         partition: Option<Arc<str>>,
         delete: Option<DeleteNode>,
         docs: Vec<ExplicitDocument>,
+        vectors: Option<Vec<Vec<DocumentVector>>>,
     ) -> Result<SeqNo> {
         let cfg = self.cfg();
         // Every fallible lookup runs before anything is buffered, so a
         // refused document leaves nothing behind.
         let options = cfg.explicit_add_options(&docs)?;
+        if let Some(vectors) = &vectors {
+            if vectors.len() != docs.len() {
+                return Err(crate::index_writer::explicit_error(
+                    "one vector list per document",
+                ));
+            }
+            for doc_vectors in vectors {
+                cfg.validate_explicit_vectors(doc_vectors)?;
+            }
+        }
+        // A list per document, empty for one without vectors.
+        let mut vectors = vectors.map(Vec::into_iter);
         let mut docs = docs;
         // `IndexingChain.processDocument(docId, doc, lastDocInBlock)`: the
         // last document of the add is the parent, `-1` in the parent field.
@@ -1391,6 +1446,10 @@ impl<'d> ConcurrentIndexWriter<'d> {
                 let postings_before = dwpt.postings.bytes();
                 let mut added = 0usize;
                 for (mut doc, options) in docs.into_iter().zip(options) {
+                    let doc_vectors = vectors
+                        .as_mut()
+                        .and_then(Iterator::next)
+                        .unwrap_or_default();
                     let stored = Document { fields: doc.stored };
                     if live.is_some() {
                         dwpt.live.record_stored(&stored.fields);
@@ -1420,6 +1479,18 @@ impl<'d> ConcurrentIndexWriter<'d> {
                     }
                     if let Some(soft) = live {
                         dwpt.live.record(doc_id, &doc.fields, soft);
+                    }
+                    if !doc_vectors.is_empty() {
+                        // Short until a document has vectors (see `Dwpt`).
+                        added = added.saturating_add(
+                            doc_vectors
+                                .iter()
+                                .map(DocumentVector::ram_bytes)
+                                .fold(0usize, usize::saturating_add),
+                        );
+                        let at = usize::try_from(doc_id).unwrap_or(0);
+                        dwpt.vectors.resize_with(at, Vec::new);
+                        dwpt.vectors.push(doc_vectors);
                     }
                     added = added.saturating_add(dwpt.explicit.push(doc.fields));
                 }

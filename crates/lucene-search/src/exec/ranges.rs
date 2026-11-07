@@ -1126,8 +1126,13 @@ pub(crate) fn document<'a>(
         doc_in: ctx.doc_in,
         pos_in: ctx.pos_in,
         pay_in: ctx.pay_in,
-        // The tree applies deletions; the set is the segment core's.
-        live_docs: None,
+        // The tree applies deletions; the set is the segment core's. A
+        // query that searches for its best live documents sees them.
+        live_docs: if q.query.needs_live_docs() {
+            ctx.live_docs
+        } else {
+            None
+        },
         doc_base: 0,
         max_doc: Some(reader.max_doc),
         cache: None,
@@ -1145,7 +1150,9 @@ pub(crate) fn document<'a>(
     let filter = match &q.filter {
         None => None,
         Some(filter) => match build::build(ctx, filter, 1.0, Mode::NoScores, false)? {
-            // `Weight.scorer` returned null: the query searches unfiltered.
+            // `Weight.scorer` returned null: the query searches unfiltered,
+            // or, for a KNN query, finds nothing.
+            None if q.query.empty_filter_matches_nothing() => return Ok(None),
             None => None,
             Some(mut scorer) => {
                 let len = usize::try_from(reader.max_doc).unwrap_or(0);

@@ -21,7 +21,10 @@ swapped), every observable result must be identical:
     no other shard notices;
   * the writer's circuit breaker trips (HTTP 429) instead of the node running out of memory;
   * the rust_encrypted store (encryption at rest) on both engines: plaintext-equal results, every
-    shard file encrypted on disk, recovery after SIGKILL.
+    shard file encrypted on disk, recovery after SIGKILL;
+  * index.codec best_compression, zstd and zstd_no_dict (the bundled custom-codecs plugin's) on
+    the Rust engine: the same results and _source as the default codec, and segments recorded
+    under the codec names OpenSearch's own engine records.
 
 Usage: verify_engine.py <base-url> <container-name> [--ops N]
 Standard library only.
@@ -778,7 +781,7 @@ def merge_policies():
 
 def unsupported():
     """What the Rust writer cannot produce is refused, never written differently."""
-    refused = (("bad_codec", {"index.codec": "best_compression"}, "default codec"),
+    refused = (("bad_codec", {"index.sparse": True, "index.codec": "zstd"}, "default codec"),
                ("bad_fuzzy_set", {"index.optimize_doc_id_lookup.fuzzy_set.enabled": True}, "fuzzy_set"))
     for index, extra, named in refused:
         status, out = req("PUT", f"/{index}", {"settings": {"index.lucene_rust.engine": True,
@@ -807,11 +810,76 @@ def unsupported():
     if any(n["settings"].get("lucene_rust.engine.default") == "true" for n in nodes):
         # Only asked-for is strict: an index that merely inherits the node default and needs what
         # the Rust writer cannot produce is served by OpenSearch's engine.
-        must("PUT", "/fallback_codec", {"settings": {"index.codec": "best_compression", "number_of_replicas": 0}})
+        must("PUT", "/fallback_codec", {"settings": {"index.sparse": True, "index.codec": "zstd",
+                                                      "number_of_replicas": 0}})
         wait_green("fallback_codec")
         status, _ = req("PUT", "/fallback_codec/_doc/1?refresh=true", {"n": 1})
         check(status in (200, 201), "an inherited-default index the Rust writer cannot serve falls back")
         must("DELETE", "/fallback_codec")
+
+
+def codecs(container):
+    """index.codec best_compression, zstd and zstd_no_dict on the Rust engine: the same answers and
+    _source as the default codec through flushes and a force merge, and each shard's commit
+    naming the codec OpenSearch's own engine names (custom-codecs' ZSTD104/ZSTDNODICT104), so
+    either engine opens the other's segments."""
+    names = (("codec_plain", False, None, "Lucene104"),
+             ("codec_java_zstd", False, {"index.codec": "zstd"}, "ZSTD104"),
+             ("codec_rust_zstd", True, {"index.codec": "zstd"}, "ZSTD104"),
+             ("codec_rust_zstd_nd", True, {"index.codec": "zstd_no_dict", "index.codec.compression_level": 6},
+              "ZSTDNODICT104"),
+             ("codec_rust_best", True, {"index.codec": "best_compression"}, "Lucene104"))
+    # The stored fields mode each segment's .si records: what tells best_compression from default.
+    modes = {"codec_plain": "BEST_SPEED", "codec_java_zstd": "ZSTD", "codec_rust_zstd": "ZSTD",
+             "codec_rust_zstd_nd": "ZSTD_NO_DICT", "codec_rust_best": "BEST_COMPRESSION"}
+    for idx, rust, extra, _ in names:
+        req("DELETE", f"/{idx}")
+        create(idx, rust, extra)
+    check(wait_green(",".join(n[0] for n in names)), "codec indices start green")
+    r = random.Random(13)
+    for batch in range(8):
+        lines = []
+        for i in range(250):
+            n = batch * 250 + i
+            lines += [{"index": {"_id": f"c{n}"}}, source(r, n)]
+        body = "\n".join(json.dumps(l) for l in lines) + "\n"
+        for idx, _, _, _ in names:
+            out = must("POST", f"/{idx}/_bulk", body, ndjson=True)
+            check(not out["errors"], f"{idx}: bulk {batch} applies every operation")
+            if batch % 3 == 2:
+                must("POST", f"/{idx}/_flush")
+    ids = {"ids": [f"c{i}" for i in range(0, 2000, 3)]}
+
+    def same(label):
+        for idx, _, _, _ in names:
+            must("POST", f"/{idx}/_refresh")
+        plain = [{k: v for k, v in d.items() if k != "_index"} for d in must("POST", "/codec_plain/_mget", ids)["docs"]]
+        for idx, _, _, _ in names[1:]:
+            compare_searches(f"{label}, {idx}", scores=False, java="codec_plain", rust=idx)
+            docs = [{k: v for k, v in d.items() if k != "_index"} for d in must("POST", f"/{idx}/_mget", ids)["docs"]]
+            check(docs == plain, f"{label}, {idx}: _source and metadata of {len(ids['ids'])} documents")
+
+    same("codecs")
+    for idx, _, _, _ in names:
+        must("POST", f"/{idx}/_forcemerge?max_num_segments=1")
+    same("codecs, force-merged")
+    for idx, _, _, codec in names:
+        uuid = must("GET", f"/{idx}/_settings")[idx]["settings"]["index"]["uuid"]
+        script = (f"cd /usr/share/opensearch/data/nodes/0/indices/{uuid} && "
+                  f"for f in */index/segments_*; do grep -c -a '{codec}' \"$f\" || true; done")
+        out = subprocess.run(["docker", "exec", container, "sh", "-c", script],
+                             capture_output=True, text=True, errors="replace").stdout.split()
+        check(len(out) == 2 and all(int(c) > 0 for c in out), f"{idx}: every shard's commit names {codec}: {out}")
+        script = (f"cd /usr/share/opensearch/data/nodes/0/indices/{uuid} && "
+                  f"for d in */index; do grep -l -a -- '{modes[idx]}' \"$d\"/*.si | wc -l; done")
+        out = subprocess.run(["docker", "exec", container, "sh", "-c", script],
+                             capture_output=True, text=True, errors="replace").stdout.split()
+        check(len(out) == 2 and all(int(c) > 0 for c in out),
+              f"{idx}: every shard's segment records stored fields mode {modes[idx]}: {out}")
+    stats = must("GET", "/_plugins/lucene_rust/stats")
+    check(stats.get("native_errors", 0) == 0, f"no native errors on codec indices: {stats.get('native_errors')}")
+    for idx, _, _, _ in names:
+        must("DELETE", f"/{idx}")
 
 
 def encrypted(container):
@@ -927,6 +995,7 @@ def main():
     breaker()
     merge_policies()
     unsupported()
+    codecs(a.container)
     encrypted(a.container)
     print(f"verify_engine: {CHECKS[0]} checks, {len(FAILURES)} failures", flush=True)
     sys.exit(1 if FAILURES else 0)
