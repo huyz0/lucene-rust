@@ -267,6 +267,10 @@ fn resolve_overlaps(clauses: &[LongRange]) -> BTreeMap<i64, i64> {
 }
 
 impl DocumentQuery for SortedNumericDocValuesMultiRangeQuery {
+    fn reads_no_terms(&self) -> bool {
+        true
+    }
+
     fn score_leaf(
         &self,
         leaf: &OpenSegment<'_>,
@@ -648,6 +652,10 @@ impl SortedSetDocValuesMultiRangeQuery {
 }
 
 impl DocumentQuery for SortedSetDocValuesMultiRangeQuery {
+    fn reads_no_terms(&self) -> bool {
+        true
+    }
+
     fn score_leaf(
         &self,
         leaf: &OpenSegment<'_>,

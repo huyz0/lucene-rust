@@ -458,6 +458,7 @@ public class RustSearchPlugin extends Plugin implements
             RustEngineSupport.ENGINE_DEFAULT,
             RustEngineSupport.FAULT_INJECTION,
             RustEngineSupport.REALTIME_SEARCH,
+            RustEngineSupport.REALTIME_MAX_STALENESS,
             RustEngineSupport.ADAPTIVE_DOC_VALUES,
             RustEngineSupport.ZSTD_TERMS,
             RustEngineSupport.MERGE_LZ4_HIGH_COMPRESSION,
