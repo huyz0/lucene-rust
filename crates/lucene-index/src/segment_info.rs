@@ -775,31 +775,7 @@ pub fn parse_with_format(
     let files = input.read_set_of_strings()?;
     let attributes = input.read_map_of_strings()?;
 
-    let num_sort_fields = input.read_vint()?;
-    if num_sort_fields < 0 {
-        return Err(Error::InvalidSortFieldCount(num_sort_fields));
-    }
-    // A sort field is at minimum a provider-name string plus a field name, a
-    // direction byte, a missing-value marker and a type byte -- several bytes
-    // each. Bounding the count by the bytes left in the file before reserving
-    // is what keeps a corrupt `.si` from *aborting* the process:
-    // `IndexSortField` is a multi-`String` struct, so an unbounded vint count
-    // reserves hundreds of gigabytes, and an allocation failure is an abort
-    // that `catch_unwind` cannot keep out of the JVM. Java sizes a
-    // `SortField[]` from the same unbounded value and gets a catchable
-    // `OutOfMemoryError` instead.
-    if num_sort_fields as usize > input.remaining() {
-        return Err(Error::InvalidSortFieldCount(num_sort_fields));
-    }
-    let index_sort = if num_sort_fields == 0 {
-        None
-    } else {
-        let mut fields = Vec::with_capacity(num_sort_fields as usize);
-        for _ in 0..num_sort_fields {
-            fields.push(read_sort_field(&mut input)?);
-        }
-        Some(fields)
-    };
+    let index_sort = read_index_sort(&mut input)?;
 
     let payload_end = input.position();
     codec_util::check_footer(&mut input, buf.len())?;
@@ -1073,6 +1049,45 @@ fn read_binary_sort_field(input: &mut SliceInput) -> Result<IndexSortField> {
         reverse,
         kind: IndexSortKind::Binary(missing),
     })
+}
+
+/// An index sort encoded as a `.si` encodes it (`Lucene99SegmentInfoFormat`):
+/// a vint count, then each field's `SortFieldProvider` name and body.
+/// `None` for a count of 0.
+///
+/// # Errors
+/// A truncated or malformed encoding, or a sort field this port cannot read.
+pub fn parse_index_sort(buf: &[u8]) -> Result<Option<Vec<IndexSortField>>> {
+    read_index_sort(&mut SliceInput::new(buf))
+}
+
+/// The `.si`'s sort block: a vint count, then each field's provider name and
+/// body. `None` for a count of 0.
+fn read_index_sort(input: &mut SliceInput) -> Result<Option<Vec<IndexSortField>>> {
+    let num_sort_fields = input.read_vint()?;
+    if num_sort_fields < 0 {
+        return Err(Error::InvalidSortFieldCount(num_sort_fields));
+    }
+    // A sort field is at minimum a provider-name string plus a field name, a
+    // direction byte, a missing-value marker and a type byte -- several bytes
+    // each. Bounding the count by the bytes left in the file before reserving
+    // is what keeps a corrupt `.si` from *aborting* the process:
+    // `IndexSortField` is a multi-`String` struct, so an unbounded vint count
+    // reserves hundreds of gigabytes, and an allocation failure is an abort
+    // that `catch_unwind` cannot keep out of the JVM. Java sizes a
+    // `SortField[]` from the same unbounded value and gets a catchable
+    // `OutOfMemoryError` instead.
+    if num_sort_fields as usize > input.remaining() {
+        return Err(Error::InvalidSortFieldCount(num_sort_fields));
+    }
+    if num_sort_fields == 0 {
+        return Ok(None);
+    }
+    let mut fields = Vec::with_capacity(num_sort_fields as usize);
+    for _ in 0..num_sort_fields {
+        fields.push(read_sort_field(input)?);
+    }
+    Ok(Some(fields))
 }
 
 /// `Lucene99SegmentInfoFormat.parseSegmentInfo`'s per-sort-field body:

@@ -80,9 +80,9 @@ impl Column<'_> {
 
 /// A two-phase leaf over every document of the segment: the approximation
 /// visits each one, `matches` asks `accept`. `DocValuesRangeIterator`'s
-/// shape without a skipper (this port's `SegmentReader` opens no `.dvs`), so
-/// its approximation is the whole segment where Java's is the column's
-/// documents -- the same matches, found by asking more documents.
+/// shape for a field without a skip index, except that its approximation is
+/// the whole segment where Java's is the column's documents -- the same
+/// matches, found by asking more documents.
 struct TwoPhaseDocs<F> {
     doc: i32,
     max_doc: i32,
@@ -481,6 +481,11 @@ pub(crate) fn index_sort_range<'a>(
         boost,
         mode,
     ))
+}
+
+/// Every document in `min..max` (`min < max`) as a constant-scored leaf.
+pub(crate) fn doc_range<'a>(min: i32, max: i32, boost: f32, mode: Mode) -> Option<BoxScorer<'a>> {
+    constant(Box::new(DocRange { doc: -1, min, max }), boost, mode)
 }
 
 /// `DocIdSetIterator.range(min, max)`: every document in `min..max`

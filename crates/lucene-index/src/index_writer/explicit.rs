@@ -364,7 +364,7 @@ impl IndexingConfig {
 
     /// `FreqProxTermsWriter.flush`: the buffered postings' files. A
     /// block-tree segment takes each field's terms a batch at a time,
-    /// straight from the buffer ([`PendingPostings::stream_field`]); an
+    /// straight from the buffer ([`PendingPostings::stream_field_below`]); an
     /// installed postings writer or another terms dictionary needs every
     /// field laid out first.
     fn write_pending_postings(
@@ -372,6 +372,7 @@ impl IndexingConfig {
         pending: &PendingPostings,
         fields: &[(super::pending_postings::FieldToFlush, IndexOptions)],
         old_to_new: Option<&[usize]>,
+        range: Option<(i32, i32)>,
         norms: &[postings_writer::FieldNorms<'_>],
         state: lucene_codecs::postings_consumer::PostingsWriteState<'_>,
     ) -> Result<super::PostingsGroups> {
@@ -392,6 +393,7 @@ impl IndexingConfig {
                 })
                 .collect();
             let streamed = per_field_postings::write_streaming::<Error>(
+                None,
                 &specs,
                 state.field_infos,
                 &name_of,
@@ -399,7 +401,7 @@ impl IndexingConfig {
                 state.id,
                 &mut |i, writer| {
                     let (field, _) = fields[i];
-                    pending.stream_field(field.number, old_to_new, &mut |terms| {
+                    pending.stream_field_below(field.number, old_to_new, range, &mut |terms| {
                         writer.add_terms(terms, norms)?;
                         Ok(())
                     })?;
@@ -410,12 +412,21 @@ impl IndexingConfig {
                 return Ok(groups);
             }
         }
-        let flushed = pending.flushed(old_to_new)?;
+        let flushed = pending.flushed_below(old_to_new, range)?;
         let term_lists = flushed.term_lists();
         let inputs: Vec<FieldPostingsInput<'_, _>> = term_lists
             .iter()
-            .zip(fields)
-            .map(|((n, docs, terms), (f, options))| FieldPostingsInput {
+            .filter_map(|(n, docs, terms)| {
+                let (f, options) = fields.iter().find(|(f, _)| f.number == *n)?;
+                Some((
+                    n,
+                    if range.is_some() { &f.doc_count } else { docs },
+                    terms,
+                    f,
+                    options,
+                ))
+            })
+            .map(|(n, docs, terms, f, options)| FieldPostingsInput {
                 field_number: *n,
                 index_options: *options,
                 doc_count: *docs,
@@ -874,11 +885,22 @@ impl IndexingConfig {
                 &inverted_here
             }
         };
-        let postings_fields: Vec<(super::pending_postings::FieldToFlush, IndexOptions)> = pending
-            .fields_to_flush()
-            .into_iter()
-            .map(|f| Ok((f, self.explicit_field(f.number)?.index_options)))
-            .collect::<Result<_>>()?;
+        let mut flush_fields = pending.fields_to_flush();
+        if let Some(limit) = buf.limit {
+            if !limit.postings {
+                flush_fields.clear();
+            }
+            // The fields as the documents written hold them.
+            flush_fields.retain_mut(|f| {
+                f.doc_count = limit.doc_counts.get(&f.number).copied().unwrap_or(0);
+                f.doc_count > 0
+            });
+        }
+        let postings_fields: Vec<(super::pending_postings::FieldToFlush, IndexOptions)> =
+            flush_fields
+                .into_iter()
+                .map(|f| Ok((f, self.explicit_field(f.number)?.index_options)))
+                .collect::<Result<_>>()?;
         // `FieldInfo.setStorePayloads`: the fields a document of this segment
         // gave a non-empty payload. Every occurrence of such a field then
         // carries a payload length, zero where it has none -- what
@@ -994,6 +1016,7 @@ impl IndexingConfig {
                 pending,
                 &postings_fields,
                 buf.old_to_new,
+                buf.limit.map(|l| (l.start, l.docs)),
                 &norms_for_impacts,
                 lucene_codecs::postings_consumer::PostingsWriteState {
                     directory: dir,
@@ -1215,6 +1238,7 @@ impl IndexingConfig {
             self.codec.as_deref(),
             lucene_codecs::codec::WritePoint::FieldInfos,
         )?;
+        let fnm_fields = self.partition_fields(fnm_fields, buf.partition);
         let mut flushed = segment_writer::write_stored_only_segment_files_with_codec(
             dir,
             segment_name,
@@ -1307,6 +1331,7 @@ impl IndexingConfig {
             self.codec.as_deref(),
             lucene_codecs::codec::WritePoint::SegmentInfo,
         )?;
+        self.partition_segment(&mut flushed.info.attributes, buf.partition);
         segment_writer::seal_flushed_segment(dir, segment_name, flushed).map_err(Error::from)
     }
 }
@@ -3143,6 +3168,96 @@ mod tests {
         ));
     }
 
+    /// Merge hooks that keep every document the sources' hard deletes keep,
+    /// as hooks reading the sources through a reader do.
+    #[derive(Debug)]
+    struct KeepHardLive;
+
+    impl crate::merge_policy::MergeHooks for KeepHardLive {
+        fn prepare(
+            &self,
+            dir: &dyn Directory,
+            sources: &crate::segment_infos::SegmentInfos,
+            _may_reorder: bool,
+        ) -> std::result::Result<crate::merge_policy::PreparedMerge, String> {
+            let mut live_docs = Vec::new();
+            for sci in &sources.segments {
+                let si = dir
+                    .open(&format!("{}.si", sci.segment_name))
+                    .map_err(|e| e.to_string())?;
+                let max_doc = crate::segment_info::parse(&si, &sci.segment_id)
+                    .map_err(|e| e.to_string())?
+                    .doc_count;
+                let mut bits =
+                    lucene_util::fixed_bit_set::FixedBitSet::new(usize::try_from(max_doc).unwrap());
+                bits.set_range(0, bits.len());
+                live_docs.push(Some(bits));
+            }
+            Ok(crate::merge_policy::PreparedMerge {
+                live_docs,
+                new_to_old: None,
+                diagnostics: vec![("test.hooked".to_string(), "yes".to_string())],
+            })
+        }
+    }
+
+    /// A merge with hooks still drops the soft-deleted history retention no
+    /// longer keeps, though the hooks' own live documents keep it.
+    #[test]
+    fn hooked_merges_still_drop_unretained_soft_deletes() {
+        let tmp = TempDir::new("explicit-retention-hooks");
+        let dir = FsDirectory::open(tmp.path());
+        let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", VERSION).unwrap();
+        let f = register(&mut w);
+        w.set_max_buffered_docs(4).unwrap();
+        for i in 0..10 {
+            w.add_explicit_documents(vec![doc(&f, i)]).unwrap();
+        }
+        w.commit().unwrap();
+        for i in 0..6 {
+            w.soft_update_explicit_documents(
+                id_term(i),
+                vec![doc_at(&f, i, 100 + i)],
+                &[soft_delete(i)],
+            )
+            .unwrap();
+        }
+        assert_eq!(counts(&mut w), (16, 6));
+        w.set_soft_deletes_retention(Some(SoftDeletesRetention {
+            seq_no_field: "_seq_no".to_string(),
+            min_retained_seq_no: 3,
+            prune_postings_field: None,
+            prune_recovery_source_field: None,
+        }));
+        let names: Vec<String> = w
+            .commit()
+            .unwrap()
+            .segments
+            .iter()
+            .map(|s| s.segment_name.clone())
+            .collect();
+        w.execute_merge_hooked(&names, Some(std::sync::Arc::new(KeepHardLive)))
+            .unwrap();
+        assert_eq!(counts(&mut w), (13, 3));
+        let infos = w.commit().unwrap().clone();
+        assert_eq!(infos.segments.len(), 1);
+        let sci = &infos.segments[0];
+        let si = crate::segment_info::parse(
+            &dir.open(&format!("{}.si", sci.segment_name)).unwrap(),
+            &sci.segment_id,
+        )
+        .unwrap();
+        assert!(si
+            .diagnostics
+            .iter()
+            .any(|(k, v)| k == "test.hooked" && v == "yes"));
+        assert!(si
+            .diagnostics
+            .iter()
+            .any(|(k, v)| k == "source" && v == "merge"));
+        check(&dir);
+    }
+
     /// The `_id` document frequency of each of `terms` in the index's only
     /// segment, or `None` when that segment writes no `_id` terms at all.
     fn id_doc_freqs(
@@ -3612,6 +3727,122 @@ mod tests {
         w.force_merge_deletes().unwrap();
         assert_eq!(counts(&mut w), (17, 0), "3 of 20 is above it");
         check(&dir);
+    }
+
+    /// The latest commit's segments, each with its parsed `.si`.
+    fn committed_infos(dir: &FsDirectory) -> Vec<crate::segment_info::SegmentInfo> {
+        crate::segment_infos::read_latest(dir)
+            .unwrap()
+            .segments
+            .iter()
+            .map(|sci| {
+                let si = dir.open(&format!("{}.si", sci.segment_name)).unwrap();
+                crate::segment_info::parse(&si, &sci.segment_id).unwrap()
+            })
+            .collect()
+    }
+
+    /// Four committed segments of 1, 2, 3 and 4 documents.
+    fn four_segments(w: &mut IndexWriter<'_>, f: &Fields) {
+        let mut next = 0;
+        for n in 1..=4 {
+            let docs: Vec<ExplicitDocument> = (next..next + n).map(|i| doc(f, i)).collect();
+            next += n;
+            w.add_explicit_documents(docs).unwrap();
+            w.commit().unwrap();
+        }
+    }
+
+    /// With a merge policy set, `forceMergeDeletes` is the policy's
+    /// `findForcedDeletesMerges`, with its `forceMergeDeletesPctAllowed`.
+    #[test]
+    fn force_merge_deletes_takes_the_policys_pct_allowed() {
+        let tmp = TempDir::new("explicit-expunge-policy-pct");
+        let dir = FsDirectory::open(tmp.path());
+        let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", VERSION).unwrap();
+        w.set_merge_policy(Some(crate::merge_policy::MergePolicyConfig {
+            force_merge_deletes_pct_allowed: 20.0,
+            ..Default::default()
+        }));
+        let f = register(&mut w);
+        let docs: Vec<ExplicitDocument> = (0..20).map(|i| doc(&f, i)).collect();
+        w.add_explicit_documents(docs).unwrap();
+        w.commit().unwrap();
+        w.set_soft_deletes_retention(Some(SoftDeletesRetention {
+            seq_no_field: "_seq_no".to_string(),
+            min_retained_seq_no: i64::MAX,
+            prune_postings_field: None,
+            prune_recovery_source_field: None,
+        }));
+        for i in 0..3 {
+            w.soft_update_explicit_documents(id_term(i), Vec::new(), &[soft_delete(i)])
+                .unwrap();
+        }
+        w.commit().unwrap();
+        let before = w.commit_generations();
+        w.force_merge_deletes().unwrap();
+        assert_eq!(w.commit_generations(), before, "3 of 20 is not above 20%");
+        for i in 3..5 {
+            w.soft_update_explicit_documents(id_term(i), Vec::new(), &[soft_delete(i)])
+                .unwrap();
+        }
+        w.commit().unwrap();
+        w.force_merge_deletes().unwrap();
+        assert_eq!(counts(&mut w), (15, 0), "5 of 20 is above it");
+        check(&dir);
+    }
+
+    /// `ShuffleForcedMergePolicy`: a forced merge takes its sources
+    /// interleaved and says so in the merged segment's diagnostics; without
+    /// it the merged segment carries no such key.
+    #[test]
+    fn a_shuffled_forced_merge_is_marked_in_its_diagnostics() {
+        for shuffle in [false, true] {
+            let tmp = TempDir::new("explicit-shuffle");
+            let dir = FsDirectory::open(tmp.path());
+            let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", VERSION).unwrap();
+            w.set_merge_policy(Some(crate::merge_policy::MergePolicyConfig::default()));
+            w.set_shuffle_forced_merges(shuffle);
+            assert_eq!(w.shuffle_forced_merges(), shuffle);
+            let f = register(&mut w);
+            four_segments(&mut w, &f);
+            w.force_merge(1).unwrap();
+            let infos = committed_infos(&dir);
+            assert_eq!(infos.len(), 1);
+            let marked = infos[0]
+                .diagnostics
+                .iter()
+                .any(|(k, v)| k == crate::merge::SHUFFLE_MERGE_KEY && v.is_empty());
+            assert_eq!(marked, shuffle);
+            assert_eq!(w.committed_doc_count().unwrap(), 10);
+            check(&dir);
+        }
+    }
+
+    /// The merge policy's `noCFSRatio` decides whether a merged segment is
+    /// compound, whatever `use_compound_file` (flushed segments only) says.
+    #[test]
+    fn the_merge_compound_file_settings_decide_merged_segments() {
+        for (ratio, compound) in [(1.0, true), (0.0, false)] {
+            let tmp = TempDir::new("explicit-merge-cfs");
+            let dir = FsDirectory::open(tmp.path());
+            let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", VERSION).unwrap();
+            w.set_merge_policy(Some(crate::merge_policy::MergePolicyConfig::default()));
+            w.set_use_compound_file(!compound);
+            let settings = crate::merge_policy::CompoundFileSettings::new(ratio, i64::MAX);
+            w.set_merge_compound_file_settings(Some(settings));
+            assert_eq!(w.merge_compound_file_settings(), Some(settings));
+            let f = register(&mut w);
+            four_segments(&mut w, &f);
+            assert!(committed_infos(&dir)
+                .iter()
+                .all(|si| si.is_compound_file == !compound));
+            w.force_merge(1).unwrap();
+            let infos = committed_infos(&dir);
+            assert_eq!(infos.len(), 1);
+            assert_eq!(infos[0].is_compound_file, compound, "noCFSRatio {ratio}");
+            check(&dir);
+        }
     }
 
     /// A soft-deleted document with no sequence number is never retained.

@@ -169,6 +169,9 @@ pub struct PreparedMerge {
     /// documents -- every source's `maxDoc` documents, concatenated in merge
     /// order, deleted ones included. `None` keeps the sources' order.
     pub new_to_old: Option<Vec<i32>>,
+    /// `OneMerge.setMergeInfo`'s `addDiagnostics`: entries for the merged
+    /// segment's `.si`.
+    pub diagnostics: Vec<(String, String)>,
 }
 
 /// `OneMerge.wrapForMerge` and `OneMerge.reorder`: the two hooks a

@@ -1,0 +1,386 @@
+//! Recall and latency of the IVF index against HNSW + BBQ.
+//!
+//! ```text
+//! cargo run --release -p lucene-ivf --example ivf_bench -- <prefix> <l2|cosine> [options]
+//!   --base N         use the first N base vectors (ground truth must match: default all)
+//!   --queries N      queries to run (default 1000)
+//!   --target N       IVF vectors per cluster (default 384)
+//!   --quantizers L   comma list of bbq,osq2,osq4,osq7,sq7,sq4,erq2..erq8, or any
+//!                    osq/sq name prefixed r for its randomly rotated form
+//!                    (rbbq, rosq2, ...) (default bbq,osq4,sq7)
+//!   --nprobe L       comma list of probe counts, or auto for the field's
+//!                    calibrated share of its clusters (default 4,8,16,32,64,128)
+//!   --rerank L       comma list of candidates reranked: a count, auto (the
+//!                    calibrated depth with error-bound early stop), or bN
+//!                    (early stop capped at N) (default 0,50,100)
+//!   --no-calibrate   write the field without a calibrated depth
+//!   --refine N       k-means neighbourhood rounds; --full N  full Lloyd rounds
+//!   --iters N        Lloyd iterations per split
+//!   --spill X        SOAR spill with lambda X (default: no spilling)
+//!   --rerank-encoding E  f32|f16|bf16|int8: how .ivv stores the rerank
+//!                    vectors (default f32); vectors_mb is that file's size
+//!   --routing L      comma list of exact, int8, tree<cover>, auto (default auto)
+//!   --hnsw           also build and search Lucene104 HNSW + BBQ (M 16, beam 100)
+//!   --ef L           HNSW candidate counts (default 10,20,40,80,160,320)
+//! ```
+//!
+//! `<prefix>` names `.base.fbin`, `.query.fbin` and `.gt.ibin` as
+//! `benchmarks/ivf/prepare.py` writes them. Builds use every core (rayon);
+//! searches run one query at a time on one thread, so QPS is single-thread
+//! QPS. Prints one CSV row per configuration; `avg_reranked` is the mean
+//! number of candidates whose full-precision vectors a query read.
+#![allow(clippy::arithmetic_side_effects, clippy::too_many_arguments)]
+
+use std::sync::Arc;
+use std::time::Instant;
+
+use lucene_codecs::field_infos::VectorSimilarityFunction as CodecSim;
+use lucene_codecs::scalar_quantized_vectors::{
+    binarized_query_data, merge_scorer_supplier, QuantizedQueryScorer, QuantizedVectorsField,
+    ScalarQuantizedVectorsReader, ScalarQuantizedVectorsWriter,
+};
+use lucene_codecs::{hnsw, hnsw_concurrent, hnsw_vectors};
+use lucene_ivf::{
+    FieldVectors, IvfParams, IvfReader, IvfWriter, Probes, Rerank, Routing, SearchParams,
+    Similarity, VectorEncoding,
+};
+use lucene_util::quantization::ScalarEncoding;
+use lucene_vector_quant::osq::OsqFactory;
+use lucene_vector_quant::rabitq::ExRabitqFactory;
+use lucene_vector_quant::rotation::RotatedFactory;
+use lucene_vector_quant::scalar::ScalarFactory;
+use lucene_vector_quant::{QuantizerFactory, QuantizerRegistry};
+
+const K: usize = 10;
+const ID: [u8; 16] = [3; 16];
+
+fn read_bin<T: Copy>(path: &str, decode: fn([u8; 4]) -> T) -> (usize, usize, Vec<T>) {
+    let bytes = std::fs::read(path).unwrap_or_else(|e| panic!("{path}: {e}"));
+    let n = u32::from_le_bytes(bytes[0..4].try_into().unwrap()) as usize;
+    let d = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
+    let data = bytes[8..]
+        .chunks_exact(4)
+        .map(|c| decode(c.try_into().unwrap()))
+        .collect();
+    (n, d, data)
+}
+
+fn list(s: &str) -> Vec<usize> {
+    s.split(',').map(|x| x.parse().expect("number")).collect()
+}
+
+fn probes(s: &str) -> Vec<Probes> {
+    s.split(',')
+        .map(|x| match x {
+            "auto" => Probes::Auto,
+            n => Probes::Fixed(n.parse().expect("number or auto")),
+        })
+        .collect()
+}
+
+fn reranks(s: &str) -> Vec<Rerank> {
+    s.split(',')
+        .map(|x| match x {
+            "auto" => Rerank::Auto,
+            b if b.starts_with('b') => Rerank::Bounded {
+                cap: b[1..].parse().expect("bN"),
+            },
+            n => Rerank::Fixed(n.parse().expect("number, auto or bN")),
+        })
+        .collect()
+}
+
+fn factory(name: &str) -> Box<dyn QuantizerFactory> {
+    if let Some(inner) = name.strip_prefix('r') {
+        return Box::new(RotatedFactory::new(Arc::from(factory(inner))));
+    }
+    match name {
+        "bbq" => Box::new(OsqFactory::bbq()),
+        "osq2" => Box::new(OsqFactory::new(ScalarEncoding::DibitQueryNibble)),
+        "osq4" => Box::new(OsqFactory::new(ScalarEncoding::PackedNibble)),
+        "osq7" => Box::new(OsqFactory::new(ScalarEncoding::SevenBit)),
+        "sq7" => Box::new(ScalarFactory::int7()),
+        "sq4" => Box::new(ScalarFactory::int4()),
+        erq if erq.starts_with("erq") => match erq[3..].parse() {
+            Ok(bits @ 2..=8) => Box::new(ExRabitqFactory::new(bits)),
+            _ => panic!("unknown quantizer {erq}: erq takes 2..=8 bits"),
+        },
+        other => panic!("unknown quantizer {other}"),
+    }
+}
+
+fn recall(hits: impl Iterator<Item = i32>, truth: &[i32]) -> usize {
+    hits.filter(|d| truth[..K].contains(d)).count()
+}
+
+fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    let prefix = &args[1];
+    let similarity = match args[2].as_str() {
+        "l2" => Similarity::Euclidean,
+        "cosine" => Similarity::Cosine,
+        "dot" => Similarity::DotProduct,
+        "mip" => Similarity::MaximumInnerProduct,
+        m => panic!("unknown metric {m}"),
+    };
+    let opt = |name: &str| {
+        args.iter()
+            .position(|a| a == name)
+            .map(|i| args[i + 1].clone())
+    };
+    let (n_all, dim, base) = read_bin(&format!("{prefix}.base.fbin"), f32::from_le_bytes);
+    let (nq_all, _, queries) = read_bin(&format!("{prefix}.query.fbin"), f32::from_le_bytes);
+    let (_, gt_k, gt) = read_bin(&format!("{prefix}.gt.ibin"), i32::from_le_bytes);
+    let n = opt("--base")
+        .map_or(n_all, |s| s.parse().unwrap())
+        .min(n_all);
+    let nq = opt("--queries")
+        .map_or(1000, |s| s.parse().unwrap())
+        .min(nq_all);
+    let target = opt("--target").map_or(384, |s| s.parse().unwrap());
+    let spill: Option<f32> = opt("--spill").map(|s| s.parse().unwrap());
+    let encoding = opt("--rerank-encoding").map_or(VectorEncoding::F32, |s| {
+        VectorEncoding::from_name(&s).unwrap_or_else(|| panic!("unknown rerank encoding {s}"))
+    });
+    let mut kmeans = lucene_ivf::kmeans::KMeansParams::default();
+    if let Some(r) = opt("--refine") {
+        kmeans.refine_rounds = r.parse().unwrap();
+    }
+    if let Some(r) = opt("--full") {
+        kmeans.full_rounds = r.parse().unwrap();
+    }
+    if let Some(r) = opt("--iters") {
+        kmeans.iterations = r.parse().unwrap();
+    }
+    let quantizers = opt("--quantizers").unwrap_or_else(|| "bbq,osq4,sq7".into());
+    let nprobes = probes(&opt("--nprobe").unwrap_or_else(|| "4,8,16,32,64,128".into()));
+    let reranks = reranks(&opt("--rerank").unwrap_or_else(|| "0,50,100".into()));
+    let calibrate = !args.iter().any(|a| a == "--no-calibrate");
+    let efs = list(&opt("--ef").unwrap_or_else(|| "10,20,40,80,160,320".into()));
+    let base = &base[..n * dim];
+    let docs: Vec<i32> = (0..n as i32).collect();
+    let truth = |q: usize| &gt[q * gt_k..(q + 1) * gt_k];
+    eprintln!("{prefix}: {n} x {dim}, {nq} queries, {:?}", similarity);
+    println!("index,config,build_s,recall@10,latency_us,qps,pinned_mb,vectors_mb,avg_reranked");
+
+    let registry = QuantizerRegistry::with_builtins();
+    for qname in quantizers.split(',') {
+        let f = factory(qname);
+        let t = Instant::now();
+        let mut w = IvfWriter::new(&ID, "");
+        w.add_field(
+            &FieldVectors {
+                number: 0,
+                similarity,
+                dimension: dim,
+                docs: &docs,
+                vectors: base,
+            },
+            f.as_ref(),
+            &IvfParams {
+                target_cluster_size: target,
+                spill,
+                kmeans,
+                rerank_encoding: encoding,
+                calibration_recall: if calibrate {
+                    IvfParams::default().calibration_recall
+                } else {
+                    None
+                },
+                ..IvfParams::default()
+            },
+        )
+        .unwrap();
+        let files = w.finish();
+        let build = t.elapsed().as_secs_f64();
+        let pinned = (files.meta.len() + files.postings.len()) as f64 / 1e6;
+        let vectors_mb = files.vectors.len() as f64 / 1e6;
+        let mut r = IvfReader::open(
+            &files.meta,
+            Arc::new(files.postings),
+            Arc::new(files.vectors),
+            &ID,
+            "",
+            &registry,
+        )
+        .unwrap();
+        let field = r.field(0).unwrap();
+        let clusters = field.clusters();
+        let entries = field.entries();
+        if let Some(c) = field.calibration() {
+            eprintln!(
+                "ivf-{qname}: calibrated nprobe {} ({:.4} of {clusters} clusters), rerank {} per hit",
+                field.auto_nprobe(),
+                c.probe_fraction,
+                c.rerank_multiple
+            );
+        }
+        let routings = opt("--routing").unwrap_or_else(|| "auto".into());
+        for rname in routings.split(',') {
+            let routing = match rname {
+                "auto" => Routing::Auto,
+                "exact" => Routing::Exact,
+                "int8" => Routing::Quantized,
+                t => Routing::Tree {
+                    cover: t
+                        .strip_prefix("tree")
+                        .and_then(|c| c.parse().ok())
+                        .expect("--routing"),
+                },
+            };
+            let t_route = Instant::now();
+            r.set_routing(routing);
+            eprintln!("routing {routing:?} built in {:?}", t_route.elapsed());
+            let field = r.field(0).unwrap();
+            for &nprobe in &nprobes {
+                for &rerank in &reranks {
+                    let params = SearchParams {
+                        k: K,
+                        nprobe,
+                        rerank,
+                    };
+                    let mut found = 0;
+                    let mut reranked = 0;
+                    let t = Instant::now();
+                    for q in 0..nq {
+                        let out = r
+                            .search_with(0, &queries[q * dim..(q + 1) * dim], &params, None, None)
+                            .unwrap();
+                        found += recall(out.hits.iter().map(|h| h.doc), truth(q));
+                        reranked += out.stats.reranked;
+                    }
+                    let secs = t.elapsed().as_secs_f64();
+                    let nprobe = match nprobe {
+                        Probes::Fixed(n) => n.to_string(),
+                        Probes::Auto => format!("auto({})", field.auto_nprobe()),
+                    };
+                    let rerank = match rerank {
+                        Rerank::Fixed(n) => n.to_string(),
+                        Rerank::Auto => format!("auto({})", field.auto_rerank(K)),
+                        Rerank::Bounded { cap } => format!("b{cap}"),
+                    };
+                    println!(
+                    "ivf-{qname},clusters={clusters} entries={entries} routing={rname} nprobe={nprobe} rerank={rerank} enc={},{build:.1},{:.4},{:.0},{:.0},{pinned:.1},{vectors_mb:.1},{:.1}",
+                    encoding.name(),
+                    found as f64 / (nq * K) as f64,
+                    secs / nq as f64 * 1e6,
+                    nq as f64 / secs,
+                    reranked as f64 / nq as f64
+                );
+                }
+            }
+        }
+    }
+
+    if args.iter().any(|a| a == "--hnsw") {
+        hnsw_bbq(
+            similarity,
+            dim,
+            base,
+            &docs,
+            &queries[..nq * dim],
+            &gt,
+            gt_k,
+            &efs,
+        );
+    }
+}
+
+/// `Lucene104HnswScalarQuantizedVectorsFormat(SINGLE_BIT_QUERY_NIBBLE, 16,
+/// 100)` as a merged segment has it: 1-bit codes and a graph built on the
+/// asymmetric quantized scorer, searched on the codes, then the candidates
+/// reranked with the full-precision vectors.
+fn hnsw_bbq(
+    similarity: Similarity,
+    dim: usize,
+    base: &[f32],
+    docs: &[i32],
+    queries: &[f32],
+    gt: &[i32],
+    gt_k: usize,
+    efs: &[usize],
+) {
+    let sim = match similarity {
+        Similarity::Euclidean => CodecSim::Euclidean,
+        Similarity::DotProduct => CodecSim::DotProduct,
+        Similarity::Cosine => CodecSim::Cosine,
+        Similarity::MaximumInnerProduct => CodecSim::MaximumInnerProduct,
+    };
+    let n = docs.len();
+    let t = Instant::now();
+    let mut w =
+        ScalarQuantizedVectorsWriter::new(ScalarEncoding::SingleBitQueryNibble, n as i32, &ID, "");
+    w.write_field(&QuantizedVectorsField {
+        field_number: 0,
+        similarity: sim,
+        dimension: dim as i32,
+        docs,
+        vectors: base,
+    })
+    .unwrap();
+    let (veq, vemq) = w.finish();
+    let reader = ScalarQuantizedVectorsReader::open(&vemq, &veq, &ID, "").unwrap();
+    let values = reader.quantized_vector_values(0).unwrap();
+    let query_side = binarized_query_data(&values, sim, base).unwrap();
+    let threads = rayon::current_num_threads();
+    let scorers: Vec<_> = (0..threads)
+        .map(|_| merge_scorer_supplier(&values, sim, Some(&query_side)).unwrap())
+        .collect();
+    let graph = hnsw_concurrent::build_concurrent(
+        scorers,
+        hnsw::DEFAULT_MAX_CONN,
+        hnsw::DEFAULT_BEAM_WIDTH,
+        hnsw::DEFAULT_RAND_SEED,
+        hnsw::OnHeapHnswGraph::with_size(hnsw::DEFAULT_MAX_CONN, n as i32),
+        None,
+        n as i32,
+        hnsw_concurrent::DEFAULT_BATCH_SIZE,
+    )
+    .unwrap();
+    let build = t.elapsed().as_secs_f64();
+    let mut level0 = 0usize;
+    for node in 0..n as i32 {
+        level0 += graph.neighbors(0, node).size();
+    }
+    // Codes plus level-0 adjacency (4 bytes a neighbour), what must stay hot.
+    let pinned = (veq.len() + level0 * 4) as f64 / 1e6;
+    let vectors_mb = (base.len() * 4) as f64 / 1e6;
+    let nq = queries.len() / dim;
+    let mut q = vec![0f32; dim];
+    for &ef in efs {
+        let mut found = 0;
+        let t = Instant::now();
+        for qi in 0..nq {
+            q.copy_from_slice(&queries[qi * dim..(qi + 1) * dim]);
+            let mut scorer = QuantizedQueryScorer::new(&values, sim, &q).unwrap();
+            let (cands, _) = hnsw_vectors::search(
+                &mut scorer,
+                Some(&graph),
+                ef.max(K),
+                u64::MAX,
+                hnsw_vectors::SearchOptions::default(),
+            )
+            .unwrap();
+            let mut exact: Vec<(f32, i32)> = cands
+                .iter()
+                .map(|&(ord, _)| {
+                    let v = &base[ord as usize * dim..(ord as usize + 1) * dim];
+                    (similarity.score(&q, v), ord)
+                })
+                .collect();
+            exact.sort_unstable_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
+            found += recall(
+                exact.iter().take(K).map(|e| e.1),
+                &gt[qi * gt_k..(qi + 1) * gt_k],
+            );
+        }
+        let secs = t.elapsed().as_secs_f64();
+        println!(
+            "hnsw-bbq,M=16 beam=100 ef={ef} rerank={ef},{build:.1},{:.4},{:.0},{:.0},{pinned:.1},{vectors_mb:.1},{}",
+            found as f64 / (nq * K) as f64,
+            secs / nq as f64 * 1e6,
+            nq as f64 / secs,
+            ef.max(K)
+        );
+    }
+}

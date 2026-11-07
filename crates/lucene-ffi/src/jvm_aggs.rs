@@ -1243,6 +1243,39 @@ pub(crate) mod tests {
         string(b, field);
     }
 
+    /// `terms(field, size)` alone.
+    pub(crate) fn terms_tree(field: &str, size: i32) -> Vec<u8> {
+        let mut b = vec![1u8, AGG_TERMS];
+        string(&mut b, field);
+        b.extend_from_slice(&size.to_le_bytes());
+        b.extend_from_slice(&[0, 0, 0]);
+        b.push(0);
+        b.extend_from_slice(&0i32.to_le_bytes());
+        b
+    }
+
+    /// `histogram(field, interval) > filters(filter, other) > count(field)`
+    /// next to a top-level `count(field)`.
+    pub(crate) fn histogram_of_filters(field: &str, interval: f64, filter: &[u8]) -> Vec<u8> {
+        let mut b = vec![2u8, AGG_HISTOGRAM];
+        string(&mut b, field);
+        b.push(0);
+        f64s(&mut b, &[interval, 0.0]);
+        b.push(0);
+        b.push(1);
+        b.push(AGG_FILTERS);
+        b.extend_from_slice(&1i32.to_le_bytes());
+        b.extend_from_slice(&(filter.len() as i32).to_le_bytes());
+        b.extend_from_slice(filter);
+        b.push(1);
+        b.push(1);
+        metric(&mut b, 0, 0, field);
+        metric(&mut b, 0, 0, field);
+        b.push(0);
+        b.extend_from_slice(&0i32.to_le_bytes());
+        b
+    }
+
     /// A tree over the fixture's `n` (a long) and `body`: every node kind.
     pub(crate) fn every_kind(global: bool) -> Vec<u8> {
         let mut b = vec![6u8];

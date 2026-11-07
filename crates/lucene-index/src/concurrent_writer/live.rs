@@ -35,13 +35,13 @@
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
+use std::sync::{Arc, MutexGuard};
 
 use lucene_codecs::field_infos::{FieldInfo, IndexOptions};
 use lucene_codecs::postings_writer::TermPostings;
 use lucene_codecs::stored_fields::{FieldValue, StoredField};
 
-use super::{lock, ConcurrentIndexWriter};
+use super::{lock, ConcurrentIndexWriter, Dwpt};
 use crate::buffered_updates::{DocValuesUpdate, Term};
 use crate::index_writer::pending_postings::{LiveFieldStats, PendingPostings};
 use crate::index_writer::ExplicitFields;
@@ -64,6 +64,28 @@ pub struct LiveFieldRequest {
     /// as indexing documents and frequencies only, which is all a search
     /// with no phrase, span or interval clause on it reads.
     pub positions: bool,
+    /// Read every buffered term any of these match too.
+    pub patterns: Vec<LivePattern>,
+}
+
+/// A set of terms named by a pattern ([`LiveFieldRequest::patterns`]).
+#[derive(Debug, Clone)]
+pub enum LivePattern {
+    /// A wildcard (or prefix) pattern.
+    Wildcard(lucene_codecs::wildcard::WildcardPattern),
+    /// A regexp with a compiled automaton
+    /// ([`lucene_codecs::regexp::RegexpPattern::dfa_matches`]); one without
+    /// matches nothing here.
+    Regexp(lucene_codecs::regexp::RegexpPattern),
+}
+
+impl LivePattern {
+    fn matches(&self, term: &[u8]) -> bool {
+        match self {
+            LivePattern::Wildcard(p) => p.matches(term),
+            LivePattern::Regexp(p) => p.dfa_matches(term).unwrap_or(false),
+        }
+    }
 }
 
 /// A consistent cut through the writer's buffers: see the module doc.
@@ -331,6 +353,10 @@ pub(super) struct Flushing {
     pub(super) postings: Arc<PendingPostings>,
     pub(super) columns: LiveColumns,
     pub(super) max_doc: i32,
+    /// The segment it was published as, as flushed: its documents in the
+    /// buffer's order. `None` until then, and for a segment dropped as
+    /// fully deleted.
+    pub(super) segment: Option<crate::segment_infos::SegmentCommitInfo>,
 }
 
 /// The live-search state the control lock guards.
@@ -374,10 +400,17 @@ struct Commit {
 const COMMITS_KEPT: usize = 64;
 
 impl LiveFlushes {
-    /// A buffer taken for a flush published (`published` set) or dropped.
-    pub(super) fn finish(&mut self, ticket: u64, published: bool) {
-        if let Some(f) = self.flushing.remove(&ticket) {
+    /// A buffer taken for a flush published (`published` set, with the
+    /// segment it was published as) or dropped.
+    pub(super) fn finish(
+        &mut self,
+        ticket: u64,
+        published: bool,
+        segment: Option<crate::segment_infos::SegmentCommitInfo>,
+    ) {
+        if let Some(mut f) = self.flushing.remove(&ticket) {
             if published {
+                f.segment = segment;
                 self.retained.insert(self.published, f);
                 self.published = self.published.saturating_add(1);
             }
@@ -560,6 +593,7 @@ fn delete_terms(nodes: &[Arc<DeleteNode>], soft_field: Option<&str>) -> Option<V
 struct Wanted<'a> {
     info: &'a FieldInfo,
     terms: Vec<&'a [u8]>,
+    patterns: &'a [LivePattern],
     positions: bool,
 }
 
@@ -588,8 +622,44 @@ pub struct ViewBuffer {
     pub max_doc: i32,
     /// Deleted documents, ascending.
     pub deleted: Vec<i32>,
+    /// Whether the buffer was still taking documents when the view opened:
+    /// else it was being flushed, or published, and grows no more.
+    pub in_slot: bool,
     /// Every field's statistics as of the view, by field number.
     stats: HashMap<i32, LiveFieldStats>,
+}
+
+impl ViewBuffer {
+    /// By field number, the statistics of the view's documents of the
+    /// buffer, deleted ones included.
+    pub fn field_totals(&self) -> HashMap<i32, FieldTotals> {
+        self.stats
+            .iter()
+            .map(|(&f, s)| {
+                (
+                    f,
+                    FieldTotals {
+                        num_terms: s.num_terms,
+                        sum_total_term_freq: s.sum_total_term_freq,
+                        sum_doc_freq: s.sum_doc_freq,
+                        doc_count: s.doc_count,
+                    },
+                )
+            })
+            .collect()
+    }
+}
+
+/// A field's statistics over a buffer's first documents: see
+/// [`ViewBuffer::field_totals`]. Those of documents `a..b` are the
+/// difference of the totals at `b` and at `a`, but for `num_terms` (the
+/// distinct terms, which do not subtract).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FieldTotals {
+    pub num_terms: i64,
+    pub sum_total_term_freq: i64,
+    pub sum_doc_freq: i64,
+    pub doc_count: i32,
 }
 
 /// A buffered document's stored fields, in the order they were added.
@@ -682,7 +752,7 @@ impl ConcurrentIndexWriter<'_> {
     /// filled without it cannot be read.
     pub fn enable_live_search(&self) -> Result<()> {
         let slots: Vec<_> = self.slots.iter().map(lock).collect();
-        if slots.iter().any(|d| !d.docs.is_empty()) {
+        if slots.iter().any(|d| d.has_docs()) {
             return Err(Error::LiveSearch(
                 "live search must be enabled before the first document".into(),
             ));
@@ -788,15 +858,17 @@ impl ConcurrentIndexWriter<'_> {
             commit_deletes: Vec::new(),
         };
         for (dwpt, tail) in slots.iter().zip(&slot_tails) {
-            if dwpt.docs.is_empty() {
+            if !dwpt.has_docs() {
                 continue;
             }
-            let max_doc = i32::try_from(dwpt.docs.len()).unwrap_or(i32::MAX);
+            let max_doc = i32::try_from(dwpt.num_docs()).unwrap_or(i32::MAX);
             let source = Source {
                 postings: &dwpt.postings,
                 columns: &dwpt.live,
             };
-            out.buffers.push(view_buffer(&source, tail, max_doc, &cfg)?);
+            let mut buffer = view_buffer(&source, tail, max_doc, &cfg)?;
+            buffer.in_slot = true;
+            out.buffers.push(buffer);
         }
         let published = core.live.retained.range(from..).map(|(_, f)| f);
         for f in core.live.flushing.values().chain(published) {
@@ -828,6 +900,114 @@ impl ConcurrentIndexWriter<'_> {
         Ok(out)
     }
 
+    /// The segment buffer `id` was published as, in the writer's directory
+    /// ([`Self::directory`]): every document of the buffer, which grows no
+    /// more. `None` while it is buffered or being flushed, and once a view
+    /// no longer pins it.
+    pub fn live_published_segment(
+        &self,
+        id: u64,
+    ) -> Option<crate::segment_infos::SegmentCommitInfo> {
+        let core = lock(&self.core);
+        core.live
+            .retained
+            .values()
+            .find(|f| f.columns.id == id)
+            .and_then(|f| f.segment.clone())
+    }
+
+    /// Writes documents `start..end` of buffer `id` into `dir` as segment
+    /// `name`, numbered from `start`, as a flush of just those documents
+    /// would write them, without taking them from the writer: what a search
+    /// needing whole segments (doc values, points, every term) reads a
+    /// view's buffers through. `doc_counts` is, by field number, how many
+    /// of those documents have the field: the difference of the
+    /// `doc_count`s of the [`ViewBuffer::field_totals`] of views of `end` and of `start`
+    /// documents. Stored fields are not written ([`Self::live_document`]
+    /// reads them); deletes are the caller's.
+    ///
+    /// A range starting where an earlier one ended reads the buffered
+    /// postings from there on; `next_starts` names the documents ranges
+    /// may start at next (the ends of the ranges kept), and where other
+    /// ranges ended is forgotten. Without `postings` the segment has no
+    /// terms (norms, doc values and points only), for a search that reads
+    /// the terms it needs through [`Self::live_view_snapshot`].
+    ///
+    /// The buffer's slot is locked while the segment is written. Fails when
+    /// the buffer has left its slot (taken for a flush since), when it
+    /// holds fewer than `end` documents, and under an index sort, which
+    /// would renumber the documents.
+    #[allow(clippy::too_many_arguments)]
+    pub fn live_buffer_segment(
+        &self,
+        id: u64,
+        range: std::ops::Range<i32>,
+        doc_counts: HashMap<i32, i32>,
+        next_starts: &[i32],
+        postings: bool,
+        dir: &dyn lucene_store::Directory,
+        name: &str,
+    ) -> Result<crate::segment_infos::SegmentCommitInfo> {
+        let cfg = self.check_live()?;
+        if cfg.sorts_documents() {
+            return Err(Error::LiveSearch(
+                "an index sort renumbers the buffered documents".into(),
+            ));
+        }
+        let slot = self
+            .slot_of(id)
+            .filter(|d| d.has_docs())
+            .ok_or_else(|| Error::LiveSearch(format!("buffer {id} is being flushed")))?;
+        let (Ok(start), Ok(end)) = (usize::try_from(range.start), usize::try_from(range.end))
+        else {
+            return Err(Error::LiveSearch("a negative document range".into()));
+        };
+        if start >= end || end > slot.num_docs() {
+            return Err(Error::LiveSearch(format!(
+                "documents {start}..{end} of a buffer of {}",
+                slot.num_docs()
+            )));
+        }
+        let limit = crate::index_writer::BufferLimit {
+            start: range.start,
+            docs: range.end,
+            doc_counts,
+            postings,
+        };
+        // Documents counted but not held (`Dwpt::stored_docs`) are empty.
+        let docs = padded(&slot.docs, start, end);
+        let custom_freq_terms = padded_or_empty(&slot.custom_freq_terms, start, end);
+        let vectors = padded_or_empty(&slot.vectors, start, end);
+        let buffer = crate::index_writer::DocumentBuffer {
+            docs: &docs,
+            custom_freq_terms: &custom_freq_terms,
+            vectors: &vectors,
+            explicit: crate::index_writer::ExplicitDocs::PackedRange(&slot.explicit, start, end),
+            postings: Some(&slot.postings),
+            old_to_new: None,
+            has_blocks: slot.has_blocks,
+            stored: None,
+            limit: Some(&limit),
+            partition: slot.partition.as_deref(),
+        };
+        let (sci, _) = cfg.build_and_write_segment(
+            dir,
+            &buffer,
+            name,
+            lucene_util::string_helper::random_id(),
+            None,
+        )?;
+        if postings {
+            slot.postings.keep_cursors_at(next_starts);
+        }
+        Ok(sci)
+    }
+
+    /// The directory the writer's segments are in.
+    pub fn directory(&self) -> &dyn lucene_store::Directory {
+        self.dir
+    }
+
     /// Lets the buffers `view` read go once no other view reads them.
     pub fn close_live_view(&self, view: &LiveView) {
         let mut core = lock(&self.core);
@@ -843,18 +1023,37 @@ impl ConcurrentIndexWriter<'_> {
         core.live.release(released);
     }
 
+    /// The slot holding buffer `id`, locked. The free slots are looked at
+    /// first, so a slot another thread holds (writing one of its own chunks,
+    /// say) is waited for only when the buffer is in no free one. A buffer
+    /// never moves into a slot, so the second look cannot miss it.
+    fn slot_of(&self, id: u64) -> Option<MutexGuard<'_, Dwpt>> {
+        let mut busy = Vec::new();
+        for slot in &self.slots {
+            match slot.try_lock() {
+                Ok(d) if d.live.id == id => return Some(d),
+                Ok(_) => {}
+                Err(std::sync::TryLockError::Poisoned(p)) => {
+                    let d = p.into_inner();
+                    if d.live.id == id {
+                        return Some(d);
+                    }
+                }
+                Err(std::sync::TryLockError::WouldBlock) => busy.push(slot),
+            }
+        }
+        busy.into_iter().map(lock).find(|d| d.live.id == id)
+    }
+
     /// Runs `f` on buffer `id`'s postings and columns, wherever it is now.
     /// A buffer only moves from a slot to the control lock, so looking in
     /// the slots one at a time, then there, cannot miss it.
     fn with_buffer<T>(&self, id: u64, f: impl Fn(Option<&Source<'_>>) -> T) -> T {
-        for slot in &self.slots {
-            let d = lock(slot);
-            if d.live.id == id {
-                return f(Some(&Source {
-                    postings: &d.postings,
-                    columns: &d.live,
-                }));
-            }
+        if let Some(d) = self.slot_of(id) {
+            return f(Some(&Source {
+                postings: &d.postings,
+                columns: &d.live,
+            }));
         }
         let core = lock(&self.core);
         f(core.live.find(id).as_ref())
@@ -880,36 +1079,34 @@ impl ConcurrentIndexWriter<'_> {
                 Some(Wanted {
                     info,
                     terms,
+                    patterns: &r.patterns,
                     positions: r.positions && info.index_options.subsumes_positions(),
                 })
             })
             .collect();
-        let slots: Vec<_> = self.slots.iter().map(lock).collect();
-        let core = lock(&self.core);
         let mut out = LiveSnapshot {
             buffers: Vec::with_capacity(view.buffers.len()),
             published: view.published,
         };
+        // Each buffer is read under its own slot lock: the view fixed its
+        // documents and statistics, so the buffers need not be read at
+        // one instant, and indexing into the other slots goes on.
         for b in &view.buffers {
-            let source = slots
-                .iter()
-                .find(|d| d.live.id == b.id)
-                .map(|d| Source {
-                    postings: &d.postings,
-                    columns: &d.live,
-                })
-                .or_else(|| core.live.find(b.id));
-            // A buffer `delete_all` or `rollback` dropped: none of its
-            // documents is live any more.
-            let Some(source) = source else {
-                out.buffers.push(LiveBuffer {
-                    max_doc: b.max_doc,
-                    deleted: (0..b.max_doc).collect(),
-                    fields: Vec::new(),
-                });
-                continue;
-            };
-            out.buffers.push(read_buffer(&source, b, &wanted)?);
+            let read = self.with_buffer(b.id, |source| {
+                // A buffer `delete_all` or `rollback` dropped: none of its
+                // documents is live any more.
+                source.map_or_else(
+                    || {
+                        Ok(LiveBuffer {
+                            max_doc: b.max_doc,
+                            deleted: (0..b.max_doc).collect(),
+                            fields: Vec::new(),
+                        })
+                    },
+                    |source| read_buffer(source, b, &wanted),
+                )
+            });
+            out.buffers.push(read?);
         }
         Ok(out)
     }
@@ -973,6 +1170,7 @@ fn view_buffer(
         id: source.columns.id,
         max_doc,
         deleted: deletes.docs(max_doc),
+        in_slot: false,
         stats: source.postings.live_stats_all(),
     })
 }
@@ -992,8 +1190,19 @@ fn read_buffer(
         ) else {
             continue;
         };
+        let matched: Vec<&[u8]>;
+        let names: &[&[u8]] = if w.patterns.is_empty() {
+            &w.terms
+        } else {
+            let mut all = w.terms.clone();
+            all.extend(runs.live_matching(|t| w.patterns.iter().any(|p| p.matches(t))));
+            all.sort_unstable();
+            all.dedup();
+            matched = all;
+            &matched
+        };
         let mut terms = Vec::new();
-        for t in &w.terms {
+        for &t in names {
             if let Some(mut p) = runs.live_term(t, w.positions)? {
                 truncate(&mut p, view.max_doc);
                 if !p.docs.is_empty() {
@@ -1031,6 +1240,31 @@ fn read_buffer(
         deleted: view.deleted.clone(),
         fields,
     })
+}
+
+/// `list[start..end]`, with default entries for the documents past the end of `list`.
+fn padded<T: Clone + Default>(list: &[T], start: usize, end: usize) -> std::borrow::Cow<'_, [T]> {
+    match list.get(start..end) {
+        Some(held) => held.into(),
+        None => {
+            let mut out = list.get(start..).unwrap_or_default().to_vec();
+            out.resize_with(end.saturating_sub(start), T::default);
+            out.into()
+        }
+    }
+}
+
+/// Like [`padded`], but an empty list (no document has an entry) stays empty.
+fn padded_or_empty<T: Clone + Default>(
+    list: &[T],
+    start: usize,
+    end: usize,
+) -> std::borrow::Cow<'_, [T]> {
+    if list.is_empty() {
+        list.into()
+    } else {
+        padded(list, start, end)
+    }
 }
 
 /// Drops `p`'s documents from `max_doc` on, with their occurrences.

@@ -1431,6 +1431,11 @@ struct EnumState {
     /// Java's `eof` (an assert-only flag there): repeated `next()` past the
     /// end keeps returning "no more terms" instead of walking off the stack.
     eof: bool,
+    /// Set for [`FieldTerms::term_block`]: an exact seek stops where it
+    /// would load the block, recording its `.tim` offset in
+    /// [`Self::prepared_fp`].
+    prepare_only: bool,
+    prepared_fp: Option<usize>,
 }
 
 impl EnumState {
@@ -1499,6 +1504,8 @@ impl Default for EnumState {
             term_exists: false,
             on_term: false,
             eof: false,
+            prepare_only: false,
+            prepared_fp: None,
         }
     }
 }
@@ -1878,6 +1885,10 @@ impl<'a> SegmentTermsEnum<'a> {
     }
 
     fn load_and_scan_exact(&mut self, target: &[u8]) -> Result<bool> {
+        if self.st.prepare_only {
+            self.st.prepared_fp = Some(self.cur_ref().fp);
+            return Ok(false);
+        }
         self.load_current_block()?;
         let ord = self.st.current.max(0) as usize;
         let EnumState {
@@ -2747,6 +2758,32 @@ impl FieldTerms {
     /// [`TermsEnum::next`].
     pub fn seek_exact(&self, term: &[u8]) -> Option<TermStats> {
         self.try_seek_exact(term).unwrap_or(None)
+    }
+
+    /// The segment's whole `.tim`, which [`Self::term_block`] points into.
+    pub fn terms_file(&self) -> &[u8] {
+        self.tim.as_ref().as_ref()
+    }
+
+    /// `TermsEnum.prepareSeekExact`'s I/O hint: the first byte of the
+    /// `.tim` block that could hold `term`, found from the terms index
+    /// alone (no `.tim` byte is read), or `None` when no block could. A
+    /// query hands these to [`lucene_store::prefetch`] for all its terms
+    /// before seeking any, so their blocks arrive together.
+    pub fn term_block(&self, term: &[u8]) -> Result<Option<&[u8]>> {
+        let mut st = EnumState {
+            prepare_only: true,
+            ..EnumState::default()
+        };
+        SegmentTermsEnum {
+            field: self,
+            st: &mut st,
+        }
+        .seek_exact(term)?;
+        let tim = self.terms_file();
+        Ok(st
+            .prepared_fp
+            .and_then(|fp| tim.get(fp..fp.saturating_add(1))))
     }
 
     /// `seekExact` plus `decodeMetaData`, exposing just the postings file
@@ -5881,6 +5918,11 @@ mod tests {
         assert_eq!(field.seek_exact(b"missing"), None);
         assert_eq!(field.seek_exact(b""), None);
         assert!(fields.field("nope").is_none());
+        // The prefetch hint names the one block, from the index alone.
+        let block = field.term_block(b"ab").unwrap().unwrap();
+        assert_eq!(block.len(), 1);
+        assert_eq!(field.term_block(b"a").unwrap(), Some(block));
+        assert_eq!(field.term_block(b"zzz").unwrap(), None);
     }
 
     #[test]
@@ -7042,6 +7084,26 @@ mod tests {
             checked > 0,
             "expected at least one absent lead byte inside [{lo}, {hi}]"
         );
+
+        // Over this many-block field, the prefetch hint names exactly the
+        // block a full seek loads, for every term.
+        let tim: &[u8] = field.tim.as_ref().as_ref();
+        let mut terms = Vec::new();
+        let mut it = field.iter();
+        while let Some((term, _)) = it.next() {
+            terms.push(term.to_vec());
+        }
+        assert!(terms.len() > 100);
+        for term in &terms {
+            let loaded = field
+                .with_scratch(|ste| {
+                    assert!(ste.seek_exact(term)?);
+                    Ok(ste.cur_ref().fp)
+                })
+                .unwrap();
+            let hint = field.term_block(term).unwrap().expect("a block");
+            assert_eq!(hint.as_ptr(), tim[loaded..].as_ptr(), "{term:?}");
+        }
     }
 
     /// The pooled lookup scratch must never make concurrent searchers wait on

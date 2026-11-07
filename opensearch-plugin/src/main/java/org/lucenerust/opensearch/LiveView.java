@@ -5,23 +5,31 @@ package org.lucenerust.opensearch;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
-import java.util.Arrays;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * One searcher's view of the documents still in the Rust writer's buffers ({@link
- * NativeBridge#liveViewOpen}): how many documents each buffer held when the view opened. Its documents are numbered buffer after buffer; {@link LiveLeafReader} gives them
- * to the searcher after the reader's own. Closing it lets its buffers go.
+ * NativeBridge#liveViewOpen}): how many documents each buffer held when the view opened. Its
+ * documents are numbered buffer after buffer; each buffer is one or more chunks of consecutive
+ * documents, as the native reader of the view holds it as segments, and a {@link LiveLeafReader} per
+ * chunk gives them to the searcher after the reader's own. Closing it lets its buffers go.
  */
 public final class LiveView implements AutoCloseable {
     private final long id;
     /** Buffer {@code i}'s first document, and the total last. */
     private final int[] starts;
+    /** Per chunk: its buffer, its first document in the buffer, and its documents. */
+    private final int[] chunkBuffer;
+    private final int[] chunkStart;
+    private final int[] chunkDocs;
     private final AtomicBoolean closed = new AtomicBoolean();
 
-    private LiveView(long id, int[] starts) {
+    private LiveView(long id, int[] starts, int[] chunkBuffer, int[] chunkStart, int[] chunkDocs) {
         this.id = id;
         this.starts = starts;
+        this.chunkBuffer = chunkBuffer;
+        this.chunkStart = chunkStart;
+        this.chunkDocs = chunkDocs;
     }
 
     /** The view {@code id} its blob describes; the view is closed if the blob cannot be read. */
@@ -31,13 +39,32 @@ public final class LiveView implements AutoCloseable {
             b.getLong();
             int count = b.getInt();
             int[] starts = new int[count + 1];
+            IntArrayList buffers = new IntArrayList();
+            IntArrayList chunkStarts = new IntArrayList();
+            IntArrayList docs = new IntArrayList();
             for (int i = 0; i < count; i++) {
-                starts[i + 1] = Math.addExact(starts[i], b.getInt());
+                int maxDoc = b.getInt();
+                starts[i + 1] = Math.addExact(starts[i], maxDoc);
                 // The native search applies the deletes itself.
                 int deleted = b.getInt();
                 b.position(Math.addExact(b.position(), Math.multiplyExact(deleted, Integer.BYTES)));
+                int chunks = b.getInt();
+                int from = 0;
+                for (int c = 0; c < chunks; c++) {
+                    int end = b.getInt();
+                    if (end < from || end > maxDoc) {
+                        throw new IllegalArgumentException("live view: chunk end " + end + " of a buffer of " + maxDoc);
+                    }
+                    buffers.add(i);
+                    chunkStarts.add(from);
+                    docs.add(end - from);
+                    from = end;
+                }
+                if (from != maxDoc) {
+                    throw new IllegalArgumentException("live view: chunks of " + from + " of a buffer of " + maxDoc);
+                }
             }
-            return new LiveView(id, starts);
+            return new LiveView(id, starts, buffers.toArray(), chunkStarts.toArray(), docs.toArray());
         } catch (RuntimeException e) {
             NativeBridge.liveViewClose(id);
             throw e;
@@ -54,22 +81,51 @@ public final class LiveView implements AutoCloseable {
         return starts[starts.length - 1];
     }
 
-    /** The buffer holding view document {@code doc}. */
-    public int buffer(int doc) {
-        int i = Arrays.binarySearch(starts, doc);
-        // An exact match is a buffer's first document; empty buffers share it, so take the last.
-        if (i >= 0) {
-            while (i + 1 < starts.length - 1 && starts[i + 1] == doc) {
-                i++;
-            }
-            return i;
-        }
-        return -i - 2;
+    /** How many buffers the view reads. */
+    public int buffers() {
+        return starts.length - 1;
     }
 
-    /** View document {@code doc}'s number within its buffer. */
-    public int local(int doc) {
-        return doc - starts[buffer(doc)];
+    /** Buffer {@code i}'s documents, deleted ones included. */
+    public int bufferMaxDoc(int i) {
+        return starts[i + 1] - starts[i];
+    }
+
+    /** How many chunks the view's buffers are, together. */
+    public int chunks() {
+        return chunkDocs.length;
+    }
+
+    /** The buffer chunk {@code c} is part of. */
+    public int chunkBuffer(int c) {
+        return chunkBuffer[c];
+    }
+
+    /** Chunk {@code c}'s first document, in its buffer. */
+    public int chunkStart(int c) {
+        return chunkStart[c];
+    }
+
+    /** Chunk {@code c}'s documents, deleted ones included. */
+    public int chunkMaxDoc(int c) {
+        return chunkDocs[c];
+    }
+
+    /** A growable list of ints. */
+    private static final class IntArrayList {
+        private int[] values = new int[4];
+        private int size;
+
+        void add(int v) {
+            if (size == values.length) {
+                values = java.util.Arrays.copyOf(values, size * 2);
+            }
+            values[size++] = v;
+        }
+
+        int[] toArray() {
+            return java.util.Arrays.copyOf(values, size);
+        }
     }
 
     @Override

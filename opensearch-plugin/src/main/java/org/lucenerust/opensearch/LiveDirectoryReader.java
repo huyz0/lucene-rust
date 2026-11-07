@@ -8,6 +8,7 @@ import org.apache.lucene.index.FieldInfos;
 import org.apache.lucene.index.FilterDirectoryReader;
 import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.index.LeafReader;
+import org.apache.lucene.util.IOUtils;
 import org.opensearch.common.lucene.index.OpenSearchDirectoryReader;
 
 import java.io.IOException;
@@ -16,13 +17,15 @@ import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * A searcher's reader with a view of the writer's buffers: the leaves of {@code base} (one of the
- * engine's readers, kept open as long as this one), then a {@link LiveLeafReader} of the view.
+ * engine's readers, kept open as long as this one), then a {@link LiveLeafReader} per chunk of the
+ * view's buffers.
  * Its own cache key, so nothing cached for {@code base} answers for it; the native reader is
  * {@code base}'s ({@link #baseOf}), whose segments are the same. Closing it closes the view.
  */
 public final class LiveDirectoryReader extends FilterDirectoryReader {
     private final OpenSearchDirectoryReader base;
-    private final LiveLeafReader live;
+    private final LiveView view;
+    private final LiveLeafReader[] live;
     private final IndexReader.CacheKey key = CacheKeys.newKey();
     private final List<ClosedListener> listeners = new CopyOnWriteArrayList<>();
     private final CacheHelper cacheHelper = new CacheHelper() {
@@ -37,9 +40,10 @@ public final class LiveDirectoryReader extends FilterDirectoryReader {
         }
     };
 
-    private LiveDirectoryReader(OpenSearchDirectoryReader base, LiveLeafReader live) throws IOException {
+    private LiveDirectoryReader(OpenSearchDirectoryReader base, LiveView view, LiveLeafReader[] live) throws IOException {
         super(base.getDelegate(), new Appending(live));
         this.base = base;
+        this.view = view;
         this.live = live;
     }
 
@@ -51,7 +55,11 @@ public final class LiveDirectoryReader extends FilterDirectoryReader {
         throws IOException {
         base.incRef();
         try {
-            return OpenSearchDirectoryReader.wrap(new LiveDirectoryReader(base, new LiveLeafReader(view, infos)), base.shardId());
+            LiveLeafReader[] leaves = new LiveLeafReader[view.chunks()];
+            for (int c = 0; c < leaves.length; c++) {
+                leaves[c] = new LiveLeafReader(view, view.chunkBuffer(c), view.chunkStart(c), view.chunkMaxDoc(c), infos);
+            }
+            return OpenSearchDirectoryReader.wrap(new LiveDirectoryReader(base, view, leaves), base.shardId());
         } catch (IOException | RuntimeException e) {
             try {
                 view.close();
@@ -81,7 +89,7 @@ public final class LiveDirectoryReader extends FilterDirectoryReader {
 
     /** The view of the buffers. */
     public LiveView view() {
-        return live.view();
+        return view;
     }
 
     /** The doc ID of the view's first document: every document of {@code base} comes before. */
@@ -100,10 +108,10 @@ public final class LiveDirectoryReader extends FilterDirectoryReader {
             for (ClosedListener l : listeners) {
                 l.onClose(key);
             }
-            live.close();
+            IOUtils.close(live);
         } finally {
             try {
-                live.view().close();
+                view.close();
             } finally {
                 base.decRef();
             }
@@ -115,18 +123,18 @@ public final class LiveDirectoryReader extends FilterDirectoryReader {
         return cacheHelper;
     }
 
-    /** {@code in}'s leaves, then the leaf of buffered documents. */
+    /** {@code in}'s leaves, then the leaves of buffered documents. */
     private static final class Appending extends SubReaderWrapper {
-        private final LiveLeafReader live;
+        private final LiveLeafReader[] live;
 
-        Appending(LiveLeafReader live) {
+        Appending(LiveLeafReader[] live) {
             this.live = live;
         }
 
         @Override
         protected LeafReader[] wrap(List<? extends LeafReader> readers) {
-            LeafReader[] out = readers.toArray(new LeafReader[readers.size() + 1]);
-            out[readers.size()] = live;
+            LeafReader[] out = readers.toArray(new LeafReader[readers.size() + live.length]);
+            System.arraycopy(live, 0, out, readers.size(), live.length);
             return out;
         }
 

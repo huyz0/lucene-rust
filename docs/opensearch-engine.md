@@ -40,16 +40,62 @@ The writer side works like this:
 | `lucene_rust.engine.default` | node | Sets the default of the index setting above, so every index without its own setting (system indices included) uses the Rust engine **where it can**. An index that only inherits this default is served by OpenSearch's engine instead if it needs something the Rust writer refuses: a refused index configuration, or a creation mapping with a field whose documents it refuses. |
 | `lucene_rust.engine.node_enabled` | node | `false` makes the plugin build OpenSearch's own engine for Rust-engine indices on this node, for a mixed cluster during a rollout or rollback. Rust-written segments are ordinary Lucene 10.5 segments, so either engine takes over a shard from the other. |
 | `index.lucene_rust.engine.fault_injection` | index, final | Test only: a document with a `__lucene_rust_panic` field makes the writer panic. |
+| `index.lucene_rust.partition_field` | index, final | Names a field whose value is each document's partition, like a partitioned table's partition key: see [Partitions](#partitions). Empty (the default) partitions nothing. |
 
 `GET /_plugins/lucene_rust/stats` counts the engines built, as
 `engines.rust`, `engines.java` and `engines.nrt_replica`.
+
+## Partitions
+
+With `index.lucene_rust.partition_field` set, every segment of a shard holds
+the documents of one partition, and merges never mix partitions, so a
+partition's documents stay together on disk however many partitions share
+the shard. Use it instead of an index per partition, which multiplies
+shards and their memory.
+
+- A document's partition is the field's value on the document (on the root
+  of a nested block): a keyword's or ip's value, or a numeric's or date's.
+  Documents without a value, and delete tombstones, share the default
+  partition.
+- The writer keeps one indexing buffer per partition in flight, up to 1024
+  of them, all under the shard's indexing buffer: when that fills, the
+  largest is flushed, and a refresh flushes them all, one segment per
+  partition. Past 1024 partitions in flight, a buffer of another partition
+  is flushed to make room, so segments get small.
+- Each segment records its partition the way OpenSearch's context-aware
+  segments do (the `bucket` attribute on the segment and on `_id` and
+  `_seq_no`), and merges are chosen per partition, as
+  `CriteriaBasedMergePolicy` does. OpenSearch's own engine therefore reads
+  and merges these segments alike, and stock Lucene reads them as any other.
+- A document's partition is the smallest value when it has several. Bytes
+  that are not UTF-8 (an ip's) are recorded as `0x` and hex. A value held
+  only as analyzed text is refused.
+- A document may move to another partition on update: the earlier version is
+  soft deleted wherever it is.
+- The default partition is recorded as `-2`, as OpenSearch records it, so a
+  partition whose value is `-2` shares segments with it.
+- An index served by OpenSearch's engine (a fallback, or
+  `lucene_rust.engine.node_enabled: false`) ignores the setting.
+- OpenSearch's own context-aware setting (`index.context_aware.enabled`, with a
+  `context_aware_grouping` script) is still refused.
+
+## Index sorting
+
+`index.sort.*` is served natively: every segment is flushed and merged in the
+sort's order, with OpenSearch's parent field (`__nested_parent`) keeping each
+nested block whole, so the segments are those OpenSearch's own writer would
+write. Sorting by a keyword partition field (`index.sort.field: tenant`) puts
+each partition's documents side by side: a `term` filter on the sort's first
+field is then matched as that run of doc ids, checked against the term's
+postings, and the other clauses skip straight to it.
 
 ## What it refuses
 
 When an index is created:
 
 - a codec other than `default` or `lucene_default`
-- index sorting
+- index sorting on an index created before 3.2.0 (whose nested blocks have no
+  parent field), or together with `index.lucene_rust.realtime_search`
 - context-aware segments
 - remote-backed storage (remote-store indices or nodes)
 
@@ -115,12 +161,6 @@ Remote-backed storage stays refused, because its upload listener asks for an
 
 ## Where it behaves differently
 
-- **No merged-segment pre-copy.** With
-  `indices.replication.merges.warmer.enabled` (default false), OpenSearch's
-  engine pushes a merged segment to segment-replication replicas before the
-  merge commits. The Rust writer runs no merge warmer. Replicas fetch the merged segment at the next refresh: replication
-  stays correct, and that refresh copies more.
-
 - **Refresh is a commit.** Every refreshed operation is already in the last
   Lucene commit. A restart therefore replays only what was never refreshed.
   The safe commit also advances more often, so history retention (which is
@@ -138,20 +178,23 @@ Remote-backed storage stays refused, because its upload listener asks for an
   read document counts off the unwrapped `SegmentReader`, which here does not
   have the soft deletes applied, as on `NRTReplicationEngine` replicas.
   Index-level `docs.count` and `docs.deleted` are exact.
-- **Merges.** The Rust writer's merge policy uses its defaults, and
-  `index.merge.policy.*` and `index.merge_on_flush` are not honoured. Merges
-  run on the Rust writer's own merge threads, so `_stats` reports no merge
-  activity, and a finished merge becomes visible at the next refresh. When
-  merges fall behind, the writer stalls the indexing thread, as Lucene's
-  `ConcurrentMergeScheduler` does, and OpenSearch's indexing throttle does not
-  engage.
+- **Merges run in the Rust writer.** Its merge threads take the
+  `index.merge.policy.*` (tiered or `log_byte_size`, and `index.merge.enabled`),
+  `index.merge.scheduler.*` and `index.merge_on_flush.*` settings, and report each merge to the engine as OpenSearch's merge
+  scheduler does: `_stats` merge counts and times, the indexing throttle once
+  more than `max_merge_count` merges are in flight, the flush after a big merge
+  or once merges finish on an idle shard, and a failed merge failing the
+  shard. On segment-replication indices each merged segment goes to
+  OpenSearch's merged-segment warmer before the merge is published
+  (`indices.replication.merges.warmer.enabled`). A finished merge becomes
+  visible at the next refresh.
 - **No infoStream.** Lucene's `IndexWriter` debug log has no counterpart.
 
 ## How it is verified
 
 | What | Where |
 |---|---|
-| OpenSearch's own `InternalEngineTests`, derived to build `RustEngine` | `scripts/opensearch-engine-tests.sh`. 117 pass. The 34 skipped are each listed with a reason in `opensearch-plugin/tools/derive_engine_tests.py`: the refusals above, failure injection through a Java `IndexWriter` or in-memory `Directory`, and the differences above. |
+| OpenSearch's own `InternalEngineTests`, derived to build `RustEngine` | `scripts/opensearch-engine-tests.sh`. 118 pass. The 33 skipped are each listed with a reason in `opensearch-plugin/tools/derive_engine_tests.py`: the refusals above, failure injection through a Java `IndexWriter` or in-memory `Directory`, and the differences above. |
 | The Rust writer against Lucene's `IndexWriter` on the same operations | `EngineWriterDiffTest` (`gradle -p opensearch-plugin check`) |
 | One node, the Rust engine against OpenSearch's, operation for operation: bulk results, OCC, get, search, scores, aggregations; then restart, SIGKILL, a panic, the breaker, the refusals | `scripts/verify-opensearch.sh --engine` (`opensearch-plugin/e2e/verify_engine.py`) |
 | OpenSearch's REST YAML suites with every index on the Rust engine, against a stock node | `scripts/verify-opensearch.sh --engine --yaml` |

@@ -21,7 +21,7 @@
 //!
 //! The flush decodes each field's streams into contiguous columns, terms in
 //! byte order and documents renumbered into an index sort's order when there
-//! is one ([`PendingPostings::flushed`]), and hands the postings writer a
+//! is one ([`PendingPostings::flushed_below`]), and hands the postings writer a
 //! [`TermView`] of each term, read in place.
 
 use std::collections::BTreeMap;
@@ -114,7 +114,8 @@ struct BytePool {
     used: usize,
 }
 
-/// Where a [`SliceReader`] stands: enough to cut its stream there.
+/// Where a [`SliceReader`] stands: enough to cut its stream there, or to
+/// read on from there ([`BytePool::resume`]).
 #[derive(Debug, Clone, Copy)]
 struct SlicePos {
     upto: u32,
@@ -227,6 +228,44 @@ impl BytePool {
             end,
             level: 0,
             slice_start: start,
+        }
+    }
+
+    /// The stream ending at `end` read on from `pos`, where a reader of it
+    /// stood when it ended earlier: the stream has only grown since.
+    fn resume(&self, pos: SlicePos, end: u32) -> SliceReader<'_> {
+        let mut pos = pos;
+        let limit = loop {
+            let size = level_size(pos.level);
+            if pos.slice_start.saturating_add(size) >= end {
+                break end;
+            }
+            let limit = pos.slice_start.wrapping_add(size).wrapping_sub(4);
+            if pos.upto <= limit {
+                break limit;
+            }
+            // The slice filled since: the bytes past its link moved to the
+            // start of the next ([`Self::next_slice`]).
+            let mut link = [0u8; 4];
+            link.copy_from_slice(
+                self.span(limit, limit.wrapping_add(4))
+                    .get(..4)
+                    .unwrap_or(&[0; 4]),
+            );
+            let next = u32::from_le_bytes(link);
+            pos = SlicePos {
+                upto: next.wrapping_add(pos.upto.wrapping_sub(limit)),
+                slice_start: next,
+                level: next_level(pos.level),
+            };
+        };
+        SliceReader {
+            pool: self,
+            cur: self.span(pos.upto, limit),
+            limit,
+            end,
+            level: pos.level,
+            slice_start: pos.slice_start,
         }
     }
 
@@ -436,7 +475,46 @@ pub(crate) struct FieldRuns {
     /// documents arrive for a search over the buffer.
     sum_doc_freq: i64,
     sum_total_term_freq: i64,
+    /// Where terms' streams stood at a few documents ranges were written up
+    /// to ([`FieldRuns::lay_out_range`]), newest last: a range from one of
+    /// them reads each term's streams from there on, not from the start.
+    cursors: std::sync::Mutex<Vec<(i32, std::sync::Arc<Cursors>)>>,
 }
+
+/// By term id, where its streams stood at a document.
+type Cursors = std::collections::HashMap<u32, Cursor>;
+
+/// A term's streams just before its first document at or past some
+/// document `d`: everything before is of earlier documents.
+#[derive(Debug, Clone, Copy)]
+struct Cursor {
+    docs: SlicePos,
+    /// `None` for a field without positions.
+    prox: Option<SlicePos>,
+    /// The document the documents stream's next code is a delta from.
+    doc: i32,
+}
+
+/// A range layout's cursors: those at its start it reads from, and those
+/// at its end it keeps.
+struct RangeCursors {
+    range: (i32, i32),
+    from: Option<std::sync::Arc<Cursors>>,
+    next: Cursors,
+}
+
+fn lock_cursors(
+    m: &std::sync::Mutex<Vec<(i32, std::sync::Arc<Cursors>)>>,
+) -> std::sync::MutexGuard<'_, Vec<(i32, std::sync::Arc<Cursors>)>> {
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Terms with fewer documents are read from their start each range.
+const CURSOR_DOCS: u32 = if cfg!(test) { 2 } else { 64 };
+
+/// How many documents' cursors a field keeps at most, when its caller
+/// does not say which ([`PendingPostings::keep_cursors_at`]).
+const CURSOR_SETS: usize = 32;
 
 /// How many terms ahead of the one being added [`FieldRuns::prefetch_ahead`]
 /// starts loading the likely term's bytes and run, and (half as far) the pool
@@ -504,6 +582,7 @@ impl FieldRuns {
             last_doc: -1,
             sum_doc_freq: 0,
             sum_total_term_freq: 0,
+            cursors: std::sync::Mutex::default(),
         }
     }
 
@@ -775,6 +854,123 @@ impl FieldRuns {
         Ok(())
     }
 
+    /// Term `id`'s documents `start..end`, numbered from `start`, with their
+    /// positions, offsets and payloads, appended to `out`'s columns (unsorted
+    /// buffers): nothing when none holds the term. Its streams are read from
+    /// `from`, where they stood at `start`, when given, and only up to
+    /// `end`. Returns where they stand at `end`.
+    fn lay_out_range(
+        &self,
+        id: u32,
+        (start, end): (i32, i32),
+        from: Option<&Cursor>,
+        out: &mut FlushedField,
+    ) -> Result<Cursor> {
+        let docs_from = out.cols.docs.len();
+        let pos_from = out.cols.positions.len();
+        let len_from = out.cols.payload_lengths.len();
+        let bytes_from = out.cols.payload_bytes.len();
+        let run = &self.runs[id as usize];
+        let [docs_start, prox_start] = self.starts[id as usize];
+        let mut docs = match from {
+            Some(c) => self.pool.resume(c.docs, run.docs),
+            None => self.pool.reader(docs_start, run.docs),
+        };
+        let mut prox = self.positions.then(|| match from.and_then(|c| c.prox) {
+            Some(p) => self.pool.resume(p, run.prox),
+            None => self.pool.reader(prox_start, run.prox),
+        });
+        let mut doc = from.map_or(0, |c| c.doc);
+        let cursor = loop {
+            let here = Cursor {
+                docs: docs.pos(),
+                prox: prox.as_ref().map(SliceReader::pos),
+                doc,
+            };
+            if docs.eof() {
+                // The newest document is not in the stream yet: a range
+                // from `here` reads it once it is.
+                if run.doc_count > 0 && (start..end).contains(&run.last_doc) {
+                    self.take_doc(
+                        run.last_doc.wrapping_sub(start),
+                        run.freq,
+                        prox.as_mut(),
+                        pos_from,
+                        &mut out.cols,
+                    );
+                }
+                break here;
+            }
+            let code = docs.read_vlong();
+            doc = doc.wrapping_add((code >> 1) as u32 as i32);
+            let freq = if code & 1 != 0 { 1 } else { docs.read_i32() };
+            if doc >= end {
+                break here;
+            }
+            if doc < start {
+                if let Some(p) = prox.as_mut() {
+                    let mut last = Occurrence::default();
+                    for _ in 0..freq {
+                        self.read_occurrence(p, &mut last, None);
+                    }
+                }
+            } else {
+                self.take_doc(
+                    doc.wrapping_sub(start),
+                    freq,
+                    prox.as_mut(),
+                    pos_from,
+                    &mut out.cols,
+                );
+            }
+        };
+        if out.cols.docs.len() > docs_from {
+            out.term_bytes.extend_from_slice(self.terms.term(id));
+            out.terms.push(TermSpan {
+                term_end: to_u32(out.term_bytes.len()),
+                docs: (to_u32(docs_from), to_u32(out.cols.docs.len())),
+                positions: (to_u32(pos_from), to_u32(out.cols.positions.len())),
+                payload_lengths: (to_u32(len_from), to_u32(out.cols.payload_lengths.len())),
+                payload_bytes: (to_u32(bytes_from), to_u32(out.cols.payload_bytes.len())),
+            });
+        }
+        Ok(cursor)
+    }
+
+    /// One document of a term, `freq` occurrences read from `prox`, onto
+    /// `cols` (its `ends` relative to the term's first position, at
+    /// `pos_from`).
+    fn take_doc(
+        &self,
+        doc: i32,
+        freq: i32,
+        prox: Option<&mut SliceReader<'_>>,
+        pos_from: usize,
+        cols: &mut Columns,
+    ) {
+        cols.docs.push((doc, freq));
+        let Some(p) = prox else {
+            return;
+        };
+        let mut last = Occurrence::default();
+        for _ in 0..freq {
+            let len = self.read_occurrence(
+                p,
+                &mut last,
+                self.payloads.then_some(&mut cols.payload_bytes),
+            );
+            cols.positions.push(last.position);
+            if self.offsets {
+                cols.offsets.push(last.offsets);
+            }
+            if self.payloads {
+                cols.payload_lengths.push(len);
+            }
+        }
+        cols.ends
+            .push(to_u32(cols.positions.len().saturating_sub(pos_from)));
+    }
+
     /// Term `id`'s documents, positions, offsets and payloads, appended to
     /// `out`'s columns with each document renumbered by `old_to_new` (and
     /// the documents put back in doc order) when given.
@@ -867,14 +1063,14 @@ impl FieldRuns {
         Ok(())
     }
 
-    /// The field laid out for the postings writer: [`PendingPostings::flushed`].
-    fn flushed(&self, number: i32, old_to_new: Option<&[usize]>) -> Result<FlushedField> {
-        let ids: Vec<u32> = self
-            .terms
-            .sorted_ids()
-            .into_iter()
-            .filter(|&id| self.runs[id as usize].doc_count > 0)
-            .collect();
+    /// The field laid out for the postings writer: [`PendingPostings::flushed_below`].
+    fn flushed(
+        &self,
+        number: i32,
+        old_to_new: Option<&[usize]>,
+        range: Option<(i32, i32)>,
+    ) -> Result<FlushedField> {
+        let ids = self.ids_for(range);
         let (docs, occurrences) = ids.iter().fold((0usize, 0usize), |(d, o), &id| {
             let r = &self.runs[id as usize];
             (
@@ -901,13 +1097,15 @@ impl FieldRuns {
             },
         };
         let mut scratch = Scratch::default();
+        let mut cursors = self.cursors_for(range, old_to_new)?;
         // Byte order visits the terms' runs and streams at random: start
         // loading a term's run and stream starts a few terms ahead, and its
         // bytes and streams' first bytes once those are in cache.
         for (i, &id) in ids.iter().enumerate() {
             self.prefetch_layout(&ids, i);
-            self.lay_out(id, old_to_new, &mut scratch, &mut out)?;
+            self.lay_out_any(id, old_to_new, &mut cursors, &mut scratch, &mut out)?;
         }
+        self.keep_cursors(cursors);
         Ok(out)
     }
 
@@ -917,14 +1115,10 @@ impl FieldRuns {
     fn stream(
         &self,
         old_to_new: Option<&[usize]>,
+        range: Option<(i32, i32)>,
         write: &mut dyn FnMut(&[TermView<'_>]) -> Result<()>,
     ) -> Result<()> {
-        let ids: Vec<u32> = self
-            .terms
-            .sorted_ids()
-            .into_iter()
-            .filter(|&id| self.runs[id as usize].doc_count > 0)
-            .collect();
+        let ids = self.ids_for(range);
         let mut out = FlushedField {
             number: 0,
             doc_count: self.doc_count,
@@ -933,9 +1127,10 @@ impl FieldRuns {
             cols: Columns::default(),
         };
         let mut scratch = Scratch::default();
+        let mut cursors = self.cursors_for(range, old_to_new)?;
         for (i, &id) in ids.iter().enumerate() {
             self.prefetch_layout(&ids, i);
-            self.lay_out(id, old_to_new, &mut scratch, &mut out)?;
+            self.lay_out_any(id, old_to_new, &mut cursors, &mut scratch, &mut out)?;
             if out.terms.len() >= STREAM_TERMS
                 || out.cols.docs.len().max(out.cols.positions.len()) >= STREAM_ENTRIES
             {
@@ -945,6 +1140,79 @@ impl FieldRuns {
         }
         if !out.terms.is_empty() {
             write(&out.views())?;
+        }
+        self.keep_cursors(cursors);
+        Ok(())
+    }
+
+    /// The ids of the terms a layout writes, in byte order: those with a
+    /// document, and for a range `start..` only those with one at or past
+    /// `start`.
+    fn ids_for(&self, range: Option<(i32, i32)>) -> Vec<u32> {
+        let from = range.map_or(i32::MIN, |(start, _)| start);
+        self.terms.sorted_ids_where(|id| {
+            let r = &self.runs[id as usize];
+            r.doc_count > 0 && r.last_doc >= from
+        })
+    }
+
+    /// For a layout of `range`, the cursors at its start when kept, and the
+    /// set at its end to fill.
+    fn cursors_for(
+        &self,
+        range: Option<(i32, i32)>,
+        old_to_new: Option<&[usize]>,
+    ) -> Result<Option<RangeCursors>> {
+        let Some((start, end)) = range else {
+            return Ok(None);
+        };
+        if old_to_new.is_some() {
+            return Err(explicit_error(
+                "a document range applies to unsorted buffers only",
+            ));
+        }
+        let kept = lock_cursors(&self.cursors)
+            .iter()
+            .find(|(at, _)| *at == start)
+            .map(|(_, c)| std::sync::Arc::clone(c));
+        let next = kept.as_deref().cloned().unwrap_or_default();
+        Ok(Some(RangeCursors {
+            range: (start, end),
+            from: kept,
+            next,
+        }))
+    }
+
+    /// Keeps the cursors a range layout reached, dropping the oldest set
+    /// past [`CURSOR_SETS`].
+    fn keep_cursors(&self, cursors: Option<RangeCursors>) {
+        let Some(c) = cursors else {
+            return;
+        };
+        let mut sets = lock_cursors(&self.cursors);
+        sets.retain(|(at, _)| *at != c.range.1);
+        sets.push((c.range.1, std::sync::Arc::new(c.next)));
+        if sets.len() > CURSOR_SETS {
+            sets.remove(0);
+        }
+    }
+
+    /// [`Self::lay_out_range`] under `cursors`, else [`Self::lay_out`].
+    fn lay_out_any(
+        &self,
+        id: u32,
+        old_to_new: Option<&[usize]>,
+        cursors: &mut Option<RangeCursors>,
+        scratch: &mut Scratch,
+        out: &mut FlushedField,
+    ) -> Result<()> {
+        let Some(c) = cursors else {
+            return self.lay_out(id, old_to_new, scratch, out);
+        };
+        let from = c.from.as_ref().and_then(|f| f.get(&id));
+        let at = self.lay_out_range(id, c.range, from, out)?;
+        if self.runs[id as usize].doc_count >= CURSOR_DOCS {
+            c.next.insert(id, at);
         }
         Ok(())
     }
@@ -1228,15 +1496,20 @@ impl PendingPostings {
     }
 
     /// Field `number`'s postings handed to `write` in term order, a batch
-    /// at a time, renumbered by `old_to_new` as [`Self::flushed`] does.
-    pub(crate) fn stream_field(
+    /// at a time, renumbered by `old_to_new` as [`Self::flushed_below`] does.
+    ///
+    /// With `range` (`start..end`, unsorted buffers only), the documents in
+    /// it alone, numbered from `start`: the postings a flush of just those
+    /// documents writes.
+    pub(crate) fn stream_field_below(
         &self,
         number: i32,
         old_to_new: Option<&[usize]>,
+        range: Option<(i32, i32)>,
         write: &mut dyn FnMut(&[TermView<'_>]) -> Result<()>,
     ) -> Result<()> {
         match self.fields.get(&number) {
-            Some(f) if f.doc_count > 0 => f.stream(old_to_new, write),
+            Some(f) if f.doc_count > 0 => f.stream(old_to_new, range, write),
             _ => Ok(()),
         }
     }
@@ -1244,12 +1517,24 @@ impl PendingPostings {
     /// Every field's postings laid out for the postings writer, documents
     /// renumbered by `old_to_new` (buffered doc id to sorted) under an index
     /// sort. The buffer is left as it was.
+    #[cfg(test)]
     pub(crate) fn flushed(&self, old_to_new: Option<&[usize]>) -> Result<FlushedPostings> {
+        self.flushed_below(old_to_new, None)
+    }
+
+    /// Every field's postings laid out (see `flushed`), for the documents
+    /// in `range` only when given (see [`Self::stream_field_below`]). Each
+    /// field's `doc_count` stays the whole buffer's: the caller knows its own.
+    pub(crate) fn flushed_below(
+        &self,
+        old_to_new: Option<&[usize]>,
+        range: Option<(i32, i32)>,
+    ) -> Result<FlushedPostings> {
         let fields = self
             .fields
             .iter()
             .filter(|(_, f)| f.doc_count > 0)
-            .map(|(&n, f)| f.flushed(n, old_to_new))
+            .map(|(&n, f)| f.flushed(n, old_to_new, range))
             .collect::<Result<_>>()?;
         Ok(FlushedPostings { fields })
     }
@@ -1265,6 +1550,14 @@ impl PendingPostings {
 
     pub(crate) fn clear(&mut self) {
         self.fields.clear();
+    }
+
+    /// Keeps only the cursors at the documents in `at` (the starts of the
+    /// ranges likely written next), in every field.
+    pub(crate) fn keep_cursors_at(&self, at: &[i32]) {
+        for f in self.fields.values() {
+            lock_cursors(&f.cursors).retain(|(d, _)| at.contains(d));
+        }
     }
 
     /// Field `number`'s terms of document `doc`, in no particular order.
@@ -1346,7 +1639,7 @@ impl FlushedField {
     }
 }
 
-/// The buffered postings laid out for a flush: [`PendingPostings::flushed`].
+/// The buffered postings laid out for a flush: [`PendingPostings::flushed_below`].
 #[derive(Debug)]
 pub(crate) struct FlushedPostings {
     fields: Vec<FlushedField>,
@@ -1468,6 +1761,121 @@ mod tests {
     /// Streams interleave in one pool across many slice levels and blocks,
     /// read back in order, and a cut at any length resumes appending from
     /// there.
+    /// Every posting of `f`: field, term, document (plus `base`), then its
+    /// positions, offsets and payloads.
+    #[allow(clippy::type_complexity)]
+    fn flat(
+        f: &FlushedPostings,
+        base: i32,
+    ) -> Vec<(i32, Vec<u8>, i32, Vec<i32>, Vec<(i32, i32)>, Vec<Vec<u8>>)> {
+        let mut out = Vec::new();
+        for (field, _, terms) in f.term_lists() {
+            for t in terms {
+                let mut at = 0usize;
+                for (i, &(doc, freq)) in t.docs.iter().enumerate() {
+                    let span = t.span(i);
+                    let mut payloads = Vec::new();
+                    for j in span.clone() {
+                        let len = t.payload_lengths.get(j).copied().unwrap_or(0) as usize;
+                        payloads.push(t.payload_bytes[at..at.saturating_add(len)].to_vec());
+                        at = at.saturating_add(len);
+                    }
+                    assert_eq!(
+                        span.len(),
+                        if t.ends.is_empty() { 0 } else { freq as usize }
+                    );
+                    out.push((
+                        field,
+                        t.term.to_vec(),
+                        doc.saturating_add(base),
+                        t.positions[span.clone()].to_vec(),
+                        t.offsets.get(span).map(<[_]>::to_vec).unwrap_or_default(),
+                        payloads,
+                    ));
+                }
+            }
+        }
+        out.sort();
+        out
+    }
+
+    /// Ranges laid out one after the other, each from where the last
+    /// stopped (and some again from 0), hold what the whole buffer's
+    /// layout holds of their documents, while documents keep arriving.
+    #[test]
+    fn ranges_lay_out_their_documents_alone() {
+        let mut p = PendingPostings::default();
+        let words = ["a", "b", "c", "d"];
+        let mut x = 11u64;
+        let mut next = || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        let (mut doc, mut from) = (0i32, 0i32);
+        for round in 0..40 {
+            for _ in 0..1 + next() % 40 {
+                let mut terms = Vec::new();
+                for w in words {
+                    if next() % 3 != 0 {
+                        let n = 1 + (next() % 3) as i32;
+                        let positions: Vec<i32> = (0..n).map(|k| k * 3).collect();
+                        let payloads: Vec<Vec<u8>> = (0..n)
+                            .map(|k| {
+                                if (doc + k) % 5 == 0 {
+                                    vec![k as u8; 2]
+                                } else {
+                                    Vec::new()
+                                }
+                            })
+                            .collect();
+                        let refs: Vec<&[u8]> = payloads.iter().map(Vec::as_slice).collect();
+                        terms.push(term(w, &positions, &refs));
+                    }
+                }
+                add(&mut p, 0, doc, FULL, terms.clone());
+                // a field without positions too
+                let docs_only: Vec<InvertedTerm> = terms
+                    .iter()
+                    .map(|t| InvertedTerm {
+                        freq: 1,
+                        positions: Vec::new(),
+                        offsets: Vec::new(),
+                        payloads: Vec::new(),
+                        ..t.clone()
+                    })
+                    .collect();
+                add(&mut p, 1, doc, IndexOptions::DocsAndFreqs, docs_only);
+                doc += 1;
+            }
+            let start = if round % 7 == 6 { 0 } else { from };
+            let whole = flat(&p.flushed(None).unwrap(), 0);
+            let want: Vec<_> = whole
+                .into_iter()
+                .filter(|e| (start..doc).contains(&e.2))
+                .collect();
+            let got = flat(&p.flushed_below(None, Some((start, doc))).unwrap(), start);
+            assert_eq!(got, want, "round {round}: {start}..{doc}");
+            let mut streamed = Vec::new();
+            for field in [0, 1] {
+                p.stream_field_below(field, None, Some((start, doc)), &mut |terms| {
+                    for t in terms {
+                        for &(d, _) in t.docs {
+                            streamed.push((field, t.term.to_vec(), d + start));
+                        }
+                    }
+                    Ok(())
+                })
+                .unwrap();
+            }
+            streamed.sort();
+            let want: Vec<_> = want.iter().map(|e| (e.0, e.1.clone(), e.2)).collect();
+            assert_eq!(streamed, want, "round {round}: streamed");
+            from = doc;
+        }
+    }
+
     #[test]
     fn pool_streams_chain_slices_and_cut_anywhere() {
         let mut pool = BytePool::default();

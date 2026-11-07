@@ -1694,9 +1694,11 @@ fn write_merged_stored_fields(
     per_source_maps: &[HashMap<i32, i32>],
     doc_order: &[(usize, i32)],
     merged_segment_id: &[u8; ID_LENGTH],
-) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+    fdt_out: lucene_store::FsIndexOutput,
+) -> Result<(lucene_store::FsIndexOutput, Vec<u8>, Vec<u8>)> {
     let mut writer =
         stored_fields::StoredFieldsWriter::new(mode, merged_segment_id, mode.segment_suffix());
+    writer.stream_to(fdt_out);
     // Java's per-reader cached `BlockState`: the DOC path reads a run of
     // documents out of the same chunk, and decompressing that chunk once per
     // document instead of once per chunk is the difference between a merge
@@ -1729,6 +1731,18 @@ fn write_merged_stored_fields(
         .zip(&matching)
         .map(|(source, &m)| stored_fields_merge_strategy(&writer, source, m))
         .collect();
+
+    if is_scattered(doc_order, sources.len()) {
+        write_scattered_stored_fields(
+            &mut writer,
+            sources,
+            per_source_maps,
+            &strategies,
+            &mut chunk_cursors,
+            doc_order,
+        )?;
+        return finish_streamed_stored(writer);
+    }
 
     let mut i = 0usize;
     while i < doc_order.len() {
@@ -1784,20 +1798,14 @@ fn write_merged_stored_fields(
                 // not anything about how they are decompressed.
                 let (num_stored_fields, bytes) =
                     chunk_cursors[src_idx].document(sources[src_idx].reader, doc_id)?;
-                let mut doc = stored_fields::parse_document(num_stored_fields, bytes)?;
-                if let Some(pruned) = sources[src_idx].pruned_field {
-                    doc.fields
-                        .retain(|field| !pruned.drops(field.field_number, doc_id));
-                }
-                let field_number_map = &per_source_maps[src_idx];
-                for field in &mut doc.fields {
-                    field.field_number = *field_number_map.get(&field.field_number).ok_or(
-                        Error::UnknownSourceFieldNumber {
-                            field_number: field.field_number,
-                        },
-                    )?;
-                }
-                writer.add_document(&doc);
+                add_renumbered_document(
+                    &mut writer,
+                    &sources[src_idx],
+                    &per_source_maps[src_idx],
+                    doc_id,
+                    num_stored_fields,
+                    bytes,
+                )?;
                 // ARITH: as above -- `i < doc_order.len()`.
                 #[allow(clippy::arithmetic_side_effects)]
                 {
@@ -1806,7 +1814,127 @@ fn write_merged_stored_fields(
             }
         }
     }
-    Ok(writer.finish())
+    finish_streamed_stored(writer)
+}
+
+/// The streamed stored-fields writer's output and its `.fdx`/`.fdm`.
+fn finish_streamed_stored(
+    writer: stored_fields::StoredFieldsWriter,
+) -> Result<(lucene_store::FsIndexOutput, Vec<u8>, Vec<u8>)> {
+    let (out, fdx, fdm) = writer.finish_streamed();
+    let out = out.expect("write_merged_stored_fields streams the .fdt");
+    Ok((out, fdx, fdm))
+}
+
+/// A VISITOR source's document: parsed, its pruned field dropped, and its
+/// fields renumbered into the merged segment's numbers.
+fn add_renumbered_document(
+    writer: &mut stored_fields::StoredFieldsWriter,
+    source: &MergeSource,
+    field_number_map: &HashMap<i32, i32>,
+    doc_id: i32,
+    num_stored_fields: i64,
+    bytes: &[u8],
+) -> Result<()> {
+    let mut doc = stored_fields::parse_document(num_stored_fields, bytes)?;
+    if let Some(pruned) = source.pruned_field {
+        doc.fields
+            .retain(|field| !pruned.drops(field.field_number, doc_id));
+    }
+    for field in &mut doc.fields {
+        field.field_number =
+            *field_number_map
+                .get(&field.field_number)
+                .ok_or(Error::UnknownSourceFieldNumber {
+                    field_number: field.field_number,
+                })?;
+    }
+    writer.add_document(&doc);
+    Ok(())
+}
+
+/// Whether `doc_order` visits a source's documents out of their order often
+/// enough -- a reordered merge does on nearly every document -- that reading
+/// each document where it falls would decompress a chunk per document.
+fn is_scattered(doc_order: &[(usize, i32)], num_sources: usize) -> bool {
+    let mut last = vec![-1i32; num_sources];
+    let mut backwards = 0usize;
+    for &(src, doc) in doc_order {
+        let Some(prev) = last.get_mut(src) else {
+            continue;
+        };
+        if doc < *prev {
+            backwards = backwards.saturating_add(1);
+        }
+        *prev = doc;
+    }
+    backwards.saturating_mul(64) > doc_order.len()
+}
+
+/// About how many uncompressed bytes of documents a window of
+/// [`write_scattered_stored_fields`] holds.
+const SCATTERED_WINDOW_BYTES: usize = 64 << 20;
+
+/// [`write_merged_stored_fields`] for a scattered `doc_order`: the merged
+/// documents a window at a time, each window's documents read in source
+/// order -- every chunk decompressed once per window, not once per document
+/// -- then written in merged order. The window is sized from the documents
+/// seen so far to hold about [`SCATTERED_WINDOW_BYTES`].
+fn write_scattered_stored_fields(
+    writer: &mut stored_fields::StoredFieldsWriter,
+    sources: &[MergeSource],
+    per_source_maps: &[HashMap<i32, i32>],
+    strategies: &[StoredFieldsMergeStrategy],
+    chunk_cursors: &mut [stored_fields::ChunkCursor],
+    doc_order: &[(usize, i32)],
+) -> Result<()> {
+    let mut window = 4096usize;
+    let mut start = 0usize;
+    let mut arena: Vec<u8> = Vec::new();
+    let mut slots: Vec<(i64, usize, usize)> = Vec::new();
+    let mut by_source: Vec<usize> = Vec::new();
+    while start < doc_order.len() {
+        let end = start.saturating_add(window).min(doc_order.len());
+        let entries = &doc_order[start..end];
+        by_source.clear();
+        by_source.extend(0..entries.len());
+        by_source.sort_unstable_by_key(|&k| entries[k]);
+        arena.clear();
+        slots.clear();
+        slots.resize(entries.len(), (0, 0, 0));
+        for &k in &by_source {
+            let (src, doc) = entries[k];
+            let (num_stored_fields, bytes) =
+                chunk_cursors[src].document(sources[src].reader, doc)?;
+            slots[k] = (num_stored_fields, arena.len(), bytes.len());
+            arena.extend_from_slice(bytes);
+        }
+        for (&(src, doc), &(num_stored_fields, at, len)) in entries.iter().zip(&slots) {
+            // ARITH: `at..at + len` is a range this loop's reads appended.
+            #[allow(clippy::arithmetic_side_effects)]
+            let bytes = &arena[at..at + len];
+            match strategies[src] {
+                StoredFieldsMergeStrategy::Bulk | StoredFieldsMergeStrategy::Doc => {
+                    writer.add_serialized_document(num_stored_fields, bytes);
+                }
+                StoredFieldsMergeStrategy::Visitor => add_renumbered_document(
+                    writer,
+                    &sources[src],
+                    &per_source_maps[src],
+                    doc,
+                    num_stored_fields,
+                    bytes,
+                )?,
+            }
+        }
+        let per_doc = arena.len().checked_div(entries.len()).unwrap_or(1).max(1);
+        window = SCATTERED_WINDOW_BYTES
+            .checked_div(per_doc)
+            .unwrap_or(1024)
+            .clamp(1024, 1 << 16);
+        start = end;
+    }
+    Ok(())
 }
 
 /// Java's `StoredFieldsWriter.MergeVisitor`: forward each decoded value
@@ -2474,14 +2602,19 @@ fn merge_segments_mapped_inner(
             )?;
             files.extend([fdt_name, fdx_name, fdm_name]);
         } else {
-            let (fdt, fdx, fdm) = write_merged_stored_fields(
+            // The `.fdt` streams to its file as chunks are copied: a merge
+            // holds a few chunks of stored fields, not the merged segment's.
+            let (fdt_out, fdx, fdm) = write_merged_stored_fields(
                 stored_mode,
                 sources,
                 &per_source_maps,
                 &doc_order,
                 &merged_segment_id,
+                dir.create_output(&fdt_name)?,
             )?;
-            for (name, bytes) in [(&fdt_name, &fdt), (&fdx_name, &fdx), (&fdm_name, &fdm)] {
+            fdt_out.close()?;
+            files.push(fdt_name.clone());
+            for (name, bytes) in [(&fdx_name, &fdx), (&fdm_name, &fdm)] {
                 write_file(dir, name, bytes)?;
                 files.push(name.clone());
             }
@@ -2643,7 +2776,11 @@ fn merge_segments_mapped_inner(
                     has_payloads: plan.shape.has_payloads,
                 })
                 .collect();
+            // `.doc`/`.pos`/`.pay` stream to their files as windows are
+            // encoded, so the merge holds neither the decoded postings nor the
+            // encoded files whole.
             per_field_postings::write_streaming::<Error>(
+                Some((dir, merged_segment_name)),
                 &specs,
                 &merged_fields,
                 &name_of,
@@ -2667,6 +2804,7 @@ fn merge_segments_mapped_inner(
         };
         if let Some(groups) = streamed {
             for group in &groups {
+                files.extend(group.streamed_files.iter().cloned());
                 for (ext, bytes) in group.files() {
                     let name = group.file_name(merged_segment_name, ext);
                     write_file(dir, &name, bytes)?;
@@ -2979,9 +3117,25 @@ fn merge_segments_mapped_inner(
         // `IndexWriter.mergeMiddle`: the merged segment holds blocks iff any
         // source did -- see [`MergeSource::has_blocks`].
         has_blocks: sources.iter().any(|s| s.has_blocks),
-        diagnostics: options.kind.diagnostics(sources.len(), lucene_version),
+        diagnostics: {
+            let mut diagnostics = options.kind.diagnostics(sources.len(), lucene_version);
+            for (key, value) in &options.extra_diagnostics {
+                // `SegmentInfo.addDiagnostics`: a later value replaces an earlier one.
+                match diagnostics.iter_mut().find(|(k, _)| k == key) {
+                    Some(slot) => slot.1.clone_from(value),
+                    None => diagnostics.push((key.clone(), value.clone())),
+                }
+            }
+            diagnostics
+        },
         files: files.clone(),
-        attributes: crate::segment_writer::stored_fields_mode_attribute(stored_mode),
+        attributes: {
+            let mut attributes = crate::segment_writer::stored_fields_mode_attribute(stored_mode);
+            for (key, value) in &options.extra_attributes {
+                crate::index_writer::set_attribute(&mut attributes, key, value);
+            }
+            attributes
+        },
         // The merged segment claims the sort exactly when this merge produced
         // it. A concatenating merge must not claim one (it would describe an
         // order the bytes do not have); the k-way merge genuinely preserves
@@ -4288,6 +4442,10 @@ pub struct MergeOptions {
     /// ([`crate::index_writer::IndexWriter::set_doc_values_format_for_field`]);
     /// regrouped on write like `postings_formats`.
     pub doc_values_formats: Vec<(String, per_field_doc_values::Lucene90DocValuesFormat)>,
+    /// What replaces the default `Lucene90DocValuesFormat()` for a field
+    /// nothing else routes
+    /// ([`crate::index_writer::IndexWriter::set_default_doc_values_format`]).
+    pub default_doc_values_format: per_field_doc_values::Lucene90DocValuesFormat,
     /// The fields routed to a KNN vectors format other than the default
     /// `Lucene99HnswVectorsFormat(hnsw_m, hnsw_beam_width)`
     /// ([`crate::index_writer::IndexWriter::set_knn_vectors_format_for_field`]).
@@ -4307,7 +4465,17 @@ pub struct MergeOptions {
     pub sorted_numeric_remap: Option<std::sync::Arc<SortedNumericRemap>>,
     /// What the merged `.si`'s diagnostics say produced it.
     pub kind: MergeKind,
+    /// Diagnostics the merge's hooks add to the merged `.si`
+    /// (`OneMerge.setMergeInfo`), after the writer's own.
+    pub extra_diagnostics: Vec<(String, String)>,
+    /// `.si` attributes the merged segment records after the writer's own,
+    /// a later value for a key replacing an earlier one.
+    pub extra_attributes: Vec<(String, String)>,
 }
+
+/// The diagnostics key OpenSearch's `ShuffleForcedMergePolicy` marks an
+/// interleaved merged segment with (`isInterleavedSegment`).
+pub const SHUFFLE_MERGE_KEY: &str = "opensearch.shuffle_merge";
 
 /// The writer operation a merge carries out, as the merged segment's
 /// diagnostics record it (`IndexWriter.setDiagnostics`' source and details).
@@ -4316,7 +4484,13 @@ pub enum MergeKind {
     /// A `OneMerge` (`_mergeInit`): source `merge`, with `mergeFactor` (the
     /// number of sources) and `mergeMaxNumSegments` (`OneMerge.maxNumSegments`:
     /// `forceMerge`'s argument for a forced merge, `-1` otherwise).
-    Merge { max_num_segments: i32 },
+    ///
+    /// `shuffled`: OpenSearch's `ShuffleForcedMergePolicy` interleaved the
+    /// sources, which the diagnostics record as `opensearch.shuffle_merge`.
+    Merge {
+        max_num_segments: i32,
+        shuffled: bool,
+    },
     /// `addIndexes(CodecReader...)`'s merge: source
     /// `addIndexes(CodecReader...)`, no details.
     AddIndexes,
@@ -4326,6 +4500,7 @@ impl Default for MergeKind {
     fn default() -> Self {
         MergeKind::Merge {
             max_num_segments: -1,
+            shuffled: false,
         }
     }
 }
@@ -4335,14 +4510,23 @@ impl MergeKind {
     /// sources.
     pub fn diagnostics(self, merge_factor: usize, version: LuceneVersion) -> Vec<(String, String)> {
         match self {
-            MergeKind::Merge { max_num_segments } => segment_info::writer_diagnostics(
-                segment_info::SOURCE_MERGE,
-                version,
-                &[
-                    ("mergeMaxNumSegments", max_num_segments.to_string()),
-                    ("mergeFactor", merge_factor.to_string()),
-                ],
-            ),
+            MergeKind::Merge {
+                max_num_segments,
+                shuffled,
+            } => {
+                let mut diagnostics = segment_info::writer_diagnostics(
+                    segment_info::SOURCE_MERGE,
+                    version,
+                    &[
+                        ("mergeMaxNumSegments", max_num_segments.to_string()),
+                        ("mergeFactor", merge_factor.to_string()),
+                    ],
+                );
+                if shuffled {
+                    diagnostics.push((SHUFFLE_MERGE_KEY.to_string(), String::new()));
+                }
+                diagnostics
+            }
             MergeKind::AddIndexes => segment_info::writer_diagnostics(
                 segment_info::SOURCE_ADDINDEXES_READERS,
                 version,
@@ -4413,16 +4597,24 @@ impl MergeOptions {
 
     /// The doc-values format `field` is routed to.
     fn doc_values_format_for(&self, field: &str) -> per_field_doc_values::Lucene90DocValuesFormat {
-        self.doc_values_formats
+        // A field routed explicitly keeps its format, even the default one.
+        if let Some((_, format)) = self
+            .doc_values_formats
             .iter()
             .find(|(name, _)| name == field)
-            .map(|(_, format)| *format)
-            .or_else(|| {
-                self.codec
-                    .as_ref()
-                    .map(|c| c.doc_values_format_for_field(field))
-            })
-            .unwrap_or_default()
+        {
+            return *format;
+        }
+        let routed = self
+            .codec
+            .as_ref()
+            .map(|c| c.doc_values_format_for_field(field))
+            .unwrap_or_default();
+        if routed == per_field_doc_values::Lucene90DocValuesFormat::default() {
+            self.default_doc_values_format
+        } else {
+            routed
+        }
     }
 
     /// The postings format `field` is routed to.
@@ -4447,11 +4639,14 @@ impl Default for MergeOptions {
             hnsw_beam_width: hnsw::DEFAULT_BEAM_WIDTH,
             postings_formats: Vec::new(),
             doc_values_formats: Vec::new(),
+            default_doc_values_format: Default::default(),
             knn_vectors_formats: Vec::new(),
             codec: None,
             reorder: None,
             sorted_numeric_remap: None,
             kind: MergeKind::default(),
+            extra_diagnostics: Vec::new(),
+            extra_attributes: Vec::new(),
         }
     }
 }
@@ -5729,12 +5924,17 @@ const PARALLEL_MERGE_MIN_TERMS: i64 = 8192;
 /// large field covers.
 const TERMS_PER_MERGE_RANGE: i64 = 16384;
 
+/// Roughly how many postings (documents plus positions, summed over the
+/// sources) one merge range of a large field holds: a few MB of decoded run
+/// per range, a window of one range per thread at a time.
+const POSTINGS_PER_MERGE_RANGE: i64 = 1 << 20;
+
 /// Where to split a field's term space for a parallel merge: `ranges[0]` is
 /// an unused placeholder for "from the first term", and range `i` covers the
 /// terms in `ranges[i]..ranges[i + 1]` (the last one to the end).
 ///
-/// The split terms are evenly spaced terms of the source with the most
-/// terms, taken in one walk of its dictionary. Ranges are disjoint and
+/// The split terms are taken in one walk of the dictionary of the source
+/// with the most postings, evenly spaced in its postings. Ranges are disjoint and
 /// cover every term of every source, so merging them independently and
 /// concatenating the results in order is the single merge.
 fn term_ranges(per_source_field: &[Option<&SourcePostings<'_>>]) -> Result<Vec<Vec<u8>>> {
@@ -5744,32 +5944,50 @@ fn term_ranges(per_source_field: &[Option<&SourcePostings<'_>>]) -> Result<Vec<V
         .map(|pf| pf.field_terms.num_terms.max(0))
         .sum();
     let threads = rayon::current_num_threads();
+    // Documents plus positions: what a range's run holds.
+    let postings = |pf: &SourcePostings<'_>| {
+        pf.field_terms
+            .sum_doc_freq
+            .max(0)
+            .saturating_add(pf.field_terms.sum_total_term_freq.max(0))
+    };
     let largest = per_source_field
         .iter()
         .flatten()
-        .max_by_key(|pf| pf.field_terms.num_terms);
+        .max_by_key(|pf| (postings(pf), pf.field_terms.num_terms));
     let (Some(largest), true) = (largest, threads > 1 && total >= PARALLEL_MERGE_MIN_TERMS) else {
         return Ok(vec![Vec::new()]);
     };
     // Four ranges per thread: ranges differ in how many sources and
     // postings they hold, so finer ranges balance better. A large field gets
     // more, so that the window `merge_field_runs` decodes at a time (one
-    // range per thread) stays a small part of it.
-    let ranges = (threads.saturating_mul(4) as i64).max(total / TERMS_PER_MERGE_RANGE);
-    let step = largest
-        .field_terms
-        .num_terms
-        .checked_div(ranges)
-        .unwrap_or(0)
-        .max(1);
+    // range per thread) stays a small part of it, by terms and by postings.
+    let total_postings: i64 = per_source_field
+        .iter()
+        .flatten()
+        .map(|pf| postings(pf))
+        .fold(0, i64::saturating_add);
+    let ranges = (threads.saturating_mul(4) as i64)
+        .max(total / TERMS_PER_MERGE_RANGE)
+        .max(total_postings / POSTINGS_PER_MERGE_RANGE);
+    // Split points evenly spaced in the largest source's postings, not its
+    // terms: a few frequent terms hold most of a field's postings (Zipf), and
+    // equal term counts would give one range most of them.
+    let step = postings(largest).checked_div(ranges).unwrap_or(0).max(1);
     let mut out = vec![Vec::new()];
     let mut terms = largest.field_terms.iter();
-    let mut ord = 0i64;
-    while let Some((term, _)) = terms.try_next()? {
-        if ord > 0 && ord.checked_rem(step) == Some(0) && (out.len() as i64) < ranges {
+    let mut seen = 0i64;
+    let mut next_split = step;
+    while let Some((term, stats)) = terms.try_next()? {
+        if seen >= next_split && (out.len() as i64) < ranges {
             out.push(term.to_vec());
+            while next_split <= seen {
+                next_split = next_split.saturating_add(step);
+            }
         }
-        ord = ord.saturating_add(1);
+        seen = seen
+            .saturating_add(i64::from(stats.doc_freq.max(0)))
+            .saturating_add(stats.total_term_freq.max(0));
     }
     Ok(out)
 }

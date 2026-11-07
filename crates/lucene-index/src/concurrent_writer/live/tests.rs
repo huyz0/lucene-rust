@@ -131,6 +131,7 @@ fn body(positions: bool, terms: &[&str]) -> LiveRequest {
             field: "body".to_string(),
             terms: terms.iter().map(|t| t.as_bytes().to_vec()).collect(),
             positions,
+            patterns: Vec::new(),
         }],
     }
 }
@@ -199,6 +200,7 @@ fn buffered_documents_are_read_with_their_statistics() {
             field: "_id".to_string(),
             terms: vec![b"d4".to_vec()],
             positions: true,
+            patterns: Vec::new(),
         }],
     };
     let snap = w.live_snapshot(&ids, None).unwrap();

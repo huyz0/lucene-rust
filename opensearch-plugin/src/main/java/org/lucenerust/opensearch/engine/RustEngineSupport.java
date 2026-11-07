@@ -64,6 +64,34 @@ public final class RustEngineSupport {
     );
 
     /**
+     * Whether the Rust engine writes doc values in the {@code RustAdaptive} format: numeric and
+     * date columns as adaptive blocks (delta, GCD, decimal and bit-packing per 128 values), several
+     * times smaller for timestamps and decimal doubles. Off by default, which writes stock
+     * Lucene90 doc values. Only nodes with this plugin read {@code RustAdaptive} segments; to go
+     * back, close the index, set this to false, reopen it and force-merge, which rewrites every
+     * segment stock-readable.
+     */
+    public static final Setting<Boolean> ADAPTIVE_DOC_VALUES = Setting.boolSetting(
+        "index.lucene_rust.adaptive_doc_values",
+        false,
+        Setting.Property.IndexScope
+    );
+
+    /**
+     * The field whose value is a document's partition, as a partitioned table's partition key: every
+     * segment of the shard holds the documents of one partition (a keyword's value, or a numeric's or
+     * date's), and merges never mix partitions, so each partition's documents stay together on disk.
+     * Documents without a value, and delete tombstones, share one default partition. Empty (the
+     * default) partitions nothing. Segments record their partition the way OpenSearch's context-aware
+     * segments do, so OpenSearch's own engine reads and merges them alike.
+     */
+    public static final Setting<String> PARTITION_FIELD = Setting.simpleString(
+        "index.lucene_rust.partition_field",
+        Setting.Property.IndexScope,
+        Setting.Property.Final
+    );
+
+    /**
      * Test-only: a document with a {@code __lucene_rust_panic} field makes the writer panic inside
      * its lock, for the "a panic fails exactly one shard" check. Never set on a real index.
      */
@@ -92,6 +120,28 @@ public final class RustEngineSupport {
         "zstd_no_dict",
         NativeBridge.STORED_FIELDS_ZSTD_NO_DICT
     );
+
+    /** {@code NativeLuceneIndexWriterFactory}'s {@code opensearch.shuffle_forced_merge}, read as it reads it. */
+    private static final boolean SHUFFLE_FORCED_MERGE = org.opensearch.common.Booleans.parseBoolean(
+        System.getProperty("opensearch.shuffle_forced_merge", Boolean.TRUE.toString())
+    );
+
+    /** Why an index with a fuzzy-set {@code _id} postings format cannot be served. */
+    public static final String FUZZY_SET_REFUSED = "the Rust engine does not support index.optimize_doc_id_lookup.fuzzy_set.enabled";
+
+    /**
+     * Whether an index with these settings is served by the Rust engine: it asked for it, or it
+     * inherits the node default and none of its static settings sends it to OpenSearch's engine.
+     */
+    public static boolean servedByRust(org.opensearch.common.settings.Settings settings) {
+        if (ENGINE_ENABLED.get(settings) == false) {
+            return false;
+        }
+        return ENGINE_ENABLED.exists(settings)
+            || (CODECS.containsKey(EngineConfig.INDEX_CODEC_SETTING.get(settings))
+                && (org.opensearch.index.IndexSortConfig.INDEX_SORT_FIELD_SETTING.exists(settings) == false
+                    || unsupportedSort(settings) == null));
+    }
 
     /** The circuit breaker the plugin registers for the writers' buffers. */
     public static final String BREAKER_NAME = "lucene_rust_writer";
@@ -157,8 +207,13 @@ public final class RustEngineSupport {
             && org.lucenerust.opensearch.sparse.SparseSettings.SPARSE_INDEX.get(settings.getSettings())) {
             return "the Rust engine writes an index.sparse index with the default codec only, and index.codec is [" + codec + "]";
         }
-        if (indexSorted) {
-            return "the Rust engine does not support index sorting";
+        if (indexSorted && unsupportedSort(settings.getSettings()) != null) {
+            return unsupportedSort(settings.getSettings());
+        }
+        // The codec then gives _id a FuzzyFilterPostingsFormat (a bloom filter beside the terms),
+        // which the Rust writer does not lay out.
+        if (settings.isEnableFuzzySetForDocId()) {
+            return FUZZY_SET_REFUSED;
         }
         if (settings.isContextAwareEnabled()) {
             return "the Rust engine does not support context-aware segments";
@@ -232,6 +287,38 @@ public final class RustEngineSupport {
         return null;
     }
 
+    /** {@link #PARTITION_FIELD}, or null when it names none. */
+    static String partitionField(org.opensearch.common.settings.Settings settings) {
+        String field = PARTITION_FIELD.get(settings);
+        return field.isEmpty() ? null : field;
+    }
+
+    /**
+     * Why the Rust writer cannot sort an index with these settings, or {@code null} when it can.
+     * Before 3.2.0 OpenSearch sets no parent field under an index sort (see {@link #parentField}),
+     * which the writer needs to keep nested blocks whole; a search of the buffers reads documents
+     * in arrival order, which a sorted flush renumbers.
+     */
+    static String unsupportedSort(org.opensearch.common.settings.Settings settings) {
+        if (org.opensearch.cluster.metadata.IndexMetadata.SETTING_INDEX_VERSION_CREATED.get(settings)
+            .before(org.opensearch.Version.V_3_2_0)) {
+            return "the Rust engine supports index sorting on indices created on 3.2.0 or later";
+        }
+        if (REALTIME_SEARCH.get(settings)) {
+            return "index.lucene_rust.realtime_search does not support index sorting";
+        }
+        return null;
+    }
+
+    /**
+     * The parent field {@code NativeLuceneIndexWriterFactory} sets under an index sort, which marks
+     * each nested block's last document ({@link #unsupportedSort} refuses the indices it does not
+     * set it on).
+     */
+    static String parentField(EngineConfig config) {
+        return config.getIndexSort() != null ? org.opensearch.common.lucene.Lucene.PARENT_FIELD : null;
+    }
+
     static RustIndexWriter openWriter(
         EngineConfig config,
         Store store,
@@ -248,6 +335,10 @@ public final class RustEngineSupport {
             FAULT_INJECTION.get(config.getIndexSettings().getSettings()),
             org.lucenerust.opensearch.sparse.SparseSettings.SPARSE_INDEX.get(config.getIndexSettings().getSettings()),
             REALTIME_SEARCH.get(config.getIndexSettings().getSettings()),
+            ADAPTIVE_DOC_VALUES.get(config.getIndexSettings().getSettings()),
+            partitionField(config.getIndexSettings().getSettings()),
+            config.getIndexSort(),
+            parentField(config),
             maxDocs,
             CODECS.getOrDefault(config.getIndexSettings().getValue(EngineConfig.INDEX_CODEC_SETTING), NativeBridge.STORED_FIELDS_BEST_SPEED),
             config.getIndexSettings().getValue(EngineConfig.INDEX_CODEC_COMPRESSION_LEVEL_SETTING),
@@ -269,6 +360,13 @@ public final class RustEngineSupport {
             refreshMergePolicy(writer, config);
             writer.setMergeOnFlush(Math.max(wait, 0), wait > 0 && indexSettings.getMergeOnFlushPolicy().isPresent());
             refreshMergeScheduler(writer, config);
+            // NativeLuceneIndexWriterFactory: merged segments are warmed (pre-copied to replicas) on
+            // segment-replication indices.
+            if (indexSettings.isDocumentReplication() == false
+                && (indexSettings.isSegRepLocalEnabled() || indexSettings.isRemoteStoreEnabled())
+                && config.getIndexReaderWarmer() != null) {
+                writer.setMergedSegmentWarmer(config.getIndexReaderWarmer());
+            }
             success = true;
         } finally {
             if (success == false) {
@@ -302,8 +400,9 @@ public final class RustEngineSupport {
     }
 
     /**
-     * The shard's {@code index.merge.policy.*} for the Rust writer: the {@code TieredMergePolicy}
-     * OpenSearch's provider keeps (and updates in place when the settings change), under its wrappers.
+     * The shard's merge policy for the Rust writer, under its wrappers: the {@code TieredMergePolicy}
+     * or {@code LogByteSizeMergePolicy} OpenSearch's provider keeps (and updates in place when the
+     * settings change), or {@code NoMergePolicy} when merges are off.
      */
     static void refreshMergePolicy(DocumentIndexWriter writer, EngineConfig config) {
         if (writer instanceof RustIndexWriter rust) {
@@ -311,14 +410,41 @@ public final class RustEngineSupport {
             while (policy instanceof FilterMergePolicy filter) {
                 policy = filter.unwrap();
             }
-            if (policy instanceof TieredMergePolicy tiered) {
-                try {
+            try {
+                if (policy instanceof TieredMergePolicy tiered) {
                     rust.setMergePolicy(tiered);
-                } catch (IOException e) {
-                    throw new java.io.UncheckedIOException(e);
+                    rust.setPluggableMergePolicy(null);
+                } else {
+                    // log_byte_size, or index.merge.enabled: false. No OpenSearch setting yields any
+                    // other policy; one a test passes in directly merges with the tiered defaults.
+                    rust.setPluggableMergePolicy(policy);
                 }
+                // NativeLuceneIndexWriterFactory's setUseCompoundFile and setCheckPendingFlushUpdate,
+                // the policy's compound-file ratio and cap, and its ShuffleForcedMergePolicy wrapper.
+                rust.setOptions(
+                    config.useCompoundFile(),
+                    policy.getNoCFSRatio(),
+                    policy.getMaxCFSSegmentSizeMB(),
+                    config.getIndexSettings().isCheckPendingFlushEnabled(),
+                    SHUFFLE_FORCED_MERGE
+                );
+                rust.setBpReorder(bpReorder(config.getIndexSettings()));
+            } catch (IOException e) {
+                throw new java.io.UncheckedIOException(e);
             }
         }
+    }
+
+    /**
+     * The shard's {@code index.lucene_rust.bp_reorder.*}. A sparse index has its own segment layout,
+     * which BP reordering does not support, so it is never reordered.
+     */
+    static BpReorderSettings.Values bpReorder(IndexSettings indexSettings) {
+        BpReorderSettings.Values values = BpReorderSettings.Values.of(indexSettings.getSettings());
+        if (values.enabled() && org.lucenerust.opensearch.sparse.SparseSettings.SPARSE_INDEX.get(indexSettings.getSettings())) {
+            return BpReorderSettings.Values.of(org.opensearch.common.settings.Settings.EMPTY);
+        }
+        return values;
     }
 
     /**

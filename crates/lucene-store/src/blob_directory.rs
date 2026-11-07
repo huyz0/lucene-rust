@@ -29,10 +29,10 @@
 //!   processes must pass its own [`LockFactory`] (a conditional put, a
 //!   lease) through [`BlobDirectory::with_lock_factory`].
 //!
-//! Reads are whole objects ([`BlobStore::get`]), as every [`Input`] here
-//! is a contiguous byte slice. A store that serves large shards will want a
-//! local cache in front of it: wrap the directory, or return mapped cache
-//! files from `get` through [`Input::external`].
+//! [`BlobDirectory`] reads whole objects ([`BlobStore::get`]). For large
+//! shards, [`crate::CachedBlobDirectory`] reads the same store by range
+//! ([`BlobStore::get_range`]) through a page cache on local disk and in
+//! memory, fetching only the pages a reader touches.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -56,6 +56,27 @@ pub trait BlobStore: Send + Sync {
 
     /// A whole object's bytes.
     fn get(&self, name: &str) -> Result<Input>;
+
+    /// `len` bytes of object `name` from `offset`, fewer where the object
+    /// ends first (a ranged `GET`). [`crate::CachedBlobDirectory`] reads
+    /// through this alone. The default downloads the whole object; a real
+    /// store overrides it.
+    fn get_range(&self, name: &str, offset: u64, len: usize) -> Result<Vec<u8>> {
+        let bytes = self.get(name)?;
+        let start = usize::try_from(offset)
+            .unwrap_or(usize::MAX)
+            .min(bytes.len());
+        let end = start.saturating_add(len).min(bytes.len());
+        Ok(bytes[start..end].to_vec())
+    }
+
+    /// Every object name with its length, when the store's listing carries
+    /// lengths (S3's `ListObjectsV2`, Azure's and GCS's lists do): a reader
+    /// then opens files without asking for each length. `None`, the
+    /// default, when it does not.
+    fn list_with_sizes(&self) -> Result<Option<Vec<(String, u64)>>> {
+        Ok(None)
+    }
 
     /// An object's length. The default downloads it; a real store answers
     /// from metadata (`HEAD`).
@@ -175,6 +196,16 @@ impl<S: BlobStore + 'static> BlobDirectory<S> {
         }
     }
 
+    /// A directory over a store already shared with another owner
+    /// ([`crate::CachedBlobDirectory`]'s page fetches).
+    pub(crate) fn from_shared(store: Arc<S>, lock_factory: Arc<dyn LockFactory>) -> Self {
+        Self {
+            store,
+            base: BaseDirectory::new(lock_factory),
+            temp_counter: AtomicU64::new(0),
+        }
+    }
+
     /// The store underneath.
     pub fn store(&self) -> &S {
         &self.store
@@ -191,6 +222,10 @@ impl<S: BlobStore + 'static> Directory for BlobDirectory<S> {
 
     fn open(&self, name: &str) -> Result<Input> {
         self.store.get(name)
+    }
+
+    fn read_at(&self, name: &str, offset: u64, len: usize) -> Result<Vec<u8>> {
+        self.store.get_range(name, offset, len)
     }
 
     fn file_length(&self, name: &str) -> Result<u64> {
@@ -272,6 +307,25 @@ impl BlobStore for InMemoryBlobStore {
             .get(name)
             .map(|b| Input::Shared(Arc::clone(b)))
             .ok_or_else(|| not_found(name))
+    }
+
+    fn get_range(&self, name: &str, offset: u64, len: usize) -> Result<Vec<u8>> {
+        let objects = lock_ignoring_poison(&self.objects);
+        let bytes = objects.get(name).ok_or_else(|| not_found(name))?;
+        let start = usize::try_from(offset)
+            .unwrap_or(usize::MAX)
+            .min(bytes.len());
+        let end = start.saturating_add(len).min(bytes.len());
+        Ok(bytes[start..end].to_vec())
+    }
+
+    fn list_with_sizes(&self) -> Result<Option<Vec<(String, u64)>>> {
+        Ok(Some(
+            lock_ignoring_poison(&self.objects)
+                .iter()
+                .map(|(name, bytes)| (name.clone(), bytes.len() as u64))
+                .collect(),
+        ))
     }
 
     fn size(&self, name: &str) -> Result<u64> {

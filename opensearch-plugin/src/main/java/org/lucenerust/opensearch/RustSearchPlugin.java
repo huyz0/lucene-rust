@@ -22,6 +22,8 @@ import org.lucenerust.opensearch.store.StoreCrypto;
 import org.opensearch.index.IndexModule;
 import org.opensearch.index.IndexSettings;
 import org.opensearch.index.engine.EngineFactory;
+import org.opensearch.index.shard.SearchOperationListener;
+import org.opensearch.search.internal.SearchContext;
 import org.opensearch.core.common.breaker.CircuitBreaker;
 import org.opensearch.indices.IndexingMemoryController;
 import org.opensearch.indices.breaker.BreakerSettings;
@@ -119,6 +121,9 @@ public class RustSearchPlugin extends Plugin implements
     );
 
     private static final Logger logger = LogManager.getLogger(RustSearchPlugin.class);
+
+    private final SetOnce<org.opensearch.cluster.service.ClusterService> clusterService = new SetOnce<>();
+    private final SetOnce<IndexNameExpressionResolver> resolver = new SetOnce<>();
 
     private final NativeReaders readers = new NativeReaders();
     private final SearchStats stats = new SearchStats();
@@ -225,6 +230,15 @@ public class RustSearchPlugin extends Plugin implements
     @Override
     public void onIndexModule(IndexModule indexModule) {
         RustIndexerFactory.install(indexModule);
+        // The fuzzy-set _id postings format is refused at creation (RustEngineSupport.unsupported); the
+        // setting is dynamic, so turning it on later is refused too, rather than ignored.
+        if (RustEngineSupport.servedByRust(indexModule.getSettings())) {
+            indexModule.addSettingsUpdateConsumer(IndexSettings.INDEX_DOC_ID_FUZZY_SET_ENABLED_SETTING, enabled -> {}, enabled -> {
+                if (enabled) {
+                    throw new IllegalArgumentException(RustEngineSupport.FUZZY_SET_REFUSED);
+                }
+            });
+        }
         // Every searcher OpenSearch hands out for the index -- the fetch
         // phase's, the get API's -- reads stored fields natively while
         // index.lucene_rust.fetch.enabled is on, and with Lucene otherwise
@@ -234,6 +248,31 @@ public class RustSearchPlugin extends Plugin implements
             indexModule.addSettingsUpdateConsumer(FETCH_ENABLED, flag::set);
             try {
                 indexModule.setReaderWrapper(indexService -> reader -> NativeStoredFieldsReader.wrap(reader, readers, stats, flag::enabled));
+                // The fetch phase reads its hits one at a time; announcing them first lets a
+                // segment read by range fetch their stored fields together.
+                indexModule.addSearchOperationListener(new SearchOperationListener() {
+                    @Override
+                    public void onPreFetchPhase(SearchContext context) {
+                        if (flag.enabled() == false) {
+                            return;
+                        }
+                        // `stored_fields: _none_`: the fetch phase reads no stored fields.
+                        if (context.storedFieldsContext() != null && context.storedFieldsContext().fetchFields() == false) {
+                            return;
+                        }
+                        try {
+                            NativeStoredFieldsReader.prefetch(
+                                context.searcher().getIndexReader(),
+                                context.docIdsToLoad(),
+                                context.docIdsToLoadFrom(),
+                                context.docIdsToLoadSize()
+                            );
+                        } catch (RuntimeException e) {
+                            // Only a hint: the fetch phase reads every document itself.
+                            logger.debug("lucene-rust: stored-fields prefetch failed", e);
+                        }
+                    }
+                });
             } catch (SetOnce.AlreadySetException e) {
                 // Another plugin wrapped the index's readers first: its wrapper
                 // stays, Lucene reads.
@@ -343,6 +382,8 @@ public class RustSearchPlugin extends Plugin implements
             RustEngineSupport.ENGINE_DEFAULT,
             RustEngineSupport.FAULT_INJECTION,
             RustEngineSupport.REALTIME_SEARCH,
+            RustEngineSupport.ADAPTIVE_DOC_VALUES,
+            RustEngineSupport.PARTITION_FIELD,
             NODE_ENGINE_ENABLED,
             LocalKeySource.KEY,
             LocalKeySource.KEY_ID,
@@ -350,6 +391,7 @@ public class RustSearchPlugin extends Plugin implements
             NODE_DECRYPT_CACHE,
             SparseSettings.SPARSE_INDEX
         ));
+        settings.addAll(org.lucenerust.opensearch.engine.BpReorderSettings.settings());
         return settings;
     }
 
@@ -363,6 +405,30 @@ public class RustSearchPlugin extends Plugin implements
     @Override
     public List<QuerySpec<?>> getQueries() {
         return List.of(new QuerySpec<>(NeuralSparseQueryBuilder.NAME, NeuralSparseQueryBuilder::new, NeuralSparseQueryBuilder::fromXContent));
+    }
+
+    @Override
+    public java.util.Collection<Object> createComponents(
+        org.opensearch.transport.client.Client client,
+        org.opensearch.cluster.service.ClusterService clusterService,
+        org.opensearch.threadpool.ThreadPool threadPool,
+        org.opensearch.watcher.ResourceWatcherService resourceWatcherService,
+        org.opensearch.script.ScriptService scriptService,
+        org.opensearch.core.xcontent.NamedXContentRegistry xContentRegistry,
+        org.opensearch.env.Environment environment,
+        org.opensearch.env.NodeEnvironment nodeEnvironment,
+        org.opensearch.core.common.io.stream.NamedWriteableRegistry namedWriteableRegistry,
+        IndexNameExpressionResolver indexNameExpressionResolver,
+        Supplier<org.opensearch.repositories.RepositoriesService> repositoriesServiceSupplier
+    ) {
+        this.clusterService.set(clusterService);
+        this.resolver.set(indexNameExpressionResolver);
+        return List.of();
+    }
+
+    @Override
+    public List<org.opensearch.action.support.ActionFilter> getActionFilters() {
+        return List.of(new RealtimePrimaryFilter(clusterService::get, resolver::get));
     }
 
     @Override

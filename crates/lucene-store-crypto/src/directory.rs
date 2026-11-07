@@ -366,6 +366,13 @@ impl<D: Directory> Directory for EncryptedDirectory<D> {
         if self.is_plain(name) {
             return self.inner.open(name);
         }
+        let decoder = crate::pages::EncryptedDecoder {
+            keys: self.keys.as_ref(),
+            header_lens: &self.header_lens,
+        };
+        if let Some(opened) = self.inner.open_decoded(name, &decoder) {
+            return opened;
+        }
         let sealed_len = self.inner.file_length(name)?;
         if let Some(shared) = self.cache.get(name, sealed_len) {
             return Input::slice_of(&shared, 0, shared.len());
@@ -380,6 +387,21 @@ impl<D: Directory> Directory for EncryptedDirectory<D> {
         Input::slice_of(&shared, 0, shared.len())
     }
 
+    /// Plain files are hinted as they are; encrypted ones with the decoder
+    /// their opens use, so their headers and first and last decoded pages
+    /// come in the batch.
+    fn prefetch_files(&self, names: &[String]) -> Result<()> {
+        let (plain, sealed): (Vec<String>, Vec<String>) =
+            names.iter().cloned().partition(|n| self.is_plain(n));
+        let decoder = crate::pages::EncryptedDecoder {
+            keys: self.keys.as_ref(),
+            header_lens: &self.header_lens,
+        };
+        let plain_result = self.inner.prefetch_files(&plain);
+        self.inner.prefetch_files_decoded(&sealed, &decoder)?;
+        plain_result
+    }
+
     fn file_length(&self, name: &str) -> Result<u64> {
         if self.is_plain(name) {
             return self.inner.file_length(name);
@@ -388,9 +410,8 @@ impl<D: Directory> Directory for EncryptedDirectory<D> {
         let (header_len, chunk_size) = match known {
             Some(k) => k,
             None => {
-                let file = self.inner.open(name)?;
-                let (header, len) = Header::decode(&file, name)?;
-                let entry = (len as u64, header.chunk_size);
+                let (header, bytes) = crate::pages::read_header(&self.inner, name)?;
+                let entry = (bytes.len() as u64, header.chunk_size);
                 self.header_lens().insert(name.to_string(), entry);
                 entry
             }
