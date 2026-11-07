@@ -321,6 +321,8 @@ struct CodecFiles {
     /// `.tvx` for term vectors; the HNSW graph's `.vex` for vectors.
     index: Option<Arc<Input>>,
     meta: Arc<Input>,
+    /// The HNSW graph's `.vem`, beside its `.vex` in [`Self::index`].
+    graph_meta: Option<Arc<Input>>,
     suffix: String,
 }
 
@@ -834,6 +836,7 @@ impl SegmentReader {
                     data,
                     index: Some(index),
                     meta,
+                    graph_meta: None,
                     suffix: codec_suffix_of(&name, &segment_name, ".tvd"),
                 }))
             }
@@ -860,7 +863,7 @@ impl SegmentReader {
         // though this reader searches the flat vectors (`.vex` rides as the
         // pair's `index`).
         let mut vectors = Vec::new();
-        let mut graph_meta = Vec::new();
+
         for suffix in segment_codec_suffixes(&si.files, compound.as_ref(), &segment_name, ".vemf") {
             // No suffix: a codec whose `knnVectorsFormat()` is the format
             // itself, not `PerFieldKnnVectorsFormat` (`ConfigurableMCodec`).
@@ -873,11 +876,11 @@ impl SegmentReader {
                 )
             };
             if let (Some(data), Some(meta)) = (open(".vec")?, open(".vemf")?) {
-                graph_meta.extend(open(".vem")?);
                 vectors.push(Arc::new(CodecFiles {
                     data,
                     index: open(".vex")?,
                     meta,
+                    graph_meta: open(".vem")?,
                     suffix,
                 }));
             }
@@ -945,7 +948,7 @@ impl SegmentReader {
             .map(|s| &s.fdm)
             .chain(term_vectors.iter().chain(&vectors).map(|c| &c.meta))
             .chain(psm.iter().flatten())
-            .chain(&graph_meta)
+            .chain(vectors.iter().filter_map(|c| c.graph_meta.as_ref()))
             .chain(kdm_buf.iter())
         {
             let end = meta
@@ -1176,6 +1179,84 @@ impl SegmentReader {
             }
         }
         Ok(None)
+    }
+
+    /// `PerFieldKnnVectorsFormat.FieldsReader.getFieldReader` for a search:
+    /// the flat vectors of the instance field `field_number` was written with
+    /// and, when that instance has an HNSW graph with an entry for the field,
+    /// its graph reader (`Lucene99HnswVectorsReader`, which also holds the
+    /// graph of a `Lucene104HnswScalarQuantizedVectorsFormat` field). `None`
+    /// when no instance holds the field.
+    ///
+    /// # Errors
+    /// Vector files that do not decode.
+    pub fn knn_vectors_for(
+        &self,
+        field_number: i32,
+    ) -> crate::Result<
+        Option<(
+            lucene_codecs::vectors::FlatVectorsReader<'_>,
+            Option<lucene_codecs::hnsw_vectors::HnswVectorsReader<'_>>,
+        )>,
+    > {
+        if self.simpletext.is_some() {
+            let reader = self.simpletext_flat_vectors()?;
+            return Ok(reader
+                .filter(|reader| reader.field(field_number).is_some())
+                .map(|r| (r, None)));
+        }
+        let named = self.vectors_instance_of(field_number);
+        let ordered = self
+            .vectors
+            .iter()
+            .filter(|f| named.as_deref().is_none_or(|n| n == f.suffix))
+            .chain(self.vectors.iter());
+        for f in ordered {
+            let flat = lucene_codecs::vectors::FlatVectorsReader::open(
+                &f.meta,
+                &f.data,
+                &self.segment_id,
+                &f.suffix,
+            )?;
+            if flat.field(field_number).is_none() {
+                continue;
+            }
+            let graph = match (&f.graph_meta, &f.index) {
+                (Some(meta), Some(index)) => {
+                    let g = lucene_codecs::hnsw_vectors::HnswVectorsReader::open(
+                        meta,
+                        index,
+                        &self.segment_id,
+                        &f.suffix,
+                    )?;
+                    g.field(field_number).is_some().then_some(g)
+                }
+                _ => None,
+            };
+            return Ok(Some((flat, graph)));
+        }
+        Ok(None)
+    }
+
+    /// The `{format}_{suffix}` instance a field's
+    /// `PerFieldKnnVectorsFormat` attributes name, if it has them.
+    fn vectors_instance_of(&self, field_number: i32) -> Option<String> {
+        let f = self
+            .field_infos
+            .fields
+            .iter()
+            .find(|f| f.number == field_number)?;
+        let attr = |key: &str| {
+            f.attributes
+                .iter()
+                .find(|(k, _)| k == key)
+                .map(|(_, v)| v.clone())
+        };
+        Some(format!(
+            "{}_{}",
+            attr("PerFieldKnnVectorsFormat.format")?,
+            attr("PerFieldKnnVectorsFormat.suffix")?
+        ))
     }
 
     /// `getVectorReader().getVectorCount(fieldInfo)` (Lucene 10.6,
