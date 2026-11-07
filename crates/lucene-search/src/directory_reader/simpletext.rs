@@ -510,6 +510,7 @@ impl SegmentReader {
             dv_data: None,
             dv_meta: None,
             dv_generations: Vec::new(),
+            lazy_doc_values: None,
             kdm_buf: None,
             kdi_buf: None,
             kdd_buf: None,
