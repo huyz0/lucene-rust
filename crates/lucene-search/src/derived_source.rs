@@ -180,10 +180,8 @@ pub fn inject(
     source: &[u8],
     vectors: &mut dyn VectorSource,
 ) -> stored_fields::Result<Vec<u8>> {
-    match content_type(source) {
-        Content::Json => {}
-        Content::Other => return Err(refused("_source is not JSON")),
-        Content::None => return Ok(source.to_vec()),
+    if !needs_injection(source)? {
+        return Ok(source.to_vec());
     }
     let paths: Vec<&str> = fields.fields.iter().map(|f| f.path.as_str()).collect();
     let spans = value_spans(source, &paths)?;

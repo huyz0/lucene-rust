@@ -164,14 +164,14 @@ pub fn push_java_float_string(out: &mut String, v: f32) {
         out.push_str("0.0");
         return;
     }
-    let mut text = StackText::default();
+    let mut text = StackBuf::default();
     // `{:e}` of an f32 is at most 15 bytes (`1.17549435e-38`), so it always fits.
     let _ = write!(text, "{a:e}");
-    let mut digits = Digits::default();
-    let mut exp = digits.split_scientific(text.as_str());
+    let mut digits = StackBuf::default();
+    let mut exp = split_scientific_into(text.as_str(), &mut digits);
     if needs_exact_digits(a, digits.as_slice(), exp) {
         if let Some((d, e)) = closest_digits(a, digits.len.max(2)) {
-            digits = Digits::default();
+            digits = StackBuf::default();
             d.iter().for_each(|&b| digits.push(b));
             exp = e;
         }
@@ -214,9 +214,10 @@ pub fn push_java_float_string(out: &mut String, v: f32) {
 /// Whether Java's digits for `a` may differ from Rust's shortest `digits` (exponent `exp`):
 /// Java prints at least two digits, and of the decimals of that length that round to `a` takes
 /// the closest, a tie to the even digit, where Rust rounds a tie up. Rust's digits are already
-/// the closest otherwise, so only a single digit or an `a` within a millionth of a step of the
-/// midpoint between two candidates (f64 error here is below 10^-7 of a step) needs the exact
-/// expansion.
+/// the closest otherwise, so only a single digit or an `a` within 10^-4 of a step of the
+/// midpoint between two candidates needs the exact expansion. The f64 estimate of where `a` falls
+/// is off by at most a few 10^-6 of a step (nine digits, and `10^scale` a few ulps off when
+/// `|scale| > 22`), well inside that margin.
 fn needs_exact_digits(a: f32, digits: &[u8], exp: i32) -> bool {
     if digits.len() < 2 {
         return true;
@@ -233,23 +234,36 @@ fn needs_exact_digits(a: f32, digits: &[u8], exp: i32) -> bool {
     let scale = exp - (digits.len() as i32 - 1);
     let r = f64::from(a) / 10f64.powi(scale);
     let off = (r - t).abs();
-    (off - 0.5).abs() < 1e-6 || off > 0.5
+    (off - 0.5).abs() < 1e-4 || off > 0.5
 }
 
-/// A stack buffer `{:e}` writes into.
+/// 32 bytes on the stack: `{:e}` of an f32 (at most 15) and its digits (at most 9, or the
+/// exact path's 9) both fit.
 #[derive(Default)]
-struct StackText {
+struct StackBuf {
     buf: [u8; 32],
     len: usize,
 }
 
-impl StackText {
+impl StackBuf {
+    fn push(&mut self, b: u8) {
+        debug_assert!(self.len < self.buf.len(), "StackBuf overflow");
+        if let Some(slot) = self.buf.get_mut(self.len) {
+            *slot = b;
+            self.len += 1;
+        }
+    }
+
+    fn as_slice(&self) -> &[u8] {
+        &self.buf[..self.len]
+    }
+
     fn as_str(&self) -> &str {
-        std::str::from_utf8(&self.buf[..self.len]).unwrap_or("")
+        std::str::from_utf8(self.as_slice()).unwrap_or("")
     }
 }
 
-impl std::fmt::Write for StackText {
+impl std::fmt::Write for StackBuf {
     fn write_str(&mut self, s: &str) -> std::fmt::Result {
         let end = self.len.checked_add(s.len()).ok_or(std::fmt::Error)?;
         self.buf
@@ -261,34 +275,14 @@ impl std::fmt::Write for StackText {
     }
 }
 
-/// Up to 32 decimal digits, on the stack.
-#[derive(Default)]
-struct Digits {
-    buf: [u8; 32],
-    len: usize,
-}
-
-impl Digits {
-    fn push(&mut self, d: u8) {
-        if let Some(slot) = self.buf.get_mut(self.len) {
-            *slot = d;
-            self.len += 1;
-        }
-    }
-
-    fn as_slice(&self) -> &[u8] {
-        &self.buf[..self.len]
-    }
-
-    /// The digits of Rust's `{:e}` rendering `s` into `self`, returning its exponent.
-    fn split_scientific(&mut self, s: &str) -> i32 {
-        let (mantissa, exp) = s.split_once('e').unwrap_or((s, "0"));
-        mantissa
-            .bytes()
-            .filter(u8::is_ascii_digit)
-            .for_each(|d| self.push(d));
-        exp.parse().unwrap_or(0)
-    }
+/// [`split_scientific`]'s digits into `digits`, returning the exponent.
+fn split_scientific_into(s: &str, digits: &mut StackBuf) -> i32 {
+    let (mantissa, exp) = s.split_once('e').unwrap_or((s, "0"));
+    mantissa
+        .bytes()
+        .filter(u8::is_ascii_digit)
+        .for_each(|d| digits.push(d));
+    exp.parse().unwrap_or(0)
 }
 
 /// The digits and decimal exponent of Rust's `{:e}` rendering

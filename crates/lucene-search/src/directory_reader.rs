@@ -1661,9 +1661,11 @@ impl SegmentReader {
         doc: i32,
         visitor: &mut dyn lucene_codecs::stored_fields::StoredFieldVisitor,
     ) -> Result<bool> {
-        let (Some(fields), None, Some(f)) = (
+        // The gate [`Self::derived_source_number`] states, so the plugin's lazy `_source` and this
+        // splice agree on which segments splice.
+        let (true, Some(fields), Some(f)) = (
+            self.derived_source_number().is_some(),
             self.derived_source.as_deref(),
-            &self.simpletext,
             self.stored.as_deref(),
         ) else {
             return self.visit_stored_document(doc, visitor);

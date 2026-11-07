@@ -273,13 +273,16 @@ final class NativeStoredFieldsReader extends FilterDirectoryReader {
             shared.stats.nativeError();
             logger.warn("lucene-rust: native derived _source failed ({}), reading with Lucene: {}", rc, NativeBridge.lastError());
             lucene.document(docID, new StoredFieldVisitor() {
+                private boolean done;
+
                 @Override
                 public Status needsField(FieldInfo field) {
-                    return field.number == fi.number ? Status.YES : Status.NO;
+                    return done ? Status.STOP : field.number == fi.number ? Status.YES : Status.NO;
                 }
 
                 @Override
                 public void binaryField(FieldInfo field, StoredFieldDataInput value) throws IOException {
+                    done = true;
                     visitor.binaryField(fi, value);
                 }
             });
@@ -371,6 +374,9 @@ final class NativeStoredFieldsReader extends FilterDirectoryReader {
                     return;
                 }
                 if (status == StoredFieldVisitor.Status.YES) {
+                    if (fi == null) {
+                        throw new IOException("a derived _source of a field number the reader does not know");
+                    }
                     source.load(fi, visitor);
                 }
                 continue;
