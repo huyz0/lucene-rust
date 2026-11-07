@@ -1642,7 +1642,9 @@ pub fn train_zstd_paged_dictionary(readers: &[&StoredFieldsReader<'_>]) -> Resul
     if total == 0 {
         return Ok(None);
     }
-    let mut samples: Vec<Vec<u8>> = Vec::new();
+    // Every sample back to back in one buffer, with each one's end.
+    let mut samples: Vec<u8> = Vec::new();
+    let mut ends: Vec<usize> = Vec::new();
     for reader in readers {
         let max_doc = reader.max_doc();
         if max_doc == 0 {
@@ -1664,13 +1666,22 @@ pub fn train_zstd_paged_dictionary(readers: &[&StoredFieldsReader<'_>]) -> Resul
             for d in chunk.doc_base()..chunk.doc_base() + chunk.num_docs() {
                 if let Some((_, bytes)) = chunk.document(d) {
                     if !bytes.is_empty() {
-                        samples.push(bytes[..bytes.len().min(ZSTD_PAGED_CHUNK_SIZE)].to_vec());
+                        samples.extend_from_slice(&bytes[..bytes.len().min(ZSTD_PAGED_CHUNK_SIZE)]);
+                        ends.push(samples.len());
                     }
                 }
             }
         }
     }
-    let refs: Vec<&[u8]> = samples.iter().map(Vec::as_slice).collect();
+    let mut start = 0;
+    let refs: Vec<&[u8]> = ends
+        .iter()
+        .map(|&end| {
+            let sample = &samples[start..end];
+            start = end;
+            sample
+        })
+        .collect();
     Ok(lucene_zstd::train_dictionary(&refs, ZSTD_PAGED_DICTIONARY_SIZE).ok())
 }
 
@@ -1861,6 +1872,7 @@ impl StoredFieldsWriter {
         self.fdt
             .capacity()
             .saturating_add(self.chunk_buf.capacity())
+            .saturating_add(self.page_chunk.capacity())
             .saturating_add(longs)
     }
 
@@ -2033,6 +2045,8 @@ impl StoredFieldsWriter {
             let room = ZSTD_PAGED_PAGE_SIZE - pos;
             if pos != 0 && chunk.len() > room {
                 let mut fitted = false;
+                // Whether `chunk` no longer holds the whole-buffer encoding.
+                let mut overwritten = false;
                 if room >= ZSTD_PAGED_MIN_FILL {
                     let mut len = chunk.len();
                     for _ in 0..ZSTD_PAGED_FILL_ATTEMPTS {
@@ -2042,6 +2056,7 @@ impl StoredFieldsWriter {
                         if docs == 0 {
                             break;
                         }
+                        overwritten = true;
                         self.encode_buffered(docs, false, &mut chunk);
                         if chunk.len() <= room {
                             fitted = true;
@@ -2057,7 +2072,11 @@ impl StoredFieldsWriter {
                         *start = next;
                     }
                     docs = all;
-                    self.encode_buffered(docs, force, &mut chunk);
+                    // A chunk's bytes do not depend on where it lands, so
+                    // the first encoding is reused unless a try replaced it.
+                    if overwritten {
+                        self.encode_buffered(docs, force, &mut chunk);
+                    }
                 }
             }
             self.fdt.extend_from_slice(&chunk);

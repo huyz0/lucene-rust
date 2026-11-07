@@ -256,6 +256,11 @@ public final class RustEngineSupport {
         }
         if ((CODECS.get(codec) != NativeBridge.STORED_FIELDS_BEST_SPEED || PAGED_ZSTD_STORED_FIELDS.get(settings.getSettings()))
             && org.lucenerust.opensearch.sparse.SparseSettings.SPARSE_INDEX.get(settings.getSettings())) {
+            if (PAGED_ZSTD_STORED_FIELDS.get(settings.getSettings())) {
+                return "the Rust engine writes an index.sparse index with the default stored fields only, and "
+                    + PAGED_ZSTD_STORED_FIELDS.getKey()
+                    + " is set";
+            }
             return "the Rust engine writes an index.sparse index with the default codec only, and index.codec is [" + codec + "]";
         }
         if (indexSorted && unsupportedSort(settings.getSettings()) != null) {
