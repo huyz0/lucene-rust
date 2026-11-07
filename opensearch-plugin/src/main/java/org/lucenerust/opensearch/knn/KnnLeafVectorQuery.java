@@ -138,7 +138,7 @@ public final class KnnLeafVectorQuery extends Query {
                 scores[i] = hits[i].score;
             }
             return new KnnHits.Leaf(docs, scores);
-        }, boost);
+        }, boost, -1);
     }
 
     @Override
