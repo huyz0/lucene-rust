@@ -295,13 +295,15 @@ public final class KnnVectorFieldMapper extends ParametrizedFieldMapper {
         if (config.dataType() == VectorEncoding.BYTE) {
             byte[] v = KnnVectors.toBytes(values);
             if (vectorType != null) {
-                context.doc().add(new KnnByteVectorField(name(), v, vectorType(context)));
+                FieldType type = vectorType(context);
+                context.doc().add(masked(context) ? new DerivedSource.MaskedByte(name(), v, type) : new KnnByteVectorField(name(), v, type));
             }
             keep(context, v);
         } else {
             float[] v = KnnVectors.toFloats(values, config.spaceType());
             if (vectorType != null) {
-                context.doc().add(new KnnFloatVectorField(name(), v, vectorType(context)));
+                FieldType type = vectorType(context);
+                context.doc().add(masked(context) ? new DerivedSource.MaskedFloat(name(), v, type) : new KnnFloatVectorField(name(), v, type));
             }
             if (hasDocValues || stored) {
                 ByteBuffer bytes = ByteBuffer.allocate(v.length * Float.BYTES);
@@ -313,15 +315,20 @@ public final class KnnVectorFieldMapper extends ParametrizedFieldMapper {
         }
     }
 
-    /** The marked type for a root field derived source covers ({@code isDerivedEnabled}); nested ones keep their values. */
+    /** The marked type for every root field of a masking index; nested fields keep their values. */
     private FieldType vectorType(ParseContext context) {
+        return derivedType == null || context.doc() != context.rootDoc() ? vectorType : derivedType;
+    }
+
+    /** Whether the field's value is masked in {@code _source} ({@code isDerivedEnabled}). */
+    private boolean masked(ParseContext context) {
         if (derivedType == null || context.doc() != context.rootDoc()) {
-            return vectorType;
+            return false;
         }
         if (derivedField == null) {
             derivedField = DerivedSource.forField(name(), context.docMapper());
         }
-        return derivedField ? derivedType : vectorType;
+        return derivedField;
     }
 
     private void keep(ParseContext context, byte[] serialized) {

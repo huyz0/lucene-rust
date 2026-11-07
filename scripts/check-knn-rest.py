@@ -131,13 +131,16 @@ def sources(port, index):
 
 
 def compare_sources(failures):
-    doc = {"tag": "x", "nested_obj": {"inner": [9, 8, 7, 6]}, **{k: [1, 2, 3, 4] for k in MAPPINGS}}
-    props = {**MAPPINGS, "tag": {"type": "keyword"},
+    doc = {"tag": "x", "secret": "s", "hidden": [5, 5, 5, 5], "nested_obj": {"inner": [9, 8, 7, 6]},
+           **{k: [1, 2, 3, 4] for k in MAPPINGS}}
+    props = {**MAPPINGS, "tag": {"type": "keyword"}, "secret": {"type": "keyword"},
+             "hidden": {"type": "knn_vector", "dimension": 4},
              "nested_obj": {"properties": {"inner": {"type": "knn_vector", "dimension": 4}}}}
     got = {}
     for port in (OURS[1], STOCK[1]):
         settings = {"knn": True, "number_of_replicas": 0, **({"lucene_rust.engine": True} if port == OURS[1] else {})}
-        ck.req(port, "PUT", "/sources", {"settings": {"index": settings}, "mappings": {"properties": props}})
+        ck.req(port, "PUT", "/sources", {"settings": {"index": settings},
+                                         "mappings": {"_source": {"excludes": ["secret", "hidden"]}, "properties": props}})
         setting = ck.req(port, "GET", "/sources/_settings/index.knn.derived_source.enabled")
         got[port] = {"setting": setting["sources"]["settings"]["index"]["knn"]["derived_source"]["enabled"]}
         ck.req(port, "PUT", "/sources/_doc/1", doc)

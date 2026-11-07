@@ -26,6 +26,7 @@ import org.opensearch.common.collect.Tuple;
 import org.opensearch.common.io.stream.BytesStreamOutput;
 import org.opensearch.common.xcontent.XContentHelper;
 import org.opensearch.common.xcontent.support.XContentMapValues;
+import org.lucenerust.opensearch.knn.DerivedSource;
 import org.opensearch.core.common.bytes.BytesArray;
 import org.opensearch.core.common.bytes.BytesReference;
 import org.opensearch.core.compress.NotXContentException;
@@ -331,12 +332,7 @@ final class DerivedSourceStoredFieldsFormat extends StoredFieldsFormat {
                 if (values instanceof FloatVectorValues f) {
                     return f.vectorValue(ord).clone();
                 }
-                byte[] b = ((ByteVectorValues) values).vectorValue(ord);
-                int[] out = new int[b.length];
-                for (int i = 0; i < b.length; i++) {
-                    out[i] = b[i];
-                }
-                return out;
+                return DerivedSource.signed(((ByteVectorValues) values).vectorValue(ord));
             } catch (IOException e) {
                 throw new UncheckedIOException(e);
             }

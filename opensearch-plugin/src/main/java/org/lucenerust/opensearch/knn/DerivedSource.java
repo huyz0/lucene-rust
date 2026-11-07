@@ -8,6 +8,7 @@ import org.apache.lucene.document.KnnByteVectorField;
 import org.apache.lucene.document.KnnFloatVectorField;
 import org.apache.lucene.document.StoredField;
 import org.apache.lucene.index.IndexableField;
+import org.apache.lucene.util.BytesRef;
 import org.lucenerust.opensearch.engine.RustEngineSupport;
 import org.opensearch.common.collect.Tuple;
 import org.opensearch.common.io.stream.BytesStreamOutput;
@@ -16,6 +17,7 @@ import org.opensearch.common.settings.Settings;
 import org.opensearch.common.xcontent.XContentHelper;
 import org.opensearch.common.xcontent.XContentType;
 import org.opensearch.common.xcontent.support.XContentMapValues;
+import org.opensearch.core.common.bytes.BytesArray;
 import org.opensearch.core.common.bytes.BytesReference;
 import org.opensearch.core.index.shard.ShardId;
 import org.opensearch.core.xcontent.MediaType;
@@ -39,9 +41,11 @@ import java.util.function.Function;
 /**
  * k-NN's derived source on this node's writes: in an index that turns it on, each root vector
  * field's values are masked in the stored {@code _source} ({@link #MASK}) and read back from the
- * vector files. A field the Rust writer must list in the segment's {@code derived_vector_fields}
- * carries {@link #FIELD_ATTRIBUTE}, and {@link Listener} masks exactly those fields, so every
- * reader -- this node's native fetch and Lucene codec, and stock k-NN's -- puts the vectors back.
+ * vector files. Every root vector field of such an index carries {@link #FIELD_ATTRIBUTE}, which
+ * the Rust writer lists in the segment's {@code derived_vector_fields}, and {@link Listener} masks
+ * only listed fields ({@link MaskedFloat}, {@link MaskedByte}), so every reader -- this node's
+ * native fetch and Lucene codec, and stock k-NN's -- puts the vectors back. A listed field left
+ * whole (a {@code copy_to} source) reads back the same vector.
  *
  * <p>Only the Rust engine lists the fields, so only its indexes are masked; and only with realtime
  * search off, whose buffered documents are read without the vector files.
@@ -90,11 +94,30 @@ public final class DerivedSource {
 
     private static boolean excluded(String name, SourceFieldMapper source) {
         Collection<String> includes = source.getIncludes();
-        if (includes != null && includes.isEmpty() == false && includes.stream().noneMatch(p -> Regex.simpleMatch(p, name))) {
+        if (includes != null && includes.isEmpty() == false && includes.stream().noneMatch(p -> covers(p, name))) {
             return true;
         }
         Collection<String> excludes = source.getExcludes();
-        return excludes != null && excludes.stream().anyMatch(p -> Regex.simpleMatch(p, name));
+        return excludes != null && excludes.stream().anyMatch(p -> covers(p, name));
+    }
+
+    /** Whether a {@code _source} filter pattern takes {@code name}: the field itself or one of its parent objects, as {@code XContentMapValues.filter} does. */
+    private static boolean covers(String pattern, String name) {
+        for (int dot = name.length(); dot > 0; dot = name.lastIndexOf('.', dot - 1)) {
+            if (Regex.simpleMatch(pattern, name.substring(0, dot))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** A byte vector as the signed ints its {@code _source} holds. */
+    public static int[] signed(byte[] b) {
+        int[] out = new int[b.length];
+        for (int i = 0; i < b.length; i++) {
+            out[i] = b[i];
+        }
+        return out;
     }
 
     /** {@code type} with {@link #FIELD_ATTRIBUTE}. */
@@ -105,9 +128,22 @@ public final class DerivedSource {
         return ft;
     }
 
-    private static boolean isMarked(IndexableField f) {
-        Map<String, String> attributes = f.fieldType().getAttributes();
-        return attributes != null && "true".equals(attributes.get(FIELD_ATTRIBUTE));
+    /**
+     * A root vector the listener masks. Its type always carries {@link #FIELD_ATTRIBUTE}: every root
+     * vector field of a masking index is marked, whatever its mapping says later, so the writer,
+     * which keeps a field's first attributes, lists every field a document may have masked.
+     */
+    static final class MaskedFloat extends KnnFloatVectorField {
+        MaskedFloat(String name, float[] vector, FieldType type) {
+            super(name, vector, type);
+        }
+    }
+
+    /** {@link MaskedFloat} for byte vectors. */
+    static final class MaskedByte extends KnnByteVectorField {
+        MaskedByte(String name, byte[] vector, FieldType type) {
+            super(name, vector, type);
+        }
     }
 
     /**
@@ -122,18 +158,10 @@ public final class DerivedSource {
             }
             Map<String, Object> vectors = new HashMap<>();
             for (IndexableField f : operation.parsedDoc().rootDoc()) {
-                if (isMarked(f) == false) {
-                    continue;
-                }
-                if (f instanceof KnnFloatVectorField v) {
+                if (f instanceof MaskedFloat v) {
                     vectors.put(f.name(), v.vectorValue());
-                } else if (f instanceof KnnByteVectorField v) {
-                    byte[] b = v.vectorValue();
-                    int[] ints = new int[b.length];
-                    for (int i = 0; i < b.length; i++) {
-                        ints[i] = b[i];
-                    }
-                    vectors.put(f.name(), ints);
+                } else if (f instanceof MaskedByte v) {
+                    vectors.put(f.name(), signed(v.vectorValue()));
                 }
             }
             if (vectors.isEmpty()) {
@@ -146,8 +174,9 @@ public final class DerivedSource {
                 inject.put(e.getKey(), o -> o == null ? null : vector);
                 mask.put(e.getKey(), o -> o == null ? null : MASK);
             }
+            BytesReference original = operation.parsedDoc().source();
             Tuple<? extends MediaType, Map<String, Object>> source = XContentHelper.convertToMap(
-                operation.parsedDoc().source(),
+                original,
                 true,
                 operation.parsedDoc().getMediaType()
             );
@@ -159,7 +188,13 @@ public final class DerivedSource {
                 );
             IndexableField stored = operation.parsedDoc().rootDoc().getField(SourceFieldMapper.NAME);
             if (stored instanceof StoredField f && f.storedValue() != null) {
-                f.setBytesValue(write(type, XContentMapValues.transform(mask, true).apply(source.v2())).toBytesRef());
+                // The stored _source may be filtered (_source includes/excludes without a recovery
+                // source): mask what is stored, never the whole request source.
+                BytesRef bytes = f.binaryValue();
+                Map<String, Object> storedMap = bytes.bytesEquals(original.toBytesRef())
+                    ? source.v2()
+                    : XContentHelper.convertToMap(new BytesArray(bytes), true, type).v2();
+                f.setBytesValue(write(type, XContentMapValues.transform(mask, true).apply(storedMap)).toBytesRef());
             }
             return operation;
         }
