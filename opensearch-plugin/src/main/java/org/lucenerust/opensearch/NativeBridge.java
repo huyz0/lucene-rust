@@ -399,6 +399,10 @@ public final class NativeBridge {
             "ffi_engine_writer_release_live",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG)
         );
+        static final MethodHandle LIVE_DOC_VALUES = bind(
+            "ffi_live_view_doc_values_alloc",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS)
+        );
         static final MethodHandle LIVE_DOCUMENT = bind(
             "ffi_live_view_document_alloc",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_INT, ADDRESS, ADDRESS)
@@ -2403,6 +2407,34 @@ public final class NativeBridge {
     public static int writerReleaseLive(long writer, long generation) {
         try {
             return (int) H.WRITER_RELEASE_LIVE.invokeExact(writer, generation);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * Document {@code doc} of buffer {@code buffer} of view {@code view}: its doc values of the
+     * fields numbered {@code fields}, encoded as {@link #docValues} encodes a segment's, the terms
+     * of each field numbered {@code 0..n} for that document alone, in {@code out[0]}.
+     */
+    public static int liveDocValues(long view, int buffer, int doc, int[] fields, byte[][] out) {
+        if (fields == null) {
+            return nullArgument("fields");
+        }
+        if (out == null || out.length < 1) {
+            return fail(INVALID_ARGUMENT, "out holds no slot");
+        }
+        try (Scratch s = Scratch.open()) {
+            MemorySegment result = ownedSlot(s);
+            int rc = (int) H.LIVE_DOC_VALUES.invokeExact(view, buffer, doc, s.ints(fields), (long) fields.length, ptrOf(result), lenOf(result));
+            if (rc == OK) {
+                byte[] encoded = take(result);
+                if (encoded == null) {
+                    return tooLarge("the doc values");
+                }
+                out[0] = encoded;
+            }
+            return rc;
         } catch (Throwable t) {
             throw rethrow(t);
         }

@@ -27,7 +27,7 @@ swapped), every observable result must be identical:
     under the codec names OpenSearch's own engine records.
   * index.derived_source.enabled (and its translog form): _source rebuilt from doc values and
     stored fields the same on both engines, through searches, gets, top_hits, updates and
-    SIGKILL; realtime search with it is refused.
+    SIGKILL, and on realtime search's buffered hits.
 
 Usage: verify_engine.py <base-url> <container-name> [--ops N]
 Standard library only.
@@ -930,16 +930,36 @@ def derived_source(container):
     subprocess.run(["docker", "start", container], check=True, capture_output=True)
     check(wait_green(f"{java},{rust}", 300), "derived source: green after SIGKILL")
     same("derived source, after SIGKILL")
-    status, out = req("PUT", "/ds_realtime", {"settings": {"index.lucene_rust.engine": True, "number_of_replicas": 0,
-                                                          "index.derived_source.enabled": True,
-                                                          "index.lucene_rust.realtime_search": True}})
-    if status in (200, 201):
-        time.sleep(3)
-        explain = must("GET", "/_cluster/allocation/explain", {"index": "ds_realtime", "shard": 0, "primary": True})
-        check("derived_source" in json.dumps(explain), f"realtime search with derived source is refused: {json.dumps(explain)[:300]}")
-    else:
-        check("derived_source" in json.dumps(out), f"realtime search with derived source is refused: {out}")
-    for idx in (java, rust, "ds_realtime"):
+    # Realtime search: buffered hits, never refreshed, rebuild their _source (and give their
+    # docvalue_fields) from the writer's buffers, as the refreshed Java index gives them.
+    rt = "ds_realtime"
+    req("DELETE", f"/{rt}")
+    must("PUT", f"/{rt}", {"settings": {"number_of_shards": 1, "number_of_replicas": 0, "refresh_interval": -1,
+                                       "index.lucene_rust.engine": True, "index.lucene_rust.realtime_search": True,
+                                       "index.derived_source.enabled": True}, "mappings": DS_MAPPING})
+    req("DELETE", "/ds_rt_java")
+    must("PUT", "/ds_rt_java", {"settings": {"number_of_shards": 1, "number_of_replicas": 0, "refresh_interval": -1,
+                                            "index.lucene_rust.engine": False, "index.derived_source.enabled": True},
+                               "mappings": DS_MAPPING})
+    wait_green(f"{rt},ds_rt_java")
+    r = random.Random(9)
+    lines = []
+    for i in range(400):
+        lines += [json.dumps({"index": {"_id": f"r{i}"}}), json.dumps(ds_doc(r, i))]
+    body = "\n".join(lines) + "\n"
+    check(not must("POST", f"/{rt}/_bulk", body, ndjson=True)["errors"], "derived source realtime: bulk")
+    check(not must("POST", "/ds_rt_java/_bulk?refresh=true", body, ndjson=True)["errors"], "derived source realtime: java bulk")
+    # Not match_all under a sort: OpenSearch rewrites that to an approximate range query, which
+    # Lucene answers from the reader's documents alone.
+    every = {"exists": {"field": "kws"}}
+    for q in ({**queries[0], "query": every}, queries[1], {**queries[3], "query": every}, queries[4]):
+        a = must("POST", "/ds_rt_java/_search?request_cache=false", q)
+        b = must("POST", f"/{rt}/_search?request_cache=false", q)
+        check(strip(a["hits"]) == strip(b["hits"]),
+              f"derived source realtime: {json.dumps(q)[:120]}: {json.dumps(strip(a['hits']))[:300]} vs {json.dumps(strip(b['hits']))[:300]}")
+    live = must("GET", "/_plugins/lucene_rust/stats").get("live_queries", 0)
+    check(live > 0, f"derived source realtime: the buffers were searched: {live}")
+    for idx in (java, rust, rt, "ds_rt_java"):
         req("DELETE", f"/{idx}")
     print("derived source: compared", flush=True)
 

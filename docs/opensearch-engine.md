@@ -102,6 +102,9 @@ values come back in one native call (`ffi_jvm_reader_doc_values_alloc`) for
 every field asked for. The fetch phase's `docvalue_fields` are read the same
 way in every index. An iterator walked as a scan (`nextDoc`, `advance`, or
 more than 128 documents) hands over to the segment's own.
+With `index.lucene_rust.realtime_search`, a buffered hit's doc values come
+from the writer's buffers (`ffi_live_view_doc_values_alloc`), so its derived
+`_source` and `docvalue_fields` are those it has once refreshed.
 
 ## What it refuses
 
@@ -110,8 +113,6 @@ When an index is created:
 - a codec other than `default` or `lucene_default`
 - index sorting on an index created before 3.2.0 (whose nested blocks have no
   parent field), or together with `index.lucene_rust.realtime_search`
-- `index.lucene_rust.realtime_search` together with `index.derived_source.enabled`
-  (buffered documents have no doc values to rebuild `_source` from)
 - context-aware segments
 - remote-backed storage (remote-store indices or nodes)
 

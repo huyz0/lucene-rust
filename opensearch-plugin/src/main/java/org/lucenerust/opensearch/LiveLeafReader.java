@@ -163,6 +163,22 @@ public final class LiveLeafReader extends SequentialStoredFieldsLeafReader {
             return fi != null && fi.getDocValuesType() == type;
         }
 
+        /**
+         * The buffered documents' doc values, read a document at a time natively: what the fetch
+         * phase reads of a hit ({@code docvalue_fields}, a derived {@code _source}). To a scan the
+         * leaf has none, as it has no documents Lucene sees.
+         */
+        private final NativeDocValues.Batch docValues = new NativeDocValues.Batch(this::readDocValues);
+
+        private byte[] readDocValues(int doc, int[] fields) throws IOException {
+            byte[][] out = new byte[1][];
+            int rc = NativeBridge.liveDocValues(view.id(), buffer, start + doc, fields, out);
+            if (rc != NativeBridge.OK) {
+                throw new IOException("doc values of buffered document " + doc + ": " + NativeBridge.lastError());
+            }
+            return out[0];
+        }
+
         void document(int docID, StoredFieldVisitor visitor) throws IOException {
             byte[][] out = new byte[1][];
             int rc = NativeBridge.liveDocument(view.id(), buffer, start + docID, out);
@@ -204,12 +220,18 @@ public final class LiveLeafReader extends SequentialStoredFieldsLeafReader {
 
         @Override
         public SortedNumericDocValues getSortedNumericDocValues(String field) {
-            return has(field, DocValuesType.SORTED_NUMERIC) ? DocValues.emptySortedNumeric() : null;
+            if (has(field, DocValuesType.SORTED_NUMERIC) == false) {
+                return null;
+            }
+            return new NativeDocValues.Numbers(docValues, infos.fieldInfo(field).number, DocValues::emptySortedNumeric, Integer.MAX_VALUE);
         }
 
         @Override
         public SortedSetDocValues getSortedSetDocValues(String field) {
-            return has(field, DocValuesType.SORTED_SET) ? DocValues.emptySortedSet() : null;
+            if (has(field, DocValuesType.SORTED_SET) == false) {
+                return null;
+            }
+            return new NativeDocValues.Terms(docValues, infos.fieldInfo(field).number, DocValues::emptySortedSet, Integer.MAX_VALUE);
         }
 
         @Override

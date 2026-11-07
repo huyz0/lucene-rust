@@ -171,10 +171,19 @@ final class NativeDocValues {
         private long[] values;
         private int upto;
 
+        /** Point reads answered natively before handing over: {@link #POINT_READS}. */
+        private final int pointReads;
+
         Numbers(Batch batch, int field, Column<SortedNumericDocValues> column) {
+            this(batch, field, column, POINT_READS);
+        }
+
+        /** With no limit on the point reads where {@code column} holds nothing to scan. */
+        Numbers(Batch batch, int field, Column<SortedNumericDocValues> column, int pointReads) {
             this.batch = batch;
             this.field = field;
             this.column = column;
+            this.pointReads = pointReads;
         }
 
         /** The segment's iterator, from now on; not yet positioned. */
@@ -197,7 +206,7 @@ final class NativeDocValues {
 
         @Override
         public boolean advanceExact(int target) throws IOException {
-            Values v = scan != null || ++reads > POINT_READS ? null : batch.values(target, field);
+            Values v = scan != null || ++reads > pointReads ? null : batch.values(target, field);
             if (v == null) {
                 boolean has = scan().advanceExact(target);
                 doc = target;
@@ -264,10 +273,19 @@ final class NativeDocValues {
         private BytesRef[] terms;
         private int upto;
 
+        /** Point reads answered natively before handing over: {@link #POINT_READS}. */
+        private final int pointReads;
+
         Terms(Batch batch, int field, Column<SortedSetDocValues> column) {
+            this(batch, field, column, POINT_READS);
+        }
+
+        /** With no limit on the point reads where {@code column} holds nothing to scan. */
+        Terms(Batch batch, int field, Column<SortedSetDocValues> column, int pointReads) {
             this.batch = batch;
             this.field = field;
             this.column = column;
+            this.pointReads = pointReads;
         }
 
         private SortedSetDocValues dictionary() throws IOException {
@@ -303,7 +321,7 @@ final class NativeDocValues {
 
         @Override
         public boolean advanceExact(int target) throws IOException {
-            Values v = scan != null || ++reads > POINT_READS ? null : batch.values(target, field);
+            Values v = scan != null || ++reads > pointReads ? null : batch.values(target, field);
             if (v == null) {
                 boolean has = scan().advanceExact(target);
                 doc = target;
