@@ -1234,7 +1234,7 @@ impl ConcurrentIndexWriter<'_> {
         let columns_of = |c: &LiveColumns| {
             if decode_chunks() {
                 None
-            } else if lazy.is_some() {
+            } else if lazy.is_some() && cfg.codec.is_none() {
                 c.lean_columns(range.start, range.end)
                     .map(|(c, runs)| (c, Some(runs)))
             } else {

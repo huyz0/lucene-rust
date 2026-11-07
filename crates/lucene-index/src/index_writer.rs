@@ -1403,14 +1403,14 @@ impl LazyDocValues {
             skip_index: info.doc_values_skip_index_type
                 != lucene_codecs::field_infos::DocValuesSkipIndexType::None,
         };
-        let Some(column) = self
-            .columns
-            .iter()
-            .find(|(n, _)| *n == field_number)
-            .and_then(|(_, run)| run.build())
-        else {
+        let Some((_, run)) = self.columns.iter().find(|(n, _)| *n == field_number) else {
             return Ok(None);
         };
+        let column = run.build().ok_or_else(|| {
+            Error::LiveSearch(format!(
+                "field {field_number}'s buffered doc values do not match their documents"
+            ))
+        })?;
         let Some(groups) = self.cfg.build_prebuilt_doc_values_groups(
             &[(field_number, column)],
             self.max_doc,

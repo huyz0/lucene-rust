@@ -77,6 +77,7 @@ impl TermList {
         }
     }
 
+    /// Term `id`'s bytes; empty for an id past the list's end.
     fn get(&self, id: u32) -> &[u8] {
         let id = id as usize;
         let (block, at) = (id / TERM_BLOCK, id % TERM_BLOCK);
@@ -422,6 +423,12 @@ impl Column {
                 let mut used: Vec<u32> = ids.to_vec();
                 used.sort_unstable();
                 used.dedup();
+                if used
+                    .last()
+                    .is_some_and(|&id| id as usize >= terms.list.len())
+                {
+                    return None;
+                }
                 used.sort_unstable_by(|&a, &b| terms.list.get(a).cmp(terms.list.get(b)));
                 let mut ord_of: HashMap<u32, i64> = HashMap::with_capacity(used.len());
                 for (o, &id) in used.iter().enumerate() {
