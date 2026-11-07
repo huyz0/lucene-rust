@@ -4494,6 +4494,10 @@ pub struct MergeOptions {
     /// nothing else routes
     /// ([`crate::index_writer::IndexWriter::set_default_doc_values_format`]).
     pub default_doc_values_format: per_field_doc_values::Lucene90DocValuesFormat,
+    /// What replaces the default `Lucene104PostingsFormat()` for a field
+    /// nothing else routes
+    /// ([`crate::index_writer::IndexWriter::set_default_postings_format`]).
+    pub default_postings_format: per_field_postings::Lucene104PostingsFormat,
     /// Whether `BEST_SPEED` stored fields are written with the
     /// high-compression LZ4 match finder
     /// ([`crate::index_writer::IndexWriter::set_merge_lz4_high_compression`]).
@@ -4680,16 +4684,35 @@ impl MergeOptions {
 
     /// The postings format `field` is routed to.
     fn postings_format_for(&self, field: &str) -> per_field_postings::Lucene104PostingsFormat {
-        self.postings_formats
-            .iter()
-            .find(|(name, _)| name == field)
-            .map(|(_, format)| *format)
-            .or_else(|| {
-                self.codec
-                    .as_ref()
-                    .map(|c| c.postings_format_for_field(field))
-            })
-            .unwrap_or_default()
+        route_postings_format(
+            field,
+            &self.postings_formats,
+            self.codec.as_deref(),
+            self.default_postings_format,
+        )
+    }
+}
+
+/// `field`'s postings format: its explicit routing, else the codec's, with
+/// the default `Lucene104PostingsFormat()` replaced by `default` -- shared by
+/// flush ([`crate::index_writer::IndexingConfig::postings_format_for`]) and
+/// merge ([`MergeOptions`]).
+pub(crate) fn route_postings_format(
+    field: &str,
+    explicit: &[(String, per_field_postings::Lucene104PostingsFormat)],
+    codec: Option<&dyn lucene_codecs::codec::Lucene104Codec>,
+    default: per_field_postings::Lucene104PostingsFormat,
+) -> per_field_postings::Lucene104PostingsFormat {
+    if let Some((_, format)) = explicit.iter().find(|(name, _)| name == field) {
+        return *format;
+    }
+    let routed = codec
+        .map(|c| c.postings_format_for_field(field))
+        .unwrap_or_default();
+    if routed == per_field_postings::Lucene104PostingsFormat::default() {
+        default
+    } else {
+        routed
     }
 }
 
@@ -4701,6 +4724,7 @@ impl Default for MergeOptions {
             postings_formats: Vec::new(),
             doc_values_formats: Vec::new(),
             default_doc_values_format: Default::default(),
+            default_postings_format: Default::default(),
             stored_fields_lz4_high_compression: false,
             lz4_high_compression_sources: Vec::new(),
             zstd_dictionary_min_bytes: stored_fields::ZSTD_PAGED_DICTIONARY_MIN_BYTES,

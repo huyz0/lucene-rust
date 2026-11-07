@@ -975,6 +975,10 @@ pub(crate) struct IndexingConfig {
     /// the codec routes it anywhere but the default `Lucene90DocValuesFormat()`
     /// -- see [`IndexWriter::set_default_doc_values_format`].
     default_doc_values_format: per_field_doc_values::Lucene90DocValuesFormat,
+    /// The format a field gets when neither [`Self::postings_formats`] nor
+    /// the codec routes it anywhere but the default `Lucene104PostingsFormat()`
+    /// -- see [`IndexWriter::set_default_postings_format`].
+    default_postings_format: per_field_postings::Lucene104PostingsFormat,
     /// Whether merges write `BEST_SPEED` stored fields with the
     /// high-compression LZ4 match finder -- see
     /// [`IndexWriter::set_merge_lz4_high_compression`].
@@ -1672,16 +1676,12 @@ impl IndexingConfig {
         &self,
         field: &str,
     ) -> per_field_postings::Lucene104PostingsFormat {
-        self.postings_formats
-            .iter()
-            .find(|(name, _)| name == field)
-            .map(|(_, format)| *format)
-            .or_else(|| {
-                self.codec
-                    .as_ref()
-                    .map(|c| c.postings_format_for_field(field))
-            })
-            .unwrap_or_default()
+        crate::merge::route_postings_format(
+            field,
+            &self.postings_formats,
+            self.codec.as_deref(),
+            self.default_postings_format,
+        )
     }
 
     /// `PerFieldPostingsFormat.FieldsWriter.write`: this segment's postings,
@@ -3010,6 +3010,7 @@ impl IndexingConfig {
                 postings_formats: self.postings_formats.clone(),
                 doc_values_formats: self.doc_values_formats.clone(),
                 default_doc_values_format: self.default_doc_values_format,
+                default_postings_format: self.default_postings_format,
                 stored_fields_lz4_high_compression: self.merge_lz4_high_compression,
                 lz4_high_compression_sources: opened.iter().map(|o| o.lz4_hc).collect(),
                 zstd_dictionary_min_bytes: self.zstd_dictionary_min_bytes,
@@ -5920,6 +5921,23 @@ impl<'d> IndexWriter<'d> {
         self.cfg_mut().default_doc_values_format = format;
     }
 
+    /// The postings format of every field that would otherwise get the
+    /// default `Lucene104PostingsFormat()` -- neither routed by
+    /// [`Self::set_postings_format_for_field`] nor by the codec to anything
+    /// else. Flushes and merges after this call write it; existing segments
+    /// keep theirs until merged.
+    /// [`Lucene104PostingsFormat::rust_zstd`] here is the plugin's
+    /// `index.lucene_rust.zstd_terms`; setting the default back restores
+    /// stock-readable segments from then on.
+    ///
+    /// [`Lucene104PostingsFormat::rust_zstd`]: per_field_postings::Lucene104PostingsFormat::rust_zstd
+    pub fn set_default_postings_format(
+        &mut self,
+        format: per_field_postings::Lucene104PostingsFormat,
+    ) {
+        self.cfg_mut().default_postings_format = format;
+    }
+
     /// Whether merged segments' `BEST_SPEED` stored fields are written with the
     /// high-compression LZ4 match finder ([`lucene_codecs::lz4_hc`]): the
     /// same LZ4 format, which stock Lucene reads, about 8-33% smaller and
@@ -6251,6 +6269,7 @@ impl<'d> IndexWriter<'d> {
                 postings_formats: Vec::new(),
                 doc_values_formats: Vec::new(),
                 default_doc_values_format: Default::default(),
+                default_postings_format: Default::default(),
                 merge_lz4_high_compression: false,
                 zstd_dictionary_min_bytes:
                     lucene_codecs::stored_fields::ZSTD_PAGED_DICTIONARY_MIN_BYTES,

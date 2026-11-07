@@ -98,6 +98,7 @@ fn the_second_postings_format_is_written_byte_identical_to_lucene() {
         max_items_in_block: 20,
         has_prox: Some(true),
         has_payloads_or_offsets: Some(false),
+        zstd_term_blocks: None,
     };
     let out =
         postings_writer::write_fields_with_options(&inputs, &[], &options, &id, suffix).unwrap();
