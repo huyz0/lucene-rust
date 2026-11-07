@@ -248,6 +248,10 @@ public final class RustEngineSupport {
                     || unsupportedSort(settings) == null));
     }
 
+    /** Why an index cannot search its buffers and derive its {@code _source} at once. */
+    public static final String REALTIME_DERIVED_SOURCE_REFUSED =
+        "index.lucene_rust.realtime_search does not support index.derived_source.enabled";
+
     /** The circuit breaker the plugin registers for the writers' buffers. */
     public static final String BREAKER_NAME = "lucene_rust_writer";
 
@@ -341,6 +345,10 @@ public final class RustEngineSupport {
         }
         if (indexSorted && unsupportedSort(settings.getSettings()) != null) {
             return unsupportedSort(settings.getSettings());
+        }
+        // A derived _source is rebuilt from doc values the buffered documents' leaves do not have.
+        if (REALTIME_SEARCH.get(settings.getSettings()) && settings.isDerivedSourceEnabled()) {
+            return REALTIME_DERIVED_SOURCE_REFUSED;
         }
         // The codec then gives _id a FuzzyFilterPostingsFormat (a bloom filter beside the terms),
         // which the Rust writer does not lay out.

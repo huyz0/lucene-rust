@@ -89,6 +89,16 @@ each partition's documents side by side: a `term` filter on the sort's first
 field is then matched as that run of doc ids, checked against the term's
 postings, and the other clauses skip straight to it.
 
+## Derived source
+
+`index.derived_source.enabled` (and `index.derived_source.translog.enabled`)
+works as on OpenSearch's own engine: `_source` is not stored, and OpenSearch's
+mappers rebuild it at fetch from doc values and stored fields, so searches,
+gets, `top_hits`, updates and reindexing return what a stock node returns and
+the shard is the same size. The stored fields the mappers read come from the
+native reader; a leaf of such an index keeps the last document it read, so
+the one read per rebuilt stored field becomes one read per hit.
+
 ## What it refuses
 
 When an index is created:
@@ -96,6 +106,8 @@ When an index is created:
 - a codec other than `default` or `lucene_default`
 - index sorting on an index created before 3.2.0 (whose nested blocks have no
   parent field), or together with `index.lucene_rust.realtime_search`
+- `index.lucene_rust.realtime_search` together with `index.derived_source.enabled`
+  (buffered documents have no doc values to rebuild `_source` from)
 - context-aware segments
 - remote-backed storage (remote-store indices or nodes)
 

@@ -63,13 +63,20 @@ final class NativeStoredFieldsReader extends FilterDirectoryReader {
         final SearchStats stats;
         /** Whether documents are read natively ({@code index.lucene_rust.fetch.enabled}). */
         final BooleanSupplier enabled;
+        /**
+         * The index derives {@code _source} ({@code index.derived_source.enabled}): its mappers read
+         * each stored field they rebuild from with a document read of its own, so a leaf keeps the
+         * last document it read natively ({@link Leaf#last}).
+         */
+        final boolean derivedSource;
         volatile DirectoryReader top;
         private volatile long handle = -1;
 
-        Shared(NativeReaders readers, SearchStats stats, BooleanSupplier enabled) {
+        Shared(NativeReaders readers, SearchStats stats, BooleanSupplier enabled, boolean derivedSource) {
             this.readers = readers;
             this.stats = stats;
             this.enabled = enabled;
+            this.derivedSource = derivedSource;
         }
 
         /** The query phase's native handle for this reader, looked up on first use; 0 when there is none. */
@@ -87,7 +94,17 @@ final class NativeStoredFieldsReader extends FilterDirectoryReader {
 
     static DirectoryReader wrap(DirectoryReader in, NativeReaders readers, SearchStats stats, BooleanSupplier enabled)
         throws IOException {
-        Shared shared = new Shared(readers, stats, enabled);
+        return wrap(in, readers, stats, enabled, false);
+    }
+
+    static DirectoryReader wrap(
+        DirectoryReader in,
+        NativeReaders readers,
+        SearchStats stats,
+        BooleanSupplier enabled,
+        boolean derivedSource
+    ) throws IOException {
+        Shared shared = new Shared(readers, stats, enabled, derivedSource);
         NativeStoredFieldsReader r = new NativeStoredFieldsReader(in, shared);
         shared.top = r;
         return r;
@@ -114,7 +131,7 @@ final class NativeStoredFieldsReader extends FilterDirectoryReader {
 
     @Override
     protected DirectoryReader doWrapDirectoryReader(DirectoryReader in) throws IOException {
-        return wrap(in, shared.readers, shared.stats, shared.enabled);
+        return wrap(in, shared.readers, shared.stats, shared.enabled, shared.derivedSource);
     }
 
     @Override
@@ -131,6 +148,13 @@ final class NativeStoredFieldsReader extends FilterDirectoryReader {
         private final Shared shared;
         private final int ord;
         private final boolean live;
+        /**
+         * In a derived-source index, the last document read natively and the thread that read it.
+         * Deriving one hit's {@code _source} reads the document once per stored field it rebuilds
+         * from ({@code StoredFieldFetcher}), then once more for the hit's other stored fields; the
+         * same thread asking for the same document again replays these bytes instead.
+         */
+        private volatile LastDocument last;
 
         Leaf(LeafReader in, Shared shared, int ord) {
             super(in);
@@ -232,17 +256,30 @@ final class NativeStoredFieldsReader extends FilterDirectoryReader {
             if (h == 0) {
                 return false;
             }
-            byte[][] out = new byte[1][];
-            int rc = NativeBridge.document(h, ord, docID, out);
-            if (rc != NativeBridge.OK) {
-                shared.stats.nativeError();
-                logger.warn("lucene-rust: native stored fields failed ({}), reading with Lucene: {}", rc, NativeBridge.lastError());
-                return false;
+            byte[] blob = null;
+            LastDocument l = last;
+            if (l != null && l.doc == docID && l.thread == Thread.currentThread()) {
+                blob = l.blob;
+            } else {
+                byte[][] out = new byte[1][];
+                int rc = NativeBridge.document(h, ord, docID, out);
+                if (rc != NativeBridge.OK) {
+                    shared.stats.nativeError();
+                    logger.warn("lucene-rust: native stored fields failed ({}), reading with Lucene: {}", rc, NativeBridge.lastError());
+                    return false;
+                }
+                blob = out[0];
+                if (shared.derivedSource) {
+                    last = new LastDocument(Thread.currentThread(), docID, blob);
+                }
             }
-            replay(getFieldInfos(), out[0], visitor);
+            replay(getFieldInfos(), blob, visitor);
             shared.stats.nativeFetch(sequential);
             return true;
         }
+
+        /** A document's native bytes, as {@link #replay} reads them, and who read them. */
+        private record LastDocument(Thread thread, int doc, byte[] blob) {}
 
 
         @Override

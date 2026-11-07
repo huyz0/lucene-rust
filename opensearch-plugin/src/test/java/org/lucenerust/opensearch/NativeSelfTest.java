@@ -1468,6 +1468,41 @@ public final class NativeSelfTest {
                 check(stats.fetchCount() > 1000, "stored fields read natively: " + stats.fetchCount());
                 check(stats.sequentialFetchCount() > 300, "through the sequential reader: " + stats.sequentialFetchCount());
                 check(stats.fetchLuceneCount() == 0, "no document fell back to Lucene: " + stats.fetchLuceneCount());
+                // A derived-source index's leaf replays the document it read last: the same
+                // document again (one read per rebuilt stored field, then the hit's own), another
+                // in between, and a read from another thread all match Lucene's.
+                DirectoryReader derived = NativeStoredFieldsReader.wrap(lucene, readers, stats, () -> true, true);
+                for (int leaf = 0; leaf < lucene.leaves().size(); leaf++) {
+                    org.apache.lucene.index.LeafReader want = lucene.leaves().get(leaf).reader();
+                    org.apache.lucene.index.LeafReader got = derived.leaves().get(leaf).reader();
+                    int max = want.maxDoc();
+                    for (int n = 0; n < 200; n++) {
+                        int doc = r.nextInt(max);
+                        int[] order = { doc, doc, r.nextInt(max), doc };
+                        for (int i = 0; i < order.length; i++) {
+                            String[] no = i == 1 ? skip : new String[0];
+                            Recorder a = new Recorder(no, i == 3 ? 2 : Integer.MAX_VALUE);
+                            Recorder b = new Recorder(no, i == 3 ? 2 : Integer.MAX_VALUE);
+                            want.storedFields().document(order[i], a);
+                            got.storedFields().document(order[i], b);
+                            check(a.log.equals(b.log), "derived source leaf " + leaf + " doc " + order[i] + ": " + firstDiff(b.log, a.log));
+                        }
+                        int other = r.nextInt(max);
+                        Recorder a = new Recorder(new String[0], Integer.MAX_VALUE);
+                        Recorder b = new Recorder(new String[0], Integer.MAX_VALUE);
+                        want.storedFields().document(other, a);
+                        Thread t = new Thread(() -> {
+                            try {
+                                got.storedFields().document(other, b);
+                            } catch (java.io.IOException e) {
+                                throw new java.io.UncheckedIOException(e);
+                            }
+                        });
+                        t.start();
+                        t.join();
+                        check(a.log.equals(b.log), "derived source, another thread, doc " + other);
+                    }
+                }
                 // Disabled, every document is Lucene's.
                 DirectoryReader off = NativeStoredFieldsReader.wrap(lucene, readers, stats, () -> false);
                 Recorder x = new Recorder(new String[0], Integer.MAX_VALUE);

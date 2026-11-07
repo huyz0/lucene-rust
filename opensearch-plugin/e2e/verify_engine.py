@@ -25,6 +25,9 @@ swapped), every observable result must be identical:
   * index.codec best_compression, zstd and zstd_no_dict (the bundled custom-codecs plugin's) on
     the Rust engine: the same results and _source as the default codec, and segments recorded
     under the codec names OpenSearch's own engine records.
+  * index.derived_source.enabled (and its translog form): _source rebuilt from doc values and
+    stored fields the same on both engines, through searches, gets, top_hits, updates and
+    SIGKILL; realtime search with it is refused.
 
 Usage: verify_engine.py <base-url> <container-name> [--ops N]
 Standard library only.
@@ -818,6 +821,124 @@ def unsupported():
         must("DELETE", "/fallback_codec")
 
 
+DS_MAPPING = {"properties": {
+    "kw": {"type": "keyword"}, "kws": {"type": "keyword", "doc_values": False, "store": True},
+    "txt": {"type": "text"}, "l": {"type": "long"}, "i": {"type": "integer"},
+    "d": {"type": "double"}, "f": {"type": "float"}, "hf": {"type": "half_float"},
+    "ul": {"type": "unsigned_long"}, "ls": {"type": "long", "doc_values": False, "store": True},
+    "b": {"type": "boolean"}, "dt": {"type": "date"},
+    "dtf": {"type": "date", "format": "yyyy-MM-dd HH:mm:ss"}, "ip": {"type": "ip"},
+    "geo": {"type": "geo_point"}, "wc": {"type": "wildcard"}, "bin": {"type": "binary", "store": True},
+    "obj": {"properties": {"a": {"type": "keyword"}, "deep": {"properties": {"x": {"type": "double"}}}}},
+}}
+
+
+def ds_doc(r, i):
+    doc = {"kw": [f"k{r.randrange(40)}" for _ in range(1 + r.randrange(3))], "kws": f"s{i}",
+           "txt": words(r, 1 + r.randrange(20)), "l": r.randrange(-10**12, 10**12),
+           "i": r.randrange(-10**6, 10**6), "d": r.uniform(-1e6, 1e6), "f": round(r.uniform(-1e3, 1e3), 3),
+           "hf": round(r.uniform(-100, 100), 1), "ul": r.randrange(2**64), "ls": [i, i * 3],
+           "b": r.random() < 0.5, "dt": f"2026-0{1 + r.randrange(9)}-1{r.randrange(10)}T0{r.randrange(10)}:00:00.250Z",
+           "dtf": f"2025-0{1 + r.randrange(9)}-2{r.randrange(9)} 1{r.randrange(10)}:00:00",
+           "ip": f"10.{r.randrange(256)}.0.{r.randrange(256)}" if i % 5 else "2001:db8::7",
+           "geo": {"lat": round(r.uniform(-60, 60), 4), "lon": round(r.uniform(-170, 170), 4)},
+           "wc": f"w-{r.randrange(10**6)}", "bin": "aGVsbG8=", "obj": {"a": f"a{r.randrange(5)}", "deep": {"x": r.random()}}}
+    for k in ("txt", "ip", "geo", "obj"):
+        if r.random() < 0.1:
+            del doc[k]
+    return doc
+
+
+def derived_source(container):
+    """index.derived_source.enabled: OpenSearch rebuilds _source from doc values and stored
+    fields; the Rust engine's segments (read natively) give back what OpenSearch's own engine's
+    give back, before and after updates, a merge and SIGKILL (translog replay)."""
+    java, rust = "ds_java", "ds_rust"
+    for idx, on_rust in ((java, False), (rust, True)):
+        req("DELETE", f"/{idx}")
+        must("PUT", f"/{idx}", {"settings": {"number_of_shards": 2, "number_of_replicas": 0, "refresh_interval": -1,
+                                            "index.lucene_rust.engine": on_rust,
+                                            "index.derived_source.enabled": True,
+                                            "index.derived_source.translog.enabled": True},
+                               "mappings": DS_MAPPING})
+    wait_green(f"{java},{rust}")
+    r = random.Random(7)
+    lines = []
+    for i in range(3000):
+        lines += [json.dumps({"index": {"_id": f"d{i}"}}), json.dumps(ds_doc(r, i))]
+    body = "\n".join(lines) + "\n"
+    for idx in (java, rust):
+        out = must("POST", f"/{idx}/_bulk?refresh=true", body, ndjson=True)
+        check(not out["errors"], f"derived source: bulk into {idx}")
+    queries = [
+        {"query": {"match_all": {}}, "size": 100, "sort": [{"l": "asc"}]},
+        {"query": {"match": {"txt": words(random.Random(1), 2)}}, "size": 20, "sort": [{"i": "desc"}]},
+        {"query": {"range": {"l": {"gte": 0}}}, "size": 30, "sort": ["_id"], "_source": ["kw", "obj.*"]},
+        {"query": {"match_all": {}}, "size": 0, "aggs": {"t": {"terms": {"field": "kw", "size": 3},
+            "aggs": {"h": {"top_hits": {"size": 3, "sort": [{"l": "asc"}]}}}}}},
+        # Adjacent documents: the fetch phase's sequential stored-fields reader.
+        {"query": {"ids": {"values": [f"d{i}" for i in range(200, 260)]}}, "size": 60, "sort": ["_id"]},
+    ]
+
+    def strip(v):
+        if isinstance(v, dict):
+            return {k: strip(x) for k, x in v.items() if k not in ("_index", "took", "_shards")}
+        if isinstance(v, list):
+            return [strip(x) for x in v]
+        return v
+
+    def same(label):
+        for q in queries:
+            a = must("POST", f"/{java}/_search?request_cache=false", q)
+            b = must("POST", f"/{rust}/_search?request_cache=false", q)
+            check(strip(a) == strip(b), f"{label}: {json.dumps(q)[:120]}: {json.dumps(strip(a))[:300]} vs {json.dumps(strip(b))[:300]}")
+        for i in list(range(0, 3000, 97)) + [2999]:
+            for realtime in ("true", "false"):
+                a = req("GET", f"/{java}/_doc/d{i}?realtime={realtime}")[1]
+                b = req("GET", f"/{rust}/_doc/d{i}?realtime={realtime}")[1]
+                check(strip(a) == strip(b), f"{label}: get d{i} realtime={realtime}: {json.dumps(strip(a))[:300]} vs {json.dumps(strip(b))[:300]}")
+        ids = {"ids": [f"d{i}" for i in range(0, 3000, 151)]}
+        check(strip(must("POST", f"/{java}/_mget", ids)) == strip(must("POST", f"/{rust}/_mget", ids)), f"{label}: mget")
+
+    same("derived source")
+    # Updates (partial ones read the derived _source), deletes, then a realtime get from the translog.
+    for idx in (java, rust):
+        for i in range(0, 3000, 13):
+            must("POST", f"/{idx}/_update/d{i}", {"doc": {"l": i, "kw": "updated"}})
+        for i in range(5, 3000, 211):
+            must("DELETE", f"/{idx}/_doc/d{i}")
+    same("derived source, updated (translog)")
+    for idx in (java, rust):
+        must("POST", f"/{idx}/_refresh")
+    same("derived source, updated")
+    for idx in (java, rust):
+        must("POST", f"/{idx}/_forcemerge?max_num_segments=1")
+        must("POST", f"/{idx}/_refresh")
+    same("derived source, merged")
+    sizes = [must("GET", f"/{idx}/_stats/store")["_all"]["primaries"]["store"]["size_in_bytes"] for idx in (java, rust)]
+    check(sizes[1] <= sizes[0] * 1.1, f"derived source: the Rust index is no bigger than Java's: {sizes}")
+    for idx in (java, rust):
+        for i in range(1, 3000, 17):
+            # Some of these were deleted above: a 404 on both.
+            req("POST", f"/{idx}/_update/d{i}", {"doc": {"i": -i}}, ok=(200, 201, 404))
+    subprocess.run(["docker", "kill", "-s", "KILL", container], check=True, capture_output=True)
+    subprocess.run(["docker", "start", container], check=True, capture_output=True)
+    check(wait_green(f"{java},{rust}", 300), "derived source: green after SIGKILL")
+    same("derived source, after SIGKILL")
+    status, out = req("PUT", "/ds_realtime", {"settings": {"index.lucene_rust.engine": True, "number_of_replicas": 0,
+                                                          "index.derived_source.enabled": True,
+                                                          "index.lucene_rust.realtime_search": True}})
+    if status in (200, 201):
+        time.sleep(3)
+        explain = must("GET", "/_cluster/allocation/explain", {"index": "ds_realtime", "shard": 0, "primary": True})
+        check("derived_source" in json.dumps(explain), f"realtime search with derived source is refused: {json.dumps(explain)[:300]}")
+    else:
+        check("derived_source" in json.dumps(out), f"realtime search with derived source is refused: {out}")
+    for idx in (java, rust, "ds_realtime"):
+        req("DELETE", f"/{idx}")
+    print("derived source: compared", flush=True)
+
+
 def codecs(container):
     """index.codec best_compression, zstd and zstd_no_dict on the Rust engine: the same answers and
     _source as the default codec through flushes and a force merge, and each shard's commit
@@ -996,6 +1117,7 @@ def main():
     merge_policies()
     unsupported()
     codecs(a.container)
+    derived_source(a.container)
     encrypted(a.container)
     print(f"verify_engine: {CHECKS[0]} checks, {len(FAILURES)} failures", flush=True)
     sys.exit(1 if FAILURES else 0)
