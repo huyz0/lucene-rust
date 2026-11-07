@@ -214,10 +214,21 @@ public final class RustEngineSupport {
         return null;
     }
 
+    private static volatile boolean refuseKnnVector;
+
+    /**
+     * The stock k-NN plugin serves {@code knn_vector} on this node: its fields (its codec's formats)
+     * are left to OpenSearch's engine.
+     */
+    public static void refuseKnnVectorFields() {
+        refuseKnnVector = true;
+    }
+
     /**
      * The first field of {@code mapping} (a mapping's source, as parsed) whose documents the Rust
-     * writer would refuse -- completion fields (their postings format), term vectors, vector
-     * fields, in its properties or dynamic templates -- or {@code null}. An index that only inherits {@link #ENGINE_DEFAULT} and is created
+     * writer would refuse -- completion fields (their postings format), term vectors and, beside the
+     * stock k-NN plugin, its {@code knn_vector} fields, in its properties or dynamic templates -- or
+     * {@code null}. An index that only inherits {@link #ENGINE_DEFAULT} and is created
      * with such a mapping is served by OpenSearch's engine; one that asked for the Rust engine
      * refuses those documents one by one.
      */
@@ -242,7 +253,7 @@ public final class RustEngineSupport {
             for (Map.Entry<?, ?> e : props.entrySet()) {
                 if (e.getValue() instanceof Map<?, ?> field) {
                     Object type = field.get("type");
-                    if ("completion".equals(type) || "knn_vector".equals(type)) {
+                    if ("completion".equals(type) || (refuseKnnVector && "knn_vector".equals(type))) {
                         return e.getKey() + " (" + type + ")";
                     }
                     Object tv = field.get("term_vector");

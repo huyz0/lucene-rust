@@ -151,7 +151,9 @@ public final class NativeSelfTest {
         }
         // SELFTEST_ONLY=similarity: NativeSelfTestSimilarity's per-field similarities alone.
         if ("similarity".equals(System.getenv("SELFTEST_ONLY"))) {
-            NativeSelfTestSimilarity.run(new Random(29), (ok, what) -> check(ok, what), NativeSelfTest::compare);
+            NativeSelfTestKnn.run(new Random(31), (ok, what) -> check(ok, what), NativeSelfTest::compare);
+        check(NativeSelfTestKnn.encoded >= 300 && NativeSelfTestKnn.topCompared >= 90, "knn queries compared: " + NativeSelfTestKnn.encoded + " encoded, " + NativeSelfTestKnn.topCompared + " whole-reader");
+        NativeSelfTestSimilarity.run(new Random(29), (ok, what) -> check(ok, what), NativeSelfTest::compare);
             System.out.printf("NativeSelfTest (similarity only): %s; %d checks, %d failures; %d of %d compared scores bit-exact%n", NativeSelfTestSimilarity.COMPARED.entrySet().stream().map(e -> e.getKey() + "=" + e.getValue()[0]).toList(), checks, failures, bitExact, scored);
             System.exit(failures > 0 ? 1 : 0);
         }
