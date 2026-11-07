@@ -20,6 +20,7 @@ use lucene_util::fixed_bit_set::FixedBitSet;
 use crate::collector::{ScoreDoc, ScoringCollector};
 use crate::directory_reader::SegmentReader;
 use crate::document::DocumentQuery;
+use crate::join::BitSetProducer;
 use crate::multi_segment::OpenSegment;
 use crate::query::Clause;
 use crate::vector_query::{
@@ -255,6 +256,50 @@ pub fn knn_top_hits(
     candidates: usize,
     filter: Option<&Clause>,
 ) -> Result<Vec<ScoreDoc>> {
+    top_hits(segments, field, target, k, candidates, filter, None)
+}
+
+/// [`knn_top_hits`] over a nested field (the `lucene` engine's
+/// `OSDiversifyingChildrenFloatKnnVectorQuery`): the best child of each of
+/// the best `k` parents, the blocks `parents` closes.
+///
+/// With `expand` (`expand_nested_docs`, k-NN's `ExpandNestedDocsQuery`)
+/// every child of those parents that passes the filter and has a vector is
+/// scored too, and all of them are returned, best first.
+///
+/// # Errors
+/// As [`knn_top_hits`], and the parent filter's own errors.
+#[allow(clippy::too_many_arguments)]
+pub fn knn_top_hits_nested(
+    segments: &[OpenSegment<'_>],
+    field: &str,
+    target: &KnnTarget,
+    k: usize,
+    candidates: usize,
+    filter: Option<&Clause>,
+    parents: &dyn BitSetProducer,
+    expand: bool,
+) -> Result<Vec<ScoreDoc>> {
+    top_hits(
+        segments,
+        field,
+        target,
+        k,
+        candidates,
+        filter,
+        Some((parents, expand)),
+    )
+}
+
+fn top_hits(
+    segments: &[OpenSegment<'_>],
+    field: &str,
+    target: &KnnTarget,
+    k: usize,
+    candidates: usize,
+    filter: Option<&Clause>,
+    nested: Option<(&dyn BitSetProducer, bool)>,
+) -> Result<Vec<ScoreDoc>> {
     let filters = match filter {
         Some(f) => Some(vector_query::filter_bitsets(segments, f)?),
         None => None,
@@ -269,6 +314,9 @@ pub fn knn_top_hits(
         opened.push((reader, open_leaf(reader, field)?));
     }
     let mut knn = Vec::with_capacity(segments.len()); // alloc-ok: one per segment
+                                                      // The segment each `knn` entry is, and (nested) its parent bit set.
+    let mut leaves = Vec::with_capacity(segments.len()); // alloc-ok: one per segment
+    let mut parent_sets = Vec::with_capacity(segments.len()); // alloc-ok: one per segment
     for (i, (seg, (reader, vectors))) in segments.iter().zip(&opened).enumerate() {
         let Some(vectors) = vectors else { continue };
         let filter = filters.as_ref().map(|f| &f[i]);
@@ -276,6 +324,10 @@ pub fn knn_top_hits(
             vectors: vectors.input(reader, seg.live_docs, filter),
             doc_base: seg.doc_base,
         });
+        leaves.push(i);
+        if let Some((parents, _)) = nested {
+            parent_sets.push(parents.bit_set(seg)?);
+        }
     }
     if knn.is_empty() {
         return Ok(Vec::new());
@@ -288,16 +340,99 @@ pub fn knn_top_hits(
         .fold(0usize, usize::saturating_add)
         .max(1);
     let candidates = candidates.max(k).min(docs);
-    let mut hits = match target {
-        KnnTarget::Float(t) => {
+    let parents: Vec<Option<&FixedBitSet>> = parent_sets.iter().map(|b| b.as_deref()).collect();
+    let mut hits = match (target, nested.is_some()) {
+        (KnnTarget::Float(t), false) => {
             let q = KnnFloatVectorQuery::new(field, t.clone(), candidates)?;
             vector_query::search_knn_float_vector_query_multi_segment(&knn, &q)?
         }
-        KnnTarget::Byte(t) => {
+        (KnnTarget::Byte(t), false) => {
             let q = KnnByteVectorQuery::new(field, t.clone(), candidates)?;
             vector_query::search_knn_byte_vector_query_multi_segment(&knn, &q)?
         }
+        (KnnTarget::Float(t), true) => {
+            let q = KnnFloatVectorQuery::new(field, t.clone(), candidates)?;
+            vector_query::search_diversifying_children_float_knn_multi_segment(&knn, &parents, &q)?
+        }
+        (KnnTarget::Byte(t), true) => {
+            let q = KnnByteVectorQuery::new(field, t.clone(), candidates)?;
+            vector_query::search_diversifying_children_byte_knn_multi_segment(&knn, &parents, &q)?
+        }
     };
     hits.truncate(k);
-    Ok(hits)
+    if !matches!(nested, Some((_, true))) {
+        return Ok(hits);
+    }
+    let mut expanded = Vec::new();
+    for ((seg, &leaf), parents) in knn.iter().zip(&leaves).zip(&parents) {
+        let Some(parents) = parents else { continue };
+        let Some(siblings) = siblings(&hits, seg, parents, filters.as_ref().map(|f| &f[leaf]))
+        else {
+            continue;
+        };
+        let (reader, vectors) = &opened[leaf];
+        let Some(vectors) = vectors else { continue };
+        let input = vectors.input(reader, segments[leaf].live_docs, Some(&siblings));
+        let n = siblings.cardinality().max(1);
+        let local = match target {
+            KnnTarget::Float(t) => {
+                let q = KnnFloatVectorQuery::new(field, t.clone(), n)?;
+                vector_query::search_knn_float_vector_query(&input, &q)?
+            }
+            KnnTarget::Byte(t) => {
+                let q = KnnByteVectorQuery::new(field, t.clone(), n)?;
+                vector_query::search_knn_byte_vector_query(&input, &q)?
+            }
+        };
+        expanded.extend(local.into_iter().map(|h| ScoreDoc {
+            doc_id: h.doc_id.saturating_add(seg.doc_base),
+            score: h.score,
+        }));
+    }
+    // `TopDocs.merge`'s order: the better score first, the lower doc on a tie.
+    expanded.sort_by(|a, b| {
+        b.score
+            .total_cmp(&a.score)
+            .then_with(|| a.doc_id.cmp(&b.doc_id))
+    });
+    Ok(expanded)
+}
+
+/// k-NN's `GroupedNestedDocIdSetIterator`: in `seg`'s doc space, every child
+/// of the parents of the `hits` that fall in it, and that pass `filter`.
+/// `None` when no hit is in this segment.
+fn siblings(
+    hits: &[ScoreDoc],
+    seg: &KnnSegment<'_>,
+    parents: &FixedBitSet,
+    filter: Option<&FixedBitSet>,
+) -> Option<FixedBitSet> {
+    let max_doc = usize::try_from(seg.vectors.max_doc).unwrap_or(0);
+    let mut out: Option<FixedBitSet> = None;
+    for hit in hits {
+        let Some(local) = hit
+            .doc_id
+            .checked_sub(seg.doc_base)
+            .and_then(|d| usize::try_from(d).ok())
+            .filter(|&d| d < max_doc && d < parents.len())
+        else {
+            continue;
+        };
+        let Some(parent) = parents.next_set_bit(local) else {
+            continue;
+        };
+        let first = match local.checked_sub(1) {
+            Some(before) => parents
+                .prev_set_bit(before)
+                .map_or(0, |p| p.saturating_add(1)),
+            None => 0,
+        };
+        let bits = out.get_or_insert_with(|| FixedBitSet::new(max_doc));
+        for child in first..parent.min(bits.len()) {
+            if filter.is_none_or(|f| f.get_doc(child as i32)) {
+                bits.set(child);
+            }
+        }
+    }
+    out
 }

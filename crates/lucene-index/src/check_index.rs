@@ -5713,7 +5713,15 @@ fn check_current_vector_group(
     // is this subsystem's own failure to report.
     let flat = match vectors::FlatVectorsReader::open(&vemf, &vec, &commit.segment_id, suffix)
         .and_then(|r| r.check_integrity().map(|()| r))
-    {
+        .and_then(|mut r| {
+            r.resolve_similarities(|number| {
+                fields
+                    .iter()
+                    .find(|f| f.number == number)
+                    .map(|f| f.vector_similarity_function)
+            })
+            .map(|()| r)
+        }) {
         Ok(r) => r,
         Err(e) => {
             checks.push(Check::fail("vectors.open", e.to_string()));

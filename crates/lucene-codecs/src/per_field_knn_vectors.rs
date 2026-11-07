@@ -40,6 +40,15 @@ pub enum KnnVectorsFormat {
     /// `Lucene99HnswVectorsFormat(maxConn, beamWidth)`: raw vectors
     /// (`.vec`/`.vemf`) and an HNSW graph (`.vem`/`.vex`).
     Hnsw { max_conn: i32, beam_width: i32 },
+    /// The OpenSearch k-NN plugin's `KNN9120HnswBinaryVectorsFormat(maxConn,
+    /// beamWidth)` ([`crate::vectors::HAMMING_FORMAT_NAME`]): [`Self::Hnsw`]'s
+    /// files over packed bit vectors, whose graph and searches score by
+    /// Hamming distance.
+    HnswHamming { max_conn: i32, beam_width: i32 },
+    /// The OpenSearch k-NN plugin's `KNN1040HnswHalfFloatVectorsFormat(maxConn,
+    /// beamWidth)` ([`crate::vectors::HALF_FLOAT_FORMAT_NAME`]): an HNSW graph
+    /// over float vectors stored as half floats.
+    HnswHalfFloat { max_conn: i32, beam_width: i32 },
     /// `Lucene104HnswScalarQuantizedVectorsFormat(encoding, maxConn,
     /// beamWidth)`: the raw vectors, their scalar-quantized codes
     /// (`.veq`/`.vemq`, `FLOAT32` fields only) and a graph.
@@ -102,6 +111,24 @@ impl KnnVectorsFormat {
         })
     }
 
+    /// `new KNN9120HnswBinaryVectorsFormat(maxConn, beamWidth)`.
+    pub fn hnsw_hamming(max_conn: i32, beam_width: i32) -> Result<Self, InvalidFormat> {
+        check_graph(max_conn, beam_width)?;
+        Ok(KnnVectorsFormat::HnswHamming {
+            max_conn,
+            beam_width,
+        })
+    }
+
+    /// `new KNN1040HnswHalfFloatVectorsFormat(maxConn, beamWidth)`.
+    pub fn hnsw_half_float(max_conn: i32, beam_width: i32) -> Result<Self, InvalidFormat> {
+        check_graph(max_conn, beam_width)?;
+        Ok(KnnVectorsFormat::HnswHalfFloat {
+            max_conn,
+            beam_width,
+        })
+    }
+
     /// `new Lucene104HnswScalarQuantizedVectorsFormat(encoding, maxConn,
     /// beamWidth)`.
     pub fn hnsw_scalar_quantized(
@@ -143,6 +170,8 @@ impl KnnVectorsFormat {
         match self {
             KnnVectorsFormat::Named { name, .. } => name,
             KnnVectorsFormat::Hnsw { .. } => HNSW_NAME,
+            KnnVectorsFormat::HnswHamming { .. } => crate::vectors::HAMMING_FORMAT_NAME,
+            KnnVectorsFormat::HnswHalfFloat { .. } => crate::vectors::HALF_FLOAT_FORMAT_NAME,
             KnnVectorsFormat::HnswScalarQuantized { .. } => scalar_quantized_vectors::HNSW_NAME,
             KnnVectorsFormat::ScalarQuantized { .. } => scalar_quantized_vectors::NAME,
         }
@@ -153,6 +182,14 @@ impl KnnVectorsFormat {
     pub fn graph(&self) -> Option<(i32, i32)> {
         match *self.files_format() {
             KnnVectorsFormat::Hnsw {
+                max_conn,
+                beam_width,
+            }
+            | KnnVectorsFormat::HnswHamming {
+                max_conn,
+                beam_width,
+            }
+            | KnnVectorsFormat::HnswHalfFloat {
                 max_conn,
                 beam_width,
             }
@@ -168,7 +205,10 @@ impl KnnVectorsFormat {
     /// The quantization, `None` for plain HNSW.
     pub fn quantization(&self) -> Option<ScalarEncoding> {
         match *self.files_format() {
-            KnnVectorsFormat::Hnsw { .. } | KnnVectorsFormat::Named { .. } => None,
+            KnnVectorsFormat::Hnsw { .. }
+            | KnnVectorsFormat::HnswHamming { .. }
+            | KnnVectorsFormat::HnswHalfFloat { .. }
+            | KnnVectorsFormat::Named { .. } => None,
             KnnVectorsFormat::HnswScalarQuantized { encoding, .. }
             | KnnVectorsFormat::ScalarQuantized { encoding } => Some(encoding),
         }
@@ -224,6 +264,14 @@ pub fn for_name(name: &str) -> Option<KnnVectorsFormat> {
         },
         KnnVectorsFormat::ScalarQuantized {
             encoding: ScalarEncoding::UnsignedByte,
+        },
+        KnnVectorsFormat::HnswHamming {
+            max_conn: hnsw::DEFAULT_MAX_CONN,
+            beam_width: hnsw::DEFAULT_BEAM_WIDTH,
+        },
+        KnnVectorsFormat::HnswHalfFloat {
+            max_conn: hnsw::DEFAULT_MAX_CONN,
+            beam_width: hnsw::DEFAULT_BEAM_WIDTH,
         },
     ];
     if let Some(format) = builtin.into_iter().find(|f| f.name() == name) {

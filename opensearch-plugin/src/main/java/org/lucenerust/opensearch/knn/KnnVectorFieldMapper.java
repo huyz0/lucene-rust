@@ -3,14 +3,17 @@
  */
 package org.lucenerust.opensearch.knn;
 
+import org.apache.lucene.index.DocValuesType;
 import org.apache.lucene.document.BinaryDocValuesField;
 import org.apache.lucene.document.FieldType;
+import org.apache.lucene.document.Field;
 import org.apache.lucene.document.KnnByteVectorField;
 import org.apache.lucene.document.KnnFloatVectorField;
 import org.apache.lucene.document.StoredField;
 import org.apache.lucene.index.VectorEncoding;
 import org.apache.lucene.search.FieldExistsQuery;
 import org.apache.lucene.search.Query;
+import org.apache.lucene.util.VectorUtil;
 import org.lucenerust.opensearch.engine.VectorsFormatSpec;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.common.xcontent.support.XContentMapValues;
@@ -191,11 +194,24 @@ public final class KnnVectorFieldMapper extends ParametrizedFieldMapper {
     final String compression;
     final boolean hasDocValues;
     final boolean stored;
+    /** {@code FlatVectorFieldMapper}'s half-float doc values: binary, the field marked {@code data_type: half_float}. */
+    private static final FieldType HALF_FLOAT_DOC_VALUES = halfFloatDocValues();
+
+    private static FieldType halfFloatDocValues() {
+        FieldType ft = new FieldType();
+        ft.setDocValuesType(DocValuesType.BINARY);
+        ft.putAttribute("data_type", "half_float");
+        ft.freeze();
+        return ft;
+    }
+
     private final Settings indexSettings;
     private final KnnFieldConfig config;
     private final FieldType vectorType;
     /** {@link #vectorType} marked for derived source, in an index that masks it. */
     private final FieldType derivedType;
+    /** {@link #derivedType} for the field's values in nested documents. */
+    private final FieldType nestedDerivedType;
     private volatile Boolean derivedField;
 
     private KnnVectorFieldMapper(
@@ -222,19 +238,25 @@ public final class KnnVectorFieldMapper extends ParametrizedFieldMapper {
         this.config = config;
         if (knnIndex) {
             FieldType ft = new FieldType();
-            ft.setVectorAttributes(config.dimension(), config.dataType(), config.spaceType().similarity());
+            ft.setVectorAttributes(config.vectorDimension(), config.dataType(), config.spaceType().similarity());
             ft.putAttribute(KNN_FIELD, "true");
             ft.putAttribute(DIMENSION, Integer.toString(config.dimension()));
             ft.putAttribute(SPACE_TYPE, config.spaceType().value());
             ft.putAttribute(KNN_ENGINE, config.engine());
-            ft.putAttribute(DATA_TYPE, config.dataType() == VectorEncoding.BYTE ? "byte" : "float");
+            ft.putAttribute(
+                DATA_TYPE,
+                config.binary() ? "binary" : config.halfFloat() ? "half_float" : config.dataType() == VectorEncoding.BYTE ? "byte" : "float"
+            );
             ft.putAttribute(VectorsFormatSpec.ATTRIBUTE, config.format().attribute());
             ft.freeze();
             this.vectorType = ft;
-            this.derivedType = DerivedSource.forIndex(indexSettings) ? DerivedSource.marked(ft) : null;
+            boolean derived = DerivedSource.forIndex(indexSettings);
+            this.derivedType = derived ? DerivedSource.marked(ft, false) : null;
+            this.nestedDerivedType = derived ? DerivedSource.marked(ft, true) : null;
         } else {
             this.vectorType = null;
             this.derivedType = null;
+            this.nestedDerivedType = null;
         }
     }
 
@@ -274,7 +296,7 @@ public final class KnnVectorFieldMapper extends ParametrizedFieldMapper {
         if (parser.currentToken() == XContentParser.Token.VALUE_NULL) {
             return;
         }
-        List<Float> values = new ArrayList<>(config.dimension());
+        List<Float> values = new ArrayList<>(config.vectorDimension());
         if (parser.currentToken() == XContentParser.Token.START_ARRAY) {
             for (XContentParser.Token t = parser.nextToken(); t != XContentParser.Token.END_ARRAY; t = parser.nextToken()) {
                 if (t != XContentParser.Token.VALUE_NUMBER && t != XContentParser.Token.VALUE_STRING) {
@@ -287,9 +309,9 @@ public final class KnnVectorFieldMapper extends ParametrizedFieldMapper {
         } else {
             throw new IllegalArgumentException("[" + CONTENT_TYPE + "] field [" + name() + "] takes an array of numbers, got " + parser.currentToken());
         }
-        if (values.size() != config.dimension()) {
+        if (values.size() != config.vectorDimension()) {
             throw new IllegalArgumentException(
-                String.format(Locale.ROOT, "Vector dimension mismatch. Expected: %d, Given: %d", config.dimension(), values.size())
+                String.format(Locale.ROOT, "Vector dimension mismatch. Expected: %d, Given: %d", config.vectorDimension(), values.size())
             );
         }
         if (config.dataType() == VectorEncoding.BYTE) {
@@ -301,11 +323,27 @@ public final class KnnVectorFieldMapper extends ParametrizedFieldMapper {
             keep(context, v);
         } else {
             float[] v = KnnVectors.toFloats(values, config.spaceType());
+            if (config.halfFloat()) {
+                KnnVectors.checkHalfFloats(v);
+                // VectorTransformerFactory: k-NN normalizes half-float cosine vectors before storing them.
+                if (config.spaceType() == SpaceType.COSINESIMIL) {
+                    VectorUtil.l2normalize(v);
+                }
+            }
             if (vectorType != null) {
                 FieldType type = vectorType(context);
                 context.doc().add(masked(context) ? new DerivedSource.MaskedFloat(name(), v, type) : new KnnFloatVectorField(name(), v, type));
             }
-            if (hasDocValues || stored) {
+            if (config.halfFloat()) {
+                // LuceneFieldStrategy: no doc values on a knn index; stored as little-endian half
+                // floats. FlatVectorFieldMapper (not a knn index): half-float doc values.
+                if (vectorType == null && hasDocValues) {
+                    context.doc().add(new Field(name(), new org.apache.lucene.util.BytesRef(KnnVectors.halfFloatBytes(v)), HALF_FLOAT_DOC_VALUES));
+                }
+                if (stored) {
+                    context.doc().add(new StoredField(name(), KnnVectors.halfFloatBytes(v)));
+                }
+            } else if (hasDocValues || stored) {
                 ByteBuffer bytes = ByteBuffer.allocate(v.length * Float.BYTES);
                 for (float f : v) {
                     bytes.putFloat(f);
@@ -315,14 +353,17 @@ public final class KnnVectorFieldMapper extends ParametrizedFieldMapper {
         }
     }
 
-    /** The marked type for every root field of a masking index; nested fields keep their values. */
+    /** The marked type for every field of a masking index: the nested one in a nested document. */
     private FieldType vectorType(ParseContext context) {
-        return derivedType == null || context.doc() != context.rootDoc() ? vectorType : derivedType;
+        if (derivedType == null) {
+            return vectorType;
+        }
+        return context.doc() == context.rootDoc() ? derivedType : nestedDerivedType;
     }
 
     /** Whether the field's value is masked in {@code _source} ({@code isDerivedEnabled}). */
     private boolean masked(ParseContext context) {
-        if (derivedType == null || context.doc() != context.rootDoc()) {
+        if (derivedType == null) {
             return false;
         }
         if (derivedField == null) {

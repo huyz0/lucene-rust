@@ -100,6 +100,25 @@ fn count(
     Ok(n)
 }
 
+/// A parent filter (a node) as the bit-set producer of a block join, its
+/// sets shared across requests ([`SharedParents`]).
+pub(crate) fn decode_parents(
+    c: &mut Cursor<'_>,
+    depth: usize,
+    nodes: &mut usize,
+) -> Result<Arc<dyn BitSetProducer>, FfiStatus> {
+    let start = c.pos();
+    let parents = crate::jvm_reader::decode_node(c, depth, nodes)?;
+    let key = crate::jvm_reader::hex(c.since(start));
+    Ok(Arc::new(SharedParents {
+        key,
+        query: BooleanQuery {
+            must: vec![parents],
+            ..Default::default()
+        },
+    }))
+}
+
 /// A node of kind 20-24, its kind byte read; `start` is the node's offset.
 pub(crate) fn decode(
     c: &mut Cursor<'_>,
@@ -122,17 +141,8 @@ pub(crate) fn decode(
                     )))
                 }
             };
-            let filter_start = c.pos();
-            let parents = crate::jvm_reader::decode_node(c, depth + 1, nodes)?;
-            let key = crate::jvm_reader::hex(c.since(filter_start));
+            let parents = decode_parents(c, depth + 1, nodes)?;
             let child = crate::jvm_reader::decode_node(c, depth + 1, nodes)?;
-            let parents: Arc<dyn BitSetProducer> = Arc::new(SharedParents {
-                key,
-                query: BooleanQuery {
-                    must: vec![parents],
-                    ..Default::default()
-                },
-            });
             ExtendedQuery::ToParentBlockJoin(ToParentBlockJoinQuery::new(
                 child, parents, score_mode,
             ))

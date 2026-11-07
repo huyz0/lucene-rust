@@ -18,6 +18,7 @@
 //! | `37` feature | `field`, `feature: bytes`, `function: u8` (`0` linear; `1` log, then `scaling_factor: f32`; `2` saturation, then `pivot: f32`; `3` sigmoid, then `pivot: f32`, `exponent: f32`), each `f32` as `i32` bits | `FeatureField`'s `FeatureQuery` (`rank_feature`, `neural_sparse` on `rank_features`), its weight a boost node around it |
 //! | `39` KNN | `field`, the target ([`decode_knn_target`]), `kind: u8` (`0` top `k`: `k: i32`, `ef_search: i32`; `1` radial: `min_score: f32` bits), `has_filter: u8` and the filter (a node) when `1` | the k-NN plugin's per-segment `knn` (`faiss` engine: `k` hits per segment; `min_score`/`max_distance`) |
 //! | `40` doc and score | `segments: i32`, each segment's `doc_base: i32` (ascending), then `count: i32`, each `doc: i32` (global), `score: f32` bits | `DocAndScoreQuery`: a whole-reader KNN search already run ([`crate::jvm_knn`]) |
+//! | `41` to-child block join | the parent filter (a node), the parent query (a node) | `ToChildBlockJoinQuery` with a `QueryBitSetProducer` (a `knn` filter on a nested field, as the k-NN plugin joins it down) |
 //! | `38` sparse ANN | `field`, `count: i32`, each `token: i32`, `weight: f32` bits; `top_n: i32`, `k: i32`, `heap_factor: f32` bits, `has_filter: u8` and the filter (a node) when `1`, then the fallback (a node) | neural-search's `SparseVectorQuery` (`neural_sparse` with `method_parameters` on a `sparse_vector`) |
 //!
 //! The doc-values, distance-feature, feature and sparse nodes become
@@ -69,9 +70,10 @@ pub(crate) const NODE_FEATURE: u8 = 37;
 pub(crate) const NODE_SPARSE_ANN: u8 = 38;
 pub(crate) const NODE_KNN: u8 = 39;
 pub(crate) const NODE_DOC_AND_SCORE: u8 = 40;
+pub(crate) const NODE_TO_CHILD: u8 = 41;
 /// The first and last kinds this module decodes.
 pub(crate) const NODE_FIRST: u8 = NODE_MULTI_TERM;
-pub(crate) const NODE_LAST: u8 = NODE_DOC_AND_SCORE;
+pub(crate) const NODE_LAST: u8 = NODE_TO_CHILD;
 
 /// The KNN node's kinds.
 pub(crate) const KNN_TOP_K: u8 = 0;
@@ -152,7 +154,7 @@ fn f32(c: &mut Cursor<'_>) -> Result<f32, FfiStatus> {
     Ok(f32::from_bits(c.i32()? as u32))
 }
 
-/// A node of kinds 27-38, its kind byte read; `start` is the node's offset.
+/// A node of kinds 27-41, its kind byte read; `start` is the node's offset.
 pub(crate) fn decode(
     c: &mut Cursor<'_>,
     kind: u8,
@@ -401,6 +403,13 @@ pub(crate) fn decode(
                 clause = clause.with_filter(filter);
             }
             return Ok(clause.into());
+        }
+        NODE_TO_CHILD => {
+            let parents = crate::jvm_nodes::decode_parents(c, depth + 1, nodes)?;
+            let parent = crate::jvm_reader::decode_node(c, depth + 1, nodes)?;
+            return Ok(Clause::Extended(Box::new(ExtendedQuery::ToChildBlockJoin(
+                lucene_search::join::ToChildBlockJoinQuery::new(parent, parents),
+            ))));
         }
         NODE_DOC_AND_SCORE => {
             let segments = c.len()?;

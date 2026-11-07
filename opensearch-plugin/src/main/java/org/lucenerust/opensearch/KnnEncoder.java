@@ -113,10 +113,37 @@ final class KnnEncoder {
                 return null;
             }
         }
-        int[] docs = new int[q.k()];
-        float[] scores = new float[q.k()];
+        if (q.parents() == null) {
+            request.write(0);
+        } else {
+            Query parents;
+            try {
+                parents = ExtendedEncoder.parentsQuery(q.parents());
+            } catch (ReflectiveOperationException e) {
+                parents = null;
+            }
+            if (parents == null) {
+                return null;
+            }
+            request.write(1);
+            if (QueryEncoder.encodeNode(parents, request, searcher.getTopReaderContext()) != null) {
+                return null;
+            }
+            request.write(q.expand() ? 1 : 0);
+        }
+        byte[] blob = request.toByteArray();
+        // An expanded search returns every scored child of the k parents: a few per parent, usually.
+        int room = q.expand() ? (int) Math.min((long) q.k() * 8, Integer.MAX_VALUE - 8) : q.k();
+        int[] docs = new int[room];
+        float[] scores = new float[room];
         int[] count = new int[1];
-        int rc = NativeBridge.readerKnn(acquired.handle(), request.toByteArray(), q.k(), docs, scores, count);
+        int rc = NativeBridge.readerKnn(acquired.handle(), blob, room, docs, scores, count);
+        if (rc == NativeBridge.BUFFER_TOO_SMALL && count[0] > room) {
+            room = count[0];
+            docs = new int[room];
+            scores = new float[room];
+            rc = NativeBridge.readerKnn(acquired.handle(), blob, room, docs, scores, count);
+        }
         if (rc != NativeBridge.OK) {
             // As every native search does: a failure falls back to Lucene rather than failing the query.
             logger.debug("lucene-rust: [knn] native search failed ({}): {}", rc, NativeBridge.lastError());

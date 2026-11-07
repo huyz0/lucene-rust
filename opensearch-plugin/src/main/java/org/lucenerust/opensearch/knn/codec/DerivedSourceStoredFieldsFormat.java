@@ -274,7 +274,7 @@ final class DerivedSourceStoredFieldsFormat extends StoredFieldsFormat {
                         advanceTo(c, first);
                     }
                     transforms.put(fi.name, v -> {
-                        if (v == null || c == null || c.it.docID() >= docID) {
+                        if (v instanceof Number == false || c == null || c.it.docID() >= docID) {
                             return v;
                         }
                         Object vector = vector(c.values, c.it);
