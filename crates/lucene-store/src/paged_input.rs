@@ -808,11 +808,11 @@ impl Pager {
         if index >= file.pages {
             return;
         }
-        if file.live[index].load(Ordering::Acquire) {
-            // Installed since the fault was raised.
-            self.wake(addr);
-            return;
-        }
+        // A page marked resident is filled again all the same: an eviction
+        // releasing it while an install was copying it in can leave some of
+        // its OS pages missing under the mark, and only a new install fills
+        // those holes (the OS pages present are skipped). Waking the thread
+        // instead would have it fault on the hole again, forever.
         if file.inflight[index].load(Ordering::Acquire) {
             // A background read-ahead brings it: installing it wakes the
             // faulting thread, and a failed one wakes it to fault again.
@@ -1138,6 +1138,36 @@ mod tests {
             fail_first: AtomicUsize::new(0),
             background: AtomicBool::new(false),
         })
+    }
+
+    #[test]
+    fn a_resident_page_with_a_hole_is_filled_again() {
+        let Some(pager) = Pager::spawn(false) else {
+            return;
+        };
+        let page = 16 * 1024;
+        let len = 4 * page;
+        let p = pattern(len, page);
+        let input = pager.open(len, page, p.clone(), "hole").unwrap();
+        let bytes = input.bytes();
+        assert_eq!(bytes[5], byte(5));
+        // The handler marks the page after the copy that woke this thread.
+        while !input.file.live[0].load(Ordering::Acquire) {
+            std::thread::yield_now();
+        }
+        // What an eviction racing an install can leave: the page marked
+        // resident with one of its OS pages gone.
+        let os = pager.os_page;
+        // SAFETY: drops one OS page inside the file's live mapping.
+        unsafe {
+            libc::madvise(
+                bytes.as_ptr().add(os) as *mut libc::c_void,
+                os,
+                libc::MADV_DONTNEED,
+            )
+        };
+        assert_eq!(bytes[os + 7], byte(os + 7));
+        assert!(bytes.iter().enumerate().all(|(i, b)| *b == byte(i)));
     }
 
     #[test]
