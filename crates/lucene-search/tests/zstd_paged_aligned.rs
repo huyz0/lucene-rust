@@ -179,8 +179,30 @@ fn a_loose_paged_fdt_is_opened_with_the_page_size() {
     );
 }
 
+/// The compound segment's (`.fdt` offset, `.fdt` length, every entry's
+/// offset).
+fn compound_fdt(dir: &dyn Directory) -> (i64, i64, Vec<i64>) {
+    let cfe = dir
+        .list_all()
+        .unwrap()
+        .into_iter()
+        .find(|f| f.ends_with(".cfe"))
+        .expect("a compound segment");
+    let sis = lucene_index::segment_infos::read_latest(dir).unwrap();
+    let entries =
+        compound_format::parse_entries(&dir.open(&cfe).unwrap(), &sis.segments[0].segment_id)
+            .unwrap();
+    let (_, fdt) = entries
+        .entries
+        .iter()
+        .find(|(name, _)| name.ends_with(".fdt"))
+        .expect("a .fdt entry");
+    let offsets = entries.entries.iter().map(|(_, e)| e.offset).collect();
+    (fdt.offset, fdt.length, offsets)
+}
+
 #[test]
-fn a_compound_file_starts_the_paged_fdt_on_a_page() {
+fn a_compound_file_starts_a_multi_page_paged_fdt_on_a_page() {
     let tmp = TempDir::new("zstd-paged-aligned-cfs");
     let dir = FsDirectory::open(tmp.path());
     write(&dir, 3000, true, true);
@@ -190,24 +212,38 @@ fn a_compound_file_starts_the_paged_fdt_on_a_page() {
         [ZSTD_PAGED_PAGE_SIZE],
         "{calls:?}"
     );
+    let (offset, length, offsets) = compound_fdt(&dir);
+    assert!(length > ZSTD_PAGED_PAGE_SIZE as i64, "{length}");
+    assert_eq!(offset % ZSTD_PAGED_PAGE_SIZE as i64, 0);
+    assert!(offsets.iter().all(|o| o % 64 == 0), "{offsets:?}");
+}
 
-    let cfe = dir
+#[test]
+fn a_compound_file_packs_a_small_paged_fdt_without_padding_a_page() {
+    // A segment smaller than a page: its `.fdt` sits inside one page of the
+    // `.cfs`, after the smaller entries, with no page of padding before it.
+    let tmp = TempDir::new("zstd-paged-aligned-small");
+    let dir = FsDirectory::open(tmp.path());
+    write(&dir, 20, true, true);
+    read(&dir, 20);
+    let (offset, length, offsets) = compound_fdt(&dir);
+    let page = ZSTD_PAGED_PAGE_SIZE as i64;
+    assert!(length < page / 4, "{length}");
+    assert_eq!(
+        offset / page,
+        (offset + length - 1) / page,
+        "{offset} {length}"
+    );
+    assert!(offset < page, "{offset}");
+    assert!(offsets.iter().all(|o| o % 64 == 0), "{offsets:?}");
+    let cfs: u64 = dir
         .list_all()
         .unwrap()
-        .into_iter()
-        .find(|f| f.ends_with(".cfe"))
-        .expect("a compound segment");
-    let sis = lucene_index::segment_infos::read_latest(&dir).unwrap();
-    let entries =
-        compound_format::parse_entries(&dir.open(&cfe).unwrap(), &sis.segments[0].segment_id)
-            .unwrap();
-    for (name, entry) in &entries.entries {
-        if name.ends_with(".fdt") {
-            assert_eq!(entry.offset % ZSTD_PAGED_PAGE_SIZE as i64, 0, "{name}");
-        } else {
-            assert_eq!(entry.offset % 64, 0, "{name}");
-        }
-    }
+        .iter()
+        .filter(|f| f.ends_with(".cfs"))
+        .map(|f| dir.file_length(f).unwrap())
+        .sum();
+    assert!(cfs < page as u64, "{cfs}");
 }
 
 #[test]

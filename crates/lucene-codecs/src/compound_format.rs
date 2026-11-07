@@ -240,10 +240,8 @@ pub fn write(
     for (name, bytes) in ordered {
         verify_sub_file(name, bytes, segment_id)?;
 
-        let alignment = sub_file_alignment(bytes);
-        while !cfs.len().is_multiple_of(alignment) {
-            cfs.push(0);
-        }
+        let start = entry_start(cfs.len(), bytes);
+        cfs.resize(start, 0);
         let start_offset = cfs.len() as i64;
         cfs.extend_from_slice(bytes);
         // ARITH: `start_offset` was `cfs.len()` immediately before the
@@ -264,21 +262,30 @@ pub fn write(
     Ok((cfs, cfe))
 }
 
-/// Where a sub-file starts in `.cfs`: [`ALIGNMENT_BYTES`], or the page size
-/// for paged zstd stored fields, whose chunks are packed into pages counted
-/// from the file's start
-/// ([`crate::stored_fields::ZSTD_PAGED_PAGE_SIZE`]). Readers slice by the
-/// recorded offset either way, Java's included.
-fn sub_file_alignment(bytes: &[u8]) -> usize {
+/// Where a sub-file appended at `pos` starts in `.cfs`: the next
+/// [`ALIGNMENT_BYTES`] boundary, except that paged zstd stored fields, whose
+/// chunks are packed into pages counted from the file's start
+/// ([`crate::stored_fields::ZSTD_PAGED_PAGE_SIZE`]), never straddle a page
+/// they need not. One that fits in what is left of the current page stays
+/// there (a small segment's `.fdt` costs no padding); a longer one starts
+/// on the next page. Readers slice by the recorded offset either way,
+/// Java's included.
+fn entry_start(pos: usize, bytes: &[u8]) -> usize {
+    let start = pos.next_multiple_of(ALIGNMENT_BYTES);
     let mut input = SliceInput::new(bytes);
     let paged = input.read_be_u32().is_ok()
         && input
             .read_string()
             .is_ok_and(|codec| codec == crate::stored_fields::DATA_CODEC_ZSTD_PAGED);
-    if paged {
-        crate::stored_fields::ZSTD_PAGED_PAGE_SIZE
+    if !paged {
+        return start;
+    }
+    let page = crate::stored_fields::ZSTD_PAGED_PAGE_SIZE;
+    let room = page.saturating_sub(start.checked_rem(page).unwrap_or(0));
+    if bytes.len() <= room {
+        start
     } else {
-        ALIGNMENT_BYTES
+        pos.next_multiple_of(page)
     }
 }
 
