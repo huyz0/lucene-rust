@@ -239,6 +239,7 @@ public final class EncryptedStoreTest {
                     false,
                     false,
                     false,
+                    false,
                     null,
                     null,
                     null,

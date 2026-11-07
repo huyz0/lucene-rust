@@ -65,6 +65,7 @@ use lucene_store::index_output::{FsIndexOutput, IndexOutput};
 use crate::blocktree::{
     POSTINGS_BLOCK_SIZE, POSTINGS_TERMS_CODEC, POSTINGS_VERSION_CURRENT, TERMS_CODEC_NAME,
     TERMS_INDEX_CODEC_NAME, TERMS_META_CODEC_NAME, VERSION_CURRENT as BLOCKTREE_VERSION_CURRENT,
+    ZSTD_TERMS_CODEC_NAME, ZSTD_TERMS_INDEX_CODEC_NAME, ZSTD_TERMS_META_CODEC_NAME,
 };
 use crate::blocktree_writer;
 use crate::field_infos::IndexOptions;
@@ -799,6 +800,12 @@ pub struct WriteOptions {
     /// The same for `.pay`: `None` writes one when some input field has
     /// offsets or payloads.
     pub has_payloads_or_offsets: Option<bool>,
+    /// Write the terms dictionary with zstd blocks at this level: a block is
+    /// zstd-compressed when that makes it at least an eighth smaller, and a
+    /// field with about a MiB or more of blocks gets a dictionary trained on
+    /// its own blocks. Only this port reads such a dictionary; `None` (the
+    /// default) writes Lucene's.
+    pub zstd_term_blocks: Option<i32>,
 }
 
 impl Default for WriteOptions {
@@ -808,6 +815,7 @@ impl Default for WriteOptions {
             max_items_in_block: blocktree_writer::MAX_ITEMS_IN_BLOCK,
             has_prox: None,
             has_payloads_or_offsets: None,
+            zstd_term_blocks: None,
         }
     }
 }
@@ -833,6 +841,9 @@ impl WriteOptions {
             return Err(Error::InvalidBlockSizes(format!(
                 "maxItemsInBlock must be at least 2*(minItemsInBlock-1); got maxItemsInBlock={max} minItemsInBlock={min}"
             )));
+        }
+        if let Some(level) = self.zstd_term_blocks {
+            lucene_zstd::check_level(level).map_err(|e| Error::InvalidBlockSizes(e.to_string()))?;
         }
         Ok(())
     }
@@ -1150,6 +1161,49 @@ struct BlockTreeDictionary {
     records: Vec<u8>,
     num_fields: usize,
     block_sizes: (usize, usize),
+    /// [`WriteOptions::zstd_term_blocks`].
+    zstd_level: Option<i32>,
+}
+
+/// Fields with fewer bytes of terms than this get no zstd dictionary: one
+/// would cost more than it saves.
+const ZSTD_DICTIONARY_MIN_TERM_BYTES: usize = 1 << 20;
+/// The most bytes of a field's zstd dictionary.
+const ZSTD_DICTIONARY_SIZE: usize = 16 << 10;
+/// About how many bytes of blocks a dictionary is trained on.
+const ZSTD_SAMPLE_BYTES: usize = 2 << 20;
+
+/// A zstd dictionary for `terms`' blocks, trained on a dry run of the block
+/// writer over them; empty when the field is too small for one or training
+/// fails.
+// ARITH: sums of in-memory term lengths.
+#[allow(clippy::arithmetic_side_effects)]
+fn train_term_block_dictionary(
+    terms: &[blocktree_writer::BlockTerm<'_>],
+    block_sizes: (usize, usize),
+    has_freqs: bool,
+    encode_meta: impl FnMut(&mut Vec<u8>, &[usize]),
+) -> Vec<u8> {
+    let term_bytes: usize = terms.iter().map(|t| t.bytes.len() + 4).sum();
+    if term_bytes < ZSTD_DICTIONARY_MIN_TERM_BYTES {
+        return Vec::new();
+    }
+    let (mut tim, mut tip) = (Vec::new(), Vec::new());
+    let (mut samples, mut sizes) = (Vec::new(), Vec::new());
+    blocktree_writer::write_field_terms(
+        &mut tim,
+        &mut tip,
+        terms,
+        block_sizes,
+        has_freqs,
+        encode_meta,
+        Some(blocktree_writer::BlockZstd::Sample {
+            samples: &mut samples,
+            sizes: &mut sizes,
+            stride: term_bytes.div_ceil(ZSTD_SAMPLE_BYTES),
+        }),
+    );
+    lucene_zstd::train_dictionary_joined(&samples, &sizes, ZSTD_DICTIONARY_SIZE).unwrap_or_default()
 }
 
 impl BlockTreeDictionary {
@@ -1170,9 +1224,19 @@ impl BlockTreeDictionary {
             );
             out
         };
-        let tim = header(TERMS_CODEC_NAME);
-        let tip = header(TERMS_INDEX_CODEC_NAME);
-        let mut tmd = header(TERMS_META_CODEC_NAME);
+        let (tim, tip, mut tmd) = if options.zstd_term_blocks.is_some() {
+            (
+                header(ZSTD_TERMS_CODEC_NAME),
+                header(ZSTD_TERMS_INDEX_CODEC_NAME),
+                header(ZSTD_TERMS_META_CODEC_NAME),
+            )
+        } else {
+            (
+                header(TERMS_CODEC_NAME),
+                header(TERMS_INDEX_CODEC_NAME),
+                header(TERMS_META_CODEC_NAME),
+            )
+        };
         write_postings_terms_header(&mut tmd, segment_id, segment_suffix);
         BlockTreeDictionary {
             tim,
@@ -1181,6 +1245,7 @@ impl BlockTreeDictionary {
             records: Vec::with_capacity(initial),
             num_fields: 0,
             block_sizes: (options.min_items_in_block, options.max_items_in_block),
+            zstd_level: options.zstd_term_blocks,
         }
     }
 
@@ -1200,14 +1265,48 @@ impl BlockTreeDictionary {
         // metadata is encoded by the postings writer, against this
         // field's per-term file pointers.
         let block_terms = field.block_terms;
-        let trie = blocktree_writer::write_field_terms(
-            tim,
-            tip,
-            block_terms,
-            self.block_sizes,
-            field.index_options != IndexOptions::Docs,
-            |meta, indices| field.encode_terms(meta, indices),
-        );
+        let has_freqs = field.index_options != IndexOptions::Docs;
+        let encode = |meta: &mut Vec<u8>, indices: &[usize]| field.encode_terms(meta, indices);
+        let mut dictionary = Vec::new();
+        let trie = match self.zstd_level {
+            None => blocktree_writer::write_field_terms(
+                tim,
+                tip,
+                block_terms,
+                self.block_sizes,
+                has_freqs,
+                encode,
+                None,
+            ),
+            Some(level) => {
+                dictionary =
+                    train_term_block_dictionary(block_terms, self.block_sizes, has_freqs, encode);
+                // The level was validated with the options, so neither fails.
+                let prepared = (!dictionary.is_empty())
+                    .then(|| lucene_zstd::EncoderDictionary::new(&dictionary, level).ok())
+                    .flatten();
+                let mut compressor =
+                    lucene_zstd::BareCompressor::new(level, prepared.as_ref()).ok();
+                // The `.tmd` must name exactly the dictionary the blocks were
+                // compressed against: a reader decoding a dictionary-less
+                // frame against one starts from the dictionary's repeat
+                // offsets and entropy tables, not the frame's.
+                if prepared.is_none() || compressor.is_none() {
+                    dictionary.clear();
+                }
+                blocktree_writer::write_field_terms(
+                    tim,
+                    tip,
+                    block_terms,
+                    self.block_sizes,
+                    has_freqs,
+                    encode,
+                    compressor
+                        .as_mut()
+                        .map(blocktree_writer::BlockZstd::Compress),
+                )
+            }
+        };
 
         // ---- this field's .tmd record ----
         tmd.write_vint(field.field_number);
@@ -1231,6 +1330,10 @@ impl BlockTreeDictionary {
         tmd.write_vlong(trie.index_start as i64);
         tmd.write_vlong(trie.root_fp as i64);
         tmd.write_vlong(trie.index_end as i64);
+        if self.zstd_level.is_some() {
+            tmd.write_vint(dictionary.len() as i32);
+            tmd.write_bytes(&dictionary);
+        }
     }
 
     /// The footers, and the `.tmd`'s two lengths: both are the *whole* file,

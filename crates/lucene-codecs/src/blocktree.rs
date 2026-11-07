@@ -90,9 +90,20 @@
 //! `LowercaseAsciiCompression.decompress`, see [`decompress_lowercase_ascii`])
 //! are both decoded, alongside `NO_COMPRESSION`, and this port's own
 //! blocktree writer emits all three exactly where Java does
-//! (`crate::blocktree_writer`). Only code `3` (never assigned to a
-//! `CompressionAlgorithm` constant) is rejected, as `Error::Store(Corrupted)`,
-//! matching `CompressionAlgorithm.byCode`'s own `IllegalArgumentException`.
+//! (`crate::blocktree_writer`). Code `3` (never assigned to a
+//! `CompressionAlgorithm` constant) is rejected in a stock dictionary, as
+//! `Error::Store(Corrupted)`, matching `CompressionAlgorithm.byCode`'s own
+//! `IllegalArgumentException`.
+//!
+//! ## Zstd blocks
+//!
+//! A dictionary written with `postings_writer::WriteOptions::zstd_term_blocks`
+//! (the `RustZstd104` postings format) carries [`ZSTD_TERMS_CODEC_NAME`] and
+//! its siblings in place of the three stock header names, so stock Lucene
+//! refuses it. Its blocks may use code `3`: a whole block after its token as
+//! one bare zstd frame (`crate::blocktree_writer::BlockZstd` has the layout),
+//! decoded against the field's dictionary, which ends its `.tmd` record. The
+//! decoded sections are read exactly as an ordinary block's.
 
 use std::sync::{Arc, Mutex};
 
@@ -115,6 +126,13 @@ use crate::wildcard::WildcardPattern;
 pub(crate) const TERMS_CODEC_NAME: &str = "BlockTreeTermsDict";
 pub(crate) const TERMS_INDEX_CODEC_NAME: &str = "BlockTreeTermsIndex";
 pub(crate) const TERMS_META_CODEC_NAME: &str = "BlockTreeTermsMeta";
+/// The headers of a dictionary whose blocks may be zstd blocks
+/// (`blocktree_writer::BlockZstd`) and whose `.tmd` field records each end
+/// with the field's zstd dictionary (`vInt` length, then the bytes; 0 for
+/// none). Stock Lucene rejects these names, so it never misreads a zstd block.
+pub(crate) const ZSTD_TERMS_CODEC_NAME: &str = "RustZstdBlockTreeTermsDict";
+pub(crate) const ZSTD_TERMS_INDEX_CODEC_NAME: &str = "RustZstdBlockTreeTermsIndex";
+pub(crate) const ZSTD_TERMS_META_CODEC_NAME: &str = "RustZstdBlockTreeTermsMeta";
 const VERSION_START: i32 = 0;
 pub(crate) const VERSION_CURRENT: i32 = 0;
 
@@ -369,6 +387,35 @@ fn fit_buf(buf: &mut Vec<u8>, len: usize, what: &str) -> Result<()> {
     Ok(())
 }
 
+/// What a dictionary's zstd blocks (`blocktree_writer::BlockZstd`) decode
+/// with: the field's trained dictionary, if it has one.
+#[derive(Debug, Default)]
+pub(crate) struct ZstdBlocks {
+    dict: Option<lucene_zstd::DecoderDictionary>,
+}
+
+/// A field's `.tim` bytes, and whether (and how) its blocks may be zstd
+/// blocks: `None` for a stock dictionary, where the zstd code is corrupt.
+#[derive(Debug, Clone, Copy)]
+struct Tim<'a> {
+    bytes: &'a [u8],
+    zstd: Option<&'a ZstdBlocks>,
+}
+
+impl std::ops::Deref for Tim<'_> {
+    type Target = [u8];
+    #[inline]
+    fn deref(&self) -> &[u8] {
+        self.bytes
+    }
+}
+
+/// The most bytes per entry a zstd block's suffix-lengths, stats and
+/// metadata sections can take together (a sub-block pointer, a term's stats
+/// and its postings metadata are a few `vLong`s each), so a corrupt plain
+/// length cannot buy a large allocation.
+const ZSTD_SECTION_BYTES_PER_ENTRY: usize = 256;
+
 /// `BytesRefBuilder`: a growable byte buffer with a logical length that can
 /// be shorter than the allocation, so `setByteAt`/`setLength` behave the way
 /// `SegmentTermsEnum.term` does while walking a target term's bytes.
@@ -496,6 +543,8 @@ struct Frame {
 
     stats_singleton_run_length: u32,
     meta_data_upto: u32,
+    /// A zstd block's plain bytes, reused across loads.
+    zstd_plain: Vec<u8>,
 
     // `BlockTermState`.
     doc_freq: i32,
@@ -607,12 +656,12 @@ impl Frame {
     /// stats and postings metadata are *not* decoded here -- that is
     /// [`Frame::decode_meta_data`]'s job, run only up to the term actually
     /// landed on.
-    fn load_block(&mut self, tim: &[u8]) -> Result<()> {
+    fn load_block(&mut self, tim: Tim<'_>) -> Result<()> {
         if self.next_ent != -1 {
             // Already loaded.
             return Ok(());
         }
-        let mut r = SliceInput::new(tim);
+        let mut r = SliceInput::new(tim.bytes);
         r.seek(self.fp)?;
 
         let code = r.read_vint()?;
@@ -630,6 +679,11 @@ impl Frame {
         self.is_leaf_block = (code_l & 0x04) != 0;
         let num_suffix_bytes = (code_l >> 3) as usize;
         let compression_alg = code_l & 0x03;
+        if compression_alg == crate::blocktree_writer::COMPRESSION_ZSTD {
+            if let Some(zstd) = tim.zstd {
+                return self.load_zstd_block(&mut r, zstd, num_suffix_bytes);
+            }
+        }
         // `numSuffixBytes` is the *decompressed* length, so only the
         // uncompressed case can be bounds-checked against what is left.
         if compression_alg == 0 && num_suffix_bytes > r.remaining() {
@@ -656,7 +710,8 @@ impl Frame {
             }
             _ => {
                 // `code_l & 0x03` is masked to 2 bits, so `3` is the only
-                // remaining value; `CompressionAlgorithm.byCode` throws
+                // remaining value, a zstd block, which only a zstd
+                // dictionary may hold; `CompressionAlgorithm.byCode` throws
                 // `IllegalArgumentException` for it too.
                 return Err(Error::Store(lucene_store::Error::Corrupted(
                     "illegal compression algorithm code (3) for a terms block".into(),
@@ -664,7 +719,75 @@ impl Frame {
             }
         }
         self.suffixes_pos = 0;
+        self.read_sections(&mut r)?;
+        // Sub-blocks of one floor block are written back to back, so the next
+        // floor block starts exactly here.
+        self.fp_end = r.position();
+        Ok(())
+    }
 
+    /// The rest of a zstd block after its token: `vInt(plainLength)`,
+    /// `vInt(frameLength)` and a bare zstd frame holding the suffix bytes
+    /// and then the three sections [`Self::read_sections`] reads.
+    // ARITH: `ent_count <= i32::MAX` (`ENT_COUNT`) times a small constant,
+    // plus a suffix length already bounded by the plain length it is
+    // compared with; `position + frame_len` is checked by `read_region_len`.
+    #[allow(clippy::arithmetic_side_effects)]
+    fn load_zstd_block(
+        &mut self,
+        r: &mut SliceInput<'_>,
+        zstd: &ZstdBlocks,
+        num_suffix_bytes: usize,
+    ) -> Result<()> {
+        let corrupt = |m: String| Error::Store(lucene_store::Error::Corrupted(m));
+        let plain_len = r.read_vint()?;
+        let frame_len = read_region_len(r, "zstd terms block")?;
+        let max_plain = (self.ent_count as usize)
+            .saturating_mul(ZSTD_SECTION_BYTES_PER_ENTRY)
+            .saturating_add(num_suffix_bytes);
+        if plain_len < 0
+            || (plain_len as usize) < num_suffix_bytes
+            || plain_len as usize > max_plain
+        {
+            return Err(corrupt(format!(
+                "zstd terms block of {plain_len} bytes for {num_suffix_bytes} suffix bytes and {} entries",
+                self.ent_count
+            )));
+        }
+        let plain_len = plain_len as usize;
+        let frame = &r.as_slice()[..frame_len];
+        r.seek(r.position() + frame_len)?;
+        let mut plain = std::mem::take(&mut self.zstd_plain);
+        plain.clear();
+        lucene_zstd::with_bare_decompressor(|d| {
+            d.decompress(frame, zstd.dict.as_ref(), plain_len, &mut plain)
+        })
+        .map_err(|e| corrupt(format!("zstd terms block: {e}")))?;
+        fit_buf(
+            &mut self.suffix_bytes,
+            num_suffix_bytes,
+            "terms block suffix bytes",
+        )?;
+        self.suffix_bytes_len = num_suffix_bytes;
+        self.suffix_bytes[..num_suffix_bytes].copy_from_slice(&plain[..num_suffix_bytes]);
+        self.suffixes_pos = 0;
+        let mut sections = SliceInput::new(&plain[num_suffix_bytes..]);
+        let read = self.read_sections(&mut sections);
+        let left = sections.as_slice().len();
+        self.zstd_plain = plain;
+        read?;
+        if left != 0 {
+            return Err(corrupt(format!(
+                "{left} bytes after a zstd terms block's sections"
+            )));
+        }
+        self.fp_end = r.position();
+        Ok(())
+    }
+
+    /// A block's suffix-lengths, stats and metadata sections, which follow
+    /// its suffix bytes.
+    fn read_sections(&mut self, r: &mut SliceInput<'_>) -> Result<()> {
         let raw = r.read_vint()? as u32;
         self.all_equal = (raw & 1) != 0;
         let num_suffix_length_bytes = (raw >> 1) as usize;
@@ -708,7 +831,7 @@ impl Frame {
         }
         self.suffix_lengths_pos = 0;
 
-        let num_stat_bytes = read_region_len(&mut r, "terms block stats")?;
+        let num_stat_bytes = read_region_len(r, "terms block stats")?;
         fit_buf(&mut self.stat_bytes, num_stat_bytes, "terms block stats")?;
         self.stat_bytes_len = num_stat_bytes;
         r.read_bytes(&mut self.stat_bytes[..num_stat_bytes])?;
@@ -721,20 +844,16 @@ impl Frame {
         self.next_ent = 0;
         self.last_sub_fp = -1;
 
-        let num_meta_bytes = read_region_len(&mut r, "terms block metadata")?;
+        let num_meta_bytes = read_region_len(r, "terms block metadata")?;
         fit_buf(&mut self.meta_bytes, num_meta_bytes, "terms block metadata")?;
         self.meta_bytes_len = num_meta_bytes;
         r.read_bytes(&mut self.meta_bytes[..num_meta_bytes])?;
         self.meta_pos = 0;
-
-        // Sub-blocks of one floor block are written back to back, so the next
-        // floor block starts exactly here.
-        self.fp_end = r.position();
         Ok(())
     }
 
     /// `SegmentTermsEnumFrame.loadNextFloorBlock`.
-    fn load_next_floor_block(&mut self, tim: &[u8]) -> Result<()> {
+    fn load_next_floor_block(&mut self, tim: Tim<'_>) -> Result<()> {
         self.fp = self.fp_end;
         self.next_ent = -1;
         self.load_block(tim)
@@ -904,7 +1023,7 @@ impl Frame {
     // `next_ent + 1` cannot overflow. `term_block_ord` counts *terms* within
     // the same block, so it is bounded by `ent_count <= i32::MAX < u32::MAX`.
     #[allow(clippy::arithmetic_side_effects)]
-    fn next_non_leaf(&mut self, tim: &[u8], term: &mut TermBuf) -> Result<bool> {
+    fn next_non_leaf(&mut self, tim: Tim<'_>, term: &mut TermBuf) -> Result<bool> {
         loop {
             if self.next_ent == self.ent_count as i32 {
                 self.load_next_floor_block(tim)?;
@@ -1002,7 +1121,7 @@ impl Frame {
     }
 
     /// `SegmentTermsEnumFrame.next`.
-    fn next(&mut self, tim: &[u8], term: &mut TermBuf) -> Result<bool> {
+    fn next(&mut self, tim: Tim<'_>, term: &mut TermBuf) -> Result<bool> {
         if self.is_leaf_block {
             self.next_leaf(term)?;
             Ok(false)
@@ -1541,8 +1660,8 @@ struct SegmentTermsEnum<'a> {
 
 impl<'a> SegmentTermsEnum<'a> {
     #[inline]
-    fn tim(&self) -> &'a [u8] {
-        self.field.tim.as_ref().as_ref()
+    fn tim(&self) -> Tim<'a> {
+        self.field.tim()
     }
 
     /// The field's own trie: its `[indexStart, indexEnd)` region of `.tip`.
@@ -2629,6 +2748,8 @@ pub struct FieldTerms {
     postings_format: postings::PostingsFormat,
     /// The whole segment's `.tim`, shared by every field.
     tim: SharedBytes,
+    /// Set for a dictionary with zstd blocks.
+    zstd: Option<Arc<ZstdBlocks>>,
     /// The field's terms index, read in place from `.tip`: a trie, or a
     /// retired format's FST.
     index: TermsIndex,
@@ -2688,6 +2809,7 @@ impl Clone for FieldTerms {
             has_payloads: self.has_payloads,
             postings_format: self.postings_format,
             tim: Arc::clone(&self.tim),
+            zstd: self.zstd.clone(),
             index: self.index.clone(),
             scratch: ScratchPool::default(),
             ngram: self.ngram.clone(),
@@ -2700,6 +2822,15 @@ impl Clone for FieldTerms {
 }
 
 impl FieldTerms {
+    /// The field's `.tim` as a block loader reads it.
+    #[inline]
+    fn tim(&self) -> Tim<'_> {
+        Tim {
+            bytes: self.tim.as_ref().as_ref(),
+            zstd: self.zstd.as_deref(),
+        }
+    }
+
     /// The field's `IndexOptions` (`Terms.hasPositions`/`hasOffsets` and the
     /// rest read it).
     pub fn index_options(&self) -> IndexOptions {
@@ -3588,6 +3719,7 @@ impl FieldTerms {
             has_payloads: field_info.store_payloads,
             postings_format,
             tim,
+            zstd: None,
             index: TermsIndex::Fst(Arc::new(index)),
             scratch: ScratchPool::default(),
             ngram: std::sync::OnceLock::new(),
@@ -4315,7 +4447,7 @@ impl<'a, A: TermAutomaton> DfaIntersect<'a, A> {
 
     fn seek_live_floor_unbudgeted(&mut self, ord: usize, from: u32) -> Result<bool> {
         let index = self.field.index.trie_bytes();
-        let tim: &[u8] = self.field.tim.as_ref().as_ref();
+        let tim = self.field.tim();
         let s = self.states[ord];
         let f = &mut self.st.stack[ord];
         if !f.is_floor {
@@ -5275,6 +5407,10 @@ fn decode_block_at_depth(
         prefix_length: prefix.len(),
         ..Frame::default()
     };
+    let tim = Tim {
+        bytes: tim,
+        zstd: None,
+    };
     frame.load_block(tim)?;
     let mut term = TermBuf::default();
     term.copy_from(prefix);
@@ -5283,7 +5419,7 @@ fn decode_block_at_depth(
             let sub_fp = frame.last_sub_fp;
             let child_prefix = term.get().to_vec();
             decode_block_at_depth(
-                tim,
+                tim.bytes,
                 sub_fp as usize,
                 index_options,
                 has_payloads,
@@ -5375,10 +5511,24 @@ pub fn open_shared(
     }
     let tim_bytes: &[u8] = tim.as_ref().as_ref();
     let tip_bytes: &[u8] = tip.as_ref().as_ref();
+    let zstd = codec_util::peek_codec_name(tim_bytes).as_deref() == Some(ZSTD_TERMS_CODEC_NAME);
+    let (terms_codec, index_codec, meta_codec) = if zstd {
+        (
+            ZSTD_TERMS_CODEC_NAME,
+            ZSTD_TERMS_INDEX_CODEC_NAME,
+            ZSTD_TERMS_META_CODEC_NAME,
+        )
+    } else {
+        (
+            TERMS_CODEC_NAME,
+            TERMS_INDEX_CODEC_NAME,
+            TERMS_META_CODEC_NAME,
+        )
+    };
     let mut tim_input = SliceInput::new(tim_bytes);
     let tim_header = codec_util::check_index_header(
         &mut tim_input,
-        TERMS_CODEC_NAME,
+        terms_codec,
         VERSION_START,
         VERSION_CURRENT,
         segment_id,
@@ -5388,7 +5538,7 @@ pub fn open_shared(
     let mut tip_input = SliceInput::new(tip_bytes);
     codec_util::check_index_header(
         &mut tip_input,
-        TERMS_INDEX_CODEC_NAME,
+        index_codec,
         tim_header.version,
         tim_header.version,
         segment_id,
@@ -5398,7 +5548,7 @@ pub fn open_shared(
     let mut tmd_input = SliceInput::new(tmd);
     codec_util::check_index_header(
         &mut tmd_input,
-        TERMS_META_CODEC_NAME,
+        meta_codec,
         tim_header.version,
         tim_header.version,
         segment_id,
@@ -5504,6 +5654,16 @@ pub fn open_shared(
         // field's own trie region is rejected at open rather than at the
         // first lookup.
         load_node(&tip_bytes[index_start..index_end], root_fp)?;
+        let zstd = if zstd {
+            let len = read_region_len(&mut tmd_input, "zstd terms dictionary")?;
+            // In place: `DecoderDictionary::new` copies what it keeps.
+            let dict = (len > 0)
+                .then(|| lucene_zstd::DecoderDictionary::new(&tmd_input.as_slice()[..len]));
+            tmd_input.skip(len)?;
+            Some(Arc::new(ZstdBlocks { dict }))
+        } else {
+            None
+        };
 
         if fields.iter().any(|(n, _)| n == &field_info.name) {
             return Err(Error::DuplicateField(field_info.name.clone()));
@@ -5521,6 +5681,7 @@ pub fn open_shared(
                 has_payloads: field_info.store_payloads,
                 postings_format,
                 tim: Arc::clone(&tim),
+                zstd,
                 index: TermsIndex::InPlace(TrieSlice {
                     bytes: Arc::clone(&tip),
                     start: index_start,
