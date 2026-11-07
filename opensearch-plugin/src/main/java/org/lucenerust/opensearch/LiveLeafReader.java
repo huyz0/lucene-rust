@@ -12,6 +12,7 @@ import org.apache.lucene.index.DocValuesType;
 import org.apache.lucene.index.FieldInfo;
 import org.apache.lucene.index.FieldInfos;
 import org.apache.lucene.index.FloatVectorValues;
+import org.apache.lucene.index.IndexOptions;
 import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.index.LeafMetaData;
 import org.apache.lucene.index.LeafReader;
@@ -24,22 +25,32 @@ import org.apache.lucene.index.StoredFieldVisitor;
 import org.apache.lucene.index.StoredFields;
 import org.apache.lucene.index.TermVectors;
 import org.apache.lucene.index.Terms;
+import org.apache.lucene.index.TermsEnum;
 import org.apache.lucene.search.AcceptDocs;
 import org.apache.lucene.search.KnnCollector;
 import org.apache.lucene.util.Bits;
+import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.Version;
 import org.opensearch.common.lucene.index.SequentialStoredFieldsLeafReader;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * One chunk of a buffer of a {@link LiveView} (consecutive documents of it) as a leaf after the reader's, so its hits have doc IDs the fetch
  * phase reads. Only the native searches find them ({@code ffi_jvm_reader_search_live}, or any search
  * of the reader handle {@code ffi_live_view_reader} makes, whose segments match these leaves): to
- * Lucene every one of them is deleted and the leaf holds no terms, points or values, so a search
- * Lucene answers sees the reader alone, as it would without live search. Its stored fields are the
+ * Lucene every one of them is deleted and the leaf holds no terms, points or values (only bounds that
+ * take in the buffered documents', so OpenSearch never skips the shard or rewrites a query to
+ * match nothing for the reader's bounds), so a search Lucene answers sees the reader alone, as it would without live
+ * search. Its stored fields are the
  * buffered documents', read through the view.
  */
 public final class LiveLeafReader extends SequentialStoredFieldsLeafReader {
@@ -131,6 +142,8 @@ public final class LiveLeafReader extends SequentialStoredFieldsLeafReader {
         private final int maxDoc;
         private final FieldInfos infos;
         private final Bits none;
+        /** By field: its {@link #getPointValues}, once read. */
+        private final Map<String, Optional<PointValues>> points = new ConcurrentHashMap<>();
         private final IndexReader.CacheKey key = CacheKeys.newKey();
         private final List<ClosedListener> listeners = new CopyOnWriteArrayList<>();
         private final CacheHelper cacheHelper = new CacheHelper() {
@@ -182,9 +195,17 @@ public final class LiveLeafReader extends SequentialStoredFieldsLeafReader {
             };
         }
 
+        /**
+         * No terms, bounded by the least and a greater than any term (no UTF-8 term holds byte
+         * {@code 0xFF}), so OpenSearch never skips the shard by its terms' bounds either.
+         */
         @Override
         public Terms terms(String field) {
-            return null;
+            FieldInfo fi = infos.fieldInfo(field);
+            if (fi == null || fi.getIndexOptions() == IndexOptions.NONE || maxDoc == 0) {
+                return null;
+            }
+            return new AnyTerms(fi);
         }
 
         @Override
@@ -248,9 +269,44 @@ public final class LiveLeafReader extends SequentialStoredFieldsLeafReader {
             return none;
         }
 
+        /**
+         * The buffer's points of {@code field} as bounds without points (the leaf's documents are
+         * deleted): the least and greatest values of every document the buffer holds, so the
+         * bounds OpenSearch reads to skip a shard (a sort's competitive range, a range query
+         * rewritten to match nothing) never leave its buffered documents out.
+         */
         @Override
-        public PointValues getPointValues(String field) {
-            return null;
+        public PointValues getPointValues(String field) throws IOException {
+            FieldInfo fi = infos.fieldInfo(field);
+            if (fi == null || fi.getPointDimensionCount() == 0 || maxDoc == 0) {
+                return null;
+            }
+            Optional<PointValues> got = points.get(field);
+            if (got == null) {
+                got = Optional.ofNullable(bounds(fi));
+                points.put(field, got);
+            }
+            return got.orElse(null);
+        }
+
+        private PointValues bounds(FieldInfo fi) throws IOException {
+            byte[][] out = new byte[1][];
+            int rc = NativeBridge.livePointBounds(view.id(), buffer, fi.number, out);
+            if (rc != NativeBridge.OK) {
+                throw new IOException("buffered points of " + fi.name + ": " + NativeBridge.lastError());
+            }
+            byte[] b = out[0];
+            int packed = fi.getPointIndexDimensionCount() * fi.getPointNumBytes();
+            if (b.length == 0) {
+                return null;
+            }
+            if (b.length != Long.BYTES + 2 * packed) {
+                throw new IOException("buffered points of " + fi.name + ": bounds of " + b.length + " bytes");
+            }
+            long count = ByteBuffer.wrap(b, 0, Long.BYTES).order(ByteOrder.LITTLE_ENDIAN).getLong();
+            byte[] min = Arrays.copyOfRange(b, Long.BYTES, Long.BYTES + packed);
+            byte[] max = Arrays.copyOfRange(b, Long.BYTES + packed, b.length);
+            return new BoundsOnly(fi, min, max, count, (int) Math.min(count, maxDoc));
         }
 
         @Override
@@ -291,6 +347,174 @@ public final class LiveLeafReader extends SequentialStoredFieldsLeafReader {
         @Override
         public CacheHelper getReaderCacheHelper() {
             return cacheHelper;
+        }
+    }
+
+
+    /** A field's terms: none, bounded as {@link Core#terms} describes. */
+    private static final class AnyTerms extends Terms {
+        private static final BytesRef MIN = new BytesRef();
+        private static final BytesRef MAX = new BytesRef(new byte[] { (byte) 0xFF });
+        private final FieldInfo fi;
+
+        AnyTerms(FieldInfo fi) {
+            this.fi = fi;
+        }
+
+        @Override
+        public TermsEnum iterator() {
+            return TermsEnum.EMPTY;
+        }
+
+        @Override
+        public BytesRef getMin() {
+            return MIN;
+        }
+
+        @Override
+        public BytesRef getMax() {
+            return MAX;
+        }
+
+        @Override
+        public long size() {
+            return 0;
+        }
+
+        @Override
+        public long getSumTotalTermFreq() {
+            return 0;
+        }
+
+        @Override
+        public long getSumDocFreq() {
+            return 0;
+        }
+
+        @Override
+        public int getDocCount() {
+            return 0;
+        }
+
+        @Override
+        public boolean hasFreqs() {
+            return fi.getIndexOptions().compareTo(IndexOptions.DOCS_AND_FREQS) >= 0;
+        }
+
+        @Override
+        public boolean hasOffsets() {
+            return fi.getIndexOptions().compareTo(IndexOptions.DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS) >= 0;
+        }
+
+        @Override
+        public boolean hasPositions() {
+            return fi.getIndexOptions().compareTo(IndexOptions.DOCS_AND_FREQS_AND_POSITIONS) >= 0;
+        }
+
+        @Override
+        public boolean hasPayloads() {
+            return fi.hasPayloads();
+        }
+    }
+    /** A field's points as one cell between bounds, counting {@code size} points, that visits none. */
+    private static final class BoundsOnly extends PointValues {
+        private final int dims;
+        private final int indexDims;
+        private final int bytesPerDim;
+        private final byte[] min;
+        private final byte[] max;
+        private final long size;
+        private final int docs;
+
+        BoundsOnly(FieldInfo fi, byte[] min, byte[] max, long size, int docs) {
+            this.dims = fi.getPointDimensionCount();
+            this.indexDims = fi.getPointIndexDimensionCount();
+            this.bytesPerDim = fi.getPointNumBytes();
+            this.min = min;
+            this.max = max;
+            this.size = size;
+            this.docs = docs;
+        }
+
+        @Override
+        public PointTree getPointTree() {
+            return new PointTree() {
+                @Override
+                public PointTree clone() {
+                    return this;
+                }
+
+                @Override
+                public boolean moveToChild() {
+                    return false;
+                }
+
+                @Override
+                public boolean moveToSibling() {
+                    return false;
+                }
+
+                @Override
+                public boolean moveToParent() {
+                    return false;
+                }
+
+                @Override
+                public byte[] getMinPackedValue() {
+                    return min.clone();
+                }
+
+                @Override
+                public byte[] getMaxPackedValue() {
+                    return max.clone();
+                }
+
+                @Override
+                public long size() {
+                    return size;
+                }
+
+                @Override
+                public void visitDocIDs(IntersectVisitor visitor) {}
+
+                @Override
+                public void visitDocValues(IntersectVisitor visitor) {}
+            };
+        }
+
+        @Override
+        public byte[] getMinPackedValue() {
+            return min.clone();
+        }
+
+        @Override
+        public byte[] getMaxPackedValue() {
+            return max.clone();
+        }
+
+        @Override
+        public int getNumDimensions() {
+            return dims;
+        }
+
+        @Override
+        public int getNumIndexDimensions() {
+            return indexDims;
+        }
+
+        @Override
+        public int getBytesPerDimension() {
+            return bytesPerDim;
+        }
+
+        @Override
+        public long size() {
+            return size;
+        }
+
+        @Override
+        public int getDocCount() {
+            return docs;
         }
     }
 }

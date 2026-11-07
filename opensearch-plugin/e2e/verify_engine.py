@@ -529,6 +529,16 @@ def realtime():
             hb = [(h["_id"], h["sort"]) for h in b["hits"]["hits"]]
             check(a["hits"]["total"]["value"] == b["hits"]["total"]["value"], f"{where}: sorted total {sort}")
             check(ha == hb, f"{where}: sorted hits {sort}: {ha[:3]} vs {hb[:3]}")
+        # A range past what the searcher's segments hold is one OpenSearch would rewrite to match
+        # nothing by their bounds, which buffered documents are not in yet.
+        newest = must("POST", f"/{ref}/_search?request_cache=false",
+                      {"size": 20, "sort": [{"@timestamp": "desc"}], "query": {"match_all": {}}})["hits"]["hits"]
+        if newest:
+            body = {"size": 0, "track_total_hits": True,
+                    "query": {"range": {"@timestamp": {"gte": newest[-1]["sort"][0]}}}}
+            a = must("POST", f"/{rt}/_search?request_cache=false", body)["hits"]["total"]["value"]
+            b = must("POST", f"/{ref}/_search?request_cache=false", body)["hits"]["total"]["value"]
+            check(a == b, f"{where}: newest range total: {a} vs {b}")
 
     for rnd in range(3):
         lines = []

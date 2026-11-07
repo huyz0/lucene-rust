@@ -288,10 +288,11 @@ impl LiveColumns {
         }
     }
 
-    /// Frees the columns kept only for writing chunks.
+    /// Frees the columns kept only for writing chunks, keeping the points'
+    /// bounds views read.
     pub(super) fn drop_chunk_columns(&mut self) {
         self.doc_values = doc_values::DocValuesColumns::default();
-        self.chunk = chunk_fields::ChunkFields::default();
+        self.chunk.drop_columns();
     }
 
     /// Documents `start..end` as columns, numbered from `start`; `None`
@@ -1709,6 +1710,26 @@ impl ConcurrentIndexWriter<'_> {
             .collect())
     }
 
+    /// The least and greatest value of each indexed dimension of field
+    /// `field`'s points in `view`'s buffer `buffer`, and how many points it
+    /// holds: over every document the buffer holds now, so they bound the
+    /// view's documents' too. `None` when no document of it gave the field
+    /// a point, or the buffer was dropped.
+    pub fn live_point_bounds(
+        &self,
+        view: &LiveView,
+        buffer: usize,
+        field: i32,
+    ) -> Result<Option<PointBounds>> {
+        let b = view
+            .buffers
+            .get(buffer)
+            .ok_or_else(|| Error::LiveSearch(format!("no buffer {buffer} in the view")))?;
+        Ok(self.with_buffer(b.id, |s| {
+            s.and_then(|s| s.columns.chunk.bounds(field).cloned())
+        }))
+    }
+
     /// [`Self::open_live_view`], [`Self::live_view_snapshot`] and
     /// [`Self::close_live_view`] in one: the requested terms of every
     /// buffered document a reader of the commit at `commit` lacks.
@@ -1886,6 +1907,7 @@ fn truncate(p: &mut TermPostings, max_doc: i32) {
 }
 
 mod chunk_fields;
+pub use chunk_fields::PointBounds;
 
 #[cfg(test)]
 thread_local! {
