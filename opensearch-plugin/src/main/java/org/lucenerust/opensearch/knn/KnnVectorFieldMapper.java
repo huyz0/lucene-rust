@@ -262,10 +262,7 @@ public final class KnnVectorFieldMapper extends ParametrizedFieldMapper {
             ft.putAttribute(DIMENSION, Integer.toString(config.dimension()));
             ft.putAttribute(SPACE_TYPE, config.spaceType().value());
             ft.putAttribute(KNN_ENGINE, config.engine());
-            ft.putAttribute(
-                DATA_TYPE,
-                config.binary() ? "binary" : config.halfFloat() ? "half_float" : config.dataType() == VectorEncoding.BYTE ? "byte" : "float"
-            );
+            ft.putAttribute(DATA_TYPE, config.dataTypeName());
             ft.putAttribute(VectorsFormatSpec.ATTRIBUTE, config.format().attribute());
             ft.freeze();
             this.vectorType = ft;

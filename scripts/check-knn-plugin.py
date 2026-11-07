@@ -585,6 +585,30 @@ def script_check(failures):
             compare(f"lateInteractionScore {space} {qi}", "hammingbit", body)
     for port in (OURS[1], STOCK[1]):
         req(port, "DELETE", "/hammingbit")
+    # An index without index.knn: the fields are doc values only, the usual exact-search setup.
+    types = {"f": "float", "b": "byte", "h": "half_float"}
+    for port in (OURS[1], STOCK[1]):
+        req(port, "PUT", "/no_knn", {"settings": {"number_of_shards": 1, "number_of_replicas": 0},
+                                      "mappings": {"properties": {f"emb_{k}": {"type": "knn_vector", "dimension": DIM,
+                                                                               "data_type": t}
+                                                                  for k, t in types.items()}}})
+    rng = random.Random(f"{SEED}-no-knn")
+    lines = []
+    for i in range(150):
+        lines.append(json.dumps({"index": {"_index": "no_knn", "_id": f"x{i}"}}))
+        lines.append(json.dumps({"emb_f": vector(rng, False), "emb_b": vector(rng, True), "emb_h": vector(rng, False)}))
+    for port in (OURS[1], STOCK[1]):
+        req(port, "POST", "/_bulk?refresh=true", "\n".join(lines) + "\n", ndjson=True)
+    for k in types:
+        t = vector(rng, k == "b")
+        for space in ("l2", "cosinesimil", "innerproduct", "l1", "linf"):
+            compare(f"no knn emb_{k} {space}", "no_knn", script_score({"match_all": {}}, knn_score(space, t, f"emb_{k}")))
+        for src in PAINLESS:
+            compare(f"no knn emb_{k} {src}", "no_knn",
+                    script_score({"match_all": {}}, {"source": src.replace("'emb'", f"'emb_{k}'"),
+                                                     "params": {"q": t, "norm": sum(x * x for x in t)}}))
+    for port in (OURS[1], STOCK[1]):
+        req(port, "DELETE", "/no_knn")
     return checked
 
 

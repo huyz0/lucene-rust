@@ -6,7 +6,6 @@ package org.lucenerust.opensearch.knn.script;
 import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.util.BytesRef;
-import org.lucenerust.opensearch.knn.KnnFieldConfig;
 import org.lucenerust.opensearch.knn.KnnScriptDocValues;
 import org.lucenerust.opensearch.knn.KnnVectorFieldMapper.KnnVectorFieldType;
 import org.opensearch.Version;
@@ -21,12 +20,12 @@ import org.opensearch.script.ScriptFactory;
 import org.opensearch.search.lookup.SearchLookup;
 
 import java.math.BigInteger;
+import java.util.Arrays;
 import java.util.Base64;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
-import java.util.function.Function;
 
 /**
  * k-NN's {@code KNNScoringScriptEngine}: the {@code knn} script language, whose one script, {@code
@@ -123,7 +122,7 @@ public final class KnnScoringScriptEngine implements ScriptEngine {
                 fieldType,
                 "l2",
                 DEFAULT_TYPES,
-                q -> v -> 1 / (1 + KnnScoring.l2Squared(q, v)),
+                (q, v) -> 1 / (1 + KnnScoring.l2Squared(q, v)),
                 (q, v) -> 1 / (1 + KnnScoring.l2Squared(q, v))
             );
             case "l1" -> vectorSpace(
@@ -131,7 +130,7 @@ public final class KnnScoringScriptEngine implements ScriptEngine {
                 fieldType,
                 "l1",
                 DEFAULT_TYPES,
-                q -> v -> 1 / (1 + KnnScoring.l1Norm(q, v)),
+                (q, v) -> 1 / (1 + KnnScoring.l1Norm(q, v)),
                 (q, v) -> 1 / (1 + KnnScoring.l1Norm(q, v))
             );
             case "linf" -> vectorSpace(
@@ -139,7 +138,7 @@ public final class KnnScoringScriptEngine implements ScriptEngine {
                 fieldType,
                 "l-inf",
                 DEFAULT_TYPES,
-                q -> v -> 1 / (1 + KnnScoring.lInfNorm(q, v)),
+                (q, v) -> 1 / (1 + KnnScoring.lInfNorm(q, v)),
                 (q, v) -> 1 / (1 + KnnScoring.lInfNorm(q, v))
             );
             case "innerproduct" -> vectorSpace(
@@ -147,7 +146,7 @@ public final class KnnScoringScriptEngine implements ScriptEngine {
                 fieldType,
                 "innerproduct",
                 DEFAULT_TYPES,
-                q -> v -> normalize(-KnnScoring.innerProduct(q, v)),
+                (q, v) -> normalize(-KnnScoring.innerProduct(q, v)),
                 (q, v) -> normalize(-KnnScoring.innerProduct(q, v))
             );
             case "cosinesimil" -> cosine(query, fieldType);
@@ -162,6 +161,10 @@ public final class KnnScoringScriptEngine implements ScriptEngine {
         return score >= 0 ? 1 / (1 + score) : -score + 1;
     }
 
+    private interface FloatScore {
+        float score(float[] q, float[] v);
+    }
+
     private interface ByteScore {
         float score(byte[] q, byte[] v);
     }
@@ -173,7 +176,7 @@ public final class KnnScoringScriptEngine implements ScriptEngine {
             );
         }
         KnnVectorFieldType ft = (KnnVectorFieldType) fieldType;
-        String type = dataType(ft.config());
+        String type = ft.config().dataTypeName();
         if (types.contains(type) == false) {
             throw new IllegalArgumentException(
                 String.format(
@@ -188,26 +191,21 @@ public final class KnnScoringScriptEngine implements ScriptEngine {
         return ft;
     }
 
-    static String dataType(KnnFieldConfig c) {
-        return c.binary() ? "binary" : c.halfFloat() ? "half_float" : c.dataType() == org.apache.lucene.index.VectorEncoding.BYTE ? "byte" : "float";
-    }
-
     /** A space over a {@code knn_vector} field: float queries scored by {@code floats}, byte ones by {@code bytes}. */
     private static Scorer vectorSpace(
         Object query,
         MappedFieldType fieldType,
         String space,
         Set<String> types,
-        Function<float[], Function<float[], Float>> floats,
+        FloatScore floats,
         ByteScore bytes
     ) {
         KnnVectorFieldType ft = vectorField(fieldType, space, types);
-        String type = dataType(ft.config());
+        String type = ft.config().dataTypeName();
         int length = ft.config().vectorDimension();
         if (type.equals("float") || type.equals("half_float")) {
             float[] q = floatQuery(query, length, type);
-            Function<float[], Float> f = floats.apply(q);
-            return values -> f.apply((float[]) ((KnnScriptDocValues) values).getValue());
+            return values -> floats.score(q, (float[]) ((KnnScriptDocValues) values).getValue());
         }
         byte[] q = byteQuery(query, length, type);
         return values -> bytes.score(q, (byte[]) ((KnnScriptDocValues) values).getValue());
@@ -215,7 +213,7 @@ public final class KnnScoringScriptEngine implements ScriptEngine {
 
     private static Scorer cosine(Object query, MappedFieldType fieldType) {
         KnnVectorFieldType ft = vectorField(fieldType, "cosine", DEFAULT_TYPES);
-        String type = dataType(ft.config());
+        String type = ft.config().dataTypeName();
         int length = ft.config().vectorDimension();
         if (type.equals("float") || type.equals("half_float")) {
             float[] q = floatQuery(query, length, type);
@@ -269,7 +267,7 @@ public final class KnnScoringScriptEngine implements ScriptEngine {
             BigInteger q = new BigInteger(1, Base64.getDecoder().decode((String) query));
             return values -> {
                 BytesRef b = ((ScriptDocValues.BytesRefs) values).getValue();
-                return 1.0f / (1 + KnnScoring.hammingBit(q, new BigInteger(1, b.bytes)));
+                return 1.0f / (1 + KnnScoring.hammingBit(q, new BigInteger(1, Arrays.copyOfRange(b.bytes, b.offset, b.offset + b.length))));
             };
         }
         throw new IllegalArgumentException("Incompatible field_type for hammingbit space. The field type must of type long or binary.");
