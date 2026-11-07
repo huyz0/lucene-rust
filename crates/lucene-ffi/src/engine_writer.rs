@@ -790,6 +790,39 @@ pub(crate) fn parse_vectors_format(value: &str) -> Option<KnnVectorsFormat> {
     }
 }
 
+/// The field attribute (`true`) marking a vector field whose `_source` value the plugin stores
+/// masked, as k-NN's derived source does: every segment flushed with the field lists it under
+/// [`lucene_search::derived_source::DERIVED_VECTOR_FIELDS`], so a reader (the plugin's or stock
+/// k-NN's) puts the vector back.
+pub(crate) const DERIVED_SOURCE_ATTRIBUTE: &str = "lucene_rust.derived_source";
+
+/// Whether `info` carries [`DERIVED_SOURCE_ATTRIBUTE`].
+fn is_derived_source(info: &FieldInfo) -> bool {
+    info.attributes
+        .iter()
+        .any(|(k, v)| k == DERIVED_SOURCE_ATTRIBUTE && v == "true")
+}
+
+/// k-NN's derived-source `.si` lists: flushed segments list the derived fields, and a merge
+/// keeps every name its sources list, so masked `_source` values never lose their vectors.
+fn derived_source_attributes(writer: &mut IndexWriter<'_>) {
+    use lucene_search::derived_source::{DERIVED_VECTOR_FIELDS, NESTED_DERIVED_VECTOR_FIELDS};
+    writer.set_merge_union_attributes(vec![
+        DERIVED_VECTOR_FIELDS.to_string(),
+        NESTED_DERIVED_VECTOR_FIELDS.to_string(),
+        KNN_DELEGATE_CODEC_ATTRIBUTE.to_string(),
+    ]);
+    let derived: Vec<String> = writer
+        .fields()
+        .iter()
+        .filter(|f| is_derived_source(f))
+        .map(|f| f.name.clone())
+        .collect();
+    for name in derived {
+        writer.add_segment_list_value(DERIVED_VECTOR_FIELDS, &name);
+    }
+}
+
 /// Routes every vector field of `writer`'s existing segments to the format
 /// its [`VECTORS_FORMAT_ATTRIBUTE`] names.
 fn restore_vectors_formats(writer: &mut IndexWriter<'_>) {
@@ -1057,6 +1090,16 @@ pub const OPEN_SPARSE: u8 = 2;
 /// [`ffi_engine_writer_open`]'s flag for an index searched without a refresh
 /// (`crate::live`).
 pub const OPEN_LIVE_SEARCH: u8 = 4;
+/// [`ffi_engine_writer_open`]'s flag for an `index.knn` index: segments record OpenSearch
+/// k-NN's codec name ([`KNN_CODEC`]) over the stored-fields codec, whose name they record under
+/// [`KNN_DELEGATE_CODEC_ATTRIBUTE`], as stock k-NN writes them; so k-NN's derived source reads
+/// back through that codec on any node.
+pub const OPEN_KNN: u8 = 8;
+/// The codec name a k-NN index's segments record (`KNN1040Codec`).
+pub(crate) const KNN_CODEC: &str = "KNN1040Codec";
+/// The `.si` attribute naming the codec whose stored fields a k-NN segment holds
+/// (`KNN10010DerivedSourceStoredFieldsFormat.KNN_DELEGATE_CODEC_NAME`).
+pub(crate) const KNN_DELEGATE_CODEC_ATTRIBUTE: &str = "knn_delegate_stored_fields_codec_key";
 /// [`ffi_engine_writer_open`]'s flag for `index.lucene_rust.adaptive_doc_values`:
 /// new segments write their doc values in the `RustAdaptive` format
 /// ([`lucene_codecs::doc_values::Lucene90DocValuesFormat::rust_adaptive`]).
@@ -1210,15 +1253,31 @@ pub unsafe extern "C" fn ffi_engine_writer_open_codec(
             );
             return Err(FfiStatus::InvalidArgument);
         }
+        let knn = flags & OPEN_KNN != 0;
+        if sparse && knn {
+            set_last_error("an index.sparse index is not a k-NN index".to_string());
+            return Err(FfiStatus::InvalidArgument);
+        }
         let open = || -> index_writer::Result<Arc<ConcurrentIndexWriter<'static>>> {
             let codec = if sparse {
                 lucene_sparse::CODEC_NAME
+            } else if knn {
+                KNN_CODEC
             } else {
                 "Lucene104"
             };
             let mut writer = IndexWriter::open(dir_ref, Vec::new(), codec, VERSION)?;
             if sparse {
                 writer.set_codec(Some(Arc::new(lucene_sparse::SparseCodec)))?;
+            } else if knn {
+                let delegate: Arc<dyn lucene_codecs::codec::Lucene104Codec> = match stored_codec.clone() {
+                    Some(c) => c,
+                    None => Arc::new(lucene_codecs::codec::DefaultLucene104Codec),
+                };
+                writer.add_segment_list_value(KNN_DELEGATE_CODEC_ATTRIBUTE, delegate.name());
+                writer.set_codec(Some(Arc::new(lucene_codecs::codec::NamedLucene104Codec::new(
+                    KNN_CODEC, delegate,
+                ))))?;
             } else if let Some(codec) = stored_codec.clone() {
                 writer.set_codec(Some(codec))?;
             }
@@ -1229,6 +1288,7 @@ pub unsafe extern "C" fn ffi_engine_writer_open_codec(
             }
             writer.enable_explicit_documents()?;
             restore_vectors_formats(&mut writer);
+            derived_source_attributes(&mut writer);
             if !parent_field.is_empty() {
                 writer.set_parent_field(Some(parent_field))?;
             }
@@ -1347,11 +1407,18 @@ pub unsafe extern "C" fn ffi_engine_writer_register_field(
         let (info, format) = decode_field(spec)?;
         let number = with_writer(handle, |w| {
             let name = info.name.clone();
+            let derived = is_derived_source(&info);
             w.writer()
                 .with_writer(|iw| {
                     let number = iw.register_field(info)?;
                     if let Some(format) = format {
                         iw.set_knn_vectors_format_for_field(&name, format);
+                    }
+                    if derived {
+                        iw.add_segment_list_value(
+                            lucene_search::derived_source::DERIVED_VECTOR_FIELDS,
+                            &name,
+                        );
                     }
                     Ok::<_, lucene_index::index_writer::Error>(number)
                 })
@@ -6479,6 +6546,141 @@ mod tests {
     fn knn_score(a: &[f32], b: &[f32]) -> f32 {
         let d: f32 = a.iter().zip(b).map(|(x, y)| (x - y) * (x - y)).sum();
         1.0 / (1.0 + d)
+    }
+
+    /// **k-NN's derived source.** In a k-NN index ([`OPEN_KNN`]) a vector
+    /// field marked [`DERIVED_SOURCE_ATTRIBUTE`] makes every flushed segment
+    /// list it under `derived_vector_fields`, a forced merge keeps the list,
+    /// and a read of the masked `_source` gets the vector back, before and
+    /// after the merge; the segments record k-NN's codec over `Lucene104`.
+    #[test]
+    fn derived_source_fields_are_listed_kept_by_merges_and_read_back() {
+        use lucene_search::derived_source::DERIVED_VECTOR_FIELDS;
+        let tmp = empty_index("engine-writer-derived-source");
+        let h = open(&tmp, OPEN_KNN);
+        let f = setup(h);
+        let source = register(h, &field("_source", 0, 1, 0, 0)).unwrap();
+        let spec = Blob::default()
+            .bytes(b"v")
+            .u8(0)
+            .u8(0)
+            .u8(0)
+            .u8(0)
+            .u8(0)
+            .u8(0)
+            .i32(0)
+            .i32(0)
+            .i32(0)
+            .i32(4)
+            .u8(0)
+            .u8(0)
+            .u8(1)
+            .i32(8)
+            .i32(50)
+            .u8(0)
+            .i32(2)
+            .bytes(VECTORS_FORMAT_ATTRIBUTE.as_bytes())
+            .bytes(b"hnsw:8:50")
+            .bytes(DERIVED_SOURCE_ATTRIBUTE.as_bytes())
+            .bytes(b"true")
+            .0;
+        register(h, &spec).unwrap();
+        let mut seq = 0;
+        for batch in 0..2 {
+            let ids: Vec<usize> = (batch * 5..batch * 5 + 5).collect();
+            let mut b = Blob::default().u8(OP_ADD).i32(ids.len() as i32);
+            for &i in &ids {
+                let id = format!("d{i}");
+                let masked = format!(r#"{{"n":{i},"v":1}}"#);
+                b = b
+                    .i32(2)
+                    .i32(f.id)
+                    .u8(1)
+                    .bytes(id.as_bytes())
+                    .i32(source)
+                    .u8(1)
+                    .bytes(masked.as_bytes())
+                    .i32(1)
+                    .i32(f.id)
+                    .u8(0)
+                    .i32(1)
+                    .bytes(id.as_bytes())
+                    .i32(1)
+                    .u8(0)
+                    .i32(1)
+                    .i32(f.seq)
+                    .u8(0)
+                    .i64(seq)
+                    .i32(0);
+                seq += 1;
+            }
+            for &i in &ids {
+                b = b.i32(1).bytes(b"v").u8(0).i32(4);
+                for x in knn_vector(i) {
+                    b = b.f32(x);
+                }
+            }
+            assert_eq!(apply(h, &b.0), 0, "{}", crate::error::last_error());
+            commit(h, &[]);
+        }
+        commit_settled(h);
+        let read_all = |want_segments: usize| {
+            let dir = FsDirectory::open(tmp.path());
+            let reader = lucene_search::directory_reader::DirectoryReader::open(&dir).unwrap();
+            assert_eq!(reader.segment_readers().len(), want_segments);
+            let mut seen = 0;
+            for seg in reader.segment_readers() {
+                assert!(seg.derived_source().is_some(), "{}", seg.segment_name);
+                for d in 0..seg.max_doc {
+                    let doc = seg.stored_document(d).unwrap().unwrap();
+                    let src = doc
+                        .fields
+                        .iter()
+                        .find(|f| f.field_number == source)
+                        .unwrap();
+                    let lucene_codecs::stored_fields::FieldValue::Binary(bytes) = &src.value else {
+                        panic!("binary _source");
+                    };
+                    let text = String::from_utf8(bytes.clone()).unwrap();
+                    let n: usize = text[5..text.find(',').unwrap()].parse().unwrap();
+                    let want: Vec<String> = knn_vector(n)
+                        .iter()
+                        .map(|x| lucene_analysis::attributes::java_float_to_string(*x))
+                        .collect();
+                    assert_eq!(text, format!(r#"{{"n":{n},"v":[{}]}}"#, want.join(",")));
+                    seen += 1;
+                }
+            }
+            assert_eq!(seen, 10);
+        };
+        read_all(2);
+        let mut gen = 0;
+        // SAFETY: a live handle and out-pointer.
+        let rc = unsafe { ffi_engine_writer_force_merge(h, 1, 0, &mut gen) };
+        assert_eq!(rc, 0, "{}", crate::error::last_error());
+        commit_settled(h);
+        ffi_engine_writer_close(h);
+        check(&tmp);
+        read_all(1);
+        let dir = FsDirectory::open(tmp.path());
+        let reader = lucene_search::directory_reader::DirectoryReader::open(&dir).unwrap();
+        let name = &reader.segment_readers()[0].segment_name;
+        let infos = lucene_index::segment_infos::read_latest(&dir).unwrap();
+        let sci = infos.segments.iter().find(|s| &s.segment_name == name).unwrap();
+        let si = lucene_index::segment_info::parse(
+            &std::fs::read(tmp.path().join(format!("{name}.si"))).unwrap(),
+            &sci.segment_id,
+        )
+        .unwrap();
+        let attr = |key: &str| {
+            si.attributes
+                .iter()
+                .find(|(k, _)| k == key)
+                .map(|(_, v)| v.as_str())
+        };
+        assert_eq!(attr(DERIVED_VECTOR_FIELDS), Some("v"));
+        assert_eq!(attr(KNN_DELEGATE_CODEC_ATTRIBUTE), Some("Lucene104"));
+        assert_eq!(sci.codec_name, KNN_CODEC);
     }
 
     /// **A vector field is written in its mapping's format and searched

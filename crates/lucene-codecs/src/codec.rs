@@ -273,6 +273,78 @@ pub struct DefaultLucene104Codec;
 
 impl Lucene104Codec for DefaultLucene104Codec {}
 
+/// A `FilterCodec` that writes its delegate's files under its own name (OpenSearch k-NN's
+/// `KNN1040Codec` over `Lucene104` or a custom-codecs codec): every answer is the delegate's but
+/// [`Lucene104Codec::name`].
+#[derive(Debug, Clone)]
+pub struct NamedLucene104Codec {
+    name: &'static str,
+    delegate: std::sync::Arc<dyn Lucene104Codec>,
+}
+
+impl NamedLucene104Codec {
+    /// `delegate`'s files recorded as `name`.
+    pub fn new(name: &'static str, delegate: std::sync::Arc<dyn Lucene104Codec>) -> Self {
+        Self { name, delegate }
+    }
+
+    /// The codec whose files this one writes.
+    pub fn delegate(&self) -> &dyn Lucene104Codec {
+        &*self.delegate
+    }
+}
+
+impl Lucene104Codec for NamedLucene104Codec {
+    fn name(&self) -> &str {
+        self.name
+    }
+    fn stored_fields_writer_factory(&self) -> Option<&dyn StoredFieldsWriterFactory> {
+        self.delegate.stored_fields_writer_factory()
+    }
+    fn live_docs_writer(&self) -> Option<&dyn LiveDocsWriter> {
+        self.delegate.live_docs_writer()
+    }
+    fn norms_writer_factory(&self) -> Option<&dyn NormsWriterFactory> {
+        self.delegate.norms_writer_factory()
+    }
+    fn points_writer_factory(&self) -> Option<&dyn PointsWriterFactory> {
+        self.delegate.points_writer_factory()
+    }
+    fn postings_writer_factory(&self) -> Option<&dyn PostingsWriterFactory> {
+        self.delegate.postings_writer_factory()
+    }
+    fn term_vectors_writer_factory(&self) -> Option<&dyn TermVectorsWriterFactory> {
+        self.delegate.term_vectors_writer_factory()
+    }
+    fn compressing_format(&self) -> Option<&'static CompressingFormat> {
+        self.delegate.compressing_format()
+    }
+    fn stored_fields_mode(&self) -> crate::stored_fields::Mode {
+        self.delegate.stored_fields_mode()
+    }
+    fn postings_format_for_field(&self, field: &str) -> Lucene104PostingsFormat {
+        self.delegate.postings_format_for_field(field)
+    }
+    fn doc_values_format_for_field(&self, field: &str) -> Lucene90DocValuesFormat {
+        self.delegate.doc_values_format_for_field(field)
+    }
+    fn knn_vectors_format_for_field(&self, field: &str) -> KnnVectorsFormat {
+        self.delegate.knn_vectors_format_for_field(field)
+    }
+    fn knn_vectors_format_is_direct(&self) -> bool {
+        self.delegate.knn_vectors_format_is_direct()
+    }
+    fn before_write(&self, point: WritePoint) -> std::io::Result<()> {
+        self.delegate.before_write(point)
+    }
+    fn check_doc_values(&self, write: &DocValuesWrite<'_>) -> std::io::Result<()> {
+        self.delegate.check_doc_values(write)
+    }
+    fn segment_files_writer(&self) -> Option<&dyn SegmentFilesWriter> {
+        self.delegate.segment_files_writer()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

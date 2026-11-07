@@ -1332,6 +1332,7 @@ impl IndexingConfig {
             lucene_codecs::codec::WritePoint::SegmentInfo,
         )?;
         self.partition_segment(&mut flushed.info.attributes, buf.partition);
+        self.record_list_attributes(&mut flushed.info.attributes);
         segment_writer::seal_flushed_segment(dir, segment_name, flushed).map_err(Error::from)
     }
 }

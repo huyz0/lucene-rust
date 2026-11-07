@@ -38,7 +38,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code jvm_reader.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 81;
+    public static final int EXPECTED_ABI_VERSION = 84;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -1532,6 +1532,7 @@ public final class NativeBridge {
     public static final int OPEN_FAULT_INJECTION = 1;
     public static final int OPEN_SPARSE = 2;
     public static final int OPEN_LIVE_SEARCH = 4;
+    public static final int OPEN_KNN = 8;
     public static final int OPEN_ADAPTIVE_DOC_VALUES = 32;
     public static final int OPEN_PARTITIONED = 64;
 
@@ -1548,7 +1549,9 @@ public final class NativeBridge {
      * with neural-search's codec and clustered postings; {@code liveSearch} keeps what a search of the
      * buffered documents reads ({@link #liveViewOpen}); {@code adaptiveDocValues} writes doc values in
      * the {@code RustAdaptive} format; with {@code partitioned} every segment holds one partition
-     * (the value of the index's partition field) and records it, and merges never mix partitions.
+     * (the value of the index's partition field) and records it, and merges never mix partitions;
+     * {@code knn} writes a k-NN index's segments under the k-NN codec's name, listing the fields
+     * whose vectors {@code _source} leaves out (derived source).
      * {@code indexSort} is the index sort as a {@code .si} encodes it (null or empty for none), and
      * {@code parentFieldUtf8} the field marking each block's last document (null or empty for none).
      * {@code maxDocs} is {@code IndexWriter.getActualMaxDocs()}, which Lucene's tests lower.
@@ -1563,6 +1566,7 @@ public final class NativeBridge {
         boolean liveSearch,
         boolean adaptiveDocValues,
         boolean partitioned,
+        boolean knn,
         byte[] indexSort,
         byte[] parentFieldUtf8,
         int maxDocs,
@@ -1583,7 +1587,7 @@ public final class NativeBridge {
                 ramBufferMb,
                 (byte) ((faultInjection ? OPEN_FAULT_INJECTION : 0) | (sparse ? OPEN_SPARSE : 0)
                     | (liveSearch ? OPEN_LIVE_SEARCH : 0) | (adaptiveDocValues ? OPEN_ADAPTIVE_DOC_VALUES : 0)
-                    | (partitioned ? OPEN_PARTITIONED : 0)),
+                    | (partitioned ? OPEN_PARTITIONED : 0) | (knn ? OPEN_KNN : 0)),
                 s.bytes(sort),
                 (long) sort.length,
                 s.bytes(parent),

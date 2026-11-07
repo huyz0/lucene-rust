@@ -206,7 +206,7 @@ public final class IndexingBench {
                     false,
                     false,
                     false,
-                    null,
+                    null, false,
                     null,
                     null,
                     IndexWriter.MAX_DOCS,

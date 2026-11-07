@@ -174,6 +174,9 @@ pub struct SegmentReader {
     /// read when the reader was opened, so it stays readable after the file
     /// is deleted.
     diagnostics: Arc<Vec<(String, String)>>,
+    /// The k-NN derived-source fields the segment's `.si` lists, whose vectors a read puts back
+    /// into `_source` ([`crate::derived_source`]).
+    derived_source: Option<Arc<crate::derived_source::DerivedFields>>,
     /// Each doc-values format instance's `.dvs`, with its codec suffix and
     /// the `.dvm` that locates its fields' skip indexes in it: every field's
     /// doc-values skip index, parsed on first use into
@@ -362,6 +365,45 @@ struct Attachments(
 impl std::fmt::Debug for Attachments {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("Attachments")
+    }
+}
+
+/// One document's vectors, for [`crate::derived_source::inject`].
+struct SegmentVectors<'r> {
+    reader: &'r SegmentReader,
+    doc: i32,
+}
+
+fn derived_error(e: impl std::fmt::Display) -> lucene_codecs::stored_fields::Error {
+    lucene_codecs::stored_fields::Error::DerivedSource(e.to_string())
+}
+
+impl crate::derived_source::VectorSource for SegmentVectors<'_> {
+    fn float_vector(
+        &mut self,
+        number: i32,
+    ) -> lucene_codecs::stored_fields::Result<Option<Vec<f32>>> {
+        let Some((flat, _)) = self.reader.knn_vectors_for(number).map_err(derived_error)? else {
+            return Ok(None);
+        };
+        let values = flat.float_vector_values(number).map_err(derived_error)?;
+        let mut cursor = values.doc_to_ord().map_err(derived_error)?;
+        match cursor.ordinal(self.doc).map_err(derived_error)? {
+            Some(ord) => Ok(Some(values.vector(ord).map_err(derived_error)?)),
+            None => Ok(None),
+        }
+    }
+
+    fn byte_vector(&mut self, number: i32) -> lucene_codecs::stored_fields::Result<Option<Vec<u8>>> {
+        let Some((flat, _)) = self.reader.knn_vectors_for(number).map_err(derived_error)? else {
+            return Ok(None);
+        };
+        let values = flat.byte_vector_values(number).map_err(derived_error)?;
+        let mut cursor = values.doc_to_ord().map_err(derived_error)?;
+        match cursor.ordinal(self.doc).map_err(derived_error)? {
+            Some(ord) => Ok(Some(values.vector(ord).map_err(derived_error)?.to_vec())),
+            None => Ok(None),
+        }
     }
 }
 
@@ -984,6 +1026,11 @@ impl SegmentReader {
             index_sort: si.index_sort.clone().map(Arc::new),
             has_blocks: si.has_blocks,
             diagnostics: Arc::new(si.diagnostics.clone()),
+            derived_source: crate::derived_source::DerivedFields::from_attributes(
+                &si.attributes,
+                &field_infos,
+            )
+            .map(Arc::new),
             dvs,
             skip_indexes: Arc::default(),
             docs_with_field: Arc::default(),
@@ -1435,8 +1482,27 @@ impl SegmentReader {
         let Some(f) = self.stored.as_deref() else {
             return Ok(false);
         };
-        f.reader(&self.segment_id)?.visit_document(doc, visitor)?;
+        let reader = f.reader(&self.segment_id)?;
+        match self.derived_source.as_deref() {
+            Some(fields) => {
+                let mut vectors = SegmentVectors { reader: self, doc };
+                reader.visit_document(
+                    doc,
+                    &mut crate::derived_source::InjectingVisitor {
+                        inner: visitor,
+                        fields,
+                        vectors: &mut vectors,
+                    },
+                )?;
+            }
+            None => reader.visit_document(doc, visitor)?,
+        }
         Ok(true)
+    }
+
+    /// The k-NN derived-source fields this segment lists, if any.
+    pub fn derived_source(&self) -> Option<&crate::derived_source::DerivedFields> {
+        self.derived_source.as_deref()
     }
 
     /// `StoredFields.prefetch(docID)` for each of `docs`: announces the
