@@ -206,6 +206,7 @@ public final class IndexingBench {
                     false,
                     false,
                     false,
+                    false,
                     null, false,
                     null,
                     null,

@@ -1090,11 +1090,17 @@ pub const OPEN_SPARSE: u8 = 2;
 /// [`ffi_engine_writer_open`]'s flag for an index searched without a refresh
 /// (`crate::live`).
 pub const OPEN_LIVE_SEARCH: u8 = 4;
+/// [`ffi_engine_writer_open`]'s flag for
+/// `index.lucene_rust.stored_fields.merge_lz4_high_compression`: merges write
+/// `BEST_SPEED` stored fields with the high-compression LZ4 match finder,
+/// which stock Lucene reads
+/// ([`IndexWriter::set_merge_lz4_high_compression`]).
+pub const OPEN_MERGE_LZ4_HC: u8 = 8;
 /// [`ffi_engine_writer_open`]'s flag for an `index.knn` index: segments record OpenSearch
 /// k-NN's codec name ([`KNN_CODEC`]) over the stored-fields codec, whose name they record under
 /// [`KNN_DELEGATE_CODEC_ATTRIBUTE`], as stock k-NN writes them; so k-NN's derived source reads
 /// back through that codec on any node.
-pub const OPEN_KNN: u8 = 8;
+pub const OPEN_KNN: u8 = 16;
 /// The codec name a k-NN index's segments record (`KNN1040Codec`).
 pub(crate) const KNN_CODEC: &str = "KNN1040Codec";
 /// The `.si` attribute naming the codec whose stored fields a k-NN segment holds
@@ -1122,7 +1128,8 @@ const PARTITIONED_SLOTS: usize = 1024;
 /// an `index.sparse` index ([`lucene_sparse::SparseCodec`]);
 /// [`OPEN_LIVE_SEARCH`] keeps what a search of the buffers reads;
 /// [`OPEN_ADAPTIVE_DOC_VALUES`] writes doc values in the `RustAdaptive`
-/// format; [`OPEN_PARTITIONED`] keeps partitions in segments of their own.
+/// format; [`OPEN_PARTITIONED`] keeps partitions in segments of their own;
+/// [`OPEN_MERGE_LZ4_HC`] has merges compress stored fields harder.
 /// `index_sort` is the index's sort as a `.si` encodes it
 /// ([`lucene_index::segment_info::parse_index_sort`]; empty for none):
 /// every segment is written in that order, as `IndexWriterConfig.setIndexSort`
@@ -1174,6 +1181,10 @@ pub const STORED_FIELDS_BEST_COMPRESSION: u8 = 1;
 pub const STORED_FIELDS_ZSTD: u8 = 2;
 /// OpenSearch custom-codecs' `ZSTDNODICT104` (`index.codec: zstd_no_dict`).
 pub const STORED_FIELDS_ZSTD_NO_DICT: u8 = 3;
+/// The Rust engine's paged zstd stored fields, `LuceneRustZstdPaged104`
+/// (`index.lucene_rust.stored_fields.paged_zstd`): 16 KiB chunks packed into
+/// 16 KiB pages, with a dictionary trained at large merges.
+pub const STORED_FIELDS_ZSTD_PAGED: u8 = 4;
 
 /// [`ffi_engine_writer_open`] writing the stored fields `stored_fields`
 /// names (`STORED_FIELDS_*`), the zstd ones at `compression_level`
@@ -1282,6 +1293,9 @@ pub unsafe extern "C" fn ffi_engine_writer_open_codec(
             } else if let Some(codec) = stored_codec.clone() {
                 writer.set_codec(Some(codec))?;
             }
+            if flags & OPEN_MERGE_LZ4_HC != 0 {
+                writer.set_merge_lz4_high_compression(true);
+            }
             if flags & OPEN_ADAPTIVE_DOC_VALUES != 0 {
                 writer.set_default_doc_values_format(
                     lucene_codecs::doc_values::Lucene90DocValuesFormat::rust_adaptive(),
@@ -1369,7 +1383,9 @@ fn stored_fields_codec(
     stored_fields: u8,
     level: i32,
 ) -> Result<Option<Arc<dyn lucene_codecs::codec::Lucene104Codec>>, FfiStatus> {
-    use lucene_codecs::codec::{BestCompressionLucene104Codec, ZstdLucene104Codec};
+    use lucene_codecs::codec::{
+        BestCompressionLucene104Codec, ZstdLucene104Codec, ZstdPagedLucene104Codec,
+    };
     use lucene_codecs::stored_fields::ZstdMode;
     let zstd = |mode: ZstdMode| -> Result<Option<Arc<dyn lucene_codecs::codec::Lucene104Codec>>, FfiStatus> {
         let codec = ZstdLucene104Codec::new(mode).map_err(|e| {
@@ -1383,6 +1399,13 @@ fn stored_fields_codec(
         STORED_FIELDS_BEST_COMPRESSION => Ok(Some(Arc::new(BestCompressionLucene104Codec))),
         STORED_FIELDS_ZSTD => zstd(ZstdMode::zstd(level)),
         STORED_FIELDS_ZSTD_NO_DICT => zstd(ZstdMode::zstd_no_dict(level)),
+        STORED_FIELDS_ZSTD_PAGED => {
+            let codec = ZstdPagedLucene104Codec::new(level).map_err(|e| {
+                set_last_error(format!("index.codec.compression_level: {e}"));
+                FfiStatus::InvalidArgument
+            })?;
+            Ok(Some(Arc::new(codec)))
+        }
         other => {
             set_last_error(format!("unknown stored fields format {other}"));
             Err(FfiStatus::InvalidArgument)
@@ -2848,6 +2871,12 @@ mod tests {
                 -1,
                 "ZSTDNODICT104",
                 "ZSTD_NO_DICT",
+            ),
+            (
+                STORED_FIELDS_ZSTD_PAGED,
+                3,
+                "LuceneRustZstdPaged104",
+                "ZSTD_PAGED",
             ),
         ] {
             let tmp = empty_index("engine-writer-codec");
@@ -5907,6 +5936,21 @@ mod tests {
                 }
                 held
             };
+            // A plain search reads the chunks the view planned (with their
+            // kept overlays from the second time) and the documents after:
+            // the same hits and scores as the reader with postings.
+            for word in ["alpha", "gamma", "eps", "zz"] {
+                let q = crate::jvm_reader::tests::term_blob("body", word);
+                for _ in 0..2 {
+                    let (hits, total) = search_live(reader, view, &q).unwrap();
+                    let mut hits: Vec<(i32, u32)> =
+                        hits.iter().map(|&(d, s)| (d, s.to_bits())).collect();
+                    hits.sort_unstable();
+                    let (mut want, want_total) = scored_hits(whole, &q);
+                    want.sort_unstable();
+                    assert_eq!((hits, total), (want, want_total), "round {round}: {word}");
+                }
+            }
             for prefix in ["d", "ga", "e", "zz"] {
                 let q = crate::jvm_reader::tests::prefix_blob("body", prefix);
                 let lean = lean_of(&q, &[]);
@@ -5958,7 +6002,7 @@ mod tests {
             assert_eq!(ffi_live_view_close(view), 0);
         }
         // A few chunks per buffer, not one per view.
-        assert!(leaves_seen.iter().all(|&n| n <= 8), "{leaves_seen:?}");
+        assert!(leaves_seen.iter().all(|&n| n <= 12), "{leaves_seen:?}");
         assert!(leaves_seen.iter().any(|&n| n > 1), "{leaves_seen:?}");
 
         // A buffer published after views of it opened: one whose chunks
@@ -6361,7 +6405,7 @@ mod tests {
                 );
                 [term, sort, t.elapsed()]
             };
-            let mut sums = [std::time::Duration::ZERO; 9];
+            let mut sums = [std::time::Duration::ZERO; 10];
             let mut builds: Vec<std::time::Duration> = Vec::new();
             // LIVE_LOAD=1: documents keep arriving, LIVE_STEP at a time, while
             // the views are read, as under the bench's bulk load.
@@ -6388,6 +6432,14 @@ mod tests {
                     assert_eq!(rc, 0, "{}", crate::error::last_error());
                     // SAFETY: the buffer the call gave, freed once.
                     unsafe { crate::ffm_bridge::ffi_jvm_free_bytes(ptr, len) };
+                    if searches {
+                        // The plain search of the term, as a scored query
+                        // with no sort or aggregation runs.
+                        let t = std::time::Instant::now();
+                        std::hint::black_box(super::tests::search_live(reader, view, &term_q));
+                        sums[9] += t.elapsed();
+                        let _ = crate::live::phases::take();
+                    }
                     if !searches {
                         let t = std::time::Instant::now();
                         let mut whole = 0u64;
@@ -6475,9 +6527,9 @@ mod tests {
             if searches && live_rounds > 0 {
                 let r = live_rounds as u32;
                 eprintln!(
-                    "mean over {r} rounds: lean reader {:?} (chunks {:?}, snapshot {:?}, overlay {:?}, append {:?}, live_docs {:?}), term {:?}, sort {:?}, agg {:?}",
+                    "mean over {r} rounds: lean reader {:?} (chunks {:?}, snapshot {:?}, overlay {:?}, append {:?}, live_docs {:?}), term {:?}, sort {:?}, agg {:?}, plain term {:?}",
                     sums[0] / r, sums[1] / r, sums[2] / r, sums[3] / r, sums[4] / r, sums[5] / r,
-                    sums[6] / r, sums[7] / r, sums[8] / r
+                    sums[6] / r, sums[7] / r, sums[8] / r, sums[9] / r
                 );
                 builds.sort_unstable();
                 let at = |q: f64| builds[((builds.len() as f64 - 1.0) * q).round() as usize];

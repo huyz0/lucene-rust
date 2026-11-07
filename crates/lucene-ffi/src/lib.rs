@@ -43,6 +43,7 @@ mod live;
 mod raw;
 mod registry;
 mod store;
+mod zstd_dictionary;
 
 pub use error::FfiStatus;
 

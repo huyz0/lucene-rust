@@ -149,6 +149,11 @@ pub struct OpenSegment<'a> {
     /// the sort's order: set per request by a caller that knows both, and
     /// only a sorted search reads it.
     pub index_sort_prefix: bool,
+    /// By field, `[numTerms, sumTotalTermFreq, sumDocFreq, docCount]` of a
+    /// segment without a reader whose dictionary may lack a field its
+    /// documents have (a buffer's terms read for one request): what the
+    /// reader-wide statistics count of it for such a field.
+    pub termless: Option<&'a std::collections::HashMap<String, [i64; 4]>>,
     /// The searcher's similarity (`IndexSearcher.setSimilarity`), every
     /// segment of a search holding the same one: what scores the request
     /// when the search function is not handed one itself. `None` is
@@ -586,9 +591,17 @@ impl FieldSums {
     /// documents have the field ([`crate::directory_reader::SegmentReader::termless_field_stats`]):
     /// its statistics count all the same. Whether it had any.
     fn add_termless(&mut self, seg: &OpenSegment<'_>, field: &str) -> bool {
-        match seg.reader.and_then(|r| r.termless_field_stats(field)) {
-            Some((ttf, sdf, dc)) => {
-                self.add_stats(ttf, sdf, dc);
+        if let Some((ttf, sdf, dc)) = seg.reader.and_then(|r| r.termless_field_stats(field)) {
+            self.add_stats(ttf, sdf, dc);
+            return true;
+        }
+        match seg
+            .termless
+            .filter(|_| seg.fields.field(field).is_none())
+            .and_then(|m| m.get(field))
+        {
+            Some(&[_, ttf, sdf, dc]) => {
+                self.add_stats(ttf, sdf, i32::try_from(dc).unwrap_or(i32::MAX));
                 true
             }
             None => false,
@@ -2124,6 +2137,7 @@ mod tests {
                 cache: None,
                 reader: None,
                 index_sort_prefix: false,
+                termless: None,
                 similarity: None,
                 points: None,
             },
@@ -2137,6 +2151,7 @@ mod tests {
                 cache: None,
                 reader: None,
                 index_sort_prefix: false,
+                termless: None,
                 similarity: None,
                 points: None,
                 max_doc: None,
@@ -2206,6 +2221,7 @@ mod tests {
                 cache: None,
                 reader: None,
                 index_sort_prefix: false,
+                termless: None,
                 similarity: None,
                 points: None,
             },
@@ -2219,6 +2235,7 @@ mod tests {
                 cache: None,
                 reader: None,
                 index_sort_prefix: false,
+                termless: None,
                 similarity: None,
                 points: None,
                 max_doc: None,
@@ -2283,6 +2300,7 @@ mod tests {
                 cache: None,
                 reader: None,
                 index_sort_prefix: false,
+                termless: None,
                 similarity: None,
                 points: None,
             },
@@ -2296,6 +2314,7 @@ mod tests {
                 cache: None,
                 reader: None,
                 index_sort_prefix: false,
+                termless: None,
                 similarity: None,
                 points: None,
                 max_doc: None,
@@ -2334,6 +2353,7 @@ mod tests {
                 cache: None,
                 reader: None,
                 index_sort_prefix: false,
+                termless: None,
                 similarity: None,
                 points: None,
             },
@@ -2347,6 +2367,7 @@ mod tests {
                 cache: None,
                 reader: None,
                 index_sort_prefix: false,
+                termless: None,
                 similarity: None,
                 points: None,
                 max_doc: None,
@@ -2380,6 +2401,7 @@ mod tests {
             cache: None,
             reader: None,
             index_sort_prefix: false,
+            termless: None,
             similarity: None,
             points: None,
         }];
@@ -2758,6 +2780,7 @@ mod tests {
                 cache: None,
                 reader: None,
                 index_sort_prefix: false,
+                termless: None,
                 similarity: None,
                 points: None,
             },
@@ -2771,6 +2794,7 @@ mod tests {
                 cache: None,
                 reader: None,
                 index_sort_prefix: false,
+                termless: None,
                 similarity: None,
                 points: None,
                 max_doc: None,
@@ -2807,6 +2831,7 @@ mod tests {
                 cache: None,
                 reader: None,
                 index_sort_prefix: false,
+                termless: None,
                 similarity: None,
                 points: None,
             },
@@ -2820,6 +2845,7 @@ mod tests {
                 cache: None,
                 reader: None,
                 index_sort_prefix: false,
+                termless: None,
                 similarity: None,
                 points: None,
                 max_doc: None,

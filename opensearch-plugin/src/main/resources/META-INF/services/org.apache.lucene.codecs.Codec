@@ -8,3 +8,4 @@ org.lucenerust.opensearch.knn.codec.KNN9120Codec
 org.lucenerust.opensearch.knn.codec.KNN10010Codec
 org.lucenerust.opensearch.knn.codec.KNN1030Codec
 org.lucenerust.opensearch.knn.codec.KNN1040Codec
+org.lucenerust.opensearch.storedfields.ZstdPagedCodec

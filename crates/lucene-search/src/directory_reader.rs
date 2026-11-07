@@ -3302,6 +3302,7 @@ impl SegmentReader {
             points: Some(&points),
             reader: Some(self),
             index_sort_prefix: false,
+            termless: None,
             similarity: None,
         };
         f(&seg)
@@ -3377,6 +3378,7 @@ impl<'a> OpenedSegments<'a> {
                 points: self.points_ins.get(i).and_then(Option::as_ref),
                 reader: Some(r),
                 index_sort_prefix: false,
+                termless: None,
                 similarity: None,
             })
             .collect()

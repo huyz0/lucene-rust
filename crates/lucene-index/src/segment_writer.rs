@@ -318,6 +318,28 @@ pub(crate) fn build_native_stored_fields(
     Some(writer.finish())
 }
 
+/// The `.si` attribute a segment whose `BEST_SPEED` stored fields were all
+/// written by the high-compression LZ4 match finder records (value
+/// [`LZ4_HC_VALUE`]). Readers ignore it; a merge that writes the same way
+/// copies such a segment's chunks instead of compressing them again.
+pub const LZ4_HC_ATTRIBUTE: &str = "lucene_rust.stored_fields.lz4";
+/// [`LZ4_HC_ATTRIBUTE`]'s value.
+pub const LZ4_HC_VALUE: &str = "hc";
+
+/// Whether `attributes` carry [`LZ4_HC_ATTRIBUTE`].
+pub(crate) fn has_lz4_hc_attribute(attributes: &[(String, String)]) -> bool {
+    attributes
+        .iter()
+        .any(|(k, v)| k == LZ4_HC_ATTRIBUTE && v == LZ4_HC_VALUE)
+}
+
+/// The `.si` attribute of a segment with [`stored_fields::Mode::ZstdPaged`]
+/// stored fields (value [`ZSTD_PAGED_VALUE`]); the plugin's Java format
+/// reads it to pick its reader.
+pub const ZSTD_PAGED_ATTRIBUTE: &str = "LuceneRustStoredFieldsFormat.mode";
+/// [`ZSTD_PAGED_ATTRIBUTE`]'s value.
+pub const ZSTD_PAGED_VALUE: &str = "ZSTD_PAGED";
+
 /// `Lucene90StoredFieldsFormat.fieldsWriter`'s `.si` attribute naming its
 /// mode, or OpenSearch custom-codecs' `Lucene104CustomStoredFieldsFormat`
 /// one; a `CompressingCodec` format records none.
@@ -330,6 +352,12 @@ pub(crate) fn stored_fields_mode_attribute(mode: stored_fields::Mode) -> Vec<(St
             return vec![(
                 "Lucene104CustomStoredFieldsFormat.mode".to_string(),
                 z.mode_name().to_string(),
+            )]
+        }
+        stored_fields::Mode::ZstdPaged(_) => {
+            return vec![(
+                ZSTD_PAGED_ATTRIBUTE.to_string(),
+                ZSTD_PAGED_VALUE.to_string(),
             )]
         }
     };
