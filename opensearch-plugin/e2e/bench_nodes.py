@@ -316,7 +316,8 @@ def visibility(base, container, corpus, label, out, settings):
                 with open(path, "rb") as fh:
                     res = req("POST", "/bench/_bulk", fh.read(), ndjson=True)
                 if res["errors"]:
-                    raise RuntimeError(f"bulk {path} had errors")
+                    first = next((i for i in res["items"] if "error" in next(iter(i.values()))), None)
+                    raise RuntimeError(f"bulk {path} had errors, first: {json.dumps(first)[:2000]}")
             with concurrent.futures.ThreadPoolExecutor(CLIENTS) as ex:
                 list(ex.map(send, files))
         finally:
