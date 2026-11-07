@@ -1321,6 +1321,30 @@ impl<'d> ConcurrentIndexWriter<'d> {
         docs: Vec<ExplicitDocument>,
         soft_deletes: &[DocValuesUpdate],
     ) -> Result<SeqNo> {
+        self.soft_update_explicit(partition, term, docs, None, soft_deletes)
+    }
+
+    /// [`Self::soft_update_explicit_documents_in`] with each document's KNN
+    /// vectors, as [`Self::add_explicit_documents_with_vectors_in`].
+    pub fn soft_update_explicit_documents_with_vectors_in(
+        &self,
+        partition: Option<Arc<str>>,
+        term: Term,
+        docs: Vec<ExplicitDocument>,
+        vectors: Vec<Vec<DocumentVector>>,
+        soft_deletes: &[DocValuesUpdate],
+    ) -> Result<SeqNo> {
+        self.soft_update_explicit(partition, term, docs, Some(vectors), soft_deletes)
+    }
+
+    fn soft_update_explicit(
+        &self,
+        partition: Option<Arc<str>>,
+        term: Term,
+        docs: Vec<ExplicitDocument>,
+        vectors: Option<Vec<Vec<DocumentVector>>>,
+        soft_deletes: &[DocValuesUpdate],
+    ) -> Result<SeqNo> {
         if soft_deletes.is_empty() {
             return Err(crate::index_writer::Error::NoSoftDeletesSupplied);
         }
@@ -1338,36 +1362,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
             partition,
             Some(DeleteNode::DocValuesUpdates(updates)),
             docs,
-            None,
-        )
-    }
-
-    /// [`Self::soft_update_explicit_documents_in`] with each document's KNN
-    /// vectors, as [`Self::add_explicit_documents_with_vectors_in`].
-    pub fn soft_update_explicit_documents_with_vectors_in(
-        &self,
-        partition: Option<Arc<str>>,
-        term: Term,
-        docs: Vec<ExplicitDocument>,
-        vectors: Vec<Vec<DocumentVector>>,
-        soft_deletes: &[DocValuesUpdate],
-    ) -> Result<SeqNo> {
-        if soft_deletes.is_empty() {
-            return Err(crate::index_writer::Error::NoSoftDeletesSupplied);
-        }
-        let cfg = self.cfg();
-        for update in soft_deletes {
-            cfg.verify_doc_values_update_field(update)?;
-        }
-        let updates = soft_deletes
-            .iter()
-            .map(|u| crate::index_writer::retarget_update(u, &term))
-            .collect();
-        self.add_explicit(
-            partition,
-            Some(DeleteNode::DocValuesUpdates(updates)),
-            docs,
-            Some(vectors),
+            vectors,
         )
     }
 

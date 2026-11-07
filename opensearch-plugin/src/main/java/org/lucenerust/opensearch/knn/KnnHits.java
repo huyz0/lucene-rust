@@ -68,6 +68,8 @@ final class KnnHits {
     private static final class HitsScorer extends Scorer {
         private final Leaf leaf;
         private final float boost;
+        /** The leaf's best score, boosted: fixed for the scorer's life. */
+        private final float maxScore;
         private int i = -1;
         private final DocIdSetIterator it = new DocIdSetIterator() {
             @Override
@@ -100,6 +102,11 @@ final class KnnHits {
         HitsScorer(Leaf leaf, float boost) {
             this.leaf = leaf;
             this.boost = boost;
+            float max = 0;
+            for (float s : leaf.scores) {
+                max = Math.max(max, s);
+            }
+            this.maxScore = max * boost;
         }
 
         @Override
@@ -114,11 +121,7 @@ final class KnnHits {
 
         @Override
         public float getMaxScore(int upTo) {
-            float max = 0;
-            for (float s : leaf.scores) {
-                max = Math.max(max, s);
-            }
-            return max * boost;
+            return maxScore;
         }
 
         @Override

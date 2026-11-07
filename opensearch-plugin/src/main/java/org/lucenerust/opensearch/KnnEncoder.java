@@ -3,6 +3,8 @@
  */
 package org.lucenerust.opensearch;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.Query;
@@ -30,6 +32,8 @@ import java.nio.charset.StandardCharsets;
  * {@link #topHits} is {@link KnnTopVectorQuery}'s native rewrite.
  */
 final class KnnEncoder {
+    private static final Logger logger = LogManager.getLogger(KnnEncoder.class);
+
     static final byte NODE_KNN = 39;
     static final byte NODE_DOC_AND_SCORE = 40;
     static final byte KNN_TOP_K = 0;
@@ -84,7 +88,7 @@ final class KnnEncoder {
 
     /**
      * {@code q}'s hits over the searcher's native reader, or null when the reader has none (or its
-     * filter cannot be written), for Lucene to find.
+     * filter cannot be written, or the native search fails), for Lucene to find.
      */
     static KnnHitsQuery topHits(NativeReaders readers, IndexSearcher searcher, KnnTopVectorQuery q) {
         IndexReader reader = searcher.getIndexReader();
@@ -114,7 +118,9 @@ final class KnnEncoder {
         int[] count = new int[1];
         int rc = NativeBridge.readerKnn(acquired.handle(), request.toByteArray(), q.k(), docs, scores, count);
         if (rc != NativeBridge.OK) {
-            throw new IllegalArgumentException("[knn] native search failed (" + rc + "): " + NativeBridge.lastError());
+            // As every native search does: a failure falls back to Lucene rather than failing the query.
+            logger.debug("lucene-rust: [knn] native search failed ({}): {}", rc, NativeBridge.lastError());
+            return null;
         }
         ScoreDoc[] hits = new ScoreDoc[count[0]];
         for (int i = 0; i < hits.length; i++) {

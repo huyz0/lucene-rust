@@ -87,7 +87,19 @@ impl KnnLeafQuery {
             return Ok(Vec::new());
         };
         let input = owned.input(reader, live_docs, filter);
-        match (self.kind, &self.target) {
+        // A beam wider than the segment finds what one of its size does; the
+        // bound keeps a request's `k` or `ef_search` from sizing the heaps.
+        let kind = match self.kind {
+            KnnLeafKind::TopK { k, ef_search } => {
+                let docs = usize::try_from(reader.max_doc).unwrap_or(0).max(1);
+                KnnLeafKind::TopK {
+                    k: k.min(docs),
+                    ef_search: ef_search.min(docs),
+                }
+            }
+            radial => radial,
+        };
+        match (kind, &self.target) {
             (KnnLeafKind::TopK { k, ef_search }, KnnTarget::Float(t)) => {
                 let q = KnnFloatVectorQuery::new(self.field.clone(), t.clone(), k)?
                     .with_ef_search(ef_search);
@@ -268,7 +280,14 @@ pub fn knn_top_hits(
     if knn.is_empty() {
         return Ok(Vec::new());
     }
-    let candidates = candidates.max(k);
+    // More candidates than the reader has documents find no more of them; the
+    // bound keeps a request's `ef_search` from sizing the search's heaps.
+    let docs = opened
+        .iter()
+        .map(|(reader, _)| usize::try_from(reader.max_doc).unwrap_or(0))
+        .fold(0usize, usize::saturating_add)
+        .max(1);
+    let candidates = candidates.max(k).min(docs);
     let mut hits = match target {
         KnnTarget::Float(t) => {
             let q = KnnFloatVectorQuery::new(field, t.clone(), candidates)?;
