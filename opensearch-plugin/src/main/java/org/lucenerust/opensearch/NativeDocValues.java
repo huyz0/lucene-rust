@@ -6,7 +6,6 @@ package org.lucenerust.opensearch;
 import org.apache.lucene.index.SortedNumericDocValues;
 import org.apache.lucene.index.SortedSetDocValues;
 import org.apache.lucene.index.TermsEnum;
-import org.apache.lucene.search.DocIdSetIterator;
 import org.apache.lucene.util.BytesRef;
 
 import java.io.IOException;
@@ -25,8 +24,7 @@ import java.util.Arrays;
  * #POINT_READS} documents -- is a consumer reading the column (a sort or aggregation Lucene
  * answers), which the segment's own iterator serves; so are the calls with no document
  * ({@code lookupOrd} of an ordinal the current document lacks, {@code termsEnum}, {@code
- * getValueCount}). A leaf with no such iterator (the writer's buffered documents) answers them as
- * a column that holds only the documents read.
+ * getValueCount}), and every read the native side fails.
  */
 final class NativeDocValues {
     /** {@code jvm_fetch.rs}'s kinds. */
@@ -57,14 +55,10 @@ final class NativeDocValues {
             this.terms = terms;
         }
 
-        /** {@code field}'s slot, or -1 when the read did not ask for it. */
+        /** {@code field}'s slot, or -1 when the read did not ask for it ({@code fields} is sorted: {@link Batch#wanted}). */
         int slot(int field) {
-            for (int i = 0; i < fields.length; i++) {
-                if (fields[i] == field) {
-                    return i;
-                }
-            }
-            return -1;
+            int i = Arrays.binarySearch(fields, field);
+            return i < 0 ? -1 : i;
         }
 
         static Values decode(Thread thread, int doc, byte[] blob) throws IOException {
@@ -106,7 +100,10 @@ final class NativeDocValues {
         }
     }
 
-    /** A document's encoded values of {@code fields}, from wherever the leaf's documents live. */
+    /**
+     * A document's encoded values of {@code fields}, from wherever the leaf's documents live; null
+     * when they cannot be read natively, and the segment's own iterator answers instead.
+     */
     @FunctionalInterface
     interface Source {
         byte[] read(int doc, int[] fields) throws IOException;
@@ -126,7 +123,7 @@ final class NativeDocValues {
             this.source = source;
         }
 
-        /** Document {@code doc}'s values, {@code field}'s among them. */
+        /** Document {@code doc}'s values, {@code field}'s among them; null when the native read failed. */
         Values values(int doc, int field) throws IOException {
             Thread t = Thread.currentThread();
             Values v = last;
@@ -145,13 +142,17 @@ final class NativeDocValues {
                     }
                 }
             }
-            v = Values.decode(t, doc, source.read(doc, w));
+            byte[] blob = source.read(doc, w);
+            if (blob == null) {
+                return null;
+            }
+            v = Values.decode(t, doc, blob);
             last = v;
             return v;
         }
     }
 
-    /** The segment's own iterator, made on first need. */
+    /** The segment's own iterator, made on first need; never null for a field of its type. */
     @FunctionalInterface
     interface Column<T> {
         T open() throws IOException;
@@ -162,6 +163,8 @@ final class NativeDocValues {
         private final Batch batch;
         private final int field;
         private final Column<SortedNumericDocValues> column;
+        /** For {@link #cost}: the segment's iterator, never positioned. */
+        private SortedNumericDocValues probe;
         private SortedNumericDocValues scan;
         private int doc = -1;
         private int reads;
@@ -177,7 +180,7 @@ final class NativeDocValues {
         /** The segment's iterator, from now on; not yet positioned. */
         private SortedNumericDocValues scan() throws IOException {
             if (scan == null) {
-                scan = column == null ? null : column.open();
+                scan = column.open();
                 if (scan == null) {
                     throw new IllegalStateException("no column of doc values to scan for field number " + field);
                 }
@@ -192,27 +195,14 @@ final class NativeDocValues {
             return fresh && doc >= 0 ? s.advance(doc + 1) : s.nextDoc();
         }
 
-        /** The segment's iterator's cost, without handing over to it. */
-        private long costOf() {
-            try {
-                if (scan != null) {
-                    return scan.cost();
-                }
-                SortedNumericDocValues c = column == null ? null : column.open();
-                return c == null ? 0 : c.cost();
-            } catch (IOException e) {
-                throw new java.io.UncheckedIOException(e);
-            }
-        }
-
         @Override
         public boolean advanceExact(int target) throws IOException {
-            if (scan != null || (++reads > POINT_READS && column != null)) {
+            Values v = scan != null || ++reads > POINT_READS ? null : batch.values(target, field);
+            if (v == null) {
                 boolean has = scan().advanceExact(target);
                 doc = target;
                 return has;
             }
-            Values v = batch.values(target, field);
             doc = target;
             values = v.numbers[v.slot(field)];
             upto = 0;
@@ -236,23 +226,27 @@ final class NativeDocValues {
 
         @Override
         public int nextDoc() throws IOException {
-            if (column == null) {
-                return doc = NO_MORE_DOCS;
-            }
             return doc = scanNext();
         }
 
         @Override
         public int advance(int target) throws IOException {
-            if (column == null) {
-                return doc = NO_MORE_DOCS;
-            }
             return doc = scan().advance(target);
         }
 
         @Override
         public long cost() {
-            return costOf();
+            try {
+                if (scan != null) {
+                    return scan.cost();
+                }
+                if (probe == null) {
+                    probe = column.open();
+                }
+                return probe == null ? 0 : probe.cost();
+            } catch (IOException e) {
+                throw new java.io.UncheckedIOException(e);
+            }
         }
     }
 
@@ -261,7 +255,7 @@ final class NativeDocValues {
         private final Batch batch;
         private final int field;
         private final Column<SortedSetDocValues> column;
-        /** For calls with no document: ordinals and terms are the segment's own. */
+        /** For calls with no document, and {@link #cost}: ordinals and terms are the segment's own. */
         private SortedSetDocValues dictionary;
         private SortedSetDocValues scan;
         private int doc = -1;
@@ -280,8 +274,11 @@ final class NativeDocValues {
             if (scan != null) {
                 return scan;
             }
-            if (dictionary == null && column != null) {
+            if (dictionary == null) {
                 dictionary = column.open();
+                if (dictionary == null) {
+                    throw new IllegalStateException("no column of doc values for field number " + field);
+                }
             }
             return dictionary;
         }
@@ -289,7 +286,7 @@ final class NativeDocValues {
         /** The segment's iterator, from now on; not yet positioned. */
         private SortedSetDocValues scan() throws IOException {
             if (scan == null) {
-                scan = column == null ? null : column.open();
+                scan = column.open();
                 if (scan == null) {
                     throw new IllegalStateException("no column of doc values to scan for field number " + field);
                 }
@@ -304,27 +301,14 @@ final class NativeDocValues {
             return fresh && doc >= 0 ? s.advance(doc + 1) : s.nextDoc();
         }
 
-        /** The segment's iterator's cost, without handing over to it. */
-        private long costOf() {
-            try {
-                if (scan != null) {
-                    return scan.cost();
-                }
-                SortedSetDocValues c = column == null ? null : column.open();
-                return c == null ? 0 : c.cost();
-            } catch (IOException e) {
-                throw new java.io.UncheckedIOException(e);
-            }
-        }
-
         @Override
         public boolean advanceExact(int target) throws IOException {
-            if (scan != null || (++reads > POINT_READS && column != null)) {
+            Values v = scan != null || ++reads > POINT_READS ? null : batch.values(target, field);
+            if (v == null) {
                 boolean has = scan().advanceExact(target);
                 doc = target;
                 return has;
             }
-            Values v = batch.values(target, field);
             int slot = v.slot(field);
             doc = target;
             ords = v.ords[slot];
@@ -352,18 +336,13 @@ final class NativeDocValues {
                     }
                 }
             }
-            SortedSetDocValues d = dictionary();
-            if (d == null) {
-                throw new IllegalArgumentException("ordinal " + ord + " is not the current document's");
-            }
-            return d.lookupOrd(ord);
+            return dictionary().lookupOrd(ord);
         }
 
         @Override
         public long getValueCount() {
             try {
-                SortedSetDocValues d = dictionary();
-                return d == null ? (ords == null ? 0 : ords[ords.length - 1] + 1) : d.getValueCount();
+                return dictionary().getValueCount();
             } catch (IOException e) {
                 throw new java.io.UncheckedIOException(e);
             }
@@ -371,14 +350,12 @@ final class NativeDocValues {
 
         @Override
         public TermsEnum termsEnum() throws IOException {
-            SortedSetDocValues d = dictionary();
-            return d == null ? TermsEnum.EMPTY : d.termsEnum();
+            return dictionary().termsEnum();
         }
 
         @Override
         public long lookupTerm(BytesRef key) throws IOException {
-            SortedSetDocValues d = dictionary();
-            return d == null ? -1 : d.lookupTerm(key);
+            return dictionary().lookupTerm(key);
         }
 
         @Override
@@ -388,23 +365,21 @@ final class NativeDocValues {
 
         @Override
         public int nextDoc() throws IOException {
-            if (column == null) {
-                return doc = DocIdSetIterator.NO_MORE_DOCS;
-            }
             return doc = scanNext();
         }
 
         @Override
         public int advance(int target) throws IOException {
-            if (column == null) {
-                return doc = DocIdSetIterator.NO_MORE_DOCS;
-            }
             return doc = scan().advance(target);
         }
 
         @Override
         public long cost() {
-            return costOf();
+            try {
+                return dictionary().cost();
+            } catch (IOException e) {
+                throw new java.io.UncheckedIOException(e);
+            }
         }
     }
 }

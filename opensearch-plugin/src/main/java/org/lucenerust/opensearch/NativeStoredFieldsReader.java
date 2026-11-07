@@ -187,8 +187,10 @@ final class NativeStoredFieldsReader extends FilterDirectoryReader {
                 byte[][] out = new byte[1][];
                 int rc = NativeBridge.docValues(shared.handle(), ord, doc, fields, out);
                 if (rc != NativeBridge.OK) {
+                    // As for stored fields: the segment's own iterator answers instead.
                     shared.stats.nativeError();
-                    throw new IOException("native doc values of document " + doc + " failed (" + rc + "): " + NativeBridge.lastError());
+                    logger.warn("lucene-rust: native doc values failed ({}), reading with Lucene: {}", rc, NativeBridge.lastError());
+                    return null;
                 }
                 shared.stats.nativeDocValues();
                 return out[0];
