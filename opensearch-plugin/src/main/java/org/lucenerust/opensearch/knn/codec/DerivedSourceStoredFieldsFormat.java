@@ -47,8 +47,8 @@ import java.util.function.Function;
  * k-NN's derived source ({@code KNN10010DerivedSourceStoredFieldsFormat}): a segment whose {@code .si}
  * attribute {@link #DERIVED_VECTOR_FIELDS} (or {@link #NESTED_DERIVED_VECTOR_FIELDS}) lists vector
  * fields stores each document's {@code _source} with those fields' values masked. Reading puts each
- * field's vector, from the segment's vector values, back in place of every non-null value at its
- * path; a nested field's values are its child documents' vectors, in order. {@code KNN9120Codec}'s
+ * field's vector, from the segment's vector values, back in place of its masked value (the number
+ * stock masks with; a value left whole stays); a nested field's values are its child documents' vectors, in order. {@code KNN9120Codec}'s
  * segments mark the fields with {@link #FIELD_ATTRIBUTE} instead. The stored fields themselves are
  * those of the codec {@link #DELEGATE_CODEC} names, or of the delegate when it names none.
  *
@@ -263,7 +263,8 @@ final class DerivedSourceStoredFieldsFormat extends StoredFieldsFormat {
             for (FieldInfo fi : root) {
                 Cursor c = cursor(fi, docID);
                 boolean present = c != null && advanceTo(c, docID) == docID;
-                transforms.put(fi.name, v -> v == null || present == false ? v : vector(c.values, c.it));
+                // Only the mask is replaced: a value left whole (the field had copy_to) stays.
+                transforms.put(fi.name, v -> v instanceof Number == false || present == false ? v : vector(c.values, c.it));
             }
             if (nested.isEmpty() == false) {
                 int first = firstChild(docID);

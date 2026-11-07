@@ -136,17 +136,27 @@ def compare_sources(failures):
     props = {**MAPPINGS, "tag": {"type": "keyword"}, "secret": {"type": "keyword"},
              "hidden": {"type": "knn_vector", "dimension": 4},
              "nested_obj": {"properties": {"inner": {"type": "knn_vector", "dimension": 4}}}}
-    got = {}
-    for port in (OURS[1], STOCK[1]):
-        settings = {"knn": True, "number_of_replicas": 0, **({"lucene_rust.engine": True} if port == OURS[1] else {})}
-        ck.req(port, "PUT", "/sources", {"settings": {"index": settings},
-                                         "mappings": {"_source": {"excludes": ["secret", "hidden"]}, "properties": props}})
-        setting = ck.req(port, "GET", "/sources/_settings/index.knn.derived_source.enabled")
-        got[port] = {"setting": setting["sources"]["settings"]["index"]["knn"]["derived_source"]["enabled"]}
-        ck.req(port, "PUT", "/sources/_doc/1", doc)
-        got[port].update(sources(port, "sources"))
-    if typed(got[OURS[1]]) != typed(got[STOCK[1]]):
-        failures.append(f"_source: ours {got[OURS[1]]}, stock {got[STOCK[1]]}")
+    n = 0
+    # Filtered and whole _source; a copy_to field, which stock leaves whole.
+    variants = (("sources", {"excludes": ["secret", "hidden"]}, {}),
+                ("sources-whole", None, {"copied": {"type": "knn_vector", "dimension": 4, "copy_to": "copied_all"},
+                                         "copied_all": {"type": "knn_vector", "dimension": 4}}))
+    for index, source, extra in variants:
+        got = {}
+        mappings = {"properties": {**props, **extra}}
+        if source:
+            mappings["_source"] = source
+        body = {**doc, **({"copied": [4, 3, 2, 1]} if extra else {})}
+        for port in (OURS[1], STOCK[1]):
+            settings = {"knn": True, "number_of_replicas": 0, **({"lucene_rust.engine": True} if port == OURS[1] else {})}
+            ck.req(port, "PUT", f"/{index}", {"settings": {"index": settings}, "mappings": mappings})
+            setting = ck.req(port, "GET", f"/{index}/_settings/index.knn.derived_source.enabled")
+            got[port] = {"setting": setting[index]["settings"]["index"]["knn"]["derived_source"]["enabled"]}
+            ck.req(port, "PUT", f"/{index}/_doc/1", body)
+            got[port].update(sources(port, index))
+        n += 3
+        if typed(got[OURS[1]]) != typed(got[STOCK[1]]):
+            failures.append(f"{index} _source: ours {got[OURS[1]]}, stock {got[STOCK[1]]}")
     # Masking stores less: the same documents with derived source off take more room.
     rng = random.Random(5)
     lines = []
@@ -168,7 +178,7 @@ def compare_sources(failures):
     if size["masked"] >= size["whole"]:
         failures.append(f"masked index stores {size['masked']} bytes, not less than {size['whole']} unmasked")
     print(f"store: masked {size['masked']} bytes, whole {size['whole']}")
-    return 3
+    return n
 
 
 def compare_explain(failures):
