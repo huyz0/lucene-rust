@@ -29,8 +29,9 @@ import java.util.Map;
  * with 1-bit (BBQ) codes beside the raw vectors ({@code LuceneRustIvfVectorsFormat}), no training
  * step; {@code parameters.target_cluster_size} (16 to 65536, default 384) sizes its clusters and
  * {@code parameters.rerank_encoding} ({@code float}, {@code half_float} by default, {@code bfloat16}
- * or {@code int8}) stores the copy it reranks from. Float fields only. A stock node does not know
- * the engine, so it refuses the mapping rather than reading the field another way.
+ * or {@code int8}) stores the copy it reranks from. Float fields only, in an index on the Rust
+ * engine ({@code index.lucene_rust.engine}), which builds the index. A stock node does not know the
+ * engine, so it refuses the mapping rather than reading the field another way.
  *
  * @param dimension the mapping's dimension: bits for a {@link #binary} field
  * @param binary packed bit vectors, {@code dimension / 8} bytes each
@@ -77,7 +78,7 @@ public record KnnFieldConfig(
 
     /** An IVF field ({@code lucene_rust} engine, {@code ivf} method). */
     public boolean ivf() {
-        return clusterSize > 0;
+        return LUCENE_RUST.equals(engine);
     }
 
     /** The format the Rust writer builds the field with. */

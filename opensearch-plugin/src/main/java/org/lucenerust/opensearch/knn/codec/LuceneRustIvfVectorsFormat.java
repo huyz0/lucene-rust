@@ -22,6 +22,7 @@ import org.apache.lucene.search.AcceptDocs;
 import org.apache.lucene.search.KnnCollector;
 import org.apache.lucene.util.Bits;
 import org.apache.lucene.util.hnsw.RandomVectorScorer;
+import org.lucenerust.opensearch.knn.KnnFieldConfig;
 
 /**
  * The Rust engine's IVF vectors format, as the JVM reads it: a field's raw vectors are {@code
@@ -51,7 +52,7 @@ public final class LuceneRustIvfVectorsFormat extends KnnVectorsFormat {
 
     @Override
     public int getMaxDimensions(String fieldName) {
-        return 16_000;
+        return KnnFieldConfig.MAX_DIMENSION;
     }
 
     @Override

@@ -47,7 +47,8 @@ import java.util.Objects;
  *
  * <p>{@code nprobes} ({@code method_parameters.nprobes}) is the clusters probed in each segment
  * whose field has an IVF index ({@code LuceneRustIvfVectorsFormat}), {@code 0} for the depth each
- * segment calibrated; other formats ignore it.
+ * segment calibrated; other formats, and a nested search (which scans an IVF field exactly), ignore
+ * it.
  */
 public final class KnnTopVectorQuery extends Query {
     /** Searches a query natively over a searcher's reader: its hits, or null when the reader is not native. */

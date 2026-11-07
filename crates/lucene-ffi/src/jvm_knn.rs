@@ -15,7 +15,8 @@
 //! `expand: u8` (`expand_nested_docs`) follow, and last `nprobes: i32`: the
 //! clusters probed in each segment whose field has an IVF index
 //! (`LuceneRustIvfVectorsFormat`; `method_parameters.nprobes`), `0` for the
-//! depth each segment calibrated.
+//! depth each segment calibrated. A nested search scans an IVF field's
+//! vectors exactly, so it ignores `nprobes`.
 //!
 //! A nested search keeps the best child of each of the best `k` parents; an
 //! expanded one returns every scored child of those parents, which can be

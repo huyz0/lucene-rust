@@ -450,8 +450,9 @@ def ivf_check(failures):
         ("lucene ivf", {"type": "knn_vector", "dimension": DIM,
                         "method": {"name": "ivf", "engine": "lucene", "space_type": "l2"}}),
     ]
-    for label, m in bad:
-        r = req(OURS[1], "PUT", "/bad-mapping", {"settings": {"index.knn": True},
+    for label, m, rust in [(label, m, True) for label, m in bad] + [("ivf off the Rust engine", ivf_mapping(), False)]:
+        settings = {"index.knn": True, **({"index.lucene_rust.engine": True} if rust else {})}
+        r = req(OURS[1], "PUT", "/bad-mapping", {"settings": settings,
                                                  "mappings": {"properties": {"v": m}}}, ok_errors=True)
         if r.get("status", 200) != 400:
             failures.append(f"mapping {label} accepted: {json.dumps(r)[:200]}")
