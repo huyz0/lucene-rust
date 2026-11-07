@@ -52,6 +52,14 @@ def open_files(container):
         return 0
 
 
+def breaker_bytes(base):
+    try:
+        n = next(iter(req(base, "GET", "/_nodes/stats/breaker")["nodes"].values()))
+        return n["breakers"].get("lucene_rust_writer", {}).get("estimated_size_in_bytes", 0)
+    except Exception:
+        return 0
+
+
 def mapping():
     props = {"body": {"type": "text"}}
     for i in range(1, int(SIZE_MB) // 40 + 3):
@@ -87,12 +95,13 @@ def main():
     words = ["t%d" % i for i in range(50_000)]
     bodies = [doc(n, rnd, words) for n in range(min(DOCS, 4))]
     idle = mem_bytes(container)
-    samples, fds, stop = [], [open_files(container)], threading.Event()
+    samples, fds, breaker, stop = [], [open_files(container)], [0], threading.Event()
 
     def sample():
         i = 0
         while not stop.is_set():
             samples.append(mem_bytes(container))
+            breaker.append(breaker_bytes(base))
             if i % 5 == 0:
                 fds.append(open_files(container))
             i += 1
@@ -121,7 +130,11 @@ def main():
            "mb_per_sec": round(DOCS * SIZE_MB / indexed, 1), "rss_idle_gib": gib(idle),
            "rss_peak_gib": gib(max(samples or [0])), "rss_after_refresh_gib": gib(after),
            "visible_before_refresh": found,
-           "open_files_idle": fds[0], "open_files_peak": max(fds)}
+           "open_files_idle": fds[0], "open_files_peak": max(fds),
+           "breaker_peak_gib": gib(max(breaker))}
+    if os.environ.get("BREAKER_SERIES"):
+        print("breaker MB:", [round(b / 2**20) for b in breaker[::2]])
+        print("rss GiB:", [round(b / 2**30, 2) for b in samples[::2]])
     print(f"{label}: {json.dumps(res)}")
     with open(out, "w") as fh:
         json.dump(res, fh, indent=1)
