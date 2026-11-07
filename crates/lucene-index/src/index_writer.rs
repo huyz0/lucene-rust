@@ -1334,7 +1334,7 @@ pub(crate) fn encode_live_point(info: &FieldInfo, value: &FieldValue, out: &mut 
 /// field at a time when a reader first reads that field.
 pub struct LazyDocValues {
     cfg: std::sync::Arc<IndexingConfig>,
-    columns: Vec<(i32, PrebuiltDocValues)>,
+    columns: Vec<(i32, crate::concurrent_writer::DocValuesRun)>,
     max_doc: i32,
 }
 
@@ -1354,7 +1354,7 @@ impl LazyDocValues {
     /// would fail a read).
     pub(crate) fn covers(
         cfg: &IndexingConfig,
-        columns: &[(i32, PrebuiltDocValues)],
+        columns: &[(i32, crate::concurrent_writer::DocValuesRun)],
         present: &[i32],
     ) -> bool {
         cfg.codec.is_none()
@@ -1371,7 +1371,7 @@ impl LazyDocValues {
 
     pub(crate) fn new(
         cfg: std::sync::Arc<IndexingConfig>,
-        columns: Vec<(i32, PrebuiltDocValues)>,
+        columns: Vec<(i32, crate::concurrent_writer::DocValuesRun)>,
         max_doc: i32,
     ) -> Self {
         Self {
@@ -1403,8 +1403,16 @@ impl LazyDocValues {
             skip_index: info.doc_values_skip_index_type
                 != lucene_codecs::field_infos::DocValuesSkipIndexType::None,
         };
+        let Some(column) = self
+            .columns
+            .iter()
+            .find(|(n, _)| *n == field_number)
+            .and_then(|(_, run)| run.build())
+        else {
+            return Ok(None);
+        };
         let Some(groups) = self.cfg.build_prebuilt_doc_values_groups(
-            &self.columns,
+            &[(field_number, column)],
             self.max_doc,
             std::slice::from_ref(&config),
             &[info.name.as_str()],

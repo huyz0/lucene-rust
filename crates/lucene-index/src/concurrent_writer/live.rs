@@ -298,6 +298,29 @@ impl LiveColumns {
     /// when they must be decoded to be written.
     fn chunk_columns(&self, start: i32, end: i32) -> Option<crate::index_writer::ChunkColumns> {
         let doc_values = self.doc_values.range(start, end)?;
+        self.columns_besides_doc_values(start, end, doc_values)
+    }
+
+    /// [`Self::chunk_columns`] with each field's doc values copied out as
+    /// kept, to be put in the writer's shape only for the fields read.
+    fn lean_columns(
+        &self,
+        start: i32,
+        end: i32,
+    ) -> Option<(crate::index_writer::ChunkColumns, Vec<(i32, DocValuesRun)>)> {
+        let runs = self.doc_values.runs(start, end)?;
+        Some((
+            self.columns_besides_doc_values(start, end, Vec::new())?,
+            runs,
+        ))
+    }
+
+    fn columns_besides_doc_values(
+        &self,
+        start: i32,
+        end: i32,
+        doc_values: Vec<(i32, crate::index_writer::PrebuiltDocValues)>,
+    ) -> Option<crate::index_writer::ChunkColumns> {
         let (present, points) = self.chunk.range(start, end)?;
         let (from, to) = (usize::try_from(start).ok()?, usize::try_from(end).ok()?);
         let norms = self
@@ -1206,17 +1229,24 @@ impl ConcurrentIndexWriter<'_> {
         else {
             return Err(Error::LiveSearch("a negative document range".into()));
         };
+        // A view copies each field's doc values out as kept, and puts in
+        // the writer's shape only those its searches read.
         let columns_of = |c: &LiveColumns| {
-            (!decode_chunks())
-                .then(|| c.chunk_columns(range.start, range.end))
-                .flatten()
+            if decode_chunks() {
+                None
+            } else if lazy.is_some() {
+                c.lean_columns(range.start, range.end)
+                    .map(|(c, runs)| (c, Some(runs)))
+            } else {
+                c.chunk_columns(range.start, range.end).map(|c| (c, None))
+            }
         };
         let waiting = std::time::Instant::now();
         let slot = self.slot_of(id).filter(|d| d.has_docs());
         // A buffer gone from its slot is written, without postings, from
         // what it keeps for that until it is published and the views that
         // read it as chunks are closed.
-        let (num_docs, mut columns, mut copied) = match &slot {
+        let (num_docs, columns, mut copied) = match &slot {
             Some(slot) => {
                 crate::live_timing::record(
                     crate::live_timing::Phase::ChunkSlotWait,
@@ -1251,18 +1281,30 @@ impl ConcurrentIndexWriter<'_> {
                 "documents {start}..{end} of a buffer of {num_docs}"
             )));
         }
-        let lazy_doc_values = lazy
-            .zip(columns.as_mut())
-            .filter(|(_, c)| {
-                crate::index_writer::LazyDocValues::covers(&cfg, &c.doc_values, &c.present)
-            })
-            .map(|(_, c)| {
-                crate::index_writer::LazyDocValues::new(
+        let (mut columns, runs) = columns.map_or((None, None), |(c, runs)| (Some(c), runs));
+        let lazy_doc_values = match (runs, columns.as_mut()) {
+            (Some(runs), Some(c))
+                if crate::index_writer::LazyDocValues::covers(&cfg, &runs, &c.present) =>
+            {
+                Some(crate::index_writer::LazyDocValues::new(
                     Arc::clone(&cfg),
-                    std::mem::take(&mut c.doc_values),
+                    runs,
                     range.end.saturating_sub(range.start),
-                )
-            });
+                ))
+            }
+            (Some(runs), Some(c)) => {
+                match runs
+                    .iter()
+                    .map(|(n, r)| Some((*n, r.build()?)))
+                    .collect::<Option<Vec<_>>>()
+                {
+                    Some(doc_values) => c.doc_values = doc_values,
+                    None => columns = None,
+                }
+                None
+            }
+            _ => None,
+        };
         let lean = lazy_doc_values.is_some();
         let limit = crate::index_writer::BufferLimit {
             start: range.start,
@@ -1746,5 +1788,6 @@ fn decode_chunks() -> bool {
 }
 
 mod doc_values;
+pub(crate) use doc_values::DocValuesRun;
 #[cfg(test)]
 mod tests;

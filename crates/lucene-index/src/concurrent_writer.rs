@@ -113,6 +113,7 @@ use crate::stall_control::DocumentsWriterStallControl;
 use lucene_codecs::field_infos::FieldInfo;
 
 mod live;
+pub(crate) use live::DocValuesRun;
 pub use live::{
     FieldTotals, LiveBuffer, LiveBufferField, LiveFieldRequest, LivePattern, LiveRequest,
     LiveSnapshot, LiveView, ViewBuffer,

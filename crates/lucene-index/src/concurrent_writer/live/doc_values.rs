@@ -48,8 +48,51 @@ enum Column {
 #[derive(Debug, Clone, Default)]
 struct Terms {
     ids: HashMap<Arc<[u8]>, u32>,
-    list: Vec<Arc<[u8]>>,
+    list: TermList,
     bytes: usize,
+}
+
+/// How many terms a [`TermList`] block holds.
+const TERM_BLOCK: usize = 1024;
+
+/// Terms by id, in blocks that stop changing once full, so a copy of the
+/// list shares them and copies only the last, open one.
+#[derive(Debug, Clone, Default)]
+struct TermList {
+    sealed: Vec<Arc<[Arc<[u8]>]>>,
+    open: Vec<Arc<[u8]>>,
+}
+
+impl TermList {
+    // ARITH: a count of in-memory terms.
+    #[allow(clippy::arithmetic_side_effects)]
+    fn len(&self) -> usize {
+        self.sealed.len() * TERM_BLOCK + self.open.len()
+    }
+
+    fn push(&mut self, term: Arc<[u8]>) {
+        self.open.push(term);
+        if self.open.len() == TERM_BLOCK {
+            self.sealed.push(std::mem::take(&mut self.open).into());
+        }
+    }
+
+    fn get(&self, id: u32) -> &[u8] {
+        let id = id as usize;
+        let (block, at) = (id / TERM_BLOCK, id % TERM_BLOCK);
+        let term = match self.sealed.get(block) {
+            Some(b) => b.get(at),
+            None if block == self.sealed.len() => self.open.get(at),
+            None => None,
+        };
+        term.map_or(&[], |t| t)
+    }
+
+    // ARITH: capacities of in-memory vectors.
+    #[allow(clippy::arithmetic_side_effects)]
+    fn capacity(&self) -> usize {
+        self.sealed.len() * TERM_BLOCK + self.open.capacity()
+    }
 }
 
 impl Terms {
@@ -249,21 +292,98 @@ impl Column {
         }
     }
 
-    /// Documents `start..end`'s values, numbered from `start`, in the
-    /// shape the doc-values writer takes.
-    // ARITH: indices within in-memory columns; document numbers at or
-    // above `start`.
-    #[allow(clippy::arithmetic_side_effects)]
-    fn range(&self, start: i32, end: i32) -> Option<PrebuiltDocValues> {
+    /// Where documents `start..end` are in the column: their positions in
+    /// `docs` and where their values start and end.
+    fn span(&self, start: i32, end: i32) -> ((usize, usize), (usize, usize)) {
         let docs_of = |docs: &[i32]| {
             let lo = docs.partition_point(|&d| d < start);
             let hi = docs.partition_point(|&d| d < end);
             (lo, hi)
         };
+        match self {
+            Column::Numeric { docs, .. } => (docs_of(docs), (0, 0)),
+            Column::SortedNumeric { docs, ends, .. }
+            | Column::Binary { docs, ends, .. }
+            | Column::Terms { docs, ends, .. } => {
+                let (lo, hi) = docs_of(docs);
+                ((lo, hi), value_span(ends, lo, hi))
+            }
+        }
+    }
+
+    /// Documents `start..end`'s values, numbered from `start`, in the
+    /// shape the doc-values writer takes.
+    fn range(&self, start: i32, end: i32) -> Option<PrebuiltDocValues> {
+        let (docs, values) = self.span(start, end);
+        self.prebuilt(start, end, docs, values, 0)
+    }
+
+    /// Documents `start..end`'s values copied out as they are kept, for
+    /// [`DocValuesRun::build`] to put in the writer's shape later.
+    fn run(&self, start: i32, end: i32) -> Option<DocValuesRun> {
+        let ((lo, hi), (from, to)) = self.span(start, end);
+        let column = match self {
+            Column::Numeric { docs, values } => Column::Numeric {
+                docs: docs.get(lo..hi)?.to_vec(),
+                values: values.get(lo..hi)?.to_vec(),
+            },
+            Column::SortedNumeric {
+                docs, ends, values, ..
+            } => Column::SortedNumeric {
+                docs: docs.get(lo..hi)?.to_vec(),
+                ends: ends.get(lo..hi)?.to_vec(),
+                values: values.get(from..to)?.to_vec(),
+                sorted: 0,
+            },
+            Column::Binary { docs, ends, bytes } => Column::Binary {
+                docs: docs.get(lo..hi)?.to_vec(),
+                ends: ends.get(lo..hi)?.to_vec(),
+                bytes: bytes.get(from..to)?.to_vec(),
+            },
+            Column::Terms {
+                set,
+                terms,
+                docs,
+                ends,
+                ids,
+            } => Column::Terms {
+                set: *set,
+                terms: Terms {
+                    ids: HashMap::new(),
+                    list: terms.list.clone(),
+                    bytes: 0,
+                },
+                docs: docs.get(lo..hi)?.to_vec(),
+                ends: ends.get(lo..hi)?.to_vec(),
+                ids: ids.get(from..to)?.to_vec(),
+            },
+        };
+        Some(DocValuesRun {
+            start,
+            end,
+            from,
+            column,
+        })
+    }
+
+    /// The documents at `docs` in the column, numbered from `start`, in the
+    /// shape the doc-values writer takes; `values` is where their values
+    /// start and end, of which the column holds those from `base` on.
+    // ARITH: indices within in-memory columns; document numbers at or
+    // above `start`.
+    #[allow(clippy::arithmetic_side_effects)]
+    fn prebuilt(
+        &self,
+        start: i32,
+        end: i32,
+        (lo, hi): (usize, usize),
+        (from, to): (usize, usize),
+        base: usize,
+    ) -> Option<PrebuiltDocValues> {
         let shift = |d: &[i32]| d.iter().map(|&x| x - start).collect::<Vec<i32>>();
+        let (at, until) = (from.checked_sub(base)?, to.checked_sub(base)?);
         Some(match self {
             Column::Numeric { docs, values } => {
-                let (lo, hi) = docs_of(docs);
                 let docs = docs.get(lo..hi)?;
                 let values = values.get(lo..hi)?;
                 if i64::try_from(docs.len()).ok() == Some(i64::from(end - start)) {
@@ -279,24 +399,16 @@ impl Column {
             }
             Column::SortedNumeric {
                 docs, ends, values, ..
-            } => {
-                let (lo, hi) = docs_of(docs);
-                let (from, to) = value_span(ends, lo, hi);
-                PrebuiltDocValues::SortedNumeric(SortedNumericColumn {
-                    docs: shift(docs.get(lo..hi)?),
-                    counts: counts(ends.get(lo..hi)?, from),
-                    values: values.get(from..to)?.to_vec(),
-                })
-            }
-            Column::Binary { docs, ends, bytes } => {
-                let (lo, hi) = docs_of(docs);
-                let (from, to) = value_span(ends, lo, hi);
-                PrebuiltDocValues::Binary(BinaryColumn {
-                    docs: shift(docs.get(lo..hi)?),
-                    lengths: counts(ends.get(lo..hi)?, from),
-                    bytes: bytes.get(from..to)?.to_vec(),
-                })
-            }
+            } => PrebuiltDocValues::SortedNumeric(SortedNumericColumn {
+                docs: shift(docs.get(lo..hi)?),
+                counts: counts(ends.get(lo..hi)?, from),
+                values: values.get(at..until)?.to_vec(),
+            }),
+            Column::Binary { docs, ends, bytes } => PrebuiltDocValues::Binary(BinaryColumn {
+                docs: shift(docs.get(lo..hi)?),
+                lengths: counts(ends.get(lo..hi)?, from),
+                bytes: bytes.get(at..until)?.to_vec(),
+            }),
             Column::Terms {
                 set,
                 terms,
@@ -304,23 +416,19 @@ impl Column {
                 ends,
                 ids: all_ids,
             } => {
-                let (lo, hi) = docs_of(docs);
-                let (from, to) = value_span(ends, lo, hi);
-                let ids = all_ids.get(from..to)?;
+                let ids = all_ids.get(at..until)?;
                 // The range's distinct terms in byte order, and each id's
                 // ordinal among them.
                 let mut used: Vec<u32> = ids.to_vec();
                 used.sort_unstable();
                 used.dedup();
-                used.sort_unstable_by(|&a, &b| terms.list[a as usize].cmp(&terms.list[b as usize]));
+                used.sort_unstable_by(|&a, &b| terms.list.get(a).cmp(terms.list.get(b)));
                 let mut ord_of: HashMap<u32, i64> = HashMap::with_capacity(used.len());
                 for (o, &id) in used.iter().enumerate() {
                     ord_of.insert(id, o as i64);
                 }
-                let dict: Vec<Vec<u8>> = used
-                    .iter()
-                    .map(|&id| terms.list[id as usize].to_vec())
-                    .collect();
+                let dict: Vec<Vec<u8>> =
+                    used.iter().map(|&id| terms.list.get(id).to_vec()).collect();
                 let counts = counts(ends.get(lo..hi)?, from);
                 let docs = shift(docs.get(lo..hi)?);
                 if *set {
@@ -359,6 +467,48 @@ impl Column {
                 }
             }
         })
+    }
+
+    fn doc_values_type(&self) -> DocValuesType {
+        match self {
+            Column::Numeric { .. } => DocValuesType::Numeric,
+            Column::SortedNumeric { .. } => DocValuesType::SortedNumeric,
+            Column::Binary { .. } => DocValuesType::Binary,
+            Column::Terms { set: true, .. } => DocValuesType::SortedSet,
+            Column::Terms { set: false, .. } => DocValuesType::Sorted,
+        }
+    }
+}
+
+/// One field's values for a run of documents, copied out of its column as
+/// kept and put in the doc-values writer's shape only when read.
+#[derive(Debug, Clone)]
+pub(crate) struct DocValuesRun {
+    start: i32,
+    end: i32,
+    /// Where the run's values start among the column's.
+    from: usize,
+    column: Column,
+}
+
+impl DocValuesRun {
+    /// The field's type; a written field of another type cannot take it.
+    pub(crate) fn doc_values_type(&self) -> DocValuesType {
+        self.column.doc_values_type()
+    }
+
+    /// The run's values, numbered from its first document, in the shape
+    /// the doc-values writer takes.
+    pub(crate) fn build(&self) -> Option<PrebuiltDocValues> {
+        let (docs, values) = match &self.column {
+            Column::Numeric { docs, .. } => (docs.len(), 0),
+            Column::SortedNumeric { docs, values, .. } => (docs.len(), values.len()),
+            Column::Binary { docs, bytes, .. } => (docs.len(), bytes.len()),
+            Column::Terms { docs, ids, .. } => (docs.len(), ids.len()),
+        };
+        let values = (self.from, self.from.saturating_add(values));
+        self.column
+            .prebuilt(self.start, self.end, (0, docs), values, self.from)
     }
 }
 
@@ -435,6 +585,22 @@ impl DocValuesColumns {
             out.push((field, c.range(start, end)?));
         }
         Some(out)
+    }
+
+    /// [`Self::range`], each field's values copied out as kept, to be put
+    /// in the writer's shape only for the fields read.
+    pub(in crate::concurrent_writer) fn runs(
+        &self,
+        start: i32,
+        end: i32,
+    ) -> Option<Vec<(i32, DocValuesRun)>> {
+        if self.refused {
+            return None;
+        }
+        self.columns
+            .iter()
+            .map(|(&field, c)| Some((field, c.run(start, end)?)))
+            .collect()
     }
 }
 
@@ -534,9 +700,42 @@ mod tests {
             );
             let (decoded, from_columns) = cfg.doc_values_both_ways(&run, &prebuilt);
             assert_eq!(decoded, from_columns, "documents {start}..{end}");
+            // Copied out first and built later, the same files.
+            let built: Vec<(i32, PrebuiltDocValues)> = columns
+                .runs(i32::try_from(start).unwrap(), i32::try_from(end).unwrap())
+                .unwrap()
+                .iter()
+                .map(|(n, r)| (*n, r.build().unwrap()))
+                .collect();
+            let (_, from_runs) = cfg.doc_values_both_ways(&run, &built);
+            assert_eq!(decoded, from_runs, "documents {start}..{end}, built later");
             compared += 1;
         }
         assert_eq!(compared, 5);
+    }
+
+    /// Terms past a block's end are found by id, in a copy taken before
+    /// and after more arrive.
+    #[test]
+    fn a_term_list_finds_terms_across_blocks() {
+        let mut terms = Terms::default();
+        let n = TERM_BLOCK * 2 + 5;
+        for k in 0..n {
+            assert_eq!(
+                terms.id(format!("t{k}").as_bytes()),
+                Some(u32::try_from(k).unwrap())
+            );
+        }
+        assert_eq!(terms.id(b"t3"), Some(3));
+        let copy = terms.list.clone();
+        terms.id(b"later");
+        assert_eq!(copy.len(), n);
+        for k in [0, TERM_BLOCK - 1, TERM_BLOCK, 2 * TERM_BLOCK, n - 1] {
+            let id = u32::try_from(k).unwrap();
+            assert_eq!(copy.get(id), format!("t{k}").as_bytes());
+            assert_eq!(terms.list.get(id), format!("t{k}").as_bytes());
+        }
+        assert_eq!(terms.list.get(u32::try_from(n).unwrap()), b"later");
     }
 
     #[test]

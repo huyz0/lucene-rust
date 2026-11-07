@@ -306,11 +306,20 @@ def visibility(base, container, corpus, label, out, settings):
                 errors.append(f"probe {n}: {e}")
             time.sleep(every)
 
+    # SEARCH_RATE=N: each searcher sends at most N searches a second, so
+    # configs compare at the same search load.
+    rate = float(os.environ.get("SEARCH_RATE", "0"))
+
     def search():
         i = 0
+        last = [0.0]
         while not done[0]:
             name, body = pairs[i % len(pairs)]
             t = time.perf_counter()
+            if rate > 0 and i > 0:
+                time.sleep(max(0.0, last[0] + 1.0 / rate - t))
+                t = time.perf_counter()
+            last[0] = t
             try:
                 req("POST", "/bench/_search?request_cache=false", body)
                 searched.setdefault(name, []).append((time.perf_counter() - t) * 1000)
