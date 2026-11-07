@@ -756,13 +756,14 @@ const SEARCH_ABSORB_DOCS: i32 = 4096;
 /// `b`'s chunks: those of `chunks` its documents cover (of the chain with
 /// postings or the one without, whichever covers more), then the documents
 /// past them, absorbing the last chunks while they are small beside them
-/// and the documents absorbed stay within `absorb_docs`. A buffer no longer
-/// in its slot, or with no chunk written yet, is one.
+/// and the documents absorbed stay within `absorb_docs`. A buffer not read
+/// as chunks ([`ViewBuffer::chunks`]), or with no chunk written yet, is
+/// one.
 fn plan(chunks: &Chunks, b: &ViewBuffer, absorb_docs: i32, writing: &[Writing]) -> Vec<Planned> {
     let totals = Arc::new(b.field_totals());
     let chain_of = |postings: bool| -> Vec<&Arc<Chunk>> {
         match chunks.get(&(b.id, postings)) {
-            Some(c) if b.in_slot => c.iter().take_while(|c| c.end <= b.max_doc).collect(),
+            Some(c) if b.chunks => c.iter().take_while(|c| c.end <= b.max_doc).collect(),
             _ => Vec::new(),
         }
     };
@@ -859,7 +860,7 @@ fn keep_chunk(chain: &mut Vec<Arc<Chunk>>, chunk: Arc<Chunk>) {
 }
 
 /// Drops `w`'s chunks of the buffers no open view of it reads, unless
-/// `keep` says the buffer may still be in its slot.
+/// `keep` says the buffer may still be read as chunks.
 fn prune_chunks(w: &Arc<EngineWriter>, keep: impl Fn(u64) -> bool) {
     let mut read: std::collections::HashSet<u64> = views()
         .lock()
@@ -1068,8 +1069,8 @@ fn open_handle(
         }
         plans = plan_all(w);
     }
-    // A buffer gone from its slot is read as one segment by later views.
-    prune_chunks(w, |id| view.buffers.iter().any(|b| b.in_slot && b.id == id));
+    // A buffer not read as chunks is read as one segment by later views.
+    prune_chunks(w, |id| view.buffers.iter().any(|b| b.chunks && b.id == id));
     let blob = match view_blob(&view, &plans) {
         Ok(b) => b,
         Err(e) => {
@@ -1503,7 +1504,7 @@ fn buffer_segments(
         // values encoded a field at a time as the search reads them, its
         // points only when the request reads points, and without waiting
         // for another thread writing the same documents.
-        let lean = lean_tail.filter(|_| !postings && b.in_slot && i + 1 == plan.len());
+        let lean = lean_tail.filter(|_| !postings && i + 1 == plan.len());
         // Claimed before the cache is read: a chunk another thread is
         // writing is waited for and then found there.
         let _writing = (b.in_slot && lean.is_none()).then(|| {

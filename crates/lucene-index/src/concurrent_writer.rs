@@ -1009,8 +1009,13 @@ impl<'d> ConcurrentIndexWriter<'d> {
             (log.take_seq(), end)
         };
         self.update_ram(|c| c.set_delete_bytes_used(0));
-        self.live_flushes().discard(end);
+        let unpinned = {
+            let mut live = self.live_flushes();
+            live.discard(end);
+            live.take_unpinned()
+        };
         let deleted = core.writer.delete_all();
+        self.unpin_with(&mut core.writer, unpinned);
         // Every slot was emptied above and no flush is in flight.
         self.buffered_docs.store(0, Ordering::Release);
         self.refresh_segment_docs(&mut core);
@@ -1767,14 +1772,29 @@ impl<'d> ConcurrentIndexWriter<'d> {
         core.next_ticket = core.next_ticket.saturating_add(1);
         let postings = Arc::new(std::mem::take(&mut dwpt.postings));
         let mut columns = std::mem::take(&mut dwpt.live);
-        // Chunks are written only while the buffer is in its slot.
-        columns.drop_chunk_columns();
+        // Until it is published, a buffer whose documents are all in its
+        // columns and packed fields is still read as chunks without
+        // postings; any other goes as one segment once published.
+        let lean = (self.live()
+            && dwpt.vectors.is_empty()
+            && dwpt.custom_freq_terms.is_empty()
+            && dwpt.docs.iter().all(|d| d.fields.is_empty()))
+        .then(|| live::LeanSource {
+            explicit: dwpt.explicit.snapshot(),
+            has_blocks: dwpt.has_blocks,
+            partition: dwpt.partition.clone(),
+        });
+        if lean.is_none() {
+            columns.drop_chunk_columns();
+        }
         if self.live() {
             let flushing = live::Flushing {
                 postings: Arc::clone(&postings),
                 columns,
                 max_doc: i32::try_from(dwpt.docs.len()).unwrap_or(i32::MAX),
                 segment: None,
+                held_files: Vec::new(),
+                lean,
             };
             live.flushing.insert(ticket_no, flushing);
         }
@@ -2056,9 +2076,21 @@ impl<'d> ConcurrentIndexWriter<'d> {
         if let Some(fdt) = reserved_fdt {
             let _ = core.writer.release_files(&[fdt]);
         }
-        // Published or abandoned, under the lock it happened under.
-        self.live_flushes()
-            .finish(ticket_no, matches!(outcome, Ok(Ok(Ok(())))), segment);
+        // Published or abandoned, under the lock it happened under. A
+        // published buffer's files stay while views may read it.
+        let published = matches!(outcome, Ok(Ok(Ok(()))));
+        // A segment whose files cannot be pinned is still read while they
+        // last; a view that finds them gone fails and is answered without it.
+        let held = match segment.as_ref().filter(|_| published) {
+            Some(sci) => core.writer.hold_segment(sci).unwrap_or_default(),
+            None => Vec::new(),
+        };
+        let unpinned = {
+            let mut live = self.live_flushes();
+            live.finish(ticket_no, published, segment, held);
+            live.take_unpinned()
+        };
+        self.unpin_with(&mut core.writer, unpinned);
         self.retire(core);
         // Published or abandoned, its buffer is gone either way
         // (`doAfterFlush`), panics included. Published documents are now in
@@ -2209,7 +2241,12 @@ impl<'d> ConcurrentIndexWriter<'d> {
             writer.prepare_commit_excluding(merging)?;
             writer.finish_commit()?;
             let generation = writer.segment_infos().generation;
-            self.live_flushes().committed(generation, handed);
+            let unpinned = {
+                let mut live = self.live_flushes();
+                live.committed(generation, handed);
+                live.take_unpinned()
+            };
+            self.unpin_with(writer, unpinned);
             last_seq
         };
         self.schedule_merges(MergeTrigger::FullFlush)?;
@@ -2476,7 +2513,9 @@ impl<'d> ConcurrentIndexWriter<'d> {
         // Back at its last commit, whose readers now hold every document.
         let generation = core.writer.segment_infos().generation;
         live.committed(generation, end);
+        let unpinned = live.take_unpinned();
         drop(live);
+        self.unpin_with(&mut core.writer, unpinned);
         self.buffered_docs.store(0, Ordering::Release);
         self.refresh_segment_docs(&mut core);
         drop(core);

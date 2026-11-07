@@ -436,6 +436,42 @@ pub(super) struct Flushing {
     /// buffer's order. `None` until then, and for a segment dropped as
     /// fully deleted.
     pub(super) segment: Option<crate::segment_infos::SegmentCommitInfo>,
+    /// The published segment's files, pinned while the buffer is kept so a
+    /// view still opens them after a merge replaced the segment.
+    pub(super) held_files: Vec<String>,
+    /// What chunks without postings are written from until the buffer is
+    /// published, beside `columns`' chunk columns.
+    pub(super) lean: Option<LeanSource>,
+}
+
+/// What a chunk without postings is written from, copied out of its
+/// buffer so the buffer's lock is not held while it is written.
+struct Copied {
+    explicit: PackedFields,
+    /// Documents `start..end` of the chunk; empty for a flushing buffer.
+    docs: Vec<lucene_codecs::stored_fields::Document>,
+    custom: Vec<Vec<(String, i32)>>,
+    vectors: Vec<Vec<crate::index_writer::DocumentVector>>,
+    has_blocks: bool,
+    partition: Option<Arc<str>>,
+}
+
+impl Flushing {
+    /// Frees what chunks of the buffer were written from.
+    fn drop_lean(&mut self) {
+        self.columns.drop_chunk_columns();
+        self.lean = None;
+    }
+}
+
+/// A flushing buffer's packed fields (their full blocks shared with the
+/// flush) and the rest a chunk of it without postings is written from
+/// ([`ConcurrentIndexWriter::live_lean_segment`]). Kept only for a buffer
+/// whose documents carry no fields or vectors of their own.
+pub(super) struct LeanSource {
+    pub(super) explicit: PackedFields,
+    pub(super) has_blocks: bool,
+    pub(super) partition: Option<Arc<str>>,
 }
 
 /// The live-search state the control lock guards.
@@ -451,6 +487,10 @@ pub(super) struct LiveFlushes {
     commits: VecDeque<Commit>,
     /// Open views per buffer id: a published buffer a view reads is kept.
     pins: HashMap<u64, usize>,
+    /// Open views per buffer id that read it as chunks
+    /// ([`ViewBuffer::chunks`]): its [`Flushing::lean`] source stays after
+    /// its publish while there are any.
+    lean_pins: HashMap<u64, usize>,
     /// Publishes below this number go once no view reads them.
     released: u64,
     /// The deletes handed over to the published segments
@@ -463,6 +503,9 @@ pub(super) struct LiveFlushes {
     keeps_history: bool,
     /// What [`Self::history`]'s entries hold.
     history_bytes: usize,
+    /// Files of published buffers no longer kept, to unpin
+    /// ([`Self::take_unpinned`]) under the writer's lock.
+    unpinned: Vec<String>,
 }
 
 /// A commit this writer made.
@@ -486,14 +529,27 @@ impl LiveFlushes {
         ticket: u64,
         published: bool,
         segment: Option<crate::segment_infos::SegmentCommitInfo>,
+        held_files: Vec<String>,
     ) {
         if let Some(mut f) = self.flushing.remove(&ticket) {
+            // A published buffer is read as its segment by views to come.
+            if !published || !self.lean_pins.contains_key(&f.columns.id) {
+                f.drop_lean();
+            }
             if published {
                 f.segment = segment;
+                f.held_files = held_files;
                 self.retained.insert(self.published, f);
                 self.published = self.published.saturating_add(1);
+                return;
             }
         }
+        self.unpinned.extend(held_files);
+    }
+
+    /// The files to unpin: those of the published buffers dropped since.
+    pub(super) fn take_unpinned(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.unpinned)
     }
 
     /// A commit at `generation` holds every publish so far, and every
@@ -546,9 +602,14 @@ impl LiveFlushes {
     /// still searched has.
     fn release(&mut self, held: u64) {
         self.released = self.released.max(held);
-        let (released, pins) = (self.released, &self.pins);
-        self.retained
-            .retain(|&n, f| n >= released || pins.contains_key(&f.columns.id));
+        let (released, pins, unpinned) = (self.released, &self.pins, &mut self.unpinned);
+        self.retained.retain(|&n, f| {
+            let keep = n >= released || pins.contains_key(&f.columns.id);
+            if !keep {
+                unpinned.append(&mut f.held_files);
+            }
+            keep
+        });
         let end = self.history_base.saturating_add(self.history.len());
         let needed = self
             .commits
@@ -570,6 +631,9 @@ impl LiveFlushes {
     /// segments having lost documents no delete names.
     pub(super) fn discard(&mut self, handed: usize) {
         self.flushing.clear();
+        for f in self.retained.values_mut() {
+            self.unpinned.append(&mut f.held_files);
+        }
         self.retained.clear();
         self.released = self.published;
         self.commits.clear();
@@ -704,6 +768,10 @@ pub struct ViewBuffer {
     /// Whether the buffer was still taking documents when the view opened:
     /// else it was being flushed, or published, and grows no more.
     pub in_slot: bool,
+    /// Whether the view reads the buffer as chunks: it was in its slot, or
+    /// being flushed with what chunks are written from kept. Else it is
+    /// read as the segment it is published as.
+    pub chunks: bool,
     /// Every field's statistics as of the view, by field number.
     stats: HashMap<i32, LiveFieldStats>,
 }
@@ -881,10 +949,35 @@ impl ConcurrentIndexWriter<'_> {
     /// once no open view reads them: call it once no search reads from an
     /// older commit. Their memory goes.
     pub fn release_live(&self, generation: i64) -> Result<()> {
-        let mut live = self.live_flushes();
-        let held = live.commit(generation)?.held;
-        live.release(held);
+        let unpinned = {
+            let mut live = self.live_flushes();
+            let held = live.commit(generation)?.held;
+            live.release(held);
+            live.take_unpinned()
+        };
+        self.unpin(unpinned);
         Ok(())
+    }
+
+    /// Hands the files of published buffers no longer kept back to the
+    /// writer, which deletes those nothing else names. Takes the writer's
+    /// lock, so is called without the live lock held.
+    fn unpin(&self, files: Vec<String>) {
+        if !files.is_empty() {
+            self.unpin_with(&mut lock(&self.core).writer, files);
+        }
+    }
+
+    /// [`Self::unpin`] under the writer's lock, held as `writer`. Files the
+    /// writer fails to release are kept for the next try.
+    pub(super) fn unpin_with(
+        &self,
+        writer: &mut crate::index_writer::IndexWriter<'_>,
+        files: Vec<String>,
+    ) {
+        if !files.is_empty() && writer.release_files(&files).is_err() {
+            self.live_flushes().unpinned.extend(files);
+        }
     }
 
     fn check_live(&self) -> Result<Arc<IndexingConfig>> {
@@ -952,20 +1045,27 @@ impl ConcurrentIndexWriter<'_> {
             };
             let mut buffer = view_buffer(&source, tail, max_doc, &cfg)?;
             buffer.in_slot = true;
+            buffer.chunks = true;
             out.buffers.push(buffer);
         }
-        let published = live.retained.range(from..).map(|(_, f)| f);
-        for f in live.flushing.values().chain(published) {
+        let published = live.retained.range(from..).map(|(_, f)| (f, false));
+        let flushing = live.flushing.values().map(|f| (f, f.lean.is_some()));
+        for (f, chunks) in flushing.chain(published) {
             let source = Source {
                 postings: &f.postings,
                 columns: &f.columns,
             };
-            out.buffers
-                .push(view_buffer(&source, &flushing_tail, f.max_doc, &cfg)?);
+            let mut buffer = view_buffer(&source, &flushing_tail, f.max_doc, &cfg)?;
+            buffer.chunks = chunks;
+            out.buffers.push(buffer);
         }
         for b in &out.buffers {
             let pins = live.pins.entry(b.id).or_insert(0);
             *pins = pins.saturating_add(1);
+            if b.chunks {
+                let pins = live.lean_pins.entry(b.id).or_insert(0);
+                *pins = pins.saturating_add(1);
+            }
         }
         drop(live);
         drop(slots);
@@ -1101,25 +1201,56 @@ impl ConcurrentIndexWriter<'_> {
                 "an index sort renumbers the buffered documents".into(),
             ));
         }
-        let waiting = std::time::Instant::now();
-        let slot = self
-            .slot_of(id)
-            .filter(|d| d.has_docs())
-            .ok_or_else(|| Error::LiveSearch(format!("buffer {id} is being flushed")))?;
-        crate::live_timing::record(crate::live_timing::Phase::ChunkSlotWait, waiting.elapsed());
+        let flushed = || Error::LiveSearch(format!("buffer {id} is being flushed"));
         let (Ok(start), Ok(end)) = (usize::try_from(range.start), usize::try_from(range.end))
         else {
             return Err(Error::LiveSearch("a negative document range".into()));
         };
-        if start >= end || end > slot.num_docs() {
+        let columns_of = |c: &LiveColumns| {
+            (!decode_chunks())
+                .then(|| c.chunk_columns(range.start, range.end))
+                .flatten()
+        };
+        let waiting = std::time::Instant::now();
+        let slot = self.slot_of(id).filter(|d| d.has_docs());
+        // A buffer gone from its slot is written, without postings, from
+        // what it keeps for that until it is published and the views that
+        // read it as chunks are closed.
+        let (num_docs, mut columns, mut copied) = match &slot {
+            Some(slot) => {
+                crate::live_timing::record(
+                    crate::live_timing::Phase::ChunkSlotWait,
+                    waiting.elapsed(),
+                );
+                (slot.num_docs(), columns_of(&slot.live), None)
+            }
+            None if postings => return Err(flushed()),
+            None => {
+                let live = self.live_flushes();
+                let f = live
+                    .flushing
+                    .values()
+                    .chain(live.retained.values())
+                    .find(|f| f.columns.id == id)
+                    .ok_or_else(flushed)?;
+                let source = f.lean.as_ref().ok_or_else(flushed)?;
+                let copied = Copied {
+                    explicit: source.explicit.snapshot(),
+                    docs: Vec::new(),
+                    custom: Vec::new(),
+                    vectors: Vec::new(),
+                    has_blocks: source.has_blocks,
+                    partition: source.partition.clone(),
+                };
+                let num_docs = usize::try_from(f.max_doc).unwrap_or(0);
+                (num_docs, columns_of(&f.columns), Some(copied))
+            }
+        };
+        if start >= end || end > num_docs {
             return Err(Error::LiveSearch(format!(
-                "documents {start}..{end} of a buffer of {}",
-                slot.num_docs()
+                "documents {start}..{end} of a buffer of {num_docs}"
             )));
         }
-        let mut columns = (!decode_chunks())
-            .then(|| slot.live.chunk_columns(range.start, range.end))
-            .flatten();
         let lazy_doc_values = lazy
             .zip(columns.as_mut())
             .filter(|(_, c)| {
@@ -1142,10 +1273,6 @@ impl ConcurrentIndexWriter<'_> {
             doc_values: !lean,
             points: !lean || lazy == Some(true),
         };
-        // Documents counted but not held (`Dwpt::stored_docs`) are empty.
-        let docs = padded(&slot.docs, start, end);
-        let custom_freq_terms = padded_or_empty(&slot.custom_freq_terms, start, end);
-        let vectors = padded_or_empty(&slot.vectors, start, end);
         let write = |explicit: &PackedFields,
                      pending: &PendingPostings,
                      docs: &[_],
@@ -1174,39 +1301,51 @@ impl ConcurrentIndexWriter<'_> {
             )
             .map(|(sci, _)| sci)
         };
-        let sci = if postings {
-            let sci = write(
-                &slot.explicit,
-                &slot.postings,
-                &docs,
-                &custom_freq_terms,
-                &vectors,
-                slot.has_blocks,
-                slot.partition.as_deref(),
-            )?;
-            slot.postings.keep_cursors_at(next_starts);
-            sci
-        } else {
-            // Without postings the chunk reads only the documents' own
-            // columns: they are copied out (the packed fields' full blocks
-            // shared) and written with the slot free for indexing.
-            let (docs, custom, vectors) = (
-                docs.into_owned(),
-                custom_freq_terms.into_owned(),
-                vectors.into_owned(),
-            );
-            let explicit = slot.explicit.snapshot();
-            let (has_blocks, partition) = (slot.has_blocks, slot.partition.clone());
-            drop(slot);
-            write(
-                &explicit,
-                &PendingPostings::default(),
-                &docs,
-                &custom,
-                &vectors,
-                has_blocks,
-                partition.as_deref(),
-            )?
+        let sci = match slot {
+            Some(slot) if postings => {
+                // Documents counted but not held (`Dwpt::stored_docs`) are
+                // empty.
+                let sci = write(
+                    &slot.explicit,
+                    &slot.postings,
+                    &padded(&slot.docs, start, end),
+                    &padded_or_empty(&slot.custom_freq_terms, start, end),
+                    &padded_or_empty(&slot.vectors, start, end),
+                    slot.has_blocks,
+                    slot.partition.as_deref(),
+                )?;
+                slot.postings.keep_cursors_at(next_starts);
+                sci
+            }
+            slot => {
+                // Without postings the chunk reads only the documents' own
+                // columns: they are copied out (the packed fields' full
+                // blocks shared) and written with the slot free for
+                // indexing.
+                let c = match (slot, copied.take()) {
+                    (Some(slot), _) => Copied {
+                        explicit: slot.explicit.snapshot(),
+                        docs: padded(&slot.docs, start, end).into_owned(),
+                        custom: padded_or_empty(&slot.custom_freq_terms, start, end).into_owned(),
+                        vectors: padded_or_empty(&slot.vectors, start, end).into_owned(),
+                        has_blocks: slot.has_blocks,
+                        partition: slot.partition.clone(),
+                    },
+                    (None, Some(c)) => c,
+                    (None, None) => return Err(flushed()),
+                };
+                // A flushing buffer keeps no documents: they are all empty.
+                let docs = padded(&c.docs, 0, end.saturating_sub(start));
+                write(
+                    &c.explicit,
+                    &PendingPostings::default(),
+                    &docs,
+                    &c.custom,
+                    &c.vectors,
+                    c.has_blocks,
+                    c.partition.as_deref(),
+                )?
+            }
         };
         crate::live_timing::record(
             if lazy.is_some() {
@@ -1234,9 +1373,24 @@ impl ConcurrentIndexWriter<'_> {
                     live.pins.remove(&b.id);
                 }
             }
+            if !b.chunks {
+                continue;
+            }
+            if let Some(n) = live.lean_pins.get_mut(&b.id) {
+                *n = n.saturating_sub(1);
+                if *n == 0 {
+                    live.lean_pins.remove(&b.id);
+                    if let Some(f) = live.retained.values_mut().find(|f| f.columns.id == b.id) {
+                        f.drop_lean();
+                    }
+                }
+            }
         }
         let released = live.released;
         live.release(released);
+        let unpinned = live.take_unpinned();
+        drop(live);
+        self.unpin(unpinned);
     }
 
     /// The buffers in the slots now, each read under its own slot's lock,
@@ -1256,6 +1410,7 @@ impl ConcurrentIndexWriter<'_> {
                     max_doc: i32::try_from(d.num_docs()).unwrap_or(i32::MAX),
                     deleted: Vec::new(),
                     in_slot: true,
+                    chunks: true,
                     stats: d.postings.live_stats_all(),
                 })
             })
@@ -1437,6 +1592,7 @@ fn view_buffer(
         max_doc,
         deleted: deletes.docs(max_doc),
         in_slot: false,
+        chunks: false,
         stats: source.postings.live_stats_all(),
     })
 }
