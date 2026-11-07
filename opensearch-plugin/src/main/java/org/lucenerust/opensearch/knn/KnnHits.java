@@ -26,7 +26,11 @@ final class KnnHits {
 
     private KnnHits() {}
 
-    static Weight weight(Query query, Source source, float boost) {
+    /**
+     * {@code total}, the query's hits across the reader, names them in an explanation as Lucene's
+     * {@code DocAndScoreQuery} does; below 0, hits found per segment.
+     */
+    static Weight weight(Query query, Source source, float boost, int total) {
         return new Weight(query) {
             @Override
             public ScorerSupplier scorerSupplier(LeafReaderContext context) throws IOException {
@@ -53,9 +57,9 @@ final class KnnHits {
                 Leaf leaf = source.hits(context);
                 int i = java.util.Arrays.binarySearch(leaf.docs, doc);
                 if (i < 0) {
-                    return Explanation.noMatch("not in the top hits");
+                    return Explanation.noMatch(total < 0 ? "not in the top hits" : "not in top " + total + " docs");
                 }
-                return Explanation.match(leaf.scores[i] * boost, "within top hits");
+                return Explanation.match(leaf.scores[i] * boost, total < 0 ? "within top hits" : "within top " + total + " docs");
             }
 
             @Override
