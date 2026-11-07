@@ -126,23 +126,29 @@ impl PackedFields {
                 if i == limit {
                     return Ok(());
                 }
+                let wanted = i >= start;
                 match r.byte()? {
                     PACKED => {
                         shape.read(&mut r)?;
-                        shape.decode_into(&mut r, &mut doc)?;
+                        if wanted {
+                            shape.decode_into(&mut r, &mut doc)?;
+                        } else {
+                            shape.skip(&mut r)?;
+                        }
                     }
-                    SAME_SHAPE => shape.decode_into(&mut r, &mut doc)?,
+                    SAME_SHAPE if wanted => shape.decode_into(&mut r, &mut doc)?,
+                    SAME_SHAPE => shape.skip(&mut r)?,
                     KEPT => {
                         let k = kept.next().ok_or_else(|| {
                             explicit_error("packed fields: a kept document is missing")
                         })?;
-                        if i >= start {
+                        if wanted {
                             doc.clone_from(k);
                         }
                     }
                     _ => return Err(corrupt()),
                 }
-                if i >= start {
+                if wanted {
                     f(i.wrapping_sub(start), &mut doc)?;
                 }
                 i = i.saturating_add(1);
@@ -489,6 +495,35 @@ impl Shape {
         Ok(())
     }
 
+    /// Moves `r` past one document's values without decoding them.
+    fn skip(&self, r: &mut Reader<'_>) -> Result<()> {
+        if !self.set {
+            return Err(corrupt());
+        }
+        for _ in self.inverted.iter().filter(|&&(_, has_norm)| has_norm) {
+            r.vlong()?;
+        }
+        for &(_, kind) in self.doc_values.iter().chain(&self.points) {
+            match kind {
+                LONG | INT => {
+                    r.vlong()?;
+                }
+                FLOAT => {
+                    r.bytes(4)?;
+                }
+                DOUBLE => {
+                    r.bytes(8)?;
+                }
+                BINARY | STRING => {
+                    let len = r.len()?;
+                    r.bytes(len)?;
+                }
+                _ => return Err(corrupt()),
+            }
+        }
+        Ok(())
+    }
+
     /// Decodes one document's values over `out`, reusing its vectors.
     fn decode_into(&self, r: &mut Reader<'_>, out: &mut ExplicitFields) -> Result<()> {
         if !self.set {
@@ -512,9 +547,11 @@ impl Shape {
             (&mut out.doc_values, &self.doc_values),
             (&mut out.points, &self.points),
         ] {
-            values.clear();
-            values.reserve(shape.len());
-            for &(field_number, kind) in shape {
+            // Values are overwritten in place, so a binary or string value
+            // reuses the buffer its slot held for the previous document.
+            values.truncate(shape.len());
+            values.reserve(shape.len().saturating_sub(values.len()));
+            for (j, &(field_number, kind)) in shape.iter().enumerate() {
                 let value = match kind {
                     LONG => FieldValue::Long(unzigzag(r.vlong()?)),
                     INT => {
@@ -524,19 +561,44 @@ impl Shape {
                     DOUBLE => FieldValue::Double(f64::from_bits(u64::from_le_bytes(r.array()?))),
                     BINARY => {
                         let len = r.len()?;
-                        FieldValue::Binary(r.bytes(len)?.to_vec())
+                        let bytes = r.bytes(len)?;
+                        if let Some(StoredField {
+                            field_number: n,
+                            value: FieldValue::Binary(b),
+                        }) = values.get_mut(j)
+                        {
+                            *n = field_number;
+                            b.clear();
+                            b.extend_from_slice(bytes);
+                            continue;
+                        }
+                        FieldValue::Binary(bytes.to_vec())
                     }
                     STRING => {
                         let len = r.len()?;
                         let s = std::str::from_utf8(r.bytes(len)?).map_err(|_| corrupt())?;
+                        if let Some(StoredField {
+                            field_number: n,
+                            value: FieldValue::String(v),
+                        }) = values.get_mut(j)
+                        {
+                            *n = field_number;
+                            v.clear();
+                            v.push_str(s);
+                            continue;
+                        }
                         FieldValue::String(s.to_string())
                     }
                     _ => return Err(corrupt()),
                 };
-                values.push(StoredField {
+                let field = StoredField {
                     field_number,
                     value,
-                });
+                };
+                match values.get_mut(j) {
+                    Some(slot) => *slot = field,
+                    None => values.push(field),
+                }
             }
         }
         out.registered.clone_from(&self.registered);
