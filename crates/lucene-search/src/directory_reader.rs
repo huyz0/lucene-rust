@@ -373,11 +373,17 @@ impl std::fmt::Debug for Attachments {
 struct SegmentVectors<'r> {
     reader: &'r SegmentReader,
     doc: i32,
+    /// [`Self::first_child`], once found.
+    first_child: Option<Option<i32>>,
 }
 
 impl<'r> SegmentVectors<'r> {
     fn new(reader: &'r SegmentReader, doc: i32) -> Self {
-        Self { reader, doc }
+        Self {
+            reader,
+            doc,
+            first_child: None,
+        }
     }
 
     /// The document's vector of field `number`, by `read` from the field's flat vectors.
@@ -404,7 +410,16 @@ impl SegmentVectors<'_> {
     /// The first nested child of the document, `None` when it has none: the document after the
     /// previous parent, a parent being a document with a `_primary_term` value. Searched from
     /// windows that grow back from the document, as `DerivedSourceLuceneHelper.getFirstChild`.
-    fn first_child(&self) -> lucene_codecs::stored_fields::Result<Option<i32>> {
+    fn first_child(&mut self) -> lucene_codecs::stored_fields::Result<Option<i32>> {
+        if let Some(found) = self.first_child {
+            return Ok(found);
+        }
+        let found = self.find_first_child()?;
+        self.first_child = Some(found);
+        Ok(found)
+    }
+
+    fn find_first_child(&self) -> lucene_codecs::stored_fields::Result<Option<i32>> {
         use crate::reader::{LeafReader, NO_MORE_DOCS};
         let parent = self.doc;
         if parent == 0 {
@@ -416,6 +431,7 @@ impl SegmentVectors<'_> {
             if start <= last_start {
                 break;
             }
+            // Doc values iterate forward only: a wider window opens them again.
             let Some(mut terms) = self
                 .reader
                 .numeric_doc_values("_primary_term")
@@ -441,7 +457,7 @@ impl SegmentVectors<'_> {
 
     /// The vectors of field `number` held by the document's nested children, in document order.
     fn children<T>(
-        &self,
+        &mut self,
         number: i32,
         read: impl Fn(
             &lucene_codecs::vectors::FlatVectorsReader<'_>,

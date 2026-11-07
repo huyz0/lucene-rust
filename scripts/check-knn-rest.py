@@ -200,7 +200,8 @@ def compare_sources(failures):
         hit = ck.req(OURS[1], "GET", f"/{index}/_doc/7")["_source"]
         if len(hit["v"]) != 64 or [len(c["w"]) for c in hit["nest"]] != [64, 64]:
             failures.append(f"{index}: _source vectors {hit}")
-    # Unmasked, the three vectors take over 6 bytes a number of _source text, compressed; masked, none.
+    # Unmasked, the three vectors take about 6 bytes a number of _source text after the default
+    # codec's compression (4 checked); masked, none.
     if size["whole"] - size["masked"] < 400 * 3 * 64 * 4:
         failures.append(f"masked index stores {size['masked']} bytes, not well below {size['whole']} unmasked")
     print(f"store: masked {size['masked']} bytes, whole {size['whole']}")

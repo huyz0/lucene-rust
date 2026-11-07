@@ -78,9 +78,11 @@ impl DerivedFields {
                 });
             }
         }
+        // A field both lists name reads as nested, as k-NN's reader applies the nested transform last.
         for f in resolved(&nested, true) {
-            if !fields.iter().any(|d| d.number == f.number) {
-                fields.push(f);
+            match fields.iter_mut().find(|d| d.number == f.number) {
+                Some(d) => d.nested = true,
+                None => fields.push(f),
             }
         }
         if fields.is_empty() {
@@ -208,13 +210,15 @@ pub fn inject(
                 children[which] = Some((texts, 0));
             }
             children[which].as_mut().and_then(|(texts, next)| {
-                let t = texts.get(*next).cloned();
+                let t = texts.get_mut(*next).map(std::mem::take);
                 *next = next.saturating_add(1);
                 t
             })
         } else {
             match field.encoding {
-                VectorEncoding::Float32 => vectors.float_vector(field.number)?.map(|v| float_text(&v)),
+                VectorEncoding::Float32 => {
+                    vectors.float_vector(field.number)?.map(|v| float_text(&v))
+                }
                 VectorEncoding::Byte => vectors.byte_vector(field.number)?.map(|v| byte_text(&v)),
             }
         };
