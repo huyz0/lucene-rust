@@ -1184,6 +1184,22 @@ impl SegmentReader {
         Ok(Some(meta.rebind(&f.data, index)))
     }
 
+    /// One instance's flat vectors, each field's similarity taken from this
+    /// segment's `FieldInfos` where its `.vemf` records none.
+    fn open_flat_vectors<'s>(
+        &'s self,
+        f: &'s CodecFiles,
+    ) -> crate::Result<lucene_codecs::vectors::FlatVectorsReader<'s>> {
+        let mut reader = lucene_codecs::vectors::FlatVectorsReader::open(
+            &f.meta,
+            &f.data,
+            &self.segment_id,
+            &f.suffix,
+        )?;
+        reader.resolve_similarities_from(&self.field_infos.fields)?;
+        Ok(reader)
+    }
+
     /// `SegmentReader.getVectorReader()`'s flat half: a reader over this
     /// segment's KNN vectors (`.vec`/`.vemf`), `None` when it has none.
     ///
@@ -1198,12 +1214,7 @@ impl SegmentReader {
         let Some(f) = self.vectors.first() else {
             return Ok(None);
         };
-        Ok(Some(lucene_codecs::vectors::FlatVectorsReader::open(
-            &f.meta,
-            &f.data,
-            &self.segment_id,
-            &f.suffix,
-        )?))
+        Ok(Some(self.open_flat_vectors(f)?))
     }
 
     /// `PerFieldKnnVectorsFormat.FieldsReader.getFieldReader`'s flat half:
@@ -1246,12 +1257,7 @@ impl SegmentReader {
             .filter(|f| named.as_deref().is_none_or(|n| n == f.suffix))
             .chain(self.vectors.iter());
         for f in ordered {
-            let reader = lucene_codecs::vectors::FlatVectorsReader::open(
-                &f.meta,
-                &f.data,
-                &self.segment_id,
-                &f.suffix,
-            )?;
+            let reader = self.open_flat_vectors(f)?;
             if reader.field(field_number).is_some() {
                 return Ok(Some(reader));
             }
@@ -1290,12 +1296,7 @@ impl SegmentReader {
             .filter(|f| named.as_deref().is_none_or(|n| n == f.suffix))
             .chain(self.vectors.iter());
         for f in ordered {
-            let flat = lucene_codecs::vectors::FlatVectorsReader::open(
-                &f.meta,
-                &f.data,
-                &self.segment_id,
-                &f.suffix,
-            )?;
+            let flat = self.open_flat_vectors(f)?;
             if flat.field(field_number).is_none() {
                 continue;
             }

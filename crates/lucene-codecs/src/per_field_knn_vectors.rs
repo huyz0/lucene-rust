@@ -45,6 +45,10 @@ pub enum KnnVectorsFormat {
     /// files over packed bit vectors, whose graph and searches score by
     /// Hamming distance.
     HnswHamming { max_conn: i32, beam_width: i32 },
+    /// The OpenSearch k-NN plugin's `KNN1040HnswHalfFloatVectorsFormat(maxConn,
+    /// beamWidth)` ([`crate::vectors::HALF_FLOAT_FORMAT_NAME`]): an HNSW graph
+    /// over float vectors stored as half floats.
+    HnswHalfFloat { max_conn: i32, beam_width: i32 },
     /// `Lucene104HnswScalarQuantizedVectorsFormat(encoding, maxConn,
     /// beamWidth)`: the raw vectors, their scalar-quantized codes
     /// (`.veq`/`.vemq`, `FLOAT32` fields only) and a graph.
@@ -116,6 +120,15 @@ impl KnnVectorsFormat {
         })
     }
 
+    /// `new KNN1040HnswHalfFloatVectorsFormat(maxConn, beamWidth)`.
+    pub fn hnsw_half_float(max_conn: i32, beam_width: i32) -> Result<Self, InvalidFormat> {
+        check_graph(max_conn, beam_width)?;
+        Ok(KnnVectorsFormat::HnswHalfFloat {
+            max_conn,
+            beam_width,
+        })
+    }
+
     /// `new Lucene104HnswScalarQuantizedVectorsFormat(encoding, maxConn,
     /// beamWidth)`.
     pub fn hnsw_scalar_quantized(
@@ -158,6 +171,7 @@ impl KnnVectorsFormat {
             KnnVectorsFormat::Named { name, .. } => name,
             KnnVectorsFormat::Hnsw { .. } => HNSW_NAME,
             KnnVectorsFormat::HnswHamming { .. } => crate::vectors::HAMMING_FORMAT_NAME,
+            KnnVectorsFormat::HnswHalfFloat { .. } => crate::vectors::HALF_FLOAT_FORMAT_NAME,
             KnnVectorsFormat::HnswScalarQuantized { .. } => scalar_quantized_vectors::HNSW_NAME,
             KnnVectorsFormat::ScalarQuantized { .. } => scalar_quantized_vectors::NAME,
         }
@@ -175,6 +189,10 @@ impl KnnVectorsFormat {
                 max_conn,
                 beam_width,
             }
+            | KnnVectorsFormat::HnswHalfFloat {
+                max_conn,
+                beam_width,
+            }
             | KnnVectorsFormat::HnswScalarQuantized {
                 max_conn,
                 beam_width,
@@ -189,6 +207,7 @@ impl KnnVectorsFormat {
         match *self.files_format() {
             KnnVectorsFormat::Hnsw { .. }
             | KnnVectorsFormat::HnswHamming { .. }
+            | KnnVectorsFormat::HnswHalfFloat { .. }
             | KnnVectorsFormat::Named { .. } => None,
             KnnVectorsFormat::HnswScalarQuantized { encoding, .. }
             | KnnVectorsFormat::ScalarQuantized { encoding } => Some(encoding),
@@ -247,6 +266,10 @@ pub fn for_name(name: &str) -> Option<KnnVectorsFormat> {
             encoding: ScalarEncoding::UnsignedByte,
         },
         KnnVectorsFormat::HnswHamming {
+            max_conn: hnsw::DEFAULT_MAX_CONN,
+            beam_width: hnsw::DEFAULT_BEAM_WIDTH,
+        },
+        KnnVectorsFormat::HnswHalfFloat {
             max_conn: hnsw::DEFAULT_MAX_CONN,
             beam_width: hnsw::DEFAULT_BEAM_WIDTH,
         },

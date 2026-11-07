@@ -2708,12 +2708,13 @@ impl IndexingConfig {
                 o.vectors
                     .iter()
                     .map(|g| {
-                        let flat = vectors::FlatVectorsReader::open(
+                        let mut flat = vectors::FlatVectorsReader::open(
                             &g.vemf,
                             &g.vec,
                             &o.sci.segment_id,
                             &g.suffix,
                         )?;
+                        flat.resolve_similarities_from(&o.field_infos)?;
                         let graph = match &g.graph {
                             Some((vem, vex)) => Some(hnsw_vectors::HnswVectorsReader::open(
                                 vem,
@@ -10701,8 +10702,14 @@ impl IndexWriter<'_> {
             // do not change. The first error in field order is returned.
             let graphs: Vec<Option<hnsw::OnHeapHnswGraph>> = {
                 use rayon::prelude::*;
-                let flat =
+                let mut flat =
                     vectors::FlatVectorsReader::open(&vemf_bytes, &vec_bytes, segment_id, suffix)?;
+                flat.resolve_similarities(|number| {
+                    flat_fields
+                        .iter()
+                        .find(|f| f.field_number == number)
+                        .map(|f| f.similarity)
+                })?;
                 let build = |field: &FlatVectorsField| -> Result<Option<hnsw::OnHeapHnswGraph>> {
                     let count = field.docs.len() as i32;
                     // `Lucene99HnswVectorsWriter.shouldCreateGraph`: a segment
