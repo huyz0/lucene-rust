@@ -410,7 +410,9 @@ is the `lucene` engine (`m` 16, `ef_construction` 100, the default
 | IVF float | calibrated | 25 s (15.5k docs/s) | 3.5 s | 335 MB | 0.972 | 2.21 ms | 3.64 ms |
 | IVF float | nprobes 32 | | | | 0.918 | 1.49 ms | 3.08 ms |
 
-IVF loads 6x faster and merges 9x faster. `took` includes a fixed cost
-the vectors do not set: a `match_all` returning 10 hits takes 2.1 ms on the
-same index, almost all of it the fetch phase (about 0.14 ms a hit). The
-plugin's query-phase timer puts an IVF search at about 0.1 ms.
+IVF loads 6x faster and merges 9x faster. Most of `took` is a fixed cost
+that does not depend on the vectors. In a second run on a fresh copy of the
+float index, a `match_all` returning 10 hits took 2.10 ms, and an nprobes 32
+search took 2.07 ms. Nearly all of that is the fetch phase, at about 0.14 ms
+a hit; the plugin's query-phase timer puts the IVF search itself at about
+0.1 ms.
