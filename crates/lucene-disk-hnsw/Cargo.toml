@@ -1,0 +1,20 @@
+[package]
+name = "lucene-disk-hnsw"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+lucene-util = { path = "../lucene-util" }
+lucene-store = { path = "../lucene-store" }
+lucene-codecs = { path = "../lucene-codecs" }
+lucene-vector-quant = { path = "../lucene-vector-quant" }
+lucene-ivf = { path = "../lucene-ivf" }
+rayon.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+
