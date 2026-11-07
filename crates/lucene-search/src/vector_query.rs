@@ -155,6 +155,11 @@ pub enum GraphReader<'d> {
     /// on the quantized codes, and each format searches its own way
     /// ([`SearchKind`]).
     Quantized(QuantizedVectorsReader<'d>),
+    /// `LuceneRustIvfVectorsFormat`: a float query probes the field's
+    /// clusters and reranks on its rerank vectors ([`ivf_leaf_results`]);
+    /// a byte field, a diversifying search and a selective filter scan the
+    /// raw vectors exhaustively.
+    Ivf(std::sync::Arc<lucene_ivf::IvfReader>),
 }
 
 impl<'d> From<HnswVectorsReader<'d>> for GraphReader<'d> {
@@ -306,7 +311,7 @@ fn leaf_graph<'a, 'd>(
     float_target: bool,
 ) -> Result<LeafGraph<'a, 'd>> {
     Ok(match &input.hnsw {
-        None => LeafGraph::Lucene99(None),
+        None | Some(GraphReader::Ivf(_)) => LeafGraph::Lucene99(None),
         Some(GraphReader::Retired(reader)) => LeafGraph::Retired(reader, field_number),
         Some(GraphReader::Lucene99(reader)) => {
             LeafGraph::Lucene99(lucene99_graph(reader, field_number)?)
@@ -378,6 +383,10 @@ pub struct KnnFloatVectorQuery {
     /// passing fewer than this percentage of its graph walks level 0 with
     /// `FilteredHnswGraphSearcher`. `0`, Lucene's default, never does.
     pub filtered_search_threshold: i32,
+    /// The clusters an IVF field's search probes in each segment
+    /// (`LuceneRustIvfVectorsFormat`); `0` leaves it to the depth each
+    /// segment calibrated when it was written. Other formats ignore it.
+    pub ivf_nprobes: usize,
 }
 
 /// `KnnByteVectorQuery`: [`KnnFloatVectorQuery`] over a BYTE-encoded field.
@@ -400,6 +409,10 @@ pub struct KnnByteVectorQuery {
     /// passing fewer than this percentage of its graph walks level 0 with
     /// `FilteredHnswGraphSearcher`. `0`, Lucene's default, never does.
     pub filtered_search_threshold: i32,
+    /// The clusters an IVF field's search probes in each segment
+    /// (`LuceneRustIvfVectorsFormat`); `0` leaves it to the depth each
+    /// segment calibrated when it was written. Other formats ignore it.
+    pub ivf_nprobes: usize,
 }
 
 macro_rules! knn_query_impl {
@@ -417,7 +430,14 @@ macro_rules! knn_query_impl {
                     visited_limit: 0,
                     similarity: None,
                     filtered_search_threshold: 0,
+                    ivf_nprobes: 0,
                 })
+            }
+
+            /// See [`KnnFloatVectorQuery::ivf_nprobes`].
+            pub fn with_ivf_nprobes(mut self, nprobes: usize) -> Self {
+                self.ivf_nprobes = nprobes;
+                self
             }
 
             /// See [`KnnFloatVectorQuery::ef_search`].
@@ -469,6 +489,9 @@ macro_rules! knn_query_impl {
             fn filtered_search_threshold(&self) -> i32 {
                 self.filtered_search_threshold
             }
+            fn ivf_nprobes(&self) -> usize {
+                self.ivf_nprobes
+            }
         }
     };
 }
@@ -488,6 +511,7 @@ trait KnnQuery {
     fn visited_limit(&self) -> u64;
     fn similarity(&self) -> Option<VectorSimilarityFunction>;
     fn filtered_search_threshold(&self) -> i32;
+    fn ivf_nprobes(&self) -> usize;
 }
 
 #[derive(Clone, Copy)]
@@ -948,6 +972,8 @@ struct LeafExtras {
     deadline: Option<std::time::Instant>,
     /// `KnnSearchStrategy.Hnsw.filteredSearchThreshold`.
     filtered_search_threshold: i32,
+    /// [`KnnFloatVectorQuery::ivf_nprobes`].
+    ivf_nprobes: usize,
 }
 
 impl LeafExtras {
@@ -1165,6 +1191,15 @@ fn search_leaf(
     )?;
     match target {
         Target::Float(t) => {
+            if let (Some(GraphReader::Ivf(reader)), None) = (&input.hnsw, diversify) {
+                return match ivf_leaf_results(reader, input, resolved, t, plan)? {
+                    Some(found) => Ok(found),
+                    None => Ok((
+                        exact_float_leaf(input, resolved, t, plan.collector_k.max(1))?,
+                        false,
+                    )),
+                };
+            }
             let values = input.flat.float_vector_values(resolved.field_number)?;
             let ord_to_doc = |ord: i32| Ok(values.ord_to_doc(ord)?);
             let ord_to_docs = |out: &mut Vec<i32>| Ok(values.ord_to_docs(out)?);
@@ -1229,6 +1264,165 @@ fn search_leaf(
     }
 }
 
+/// A filter passing at most this many times the leaf's `k` documents is
+/// searched exhaustively rather than through an IVF index, whose probed
+/// clusters could hold fewer than `k` of them.
+const IVF_EXACT_FILTER_MULTIPLE: usize = 10;
+
+/// One leaf's search through its IVF index: the `collector_k` best live
+/// documents the filter passes, best first. `None` sends the leaf to the
+/// exhaustive scan instead: a filter too selective for probing
+/// ([`IVF_EXACT_FILTER_MULTIPLE`]). The flag is set when the leaf's
+/// deadline passed before the probes reached `k` accepted documents.
+fn ivf_leaf_results(
+    reader: &lucene_ivf::IvfReader,
+    input: &VectorsInput<'_>,
+    resolved: &ResolvedField,
+    target: &[f32],
+    plan: &LeafPlan,
+) -> Result<Option<(LeafHits, bool)>> {
+    let Some(field) = reader.field(resolved.field_number) else {
+        return Ok(None);
+    };
+    let k = plan.collector_k.max(1);
+    let accepted = match input.filter {
+        Some(filter) => {
+            let passing = match input.live_docs {
+                Some(live) => FixedBitSet::intersection_count(filter, live),
+                None => filter.cardinality(),
+            };
+            if passing <= k.saturating_mul(IVF_EXACT_FILTER_MULTIPLE) {
+                return Ok(None);
+            }
+            passing
+        }
+        None => input
+            .live_docs
+            .map_or(field.count(), |l| l.cardinality().min(field.count())),
+    };
+    let accept = |doc: i32| {
+        input.live_docs.is_none_or(|l| l.get_doc(doc))
+            && input.filter.is_none_or(|f| f.get_doc(doc))
+    };
+    let restricted = input.live_docs.is_some() || input.filter.is_some();
+    let filtered: Option<&dyn Fn(i32) -> bool> = restricted.then_some(&accept);
+    // Probing the calibrated depth (or the asked one) first, then twice as
+    // many clusters each time the accepted documents in reach fall short of
+    // `k`: deletions or a filter can empty the nearest clusters.
+    let mut nprobe = match plan.extras.ivf_nprobes {
+        0 => None,
+        n => Some(n),
+    };
+    let (found, partial) = loop {
+        let params = lucene_ivf::SearchParams {
+            k,
+            nprobe: nprobe.map_or(lucene_ivf::Probes::Auto, lucene_ivf::Probes::Fixed),
+            rerank: lucene_ivf::Rerank::Auto,
+        };
+        let found = reader.search(resolved.field_number, target, &params, filtered)?;
+        let probed = nprobe.unwrap_or_else(|| field.auto_nprobe());
+        // `accepted` counts documents without a vector too, so a search of
+        // every cluster is complete whatever it found.
+        if !restricted || found.len() >= k.min(accepted) || probed >= field.clusters() {
+            break (found, false);
+        }
+        if plan.extras.timed_out() {
+            break (found, true);
+        }
+        nprobe = Some(probed.saturating_mul(2));
+    };
+    let mut hits: Vec<ScoreDoc> = found
+        .into_iter()
+        .map(|h| ScoreDoc {
+            doc_id: h.doc,
+            score: h.score,
+        })
+        .collect();
+    // Rerank vectors stored narrower than `f32` score approximately: the
+    // hits are scored again on the raw vectors, as every other leaf is.
+    if field.encoding() != lucene_ivf::VectorEncoding::F32 {
+        let values = input.flat.float_vector_values(resolved.field_number)?;
+        let mut ords = values.doc_to_ord()?;
+        let mut scratch = vec![0f32; target.len()];
+        hits.sort_unstable_by_key(|h| h.doc_id);
+        for h in &mut hits {
+            if let Some(ord) = ords.ordinal(h.doc_id)? {
+                h.score = resolved
+                    .entry
+                    .similarity
+                    .score(target, values.vector_ref(ord, &mut scratch)?);
+            }
+        }
+        hits.sort_by(|a, b| b.score.total_cmp(&a.score).then(a.doc_id.cmp(&b.doc_id)));
+    }
+    Ok(Some((
+        LeafHits {
+            hits,
+            ords: Vec::new(),
+        },
+        partial,
+    )))
+}
+
+/// The exact `k` best live documents the filter passes, best first (the
+/// lower doc on a tie), scored on the leaf's raw vectors.
+fn exact_float_leaf(
+    input: &VectorsInput<'_>,
+    resolved: &ResolvedField,
+    target: &[f32],
+    k: usize,
+) -> Result<LeafHits> {
+    let values = input.flat.float_vector_values(resolved.field_number)?;
+    let similarity = resolved.entry.similarity;
+    let mut scratch = vec![0f32; target.len()];
+    let mut top: std::collections::BinaryHeap<std::cmp::Reverse<(OrdScore, i32)>> =
+        std::collections::BinaryHeap::with_capacity(k.saturating_add(1));
+    for ord in 0..values.size() {
+        let doc = values.ord_to_doc(ord)?;
+        if input.live_docs.is_some_and(|l| !l.get_doc(doc))
+            || input.filter.is_some_and(|f| !f.get_doc(doc))
+        {
+            continue;
+        }
+        let score = similarity.score(target, values.vector_ref(ord, &mut scratch)?);
+        // Ties keep the lower doc: it ranks above a higher one.
+        top.push(std::cmp::Reverse((OrdScore(score), -doc)));
+        if top.len() > k {
+            top.pop();
+        }
+    }
+    let mut hits: Vec<ScoreDoc> = top
+        .into_iter()
+        .map(|std::cmp::Reverse((OrdScore(score), neg))| ScoreDoc {
+            doc_id: -neg,
+            score,
+        })
+        .collect();
+    hits.sort_by(|a, b| b.score.total_cmp(&a.score).then(a.doc_id.cmp(&b.doc_id)));
+    Ok(LeafHits {
+        hits,
+        ords: Vec::new(),
+    })
+}
+
+/// A score ordered by `total_cmp`, for a heap.
+#[derive(Clone, Copy, PartialEq)]
+struct OrdScore(f32);
+
+impl Eq for OrdScore {}
+
+impl PartialOrd for OrdScore {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for OrdScore {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0.total_cmp(&other.0)
+    }
+}
+
 /// Runs a `KnnFloatVectorQuery` against one already-opened segment, exactly
 /// as `IndexSearcher.search(KnnFloatVectorQuery, k)` does over a single-leaf
 /// reader (`leafProportion == 1`, so `perLeafTopK == k` and the re-entrant
@@ -1262,6 +1456,7 @@ fn search_one_segment<Q: KnnQuery>(input: &VectorsInput<'_>, query: &Q) -> Resul
         filtered: input.filter.is_some(),
         extras: LeafExtras {
             filtered_search_threshold: query.filtered_search_threshold(),
+            ivf_nprobes: query.ivf_nprobes(),
             ..LeafExtras::default()
         },
     };
@@ -1394,6 +1589,7 @@ fn plan_leaves<Q: KnnQuery>(
             filtered: seg.vectors.filter.is_some(),
             extras: LeafExtras {
                 filtered_search_threshold: query.filtered_search_threshold(),
+                ivf_nprobes: query.ivf_nprobes(),
                 ..extras
             },
         });

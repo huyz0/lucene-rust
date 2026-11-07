@@ -6,8 +6,8 @@ use std::sync::Arc;
 
 use lucene_ivf::kmeans::{Clustering, KMeansParams};
 use lucene_ivf::{
-    merge_field, Error, FieldVectors, IvfParams, IvfReader, IvfWriter, MergeClustering,
-    MergeSource, RangeSource, ScoredDoc, SearchParams, Similarity, VectorEncoding,
+    merge_field, merge_field_with_vectors, Error, FieldVectors, IvfParams, IvfReader, IvfWriter,
+    MergeClustering, MergeSource, RangeSource, ScoredDoc, SearchParams, Similarity, VectorEncoding,
 };
 use lucene_util::quantization::ScalarEncoding;
 use lucene_vector_quant::osq::OsqFactory;
@@ -1659,4 +1659,95 @@ fn writer_takes_a_given_clustering() {
             "{c:?}"
         );
     }
+}
+
+/// [`merge_field_with_vectors`] writes the caller's exact vectors and takes
+/// only the clusters from the sources: a merge reusing a dominant source
+/// matches [`merge_field`]'s from the same `f32` sources, documents no
+/// source holds are placed, documents a source maps outside the field are
+/// ignored, and a source of another shape is refused.
+#[test]
+fn merge_with_vectors_reuses_clusters_of_the_given_vectors() {
+    let dim = 8;
+    let sim = Similarity::Euclidean;
+    let data = dataset(2000, dim, 20, sim, 71);
+    let p = IvfParams {
+        target_cluster_size: 50,
+        ..IvfParams::default()
+    };
+    let a = segment(sim, dim, &data[..1800 * dim], &p);
+    let b = segment(sim, dim, &data[1800 * dim..], &p);
+    let same = |d: i32| Some(d);
+    let after = |d: i32| Some(1800 + d);
+    let sources = [
+        MergeSource {
+            reader: &a,
+            doc_map: &same,
+        },
+        MergeSource {
+            reader: &b,
+            doc_map: &after,
+        },
+    ];
+    let docs: Vec<i32> = (0..2000).collect();
+    let field = FieldVectors {
+        number: 1,
+        similarity: sim,
+        dimension: dim,
+        docs: &docs,
+        vectors: &data,
+    };
+    let with_vectors = |sources: &[MergeSource<'_>], field: &FieldVectors<'_>| {
+        let mut w = IvfWriter::new(&ID, "");
+        merge_field_with_vectors(&mut w, field, sources, &OsqFactory::bbq(), &p).unwrap();
+        w.finish()
+    };
+    assert_eq!(
+        with_vectors(&sources, &field),
+        merge_with(&sources, &p).unwrap()
+    );
+    // Only `a` lends clusters; `b`'s documents are placed like new ones.
+    let reused = with_vectors(&sources[..1], &field);
+    let mut fresh = IvfWriter::new(&ID, "");
+    fresh
+        .add_field(
+            &field,
+            &OsqFactory::bbq(),
+            &IvfParams {
+                merge_clustering: MergeClustering::Recluster,
+                ..p
+            },
+        )
+        .unwrap();
+    let fresh = fresh.finish();
+    assert_ne!(reused, fresh);
+    let r = open(&reused);
+    assert_eq!(r.field(1).unwrap().count(), 2000);
+    let (got, _) = merged_recall([&open(&fresh), &r], &data, dim, 6);
+    assert!(got > 0.8, "recall {got}");
+    // `a` mapping past the field: its extra documents are ignored, and
+    // below half the field it lends nothing.
+    let short = FieldVectors {
+        docs: &docs[..900],
+        vectors: &data[..900 * dim],
+        ..field
+    };
+    assert!(!with_vectors(&sources[..1], &short).meta.is_empty());
+    let mut alone = IvfWriter::new(&ID, "");
+    alone.add_field(&short, &OsqFactory::bbq(), &p).unwrap();
+    assert_eq!(with_vectors(&sources[1..], &short), alone.finish());
+    // Another dimension is refused.
+    let other = segment(sim, 4, &data[..400 * 4], &p);
+    let mut w = IvfWriter::new(&ID, "");
+    assert!(merge_field_with_vectors(
+        &mut w,
+        &field,
+        &[MergeSource {
+            reader: &other,
+            doc_map: &same,
+        }],
+        &OsqFactory::bbq(),
+        &p,
+    )
+    .is_err());
 }
