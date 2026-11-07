@@ -9,6 +9,10 @@
 //!   --target N    IVF vectors per cluster (default 384)
 //!   --nprobe N    clusters probed (default 64); --rerank N  candidates reranked (default 100)
 //!   --refine N    neighbourhood rounds of the reusing merge (default 1)
+//!   --generations G  instead of one merge, a stream of G merges: each merges
+//!                 the previous result with the next 1/G of B, deleting the
+//!                 --delete share of the previous result's live documents,
+//!                 and prints a row per policy and generation
 //! ```
 //!
 //! `<prefix>` names `.base.fbin`, `.query.fbin` and `.gt.ibin` as
@@ -17,6 +21,7 @@
 //! Segments are built with BBQ. Prints one CSV row per merge policy.
 #![allow(clippy::arithmetic_side_effects)]
 
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -101,6 +106,104 @@ fn main() {
         .unwrap();
         open(&w.finish())
     };
+    if let Some(g) = opt("--generations") {
+        let generations: usize = g.parse().unwrap();
+        let search = SearchParams::new(K, nprobe, rerank);
+        println!("policy,generation,merge_s,clusters,min_size,max_size,recall@{K},search_us");
+        for (name, policy) in [
+            ("recluster", MergeClustering::Recluster),
+            (
+                "reuse",
+                MergeClustering::ReuseLargest {
+                    min_fraction: 0.5,
+                    refine_rounds,
+                },
+            ),
+        ] {
+            let p = IvfParams {
+                merge_clustering: policy,
+                ..params
+            };
+            let mut current = segment(0, na);
+            let mut deleted: HashSet<i32> = HashSet::new();
+            let mut live: Vec<i32> = (0..na as i32).collect();
+            let chunk = (n - na).div_ceil(generations);
+            let mut total = 0.0;
+            for gen in 0..generations {
+                let from = na + gen * chunk;
+                let to = (from + chunk).min(n);
+                let fresh = segment(from, to);
+                // Deletes spread over the live documents, a different set
+                // each generation.
+                let step = if delete > 0.0 {
+                    (1.0 / delete).round() as usize
+                } else {
+                    0
+                };
+                let mut gone = HashSet::new();
+                if step > 0 {
+                    for (i, &d) in live.iter().enumerate() {
+                        if (i + gen) % step == 0 {
+                            gone.insert(d);
+                        }
+                    }
+                }
+                let map_cur = |d: i32| (!gone.contains(&d)).then_some(d);
+                let offset = from as i32;
+                let map_new = |d: i32| Some(offset + d);
+                let sources = [
+                    MergeSource {
+                        reader: &current,
+                        doc_map: &map_cur,
+                    },
+                    MergeSource {
+                        reader: &fresh,
+                        doc_map: &map_new,
+                    },
+                ];
+                let t = Instant::now();
+                let mut w = IvfWriter::new(&ID, "");
+                merge_field(&mut w, 0, &sources, &factory, &p).unwrap();
+                let files = w.finish();
+                let secs = t.elapsed().as_secs_f64();
+                total += secs;
+                current = open(&files);
+                live.retain(|d| !gone.contains(d));
+                live.extend(from as i32..to as i32);
+                deleted.extend(gone);
+                let visible = to;
+                let f = current.field(0).unwrap();
+                let sizes: Vec<usize> = (0..f.clusters()).map(|c| f.cluster_size(c)).collect();
+                let mut found = 0usize;
+                let mut wanted = 0usize;
+                let t = Instant::now();
+                for q in 0..nq {
+                    let truth: Vec<i32> = gt[q * gt_k..(q + 1) * gt_k]
+                        .iter()
+                        .copied()
+                        .filter(|&d| (d as usize) < visible && !deleted.contains(&d))
+                        .take(K)
+                        .collect();
+                    let hits = current
+                        .search(0, &queries[q * dim..(q + 1) * dim], &search, None)
+                        .unwrap();
+                    found += hits.iter().filter(|h| truth.contains(&h.doc)).count();
+                    wanted += truth.len();
+                }
+                let search_us = t.elapsed().as_secs_f64() * 1e6 / nq as f64;
+                println!(
+                    "{name},{},{secs:.2},{},{},{},{:.4},{search_us:.0}",
+                    gen + 1,
+                    sizes.len(),
+                    sizes.iter().min().unwrap(),
+                    sizes.iter().max().unwrap(),
+                    found as f64 / wanted as f64
+                );
+            }
+            eprintln!("{name}: {total:.1}s merging");
+        }
+        return;
+    }
     let t = Instant::now();
     let a = segment(0, na);
     let b = segment(na, n);
