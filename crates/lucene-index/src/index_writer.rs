@@ -979,6 +979,9 @@ pub(crate) struct IndexingConfig {
     /// high-compression LZ4 match finder -- see
     /// [`IndexWriter::set_merge_lz4_high_compression`].
     merge_lz4_high_compression: bool,
+    /// The least source `.fdt` bytes for which a merge trains a paged zstd
+    /// dictionary -- see [`IndexWriter::set_zstd_dictionary_min_bytes`].
+    zstd_dictionary_min_bytes: u64,
     /// `PerFieldKnnVectorsFormat.getKnnVectorsFormatForField`: the fields
     /// routed to a KNN format other than the default
     /// `Lucene99HnswVectorsFormat(hnsw_m, hnsw_beam_width)` -- see
@@ -3002,6 +3005,7 @@ impl IndexingConfig {
                 default_doc_values_format: self.default_doc_values_format,
                 stored_fields_lz4_high_compression: self.merge_lz4_high_compression,
                 lz4_high_compression_sources: opened.iter().map(|o| o.lz4_hc).collect(),
+                zstd_dictionary_min_bytes: self.zstd_dictionary_min_bytes,
                 knn_vectors_formats: self.knn_vectors_formats.clone(),
                 codec: self.codec.clone(),
                 reorder,
@@ -5911,7 +5915,7 @@ impl<'d> IndexWriter<'d> {
 
     /// Whether merged segments' `BEST_SPEED` stored fields are written with the
     /// high-compression LZ4 match finder ([`lucene_codecs::lz4_hc`]): the
-    /// same LZ4 format, which stock Lucene reads, about 10-30% smaller and
+    /// same LZ4 format, which stock Lucene reads, about 8-33% smaller and
     /// several times slower to compress. Flushes keep the fast compressor.
     /// A merged segment written this way records
     /// [`segment_writer::LZ4_HC_ATTRIBUTE`], so a later merge copies its
@@ -5920,6 +5924,16 @@ impl<'d> IndexWriter<'d> {
     /// `index.lucene_rust.stored_fields.merge_lz4_high_compression`.
     pub fn set_merge_lz4_high_compression(&mut self, on: bool) {
         self.cfg_mut().merge_lz4_high_compression = on;
+    }
+
+    /// The least `.fdt` bytes, summed over a merge's sources, for which the
+    /// merged segment of a paged zstd codec
+    /// ([`lucene_codecs::stored_fields::Mode::ZstdPaged`]) gets a trained
+    /// dictionary. Defaults to
+    /// [`lucene_codecs::stored_fields::ZSTD_PAGED_DICTIONARY_MIN_BYTES`];
+    /// `u64::MAX` never trains one.
+    pub fn set_zstd_dictionary_min_bytes(&mut self, bytes: u64) {
+        self.cfg_mut().zstd_dictionary_min_bytes = bytes;
     }
 
     /// Buffers `node` for the segments already published only -- a
@@ -6231,6 +6245,8 @@ impl<'d> IndexWriter<'d> {
                 doc_values_formats: Vec::new(),
                 default_doc_values_format: Default::default(),
                 merge_lz4_high_compression: false,
+                zstd_dictionary_min_bytes:
+                    lucene_codecs::stored_fields::ZSTD_PAGED_DICTIONARY_MIN_BYTES,
                 knn_vectors_formats: Vec::new(),
                 codec: None,
                 reader_pool: std::sync::Arc::default(),

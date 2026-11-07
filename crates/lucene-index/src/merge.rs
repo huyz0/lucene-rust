@@ -1702,6 +1702,7 @@ fn write_merged_stored_fields(
     mode: stored_fields::Mode,
     lz4_high_compression: bool,
     lz4_hc_sources: &[bool],
+    zstd_dictionary_min_bytes: u64,
     sources: &[MergeSource],
     per_source_maps: &[HashMap<i32, i32>],
     doc_order: &[(usize, i32)],
@@ -1738,6 +1739,19 @@ fn write_merged_stored_fields(
                 .par_iter()
                 .map(|source| Ok(source.reader.check_integrity()?)),
         )?;
+    }
+    if let stored_fields::Mode::ZstdPaged(_) = mode {
+        let bytes: u64 = sources
+            .iter()
+            .map(|s| s.reader.max_pointer().max(0) as u64)
+            .sum();
+        if bytes >= zstd_dictionary_min_bytes {
+            let readers: Vec<&stored_fields::StoredFieldsReader<'_>> =
+                sources.iter().map(|s| s.reader).collect();
+            if let Some(dict) = stored_fields::train_zstd_paged_dictionary(&readers)? {
+                writer.set_zstd_dictionary(&dict);
+            }
+        }
     }
     let strategies: Vec<StoredFieldsMergeStrategy> = sources
         .iter()
@@ -2633,6 +2647,7 @@ fn merge_segments_mapped_inner(
                 stored_mode,
                 lz4_hc,
                 &options.lz4_high_compression_sources,
+                options.zstd_dictionary_min_bytes,
                 sources,
                 &per_source_maps,
                 &doc_order,
@@ -4488,6 +4503,10 @@ pub struct MergeOptions {
     /// missing entry is `false`. With the option on, only these sources'
     /// chunks are copied verbatim.
     pub lz4_high_compression_sources: Vec<bool>,
+    /// The least source `.fdt` bytes for which a
+    /// [`stored_fields::Mode::ZstdPaged`] merge trains a dictionary
+    /// ([`crate::index_writer::IndexWriter::set_zstd_dictionary_min_bytes`]).
+    pub zstd_dictionary_min_bytes: u64,
     /// The fields routed to a KNN vectors format other than the default
     /// `Lucene99HnswVectorsFormat(hnsw_m, hnsw_beam_width)`
     /// ([`crate::index_writer::IndexWriter::set_knn_vectors_format_for_field`]).
@@ -4684,6 +4703,7 @@ impl Default for MergeOptions {
             default_doc_values_format: Default::default(),
             stored_fields_lz4_high_compression: false,
             lz4_high_compression_sources: Vec::new(),
+            zstd_dictionary_min_bytes: stored_fields::ZSTD_PAGED_DICTIONARY_MIN_BYTES,
             knn_vectors_formats: Vec::new(),
             codec: None,
             reorder: None,

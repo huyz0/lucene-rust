@@ -8,7 +8,8 @@ license.workspace = true
 workspace = true
 
 [dependencies]
-zstd-safe.workspace = true
+# `experimental`: `ForceAttachDict`, for many small blocks against one dictionary.
+zstd-safe = { workspace = true, features = ["experimental"] }
 thiserror.workspace = true
 
 [features]

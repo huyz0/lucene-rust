@@ -14,6 +14,9 @@
 //!   the same dictionary-plus-ten-sub-blocks shape in zstd frames, and
 //!   `ZstdNoDictCompressionMode` (`zstd_no_dict`): ten independent zstd
 //!   frames.
+//! - The Rust engine's paged zstd stored fields ([`Compression::ZstdPaged`]):
+//!   one zstd frame per unit, compressed against the segment's trained
+//!   dictionary when it has one, so a unit decodes on its own.
 //!
 //! [`decompress`] always leaves its input at the end of the unit, so a sliced
 //! chunk's units can be read back to back. Java's plain-LZ4 decompressor stops
@@ -49,6 +52,9 @@ pub enum Compression {
     Zstd,
     /// OpenSearch custom-codecs' `ZstdNoDictCompressionMode`.
     ZstdNoDict,
+    /// `vint compressedLength`, then one zstd frame, against the segment's
+    /// dictionary if it has one ([`decompress_paged`]).
+    ZstdPaged,
 }
 
 impl Compression {
@@ -59,7 +65,7 @@ impl Compression {
             Self::Fast | Self::FastDecompression | Self::Lz4WithPreset => LZ4_MAX_EXPANSION,
             Self::HighCompression | Self::DeflateWithPreset => DEFLATE_MAX_EXPANSION,
             Self::Dummy => 1,
-            Self::Zstd | Self::ZstdNoDict => ZSTD_MAX_EXPANSION,
+            Self::Zstd | Self::ZstdNoDict | Self::ZstdPaged => ZSTD_MAX_EXPANSION,
         }
     }
 }
@@ -76,6 +82,7 @@ impl fmt::Display for Compression {
             Self::Lz4WithPreset => "BEST_SPEED",
             Self::Zstd => "ZSTD",
             Self::ZstdNoDict => "ZSTD_NO_DICT",
+            Self::ZstdPaged => "ZSTD_PAGED",
         })
     }
 }
@@ -170,7 +177,46 @@ impl Compressor {
                     compression == Compression::Zstd,
                 );
             }
+            Compression::ZstdPaged => {
+                let z = self.zstd.get_or_insert_with(|| {
+                    Box::new(
+                        lucene_zstd::Compressor::new(lucene_zstd::DEFAULT_LEVEL)
+                            .expect("the default level is valid"),
+                    )
+                });
+                let dict = self.zstd_dictionary.as_deref();
+                write_zstd_frame(
+                    out,
+                    &mut self.compressed,
+                    |f| match dict {
+                        Some(d) => z.compress_with_prepared_attached(d, payload, f),
+                        None => z.compress(payload, f),
+                    },
+                    payload.len(),
+                );
+            }
         }
+    }
+
+    /// The dictionary [`Compression::ZstdPaged`] units are compressed
+    /// against from now on (`None`: no dictionary), prepared at the
+    /// compressor's level.
+    ///
+    /// # Errors
+    /// The compressor's level is not a zstd level.
+    pub fn set_zstd_dictionary(
+        &mut self,
+        dict: Option<&[u8]>,
+    ) -> std::result::Result<(), lucene_zstd::Error> {
+        let level = self
+            .zstd
+            .as_ref()
+            .map_or(lucene_zstd::DEFAULT_LEVEL, |z| z.level());
+        self.zstd_dictionary = match dict {
+            Some(d) => Some(Box::new(lucene_zstd::EncoderDictionary::new(d, level)?)),
+            None => None,
+        };
+        Ok(())
     }
 
     /// The zstd level [`Compression::Zstd`] and [`Compression::ZstdNoDict`]
@@ -183,6 +229,9 @@ impl Compressor {
             return Ok(());
         }
         self.zstd = Some(Box::new(lucene_zstd::Compressor::new(level)?));
+        // A prepared dictionary carries its level; it is rebuilt on the next
+        // `set_zstd_dictionary`.
+        self.zstd_dictionary = None;
         Ok(())
     }
 }
@@ -322,7 +371,48 @@ pub fn decompress(
         Compression::ZstdNoDict => {
             decompress_zstd(false, input, original_length, offset, length, out)?
         }
+        Compression::ZstdPaged => {
+            decompress_paged(input, None, original_length, offset, length, out)?
+        }
     }
+    Ok(())
+}
+
+/// [`decompress`] for a [`Compression::ZstdPaged`] unit compressed against
+/// `dict` (the segment's dictionary, `None` when it has none).
+pub fn decompress_paged(
+    input: &mut SliceInput,
+    dict: Option<&lucene_zstd::DecoderDictionary>,
+    original_length: usize,
+    offset: usize,
+    length: usize,
+    out: &mut Vec<u8>,
+) -> Result<()> {
+    if original_length == 0 {
+        return Ok(());
+    }
+    // ARITH: callers pass a range inside the unit; checked just below.
+    #[allow(clippy::arithmetic_side_effects)]
+    let want_end = offset + length;
+    if want_end > original_length {
+        return Err(lucene_store::Error::Corrupted(format!(
+            "range {offset}+{length} outside a {original_length} byte unit"
+        )));
+    }
+    let n = read_compressed_length(input)?;
+    let at = input.position();
+    let frame = input.slice(at, at.saturating_add(n))?;
+    input.skip(n)?;
+    if length == 0 {
+        return Ok(());
+    }
+    let d = match dict {
+        Some(d) => lucene_zstd::Dictionary::Prepared(d),
+        None => lucene_zstd::Dictionary::None,
+    };
+    let start = out.len();
+    zstd_frame(frame, d, original_length, out)?;
+    keep_range(out, start, offset, want_end);
     Ok(())
 }
 
@@ -381,6 +471,8 @@ pub struct Compressor {
     /// The zstd context, created with the first zstd unit or by
     /// [`Compressor::set_zstd_level`].
     zstd: Option<Box<lucene_zstd::Compressor>>,
+    /// The segment dictionary [`Compression::ZstdPaged`] units use.
+    zstd_dictionary: Option<Box<lucene_zstd::EncoderDictionary>>,
 }
 
 impl Compressor {
@@ -951,7 +1043,7 @@ mod tests {
 
     use super::*;
 
-    const ALL: [Compression; 8] = [
+    const ALL: [Compression; 9] = [
         Compression::Fast,
         Compression::FastDecompression,
         Compression::HighCompression,
@@ -960,6 +1052,7 @@ mod tests {
         Compression::Lz4WithPreset,
         Compression::Zstd,
         Compression::ZstdNoDict,
+        Compression::ZstdPaged,
     ];
 
     fn payload(len: usize) -> Vec<u8> {
