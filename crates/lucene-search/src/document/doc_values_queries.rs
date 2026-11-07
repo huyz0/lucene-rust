@@ -186,6 +186,11 @@ impl SortedNumericDocValuesRangeQuery {
 }
 
 impl DocumentQuery for SortedNumericDocValuesRangeQuery {
+    fn reads_no_terms(&self) -> bool {
+        // The whole range rewrites to `FieldExists`, which may read norms.
+        self.lower_value != i64::MIN || self.upper_value != i64::MAX
+    }
+
     /// `rewrite`: the whole `long` range is `FieldExistsQuery`, an empty one
     /// `MatchNoDocsQuery`.
     fn rewrite(&self, _leaves: &[OpenSegment<'_>]) -> Result<Option<Box<dyn DocumentQuery>>> {
@@ -450,6 +455,10 @@ impl SortedNumericDocValuesSetQuery {
 }
 
 impl DocumentQuery for SortedNumericDocValuesSetQuery {
+    fn reads_no_terms(&self) -> bool {
+        true
+    }
+
     fn rewrite(&self, _leaves: &[OpenSegment<'_>]) -> Result<Option<Box<dyn DocumentQuery>>> {
         if self.numbers.size() == 0 {
             return Ok(Some(Box::new(MatchNoDocs)));
@@ -640,6 +649,11 @@ impl SortedSetDocValuesRangeQuery {
 }
 
 impl DocumentQuery for SortedSetDocValuesRangeQuery {
+    fn reads_no_terms(&self) -> bool {
+        // Unbounded, it rewrites to `FieldExists`, which may read norms.
+        self.lower_value.is_some() || self.upper_value.is_some()
+    }
+
     /// `rewrite`: no bounds at all is `FieldExistsQuery`.
     fn rewrite(&self, _leaves: &[OpenSegment<'_>]) -> Result<Option<Box<dyn DocumentQuery>>> {
         if self.lower_value.is_none() && self.upper_value.is_none() {
@@ -782,6 +796,10 @@ impl DocValuesTermInSetQuery {
 }
 
 impl DocumentQuery for DocValuesTermInSetQuery {
+    fn reads_no_terms(&self) -> bool {
+        true
+    }
+
     fn rewrite(&self, _leaves: &[OpenSegment<'_>]) -> Result<Option<Box<dyn DocumentQuery>>> {
         if self.terms.is_empty() {
             return Ok(Some(Box::new(MatchNoDocs)));
