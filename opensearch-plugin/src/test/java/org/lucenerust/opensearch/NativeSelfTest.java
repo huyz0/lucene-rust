@@ -1487,20 +1487,22 @@ public final class NativeSelfTest {
                             got.storedFields().document(order[i], b);
                             check(a.log.equals(b.log), "derived source leaf " + leaf + " doc " + order[i] + ": " + firstDiff(b.log, a.log));
                         }
-                        int other = r.nextInt(max);
+                        // The document this thread read last, asked for by another thread.
                         Recorder a = new Recorder(new String[0], Integer.MAX_VALUE);
                         Recorder b = new Recorder(new String[0], Integer.MAX_VALUE);
-                        want.storedFields().document(other, a);
+                        want.storedFields().document(doc, a);
+                        java.util.concurrent.atomic.AtomicReference<Throwable> failed = new java.util.concurrent.atomic.AtomicReference<>();
                         Thread t = new Thread(() -> {
                             try {
-                                got.storedFields().document(other, b);
-                            } catch (java.io.IOException e) {
-                                throw new java.io.UncheckedIOException(e);
+                                got.storedFields().document(doc, b);
+                            } catch (Throwable e) {
+                                failed.set(e);
                             }
                         });
                         t.start();
                         t.join();
-                        check(a.log.equals(b.log), "derived source, another thread, doc " + other);
+                        check(failed.get() == null, "derived source, another thread, doc " + doc + ": " + failed.get());
+                        check(a.log.equals(b.log), "derived source, another thread, doc " + doc);
                     }
                 }
                 // Disabled, every document is Lucene's.
