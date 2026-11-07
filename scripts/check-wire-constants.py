@@ -95,6 +95,8 @@ RENAMES = {
 JAVA_ONLY = {
     ("KnnFieldConfig.java", "DEFAULT_M"): "k-NN's mapping default, resolved into the field's format attribute",
     ("KnnFieldConfig.java", "DEFAULT_EF_CONSTRUCTION"): "k-NN's mapping default, resolved into the field's format attribute",
+    ("KnnFieldConfig.java", "DEFAULT_CLUSTER_SIZE"): "the ivf mapping's default, resolved into the field's format attribute",
+    ("KnnFieldConfig.java", "MIN_CLUSTER_SIZE"): "the ivf mapping's validation, at KnnVectorsFormat::ivf's limit",
     ("KnnFieldConfig.java", "MAX_M"): "the mapping's validation, at Lucene's HnswGraphBuilder limit",
     ("KnnFieldConfig.java", "MAX_EF_CONSTRUCTION"): "the mapping's validation, at Lucene's HnswGraphBuilder limit",
     ("VectorsFormatSpec.java", "UNSIGNED_BYTE"): "ScalarEncoding::wire_number in quantization.rs, an enum's numbers",
