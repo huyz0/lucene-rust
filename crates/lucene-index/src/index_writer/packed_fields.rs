@@ -495,7 +495,8 @@ impl Shape {
         Ok(())
     }
 
-    /// Moves `r` past one document's values without decoding them.
+    /// Moves `r` past one document's values, checked as
+    /// [`Self::decode_into`] checks them but not materialized.
     fn skip(&self, r: &mut Reader<'_>) -> Result<()> {
         if !self.set {
             return Err(corrupt());
@@ -504,22 +505,7 @@ impl Shape {
             r.vlong()?;
         }
         for &(_, kind) in self.doc_values.iter().chain(&self.points) {
-            match kind {
-                LONG | INT => {
-                    r.vlong()?;
-                }
-                FLOAT => {
-                    r.bytes(4)?;
-                }
-                DOUBLE => {
-                    r.bytes(8)?;
-                }
-                BINARY | STRING => {
-                    let len = r.len()?;
-                    r.bytes(len)?;
-                }
-                _ => return Err(corrupt()),
-            }
+            read_value(r, kind)?;
         }
         Ok(())
     }
@@ -547,64 +533,56 @@ impl Shape {
             (&mut out.doc_values, &self.doc_values),
             (&mut out.points, &self.points),
         ] {
-            // Values are overwritten in place, so a binary or string value
-            // reuses the buffer its slot held for the previous document.
-            values.truncate(shape.len());
-            values.reserve(shape.len().saturating_sub(values.len()));
-            for (j, &(field_number, kind)) in shape.iter().enumerate() {
-                let value = match kind {
-                    LONG => FieldValue::Long(unzigzag(r.vlong()?)),
-                    INT => {
-                        FieldValue::Int(i32::try_from(unzigzag(r.vlong()?)).map_err(|_| corrupt())?)
-                    }
-                    FLOAT => FieldValue::Float(f32::from_bits(u32::from_le_bytes(r.array()?))),
-                    DOUBLE => FieldValue::Double(f64::from_bits(u64::from_le_bytes(r.array()?))),
-                    BINARY => {
-                        let len = r.len()?;
-                        let bytes = r.bytes(len)?;
-                        if let Some(StoredField {
-                            field_number: n,
-                            value: FieldValue::Binary(b),
-                        }) = values.get_mut(j)
-                        {
-                            *n = field_number;
-                            b.clear();
-                            b.extend_from_slice(bytes);
-                            continue;
-                        }
-                        FieldValue::Binary(bytes.to_vec())
-                    }
-                    STRING => {
-                        let len = r.len()?;
-                        let s = std::str::from_utf8(r.bytes(len)?).map_err(|_| corrupt())?;
-                        if let Some(StoredField {
-                            field_number: n,
-                            value: FieldValue::String(v),
-                        }) = values.get_mut(j)
-                        {
-                            *n = field_number;
-                            v.clear();
-                            v.push_str(s);
-                            continue;
-                        }
-                        FieldValue::String(s.to_string())
-                    }
-                    _ => return Err(corrupt()),
+            values.clear();
+            values.reserve(shape.len());
+            for &(field_number, kind) in shape {
+                let value = match read_value(r, kind)? {
+                    Value::Long(x) => FieldValue::Long(x),
+                    Value::Int(x) => FieldValue::Int(x),
+                    Value::Float(x) => FieldValue::Float(x),
+                    Value::Double(x) => FieldValue::Double(x),
+                    Value::Binary(b) => FieldValue::Binary(b.to_vec()),
+                    Value::String(s) => FieldValue::String(s.to_string()),
                 };
-                let field = StoredField {
+                values.push(StoredField {
                     field_number,
                     value,
-                };
-                match values.get_mut(j) {
-                    Some(slot) => *slot = field,
-                    None => values.push(field),
-                }
+                });
             }
         }
         out.registered.clone_from(&self.registered);
         out.term_vectors.clear();
         Ok(())
     }
+}
+
+/// A packed value, its bytes borrowed from the block.
+enum Value<'a> {
+    Long(i64),
+    Int(i32),
+    Float(f32),
+    Double(f64),
+    Binary(&'a [u8]),
+    String(&'a str),
+}
+
+/// Reads one value of `kind`, as [`encode_values`] wrote it.
+fn read_value<'a>(r: &mut Reader<'a>, kind: u8) -> Result<Value<'a>> {
+    Ok(match kind {
+        LONG => Value::Long(unzigzag(r.vlong()?)),
+        INT => Value::Int(i32::try_from(unzigzag(r.vlong()?)).map_err(|_| corrupt())?),
+        FLOAT => Value::Float(f32::from_bits(u32::from_le_bytes(r.array()?))),
+        DOUBLE => Value::Double(f64::from_bits(u64::from_le_bytes(r.array()?))),
+        BINARY => {
+            let len = r.len()?;
+            Value::Binary(r.bytes(len)?)
+        }
+        STRING => {
+            let len = r.len()?;
+            Value::String(std::str::from_utf8(r.bytes(len)?).map_err(|_| corrupt())?)
+        }
+        _ => return Err(corrupt()),
+    })
 }
 
 fn zigzag(v: i64) -> u64 {

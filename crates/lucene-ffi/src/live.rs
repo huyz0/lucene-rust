@@ -175,7 +175,7 @@ pub(crate) mod phases {
 #[derive(Default)]
 pub(crate) struct Warmer {
     /// When a search last read chunks without postings, in milliseconds
-    /// since [`epoch_ms`]'s epoch.
+    /// since [`epoch_ms`]'s epoch; 0 when none came.
     last_lean: AtomicU64,
     running: std::sync::atomic::AtomicBool,
     /// The chunks being written now, by any thread.
@@ -191,6 +191,8 @@ struct Writing {
     start: i32,
     end: i32,
     postings: bool,
+    /// Whether [`Warmer`]'s thread writes it.
+    warm: bool,
     end_totals: Totals,
 }
 
@@ -283,7 +285,8 @@ fn epoch_ms() -> u64 {
 /// starting `w`'s warming thread when it is not running.
 fn searched_lean(w: &Arc<EngineWriter>) {
     let warmer = w.live_warmer();
-    warmer.last_lean.store(epoch_ms(), Ordering::Relaxed);
+    // 0 is never: see `warm_loop`.
+    warmer.last_lean.store(epoch_ms().max(1), Ordering::Relaxed);
     if warmer.running.swap(true, Ordering::AcqRel) {
         return;
     }
@@ -303,8 +306,10 @@ fn warm_loop(weak: &std::sync::Weak<EngineWriter>) {
             return;
         };
         let warmer = w.live_warmer();
-        let idle =
-            || epoch_ms().saturating_sub(warmer.last_lean.load(Ordering::Relaxed)) > WARM_IDLE;
+        let idle = || {
+            let last = warmer.last_lean.load(Ordering::Relaxed);
+            last == 0 || epoch_ms().saturating_sub(last) > WARM_IDLE
+        };
         if idle() {
             warmer.running.store(false, Ordering::Release);
             // A search between the check and the store found it running.
@@ -330,7 +335,7 @@ fn warm(w: &EngineWriter) -> lucene_index::index_writer::Result<()> {
             if tail < WARM_MIN_DOCS || writes_nothing(w, b, &plan, false) {
                 return Ok(());
             }
-            buffer_segments(w, b, &plan, false).map(drop)
+            buffer_segments(w, b, &plan, false, true).map(drop)
         })
     }))
     .unwrap_or_else(|_| {
@@ -362,6 +367,7 @@ pub(crate) fn hold_tail(w: &EngineWriter) -> Option<(i32, i32, impl Drop + '_)> 
             start: p.start,
             end: p.end,
             postings: true,
+            warm: false,
             end_totals: Arc::clone(&p.end_totals),
         })
     });
@@ -492,9 +498,16 @@ fn plan(chunks: &Chunks, b: &ViewBuffer, absorb_docs: i32, writing: &[Writing]) 
     // A chunk being written from the chain's end is planned as it is, after
     // the whole chain: the view waits for it and writes only what follows.
     // One that absorbs chunks of the chain is not waited for: the chunks it
-    // replaces still serve this view.
+    // replaces still serve this view. Nor is a warmer's chunk of at most
+    // [`SEARCH_ABSORB_DOCS`]: the view writes those documents sooner than
+    // it would wait for them.
     let pending = writing.iter().find(|x| {
-        b.in_slot && x.buffer == b.id && x.end > covered && x.end < b.max_doc && x.start == covered
+        b.in_slot
+            && x.buffer == b.id
+            && x.end > covered
+            && x.end < b.max_doc
+            && x.start == covered
+            && !(x.warm && x.end.saturating_sub(x.start) <= SEARCH_ABSORB_DOCS)
     });
     if pending.is_none() && covered < b.max_doc {
         let mut acc = b.max_doc.saturating_sub(covered);
@@ -673,14 +686,13 @@ pub unsafe extern "C" fn ffi_engine_writer_live_view_open(
         let view = w.writer().open_live_view(commit).map_err(live_error)?;
         let plans: Vec<Vec<Planned>> = {
             let chunks = w.live_chunks();
-            // While the warmer runs, a search waits for none of its chunks:
-            // it writes the documents after its chain itself, and the
-            // warmer's chunk of them serves the views after.
-            let (absorb, writing) = if w.live_warmer().running() {
-                (SEARCH_ABSORB_DOCS, Vec::new())
+            let warmer = w.live_warmer();
+            let absorb = if warmer.running() {
+                SEARCH_ABSORB_DOCS
             } else {
-                (i32::MAX, w.live_warmer().writing())
+                i32::MAX
             };
+            let writing = warmer.writing();
             view.buffers
                 .iter()
                 .map(|b| plan(&chunks, b, absorb, &writing))
@@ -924,7 +936,7 @@ fn build_view_reader(
                 }
                 std::thread::Builder::new()
                     .name("live-view".into())
-                    .spawn_scoped(s, move || buffer_segments(w, b, plan, postings))
+                    .spawn_scoped(s, move || buffer_segments(w, b, plan, postings, false))
                     .map_err(|_| (b, plan))
             })
             .collect();
@@ -933,7 +945,7 @@ fn build_view_reader(
                 Ok(handle) => handle
                     .join()
                     .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
-                Err((b, plan)) => buffer_segments(w, b, plan, postings),
+                Err((b, plan)) => buffer_segments(w, b, plan, postings, false),
             })
             .collect::<Vec<_>>()
     });
@@ -1100,6 +1112,7 @@ fn buffer_segments(
     b: &ViewBuffer,
     plan: &[Planned],
     postings: bool,
+    warm: bool,
 ) -> lucene_index::index_writer::Result<Vec<(SegmentReader, bool)>> {
     let writer = w.writer();
     if let [only] = plan {
@@ -1133,6 +1146,7 @@ fn buffer_segments(
                 start: p.start,
                 end: p.end,
                 postings,
+                warm,
                 end_totals: Arc::clone(&p.end_totals),
             })
         });
