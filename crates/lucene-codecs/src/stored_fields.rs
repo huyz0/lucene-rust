@@ -1546,6 +1546,18 @@ impl StoredFieldsWriter {
         self.segment_id = *segment_id;
     }
 
+    /// Writes `Mode::BestSpeed` chunks with the high-compression LZ4 match
+    /// finder: the same format, smaller, slower to write. See
+    /// [`Compressor::set_lz4_high_compression`].
+    pub fn set_lz4_high_compression(&mut self, on: bool) {
+        self.scratch.set_lz4_high_compression(on);
+    }
+
+    /// Whether [`Self::set_lz4_high_compression`] is on.
+    pub fn lz4_high_compression(&self) -> bool {
+        self.scratch.lz4_high_compression()
+    }
+
     /// `getChunkSize()` -- a bulk chunk copy is only legal from a reader
     /// that agrees with this.
     pub fn chunk_size(&self) -> i32 {

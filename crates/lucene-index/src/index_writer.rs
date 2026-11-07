@@ -975,6 +975,10 @@ pub(crate) struct IndexingConfig {
     /// the codec routes it anywhere but the default `Lucene90DocValuesFormat()`
     /// -- see [`IndexWriter::set_default_doc_values_format`].
     default_doc_values_format: per_field_doc_values::Lucene90DocValuesFormat,
+    /// Whether merges write `BEST_SPEED` stored fields with the
+    /// high-compression LZ4 match finder -- see
+    /// [`IndexWriter::set_merge_lz4_high_compression`].
+    merge_lz4_high_compression: bool,
     /// `PerFieldKnnVectorsFormat.getKnnVectorsFormatForField`: the fields
     /// routed to a KNN format other than the default
     /// `Lucene99HnswVectorsFormat(hnsw_m, hnsw_beam_width)` -- see
@@ -1841,6 +1845,9 @@ impl IndexingConfig {
             field_infos: Vec<FieldInfo>,
             index_sort: Option<Vec<segment_info::IndexSortField>>,
             has_blocks: bool,
+            /// Whether the source's `.si` records
+            /// [`segment_writer::LZ4_HC_ATTRIBUTE`].
+            lz4_hc: bool,
             /// This source's `SegmentInfo.minVersion` -- Java's
             /// `LeafMetaData.minVersion()`, which `SegmentMerger` folds into
             /// the merged segment's.
@@ -2258,6 +2265,7 @@ impl IndexingConfig {
                 field_infos: own_field_infos,
                 index_sort: si.index_sort.clone(),
                 has_blocks: si.has_blocks,
+                lz4_hc: segment_writer::has_lz4_hc_attribute(&si.attributes),
                 min_version: si.min_version,
                 // `SegmentCommitInfo::files`, not `si.files`: a generational
                 // `.dvm`/`.dvd` is never listed in the `.si` (it did not
@@ -2992,6 +3000,8 @@ impl IndexingConfig {
                 postings_formats: self.postings_formats.clone(),
                 doc_values_formats: self.doc_values_formats.clone(),
                 default_doc_values_format: self.default_doc_values_format,
+                stored_fields_lz4_high_compression: self.merge_lz4_high_compression,
+                lz4_high_compression_sources: opened.iter().map(|o| o.lz4_hc).collect(),
                 knn_vectors_formats: self.knn_vectors_formats.clone(),
                 codec: self.codec.clone(),
                 reorder,
@@ -5899,6 +5909,19 @@ impl<'d> IndexWriter<'d> {
         self.cfg_mut().default_doc_values_format = format;
     }
 
+    /// Whether merged segments' `BEST_SPEED` stored fields are written with the
+    /// high-compression LZ4 match finder ([`lucene_codecs::lz4_hc`]): the
+    /// same LZ4 format, which stock Lucene reads, about 10-30% smaller and
+    /// several times slower to compress. Flushes keep the fast compressor.
+    /// A merged segment written this way records
+    /// [`segment_writer::LZ4_HC_ATTRIBUTE`], so a later merge copies its
+    /// chunks as they are instead of compressing them again; a source without
+    /// it is recompressed once. The plugin's
+    /// `index.lucene_rust.stored_fields.merge_lz4_high_compression`.
+    pub fn set_merge_lz4_high_compression(&mut self, on: bool) {
+        self.cfg_mut().merge_lz4_high_compression = on;
+    }
+
     /// Buffers `node` for the segments already published only -- a
     /// [`crate::concurrent_writer::ConcurrentIndexWriter`] keeps each
     /// in-RAM buffer's own share of it with that buffer.
@@ -6207,6 +6230,7 @@ impl<'d> IndexWriter<'d> {
                 postings_formats: Vec::new(),
                 doc_values_formats: Vec::new(),
                 default_doc_values_format: Default::default(),
+                merge_lz4_high_compression: false,
                 knn_vectors_formats: Vec::new(),
                 codec: None,
                 reader_pool: std::sync::Arc::default(),

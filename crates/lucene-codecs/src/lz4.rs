@@ -33,7 +33,7 @@
 use lucene_store::data_input::DataInput;
 use lucene_store::{Error, Result};
 
-const MIN_MATCH: usize = 4;
+pub(crate) const MIN_MATCH: usize = 4;
 const LAST_LITERALS: usize = 5;
 pub const MAX_DISTANCE: usize = 1 << 16;
 /// `LZ4.MEMORY_USAGE`: the fast table is sized so it always costs 16kB,
@@ -413,7 +413,7 @@ fn encode_literals(bytes: &[u8], token: u8, anchor: usize, literal_len: usize, o
     out.extend_from_slice(&bytes[anchor..anchor + literal_len]);
 }
 
-fn encode_last_literals(bytes: &[u8], anchor: usize, literal_len: usize, out: &mut Vec<u8>) {
+pub(crate) fn encode_last_literals(bytes: &[u8], anchor: usize, literal_len: usize, out: &mut Vec<u8>) {
     let token = (literal_len.min(0x0F) as u8) << 4;
     encode_literals(bytes, token, anchor, literal_len, out);
 }
@@ -424,7 +424,7 @@ fn encode_last_literals(bytes: &[u8], anchor: usize, literal_len: usize, out: &m
 // construction, and the `>= MIN_MATCH + 0x0F` guard covers the second
 // subtraction.
 #[allow(clippy::arithmetic_side_effects)]
-fn encode_sequence(
+pub(crate) fn encode_sequence(
     bytes: &[u8],
     anchor: usize,
     match_ref: usize,

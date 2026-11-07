@@ -320,6 +320,21 @@ pub(crate) fn build_native_stored_fields(
 
 /// `Lucene90StoredFieldsFormat.fieldsWriter`'s `.si` attribute naming its
 /// mode; a `CompressingCodec` format records none.
+/// The `.si` attribute a segment whose `BEST_SPEED` stored fields were all
+/// written by the high-compression LZ4 match finder records (value
+/// [`LZ4_HC_VALUE`]). Readers ignore it; a merge that writes the same way
+/// copies such a segment's chunks instead of compressing them again.
+pub const LZ4_HC_ATTRIBUTE: &str = "lucene_rust.stored_fields.lz4";
+/// [`LZ4_HC_ATTRIBUTE`]'s value.
+pub const LZ4_HC_VALUE: &str = "hc";
+
+/// Whether `attributes` carry [`LZ4_HC_ATTRIBUTE`].
+pub(crate) fn has_lz4_hc_attribute(attributes: &[(String, String)]) -> bool {
+    attributes
+        .iter()
+        .any(|(k, v)| k == LZ4_HC_ATTRIBUTE && v == LZ4_HC_VALUE)
+}
+
 pub(crate) fn stored_fields_mode_attribute(mode: stored_fields::Mode) -> Vec<(String, String)> {
     let value = match mode {
         stored_fields::Mode::BestSpeed => "BEST_SPEED",

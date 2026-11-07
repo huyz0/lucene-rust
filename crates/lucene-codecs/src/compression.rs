@@ -24,6 +24,7 @@ use lucene_store::Result;
 use crate::deflate;
 use crate::deflater::Deflater;
 use crate::lz4;
+use crate::lz4_hc;
 
 /// One of Java's compression modes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -123,7 +124,10 @@ impl Compressor {
     // ARITH: none beyond the preset writer's own, which documents them.
     pub fn compress(&mut self, compression: Compression, payload: &[u8], out: &mut Vec<u8>) {
         match compression {
-            Compression::Fast => lz4::compress_into(payload, out, &mut self.ht),
+            Compression::Fast => match self.lz4_hc.as_mut() {
+                Some(hc) => hc.compress_into(payload, out),
+                None => lz4::compress_into(payload, out, &mut self.ht),
+            },
             Compression::FastDecompression => {
                 let ht = self
                     .high
@@ -321,6 +325,28 @@ pub struct Compressor {
     /// for the writer's life: zlib's window
     /// and chain state survive `reset()`, and the bytes depend on them.
     deflater: Option<Box<Deflater>>,
+    /// When set, the LZ4 modes (`FAST` and `BEST_SPEED`) find their matches
+    /// with [`lz4_hc::Lz4HcCompressor`]: the same LZ4 block format, smaller
+    /// and several times slower to write. See [`Self::set_lz4_high_compression`].
+    lz4_hc: Option<Box<lz4_hc::Lz4HcCompressor>>,
+}
+
+impl Compressor {
+    /// Writes the LZ4 modes' blocks with the high-compression match finder
+    /// (`true`) or with Java's fast hash table (`false`, the default). Any
+    /// LZ4 reader, Java's included, reads either.
+    pub fn set_lz4_high_compression(&mut self, on: bool) {
+        if !on {
+            self.lz4_hc = None;
+        } else if self.lz4_hc.is_none() {
+            self.lz4_hc = Some(Box::default());
+        }
+    }
+
+    /// Whether [`Self::set_lz4_high_compression`] is on.
+    pub fn lz4_high_compression(&self) -> bool {
+        self.lz4_hc.is_some()
+    }
 }
 
 /// Appends one preset-dictionary compression unit for `payload`
@@ -366,14 +392,7 @@ fn write_preset(preset: Preset, scratch: &mut Compressor, out: &mut Vec<u8>, pay
             // The dictionary is compressed with no dictionary of its own.
             scratch.buffer[..dict_length].copy_from_slice(&payload[..dict_length]);
             let mark = scratch.compressed.len();
-            lz4::compress_with_dictionary(
-                &scratch.buffer,
-                0,
-                0,
-                dict_length,
-                &mut scratch.compressed,
-                &mut scratch.ht,
-            );
+            lz4_unit(scratch, 0, dict_length);
             scratch.lengths.push(scratch.compressed.len() - mark);
 
             // ...then each sub-block, back-referencing into it.
@@ -383,14 +402,7 @@ fn write_preset(preset: Preset, scratch: &mut Compressor, out: &mut Vec<u8>, pay
                 scratch.buffer[dict_length..dict_length + l]
                     .copy_from_slice(&payload[start..start + l]);
                 let mark = scratch.compressed.len();
-                lz4::compress_with_dictionary(
-                    &scratch.buffer,
-                    0,
-                    dict_length,
-                    l,
-                    &mut scratch.compressed,
-                    &mut scratch.ht,
-                );
+                lz4_unit(scratch, dict_length, l);
                 scratch.lengths.push(scratch.compressed.len() - mark);
                 start += l;
             }
@@ -432,6 +444,24 @@ fn write_preset(preset: Preset, scratch: &mut Compressor, out: &mut Vec<u8>, pay
                 start += this_block;
             }
         }
+    }
+}
+
+/// Appends one LZ4 block for `scratch.buffer[dict_len..][..len]`, with the
+/// `dict_len` bytes before it as its dictionary, to `scratch.compressed`.
+fn lz4_unit(scratch: &mut Compressor, dict_len: usize, len: usize) {
+    match scratch.lz4_hc.as_mut() {
+        Some(hc) => {
+            hc.compress_with_dictionary(&scratch.buffer, 0, dict_len, len, &mut scratch.compressed)
+        }
+        None => lz4::compress_with_dictionary(
+            &scratch.buffer,
+            0,
+            dict_len,
+            len,
+            &mut scratch.compressed,
+            &mut scratch.ht,
+        ),
     }
 }
 
