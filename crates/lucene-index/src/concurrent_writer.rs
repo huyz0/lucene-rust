@@ -1445,6 +1445,8 @@ impl<'d> ConcurrentIndexWriter<'d> {
                 // `TermsHashPerField`'s pools; the documents' own inverted
                 // terms are dropped once they are in.
                 let postings_before = dwpt.postings.bytes();
+                // Chunk columns copy the documents' doc values and points.
+                let columns_before = dwpt.live.chunk_ram_bytes();
                 let mut added = 0usize;
                 for (mut doc, options) in docs.into_iter().zip(options) {
                     let doc_vectors = vectors
@@ -1496,8 +1498,10 @@ impl<'d> ConcurrentIndexWriter<'d> {
                     added = added.saturating_add(dwpt.explicit.push(doc.fields));
                 }
                 let grown = dwpt.postings.bytes().saturating_sub(postings_before);
+                let columns = dwpt.live.chunk_ram_bytes().saturating_sub(columns_before);
                 Ok(added
                     .saturating_add(grown)
+                    .saturating_add(columns)
                     .saturating_add(Self::recharge_stored(dwpt)))
             }) as Fill)
         })

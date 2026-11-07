@@ -53,8 +53,7 @@ impl ChunkFields {
             return;
         }
         if !fields.term_vectors.is_empty() {
-            self.unsupported = true;
-            return;
+            return self.give_up();
         }
         let mut present = |n: i32| self.present.entry(n).or_default().add(doc);
         for inv in &fields.inverted {
@@ -74,14 +73,12 @@ impl ChunkFields {
                 .field_by_number(inv.field_number)
                 .is_none_or(|f| f.store_term_vectors);
             if tv || inv.norm == Some(0) {
-                self.unsupported = true;
-                return;
+                return self.give_up();
             }
         }
         for p in &fields.points {
             let Some(info) = cfg.field_by_number(p.field_number) else {
-                self.unsupported = true;
-                return;
+                return self.give_up();
             };
             let column = self
                 .points
@@ -94,11 +91,18 @@ impl ChunkFields {
                     ..PackedPointsField::default()
                 });
             if !encode_live_point(info, &p.value, &mut column.values) {
-                self.unsupported = true;
-                return;
+                return self.give_up();
             }
             column.docs.push(doc);
         }
+    }
+
+    /// Stops keeping columns: the buffer's chunks are decoded.
+    fn give_up(&mut self) {
+        *self = ChunkFields {
+            unsupported: true,
+            ..ChunkFields::default()
+        };
     }
 
     pub(in crate::concurrent_writer) fn ram_bytes(&self) -> usize {

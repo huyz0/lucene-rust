@@ -320,7 +320,13 @@ impl LiveColumns {
             .fold(self.deletes.hard.ram_bytes(), usize::saturating_add)
             .saturating_add(self.deletes.soft.ram_bytes())
             .saturating_add(self.stored.ram_bytes())
-            .saturating_add(self.doc_values.ram_bytes())
+            .saturating_add(self.chunk_ram_bytes())
+    }
+
+    /// What the columns kept only for writing chunks hold.
+    pub(super) fn chunk_ram_bytes(&self) -> usize {
+        self.doc_values
+            .ram_bytes()
             .saturating_add(self.chunk.ram_bytes())
     }
 }

@@ -623,9 +623,7 @@ fn chunks_from_columns_match_chunks_from_documents() {
     let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", VERSION).unwrap();
     w.enable_explicit_documents().unwrap();
     let body = w
-        .register_field(
-            FieldInfo::new("body", 0).with_index_options(IndexOptions::DocsAndFreqs),
-        )
+        .register_field(FieldInfo::new("body", 0).with_index_options(IndexOptions::DocsAndFreqs))
         .unwrap();
     let kw = w
         .register_field(
@@ -638,7 +636,11 @@ fn chunks_from_columns_match_chunks_from_documents() {
     let price = w
         .register_field(
             FieldInfo::new("price", 0)
-                .with_doc_values(DocValuesType::SortedNumeric, DocValuesSkipIndexType::None, -1)
+                .with_doc_values(
+                    DocValuesType::SortedNumeric,
+                    DocValuesSkipIndexType::None,
+                    -1,
+                )
                 .with_points(1, 1, 8),
         )
         .unwrap();

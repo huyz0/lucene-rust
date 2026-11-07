@@ -881,16 +881,22 @@ impl IndexingConfig {
                 norm_values.extend(c.norms.iter().cloned());
                 None
             }
-            None => Some(decode(&mut present, &mut norm_values, &mut has_vectors)?),
+            None => {
+                let roles = decode(&mut present, &mut norm_values, &mut has_vectors)?;
+                if buf.limit.is_some() {
+                    crate::live_timing::record(
+                        crate::live_timing::Phase::ChunkDecode,
+                        decoding.elapsed(),
+                    );
+                }
+                Some(roles)
+            }
         };
         let (mut dv_role, points_role) = match roles {
             Some([dv, points]) => (Some(dv), Some(points)),
             None => (None, None),
         };
         let chunk = buf.limit.is_some();
-        if chunk {
-            crate::live_timing::record(crate::live_timing::Phase::ChunkDecode, decoding.elapsed());
-        }
 
         // Postings: one term dictionary per field, terms in byte order. The
         // writer inverted them as each document was buffered
