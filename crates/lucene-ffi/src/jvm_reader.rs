@@ -253,6 +253,11 @@ impl<'a> Cursor<'a> {
         Ok(f64::from_bits(self.i64()? as u64))
     }
 
+    /// The bytes not read yet.
+    pub(crate) fn remaining(&self) -> usize {
+        self.buf.len().saturating_sub(self.pos)
+    }
+
     pub(crate) fn len(&mut self) -> Result<usize, FfiStatus> {
         let v = self.i32()?;
         usize::try_from(v).map_err(|_| {

@@ -152,6 +152,20 @@ pub trait DocumentQuery: AsAnyQuery + fmt::Debug + Send + Sync {
         None
     }
 
+    /// Whether the query must see the segment's deletions itself (a KNN
+    /// search, whose `k` best are `k` live documents): the scorer tree then
+    /// passes them in [`OpenSegment::live_docs`].
+    fn needs_live_docs(&self) -> bool {
+        false
+    }
+
+    /// Whether a filter that matches nothing in a segment leaves the query
+    /// nothing there (`AbstractKnnVectorQuery`: a null filter scorer is an
+    /// empty leaf), rather than running it unfiltered.
+    fn empty_filter_matches_nothing(&self) -> bool {
+        false
+    }
+
     /// Whether every match scores `boost` (a constant-score weight), so a
     /// scorer tree may keep just the set of matches. `false` for a query
     /// whose scores vary by document.

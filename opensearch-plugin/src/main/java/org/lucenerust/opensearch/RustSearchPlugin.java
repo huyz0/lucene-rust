@@ -37,6 +37,10 @@ import org.opensearch.plugins.EnginePlugin;
 import org.opensearch.plugins.IndexStorePlugin;
 import org.opensearch.plugins.MapperPlugin;
 import org.opensearch.index.mapper.Mapper;
+import org.lucenerust.opensearch.knn.KnnQueryBuilder;
+import org.lucenerust.opensearch.knn.KnnSettings;
+import org.lucenerust.opensearch.knn.KnnTopVectorQuery;
+import org.lucenerust.opensearch.knn.KnnVectorFieldMapper;
 import org.lucenerust.opensearch.sparse.NeuralSparseQueryBuilder;
 import org.lucenerust.opensearch.sparse.SparseSettings;
 import org.lucenerust.opensearch.sparse.SparseVectorFieldMapper;
@@ -131,9 +135,21 @@ public class RustSearchPlugin extends Plugin implements
     private final boolean nodeEngineEnabled;
     private final boolean fetchWrapper;
     private final LocalKeySource.Config localKey;
+    /**
+     * Whether the stock k-NN plugin is installed beside this one: it then owns {@code knn_vector},
+     * {@code knn} and the {@code knn} settings, and the Rust writer leaves its fields alone.
+     */
+    private final boolean stockKnn;
 
     public RustSearchPlugin(Settings settings, Path configPath) {
         this.libraryPath = NativeLibrary.load(pluginDir());
+        this.stockKnn = Files.isDirectory(pluginDir().resolveSibling("opensearch-knn"));
+        if (stockKnn) {
+            logger.info("lucene-rust: the k-NN plugin is installed; it serves knn_vector and knn");
+            org.lucenerust.opensearch.engine.RustEngineSupport.refuseKnnVectorFields();
+        } else {
+            KnnTopVectorQuery.setNative((searcher, q) -> KnnEncoder.topHits(readers, searcher, q));
+        }
         addDataPackDirs(configPath);
         this.nodeEngineEnabled = NODE_ENGINE_ENABLED.get(settings);
         boolean security = Files.isDirectory(pluginDir().resolveSibling("opensearch-security"));
@@ -393,20 +409,38 @@ public class RustSearchPlugin extends Plugin implements
             NODE_DECRYPT_CACHE,
             SparseSettings.SPARSE_INDEX
         ));
+        if (stockKnn == false) {
+            settings.addAll(KnnSettings.settings());
+        }
         settings.addAll(org.lucenerust.opensearch.engine.BpReorderSettings.settings());
         return settings;
     }
 
-    /** neural-search's {@code sparse_vector} field, which the Rust engine clusters and searches. */
+    /**
+     * neural-search's {@code sparse_vector} field, which the Rust engine clusters and searches, and
+     * k-NN's {@code knn_vector}, whose HNSW graphs it builds and searches.
+     */
     @Override
     public Map<String, Mapper.TypeParser> getMappers() {
-        return Map.of(SparseVectorFieldMapper.CONTENT_TYPE, new SparseVectorFieldMapper.TypeParser());
+        if (stockKnn) {
+            return Map.of(SparseVectorFieldMapper.CONTENT_TYPE, new SparseVectorFieldMapper.TypeParser());
+        }
+        return Map.of(
+            SparseVectorFieldMapper.CONTENT_TYPE,
+            new SparseVectorFieldMapper.TypeParser(),
+            KnnVectorFieldMapper.CONTENT_TYPE,
+            new KnnVectorFieldMapper.TypeParser()
+        );
     }
 
-    /** neural-search's {@code neural_sparse} query, by {@code query_tokens}. */
+    /** neural-search's {@code neural_sparse} query, by {@code query_tokens}, and k-NN's {@code knn}. */
     @Override
     public List<QuerySpec<?>> getQueries() {
-        return List.of(new QuerySpec<>(NeuralSparseQueryBuilder.NAME, NeuralSparseQueryBuilder::new, NeuralSparseQueryBuilder::fromXContent));
+        QuerySpec<?> sparse = new QuerySpec<>(NeuralSparseQueryBuilder.NAME, NeuralSparseQueryBuilder::new, NeuralSparseQueryBuilder::fromXContent);
+        if (stockKnn) {
+            return List.of(sparse);
+        }
+        return List.of(sparse, new QuerySpec<>(KnnQueryBuilder.NAME, KnnQueryBuilder::new, KnnQueryBuilder::fromXContent));
     }
 
     @Override
