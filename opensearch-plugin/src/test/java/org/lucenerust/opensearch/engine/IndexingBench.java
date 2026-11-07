@@ -210,6 +210,8 @@ public final class IndexingBench {
                     null,
                     null,
                     IndexWriter.MAX_DOCS,
+                    org.lucenerust.opensearch.NativeBridge.STORED_FIELDS_BEST_SPEED,
+                    3,
                     analyzer,
                     similarity,
                     10,
