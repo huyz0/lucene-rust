@@ -819,6 +819,39 @@ fn a_flushing_buffer_is_written_as_lean_chunks_until_published() {
     w.close_live_view(&later);
 }
 
+/// A multi-valued field's values come sorted (and, for SORTED_SET,
+/// without repeats); a single-valued field gives its first value.
+#[test]
+fn a_documents_doc_values_take_the_segments_shape() {
+    use super::LiveDocValue::{self, Bytes, Numbers};
+    let longs = [
+        FieldValue::Long(3),
+        FieldValue::Long(-1),
+        FieldValue::Long(3),
+    ];
+    let bytes = [
+        FieldValue::Binary(b"b".to_vec()),
+        FieldValue::Binary(b"a".to_vec()),
+        FieldValue::Binary(b"b".to_vec()),
+    ];
+    let of = |kind, values: &[FieldValue]| LiveDocValue::of(kind, values.iter());
+    assert_eq!(
+        of(DocValuesType::SortedNumeric, &longs),
+        Some(Numbers(vec![-1, 3, 3]))
+    );
+    assert_eq!(of(DocValuesType::Numeric, &longs), Some(Numbers(vec![3])));
+    assert_eq!(
+        of(DocValuesType::SortedSet, &bytes),
+        Some(Bytes(vec![b"a".to_vec(), b"b".to_vec()]))
+    );
+    assert_eq!(
+        of(DocValuesType::Sorted, &bytes),
+        Some(Bytes(vec![b"b".to_vec()]))
+    );
+    assert_eq!(of(DocValuesType::SortedSet, &longs), None);
+    assert_eq!(of(DocValuesType::None, &bytes), None);
+}
+
 /// One buffered document's doc values read the same in its slot, while
 /// flushing and once published, as long as a view holds the buffer.
 #[test]

@@ -541,9 +541,8 @@ impl Flushing {
     }
 }
 
-/// A flushing buffer's packed fields (their full blocks shared with the
-/// flush) and the rest a chunk of it without postings is written from
-/// ([`ConcurrentIndexWriter::live_lean_segment`]). Kept only for a buffer
+/// What a chunk of a flushing buffer without postings is written from,
+/// beside its packed fields ([`ConcurrentIndexWriter::live_lean_segment`]). Kept only for a buffer
 /// whose documents carry no fields or vectors of their own.
 pub(super) struct LeanSource {
     pub(super) has_blocks: bool,
@@ -752,6 +751,7 @@ impl LiveFlushes {
             postings: &f.postings,
             columns: &f.columns,
             explicit: &f.explicit,
+            num_docs: usize::try_from(f.max_doc).unwrap_or(0),
         })
     }
 
@@ -969,6 +969,8 @@ struct Source<'a> {
     postings: &'a PendingPostings,
     columns: &'a LiveColumns,
     explicit: &'a PackedFields,
+    /// How many documents the buffer holds now.
+    num_docs: usize,
 }
 
 impl ConcurrentIndexWriter<'_> {
@@ -1018,7 +1020,7 @@ impl ConcurrentIndexWriter<'_> {
             .map(|f| f.postings.bytes())
             .fold(slots, usize::saturating_add);
         live.buffers()
-            .map(|f| f.columns.ram_bytes())
+            .map(|f| f.columns.ram_bytes().saturating_add(f.explicit.ram_bytes()))
             .fold(retained, usize::saturating_add)
             .saturating_add(live.history_bytes)
     }
@@ -1121,6 +1123,7 @@ impl ConcurrentIndexWriter<'_> {
                 postings: &dwpt.postings,
                 columns: &dwpt.live,
                 explicit: &dwpt.explicit,
+                num_docs: dwpt.num_docs(),
             };
             let mut buffer = view_buffer(&source, tail, max_doc, &cfg)?;
             buffer.in_slot = true;
@@ -1134,6 +1137,7 @@ impl ConcurrentIndexWriter<'_> {
                 postings: &f.postings,
                 columns: &f.columns,
                 explicit: &f.explicit,
+                num_docs: usize::try_from(f.max_doc).unwrap_or(0),
             };
             let mut buffer = view_buffer(&source, &flushing_tail, f.max_doc, &cfg)?;
             buffer.chunks = chunks;
@@ -1547,6 +1551,7 @@ impl ConcurrentIndexWriter<'_> {
                 postings: &d.postings,
                 columns: &d.live,
                 explicit: &d.explicit,
+                num_docs: d.num_docs(),
             }));
         }
         let core_wait = crate::live_timing::start(crate::live_timing::Phase::CoreWait);
@@ -1653,7 +1658,9 @@ impl ConcurrentIndexWriter<'_> {
     /// The doc values of document `doc` of `view`'s buffer `buffer`, for
     /// each of `fields` the document has, as a segment would hold them:
     /// SORTED_NUMERIC values sorted, SORTED_SET values sorted without
-    /// repeats, and a single-valued field's first value. Fails where
+    /// repeats, and a single-valued field's first value. They are the
+    /// values the document was added with: a doc-values update to a
+    /// buffered document is not applied. Fails where
     /// [`Self::live_document`] fails, and for a buffer whose documents were
     /// not all added as explicit fields.
     pub fn live_doc_values(
@@ -1670,11 +1677,12 @@ impl ConcurrentIndexWriter<'_> {
             return Err(missing());
         }
         let at = usize::try_from(doc).map_err(|_| missing())?;
-        let max_doc = usize::try_from(b.max_doc).map_err(|_| missing())?;
         let values = self
             .with_buffer(b.id, |s| {
                 let s = s?;
-                if s.explicit.len() < max_doc {
+                // Each document has packed fields only when all were
+                // added as explicit fields.
+                if s.explicit.len() != s.num_docs {
                     return Some(Err(Error::LiveSearch(format!(
                         "buffer {buffer} holds documents not added as explicit fields"
                     ))));
