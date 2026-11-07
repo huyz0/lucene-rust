@@ -1669,19 +1669,12 @@ impl IndexingConfig {
         &self,
         field: &str,
     ) -> per_field_postings::Lucene104PostingsFormat {
-        if let Some((_, format)) = self.postings_formats.iter().find(|(name, _)| name == field) {
-            return *format;
-        }
-        let routed = self
-            .codec
-            .as_ref()
-            .map(|c| c.postings_format_for_field(field))
-            .unwrap_or_default();
-        if routed == per_field_postings::Lucene104PostingsFormat::default() {
-            self.default_postings_format
-        } else {
-            routed
-        }
+        crate::merge::route_postings_format(
+            field,
+            &self.postings_formats,
+            self.codec.as_deref(),
+            self.default_postings_format,
+        )
     }
 
     /// `PerFieldPostingsFormat.FieldsWriter.write`: this segment's postings,

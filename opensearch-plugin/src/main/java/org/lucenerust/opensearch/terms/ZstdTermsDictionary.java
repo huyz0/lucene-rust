@@ -6,7 +6,6 @@ package org.lucenerust.opensearch.terms;
 import java.io.Closeable;
 import java.io.IOException;
 import org.apache.lucene.index.CorruptIndexException;
-import org.apache.lucene.store.DataInput;
 import org.apache.lucene.store.IndexInput;
 import org.lucenerust.opensearch.NativeBridge;
 
@@ -24,9 +23,11 @@ final class ZstdTermsDictionary implements Closeable {
     }
 
     /** The dictionary at the end of a field's {@code .tmd} record. */
-    static ZstdTermsDictionary read(DataInput meta) throws IOException {
+    static ZstdTermsDictionary read(IndexInput meta) throws IOException {
         int length = meta.readVInt();
-        if (length < 0) {
+        // Bounded by what is left before the checksum is verified, so a corrupt length cannot buy a
+        // large allocation.
+        if (length < 0 || length > meta.length() - meta.getFilePointer()) {
             throw new CorruptIndexException("invalid zstd terms dictionary length: " + length, meta.toString());
         }
         if (length == 0) {

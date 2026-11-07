@@ -1203,13 +1203,7 @@ fn train_term_block_dictionary(
             stride: term_bytes.div_ceil(ZSTD_SAMPLE_BYTES),
         }),
     );
-    let mut refs = Vec::with_capacity(sizes.len());
-    let mut at = 0;
-    for n in sizes {
-        refs.push(&samples[at..at + n]);
-        at += n;
-    }
-    lucene_zstd::train_dictionary(&refs, ZSTD_DICTIONARY_SIZE).unwrap_or_default()
+    lucene_zstd::train_dictionary_joined(&samples, &sizes, ZSTD_DICTIONARY_SIZE).unwrap_or_default()
 }
 
 impl BlockTreeDictionary {
@@ -1293,6 +1287,13 @@ impl BlockTreeDictionary {
                     .flatten();
                 let mut compressor =
                     lucene_zstd::BareCompressor::new(level, prepared.as_ref()).ok();
+                // The `.tmd` must name exactly the dictionary the blocks were
+                // compressed against: a reader decoding a dictionary-less
+                // frame against one starts from the dictionary's repeat
+                // offsets and entropy tables, not the frame's.
+                if prepared.is_none() || compressor.is_none() {
+                    dictionary.clear();
+                }
                 blocktree_writer::write_field_terms(
                     tim,
                     tip,

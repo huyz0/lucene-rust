@@ -5656,11 +5656,11 @@ pub fn open_shared(
         load_node(&tip_bytes[index_start..index_end], root_fp)?;
         let zstd = if zstd {
             let len = read_region_len(&mut tmd_input, "zstd terms dictionary")?;
-            let mut dict = vec![0u8; len];
-            tmd_input.read_bytes(&mut dict)?;
-            Some(Arc::new(ZstdBlocks {
-                dict: (len > 0).then(|| lucene_zstd::DecoderDictionary::new(&dict)),
-            }))
+            // In place: `DecoderDictionary::new` copies what it keeps.
+            let dict = (len > 0)
+                .then(|| lucene_zstd::DecoderDictionary::new(&tmd_input.as_slice()[..len]));
+            tmd_input.skip(len)?;
+            Some(Arc::new(ZstdBlocks { dict }))
         } else {
             None
         };

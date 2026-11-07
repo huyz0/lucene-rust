@@ -376,8 +376,18 @@ pub fn train_dictionary(samples: &[&[u8]], max_size: usize) -> Result<Vec<u8>> {
         joined.extend_from_slice(s);
         sizes.push(s.len());
     }
+    train_dictionary_joined(&joined, &sizes, max_size)
+}
+
+/// [`train_dictionary`] over samples already laid end to end in `joined`,
+/// `sizes` giving each one's length in order.
+///
+/// # Errors
+/// As [`train_dictionary`].
+#[cfg(feature = "dict-builder")]
+pub fn train_dictionary_joined(joined: &[u8], sizes: &[usize], max_size: usize) -> Result<Vec<u8>> {
     let mut dict = Vec::with_capacity(max_size);
-    zstd_safe::train_from_buffer(&mut dict, &joined, &sizes).map_err(zstd_error)?;
+    zstd_safe::train_from_buffer(&mut dict, joined, sizes).map_err(zstd_error)?;
     Ok(dict)
 }
 
