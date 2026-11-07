@@ -87,6 +87,9 @@ MAPPINGS = {
     "binary_method": {"type": "knn_vector", "dimension": 16, "data_type": "binary",
                       "method": {"name": "hnsw", "engine": "lucene", "space_type": "hamming"}},
     "stored": {"type": "knn_vector", "dimension": 4, "doc_values": False, "store": True},
+    "half": {"type": "knn_vector", "dimension": 4, "data_type": "half_float"},
+    "half_cos": {"type": "knn_vector", "dimension": 4, "data_type": "half_float", "space_type": "cosinesimil",
+                 "method": {"name": "hnsw", "engine": "lucene"}},
 }
 
 

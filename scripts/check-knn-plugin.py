@@ -13,6 +13,9 @@ answer the same queries. The Rust engine writes the plugin node's segments.
              top-k, filtered, ef_search, boosted and radial query must return
              the same hits with the same scores (1e-4), and the same hits as an
              exhaustive scan computed here.
+  half_float float vectors stored as half floats (cosine ones normalized
+             first, as stock does): checked as exact, against a scan over the
+             half-float values.
   binary     packed bit vectors in the hamming space: the same scores as
              stock, each the hit's own Hamming score; distances tie often, so
              hits are compared by id only above the last score.
@@ -30,7 +33,7 @@ Every search must run in Rust (the plugin's stats show no fallback).
 Needs Docker and the plugin zip in opensearch-plugin/build/distributions
 (`gradle -p opensearch-plugin bundlePlugin`).
 """
-import glob, json, math, os, random, shutil, subprocess, sys, time, urllib.request
+import glob, json, math, os, random, shutil, struct, subprocess, sys, time, urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 VERSION = "3.9.0"
@@ -47,6 +50,8 @@ EXACT = {
     "lucene_ip": {"engine": "lucene", "space_type": "innerproduct"},
     "lucene_byte": {"engine": "lucene", "space_type": "l2", "data_type": "byte"},
     "lucene_binary": {"engine": "lucene", "space_type": "hamming", "data_type": "binary", "dimension": 64},
+    "lucene_half_l2": {"engine": "lucene", "space_type": "l2", "data_type": "half_float"},
+    "lucene_half_cos": {"engine": "lucene", "space_type": "cosinesimil", "data_type": "half_float"},
 }
 QUANTIZED = {
     "lucene_sq": {"engine": "lucene", "space_type": "l2", "encoder": {"name": "sq", "parameters": {"bits": 7}}},
@@ -159,8 +164,36 @@ def score(space, a, b):
     return 1 / (1 - dot) if dot < 0 else dot + 1
 
 
+def indexed(spec, v):
+    """The vector a field indexes for `v`: a half_float field's half floats, normalized first for cosine."""
+    if spec.get("data_type") != "half_float":
+        return v
+    if spec["space_type"] == "cosinesimil":
+        v = normalized(v)
+    return [struct.unpack("<e", struct.pack("<e", x))[0] for x in v]
+
+
+def normalized(v):
+    """VectorUtil.l2normalize, in float32."""
+    f32 = lambda x: struct.unpack("<f", struct.pack("<f", x))[0]
+    norm = f32(math.sqrt(f32(sum(f32(x * x) for x in v))))
+    return [f32(x / norm) for x in v]
+
+
+def half_cosine(spec):
+    """k-NN scores half_float cosine fields' normalized vectors by its FP16 kernel, (1 + dot) / 2:
+    in float32 here, and on CPUs with AVX-512-FP16 by FP16 FMAs on stock, whose scores then differ
+    by up to a few 1e-4 and can swap near-equal hits."""
+    return spec.get("data_type") == "half_float" and spec["space_type"] == "cosinesimil"
+
+
 def exact_top(spec, docs, target, k, keep=lambda d: True):
-    scored = sorted(((score(spec["space_type"], target, d["emb"]), d["_id"]) for d in docs if keep(d)),
+    if half_cosine(spec):
+        q = normalized(target)
+        of = lambda d: (1 + sum(x * y for x, y in zip(q, indexed(spec, d["emb"])))) / 2
+    else:
+        of = lambda d: score(spec["space_type"], target, indexed(spec, d["emb"]))
+    scored = sorted(((of(d), d["_id"]) for d in docs if keep(d)),
                     key=lambda t: (-t[0], t[1]))
     return scored[:k]
 
@@ -180,6 +213,21 @@ def same(got, want, tol=1e-4, ties=False):
         last = want[-1][1]
         return [i for i, sc in got if sc > last] == [i for i, sc in want if sc > last]
     return [i for i, _ in got] == [i for i, _ in want]
+
+
+def close(got, want, tol=1e-3):
+    """Scores within `tol`; a hit missing from the other list scores within `tol` of its last."""
+    if len(got) != len(want):
+        return False
+    theirs, last = dict(want), (want[-1][1] if want else 0)
+    for (i, sc), (_, w) in zip(got, want):
+        if abs(sc - w) > tol * max(1.0, abs(w)):
+            return False
+        if i in theirs and abs(sc - theirs[i]) > tol * max(1.0, abs(w)):
+            return False
+        if i not in theirs and abs(sc - last) > tol * max(1.0, abs(last)):
+            return False
+    return True
 
 
 def knn(target, **params):
@@ -259,7 +307,7 @@ def main():
                         got = search(OURS[1], index, body)
                         want = search(STOCK[1], index, body)
                         checked += 1
-                        if not same(got, want, ties=binary):
+                        if not (close(got, want) if half_cosine(spec) else same(got, want, ties=binary)):
                             first = next((i for i, (a, b) in enumerate(zip(got, want)) if a[0] != b[0]),
                                          min(len(got), len(want)))
                             failures.append(f"{index} {label} query {qi}: {len(got)} vs {len(want)} hits, first "
@@ -289,6 +337,7 @@ def main():
             ("binary max_distance", "lucene_binary", {"query": knn([1] * 8, max_distance=3)}),
             ("binary dimension", "lucene_binary", {"query": knn([1] * 7, k=3)}),
             ("binary values", "lucene_binary", {"query": knn([200] * 8, k=3)}),
+            ("half_float dimension", "lucene_half_l2", {"query": knn([0.1] * (DIM + 1), k=3)}),
         ]
         for label, index, body in errors:
             a = req(OURS[1], "POST", f"/{index}/_search", body, ok_errors=True)
@@ -303,6 +352,11 @@ def main():
             ("binary dimension", {"type": "knn_vector", "dimension": 12, "data_type": "binary"}),
             ("binary l2", {"type": "knn_vector", "dimension": 16, "data_type": "binary", "space_type": "l2"}),
             ("hamming float", {"type": "knn_vector", "dimension": 16, "space_type": "hamming"}),
+            ("half_float hamming", {"type": "knn_vector", "dimension": 16, "data_type": "half_float", "space_type": "hamming"}),
+            ("half_float 4x", {"type": "knn_vector", "dimension": 16, "data_type": "half_float", "compression_level": "4x"}),
+            ("half_float sq", {"type": "knn_vector", "dimension": 16, "data_type": "half_float",
+                               "method": {"name": "hnsw", "engine": "lucene",
+                                          "parameters": {"encoder": {"name": "sq", "parameters": {"bits": 1}}}}}),
             ("binary sq", {"type": "knn_vector", "dimension": 16, "data_type": "binary",
                            "method": {"name": "hnsw", "engine": "lucene",
                                       "parameters": {"encoder": {"name": "sq", "parameters": {"bits": 7}}}}}),
@@ -314,6 +368,11 @@ def main():
                 if r.get("status", 200) != 400:
                     failures.append(f"mapping {label} accepted on port {port}: {json.dumps(r)[:200]}")
                     req(port, "DELETE", "/bad-mapping", ok_errors=True)
+        for label, value in (("half_float range", [70000.0] * DIM), ("half_float nan", ["NaN"] * DIM)):
+            for port in (OURS[1], STOCK[1]):
+                r = req(port, "PUT", "/lucene_half_l2/_doc/bad", {"emb": value}, ok_errors=True)
+                if r.get("status", 200) != 400:
+                    failures.append(f"document {label} accepted on port {port}: {json.dumps(r)[:200]}")
         faiss_mappings = [
             ("faiss", {"type": "knn_vector", "dimension": 4, "method": {"name": "hnsw", "engine": "faiss"}}),
             ("top-level faiss", {"type": "knn_vector", "dimension": 4, "engine": "FAISS"}),

@@ -7,6 +7,7 @@ import org.lucenerust.opensearch.knn.rest.KnnStats;
 import org.apache.lucene.index.VectorEncoding;
 import org.apache.lucene.search.MatchNoDocsQuery;
 import org.apache.lucene.search.Query;
+import org.apache.lucene.util.VectorUtil;
 import org.opensearch.Version;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.core.ParseField;
@@ -381,7 +382,12 @@ public final class KnnQueryBuilder extends AbstractQueryBuilder<KnnQueryBuilder>
             target = KnnTarget.of(bytes);
         } else {
             KnnVectors.checkFloats(vector, space);
-            target = KnnTarget.of(vector.clone());
+            float[] query = vector.clone();
+            // KNNVectorFieldType.transformQueryVector: half-float cosine queries are normalized, as the vectors are.
+            if (config.halfFloat() && space == SpaceType.COSINESIMIL) {
+                VectorUtil.l2normalize(query);
+            }
+            target = KnnTarget.of(query);
         }
         Query filterQuery = filter == null ? null : filter.toQuery(context);
         if (k != null) {

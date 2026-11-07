@@ -11,6 +11,7 @@ import org.apache.lucene.document.StoredField;
 import org.apache.lucene.index.VectorEncoding;
 import org.apache.lucene.search.FieldExistsQuery;
 import org.apache.lucene.search.Query;
+import org.apache.lucene.util.VectorUtil;
 import org.lucenerust.opensearch.engine.VectorsFormatSpec;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.common.xcontent.support.XContentMapValues;
@@ -227,7 +228,10 @@ public final class KnnVectorFieldMapper extends ParametrizedFieldMapper {
             ft.putAttribute(DIMENSION, Integer.toString(config.dimension()));
             ft.putAttribute(SPACE_TYPE, config.spaceType().value());
             ft.putAttribute(KNN_ENGINE, config.engine());
-            ft.putAttribute(DATA_TYPE, config.binary() ? "binary" : config.dataType() == VectorEncoding.BYTE ? "byte" : "float");
+            ft.putAttribute(
+                DATA_TYPE,
+                config.binary() ? "binary" : config.halfFloat() ? "half_float" : config.dataType() == VectorEncoding.BYTE ? "byte" : "float"
+            );
             ft.putAttribute(VectorsFormatSpec.ATTRIBUTE, config.format().attribute());
             ft.freeze();
             this.vectorType = ft;
@@ -301,11 +305,23 @@ public final class KnnVectorFieldMapper extends ParametrizedFieldMapper {
             keep(context, v);
         } else {
             float[] v = KnnVectors.toFloats(values, config.spaceType());
+            if (config.halfFloat()) {
+                KnnVectors.checkHalfFloats(v);
+                // VectorTransformerFactory: k-NN normalizes half-float cosine vectors before storing them.
+                if (config.spaceType() == SpaceType.COSINESIMIL) {
+                    VectorUtil.l2normalize(v);
+                }
+            }
             if (vectorType != null) {
                 FieldType type = vectorType(context);
                 context.doc().add(masked(context) ? new DerivedSource.MaskedFloat(name(), v, type) : new KnnFloatVectorField(name(), v, type));
             }
-            if (hasDocValues || stored) {
+            if (config.halfFloat()) {
+                // LuceneFieldStrategy: no doc values; stored as little-endian half floats.
+                if (stored) {
+                    context.doc().add(new StoredField(name(), KnnVectors.halfFloatBytes(v)));
+                }
+            } else if (hasDocValues || stored) {
                 ByteBuffer bytes = ByteBuffer.allocate(v.length * Float.BYTES);
                 for (float f : v) {
                     bytes.putFloat(f);

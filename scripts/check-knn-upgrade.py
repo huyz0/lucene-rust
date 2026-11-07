@@ -163,7 +163,7 @@ def read(cases, rename, plugin_reads, failures):
                 got = [(h["_id"], h["_score"]) for h in r["hits"]["hits"]]
                 checked += 1
                 if group == "exact":
-                    if not ck.same(got, want, ties=ck.ties(spec)):
+                    if not (ck.close(got, want) if ck.half_cosine(spec) else ck.same(got, want, ties=ck.ties(spec))):
                         failures.append(f"{rename}{index} {label} query {qi}: {got[:3]} vs writer's {want[:3]}")
                 elif label == "top k":
                     if plugin_reads:
@@ -193,12 +193,21 @@ def sources(docs_by_index, rename, failures):
             if set(seen) != set(want):
                 failures.append(f"{rename}{index} {how}: {len(seen)} documents, {len(want)} live")
                 continue
-            bad = [i for i, v in want.items() if not same_vector(seen[i], v)]
+            # A half_float field's derived source is its half floats, as stock's.
+            spec = spec_of(index)
+            bad = [i for i, v in want.items()
+                   if not same_vector(seen[i], v) and not same_vector(seen[i], ck.indexed(spec, v))]
             checked += len(seen)
             if bad:
                 failures.append(f"{rename}{index} {how}: _source of {bad[:3]} is {seen[bad[0]]!r:.80}, "
                                 f"indexed {want[bad[0]]!r:.80}")
     return checked
+
+
+def spec_of(index):
+    """The mapping case an index (a prefix and the case's name) was created from."""
+    specs = {**ck.EXACT, **ck.QUANTIZED}
+    return specs[max((n for n in specs if index.endswith(n)), key=len)]
 
 
 def same_vector(got, want):

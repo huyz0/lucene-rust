@@ -8,8 +8,9 @@ package org.lucenerust.opensearch.engine;
  * names it in the field attribute {@link #ATTRIBUTE}: {@code hnsw:<m>:<beam>} for {@code
  * Lucene99HnswVectorsFormat}, {@code hnsw_sq:<encoding>:<m>:<beam>} for {@code
  * Lucene104HnswScalarQuantizedVectorsFormat}, {@code sq:<encoding>} for {@code
- * Lucene104ScalarQuantizedVectorsFormat} and {@code hnsw_hamming:<m>:<beam>} for k-NN's {@code
- * KNN990HnswBinaryVectorsFormat} ({@code encoding} is {@code ScalarEncoding}'s wire number).
+ * Lucene104ScalarQuantizedVectorsFormat}, {@code hnsw_hamming:<m>:<beam>} for k-NN's {@code
+ * KNN990HnswBinaryVectorsFormat} and {@code hnsw_half:<m>:<beam>} for its {@code
+ * KNN1040HnswHalfFloatVectorsFormat} ({@code encoding} is {@code ScalarEncoding}'s wire number).
  * The attribute stays in the segments' field infos, so a reopened writer merges the field in the
  * same format ({@code engine_writer.rs}'s {@code parse_vectors_format}).
  */
@@ -42,6 +43,10 @@ public record VectorsFormatSpec(int kind, int maxConn, int beamWidth, int encodi
         return new VectorsFormatSpec(4, m, beam, 0);
     }
 
+    public static VectorsFormatSpec hnswHalfFloat(int m, int beam) {
+        return new VectorsFormatSpec(5, m, beam, 0);
+    }
+
     /** The attribute value. */
     public String attribute() {
         return switch (kind) {
@@ -49,6 +54,7 @@ public record VectorsFormatSpec(int kind, int maxConn, int beamWidth, int encodi
             case 2 -> "hnsw_sq:" + encoding + ":" + maxConn + ":" + beamWidth;
             case 3 -> "sq:" + encoding;
             case 4 -> "hnsw_hamming:" + maxConn + ":" + beamWidth;
+            case 5 -> "hnsw_half:" + maxConn + ":" + beamWidth;
             default -> "default";
         };
     }
@@ -67,6 +73,7 @@ public record VectorsFormatSpec(int kind, int maxConn, int beamWidth, int encodi
                     : DEFAULT;
                 case "sq" -> p.length == 2 ? quantized(Integer.parseInt(p[1])) : DEFAULT;
                 case "hnsw_hamming" -> p.length == 3 ? hnswHamming(Integer.parseInt(p[1]), Integer.parseInt(p[2])) : DEFAULT;
+                case "hnsw_half" -> p.length == 3 ? hnswHalfFloat(Integer.parseInt(p[1]), Integer.parseInt(p[2])) : DEFAULT;
                 default -> DEFAULT;
             };
         } catch (NumberFormatException e) {
@@ -77,7 +84,7 @@ public record VectorsFormatSpec(int kind, int maxConn, int beamWidth, int encodi
     /** {@code engine_writer.rs}'s {@code decode_vector_schema} format part. */
     void encode(Blob b) {
         b.u8(kind);
-        if (kind == 1 || kind == 2 || kind == 4) {
+        if (kind == 1 || kind == 2 || kind == 4 || kind == 5) {
             b.i32(maxConn).i32(beamWidth);
         }
         if (kind == 2 || kind == 3) {

@@ -105,9 +105,14 @@ fn check(similarity: VectorSimilarityFunction, merge: bool) {
         }));
         let flat = seg.flat_vectors_reader().unwrap().unwrap();
         assert!(flat.stores_half_floats());
-        let values = flat.float_vector_values(field.number).unwrap();
-        assert_eq!(values.similarity(), similarity);
+        assert_eq!(flat.field(field.number).unwrap().similarity, similarity);
     }
+    // k-NN scores half-float cosine vectors (which it normalizes) by `(1 + dot) / 2`.
+    let scoring = if similarity == VectorSimilarityFunction::Cosine {
+        VectorSimilarityFunction::DotProduct
+    } else {
+        similarity
+    };
     let opened = reader.open_segments().unwrap();
     let segments = opened.as_open_segments();
     let k = 10;
@@ -127,11 +132,11 @@ fn check(similarity: VectorSimilarityFunction, merge: bool) {
         assert_eq!(hits.len(), k);
         // Doc ids are ids: one writer, segments in order.
         for h in &hits {
-            let want = similarity.score(&target, &stored(&vector(h.doc_id as usize)));
+            let want = scoring.score(&target, &stored(&vector(h.doc_id as usize)));
             assert_eq!(h.score, want, "doc {} score", h.doc_id);
         }
         let mut exact: Vec<f32> = (0..DOCS)
-            .map(|id| similarity.score(&target, &stored(&vector(id))))
+            .map(|id| scoring.score(&target, &stored(&vector(id))))
             .collect();
         exact.sort_by(|a, b| b.total_cmp(a));
         let kth = exact[k - 1];
@@ -157,5 +162,6 @@ fn a_merged_segment_scores_its_half_floats() {
 #[test]
 fn the_similarity_comes_from_the_field() {
     check(VectorSimilarityFunction::Cosine, true);
+    check(VectorSimilarityFunction::Cosine, false);
     check(VectorSimilarityFunction::MaximumInnerProduct, false);
 }

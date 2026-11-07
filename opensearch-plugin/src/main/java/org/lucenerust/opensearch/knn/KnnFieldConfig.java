@@ -7,6 +7,8 @@ import org.apache.lucene.index.VectorEncoding;
 import org.lucenerust.opensearch.engine.VectorsFormatSpec;
 import org.opensearch.index.mapper.MapperParsingException;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 
@@ -16,7 +18,8 @@ import java.util.Map;
  * format the Rust writer builds: Lucene's HNSW graph over float or byte vectors, quantized with a
  * Lucene104 scalar encoding when the method's encoder or the compression asks for one, or k-NN's
  * {@code KNN990HnswBinaryVectorsFormat} graph over packed bit vectors ({@code data_type: binary},
- * {@code hamming} space).
+ * {@code hamming} space), or its {@code KNN1040HnswHalfFloatVectorsFormat} graph over half floats
+ * ({@code data_type: half_float}).
  *
  * <p>A mapping without an engine uses {@code lucene}; {@code faiss} is refused. The search reads the
  * raw vectors through the graph, so a quantized field's scores are the exact ones the stock plugin
@@ -24,12 +27,14 @@ import java.util.Map;
  *
  * @param dimension the mapping's dimension: bits for a {@link #binary} field
  * @param binary packed bit vectors, {@code dimension / 8} bytes each
+ * @param halfFloat float vectors stored as half floats
  * @param encoding a {@link VectorsFormatSpec} scalar encoding wire number, {@code -1} for full precision
  */
 public record KnnFieldConfig(
     int dimension,
     VectorEncoding dataType,
     boolean binary,
+    boolean halfFloat,
     SpaceType spaceType,
     String engine,
     int m,
@@ -56,6 +61,9 @@ public record KnnFieldConfig(
     public VectorsFormatSpec format() {
         if (binary) {
             return VectorsFormatSpec.hnswHamming(m, efConstruction);
+        }
+        if (halfFloat) {
+            return VectorsFormatSpec.hnswHalfFloat(m, efConstruction);
         }
         return encoding < 0 ? VectorsFormatSpec.hnsw(m, efConstruction) : VectorsFormatSpec.hnswQuantized(encoding, m, efConstruction);
     }
@@ -88,13 +96,14 @@ public record KnnFieldConfig(
         }
         // Stock parses data_type and engine names in any case, and persists data_type upper case.
         VectorEncoding encodingType = switch (dataType.toLowerCase(Locale.ROOT)) {
-            case "float" -> VectorEncoding.FLOAT32;
+            case "float", "half_float" -> VectorEncoding.FLOAT32;
             case "byte", "binary" -> VectorEncoding.BYTE;
             default -> throw new MapperParsingException(
-                String.format(Locale.ROOT, "Invalid value provided for [data_type] field: [%s]. Supported values are [float, byte, binary]", dataType)
+                String.format(Locale.ROOT, "Invalid value provided for [data_type] field: [%s]. Supported values are [float, half_float, byte, binary]", dataType)
             );
         };
         boolean binary = dataType.equalsIgnoreCase("binary");
+        boolean halfFloat = dataType.equalsIgnoreCase("half_float");
 
         String methodName = "hnsw";
         String methodSpace = null;
@@ -141,7 +150,7 @@ public record KnnFieldConfig(
             );
         }
         if (level == null && "on_disk".equals(resolvedMode)) {
-            level = encodingType == VectorEncoding.BYTE ? "1x" : "32x";
+            level = encodingType == VectorEncoding.BYTE ? "1x" : halfFloat ? "16x" : "32x";
         }
 
         // Stock parses engine names in any case; the lucene engine is the default here, and faiss
@@ -188,6 +197,28 @@ public record KnnFieldConfig(
             }
         }
 
+        if (halfFloat) {
+            // LuceneHNSWMethodResolver.resolveHalfFloatMethod: x1 or x16, set by compression_level only.
+            List<String> errors = new ArrayList<>();
+            if (level != null && level.equals("1x") == false && level.equals("16x") == false) {
+                errors.add(String.format(Locale.ROOT, "\"lucene\" with \"half_float\" data type does not support \"%s\" compression", level));
+            }
+            if (explicitEncoder) {
+                errors.add("\"encoder\" parameter is not supported for \"half_float\" data type; use \"compression_level\" instead.");
+            }
+            if (errors.isEmpty() == false) {
+                StringBuilder message = new StringBuilder("Validation Failed: ");
+                for (int i = 0; i < errors.size(); i++) {
+                    message.append(i + 1).append(": ").append(errors.get(i)).append(';');
+                }
+                throw new MapperParsingException(message.toString());
+            }
+            if ("16x".equals(level)) {
+                throw new MapperParsingException("Compression level [16x] for [data_type] [half_float] is not supported by this node");
+            }
+            return new KnnFieldConfig(dimension, encodingType, false, true, spaceType, engine, m, efConstruction, -1, resolvedMode, level);
+        }
+
         if (level != null) {
             int fromLevel = compressionEncoding(level);
             if (encodingType == VectorEncoding.BYTE && level.equals("1x") == false) {
@@ -206,7 +237,7 @@ public record KnnFieldConfig(
         if (encoding >= 0 && encodingType == VectorEncoding.BYTE) {
             throw new MapperParsingException("Quantization is only supported for [data_type] [float]");
         }
-        return new KnnFieldConfig(dimension, encodingType, binary, spaceType, engine, m, efConstruction, encoding, resolvedMode, level);
+        return new KnnFieldConfig(dimension, encodingType, binary, false, spaceType, engine, m, efConstruction, encoding, resolvedMode, level);
     }
 
     /** The encoder's scalar encoding, {@code -1} for full precision. */

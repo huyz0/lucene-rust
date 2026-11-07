@@ -10702,14 +10702,17 @@ impl IndexWriter<'_> {
             // do not change. The first error in field order is returned.
             let graphs: Vec<Option<hnsw::OnHeapHnswGraph>> = {
                 use rayon::prelude::*;
-                let mut flat =
-                    vectors::FlatVectorsReader::open(&vemf_bytes, &vec_bytes, segment_id, suffix)?;
-                flat.resolve_similarities(|number| {
-                    flat_fields
-                        .iter()
-                        .find(|f| f.field_number == number)
-                        .map(|f| f.similarity)
-                })?;
+                // A half-float instance's flush graph is built over the
+                // vectors as indexed, as `Lucene99HnswVectorsWriter` builds
+                // k-NN's from the field writer's `float[]`s: an in-memory
+                // full-precision copy, ordinal for ordinal.
+                let full;
+                let flat = if vectors::stores_half_floats(suffix) {
+                    full = vectors::write_flat_vectors(flat_fields, max_doc, segment_id, "")?;
+                    vectors::FlatVectorsReader::open(&full.1, &full.0, segment_id, "")?
+                } else {
+                    vectors::FlatVectorsReader::open(&vemf_bytes, &vec_bytes, segment_id, suffix)?
+                };
                 let build = |field: &FlatVectorsField| -> Result<Option<hnsw::OnHeapHnswGraph>> {
                     let count = field.docs.len() as i32;
                     // `Lucene99HnswVectorsWriter.shouldCreateGraph`: a segment

@@ -883,13 +883,20 @@ impl<'a> FlatVectorsReader<'a> {
                 entry.dimension
             ));
         };
+        // k-NN normalizes half-float cosine vectors and scores them with its
+        // FP16 cosine kernel, `(1 + dot) / 2`: the dot-product score.
+        let similarity = if self.half && entry.similarity == VectorSimilarityFunction::Cosine {
+            VectorSimilarityFunction::DotProduct
+        } else {
+            entry.similarity
+        };
         Ok(RawVectorValues {
             slice: region,
             file: self.data,
             dimension: entry.dimension as usize,
             vector_bytes,
             size: entry.size,
-            similarity: entry.similarity,
+            similarity,
             hamming: self.hamming && entry.encoding == VectorEncoding::Byte,
             half: self.half,
             ord_to_doc: entry.ord_to_doc.clone(),
@@ -2819,8 +2826,13 @@ mod tests {
         reader
             .resolve_similarities(|n| (n == 3).then_some(VectorSimilarityFunction::Cosine))
             .unwrap();
+        assert_eq!(
+            reader.field(3).unwrap().similarity,
+            VectorSimilarityFunction::Cosine
+        );
+        // Scored as k-NN's FP16 cosine kernel scores normalized vectors.
         let values = reader.float_vector_values(3).unwrap();
-        assert_eq!(values.similarity(), VectorSimilarityFunction::Cosine);
+        assert_eq!(values.similarity(), VectorSimilarityFunction::DotProduct);
         assert_eq!(values.ord_to_doc(1).unwrap(), 2);
         // `float_field`'s components (`i * 0.5 - 1`) are exact half floats.
         let want: Vec<f32> = (4..8).map(|i| i as f32 * 0.5 - 1.0).collect();
