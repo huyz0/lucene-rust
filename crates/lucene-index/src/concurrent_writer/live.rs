@@ -37,7 +37,7 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLockReadGuard};
 
-use lucene_codecs::field_infos::{FieldInfo, IndexOptions};
+use lucene_codecs::field_infos::{DocValuesType, FieldInfo, IndexOptions};
 use lucene_codecs::postings_writer::TermPostings;
 use lucene_codecs::stored_fields::{FieldValue, StoredField};
 
@@ -448,6 +448,56 @@ impl Deletes {
     }
 }
 
+/// One buffered document's doc values for a field
+/// ([`ConcurrentIndexWriter::live_doc_values`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LiveDocValue {
+    /// NUMERIC and SORTED_NUMERIC.
+    Numbers(Vec<i64>),
+    /// BINARY, SORTED and SORTED_SET.
+    Bytes(Vec<Vec<u8>>),
+}
+
+impl LiveDocValue {
+    /// `values` as a segment of field type `kind` holds them; `None` when
+    /// there are none of the field's kind.
+    fn of<'a>(kind: DocValuesType, values: impl Iterator<Item = &'a FieldValue>) -> Option<Self> {
+        let number = |v: &FieldValue| match v {
+            FieldValue::Long(x) => Some(*x),
+            FieldValue::Int(x) => Some(i64::from(*x)),
+            _ => None,
+        };
+        let bytes = |v: &FieldValue| match v {
+            FieldValue::String(s) => Some(s.as_bytes().to_vec()),
+            FieldValue::Binary(b) => Some(b.clone()),
+            _ => None,
+        };
+        let out = match kind {
+            DocValuesType::Numeric => Self::Numbers(values.filter_map(number).take(1).collect()),
+            DocValuesType::SortedNumeric => {
+                let mut v: Vec<i64> = values.filter_map(number).collect();
+                v.sort_unstable();
+                Self::Numbers(v)
+            }
+            DocValuesType::Binary | DocValuesType::Sorted => {
+                Self::Bytes(values.filter_map(bytes).take(1).collect())
+            }
+            DocValuesType::SortedSet => {
+                let mut v: Vec<Vec<u8>> = values.filter_map(bytes).collect();
+                v.sort_unstable();
+                v.dedup();
+                Self::Bytes(v)
+            }
+            _ => return None,
+        };
+        match &out {
+            Self::Numbers(v) if v.is_empty() => None,
+            Self::Bytes(v) if v.is_empty() => None,
+            _ => Some(out),
+        }
+    }
+}
+
 /// A buffer taken for a flush: readable by live search until it is
 /// published, and after, until a commit holding it is released
 /// ([`ConcurrentIndexWriter::release_live`]).
@@ -465,6 +515,10 @@ pub(super) struct Flushing {
     /// What chunks without postings are written from until the buffer is
     /// published, beside `columns`' chunk columns.
     pub(super) lean: Option<LeanSource>,
+    /// The documents' fields as indexed (full blocks shared with the
+    /// flush), for reading one document's doc values
+    /// ([`ConcurrentIndexWriter::live_doc_values`]).
+    pub(super) explicit: PackedFields,
 }
 
 /// What a chunk without postings is written from, copied out of its
@@ -492,7 +546,6 @@ impl Flushing {
 /// ([`ConcurrentIndexWriter::live_lean_segment`]). Kept only for a buffer
 /// whose documents carry no fields or vectors of their own.
 pub(super) struct LeanSource {
-    pub(super) explicit: PackedFields,
     pub(super) has_blocks: bool,
     pub(super) partition: Option<Arc<str>>,
 }
@@ -698,6 +751,7 @@ impl LiveFlushes {
         self.buffers().find(|f| f.columns.id == id).map(|f| Source {
             postings: &f.postings,
             columns: &f.columns,
+            explicit: &f.explicit,
         })
     }
 
@@ -914,6 +968,7 @@ impl StoredArena {
 struct Source<'a> {
     postings: &'a PendingPostings,
     columns: &'a LiveColumns,
+    explicit: &'a PackedFields,
 }
 
 impl ConcurrentIndexWriter<'_> {
@@ -1065,6 +1120,7 @@ impl ConcurrentIndexWriter<'_> {
             let source = Source {
                 postings: &dwpt.postings,
                 columns: &dwpt.live,
+                explicit: &dwpt.explicit,
             };
             let mut buffer = view_buffer(&source, tail, max_doc, &cfg)?;
             buffer.in_slot = true;
@@ -1077,6 +1133,7 @@ impl ConcurrentIndexWriter<'_> {
             let source = Source {
                 postings: &f.postings,
                 columns: &f.columns,
+                explicit: &f.explicit,
             };
             let mut buffer = view_buffer(&source, &flushing_tail, f.max_doc, &cfg)?;
             buffer.chunks = chunks;
@@ -1265,7 +1322,7 @@ impl ConcurrentIndexWriter<'_> {
                     .ok_or_else(flushed)?;
                 let source = f.lean.as_ref().ok_or_else(flushed)?;
                 let copied = Copied {
-                    explicit: source.explicit.snapshot(),
+                    explicit: f.explicit.snapshot(),
                     docs: Vec::new(),
                     custom: Vec::new(),
                     vectors: Vec::new(),
@@ -1489,6 +1546,7 @@ impl ConcurrentIndexWriter<'_> {
             return f(Some(&Source {
                 postings: &d.postings,
                 columns: &d.live,
+                explicit: &d.explicit,
             }));
         }
         let core_wait = crate::live_timing::start(crate::live_timing::Phase::CoreWait);
@@ -1590,6 +1648,57 @@ impl ConcurrentIndexWriter<'_> {
         let doc = usize::try_from(doc).map_err(|_| missing())?;
         self.with_buffer(b.id, |s| s.and_then(|s| s.columns.stored.document(doc)))
             .ok_or_else(missing)
+    }
+
+    /// The doc values of document `doc` of `view`'s buffer `buffer`, for
+    /// each of `fields` the document has, as a segment would hold them:
+    /// SORTED_NUMERIC values sorted, SORTED_SET values sorted without
+    /// repeats, and a single-valued field's first value. Fails where
+    /// [`Self::live_document`] fails, and for a buffer whose documents were
+    /// not all added as explicit fields.
+    pub fn live_doc_values(
+        &self,
+        view: &LiveView,
+        buffer: usize,
+        doc: i32,
+        fields: &[i32],
+    ) -> Result<Vec<(i32, LiveDocValue)>> {
+        let missing =
+            || Error::LiveSearch(format!("no buffered document {doc} in buffer {buffer}"));
+        let b = view.buffers.get(buffer).ok_or_else(missing)?;
+        if doc < 0 || doc >= b.max_doc {
+            return Err(missing());
+        }
+        let at = usize::try_from(doc).map_err(|_| missing())?;
+        let max_doc = usize::try_from(b.max_doc).map_err(|_| missing())?;
+        let values = self
+            .with_buffer(b.id, |s| {
+                let s = s?;
+                if s.explicit.len() < max_doc {
+                    return Some(Err(Error::LiveSearch(format!(
+                        "buffer {buffer} holds documents not added as explicit fields"
+                    ))));
+                }
+                let mut out = Vec::new();
+                Some(
+                    s.explicit
+                        .for_each_range(at, at.saturating_add(1), |_, f| {
+                            out = std::mem::take(&mut f.doc_values);
+                            Ok(())
+                        })
+                        .map(|()| out),
+                )
+            })
+            .ok_or_else(missing)??;
+        let cfg = self.cfg();
+        Ok(fields
+            .iter()
+            .filter_map(|&n| {
+                let kind = cfg.field_by_number(n)?.doc_values_type;
+                let of_field = values.iter().filter(|v| v.field_number == n);
+                LiveDocValue::of(kind, of_field.map(|v| &v.value)).map(|v| (n, v))
+            })
+            .collect())
     }
 
     /// [`Self::open_live_view`], [`Self::live_view_snapshot`] and

@@ -819,6 +819,47 @@ fn a_flushing_buffer_is_written_as_lean_chunks_until_published() {
     w.close_live_view(&later);
 }
 
+/// One buffered document's doc values read the same in its slot, while
+/// flushing and once published, as long as a view holds the buffer.
+#[test]
+fn a_buffered_documents_doc_values_read_in_every_state() {
+    use super::LiveDocValue::{Bytes, Numbers};
+    let tmp = TempDir::new("live-doc-values");
+    let dir = FsDirectory::open(tmp.path());
+    let w = columns_writer(&dir);
+    let cfg = w.cfg();
+    let number = |name: &str| cfg.field_by_name(name).unwrap().number;
+    let (kw, price, body) = (number("kw"), number("price"), number("body"));
+    let fields = [kw, price, body];
+    let check = |view: &LiveView| {
+        let b = view.buffers.iter().position(|b| b.max_doc == 400).unwrap();
+        let read = |doc| w.live_doc_values(view, b, doc, &fields).unwrap();
+        assert_eq!(
+            read(7),
+            vec![
+                (kw, Bytes(vec![b"t7".to_vec()])),
+                (price, Numbers(vec![993]))
+            ]
+        );
+        assert_eq!(read(4), vec![(price, Numbers(vec![996]))]);
+        assert_eq!(read(11), vec![(kw, Bytes(vec![b"t2".to_vec()]))]);
+        assert!(w.live_doc_values(view, b, 400, &fields).is_err());
+    };
+    let slot_view = w.open_live_view(None).unwrap();
+    check(&slot_view);
+    let batch = {
+        let mut slot = super::write_slot(&w.slots[0]);
+        w.begin_flush(0, &mut slot).unwrap()
+    };
+    let view = w.open_live_view(None).unwrap();
+    check(&view);
+    check(&slot_view);
+    w.complete_flush(batch).unwrap();
+    check(&view);
+    w.close_live_view(&view);
+    w.close_live_view(&slot_view);
+}
+
 /// A published buffer a view reads keeps its segment's files after a
 /// merge replaced the segment and a commit dropped it, until the view is
 /// closed and a release lets the buffer go.
