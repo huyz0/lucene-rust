@@ -26,6 +26,7 @@ pub enum RegistryTag {
     JvmReader = 12,
     /// A shard's index writer (`engine_writer.rs`).
     EngineWriter = 13,
+    ZstdDictionary = 14,
     /// A zstd term-block dictionary (`zstd_terms.rs`).
     ZstdTermsDictionary = 15,
 }

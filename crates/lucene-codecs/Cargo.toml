@@ -12,7 +12,6 @@ thiserror.workspace = true
 lucene-util = { path = "../lucene-util" }
 lucene-store = { path = "../lucene-store" }
 lz4_flex.workspace = true
-miniz_oxide.workspace = true
 # OpenSearch custom-codecs' `zstd` and `zstd_no_dict` stored fields.
 lucene-zstd = { path = "../lucene-zstd", features = ["dict-builder"] }
 # The SimpleText codec's `checksum` line (`SimpleTextUtil.writeChecksum`).
@@ -30,6 +29,8 @@ test-support = []
 # module out of this crate's production build.
 lucene-util = { path = "../lucene-util", features = ["test-support"] }
 criterion.workspace = true
+# Independent DEFLATE streams for the inflater's tests.
+miniz_oxide.workspace = true
 
 [[bench]]
 name = "hot_paths"

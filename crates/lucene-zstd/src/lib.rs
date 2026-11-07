@@ -225,6 +225,38 @@ impl Compressor {
             cctx.compress_using_cdict(dst, src, &dict.cdict)
         })
     }
+
+    /// [`Self::compress_with_prepared`] for many small blocks against one
+    /// dictionary: libzstd searches the prepared dictionary's tables in
+    /// place instead of copying them into the context for each block, which
+    /// it otherwise does for blocks above a few KiB. The frames differ from
+    /// [`Self::compress_with_prepared`]'s; any decoder reads both.
+    ///
+    /// # Errors
+    /// As [`Self::compress`].
+    pub fn compress_with_prepared_attached(
+        &mut self,
+        dict: &EncoderDictionary,
+        src: &[u8],
+        out: &mut Vec<u8>,
+    ) -> Result<usize> {
+        let cctx = &mut self.cctx;
+        cctx.set_parameter(zstd_safe::CParameter::ForceAttachDict(
+            zstd_safe::DictAttachPref::ForceAttach,
+        ))
+        .map_err(zstd_error)?;
+        cctx.ref_cdict(&dict.cdict).map_err(zstd_error)?;
+        let n = append_with(out, compress_bound(src.len()), |dst| {
+            cctx.compress2(dst, src)
+        });
+        // The context must not keep a reference past this borrow of `dict`.
+        let reset = cctx
+            .reset(zstd_safe::ResetDirective::SessionAndParameters)
+            .map_err(zstd_error);
+        let n = n?;
+        reset?;
+        Ok(n)
+    }
 }
 
 /// The dictionary a frame was compressed against, as a decompressor needs it.

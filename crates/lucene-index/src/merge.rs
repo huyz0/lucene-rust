@@ -1654,10 +1654,16 @@ enum StoredFieldsMergeStrategy {
 /// `stored_fields::open` already refuses anything that is not this port's one
 /// `VERSION_CURRENT` in this port's one chunk format, so a `MergeSource`
 /// cannot be holding a reader those checks would reject.
+///
+/// A writer with the high-compression LZ4 match finder on copies only the
+/// chunks of a source written the same way (`source_lz4_hc`): any other
+/// source is recompressed once, so a merged segment's chunks are all of one
+/// kind.
 fn stored_fields_merge_strategy(
     writer: &stored_fields::StoredFieldsWriter,
     source: &MergeSource,
     matching: bool,
+    source_lz4_hc: bool,
 ) -> StoredFieldsMergeStrategy {
     // A pruning source hands the writer a filtering reader in Java, which is
     // never the matching compressing reader either.
@@ -1666,7 +1672,10 @@ fn stored_fields_merge_strategy(
     }
     // "its not worth fine-graining this if there are deletions" -- plus the
     // compressor/chunk-size/dirtiness trio, which `can_bulk_copy` owns.
-    if source.live_docs.is_none() && writer.can_bulk_copy(source.reader) {
+    if source.live_docs.is_none()
+        && writer.can_bulk_copy(source.reader)
+        && (source_lz4_hc || !writer.lz4_high_compression())
+    {
         StoredFieldsMergeStrategy::Bulk
     } else {
         StoredFieldsMergeStrategy::Doc
@@ -1688,8 +1697,12 @@ fn stored_fields_merge_strategy(
 /// `0..maxDoc`, so every chunk it owns is copied verbatim. For the sorted
 /// merge the runs are whatever the k-way merge produces, and `copy_chunks`
 /// falls back to per-document copying at each run's ragged ends.
+#[allow(clippy::too_many_arguments)]
 fn write_merged_stored_fields(
     mode: stored_fields::Mode,
+    lz4_high_compression: bool,
+    lz4_hc_sources: &[bool],
+    zstd_dictionary_min_bytes: u64,
     sources: &[MergeSource],
     per_source_maps: &[HashMap<i32, i32>],
     doc_order: &[(usize, i32)],
@@ -1698,6 +1711,7 @@ fn write_merged_stored_fields(
 ) -> Result<(lucene_store::FsIndexOutput, Vec<u8>, Vec<u8>)> {
     let mut writer =
         stored_fields::StoredFieldsWriter::new(mode, merged_segment_id, mode.segment_suffix());
+    writer.set_lz4_high_compression(lz4_high_compression);
     writer.stream_to(fdt_out);
     // Java's per-reader cached `BlockState`: the DOC path reads a run of
     // documents out of the same chunk, and decompressing that chunk once per
@@ -1726,10 +1740,27 @@ fn write_merged_stored_fields(
                 .map(|source| Ok(source.reader.check_integrity()?)),
         )?;
     }
+    if let stored_fields::Mode::ZstdPaged(_) = mode {
+        let bytes: u64 = sources
+            .iter()
+            .map(|s| s.reader.max_pointer().max(0) as u64)
+            .sum();
+        if bytes >= zstd_dictionary_min_bytes {
+            let readers: Vec<&stored_fields::StoredFieldsReader<'_>> =
+                sources.iter().map(|s| s.reader).collect();
+            if let Some(dict) = stored_fields::train_zstd_paged_dictionary(&readers)? {
+                writer.set_zstd_dictionary(&dict);
+            }
+        }
+    }
     let strategies: Vec<StoredFieldsMergeStrategy> = sources
         .iter()
         .zip(&matching)
-        .map(|(source, &m)| stored_fields_merge_strategy(&writer, source, m))
+        .enumerate()
+        .map(|(i, (source, &m))| {
+            let hc = lz4_hc_sources.get(i).copied().unwrap_or(false);
+            stored_fields_merge_strategy(&writer, source, m, hc)
+        })
         .collect();
 
     if is_scattered(doc_order, sources.len()) {
@@ -2575,6 +2606,14 @@ fn merge_segments_mapped_inner(
         .map_or(stored_fields::Mode::BestSpeed, |codec| {
             codec.stored_fields_mode()
         });
+    // The high-compression match finder only changes LZ4 modes' bytes.
+    let lz4_hc = options.stored_fields_lz4_high_compression
+        && matches!(stored_mode, stored_fields::Mode::BestSpeed)
+        && options
+            .codec
+            .as_deref()
+            .and_then(|codec| codec.stored_fields_writer_factory())
+            .is_none();
     let format_suffix = stored_mode.segment_suffix();
     let format_file =
         |ext| crate::index_writer::segment_file_name(merged_segment_name, format_suffix, ext);
@@ -2606,6 +2645,9 @@ fn merge_segments_mapped_inner(
             // holds a few chunks of stored fields, not the merged segment's.
             let (fdt_out, fdx, fdm) = write_merged_stored_fields(
                 stored_mode,
+                lz4_hc,
+                &options.lz4_high_compression_sources,
+                options.zstd_dictionary_min_bytes,
                 sources,
                 &per_source_maps,
                 &doc_order,
@@ -3131,6 +3173,12 @@ fn merge_segments_mapped_inner(
         files: files.clone(),
         attributes: {
             let mut attributes = crate::segment_writer::stored_fields_mode_attribute(stored_mode);
+            if lz4_hc {
+                attributes.push((
+                    crate::segment_writer::LZ4_HC_ATTRIBUTE.to_string(),
+                    crate::segment_writer::LZ4_HC_VALUE.to_string(),
+                ));
+            }
             for (key, value) in &options.extra_attributes {
                 crate::index_writer::set_attribute(&mut attributes, key, value);
             }
@@ -4450,6 +4498,19 @@ pub struct MergeOptions {
     /// nothing else routes
     /// ([`crate::index_writer::IndexWriter::set_default_postings_format`]).
     pub default_postings_format: per_field_postings::Lucene104PostingsFormat,
+    /// Whether `BEST_SPEED` stored fields are written with the
+    /// high-compression LZ4 match finder
+    /// ([`crate::index_writer::IndexWriter::set_merge_lz4_high_compression`]).
+    pub stored_fields_lz4_high_compression: bool,
+    /// Per source, whether its stored fields were already written that way
+    /// (its `.si` records [`crate::segment_writer::LZ4_HC_ATTRIBUTE`]); a
+    /// missing entry is `false`. With the option on, only these sources'
+    /// chunks are copied verbatim.
+    pub lz4_high_compression_sources: Vec<bool>,
+    /// The least source `.fdt` bytes for which a
+    /// [`stored_fields::Mode::ZstdPaged`] merge trains a dictionary
+    /// ([`crate::index_writer::IndexWriter::set_zstd_dictionary_min_bytes`]).
+    pub zstd_dictionary_min_bytes: u64,
     /// The fields routed to a KNN vectors format other than the default
     /// `Lucene99HnswVectorsFormat(hnsw_m, hnsw_beam_width)`
     /// ([`crate::index_writer::IndexWriter::set_knn_vectors_format_for_field`]).
@@ -4664,6 +4725,9 @@ impl Default for MergeOptions {
             doc_values_formats: Vec::new(),
             default_doc_values_format: Default::default(),
             default_postings_format: Default::default(),
+            stored_fields_lz4_high_compression: false,
+            lz4_high_compression_sources: Vec::new(),
+            zstd_dictionary_min_bytes: stored_fields::ZSTD_PAGED_DICTIONARY_MIN_BYTES,
             knn_vectors_formats: Vec::new(),
             codec: None,
             reorder: None,
@@ -16436,7 +16500,7 @@ mod tests {
         sources
             .iter()
             .zip(&matching)
-            .map(|(s, &m)| stored_fields_merge_strategy(&writer, s, m))
+            .map(|(s, &m)| stored_fields_merge_strategy(&writer, s, m, false))
             .collect()
     }
 

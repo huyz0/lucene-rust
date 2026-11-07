@@ -115,7 +115,7 @@ public final class EngineWriterDiffTest {
         run(6, 4000, nativeAnalyzer(), true);
         // Under index.lucene_rust.zstd_terms: every terms dictionary read back through the
         // RustZstd104 postings format's reader, zstd term blocks and trained dictionaries included.
-        run(9, 4000, nativeAnalyzer(), false, null, true);
+        run(9, 4000, nativeAnalyzer(), false, null, true, org.lucenerust.opensearch.NativeBridge.STORED_FIELDS_BEST_SPEED);
         // Under an index sort (a keyword, then a descending numeric), with OpenSearch's parent
         // field: segments flushed and merged in the same order Lucene writes them.
         org.apache.lucene.search.Sort sort = new org.apache.lucene.search.Sort(
@@ -125,6 +125,9 @@ public final class EngineWriterDiffTest {
         for (long seed : new long[] { 7, 8 }) {
             run(seed, 2500, nativeAnalyzer(), false, sort);
         }
+        // Under index.lucene_rust.stored_fields.paged_zstd: the documents read back through the
+        // plugin's ZstdPagedCodec, from flushed and merged segments.
+        run(9, 2500, nativeAnalyzer(), false, null, false, org.lucenerust.opensearch.NativeBridge.STORED_FIELDS_ZSTD_PAGED);
         check(DocumentEncoder.ANALYZED_NATIVELY.get() > 3000, "field values analyzed in Rust: " + DocumentEncoder.ANALYZED_NATIVELY.get());
         check(payloadsSeen > 0, "payloads were indexed and compared");
         refusals();
@@ -373,7 +376,7 @@ public final class EngineWriterDiffTest {
 
     private static void run(long seed, int ops, Analyzer analyzer, boolean adaptive, org.apache.lucene.search.Sort sort)
         throws Exception {
-        run(seed, ops, analyzer, adaptive, sort, false);
+        run(seed, ops, analyzer, adaptive, sort, false, org.lucenerust.opensearch.NativeBridge.STORED_FIELDS_BEST_SPEED);
     }
 
     private static void run(
@@ -382,7 +385,8 @@ public final class EngineWriterDiffTest {
         Analyzer analyzer,
         boolean adaptive,
         org.apache.lucene.search.Sort sort,
-        boolean zstdTerms
+        boolean zstdTerms,
+        int storedFields
     ) throws Exception {
         Path root = Files.createTempDirectory("engine-writer-diff");
         Path javaPath = root.resolve("java");
@@ -409,11 +413,12 @@ public final class EngineWriterDiffTest {
                 false,
                 adaptive,
                 zstdTerms,
+                false,
                 null,
                 sort,
                 parent,
                 IndexWriter.MAX_DOCS,
-                org.lucenerust.opensearch.NativeBridge.STORED_FIELDS_BEST_SPEED,
+                storedFields,
                 3,
                 analyzer,
                 similarity,
@@ -492,6 +497,15 @@ public final class EngineWriterDiffTest {
             compare("seed " + seed, javaDir, rustDir);
             checkIndex("seed " + seed, rustDir);
             checkSkippers("seed " + seed, rustDir);
+            if (storedFields == org.lucenerust.opensearch.NativeBridge.STORED_FIELDS_ZSTD_PAGED) {
+                try (DirectoryReader reader = DirectoryReader.open(rustDir)) {
+                    for (org.apache.lucene.index.LeafReaderContext ctx : reader.leaves()) {
+                        String codec = ((org.apache.lucene.index.SegmentReader) ctx.reader()).getSegmentInfo().info.getCodec().getName();
+                        check(codec.equals("LuceneRustZstdPaged104"), "seed " + seed + ": paged zstd segment codec " + codec);
+                    }
+                    check(reader.leaves().isEmpty() == false, "seed " + seed + ": paged zstd segments");
+                }
+            }
             if (sort != null) {
                 try (DirectoryReader reader = DirectoryReader.open(rustDir)) {
                     int sorted = 0;
@@ -872,6 +886,7 @@ public final class EngineWriterDiffTest {
                 false,
                 false,
                 false,
+                false,
                 null,
                 null,
                 null,
@@ -932,6 +947,7 @@ public final class EngineWriterDiffTest {
                 dir,
                 root,
                 16,
+                false,
                 false,
                 false,
                 false,
