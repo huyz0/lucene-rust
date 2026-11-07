@@ -252,7 +252,9 @@ fn field(
         .i32(i32::from(point_bytes > 0))
         .i32(point_bytes)
         .i32(0)
-        .u8(soft);
+        .u8(soft)
+        // no field attributes
+        .i32(0);
     b.0
 }
 
@@ -367,7 +369,11 @@ fn main() {
         .nth(1)
         .map(|a| a.parse().expect("docs"))
         .unwrap_or(20_000);
-    let words = 120;
+    // `BIG_MB` gives each document a body of about that many megabytes.
+    let words = std::env::var("BIG_MB")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .map_or(120, |mb| (mb * 1_048_576.0 / 6.5) as usize);
     let vocab: Vec<String> = (0..30_000).map(|i| format!("w{i}")).collect();
     let root = std::env::temp_dir().join(format!("alloc-profile-{}", std::process::id()));
     std::fs::create_dir_all(&root).unwrap();

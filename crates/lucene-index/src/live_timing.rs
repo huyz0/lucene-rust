@@ -44,9 +44,19 @@ pub enum Phase {
     PlainNorms,
     /// A plain search's query run.
     PlainQuery,
+    /// A chunk's documents decoded for their fields.
+    ChunkDecode,
+    /// A chunk's doc values written from the buffer's columns.
+    ChunkDocValuesColumns,
+    /// A chunk's doc values written from its decoded documents.
+    ChunkDocValuesDecoded,
+    /// A chunk's points written.
+    ChunkPoints,
 }
 
-const NAMES: [&str; 17] = [
+const PHASES: usize = 21;
+
+const NAMES: [&str; PHASES] = [
     "view_open",
     "view_open_locks",
     "snapshot",
@@ -64,12 +74,16 @@ const NAMES: [&str; 17] = [
     "p_open",
     "p_norms",
     "p_query",
+    "c_decode",
+    "c_dv_columns",
+    "c_dv_decoded",
+    "c_points",
 ];
 
 struct Sums {
-    count: [AtomicU64; 17],
-    nanos: [AtomicU64; 17],
-    max: [AtomicU64; 17],
+    count: [AtomicU64; PHASES],
+    nanos: [AtomicU64; PHASES],
+    max: [AtomicU64; PHASES],
     printing: AtomicBool,
     start: Instant,
     printed: AtomicU64,

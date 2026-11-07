@@ -1532,6 +1532,7 @@ fn apply_op(handle: u64, op: Op) -> Result<(), FfiStatus> {
                 panic!("injected fault: engine writer panic");
             }
         };
+        crate::live::after_add(w);
         Ok(())
     })
 }
