@@ -363,6 +363,7 @@ public final class KnnQueryBuilder extends AbstractQueryBuilder<KnnQueryBuilder>
             KnnVectors.checkFloats(vector, space);
             target = KnnTarget.of(vector.clone());
         }
+        org.lucenerust.opensearch.knn.rest.KnnStats.query(k != null ? 0 : maxDistance != null ? 2 : 1, filter != null);
         Query filterQuery = filter == null ? null : filter.toQuery(context);
         if (k != null) {
             return new KnnTopVectorQuery(fieldName, target, k, efSearch == null ? k : Math.max(k, efSearch), filterQuery);

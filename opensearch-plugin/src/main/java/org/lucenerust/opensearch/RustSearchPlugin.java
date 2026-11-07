@@ -41,6 +41,11 @@ import org.lucenerust.opensearch.knn.KnnQueryBuilder;
 import org.lucenerust.opensearch.knn.KnnSettings;
 import org.lucenerust.opensearch.knn.KnnTopVectorQuery;
 import org.lucenerust.opensearch.knn.KnnVectorFieldMapper;
+import org.lucenerust.opensearch.knn.rest.KnnRestHandlers;
+import org.lucenerust.opensearch.knn.rest.KnnShardsTransport;
+import org.lucenerust.opensearch.knn.rest.KnnStatsTransport;
+import org.opensearch.action.ActionRequest;
+import org.opensearch.core.action.ActionResponse;
 import org.lucenerust.opensearch.sparse.NeuralSparseQueryBuilder;
 import org.lucenerust.opensearch.sparse.SparseSettings;
 import org.lucenerust.opensearch.sparse.SparseVectorFieldMapper;
@@ -502,7 +507,24 @@ public class RustSearchPlugin extends Plugin implements
         IndexNameExpressionResolver indexNameExpressionResolver,
         Supplier<DiscoveryNodes> nodesInCluster
     ) {
-        return List.of(new RestStatsAction(stats, readers, libraryPath));
+        List<RestHandler> handlers = new ArrayList<>();
+        handlers.add(new RestStatsAction(stats, readers, libraryPath));
+        if (stockKnn == false) {
+            handlers.addAll(KnnRestHandlers.all(clusterService::get, indexNameExpressionResolver));
+        }
+        return handlers;
+    }
+
+    @Override
+    public List<ActionHandler<? extends ActionRequest, ? extends ActionResponse>> getActions() {
+        if (stockKnn) {
+            return List.of();
+        }
+        return List.of(
+            new ActionHandler<>(KnnStatsTransport.Action.INSTANCE, KnnStatsTransport.TransportAction.class),
+            new ActionHandler<>(KnnShardsTransport.WarmupAction.INSTANCE, KnnShardsTransport.WarmupTransportAction.class),
+            new ActionHandler<>(KnnShardsTransport.ClearCacheAction.INSTANCE, KnnShardsTransport.ClearCacheTransportAction.class)
+        );
     }
 
     @Override
