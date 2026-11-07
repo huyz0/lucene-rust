@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Extracts lib/ of the pinned OpenSearch distribution from its Docker image,
+# Extracts lib/ (and Painless's SPI jar) of the pinned OpenSearch distribution from its Docker image,
 # for opensearch-plugin/'s build to compile against.
 #
 # The plugin must match its node's exact version, and the image is the
@@ -15,7 +15,8 @@ VERSION="${OPENSEARCH_VERSION:-3.9.0}"
 IMAGE="opensearchproject/opensearch:${VERSION}"
 OUT="target/opensearch-dist/${VERSION}"
 
-if [[ -f "$OUT/lib/opensearch-${VERSION}.jar" ]]; then
+SPI="modules/lang-painless/opensearch-scripting-painless-spi-${VERSION}.jar"
+if [[ -f "$OUT/lib/opensearch-${VERSION}.jar" && -f "$OUT/$SPI" ]]; then
     echo "opensearch-dist: $OUT/lib already present"
     exit 0
 fi
@@ -23,5 +24,8 @@ docker image inspect "$IMAGE" >/dev/null 2>&1 || docker pull "$IMAGE"
 mkdir -p "$OUT"
 cid=$(docker create "$IMAGE")
 trap 'docker rm -f "$cid" >/dev/null' EXIT
-docker cp "$cid:/usr/share/opensearch/lib" "$OUT/lib"
+[[ -d "$OUT/lib" ]] || docker cp "$cid:/usr/share/opensearch/lib" "$OUT/lib"
+# Painless's SPI, which the k-NN allowlist extension compiles against.
+mkdir -p "$OUT/modules/lang-painless"
+docker cp "$cid:/usr/share/opensearch/$SPI" "$OUT/$SPI"
 echo "opensearch-dist: extracted $(ls "$OUT/lib" | wc -l) jars to $OUT/lib"
