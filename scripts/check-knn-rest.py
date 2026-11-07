@@ -246,6 +246,18 @@ def compare_fields(failures):
     return n
 
 
+def close(a, b):
+    """a == b, floats within a few ulps: stock's scalar kernels fuse multiply-adds only on CPUs
+    with fast FMA (Lucene's HAS_FAST_SCALAR_FMA), so its scores move by an ulp across runners."""
+    if isinstance(a, float) and isinstance(b, float):
+        return abs(a - b) <= 4e-7 * max(abs(a), abs(b))
+    if isinstance(a, dict) and isinstance(b, dict):
+        return a.keys() == b.keys() and all(close(a[k], b[k]) for k in a)
+    if isinstance(a, list) and isinstance(b, list):
+        return len(a) == len(b) and all(close(x, y) for x, y in zip(a, b))
+    return a == b
+
+
 def compare_explain(failures):
     n = 0
     for body in ({"k": 1}, {"k": 3}, {"k": 3, "filter": {"term": {"tag": "even"}}}):
@@ -253,7 +265,7 @@ def compare_explain(failures):
         o, s = (ck.req(p, "POST", "/vec-a/_search", query)["hits"]["hits"] for p in (OURS[1], STOCK[1]))
         eo = [h.get("_explanation") for h in o]
         es = [h.get("_explanation") for h in s]
-        if eo != es:
+        if not close(eo, es):
             failures.append(f"explain {body}: ours {eo}, stock {es}")
         n += 1
     return n
