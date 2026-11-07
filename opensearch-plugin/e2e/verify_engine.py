@@ -517,8 +517,12 @@ def realtime():
             check(a["hits"]["total"]["value"] == b["hits"]["total"]["value"], f"{where}: aggregation total {q}")
             check(json.dumps(a["aggregations"], sort_keys=True) == json.dumps(b["aggregations"], sort_keys=True),
                   f"{where}: aggregations {q}: {json.dumps(a['aggregations'])[:300]} vs {json.dumps(b['aggregations'])[:300]}")
-        for sort in sorts:
-            body = {"query": {"match": {"body": "fox"}}, "size": 50, "sort": sort, "track_total_hits": True}
+        # A sorted match_all that counts at most the default hits is one OpenSearch approximates
+        # over the points, which buffered documents do not have yet.
+        cases = [({"match": {"body": "fox"}}, s, True) for s in sorts]
+        cases.append(({"match_all": {}}, [{"@timestamp": "desc"}], 10000))
+        for q, sort, total in cases:
+            body = {"query": q, "size": 50, "sort": sort, "track_total_hits": total}
             a = must("POST", f"/{rt}/_search?request_cache=false", body)
             b = must("POST", f"/{ref}/_search?request_cache=false", body)
             ha = [(h["_id"], h["sort"]) for h in a["hits"]["hits"]]
