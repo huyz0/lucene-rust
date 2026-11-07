@@ -25,6 +25,7 @@ import random
 import statistics
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -333,9 +334,23 @@ def visibility(base, container, corpus, label, out, settings):
     with concurrent.futures.ThreadPoolExecutor(1 + searchers) as side:
         tasks = [side.submit(probe)] + [side.submit(search) for _ in range(searchers)]
         try:
+            # INDEX_RATE=N: bulks are sent no faster than N documents a
+            # second in all, so each config indexes at the same rate and
+            # leaves the same CPU to searches.
+            rate = float(os.environ.get("INDEX_RATE") or 0)
+            paced = [0, threading.Lock()]
+
             def send(path):
                 with open(path, "rb") as fh:
-                    res = req("POST", "/bench/_bulk", fh.read(), ndjson=True)
+                    body = fh.read()
+                if rate > 0:
+                    with paced[1]:
+                        due = t0 + paced[0] / rate
+                        paced[0] += body.count(b"\n") // 2
+                    wait = due - time.perf_counter()
+                    if wait > 0:
+                        time.sleep(wait)
+                res = req("POST", "/bench/_bulk", body, ndjson=True)
                 if res["errors"]:
                     first = next((i for i in res["items"] if "error" in next(iter(i.values()))), None)
                     raise RuntimeError(f"bulk {path} had errors, first: {json.dumps(first)[:2000]}")
