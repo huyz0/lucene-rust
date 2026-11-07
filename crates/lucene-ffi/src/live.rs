@@ -124,35 +124,45 @@ pub(crate) mod phases {
         SPENT.with(|s| s.replace([std::time::Duration::ZERO; 5]))
     }
 
+    const TIMED: [lucene_index::live_timing::Phase; 5] = [
+        lucene_index::live_timing::Phase::ReaderChunks,
+        lucene_index::live_timing::Phase::ReaderSnapshot,
+        lucene_index::live_timing::Phase::ReaderOverlay,
+        lucene_index::live_timing::Phase::ReaderAppend,
+        lucene_index::live_timing::Phase::ReaderLiveDocs,
+    ];
+
     pub(crate) struct Timer {
-        #[cfg(test)]
-        at: std::time::Instant,
+        at: Option<std::time::Instant>,
     }
 
     impl Timer {
         pub(crate) fn start() -> Self {
+            let timed = cfg!(test) || lucene_index::live_timing::enabled();
             Timer {
-                #[cfg(test)]
-                at: std::time::Instant::now(),
+                at: timed.then(std::time::Instant::now),
             }
         }
 
-        /// Ends phase `_phase`, the next starting now.
-        #[allow(clippy::unused_self)]
-        pub(crate) fn lap(&mut self, _phase: usize) {
-            #[cfg(test)]
-            {
-                let now = std::time::Instant::now();
-                let took = now.saturating_duration_since(self.at);
-                self.at = now;
-                SPENT.with(|s| {
-                    let mut v = s.get();
-                    if let Some(d) = v.get_mut(_phase) {
-                        *d += took;
-                    }
-                    s.set(v);
-                });
+        /// Ends phase `phase`, the next starting now.
+        pub(crate) fn lap(&mut self, phase: usize) {
+            let Some(at) = self.at else {
+                return;
+            };
+            let now = std::time::Instant::now();
+            let took = now.saturating_duration_since(at);
+            self.at = Some(now);
+            if let Some(&p) = TIMED.get(phase) {
+                lucene_index::live_timing::record(p, took);
             }
+            #[cfg(test)]
+            SPENT.with(|s| {
+                let mut v = s.get();
+                if let Some(d) = v.get_mut(phase) {
+                    *d += took;
+                }
+                s.set(v);
+            });
         }
     }
 }
@@ -330,13 +340,13 @@ fn warm(w: &EngineWriter) -> lucene_index::index_writer::Result<()> {
     })
 }
 
-/// The chunk the next view of `w`'s first buffer would write last, and
-/// that chunk marked as being written until the guard is dropped.
+/// The documents of `w`'s first buffer after its chunks, as a chunk
+/// marked as being written until the guard is dropped.
 #[cfg(test)]
 pub(crate) fn hold_tail(w: &EngineWriter) -> Option<(i32, i32, impl Drop + '_)> {
     let view = w.writer().open_live_view(None).ok()?;
     let tail = view.buffers.first().filter(|b| b.in_slot).and_then(|b| {
-        let plan = plan(&w.live_chunks(), b, i32::MAX, &[]);
+        let plan = plan(&w.live_chunks(), b, 0, &[]);
         plan.last().filter(|p| p.chunk.is_none()).map(|p| Writing {
             buffer: b.id,
             start: p.start,
@@ -469,14 +479,12 @@ fn plan(chunks: &Chunks, b: &ViewBuffer, absorb_docs: i32, writing: &[Writing]) 
     };
     let mut kept = chain.len();
     let covered = chain.last().map_or(0, |c| c.end);
-    // A chunk being written from one of the chain's boundaries is planned
-    // as it is: the view waits for it and writes only what follows.
+    // A chunk being written from the chain's end is planned as it is: the
+    // view waits for it and writes only what follows. One that absorbs
+    // chunks of the chain is not waited for: the chunks it replaces still
+    // serve this view.
     let pending = writing.iter().find(|x| {
-        b.in_slot
-            && x.buffer == b.id
-            && x.end > covered
-            && x.end < b.max_doc
-            && (x.start == covered || chain.iter().any(|c| c.start == x.start))
+        b.in_slot && x.buffer == b.id && x.end > covered && x.end < b.max_doc && x.start == covered
     });
     if let Some(x) = pending {
         kept = chain

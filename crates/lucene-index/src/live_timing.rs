@@ -23,11 +23,22 @@ pub enum Phase {
     PlainSearch,
     /// Building the postings overlays of a view's chunks.
     Overlay,
-    /// Waiting for the writer's control lock in a view or a snapshot.
+    /// Waiting for the lock of the buffers being flushed in a view or a
+    /// snapshot.
     CoreWait,
+    /// A view reader's chunks, written or found.
+    ReaderChunks,
+    /// A view reader's read of the buffers.
+    ReaderSnapshot,
+    /// A view reader's chunks given their postings.
+    ReaderOverlay,
+    /// A view reader's chunks appended to the reader.
+    ReaderAppend,
+    /// A view reader's live documents.
+    ReaderLiveDocs,
 }
 
-const NAMES: [&str; 8] = [
+const NAMES: [&str; 13] = [
     "view_open",
     "view_open_locks",
     "snapshot",
@@ -36,12 +47,17 @@ const NAMES: [&str; 8] = [
     "plain_search",
     "overlay",
     "core_wait",
+    "r_chunks",
+    "r_snapshot",
+    "r_overlay",
+    "r_append",
+    "r_live_docs",
 ];
 
 struct Sums {
-    count: [AtomicU64; 8],
-    nanos: [AtomicU64; 8],
-    max: [AtomicU64; 8],
+    count: [AtomicU64; 13],
+    nanos: [AtomicU64; 13],
+    max: [AtomicU64; 13],
     printing: AtomicBool,
     start: Instant,
     printed: AtomicU64,

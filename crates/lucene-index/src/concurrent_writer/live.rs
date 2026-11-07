@@ -43,6 +43,7 @@ use lucene_codecs::stored_fields::{FieldValue, StoredField};
 
 use super::{lock, read_slot, write_slot, ConcurrentIndexWriter, Dwpt};
 use crate::buffered_updates::{DocValuesUpdate, Term};
+use crate::index_writer::packed_fields::PackedFields;
 use crate::index_writer::pending_postings::{LiveFieldStats, PendingPostings};
 use crate::index_writer::ExplicitFields;
 use crate::index_writer::{DeleteNode, Error, IndexingConfig, Result};
@@ -980,29 +981,68 @@ impl ConcurrentIndexWriter<'_> {
         let docs = padded(&slot.docs, start, end);
         let custom_freq_terms = padded_or_empty(&slot.custom_freq_terms, start, end);
         let vectors = padded_or_empty(&slot.vectors, start, end);
-        let buffer = crate::index_writer::DocumentBuffer {
-            docs: &docs,
-            custom_freq_terms: &custom_freq_terms,
-            vectors: &vectors,
-            explicit: crate::index_writer::ExplicitDocs::PackedRange(&slot.explicit, start, end),
-            postings: Some(&slot.postings),
-            old_to_new: None,
-            has_blocks: slot.has_blocks,
-            stored: None,
-            limit: Some(&limit),
-            partition: slot.partition.as_deref(),
+        let write = |explicit: &PackedFields,
+                     pending: &PendingPostings,
+                     docs: &[_],
+                     custom: &[_],
+                     vectors: &[_],
+                     has_blocks,
+                     partition: Option<&str>| {
+            let buffer = crate::index_writer::DocumentBuffer {
+                docs,
+                custom_freq_terms: custom,
+                vectors,
+                explicit: crate::index_writer::ExplicitDocs::PackedRange(explicit, start, end),
+                postings: Some(pending),
+                old_to_new: None,
+                has_blocks,
+                stored: None,
+                limit: Some(&limit),
+                partition,
+            };
+            cfg.build_and_write_segment(
+                dir,
+                &buffer,
+                name,
+                lucene_util::string_helper::random_id(),
+                None,
+            )
+            .map(|(sci, _)| sci)
         };
-        let (sci, _) = cfg.build_and_write_segment(
-            dir,
-            &buffer,
-            name,
-            lucene_util::string_helper::random_id(),
-            None,
-        )?;
-        if postings {
+        let sci = if postings {
+            let sci = write(
+                &slot.explicit,
+                &slot.postings,
+                &docs,
+                &custom_freq_terms,
+                &vectors,
+                slot.has_blocks,
+                slot.partition.as_deref(),
+            )?;
             slot.postings.keep_cursors_at(next_starts);
-        }
-        drop(slot);
+            sci
+        } else {
+            // Without postings the chunk reads only the documents' own
+            // columns: they are copied out (the packed fields' full blocks
+            // shared) and written with the slot free for indexing.
+            let (docs, custom, vectors) = (
+                docs.into_owned(),
+                custom_freq_terms.into_owned(),
+                vectors.into_owned(),
+            );
+            let explicit = slot.explicit.snapshot();
+            let (has_blocks, partition) = (slot.has_blocks, slot.partition.clone());
+            drop(slot);
+            write(
+                &explicit,
+                &PendingPostings::default(),
+                &docs,
+                &custom,
+                &vectors,
+                has_blocks,
+                partition.as_deref(),
+            )?
+        };
         crate::live_timing::record(crate::live_timing::Phase::ChunkWrite, started.elapsed());
         Ok(sci)
     }
