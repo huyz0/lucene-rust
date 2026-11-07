@@ -204,11 +204,21 @@ pub const ZSTD_CODEC: &str = "ZSTD104";
 /// The codec OpenSearch 3.x writes for `index.codec: zstd_no_dict`.
 pub const ZSTD_NO_DICT_CODEC: &str = "ZSTDNODICT104";
 
-/// [`OPENSEARCH_ZSTD_CODECS`] and [`OPENSEARCH_KNN_CODECS`] as readable codecs.
+/// The codec of the Rust engine's paged zstd stored fields
+/// ([`crate::stored_fields::Mode::ZstdPaged`]): `Lucene104` with those
+/// stored fields. The OpenSearch plugin registers a Java codec of this name.
+pub const ZSTD_PAGED_CODEC: &str = "LuceneRustZstdPaged104";
+
+/// The Rust engine's own `FilterCodec`s, `(name, delegate)` as in
+/// [`OPENSEARCH_ZSTD_CODECS`].
+pub const RUST_CODECS: &[(&str, &str)] = &[(ZSTD_PAGED_CODEC, "Lucene104")];
+
+/// [`OPENSEARCH_ZSTD_CODECS`], [`OPENSEARCH_KNN_CODECS`] and [`RUST_CODECS`] as readable codecs.
 static OPENSEARCH: std::sync::LazyLock<Vec<CodecFormats>> = std::sync::LazyLock::new(|| {
     OPENSEARCH_ZSTD_CODECS
         .iter()
         .chain(OPENSEARCH_KNN_CODECS)
+        .chain(RUST_CODECS)
         .filter_map(|&(name, delegate)| {
             CODECS
                 .iter()
@@ -299,9 +309,13 @@ mod tests {
     fn opensearch_codecs_read_as_their_delegates() {
         assert_eq!(
             OPENSEARCH.len(),
-            OPENSEARCH_ZSTD_CODECS.len() + OPENSEARCH_KNN_CODECS.len()
+            OPENSEARCH_ZSTD_CODECS.len() + OPENSEARCH_KNN_CODECS.len() + RUST_CODECS.len()
         );
-        for &(name, delegate) in OPENSEARCH_ZSTD_CODECS.iter().chain(OPENSEARCH_KNN_CODECS) {
+        for &(name, delegate) in OPENSEARCH_ZSTD_CODECS
+            .iter()
+            .chain(OPENSEARCH_KNN_CODECS)
+            .chain(RUST_CODECS)
+        {
             let c = for_name(name).unwrap();
             assert_eq!(renamed(c, delegate), *for_name(delegate).unwrap(), "{name}");
         }
