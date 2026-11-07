@@ -5621,6 +5621,11 @@ mod tests {
             let hold = round % 3 == 2;
             let mut held = None;
             let n = 1 + round % 5 + usize::from(hold);
+            if hold {
+                // A view waits for a chunk being written only while the
+                // warmer is idle: else it writes those documents itself.
+                crate::live::idle_warmer(&ew);
+            }
             for k in 0..n {
                 if hold && k + 1 == n {
                     held = crate::live::hold_tail(&ew);
