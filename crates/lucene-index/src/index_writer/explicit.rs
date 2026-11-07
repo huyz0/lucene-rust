@@ -1075,7 +1075,9 @@ impl IndexingConfig {
                     .fields
                     .iter()
                     .filter(|f| {
-                        present.contains(&f.number) && f.doc_values_type != DocValuesType::None
+                        buf.limit.is_none_or(|l| l.doc_values)
+                            && present.contains(&f.number)
+                            && f.doc_values_type != DocValuesType::None
                     })
                     .map(|f| DocValuesFieldConfig {
                         name: f.name.clone(),
@@ -1134,7 +1136,11 @@ impl IndexingConfig {
                 let point_configs: Vec<PointsFieldConfig> = self
                     .fields
                     .iter()
-                    .filter(|f| present.contains(&f.number) && f.point_dimension_count > 0)
+                    .filter(|f| {
+                        buf.limit.is_none_or(|l| l.points)
+                            && present.contains(&f.number)
+                            && f.point_dimension_count > 0
+                    })
                     .map(|f| PointsFieldConfig {
                         name: f.name.clone(),
                         field_number: f.number,

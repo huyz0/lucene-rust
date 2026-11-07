@@ -6041,8 +6041,9 @@ mod tests {
                 assert_eq!(live_total, want as i64, "round {round}: {term}");
 
                 // A handle for the query and an aggregation filtering on
-                // another term: its chunks carry only those terms, and
-                // sorts and aggregations over it agree with `whole`.
+                // another term: the chunks it writes carry only those terms
+                // (one written with every term may be reused), and sorts and
+                // aggregations over it agree with `whole`.
                 let other = crate::jvm_reader::tests::term_blob("body", words[round % 5]);
                 let tree = crate::jvm_aggs::tests::histogram_of_filters("_seq_no", 5.0, &other);
                 let mut lean = 0u64;
@@ -6062,18 +6063,32 @@ mod tests {
                 };
                 assert_eq!(rc, 0, "{}", crate::error::last_error());
                 {
-                    let l = crate::jvm_reader::lookup(lean, "test").unwrap();
-                    for r in &l.reader.segment_readers()[base..] {
-                        let Some(terms) = r.terms("body").unwrap() else {
-                            continue;
-                        };
-                        let mut te = terms.iterator().unwrap();
-                        while let Some(t) = te.next().unwrap() {
-                            assert!(
-                                [term, words[round % 5]].contains(&std::str::from_utf8(t).unwrap()),
-                                "round {round}: only the request's terms"
-                            );
+                    let body_terms = |r: &lucene_search::directory_reader::SegmentReader| {
+                        let mut out = Vec::new();
+                        if let Some(terms) = r.terms("body").unwrap() {
+                            let mut te = terms.iterator().unwrap();
+                            while let Some(t) = te.next().unwrap() {
+                                out.push(String::from_utf8(t.to_vec()).unwrap());
+                            }
                         }
+                        out
+                    };
+                    let l = crate::jvm_reader::lookup(lean, "test").unwrap();
+                    let w = crate::jvm_reader::lookup(whole, "test").unwrap();
+                    for r in &l.reader.segment_readers()[base..] {
+                        let got = body_terms(r);
+                        let requested = got
+                            .iter()
+                            .all(|t| [term, words[round % 5]].contains(&t.as_str()));
+                        // The very chunk `whole` holds (the same core).
+                        let reused = w.reader.segment_readers()[base..].iter().any(|c| {
+                            c.core_cache_helper().key_id() == r.core_cache_helper().key_id()
+                        });
+                        assert!(
+                            requested || reused,
+                            "round {round}: only the request's terms in {}: {got:?}",
+                            r.segment_name
+                        );
                     }
                 }
                 assert_eq!(
@@ -6122,10 +6137,19 @@ mod tests {
                 assert_ne!(lean, whole, "round {round}: a handle of its own");
                 lean
             };
+            // The terms of the chunks a handle wrote: a chunk of `whole`'s,
+            // written with every term, may be reused.
             let held = |lean: u64| {
                 let l = crate::jvm_reader::lookup(lean, "test").unwrap();
+                let w = crate::jvm_reader::lookup(whole, "test").unwrap();
                 let mut held = std::collections::BTreeSet::new();
                 for r in &l.reader.segment_readers()[base..] {
+                    let reused = w.reader.segment_readers()[base..]
+                        .iter()
+                        .any(|c| c.core_cache_helper().key_id() == r.core_cache_helper().key_id());
+                    if reused {
+                        continue;
+                    }
                     if let Some(terms) = r.terms("body").unwrap() {
                         let mut te = terms.iterator().unwrap();
                         while let Some(t) = te.next().unwrap() {

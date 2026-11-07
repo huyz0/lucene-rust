@@ -1292,6 +1292,11 @@ pub(crate) struct BufferLimit {
     /// caller kept them: written as they are instead of being read from
     /// each document.
     pub(crate) columns: Option<ChunkColumns>,
+    /// Whether the doc values are written: without them a reader takes
+    /// them from [`LazyDocValues`], one field when it is first read.
+    pub(crate) doc_values: bool,
+    /// Whether the points are written.
+    pub(crate) points: bool,
 }
 
 /// A run of a buffer's documents as columns, for writing them without
@@ -1323,6 +1328,96 @@ pub(crate) fn encode_live_point(info: &FieldInfo, value: &FieldValue, out: &mut 
         out.truncate(len);
     }
     ok
+}
+
+/// A run of buffered documents' doc values, kept as columns and encoded a
+/// field at a time when a reader first reads that field.
+pub struct LazyDocValues {
+    cfg: std::sync::Arc<IndexingConfig>,
+    columns: Vec<(i32, PrebuiltDocValues)>,
+    max_doc: i32,
+}
+
+/// One field's doc values as a `.dvm`/`.dvd` pair of their own.
+#[derive(Debug)]
+pub struct EncodedDocValues {
+    pub dvm: Vec<u8>,
+    pub dvd: Vec<u8>,
+    /// The pair's codec suffix (`Lucene90_0`), for parsing the `.dvm`.
+    pub segment_suffix: String,
+}
+
+impl LazyDocValues {
+    /// Whether `columns` hold every doc-values field of `present` in its
+    /// own type, so that each encodes from its column as a written segment
+    /// would hold it; and the writer's codec checks no doc values (a check
+    /// would fail a read).
+    pub(crate) fn covers(
+        cfg: &IndexingConfig,
+        columns: &[(i32, PrebuiltDocValues)],
+        present: &[i32],
+    ) -> bool {
+        cfg.codec.is_none()
+            && cfg
+                .fields
+                .iter()
+                .filter(|f| present.contains(&f.number) && f.doc_values_type != DocValuesType::None)
+                .all(|f| {
+                    columns
+                        .iter()
+                        .any(|(n, c)| *n == f.number && c.doc_values_type() == f.doc_values_type)
+                })
+    }
+
+    pub(crate) fn new(
+        cfg: std::sync::Arc<IndexingConfig>,
+        columns: Vec<(i32, PrebuiltDocValues)>,
+        max_doc: i32,
+    ) -> Self {
+        Self {
+            cfg,
+            columns,
+            max_doc,
+        }
+    }
+
+    /// The fields with a column.
+    pub fn fields(&self) -> impl Iterator<Item = i32> + '_ {
+        self.columns.iter().map(|(n, _)| *n)
+    }
+
+    /// Field `field_number`'s doc values as a segment `segment_id` would
+    /// hold them, `None` when no document has it.
+    pub fn encode(
+        &self,
+        field_number: i32,
+        segment_id: &[u8; ID_LENGTH],
+    ) -> Result<Option<EncodedDocValues>> {
+        let Some(info) = self.cfg.fields.iter().find(|f| f.number == field_number) else {
+            return Ok(None);
+        };
+        let config = DocValuesFieldConfig {
+            name: info.name.clone(),
+            field_number,
+            doc_values_type: info.doc_values_type,
+            skip_index: info.doc_values_skip_index_type
+                != lucene_codecs::field_infos::DocValuesSkipIndexType::None,
+        };
+        let Some(groups) = self.cfg.build_prebuilt_doc_values_groups(
+            &self.columns,
+            self.max_doc,
+            std::slice::from_ref(&config),
+            &[info.name.as_str()],
+            segment_id,
+        ) else {
+            return Ok(None);
+        };
+        Ok(groups?.into_iter().next().map(|g| EncodedDocValues {
+            segment_suffix: format!("{}_{}", g.format_name, g.suffix),
+            dvm: g.dvm,
+            dvd: g.dvd,
+        }))
+    }
 }
 
 /// One field's doc values for a run of documents, in the shape the
