@@ -13,6 +13,7 @@ import org.apache.lucene.document.StoredField;
 import org.apache.lucene.index.VectorEncoding;
 import org.apache.lucene.search.FieldExistsQuery;
 import org.apache.lucene.search.Query;
+import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.VectorUtil;
 import org.lucenerust.opensearch.engine.VectorsFormatSpec;
 import org.opensearch.common.settings.Settings;
@@ -28,6 +29,7 @@ import org.opensearch.index.mapper.SourceValueFetcher;
 import org.opensearch.index.mapper.TextSearchInfo;
 import org.opensearch.index.mapper.ValueFetcher;
 import org.opensearch.index.query.QueryShardContext;
+import org.opensearch.search.DocValueFormat;
 import org.opensearch.search.lookup.SearchLookup;
 
 import java.io.IOException;
@@ -35,6 +37,7 @@ import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.time.ZoneId;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
@@ -425,7 +428,20 @@ public final class KnnVectorFieldMapper extends ParametrizedFieldMapper {
 
         @Override
         public IndexFieldData.Builder fielddataBuilder(String fullyQualifiedIndexName, Supplier<SearchLookup> searchLookup) {
-            throw new IllegalArgumentException("[" + CONTENT_TYPE + "] fields do not support sorting, scripting or aggregating yet");
+            return new KnnVectorFieldData.Builder(name(), config);
+        }
+
+        @Override
+        public DocValueFormat docValueFormat(String format, ZoneId timeZone) {
+            if (timeZone != null) {
+                throw new IllegalArgumentException("Field [" + name() + "] of type [" + typeName() + "] does not support custom time zones");
+            }
+            return KnnVectorFieldData.Format.of(format);
+        }
+
+        @Override
+        public Object valueForDisplay(Object value) {
+            return value instanceof BytesRef b ? KnnVectorFieldData.stored(b, config) : value;
         }
     }
 }
