@@ -81,7 +81,7 @@ public final class KnnHitsQuery extends Query {
                 local[i - lo] = docs[i] - ctx.docBase;
             }
             return new KnnHits.Leaf(local, Arrays.copyOfRange(scores, lo, hi));
-        }, boost);
+        }, boost, docs.length);
     }
 
     private int lowerBound(int doc) {
