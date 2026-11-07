@@ -126,12 +126,6 @@ public final class KnnVectorFieldMapper extends ParametrizedFieldMapper {
         @Override
         public KnnVectorFieldMapper build(BuilderContext context) {
             boolean knnIndex = KnnSettings.KNN_INDEX.get(indexSettings);
-            if (knnIndex && KnnSettings.DERIVED_SOURCE.get(indexSettings)) {
-                // The vectors would be left out of the stored _source, and this node cannot derive them back.
-                throw new IllegalArgumentException(
-                    "[" + KnnSettings.DERIVED_SOURCE.getKey() + "] is not supported by this node's [" + CONTENT_TYPE + "] fields"
-                );
-            }
             KnnFieldConfig config = config();
             if (engine.isConfigured() == false && (method.getValue() == null || method.getValue().get("engine") == null)) {
                 // Persisted, so a stock node, whose default engine is faiss, reads the field as the lucene one it is.

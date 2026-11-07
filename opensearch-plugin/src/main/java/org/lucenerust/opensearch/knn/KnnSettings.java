@@ -44,6 +44,11 @@ public final class KnnSettings {
         Property.Dynamic
     );
 
+    /**
+     * {@code index.knn.derived_source.enabled}: the stock plugin then leaves vectors out of the stored
+     * {@code _source} and derives them back on read. Segments written that way are read here
+     * ({@code DerivedSourceStoredFieldsFormat}); this node's writers keep {@code _source} whole.
+     */
     public static final Setting<Boolean> DERIVED_SOURCE = Setting.boolSetting(
         "index.knn.derived_source.enabled",
         false,

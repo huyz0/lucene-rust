@@ -179,6 +179,7 @@ mod lifecycle;
 pub(crate) mod packed_fields;
 pub(crate) mod pending_postings;
 mod pluggable_merge;
+mod segment_attributes;
 mod segment_partitions;
 pub(crate) use segment_partitions::set_attribute;
 pub use segment_partitions::SegmentPartitioning;
@@ -958,6 +959,12 @@ pub(crate) struct IndexingConfig {
     shuffle_forced_merges: bool,
     /// See [`IndexWriter::set_segment_partitioning`].
     segment_partitioning: Option<SegmentPartitioning>,
+    /// See [`IndexWriter::add_segment_list_value`].
+    segment_list_attributes: Vec<(String, Vec<String>)>,
+    /// See [`IndexWriter::set_merge_union_attributes`].
+    merge_union_attributes: Vec<String>,
+    /// See [`IndexWriter::set_segment_attribute`].
+    segment_attributes: Vec<(String, String)>,
     /// `IndexWriterConfig.getSimilarity()`, as far as the writer reads it
     /// (`computeNorm`): `None` is Lucene's default, `BM25Similarity`. See
     /// [`IndexWriter::set_similarity`].
@@ -4135,6 +4142,7 @@ impl IndexingConfig {
             lucene_codecs::codec::WritePoint::SegmentInfo,
         )?;
         self.partition_segment(&mut flushed.info.attributes, buf.partition);
+        self.record_list_attributes(&mut flushed.info.attributes);
         segment_writer::seal_flushed_segment(dir, segment_name, flushed).map_err(Error::from)
     }
 
@@ -6266,6 +6274,9 @@ impl<'d> IndexWriter<'d> {
                 merge_compound_file: None,
                 shuffle_forced_merges: false,
                 segment_partitioning: None,
+                segment_list_attributes: Vec::new(),
+                merge_union_attributes: Vec::new(),
+                segment_attributes: Vec::new(),
                 postings_formats: Vec::new(),
                 doc_values_formats: Vec::new(),
                 default_doc_values_format: Default::default(),
@@ -11394,7 +11405,8 @@ impl IndexWriter<'_> {
             Some(_) => Some(self.compound_file_decider()?),
             None => None,
         };
-        let attributes = self.merged_partition_attributes(&sources)?;
+        let mut attributes = self.merged_partition_attributes(&sources)?;
+        self.merged_segment_attributes(&sources, &mut attributes)?;
         let held = self.deleter.hold_segment_files(&sources)?;
         Ok(MergePlan {
             early_compound,

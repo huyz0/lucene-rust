@@ -38,7 +38,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code jvm_reader.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 84;
+    public static final int EXPECTED_ABI_VERSION = 86;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -1557,6 +1557,7 @@ public final class NativeBridge {
     public static final int OPEN_ZSTD_TERMS = 16;
     public static final int OPEN_ADAPTIVE_DOC_VALUES = 32;
     public static final int OPEN_PARTITIONED = 64;
+    public static final int OPEN_KNN = 128;
 
     /** {@link #writerOpen}'s stored fields, one per {@code index.codec} the Rust writer writes. */
     public static final int STORED_FIELDS_BEST_SPEED = 0;
@@ -1630,7 +1631,9 @@ public final class NativeBridge {
      * the {@code RustAdaptive} format; {@code zstdTerms} writes every field's terms in the {@code
      * RustZstd104} postings format, with zstd term blocks; {@code mergeLz4Hc} has merges write {@code BEST_SPEED} stored
      * fields with the high-compression LZ4 match finder (stock-readable); with {@code partitioned} every segment holds one partition
-     * (the value of the index's partition field) and records it, and merges never mix partitions.
+     * (the value of the index's partition field) and records it, and merges never mix partitions;
+     * {@code knn} writes a k-NN index's segments under the k-NN codec's name, listing the fields
+     * whose vectors {@code _source} leaves out (derived source).
      * {@code indexSort} is the index sort as a {@code .si} encodes it (null or empty for none), and
      * {@code parentFieldUtf8} the field marking each block's last document (null or empty for none).
      * {@code maxDocs} is {@code IndexWriter.getActualMaxDocs()}, which Lucene's tests lower.
@@ -1647,6 +1650,7 @@ public final class NativeBridge {
         boolean zstdTerms,
         boolean mergeLz4Hc,
         boolean partitioned,
+        boolean knn,
         byte[] indexSort,
         byte[] parentFieldUtf8,
         int maxDocs,
@@ -1668,7 +1672,7 @@ public final class NativeBridge {
                 (byte) ((faultInjection ? OPEN_FAULT_INJECTION : 0) | (sparse ? OPEN_SPARSE : 0)
                     | (liveSearch ? OPEN_LIVE_SEARCH : 0) | (adaptiveDocValues ? OPEN_ADAPTIVE_DOC_VALUES : 0)
                     | (zstdTerms ? OPEN_ZSTD_TERMS : 0) | (mergeLz4Hc ? OPEN_MERGE_LZ4_HC : 0)
-                    | (partitioned ? OPEN_PARTITIONED : 0)),
+                    | (partitioned ? OPEN_PARTITIONED : 0) | (knn ? OPEN_KNN : 0)),
                 s.bytes(sort),
                 (long) sort.length,
                 s.bytes(parent),
