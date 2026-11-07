@@ -1725,8 +1725,8 @@ pub extern "C" fn ffi_engine_writer_release_live(writer: u64, generation: i64) -
     })
 }
 
-/// The bounds of field `field`'s points in buffer `buffer` of `view`
-/// ([`lucene_index::concurrent_writer::ConcurrentIndexWriter::live_point_bounds`]),
+/// The bounds of field `field`'s points in buffer `buffer` of `view` as the view
+/// opened ([`lucene_index::concurrent_writer::ConcurrentIndexWriter::live_point_bounds`]),
 /// as an owned buffer: the point count as a little-endian `u64`, then the
 /// packed least values, then the packed greatest; empty when the buffer
 /// holds no point of the field.

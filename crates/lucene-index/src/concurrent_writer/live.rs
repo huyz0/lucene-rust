@@ -852,6 +852,8 @@ pub struct ViewBuffer {
     pub chunks: bool,
     /// Every field's statistics as of the view, by field number.
     stats: HashMap<i32, LiveFieldStats>,
+    /// By field number, its points' bounds as of the view.
+    bounds: HashMap<i32, PointBounds>,
 }
 
 impl ViewBuffer {
@@ -1516,6 +1518,7 @@ impl ConcurrentIndexWriter<'_> {
                     in_slot: true,
                     chunks: true,
                     stats: d.postings.live_stats_all(),
+                    bounds: HashMap::new(),
                 })
             })
             .collect()
@@ -1712,22 +1715,20 @@ impl ConcurrentIndexWriter<'_> {
 
     /// The least and greatest value of each indexed dimension of field
     /// `field`'s points in `view`'s buffer `buffer`, and how many points it
-    /// holds: over every document the buffer holds now, so they bound the
-    /// view's documents' too. `None` when no document of it gave the field
-    /// a point, or the buffer was dropped.
+    /// held, as of the view: they bound the view's documents' points.
+    /// `None` when no document of it gave the field a point.
     pub fn live_point_bounds(
         &self,
         view: &LiveView,
         buffer: usize,
         field: i32,
     ) -> Result<Option<PointBounds>> {
+        self.check_live()?;
         let b = view
             .buffers
             .get(buffer)
             .ok_or_else(|| Error::LiveSearch(format!("no buffer {buffer} in the view")))?;
-        Ok(self.with_buffer(b.id, |s| {
-            s.and_then(|s| s.columns.chunk.bounds(field).cloned())
-        }))
+        Ok(b.bounds.get(&field).filter(|p| p.count > 0).cloned())
     }
 
     /// [`Self::open_live_view`], [`Self::live_view_snapshot`] and
@@ -1774,6 +1775,7 @@ fn view_buffer(
         in_slot: false,
         chunks: false,
         stats: source.postings.live_stats_all(),
+        bounds: source.columns.chunk.all_bounds().clone(),
     })
 }
 

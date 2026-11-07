@@ -197,12 +197,18 @@ public final class LiveLeafReader extends SequentialStoredFieldsLeafReader {
 
         /**
          * No terms, bounded by the least and a greater than any term (no UTF-8 term holds byte
-         * {@code 0xFF}), so OpenSearch never skips the shard by its terms' bounds either.
+         * {@code 0xFF}), so OpenSearch never skips the shard by its terms' bounds either: for the
+         * fields a search sorts by their terms (UTF-8, with sorted doc values), not metadata
+         * fields.
          */
         @Override
         public Terms terms(String field) {
             FieldInfo fi = infos.fieldInfo(field);
-            if (fi == null || fi.getIndexOptions() == IndexOptions.NONE || maxDoc == 0) {
+            if (fi == null || fi.getIndexOptions() == IndexOptions.NONE || maxDoc == 0 || field.startsWith("_")) {
+                return null;
+            }
+            DocValuesType sortable = fi.getDocValuesType();
+            if (sortable != DocValuesType.SORTED && sortable != DocValuesType.SORTED_SET) {
                 return null;
             }
             return new AnyTerms(fi);
@@ -290,12 +296,7 @@ public final class LiveLeafReader extends SequentialStoredFieldsLeafReader {
         }
 
         private PointValues bounds(FieldInfo fi) throws IOException {
-            byte[][] out = new byte[1][];
-            int rc = NativeBridge.livePointBounds(view.id(), buffer, fi.number, out);
-            if (rc != NativeBridge.OK) {
-                throw new IOException("buffered points of " + fi.name + ": " + NativeBridge.lastError());
-            }
-            byte[] b = out[0];
+            byte[] b = view.pointBounds(buffer, fi.number);
             int packed = fi.getPointIndexDimensionCount() * fi.getPointNumBytes();
             if (b.length == 0) {
                 return null;
@@ -306,7 +307,10 @@ public final class LiveLeafReader extends SequentialStoredFieldsLeafReader {
             long count = ByteBuffer.wrap(b, 0, Long.BYTES).order(ByteOrder.LITTLE_ENDIAN).getLong();
             byte[] min = Arrays.copyOfRange(b, Long.BYTES, Long.BYTES + packed);
             byte[] max = Arrays.copyOfRange(b, Long.BYTES + packed, b.length);
-            return new BoundsOnly(fi, min, max, count, (int) Math.min(count, maxDoc));
+            // At most the leaf's documents, and none counted as having the field: the buffer's
+            // points are not this leaf's alone, and a reader whose every document has a point
+            // (an `exists` query rewritten to match all) is not one of a buffer's leaves.
+            return new BoundsOnly(fi, min, max, Math.max(1, Math.min(count, maxDoc)), 0);
         }
 
         @Override

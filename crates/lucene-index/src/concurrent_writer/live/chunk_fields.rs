@@ -99,14 +99,15 @@ impl ChunkFields {
         fields: &ExplicitFields,
         cfg: &IndexingConfig,
     ) {
-        if !fields.points.is_empty() {
-            self.bound(fields, cfg);
-        }
         if self.unsupported {
+            // Without columns the points are encoded for their bounds alone.
+            if !fields.points.is_empty() {
+                self.bound(fields, cfg);
+            }
             return;
         }
         if !fields.term_vectors.is_empty() {
-            return self.give_up();
+            return self.give_up_with(fields, cfg);
         }
         let mut present = |n: i32| self.present.entry(n).or_default().add(doc);
         for inv in &fields.inverted {
@@ -126,7 +127,7 @@ impl ChunkFields {
                 .field_by_number(inv.field_number)
                 .is_none_or(|f| f.store_term_vectors);
             if tv {
-                return self.give_up();
+                return self.give_up_with(fields, cfg);
             }
             if inv.norm.is_some() {
                 self.normed.entry(inv.field_number).or_default().add(doc);
@@ -134,7 +135,7 @@ impl ChunkFields {
         }
         for p in &fields.points {
             let Some(info) = cfg.field_by_number(p.field_number) else {
-                return self.give_up();
+                return self.give_up_with(fields, cfg);
             };
             let column = self
                 .points
@@ -146,11 +147,27 @@ impl ChunkFields {
                     bytes_per_dim: info.point_num_bytes,
                     ..PackedPointsField::default()
                 });
+            let at = column.values.len();
             if !encode_live_point(info, &p.value, &mut column.values) {
-                return self.give_up();
+                return self.give_up_with(fields, cfg);
             }
             column.docs.push(doc);
+            if let (Ok(dims), Ok(width)) = (
+                usize::try_from(info.point_index_dimension_count),
+                usize::try_from(info.point_num_bytes),
+            ) {
+                self.bounds
+                    .entry(p.field_number)
+                    .or_default()
+                    .take(column.values.get(at..).unwrap_or_default(), dims, width);
+            }
         }
+    }
+
+    /// [`Self::give_up`] on a document, its points still bounded.
+    fn give_up_with(&mut self, fields: &ExplicitFields, cfg: &IndexingConfig) {
+        self.give_up();
+        self.bound(fields, cfg);
     }
 
     /// Widens the fields' bounds to take a document's points.
@@ -177,10 +194,10 @@ impl ChunkFields {
         }
     }
 
-    /// Field `field`'s points' bounds over every document recorded, `None`
-    /// when none gave it a point.
-    pub(in crate::concurrent_writer) fn bounds(&self, field: i32) -> Option<&PointBounds> {
-        self.bounds.get(&field).filter(|b| b.count > 0)
+    /// By field, its points' bounds over every document recorded, for the
+    /// fields some document gave a point.
+    pub(in crate::concurrent_writer) fn all_bounds(&self) -> &HashMap<i32, PointBounds> {
+        &self.bounds
     }
 
     /// Frees the columns, keeping the bounds.
