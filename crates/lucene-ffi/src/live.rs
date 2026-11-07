@@ -220,6 +220,11 @@ pub(crate) struct Warmer {
     asked: Mutex<Option<Option<i64>>>,
     /// See [`Self::refresh_shared`].
     fresh_from: Mutex<Option<std::time::Instant>>,
+    /// When an indexing thread last wrote a chunk, as `last_lean`.
+    last_inline: AtomicU64,
+    /// Adds since the writer opened, to look for a chunk every
+    /// [`INLINE_EVERY`] of them.
+    adds: AtomicU64,
 }
 
 /// A chunk of buffer `buffer`'s documents `start..end` being written.
@@ -540,20 +545,78 @@ fn warm_loop(weak: &std::sync::Weak<EngineWriter>) {
     }
 }
 
+/// Indexing threads write a chunk once a buffer has this many documents
+/// past its chunks, while lean searches come, so searches rarely wait on
+/// one; the warmer writes only a tail no indexing thread cut lately.
+/// `LUCENE_RUST_LIVE_INLINE_CHUNK` overrides it, 0 leaving chunks to the
+/// warmer.
+const INLINE_CHUNK_DOCS: i32 = 1024;
+
+/// How often, in adds, an indexing thread looks for a chunk to write.
+const INLINE_EVERY: u64 = 32;
+
+/// How long, in milliseconds, after an indexing thread wrote a chunk the
+/// warmer leaves the tails alone.
+const INLINE_QUIET_MS: u64 = 20;
+
+fn inline_chunk_docs() -> Option<i32> {
+    static N: OnceLock<Option<i32>> = OnceLock::new();
+    *N.get_or_init(|| {
+        let n = std::env::var("LUCENE_RUST_LIVE_INLINE_CHUNK")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(INLINE_CHUNK_DOCS);
+        (n > 0).then_some(n)
+    })
+}
+
+/// After an add on an indexing thread: see [`INLINE_CHUNK_DOCS`].
+pub(crate) fn after_add(w: &EngineWriter) {
+    let Some(n) = inline_chunk_docs() else {
+        return;
+    };
+    let warmer = w.live_warmer();
+    if !warmer.running()
+        || !warmer
+            .adds
+            .fetch_add(1, Ordering::Relaxed)
+            .is_multiple_of(INLINE_EVERY)
+    {
+        return;
+    }
+    if let Ok(true) = warm_min(w, n) {
+        warmer
+            .last_inline
+            .store(epoch_ms().max(1), Ordering::Relaxed);
+    }
+}
+
 /// Writes the newest documents of `w`'s buffers into chunks without
 /// postings, as the next search's plan would cut them.
 fn warm(w: &EngineWriter) -> lucene_index::index_writer::Result<()> {
+    let last = w.live_warmer().last_inline.load(Ordering::Relaxed);
+    if inline_chunk_docs().is_some() && epoch_ms().saturating_sub(last) < INLINE_QUIET_MS {
+        return Ok(());
+    }
+    warm_min(w, WARM_MIN_DOCS).map(drop)
+}
+
+/// [`warm`] for tails of at least `min` documents; whether it wrote one.
+fn warm_min(w: &EngineWriter, min: i32) -> lucene_index::index_writer::Result<bool> {
     // A panic must not end the thread with the warmer marked running.
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut wrote = false;
         w.writer().live_slot_buffers().iter().try_for_each(|b| {
             let writing = w.live_warmer().writing();
             let plan = plan(&w.live_chunks(), b, i32::MAX, &writing);
             let tail = plan.last().map_or(0, |p| p.end.saturating_sub(p.start));
-            if tail < WARM_MIN_DOCS || writes_nothing(w, b, &plan, false) {
+            if tail < min || writes_nothing(w, b, &plan, false) {
                 return Ok(());
             }
+            wrote = true;
             buffer_segments(w, b, &plan, false, true).map(drop)
-        })
+        })?;
+        Ok(wrote)
     }))
     .unwrap_or_else(|_| {
         Err(lucene_index::index_writer::Error::LiveSearch(

@@ -1438,12 +1438,15 @@ impl<'d> ConcurrentIndexWriter<'d> {
         let live = self
             .live()
             .then(|| cfg.soft_deletes_field().map(|f| f.number));
+        let live_cfg = Arc::clone(&cfg);
         self.add_with(delete, partition, count, move |_| {
             Ok(Box::new(move |dwpt: &mut Dwpt| {
                 // The postings count what they grew by, as `bytesUsed` counts
                 // `TermsHashPerField`'s pools; the documents' own inverted
                 // terms are dropped once they are in.
                 let postings_before = dwpt.postings.bytes();
+                // Chunk columns copy the documents' doc values and points.
+                let columns_before = dwpt.live.chunk_ram_bytes();
                 let mut added = 0usize;
                 for (mut doc, options) in docs.into_iter().zip(options) {
                     let doc_vectors = vectors
@@ -1478,7 +1481,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
                         inv.terms = InvertedTerms::default();
                     }
                     if let Some(soft) = live {
-                        dwpt.live.record(doc_id, &doc.fields, soft);
+                        dwpt.live.record(doc_id, &doc.fields, soft, &live_cfg);
                     }
                     if !doc_vectors.is_empty() {
                         // Short until a document has vectors (see `Dwpt`).
@@ -1495,8 +1498,17 @@ impl<'d> ConcurrentIndexWriter<'d> {
                     added = added.saturating_add(dwpt.explicit.push(doc.fields));
                 }
                 let grown = dwpt.postings.bytes().saturating_sub(postings_before);
+                let columns_now = dwpt.live.chunk_ram_bytes();
+                if columns_now < columns_before {
+                    // The columns gave up: their charge goes back.
+                    dwpt.ram_bytes = dwpt
+                        .ram_bytes
+                        .saturating_sub(columns_before.saturating_sub(columns_now));
+                }
+                let columns = columns_now.saturating_sub(columns_before);
                 Ok(added
                     .saturating_add(grown)
+                    .saturating_add(columns)
                     .saturating_add(Self::recharge_stored(dwpt)))
             }) as Fill)
         })
@@ -1754,7 +1766,9 @@ impl<'d> ConcurrentIndexWriter<'d> {
         let ticket_no = core.next_ticket;
         core.next_ticket = core.next_ticket.saturating_add(1);
         let postings = Arc::new(std::mem::take(&mut dwpt.postings));
-        let columns = std::mem::take(&mut dwpt.live);
+        let mut columns = std::mem::take(&mut dwpt.live);
+        // Chunks are written only while the buffer is in its slot.
+        columns.drop_chunk_columns();
         if self.live() {
             let flushing = live::Flushing {
                 postings: Arc::clone(&postings),

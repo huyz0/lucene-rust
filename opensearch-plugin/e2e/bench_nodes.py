@@ -320,8 +320,9 @@ def visibility(base, container, corpus, label, out, settings):
 
     cpu0 = cpu_seconds(container)
     t0 = time.perf_counter()
-    with concurrent.futures.ThreadPoolExecutor(2) as side:
-        tasks = [side.submit(probe), side.submit(search)]
+    searchers = int(os.environ.get("SEARCHERS", "1"))
+    with concurrent.futures.ThreadPoolExecutor(1 + searchers) as side:
+        tasks = [side.submit(probe)] + [side.submit(search) for _ in range(searchers)]
         try:
             def send(path):
                 with open(path, "rb") as fh:
@@ -349,6 +350,26 @@ def visibility(base, container, corpus, label, out, settings):
         "search_ms_during_load": {n: {"p50": pct(v, 0.5), "p90": pct(v, 0.9), "n": len(v)} for n, v in searched.items()},
         "memory_after_load": node_snapshot(container),
     }
+    # SEARCH_ONLY=N: then N searches of each shape, one at a time, with no
+    # indexing: their CPU alone. The buffered documents stay as the load
+    # left them; nothing refreshes them first.
+    rounds = int(os.environ.get("SEARCH_ONLY", "0"))
+    if rounds:
+        took = {n: [] for n, _ in pairs}
+        cpu1 = cpu_seconds(container)
+        t1 = time.perf_counter()
+        for _ in range(rounds):
+            for name, body in pairs:
+                t = time.perf_counter()
+                req("POST", "/bench/_search?request_cache=false", body)
+                took[name].append((time.perf_counter() - t) * 1000)
+        result["search_only"] = {
+            "searches": rounds * len(pairs),
+            "seconds": round(time.perf_counter() - t1, 2),
+            "cpu_seconds": round(cpu_seconds(container) - cpu1, 2),
+            "ms": {n: {"p50": pct(v, 0.5), "avg": round(sum(v) / len(v), 2)} for n, v in took.items()},
+        }
+        print(f"  search only: {result['search_only']}", flush=True)
     try:
         result["plugin_stats"] = req("GET", "/_plugins/lucene_rust/stats")
     except Exception:  # optional: the stock node has no such endpoint
