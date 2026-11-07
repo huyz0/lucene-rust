@@ -185,6 +185,12 @@ impl RangeSource for Paged {
     fn prefetch(&self, offset: usize, len: usize) {
         self.cache.touch(self.id, offset, len, true);
     }
+
+    fn prefetch_ranges(&self, ranges: &[(usize, usize)]) {
+        for &(offset, len) in ranges {
+            self.cache.touch(self.id, offset, len, true);
+        }
+    }
 }
 
 fn paged(id: u64, bytes: &Arc<Vec<u8>>, cache: &Arc<Cache>) -> Arc<Paged> {
