@@ -154,6 +154,9 @@ pub enum Error {
     },
     #[error("inverted document range: fromDoc={from_doc} > toDoc={to_doc}")]
     InvertedDocRange { from_doc: i32, to_doc: i32 },
+    /// A derived-source `_source` this reader does not rebuild (`lucene_search::derived_source`).
+    #[error("derived source: {0}")]
+    DerivedSource(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

@@ -174,6 +174,9 @@ pub struct SegmentReader {
     /// read when the reader was opened, so it stays readable after the file
     /// is deleted.
     diagnostics: Arc<Vec<(String, String)>>,
+    /// The k-NN derived-source fields the segment's `.si` lists, whose vectors a read puts back
+    /// into `_source` ([`crate::derived_source`]).
+    derived_source: Option<Arc<crate::derived_source::DerivedFields>>,
     /// Each doc-values format instance's `.dvs`, with its codec suffix and
     /// the `.dvm` that locates its fields' skip indexes in it: every field's
     /// doc-values skip index, parsed on first use into
@@ -362,6 +365,67 @@ struct Attachments(
 impl std::fmt::Debug for Attachments {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("Attachments")
+    }
+}
+
+/// One document's vectors, for [`crate::derived_source::inject`]: each from the flat vectors
+/// alone (no graph is opened).
+struct SegmentVectors<'r> {
+    reader: &'r SegmentReader,
+    doc: i32,
+}
+
+impl<'r> SegmentVectors<'r> {
+    fn new(reader: &'r SegmentReader, doc: i32) -> Self {
+        Self { reader, doc }
+    }
+
+    /// The document's vector of field `number`, by `read` from the field's flat vectors.
+    fn vector<T>(
+        &self,
+        number: i32,
+        read: impl FnOnce(
+            &lucene_codecs::vectors::FlatVectorsReader<'_>,
+            i32,
+        ) -> lucene_codecs::vectors::Result<Option<T>>,
+    ) -> lucene_codecs::stored_fields::Result<Option<T>> {
+        let flat = self
+            .reader
+            .flat_vectors_reader_for(number)
+            .map_err(derived_error)?;
+        match flat {
+            Some(flat) => read(&flat, self.doc).map_err(derived_error),
+            None => Ok(None),
+        }
+    }
+}
+
+fn derived_error(e: impl std::fmt::Display) -> lucene_codecs::stored_fields::Error {
+    lucene_codecs::stored_fields::Error::DerivedSource(e.to_string())
+}
+
+impl crate::derived_source::VectorSource for SegmentVectors<'_> {
+    fn float_vector(
+        &mut self,
+        number: i32,
+    ) -> lucene_codecs::stored_fields::Result<Option<Vec<f32>>> {
+        self.vector(number, |flat, doc| {
+            let values = flat.float_vector_values(number)?;
+            let ord = values.doc_to_ord()?.ordinal(doc)?;
+            ord.map(|ord| values.vector(ord)).transpose()
+        })
+    }
+
+    fn byte_vector(
+        &mut self,
+        number: i32,
+    ) -> lucene_codecs::stored_fields::Result<Option<Vec<u8>>> {
+        self.vector(number, |flat, doc| {
+            let values = flat.byte_vector_values(number)?;
+            let ord = values.doc_to_ord()?.ordinal(doc)?;
+            ord.map(|ord| values.vector(ord).map(|v| v.to_vec()))
+                .transpose()
+        })
     }
 }
 
@@ -993,6 +1057,11 @@ impl SegmentReader {
             index_sort: si.index_sort.clone().map(Arc::new),
             has_blocks: si.has_blocks,
             diagnostics: Arc::new(si.diagnostics.clone()),
+            derived_source: crate::derived_source::DerivedFields::from_attributes(
+                &si.attributes,
+                &field_infos,
+            )
+            .map(Arc::new),
             dvs,
             skip_indexes: Arc::default(),
             docs_with_field: Arc::default(),
@@ -1446,6 +1515,43 @@ impl SegmentReader {
         };
         f.reader(&self.segment_id)?.visit_document(doc, visitor)?;
         Ok(true)
+    }
+
+    /// [`Self::visit_stored_document`] with `_source` as OpenSearch reads it: in a segment that
+    /// lists k-NN derived fields ([`crate::derived_source`]), with their vectors put back.
+    ///
+    /// # Errors
+    /// Those of [`Self::visit_stored_document`], and
+    /// [`lucene_codecs::stored_fields::Error::DerivedSource`] for a `_source` the vectors cannot
+    /// be spliced into, which Lucene's codec reads instead.
+    #[must_use = "`false` means the segment has no stored fields and the visitor saw nothing"]
+    pub fn visit_source_document(
+        &self,
+        doc: i32,
+        visitor: &mut dyn lucene_codecs::stored_fields::StoredFieldVisitor,
+    ) -> Result<bool> {
+        let (Some(fields), None, Some(f)) = (
+            self.derived_source.as_deref(),
+            &self.simpletext,
+            self.stored.as_deref(),
+        ) else {
+            return self.visit_stored_document(doc, visitor);
+        };
+        let mut vectors = SegmentVectors::new(self, doc);
+        f.reader(&self.segment_id)?.visit_document(
+            doc,
+            &mut crate::derived_source::InjectingVisitor {
+                inner: visitor,
+                fields,
+                vectors: &mut vectors,
+            },
+        )?;
+        Ok(true)
+    }
+
+    /// The k-NN derived-source fields this segment lists, if any.
+    pub fn derived_source(&self) -> Option<&crate::derived_source::DerivedFields> {
+        self.derived_source.as_deref()
     }
 
     /// `StoredFields.prefetch(docID)` for each of `docs`: announces the
