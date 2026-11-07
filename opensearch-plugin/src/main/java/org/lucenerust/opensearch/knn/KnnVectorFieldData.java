@@ -192,7 +192,25 @@ public final class KnnVectorFieldData implements IndexFieldData<KnnVectorFieldDa
 
         @Override
         public ScriptDocValues<?> getScriptValues() {
-            throw new IllegalArgumentException("[" + KnnVectorFieldMapper.CONTENT_TYPE + "] fields do not support scripting yet");
+            FieldInfo info = reader.getFieldInfos().fieldInfo(name);
+            Values values;
+            try {
+                values = info == null ? null : values(info, config.dataTypeName());
+            } catch (IOException e) {
+                throw new UncheckedIOException(e);
+            }
+            KnnScriptDocValues.Source source = values == null ? null : new KnnScriptDocValues.Source() {
+                @Override
+                public int advance(int doc) throws IOException {
+                    return values.advance(doc);
+                }
+
+                @Override
+                public Object vector() throws IOException {
+                    return values.vector();
+                }
+            };
+            return new KnnScriptDocValues(source, name, config.dataTypeName());
         }
 
         @Override
@@ -214,7 +232,7 @@ public final class KnnVectorFieldData implements IndexFieldData<KnnVectorFieldDa
             }
             Values values;
             try {
-                values = values(info);
+                values = values(info, null);
             } catch (IOException e) {
                 throw new UncheckedIOException(e);
             }
@@ -252,9 +270,11 @@ public final class KnnVectorFieldData implements IndexFieldData<KnnVectorFieldDa
 
         /**
          * {@code KNNVectorValuesFactory.getVectorValues}: the vector files, else the binary doc
-         * values decoded by the field's {@code data_type} attribute (float without one).
+         * values decoded by the field's {@code data_type} attribute, or by {@code unmarked} without
+         * one. Scripts pass the mapping's type; the value fetcher passes {@code null} (floats), as
+         * stock reads an unmarked byte field of an index without knn.
          */
-        private Values values(FieldInfo info) throws IOException {
+        private Values values(FieldInfo info, String unmarked) throws IOException {
             if (info.hasVectorValues()) {
                 if (info.getVectorEncoding() == VectorEncoding.BYTE) {
                     ByteVectorValues v = reader.getByteVectorValues(name);
@@ -267,6 +287,9 @@ public final class KnnVectorFieldData implements IndexFieldData<KnnVectorFieldDa
             }
             BinaryDocValues dv = DocValues.getBinary(reader, name);
             String type = info.getAttribute(KnnVectorFieldMapper.DATA_TYPE);
+            if (type == null) {
+                type = unmarked;
+            }
             if ("half_float".equals(type)) {
                 return new Values(dv, () -> halfFloats(dv.binaryValue()));
             }
