@@ -244,8 +244,8 @@ public final class KnnVectorFieldData implements IndexFieldData<KnnVectorFieldDa
                     if (v instanceof float[] fv) {
                         return fv.clone();
                     }
-                    byte[] b = ((byte[]) v).clone();
-                    return binary ? b : DerivedSource.signed(b);
+                    byte[] b = (byte[]) v;
+                    return binary ? b.clone() : DerivedSource.signed(b);
                 }
             };
         }

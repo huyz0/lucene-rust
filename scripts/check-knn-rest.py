@@ -216,6 +216,7 @@ def compare_fields(failures):
                 {"docvalue_fields": [{"field": "plain", "format": "use_field_mapping"}]},
                 {"stored_fields": ["stored"]}, {"stored_fields": ["*"], "_source": False}]
     requests += [{"docvalue_fields": [n]} for n in names] + [{"fields": [n]} for n in names]
+    requests += [{"sort": [{"plain": "asc"}]}, {"size": 0, "aggs": {"t": {"terms": {"field": "plain"}}}}]
     n = 0
     for index, knn in (("fields-knn", True), ("fields-plain", False)):
         plain = ("plain", "space", "byte", "float", "stored", "half")
@@ -230,12 +231,15 @@ def compare_fields(failures):
             for port in (OURS[1], STOCK[1]):
                 res = ck.req(port, "POST", f"/{index}/_search", {"query": {"match_all": {}}, **r}, ok_errors=True)
                 if "error" in res and "status" in res:
-                    e = res["error"].get("error", {})
+                    e = (res["error"] or {}).get("error") or {}
                     cause = (e.get("root_cause") or [{}])[0]
                     got.append(("error", res["status"], cause.get("type"), cause.get("reason")))
                 else:
-                    hit = res["hits"]["hits"][0]
-                    got.append(typed({k: hit.get(k) for k in ("fields", "_source") if k in hit}))
+                    hits = res["hits"]["hits"]
+                    failed = res.get("_shards", {}).get("failures")
+                    got.append(("failed", [f.get("reason", {}).get("type") for f in failed]) if failed
+                               else typed({k: hits[0].get(k) for k in ("fields", "_source") if k in hits[0]}) if hits
+                               else typed(res.get("aggregations")))
             n += 1
             if got[0] != got[1]:
                 failures.append(f"{index} {r}: ours {got[0]}, stock {got[1]}")
