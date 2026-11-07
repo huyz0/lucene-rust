@@ -301,8 +301,12 @@ fn report(
     let pager = lucene_store::paged_input::Pager::global()
         .filter(|_| mode == "paged")
         .map_or(0, |p| p.resident_bytes());
+    let st = lucene_store::paged_input::Pager::global()
+        .filter(|_| mode == "paged")
+        .map(|p| p.stats())
+        .unwrap_or_default();
     println!(
-        "{pass},{:.0},{:.0},{:.0},{:.0},{:.0},{:.1},{:.1},{:.1},{:.1},{:.1},{extra}",
+        "{pass},{:.0},{:.0},{:.0},{:.0},{:.0},{:.1},{:.1},{:.1},{:.1},{:.1},{extra},{},{},{},{}",
         pct(0.5),
         pct(0.9),
         pct(0.99),
@@ -313,11 +317,15 @@ fn report(
         mib(pager),
         mib(read_bytes().saturating_sub(base_read)),
         mib(cgroup_bytes()),
+        st.faults,
+        st.refaults,
+        st.fault_nanos / 1_000_000,
+        st.evictions,
     );
 }
 
 const HEADER: &str =
-    "pass,p50_us,p90_us,p99_us,mean_us,qps,rss_anon_mib,rss_file_mib,pager_mib,read_mib,cgroup_mib,recall_vs_first";
+    "pass,p50_us,p90_us,p99_us,mean_us,qps,rss_anon_mib,rss_file_mib,pager_mib,read_mib,cgroup_mib,recall_vs_first,faults,refaults,fault_ms,evictions";
 
 fn query_ivf(args: &[String]) {
     let path = &args[2];

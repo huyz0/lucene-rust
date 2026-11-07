@@ -269,6 +269,14 @@ pub trait Directory: Send + Sync {
     /// Reads a whole file's bytes (`Directory.openInput`).
     fn open(&self, name: &str) -> Result<Input>;
 
+    /// [`Self::open`] for a file whose blocks start every `alignment`
+    /// bytes ([`crate::alignment`]): a directory reading whole pages uses
+    /// pages of a power-of-two multiple of it. Others ignore it.
+    fn open_aligned(&self, name: &str, alignment: usize) -> Result<Input> {
+        let _ = alignment;
+        self.open(name)
+    }
+
     /// Port of `Directory.fileLength(name)`. The default reads the file,
     /// which is correct for any implementation; the real ones override it.
     fn file_length(&self, name: &str) -> Result<u64> {
@@ -467,6 +475,9 @@ macro_rules! forward_directory {
             }
             fn open(&self, name: &str) -> Result<Input> {
                 (**self).open(name)
+            }
+            fn open_aligned(&self, name: &str, alignment: usize) -> Result<Input> {
+                (**self).open_aligned(name, alignment)
             }
             fn file_length(&self, name: &str) -> Result<u64> {
                 (**self).file_length(name)

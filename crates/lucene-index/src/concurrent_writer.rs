@@ -2534,6 +2534,10 @@ impl Directory for TrackingDirectory<'_> {
         self.inner.open(name)
     }
 
+    fn open_aligned(&self, name: &str, alignment: usize) -> lucene_store::Result<Input> {
+        self.inner.open_aligned(name, alignment)
+    }
+
     fn create_output(&self, name: &str) -> lucene_store::Result<FsIndexOutput> {
         let output = self.inner.create_output(name)?;
         lock(&self.created).push(name.to_string());

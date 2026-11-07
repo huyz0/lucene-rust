@@ -216,7 +216,7 @@ impl PagedFsDirectory {
     }
 
     #[cfg(target_os = "linux")]
-    fn open_paged(&self, name: &str) -> Result<Option<Input>> {
+    fn open_paged(&self, name: &str, alignment: Option<usize>) -> Result<Option<Input>> {
         use crate::paged_input::{PageFiller, Pager};
         use std::sync::Arc;
 
@@ -230,7 +230,11 @@ impl PagedFsDirectory {
         let path = self.root.join(name);
         let mut file = local::LocalFile::open(&path, self.config.direct_io)?;
         let budget = pager.budget();
-        let page = self.config.page_size_for(name, file.len(), budget);
+        let mut page = self.config.page_size_for(name, file.len(), budget);
+        if let Some(hint) = alignment {
+            // Whole blocks per page: a multiple of the format's alignment.
+            page = crate::alignment::page_size_for(crate::alignment::check_hint(hint)?, page);
+        }
         if !pager.supports(page) {
             return Ok(None);
         }
@@ -264,9 +268,18 @@ impl Directory for PagedFsDirectory {
 
     fn open(&self, name: &str) -> Result<Input> {
         #[cfg(target_os = "linux")]
-        if let Some(input) = self.open_paged(name)? {
+        if let Some(input) = self.open_paged(name, None)? {
             return Ok(input);
         }
+        self.inner.open(name)
+    }
+
+    fn open_aligned(&self, name: &str, alignment: usize) -> Result<Input> {
+        #[cfg(target_os = "linux")]
+        if let Some(input) = self.open_paged(name, Some(alignment))? {
+            return Ok(input);
+        }
+        let _ = alignment;
         self.inner.open(name)
     }
 
@@ -354,7 +367,7 @@ mod local {
     use std::sync::{mpsc, Arc, Mutex, OnceLock};
 
     use crate::error::{Error, Result};
-    use crate::paged_input::PageFiller;
+    use crate::paged_input::{BackgroundDone, PageFiller, PageSink};
 
     /// `O_DIRECT` buffers, offsets and lengths are aligned to this; 4 KiB
     /// covers every logical block size in use.
@@ -362,7 +375,7 @@ mod local {
 
     /// One open local file, read page by page.
     pub(super) struct LocalFile {
-        file: std::fs::File,
+        file: Arc<std::fs::File>,
         len: u64,
         page: usize,
         direct: bool,
@@ -391,7 +404,7 @@ mod local {
             };
             let len = file.metadata()?.len();
             Ok(LocalFile {
-                file,
+                file: Arc::new(file),
                 len,
                 page: ALIGN,
                 direct,
@@ -432,24 +445,38 @@ mod local {
                 return Ok(());
             }
             if self.direct && offset.is_multiple_of(ALIGN as u64) {
-                let mut buf = AlignedBuf::new(want.div_ceil(ALIGN).saturating_mul(ALIGN))?;
-                match read_full(&self.file, buf.as_mut(), offset) {
-                    Ok(n) if n >= want => {
-                        sink(&buf.as_mut()[..want]);
-                        return Ok(());
-                    }
-                    Ok(n) => {
-                        return Err(Error::Corrupted(format!(
+                let aligned = want.div_ceil(ALIGN).saturating_mul(ALIGN);
+                let read = with_scratch(aligned, |buf| {
+                    match read_full(&self.file, buf, offset) {
+                        Ok(n) if n >= want => {
+                            sink(&buf[..want]);
+                            Ok(true)
+                        }
+                        Ok(n) => Err(Error::Corrupted(format!(
                             "short read: {n} of {want} bytes at {offset}"
-                        )))
+                        ))),
+                        // A filesystem that opened with O_DIRECT but refuses
+                        // this read: fall through to a buffered read.
+                        Err(e) if e.raw_os_error() == Some(libc::EINVAL) => Ok(false),
+                        Err(e) => Err(Error::Io(e)),
                     }
-                    // A filesystem that opened with O_DIRECT but refuses this
-                    // read: fall through to a buffered read.
-                    Err(e) if e.raw_os_error() == Some(libc::EINVAL) => {}
-                    Err(e) => return Err(Error::Io(e)),
+                })??;
+                if read {
+                    return Ok(());
                 }
             }
-            let mut buf = vec![0u8; want];
+            with_scratch(want, |buf| self.read_buffered(offset, buf, sink))?
+        }
+
+        /// [`Self::read_into`] through the page cache, whose copy is
+        /// dropped after: the bytes are held in the budget.
+        fn read_buffered(
+            &self,
+            offset: u64,
+            buf: &mut [u8],
+            sink: &mut dyn FnMut(&[u8]),
+        ) -> Result<()> {
+            let want = buf.len();
             // The descriptor is O_DIRECT; read this range through a buffered
             // one, opened once.
             let plain = if self.direct {
@@ -463,7 +490,7 @@ mod local {
             } else {
                 &self.file
             };
-            let n = read_full(plain, &mut buf, offset)?;
+            let n = read_full(plain, buf, offset)?;
             if n < want {
                 return Err(Error::Corrupted(format!(
                     "short read: {n} of {want} bytes at {offset}"
@@ -479,9 +506,38 @@ mod local {
                     libc::POSIX_FADV_DONTNEED,
                 );
             }
-            sink(&buf);
+            sink(buf);
             Ok(())
         }
+    }
+
+    /// Scratch buffers up to this size stay with their thread for the
+    /// next read; larger ones are freed after it.
+    const KEPT_SCRATCH: usize = 2 << 20;
+
+    thread_local! {
+        static SCRATCH: std::cell::RefCell<Option<AlignedBuf>> =
+            const { std::cell::RefCell::new(None) };
+    }
+
+    /// Runs `f` on an aligned buffer of `len` bytes, the thread's own when
+    /// it is big enough, so a read allocates and zeroes nothing.
+    fn with_scratch<R>(len: usize, f: impl FnOnce(&mut [u8]) -> R) -> Result<R> {
+        SCRATCH.with(|cell| {
+            let Ok(mut slot) = cell.try_borrow_mut() else {
+                let mut buf = AlignedBuf::new(len)?;
+                return Ok(f(&mut buf.as_mut()[..len]));
+            };
+            let mut buf = match slot.take() {
+                Some(b) if b.len >= len => b,
+                _ => AlignedBuf::new(len)?,
+            };
+            let r = f(&mut buf.as_mut()[..len]);
+            if buf.len <= KEPT_SCRATCH {
+                *slot = Some(buf);
+            }
+            Ok(r)
+        })
     }
 
     /// The most read whole in one call.
@@ -490,33 +546,35 @@ mod local {
     impl LocalFile {
         /// Another handle on the same open file (`dup`), for a read on an
         /// I/O thread.
-        fn handle(&self) -> Result<LocalFile> {
-            Ok(LocalFile {
-                file: self.file.try_clone()?,
+        fn handle(&self) -> LocalFile {
+            LocalFile {
+                file: Arc::clone(&self.file),
                 len: self.len,
                 page: self.page,
                 direct: self.direct,
                 buffered: Arc::clone(&self.buffered),
-            })
+            }
         }
 
-        /// The `count` pages from page `first`, read at once.
-        fn read_run(&self, first: u64, count: usize) -> Result<Vec<Arc<[u8]>>> {
+        /// The `count` pages from page `first`, read at once and handed to
+        /// `sink` last to first.
+        fn read_run(&self, first: u64, count: usize, sink: &PageSink) -> Result<()> {
             let offset = first.saturating_mul(self.page as u64);
             let len = count.saturating_mul(self.page);
             let page = self.page;
-            let mut out: Vec<Arc<[u8]>> = Vec::with_capacity(count);
+            let mut delivered = 0usize;
             self.read_into(offset, len, &mut |bytes| {
-                for chunk in bytes.chunks(page) {
-                    out.push(Arc::from(chunk));
+                for (i, chunk) in bytes.chunks(page).enumerate().rev() {
+                    sink(first.saturating_add(i as u64), chunk);
                 }
+                delivered = bytes.len().div_ceil(page.max(1));
             })?;
-            if out.len() != count {
+            if delivered != count {
                 return Err(Error::Corrupted(format!(
                     "page {first}: read past the end of the file"
                 )));
             }
-            Ok(out)
+            Ok(())
         }
     }
 
@@ -555,11 +613,10 @@ mod local {
         .as_ref()
     }
 
-    type Pages = Vec<Arc<[u8]>>;
-
-    impl PageFiller for LocalFile {
-        fn fill(&self, pages: &[u64]) -> Result<Vec<Arc<[u8]>>> {
-            // Runs of consecutive pages, each read at once.
+    impl LocalFile {
+        /// `pages` (sorted, distinct) as runs of consecutive pages, each
+        /// read at once.
+        fn runs(&self, pages: &[u64]) -> Vec<(u64, usize)> {
             let per_read = MAX_CHUNK.checked_div(self.page).unwrap_or(1).max(1);
             let mut runs: Vec<(u64, usize)> = Vec::new();
             for &p in pages {
@@ -572,24 +629,43 @@ mod local {
                     _ => runs.push((p, 1)),
                 }
             }
+            runs
+        }
+    }
+
+    impl PageFiller for LocalFile {
+        fn fill(&self, pages: &[u64]) -> Result<Vec<Arc<[u8]>>> {
+            type Got = Mutex<Vec<(u64, Arc<[u8]>)>>;
+            let got: Arc<Got> = Arc::default();
+            let into = Arc::clone(&got);
+            let sink: PageSink = Arc::new(move |page, bytes| {
+                crate::lock::lock_ignoring_poison(&into).push((page, Arc::from(bytes)));
+            });
+            self.fill_into(pages, &sink)?;
+            let mut got = std::mem::take(&mut *crate::lock::lock_ignoring_poison(&got));
+            got.sort_unstable_by_key(|&(page, _)| page);
+            Ok(got.into_iter().map(|(_, bytes)| bytes).collect())
+        }
+
+        fn fill_into(&self, pages: &[u64], sink: &PageSink) -> Result<()> {
+            let runs = self.runs(pages);
             let pool = if runs.len() > 1 { io_pool() } else { None };
             let Some(pool) = pool else {
-                let mut out: Vec<Arc<[u8]>> = Vec::with_capacity(pages.len());
                 for &(first, count) in &runs {
-                    out.extend(self.read_run(first, count)?);
+                    self.read_run(first, count, sink)?;
                 }
-                return Ok(out);
+                return Ok(());
             };
             // Every run but the first on the I/O threads, the first here.
-            let (tx, rx) = mpsc::channel::<(usize, Result<Pages>)>();
-            let mut results: Vec<Option<Result<Pages>>> = (0..runs.len()).map(|_| None).collect();
+            let (tx, rx) = mpsc::channel::<Result<()>>();
             {
                 let queue = crate::lock::lock_ignoring_poison(pool);
-                for (k, &(first, count)) in runs.iter().enumerate().skip(1) {
-                    let handle = self.handle()?;
+                for &(first, count) in runs.iter().skip(1) {
+                    let handle = self.handle();
+                    let sink = Arc::clone(sink);
                     let tx = tx.clone();
                     let job: Job = Box::new(move || {
-                        let _ = tx.send((k, handle.read_run(first, count)));
+                        let _ = tx.send(handle.read_run(first, count, &sink));
                     });
                     if let Err(mpsc::SendError(job)) = queue.send(job) {
                         job();
@@ -597,24 +673,68 @@ mod local {
                 }
             }
             drop(tx);
-            results[0] = Some(self.read_run(runs[0].0, runs[0].1));
-            for (k, r) in rx {
-                if let Some(slot) = results.get_mut(k) {
-                    *slot = Some(r);
+            let mut result = self.read_run(runs[0].0, runs[0].1, sink);
+            let mut done = 1usize;
+            for r in rx {
+                done = done.saturating_add(1);
+                if result.is_ok() {
+                    result = r;
                 }
             }
-            let mut out: Vec<Arc<[u8]>> = Vec::with_capacity(pages.len());
-            for r in results {
-                match r {
-                    Some(r) => out.extend(r?),
-                    None => {
-                        return Err(Error::Io(std::io::Error::other(
-                            "a page read did not complete",
-                        )))
+            if result.is_ok() && done != runs.len() {
+                result = Err(Error::Io(std::io::Error::other(
+                    "a page read did not complete",
+                )));
+            }
+            result
+        }
+
+        fn fill_background(&self, pages: Vec<u64>, sink: PageSink, done: BackgroundDone) -> bool {
+            let Some(pool) = io_pool() else {
+                return false;
+            };
+            // One job per run, so scattered pages are read in parallel;
+            // the last job to finish reports.
+            struct Batch {
+                left: std::sync::atomic::AtomicUsize,
+                result: Mutex<Result<()>>,
+                done: Mutex<Option<BackgroundDone>>,
+            }
+            let runs = self.runs(&pages);
+            let batch = Arc::new(Batch {
+                left: std::sync::atomic::AtomicUsize::new(runs.len()),
+                result: Mutex::new(Ok(())),
+                done: Mutex::new(Some(done)),
+            });
+            let queue = crate::lock::lock_ignoring_poison(pool);
+            for (first, count) in runs {
+                let handle = self.handle();
+                let sink = Arc::clone(&sink);
+                let batch = Arc::clone(&batch);
+                let job: Job = Box::new(move || {
+                    let r = handle.read_run(first, count, &sink);
+                    if r.is_err() {
+                        let mut slot = crate::lock::lock_ignoring_poison(&batch.result);
+                        if slot.is_ok() {
+                            *slot = r;
+                        }
                     }
+                    if batch.left.fetch_sub(1, std::sync::atomic::Ordering::AcqRel) == 1 {
+                        let result = std::mem::replace(
+                            &mut *crate::lock::lock_ignoring_poison(&batch.result),
+                            Ok(()),
+                        );
+                        if let Some(done) = crate::lock::lock_ignoring_poison(&batch.done).take() {
+                            done(result);
+                        }
+                    }
+                });
+                // No I/O thread left: run it here.
+                if let Err(mpsc::SendError(job)) = queue.send(job) {
+                    job();
                 }
             }
-            Ok(out)
+            true
         }
     }
 
@@ -807,6 +927,27 @@ mod tests {
         write(&dir, "b.dat", &bytes);
         assert_eq!(&dir.open("b.dat").unwrap()[..], &bytes[..]);
         assert_eq!(dir.read_at("b.dat", 1000, 50).unwrap(), &bytes[1000..1050]);
+    }
+
+    #[test]
+    fn aligned_files_get_whole_blocks_per_page() {
+        if crate::paged_input::Pager::global().is_none() {
+            return;
+        }
+        let tmp = TempDir::new("paged-fs-aligned");
+        let dir = PagedFsDirectory::with_config(
+            tmp.path(),
+            PagedFsConfig {
+                page_size: 4 << 10,
+                adaptive: false,
+                ..PagedFsConfig::default()
+            },
+        );
+        let bytes = pattern(1 << 20);
+        write(&dir, "_0.fdt", &bytes);
+        let input = dir.open_aligned("_0.fdt", 16 << 10).unwrap();
+        assert_eq!(&input[..], &bytes[..]);
+        assert!(dir.open_aligned("_0.fdt", 12 << 10).is_err());
     }
 
     #[test]

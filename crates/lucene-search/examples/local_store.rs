@@ -360,7 +360,7 @@ fn query(args: &[String]) {
         open.as_secs_f64() * 1e3
     );
     println!(
-        "pass,p50_us,p90_us,p99_us,mean_us,qps,rss_anon_mib,rss_file_mib,pager_mib,read_mib,page_cache_mib,cgroup_mib,hot_p50_us,hot_p99_us,cold_p50_us,cold_p99_us"
+        "pass,p50_us,p90_us,p99_us,mean_us,qps,rss_anon_mib,rss_file_mib,pager_mib,read_mib,page_cache_mib,cgroup_mib,hot_p50_us,hot_p99_us,cold_p50_us,cold_p99_us,faults,refaults,fault_ms,evictions"
     );
     let run_one = |q: &BooleanQuery| {
         let t = Instant::now();
@@ -425,8 +425,12 @@ fn query(args: &[String]) {
         let pager = lucene_store::paged_input::Pager::global()
             .filter(|_| mode == "paged")
             .map_or(0, |p| p.resident_bytes());
+        let st = lucene_store::paged_input::Pager::global()
+            .filter(|_| mode == "paged")
+            .map(|p| p.stats())
+            .unwrap_or_default();
         println!(
-            "{pass},{:.0},{:.0},{:.0},{:.0},{:.0},{:.1},{:.1},{:.1},{:.1},{:.1},{:.1},{hot50:.0},{hot99:.0},{cold50:.0},{cold99:.0}",
+            "{pass},{:.0},{:.0},{:.0},{:.0},{:.0},{:.1},{:.1},{:.1},{:.1},{:.1},{:.1},{hot50:.0},{hot99:.0},{cold50:.0},{cold99:.0},{},{},{},{}",
             percentile(&lat, 0.5),
             percentile(&lat, 0.9),
             percentile(&lat, 0.99),
@@ -438,6 +442,10 @@ fn query(args: &[String]) {
             mib(m.read_bytes.saturating_sub(base.read_bytes)),
             mib(page_cache_bytes(path)),
             mib(m.cgroup),
+            st.faults,
+            st.refaults,
+            st.fault_nanos / 1_000_000,
+            st.evictions,
         );
     }
 }

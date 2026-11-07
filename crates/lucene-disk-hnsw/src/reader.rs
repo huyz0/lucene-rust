@@ -720,6 +720,7 @@ impl DiskHnswReader {
         let mut exact: Vec<(u32, f32)> = Vec::with_capacity(beam);
         let mut fresh: Vec<(usize, u32)> = Vec::with_capacity(f.layout.max_neighbors());
         let mut scratch = vec![0f32; f.dimension];
+        let mut ranges: Vec<(usize, usize)> = Vec::with_capacity(beam);
         let layout = f.layout;
         loop {
             batch.clear();
@@ -732,10 +733,15 @@ impl DiskHnswReader {
             }
             exact.clear();
             stats.rounds = stats.rounds.saturating_add(1);
+            // The whole beam's records in one batch where the file is read
+            // by page; into the CPU cache where it is in memory.
+            ranges.clear();
             for &node in &batch {
                 let (at, len) = f.record_range(node);
                 self.nodes.prefetch(at, len);
+                ranges.push((at, len));
             }
+            self.nodes.prefetch_ranges(&ranges);
             for &node in &batch {
                 let (at, len) = f.record_range(node);
                 let record = self.nodes.read(at, len)?;
