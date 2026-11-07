@@ -414,6 +414,15 @@ public final class RustEngineSupport {
         return null;
     }
 
+    /**
+     * Whether the index is a k-NN one ({@code index.knn}) whose {@code knn_vector} fields this node
+     * serves: its segments are written under the k-NN codec's name, which reads their derived source.
+     */
+    static boolean knnIndex(EngineConfig config) {
+        return refuseKnnVector == false
+            && org.lucenerust.opensearch.knn.KnnSettings.KNN_INDEX.get(config.getIndexSettings().getSettings());
+    }
+
     /** {@link #PARTITION_FIELD}, or null when it names none. */
     static String partitionField(org.opensearch.common.settings.Settings settings) {
         String field = PARTITION_FIELD.get(settings);
@@ -467,6 +476,7 @@ public final class RustEngineSupport {
             ZSTD_TERMS.get(config.getIndexSettings().getSettings()),
             MERGE_LZ4_HIGH_COMPRESSION.get(config.getIndexSettings().getSettings()),
             partitionField(config.getIndexSettings().getSettings()),
+            knnIndex(config),
             config.getIndexSort(),
             parentField(config),
             maxDocs,

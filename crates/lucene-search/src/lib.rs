@@ -205,6 +205,7 @@ pub mod cardinality_sketch;
 pub mod collector;
 pub mod collectors;
 pub mod common_terms;
+pub mod derived_source;
 pub mod directory_reader;
 pub mod doc_value_query;
 pub mod docid_set;
