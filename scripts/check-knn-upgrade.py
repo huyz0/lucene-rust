@@ -81,16 +81,19 @@ def queries(t):
 
 
 def lucene_engine(spec):
-    """Stock k-NN writes Lucene's formats only for the lucene engine (faiss writes .faiss)."""
+    """Stock k-NN writes Lucene's formats only for the lucene engine: its default is faiss, except at 4x."""
     return spec.get("engine") == "lucene" or spec.get("compression_level") == "4x"
 
 
-def write(prefix, rust):
-    """Every lucene-engine mapping indexed and searched on the running node; the recorded cases."""
+def write(prefix, rust, plugin=True):
+    """Every lucene-engine mapping indexed and searched on the running node; the recorded cases.
+
+    The plugin resolves a mapping without an engine to lucene and persists that, so its indexes of
+    every mapping are lucene ones a stock node reads."""
     cases = {}
     for group, specs in (("exact", ck.EXACT), ("quantized", ck.QUANTIZED)):
         for name, spec in specs.items():
-            if not lucene_engine(spec):
+            if not plugin and not lucene_engine(spec):
                 continue
             index = prefix + name
             byte = spec.get("data_type") == "byte"
@@ -151,7 +154,7 @@ def read(cases, rename, plugin_reads, failures):
                 elif label == "top k":
                     if plugin_reads:
                         scan = ck.exact_top(spec, alive, t, 10)
-                        if [i for i, _ in got[:10]] != [i for _, i in scan]:
+                        if not same_top(got[:10], scan):
                             failures.append(f"{rename}{index}: top 10 is not the exhaustive scan's")
                     overlaps.append(len({i for i, _ in got[:10]} & {i for i, _ in want[:10]}) / 10)
         if overlaps:
@@ -160,6 +163,20 @@ def read(cases, rename, plugin_reads, failures):
             if recall < ck.MIN_RECALL:
                 failures.append(f"{rename}{index}: overlap with the writer's {recall:.3f} < {ck.MIN_RECALL}")
     return checked
+
+
+def same_top(got, scan, eps=1e-5):
+    """`got` (id, score) is the exhaustive `scan` (score, id), letting equal scores trade places."""
+    if len(got) < len(scan):
+        return False
+    want = {i for _, i in scan}
+    cutoff = scan[-1][0]
+    for (i, score), (s, _) in zip(got, scan):
+        if abs(score - s) > eps * max(1.0, abs(s)):
+            return False
+        if i not in want and abs(score - cutoff) > eps * max(1.0, abs(cutoff)):
+            return False
+    return True
 
 
 def write_into(cases, failures):
@@ -188,7 +205,7 @@ def write_into(cases, failures):
                 t, k=10, method_parameters={"ef_search": len(now)})})
             scan = ck.exact_top(spec, now, t, 10)
             checked += 1
-            if [i for i, _ in got] != [i for _, i in scan]:
+            if not same_top(got, scan):
                 failures.append(f"{index} after writes and merge: {[i for i, _ in got]} vs scan {[i for _, i in scan]}")
     return checked
 
@@ -217,7 +234,7 @@ def main():
         print("stock -> plugin")
         fresh_volumes()
         start(STOCK_IMAGE)
-        cases = write("", False)
+        cases = write("", False, plugin=False)
         snapshot("from-stock", list(cases))
         stop()
         start(image)

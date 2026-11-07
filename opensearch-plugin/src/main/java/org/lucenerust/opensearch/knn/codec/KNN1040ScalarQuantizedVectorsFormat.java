@@ -13,10 +13,6 @@ import org.apache.lucene.codecs.lucene104.Lucene104ScalarQuantizedVectorsFormat;
 public final class KNN1040ScalarQuantizedVectorsFormat extends Lucene104ScalarQuantizedVectorsFormat {
     public static final String NAME = "KNN1040ScalarQuantizedVectorsFormat";
 
-    public KNN1040ScalarQuantizedVectorsFormat() {
-        super();
-    }
-
     @Override
     public String getName() {
         return NAME;

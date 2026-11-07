@@ -56,6 +56,10 @@ public final class KnnVectorFieldMapper extends ParametrizedFieldMapper {
         return (KnnVectorFieldMapper) in;
     }
 
+    private static String engineOrDefault(String engine) {
+        return engine.equals("undefined") ? KnnFieldConfig.LUCENE : engine;
+    }
+
     /** {@code KNNVectorFieldMapper.Builder}. */
     public static final class Builder extends ParametrizedFieldMapper.Builder {
         final Parameter<Integer> dimension = new Parameter<>(
@@ -65,9 +69,11 @@ public final class KnnVectorFieldMapper extends ParametrizedFieldMapper {
             (n, c, o) -> XContentMapValues.nodeIntegerValue(o),
             m -> toType(m).dimension
         );
-        final Parameter<String> dataType = Parameter.stringParam(DATA_TYPE, false, m -> toType(m).dataType, "float");
+        final Parameter<String> dataType = Parameter.stringParam(DATA_TYPE, false, m -> toType(m).dataType, "float")
+            .setMergeValidator((a, b) -> a.equalsIgnoreCase(b));
         final Parameter<String> spaceType = Parameter.stringParam(SPACE_TYPE, false, m -> toType(m).spaceType, SpaceType.UNDEFINED);
-        final Parameter<String> engine = Parameter.stringParam("engine", false, m -> toType(m).engine, "undefined");
+        final Parameter<String> engine = Parameter.stringParam("engine", false, m -> toType(m).engine, "undefined")
+            .setMergeValidator((a, b) -> engineOrDefault(a).equalsIgnoreCase(engineOrDefault(b)));
         final Parameter<Map<String, Object>> method = new Parameter<Map<String, Object>>(
             "method",
             false,
@@ -120,7 +126,17 @@ public final class KnnVectorFieldMapper extends ParametrizedFieldMapper {
         @Override
         public KnnVectorFieldMapper build(BuilderContext context) {
             boolean knnIndex = KnnSettings.KNN_INDEX.get(indexSettings);
+            if (knnIndex && KnnSettings.DERIVED_SOURCE.get(indexSettings)) {
+                // The vectors would be left out of the stored _source, and this node cannot derive them back.
+                throw new IllegalArgumentException(
+                    "[" + KnnSettings.DERIVED_SOURCE.getKey() + "] is not supported by this node's [" + CONTENT_TYPE + "] fields"
+                );
+            }
             KnnFieldConfig config = config();
+            if (engine.isConfigured() == false && (method.getValue() == null || method.getValue().get("engine") == null)) {
+                // Persisted, so a stock node, whose default engine is faiss, reads the field as the lucene one it is.
+                engine.setValue(config.engine());
+            }
             // The stock plugin's flat mapper keeps doc values by default.
             boolean dv = docValues.isConfigured() ? docValues.getValue() : knnIndex == false;
             KnnVectorFieldType ft = new KnnVectorFieldType(buildFullName(context), meta.getValue(), config, knnIndex, dv);
