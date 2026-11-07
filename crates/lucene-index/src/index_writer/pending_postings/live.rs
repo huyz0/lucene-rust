@@ -21,6 +21,11 @@ pub(crate) struct LiveFieldStats {
     pub(crate) doc_count: i32,
 }
 
+thread_local! {
+    static DECODER: std::cell::RefCell<lucene_codecs::postings::DocBlockDecoder> =
+        std::cell::RefCell::default();
+}
+
 impl FieldRuns {
     /// The field's statistics over every buffered document.
     pub(crate) fn live_stats(&self) -> LiveFieldStats {
@@ -55,6 +60,44 @@ impl FieldRuns {
             return;
         };
         let run = &self.runs[id as usize];
+        let blocks = self.sealed_blocks(id);
+        if let Some(last) = blocks.last() {
+            // The sealed blocks from the first reaching `from`, then the
+            // documents written after them, then the newest. A block that
+            // does not decode leaves the term to its stream.
+            let at = out.len();
+            let first = blocks.partition_point(|b| b.last_doc < from);
+            let decoded = DECODER.with(|d| {
+                let mut d = d.borrow_mut();
+                blocks
+                    .iter()
+                    .enumerate()
+                    .skip(first)
+                    .try_for_each(|(i, b)| {
+                        let prev = i
+                            .checked_sub(1)
+                            .and_then(|p| blocks.get(p))
+                            .map_or(-1, |p| p.last_doc);
+                        d.decode(&b.bytes, prev, self.freqs, from, out)
+                    })
+            });
+            if decoded.is_ok() {
+                let mut r = self.pool.resume(last.end, run.docs);
+                let mut doc = last.last_doc;
+                while !r.eof() {
+                    let freq = r.next_doc(&mut doc);
+                    if doc >= from {
+                        out.push((doc, if self.freqs { freq } else { 1 }));
+                    }
+                }
+                if run.last_doc >= from {
+                    out.push((run.last_doc, if self.freqs { run.freq } else { 1 }));
+                }
+                return;
+            }
+            debug_assert!(false, "a sealed block decodes");
+            out.truncate(at);
+        }
         let [docs_start, _] = self.starts[id as usize];
         let cursored = run.doc_count >= LIVE_CURSOR_DOCS;
         let lock = || {
@@ -80,9 +123,7 @@ impl FieldRuns {
         // before where the read starts is at most it.
         let mut doc = start.map_or(0, |c| c.doc);
         while !r.eof() {
-            let code = r.read_vlong();
-            doc = doc.wrapping_add((code >> 1) as u32 as i32);
-            let freq = if code & 1 != 0 { 1 } else { r.read_i32() };
+            let freq = r.next_doc(&mut doc);
             if doc >= from {
                 out.push((doc, freq));
             }
@@ -170,6 +211,7 @@ mod tests {
     use lucene_codecs::postings_writer::TermSource;
 
     use super::super::super::explicit::{InvertedField, InvertedTerm};
+    use super::super::{Checkpoint, SEALED_DOCS};
     use super::*;
 
     const FULL: IndexOptions = IndexOptions::DocsAndFreqsAndPositionsAndOffsets;
@@ -197,6 +239,7 @@ mod tests {
     /// ones, a payload on "b" in every fourth.
     fn buffer(n: i32) -> PendingPostings {
         let mut p = PendingPostings::default();
+        p.seal_blocks();
         for doc in 0..n {
             let a: Vec<i32> = (0..=doc % 3).map(|k| k * 2).collect();
             let mut terms = vec![term("a", &a, b"")];
@@ -271,5 +314,49 @@ mod tests {
         );
         p.rollback(cp);
         assert_eq!(p.live_field(0).unwrap().live_stats(), want);
+    }
+
+    /// A term with sealed blocks reads the same documents from any
+    /// document on, and after a rollback cut its last block.
+    #[test]
+    fn sealed_blocks_read_as_the_streams() {
+        let n = 3 * SEALED_DOCS as i32 + 17;
+        let mut p = buffer(n);
+        let flushed = p.flushed(None).unwrap();
+        let lists = flushed.term_lists();
+        let want = |t: &str| {
+            lists[0]
+                .2
+                .iter()
+                .find(|v| v.term() == t.as_bytes())
+                .unwrap()
+                .docs()
+                .to_vec()
+        };
+        let (a, b) = (want("a"), want("b"));
+        drop(flushed);
+        let runs = p.live_field(0).unwrap();
+        let id = runs.terms.find(b"a").unwrap();
+        assert_eq!(runs.sealed_blocks(id).len(), 3);
+        for from in [0, 1, 255, 256, 257, 600, n - 1, n] {
+            let mut got = Vec::new();
+            runs.live_docs_of(b"a", from, &mut got);
+            let expect: Vec<_> = a.iter().copied().filter(|d| d.0 >= from).collect();
+            assert_eq!(got, expect, "a from {from}");
+            got.clear();
+            runs.live_docs_of(b"b", from, &mut got);
+            let expect: Vec<_> = b.iter().copied().filter(|d| d.0 >= from).collect();
+            assert_eq!(got, expect, "b from {from}");
+        }
+        // Cut back into the third block: it goes, the first two stay.
+        let cut = 2 * SEALED_DOCS as i32 + 5;
+        let cp = p.checkpoint(n);
+        p.rollback(Checkpoint { doc: cut, ..cp });
+        let runs = p.live_field(0).unwrap();
+        assert_eq!(runs.sealed_blocks(id).len(), 2);
+        let mut got = Vec::new();
+        runs.live_docs_of(b"a", 0, &mut got);
+        let expect: Vec<_> = a.iter().copied().filter(|d| d.0 < cut).collect();
+        assert_eq!(got, expect);
     }
 }
