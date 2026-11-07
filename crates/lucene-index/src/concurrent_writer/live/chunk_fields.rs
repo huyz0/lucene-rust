@@ -21,6 +21,12 @@ impl Runs {
         }
     }
 
+    /// Whether document `doc` is in a run.
+    fn contains(&self, doc: i32) -> bool {
+        let at = self.0.partition_point(|&(_, e)| e <= doc);
+        self.0.get(at).is_some_and(|&(s, _)| s <= doc)
+    }
+
     /// Whether a document of `start..end` is in a run.
     fn any_in(&self, start: i32, end: i32) -> bool {
         let at = self.0.partition_point(|&(_, e)| e <= start);
@@ -36,8 +42,10 @@ impl Runs {
 pub(in crate::concurrent_writer) struct ChunkFields {
     present: HashMap<i32, Runs>,
     points: HashMap<i32, PackedPointsField>,
-    /// A document stores term vectors, gave a point the field does not
-    /// take, or a norm of zero: chunks are written from the documents.
+    /// By field: the documents that have a norm for it.
+    normed: HashMap<i32, Runs>,
+    /// A document stores term vectors, or gave a point the field does not
+    /// take: chunks are written from the documents.
     unsupported: bool,
 }
 
@@ -72,8 +80,11 @@ impl ChunkFields {
             let tv = cfg
                 .field_by_number(inv.field_number)
                 .is_none_or(|f| f.store_term_vectors);
-            if tv || inv.norm == Some(0) {
+            if tv {
                 return self.give_up();
+            }
+            if inv.norm.is_some() {
+                self.normed.entry(inv.field_number).or_default().add(doc);
             }
         }
         for p in &fields.points {
@@ -97,16 +108,33 @@ impl ChunkFields {
         }
     }
 
+    /// Whether the columns stopped: the buffer's chunks are decoded.
+    pub(in crate::concurrent_writer) fn gave_up(&self) -> bool {
+        self.unsupported
+    }
+
     /// Stops keeping columns: the buffer's chunks are decoded.
-    fn give_up(&mut self) {
+    pub(in crate::concurrent_writer) fn give_up(&mut self) {
+        if self.unsupported {
+            return;
+        }
         *self = ChunkFields {
             unsupported: true,
             ..ChunkFields::default()
         };
     }
 
+    /// Whether document `doc` has a norm for field `field`.
+    pub(in crate::concurrent_writer) fn has_norm(&self, field: i32, doc: i32) -> bool {
+        self.normed.get(&field).is_some_and(|r| r.contains(doc))
+    }
+
     pub(in crate::concurrent_writer) fn ram_bytes(&self) -> usize {
-        let present = self.present.values().map(Runs::ram_bytes);
+        let present = self
+            .present
+            .values()
+            .chain(self.normed.values())
+            .map(Runs::ram_bytes);
         let points = self.points.values().map(|p| {
             p.docs
                 .capacity()

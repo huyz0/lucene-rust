@@ -1498,7 +1498,14 @@ impl<'d> ConcurrentIndexWriter<'d> {
                     added = added.saturating_add(dwpt.explicit.push(doc.fields));
                 }
                 let grown = dwpt.postings.bytes().saturating_sub(postings_before);
-                let columns = dwpt.live.chunk_ram_bytes().saturating_sub(columns_before);
+                let columns_now = dwpt.live.chunk_ram_bytes();
+                if columns_now < columns_before {
+                    // The columns gave up: their charge goes back.
+                    dwpt.ram_bytes = dwpt
+                        .ram_bytes
+                        .saturating_sub(columns_before.saturating_sub(columns_now));
+                }
+                let columns = columns_now.saturating_sub(columns_before);
                 Ok(added
                     .saturating_add(grown)
                     .saturating_add(columns)

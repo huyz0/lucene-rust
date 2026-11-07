@@ -1338,18 +1338,6 @@ pub(crate) enum PrebuiltDocValues {
 }
 
 impl PrebuiltDocValues {
-    /// Whether no document has a value.
-    pub(crate) fn is_empty(&self) -> bool {
-        match self {
-            PrebuiltDocValues::Numeric(v) => v.is_empty(),
-            PrebuiltDocValues::SparseNumeric(v) => v.is_empty(),
-            PrebuiltDocValues::SortedNumeric(c) => c.docs.is_empty(),
-            PrebuiltDocValues::Binary(c) => c.docs.is_empty(),
-            PrebuiltDocValues::Sorted(c) => c.docs.is_empty(),
-            PrebuiltDocValues::SortedSet(c) => c.docs.is_empty(),
-        }
-    }
-
     fn doc_values_type(&self) -> DocValuesType {
         match self {
             PrebuiltDocValues::Numeric(_) | PrebuiltDocValues::SparseNumeric(_) => {

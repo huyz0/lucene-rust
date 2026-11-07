@@ -150,17 +150,26 @@ impl Column {
 
     /// Adds one of document `doc`'s values; a document's values arrive
     /// together, after every earlier document's. `false` when the field
-    /// does not take it: a value of another kind, or a second value of a
-    /// single-valued field.
+    /// does not take it: a value of another kind.
     fn add(&mut self, doc: i32, value: &FieldValue) -> bool {
         match self {
+            // A single-valued field keeps a document's first value, as the
+            // documents are read.
+            Column::Numeric { docs, .. } | Column::Binary { docs, .. }
+                if docs.last() == Some(&doc) =>
+            {
+                true
+            }
+            Column::Terms {
+                set: false, docs, ..
+            } if docs.last() == Some(&doc) => true,
             Column::Numeric { docs, values } => match number(value) {
-                Some(v) if docs.last() != Some(&doc) => {
+                Some(v) => {
                     docs.push(doc);
                     values.push(v);
                     true
                 }
-                _ => false,
+                None => false,
             },
             Column::SortedNumeric {
                 docs, ends, values, ..
@@ -176,20 +185,20 @@ impl Column {
                 ends,
                 bytes: all,
             } => match bytes(value) {
-                Some(b) if docs.last() != Some(&doc) => {
+                Some(b) => {
                     all.extend_from_slice(b);
                     bump(docs, ends, doc, all.len())
                 }
-                _ => false,
+                None => false,
             },
             Column::Terms {
-                set,
+                set: _,
                 terms,
                 docs,
                 ends,
                 ids,
             } => match bytes(value) {
-                Some(b) if *set || docs.last() != Some(&doc) => match terms.id(b) {
+                Some(b) => match terms.id(b) {
                     Some(id) => {
                         ids.push(id);
                         bump(docs, ends, doc, ids.len())
@@ -363,6 +372,17 @@ pub(in crate::concurrent_writer) struct DocValuesColumns {
 }
 
 impl DocValuesColumns {
+    /// Whether the columns stopped: the buffer's chunks are decoded.
+    pub(in crate::concurrent_writer) fn refused(&self) -> bool {
+        self.refused
+    }
+
+    /// Stops keeping columns: the buffer's chunks are decoded.
+    pub(in crate::concurrent_writer) fn refuse(&mut self) {
+        self.refused = true;
+        self.columns = HashMap::new();
+    }
+
     /// Adds document `doc`'s values; `kind` gives a field's type.
     pub(in crate::concurrent_writer) fn record(
         &mut self,
@@ -381,9 +401,7 @@ impl DocValuesColumns {
                     .map(|c| e.insert(c)),
             };
             if !column.is_some_and(|c| c.add(doc, &v.value)) {
-                self.refused = true;
-                self.columns = HashMap::new();
-                return;
+                return self.refuse();
             }
         }
         for v in values {
@@ -411,11 +429,10 @@ impl DocValuesColumns {
             return None;
         }
         let mut out = Vec::with_capacity(self.columns.len());
+        // A field with no values in the range keeps its empty column: a
+        // document of the range may still have the field.
         for (&field, c) in &self.columns {
-            let r = c.range(start, end)?;
-            if !r.is_empty() {
-                out.push((field, r));
-            }
+            out.push((field, c.range(start, end)?));
         }
         Some(out)
     }
@@ -508,22 +525,22 @@ mod tests {
             let prebuilt = columns
                 .range(i32::try_from(start).unwrap(), i32::try_from(end).unwrap())
                 .unwrap();
+            // A field none of the run's documents has keeps its empty column.
             let present: Vec<i32> = prebuilt.iter().map(|(n, _)| *n).collect();
             let all = [num, sparse, multi, bin, kw, tags];
-            if all.iter().any(|n| !present.contains(n)) {
-                // A field none of the run's documents has is written from
-                // the documents.
-                continue;
-            }
+            assert!(
+                all.iter().all(|n| present.contains(n)),
+                "documents {start}..{end}"
+            );
             let (decoded, from_columns) = cfg.doc_values_both_ways(&run, &prebuilt);
             assert_eq!(decoded, from_columns, "documents {start}..{end}");
             compared += 1;
         }
-        assert_eq!(compared, 3);
+        assert_eq!(compared, 5);
     }
 
     #[test]
-    fn a_value_of_the_wrong_kind_refuses_the_column() {
+    fn a_value_of_the_wrong_kind_refuses_the_columns() {
         let mut columns = DocValuesColumns::default();
         let kind = |_| Some(DocValuesType::Numeric);
         columns.record(0, &[value(1, FieldValue::Long(3))], kind);
@@ -537,8 +554,11 @@ mod tests {
             kind,
         );
         assert!(
-            columns.range(0, 1).is_none(),
-            "two values of a NUMERIC field"
+            matches!(
+                columns.range(0, 1).as_deref(),
+                Some([(1, PrebuiltDocValues::Numeric(v))]) if v == &[3]
+            ),
+            "a NUMERIC field keeps a document's first value"
         );
     }
 }

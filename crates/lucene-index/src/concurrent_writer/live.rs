@@ -257,6 +257,11 @@ impl LiveColumns {
             cfg.field_by_number(n).map(|f| f.doc_values_type)
         });
         self.chunk.record(doc, fields, cfg);
+        if self.chunk.gave_up() || self.doc_values.refused() {
+            // Chunks are decoded from now on: neither set of columns is read.
+            self.chunk.give_up();
+            self.doc_values.refuse();
+        }
         for f in &fields.inverted {
             if let Some(norm) = f.norm {
                 self.norms
@@ -289,7 +294,12 @@ impl LiveColumns {
             .iter()
             .filter_map(|(&n, column)| {
                 let values: Vec<Option<i64>> = (from..to)
-                    .map(|d| column.get(d).filter(|&v| v != 0))
+                    .map(|d| {
+                        let doc = i32::try_from(d).unwrap_or(i32::MAX);
+                        self.chunk
+                            .has_norm(n, doc)
+                            .then(|| column.get(d).unwrap_or(0))
+                    })
                     .collect();
                 values.iter().any(Option::is_some).then_some((n, values))
             })
@@ -320,7 +330,6 @@ impl LiveColumns {
             .fold(self.deletes.hard.ram_bytes(), usize::saturating_add)
             .saturating_add(self.deletes.soft.ram_bytes())
             .saturating_add(self.stored.ram_bytes())
-            .saturating_add(self.chunk_ram_bytes())
     }
 
     /// What the columns kept only for writing chunks hold.
