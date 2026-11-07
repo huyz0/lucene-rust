@@ -174,7 +174,14 @@ public final class KnnVectorFieldMapper extends ParametrizedFieldMapper {
             }
             // The stock plugin's flat mapper keeps doc values by default.
             boolean dv = docValues.isConfigured() ? docValues.getValue() : knnIndex == false;
-            KnnVectorFieldType ft = new KnnVectorFieldType(buildFullName(context), meta.getValue(), config, knnIndex, dv);
+            KnnVectorFieldType ft = new KnnVectorFieldType(
+                buildFullName(context),
+                meta.getValue(),
+                config,
+                knnIndex,
+                dv,
+                org.opensearch.cluster.metadata.IndexMetadata.SETTING_INDEX_VERSION_CREATED.get(indexSettings)
+            );
             return new KnnVectorFieldMapper(name, ft, multiFieldsBuilder.build(this, context), copyTo.build(), this, config, knnIndex, dv);
         }
     }
@@ -397,11 +404,25 @@ public final class KnnVectorFieldMapper extends ParametrizedFieldMapper {
     public static final class KnnVectorFieldType extends MappedFieldType {
         private final KnnFieldConfig config;
         private final boolean knnIndex;
+        private final org.opensearch.Version created;
 
-        KnnVectorFieldType(String name, Map<String, String> meta, KnnFieldConfig config, boolean knnIndex, boolean docValues) {
+        KnnVectorFieldType(
+            String name,
+            Map<String, String> meta,
+            KnnFieldConfig config,
+            boolean knnIndex,
+            boolean docValues,
+            org.opensearch.Version created
+        ) {
             super(name, false, false, docValues, TextSearchInfo.NONE, meta);
             this.config = config;
             this.knnIndex = knnIndex;
+            this.created = created;
+        }
+
+        /** The version the field's index was created on. */
+        public org.opensearch.Version indexCreated() {
+            return created;
         }
 
         public KnnFieldConfig config() {

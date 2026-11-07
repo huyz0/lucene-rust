@@ -36,6 +36,13 @@ answer the same queries. The Rust engine writes the plugin node's segments.
              of it flushed, after deletes and after a force merge; the
              calibrated depth finds most of them; one probe finds fewer, so
              the index is what is searched.
+  scripts    script_score with the `knn` language's `knn_score` in every
+             space the field allows (plus `hammingbit` over long and binary
+             fields), and the Painless functions (l2Squared, cosineSimilarity,
+             innerProduct, l1Norm, lInfNorm, hamming, lateInteractionScore) in
+             script_score and script_fields: the same hits, scores and values
+             as stock, and the same refusals. Scripts run in Java for now, so
+             they are left out of the no-fallback count.
   errors     requests the stock plugin refuses are refused here too; faiss
              mappings, which stock accepts, are refused here.
 
@@ -46,7 +53,7 @@ Every search must run in Rust (the plugin's stats show no fallback).
 Needs Docker and the plugin zip in opensearch-plugin/build/distributions
 (`gradle -p opensearch-plugin bundlePlugin`).
 """
-import glob, json, math, os, random, shutil, struct, subprocess, sys, time, urllib.request
+import base64, glob, json, math, os, random, shutil, struct, subprocess, sys, time, urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 VERSION = "3.9.0"
@@ -460,6 +467,127 @@ def ivf_check(failures):
     return checked
 
 
+SCRIPT_SPACES = {
+    "lucene_l2": ["l2", "cosinesimil", "innerproduct", "l1", "linf"],
+    "lucene_cos": ["cosinesimil", "l2"],
+    "lucene_ip": ["innerproduct"],
+    "lucene_byte": ["l2", "cosinesimil", "innerproduct", "l1", "linf"],
+    "lucene_binary": ["hamming"],
+    "lucene_half_l2": ["l2", "cosinesimil", "innerproduct"],
+}
+PAINLESS = [
+    "1 / (1 + l2Squared(params.q, doc['emb']))",
+    "1 + cosineSimilarity(params.q, doc['emb'])",
+    "1 + cosineSimilarity(params.q, doc['emb'], params.norm)",
+    "10000 + innerProduct(params.q, doc['emb'])",
+    "1 / (1 + l1Norm(params.q, doc['emb']))",
+    "1 / (1 + lInfNorm(params.q, doc['emb']))",
+]
+
+
+def script_score(base, script, size=20):
+    return {"size": size, "query": {"script_score": {"query": base, "script": script}}}
+
+
+def knn_score(space, target, field="emb"):
+    return {"lang": "knn", "source": "knn_score",
+            "params": {"field": field, "query_value": target, "space_type": space}}
+
+
+def script_check(failures):
+    """Scoring scripts on both nodes over the exact indexes: returns the number of queries compared."""
+    checked = 0
+    bases = [{"match_all": {}}, {"term": {"tag": "even"}}]
+
+    def compare(label, index, body, ties=False):
+        nonlocal checked
+        checked += 1
+        a = req(OURS[1], "POST", f"/{index}/_search", body, ok_errors=True)
+        b = req(STOCK[1], "POST", f"/{index}/_search", body, ok_errors=True)
+        if "status" in a or "status" in b:
+            if a.get("status", 200) != b.get("status", 200):
+                failures.append(f"script {label} on {index}: status {a.get('status', 200)} vs stock "
+                                f"{b.get('status', 200)}: {json.dumps(a)[:400]} / {json.dumps(b)[:400]}")
+            return
+        got = [(h["_id"], h["_score"] or 0.0) for h in a["hits"]["hits"]]
+        want = [(h["_id"], h["_score"] or 0.0) for h in b["hits"]["hits"]]
+        if not same(got, want, ties=ties):
+            failures.append(f"script {label} on {index}: {got[:3]} vs stock {want[:3]}")
+        fa = [(h["_id"], h.get("fields")) for h in a["hits"]["hits"]]
+        fb = [(h["_id"], h.get("fields")) for h in b["hits"]["hits"]]
+        if not ties and any(x[1] is not None for x in fb):
+            vals = lambda f: [(i, [round(v, 3) for v in (d or {}).get("s", [])]) for i, d in f]
+            if vals(fa) != vals(fb):
+                failures.append(f"script_fields {label} on {index}: {fa[:2]} vs stock {fb[:2]}")
+
+    for index, spaces in SCRIPT_SPACES.items():
+        spec = EXACT[index]
+        rng = random.Random(f"{SEED}-{index}-scripts")
+        for qi in range(3):
+            t = vector_for(spec, rng)
+            for space in spaces:
+                for base in bases:
+                    compare(f"knn_score {space} query {qi}", index, script_score(base, knn_score(space, t)),
+                            ties=space == "hamming")
+            if spec.get("data_type") == "binary":
+                scripts = ["1 / (1 + hamming(params.q, doc['emb']))"]
+            else:
+                scripts = PAINLESS
+            norm = sum(x * x for x in t)
+            for src in scripts:
+                params = {"q": t, "norm": norm}
+                compare(f"painless {src} query {qi}", index,
+                        script_score(bases[qi % 2], {"source": src, "params": params}), ties=spec.get("data_type") == "binary")
+                body = {"size": 5, "query": {"term": {"tag": "odd"}}, "sort": ["n"],
+                        "script_fields": {"s": {"script": {"source": src, "params": params}}}}
+                compare(f"script_fields {src} query {qi}", index, body)
+    # Refusals: an unknown space, a space the field does not allow, a missing parameter, a wrong length.
+    t = [0.1] * DIM
+    for label, index, script in [
+        ("bad space", "lucene_l2", knn_score("nope", t)),
+        ("hamming on floats", "lucene_l2", knn_score("hamming", t)),
+        ("hammingbit on knn_vector", "lucene_l2", knn_score("hammingbit", 3)),
+        ("l2 on binary", "lucene_binary", knn_score("l2", [1] * 8)),
+        ("missing field", "lucene_l2", {"lang": "knn", "source": "knn_score", "params": {"query_value": t, "space_type": "l2"}}),
+        ("unknown source", "lucene_l2", {"lang": "knn", "source": "nope", "params": {}}),
+        ("length", "lucene_l2", knn_score("l2", [0.1] * (DIM - 1))),
+        ("byte values", "lucene_byte", knn_score("l2", [0.5] * DIM)),
+        ("cosine zero", "lucene_l2", knn_score("cosinesimil", [0.0] * DIM)),
+        ("painless dimension", "lucene_l2", {"source": "l2Squared(params.q, doc['emb'])", "params": {"q": [0.1] * 3}}),
+        ("painless binary", "lucene_binary", {"source": "l2Squared(params.q, doc['emb'])", "params": {"q": [1] * 8}}),
+    ]:
+        compare(label, index, script_score({"match_all": {}}, script))
+    # hammingbit over long and binary fields.
+    rng = random.Random(f"{SEED}-hammingbit")
+    for port in (OURS[1], STOCK[1]):
+        req(port, "PUT", "/hammingbit", {"settings": {"number_of_shards": 1, "number_of_replicas": 0},
+                                          "mappings": {"properties": {"h": {"type": "long"},
+                                                                      "b": {"type": "binary", "doc_values": True},
+                                                                      "mv": {"type": "object", "enabled": False}}}})
+    lines = []
+    for i in range(200):
+        raw = bytes(rng.randrange(256) for _ in range(8))
+        mv = [[round(rng.uniform(-1, 1), 3) for _ in range(4)] for _ in range(rng.randint(1, 3))]
+        lines.append(json.dumps({"index": {"_index": "hammingbit", "_id": f"h{i}"}}))
+        lines.append(json.dumps({"h": rng.randrange(-2 ** 62, 2 ** 62), "b": base64.b64encode(raw).decode(), "mv": mv}))
+    for port in (OURS[1], STOCK[1]):
+        req(port, "POST", "/_bulk?refresh=true", "\n".join(lines) + "\n", ndjson=True)
+    for qi in range(3):
+        compare(f"hammingbit long {qi}", "hammingbit",
+                script_score({"match_all": {}}, knn_score("hammingbit", rng.randrange(-2 ** 62, 2 ** 62), "h")), ties=True)
+        q = base64.b64encode(bytes(rng.randrange(256) for _ in range(8))).decode()
+        compare(f"hammingbit binary {qi}", "hammingbit",
+                script_score({"match_all": {}}, knn_score("hammingbit", q, "b")), ties=True)
+        mq = [[round(rng.uniform(-1, 1), 3) for _ in range(4)] for _ in range(2)]
+        for space in (None, "l2", "cosinesimil", "innerproduct", "l1", "hamming", "nope"):
+            src = "lateInteractionScore(params.q, 'mv', params._source" + (", params.space)" if space else ")")
+            body = script_score({"match_all": {}}, {"source": "100 + " + src, "params": {"q": mq, "space": space or ""}})
+            compare(f"lateInteractionScore {space} {qi}", "hammingbit", body)
+    for port in (OURS[1], STOCK[1]):
+        req(port, "DELETE", "/hammingbit")
+    return checked
+
+
 def main():
     keep = "--keep" in sys.argv
     zips = glob.glob(os.path.join(ROOT, "opensearch-plugin", "build", "distributions", "lucene-rust-*.zip"))
@@ -630,6 +758,7 @@ def main():
         print(f"plugin: {ran} shard queries in Rust, fallbacks {fallbacks}")
         if fallbacks:
             failures.append(f"queries fell back to Java: {fallbacks}")
+        print(f"compared {script_check(failures)} script queries")
     finally:
         if failures:
             logs = subprocess.run(["docker", "logs", OURS[0]], capture_output=True, text=True)

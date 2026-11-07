@@ -192,7 +192,26 @@ public final class KnnVectorFieldData implements IndexFieldData<KnnVectorFieldDa
 
         @Override
         public ScriptDocValues<?> getScriptValues() {
-            throw new IllegalArgumentException("[" + KnnVectorFieldMapper.CONTENT_TYPE + "] fields do not support scripting yet");
+            FieldInfo info = reader.getFieldInfos().fieldInfo(name);
+            String dataType = config.binary() ? "binary" : config.halfFloat() ? "half_float" : config.dataType() == VectorEncoding.BYTE ? "byte" : "float";
+            Values values;
+            try {
+                values = info == null ? null : values(info);
+            } catch (IOException e) {
+                throw new UncheckedIOException(e);
+            }
+            KnnScriptDocValues.Source source = values == null ? null : new KnnScriptDocValues.Source() {
+                @Override
+                public int advance(int doc) throws IOException {
+                    return values.advance(doc);
+                }
+
+                @Override
+                public Object vector() throws IOException {
+                    return values.vector();
+                }
+            };
+            return new KnnScriptDocValues(source, name, dataType);
         }
 
         @Override
