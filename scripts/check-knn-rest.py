@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""The plugin's _plugins/_knn REST endpoints against stock k-NN's.
+"""The plugin's knn REST output against stock k-NN's.
 
 One plugin node and one stock node take the same indexes and the same knn
-queries. Then both answer the k-NN stats, warmup and clear_cache calls, and
-the answers are compared:
+queries. Then both answer the k-NN stats, warmup and clear_cache calls, the
+mapping and explain APIs, and the answers are compared:
 
   stats         the same keys at every level, cluster and node, for the full
                 listing, one stat, a group stat, ?stat= and a node filter;
@@ -12,6 +12,12 @@ the answers are compared:
   warmup        the same _shards counts for knn indexes; the same error status,
   clear_cache   type and reason for a non-knn index and a missing one
   errors        an unknown stat and _all mixed with names give stock's 400
+  mapping       GET _mapping persists each knn_vector mapping as stock does
+                (method filled in with its engine, space type and parameters,
+                data_type upper case); where no engine is named, stock's
+                default is faiss and the plugin persists lucene, so a stock
+                node reading the index sees the lucene field it is
+  explain       a knn hit's explanation
 
   scripts/check-knn-rest.py [--keep]
 
@@ -53,6 +59,66 @@ def setup(port):
     for body in ({"k": 5}, {"k": 5, "filter": flt}, {"min_score": 0.5}, {"min_score": 0.5, "filter": flt},
                  {"max_distance": 1.0}, {"max_distance": 1.0, "filter": flt}, {"k": 3}):
         ck.req(port, "POST", "/vec-a/_search", {"query": {"knn": {"emb": {"vector": target, **body}}}})
+
+
+MAPPINGS = {
+    "plain": {"type": "knn_vector", "dimension": 4},
+    "space": {"type": "knn_vector", "dimension": 4, "space_type": "innerproduct"},
+    "method": {"type": "knn_vector", "dimension": 4, "method": {"name": "hnsw", "parameters": {"m": 8}}},
+    "lucene": {"type": "knn_vector", "dimension": 4,
+               "method": {"name": "hnsw", "engine": "lucene", "space_type": "l2",
+                          "parameters": {"m": 8, "ef_construction": 64}}},
+    "bare": {"type": "knn_vector", "dimension": 4, "method": {"name": "hnsw", "engine": "lucene"}},
+    "top": {"type": "knn_vector", "dimension": 4, "space_type": "innerproduct", "engine": "lucene",
+            "method": {"name": "hnsw"}},
+    "sq": {"type": "knn_vector", "dimension": 4,
+           "method": {"name": "hnsw", "engine": "lucene", "parameters": {"encoder": {"name": "sq", "parameters": {"bits": 4}}}}},
+    "mode": {"type": "knn_vector", "dimension": 4, "mode": "on_disk"},
+    "mode_lucene": {"type": "knn_vector", "dimension": 4, "engine": "lucene", "mode": "on_disk"},
+    "comp": {"type": "knn_vector", "dimension": 4, "compression_level": "4x"},
+    "byte": {"type": "knn_vector", "dimension": 4, "data_type": "byte"},
+    "float": {"type": "knn_vector", "dimension": 4, "data_type": "FLOAT"},
+    "stored": {"type": "knn_vector", "dimension": 4, "doc_values": False, "store": True},
+}
+
+
+def stock_engine_to_lucene(spec, persisted):
+    """The stock mapping as the plugin persists it: lucene where stock resolved faiss."""
+    out = dict(persisted)
+    if "method" in out:
+        out["method"] = {**out["method"], "engine": "lucene"}
+    elif "engine" not in spec:
+        out["engine"] = "lucene"
+    return out
+
+
+def compare_mappings(failures):
+    got = {}
+    for port in (OURS[1], STOCK[1]):
+        ck.req(port, "PUT", "/mappings", {"settings": {"index": {"knn": True, "number_of_replicas": 0}},
+                                          "mappings": {"properties": MAPPINGS}})
+        ck.req(port, "PUT", "/mappings/_doc/1?refresh=true", {k: [1, 2, 3, 4] for k in MAPPINGS})
+        got[port] = ck.req(port, "GET", "/mappings/_mapping")["mappings"]["mappings"]["properties"]
+        # The persisted mapping must parse again: an update repeating the request's mapping is no conflict.
+        ck.req(port, "PUT", "/mappings/_mapping", {"properties": MAPPINGS})
+    for name, spec in MAPPINGS.items():
+        want = stock_engine_to_lucene(spec, got[STOCK[1]][name])
+        if got[OURS[1]][name] != want:
+            failures.append(f"mapping {name}: ours {got[OURS[1]][name]}, stock {got[STOCK[1]][name]}")
+    return len(MAPPINGS)
+
+
+def compare_explain(failures):
+    n = 0
+    for body in ({"k": 1}, {"k": 3}, {"k": 3, "filter": {"term": {"tag": "even"}}}):
+        query = {"explain": True, "size": 3, "query": {"knn": {"emb": {"vector": [0.5, 0.5, 0.5, 0.5], **body}}}}
+        o, s = (ck.req(p, "POST", "/vec-a/_search", query)["hits"]["hits"] for p in (OURS[1], STOCK[1]))
+        eo = [h.get("_explanation") for h in o]
+        es = [h.get("_explanation") for h in s]
+        if eo != es:
+            failures.append(f"explain {body}: ours {eo}, stock {es}")
+        n += 1
+    return n
 
 
 def shape(v):
@@ -146,7 +212,10 @@ def main():
                  ("POST", "/_plugins/_knn/clear_cache/plain"), ("POST", "/_plugins/_knn/clear_cache/missing")]
         for method, path in calls:
             same_answer(method, path, failures)
-        print(f"{len(stats)} stats calls, {len(calls)} warmup/clear_cache/error calls compared")
+        mappings = compare_mappings(failures)
+        explains = compare_explain(failures)
+        print(f"{len(stats)} stats calls, {len(calls)} warmup/clear_cache/error calls, {mappings} mappings, "
+              f"{explains} explains compared")
     finally:
         if not keep:
             for name in (OURS[0], STOCK[0]):
