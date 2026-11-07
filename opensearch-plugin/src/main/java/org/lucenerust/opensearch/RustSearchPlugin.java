@@ -384,6 +384,7 @@ public class RustSearchPlugin extends Plugin implements
             RustEngineSupport.REALTIME_SEARCH,
             RustEngineSupport.ADAPTIVE_DOC_VALUES,
             RustEngineSupport.MERGE_LZ4_HIGH_COMPRESSION,
+            RustEngineSupport.PAGED_ZSTD_STORED_FIELDS,
             RustEngineSupport.PARTITION_FIELD,
             NODE_ENGINE_ENABLED,
             LocalKeySource.KEY,

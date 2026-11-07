@@ -89,8 +89,12 @@ fn body(i: usize) -> String {
 
 #[test]
 fn a_large_merge_trains_a_dictionary_and_reads_back_the_same() {
+    // `ZSTD_PAGED_OUT=DIR` keeps the index there, with every body sorted in
+    // `bodies.expected`, for checking another reader (the plugin's Java
+    // codec) against it.
     let tmp = TempDir::new("zstd-paged-merge");
-    let dir = FsDirectory::open(tmp.path());
+    let out = std::env::var_os("ZSTD_PAGED_OUT").map(std::path::PathBuf::from);
+    let dir = FsDirectory::open(out.as_deref().unwrap_or(tmp.path()));
     let codec = lucene_codecs::codec::ZstdPagedLucene104Codec::new(3).unwrap();
     let mut w = IndexWriter::open(&dir, vec![body_field()], "Lucene104", version()).unwrap();
     w.set_codec(Some(std::sync::Arc::new(codec))).unwrap();
@@ -127,4 +131,22 @@ fn a_large_merge_trains_a_dictionary_and_reads_back_the_same() {
     flushed_bodies.sort_unstable();
     assert!(bodies == flushed_bodies);
     assert_eq!(bodies.len(), n);
+
+    // A flush after the merge: one segment with a dictionary, one without.
+    for i in n..n + 5000 {
+        w.add_document(Document {
+            fields: vec![StoredField {
+                field_number: 0,
+                value: FieldValue::String(body(i)),
+            }],
+        })
+        .unwrap();
+    }
+    w.commit().unwrap();
+    let (segs, mut all) = inspect(&dir);
+    assert_eq!(segs.iter().map(|s| s.1).collect::<Vec<_>>(), [true, false]);
+    if let Some(out) = &out {
+        all.sort_unstable();
+        std::fs::write(out.join("bodies.expected"), all.join("\n") + "\n").unwrap();
+    }
 }
