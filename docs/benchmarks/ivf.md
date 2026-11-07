@@ -176,6 +176,15 @@ empty are split or dissolved. GloVe, 90% + 10% segments, BBQ, nprobe 64,
 rerank 100: merge 1.43 s and recall 0.871, against 4.80 s and 0.876 for a
 full re-cluster.
 
+Repeated reuse does not drift. An update stream (`ivf_merge_bench
+--generations 10 --split 0.5 --delete 0.05`): GloVe starts from half its
+vectors, and each of 10 merges adds the next 5% and deletes 5% of the live
+documents. After the tenth merge, at nprobe 64, reuse holds recall 0.882 at
+117 us a query against 0.878 at 114 us for re-clustering every time, and spends
+9.0 s merging in all against 24.5 s. Reuse keeps fewer, larger clusters
+(823 of up to 758 vectors against 1183 of up to 668), which costs about 3% more
+search time at the same nprobe.
+
 ## Centroid routing
 
 Picking the clusters to probe means scoring the query against every
