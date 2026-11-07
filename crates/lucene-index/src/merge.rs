@@ -4966,8 +4966,13 @@ fn merge_vector_group(
     // Reopen exactly the bytes just written and build everything else over
     // *those*, so the graph's ordinals, the codes' ordinals and the flat
     // store's ordinals are the same fact rather than three derivations of it.
-    let flat =
+    let mut flat =
         vectors::FlatVectorsReader::open(&vemf_bytes, &vec_bytes, merged_segment_id, suffix)?;
+    flat.resolve_similarities(|number| {
+        plan.iter()
+            .find(|p| p.0.number == number)
+            .map(|p| p.0.vector_similarity_function)
+    })?;
     let mut files: Vec<(&'static str, Vec<u8>)> = Vec::new();
 
     if let Some(encoding) = format.quantization() {

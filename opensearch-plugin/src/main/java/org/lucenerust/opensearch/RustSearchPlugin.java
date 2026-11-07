@@ -34,6 +34,8 @@ import org.opensearch.plugins.ActionPlugin;
 import org.opensearch.plugins.AnalysisPlugin;
 import org.opensearch.plugins.CircuitBreakerPlugin;
 import org.opensearch.plugins.EnginePlugin;
+import org.opensearch.index.codec.CodecServiceFactory;
+import org.lucenerust.opensearch.knn.codec.KnnCodecService;
 import org.opensearch.plugins.IndexStorePlugin;
 import org.opensearch.plugins.MapperPlugin;
 import org.opensearch.index.mapper.Mapper;
@@ -381,6 +383,18 @@ public class RustSearchPlugin extends Plugin implements
         Setting.Property.IndexScope,
         Setting.Property.Dynamic
     );
+
+    /**
+     * {@code KNNPlugin.getCustomCodecServiceFactory}: OpenSearch's engine writes a k-NN index's
+     * vector fields in the formats their mappings resolve to, as the Rust writer does.
+     */
+    @Override
+    public Optional<CodecServiceFactory> getCustomCodecServiceFactory(IndexSettings indexSettings) {
+        if (stockKnn || KnnSettings.KNN_INDEX.get(indexSettings.getSettings()) == false) {
+            return Optional.empty();
+        }
+        return Optional.of(KnnCodecService::new);
+    }
 
     @Override
     public Optional<EngineFactory> getEngineFactory(IndexSettings indexSettings) {

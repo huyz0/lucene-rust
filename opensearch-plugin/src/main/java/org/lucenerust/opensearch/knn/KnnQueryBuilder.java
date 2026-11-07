@@ -7,6 +7,15 @@ import org.lucenerust.opensearch.knn.rest.KnnStats;
 import org.apache.lucene.index.VectorEncoding;
 import org.apache.lucene.search.MatchNoDocsQuery;
 import org.apache.lucene.search.Query;
+import org.apache.lucene.search.join.BitSetProducer;
+import org.apache.lucene.search.join.ToChildBlockJoinQuery;
+import org.apache.lucene.util.VectorUtil;
+import org.opensearch.common.lucene.search.Queries;
+import org.opensearch.index.mapper.ObjectMapper;
+import org.opensearch.index.search.NestedHelper;
+import org.opensearch.index.search.OpenSearchToParentBlockJoinQuery;
+import org.opensearch.Version;
+import org.opensearch.common.settings.Settings;
 import org.opensearch.core.ParseField;
 import org.opensearch.core.common.ParsingException;
 import org.opensearch.core.common.io.stream.StreamInput;
@@ -21,7 +30,9 @@ import org.opensearch.index.query.QueryShardContext;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.ArrayDeque;
 import java.util.Arrays;
+import java.util.Deque;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
@@ -350,13 +361,32 @@ public final class KnnQueryBuilder extends AbstractQueryBuilder<KnnQueryBuilder>
                 : KnnStats.QueryKind.MIN_SCORE,
             filter != null
         );
-        if (Boolean.TRUE.equals(expandNested)) {
-            throw new IllegalArgumentException("[" + NAME + "] [expand_nested_docs] is not supported by this node yet");
+        BitSetProducer parents = context.getParentFilter();
+        boolean expand = Boolean.TRUE.equals(expandNested);
+        if (k != null && expand && parents == null) {
+            throw new IllegalArgumentException(
+                String.format(
+                    Locale.ROOT,
+                    "Invalid value provided for the [%s] field. [%s] is only supported with a nested field.",
+                    EXPAND_NESTED_FIELD.getPreferredName(),
+                    EXPAND_NESTED_FIELD.getPreferredName()
+                )
+            );
         }
         KnnFieldConfig config = knn.config();
-        if (vector.length != config.dimension()) {
+        if (config.binary() && k == null) {
+            throw new UnsupportedOperationException(
+                String.format(
+                    Locale.ROOT,
+                    "Radial search is not supported for this configuration: engine=LUCENE, data_type=BINARY, method=hnsw, compression=%s",
+                    config.compression() == null ? "1x" : config.compression()
+                )
+            );
+        }
+        int queryDimension = config.binary() ? vector.length * Byte.SIZE : vector.length;
+        if (queryDimension != config.dimension()) {
             throw new IllegalArgumentException(
-                String.format(Locale.ROOT, "Query vector has invalid dimension: %d. Dimension should be: %d", vector.length, config.dimension())
+                String.format(Locale.ROOT, "Query vector has invalid dimension: %d. Dimension should be: %d", queryDimension, config.dimension())
             );
         }
         SpaceType space = config.spaceType();
@@ -369,11 +399,17 @@ public final class KnnQueryBuilder extends AbstractQueryBuilder<KnnQueryBuilder>
             target = KnnTarget.of(bytes);
         } else {
             KnnVectors.checkFloats(vector, space);
-            target = KnnTarget.of(vector.clone());
+            float[] query = vector.clone();
+            // KNNVectorFieldType.transformQueryVector: half-float cosine queries are normalized, as the vectors are.
+            if (config.halfFloat() && space == SpaceType.COSINESIMIL) {
+                VectorUtil.l2normalize(query);
+            }
+            target = KnnTarget.of(query);
         }
-        Query filterQuery = filter == null ? null : filter.toQuery(context);
+        Query filterQuery = filterQuery(context);
         if (k != null) {
-            return new KnnTopVectorQuery(fieldName, target, k, efSearch == null ? k : Math.max(k, efSearch), filterQuery);
+            int candidates = Math.max(k, efSearch == null ? defaultEfSearch(context) : efSearch);
+            return new KnnTopVectorQuery(fieldName, target, k, candidates, filterQuery, parents, expand);
         }
         float threshold;
         if (maxDistance != null) {
@@ -392,6 +428,55 @@ public final class KnnQueryBuilder extends AbstractQueryBuilder<KnnQueryBuilder>
             threshold = minScore;
         }
         return KnnLeafVectorQuery.radial(fieldName, target, threshold, filterQuery);
+    }
+
+    /**
+     * {@code BaseQueryFactory.getFilterQuery}: the filter, evaluated at the root level. Under a
+     * {@code nested} query it matches parents, so it is joined down to their children (a to-parent
+     * join over the root is unwrapped instead).
+     */
+    private Query filterQuery(QueryShardContext context) throws IOException {
+        if (filter == null) {
+            return null;
+        }
+        Deque<ObjectMapper> levels = new ArrayDeque<>();
+        if (context.nestedScope() != null) {
+            ObjectMapper level;
+            while ((level = context.nestedScope().getObjectMapper()) != null) {
+                levels.push(level);
+                context.nestedScope().previousLevel();
+            }
+        }
+        Query q;
+        try {
+            q = filter.toQuery(context);
+        } finally {
+            while (levels.isEmpty() == false) {
+                context.nestedScope().nextLevel(levels.pop());
+            }
+        }
+        if (q == null || context.getParentFilter() == null) {
+            return q;
+        }
+        if (q instanceof OpenSearchToParentBlockJoinQuery toParent && toParent.getPath() == null) {
+            return toParent.getChildQuery();
+        }
+        Query parentQuery = Queries.newNonNestedFilter();
+        BitSetProducer parents = context.bitsetFilter(parentQuery);
+        Query roots = new NestedHelper(context.getMapperService()).mightMatchNestedDocs(q) ? Queries.filtered(q, parentQuery) : q;
+        return new ToChildBlockJoinQuery(roots, parents);
+    }
+
+    /**
+     * {@code IndexHyperParametersUtil.getHNSWEFSearchValue}: the index's {@code
+     * knn.algo_param.ef_search}, whose default is 512 for indexes created before 2.12.
+     */
+    private static int defaultEfSearch(QueryShardContext context) {
+        Settings settings = context.getIndexSettings().getSettings();
+        if (KnnSettings.EF_SEARCH.exists(settings) == false && context.indexVersionCreated().before(Version.V_2_12_0)) {
+            return 512;
+        }
+        return KnnSettings.EF_SEARCH.get(settings);
     }
 
     @Override

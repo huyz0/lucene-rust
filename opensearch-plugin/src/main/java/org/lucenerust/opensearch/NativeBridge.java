@@ -38,7 +38,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code jvm_reader.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 87;
+    public static final int EXPECTED_ABI_VERSION = 88;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -857,37 +857,45 @@ public final class NativeBridge {
     }
 
     /**
-     * The reader's top {@code k} for a KNN request ({@code jvm_knn.rs}): global doc ids into {@code
-     * outDocs}, scores into {@code outScores}, best first; returns the status, the hit count in
-     * {@code outCount[0]}.
+     * The reader's top hits for a KNN request ({@code jvm_knn.rs}): global doc ids into {@code
+     * outDocs}, scores into {@code outScores}, best first, at most {@code room} of them; returns the
+     * status, the hit count in {@code outCount[0]}. An expanded nested search can find more than
+     * {@code room}: the status is then {@link #BUFFER_TOO_SMALL} and {@code outCount[0]} the room it
+     * needs.
      */
-    public static int readerKnn(long handle, byte[] request, int k, int[] outDocs, float[] outScores, int[] outCount) {
+    public static int readerKnn(long handle, byte[] request, int room, int[] outDocs, float[] outScores, int[] outCount) {
         if (request == null) {
             return nullArgument("request");
         }
-        if (k <= 0 || outDocs == null || outScores == null || Math.min(outDocs.length, outScores.length) < k) {
-            return fail(BUFFER_TOO_SMALL, "output arrays hold fewer than k=" + k + " hits");
+        if (room <= 0 || outDocs == null || outScores == null || Math.min(outDocs.length, outScores.length) < room) {
+            return fail(BUFFER_TOO_SMALL, "output arrays hold fewer than " + room + " hits");
         }
         if (outCount == null || outCount.length < 1) {
             return fail(INVALID_ARGUMENT, "outCount holds no slot");
         }
         try (Scratch s = Scratch.open()) {
-            MemorySegment docs = s.room(JAVA_INT, k);
-            MemorySegment scores = s.room(JAVA_FLOAT, k);
+            MemorySegment docs = s.room(JAVA_INT, room);
+            MemorySegment scores = s.room(JAVA_FLOAT, room);
             MemorySegment count = s.alloc(Long.BYTES);
+            count.set(JAVA_LONG, 0, 0L);
             int rc;
             try {
-                rc = (int) H.READER_KNN.invokeExact(handle, s.bytes(request), (long) request.length, docs, scores, (long) k, count);
+                rc = (int) H.READER_KNN.invokeExact(handle, s.bytes(request), (long) request.length, docs, scores, (long) room, count);
             } catch (Throwable t) {
                 throw rethrow(t);
+            }
+            long n = count.get(JAVA_LONG, 0);
+            if (rc == BUFFER_TOO_SMALL) {
+                outCount[0] = n > room && n <= Integer.MAX_VALUE - 8 ? (int) n : 0;
+                return rc;
             }
             if (rc != OK) {
                 return rc;
             }
-            int n = Math.toIntExact(count.get(JAVA_LONG, 0));
-            MemorySegment.copy(docs, JAVA_INT, 0, outDocs, 0, n);
-            MemorySegment.copy(scores, JAVA_FLOAT, 0, outScores, 0, n);
-            outCount[0] = n;
+            int hits = Math.toIntExact(n);
+            MemorySegment.copy(docs, JAVA_INT, 0, outDocs, 0, hits);
+            MemorySegment.copy(scores, JAVA_FLOAT, 0, outScores, 0, hits);
+            outCount[0] = hits;
             return OK;
         }
     }

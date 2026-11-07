@@ -770,6 +770,7 @@ fn decode_field(blob: &[u8]) -> Result<(FieldInfo, Option<KnnVectorsFormat>), Ff
 pub(crate) const VECTORS_FORMAT_ATTRIBUTE: &str = "lucene_rust.knn_format";
 
 /// A [`VECTORS_FORMAT_ATTRIBUTE`] value: `hnsw:<max_conn>:<beam_width>`,
+/// `hnsw_hamming:<max_conn>:<beam_width>`, `hnsw_half:<max_conn>:<beam_width>`,
 /// `hnsw_sq:<scalar encoding wire number>:<max_conn>:<beam_width>` or
 /// `sq:<scalar encoding wire number>`; `None` for anything else.
 pub(crate) fn parse_vectors_format(value: &str) -> Option<KnnVectorsFormat> {
@@ -777,6 +778,8 @@ pub(crate) fn parse_vectors_format(value: &str) -> Option<KnnVectorsFormat> {
     let int = |s: &str| s.parse::<i32>().ok();
     match parts.as_slice() {
         ["hnsw", m, beam] => KnnVectorsFormat::hnsw(int(m)?, int(beam)?).ok(),
+        ["hnsw_hamming", m, beam] => KnnVectorsFormat::hnsw_hamming(int(m)?, int(beam)?).ok(),
+        ["hnsw_half", m, beam] => KnnVectorsFormat::hnsw_half_float(int(m)?, int(beam)?).ok(),
         ["hnsw_sq", e, m, beam] => KnnVectorsFormat::hnsw_scalar_quantized(
             ScalarEncoding::from_wire_number(int(e)?)?,
             int(m)?,
@@ -790,17 +793,25 @@ pub(crate) fn parse_vectors_format(value: &str) -> Option<KnnVectorsFormat> {
     }
 }
 
-/// The field attribute (`true`) marking a vector field whose `_source` value the plugin stores
-/// masked, as k-NN's derived source does: every segment flushed with the field lists it under
-/// [`lucene_search::derived_source::DERIVED_VECTOR_FIELDS`], so a reader (the plugin's or stock
-/// k-NN's) puts the vector back.
+/// The field attribute marking a vector field whose `_source` value the plugin stores masked, as
+/// k-NN's derived source does: `true` for a field of the root document, `nested` for one of nested
+/// documents. Every segment flushed with the field lists it under
+/// [`lucene_search::derived_source::DERIVED_VECTOR_FIELDS`] or
+/// [`lucene_search::derived_source::NESTED_DERIVED_VECTOR_FIELDS`], so a reader (the plugin's or
+/// stock k-NN's) puts the vector back.
 pub(crate) const DERIVED_SOURCE_ATTRIBUTE: &str = "lucene_rust.derived_source";
 
-/// Whether `info` carries [`DERIVED_SOURCE_ATTRIBUTE`].
-fn is_derived_source(info: &FieldInfo) -> bool {
+/// The `.si` list that names `info` when it carries [`DERIVED_SOURCE_ATTRIBUTE`].
+fn derived_source_list(info: &FieldInfo) -> Option<&'static str> {
+    use lucene_search::derived_source::{DERIVED_VECTOR_FIELDS, NESTED_DERIVED_VECTOR_FIELDS};
     info.attributes
         .iter()
-        .any(|(k, v)| k == DERIVED_SOURCE_ATTRIBUTE && v == "true")
+        .find(|(k, _)| k == DERIVED_SOURCE_ATTRIBUTE)
+        .and_then(|(_, v)| match v.as_str() {
+            "true" => Some(DERIVED_VECTOR_FIELDS),
+            "nested" => Some(NESTED_DERIVED_VECTOR_FIELDS),
+            _ => None,
+        })
 }
 
 /// k-NN's derived-source `.si` lists, for a k-NN index ([`OPEN_KNN`]): flushed segments list the
@@ -812,14 +823,13 @@ fn derived_source_attributes(writer: &mut IndexWriter<'_>) {
         DERIVED_VECTOR_FIELDS.to_string(),
         NESTED_DERIVED_VECTOR_FIELDS.to_string(),
     ]);
-    let derived: Vec<String> = writer
+    let derived: Vec<(&'static str, String)> = writer
         .fields()
         .iter()
-        .filter(|f| is_derived_source(f))
-        .map(|f| f.name.clone())
+        .filter_map(|f| derived_source_list(f).map(|list| (list, f.name.clone())))
         .collect();
-    for name in derived {
-        writer.add_segment_list_value(DERIVED_VECTOR_FIELDS, &name);
+    for (list, name) in derived {
+        writer.add_segment_list_value(list, &name);
     }
 }
 
@@ -850,9 +860,12 @@ fn restore_vectors_formats(writer: &mut IndexWriter<'_>) {
 /// `0` the codec's default (`Lucene99HnswVectorsFormat()`), `1`
 /// `Lucene99HnswVectorsFormat(max_conn, beam_width)`, `2`
 /// `Lucene104HnswScalarQuantizedVectorsFormat(encoding, max_conn,
-/// beam_width)` or `3` `Lucene104ScalarQuantizedVectorsFormat(encoding)`;
-/// kinds `1` and `2` are followed by `i32 max_conn, i32 beam_width`, kinds `2`
-/// and `3` by `u8 scalar encoding` (`ScalarEncoding.getWireNumber`).
+/// beam_width)`, `3` `Lucene104ScalarQuantizedVectorsFormat(encoding)`, `4`
+/// k-NN's `KNN9120HnswBinaryVectorsFormat(max_conn, beam_width)` (byte
+/// fields only; recorded as `KNN990HnswBinaryVectorsFormat`) or `5` k-NN's
+/// `KNN1040HnswHalfFloatVectorsFormat(max_conn, beam_width)` (float fields
+/// only); kinds `1`, `2`, `4` and `5` are followed by `i32 max_conn, i32 beam_width`,
+/// kinds `2` and `3` by `u8 scalar encoding` (`ScalarEncoding.getWireNumber`).
 fn decode_vector_schema(
     c: &mut Cursor<'_>,
 ) -> Result<
@@ -899,8 +912,28 @@ fn decode_vector_schema(
             Some(KnnVectorsFormat::hnsw_scalar_quantized(e, m, beam).map_err(invalid)?)
         }
         3 => Some(KnnVectorsFormat::scalar_quantized(scalar(c)?)),
+        4 => {
+            let (m, beam) = graph(c)?;
+            Some(KnnVectorsFormat::hnsw_hamming(m, beam).map_err(invalid)?)
+        }
+        5 => {
+            let (m, beam) = graph(c)?;
+            Some(KnnVectorsFormat::hnsw_half_float(m, beam).map_err(invalid)?)
+        }
         _ => return Err(decode_error("vectors format")),
     };
+    if encoding == VectorEncoding::Byte
+        && matches!(format, Some(KnnVectorsFormat::HnswHalfFloat { .. }))
+    {
+        set_last_error("a byte vector field cannot be stored as half floats");
+        return Err(FfiStatus::InvalidArgument);
+    }
+    if encoding == VectorEncoding::Float32
+        && matches!(format, Some(KnnVectorsFormat::HnswHamming { .. }))
+    {
+        set_last_error("a float vector field cannot be scored by Hamming distance");
+        return Err(FfiStatus::InvalidArgument);
+    }
     if format.as_ref().is_some_and(|f| {
         encoding == VectorEncoding::Byte
             && matches!(
@@ -1452,7 +1485,7 @@ pub unsafe extern "C" fn ffi_engine_writer_register_field(
         let (info, format) = decode_field(spec)?;
         let number = with_writer(handle, |w| {
             let name = info.name.clone();
-            let derived = is_derived_source(&info);
+            let derived = derived_source_list(&info);
             w.writer()
                 .with_writer(|iw| {
                     let number = iw.register_field(info)?;
@@ -1460,11 +1493,10 @@ pub unsafe extern "C" fn ffi_engine_writer_register_field(
                         iw.set_knn_vectors_format_for_field(&name, format);
                     }
                     // Only a k-NN index's codec reads the list back.
-                    if derived && iw.segment_attribute(KNN_DELEGATE_CODEC_ATTRIBUTE).is_some() {
-                        iw.add_segment_list_value(
-                            lucene_search::derived_source::DERIVED_VECTOR_FIELDS,
-                            &name,
-                        );
+                    if let Some(list) = derived {
+                        if iw.segment_attribute(KNN_DELEGATE_CODEC_ATTRIBUTE).is_some() {
+                            iw.add_segment_list_value(list, &name);
+                        }
                     }
                     Ok::<_, lucene_index::index_writer::Error>(number)
                 })
@@ -5121,7 +5153,7 @@ mod tests {
                 .u8(0)
                 .u8(kind);
             let b = match kind {
-                1 => b.i32(m).i32(100),
+                1 | 4 | 5 => b.i32(m).i32(100),
                 2 => b.i32(m).i32(100).u8(2),
                 3 => b.u8(2),
                 _ => b,
@@ -5131,6 +5163,18 @@ mod tests {
         assert!(decode_field(&schema(1, 2, 16)).is_err());
         assert!(decode_field(&schema(1, 3, 16)).is_err());
         assert!(decode_field(&schema(1, 1, 16)).is_ok());
+        // Hamming scoring is for byte (packed bit) fields only.
+        assert_eq!(
+            decode_field(&schema(1, 4, 16)).unwrap().1,
+            Some(KnnVectorsFormat::hnsw_hamming(16, 100).unwrap())
+        );
+        assert!(decode_field(&schema(0, 4, 16)).is_err());
+        // Half floats are for float fields only.
+        assert_eq!(
+            decode_field(&schema(0, 5, 16)).unwrap().1,
+            Some(KnnVectorsFormat::hnsw_half_float(16, 100).unwrap())
+        );
+        assert!(decode_field(&schema(1, 5, 16)).is_err());
         assert!(decode_field(&schema(0, 1, 0)).is_err());
         assert!(decode_field(&schema(0, 1, 513)).is_err());
         assert_eq!(decode_field(&schema(0, 0, 0)).unwrap().1, None);
@@ -5149,6 +5193,14 @@ mod tests {
                 )
                 .unwrap()
             )
+        );
+        assert_eq!(
+            parse_vectors_format("hnsw_hamming:8:64"),
+            Some(KnnVectorsFormat::hnsw_hamming(8, 64).unwrap())
+        );
+        assert_eq!(
+            parse_vectors_format("hnsw_half:8:64"),
+            Some(KnnVectorsFormat::hnsw_half_float(8, 64).unwrap())
         );
         assert_eq!(
             parse_vectors_format("sq:1"),
@@ -6984,7 +7036,7 @@ mod tests {
         for x in target {
             request = request.f32(x);
         }
-        let request = request.i32(5).i32(40).u8(0).0;
+        let request = request.i32(5).i32(40).u8(0).u8(0).0;
         let (mut docs, mut scores, mut n) = ([0i32; 5], [0f32; 5], 0usize);
         // SAFETY: live request and buffers of 5.
         let rc = unsafe {
