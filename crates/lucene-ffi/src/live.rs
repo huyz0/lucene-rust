@@ -614,7 +614,7 @@ fn warm_min(w: &EngineWriter, min: i32) -> lucene_index::index_writer::Result<bo
                 return Ok(());
             }
             wrote = true;
-            buffer_segments(w, b, &plan, false, true).map(drop)
+            buffer_segments(w, b, &plan, false, true, None).map(drop)
         })?;
         Ok(wrote)
     }))
@@ -1060,7 +1060,7 @@ fn open_handle(
     if warm {
         for (b, plan) in view.buffers.iter().zip(&plans) {
             if b.in_slot && !writes_nothing(w, b, plan, false) {
-                if let Err(e) = buffer_segments(w, b, plan, false, true) {
+                if let Err(e) = buffer_segments(w, b, plan, false, true, None) {
                     w.writer().close_live_view(&view);
                     return Err(live_error(e));
                 }
@@ -1258,9 +1258,11 @@ pub unsafe extern "C" fn ffi_live_view_reader(
 fn build_view_reader(
     handle: u64,
     v: &ViewHandle,
-    request: Option<&LiveRequest>,
+    request: Option<&(LiveRequest, bool)>,
     key: Option<&[u8]>,
 ) -> Result<u64, FfiStatus> {
+    let lean_tail = request.map(|&(_, points)| points);
+    let request = request.map(|(r, _)| r);
     let h = lookup(handle, "ffi_live_view_reader: unknown or closed reader")?;
     let mut extra = Vec::new();
     let mut masks = Vec::new();
@@ -1288,7 +1290,9 @@ fn build_view_reader(
                 }
                 std::thread::Builder::new()
                     .name("live-view".into())
-                    .spawn_scoped(s, move || buffer_segments(w, b, plan, postings, false))
+                    .spawn_scoped(s, move || {
+                        buffer_segments(w, b, plan, postings, false, lean_tail)
+                    })
                     .map_err(|_| (b, plan))
             })
             .collect();
@@ -1297,7 +1301,7 @@ fn build_view_reader(
                 Ok(handle) => handle
                     .join()
                     .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
-                Err((b, plan)) => buffer_segments(w, b, plan, postings, false),
+                Err((b, plan)) => buffer_segments(w, b, plan, postings, false, lean_tail),
             })
             .collect::<Vec<_>>()
     });
@@ -1465,6 +1469,7 @@ fn buffer_segments(
     plan: &[Planned],
     postings: bool,
     warm: bool,
+    lean_tail: Option<bool>,
 ) -> lucene_index::index_writer::Result<Vec<(SegmentReader, bool)>> {
     let writer = w.writer();
     if let [only] = plan {
@@ -1476,7 +1481,7 @@ fn buffer_segments(
         }
     }
     let mut out = Vec::new();
-    for p in plan {
+    for (i, p) in plan.iter().enumerate() {
         // A chunk with postings serves a search without them too.
         if let Some(c) = p.chunk.as_ref().filter(|c| c.postings || !postings) {
             // Kept in the chain without postings too, so the chunks written
@@ -1488,6 +1493,42 @@ fn buffer_segments(
                 );
             }
             out.push((c.reader.clone(), !c.postings));
+            continue;
+        }
+        // The last chunk of a search without postings, which a later view
+        // seldom ends at too: written for this search alone, its doc values
+        // encoded a field at a time as the search reads them, and its points
+        // only when the request reads points.
+        if let Some(points) = lean_tail.filter(|_| !postings && b.in_slot && i + 1 == plan.len()) {
+            let found = w.live_chunks().get(&(b.id, false)).and_then(|c| {
+                c.iter()
+                    .find(|c| c.start == p.start && c.end == p.end && !c.postings)
+                    .cloned()
+            });
+            if let Some(c) = found {
+                out.push((c.reader.clone(), !c.postings));
+                continue;
+            }
+            let dir = lucene_store::ByteBuffersDirectory::new();
+            let name = format!("_live{}_{}", p.start, p.end);
+            let starts: Vec<i32> = plan.iter().map(|p| p.end).collect();
+            let (sci, lazy) = writer.live_lean_segment(
+                b.id,
+                p.start..p.end,
+                range_counts(p),
+                &starts,
+                points,
+                &dir,
+                &name,
+            )?;
+            let reader = SegmentReader::open_one(&dir, &sci).map_err(open_error)?;
+            out.push((
+                match lazy {
+                    Some(lazy) => reader.with_lazy_doc_values(lazy),
+                    None => reader,
+                },
+                true,
+            ));
             continue;
         }
         // Claimed before the cache is read: a chunk another thread is
@@ -1550,7 +1591,7 @@ fn overlay_request(
     query: &[u8],
     tree: Option<&[u8]>,
     extra: Option<&[u8]>,
-) -> Result<Option<LiveRequest>, FfiStatus> {
+) -> Result<Option<(LiveRequest, bool)>, FfiStatus> {
     let (query, _, _) = decode_request(query)?;
     let main = Clause::Boolean(Box::new(boolean_of(&query)));
     let decoded = tree.map(crate::jvm_aggs::decode_tree).transpose()?;
@@ -1594,7 +1635,8 @@ fn overlay_request(
         }
     }
     let refs: Vec<&Clause> = clauses.iter().collect();
-    Ok(lucene_search::live_segment::whole_request(&refs))
+    Ok(lucene_search::live_segment::whole_request(&refs)
+        .map(|r| (r, lucene_search::live_segment::reads_points(&refs))))
 }
 
 /// The overlay of the request `key` names on `p`'s chunk, when that chunk

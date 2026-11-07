@@ -120,9 +120,13 @@ pub struct LiveBufferField {
     pub info: FieldInfo,
     /// The requested terms the buffer holds, in term order.
     pub terms: Vec<TermPostings>,
-    /// Each document's norm (`max_doc` entries, `0` for a document without
-    /// the field); `None` for a field without norms.
+    /// Each document's norm from document [`Self::norms_from`] on
+    /// (`max_doc - norms_from` entries, `0` for a document without the
+    /// field); `None` for a field without norms.
     pub norms: Option<Vec<i64>>,
+    /// The first document [`Self::norms`] holds: where the buffer was read
+    /// from.
+    pub norms_from: i32,
     /// The buffer's statistics for the field, over all its documents.
     pub num_terms: i64,
     pub sum_total_term_freq: i64,
@@ -192,12 +196,19 @@ impl NormColumn {
         }
     }
 
-    fn to_vec(&self, max_doc: usize) -> Vec<i64> {
+    /// Documents `from..max_doc`'s norms, 0 past the column's end.
+    fn to_vec_from(&self, from: usize, max_doc: usize) -> Vec<i64> {
+        let to = max_doc.max(from);
         let mut out: Vec<i64> = match self {
-            NormColumn::Narrow(v) => v.iter().map(|&b| i64::from(b)).collect(),
-            NormColumn::Wide(v) => v.clone(),
+            NormColumn::Narrow(v) => v
+                .get(from..to.min(v.len()))
+                .unwrap_or_default()
+                .iter()
+                .map(|&b| i64::from(b))
+                .collect(),
+            NormColumn::Wide(v) => v.get(from..to.min(v.len())).unwrap_or_default().to_vec(),
         };
-        out.resize(max_doc, 0);
+        out.resize(to.saturating_sub(from), 0);
         out
     }
 
@@ -1023,6 +1034,66 @@ impl ConcurrentIndexWriter<'_> {
         dir: &dyn lucene_store::Directory,
         name: &str,
     ) -> Result<crate::segment_infos::SegmentCommitInfo> {
+        self.live_segment_with(
+            id,
+            range,
+            doc_counts,
+            next_starts,
+            postings,
+            None,
+            dir,
+            name,
+        )
+        .map(|(sci, _)| sci)
+    }
+
+    /// [`Self::live_buffer_segment`] without postings, for one search: the
+    /// segment's doc values are not written but given back as columns, for
+    /// its reader to encode a field when it first reads it, and its points
+    /// are written only with `points`. Written as `live_buffer_segment`
+    /// writes it, doc values and points included, when the buffer keeps no
+    /// columns.
+    #[allow(clippy::too_many_arguments)]
+    pub fn live_lean_segment(
+        &self,
+        id: u64,
+        range: std::ops::Range<i32>,
+        doc_counts: HashMap<i32, i32>,
+        next_starts: &[i32],
+        points: bool,
+        dir: &dyn lucene_store::Directory,
+        name: &str,
+    ) -> Result<(
+        crate::segment_infos::SegmentCommitInfo,
+        Option<crate::index_writer::LazyDocValues>,
+    )> {
+        self.live_segment_with(
+            id,
+            range,
+            doc_counts,
+            next_starts,
+            false,
+            Some(points),
+            dir,
+            name,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn live_segment_with(
+        &self,
+        id: u64,
+        range: std::ops::Range<i32>,
+        doc_counts: HashMap<i32, i32>,
+        next_starts: &[i32],
+        postings: bool,
+        lazy: Option<bool>,
+        dir: &dyn lucene_store::Directory,
+        name: &str,
+    ) -> Result<(
+        crate::segment_infos::SegmentCommitInfo,
+        Option<crate::index_writer::LazyDocValues>,
+    )> {
         let started = std::time::Instant::now();
         let cfg = self.check_live()?;
         if cfg.sorts_documents() {
@@ -1044,14 +1115,25 @@ impl ConcurrentIndexWriter<'_> {
                 slot.num_docs()
             )));
         }
+        let mut columns = (!decode_chunks())
+            .then(|| slot.live.chunk_columns(range.start, range.end))
+            .flatten();
+        let lazy_doc_values = lazy.zip(columns.as_mut()).map(|(_, c)| {
+            crate::index_writer::LazyDocValues::new(
+                Arc::clone(&cfg),
+                std::mem::take(&mut c.doc_values),
+                range.end.saturating_sub(range.start),
+            )
+        });
+        let lean = lazy_doc_values.is_some();
         let limit = crate::index_writer::BufferLimit {
             start: range.start,
             docs: range.end,
             doc_counts,
             postings,
-            columns: (!decode_chunks())
-                .then(|| slot.live.chunk_columns(range.start, range.end))
-                .flatten(),
+            columns,
+            doc_values: !lean,
+            points: !lean || lazy == Some(true),
         };
         // Documents counted but not held (`Dwpt::stored_docs`) are empty.
         let docs = padded(&slot.docs, start, end);
@@ -1120,7 +1202,7 @@ impl ConcurrentIndexWriter<'_> {
             )?
         };
         crate::live_timing::record(crate::live_timing::Phase::ChunkWrite, started.elapsed());
-        Ok(sci)
+        Ok((sci, lazy_doc_values))
     }
 
     /// The directory the writer's segments are in.
@@ -1352,6 +1434,7 @@ fn read_buffer(
     wanted: &[Wanted<'_>],
     from: i32,
 ) -> Result<LiveBuffer> {
+    let from_doc = usize::try_from(from).unwrap_or(0);
     if from >= view.max_doc {
         // Nothing of it is asked for: neither its norms nor its positions
         // are read.
@@ -1398,13 +1481,19 @@ fn read_buffer(
             info.store_payloads = false;
         }
         let freqs = !matches!(info.index_options, IndexOptions::Docs | IndexOptions::None);
+        // Only the documents from `from` on are read, as their terms are.
         let norms = source.columns.norms.get(&w.info.number);
-        let norms =
-            (!w.info.omit_norms).then(|| norms.map_or_else(|| vec![0; max], |c| c.to_vec(max)));
+        let norms = (!w.info.omit_norms).then(|| {
+            norms.map_or_else(
+                || vec![0; max.saturating_sub(from_doc)],
+                |c| c.to_vec_from(from_doc, max),
+            )
+        });
         fields.push(LiveBufferField {
             info,
             terms,
             norms,
+            norms_from: from.max(0),
             num_terms: stats.num_terms,
             sum_total_term_freq: if freqs {
                 stats.sum_total_term_freq

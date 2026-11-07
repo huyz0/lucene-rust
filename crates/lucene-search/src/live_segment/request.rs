@@ -36,6 +36,41 @@ pub fn whole_request(clauses: &[&Clause]) -> Option<LiveRequest> {
     Some(request_of(fields))
 }
 
+/// Whether any of `clauses` may read points: `false` only when each is
+/// one [`whole_request`] answers from terms or doc values alone.
+pub fn reads_points(clauses: &[&Clause]) -> bool {
+    clauses.iter().any(|c| clause_reads_points(c))
+}
+
+fn clause_reads_points(clause: &Clause) -> bool {
+    match clause {
+        Clause::Term(_)
+        | Clause::TermInSet(_)
+        | Clause::Phrase(_)
+        | Clause::MultiPhrase(_)
+        | Clause::MatchAllDocs(_)
+        | Clause::MatchNoDocs(_)
+        | Clause::Prefix(_)
+        | Clause::Wildcard(_)
+        | Clause::Regexp(_) => false,
+        Clause::Boolean(b) => b
+            .must
+            .iter()
+            .chain(&b.filter)
+            .chain(&b.should)
+            .chain(&b.must_not)
+            .any(clause_reads_points),
+        Clause::DisjunctionMax(d) => d.disjuncts.iter().any(clause_reads_points),
+        Clause::ConstantScore(c) => clause_reads_points(&c.inner),
+        Clause::Boost(b) => clause_reads_points(&b.inner),
+        Clause::Extended(e) => !matches!(
+            &**e,
+            crate::extended_query::ExtendedQuery::NumericDocValuesRange(_)
+        ),
+        _ => true,
+    }
+}
+
 fn request_of(fields: Fields<'_>) -> LiveRequest {
     LiveRequest {
         fields: fields
@@ -156,7 +191,15 @@ impl From<LiveBufferField> for LiveField {
         LiveField {
             info: f.info,
             terms: f.terms,
-            norms: f.norms,
+            norms: f.norms.map(|mut n| {
+                // Documents before `norms_from` were not read: 0, as for a
+                // document without the field.
+                let skip = usize::try_from(f.norms_from).unwrap_or(0);
+                if skip > 0 {
+                    n.splice(0..0, std::iter::repeat_n(0, skip));
+                }
+                n
+            }),
             num_terms: f.num_terms,
             sum_total_term_freq: f.sum_total_term_freq,
             sum_doc_freq: f.sum_doc_freq,
@@ -214,10 +257,18 @@ pub fn tail_segment(
                 info: f.info.clone(),
                 num_terms: terms.len() as i64,
                 terms,
-                norms: f
-                    .norms
-                    .as_ref()
-                    .map(|n| n.get(skip..).unwrap_or_default().to_vec()),
+                norms: f.norms.as_ref().map(|n| {
+                    let held = usize::try_from(f.norms_from).unwrap_or(0);
+                    let mut out = n
+                        .get(skip.saturating_sub(held)..)
+                        .unwrap_or_default()
+                        .to_vec();
+                    // Documents before `norms_from` were not read: 0.
+                    if held > skip {
+                        out.splice(0..0, std::iter::repeat_n(0, held - skip));
+                    }
+                    out
+                }),
                 sum_total_term_freq: f.sum_total_term_freq.saturating_sub(if freqs {
                     at.sum_total_term_freq
                 } else {

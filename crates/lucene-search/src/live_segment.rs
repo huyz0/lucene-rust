@@ -407,7 +407,9 @@ impl LiveSegment {
 }
 
 mod request;
-pub use request::{live_request, live_segments, range_segment, tail_segment, whole_request};
+pub use request::{
+    live_request, live_segments, range_segment, reads_points, tail_segment, whole_request,
+};
 
 #[cfg(test)]
 mod tests;
