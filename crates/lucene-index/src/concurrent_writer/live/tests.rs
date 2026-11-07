@@ -267,7 +267,7 @@ fn a_buffer_being_flushed_stays_readable_until_published() {
         w.add_explicit_documents(vec![doc(&f, i)]).unwrap();
     }
     let batch = {
-        let mut slot = lock(&w.slots[0]);
+        let mut slot = super::write_slot(&w.slots[0]);
         w.begin_flush(0, &mut slot).unwrap()
     };
     w.add_explicit_documents(vec![doc(&f, 5)]).unwrap();
@@ -324,7 +324,7 @@ fn a_buffer_being_flushed_stays_readable_until_published() {
 /// Flushes slot 0 and publishes it.
 fn flush(w: &ConcurrentIndexWriter<'_>) {
     let batch = {
-        let mut slot = lock(&w.slots[0]);
+        let mut slot = super::write_slot(&w.slots[0]);
         w.begin_flush(0, &mut slot).unwrap()
     };
     w.complete_flush(batch).unwrap();
@@ -360,16 +360,16 @@ fn released_buffers_go_when_their_last_view_closes() {
         Err(Error::LiveSearch(_))
     ));
     assert_eq!(w.live_view_snapshot(&view, &req).unwrap().buffers.len(), 1);
-    assert_eq!(lock(&w.core).live.retained.len(), 1);
+    assert_eq!(w.live_flushes().retained.len(), 1);
     w.close_live_view(&view);
-    assert!(lock(&w.core).live.retained.is_empty());
+    assert!(w.live_flushes().retained.is_empty());
 
     w.add_explicit_documents(vec![doc(&f, 3)]).unwrap();
     flush(&w);
     let view = w.open_live_view(Some(gens[2])).unwrap();
     assert_eq!(view.buffers.len(), 1);
     w.rollback();
-    assert!(lock(&w.core).live.retained.is_empty());
+    assert!(w.live_flushes().retained.is_empty());
     // Back at that commit: its reader holds every document.
     assert!(w
         .live_snapshot(&req, Some(gens[2]))
@@ -434,9 +434,9 @@ fn a_view_of_a_commit_carries_the_deletes_issued_since() {
     w.release_live(g1).unwrap();
     assert!(w.open_live_view(Some(g0)).is_err());
     assert_eq!(deletes(g1), ["d1"]);
-    let history = lock(&w.core).live.history.len();
+    let history = w.live_flushes().history.len();
     assert_eq!(history, 0, "the deletes before the second commit went");
-    assert_eq!(lock(&w.core).live.history_bytes, 0);
+    assert_eq!(w.live_flushes().history_bytes, 0);
 
     w.delete_documents_by_query(&[DeleteQuery::Term(id(1))])
         .unwrap();
@@ -445,7 +445,7 @@ fn a_view_of_a_commit_carries_the_deletes_issued_since() {
         Err(Error::LiveSearch(_))
     ));
     assert!(
-        lock(&w.core).live.pins.is_empty(),
+        w.live_flushes().pins.is_empty(),
         "a refused view keeps nothing"
     );
     // A rollback goes back to the last commit, which can be viewed again.

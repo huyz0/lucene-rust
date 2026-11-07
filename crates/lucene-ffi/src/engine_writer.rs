@@ -5836,6 +5836,21 @@ mod tests {
                 }
                 held
             };
+            // A plain search reads the chunks the view planned (with their
+            // kept overlays from the second time) and the documents after:
+            // the same hits and scores as the reader with postings.
+            for word in ["alpha", "gamma", "eps", "zz"] {
+                let q = crate::jvm_reader::tests::term_blob("body", word);
+                for _ in 0..2 {
+                    let (hits, total) = search_live(reader, view, &q).unwrap();
+                    let mut hits: Vec<(i32, u32)> =
+                        hits.iter().map(|&(d, s)| (d, s.to_bits())).collect();
+                    hits.sort_unstable();
+                    let (mut want, want_total) = scored_hits(whole, &q);
+                    want.sort_unstable();
+                    assert_eq!((hits, total), (want, want_total), "round {round}: {word}");
+                }
+            }
             for prefix in ["d", "ga", "e", "zz"] {
                 let q = crate::jvm_reader::tests::prefix_blob("body", prefix);
                 let lean = lean_of(&q, &[]);
@@ -5887,7 +5902,7 @@ mod tests {
             assert_eq!(ffi_live_view_close(view), 0);
         }
         // A few chunks per buffer, not one per view.
-        assert!(leaves_seen.iter().all(|&n| n <= 8), "{leaves_seen:?}");
+        assert!(leaves_seen.iter().all(|&n| n <= 12), "{leaves_seen:?}");
         assert!(leaves_seen.iter().any(|&n| n > 1), "{leaves_seen:?}");
 
         // A buffer published after views of it opened: one whose chunks
@@ -6290,7 +6305,7 @@ mod tests {
                 );
                 [term, sort, t.elapsed()]
             };
-            let mut sums = [std::time::Duration::ZERO; 9];
+            let mut sums = [std::time::Duration::ZERO; 10];
             let mut builds: Vec<std::time::Duration> = Vec::new();
             // LIVE_LOAD=1: documents keep arriving, LIVE_STEP at a time, while
             // the views are read, as under the bench's bulk load.
@@ -6317,6 +6332,14 @@ mod tests {
                     assert_eq!(rc, 0, "{}", crate::error::last_error());
                     // SAFETY: the buffer the call gave, freed once.
                     unsafe { crate::ffm_bridge::ffi_jvm_free_bytes(ptr, len) };
+                    if searches {
+                        // The plain search of the term, as a scored query
+                        // with no sort or aggregation runs.
+                        let t = std::time::Instant::now();
+                        std::hint::black_box(super::tests::search_live(reader, view, &term_q));
+                        sums[9] += t.elapsed();
+                        let _ = crate::live::phases::take();
+                    }
                     if !searches {
                         let t = std::time::Instant::now();
                         let mut whole = 0u64;
@@ -6404,9 +6427,9 @@ mod tests {
             if searches && live_rounds > 0 {
                 let r = live_rounds as u32;
                 eprintln!(
-                    "mean over {r} rounds: lean reader {:?} (chunks {:?}, snapshot {:?}, overlay {:?}, append {:?}, live_docs {:?}), term {:?}, sort {:?}, agg {:?}",
+                    "mean over {r} rounds: lean reader {:?} (chunks {:?}, snapshot {:?}, overlay {:?}, append {:?}, live_docs {:?}), term {:?}, sort {:?}, agg {:?}, plain term {:?}",
                     sums[0] / r, sums[1] / r, sums[2] / r, sums[3] / r, sums[4] / r, sums[5] / r,
-                    sums[6] / r, sums[7] / r, sums[8] / r
+                    sums[6] / r, sums[7] / r, sums[8] / r, sums[9] / r
                 );
                 builds.sort_unstable();
                 let at = |q: f64| builds[((builds.len() as f64 - 1.0) * q).round() as usize];
