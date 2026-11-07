@@ -8067,6 +8067,12 @@ impl IndexWriter<'_> {
         Ok(self.deleter.hold_segment_files(&infos.segments)?)
     }
 
+    /// Pins segment `sci`'s files, as [`IndexWriter::hold_commit`] pins a
+    /// commit's; hand them back to [`IndexWriter::release_files`] once.
+    pub(crate) fn hold_segment(&mut self, sci: &SegmentCommitInfo) -> Result<Vec<String>> {
+        Ok(self.deleter.hold_segment_files(std::slice::from_ref(sci))?)
+    }
+
     /// Releases a [`IndexWriter::hold_commit`] pin, deleting whatever nothing
     /// else still names.
     pub fn release_files(&mut self, files: &[String]) -> Result<()> {
