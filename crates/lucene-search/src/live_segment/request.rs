@@ -157,6 +157,66 @@ pub fn live_segments(snapshot: LiveSnapshot) -> Result<Vec<LiveSegment>> {
         .collect()
 }
 
+/// Documents `start..` of `buffer` as a segment of their own, numbered
+/// from `start`, with their norms and deletes. Each field's statistics
+/// are those of the documents: `at_start(field_number)` gives the
+/// buffer's at `start`. From 0 it is [`live_segments`]' segment of the
+/// buffer.
+///
+/// # Errors
+/// What [`LiveSegment::build`] reports.
+pub fn tail_segment(
+    buffer: LiveBuffer,
+    start: i32,
+    at_start: &dyn Fn(i32) -> FieldTotals,
+) -> Result<LiveSegment> {
+    if start <= 0 {
+        let fields: Vec<LiveField> = buffer.fields.into_iter().map(LiveField::from).collect();
+        return LiveSegment::build(&fields, buffer.max_doc, &buffer.deleted);
+    }
+    let skip = usize::try_from(start).unwrap_or(usize::MAX);
+    let fields: Vec<LiveField> = buffer
+        .fields
+        .iter()
+        .map(|f| {
+            let at = at_start(f.info.number);
+            let freqs = !matches!(
+                f.info.index_options,
+                lucene_codecs::field_infos::IndexOptions::Docs
+                    | lucene_codecs::field_infos::IndexOptions::None
+            );
+            let terms: Vec<TermPostings> = f
+                .terms
+                .iter()
+                .filter_map(|t| range_of(t, start, buffer.max_doc))
+                .collect();
+            LiveField {
+                info: f.info.clone(),
+                num_terms: terms.len() as i64,
+                terms,
+                norms: f
+                    .norms
+                    .as_ref()
+                    .map(|n| n.get(skip..).unwrap_or_default().to_vec()),
+                sum_total_term_freq: f.sum_total_term_freq.saturating_sub(if freqs {
+                    at.sum_total_term_freq
+                } else {
+                    at.sum_doc_freq
+                }),
+                sum_doc_freq: f.sum_doc_freq.saturating_sub(at.sum_doc_freq),
+                doc_count: f.doc_count.saturating_sub(at.doc_count),
+            }
+        })
+        .collect();
+    let deleted: Vec<i32> = buffer
+        .deleted
+        .iter()
+        .filter(|&&d| d >= start)
+        .map(|&d| d.saturating_sub(start))
+        .collect();
+    LiveSegment::build(&fields, buffer.max_doc.saturating_sub(start), &deleted)
+}
+
 /// Documents `start..end` of `buffer`'s requested terms as a segment of
 /// their own, numbered from `start`, for
 /// [`crate::directory_reader::SegmentReader::with_postings`] over the

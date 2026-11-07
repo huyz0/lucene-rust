@@ -526,6 +526,7 @@ fn sparse_ann_query_edges() {
         points: l.points,
         reader: None,
         index_sort_prefix: l.index_sort_prefix,
+        termless: None,
         similarity: l.similarity,
     }];
     assert!(query("emb").scores_leaf(&bare[0]).unwrap());

@@ -279,6 +279,7 @@ impl MemorySegment {
             points: None,
             reader: None,
             index_sort_prefix: false,
+            termless: None,
             similarity: None,
         }];
         let segment_norms: [SegmentNorms<'_, '_>; 1] = [Some(&norms)];

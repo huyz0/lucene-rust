@@ -35,14 +35,15 @@
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, MutexGuard};
+use std::sync::{Arc, RwLockReadGuard};
 
 use lucene_codecs::field_infos::{FieldInfo, IndexOptions};
 use lucene_codecs::postings_writer::TermPostings;
 use lucene_codecs::stored_fields::{FieldValue, StoredField};
 
-use super::{lock, ConcurrentIndexWriter, Dwpt};
+use super::{lock, read_slot, write_slot, ConcurrentIndexWriter, Dwpt};
 use crate::buffered_updates::{DocValuesUpdate, Term};
+use crate::index_writer::packed_fields::PackedFields;
 use crate::index_writer::pending_postings::{LiveFieldStats, PendingPostings};
 use crate::index_writer::ExplicitFields;
 use crate::index_writer::{DeleteNode, Error, IndexingConfig, Result};
@@ -289,7 +290,7 @@ impl Deletes {
                 .field_by_name(field)
                 .and_then(|f| postings.live_field(f.number))
             {
-                runs.live_docs_of(bytes, docs);
+                runs.live_docs_of(bytes, 0, docs);
             }
             docs.iter()
                 .map(|&(d, _)| d)
@@ -751,15 +752,18 @@ impl ConcurrentIndexWriter<'_> {
     /// arrive, from now on. Fails once a document is buffered: a buffer
     /// filled without it cannot be read.
     pub fn enable_live_search(&self) -> Result<()> {
-        let slots: Vec<_> = self.slots.iter().map(lock).collect();
+        let slots: Vec<_> = self.slots.iter().map(write_slot).collect();
         if slots.iter().any(|d| d.has_docs()) {
             return Err(Error::LiveSearch(
                 "live search must be enabled before the first document".into(),
             ));
         }
-        let mut core = lock(&self.core);
+        // Locked before the log, as `hand_over` holds it: a delete handed
+        // over meanwhile is either before `handed` or kept in the history.
+        let mut live = self.live_flushes();
         let handed = lock(&self.log).handed;
-        core.live.keep_history(handed);
+        live.keep_history(handed);
+        drop(live);
         self.live.store(true, Ordering::Release);
         Ok(())
     }
@@ -781,29 +785,27 @@ impl ConcurrentIndexWriter<'_> {
         let slots = self
             .slots
             .iter()
-            .map(|s| lock(s).live.ram_bytes())
+            .map(|s| read_slot(s).live.ram_bytes())
             .fold(0usize, usize::saturating_add);
-        let core = lock(&self.core);
-        let retained = core
-            .live
+        let live = self.live_flushes();
+        let retained = live
             .retained
             .values()
             .map(|f| f.postings.bytes())
             .fold(slots, usize::saturating_add);
-        core.live
-            .buffers()
+        live.buffers()
             .map(|f| f.columns.ram_bytes())
             .fold(retained, usize::saturating_add)
-            .saturating_add(core.live.history_bytes)
+            .saturating_add(live.history_bytes)
     }
 
     /// Stops reading the published buffers the commit at `generation` holds,
     /// once no open view reads them: call it once no search reads from an
     /// older commit. Their memory goes.
     pub fn release_live(&self, generation: i64) -> Result<()> {
-        let mut core = lock(&self.core);
-        let held = core.live.commit(generation)?.held;
-        core.live.release(held);
+        let mut live = self.live_flushes();
+        let held = live.commit(generation)?.held;
+        live.release(held);
         Ok(())
     }
 
@@ -827,12 +829,16 @@ impl ConcurrentIndexWriter<'_> {
     /// whose buffers [`Self::release_live`] dropped, and when a delete by
     /// query reached a buffer.
     pub fn open_live_view(&self, commit: Option<i64>) -> Result<LiveView> {
+        let opened = std::time::Instant::now();
         let cfg = self.check_live()?;
-        let slots: Vec<_> = self.slots.iter().map(lock).collect();
-        let mut core = lock(&self.core);
-        let commit = commit.map(|g| core.live.commit(g)).transpose()?;
-        let from = commit.map_or(core.live.published, |c| c.held);
-        if !core.live.keeps_from(from) {
+        let slots: Vec<_> = self.slots.iter().map(read_slot).collect();
+        crate::live_timing::record(crate::live_timing::Phase::ViewOpenLocks, opened.elapsed());
+        let core_wait = crate::live_timing::start(crate::live_timing::Phase::CoreWait);
+        let mut live = self.live_flushes();
+        drop(core_wait);
+        let commit = commit.map(|g| live.commit(g)).transpose()?;
+        let from = commit.map_or(live.published, |c| c.held);
+        if !live.keeps_from(from) {
             return Err(Error::LiveSearch(format!(
                 "the buffers published after commit {:?} were released",
                 commit.map(|c| c.generation)
@@ -844,7 +850,7 @@ impl ConcurrentIndexWriter<'_> {
             (tails, log.since(log.handed))
         };
         let commit_nodes = match &commit {
-            Some(c) => Some(core.live.deletes_after(c, &flushing_tail).ok_or_else(|| {
+            Some(c) => Some(live.deletes_after(c, &flushing_tail).ok_or_else(|| {
                 Error::LiveSearch(format!(
                     "the deletes since commit {} are no longer kept",
                     c.generation
@@ -854,7 +860,7 @@ impl ConcurrentIndexWriter<'_> {
         };
         let mut out = LiveView {
             buffers: Vec::new(),
-            published: core.live.published,
+            published: live.published,
             commit_deletes: Vec::new(),
         };
         for (dwpt, tail) in slots.iter().zip(&slot_tails) {
@@ -870,8 +876,8 @@ impl ConcurrentIndexWriter<'_> {
             buffer.in_slot = true;
             out.buffers.push(buffer);
         }
-        let published = core.live.retained.range(from..).map(|(_, f)| f);
-        for f in core.live.flushing.values().chain(published) {
+        let published = live.retained.range(from..).map(|(_, f)| f);
+        for f in live.flushing.values().chain(published) {
             let source = Source {
                 postings: &f.postings,
                 columns: &f.columns,
@@ -880,11 +886,12 @@ impl ConcurrentIndexWriter<'_> {
                 .push(view_buffer(&source, &flushing_tail, f.max_doc, &cfg)?);
         }
         for b in &out.buffers {
-            let pins = core.live.pins.entry(b.id).or_insert(0);
+            let pins = live.pins.entry(b.id).or_insert(0);
             *pins = pins.saturating_add(1);
         }
-        drop(core);
+        drop(live);
         drop(slots);
+        crate::live_timing::record(crate::live_timing::Phase::ViewOpen, opened.elapsed());
         if let Some(nodes) = commit_nodes {
             let soft = cfg.soft_deletes_field().map(|f| f.name.as_str());
             match delete_terms(&nodes, soft) {
@@ -908,8 +915,7 @@ impl ConcurrentIndexWriter<'_> {
         &self,
         id: u64,
     ) -> Option<crate::segment_infos::SegmentCommitInfo> {
-        let core = lock(&self.core);
-        core.live
+        self.live_flushes()
             .retained
             .values()
             .find(|f| f.columns.id == id)
@@ -933,7 +939,9 @@ impl ConcurrentIndexWriter<'_> {
     /// terms (norms, doc values and points only), for a search that reads
     /// the terms it needs through [`Self::live_view_snapshot`].
     ///
-    /// The buffer's slot is locked while the segment is written. Fails when
+    /// The buffer's slot is held for reading while a segment with postings
+    /// is written; one without them copies the documents' columns out and
+    /// is written with the slot free. Fails when
     /// the buffer has left its slot (taken for a flush since), when it
     /// holds fewer than `end` documents, and under an index sort, which
     /// would renumber the documents.
@@ -948,6 +956,7 @@ impl ConcurrentIndexWriter<'_> {
         dir: &dyn lucene_store::Directory,
         name: &str,
     ) -> Result<crate::segment_infos::SegmentCommitInfo> {
+        let started = std::time::Instant::now();
         let cfg = self.check_live()?;
         if cfg.sorts_documents() {
             return Err(Error::LiveSearch(
@@ -978,28 +987,69 @@ impl ConcurrentIndexWriter<'_> {
         let docs = padded(&slot.docs, start, end);
         let custom_freq_terms = padded_or_empty(&slot.custom_freq_terms, start, end);
         let vectors = padded_or_empty(&slot.vectors, start, end);
-        let buffer = crate::index_writer::DocumentBuffer {
-            docs: &docs,
-            custom_freq_terms: &custom_freq_terms,
-            vectors: &vectors,
-            explicit: crate::index_writer::ExplicitDocs::PackedRange(&slot.explicit, start, end),
-            postings: Some(&slot.postings),
-            old_to_new: None,
-            has_blocks: slot.has_blocks,
-            stored: None,
-            limit: Some(&limit),
-            partition: slot.partition.as_deref(),
+        let write = |explicit: &PackedFields,
+                     pending: &PendingPostings,
+                     docs: &[_],
+                     custom: &[_],
+                     vectors: &[_],
+                     has_blocks,
+                     partition: Option<&str>| {
+            let buffer = crate::index_writer::DocumentBuffer {
+                docs,
+                custom_freq_terms: custom,
+                vectors,
+                explicit: crate::index_writer::ExplicitDocs::PackedRange(explicit, start, end),
+                postings: Some(pending),
+                old_to_new: None,
+                has_blocks,
+                stored: None,
+                limit: Some(&limit),
+                partition,
+            };
+            cfg.build_and_write_segment(
+                dir,
+                &buffer,
+                name,
+                lucene_util::string_helper::random_id(),
+                None,
+            )
+            .map(|(sci, _)| sci)
         };
-        let (sci, _) = cfg.build_and_write_segment(
-            dir,
-            &buffer,
-            name,
-            lucene_util::string_helper::random_id(),
-            None,
-        )?;
-        if postings {
+        let sci = if postings {
+            let sci = write(
+                &slot.explicit,
+                &slot.postings,
+                &docs,
+                &custom_freq_terms,
+                &vectors,
+                slot.has_blocks,
+                slot.partition.as_deref(),
+            )?;
             slot.postings.keep_cursors_at(next_starts);
-        }
+            sci
+        } else {
+            // Without postings the chunk reads only the documents' own
+            // columns: they are copied out (the packed fields' full blocks
+            // shared) and written with the slot free for indexing.
+            let (docs, custom, vectors) = (
+                docs.into_owned(),
+                custom_freq_terms.into_owned(),
+                vectors.into_owned(),
+            );
+            let explicit = slot.explicit.snapshot();
+            let (has_blocks, partition) = (slot.has_blocks, slot.partition.clone());
+            drop(slot);
+            write(
+                &explicit,
+                &PendingPostings::default(),
+                &docs,
+                &custom,
+                &vectors,
+                has_blocks,
+                partition.as_deref(),
+            )?
+        };
+        crate::live_timing::record(crate::live_timing::Phase::ChunkWrite, started.elapsed());
         Ok(sci)
     }
 
@@ -1010,27 +1060,50 @@ impl ConcurrentIndexWriter<'_> {
 
     /// Lets the buffers `view` read go once no other view reads them.
     pub fn close_live_view(&self, view: &LiveView) {
-        let mut core = lock(&self.core);
+        let mut live = self.live_flushes();
         for b in &view.buffers {
-            if let Some(n) = core.live.pins.get_mut(&b.id) {
+            if let Some(n) = live.pins.get_mut(&b.id) {
                 *n = n.saturating_sub(1);
                 if *n == 0 {
-                    core.live.pins.remove(&b.id);
+                    live.pins.remove(&b.id);
                 }
             }
         }
-        let released = core.live.released;
-        core.live.release(released);
+        let released = live.released;
+        live.release(released);
+    }
+
+    /// The buffers in the slots now, each read under its own slot's lock,
+    /// without their deletes and not pinned: what writing their newest
+    /// documents into chunks ([`Self::live_buffer_segment`]) needs, more
+    /// cheaply than a view.
+    pub fn live_slot_buffers(&self) -> Vec<ViewBuffer> {
+        if !self.live() {
+            return Vec::new();
+        }
+        self.slots
+            .iter()
+            .filter_map(|s| {
+                let d = read_slot(s);
+                d.has_docs().then(|| ViewBuffer {
+                    id: d.live.id,
+                    max_doc: i32::try_from(d.num_docs()).unwrap_or(i32::MAX),
+                    deleted: Vec::new(),
+                    in_slot: true,
+                    stats: d.postings.live_stats_all(),
+                })
+            })
+            .collect()
     }
 
     /// The slot holding buffer `id`, locked. The free slots are looked at
     /// first, so a slot another thread holds (writing one of its own chunks,
     /// say) is waited for only when the buffer is in no free one. A buffer
     /// never moves into a slot, so the second look cannot miss it.
-    fn slot_of(&self, id: u64) -> Option<MutexGuard<'_, Dwpt>> {
+    fn slot_of(&self, id: u64) -> Option<RwLockReadGuard<'_, Dwpt>> {
         let mut busy = Vec::new();
         for slot in &self.slots {
-            match slot.try_lock() {
+            match slot.try_read() {
                 Ok(d) if d.live.id == id => return Some(d),
                 Ok(_) => {}
                 Err(std::sync::TryLockError::Poisoned(p)) => {
@@ -1042,7 +1115,7 @@ impl ConcurrentIndexWriter<'_> {
                 Err(std::sync::TryLockError::WouldBlock) => busy.push(slot),
             }
         }
-        busy.into_iter().map(lock).find(|d| d.live.id == id)
+        busy.into_iter().map(read_slot).find(|d| d.live.id == id)
     }
 
     /// Runs `f` on buffer `id`'s postings and columns, wherever it is now.
@@ -1055,8 +1128,10 @@ impl ConcurrentIndexWriter<'_> {
                 columns: &d.live,
             }));
         }
-        let core = lock(&self.core);
-        f(core.live.find(id).as_ref())
+        let core_wait = crate::live_timing::start(crate::live_timing::Phase::CoreWait);
+        let live = self.live_flushes();
+        drop(core_wait);
+        f(live.find(id).as_ref())
     }
 
     /// The requested fields and terms of `view`'s documents, with each
@@ -1066,6 +1141,30 @@ impl ConcurrentIndexWriter<'_> {
         &self,
         view: &LiveView,
         request: &LiveRequest,
+    ) -> Result<LiveSnapshot> {
+        self.live_view_snapshot_from(view, request, &[])
+    }
+
+    /// [`Self::live_view_snapshot`], each buffer's postings without
+    /// positions only from its document in `from` on (by buffer; 0 past
+    /// its end): a term's documents before are left out, its read starting
+    /// near there. A buffer read from its end on has no fields.
+    pub fn live_view_snapshot_from(
+        &self,
+        view: &LiveView,
+        request: &LiveRequest,
+        from: &[i32],
+    ) -> Result<LiveSnapshot> {
+        crate::live_timing::timed(crate::live_timing::Phase::Snapshot, || {
+            self.snapshot_from(view, request, from)
+        })
+    }
+
+    fn snapshot_from(
+        &self,
+        view: &LiveView,
+        request: &LiveRequest,
+        from: &[i32],
     ) -> Result<LiveSnapshot> {
         let cfg = self.check_live()?;
         let wanted: Vec<Wanted<'_>> = request
@@ -1091,7 +1190,8 @@ impl ConcurrentIndexWriter<'_> {
         // Each buffer is read under its own slot lock: the view fixed its
         // documents and statistics, so the buffers need not be read at
         // one instant, and indexing into the other slots goes on.
-        for b in &view.buffers {
+        for (i, b) in view.buffers.iter().enumerate() {
+            let from = from.get(i).copied().unwrap_or(0);
             let read = self.with_buffer(b.id, |source| {
                 // A buffer `delete_all` or `rollback` dropped: none of its
                 // documents is live any more.
@@ -1103,7 +1203,7 @@ impl ConcurrentIndexWriter<'_> {
                             fields: Vec::new(),
                         })
                     },
-                    |source| read_buffer(source, b, &wanted),
+                    |source| read_buffer(source, b, &wanted, from),
                 )
             });
             out.buffers.push(read?);
@@ -1180,7 +1280,17 @@ fn read_buffer(
     source: &Source<'_>,
     view: &ViewBuffer,
     wanted: &[Wanted<'_>],
+    from: i32,
 ) -> Result<LiveBuffer> {
+    if from >= view.max_doc {
+        // Nothing of it is asked for: neither its norms nor its positions
+        // are read.
+        return Ok(LiveBuffer {
+            max_doc: view.max_doc,
+            deleted: view.deleted.clone(),
+            fields: Vec::new(),
+        });
+    }
     let max = usize::try_from(view.max_doc).unwrap_or(0);
     let mut fields = Vec::new();
     for w in wanted {
@@ -1203,7 +1313,7 @@ fn read_buffer(
         };
         let mut terms = Vec::new();
         for &t in names {
-            if let Some(mut p) = runs.live_term(t, w.positions)? {
+            if let Some(mut p) = runs.live_term(t, w.positions, from)? {
                 truncate(&mut p, view.max_doc);
                 if !p.docs.is_empty() {
                     terms.push(p);
