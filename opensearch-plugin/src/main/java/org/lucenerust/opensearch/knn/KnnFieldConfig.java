@@ -76,6 +76,11 @@ public record KnnFieldConfig(
         return binary ? dimension / 8 : dimension;
     }
 
+    /** The mapping's {@code data_type}: {@code float}, {@code byte}, {@code binary} or {@code half_float}. */
+    public String dataTypeName() {
+        return binary ? "binary" : halfFloat ? "half_float" : dataType == VectorEncoding.BYTE ? "byte" : "float";
+    }
+
     /** An IVF field ({@code lucene_rust} engine, {@code ivf} method). */
     public boolean ivf() {
         return LUCENE_RUST.equals(engine);
