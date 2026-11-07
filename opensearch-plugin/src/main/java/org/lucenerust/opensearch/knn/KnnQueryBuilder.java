@@ -29,9 +29,8 @@ import java.util.Objects;
  * k-NN's {@code knn} query ({@code KNNQueryBuilder}): {@code vector} with one of {@code k}, {@code
  * max_distance} or {@code min_score}, and {@code filter}, {@code method_parameters.ef_search},
  * {@code rescore}, {@code expand_nested_docs}, {@code ignore_unmapped}, {@code boost} and {@code
- * _name}. On a {@code lucene} field a top-{@code k} search is the shard's top {@code k} ({@link
- * KnnTopVectorQuery}); on a {@code faiss} field {@code k} per segment, and a radial search on either,
- * run segment by segment ({@link KnnLeafVectorQuery}). The vectors are searched at full precision,
+ * _name}. A top-{@code k} search is the shard's top {@code k} ({@link KnnTopVectorQuery}); a radial
+ * search runs segment by segment ({@link KnnLeafVectorQuery}). The vectors are searched at full precision,
  * so {@code rescore} has nothing to correct and is accepted as is.
  */
 public final class KnnQueryBuilder extends AbstractQueryBuilder<KnnQueryBuilder> {
@@ -366,13 +365,7 @@ public final class KnnQueryBuilder extends AbstractQueryBuilder<KnnQueryBuilder>
         }
         Query filterQuery = filter == null ? null : filter.toQuery(context);
         if (k != null) {
-            if (config.isFaiss() == false) {
-                return new KnnTopVectorQuery(fieldName, target, k, efSearch == null ? k : Math.max(k, efSearch), filterQuery);
-            }
-            int ef = efSearch != null ? efSearch
-                : config.efSearch() != null ? config.efSearch()
-                : context.getIndexSettings().getValue(KnnSettings.EF_SEARCH);
-            return KnnLeafVectorQuery.topK(fieldName, target, k, ef, filterQuery);
+            return new KnnTopVectorQuery(fieldName, target, k, efSearch == null ? k : Math.max(k, efSearch), filterQuery);
         }
         float threshold;
         if (maxDistance != null) {
@@ -381,7 +374,7 @@ public final class KnnQueryBuilder extends AbstractQueryBuilder<KnnQueryBuilder>
                     String.format(Locale.ROOT, "[%s] requires distance to be non-negative for space type: %s", NAME, space)
                 );
             }
-            threshold = space.scoreForDistance(maxDistance, config.isFaiss());
+            threshold = space.scoreForDistance(maxDistance);
         } else {
             if (minScore > 1 && space != SpaceType.INNER_PRODUCT) {
                 throw new IllegalArgumentException(

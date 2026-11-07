@@ -53,18 +53,14 @@ public enum SpaceType {
     }
 
     /**
-     * The least score a radial search keeps for {@code max_distance} ({@code
-     * KNNQueryBuilder}'s distance-to-score translation: the {@code lucene} engine's, and the {@code
-     * faiss} engine's, whose inner-product distance is the negated product).
+     * The least score a radial search keeps for {@code max_distance} ({@code KNNQueryBuilder}'s
+     * distance-to-score translation for the {@code lucene} engine).
      */
-    public float scoreForDistance(float distance, boolean faiss) {
+    public float scoreForDistance(float distance) {
         return switch (this) {
             case L2 -> 1 / (1 + distance);
             case COSINESIMIL -> Math.max((2 - distance) / 2, 0);
-            case INNER_PRODUCT -> {
-                float ip = faiss ? -distance : distance;
-                yield ip < 0 ? 1 / (1 - ip) : ip + 1;
-            }
+            case INNER_PRODUCT -> distance < 0 ? 1 / (1 - distance) : distance + 1;
         };
     }
 

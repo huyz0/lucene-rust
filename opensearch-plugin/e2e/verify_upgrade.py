@@ -44,8 +44,8 @@ REPO = "upgrade_repo"
 SNAPSHOT = "from-2x"
 DIM = 8
 # index -> shards. `knn` carries the k-NN plugin's own codec (KNN9120Codec),
-# which the Rust reader does not know: it falls back as a whole, before and
-# after the upgrade, and is here to prove that fallback is clean and correct.
+# which the Rust reader reads as its Lucene delegate, before and after the
+# upgrade.
 INDICES = {"single": 1, "multi": 3, "nest": 1, "knn": 1}
 
 
@@ -215,11 +215,11 @@ def serve_all(label, plugin, stock, prefix="", merged=False):
     # Rows that stay in Java anyway (an aggregation it cannot run) keep their own reason.
     nest = [(n, b, "native|sort_nested" if merged and e == "native" else e) for n, b, e in vo.nested_rows()]
     native += run_rows(prefix + "nest", nest, label, plugin, stock, 1)
-    # The k-NN plugin's codec: the whole reader falls back, text queries included.
+    # The k-NN plugin's codec reads natively; with the k-NN plugin installed, its own
+    # vector queries stay in Java.
     text = [(n, b, e) for n, b, e in vo.matrix()[:8]]
-    native += run_rows(prefix + "knn", text, label, plugin, stock, 1, expect_override="native_open_failed")
-    native += run_rows(prefix + "knn", vector_rows(True), label, plugin, stock, 1,
-                       expect_override="native_open_failed|query_*")
+    native += run_rows(prefix + "knn", text, label, plugin, stock, 1)
+    native += run_rows(prefix + "knn", vector_rows(True), label, plugin, stock, 1)
     print(f"{label}: {native} shard queries ran native")
     return native
 
