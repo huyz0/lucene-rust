@@ -10,6 +10,7 @@ lucene-util = { path = "../lucene-util" }
 lucene-store = { path = "../lucene-store" }
 lucene-codecs = { path = "../lucene-codecs" }
 lucene-index = { path = "../lucene-index" }
+lucene-ivf = { path = "../lucene-ivf" }
 lucene-analysis = { path = "../lucene-analysis" }
 rayon.workspace = true
 # Inflates a Deeplearning4j word2vec model zip (`word2vec::read_dl4j_model`).
@@ -39,7 +40,6 @@ asserting = []
 memmap2.workspace = true
 libc.workspace = true
 # The local_vectors example builds and reads an IVF index.
-lucene-ivf = { path = "../lucene-ivf" }
 lucene-vector-quant = { path = "../lucene-vector-quant" }
 # The modules split out of this crate, for the tests, benches and examples
 # that still exercise them together with lucene-search (a dev-dependency
