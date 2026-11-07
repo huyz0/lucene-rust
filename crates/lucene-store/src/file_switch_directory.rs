@@ -149,6 +149,10 @@ impl<P: Directory, S: Directory> Directory for FileSwitchDirectory<P, S> {
         self.directory(name).open(name)
     }
 
+    fn open_aligned(&self, name: &str, alignment: usize) -> Result<Input> {
+        self.directory(name).open_aligned(name, alignment)
+    }
+
     #[cfg(any(test, feature = "test-util"))]
     fn close_input(&self, name: &str, input: Input) -> Result<()> {
         self.directory(name).close_input(name, input)
