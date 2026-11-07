@@ -3,6 +3,7 @@
  */
 package org.lucenerust.opensearch.knn;
 
+import org.lucenerust.opensearch.knn.rest.KnnStats;
 import org.apache.lucene.index.VectorEncoding;
 import org.apache.lucene.search.MatchNoDocsQuery;
 import org.apache.lucene.search.Query;
@@ -342,6 +343,13 @@ public final class KnnQueryBuilder extends AbstractQueryBuilder<KnnQueryBuilder>
         if (knn.isIndexedForAnn() == false) {
             throw new IllegalArgumentException(String.format(Locale.ROOT, "Field '%s' is not built for ANN search.", fieldName));
         }
+        // Counted where the stock plugin counts: once the field is a knn one, before the vector is checked.
+        KnnStats.query(
+            k != null ? KnnStats.QueryKind.K
+                : maxDistance != null ? KnnStats.QueryKind.MAX_DISTANCE
+                : KnnStats.QueryKind.MIN_SCORE,
+            filter != null
+        );
         if (Boolean.TRUE.equals(expandNested)) {
             throw new IllegalArgumentException("[" + NAME + "] [expand_nested_docs] is not supported by this node yet");
         }

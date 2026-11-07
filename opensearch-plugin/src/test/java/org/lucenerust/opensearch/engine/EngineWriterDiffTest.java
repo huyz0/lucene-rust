@@ -486,13 +486,21 @@ public final class EngineWriterDiffTest {
                 rust.commit();
                 // A background merge that finishes after the commit leaves the writer with
                 // uncommitted changes again, as IndexWriter's merges do; committing settles it.
-                long deadline = System.nanoTime() + 30_000_000_000L;
-                while (rust.hasUncommittedChanges() && System.nanoTime() < deadline) {
-                    Thread.sleep(10);
-                    rust.commit();
+                // Settled means clean, with no merge queued, on three checks 100 ms apart: a
+                // running merge is not visible, so a single clean check can precede its finish.
+                long deadline = System.nanoTime() + 60_000_000_000L;
+                int clean = 0;
+                while (clean < 3 && System.nanoTime() < deadline) {
+                    Thread.sleep(100);
+                    if (rust.hasPendingMerges() || rust.hasUncommittedChanges()) {
+                        clean = 0;
+                        rust.commit();
+                    } else {
+                        clean++;
+                    }
                 }
+                check(rust.hasUncommittedChanges() == false, "seed " + seed + ": nothing left uncommitted");
             }
-            check(rust.hasUncommittedChanges() == false, "seed " + seed + ": nothing left uncommitted");
             rust.close();
             compare("seed " + seed, javaDir, rustDir);
             checkIndex("seed " + seed, rustDir);

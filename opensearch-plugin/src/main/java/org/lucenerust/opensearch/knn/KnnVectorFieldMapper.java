@@ -30,9 +30,11 @@ import org.opensearch.search.lookup.SearchLookup;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.function.Supplier;
 
 /**
@@ -60,6 +62,24 @@ public final class KnnVectorFieldMapper extends ParametrizedFieldMapper {
         return engine.equals("undefined") ? KnnFieldConfig.LUCENE : engine;
     }
 
+    /**
+     * A method as persisted (engine, space type and parameters filled in) and as a request repeats
+     * it are the same method: keys only one names are the resolved defaults.
+     */
+    static boolean sameMethod(Map<String, Object> a, Map<String, Object> b) {
+        if (a == null || b == null) {
+            return a == b;
+        }
+        for (String k : List.of("engine", SPACE_TYPE, "name")) {
+            Object x = a.get(k), y = b.get(k);
+            if (x != null && y != null && String.valueOf(x).equalsIgnoreCase(String.valueOf(y)) == false) {
+                return false;
+            }
+        }
+        Object pa = a.getOrDefault("parameters", Map.of()), pb = b.getOrDefault("parameters", Map.of());
+        return Objects.equals(pa, pb);
+    }
+
     /** {@code KNNVectorFieldMapper.Builder}. */
     public static final class Builder extends ParametrizedFieldMapper.Builder {
         final Parameter<Integer> dimension = new Parameter<>(
@@ -69,8 +89,14 @@ public final class KnnVectorFieldMapper extends ParametrizedFieldMapper {
             (n, c, o) -> XContentMapValues.nodeIntegerValue(o),
             m -> toType(m).dimension
         );
-        final Parameter<String> dataType = Parameter.stringParam(DATA_TYPE, false, m -> toType(m).dataType, "float")
-            .setMergeValidator((a, b) -> a.equalsIgnoreCase(b));
+        // Parsed in any case and persisted upper case, as stock's VectorDataType.
+        final Parameter<String> dataType = new Parameter<>(
+            DATA_TYPE,
+            false,
+            () -> "float",
+            (n, c, o) -> XContentMapValues.nodeStringValue(o, null).toLowerCase(Locale.ROOT),
+            m -> toType(m).dataType
+        ).setSerializer((b, n, v) -> b.field(n, v.toUpperCase(Locale.ROOT)), v -> v);
         final Parameter<String> spaceType = Parameter.stringParam(SPACE_TYPE, false, m -> toType(m).spaceType, SpaceType.UNDEFINED);
         final Parameter<String> engine = Parameter.stringParam("engine", false, m -> toType(m).engine, "undefined")
             .setMergeValidator((a, b) -> engineOrDefault(a).equalsIgnoreCase(engineOrDefault(b)));
@@ -84,7 +110,7 @@ public final class KnnVectorFieldMapper extends ParametrizedFieldMapper {
             if (v != null) {
                 b.field(n, v);
             }
-        }, v -> String.valueOf(v));
+        }, v -> String.valueOf(v)).setMergeValidator(KnnVectorFieldMapper::sameMethod);
         final Parameter<String> mode = Parameter.stringParam("mode", false, m -> toType(m).mode, null).acceptsNull();
         final Parameter<String> compression = Parameter.stringParam("compression_level", false, m -> toType(m).compression, null)
             .acceptsNull();
@@ -127,8 +153,15 @@ public final class KnnVectorFieldMapper extends ParametrizedFieldMapper {
         public KnnVectorFieldMapper build(BuilderContext context) {
             boolean knnIndex = KnnSettings.KNN_INDEX.get(indexSettings);
             KnnFieldConfig config = config();
-            if (engine.isConfigured() == false && (method.getValue() == null || method.getValue().get("engine") == null)) {
-                // Persisted, so a stock node, whose default engine is faiss, reads the field as the lucene one it is.
+            if (method.getValue() != null) {
+                // Persisted resolved, as stock does; the engine so a stock node, whose default is faiss, reads it as lucene.
+                Map<String, Object> resolved = new LinkedHashMap<>();
+                resolved.put("engine", config.engine());
+                resolved.put(SPACE_TYPE, config.spaceType().value());
+                resolved.put("name", method.getValue().get("name"));
+                resolved.put("parameters", method.getValue().getOrDefault("parameters", Map.of()));
+                method.setValue(resolved);
+            } else if (engine.isConfigured() == false) {
                 engine.setValue(config.engine());
             }
             // The stock plugin's flat mapper keeps doc values by default.
