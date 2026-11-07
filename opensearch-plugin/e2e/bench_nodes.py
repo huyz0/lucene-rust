@@ -320,8 +320,9 @@ def visibility(base, container, corpus, label, out, settings):
 
     cpu0 = cpu_seconds(container)
     t0 = time.perf_counter()
-    with concurrent.futures.ThreadPoolExecutor(2) as side:
-        tasks = [side.submit(probe), side.submit(search)]
+    searchers = int(os.environ.get("SEARCHERS", "1"))
+    with concurrent.futures.ThreadPoolExecutor(1 + searchers) as side:
+        tasks = [side.submit(probe)] + [side.submit(search) for _ in range(searchers)]
         try:
             def send(path):
                 with open(path, "rb") as fh:

@@ -1288,6 +1288,61 @@ pub(crate) struct BufferLimit {
     /// field's norms, doc values, points and stored fields but no terms,
     /// for a caller that reads the documents' terms elsewhere.
     pub(crate) postings: bool,
+    /// The documents' doc values as columns, numbered from `start`, when
+    /// the caller kept them: written as they are instead of being read
+    /// from each document.
+    pub(crate) doc_values: Option<Vec<(i32, PrebuiltDocValues)>>,
+}
+
+/// One field's doc values for a run of documents, in the shape the
+/// doc-values writer takes.
+#[derive(Debug, Clone)]
+pub(crate) enum PrebuiltDocValues {
+    Numeric(Vec<i64>),
+    SparseNumeric(Vec<(i32, i64)>),
+    SortedNumeric(doc_values::SortedNumericColumn),
+    Binary(doc_values::BinaryColumn),
+    Sorted(doc_values::SortedOrdsColumn),
+    SortedSet(doc_values::SortedSetOrdsColumn),
+}
+
+impl PrebuiltDocValues {
+    /// Whether no document has a value.
+    pub(crate) fn is_empty(&self) -> bool {
+        match self {
+            PrebuiltDocValues::Numeric(v) => v.is_empty(),
+            PrebuiltDocValues::SparseNumeric(v) => v.is_empty(),
+            PrebuiltDocValues::SortedNumeric(c) => c.docs.is_empty(),
+            PrebuiltDocValues::Binary(c) => c.docs.is_empty(),
+            PrebuiltDocValues::Sorted(c) => c.docs.is_empty(),
+            PrebuiltDocValues::SortedSet(c) => c.docs.is_empty(),
+        }
+    }
+
+    fn doc_values_type(&self) -> DocValuesType {
+        match self {
+            PrebuiltDocValues::Numeric(_) | PrebuiltDocValues::SparseNumeric(_) => {
+                DocValuesType::Numeric
+            }
+            PrebuiltDocValues::SortedNumeric(_) => DocValuesType::SortedNumeric,
+            PrebuiltDocValues::Binary(_) => DocValuesType::Binary,
+            PrebuiltDocValues::Sorted(_) => DocValuesType::Sorted,
+            PrebuiltDocValues::SortedSet(_) => DocValuesType::SortedSet,
+        }
+    }
+
+    fn as_dense_field(&self, n: i32) -> doc_values::DenseField<'_> {
+        match self {
+            PrebuiltDocValues::Numeric(v) => doc_values::DenseField::Numeric(n, v),
+            PrebuiltDocValues::SparseNumeric(v) => doc_values::DenseField::SparseNumeric(n, v),
+            PrebuiltDocValues::SortedNumeric(c) => {
+                doc_values::DenseField::SortedNumericColumn(n, c)
+            }
+            PrebuiltDocValues::Binary(c) => doc_values::DenseField::BinaryColumn(n, c),
+            PrebuiltDocValues::Sorted(c) => doc_values::DenseField::SortedOrds(n, c),
+            PrebuiltDocValues::SortedSet(c) => doc_values::DenseField::SortedSetOrds(n, c),
+        }
+    }
 }
 
 /// A buffer's explicit document fields: as structs, or packed as the
@@ -3424,6 +3479,127 @@ impl IndexingConfig {
         segment_fields: &[&str],
         segment_id: &[u8; ID_LENGTH],
     ) -> Result<Vec<DocValuesGroupOutput>> {
+        self.doc_values_groups_with(
+            i32::try_from(docs.len()).unwrap_or(i32::MAX),
+            configs,
+            segment_fields,
+            segment_id,
+            |group_configs, suffix, format| {
+                IndexWriter::build_doc_values_output(
+                    docs,
+                    group_configs,
+                    segment_id,
+                    suffix,
+                    format,
+                )
+            },
+        )
+    }
+
+    /// [`Self::build_doc_values_groups`] from columns already built, one
+    /// per field of `configs` (by field number); `None` when one is missing
+    /// or of another type.
+    fn build_prebuilt_doc_values_groups(
+        &self,
+        columns: &[(i32, PrebuiltDocValues)],
+        max_doc: i32,
+        configs: &[DocValuesFieldConfig],
+        segment_fields: &[&str],
+        segment_id: &[u8; ID_LENGTH],
+    ) -> Option<Result<Vec<DocValuesGroupOutput>>> {
+        let column = |n: i32| columns.iter().find(|(f, _)| *f == n).map(|(_, c)| c);
+        let covered = configs.iter().all(|c| {
+            column(c.field_number).is_some_and(|col| col.doc_values_type() == c.doc_values_type)
+        });
+        if !covered {
+            return None;
+        }
+        Some(self.doc_values_groups_with(
+            max_doc,
+            configs,
+            segment_fields,
+            segment_id,
+            |group_configs, suffix, format| {
+                let skip_indexes: Vec<i32> = group_configs
+                    .iter()
+                    .filter(|c| c.skip_index)
+                    .map(|c| c.field_number)
+                    .collect();
+                let fields: Vec<doc_values::DenseField<'_>> = group_configs
+                    .iter()
+                    .filter_map(|c| {
+                        column(c.field_number).map(|col| col.as_dense_field(c.field_number))
+                    })
+                    .collect();
+                Ok(doc_values::write_fields_with_format(
+                    &fields,
+                    &skip_indexes,
+                    max_doc,
+                    segment_id,
+                    &format!("{}_{suffix}", format.name()),
+                    format,
+                )?)
+            },
+        ))
+    }
+
+    /// Every doc-values field's files for `docs`, written from each
+    /// document's values and from `columns`, as `(dvm, dvd, dvs)` per
+    /// group.
+    #[cfg(test)]
+    #[allow(clippy::type_complexity)]
+    pub(crate) fn doc_values_both_ways(
+        &self,
+        docs: &[&[lucene_codecs::stored_fields::StoredField]],
+        columns: &[(i32, PrebuiltDocValues)],
+    ) -> (
+        Vec<(Vec<u8>, Vec<u8>, Vec<u8>)>,
+        Vec<(Vec<u8>, Vec<u8>, Vec<u8>)>,
+    ) {
+        let configs: Vec<DocValuesFieldConfig> = self
+            .fields
+            .iter()
+            .filter(|f| f.doc_values_type != DocValuesType::None)
+            .map(|f| DocValuesFieldConfig {
+                name: f.name.clone(),
+                field_number: f.number,
+                doc_values_type: f.doc_values_type,
+                skip_index: f.doc_values_skip_index_type
+                    != lucene_codecs::field_infos::DocValuesSkipIndexType::None,
+            })
+            .collect();
+        let names: Vec<&str> = self.fields.iter().map(|f| f.name.as_str()).collect();
+        let id = [7u8; ID_LENGTH];
+        let files = |g: Vec<DocValuesGroupOutput>| {
+            g.into_iter()
+                .map(|g| (g.dvm, g.dvd, g.dvs))
+                .collect::<Vec<_>>()
+        };
+        let decoded = self
+            .build_doc_values_groups(docs, &configs, &names, &id)
+            .unwrap();
+        let max_doc = i32::try_from(docs.len()).unwrap();
+        let prebuilt = self
+            .build_prebuilt_doc_values_groups(columns, max_doc, &configs, &names, &id)
+            .expect("a column per field")
+            .unwrap();
+        (files(decoded), files(prebuilt))
+    }
+
+    /// Groups `configs` by doc-values format and writes each group with
+    /// `build`, checked against the installed codec.
+    fn doc_values_groups_with(
+        &self,
+        max_doc: i32,
+        configs: &[DocValuesFieldConfig],
+        segment_fields: &[&str],
+        segment_id: &[u8; ID_LENGTH],
+        build: impl Fn(
+            &[DocValuesFieldConfig],
+            u32,
+            per_field_doc_values::Lucene90DocValuesFormat,
+        ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)>,
+    ) -> Result<Vec<DocValuesGroupOutput>> {
         let walk = crate::indexing_chain::field_hash_order(segment_fields);
         let rank = |name: &str| {
             walk.iter()
@@ -3445,13 +3621,7 @@ impl IndexingConfig {
                     .filter(|c| group.field_numbers.contains(&c.field_number))
                     .map(|c| (*c).clone())
                     .collect();
-                let (dvm, dvd, dvs) = IndexWriter::build_doc_values_output(
-                    docs,
-                    &group_configs,
-                    segment_id,
-                    group.suffix,
-                    group.format,
-                )?;
+                let (dvm, dvd, dvs) = build(&group_configs, group.suffix, group.format)?;
                 let field_infos = lucene_codecs::field_infos::FieldInfos {
                     fields: self
                         .fields
@@ -3463,7 +3633,7 @@ impl IndexingConfig {
                 check_doc_values(
                     self.codec.as_deref(),
                     &lucene_codecs::codec::DocValuesWrite {
-                        max_doc: i32::try_from(docs.len()).unwrap_or(i32::MAX),
+                        max_doc,
                         segment_id,
                         segment_suffix: &group.codec_suffix(),
                         format_name: group.format.name(),

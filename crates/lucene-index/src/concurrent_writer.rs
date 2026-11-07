@@ -1438,6 +1438,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
         let live = self
             .live()
             .then(|| cfg.soft_deletes_field().map(|f| f.number));
+        let live_cfg = Arc::clone(&cfg);
         self.add_with(delete, partition, count, move |_| {
             Ok(Box::new(move |dwpt: &mut Dwpt| {
                 // The postings count what they grew by, as `bytesUsed` counts
@@ -1478,7 +1479,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
                         inv.terms = InvertedTerms::default();
                     }
                     if let Some(soft) = live {
-                        dwpt.live.record(doc_id, &doc.fields, soft);
+                        dwpt.live.record(doc_id, &doc.fields, soft, &live_cfg);
                     }
                     if !doc_vectors.is_empty() {
                         // Short until a document has vectors (see `Dwpt`).
@@ -1754,7 +1755,9 @@ impl<'d> ConcurrentIndexWriter<'d> {
         let ticket_no = core.next_ticket;
         core.next_ticket = core.next_ticket.saturating_add(1);
         let postings = Arc::new(std::mem::take(&mut dwpt.postings));
-        let columns = std::mem::take(&mut dwpt.live);
+        let mut columns = std::mem::take(&mut dwpt.live);
+        // Chunks are written only while the buffer is in its slot.
+        columns.drop_doc_values();
         if self.live() {
             let flushing = live::Flushing {
                 postings: Arc::clone(&postings),

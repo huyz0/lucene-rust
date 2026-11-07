@@ -210,6 +210,7 @@ pub(super) struct LiveColumns {
     norms: HashMap<i32, NormColumn>,
     deletes: Deletes,
     stored: StoredArena,
+    doc_values: doc_values::DocValuesColumns,
 }
 
 /// A buffer's deleted documents.
@@ -233,10 +234,19 @@ impl LiveColumns {
 
     /// Records document `doc`'s norms, and whether it arrives soft-deleted
     /// (`soft` is the soft-deletes field's number).
-    pub(super) fn record(&mut self, doc: i32, fields: &ExplicitFields, soft: Option<i32>) {
+    pub(super) fn record(
+        &mut self,
+        doc: i32,
+        fields: &ExplicitFields,
+        soft: Option<i32>,
+        cfg: &IndexingConfig,
+    ) {
         let Ok(at) = usize::try_from(doc) else {
             return;
         };
+        self.doc_values.record(doc, &fields.doc_values, |n| {
+            cfg.field_by_number(n).map(|f| f.doc_values_type)
+        });
         for f in &fields.inverted {
             if let Some(norm) = f.norm {
                 self.norms
@@ -250,6 +260,11 @@ impl LiveColumns {
                 self.deletes.soft.set(at, true);
             }
         }
+    }
+
+    /// Frees the doc-values columns, kept only for writing chunks.
+    pub(super) fn drop_doc_values(&mut self) {
+        self.doc_values = doc_values::DocValuesColumns::default();
     }
 
     /// See [`Deletes::apply`].
@@ -270,6 +285,7 @@ impl LiveColumns {
             .fold(self.deletes.hard.ram_bytes(), usize::saturating_add)
             .saturating_add(self.deletes.soft.ram_bytes())
             .saturating_add(self.stored.ram_bytes())
+            .saturating_add(self.doc_values.ram_bytes())
     }
 }
 
@@ -982,6 +998,7 @@ impl ConcurrentIndexWriter<'_> {
             docs: range.end,
             doc_counts,
             postings,
+            doc_values: slot.live.doc_values.range(range.start, range.end),
         };
         // Documents counted but not held (`Dwpt::stored_docs`) are empty.
         let docs = padded(&slot.docs, start, end);
@@ -1397,5 +1414,6 @@ fn truncate(p: &mut TermPostings, max_doc: i32) {
     p.offsets.truncate(keep);
 }
 
+mod doc_values;
 #[cfg(test)]
 mod tests;
