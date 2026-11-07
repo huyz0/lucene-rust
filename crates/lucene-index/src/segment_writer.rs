@@ -333,12 +333,9 @@ pub(crate) fn has_lz4_hc_attribute(attributes: &[(String, String)]) -> bool {
         .any(|(k, v)| k == LZ4_HC_ATTRIBUTE && v == LZ4_HC_VALUE)
 }
 
-/// The `.si` attribute of a segment with [`stored_fields::Mode::ZstdPaged`]
-/// stored fields (value [`ZSTD_PAGED_VALUE`]); the plugin's Java format
-/// reads it to pick its reader.
-pub const ZSTD_PAGED_ATTRIBUTE: &str = "LuceneRustStoredFieldsFormat.mode";
-/// [`ZSTD_PAGED_ATTRIBUTE`]'s value.
-pub const ZSTD_PAGED_VALUE: &str = "ZSTD_PAGED";
+pub use lucene_codecs::stored_fields::{
+    ZSTD_PAGED_MODE_ATTRIBUTE as ZSTD_PAGED_ATTRIBUTE, ZSTD_PAGED_MODE_VALUE as ZSTD_PAGED_VALUE,
+};
 
 /// `Lucene90StoredFieldsFormat.fieldsWriter`'s `.si` attribute naming its
 /// mode, or OpenSearch custom-codecs' `Lucene104CustomStoredFieldsFormat`
