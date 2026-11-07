@@ -70,7 +70,9 @@ const DIST_EXTRA: [u8; 30] = [
     13,
 ];
 /// The order the precode lengths are stored in.
-const PRECODE_ORDER: [usize; 19] = [16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15];
+const PRECODE_ORDER: [usize; 19] = [
+    16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15,
+];
 
 /// The fast loop runs while this many output bytes are free: the longest
 /// match (258) plus the 16-byte overshoot of its last word copy, plus the
@@ -179,12 +181,12 @@ impl<const MAIN: usize> Table<MAIN> {
         self.entries.resize(MAIN, INVALID);
         let mut code = 0u32;
         let mut k = 0usize;
-        for len in 1..=tb {
+        for (len, &n) in count.iter().enumerate().take(tb + 1).skip(1) {
             if len > 1 {
                 let half = 1usize << (len - 1);
                 self.entries.copy_within(0..half, half);
             }
-            for _ in 0..count[len] {
+            for _ in 0..n {
                 let sym = sorted[k] as usize;
                 let rev = (code.reverse_bits() >> (32 - len)) as usize;
                 self.entries[rev] = with_len(value(sym), len as u32);
@@ -202,8 +204,8 @@ impl<const MAIN: usize> Table<MAIN> {
         // which sizes their second-level table.
         let mut long = [(0u16, 0u8, 0u32); NUM_LITLEN];
         let mut n = 0;
-        for len in tb + 1..=max_len {
-            for _ in 0..count[len] {
+        for (len, &c) in count.iter().enumerate().take(max_len + 1).skip(tb + 1) {
+            for _ in 0..c {
                 long[n] = (sorted[k], len as u8, code);
                 code += 1;
                 k += 1;
@@ -460,7 +462,8 @@ impl Inflater {
         l[144..256].fill(9);
         l[256..280].fill(7);
         l[280..].fill(8);
-        self.litlen.build(&l, LITLEN_TABLE_BITS, false, litlen_value)?;
+        self.litlen
+            .build(&l, LITLEN_TABLE_BITS, false, litlen_value)?;
         self.dist
             .build(&[5u8; NUM_DIST], DIST_TABLE_BITS, false, dist_value)?;
         self.fixed = true;
@@ -518,7 +521,8 @@ impl Inflater {
             return Err(corrupt("no end-of-block code"));
         }
         let (lit, dist) = self.lengths[..total].split_at(hlit);
-        self.litlen.build(lit, LITLEN_TABLE_BITS, false, litlen_value)?;
+        self.litlen
+            .build(lit, LITLEN_TABLE_BITS, false, litlen_value)?;
         self.dist.build(dist, DIST_TABLE_BITS, true, dist_value)?;
         Ok(())
     }
@@ -796,8 +800,19 @@ mod tests {
 
     fn corpus(n: usize, seed: u64) -> Vec<u8> {
         let words = [
-            "lucene", "segment", "merge", "the", "of", "{\"id\":", "\"body\":", "1234", "GET /a",
-            "HTTP/1.1", "200", "stored", "fields",
+            "lucene",
+            "segment",
+            "merge",
+            "the",
+            "of",
+            "{\"id\":",
+            "\"body\":",
+            "1234",
+            "GET /a",
+            "HTTP/1.1",
+            "200",
+            "stored",
+            "fields",
         ];
         let mut x = seed | 1;
         let mut out = Vec::with_capacity(n);
@@ -805,7 +820,7 @@ mod tests {
             x ^= x << 13;
             x ^= x >> 7;
             x ^= x << 17;
-            if x % 9 == 0 {
+            if x.is_multiple_of(9) {
                 out.push((x >> 24) as u8);
             } else {
                 out.extend_from_slice(words[(x >> 33) as usize % words.len()].as_bytes());
@@ -856,11 +871,13 @@ mod tests {
         let good = miniz(&raw, 6);
         let mut x = 1u64;
         for _ in 0..3000 {
-            x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            x = x
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             let mut bad = good.clone();
             let i = (x >> 33) as usize % bad.len();
             bad[i] ^= 1 << ((x >> 20) % 8);
-            if x % 3 == 0 {
+            if x.is_multiple_of(3) {
                 bad.truncate(i);
             }
             let mut dest = vec![0u8; raw.len()];
@@ -872,9 +889,13 @@ mod tests {
         }
         // Wrong expected lengths.
         let mut dest = vec![0u8; raw.len() + 1];
-        assert!(Inflater::default().inflate(&good, &mut dest, 0, raw.len() + 1).is_err());
+        assert!(Inflater::default()
+            .inflate(&good, &mut dest, 0, raw.len() + 1)
+            .is_err());
         let mut dest = vec![0u8; raw.len() - 1];
-        assert!(Inflater::default().inflate(&good, &mut dest, 0, raw.len() - 1).is_err());
+        assert!(Inflater::default()
+            .inflate(&good, &mut dest, 0, raw.len() - 1)
+            .is_err());
         // Random garbage.
         for seed in 0..500u64 {
             let junk = corpus(64, seed);
@@ -896,10 +917,14 @@ mod tests {
         w.put_rev(0, 7); // end of block
         let bytes = w.finish();
         let mut dest = vec![0u8; 4];
-        assert!(Inflater::default().inflate(&bytes, &mut dest, 0, 4).is_err());
+        assert!(Inflater::default()
+            .inflate(&bytes, &mut dest, 0, 4)
+            .is_err());
         // With one dictionary byte before the output, the same stream is fine.
         let mut dest = vec![b'x', 0, 0, 0, 0];
-        Inflater::default().inflate(&bytes, &mut dest, 1, 4).unwrap();
+        Inflater::default()
+            .inflate(&bytes, &mut dest, 1, 4)
+            .unwrap();
         assert_eq!(&dest, b"xaxax");
     }
 

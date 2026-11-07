@@ -81,11 +81,12 @@ pub(crate) fn decompress(
 
     // One decoder per thread: its tables are rebuilt per block, never
     // reallocated.
-    INFLATER.with(|cell| {
-        cell.borrow_mut()
-            .inflate(compressed, dest, d_off, decompressed_len)
-    })
-    .map_err(|e| Error::Corrupted(e.to_string()))?;
+    INFLATER
+        .with(|cell| {
+            cell.borrow_mut()
+                .inflate(compressed, dest, d_off, decompressed_len)
+        })
+        .map_err(|e| Error::Corrupted(e.to_string()))?;
     Ok(dest_end)
 }
 
@@ -156,7 +157,14 @@ mod tests {
 
     #[test]
     fn lucene_deflater_streams_with_a_preset_dictionary() {
-        let words = ["stored ", "fields ", "{\"id\": ", "merge ", "1234 ", "segment "];
+        let words = [
+            "stored ",
+            "fields ",
+            "{\"id\": ",
+            "merge ",
+            "1234 ",
+            "segment ",
+        ];
         let mut raw = Vec::new();
         let mut x = 7u32;
         while raw.len() < 120_000 {

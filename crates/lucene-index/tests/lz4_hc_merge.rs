@@ -119,7 +119,10 @@ fn merged_stored_fields_are_smaller_and_read_back_the_same() {
 
     assert_eq!(fast_segs.len(), 1);
     assert_eq!(hc_segs.len(), 1);
-    assert!(!fast_segs[0].2, "the attribute is only written with the option on");
+    assert!(
+        !fast_segs[0].2,
+        "the attribute is only written with the option on"
+    );
     assert!(hc_segs[0].2, "{hc_segs:?}");
     assert!(
         hc_segs[0].1 * 100 < fast_segs[0].1 * 95,
@@ -160,5 +163,8 @@ fn a_merge_copies_high_compression_chunks_as_they_are() {
     assert_eq!(bodies.len(), 6010);
     assert_eq!(bodies[6005], body(6005));
     // The copied chunks keep their bytes, and only the new docs add to them.
-    assert!(second[0].1 > first[0].1 && second[0].1 < first[0].1 + 2000, "{first:?} {second:?}");
+    assert!(
+        second[0].1 > first[0].1 && second[0].1 < first[0].1 + 2000,
+        "{first:?} {second:?}"
+    );
 }

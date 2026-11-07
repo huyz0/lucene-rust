@@ -1114,7 +1114,8 @@ mod tests {
                 "BEST_COMPRESSION",
                 "BEST_SPEED",
                 "ZSTD",
-                "ZSTD_NO_DICT"
+                "ZSTD_NO_DICT",
+                "ZSTD_PAGED"
             ]
         );
     }

@@ -117,7 +117,8 @@ mod tests {
         let mut z = lucene_zstd::Compressor::new(3).unwrap();
         let prepared = lucene_zstd::EncoderDictionary::new(&dict, 3).unwrap();
         let mut frame = Vec::new();
-        z.compress_with_prepared(&prepared, &plain, &mut frame).unwrap();
+        z.compress_with_prepared(&prepared, &plain, &mut frame)
+            .unwrap();
 
         let mut handle = 0u64;
         // SAFETY: valid buffers.
@@ -126,7 +127,13 @@ mod tests {
         let mut out = vec![0u8; plain.len()];
         // SAFETY: valid buffers.
         let status = unsafe {
-            ffi_zstd_paged_decompress(handle, frame.as_ptr(), frame.len(), out.as_mut_ptr(), out.len())
+            ffi_zstd_paged_decompress(
+                handle,
+                frame.as_ptr(),
+                frame.len(),
+                out.as_mut_ptr(),
+                out.len(),
+            )
         };
         assert_eq!(status, 0);
         assert_eq!(out, plain);
@@ -134,10 +141,19 @@ mod tests {
         let mut short = vec![0u8; plain.len() - 1];
         // SAFETY: valid buffers.
         let status = unsafe {
-            ffi_zstd_paged_decompress(handle, frame.as_ptr(), frame.len(), short.as_mut_ptr(), short.len())
+            ffi_zstd_paged_decompress(
+                handle,
+                frame.as_ptr(),
+                frame.len(),
+                short.as_mut_ptr(),
+                short.len(),
+            )
         };
         assert_eq!(status, FfiStatus::Decode.code());
         assert_eq!(ffi_zstd_dictionary_close(handle), 0);
-        assert_eq!(ffi_zstd_dictionary_close(handle), FfiStatus::InvalidHandle.code());
+        assert_eq!(
+            ffi_zstd_dictionary_close(handle),
+            FfiStatus::InvalidHandle.code()
+        );
     }
 }

@@ -47,8 +47,16 @@ fn modes() -> Vec<(String, Mode, bool)> {
     }
     let mut m: Vec<(String, Mode, bool)> = m.into_iter().map(|(n, m)| (n, m, false)).collect();
     for level in [1, 3, 6] {
-        m.push((format!("zstd_paged level {level}"), Mode::ZstdPaged(level), false));
-        m.push((format!("zstd_paged level {level} + dict"), Mode::ZstdPaged(level), true));
+        m.push((
+            format!("zstd_paged level {level}"),
+            Mode::ZstdPaged(level),
+            false,
+        ));
+        m.push((
+            format!("zstd_paged level {level} + dict"),
+            Mode::ZstdPaged(level),
+            true,
+        ));
     }
     m
 }

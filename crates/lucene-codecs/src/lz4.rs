@@ -413,7 +413,12 @@ fn encode_literals(bytes: &[u8], token: u8, anchor: usize, literal_len: usize, o
     out.extend_from_slice(&bytes[anchor..anchor + literal_len]);
 }
 
-pub(crate) fn encode_last_literals(bytes: &[u8], anchor: usize, literal_len: usize, out: &mut Vec<u8>) {
+pub(crate) fn encode_last_literals(
+    bytes: &[u8],
+    anchor: usize,
+    literal_len: usize,
+    out: &mut Vec<u8>,
+) {
     let token = (literal_len.min(0x0F) as u8) << 4;
     encode_literals(bytes, token, anchor, literal_len, out);
 }

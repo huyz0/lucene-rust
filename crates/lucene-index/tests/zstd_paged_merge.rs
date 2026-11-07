@@ -49,7 +49,10 @@ fn version() -> LuceneVersion {
 
 /// Every segment's (`.fdt` length, has a dictionary, records the
 /// attribute, codec), and the bodies in doc order.
-fn inspect(dir: &dyn Directory) -> (Vec<(usize, bool, bool, String)>, Vec<String>) {
+/// One segment: `.fdt` length, has a dictionary, records the attribute, codec.
+type SegmentSummary = (usize, bool, bool, String);
+
+fn inspect(dir: &dyn Directory) -> (Vec<SegmentSummary>, Vec<String>) {
     let sis = segment_infos::read_latest(dir).unwrap();
     let mut segs = Vec::new();
     let mut bodies = Vec::new();
@@ -63,7 +66,12 @@ fn inspect(dir: &dyn Directory) -> (Vec<(usize, bool, bool, String)>, Vec<String
         let (fdt, fdx, fdm) = (read("fdt"), read("fdx"), read("fdm"));
         let reader = stored_fields::open(&fdt, &fdx, &fdm, &sci.segment_id, "").unwrap();
         assert_eq!(reader.data_codec(), stored_fields::DATA_CODEC_ZSTD_PAGED);
-        segs.push((fdt.len(), reader.has_zstd_dictionary(), attr, sci.codec_name.clone()));
+        segs.push((
+            fdt.len(),
+            reader.has_zstd_dictionary(),
+            attr,
+            sci.codec_name.clone(),
+        ));
         for d in 0..reader.max_doc() {
             if let FieldValue::String(s) = &reader.document(d).unwrap().fields[0].value {
                 bodies.push(s.clone());
@@ -116,7 +124,12 @@ fn a_large_merge_trains_a_dictionary_and_reads_back_the_same() {
     w.commit().unwrap();
     let (flushed, flushed_bodies) = inspect(&dir);
     assert_eq!(flushed.len(), 4);
-    assert!(flushed.iter().all(|s| !s.1 && s.2 && s.3 == "LuceneRustZstdPaged104"), "{flushed:?}");
+    assert!(
+        flushed
+            .iter()
+            .all(|s| !s.1 && s.2 && s.3 == "LuceneRustZstdPaged104"),
+        "{flushed:?}"
+    );
     let flushed_bytes: usize = flushed.iter().map(|s| s.0).sum();
     assert!(flushed_bytes >= 1 << 20, "{flushed_bytes}");
 

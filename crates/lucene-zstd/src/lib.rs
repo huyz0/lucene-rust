@@ -243,7 +243,9 @@ impl Compressor {
         ))
         .map_err(zstd_error)?;
         cctx.ref_cdict(&dict.cdict).map_err(zstd_error)?;
-        let n = append_with(out, compress_bound(src.len()), |dst| cctx.compress2(dst, src));
+        let n = append_with(out, compress_bound(src.len()), |dst| {
+            cctx.compress2(dst, src)
+        });
         // The context must not keep a reference past this borrow of `dict`.
         let reset = cctx
             .reset(zstd_safe::ResetDirective::SessionAndParameters)

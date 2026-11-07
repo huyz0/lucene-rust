@@ -35,13 +35,16 @@ public final class ZstdPagedStoredFieldsFormat extends StoredFieldsFormat {
     public static final String MODE = "ZSTD_PAGED";
     /** {@code DATA_CODEC_ZSTD_PAGED} in {@code stored_fields.rs}. */
     public static final String FORMAT_NAME = "RustZstdPagedStoredFieldsData";
-    /** {@code ZSTD_PAGED_CHUNK_SIZE}, {@code ZSTD_PAGED_MAX_DOCS_PER_CHUNK} and the block shift. */
-    static final int CHUNK_SIZE = 16 * 1024;
-    static final int MAX_DOCS_PER_CHUNK = 1024;
-    static final int BLOCK_SHIFT = 10;
-    /** {@code ZSTD_PAGED_MAX_DICTIONARY} in {@code stored_fields.rs}. */
-    static final int MAX_DICTIONARY = 1 << 20;
-    private static final int VERSION = 1;
+    /** The chunk geometry, as in {@code stored_fields.rs}. */
+    static final int ZSTD_PAGED_CHUNK_SIZE = 16 << 10;
+    /** As in {@code stored_fields.rs}. */
+    static final int ZSTD_PAGED_MAX_DOCS_PER_CHUNK = 1024;
+    /** The {@code .fdx} block shift, as in {@code stored_fields.rs}. */
+    static final int INDEX_BLOCK_SHIFT = 10;
+    /** As in {@code stored_fields.rs}. */
+    static final int ZSTD_PAGED_MAX_DICTIONARY = 1 << 20;
+    /** The {@code .fdt} version, as in {@code stored_fields.rs}. */
+    private static final int VERSION_CURRENT = 1;
 
     private final Lucene90StoredFieldsFormat lucene90 = new Lucene90StoredFieldsFormat();
 
@@ -57,9 +60,9 @@ public final class ZstdPagedStoredFieldsFormat extends StoredFieldsFormat {
             StoredFieldsReader reader = new Lucene90CompressingStoredFieldsFormat(
                 FORMAT_NAME,
                 new ZstdPagedCompressionMode(dict == null ? 0 : dict.handle()),
-                CHUNK_SIZE,
-                MAX_DOCS_PER_CHUNK,
-                BLOCK_SHIFT
+                ZSTD_PAGED_CHUNK_SIZE,
+                ZSTD_PAGED_MAX_DOCS_PER_CHUNK,
+                INDEX_BLOCK_SHIFT
             ).fieldsReader(directory, si, fn, context);
             success = true;
             return dict == null ? reader : new DictionaryStoredFieldsReader(reader, dict);
@@ -79,9 +82,9 @@ public final class ZstdPagedStoredFieldsFormat extends StoredFieldsFormat {
     static byte[] readDictionary(Directory directory, SegmentInfo si) throws IOException {
         String name = IndexFileNames.segmentFileName(si.name, "", "fdt");
         try (IndexInput in = directory.openInput(name, IOContext.READONCE)) {
-            CodecUtil.checkIndexHeader(in, FORMAT_NAME, VERSION, VERSION, si.getId(), "");
+            CodecUtil.checkIndexHeader(in, FORMAT_NAME, VERSION_CURRENT, VERSION_CURRENT, si.getId(), "");
             int length = in.readVInt();
-            if (length < 0 || length > MAX_DICTIONARY) {
+            if (length < 0 || length > ZSTD_PAGED_MAX_DICTIONARY) {
                 throw new CorruptIndexException("invalid zstd dictionary length " + length, in);
             }
             byte[] dictionary = new byte[length];

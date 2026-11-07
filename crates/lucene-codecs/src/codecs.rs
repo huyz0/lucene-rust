@@ -289,8 +289,11 @@ mod tests {
 
     #[test]
     fn opensearch_zstd_codecs_read_as_their_delegates() {
-        assert_eq!(OPENSEARCH.len(), OPENSEARCH_ZSTD_CODECS.len());
-        for &(name, delegate) in OPENSEARCH_ZSTD_CODECS {
+        assert_eq!(
+            OPENSEARCH.len(),
+            OPENSEARCH_ZSTD_CODECS.len() + RUST_CODECS.len()
+        );
+        for &(name, delegate) in OPENSEARCH_ZSTD_CODECS.iter().chain(RUST_CODECS) {
             let c = for_name(name).unwrap();
             assert_eq!(renamed(c, delegate), *for_name(delegate).unwrap(), "{name}");
         }

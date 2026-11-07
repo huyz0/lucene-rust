@@ -56,7 +56,14 @@ pub const DATA_CODEC_ZSTD_PAGED: &str = "RustZstdPagedStoredFieldsData";
 /// inside a page also ends inside it, so reading one page is enough to
 /// decode every chunk that starts there. A storage layer that caches whole
 /// pages should use this size or a multiple of it.
+///
+/// Pages are counted from the start of the `.fdt`, so a segment packed into a
+/// compound file keeps its packing only relative to its own entry.
 pub const ZSTD_PAGED_PAGE_SIZE: usize = 16 << 10;
+// The storage layer's alignment rule: a page-aligned format's block is
+// 4 KiB times a power of two, so a page cache can always pick pages of a
+// multiple of it.
+const _: () = assert!(ZSTD_PAGED_PAGE_SIZE >= 4096 && ZSTD_PAGED_PAGE_SIZE.is_power_of_two());
 /// [`Mode::ZstdPaged`]'s `chunkSize`: plain bytes per chunk, so one frame.
 const ZSTD_PAGED_CHUNK_SIZE: usize = 16 << 10;
 /// [`Mode::ZstdPaged`]'s `maxDocsPerChunk`.
@@ -386,7 +393,8 @@ pub fn open<'d>(
     )?;
     codec_util::retrieve_checksum(fdt)?;
     let zstd_dictionary = if compression == Compression::ZstdPaged {
-        read_zstd_dictionary(&mut fdt_input)?.map(|d| Arc::new(lucene_zstd::DecoderDictionary::new(d)))
+        read_zstd_dictionary(&mut fdt_input)?
+            .map(|d| Arc::new(lucene_zstd::DecoderDictionary::new(d)))
     } else {
         None
     };
@@ -942,7 +950,14 @@ impl<'d> StoredFieldsReader<'d> {
                 out,
             )?;
         } else {
-            compression::decompress(self.compression, input, original_length, offset, length, out)?;
+            compression::decompress(
+                self.compression,
+                input,
+                original_length,
+                offset,
+                length,
+                out,
+            )?;
         }
         Ok(())
     }
@@ -1633,8 +1648,8 @@ pub fn train_zstd_paged_dictionary(readers: &[&StoredFieldsReader<'_>]) -> Resul
         if max_doc == 0 {
             continue;
         }
-        let share = (ZSTD_PAGED_SAMPLE_BYTES as u64 * reader.max_pointer().max(0) as u64 / total)
-            as usize;
+        let share =
+            (ZSTD_PAGED_SAMPLE_BYTES as u64 * reader.max_pointer().max(0) as u64 / total) as usize;
         let chunks = share
             .div_ceil(reader.chunk_size().max(1) as usize)
             .clamp(1, reader.num_chunks().max(1) as usize);
@@ -1812,7 +1827,10 @@ impl StoredFieldsWriter {
                 && self.docs_values.len() == 1,
             "set_zstd_dictionary after documents"
         );
-        assert!(dict.len() <= ZSTD_PAGED_MAX_DICTIONARY, "zstd dictionary too large");
+        assert!(
+            dict.len() <= ZSTD_PAGED_MAX_DICTIONARY,
+            "zstd dictionary too large"
+        );
         let header = codec_util::index_header_length(self.mode.data_codec(), &self.segment_suffix);
         self.fdt.truncate(header);
         self.fdt.write_vint(dict.len() as i32);
@@ -3890,13 +3908,15 @@ mod tests {
 
     fn paged_docs(n: usize) -> Vec<Document> {
         let words = [
-            "merge", "segment", "commit", "index", "query", "field", "stored", "reader",
-            "writer", "zstd", "page", "cache", "lucene", "rust", "plugin", "search",
+            "merge", "segment", "commit", "index", "query", "field", "stored", "reader", "writer",
+            "zstd", "page", "cache", "lucene", "rust", "plugin", "search",
         ];
         let mut state = 0x9E37_79B9_7F4A_7C15u64;
         (0..n)
             .map(|i| {
-                state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                state = state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
                 let len = 4 + (state >> 58) as usize * if i % 97 == 0 { 400 } else { 3 };
                 let mut text = format!("{{\"id\":{i},\"msg\":\"");
                 for j in 0..len {
@@ -4011,7 +4031,10 @@ mod tests {
         assert_eq!((sfdx, sfdm), (fdx.clone(), fdm.clone()));
         let reader = open(&fdt, &fdx, &fdm, &id_write(), "").unwrap();
         assert_page_packed(&reader);
-        assert_eq!(reader.document(19999).unwrap().fields[1].value, FieldValue::Long(19999));
+        assert_eq!(
+            reader.document(19999).unwrap().fields[1].value,
+            FieldValue::Long(19999)
+        );
     }
 
     fn id_write() -> [u8; ID_LENGTH] {
