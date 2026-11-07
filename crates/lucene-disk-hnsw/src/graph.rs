@@ -129,7 +129,7 @@ pub fn build_graph(
 /// # Errors
 ///
 /// The graph's own read errors, or a neighbour outside `0..size`.
-pub(crate) fn breadth_first_order<G: HnswGraphView>(graph: &G, size: usize) -> Result<Vec<u32>> {
+pub(crate) fn breadth_first_order(graph: &dyn HnswGraphView, size: usize) -> Result<Vec<u32>> {
     let mut seen = vec![false; size];
     let mut order = Vec::with_capacity(size);
     let mut queue = VecDeque::new();

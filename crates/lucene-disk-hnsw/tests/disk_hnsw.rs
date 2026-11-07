@@ -285,6 +285,27 @@ fn filters_keep_traversing() {
         .unwrap();
     assert_eq!(out.hits.len(), 10);
     assert!(out.hits.iter().all(|h| h.doc % 2 == 0));
+    // One document in fifty: the search still finds most of the accepted
+    // nearest ones.
+    let rare = |d: i32| d % 50 == 1;
+    let docs = docs(1200);
+    let mut exact: Vec<(f32, i32)> = vectors
+        .chunks_exact(dim)
+        .zip(&docs)
+        .filter(|(_, &d)| rare(d))
+        .map(|(v, &d)| (sim.score(q, v), d))
+        .collect();
+    exact.sort_by(|a, b| b.0.total_cmp(&a.0));
+    let out = reader
+        .search(7, q, &SearchParams::default(), Some(&rare))
+        .unwrap();
+    assert_eq!(out.hits.len(), 10);
+    let found = out
+        .hits
+        .iter()
+        .filter(|h| exact[..10].iter().any(|e| e.1 == h.doc))
+        .count();
+    assert!(found >= 8, "{found}");
     let none = |_: i32| false;
     let out = reader
         .search(7, q, &SearchParams::default(), Some(&none))
@@ -797,4 +818,93 @@ fn a_single_vector_and_a_flat_graph() {
         assert_eq!(out.hits[0].doc, 1);
         assert_eq!(reader.fields()[0].num_levels(), 1);
     }
+}
+
+/// A graph of four nodes on level 0, with node 0 alone on the upper
+/// levels, bent in one way per case.
+struct Bent {
+    case: usize,
+}
+
+impl HnswGraphView for Bent {
+    fn size(&self) -> i32 {
+        4
+    }
+    fn num_levels(&self) -> i32 {
+        if self.case == 1 {
+            70
+        } else {
+            2
+        }
+    }
+    fn entry_node(&self) -> i32 {
+        0
+    }
+    fn max_conn(&self) -> i32 {
+        1
+    }
+    fn neighbors_into(
+        &self,
+        level: i32,
+        node: i32,
+        out: &mut Vec<i32>,
+    ) -> lucene_codecs::vectors::Result<()> {
+        out.clear();
+        match (self.case, level) {
+            // Level 0 over 2 * M.
+            (0, 0) => out.extend((0..4).filter(|&n| n != node)),
+            (_, 0) => out.push((node + 1) % 4),
+            // An upper level over 2 * M.
+            (2, _) => out.extend([1, 2, 3]),
+            // An upper neighbour that is not on an upper level.
+            (3, _) => out.push(2),
+            _ => {}
+        }
+        Ok(())
+    }
+    fn sorted_nodes_on_level(&self, level: i32) -> lucene_codecs::vectors::Result<Vec<i32>> {
+        Ok(if level == 0 {
+            (0..4).collect()
+        } else {
+            vec![0]
+        })
+    }
+}
+
+#[test]
+fn writer_rejects_graphs_the_reader_would_refuse() {
+    let sim = Similarity::Euclidean;
+    let v = dataset(4, 2, 2, sim, 3);
+    let d = docs(4);
+    let field = FieldVectors {
+        number: 0,
+        similarity: sim,
+        dimension: 2,
+        docs: &d,
+        vectors: &v,
+    };
+    for case in 0..4 {
+        let mut w = DiskHnswWriter::new(&ID, "");
+        let r = w.add_field_with_graph(
+            &field,
+            &Bent { case },
+            &OsqFactory::bbq(),
+            &DiskHnswParams::default(),
+        );
+        assert!(matches!(r, Err(Error::Graph(_))), "case {case}: {r:?}");
+        // The refused field leaves the writer as it was.
+        let files = w.finish();
+        let reader = open(&files);
+        assert!(reader.fields().is_empty());
+    }
+    let mut w = DiskHnswWriter::new(&ID, "");
+    let r = w.add_field(
+        &field,
+        &OsqFactory::bbq(),
+        &DiskHnswParams {
+            page_len: 1 << 31,
+            ..DiskHnswParams::default()
+        },
+    );
+    assert!(matches!(r, Err(Error::IllegalArgument(_))), "{r:?}");
 }

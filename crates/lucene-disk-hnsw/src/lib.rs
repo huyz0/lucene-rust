@@ -86,6 +86,8 @@ pub const NODES_EXTENSION: &str = "dhn";
 pub const VERSION_START: i32 = 0;
 /// The current format version.
 pub const VERSION_CURRENT: i32 = VERSION_START;
+/// The most levels, level 0 included, a field may have.
+pub(crate) const MAX_LEVELS: usize = 64;
 
 /// Errors building or reading a disk HNSW index.
 #[derive(Debug, thiserror::Error)]
@@ -119,43 +121,11 @@ impl From<lucene_codecs::vectors::Error> for Error {
 /// This crate's result.
 pub type Result<T> = std::result::Result<T, Error>;
 
-/// `VectorSimilarityFunction`'s ordinal, as Lucene records it.
-pub(crate) fn similarity_ordinal(s: Similarity) -> u8 {
-    match s {
-        Similarity::Euclidean => 0,
-        Similarity::DotProduct => 1,
-        Similarity::Cosine => 2,
-        Similarity::MaximumInnerProduct => 3,
-    }
-}
-
-/// The similarity of a recorded ordinal.
-pub(crate) fn similarity_from_ordinal(o: u8) -> Option<Similarity> {
-    Some(match o {
-        0 => Similarity::Euclidean,
-        1 => Similarity::DotProduct,
-        2 => Similarity::Cosine,
-        3 => Similarity::MaximumInnerProduct,
-        _ => return None,
-    })
-}
+pub(crate) use lucene_ivf::{similarity_from_ordinal, similarity_ordinal};
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn similarity_ordinals_round_trip() {
-        for s in [
-            Similarity::Euclidean,
-            Similarity::DotProduct,
-            Similarity::Cosine,
-            Similarity::MaximumInnerProduct,
-        ] {
-            assert_eq!(similarity_from_ordinal(similarity_ordinal(s)), Some(s));
-        }
-        assert_eq!(similarity_from_ordinal(4), None);
-    }
 
     #[test]
     fn errors_convert() {

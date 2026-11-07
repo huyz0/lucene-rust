@@ -29,8 +29,8 @@ use rayon::prelude::*;
 use crate::graph::{self, GraphParams};
 use crate::layout::{NodeLayout, DEFAULT_PAGE_LEN};
 use crate::{
-    similarity_ordinal, Error, Result, Similarity, VectorEncoding, CODES_CODEC, META_CODEC,
-    NODES_CODEC, VERSION_CURRENT,
+    similarity_ordinal, Error, Result, Similarity, VectorEncoding, CODES_CODEC, MAX_LEVELS,
+    META_CODEC, NODES_CODEC, VERSION_CURRENT,
 };
 
 /// How a field is written.
@@ -106,11 +106,11 @@ fn bad<T>(m: String) -> Result<T> {
     Err(Error::IllegalArgument(m))
 }
 
-fn write_count(out: &mut Vec<u8>, v: usize) -> Result<()> {
-    let v = i32::try_from(v)
-        .map_err(|_| Error::IllegalArgument(format!("count {v} does not fit an int")))?;
-    out.write_vint(v);
-    Ok(())
+/// Writes a count that fits an int: the field's vector count, dimension,
+/// page length and M are checked to, and every other count is bounded by
+/// one of them.
+fn write_count(out: &mut Vec<u8>, v: usize) {
+    out.write_vint(i32::try_from(v).unwrap_or(i32::MAX));
 }
 
 fn write_offset(out: &mut Vec<u8>, v: usize) {
@@ -231,12 +231,15 @@ impl DiskHnswWriter {
         if field.vectors.iter().any(|x| !x.is_finite()) {
             return bad("vectors must be finite".into());
         }
-        if i32::try_from(field.docs.len()).is_err() {
-            return bad("too many vectors".into());
+        if i32::try_from(field.docs.len()).is_err() || i32::try_from(field.dimension).is_err() {
+            return bad("too many vectors or dimensions".into());
         }
-        if params.page_len == 0 || !params.page_len.is_multiple_of(4) {
+        if params.page_len == 0
+            || !params.page_len.is_multiple_of(4)
+            || i32::try_from(params.page_len).is_err()
+        {
             return bad(format!(
-                "page length {} is not a positive multiple of 4",
+                "page length {} is not a positive multiple of 4 that fits an int",
                 params.page_len
             ));
         }
@@ -290,11 +293,11 @@ impl DiskHnswWriter {
     }
 
     /// Writes a checked `field` whose vectors, as stored, are `vectors`.
-    fn write_field<G: HnswGraphView>(
+    fn write_field(
         &mut self,
         field: &FieldVectors<'_>,
         vectors: &[f32],
-        graph: &G,
+        graph: &dyn HnswGraphView,
         factory: &dyn QuantizerFactory,
         params: &DiskHnswParams,
     ) -> Result<()> {
@@ -380,9 +383,10 @@ impl DiskHnswWriter {
         )
         .ok_or_else(overflow)?;
 
-        // Records, by page group, in parallel.
+        // Records, by page group, in parallel. Nothing is added to the
+        // writer's buffers until the whole field has been encoded, so a
+        // field that fails leaves the files as they were.
         let page_start = self.nodes.len().next_multiple_of(params.page_len);
-        self.nodes.resize(page_start, 0);
         let region_len = layout.region_len(n).ok_or_else(overflow)?;
         let mut region = vec![0u8; region_len];
         let group_len = layout.page_len().saturating_mul(layout.pages_per_record());
@@ -435,15 +439,14 @@ impl DiskHnswWriter {
                 params.encoding.name()
             ));
         }
-        self.nodes.extend_from_slice(&region);
-
-        let codes_start = self.codes.len();
-        for &old in &order {
-            self.codes.extend_from_slice(code(old as usize));
-        }
 
         // Upper levels, renumbered.
         let levels = usize::try_from(graph.num_levels()).unwrap_or(0).max(1);
+        if levels > MAX_LEVELS {
+            return Err(Error::Graph(format!(
+                "{levels} levels, more than {MAX_LEVELS}"
+            )));
+        }
         let mut upper_levels = Vec::new();
         let mut upper_nodes = Vec::new();
         for level in 1..levels {
@@ -463,6 +466,13 @@ impl DiskHnswWriter {
             let mut adj = Vec::with_capacity(nodes.len());
             for &(new, old) in &nodes {
                 graph.neighbors_into(level_i32, old, &mut scratch)?;
+                if scratch.len() > max_neighbors {
+                    return Err(Error::Graph(format!(
+                        "node {old} has {} level-{level} neighbours, more than 2 * M = \
+                         {max_neighbors}",
+                        scratch.len()
+                    )));
+                }
                 adj.push((new, renumber(&scratch, &rank, n)?));
                 upper_nodes.push(new);
             }
@@ -480,22 +490,26 @@ impl DiskHnswWriter {
             }
         }
 
-        let out = &mut self.fields;
+        let codes_start = self.codes.len();
+        let mut field_meta = Vec::new();
+        let out = &mut field_meta;
         out.write_vint(field.number);
         out.write_byte(similarity_ordinal(field.similarity));
-        write_count(out, dim)?;
+        write_count(out, dim);
         out.write_byte(params.encoding.ordinal());
         out.write_string(quantizer.name());
         let state = quantizer.state();
-        write_count(out, state.len())?;
+        let state_len = i32::try_from(state.len())
+            .map_err(|_| Error::IllegalArgument("the quantizer state is too large".into()))?;
+        out.write_vint(state_len);
         out.write_bytes(&state);
         for c in &centroid {
             out.write_bytes(&c.to_le_bytes());
         }
-        write_count(out, n)?;
-        write_count(out, max_conn)?;
-        write_count(out, params.page_len)?;
-        write_count(out, max_neighbors)?;
+        write_count(out, n);
+        write_count(out, max_conn);
+        write_count(out, params.page_len);
+        write_count(out, max_neighbors);
         out.write_byte(u8::from(params.inline_codes));
         write_offset(out, page_start);
         write_offset(out, codes_start);
@@ -503,24 +517,31 @@ impl DiskHnswWriter {
             .ok()
             .filter(|&e| e < n)
             .map_or(0, |e| (rank[e] as usize).saturating_add(1));
-        write_count(out, if n == 0 { 0 } else { entry.max(1) })?;
-        write_count(out, levels)?;
+        write_count(out, if n == 0 { 0 } else { entry.max(1) });
+        write_count(out, levels);
         for adj in &upper_levels {
-            write_count(out, adj.len())?;
+            write_count(out, adj.len());
             let mut prev = 0u32;
             for (node, nbs) in adj {
-                write_count(out, node.saturating_sub(prev) as usize)?;
+                write_count(out, node.saturating_sub(prev) as usize);
                 prev = *node;
-                write_count(out, nbs.len())?;
+                write_count(out, nbs.len());
                 for &nb in nbs {
-                    write_count(out, nb as usize)?;
+                    write_count(out, nb as usize);
                 }
             }
         }
-        write_count(out, upper_nodes.len())?;
+        write_count(out, upper_nodes.len());
         for &node in &upper_nodes {
             out.write_bytes(code(order[node as usize] as usize));
         }
+
+        self.nodes.resize(page_start, 0);
+        self.nodes.extend_from_slice(&region);
+        for &old in &order {
+            self.codes.extend_from_slice(code(old as usize));
+        }
+        self.fields.extend_from_slice(&field_meta);
         self.numbers.push(field.number);
         Ok(())
     }

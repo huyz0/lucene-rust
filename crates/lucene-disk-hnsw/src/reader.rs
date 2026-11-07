@@ -10,7 +10,7 @@ use lucene_vector_quant::{Quantizer, QuantizerRegistry, QueryScorer};
 use crate::layout::NodeLayout;
 use crate::{
     similarity_from_ordinal, Error, RangeSource, Result, Similarity, VectorEncoding, CODES_CODEC,
-    META_CODEC, NODES_CODEC, VERSION_CURRENT, VERSION_START,
+    MAX_LEVELS, META_CODEC, NODES_CODEC, VERSION_CURRENT, VERSION_START,
 };
 
 /// A search hit: a document and its exact score.
@@ -440,7 +440,7 @@ fn read_field(
         e => return corrupt(format!("entry node {e} of {count}")),
     };
     let levels = read_count(input, "level count")?;
-    if levels == 0 || levels > 64 {
+    if levels == 0 || levels > MAX_LEVELS {
         return corrupt(format!("{levels} levels"));
     }
     let upper = read_upper_levels(input, levels, count, max_conn)?;
@@ -656,6 +656,9 @@ impl DiskHnswReader {
                 f.dimension
             )));
         }
+        if query.iter().any(|x| !x.is_finite()) {
+            return Err(Error::IllegalArgument("query must be finite".into()));
+        }
         let mut stats = SearchStats::default();
         let Some(entry) = f.entry else {
             return Ok(SearchOutput {
@@ -699,7 +702,10 @@ impl DiskHnswReader {
         }
 
         // Beam search on level 0.
-        let cap = params.list_len.max(params.k).max(1);
+        // A rejected node does not use up a place on the list, so a
+        // selective filter searches as deep among the accepted nodes as an
+        // unfiltered search does among all of them.
+        let mut cap = params.list_len.max(params.k).max(1);
         let beam = params.beam_width.max(1);
         let mut visited = Visited::new(f.count);
         visited.test_and_set(best);
@@ -750,6 +756,8 @@ impl DiskHnswReader {
                 };
                 if accept.is_none_or(|a| a(doc)) {
                     hits.push(ScoredDoc { doc, score });
+                } else {
+                    cap = cap.saturating_add(1).min(f.count.max(1));
                 }
                 exact.push((node, score));
                 let neighbors = &record[layout.neighbors_start()..layout.codes_start()];
