@@ -317,6 +317,9 @@ pub enum Error {
     /// share one `Error` type, the way they share one on-disk format family.
     #[error(transparent)]
     Vectors(#[from] vectors::Error),
+    /// The IVF index of a `LuceneRustIvfVectorsFormat` instance.
+    #[error(transparent)]
+    Ivf(#[from] lucene_ivf::Error),
     #[error("set_vector_field: no field named {0:?} in this writer's field list")]
     UnknownVectorField(String),
     #[error(transparent)]
@@ -1334,7 +1337,7 @@ pub(crate) fn encode_live_point(info: &FieldInfo, value: &FieldValue, out: &mut 
 /// field at a time when a reader first reads that field.
 pub struct LazyDocValues {
     cfg: std::sync::Arc<IndexingConfig>,
-    columns: Vec<(i32, PrebuiltDocValues)>,
+    columns: Vec<(i32, crate::concurrent_writer::DocValuesRun)>,
     max_doc: i32,
 }
 
@@ -1354,7 +1357,7 @@ impl LazyDocValues {
     /// would fail a read).
     pub(crate) fn covers(
         cfg: &IndexingConfig,
-        columns: &[(i32, PrebuiltDocValues)],
+        columns: &[(i32, crate::concurrent_writer::DocValuesRun)],
         present: &[i32],
     ) -> bool {
         cfg.codec.is_none()
@@ -1371,7 +1374,7 @@ impl LazyDocValues {
 
     pub(crate) fn new(
         cfg: std::sync::Arc<IndexingConfig>,
-        columns: Vec<(i32, PrebuiltDocValues)>,
+        columns: Vec<(i32, crate::concurrent_writer::DocValuesRun)>,
         max_doc: i32,
     ) -> Self {
         Self {
@@ -1403,8 +1406,16 @@ impl LazyDocValues {
             skip_index: info.doc_values_skip_index_type
                 != lucene_codecs::field_infos::DocValuesSkipIndexType::None,
         };
+        let Some((_, run)) = self.columns.iter().find(|(n, _)| *n == field_number) else {
+            return Ok(None);
+        };
+        let column = run.build().ok_or_else(|| {
+            Error::LiveSearch(format!(
+                "field {field_number}'s buffered doc values do not match their documents"
+            ))
+        })?;
         let Some(groups) = self.cfg.build_prebuilt_doc_values_groups(
-            &self.columns,
+            &[(field_number, column)],
             self.max_doc,
             std::slice::from_ref(&config),
             &[info.name.as_str()],
@@ -1975,6 +1986,8 @@ impl IndexingConfig {
             vemf: Input,
             graph: Option<(Input, Input)>,
             quantized: Option<(Input, Input)>,
+            /// A `LuceneRustIvfVectorsFormat` group's `.ivm`, `.ivp`, `.ivv`.
+            ivf: Option<crate::ivf_vectors::IvfInputs>,
         }
         type RawVectorFiles = Vec<RawVectorGroup>;
         /// A retired (9.0-9.8) HNSW format's `.vem`/`.vec`/`.vex` triple,
@@ -2393,6 +2406,17 @@ impl IndexingConfig {
                         vemf: seg_dir.open(&format!("{seg}.vemf"))?,
                         graph: pair("vem", "vex")?,
                         quantized: pair("vemq", "veq")?,
+                        ivf: if listed("ivm") {
+                            Some(crate::ivf_vectors::IvfInputs {
+                                meta: seg_dir.open(&format!("{seg}.ivm"))?,
+                                postings: std::sync::Arc::new(seg_dir.open(&format!("{seg}.ivp"))?),
+                                vectors: std::sync::Arc::new(seg_dir.open(&format!("{seg}.ivv"))?),
+                                segment_id: sci.segment_id,
+                                suffix: suffix.clone(),
+                            })
+                        } else {
+                            None
+                        },
                         suffix,
                     });
                 }
@@ -2870,6 +2894,7 @@ impl IndexingConfig {
             vectors::FlatVectorsReader<'a>,
             Option<hnsw_vectors::HnswVectorsReader<'a>>,
             Option<lucene_codecs::scalar_quantized_vectors::ScalarQuantizedVectorsReader<'a>>,
+            Option<&'a crate::ivf_vectors::IvfInputs>,
         );
         let opened_vector_groups: Vec<Vec<OpenedVectorGroup>> = opened
             .iter()
@@ -2906,7 +2931,7 @@ impl IndexingConfig {
                             ),
                             _ => None,
                         };
-                        Ok::<_, Error>((flat, graph, quantized))
+                        Ok::<_, Error>((flat, graph, quantized, g.ivf.as_ref()))
                     })
                     .collect::<std::result::Result<Vec<_>, Error>>()
             })
@@ -2970,19 +2995,22 @@ impl IndexingConfig {
                         flat: r.flat(),
                         graph: None,
                         flat_quantized: None,
+                        ivf: None,
                     }),
-                    None => {
-                        groups.extend(current.iter().map(|(flat, graph, q)| merge::VectorGroup {
+                    None => groups.extend(current.iter().map(|(flat, graph, q, ivf)| {
+                        merge::VectorGroup {
                             flat,
                             graph: graph.as_ref(),
                             flat_quantized: q.as_ref(),
-                        }))
-                    }
+                            ivf: *ivf,
+                        }
+                    })),
                 }
                 groups.extend(quantized.iter().map(|q| merge::VectorGroup {
                     flat: q.flat(),
                     graph: q.graph(),
                     flat_quantized: None,
+                    ivf: None,
                 }));
                 (!groups.is_empty()).then_some(merge::SourceVectors { groups })
             })
@@ -10981,6 +11009,25 @@ impl IndexWriter<'_> {
             let (veq, vemq) = writer.finish();
             files.push(("veq", veq));
             files.push(("vemq", vemq));
+        }
+
+        if let Some(mut ivf) = crate::ivf_vectors::IvfGroupWriter::new(format, segment_id, suffix)?
+        {
+            for field in flat_fields {
+                if let FieldVectorData::Float32(values) = &field.values {
+                    ivf.add(
+                        &crate::ivf_vectors::IvfField {
+                            number: field.field_number,
+                            similarity: field.similarity,
+                            dimension: usize::try_from(field.dimension).unwrap_or(0),
+                            docs: &field.docs,
+                            vectors: values,
+                        },
+                        &[],
+                    )?;
+                }
+            }
+            files.extend(ivf.finish().into_iter().flatten());
         }
 
         if let Some((m, beam_width)) = format.graph() {
