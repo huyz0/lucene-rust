@@ -99,6 +99,10 @@ fn score_points_leaf(
 /// with Java's messages, then the scorer tree's `PointRangeQuery`
 /// ([`crate::extended_query::PointRangeQuery`], which this is).
 impl DocumentQuery for PointRangeQuery {
+    fn reads_no_terms(&self) -> bool {
+        true
+    }
+
     fn equals(&self, other: &dyn DocumentQuery) -> bool {
         same_class::<Self>(other).is_some_and(|o| self == o)
     }
@@ -128,6 +132,10 @@ impl DocumentQuery for PointRangeQuery {
 
 /// `PointInSetQuery` as a document-package query, as [`PointRangeQuery`].
 impl DocumentQuery for PointInSetQuery {
+    fn reads_no_terms(&self) -> bool {
+        true
+    }
+
     fn score_leaf(
         &self,
         leaf: &OpenSegment<'_>,

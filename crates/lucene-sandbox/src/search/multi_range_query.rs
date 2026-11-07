@@ -177,6 +177,10 @@ impl MultiRangeQuery {
 }
 
 impl DocumentQuery for MultiRangeQuery {
+    fn reads_no_terms(&self) -> bool {
+        true
+    }
+
     /// `rewrite`: a one-dimensional query with overlapping ranges becomes
     /// the query of the merged ranges.
     fn rewrite(&self, _leaves: &[OpenSegment<'_>]) -> Result<Option<Box<dyn DocumentQuery>>> {

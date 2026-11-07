@@ -186,6 +186,10 @@ impl SortedNumericDocValuesRangeQuery {
 }
 
 impl DocumentQuery for SortedNumericDocValuesRangeQuery {
+    fn reads_no_terms(&self) -> bool {
+        true
+    }
+
     /// `rewrite`: the whole `long` range is `FieldExistsQuery`, an empty one
     /// `MatchNoDocsQuery`.
     fn rewrite(&self, _leaves: &[OpenSegment<'_>]) -> Result<Option<Box<dyn DocumentQuery>>> {
@@ -450,6 +454,10 @@ impl SortedNumericDocValuesSetQuery {
 }
 
 impl DocumentQuery for SortedNumericDocValuesSetQuery {
+    fn reads_no_terms(&self) -> bool {
+        true
+    }
+
     fn rewrite(&self, _leaves: &[OpenSegment<'_>]) -> Result<Option<Box<dyn DocumentQuery>>> {
         if self.numbers.size() == 0 {
             return Ok(Some(Box::new(MatchNoDocs)));

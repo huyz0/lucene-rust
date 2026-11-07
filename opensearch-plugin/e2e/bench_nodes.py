@@ -61,6 +61,7 @@ def gen(out_dir, docs):
     words = ["t" + b36(i) for i in range(VOCAB)]
     cum = zipf_cum(VOCAB)
     tag_cum = zipf_cum(TAGS)
+    geo = random.Random(7)
     for f, start in enumerate(range(0, docs, PER_FILE)):
         lines = []
         for i in range(start, min(docs, start + PER_FILE)):
@@ -75,6 +76,8 @@ def gen(out_dir, docs):
                 "num": rnd.randrange(1_000_000),
                 "price": round(rnd.uniform(0, 1000), 2),
                 "ts": 1_700_000_000_000 + rnd.randrange(365 * 24 * 60) * 60_000,
+                # Its own stream, so the other fields stay those of corpora made before.
+                "loc": {"lat": round(geo.uniform(-60, 60), 5), "lon": round(geo.uniform(-180, 180), 5)},
             }, separators=(",", ":")))
         with open(os.path.join(out_dir, "bulk-%05d.ndjson" % f), "w") as fh:
             fh.write("\n".join(lines) + "\n")
@@ -107,6 +110,7 @@ MAPPING = {
         "num": {"type": "long"},
         "price": {"type": "double"},
         "ts": {"type": "date"},
+        "loc": {"type": "geo_point"},
     }
 }
 
@@ -134,6 +138,8 @@ def shapes():
         ("terms agg on tag, filtered", {"size": 0, "query": {"match": {"body": "t8"}}, "aggs": {"a": {"terms": {"field": "tag", "size": 20}}}}),
         ("date_histogram by month", {"size": 0, "aggs": {"a": {"date_histogram": {"field": "ts", "calendar_interval": "month"}}}}),
         ("stats on price", {"size": 0, "aggs": {"a": {"stats": {"field": "price"}}}}),
+        ("geo_distance filter", {"query": {"bool": {"filter": {"geo_distance": {"distance": "500km", "loc": {"lat": 10, "lon": 20}}}}}}),
+        ("geo_bounding_box filter", {"query": {"bool": {"filter": {"geo_bounding_box": {"loc": {"top_left": {"lat": 15, "lon": 10}, "bottom_right": {"lat": 5, "lon": 25}}}}}}}),
     ]
 
 
@@ -270,6 +276,8 @@ def visibility(base, container, corpus, label, out, settings):
     seen, missed, errors = [], [0], []
     searched = {}
     wanted = {"term, frequent (t0)", "match OR, 2 frequent", "terms agg on tag, filtered", "match, sort by price"}
+    if os.environ.get("VIS_SHAPES"):
+        wanted = set(os.environ["VIS_SHAPES"].split("|"))
     pairs = [(n, b) for n, b in shapes() if n in wanted]
 
     def probe_once(n):

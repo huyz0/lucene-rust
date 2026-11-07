@@ -94,6 +94,13 @@ pub(crate) fn same_class<T: Any>(other: &dyn DocumentQuery) -> Option<&T> {
 /// One document-package query: `Query.rewrite` plus the `Weight`'s scorer
 /// over a segment. See the module doc.
 pub trait DocumentQuery: AsAnyQuery + fmt::Debug + Send + Sync {
+    /// Whether the query reads only points and doc values, never terms or
+    /// postings: it runs as is on a segment holding no terms
+    /// ([`crate::live_segment::whole_request`]).
+    fn reads_no_terms(&self) -> bool {
+        false
+    }
+
     /// The field `Query.visit` checks `QueryVisitor.acceptField` against
     /// before visiting the query as a leaf; `None` visits it unconditionally.
     fn field(&self) -> Option<&str> {

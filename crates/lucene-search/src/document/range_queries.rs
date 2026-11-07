@@ -100,6 +100,10 @@ impl IntersectVisitor for RangeVisitor<'_> {
 }
 
 impl DocumentQuery for RangeFieldQuery {
+    fn reads_no_terms(&self) -> bool {
+        true
+    }
+
     fn score_leaf(
         &self,
         leaf: &OpenSegment<'_>,

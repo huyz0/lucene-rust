@@ -243,6 +243,10 @@ impl LatLonShapeQuery {
 }
 
 impl DocumentQuery for LatLonShapeQuery {
+    fn reads_no_terms(&self) -> bool {
+        true
+    }
+
     fn score_leaf(
         &self,
         leaf: &OpenSegment<'_>,
@@ -295,6 +299,10 @@ impl XYShapeQuery {
 }
 
 impl DocumentQuery for XYShapeQuery {
+    fn reads_no_terms(&self) -> bool {
+        true
+    }
+
     fn score_leaf(
         &self,
         leaf: &OpenSegment<'_>,
@@ -913,6 +921,10 @@ impl LatLonShapeBoundingBoxQuery {
 }
 
 impl DocumentQuery for LatLonShapeBoundingBoxQuery {
+    fn reads_no_terms(&self) -> bool {
+        true
+    }
+
     fn score_leaf(
         &self,
         leaf: &OpenSegment<'_>,
@@ -1082,6 +1094,10 @@ impl LatLonShapeDocValuesQuery {
 }
 
 impl DocumentQuery for LatLonShapeDocValuesQuery {
+    fn reads_no_terms(&self) -> bool {
+        true
+    }
+
     fn score_leaf(
         &self,
         leaf: &OpenSegment<'_>,
@@ -1138,6 +1154,10 @@ impl XYShapeDocValuesQuery {
 }
 
 impl DocumentQuery for XYShapeDocValuesQuery {
+    fn reads_no_terms(&self) -> bool {
+        true
+    }
+
     fn score_leaf(
         &self,
         leaf: &OpenSegment<'_>,
