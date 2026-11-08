@@ -56,6 +56,19 @@ final class NativeStoredFieldsReader extends FilterDirectoryReader {
     static final byte LONG = 3;
     static final byte FLOAT = 4;
     static final byte DOUBLE = 5;
+    /** A derived {@code _source} whose value the blob leaves out: read with {@link SourceLoader} when wanted. */
+    static final byte DERIVED_SOURCE = 6;
+
+    /** A derived {@code _source}'s value, read only when the visitor asks for it. */
+    @FunctionalInterface
+    interface SourceLoader {
+        /** Hands {@code fi}'s value to {@code visitor}. */
+        void load(FieldInfo fi, StoredFieldVisitor visitor) throws IOException;
+    }
+
+    private static final SourceLoader NO_DERIVED_SOURCE = (fi, visitor) -> {
+        throw new IOException("a derived _source from a reader that has none");
+    };
 
     /** What the leaves share: the top reader, once built, and its native handle. */
     static final class Shared {
@@ -198,7 +211,7 @@ final class NativeStoredFieldsReader extends FilterDirectoryReader {
         /** Document {@code docID}, natively when enabled and possible, else by Lucene; timed either way. */
         private void read(int docID, StoredFieldVisitor visitor, LuceneDocument lucene, boolean sequential) throws IOException {
             long start = System.nanoTime();
-            if (shared.enabled.getAsBoolean() && nativeDocument(docID, visitor, sequential)) {
+            if (shared.enabled.getAsBoolean() && nativeDocument(docID, visitor, sequential, lucene)) {
                 shared.stats.fetchTime(true, System.nanoTime() - start);
                 return;
             }
@@ -223,7 +236,8 @@ final class NativeStoredFieldsReader extends FilterDirectoryReader {
         }
 
         /** Document {@code docID} replayed into {@code visitor} from the native reader; false when it cannot be. */
-        private boolean nativeDocument(int docID, StoredFieldVisitor visitor, boolean sequential) throws IOException {
+        private boolean nativeDocument(int docID, StoredFieldVisitor visitor, boolean sequential, LuceneDocument lucene)
+            throws IOException {
             if (live) {
                 // The writer's buffered documents: the leaf reads them from its view itself.
                 return false;
@@ -239,9 +253,39 @@ final class NativeStoredFieldsReader extends FilterDirectoryReader {
                 logger.warn("lucene-rust: native stored fields failed ({}), reading with Lucene: {}", rc, NativeBridge.lastError());
                 return false;
             }
-            replay(getFieldInfos(), out[0], visitor);
+            replay(getFieldInfos(), out[0], visitor, (fi, v) -> derivedSource(h, docID, fi, v, lucene));
             shared.stats.nativeFetch(sequential);
             return true;
+        }
+
+        /**
+         * The {@code _source} of {@code docID} with its vectors spliced back, natively, else from
+         * Lucene's codec (which splices them too): the document's other fields are already replayed.
+         */
+        private void derivedSource(long h, int docID, FieldInfo fi, StoredFieldVisitor visitor, LuceneDocument lucene)
+            throws IOException {
+            byte[][] out = new byte[1][];
+            int rc = NativeBridge.derivedSource(h, ord, docID, out);
+            if (rc == NativeBridge.OK) {
+                visitor.binaryField(fi, new StoredFieldDataInput(new ByteArrayDataInput(out[0]), out[0].length));
+                return;
+            }
+            shared.stats.nativeError();
+            logger.warn("lucene-rust: native derived _source failed ({}), reading with Lucene: {}", rc, NativeBridge.lastError());
+            lucene.document(docID, new StoredFieldVisitor() {
+                private boolean done;
+
+                @Override
+                public Status needsField(FieldInfo field) {
+                    return done ? Status.STOP : field.number == fi.number ? Status.YES : Status.NO;
+                }
+
+                @Override
+                public void binaryField(FieldInfo field, StoredFieldDataInput value) throws IOException {
+                    done = true;
+                    visitor.binaryField(fi, value);
+                }
+            });
         }
 
 
@@ -311,14 +355,32 @@ final class NativeStoredFieldsReader extends FilterDirectoryReader {
      * Lucene90CompressingStoredFieldsReader.document} visits them: each field's {@code FieldInfo}
      * (null for a number {@code infos} does not know, asked all the same) to {@code needsField} before
      * its value, {@code NO} skipping the value and {@code STOP} ending the document, a binary value
-     * handed over as a {@link StoredFieldDataInput}.
+     * handed over as a {@link StoredFieldDataInput}. A {@code DERIVED_SOURCE} field's value comes from
+     * {@code source}, asked only when the visitor wants it.
      */
     static void replay(FieldInfos infos, byte[] blob, StoredFieldVisitor visitor) throws IOException {
+        replay(infos, blob, visitor, NO_DERIVED_SOURCE);
+    }
+
+    static void replay(FieldInfos infos, byte[] blob, StoredFieldVisitor visitor, SourceLoader source) throws IOException {
         ByteBuffer b = ByteBuffer.wrap(blob).order(ByteOrder.LITTLE_ENDIAN);
         int n = b.getInt();
         for (int i = 0; i < n; i++) {
             FieldInfo fi = infos.fieldInfo(b.getInt());
             byte type = b.get();
+            if (type == DERIVED_SOURCE) {
+                StoredFieldVisitor.Status status = visitor.needsField(fi);
+                if (status == StoredFieldVisitor.Status.STOP) {
+                    return;
+                }
+                if (status == StoredFieldVisitor.Status.YES) {
+                    if (fi == null) {
+                        throw new IOException("a derived _source of a field number the reader does not know");
+                    }
+                    source.load(fi, visitor);
+                }
+                continue;
+            }
             int len = type == STRING || type == BINARY ? b.getInt() : 0;
             StoredFieldVisitor.Status status = visitor.needsField(fi);
             if (status == StoredFieldVisitor.Status.STOP) {
