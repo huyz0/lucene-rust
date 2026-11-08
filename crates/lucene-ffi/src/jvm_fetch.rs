@@ -9,6 +9,11 @@
 //! (the field number), `type: u8` and the value -- [`STRING`] and [`BINARY`]
 //! as `len: i32` and the bytes (UTF-8 for a string), [`INT`] an `i32`,
 //! [`LONG`] an `i64`, [`FLOAT`] an `f32`'s bits, [`DOUBLE`] an `f64`'s bits.
+//!
+//! In a segment whose `_source` has k-NN vectors masked out (derived source), the `_source`
+//! field is [`DERIVED_SOURCE`] with no value: splicing the vectors back in costs far more than
+//! the rest of the document, and most fetches (`_source: false`, `_id` only) never read it. The
+//! plugin asks [`source_blob`] for it when its visitor does.
 
 use lucene_codecs::stored_fields::{self, StoredFieldVisitor, VisitStatus};
 
@@ -21,34 +26,53 @@ pub(crate) const INT: u8 = 2;
 pub(crate) const LONG: u8 = 3;
 pub(crate) const FLOAT: u8 = 4;
 pub(crate) const DOUBLE: u8 = 5;
+/// A derived `_source`, its value left out: [`source_blob`] reads it.
+pub(crate) const DERIVED_SOURCE: u8 = 6;
+
+/// Segment `segment` of `handle`'s reader, checked.
+fn segment_reader<'h>(
+    h: &'h crate::registry::JvmReaderHandle,
+    segment: i32,
+    what: &str,
+) -> Result<&'h lucene_search::directory_reader::SegmentReader, FfiStatus> {
+    let readers = h.reader.segment_readers();
+    usize::try_from(segment)
+        .ok()
+        .and_then(|s| readers.get(s))
+        .ok_or_else(|| {
+            set_last_error(format!("{what}: segment {segment} of {}", readers.len()));
+            FfiStatus::InvalidArgument
+        })
+}
+
+fn check_doc(
+    reader: &lucene_search::directory_reader::SegmentReader,
+    doc: i32,
+    what: &str,
+) -> Result<(), FfiStatus> {
+    if doc < 0 || doc >= reader.max_doc {
+        set_last_error(format!("{what}: document {doc} of {}", reader.max_doc));
+        return Err(FfiStatus::InvalidArgument);
+    }
+    Ok(())
+}
 
 /// Segment `segment`'s document `doc` (segment-local) of `handle`'s reader,
 /// encoded (see the module doc).
 pub(crate) fn document_blob(handle: u64, segment: i32, doc: i32) -> Result<Vec<u8>, FfiStatus> {
+    const WHAT: &str = "ffi_jvm_reader_document";
     let h = jvm_reader::lookup(
         handle,
         "ffi_jvm_reader_document: unknown or already-closed handle",
     )?;
-    let readers = h.reader.segment_readers();
-    let Some(reader) = usize::try_from(segment).ok().and_then(|s| readers.get(s)) else {
-        set_last_error(format!(
-            "ffi_jvm_reader_document: segment {segment} of {}",
-            readers.len()
-        ));
-        return Err(FfiStatus::InvalidArgument);
-    };
-    if doc < 0 || doc >= reader.max_doc {
-        set_last_error(format!(
-            "ffi_jvm_reader_document: document {doc} of {}",
-            reader.max_doc
-        ));
-        return Err(FfiStatus::InvalidArgument);
-    }
+    let reader = segment_reader(&h, segment, WHAT)?;
+    check_doc(reader, doc, WHAT)?;
     let mut blob = Blob {
         out: 0i32.to_le_bytes().to_vec(),
         count: 0,
+        derived_source: reader.derived_source_number(),
     };
-    let stored = reader.visit_source_document(doc, &mut blob).map_err(|e| {
+    let stored = reader.visit_stored_document(doc, &mut blob).map_err(|e| {
         set_last_error(format!("reading stored fields: {e}"));
         FfiStatus::Decode
     })?;
@@ -61,9 +85,77 @@ pub(crate) fn document_blob(handle: u64, segment: i32, doc: i32) -> Result<Vec<u
         ));
         return Err(FfiStatus::Decode);
     }
-    let Blob { mut out, count } = blob;
+    let Blob { mut out, count, .. } = blob;
     out[..4].copy_from_slice(&count.to_le_bytes());
     Ok(out)
+}
+
+/// The `_source` of segment `segment`'s document `doc` with its k-NN vectors put back
+/// ([`lucene_search::directory_reader::SegmentReader::visit_source_document`]): the value a
+/// [`DERIVED_SOURCE`] field of [`document_blob`] leaves out.
+pub(crate) fn source_blob(handle: u64, segment: i32, doc: i32) -> Result<Vec<u8>, FfiStatus> {
+    const WHAT: &str = "ffi_jvm_reader_derived_source";
+    let h = jvm_reader::lookup(
+        handle,
+        "ffi_jvm_reader_derived_source: unknown or already-closed handle",
+    )?;
+    let reader = segment_reader(&h, segment, WHAT)?;
+    check_doc(reader, doc, WHAT)?;
+    let Some(number) = reader.derived_source_number() else {
+        set_last_error(format!("{WHAT}: segment {segment} has no derived source"));
+        return Err(FfiStatus::InvalidArgument);
+    };
+    let mut source = SourceOnly {
+        number,
+        value: None,
+    };
+    reader
+        .visit_source_document(doc, &mut source)
+        .map_err(|e| {
+            set_last_error(format!("reading stored fields: {e}"));
+            FfiStatus::Decode
+        })?;
+    source.value.ok_or_else(|| {
+        set_last_error(format!("{WHAT}: document {doc} stores no _source"));
+        FfiStatus::Decode
+    })
+}
+
+/// Keeps field `number`'s binary value and stops there.
+struct SourceOnly {
+    number: i32,
+    value: Option<Vec<u8>>,
+}
+
+impl StoredFieldVisitor for SourceOnly {
+    fn needs_field(&mut self, field_number: i32) -> stored_fields::Result<VisitStatus> {
+        Ok(match (self.value.is_some(), field_number == self.number) {
+            (true, _) => VisitStatus::Stop,
+            (false, true) => VisitStatus::Yes,
+            (false, false) => VisitStatus::No,
+        })
+    }
+
+    fn binary_field(&mut self, _field_number: i32, value: &[u8]) -> stored_fields::Result<()> {
+        self.value = Some(value.to_vec());
+        Ok(())
+    }
+
+    fn string_field(&mut self, _: i32, _: &str) -> stored_fields::Result<()> {
+        Ok(())
+    }
+    fn int_field(&mut self, _: i32, _: i32) -> stored_fields::Result<()> {
+        Ok(())
+    }
+    fn long_field(&mut self, _: i32, _: i64) -> stored_fields::Result<()> {
+        Ok(())
+    }
+    fn float_field(&mut self, _: i32, _: f32) -> stored_fields::Result<()> {
+        Ok(())
+    }
+    fn double_field(&mut self, _: i32, _: f64) -> stored_fields::Result<()> {
+        Ok(())
+    }
 }
 
 /// Encodes every field it is shown (see the module doc), straight from the
@@ -72,6 +164,8 @@ pub(crate) fn document_blob(handle: u64, segment: i32, doc: i32) -> Result<Vec<u
 struct Blob {
     out: Vec<u8>,
     count: i32,
+    /// The `_source` field number in a derived-source segment: written as [`DERIVED_SOURCE`].
+    derived_source: Option<i32>,
 }
 
 impl Blob {
@@ -119,6 +213,13 @@ impl StoredFieldVisitor for Blob {
     }
 
     fn binary_field(&mut self, number: i32, value: &[u8]) -> stored_fields::Result<()> {
+        // A `_source` the splice would refuse is refused here too, so the plugin reads the whole
+        // document with Lucene as before; one the splice leaves unchanged stays inline.
+        if self.derived_source == Some(number)
+            && lucene_search::derived_source::needs_injection(value)?
+        {
+            return self.field(number, DERIVED_SOURCE);
+        }
         self.bytes(number, BINARY, value)
     }
 
@@ -291,6 +392,7 @@ mod tests {
             let ty = blob[at];
             at += 1;
             let (value, len) = match ty {
+                DERIVED_SOURCE => (FieldValue::Binary(b"derived".to_vec()), 0),
                 STRING | BINARY => {
                     let len = i32_at(blob, &mut at) as usize;
                     let b = blob[at..at + len].to_vec();
@@ -459,6 +561,7 @@ mod tests {
         let mut b = Blob {
             out: Vec::new(),
             count: i32::MAX,
+            derived_source: None,
         };
         let e = b.int_field(1, 1).unwrap_err();
         assert!(e.to_string().contains("too large for the JVM"), "{e}");
@@ -469,6 +572,7 @@ mod tests {
         let mut b = Blob {
             out: 0i32.to_le_bytes().to_vec(),
             count: 0,
+            derived_source: Some(7),
         };
         assert_eq!(b.needs_field(3).unwrap(), VisitStatus::Yes);
         b.string_field(1, "héllo").unwrap();
@@ -477,7 +581,12 @@ mod tests {
         b.long_field(4, i64::MIN).unwrap();
         b.float_field(5, -0.5).unwrap();
         b.double_field(6, f64::MAX).unwrap();
-        let Blob { mut out, count } = b;
+        // A derived `_source` leaves its value out; one that is not content stays inline, and
+        // one in another content type is refused, so the plugin reads the document with Lucene.
+        b.binary_field(7, br#" {"v":1}"#).unwrap();
+        b.binary_field(7, b"").unwrap();
+        assert!(b.binary_field(7, b"---\nv: 1").is_err());
+        let Blob { mut out, count, .. } = b;
         out[..4].copy_from_slice(&count.to_le_bytes());
         assert_eq!(
             decode(&out),
@@ -488,6 +597,8 @@ mod tests {
                 (4, FieldValue::Long(i64::MIN)),
                 (5, FieldValue::Float(-0.5)),
                 (6, FieldValue::Double(f64::MAX)),
+                (7, FieldValue::Binary(b"derived".to_vec())),
+                (7, FieldValue::Binary(Vec::new())),
             ]
         );
     }
