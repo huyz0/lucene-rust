@@ -286,7 +286,7 @@ impl DoubleValuesSource for KnnScoreSource {
                     let mut ords =
                         Ordinals::new(values.size(), reader.max_doc, |d| values.ord_to_docs(d))?;
                     let q = Arc::clone(q);
-                    let mut scratch = vec![0f32; q.len()];
+                    let mut scratch = vec![0f32; q.len()]; // alloc-ok: the target decoded from the blob, no longer than it
                     Ok(Box::new(Scores {
                         next: Box::new(move |doc| {
                             let Some(ord) = ords.ordinal(doc) else {
