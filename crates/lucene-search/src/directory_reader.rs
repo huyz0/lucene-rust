@@ -1730,9 +1730,11 @@ impl SegmentReader {
         doc: i32,
         visitor: &mut dyn lucene_codecs::stored_fields::StoredFieldVisitor,
     ) -> Result<bool> {
-        let (Some(fields), None, Some(f)) = (
+        // The gate [`Self::derived_source_number`] states, so the plugin's lazy `_source` and this
+        // splice agree on which segments splice.
+        let (true, Some(fields), Some(f)) = (
+            self.derived_source_number().is_some(),
             self.derived_source.as_deref(),
-            &self.simpletext,
             self.stored.as_deref(),
         ) else {
             return self.visit_stored_document(doc, visitor);
@@ -1747,6 +1749,19 @@ impl SegmentReader {
             },
         )?;
         Ok(true)
+    }
+
+    /// The `_source` field number when [`Self::visit_source_document`] splices vectors into it
+    /// (a segment that lists k-NN derived fields), `None` when it reads `_source` as stored.
+    pub fn derived_source_number(&self) -> Option<i32> {
+        match (
+            self.derived_source.as_deref(),
+            &self.simpletext,
+            self.stored.as_deref(),
+        ) {
+            (Some(fields), None, Some(_)) => Some(fields.source_number()),
+            _ => None,
+        }
     }
 
     /// The k-NN derived-source fields this segment lists, if any.
