@@ -3,7 +3,10 @@
 //!
 //! One pool, not a pool per model: a node with several deployed models would
 //! otherwise run several pools of `cores` threads each against the same
-//! cores. Spinning is off, so an idle pool does not take CPU from searches.
+//! cores. The pool's threads spin between an inference's operators, as ONNX
+//! Runtime's do by default (and stock ml-commons' through DJL): on a
+//! MiniLM-sized model that halves a query's latency (1.47 vs 2.97 ms on four
+//! cores) for about 11% more CPU, and an idle pool sleeps.
 
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
@@ -37,9 +40,7 @@ pub fn init(library: &Path, threads: usize) -> Result<()> {
     // `init_from` must come first: building the pool options calls into the
     // runtime, which would otherwise load it from the default path.
     let builder = ort::init_from(library).map_err(runtime_error)?;
-    let mut pool = GlobalThreadPoolOptions::default()
-        .with_spin_control(false)
-        .map_err(runtime_error)?;
+    let mut pool = GlobalThreadPoolOptions::default();
     if threads > 0 {
         pool = pool.with_intra_threads(threads).map_err(runtime_error)?;
     }

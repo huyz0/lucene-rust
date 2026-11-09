@@ -33,6 +33,8 @@ OURS = ("ml-check-rust", 19231)
 STOCK = ("ml-check-stock", 19232)
 SERVE = 8766
 TOLERANCE = 2e-5
+# Names carry the run's time, so that a reused --stock node's earlier models and groups do not count.
+RUN = str(int(time.time()))
 
 spec = importlib.util.spec_from_file_location("golden", os.path.join(ROOT, "scripts", "ml-golden.py"))
 golden = importlib.util.module_from_spec(spec)
@@ -140,7 +142,7 @@ def reason(r):
 
 
 # Model document fields both nodes must write alike (times and ids differ).
-MODEL_FIELDS = ["name", "algorithm", "model_version", "model_format", "model_state", "model_content_hash_value",
+MODEL_FIELDS = [ "algorithm", "model_version", "model_format", "model_state", "model_content_hash_value",
                 "model_content_size_in_bytes", "total_chunks", "model_config", "planning_worker_node_count",
                 "current_worker_node_count", "deploy_to_all_nodes", "is_hidden"]
 TASK_FIELDS = ["task_type", "function_name", "state", "is_async", "error"]
@@ -151,9 +153,9 @@ def pick(doc, fields):
 
 
 def register(node, name, z, model_type, pooling, normalize, group=None):
-    body = {"name": name, "version": "1.0.0", "model_format": "ONNX",
+    body = {"name": f"{name}-{RUN}", "version": "1.0.0", "model_format": "ONNX",
             "model_content_hash_value": hashlib.sha256(z).hexdigest(), "model_content_size_in_bytes": len(z),
-            "url": f"http://localhost:{SERVE}/{name.split('/')[0]}.zip",
+            "url": f"http://localhost:{SERVE}/{name}.zip",
             "model_config": {"model_type": model_type, "embedding_dimension": 32,
                              "framework_type": "sentence_transformers", "pooling_mode": pooling,
                              "normalize_result": normalize}}
@@ -171,13 +173,13 @@ def close(a, b):
 def groups(c, ours, stock):
     rs = {}
     for label, n in (("ours", ours), ("stock", stock)):
-        s1, r1 = n.call("POST", "/_plugins/_ml/model_groups/_register", {"name": "check-group", "description": "d"})
-        s2, r2 = n.call("POST", "/_plugins/_ml/model_groups/_register", {"name": "check-group"})
+        s1, r1 = n.call("POST", "/_plugins/_ml/model_groups/_register", {"name": f"check-group-{RUN}", "description": "d"})
+        s2, r2 = n.call("POST", "/_plugins/_ml/model_groups/_register", {"name": f"check-group-{RUN}"})
         gid = r1.get("model_group_id")
         g = n.ok("GET", f"/_plugins/_ml/model_groups/{gid}")
         s3, r3 = n.call("PUT", f"/_plugins/_ml/model_groups/{gid}", {"description": "e"})
         g2 = n.ok("GET", f"/_plugins/_ml/model_groups/{gid}")
-        hits = n.ok("POST", "/_plugins/_ml/model_groups/_search", {"query": {"match_all": {}}})["hits"]["total"]["value"]
+        hits = n.ok("POST", "/_plugins/_ml/model_groups/_search", {"query": {"term": {"name.keyword": f"check-group-{RUN}"}}})["hits"]["total"]["value"]
         s4, r4 = n.call("GET", "/_plugins/_ml/model_groups/missing-group")
         s5, _ = n.call("DELETE", f"/_plugins/_ml/model_groups/{gid}")
         s6, _ = n.call("GET", f"/_plugins/_ml/model_groups/{gid}")

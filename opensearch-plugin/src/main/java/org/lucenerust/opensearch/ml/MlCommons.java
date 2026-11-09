@@ -200,8 +200,7 @@ public final class MlCommons {
         String index = request.indices()[0];
         if (clusterService.state().metadata().hasIndex(index) == false) {
             // ml-commons answers a search of a missing system index with no hits.
-            MlIndices.system(client, l -> client.search(new SearchRequest().source(new SearchSourceBuilder().size(0)), l), listener);
-            return;
+            request.indicesOptions(org.opensearch.action.support.IndicesOptions.lenientExpandOpen());
         }
         MlIndices.system(client, l -> client.search(request, l), listener);
     }
