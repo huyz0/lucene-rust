@@ -7,6 +7,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.lucene.codecs.StoredFieldsReader;
 import org.apache.lucene.index.DirectoryReader;
+import org.apache.lucene.index.DocValuesType;
 import org.apache.lucene.index.FieldInfo;
 import org.apache.lucene.index.FilterDirectoryReader;
 import org.apache.lucene.index.FilterLeafReader;
@@ -17,6 +18,8 @@ import org.apache.lucene.index.LeafReader;
 import org.apache.lucene.index.FieldInfos;
 import org.apache.lucene.index.StoredFieldDataInput;
 import org.apache.lucene.index.StoredFieldVisitor;
+import org.apache.lucene.index.SortedNumericDocValues;
+import org.apache.lucene.index.SortedSetDocValues;
 import org.apache.lucene.index.StoredFields;
 import org.apache.lucene.store.ByteArrayDataInput;
 
@@ -76,13 +79,20 @@ final class NativeStoredFieldsReader extends FilterDirectoryReader {
         final SearchStats stats;
         /** Whether documents are read natively ({@code index.lucene_rust.fetch.enabled}). */
         final BooleanSupplier enabled;
+        /**
+         * The index derives {@code _source} ({@code index.derived_source.enabled}): its mappers read
+         * each stored field they rebuild from with a document read of its own, so a leaf keeps the
+         * last document it read natively ({@link Leaf#last}).
+         */
+        final boolean derivedSource;
         volatile DirectoryReader top;
         private volatile long handle = -1;
 
-        Shared(NativeReaders readers, SearchStats stats, BooleanSupplier enabled) {
+        Shared(NativeReaders readers, SearchStats stats, BooleanSupplier enabled, boolean derivedSource) {
             this.readers = readers;
             this.stats = stats;
             this.enabled = enabled;
+            this.derivedSource = derivedSource;
         }
 
         /** The query phase's native handle for this reader, looked up on first use; 0 when there is none. */
@@ -98,9 +108,36 @@ final class NativeStoredFieldsReader extends FilterDirectoryReader {
 
     private final Shared shared;
 
+    /**
+     * Per thread, how many fetch phases are running on it ({@link #fetchStarted}): their doc
+     * values ({@code docvalue_fields}) are read a document at a time natively.
+     */
+    private static final ThreadLocal<int[]> FETCHING = ThreadLocal.withInitial(() -> new int[1]);
+
+    /** A fetch phase starts on this thread. */
+    static void fetchStarted() {
+        FETCHING.get()[0]++;
+    }
+
+    /** A fetch phase ends on this thread, done or failed. */
+    static void fetchEnded() {
+        int[] n = FETCHING.get();
+        n[0] = Math.max(0, n[0] - 1);
+    }
+
     static DirectoryReader wrap(DirectoryReader in, NativeReaders readers, SearchStats stats, BooleanSupplier enabled)
         throws IOException {
-        Shared shared = new Shared(readers, stats, enabled);
+        return wrap(in, readers, stats, enabled, false);
+    }
+
+    static DirectoryReader wrap(
+        DirectoryReader in,
+        NativeReaders readers,
+        SearchStats stats,
+        BooleanSupplier enabled,
+        boolean derivedSource
+    ) throws IOException {
+        Shared shared = new Shared(readers, stats, enabled, derivedSource);
         NativeStoredFieldsReader r = new NativeStoredFieldsReader(in, shared);
         shared.top = r;
         return r;
@@ -127,7 +164,7 @@ final class NativeStoredFieldsReader extends FilterDirectoryReader {
 
     @Override
     protected DirectoryReader doWrapDirectoryReader(DirectoryReader in) throws IOException {
-        return wrap(in, shared.readers, shared.stats, shared.enabled);
+        return wrap(in, shared.readers, shared.stats, shared.enabled, shared.derivedSource);
     }
 
     @Override
@@ -144,12 +181,63 @@ final class NativeStoredFieldsReader extends FilterDirectoryReader {
         private final Shared shared;
         private final int ord;
         private final boolean live;
+        /**
+         * In a derived-source index, the last document read natively and the thread that read it.
+         * Deriving one hit's {@code _source} reads the document once per stored field it rebuilds
+         * from ({@code StoredFieldFetcher}), then once more for the hit's other stored fields; the
+         * same thread asking for the same document again replays these bytes instead.
+         */
+        private volatile LastDocument last;
+        /** The leaf's doc values read a document at a time, natively ({@link #pointReads}). */
+        private final NativeDocValues.Batch docValues;
 
         Leaf(LeafReader in, Shared shared, int ord) {
             super(in);
             this.shared = shared;
             this.ord = ord;
             this.live = LiveLeafReader.unwrap(in) != null;
+            this.docValues = new NativeDocValues.Batch((doc, fields) -> {
+                byte[][] out = new byte[1][];
+                int rc = NativeBridge.docValues(shared.handle(), ord, doc, fields, out);
+                if (rc != NativeBridge.OK) {
+                    // As for stored fields: the segment's own iterator answers instead.
+                    shared.stats.nativeError();
+                    logger.warn("lucene-rust: native doc values failed ({}), reading with Lucene: {}", rc, NativeBridge.lastError());
+                    return null;
+                }
+                shared.stats.nativeDocValues();
+                return out[0];
+            });
+        }
+
+        /**
+         * Whether doc values are read a document at a time natively: in the fetch phase ({@link
+         * #FETCHING}) and wherever a derived-source index rebuilds {@code _source} -- its mappers
+         * read each field's values per hit -- once the searcher's reader is open natively.
+         */
+        private boolean pointReads() {
+            return live == false
+                && shared.enabled.getAsBoolean()
+                && (shared.derivedSource || FETCHING.get()[0] > 0)
+                && shared.handle() != 0;
+        }
+
+        @Override
+        public SortedNumericDocValues getSortedNumericDocValues(String field) throws IOException {
+            FieldInfo fi = pointReads() ? getFieldInfos().fieldInfo(field) : null;
+            if (fi == null || fi.getDocValuesType() != DocValuesType.SORTED_NUMERIC) {
+                return in.getSortedNumericDocValues(field);
+            }
+            return new NativeDocValues.Numbers(docValues, fi.number, () -> in.getSortedNumericDocValues(field));
+        }
+
+        @Override
+        public SortedSetDocValues getSortedSetDocValues(String field) throws IOException {
+            FieldInfo fi = pointReads() ? getFieldInfos().fieldInfo(field) : null;
+            if (fi == null || fi.getDocValuesType() != DocValuesType.SORTED_SET) {
+                return in.getSortedSetDocValues(field);
+            }
+            return new NativeDocValues.Terms(docValues, fi.number, () -> in.getSortedSetDocValues(field));
         }
 
         @Override
@@ -246,17 +334,30 @@ final class NativeStoredFieldsReader extends FilterDirectoryReader {
             if (h == 0) {
                 return false;
             }
-            byte[][] out = new byte[1][];
-            int rc = NativeBridge.document(h, ord, docID, out);
-            if (rc != NativeBridge.OK) {
-                shared.stats.nativeError();
-                logger.warn("lucene-rust: native stored fields failed ({}), reading with Lucene: {}", rc, NativeBridge.lastError());
-                return false;
+            byte[] blob = null;
+            LastDocument l = last;
+            if (l != null && l.doc == docID && l.thread == Thread.currentThread()) {
+                blob = l.blob;
+            } else {
+                byte[][] out = new byte[1][];
+                int rc = NativeBridge.document(h, ord, docID, out);
+                if (rc != NativeBridge.OK) {
+                    shared.stats.nativeError();
+                    logger.warn("lucene-rust: native stored fields failed ({}), reading with Lucene: {}", rc, NativeBridge.lastError());
+                    return false;
+                }
+                blob = out[0];
+                if (shared.derivedSource) {
+                    last = new LastDocument(Thread.currentThread(), docID, blob);
+                }
             }
-            replay(getFieldInfos(), out[0], visitor, (fi, v) -> derivedSource(h, docID, fi, v, lucene));
+            replay(getFieldInfos(), blob, visitor, (fi, v) -> derivedSource(h, docID, fi, v, lucene));
             shared.stats.nativeFetch(sequential);
             return true;
         }
+
+        /** A document's native bytes, as {@link #replay} reads them, and who read them. */
+        private record LastDocument(Thread thread, int doc, byte[] blob) {}
 
         /**
          * The {@code _source} of {@code docID} with its vectors spliced back, natively, else from

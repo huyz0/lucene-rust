@@ -25,6 +25,7 @@ import org.opensearch.core.xcontent.XContentParser;
 import org.opensearch.index.mapper.MappedFieldType;
 import org.opensearch.index.query.AbstractQueryBuilder;
 import org.opensearch.index.query.QueryBuilder;
+import org.opensearch.index.query.QueryBuilderVisitor;
 import org.opensearch.index.query.QueryRewriteContext;
 import org.opensearch.index.query.QueryShardContext;
 
@@ -114,9 +115,48 @@ public final class KnnQueryBuilder extends AbstractQueryBuilder<KnnQueryBuilder>
         out.writeBoolean(ignoreUnmapped);
     }
 
-    public KnnQueryBuilder filter(QueryBuilder filter) {
-        this.filter = filter;
-        return this;
+    /**
+     * {@code KNNQueryBuilder.filter}: a new query with {@code more} added to its filter (as a bool
+     * query's filter when it has one), so the knn search is filtered rather than its hits. Like
+     * stock's, the new query has the default boost and no name.
+     */
+    @Override
+    public KnnQueryBuilder filter(QueryBuilder more) {
+        if (validateFilterParams(more) == false) {
+            return this;
+        }
+        KnnQueryBuilder c = copy();
+        c.filter = filter == null ? more : unshared(filter).filter(more);
+        c.boost(DEFAULT_BOOST).queryName(null);
+        return c;
+    }
+
+    /**
+     * {@code filter}, or a copy of it when it is a bool query: a bool query's {@code filter} adds the
+     * clause in place, and this query's own filter must not change.
+     */
+    private static QueryBuilder unshared(QueryBuilder filter) {
+        if (filter instanceof org.opensearch.index.query.BoolQueryBuilder b) {
+            org.opensearch.index.query.BoolQueryBuilder copy = new org.opensearch.index.query.BoolQueryBuilder();
+            b.must().forEach(copy::must);
+            b.should().forEach(copy::should);
+            b.mustNot().forEach(copy::mustNot);
+            b.filter().forEach(copy::filter);
+            copy.minimumShouldMatch(b.minimumShouldMatch());
+            copy.adjustPureNegative(b.adjustPureNegative());
+            copy.boost(b.boost()).queryName(b.queryName());
+            return copy;
+        }
+        return filter;
+    }
+
+    /** {@code KNNQueryBuilder.visit}: this query, then its filter as a filter clause. */
+    @Override
+    public void visit(QueryBuilderVisitor visitor) {
+        visitor.accept(this);
+        if (filter != null) {
+            filter.visit(visitor.getChildVisitor(org.apache.lucene.search.BooleanClause.Occur.FILTER));
+        }
     }
 
     public KnnQueryBuilder efSearch(int efSearch) {

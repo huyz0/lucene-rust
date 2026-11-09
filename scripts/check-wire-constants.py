@@ -77,6 +77,9 @@ RENAMES = {
     ("QueryEncoder.java", "MAX_NODES"): ("clauses.rs", "MAX_CLAUSE_COUNT"),
     ("GeoEncoder.java", "MAX_ORIGINS"): ("jvm_reader.rs", "MAX_GEO_ORIGINS"),
     ("SortEncoder.java", "NESTED_KEY"): ("jvm_reader.rs", "SORT_NESTED"),
+    ("NativeDocValues.java", "NONE"): ("jvm_fetch.rs", "DV_NONE"),
+    ("NativeDocValues.java", "SORTED_NUMERIC"): ("jvm_fetch.rs", "DV_SORTED_NUMERIC"),
+    ("NativeDocValues.java", "SORTED_SET"): ("jvm_fetch.rs", "DV_SORTED_SET"),
     ("SortEncoder.java", "MAX_KEYS"): ("jvm_reader.rs", "MAX_SORT_KEYS"),
     ("SortEncoder.java", "GEO"): ("jvm_reader.rs", "SORT_GEO_DISTANCE"),
     ("AnalyzerSpec.java", "VERSION"): ("jvm_analysis.rs", "SPEC_VERSION"),
@@ -107,6 +110,7 @@ JAVA_ONLY = {
     ("VectorsFormatSpec.java", "DIBIT"): "ScalarEncoding::wire_number in quantization.rs, an enum's numbers",
     ("NativeBridge.java", "WARM_FAILED"): "any answer but WARM_OK fails the merge; Rust names none",
     ("QueryEncoder.java", "REGEXP_CACHE_SIZE"): "the Java side's parsed-regexp cache",
+    ("NativeDocValues.java", "POINT_READS"): "when a Java iterator hands over to the segment's own for a scan",
     ("LuceneChangesSnapshot.java", "DEFAULT_BATCH_SIZE"): "derived OpenSearch engine code",
     ("LuceneChangesSnapshot.java", "MIN_SEQUENTIAL_ACCESS_BATCH_SIZE"): "derived OpenSearch engine code",
     ("RustIndexWriter.java", "BUFFER_BYTES_PER_BLOB_BYTE"): "the Java side's RAM accounting estimate",
@@ -120,6 +124,14 @@ JAVA_ONLY = {
     ("SparseMethod.java", "MAX_CLUSTERING_BATCH_SIZE"): "neural-search's mapping validation",
     ("TrieReader.java", "NO_OUTPUT"): "Lucene's own trie reader's in-memory sentinel, not on disk",
     ("TrieReader.java", "NO_FLOOR_DATA"): "Lucene's own trie reader's in-memory sentinel, not on disk",
+    ("RRFNormalizationTechnique.java", "DEFAULT_RANK_CONSTANT"): "neural-search's pipeline default, coordinator side",
+    ("RRFNormalizationTechnique.java", "MIN_RANK_CONSTANT"): "neural-search's pipeline validation, coordinator side",
+    ("RRFNormalizationTechnique.java", "MAX_RANK_CONSTANT"): "neural-search's pipeline validation, coordinator side",
+    ("HybridQueryScoreDocsMerger.java", "MIN_NUMBER_OF_ELEMENTS_IN_SCORE_DOC"): "the Java hybrid result merge: start, delimiter, stop",
+    ("HybridBulkScorer.java", "SHIFT"): "the Java hybrid bulk scorer's window size",
+    ("HybridQueryBuilder.java", "MAX_NUMBER_OF_SUB_QUERIES"): "neural-search's query validation",
+    ("HybridQueryBuilder.java", "LOWER_BOUND_OF_PAGINATION_DEPTH"): "neural-search's query validation",
+    ("HybridQueryDocIdStream.java", "BLOCK_SHIFT"): "the Java hybrid bulk scorer's bitset words",
 }
 
 JAVA_CONST = re.compile(

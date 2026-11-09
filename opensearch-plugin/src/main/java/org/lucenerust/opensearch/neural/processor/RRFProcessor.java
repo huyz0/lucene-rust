@@ -1,0 +1,139 @@
+/*
+ * Copyright OpenSearch Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.lucenerust.opensearch.neural.processor;
+
+import static org.lucenerust.opensearch.neural.search.util.HybridSearchResultFormatUtil.isHybridQueryStartStopElement;
+import java.util.Map;
+import java.util.stream.Collectors;
+import java.util.List;
+import java.util.Objects;
+import java.util.Optional;
+import org.lucenerust.opensearch.neural.processor.combination.RRFScoreCombinationTechnique;
+import org.lucenerust.opensearch.neural.processor.combination.ScoreCombinationTechnique;
+import org.lucenerust.opensearch.neural.processor.normalization.ScoreNormalizationTechnique;
+import org.lucenerust.opensearch.neural.stats.EventStatName;
+import org.lucenerust.opensearch.neural.stats.EventStatsManager;
+import org.opensearch.search.fetch.FetchSearchResult;
+import org.opensearch.search.pipeline.PipelineProcessingContext;
+import org.opensearch.search.query.QuerySearchResult;
+import org.opensearch.action.search.QueryPhaseResultConsumer;
+import org.opensearch.action.search.SearchPhaseContext;
+import org.opensearch.action.search.SearchPhaseName;
+import org.opensearch.action.search.SearchPhaseResults;
+import org.opensearch.search.SearchPhaseResult;
+import org.opensearch.search.internal.SearchContext;
+
+/**
+ * Processor for implementing reciprocal rank fusion technique on post
+ * query search results. Updates query results with
+ * normalized and combined scores for next phase (typically it's FETCH)
+ * by using ranks from individual subqueries to calculate 'normalized'
+ * scores before combining results from subqueries into final results
+ */
+public class RRFProcessor extends AbstractScoreHybridizationProcessor {
+    @java.lang.SuppressWarnings("all")
+    private static final org.apache.logging.log4j.Logger log = org.apache.logging.log4j.LogManager.getLogger(RRFProcessor.class);
+    public static final String TYPE = "score-ranker-processor";
+    private final String tag;
+    private final String description;
+    private final ScoreNormalizationTechnique normalizationTechnique;
+    private final ScoreCombinationTechnique combinationTechnique;
+    private final NormalizationProcessorWorkflow normalizationWorkflow;
+    private final Map<String, Runnable> combTechniqueIncrementers = Map.of(RRFScoreCombinationTechnique.TECHNIQUE_NAME, () -> EventStatsManager.increment(EventStatName.COMB_TECHNIQUE_RRF_EXECUTIONS));
+
+    /**
+     * Method abstracts functional aspect of score normalization and score combination. Exact methods for each processing stage
+     * are set as part of class constructor
+     * @param searchPhaseResult {@link SearchPhaseResults} DTO that has query search results. Results will be mutated as part of this method execution
+     * @param searchPhaseContext {@link SearchContext}
+     */
+    @Override
+    <Result extends SearchPhaseResult> void hybridizeScores(SearchPhaseResults<Result> searchPhaseResult, SearchPhaseContext searchPhaseContext, Optional<PipelineProcessingContext> requestContextOptional) {
+        if (shouldSkipProcessor(searchPhaseResult)) {
+            log.debug("Query results are not compatible with RRF processor");
+            return;
+        }
+        List<QuerySearchResult> querySearchResults = getQueryPhaseSearchResults(searchPhaseResult);
+        Optional<FetchSearchResult> fetchSearchResult = getFetchSearchResults(searchPhaseResult);
+        boolean explain = Objects.nonNull(searchPhaseContext.getRequest().source().explain()) && searchPhaseContext.getRequest().source().explain();
+        recordStats(combinationTechnique);
+        // make data transfer object to pass in, execute will get object with 4 or 5 fields, depending
+        // on coming from NormalizationProcessor or RRFProcessor
+        NormalizationProcessorWorkflowExecuteRequest normalizationExecuteDTO = NormalizationProcessorWorkflowExecuteRequest.builder().querySearchResults(querySearchResults).fetchSearchResultOptional(fetchSearchResult).normalizationTechnique(normalizationTechnique).combinationTechnique(combinationTechnique).explain(explain).pipelineProcessingContext(requestContextOptional.orElse(null)).searchPhaseContext(searchPhaseContext).build();
+        normalizationWorkflow.execute(normalizationExecuteDTO);
+    }
+
+    @Override
+    public SearchPhaseName getBeforePhase() {
+        return SearchPhaseName.QUERY;
+    }
+
+    @Override
+    public SearchPhaseName getAfterPhase() {
+        return SearchPhaseName.FETCH;
+    }
+
+    @Override
+    public String getType() {
+        return TYPE;
+    }
+
+    @Override
+    public boolean isIgnoreFailure() {
+        return false;
+    }
+
+    <Result extends SearchPhaseResult> boolean shouldSkipProcessor(SearchPhaseResults<Result> searchPhaseResult) {
+        if (Objects.isNull(searchPhaseResult) || !(searchPhaseResult instanceof QueryPhaseResultConsumer queryPhaseResultConsumer)) {
+            return true;
+        }
+        return queryPhaseResultConsumer.getAtomicArray().asList().stream().filter(Objects::nonNull).noneMatch(this::isHybridQuery);
+    }
+
+    /**
+     * Return true if results are from hybrid query.
+     * @param searchPhaseResult
+     * @return true if results are from hybrid query
+     */
+    boolean isHybridQuery(final SearchPhaseResult searchPhaseResult) {
+        // check for delimiter at the end of the score docs.
+        return Objects.nonNull(searchPhaseResult.queryResult()) && Objects.nonNull(searchPhaseResult.queryResult().topDocs()) && Objects.nonNull(searchPhaseResult.queryResult().topDocs().topDocs.scoreDocs) && searchPhaseResult.queryResult().topDocs().topDocs.scoreDocs.length > 0 && isHybridQueryStartStopElement(searchPhaseResult.queryResult().topDocs().topDocs.scoreDocs[0]);
+    }
+
+    <Result extends SearchPhaseResult> List<QuerySearchResult> getQueryPhaseSearchResults(final SearchPhaseResults<Result> results) {
+        return results.getAtomicArray().asList().stream().map(result -> result == null ? null : result.queryResult()).collect(Collectors.toList());
+    }
+
+    <Result extends SearchPhaseResult> Optional<FetchSearchResult> getFetchSearchResults(final SearchPhaseResults<Result> searchPhaseResults) {
+        Optional<Result> optionalFirstSearchPhaseResult = searchPhaseResults.getAtomicArray().asList().stream().findFirst();
+        return optionalFirstSearchPhaseResult.map(SearchPhaseResult::fetchResult);
+    }
+
+    private void recordStats(ScoreCombinationTechnique combinationTechnique) {
+        EventStatsManager.increment(EventStatName.RRF_PROCESSOR_EXECUTIONS);
+        // ofNullable, not of: a technique with no incrementer must not fail the query. RRFProcessorFactory rejects any
+        // technique but rrf, so this is no longer reachable from a pipeline definition, but this constructor is public.
+        Optional.ofNullable(combTechniqueIncrementers.get(combinationTechnique.techniqueName())).ifPresent(Runnable::run);
+    }
+
+    @java.lang.SuppressWarnings("all")
+    public RRFProcessor(final String tag, final String description, final ScoreNormalizationTechnique normalizationTechnique, final ScoreCombinationTechnique combinationTechnique, final NormalizationProcessorWorkflow normalizationWorkflow) {
+        this.tag = tag;
+        this.description = description;
+        this.normalizationTechnique = normalizationTechnique;
+        this.combinationTechnique = combinationTechnique;
+        this.normalizationWorkflow = normalizationWorkflow;
+    }
+
+    @java.lang.SuppressWarnings("all")
+    public String getTag() {
+        return this.tag;
+    }
+
+    @java.lang.SuppressWarnings("all")
+    public String getDescription() {
+        return this.description;
+    }
+}

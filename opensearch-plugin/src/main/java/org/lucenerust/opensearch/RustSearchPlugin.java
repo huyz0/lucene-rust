@@ -3,6 +3,9 @@
  */
 package org.lucenerust.opensearch;
 
+import org.lucenerust.opensearch.neural.HybridSearch;
+import org.lucenerust.opensearch.neural.NeuralSearchSettings;
+import org.opensearch.plugins.SearchPipelinePlugin;
 import org.opensearch.cluster.metadata.IndexNameExpressionResolver;
 import org.opensearch.cluster.metadata.MappingMetadata;
 import org.opensearch.cluster.node.DiscoveryNodes;
@@ -97,7 +100,8 @@ public class RustSearchPlugin extends Plugin implements
     AnalysisPlugin,
     IndexStorePlugin,
     MapperPlugin,
-    ScriptPlugin {
+    ScriptPlugin,
+    SearchPipelinePlugin {
     /**
      * Whether this node serves Rust-engine indices with the Rust writer; {@code false} serves them
      * with OpenSearch's own engine -- a mixed cluster, one index.
@@ -331,12 +335,16 @@ public class RustSearchPlugin extends Plugin implements
             FetchFlag flag = new FetchFlag(FETCH_ENABLED.get(indexModule.getSettings()));
             indexModule.addSettingsUpdateConsumer(FETCH_ENABLED, flag::set);
             try {
-                indexModule.setReaderWrapper(indexService -> reader -> NativeStoredFieldsReader.wrap(reader, readers, stats, flag::enabled));
+                indexModule.setReaderWrapper(indexService -> {
+                    boolean derivedSource = indexService.getIndexSettings().isDerivedSourceEnabled();
+                    return reader -> NativeStoredFieldsReader.wrap(reader, readers, stats, flag::enabled, derivedSource);
+                });
                 // The fetch phase reads its hits one at a time; announcing them first lets a
                 // segment read by range fetch their stored fields together.
                 indexModule.addSearchOperationListener(new SearchOperationListener() {
                     @Override
                     public void onPreFetchPhase(SearchContext context) {
+                        NativeStoredFieldsReader.fetchStarted();
                         if (flag.enabled() == false) {
                             return;
                         }
@@ -355,6 +363,16 @@ public class RustSearchPlugin extends Plugin implements
                             // Only a hint: the fetch phase reads every document itself.
                             logger.debug("lucene-rust: stored-fields prefetch failed", e);
                         }
+                    }
+
+                    @Override
+                    public void onFetchPhase(SearchContext context, long tookInNanos) {
+                        NativeStoredFieldsReader.fetchEnded();
+                    }
+
+                    @Override
+                    public void onFailedFetchPhase(SearchContext context) {
+                        NativeStoredFieldsReader.fetchEnded();
                     }
                 });
             } catch (SetOnce.AlreadySetException e) {
@@ -498,6 +516,7 @@ public class RustSearchPlugin extends Plugin implements
             NODE_PAGE_CACHE_SIZE,
             SparseSettings.SPARSE_INDEX
         ));
+        settings.addAll(NeuralSearchSettings.all());
         if (stockKnn == false) {
             settings.addAll(KnnSettings.settings());
         }
@@ -542,9 +561,9 @@ public class RustSearchPlugin extends Plugin implements
     public List<QuerySpec<?>> getQueries() {
         QuerySpec<?> sparse = new QuerySpec<>(NeuralSparseQueryBuilder.NAME, NeuralSparseQueryBuilder::new, NeuralSparseQueryBuilder::fromXContent);
         if (stockKnn) {
-            return List.of(sparse);
+            return List.of(sparse, HybridSearch.query());
         }
-        return List.of(sparse, new QuerySpec<>(KnnQueryBuilder.NAME, KnnQueryBuilder::new, KnnQueryBuilder::fromXContent));
+        return List.of(sparse, HybridSearch.query(), new QuerySpec<>(KnnQueryBuilder.NAME, KnnQueryBuilder::new, KnnQueryBuilder::fromXContent));
     }
 
     @Override
@@ -563,12 +582,43 @@ public class RustSearchPlugin extends Plugin implements
     ) {
         this.clusterService.set(clusterService);
         this.resolver.set(indexNameExpressionResolver);
+        HybridSearch.initialize(threadPool);
         return List.of();
     }
 
     @Override
     public List<org.opensearch.action.support.ActionFilter> getActionFilters() {
-        return List.of(new RealtimePrimaryFilter(clusterService::get, resolver::get));
+        return List.of(new RealtimePrimaryFilter(clusterService::get, resolver::get), HybridSearch.requestFilter());
+    }
+
+    @Override
+    public List<org.opensearch.threadpool.ExecutorBuilder<?>> getExecutorBuilders(Settings settings) {
+        return List.of(HybridSearch.executorBuilder(settings));
+    }
+
+    /** k-NN's concurrent search decider: {@code auto} mode searches a knn query's segments concurrently. */
+    @Override
+    public Optional<org.opensearch.search.deciders.ConcurrentSearchRequestDecider.Factory> getConcurrentSearchRequestDeciderFactory() {
+        return stockKnn ? Optional.empty() : Optional.of(new org.lucenerust.opensearch.knn.KnnConcurrentSearchDecider.Factory());
+    }
+
+    @Override
+    public List<org.opensearch.search.query.QueryCollectorContextSpecFactory> getCollectorContextSpecFactories() {
+        return List.of(HybridSearch.collectorContextSpecFactory());
+    }
+
+    @Override
+    public Map<String, org.opensearch.search.pipeline.Processor.Factory<org.opensearch.search.pipeline.SearchPhaseResultsProcessor>> getSearchPhaseResultsProcessors(
+        Parameters parameters
+    ) {
+        return HybridSearch.phaseResultsProcessors();
+    }
+
+    @Override
+    public Map<String, org.opensearch.search.pipeline.Processor.Factory<org.opensearch.search.pipeline.SearchResponseProcessor>> getResponseProcessors(
+        Parameters parameters
+    ) {
+        return HybridSearch.responseProcessors();
     }
 
     @Override

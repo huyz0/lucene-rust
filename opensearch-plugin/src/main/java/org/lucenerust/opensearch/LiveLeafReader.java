@@ -47,11 +47,11 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * One chunk of a buffer of a {@link LiveView} (consecutive documents of it) as a leaf after the reader's, so its hits have doc IDs the fetch
  * phase reads. Only the native searches find them ({@code ffi_jvm_reader_search_live}, or any search
  * of the reader handle {@code ffi_live_view_reader} makes, whose segments match these leaves): to
- * Lucene every one of them is deleted and the leaf holds no terms, points or values (only bounds that
- * take in the buffered documents', so OpenSearch never skips the shard or rewrites a query to
- * match nothing for the reader's bounds), so a search Lucene answers sees the reader alone, as it would without live
- * search. Its stored fields are the
- * buffered documents', read through the view.
+ * Lucene every one of them is deleted and the leaf holds no terms, points or values (only bounds
+ * that take in the buffered documents', so OpenSearch never skips the shard or rewrites a query to
+ * match nothing for the reader's bounds), and no doc values to a scan, so a search Lucene answers
+ * sees the reader alone, as it would without live search. Its stored fields, and its doc values
+ * read a document at a time, are the buffered documents', read through the view.
  */
 public final class LiveLeafReader extends SequentialStoredFieldsLeafReader {
     private final Core core;
@@ -169,11 +169,28 @@ public final class LiveLeafReader extends SequentialStoredFieldsLeafReader {
 
         /**
          * Whether {@code field} declares doc values of {@code type}: Lucene takes a reader that
-         * declares them and has none as a broken index, so the leaf answers with empty ones.
+         * declares them and has none as a broken index, so the leaf answers with an iterator --
+         * the buffered documents' values to a point read, none to a scan.
          */
         private boolean has(String field, DocValuesType type) {
             FieldInfo fi = infos.fieldInfo(field);
             return fi != null && fi.getDocValuesType() == type;
+        }
+
+        /**
+         * The buffered documents' doc values, read a document at a time natively: what the fetch
+         * phase reads of a hit ({@code docvalue_fields}, a derived {@code _source}). To a scan the
+         * leaf has none, as it has no documents Lucene sees.
+         */
+        private final NativeDocValues.Batch docValues = new NativeDocValues.Batch(this::readDocValues);
+
+        private byte[] readDocValues(int doc, int[] fields) throws IOException {
+            byte[][] out = new byte[1][];
+            int rc = NativeBridge.liveDocValues(view.id(), buffer, start + doc, fields, out);
+            if (rc != NativeBridge.OK) {
+                throw new IOException("doc values of buffered document " + doc + ": " + NativeBridge.lastError());
+            }
+            return out[0];
         }
 
         void document(int docID, StoredFieldVisitor visitor) throws IOException {
@@ -216,12 +233,96 @@ public final class LiveLeafReader extends SequentialStoredFieldsLeafReader {
 
         @Override
         public NumericDocValues getNumericDocValues(String field) {
-            return has(field, DocValuesType.NUMERIC) ? DocValues.emptyNumeric() : null;
+            if (has(field, DocValuesType.NUMERIC) == false) {
+                return null;
+            }
+            // The native side gives a single-valued field's value as one sorted-numeric value.
+            NativeDocValues.Numbers values =
+                new NativeDocValues.Numbers(docValues, infos.fieldInfo(field).number, DocValues::emptySortedNumeric, Integer.MAX_VALUE);
+            return new NumericDocValues() {
+                private long value;
+
+                @Override
+                public boolean advanceExact(int target) throws IOException {
+                    if (values.advanceExact(target) == false) {
+                        return false;
+                    }
+                    value = values.nextValue();
+                    return true;
+                }
+
+                @Override
+                public long longValue() {
+                    return value;
+                }
+
+                @Override
+                public int docID() {
+                    return values.docID();
+                }
+
+                @Override
+                public int nextDoc() throws IOException {
+                    return values.nextDoc();
+                }
+
+                @Override
+                public int advance(int target) throws IOException {
+                    return values.advance(target);
+                }
+
+                @Override
+                public long cost() {
+                    return values.cost();
+                }
+            };
         }
 
         @Override
         public BinaryDocValues getBinaryDocValues(String field) {
-            return has(field, DocValuesType.BINARY) ? DocValues.emptyBinary() : null;
+            if (has(field, DocValuesType.BINARY) == false) {
+                return null;
+            }
+            // The native side gives a binary field's value as a document's one sorted-set term.
+            NativeDocValues.Terms values =
+                new NativeDocValues.Terms(docValues, infos.fieldInfo(field).number, DocValues::emptySortedSet, Integer.MAX_VALUE);
+            return new BinaryDocValues() {
+                private BytesRef value;
+
+                @Override
+                public boolean advanceExact(int target) throws IOException {
+                    if (values.advanceExact(target) == false) {
+                        return false;
+                    }
+                    value = values.lookupOrd(values.nextOrd());
+                    return true;
+                }
+
+                @Override
+                public BytesRef binaryValue() {
+                    return value;
+                }
+
+                @Override
+                public int docID() {
+                    return values.docID();
+                }
+
+                @Override
+                public int nextDoc() throws IOException {
+                    return values.nextDoc();
+                }
+
+                @Override
+                public int advance(int target) throws IOException {
+                    return values.advance(target);
+                }
+
+                @Override
+                public long cost() {
+                    return values.cost();
+                }
+            };
         }
 
         @Override
@@ -231,12 +332,18 @@ public final class LiveLeafReader extends SequentialStoredFieldsLeafReader {
 
         @Override
         public SortedNumericDocValues getSortedNumericDocValues(String field) {
-            return has(field, DocValuesType.SORTED_NUMERIC) ? DocValues.emptySortedNumeric() : null;
+            if (has(field, DocValuesType.SORTED_NUMERIC) == false) {
+                return null;
+            }
+            return new NativeDocValues.Numbers(docValues, infos.fieldInfo(field).number, DocValues::emptySortedNumeric, Integer.MAX_VALUE);
         }
 
         @Override
         public SortedSetDocValues getSortedSetDocValues(String field) {
-            return has(field, DocValuesType.SORTED_SET) ? DocValues.emptySortedSet() : null;
+            if (has(field, DocValuesType.SORTED_SET) == false) {
+                return null;
+            }
+            return new NativeDocValues.Terms(docValues, infos.fieldInfo(field).number, DocValues::emptySortedSet, Integer.MAX_VALUE);
         }
 
         @Override

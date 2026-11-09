@@ -5,6 +5,9 @@ package org.lucenerust.opensearch;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.lucenerust.opensearch.neural.query.HybridQuery;
+import org.lucenerust.opensearch.neural.search.query.HybridAggregationProcessor;
+import org.lucenerust.opensearch.neural.search.query.HybridQueryPhaseSearcher;
 import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.index.Term;
@@ -104,6 +107,8 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
     );
 
     private final QueryPhaseSearcher fallback = new QueryPhaseSearcherWrapper();
+    /** neural-search's searcher, for a query with a {@code hybrid} query anywhere in it. */
+    private final QueryPhaseSearcher hybrid = new HybridQueryPhaseSearcher();
     private final NativeReaders readers;
     private final SearchStats stats;
 
@@ -114,7 +119,9 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
 
     @Override
     public AggregationProcessor aggregationProcessor(SearchContext searchContext) {
-        return fallback.aggregationProcessor(searchContext);
+        AggregationProcessor processor = fallback.aggregationProcessor(searchContext);
+        Query query = searchContext.query();
+        return query != null && containsHybrid(query) ? new HybridAggregationProcessor(processor) : processor;
     }
 
     @Override
@@ -126,6 +133,13 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         boolean hasFilterCollector,
         boolean hasTimeout
     ) throws IOException {
+        if (containsHybrid(query)) {
+            stats.fallback("hybrid");
+            long luceneStart = System.nanoTime();
+            boolean rescore = hybrid.searchWith(ctx, searcher, query, collectors, hasFilterCollector, hasTimeout);
+            stats.luceneTime(System.nanoTime() - luceneStart);
+            return rescore;
+        }
         long start = System.nanoTime();
         // Aggregations OpenSearch's DefaultAggregationProcessor.preProcess registered (their one
         // collector context is the one in "collectors"), when all of them run natively.
@@ -329,15 +343,20 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         return rescore;
     }
 
+    /** Whether {@code query} is or holds a {@link HybridQuery}. */
+    static boolean containsHybrid(Query query) {
+        return org.lucenerust.opensearch.neural.util.HybridQueryUtil.containsHybridQuery(query);
+    }
+
     /**
      * Why a search cannot read the writer's buffered documents, or null when it can: what the
-     * buffers do not hold for the fetch phase (doc values, versions, highlighting), a query that
+     * buffers do not hold for the fetch phase (versions, highlighting, scripts), a query that
      * was expanded or given term statistics over the reader's terms alone (a multi-term query under
      * a scoring rewrite, a fuzzy query, a blended {@code multi_match}), or nested documents.
      */
     static String liveIneligible(SearchContext ctx) {
         if (ctx.version() || ctx.seqNoAndPrimaryTerm() || ctx.explain()) return "fetch_metadata";
-        if (ctx.docValuesContext() != null || ctx.highlight() != null || ctx.hasScriptFields() || ctx.innerHits() != null
+        if (ctx.highlight() != null || ctx.hasScriptFields() || ctx.innerHits() != null
             && ctx.innerHits().getInnerHits().isEmpty() == false) return "fetch_doc_values";
         // Nested documents: the view has no parent filter to tell them apart.
         if (ctx.mapperService().hasNested()) return "nested";
