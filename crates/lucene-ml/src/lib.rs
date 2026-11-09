@@ -15,6 +15,7 @@
 //!   [`text_embedding::Pooling`].
 
 pub mod runtime;
+pub mod sparse_tokenize;
 pub mod text_embedding;
 pub mod tokenizer;
 

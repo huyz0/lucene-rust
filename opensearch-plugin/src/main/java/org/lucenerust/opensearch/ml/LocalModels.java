@@ -114,10 +114,11 @@ public final class LocalModels {
             Map<String, Object> model = r.getSourceAsMap();
             String function = String.valueOf(model.get("algorithm"));
             String format = String.valueOf(model.get("model_format"));
-            if ("TEXT_EMBEDDING".equals(function) == false) {
+            if ("TEXT_EMBEDDING".equals(function) == false && "SPARSE_TOKENIZE".equals(function) == false) {
                 throw new IllegalArgumentException("lucene-rust does not deploy " + function + " models yet");
             }
-            if ("ONNX".equals(format) == false) {
+            // A sparse tokenize model has no network, only its tokenizer and idf.json, whatever its format says.
+            if ("TEXT_EMBEDDING".equals(function) && "ONNX".equals(format) == false) {
                 throw new IllegalArgumentException("lucene-rust runs ONNX models; this model's format is " + format);
             }
             int chunks = ((Number) model.getOrDefault("total_chunks", 0)).intValue();
@@ -210,6 +211,7 @@ public final class LocalModels {
     private void open(String modelId, String function, Map<String, Object> model, Path zip, Path dir) throws IOException {
         Path onnx = null;
         Path tokenizer = null;
+        Path idf = null;
         try (ZipInputStream in = new ZipInputStream(Files.newInputStream(zip))) {
             for (ZipEntry e = in.getNextEntry(); e != null; e = in.getNextEntry()) {
                 if (e.isDirectory()) {
@@ -222,10 +224,24 @@ public final class LocalModels {
                     onnx = target;
                 } else if (name.equals("tokenizer.json")) {
                     tokenizer = target;
+                } else if (name.equals("idf.json")) {
+                    idf = target;
                 }
             }
         }
         Files.deleteIfExists(zip);
+        if ("SPARSE_TOKENIZE".equals(function)) {
+            if (tokenizer == null) {
+                throw new IllegalArgumentException("found no tokenizer.json in the model zip");
+            }
+            long[] handle = new long[1];
+            int rc = NativeBridge.mlSparseTokenizeOpen(Files.readAllBytes(tokenizer), idf == null ? null : Files.readAllBytes(idf), handle);
+            if (rc != NativeBridge.OK) {
+                throw new IllegalArgumentException(NativeBridge.lastError());
+            }
+            put(modelId, new Deployed(handle[0], function, model));
+            return;
+        }
         if (onnx == null) {
             throw new IllegalArgumentException("found no .onnx file in the model zip");
         }
@@ -242,11 +258,21 @@ public final class LocalModels {
         if (rc != NativeBridge.OK) {
             throw new IllegalArgumentException(NativeBridge.lastError());
         }
-        Deployed previous = models.put(modelId, new Deployed(handle[0], function, model));
+        put(modelId, new Deployed(handle[0], function, model));
+    }
+
+    private void put(String modelId, Deployed deployed) {
+        Deployed previous = models.put(modelId, deployed);
         if (previous != null) {
             NativeBridge.mlModelClose(previous.handle());
         }
         LOGGER.info("lucene-rust: deployed model [{}]", modelId);
+    }
+
+    /** The function name ({@code algorithm}) of {@code modelId} as deployed here, or {@code null}. */
+    public String function(String modelId) {
+        Deployed d = models.get(modelId);
+        return d == null ? null : d.functionName();
     }
 
     private static void copy(InputStream in, Path target) throws IOException {
@@ -277,15 +303,36 @@ public final class LocalModels {
         }
     }
 
-    /** A text embedding: {@code shape} and {@code data}, as ml-commons' {@code ModelTensor} carries it. */
-    public record Tensor(long[] shape, float[] data) {}
+    /** One token of a sparse vector: its id, its decoded token and its weight. */
+    public record TokenWeight(int id, String token, float weight) {}
 
-    /** The embeddings of {@code texts} from model {@code modelId}, deployed on this node. */
-    public List<Tensor> embed(String modelId, List<String> texts) {
+    /** The sparse vectors of {@code texts} from sparse tokenize model {@code modelId}, deployed on this node. */
+    public List<List<TokenWeight>> sparseTokenize(String modelId, List<String> texts) {
         Deployed d = models.get(modelId);
         if (d == null) {
             throw new IllegalArgumentException("Model not ready yet. Please deploy the model first.");
         }
+        byte[] out = NativeBridge.mlSparseTokenize(d.handle(), encodeTexts(texts));
+        if (out == null) {
+            throw new IllegalStateException("Failed to inference " + d.functionName() + " model: " + modelId);
+        }
+        ByteBuffer r = ByteBuffer.wrap(out).order(ByteOrder.LITTLE_ENDIAN);
+        List<List<TokenWeight>> result = new ArrayList<>(texts.size());
+        while (r.hasRemaining()) {
+            int n = r.getInt();
+            List<TokenWeight> weights = new ArrayList<>(n);
+            for (int i = 0; i < n; i++) {
+                int id = r.getInt();
+                byte[] token = new byte[r.getInt()];
+                r.get(token);
+                weights.add(new TokenWeight(id, new String(token, StandardCharsets.UTF_8), r.getFloat()));
+            }
+            result.add(weights);
+        }
+        return result;
+    }
+
+    private static byte[] encodeTexts(List<String> texts) {
         int size = 0;
         List<byte[]> utf8 = new ArrayList<>(texts.size());
         for (String t : texts) {
@@ -297,7 +344,19 @@ public final class LocalModels {
         for (byte[] b : utf8) {
             in.putInt(b.length).put(b);
         }
-        byte[] out = NativeBridge.mlTextEmbeddingEmbed(d.handle(), in.array());
+        return in.array();
+    }
+
+    /** A text embedding: {@code shape} and {@code data}, as ml-commons' {@code ModelTensor} carries it. */
+    public record Tensor(long[] shape, float[] data) {}
+
+    /** The embeddings of {@code texts} from model {@code modelId}, deployed on this node. */
+    public List<Tensor> embed(String modelId, List<String> texts) {
+        Deployed d = models.get(modelId);
+        if (d == null) {
+            throw new IllegalArgumentException("Model not ready yet. Please deploy the model first.");
+        }
+        byte[] out = NativeBridge.mlTextEmbeddingEmbed(d.handle(), encodeTexts(texts));
         if (out == null) {
             throw new IllegalStateException("Failed to inference " + d.functionName() + " model: " + modelId);
         }

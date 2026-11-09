@@ -792,11 +792,10 @@ public final class MlCommons {
     public void predict(String algorithm, String modelId, Map<String, Object> body, ActionListener<Map<String, Object>> listener) {
         try {
             List<String> texts = textDocs(body);
-            List<String> targets = targetResponse(body);
             if (local.isDeployed(modelId)) {
                 threadPool.executor(PREDICT_THREAD_POOL).execute(() -> {
                     try {
-                        listener.onResponse(predictLocal(modelId, texts, targets));
+                        listener.onResponse(predictLocal(modelId, body));
                     } catch (Exception e) {
                         listener.onFailure(e);
                     }
@@ -854,8 +853,41 @@ public final class MlCommons {
         return live;
     }
 
+    /** Runs {@code body}'s prediction with {@code modelId}, deployed on this node. */
+    private Map<String, Object> predictLocal(String modelId, Map<String, Object> body) {
+        List<String> texts = textDocs(body);
+        if ("SPARSE_TOKENIZE".equals(local.function(modelId))) {
+            return sparseTokenize(modelId, texts, body);
+        }
+        return embedLocal(modelId, texts, targetResponse(body));
+    }
+
+    /**
+     * {@code SparseTokenizerModel.predict}: per text one tensor whose {@code dataAsMap} holds the token
+     * weights, keyed by token, or by token id with {@code parameters.sparse_embedding_format: TOKEN_ID}.
+     */
+    private Map<String, Object> sparseTokenize(String modelId, List<String> texts, Map<String, Object> body) {
+        boolean byId = body.get("parameters") instanceof Map<?, ?> p
+            && "TOKEN_ID".equalsIgnoreCase(String.valueOf(p.get("sparse_embedding_format")));
+        List<List<LocalModels.TokenWeight>> vectors;
+        try {
+            vectors = local.sparseTokenize(modelId, texts);
+        } catch (IllegalStateException e) {
+            throw new OpenSearchStatusException(e.getMessage(), RestStatus.INTERNAL_SERVER_ERROR);
+        }
+        List<Object> results = new ArrayList<>(vectors.size());
+        for (List<LocalModels.TokenWeight> weights : vectors) {
+            Map<String, Object> map = new LinkedHashMap<>();
+            for (LocalModels.TokenWeight w : weights) {
+                map.put(byId ? Integer.toUnsignedString(w.id()) : w.token(), w.weight());
+            }
+            results.add(Map.of("output", List.of(Map.of("dataAsMap", Map.of("response", List.of(map))))));
+        }
+        return Map.of("inference_results", results);
+    }
+
     /** {@code ModelTensorOutput} for {@code texts}, one {@code inference_results} entry per text. */
-    private Map<String, Object> predictLocal(String modelId, List<String> texts, List<String> targets) {
+    private Map<String, Object> embedLocal(String modelId, List<String> texts, List<String> targets) {
         for (String t : texts) {
             if (t == null) {
                 throw new IllegalArgumentException("input data set should not be null");
@@ -908,6 +940,27 @@ public final class MlCommons {
         }, listener::onFailure));
     }
 
+    /**
+     * The sparse vectors of {@code texts} (token to weight), for the neural_sparse query and the
+     * sparse_encoding processor, as {@code MLCommonsClientAccessor.inferenceSentencesWithMapResult}
+     * returns them.
+     */
+    @SuppressWarnings("unchecked")
+    public void inferenceSentencesWithMapResult(String modelId, List<String> texts, ActionListener<List<Map<String, ?>>> listener) {
+        predict("sparse_encoding", modelId, Map.of("text_docs", texts), ActionListener.wrap(r -> {
+            List<Map<String, ?>> maps = new ArrayList<>(texts.size());
+            for (Object result : (List<Object>) r.get("inference_results")) {
+                for (Object tensor : (List<Object>) ((Map<String, Object>) result).get("output")) {
+                    Object data = ((Map<String, Object>) tensor).get("dataAsMap");
+                    if (data instanceof Map<?, ?> m) {
+                        maps.add((Map<String, ?>) m);
+                    }
+                }
+            }
+            listener.onResponse(maps);
+        }, listener::onFailure));
+    }
+
     // ---- Node side -------------------------------------------------------------------------
 
     /** Runs {@code op} for {@code modelId} on this node; the answer is JSON (or a state name). */
@@ -924,7 +977,7 @@ public final class MlCommons {
             }
             case PREDICT -> {
                 Map<String, Object> body = parse(payload);
-                Map<String, Object> result = predictLocal(modelId, textDocs(body), targetResponse(body));
+                Map<String, Object> result = predictLocal(modelId, body);
                 return json(result).getBytes(java.nio.charset.StandardCharsets.UTF_8);
             }
             case PROFILE -> {

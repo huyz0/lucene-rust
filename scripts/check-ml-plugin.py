@@ -13,6 +13,8 @@ script serves over HTTP, and the answers are compared:
   deploy     the task, the model's state, predict before and after
   predict    every fixture text under every model and pooling mode: the same
              vectors (relative 2e-5) or the same error status; target_response
+  sparse     a SPARSE_TOKENIZE model (fixtures/ml tokenizer + an idf.json):
+             the token weights by token and by token id
   lifecycle  delete while deployed, undeploy, delete, get after delete, tasks
 
 A stock node needs libtorch for DJL, which it downloads from publish.djl.ai
@@ -24,7 +26,7 @@ pytorch/<version>-cpu-linux-x86_64 layout, PyTorch 2.5.1).
 Needs Docker and the plugin zip in opensearch-plugin/build/distributions
 (`gradle -p opensearch-plugin bundlePlugin`).
 """
-import argparse, glob, hashlib, http.server, importlib.util, json, os, shutil, subprocess, sys, threading, time
+import argparse, glob, hashlib, http.server, importlib.util, io, json, os, shutil, subprocess, sys, threading, time, zipfile
 import urllib.error, urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -241,6 +243,42 @@ def models(c, ours, stock, zips):
             c.same(f"{label} target_response status", a["target"][0], b["target"][0])
 
 
+IDF = {"search": 3.25, "documents": 1.5, "model": 0.75, "##s": 2.0}
+SPARSE_TEXTS = ["search documents models search", "", "the model", "Neural search finds documents by meaning",
+                "café über straße naïve"]
+
+
+def sparse_zip():
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as f:
+        f.write(os.path.join(golden.HERE, "tokenizer.json"), "tokenizer.json")
+        f.writestr("idf.json", json.dumps(IDF))
+    return buf.getvalue()
+
+
+def sparse(c, ours, stock, z):
+    out = {}
+    for side, n in (("ours", ours), ("stock", stock)):
+        r = n.ok("POST", "/_plugins/_ml/models/_register", {
+            "name": f"sparse-{RUN}", "version": "1.0.0", "model_format": "TORCH_SCRIPT", "function_name": "SPARSE_TOKENIZE",
+            "model_content_hash_value": hashlib.sha256(z).hexdigest(), "model_content_size_in_bytes": len(z),
+            "url": f"http://localhost:{SERVE}/sparse.zip"})
+        t = n.task(r["task_id"])
+        mid = t["model_id"]
+        dt = n.task(n.ok("POST", f"/_plugins/_ml/models/{mid}/_deploy")["task_id"])
+        m = n.ok("GET", f"/_plugins/_ml/models/{mid}")
+        rows = [pick(t, TASK_FIELDS), pick(dt, TASK_FIELDS), pick(m, MODEL_FIELDS)]
+        for fmt in (None, "TOKEN_ID"):
+            body = {"text_docs": SPARSE_TEXTS}
+            if fmt:
+                body["parameters"] = {"sparse_embedding_format": fmt}
+            rows.append(n.call("POST", f"/_plugins/_ml/_predict/sparse_tokenize/{mid}", body))
+        n.ok("POST", f"/_plugins/_ml/models/{mid}/_undeploy")
+        out[side] = rows
+    for i, what in enumerate(["register task", "deploy task", "model", "predict by token", "predict by id"]):
+        c.same(f"sparse {what}", out["ours"][i], out["stock"][i])
+
+
 def tasks(c, ours, stock):
     for path in ("/_plugins/_ml/tasks/missing-task",):
         sa, ra = ours.call("GET", path)
@@ -283,6 +321,7 @@ def main():
         stock = Node(f"http://localhost:{STOCK[1]}")
     ours = Node(f"http://localhost:{OURS[1]}")
     zips = {name: golden.model_zip(name) for name, _ in golden.MODELS}
+    zips["sparse"] = sparse_zip()
     serve(zips)
     c = Check()
     try:
@@ -290,6 +329,7 @@ def main():
             wait(n)
             n.ok("PUT", "/_cluster/settings", SETTINGS)
         groups(c, ours, stock)
+        sparse(c, ours, stock, zips["sparse"])
         models(c, ours, stock, zips)
         tasks(c, ours, stock)
     finally:
