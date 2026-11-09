@@ -1972,6 +1972,18 @@ impl SegmentReader {
     /// and stay that way: a caller that has not been taught about generations
     /// keeps working for un-updated fields rather than silently reading a
     /// column that has been superseded for one field and not another.
+    /// Keyword field `field`'s values as they arrived, for a segment of
+    /// buffered documents whose doc values are kept as columns: read in
+    /// place, with no doc values encoded. `None` for any other segment.
+    pub fn keyword_run(
+        &self,
+        field: &str,
+    ) -> Option<lucene_index::concurrent_writer::KeywordRun<'_>> {
+        let lazy = self.lazy_doc_values.as_ref()?;
+        let info = self.field_infos.fields.iter().find(|f| f.name == field)?;
+        lazy.source.keyword_run(info.number)
+    }
+
     pub fn doc_values_for_field(&self, field_number: i32) -> Option<(&DocValuesMeta, &[u8])> {
         if let Some(core) = &self.simpletext {
             return core
@@ -3216,6 +3228,44 @@ impl DirectoryReader {
         map.entry(key)
             .or_insert_with(|| crate::field_norms::inverse_table(avg_field_length))
             .clone()
+    }
+
+    /// [`Self::global_ords`] leaving out the segments with a keyword run of
+    /// `field` ([`SegmentReader::keyword_run`]), whose documents a terms
+    /// aggregation counts from the run: the map stays the same while only
+    /// those segments change. The plain map when the terms are too many to
+    /// find the runs' terms in.
+    pub fn global_ords_skipping_runs(
+        &self,
+        field: &str,
+    ) -> crate::Result<Arc<crate::terms_agg::GlobalOrds>> {
+        if !self.segments.iter().any(|s| s.keyword_run(field).is_some()) {
+            return self.global_ords(field);
+        }
+        let slot = format!("\u{1}{field}");
+        if let Some(g) = self
+            .global_ords
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&slot)
+        {
+            return Ok(Arc::clone(g));
+        }
+        let built = match &self.ords_cache {
+            Some(cache) => cache.ords_with(&self.segments, field, true)?,
+            None => Arc::new(crate::terms_agg::GlobalOrds::build_keeping(
+                &self.segments,
+                field,
+                true,
+            )?),
+        };
+        let built = if built.has_terms() {
+            built
+        } else {
+            self.global_ords(field)?
+        };
+        let mut map = self.global_ords.lock().unwrap_or_else(|e| e.into_inner());
+        Ok(map.entry(slot).or_insert(built).clone())
     }
 
     pub fn global_ords(&self, field: &str) -> crate::Result<Arc<crate::terms_agg::GlobalOrds>> {

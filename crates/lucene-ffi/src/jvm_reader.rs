@@ -1850,6 +1850,19 @@ pub(crate) fn aggregate_counting_blobs(
         .map(|(s, t, total, _)| (s, t, total))
 }
 
+/// Whether a terms aggregation counts buffered documents' keyword runs in
+/// place; a test turns it off to compare with their encoded doc values.
+fn count_runs_in_place() -> bool {
+    #[cfg(test)]
+    {
+        !tests::ENCODED_RUNS.with(std::cell::Cell::get)
+    }
+    #[cfg(not(test))]
+    {
+        true
+    }
+}
+
 /// [`aggregate_counting_blobs`], also handing back each segment's live
 /// match count where the aggregations' pass counted it (`None` for a
 /// segment whose aggregations were answered without visiting its matches):
@@ -1915,7 +1928,13 @@ pub(crate) fn aggregate_counting_blobs_seen(
     // Each terms field's global ordinals, built once per reader and kept.
     let globals = terms
         .iter()
-        .map(|t| h.reader.global_ords(&t.field))
+        .map(|t| {
+            if count_runs_in_place() {
+                h.reader.global_ords_skipping_runs(&t.field)
+            } else {
+                h.reader.global_ords(&t.field)
+            }
+        })
         .collect::<Result<Vec<_>, _>>()
         .map_err(map_search_error)?;
     // min_score scores the query: its fields' norms.
@@ -4627,6 +4646,11 @@ pub(crate) mod tests {
         );
         assert_eq!(counts[0], 0);
         ffi_close_jvm_reader(h);
+    }
+
+    thread_local! {
+        /// Set: terms aggregations read buffered keyword runs encoded.
+        pub(crate) static ENCODED_RUNS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     }
 
     fn metrics_blob(fields: &[(u8, &str)]) -> Vec<u8> {

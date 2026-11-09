@@ -1999,5 +1999,6 @@ fn decode_chunks() -> bool {
 
 mod doc_values;
 pub(crate) use doc_values::DocValuesRun;
+pub use doc_values::KeywordRun;
 #[cfg(test)]
 mod tests;

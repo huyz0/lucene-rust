@@ -47,7 +47,9 @@ use crate::exec::{self, Mode};
 use crate::field_norms::FieldNorms;
 use crate::multi_segment::OpenSegment;
 use crate::query::{BooleanQuery, Clause};
-use crate::terms_agg::{segment_counts, select, GlobalOrds, TermsResult, TermsScratch, TermsSpec};
+use crate::terms_agg::{
+    segment_counts, select_with, GlobalOrds, TermsResult, TermsScratch, TermsSpec,
+};
 use crate::Result;
 use std::collections::HashMap;
 
@@ -688,6 +690,10 @@ fn slice_states(
 ) -> Result<SliceStates> {
     let mut seen = Vec::with_capacity(slice.len());
     let mut term_counts: Vec<Vec<u64>> = globals.iter().map(|g| vec![0; g.value_count()]).collect();
+    let mut term_extra: Vec<std::collections::HashMap<Vec<u8>, u64>> = globals
+        .iter()
+        .map(|_| std::collections::HashMap::new())
+        .collect();
     let mut terms_scratch = TermsScratch::default();
     let clause = clause.clone();
     let mut raw = Vec::new();
@@ -797,7 +803,12 @@ fn slice_states(
                 _ => fold::<NEED_ALL>(values, &read, state, kind, max_doc, &mut raw)?,
             }
         }
-        for ((t, g), counts) in terms.iter().zip(globals).zip(&mut term_counts) {
+        for (((t, g), counts), extra) in terms
+            .iter()
+            .zip(globals)
+            .zip(&mut term_counts)
+            .zip(&mut term_extra)
+        {
             segment_counts(
                 reader,
                 seg.fields,
@@ -806,6 +817,7 @@ fn slice_states(
                 g,
                 &read,
                 counts,
+                extra,
                 &mut terms_scratch,
             )?;
         }
@@ -814,7 +826,10 @@ fn slice_states(
         .iter()
         .zip(globals)
         .zip(&term_counts)
-        .map(|((t, g), counts)| select(counts, t.shard_size, g, readers, &t.field))
+        .zip(&term_extra)
+        .map(|(((t, g), counts), extra)| {
+            select_with(counts, extra, t.shard_size, g, readers, &t.field)
+        })
         .collect::<Result<Vec<_>>>()?;
     Ok((states, terms, seen))
 }
