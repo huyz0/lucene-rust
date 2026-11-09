@@ -86,6 +86,8 @@ public final class MlCommons {
     static final String THREAD_POOL_PREFIX = "thread_pool.ml_commons.";
     /** {@code ModelHelper.CHUNK_SIZE}. */
     static final int CHUNK_SIZE = 10_000_000;
+    private static final String LOCAL_MODEL_DISABLED =
+        "Local Model is disabled. To enable it, update the setting plugins.ml_commons.local_model.enabled to true.";
 
     /** ml-commons' {@code ml} node role, so nodes configured with {@code node.roles: [ml]} start. */
     public static final DiscoveryNodeRole ML_ROLE = new DiscoveryNodeRole("ml", "ml") {
@@ -410,20 +412,27 @@ public final class MlCommons {
             listener.onFailure(new IllegalArgumentException("lucene-rust does not run remote models yet"));
             return;
         }
+        if (setting(MlSettings.ML_COMMONS_LOCAL_MODEL_ENABLED) == false) {
+            listener.onFailure(new IllegalArgumentException(LOCAL_MODEL_DISABLED));
+            return;
+        }
         String url = (String) body.get("url");
-        if (url != null) {
-            if (setting(MlSettings.ML_COMMONS_ALLOW_MODEL_URL) == false) {
-                listener.onFailure(
-                    new IllegalArgumentException(
-                        "To upload custom model user needs to enable allow_registering_model_via_url settings. Otherwise please use OpenSearch pre-trained models."
-                    )
-                );
-                return;
-            }
-            if (Pattern.compile(setting(MlSettings.ML_COMMONS_TRUSTED_URL_REGEX)).matcher(url).find() == false) {
-                listener.onFailure(new IllegalArgumentException("URL can't match trusted url regex"));
-                return;
-            }
+        if (url == null) {
+            // Pre-trained models (downloaded by name and version) and chunk uploads are not ported.
+            listener.onFailure(new IllegalArgumentException("lucene-rust registers local models from a url only"));
+            return;
+        }
+        if (setting(MlSettings.ML_COMMONS_ALLOW_MODEL_URL) == false) {
+            listener.onFailure(
+                new IllegalArgumentException(
+                    "To upload custom model user needs to enable allow_registering_model_via_url settings. Otherwise please use OpenSearch pre-trained models."
+                )
+            );
+            return;
+        }
+        if (Pattern.compile(setting(MlSettings.ML_COMMONS_TRUSTED_URL_REGEX)).matcher(url).find() == false) {
+            listener.onFailure(new IllegalArgumentException("URL can't match trusted url regex"));
+            return;
         }
         String function = ((String) body.getOrDefault("function_name", "TEXT_EMBEDDING")).toUpperCase(Locale.ROOT);
         String workers = clusterService.localNode().getId();
@@ -438,12 +447,8 @@ public final class MlCommons {
 
     private void register(String taskId, String function, Map<String, Object> body, boolean deploy) {
         String name = (String) body.get("name");
-        String url = (String) body.get("url");
         Object groupId = body.get("model_group_id");
         ActionListener<String> withGroup = ActionListener.wrap(group -> {
-            if (url == null) {
-                throw new IllegalArgumentException("");
-            }
             nextVersion(group, ActionListener.wrap(version -> writeModel(taskId, function, body, group, version, deploy), e -> failTask(taskId, e)));
         }, e -> failTask(taskId, e));
         if (groupId != null) {
@@ -461,15 +466,31 @@ public final class MlCommons {
 
     /** Takes the group's next version number, as {@code MLModelGroupManager} does. */
     private void nextVersion(String groupId, ActionListener<String> listener) {
-        getModelGroup(groupId, ActionListener.wrap(group -> {
-            int version = ((Number) group.getOrDefault("latest_version", 0)).intValue() + 1;
-            updateDoc(
-                MlIndices.MODEL_GROUP,
-                groupId,
-                Map.of("latest_version", version, "last_updated_time", now()),
-                ActionListener.wrap(r -> listener.onResponse(Integer.toString(version)), listener::onFailure)
-            );
-        }, listener::onFailure));
+        nextVersion(groupId, 10, listener);
+    }
+
+    /** Bumps {@code latest_version} only if the group is unchanged since read, so concurrent registers get distinct versions. */
+    private void nextVersion(String groupId, int attempts, ActionListener<String> listener) {
+        String missing = "Failed to find model group with the provided model group id: " + groupId;
+        getDoc(MlIndices.MODEL_GROUP, groupId, ActionListener.wrap(g -> {
+            if (g.isExists() == false) {
+                throw new OpenSearchStatusException(missing, RestStatus.NOT_FOUND);
+            }
+            int version = ((Number) g.getSourceAsMap().getOrDefault("latest_version", 0)).intValue() + 1;
+            UpdateRequest request = new UpdateRequest(MlIndices.MODEL_GROUP, groupId).doc(
+                Map.of("latest_version", version, "last_updated_time", now())
+            ).setIfSeqNo(g.getSeqNo()).setIfPrimaryTerm(g.getPrimaryTerm()).setRefreshPolicy(WriteRequest.RefreshPolicy.IMMEDIATE);
+            MlIndices.system(client, l -> client.update(request, l), ActionListener.<UpdateResponse>wrap(
+                r -> listener.onResponse(Integer.toString(version)),
+                e -> {
+                    if (org.opensearch.ExceptionsHelper.unwrapCause(e) instanceof org.opensearch.index.engine.VersionConflictEngineException && attempts > 1) {
+                        nextVersion(groupId, attempts - 1, listener);
+                    } else {
+                        listener.onFailure(e);
+                    }
+                }
+            ));
+        }, e -> listener.onFailure(missingIndex(e, missing))));
     }
 
     @SuppressWarnings("unchecked")
@@ -549,17 +570,21 @@ public final class MlCommons {
         Path tmp = Files.createTempFile(dir, modelId + "-", ".zip");
         try {
             URL u = URI.create(url).toURL();
-            try (InputStream in = u.openStream()) {
+            MessageDigest sha = MessageDigest.getInstance("SHA-256");
+            try (InputStream in = new java.security.DigestInputStream(u.openStream(), sha)) {
                 Files.copy(in, tmp, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
             }
             long size = Files.size(tmp);
-            MessageDigest sha = MessageDigest.getInstance("SHA-256");
             String hash = (String) model.get("model_content_hash_value");
+            String got = HexFormat.of().formatHex(sha.digest());
+            // Checked before any chunk is written, so a refused zip leaves no chunks behind.
+            if (hash != null && hash.equals(got) == false) {
+                throw new IllegalArgumentException("model content changed");
+            }
             int chunks = (int) ((size + CHUNK_SIZE - 1) / CHUNK_SIZE);
             try (InputStream in = Files.newInputStream(tmp)) {
                 for (int i = 0; i < chunks; i++) {
                     byte[] chunk = in.readNBytes(CHUNK_SIZE);
-                    sha.update(chunk);
                     Map<String, Object> doc = new LinkedHashMap<>();
                     doc.put("model_id", modelId);
                     doc.put("model_version", model.get("model_version"));
@@ -577,10 +602,6 @@ public final class MlCommons {
                     indexDoc(MlIndices.MODEL, modelId + "_" + i, doc, f);
                     f.actionGet(TimeValue.timeValueMinutes(1));
                 }
-            }
-            String got = HexFormat.of().formatHex(sha.digest());
-            if (hash != null && hash.equals(got) == false) {
-                throw new IllegalArgumentException("model content changed");
             }
             Map<String, Object> fields = new LinkedHashMap<>();
             fields.put("model_state", "REGISTERED");
@@ -627,6 +648,10 @@ public final class MlCommons {
      * eligible node (or {@code nodeIds}) and records the outcome in the model and task documents.
      */
     public void deployModel(String modelId, List<String> nodeIds, ActionListener<Map<String, Object>> listener) {
+        if (setting(MlSettings.ML_COMMONS_LOCAL_MODEL_ENABLED) == false) {
+            listener.onFailure(new IllegalArgumentException(LOCAL_MODEL_DISABLED));
+            return;
+        }
         getModel(modelId, ActionListener.wrap(model -> {
             List<String> targets = new ArrayList<>();
             List<DiscoveryNode> eligible = eligibleNodes();

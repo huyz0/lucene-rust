@@ -181,7 +181,12 @@ pub fn pool(t: Tensor, mask: &[i64], mode: Pooling) -> Result<Tensor> {
         return Ok(t);
     }
     let dim = match t.shape.as_slice() {
-        [r, d] if *d > 0 && *r == mask.len() && t.data.len().checked_div(*d) == Some(*r) => *d,
+        // At least one token: CLS and LAST_TOKEN index the first row.
+        [r, d]
+            if *d > 0 && *r > 0 && *r == mask.len() && t.data.len().checked_div(*d) == Some(*r) =>
+        {
+            *d
+        }
         other => {
             return Err(MlError::Model(format!(
                 "token embeddings of shape {other:?} cannot be pooled over {} tokens",
@@ -319,6 +324,11 @@ mod tests {
         };
         assert!(pool(flat, &MASK, Pooling::Mean).is_err());
         assert!(pool(tokens(), &[1, 1], Pooling::Mean).is_err());
+        let none = Tensor {
+            shape: vec![0, 2],
+            data: vec![],
+        };
+        assert!(pool(none, &[], Pooling::Cls).is_err());
     }
 
     #[test]

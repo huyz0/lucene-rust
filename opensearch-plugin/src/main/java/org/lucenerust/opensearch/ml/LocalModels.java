@@ -49,6 +49,8 @@ public final class LocalModels {
     private final Path cacheDir;
     private final Path runtimeLibrary;
     private final Map<String, Deployed> models = new ConcurrentHashMap<>();
+    /** The listeners of each deploy in flight here, by model id; guarded by itself. */
+    private final Map<String, List<ActionListener<Void>>> deploying = new java.util.HashMap<>();
     private volatile boolean runtimeLoaded;
 
     LocalModels(Client client, Path cacheDir, Path runtimeLibrary) {
@@ -84,15 +86,28 @@ public final class LocalModels {
     }
 
     /**
-     * Deploys {@code modelId} on this node: reads its document and chunks, then opens it. Runs the
-     * blocking part on the caller's thread, which must be a pool thread.
+     * Deploys {@code modelId} on this node: reads its document and chunks, then opens it. The chunk
+     * writes, unzip and model load run on the deploy pool, whatever thread answers the reads. A
+     * deploy of a model already being deployed here waits for that one rather than racing it over
+     * the same files.
      */
     public void deploy(String modelId, ActionListener<Void> listener) {
         if (models.containsKey(modelId)) {
             listener.onResponse(null);
             return;
         }
-        MlIndices.system(client, l -> client.get(new GetRequest(MlIndices.MODEL, modelId), l), ActionListener.<GetResponse>wrap(r -> {
+        synchronized (deploying) {
+            List<ActionListener<Void>> waiting = deploying.get(modelId);
+            if (waiting != null) {
+                waiting.add(listener);
+                return;
+            }
+            waiting = new ArrayList<>();
+            waiting.add(listener);
+            deploying.put(modelId, waiting);
+        }
+        ActionListener<Void> all = ActionListener.wrap(v -> finishDeploy(modelId, null), e -> finishDeploy(modelId, e));
+        MlIndices.system(client, l -> client.get(new GetRequest(MlIndices.MODEL, modelId), l), onDeployPool(ActionListener.<GetResponse>wrap(r -> {
             if (r.isExists() == false) {
                 throw new IllegalArgumentException("Failed to find model");
             }
@@ -109,9 +124,43 @@ public final class LocalModels {
             Path dir = cacheDir.resolve("deploy").resolve(modelId);
             fetchChunks(modelId, chunks, dir, model, ActionListener.wrap(zip -> {
                 open(modelId, function, model, zip, dir);
-                listener.onResponse(null);
-            }, listener::onFailure));
-        }, listener::onFailure));
+                all.onResponse(null);
+            }, all::onFailure));
+        }, all::onFailure)));
+    }
+
+    private void finishDeploy(String modelId, Exception failure) {
+        List<ActionListener<Void>> waiting;
+        synchronized (deploying) {
+            waiting = deploying.remove(modelId);
+        }
+        if (waiting == null) {
+            return;
+        }
+        for (ActionListener<Void> l : waiting) {
+            if (failure == null) {
+                l.onResponse(null);
+            } else {
+                l.onFailure(failure);
+            }
+        }
+    }
+
+    /** {@code listener}, answered on the deploy pool: its work is file I/O and model loading. */
+    private <T> ActionListener<T> onDeployPool(ActionListener<T> listener) {
+        return ActionListener.wrap(r -> {
+            try {
+                client.threadPool().executor(MlCommons.DEPLOY_THREAD_POOL).execute(() -> {
+                    try {
+                        listener.onResponse(r);
+                    } catch (Exception e) {
+                        listener.onFailure(e);
+                    }
+                });
+            } catch (Exception rejected) {
+                listener.onFailure(rejected);
+            }
+        }, listener::onFailure);
     }
 
     /** Writes chunks {@code 0..n} of {@code modelId} to one zip in {@code dir}, in order. */
@@ -145,7 +194,7 @@ public final class LocalModels {
             return;
         }
         String id = modelId + "_" + i;
-        MlIndices.system(client, l -> client.get(new GetRequest(MlIndices.MODEL, id), l), ActionListener.<GetResponse>wrap(r -> {
+        MlIndices.system(client, l -> client.get(new GetRequest(MlIndices.MODEL, id), l), onDeployPool(ActionListener.<GetResponse>wrap(r -> {
             Object content = r.isExists() ? r.getSourceAsMap().get("model_content") : null;
             if (content == null) {
                 throw new IllegalArgumentException("Failed to find model chunk " + id);
@@ -154,7 +203,7 @@ public final class LocalModels {
             sha.update(bytes);
             out.write(bytes);
             fetchChunk(modelId, i + 1, n, out, sha, listener);
-        }, listener::onFailure));
+        }, listener::onFailure)));
     }
 
     @SuppressWarnings("unchecked")
