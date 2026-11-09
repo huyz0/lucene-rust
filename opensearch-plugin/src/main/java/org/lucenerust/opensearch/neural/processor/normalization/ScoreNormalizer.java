@@ -1,0 +1,52 @@
+/*
+ * Copyright OpenSearch Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.lucenerust.opensearch.neural.processor.normalization;
+
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+
+import org.lucenerust.opensearch.neural.processor.CompoundTopDocs;
+import org.lucenerust.opensearch.neural.processor.dto.ExplainDTO;
+import org.lucenerust.opensearch.neural.processor.explain.DocIdAtSearchShard;
+import org.lucenerust.opensearch.neural.processor.explain.ExplanationDetails;
+import org.lucenerust.opensearch.neural.processor.explain.ExplainableTechnique;
+import org.lucenerust.opensearch.neural.processor.dto.NormalizeScoresDTO;
+
+public class ScoreNormalizer {
+
+    /**
+     * Performs score normalization based on input normalization technique.
+     * Mutates input object by updating normalized scores.
+     * @param normalizeScoresDTO used as data transfer object to pass in queryTopDocs, original query results
+     * from multiple shards and multiple sub-queries, scoreNormalizationTechnique exact normalization technique
+     * that should be applied, and nullable rankConstant that is only used in RRF technique
+     */
+    public void normalizeScores(final NormalizeScoresDTO normalizeScoresDTO) {
+        final List<CompoundTopDocs> queryTopDocs = normalizeScoresDTO.getQueryTopDocs();
+        final ScoreNormalizationTechnique scoreNormalizationTechnique = normalizeScoresDTO.getNormalizationTechnique();
+        if (canQueryResultsBeNormalized(queryTopDocs)) {
+            scoreNormalizationTechnique.normalize(normalizeScoresDTO);
+        }
+    }
+
+    private boolean canQueryResultsBeNormalized(final List<CompoundTopDocs> queryTopDocs) {
+        return queryTopDocs.stream().filter(Objects::nonNull).anyMatch(topDocs -> topDocs.getTopDocs().size() > 0);
+    }
+
+    /**
+     * Explain normalized scores based on input normalization technique. Does not mutate input object.
+     * @param explainDTO original query results from multiple shards of multiple sub-queries with explainableTechnique
+     * @return map of doc id to explanation details
+     */
+    public Map<DocIdAtSearchShard, ExplanationDetails> explain(final ExplainDTO explainDTO) {
+        final List<CompoundTopDocs> queryTopDocs = explainDTO.getQueryTopDocs();
+        final ExplainableTechnique scoreNormalizationTechnique = explainDTO.getExplainableTechnique();
+        if (canQueryResultsBeNormalized(queryTopDocs)) {
+            return scoreNormalizationTechnique.explain(explainDTO);
+        }
+        return Map.of();
+    }
+}
