@@ -79,7 +79,7 @@ public final class HybridQuery extends Query implements Iterable<Query> {
             for (Query subQuery : subQueries) {
                 BooleanQuery.Builder builder = new BooleanQuery.Builder();
                 builder.add(subQuery, BooleanClause.Occur.MUST);
-                booleanClauses.forEach(filterQuery -> builder.add(booleanClauses));
+                booleanClauses.forEach(builder::add);
                 modifiedSubQueries.add(builder.build());
             }
             this.subQueries = modifiedSubQueries;

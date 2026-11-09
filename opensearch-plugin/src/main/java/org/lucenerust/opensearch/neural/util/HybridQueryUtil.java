@@ -228,4 +228,22 @@ public class HybridQueryUtil {
     @java.lang.SuppressWarnings("all")
     private HybridQueryUtil() {
     }
+
+    /** Whether {@code query} is a hybrid query or holds one anywhere in its tree. */
+    public static boolean containsHybridQuery(Query query) {
+        if (query instanceof HybridQuery) {
+            return true;
+        }
+        boolean[] found = { false };
+        query.visit(new org.apache.lucene.search.QueryVisitor() {
+            @Override
+            public org.apache.lucene.search.QueryVisitor getSubVisitor(BooleanClause.Occur occur, Query parent) {
+                if (parent instanceof HybridQuery) {
+                    found[0] = true;
+                }
+                return this;
+            }
+        });
+        return found[0];
+    }
 }

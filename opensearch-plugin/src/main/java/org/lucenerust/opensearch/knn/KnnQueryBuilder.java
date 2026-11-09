@@ -126,9 +126,28 @@ public final class KnnQueryBuilder extends AbstractQueryBuilder<KnnQueryBuilder>
             return this;
         }
         KnnQueryBuilder c = copy();
-        c.filter = filter == null ? more : filter.filter(more);
+        c.filter = filter == null ? more : unshared(filter).filter(more);
         c.boost(DEFAULT_BOOST).queryName(null);
         return c;
+    }
+
+    /**
+     * {@code filter}, or a copy of it when it is a bool query: a bool query's {@code filter} adds the
+     * clause in place, and this query's own filter must not change.
+     */
+    private static QueryBuilder unshared(QueryBuilder filter) {
+        if (filter instanceof org.opensearch.index.query.BoolQueryBuilder b) {
+            org.opensearch.index.query.BoolQueryBuilder copy = new org.opensearch.index.query.BoolQueryBuilder();
+            b.must().forEach(copy::must);
+            b.should().forEach(copy::should);
+            b.mustNot().forEach(copy::mustNot);
+            b.filter().forEach(copy::filter);
+            copy.minimumShouldMatch(b.minimumShouldMatch());
+            copy.adjustPureNegative(b.adjustPureNegative());
+            copy.boost(b.boost()).queryName(b.queryName());
+            return copy;
+        }
+        return filter;
     }
 
     /** {@code KNNQueryBuilder.visit}: this query, then its filter as a filter clause. */

@@ -4,10 +4,11 @@
  */
 package org.lucenerust.opensearch.neural.search.query;
 
+import org.lucenerust.opensearch.neural.util.HybridQueryUtil;
+
 import java.io.IOException;
 import java.util.LinkedList;
 import java.util.List;
-import java.util.concurrent.atomic.AtomicBoolean;
 import org.apache.lucene.search.BoostQuery;
 import org.apache.lucene.search.BooleanClause;
 import org.apache.lucene.search.BooleanQuery;
@@ -141,17 +142,7 @@ public class HybridQueryPhaseSearcher extends QueryPhaseSearcherWrapper {
             return containsHybridQuery(boostQuery.getQuery(), depth - 1);
         } else if (query instanceof ScriptScoreQuery) {
             // ScriptScoreQuery has no public getter for its inner query, use QueryVisitor
-            AtomicBoolean found = new AtomicBoolean(false);
-            query.visit(new org.apache.lucene.search.QueryVisitor() {
-                @Override
-                public org.apache.lucene.search.QueryVisitor getSubVisitor(BooleanClause.Occur occur, Query parent) {
-                    if (parent instanceof HybridQuery) {
-                        found.set(true);
-                    }
-                    return this;
-                }
-            });
-            return found.get();
+            return HybridQueryUtil.containsHybridQuery(query);
         }
         return false;
     }

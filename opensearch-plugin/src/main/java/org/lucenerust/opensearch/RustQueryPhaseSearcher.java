@@ -119,7 +119,9 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
 
     @Override
     public AggregationProcessor aggregationProcessor(SearchContext searchContext) {
-        return new HybridAggregationProcessor(fallback.aggregationProcessor(searchContext));
+        AggregationProcessor processor = fallback.aggregationProcessor(searchContext);
+        Query query = searchContext.query();
+        return query != null && containsHybrid(query) ? new HybridAggregationProcessor(processor) : processor;
     }
 
     @Override
@@ -341,20 +343,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
 
     /** Whether {@code query} is or holds a {@link HybridQuery}. */
     static boolean containsHybrid(Query query) {
-        if (query instanceof HybridQuery) {
-            return true;
-        }
-        boolean[] found = { false };
-        query.visit(new org.apache.lucene.search.QueryVisitor() {
-            @Override
-            public org.apache.lucene.search.QueryVisitor getSubVisitor(org.apache.lucene.search.BooleanClause.Occur occur, Query parent) {
-                if (parent instanceof HybridQuery) {
-                    found[0] = true;
-                }
-                return this;
-            }
-        });
-        return found[0];
+        return org.lucenerust.opensearch.neural.util.HybridQueryUtil.containsHybridQuery(query);
     }
 
     /**
