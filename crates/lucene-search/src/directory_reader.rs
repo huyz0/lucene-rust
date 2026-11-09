@@ -2062,6 +2062,18 @@ impl SegmentReader {
         self.dv_data.as_ref().map(|d| &***d)
     }
 
+    /// Keyword field `field`'s values as they arrived, for a segment of
+    /// buffered documents whose doc values are kept as columns: read in
+    /// place, with no doc values encoded. `None` for any other segment.
+    pub fn keyword_run(
+        &self,
+        field: &str,
+    ) -> Option<lucene_index::concurrent_writer::KeywordRun<'_>> {
+        let lazy = self.lazy_doc_values.as_ref()?;
+        let info = self.field_infos.fields.iter().find(|f| f.name == field)?;
+        lazy.source.keyword_run(info.number)
+    }
+
     /// The `(meta, data)` pair holding **`field_number`'s current column**:
     /// `SegmentDocValuesProducer.dvProducersByField`. A field that has taken a
     /// doc-values update is served from the generation its newest `FieldInfo`
@@ -3299,11 +3311,6 @@ impl DirectoryReader {
         })
     }
 
-    /// `field`'s global ordinals over this reader's segments, built on the
-    /// first call and kept (see [`crate::terms_agg::GlobalOrds`]).
-    ///
-    /// # Errors
-    /// What building them reports ([`crate::terms_agg::GlobalOrds::build`]).
     /// The BM25 norm table for one average field length
     /// ([`crate::field_norms::inverse_table`]), built once per reader: every
     /// search scoring a field over this reader uses the same reader-wide
@@ -3317,6 +3324,51 @@ impl DirectoryReader {
             .clone()
     }
 
+    /// [`Self::global_ords`] leaving out the segments with a keyword run of
+    /// `field` ([`SegmentReader::keyword_run`]), whose documents a terms
+    /// aggregation counts from the run: the map stays the same while only
+    /// those segments change. The plain map when the terms are too many to
+    /// find the runs' terms in.
+    pub fn global_ords_skipping_runs(
+        &self,
+        field: &str,
+    ) -> crate::Result<Arc<crate::terms_agg::GlobalOrds>> {
+        if !self.segments.iter().any(|s| s.keyword_run(field).is_some()) {
+            return self.global_ords(field);
+        }
+        let slot = format!("\u{1}{field}");
+        if let Some(g) = self
+            .global_ords
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&slot)
+        {
+            return Ok(Arc::clone(g));
+        }
+        let built = match &self.ords_cache {
+            Some(cache) => cache.ords_with(&self.segments, field, true)?,
+            None => Arc::new(crate::terms_agg::GlobalOrds::build_keeping(
+                &self.segments,
+                field,
+                true,
+            )?),
+        };
+        // Too many terms to find the runs' in: the plain map, which the
+        // cache already built in their place.
+        let built = if built.has_terms() || self.ords_cache.is_some() {
+            built
+        } else {
+            self.global_ords(field)?
+        };
+        let mut map = self.global_ords.lock().unwrap_or_else(|e| e.into_inner());
+        Ok(map.entry(slot).or_insert(built).clone())
+    }
+
+    /// `field`'s global ordinals over this reader's segments, built on the
+    /// first call and kept (see [`crate::terms_agg::GlobalOrds`]).
+    ///
+    /// # Errors
+    /// What building them reports ([`crate::terms_agg::GlobalOrds::build`]).
     pub fn global_ords(&self, field: &str) -> crate::Result<Arc<crate::terms_agg::GlobalOrds>> {
         let cached = |m: &std::collections::HashMap<String, Arc<crate::terms_agg::GlobalOrds>>| {
             m.get(field).cloned()
