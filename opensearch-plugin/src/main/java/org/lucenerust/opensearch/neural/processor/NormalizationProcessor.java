@@ -22,8 +22,8 @@ import org.lucenerust.opensearch.neural.processor.normalization.L2ScoreNormaliza
 import org.lucenerust.opensearch.neural.processor.normalization.MinMaxScoreNormalizationTechnique;
 import org.lucenerust.opensearch.neural.processor.normalization.ScoreNormalizationTechnique;
 import org.lucenerust.opensearch.neural.processor.normalization.ZScoreNormalizationTechnique;
-import org.lucenerust.opensearch.neural.stats.EventStatName;
-import org.lucenerust.opensearch.neural.stats.EventStatsManager;
+import org.lucenerust.opensearch.neural.stats.events.EventStatName;
+import org.lucenerust.opensearch.neural.stats.events.EventStatsManager;
 import org.opensearch.search.SearchPhaseResult;
 import org.opensearch.search.fetch.FetchSearchResult;
 import org.opensearch.search.pipeline.PipelineProcessingContext;
