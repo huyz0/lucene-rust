@@ -1112,6 +1112,24 @@ fn leaf_results<S: VectorScorer>(
             scorer, graph, accept, ord_to_doc, max_doc, plan, seed_ords, parents,
         );
     }
+    leaf_results_rescored(
+        scorer, None, graph, accept, ord_to_doc, max_doc, plan, seed_ords,
+    )
+}
+
+/// [`leaf_results`] without diversification, with every collected hit
+/// rescored by `rescore` (and re-ranked, best first) when one is given.
+#[allow(clippy::too_many_arguments)]
+fn leaf_results_rescored<S: VectorScorer>(
+    scorer: &mut S,
+    rescore: Option<&mut dyn VectorScorer>,
+    graph: &LeafGraph<'_, '_>,
+    accept: Option<&AcceptOrds<'_>>,
+    ord_to_doc: &impl Fn(i32) -> Result<i32>,
+    max_doc: i32,
+    plan: &LeafPlan,
+    seed_ords: Option<&[i32]>,
+) -> Result<(LeafHits, bool)> {
     let size = scorer.max_ord().max(0) as usize;
     // Clamped to the field's own vector count, which the reader validated
     // against the `.vec` file's length when it opened. That clamp is what
@@ -1189,6 +1207,14 @@ fn leaf_results<S: VectorScorer>(
     // the hits' local doc ids ascending and `MappedDISI` turns each into its
     // ordinal, and ordinals ascend with doc ids by construction -- so the
     // seed list is this hit set's ordinals, ascending.
+    let mut hits = hits;
+    if let Some(rescore) = rescore {
+        for hit in &mut hits {
+            hit.1 = rescore.score(hit.0)?;
+        }
+        // Ordinals ascend with doc ids: ties keep the lower doc first.
+        hits.sort_unstable_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+    }
     let ordinals_as_docs = from_graph && graph.hits_are_ordinals();
     let mut out = Vec::with_capacity(hits.len());
     let mut ords = Vec::with_capacity(hits.len());
@@ -1259,19 +1285,23 @@ fn search_leaf(
                     diversify,
                 );
             }
-            if let Some(mut scorer) = scalar_quantized_scorer(input, resolved, t)? {
-                return leaf_results(
-                    &mut scorer,
-                    &graph,
-                    accept.as_ref(),
-                    &ord_to_doc,
-                    input.max_doc,
-                    plan,
-                    seed_ords,
-                    diversify,
-                );
-            }
             let mut scorer = values.scorer(t)?;
+            if diversify.is_none() {
+                if let Some(mut codes) = scalar_quantized_scorer(input, resolved, t)? {
+                    // The graph is walked on the codes, then the collected
+                    // candidates are rescored on the float vectors.
+                    return leaf_results_rescored(
+                        &mut codes,
+                        Some(&mut scorer),
+                        &graph,
+                        accept.as_ref(),
+                        &ord_to_doc,
+                        input.max_doc,
+                        plan,
+                        seed_ords,
+                    );
+                }
+            }
             leaf_results(
                 &mut scorer,
                 &graph,
@@ -2426,9 +2456,6 @@ fn similarity_leaf<T>(
             // quantized format answers on its codes.
             if let Some(GraphReader::Quantized(reader)) = &input.hnsw {
                 let mut scorer = reader.float_scorer(resolved.field_number, t)?;
-                return leaf.run(&mut scorer, &graph, &ord_to_doc, &ord_to_docs);
-            }
-            if let Some(mut scorer) = scalar_quantized_scorer(input, &resolved, t)? {
                 return leaf.run(&mut scorer, &graph, &ord_to_doc, &ord_to_docs);
             }
             let mut scorer = values.scorer(t)?;
