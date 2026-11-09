@@ -38,7 +38,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code jvm_reader.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 92;
+    public static final int EXPECTED_ABI_VERSION = 93;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -207,6 +207,10 @@ public final class NativeBridge {
         static final MethodHandle DOCUMENT = bind(
             "ffi_jvm_reader_document_alloc",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_INT, ADDRESS, ADDRESS)
+        );
+        static final MethodHandle DOC_VALUES = bind(
+            "ffi_jvm_reader_doc_values_alloc",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS)
         );
         static final MethodHandle DERIVED_SOURCE = bind(
             "ffi_jvm_reader_derived_source_alloc",
@@ -398,6 +402,10 @@ public final class NativeBridge {
         static final MethodHandle WRITER_RELEASE_LIVE = bind(
             "ffi_engine_writer_release_live",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG)
+        );
+        static final MethodHandle LIVE_DOC_VALUES = bind(
+            "ffi_live_view_doc_values_alloc",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS)
         );
         static final MethodHandle LIVE_DOCUMENT = bind(
             "ffi_live_view_document_alloc",
@@ -1338,6 +1346,34 @@ public final class NativeBridge {
                 byte[] encoded = take(result);
                 if (encoded == null) {
                     return tooLarge("the document");
+                }
+                out[0] = encoded;
+            }
+            return rc;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * Segment {@code segment}'s document {@code doc} (segment-local): its values of the fields
+     * numbered {@code fields}, encoded as {@code jvm_fetch.rs}'s doc-values blob, in {@code out[0]}
+     * ({@link NativeDocValues} reads them).
+     */
+    public static int docValues(long handle, int segment, int doc, int[] fields, byte[][] out) {
+        if (fields == null) {
+            return nullArgument("fields");
+        }
+        if (out == null || out.length < 1) {
+            return fail(INVALID_ARGUMENT, "out holds no slot");
+        }
+        try (Scratch s = Scratch.open()) {
+            MemorySegment result = ownedSlot(s);
+            int rc = (int) H.DOC_VALUES.invokeExact(handle, segment, doc, s.ints(fields), (long) fields.length, ptrOf(result), lenOf(result));
+            if (rc == OK) {
+                byte[] encoded = take(result);
+                if (encoded == null) {
+                    return tooLarge("the doc values");
                 }
                 out[0] = encoded;
             }
@@ -2399,6 +2435,34 @@ public final class NativeBridge {
     public static int writerReleaseLive(long writer, long generation) {
         try {
             return (int) H.WRITER_RELEASE_LIVE.invokeExact(writer, generation);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * Document {@code doc} of buffer {@code buffer} of view {@code view}: its doc values of the
+     * fields numbered {@code fields}, encoded as {@link #docValues} encodes a segment's, the terms
+     * of each field numbered {@code 0..n} for that document alone, in {@code out[0]}.
+     */
+    public static int liveDocValues(long view, int buffer, int doc, int[] fields, byte[][] out) {
+        if (fields == null) {
+            return nullArgument("fields");
+        }
+        if (out == null || out.length < 1) {
+            return fail(INVALID_ARGUMENT, "out holds no slot");
+        }
+        try (Scratch s = Scratch.open()) {
+            MemorySegment result = ownedSlot(s);
+            int rc = (int) H.LIVE_DOC_VALUES.invokeExact(view, buffer, doc, s.ints(fields), (long) fields.length, ptrOf(result), lenOf(result));
+            if (rc == OK) {
+                byte[] encoded = take(result);
+                if (encoded == null) {
+                    return tooLarge("the doc values");
+                }
+                out[0] = encoded;
+            }
+            return rc;
         } catch (Throwable t) {
             throw rethrow(t);
         }

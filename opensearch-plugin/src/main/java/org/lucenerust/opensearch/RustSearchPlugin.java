@@ -335,12 +335,16 @@ public class RustSearchPlugin extends Plugin implements
             FetchFlag flag = new FetchFlag(FETCH_ENABLED.get(indexModule.getSettings()));
             indexModule.addSettingsUpdateConsumer(FETCH_ENABLED, flag::set);
             try {
-                indexModule.setReaderWrapper(indexService -> reader -> NativeStoredFieldsReader.wrap(reader, readers, stats, flag::enabled));
+                indexModule.setReaderWrapper(indexService -> {
+                    boolean derivedSource = indexService.getIndexSettings().isDerivedSourceEnabled();
+                    return reader -> NativeStoredFieldsReader.wrap(reader, readers, stats, flag::enabled, derivedSource);
+                });
                 // The fetch phase reads its hits one at a time; announcing them first lets a
                 // segment read by range fetch their stored fields together.
                 indexModule.addSearchOperationListener(new SearchOperationListener() {
                     @Override
                     public void onPreFetchPhase(SearchContext context) {
+                        NativeStoredFieldsReader.fetchStarted();
                         if (flag.enabled() == false) {
                             return;
                         }
@@ -359,6 +363,16 @@ public class RustSearchPlugin extends Plugin implements
                             // Only a hint: the fetch phase reads every document itself.
                             logger.debug("lucene-rust: stored-fields prefetch failed", e);
                         }
+                    }
+
+                    @Override
+                    public void onFetchPhase(SearchContext context, long tookInNanos) {
+                        NativeStoredFieldsReader.fetchEnded();
+                    }
+
+                    @Override
+                    public void onFailedFetchPhase(SearchContext context) {
+                        NativeStoredFieldsReader.fetchEnded();
                     }
                 });
             } catch (SetOnce.AlreadySetException e) {
