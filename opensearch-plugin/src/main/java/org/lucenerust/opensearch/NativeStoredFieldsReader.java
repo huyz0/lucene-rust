@@ -193,8 +193,8 @@ final class NativeStoredFieldsReader extends FilterDirectoryReader {
                 try {
                     helper.addClosedListener(WANTED::remove);
                 } catch (RuntimeException e) {
+                    // Closed already: nothing would remove the entry, and nothing reads it again.
                     WANTED.remove(key);
-                    throw e;
                 }
             }
         }
@@ -245,7 +245,7 @@ final class NativeStoredFieldsReader extends FilterDirectoryReader {
                 }
                 shared.stats.nativeDocValues();
                 return out[0];
-            }, wanted(in));
+            }, live ? new NativeDocValues.Wanted() : wanted(in));
         }
 
         /**
@@ -301,6 +301,8 @@ final class NativeStoredFieldsReader extends FilterDirectoryReader {
             }
             // Lucene's reader (a clone of the segment's, with its own inputs and index) only as the
             // fallback: a derived _source asks for stored fields once per field it rebuilds from.
+            // Its prefetch is only a hint, passed on once the fallback has been needed: the native
+            // reads are announced to the native reader (prefetchNative).
             return new StoredFields() {
                 private StoredFields lucene;
 
@@ -313,7 +315,9 @@ final class NativeStoredFieldsReader extends FilterDirectoryReader {
 
                 @Override
                 public void prefetch(int docID) throws IOException {
-                    lucene().prefetch(docID);
+                    if (lucene != null) {
+                        lucene.prefetch(docID);
+                    }
                 }
 
                 @Override
