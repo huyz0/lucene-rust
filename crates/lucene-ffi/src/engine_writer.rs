@@ -2750,7 +2750,11 @@ mod tests {
             .ok()
             .and_then(|v| v.trim().parse().ok())
             .unwrap_or(INDEX_NICE);
-        let want = if want <= 0 { before } else { (before + want).min(19) };
+        let want = if want <= 0 {
+            before
+        } else {
+            (before + want).min(19)
+        };
         assert_eq!(after, want);
         assert_eq!(nice(), before);
     }
