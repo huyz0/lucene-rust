@@ -1,0 +1,21 @@
+[package]
+name = "lucene-ml"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+# Hugging Face tokenizers: the library ml-commons' DJL tokenizer wraps, so
+# token ids are the same. No progress bars, no hub download, no C++ suffix
+# arrays (only Unigram training uses them).
+tokenizers = { version = "0.22", default-features = false, features = ["onig"] }
+# ONNX Runtime, loaded from the shared library the plugin ships (feature
+# `load-dynamic`): ml-commons runs ONNX models on the same runtime.
+ort = { version = "=2.0.0-rc.15", default-features = false, features = ["load-dynamic", "std"] }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+serde_json = "1"
