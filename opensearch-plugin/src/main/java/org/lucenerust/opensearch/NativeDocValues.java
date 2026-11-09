@@ -9,7 +9,8 @@ import org.apache.lucene.index.TermsEnum;
 import org.apache.lucene.util.BytesRef;
 
 import java.io.IOException;
-import java.nio.ByteBuffer;
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.VarHandle;
 import java.nio.ByteOrder;
 import java.util.Arrays;
 
@@ -37,22 +38,29 @@ final class NativeDocValues {
 
     private NativeDocValues() {}
 
-    /** One document's values of some fields, as the native side encodes them. */
+    private static final VarHandle INT = MethodHandles.byteArrayViewVarHandle(int[].class, ByteOrder.LITTLE_ENDIAN);
+    private static final VarHandle LONG = MethodHandles.byteArrayViewVarHandle(long[].class, ByteOrder.LITTLE_ENDIAN);
+
+    /**
+     * One document's values of some fields, read in place from the bytes the native side encodes:
+     * per field its kind and where its values start, and nothing copied out until asked for.
+     */
     static final class Values {
         final Thread thread;
         final int doc;
+        final byte[] blob;
         final int[] fields;
-        final long[][] numbers;
-        final long[][] ords;
-        final BytesRef[][] terms;
+        final byte[] kinds;
+        /** Per field, the offset of its value count in {@link #blob}; -1 for {@link #NONE}. */
+        final int[] offsets;
 
-        private Values(Thread thread, int doc, int[] fields, long[][] numbers, long[][] ords, BytesRef[][] terms) {
+        private Values(Thread thread, int doc, byte[] blob, int[] fields, byte[] kinds, int[] offsets) {
             this.thread = thread;
             this.doc = doc;
+            this.blob = blob;
             this.fields = fields;
-            this.numbers = numbers;
-            this.ords = ords;
-            this.terms = terms;
+            this.kinds = kinds;
+            this.offsets = offsets;
         }
 
         /** {@code field}'s slot, or -1 when the read did not ask for it ({@code fields} is sorted: {@link Batch#wanted}). */
@@ -61,42 +69,47 @@ final class NativeDocValues {
             return i < 0 ? -1 : i;
         }
 
+        /** The number of values at {@code slot}, of {@code kind}; 0 when it has none or is of another kind. */
+        int count(int slot, byte kind) {
+            return kinds[slot] == kind ? (int) INT.get(blob, offsets[slot]) : 0;
+        }
+
         static Values decode(Thread thread, int doc, byte[] blob) throws IOException {
-            ByteBuffer b = ByteBuffer.wrap(blob).order(ByteOrder.LITTLE_ENDIAN);
-            int n = b.getInt();
-            int[] fields = new int[n];
-            long[][] numbers = new long[n][];
-            long[][] ords = new long[n][];
-            BytesRef[][] terms = new BytesRef[n][];
-            for (int i = 0; i < n; i++) {
-                fields[i] = b.getInt();
-                byte kind = b.get();
-                switch (kind) {
-                    case NONE -> {}
-                    case SORTED_NUMERIC -> {
-                        long[] v = new long[b.getInt()];
-                        for (int j = 0; j < v.length; j++) {
-                            v[j] = b.getLong();
+            try {
+                int n = (int) INT.get(blob, 0);
+                int[] fields = new int[n];
+                byte[] kinds = new byte[n];
+                int[] offsets = new int[n];
+                int at = 4;
+                for (int i = 0; i < n; i++) {
+                    fields[i] = (int) INT.get(blob, at);
+                    byte kind = blob[at + 4];
+                    at += 5;
+                    kinds[i] = kind;
+                    switch (kind) {
+                        case NONE -> offsets[i] = -1;
+                        case SORTED_NUMERIC -> {
+                            offsets[i] = at;
+                            at += 4 + 8 * (int) INT.get(blob, at);
                         }
-                        numbers[i] = v;
-                    }
-                    case SORTED_SET -> {
-                        int count = b.getInt();
-                        long[] o = new long[count];
-                        BytesRef[] t = new BytesRef[count];
-                        for (int j = 0; j < count; j++) {
-                            o[j] = b.getLong();
-                            int len = b.getInt();
-                            t[j] = new BytesRef(blob, b.position(), len);
-                            b.position(b.position() + len);
+                        case SORTED_SET -> {
+                            offsets[i] = at;
+                            int count = (int) INT.get(blob, at);
+                            at += 4;
+                            for (int j = 0; j < count; j++) {
+                                at += 12 + (int) INT.get(blob, at + 8);
+                            }
                         }
-                        ords[i] = o;
-                        terms[i] = t;
+                        default -> throw new IOException("native doc values of unknown kind " + kind);
                     }
-                    default -> throw new IOException("native doc values of unknown kind " + kind);
                 }
+                if (at != blob.length) {
+                    throw new IOException("native doc values: " + (blob.length - at) + " bytes left over");
+                }
+                return new Values(thread, doc, blob, fields, kinds, offsets);
+            } catch (IndexOutOfBoundsException e) {
+                throw new IOException("native doc values cut short", e);
             }
-            return new Values(thread, doc, fields, numbers, ords, terms);
         }
     }
 
@@ -110,17 +123,45 @@ final class NativeDocValues {
     }
 
     /**
-     * One leaf's native reads: the fields asked for so far (a derived {@code _source} asks for the
-     * same ones every hit, so from the second hit on each is one read), and the last document read,
-     * kept for the thread that read it.
+     * The fields a segment's reads have asked for so far, shared by the leaves that read the
+     * segment: OpenSearch wraps the reader again for every search, and a derived {@code _source}
+     * asks for the same fields every hit, so once known each hit is one read.
      */
+    static final class Wanted {
+        private volatile int[] fields = new int[0];
+
+        /** The fields, {@code field} among them: sorted, and never changed once returned. */
+        int[] with(int field) {
+            int[] w = fields;
+            if (Arrays.binarySearch(w, field) >= 0) {
+                return w;
+            }
+            synchronized (this) {
+                w = fields;
+                if (Arrays.binarySearch(w, field) < 0) {
+                    w = Arrays.copyOf(w, w.length + 1);
+                    w[w.length - 1] = field;
+                    Arrays.sort(w);
+                    fields = w;
+                }
+                return w;
+            }
+        }
+    }
+
+    /** One leaf's native reads: the segment's {@link Wanted} fields, and the last document read, kept for the thread that read it. */
     static final class Batch {
         private final Source source;
-        private volatile int[] wanted = new int[0];
+        private final Wanted wanted;
         private volatile Values last;
 
         Batch(Source source) {
+            this(source, new Wanted());
+        }
+
+        Batch(Source source, Wanted wanted) {
             this.source = source;
+            this.wanted = wanted;
         }
 
         /** Document {@code doc}'s values, {@code field}'s among them; null when the native read failed. */
@@ -130,19 +171,7 @@ final class NativeDocValues {
             if (v != null && v.doc == doc && v.thread == t && v.slot(field) >= 0) {
                 return v;
             }
-            int[] w = wanted;
-            if (Arrays.binarySearch(w, field) < 0) {
-                synchronized (this) {
-                    w = wanted;
-                    if (Arrays.binarySearch(w, field) < 0) {
-                        w = Arrays.copyOf(w, w.length + 1);
-                        w[w.length - 1] = field;
-                        Arrays.sort(w);
-                        wanted = w;
-                    }
-                }
-            }
-            byte[] blob = source.read(doc, w);
+            byte[] blob = source.read(doc, wanted.with(field));
             if (blob == null) {
                 return null;
             }
@@ -168,7 +197,10 @@ final class NativeDocValues {
         private SortedNumericDocValues scan;
         private int doc = -1;
         private int reads;
-        private long[] values;
+        /** The current document's values: {@code count} longs in {@code blob} from {@code at}. */
+        private byte[] blob;
+        private int at;
+        private int count;
         private int upto;
 
         /** Point reads answered natively before handing over: {@link #POINT_READS}. */
@@ -212,20 +244,29 @@ final class NativeDocValues {
                 doc = target;
                 return has;
             }
+            int slot = v.slot(field);
             doc = target;
-            values = v.numbers[v.slot(field)];
+            blob = v.blob;
+            count = v.count(slot, SORTED_NUMERIC);
+            at = v.offsets[slot] + 4;
             upto = 0;
-            return values != null;
+            return count > 0;
         }
 
         @Override
         public long nextValue() throws IOException {
-            return scan != null ? scan.nextValue() : values[upto++];
+            if (scan != null) {
+                return scan.nextValue();
+            }
+            if (upto >= count) {
+                throw new IllegalStateException("no more values of document " + doc);
+            }
+            return (long) LONG.get(blob, at + 8 * upto++);
         }
 
         @Override
         public int docValueCount() {
-            return scan != null ? scan.docValueCount() : values.length;
+            return scan != null ? scan.docValueCount() : count;
         }
 
         @Override
@@ -269,9 +310,17 @@ final class NativeDocValues {
         private SortedSetDocValues scan;
         private int doc = -1;
         private int reads;
-        private long[] ords;
-        private BytesRef[] terms;
+        /**
+         * The current document's values in {@code blob}: {@code count} of them from {@code start},
+         * each its ordinal, length and bytes; {@code at} is the next one {@link #nextOrd} reads.
+         */
+        private byte[] blob;
+        private int start;
+        private int count;
+        private int at;
         private int upto;
+        /** What {@link #lookupOrd} returns for the current document's terms, pointed at them in turn. */
+        private final BytesRef term = new BytesRef();
 
         /** Point reads answered natively before handing over: {@link #POINT_READS}. */
         private final int pointReads;
@@ -329,29 +378,46 @@ final class NativeDocValues {
             }
             int slot = v.slot(field);
             doc = target;
-            ords = v.ords[slot];
-            terms = v.terms[slot];
+            blob = v.blob;
+            count = v.count(slot, SORTED_SET);
+            start = v.offsets[slot] + 4;
+            at = start;
             upto = 0;
-            return ords != null;
+            return count > 0;
         }
 
         @Override
         public long nextOrd() throws IOException {
-            return scan != null ? scan.nextOrd() : ords[upto++];
+            if (scan != null) {
+                return scan.nextOrd();
+            }
+            if (upto >= count) {
+                throw new IllegalStateException("no more ordinals of document " + doc);
+            }
+            long ord = (long) LONG.get(blob, at);
+            at += 12 + (int) INT.get(blob, at + 8);
+            upto++;
+            return ord;
         }
 
         @Override
         public int docValueCount() {
-            return scan != null ? scan.docValueCount() : ords.length;
+            return scan != null ? scan.docValueCount() : count;
         }
 
         @Override
         public BytesRef lookupOrd(long ord) throws IOException {
-            if (scan == null && ords != null) {
-                for (int i = 0; i < ords.length; i++) {
-                    if (ords[i] == ord) {
-                        return terms[i];
+            if (scan == null) {
+                // The current document's own terms come with it; any other ordinal is the segment's.
+                for (int i = 0, p = start; i < count; i++) {
+                    int len = (int) INT.get(blob, p + 8);
+                    if ((long) LONG.get(blob, p) == ord) {
+                        term.bytes = blob;
+                        term.offset = p + 12;
+                        term.length = len;
+                        return term;
                     }
+                    p += 12 + len;
                 }
             }
             return dictionary().lookupOrd(ord);
