@@ -299,19 +299,21 @@ impl LiveColumns {
     /// when they must be decoded to be written.
     fn chunk_columns(&self, start: i32, end: i32) -> Option<crate::index_writer::ChunkColumns> {
         let doc_values = self.doc_values.range(start, end)?;
-        self.columns_besides_doc_values(start, end, doc_values)
+        self.columns_besides_doc_values(start, end, doc_values, true)
     }
 
     /// [`Self::chunk_columns`] with each field's doc values copied out as
-    /// kept, to be put in the writer's shape only for the fields read.
+    /// kept, to be put in the writer's shape only for the fields read, and
+    /// the points only with `points`.
     fn lean_columns(
         &self,
         start: i32,
         end: i32,
+        points: bool,
     ) -> Option<(crate::index_writer::ChunkColumns, Vec<(i32, DocValuesRun)>)> {
         let runs = self.doc_values.runs(start, end)?;
         Some((
-            self.columns_besides_doc_values(start, end, Vec::new())?,
+            self.columns_besides_doc_values(start, end, Vec::new(), points)?,
             runs,
         ))
     }
@@ -321,8 +323,9 @@ impl LiveColumns {
         start: i32,
         end: i32,
         doc_values: Vec<(i32, crate::index_writer::PrebuiltDocValues)>,
+        points: bool,
     ) -> Option<crate::index_writer::ChunkColumns> {
-        let (present, points) = self.chunk.range(start, end)?;
+        let (present, points) = self.chunk.range(start, end, points)?;
         let (from, to) = (usize::try_from(start).ok()?, usize::try_from(end).ok()?);
         let norms = self
             .norms
@@ -1234,7 +1237,12 @@ impl ConcurrentIndexWriter<'_> {
             dir,
             name,
         )
-        .map(|(sci, _)| sci)
+        .and_then(|s| match s {
+            LeanSegment::Written(sci, _) => Ok(sci),
+            LeanSegment::Parts(..) => Err(Error::LiveSearch(
+                "a chunk for a search alone was asked for another".into(),
+            )),
+        })
     }
 
     /// [`Self::live_buffer_segment`] without postings, for one search: the
@@ -1253,10 +1261,7 @@ impl ConcurrentIndexWriter<'_> {
         points: bool,
         dir: &dyn lucene_store::Directory,
         name: &str,
-    ) -> Result<(
-        crate::segment_infos::SegmentCommitInfo,
-        Option<crate::index_writer::LazyDocValues>,
-    )> {
+    ) -> Result<LeanSegment> {
         self.live_segment_with(
             id,
             range,
@@ -1280,10 +1285,7 @@ impl ConcurrentIndexWriter<'_> {
         lazy: Option<bool>,
         dir: &dyn lucene_store::Directory,
         name: &str,
-    ) -> Result<(
-        crate::segment_infos::SegmentCommitInfo,
-        Option<crate::index_writer::LazyDocValues>,
-    )> {
+    ) -> Result<LeanSegment> {
         let started = std::time::Instant::now();
         let cfg = self.check_live()?;
         if cfg.sorts_documents() {
@@ -1302,7 +1304,7 @@ impl ConcurrentIndexWriter<'_> {
             if decode_chunks() {
                 None
             } else if lazy.is_some() && cfg.codec.is_none() {
-                c.lean_columns(range.start, range.end)
+                c.lean_columns(range.start, range.end, lazy == Some(true))
                     .map(|(c, runs)| (c, Some(runs)))
             } else {
                 c.chunk_columns(range.start, range.end).map(|c| (c, None))
@@ -1372,6 +1374,27 @@ impl ConcurrentIndexWriter<'_> {
             }
             _ => None,
         };
+        if let (Some(points), Some(c)) = (lazy, columns.as_ref()) {
+            if lazy_doc_values.is_some() && cfg.takes_lean_parts(c) {
+                // Built from the columns alone, with the slot free.
+                let partition = match (&slot, &copied) {
+                    (Some(slot), _) => slot.partition.clone(),
+                    (None, Some(c)) => c.partition.clone(),
+                    (None, None) => None,
+                };
+                drop(slot);
+                let parts = cfg.build_lean_parts(
+                    c,
+                    range.end.saturating_sub(range.start),
+                    points,
+                    partition.as_deref(),
+                    lucene_util::string_helper::random_id(),
+                )?;
+                crate::live_timing::record(crate::live_timing::Phase::ChunkLean, started.elapsed());
+                let lazy_doc_values = lazy_doc_values.ok_or_else(flushed)?;
+                return Ok(LeanSegment::Parts(Box::new(parts), lazy_doc_values));
+            }
+        }
         let lean = lazy_doc_values.is_some();
         let limit = crate::index_writer::BufferLimit {
             start: range.start,
@@ -1464,7 +1487,7 @@ impl ConcurrentIndexWriter<'_> {
             },
             started.elapsed(),
         );
-        Ok((sci, lazy_doc_values))
+        Ok(LeanSegment::Written(sci, lazy_doc_values))
     }
 
     /// The directory the writer's segments are in.
@@ -1747,6 +1770,22 @@ impl ConcurrentIndexWriter<'_> {
         self.close_live_view(&view);
         out
     }
+}
+
+/// A run of buffered documents for one search
+/// ([`ConcurrentIndexWriter::live_lean_segment`]).
+pub enum LeanSegment {
+    /// Built in memory: what a reader of the run needs besides its doc
+    /// values, which are encoded a field at a time as they are read.
+    Parts(
+        Box<crate::index_writer::LeanParts>,
+        crate::index_writer::LazyDocValues,
+    ),
+    /// Written to the directory, with its doc values when they were not.
+    Written(
+        crate::segment_infos::SegmentCommitInfo,
+        Option<crate::index_writer::LazyDocValues>,
+    ),
 }
 
 /// One buffer's documents and deletes as of now, with `tail` (delete-log

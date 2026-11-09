@@ -115,8 +115,8 @@ use lucene_codecs::field_infos::FieldInfo;
 mod live;
 pub(crate) use live::DocValuesRun;
 pub use live::{
-    FieldTotals, LiveBuffer, LiveBufferField, LiveDocValue, LiveFieldRequest, LivePattern,
-    LiveRequest, LiveSnapshot, LiveView, PointBounds, ViewBuffer,
+    FieldTotals, LeanSegment, LiveBuffer, LiveBufferField, LiveDocValue, LiveFieldRequest,
+    LivePattern, LiveRequest, LiveSnapshot, LiveView, PointBounds, ViewBuffer,
 };
 
 /// A value only reached through `&mut`: a slot's buffer is read by

@@ -259,13 +259,15 @@ impl ChunkFields {
             .fold(0, usize::saturating_add)
     }
 
-    /// The fields some document of `start..end` has, and their points
-    /// numbered from `start`; `None` when the documents must be decoded.
+    /// The fields some document of `start..end` has, and with
+    /// `with_points` their points numbered from `start`; `None` when the
+    /// documents must be decoded.
     #[allow(clippy::type_complexity)]
     pub(in crate::concurrent_writer) fn range(
         &self,
         start: i32,
         end: i32,
+        with_points: bool,
     ) -> Option<(Vec<i32>, Vec<PackedPointsField>)> {
         if self.unsupported {
             return None;
@@ -277,7 +279,7 @@ impl ChunkFields {
             .map(|(&n, _)| n)
             .collect();
         let mut points = Vec::new();
-        for p in self.points.values() {
+        for p in self.points.values().filter(|_| with_points) {
             let width = usize::try_from(p.num_dims.checked_mul(p.bytes_per_dim)?).ok()?;
             let hi = super::doc_values::before_from_end(&p.docs, end);
             let lo =

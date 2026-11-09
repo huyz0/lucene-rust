@@ -824,7 +824,11 @@ fn a_flushing_buffer_is_written_as_lean_chunks_until_published() {
     let w = columns_writer(&dir);
     let id = w.live_slot_buffers()[0].id;
     let lean = |name: &str| w.live_lean_segment(id, 37..301, HashMap::new(), &[], true, &dir, name);
-    let (in_slot, slot_dv) = lean("_s").unwrap();
+    let parts = |s: super::LeanSegment| match s {
+        super::LeanSegment::Parts(p, dv) => (*p, dv),
+        super::LeanSegment::Written(..) => panic!("a run kept as columns is built in memory"),
+    };
+    let (in_slot, slot_dv) = parts(lean("_s").unwrap());
     let slot_view = w.open_live_view(None).unwrap();
     let batch = {
         let mut slot = super::write_slot(&w.slots[0]);
@@ -835,12 +839,22 @@ fn a_flushing_buffer_is_written_as_lean_chunks_until_published() {
         .buffers
         .iter()
         .any(|b| b.id == id && !b.in_slot && b.chunks));
-    let (flushing, flushing_dv) = lean("_f").unwrap();
+    let (flushing, flushing_dv) = parts(lean("_f").unwrap());
+    let named = |p: &crate::index_writer::LeanParts| {
+        p.field_infos
+            .iter()
+            .map(|f| (f.number, f.name.clone()))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(named(&in_slot), named(&flushing));
+    assert_eq!((in_slot.max_doc, flushing.max_doc), (264, 264));
+    let unframed = |b: &Option<(Vec<u8>, Vec<u8>)>| b.as_ref().map(|(m, d)| (m.len(), d.len()));
+    assert!(in_slot.norms.is_some() && in_slot.points.is_some());
+    assert_eq!(unframed(&in_slot.norms), unframed(&flushing.norms));
     assert_eq!(
-        segment_files(tmp.path(), &in_slot, "_s"),
-        segment_files(tmp.path(), &flushing, "_f")
+        in_slot.points.as_ref().map(|p| p.2.len()),
+        flushing.points.as_ref().map(|p| p.2.len())
     );
-    let (slot_dv, flushing_dv) = (slot_dv.unwrap(), flushing_dv.unwrap());
     let fields: Vec<i32> = slot_dv.fields().collect();
     assert!(!fields.is_empty());
     assert_eq!(fields, flushing_dv.fields().collect::<Vec<_>>());
