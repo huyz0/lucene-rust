@@ -522,7 +522,64 @@ pub(crate) struct DocValuesRun {
     column: Column,
 }
 
+/// A keyword run's values as they arrived: each document's term ids and
+/// the ids' bytes, read with no sorting or encoding.
+#[derive(Debug, Clone, Copy)]
+pub struct KeywordRun<'a> {
+    start: i32,
+    from: usize,
+    docs: &'a [i32],
+    ends: &'a [u32],
+    ids: &'a [u32],
+    terms: &'a TermList,
+}
+
+impl<'a> KeywordRun<'a> {
+    /// Each document with a value, numbered from the run's first, and its
+    /// term ids (a set's possibly repeated), in document order.
+    pub fn docs(&self) -> impl Iterator<Item = (i32, &'a [u32])> + 'a {
+        let (start, from, ids) = (self.start, self.from, self.ids);
+        let mut last = from;
+        self.docs.iter().zip(self.ends).map(move |(&d, &e)| {
+            let (lo, hi) = (last.saturating_sub(from), (e as usize).saturating_sub(from));
+            last = e as usize;
+            (d.saturating_sub(start), ids.get(lo..hi).unwrap_or_default())
+        })
+    }
+
+    /// How many term ids there are: every id is below it.
+    pub fn term_count(&self) -> usize {
+        self.terms.len()
+    }
+
+    /// Term `id`'s bytes.
+    pub fn term(&self, id: u32) -> &'a [u8] {
+        self.terms.get(id)
+    }
+}
+
 impl DocValuesRun {
+    /// A keyword field's values as they arrived; `None` for other types.
+    pub(crate) fn keyword(&self) -> Option<KeywordRun<'_>> {
+        match &self.column {
+            Column::Terms {
+                terms,
+                docs,
+                ends,
+                ids,
+                ..
+            } => Some(KeywordRun {
+                start: self.start,
+                from: self.from,
+                docs,
+                ends,
+                ids,
+                terms: &terms.list,
+            }),
+            _ => None,
+        }
+    }
+
     /// The field's type; a written field of another type cannot take it.
     pub(crate) fn doc_values_type(&self) -> DocValuesType {
         self.column.doc_values_type()

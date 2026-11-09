@@ -1384,6 +1384,18 @@ impl LazyDocValues {
         }
     }
 
+    /// Keyword field `field_number`'s values as they arrived, read in
+    /// place; `None` for a field of another type or without a column.
+    pub fn keyword_run(
+        &self,
+        field_number: i32,
+    ) -> Option<crate::concurrent_writer::KeywordRun<'_>> {
+        self.columns
+            .iter()
+            .find(|(n, _)| *n == field_number)
+            .and_then(|(_, r)| r.keyword())
+    }
+
     /// The fields with a column.
     pub fn fields(&self) -> impl Iterator<Item = i32> + '_ {
         self.columns.iter().map(|(n, _)| *n)

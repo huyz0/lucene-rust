@@ -105,6 +105,19 @@ fn terms_entry<'a>(
     Ok(keyword_column(reader, field)?.map(|(_, data, entry)| (data, entry)))
 }
 
+/// [`terms_entry`], but none for a segment with a keyword run of `field`
+/// when `skip_runs`: its terms are found by bytes instead.
+fn dict_entry<'a>(
+    reader: &'a SegmentReader,
+    field: &str,
+    skip_runs: bool,
+) -> Result<Option<(&'a [u8], &'a TermsDictEntry)>> {
+    if skip_runs && reader.keyword_run(field).is_some() {
+        return Ok(None);
+    }
+    terms_entry(reader, field)
+}
+
 /// [`keyword_column`] with its dictionary opened.
 pub(crate) fn open_ords<'a>(
     reader: &'a SegmentReader,
@@ -130,6 +143,10 @@ pub struct GlobalOrds {
     /// The distinct terms in global-ordinal order, while there are few
     /// ([`KEPT_TERMS`]): what [`Self::remapped`] looks terms up in.
     terms: Option<Arc<[Box<[u8]>]>>,
+    /// Whether the segments with a keyword run of the field
+    /// ([`SegmentReader::keyword_run`]) are left out: their documents are
+    /// counted from the run, their terms found by bytes.
+    skips_runs: bool,
 }
 
 /// At most this many terms, of at most as many bytes together, are kept
@@ -149,6 +166,7 @@ impl GlobalOrds {
         Ok(GlobalOrds {
             map: ordinal_map_of(&readers, field)?,
             terms: None,
+            skips_runs: false,
         })
     }
 
@@ -157,13 +175,35 @@ impl GlobalOrds {
     ///
     /// # Errors
     /// As [`Self::build`].
-    fn build_keeping(readers: &[SegmentReader], field: &str) -> Result<Self> {
+    pub(crate) fn build_keeping(
+        readers: &[SegmentReader],
+        field: &str,
+        skip_runs: bool,
+    ) -> Result<Self> {
         let readers: Vec<&SegmentReader> = readers.iter().collect();
-        let (map, terms) = ordinal_map_keeping(&readers, field)?;
+        let (map, terms) = ordinal_map_keeping(&readers, field, skip_runs)?;
         Ok(GlobalOrds {
             map,
             terms: terms.map(Arc::from),
+            skips_runs: skip_runs,
         })
+    }
+
+    /// Whether these ordinals kept their terms.
+    pub(crate) fn has_terms(&self) -> bool {
+        self.terms.is_some()
+    }
+
+    /// Whether the segments with a keyword run are left out.
+    pub(crate) fn skips_runs(&self) -> bool {
+        self.skips_runs
+    }
+
+    /// Term `term`'s global ordinal, when these ordinals kept their terms
+    /// and it is one of them.
+    pub(crate) fn ord_of(&self, term: &[u8]) -> Option<usize> {
+        let terms = self.terms.as_ref()?;
+        terms.binary_search_by(|t| (**t).cmp(term)).ok()
     }
 
     /// These ordinals' terms over `readers`, where `kept[i]` is the
@@ -180,12 +220,13 @@ impl GlobalOrds {
         kept: &[Option<usize>],
         field: &str,
     ) -> Result<Option<Self>> {
+        let skip_runs = self.skips_runs;
         let Some(terms) = &self.terms else {
             return Ok(None);
         };
         let mut cursors = Vec::with_capacity(readers.len());
         for (reader, k) in readers.iter().zip(kept) {
-            cursors.push(match (k, terms_entry(reader, field)?) {
+            cursors.push(match (k, dict_entry(reader, field, skip_runs)?) {
                 (None, Some((data, entry))) => {
                     Some(TermsCursor::open(data, entry).map_err(store_err)?)
                 }
@@ -212,6 +253,7 @@ impl GlobalOrds {
             .map(|map| GlobalOrds {
                 map,
                 terms: Some(Arc::clone(terms)),
+                skips_runs: skip_runs,
             }))
     }
 
@@ -245,7 +287,7 @@ impl GlobalOrds {
 /// A field whose doc values are not keyword ones, or a dictionary that
 /// cannot be read.
 pub(crate) fn ordinal_map_of(readers: &[&SegmentReader], field: &str) -> Result<OrdinalMap> {
-    with_cursors(readers, field, |refs| {
+    with_cursors(readers, field, false, |refs| {
         OrdinalMap::build_streaming(refs).map_err(store_err)
     })
 }
@@ -254,8 +296,9 @@ pub(crate) fn ordinal_map_of(readers: &[&SegmentReader], field: &str) -> Result<
 fn ordinal_map_keeping(
     readers: &[&SegmentReader],
     field: &str,
+    skip_runs: bool,
 ) -> Result<(OrdinalMap, Option<KeptTerms>)> {
-    with_cursors(readers, field, |refs| {
+    with_cursors(readers, field, skip_runs, |refs| {
         OrdinalMap::build_keeping_terms(refs, KEPT_TERMS).map_err(store_err)
     })
 }
@@ -265,11 +308,12 @@ fn ordinal_map_keeping(
 fn with_cursors<T>(
     readers: &[&SegmentReader],
     field: &str,
+    skip_runs: bool,
     f: impl FnOnce(&mut [&mut dyn TermCursor]) -> Result<T>,
 ) -> Result<T> {
     let mut cursors = Vec::with_capacity(readers.len());
     for reader in readers {
-        cursors.push(match terms_entry(reader, field)? {
+        cursors.push(match dict_entry(reader, field, skip_runs)? {
             Some((data, entry)) => Some(TermsCursor::open(data, entry).map_err(store_err)?),
             None => None,
         });
@@ -296,6 +340,9 @@ fn with_cursors<T>(
 #[derive(Debug, Default)]
 pub struct GlobalOrdsCache {
     by_field: std::sync::Mutex<HashMap<String, Vec<KeptMap>>>,
+    /// Fields whose terms are too many to keep: their runs are not left
+    /// out, so a map leaving them out is not built only to be dropped.
+    unkept: std::sync::Mutex<std::collections::HashSet<String>>,
 }
 
 /// How many maps a cache keeps per field, the newest.
@@ -308,7 +355,33 @@ type KeptMap = (Vec<SegmentKey>, Arc<GlobalOrds>);
 /// the field's doc-values generation, which a doc-values update moves on.
 type SegmentKey = ([u8; lucene_util::string_helper::ID_LENGTH], i64);
 
-fn segment_key(reader: &SegmentReader, field: &str) -> SegmentKey {
+/// The key of every segment left out for its keyword run.
+const RUN_KEY: SegmentKey = ([0; lucene_util::string_helper::ID_LENGTH], -2);
+
+/// Where each of `keys` sits in `old`: its position, or for the n-th
+/// segment left out for its keyword run, the n-th such one's.
+fn kept_at(keys: &[SegmentKey], old: &[SegmentKey]) -> Vec<Option<usize>> {
+    let mut runs = old
+        .iter()
+        .enumerate()
+        .filter(|(_, k)| **k == RUN_KEY)
+        .map(|(i, _)| i);
+    keys.iter()
+        .map(|key| {
+            if *key == RUN_KEY {
+                runs.next()
+            } else {
+                old.iter().position(|o| o == key)
+            }
+        })
+        .collect()
+}
+
+fn segment_key(reader: &SegmentReader, field: &str, skip_runs: bool) -> SegmentKey {
+    // Every segment left out adds no terms: they all have one key.
+    if skip_runs && reader.keyword_run(field).is_some() {
+        return RUN_KEY;
+    }
     let gen = reader
         .field_infos()
         .fields
@@ -326,20 +399,50 @@ impl GlobalOrdsCache {
     /// # Errors
     /// As [`GlobalOrds::build`].
     pub fn ords(&self, readers: &[SegmentReader], field: &str) -> Result<Arc<GlobalOrds>> {
-        let keys: Vec<SegmentKey> = readers.iter().map(|r| segment_key(r, field)).collect();
+        self.ords_with(readers, field, false)
+    }
+
+    /// [`Self::ords`], leaving out the segments with a keyword run when
+    /// `skip_runs`.
+    ///
+    /// # Errors
+    /// As [`GlobalOrds::build`].
+    pub fn ords_with(
+        &self,
+        readers: &[SegmentReader],
+        field: &str,
+        skip_runs: bool,
+    ) -> Result<Arc<GlobalOrds>> {
+        let unkept = |c: &Self| {
+            c.unkept
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains(field)
+        };
+        if skip_runs && unkept(self) {
+            return self.ords_with(readers, field, false);
+        }
+        let keys: Vec<SegmentKey> = readers
+            .iter()
+            .map(|r| segment_key(r, field, skip_runs))
+            .collect();
+        let slot = if skip_runs {
+            format!("\u{1}{field}")
+        } else {
+            field.to_string()
+        };
         let best = {
             let kept = self.by_field.lock().unwrap_or_else(|e| e.into_inner());
-            kept.get(field).and_then(|maps| {
+            kept.get(&slot).and_then(|maps| {
                 maps.iter()
-                    .map(|(k, g)| {
-                        let at: Vec<Option<usize>> = keys
-                            .iter()
-                            .map(|key| k.iter().position(|old| old == key))
-                            .collect();
-                        (at, Arc::clone(g), k.len())
-                    })
+                    .map(|(k, g)| (kept_at(&keys, k), Arc::clone(g), k.len()))
                     .filter(|(at, _, _)| at.iter().any(Option::is_some))
-                    .max_by_key(|(at, _, _)| at.iter().flatten().count())
+                    .max_by_key(|(at, _, _)| {
+                        at.iter()
+                            .zip(&keys)
+                            .filter(|(a, k)| a.is_some() && **k != RUN_KEY)
+                            .count()
+                    })
             })
         };
         let built = match best {
@@ -350,14 +453,21 @@ impl GlobalOrdsCache {
             }
             Some((at, g, _)) => match g.remapped(readers, &at, field)? {
                 Some(e) => e,
-                None => GlobalOrds::build_keeping(readers, field)?,
+                None => GlobalOrds::build_keeping(readers, field, skip_runs)?,
             },
-            None => GlobalOrds::build_keeping(readers, field)?,
+            None => GlobalOrds::build_keeping(readers, field, skip_runs)?,
         };
         let built = Arc::new(built);
+        if skip_runs && built.terms.is_none() {
+            self.unkept
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(field.to_string());
+            return self.ords_with(readers, field, false);
+        }
         if built.terms.is_some() {
             let mut kept = self.by_field.lock().unwrap_or_else(|e| e.into_inner());
-            let maps = kept.entry(field.to_string()).or_default();
+            let maps = kept.entry(slot).or_default();
             if maps.len() >= CACHED_MAPS {
                 maps.remove(0);
             }
@@ -466,8 +576,14 @@ pub(crate) fn segment_counts(
     global: &GlobalOrds,
     read: &ColumnRead<'_>,
     counts: &mut [u64],
+    extra: &mut HashMap<Vec<u8>, u64>,
     scratch: &mut TermsScratch,
 ) -> Result<()> {
+    if global.skips_runs() {
+        if let Some(run) = reader.keyword_run(field) {
+            return count_run(&run, global, read, counts, extra);
+        }
+    }
     let map = global.map.segment_ords(seg).unwrap_or(&[]);
     // `tryCollectFromTermFrequencies`: a segment every document of which
     // matches (a match-all, nothing deleted) is counted from its postings --
@@ -550,6 +666,90 @@ pub(crate) fn segment_counts(
         )))),
         None => Ok(()),
     }
+}
+
+/// A keyword run's matches counted by term id, each id's count then put on
+/// its term's global ordinal, or in `extra` by bytes for a term no other
+/// segment has. A document counts once per distinct term.
+///
+/// # Errors
+/// A term id outside the run's terms.
+fn count_run(
+    run: &lucene_index::concurrent_writer::KeywordRun<'_>,
+    global: &GlobalOrds,
+    read: &ColumnRead<'_>,
+    counts: &mut [u64],
+    extra: &mut HashMap<Vec<u8>, u64>,
+) -> Result<()> {
+    // The matches' term ids, each document's distinct ones.
+    let mut hits: Vec<u32> = Vec::new();
+    let mut add = |ids: &[u32]| match ids {
+        [] => {}
+        [id] => hits.push(*id),
+        _ => {
+            let at = hits.len();
+            hits.extend_from_slice(ids);
+            hits[at..].sort_unstable();
+            let mut keep = at;
+            for i in at..hits.len() {
+                if keep == at || hits[keep - 1] != hits[i] {
+                    hits[keep] = hits[i];
+                    keep += 1;
+                }
+            }
+            hits.truncate(keep);
+        }
+    };
+    match read {
+        ColumnRead::Stream(accept) => {
+            for (doc, ids) in run.docs() {
+                if accept.test(doc) {
+                    add(ids);
+                }
+            }
+        }
+        ColumnRead::Seek(docs) => {
+            let mut values = run.docs().peekable();
+            for &doc in *docs {
+                while values.next_if(|&(d, _)| d < doc).is_some() {}
+                if let Some((_, ids)) = values.next_if(|&(d, _)| d == doc) {
+                    add(ids);
+                }
+            }
+        }
+    }
+    let term_count = run.term_count();
+    if let Some(&bad) = hits.iter().find(|&&id| id as usize >= term_count) {
+        return Err(store_err(lucene_store::Error::Corrupted(format!(
+            "keyword run: term id {bad} outside its {term_count} terms"
+        ))));
+    }
+    let mut put = |id: u32, n: u64| {
+        let term = run.term(id);
+        match global.ord_of(term).and_then(|g| counts.get_mut(g)) {
+            Some(c) => *c += n,
+            None => *extra.entry(term.to_vec()).or_default() += n,
+        }
+    };
+    // Few terms: counted in place; many (the buffer's, the run holding a
+    // few of its documents): the ids sorted and their runs counted.
+    if term_count <= hits.len().saturating_mul(4) {
+        let mut by_id = vec![0u64; term_count];
+        for &id in &hits {
+            by_id[id as usize] += 1;
+        }
+        for (id, &n) in (0u32..).zip(&by_id) {
+            if n > 0 {
+                put(id, n);
+            }
+        }
+    } else {
+        hits.sort_unstable();
+        for same in hits.chunk_by(|a, b| a == b) {
+            put(same[0], same.len() as u64);
+        }
+    }
+    Ok(())
 }
 
 fn store_err(e: lucene_store::Error) -> crate::Error {
@@ -671,10 +871,62 @@ fn count_lanes<const L: usize>(
     Ok(first)
 }
 
+/// [`select_with`] with no terms beside `global`'s.
+#[cfg(test)]
+pub(crate) fn select(
+    counts: &[u64],
+    shard_size: usize,
+    global: &GlobalOrds,
+    readers: &[SegmentReader],
+    field: &str,
+) -> Result<TermsResult> {
+    select_with(counts, &HashMap::new(), shard_size, global, readers, field)
+}
+
+/// [`select_global`] with `extra`'s counts too: terms of keyword runs that no
+/// segment of `global` has, by bytes.
+pub(crate) fn select_with(
+    counts: &[u64],
+    extra: &HashMap<Vec<u8>, u64>,
+    shard_size: usize,
+    global: &GlobalOrds,
+    readers: &[SegmentReader],
+    field: &str,
+) -> Result<TermsResult> {
+    let mut result = select_global(counts, shard_size, global, readers, field)?;
+    if extra.is_empty() {
+        return Ok(result);
+    }
+    // The global top `shard_size` holds every global term the merged top
+    // can: a global term outside it is outranked by as many global ones.
+    let total = result.other_doc_count
+        + result.buckets.iter().map(|b| b.1).sum::<u64>()
+        + extra.values().sum::<u64>();
+    let mut all: Vec<(&[u8], u64)> = result
+        .buckets
+        .iter()
+        .map(|(t, n)| (t.as_slice(), *n))
+        .chain(extra.iter().map(|(t, &n)| (t.as_slice(), n)))
+        .collect();
+    let by_rank = |a: &(&[u8], u64), b: &(&[u8], u64)| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0));
+    if all.len() > shard_size {
+        if shard_size > 0 {
+            all.select_nth_unstable_by(shard_size - 1, by_rank);
+        }
+        all.truncate(shard_size);
+    }
+    let kept: u64 = all.iter().map(|b| b.1).sum();
+    all.sort_unstable_by(|a, b| a.0.cmp(b.0));
+    let buckets = all.into_iter().map(|(t, n)| (t.to_vec(), n)).collect();
+    result.buckets = buckets;
+    result.other_doc_count = total - kept;
+    Ok(result)
+}
+
 /// `buildAggregations`: the top `shard_size` by count desc, then global
 /// ordinal (term) asc; the others' counts in `other_doc_count`; the kept
 /// listed by term, their bytes read from a segment holding each.
-pub(crate) fn select(
+fn select_global(
     counts: &[u64],
     shard_size: usize,
     global: &GlobalOrds,
@@ -728,6 +980,23 @@ pub(crate) fn select(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn segments_left_out_for_their_runs_match_in_order() {
+        let seg = |b: u8| ([b; lucene_util::string_helper::ID_LENGTH], -1);
+        let old = [seg(1), RUN_KEY, seg(2), RUN_KEY];
+        // The same segments: an exact hit, each at its own place.
+        assert_eq!(
+            kept_at(&old, &old),
+            vec![Some(0), Some(1), Some(2), Some(3)]
+        );
+        // One more run than kept: the extra one has no match.
+        let new = [seg(1), RUN_KEY, RUN_KEY, RUN_KEY, seg(3)];
+        assert_eq!(
+            kept_at(&new, &old),
+            vec![Some(0), Some(1), Some(3), None, None]
+        );
+    }
 
     #[test]
     fn the_top_terms_are_kept_by_count_then_term_and_listed_by_term() {
