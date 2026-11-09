@@ -55,12 +55,13 @@ struct Terms {
 /// How many terms a [`TermList`] block holds.
 const TERM_BLOCK: usize = 1024;
 
-/// Terms by id, in blocks that stop changing once full, so a copy of the
-/// list shares them and copies only the last, open one.
+/// Terms by id, in blocks that stop changing once full. A copy of the list
+/// shares its blocks and its open one: a term added while a copy is held
+/// copies the open block once, on the indexing side.
 #[derive(Debug, Clone, Default)]
 struct TermList {
-    sealed: Vec<Arc<[Arc<[u8]>]>>,
-    open: Vec<Arc<[u8]>>,
+    sealed: Arc<Vec<Arc<[Arc<[u8]>]>>>,
+    open: Arc<Vec<Arc<[u8]>>>,
 }
 
 impl TermList {
@@ -71,9 +72,11 @@ impl TermList {
     }
 
     fn push(&mut self, term: Arc<[u8]>) {
-        self.open.push(term);
-        if self.open.len() == TERM_BLOCK {
-            self.sealed.push(std::mem::take(&mut self.open).into());
+        let open = Arc::make_mut(&mut self.open);
+        open.push(term);
+        if open.len() == TERM_BLOCK {
+            let full: Arc<[Arc<[u8]>]> = std::mem::take(open).into();
+            Arc::make_mut(&mut self.sealed).push(full);
         }
     }
 
