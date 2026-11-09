@@ -263,6 +263,44 @@ def pipeline_error(port, body):
     return (r["status"], e.get("type"), e.get("reason"))
 
 
+def stats_answer(port, path):
+    """A stats call's status and body, its node ids, timestamps and memory left out."""
+    import urllib.request, urllib.error
+    try:
+        with urllib.request.urlopen(f"http://localhost:{port}{path}", timeout=60) as r:
+            status, body = r.status, r.read().decode()
+    except urllib.error.HTTPError as e:
+        status, body = e.code, e.read().decode()
+    try:
+        body = json.loads(body)
+    except ValueError:
+        return status, body
+    def clean(v):
+        if isinstance(v, dict):
+            return {k: clean(x) for k, x in v.items()
+                    if k not in ("nodes", "minutes_since_last_event") and not k.startswith("memory")}
+        return v
+    return status, clean(body)
+
+
+STATS_CALLS = [
+    "/_plugins/_neural/stats",
+    "/_plugins/_neural/stats?flat_stat_paths=true",
+    "/_plugins/_neural/stats?include_metadata=true&flat_stat_paths=true",
+    "/_plugins/_neural/stats/hybrid_query_requests,normalization_processor_executions",
+    "/_plugins/_neural/stats?include_individual_nodes=false&include_info=false",
+    "/_plugins/_neural/stats/bogus_stat",
+    "/_plugins/_neural/stats?include_all_nodes=false",
+]
+
+
+def compare_stats(failures):
+    for path in STATS_CALLS:
+        o, s = stats_answer(OURS[1], path), stats_answer(STOCK[1], path)
+        if o != s:
+            failures.append(f"stats {path}:\n  ours  {json.dumps(o)[:1500]}\n  stock {json.dumps(s)[:1500]}")
+
+
 def main():
     keep = "--keep" in sys.argv
     zips = glob.glob(os.path.join(ROOT, "opensearch-plugin", "build", "distributions", "lucene-rust-*.zip"))
@@ -277,11 +315,15 @@ def main():
     ck.start(OURS[0], OURS[1], image)
     ck.start(STOCK[0], STOCK[1], f"opensearchproject/opensearch:{ck.VERSION}")
     failures = []
+    disabled = []
     try:
         ck.wait(OURS[1])
         ck.wait(STOCK[1])
         # Java-engine indexes on both nodes keep documents in the order they came, so equal
         # scores at the edge of a sub-query's top hits break the same way.
+        for port in (OURS[1], STOCK[1]):
+            disabled.append(stats_answer(port, "/_plugins/_neural/stats"))
+            ck.req(port, "PUT", "/_cluster/settings", {"persistent": {"plugins.neural_search.stats_enabled": True}})
         setup(OURS[1], False)
         setup(STOCK[1], False)
         runs = searches()
@@ -296,6 +338,10 @@ def main():
         big = big_searches()
         for pipeline, body in big:
             compare(pipeline, body, failures, ours="hb", stock="hb")
+        # Before the plugin-only searches below, which the counters would see.
+        if disabled[0] != disabled[1]:
+            failures.append(f"stats while disabled: ours {disabled[0]}, stock {disabled[1]}")
+        compare_stats(failures)
         # Rust-written segments: the plugin's Rust-engine index against stock's Java one.
         setup(OURS[1], True, "hr")
         whole = whole_searches()
@@ -315,7 +361,7 @@ def main():
                 "hybrid_sort"}
         if ran == 0 or set(fallbacks) - java:
             failures.append(f"hybrid searches fell back to Java: {fallbacks}")
-        print(f"{len(runs) + 1} hybrid searches, {len(whole)} on a Rust-engine index, {len(big)} over 5000-document segments, {len(ERRORS)} search errors, {len(BAD_PIPELINES)} pipeline errors compared")
+        print(f"{len(runs) + 1} hybrid searches, {len(whole)} on a Rust-engine index, {len(big)} over 5000-document segments, {len(ERRORS)} search errors, {len(BAD_PIPELINES)} pipeline errors, {len(STATS_CALLS)} stats calls compared")
     finally:
         if not keep:
             for name in (OURS[0], STOCK[0]):

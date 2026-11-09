@@ -583,7 +583,7 @@ public class RustSearchPlugin extends Plugin implements
         this.clusterService.set(clusterService);
         this.resolver.set(indexNameExpressionResolver);
         HybridSearch.initialize(threadPool);
-        return List.of();
+        return org.lucenerust.opensearch.neural.NeuralStats.initialize(clusterService, indexNameExpressionResolver, environment.settings());
     }
 
     @Override
@@ -633,6 +633,7 @@ public class RustSearchPlugin extends Plugin implements
     ) {
         List<RestHandler> handlers = new ArrayList<>();
         handlers.add(new RestStatsAction(stats, readers, libraryPath));
+        handlers.add(org.lucenerust.opensearch.neural.NeuralStats.restHandler());
         if (stockKnn == false) {
             handlers.addAll(KnnRestHandlers.all(clusterService::get, indexNameExpressionResolver));
             handlers.addAll(KnnModelHandlers.all(clusterService::get));
@@ -643,9 +644,10 @@ public class RustSearchPlugin extends Plugin implements
     @Override
     public List<ActionHandler<? extends ActionRequest, ? extends ActionResponse>> getActions() {
         if (stockKnn) {
-            return List.of();
+            return List.of(org.lucenerust.opensearch.neural.NeuralStats.actionHandler());
         }
         return List.of(
+            org.lucenerust.opensearch.neural.NeuralStats.actionHandler(),
             new ActionHandler<>(KnnStatsTransport.Action.INSTANCE, KnnStatsTransport.TransportAction.class),
             new ActionHandler<>(KnnShardsTransport.WarmupAction.INSTANCE, KnnShardsTransport.WarmupTransportAction.class),
             new ActionHandler<>(KnnShardsTransport.ClearCacheAction.INSTANCE, KnnShardsTransport.ClearCacheTransportAction.class)
