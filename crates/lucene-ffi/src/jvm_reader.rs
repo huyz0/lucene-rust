@@ -2458,7 +2458,7 @@ pub(crate) fn search_hybrid_blobs(handle: u64, blob: &[u8]) -> Result<Vec<u8>, F
             "{count} sub-queries, want 1 to {MAX_HYBRID_QUERIES}"
         )));
     }
-    let mut subs = Vec::with_capacity(count);
+    let mut subs = Vec::with_capacity(count); // alloc-ok: count is checked to be at most MAX_HYBRID_QUERIES
     let mut sim = None;
     for _ in 0..count {
         let (query, min_score, s) = decode_request(c.bytes()?)?;
@@ -2517,7 +2517,7 @@ pub(crate) fn search_hybrid_blobs(handle: u64, blob: &[u8]) -> Result<Vec<u8>, F
     } else {
         slices
     };
-    let mut seen = vec![false; segment_count];
+    let mut seen = vec![false; segment_count]; // alloc-ok: segment count of the opened reader
     for &s in slices.iter().flatten() {
         if s >= segment_count || std::mem::replace(&mut seen[s], true) {
             return Err(bad(format!("segment {s} out of range or in two slices")));
@@ -2606,7 +2606,7 @@ struct HitQueue {
 impl HitQueue {
     fn new(size: usize) -> Self {
         Self {
-            heap: std::collections::BinaryHeap::with_capacity(size.min(1 << 16)),
+            heap: std::collections::BinaryHeap::with_capacity(size.min(1 << 16)), // alloc-ok: capped at 65536
             size,
         }
     }
@@ -2647,7 +2647,7 @@ impl HybridCollector {
         Self {
             queues: (0..subs).map(|_| HitQueue::new(top_n)).collect(),
             total: 0,
-            window: vec![vec![0.0; HYBRID_WINDOW as usize]; subs],
+            window: vec![vec![0.0; HYBRID_WINDOW as usize]; subs], // alloc-ok: at most MAX_HYBRID_QUERIES windows of a fixed size
         }
     }
 
@@ -2655,9 +2655,9 @@ impl HybridCollector {
     /// segment-local doc ID.
     fn segment(&mut self, scored: &[Vec<lucene_search::collector::ScoreDoc>], doc_base: i32) {
         // The segment's own HybridSubQueryScorer: thresholds start at 0.
-        let mut min_scores = vec![0.0f32; scored.len()];
-        let mut next = vec![0usize; scored.len()];
-        let mut matching = vec![0u64; HYBRID_WINDOW as usize / 64];
+        let mut min_scores = vec![0.0f32; scored.len()]; // alloc-ok: one per sub-query, at most MAX_HYBRID_QUERIES
+        let mut next = vec![0usize; scored.len()]; // alloc-ok: one per sub-query, at most MAX_HYBRID_QUERIES
+        let mut matching = vec![0u64; HYBRID_WINDOW as usize / 64]; // alloc-ok: fixed window size
         loop {
             let Some(top) = scored
                 .iter()
