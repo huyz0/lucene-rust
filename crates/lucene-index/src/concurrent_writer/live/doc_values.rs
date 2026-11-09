@@ -55,12 +55,15 @@ struct Terms {
 /// How many terms a [`TermList`] block holds.
 const TERM_BLOCK: usize = 1024;
 
+/// A full [`TermList`] block.
+type TermBlock = Arc<[Arc<[u8]>]>;
+
 /// Terms by id, in blocks that stop changing once full. A copy of the list
 /// shares its blocks and its open one: a term added while a copy is held
 /// copies the open block once, on the indexing side.
 #[derive(Debug, Clone, Default)]
 struct TermList {
-    sealed: Arc<Vec<Arc<[Arc<[u8]>]>>>,
+    sealed: Arc<Vec<TermBlock>>,
     open: Arc<Vec<Arc<[u8]>>>,
 }
 
