@@ -55,12 +55,16 @@ struct Terms {
 /// How many terms a [`TermList`] block holds.
 const TERM_BLOCK: usize = 1024;
 
-/// Terms by id, in blocks that stop changing once full, so a copy of the
-/// list shares them and copies only the last, open one.
+/// A full [`TermList`] block.
+type TermBlock = Arc<[Arc<[u8]>]>;
+
+/// Terms by id, in blocks that stop changing once full. A copy of the list
+/// shares its blocks and its open one: a term added while a copy is held
+/// copies the open block once, on the indexing side.
 #[derive(Debug, Clone, Default)]
 struct TermList {
-    sealed: Vec<Arc<[Arc<[u8]>]>>,
-    open: Vec<Arc<[u8]>>,
+    sealed: Arc<Vec<TermBlock>>,
+    open: Arc<Vec<Arc<[u8]>>>,
 }
 
 impl TermList {
@@ -71,9 +75,11 @@ impl TermList {
     }
 
     fn push(&mut self, term: Arc<[u8]>) {
-        self.open.push(term);
-        if self.open.len() == TERM_BLOCK {
-            self.sealed.push(std::mem::take(&mut self.open).into());
+        let open = Arc::make_mut(&mut self.open);
+        open.push(term);
+        if open.len() == TERM_BLOCK {
+            let full: Arc<[Arc<[u8]>]> = std::mem::take(open).into();
+            Arc::make_mut(&mut self.sealed).push(full);
         }
     }
 
@@ -149,6 +155,24 @@ fn value_span(ends: &[u32], lo: usize, hi: usize) -> (usize, usize) {
             .map_or(0, |&e| e as usize)
     };
     (at(lo), at(hi))
+}
+
+/// How many of `docs` (ascending) are below `doc`, searched from the end:
+/// views read the newest documents, so the answer is mostly near it.
+pub(super) fn before_from_end(docs: &[i32], doc: i32) -> usize {
+    let mut hi = docs.len();
+    let mut step = 1usize;
+    // Gallop back to a position whose document is below `doc`.
+    let lo = loop {
+        let at = hi.saturating_sub(step);
+        if docs.get(at).is_none_or(|&d| d < doc) || at == 0 {
+            break at;
+        }
+        hi = at;
+        step = step.saturating_mul(2);
+    };
+    let window = docs.get(lo..hi).unwrap_or_default();
+    lo.saturating_add(window.partition_point(|&d| d < doc))
 }
 
 /// Each document's value count, from where its values end.
@@ -297,8 +321,8 @@ impl Column {
     /// `docs` and where their values start and end.
     fn span(&self, start: i32, end: i32) -> ((usize, usize), (usize, usize)) {
         let docs_of = |docs: &[i32]| {
-            let lo = docs.partition_point(|&d| d < start);
-            let hi = docs.partition_point(|&d| d < end);
+            let hi = before_from_end(docs, end);
+            let lo = before_from_end(docs.get(..hi).unwrap_or_default(), start);
             (lo, hi)
         };
         match self {
@@ -766,5 +790,26 @@ mod tests {
             ),
             "a NUMERIC field keeps a document's first value"
         );
+    }
+}
+
+#[cfg(test)]
+mod before_from_end_tests {
+    use super::before_from_end;
+
+    /// The search from the end finds what a binary search finds.
+    #[test]
+    fn searching_from_the_end_matches_a_binary_search() {
+        let docs: Vec<i32> = (0..300).filter(|d| d % 3 != 1).collect();
+        for n in [0usize, 1, 2, 7, docs.len()] {
+            let docs = &docs[..n];
+            for doc in -2..305 {
+                assert_eq!(
+                    before_from_end(docs, doc),
+                    docs.partition_point(|&d| d < doc),
+                    "{n} {doc}"
+                );
+            }
+        }
     }
 }

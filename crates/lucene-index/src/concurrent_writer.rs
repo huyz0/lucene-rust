@@ -1454,6 +1454,9 @@ impl<'d> ConcurrentIndexWriter<'d> {
                 // Chunk columns copy the documents' doc values and points.
                 let columns_before = dwpt.live.chunk_ram_bytes();
                 let mut added = 0usize;
+                if live.is_some() {
+                    dwpt.postings.seal_blocks();
+                }
                 for (mut doc, options) in docs.into_iter().zip(options) {
                     let doc_vectors = vectors
                         .as_mut()

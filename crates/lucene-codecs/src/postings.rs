@@ -3959,6 +3959,59 @@ fn wire_position_mismatch(position: usize, expected: usize, what: &str) -> Error
     ))
 }
 
+/// Scratch for decoding doc blocks ([`Self::decode`]), reused across blocks.
+pub struct DocBlockDecoder {
+    scratch: Box<BlockScratch>,
+    docs: Box<[i32; BLOCK_SIZE as usize]>,
+    freqs: Box<[i32; BLOCK_SIZE as usize]>,
+}
+
+impl Default for DocBlockDecoder {
+    fn default() -> Self {
+        Self {
+            scratch: Box::new(BlockScratch::new()),
+            docs: Box::new([0; BLOCK_SIZE as usize]),
+            freqs: Box::new([0; BLOCK_SIZE as usize]),
+        }
+    }
+}
+
+impl DocBlockDecoder {
+    /// Appends the `(doc, freq)` pairs of a block
+    /// `crate::postings_writer::encode_doc_block` wrote from `prev_doc_id`
+    /// onto `out`, those from document `from` on; a frequency of 1 for each
+    /// without `index_has_freq`.
+    pub fn decode(
+        &mut self,
+        bytes: &[u8],
+        prev_doc_id: i32,
+        index_has_freq: bool,
+        from: i32,
+        out: &mut Vec<(i32, i32)>,
+    ) -> Result<()> {
+        let mut r = SliceInput::new(bytes);
+        decode_full_block_body(
+            &mut r,
+            prev_doc_id,
+            index_has_freq,
+            index_has_freq,
+            &mut self.scratch,
+            &mut self.docs,
+            &mut self.freqs,
+            false,
+            false,
+        )?;
+        let first = self.docs.partition_point(|&d| d < from);
+        out.extend(
+            self.docs[first..]
+                .iter()
+                .copied()
+                .zip(self.freqs[first..].iter().copied()),
+        );
+        Ok(())
+    }
+}
+
 /// What [`decode_full_block_body`] left behind for the block's doc ids.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BodyShape {

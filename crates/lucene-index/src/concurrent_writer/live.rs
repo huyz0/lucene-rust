@@ -328,15 +328,18 @@ impl LiveColumns {
             .norms
             .iter()
             .filter_map(|(&n, column)| {
-                let values: Vec<Option<i64>> = (from..to)
-                    .map(|d| {
-                        let doc = i32::try_from(d).unwrap_or(i32::MAX);
-                        self.chunk
-                            .has_norm(n, doc)
-                            .then(|| column.get(d).unwrap_or(0))
-                    })
-                    .collect();
-                values.iter().any(Option::is_some).then_some((n, values))
+                let mut values: Vec<Option<i64>> = vec![None; to.saturating_sub(from)];
+                let mut any = false;
+                for (s, e) in self.chunk.normed_in(n, start, end) {
+                    let (s, e) = (usize::try_from(s).ok()?, usize::try_from(e).ok()?);
+                    for d in s..e {
+                        if let Some(v) = values.get_mut(d.saturating_sub(from)) {
+                            *v = Some(column.get(d).unwrap_or(0));
+                            any = true;
+                        }
+                    }
+                }
+                any.then_some((n, values))
             })
             .collect();
         Some(crate::index_writer::ChunkColumns {

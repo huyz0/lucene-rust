@@ -21,12 +21,6 @@ impl Runs {
         }
     }
 
-    /// Whether document `doc` is in a run.
-    fn contains(&self, doc: i32) -> bool {
-        let at = self.0.partition_point(|&(_, e)| e <= doc);
-        self.0.get(at).is_some_and(|&(s, _)| s <= doc)
-    }
-
     /// Whether a document of `start..end` is in a run.
     fn any_in(&self, start: i32, end: i32) -> bool {
         let at = self.0.partition_point(|&(_, e)| e <= start);
@@ -226,9 +220,21 @@ impl ChunkFields {
         };
     }
 
-    /// Whether document `doc` has a norm for field `field`.
-    pub(in crate::concurrent_writer) fn has_norm(&self, field: i32, doc: i32) -> bool {
-        self.normed.get(&field).is_some_and(|r| r.contains(doc))
+    /// The runs of documents of `start..end` with a norm for field
+    /// `field`, clipped to it.
+    pub(in crate::concurrent_writer) fn normed_in(
+        &self,
+        field: i32,
+        start: i32,
+        end: i32,
+    ) -> impl Iterator<Item = (i32, i32)> + '_ {
+        let runs = self.normed.get(&field).map_or(&[][..], |r| &r.0[..]);
+        let at = runs.partition_point(|&(_, e)| e <= start);
+        runs.get(at..)
+            .unwrap_or_default()
+            .iter()
+            .take_while(move |&&(s, _)| s < end)
+            .map(move |&(s, e)| (s.max(start), e.min(end)))
     }
 
     pub(in crate::concurrent_writer) fn ram_bytes(&self) -> usize {
@@ -273,8 +279,9 @@ impl ChunkFields {
         let mut points = Vec::new();
         for p in self.points.values() {
             let width = usize::try_from(p.num_dims.checked_mul(p.bytes_per_dim)?).ok()?;
-            let lo = p.docs.partition_point(|&d| d < start);
-            let hi = p.docs.partition_point(|&d| d < end);
+            let hi = super::doc_values::before_from_end(&p.docs, end);
+            let lo =
+                super::doc_values::before_from_end(p.docs.get(..hi).unwrap_or_default(), start);
             if lo == hi {
                 continue;
             }

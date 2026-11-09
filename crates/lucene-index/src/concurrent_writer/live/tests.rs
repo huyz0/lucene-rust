@@ -617,6 +617,11 @@ fn live_search_cost() {
 /// A live writer of one slot holding 400 documents with norms, doc values
 /// and points, all kept as columns.
 fn columns_writer(dir: &FsDirectory) -> ConcurrentIndexWriter<'_> {
+    columns_writer_with(dir, true)
+}
+
+/// [`columns_writer`]'s documents, live search on or off.
+fn columns_writer_with(dir: &FsDirectory, live: bool) -> ConcurrentIndexWriter<'_> {
     let mut w = IndexWriter::open(dir, Vec::new(), "Lucene104", VERSION).unwrap();
     w.enable_explicit_documents().unwrap();
     let body = w
@@ -645,7 +650,9 @@ fn columns_writer(dir: &FsDirectory) -> ConcurrentIndexWriter<'_> {
         .register_field(FieldInfo::new("loc", 0).with_points(2, 2, 4))
         .unwrap();
     let w = ConcurrentIndexWriter::new(w, 1).unwrap();
-    w.enable_live_search().unwrap();
+    if live {
+        w.enable_live_search().unwrap();
+    }
     for i in 0..400i64 {
         let mut fields = ExplicitFields {
             inverted: vec![InvertedField {
@@ -729,6 +736,49 @@ fn segment_files(
         .collect();
     files.sort();
     files
+}
+
+/// A flushed segment is byte for byte the same with live search on as off:
+/// what live search keeps beside a buffer (sealed postings blocks, columns,
+/// bounds) changes nothing the flush writes.
+#[test]
+fn live_search_leaves_flushed_segments_unchanged() {
+    let flushed = |live: bool, with_positions: bool| {
+        let tmp = TempDir::new("live-flush-same");
+        let dir = FsDirectory::open(tmp.path());
+        {
+            if with_positions {
+                let (w, f) = open(&dir, 1, live);
+                for i in 0..700 {
+                    w.add_explicit_documents(vec![doc(&f, i)]).unwrap();
+                }
+                w.commit().unwrap();
+            } else {
+                let w = columns_writer_with(&dir, live);
+                w.commit().unwrap();
+            }
+        }
+        let infos = crate::segment_infos::read_latest(&dir).unwrap();
+        assert_eq!(infos.segments.len(), 1);
+        let sci = &infos.segments[0];
+        let files = segment_files(tmp.path(), sci, &sci.segment_name);
+        assert!(files.iter().any(|(n, _)| n.ends_with(".doc")), "{files:?}");
+        files
+    };
+    for with_positions in [false, true] {
+        let (on, off) = (
+            flushed(true, with_positions),
+            flushed(false, with_positions),
+        );
+        let names: Vec<&str> = on.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(
+            names,
+            off.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>()
+        );
+        for ((name, a), (_, b)) in on.iter().zip(&off) {
+            assert!(a == b, "{name} differs with live search on");
+        }
+    }
 }
 
 /// A chunk written from the buffer's columns holds the files the decoded

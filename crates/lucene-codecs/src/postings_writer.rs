@@ -2548,6 +2548,46 @@ fn write_full_block(
     // deltas and freqs are appended.
     let impacts_region_len = rest.len() as i64;
 
+    let last_doc_id = encode_doc_block(block, prev_doc_id, index_has_freq, rest);
+
+    // `numSkipBytes` spans the two header fields below plus the impacts
+    // region -- landing a reader that skips this block on the first doc-delta
+    // byte. This port's own reader parses the field and ignores it, deriving
+    // the same position from `blockLength`; real Lucene's `skipLevel0To`
+    // seeks by it, and a zero here sends it *backwards* to re-read the header
+    // as block data and then off the end of the file. Measure the fields by
+    // building them first, as Java does with its `scratchOutput`.
+    // Java writes `docBuffer[BLOCK_SIZE - 1] - level0LastDocID` as an `int`;
+    // see the per-doc delta in `encode_doc_block`.
+    write_vint15(header, last_doc_id.wrapping_sub(prev_doc_id));
+    write_vlong15(header, rest.len() as i64);
+    // ARITH: both terms are lengths of in-memory scratch buffers this call
+    // just built -- a few KiB each, and both bounded by `isize::MAX`.
+    #[allow(clippy::arithmetic_side_effects)]
+    let num_skip_bytes = impacts_region_len + header.len() as i64;
+    out.write_vlong(num_skip_bytes);
+    out.write_bytes(header);
+    out.write_bytes(rest);
+
+    last_doc_id
+}
+
+/// A full block's documents and frequencies as its body holds them after
+/// the impacts: the `bitsPerValue` token, the doc deltas from
+/// `prev_doc_id` (packed, a bit set, or nothing when consecutive), then the
+/// frequencies when `index_has_freq`. Returns the block's last document.
+/// `block` is `BLOCK_SIZE` ascending `(doc, freq)` pairs, each document
+/// after `prev_doc_id`.
+///
+/// # Panics
+/// When `block` is not `BLOCK_SIZE` pairs long.
+pub fn encode_doc_block(
+    block: &[(i32, i32)],
+    prev_doc_id: i32,
+    index_has_freq: bool,
+    rest: &mut Vec<u8>,
+) -> i32 {
+    assert_eq!(block.len(), BLOCK_SIZE as usize, "a full block's documents");
     let mut deltas = [0u32; for_util::BLOCK_SIZE];
     let mut prev = prev_doc_id;
     let mut max_delta = 0u32;
@@ -2651,25 +2691,6 @@ fn write_full_block(
         }
         for_util::pfor_encode(&mut freqs, rest);
     }
-
-    // `numSkipBytes` spans the two header fields below plus the impacts
-    // region -- landing a reader that skips this block on the first doc-delta
-    // byte. This port's own reader parses the field and ignores it, deriving
-    // the same position from `blockLength`; real Lucene's `skipLevel0To`
-    // seeks by it, and a zero here sends it *backwards* to re-read the header
-    // as block data and then off the end of the file. Measure the fields by
-    // building them first, as Java does with its `scratchOutput`.
-    // Java writes `docBuffer[BLOCK_SIZE - 1] - level0LastDocID` as an `int`;
-    // see the per-doc delta above.
-    write_vint15(header, last_doc_id.wrapping_sub(prev_doc_id));
-    write_vlong15(header, rest.len() as i64);
-    // ARITH: both terms are lengths of in-memory scratch buffers this call
-    // just built -- a few KiB each, and both bounded by `isize::MAX`.
-    #[allow(clippy::arithmetic_side_effects)]
-    let num_skip_bytes = impacts_region_len + header.len() as i64;
-    out.write_vlong(num_skip_bytes);
-    out.write_bytes(header);
-    out.write_bytes(rest);
 
     last_doc_id
 }

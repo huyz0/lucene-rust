@@ -76,6 +76,7 @@
 //!   the caller owns the lifetime.
 
 use std::cmp::Ordering;
+use std::sync::Arc;
 
 /// One sub-enumerator of the k-way merge `OrdinalMap.build` runs — this
 /// port's `TermsEnumIndex`.
@@ -215,18 +216,29 @@ impl MergeQueue {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OrdinalMap {
     /// `segmentToGlobalOrds[segment][segmentOrd] == globalOrd`.
-    segment_to_global: Vec<Vec<i64>>,
+    segment_to_global: Vec<Arc<[i64]>>,
     /// `OrdinalMap.valueCount` — the number of distinct terms across every
     /// segment, i.e. the size of the global dictionary.
     value_count: i64,
     /// `OrdinalMap.firstSegments` — for each global ordinal, the first
     /// segment that contains it. See the module doc for how "first" differs
     /// from Java's.
-    first_segments: Vec<u32>,
+    first_segments: Arc<[u32]>,
     /// The segment ordinal that global ordinal holds in
     /// [`Self::first_segments`]'s segment. Java derives this from
     /// `globalOrdDeltas`; the same number, stored rather than reconstructed.
-    first_segment_ords: Vec<i64>,
+    first_segment_ords: Arc<[i64]>,
+}
+
+/// A map's distinct terms in global-ordinal order.
+pub type KeptTerms = Vec<Box<[u8]>>;
+
+/// Where [`OrdinalMap::remapped`] takes a segment's ordinals from.
+pub enum SegmentSource<'a> {
+    /// The map's own segment of this index.
+    Kept(usize),
+    /// A segment's dictionary, its terms looked up.
+    Terms(&'a mut dyn TermCursor),
 }
 
 impl OrdinalMap {
@@ -291,6 +303,28 @@ impl OrdinalMap {
     /// Errors are the cursors' own (a corrupt terms dictionary); the merge
     /// itself cannot fail.
     pub fn build_streaming(cursors: &mut [&mut dyn TermCursor]) -> lucene_store::Result<Self> {
+        Self::build_keeping(cursors, None)
+    }
+
+    /// [`Self::build_streaming`], also giving back every distinct term in
+    /// global-ordinal order while there are at most `limit` of them of at
+    /// most `limit` bytes together (`None` past that): what
+    /// [`Self::remapped`] looks terms up in.
+    pub fn build_keeping_terms(
+        cursors: &mut [&mut dyn TermCursor],
+        limit: usize,
+    ) -> lucene_store::Result<(Self, Option<KeptTerms>)> {
+        let mut kept = Some((Vec::new(), limit));
+        let map = Self::build_keeping(cursors, Some((&mut kept, limit)))?;
+        Ok((map, kept.map(|(terms, _)| terms)))
+    }
+
+    fn build_keeping(
+        cursors: &mut [&mut dyn TermCursor],
+        // The terms kept so far and the bytes they may still take, and how
+        // many terms may be kept.
+        mut kept: Option<(&mut Option<(KeptTerms, usize)>, usize)>,
+    ) -> lucene_store::Result<Self> {
         let n = cursors.len();
         let mut segment_to_global: Vec<Vec<i64>> = vec![Vec::new(); n];
         // One reused buffer per segment: the cursor's own term is a borrow
@@ -316,6 +350,17 @@ impl OrdinalMap {
         while let Some(top) = queue.peek() {
             top_term.clear();
             top_term.extend_from_slice(&current[top]);
+            if let Some((slot, most)) = kept.as_mut() {
+                let full = slot
+                    .as_ref()
+                    .is_some_and(|(terms, room)| terms.len() >= *most || top_term.len() > *room);
+                if full {
+                    **slot = None;
+                } else if let Some((terms, room)) = slot.as_mut() {
+                    *room = room.saturating_sub(top_term.len());
+                    terms.push(top_term.as_slice().into());
+                }
+            }
             let global_ord = value_count;
             // ARITH: one increment per distinct term, and a term costs at
             // least one byte in some segment's dictionary, so this cannot
@@ -363,11 +408,109 @@ impl OrdinalMap {
         }
 
         Ok(OrdinalMap {
-            segment_to_global,
+            segment_to_global: segment_to_global.into_iter().map(Arc::from).collect(),
             value_count,
-            first_segments,
-            first_segment_ords,
+            first_segments: first_segments.into(),
+            first_segment_ords: first_segment_ords.into(),
         })
+    }
+
+    /// This map's terms over other segments, each one of this map's own
+    /// ([`SegmentSource::Kept`], its ordinals shared) or one whose terms are
+    /// looked up in `terms` (the map's distinct terms in global-ordinal
+    /// order, as [`Self::build_keeping_terms`] keeps them). `None` when a
+    /// looked-up term is not one of `terms` or a term is in none of the
+    /// segments, for the caller to build the map anew: the map is then the
+    /// one built over the segments.
+    ///
+    /// # Errors
+    /// The cursors' own.
+    pub fn remapped(
+        &self,
+        terms: &[Box<[u8]>],
+        segments: &mut [SegmentSource<'_>],
+    ) -> lucene_store::Result<Option<Self>> {
+        let mut segment_to_global: Vec<Arc<[i64]>> = Vec::with_capacity(segments.len());
+        for source in segments.iter_mut() {
+            match source {
+                SegmentSource::Kept(old) => match self.segment_to_global.get(*old) {
+                    Some(ords) => segment_to_global.push(Arc::clone(ords)),
+                    None => return Ok(None),
+                },
+                SegmentSource::Terms(cursor) => {
+                    let mut ords = Vec::new();
+                    let mut from = 0usize;
+                    while let Some(term) = cursor.next_term()? {
+                        // Terms ascend, so each is looked for past the
+                        // previous one.
+                        let rest = terms.get(from..).unwrap_or_default();
+                        let at = rest.partition_point(|t| &t[..] < term);
+                        match rest.get(at) {
+                            Some(t) if &t[..] == term => {
+                                let g = from.saturating_add(at);
+                                ords.push(i64::try_from(g).unwrap_or(i64::MAX));
+                                from = g.saturating_add(1);
+                            }
+                            _ => return Ok(None),
+                        }
+                    }
+                    segment_to_global.push(ords.into());
+                }
+            }
+        }
+        // This map's segments first and in their order: each term's first
+        // segment is still its own.
+        let prefix = self.segment_to_global.len() <= segments.len()
+            && segments
+                .iter()
+                .take(self.segment_to_global.len())
+                .enumerate()
+                .all(|(i, s)| matches!(s, SegmentSource::Kept(old) if *old == i));
+        if prefix {
+            return Ok(Some(OrdinalMap {
+                segment_to_global,
+                value_count: self.value_count,
+                first_segments: Arc::clone(&self.first_segments),
+                first_segment_ords: Arc::clone(&self.first_segment_ords),
+            }));
+        }
+        let count = usize::try_from(self.value_count).unwrap_or(0);
+        let mut first_segments = vec![u32::MAX; count];
+        let mut first_segment_ords = vec![0i64; count];
+        let mut unset = count;
+        for (seg, ords) in segment_to_global.iter().enumerate() {
+            if unset == 0 {
+                break;
+            }
+            let seg = u32::try_from(seg).unwrap_or(u32::MAX);
+            for (ord, &g) in ords.iter().enumerate() {
+                let Some(first) = usize::try_from(g)
+                    .ok()
+                    .and_then(|g| first_segments.get_mut(g))
+                else {
+                    return Ok(None);
+                };
+                if *first == u32::MAX {
+                    *first = seg;
+                    if let Some(o) = usize::try_from(g)
+                        .ok()
+                        .and_then(|g| first_segment_ords.get_mut(g))
+                    {
+                        *o = i64::try_from(ord).unwrap_or(i64::MAX);
+                    }
+                    unset = unset.saturating_sub(1);
+                }
+            }
+        }
+        if unset > 0 {
+            return Ok(None);
+        }
+        Ok(Some(OrdinalMap {
+            segment_to_global,
+            value_count: self.value_count,
+            first_segments: first_segments.into(),
+            first_segment_ords: first_segment_ords.into(),
+        }))
     }
 
     /// `OrdinalMap.getValueCount()` — the number of distinct terms across
@@ -392,7 +535,7 @@ impl OrdinalMap {
     /// a caller remapping every ordinal of a segment in one pass (which is
     /// what `lucene_facet::merge_segment_counts` does).
     pub fn segment_ords(&self, segment: usize) -> Option<&[i64]> {
-        self.segment_to_global.get(segment).map(Vec::as_slice)
+        self.segment_to_global.get(segment).map(|o| &o[..])
     }
 
     /// The number of segments this map was built over.
@@ -427,6 +570,78 @@ mod tests {
 
     fn terms(v: &[&str]) -> Vec<Vec<u8>> {
         v.iter().map(|s| s.as_bytes().to_vec()).collect()
+    }
+
+    fn cursors<'a>(segments: &'a [Vec<Vec<u8>>]) -> Vec<SliceCursor<'a, Vec<u8>>> {
+        segments
+            .iter()
+            .map(|terms| SliceCursor { terms, next: 0 })
+            .collect()
+    }
+
+    /// A map remapped over segments of its own and others whose terms it
+    /// holds, in any order, is the map built over them; a new term, or a
+    /// term left in no segment, leaves it to be built.
+    #[test]
+    fn remapped_maps_equal_built_ones() {
+        let base = vec![terms(&["a", "c", "e"]), terms(&["b", "c"])];
+        let mut cs = cursors(&base);
+        let mut refs: Vec<&mut dyn TermCursor> = cs.iter_mut().map(|c| c as _).collect();
+        let (map, kept) = OrdinalMap::build_keeping_terms(&mut refs, 1 << 10).unwrap();
+        let kept = kept.unwrap();
+        assert_eq!(kept.len(), 4);
+        let remap = |order: &[Option<usize>], more: &[Vec<Vec<u8>>]| {
+            let mut cs = cursors(more);
+            let mut more_cs = cs.iter_mut();
+            let mut sources: Vec<SegmentSource<'_>> = order
+                .iter()
+                .map(|o| match o {
+                    Some(i) => SegmentSource::Kept(*i),
+                    None => SegmentSource::Terms(more_cs.next().unwrap()),
+                })
+                .collect();
+            map.remapped(&kept, &mut sources).unwrap()
+        };
+        let more = vec![terms(&["c", "e"]), terms(&[]), terms(&["a", "b", "e"])];
+        // Appended after the map's segments.
+        let got = remap(&[Some(0), Some(1), None, None, None], &more).unwrap();
+        let all: Vec<Vec<Vec<u8>>> = base.iter().chain(&more).cloned().collect();
+        assert_eq!(got, OrdinalMap::build(&all));
+        // Interleaved and reordered.
+        let got = remap(&[Some(1), None, Some(0), None, None], &more).unwrap();
+        let all = vec![
+            base[1].clone(),
+            more[0].clone(),
+            base[0].clone(),
+            more[1].clone(),
+            more[2].clone(),
+        ];
+        assert_eq!(got, OrdinalMap::build(&all));
+        // A segment dropped, its terms still held by the others.
+        let got = remap(&[None, Some(1), None, None], &more).unwrap();
+        let all = vec![
+            more[0].clone(),
+            base[1].clone(),
+            more[1].clone(),
+            more[2].clone(),
+        ];
+        assert_eq!(got, OrdinalMap::build(&all));
+        // A term in no segment any more.
+        assert!(remap(&[Some(1)], &[]).is_none());
+        // A new term.
+        assert!(remap(&[Some(0), None], &[terms(&["c", "d"])]).is_none());
+        // Four terms of four bytes together are at the limit of four.
+        let mut cs = cursors(&base);
+        let mut refs: Vec<&mut dyn TermCursor> = cs.iter_mut().map(|c| c as _).collect();
+        let at_limit = OrdinalMap::build_keeping_terms(&mut refs, 4).unwrap().1;
+        assert_eq!(at_limit.map(|t| t.len()), Some(4));
+        // Terms past the limit are not kept.
+        let mut cs = cursors(&base);
+        let mut refs: Vec<&mut dyn TermCursor> = cs.iter_mut().map(|c| c as _).collect();
+        assert!(OrdinalMap::build_keeping_terms(&mut refs, 3)
+            .unwrap()
+            .1
+            .is_none());
     }
 
     /// The exact worked example in `OrdinalMap`'s own class javadoc:
