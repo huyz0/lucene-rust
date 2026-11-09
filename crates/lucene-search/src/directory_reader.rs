@@ -2899,6 +2899,12 @@ pub struct DirectoryReader {
     /// reader's life -- the `OrdinalMap` Lucene caches per reader and field.
     global_ords:
         std::sync::Mutex<std::collections::HashMap<String, Arc<crate::terms_agg::GlobalOrds>>>,
+    /// Global ordinals of the readers made from this one with segments
+    /// appended ([`Self::with_readers_appended`]), which share its segments.
+    appended_ords: Arc<crate::terms_agg::GlobalOrdsCache>,
+    /// For a reader made with segments appended, its parent's
+    /// `appended_ords`, which its global ordinals are built through.
+    ords_cache: Option<Arc<crate::terms_agg::GlobalOrdsCache>>,
     /// BM25 norm tables by average field length's bits ([`Self::norm_table`]).
     norm_tables: std::sync::Mutex<std::collections::HashMap<u32, Arc<[f32; 256]>>>,
     /// Each field's norms across the segments, resolved once
@@ -3095,6 +3101,8 @@ impl DirectoryReader {
             segment_infos,
             segments,
             global_ords: std::sync::Mutex::default(),
+            appended_ords: Arc::default(),
+            ords_cache: None,
             norm_tables: std::sync::Mutex::default(),
             norms_plans: std::sync::Mutex::default(),
             nrt_hold: None,
@@ -3132,7 +3140,10 @@ impl DirectoryReader {
         }
         // Built outside the lock: two threads may both build, and one's map
         // is kept -- the same map either way.
-        let built = Arc::new(crate::terms_agg::GlobalOrds::build(&self.segments, field)?);
+        let built = match &self.ords_cache {
+            Some(cache) => cache.ords(&self.segments, field)?,
+            None => Arc::new(crate::terms_agg::GlobalOrds::build(&self.segments, field)?),
+        };
         let mut map = self.global_ords.lock().unwrap_or_else(|e| e.into_inner());
         Ok(map.entry(field.to_string()).or_insert(built).clone())
     }
@@ -3240,6 +3251,8 @@ impl DirectoryReader {
             segment_infos: self.segment_infos.clone(),
             segments,
             global_ords: std::sync::Mutex::default(),
+            appended_ords: Arc::default(),
+            ords_cache: None,
             norm_tables: std::sync::Mutex::default(),
             norms_plans: std::sync::Mutex::default(),
             nrt_hold: self.nrt_hold.clone(),
@@ -3275,6 +3288,12 @@ impl DirectoryReader {
             segment_infos: self.segment_infos.clone(),
             segments,
             global_ords: std::sync::Mutex::default(),
+            appended_ords: Arc::default(),
+            // A view of a view shares its parent's: their segments are the
+            // same reader's.
+            ords_cache: Some(Arc::clone(
+                self.ords_cache.as_ref().unwrap_or(&self.appended_ords),
+            )),
             norm_tables: std::sync::Mutex::default(),
             norms_plans: std::sync::Mutex::default(),
             nrt_hold: self.nrt_hold.clone(),
@@ -3299,6 +3318,8 @@ impl DirectoryReader {
             segment_infos: self.segment_infos.clone(),
             segments,
             global_ords: std::sync::Mutex::default(),
+            appended_ords: Arc::default(),
+            ords_cache: None,
             norm_tables: std::sync::Mutex::default(),
             norms_plans: std::sync::Mutex::default(),
             nrt_hold: self.nrt_hold.clone(),
