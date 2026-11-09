@@ -51,7 +51,13 @@ final class LiveSearchers {
         return new Engine.SearcherSupplier(wrapper) {
             @Override
             protected Engine.Searcher acquireSearcherInternal(String source) {
-                return live.wrap(inner.acquireSearcher(source));
+                Engine.Searcher s = inner.acquireSearcher(source);
+                try {
+                    return live.wrap(s);
+                } catch (RuntimeException e) {
+                    org.opensearch.common.lease.Releasables.closeWhileHandlingException(s);
+                    throw e;
+                }
             }
 
             @Override
