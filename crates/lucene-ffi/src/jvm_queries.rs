@@ -435,6 +435,10 @@ pub(crate) fn decode(
                 }
                 hits.push((doc, f32(c)?));
             }
+            hits.sort_unstable_by_key(|&(d, _)| d);
+            if hits.windows(2).any(|w| w[0].0 == w[1].0) {
+                return Err(invalid("query tree: a doc id listed twice"));
+            }
             return Ok(Clause::Extended(Box::new(ExtendedQuery::DocAndScore(
                 lucene_search::extended_query::DocAndScoreQuery::new(hits, &bases),
             ))));

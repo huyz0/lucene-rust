@@ -394,6 +394,32 @@ pub unsafe extern "C" fn ffi_jvm_reader_aggregate_tree_alloc(
     })
 }
 
+/// [`jvm_reader::search_hybrid_blobs`]: a hybrid query's shard phase, its
+/// slices' answers encoded in an owned buffer.
+///
+/// # Safety
+/// `blob` must be valid for `blob_len` bytes and `out_ptr`/`out_len` for one
+/// write each.
+#[no_mangle]
+pub unsafe extern "C" fn ffi_jvm_reader_search_hybrid_alloc(
+    handle: u64,
+    blob: *const u8,
+    blob_len: usize,
+    out_ptr: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    guard(|| {
+        // SAFETY: caller contract.
+        unsafe { clear_out(out_ptr, out_len)? };
+        // SAFETY: caller contract.
+        let blob = unsafe { bytes_from_raw(blob, blob_len)? };
+        let encoded = jvm_reader::search_hybrid_blobs(handle, blob)?;
+        // SAFETY: caller contract.
+        unsafe { give(encoded, out_ptr, out_len) };
+        Ok(())
+    })
+}
+
 /// [`jvm_reader::search_collapsed_blobs`]: a collapsed search (OpenSearch's
 /// `collapse`), its slices' groups encoded in an owned buffer.
 ///
