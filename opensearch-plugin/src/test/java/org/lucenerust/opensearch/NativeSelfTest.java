@@ -41,6 +41,7 @@ import org.apache.lucene.index.MultiReader;
 import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.store.FSDirectory;
 
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -291,7 +292,7 @@ public final class NativeSelfTest {
 
     // --- The bridge's error paths ----------------------------------------------------------
 
-    private static void bridgeErrorPaths() {
+    private static void bridgeErrorPaths() throws IOException {
         int[] docs = new int[4];
         float[] scores = new float[4];
         long[] counts = new long[3];
@@ -330,7 +331,11 @@ public final class NativeSelfTest {
         check(NativeBridge.aggregate(1, blob, new byte[0], new long[1], new double[6], null, 0, new long[2], null) == 10, "null aggregate terms slot -> InvalidArgument");
         check(NativeBridge.aggregateTree(1, blob, new byte[0], new byte[0][]) == 10, "empty aggregateTree out -> InvalidArgument");
         check(NativeBridge.document(12345L, 0, 0, out) == NativeBridge.INVALID_HANDLE && out[0] == null, "document on a fabricated handle");
-        check(NativeBridge.document(12345L, 0, 0, null) == 10, "null document out -> InvalidArgument");
+        check(NativeBridge.document(12345L, 0, 0, (byte[][]) null) == 10, "null document out -> InvalidArgument");
+        boolean[] lent = new boolean[1];
+        check(NativeBridge.document(12345L, 0, 0, bytes -> lent[0] = true) == NativeBridge.INVALID_HANDLE && lent[0] == false, "lent document on a fabricated handle");
+        check(NativeBridge.document(12345L, 0, 0, (NativeBridge.Borrowed) null) == 10, "null document reader -> InvalidArgument");
+        check(NativeBridge.derivedSource(12345L, 0, 0, bytes -> lent[0] = true) == NativeBridge.INVALID_HANDLE && lent[0] == false, "lent _source on a fabricated handle");
         check(NativeBridge.countTerminates(1, blob, null, new long[1]) == 10, "null count spec -> InvalidArgument");
         check(NativeBridge.docFreq(12345L, f, f, new long[1]) == NativeBridge.INVALID_HANDLE, "docFreq on a fabricated handle");
         check(NativeBridge.writerApply(12345L, new byte[2], 5) == 10, "writerApply past the array -> InvalidArgument");
