@@ -603,7 +603,7 @@ public class RustSearchPlugin extends Plugin implements
             Path runtime = Path.of(libraryPath).resolveSibling(System.mapLibraryName("onnxruntime"));
             MlCommons.initialize(client, clusterService, threadPool, environment.dataFiles()[0], runtime);
         }
-        return List.of();
+        return org.lucenerust.opensearch.neural.NeuralStats.initialize(clusterService, indexNameExpressionResolver, environment.settings());
     }
 
     @Override
@@ -658,6 +658,7 @@ public class RustSearchPlugin extends Plugin implements
     ) {
         List<RestHandler> handlers = new ArrayList<>();
         handlers.add(new RestStatsAction(stats, readers, libraryPath));
+        handlers.add(org.lucenerust.opensearch.neural.NeuralStats.restHandler());
         if (stockKnn == false) {
             handlers.addAll(KnnRestHandlers.all(clusterService::get, indexNameExpressionResolver));
             handlers.addAll(KnnModelHandlers.all(clusterService::get));
@@ -671,6 +672,7 @@ public class RustSearchPlugin extends Plugin implements
     @Override
     public List<ActionHandler<? extends ActionRequest, ? extends ActionResponse>> getActions() {
         List<ActionHandler<? extends ActionRequest, ? extends ActionResponse>> actions = new ArrayList<>();
+        actions.add(org.lucenerust.opensearch.neural.NeuralStats.actionHandler());
         if (stockKnn == false) {
             actions.add(new ActionHandler<>(KnnStatsTransport.Action.INSTANCE, KnnStatsTransport.TransportAction.class));
             actions.add(new ActionHandler<>(KnnShardsTransport.WarmupAction.INSTANCE, KnnShardsTransport.WarmupTransportAction.class));

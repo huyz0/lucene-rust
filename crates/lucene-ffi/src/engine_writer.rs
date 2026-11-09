@@ -6523,6 +6523,153 @@ mod tests {
         }
     }
 
+    /// A terms aggregation counts the buffered documents' keyword runs in
+    /// place, their new terms found by bytes, to the same buckets as their
+    /// doc values encoded: committed terms, new ones, ties and the cut.
+    #[test]
+    fn buffered_keyword_runs_count_as_their_encoded_doc_values() {
+        use crate::live::{
+            ffi_engine_writer_live_view_open, ffi_live_view_close, ffi_live_view_reader,
+        };
+        fn spec(name: &str, io: u8, dv: u8, dims: i32, bytes: i32) -> Vec<u8> {
+            Blob::default()
+                .bytes(name.as_bytes())
+                .u8(io)
+                .u8(1)
+                .u8(0)
+                .u8(0)
+                .u8(dv)
+                .u8(0)
+                .i32(dims)
+                .i32(dims)
+                .i32(bytes)
+                .i32(0)
+                .u8(0)
+                .i32(0)
+                .0
+        }
+        fn keyword(b: Blob, field: i32, v: &str) -> Blob {
+            b.i32(field).u8(0).i32(1).bytes(v.as_bytes()).i32(1).u8(0)
+        }
+        let tmp = empty_index("engine-writer-live-keyword-runs");
+        let h = open_with(&tmp, 4096.0, OPEN_LIVE_SEARCH, i32::MAX);
+        let id = register(h, &spec("_id", 1, 0, 0, 0)).unwrap();
+        let body = register(h, &spec("body", 1, 0, 0, 0)).unwrap();
+        let tag = register(h, &spec("tag", 1, 4, 0, 0)).unwrap();
+        let seq = register(h, &spec("_seq_no", 0, 1, 1, 8)).unwrap();
+        let add = |i: usize, tags: &[String]| {
+            let id_v = format!("d{i}");
+            let mut b = Blob::default()
+                .u8(OP_ADD)
+                .i32(1)
+                .i32(1)
+                .i32(id)
+                .u8(1)
+                .bytes(id_v.as_bytes())
+                .i32(2 + i32::from(!tags.is_empty()));
+            b = keyword(b, id, &id_v);
+            b = keyword(b, body, if i.is_multiple_of(3) { "x" } else { "y" });
+            if !tags.is_empty() {
+                let mut sorted = tags.to_vec();
+                sorted.sort();
+                b = b.i32(tag).u8(0).i32(sorted.len() as i32);
+                for t in &sorted {
+                    b = b.bytes(t.as_bytes()).i32(1).u8(0);
+                }
+            }
+            b = b.i32(1 + tags.len() as i32);
+            for t in tags {
+                b = b.i32(tag).u8(1).bytes(t.as_bytes());
+            }
+            b = b
+                .i32(seq)
+                .u8(0)
+                .i64(i as i64)
+                .i32(1)
+                .i32(seq)
+                .bytes(&((i as u64) ^ (1 << 63)).to_be_bytes());
+            assert_eq!(apply(h, &b.0), 0, "{}", crate::error::last_error());
+        };
+        // Committed: tags k0..k9; buffered: those, new ones n0..n6, and
+        // documents with two tags or none.
+        let tags_of = |i: usize, buffered: bool| -> Vec<String> {
+            match (buffered, i % 5) {
+                (_, 4) => Vec::new(),
+                (true, 3) => vec![format!("n{}", i % 7), format!("k{}", i % 10)],
+                (true, 2) => vec![format!("n{}", i % 7)],
+                _ => vec![format!("k{}", (i * i) % 10)],
+            }
+        };
+        for i in 0..300 {
+            add(i, &tags_of(i, false));
+        }
+        let gen = commit_settled(h);
+        let reader = open_reader(&tmp, gen);
+        let q = crate::jvm_reader::tests::term_blob("body", "y");
+        let tree = crate::jvm_aggs::tests::terms_tree("tag", 10);
+        let mut added = 300;
+        let mut runs_seen = false;
+        for round in 0..6 {
+            for _ in 0..(150 + 97 * round) {
+                add(added, &tags_of(added, true));
+                added += 1;
+            }
+            let (mut view, mut ptr, mut len) = (0u64, std::ptr::null_mut(), 0usize);
+            // SAFETY: live out-pointers.
+            let rc =
+                unsafe { ffi_engine_writer_live_view_open(h, gen, &mut view, &mut ptr, &mut len) };
+            assert_eq!(rc, 0, "{}", crate::error::last_error());
+            // SAFETY: the buffer the call gave, freed once.
+            unsafe { crate::ffm_bridge::ffi_jvm_free_bytes(ptr, len) };
+            let mut lean = 0u64;
+            // SAFETY: live slices and out-pointer.
+            let rc = unsafe {
+                ffi_live_view_reader(
+                    reader,
+                    view,
+                    q.as_ptr(),
+                    q.len(),
+                    tree.as_ptr(),
+                    tree.len(),
+                    std::ptr::null(),
+                    0,
+                    &mut lean,
+                )
+            };
+            assert_eq!(rc, 0, "{}", crate::error::last_error());
+            let handle = crate::jvm_reader::lookup(lean, "test").unwrap();
+            runs_seen |= handle
+                .reader
+                .segment_readers()
+                .iter()
+                .any(|r| r.keyword_run("tag").is_some());
+            drop(handle);
+            // `body:y` matches most documents (the column streamed); one
+            // buffered `_id` few (each match sought).
+            let sparse = crate::jvm_reader::tests::term_blob("_id", &format!("d{}", added - 2));
+            for (query, q) in [("dense", &q), ("sparse", &sparse)] {
+                for shard_size in [1, 3, 8, 100] {
+                    let aggs =
+                        crate::jvm_reader::tests::aggs_blob(&[], &[("tag", shard_size)], &[]);
+                    let count = |encoded: bool| {
+                        let _reset = crate::jvm_reader::tests::EncodedRuns::set(encoded);
+                        crate::jvm_reader::aggregate_counting_blobs(lean, q, &aggs, -1)
+                            .unwrap()
+                            .1
+                    };
+                    assert_eq!(
+                        count(false),
+                        count(true),
+                        "round {round}, {query} query, shard size {shard_size}"
+                    );
+                }
+            }
+            crate::jvm_reader::ffi_close_jvm_reader(lean);
+            assert_eq!(ffi_live_view_close(view), 0);
+        }
+        assert!(runs_seen, "some view read a keyword run in place");
+    }
+
     /// The 1M OpenSearch bench's documents (`bench_nodes.py gen`), mapped as
     /// OpenSearch maps them, buffered by four threads, then one refresh
     /// timed. `FLUSH_DOCS` sets how many (default 500 000), `THREADS` the
@@ -6757,6 +6904,7 @@ mod tests {
                 None,
             );
             let tags = crate::jvm_aggs::tests::terms_tree("tag", 10);
+            let tag_counts = crate::jvm_reader::tests::aggs_blob(&[], &[("tag", 10)], &[]);
             let shapes = |r: u64| -> [std::time::Duration; 3] {
                 let t = std::time::Instant::now();
                 std::hint::black_box(super::tests::scored_hits(r, &term_q));
@@ -6766,9 +6914,15 @@ mod tests {
                     crate::jvm_reader::search_sorted_blobs(r, &term_q, &price, 10, 10_000).unwrap();
                 std::hint::black_box(sorted.total);
                 let sort = t.elapsed();
+                // The `terms` aggregation as OpenSearch runs one alone: the
+                // counting pass. `LIVE_ENCODED=1` reads the buffered keyword
+                // runs encoded instead of in place.
                 let t = std::time::Instant::now();
+                crate::jvm_reader::tests::ENCODED_RUNS
+                    .with(|c| c.set(std::env::var("LIVE_ENCODED").is_ok_and(|v| v == "1")));
                 std::hint::black_box(
-                    crate::jvm_aggs::aggregate_tree_blobs(r, &term_q, &tags).unwrap(),
+                    crate::jvm_reader::aggregate_counting_blobs(r, &term_q, &tag_counts, -1)
+                        .unwrap(),
                 );
                 [term, sort, t.elapsed()]
             };

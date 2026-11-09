@@ -81,6 +81,7 @@ RENAMES = {
     ("NativeDocValues.java", "SORTED_NUMERIC"): ("jvm_fetch.rs", "DV_SORTED_NUMERIC"),
     ("NativeDocValues.java", "SORTED_SET"): ("jvm_fetch.rs", "DV_SORTED_SET"),
     ("SortEncoder.java", "MAX_KEYS"): ("jvm_reader.rs", "MAX_SORT_KEYS"),
+    ("NativeHybrid.java", "MAX_SUB_QUERIES"): ("jvm_reader.rs", "MAX_HYBRID_QUERIES"),
     ("SortEncoder.java", "GEO"): ("jvm_reader.rs", "SORT_GEO_DISTANCE"),
     ("AnalyzerSpec.java", "VERSION"): ("jvm_analysis.rs", "SPEC_VERSION"),
     ("NativeBridge.java", "EXPECTED_ABI_VERSION"): ("jvm_reader.rs", "JVM_ABI_VERSION"),
@@ -132,6 +133,9 @@ JAVA_ONLY = {
     ("HybridQueryBuilder.java", "MAX_NUMBER_OF_SUB_QUERIES"): "neural-search's query validation",
     ("HybridQueryBuilder.java", "LOWER_BOUND_OF_PAGINATION_DEPTH"): "neural-search's query validation",
     ("HybridQueryDocIdStream.java", "BLOCK_SHIFT"): "the Java hybrid bulk scorer's bitset words",
+    ("RestNeuralStatsAction.java", "MAX_PARAM_LENGTH"): "the neural stats API's request checks",
+    ("MemoryStat.java", "BYTES_PER_KILOBYTES"): "the neural stats API's memory units",
+    ("TimestampedEventStat.java", "TRAILING_NUMBER_OF_INTERVALS"): "the neural stats API's trailing event window",
 }
 
 JAVA_CONST = re.compile(

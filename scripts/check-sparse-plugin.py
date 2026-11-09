@@ -121,6 +121,8 @@ def main():
     try:
         wait(OURS[1])
         wait(STOCK[1])
+        for port in (OURS[1], STOCK[1]):
+            req(port, "PUT", "/_cluster/settings", {"persistent": {"plugins.neural_search.stats_enabled": True}})
         rng = fixture.random.Random(fixture.SEED)
         docs = [{"_id": f"d{i}", "tag": "even" if i % 2 == 0 else "odd",
                  "emb": fixture.vector(rng, rng.randint(10, 60))} for i in range(fixture.DOCS)]
@@ -162,6 +164,17 @@ def main():
         if recall < MIN_RECALL:
             failures.append(f"approx: overlap {recall:.3f} < {MIN_RECALL}")
 
+        # neural-search's stats: the queries counted, the sparse_vector fields found (the memory
+        # stats are 0 here: no JVM sparse caches).
+        path = "/_plugins/_neural/stats?flat_stat_paths=true&include_individual_nodes=false"
+        answers = []
+        for port in (OURS[1], STOCK[1]):
+            r = req(port, "GET", path)
+            answers.append({k: v for sect in ("all_nodes", "info") for k, v in r.get(sect, {}).items()
+                            if "sparse" in k and not k.startswith("memory.")})
+        if answers[0] != answers[1]:
+            failures.append(f"neural stats: ours {answers[0]}, stock {answers[1]}")
+        print(f"neural stats: {answers[0]}")
         after = req(OURS[1], "GET", "/_plugins/lucene_rust/stats")
         ran = after["native_queries"] - before["native_queries"]
         fallbacks = {k: v - before.get("fallbacks", {}).get(k, 0) for k, v in after.get("fallbacks", {}).items()
