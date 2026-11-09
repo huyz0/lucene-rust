@@ -655,6 +655,95 @@ impl SegmentReader {
         Self::open(dir, commit, 0)
     }
 
+    /// A run of buffered documents as a segment without postings or
+    /// stored fields, built from `parts` in memory instead of read from
+    /// files: its norms and points as the writer encoded them, its doc
+    /// values taken from `lazy` a field at a time, at document base 0.
+    ///
+    /// # Errors
+    /// Norms that do not parse, which only a bug writes.
+    pub fn from_lean_parts(
+        name: String,
+        parts: lucene_index::index_writer::LeanParts,
+        lazy: lucene_index::index_writer::LazyDocValues,
+    ) -> Result<Self> {
+        let lucene_index::index_writer::LeanParts {
+            field_infos,
+            max_doc,
+            norms,
+            points,
+            segment_id,
+        } = parts;
+        let field_infos = Arc::new(FieldInfos {
+            fields: field_infos,
+        });
+        let (norms_meta, norms_data) = match norms {
+            Some((nvm, nvd)) => {
+                let (_, meta) = norms::parse_meta(&nvm, &segment_id, "")?;
+                norms::validate_fields(&meta, &field_infos)?;
+                (Some(Arc::new(meta)), Some(Arc::new(Input::Owned(nvd))))
+            }
+            None => (None, None),
+        };
+        let (kdm_buf, kdi_buf, kdd_buf) = match points {
+            Some((kdm, kdi, kdd)) => (
+                Some(Arc::new(Input::Owned(kdm))),
+                Some(Arc::new(Input::Owned(kdi))),
+                Some(Arc::new(Input::Owned(kdd))),
+            ),
+            None => (None, None, None),
+        };
+        let reader = SegmentReader {
+            codec_files: Arc::default(),
+            attachments: Arc::default(),
+            simpletext: None,
+            num_docs: max_doc,
+            term_vectors: None,
+            term_vectors_meta: Arc::default(),
+            vectors: Vec::new(),
+            completion: Vec::new(),
+            core_cache: crate::reader::CacheHelper::new(),
+            reader_cache: crate::reader::CacheHelper::new(),
+            query_cache: Arc::default(),
+            segment_name: name,
+            index_sort: None,
+            has_blocks: false,
+            diagnostics: Arc::default(),
+            derived_source: None,
+            dvs: Vec::new(),
+            skip_indexes: Arc::default(),
+            docs_with_field: Arc::default(),
+            max_doc,
+            doc_base: 0,
+            segment_id,
+            del_gen: -1,
+            field_infos_gen: -1,
+            doc_values_gen: -1,
+            segment_suffix: String::new(),
+            fields: Arc::new(BlockTreeFields::empty()),
+            doc_buf: None,
+            postings_files: Vec::new(),
+            pos_buf: None,
+            pay_buf: None,
+            live_docs: None,
+            field_infos,
+            dv_data: None,
+            kdm_buf,
+            kdi_buf,
+            kdd_buf,
+            stored: None,
+            points_meta: Arc::default(),
+            postings_validated: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            postings_stats: None,
+            dv_meta: None,
+            dv_generations: Vec::new(),
+            lazy_doc_values: None,
+            norms_meta,
+            norms_data,
+        };
+        Ok(reader.with_lazy_doc_values(lazy))
+    }
+
     /// Opens one segment: reads its `.si`, then whichever of `.fnm`/
     /// `.tim`/`.tip`/`.tmd`/`.doc`/`.pos`/`.pay`/`.liv` it actually has
     /// (checked via `SegmentInfo.files` -- a segment missing postings, e.g.

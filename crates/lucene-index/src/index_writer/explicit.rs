@@ -1426,6 +1426,134 @@ impl IndexingConfig {
     }
 }
 
+/// What a reader of a run of buffered documents needs besides their doc
+/// values ([`super::LazyDocValues`]) and terms, built in memory without
+/// writing a segment: [`IndexingConfig::build_lean_parts`].
+#[derive(Debug, Clone)]
+pub struct LeanParts {
+    /// The fields the documents have, as a written segment of them lists
+    /// them.
+    pub field_infos: Vec<FieldInfo>,
+    /// How many documents there are.
+    pub max_doc: i32,
+    /// The norms as `.nvm` and `.nvd` bytes, when some field has norms.
+    pub norms: Option<(Vec<u8>, Vec<u8>)>,
+    /// The points as `.kdm`, `.kdi` and `.kdd` bytes, when they were asked
+    /// for and some document has one.
+    pub points: Option<(Vec<u8>, Vec<u8>, Vec<u8>)>,
+    /// The segment id the norms and points are encoded for.
+    pub segment_id: [u8; ID_LENGTH],
+}
+
+impl IndexingConfig {
+    /// Whether a run kept as `columns` is read from
+    /// [`Self::build_lean_parts`]' parts: no codec of the caller's writes
+    /// its files and no document has a vector.
+    pub(crate) fn takes_lean_parts(&self, columns: &super::ChunkColumns) -> bool {
+        self.codec.is_none()
+            && !self
+                .fields
+                .iter()
+                .any(|f| f.vector_dimension > 0 && columns.present.contains(&f.number))
+    }
+
+    /// A run of `max_doc` buffered documents kept as `columns`, as the
+    /// parts of a segment without postings, doc values or stored fields:
+    /// what [`Self::build_and_write_explicit_segment`] writes of them,
+    /// without the files. For a run [`Self::takes_lean_parts`] takes.
+    pub(crate) fn build_lean_parts(
+        &self,
+        columns: &super::ChunkColumns,
+        max_doc: i32,
+        points: bool,
+        partition: Option<&str>,
+        segment_id: [u8; ID_LENGTH],
+    ) -> Result<LeanParts> {
+        let mut present = FieldNumberSet::default();
+        columns.present.iter().for_each(|&n| present.insert(n));
+        let docs = usize::try_from(max_doc).map_err(|_| explicit_error("a negative run"))?;
+        let mut norm_values: BTreeMap<i32, Vec<Option<i64>>> =
+            columns.norms.iter().cloned().collect();
+        for field in &self.fields {
+            if present.contains(&field.number)
+                && field.index_options != IndexOptions::None
+                && !field.omit_norms
+            {
+                norm_values
+                    .entry(field.number)
+                    .or_insert_with(|| vec![None; docs]);
+            }
+        }
+        let norm_columns: Vec<_> = norm_values
+            .into_iter()
+            .map(|(number, values)| (number, super::NormsColumn::from_values(values)))
+            .collect();
+        let norms = if norm_columns.is_empty() {
+            None
+        } else {
+            let fields: Vec<_> = norm_columns
+                .iter()
+                .map(|(number, column)| match &column.sparse {
+                    None => norms::NormsField::Dense(*number, &column.dense),
+                    Some(pairs) => norms::NormsField::Sparse(*number, pairs),
+                })
+                .collect();
+            Some(norms::write_fields(&fields, max_doc, &segment_id, "")?)
+        };
+        let points = if points {
+            let point_configs: Vec<PointsFieldConfig> = self
+                .fields
+                .iter()
+                .filter(|f| present.contains(&f.number) && f.point_dimension_count > 0)
+                .map(|f| PointsFieldConfig {
+                    name: f.name.clone(),
+                    field_number: f.number,
+                    num_dims: f.point_dimension_count,
+                    num_index_dims: f.point_index_dimension_count,
+                    bytes_per_dim: f.point_num_bytes,
+                })
+                .collect();
+            if point_configs.is_empty() {
+                None
+            } else {
+                // Without a codec the points are encoded in memory: the
+                // directory is not written to.
+                let unused = lucene_store::ByteBuffersDirectory::new();
+                IndexWriter::build_prebuilt_points_output(
+                    self,
+                    &columns.points,
+                    &point_configs,
+                    &segment_id,
+                    &unused,
+                    "",
+                    max_doc,
+                )?
+                .and_then(|o| o.bytes)
+            }
+        } else {
+            None
+        };
+        let field_infos: Vec<FieldInfo> = self
+            .fields
+            .iter()
+            .filter(|f| present.contains(&f.number))
+            .map(|f| {
+                let mut f = f.clone();
+                f.store_payloads = false;
+                f.attributes.retain(|(k, _)| !k.starts_with("PerField"));
+                f
+            })
+            .collect();
+        Ok(LeanParts {
+            field_infos: self.partition_fields(field_infos, partition),
+            max_doc,
+            norms,
+            points,
+            segment_id,
+        })
+    }
+}
+
 /// `FieldInfos.FieldNumbers`' number reservations. Source segments supply
 /// preferred numbers; newly registered explicit fields request the first free
 /// number. Keeping this separate from the configured schema preserves fields
