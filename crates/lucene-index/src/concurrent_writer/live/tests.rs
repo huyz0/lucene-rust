@@ -914,7 +914,9 @@ fn a_buffers_point_bounds_read_in_every_state() {
         assert_eq!(l.max, [int(395), int(7 * 395)].concat());
         assert_eq!(l.count, 80);
         assert_eq!(w.live_point_bounds(view, b, body).unwrap(), None);
-        assert!(w.live_point_bounds(view, view.buffers.len(), price).is_err());
+        assert!(w
+            .live_point_bounds(view, view.buffers.len(), price)
+            .is_err());
     };
     let slot_view = w.open_live_view(None).unwrap();
     check(&slot_view);

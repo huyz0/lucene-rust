@@ -156,10 +156,11 @@ impl ChunkFields {
                 usize::try_from(info.point_index_dimension_count),
                 usize::try_from(info.point_num_bytes),
             ) {
-                self.bounds
-                    .entry(p.field_number)
-                    .or_default()
-                    .take(column.values.get(at..).unwrap_or_default(), dims, width);
+                self.bounds.entry(p.field_number).or_default().take(
+                    column.values.get(at..).unwrap_or_default(),
+                    dims,
+                    width,
+                );
             }
         }
     }
