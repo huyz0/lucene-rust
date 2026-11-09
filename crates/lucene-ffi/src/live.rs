@@ -1725,6 +1725,44 @@ pub extern "C" fn ffi_engine_writer_release_live(writer: u64, generation: i64) -
     })
 }
 
+/// The bounds of field `field`'s points in buffer `buffer` of `view` as the view
+/// opened ([`lucene_index::concurrent_writer::ConcurrentIndexWriter::live_point_bounds`]),
+/// as an owned buffer: the point count as a little-endian `u64`, then the
+/// packed least values, then the packed greatest; empty when the buffer
+/// holds no point of the field.
+///
+/// # Safety
+/// `out_ptr`/`out_len` valid for one write each.
+#[no_mangle]
+pub unsafe extern "C" fn ffi_live_view_point_bounds_alloc(
+    view_id: u64,
+    buffer: i32,
+    field: i32,
+    out_ptr: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    guard(|| {
+        // SAFETY: caller contract.
+        unsafe { crate::ffm_bridge::clear_out(out_ptr, out_len)? };
+        let h = view(view_id)?;
+        let buffer = usize::try_from(buffer).map_err(|_| FfiStatus::IndexOutOfBounds)?;
+        let bounds = h
+            .writer
+            .writer()
+            .live_point_bounds(&h.view, buffer, field)
+            .map_err(live_error)?;
+        let mut out = Vec::new();
+        if let Some(b) = bounds {
+            out.extend_from_slice(&b.count.to_le_bytes());
+            out.extend_from_slice(&b.min);
+            out.extend_from_slice(&b.max);
+        }
+        // SAFETY: caller contract.
+        unsafe { crate::ffm_bridge::give(out, out_ptr, out_len) };
+        Ok(())
+    })
+}
+
 /// Document `doc` of buffer `buffer` of `view`, its stored fields encoded
 /// as [`crate::jvm_fetch`]'s document blob, as an owned buffer.
 ///
