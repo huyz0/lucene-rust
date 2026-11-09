@@ -35,6 +35,7 @@ mod jvm_fetch;
 mod jvm_function_score;
 mod jvm_invert;
 mod jvm_knn;
+mod jvm_knn_score;
 mod jvm_nodes;
 mod jvm_queries;
 mod jvm_reader;
