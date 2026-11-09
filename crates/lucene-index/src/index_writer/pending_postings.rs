@@ -401,6 +401,19 @@ impl SliceReader<'_> {
     fn read_i32(&mut self) -> i32 {
         self.read_vlong() as u32 as i32
     }
+
+    /// A documents stream's next entry ([`FieldRuns::write_doc`]): moves
+    /// `doc` on by its delta and returns its frequency.
+    #[inline]
+    fn next_doc(&mut self, doc: &mut i32) -> i32 {
+        let code = self.read_vlong();
+        *doc = doc.wrapping_add((code >> 1) as u32 as i32);
+        if code & 1 != 0 {
+            1
+        } else {
+            self.read_i32()
+        }
+    }
 }
 
 /// One term's newest document and where its streams continue:
@@ -456,6 +469,10 @@ pub(crate) struct TermSlot {
 pub(crate) struct FieldRuns {
     positions: bool,
     offsets: bool,
+    /// The field indexes frequencies.
+    freqs: bool,
+    /// Terms' full blocks are sealed as their documents arrive.
+    seal: bool,
     terms: TermHash,
     /// By term id (`TermHash` ids are dense, in insertion order).
     runs: Vec<TermRun>,
@@ -483,7 +500,46 @@ pub(crate) struct FieldRuns {
     /// ended, newest last ([`FieldRuns::live_docs_of`]): a later read of the
     /// documents from past one of them starts there.
     live_cursors: std::sync::Mutex<std::collections::HashMap<u32, Vec<Cursor>>>,
+    /// By term id, the term's entry in `sealed`, [`NONE`] for a term whose
+    /// documents have not filled a block; shorter than `runs` past the
+    /// last term that has one.
+    sealed_of: Vec<u32>,
+    sealed: Vec<SealedTerm>,
+    /// What the sealed blocks hold.
+    sealed_bytes: usize,
+    /// Where [`FieldRuns::seal`] encodes a block.
+    seal_scratch: Vec<u8>,
 }
+
+/// A term's documents in full postings blocks, each sealed once its
+/// [`SEALED_DOCS`] documents are written to the documents stream: encoded
+/// as a flushed segment's block holds them and never changed after.
+#[derive(Debug, Default)]
+struct SealedTerm {
+    blocks: Vec<SealedBlock>,
+}
+
+#[derive(Debug)]
+struct SealedBlock {
+    /// [`lucene_codecs::postings_writer::encode_doc_block`]'s bytes.
+    bytes: std::sync::Arc<[u8]>,
+    last_doc: i32,
+    /// Where the documents stream stands after the block's documents.
+    end: SlicePos,
+}
+
+/// Whether terms' full blocks are sealed; `LUCENE_RUST_NO_SEAL` turns it
+/// off.
+fn sealing() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("LUCENE_RUST_NO_SEAL").is_none())
+}
+
+/// A sealed block's charge beside its bytes: its entry and `Arc` header.
+const SEALED_BLOCK_BYTES: usize = 48;
+
+/// Documents per sealed block: a postings block's.
+const SEALED_DOCS: u32 = lucene_codecs::for_util::BLOCK_SIZE as u32;
 
 /// By term id, where its streams stood at a document.
 type Cursors = std::collections::HashMap<u32, Cursor>;
@@ -572,10 +628,12 @@ impl Columns {
 const TERM_BYTES: usize = 24 + 4 + 4 + 8;
 
 impl FieldRuns {
-    fn new(index_options: IndexOptions) -> Self {
+    fn new(index_options: IndexOptions, seal: bool) -> Self {
         FieldRuns {
+            seal: seal && sealing(),
             positions: index_options.subsumes_positions(),
             offsets: index_options.subsumes_offsets(),
+            freqs: !matches!(index_options, IndexOptions::None | IndexOptions::Docs),
             terms: TermHash::new(),
             runs: Vec::new(),
             starts: Vec::new(),
@@ -588,6 +646,10 @@ impl FieldRuns {
             sum_total_term_freq: 0,
             cursors: std::sync::Mutex::default(),
             live_cursors: std::sync::Mutex::default(),
+            sealed_of: Vec::new(),
+            sealed: Vec::new(),
+            sealed_bytes: 0,
+            seal_scratch: Vec::new(),
         }
     }
 
@@ -602,6 +664,94 @@ impl FieldRuns {
             .saturating_mul(TERM_BYTES)
             .saturating_add(self.terms.term_bytes())
             .saturating_add(self.pool.ram_bytes())
+            .saturating_add(self.sealed_bytes)
+            .saturating_add(self.sealed_of.capacity().saturating_mul(4))
+            .saturating_add(
+                self.sealed
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<SealedTerm>()),
+            )
+    }
+
+    /// Term `id`'s sealed blocks.
+    fn sealed_blocks(&self, id: u32) -> &[SealedBlock] {
+        match self.sealed_of.get(id as usize) {
+            Some(&k) if k != NONE => self
+                .sealed
+                .get(k as usize)
+                .map_or(&[], |t| t.blocks.as_slice()),
+            _ => &[],
+        }
+    }
+
+    /// Seals term `id`'s next block: its documents stream holds a full
+    /// block's documents past its last sealed one.
+    fn seal(&mut self, id: usize) {
+        if self.sealed_of.len() <= id {
+            self.sealed_of.resize(id.saturating_add(1), NONE);
+        }
+        let k = match self.sealed_of[id] {
+            NONE => {
+                self.sealed.push(SealedTerm::default());
+                let k = to_u32(self.sealed.len().saturating_sub(1));
+                self.sealed_of[id] = k;
+                k
+            }
+            k => k,
+        };
+        let run = &self.runs[id];
+        let term = &self.sealed[k as usize];
+        let (mut r, prev) = match term.blocks.last() {
+            Some(b) => (self.pool.resume(b.end, run.docs), b.last_doc),
+            None => (self.pool.reader(self.starts[id][0], run.docs), -1),
+        };
+        let mut block = [(0i32, 0i32); SEALED_DOCS as usize];
+        // The stream's first code is its first document itself.
+        let mut doc = prev.max(0);
+        for (n, entry) in block.iter_mut().enumerate() {
+            if r.eof() {
+                debug_assert!(false, "a sealed block is short of documents at {n}");
+                return;
+            }
+            let freq = r.next_doc(&mut doc);
+            *entry = (doc, freq);
+        }
+        let end = r.pos();
+        let mut bytes = std::mem::take(&mut self.seal_scratch);
+        bytes.clear();
+        let last_doc =
+            lucene_codecs::postings_writer::encode_doc_block(&block, prev, self.freqs, &mut bytes);
+        self.sealed_bytes = self
+            .sealed_bytes
+            .saturating_add(bytes.len().saturating_add(SEALED_BLOCK_BYTES));
+        let sealed: std::sync::Arc<[u8]> = std::sync::Arc::from(bytes.as_slice());
+        self.seal_scratch = bytes;
+        self.sealed[k as usize].blocks.push(SealedBlock {
+            bytes: sealed,
+            last_doc,
+            end,
+        });
+    }
+
+    /// Drops term `id`'s sealed blocks past its written documents, after a
+    /// rollback cut them.
+    fn unseal_past(&mut self, id: usize) {
+        let written = self.runs[id].doc_count.saturating_sub(1);
+        self.unseal(id, (written / SEALED_DOCS) as usize);
+    }
+
+    /// Keeps term `id`'s first `keep` sealed blocks.
+    fn unseal(&mut self, id: usize, keep: usize) {
+        let Some(&k) = self.sealed_of.get(id).filter(|&&k| k != NONE) else {
+            return;
+        };
+        if let Some(t) = self.sealed.get_mut(k as usize) {
+            for b in t.blocks.drain(keep.min(t.blocks.len())..) {
+                self.sealed_bytes = self
+                    .sealed_bytes
+                    .saturating_sub(b.bytes.len().saturating_add(SEALED_BLOCK_BYTES));
+            }
+        }
     }
 
     /// Starts loading what adding the terms after `i` will read: for the
@@ -680,9 +830,12 @@ impl FieldRuns {
         }
         let id = slot.id as usize;
         let run = &mut self.runs[id];
+        let mut full = false;
         if run.doc_count > 0 {
             Self::write_doc(&mut self.pool, run);
             run.last_doc_code = doc.wrapping_sub(run.last_doc);
+            // Every document before this one is written now.
+            full = self.seal && run.doc_count.is_multiple_of(SEALED_DOCS);
         } else {
             run.last_doc_code = doc;
         }
@@ -694,6 +847,9 @@ impl FieldRuns {
         self.sum_total_term_freq = self.sum_total_term_freq.saturating_add(i64::from(freq));
         if let Some(o) = self.last_offsets.get_mut(id) {
             *o = 0;
+        }
+        if full {
+            self.seal(id);
         }
     }
 
@@ -810,9 +966,7 @@ impl FieldRuns {
         let mut r = self.pool.reader(docs_start, run.docs);
         let mut doc = 0i32;
         while !r.eof() {
-            let code = r.read_vlong();
-            doc = doc.wrapping_add((code >> 1) as u32 as i32);
-            let freq = if code & 1 != 0 { 1 } else { r.read_i32() };
+            let freq = r.next_doc(&mut doc);
             out.docs.push((doc, freq));
         }
         if run.doc_count > 0 {
@@ -1340,6 +1494,7 @@ impl FieldRuns {
             new.occurrences = occurrences;
         }
         self.runs[id] = new;
+        self.unseal_past(id);
     }
 }
 
@@ -1377,6 +1532,9 @@ struct FieldMark {
 #[derive(Debug, Default)]
 pub(crate) struct PendingPostings {
     fields: BTreeMap<i32, FieldRuns>,
+    /// Whether fields created from now on seal their terms' full blocks,
+    /// for live search to read ([`PendingPostings::seal_blocks`]).
+    seal: bool,
 }
 
 impl PendingPostings {
@@ -1385,7 +1543,7 @@ impl PendingPostings {
     pub(crate) fn field(&mut self, number: i32, index_options: IndexOptions) -> &mut FieldRuns {
         self.fields
             .entry(number)
-            .or_insert_with(|| FieldRuns::new(index_options))
+            .or_insert_with(|| FieldRuns::new(index_options, self.seal))
     }
 
     /// Inverts an explicit document's `field` for document `doc`, the
@@ -1424,6 +1582,13 @@ impl PendingPostings {
             }
         }
         Ok(())
+    }
+
+    /// Seals terms' full blocks from now on, for live search to read in
+    /// their flushed form; for fields created before only once the buffer
+    /// is new.
+    pub(crate) fn seal_blocks(&mut self) {
+        self.seal = true;
     }
 
     /// Marks where the postings stand before document `doc` (a block's
@@ -1466,6 +1631,10 @@ impl PendingPostings {
                 f.starts.truncate(mark.terms);
                 f.last_offsets.truncate(mark.terms);
                 f.terms.truncate(mark.terms);
+                for id in mark.terms..f.sealed_of.len() {
+                    f.unseal(id, 0);
+                }
+                f.sealed_of.truncate(mark.terms);
             }
             for id in 0..f.runs.len() {
                 if f.runs[id].last_doc >= cut_at {

@@ -1581,6 +1581,54 @@ fn apply_op(handle: u64, op: Op) -> Result<(), FfiStatus> {
     })
 }
 
+/// How much lower than a search's an indexing thread's scheduling priority
+/// is, as a nice increment, unless `LUCENE_RUST_INDEX_NICE` says otherwise
+/// (0 leaves it).
+const INDEX_NICE: i32 = 5;
+
+/// Lowers the calling indexing thread's scheduling priority, once per
+/// thread: on a machine indexing keeps busy, a search then runs as soon as
+/// it is ready instead of waiting behind the indexing threads for a core,
+/// and indexing gives up only the time searches take.
+fn yield_to_searches() {
+    #[cfg(target_os = "linux")]
+    {
+        thread_local!(static LOWERED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) });
+        static NICE: std::sync::OnceLock<i32> = std::sync::OnceLock::new();
+        let nice = *NICE.get_or_init(|| {
+            std::env::var("LUCENE_RUST_INDEX_NICE")
+                .ok()
+                .and_then(|v| v.trim().parse().ok())
+                .unwrap_or(INDEX_NICE)
+        });
+        if nice <= 0 || LOWERED.with(|d| d.replace(true)) {
+            return;
+        }
+        // A thread inherits the priority of the thread starting it: the
+        // shared worker pool, which merges and searches use too, starts
+        // now if no thread started it yet, at the priority it had before.
+        let _ = rayon::current_num_threads();
+        // SAFETY: syscalls about the calling thread alone, which Linux
+        // schedules by its thread id; failing leaves the priority as it is.
+        unsafe {
+            let Ok(tid) = libc::id_t::try_from(libc::syscall(libc::SYS_gettid)) else {
+                return;
+            };
+            // -1 is a priority too: only errno tells a failure.
+            *libc::__errno_location() = 0;
+            let current = libc::getpriority(libc::PRIO_PROCESS, tid);
+            if current == -1 && *libc::__errno_location() != 0 {
+                return;
+            }
+            libc::setpriority(
+                libc::PRIO_PROCESS,
+                tid,
+                current.saturating_add(nice).min(19),
+            );
+        }
+    }
+}
+
 /// Applies one operation blob ([`decode_op`]).
 ///
 /// # Safety
@@ -1588,6 +1636,7 @@ fn apply_op(handle: u64, op: Op) -> Result<(), FfiStatus> {
 #[no_mangle]
 pub unsafe extern "C" fn ffi_engine_writer_apply(handle: u64, op: *const u8, op_len: usize) -> i32 {
     guard(|| {
+        yield_to_searches();
         // SAFETY: caller contract.
         let op = decode_op(unsafe { bytes_from_raw(op, op_len)? })?;
         apply_op(handle, op)
@@ -1611,6 +1660,7 @@ static NEXT_PREPARED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU6
 #[no_mangle]
 pub unsafe extern "C" fn ffi_engine_prepare(op: *const u8, op_len: usize, out_id: *mut u64) -> i32 {
     guard(|| {
+        yield_to_searches();
         if out_id.is_null() {
             return Err(FfiStatus::NullPointer);
         }
@@ -1631,6 +1681,7 @@ pub unsafe extern "C" fn ffi_engine_prepare(op: *const u8, op_len: usize, out_id
 #[no_mangle]
 pub extern "C" fn ffi_engine_writer_apply_prepared(handle: u64, id: u64) -> i32 {
     guard(|| {
+        yield_to_searches();
         let op = PREPARED
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -2680,6 +2731,40 @@ mod tests {
     use super::*;
     use lucene_store::directory::FsDirectory;
     use lucene_util::test_support::TempDir;
+
+    /// An indexing thread runs at a lower priority from its first
+    /// operation on, lowered once however many it runs; other threads keep
+    /// theirs.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn indexing_threads_yield_to_searches() {
+        extern "C" {
+            fn getpriority(which: u32, who: u32) -> i32;
+            fn gettid() -> i32;
+        }
+        // SAFETY: reads the calling thread's own priority.
+        let nice = || unsafe { getpriority(0, u32::try_from(gettid()).unwrap()) };
+        let before = nice();
+        let after = std::thread::spawn(move || {
+            assert_eq!(nice(), before);
+            yield_to_searches();
+            yield_to_searches();
+            nice()
+        })
+        .join()
+        .unwrap();
+        let want = std::env::var("LUCENE_RUST_INDEX_NICE")
+            .ok()
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or(INDEX_NICE);
+        let want = if want <= 0 {
+            before
+        } else {
+            (before + want).min(19)
+        };
+        assert_eq!(after, want);
+        assert_eq!(nice(), before);
+    }
 
     /// A little-endian blob builder mirroring the JVM side's.
     #[derive(Default, Clone)]
