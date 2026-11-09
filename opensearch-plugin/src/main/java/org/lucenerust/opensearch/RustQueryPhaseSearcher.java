@@ -348,13 +348,13 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
 
     /**
      * Why a search cannot read the writer's buffered documents, or null when it can: what the
-     * buffers do not hold for the fetch phase (doc values, versions, highlighting), a query that
+     * buffers do not hold for the fetch phase (versions, highlighting, scripts), a query that
      * was expanded or given term statistics over the reader's terms alone (a multi-term query under
      * a scoring rewrite, a fuzzy query, a blended {@code multi_match}), or nested documents.
      */
     static String liveIneligible(SearchContext ctx) {
         if (ctx.version() || ctx.seqNoAndPrimaryTerm() || ctx.explain()) return "fetch_metadata";
-        if (ctx.docValuesContext() != null || ctx.highlight() != null || ctx.hasScriptFields() || ctx.innerHits() != null
+        if (ctx.highlight() != null || ctx.hasScriptFields() || ctx.innerHits() != null
             && ctx.innerHits().getInnerHits().isEmpty() == false) return "fetch_doc_values";
         // Nested documents: the view has no parent filter to tell them apart.
         if (ctx.mapperService().hasNested()) return "nested";

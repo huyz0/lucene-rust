@@ -14,6 +14,17 @@
 //! field is [`DERIVED_SOURCE`] with no value: splicing the vectors back in costs far more than
 //! the rest of the document, and most fetches (`_source: false`, `_id` only) never read it. The
 //! plugin asks [`source_blob`] for it when its visitor does.
+//!
+//! # The doc-values blob
+//!
+//! One document's values of the fields the plugin names
+//! ([`doc_values_blob`]), for the reads OpenSearch makes per hit -- a
+//! derived `_source`, `docvalue_fields`. Little-endian: `count: i32`, then
+//! per named field, in the order named, `number: i32`, `kind: u8` and the
+//! values: [`DV_NONE`] (the document has none, or the field no doc values
+//! of either kind) nothing more; [`DV_SORTED_NUMERIC`] `n: i32` and `n`
+//! `i64`s, ascending; [`DV_SORTED_SET`] `n: i32` and per value its ordinal
+//! (`i64`), `len: i32` and the bytes, ordinals ascending.
 
 use lucene_codecs::stored_fields::{self, StoredFieldVisitor, VisitStatus};
 
@@ -57,6 +68,10 @@ fn check_doc(
     Ok(())
 }
 
+pub(crate) const DV_NONE: u8 = 0;
+pub(crate) const DV_SORTED_NUMERIC: u8 = 1;
+pub(crate) const DV_SORTED_SET: u8 = 2;
+
 /// Segment `segment`'s document `doc` (segment-local) of `handle`'s reader,
 /// encoded (see the module doc).
 pub(crate) fn document_blob(handle: u64, segment: i32, doc: i32) -> Result<Vec<u8>, FfiStatus> {
@@ -87,6 +102,89 @@ pub(crate) fn document_blob(handle: u64, segment: i32, doc: i32) -> Result<Vec<u
     }
     let Blob { mut out, count, .. } = blob;
     out[..4].copy_from_slice(&count.to_le_bytes());
+    Ok(out)
+}
+
+/// Segment `segment`'s document `doc` (segment-local) of `handle`'s reader:
+/// its values of the fields numbered `fields`, encoded as the module doc's
+/// doc-values blob. A field is read as `LeafReader.getSortedNumericDocValues`
+/// or `getSortedSetDocValues` read it: by its exact doc-values type.
+pub(crate) fn doc_values_blob(
+    handle: u64,
+    segment: i32,
+    doc: i32,
+    fields: &[i32],
+) -> Result<Vec<u8>, FfiStatus> {
+    const WHAT: &str = "ffi_jvm_reader_doc_values";
+    let h = jvm_reader::lookup(
+        handle,
+        "ffi_jvm_reader_doc_values: unknown or already-closed handle",
+    )?;
+    let reader = segment_reader(&h, segment, WHAT)?;
+    check_doc(reader, doc, WHAT)?;
+    encode_doc_values(reader, doc, fields).map_err(|e| {
+        set_last_error(format!("reading doc values: {e}"));
+        FfiStatus::Decode
+    })
+}
+
+/// [`doc_values_blob`]'s encoding of document `doc` of any leaf.
+pub(crate) fn encode_doc_values<R: lucene_search::reader::LeafReader + ?Sized>(
+    reader: &R,
+    doc: i32,
+    fields: &[i32],
+) -> lucene_search::Result<Vec<u8>> {
+    use lucene_codecs::field_infos::DocValuesType;
+    let len = |n: usize| {
+        i32::try_from(n)
+            .map_err(|_| lucene_search::Error::IllegalArgument("too many values".into()))
+    };
+    let mut out = len(fields.len())?.to_le_bytes().to_vec();
+    let infos = reader.field_infos();
+    for &number in fields {
+        out.extend_from_slice(&number.to_le_bytes());
+        let info = infos.field_by_number(number);
+        let name = info.map(|i| i.name.as_str()).unwrap_or_default();
+        match info.map(|i| i.doc_values_type) {
+            Some(DocValuesType::SortedNumeric) => {
+                let Some(mut dv) = reader.sorted_numeric_doc_values(name)? else {
+                    out.push(DV_NONE);
+                    continue;
+                };
+                if !dv.advance_exact(doc)? {
+                    out.push(DV_NONE);
+                    continue;
+                }
+                let n = dv.doc_value_count();
+                out.push(DV_SORTED_NUMERIC);
+                out.extend_from_slice(&n.to_le_bytes());
+                for _ in 0..n {
+                    out.extend_from_slice(&dv.next_value()?.to_le_bytes());
+                }
+            }
+            Some(DocValuesType::SortedSet) => {
+                let Some(mut dv) = reader.sorted_set_doc_values(name)? else {
+                    out.push(DV_NONE);
+                    continue;
+                };
+                if !dv.advance_exact(doc)? {
+                    out.push(DV_NONE);
+                    continue;
+                }
+                let n = dv.doc_value_count();
+                out.push(DV_SORTED_SET);
+                out.extend_from_slice(&n.to_le_bytes());
+                for _ in 0..n {
+                    let ord = dv.next_ord()?;
+                    let term = dv.lookup_ord(ord)?;
+                    out.extend_from_slice(&ord.to_le_bytes());
+                    out.extend_from_slice(&len(term.len())?.to_le_bytes());
+                    out.extend_from_slice(&term);
+                }
+            }
+            _ => out.push(DV_NONE),
+        }
+    }
     Ok(out)
 }
 
@@ -380,6 +478,98 @@ mod tests {
         assert_eq!(rc, FfiStatus::NullPointer.code());
         crate::jvm_reader::ffi_close_jvm_reader(h);
         assert!(document_blob(h, 0, 0).is_err());
+    }
+
+    #[test]
+    fn a_documents_doc_values_come_back_as_its_leaf_reads_them() {
+        use lucene_codecs::field_infos::DocValuesType;
+        use lucene_search::reader::LeafReader;
+        let h = crate::jvm_reader::tests::open_bwc("10.4.0");
+        let held = jvm_reader::lookup(h, "test").unwrap();
+        let mut seen = [0usize; 3];
+        for (segment, reader) in held.reader.segment_readers().iter().enumerate() {
+            let segment = i32::try_from(segment).unwrap();
+            let infos = reader.field_infos();
+            // Every field, and a number no field has.
+            let mut fields: Vec<i32> = infos.fields.iter().map(|f| f.number).collect();
+            fields.push(9999);
+            for doc in 0..reader.max_doc {
+                let blob = doc_values_blob(h, segment, doc, &fields).unwrap();
+                let mut at = 0;
+                assert_eq!(i32_at(&blob, &mut at), i32::try_from(fields.len()).unwrap());
+                for &number in &fields {
+                    assert_eq!(i32_at(&blob, &mut at), number);
+                    let kind = blob[at];
+                    at += 1;
+                    seen[usize::from(kind)] += 1;
+                    let info = infos.field_by_number(number);
+                    match kind {
+                        DV_NONE => {
+                            let has = match info.map(|i| i.doc_values_type) {
+                                Some(DocValuesType::SortedNumeric) => reader
+                                    .sorted_numeric_doc_values(&info.unwrap().name)
+                                    .unwrap()
+                                    .unwrap()
+                                    .advance_exact(doc)
+                                    .unwrap(),
+                                Some(DocValuesType::SortedSet) => reader
+                                    .sorted_set_doc_values(&info.unwrap().name)
+                                    .unwrap()
+                                    .unwrap()
+                                    .advance_exact(doc)
+                                    .unwrap(),
+                                _ => false,
+                            };
+                            assert!(!has, "field {number} doc {doc}");
+                        }
+                        DV_SORTED_NUMERIC => {
+                            let mut dv = reader
+                                .sorted_numeric_doc_values(&info.unwrap().name)
+                                .unwrap()
+                                .unwrap();
+                            assert!(dv.advance_exact(doc).unwrap());
+                            let n = i32_at(&blob, &mut at);
+                            assert_eq!(n, dv.doc_value_count());
+                            for _ in 0..n {
+                                let v = i64::from_le_bytes(blob[at..at + 8].try_into().unwrap());
+                                at += 8;
+                                assert_eq!(v, dv.next_value().unwrap());
+                            }
+                        }
+                        DV_SORTED_SET => {
+                            let mut dv = reader
+                                .sorted_set_doc_values(&info.unwrap().name)
+                                .unwrap()
+                                .unwrap();
+                            assert!(dv.advance_exact(doc).unwrap());
+                            let n = i32_at(&blob, &mut at);
+                            assert_eq!(n, dv.doc_value_count());
+                            for _ in 0..n {
+                                let ord = i64::from_le_bytes(blob[at..at + 8].try_into().unwrap());
+                                at += 8;
+                                assert_eq!(ord, dv.next_ord().unwrap());
+                                let len = usize::try_from(i32_at(&blob, &mut at)).unwrap();
+                                assert_eq!(blob[at..at + len], dv.lookup_ord(ord).unwrap()[..]);
+                                at += len;
+                            }
+                        }
+                        other => panic!("kind {other}"),
+                    }
+                }
+                assert_eq!(at, blob.len());
+            }
+        }
+        assert!(seen.iter().all(|&n| n > 0), "every kind read: {seen:?}");
+        assert_eq!(
+            doc_values_blob(h, 0, -1, &[]).err(),
+            Some(FfiStatus::InvalidArgument)
+        );
+        assert_eq!(
+            doc_values_blob(h, 99, 0, &[]).err(),
+            Some(FfiStatus::InvalidArgument)
+        );
+        drop(held);
+        crate::jvm_reader::ffi_close_jvm_reader(h);
     }
 
     /// A blob decoded back into `(number, value)`s.

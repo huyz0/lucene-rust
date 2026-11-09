@@ -5426,6 +5426,34 @@ mod tests {
         unsafe { crate::ffm_bridge::ffi_jvm_free_bytes(ptr, len) };
         let id = format!("d{doc}");
         assert!(stored.windows(id.len()).any(|w| w == id.as_bytes()));
+        // Its doc values: _seq_no's value, and none of body, which has none.
+        let fields = [f.seq, f.body];
+        let (mut ptr, mut len) = (std::ptr::null_mut(), 0usize);
+        // SAFETY: live out-pointers; `fields` holds two numbers.
+        let rc = unsafe {
+            crate::live::ffi_live_view_doc_values_alloc(
+                view,
+                0,
+                doc - 40,
+                fields.as_ptr(),
+                2,
+                &mut ptr,
+                &mut len,
+            )
+        };
+        assert_eq!(rc, 0, "{}", crate::error::last_error());
+        // SAFETY: the buffer the call just gave.
+        let values = unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec();
+        // SAFETY: the buffer the call gave, freed once.
+        unsafe { crate::ffm_bridge::ffi_jvm_free_bytes(ptr, len) };
+        let mut want = 2i32.to_le_bytes().to_vec();
+        want.extend_from_slice(&f.seq.to_le_bytes());
+        want.push(crate::jvm_fetch::DV_SORTED_NUMERIC);
+        want.extend_from_slice(&1i32.to_le_bytes());
+        want.extend_from_slice(&i64::from(doc).to_le_bytes());
+        want.extend_from_slice(&f.body.to_le_bytes());
+        want.push(crate::jvm_fetch::DV_NONE);
+        assert_eq!(values, want);
 
         assert_eq!(ffi_live_view_close(view), 0);
         assert_ne!(ffi_live_view_close(view), 0);

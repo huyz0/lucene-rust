@@ -819,6 +819,80 @@ fn a_flushing_buffer_is_written_as_lean_chunks_until_published() {
     w.close_live_view(&later);
 }
 
+/// A multi-valued field's values come sorted (and, for SORTED_SET,
+/// without repeats); a single-valued field gives its first value.
+#[test]
+fn a_documents_doc_values_take_the_segments_shape() {
+    use super::LiveDocValue::{self, Bytes, Numbers};
+    let longs = [
+        FieldValue::Long(3),
+        FieldValue::Long(-1),
+        FieldValue::Long(3),
+    ];
+    let bytes = [
+        FieldValue::Binary(b"b".to_vec()),
+        FieldValue::Binary(b"a".to_vec()),
+        FieldValue::Binary(b"b".to_vec()),
+    ];
+    let of = |kind, values: &[FieldValue]| LiveDocValue::of(kind, values.iter());
+    assert_eq!(
+        of(DocValuesType::SortedNumeric, &longs),
+        Some(Numbers(vec![-1, 3, 3]))
+    );
+    assert_eq!(of(DocValuesType::Numeric, &longs), Some(Numbers(vec![3])));
+    assert_eq!(
+        of(DocValuesType::SortedSet, &bytes),
+        Some(Bytes(vec![b"a".to_vec(), b"b".to_vec()]))
+    );
+    assert_eq!(
+        of(DocValuesType::Sorted, &bytes),
+        Some(Bytes(vec![b"b".to_vec()]))
+    );
+    assert_eq!(of(DocValuesType::SortedSet, &longs), None);
+    assert_eq!(of(DocValuesType::None, &bytes), None);
+}
+
+/// One buffered document's doc values read the same in its slot, while
+/// flushing and once published, as long as a view holds the buffer.
+#[test]
+fn a_buffered_documents_doc_values_read_in_every_state() {
+    use super::LiveDocValue::{Bytes, Numbers};
+    let tmp = TempDir::new("live-doc-values");
+    let dir = FsDirectory::open(tmp.path());
+    let w = columns_writer(&dir);
+    let cfg = w.cfg();
+    let number = |name: &str| cfg.field_by_name(name).unwrap().number;
+    let (kw, price, body) = (number("kw"), number("price"), number("body"));
+    let fields = [kw, price, body];
+    let check = |view: &LiveView| {
+        let b = view.buffers.iter().position(|b| b.max_doc == 400).unwrap();
+        let read = |doc| w.live_doc_values(view, b, doc, &fields).unwrap();
+        assert_eq!(
+            read(7),
+            vec![
+                (kw, Bytes(vec![b"t7".to_vec()])),
+                (price, Numbers(vec![993]))
+            ]
+        );
+        assert_eq!(read(4), vec![(price, Numbers(vec![996]))]);
+        assert_eq!(read(11), vec![(kw, Bytes(vec![b"t2".to_vec()]))]);
+        assert!(w.live_doc_values(view, b, 400, &fields).is_err());
+    };
+    let slot_view = w.open_live_view(None).unwrap();
+    check(&slot_view);
+    let batch = {
+        let mut slot = super::write_slot(&w.slots[0]);
+        w.begin_flush(0, &mut slot).unwrap()
+    };
+    let view = w.open_live_view(None).unwrap();
+    check(&view);
+    check(&slot_view);
+    w.complete_flush(batch).unwrap();
+    check(&view);
+    w.close_live_view(&view);
+    w.close_live_view(&slot_view);
+}
+
 /// A published buffer a view reads keeps its segment's files after a
 /// merge replaced the segment and a commit dropped it, until the view is
 /// closed and a release lets the buffer go.
