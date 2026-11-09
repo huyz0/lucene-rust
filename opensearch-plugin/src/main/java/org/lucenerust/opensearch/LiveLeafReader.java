@@ -193,13 +193,29 @@ public final class LiveLeafReader extends SequentialStoredFieldsLeafReader {
             return out[0];
         }
 
+        /**
+         * The last document read and the thread that read it: deriving a hit's {@code _source}
+         * reads it once per stored field it rebuilds from, and the same thread asking again
+         * replays these bytes. Only a document of at most {@link NativeStoredFieldsReader#KEEP_BYTES}.
+         */
+        private volatile NativeStoredFieldsReader.LastDocument last;
+
         void document(int docID, StoredFieldVisitor visitor) throws IOException {
+            NativeStoredFieldsReader.LastDocument l = last;
+            if (l != null && l.doc() == docID && l.thread() == Thread.currentThread()) {
+                NativeStoredFieldsReader.replay(infos, l.blob(), visitor);
+                return;
+            }
             byte[][] out = new byte[1][];
             int rc = NativeBridge.liveDocument(view.id(), buffer, start + docID, out);
             if (rc != NativeBridge.OK) {
                 throw new IOException("buffered document " + docID + ": " + NativeBridge.lastError());
             }
-            NativeStoredFieldsReader.replay(infos, out[0], visitor);
+            byte[] blob = out[0];
+            last = blob.length <= NativeStoredFieldsReader.KEEP_BYTES
+                ? new NativeStoredFieldsReader.LastDocument(Thread.currentThread(), docID, blob)
+                : null;
+            NativeStoredFieldsReader.replay(infos, blob, visitor);
         }
 
         @Override
