@@ -153,6 +153,17 @@ fn check(format: KnnVectorsFormat, exact_scores: bool) {
             assert!((h.score - w.1).abs() < 1e-6, "{} vs {}", h.score, w.1);
         }
     }
+    // Quantized scores stay close to each hit's float score: wrong
+    // corrections, query quantization or ordinals would drift far from it.
+    for h in &hits {
+        let float = l2_score(&target, &vector(h.doc_id as usize));
+        assert!(
+            (h.score - float).abs() <= 0.02 * float,
+            "doc {}: {} vs {float}",
+            h.doc_id,
+            h.score
+        );
+    }
 
     // Filtered to even documents.
     let even = Clause::Term(TermQuery::new("parity", b"even".to_vec()));

@@ -333,17 +333,12 @@ struct CodecFiles {
     ivf: Option<IvfFiles>,
     /// A `Lucene104(Hnsw)ScalarQuantizedVectorsFormat` instance's codes.
     scalar_quantized: Option<ScalarQuantizedFiles>,
-    /// The vectors instance's flat and graph readers, detached from their
-    /// files: opened (headers, footers, metadata) on first use, then shared
-    /// by every search.
-    vector_readers: OnceLock<VectorReaders>,
+    /// The vectors instance's flat reader, detached from its file: opened
+    /// (header, footer, metadata) on first use, then shared by every read.
+    flat_reader: OnceLock<lucene_codecs::vectors::FlatVectorsReader<'static>>,
+    /// The HNSW graph's reader, likewise; opened only by graph searches.
+    graph_reader: OnceLock<Option<lucene_codecs::hnsw_vectors::HnswVectorsReader<'static>>>,
     suffix: String,
-}
-
-#[derive(Debug)]
-struct VectorReaders {
-    flat: lucene_codecs::vectors::FlatVectorsReader<'static>,
-    graph: Option<lucene_codecs::hnsw_vectors::HnswVectorsReader<'static>>,
 }
 
 /// `.vemq`/`.veq` of a `Lucene104` scalar-quantized vectors instance, with
@@ -1164,7 +1159,8 @@ impl SegmentReader {
                     graph_meta: None,
                     ivf: None,
                     scalar_quantized: None,
-                    vector_readers: OnceLock::new(),
+                    flat_reader: OnceLock::new(),
+                    graph_reader: OnceLock::new(),
                     suffix: codec_suffix_of(&name, &segment_name, ".tvd"),
                 }))
             }
@@ -1238,7 +1234,8 @@ impl SegmentReader {
                     graph_meta: open(".vem")?,
                     ivf,
                     scalar_quantized,
-                    vector_readers: OnceLock::new(),
+                    flat_reader: OnceLock::new(),
+                    graph_reader: OnceLock::new(),
                     suffix,
                 }));
             }
@@ -1476,15 +1473,10 @@ impl SegmentReader {
         &'s self,
         f: &'s CodecFiles,
     ) -> crate::Result<lucene_codecs::vectors::FlatVectorsReader<'s>> {
-        Ok(self.vector_readers(f)?.flat.attach(&f.data))
-    }
-
-    /// `f`'s flat and graph readers, opened once.
-    fn vector_readers<'s>(&self, f: &'s CodecFiles) -> crate::Result<&'s VectorReaders> {
-        if let Some(readers) = f.vector_readers.get() {
-            return Ok(readers);
+        if let Some(flat) = f.flat_reader.get() {
+            return Ok(flat.attach(&f.data));
         }
-        // A failed open is not kept: the next search tries again.
+        // A failed open is not kept: the next read tries again.
         let mut flat = lucene_codecs::vectors::FlatVectorsReader::open(
             &f.meta,
             &f.data,
@@ -1492,6 +1484,19 @@ impl SegmentReader {
             &f.suffix,
         )?;
         flat.resolve_similarities_from(&self.field_infos.fields)?;
+        Ok(f.flat_reader
+            .get_or_init(|| flat.detached())
+            .attach(&f.data))
+    }
+
+    /// `f`'s HNSW graph reader, opened once; `None` without a graph.
+    fn graph_reader<'s>(
+        &self,
+        f: &'s CodecFiles,
+    ) -> crate::Result<Option<&'s lucene_codecs::hnsw_vectors::HnswVectorsReader<'static>>> {
+        if let Some(graph) = f.graph_reader.get() {
+            return Ok(graph.as_ref());
+        }
         let graph = match (&f.graph_meta, &f.index) {
             (Some(meta), Some(index)) => Some(
                 lucene_codecs::hnsw_vectors::HnswVectorsReader::open(
@@ -1504,11 +1509,7 @@ impl SegmentReader {
             ),
             _ => None,
         };
-        let opened = VectorReaders {
-            flat: flat.detached(),
-            graph,
-        };
-        Ok(f.vector_readers.get_or_init(|| opened))
+        Ok(f.graph_reader.get_or_init(|| graph).as_ref())
     }
 
     /// `SegmentReader.getVectorReader()`'s flat half: a reader over this
@@ -1611,7 +1612,7 @@ impl SegmentReader {
             if flat.field(field_number).is_none() {
                 continue;
             }
-            let graph = match (&self.vector_readers(f)?.graph, &f.index) {
+            let graph = match (self.graph_reader(f)?, &f.index) {
                 (Some(g), Some(index)) => g.field(field_number).is_some().then(|| g.attach(index)),
                 _ => None,
             };

@@ -10,7 +10,7 @@
 //!   --nprobes L   IVF probes per segment, 0 = calibrated (default 0)
 //!   --dir D       where the indexes are written (default a temporary directory)
 //!   --reuse       keep each format's index under D and search it again on
-//!                 later runs instead of rebuilding it
+//!                 later runs with the same data and build options
 //! ```
 //!
 //! `<prefix>` names `.base.fbin`, `.query.fbin` and `.gt.ibin` as
@@ -101,8 +101,13 @@ fn main() {
         } else {
             root.join(format!("knn-formats-{}-{name}", std::process::id()))
         };
-        let built = reuse && path.exists() && dir_size(&path) > 0;
+        // The marker names what the kept index was built from; a missing
+        // marker (an interrupted build) or another build rebuilds it.
+        let marker = root.join(format!("knn-formats-{name}.built"));
+        let key = format!("{prefix} {} {segments} {merge}", args[2]);
+        let built = reuse && std::fs::read_to_string(&marker).is_ok_and(|k| k == key);
         if !built {
+            let _ = std::fs::remove_file(&marker);
             let _ = std::fs::remove_dir_all(&path);
             std::fs::create_dir_all(&path).unwrap();
         }
@@ -161,6 +166,9 @@ fn main() {
                 w.commit().unwrap();
             }
             w.close().unwrap();
+            if reuse {
+                std::fs::write(&marker, &key).unwrap();
+            }
         }
         let build = t.elapsed().as_secs_f64();
         let size = dir_size(&path) as f64 / 1e6;

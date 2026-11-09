@@ -517,7 +517,7 @@ pub struct QuantizedFieldEntry {
     pub size: i32,
     pub scalar_encoding: ScalarEncoding,
     /// `None` when the field has no vectors.
-    pub centroid: Option<Vec<f32>>,
+    pub centroid: Option<std::sync::Arc<[f32]>>,
     pub centroid_dp: f32,
     pub ord_to_doc: OrdToDoc,
 }
@@ -675,7 +675,10 @@ impl<'a> ScalarQuantizedVectorsReader<'a> {
             size: entry.size,
             encoding: entry.scalar_encoding,
             similarity: entry.similarity,
-            centroid: entry.centroid.clone().unwrap_or_default(),
+            centroid: entry
+                .centroid
+                .clone()
+                .unwrap_or_else(|| std::sync::Arc::from([])),
             centroid_dp: entry.centroid_dp,
             ord_to_doc: entry.ord_to_doc.clone(),
             packed_len,
@@ -725,7 +728,7 @@ fn read_field(
         for _ in 0..dim {
             c.push(f32::from_bits(meta.read_i32()? as u32));
         }
-        centroid = Some(c);
+        centroid = Some(c.into());
         centroid_dp = f32::from_bits(meta.read_i32()? as u32);
     }
     let ord_to_doc = OrdToDoc::from_stored_meta(meta, size)?;
@@ -774,7 +777,7 @@ pub struct QuantizedVectorValues<'a> {
     size: i32,
     encoding: ScalarEncoding,
     similarity: VectorSimilarityFunction,
-    centroid: Vec<f32>,
+    centroid: std::sync::Arc<[f32]>,
     centroid_dp: f32,
     ord_to_doc: OrdToDoc,
     packed_len: usize,
