@@ -37,7 +37,7 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLockReadGuard};
 
-use lucene_codecs::field_infos::{FieldInfo, IndexOptions};
+use lucene_codecs::field_infos::{DocValuesType, FieldInfo, IndexOptions};
 use lucene_codecs::postings_writer::TermPostings;
 use lucene_codecs::stored_fields::{FieldValue, StoredField};
 
@@ -288,29 +288,32 @@ impl LiveColumns {
         }
     }
 
-    /// Frees the columns kept only for writing chunks.
+    /// Frees the columns kept only for writing chunks, keeping the points'
+    /// bounds views read.
     pub(super) fn drop_chunk_columns(&mut self) {
         self.doc_values = doc_values::DocValuesColumns::default();
-        self.chunk = chunk_fields::ChunkFields::default();
+        self.chunk.drop_columns();
     }
 
     /// Documents `start..end` as columns, numbered from `start`; `None`
     /// when they must be decoded to be written.
     fn chunk_columns(&self, start: i32, end: i32) -> Option<crate::index_writer::ChunkColumns> {
         let doc_values = self.doc_values.range(start, end)?;
-        self.columns_besides_doc_values(start, end, doc_values)
+        self.columns_besides_doc_values(start, end, doc_values, true)
     }
 
     /// [`Self::chunk_columns`] with each field's doc values copied out as
-    /// kept, to be put in the writer's shape only for the fields read.
+    /// kept, to be put in the writer's shape only for the fields read, and
+    /// the points only with `points`.
     fn lean_columns(
         &self,
         start: i32,
         end: i32,
+        points: bool,
     ) -> Option<(crate::index_writer::ChunkColumns, Vec<(i32, DocValuesRun)>)> {
         let runs = self.doc_values.runs(start, end)?;
         Some((
-            self.columns_besides_doc_values(start, end, Vec::new())?,
+            self.columns_besides_doc_values(start, end, Vec::new(), points)?,
             runs,
         ))
     }
@@ -320,22 +323,26 @@ impl LiveColumns {
         start: i32,
         end: i32,
         doc_values: Vec<(i32, crate::index_writer::PrebuiltDocValues)>,
+        points: bool,
     ) -> Option<crate::index_writer::ChunkColumns> {
-        let (present, points) = self.chunk.range(start, end)?;
+        let (present, points) = self.chunk.range(start, end, points)?;
         let (from, to) = (usize::try_from(start).ok()?, usize::try_from(end).ok()?);
         let norms = self
             .norms
             .iter()
             .filter_map(|(&n, column)| {
-                let values: Vec<Option<i64>> = (from..to)
-                    .map(|d| {
-                        let doc = i32::try_from(d).unwrap_or(i32::MAX);
-                        self.chunk
-                            .has_norm(n, doc)
-                            .then(|| column.get(d).unwrap_or(0))
-                    })
-                    .collect();
-                values.iter().any(Option::is_some).then_some((n, values))
+                let mut values: Vec<Option<i64>> = vec![None; to.saturating_sub(from)];
+                let mut any = false;
+                for (s, e) in self.chunk.normed_in(n, start, end) {
+                    let (s, e) = (usize::try_from(s).ok()?, usize::try_from(e).ok()?);
+                    for d in s..e {
+                        if let Some(v) = values.get_mut(d.saturating_sub(from)) {
+                            *v = Some(column.get(d).unwrap_or(0));
+                            any = true;
+                        }
+                    }
+                }
+                any.then_some((n, values))
             })
             .collect();
         Some(crate::index_writer::ChunkColumns {
@@ -448,6 +455,56 @@ impl Deletes {
     }
 }
 
+/// One buffered document's doc values for a field
+/// ([`ConcurrentIndexWriter::live_doc_values`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LiveDocValue {
+    /// NUMERIC and SORTED_NUMERIC.
+    Numbers(Vec<i64>),
+    /// BINARY, SORTED and SORTED_SET.
+    Bytes(Vec<Vec<u8>>),
+}
+
+impl LiveDocValue {
+    /// `values` as a segment of field type `kind` holds them; `None` when
+    /// there are none of the field's kind.
+    fn of<'a>(kind: DocValuesType, values: impl Iterator<Item = &'a FieldValue>) -> Option<Self> {
+        let number = |v: &FieldValue| match v {
+            FieldValue::Long(x) => Some(*x),
+            FieldValue::Int(x) => Some(i64::from(*x)),
+            _ => None,
+        };
+        let bytes = |v: &FieldValue| match v {
+            FieldValue::String(s) => Some(s.as_bytes().to_vec()),
+            FieldValue::Binary(b) => Some(b.clone()),
+            _ => None,
+        };
+        let out = match kind {
+            DocValuesType::Numeric => Self::Numbers(values.filter_map(number).take(1).collect()),
+            DocValuesType::SortedNumeric => {
+                let mut v: Vec<i64> = values.filter_map(number).collect();
+                v.sort_unstable();
+                Self::Numbers(v)
+            }
+            DocValuesType::Binary | DocValuesType::Sorted => {
+                Self::Bytes(values.filter_map(bytes).take(1).collect())
+            }
+            DocValuesType::SortedSet => {
+                let mut v: Vec<Vec<u8>> = values.filter_map(bytes).collect();
+                v.sort_unstable();
+                v.dedup();
+                Self::Bytes(v)
+            }
+            _ => return None,
+        };
+        match &out {
+            Self::Numbers(v) if v.is_empty() => None,
+            Self::Bytes(v) if v.is_empty() => None,
+            _ => Some(out),
+        }
+    }
+}
+
 /// A buffer taken for a flush: readable by live search until it is
 /// published, and after, until a commit holding it is released
 /// ([`ConcurrentIndexWriter::release_live`]).
@@ -465,6 +522,10 @@ pub(super) struct Flushing {
     /// What chunks without postings are written from until the buffer is
     /// published, beside `columns`' chunk columns.
     pub(super) lean: Option<LeanSource>,
+    /// The documents' fields as indexed (full blocks shared with the
+    /// flush), for reading one document's doc values
+    /// ([`ConcurrentIndexWriter::live_doc_values`]).
+    pub(super) explicit: PackedFields,
 }
 
 /// What a chunk without postings is written from, copied out of its
@@ -487,12 +548,10 @@ impl Flushing {
     }
 }
 
-/// A flushing buffer's packed fields (their full blocks shared with the
-/// flush) and the rest a chunk of it without postings is written from
-/// ([`ConcurrentIndexWriter::live_lean_segment`]). Kept only for a buffer
+/// What a chunk of a flushing buffer without postings is written from,
+/// beside its packed fields ([`ConcurrentIndexWriter::live_lean_segment`]). Kept only for a buffer
 /// whose documents carry no fields or vectors of their own.
 pub(super) struct LeanSource {
-    pub(super) explicit: PackedFields,
     pub(super) has_blocks: bool,
     pub(super) partition: Option<Arc<str>>,
 }
@@ -698,6 +757,8 @@ impl LiveFlushes {
         self.buffers().find(|f| f.columns.id == id).map(|f| Source {
             postings: &f.postings,
             columns: &f.columns,
+            explicit: &f.explicit,
+            num_docs: usize::try_from(f.max_doc).unwrap_or(0),
         })
     }
 
@@ -797,6 +858,8 @@ pub struct ViewBuffer {
     pub chunks: bool,
     /// Every field's statistics as of the view, by field number.
     stats: HashMap<i32, LiveFieldStats>,
+    /// By field number, its points' bounds as of the view.
+    bounds: HashMap<i32, PointBounds>,
 }
 
 impl ViewBuffer {
@@ -914,6 +977,9 @@ impl StoredArena {
 struct Source<'a> {
     postings: &'a PendingPostings,
     columns: &'a LiveColumns,
+    explicit: &'a PackedFields,
+    /// How many documents the buffer holds now.
+    num_docs: usize,
 }
 
 impl ConcurrentIndexWriter<'_> {
@@ -963,7 +1029,7 @@ impl ConcurrentIndexWriter<'_> {
             .map(|f| f.postings.bytes())
             .fold(slots, usize::saturating_add);
         live.buffers()
-            .map(|f| f.columns.ram_bytes())
+            .map(|f| f.columns.ram_bytes().saturating_add(f.explicit.ram_bytes()))
             .fold(retained, usize::saturating_add)
             .saturating_add(live.history_bytes)
     }
@@ -1065,6 +1131,8 @@ impl ConcurrentIndexWriter<'_> {
             let source = Source {
                 postings: &dwpt.postings,
                 columns: &dwpt.live,
+                explicit: &dwpt.explicit,
+                num_docs: dwpt.num_docs(),
             };
             let mut buffer = view_buffer(&source, tail, max_doc, &cfg)?;
             buffer.in_slot = true;
@@ -1077,6 +1145,8 @@ impl ConcurrentIndexWriter<'_> {
             let source = Source {
                 postings: &f.postings,
                 columns: &f.columns,
+                explicit: &f.explicit,
+                num_docs: usize::try_from(f.max_doc).unwrap_or(0),
             };
             let mut buffer = view_buffer(&source, &flushing_tail, f.max_doc, &cfg)?;
             buffer.chunks = chunks;
@@ -1167,7 +1237,12 @@ impl ConcurrentIndexWriter<'_> {
             dir,
             name,
         )
-        .map(|(sci, _)| sci)
+        .and_then(|s| match s {
+            LeanSegment::Written(sci, _) => Ok(sci),
+            LeanSegment::Parts(..) => Err(Error::LiveSearch(
+                "a chunk for a search alone was asked for another".into(),
+            )),
+        })
     }
 
     /// [`Self::live_buffer_segment`] without postings, for one search: the
@@ -1186,10 +1261,7 @@ impl ConcurrentIndexWriter<'_> {
         points: bool,
         dir: &dyn lucene_store::Directory,
         name: &str,
-    ) -> Result<(
-        crate::segment_infos::SegmentCommitInfo,
-        Option<crate::index_writer::LazyDocValues>,
-    )> {
+    ) -> Result<LeanSegment> {
         self.live_segment_with(
             id,
             range,
@@ -1213,10 +1285,7 @@ impl ConcurrentIndexWriter<'_> {
         lazy: Option<bool>,
         dir: &dyn lucene_store::Directory,
         name: &str,
-    ) -> Result<(
-        crate::segment_infos::SegmentCommitInfo,
-        Option<crate::index_writer::LazyDocValues>,
-    )> {
+    ) -> Result<LeanSegment> {
         let started = std::time::Instant::now();
         let cfg = self.check_live()?;
         if cfg.sorts_documents() {
@@ -1235,7 +1304,7 @@ impl ConcurrentIndexWriter<'_> {
             if decode_chunks() {
                 None
             } else if lazy.is_some() && cfg.codec.is_none() {
-                c.lean_columns(range.start, range.end)
+                c.lean_columns(range.start, range.end, lazy == Some(true))
                     .map(|(c, runs)| (c, Some(runs)))
             } else {
                 c.chunk_columns(range.start, range.end).map(|c| (c, None))
@@ -1265,7 +1334,7 @@ impl ConcurrentIndexWriter<'_> {
                     .ok_or_else(flushed)?;
                 let source = f.lean.as_ref().ok_or_else(flushed)?;
                 let copied = Copied {
-                    explicit: source.explicit.snapshot(),
+                    explicit: f.explicit.snapshot(),
                     docs: Vec::new(),
                     custom: Vec::new(),
                     vectors: Vec::new(),
@@ -1298,13 +1367,61 @@ impl ConcurrentIndexWriter<'_> {
                     .map(|(n, r)| Some((*n, r.build()?)))
                     .collect::<Option<Vec<_>>>()
                 {
-                    Some(doc_values) => c.doc_values = doc_values,
-                    None => columns = None,
+                    // Columns copied without their points cannot write a
+                    // segment that has them: the documents are decoded.
+                    Some(doc_values) if lazy != Some(false) => c.doc_values = doc_values,
+                    _ => columns = None,
                 }
                 None
             }
             _ => None,
         };
+        // Only the columns hold the run's fields: no held documents,
+        // custom-frequency terms, vectors or blocks of their own.
+        let only_columns = match (&slot, &copied) {
+            (Some(slot), _) => {
+                let run = end.saturating_sub(start);
+                !slot.has_blocks
+                    && slot
+                        .docs
+                        .iter()
+                        .skip(start)
+                        .take(run)
+                        .all(|d| d.fields.is_empty())
+                    && slot
+                        .custom_freq_terms
+                        .iter()
+                        .skip(start)
+                        .take(run)
+                        .all(Vec::is_empty)
+                    && slot.vectors.iter().skip(start).take(run).all(Vec::is_empty)
+            }
+            (None, Some(c)) => {
+                !c.has_blocks && c.docs.is_empty() && c.custom.is_empty() && c.vectors.is_empty()
+            }
+            (None, None) => false,
+        };
+        if let (Some(points), Some(c), true) = (lazy, columns.as_ref(), only_columns) {
+            if lazy_doc_values.is_some() && cfg.takes_lean_parts(c) {
+                // Built from the columns alone, with the slot free.
+                let partition = match (&slot, &copied) {
+                    (Some(slot), _) => slot.partition.clone(),
+                    (None, Some(c)) => c.partition.clone(),
+                    (None, None) => None,
+                };
+                drop(slot);
+                let parts = cfg.build_lean_parts(
+                    c,
+                    range.end.saturating_sub(range.start),
+                    points,
+                    partition.as_deref(),
+                    lucene_util::string_helper::random_id(),
+                )?;
+                crate::live_timing::record(crate::live_timing::Phase::ChunkLean, started.elapsed());
+                let lazy_doc_values = lazy_doc_values.ok_or_else(flushed)?;
+                return Ok(LeanSegment::Parts(Box::new(parts), lazy_doc_values));
+            }
+        }
         let lean = lazy_doc_values.is_some();
         let limit = crate::index_writer::BufferLimit {
             start: range.start,
@@ -1397,7 +1514,7 @@ impl ConcurrentIndexWriter<'_> {
             },
             started.elapsed(),
         );
-        Ok((sci, lazy_doc_values))
+        Ok(LeanSegment::Written(sci, lazy_doc_values))
     }
 
     /// The directory the writer's segments are in.
@@ -1454,6 +1571,7 @@ impl ConcurrentIndexWriter<'_> {
                     in_slot: true,
                     chunks: true,
                     stats: d.postings.live_stats_all(),
+                    bounds: HashMap::new(),
                 })
             })
             .collect()
@@ -1489,6 +1607,8 @@ impl ConcurrentIndexWriter<'_> {
             return f(Some(&Source {
                 postings: &d.postings,
                 columns: &d.live,
+                explicit: &d.explicit,
+                num_docs: d.num_docs(),
             }));
         }
         let core_wait = crate::live_timing::start(crate::live_timing::Phase::CoreWait);
@@ -1592,6 +1712,78 @@ impl ConcurrentIndexWriter<'_> {
             .ok_or_else(missing)
     }
 
+    /// The doc values of document `doc` of `view`'s buffer `buffer`, for
+    /// each of `fields` the document has, as a segment would hold them:
+    /// SORTED_NUMERIC values sorted, SORTED_SET values sorted without
+    /// repeats, and a single-valued field's first value. They are the
+    /// values the document was added with: a doc-values update to a
+    /// buffered document is not applied. Fails where
+    /// [`Self::live_document`] fails, and for a buffer whose documents were
+    /// not all added as explicit fields.
+    pub fn live_doc_values(
+        &self,
+        view: &LiveView,
+        buffer: usize,
+        doc: i32,
+        fields: &[i32],
+    ) -> Result<Vec<(i32, LiveDocValue)>> {
+        let missing =
+            || Error::LiveSearch(format!("no buffered document {doc} in buffer {buffer}"));
+        let b = view.buffers.get(buffer).ok_or_else(missing)?;
+        if doc < 0 || doc >= b.max_doc {
+            return Err(missing());
+        }
+        let at = usize::try_from(doc).map_err(|_| missing())?;
+        let values = self
+            .with_buffer(b.id, |s| {
+                let s = s?;
+                // Each document has packed fields only when all were
+                // added as explicit fields.
+                if s.explicit.len() != s.num_docs {
+                    return Some(Err(Error::LiveSearch(format!(
+                        "buffer {buffer} holds documents not added as explicit fields"
+                    ))));
+                }
+                let mut out = Vec::new();
+                Some(
+                    s.explicit
+                        .for_each_range(at, at.saturating_add(1), |_, f| {
+                            out = std::mem::take(&mut f.doc_values);
+                            Ok(())
+                        })
+                        .map(|()| out),
+                )
+            })
+            .ok_or_else(missing)??;
+        let cfg = self.cfg();
+        Ok(fields
+            .iter()
+            .filter_map(|&n| {
+                let kind = cfg.field_by_number(n)?.doc_values_type;
+                let of_field = values.iter().filter(|v| v.field_number == n);
+                LiveDocValue::of(kind, of_field.map(|v| &v.value)).map(|v| (n, v))
+            })
+            .collect())
+    }
+
+    /// The least and greatest value of each indexed dimension of field
+    /// `field`'s points in `view`'s buffer `buffer`, and how many points it
+    /// held, as of the view: they bound the view's documents' points.
+    /// `None` when no document of it gave the field a point.
+    pub fn live_point_bounds(
+        &self,
+        view: &LiveView,
+        buffer: usize,
+        field: i32,
+    ) -> Result<Option<PointBounds>> {
+        self.check_live()?;
+        let b = view
+            .buffers
+            .get(buffer)
+            .ok_or_else(|| Error::LiveSearch(format!("no buffer {buffer} in the view")))?;
+        Ok(b.bounds.get(&field).filter(|p| p.count > 0).cloned())
+    }
+
     /// [`Self::open_live_view`], [`Self::live_view_snapshot`] and
     /// [`Self::close_live_view`] in one: the requested terms of every
     /// buffered document a reader of the commit at `commit` lacks.
@@ -1605,6 +1797,22 @@ impl ConcurrentIndexWriter<'_> {
         self.close_live_view(&view);
         out
     }
+}
+
+/// A run of buffered documents for one search
+/// ([`ConcurrentIndexWriter::live_lean_segment`]).
+pub enum LeanSegment {
+    /// Built in memory: what a reader of the run needs besides its doc
+    /// values, which are encoded a field at a time as they are read.
+    Parts(
+        Box<crate::index_writer::LeanParts>,
+        crate::index_writer::LazyDocValues,
+    ),
+    /// Written to the directory, with its doc values when they were not.
+    Written(
+        crate::segment_infos::SegmentCommitInfo,
+        Option<crate::index_writer::LazyDocValues>,
+    ),
 }
 
 /// One buffer's documents and deletes as of now, with `tail` (delete-log
@@ -1636,6 +1844,7 @@ fn view_buffer(
         in_slot: false,
         chunks: false,
         stats: source.postings.live_stats_all(),
+        bounds: source.columns.chunk.all_bounds().clone(),
     })
 }
 
@@ -1769,6 +1978,7 @@ fn truncate(p: &mut TermPostings, max_doc: i32) {
 }
 
 mod chunk_fields;
+pub use chunk_fields::PointBounds;
 
 #[cfg(test)]
 thread_local! {

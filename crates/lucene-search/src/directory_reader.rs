@@ -655,6 +655,95 @@ impl SegmentReader {
         Self::open(dir, commit, 0)
     }
 
+    /// A run of buffered documents as a segment without postings or
+    /// stored fields, built from `parts` in memory instead of read from
+    /// files: its norms and points as the writer encoded them, its doc
+    /// values taken from `lazy` a field at a time, at document base 0.
+    ///
+    /// # Errors
+    /// Norms that do not parse, which only a bug writes.
+    pub fn from_lean_parts(
+        name: String,
+        parts: lucene_index::index_writer::LeanParts,
+        lazy: lucene_index::index_writer::LazyDocValues,
+    ) -> Result<Self> {
+        let lucene_index::index_writer::LeanParts {
+            field_infos,
+            max_doc,
+            norms,
+            points,
+            segment_id,
+        } = parts;
+        let field_infos = Arc::new(FieldInfos {
+            fields: field_infos,
+        });
+        let (norms_meta, norms_data) = match norms {
+            Some((nvm, nvd)) => {
+                let (_, meta) = norms::parse_meta(&nvm, &segment_id, "")?;
+                norms::validate_fields(&meta, &field_infos)?;
+                (Some(Arc::new(meta)), Some(Arc::new(Input::Owned(nvd))))
+            }
+            None => (None, None),
+        };
+        let (kdm_buf, kdi_buf, kdd_buf) = match points {
+            Some((kdm, kdi, kdd)) => (
+                Some(Arc::new(Input::Owned(kdm))),
+                Some(Arc::new(Input::Owned(kdi))),
+                Some(Arc::new(Input::Owned(kdd))),
+            ),
+            None => (None, None, None),
+        };
+        let reader = SegmentReader {
+            codec_files: Arc::default(),
+            attachments: Arc::default(),
+            simpletext: None,
+            num_docs: max_doc,
+            term_vectors: None,
+            term_vectors_meta: Arc::default(),
+            vectors: Vec::new(),
+            completion: Vec::new(),
+            core_cache: crate::reader::CacheHelper::new(),
+            reader_cache: crate::reader::CacheHelper::new(),
+            query_cache: Arc::default(),
+            segment_name: name,
+            index_sort: None,
+            has_blocks: false,
+            diagnostics: Arc::default(),
+            derived_source: None,
+            dvs: Vec::new(),
+            skip_indexes: Arc::default(),
+            docs_with_field: Arc::default(),
+            max_doc,
+            doc_base: 0,
+            segment_id,
+            del_gen: -1,
+            field_infos_gen: -1,
+            doc_values_gen: -1,
+            segment_suffix: String::new(),
+            fields: Arc::new(BlockTreeFields::empty()),
+            doc_buf: None,
+            postings_files: Vec::new(),
+            pos_buf: None,
+            pay_buf: None,
+            live_docs: None,
+            field_infos,
+            dv_data: None,
+            kdm_buf,
+            kdi_buf,
+            kdd_buf,
+            stored: None,
+            points_meta: Arc::default(),
+            postings_validated: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            postings_stats: None,
+            dv_meta: None,
+            dv_generations: Vec::new(),
+            lazy_doc_values: None,
+            norms_meta,
+            norms_data,
+        };
+        Ok(reader.with_lazy_doc_values(lazy))
+    }
+
     /// Opens one segment: reads its `.si`, then whichever of `.fnm`/
     /// `.tim`/`.tip`/`.tmd`/`.doc`/`.pos`/`.pay`/`.liv` it actually has
     /// (checked via `SegmentInfo.files` -- a segment missing postings, e.g.
@@ -2899,6 +2988,12 @@ pub struct DirectoryReader {
     /// reader's life -- the `OrdinalMap` Lucene caches per reader and field.
     global_ords:
         std::sync::Mutex<std::collections::HashMap<String, Arc<crate::terms_agg::GlobalOrds>>>,
+    /// Global ordinals of the readers made from this one with segments
+    /// appended ([`Self::with_readers_appended`]), which share its segments.
+    appended_ords: Arc<crate::terms_agg::GlobalOrdsCache>,
+    /// For a reader made with segments appended, its parent's
+    /// `appended_ords`, which its global ordinals are built through.
+    ords_cache: Option<Arc<crate::terms_agg::GlobalOrdsCache>>,
     /// BM25 norm tables by average field length's bits ([`Self::norm_table`]).
     norm_tables: std::sync::Mutex<std::collections::HashMap<u32, Arc<[f32; 256]>>>,
     /// Each field's norms across the segments, resolved once
@@ -3095,6 +3190,8 @@ impl DirectoryReader {
             segment_infos,
             segments,
             global_ords: std::sync::Mutex::default(),
+            appended_ords: Arc::default(),
+            ords_cache: None,
             norm_tables: std::sync::Mutex::default(),
             norms_plans: std::sync::Mutex::default(),
             nrt_hold: None,
@@ -3132,7 +3229,10 @@ impl DirectoryReader {
         }
         // Built outside the lock: two threads may both build, and one's map
         // is kept -- the same map either way.
-        let built = Arc::new(crate::terms_agg::GlobalOrds::build(&self.segments, field)?);
+        let built = match &self.ords_cache {
+            Some(cache) => cache.ords(&self.segments, field)?,
+            None => Arc::new(crate::terms_agg::GlobalOrds::build(&self.segments, field)?),
+        };
         let mut map = self.global_ords.lock().unwrap_or_else(|e| e.into_inner());
         Ok(map.entry(field.to_string()).or_insert(built).clone())
     }
@@ -3240,6 +3340,8 @@ impl DirectoryReader {
             segment_infos: self.segment_infos.clone(),
             segments,
             global_ords: std::sync::Mutex::default(),
+            appended_ords: Arc::default(),
+            ords_cache: None,
             norm_tables: std::sync::Mutex::default(),
             norms_plans: std::sync::Mutex::default(),
             nrt_hold: self.nrt_hold.clone(),
@@ -3275,6 +3377,12 @@ impl DirectoryReader {
             segment_infos: self.segment_infos.clone(),
             segments,
             global_ords: std::sync::Mutex::default(),
+            appended_ords: Arc::default(),
+            // A view of a view shares its parent's: their segments are the
+            // same reader's.
+            ords_cache: Some(Arc::clone(
+                self.ords_cache.as_ref().unwrap_or(&self.appended_ords),
+            )),
             norm_tables: std::sync::Mutex::default(),
             norms_plans: std::sync::Mutex::default(),
             nrt_hold: self.nrt_hold.clone(),
@@ -3299,6 +3407,8 @@ impl DirectoryReader {
             segment_infos: self.segment_infos.clone(),
             segments,
             global_ords: std::sync::Mutex::default(),
+            appended_ords: Arc::default(),
+            ords_cache: None,
             norm_tables: std::sync::Mutex::default(),
             norms_plans: std::sync::Mutex::default(),
             nrt_hold: self.nrt_hold.clone(),

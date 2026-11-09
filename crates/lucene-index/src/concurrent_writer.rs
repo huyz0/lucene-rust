@@ -115,8 +115,8 @@ use lucene_codecs::field_infos::FieldInfo;
 mod live;
 pub(crate) use live::DocValuesRun;
 pub use live::{
-    FieldTotals, LiveBuffer, LiveBufferField, LiveFieldRequest, LivePattern, LiveRequest,
-    LiveSnapshot, LiveView, ViewBuffer,
+    FieldTotals, LeanSegment, LiveBuffer, LiveBufferField, LiveDocValue, LiveFieldRequest,
+    LivePattern, LiveRequest, LiveSnapshot, LiveView, PointBounds, ViewBuffer,
 };
 
 /// A value only reached through `&mut`: a slot's buffer is read by
@@ -1454,6 +1454,9 @@ impl<'d> ConcurrentIndexWriter<'d> {
                 // Chunk columns copy the documents' doc values and points.
                 let columns_before = dwpt.live.chunk_ram_bytes();
                 let mut added = 0usize;
+                if live.is_some() {
+                    dwpt.postings.seal_blocks();
+                }
                 for (mut doc, options) in docs.into_iter().zip(options) {
                     let doc_vectors = vectors
                         .as_mut()
@@ -1781,7 +1784,6 @@ impl<'d> ConcurrentIndexWriter<'d> {
             && dwpt.custom_freq_terms.is_empty()
             && dwpt.docs.iter().all(|d| d.fields.is_empty()))
         .then(|| live::LeanSource {
-            explicit: dwpt.explicit.snapshot(),
             has_blocks: dwpt.has_blocks,
             partition: dwpt.partition.clone(),
         });
@@ -1796,6 +1798,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
                 segment: None,
                 held_files: Vec::new(),
                 lean,
+                explicit: dwpt.explicit.snapshot(),
             };
             live.flushing.insert(ticket_no, flushing);
         }

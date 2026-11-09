@@ -24,10 +24,13 @@
 //! Counting is by global ordinal ([`GlobalOrds`]), as OpenSearch counts: a
 //! global ordinal is a term, and the ordinals are in term order.
 
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use lucene_codecs::doc_values::{NumericReader, SortedNumericReader, SortedSetKind};
 use lucene_codecs::terms_dict::{TermsCursor, TermsDict, TermsDictEntry};
 
-use crate::ordinal_map::{OrdinalMap, TermCursor};
+use crate::ordinal_map::{KeptTerms, OrdinalMap, SegmentSource, TermCursor};
 
 use crate::aggs::ColumnRead;
 use crate::directory_reader::SegmentReader;
@@ -124,7 +127,14 @@ pub(crate) fn open_ords<'a>(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GlobalOrds {
     map: OrdinalMap,
+    /// The distinct terms in global-ordinal order, while there are few
+    /// ([`KEPT_TERMS`]): what [`Self::remapped`] looks terms up in.
+    terms: Option<Arc<[Box<[u8]>]>>,
 }
+
+/// At most this many terms, of at most as many bytes together, are kept
+/// with a [`GlobalOrds`].
+const KEPT_TERMS: usize = 1 << 16;
 
 impl GlobalOrds {
     /// Merges the segments' dictionaries of `field`, streamed
@@ -138,7 +148,71 @@ impl GlobalOrds {
         let readers: Vec<&SegmentReader> = readers.iter().collect();
         Ok(GlobalOrds {
             map: ordinal_map_of(&readers, field)?,
+            terms: None,
         })
+    }
+
+    /// [`Self::build`], also keeping the distinct terms while few, for a
+    /// [`GlobalOrdsCache`] to look the terms of other segments up in.
+    ///
+    /// # Errors
+    /// As [`Self::build`].
+    fn build_keeping(readers: &[SegmentReader], field: &str) -> Result<Self> {
+        let readers: Vec<&SegmentReader> = readers.iter().collect();
+        let (map, terms) = ordinal_map_keeping(&readers, field)?;
+        Ok(GlobalOrds {
+            map,
+            terms: terms.map(Arc::from),
+        })
+    }
+
+    /// These ordinals' terms over `readers`, where `kept[i]` is the
+    /// segment of these ordinals that reader `i` is, if any: those
+    /// segments' maps shared, the other readers' terms looked up. `None`
+    /// when a looked-up term is new or one of theirs is in no reader, or
+    /// the terms were too many to keep.
+    ///
+    /// # Errors
+    /// As [`Self::build`].
+    fn remapped(
+        &self,
+        readers: &[SegmentReader],
+        kept: &[Option<usize>],
+        field: &str,
+    ) -> Result<Option<Self>> {
+        let Some(terms) = &self.terms else {
+            return Ok(None);
+        };
+        let mut cursors = Vec::with_capacity(readers.len());
+        for (reader, k) in readers.iter().zip(kept) {
+            cursors.push(match (k, terms_entry(reader, field)?) {
+                (None, Some((data, entry))) => {
+                    Some(TermsCursor::open(data, entry).map_err(store_err)?)
+                }
+                _ => None,
+            });
+        }
+        let mut empty: Vec<NoTerms> = std::iter::repeat_with(|| NoTerms)
+            .take(readers.len())
+            .collect();
+        let mut sources: Vec<SegmentSource<'_>> = cursors
+            .iter_mut()
+            .zip(&mut empty)
+            .zip(kept)
+            .map(|((c, e), k)| match (k, c) {
+                (Some(old), _) => SegmentSource::Kept(*old),
+                (None, Some(c)) => SegmentSource::Terms(c),
+                (None, None) => SegmentSource::Terms(e),
+            })
+            .collect();
+        Ok(self
+            .map
+            .remapped(terms, &mut sources)
+            .map_err(store_err)?
+            .map(|map| GlobalOrds {
+                map,
+                terms: Some(Arc::clone(terms)),
+            }))
     }
 
     /// Segment `seg`'s ordinals to global ones.
@@ -171,6 +245,28 @@ impl GlobalOrds {
 /// A field whose doc values are not keyword ones, or a dictionary that
 /// cannot be read.
 pub(crate) fn ordinal_map_of(readers: &[&SegmentReader], field: &str) -> Result<OrdinalMap> {
+    with_cursors(readers, field, |refs| {
+        OrdinalMap::build_streaming(refs).map_err(store_err)
+    })
+}
+
+/// [`ordinal_map_of`] with the distinct terms, while few.
+fn ordinal_map_keeping(
+    readers: &[&SegmentReader],
+    field: &str,
+) -> Result<(OrdinalMap, Option<KeptTerms>)> {
+    with_cursors(readers, field, |refs| {
+        OrdinalMap::build_keeping_terms(refs, KEPT_TERMS).map_err(store_err)
+    })
+}
+
+/// `f` over a cursor of each reader's dictionary of `field`, an empty one
+/// for a reader without it.
+fn with_cursors<T>(
+    readers: &[&SegmentReader],
+    field: &str,
+    f: impl FnOnce(&mut [&mut dyn TermCursor]) -> Result<T>,
+) -> Result<T> {
     let mut cursors = Vec::with_capacity(readers.len());
     for reader in readers {
         cursors.push(match terms_entry(reader, field)? {
@@ -189,7 +285,86 @@ pub(crate) fn ordinal_map_of(readers: &[&SegmentReader], field: &str) -> Result<
             None => e as &mut dyn TermCursor,
         })
         .collect();
-    OrdinalMap::build_streaming(&mut refs).map_err(store_err)
+    f(&mut refs)
+}
+
+/// Global ordinals of readers that share most of their segments -- views
+/// of one reader with buffered documents appended -- kept by each segment's
+/// identity, so a reader holding a kept map's segments takes their maps
+/// and looks up only its other segments' terms instead of merging every
+/// dictionary again.
+#[derive(Debug, Default)]
+pub struct GlobalOrdsCache {
+    by_field: std::sync::Mutex<HashMap<String, Vec<KeptMap>>>,
+}
+
+/// How many maps a cache keeps per field, the newest.
+const CACHED_MAPS: usize = 4;
+
+/// A kept map and its segments' keys.
+type KeptMap = (Vec<SegmentKey>, Arc<GlobalOrds>);
+
+/// A segment's doc values' identity: its id, unique to the segment, and
+/// the field's doc-values generation, which a doc-values update moves on.
+type SegmentKey = ([u8; lucene_util::string_helper::ID_LENGTH], i64);
+
+fn segment_key(reader: &SegmentReader, field: &str) -> SegmentKey {
+    let gen = reader
+        .field_infos()
+        .fields
+        .iter()
+        .find(|i| i.name == field)
+        .map_or(-1, |i| i.doc_values_gen);
+    (reader.segment_id(), gen)
+}
+
+impl GlobalOrdsCache {
+    /// `readers`' global ordinals of `field`: a kept map's when one is over
+    /// the same segments, else one taking the segments the kept map that
+    /// shares the most with them holds, else built.
+    ///
+    /// # Errors
+    /// As [`GlobalOrds::build`].
+    pub fn ords(&self, readers: &[SegmentReader], field: &str) -> Result<Arc<GlobalOrds>> {
+        let keys: Vec<SegmentKey> = readers.iter().map(|r| segment_key(r, field)).collect();
+        let best = {
+            let kept = self.by_field.lock().unwrap_or_else(|e| e.into_inner());
+            kept.get(field).and_then(|maps| {
+                maps.iter()
+                    .map(|(k, g)| {
+                        let at: Vec<Option<usize>> = keys
+                            .iter()
+                            .map(|key| k.iter().position(|old| old == key))
+                            .collect();
+                        (at, Arc::clone(g), k.len())
+                    })
+                    .filter(|(at, _, _)| at.iter().any(Option::is_some))
+                    .max_by_key(|(at, _, _)| at.iter().flatten().count())
+            })
+        };
+        let built = match best {
+            Some((at, g, n))
+                if n == keys.len() && at.iter().enumerate().all(|(i, a)| *a == Some(i)) =>
+            {
+                return Ok(g)
+            }
+            Some((at, g, _)) => match g.remapped(readers, &at, field)? {
+                Some(e) => e,
+                None => GlobalOrds::build_keeping(readers, field)?,
+            },
+            None => GlobalOrds::build_keeping(readers, field)?,
+        };
+        let built = Arc::new(built);
+        if built.terms.is_some() {
+            let mut kept = self.by_field.lock().unwrap_or_else(|e| e.into_inner());
+            let maps = kept.entry(field.to_string()).or_default();
+            if maps.len() >= CACHED_MAPS {
+                maps.remove(0);
+            }
+            maps.push((keys, Arc::clone(&built)));
+        }
+        Ok(built)
+    }
 }
 
 /// A segment without the field: no terms.

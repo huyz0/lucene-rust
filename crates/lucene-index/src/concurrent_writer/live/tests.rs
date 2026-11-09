@@ -617,6 +617,11 @@ fn live_search_cost() {
 /// A live writer of one slot holding 400 documents with norms, doc values
 /// and points, all kept as columns.
 fn columns_writer(dir: &FsDirectory) -> ConcurrentIndexWriter<'_> {
+    columns_writer_with(dir, true)
+}
+
+/// [`columns_writer`]'s documents, live search on or off.
+fn columns_writer_with(dir: &FsDirectory, live: bool) -> ConcurrentIndexWriter<'_> {
     let mut w = IndexWriter::open(dir, Vec::new(), "Lucene104", VERSION).unwrap();
     w.enable_explicit_documents().unwrap();
     let body = w
@@ -645,7 +650,9 @@ fn columns_writer(dir: &FsDirectory) -> ConcurrentIndexWriter<'_> {
         .register_field(FieldInfo::new("loc", 0).with_points(2, 2, 4))
         .unwrap();
     let w = ConcurrentIndexWriter::new(w, 1).unwrap();
-    w.enable_live_search().unwrap();
+    if live {
+        w.enable_live_search().unwrap();
+    }
     for i in 0..400i64 {
         let mut fields = ExplicitFields {
             inverted: vec![InvertedField {
@@ -731,6 +738,49 @@ fn segment_files(
     files
 }
 
+/// A flushed segment is byte for byte the same with live search on as off:
+/// what live search keeps beside a buffer (sealed postings blocks, columns,
+/// bounds) changes nothing the flush writes.
+#[test]
+fn live_search_leaves_flushed_segments_unchanged() {
+    let flushed = |live: bool, with_positions: bool| {
+        let tmp = TempDir::new("live-flush-same");
+        let dir = FsDirectory::open(tmp.path());
+        {
+            if with_positions {
+                let (w, f) = open(&dir, 1, live);
+                for i in 0..700 {
+                    w.add_explicit_documents(vec![doc(&f, i)]).unwrap();
+                }
+                w.commit().unwrap();
+            } else {
+                let w = columns_writer_with(&dir, live);
+                w.commit().unwrap();
+            }
+        }
+        let infos = crate::segment_infos::read_latest(&dir).unwrap();
+        assert_eq!(infos.segments.len(), 1);
+        let sci = &infos.segments[0];
+        let files = segment_files(tmp.path(), sci, &sci.segment_name);
+        assert!(files.iter().any(|(n, _)| n.ends_with(".doc")), "{files:?}");
+        files
+    };
+    for with_positions in [false, true] {
+        let (on, off) = (
+            flushed(true, with_positions),
+            flushed(false, with_positions),
+        );
+        let names: Vec<&str> = on.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(
+            names,
+            off.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>()
+        );
+        for ((name, a), (_, b)) in on.iter().zip(&off) {
+            assert!(a == b, "{name} differs with live search on");
+        }
+    }
+}
+
 /// A chunk written from the buffer's columns holds the files the decoded
 /// documents give, for norms, doc values, points and field infos alike.
 #[test]
@@ -768,13 +818,41 @@ fn chunks_from_columns_match_chunks_from_documents() {
 /// was in its slot, until it is published and the views that read it as
 /// chunks are closed.
 #[test]
+fn a_buffer_holding_blocks_is_written_not_built_in_memory() {
+    let tmp = TempDir::new("live-lean-blocks");
+    let dir = FsDirectory::open(tmp.path());
+    let w = columns_writer(&dir);
+    let block = |n: usize| {
+        (0..n)
+            .map(|_| ExplicitDocument {
+                stored: Vec::new(),
+                fields: ExplicitFields::default(),
+            })
+            .collect::<Vec<_>>()
+    };
+    w.add_explicit_documents(block(3)).unwrap();
+    let id = w.live_slot_buffers()[0].id;
+    let lean = w
+        .live_lean_segment(id, 37..301, HashMap::new(), &[], true, &dir, "_b")
+        .unwrap();
+    assert!(
+        matches!(lean, super::LeanSegment::Written(..)),
+        "a segment's block flag comes from its segment info"
+    );
+}
+
+#[test]
 fn a_flushing_buffer_is_written_as_lean_chunks_until_published() {
     let tmp = TempDir::new("live-flushing-lean");
     let dir = FsDirectory::open(tmp.path());
     let w = columns_writer(&dir);
     let id = w.live_slot_buffers()[0].id;
     let lean = |name: &str| w.live_lean_segment(id, 37..301, HashMap::new(), &[], true, &dir, name);
-    let (in_slot, slot_dv) = lean("_s").unwrap();
+    let parts = |s: super::LeanSegment| match s {
+        super::LeanSegment::Parts(p, dv) => (*p, dv),
+        super::LeanSegment::Written(..) => panic!("a run kept as columns is built in memory"),
+    };
+    let (in_slot, slot_dv) = parts(lean("_s").unwrap());
     let slot_view = w.open_live_view(None).unwrap();
     let batch = {
         let mut slot = super::write_slot(&w.slots[0]);
@@ -785,12 +863,22 @@ fn a_flushing_buffer_is_written_as_lean_chunks_until_published() {
         .buffers
         .iter()
         .any(|b| b.id == id && !b.in_slot && b.chunks));
-    let (flushing, flushing_dv) = lean("_f").unwrap();
+    let (flushing, flushing_dv) = parts(lean("_f").unwrap());
+    let named = |p: &crate::index_writer::LeanParts| {
+        p.field_infos
+            .iter()
+            .map(|f| (f.number, f.name.clone()))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(named(&in_slot), named(&flushing));
+    assert_eq!((in_slot.max_doc, flushing.max_doc), (264, 264));
+    let unframed = |b: &Option<(Vec<u8>, Vec<u8>)>| b.as_ref().map(|(m, d)| (m.len(), d.len()));
+    assert!(in_slot.norms.is_some() && in_slot.points.is_some());
+    assert_eq!(unframed(&in_slot.norms), unframed(&flushing.norms));
     assert_eq!(
-        segment_files(tmp.path(), &in_slot, "_s"),
-        segment_files(tmp.path(), &flushing, "_f")
+        in_slot.points.as_ref().map(|p| p.2.len()),
+        flushing.points.as_ref().map(|p| p.2.len())
     );
-    let (slot_dv, flushing_dv) = (slot_dv.unwrap(), flushing_dv.unwrap());
     let fields: Vec<i32> = slot_dv.fields().collect();
     assert!(!fields.is_empty());
     assert_eq!(fields, flushing_dv.fields().collect::<Vec<_>>());
@@ -817,6 +905,120 @@ fn a_flushing_buffer_is_written_as_lean_chunks_until_published() {
         "read as its published segment from now on"
     );
     w.close_live_view(&later);
+}
+
+/// A multi-valued field's values come sorted (and, for SORTED_SET,
+/// without repeats); a single-valued field gives its first value.
+#[test]
+fn a_documents_doc_values_take_the_segments_shape() {
+    use super::LiveDocValue::{self, Bytes, Numbers};
+    let longs = [
+        FieldValue::Long(3),
+        FieldValue::Long(-1),
+        FieldValue::Long(3),
+    ];
+    let bytes = [
+        FieldValue::Binary(b"b".to_vec()),
+        FieldValue::Binary(b"a".to_vec()),
+        FieldValue::Binary(b"b".to_vec()),
+    ];
+    let of = |kind, values: &[FieldValue]| LiveDocValue::of(kind, values.iter());
+    assert_eq!(
+        of(DocValuesType::SortedNumeric, &longs),
+        Some(Numbers(vec![-1, 3, 3]))
+    );
+    assert_eq!(of(DocValuesType::Numeric, &longs), Some(Numbers(vec![3])));
+    assert_eq!(
+        of(DocValuesType::SortedSet, &bytes),
+        Some(Bytes(vec![b"a".to_vec(), b"b".to_vec()]))
+    );
+    assert_eq!(
+        of(DocValuesType::Sorted, &bytes),
+        Some(Bytes(vec![b"b".to_vec()]))
+    );
+    assert_eq!(of(DocValuesType::SortedSet, &longs), None);
+    assert_eq!(of(DocValuesType::None, &bytes), None);
+}
+
+/// One buffered document's doc values read the same in its slot, while
+/// flushing and once published, as long as a view holds the buffer.
+#[test]
+fn a_buffered_documents_doc_values_read_in_every_state() {
+    use super::LiveDocValue::{Bytes, Numbers};
+    let tmp = TempDir::new("live-doc-values");
+    let dir = FsDirectory::open(tmp.path());
+    let w = columns_writer(&dir);
+    let cfg = w.cfg();
+    let number = |name: &str| cfg.field_by_name(name).unwrap().number;
+    let (kw, price, body) = (number("kw"), number("price"), number("body"));
+    let fields = [kw, price, body];
+    let check = |view: &LiveView| {
+        let b = view.buffers.iter().position(|b| b.max_doc == 400).unwrap();
+        let read = |doc| w.live_doc_values(view, b, doc, &fields).unwrap();
+        assert_eq!(
+            read(7),
+            vec![
+                (kw, Bytes(vec![b"t7".to_vec()])),
+                (price, Numbers(vec![993]))
+            ]
+        );
+        assert_eq!(read(4), vec![(price, Numbers(vec![996]))]);
+        assert_eq!(read(11), vec![(kw, Bytes(vec![b"t2".to_vec()]))]);
+        assert!(w.live_doc_values(view, b, 400, &fields).is_err());
+    };
+    let slot_view = w.open_live_view(None).unwrap();
+    check(&slot_view);
+    let batch = {
+        let mut slot = super::write_slot(&w.slots[0]);
+        w.begin_flush(0, &mut slot).unwrap()
+    };
+    let view = w.open_live_view(None).unwrap();
+    check(&view);
+    check(&slot_view);
+    w.complete_flush(batch).unwrap();
+    check(&view);
+    w.close_live_view(&view);
+    w.close_live_view(&slot_view);
+}
+
+/// A buffer's points' bounds take in each of its documents' points, per
+/// indexed dimension, whether it is in its slot, flushing or published.
+#[test]
+fn a_buffers_point_bounds_read_in_every_state() {
+    let tmp = TempDir::new("live-point-bounds");
+    let dir = FsDirectory::open(tmp.path());
+    let w = columns_writer(&dir);
+    let cfg = w.cfg();
+    let number = |name: &str| cfg.field_by_name(name).unwrap().number;
+    let (price, loc, body) = (number("price"), number("loc"), number("body"));
+    let long = |v: u64| (v ^ 0x8000_0000_0000_0000).to_be_bytes().to_vec();
+    let int = |v: u32| (v ^ 0x8000_0000).to_be_bytes().to_vec();
+    let check = |view: &LiveView| {
+        let b = view.buffers.iter().position(|b| b.max_doc == 400).unwrap();
+        let p = w.live_point_bounds(view, b, price).unwrap().unwrap();
+        assert_eq!((p.min, p.max, p.count), (long(601), long(1000), 267));
+        let l = w.live_point_bounds(view, b, loc).unwrap().unwrap();
+        assert_eq!(l.min, [int(0), int(0)].concat());
+        assert_eq!(l.max, [int(395), int(7 * 395)].concat());
+        assert_eq!(l.count, 80);
+        assert_eq!(w.live_point_bounds(view, b, body).unwrap(), None);
+        assert!(w
+            .live_point_bounds(view, view.buffers.len(), price)
+            .is_err());
+    };
+    let slot_view = w.open_live_view(None).unwrap();
+    check(&slot_view);
+    let batch = {
+        let mut slot = super::write_slot(&w.slots[0]);
+        w.begin_flush(0, &mut slot).unwrap()
+    };
+    let view = w.open_live_view(None).unwrap();
+    check(&view);
+    w.complete_flush(batch).unwrap();
+    check(&view);
+    check(&slot_view);
+    w.close_live_view(&view);
+    w.close_live_view(&slot_view);
 }
 
 /// A published buffer a view reads keeps its segment's files after a

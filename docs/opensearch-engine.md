@@ -89,6 +89,23 @@ each partition's documents side by side: a `term` filter on the sort's first
 field is then matched as that run of doc ids, checked against the term's
 postings, and the other clauses skip straight to it.
 
+## Derived source
+
+`index.derived_source.enabled` (and `index.derived_source.translog.enabled`)
+works as on OpenSearch's own engine: `_source` is not stored, and OpenSearch's
+mappers rebuild it at fetch from doc values and stored fields, so searches,
+gets, `top_hits`, updates and reindexing return what a stock node returns and
+the shard is the same size. What the mappers read comes from the native
+reader: a leaf of such an index keeps the last document it read, so the one
+read per rebuilt stored field becomes one read per hit, and a hit's doc
+values come back in one native call (`ffi_jvm_reader_doc_values_alloc`) for
+every field asked for. The fetch phase's `docvalue_fields` are read the same
+way in every index. An iterator walked as a scan (`nextDoc`, `advance`, or
+more than 128 documents) hands over to the segment's own.
+With `index.lucene_rust.realtime_search`, a buffered hit's doc values come
+from the writer's buffers (`ffi_live_view_doc_values_alloc`), so its derived
+`_source` and `docvalue_fields` are those it has once refreshed.
+
 ## What it refuses
 
 When an index is created:

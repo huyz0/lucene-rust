@@ -51,7 +51,7 @@ use crate::jvm_fetch::{BINARY, DOUBLE, FLOAT, INT, LONG, STRING};
 use crate::jvm_reader::{boolean_of, decode_request, lookup};
 use crate::raw::bytes_from_raw;
 use crate::registry::JvmReaderHandle;
-use lucene_index::concurrent_writer::{FieldTotals, LiveRequest, ViewBuffer};
+use lucene_index::concurrent_writer::{FieldTotals, LeanSegment, LiveRequest, ViewBuffer};
 use lucene_search::directory_reader::SegmentReader;
 
 /// An open view and the writer it reads.
@@ -1531,7 +1531,7 @@ fn buffer_segments(
         let starts: Vec<i32> = plan.iter().map(|p| p.end).collect();
         let range = p.start..p.end;
         let (sci, lazy) = match lean {
-            Some(points) => writer.live_lean_segment(
+            Some(points) => match writer.live_lean_segment(
                 b.id,
                 range,
                 range_counts(p),
@@ -1539,7 +1539,15 @@ fn buffer_segments(
                 points,
                 &dir,
                 &name,
-            )?,
+            )? {
+                LeanSegment::Parts(parts, lazy) => {
+                    let reader =
+                        SegmentReader::from_lean_parts(name, *parts, lazy).map_err(open_error)?;
+                    out.push((reader, true));
+                    continue;
+                }
+                LeanSegment::Written(sci, lazy) => (sci, lazy),
+            },
             None => (
                 writer.live_buffer_segment(
                     b.id,
@@ -1725,6 +1733,44 @@ pub extern "C" fn ffi_engine_writer_release_live(writer: u64, generation: i64) -
     })
 }
 
+/// The bounds of field `field`'s points in buffer `buffer` of `view` as the view
+/// opened ([`lucene_index::concurrent_writer::ConcurrentIndexWriter::live_point_bounds`]),
+/// as an owned buffer: the point count as a little-endian `u64`, then the
+/// packed least values, then the packed greatest; empty when the buffer
+/// holds no point of the field.
+///
+/// # Safety
+/// `out_ptr`/`out_len` valid for one write each.
+#[no_mangle]
+pub unsafe extern "C" fn ffi_live_view_point_bounds_alloc(
+    view_id: u64,
+    buffer: i32,
+    field: i32,
+    out_ptr: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    guard(|| {
+        // SAFETY: caller contract.
+        unsafe { crate::ffm_bridge::clear_out(out_ptr, out_len)? };
+        let h = view(view_id)?;
+        let buffer = usize::try_from(buffer).map_err(|_| FfiStatus::IndexOutOfBounds)?;
+        let bounds = h
+            .writer
+            .writer()
+            .live_point_bounds(&h.view, buffer, field)
+            .map_err(live_error)?;
+        let mut out = Vec::new();
+        if let Some(b) = bounds {
+            out.extend_from_slice(&b.count.to_le_bytes());
+            out.extend_from_slice(&b.min);
+            out.extend_from_slice(&b.max);
+        }
+        // SAFETY: caller contract.
+        unsafe { crate::ffm_bridge::give(out, out_ptr, out_len) };
+        Ok(())
+    })
+}
+
 /// Document `doc` of buffer `buffer` of `view`, its stored fields encoded
 /// as [`crate::jvm_fetch`]'s document blob, as an owned buffer.
 ///
@@ -1784,6 +1830,86 @@ pub unsafe extern "C" fn ffi_live_view_document_alloc(
         unsafe { crate::ffm_bridge::give(out, out_ptr, out_len) };
         Ok(())
     })
+}
+
+/// Document `doc` of buffer `buffer` of `view`: its doc values of the
+/// `count` fields numbered at `fields`, encoded as [`crate::jvm_fetch`]'s
+/// doc-values blob, as an owned buffer. A buffer has no terms dictionary:
+/// a document's terms are numbered `0..n` in order, ordinals of that
+/// document alone.
+///
+/// # Safety
+/// `fields` valid for `count` `i32` reads (null when 0); `out_ptr`/`out_len`
+/// valid for one write each.
+#[no_mangle]
+pub unsafe extern "C" fn ffi_live_view_doc_values_alloc(
+    view_id: u64,
+    buffer: i32,
+    doc: i32,
+    fields: *const i32,
+    count: usize,
+    out_ptr: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    guard(|| {
+        // SAFETY: caller contract.
+        unsafe { crate::ffm_bridge::clear_out(out_ptr, out_len)? };
+        if fields.is_null() && count > 0 {
+            return Err(FfiStatus::NullPointer);
+        }
+        let fields: &[i32] = if count == 0 {
+            &[]
+        } else {
+            // SAFETY: caller contract, non-null checked above.
+            unsafe { std::slice::from_raw_parts(fields, count) }
+        };
+        let h = view(view_id)?;
+        let buffer = usize::try_from(buffer).map_err(|_| FfiStatus::IndexOutOfBounds)?;
+        let values = h
+            .writer
+            .writer()
+            .live_doc_values(&h.view, buffer, doc, fields)
+            .map_err(live_error)?;
+        let out = encode_live_doc_values(fields, &values)?;
+        // SAFETY: caller contract.
+        unsafe { crate::ffm_bridge::give(out, out_ptr, out_len) };
+        Ok(())
+    })
+}
+
+/// `values` (a buffered document's, by field number) as the doc-values blob
+/// of `fields`, in their order; a field without values is
+/// [`crate::jvm_fetch::DV_NONE`].
+fn encode_live_doc_values(
+    fields: &[i32],
+    values: &[(i32, lucene_index::concurrent_writer::LiveDocValue)],
+) -> Result<Vec<u8>, FfiStatus> {
+    use crate::jvm_fetch::{DV_NONE, DV_SORTED_NUMERIC, DV_SORTED_SET};
+    use lucene_index::concurrent_writer::LiveDocValue;
+    let mut out = len_i32(fields.len())?.to_le_bytes().to_vec();
+    for &number in fields {
+        out.extend_from_slice(&number.to_le_bytes());
+        match values.iter().find(|(n, _)| *n == number).map(|(_, v)| v) {
+            Some(LiveDocValue::Numbers(v)) if !v.is_empty() => {
+                out.push(DV_SORTED_NUMERIC);
+                out.extend_from_slice(&len_i32(v.len())?.to_le_bytes());
+                for x in v {
+                    out.extend_from_slice(&x.to_le_bytes());
+                }
+            }
+            Some(LiveDocValue::Bytes(v)) if !v.is_empty() => {
+                out.push(DV_SORTED_SET);
+                out.extend_from_slice(&len_i32(v.len())?.to_le_bytes());
+                for (ord, term) in v.iter().enumerate() {
+                    out.extend_from_slice(&i64::try_from(ord).unwrap_or(i64::MAX).to_le_bytes());
+                    out.extend_from_slice(&len_i32(term.len())?.to_le_bytes());
+                    out.extend_from_slice(term);
+                }
+            }
+            _ => out.push(DV_NONE),
+        }
+    }
+    Ok(out)
 }
 
 /// [`crate::jvm_reader::ffi_jvm_reader_search`] over the reader at

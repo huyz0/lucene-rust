@@ -6,6 +6,11 @@ license.workspace = true
 
 [dependencies]
 thiserror.workspace = true
+# An indexing thread's scheduling priority (`yield_to_searches`).
+libc.workspace = true
+# Started before an indexing thread lowers its priority, which threads it
+# starts would inherit (`yield_to_searches`).
+rayon.workspace = true
 lucene-store = { path = "../lucene-store" }
 # The `rust_encrypted` store (`store.rs`): AWS-LC by default, its FIPS 140-3
 # module with feature `fips` (build with `--no-default-features`, see

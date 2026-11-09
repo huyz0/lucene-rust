@@ -177,7 +177,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             // filter narrower than the range, which the native engine would not
             // reproduce, so OpenSearch answers.
             Query postFilter = reason == null && ctx.parsedPostFilter() != null ? searcher.rewrite(ctx.parsedPostFilter().query()) : null;
-            if (postFilter != null && approximated(postFilter)) {
+            if (postFilter != null && approximated(postFilter) && buffered(searcher) == false) {
                 reason = "approximate";
             }
             if (reason == null && postFilter != null) {
@@ -214,7 +214,9 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         // OpenSearch's approximate match_all/range (ApproximateScoreQuery resolved to its
         // ApproximateQuery) collects documents in BKD order and so breaks ties differently from
         // Lucene's exact answer, which is what the native engine gives: stay on OpenSearch's.
-        if (reason == null && approximated(query)) {
+        // Not over buffered documents: the approximation walks the reader's points alone, where
+        // they have none, so only the native engine finds them.
+        if (reason == null && approximated(query) && buffered(searcher) == false) {
             reason = "approximate";
         }
         // A sorted search: the sort blob, unless the hits are not asked for at all (size 0 has no
@@ -399,13 +401,13 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
 
     /**
      * Why a search cannot read the writer's buffered documents, or null when it can: what the
-     * buffers do not hold for the fetch phase (doc values, versions, highlighting), a query that
+     * buffers do not hold for the fetch phase (versions, highlighting, scripts), a query that
      * was expanded or given term statistics over the reader's terms alone (a multi-term query under
      * a scoring rewrite, a fuzzy query, a blended {@code multi_match}), or nested documents.
      */
     static String liveIneligible(SearchContext ctx) {
         if (ctx.version() || ctx.seqNoAndPrimaryTerm() || ctx.explain()) return "fetch_metadata";
-        if (ctx.docValuesContext() != null || ctx.highlight() != null || ctx.hasScriptFields() || ctx.innerHits() != null
+        if (ctx.highlight() != null || ctx.hasScriptFields() || ctx.innerHits() != null
             && ctx.innerHits().getInnerHits().isEmpty() == false) return "fetch_doc_values";
         // Nested documents: the view has no parent filter to tell them apart.
         if (ctx.mapperService().hasNested()) return "nested";
@@ -1411,6 +1413,12 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         } catch (ReflectiveOperationException | RuntimeException e) {
             return null;
         }
+    }
+
+    /** Whether the searcher reads a view of the writer's buffered documents that holds some. */
+    private static boolean buffered(ContextIndexSearcher searcher) {
+        LiveDirectoryReader live = LiveDirectoryReader.find(searcher.getIndexReader());
+        return live != null && live.view().maxDoc() > 0;
     }
 
     /**

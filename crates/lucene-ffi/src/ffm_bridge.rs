@@ -480,6 +480,42 @@ pub unsafe extern "C" fn ffi_jvm_reader_document_alloc(
     })
 }
 
+/// [`crate::jvm_fetch::doc_values_blob`]: segment `segment`'s document
+/// `doc` -- its values of the `count` fields numbered at `fields` -- as an
+/// owned buffer.
+///
+/// # Safety
+/// `fields` must be valid for `count` `i32` reads (null when 0);
+/// `out_ptr`/`out_len` valid for one write each.
+#[no_mangle]
+pub unsafe extern "C" fn ffi_jvm_reader_doc_values_alloc(
+    handle: u64,
+    segment: i32,
+    doc: i32,
+    fields: *const i32,
+    count: usize,
+    out_ptr: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    guard(|| {
+        // SAFETY: caller contract.
+        unsafe { clear_out(out_ptr, out_len)? };
+        if fields.is_null() && count > 0 {
+            return Err(FfiStatus::NullPointer);
+        }
+        let fields: &[i32] = if count == 0 {
+            &[]
+        } else {
+            // SAFETY: caller contract, non-null checked above.
+            unsafe { std::slice::from_raw_parts(fields, count) }
+        };
+        let encoded = crate::jvm_fetch::doc_values_blob(handle, segment, doc, fields)?;
+        // SAFETY: caller contract.
+        unsafe { give(encoded, out_ptr, out_len) };
+        Ok(())
+    })
+}
+
 /// [`crate::jvm_fetch::source_blob`]: a derived-source document's `_source`, its vectors put
 /// back, as an owned buffer.
 ///
