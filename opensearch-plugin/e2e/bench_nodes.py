@@ -25,6 +25,7 @@ import random
 import statistics
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -333,9 +334,23 @@ def visibility(base, container, corpus, label, out, settings):
     with concurrent.futures.ThreadPoolExecutor(1 + searchers) as side:
         tasks = [side.submit(probe)] + [side.submit(search) for _ in range(searchers)]
         try:
+            # INDEX_RATE=N: bulks are sent no faster than N documents a
+            # second in all, so each config indexes at the same rate and
+            # leaves the same CPU to searches.
+            index_rate = float(os.environ.get("INDEX_RATE") or 0)
+            paced = [0, threading.Lock()]
+
             def send(path):
                 with open(path, "rb") as fh:
-                    res = req("POST", "/bench/_bulk", fh.read(), ndjson=True)
+                    body = fh.read()
+                if index_rate > 0:
+                    with paced[1]:
+                        due = t0 + paced[0] / index_rate
+                        paced[0] += body.count(b"\n") // 2
+                    wait = due - time.perf_counter()
+                    if wait > 0:
+                        time.sleep(wait)
+                res = req("POST", "/bench/_bulk", body, ndjson=True)
                 if res["errors"]:
                     first = next((i for i in res["items"] if "error" in next(iter(i.values()))), None)
                     raise RuntimeError(f"bulk {path} had errors, first: {json.dumps(first)[:2000]}")
@@ -360,23 +375,29 @@ def visibility(base, container, corpus, label, out, settings):
         "memory_after_load": node_snapshot(container),
     }
     # SEARCH_ONLY=N: then N searches of each shape, one at a time, with no
-    # indexing: their CPU alone. The buffered documents stay as the load
-    # left them; nothing refreshes them first.
+    # indexing: their CPU alone, a shape at a time. The buffered documents
+    # stay as the load left them; nothing refreshes them first.
     rounds = int(os.environ.get("SEARCH_ONLY", "0"))
     if rounds:
         took = {n: [] for n, _ in pairs}
+        cpu_by = {}
+        # Merges the load started settle first.
+        time.sleep(float(os.environ.get("SEARCH_ONLY_SETTLE", "15")))
         cpu1 = cpu_seconds(container)
         t1 = time.perf_counter()
-        for _ in range(rounds):
-            for name, body in pairs:
+        for name, body in pairs:
+            c = cpu_seconds(container)
+            for _ in range(rounds):
                 t = time.perf_counter()
                 req("POST", "/bench/_search?request_cache=false", body)
                 took[name].append((time.perf_counter() - t) * 1000)
+            cpu_by[name] = round((cpu_seconds(container) - c) * 1000 / rounds, 3)
         result["search_only"] = {
             "searches": rounds * len(pairs),
             "seconds": round(time.perf_counter() - t1, 2),
             "cpu_seconds": round(cpu_seconds(container) - cpu1, 2),
-            "ms": {n: {"p50": pct(v, 0.5), "avg": round(sum(v) / len(v), 2)} for n, v in took.items()},
+            "ms": {n: {"p50": pct(v, 0.5), "avg": round(sum(v) / len(v), 2), "cpu_ms": cpu_by[n]}
+                   for n, v in took.items()},
         }
         print(f"  search only: {result['search_only']}", flush=True)
     try:
