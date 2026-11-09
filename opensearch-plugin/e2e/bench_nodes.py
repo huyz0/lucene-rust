@@ -337,15 +337,15 @@ def visibility(base, container, corpus, label, out, settings):
             # INDEX_RATE=N: bulks are sent no faster than N documents a
             # second in all, so each config indexes at the same rate and
             # leaves the same CPU to searches.
-            rate = float(os.environ.get("INDEX_RATE") or 0)
+            index_rate = float(os.environ.get("INDEX_RATE") or 0)
             paced = [0, threading.Lock()]
 
             def send(path):
                 with open(path, "rb") as fh:
                     body = fh.read()
-                if rate > 0:
+                if index_rate > 0:
                     with paced[1]:
-                        due = t0 + paced[0] / rate
+                        due = t0 + paced[0] / index_rate
                         paced[0] += body.count(b"\n") // 2
                     wait = due - time.perf_counter()
                     if wait > 0:

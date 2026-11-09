@@ -125,7 +125,7 @@ impl FieldRuns {
         while !r.eof() {
             let freq = r.next_doc(&mut doc);
             if doc >= from {
-                out.push((doc, freq));
+                out.push((doc, if self.freqs { freq } else { 1 }));
             }
         }
         if cursored {
@@ -144,7 +144,7 @@ impl FieldRuns {
             }
         }
         if run.doc_count > 0 && run.last_doc >= from {
-            out.push((run.last_doc, run.freq));
+            out.push((run.last_doc, if self.freqs { run.freq } else { 1 }));
         }
     }
 

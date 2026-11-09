@@ -315,13 +315,15 @@ impl OrdinalMap {
         limit: usize,
     ) -> lucene_store::Result<(Self, Option<KeptTerms>)> {
         let mut kept = Some((Vec::new(), limit));
-        let map = Self::build_keeping(cursors, Some(&mut kept))?;
+        let map = Self::build_keeping(cursors, Some((&mut kept, limit)))?;
         Ok((map, kept.map(|(terms, _)| terms)))
     }
 
     fn build_keeping(
         cursors: &mut [&mut dyn TermCursor],
-        mut kept: Option<&mut Option<(KeptTerms, usize)>>,
+        // The terms kept so far and the bytes they may still take, and how
+        // many terms may be kept.
+        mut kept: Option<(&mut Option<(KeptTerms, usize)>, usize)>,
     ) -> lucene_store::Result<Self> {
         let n = cursors.len();
         let mut segment_to_global: Vec<Vec<i64>> = vec![Vec::new(); n];
@@ -348,12 +350,12 @@ impl OrdinalMap {
         while let Some(top) = queue.peek() {
             top_term.clear();
             top_term.extend_from_slice(&current[top]);
-            if let Some(slot) = kept.as_deref_mut() {
+            if let Some((slot, most)) = kept.as_mut() {
                 let full = slot
                     .as_ref()
-                    .is_some_and(|(terms, room)| terms.len() >= *room || top_term.len() > *room);
+                    .is_some_and(|(terms, room)| terms.len() >= *most || top_term.len() > *room);
                 if full {
-                    *slot = None;
+                    **slot = None;
                 } else if let Some((terms, room)) = slot.as_mut() {
                     *room = room.saturating_sub(top_term.len());
                     terms.push(top_term.as_slice().into());
@@ -628,6 +630,11 @@ mod tests {
         assert!(remap(&[Some(1)], &[]).is_none());
         // A new term.
         assert!(remap(&[Some(0), None], &[terms(&["c", "d"])]).is_none());
+        // Four terms of four bytes together are at the limit of four.
+        let mut cs = cursors(&base);
+        let mut refs: Vec<&mut dyn TermCursor> = cs.iter_mut().map(|c| c as _).collect();
+        let at_limit = OrdinalMap::build_keeping_terms(&mut refs, 4).unwrap().1;
+        assert_eq!(at_limit.map(|t| t.len()), Some(4));
         // Terms past the limit are not kept.
         let mut cs = cursors(&base);
         let mut refs: Vec<&mut dyn TermCursor> = cs.iter_mut().map(|c| c as _).collect();

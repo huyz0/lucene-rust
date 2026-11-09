@@ -146,6 +146,19 @@ impl GlobalOrds {
     /// cannot be read.
     pub fn build(readers: &[SegmentReader], field: &str) -> Result<Self> {
         let readers: Vec<&SegmentReader> = readers.iter().collect();
+        Ok(GlobalOrds {
+            map: ordinal_map_of(&readers, field)?,
+            terms: None,
+        })
+    }
+
+    /// [`Self::build`], also keeping the distinct terms while few, for a
+    /// [`GlobalOrdsCache`] to look the terms of other segments up in.
+    ///
+    /// # Errors
+    /// As [`Self::build`].
+    fn build_keeping(readers: &[SegmentReader], field: &str) -> Result<Self> {
+        let readers: Vec<&SegmentReader> = readers.iter().collect();
         let (map, terms) = ordinal_map_keeping(&readers, field)?;
         Ok(GlobalOrds {
             map,
@@ -337,9 +350,9 @@ impl GlobalOrdsCache {
             }
             Some((at, g, _)) => match g.remapped(readers, &at, field)? {
                 Some(e) => e,
-                None => GlobalOrds::build(readers, field)?,
+                None => GlobalOrds::build_keeping(readers, field)?,
             },
-            None => GlobalOrds::build(readers, field)?,
+            None => GlobalOrds::build_keeping(readers, field)?,
         };
         let built = Arc::new(built);
         if built.terms.is_some() {

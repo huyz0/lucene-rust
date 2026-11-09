@@ -3289,7 +3289,11 @@ impl DirectoryReader {
             segments,
             global_ords: std::sync::Mutex::default(),
             appended_ords: Arc::default(),
-            ords_cache: Some(Arc::clone(&self.appended_ords)),
+            // A view of a view shares its parent's: their segments are the
+            // same reader's.
+            ords_cache: Some(Arc::clone(
+                self.ords_cache.as_ref().unwrap_or(&self.appended_ords),
+            )),
             norm_tables: std::sync::Mutex::default(),
             norms_plans: std::sync::Mutex::default(),
             nrt_hold: self.nrt_hold.clone(),

@@ -1604,20 +1604,27 @@ fn yield_to_searches() {
         if nice <= 0 || LOWERED.with(|d| d.replace(true)) {
             return;
         }
-        extern "C" {
-            fn gettid() -> i32;
-            fn getpriority(which: u32, who: u32) -> i32;
-            fn setpriority(which: u32, who: u32, prio: i32) -> i32;
-        }
-        const PRIO_PROCESS: u32 = 0;
+        // A thread inherits the priority of the thread starting it: the
+        // shared worker pool, which merges and searches use too, starts
+        // now if no thread started it yet, at the priority it had before.
+        let _ = rayon::current_num_threads();
         // SAFETY: syscalls about the calling thread alone, which Linux
         // schedules by its thread id; failing leaves the priority as it is.
         unsafe {
-            let Ok(tid) = u32::try_from(gettid()) else {
+            let Ok(tid) = libc::id_t::try_from(libc::syscall(libc::SYS_gettid)) else {
                 return;
             };
-            let current = getpriority(PRIO_PROCESS, tid);
-            setpriority(PRIO_PROCESS, tid, current.saturating_add(nice).min(19));
+            // -1 is a priority too: only errno tells a failure.
+            *libc::__errno_location() = 0;
+            let current = libc::getpriority(libc::PRIO_PROCESS, tid);
+            if current == -1 && *libc::__errno_location() != 0 {
+                return;
+            }
+            libc::setpriority(
+                libc::PRIO_PROCESS,
+                tid,
+                current.saturating_add(nice).min(19),
+            );
         }
     }
 }
