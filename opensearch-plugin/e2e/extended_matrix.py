@@ -85,7 +85,7 @@ def rows():
                                                       "should": [{"function_score": {"query": {"match": {"body": "beta"}}, "functions": [{"field_value_factor": {"field": "qty", "missing": 2}}]}}]}}}, "native")
     add("function_score min_score", fs([{"weight": 2}], min_score=1), "function_score_min_score")
     add("function_score script", fs([{"script_score": {"script": {"source": "doc['qty'].value + 1"}}}]), "function_score_script")
-    add("script_score query", {"query": {"script_score": {"query": {"match": {"body": "alpha"}}, "script": {"source": "_score * 2"}}}}, "query_*")
+    add("script_score query", {"query": {"script_score": {"query": {"match": {"body": "alpha"}}, "script": {"source": "_score * 2"}}}}, "script_score_script")
 
     # Rewritten before the query phase sees them: more_like_this to a boolean of
     # term queries, common to blended term queries.

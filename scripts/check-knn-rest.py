@@ -17,6 +17,10 @@ mapping and explain APIs, and the answers are compared:
                 data_type upper case); where no engine is named, stock's
                 default is faiss and the plugin persists lucene, so a stock
                 node reading the index sees the lucene field it is
+  models        the models API: get, delete and search answer as stock's with
+                no model index and with one holding a stock model document;
+                training requests get stock's validation errors, and a request
+                stock would train (faiss) gets a 400 naming faiss
   explain       a knn hit's explanation
   _source       a document's _source by get (from the translog, then from the
                 index) and by search, numbers' types included, with derived
@@ -29,7 +33,7 @@ mapping and explain APIs, and the answers are compared:
 Needs Docker and the plugin zip in opensearch-plugin/build/distributions
 (`gradle -p opensearch-plugin bundlePlugin`).
 """
-import glob, importlib.util, os, random, shutil, subprocess, sys
+import glob, importlib.util, json, os, random, shutil, subprocess, sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _spec = importlib.util.spec_from_file_location("check_knn", os.path.join(ROOT, "scripts", "check-knn-plugin.py"))
@@ -315,18 +319,73 @@ def compare_stats(path, failures):
             failures.append(f"{path}: {k} = {ours.get(k)!r}, stock {stock[k]!r}")
 
 
-def error(port, method, path):
-    r = ck.req(port, method, path, ok_errors=True)
+def error(port, method, path, body=None):
+    r = ck.req(port, method, path, body, ok_errors=True)
     if "status" not in r or "error" not in r:
         return ("ok", r.get("_shards"))
     e = (r["error"] or {}).get("error", {})
+    if isinstance(e, str):
+        return (r["status"], e)
     return (r["status"], e.get("type"), e.get("reason"))
 
 
-def same_answer(method, path, failures):
-    o, s = error(OURS[1], method, path), error(STOCK[1], method, path)
+def same_answer(method, path, failures, body=None):
+    o, s = error(OURS[1], method, path, body), error(STOCK[1], method, path, body)
     if o != s:
-        failures.append(f"{method} {path}: ours {o}, stock {s}")
+        failures.append(f"{method} {path} {'' if body is None else json.dumps(body)}: ours {o}, stock {s}")
+
+
+MODELS = "/_plugins/_knn/models"
+TRAIN = {"training_index": "vec-a", "training_field": "emb", "dimension": 4}
+# The stock model document that a failed on_disk training leaves in the model index.
+MODEL_DOC = {"model_version": "3.9.0", "compression_level": "32x", "space_type": "l2", "description": "",
+             "model_id": "m1", "error": "training failed", "training_node_assignment": "n1", "mode": "on_disk",
+             "engine": "faiss", "data_type": "FLOAT", "state": "failed", "dimension": 4,
+             "timestamp": "2026-11-07T23:27:46.265017209Z",
+             "model_definition": json.dumps({"name": "ivf", "parameters": {"nprobes": 1, "nlist": 4}})}
+
+
+def compare_models(failures):
+    """The models API: stock's answers without a model index and with a restored one; training is refused."""
+    calls = [("GET", f"{MODELS}/m1", None), ("DELETE", f"{MODELS}/m1", None), ("GET", f"{MODELS}/_search", None),
+             ("POST", f"{MODELS}/_search", {"query": {"match_all": {}}}),
+             ("POST", f"{MODELS}/_train", {}), ("GET", f"{MODELS}/_train", None),
+             ("PUT", f"{MODELS}/m2/_train", {**TRAIN, "method": {"name": "ivf", "engine": "faiss"}}),
+             ("POST", f"{MODELS}/_train", {"training_field": "emb", "dimension": 4, "method": {"name": "ivf"}}),
+             ("POST", f"{MODELS}/_train", {"training_index": "vec-a", "dimension": 4, "method": {"name": "ivf"}}),
+             ("POST", f"{MODELS}/_train", {"training_index": "vec-a", "training_field": "emb", "method": {"name": "ivf"}}),
+             ("POST", f"{MODELS}/_train", {**TRAIN, "bogus": 1, "method": {"name": "ivf"}}),
+             ("POST", f"{MODELS}/m2/_train", {**TRAIN, "method": {"name": "hnsw", "engine": "lucene"}}),
+             ("POST", f"{MODELS}/m2/_train", {**TRAIN, "method": {"name": "hnsw", "engine": "faiss"}}),
+             ("POST", f"{MODELS}/_train", {**TRAIN, "method": {"name": "hnsw"}}),
+             ("POST", f"{MODELS}/_train", {**TRAIN, "method": {"name": "HNSW", "engine": "faiss"}}),
+             ("POST", f"{MODELS}/_train", {**TRAIN, "method": {"name": "bogus"}}),
+             ("POST", f"{MODELS}/_train", {**TRAIN, "training_index": "nope", "method": {"name": "ivf"}}),
+             ("POST", f"{MODELS}/_train", {**TRAIN, "training_index": "nope", "method": {"name": "hnsw"}})]
+    for method, path, body in calls:
+        same_answer(method, path, failures, body)
+    for body in ({**TRAIN, "method": {"name": "ivf", "engine": "faiss"}}, {**TRAIN, "mode": "on_disk"},
+                 {**TRAIN, "compression_level": "32x"}):
+        got = error(OURS[1], "POST", f"{MODELS}/_train", body)
+        if got[0] != 400 or "faiss" not in str(got[-1]):
+            failures.append(f"train {json.dumps(body)}: ours {got}, expected a 400 naming faiss")
+    for port in (OURS[1], STOCK[1]):
+        ck.req(port, "PUT", "/.opensearch-knn-models/_doc/m1?refresh=true", MODEL_DOC)
+    got = ck.req(OURS[1], "GET", f"{MODELS}/m1")
+    want = ck.req(STOCK[1], "GET", f"{MODELS}/m1")
+    if got != want or list(got) != list(want):
+        failures.append(f"GET model: ours {got}, stock {want}")
+    a = ck.req(OURS[1], "GET", f"{MODELS}/_search?q=state:failed")["hits"]["hits"]
+    b = ck.req(STOCK[1], "GET", f"{MODELS}/_search?q=state:failed")["hits"]["hits"]
+    if [h["_source"] for h in a] != [h["_source"] for h in b]:
+        failures.append(f"model search: ours {a}, stock {b}")
+    for method, path in (("GET", f"{MODELS}/nope"), ("DELETE", f"{MODELS}/nope")):
+        same_answer(method, path, failures)
+    o, s = ck.req(OURS[1], "DELETE", f"{MODELS}/m1"), ck.req(STOCK[1], "DELETE", f"{MODELS}/m1")
+    if o != s:
+        failures.append(f"DELETE model: ours {o}, stock {s}")
+    same_answer("GET", f"{MODELS}/m1", failures)
+    return len(calls) + 9
 
 
 def main():
@@ -362,11 +421,12 @@ def main():
                  ("POST", "/_plugins/_knn/clear_cache/plain"), ("POST", "/_plugins/_knn/clear_cache/missing")]
         for method, path in calls:
             same_answer(method, path, failures)
+        models = compare_models(failures)
         mappings = compare_mappings(failures)
         explains = compare_explain(failures)
         reads = compare_sources(failures)
         fields = compare_fields(failures)
-        print(f"{len(stats)} stats calls, {len(calls)} warmup/clear_cache/error calls, {mappings} mappings, "
+        print(f"{len(stats)} stats calls, {len(calls)} warmup/clear_cache/error calls, {models} model calls, {mappings} mappings, "
               f"{explains} explains, {reads} _source reads, {fields} field fetches compared")
     finally:
         if not keep:
