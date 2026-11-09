@@ -1283,6 +1283,40 @@ pub fn search_boolean_query_multi_segment_maxscore_counting(
     })
 }
 
+/// [`search_boolean_query_multi_segment_maxscore`] over the segments listed
+/// in `subset` alone, with the statistics of every segment in `segments`: one
+/// slice of a concurrent search, whose weights are built over the whole
+/// searcher (`IndexSearcher.collectionStatistics`) while its collector sees
+/// only the slice's leaves. `norms` is parallel to `segments`.
+pub fn search_boolean_query_multi_segment_subset(
+    segments: &[OpenSegment<'_>],
+    subset: &[usize],
+    query: &BooleanQuery,
+    norms: &[Option<&HashMap<String, FieldNorms<'_>>>],
+    top_n: usize,
+) -> Result<Vec<ScoreDoc>> {
+    debug_assert_eq!(
+        segments.len(),
+        norms.len(),
+        "one norms entry per segment expected"
+    );
+    let rewritten = rewrite_points_ranges(query, segments);
+    let query = rewritten.as_ref().unwrap_or(query);
+    let global = global_boolean_stats(segments, query)?;
+    let doc_bases: Vec<i32> = subset.iter().map(|&i| segments[i].doc_base).collect();
+    search_leaves_shared(&doc_bases, top_n, |j, local| {
+        let i = subset[j];
+        let seg_norms = norms.get(i).copied().flatten();
+        crate::search_boolean_query_scored_segment(
+            &segments[i],
+            query,
+            seg_norms,
+            Some(&global),
+            local,
+        )
+    })
+}
+
 /// [`search_boolean_query_multi_segment_maxscore`] under `similarity` --
 /// `IndexSearcher.setSimilarity(similarity)` then `search(query, topN)`.
 ///

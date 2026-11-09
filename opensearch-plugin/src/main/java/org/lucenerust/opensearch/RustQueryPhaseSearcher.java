@@ -134,7 +134,14 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         boolean hasTimeout
     ) throws IOException {
         if (containsHybrid(query)) {
-            stats.fallback("hybrid");
+            long nativeStart = System.nanoTime();
+            String why = searchHybrid(ctx, searcher, query, collectors, hasFilterCollector, hasTimeout);
+            if (why == null) {
+                stats.nativeQuery();
+                stats.nativeTime(System.nanoTime() - nativeStart);
+                return false;
+            }
+            stats.fallback(why);
             long luceneStart = System.nanoTime();
             boolean rescore = hybrid.searchWith(ctx, searcher, query, collectors, hasFilterCollector, hasTimeout);
             stats.luceneTime(System.nanoTime() - luceneStart);
@@ -339,6 +346,51 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         boolean rescore = fallback.searchWith(ctx, searcher, query, collectors, hasFilterCollector, hasTimeout);
         stats.luceneTime(System.nanoTime() - luceneStart);
         return rescore;
+    }
+
+    /**
+     * A hybrid query's shard phase run natively ({@link NativeHybrid}), or why it cannot be: the
+     * stock checks first (search type, sub-queries), which fail the request as they do in
+     * Java.
+     */
+    private String searchHybrid(
+        SearchContext ctx,
+        ContextIndexSearcher searcher,
+        Query query,
+        LinkedList<QueryCollectorContext> collectors,
+        boolean hasFilterCollector,
+        boolean hasTimeout
+    ) throws IOException {
+        if (flags(ctx).enabled() == false) return "disabled";
+        String reason = NativeHybrid.ineligible(ctx, query, collectors, hasFilterCollector);
+        if (reason != null) return reason;
+        HybridQuery hybrid = (HybridQuery) query;
+        org.lucenerust.opensearch.neural.util.HybridQueryUtil.validateHybridQuerySearchType(ctx.searchType());
+        org.lucenerust.opensearch.neural.util.HybridQueryUtil.validateHybridQuery(hybrid);
+        if (ctx.searchType() == SearchType.DFS_QUERY_THEN_FETCH) return "dfs";
+        int[][] slices = NativeAggregations.slices(ctx);
+        if (slices == null) return "intra_segment";
+        if (LiveDirectoryReader.find(searcher.getIndexReader()) != null) return "realtime_view";
+        NativeHybrid.Encoded enc = NativeHybrid.encode(hybrid, new SimilarityEncoder(searcher.getSimilarity()), searcher, flags(ctx).allShapes());
+        if (enc.fallbackReason() != null) return enc.fallbackReason();
+        NativeReaders.Acquired acquired = readers.acquire(searcher.getIndexReader());
+        if (acquired.fallbackReason() != null) return acquired.fallbackReason();
+        if (ctx.isCancelled()) return "cancelled";
+        if (hasTimeout && deadlinePassed(ctx)) return "timeout";
+        // HybridCollectorManager's own checks and sizes (pagination_depth, from on one shard).
+        int topN = NativeHybrid.numHits(ctx, hybrid);
+        if (topN <= 0) return "hybrid_no_hits";
+        byte[][] out = new byte[1][];
+        int rc = NativeBridge.searchHybrid(acquired.handle(), NativeHybrid.blob(enc.blobs(), topN, slices), out);
+        if (rc != NativeBridge.OK) {
+            logger.debug("lucene-rust: native hybrid search failed ({}): {}", rc, NativeBridge.lastError());
+            return "native_error";
+        }
+        NativeHybrid.store(ctx, out[0], enc.blobs().size());
+        if (hasTimeout && deadlinePassed(ctx)) {
+            timedOut(ctx);
+        }
+        return null;
     }
 
     /** Whether {@code query} is or holds a {@link HybridQuery}. */
