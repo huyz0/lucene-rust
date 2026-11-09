@@ -57,7 +57,7 @@ use std::sync::Arc;
 /// stale `.so` must not get as far as reading an index.
 ///
 /// Bump it on any change a Java caller could observe.
-pub const JVM_ABI_VERSION: u32 = 92;
+pub const JVM_ABI_VERSION: u32 = 93;
 
 /// Blob tag for a single `TermQuery`.
 pub const QUERY_TERM: u8 = 0;
@@ -3232,7 +3232,7 @@ pub(crate) mod tests {
     /// Opens `fixtures/data/bwc/<version>` the way the plugin opens a
     /// searcher's reader: its `segments_N` bytes, every segment's `maxDoc`
     /// and its live docs as words.
-    fn open_bwc(version: &str) -> u64 {
+    pub(crate) fn open_bwc(version: &str) -> u64 {
         open_fixture(&format!("bwc/{version}"))
     }
 

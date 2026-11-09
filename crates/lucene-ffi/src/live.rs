@@ -1786,6 +1786,86 @@ pub unsafe extern "C" fn ffi_live_view_document_alloc(
     })
 }
 
+/// Document `doc` of buffer `buffer` of `view`: its doc values of the
+/// `count` fields numbered at `fields`, encoded as [`crate::jvm_fetch`]'s
+/// doc-values blob, as an owned buffer. A buffer has no terms dictionary:
+/// a document's terms are numbered `0..n` in order, ordinals of that
+/// document alone.
+///
+/// # Safety
+/// `fields` valid for `count` `i32` reads (null when 0); `out_ptr`/`out_len`
+/// valid for one write each.
+#[no_mangle]
+pub unsafe extern "C" fn ffi_live_view_doc_values_alloc(
+    view_id: u64,
+    buffer: i32,
+    doc: i32,
+    fields: *const i32,
+    count: usize,
+    out_ptr: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    guard(|| {
+        // SAFETY: caller contract.
+        unsafe { crate::ffm_bridge::clear_out(out_ptr, out_len)? };
+        if fields.is_null() && count > 0 {
+            return Err(FfiStatus::NullPointer);
+        }
+        let fields: &[i32] = if count == 0 {
+            &[]
+        } else {
+            // SAFETY: caller contract, non-null checked above.
+            unsafe { std::slice::from_raw_parts(fields, count) }
+        };
+        let h = view(view_id)?;
+        let buffer = usize::try_from(buffer).map_err(|_| FfiStatus::IndexOutOfBounds)?;
+        let values = h
+            .writer
+            .writer()
+            .live_doc_values(&h.view, buffer, doc, fields)
+            .map_err(live_error)?;
+        let out = encode_live_doc_values(fields, &values)?;
+        // SAFETY: caller contract.
+        unsafe { crate::ffm_bridge::give(out, out_ptr, out_len) };
+        Ok(())
+    })
+}
+
+/// `values` (a buffered document's, by field number) as the doc-values blob
+/// of `fields`, in their order; a field without values is
+/// [`crate::jvm_fetch::DV_NONE`].
+fn encode_live_doc_values(
+    fields: &[i32],
+    values: &[(i32, lucene_index::concurrent_writer::LiveDocValue)],
+) -> Result<Vec<u8>, FfiStatus> {
+    use crate::jvm_fetch::{DV_NONE, DV_SORTED_NUMERIC, DV_SORTED_SET};
+    use lucene_index::concurrent_writer::LiveDocValue;
+    let mut out = len_i32(fields.len())?.to_le_bytes().to_vec();
+    for &number in fields {
+        out.extend_from_slice(&number.to_le_bytes());
+        match values.iter().find(|(n, _)| *n == number).map(|(_, v)| v) {
+            Some(LiveDocValue::Numbers(v)) if !v.is_empty() => {
+                out.push(DV_SORTED_NUMERIC);
+                out.extend_from_slice(&len_i32(v.len())?.to_le_bytes());
+                for x in v {
+                    out.extend_from_slice(&x.to_le_bytes());
+                }
+            }
+            Some(LiveDocValue::Bytes(v)) if !v.is_empty() => {
+                out.push(DV_SORTED_SET);
+                out.extend_from_slice(&len_i32(v.len())?.to_le_bytes());
+                for (ord, term) in v.iter().enumerate() {
+                    out.extend_from_slice(&i64::try_from(ord).unwrap_or(i64::MAX).to_le_bytes());
+                    out.extend_from_slice(&len_i32(term.len())?.to_le_bytes());
+                    out.extend_from_slice(term);
+                }
+            }
+            _ => out.push(DV_NONE),
+        }
+    }
+    Ok(out)
+}
+
 /// [`crate::jvm_reader::ffi_jvm_reader_search`] over the reader at
 /// `handle` and the buffers of `view` together: a buffered hit is
 /// numbered after the reader's `maxDoc`, the buffers in the view's order.
