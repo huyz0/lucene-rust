@@ -5774,6 +5774,38 @@ pub(crate) mod tests {
         ffi_close_jvm_reader(h);
     }
 
+    /// A doc-and-score query whose documents lie past the segment it lands
+    /// on was built against another reader: refused, never answered with
+    /// doc ids outside the index.
+    #[test]
+    fn a_doc_and_score_query_from_another_reader_is_refused() {
+        let blob = [
+            2, 40, 1, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 49, 0, 0, 0, 98, 0, 0, 1, 0, 0, 0, 0,
+            111, 89, 100,
+        ];
+        let h = open();
+        let (mut docs, mut scores) = ([0i32; 10], [0f32; 10]);
+        let (mut n, mut total, mut lower) = (0usize, 0i64, false);
+        let rc = unsafe {
+            ffi_jvm_reader_search(
+                h,
+                blob.as_ptr(),
+                blob.len(),
+                10,
+                10,
+                docs.as_mut_ptr(),
+                scores.as_mut_ptr(),
+                10,
+                &mut n,
+                &mut total,
+                &mut lower,
+            )
+        };
+        assert_ne!(rc, 0);
+        assert!(crate::error::last_error().contains("different reader"));
+        ffi_close_jvm_reader(h);
+    }
+
     #[test]
     fn decode_query_rejects_malformed_blobs() {
         let invalid = Err(FfiStatus::InvalidArgument);
