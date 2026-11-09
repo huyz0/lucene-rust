@@ -1963,15 +1963,6 @@ impl SegmentReader {
         self.dv_data.as_ref().map(|d| &***d)
     }
 
-    /// The `(meta, data)` pair holding **`field_number`'s current column**:
-    /// `SegmentDocValuesProducer.dvProducersByField`. A field that has taken a
-    /// doc-values update is served from the generation its newest `FieldInfo`
-    /// names; every other field falls through to the base `.dvm`/`.dvd`.
-    ///
-    /// [`Self::doc_values_meta`]/[`Self::doc_values_data`] are the *base* pair
-    /// and stay that way: a caller that has not been taught about generations
-    /// keeps working for un-updated fields rather than silently reading a
-    /// column that has been superseded for one field and not another.
     /// Keyword field `field`'s values as they arrived, for a segment of
     /// buffered documents whose doc values are kept as columns: read in
     /// place, with no doc values encoded. `None` for any other segment.
@@ -1984,6 +1975,15 @@ impl SegmentReader {
         lazy.source.keyword_run(info.number)
     }
 
+    /// The `(meta, data)` pair holding **`field_number`'s current column**:
+    /// `SegmentDocValuesProducer.dvProducersByField`. A field that has taken a
+    /// doc-values update is served from the generation its newest `FieldInfo`
+    /// names; every other field falls through to the base `.dvm`/`.dvd`.
+    ///
+    /// [`Self::doc_values_meta`]/[`Self::doc_values_data`] are the *base* pair
+    /// and stay that way: a caller that has not been taught about generations
+    /// keeps working for un-updated fields rather than silently reading a
+    /// column that has been superseded for one field and not another.
     pub fn doc_values_for_field(&self, field_number: i32) -> Option<(&DocValuesMeta, &[u8])> {
         if let Some(core) = &self.simpletext {
             return core
@@ -3212,11 +3212,6 @@ impl DirectoryReader {
         })
     }
 
-    /// `field`'s global ordinals over this reader's segments, built on the
-    /// first call and kept (see [`crate::terms_agg::GlobalOrds`]).
-    ///
-    /// # Errors
-    /// What building them reports ([`crate::terms_agg::GlobalOrds::build`]).
     /// The BM25 norm table for one average field length
     /// ([`crate::field_norms::inverse_table`]), built once per reader: every
     /// search scoring a field over this reader uses the same reader-wide
@@ -3268,6 +3263,11 @@ impl DirectoryReader {
         Ok(map.entry(slot).or_insert(built).clone())
     }
 
+    /// `field`'s global ordinals over this reader's segments, built on the
+    /// first call and kept (see [`crate::terms_agg::GlobalOrds`]).
+    ///
+    /// # Errors
+    /// What building them reports ([`crate::terms_agg::GlobalOrds::build`]).
     pub fn global_ords(&self, field: &str) -> crate::Result<Arc<crate::terms_agg::GlobalOrds>> {
         let cached = |m: &std::collections::HashMap<String, Arc<crate::terms_agg::GlobalOrds>>| {
             m.get(field).cloned()

@@ -690,10 +690,8 @@ fn slice_states(
 ) -> Result<SliceStates> {
     let mut seen = Vec::with_capacity(slice.len());
     let mut term_counts: Vec<Vec<u64>> = globals.iter().map(|g| vec![0; g.value_count()]).collect();
-    let mut term_extra: Vec<std::collections::HashMap<Vec<u8>, u64>> = globals
-        .iter()
-        .map(|_| std::collections::HashMap::new())
-        .collect();
+    let mut term_extra: Vec<std::collections::HashMap<Vec<u8>, u64>> =
+        vec![std::collections::HashMap::new(); globals.len()];
     let mut terms_scratch = TermsScratch::default();
     let clause = clause.clone();
     let mut raw = Vec::new();
