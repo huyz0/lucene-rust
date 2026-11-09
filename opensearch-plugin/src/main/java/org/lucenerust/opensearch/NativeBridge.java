@@ -624,6 +624,26 @@ public final class NativeBridge {
         }
     }
 
+    /** Calls {@code call}, a per-document FFI fn that leaves an owned buffer, and lends the buffer to {@code use}. */
+    private static int lendOwned(MethodHandle call, long handle, int segment, int doc, Borrowed use) throws IOException {
+        if (use == null) {
+            return nullArgument("use");
+        }
+        MemorySegment bytes;
+        try (Scratch s = Scratch.open()) {
+            MemorySegment result = ownedSlot(s);
+            int rc = (int) call.invokeExact(handle, segment, doc, ptrOf(result), lenOf(result));
+            if (rc != OK) {
+                return rc;
+            }
+            bytes = owned(result);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+        lend(bytes, use);
+        return OK;
+    }
+
     /** The largest {@code byte[]} every JVM allocates. */
     private static final long MAX_ARRAY = Integer.MAX_VALUE - 8;
 
@@ -1370,53 +1390,14 @@ public final class NativeBridge {
     }
 
     /**
-     * Segment {@code segment}'s document {@code doc} (segment-local), encoded as {@link #document(long,
-     * int, int, byte[][])} encodes it, lent to {@code use} in native memory and freed when it returns:
-     * no Java copy of a document only replayed once.
+     * Segment {@code segment}'s document {@code doc} (segment-local): its stored fields, in stored
+     * order, encoded as {@code jvm_fetch.rs} documents ({@link NativeStoredFieldsReader} reads them),
+     * lent to {@code use} in native memory and freed when it returns.
      */
     public static int document(long handle, int segment, int doc, Borrowed use) throws IOException {
-        if (use == null) {
-            return nullArgument("use");
-        }
-        MemorySegment bytes;
-        try (Scratch s = Scratch.open()) {
-            MemorySegment result = ownedSlot(s);
-            int rc = (int) H.DOCUMENT.invokeExact(handle, segment, doc, ptrOf(result), lenOf(result));
-            if (rc != OK) {
-                return rc;
-            }
-            bytes = owned(result);
-        } catch (Throwable t) {
-            throw rethrow(t);
-        }
-        lend(bytes, use);
-        return OK;
+        return lendOwned(H.DOCUMENT, handle, segment, doc, use);
     }
 
-    /**
-     * Segment {@code segment}'s document {@code doc} (segment-local): its stored fields, in stored
-     * order, encoded as {@code jvm_fetch.rs} documents, in {@code out[0]} ({@link
-     * NativeStoredFieldsReader} reads them).
-     */
-    public static int document(long handle, int segment, int doc, byte[][] out) {
-        if (out == null || out.length < 1) {
-            return fail(INVALID_ARGUMENT, "out holds no slot");
-        }
-        try (Scratch s = Scratch.open()) {
-            MemorySegment result = ownedSlot(s);
-            int rc = (int) H.DOCUMENT.invokeExact(handle, segment, doc, ptrOf(result), lenOf(result));
-            if (rc == OK) {
-                byte[] encoded = take(result);
-                if (encoded == null) {
-                    return tooLarge("the document");
-                }
-                out[0] = encoded;
-            }
-            return rc;
-        } catch (Throwable t) {
-            throw rethrow(t);
-        }
-    }
 
     /**
      * Segment {@code segment}'s document {@code doc} (segment-local): its values of the fields
@@ -1451,22 +1432,7 @@ public final class NativeBridge {
      * back, lent to {@code use}: the value a {@code DERIVED_SOURCE} field of {@link #document} leaves out.
      */
     public static int derivedSource(long handle, int segment, int doc, Borrowed use) throws IOException {
-        if (use == null) {
-            return nullArgument("use");
-        }
-        MemorySegment bytes;
-        try (Scratch s = Scratch.open()) {
-            MemorySegment result = ownedSlot(s);
-            int rc = (int) H.DERIVED_SOURCE.invokeExact(handle, segment, doc, ptrOf(result), lenOf(result));
-            if (rc != OK) {
-                return rc;
-            }
-            bytes = owned(result);
-        } catch (Throwable t) {
-            throw rethrow(t);
-        }
-        lend(bytes, use);
-        return OK;
+        return lendOwned(H.DERIVED_SOURCE, handle, segment, doc, use);
     }
 
     /**

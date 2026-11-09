@@ -22,14 +22,14 @@ import org.apache.lucene.index.SortedNumericDocValues;
 import org.apache.lucene.index.SortedSetDocValues;
 import org.apache.lucene.index.StoredFields;
 import org.apache.lucene.store.ByteArrayDataInput;
-import org.apache.lucene.store.DataInput;
+import org.apache.lucene.store.ByteBuffersDataInput;
 
 import org.opensearch.common.lucene.index.SequentialStoredFieldsLeafReader;
 
-import java.io.EOFException;
 import java.io.IOException;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
+import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
@@ -446,8 +446,15 @@ final class NativeStoredFieldsReader extends FilterDirectoryReader {
          */
         private void derivedSource(long h, int docID, FieldInfo fi, StoredFieldVisitor visitor, LuceneDocument lucene)
             throws IOException {
-            int rc = NativeBridge.derivedSource(h, ord, docID, bytes -> visitor.binaryField(fi, binary(bytes, 0, bytes.byteSize())));
-            if (rc == NativeBridge.OK) {
+            boolean[] read = new boolean[1];
+            int rc = NativeBridge.derivedSource(h, ord, docID, bytes -> {
+                // A _source past what a Java array holds is left to Lucene below.
+                if (bytes.byteSize() <= Integer.MAX_VALUE) {
+                    visitor.binaryField(fi, binary(bytes.asByteBuffer(), 0, (int) bytes.byteSize()));
+                    read[0] = true;
+                }
+            });
+            if (rc == NativeBridge.OK && read[0]) {
                 return;
             }
             shared.stats.nativeError();
@@ -543,18 +550,22 @@ final class NativeStoredFieldsReader extends FilterDirectoryReader {
     }
 
     static void replay(FieldInfos infos, byte[] blob, StoredFieldVisitor visitor, SourceLoader source) throws IOException {
-        replay(infos, MemorySegment.ofArray(blob), blob, visitor, source);
+        replay(infos, ByteBuffer.wrap(blob), visitor, source);
     }
 
-    /** {@link #replay} over native bytes, lent for the call: each value the visitor keeps is copied. */
+    /**
+     * {@link #replay} over native bytes lent for the call: as with Lucene's own reader, a binary
+     * value's input is valid only during {@code binaryField}, so a visitor copies what it keeps.
+     */
     static void replay(FieldInfos infos, MemorySegment blob, StoredFieldVisitor visitor, SourceLoader source) throws IOException {
-        replay(infos, blob, null, visitor, source);
+        if (blob.byteSize() > Integer.MAX_VALUE) {
+            throw new IOException("a native document of " + blob.byteSize() + " bytes");
+        }
+        replay(infos, blob.asByteBuffer(), visitor, source);
     }
 
-    /** {@code array} is {@code blob}'s backing array, or null when {@code blob} is native memory. */
-    private static void replay(FieldInfos infos, MemorySegment blob, byte[] array, StoredFieldVisitor visitor, SourceLoader source)
-        throws IOException {
-        Cursor b = new Cursor(blob);
+    private static void replay(FieldInfos infos, ByteBuffer b, StoredFieldVisitor visitor, SourceLoader source) throws IOException {
+        b.order(ByteOrder.LITTLE_ENDIAN);
         int n = b.getInt();
         for (int i = 0; i < n; i++) {
             FieldInfo fi = infos.fieldInfo(b.getInt());
@@ -581,17 +592,13 @@ final class NativeStoredFieldsReader extends FilterDirectoryReader {
             switch (type) {
                 case STRING -> {
                     if (yes) {
-                        visitor.stringField(fi, string(blob, array, b.position(), len));
+                        visitor.stringField(fi, string(b, b.position(), len));
                     }
                     b.position(b.position() + len);
                 }
                 case BINARY -> {
                     if (yes) {
-                        visitor.binaryField(fi, array != null
-                            // Two arguments: `ByteArrayDataInput.length()` is its
-                            // limit (offset + len), not len.
-                            ? new StoredFieldDataInput(new ByteArrayDataInput(array, (int) b.position(), len), len)
-                            : binary(blob, b.position(), len));
+                        visitor.binaryField(fi, binary(b, b.position(), len));
                     }
                     b.position(b.position() + len);
                 }
@@ -624,102 +631,31 @@ final class NativeStoredFieldsReader extends FilterDirectoryReader {
         }
     }
 
-    /** The UTF-8 string at {@code [at, at + len)}, decoded from {@code array} when there is one. */
-    private static String string(MemorySegment blob, byte[] array, long at, int len) {
-        if (array != null) {
-            return new String(array, (int) at, len, StandardCharsets.UTF_8);
+    /** Native string values at most this long decode through a per-thread scratch; longer ones through a copy of their own. */
+    private static final int SCRATCH_BYTES = 64 * 1024;
+
+    private static final ThreadLocal<byte[]> STRING_SCRATCH = ThreadLocal.withInitial(() -> new byte[1024]);
+
+    /** The UTF-8 string at {@code [at, at + len)} of {@code b}. */
+    private static String string(ByteBuffer b, int at, int len) {
+        if (b.hasArray()) {
+            return new String(b.array(), b.arrayOffset() + at, len, StandardCharsets.UTF_8);
         }
-        byte[] scratch = STRING_SCRATCH.get();
+        byte[] scratch = len <= SCRATCH_BYTES ? STRING_SCRATCH.get() : new byte[len];
         if (scratch.length < len) {
-            if (len > KEEP_BYTES) {
-                return new String(blob.asSlice(at, len).toArray(ValueLayout.JAVA_BYTE), StandardCharsets.UTF_8);
-            }
-            scratch = new byte[Math.max(len, Math.min(KEEP_BYTES, scratch.length * 2))];
+            scratch = new byte[Math.min(SCRATCH_BYTES, Math.max(len, scratch.length * 2))];
             STRING_SCRATCH.set(scratch);
         }
-        MemorySegment.copy(blob, ValueLayout.JAVA_BYTE, at, scratch, 0, len);
+        b.get(at, scratch, 0, len);
         return new String(scratch, 0, len, StandardCharsets.UTF_8);
     }
 
-    /** Where native string values are copied to be decoded: at most {@link #KEEP_BYTES} kept per thread. */
-    private static final ThreadLocal<byte[]> STRING_SCRATCH = ThreadLocal.withInitial(() -> new byte[1024]);
-
-    /** The binary value at {@code [at, at + len)} of lent native bytes, read in place. */
-    private static StoredFieldDataInput binary(MemorySegment blob, long at, long len) throws IOException {
-        if (len > Integer.MAX_VALUE) {
-            throw new IOException("a stored binary value of " + len + " bytes");
+    /** The binary value at {@code [at, at + len)} of {@code b}, read in place. */
+    private static StoredFieldDataInput binary(ByteBuffer b, int at, int len) {
+        if (b.hasArray()) {
+            // Two arguments: `ByteArrayDataInput.length()` is its limit (offset + len), not len.
+            return new StoredFieldDataInput(new ByteArrayDataInput(b.array(), b.arrayOffset() + at, len), len);
         }
-        return new StoredFieldDataInput(new SegmentInput(blob.asSlice(at, len)), (int) len);
-    }
-
-    /** A {@code DataInput} over a segment. */
-    private static final class SegmentInput extends DataInput {
-        private final MemorySegment bytes;
-        private long at;
-
-        SegmentInput(MemorySegment bytes) {
-            this.bytes = bytes;
-        }
-
-        @Override
-        public byte readByte() throws IOException {
-            if (at >= bytes.byteSize()) {
-                throw new EOFException("read past the end of a stored value");
-            }
-            return bytes.get(ValueLayout.JAVA_BYTE, at++);
-        }
-
-        @Override
-        public void readBytes(byte[] b, int offset, int len) throws IOException {
-            if (len > bytes.byteSize() - at) {
-                throw new EOFException("read past the end of a stored value");
-            }
-            MemorySegment.copy(bytes, ValueLayout.JAVA_BYTE, at, b, offset, len);
-            at += len;
-        }
-
-        @Override
-        public void skipBytes(long n) throws IOException {
-            if (n < 0 || n > bytes.byteSize() - at) {
-                throw new EOFException("skipped past the end of a stored value");
-            }
-            at += n;
-        }
-    }
-
-    /** Little-endian reads through a segment, in order. */
-    private static final class Cursor {
-        private static final ValueLayout.OfInt INT = ValueLayout.JAVA_INT_UNALIGNED.withOrder(ByteOrder.LITTLE_ENDIAN);
-        private static final ValueLayout.OfLong LONG = ValueLayout.JAVA_LONG_UNALIGNED.withOrder(ByteOrder.LITTLE_ENDIAN);
-        private final MemorySegment s;
-        private long at;
-
-        Cursor(MemorySegment s) {
-            this.s = s;
-        }
-
-        int getInt() {
-            int v = s.get(INT, at);
-            at += 4;
-            return v;
-        }
-
-        long getLong() {
-            long v = s.get(LONG, at);
-            at += 8;
-            return v;
-        }
-
-        byte get() {
-            return s.get(ValueLayout.JAVA_BYTE, at++);
-        }
-
-        long position() {
-            return at;
-        }
-
-        void position(long p) {
-            at = p;
-        }
+        return new StoredFieldDataInput(new ByteBuffersDataInput(List.of(b.slice(at, len))), len);
     }
 }

@@ -330,11 +330,9 @@ public final class NativeSelfTest {
         check(out[0] == null, "a failed call hands back nothing");
         check(NativeBridge.aggregate(1, blob, new byte[0], new long[1], new double[6], null, 0, new long[2], null) == 10, "null aggregate terms slot -> InvalidArgument");
         check(NativeBridge.aggregateTree(1, blob, new byte[0], new byte[0][]) == 10, "empty aggregateTree out -> InvalidArgument");
-        check(NativeBridge.document(12345L, 0, 0, out) == NativeBridge.INVALID_HANDLE && out[0] == null, "document on a fabricated handle");
-        check(NativeBridge.document(12345L, 0, 0, (byte[][]) null) == 10, "null document out -> InvalidArgument");
         boolean[] lent = new boolean[1];
-        check(NativeBridge.document(12345L, 0, 0, bytes -> lent[0] = true) == NativeBridge.INVALID_HANDLE && lent[0] == false, "lent document on a fabricated handle");
-        check(NativeBridge.document(12345L, 0, 0, (NativeBridge.Borrowed) null) == 10, "null document reader -> InvalidArgument");
+        check(NativeBridge.document(12345L, 0, 0, bytes -> lent[0] = true) == NativeBridge.INVALID_HANDLE && lent[0] == false, "document on a fabricated handle");
+        check(NativeBridge.document(12345L, 0, 0, null) == 10, "null document reader -> InvalidArgument");
         check(NativeBridge.derivedSource(12345L, 0, 0, bytes -> lent[0] = true) == NativeBridge.INVALID_HANDLE && lent[0] == false, "lent _source on a fabricated handle");
         check(NativeBridge.countTerminates(1, blob, null, new long[1]) == 10, "null count spec -> InvalidArgument");
         check(NativeBridge.docFreq(12345L, f, f, new long[1]) == NativeBridge.INVALID_HANDLE, "docFreq on a fabricated handle");
@@ -1576,7 +1574,22 @@ public final class NativeSelfTest {
             }
             w.commit();
             try (DirectoryReader lucene = DirectoryReader.open(d)) {
-                check(readers.acquire(lucene).handle() != 0, "stored fields: a native handle");
+                long storedHandle = readers.acquire(lucene).handle();
+                check(storedHandle != 0, "stored fields: a native handle");
+                // A lent document holds its bytes for the call only: a view kept past it fails
+                // instead of reading the freed buffer.
+                java.lang.foreign.MemorySegment[] kept = new java.lang.foreign.MemorySegment[1];
+                int lentRc = NativeBridge.document(storedHandle, 0, 0, bytes -> {
+                    kept[0] = bytes;
+                    check(bytes.byteSize() > 4 && bytes.get(java.lang.foreign.ValueLayout.JAVA_INT_UNALIGNED, 0) > 0, "a lent document holds fields");
+                });
+                check(lentRc == NativeBridge.OK && kept[0] != null, "lent document: " + lentRc);
+                try {
+                    kept[0].get(java.lang.foreign.ValueLayout.JAVA_BYTE, 0);
+                    check(false, "a lent document read after its call");
+                } catch (IllegalStateException expected) {
+                    // closed with the call
+                }
                 DirectoryReader wrapped = NativeStoredFieldsReader.wrap(lucene, readers, stats, () -> true);
                 String[] skip = { "l", "s" };
                 for (int leaf = 0; leaf < lucene.leaves().size(); leaf++) {
