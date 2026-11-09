@@ -3254,7 +3254,9 @@ impl DirectoryReader {
                 true,
             )?),
         };
-        let built = if built.has_terms() {
+        // Too many terms to find the runs' in: the plain map, which the
+        // cache already built in their place.
+        let built = if built.has_terms() || self.ords_cache.is_some() {
             built
         } else {
             self.global_ords(field)?

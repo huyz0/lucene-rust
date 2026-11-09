@@ -5063,6 +5063,22 @@ pub(crate) mod tests {
         pub(crate) static ENCODED_RUNS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     }
 
+    /// [`ENCODED_RUNS`] set until dropped, then cleared, a panic included.
+    pub(crate) struct EncodedRuns;
+
+    impl EncodedRuns {
+        pub(crate) fn set(encoded: bool) -> Self {
+            ENCODED_RUNS.with(|c| c.set(encoded));
+            Self
+        }
+    }
+
+    impl Drop for EncodedRuns {
+        fn drop(&mut self) {
+            ENCODED_RUNS.with(|c| c.set(false));
+        }
+    }
+
     fn metrics_blob(fields: &[(u8, &str)]) -> Vec<u8> {
         metrics_blob_from(&fields.iter().map(|&(k, f)| (k, 0, f)).collect::<Vec<_>>())
     }

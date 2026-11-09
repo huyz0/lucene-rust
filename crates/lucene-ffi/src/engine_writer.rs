@@ -6644,19 +6644,25 @@ mod tests {
                 .iter()
                 .any(|r| r.keyword_run("tag").is_some());
             drop(handle);
-            for shard_size in [1, 3, 8, 100] {
-                let aggs = crate::jvm_reader::tests::aggs_blob(&[], &[("tag", shard_size)], &[]);
-                let count = |encoded: bool| {
-                    crate::jvm_reader::tests::ENCODED_RUNS.with(|c| c.set(encoded));
-                    let out = crate::jvm_reader::aggregate_counting_blobs(lean, &q, &aggs, -1);
-                    crate::jvm_reader::tests::ENCODED_RUNS.with(|c| c.set(false));
-                    out.unwrap().1
-                };
-                assert_eq!(
-                    count(false),
-                    count(true),
-                    "round {round}, shard size {shard_size}"
-                );
+            // `body:y` matches most documents (the column streamed); one
+            // buffered `_id` few (each match sought).
+            let sparse = crate::jvm_reader::tests::term_blob("_id", &format!("d{}", added - 2));
+            for (query, q) in [("dense", &q), ("sparse", &sparse)] {
+                for shard_size in [1, 3, 8, 100] {
+                    let aggs =
+                        crate::jvm_reader::tests::aggs_blob(&[], &[("tag", shard_size)], &[]);
+                    let count = |encoded: bool| {
+                        let _reset = crate::jvm_reader::tests::EncodedRuns::set(encoded);
+                        crate::jvm_reader::aggregate_counting_blobs(lean, q, &aggs, -1)
+                            .unwrap()
+                            .1
+                    };
+                    assert_eq!(
+                        count(false),
+                        count(true),
+                        "round {round}, {query} query, shard size {shard_size}"
+                    );
+                }
             }
             crate::jvm_reader::ffi_close_jvm_reader(lean);
             assert_eq!(ffi_live_view_close(view), 0);

@@ -436,7 +436,11 @@ impl GlobalOrdsCache {
             kept.get(&slot).and_then(|maps| {
                 maps.iter()
                     .map(|(k, g)| (kept_at(&keys, k), Arc::clone(g), k.len()))
-                    .filter(|(at, _, _)| at.iter().any(Option::is_some))
+                    .filter(|(at, _, _)| {
+                        at.iter()
+                            .zip(&keys)
+                            .any(|(a, k)| a.is_some() && *k != RUN_KEY)
+                    })
                     .max_by_key(|(at, _, _)| {
                         at.iter()
                             .zip(&keys)
