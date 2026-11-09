@@ -16,6 +16,10 @@ spatial-extras module depends on, both under the Apache License, Version 2.0
  - The S2 Geometry Library for Java, as published in
    io.sgr:s2-geometry-library-java 1.0.0, Copyright 2005 Google Inc.
 
+crates/lucene-analysis/src/java_float.rs implements the f32 case of Ryu
+(https://github.com/ulfjack/ryu, Copyright 2018 Ulf Adams, under the Apache
+License, Version 2.0, or the Boost Software License 1.0), following its f2s.c.
+
 crates/lucene-analysis-phonetic reimplements the phonetic encoders of Apache
 Commons Codec 1.17.2 (https://commons.apache.org/proper/commons-codec/, under
 the Apache License, Version 2.0; Copyright 2002-2024 The Apache Software
