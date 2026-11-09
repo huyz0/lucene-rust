@@ -38,7 +38,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code jvm_reader.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 93;
+    public static final int EXPECTED_ABI_VERSION = 95;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -409,6 +409,10 @@ public final class NativeBridge {
         );
         static final MethodHandle LIVE_DOCUMENT = bind(
             "ffi_live_view_document_alloc",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_INT, ADDRESS, ADDRESS)
+        );
+        static final MethodHandle LIVE_POINT_BOUNDS = bind(
+            "ffi_live_view_point_bounds_alloc",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_INT, ADDRESS, ADDRESS)
         );
         static final MethodHandle SEARCH_LIVE = bind(
@@ -2435,6 +2439,31 @@ public final class NativeBridge {
     public static int writerReleaseLive(long writer, long generation) {
         try {
             return (int) H.WRITER_RELEASE_LIVE.invokeExact(writer, generation);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * The bounds of field number {@code field}'s points in buffer {@code buffer} of {@code view}
+     * into {@code out[0]}: the point count (little-endian long), then the packed least values, then
+     * the packed greatest; empty when the buffer holds no point of the field.
+     */
+    public static int livePointBounds(long view, int buffer, int field, byte[][] out) {
+        if (out == null || out.length < 1) {
+            return fail(INVALID_ARGUMENT, "out holds no slot");
+        }
+        try (Scratch s = Scratch.open()) {
+            MemorySegment result = ownedSlot(s);
+            int rc = (int) H.LIVE_POINT_BOUNDS.invokeExact(view, buffer, field, ptrOf(result), lenOf(result));
+            if (rc == OK) {
+                byte[] encoded = take(result);
+                if (encoded == null) {
+                    return tooLarge("the bounds");
+                }
+                out[0] = encoded;
+            }
+            return rc;
         } catch (Throwable t) {
             throw rethrow(t);
         }

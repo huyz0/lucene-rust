@@ -2117,12 +2117,16 @@ public class RustEngine extends Engine {
     /**
      * A searcher taken on its own (segment stats, a point in time's segment list, a get) reads the
      * reader alone, as a refresh left it: the buffered documents are for search requests, which take
-     * a {@link #acquireSearcherSupplier supplier}.
+     * a {@link #acquireSearcherSupplier supplier}. A search's can-match check takes one on its own
+     * too, and rewrites the query by the reader's bounds: it reads the buffers as the search does, or
+     * a range over buffered documents alone would be rewritten to match nothing.
      */
     @Override
     public Searcher acquireSearcher(String source, SearcherScope scope, java.util.function.Function<Searcher, Searcher> wrapper)
         throws EngineException {
-        SearcherSupplier supplier = super.acquireSearcherSupplier(wrapper, scope);
+        SearcherSupplier supplier = CAN_MATCH_SEARCH_SOURCE.equals(source)
+            ? acquireSearcherSupplier(wrapper, scope)
+            : super.acquireSearcherSupplier(wrapper, scope);
         Searcher searcher = null;
         try {
             searcher = supplier.acquireSearcher(source);

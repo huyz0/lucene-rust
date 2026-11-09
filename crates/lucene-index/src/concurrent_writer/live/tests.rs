@@ -893,6 +893,46 @@ fn a_buffered_documents_doc_values_read_in_every_state() {
     w.close_live_view(&slot_view);
 }
 
+/// A buffer's points' bounds take in each of its documents' points, per
+/// indexed dimension, whether it is in its slot, flushing or published.
+#[test]
+fn a_buffers_point_bounds_read_in_every_state() {
+    let tmp = TempDir::new("live-point-bounds");
+    let dir = FsDirectory::open(tmp.path());
+    let w = columns_writer(&dir);
+    let cfg = w.cfg();
+    let number = |name: &str| cfg.field_by_name(name).unwrap().number;
+    let (price, loc, body) = (number("price"), number("loc"), number("body"));
+    let long = |v: u64| (v ^ 0x8000_0000_0000_0000).to_be_bytes().to_vec();
+    let int = |v: u32| (v ^ 0x8000_0000).to_be_bytes().to_vec();
+    let check = |view: &LiveView| {
+        let b = view.buffers.iter().position(|b| b.max_doc == 400).unwrap();
+        let p = w.live_point_bounds(view, b, price).unwrap().unwrap();
+        assert_eq!((p.min, p.max, p.count), (long(601), long(1000), 267));
+        let l = w.live_point_bounds(view, b, loc).unwrap().unwrap();
+        assert_eq!(l.min, [int(0), int(0)].concat());
+        assert_eq!(l.max, [int(395), int(7 * 395)].concat());
+        assert_eq!(l.count, 80);
+        assert_eq!(w.live_point_bounds(view, b, body).unwrap(), None);
+        assert!(w
+            .live_point_bounds(view, view.buffers.len(), price)
+            .is_err());
+    };
+    let slot_view = w.open_live_view(None).unwrap();
+    check(&slot_view);
+    let batch = {
+        let mut slot = super::write_slot(&w.slots[0]);
+        w.begin_flush(0, &mut slot).unwrap()
+    };
+    let view = w.open_live_view(None).unwrap();
+    check(&view);
+    w.complete_flush(batch).unwrap();
+    check(&view);
+    check(&slot_view);
+    w.close_live_view(&view);
+    w.close_live_view(&slot_view);
+}
+
 /// A published buffer a view reads keeps its segment's files after a
 /// merge replaced the segment and a commit dropped it, until the view is
 /// closed and a release lets the buffer go.

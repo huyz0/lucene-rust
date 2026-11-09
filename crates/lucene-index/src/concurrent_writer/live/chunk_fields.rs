@@ -47,6 +47,48 @@ pub(in crate::concurrent_writer) struct ChunkFields {
     /// A document stores term vectors, or gave a point the field does not
     /// take: chunks are written from the documents.
     unsupported: bool,
+    /// By field: the least and greatest value of each indexed dimension
+    /// of its points, kept even when the columns stop.
+    bounds: HashMap<i32, PointBounds>,
+}
+
+/// A field's points' bounds, as [`ChunkFields::bounds`] gives them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PointBounds {
+    /// Each indexed dimension's least value, packed.
+    pub min: Vec<u8>,
+    /// Each indexed dimension's greatest value, packed.
+    pub max: Vec<u8>,
+    /// How many points there are.
+    pub count: u64,
+}
+
+impl PointBounds {
+    /// Widens the bounds to take `point`'s first `dims` dimensions of
+    /// `width` bytes each.
+    fn take(&mut self, point: &[u8], dims: usize, width: usize) {
+        let Some(point) = point.get(..dims.saturating_mul(width)) else {
+            return;
+        };
+        if self.count == 0 {
+            self.min = point.to_vec();
+            self.max = point.to_vec();
+        } else {
+            for ((v, lo), hi) in point
+                .chunks_exact(width)
+                .zip(self.min.chunks_exact_mut(width))
+                .zip(self.max.chunks_exact_mut(width))
+            {
+                if v < &*lo {
+                    lo.copy_from_slice(v);
+                }
+                if v > &*hi {
+                    hi.copy_from_slice(v);
+                }
+            }
+        }
+        self.count = self.count.saturating_add(1);
+    }
 }
 
 impl ChunkFields {
@@ -58,10 +100,14 @@ impl ChunkFields {
         cfg: &IndexingConfig,
     ) {
         if self.unsupported {
+            // Without columns the points are encoded for their bounds alone.
+            if !fields.points.is_empty() {
+                self.bound(fields, cfg);
+            }
             return;
         }
         if !fields.term_vectors.is_empty() {
-            return self.give_up();
+            return self.give_up_with(fields, cfg);
         }
         let mut present = |n: i32| self.present.entry(n).or_default().add(doc);
         for inv in &fields.inverted {
@@ -81,7 +127,7 @@ impl ChunkFields {
                 .field_by_number(inv.field_number)
                 .is_none_or(|f| f.store_term_vectors);
             if tv {
-                return self.give_up();
+                return self.give_up_with(fields, cfg);
             }
             if inv.norm.is_some() {
                 self.normed.entry(inv.field_number).or_default().add(doc);
@@ -89,7 +135,7 @@ impl ChunkFields {
         }
         for p in &fields.points {
             let Some(info) = cfg.field_by_number(p.field_number) else {
-                return self.give_up();
+                return self.give_up_with(fields, cfg);
             };
             let column = self
                 .points
@@ -101,11 +147,66 @@ impl ChunkFields {
                     bytes_per_dim: info.point_num_bytes,
                     ..PackedPointsField::default()
                 });
+            let at = column.values.len();
             if !encode_live_point(info, &p.value, &mut column.values) {
-                return self.give_up();
+                return self.give_up_with(fields, cfg);
             }
             column.docs.push(doc);
+            if let (Ok(dims), Ok(width)) = (
+                usize::try_from(info.point_index_dimension_count),
+                usize::try_from(info.point_num_bytes),
+            ) {
+                self.bounds.entry(p.field_number).or_default().take(
+                    column.values.get(at..).unwrap_or_default(),
+                    dims,
+                    width,
+                );
+            }
         }
+    }
+
+    /// [`Self::give_up`] on a document, its points still bounded.
+    fn give_up_with(&mut self, fields: &ExplicitFields, cfg: &IndexingConfig) {
+        self.give_up();
+        self.bound(fields, cfg);
+    }
+
+    /// Widens the fields' bounds to take a document's points.
+    fn bound(&mut self, fields: &ExplicitFields, cfg: &IndexingConfig) {
+        let mut packed = Vec::new();
+        for p in &fields.points {
+            let Some(info) = cfg.field_by_number(p.field_number) else {
+                continue;
+            };
+            packed.clear();
+            if !encode_live_point(info, &p.value, &mut packed) {
+                continue;
+            }
+            let (Ok(dims), Ok(width)) = (
+                usize::try_from(info.point_index_dimension_count),
+                usize::try_from(info.point_num_bytes),
+            ) else {
+                continue;
+            };
+            self.bounds
+                .entry(p.field_number)
+                .or_default()
+                .take(&packed, dims, width);
+        }
+    }
+
+    /// By field, its points' bounds over every document recorded, for the
+    /// fields some document gave a point.
+    pub(in crate::concurrent_writer) fn all_bounds(&self) -> &HashMap<i32, PointBounds> {
+        &self.bounds
+    }
+
+    /// Frees the columns, keeping the bounds.
+    pub(in crate::concurrent_writer) fn drop_columns(&mut self) {
+        *self = ChunkFields {
+            bounds: std::mem::take(&mut self.bounds),
+            ..ChunkFields::default()
+        };
     }
 
     /// Whether the columns stopped: the buffer's chunks are decoded.
@@ -120,6 +221,7 @@ impl ChunkFields {
         }
         *self = ChunkFields {
             unsupported: true,
+            bounds: std::mem::take(&mut self.bounds),
             ..ChunkFields::default()
         };
     }
@@ -141,7 +243,14 @@ impl ChunkFields {
                 .saturating_mul(4)
                 .saturating_add(p.values.capacity())
         });
-        present.chain(points).fold(0, usize::saturating_add)
+        let bounds = self
+            .bounds
+            .values()
+            .map(|b| b.min.capacity().saturating_add(b.max.capacity()));
+        present
+            .chain(points)
+            .chain(bounds)
+            .fold(0, usize::saturating_add)
     }
 
     /// The fields some document of `start..end` has, and their points
