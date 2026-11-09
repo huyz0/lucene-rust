@@ -1367,14 +1367,41 @@ impl ConcurrentIndexWriter<'_> {
                     .map(|(n, r)| Some((*n, r.build()?)))
                     .collect::<Option<Vec<_>>>()
                 {
-                    Some(doc_values) => c.doc_values = doc_values,
-                    None => columns = None,
+                    // Columns copied without their points cannot write a
+                    // segment that has them: the documents are decoded.
+                    Some(doc_values) if lazy != Some(false) => c.doc_values = doc_values,
+                    _ => columns = None,
                 }
                 None
             }
             _ => None,
         };
-        if let (Some(points), Some(c)) = (lazy, columns.as_ref()) {
+        // Only the columns hold the run's fields: no held documents,
+        // custom-frequency terms, vectors or blocks of their own.
+        let only_columns = match (&slot, &copied) {
+            (Some(slot), _) => {
+                let run = end.saturating_sub(start);
+                !slot.has_blocks
+                    && slot
+                        .docs
+                        .iter()
+                        .skip(start)
+                        .take(run)
+                        .all(|d| d.fields.is_empty())
+                    && slot
+                        .custom_freq_terms
+                        .iter()
+                        .skip(start)
+                        .take(run)
+                        .all(Vec::is_empty)
+                    && slot.vectors.iter().skip(start).take(run).all(Vec::is_empty)
+            }
+            (None, Some(c)) => {
+                !c.has_blocks && c.docs.is_empty() && c.custom.is_empty() && c.vectors.is_empty()
+            }
+            (None, None) => false,
+        };
+        if let (Some(points), Some(c), true) = (lazy, columns.as_ref(), only_columns) {
             if lazy_doc_values.is_some() && cfg.takes_lean_parts(c) {
                 // Built from the columns alone, with the slot free.
                 let partition = match (&slot, &copied) {

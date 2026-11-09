@@ -818,6 +818,30 @@ fn chunks_from_columns_match_chunks_from_documents() {
 /// was in its slot, until it is published and the views that read it as
 /// chunks are closed.
 #[test]
+fn a_buffer_holding_blocks_is_written_not_built_in_memory() {
+    let tmp = TempDir::new("live-lean-blocks");
+    let dir = FsDirectory::open(tmp.path());
+    let w = columns_writer(&dir);
+    let block = |n: usize| {
+        (0..n)
+            .map(|_| ExplicitDocument {
+                stored: Vec::new(),
+                fields: ExplicitFields::default(),
+            })
+            .collect::<Vec<_>>()
+    };
+    w.add_explicit_documents(block(3)).unwrap();
+    let id = w.live_slot_buffers()[0].id;
+    let lean = w
+        .live_lean_segment(id, 37..301, HashMap::new(), &[], true, &dir, "_b")
+        .unwrap();
+    assert!(
+        matches!(lean, super::LeanSegment::Written(..)),
+        "a segment's block flag comes from its segment info"
+    );
+}
+
+#[test]
 fn a_flushing_buffer_is_written_as_lean_chunks_until_published() {
     let tmp = TempDir::new("live-flushing-lean");
     let dir = FsDirectory::open(tmp.path());
