@@ -51,7 +51,7 @@ use crate::jvm_fetch::{BINARY, DOUBLE, FLOAT, INT, LONG, STRING};
 use crate::jvm_reader::{boolean_of, decode_request, lookup};
 use crate::raw::bytes_from_raw;
 use crate::registry::JvmReaderHandle;
-use lucene_index::concurrent_writer::{FieldTotals, LiveRequest, ViewBuffer};
+use lucene_index::concurrent_writer::{FieldTotals, LeanSegment, LiveRequest, ViewBuffer};
 use lucene_search::directory_reader::SegmentReader;
 
 /// An open view and the writer it reads.
@@ -1531,7 +1531,7 @@ fn buffer_segments(
         let starts: Vec<i32> = plan.iter().map(|p| p.end).collect();
         let range = p.start..p.end;
         let (sci, lazy) = match lean {
-            Some(points) => writer.live_lean_segment(
+            Some(points) => match writer.live_lean_segment(
                 b.id,
                 range,
                 range_counts(p),
@@ -1539,7 +1539,15 @@ fn buffer_segments(
                 points,
                 &dir,
                 &name,
-            )?,
+            )? {
+                LeanSegment::Parts(parts, lazy) => {
+                    let reader =
+                        SegmentReader::from_lean_parts(name, *parts, lazy).map_err(open_error)?;
+                    out.push((reader, true));
+                    continue;
+                }
+                LeanSegment::Written(sci, lazy) => (sci, lazy),
+            },
             None => (
                 writer.live_buffer_segment(
                     b.id,
