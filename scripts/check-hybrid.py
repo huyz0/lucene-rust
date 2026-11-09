@@ -69,6 +69,38 @@ def setup(port, rust, index="h"):
         ck.req(port, "PUT", f"/_search/pipeline/{name}", body)
 
 
+BIG = 15000
+
+
+def setup_big(port):
+    """Segments of 5000 documents: past the hybrid bulk scorer's 4096-document window, where
+    stock stops counting documents no sub-query scores competitively."""
+    rng = random.Random(11)
+    ck.req(port, "PUT", "/hb", {"settings": {"index": {"knn": True, "number_of_shards": 1, "number_of_replicas": 0,
+                                                       "refresh_interval": -1}},
+                                "mappings": {"properties": {"t": {"type": "text"}, "v": {"type": "knn_vector", "dimension": 4,
+                                             "method": {"name": "hnsw", "engine": "lucene", "space_type": "l2"}}}}})
+    for start in range(0, BIG, 5000):
+        lines = []
+        for i in range(start, start + 5000):
+            lines.append(json.dumps({"index": {"_id": str(i)}}))
+            lines.append(json.dumps({"t": " ".join(rng.choices(WORDS[:40], k=6)),
+                                     "v": [round(rng.uniform(-1, 1), 4) for _ in range(4)]}))
+        ck.req(port, "POST", "/hb/_bulk", "\n".join(lines) + "\n", ndjson=True)
+        ck.req(port, "POST", "/hb/_refresh")
+
+
+def big_searches():
+    m = {"match": {"t": "w3 w17"}}
+    k = {"knn": {"v": {"vector": [0.1, 0.2, -0.3, 0.4], "k": 10}}}
+    return [(p, b) for p in ("minmax", "rrf") for b in (
+        {"query": hybrid(m, k)},
+        {"query": hybrid(m, k, pagination_depth=40), "from": 20, "size": 10},
+        {"query": hybrid(m, {"match": {"t": "w5"}}, k), "size": 25},
+        {"query": hybrid(m, k), "size": 0, "track_total_hits": True},
+    )]
+
+
 def norm(technique, combination="arithmetic_mean", **extra):
     n = {"technique": technique}
     c = {"technique": combination}
@@ -184,8 +216,8 @@ def same_hits(o, s):
     return groups_o == groups_s
 
 
-def compare(pipeline, body, failures, explain=False, ours="h"):
-    o, s = answer(OURS[1], pipeline, body, explain, ours), answer(STOCK[1], pipeline, body, explain)
+def compare(pipeline, body, failures, explain=False, ours="h", stock="h"):
+    o, s = answer(OURS[1], pipeline, body, explain, ours), answer(STOCK[1], pipeline, body, explain, stock)
     label = f"{pipeline} {json.dumps(body)[:300]}"
     if "error" in o or "error" in s:
         if o.get("error") != s.get("error"):
@@ -259,6 +291,11 @@ def main():
         compare("explain", {"query": hybrid(MATCH, KNN), "size": 5}, failures, explain=True)
         for pipeline, body in ERRORS:
             compare(pipeline, body, failures)
+        setup_big(OURS[1])
+        setup_big(STOCK[1])
+        big = big_searches()
+        for pipeline, body in big:
+            compare(pipeline, body, failures, ours="hb", stock="hb")
         # Rust-written segments: the plugin's Rust-engine index against stock's Java one.
         setup(OURS[1], True, "hr")
         whole = whole_searches()
@@ -278,7 +315,7 @@ def main():
                 "hybrid_sort"}
         if ran == 0 or set(fallbacks) - java:
             failures.append(f"hybrid searches fell back to Java: {fallbacks}")
-        print(f"{len(runs) + 1} hybrid searches, {len(whole)} on a Rust-engine index, {len(ERRORS)} search errors, {len(BAD_PIPELINES)} pipeline errors compared")
+        print(f"{len(runs) + 1} hybrid searches, {len(whole)} on a Rust-engine index, {len(big)} over 5000-document segments, {len(ERRORS)} search errors, {len(BAD_PIPELINES)} pipeline errors compared")
     finally:
         if not keep:
             for name in (OURS[0], STOCK[0]):

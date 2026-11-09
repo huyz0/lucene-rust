@@ -367,7 +367,6 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         HybridQuery hybrid = (HybridQuery) query;
         org.lucenerust.opensearch.neural.util.HybridQueryUtil.validateHybridQuerySearchType(ctx.searchType());
         org.lucenerust.opensearch.neural.util.HybridQueryUtil.validateHybridQuery(hybrid);
-        if (ctx.searchType() == SearchType.DFS_QUERY_THEN_FETCH) return "dfs";
         int[][] slices = NativeAggregations.slices(ctx);
         if (slices == null) return "intra_segment";
         if (LiveDirectoryReader.find(searcher.getIndexReader()) != null) return "realtime_view";

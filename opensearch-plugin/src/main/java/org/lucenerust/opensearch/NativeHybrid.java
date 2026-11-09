@@ -31,6 +31,9 @@ import java.util.List;
  * the collectors' results, so the shard answers with stock's delimited top docs.
  */
 final class NativeHybrid {
+    /** The most sub-queries a hybrid blob holds ({@code MAX_HYBRID_QUERIES} in Rust). */
+    static final int MAX_SUB_QUERIES = 16;
+
     private NativeHybrid() {}
 
     /**
@@ -39,6 +42,7 @@ final class NativeHybrid {
      */
     static String ineligible(SearchContext ctx, Query query, LinkedList<QueryCollectorContext> collectors, boolean hasFilterCollector) {
         if (query instanceof HybridQuery == false) return "hybrid_wrapped";
+        if (((HybridQuery) query).getSubQueries().size() > MAX_SUB_QUERIES) return "hybrid_sub_queries";
         if (ctx.queryCollectorManagers().isEmpty() == false) return "hybrid_aggregations";
         if (ctx.sort() != null) return "hybrid_sort";
         if (ctx.collapse() != null) return "hybrid_collapse";
@@ -131,9 +135,6 @@ final class NativeHybrid {
                 return new Encoded(null, "slower_shape");
             }
             blobs.add(enc.blob());
-        }
-        if (blobs.size() > 16) {
-            return new Encoded(null, "hybrid_sub_queries");
         }
         List<byte[]> prefixed = new ArrayList<>(blobs.size());
         for (byte[] b : blobs) {

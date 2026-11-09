@@ -78,6 +78,7 @@ RENAMES = {
     ("GeoEncoder.java", "MAX_ORIGINS"): ("jvm_reader.rs", "MAX_GEO_ORIGINS"),
     ("SortEncoder.java", "NESTED_KEY"): ("jvm_reader.rs", "SORT_NESTED"),
     ("SortEncoder.java", "MAX_KEYS"): ("jvm_reader.rs", "MAX_SORT_KEYS"),
+    ("NativeHybrid.java", "MAX_SUB_QUERIES"): ("jvm_reader.rs", "MAX_HYBRID_QUERIES"),
     ("SortEncoder.java", "GEO"): ("jvm_reader.rs", "SORT_GEO_DISTANCE"),
     ("AnalyzerSpec.java", "VERSION"): ("jvm_analysis.rs", "SPEC_VERSION"),
     ("NativeBridge.java", "EXPECTED_ABI_VERSION"): ("jvm_reader.rs", "JVM_ABI_VERSION"),
