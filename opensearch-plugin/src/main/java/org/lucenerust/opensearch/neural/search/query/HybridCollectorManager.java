@@ -93,6 +93,11 @@ public class HybridCollectorManager implements CollectorManager<Collector, Reduc
         return new HybridCollectorManager(numDocs, new HitsThresholdChecker(Math.max(numDocs, trackTotalHitsUpTo)), searchContext.sort(), searchContext.searchAfter(), searchContext);
     }
 
+    /** How many hits each sub-query keeps. */
+    public int getNumHits() {
+        return numHits;
+    }
+
     @Override
     public Collector newCollector() {
         return HybridCollectorFactory.createCollector(HybridCollectorFactoryDTO.builder().sortAndFormats(sortAndFormats).searchContext(searchContext).hitsThresholdChecker(hitsThresholdChecker).numHits(numHits).after(after).build());

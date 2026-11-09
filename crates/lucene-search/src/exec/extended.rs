@@ -2712,6 +2712,13 @@ fn doc_and_score<'a>(
     if docs.is_empty() {
         return Ok(None);
     }
+    // Java checks the reader's identity; a document past this segment's end
+    // means the hits came from a different reader.
+    if docs.last().is_some_and(|&d| d >= reader.max_doc) {
+        return Err(crate::Error::IllegalState(
+            "This DocAndScore query was created by a different reader".into(),
+        ));
+    }
     let scores = if mode.needs_scores() {
         scores.iter().map(|&s| s * boost).collect()
     } else {
