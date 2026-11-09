@@ -5806,6 +5806,19 @@ pub(crate) mod tests {
         ffi_close_jvm_reader(h);
     }
 
+    /// A doc-and-score query listing a document twice is malformed: refused
+    /// at decode rather than reaching a scorer that needs ascending docs.
+    #[test]
+    fn a_doc_and_score_query_listing_a_doc_twice_is_refused() {
+        let mut blob = vec![2, 40, 1, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0];
+        for score in [1.0f32, 2.0] {
+            blob.extend_from_slice(&3i32.to_le_bytes());
+            blob.extend_from_slice(&score.to_le_bytes());
+        }
+        assert!(decode_request(&blob).is_err());
+        assert!(crate::error::last_error().contains("listed twice"));
+    }
+
     #[test]
     fn decode_query_rejects_malformed_blobs() {
         let invalid = Err(FfiStatus::InvalidArgument);
