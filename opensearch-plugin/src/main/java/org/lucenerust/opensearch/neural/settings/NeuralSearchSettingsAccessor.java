@@ -15,7 +15,6 @@ import org.lucenerust.opensearch.neural.stats.events.EventStatsManager;
  */
 public class NeuralSearchSettingsAccessor {
     private volatile boolean isStatsEnabled;
-    private volatile boolean isAgenticSearchEnabled;
 
     /**
      * Constructor, registers callbacks to update settings
@@ -40,10 +39,5 @@ public class NeuralSearchSettingsAccessor {
     @java.lang.SuppressWarnings("all")
     public boolean isStatsEnabled() {
         return this.isStatsEnabled;
-    }
-
-    @java.lang.SuppressWarnings("all")
-    public boolean isAgenticSearchEnabled() {
-        return this.isAgenticSearchEnabled;
     }
 }

@@ -402,10 +402,10 @@ public class InfoStatsManager {
         increment(stats, InfoStatName.NORMALIZATION_PROCESSORS);
 
         String normalizationTechnique = asString(
-            asMap(processorConfig.get("normalization")).get("technique")
+            clause(processorConfig, "normalization")
         );
         String combinationTechnique = asString(
-            asMap(processorConfig.get("combination")).get("technique")
+            clause(processorConfig, "combination")
         );
 
         callNullableIncrementer(stats, normTechniqueIncrementers.get(normalizationTechnique));
@@ -417,7 +417,7 @@ public class InfoStatsManager {
 
         // RRF only has combination technique
         String combinationTechnique = asString(
-            asMap(processorConfig.get("combination")).get("technique")
+            clause(processorConfig, "combination")
         );
 
         callNullableIncrementer(stats, combTechniqueIncrementers.get(combinationTechnique));
@@ -462,18 +462,12 @@ public class InfoStatsManager {
     }
 
     /**
-     * Helper to cast generic object into a specific type
-     * Used to parse pipeline processor configs
-     * @param map the map
-     * @param key the key
-     * @param clazz the class to cast to
-     * @return the map
+     * A processor clause's {@code technique}, or null when the clause is left out (its default
+     * applies; stock fails the whole stats call there).
      */
-    @SuppressWarnings("unchecked")
-    private <T> T getValue(Map<String, Object> map, String key, Class<T> clazz) {
-        if (map == null || key == null) return null;
-        Object value = map.get(key);
-        return clazz.isInstance(value) ? clazz.cast(value) : null;
+    private Object clause(Map<String, Object> processorConfig, String name) {
+        Map<String, Object> clause = asMap(processorConfig.get(name));
+        return clause == null ? null : clause.get("technique");
     }
 
     /**

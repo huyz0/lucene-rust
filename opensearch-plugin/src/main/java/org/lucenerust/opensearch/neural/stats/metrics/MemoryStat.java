@@ -30,17 +30,7 @@ public class MemoryStat implements MetricStat {
      *     and keeps no JVM forward-index or clustered-posting caches
      */
     private long getByteSize() {
-        switch (statName) {
-            case MetricStatName.MEMORY_SPARSE_MEMORY_USAGE:
-            case MetricStatName.MEMORY_SPARSE_MEMORY_USAGE_PERCENTAGE:
-                return 0L;
-            case MetricStatName.MEMORY_SPARSE_FORWARD_INDEX_USAGE:
-                return 0L;
-            case MetricStatName.MEMORY_SPARSE_CLUSTERED_POSTING_USAGE:
-                return 0L;
-            default:
-                throw new IllegalArgumentException(String.format(Locale.ROOT, "Metric stat not found: %s", statName));
-        }
+        return 0L;
     }
 
     public Double getValue() {

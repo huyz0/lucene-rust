@@ -3,6 +3,8 @@
  */
 package org.lucenerust.opensearch.sparse;
 
+import org.lucenerust.opensearch.neural.stats.events.EventStatName;
+import org.lucenerust.opensearch.neural.stats.events.EventStatsManager;
 import org.apache.lucene.document.FeatureField;
 import org.apache.lucene.search.BooleanClause;
 import org.apache.lucene.search.BooleanQuery;
@@ -103,6 +105,7 @@ public final class NeuralSparseQueryBuilder extends AbstractQueryBuilder<NeuralS
 
     /** {@code NeuralSparseQueryBuilder.fromXContent}: one field, its parameters an object. */
     public static NeuralSparseQueryBuilder fromXContent(XContentParser parser) throws IOException {
+        EventStatsManager.increment(EventStatName.NEURAL_SPARSE_QUERY_REQUESTS);
         if (parser.currentToken() != XContentParser.Token.START_OBJECT) {
             throw new ParsingException(parser.getTokenLocation(), "First token of " + NAME + "query must be START_OBJECT");
         }
@@ -186,6 +189,7 @@ public final class NeuralSparseQueryBuilder extends AbstractQueryBuilder<NeuralS
 
     /** {@code SparseAnnQueryBuilder.fromXContent}. */
     private static void parseMethodParameters(XContentParser parser, NeuralSparseQueryBuilder b) throws IOException {
+        EventStatsManager.increment(EventStatName.SEISMIC_QUERY_REQUESTS);
         if (parser.currentToken() != XContentParser.Token.START_OBJECT) {
             throw new ParsingException(
                 parser.getTokenLocation(),

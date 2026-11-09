@@ -98,7 +98,7 @@ public class NeuralStatsTransportAction extends TransportNodesAction<
         }
 
         Map<String, StatSnapshot<?>> flatInfoStats = Collections.emptyMap();
-        if (request.getNeuralStatsInput().isIncludeInfo()) {
+        if (request.getNeuralStatsInput().isIncludeInfo() && request.getNeuralStatsInput().getInfoStatNames().isEmpty() == false) {
             // Get info stats
             Map<InfoStatName, StatSnapshot<?>> infoStats = infoStatsManager.getStats(request.getNeuralStatsInput().getInfoStatNames());
 
@@ -204,7 +204,9 @@ public class NeuralStatsTransportAction extends TransportNodesAction<
         for (MetricStatName metricStatName : metricStatsToRetrieve) {
             Set<MemoryStatSnapshot> memoryStatSnapshotCollection = new HashSet<>();
             for (Map<MetricStatName, MemoryStatSnapshot> metricStats : nodeMetricStatsList) {
-                if (metricStats.get(metricStatName).isAggregationMetric()) {
+                MemoryStatSnapshot snapshot = metricStats.get(metricStatName);
+                // A node that answered without metric stats (an older node) is left out.
+                if (snapshot != null && snapshot.isAggregationMetric()) {
                     memoryStatSnapshotCollection.add(metricStats.get(metricStatName));
                 }
             }

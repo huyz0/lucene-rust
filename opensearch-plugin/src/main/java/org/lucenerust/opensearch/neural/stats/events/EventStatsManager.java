@@ -16,8 +16,8 @@ import java.util.Map;
  * The statistics collection can be enabled or disabled via cluster settings.
  */
 public class EventStatsManager {
-    private static EventStatsManager INSTANCE;
-    private NeuralSearchSettingsAccessor settingsAccessor;
+    private static final EventStatsManager INSTANCE = new EventStatsManager();
+    private volatile NeuralSearchSettingsAccessor settingsAccessor;
 
     /**
      * Returns the singleton instance of EventStatsManager.
@@ -26,9 +26,6 @@ public class EventStatsManager {
      * @return The singleton instance of EventStatsManager
      */
     public static EventStatsManager instance() {
-        if (INSTANCE == null) {
-            INSTANCE = new EventStatsManager();
-        }
         return INSTANCE;
     }
 
@@ -55,7 +52,9 @@ public class EventStatsManager {
      * @param eventStatName The name of the event stat to increment
      */
     public void inc(EventStatName eventStatName) {
-        if (settingsAccessor.isStatsEnabled()) {
+        // Nothing is counted before the node wires the settings in.
+        NeuralSearchSettingsAccessor settings = settingsAccessor;
+        if (settings != null && settings.isStatsEnabled()) {
             eventStatName.getEventStat().increment();
         }
     }

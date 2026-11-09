@@ -6,18 +6,13 @@
 package org.lucenerust.opensearch.neural.util;
 
 import org.opensearch.Version;
-import org.opensearch.action.IndicesRequest;
 import org.opensearch.cluster.metadata.IndexMetadata;
 import org.opensearch.cluster.metadata.IndexNameExpressionResolver;
 import org.opensearch.cluster.metadata.MappingMetadata;
 import org.opensearch.cluster.service.ClusterService;
-import org.opensearch.core.index.Index;
-import org.opensearch.search.pipeline.SearchPipelineService;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
-import java.util.stream.Collectors;
 
 /**
  * Class abstracts information related to underlying OpenSearch cluster
@@ -27,7 +22,6 @@ public class NeuralSearchClusterUtil {
     private static final org.apache.logging.log4j.Logger log = org.apache.logging.log4j.LogManager.getLogger(NeuralSearchClusterUtil.class);
     private ClusterService clusterService;
     private IndexNameExpressionResolver indexNameExpressionResolver;
-    private SearchPipelineService searchPipelineService;
     private static NeuralSearchClusterUtil instance;
 
     /**
@@ -62,14 +56,6 @@ public class NeuralSearchClusterUtil {
         return this.clusterService.state().getNodes().getMinNodeVersion();
     }
 
-    public List<IndexMetadata> getIndexMetadataList(final IndicesRequest searchRequest) {
-        if (searchRequest == null) {
-            throw new java.lang.NullPointerException("searchRequest is marked non-null but is null");
-        }
-        final Index[] concreteIndices = this.indexNameExpressionResolver.concreteIndices(clusterService.state(), searchRequest);
-        return Arrays.stream(concreteIndices).map(concreteIndex -> clusterService.state().metadata().index(concreteIndex)).collect(Collectors.toList());
-    }
-
     /**
      * Mapping source of every index in the cluster state, for stats derived from field mappings.
      *
@@ -94,47 +80,7 @@ public class NeuralSearchClusterUtil {
         return mappings;
     }
 
-    public Map<String, String> getIndexMapping(String[] indices) {
-        try {
-            if (indices != null && indices.length > 0) {
-                return Arrays.stream(indices).filter(indexName -> {
-                    IndexMetadata indexMetadata = clusterService.state().metadata().index(indexName);
-                    return indexMetadata != null && indexMetadata.mapping() != null;
-                }).collect(Collectors.toMap(indexName -> indexName, indexName -> {
-                    IndexMetadata indexMetadata = clusterService.state().metadata().index(indexName);
-                    return indexMetadata.mapping().source().toString();
-                }));
-            }
-        } catch (Exception e) {
-            log.warn("Failed to extract index mapping", e);
-            throw new IllegalStateException("Failed to extract index mapping", e);
-        }
-        throw new IllegalStateException("No valid index found to extract mapping");
-    }
-
-    /**
-     * Check if the system generated factory is enabled or not
-     * @param factoryName name of the factory
-     * @return If the factory is enabled or not
-     */
-    public boolean isSystemGeneratedFactoryEnabled(String factoryName) {
-        if (searchPipelineService == null) {
-            throw new IllegalStateException("search pipeline service is not initialized in the neural search cluster util.");
-        }
-        return searchPipelineService.isSystemGeneratedFactoryEnabled(factoryName);
-    }
-
     @java.lang.SuppressWarnings("all")
     private NeuralSearchClusterUtil() {
-    }
-
-    @java.lang.SuppressWarnings("all")
-    public ClusterService getClusterService() {
-        return this.clusterService;
-    }
-
-    @java.lang.SuppressWarnings("all")
-    public void setSearchPipelineService(final SearchPipelineService searchPipelineService) {
-        this.searchPipelineService = searchPipelineService;
     }
 }
