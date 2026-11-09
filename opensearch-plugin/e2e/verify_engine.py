@@ -530,13 +530,15 @@ def realtime():
             check(a["hits"]["total"]["value"] == b["hits"]["total"]["value"], f"{where}: sorted total {sort}")
             check(ha == hb, f"{where}: sorted hits {sort}: {ha[:3]} vs {hb[:3]}")
         # A range past what the searcher's segments hold is one OpenSearch would rewrite to match
-        # nothing by their bounds, which buffered documents are not in yet.
+        # nothing by their bounds, which buffered documents are not in yet. Shards searched one
+        # at a time: each after the first is checked first (can-match), on a searcher of its own.
         newest = must("POST", f"/{ref}/_search?request_cache=false",
                       {"size": 20, "sort": [{"@timestamp": "desc"}], "query": {"match_all": {}}})["hits"]["hits"]
         if newest:
             body = {"size": 0, "track_total_hits": True,
                     "query": {"range": {"@timestamp": {"gte": newest[-1]["sort"][0]}}}}
-            a = must("POST", f"/{rt}/_search?request_cache=false", body)["hits"]["total"]["value"]
+            a = must("POST", f"/{rt}/_search?request_cache=false&max_concurrent_shard_requests=1",
+                     body)["hits"]["total"]["value"]
             b = must("POST", f"/{ref}/_search?request_cache=false", body)["hits"]["total"]["value"]
             check(a == b, f"{where}: newest range total: {a} vs {b}")
 
