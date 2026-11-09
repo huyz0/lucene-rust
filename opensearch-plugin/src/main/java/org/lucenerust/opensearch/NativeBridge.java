@@ -38,7 +38,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code jvm_reader.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 95;
+    public static final int EXPECTED_ABI_VERSION = 96;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -171,6 +171,10 @@ public final class NativeBridge {
         static final MethodHandle AGGREGATE_TREE = bind(
             "ffi_jvm_reader_aggregate_tree_alloc",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS)
+        );
+        static final MethodHandle SEARCH_HYBRID = bind(
+            "ffi_jvm_reader_search_hybrid_alloc",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS)
         );
         static final MethodHandle SEARCH_COLLAPSED = bind(
             "ffi_jvm_reader_search_collapsed_alloc",
@@ -1227,6 +1231,33 @@ public final class NativeBridge {
                 byte[] encoded = take(result);
                 if (encoded == null) {
                     return tooLarge("the aggregation results");
+                }
+                out[0] = encoded;
+            }
+            return rc;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * Runs a hybrid query's shard phase ({@link NativeHybrid}): the encoded slices' answers
+     * ({@code search_hybrid_blobs} in {@code jvm_reader.rs}) in {@code out[0]}.
+     */
+    public static int searchHybrid(long handle, byte[] blob, byte[][] out) {
+        if (blob == null) {
+            return nullArgument("blob");
+        }
+        if (out == null || out.length < 1) {
+            return fail(INVALID_ARGUMENT, "out holds no slot");
+        }
+        try (Scratch s = Scratch.open()) {
+            MemorySegment result = ownedSlot(s);
+            int rc = (int) H.SEARCH_HYBRID.invokeExact(handle, s.bytes(blob), (long) blob.length, ptrOf(result), lenOf(result));
+            if (rc == OK) {
+                byte[] encoded = take(result);
+                if (encoded == null) {
+                    return tooLarge("the hybrid results");
                 }
                 out[0] = encoded;
             }

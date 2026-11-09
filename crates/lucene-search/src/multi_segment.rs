@@ -1283,6 +1283,53 @@ pub fn search_boolean_query_multi_segment_maxscore_counting(
     })
 }
 
+/// A boolean query made ready to score leaf by leaf: rewritten as the
+/// searcher rewrites it (point ranges) and holding the statistics of every
+/// segment it was prepared over, as a `Weight` created over the whole
+/// searcher does whichever leaves it then scores.
+pub struct PreparedBoolean {
+    query: BooleanQuery,
+    global: crate::GlobalStats,
+}
+
+impl PreparedBoolean {
+    /// `query` over `segments`.
+    pub fn new(segments: &[OpenSegment<'_>], query: &BooleanQuery) -> Result<Self> {
+        let query = rewrite_points_ranges(query, segments).unwrap_or_else(|| query.clone());
+        let global = global_boolean_stats(segments, &query)?;
+        Ok(Self { query, global })
+    }
+
+    /// Every document of `segment` the query matches, with its score, in
+    /// ascending (segment-local) doc ID order: an exhaustive scorer, nothing
+    /// pruned.
+    pub fn score_all(
+        &self,
+        segment: &OpenSegment<'_>,
+        norms: Option<&HashMap<String, FieldNorms<'_>>>,
+    ) -> Result<Vec<ScoreDoc>> {
+        struct All(Vec<ScoreDoc>);
+        impl crate::collector::ScoringCollector for All {
+            fn collect(&mut self, doc_id: i32, score: f32) {
+                self.0.push(ScoreDoc { doc_id, score });
+            }
+        }
+        let mut all = All(Vec::new());
+        crate::search_boolean_query_scored_segment(
+            segment,
+            &self.query,
+            norms,
+            Some(&self.global),
+            &mut all,
+        )?;
+        let mut hits = all.0;
+        if hits.windows(2).any(|w| w[0].doc_id > w[1].doc_id) {
+            hits.sort_unstable_by_key(|h| h.doc_id);
+        }
+        Ok(hits)
+    }
+}
+
 /// [`search_boolean_query_multi_segment_maxscore`] under `similarity` --
 /// `IndexSearcher.setSimilarity(similarity)` then `search(query, topN)`.
 ///
