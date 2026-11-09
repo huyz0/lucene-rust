@@ -1,0 +1,33 @@
+/*
+ * Copyright OpenSearch Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.lucenerust.opensearch.neural.processor.explain;
+
+import org.lucenerust.opensearch.neural.processor.dto.ExplainDTO;
+
+import java.util.Map;
+
+/**
+ * Abstracts explanation of score combination or normalization technique.
+ */
+public interface ExplainableTechnique {
+
+    String GENERIC_DESCRIPTION_OF_TECHNIQUE = "generic score processing technique";
+
+    /**
+     * Returns a string with general description of the technique
+     */
+    default String describe() {
+        return GENERIC_DESCRIPTION_OF_TECHNIQUE;
+    }
+
+    /**
+     * Returns a map with explanation for each document id
+     * @param explainDTO is a data transfer object that contains queryTopDocs
+     * @return map of document per shard and corresponding explanation object
+     */
+    default Map<DocIdAtSearchShard, ExplanationDetails> explain(final ExplainDTO explainDTO) {
+        return Map.of();
+    }
+}

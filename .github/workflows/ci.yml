@@ -753,6 +753,8 @@ jobs:
         run: python3 scripts/check-knn-upgrade.py
       - name: _plugins/_knn stats, warmup and clear_cache against a stock k-NN node
         run: python3 scripts/check-knn-rest.py
+      - name: hybrid search and its pipelines against a stock neural-search node
+        run: python3 scripts/check-hybrid.py
 
   # ---------------------------------------------------------------------------
   # The FFI surface under libFuzzer + AddressSanitizer. A short run
