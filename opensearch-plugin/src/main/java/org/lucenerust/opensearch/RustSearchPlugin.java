@@ -46,6 +46,7 @@ import org.lucenerust.opensearch.knn.KnnVectorFieldMapper;
 import org.lucenerust.opensearch.knn.DerivedSource;
 import org.opensearch.index.TieredMergePolicyProvider;
 import org.opensearch.index.shard.IndexSettingProvider;
+import org.lucenerust.opensearch.knn.rest.KnnModelHandlers;
 import org.lucenerust.opensearch.knn.rest.KnnRestHandlers;
 import org.lucenerust.opensearch.knn.rest.KnnShardsTransport;
 import org.lucenerust.opensearch.knn.rest.KnnStatsTransport;
@@ -584,6 +585,7 @@ public class RustSearchPlugin extends Plugin implements
         handlers.add(new RestStatsAction(stats, readers, libraryPath));
         if (stockKnn == false) {
             handlers.addAll(KnnRestHandlers.all(clusterService::get, indexNameExpressionResolver));
+            handlers.addAll(KnnModelHandlers.all(clusterService::get));
         }
         return handlers;
     }
