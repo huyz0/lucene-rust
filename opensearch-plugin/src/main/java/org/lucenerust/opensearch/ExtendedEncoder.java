@@ -30,6 +30,8 @@ import org.apache.lucene.util.automaton.Transition;
 import org.opensearch.common.lucene.search.function.CombineFunction;
 import org.opensearch.common.lucene.search.function.FieldValueFactorFunction;
 import org.opensearch.common.lucene.search.function.FunctionScoreQuery;
+import org.opensearch.common.lucene.search.function.ScriptScoreQuery;
+import org.lucenerust.opensearch.knn.script.KnnScoringScriptEngine;
 import org.opensearch.common.lucene.search.function.RandomScoreFunction;
 import org.opensearch.common.lucene.search.function.ScoreFunction;
 import org.opensearch.common.lucene.search.function.WeightFactorFunction;
@@ -64,7 +66,9 @@ import java.util.function.Predicate;
  *   <li>{@code function_score}: OpenSearch's {@link FunctionScoreQuery} with {@code weight}, {@code
  *       field_value_factor}, {@code random_score} and the numeric and date decay functions, each
  *       optionally filtered, every {@code score_mode} and {@code boost_mode}, {@code max_boost}
- *       (node 24).
+ *       (node 24);
+ *   <li>{@code script_score} running k-NN's {@code knn_score} over a {@code knn_vector} space:
+ *       OpenSearch's {@link ScriptScoreQuery} without {@code min_score} (node 42).
  * </ul>
  *
  * <p>The classes are read through their getters, or through {@link Reflect} where Lucene and
@@ -85,6 +89,7 @@ final class ExtendedEncoder {
     static final byte NODE_COMBINED_FIELD = 23;
     static final byte NODE_FUNCTION_SCORE = 24;
     static final byte NODE_TO_CHILD = 41;
+    static final byte NODE_KNN_SCORE = 42;
 
     /** What {@link #node} returns for a query that is none of these. */
     static final String NOT_EXTENDED = "not_extended";
@@ -104,6 +109,9 @@ final class ExtendedEncoder {
         try {
             if (q instanceof FunctionScoreQuery fs) {
                 return functionScore(fs, out, fieldOk, child);
+            }
+            if (q instanceof ScriptScoreQuery ss) {
+                return knnScore(ss, out, child);
             }
             if (q instanceof OpenSearchToParentBlockJoinQuery os) {
                 Field f = Reflect.declared(OpenSearchToParentBlockJoinQuery.class, "query");
@@ -515,6 +523,49 @@ final class ExtendedEncoder {
             }
             writeString(out, f);
             writeInt(out, Float.floatToIntBits((float) field(fw, "weight")));
+        }
+        return null;
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // script_score with knn_score
+    // ---------------------------------------------------------------------------------------------
+
+    /**
+     * OpenSearch's {@code ScriptScoreQuery} running k-NN's {@code knn_score} over a {@code
+     * knn_vector} space: the sub-query's documents, each scored by the script's distance (0 without
+     * a value), times the boost. Other scripts, {@code hammingbit} and {@code min_score} run in Java.
+     */
+    private static String knnScore(ScriptScoreQuery q, ByteArrayOutputStream out, Child child) throws ReflectiveOperationException {
+        Object builder = field(q, "scriptBuilder");
+        if ((builder instanceof KnnScoringScriptEngine.KnnLeafFactory) == false) {
+            return "script_score_script";
+        }
+        KnnScoringScriptEngine.Native spec = ((KnnScoringScriptEngine.KnnLeafFactory) builder).nativeSpec();
+        if (spec == null) {
+            return "script_score_hammingbit";
+        }
+        if (field(q, "minScore") != null) {
+            return "script_score_min_score";
+        }
+        out.write(NODE_KNN_SCORE);
+        String reason = child.node((Query) field(q, "subQuery"));
+        if (reason != null) {
+            return reason;
+        }
+        writeString(out, spec.field());
+        out.write(spec.space());
+        out.write(spec.dataType());
+        out.write(spec.halfCosine() ? 1 : 0);
+        if (spec.floats() != null) {
+            out.write(0);
+            writeInt(out, spec.floats().length);
+            for (float v : spec.floats()) {
+                writeInt(out, Float.floatToIntBits(v));
+            }
+        } else {
+            out.write(1);
+            writeBytes(out, spec.bytes());
         }
         return null;
     }

@@ -142,7 +142,7 @@ public final class KnnVectorFieldMapper extends ParametrizedFieldMapper {
 
         KnnFieldConfig config() {
             if (modelId.getValue() != null) {
-                throw new IllegalArgumentException("[" + CONTENT_TYPE + "] [model_id] needs the k-NN models API, which this node does not serve");
+                throw new IllegalArgumentException("[" + CONTENT_TYPE + "] [model_id] needs a model trained by the faiss engine, which this node does not run");
             }
             return KnnFieldConfig.resolve(
                 name,
