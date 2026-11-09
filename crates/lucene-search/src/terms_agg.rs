@@ -128,7 +128,7 @@ pub(crate) fn open_ords<'a>(
 pub struct GlobalOrds {
     map: OrdinalMap,
     /// The distinct terms in global-ordinal order, while there are few
-    /// ([`KEPT_TERMS`]): what [`Self::extended`] looks terms up in.
+    /// ([`KEPT_TERMS`]): what [`Self::remapped`] looks terms up in.
     terms: Option<Arc<[Box<[u8]>]>>,
 }
 
