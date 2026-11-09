@@ -55,7 +55,11 @@ import org.lucenerust.opensearch.sparse.NeuralSparseQueryBuilder;
 import org.lucenerust.opensearch.sparse.SparseSettings;
 import org.lucenerust.opensearch.sparse.SparseVectorFieldMapper;
 import org.opensearch.plugins.Plugin;
+import org.opensearch.plugins.ScriptPlugin;
 import org.opensearch.plugins.SearchPlugin;
+import org.opensearch.script.ScriptContext;
+import org.opensearch.script.ScriptEngine;
+import org.lucenerust.opensearch.knn.script.KnnScoringScriptEngine;
 import org.opensearch.rest.RestController;
 import org.opensearch.rest.RestHandler;
 import org.opensearch.search.query.QueryPhaseSearcher;
@@ -91,7 +95,8 @@ public class RustSearchPlugin extends Plugin implements
     CircuitBreakerPlugin,
     AnalysisPlugin,
     IndexStorePlugin,
-    MapperPlugin {
+    MapperPlugin,
+    ScriptPlugin {
     /**
      * Whether this node serves Rust-engine indices with the Rust writer; {@code false} serves them
      * with OpenSearch's own engine -- a mixed cluster, one index.
@@ -166,7 +171,7 @@ public class RustSearchPlugin extends Plugin implements
 
     public RustSearchPlugin(Settings settings, Path configPath) {
         this.libraryPath = NativeLibrary.load(pluginDir());
-        this.stockKnn = Files.isDirectory(pluginDir().resolveSibling("opensearch-knn"));
+        this.stockKnn = stockKnnInstalled();
         if (stockKnn) {
             logger.info("lucene-rust: the k-NN plugin is installed; it serves knn_vector and knn");
             org.lucenerust.opensearch.engine.RustEngineSupport.refuseKnnVectorFields();
@@ -450,6 +455,11 @@ public class RustSearchPlugin extends Plugin implements
         }
     }
 
+    /** Whether the stock k-NN plugin is installed beside this one. */
+    public static boolean stockKnnInstalled() {
+        return Files.isDirectory(pluginDir().resolveSibling("opensearch-knn"));
+    }
+
     private static Path pluginDir() {
         try {
             return Path.of(RustSearchPlugin.class.getProtectionDomain().getCodeSource().getLocation().toURI()).getParent();
@@ -607,5 +617,11 @@ public class RustSearchPlugin extends Plugin implements
     @Override
     public void close() {
         readers.closeAll();
+    }
+
+    /** k-NN's {@code knn} script language ({@code knn_score}), unless the stock k-NN plugin serves it. */
+    @Override
+    public ScriptEngine getScriptEngine(Settings settings, Collection<ScriptContext<?>> contexts) {
+        return stockKnn ? null : new KnnScoringScriptEngine();
     }
 }

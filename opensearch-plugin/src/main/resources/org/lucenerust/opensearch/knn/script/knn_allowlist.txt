@@ -1,0 +1,16 @@
+# Painless functions over knn_vector doc values, as the stock k-NN plugin defines them.
+
+class org.lucenerust.opensearch.knn.KnnScriptDocValues {
+  Object getValue()
+}
+static_import {
+  float l2Squared(List, org.lucenerust.opensearch.knn.KnnScriptDocValues) from_class org.lucenerust.opensearch.knn.script.KnnScoring
+  float lInfNorm(List, org.lucenerust.opensearch.knn.KnnScriptDocValues) from_class org.lucenerust.opensearch.knn.script.KnnScoring
+  float l1Norm(List, org.lucenerust.opensearch.knn.KnnScriptDocValues) from_class org.lucenerust.opensearch.knn.script.KnnScoring
+  float innerProduct(List, org.lucenerust.opensearch.knn.KnnScriptDocValues) from_class org.lucenerust.opensearch.knn.script.KnnScoring
+  float cosineSimilarity(List, org.lucenerust.opensearch.knn.KnnScriptDocValues) from_class org.lucenerust.opensearch.knn.script.KnnScoring
+  float cosineSimilarity(List, org.lucenerust.opensearch.knn.KnnScriptDocValues, Number) from_class org.lucenerust.opensearch.knn.script.KnnScoring
+  float hamming(List, org.lucenerust.opensearch.knn.KnnScriptDocValues) from_class org.lucenerust.opensearch.knn.script.KnnScoring
+  float lateInteractionScore(List, String, Map) from_class org.lucenerust.opensearch.knn.script.KnnScoring
+  float lateInteractionScore(List, String, Map, String) from_class org.lucenerust.opensearch.knn.script.KnnScoring
+}

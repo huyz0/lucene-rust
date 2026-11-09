@@ -7002,6 +7002,66 @@ mod tests {
         ffi_engine_writer_close(h);
         check(&tmp);
         read_all(1);
+        // The plugin's fetch: the document leaves the derived `_source` out, and the second call
+        // reads it with its vectors back, as the segment reader splices it.
+        {
+            let dir = FsDirectory::open(tmp.path());
+            let infos = lucene_index::segment_infos::read_latest(&dir).unwrap();
+            let file = format!(
+                "segments_{}",
+                lucene_util::base36::to_base36(infos.generation)
+            );
+            let bytes = std::fs::read(tmp.path().join(&file)).unwrap();
+            let reader = lucene_search::directory_reader::DirectoryReader::open(&dir).unwrap();
+            let seg = &reader.segment_readers()[0];
+            let max_docs = [seg.max_doc];
+            let counts = [0usize];
+            let path = tmp.path_str();
+            let mut jh = 0u64;
+            // SAFETY: every pointer is valid for its length.
+            let rc = unsafe {
+                crate::jvm_reader::ffi_open_jvm_reader(
+                    path.as_ptr().cast(),
+                    path.len(),
+                    bytes.as_ptr(),
+                    bytes.len(),
+                    infos.generation,
+                    0,
+                    max_docs.as_ptr(),
+                    1,
+                    std::ptr::null(),
+                    counts.as_ptr(),
+                    &mut jh,
+                )
+            };
+            assert_eq!(rc, 0, "{}", crate::error::last_error());
+            for d in 0..seg.max_doc {
+                let blob = crate::jvm_fetch::document_blob(jh, 0, d).unwrap();
+                let mut want = source.to_le_bytes().to_vec();
+                want.push(crate::jvm_fetch::DERIVED_SOURCE);
+                assert!(
+                    blob.windows(want.len()).any(|w| w == want.as_slice()),
+                    "document {d}: _source left out"
+                );
+                let mut visitor = lucene_codecs::stored_fields::DocumentVisitor::all();
+                assert!(seg.visit_source_document(d, &mut visitor).unwrap());
+                let spliced = visitor
+                    .into_document()
+                    .fields
+                    .into_iter()
+                    .find(|f| f.field_number == source)
+                    .unwrap()
+                    .value;
+                assert_eq!(
+                    lucene_codecs::stored_fields::FieldValue::Binary(
+                        crate::jvm_fetch::source_blob(jh, 0, d).unwrap()
+                    ),
+                    spliced
+                );
+            }
+            assert!(crate::jvm_fetch::source_blob(jh, 0, seg.max_doc).is_err());
+            crate::jvm_reader::ffi_close_jvm_reader(jh);
+        }
         let dir = FsDirectory::open(tmp.path());
         let reader = lucene_search::directory_reader::DirectoryReader::open(&dir).unwrap();
         let name = &reader.segment_readers()[0].segment_name;
