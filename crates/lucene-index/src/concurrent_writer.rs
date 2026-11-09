@@ -116,7 +116,7 @@ mod live;
 pub(crate) use live::DocValuesRun;
 pub use live::{
     FieldTotals, LiveBuffer, LiveBufferField, LiveDocValue, LiveFieldRequest, LivePattern,
-    LiveRequest, LiveSnapshot, LiveView, ViewBuffer,
+    LiveRequest, LiveSnapshot, LiveView, PointBounds, ViewBuffer,
 };
 
 /// A value only reached through `&mut`: a slot's buffer is read by

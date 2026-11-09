@@ -45,11 +45,19 @@ final class LiveSearchers {
             return base.apply(wrapper, scope);
         }
         LiveSearchers live = new LiveSearchers(w);
-        Engine.SearcherSupplier inner = base.apply(s -> wrapper.apply(live.wrap(s)), scope);
-        return new Engine.SearcherSupplier(Function.identity()) {
+        // The view goes on in acquireSearcherInternal, not through a wrapper: a supplier applies
+        // none to a can-match searcher, whose bounds must count the buffered documents too.
+        Engine.SearcherSupplier inner = base.apply(Function.identity(), scope);
+        return new Engine.SearcherSupplier(wrapper) {
             @Override
             protected Engine.Searcher acquireSearcherInternal(String source) {
-                return inner.acquireSearcher(source);
+                Engine.Searcher s = inner.acquireSearcher(source);
+                try {
+                    return live.wrap(s);
+                } catch (RuntimeException e) {
+                    org.opensearch.common.lease.Releasables.closeWhileHandlingException(s);
+                    throw e;
+                }
             }
 
             @Override

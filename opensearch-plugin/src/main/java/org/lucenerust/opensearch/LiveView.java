@@ -3,8 +3,11 @@
  */
 package org.lucenerust.opensearch;
 
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -23,6 +26,8 @@ public final class LiveView implements AutoCloseable {
     private final int[] chunkStart;
     private final int[] chunkDocs;
     private final AtomicBoolean closed = new AtomicBoolean();
+    /** By buffer and field: {@link #pointBounds}, once read. */
+    private final Map<Long, byte[]> bounds = new ConcurrentHashMap<>();
 
     private LiveView(long id, int[] starts, int[] chunkBuffer, int[] chunkStart, int[] chunkDocs) {
         this.id = id;
@@ -69,6 +74,25 @@ public final class LiveView implements AutoCloseable {
             NativeBridge.liveViewClose(id);
             throw e;
         }
+    }
+
+    /**
+     * Field number {@code field}'s points' bounds in buffer {@code buffer} ({@link
+     * NativeBridge#livePointBounds}), read once per view: empty when it holds none.
+     */
+    public byte[] pointBounds(int buffer, int field) throws IOException {
+        long key = ((long) buffer << 32) | (field & 0xFFFFFFFFL);
+        byte[] got = bounds.get(key);
+        if (got == null) {
+            byte[][] out = new byte[1][];
+            int rc = NativeBridge.livePointBounds(id, buffer, field, out);
+            if (rc != NativeBridge.OK) {
+                throw new IOException("buffered points of field " + field + ": " + NativeBridge.lastError());
+            }
+            got = out[0];
+            bounds.put(key, got);
+        }
+        return got;
     }
 
     /** The native handle. */
