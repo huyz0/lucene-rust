@@ -527,7 +527,7 @@ pub struct QuantizedFieldEntry {
 #[derive(Debug, Clone)]
 pub struct ScalarQuantizedVectorsReader<'a> {
     data: &'a [u8],
-    fields: Vec<QuantizedFieldEntry>,
+    fields: std::sync::Arc<Vec<QuantizedFieldEntry>>,
 }
 
 impl<'a> ScalarQuantizedVectorsReader<'a> {
@@ -584,8 +584,27 @@ impl<'a> ScalarQuantizedVectorsReader<'a> {
         }
         Ok(ScalarQuantizedVectorsReader {
             data: data_buf,
-            fields,
+            fields: std::sync::Arc::new(fields),
         })
+    }
+
+    /// This reader without its data file, to keep beside the segment's
+    /// files: [`Self::attach`] it to the same data for each search, so the
+    /// metadata is parsed and checked once and shared, not copied.
+    pub fn detached(&self) -> ScalarQuantizedVectorsReader<'static> {
+        ScalarQuantizedVectorsReader {
+            data: &[],
+            fields: self.fields.clone(),
+        }
+    }
+
+    /// A detached reader ([`Self::detached`]) over `data`, which must be the
+    /// file the reader was opened on.
+    pub fn attach<'b>(&self, data: &'b [u8]) -> ScalarQuantizedVectorsReader<'b> {
+        ScalarQuantizedVectorsReader {
+            data,
+            fields: self.fields.clone(),
+        }
     }
 
     /// Every field's entry.
@@ -816,20 +835,28 @@ impl<'a> QuantizedVectorValues<'a> {
 
     /// `getCorrectiveTerms(ord)`.
     pub fn corrective_terms(&self, ord: i32) -> Result<QuantizationResult> {
-        let rec = self.record(ord)?;
-        let word = |i: usize| {
-            // ARITH: `i <= 3` and the record is `packed_len + 16` bytes, so
-            // `at + 4 <= rec.len()`.
-            #[allow(clippy::arithmetic_side_effects)]
-            let (at, end) = (self.packed_len + 4 * i, self.packed_len + 4 * i + 4);
-            u32::from_le_bytes(rec[at..end].try_into().expect("4 bytes"))
-        };
-        Ok(QuantizationResult {
-            lower_interval: f32::from_bits(word(0)),
-            upper_interval: f32::from_bits(word(1)),
-            additional_correction: f32::from_bits(word(2)),
-            quantized_component_sum: word(3) as i32,
-        })
+        Ok(self.split_record(ord)?.1)
+    }
+
+    /// One ordinal's codes and corrective terms, from a single lookup.
+    #[inline]
+    fn split_record(&self, ord: i32) -> Result<(&'a [u8], QuantizationResult)> {
+        let (codes, terms) = self.record(ord)?.split_at(self.packed_len);
+        // The record is `packed_len + 16` bytes, so the terms are 16.
+        let words: &[u8; CORRECTIONS_BYTES] = terms
+            .try_into()
+            .map_err(|_| Error::OrdOutOfRange(ord, self.size))?;
+        let [a0, a1, a2, a3, b0, b1, b2, b3, c0, c1, c2, c3, d0, d1, d2, d3] = *words;
+        let word = u32::from_le_bytes;
+        Ok((
+            codes,
+            QuantizationResult {
+                lower_interval: f32::from_bits(word([a0, a1, a2, a3])),
+                upper_interval: f32::from_bits(word([b0, b1, b2, b3])),
+                additional_correction: f32::from_bits(word([c0, c1, c2, c3])),
+                quantized_component_sum: word([d0, d1, d2, d3]) as i32,
+            },
+        ))
     }
 
     /// `ordToDoc(ord)`.
@@ -949,7 +976,7 @@ pub fn quantized_score(
     target_ord: i32,
     similarity: VectorSimilarityFunction,
 ) -> Result<f32> {
-    let doc = targets.vector(target_ord)?;
+    let (doc, index) = targets.split_record(target_ord)?;
     let qc_dist = match targets.encoding {
         ScalarEncoding::UnsignedByte => vector_util::uint8_dot_product(query, doc) as f32,
         ScalarEncoding::SevenBit => vector_util::dot_product_i8(query, doc) as f32,
@@ -961,7 +988,6 @@ pub fn quantized_score(
         }
         ScalarEncoding::DibitQueryNibble => vector_util::int4_dibit_dot_product(query, doc) as f32,
     };
-    let index = targets.corrective_terms(target_ord)?;
     Ok(score_from_parts(
         qc_dist,
         query_corrections,
@@ -1040,35 +1066,7 @@ impl<'v, 'a> QuantizedQueryScorer<'v, 'a> {
         similarity: VectorSimilarityFunction,
         target: &[f32],
     ) -> Result<Self> {
-        if target.len() != values.dimension {
-            return Err(Error::QueryDimensionMismatch(
-                target.len() as i32,
-                values.dimension as i32,
-            ));
-        }
-        let encoding = values.encoding;
-        let mut scratch = vec![0u8; encoding.discrete_dimensions(values.dimension)];
-        let mut copy = target.to_vec();
-        if similarity == VectorSimilarityFunction::Cosine {
-            vector_util::l2normalize(&mut copy, true)
-                .map_err(|e| Error::CorruptMeta(e.to_string()))?;
-        }
-        let quantizer = OptimizedScalarQuantizer::new(util_similarity(similarity));
-        let corrections = quantizer.scalar_quantize(
-            &mut copy,
-            &mut scratch,
-            encoding.query_bits(),
-            &values.centroid,
-        );
-        let query = if encoding == ScalarEncoding::SingleBitQueryNibble
-            || encoding == ScalarEncoding::DibitQueryNibble
-        {
-            let mut t = vec![0u8; encoding.query_packed_length(scratch.len())];
-            quantization::transpose_half_byte(&scratch, &mut t);
-            t
-        } else {
-            scratch
-        };
+        let (query, corrections) = quantize_query(values, similarity, target)?;
         Ok(QuantizedQueryScorer {
             values,
             query,
@@ -1081,6 +1079,96 @@ impl<'v, 'a> QuantizedQueryScorer<'v, 'a> {
     pub fn query(&self) -> (&[u8], &QuantizationResult) {
         (&self.query, &self.corrections)
     }
+}
+
+/// `target` quantized against `values`' centroid at the encoding's query
+/// width, with its corrective terms.
+fn quantize_query(
+    values: &QuantizedVectorValues<'_>,
+    similarity: VectorSimilarityFunction,
+    target: &[f32],
+) -> Result<(Vec<u8>, QuantizationResult)> {
+    if target.len() != values.dimension {
+        return Err(Error::QueryDimensionMismatch(
+            target.len() as i32,
+            values.dimension as i32,
+        ));
+    }
+    let encoding = values.encoding;
+    let mut scratch = vec![0u8; encoding.discrete_dimensions(values.dimension)];
+    let mut copy = target.to_vec();
+    if similarity == VectorSimilarityFunction::Cosine {
+        vector_util::l2normalize(&mut copy, true).map_err(|e| Error::CorruptMeta(e.to_string()))?;
+    }
+    let quantizer = OptimizedScalarQuantizer::new(util_similarity(similarity));
+    let corrections = quantizer.scalar_quantize(
+        &mut copy,
+        &mut scratch,
+        encoding.query_bits(),
+        &values.centroid,
+    );
+    let query = if encoding == ScalarEncoding::SingleBitQueryNibble
+        || encoding == ScalarEncoding::DibitQueryNibble
+    {
+        let mut t = vec![0u8; encoding.query_packed_length(scratch.len())];
+        quantization::transpose_half_byte(&scratch, &mut t);
+        t
+    } else {
+        scratch
+    };
+    Ok((query, corrections))
+}
+
+/// [`QuantizedQueryScorer`] owning its field's values, for a caller that
+/// opens the values and the scorer together (the search's per-leaf scorer).
+#[derive(Debug, Clone)]
+pub struct OwnedQuantizedQueryScorer<'a> {
+    values: QuantizedVectorValues<'a>,
+    query: Vec<u8>,
+    corrections: QuantizationResult,
+    similarity: VectorSimilarityFunction,
+}
+
+impl<'a> OwnedQuantizedQueryScorer<'a> {
+    /// Quantizes `target` against the field's centroid, with the field's
+    /// own similarity.
+    pub fn new(values: QuantizedVectorValues<'a>, target: &[f32]) -> Result<Self> {
+        let similarity = values.similarity;
+        let (query, corrections) = quantize_query(&values, similarity, target)?;
+        Ok(OwnedQuantizedQueryScorer {
+            values,
+            query,
+            corrections,
+            similarity,
+        })
+    }
+}
+
+impl crate::hnsw::VectorScorer for OwnedQuantizedQueryScorer<'_> {
+    fn score(&mut self, node: i32) -> Result<f32> {
+        quantized_score(
+            &self.query,
+            &self.corrections,
+            &self.values,
+            node,
+            self.similarity,
+        )
+    }
+
+    fn max_ord(&self) -> i32 {
+        self.values.size
+    }
+}
+
+/// Whether `meta` (a `.vemq`) is this format's: `Lucene99`'s scalar
+/// quantized format uses the same extension under another codec name.
+pub fn is_meta_file(meta: &[u8]) -> bool {
+    // `CodecUtil.writeHeader`: a 4-byte magic, then the codec name as a
+    // one-byte-length string (every name here is under 128 bytes).
+    meta.get(4).map(|&n| n as usize) == Some(META_CODEC.len())
+        && meta
+            .get(5..)
+            .is_some_and(|name| name.starts_with(META_CODEC.as_bytes()))
 }
 
 impl crate::hnsw::VectorScorer for QuantizedQueryScorer<'_, '_> {

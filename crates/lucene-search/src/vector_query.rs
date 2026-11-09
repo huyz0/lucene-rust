@@ -155,6 +155,14 @@ pub enum GraphReader<'d> {
     /// on the quantized codes, and each format searches its own way
     /// ([`SearchKind`]).
     Quantized(QuantizedVectorsReader<'d>),
+    /// `Lucene104HnswScalarQuantizedVectorsFormat`: the HNSW graph (`None`
+    /// for a field indexed without one) walked, and the exhaustive branch
+    /// scanned, on the scalar-quantized codes (`getRandomVectorScorer` of
+    /// `Lucene104ScalarQuantizedVectorsReader`).
+    ScalarQuantized {
+        graph: Option<HnswVectorsReader<'d>>,
+        codes: lucene_codecs::scalar_quantized_vectors::ScalarQuantizedVectorsReader<'d>,
+    },
     /// `LuceneRustIvfVectorsFormat`: a float query probes the field's
     /// clusters and reranks on its rerank vectors ([`ivf_leaf_results`]);
     /// a byte field, a diversifying search and a selective filter scan the
@@ -316,6 +324,10 @@ fn leaf_graph<'a, 'd>(
         Some(GraphReader::Lucene99(reader)) => {
             LeafGraph::Lucene99(lucene99_graph(reader, field_number)?)
         }
+        Some(GraphReader::ScalarQuantized { graph, .. }) => LeafGraph::Lucene99(match graph {
+            Some(reader) => lucene99_graph(reader, field_number)?,
+            None => None,
+        }),
         Some(GraphReader::Quantized(reader)) => {
             match (reader.format().search_kind(), reader.graph()) {
                 (SearchKind::Hnsw, Some(graphs)) => {
@@ -331,6 +343,27 @@ fn leaf_graph<'a, 'd>(
             }
         }
     })
+}
+
+/// A float query's scorer over a `Lucene104` scalar-quantized field's codes;
+/// `None` for any other reader, and for a field the instance holds no codes
+/// for or whose codes are empty, which Java scores on the raw vectors.
+fn scalar_quantized_scorer<'d>(
+    input: &VectorsInput<'d>,
+    resolved: &ResolvedField,
+    target: &[f32],
+) -> Result<Option<lucene_codecs::scalar_quantized_vectors::OwnedQuantizedQueryScorer<'d>>> {
+    let Some(GraphReader::ScalarQuantized { codes, .. }) = &input.hnsw else {
+        return Ok(None);
+    };
+    match codes.field(resolved.field_number) {
+        Some(entry) if entry.size > 0 => {}
+        _ => return Ok(None),
+    }
+    let values = codes.quantized_vector_values(resolved.field_number)?;
+    Ok(Some(
+        lucene_codecs::scalar_quantized_vectors::OwnedQuantizedQueryScorer::new(values, target)?,
+    ))
 }
 
 /// Turns a doc-id list -- e.g. straight out of
@@ -1215,6 +1248,18 @@ fn search_leaf(
                 // flat reader -- which is also `FloatVectorValues.scorer`, so
                 // the exact-search fallback scores on the codes too.
                 let mut scorer = reader.float_scorer(resolved.field_number, t)?;
+                return leaf_results(
+                    &mut scorer,
+                    &graph,
+                    accept.as_ref(),
+                    &ord_to_doc,
+                    input.max_doc,
+                    plan,
+                    seed_ords,
+                    diversify,
+                );
+            }
+            if let Some(mut scorer) = scalar_quantized_scorer(input, resolved, t)? {
                 return leaf_results(
                     &mut scorer,
                     &graph,
@@ -2381,6 +2426,9 @@ fn similarity_leaf<T>(
             // quantized format answers on its codes.
             if let Some(GraphReader::Quantized(reader)) = &input.hnsw {
                 let mut scorer = reader.float_scorer(resolved.field_number, t)?;
+                return leaf.run(&mut scorer, &graph, &ord_to_doc, &ord_to_docs);
+            }
+            if let Some(mut scorer) = scalar_quantized_scorer(input, &resolved, t)? {
                 return leaf.run(&mut scorer, &graph, &ord_to_doc, &ord_to_docs);
             }
             let mut scorer = values.scorer(t)?;

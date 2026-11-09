@@ -609,7 +609,7 @@ pub struct FlatFieldEntry {
 #[derive(Debug, Clone)]
 pub struct FlatVectorsReader<'a> {
     data: &'a [u8],
-    fields: Vec<FlatFieldEntry>,
+    fields: std::sync::Arc<Vec<FlatFieldEntry>>,
     /// Byte vectors are scored by Hamming distance
     /// ([`scores_hamming`]) whatever their recorded similarity.
     hamming: bool,
@@ -725,7 +725,7 @@ impl<'a> FlatVectorsReader<'a> {
 
         Ok(FlatVectorsReader {
             data: data_buf,
-            fields,
+            fields: std::sync::Arc::new(fields),
             hamming: scores_hamming(segment_suffix),
             half,
             resolved: !half,
@@ -751,7 +751,7 @@ impl<'a> FlatVectorsReader<'a> {
         if self.resolved {
             return Ok(());
         }
-        for field in &mut self.fields {
+        for field in std::sync::Arc::make_mut(&mut self.fields) {
             field.similarity =
                 similarity(field.field_number).ok_or(Error::UnknownField(field.field_number))?;
         }
@@ -783,7 +783,7 @@ impl<'a> FlatVectorsReader<'a> {
     pub(crate) fn from_entries(data: &'a [u8], fields: Vec<FlatFieldEntry>) -> Self {
         FlatVectorsReader {
             data,
-            fields,
+            fields: std::sync::Arc::new(fields),
             hamming: false,
             half: false,
             resolved: true,
@@ -803,6 +803,31 @@ impl<'a> FlatVectorsReader<'a> {
 
     pub fn fields(&self) -> &[FlatFieldEntry] {
         &self.fields
+    }
+
+    /// This reader without its data file, to keep beside the segment's
+    /// files: [`Self::attach`] it to the same data for each search, so the
+    /// metadata is parsed and checked once and shared, not copied.
+    pub fn detached(&self) -> FlatVectorsReader<'static> {
+        FlatVectorsReader {
+            data: &[],
+            fields: self.fields.clone(),
+            hamming: self.hamming,
+            half: self.half,
+            resolved: self.resolved,
+        }
+    }
+
+    /// A detached reader ([`Self::detached`]) over `data`, which must be the
+    /// file the reader was opened on.
+    pub fn attach<'b>(&self, data: &'b [u8]) -> FlatVectorsReader<'b> {
+        FlatVectorsReader {
+            data,
+            fields: self.fields.clone(),
+            hamming: self.hamming,
+            half: self.half,
+            resolved: self.resolved,
+        }
     }
 
     pub fn field(&self, field_number: i32) -> Option<&FlatFieldEntry> {

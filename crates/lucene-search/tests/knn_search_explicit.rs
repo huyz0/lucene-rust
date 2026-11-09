@@ -110,6 +110,20 @@ fn exact_top(target: &[f32], k: usize, keep: impl Fn(usize) -> bool) -> Vec<(usi
     all
 }
 
+/// Exact scores must find exactly `want`; quantized scores (int7 codes, as
+/// Lucene scores them) must find most of it.
+fn assert_ids(got: &[usize], want: &[usize], exact: bool, what: &str) {
+    if exact {
+        assert_eq!(got, want, "{what}");
+    } else {
+        let found = got.iter().filter(|d| want.contains(d)).count();
+        assert!(
+            found * 10 >= want.len() * 7 && got.len() == want.len(),
+            "{what}: {got:?} vs {want:?}"
+        );
+    }
+}
+
 fn check(format: KnnVectorsFormat, exact_scores: bool) {
     let tmp = TempDir::new("knn-search-explicit");
     let dir = FsDirectory::open(&tmp);
@@ -133,7 +147,7 @@ fn check(format: KnnVectorsFormat, exact_scores: bool) {
     let want = exact_top(&target, k, |_| true);
     let got: Vec<usize> = hits.iter().map(|h| h.doc_id as usize).collect();
     let want_ids: Vec<usize> = want.iter().map(|w| w.0).collect();
-    assert_eq!(got, want_ids, "global top {k}");
+    assert_ids(&got, &want_ids, exact_scores, "global top");
     if exact_scores {
         for (h, w) in hits.iter().zip(&want) {
             assert!((h.score - w.1).abs() < 1e-6, "{} vs {}", h.score, w.1);
@@ -156,7 +170,7 @@ fn check(format: KnnVectorsFormat, exact_scores: bool) {
         .iter()
         .map(|w| w.0)
         .collect();
-    assert_eq!(got, want, "filtered top {k}");
+    assert_ids(&got, &want, exact_scores, "filtered top");
 
     // Per segment: k hits from every segment.
     let leaf = KnnLeafQuery::new(
@@ -183,7 +197,7 @@ fn check(format: KnnVectorsFormat, exact_scores: bool) {
             .map(|w| w.0)
             .collect();
         want.sort_unstable();
-        assert_eq!(got, want, "segment {seg}");
+        assert_ids(&got, &want, exact_scores, "segment");
     }
 
     // Radial: everything scoring at least the 20th best's score.
@@ -212,7 +226,7 @@ fn hnsw_float_vectors_find_the_exact_neighbours() {
 fn quantized_hnsw_vectors_are_searched() {
     check(
         KnnVectorsFormat::hnsw_scalar_quantized(ScalarEncoding::SevenBit, 16, 100).unwrap(),
-        true,
+        false,
     );
 }
 
