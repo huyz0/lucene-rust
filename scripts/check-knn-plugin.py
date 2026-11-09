@@ -494,6 +494,15 @@ def knn_score(space, target, field="emb"):
             "params": {"field": field, "query_value": target, "space_type": space}}
 
 
+def fallback_counts():
+    return req(OURS[1], "GET", "/_plugins/lucene_rust/stats").get("fallbacks", {})
+
+
+def fell_back(before):
+    """The fallback reasons counted since `before` (a `fallback_counts()`)."""
+    return {k: v - before.get(k, 0) for k, v in fallback_counts().items() if v != before.get(k, 0)}
+
+
 def script_check(failures):
     """Scoring scripts on both nodes over the exact indexes: returns the number of queries compared."""
     checked = 0
@@ -525,10 +534,14 @@ def script_check(failures):
         rng = random.Random(f"{SEED}-{index}-scripts")
         for qi in range(3):
             t = vector_for(spec, rng)
+            before = fallback_counts()
             for space in spaces:
                 for base in bases:
                     compare(f"knn_score {space} query {qi}", index, script_score(base, knn_score(space, t)),
                             ties=space == "hamming")
+            fell = fell_back(before)
+            if fell:
+                failures.append(f"knn_score on {index} fell back to Java: {fell}")
             if spec.get("data_type") == "binary":
                 scripts = ["1 / (1 + hamming(params.q, doc['emb']))"]
             else:
@@ -601,8 +614,21 @@ def script_check(failures):
         req(port, "POST", "/_bulk?refresh=true", "\n".join(lines) + "\n", ndjson=True)
     for k in types:
         t = vector(rng, k == "b")
+        before = fallback_counts()
         for space in ("l2", "cosinesimil", "innerproduct", "l1", "linf"):
             compare(f"no knn emb_{k} {space}", "no_knn", script_score({"match_all": {}}, knn_score(space, t, f"emb_{k}")))
+            compare(f"no knn emb_{k} {space} boosted", "no_knn",
+                    {"size": 20, "query": {"script_score": {"query": {"match_all": {}}, "boost": 2.5,
+                                                            "script": knn_score(space, t, f"emb_{k}")}}})
+            # Two targets in one bool: each clause keeps its own target.
+            u = vector(rng, k == "b")
+            compare(f"no knn emb_{k} {space} two targets", "no_knn",
+                    {"size": 20, "query": {"bool": {"should": [
+                        {"script_score": {"query": {"match_all": {}}, "script": knn_score(space, x, f"emb_{k}")}}
+                        for x in (t, u)]}}})
+        fell = fell_back(before)
+        if fell:
+            failures.append(f"knn_score on no_knn emb_{k} fell back to Java: {fell}")
         for src in PAINLESS:
             compare(f"no knn emb_{k} {src}", "no_knn",
                     script_score({"match_all": {}}, {"source": src.replace("'emb'", f"'emb_{k}'"),

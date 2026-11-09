@@ -125,14 +125,16 @@ def segment_versions(index):
 
 
 def vector_rows(knn_index):
-    """Vector requests: none is a native shape (the plugin encodes no vector
-    query), so each falls back with its reason and must still agree."""
+    """Vector requests: none is a native shape here (stock k-NN serves the
+    script and the queries, so the plugin encodes none), so each falls back
+    with its reason and must still agree."""
     r = vo.random.Random(99)
     target = vec(r)
     rows = [("script knn", {"size": 10, "query": {"script_score": {
         "query": {"exists": {"field": "emb"}},
         "script": {"source": "knn_score", "lang": "knn",
-                   "params": {"field": "emb", "query_value": target, "space_type": "l2"}}}}}, "query_*")]
+                   "params": {"field": "emb", "query_value": target, "space_type": "l2"}}}}},
+             "script_score_script")]
     if knn_index:
         rows.append(("knn query", {"size": 10, "query": {"knn": {"emb": {"vector": target, "k": 10}}}}, "query_*"))
         rows.append(("knn filtered", {"size": 10, "query": {"knn": {"emb": {"vector": target, "k": 10,
