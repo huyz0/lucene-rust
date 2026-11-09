@@ -234,7 +234,7 @@ pub unsafe extern "C" fn ffi_ml_sparse_tokenize_alloc(
         let Model::SparseTokenize(model) = &*model else {
             return Err(wrong_kind("sparse tokenize"));
         };
-        let mut weights = Vec::with_capacity(texts.len());
+        let mut weights = Vec::new();
         for t in texts {
             weights.push(model.encode(t).map_err(ml_failure)?);
         }
