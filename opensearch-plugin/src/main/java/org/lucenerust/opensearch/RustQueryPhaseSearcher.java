@@ -5,6 +5,9 @@ package org.lucenerust.opensearch;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.lucenerust.opensearch.neural.query.HybridQuery;
+import org.lucenerust.opensearch.neural.search.query.HybridAggregationProcessor;
+import org.lucenerust.opensearch.neural.search.query.HybridQueryPhaseSearcher;
 import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.index.Term;
@@ -104,6 +107,8 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
     );
 
     private final QueryPhaseSearcher fallback = new QueryPhaseSearcherWrapper();
+    /** neural-search's searcher, for a query with a {@code hybrid} query anywhere in it. */
+    private final QueryPhaseSearcher hybrid = new HybridQueryPhaseSearcher();
     private final NativeReaders readers;
     private final SearchStats stats;
 
@@ -114,7 +119,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
 
     @Override
     public AggregationProcessor aggregationProcessor(SearchContext searchContext) {
-        return fallback.aggregationProcessor(searchContext);
+        return new HybridAggregationProcessor(fallback.aggregationProcessor(searchContext));
     }
 
     @Override
@@ -126,6 +131,13 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         boolean hasFilterCollector,
         boolean hasTimeout
     ) throws IOException {
+        if (containsHybrid(query)) {
+            stats.fallback("hybrid");
+            long luceneStart = System.nanoTime();
+            boolean rescore = hybrid.searchWith(ctx, searcher, query, collectors, hasFilterCollector, hasTimeout);
+            stats.luceneTime(System.nanoTime() - luceneStart);
+            return rescore;
+        }
         long start = System.nanoTime();
         // Aggregations OpenSearch's DefaultAggregationProcessor.preProcess registered (their one
         // collector context is the one in "collectors"), when all of them run natively.
@@ -325,6 +337,24 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         boolean rescore = fallback.searchWith(ctx, searcher, query, collectors, hasFilterCollector, hasTimeout);
         stats.luceneTime(System.nanoTime() - luceneStart);
         return rescore;
+    }
+
+    /** Whether {@code query} is or holds a {@link HybridQuery}. */
+    static boolean containsHybrid(Query query) {
+        if (query instanceof HybridQuery) {
+            return true;
+        }
+        boolean[] found = { false };
+        query.visit(new org.apache.lucene.search.QueryVisitor() {
+            @Override
+            public org.apache.lucene.search.QueryVisitor getSubVisitor(org.apache.lucene.search.BooleanClause.Occur occur, Query parent) {
+                if (parent instanceof HybridQuery) {
+                    found[0] = true;
+                }
+                return this;
+            }
+        });
+        return found[0];
     }
 
     /**

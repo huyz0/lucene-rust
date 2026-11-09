@@ -120,6 +120,14 @@ JAVA_ONLY = {
     ("SparseMethod.java", "MAX_CLUSTERING_BATCH_SIZE"): "neural-search's mapping validation",
     ("TrieReader.java", "NO_OUTPUT"): "Lucene's own trie reader's in-memory sentinel, not on disk",
     ("TrieReader.java", "NO_FLOOR_DATA"): "Lucene's own trie reader's in-memory sentinel, not on disk",
+    ("RRFNormalizationTechnique.java", "DEFAULT_RANK_CONSTANT"): "neural-search's pipeline default, coordinator side",
+    ("RRFNormalizationTechnique.java", "MIN_RANK_CONSTANT"): "neural-search's pipeline validation, coordinator side",
+    ("RRFNormalizationTechnique.java", "MAX_RANK_CONSTANT"): "neural-search's pipeline validation, coordinator side",
+    ("HybridQueryScoreDocsMerger.java", "MIN_NUMBER_OF_ELEMENTS_IN_SCORE_DOC"): "the Java hybrid result merge: start, delimiter, stop",
+    ("HybridBulkScorer.java", "SHIFT"): "the Java hybrid bulk scorer's window size",
+    ("HybridQueryBuilder.java", "MAX_NUMBER_OF_SUB_QUERIES"): "neural-search's query validation",
+    ("HybridQueryBuilder.java", "LOWER_BOUND_OF_PAGINATION_DEPTH"): "neural-search's query validation",
+    ("HybridQueryDocIdStream.java", "BLOCK_SHIFT"): "the Java hybrid bulk scorer's bitset words",
 }
 
 JAVA_CONST = re.compile(
