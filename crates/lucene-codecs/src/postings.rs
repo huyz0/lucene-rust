@@ -3959,7 +3959,7 @@ fn wire_position_mismatch(position: usize, expected: usize, what: &str) -> Error
     ))
 }
 
-/// Scratch for [`decode_doc_block`], reused across blocks.
+/// Scratch for decoding doc blocks ([`Self::decode`]), reused across blocks.
 pub struct DocBlockDecoder {
     scratch: Box<BlockScratch>,
     docs: Box<[i32; BLOCK_SIZE as usize]>,

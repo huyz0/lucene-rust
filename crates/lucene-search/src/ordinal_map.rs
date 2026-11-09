@@ -309,7 +309,7 @@ impl OrdinalMap {
     /// [`Self::build_streaming`], also giving back every distinct term in
     /// global-ordinal order while there are at most `limit` of them of at
     /// most `limit` bytes together (`None` past that): what
-    /// [`Self::extended`] looks terms up in.
+    /// [`Self::remapped`] looks terms up in.
     pub fn build_keeping_terms(
         cursors: &mut [&mut dyn TermCursor],
         limit: usize,
