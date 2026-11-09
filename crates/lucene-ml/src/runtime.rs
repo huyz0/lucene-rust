@@ -34,14 +34,16 @@ pub fn init(library: &Path, threads: usize) -> Result<()> {
             library.display()
         )));
     }
+    // `init_from` must come first: building the pool options calls into the
+    // runtime, which would otherwise load it from the default path.
+    let builder = ort::init_from(library).map_err(runtime_error)?;
     let mut pool = GlobalThreadPoolOptions::default()
         .with_spin_control(false)
         .map_err(runtime_error)?;
     if threads > 0 {
         pool = pool.with_intra_threads(threads).map_err(runtime_error)?;
     }
-    let environment = ort::init_from(library)
-        .map_err(runtime_error)?
+    let environment = builder
         .with_name("lucene-rust-ml")
         .with_telemetry(false)
         .with_global_thread_pool(pool)

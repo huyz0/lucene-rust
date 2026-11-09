@@ -43,7 +43,11 @@ fn ml_failure(e: MlError) -> FfiStatus {
 /// # Safety
 /// `path` must be valid for `path_len` bytes.
 #[no_mangle]
-pub unsafe extern "C" fn ffi_ml_runtime_init(path: *const u8, path_len: usize, threads: u32) -> i32 {
+pub unsafe extern "C" fn ffi_ml_runtime_init(
+    path: *const u8,
+    path_len: usize,
+    threads: u32,
+) -> i32 {
     guard(|| {
         // SAFETY: caller contract.
         let path = unsafe { str_from_raw(path.cast(), path_len) }?;
@@ -263,16 +267,19 @@ mod tests {
     }
 
     /// The whole path, when the ONNX Runtime library is available
-    /// (`ORT_DYLIB_PATH`).
+    /// (`LUCENE_ML_ONNXRUNTIME`).
     #[test]
     fn embeds_through_a_handle() {
-        let Some(lib) = std::env::var_os("ORT_DYLIB_PATH") else {
-            eprintln!("ORT_DYLIB_PATH is not set: skipping");
+        let Some(lib) = std::env::var_os("LUCENE_ML_ONNXRUNTIME") else {
+            eprintln!("LUCENE_ML_ONNXRUNTIME is not set: skipping");
             return;
         };
         let lib = lib.into_string().unwrap();
         // SAFETY: valid buffers.
-        assert_eq!(unsafe { ffi_ml_runtime_init(lib.as_ptr(), lib.len(), 1) }, 0);
+        assert_eq!(
+            unsafe { ffi_ml_runtime_init(lib.as_ptr(), lib.len(), 1) },
+            0
+        );
         let fixtures = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures/ml");
         let model = format!("{fixtures}/tiny-bert.onnx");
         let tokenizer = std::fs::read(format!("{fixtures}/tokenizer.json")).unwrap();
@@ -298,7 +305,13 @@ mod tests {
         let (mut ptr, mut len) = (std::ptr::null_mut(), 0usize);
         // SAFETY: valid buffers.
         let status = unsafe {
-            ffi_ml_text_embedding_embed_alloc(handle, input.as_ptr(), input.len(), &mut ptr, &mut len)
+            ffi_ml_text_embedding_embed_alloc(
+                handle,
+                input.as_ptr(),
+                input.len(),
+                &mut ptr,
+                &mut len,
+            )
         };
         assert_eq!(status, 0);
         // Two vectors of [32]: (4 + 4 + 32 * 4) bytes each.
@@ -309,7 +322,13 @@ mod tests {
         let empty = texts(&[""]);
         // SAFETY: valid buffers.
         let status = unsafe {
-            ffi_ml_text_embedding_embed_alloc(handle, empty.as_ptr(), empty.len(), &mut ptr, &mut len)
+            ffi_ml_text_embedding_embed_alloc(
+                handle,
+                empty.as_ptr(),
+                empty.len(),
+                &mut ptr,
+                &mut len,
+            )
         };
         assert_eq!(status, FfiStatus::Search.code());
         assert_eq!(ffi_ml_model_close(handle), 0);

@@ -3,6 +3,14 @@
  */
 package org.lucenerust.opensearch;
 
+import org.lucenerust.opensearch.ml.MlActions;
+import org.lucenerust.opensearch.ml.MlCommons;
+import org.lucenerust.opensearch.ml.MlIndices;
+import org.lucenerust.opensearch.ml.MlRestHandlers;
+import org.lucenerust.opensearch.ml.MlSettings;
+import org.opensearch.cluster.node.DiscoveryNodeRole;
+import org.opensearch.indices.SystemIndexDescriptor;
+import org.opensearch.plugins.SystemIndexPlugin;
 import org.lucenerust.opensearch.neural.HybridSearch;
 import org.lucenerust.opensearch.neural.NeuralSearchSettings;
 import org.opensearch.plugins.SearchPipelinePlugin;
@@ -80,6 +88,7 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.function.Supplier;
 
 /**
@@ -101,7 +110,8 @@ public class RustSearchPlugin extends Plugin implements
     IndexStorePlugin,
     MapperPlugin,
     ScriptPlugin,
-    SearchPipelinePlugin {
+    SearchPipelinePlugin,
+    SystemIndexPlugin {
     /**
      * Whether this node serves Rust-engine indices with the Rust writer; {@code false} serves them
      * with OpenSearch's own engine -- a mixed cluster, one index.
@@ -173,10 +183,13 @@ public class RustSearchPlugin extends Plugin implements
      * {@code knn} and the {@code knn} settings, and the Rust writer leaves its fields alone.
      */
     private final boolean stockKnn;
+    /** Whether the stock ml-commons plugin is installed beside this one: it then serves {@code _plugins/_ml}. */
+    private final boolean stockMl;
 
     public RustSearchPlugin(Settings settings, Path configPath) {
         this.libraryPath = NativeLibrary.load(pluginDir());
         this.stockKnn = stockKnnInstalled();
+        this.stockMl = MlCommons.stockInstalled(pluginDir());
         if (stockKnn) {
             logger.info("lucene-rust: the k-NN plugin is installed; it serves knn_vector and knn");
             org.lucenerust.opensearch.engine.RustEngineSupport.refuseKnnVectorFields();
@@ -521,6 +534,9 @@ public class RustSearchPlugin extends Plugin implements
             settings.addAll(KnnSettings.settings());
         }
         settings.addAll(org.lucenerust.opensearch.engine.BpReorderSettings.settings());
+        if (stockMl == false) {
+            settings.addAll(MlSettings.all());
+        }
         return settings;
     }
 
@@ -583,6 +599,10 @@ public class RustSearchPlugin extends Plugin implements
         this.clusterService.set(clusterService);
         this.resolver.set(indexNameExpressionResolver);
         HybridSearch.initialize(threadPool);
+        if (stockMl == false) {
+            Path runtime = Path.of(libraryPath).resolveSibling(System.mapLibraryName("onnxruntime"));
+            MlCommons.initialize(client, clusterService, threadPool, environment.dataFiles()[0], runtime);
+        }
         return List.of();
     }
 
@@ -593,7 +613,12 @@ public class RustSearchPlugin extends Plugin implements
 
     @Override
     public List<org.opensearch.threadpool.ExecutorBuilder<?>> getExecutorBuilders(Settings settings) {
-        return List.of(HybridSearch.executorBuilder(settings));
+        List<org.opensearch.threadpool.ExecutorBuilder<?>> builders = new ArrayList<>();
+        builders.add(HybridSearch.executorBuilder(settings));
+        if (stockMl == false) {
+            builders.addAll(MlCommons.executorBuilders(settings));
+        }
+        return builders;
     }
 
     /** k-NN's concurrent search decider: {@code auto} mode searches a knn query's segments concurrently. */
@@ -637,24 +662,44 @@ public class RustSearchPlugin extends Plugin implements
             handlers.addAll(KnnRestHandlers.all(clusterService::get, indexNameExpressionResolver));
             handlers.addAll(KnnModelHandlers.all(clusterService::get));
         }
+        if (stockMl == false) {
+            handlers.addAll(MlRestHandlers.all());
+        }
         return handlers;
     }
 
     @Override
     public List<ActionHandler<? extends ActionRequest, ? extends ActionResponse>> getActions() {
-        if (stockKnn) {
-            return List.of();
+        List<ActionHandler<? extends ActionRequest, ? extends ActionResponse>> actions = new ArrayList<>();
+        if (stockKnn == false) {
+            actions.add(new ActionHandler<>(KnnStatsTransport.Action.INSTANCE, KnnStatsTransport.TransportAction.class));
+            actions.add(new ActionHandler<>(KnnShardsTransport.WarmupAction.INSTANCE, KnnShardsTransport.WarmupTransportAction.class));
+            actions.add(new ActionHandler<>(KnnShardsTransport.ClearCacheAction.INSTANCE, KnnShardsTransport.ClearCacheTransportAction.class));
         }
-        return List.of(
-            new ActionHandler<>(KnnStatsTransport.Action.INSTANCE, KnnStatsTransport.TransportAction.class),
-            new ActionHandler<>(KnnShardsTransport.WarmupAction.INSTANCE, KnnShardsTransport.WarmupTransportAction.class),
-            new ActionHandler<>(KnnShardsTransport.ClearCacheAction.INSTANCE, KnnShardsTransport.ClearCacheTransportAction.class)
-        );
+        if (stockMl == false) {
+            actions.addAll(MlActions.handlers());
+        }
+        return actions;
+    }
+
+    /** ml-commons' system indices, unless the stock ml-commons plugin registers them. */
+    @Override
+    public Collection<SystemIndexDescriptor> getSystemIndexDescriptors(Settings settings) {
+        return stockMl ? List.of() : MlIndices.descriptors();
+    }
+
+    /** ml-commons' {@code ml} node role. */
+    @Override
+    public Set<DiscoveryNodeRole> getRoles() {
+        return stockMl ? Set.of() : Set.of(MlCommons.ML_ROLE);
     }
 
     @Override
     public void close() {
         readers.closeAll();
+        if (stockMl == false) {
+            MlCommons.closeIfInitialized();
+        }
     }
 
     /** k-NN's {@code knn} script language ({@code knn_score}), unless the stock k-NN plugin serves it. */

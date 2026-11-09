@@ -2,8 +2,10 @@
 //! (fixtures/ml/expected.json, from scripts/ml-golden.py), for each pooling
 //! mode, reproduced here.
 //!
-//! Needs the ONNX Runtime library: `ORT_DYLIB_PATH` names it (CI extracts it
-//! from the onnxruntime Maven jar). Without it these tests say so and pass.
+//! Needs the ONNX Runtime library: `LUCENE_ML_ONNXRUNTIME` names it (CI extracts it
+//! from the onnxruntime Maven jar). ONNX Runtime's own loader does not read that
+//! variable, so the tests also check that `runtime::init` loads the library it is
+//! given. Without it these tests say so and pass.
 
 use std::path::{Path, PathBuf};
 
@@ -16,13 +18,13 @@ fn fixtures() -> PathBuf {
 }
 
 fn runtime_loaded() -> bool {
-    match std::env::var_os("ORT_DYLIB_PATH") {
+    match std::env::var_os("LUCENE_ML_ONNXRUNTIME") {
         Some(lib) => {
             runtime::init(Path::new(&lib), 2).expect("ONNX Runtime loads");
             true
         }
         None => {
-            eprintln!("ORT_DYLIB_PATH is not set: skipping the ONNX model tests");
+            eprintln!("LUCENE_ML_ONNXRUNTIME is not set: skipping the ONNX model tests");
             false
         }
     }
