@@ -151,6 +151,24 @@ fn value_span(ends: &[u32], lo: usize, hi: usize) -> (usize, usize) {
     (at(lo), at(hi))
 }
 
+/// How many of `docs` (ascending) are below `doc`, searched from the end:
+/// views read the newest documents, so the answer is mostly near it.
+pub(super) fn before_from_end(docs: &[i32], doc: i32) -> usize {
+    let mut hi = docs.len();
+    let mut step = 1usize;
+    // Gallop back to a position whose document is below `doc`.
+    let lo = loop {
+        let at = hi.saturating_sub(step);
+        if docs.get(at).is_none_or(|&d| d < doc) || at == 0 {
+            break at;
+        }
+        hi = at;
+        step = step.saturating_mul(2);
+    };
+    let window = docs.get(lo..hi).unwrap_or_default();
+    lo.saturating_add(window.partition_point(|&d| d < doc))
+}
+
 /// Each document's value count, from where its values end.
 fn counts(ends: &[u32], from: usize) -> Vec<u32> {
     let mut last = from;
@@ -297,8 +315,8 @@ impl Column {
     /// `docs` and where their values start and end.
     fn span(&self, start: i32, end: i32) -> ((usize, usize), (usize, usize)) {
         let docs_of = |docs: &[i32]| {
-            let lo = docs.partition_point(|&d| d < start);
-            let hi = docs.partition_point(|&d| d < end);
+            let hi = before_from_end(docs, end);
+            let lo = before_from_end(docs.get(..hi).unwrap_or_default(), start);
             (lo, hi)
         };
         match self {
@@ -766,5 +784,26 @@ mod tests {
             ),
             "a NUMERIC field keeps a document's first value"
         );
+    }
+}
+
+#[cfg(test)]
+mod before_from_end_tests {
+    use super::before_from_end;
+
+    /// The search from the end finds what a binary search finds.
+    #[test]
+    fn searching_from_the_end_matches_a_binary_search() {
+        let docs: Vec<i32> = (0..300).filter(|d| d % 3 != 1).collect();
+        for n in [0usize, 1, 2, 7, docs.len()] {
+            let docs = &docs[..n];
+            for doc in -2..305 {
+                assert_eq!(
+                    before_from_end(docs, doc),
+                    docs.partition_point(|&d| d < doc),
+                    "{n} {doc}"
+                );
+            }
+        }
     }
 }
