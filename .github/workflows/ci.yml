@@ -279,6 +279,9 @@ jobs:
       # info the test binaries are a fraction of the size, which is what kept
       # running the runner's disk out (rustc "No space left on device", ld
       # "signal 7 [Bus error]" on a full disk's mmap).
+      # lucene-ml's model tests load ONNX Runtime at run time (LUCENE_ML_ONNXRUNTIME).
+      - name: ONNX Runtime for lucene-ml's tests
+        run: echo "LUCENE_ML_ONNXRUNTIME=$(scripts/fetch-onnxruntime.sh "$RUNNER_TEMP/onnxruntime")" >> "$GITHUB_ENV"
       - name: Tests + coverage gate
         env:
           CARGO_PROFILE_DEV_DEBUG: '0'
@@ -347,6 +350,9 @@ jobs:
           tool: cargo-nextest
       - name: Lint
         run: cargo clippy --workspace --all-targets -- -D warnings
+      # lucene-ml's model tests load ONNX Runtime at run time (LUCENE_ML_ONNXRUNTIME).
+      - name: ONNX Runtime for lucene-ml's tests
+        run: echo "LUCENE_ML_ONNXRUNTIME=$(scripts/fetch-onnxruntime.sh "$RUNNER_TEMP/onnxruntime")" >> "$GITHUB_ENV"
       - name: Tests
         run: cargo nextest run --workspace
       - name: Doctests

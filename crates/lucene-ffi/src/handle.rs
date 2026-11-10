@@ -29,6 +29,8 @@ pub enum RegistryTag {
     ZstdDictionary = 14,
     /// A zstd term-block dictionary (`zstd_terms.rs`).
     ZstdTermsDictionary = 15,
+    /// A deployed ml-commons model (`ml.rs`).
+    MlModel = 16,
 }
 
 /// The cap on simultaneously open handles in one registry: the 24-bit index

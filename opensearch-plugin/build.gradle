@@ -27,6 +27,8 @@ def cargoTarget = file(System.getenv('CARGO_TARGET_DIR') ?: "${repoRoot}/target"
 // module), bundled in the zip; SunJCE is never used (store/StoreCrypto.java).
 def fips = findProperty('fips') != null
 def accpVersion = '2.5.0'
+// The ONNX Runtime ml-commons' local models run on; lucene-ml needs its C API 17 or later.
+def onnxRuntimeVersion = '1.23.2'
 def fipsTarget = file(System.getenv('CARGO_TARGET_DIR') ?: "${repoRoot}/target/fips")
 // -PcargoProfile: the Cargo profile the native library is built with. `dist`
 // (whole-program LTO, the default) is what a plugin zip ships; CI's test jobs
@@ -86,6 +88,7 @@ tasks.withType(JavaCompile).configureEach {
 
 configurations {
     fipsProvider
+    onnxRuntime
 }
 
 dependencies {
@@ -104,6 +107,8 @@ dependencies {
         def module = m
         testImplementation luceneVersion.map { "org.apache.lucene:lucene-analysis-${module}:${it}" }
     }
+    // The ONNX Runtime library ml-commons' local models run on, taken from Microsoft's jar.
+    onnxRuntime "com.microsoft.onnxruntime:onnxruntime:${onnxRuntimeVersion}@jar"
     if (fips) {
         // ACCP's classifier names the platform: linux-x86_64 or linux-aarch_64.
         def accpPlatform = hostPlatform == 'linux-aarch64' ? 'linux-aarch_64' : hostPlatform
@@ -157,6 +162,21 @@ def makeDataPacks = tasks.register('makeDataPacks', Exec) {
     commandLine 'scripts/make-data-packs.sh', dataPacks.absolutePath
 }
 
+// native/<platform>/libonnxruntime.so for this host, out of the ONNX Runtime jar, with
+// ONNX Runtime's licence and third-party notices.
+def onnxRuntimeLib = tasks.register('onnxRuntimeLib', Sync) {
+    description = 'Extracts this host\'s libonnxruntime.so and its notices from the ONNX Runtime jar.'
+    def ortPlatform = hostPlatform == 'linux-x86_64' ? 'linux-x64' : hostPlatform
+    def platformDir = "native/${hostPlatform}"
+    from({ zipTree(configurations.onnxRuntime.singleFile) }) {
+        include "ai/onnxruntime/native/${ortPlatform}/libonnxruntime.so", 'ThirdPartyNotices.txt'
+        eachFile { path = name == 'ThirdPartyNotices.txt' ? 'onnxruntime-ThirdPartyNotices.txt' : "${platformDir}/${name}" }
+        includeEmptyDirs = false
+    }
+    from(file("licenses/onnxruntime-LICENSE"))
+    into layout.buildDirectory.dir('onnxruntime')
+}
+
 tasks.register('bundlePlugin', Zip) {
     description = 'The installable plugin zip: jar, descriptor, and native/<platform>/liblucene_ffi.so.'
     dependsOn tasks.named('jar'), cargoBuild
@@ -167,6 +187,7 @@ tasks.register('bundlePlugin', Zip) {
         expand(version: version, opensearchVersion: opensearchVersion)
     }
     from(nativeLib) { into "native/${hostPlatform}" }
+    from(onnxRuntimeLib)
     // The FIPS variant's JCE provider, on the plugin's class path.
     from(configurations.fipsProvider)
     // The licence and notices ship with the binary they cover.

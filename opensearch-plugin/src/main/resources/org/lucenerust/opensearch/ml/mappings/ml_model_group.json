@@ -1,0 +1,89 @@
+{
+  "_meta": {
+    "schema_version": 4
+  },
+  "properties": {
+    "access": {
+      "type": "keyword"
+    },
+    "all_shared_principals": {
+      "type": "keyword"
+    },
+    "backend_roles": {
+      "fields": {
+        "keyword": {
+          "ignore_above": 256,
+          "type": "keyword"
+        }
+      },
+      "type": "text"
+    },
+    "created_time": {
+      "format": "strict_date_time||epoch_millis",
+      "type": "date"
+    },
+    "description": {
+      "type": "text"
+    },
+    "last_updated_time": {
+      "format": "strict_date_time||epoch_millis",
+      "type": "date"
+    },
+    "latest_version": {
+      "type": "integer"
+    },
+    "model_group_id": {
+      "type": "keyword"
+    },
+    "name": {
+      "fields": {
+        "keyword": {
+          "ignore_above": 256,
+          "type": "keyword"
+        }
+      },
+      "type": "text"
+    },
+    "owner": {
+      "properties": {
+        "backend_roles": {
+          "fields": {
+            "keyword": {
+              "type": "keyword"
+            }
+          },
+          "type": "text"
+        },
+        "custom_attribute_names": {
+          "fields": {
+            "keyword": {
+              "type": "keyword"
+            }
+          },
+          "type": "text"
+        },
+        "name": {
+          "fields": {
+            "keyword": {
+              "ignore_above": 256,
+              "type": "keyword"
+            }
+          },
+          "type": "text"
+        },
+        "roles": {
+          "fields": {
+            "keyword": {
+              "type": "keyword"
+            }
+          },
+          "type": "text"
+        }
+      },
+      "type": "nested"
+    },
+    "tenant_id": {
+      "type": "keyword"
+    }
+  }
+}

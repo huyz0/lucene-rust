@@ -1,0 +1,4 @@
+grant {
+    // ml-commons: registering a model downloads it from its URL.
+    permission java.net.SocketPermission "*", "connect,resolve";
+};
