@@ -183,6 +183,16 @@ pub const DEFAULT_PROBE_FRACTION: f32 = 0.05;
 /// without calibration.
 pub const DEFAULT_RERANK_MULTIPLE: f32 = 10.0;
 
+/// `fraction` of `clusters`, at least one.
+pub(crate) fn probes_for(fraction: f32, clusters: usize) -> usize {
+    // The calibrated fraction is a whole number of clusters over this
+    // count; the slack, relative as the `f32` fraction's rounding is,
+    // keeps that rounding from adding one.
+    let x = f64::from(fraction) * clusters as f64;
+    let n = (x - 1e-6 * x.max(1.0)).ceil();
+    (n.max(1.0) as usize).min(clusters.max(1))
+}
+
 /// The clusters one segment probes when a search spreads `nprobe` probes
 /// over segments holding `total_vectors` vectors in all: the segment's share
 /// by its `segment_vectors`, rounded up, and at least one. Clusters hold a
@@ -503,13 +513,7 @@ impl IvfField {
         let fraction = self
             .calibration
             .map_or(DEFAULT_PROBE_FRACTION, |c| c.probe_fraction);
-        let clusters = self.clusters();
-        // The calibrated fraction is a whole number of clusters over this
-        // count; the slack, relative as the `f32` fraction's rounding is,
-        // keeps that rounding from adding one.
-        let x = f64::from(fraction) * clusters as f64;
-        let n = (x - 1e-6 * x.max(1.0)).ceil();
-        (n.max(1.0) as usize).min(clusters.max(1))
+        probes_for(fraction, self.clusters())
     }
 
     /// The most candidates [`Rerank::Auto`] reranks for `k` hits: the
