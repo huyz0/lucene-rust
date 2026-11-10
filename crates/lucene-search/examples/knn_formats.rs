@@ -4,7 +4,9 @@
 //!
 //! ```text
 //! cargo run --release -p lucene-search --example knn_formats -- <prefix> <l2|cosine> [options]
-//!   --formats L   comma list of hnsw, hnsw-int7, ivf, ivf-f16 (default all)
+//!   --formats L   comma list of hnsw, hnsw-int7, ivf, ivf-f16 and ivf-<quantizer>
+//!                 (f16 rerank, any `IVF_QUANTIZERS` name: ivf-erq4, ivf-osq2, ...)
+//!                 (default hnsw, hnsw-int7, ivf, ivf-f16)
 //!   --queries N   measured queries (default 1000), after 200 warm-up ones
 //!   --segments N  flushed segments, force-merged to one when --merge is set (default 1)
 //!   --nprobes L   IVF probes per segment, 0 = calibrated (default 0)
@@ -22,7 +24,7 @@
 use std::time::Instant;
 
 use lucene_codecs::field_infos::{FieldInfo, VectorEncoding, VectorSimilarityFunction};
-use lucene_codecs::per_field_knn_vectors::KnnVectorsFormat;
+use lucene_codecs::per_field_knn_vectors::{KnnVectorsFormat, IVF_QUANTIZERS};
 use lucene_codecs::stored_fields::{FieldValue, StoredField};
 use lucene_index::concurrent_writer::ConcurrentIndexWriter;
 use lucene_index::index_writer::{DocumentVector, ExplicitDocument, IndexWriter};
@@ -53,7 +55,14 @@ fn format(name: &str) -> KnnVectorsFormat {
         }
         "ivf" => KnnVectorsFormat::ivf(384, 0).unwrap(),
         "ivf-f16" => KnnVectorsFormat::ivf(384, 1).unwrap(),
-        other => panic!("unknown format {other}"),
+        other => {
+            // `ivf-<quantizer>`: f16 rerank vectors, the named cluster codes.
+            let quantizer = other
+                .strip_prefix("ivf-")
+                .and_then(|q| IVF_QUANTIZERS.iter().position(|&n| n == q))
+                .unwrap_or_else(|| panic!("unknown format {other}"));
+            KnnVectorsFormat::ivf_quantized(384, 1, quantizer as u8).unwrap()
+        }
     }
 }
 

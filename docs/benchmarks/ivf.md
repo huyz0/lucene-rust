@@ -402,6 +402,31 @@ cargo run --release -p lucene-search --example knn_formats -- <prefix> cosine \
   --formats hnsw,ivf,ivf-f16 --nprobes 0,32 --segments 8 --merge
 ```
 
+### Cluster code quantizers
+
+`KnnVectorsFormat::ivf_quantized` (the plugin's `parameters.quantizer`) picks
+the cluster codes: `bbq` (default), `osq2`/`osq4`/`osq7`, `erq2` to `erq8`.
+GloVe-100 390k, **l2** (truth regenerated with `prepare.py ... l2`), one
+segment, f16 rerank vectors, 1000 queries:
+
+| quantizer | index | nprobes 64 | nprobes 128 | nprobes 192 |
+|---|---|---|---|---|
+| bbq | 255.0 MB | 0.930 @ 238 µs | 0.958 @ 412 µs | 0.962 @ 659 µs |
+| osq2 | 261.9 MB | 0.935 @ 210 µs | 0.966 @ 340 µs | 0.973 @ 402 µs |
+| erq2 | 260.2 MB | 0.940 @ 300 µs | 0.971 @ 332 µs | 0.978 @ 510 µs |
+| erq4 | 274.0 MB | 0.947 @ 375 µs | 0.982 @ 614 µs | 0.990 @ 954 µs |
+
+BBQ levels off near 0.96: its error bounds are loose, so the automatic
+rerank stops before the true neighbours are reached. Two-bit codes (osq2,
+erq2) cost 2-3% more index and are faster and more accurate than BBQ from
+128 probes; erq4 is the one that reaches 0.98-0.99. osq4/osq7/erq8 add bytes
+and latency for no recall over erq4.
+
+```text
+cargo run --release -p lucene-search --example knn_formats -- <prefix> l2 \
+  --formats ivf-f16,ivf-osq2,ivf-erq2,ivf-erq4 --nprobes 64,128,192
+```
+
 ## Through the OpenSearch plugin
 
 `benchmarks/ivf/plugin_knn_bench.py` loads GloVe-100 (390k, cosine) into one
