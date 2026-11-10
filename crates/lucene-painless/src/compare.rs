@@ -44,16 +44,9 @@ pub fn compare_to(a: &Value, b: &Value) -> Result<Ordering, Throw> {
     }
     natural(a, b).ok_or_else(|| {
         if crate::types::instance_of(a, "java.lang.Comparable") {
-            Throw::class_cast(format!(
-                "class {} cannot be cast to class {}",
-                b.class_name(),
-                a.class_name()
-            ))
+            Throw::cast_failure(&b.class_name(), &a.class_name())
         } else {
-            Throw::class_cast(format!(
-                "class {} cannot be cast to class java.lang.Comparable",
-                a.class_name()
-            ))
+            Throw::cast_failure(&a.class_name(), "java.lang.Comparable")
         }
     })
 }

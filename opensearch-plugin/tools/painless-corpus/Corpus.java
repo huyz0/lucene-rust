@@ -46,7 +46,8 @@ import org.opensearch.script.ScriptException;
  * what Painless returned or threw.
  *
  * <p>Record layout (little-endian): source string, status {@code u8} ({@code 0} returned, then
- * the value; {@code 1} threw, then the exception class and message; {@code 2} did not compile;
+ * the value; {@code 1} threw, then the exception class, its message ({@code u8} 1 then the string, or 0 for
+ * none) and the script offset Painless points at ({@code i32}, -1 none); {@code 2} did not compile;
  * {@code 3} compiled but the IR layout refused it, then the reason), then for status 0 and 1
  * the IR as a length-prefixed blob.
  *
@@ -65,7 +66,7 @@ public class Corpus {
         int[] counts = new int[4];
         try (BufferedReader r = Files.newBufferedReader(Path.of(args[0]));
              DataOutputStream out = new DataOutputStream(new FileOutputStream(args[1]))) {
-            out.write("PCO1".getBytes(StandardCharsets.US_ASCII));
+            out.write("PCO2".getBytes(StandardCharsets.US_ASCII));
             String line;
             while ((line = r.readLine()) != null) {
                 Matcher m = srcPat.matcher(line);
@@ -104,9 +105,16 @@ public class Corpus {
                     counts[0]++;
                 } catch (Throwable t) {
                     Throwable cause = t instanceof ScriptException && t.getCause() != null ? t.getCause() : t;
+                    ScriptException.Position pos = t instanceof ScriptException se ? se.getPos() : null;
                     rec.u8(1);
                     rec.str(cause.getClass().getName());
-                    rec.str(String.valueOf(cause.getMessage()));
+                    if (cause.getMessage() == null) {
+                        rec.u8(0);
+                    } else {
+                        rec.u8(1);
+                        rec.str(cause.getMessage());
+                    }
+                    rec.i32(pos == null ? -1 : pos.offset);
                     counts[1]++;
                 }
                 rec.blob(ir);

@@ -876,14 +876,49 @@ impl JObject for JStringBuilder {
                     *self.buf.borrow_mut() = from_utf16(&u);
                     Value::Null
                 }
-                ("capacity", 0) => Value::Int((len16(&self.buf.borrow()) as i32).max(16)),
-                _ => {
+                ("compareTo", 1) => match &args[0] {
+                    Value::Object(o) if o.as_any().is::<JStringBuilder>() => {
+                        Value::Int(java_compare(&self.buf.borrow(), &o.java_to_string()))
+                    }
+                    Value::Null => {
+                        return Err(Throw::npe(
+                            "Cannot read field \"value\" because \"another\" is null",
+                        ))
+                    }
+                    other => {
+                        return Err(Throw::cast_failure(
+                            &other.class_name(),
+                            "java.lang.StringBuilder",
+                        ))
+                    }
+                },
+                // `AbstractStringBuilder`'s reads, as `String`'s.
+                ("indexOf" | "lastIndexOf", 1 | 2) => {
+                    if !matches!(args[0], Value::Str(_)) {
+                        return Err(Throw::cast_failure(
+                            &args[0].class_name(),
+                            "java.lang.String",
+                        ));
+                    }
                     let s: Rc<str> = Rc::from(self.buf.borrow().as_str());
-                    return match call(vm, &s, name, args) {
-                        Some(r) if !matches!(name, "equals" | "hashCode") => r,
-                        _ => Err(Throw::new(api::UNSUPPORTED, "")),
-                    };
+                    return call(vm, &s, name, args)
+                        .unwrap_or_else(|| Err(Throw::new(api::UNSUPPORTED, "")));
                 }
+                ("charAt", 1)
+                | ("codePointAt", 1)
+                | ("codePointBefore", 1)
+                | ("codePointCount", 2)
+                | ("offsetByCodePoints", 2)
+                | ("substring", 1 | 2)
+                | ("subSequence", 2)
+                | ("chars" | "codePoints", 0) => {
+                    let s: Rc<str> = Rc::from(self.buf.borrow().as_str());
+                    return call(vm, &s, name, args)
+                        .unwrap_or_else(|| Err(Throw::new(api::UNSUPPORTED, "")));
+                }
+                // Everything else, `capacity()` among them (its growth is
+                // not modelled), is not served.
+                _ => return Err(Throw::new(api::UNSUPPORTED, "")),
             })
         })();
         match r {

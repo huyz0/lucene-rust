@@ -50,6 +50,27 @@ impl Throw {
         Throw::new("java.lang.ClassCastException", message)
     }
 
+    /// The JVM's `ClassCastException` for a checked cast of a `from` to
+    /// `to` (both JVM names), with its module and loader note.
+    pub fn cast_failure(from: &str, to: &str) -> Throw {
+        let place = |c: &str| {
+            if c.starts_with("java.") || c.starts_with('[') {
+                "module java.base of loader 'bootstrap'"
+            } else {
+                "unnamed module of loader 'app'"
+            }
+        };
+        let (pf, pt) = (place(from), place(to));
+        let note = if pf == pt {
+            format!("{from} and {to} are in {pf}")
+        } else {
+            format!("{from} is in {pf}; {to} is in {pt}")
+        };
+        Throw::class_cast(format!(
+            "class {from} cannot be cast to class {to} ({note})"
+        ))
+    }
+
     pub fn illegal_arg(message: impl Into<String>) -> Throw {
         Throw::new("java.lang.IllegalArgumentException", message)
     }
@@ -397,6 +418,9 @@ pub enum Op {
     },
     /// One loop iteration against the function's loop counter.
     Count,
+    /// The source offset of the code that follows, as the class's line
+    /// table has it: where an exception thrown from here on is reported.
+    At(i32),
 }
 
 impl std::fmt::Debug for Op {
@@ -438,6 +462,7 @@ impl std::fmt::Debug for Op {
             Op::Throw(r) => write!(f, "throw r{r}"),
             Op::Try { body, catches } => write!(f, "try {body:?} {catches:?}"),
             Op::Count => write!(f, "count"),
+            Op::At(o) => write!(f, "at {o}"),
         }
     }
 }
@@ -559,6 +584,9 @@ pub struct Vm<'a> {
     /// Register files of returned calls, for the next calls to reuse: a
     /// caller running many executions keeps it across them.
     pub pool: Vec<Vec<Value>>,
+    /// The source offset of the code running ([`Op::At`]); `-1` before the
+    /// first.
+    pub loc: i32,
 }
 
 /// A call's arguments, copied out of the caller's registers: on the stack
@@ -593,6 +621,7 @@ impl<'a> Vm<'a> {
             depth: 0,
             bindings: vec![None; sites],
             pool: Vec::new(),
+            loc: -1,
         }
     }
 
@@ -828,6 +857,7 @@ impl<'a> Vm<'a> {
                         }
                     }
                 },
+                Op::At(o) => self.loc = *o,
                 Op::Count => {
                     if frame.counting {
                         frame.counter -= 1;

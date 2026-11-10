@@ -68,6 +68,7 @@ import org.opensearch.painless.PainlessScriptEngine;
 import org.opensearch.painless.spi.Allowlist;
 import org.opensearch.painless.spi.AllowlistLoader;
 import org.opensearch.script.ScoreScript;
+import org.opensearch.script.ScriptException;
 import org.opensearch.script.Script;
 import org.opensearch.script.ScriptType;
 import org.opensearch.search.lookup.SearchLookup;
@@ -77,11 +78,13 @@ import org.opensearch.search.lookup.SearchLookup;
  * each script of a set the hits and scores OpenSearch's own {@code ScriptScoreQuery} gives (or
  * the exception it throws), with the IR, params and doc fields the plugin would send.
  *
- * <p>Layout (little-endian): {@code PSC1}, count, then per script: source, sub-query kind
+ * <p>Layout (little-endian): {@code PSC2}, count, then per script: source, sub-query kind
  * ({@code u8}: 0 {@code body:alpha}, 1 match all), boost {@code f32}, native {@code u8}; when
  * native, the IR, params, {@code needs_score u8} and the fields (count, then name and kind);
  * then the outcome {@code u8}: 0 the hits (count, then doc {@code i32} and score {@code f32}, by
- * doc), 1 the exception's class.
+ * doc), 1 the script's exception, 2 another exception: the class (the one Painless's {@code
+ * ScriptException} wraps), its message ({@code
+ * u8} 1 then the string, or 0 for none) and the script offset it points at ({@code i32}, -1 none).
  *
  * <pre>
  *   java -cp ... ScoreCorpus fixtures/data/painless-score
@@ -196,6 +199,12 @@ public class ScoreCorpus {
             "doc['likes'].value > 500 ? 1 : -1",
             "throw new IllegalArgumentException('nope')",
             "Double.isNaN(_score) ? 0 : (float) (doc['ratio'].value * 1.1f) + 3",
+            // Counted in a batch: a keyword's and a boolean's value counts.
+            "doc['tag'].size() + doc['flag'].size() + _score",
+            // Refused: a params collection changed (Painless shares it across segments), and
+            // params changed through a second variable.
+            "params.weights.add(1); return params.weights.size()",
+            "def p = params; def q = p; p['w'] = 5; return q.w",
         };
         for (String s : scripts) {
             c.add(new Case(s, p, 0, 1f));
@@ -231,7 +240,7 @@ public class ScoreCorpus {
         int matched = 0, threw = 0, refused = 0;
         Rec rec = new Rec();
         List<Case> cases = cases();
-        rec.out.writeBytes("PSC1".getBytes(StandardCharsets.US_ASCII));
+        rec.out.writeBytes("PSC2".getBytes(StandardCharsets.US_ASCII));
         rec.i32(cases.size());
         try (DirectoryReader reader = DirectoryReader.open(dir)) {
             IndexSearcher searcher = new IndexSearcher(reader);
@@ -277,11 +286,24 @@ public class ScoreCorpus {
                     matched++;
                 } catch (Exception e) {
                     Throwable t = e;
+                    ScriptException.Position pos = null;
+                    boolean wrapped = false;
                     while (t.getCause() != null && t.getClass().getName().startsWith("org.opensearch.script")) {
+                        if (t instanceof ScriptException se) {
+                            wrapped = true;
+                            pos = se.getPos();
+                        }
                         t = t.getCause();
                     }
-                    rec.u8(1);
+                    rec.u8(wrapped ? 1 : 2);
                     rec.str(t.getClass().getName());
+                    if (t.getMessage() == null) {
+                        rec.u8(0);
+                    } else {
+                        rec.u8(1);
+                        rec.str(t.getMessage());
+                    }
+                    rec.i32(pos == null ? -1 : pos.offset);
                     threw++;
                 }
             }

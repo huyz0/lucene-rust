@@ -228,9 +228,6 @@ pub(crate) fn str_arg(v: &Value) -> std::result::Result<Rc<str>, Throw> {
         Value::Object(o) if o.as_any().is::<string::JStringBuilder>() => {
             Ok(Rc::from(o.java_to_string().as_str()))
         }
-        other => Err(Throw::class_cast(format!(
-            "class {} cannot be cast to class java.lang.String",
-            other.class_name()
-        ))),
+        other => Err(Throw::cast_failure(&other.class_name(), "java.lang.String")),
     }
 }

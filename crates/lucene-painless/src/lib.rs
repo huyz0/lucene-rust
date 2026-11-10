@@ -2,7 +2,10 @@
 //! (types, casts, methods and `def` sites resolved) compiled to a register
 //! program and run with Java's semantics.
 
+#![forbid(unsafe_code)]
+
 pub mod api;
+pub mod check;
 pub mod compare;
 pub mod compile;
 pub mod def;

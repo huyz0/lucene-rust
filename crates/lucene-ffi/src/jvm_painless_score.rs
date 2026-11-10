@@ -11,9 +11,12 @@
 //! checks it, and Lucene's [`FunctionScoreQuery`] multiplies it by the
 //! boost as `ScriptScorer` does, in `float`.
 //!
-//! Anything the script does that the native runtime does not implement, and
-//! any exception the script throws, fails the search, which the plugin then
-//! runs on Lucene: Painless raises its own error there.
+//! The plugin asks [`check`] first, before anything runs: a script the native
+//! runtime would not run exactly as Painless does runs in Java from the
+//! start ([`lucene_painless::check`]). A script that passes runs natively to
+//! the end; an exception it throws is the script's error, reported as
+//! [`script_error`] for the plugin to raise as Painless's `ScriptException`,
+//! and never a reason to run it again in Java.
 //!
 //! The node, after its kind byte:
 //!
@@ -21,14 +24,15 @@
 //! |---|---|
 //! | sub-query | a node |
 //! | `needs_score` | `u8`: `1` the script reads `_score` |
-//! | IR | `i32` length, then the `PIR1` blob |
+//! | IR | `i32` length, then the `PIR2` blob |
 //! | params | `i32` length, then a map constant ([`lucene_painless::ir::decode_constant`]) |
 //! | index | string: `_getIndex()` |
 //! | shard | `i32`: `_getShardId()` |
+//! | script | `i32`: the plugin's number for the script within the request |
 //! | fields | `i32` count, then per field: string name, `u8` [kind](FieldKind) |
 //!
-//! The fields are the ones the script names by a constant (`doc['f']`); a
-//! field it names any other way fails the search.
+//! The fields are the ones the script names by a constant (`doc['f']`); the
+//! check refuses a script that names one any other way.
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -36,6 +40,7 @@ use std::sync::Arc;
 
 use lucene_codecs::doc_values::NumericReader;
 use lucene_painless::api::doc::{DocKind, DocLookup, DocValues};
+use lucene_painless::check::{Refused, Served};
 use lucene_painless::compile::missing;
 use lucene_painless::ir;
 use lucene_painless::jmap::{JMap, Order};
@@ -118,6 +123,8 @@ struct Spec {
     needs_score: bool,
     index: String,
     shard: i32,
+    /// The plugin's number for the script, in the errors it raises.
+    script_id: i32,
     fields: Vec<FieldSpec>,
 }
 
@@ -127,6 +134,19 @@ pub(crate) fn decode(
     nodes: &mut usize,
 ) -> std::result::Result<Clause, FfiStatus> {
     let sub = crate::jvm_reader::decode_node(c, depth + 1, nodes)?;
+    let spec = decode_spec(c)?;
+    // The plugin checked it before sending it: a refusal here is a plugin
+    // that did not.
+    spec.check()
+        .map_err(|r| invalid(format!("query tree: painless script not checked: {r}")))?;
+    let source = PainlessScoreSource(Arc::new(spec));
+    Ok(Clause::Extended(Box::new(ExtendedQuery::FunctionScore(
+        FunctionScoreQuery::new(sub, Arc::new(source)),
+    ))))
+}
+
+/// The node's script, after its sub-query.
+fn decode_spec(c: &mut Cursor<'_>) -> std::result::Result<Spec, FfiStatus> {
     let needs_score = match c.u8()? {
         0 => false,
         1 => true,
@@ -147,6 +167,7 @@ pub(crate) fn decode(
     }
     let index = string(c)?;
     let shard = c.i32()?;
+    let script_id = c.i32()?;
     let n = c.len()?;
     let mut fields = Vec::with_capacity(n.min(c.remaining())); // alloc-ok: bounded by the blob
     for _ in 0..n {
@@ -168,7 +189,7 @@ pub(crate) fn decode(
         };
         fields.push(FieldSpec { name, kind });
     }
-    let source = PainlessScoreSource(Arc::new(Spec {
+    Ok(Spec {
         script,
         ir_blob,
         params,
@@ -176,12 +197,43 @@ pub(crate) fn decode(
         needs_score,
         index,
         shard,
+        script_id,
         fields,
-    }));
-    Ok(Clause::Extended(Box::new(ExtendedQuery::FunctionScore(
-        FunctionScoreQuery::new(sub, Arc::new(source)),
-    ))))
+    })
 }
+
+/// Whether the native runtime runs the script of `blob` (a node's fields
+/// after its sub-query) exactly as Painless would: `None` when it does,
+/// else why not.
+pub(crate) fn check(blob: &[u8]) -> std::result::Result<Option<String>, FfiStatus> {
+    let mut c = Cursor::new(blob);
+    let spec = decode_spec(&mut c)?;
+    if c.remaining() != 0 {
+        return Err(invalid("painless check: trailing bytes"));
+    }
+    Ok(spec.check().err().map(|r| r.0))
+}
+
+/// The error a script's exception fails the search with: the plugin raises
+/// it as Painless's `ScriptException` around the exception `class` (with
+/// `message`, `None` for none), at source offset `offset`.
+fn script_error(script_id: i32, offset: i32, t: &Throw) -> Error {
+    let message = match t.message() {
+        Some(m) => format!("1{m}"),
+        None => "0".to_string(),
+    };
+    Error::IllegalArgument(format!(
+        "{SCRIPT_ERROR}{script_id}\u{1}{offset}\u{1}{}\u{1}{message}",
+        t.class()
+    ))
+}
+
+/// What a [`script_error`] message starts with.
+const SCRIPT_ERROR: &str = "\u{1}painless-script-error\u{1}";
+
+/// What the message of `ScriptScorer`'s own `IllegalArgumentException` (a
+/// negative or NaN score) starts with; the message follows.
+const SCORE_ERROR: &str = "\u{1}painless-score-error\u{1}";
 
 fn string(c: &mut Cursor<'_>) -> std::result::Result<String, FfiStatus> {
     Ok(std::str::from_utf8(c.bytes()?)
@@ -190,9 +242,12 @@ fn string(c: &mut Cursor<'_>) -> std::result::Result<String, FfiStatus> {
 }
 
 /// A script's exception as the search's error.
-fn thrown(t: &Throw) -> Error {
+/// A failure of the runtime itself while running a checked script (an
+/// unreadable segment): not the script's error, and not one Java would
+/// answer differently.
+fn runtime_failure(t: &Throw) -> Error {
     Error::IllegalArgument(format!(
-        "painless script threw {}: {}",
+        "painless runtime: {}: {}",
         t.class(),
         t.message().unwrap_or_default()
     ))
@@ -228,6 +283,69 @@ impl JObject for Unavailable {
 }
 
 impl Spec {
+    /// The script class's own methods the score context serves.
+    fn internals(&self) -> &'static [&'static str] {
+        const WITHOUT_SCORE: &[&str] = &[
+            "getParams",
+            "getDoc",
+            "_getDocId",
+            "_getDocBaseId",
+            "_getIndex",
+            "_getShardId",
+        ];
+        const WITH_SCORE: &[&str] = &[
+            "getParams",
+            "getDoc",
+            "get_score",
+            "_getDocId",
+            "_getDocBaseId",
+            "_getIndex",
+            "_getShardId",
+        ];
+        if self.needs_score {
+            WITH_SCORE
+        } else {
+            WITHOUT_SCORE
+        }
+    }
+
+    /// [`lucene_painless::check`] on the program each segment runs.
+    fn check(&self) -> std::result::Result<(), Refused> {
+        let mut prog =
+            lucene_painless::compile::compile(&self.script).map_err(|e| Refused(e.to_string()))?;
+        let doc_lookup = Value::object(DocLookup);
+        let params = self
+            .params(&doc_lookup)
+            .map_err(|t| Refused(format!("params: {}", t.message().unwrap_or_default())))?;
+        let fields: Vec<(&str, Option<DocKind>)> = self
+            .fields
+            .iter()
+            .map(|f| (f.name.as_str(), f.kind.doc_kind()))
+            .collect();
+        let unmapped: Vec<&str> = self
+            .fields
+            .iter()
+            .filter(|f| f.kind == FieldKind::Unmapped)
+            .map(|f| f.name.as_str())
+            .collect();
+        specialize(
+            &mut prog,
+            &Facts {
+                params: Some(&params),
+                fields: &fields,
+            },
+        );
+        lucene_painless::check::check(
+            &self.script,
+            &prog,
+            &Served {
+                fields: &fields,
+                unmapped: &unmapped,
+                internals: self.internals(),
+            },
+        )
+    }
+
     /// `ScoreScript`'s `params`: a copy of the script's, then `LeafSearchLookup.asMap()`.
     fn params(&self, doc: &Value) -> std::result::Result<Value, Throw> {
         let ir::Constant::Map(entries) = &self.params else {
@@ -311,7 +429,7 @@ struct Column {
 /// A numeric field's stored longs as its `ScriptDocValues` values' bits.
 fn decode_column(kind: FieldKind, vs: &mut [u64]) {
     match kind {
-        FieldKind::Long => {}
+        FieldKind::Long | FieldKind::Boolean => {}
         FieldKind::Double => {
             for v in vs {
                 *v = sortable_long_to_double(*v as i64).to_bits();
@@ -327,7 +445,7 @@ fn decode_column(kind: FieldKind, vs: &mut [u64]) {
                 *v = f64::from(sortable_short_to_half_float(*v as i16)).to_bits();
             }
         }
-        _ => unreachable!("a batch reads longs and doubles"),
+        FieldKind::Keyword | FieldKind::Unsupported | FieldKind::Unmapped => {}
     }
 }
 
@@ -472,7 +590,7 @@ impl ScoreEnv<'_> {
             return Ok(v.clone());
         }
         let n = self.current[i].items.len();
-        let mut items = Vec::with_capacity(n);
+        let mut items = Vec::with_capacity(n); // alloc-ok: the document's values, already read
         for x in 0..n {
             items.push(self.boxed_item(i, x as i32)?);
         }
@@ -499,6 +617,29 @@ impl ScoreEnv<'_> {
     fn read_column(&mut self, i: usize) -> Result<()> {
         let spec = &self.source.fields[i];
         let kind = spec.kind;
+        if kind == FieldKind::Keyword {
+            // Only counted in a batch (`size()`): its ordinals, document by document.
+            let mut col = std::mem::take(&mut self.columns[i]);
+            col.counts.clear();
+            col.firsts.clear();
+            let doc = self.doc;
+            for b in 0..self.batch.len() {
+                self.doc = self.batch[b];
+                let read = self.read(i);
+                if let Err(e) = read {
+                    self.doc = doc;
+                    self.columns[i] = col;
+                    return Err(e);
+                }
+                col.counts.push(self.current[i].items.len() as u64);
+                col.firsts.push(0);
+            }
+            self.doc = doc;
+            self.current[i].doc = -1;
+            col.epoch = self.epoch;
+            self.columns[i] = col;
+            return Ok(());
+        }
         let reader = self.reader;
         let direct = self.direct[i].get_or_insert_with(|| {
             direct_sorted_numeric_singleton(reader, &spec.name)
@@ -670,23 +811,25 @@ struct ScriptScores<'c> {
 impl ScriptScores<'_> {
     /// The score of the current document (`env.doc`, `env.score`).
     fn run(&mut self) -> Result<f32> {
+        let id = self.env.source.script_id;
         let r = match &mut self.typed {
             Some((t, regs)) => match t.run_double(&mut self.env, regs) {
                 Ok(Ok(v)) => return checked(v as f32, self.env.doc),
                 Ok(Err(v)) => Ok(v),
-                Err(t) => Err(t),
+                Err(e) => Err(script_error(id, t.thrown_at(regs), &e)),
             },
             None => {
                 let mut vm = Vm::new(self.prog.clone(), &mut self.env);
                 vm.bindings = std::mem::take(&mut self.bindings);
                 vm.pool = std::mem::take(&mut self.pool);
                 let r = vm.execute(&self.args);
+                let loc = vm.loc;
                 self.bindings = std::mem::take(&mut vm.bindings);
                 self.pool = std::mem::take(&mut vm.pool);
-                r
+                r.map_err(|e| script_error(id, loc, &e))
             }
         };
-        let r = r.map_err(|t| thrown(&t))?;
+        let r = r?;
         let v = match r {
             Value::Double(v) => v,
             r => lucene_painless::types::as_f64(&r).ok_or_else(|| {
@@ -704,7 +847,8 @@ impl ScriptScores<'_> {
 fn checked(v: f32, doc: i32) -> Result<f32> {
     if v < 0.0 || v.is_nan() {
         return Err(Error::IllegalArgument(format!(
-            "script_score script returned an invalid score [{v}] for doc [{doc}]. Must be a non-negative score!"
+            "{SCORE_ERROR}script_score script returned an invalid score [{}] for doc [{doc}]. Must be a non-negative score!",
+            lucene_painless::number::float_to_string(v)
         )));
     }
     Ok(v)
@@ -729,10 +873,17 @@ impl ScriptScores<'_> {
         env.batch_scores.clear();
         env.batch_scores.extend_from_slice(&scores[..docs.len()]);
         let out = &mut out[..docs.len()];
-        t.run_batch(env, &mut self.columns, out)
-            .map_err(|e| thrown(&e))?;
-        for (k, o) in out.iter_mut().enumerate() {
+        let failed = t
+            .run_batch(env, &mut self.columns, out)
+            .map_err(|e| runtime_failure(&e))?;
+        // In document order, as Java scores them: a score check fails
+        // before a later document's exception.
+        let upto = failed.as_ref().map_or(out.len(), |(k, ..)| *k);
+        for (k, o) in out[..upto].iter_mut().enumerate() {
             *o = f64::from(checked(*o as f32, docs[k])?);
+        }
+        if let Some((_, e, offset)) = failed {
+            return Err(script_error(env.source.script_id, offset, &e));
         }
         has[..docs.len()].fill(true);
         Ok(())
@@ -800,7 +951,9 @@ impl DoubleValuesSource for PainlessScoreSource {
         let arity = prog.funcs[prog.entry as usize].arity as usize;
         let source = Arc::clone(&self.0);
         let doc_lookup = Value::object(DocLookup);
-        let params = source.params(&doc_lookup).map_err(|t| thrown(&t))?;
+        let params = source
+            .params(&doc_lookup)
+            .map_err(|t| runtime_failure(&t))?;
         let fields: Vec<(&str, Option<DocKind>)> = source
             .fields
             .iter()
@@ -830,7 +983,7 @@ impl DoubleValuesSource for PainlessScoreSource {
                     view: None,
                 })
                 .collect(),
-            terms: vec![HashMap::new(); n],
+            terms: vec![HashMap::new(); n], // alloc-ok: one per field the node names
             batch: Vec::new(),
             batch_scores: Vec::new(),
             columns: (0..n).map(|_| Column::default()).collect(),
@@ -846,11 +999,11 @@ impl DoubleValuesSource for PainlessScoreSource {
             typed,
             pool: Vec::new(),
             columns: BatchRegs::default(),
-            bindings: vec![None; prog.binding_sites],
+            bindings: vec![None; prog.binding_sites], // alloc-ok: the compiled program's own count
             prog: Rc::new(prog),
             env,
             // `execute(ExplanationHolder)`: no explanation while scoring.
-            args: vec![Value::Null; arity],
+            args: vec![Value::Null; arity], // alloc-ok: execute's own arity
             scores,
             value: 0.0,
         }))
@@ -902,8 +1055,19 @@ mod tests {
         source: String,
         /// The node, when the plugin would send one.
         node: Option<Blob>,
-        /// OpenSearch's hits by doc, or `None` when it threw.
-        hits: Option<Vec<(i32, f32)>>,
+        /// The node's fields after its sub-query: what the plugin checks.
+        spec: Vec<u8>,
+        /// OpenSearch's hits by doc, or the exception it threw.
+        outcome: Outcome,
+    }
+
+    enum Outcome {
+        Hits(Vec<(i32, f32)>),
+        /// The class `ScriptException` wraps, its message, the offset it
+        /// points at.
+        Threw(String, Option<String>, i32),
+        /// `ScriptScorer`'s own error: a negative or NaN score.
+        Refused(String),
     }
 
     struct Reader<'a>(&'a [u8]);
@@ -939,7 +1103,7 @@ mod tests {
 
     fn cases() -> Vec<Case> {
         let data = std::fs::read(fixture("expected.bin")).unwrap();
-        assert_eq!(&data[..4], b"PSC1");
+        assert_eq!(&data[..4], b"PSC2");
         let mut r = Reader(&data[4..]);
         let n = r.i32();
         (0..n)
@@ -950,46 +1114,60 @@ mod tests {
                     _ => Blob::default().u8(5),
                 };
                 let boost = f32::from_bits(r.i32() as u32);
-                let node = (r.u8() == 1).then(|| {
-                    let ir = r.bytes();
-                    let params = r.bytes();
-                    let needs = r.u8();
-                    let mut b = Blob::tree();
-                    if boost != 1.0 {
-                        b = b.u8(3).f32(boost);
-                    }
-                    b = b
-                        .u8(NODE_PAINLESS_SCORE)
-                        .raw(&sub)
-                        .u8(needs)
-                        .bytes(&ir)
-                        .bytes(&params)
-                        .str("idx")
-                        .i32(3);
-                    let fields = r.i32();
-                    b = b.i32(fields);
-                    for _ in 0..fields {
-                        let name = r.str();
-                        b = b.str(&name).u8(r.u8());
-                    }
-                    b
-                });
-                let hits = (r.u8() == 0).then(|| {
-                    let n = r.i32();
-                    (0..n)
-                        .map(|_| (r.i32(), f32::from_bits(r.i32() as u32)))
-                        .collect()
-                });
-                if hits.is_none() {
-                    r.str();
+                assert_eq!(r.u8(), 1, "{source}: every fixture script compiles to IR");
+                let ir = r.bytes();
+                let params = r.bytes();
+                let needs = r.u8();
+                let mut spec = Blob::default()
+                    .u8(needs)
+                    .bytes(&ir)
+                    .bytes(&params)
+                    .str("idx")
+                    .i32(3)
+                    .i32(0);
+                let fields = r.i32();
+                spec = spec.i32(fields);
+                for _ in 0..fields {
+                    let name = r.str();
+                    spec = spec.str(&name).u8(r.u8());
                 }
-                Case { source, node, hits }
+                let mut b = Blob::tree();
+                if boost != 1.0 {
+                    b = b.u8(3).f32(boost);
+                }
+                let node = Some(b.u8(NODE_PAINLESS_SCORE).raw(&sub).raw(&spec));
+                let outcome = match r.u8() {
+                    0 => {
+                        let n = r.i32();
+                        Outcome::Hits(
+                            (0..n)
+                                .map(|_| (r.i32(), f32::from_bits(r.i32() as u32)))
+                                .collect(),
+                        )
+                    }
+                    kind => {
+                        let class = r.str();
+                        let message = (r.u8() == 1).then(|| r.str());
+                        let offset = r.i32();
+                        if kind == 1 {
+                            Outcome::Threw(class, message, offset)
+                        } else {
+                            assert_eq!(class, "java.lang.IllegalArgumentException");
+                            Outcome::Refused(message.unwrap())
+                        }
+                    }
+                };
+                Case {
+                    source,
+                    node,
+                    spec: spec.0,
+                    outcome,
+                }
             })
             .collect()
     }
 
-    /// Scripts OpenSearch scores that the native runtime leaves to Java:
-    /// the search fails natively, and the plugin runs it on Lucene.
+    /// Scripts the check leaves to Java, before any of them runs.
     const IN_JAVA: &[&str] = &[
         // A date field's `JodaCompatibleZonedDateTime`.
         "doc['d'].value.toInstant().toEpochMilli() / 1e12",
@@ -999,8 +1177,16 @@ mod tests {
         "doc['vals'].stream().mapToLong(x -> x).sum()",
         // A field Painless does not see named: `params.doc[...]`.
         "params.doc['likes'].value + params._doc['flag'].value.compareTo(true) + 3",
+        // A collection of `params` changed, which every segment's script shares.
+        "params.weights.add(1); return params.weights.size()",
+        // `params` changed through a second variable.
+        "def p = params; def q = p; p['w'] = 5; return q.w",
     ];
 
+    /// Every script the check passes runs as OpenSearch's does: the same
+    /// hits and scores, or the same exception at the same offset. The ones
+    /// it refuses never reach the native runtime: a node carrying one is
+    /// refused before any document is read.
     #[test]
     fn scripts_score_as_opensearch_does() {
         let tmp = TempDir::new("painless-score");
@@ -1010,45 +1196,93 @@ mod tests {
         }
         let h = open(&tmp);
         let (mut same, mut java) = (0, 0);
+        let mut wrong = Vec::new();
         let cases = cases();
         for case in &cases {
-            let node = case
-                .node
-                .as_ref()
-                .expect("every fixture script compiles to IR");
+            let node = case.node.as_ref().unwrap();
+            let refused = check(&case.spec).unwrap();
             let got = run_limit(h, &node.0, 1000, i64::MAX);
-            match (&case.hits, got) {
-                (Some(want), Ok((mut hits, _, _))) => {
+            if let Some(why) = refused {
+                if !IN_JAVA.contains(&case.source.as_str()) {
+                    wrong.push(format!("{}: refused: {why}", case.source));
+                    continue;
+                }
+                let e = crate::error::last_error();
+                assert!(
+                    got.is_err() && e.contains("not checked"),
+                    "{}: {e}",
+                    case.source
+                );
+                java += 1;
+                continue;
+            }
+            assert!(
+                !IN_JAVA.contains(&case.source.as_str()),
+                "{}: passed the check",
+                case.source
+            );
+            let e = crate::error::last_error();
+            let bad = match (&case.outcome, got) {
+                (Outcome::Hits(want), Ok((mut hits, _, _))) => {
                     hits.sort_by_key(|&(d, _)| d);
                     let bits = |v: &[(i32, f32)]| -> Vec<(i32, u32)> {
                         v.iter().map(|&(d, s)| (d, s.to_bits())).collect()
                     };
-                    assert_eq!(bits(&hits), bits(want), "{}", case.source);
-                    same += 1;
+                    (bits(&hits) != bits(want)).then(|| format!("hits {hits:?}, want {want:?}"))
                 }
-                (Some(_), Err(_)) => {
-                    let e = crate::error::last_error();
-                    assert!(
-                        IN_JAVA.contains(&case.source.as_str()),
-                        "{}: {e}",
-                        case.source
-                    );
-                    assert!(
-                        e.contains(lucene_painless::api::UNSUPPORTED),
-                        "{}: {e}",
-                        case.source
-                    );
-                    java += 1;
+                (Outcome::Hits(_), Err(_)) => Some(format!("failed: {e:?}")),
+                (Outcome::Threw(class, message, offset), Err(_)) => {
+                    let message = match message {
+                        Some(m) => format!("1{m}"),
+                        None => "0".to_string(),
+                    };
+                    let want = format!("{SCRIPT_ERROR}0\u{1}{offset}\u{1}{class}\u{1}{message}");
+                    (!e.ends_with(&want)).then(|| format!("{e:?}, want {want:?}"))
                 }
-                // OpenSearch threw: the native search must fail, for the
-                // plugin to run it in Java and raise the same error.
-                (None, Err(_)) => same += 1,
-                (None, Ok(r)) => panic!("{}: OpenSearch threw, native scored {r:?}", case.source),
+                (Outcome::Refused(message), Err(_)) => {
+                    let want = format!("{SCORE_ERROR}{message}");
+                    (!e.ends_with(&want)).then(|| format!("{e:?}, want {want:?}"))
+                }
+                (_, Ok(r)) => Some(format!("OpenSearch threw, native scored {r:?}")),
+            };
+            if let Some(bad) = bad {
+                wrong.push(format!("{}: {bad}", case.source));
+                continue;
             }
+            same += 1;
         }
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
         assert_eq!(java, IN_JAVA.len());
         assert_eq!(same + java, cases.len());
         assert_eq!(ffi_close_jvm_reader(h), 0);
+    }
+
+    /// `cargo test --release -p lucene-ffi --lib painless_check_cost --
+    /// --ignored --nocapture`: the static check's cost per fixture script
+    /// (decode, compile, specialise, check), once per distinct script and
+    /// params, as the plugin caches the answer.
+    #[test]
+    #[ignore]
+    fn painless_check_cost() {
+        let mut all = Vec::new();
+        for case in &cases() {
+            let mut t: Vec<u128> = (0..200)
+                .map(|_| {
+                    let start = std::time::Instant::now();
+                    std::hint::black_box(check(&case.spec).unwrap());
+                    start.elapsed().as_nanos()
+                })
+                .collect();
+            t.sort_unstable();
+            all.push(t[t.len() / 2]);
+            println!("{:>8} ns  {}", t[t.len() / 2], case.source);
+        }
+        all.sort_unstable();
+        println!(
+            "median {} ns, max {} ns",
+            all[all.len() / 2],
+            all[all.len() - 1]
+        );
     }
 }
 
@@ -1104,6 +1338,7 @@ mod bench {
                 .bytes(&unhex(cols[1]))
                 .bytes(&unhex(cols[2]))
                 .str("idx")
+                .i32(0)
                 .i32(0)
                 .i32(cols.len() as i32 - 3);
             for f in &cols[3..] {
@@ -1168,6 +1403,7 @@ mod bench {
                 needs_score: true,
                 index: "idx".into(),
                 shard: 0,
+                script_id: 0,
                 fields,
             }));
             let n = seg.max_doc;

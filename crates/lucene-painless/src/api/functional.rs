@@ -119,8 +119,14 @@ impl JObject for Composed {
             ("negate", 0) => Ok(negate(this.clone())),
             ("and", 1) => Ok(and(this.clone(), args[0].clone())),
             ("or", 1) => Ok(or(this.clone(), args[0].clone())),
-            ("equals", 1) | ("hashCode", 0) | ("toString", 0) => return None,
-            _ => self.invoke(vm, args),
+            ("compare", 2) if self.class_name() == "java.util.Comparator" => self.invoke(vm, args),
+            ("apply", 1) if self.class_name() == "java.util.function.Function" => {
+                self.invoke(vm, args)
+            }
+            ("test", 1) if self.class_name() == "java.util.function.Predicate" => {
+                self.invoke(vm, args)
+            }
+            _ => return None,
         })
     }
 }

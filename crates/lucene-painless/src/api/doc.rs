@@ -51,10 +51,7 @@ impl JObject for DocLookup {
             ("containsKey", [key]) => match key {
                 Value::Str(f) => vm.env.doc_contains(f).map(Value::Bool),
                 // `LeafDocLookup.containsKey` casts its key to a String.
-                other => Err(Throw::class_cast(format!(
-                    "class {} cannot be cast to class java.lang.String",
-                    other.class_name()
-                ))),
+                other => Err(Throw::cast_failure(&other.class_name(), "java.lang.String")),
             },
             _ => Err(crate::compile::missing(format!(
                 "doc.{name}/{}",
@@ -72,10 +69,7 @@ fn field_name(key: &Value) -> Result<Rc<str>, Throw> {
     match key {
         Value::Str(s) => Ok(s.clone()),
         Value::Null => Err(api::npe()),
-        other => Err(Throw::class_cast(format!(
-            "class {} cannot be cast to class java.lang.String",
-            other.class_name()
-        ))),
+        other => Err(Throw::cast_failure(&other.class_name(), "java.lang.String")),
     }
 }
 
@@ -201,7 +195,7 @@ impl JObject for DocValues {
             ("clear" | "addAll" | "removeAll" | "retainAll" | "removeIf", _) => {
                 Err(Throw::no_message("java.lang.UnsupportedOperationException"))
             }
-            _ => api::dynamic::call(vm, &self.as_list(), name, args),
+            _ => return api::dynamic::try_call(vm, &self.as_list(), name, args),
         })
     }
 

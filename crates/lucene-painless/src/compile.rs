@@ -49,6 +49,19 @@ struct Fx<'s> {
     scopes: Vec<Vec<(String, Reg)>>,
     stack: Vec<Entry>,
     ops: Vec<Op>,
+    /// A located node's mark that follows its child's code (a cast, a
+    /// store), until the node emits it.
+    mark_after: Option<i32>,
+    /// Whether Painless's bytecode has an instruction since the last mark.
+    code: bool,
+    /// The last of a run of marks with no bytecode between them, in force
+    /// once the op they label is out: the JVM gives that op the run's
+    /// first (an exact match ends its line table search).
+    run_last: Option<i32>,
+    /// The loop being compiled's mark, for its counter's check.
+    loop_mark: Option<i32>,
+    /// Whether the function counts loop passes.
+    counting: bool,
 }
 
 /// Compiles a decoded script.
@@ -79,6 +92,11 @@ pub fn compile(script: &ir::Script) -> Result<Program> {
             scopes: vec![Vec::new()],
             stack: Vec::new(),
             ops: Vec::new(),
+            mark_after: None,
+            code: true,
+            run_last: None,
+            loop_mark: None,
+            counting: f.max_loop_counter > 0,
         };
         for (name, ty) in f.param_names.iter().zip(&f.param_types) {
             let r = fx.reg();
@@ -86,6 +104,8 @@ pub fn compile(script: &ir::Script) -> Result<Program> {
             fx.scopes[0].push((name.clone(), r));
         }
         fx.stmt(&f.body)?;
+        let mut body = fx.ops;
+        place_marks(&mut body, &mut -1);
         funcs.push(Func {
             name: f.name.clone(),
             arity: f.param_types.len(),
@@ -95,7 +115,7 @@ pub fn compile(script: &ir::Script) -> Result<Program> {
                 t.resize(fx.regs as usize, None);
                 t
             },
-            body: fx.ops.into_boxed_slice(),
+            body: body.into_boxed_slice(),
             max_loop_counter: f.max_loop_counter,
         });
     }
@@ -104,6 +124,20 @@ pub fn compile(script: &ir::Script) -> Result<Program> {
         entry,
         binding_sites: shared.binding_sites,
     })
+}
+
+/// Whether Painless writes no instruction for `c`: a widening to `def` or
+/// `Object` (ASM's `checkCast` skips `Object`), or no change of type.
+fn no_instruction(c: &ir::Cast) -> bool {
+    let reference = |t: &str| prim(t).is_none();
+    c.unbox_from.is_none()
+        && c.unbox_to.is_none()
+        && c.box_from.is_none()
+        && c.box_to.is_none()
+        && (c.from == c.to
+            || (reference(&c.from)
+                && c.from != crate::types::DEF
+                && (c.to == crate::types::DEF || c.to == "java.lang.Object")))
 }
 
 /// The `Value` of a constant.
@@ -260,6 +294,31 @@ impl Fx<'_> {
 
     fn emit(&mut self, op: Op) {
         self.ops.push(op);
+        if let Some(o) = self.run_last.take() {
+            self.ops.push(Op::At(o));
+        }
+    }
+
+    /// A loop pass's count, at the loop's mark when the function counts.
+    fn count(&mut self) {
+        if let Some(o) = self.loop_mark.take() {
+            if self.counting {
+                self.mark(o);
+            }
+        }
+        self.emit(Op::Count);
+        self.code = true;
+    }
+
+    /// A located node's mark at this point of the code.
+    fn mark(&mut self, o: i32) {
+        if !self.code && matches!(self.ops.last(), Some(Op::At(_))) {
+            self.run_last = Some(o);
+        } else {
+            self.run_last = None;
+            self.ops.push(Op::At(o));
+        }
+        self.code = false;
     }
 
     /// Records `r`'s static type `ty`, when a primitive.
@@ -365,7 +424,17 @@ impl Fx<'_> {
     }
 
     /// Compiles `f` into a block of its own.
+    /// The pending mark of a cast or store, once its child's code is out.
+    fn emit_mark_after(&mut self) {
+        if let Some(o) = self.mark_after.take() {
+            self.mark(o);
+        }
+    }
+
     fn block(&mut self, f: impl FnOnce(&mut Self) -> Result<()>) -> Result<Block> {
+        if let Some(o) = self.run_last.take() {
+            self.ops.push(Op::At(o));
+        }
         let saved = std::mem::take(&mut self.ops);
         let r = f(self);
         let ops = std::mem::replace(&mut self.ops, saved);
@@ -400,7 +469,19 @@ impl Fx<'_> {
     }
 
     fn stmt(&mut self, n: &Node) -> Result<()> {
+        self.stmt_code(n)?;
+        self.code = true;
+        Ok(())
+    }
+
+    fn stmt_code(&mut self, n: &Node) -> Result<()> {
         match n {
+            Node::At(o, ir::At::Loop, inner) => {
+                let outer = self.loop_mark.replace(*o);
+                let r = self.stmt(inner);
+                self.loop_mark = outer;
+                r
+            }
             Node::Block(stmts) => self.scoped(|fx| {
                 for s in stmts {
                     fx.stmt(s)?;
@@ -480,7 +561,7 @@ impl Fx<'_> {
                 self.settle();
                 let head = self.block(|fx| fx.cond(cond.as_deref()))?;
                 let body = self.block(|fx| {
-                    fx.emit(Op::Count);
+                    fx.count();
                     fx.opt_stmt(body.as_deref())
                 })?;
                 self.emit(Op::Loop {
@@ -493,7 +574,7 @@ impl Fx<'_> {
             Node::DoWhile { cond, body, .. } => {
                 self.settle();
                 let body = self.block(|fx| {
-                    fx.emit(Op::Count);
+                    fx.count();
                     fx.opt_stmt(body.as_deref())
                 })?;
                 let after = self.block(|fx| fx.cond(cond.as_deref()))?;
@@ -517,7 +598,7 @@ impl Fx<'_> {
                 fx.settle();
                 let head = fx.block(|fx| fx.cond(cond.as_deref()))?;
                 let body = fx.block(|fx| {
-                    fx.emit(Op::Count);
+                    fx.count();
                     fx.opt_stmt(body.as_deref())
                 })?;
                 let after = fx.block(|fx| match after {
@@ -564,7 +645,7 @@ impl Fx<'_> {
                 let one = fx.reg();
                 fx.emit(Op::Const(one, Value::Int(1)));
                 let body = fx.block(|fx| {
-                    fx.emit(Op::Count);
+                    fx.count();
                     fx.emit(Op::Api {
                         dst: v,
                         f: api::array::load,
@@ -625,7 +706,7 @@ impl Fx<'_> {
                     Ok(())
                 })?;
                 let body = fx.block(|fx| {
-                    fx.emit(Op::Count);
+                    fx.count();
                     fx.emit(Op::Api {
                         dst: v,
                         f: api::iter::next,
@@ -776,7 +857,34 @@ impl Fx<'_> {
     }
 
     fn expr(&mut self, n: &Node) -> Result<()> {
+        if matches!(n, Node::NewObject { .. }) {
+            // `new` and `dup` come before the arguments.
+            self.code = true;
+        }
+        self.expr_code(n)?;
+        let silent = match n {
+            Node::At(..) | Node::BinaryImpl { .. } => true,
+            Node::Cast { cast, .. } => cast.as_ref().is_none_or(no_instruction),
+            _ => false,
+        };
+        if !silent {
+            self.code = true;
+        }
+        Ok(())
+    }
+
+    fn expr_code(&mut self, n: &Node) -> Result<()> {
         match n {
+            Node::At(offset, ir::At::Before, node) => {
+                self.mark(*offset);
+                self.expr(node)?;
+            }
+            Node::At(offset, ir::At::AfterChild, node) => {
+                let outer = self.mark_after.replace(*offset);
+                let r = self.expr(node);
+                self.mark_after = outer;
+                r?;
+            }
             Node::BinaryImpl { left, right, .. } => {
                 self.expr(left)?;
                 self.expr(right)?;
@@ -934,6 +1042,7 @@ impl Fx<'_> {
             }
             Node::Cast { ty, cast, child } => {
                 self.expr(child)?;
+                self.emit_mark_after();
                 match cast.as_ref().and_then(cast_op) {
                     Some(c) => {
                         let src = self.pop()?;
@@ -1198,16 +1307,19 @@ impl Fx<'_> {
             }
             Node::StoreBrace { child, .. } => {
                 self.expr(child)?;
+                self.emit_mark_after();
                 let a = self.pop_n(3)?;
                 self.api("void", api::array::store, a);
             }
             Node::StoreBraceDef { child, .. } => {
                 self.expr(child)?;
+                self.emit_mark_after();
                 let a = self.pop_n(3)?;
                 self.api("void", api::dynamic::brace_store, a);
             }
             Node::StoreDotDef { name, child, .. } => {
                 self.expr(child)?;
+                self.emit_mark_after();
                 let a = self.pop_n(2)?;
                 let name: Rc<str> = Rc::from(name.as_str());
                 self.native(
@@ -1226,6 +1338,7 @@ impl Fx<'_> {
                     )));
                 }
                 self.expr(child)?;
+                self.emit_mark_after();
                 let a = self.pop_n(2)?;
                 let name: Rc<str> = Rc::from(field.name.as_str());
                 self.native(
@@ -1248,6 +1361,7 @@ impl Fx<'_> {
                     3
                 };
                 self.expr(child)?;
+                self.emit_mark_after();
                 let a = self.pop_n(n)?;
                 let f = api::method_call(s)?;
                 self.native("void", f, a);
@@ -1540,7 +1654,76 @@ impl Fx<'_> {
     }
 }
 
+/// Makes each op's mark the one the class's line table gives it: the last
+/// mark before it in the code's order, whichever path reached it. So each
+/// nested block, the code after a compound op, and the caller after a call
+/// of one of the script's functions restate the mark in force there.
+fn place_marks(ops: &mut Vec<Op>, cur: &mut i32) {
+    let mut out = Vec::with_capacity(ops.len() + 1);
+    // Whether the last op out is a mark this pass added, which labels no
+    // code of its own and so gives way to a mark the script has there.
+    let mut added = false;
+    if !matches!(ops.first(), Some(Op::At(_))) {
+        out.push(Op::At(*cur));
+        added = true;
+    }
+    for mut op in std::mem::take(ops) {
+        if let Op::At(o) = op {
+            match out.last_mut() {
+                Some(Op::At(prev)) if added => *prev = o,
+                _ => out.push(op),
+            }
+            *cur = o;
+            added = false;
+            continue;
+        }
+        let mut restate = false;
+        match &mut op {
+            Op::If {
+                then, otherwise, ..
+            }
+            | Op::IfNull {
+                then, otherwise, ..
+            } => {
+                place_block(then, cur);
+                place_block(otherwise, cur);
+                restate = true;
+            }
+            Op::Loop { head, body, after } => {
+                place_block(head, cur);
+                place_block(body, cur);
+                place_block(after, cur);
+                restate = true;
+            }
+            Op::Try { body, catches } => {
+                place_block(body, cur);
+                for c in catches.iter_mut() {
+                    place_block(&mut c.body, cur);
+                }
+                restate = true;
+            }
+            Op::Local { .. } => restate = true,
+            _ => {}
+        }
+        out.push(op);
+        added = restate;
+        if restate {
+            out.push(Op::At(*cur));
+        }
+    }
+    *ops = out;
+}
+
+fn place_block(b: &mut Block, cur: &mut i32) {
+    let mut v = std::mem::take(b).into_vec();
+    place_marks(&mut v, cur);
+    *b = v.into_boxed_slice();
+}
+
 fn is_statement(n: &Node) -> bool {
+    if let Node::At(_, _, inner) = n {
+        return is_statement(inner);
+    }
     matches!(
         n,
         Node::Block(_)

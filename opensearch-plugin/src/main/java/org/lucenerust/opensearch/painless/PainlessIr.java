@@ -53,7 +53,7 @@ import org.opensearch.painless.symbol.ScriptScope;
  *
  * <p>The IR keeps everything Painless resolved: every expression's type, the casts, the
  * allowlisted method each call reaches, {@code def} sites and the doc fields the script reads.
- * The layout ({@code PIR1}) is the Rust decoder's ({@code lucene_painless::ir}): little-endian,
+ * The layout ({@code PIR2}) is the Rust decoder's ({@code lucene_painless::ir}): little-endian,
  * a string is an {@code i32} byte length ({@code -1} for null) and UTF-8, a type is its JVM
  * binary name as a string, and each node is its tag byte, its fields, then its children.
  */
@@ -90,7 +90,7 @@ public final class PainlessIr {
         ClassNode classNode = (ClassNode) scope.getDecoration(root, IRNodeDecoration.class).getIRNode();
         new DefaultStringConcatenationOptimizationPhase().visitClass(classNode, null);
         new DefaultConstantFoldingOptimizationPhase().visitClass(classNode, null);
-        Writer w = new Writer(scope.getStaticConstants());
+        Writer w = new Writer(scope.getStaticConstants(), lookup);
         w.script(classNode);
         if (w.unsupported != null) {
             throw new Unsupported(w.unsupported);
@@ -107,7 +107,7 @@ public final class PainlessIr {
      * @throws Unsupported when it holds any other kind of value
      */
     public static byte[] constant(Object value) throws Unsupported {
-        Writer w = new Writer(Map.of());
+        Writer w = new Writer(Map.of(), null);
         w.constant(value);
         if (w.unsupported != null) {
             throw new Unsupported(w.unsupported);
@@ -129,6 +129,78 @@ public final class PainlessIr {
         NULL_SAFE_SUB = 72, STATIC = 73, LOAD_FIELD_MEMBER = 74, STORE_FIELD_MEMBER = 75, TYPED_INTERFACE_REFERENCE = 76,
         DEF_INTERFACE_REFERENCE = 77, TYPED_CAPTURE_REFERENCE = 78;
 
+    // Site kinds: the Rust decoder's `SiteKind`.
+    static final byte SITE_METHOD = 0, SITE_GETTER = 1, SITE_SETTER = 2, SITE_INSTANCEOF = 3;
+
+    /**
+     * A member resolved by name on the receiver's runtime class: a method call (any receiver, as
+     * the native runtime dispatches every call on the value), a {@code def} field read or write,
+     * or a cast or {@code instanceof} test against a class.
+     */
+    record Site(byte kind, String name, int arity, Class<?> receiver) {}
+
+    /**
+     * The classes of every value the native runtime makes that a script can call a member on --
+     * {@code Value::class_name} in {@code lucene-painless}; its check refuses a script whose table
+     * misses one of its own.
+     */
+    static final List<String> NATIVE_CLASSES = List.of(
+        "java.lang.Boolean",
+        "java.lang.Byte",
+        "java.lang.Short",
+        "java.lang.Character",
+        "java.lang.Integer",
+        "java.lang.Long",
+        "java.lang.Float",
+        "java.lang.Double",
+        "java.lang.String",
+        "java.lang.StringBuilder",
+        "java.util.ArrayList",
+        "java.util.LinkedList",
+        "java.util.ImmutableCollections$ListN",
+        "java.util.Arrays$ArrayList",
+        "java.util.HashMap",
+        "java.util.LinkedHashMap",
+        "java.util.TreeMap",
+        "java.util.ImmutableCollections$MapN",
+        "java.util.HashSet",
+        "java.util.LinkedHashSet",
+        "java.util.TreeSet",
+        "java.util.ImmutableCollections$SetN",
+        "java.util.HashMap$Node",
+        "java.util.Iterator",
+        "java.util.Comparator",
+        "java.util.function.Function",
+        "java.util.function.Predicate",
+        "java.util.regex.Pattern",
+        "java.util.regex.Matcher",
+        "java.lang.Exception",
+        "[I",
+        "[Ljava.lang.Object;",
+        "org.opensearch.index.fielddata.ScriptDocValues$Longs",
+        "org.opensearch.index.fielddata.ScriptDocValues$Doubles",
+        "org.opensearch.index.fielddata.ScriptDocValues$Booleans",
+        "org.opensearch.index.fielddata.ScriptDocValues$Strings"
+    );
+
+    /** {@link #NATIVE_CLASSES} loaded; null for a class this JVM does not have. */
+    static final List<Class<?>> NATIVE = NATIVE_CLASSES.stream().<Class<?>>map(n -> {
+        try {
+            return Class.forName(n, false, PainlessIr.class.getClassLoader());
+        } catch (ClassNotFoundException e) {
+            return null;
+        }
+    }).toList();
+
+    /** The generated script class: a reference to it is to one of the script's own functions. */
+    static final String SCRIPT_CLASS = "org.opensearch.painless.PainlessScript$Script";
+
+    /** Whether the native runtime dispatches {@code m} on its receiver: an instance or augmentation method. */
+    static boolean instanceCall(PainlessMethod m) {
+        return java.lang.reflect.Modifier.isStatic(m.javaMethod.getModifiers()) == false
+            || m.javaMethod.getDeclaringClass().getName().endsWith("Augmentation");
+    }
+
     /** Functions every script class has that the runtime answers itself. */
     private static final Set<String> GENERATED = Set.of("getName", "getSource", "getStatements", "$bootstrapDef");
 
@@ -139,8 +211,24 @@ public final class PainlessIr {
         final List<String> fields = new java.util.ArrayList<>();
         String unsupported;
 
-        Writer(Map<String, Object> constants) {
+        final PainlessLookup lookup;
+        /** Every site that resolves a member by name on the receiver's runtime class. */
+        final java.util.LinkedHashSet<Site> sites = new java.util.LinkedHashSet<>();
+
+        Writer(Map<String, Object> constants, PainlessLookup lookup) {
             this.constants = new java.util.HashMap<>(constants);
+            this.lookup = lookup;
+        }
+
+        /** A shortcut's or call's method, dispatched on the receiver's value. */
+        void methodSite(PainlessMethod m) {
+            if (m != null && instanceCall(m)) {
+                site(SITE_METHOD, m.javaMethod.getName(), m.typeParameters.size(), m.targetClass);
+            }
+        }
+
+        void site(byte kind, String name, int arity, Class<?> receiver) {
+            sites.add(new Site(kind, name, arity, receiver == null ? Object.class : receiver));
         }
 
         void fail(String what) {
@@ -295,6 +383,14 @@ public final class PainlessIr {
             }
         }
 
+        /**
+         * Where the node's code starts in the source, for the nodes Painless marks in the class's
+         * line table: an exception's position is the last mark before it.
+         */
+        void loc(IRNode n) {
+            i32(n.getLocation() == null ? -1 : n.getLocation().getOffset());
+        }
+
         void expr(ExpressionNode n) {
             ty(n.getExpressionType());
         }
@@ -319,12 +415,63 @@ public final class PainlessIr {
             out.write('P');
             out.write('I');
             out.write('R');
-            out.write('1');
+            out.write('2');
             List<FunctionNode> fns = c.getFunctionsNodes().stream().filter(f -> GENERATED.contains(f.getName()) == false).toList();
             i32(fns.size());
             for (FunctionNode f : fns) {
                 visitFunction(f, null);
             }
+            siteTable();
+        }
+
+        /**
+         * The site table: the classes of the values the native runtime makes, then for each site
+         * which of them its static receiver type admits and which of those Painless resolves it
+         * on. The native runtime runs the script only when its own members agree on every one.
+         */
+        void siteTable() {
+            // The columns, by count and String.hashCode of the names joined by '\n': the native
+            // runtime holds the same list.
+            i32(NATIVE_CLASSES.size());
+            i32(String.join("\n", NATIVE_CLASSES).hashCode());
+            i32(sites.size());
+            for (Site site : sites) {
+                u8(site.kind());
+                str(site.name());
+                i32(site.arity());
+                ty(site.receiver());
+                byte[] admits = new byte[(NATIVE.size() + 7) / 8];
+                byte[] resolves = new byte[admits.length];
+                for (int i = 0; i < NATIVE.size(); i++) {
+                    Class<?> c = NATIVE.get(i);
+                    if (c == null || site.receiver().isAssignableFrom(c) == false) {
+                        continue;
+                    }
+                    admits[i / 8] |= (byte) (1 << (i % 8));
+                    if (resolves(site, c)) {
+                        resolves[i / 8] |= (byte) (1 << (i % 8));
+                    }
+                }
+                out.write(admits, 0, admits.length);
+                out.write(resolves, 0, resolves.length);
+            }
+        }
+
+        /** Whether Painless resolves {@code site} on a receiver of class {@code c} at run time. */
+        boolean resolves(Site site, Class<?> c) {
+            return switch (site.kind()) {
+                case SITE_METHOD -> lookup.lookupRuntimePainlessMethod(c, site.name(), site.arity()) != null;
+                case SITE_GETTER -> lookup.lookupRuntimeGetterMethodHandle(c, site.name()) != null;
+                case SITE_SETTER -> lookup.lookupRuntimeSetterMethodHandle(c, site.name()) != null;
+                case SITE_INSTANCEOF -> {
+                    try {
+                        yield Class.forName(site.name(), false, PainlessIr.class.getClassLoader()).isAssignableFrom(c);
+                    } catch (ClassNotFoundException e) {
+                        yield false;
+                    }
+                }
+                default -> throw new IllegalStateException("site kind " + site.kind());
+            };
         }
 
         /**
@@ -413,6 +560,7 @@ public final class PainlessIr {
         @Override
         public void visitWhileLoop(WhileLoopNode n, Void s) {
             u8(WHILE);
+            loc(n);
             bool(n.isContinuous());
             node(n.getConditionNode());
             node(n.getBlockNode());
@@ -421,6 +569,7 @@ public final class PainlessIr {
         @Override
         public void visitDoWhileLoop(DoWhileLoopNode n, Void s) {
             u8(DO_WHILE);
+            loc(n);
             bool(n.isContinuous());
             node(n.getConditionNode());
             node(n.getBlockNode());
@@ -429,6 +578,7 @@ public final class PainlessIr {
         @Override
         public void visitForLoop(ForLoopNode n, Void s) {
             u8(FOR);
+            loc(n);
             bool(n.isContinuous());
             node(n.getInitializerNode());
             node(n.getConditionNode());
@@ -444,6 +594,7 @@ public final class PainlessIr {
         @Override
         public void visitForEachSubArrayLoop(ForEachSubArrayNode n, Void s) {
             u8(FOR_EACH_ARRAY);
+            loc(n);
             ty(n.getVariableType());
             str(n.getVariableName());
             cast(n.getCast());
@@ -456,6 +607,7 @@ public final class PainlessIr {
         @Override
         public void visitForEachSubIterableLoop(ForEachSubIterableNode n, Void s) {
             u8(FOR_EACH_ITERABLE);
+            loc(n);
             ty(n.getVariableType());
             str(n.getVariableName());
             cast(n.getCast());
@@ -487,6 +639,7 @@ public final class PainlessIr {
         @Override
         public void visitNullSafeSub(NullSafeSubNode n, Void s) {
             u8(NULL_SAFE_SUB);
+            loc(n);
             expr(n);
             node(n.getChildNode());
         }
@@ -533,6 +686,7 @@ public final class PainlessIr {
         @Override
         public void visitUnaryMath(UnaryMathNode n, Void s) {
             u8(UNARY_MATH);
+            loc(n);
             expr(n);
             op(n.getOperation());
             ty(n.getUnaryType());
@@ -544,6 +698,7 @@ public final class PainlessIr {
         @Override
         public void visitBinaryMath(BinaryMathNode n, Void s) {
             u8(BINARY_MATH);
+            loc(n);
             expr(n);
             op(n.getOperation());
             ty(n.getBinaryType());
@@ -557,6 +712,7 @@ public final class PainlessIr {
         @Override
         public void visitStringConcatenation(StringConcatenationNode n, Void s) {
             u8(STRING_CONCAT);
+            loc(n);
             expr(n);
             nodes(n.getArgumentNodes());
         }
@@ -564,6 +720,7 @@ public final class PainlessIr {
         @Override
         public void visitBoolean(BooleanNode n, Void s) {
             u8(BOOLEAN);
+            loc(n);
             expr(n);
             op(n.getOperation());
             node(n.getLeftNode());
@@ -573,6 +730,7 @@ public final class PainlessIr {
         @Override
         public void visitComparison(ComparisonNode n, Void s) {
             u8(COMPARISON);
+            loc(n);
             expr(n);
             op(n.getOperation());
             ty(n.getComparisonType());
@@ -583,8 +741,14 @@ public final class PainlessIr {
         @Override
         public void visitCast(CastNode n, Void s) {
             u8(CAST);
+            loc(n);
             expr(n);
-            cast(n.getCast());
+            PainlessCast c = n.getCast();
+            if (c != null && c.targetType != null && c.targetType.isPrimitive() == false && c.targetType != Object.class
+                && c.targetType != org.opensearch.painless.lookup.def.class) {
+                site(SITE_INSTANCEOF, c.targetType.getName(), 0, Object.class);
+            }
+            cast(c);
             node(n.getChildNode());
         }
 
@@ -592,13 +756,18 @@ public final class PainlessIr {
         public void visitInstanceof(InstanceofNode n, Void s) {
             u8(INSTANCEOF);
             expr(n);
-            ty(n.getInstanceType());
+            Class<?> it = n.getInstanceType();
+            if (it.isPrimitive() == false && it != Object.class && it != org.opensearch.painless.lookup.def.class) {
+                site(SITE_INSTANCEOF, it.getName(), 0, Object.class);
+            }
+            ty(it);
             node(n.getChildNode());
         }
 
         @Override
         public void visitConditional(ConditionalNode n, Void s) {
             u8(CONDITIONAL);
+            loc(n);
             expr(n);
             node(n.getConditionNode());
             node(n.getLeftNode());
@@ -608,6 +777,7 @@ public final class PainlessIr {
         @Override
         public void visitElvis(ElvisNode n, Void s) {
             u8(ELVIS);
+            loc(n);
             expr(n);
             node(n.getLeftNode());
             node(n.getRightNode());
@@ -616,6 +786,7 @@ public final class PainlessIr {
         @Override
         public void visitListInitialization(ListInitializationNode n, Void s) {
             u8(LIST_INIT);
+            loc(n);
             expr(n);
             constructor(n.getConstructor());
             method(n.getMethod());
@@ -625,6 +796,7 @@ public final class PainlessIr {
         @Override
         public void visitMapInitialization(MapInitializationNode n, Void s) {
             u8(MAP_INIT);
+            loc(n);
             expr(n);
             constructor(n.getConstructor());
             method(n.getMethod());
@@ -635,6 +807,7 @@ public final class PainlessIr {
         @Override
         public void visitNewArray(NewArrayNode n, Void s) {
             u8(NEW_ARRAY);
+            loc(n);
             expr(n);
             bool(n.getInitialize());
             nodes(n.getArgumentNodes());
@@ -643,6 +816,7 @@ public final class PainlessIr {
         @Override
         public void visitNewObject(NewObjectNode n, Void s) {
             u8(NEW_OBJECT);
+            loc(n);
             expr(n);
             constructor(n.getConstructor());
             bool(n.getRead());
@@ -665,7 +839,11 @@ public final class PainlessIr {
         @Override
         public void visitDefInterfaceReference(DefInterfaceReferenceNode n, Void s) {
             u8(DEF_INTERFACE_REFERENCE);
+            loc(n);
             expr(n);
+            if (n.getDefReferenceEncoding().startsWith("Sthis.") == false) {
+                fail("method reference " + n.getDefReferenceEncoding());
+            }
             str(n.getDefReferenceEncoding());
             i32(n.getCaptures().size());
             for (String c : n.getCaptures()) {
@@ -676,8 +854,12 @@ public final class PainlessIr {
         @Override
         public void visitTypedInterfaceReference(TypedInterfaceReferenceNode n, Void s) {
             u8(TYPED_INTERFACE_REFERENCE);
+            loc(n);
             expr(n);
             var r = n.getReference();
+            if (SCRIPT_CLASS.equals(r.delegateClassName) == false) {
+                fail("method reference " + r.delegateClassName + "::" + r.delegateMethodName);
+            }
             str(r.interfaceMethodName);
             str(r.delegateClassName);
             bool(r.isDelegateInterface);
@@ -707,7 +889,9 @@ public final class PainlessIr {
         @Override
         public void visitTypeCaptureReference(TypedCaptureReferenceNode n, Void s) {
             u8(TYPED_CAPTURE_REFERENCE);
+            loc(n);
             expr(n);
+            fail("method reference on a capture: " + n.getMethodName());
             str(n.getMethodName());
             i32(n.getCaptures().size());
             for (String c : n.getCaptures()) {
@@ -731,41 +915,55 @@ public final class PainlessIr {
         @Override
         public void visitLoadDotArrayLengthNode(LoadDotArrayLengthNode n, Void s) {
             u8(LOAD_DOT_ARRAY_LENGTH);
+            loc(n);
             expr(n);
         }
 
         @Override
         public void visitLoadDotDef(LoadDotDefNode n, Void s) {
             u8(LOAD_DOT_DEF);
+            loc(n);
             expr(n);
+            site(SITE_GETTER, n.getValue(), 0, Object.class);
             str(n.getValue());
         }
 
         @Override
         public void visitLoadDot(LoadDotNode n, Void s) {
             u8(LOAD_DOT);
+            loc(n);
             expr(n);
-            field(n.getField());
+            PainlessField lf = n.getField();
+            if (java.lang.reflect.Modifier.isStatic(lf.javaField.getModifiers()) == false) {
+                site(SITE_GETTER, lf.javaField.getName(), 0, lf.javaField.getDeclaringClass());
+            }
+            field(lf);
         }
 
         @Override
         public void visitLoadDotShortcut(LoadDotShortcutNode n, Void s) {
             u8(LOAD_DOT_SHORTCUT);
+            loc(n);
             expr(n);
+            methodSite(n.getGetter());
             method(n.getGetter());
         }
 
         @Override
         public void visitLoadListShortcut(LoadListShortcutNode n, Void s) {
             u8(LOAD_LIST_SHORTCUT);
+            loc(n);
             expr(n);
+            methodSite(n.getGetter());
             method(n.getGetter());
         }
 
         @Override
         public void visitLoadMapShortcut(LoadMapShortcutNode n, Void s) {
             u8(LOAD_MAP_SHORTCUT);
+            loc(n);
             expr(n);
+            methodSite(n.getGetter());
             method(n.getGetter());
         }
 
@@ -779,6 +977,7 @@ public final class PainlessIr {
                 return;
             }
             u8(LOAD_FIELD_MEMBER);
+            loc(n);
             expr(n);
             str(n.getName());
             bool(n.isStatic());
@@ -787,6 +986,7 @@ public final class PainlessIr {
         @Override
         public void visitLoadBraceDef(LoadBraceDefNode n, Void s) {
             u8(LOAD_BRACE_DEF);
+            loc(n);
             expr(n);
             ty(n.getIndexType());
         }
@@ -794,6 +994,7 @@ public final class PainlessIr {
         @Override
         public void visitLoadBrace(LoadBraceNode n, Void s) {
             u8(LOAD_BRACE);
+            loc(n);
             expr(n);
         }
 
@@ -809,7 +1010,9 @@ public final class PainlessIr {
         @Override
         public void visitStoreDotDef(StoreDotDefNode n, Void s) {
             u8(STORE_DOT_DEF);
+            loc(n);
             expr(n);
+            site(SITE_SETTER, n.getValue(), 1, Object.class);
             ty(n.getStoreType());
             str(n.getValue());
             node(n.getChildNode());
@@ -818,17 +1021,24 @@ public final class PainlessIr {
         @Override
         public void visitStoreDot(StoreDotNode n, Void s) {
             u8(STORE_DOT);
+            loc(n);
             expr(n);
             ty(n.getStoreType());
-            field(n.getField());
+            PainlessField sf = n.getField();
+            if (java.lang.reflect.Modifier.isStatic(sf.javaField.getModifiers()) == false) {
+                site(SITE_SETTER, sf.javaField.getName(), 1, sf.javaField.getDeclaringClass());
+            }
+            field(sf);
             node(n.getChildNode());
         }
 
         @Override
         public void visitStoreDotShortcut(StoreDotShortcutNode n, Void s) {
             u8(STORE_DOT_SHORTCUT);
+            loc(n);
             expr(n);
             ty(n.getStoreType());
+            methodSite(n.getSetter());
             method(n.getSetter());
             node(n.getChildNode());
         }
@@ -836,8 +1046,10 @@ public final class PainlessIr {
         @Override
         public void visitStoreListShortcut(StoreListShortcutNode n, Void s) {
             u8(STORE_LIST_SHORTCUT);
+            loc(n);
             expr(n);
             ty(n.getStoreType());
+            methodSite(n.getSetter());
             method(n.getSetter());
             node(n.getChildNode());
         }
@@ -845,8 +1057,10 @@ public final class PainlessIr {
         @Override
         public void visitStoreMapShortcut(StoreMapShortcutNode n, Void s) {
             u8(STORE_MAP_SHORTCUT);
+            loc(n);
             expr(n);
             ty(n.getStoreType());
+            methodSite(n.getSetter());
             method(n.getSetter());
             node(n.getChildNode());
         }
@@ -854,6 +1068,7 @@ public final class PainlessIr {
         @Override
         public void visitStoreFieldMember(StoreFieldMemberNode n, Void s) {
             u8(STORE_FIELD_MEMBER);
+            loc(n);
             expr(n);
             ty(n.getStoreType());
             str(n.getName());
@@ -864,6 +1079,7 @@ public final class PainlessIr {
         @Override
         public void visitStoreBraceDef(StoreBraceDefNode n, Void s) {
             u8(STORE_BRACE_DEF);
+            loc(n);
             expr(n);
             ty(n.getStoreType());
             ty(n.getIndexType());
@@ -873,6 +1089,7 @@ public final class PainlessIr {
         @Override
         public void visitStoreBrace(StoreBraceNode n, Void s) {
             u8(STORE_BRACE);
+            loc(n);
             expr(n);
             ty(n.getStoreType());
             node(n.getChildNode());
@@ -881,7 +1098,9 @@ public final class PainlessIr {
         @Override
         public void visitInvokeCallDef(InvokeCallDefNode n, Void s) {
             u8(INVOKE_CALL_DEF);
+            loc(n);
             expr(n);
+            site(SITE_METHOD, n.getName(), n.getArgumentNodes().size(), Object.class);
             str(n.getName());
             nodes(n.getArgumentNodes());
         }
@@ -889,8 +1108,13 @@ public final class PainlessIr {
         @Override
         public void visitInvokeCall(InvokeCallNode n, Void s) {
             u8(INVOKE_CALL);
+            loc(n);
             expr(n);
-            method(n.getMethod());
+            PainlessMethod m = n.getMethod();
+            if (m != null && instanceCall(m)) {
+                site(SITE_METHOD, m.javaMethod.getName(), m.typeParameters.size(), m.targetClass);
+            }
+            method(m);
             ty(n.getBox());
             nodes(n.getArgumentNodes());
         }
@@ -898,6 +1122,7 @@ public final class PainlessIr {
         @Override
         public void visitInvokeCallMember(InvokeCallMemberNode n, Void s) {
             u8(INVOKE_CALL_MEMBER);
+            loc(n);
             expr(n);
             LocalFunction lf = n.getLocalFunction();
             PainlessClassBinding cb = n.getClassBinding();

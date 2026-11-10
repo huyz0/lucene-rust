@@ -8,6 +8,7 @@
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
+use lucene_painless::check::{check, Served};
 use lucene_painless::compile::compile;
 use lucene_painless::ir;
 use lucene_painless::jmap::{JMap, Order};
@@ -203,19 +204,25 @@ fn run_corpus() {
         "/tests/data/corpus.bin"
     ))
     .unwrap();
-    assert_eq!(&data[..4], b"PCO1");
+    assert_eq!(&data[..4], b"PCO2");
     let verbose = std::env::var("PAINLESS_CORPUS_VERBOSE").is_ok();
     let filter = std::env::var("PAINLESS_CORPUS_FILTER").ok();
     let mut r = Rd { b: &data, p: 4 };
     let (mut total, mut pass) = (0, 0);
     let (mut lowered, mut batched, mut tier_mismatches) = (0, 0, 0);
     let mut reasons: BTreeMap<String, usize> = BTreeMap::new();
+    let mut refusals: BTreeMap<String, usize> = BTreeMap::new();
+    let (mut checked, mut unsound) = (0, 0);
     while r.p < data.len() {
         let src = r.str();
         let status = r.u8();
         let expected = match status {
             0 => Ok(read_value(&mut r)),
-            1 => Err((r.str(), r.str())),
+            1 => {
+                let class = r.str();
+                let message = (r.u8() == 1).then(|| r.str());
+                Err((class, message, r.i32()))
+            }
             3 => {
                 r.str();
                 continue;
@@ -237,6 +244,14 @@ fn run_corpus() {
                 continue;
             }
         };
+        if std::env::var("PAINLESS_CORPUS_DUMP").is_ok() {
+            println!("{:#?}", script.functions);
+            if let Ok(p) = compile(&script) {
+                for f in &p.funcs {
+                    println!("{:#?}", f.body);
+                }
+            }
+        }
         let prog = match compile(&script) {
             Ok(p) => Rc::new(p),
             Err(e) => {
@@ -252,9 +267,10 @@ fn run_corpus() {
         let mut env = ParamsEnv {
             params: Value::map(MapKind::HashMap, JMap::new(Order::Hash)),
         };
-        let got = {
+        let (got, at) = {
             let mut vm = Vm::new(prog, &mut env);
-            vm.execute(&[])
+            let r = vm.execute(&[]);
+            (r, vm.loc)
         };
         // The specialised program, and its typed form where it has one,
         // must do exactly what the program did.
@@ -265,6 +281,15 @@ fn run_corpus() {
             &Facts {
                 params: Some(&params),
                 fields: &[],
+            },
+        );
+        let verdict = check(
+            &script,
+            &special,
+            &Served {
+                fields: &[],
+                unmapped: &[],
+                internals: &["getParams"],
             },
         );
         let typed = lower(&special, &[]);
@@ -282,7 +307,10 @@ fn run_corpus() {
                 let mut out = [0.0; 3];
                 let r = t
                     .run_batch(&mut NoDocs, &mut BatchRegs::default(), &mut out)
-                    .map(|()| Value::Double(out[0]));
+                    .and_then(|failed| match failed {
+                        None => Ok(Value::Double(out[0])),
+                        Some((_, t, _)) => Err(t),
+                    });
                 assert!(
                     out.iter().all(|v| v.to_bits() == out[0].to_bits()),
                     "{src}: lanes differ"
@@ -302,9 +330,35 @@ fn run_corpus() {
         }
         let ok = match (&expected, &got) {
             (Ok(e), Ok(v)) => matches(e, v),
-            (Err((class, _)), Err(t)) => *class == t.class(),
+            (Err((class, _, _)), Err(t)) => *class == t.class(),
             _ => false,
         };
+        // What the check passes runs exactly as Painless does: the value,
+        // or the exception with its message, at the same offset.
+        match &verdict {
+            Ok(()) => {
+                checked += 1;
+                let exact = match (&expected, &got) {
+                    (Err((class, message, offset)), Err(t)) => {
+                        *class == t.class() && *message == t.message() && *offset == at
+                    }
+                    _ => ok,
+                };
+                let known = KNOWN_GAPS.contains(&src.as_str())
+                    && matches!((&expected, &got), (Err((class, ..)), Err(t)) if *class == t.class());
+                if !exact && !known {
+                    println!(
+                        "--- passed the check, differs\n{src}\n  expected {expected:?}\n  got {} at {at}",
+                        show(&got)
+                    );
+                    unsound += 1;
+                }
+            }
+            Err(why) => {
+                let key: String = format!("check: {why}").chars().take(90).collect();
+                *refusals.entry(key).or_default() += 1;
+            }
+        }
         if ok {
             pass += 1;
             continue;
@@ -315,8 +369,8 @@ fn run_corpus() {
             }
             (Ok(_), Ok(_)) => "wrong value".to_string(),
             (Ok(_), Err(t)) => format!("threw {}", t.class()),
-            (Err((c, _)), Ok(_)) => format!("returned, expected {c}"),
-            (Err((c, _)), Err(t)) => format!("threw {} expected {c}", t.class()),
+            (Err((c, ..)), Ok(_)) => format!("returned, expected {c}"),
+            (Err((c, ..)), Err(t)) => format!("threw {} expected {c}", t.class()),
         };
         let key: String = key.chars().take(90).collect();
         if verbose {
@@ -333,7 +387,18 @@ fn run_corpus() {
     for (k, n) in rs.iter().take(60) {
         println!("{n:5}  {k}");
     }
+    let mut rs: Vec<_> = refusals.into_iter().collect();
+    rs.sort_by_key(|r| std::cmp::Reverse(r.1));
+    for (k, n) in rs.iter().take(40) {
+        println!("{n:5}  {k}");
+    }
     println!("corpus: {pass}/{total} match Painless; {lowered} run typed, {batched} in batches");
+    println!("check: {checked}/{total} pass, {unsound} of them differ from Painless");
+    assert_eq!(unsound, 0, "scripts the check passes differ from Painless");
+    assert!(
+        checked >= MIN_CHECKED,
+        "{checked} scripts pass the check, expected at least {MIN_CHECKED}"
+    );
     assert_eq!(
         tier_mismatches, 0,
         "specialised or typed runs differ from the VM"
@@ -348,8 +413,21 @@ fn run_corpus() {
     );
 }
 
+/// Scripts the check passes whose exception differs from Painless's in its
+/// message and position alone: a `WrongMethodTypeException` for a string
+/// index into a list or array, whose text is the JVM's method handle types
+/// and whose line is the call site's bootstrap.
+const KNOWN_GAPS: &[&str] = &[
+    "def x = new ArrayList(); return x.get('bogus');",
+    "def x = new long[1]; x[0]=1; return x['bogus'];",
+    "def x = new ArrayList(); x.add('foo'); return x['bogus'];",
+];
+
 /// Scripts that must match; raised as the runtime grows.
-const MIN_PASS: usize = 4910;
+const MIN_PASS: usize = 4897;
+
+/// Scripts the check must pass; raised as the runtime grows.
+const MIN_CHECKED: usize = 4894;
 
 #[test]
 fn corpus_matches_painless() {

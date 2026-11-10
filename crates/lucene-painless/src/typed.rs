@@ -69,6 +69,9 @@ enum I {
     Count,
     Ret(Reg, Ty),
     RetNull,
+    /// The source offset of what follows ([`Op::At`]); lowering folds it
+    /// into [`Typed::locs`].
+    At(i32),
 }
 
 /// A script lowered to typed instructions.
@@ -81,6 +84,8 @@ pub struct Typed {
     batchable: bool,
     regs: usize,
     max_loop_counter: i32,
+    /// Each instruction's source offset, as the class's line table maps it.
+    locs: Box<[i32]>,
 }
 
 /// The registers of a [`Typed`] run, kept across runs.
@@ -88,6 +93,8 @@ pub struct Typed {
 pub struct Regs {
     bits: Vec<u64>,
     refs: Vec<Value>,
+    /// The instruction running, or the one that threw.
+    pc: usize,
 }
 
 /// Lowers `prog`'s `execute` for the fields of [`crate::specialize::Facts`];
@@ -103,7 +110,7 @@ pub fn lower(prog: &Program, fields: &[(&str, Option<DocKind>)]) -> Option<Typed
     };
     l.block(&f.body)?;
     l.code.push(I::RetNull);
-    let (code, init) = fold_moves(l.code);
+    let (code, init, locs) = fold_moves(l.code);
     let batchable = batchable(&code);
     Some(Typed {
         code: code.into_boxed_slice(),
@@ -111,6 +118,7 @@ pub fn lower(prog: &Program, fields: &[(&str, Option<DocKind>)]) -> Option<Typed
         batchable,
         regs: l.ty.len(),
         max_loop_counter: f.max_loop_counter,
+        locs: locs.into_boxed_slice(),
     })
 }
 
@@ -214,7 +222,7 @@ impl I {
             | I::Math1(d, ..)
             | I::Math2(d, ..)
             | I::Round(d, _) => *d,
-            I::Jmp(_) | I::JmpF(..) | I::Count | I::Ret(..) | I::RetNull => return None,
+            I::Jmp(_) | I::JmpF(..) | I::Count | I::Ret(..) | I::RetNull | I::At(_) => return None,
         })
     }
 
@@ -222,7 +230,7 @@ impl I {
     fn sources(&mut self, f: &mut impl FnMut(&mut Reg)) {
         match self {
             I::K(..) | I::KStr(..) | I::DocCount(..) | I::Score(_) => {}
-            I::Jmp(_) | I::Count | I::RetNull => {}
+            I::Jmp(_) | I::Count | I::RetNull | I::At(_) => {}
             I::Mov(_, s) | I::MovRef(_, s) | I::Conv(_, s, ..) | I::Not(_, s) => f(s),
             I::Neg(_, _, s) | I::BwNot(_, _, s) | I::Math1(_, s, _) | I::Round(_, s) => f(s),
             I::Int(_, _, a, b)
@@ -261,7 +269,7 @@ impl I {
 /// drops each move between registers both assigned once, reading the
 /// source in its place: Java's definite assignment means no read of the
 /// copy can come before the copy, so the two always hold the same value.
-fn fold_moves(code: Vec<I>) -> (Vec<I>, Vec<Init>) {
+fn fold_moves(code: Vec<I>) -> (Vec<I>, Vec<Init>, Vec<i32>) {
     let mut defs: std::collections::HashMap<Reg, u32> = std::collections::HashMap::new();
     for ins in &code {
         if let Some(d) = ins.dst() {
@@ -286,6 +294,7 @@ fn fold_moves(code: Vec<I>) -> (Vec<I>, Vec<Init>) {
                 alias.insert(*d, *s);
                 keep[at] = false;
             }
+            I::At(_) => keep[at] = false,
             _ => {}
         }
     }
@@ -304,10 +313,16 @@ fn fold_moves(code: Vec<I>) -> (Vec<I>, Vec<Init>) {
     }
     at_new.push(n);
     let mut out = Vec::with_capacity(n as usize);
+    let mut locs = Vec::with_capacity(n as usize);
+    let mut loc = -1;
     for (mut ins, k) in code.into_iter().zip(keep) {
+        if let I::At(o) = ins {
+            loc = o;
+        }
         if !k {
             continue;
         }
+        locs.push(loc);
         ins.sources(&mut |r| *r = resolve(*r));
         match &mut ins {
             I::Jmp(t) | I::JmpF(_, t) => *t = at_new[*t as usize],
@@ -315,7 +330,7 @@ fn fold_moves(code: Vec<I>) -> (Vec<I>, Vec<Init>) {
         }
         out.push(ins);
     }
-    (out, init)
+    (out, init, locs)
 }
 
 struct Loop {
@@ -586,6 +601,7 @@ impl Lower<'_> {
                 self.code.push(I::Jmp(0));
             }
             Op::Count => self.code.push(I::Count),
+            Op::At(o) => self.code.push(I::At(*o)),
             Op::Return(Some(r)) => {
                 let t = self.get(*r)?;
                 self.code.push(I::Ret(*r, t));
@@ -835,6 +851,7 @@ fn op_reads(op: &Op) -> Vec<Reg> {
         | Op::Break
         | Op::Continue
         | Op::Count
+        | Op::At(_)
         | Op::Return(None) => Vec::new(),
         Op::Move(_, s) => vec![*s],
         Op::Api { args, .. }
@@ -1063,20 +1080,15 @@ macro_rules! float_op {
     };
 }
 
-/// Register `x`. Lowering only emits registers of the script's own
-/// register file, and [`Typed::run`] checks the file is that large.
+/// Register `x` of the script's register file.
 #[inline(always)]
 fn reg<T: Clone>(file: &[T], x: Reg) -> T {
-    debug_assert!((x as usize) < file.len());
-    // SAFETY: `x` is below the file's length (see above).
-    unsafe { file.get_unchecked(x as usize).clone() }
+    file[x as usize].clone()
 }
 
 #[inline(always)]
 fn reg_mut<T>(file: &mut [T], x: Reg) -> &mut T {
-    debug_assert!((x as usize) < file.len());
-    // SAFETY: as for `reg`.
-    unsafe { file.get_unchecked_mut(x as usize) }
+    &mut file[x as usize]
 }
 
 impl Typed {
@@ -1085,6 +1097,7 @@ impl Typed {
         let mut regs = Regs {
             bits: vec![0; self.regs],
             refs: vec![Value::Null; self.regs],
+            pc: 0,
         };
         for i in &self.init {
             match i {
@@ -1095,6 +1108,17 @@ impl Typed {
         regs
     }
 
+    /// The source offset of instruction `pc`.
+    fn loc(&self, pc: usize) -> i32 {
+        self.locs.get(pc).copied().unwrap_or(-1)
+    }
+
+    /// The source offset of the instruction that threw in the last
+    /// [`Typed::run`] with `regs`.
+    pub fn thrown_at(&self, regs: &Regs) -> i32 {
+        self.loc(regs.pc)
+    }
+
     /// Whether [`Typed::run_batch`] runs this script.
     pub fn batchable(&self) -> bool {
         self.batchable
@@ -1102,14 +1126,16 @@ impl Typed {
 
     /// Runs a [batchable](Typed::batchable) script for `out.len()`
     /// documents at once, each instruction over the documents whose path
-    /// reaches it: `out[k]` is document `k`'s result. Any document's
-    /// exception fails the batch.
+    /// reaches it: `out[k]` is document `k`'s result. A document that throws
+    /// stops alone; the first one (`k`, the exception, its source offset)
+    /// is returned, and only the documents before it have results. `Err`
+    /// is the runtime's own failure, not a script's.
     pub fn run_batch<E: BatchEnv + ?Sized>(
         &self,
         env: &mut E,
         regs: &mut BatchRegs,
         out: &mut [f64],
-    ) -> Result<(), Throw> {
+    ) -> Result<Option<(usize, Throw, i32)>, Throw> {
         assert!(self.batchable, "a batchable script");
         let n = out.len();
         if regs.width < n || regs.cols.len() != regs.width * self.regs {
@@ -1123,72 +1149,55 @@ impl Typed {
             }
         }
         let w = regs.width;
-        let cols = regs.cols.as_mut_ptr();
+        let cols = &mut regs.cols;
         // The documents on the current path, and those waiting at a jump's
         // target.
         let mut active = vec![true; n];
         let mut waiting: Vec<(usize, Vec<bool>)> = Vec::new();
+        // Each document's exception, with where it was thrown: it stops that
+        // document alone, as Java's loop would stop at the first.
+        let mut failed: Vec<Option<(Throw, usize)>> = vec![None; n];
         let mut tmp = vec![0u64; n];
-        // Lane `k` of register `r`. Lowering only emits registers of the
-        // script's file, which is `self.regs` columns of `w >= n` lanes.
-        macro_rules! at {
-            ($r:expr, $k:expr) => {
-                // SAFETY: as above.
-                unsafe { *cols.add($r + $k) }
-            };
-        }
-        macro_rules! set {
-            ($r:expr, $k:expr, $v:expr) => {{
-                let v = $v;
-                // SAFETY: as for `at`.
-                unsafe { *cols.add($r + $k) = v }
-            }};
-        }
         // Each instruction computes every lane into `tmp`, then keeps the
         // active lanes: a register another path assigned keeps its value.
         macro_rules! keep {
             ($d:expr, $all:expr) => {{
                 let d = *$d as usize * w;
-                for (k, (t, a)) in tmp.iter().zip(&active).enumerate() {
-                    if $all || *a {
-                        set!(d, k, *t);
+                let dst = &mut cols[d..d + n];
+                if $all {
+                    dst.copy_from_slice(&tmp);
+                } else {
+                    for ((o, t), a) in dst.iter_mut().zip(&tmp).zip(&active) {
+                        if *a {
+                            *o = *t;
+                        }
                     }
                 }
             }};
         }
-        // On the common path every lane is active: straight into the column.
         macro_rules! un {
             ($d:expr, $s:expr, $all:expr, |$x:ident| $e:expr) => {{
-                let (d, s) = (*$d as usize * w, *$s as usize * w);
-                if $all {
-                    for k in 0..n {
-                        let $x = at!(s, k);
-                        set!(d, k, $e);
-                    }
-                } else {
-                    for (k, t) in tmp.iter_mut().enumerate() {
-                        let $x = at!(s, k);
-                        *t = $e;
-                    }
-                    keep!($d, false)
+                let s = *$s as usize * w;
+                for (t, &$x) in tmp.iter_mut().zip(&cols[s..s + n]) {
+                    *t = $e;
                 }
+                keep!($d, $all)
             }};
         }
         macro_rules! bin {
             ($d:expr, $a:expr, $b:expr, $all:expr, |$x:ident, $y:ident| $e:expr) => {{
-                let (d, a, b) = (*$d as usize * w, *$a as usize * w, *$b as usize * w);
-                if $all {
-                    for k in 0..n {
-                        let ($x, $y) = (at!(a, k), at!(b, k));
-                        set!(d, k, $e);
-                    }
-                } else {
-                    for (k, t) in tmp.iter_mut().enumerate() {
-                        let ($x, $y) = (at!(a, k), at!(b, k));
-                        *t = $e;
-                    }
-                    keep!($d, false)
+                let (a, b) = (*$a as usize * w, *$b as usize * w);
+                for ((t, &$x), &$y) in tmp.iter_mut().zip(&cols[a..a + n]).zip(&cols[b..b + n]) {
+                    *t = $e;
                 }
+                keep!($d, $all)
+            }};
+        }
+        // Lane `k` throws: it leaves the path.
+        macro_rules! fail {
+            ($k:expr, $t:expr, $pc:expr) => {{
+                failed[$k] = Some(($t, $pc));
+                active[$k] = false;
             }};
         }
         // A comparison with its operator chosen once for all lanes.
@@ -1230,12 +1239,14 @@ impl Typed {
                 | I::Long(op @ (BinOp::Div | BinOp::Rem), d, a, b) => {
                     let bc = *b as usize * w;
                     let long = matches!(ins, I::Long(..));
-                    for (k, live) in active.iter().enumerate() {
-                        let y = at!(bc, k);
-                        if *live && (if long { y == 0 } else { i(y) == 0 }) {
-                            return Err(div_zero());
+                    for k in 0..n {
+                        let y = cols[bc + k];
+                        if active[k] && (if long { y == 0 } else { i(y) == 0 }) {
+                            fail!(k, div_zero(), pc);
                         }
                     }
+                    count = active.iter().filter(|a| **a).count();
+                    let all = count == n;
                     match (long, op) {
                         (true, BinOp::Div) => bin!(d, a, b, all, |x, y| (x as i64)
                             .wrapping_div(if y == 0 { 1 } else { y as i64 })
@@ -1316,13 +1327,21 @@ impl Typed {
                 I::Not(d, s) => un!(d, s, all, |x| x ^ 1),
                 I::DocLong(d, fld, _) | I::DocDouble(d, fld, _) => {
                     let (counts, firsts) = env.column(*fld as usize)?;
-                    if counts.iter().zip(&active).any(|(c, a)| *a && *c == 0) {
-                        return Err(Throw::new(
-                            "java.lang.IllegalStateException",
-                            crate::api::doc::NO_VALUE,
-                        ));
+                    for k in 0..n {
+                        if active[k] && counts[k] == 0 {
+                            fail!(
+                                k,
+                                Throw::new(
+                                    "java.lang.IllegalStateException",
+                                    crate::api::doc::NO_VALUE,
+                                ),
+                                pc
+                            );
+                        }
                     }
                     tmp.copy_from_slice(&firsts[..n]);
+                    count = active.iter().filter(|a| **a).count();
+                    let all = count == n;
                     keep!(d, all)
                 }
                 I::DocCount(d, fld) => {
@@ -1341,7 +1360,7 @@ impl Typed {
                     let c = *c as usize * w;
                     let mut lanes = vec![false; n];
                     for k in 0..n {
-                        if active[k] && at!(c, k) == 0 {
+                        if active[k] && cols[c + k] == 0 {
                             lanes[k] = true;
                             active[k] = false;
                         }
@@ -1357,7 +1376,7 @@ impl Typed {
                     let s = *s as usize * w;
                     for k in 0..n {
                         if active[k] {
-                            out[k] = f(at!(s, k));
+                            out[k] = f(cols[s + k]);
                             active[k] = false;
                         }
                     }
@@ -1369,7 +1388,10 @@ impl Typed {
                 _ => unreachable!("not batchable"),
             }
         }
-        Ok(())
+        Ok(failed
+            .into_iter()
+            .enumerate()
+            .find_map(|(k, f)| f.map(|(t, pc)| (k, t, self.loc(pc)))))
     }
 
     /// Runs the script once against `env`.
@@ -1396,7 +1418,7 @@ impl Typed {
     }
 
     fn exec<E: Env + ?Sized>(&self, env: &mut E, regs: &mut Regs) -> Result<Out, Throw> {
-        let Regs { bits: r, refs } = regs;
+        let Regs { bits: r, refs, pc } = regs;
         assert!(
             r.len() >= self.regs && refs.len() >= self.regs,
             "registers of this script"
@@ -1404,12 +1426,9 @@ impl Typed {
         let mut counter = self.max_loop_counter;
         let counting = counter > 0;
         let idx = |r: &[u64], x: Reg| if x == FIRST { 0 } else { i(reg(r, x)) };
-        let mut pc = 0usize;
+        *pc = 0;
         loop {
-            debug_assert!(pc < self.code.len());
-            // SAFETY: lowering ends the code with a return and only emits
-            // jumps to positions in it.
-            match unsafe { self.code.get_unchecked(pc) } {
+            match &self.code[*pc] {
                 I::K(d, v) => *reg_mut(r, *d) = *v,
                 I::KStr(d, s) => *reg_mut(refs, *d) = Value::Str(s.clone()),
                 I::Mov(d, s) => *reg_mut(r, *d) = reg(r, *s),
@@ -1517,12 +1536,12 @@ impl Typed {
                 }
                 I::Round(d, s) => *reg_mut(r, *d) = math::round(f(reg(r, *s))) as u64,
                 I::Jmp(t) => {
-                    pc = *t as usize;
+                    *pc = *t as usize;
                     continue;
                 }
                 I::JmpF(c, t) => {
                     if reg(r, *c) == 0 {
-                        pc = *t as usize;
+                        *pc = *t as usize;
                         continue;
                     }
                 }
@@ -1540,8 +1559,9 @@ impl Typed {
                 I::Ret(s, Ty::P(p)) => return Ok(Out::Bits(reg(r, *s), *p)),
                 I::Ret(s, Ty::Str) => return Ok(Out::Value(reg(refs, *s))),
                 I::RetNull => return Ok(Out::Value(Value::Null)),
+                I::At(_) => unreachable!("lowering folds marks into the offsets"),
             }
-            pc += 1;
+            *pc += 1;
         }
     }
 }

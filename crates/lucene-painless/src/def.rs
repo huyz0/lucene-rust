@@ -174,10 +174,19 @@ fn shift_operand(b: &Value) -> Result<(), Throw> {
     match b {
         Value::Float(_) | Value::Double(_) => Err(Throw::class_cast(format!(
             "Cannot cast {} to java.lang.Long",
-            b.class_name()
+            types::java_canonical(&b.class_name())
         ))),
         _ => Ok(()),
     }
+}
+
+/// A `def` binary operator's null operand: `DefMath`'s generic method
+/// reaches `left.getClass()` or `right.getClass()`, whichever is null first.
+fn null_operand(left: &Value) -> Throw {
+    let which = if left.is_null() { "left" } else { "right" };
+    Throw::npe(format!(
+        "Cannot invoke \"Object.getClass()\" because \"{which}\" is null"
+    ))
 }
 
 fn bad_op(op: BinOp, ty: Prim) -> Throw {
@@ -236,14 +245,28 @@ pub fn def_arith(
         b.write_java(&mut s, 0);
         return Ok(Value::string(s));
     }
-    if a.is_null() || b.is_null() {
+    let shift = matches!(op, BinOp::Lsh | BinOp::Rsh | BinOp::Ush);
+    if shift && a.is_null() {
+        // A shift looks up its left operand's class alone, as a unary does.
+        return Err(Throw::npe(
+            "Cannot invoke \"Object.getClass()\" because \"args[0]\" is null",
+        ));
+    }
+    if shift && b.is_null() {
         return Err(Throw::no_message("java.lang.NullPointerException"));
+    }
+    if a.is_null() || b.is_null() {
+        return Err(null_operand(a));
     }
     let r = match op {
         BinOp::Lsh | BinOp::Rsh | BinOp::Ush => {
             let ty = match a {
                 Value::Long(_) => Prim::Long,
                 Value::Int(_) | Value::Short(_) | Value::Byte(_) | Value::Char(_) => Prim::Int,
+                // A floating point number takes `DefMath`'s handle for its
+                // type, which refuses in its own words.
+                Value::Float(_) => return Err(bad_op(op, Prim::Float)),
+                Value::Double(_) => return Err(bad_op(op, Prim::Double)),
                 o => {
                     return Err(Throw::class_cast(format!(
                         "Cannot apply [{}] operation to type [{}].",
@@ -252,6 +275,7 @@ pub fn def_arith(
                     )))
                 }
             };
+            shift_operand(b)?;
             if !matches!(
                 b,
                 Value::Long(_) | Value::Int(_) | Value::Short(_) | Value::Byte(_) | Value::Char(_)
@@ -277,6 +301,14 @@ pub fn def_arith(
                             | Value::Char(_)
                     )
                 };
+                // Two numbers take `DefMath`'s handle for their promoted
+                // type, which refuses floating point in its own words.
+                if matches!(promote(a, b), Some(Prim::Float | Prim::Double)) {
+                    return Err(Throw::class_cast(format!(
+                        "Cannot apply [{}] operation to type [float]",
+                        op.symbol()
+                    )));
+                }
                 for v in [a, b] {
                     if !integral(v) {
                         return Err(Throw::class_cast(format!(
@@ -331,9 +363,10 @@ pub fn def_arith(
 
 fn cast_result(r: &Value, p: Prim) -> Result<Value, Throw> {
     if (p == Prim::Bool) != matches!(r, Value::Bool(_)) {
+        // `DefMath.cast`: the operator's return type, a primitive.
+        let from = types::prim_of(r).map_or_else(|| class_of(r), |q| q.name().to_string());
         return Err(Throw::class_cast(format!(
-            "Cannot cast {} to {}",
-            class_of(r),
+            "Cannot cast {from} to {}",
             p.name()
         )));
     }
@@ -418,7 +451,7 @@ pub fn compare(
         }
         None => {
             if a.is_null() || b.is_null() {
-                return Err(Throw::no_message("java.lang.NullPointerException"));
+                return Err(null_operand(a));
             }
             match promote(a, b) {
                 Some(p) => p,
@@ -482,12 +515,28 @@ pub fn unary(
         }
         None => {
             if v.is_null() {
-                return Err(Throw::no_message("java.lang.NullPointerException"));
+                // `DefBootstrap`'s `lookupUnary(args[0].getClass(), ...)`.
+                return Err(Throw::npe(
+                    "Cannot invoke \"Object.getClass()\" because \"args[0]\" is null",
+                ));
             }
             let p = promote1(v);
             match (op, p) {
                 (UnOp::BwNot, Some(Prim::Long | Prim::Int)) | (UnOp::Neg | UnOp::Plus, Some(_)) => {
                     p.unwrap_or(Prim::Int)
+                }
+                // `DefMath`'s boolean handle links, and its boolean result
+                // fails the conversion to the call site's type.
+                (UnOp::Neg | UnOp::Plus, _)
+                    if matches!(v, Value::Bool(_))
+                        && ret.and_then(prim).is_some_and(|r| r != Prim::Bool) =>
+                {
+                    let to = ret.and_then(prim).map_or("", Prim::name);
+                    return Err(Throw::class_cast(if explicit {
+                        format!("Cannot cast boolean to {to}")
+                    } else {
+                        format!("Cannot cast from: boolean to {to}")
+                    }));
                 }
                 _ => {
                     let sym = match op {
@@ -583,10 +632,11 @@ pub fn call_site_return(r: Value, ret: &str) -> Result<Value, Throw> {
     Ok(r)
 }
 
+/// `typeToUnboxedType(value.getClass()).getCanonicalName()`.
 fn unboxed_name(v: &Value) -> String {
     match types::prim_of(v) {
         Some(p) => p.name().to_string(),
-        None => canonical(&v.class_name()),
+        None => types::java_canonical(&v.class_name()),
     }
 }
 
@@ -635,11 +685,11 @@ pub fn cast(v: &Value, c: &CastOp) -> Result<Value, Throw> {
                     Err(Throw::no_message("java.lang.NullPointerException"))
                 };
             }
-            if let (Prim::Char, true, Value::Str(s)) = (to, explicit, v) {
+            if let (Prim::Char, true, Value::Str(_)) = (to, explicit, v) {
                 return cast(v, &CastOp::StringToChar).map_err(|_| {
-                    Throw::class_cast(format!(
-                        "cannot cast java.lang.String with length not equal to one to char: {s}"
-                    ))
+                    Throw::class_cast(
+                        "cannot cast java.lang.String with length not equal to one to char",
+                    )
                 });
             }
             let ok = match (to, explicit) {
@@ -666,20 +716,22 @@ pub fn cast(v: &Value, c: &CastOp) -> Result<Value, Throw> {
                 (Prim::Double, false) => is_number(v) || matches!(v, Value::Char(_)),
             };
             if !ok {
-                let how = if *to == Prim::Bool {
-                    "cannot cast"
-                } else if *explicit {
-                    "cannot explicitly cast"
-                } else {
-                    "cannot implicitly cast"
+                // `Def.defTo*`'s own words: `defToboolean` "cannot cast",
+                // `defToBoolean` implicit whatever the cast, and the explicit
+                // float and double ones naming byte.
+                let how = match (to, boxed, explicit) {
+                    (Prim::Bool, false, _) => "cannot cast def",
+                    (Prim::Bool, true, _) | (_, _, false) => "cannot implicitly cast def",
+                    (Prim::Float, false, true) => "cannot explicitly cast float",
+                    _ => "cannot explicitly cast def",
                 };
-                let target = if *boxed {
-                    canonical(to.boxed())
-                } else {
-                    to.name().to_string()
+                let target = match (to, boxed, explicit) {
+                    (_, true, _) => to.boxed(),
+                    (Prim::Float | Prim::Double, false, true) => "byte",
+                    _ => to.name(),
                 };
                 return Err(Throw::class_cast(format!(
-                    "{how} def [{}] to {target}",
+                    "{how} [{}] to {target}",
                     unboxed_name(v)
                 )));
             }
@@ -702,11 +754,7 @@ pub fn cast(v: &Value, c: &CastOp) -> Result<Value, Throw> {
             if v.is_null() || types::instance_of(v, class) {
                 Ok(v.clone())
             } else {
-                Err(Throw::class_cast(format!(
-                    "class {} cannot be cast to class {}",
-                    v.class_name(),
-                    class
-                )))
+                Err(Throw::cast_failure(&v.class_name(), class))
             }
         }
     }
