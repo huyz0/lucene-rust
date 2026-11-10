@@ -188,3 +188,9 @@ scratch filesystem and installs only Rust 1.97.1's rustfmt/clippy components
 there. It retains the read-only source/root filesystems and unchanged caps;
 no local installation or shared toolchain/cache mutation occurs. Selected
 all-target lint and pinned formatting follow the existing component controls.
+
+Run `42784694334` at `1f19e1a862f5a09d644066b75ac618c68c51c6e6` again passed
+type checking and all ten selected controls, then pinned Clippy rejected one
+new redundant `offset: offset` initializer in numeric range decoding. The
+source fix uses Rust field shorthand without changing behavior or suppressing
+the lint. Pinned formatting was not reached in that failed attempt.
