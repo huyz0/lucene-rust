@@ -2900,6 +2900,11 @@ mod tests {
         assert_eq!(values.vector(1).unwrap(), want);
         let mut scratch = vec![0.0; 4];
         assert_eq!(values.vector_ref(1, &mut scratch).unwrap(), want);
+        // Half floats are decoded, never borrowed.
+        let all = values.all_vectors().unwrap();
+        assert!(matches!(all, std::borrow::Cow::Owned(_)));
+        let every: Vec<f32> = (0..3).flat_map(|o| values.vector(o).unwrap()).collect();
+        assert_eq!(*all, every[..]);
         // The stock files are not the Lucene99 ones.
         assert!(open(&meta, &data).is_err());
     }
