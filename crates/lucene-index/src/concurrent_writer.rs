@@ -1898,6 +1898,10 @@ impl<'d> ConcurrentIndexWriter<'d> {
         partition: Option<&str>,
         tracking: &TrackingDirectory<'_>,
     ) -> Result<Built> {
+        // Whether or not the flush writes them, the graphs grow no more: an
+        // inserter still running stops, and lets go of them and their
+        // vectors, rather than finish a graph nothing reads.
+        let _retire = RetireGraphs(&graphs);
         let cfg = self.cfg();
         // Kept short when no document has any: nothing reads past them then
         // but a sort, which permutes them.
@@ -2782,6 +2786,19 @@ impl Directory for TrackingDirectory<'_> {
 
     fn pending_deletions(&self) -> lucene_store::Result<std::collections::BTreeSet<String>> {
         self.inner.pending_deletions()
+    }
+}
+
+/// Retires a flushed buffer's graphs when dropped ([`BufferGraph::retire`]).
+///
+/// [`BufferGraph::retire`]: lucene_codecs::buffer_vectors::BufferGraph::retire
+struct RetireGraphs<'a>(&'a [crate::index_writer::BufferGraphField]);
+
+impl Drop for RetireGraphs<'_> {
+    fn drop(&mut self) {
+        for g in self.0 {
+            g.graph.retire();
+        }
     }
 }
 

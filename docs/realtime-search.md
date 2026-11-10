@@ -138,9 +138,10 @@ buffer's own vectors, shared with the documents, so a burst that outruns it
 costs exact scoring of the tail, not memory. The buffer flushes at the RAM
 buffer's limit as with realtime off, which bounds both the backlog and the
 graph; the graph itself (about 0.4 KB a vector at M 16, reported by
-`live_bytes`) is not charged to the RAM buffer, so segments end at the same
+`live_bytes` while the buffer is in its slot) is not charged to the RAM buffer, so segments end at the same
 documents. A buffer's graph goes with its flush: views of a flushing or
-published buffer read its vectors from the segment. Peak RSS of a burst
+published buffer read its vectors from the segment, and an inserter
+still running stops once the flush is done with the graph. Peak RSS of a burst
 (`lucene-index` example `live_vector_memory`, 4 indexing threads on 4 cores,
 64 MB RAM buffer, a view opened every 100 ms, no commit until the end):
 

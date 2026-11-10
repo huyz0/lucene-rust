@@ -15,7 +15,7 @@
 //! Linux-only.
 #![allow(clippy::arithmetic_side_effects)] // A measurement harness's own sizes.
 
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use lucene_codecs::field_infos::{
@@ -99,7 +99,6 @@ fn main() {
     let base_kb = status_kb("VmRSS:");
 
     let next = AtomicUsize::new(0);
-    let done = AtomicBool::new(false);
     let peak_live = AtomicUsize::new(0);
     let views = AtomicUsize::new(0);
     let open_us = AtomicUsize::new(0);
@@ -141,7 +140,7 @@ fn main() {
             });
         }
         s.spawn(|| {
-            while !done.load(Ordering::Relaxed) {
+            loop {
                 if live {
                     let t = Instant::now();
                     if let Ok(view) = w.open_live_view(None) {
@@ -167,7 +166,6 @@ fn main() {
         });
     });
     let ingest = start.elapsed();
-    done.store(true, Ordering::Relaxed);
     let before_commit = status_kb("VmHWM:");
     w.commit().unwrap();
     let total = start.elapsed();

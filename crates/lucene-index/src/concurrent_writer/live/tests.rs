@@ -1204,9 +1204,13 @@ fn a_view_holds_the_buffer_vector_graph() {
     // (An inserter task may still be finishing with it.)
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     while std::sync::Arc::strong_count(&graph) > 1 && std::time::Instant::now() < deadline {
-        std::thread::yield_now();
+        std::thread::sleep(std::time::Duration::from_millis(1));
     }
-    assert_eq!(std::sync::Arc::strong_count(&graph), 1);
+    assert_eq!(
+        std::sync::Arc::strong_count(&graph),
+        1,
+        "the flush, a view or an inserter still holds the graph"
+    );
     let view = w.open_live_view(None).unwrap();
     assert!(view.buffers.iter().all(|b| b.vector_graphs.is_empty()));
     w.close_live_view(&view);

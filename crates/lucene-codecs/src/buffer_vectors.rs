@@ -20,7 +20,8 @@ use lucene_util::fixed_bit_set::FixedBitSet;
 
 use crate::field_infos::{VectorEncoding, VectorSimilarityFunction};
 use crate::hnsw::{
-    HnswGraphSearcher, KnnCollector, OnHeapHnswGraph, UpdateableVectorScorer, VectorScorer,
+    HnswGraphSearcher, KnnCollector, NeighborArray, OnHeapHnswGraph, UpdateableVectorScorer,
+    VectorScorer,
 };
 use crate::hnsw_concurrent::{ConcurrentHnswGraph, GraphInserter};
 use crate::vectors::{cosine_with_norm, normalize_to_unit_interval, query_norm, Error, Result};
@@ -340,8 +341,11 @@ impl BufferGraph {
     #[allow(clippy::arithmetic_side_effects)]
     pub fn ram_bytes(&self) -> usize {
         let m = usize::try_from(self.m).unwrap_or(0);
-        // The level-0 list's `NeighborArray` and the node's slot: 112 bytes.
-        let per_vector = 2 * std::mem::size_of::<OnceLock<BufferVector>>() + (2 * m + 1) * 8 + 112;
+        // Per node: its slot, its one-level array and the level-0 lists.
+        let per_vector = 2 * std::mem::size_of::<OnceLock<BufferVector>>()
+            + std::mem::size_of::<std::sync::RwLock<Vec<NeighborArray>>>()
+            + std::mem::size_of::<NeighborArray>()
+            + (2 * m + 1) * 8;
         usize::try_from(self.len()).unwrap_or(0) * per_vector
     }
 
@@ -389,6 +393,13 @@ impl BufferGraph {
     /// before it, and the flush builds the field's graph again.
     pub fn fail(&self) {
         self.failed.store(true, Ordering::Release);
+    }
+
+    /// Stops inserting once the buffer's flush is done with the graph: an
+    /// inserter still running returns after its batch, and a later
+    /// [`Self::graph`] fails.
+    pub fn retire(&self) {
+        self.fail();
     }
 
     /// Inserts the appended ordinals the graph has not reached, `batch` at
