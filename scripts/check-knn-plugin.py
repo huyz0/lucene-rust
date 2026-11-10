@@ -482,6 +482,11 @@ PAINLESS = [
     "10000 + innerProduct(params.q, doc['emb'])",
     "1 / (1 + l1Norm(params.q, doc['emb']))",
     "1 / (1 + lInfNorm(params.q, doc['emb']))",
+    "1.0 / (1.0 + l2Squared(params.q, doc['emb']))",
+    "return 10000000 - l2Squared(params.q, doc[\"emb\"]);",
+    "(2 * cosineSimilarity(params.q, doc['emb']) + 2f) / 4",
+    "1 / (1 + l2Squared(params['q'], doc[params.f]))",
+    "-innerProduct(params.q, doc['emb']) * -1.5e0 + 1e4",
 ]
 
 
@@ -548,9 +553,15 @@ def script_check(failures):
                 scripts = PAINLESS
             norm = sum(x * x for x in t)
             for src in scripts:
-                params = {"q": t, "norm": norm}
+                params = {"q": t, "norm": norm, "f": "emb"}
+                before = fallback_counts()
                 compare(f"painless {src} query {qi}", index,
                         script_score(bases[qi % 2], {"source": src, "params": params}), ties=spec.get("data_type") == "binary")
+                # Every shape here runs natively, but hamming, and a norm over a byte field.
+                native = "hamming" not in src and not ("params.norm" in src and spec.get("data_type") == "byte")
+                fell = fell_back(before)
+                if native and fell:
+                    failures.append(f"painless {src} on {index} fell back to Java: {fell}")
                 body = {"size": 5, "query": {"term": {"tag": "odd"}}, "sort": ["n"],
                         "script_fields": {"s": {"script": {"source": src, "params": params}}}}
                 compare(f"script_fields {src} query {qi}", index, body)
@@ -570,6 +581,20 @@ def script_check(failures):
         ("painless binary", "lucene_binary", {"source": "l2Squared(params.q, doc['emb'])", "params": {"q": [1] * 8}}),
     ]:
         compare(label, index, script_score({"match_all": {}}, script))
+    # Shapes Painless reads differently from the plain parse: the search lookup's names shadow params, params.empty is
+    # Map.isEmpty(), and a program past the native limits. Each runs in Java without a native error.
+    deep = "1-(" * 16 + "l2Squared(params.q, doc['emb'])" + ")" * 16
+    for label, script in [
+        ("painless params._source", {"source": "l2Squared(params._source, doc['emb'])", "params": {"_source": t}}),
+        ("painless doc[params.doc]", {"source": "1 / (1 + l2Squared(params.q, doc[params.doc]))", "params": {"q": t, "doc": "emb"}}),
+        ("painless doc[params.empty]", {"source": "1 / (1 + l2Squared(params.q, doc[params.empty]))", "params": {"q": t, "empty": "emb"}}),
+        ("painless depth 17", {"source": "1000000 + " + deep, "params": {"q": t}}),
+        ("painless 300 operations", {"source": "l2Squared(params.q, doc['emb'])" + " + 1" * 150, "params": {"q": t}}),
+    ]:
+        before = fallback_counts()
+        compare(label, "lucene_l2", script_score({"match_all": {}}, script))
+        if fell_back(before).get("native_error"):
+            failures.append(f"{label}: native error instead of a Java fallback")
     # hammingbit over long and binary fields.
     rng = random.Random(f"{SEED}-hammingbit")
     for port in (OURS[1], STOCK[1]):
