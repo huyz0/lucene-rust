@@ -1,0 +1,279 @@
+{
+  "schema_version": 1,
+  "lucene_version": "10.5.2",
+  "lucene_source": {
+    "repository": "https://github.com/apache/lucene.git",
+    "tag": "releases/lucene/10.5.2",
+    "tag_object": "39c85e075910815a0a9df84f24675811e14686ef",
+    "commit": "145d89cd30c38d25e39a0a2232cf00eee208b9cf",
+    "license": "Apache-2.0"
+  },
+  "jars": [
+    {
+      "module": "analysis-common",
+      "artifact": "lucene-analysis-common",
+      "url": "https://repo1.maven.org/maven2/org/apache/lucene/lucene-analysis-common/10.5.2/lucene-analysis-common-10.5.2.jar",
+      "sha512": "3529f6df0a763ee52c5a35f6e6e35f4dff7436280331240213c40faeb075d1663459463c8199a02ac57082ea7cbac1a5de82edb493fd64aa7110d0c35fae9de2",
+      "checksum_source": "https://repo1.maven.org/maven2/org/apache/lucene/lucene-analysis-common/10.5.2/lucene-analysis-common-10.5.2.jar.sha512",
+      "license": "Apache-2.0 (inventory-only jar)"
+    },
+    {
+      "module": "analysis-icu",
+      "artifact": "lucene-analysis-icu",
+      "url": "https://repo1.maven.org/maven2/org/apache/lucene/lucene-analysis-icu/10.5.2/lucene-analysis-icu-10.5.2.jar",
+      "sha512": "c7f11bc1d7fa617718e268b4fdff5c8a8c1d31282c452f5b0b69c0cdf8b3c141638e30517439c0601e2a9d6367d0620cef88dbc8fdf82af96d107fdab1055b8e",
+      "checksum_source": "https://repo1.maven.org/maven2/org/apache/lucene/lucene-analysis-icu/10.5.2/lucene-analysis-icu-10.5.2.jar.sha512",
+      "license": "Apache-2.0 (inventory-only jar)"
+    },
+    {
+      "module": "analysis-kuromoji",
+      "artifact": "lucene-analysis-kuromoji",
+      "url": "https://repo1.maven.org/maven2/org/apache/lucene/lucene-analysis-kuromoji/10.5.2/lucene-analysis-kuromoji-10.5.2.jar",
+      "sha512": "356c374e2149e3d10ebad8eacd53738b382b41afb153b10b820e34559b7a3e4b44133f4c9bc66323304f1720c172d2c8adde9028120305120c691b272d8a82a0",
+      "checksum_source": "https://repo1.maven.org/maven2/org/apache/lucene/lucene-analysis-kuromoji/10.5.2/lucene-analysis-kuromoji-10.5.2.jar.sha512",
+      "license": "Apache-2.0 (inventory-only jar)"
+    },
+    {
+      "module": "analysis-morfologik",
+      "artifact": "lucene-analysis-morfologik",
+      "url": "https://repo1.maven.org/maven2/org/apache/lucene/lucene-analysis-morfologik/10.5.2/lucene-analysis-morfologik-10.5.2.jar",
+      "sha512": "612a2c0a1e9fada7afe5e7962ed0f4e90ad39c84e85da416a751b0f4553e2c84a81801b20aedf021d89777964822ce624aeb4511d3a8d26e611cd777f786a6f7",
+      "checksum_source": "https://repo1.maven.org/maven2/org/apache/lucene/lucene-analysis-morfologik/10.5.2/lucene-analysis-morfologik-10.5.2.jar.sha512",
+      "license": "Apache-2.0 (inventory-only jar)"
+    },
+    {
+      "module": "analysis-nori",
+      "artifact": "lucene-analysis-nori",
+      "url": "https://repo1.maven.org/maven2/org/apache/lucene/lucene-analysis-nori/10.5.2/lucene-analysis-nori-10.5.2.jar",
+      "sha512": "e831ca870aef2bb21e2a4cf71c4973354f53edc7a11d681a965409edfb031f2b526c7555e6c66484247cc0819170d30aa4e2d25a180b9f0a228171efca080eca",
+      "checksum_source": "https://repo1.maven.org/maven2/org/apache/lucene/lucene-analysis-nori/10.5.2/lucene-analysis-nori-10.5.2.jar.sha512",
+      "license": "Apache-2.0 (inventory-only jar)"
+    },
+    {
+      "module": "analysis-opennlp",
+      "artifact": "lucene-analysis-opennlp",
+      "url": "https://repo1.maven.org/maven2/org/apache/lucene/lucene-analysis-opennlp/10.5.2/lucene-analysis-opennlp-10.5.2.jar",
+      "sha512": "36393c8fd8689e5e77f3b639ea2d0f86ca30f7aac6e87cb57a38caa10ef05ecdef3f31c8171a4e06db10d2051aa7e0c71b9c35ec5a7da8ecb725511eb193400d",
+      "checksum_source": "https://repo1.maven.org/maven2/org/apache/lucene/lucene-analysis-opennlp/10.5.2/lucene-analysis-opennlp-10.5.2.jar.sha512",
+      "license": "Apache-2.0 (inventory-only jar)"
+    },
+    {
+      "module": "analysis-phonetic",
+      "artifact": "lucene-analysis-phonetic",
+      "url": "https://repo1.maven.org/maven2/org/apache/lucene/lucene-analysis-phonetic/10.5.2/lucene-analysis-phonetic-10.5.2.jar",
+      "sha512": "e1254a47aec5d6aea3b7e49941909095889df30b5fafc32e3e282eed636c8c9106a750c94fd6b12b25239bae222a9e0aaa9e8f041c3169c9f68b82c8ceb31ef4",
+      "checksum_source": "https://repo1.maven.org/maven2/org/apache/lucene/lucene-analysis-phonetic/10.5.2/lucene-analysis-phonetic-10.5.2.jar.sha512",
+      "license": "Apache-2.0 (inventory-only jar)"
+    },
+    {
+      "module": "analysis-smartcn",
+      "artifact": "lucene-analysis-smartcn",
+      "url": "https://repo1.maven.org/maven2/org/apache/lucene/lucene-analysis-smartcn/10.5.2/lucene-analysis-smartcn-10.5.2.jar",
+      "sha512": "1381e7d42c3f57eec96580fec6c1409a4cbc391344c3f6a3b6bb1ca48818fae3cde629add61c479f6459ec8880a0db6680c84ad660bb7d5224f8999f9f8acd0e",
+      "checksum_source": "https://repo1.maven.org/maven2/org/apache/lucene/lucene-analysis-smartcn/10.5.2/lucene-analysis-smartcn-10.5.2.jar.sha512",
+      "license": "Apache-2.0 (inventory-only jar)"
+    },
+    {
+      "module": "analysis-stempel",
+      "artifact": "lucene-analysis-stempel",
+      "url": "https://repo1.maven.org/maven2/org/apache/lucene/lucene-analysis-stempel/10.5.2/lucene-analysis-stempel-10.5.2.jar",
+      "sha512": "2a3cd0a4feb2000db45af9af88c0380a20ea563e4f80fcc8a07a8ebee6de3b83e0e0451a02e8e35f2d3d386e5b91730f70414acfcec815f5cd8e494d86e409d2",
+      "checksum_source": "https://repo1.maven.org/maven2/org/apache/lucene/lucene-analysis-stempel/10.5.2/lucene-analysis-stempel-10.5.2.jar.sha512",
+      "license": "Apache-2.0 (inventory-only jar)"
+    },
+    {
+      "module": "backward-codecs",
+      "artifact": "lucene-backward-codecs",
+      "url": "https://repo1.maven.org/maven2/org/apache/lucene/lucene-backward-codecs/10.5.2/lucene-backward-codecs-10.5.2.jar",
+      "sha512": "1366193063d4b0864697bef7c2588afc26cff738568eff7d6a2e8fd3e5da064e7bbe754a361119cb3b0897a0da777c238b351ea82e501bf7a8a252205583009c",
+      "checksum_source": "https://repo1.maven.org/maven2/org/apache/lucene/lucene-backward-codecs/10.5.2/lucene-backward-codecs-10.5.2.jar.sha512",
+      "license": "Apache-2.0 (inventory-only jar)"
+    },
+    {
+      "module": "benchmark",
+      "artifact": "lucene-benchmark",
+      "url": "https://repo1.maven.org/maven2/org/apache/lucene/lucene-benchmark/10.5.2/lucene-benchmark-10.5.2.jar",
+      "sha512": "7ee23cb2a49bbf77b84bd1d55baf600b04ed7b6d7d6301315f947bcf74ab2d06026e1a76901252c6faa6e904ac5ad8bd85cde351974740b77eb428350fbb6ddc",
+      "checksum_source": "https://repo1.maven.org/maven2/org/apache/lucene/lucene-benchmark/10.5.2/lucene-benchmark-10.5.2.jar.sha512",
+      "license": "Apache-2.0 (inventory-only jar)"
+    },
+    {
+      "module": "classification",
+      "artifact": "lucene-classification",
+      "url": "https://repo1.maven.org/maven2/org/apache/lucene/lucene-classification/10.5.2/lucene-classification-10.5.2.jar",
+      "sha512": "4290c4e7dd2a4b52dd36a019823aae53e03840988a735a79c11993553a0608eea4b625e7f40c803f543e62efe9d1fbaf53f3f85de17b4cf3ff2967d62d971f13",
+      "checksum_source": "https://repo1.maven.org/maven2/org/apache/lucene/lucene-classification/10.5.2/lucene-classification-10.5.2.jar.sha512",
+      "license": "Apache-2.0 (inventory-only jar)"
+    },
+    {
+      "module": "codecs",
+      "artifact": "lucene-codecs",
+      "url": "https://repo1.maven.org/maven2/org/apache/lucene/lucene-codecs/10.5.2/lucene-codecs-10.5.2.jar",
+      "sha512": "00c466373e9eee985142878f5076a2090caf6e90259582e7c91319e4da52ff452a65b186323735ecb51bb0018f9ad283bc8fe9f35b4f5c6d58d1fd4c3f5bc7b2",
+      "checksum_source": "https://repo1.maven.org/maven2/org/apache/lucene/lucene-codecs/10.5.2/lucene-codecs-10.5.2.jar.sha512",
+      "license": "Apache-2.0 (inventory-only jar)"
+    },
+    {
+      "module": "core",
+      "artifact": "lucene-core",
+      "url": "https://repo1.maven.org/maven2/org/apache/lucene/lucene-core/10.5.2/lucene-core-10.5.2.jar",
+      "sha512": "17933b67509bc271d255e9a8e5c9fff6100653c94bd4d6040fdf6779a17f4f247a15da125578ff3146c0d3c2eeb0dde4a0a44e4395a6f9986ee9689e7b6f5610",
+      "checksum_source": "https://repo1.maven.org/maven2/org/apache/lucene/lucene-core/10.5.2/lucene-core-10.5.2.jar.sha512",
+      "license": "Apache-2.0 (inventory-only jar)"
+    },
+    {
+      "module": "demo",
+      "artifact": "lucene-demo",
+      "url": "https://repo1.maven.org/maven2/org/apache/lucene/lucene-demo/10.5.2/lucene-demo-10.5.2.jar",
+      "sha512": "27c6f53b5a4c2243b6aa57eecfcc9cf1e0f6ccdbdc1828e05c1cfdb6bb4929b4a0179f8ddaa4cf57041d88d02b97066553e31fa16ac9016c97b152eaf22d74b2",
+      "checksum_source": "https://repo1.maven.org/maven2/org/apache/lucene/lucene-demo/10.5.2/lucene-demo-10.5.2.jar.sha512",
+      "license": "Apache-2.0 (inventory-only jar)"
+    },
+    {
+      "module": "expressions",
+      "artifact": "lucene-expressions",
+      "url": "https://repo1.maven.org/maven2/org/apache/lucene/lucene-expressions/10.5.2/lucene-expressions-10.5.2.jar",
+      "sha512": "a66cea363b40a290c95c93d83d8e434caecd0a27a88b3ba6b5669071f95dfd5cd344995f02310ec6d59b1d996b2bca666242caec5b5f845b6b77ce49e11a1c6a",
+      "checksum_source": "https://repo1.maven.org/maven2/org/apache/lucene/lucene-expressions/10.5.2/lucene-expressions-10.5.2.jar.sha512",
+      "license": "Apache-2.0 (inventory-only jar)"
+    },
+    {
+      "module": "facet",
+      "artifact": "lucene-facet",
+      "url": "https://repo1.maven.org/maven2/org/apache/lucene/lucene-facet/10.5.2/lucene-facet-10.5.2.jar",
+      "sha512": "d6ba3c44f9292d2792afd4ce86994d7ac0e6bcb4aac4f35583bdffc12b8a8f923c956bd46db60341b4d657bff0eaab402871ba84596abd9646df2ae63637997d",
+      "checksum_source": "https://repo1.maven.org/maven2/org/apache/lucene/lucene-facet/10.5.2/lucene-facet-10.5.2.jar.sha512",
+      "license": "Apache-2.0 (inventory-only jar)"
+    },
+    {
+      "module": "grouping",
+      "artifact": "lucene-grouping",
+      "url": "https://repo1.maven.org/maven2/org/apache/lucene/lucene-grouping/10.5.2/lucene-grouping-10.5.2.jar",
+      "sha512": "784b5e3e57f1c14457424a7e875f56b1352f16d61c6069f5da2d8e4bfddb12b853780621b85fede5a8f4bf1a6134a9ebff4025e81c6e8b6046f26261fea0e712",
+      "checksum_source": "https://repo1.maven.org/maven2/org/apache/lucene/lucene-grouping/10.5.2/lucene-grouping-10.5.2.jar.sha512",
+      "license": "Apache-2.0 (inventory-only jar)"
+    },
+    {
+      "module": "highlighter",
+      "artifact": "lucene-highlighter",
+      "url": "https://repo1.maven.org/maven2/org/apache/lucene/lucene-highlighter/10.5.2/lucene-highlighter-10.5.2.jar",
+      "sha512": "45c9e4eba093f2410a72be5ecbc8cebadfa3bad79fab056291d55cd2bdb9247e4d11098509affe5a55cb57752d31cd61d98863690bd8265ce85fea1db6cb20ab",
+      "checksum_source": "https://repo1.maven.org/maven2/org/apache/lucene/lucene-highlighter/10.5.2/lucene-highlighter-10.5.2.jar.sha512",
+      "license": "Apache-2.0 (inventory-only jar)"
+    },
+    {
+      "module": "join",
+      "artifact": "lucene-join",
+      "url": "https://repo1.maven.org/maven2/org/apache/lucene/lucene-join/10.5.2/lucene-join-10.5.2.jar",
+      "sha512": "048d7419ccb0059f31d44121547bc830817c742fdc3942d6ab2e8c04e89bfcb45c86a50e2ec9f4d818a457b7128cb5e2d433d411332b7192f17bf4b43d0ab67f",
+      "checksum_source": "https://repo1.maven.org/maven2/org/apache/lucene/lucene-join/10.5.2/lucene-join-10.5.2.jar.sha512",
+      "license": "Apache-2.0 (inventory-only jar)"
+    },
+    {
+      "module": "luke",
+      "artifact": "lucene-luke",
+      "url": "https://repo1.maven.org/maven2/org/apache/lucene/lucene-luke/10.5.2/lucene-luke-10.5.2.jar",
+      "sha512": "f1f93c07a563b6c6a9b368a51c480d17feaa139817137d48829559d0b8b3d4bb10f3534f54a9690bb2324b8aeff0f4ec5e545d279740bdb8512a434917c0f83f",
+      "checksum_source": "https://repo1.maven.org/maven2/org/apache/lucene/lucene-luke/10.5.2/lucene-luke-10.5.2.jar.sha512",
+      "license": "Apache-2.0 (inventory-only jar)"
+    },
+    {
+      "module": "memory",
+      "artifact": "lucene-memory",
+      "url": "https://repo1.maven.org/maven2/org/apache/lucene/lucene-memory/10.5.2/lucene-memory-10.5.2.jar",
+      "sha512": "38c0b149df3b9dc920aae54b1fbf6b3d2f7309b46f909316f79c9d918af2036cadc166828f173e5f453da0d8732718810fbccc28a8693fcd72961de6a3d7f5bd",
+      "checksum_source": "https://repo1.maven.org/maven2/org/apache/lucene/lucene-memory/10.5.2/lucene-memory-10.5.2.jar.sha512",
+      "license": "Apache-2.0 (inventory-only jar)"
+    },
+    {
+      "module": "misc",
+      "artifact": "lucene-misc",
+      "url": "https://repo1.maven.org/maven2/org/apache/lucene/lucene-misc/10.5.2/lucene-misc-10.5.2.jar",
+      "sha512": "40ceee46dabb50326ddc23a47f677c7c16009a7f3b1c1c29ab70917c00e415abd21abccb9f355eb3edbba7a49141d76f3f8d3245bac2d0b0cc8504a74e65a0d5",
+      "checksum_source": "https://repo1.maven.org/maven2/org/apache/lucene/lucene-misc/10.5.2/lucene-misc-10.5.2.jar.sha512",
+      "license": "Apache-2.0 (inventory-only jar)"
+    },
+    {
+      "module": "monitor",
+      "artifact": "lucene-monitor",
+      "url": "https://repo1.maven.org/maven2/org/apache/lucene/lucene-monitor/10.5.2/lucene-monitor-10.5.2.jar",
+      "sha512": "f5f6e3d0d603351e4156b43f03323a98c84cd85d522be65eb1d37771a5a8192c40b5d722ff42efdab539602ae445f6c8b3d506765da3740c20fe518a037cd857",
+      "checksum_source": "https://repo1.maven.org/maven2/org/apache/lucene/lucene-monitor/10.5.2/lucene-monitor-10.5.2.jar.sha512",
+      "license": "Apache-2.0 (inventory-only jar)"
+    },
+    {
+      "module": "queries",
+      "artifact": "lucene-queries",
+      "url": "https://repo1.maven.org/maven2/org/apache/lucene/lucene-queries/10.5.2/lucene-queries-10.5.2.jar",
+      "sha512": "d4badeedfe8bce1ffd7d897f410a1e2a3fbbcf52873760eb6f8736c8de4a2ce2a63672d43c56c7a634f68e41bc7936642dd30fbb837bc007209eaad98241f28f",
+      "checksum_source": "https://repo1.maven.org/maven2/org/apache/lucene/lucene-queries/10.5.2/lucene-queries-10.5.2.jar.sha512",
+      "license": "Apache-2.0 (inventory-only jar)"
+    },
+    {
+      "module": "queryparser",
+      "artifact": "lucene-queryparser",
+      "url": "https://repo1.maven.org/maven2/org/apache/lucene/lucene-queryparser/10.5.2/lucene-queryparser-10.5.2.jar",
+      "sha512": "29beb44fbea2411ccb2c3bd730e27ceb6a80f77095181e3bb343e1dffcabff8db2aeb00fb312c3048bf5a968ea3d7444406e565048abf4ec888c451f536f80a7",
+      "checksum_source": "https://repo1.maven.org/maven2/org/apache/lucene/lucene-queryparser/10.5.2/lucene-queryparser-10.5.2.jar.sha512",
+      "license": "Apache-2.0 (inventory-only jar)"
+    },
+    {
+      "module": "replicator",
+      "artifact": "lucene-replicator",
+      "url": "https://repo1.maven.org/maven2/org/apache/lucene/lucene-replicator/10.5.2/lucene-replicator-10.5.2.jar",
+      "sha512": "a51842fb19ed05445db17eeb6175a3398530767bbff978fc0c0befcc87b03f43e4b926487437893cc96692c32e0c08dbb2c33881950a53f908cd9f5b56b545f9",
+      "checksum_source": "https://repo1.maven.org/maven2/org/apache/lucene/lucene-replicator/10.5.2/lucene-replicator-10.5.2.jar.sha512",
+      "license": "Apache-2.0 (inventory-only jar)"
+    },
+    {
+      "module": "sandbox",
+      "artifact": "lucene-sandbox",
+      "url": "https://repo1.maven.org/maven2/org/apache/lucene/lucene-sandbox/10.5.2/lucene-sandbox-10.5.2.jar",
+      "sha512": "fad0d262394f1b3859039f1ac5588aadbe4c04a802e58dfd0f881657e2d1fdb0506d661df596f05e5eacaca8fd7d714ee3d142617ba1c664c556828c541bf1da",
+      "checksum_source": "https://repo1.maven.org/maven2/org/apache/lucene/lucene-sandbox/10.5.2/lucene-sandbox-10.5.2.jar.sha512",
+      "license": "Apache-2.0 (inventory-only jar)"
+    },
+    {
+      "module": "spatial-extras",
+      "artifact": "lucene-spatial-extras",
+      "url": "https://repo1.maven.org/maven2/org/apache/lucene/lucene-spatial-extras/10.5.2/lucene-spatial-extras-10.5.2.jar",
+      "sha512": "b3870a975620a4c5f4ace023dc76b452b424b9375352fbef2f87e486eddb220e1dd0d55bc305aed86bebf97e8da52a704a92225bc0957a2e5f6ab2aa9df8e916",
+      "checksum_source": "https://repo1.maven.org/maven2/org/apache/lucene/lucene-spatial-extras/10.5.2/lucene-spatial-extras-10.5.2.jar.sha512",
+      "license": "Apache-2.0 (inventory-only jar)"
+    },
+    {
+      "module": "spatial3d",
+      "artifact": "lucene-spatial3d",
+      "url": "https://repo1.maven.org/maven2/org/apache/lucene/lucene-spatial3d/10.5.2/lucene-spatial3d-10.5.2.jar",
+      "sha512": "2e6587f298e36a01e5e93523ba6dfbadb0fab43a459f998acd804ef115baae5771ee47e87dd44b5390048eb13d7abb93faaeb733699efb40ccbfbe6ee77907b6",
+      "checksum_source": "https://repo1.maven.org/maven2/org/apache/lucene/lucene-spatial3d/10.5.2/lucene-spatial3d-10.5.2.jar.sha512",
+      "license": "Apache-2.0 (inventory-only jar)"
+    },
+    {
+      "module": "suggest",
+      "artifact": "lucene-suggest",
+      "url": "https://repo1.maven.org/maven2/org/apache/lucene/lucene-suggest/10.5.2/lucene-suggest-10.5.2.jar",
+      "sha512": "248987cda605c03d734b44914c5961f11079362f10f7836fcd1bd6f72ec13ba5657ace6080dd10e0211b7d8415f8daa2f04484d6551fdc0577e8c4c0b3ca1be6",
+      "checksum_source": "https://repo1.maven.org/maven2/org/apache/lucene/lucene-suggest/10.5.2/lucene-suggest-10.5.2.jar.sha512",
+      "license": "Apache-2.0 (inventory-only jar)"
+    },
+    {
+      "module": "test-framework",
+      "artifact": "lucene-test-framework",
+      "url": "https://repo1.maven.org/maven2/org/apache/lucene/lucene-test-framework/10.5.2/lucene-test-framework-10.5.2.jar",
+      "sha512": "daaaa9cda58d1e7d853fbae832b70a29bd73a563b66f5c5cc6fe65ee0e2ca2b6cc100fbbd73811c34ed94c3aec87d2f83779ef8d8dc2c1e1452b8e0895e2d46a",
+      "checksum_source": "https://repo1.maven.org/maven2/org/apache/lucene/lucene-test-framework/10.5.2/lucene-test-framework-10.5.2.jar.sha512",
+      "license": "Apache-2.0 (inventory-only jar)"
+    }
+  ],
+  "jdk": {
+    "version": "Temurin 21.0.9+10",
+    "platform": "linux/x64",
+    "url": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.9%2B10/OpenJDK21U-jdk_x64_linux_hotspot_21.0.9_10.tar.gz",
+    "bytes": 207157802,
+    "sha256": "810d3773df7e0d6c4394e4e244b264c8b30e0b05a0acf542d065fd78a6b65c2f",
+    "digest_source": "https://api.github.com/repos/adoptium/temurin21-binaries/releases/tags/jdk-21.0.9%2B10",
+    "license": "GPL-2.0-only WITH Classpath-exception-2.0 (transient test tool; not shipped)",
+    "license_source": "https://openjdk.org/legal/gplv2+ce.html"
+  }
+}

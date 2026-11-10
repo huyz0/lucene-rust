@@ -21,13 +21,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          python3 -B scripts/range-host-preflight.py "$RUNNER_TEMP"
           scratch="$RUNNER_TEMP/lucene-range-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           image="$scratch.ext4"
           test ! -e "$scratch"
           test ! -e "$image"
           mkdir "$scratch"
-          truncate -s 8589934592 "$image"
-          mkfs.ext4 -q -F "$image"
+          fallocate -l 21474836480 "$image"
+          mkfs.ext4 -q -F -E nodiscard "$image"
           sudo mount -o loop,nodev,nosuid "$image" "$scratch"
           trap 'sudo umount "$scratch"' EXIT
           sudo chown "$(id -u):$(id -g)" "$scratch"
@@ -67,6 +68,7 @@ jobs:
       max-parallel: 1
       matrix:
         include:
+          - {profile: provenance, arch: x64, runner: ubuntu-24.04}
           - {profile: checks, arch: x64, runner: ubuntu-24.04}
           - {profile: checks, arch: arm64, runner: ubuntu-24.04-arm}
           - {profile: tests, arch: x64, runner: ubuntu-24.04}
@@ -85,13 +87,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          python3 -B scripts/range-host-preflight.py "$RUNNER_TEMP"
           scratch="$RUNNER_TEMP/lucene-range-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           image="$scratch.ext4"
           test ! -e "$scratch"
           test ! -e "$image"
           mkdir "$scratch"
-          truncate -s 8589934592 "$image"
-          mkfs.ext4 -q -F "$image"
+          fallocate -l 21474836480 "$image"
+          mkfs.ext4 -q -F -E nodiscard "$image"
           sudo mount -o loop,nodev,nosuid "$image" "$scratch"
           trap 'sudo umount "$scratch"' EXIT
           sudo chown "$(id -u):$(id -g)" "$scratch"
@@ -110,6 +113,14 @@ jobs:
         with:
           name: range-qualification-${{ github.sha }}-${{ matrix.profile }}-${{ matrix.arch }}-production
           path: ${{ runner.temp }}/range-feedback-${{ github.sha }}-production-coverage*.json
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Retain pinned Java and required inventory qualification
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: range-qualification-${{ github.sha }}-${{ matrix.profile }}-${{ matrix.arch }}-provenance
+          path: ${{ runner.temp }}/range-feedback-${{ github.sha }}-provenance.json
           if-no-files-found: ignore
           retention-days: 7
       - name: Retain native query physical trace

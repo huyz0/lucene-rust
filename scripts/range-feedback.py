@@ -13,9 +13,11 @@ import subprocess
 import sys
 import time
 
+SCRATCH_BYTES = 20 * 1024**3
 IMAGE = "rust:1.97.1-bookworm@sha256:0e2bcaef56d041a486784e54104a81aebe0da44bd03019bd70bc0401e42e4a97"
 SETUP = r'''
 set -euo pipefail
+trap 'result=$?; set +e; printf "RANGE_EXIT status=%s memory_events\n" "$result"; cat /sys/fs/cgroup/memory.events; printf "RANGE_EXIT cgroup_memory_peak_bytes\n"; cat /sys/fs/cgroup/memory.peak; printf "RANGE_EXIT filesystem_bytes\n"; df -B1 /scratch; exit "$result"' EXIT
 mkdir -p /scratch/cargo /scratch/target /scratch/tmp
 cp -a /usr/local/rustup /scratch/rustup
 rustup component add rustfmt clippy --toolchain 1.97.1
@@ -85,6 +87,9 @@ cargo build --locked --release -p lucene-ffi
 cargo test --locked --release --quiet -p lucene-search --lib --bins --tests -- --test-threads=2
 cargo test --locked --release --quiet -p lucene-search --doc
 """,
+    "provenance": r"""
+python3 -B scripts/range-provenance.py
+""",
     "coverage": r"""
 rustup component add llvm-tools-preview --toolchain 1.97.1
 cargo install --locked cargo-llvm-cov --version 0.8.7 --root /scratch/cov-tools
@@ -124,8 +129,8 @@ def main():
     if mount != ["ext4", str(scratch)]:
         raise SystemExit("scratch lacks its own ext4 filesystem")
     stat = os.statvfs(scratch)
-    if stat.f_blocks * stat.f_frsize > 8 * 1024**3:
-        raise SystemExit("scratch exceeds 8 GiB")
+    if stat.f_blocks * stat.f_frsize > SCRATCH_BYTES:
+        raise SystemExit("scratch exceeds declared 20 GiB")
     profile = os.environ.get("RANGE_PROFILE", "component")
     if profile not in PROFILES:
         raise SystemExit("unknown fixed qualification profile")
@@ -136,7 +141,7 @@ def main():
     name = "lucene-range-" + identity
     print(json.dumps({"kind": "bounded-native-qualification", "profile": profile, "source": expected, "image": IMAGE,
                       "cpu": 2, "memory_bytes": 4 * 1024**3, "swap_bytes": 0, "pids": 256,
-                      "scratch_filesystem_bytes": stat.f_blocks * stat.f_frsize,
+                      "scratch_filesystem_bytes": stat.f_blocks * stat.f_frsize, "scratch_limit_bytes": SCRATCH_BYTES,
                       "deadline_seconds": 1800, "stdio_limit_bytes": 2 * 1024**2}), flush=True)
     argv = ["docker", "run", "--rm", "--name", name, "--label", "lucene.range.job=" + identity,
             "--label", "lucene.range.source=" + expected, "--cpus=2", "--memory=4g", "--memory-swap=4g",
@@ -153,10 +158,13 @@ def main():
     started = time.monotonic()
     total = 0
     failure = None
+    minimum_scratch_available = stat.f_bavail * stat.f_frsize
     selector = selectors.DefaultSelector()
     selector.register(process.stdout, selectors.EVENT_READ)
     try:
         while selector.get_map():
+            sample = os.statvfs(scratch)
+            minimum_scratch_available = min(minimum_scratch_available, sample.f_bavail * sample.f_frsize)
             if time.monotonic() - started > 1800:
                 failure = "deadline"
                 break
@@ -192,6 +200,12 @@ def main():
             process.terminate()
             process.wait(timeout=15)
         process.stdout.close()
+    ending = os.statvfs(scratch)
+    print(json.dumps({"source": expected, "profile": profile,
+                      "minimum_sampled_scratch_available_bytes": minimum_scratch_available,
+                      "ending_scratch_total_bytes": ending.f_blocks * ending.f_frsize,
+                      "ending_scratch_available_bytes": ending.f_bavail * ending.f_frsize,
+                      "ending_scratch_allocated_bytes": (ending.f_blocks - ending.f_bfree) * ending.f_frsize}))
     trace = scratch / "tmp" / "range-query-physical-trace.tsv"
     if trace.is_file():
         import hashlib
@@ -224,6 +238,13 @@ def main():
             destination = runner_temp / ("range-feedback-" + expected + "-" + suffix + ".json")
             with destination.open("xb") as output:
                 output.write(artifact.read_bytes())
+    provenance = scratch / "tmp" / "provenance-receipt.json"
+    if provenance.is_file():
+        if provenance.is_symlink() or provenance.stat().st_size > 1024**2:
+            raise SystemExit("provenance receipt exceeds envelope")
+        destination = runner_temp / ("range-feedback-" + expected + "-provenance.json")
+        with destination.open("xb") as output:
+            output.write(provenance.read_bytes())
     resolved = scratch / "resolved-Cargo.lock"
     if resolved.is_file():
         import hashlib
