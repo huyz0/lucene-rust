@@ -175,22 +175,17 @@ impl DocScoreAcc {
     }
 
     /// [`Self::copy_from`] then [`filter_competitive_hits`]'s compaction at
-    /// `min`, in one pass: every pair is written, and the write position
-    /// moves on only past a kept one, so a batch is read once rather than
-    /// copied and then read again to be filtered.
+    /// `min`, in one pass: a batch is read once rather than copied and then
+    /// read again to be filtered.
     fn copy_from_filtered(&mut self, src: &DocScores, min: f64) {
         let len = src.docs.len().min(src.scores.len());
-        self.docs.resize(len, 0);
-        self.scores.resize(len, 0.0);
-        let mut n = 0;
-        for (&d, &s) in src.docs[..len].iter().zip(&src.scores[..len]) {
-            let s = s as f64;
-            // `n <= i < len`: in bounds, and written before it is read again.
-            self.docs[n] = d;
-            self.scores[n] = s;
-            n += usize::from(s >= min);
-        }
-        self.truncate(n);
+        lucene_util::hit_compact::copy_by_score(
+            &src.docs[..len],
+            &src.scores[..len],
+            min,
+            &mut self.docs,
+            &mut self.scores,
+        );
     }
 
     fn truncate(&mut self, n: usize) {
@@ -262,39 +257,9 @@ fn filter_competitive_hits(
     // in-place compaction without a branch per hit -- every hit is written,
     // and the write position moves on only past a kept one. Whether a score
     // clears the bar is close to a coin flip, so a branch mispredicts.
-    let n = compact_by_score(&mut acc.docs, &mut acc.scores, min_required);
+    let n =
+        lucene_util::hit_compact::compact_by_score(&mut acc.docs, &mut acc.scores, min_required);
     acc.truncate(n);
-}
-
-/// Keeps the pairs whose score is at least `min`, in order, at the front;
-/// returns how many.
-fn compact_by_score(docs: &mut [i32], scores: &mut [f64], min: f64) -> usize {
-    let len = docs.len().min(scores.len());
-    let (docs, scores) = (&mut docs[..len], &mut scores[..len]);
-    // The kept prefix stays where it is: found a run of 8 at a time without
-    // a branch per score, then the first dropped one in the failing run.
-    let mut n = 0;
-    while n + 8 <= len {
-        let run: &[f64; 8] = scores[n..n + 8].try_into().expect("8 scores");
-        if !run.iter().fold(true, |all, &s| all & (s >= min)) {
-            break;
-        }
-        n += 8;
-    }
-    while n < len && scores[n] >= min {
-        n += 1;
-    }
-    let start = n;
-    for i in start..len {
-        let (d, s) = (docs[i], scores[i]);
-        // `n <= i`: the `min` tells the compiler, so neither write is
-        // bounds-checked; written before it is read again.
-        let at = n.min(i);
-        docs[at] = d;
-        scores[at] = s;
-        n = at + usize::from(s >= min);
-    }
-    n
 }
 
 /// What the conjunction bulk scorer needs of a clause: Lucene's `Scorer` as
@@ -2787,7 +2752,7 @@ pub(crate) mod test_only_req_bits_opt_docs {
 
 #[cfg(test)]
 mod compact_tests {
-    use super::compact_by_score;
+    use lucene_util::hit_compact::compact_by_score;
 
     /// The documents scoring at least `min`, in order, each beside its own
     /// score -- a score equal to `min` kept -- and nothing from an empty or

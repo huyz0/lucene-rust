@@ -12,6 +12,7 @@ pub mod float_heap;
 pub mod fx_hash;
 pub mod geo;
 pub mod half_float;
+pub mod hit_compact;
 pub mod inflate;
 pub mod java_random;
 pub mod live_docs;
