@@ -43,6 +43,9 @@ public final class PainlessKnnScript {
 
     private static final List<String> FUNCTIONS = List.of("l2Squared", "l1Norm", "lInfNorm", "innerProduct", "cosineSimilarity");
 
+    /** The names Painless takes from the search lookup instead of the user's params. */
+    private static final List<String> LOOKUP_NAMES = List.of("doc", "_doc", "_source", "_fields");
+
     private PainlessKnnScript() {}
 
     /**
@@ -136,8 +139,11 @@ public final class PainlessKnnScript {
                 throw new NotThisShape();
             }
             ByteArrayOutputStream out = new ByteArrayOutputStream();
-            int[] count = { 0 };
+            int[] count = { 0, 0, 0 };
             emit(root, root.ty, out, count);
+            if (count[0] > MAX_OPS || count[2] > MAX_DEPTH) {
+                throw new NotThisShape();
+            }
             ByteArrayOutputStream program = new ByteArrayOutputStream();
             writeInt(program, count[0]);
             program.writeBytes(out.toByteArray());
@@ -145,10 +151,24 @@ public final class PainlessKnnScript {
         }
     }
 
-    /** Appends {@code n}'s operations, leaving a value of type {@code want} (FLOAT or DOUBLE). */
+    /** The native evaluator's limits on a program's operations and stack depth. */
+    static final int MAX_OPS = 256;
+    static final int MAX_DEPTH = 16;
+
+    /** Pushes one value: counts the operation and tracks the stack depth in {@code count[1]} and its peak in {@code count[2]}. */
+    private static void push(int[] count) {
+        count[0]++;
+        count[1]++;
+        count[2] = Math.max(count[2], count[1]);
+    }
+
+    /**
+     * Appends {@code n}'s operations, leaving a value of type {@code want} (FLOAT or DOUBLE). {@code count} holds the
+     * operation count, the current stack depth and the peak depth.
+     */
     private static void emit(Node n, Ty want, ByteArrayOutputStream out, int[] count) throws NotThisShape {
         if (n.constant != null) {
-            count[0]++;
+            push(count);
             if (want == Ty.FLOAT) {
                 // An int or float constant in a float operation.
                 if (n.ty == Ty.DOUBLE) {
@@ -175,7 +195,7 @@ public final class PainlessKnnScript {
         int base = want == Ty.FLOAT ? 16 : 32;
         switch (n.op) {
             case 'v' -> {
-                count[0]++;
+                push(count);
                 out.write(2);
             }
             case 'n' -> {
@@ -187,6 +207,7 @@ public final class PainlessKnnScript {
                 emit(n.left, want, out, count);
                 emit(n.right, want, out, count);
                 count[0]++;
+                count[1]--;
                 out.write(base + "+-*/".indexOf(n.op));
             }
         }
@@ -350,17 +371,29 @@ public final class PainlessKnnScript {
             return new Node(Ty.FLOAT, null, 'v', null, null);
         }
 
-        /** {@code params.x}, {@code params['x']} or {@code params["x"]}: the parameter's name. */
+        /**
+         * {@code params.x}, {@code params['x']} or {@code params["x"]}: the parameter's name. Painless adds the search
+         * lookup's {@code doc}, {@code _doc}, {@code _source} and {@code _fields} over the user's params, and resolves
+         * {@code params.empty} to {@code Map.isEmpty()}, so those names are left to Painless.
+         */
         String paramRef() throws NotThisShape {
             if (word("params") == false) {
                 throw new NotThisShape();
             }
+            String name;
             if (eat('.')) {
-                return identifier();
+                name = identifier();
+                if (name.equals("empty") || name.equals("class")) {
+                    throw new NotThisShape();
+                }
+            } else {
+                expect('[');
+                name = quoted();
+                expect(']');
             }
-            expect('[');
-            String name = quoted();
-            expect(']');
+            if (LOOKUP_NAMES.contains(name)) {
+                throw new NotThisShape();
+            }
             return name;
         }
 
