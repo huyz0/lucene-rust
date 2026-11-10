@@ -28,6 +28,10 @@ name = "util_ops"
 harness = false
 
 [[bench]]
+name = "fts_kernels"
+harness = false
+
+[[bench]]
 name = "util_core"
 harness = false
 
