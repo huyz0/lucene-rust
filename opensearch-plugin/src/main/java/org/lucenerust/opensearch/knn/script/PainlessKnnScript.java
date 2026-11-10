@@ -151,7 +151,7 @@ public final class PainlessKnnScript {
         }
     }
 
-    /** The native evaluator's limits on a program's operations and stack depth. */
+    /** The native evaluator's limits on a program's operations and stack depth, as in jvm_knn_painless.rs. */
     static final int MAX_OPS = 256;
     static final int MAX_DEPTH = 16;
 
