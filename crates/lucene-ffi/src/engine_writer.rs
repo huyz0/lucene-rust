@@ -5953,6 +5953,142 @@ mod tests {
         assert_eq!(crate::jvm_reader::ffi_close_jvm_reader(reader), 0);
     }
 
+    /// [`crate::live::ffi_live_view_lucene`]: the reader's live documents as
+    /// of the view (a committed document updated since the commit left out)
+    /// and each leaf of the view as a segment's files, in memory while its
+    /// buffer takes documents, its flushed segment's name once published.
+    #[test]
+    fn a_view_is_handed_to_lucene_as_segments() {
+        use crate::live::{
+            ffi_engine_writer_live_view_open, ffi_live_view_close, ffi_live_view_lucene,
+        };
+        let tmp = empty_index("engine-writer-live-lucene");
+        let h = open_with(&tmp, 64.0, OPEN_LIVE_SEARCH, i32::MAX);
+        let f = setup(h);
+        let add = |i: usize| {
+            let b = doc(
+                Blob::default().u8(OP_ADD).i32(1),
+                &f,
+                &format!("d{i}"),
+                &["alpha"],
+                i as i64,
+                false,
+            );
+            assert_eq!(apply(h, &b.0), 0, "{}", crate::error::last_error());
+        };
+        (0..20).for_each(add);
+        let gen = commit_settled(h);
+        let reader = open_reader(&tmp, gen);
+        (20..30).for_each(add);
+        let b = doc(
+            Blob::default()
+                .u8(OP_SOFT_UPDATE)
+                .bytes(b"_id")
+                .bytes(b"d2")
+                .bytes(b"__soft_deletes")
+                .i64(1)
+                .i32(1),
+            &f,
+            "d2",
+            &["zeta"],
+            30,
+            false,
+        );
+        assert_eq!(apply(h, &b.0), 0, "{}", crate::error::last_error());
+
+        let (mut view, mut ptr, mut len) = (0u64, std::ptr::null_mut(), 0usize);
+        // SAFETY: live out-pointers.
+        let rc = unsafe { ffi_engine_writer_live_view_open(h, gen, &mut view, &mut ptr, &mut len) };
+        assert_eq!(rc, 0, "{}", crate::error::last_error());
+        // SAFETY: the buffer the call gave, freed once.
+        unsafe { crate::ffm_bridge::ffi_jvm_free_bytes(ptr, len) };
+
+        // (kind, name, offset, files), and the live documents per base segment.
+        type Leaf = (u8, String, i32, Vec<String>);
+        let lucene = |view: u64| -> (Vec<Option<u64>>, Vec<Leaf>) {
+            let (mut ptr, mut len) = (std::ptr::null_mut(), 0usize);
+            // SAFETY: live out-pointers.
+            let rc = unsafe { ffi_live_view_lucene(reader, view, 1000, &mut ptr, &mut len) };
+            assert_eq!(rc, 0, "{}", crate::error::last_error());
+            // SAFETY: the buffer the call gave, read before it is freed once.
+            let blob = unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec();
+            unsafe { crate::ffm_bridge::ffi_jvm_free_bytes(ptr, len) };
+            let mut at = 0usize;
+            let mut take = |n: usize| {
+                let out = blob[at..at + n].to_vec();
+                at += n;
+                out
+            };
+            let int = |b: Vec<u8>| i32::from_le_bytes(b.try_into().unwrap());
+            let mut live = Vec::new();
+            for _ in 0..int(take(4)) {
+                let words = int(take(4));
+                live.push((words >= 0).then(|| {
+                    (0..words)
+                        .map(|_| u64::from_le_bytes(take(8).try_into().unwrap()).count_ones())
+                        .map(u64::from)
+                        .sum()
+                }));
+            }
+            let mut leaves = Vec::new();
+            for _ in 0..int(take(4)) {
+                let kind = take(1)[0];
+                let n = int(take(4)) as usize;
+                let name = String::from_utf8(take(n)).unwrap();
+                take(16);
+                let n = int(take(4)) as usize;
+                take(n);
+                let offset = int(take(4));
+                let mut files = Vec::new();
+                if kind == 0 {
+                    for _ in 0..int(take(4)) {
+                        let n = int(take(4)) as usize;
+                        files.push(String::from_utf8(take(n)).unwrap());
+                        let bytes = u64::from_le_bytes(take(8).try_into().unwrap()) as usize;
+                        take(bytes);
+                    }
+                }
+                leaves.push((kind, name, offset, files));
+            }
+            assert_eq!(at, blob.len(), "the whole blob read");
+            (live, leaves)
+        };
+
+        let (live, leaves) = lucene(view);
+        assert_eq!(
+            live.iter().flatten().sum::<u64>(),
+            19,
+            "d2 left out of the commit's documents: {live:?}"
+        );
+        assert!(!leaves.is_empty());
+        for (kind, name, offset, files) in &leaves {
+            assert_eq!(*kind, 0, "{name}: in memory");
+            assert!(name.starts_with("_live"), "{name}");
+            assert_eq!(*offset, 0);
+            assert!(
+                files.iter().any(|f| f.ends_with(".si")),
+                "{name}: {files:?}"
+            );
+        }
+
+        // Published since the view opened: the flushed segment, in the
+        // index's directory.
+        commit_settled(h);
+        let (_, leaves) = lucene(view);
+        for (kind, name, offset, files) in &leaves {
+            assert_eq!(*kind, 1, "{name}: flushed");
+            assert!(!name.starts_with("_live"), "{name}");
+            assert!(*offset >= 0);
+            assert!(files.is_empty());
+        }
+        assert_eq!(ffi_live_view_close(view), 0);
+        // SAFETY: live out-pointers.
+        let rc = unsafe { ffi_live_view_lucene(reader, view, 0, &mut ptr, &mut len) };
+        assert_ne!(rc, 0, "a closed view");
+        assert_eq!(crate::jvm_reader::ffi_close_jvm_reader(reader), 0);
+        assert_eq!(ffi_engine_writer_close(h), 0);
+    }
+
     /// Views of a growing buffer: each view's reader holds the buffer as
     /// chunks, written once and read again by later views, which together
     /// hold the documents, positions, offsets and statistics of the view,

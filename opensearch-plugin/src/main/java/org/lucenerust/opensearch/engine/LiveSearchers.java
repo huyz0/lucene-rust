@@ -18,8 +18,8 @@ import java.util.function.Function;
 /**
  * External searchers that also read the writer's buffered documents ({@code
  * index.lucene_rust.realtime_search}): each searcher supplier -- one search request, its query and
- * fetch phases -- opens one view of the buffers beside its reader, so every phase numbers the
- * buffered documents alike, and closes it with the supplier.
+ * fetch phases, or a point in time -- opens one view of the buffers beside its reader as it is
+ * made, so every phase numbers the buffered documents alike, and closes it with the supplier.
  */
 final class LiveSearchers {
     private final RustIndexWriter writer;
@@ -48,6 +48,18 @@ final class LiveSearchers {
         // The view goes on in acquireSearcherInternal, not through a wrapper: a supplier applies
         // none to a can-match searcher, whose bounds must count the buffered documents too.
         Engine.SearcherSupplier inner = base.apply(Function.identity(), scope);
+        // Opened now, not on the first search: a point in time reads the documents written before
+        // it was opened, as its reader does, not those before its first search.
+        try (Engine.Searcher s = inner.acquireSearcher("live_view")) {
+            live.open(s);
+        } catch (RuntimeException e) {
+            try {
+                inner.close();
+            } finally {
+                live.close();
+            }
+            throw e;
+        }
         return new Engine.SearcherSupplier(wrapper) {
             @Override
             protected Engine.Searcher acquireSearcherInternal(String source) {
@@ -71,12 +83,17 @@ final class LiveSearchers {
         };
     }
 
-    /** {@code s} over its reader and the view of the buffers its reader's commit lacks. */
-    private synchronized Engine.Searcher wrap(Engine.Searcher s) {
+    /** Opens the view of the buffers {@code s}'s reader's commit lacks, once. */
+    private synchronized void open(Engine.Searcher s) {
         if (opened == false) {
             opened = true;
             live = open((OpenSearchDirectoryReader) s.getDirectoryReader());
         }
+    }
+
+    /** {@code s} over its reader and the view of the buffers its reader's commit lacks. */
+    private synchronized Engine.Searcher wrap(Engine.Searcher s) {
+        open(s);
         OpenSearchDirectoryReader reader = live;
         if (reader == null) {
             return s;
