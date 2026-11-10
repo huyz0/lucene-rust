@@ -201,6 +201,8 @@ struct LeafVectors<'r> {
     flat: lucene_codecs::vectors::FlatVectorsReader<'r>,
     graph: Option<lucene_codecs::hnsw_vectors::HnswVectorsReader<'r>>,
     ivf: Option<std::sync::Arc<lucene_ivf::IvfReader>>,
+    scalar_quantized:
+        Option<lucene_codecs::scalar_quantized_vectors::ScalarQuantizedVectorsReader<'r>>,
 }
 
 impl<'r> LeafVectors<'r> {
@@ -215,9 +217,13 @@ impl<'r> LeafVectors<'r> {
     {
         VectorsInput {
             flat: self.flat.clone(),
-            hnsw: match &self.ivf {
-                Some(ivf) => Some(GraphReader::Ivf(ivf.clone())),
-                None => self.graph.clone().map(GraphReader::from),
+            hnsw: match (&self.ivf, &self.scalar_quantized) {
+                (Some(ivf), _) => Some(GraphReader::Ivf(ivf.clone())),
+                (None, Some(codes)) => Some(GraphReader::ScalarQuantized {
+                    graph: self.graph.clone(),
+                    codes: codes.clone(),
+                }),
+                (None, None) => self.graph.clone().map(GraphReader::from),
             },
             field_infos: reader.field_infos(),
             live_docs,
@@ -242,7 +248,13 @@ fn open_leaf<'r>(reader: &'r SegmentReader, field: &str) -> Result<Option<LeafVe
         return Ok(None);
     };
     let ivf = reader.ivf_for(info.number)?;
-    Ok(Some(LeafVectors { flat, graph, ivf }))
+    let scalar_quantized = reader.scalar_quantized_for(info.number)?;
+    Ok(Some(LeafVectors {
+        flat,
+        graph,
+        ivf,
+        scalar_quantized,
+    }))
 }
 
 /// `KnnFloatVectorQuery(field, target, candidates, filter)` rewritten over

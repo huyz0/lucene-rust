@@ -8,7 +8,7 @@ import org.opensearch.common.settings.Setting;
 
 import java.util.List;
 
-/** The neural-search settings and names the hybrid query uses, under their stock keys. */
+/** The neural-search settings and names the hybrid query and the stats API use, under their stock keys. */
 public final class NeuralSearchSettings {
     private NeuralSearchSettings() {}
 
@@ -25,7 +25,18 @@ public final class NeuralSearchSettings {
         Setting.Property.Deprecated
     );
 
+    /** {@code NeuralSearch.NEURAL_BASE_URI}. */
+    public static final String NEURAL_BASE_URI = "/_plugins/_neural";
+
+    /** The stats API and its event counters: off, the API answers 403 and counting is skipped. */
+    public static final Setting<Boolean> NEURAL_STATS_ENABLED = Setting.boolSetting(
+        "plugins.neural_search.stats_enabled",
+        false,
+        Setting.Property.NodeScope,
+        Setting.Property.Dynamic
+    );
+
     public static List<Setting<?>> all() {
-        return List.of(HYBRID_COLLAPSE_DOCS_PER_GROUP_PER_SUBQUERY);
+        return List.of(HYBRID_COLLAPSE_DOCS_PER_GROUP_PER_SUBQUERY, NEURAL_STATS_ENABLED);
     }
 }

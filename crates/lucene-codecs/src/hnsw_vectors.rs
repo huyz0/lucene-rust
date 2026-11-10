@@ -781,7 +781,7 @@ pub struct HnswFieldEntry {
 pub struct HnswVectorsReader<'a> {
     index: &'a [u8],
     version: i32,
-    fields: Vec<HnswFieldEntry>,
+    fields: std::sync::Arc<Vec<HnswFieldEntry>>,
 }
 
 impl<'a> HnswVectorsReader<'a> {
@@ -846,7 +846,7 @@ impl<'a> HnswVectorsReader<'a> {
         Ok(HnswVectorsReader {
             index: index_buf,
             version: version_meta,
-            fields,
+            fields: std::sync::Arc::new(fields),
         })
     }
 
@@ -859,7 +859,7 @@ impl<'a> HnswVectorsReader<'a> {
         HnswVectorsReader {
             index,
             version,
-            fields,
+            fields: std::sync::Arc::new(fields),
         }
     }
 
@@ -869,6 +869,27 @@ impl<'a> HnswVectorsReader<'a> {
 
     pub fn fields(&self) -> &[HnswFieldEntry] {
         &self.fields
+    }
+
+    /// This reader without its data file, to keep beside the segment's
+    /// files: [`Self::attach`] it to the same data for each search, so the
+    /// metadata is parsed and checked once and shared, not copied.
+    pub fn detached(&self) -> HnswVectorsReader<'static> {
+        HnswVectorsReader {
+            index: &[],
+            version: self.version,
+            fields: self.fields.clone(),
+        }
+    }
+
+    /// A detached reader ([`Self::detached`]) over `data`, which must be the
+    /// file the reader was opened on.
+    pub fn attach<'b>(&self, data: &'b [u8]) -> HnswVectorsReader<'b> {
+        HnswVectorsReader {
+            index: data,
+            version: self.version,
+            fields: self.fields.clone(),
+        }
     }
 
     pub fn field(&self, field_number: i32) -> Option<&HnswFieldEntry> {

@@ -609,7 +609,7 @@ pub struct FlatFieldEntry {
 #[derive(Debug, Clone)]
 pub struct FlatVectorsReader<'a> {
     data: &'a [u8],
-    fields: Vec<FlatFieldEntry>,
+    fields: std::sync::Arc<Vec<FlatFieldEntry>>,
     /// Byte vectors are scored by Hamming distance
     /// ([`scores_hamming`]) whatever their recorded similarity.
     hamming: bool,
@@ -725,7 +725,7 @@ impl<'a> FlatVectorsReader<'a> {
 
         Ok(FlatVectorsReader {
             data: data_buf,
-            fields,
+            fields: std::sync::Arc::new(fields),
             hamming: scores_hamming(segment_suffix),
             half,
             resolved: !half,
@@ -751,7 +751,7 @@ impl<'a> FlatVectorsReader<'a> {
         if self.resolved {
             return Ok(());
         }
-        for field in &mut self.fields {
+        for field in std::sync::Arc::make_mut(&mut self.fields) {
             field.similarity =
                 similarity(field.field_number).ok_or(Error::UnknownField(field.field_number))?;
         }
@@ -783,7 +783,7 @@ impl<'a> FlatVectorsReader<'a> {
     pub(crate) fn from_entries(data: &'a [u8], fields: Vec<FlatFieldEntry>) -> Self {
         FlatVectorsReader {
             data,
-            fields,
+            fields: std::sync::Arc::new(fields),
             hamming: false,
             half: false,
             resolved: true,
@@ -803,6 +803,31 @@ impl<'a> FlatVectorsReader<'a> {
 
     pub fn fields(&self) -> &[FlatFieldEntry] {
         &self.fields
+    }
+
+    /// This reader without its data file, to keep beside the segment's
+    /// files: [`Self::attach`] it to the same data for each search, so the
+    /// metadata is parsed and checked once and shared, not copied.
+    pub fn detached(&self) -> FlatVectorsReader<'static> {
+        FlatVectorsReader {
+            data: &[],
+            fields: self.fields.clone(),
+            hamming: self.hamming,
+            half: self.half,
+            resolved: self.resolved,
+        }
+    }
+
+    /// A detached reader ([`Self::detached`]) over `data`, which must be the
+    /// file the reader was opened on.
+    pub fn attach<'b>(&self, data: &'b [u8]) -> FlatVectorsReader<'b> {
+        FlatVectorsReader {
+            data,
+            fields: self.fields.clone(),
+            hamming: self.hamming,
+            half: self.half,
+            resolved: self.resolved,
+        }
     }
 
     pub fn field(&self, field_number: i32) -> Option<&FlatFieldEntry> {
@@ -2190,6 +2215,30 @@ impl crate::hnsw::UpdateableVectorScorer for ByteVectorScorer<'_> {
 }
 
 impl<'a> FloatVectorValues<'a> {
+    /// Every vector, ordinal after ordinal, as one run of components:
+    /// borrowed straight from the file when it holds aligned little-endian
+    /// `f32`s, decoded otherwise (half floats, a misaligned buffer).
+    ///
+    /// # Errors
+    /// A vector that does not decode.
+    pub fn all_vectors(&self) -> Result<std::borrow::Cow<'a, [f32]>> {
+        let slice: &'a [u8] = self.values.slice;
+        if !self.values.half {
+            if let Some(floats) = lucene_util::vector_util::le_f32s(slice) {
+                return Ok(std::borrow::Cow::Borrowed(floats));
+            }
+        }
+        let size = usize::try_from(self.values.size).unwrap_or(0);
+        let mut out = vec![0.0f32; size.saturating_mul(self.values.dimension)];
+        for (ord, chunk) in out
+            .chunks_exact_mut(self.values.dimension.max(1))
+            .enumerate()
+        {
+            self.vector_into(ord as i32, chunk)?;
+        }
+        Ok(std::borrow::Cow::Owned(out))
+    }
+
     /// `FlatVectorsScorer.getRandomVectorScorer(similarity, values, target)`.
     pub fn scorer(&self, query: &[f32]) -> Result<FloatVectorScorer<'a>> {
         if query.len() != self.values.dimension {
@@ -2851,6 +2900,11 @@ mod tests {
         assert_eq!(values.vector(1).unwrap(), want);
         let mut scratch = vec![0.0; 4];
         assert_eq!(values.vector_ref(1, &mut scratch).unwrap(), want);
+        // Half floats are decoded, never borrowed.
+        let all = values.all_vectors().unwrap();
+        assert!(matches!(all, std::borrow::Cow::Owned(_)));
+        let every: Vec<f32> = (0..3).flat_map(|o| values.vector(o).unwrap()).collect();
+        assert_eq!(*all, every[..]);
         // The stock files are not the Lucene99 ones.
         assert!(open(&meta, &data).is_err());
     }

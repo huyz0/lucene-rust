@@ -341,7 +341,14 @@ a dependency the shipped library links is not under a licence listed here.
 - **The plugin zip** holds three things:
   - the plugin's own jar;
   - `plugin-descriptor.properties`;
-  - `native/<platform>/liblucene_ffi.so`.
+  - `native/<platform>/liblucene_ffi.so`;
+  - `native/<platform>/libonnxruntime.so`, ONNX Runtime 1.23.2 (MIT,
+    Microsoft), which ml-commons' local models run on. It is taken unmodified
+    from Microsoft's `com.microsoft.onnxruntime:onnxruntime` jar (the Gradle
+    build extracts it; `scripts/fetch-onnxruntime.sh` pins the jar by SHA-256
+    for the tests), and ships with its licence (`onnxruntime-LICENSE`) and
+    the jar's `ThirdPartyNotices.txt` (`onnxruntime-ThirdPartyNotices.txt`).
+    `liblucene_ffi.so` loads it at run time; nothing links it.
 - **No third-party jar is bundled:** OpenSearch and Lucene are `compileOnly`,
   supplied by the node at run time (both Apache-2.0).
 - **The native library** statically links the workspace and these 27 crates
@@ -382,6 +389,17 @@ a dependency the shipped library links is not under a licence listed here.
 | unicode-segmentation | 1.13.3 | MIT OR Apache-2.0 | MIT |
 
 All are permissive and compatible with redistribution under Apache-2.0.
+
+`lucene-ml` (ml-commons' local text embedding models, 2026-11-09) adds
+`tokenizers` 0.22 (Apache-2.0, Hugging Face: the same tokenizer library
+ml-commons runs through DJL) and `ort` 2.0.0-rc.15 / `ort-sys` (MIT OR
+Apache-2.0, MIT taken: the ONNX Runtime C API, loaded at run time), with
+their dependencies: all MIT, Apache-2.0, ISC (`libloading`), Zlib or
+BSD-2-Clause alternatives, MIT or Apache-2.0 taken where offered
+(`scripts/check-licences.py --all` lists them). Two compile C or C++ into the
+library: `onig_sys` builds Oniguruma (BSD-2-Clause, its text in
+[`LICENSE`](../LICENSE)) and `esaxx-rs` its own suffix array code
+(Apache-2.0).
 
 The list M6's work order named has drifted since it was written:
 - **no longer used:** `jni` (the bridge moved to Panama FFM); `zstd` came back as `zstd-safe` for
