@@ -1590,7 +1590,7 @@ const INDEX_NICE: i32 = 5;
 /// thread: on a machine indexing keeps busy, a search then runs as soon as
 /// it is ready instead of waiting behind the indexing threads for a core,
 /// and indexing gives up only the time searches take.
-fn yield_to_searches() {
+pub(crate) fn yield_to_searches() {
     #[cfg(target_os = "linux")]
     {
         thread_local!(static LOWERED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) });
@@ -5635,6 +5635,66 @@ mod tests {
 
         assert_eq!(ffi_live_view_close(view), 0);
         assert_eq!(crate::jvm_reader::ffi_close_jvm_reader(reader), 0);
+    }
+
+    /// A plain request's read of a view's buffers is made once and kept on
+    /// the view: made ahead (as the warmer makes it for a shared view) or
+    /// by a first search, a later search answers the same.
+    #[test]
+    fn a_view_keeps_what_a_plain_request_read() {
+        use crate::live::{ffi_engine_writer_live_view_open, ffi_live_view_close};
+        let tmp = empty_index("engine-writer-live-prepared");
+        let h = open_with(&tmp, 64.0, OPEN_LIVE_SEARCH, i32::MAX);
+        let f = setup(h);
+        let words = ["alpha", "beta", "gamma", "delta"];
+        let add = |i: usize| {
+            let text: Vec<&str> = (0..1 + i % 4).map(|j| words[(i + j) % 4]).collect();
+            let b = doc(
+                Blob::default().u8(OP_ADD).i32(1),
+                &f,
+                &format!("d{i}"),
+                &text,
+                i as i64,
+                false,
+            );
+            assert_eq!(apply(h, &b.0), 0, "{}", crate::error::last_error());
+        };
+        (0..20).for_each(add);
+        let gen = commit_settled(h);
+        let reader = open_reader(&tmp, gen);
+        (20..40).for_each(add);
+        let open = || {
+            let (mut view, mut ptr, mut len) = (0u64, std::ptr::null_mut(), 0usize);
+            // SAFETY: live out-pointers.
+            let rc =
+                unsafe { ffi_engine_writer_live_view_open(h, gen, &mut view, &mut ptr, &mut len) };
+            assert_eq!(rc, 0, "{}", crate::error::last_error());
+            // SAFETY: the buffer the call gave, freed once.
+            unsafe { crate::ffm_bridge::ffi_jvm_free_bytes(ptr, len) };
+            view
+        };
+        let gamma = crate::jvm_reader::tests::term_blob("body", "gamma");
+        let beta = crate::jvm_reader::tests::term_blob("body", "beta");
+        let searched = open();
+        let want = search_live(reader, searched, &gamma).unwrap();
+        assert_eq!(crate::live::prepared_reads(searched), 1);
+        assert_eq!(search_live(reader, searched, &gamma).unwrap(), want);
+        assert_eq!(crate::live::prepared_reads(searched), 1);
+        assert!(search_live(reader, searched, &beta).is_some());
+        assert_eq!(crate::live::prepared_reads(searched), 2);
+        // Made ahead, then searched: the same answer, nothing more made.
+        let ahead = open();
+        crate::live::prepare_ahead(ahead, &gamma);
+        assert_eq!(crate::live::prepared_reads(ahead), 1);
+        assert_eq!(search_live(reader, ahead, &gamma).unwrap(), want);
+        assert_eq!(crate::live::prepared_reads(ahead), 1);
+        // A request a plain search does not answer is not made.
+        crate::live::prepare_ahead(ahead, b"not a request");
+        assert_eq!(crate::live::prepared_reads(ahead), 1);
+        assert_eq!(ffi_live_view_close(searched), 0);
+        assert_eq!(ffi_live_view_close(ahead), 0);
+        assert_eq!(crate::jvm_reader::ffi_close_jvm_reader(reader), 0);
+        assert_eq!(ffi_engine_writer_close(h), 0);
     }
 
     /// Under a staleness bound a view opened within it is shared, without

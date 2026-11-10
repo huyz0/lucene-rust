@@ -69,6 +69,10 @@ struct ViewHandle {
     /// The reader handle [`ffi_live_view_reader`] made over a reader and
     /// this view's buffers, closed with the view.
     whole: Mutex<Whole>,
+    /// The buffers as the last plain requests read them ([`prepare_plain`]),
+    /// by [`request_key`], newest last: a view never changes, so neither
+    /// does what a request reads of it.
+    prepared: Mutex<Vec<(Vec<u8>, Arc<Prepared>)>>,
 }
 
 impl Drop for ViewHandle {
@@ -226,6 +230,26 @@ pub(crate) struct Warmer {
     /// Adds since the writer opened, to look for a chunk every
     /// [`INLINE_EVERY`] of them.
     adds: AtomicU64,
+    /// Under a staleness bound, the last plain requests' blobs, newest
+    /// last, each with whether it came more than once: the warmer makes
+    /// the reads of those that did of each view it opens.
+    recent_plain: Mutex<Vec<(Vec<u8>, bool)>>,
+    /// The same for [`ffi_live_view_reader`]'s requests: the reader handle
+    /// last asked with, and the request's query, tree and extra blobs.
+    recent_readers: Mutex<Vec<RecentReader>>,
+}
+
+/// A request [`Warmer::recent_readers`] keeps.
+#[derive(Clone)]
+struct RecentReader {
+    handle: u64,
+    /// The commit of the view it was asked of: the handle's reader's.
+    commit: Option<i64>,
+    query: Vec<u8>,
+    tree: Option<Vec<u8>>,
+    extra: Option<Vec<u8>>,
+    /// Whether it came more than once.
+    repeated: bool,
 }
 
 /// A chunk of buffer `buffer`'s documents `start..end` being written.
@@ -427,6 +451,86 @@ impl Warmer {
         drop(old);
     }
 
+    /// Notes a plain request's blob for [`Self::recent_plain`].
+    fn note_plain(&self, blob: &[u8]) {
+        let mut recent = self
+            .recent_plain
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(i) = recent.iter().position(|(b, _)| b == blob) {
+            let (b, _) = recent.remove(i);
+            recent.push((b, true));
+            return;
+        }
+        if recent.len() >= RECENT_PLAIN {
+            recent.remove(0);
+        }
+        recent.push((blob.to_vec(), false));
+    }
+
+    /// Notes a view reader's request for [`Self::recent_readers`].
+    fn note_reader(
+        &self,
+        handle: u64,
+        commit: Option<i64>,
+        query: Option<&[u8]>,
+        tree: Option<&[u8]>,
+        extra: Option<&[u8]>,
+    ) {
+        let Some(query) = query else {
+            return;
+        };
+        let mut recent = self
+            .recent_readers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let same = |r: &RecentReader| {
+            r.query == query && r.tree.as_deref() == tree && r.extra.as_deref() == extra
+        };
+        if let Some(i) = recent.iter().position(same) {
+            let mut r = recent.remove(i);
+            r.handle = handle;
+            r.commit = commit;
+            r.repeated = true;
+            recent.push(r);
+            return;
+        }
+        if recent.len() >= RECENT_PLAIN {
+            recent.remove(0);
+        }
+        recent.push(RecentReader {
+            handle,
+            commit,
+            query: query.to_vec(),
+            tree: tree.map(<[u8]>::to_vec),
+            extra: extra.map(<[u8]>::to_vec),
+            repeated: false,
+        });
+    }
+
+    /// The recent view readers' requests that came more than once: a
+    /// one-off is not made ahead for views no search of it will read.
+    fn recent_readers(&self) -> Vec<RecentReader> {
+        self.recent_readers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .filter(|r| r.repeated)
+            .cloned()
+            .collect()
+    }
+
+    /// As [`Self::recent_readers`], for plain requests.
+    fn recent_plain(&self) -> Vec<Vec<u8>> {
+        self.recent_plain
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .filter(|(_, repeated)| *repeated)
+            .map(|(b, _)| b.clone())
+            .collect()
+    }
+
     fn running(&self) -> bool {
         self.running.load(Ordering::Acquire)
     }
@@ -505,6 +609,9 @@ fn searched_lean(w: &Arc<EngineWriter>) {
 }
 
 fn warm_loop(weak: &std::sync::Weak<EngineWriter>) {
+    // Its work is the searches' made ahead: a search waiting for a core
+    // goes first.
+    crate::engine_writer::yield_to_searches();
     loop {
         std::thread::sleep(WARM_EVERY);
         let Some(w) = weak.upgrade() else {
@@ -537,7 +644,29 @@ fn warm_loop(weak: &std::sync::Weak<EngineWriter>) {
                     // A panic must not end the thread with the warmer marked
                     // running.
                     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        drop(open_handle(&w, commit, true));
+                        if let Ok(h) = open_view(&w, commit, true) {
+                            // The last requests' reads of it are made here,
+                            // before any search shares it: the searches
+                            // then build nothing of the buffers.
+                            for blob in warmer.recent_plain() {
+                                let _ = prepare_plain_blob(&h, &blob);
+                            }
+                            // A reader handle closed meanwhile is refused.
+                            for r in warmer
+                                .recent_readers()
+                                .into_iter()
+                                .filter(|r| r.commit == h.commit)
+                            {
+                                let _ = view_reader_of(
+                                    r.handle,
+                                    &h,
+                                    Some(&r.query),
+                                    r.tree.as_deref(),
+                                    r.extra.as_deref(),
+                                );
+                            }
+                            warmer.share_view(&h);
+                        }
                     }));
                 }
             }
@@ -624,6 +753,26 @@ fn warm_min(w: &EngineWriter, min: i32) -> lucene_index::index_writer::Result<bo
             "warming the buffers panicked".into(),
         ))
     })
+}
+
+/// How many plain requests' reads view `view` keeps.
+#[cfg(test)]
+pub(crate) fn prepared_reads(view: u64) -> usize {
+    self::view(view).map_or(0, |v| {
+        v.prepared
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
+    })
+}
+
+/// Makes the read of the plain request `blob` of view `view`, as the warmer
+/// makes it for a shared view.
+#[cfg(test)]
+pub(crate) fn prepare_ahead(view: u64, blob: &[u8]) {
+    if let Ok(v) = self::view(view) {
+        let _ = prepare_plain_blob(&v, blob);
+    }
 }
 
 /// Waits for `w`'s warming thread to end, as it does once no lean search
@@ -1037,8 +1186,19 @@ pub unsafe extern "C" fn ffi_engine_writer_live_view_open(
 
 /// A view of `w`'s buffers for a reader of `commit`, its plans and blob.
 /// `warm`, its chunks are written first, so the views' readers find them
-/// all written.
+/// all written. Under a staleness bound the searches share it.
 fn open_handle(
+    w: &Arc<EngineWriter>,
+    commit: Option<i64>,
+    warm: bool,
+) -> Result<Arc<ViewHandle>, FfiStatus> {
+    let h = open_view(w, commit, warm)?;
+    w.live_warmer().share_view(&h);
+    Ok(h)
+}
+
+/// [`open_handle`]'s view, not yet shared.
+fn open_view(
     w: &Arc<EngineWriter>,
     commit: Option<i64>,
     warm: bool,
@@ -1089,8 +1249,8 @@ fn open_handle(
         commit,
         opened,
         whole: Mutex::new(Whole::default()),
+        prepared: Mutex::new(Vec::new()),
     });
-    w.live_warmer().share_view(&h);
     Ok(h)
 }
 
@@ -1191,69 +1351,83 @@ pub unsafe extern "C" fn ffi_live_view_reader(
         let tree = (tree_len > 0)
             .then(|| unsafe { bytes_from_raw(tree, tree_len) })
             .transpose()?;
-        let mut request = match query {
-            Some(q) => overlay_request(q, tree, extra)?,
-            None => None,
-        };
-
-        let mut key = request
-            .as_ref()
-            .zip(query)
-            .map(|(_, q)| request_key(q, tree, extra));
-        {
-            let whole = v
-                .whole
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let mut found = whole.find(handle, key.as_deref())?;
-            if found.is_none()
-                && key.is_some()
-                && whole
-                    .handles
-                    .iter()
-                    .filter(|(b, k, _)| *b == handle && k.is_some())
-                    .count()
-                    >= REQUEST_HANDLES
-            {
-                (request, key) = (None, None);
-                found = whole.find(handle, None)?;
-            }
-            if let Some(id) = found {
-                // SAFETY: caller contract.
-                unsafe { *out_handle = id };
-                return Ok(());
-            }
+        if query.is_some() && v.writer.live_warmer().max_staleness().is_some() {
+            v.writer
+                .live_warmer()
+                .note_reader(handle, v.commit, query, tree, extra);
         }
-        let id = build_view_reader(handle, &v, request.as_ref(), key.as_deref())?;
-        let mut whole = v
-            .whole
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        // The view may have closed, or another search made the same handle,
-        // meanwhile.
-        let found = if whole.closed {
-            set_last_error("live view: unknown or already-closed handle");
-            Err(FfiStatus::InvalidHandle)
-        } else {
-            Ok(whole
-                .handles
-                .iter()
-                .find(|(b, k, _)| *b == handle && *k == key)
-                .map(|&(_, _, id)| id))
-        };
-        if !matches!(found, Ok(None)) {
-            drop(whole);
-            crate::jvm_reader::ffi_close_jvm_reader(id);
-            let found = found?.unwrap_or_default();
-            // SAFETY: caller contract.
-            unsafe { *out_handle = found };
-            return Ok(());
-        }
-        whole.handles.push((handle, key, id));
+        let id = view_reader_of(handle, &v, query, tree, extra)?;
         // SAFETY: caller contract.
         unsafe { *out_handle = id };
         Ok(())
     })
+}
+
+/// [`ffi_live_view_reader`]'s handle over the reader at `handle` and `v`'s
+/// buffers for the request of `query`, `tree` and `extra`, made once per
+/// view and kept.
+fn view_reader_of(
+    handle: u64,
+    v: &ViewHandle,
+    query: Option<&[u8]>,
+    tree: Option<&[u8]>,
+    extra: Option<&[u8]>,
+) -> Result<u64, FfiStatus> {
+    let mut request = match query {
+        Some(q) => overlay_request(q, tree, extra)?,
+        None => None,
+    };
+
+    let mut key = request
+        .as_ref()
+        .zip(query)
+        .map(|(_, q)| request_key(q, tree, extra));
+    {
+        let whole = v
+            .whole
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut found = whole.find(handle, key.as_deref())?;
+        if found.is_none()
+            && key.is_some()
+            && whole
+                .handles
+                .iter()
+                .filter(|(b, k, _)| *b == handle && k.is_some())
+                .count()
+                >= REQUEST_HANDLES
+        {
+            (request, key) = (None, None);
+            found = whole.find(handle, None)?;
+        }
+        if let Some(id) = found {
+            return Ok(id);
+        }
+    }
+    let id = build_view_reader(handle, v, request.as_ref(), key.as_deref())?;
+    let mut whole = v
+        .whole
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    // The view may have closed, or another search made the same handle,
+    // meanwhile.
+    let found = if whole.closed {
+        set_last_error("live view: unknown or already-closed handle");
+        Err(FfiStatus::InvalidHandle)
+    } else {
+        Ok(whole
+            .handles
+            .iter()
+            .find(|(b, k, _)| *b == handle && *k == key)
+            .map(|&(_, _, id)| id))
+    };
+    if !matches!(found, Ok(None)) {
+        drop(whole);
+        crate::jvm_reader::ffi_close_jvm_reader(id);
+        return Ok(found?.unwrap_or_default());
+    }
+    whole.handles.push((handle, key, id));
+    Ok(id)
 }
 
 /// A new reader handle over the reader at `handle` and `v`'s buffers as
@@ -2170,94 +2344,17 @@ pub unsafe extern "C" fn ffi_jvm_reader_search_live(
             k.extend(request_key(blob, None, None));
             k
         };
-        let prefixes: Vec<&[Planned]> = v
-            .view
-            .buffers
-            .iter()
-            .zip(&v.plans)
-            .map(|(b, plan)| {
-                let n = if b.in_slot {
-                    plan.iter().take_while(|p| p.chunk.is_some()).count()
-                } else {
-                    0
-                };
-                plan.get(..n).unwrap_or_default()
-            })
-            .collect();
-        // The overlays found now are the ones used: one evicted later must
-        // not be rebuilt from a read that starts past its chunk.
-        let cached: Vec<Vec<Option<SegmentReader>>> = prefixes
-            .iter()
-            .map(|prefix| {
-                prefix
-                    .iter()
-                    .map(|p| cached_overlay(p, Some(&key)))
-                    .collect()
-            })
-            .collect();
-        // Each buffer is read from its first chunk without this request's
-        // overlay, else from the documents after its chunks.
-        let from: Vec<i32> = prefixes
-            .iter()
-            .zip(&cached)
-            .map(|(prefix, cached)| {
-                let uncached = prefix
-                    .iter()
-                    .zip(cached)
-                    .find(|(p, c)| p.chunk.as_ref().is_some_and(|c| !c.postings) && c.is_none());
-                uncached.map_or_else(|| prefix.last().map_or(0, |p| p.end), |(p, _)| p.start)
-            })
-            .collect();
-        let snapshot = v
-            .writer
-            .writer()
-            .live_view_snapshot_from(&v.view, &request, &from)
-            .map_err(live_error)?;
-        let mut chunk_readers = Vec::new();
-        let mut chunk_masks = Vec::new();
-        let mut chunk_docs = Vec::new();
-        let mut live = Vec::new();
-        for ((prefix, cached), buffer) in prefixes.iter().zip(cached).zip(snapshot.buffers) {
-            let parts: Vec<(SegmentReader, bool)> = prefix
-                .iter()
-                .filter_map(|p| p.chunk.as_ref().map(|c| (c.reader.clone(), !c.postings)))
-                .collect();
-            for (p, r) in
-                prefix
-                    .iter()
-                    .zip(overlaid(parts, prefix, cached, Some(&buffer), Some(&key))?)
-            {
-                // The snapshot's deletes: every document of a buffer
-                // `delete_all` or `rollback` dropped since the view opened.
-                let lo = buffer.deleted.partition_point(|&d| d < p.start);
-                let hi = buffer.deleted.partition_point(|&d| d < p.end);
-                let deleted: Vec<i32> = buffer
-                    .deleted
-                    .get(lo..hi)
-                    .unwrap_or_default()
-                    .iter()
-                    .map(|&d| d.saturating_sub(p.start))
-                    .collect();
-                chunk_masks.push(buffer_mask(
-                    p.end.saturating_sub(p.start),
-                    &deleted,
-                    r.max_doc,
-                ));
-                chunk_docs.push(r.max_doc);
-                chunk_readers.push(r);
-            }
-            let start = prefix.last().map_or(0, |p| p.end);
-            let at_start = |f: i32| {
-                prefix
-                    .last()
-                    .and_then(|p| p.end_totals.get(&f).copied())
-                    .unwrap_or_default()
-            };
-            live.push(
-                lucene_search::live_segment::tail_segment(buffer, start, &at_start)
-                    .map_err(map_search_error)?,
-            );
+        if v.writer.live_warmer().max_staleness().is_some() {
+            v.writer.live_warmer().note_plain(blob);
         }
+        let prepared = prepare_plain(&v, &request, &key)?;
+        let Prepared {
+            chunk_readers,
+            chunk_masks,
+            chunk_docs,
+            live,
+            prefix_lens,
+        } = &*prepared;
         laps.lap(lucene_index::live_timing::Phase::PlainPrepare);
         let inputs = live
             .iter()
@@ -2269,10 +2366,13 @@ pub unsafe extern "C" fn ffi_jvm_reader_search_live(
         let reader = if chunk_readers.is_empty() {
             &h.reader
         } else {
-            chunked = h.reader.with_readers_appended(chunk_readers).map_err(|e| {
-                set_last_error(format!("opening the buffered documents: {e}"));
-                FfiStatus::Decode
-            })?;
+            chunked = h
+                .reader
+                .with_readers_appended(chunk_readers.clone())
+                .map_err(|e| {
+                    set_last_error(format!("opening the buffered documents: {e}"));
+                    FfiStatus::Decode
+                })?;
             &chunked
         };
         let opened = reader.open_segments().map_err(|e| {
@@ -2305,7 +2405,7 @@ pub unsafe extern "C" fn ffi_jvm_reader_search_live(
             .collect();
         let extra = |field: &str| {
             let mut found = None;
-            for l in &live {
+            for l in live {
                 if let Some([_, ttf, _, dc]) = l.field_stats(field) {
                     let (t, d) = found.unwrap_or((0i64, 0i64));
                     found = Some((t.saturating_add(ttf), d.saturating_add(dc)));
@@ -2333,9 +2433,9 @@ pub unsafe extern "C" fn ffi_jvm_reader_search_live(
             }
         }
         let mut doc_base = h.reader.max_doc();
-        let mut chunk_docs = chunk_docs.into_iter();
-        for (((prefix, l), i), ln) in prefixes.iter().zip(&live).zip(&inputs).zip(&live_norms) {
-            for _ in 0..prefix.len() {
+        let mut chunk_docs = chunk_docs.iter().copied();
+        for (((&n, l), i), ln) in prefix_lens.iter().zip(live).zip(&inputs).zip(&live_norms) {
+            for _ in 0..n {
                 if let (Some((mut s, n)), Some(docs)) = (opened_iter.next(), chunk_docs.next()) {
                     s.doc_base = doc_base;
                     doc_base = doc_base.saturating_add(docs);
@@ -2385,6 +2485,158 @@ pub unsafe extern "C" fn ffi_jvm_reader_search_live(
         }
         Ok(())
     })
+}
+
+/// The most plain requests' reads a view keeps ([`ViewHandle::prepared`]).
+const PREPARED: usize = 8;
+
+/// The most plain requests the warmer reads each shared view for
+/// ([`Warmer::recent_plain`]).
+const RECENT_PLAIN: usize = 8;
+
+/// What a plain request reads of a view's buffers: each buffer's chunks
+/// (with the request's terms overlaid) and then a segment of the documents
+/// after them.
+struct Prepared {
+    chunk_readers: Vec<SegmentReader>,
+    chunk_masks: Vec<Option<FixedBitSet>>,
+    chunk_docs: Vec<i32>,
+    /// By buffer, the segment after its chunks.
+    live: Vec<lucene_search::live_segment::LiveSegment>,
+    /// By buffer, how many of `chunk_readers` are its.
+    prefix_lens: Vec<usize>,
+}
+
+/// [`Prepared`] for the request `blob` decodes to, kept on `v`; nothing for
+/// a request a plain search does not answer.
+fn prepare_plain_blob(v: &ViewHandle, blob: &[u8]) -> Result<(), FfiStatus> {
+    let (query, min_score, _) = decode_request(blob)?;
+    let clause = Clause::Boolean(Box::new(boolean_of(&query)));
+    if let (None, Some(request)) = (min_score, live_request(&clause)) {
+        let mut key = vec![PLAIN_KEY];
+        key.extend(request_key(blob, None, None));
+        prepare_plain(v, &request, &key)?;
+    }
+    Ok(())
+}
+
+/// What `request` (whose [`request_key`] is `key`) reads of `v`'s buffers:
+/// made once per view and request, and kept.
+fn prepare_plain(
+    v: &ViewHandle,
+    request: &LiveRequest,
+    key: &[u8],
+) -> Result<Arc<Prepared>, FfiStatus> {
+    let lock = || {
+        v.prepared
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    };
+    if let Some((_, p)) = lock().iter().find(|(k, _)| k == key) {
+        return Ok(Arc::clone(p));
+    }
+    let prefixes: Vec<&[Planned]> = v
+        .view
+        .buffers
+        .iter()
+        .zip(&v.plans)
+        .map(|(b, plan)| {
+            let n = if b.in_slot {
+                plan.iter().take_while(|p| p.chunk.is_some()).count()
+            } else {
+                0
+            };
+            plan.get(..n).unwrap_or_default()
+        })
+        .collect();
+    // The overlays found now are the ones used: one evicted later must
+    // not be rebuilt from a read that starts past its chunk.
+    let cached: Vec<Vec<Option<SegmentReader>>> = prefixes
+        .iter()
+        .map(|prefix| {
+            prefix
+                .iter()
+                .map(|p| cached_overlay(p, Some(key)))
+                .collect()
+        })
+        .collect();
+    // Each buffer is read from its first chunk without this request's
+    // overlay, else from the documents after its chunks.
+    let from: Vec<i32> = prefixes
+        .iter()
+        .zip(&cached)
+        .map(|(prefix, cached)| {
+            let uncached = prefix
+                .iter()
+                .zip(cached)
+                .find(|(p, c)| p.chunk.as_ref().is_some_and(|c| !c.postings) && c.is_none());
+            uncached.map_or_else(|| prefix.last().map_or(0, |p| p.end), |(p, _)| p.start)
+        })
+        .collect();
+    let snapshot = v
+        .writer
+        .writer()
+        .live_view_snapshot_from(&v.view, request, &from)
+        .map_err(live_error)?;
+    let mut chunk_readers = Vec::new();
+    let mut chunk_masks = Vec::new();
+    let mut chunk_docs = Vec::new();
+    let mut live = Vec::new();
+    for ((prefix, cached), buffer) in prefixes.iter().zip(cached).zip(snapshot.buffers) {
+        let parts: Vec<(SegmentReader, bool)> = prefix
+            .iter()
+            .filter_map(|p| p.chunk.as_ref().map(|c| (c.reader.clone(), !c.postings)))
+            .collect();
+        for (p, r) in prefix
+            .iter()
+            .zip(overlaid(parts, prefix, cached, Some(&buffer), Some(key))?)
+        {
+            // The snapshot's deletes: every document of a buffer
+            // `delete_all` or `rollback` dropped since the view opened.
+            let lo = buffer.deleted.partition_point(|&d| d < p.start);
+            let hi = buffer.deleted.partition_point(|&d| d < p.end);
+            let deleted: Vec<i32> = buffer
+                .deleted
+                .get(lo..hi)
+                .unwrap_or_default()
+                .iter()
+                .map(|&d| d.saturating_sub(p.start))
+                .collect();
+            chunk_masks.push(buffer_mask(
+                p.end.saturating_sub(p.start),
+                &deleted,
+                r.max_doc,
+            ));
+            chunk_docs.push(r.max_doc);
+            chunk_readers.push(r);
+        }
+        let start = prefix.last().map_or(0, |p| p.end);
+        let at_start = |f: i32| {
+            prefix
+                .last()
+                .and_then(|p| p.end_totals.get(&f).copied())
+                .unwrap_or_default()
+        };
+        live.push(
+            lucene_search::live_segment::tail_segment(buffer, start, &at_start)
+                .map_err(map_search_error)?,
+        );
+    }
+    let prepared = Arc::new(Prepared {
+        chunk_readers,
+        chunk_masks,
+        chunk_docs,
+        live,
+        prefix_lens: prefixes.iter().map(|p| p.len()).collect(),
+    });
+    let mut kept = lock();
+    if !kept.iter().any(|(k, _)| k == key) {
+        if kept.len() >= PREPARED {
+            kept.remove(0);
+        }
+        kept.push((key.to_vec(), Arc::clone(&prepared)));
+    }
+    Ok(prepared)
 }
 
 /// The reader's live documents with `terms` (a view's
