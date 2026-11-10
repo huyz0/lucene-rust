@@ -34,6 +34,8 @@ lucene-facet = { path = "../lucene-facet" }
 lucene-sandbox = { path = "../lucene-sandbox" }
 lucene-misc = { path = "../lucene-misc" }
 lucene-sparse = { path = "../lucene-sparse" }
+# The ml-commons port's local model inference (`ml.rs`).
+lucene-ml = { path = "../lucene-ml" }
 lucene-util = { path = "../lucene-util" }
 lucene-analysis = { path = "../lucene-analysis" }
 # ICU's Thai dictionary word iterator, which `ThaiTokenizer` (the `thai`

@@ -1,0 +1,252 @@
+{
+  "_meta": {
+    "schema_version": 14
+  },
+  "properties": {
+    "algorithm": {
+      "type": "keyword"
+    },
+    "auto_redeploy_retry_times": {
+      "type": "integer"
+    },
+    "chunk_number": {
+      "type": "long"
+    },
+    "connector": {
+      "properties": {
+        "actions": {
+          "type": "flat_object"
+        },
+        "client_config": {
+          "type": "flat_object"
+        },
+        "credential": {
+          "type": "flat_object"
+        },
+        "description": {
+          "type": "text"
+        },
+        "name": {
+          "fields": {
+            "keyword": {
+              "ignore_above": 256,
+              "type": "keyword"
+            }
+          },
+          "type": "text"
+        },
+        "parameters": {
+          "type": "flat_object"
+        },
+        "protocol": {
+          "type": "keyword"
+        },
+        "version": {
+          "type": "keyword"
+        }
+      }
+    },
+    "created_time": {
+      "format": "strict_date_time||epoch_millis",
+      "type": "date"
+    },
+    "current_worker_node_count": {
+      "type": "integer"
+    },
+    "deploy_setting": {
+      "type": "flat_object"
+    },
+    "deploy_to_all_nodes": {
+      "type": "boolean"
+    },
+    "description": {
+      "type": "text"
+    },
+    "guardrails": {
+      "properties": {
+        "input_guardrail": {
+          "properties": {
+            "regex": {
+              "type": "text"
+            },
+            "stop_words": {
+              "properties": {
+                "index_name": {
+                  "type": "text"
+                },
+                "source_fields": {
+                  "type": "text"
+                }
+              }
+            }
+          }
+        },
+        "output_guardrail": {
+          "properties": {
+            "regex": {
+              "type": "text"
+            },
+            "stop_words": {
+              "properties": {
+                "index_name": {
+                  "type": "text"
+                },
+                "source_fields": {
+                  "type": "text"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "interface": {
+      "type": "flat_object"
+    },
+    "is_controller_enabled": {
+      "type": "boolean"
+    },
+    "is_enabled": {
+      "type": "boolean"
+    },
+    "is_hidden": {
+      "type": "boolean"
+    },
+    "last_deployed_time": {
+      "format": "strict_date_time||epoch_millis",
+      "type": "date"
+    },
+    "last_registered_time": {
+      "format": "strict_date_time||epoch_millis",
+      "type": "date"
+    },
+    "last_undeployed_time": {
+      "format": "strict_date_time||epoch_millis",
+      "type": "date"
+    },
+    "last_updated_time": {
+      "format": "strict_date_time||epoch_millis",
+      "type": "date"
+    },
+    "model_config": {
+      "properties": {
+        "additional_config": {
+          "type": "flat_object"
+        },
+        "all_config": {
+          "type": "text"
+        },
+        "embedding_dimension": {
+          "type": "integer"
+        },
+        "framework_type": {
+          "type": "keyword"
+        },
+        "model_max_length": {
+          "type": "integer"
+        },
+        "model_type": {
+          "type": "keyword"
+        },
+        "normalize_result": {
+          "type": "boolean"
+        },
+        "pooling_mode": {
+          "type": "keyword"
+        }
+      }
+    },
+    "model_content": {
+      "type": "binary"
+    },
+    "model_content_hash_value": {
+      "type": "keyword"
+    },
+    "model_content_size_in_bytes": {
+      "type": "long"
+    },
+    "model_format": {
+      "type": "keyword"
+    },
+    "model_group_id": {
+      "type": "keyword"
+    },
+    "model_id": {
+      "type": "keyword"
+    },
+    "model_state": {
+      "type": "keyword"
+    },
+    "model_version": {
+      "type": "keyword"
+    },
+    "name": {
+      "fields": {
+        "keyword": {
+          "ignore_above": 256,
+          "type": "keyword"
+        }
+      },
+      "type": "text"
+    },
+    "planning_worker_node_count": {
+      "type": "integer"
+    },
+    "planning_worker_nodes": {
+      "type": "keyword"
+    },
+    "provisioned_by": {
+      "type": "keyword"
+    },
+    "rate_limiter": {
+      "type": "flat_object"
+    },
+    "tenant_id": {
+      "type": "keyword"
+    },
+    "total_chunks": {
+      "type": "long"
+    },
+    "user": {
+      "properties": {
+        "backend_roles": {
+          "fields": {
+            "keyword": {
+              "type": "keyword"
+            }
+          },
+          "type": "text"
+        },
+        "custom_attribute_names": {
+          "fields": {
+            "keyword": {
+              "type": "keyword"
+            }
+          },
+          "type": "text"
+        },
+        "name": {
+          "fields": {
+            "keyword": {
+              "ignore_above": 256,
+              "type": "keyword"
+            }
+          },
+          "type": "text"
+        },
+        "roles": {
+          "fields": {
+            "keyword": {
+              "type": "keyword"
+            }
+          },
+          "type": "text"
+        }
+      },
+      "type": "nested"
+    },
+    "version": {
+      "type": "long"
+    }
+  }
+}
