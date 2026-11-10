@@ -42,6 +42,7 @@ mod jvm_reader;
 mod jvm_similarity;
 mod live;
 mod ml;
+mod ml_torch;
 mod raw;
 mod registry;
 mod store;
