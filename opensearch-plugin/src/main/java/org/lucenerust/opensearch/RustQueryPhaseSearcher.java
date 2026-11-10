@@ -370,11 +370,14 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
      * Gives Lucene the buffered documents of the searcher's view before it answers, so it finds
      * them as the native engine would: the buffers as segments, and the reader's documents deleted
      * since its commit left out. The aggregators built so far are built again over them. True when
-     * this call gave them to Lucene.
+     * Lucene reads them.
      */
     private boolean readByLucene(SearchContext ctx, ContextIndexSearcher searcher, LiveDirectoryReader view) throws IOException {
         if (view.readsLucene()) {
-            return false;
+            // Another search gave them to Lucene, perhaps after this one rewrote its query or
+            // built its aggregators: they are rebuilt over them all the same.
+            DeferredAggregationProcessor.rebuild(ctx);
+            return true;
         }
         NativeReaders.Acquired acquired = readers.acquire(searcher.getIndexReader());
         if (acquired.fallbackReason() != null) {

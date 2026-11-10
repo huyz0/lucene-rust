@@ -101,13 +101,26 @@ public final class LiveDirectoryReader extends FilterDirectoryReader {
             docs,
             ((StandardDirectoryReader) FilterDirectoryReader.unwrap(base)).directory()
         );
+        // Checked before anything changes, so a refused blob leaves the reader as it was.
+        try {
+            for (int i = 0; i < live.length; i++) {
+                if (segments.leaves[i].maxDoc() != docs[i]) {
+                    throw new IllegalStateException(
+                        "a segment of " + segments.leaves[i].maxDoc() + " documents for a leaf of " + docs[i]
+                    );
+                }
+            }
+        } catch (RuntimeException e) {
+            org.apache.lucene.util.IOUtils.closeWhileHandlingException(segments.owners);
+            throw e;
+        }
+        for (int i = 0; i < live.length; i++) {
+            live[i].useLucene(segments.leaves[i], view.chunkLive(i), segments.owners[i]);
+        }
         for (int i = 0; i < committed.length; i++) {
             if (segments.baseLive[i] != null) {
                 committed[i].deleteSinceCommit(segments.baseLive[i]);
             }
-        }
-        for (int i = 0; i < live.length; i++) {
-            live[i].useLucene(segments.leaves[i], view.chunkLive(i), segments.owners[i]);
         }
         IndexReader.CacheKey renewed = CacheKeys.newKey();
         key = renewed;

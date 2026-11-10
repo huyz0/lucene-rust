@@ -516,6 +516,28 @@ def realtime():
             check(len(got_a) == first_a["hits"]["total"]["value"], f"{where}: {kind} pages hold the first page's total")
             check(got_a == got_b, f"{where}: {kind} pages: {got_a[:3]} vs {got_b[:3]} ({len(got_a)} vs {len(got_b)})")
 
+    def pit_flushed(where):
+        """A point in time keeps its view after a flush publishes the buffers it read: a search
+        Lucene answers through it then reads them as their published segments."""
+        pits = {idx: must("POST", f"/{idx}/_search/point_in_time?keep_alive=1m")["pit_id"] for idx in (rt, ref)}
+        for idx in (rt, ref):
+            lines = []
+            for i in range(30):
+                lines += [{"index": {"_id": f"pf{i}"}}, {"body": "fox after pit", "n": 60000 + i * 3, "@timestamp": i}]
+            must("POST", f"/{idx}/_bulk", "\n".join(json.dumps(l) for l in lines) + "\n", ndjson=True)
+        must("POST", f"/{rt}/_flush")
+        must("POST", f"/{ref}/_refresh")
+        body = {"query": on_lucene, "size": 100, "track_total_hits": True, "sort": [{"n": "desc"}, {"@timestamp": "asc"}]}
+        out = {idx: must("POST", "/_search?request_cache=false", dict(body, pit={"id": pit, "keep_alive": "1m"}))
+               for idx, pit in pits.items()}
+        req("DELETE", "/_search/point_in_time", {"pit_id": list(pits.values())})
+        a, b = out[rt], out[ref]
+        check(a["hits"]["total"]["value"] == b["hits"]["total"]["value"],
+              f"{where}: script query through a flushed point in time: {a['hits']['total']} vs {b['hits']['total']}")
+        ha = [(h["_id"], h["sort"]) for h in a["hits"]["hits"]]
+        hb = [(h["_id"], h["sort"]) for h in b["hits"]["hits"]]
+        check(ha == hb, f"{where}: script query hits through a flushed point in time: {ha[:3]} vs {hb[:3]}")
+
     def same_views(where):
         """Aggregations and sorted searches on the realtime index equal the refreshed index's."""
         for q in queries + [{"match_all": {}}]:
@@ -541,7 +563,11 @@ def realtime():
                      {"query": on_lucene, "size": 100, "track_total_hits": True, "sort": by_n},
                      {"query": fox, "size": 100, "track_total_hits": True, "version": True, "sort": by_n},
                      {"query": fox, "size": 20, "track_total_hits": True, "sort": by_n,
-                      "highlight": {"fields": {"body": {}}}}]:
+                      "highlight": {"fields": {"body": {}}}},
+                     # Rewritten again once Lucene reads the buffers: its terms are theirs too.
+                     {"query": {"prefix": {"title": {"value": "qu", "rewrite": "scoring_boolean"}}}, "size": 50,
+                      "track_total_hits": True, "sort": by_n, "track_scores": True},
+                     {"query": fox, "size": 10, "track_total_hits": True, "sort": by_n, "explain": True}]:
             a = must("POST", f"/{rt}/_search?request_cache=false", body)
             b = must("POST", f"/{ref}/_search?request_cache=false", body)
             what = f"{where}: on Lucene {json.dumps(body)[:120]}"
@@ -549,8 +575,13 @@ def realtime():
                   f"{what}: total {a['hits']['total']} vs {b['hits']['total']}")
             check(json.dumps(a.get("aggregations"), sort_keys=True) == json.dumps(b.get("aggregations"), sort_keys=True),
                   f"{what}: aggregations {json.dumps(a.get('aggregations'))[:300]} vs {json.dumps(b.get('aggregations'))[:300]}")
-            ha = [(h["_id"], h.get("sort"), h.get("_version"), h.get("highlight")) for h in a["hits"]["hits"]]
-            hb = [(h["_id"], h.get("sort"), h.get("_version"), h.get("highlight")) for h in b["hits"]["hits"]]
+            def seen(h):
+                score = None if h.get("_score") is None else round(h["_score"], 4)
+                explained = h.get("_explanation", {}).get("value")
+                return (h["_id"], h.get("sort"), h.get("_version"), h.get("highlight"), score,
+                        None if explained is None else round(explained, 4))
+            ha = [seen(h) for h in a["hits"]["hits"]]
+            hb = [seen(h) for h in b["hits"]["hits"]]
             check(ha == hb, f"{what}: hits {ha[:2]} vs {hb[:2]}")
         # A sorted match_all that counts at most the default hits is one OpenSearch approximates
         # over the points, which buffered documents do not have yet.
@@ -593,6 +624,7 @@ def realtime():
         same_views(f"realtime round {rnd}")
         if rnd == 2:
             paged(f"realtime round {rnd}")
+            pit_flushed(f"realtime round {rnd}")
         if rnd == 0:
             # A flush publishes the buffers without refreshing the searcher: its view reads
             # them as their segments.
