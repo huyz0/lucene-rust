@@ -18,7 +18,7 @@ use lucene_index::index_writer::{
 use lucene_index::segment_info::LuceneVersion;
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::knn_search::{knn_top_hits, KnnTarget};
-use lucene_search::query::{Clause, TermQuery};
+use lucene_search::query::{BooleanQuery, Clause, TermQuery};
 use lucene_store::FsDirectory;
 use lucene_util::test_support::TempDir;
 
@@ -48,8 +48,9 @@ fn vector(id: usize) -> Vec<f32> {
     (0..DIM).map(|_| centre() * 4.0 + jitter() * 0.5).collect()
 }
 
-/// `id` stored, the `parity` term (`even`/`odd`) and the `rare` term
-/// (`yes` for one document in 64).
+/// `id` stored, the `parity` term (`even`/`odd`), the `rare` term
+/// (`yes` for one document in 64) and the `centre` term (the centre the
+/// vector is drawn around, `0`-`19`).
 fn doc(id: usize) -> (ExplicitDocument, Vec<DocumentVector>) {
     let mut d = ExplicitDocument::default();
     d.stored.push(StoredField {
@@ -73,6 +74,7 @@ fn doc(id: usize) -> (ExplicitDocument, Vec<DocumentVector>) {
                 b"no"
             },
         ),
+        (3, (id % 20).to_string().as_bytes()),
     ] {
         let mut terms = InvertedTerms::default();
         terms.push::<Vec<u8>>(term, 1, &[], &[], &[]);
@@ -89,7 +91,7 @@ fn writer(dir: &FsDirectory, format: KnnVectorsFormat) -> IndexWriter<'_> {
     let mut w = IndexWriter::open(dir, Vec::new(), "Lucene104", VERSION).unwrap();
     w.enable_explicit_documents().unwrap();
     w.register_field(FieldInfo::new("id", 0)).unwrap();
-    for name in ["parity", "rare"] {
+    for name in ["parity", "rare", "centre"] {
         w.register_field(
             FieldInfo::new(name, 0)
                 .with_index_options(IndexOptions::Docs)
@@ -261,6 +263,33 @@ fn filters_and_deletions_hold_through_the_ivf_index() {
     w.close().unwrap();
     let r = recall(&dir, 10, None, |id| id.is_multiple_of(2));
     assert!(r >= 0.9, "recall after deletes {r}");
+}
+
+#[test]
+fn a_filter_on_one_region_of_the_vectors_keeps_its_recall() {
+    // A tenant whose documents are one region of the vector space, queried
+    // from the other regions: the probes nearest the query hold none of its
+    // documents, so a search that stops at the calibrated depth finds few.
+    let tmp = TempDir::new("knn-ivf-region");
+    let dir = FsDirectory::open(&tmp);
+    build(&dir, ivf());
+    for centres in [&["3"][..], &["3", "7", "11", "15", "19"]] {
+        let clause = if let [one] = centres {
+            Clause::Term(TermQuery::new("centre", one.as_bytes().to_vec()))
+        } else {
+            let mut b = BooleanQuery::default();
+            for c in centres {
+                b.should.push(Clause::Term(TermQuery::new(
+                    "centre",
+                    c.as_bytes().to_vec(),
+                )));
+            }
+            Clause::Boolean(Box::new(b))
+        };
+        let keep = |id: usize| centres.contains(&(id % 20).to_string().as_str());
+        let r = recall(&dir, 10, Some(&clause), keep);
+        assert!(r >= 0.95, "recall {r} for centres {centres:?}");
+    }
 }
 
 #[test]

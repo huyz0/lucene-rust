@@ -276,6 +276,9 @@ pub struct SearchStats {
     pub candidates: usize,
     /// Candidates whose full-precision vectors were read and scored.
     pub reranked: usize,
+    /// Vectors in the scanned clusters that the search's filter accepts
+    /// (every vector of them without a filter).
+    pub accepted: usize,
 }
 
 /// A search's hits, best first, and the work it took.
@@ -1237,6 +1240,27 @@ impl IvfField {
             let block = postings.read(offset, len)?;
             let size = self.cluster_size(c);
             let (slots, codes) = block.split_at(size * 4);
+            // Under a filter, the cluster's accepted vectors are counted
+            // first, from the slots alone: a cluster holding none (most of
+            // them, for a small or clustered filter) is not scored at all.
+            let accepted = match accept {
+                Some(a) => {
+                    let mut n = 0usize;
+                    for i in 0..size {
+                        let slot = le_i32(slots, i * 4) as u32;
+                        let Some(&doc) = self.slot_docs.get(slot as usize) else {
+                            return corrupt(format!("cluster {c}: slot {slot} out of range"));
+                        };
+                        n += usize::from(a(doc));
+                    }
+                    n
+                }
+                None => size,
+            };
+            stats.accepted += accepted;
+            if accepted == 0 {
+                continue;
+            }
             if uses_centroid {
                 self.target(scorer.as_mut(), c);
             }

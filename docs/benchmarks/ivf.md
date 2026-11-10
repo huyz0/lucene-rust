@@ -425,3 +425,113 @@ float index, a `match_all` returning 10 hits took 2.10 ms, and an nprobes 32
 search took 2.07 ms. Nearly all of that is the fetch phase, at about 0.14 ms
 a hit; the plugin's query-phase timer puts the IVF search itself at about
 0.1 ms.
+
+## Filtered searches by tenant size
+
+A filter on one tenant of a shared index (a partition field the index is
+sorted by) passes a small share of a segment's documents. Each tenant is
+measured against its own exact top 10, one segment, `ivf-f16`, calibrated
+depth, 200 queries:
+
+- `u<n>`: `n` random documents, unrelated to the vector space;
+- `c<n>-local`: the `n` documents nearest an anchor, queried with the
+  query vectors nearest that anchor (a tenant searching its own data);
+- `c<n>-any`: the same tenant queried with random query vectors.
+
+```
+cargo run --release -p lucene-search --example knn_filtered -- /tmp/data/glove100 --format ivf-f16
+cargo run --release -p lucene-search --example knn_filtered -- /tmp/data/glove100 --format hnsw --ef 100
+cargo run --release -p lucene-search --example knn_filtered -- /tmp/data/glove100 --subset c10000-any
+```
+
+Before, a filtered leaf probed the calibrated depth and doubled it only
+until `k` accepted documents were in reach, and a filter passing at most
+`10 * k` documents went to an exact scan of the whole field. Now:
+
+- the probes grow until they have scanned 200 accepted vectors per hit
+  (capped by what the unfiltered search scans), starting from the depth the
+  filter's share of the field needs on average;
+- a cluster holding no accepted vector is not scored;
+- a filter whose documents cost less to score exactly than the planned
+  probes cost to scan (8 code scans per exact score) goes to the exact
+  scan, which now reads only the documents the filter passes (a 300-document
+  tenant of 390k: 1192 to 30 µs).
+
+GloVe-100, 390k (recall@10 / mean µs):
+
+| tenant | docs | IVF before | IVF after | HNSW ef 100 |
+|---|---|---|---|---|
+| none | 390000 | 0.953 / 353 | 0.953 / 336 | 0.953 / 879 |
+| u30 | 28 | 1.000 / 10 | 1.000 / 9 | 1.000 / 14 |
+| u300 | 308 | 0.666 / 418 | 1.000 / 27 | 1.000 / 63 |
+| u1000 | 977 | 0.811 / 444 | 1.000 / 63 | 1.000 / 445 |
+| u3000 | 3007 | 0.899 / 427 | 1.000 / 407 | 1.000 / 737 |
+| u10000 | 10145 | 0.946 / 514 | 0.989 / 1622 | 1.000 / 2812 |
+| u40000 | 40071 | 0.955 / 586 | 0.955 / 676 | 0.995 / 6741 |
+| c30-local | 30 | 1.000 / 16 | 1.000 / 9 | 1.000 / 13 |
+| c30-any | 30 | 1.000 / 10 | 1.000 / 10 | 1.000 / 14 |
+| c300-local | 300 | 0.875 / 491 | 1.000 / 27 | 1.000 / 66 |
+| c300-any | 300 | 0.549 / 1368 | 1.000 / 27 | 1.000 / 60 |
+| c1000-local | 1000 | 0.918 / 442 | 1.000 / 75 | 1.000 / 431 |
+| c1000-any | 1000 | 0.470 / 732 | 1.000 / 66 | 1.000 / 439 |
+| c3000-local | 3000 | 0.959 / 354 | 1.000 / 402 | 1.000 / 675 |
+| c3000-any | 3000 | 0.528 / 910 | 1.000 / 457 | 1.000 / 690 |
+| c10000-local | 10000 | 0.995 / 445 | 0.997 / 1205 | 1.000 / 1598 |
+| c10000-any | 10000 | 0.733 / 506 | 0.962 / 1545 | 1.000 / 2506 |
+| c40000-local | 40000 | 0.973 / 481 | 0.973 / 578 | 0.985 / 2148 |
+| c40000-any | 40000 | 0.908 / 604 | 0.935 / 1006 | 0.994 / 9194 |
+
+fastText-300, 1M (recall@10 / mean µs):
+
+| tenant | docs | IVF before | IVF after | HNSW ef 100 |
+|---|---|---|---|---|
+| none | 989999 | 0.944 / 714 | 0.944 / 645 | 0.911 / 557 |
+| u30 | 37 | 1.000 / 3371 | 1.000 / 17 | 1.000 / 27 |
+| u300 | 303 | 0.631 / 1424 | 1.000 / 45 | 1.000 / 884 |
+| u1000 | 994 | 0.760 / 813 | 1.000 / 182 | 1.000 / 1198 |
+| u3000 | 2971 | 0.860 / 785 | 1.000 / 680 | 1.000 / 1591 |
+| u10000 | 10034 | 0.928 / 857 | 1.000 / 1918 | 1.000 / 6089 |
+| u40000 | 40178 | 0.952 / 1002 | 0.969 / 1606 | 0.984 / 6828 |
+| c30-local | 30 | 1.000 / 4101 | 1.000 / 21 | 1.000 / 24 |
+| c30-any | 30 | 1.000 / 3672 | 1.000 / 21 | 1.000 / 25 |
+| c300-local | 300 | 0.918 / 645 | 1.000 / 58 | 1.000 / 852 |
+| c300-any | 300 | 0.755 / 24276 | 1.000 / 46 | 1.000 / 843 |
+| c1000-local | 1000 | 0.932 / 788 | 1.000 / 223 | 1.000 / 1111 |
+| c1000-any | 1000 | 0.511 / 9283 | 1.000 / 244 | 1.000 / 1050 |
+| c3000-local | 3000 | 0.943 / 527 | 1.000 / 770 | 0.996 / 955 |
+| c3000-any | 3000 | 0.786 / 51224 | 1.000 / 764 | 1.000 / 1537 |
+| c10000-local | 10000 | 0.980 / 618 | 1.000 / 2185 | 0.959 / 1071 |
+| c10000-any | 10000 | 0.541 / 5237 | 1.000 / 2183 | 1.000 / 5780 |
+| c40000-local | 40000 | 0.977 / 650 | 0.980 / 970 | 0.927 / 600 |
+| c40000-any | 40000 | 0.567 / 4167 | 0.863 / 3615 | 0.965 / 20317 |
+
+- **Before, IVF lost recall on every tenant below a few percent of the
+  segment**: 0.63-0.86 for random tenants of 300-3000 documents, and
+  0.47-0.79 for a region of the vector space queried from elsewhere, up to
+  10k documents. Its mean latency reached 5-51 ms on fastText where the
+  doubling probed every cluster.
+- **After, every tenant is at 0.93-1.0** except `c40000-any` on fastText
+  (4% of the segment, one region, queried from far away): 0.57 to 0.86.
+  There the quantized scores of distant vectors are too close to rank, and
+  even 1024 probes reach only 0.88. A tenant queried with its own data
+  (`-local`) is at 0.98-1.0.
+- Tenants of about 10k documents are slower than before (1.9-2.2 ms
+  against 0.6-0.9 ms on fastText), the cost of the recall they lacked.
+- HNSW keeps its recall under any filter: Lucene's visited limit falls back
+  to an exact scan. It is slower for mid-sized tenants (1-7 ms).
+
+An index over just one tenant's documents (`--subset`, standing in for a
+graph or clusters built per tenant inside a segment), GloVe:
+
+| tenant | IVF of the tenant | HNSW of the tenant | shared IVF, filtered |
+|---|---|---|---|
+| u10000 | 0.948 / 55 | 0.983 / 118 | 0.989 / 1622 |
+| u40000 | 0.971 / 156 | 0.948 / 204 | 0.955 / 676 |
+| c3000-any | 0.878 / 38 | 0.908 / 81 | 1.000 / 457 |
+| c10000-any | 0.889 / 59 | 0.907 / 119 | 0.962 / 1545 |
+| c40000-any | 0.894 / 81 | 0.943 / 185 | 0.935 / 1006 |
+| c10000-local | 0.978 / 53 | 0.988 / 107 | 0.997 / 1205 |
+
+A per-tenant structure is 4-30x faster, but no better on recall: it has
+the same approximation as any index of that size, while the filtered
+shared index falls back to exact scores for small tenants.
