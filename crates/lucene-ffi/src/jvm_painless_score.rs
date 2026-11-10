@@ -1,0 +1,1203 @@
+//! OpenSearch's `script_score` (`ScriptScoreQuery`) running a Painless
+//! script natively, as node `43` of the query tree ([`crate::jvm_queries`]).
+//!
+//! The plugin runs Painless's own front end and sends the script's IR
+//! ([`lucene_painless::ir`]); each segment compiles it and runs it per
+//! document with the score context's variables: `params` (with `doc`,
+//! `_doc`, `_source` and `_fields`, as `ScoreScript` adds them), `doc`, and
+//! `_score`, the sub-query's score.
+//!
+//! A document's score is `(float) execute()` checked as `ScriptScorer`
+//! checks it, and Lucene's [`FunctionScoreQuery`] multiplies it by the
+//! boost as `ScriptScorer` does, in `float`.
+//!
+//! Anything the script does that the native runtime does not implement, and
+//! any exception the script throws, fails the search, which the plugin then
+//! runs on Lucene: Painless raises its own error there.
+//!
+//! The node, after its kind byte:
+//!
+//! | field | layout |
+//! |---|---|
+//! | sub-query | a node |
+//! | `needs_score` | `u8`: `1` the script reads `_score` |
+//! | IR | `i32` length, then the `PIR1` blob |
+//! | params | `i32` length, then a map constant ([`lucene_painless::ir::decode_constant`]) |
+//! | index | string: `_getIndex()` |
+//! | shard | `i32`: `_getShardId()` |
+//! | fields | `i32` count, then per field: string name, `u8` [kind](FieldKind) |
+//!
+//! The fields are the ones the script names by a constant (`doc['f']`); a
+//! field it names any other way fails the search.
+
+use std::collections::HashMap;
+use std::rc::Rc;
+use std::sync::Arc;
+
+use lucene_codecs::doc_values::NumericReader;
+use lucene_painless::api::doc::{DocKind, DocLookup, DocValues};
+use lucene_painless::compile::missing;
+use lucene_painless::ir;
+use lucene_painless::jmap::{JMap, Order};
+use lucene_painless::object::JObject;
+use lucene_painless::specialize::{specialize, Facts};
+use lucene_painless::typed::{lower, BatchEnv, BatchRegs, Regs, Typed};
+use lucene_painless::value::{MapKind, Value};
+use lucene_painless::vm::{DocAccess, Env, Program, Throw, Vm};
+use lucene_search::extended_query::ExtendedQuery;
+use lucene_search::function::FunctionScoreQuery;
+use lucene_search::query::Clause;
+use lucene_search::reader::doc_values::{
+    direct_numeric, direct_sorted_numeric_singleton, get_sorted_numeric, get_sorted_set,
+};
+use lucene_search::reader::{SortedNumericDocValues, SortedSetDocValues};
+use lucene_search::values_source::{
+    BoxDoubleValues, DoubleValues, DoubleValuesSource, ValuesContext,
+};
+use lucene_search::{Error, Result};
+use lucene_util::half_float::sortable_short_to_half_float;
+use lucene_util::numeric_utils::{sortable_int_to_float, sortable_long_to_double};
+
+use crate::error::FfiStatus;
+use crate::jvm_nodes::invalid;
+use crate::jvm_reader::Cursor;
+
+pub(crate) const NODE_PAINLESS_SCORE: u8 = 43;
+
+/// How a field's doc values read as `ScriptDocValues`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FieldKind {
+    /// `0`: an integral type's sorted numerics, as `Longs`.
+    Long,
+    /// `1`: a double's sortable longs, as `Doubles`.
+    Double,
+    /// `2`: a float's sortable ints, as `Doubles`.
+    Float,
+    /// `3`: a half_float's sortable shorts, as `Doubles`.
+    HalfFloat,
+    /// `4`: a boolean's 0 and 1, as `Booleans`.
+    Boolean,
+    /// `5`: a keyword's sorted set, as `Strings`.
+    Keyword,
+    /// `254`: a mapped field the native runtime cannot read.
+    Unsupported,
+    /// `255`: no field of that name is mapped.
+    Unmapped,
+}
+
+impl FieldKind {
+    /// How a script reads the field directly, when it can.
+    fn doc_kind(self) -> Option<DocKind> {
+        match self {
+            FieldKind::Long => Some(DocKind::Longs),
+            FieldKind::Double | FieldKind::Float | FieldKind::HalfFloat => Some(DocKind::Doubles),
+            FieldKind::Boolean => Some(DocKind::Booleans),
+            FieldKind::Keyword => Some(DocKind::Strings),
+            FieldKind::Unsupported | FieldKind::Unmapped => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct FieldSpec {
+    name: String,
+    kind: FieldKind,
+}
+
+/// The script, for each segment to compile and run.
+#[derive(Debug)]
+pub(crate) struct PainlessScoreSource(Arc<Spec>);
+
+#[derive(Debug)]
+struct Spec {
+    script: ir::Script,
+    /// For [`DoubleValuesSource::equality_key`]: the blob the script came from.
+    ir_blob: Vec<u8>,
+    params: ir::Constant,
+    params_blob: Vec<u8>,
+    needs_score: bool,
+    index: String,
+    shard: i32,
+    fields: Vec<FieldSpec>,
+}
+
+pub(crate) fn decode(
+    c: &mut Cursor<'_>,
+    depth: usize,
+    nodes: &mut usize,
+) -> std::result::Result<Clause, FfiStatus> {
+    let sub = crate::jvm_reader::decode_node(c, depth + 1, nodes)?;
+    let needs_score = match c.u8()? {
+        0 => false,
+        1 => true,
+        other => {
+            return Err(invalid(format!(
+                "query tree: painless score flag {other} (expected 0..=1)"
+            )))
+        }
+    };
+    let ir_blob = c.bytes()?.to_vec(); // alloc-ok: the script, bounded by the blob
+    let script =
+        ir::decode(&ir_blob).map_err(|e| invalid(format!("query tree: painless script: {e}")))?;
+    let params_blob = c.bytes()?.to_vec(); // alloc-ok: the params, bounded by the blob
+    let params = ir::decode_constant(&params_blob)
+        .map_err(|e| invalid(format!("query tree: painless params: {e}")))?;
+    if !matches!(params, ir::Constant::Map(_)) {
+        return Err(invalid("query tree: painless params are not a map"));
+    }
+    let index = string(c)?;
+    let shard = c.i32()?;
+    let n = c.len()?;
+    let mut fields = Vec::with_capacity(n.min(c.remaining())); // alloc-ok: bounded by the blob
+    for _ in 0..n {
+        let name = string(c)?;
+        let kind = match c.u8()? {
+            0 => FieldKind::Long,
+            1 => FieldKind::Double,
+            2 => FieldKind::Float,
+            3 => FieldKind::HalfFloat,
+            4 => FieldKind::Boolean,
+            5 => FieldKind::Keyword,
+            254 => FieldKind::Unsupported,
+            255 => FieldKind::Unmapped,
+            other => {
+                return Err(invalid(format!(
+                    "query tree: painless field kind {other} (expected 0..=5, 254 or 255)"
+                )))
+            }
+        };
+        fields.push(FieldSpec { name, kind });
+    }
+    let source = PainlessScoreSource(Arc::new(Spec {
+        script,
+        ir_blob,
+        params,
+        params_blob,
+        needs_score,
+        index,
+        shard,
+        fields,
+    }));
+    Ok(Clause::Extended(Box::new(ExtendedQuery::FunctionScore(
+        FunctionScoreQuery::new(sub, Arc::new(source)),
+    ))))
+}
+
+fn string(c: &mut Cursor<'_>) -> std::result::Result<String, FfiStatus> {
+    Ok(std::str::from_utf8(c.bytes()?)
+        .map_err(|_| FfiStatus::InvalidUtf8)?
+        .to_string())
+}
+
+/// A script's exception as the search's error.
+fn thrown(t: &Throw) -> Error {
+    Error::IllegalArgument(format!(
+        "painless script threw {}: {}",
+        t.class(),
+        t.message().unwrap_or_default()
+    ))
+}
+
+/// What `params._source` and `params._fields` hold: lookups the native
+/// runtime does not have, so any use of one fails the search.
+#[derive(Debug)]
+struct Unavailable(&'static str);
+
+impl JObject for Unavailable {
+    fn class_name(&self) -> &str {
+        self.0
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn call(
+        &self,
+        _vm: &mut Vm,
+        _this: &Value,
+        name: &str,
+        _args: &[Value],
+    ) -> Option<std::result::Result<Value, Throw>> {
+        Some(Err(missing(format!("{}.{name}", self.0))))
+    }
+    fn field(&self, _vm: &mut Vm, name: &str) -> Option<std::result::Result<Value, Throw>> {
+        Some(Err(missing(format!("{}.{name}", self.0))))
+    }
+    fn iterate(&self, _vm: &mut Vm) -> Option<std::result::Result<Vec<Value>, Throw>> {
+        Some(Err(missing(self.0)))
+    }
+}
+
+impl Spec {
+    /// `ScoreScript`'s `params`: a copy of the script's, then `LeafSearchLookup.asMap()`.
+    fn params(&self, doc: &Value) -> std::result::Result<Value, Throw> {
+        let ir::Constant::Map(entries) = &self.params else {
+            unreachable!("decode checks the params are a map")
+        };
+        let mut m = JMap::for_copy(Order::Hash, entries.len());
+        for (k, v) in entries {
+            let k = lucene_painless::compile::constant(k).map_err(|e| missing(e.to_string()))?;
+            let v = lucene_painless::compile::constant(v).map_err(|e| missing(e.to_string()))?;
+            m.insert(k, v);
+        }
+        m.insert(Value::str("doc"), doc.clone());
+        m.insert(Value::str("_doc"), doc.clone());
+        m.insert(
+            Value::str("_source"),
+            Value::object(Unavailable("org.opensearch.search.lookup.SourceLookup")),
+        );
+        m.insert(
+            Value::str("_fields"),
+            Value::object(Unavailable("org.opensearch.search.lookup.LeafFieldsLookup")),
+        );
+        Ok(Value::map(MapKind::HashMap, m))
+    }
+}
+
+/// A field's open doc values in a segment.
+enum Opened<'c> {
+    Numeric(Box<dyn SortedNumericDocValues + 'c>),
+    Set(Box<dyn SortedSetDocValues + 'c>),
+}
+
+/// Most keyword values a segment keeps as strings by ordinal.
+const MAX_CACHED_TERMS: usize = 4096;
+
+/// A field's values in the document last read.
+struct Current {
+    doc: i32,
+    /// Numbers by their bits: a long, a double, or 0 and 1; a keyword's
+    /// ordinals.
+    items: Vec<i64>,
+    /// The `ScriptDocValues` view made of them, once asked for.
+    view: Option<Value>,
+}
+
+/// The score context of one segment.
+struct ScoreEnv<'c> {
+    source: Arc<Spec>,
+    reader: &'c lucene_search::directory_reader::SegmentReader,
+    /// Per field of `source.fields`: its doc values once read.
+    opened: Vec<Option<Opened<'c>>>,
+    /// Per field: its values in the document last read.
+    current: Vec<Current>,
+    /// Per keyword field: strings by ordinal.
+    terms: Vec<HashMap<i64, Value>>,
+    /// The documents of the batch [`BatchEnv`] reads, and their scores.
+    batch: Vec<i32>,
+    batch_scores: Vec<f32>,
+    /// Per field: the batch's value counts and first values, once read.
+    columns: Vec<Column>,
+    /// Which batch `columns` hold.
+    epoch: u64,
+    /// Per field: its one-value-per-document column, read without an
+    /// iterator, when the codec stores it so (`None` until first tried).
+    direct: Vec<Option<Option<NumericReader<'c>>>>,
+    doc: i32,
+    score: f64,
+    params: Value,
+    doc_lookup: Value,
+    index: Value,
+}
+
+/// A field's value counts and first values (decoded, by their bits) in
+/// each document of a batch.
+#[derive(Default)]
+struct Column {
+    epoch: u64,
+    counts: Vec<u64>,
+    firsts: Vec<u64>,
+}
+
+/// A numeric field's stored longs as its `ScriptDocValues` values' bits.
+fn decode_column(kind: FieldKind, vs: &mut [u64]) {
+    match kind {
+        FieldKind::Long => {}
+        FieldKind::Double => {
+            for v in vs {
+                *v = sortable_long_to_double(*v as i64).to_bits();
+            }
+        }
+        FieldKind::Float => {
+            for v in vs {
+                *v = f64::from(sortable_int_to_float(*v as i32)).to_bits();
+            }
+        }
+        FieldKind::HalfFloat => {
+            for v in vs {
+                *v = f64::from(sortable_short_to_half_float(*v as i16)).to_bits();
+            }
+        }
+        _ => unreachable!("a batch reads longs and doubles"),
+    }
+}
+
+fn no_value() -> Throw {
+    Throw::new(
+        "java.lang.IllegalStateException",
+        lucene_painless::api::doc::NO_VALUE,
+    )
+}
+
+impl ScoreEnv<'_> {
+    fn field(&self, name: &str) -> Option<usize> {
+        self.source.fields.iter().position(|f| f.name == name)
+    }
+
+    /// Field `i`'s values in the current document.
+    fn load(&mut self, i: usize) -> std::result::Result<&Current, Throw> {
+        if self.current[i].doc != self.doc {
+            self.read(i)
+                .map_err(|e| missing(format!("doc[{}]: {e}", self.source.fields[i].name)))?;
+        }
+        Ok(&self.current[i])
+    }
+
+    fn read(&mut self, i: usize) -> Result<()> {
+        let spec = &self.source.fields[i];
+        let kind = spec.kind;
+        if self.opened[i].is_none() {
+            self.opened[i] = Some(match kind {
+                FieldKind::Keyword => Opened::Set(get_sorted_set(self.reader, &spec.name)?),
+                _ => Opened::Numeric(get_sorted_numeric(self.reader, &spec.name)?),
+            });
+        }
+        let doc = self.doc;
+        let cur = &mut self.current[i];
+        cur.items.clear();
+        cur.view = None;
+        match self.opened[i].as_mut() {
+            Some(Opened::Numeric(dv)) => {
+                if dv.advance_exact(doc)? {
+                    if let Some(vs) = dv.take_values() {
+                        cur.items.extend_from_slice(vs);
+                    } else {
+                        for _ in 0..dv.doc_value_count() {
+                            cur.items.push(dv.next_value()?);
+                        }
+                    }
+                    let decode: fn(i64) -> i64 = match kind {
+                        FieldKind::Long => |v| v,
+                        FieldKind::Double => |v| sortable_long_to_double(v).to_bits() as i64,
+                        FieldKind::Float => {
+                            |v| f64::from(sortable_int_to_float(v as i32)).to_bits() as i64
+                        }
+                        FieldKind::HalfFloat => {
+                            |v| f64::from(sortable_short_to_half_float(v as i16)).to_bits() as i64
+                        }
+                        // `ScriptDocValues.Booleans`: `nextValue() == 1`.
+                        _ => |v| i64::from(v == 1),
+                    };
+                    if kind != FieldKind::Long {
+                        for v in &mut cur.items {
+                            *v = decode(*v);
+                        }
+                    }
+                }
+            }
+            Some(Opened::Set(dv)) => {
+                if dv.advance_exact(doc)? {
+                    for _ in 0..dv.doc_value_count() {
+                        cur.items.push(dv.next_ord()?);
+                    }
+                }
+            }
+            None => unreachable!("opened above"),
+        }
+        cur.doc = doc;
+        Ok(())
+    }
+
+    /// Field `i`'s checked kind.
+    fn kind(&self, i: usize) -> std::result::Result<FieldKind, Throw> {
+        let f = &self.source.fields[i];
+        match f.kind {
+            FieldKind::Unmapped => Err(Throw::illegal_arg(format!(
+                "No field found for [{}] in mapping",
+                f.name
+            ))),
+            FieldKind::Unsupported => Err(missing(format!("doc[{}]'s type", f.name))),
+            k => Ok(k),
+        }
+    }
+
+    /// Value `index` of field `i` as `ScriptDocValues.get` reads it.
+    fn item(&mut self, i: usize, index: i32) -> std::result::Result<i64, Throw> {
+        let cur = self.load(i)?;
+        if cur.items.is_empty() {
+            return Err(no_value());
+        }
+        match usize::try_from(index).ok().and_then(|x| cur.items.get(x)) {
+            Some(v) => Ok(*v),
+            None => Err(missing(format!(
+                "doc values index {index} of {}",
+                cur.items.len()
+            ))),
+        }
+    }
+
+    fn term(&mut self, i: usize, ord: i64) -> std::result::Result<Value, Throw> {
+        if let Some(v) = self.terms[i].get(&ord) {
+            return Ok(v.clone());
+        }
+        let Some(Opened::Set(dv)) = self.opened[i].as_mut() else {
+            unreachable!("a keyword's values are open once read")
+        };
+        let bytes = dv
+            .lookup_ord(ord)
+            .map_err(|e| missing(format!("doc[{}]: {e}", self.source.fields[i].name)))?;
+        let v = Value::string(String::from_utf8_lossy(&bytes).into_owned());
+        if self.terms[i].len() >= MAX_CACHED_TERMS {
+            self.terms[i].clear();
+        }
+        self.terms[i].insert(ord, v.clone());
+        Ok(v)
+    }
+
+    /// Value `index` of field `i` as a script value.
+    fn boxed_item(&mut self, i: usize, index: i32) -> std::result::Result<Value, Throw> {
+        let kind = self.kind(i)?;
+        let v = self.item(i, index)?;
+        Ok(match kind {
+            FieldKind::Long => Value::Long(v),
+            FieldKind::Boolean => Value::Bool(v != 0),
+            FieldKind::Keyword => return self.term(i, v),
+            _ => Value::Double(f64::from_bits(v as u64)),
+        })
+    }
+
+    /// `doc['f']` for field `i`.
+    fn view(&mut self, i: usize) -> std::result::Result<Value, Throw> {
+        let kind = self.kind(i)?;
+        if let Some(v) = &self.load(i)?.view {
+            return Ok(v.clone());
+        }
+        let n = self.current[i].items.len();
+        let mut items = Vec::with_capacity(n);
+        for x in 0..n {
+            items.push(self.boxed_item(i, x as i32)?);
+        }
+        let doc_kind = match kind {
+            FieldKind::Long => DocKind::Longs,
+            FieldKind::Boolean => DocKind::Booleans,
+            FieldKind::Keyword => DocKind::Strings,
+            _ => DocKind::Doubles,
+        };
+        let v = DocValues::value(doc_kind, items);
+        self.current[i].view = Some(v.clone());
+        Ok(v)
+    }
+
+    /// Field `i`'s column for the current batch.
+    fn column(&mut self, i: usize) -> std::result::Result<&Column, Throw> {
+        if self.columns[i].epoch != self.epoch {
+            self.read_column(i)
+                .map_err(|e| missing(format!("doc[{}]: {e}", self.source.fields[i].name)))?;
+        }
+        Ok(&self.columns[i])
+    }
+
+    fn read_column(&mut self, i: usize) -> Result<()> {
+        let spec = &self.source.fields[i];
+        let kind = spec.kind;
+        let reader = self.reader;
+        let direct = self.direct[i].get_or_insert_with(|| {
+            direct_sorted_numeric_singleton(reader, &spec.name)
+                .or_else(|| direct_numeric(reader, &spec.name))
+        });
+        let col = &mut self.columns[i];
+        if let Some(dv) = direct {
+            col.counts.clear();
+            col.firsts.clear();
+            for &doc in &self.batch {
+                match dv.value(doc)? {
+                    Some(v) => {
+                        col.counts.push(1);
+                        col.firsts.push(v as u64);
+                    }
+                    None => {
+                        col.counts.push(0);
+                        col.firsts.push(0);
+                    }
+                }
+            }
+            decode_column(kind, &mut col.firsts);
+            col.epoch = self.epoch;
+            return Ok(());
+        }
+        if self.opened[i].is_none() {
+            self.opened[i] = Some(Opened::Numeric(get_sorted_numeric(
+                self.reader,
+                &spec.name,
+            )?));
+        }
+        let Some(Opened::Numeric(dv)) = self.opened[i].as_mut() else {
+            unreachable!("a batch reads numeric fields")
+        };
+        let col = &mut self.columns[i];
+        col.counts.clear();
+        col.firsts.clear();
+        for &doc in &self.batch {
+            let (n, first) = if dv.advance_exact(doc)? {
+                let n = dv.doc_value_count();
+                let first = match dv.take_values() {
+                    Some(vs) => vs.first().copied().unwrap_or(0),
+                    None if n > 0 => dv.next_value()?,
+                    None => 0,
+                };
+                (n, first)
+            } else {
+                (0, 0)
+            };
+            col.counts.push(n as u64);
+            col.firsts.push(first as u64);
+        }
+        decode_column(kind, &mut col.firsts);
+        col.epoch = self.epoch;
+        // The per-document reads must move the doc values again.
+        self.current[i].doc = -1;
+        Ok(())
+    }
+
+    fn count(&mut self, i: usize) -> std::result::Result<i32, Throw> {
+        self.kind(i)?;
+        Ok(self.load(i)?.items.len() as i32)
+    }
+}
+
+impl BatchEnv for ScoreEnv<'_> {
+    fn column(&mut self, field: usize) -> std::result::Result<(&[u64], &[u64]), Throw> {
+        let col = ScoreEnv::column(self, field)?;
+        Ok((&col.counts, &col.firsts))
+    }
+
+    fn scores(&mut self, out: &mut [u64]) -> std::result::Result<(), Throw> {
+        if !self.source.needs_score {
+            return Err(missing("score script method get_score"));
+        }
+        for (o, s) in out.iter_mut().zip(&self.batch_scores) {
+            *o = f64::from(*s).to_bits();
+        }
+        Ok(())
+    }
+}
+
+impl Env for ScoreEnv<'_> {
+    fn internal(&mut self, name: &str, _args: &[Value]) -> std::result::Result<Value, Throw> {
+        match name {
+            "getParams" => Ok(self.params.clone()),
+            "getDoc" => Ok(self.doc_lookup.clone()),
+            "get_score" if self.source.needs_score => Ok(Value::Double(self.score)),
+            "_getDocId" => Ok(Value::Int(self.doc)),
+            "_getDocBaseId" => Ok(Value::Int(self.reader.doc_base + self.doc)),
+            "_getIndex" => Ok(self.index.clone()),
+            "_getShardId" => Ok(Value::Int(self.source.shard)),
+            _ => Err(missing(format!("score script method {name}"))),
+        }
+    }
+
+    fn doc_values(&mut self, field: &str) -> std::result::Result<Value, Throw> {
+        match self.field(field) {
+            Some(i) => self.view(i),
+            None => Err(missing(format!("doc[{field}] not named by a constant"))),
+        }
+    }
+
+    fn doc_at(
+        &mut self,
+        field: usize,
+        access: DocAccess,
+        index: i32,
+    ) -> std::result::Result<Value, Throw> {
+        match access {
+            DocAccess::Values => self.view(field),
+            DocAccess::Value => self.boxed_item(field, 0),
+            DocAccess::Get => self.boxed_item(field, index),
+            DocAccess::Count => Ok(Value::Int(self.count(field)?)),
+            DocAccess::Flip => Ok(Value::Int(if index < 0 {
+                index.wrapping_add(self.count(field)?)
+            } else {
+                index
+            })),
+        }
+    }
+
+    fn doc_long(&mut self, field: usize, index: i32) -> std::result::Result<i64, Throw> {
+        self.item(field, index)
+    }
+
+    fn doc_double(&mut self, field: usize, index: i32) -> std::result::Result<f64, Throw> {
+        Ok(f64::from_bits(self.item(field, index)? as u64))
+    }
+
+    fn doc_count(&mut self, field: usize) -> std::result::Result<i32, Throw> {
+        Ok(self.load(field)?.items.len() as i32)
+    }
+
+    fn score(&mut self) -> std::result::Result<f64, Throw> {
+        if self.source.needs_score {
+            Ok(self.score)
+        } else {
+            Err(missing("score script method get_score"))
+        }
+    }
+
+    fn doc_contains(&mut self, field: &str) -> std::result::Result<bool, Throw> {
+        match self.field(field) {
+            Some(i) => Ok(self.source.fields[i].kind != FieldKind::Unmapped),
+            None => Err(missing(format!(
+                "doc.containsKey({field}) not named by a constant"
+            ))),
+        }
+    }
+}
+
+/// One segment's scores.
+struct ScriptScores<'c> {
+    /// The script on the typed machine, when it lowers to it.
+    typed: Option<(Typed, Regs)>,
+    prog: Rc<Program>,
+    env: ScoreEnv<'c>,
+    bindings: Vec<Option<Value>>,
+    /// The VM's register files, kept across documents.
+    pool: Vec<Vec<Value>>,
+    /// The column-batch machine's registers.
+    columns: BatchRegs,
+    args: Vec<Value>,
+    scores: Option<BoxDoubleValues<'c>>,
+    value: f32,
+}
+
+impl ScriptScores<'_> {
+    /// The score of the current document (`env.doc`, `env.score`).
+    fn run(&mut self) -> Result<f32> {
+        let r = match &mut self.typed {
+            Some((t, regs)) => match t.run_double(&mut self.env, regs) {
+                Ok(Ok(v)) => return checked(v as f32, self.env.doc),
+                Ok(Err(v)) => Ok(v),
+                Err(t) => Err(t),
+            },
+            None => {
+                let mut vm = Vm::new(self.prog.clone(), &mut self.env);
+                vm.bindings = std::mem::take(&mut self.bindings);
+                vm.pool = std::mem::take(&mut self.pool);
+                let r = vm.execute(&self.args);
+                self.bindings = std::mem::take(&mut vm.bindings);
+                self.pool = std::mem::take(&mut vm.pool);
+                r
+            }
+        };
+        let r = r.map_err(|t| thrown(&t))?;
+        let v = match r {
+            Value::Double(v) => v,
+            r => lucene_painless::types::as_f64(&r).ok_or_else(|| {
+                Error::IllegalArgument(format!(
+                    "painless script returned {} for a score",
+                    r.class_name()
+                ))
+            })?,
+        } as f32;
+        checked(v, self.env.doc)
+    }
+}
+
+/// `ScriptScorer.score()`'s check.
+fn checked(v: f32, doc: i32) -> Result<f32> {
+    if v < 0.0 || v.is_nan() {
+        return Err(Error::IllegalArgument(format!(
+            "script_score script returned an invalid score [{v}] for doc [{doc}]. Must be a non-negative score!"
+        )));
+    }
+    Ok(v)
+}
+
+impl ScriptScores<'_> {
+    /// [`DoubleValues::fill_batch`] on the column-batch machine.
+    fn fill_columns(
+        &mut self,
+        docs: &[i32],
+        scores: &[f32],
+        out: &mut [f64],
+        has: &mut [bool],
+    ) -> Result<()> {
+        let Some((t, _)) = &self.typed else {
+            unreachable!("a typed script")
+        };
+        let env = &mut self.env;
+        env.epoch += 1;
+        env.batch.clear();
+        env.batch.extend_from_slice(docs);
+        env.batch_scores.clear();
+        env.batch_scores.extend_from_slice(&scores[..docs.len()]);
+        let out = &mut out[..docs.len()];
+        t.run_batch(env, &mut self.columns, out)
+            .map_err(|e| thrown(&e))?;
+        for (k, o) in out.iter_mut().enumerate() {
+            *o = f64::from(checked(*o as f32, docs[k])?);
+        }
+        has[..docs.len()].fill(true);
+        Ok(())
+    }
+}
+
+impl DoubleValues for ScriptScores<'_> {
+    fn advance_exact(&mut self, doc: i32) -> Result<bool> {
+        self.env.doc = doc;
+        if let Some(s) = self.scores.as_mut() {
+            self.env.score = if s.advance_exact(doc)? {
+                s.double_value()?
+            } else {
+                0.0
+            };
+        }
+        self.value = self.run()?;
+        Ok(true)
+    }
+
+    fn double_value(&mut self) -> Result<f64> {
+        Ok(f64::from(self.value))
+    }
+
+    /// The script reads the score only through `get_score`, which the
+    /// batch's scores serve.
+    fn batch_capable(&self) -> bool {
+        true
+    }
+
+    fn fill_batch(
+        &mut self,
+        docs: &[i32],
+        scores: &[f32],
+        out: &mut [f64],
+        has: &mut [bool],
+    ) -> Result<()> {
+        if let Some((t, _)) = &self.typed {
+            if t.batchable() && !docs.is_empty() {
+                return self.fill_columns(docs, scores, out, has);
+            }
+        }
+        for (i, &doc) in docs.iter().enumerate() {
+            self.env.doc = doc;
+            if self.scores.is_some() {
+                self.env.score = f64::from(scores[i]);
+            }
+            out[i] = f64::from(self.run()?);
+            has[i] = true;
+        }
+        Ok(())
+    }
+}
+
+impl DoubleValuesSource for PainlessScoreSource {
+    fn get_values<'c>(
+        &self,
+        ctx: &ValuesContext<'c>,
+        leaf: usize,
+        scores: Option<BoxDoubleValues<'c>>,
+    ) -> Result<BoxDoubleValues<'c>> {
+        let reader = ctx.leaf_reader(leaf)?;
+        let mut prog = lucene_painless::compile::compile(&self.0.script)
+            .map_err(|e| Error::IllegalArgument(format!("painless script: {e}")))?;
+        let arity = prog.funcs[prog.entry as usize].arity as usize;
+        let source = Arc::clone(&self.0);
+        let doc_lookup = Value::object(DocLookup);
+        let params = source.params(&doc_lookup).map_err(|t| thrown(&t))?;
+        let fields: Vec<(&str, Option<DocKind>)> = source
+            .fields
+            .iter()
+            .map(|f| (f.name.as_str(), f.kind.doc_kind()))
+            .collect();
+        specialize(
+            &mut prog,
+            &Facts {
+                params: Some(&params),
+                fields: &fields,
+            },
+        );
+        let typed = lower(&prog, &fields).map(|t| {
+            let regs = t.regs();
+            (t, regs)
+        });
+        drop(fields);
+        let n = source.fields.len();
+        let env = ScoreEnv {
+            index: Value::str(&source.index),
+            reader,
+            opened: (0..n).map(|_| None).collect(),
+            current: (0..n)
+                .map(|_| Current {
+                    doc: -1,
+                    items: Vec::new(),
+                    view: None,
+                })
+                .collect(),
+            terms: vec![HashMap::new(); n],
+            batch: Vec::new(),
+            batch_scores: Vec::new(),
+            columns: (0..n).map(|_| Column::default()).collect(),
+            epoch: 0,
+            direct: (0..n).map(|_| None).collect(),
+            source,
+            doc: -1,
+            score: 0.0,
+            params,
+            doc_lookup,
+        };
+        Ok(Box::new(ScriptScores {
+            typed,
+            pool: Vec::new(),
+            columns: BatchRegs::default(),
+            bindings: vec![None; prog.binding_sites],
+            prog: Rc::new(prog),
+            env,
+            // `execute(ExplanationHolder)`: no explanation while scoring.
+            args: vec![Value::Null; arity],
+            scores,
+            value: 0.0,
+        }))
+    }
+
+    fn needs_scores(&self) -> bool {
+        self.0.needs_score
+    }
+
+    fn is_cacheable(&self, _ctx: &ValuesContext<'_>, _leaf: usize) -> bool {
+        false
+    }
+
+    fn describe(&self) -> String {
+        "painless_score".to_string()
+    }
+
+    fn equality_key(&self) -> String {
+        let s = &self.0;
+        let hex = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
+        let fields: Vec<String> = s
+            .fields
+            .iter()
+            .map(|f| format!("{}:{:?}", f.name, f.kind))
+            .collect();
+        format!(
+            "painless_score(ir={}, params={}, needs_score={}, index={}, shard={}, fields=[{}])",
+            hex(&s.ir_blob),
+            hex(&s.params_blob),
+            s.needs_score,
+            s.index,
+            s.shard,
+            fields.join(",")
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::jvm_nodes::tests::{open, Blob};
+    use crate::jvm_reader::ffi_close_jvm_reader;
+    use crate::jvm_reader::tests::run_limit;
+    use lucene_util::test_support::TempDir;
+
+    /// The fixture's cases, read from `fixtures/data/painless-score/expected.bin`
+    /// (`opensearch-plugin/tools/painless-corpus/ScoreCorpus.java`).
+    struct Case {
+        source: String,
+        /// The node, when the plugin would send one.
+        node: Option<Blob>,
+        /// OpenSearch's hits by doc, or `None` when it threw.
+        hits: Option<Vec<(i32, f32)>>,
+    }
+
+    struct Reader<'a>(&'a [u8]);
+
+    impl Reader<'_> {
+        fn u8(&mut self) -> u8 {
+            let v = self.0[0];
+            self.0 = &self.0[1..];
+            v
+        }
+        fn i32(&mut self) -> i32 {
+            let v = i32::from_le_bytes(self.0[..4].try_into().unwrap());
+            self.0 = &self.0[4..];
+            v
+        }
+        fn bytes(&mut self) -> Vec<u8> {
+            let n = self.i32() as usize;
+            let v = self.0[..n].to_vec();
+            self.0 = &self.0[n..];
+            v
+        }
+        fn str(&mut self) -> String {
+            String::from_utf8(self.bytes()).unwrap()
+        }
+    }
+
+    fn fixture(name: &str) -> String {
+        format!(
+            "{}/../../fixtures/data/painless-score/{name}",
+            env!("CARGO_MANIFEST_DIR")
+        )
+    }
+
+    fn cases() -> Vec<Case> {
+        let data = std::fs::read(fixture("expected.bin")).unwrap();
+        assert_eq!(&data[..4], b"PSC1");
+        let mut r = Reader(&data[4..]);
+        let n = r.i32();
+        (0..n)
+            .map(|_| {
+                let source = r.str();
+                let sub = match r.u8() {
+                    0 => Blob::default().term("body", "alpha"),
+                    _ => Blob::default().u8(5),
+                };
+                let boost = f32::from_bits(r.i32() as u32);
+                let node = (r.u8() == 1).then(|| {
+                    let ir = r.bytes();
+                    let params = r.bytes();
+                    let needs = r.u8();
+                    let mut b = Blob::tree();
+                    if boost != 1.0 {
+                        b = b.u8(3).f32(boost);
+                    }
+                    b = b
+                        .u8(NODE_PAINLESS_SCORE)
+                        .raw(&sub)
+                        .u8(needs)
+                        .bytes(&ir)
+                        .bytes(&params)
+                        .str("idx")
+                        .i32(3);
+                    let fields = r.i32();
+                    b = b.i32(fields);
+                    for _ in 0..fields {
+                        let name = r.str();
+                        b = b.str(&name).u8(r.u8());
+                    }
+                    b
+                });
+                let hits = (r.u8() == 0).then(|| {
+                    let n = r.i32();
+                    (0..n)
+                        .map(|_| (r.i32(), f32::from_bits(r.i32() as u32)))
+                        .collect()
+                });
+                if hits.is_none() {
+                    r.str();
+                }
+                Case { source, node, hits }
+            })
+            .collect()
+    }
+
+    /// Scripts OpenSearch scores that the native runtime leaves to Java:
+    /// the search fails natively, and the plugin runs it on Lucene.
+    const IN_JAVA: &[&str] = &[
+        // A date field's `JodaCompatibleZonedDateTime`.
+        "doc['d'].value.toInstant().toEpochMilli() / 1e12",
+        // `_source`.
+        "params._source.size()",
+        // Streams.
+        "doc['vals'].stream().mapToLong(x -> x).sum()",
+        // A field Painless does not see named: `params.doc[...]`.
+        "params.doc['likes'].value + params._doc['flag'].value.compareTo(true) + 3",
+    ];
+
+    #[test]
+    fn scripts_score_as_opensearch_does() {
+        let tmp = TempDir::new("painless-score");
+        for e in std::fs::read_dir(fixture("index")).unwrap() {
+            let e = e.unwrap();
+            std::fs::copy(e.path(), tmp.path().join(e.file_name())).unwrap();
+        }
+        let h = open(&tmp);
+        let (mut same, mut java) = (0, 0);
+        let cases = cases();
+        for case in &cases {
+            let node = case
+                .node
+                .as_ref()
+                .expect("every fixture script compiles to IR");
+            let got = run_limit(h, &node.0, 1000, i64::MAX);
+            match (&case.hits, got) {
+                (Some(want), Ok((mut hits, _, _))) => {
+                    hits.sort_by_key(|&(d, _)| d);
+                    let bits = |v: &[(i32, f32)]| -> Vec<(i32, u32)> {
+                        v.iter().map(|&(d, s)| (d, s.to_bits())).collect()
+                    };
+                    assert_eq!(bits(&hits), bits(want), "{}", case.source);
+                    same += 1;
+                }
+                (Some(_), Err(_)) => {
+                    let e = crate::error::last_error();
+                    assert!(
+                        IN_JAVA.contains(&case.source.as_str()),
+                        "{}: {e}",
+                        case.source
+                    );
+                    assert!(
+                        e.contains(lucene_painless::api::UNSUPPORTED),
+                        "{}: {e}",
+                        case.source
+                    );
+                    java += 1;
+                }
+                // OpenSearch threw: the native search must fail, for the
+                // plugin to run it in Java and raise the same error.
+                (None, Err(_)) => same += 1,
+                (None, Ok(r)) => panic!("{}: OpenSearch threw, native scored {r:?}", case.source),
+            }
+        }
+        assert_eq!(java, IN_JAVA.len());
+        assert_eq!(same + java, cases.len());
+        assert_eq!(ffi_close_jvm_reader(h), 0);
+    }
+}
+
+#[cfg(test)]
+mod bench {
+    use super::*;
+    use crate::jvm_nodes::tests::{open, Blob};
+    use crate::jvm_reader::tests::run_limit;
+    use lucene_util::test_support::TempDir;
+
+    fn unhex(s: &str) -> Vec<u8> {
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+            .collect()
+    }
+
+    /// `PAINLESS_BENCH_INDEX=<dir> PAINLESS_BENCH_BLOBS=<tsv> cargo test
+    /// --release -p lucene-ffi --lib painless_score_bench -- --ignored
+    /// --nocapture`: each script's ns per document over a match-all query.
+    #[test]
+    #[ignore]
+    fn painless_score_bench() {
+        let from = std::env::var("PAINLESS_BENCH_INDEX").unwrap();
+        let tmp = TempDir::new("painless-bench");
+        for e in std::fs::read_dir(from).unwrap() {
+            let e = e.unwrap();
+            std::fs::copy(e.path(), tmp.path().join(e.file_name())).unwrap();
+        }
+        let h = open(&tmp);
+        let time = |blob: &Blob| {
+            let mut best = f64::MAX;
+            let mut total = 0;
+            for _ in 0..5 {
+                let t = std::time::Instant::now();
+                total = run_limit(h, &blob.0, 10, i64::MAX)
+                    .unwrap_or_else(|_| panic!("{}", crate::error::last_error()))
+                    .1;
+                best = best.min(t.elapsed().as_nanos() as f64);
+            }
+            best / total as f64
+        };
+        let base = time(&Blob::tree().u8(5));
+        println!("match_all\t{base:.2} ns/doc");
+        let blobs =
+            std::fs::read_to_string(std::env::var("PAINLESS_BENCH_BLOBS").unwrap()).unwrap();
+        for line in blobs.lines() {
+            let cols: Vec<&str> = line.split('\t').collect();
+            let mut b = Blob::tree()
+                .u8(super::NODE_PAINLESS_SCORE)
+                .u8(5)
+                .u8(1)
+                .bytes(&unhex(cols[1]))
+                .bytes(&unhex(cols[2]))
+                .str("idx")
+                .i32(0)
+                .i32(cols.len() as i32 - 3);
+            for f in &cols[3..] {
+                let (name, kind) = f.split_once(':').unwrap();
+                b = b.str(name).u8(kind.parse().unwrap());
+            }
+            let t = time(&b);
+            println!("{}\t{:.2} ns/doc (script {:.2})", cols[0], t, t - base);
+        }
+    }
+
+    struct OneAndHalf;
+
+    impl DoubleValues for OneAndHalf {
+        fn advance_exact(&mut self, _doc: i32) -> Result<bool> {
+            Ok(true)
+        }
+        fn double_value(&mut self) -> Result<f64> {
+            Ok(1.5)
+        }
+    }
+
+    /// The script alone per document, as the Java harness times
+    /// `setDocument` + `execute`: `PAINLESS_BENCH_INDEX` (one segment) and
+    /// `PAINLESS_BENCH_BLOBS` as for [`painless_score_bench`].
+    #[test]
+    #[ignore]
+    fn painless_script_loop_bench() {
+        let dir = lucene_store::directory::FsDirectory::open(
+            std::env::var("PAINLESS_BENCH_INDEX").unwrap(),
+        );
+        let reader = lucene_search::directory_reader::DirectoryReader::open(&dir).unwrap();
+        let seg = &reader.segment_readers()[0];
+        let ctx = ValuesContext::for_reader(seg);
+        let blobs =
+            std::fs::read_to_string(std::env::var("PAINLESS_BENCH_BLOBS").unwrap()).unwrap();
+        for line in blobs.lines() {
+            let cols: Vec<&str> = line.split('\t').collect();
+            let ir_blob = unhex(cols[1]);
+            let params_blob = unhex(cols[2]);
+            let fields = cols[3..]
+                .iter()
+                .map(|f| {
+                    let (name, kind) = f.split_once(':').unwrap();
+                    let kind = match kind {
+                        "0" => FieldKind::Long,
+                        "1" => FieldKind::Double,
+                        "5" => FieldKind::Keyword,
+                        other => panic!("kind {other}"),
+                    };
+                    FieldSpec {
+                        name: name.to_string(),
+                        kind,
+                    }
+                })
+                .collect();
+            let source = PainlessScoreSource(Arc::new(Spec {
+                script: ir::decode(&ir_blob).unwrap(),
+                params: ir::decode_constant(&params_blob).unwrap(),
+                ir_blob,
+                params_blob,
+                needs_score: true,
+                index: "idx".into(),
+                shard: 0,
+                fields,
+            }));
+            let n = seg.max_doc;
+            let mut best = f64::MAX;
+            let mut sum = 0.0;
+            for _ in 0..8 {
+                let mut v = source
+                    .get_values(&ctx, 0, Some(Box::new(OneAndHalf)))
+                    .unwrap();
+                let t = std::time::Instant::now();
+                sum = 0.0;
+                if std::env::var("PAINLESS_BENCH_PER_DOC").is_ok() {
+                    for d in 0..n {
+                        v.advance_exact(d).unwrap();
+                        sum += v.double_value().unwrap();
+                    }
+                } else {
+                    // The function score scorer's batches.
+                    let (mut docs, scores) = (Vec::new(), vec![1.5f32; 64]);
+                    let (mut out, mut has) = (vec![0.0; 64], vec![false; 64]);
+                    for start in (0..n).step_by(64) {
+                        docs.clear();
+                        docs.extend(start..(start + 64).min(n));
+                        v.fill_batch(&docs, &scores, &mut out, &mut has).unwrap();
+                        sum += out[..docs.len()].iter().sum::<f64>();
+                    }
+                }
+                best = best.min(t.elapsed().as_nanos() as f64 / f64::from(n));
+            }
+            println!("{}\t{best:.2} ns/doc\tsum={sum}", cols[0]);
+        }
+    }
+}

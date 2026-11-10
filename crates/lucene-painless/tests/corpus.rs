@@ -11,8 +11,10 @@ use std::rc::Rc;
 use lucene_painless::compile::compile;
 use lucene_painless::ir;
 use lucene_painless::jmap::{JMap, Order};
+use lucene_painless::specialize::{specialize, Facts};
+use lucene_painless::typed::{lower, BatchEnv, BatchRegs};
 use lucene_painless::value::{MapKind, Value};
-use lucene_painless::vm::{ParamsEnv, Vm};
+use lucene_painless::vm::{ParamsEnv, Throw, Vm};
 
 struct Rd<'a> {
     b: &'a [u8],
@@ -46,8 +48,10 @@ impl<'a> Rd<'a> {
     }
 }
 
-/// An expected value: the corpus encoding.
+/// An expected value: the corpus encoding. The class names only show in
+/// the verbose mismatch output.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 enum Expected {
     Null,
     Bool(bool),
@@ -154,6 +158,45 @@ fn matches(e: &Expected, v: &Value) -> bool {
     }
 }
 
+/// A batch with no fields and no score, as the corpus's scripts read.
+struct NoDocs;
+
+impl BatchEnv for NoDocs {
+    fn column(&mut self, field: usize) -> Result<(&[u64], &[u64]), Throw> {
+        unreachable!("no fields: {field}")
+    }
+    fn scores(&mut self, _out: &mut [u64]) -> Result<(), Throw> {
+        unreachable!("no score")
+    }
+}
+
+fn show(r: &Result<Value, Throw>) -> String {
+    match r {
+        Ok(v) => format!("{} {}", v.class_name(), v.java_to_string()),
+        Err(t) => format!("{} {:?}", t.class(), t.message()),
+    }
+}
+
+/// Equal results; identity hashes (`[I@2b80`) may differ.
+fn same(a: &Result<Value, Throw>, b: &Result<Value, Throw>) -> bool {
+    let strip = |s: String| {
+        let mut out = String::new();
+        let mut skip = false;
+        for c in s.chars() {
+            if c == '@' {
+                skip = true;
+            } else if skip && c.is_ascii_hexdigit() {
+                continue;
+            } else {
+                skip = false;
+            }
+            out.push(c);
+        }
+        out
+    };
+    strip(show(a)) == strip(show(b))
+}
+
 fn run_corpus() {
     let data = std::fs::read(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -165,6 +208,7 @@ fn run_corpus() {
     let filter = std::env::var("PAINLESS_CORPUS_FILTER").ok();
     let mut r = Rd { b: &data, p: 4 };
     let (mut total, mut pass) = (0, 0);
+    let (mut lowered, mut batched, mut tier_mismatches) = (0, 0, 0);
     let mut reasons: BTreeMap<String, usize> = BTreeMap::new();
     while r.p < data.len() {
         let src = r.str();
@@ -212,6 +256,50 @@ fn run_corpus() {
             let mut vm = Vm::new(prog, &mut env);
             vm.execute(&[])
         };
+        // The specialised program, and its typed form where it has one,
+        // must do exactly what the program did.
+        let mut special = compile(&script).unwrap();
+        let params = Value::map(MapKind::HashMap, JMap::new(Order::Hash));
+        specialize(
+            &mut special,
+            &Facts {
+                params: Some(&params),
+                fields: &[],
+            },
+        );
+        let typed = lower(&special, &[]);
+        let mut env = ParamsEnv { params };
+        let mut runs = vec![("specialised", {
+            let mut vm = Vm::new(Rc::new(special), &mut env);
+            vm.execute(&[])
+        })];
+        if let Some(t) = typed {
+            lowered += 1;
+            let mut regs = t.regs();
+            runs.push(("typed", t.run(&mut env, &mut regs)));
+            if t.batchable() {
+                batched += 1;
+                let mut out = [0.0; 3];
+                let r = t
+                    .run_batch(&mut NoDocs, &mut BatchRegs::default(), &mut out)
+                    .map(|()| Value::Double(out[0]));
+                assert!(
+                    out.iter().all(|v| v.to_bits() == out[0].to_bits()),
+                    "{src}: lanes differ"
+                );
+                runs.push(("batch", r));
+            }
+        }
+        for (tier, r) in runs {
+            if !same(&got, &r) {
+                println!(
+                    "--- {tier} differs\n{src}\n  vm {}\n  {tier} {}",
+                    show(&got),
+                    show(&r)
+                );
+                tier_mismatches += 1;
+            }
+        }
         let ok = match (&expected, &got) {
             (Ok(e), Ok(v)) => matches(e, v),
             (Err((class, _)), Err(t)) => *class == t.class(),
@@ -241,11 +329,15 @@ fn run_corpus() {
         *reasons.entry(key).or_default() += 1;
     }
     let mut rs: Vec<_> = reasons.into_iter().collect();
-    rs.sort_by(|a, b| b.1.cmp(&a.1));
+    rs.sort_by_key(|r| std::cmp::Reverse(r.1));
     for (k, n) in rs.iter().take(60) {
         println!("{n:5}  {k}");
     }
-    println!("corpus: {pass}/{total} match Painless");
+    println!("corpus: {pass}/{total} match Painless; {lowered} run typed, {batched} in batches");
+    assert_eq!(
+        tier_mismatches, 0,
+        "specialised or typed runs differ from the VM"
+    );
     let floor: usize = std::env::var("PAINLESS_CORPUS_FLOOR")
         .ok()
         .and_then(|s| s.parse().ok())

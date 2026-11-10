@@ -98,6 +98,11 @@ dependencies {
     def painlessSpi = files("${opensearchLib}/../modules/lang-painless/opensearch-scripting-painless-spi-${opensearchVersion}.jar")
     compileOnly painlessSpi
     testImplementation painlessSpi
+    // Painless itself (and the jars its front end needs), whose IR the native Painless runtime
+    // runs (painless/PainlessIr): the plugin extends lang-painless, so the node provides them.
+    def painless = fileTree(dir: "${opensearchLib}/../modules/lang-painless", include: ['lang-painless-*.jar', 'antlr4-runtime-*.jar', 'asm-*.jar'])
+    compileOnly painless
+    testImplementation painless
     // kuromoji and nori, which OpenSearch ships as plugins rather than in lib/, at the
     // distribution's Lucene version: the self test describes their analyzers.
     def luceneVersion = providers.provider {

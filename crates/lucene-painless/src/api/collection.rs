@@ -211,7 +211,7 @@ pub fn call(vm: &mut Vm, recv: &Value, name: &str, args: &[Value]) -> Option<Res
                 };
                 Value::array(&comp, elements(vm, recv)?)
             }
-            ("iterator", 0) => api::iter::JIter::new(elements(vm, recv)?),
+            ("iterator", 0) => api::iter::JIter::value(elements(vm, recv)?),
             ("forEach", 1) | ("each", 1) => {
                 for x in elements(vm, recv)? {
                     invoke(vm, &args[0], &[x])?;
