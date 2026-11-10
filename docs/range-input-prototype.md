@@ -82,7 +82,7 @@ expectations and a separately streamed full-materialization baseline. Data
 families `.tim`, `.doc`, `.dvd`, `.fdt` receive error and short-response faults
 after reader preparation; successful/empty results are rejected. Actual touched
 metadata includes `segments_N`, `.si`, `.fnm`, `.tip`, `.tmd`, `.dvm`, `.fdm`,
-`.fdx` and `.liv`. This corpus does not open positions, norms, points, vectors,
+`.fdx`, `.liv` and `.psm` postings metadata. This corpus does not open positions, norms, points, vectors,
 compound or update formats. Physical file/offset/request/response/outcome events
 are retained in a finite TSV. Tiny 512-byte per-source caches deliberately
 exercise eviction; this is not a speed or transfer-saving claim.
@@ -272,3 +272,20 @@ Java-fixture controls, then the new parameterized native test helper failed to
 compile because its i32 document loop passed an i32 numeric value to the i64
 field constructor. The follow-up uses an explicit lossless conversion. No
 native-query, lint, format or matrix pass is inferred for that failed source.
+
+
+Run `42794138089` at `77443215` passed the store/Java controls and all three
+valid-materialized unsupported-profile refusal cases. The native query ran,
+but the complete-inventory assertion caught `.psm`, Lucene104 postings metadata
+opened by SegmentReader's existing metadata-framing validation. The follow-up
+explicitly enumerates `.psm` as bounded resident metadata and requires its
+trace. It writes physical evidence before inventory assertions. This failure
+is retained; the additional format is not silently ignored.
+
+Component feedback now also includes the gate's excluded benchmark workspace
+type check. If that workspace lacks a committed lock, the hosted job resolves
+its own graph in capped scratch, retains the bounded standard Actions lock
+artifact and exits 78 before benchmark compilation or full qualification.
+That separate lock must become source before the locked check can pass.
+Ordinary test cells explicitly select libraries/binaries/integration tests,
+then doctests separately, avoiding duplicate doctest execution.

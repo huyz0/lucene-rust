@@ -40,6 +40,14 @@ jobs:
           path: ${{ runner.temp }}/range-feedback-${{ github.sha }}.lock
           if-no-files-found: ignore
           retention-days: 7
+      - name: Retain excluded benchmark graph for source pinning
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: range-feedback-${{ github.sha }}-benchmark-lock
+          path: ${{ runner.temp }}/range-feedback-${{ github.sha }}-benchmark.lock
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Retain the finite native query physical trace
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
