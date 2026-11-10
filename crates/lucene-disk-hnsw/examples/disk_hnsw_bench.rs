@@ -11,6 +11,12 @@
 //!   --indexes L     comma list of disk,lean,stock-bbq,stock-bbq-pinned,stock-f32,ivf
 //!                   (default all)
 //!   --encoding E    disk HNSW record vectors: f32|f16|bf16|int8 (default f32)
+//!   --rerank L      IVF rerank depths (default 100)
+//!   --ivf-encoding E  IVF rerank vectors: f32|f16|bf16|int8 (default f32)
+//!   --page-kib N    cache page size in KiB (default 4)
+//!
+//! A budget is MiB, `inf`, or `N%` of the index's own pinned plus paged
+//! bytes. An IVF nprobe of 0 searches at the field's calibrated depth.
 //! ```
 //!
 //! Every index runs over the same files a segment would hold, read through
@@ -19,7 +25,9 @@
 //! structures). A budget smaller than the pinned structures is not run.
 //! The cache counts the pages it fetches (misses) and the round trips a
 //! search waits for: a read that misses is one round trip, and so are all the
-//! ranges announced together with `prefetch` before they are read.
+//! ranges announced together with `prefetch` before they are read. `gets`
+//! counts runs of contiguous missed pages: the ranged GETs a blob store
+//! would serve, and `kib_read` the bytes those pages hold.
 //!
 //! - `disk`: this crate's layout, BBQ codes in memory, records paged.
 //! - `lean`: the same with inline neighbour codes (LM-DiskANN) and no codes
@@ -61,7 +69,12 @@ use lucene_vector_quant::{Quantizer, QuantizerFactory, QuantizerRegistry};
 
 const ID: [u8; 16] = *b"disk-hnsw-bench!";
 const K: usize = 10;
-const PAGE: usize = 4096;
+/// The cache's page size in bytes (`--page-kib`, default 4 KiB).
+static PAGE_BYTES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(4096);
+
+fn page() -> usize {
+    PAGE_BYTES.load(std::sync::atomic::Ordering::Relaxed)
+}
 
 fn read_bin<T: Copy>(path: &str, decode: fn([u8; 4]) -> T) -> (usize, usize, Vec<T>) {
     let bytes = std::fs::read(path).unwrap_or_else(|e| panic!("{path}: {e}"));
@@ -77,6 +90,8 @@ fn read_bin<T: Copy>(path: &str, decode: fn([u8; 4]) -> T) -> (usize, usize, Vec
 #[derive(Default, Clone, Copy)]
 struct Counters {
     misses: u64,
+    /// Runs of contiguous missed pages, one ranged GET each on blob storage.
+    gets: u64,
     round_trips: u64,
 }
 
@@ -112,16 +127,22 @@ impl Cache {
     fn touch(&self, file: u64, offset: usize, len: usize, prefetch: bool) {
         let mut s = self.state.lock().unwrap();
         let mut missed = false;
-        let first = offset / PAGE;
-        let last = (offset + len.max(1) - 1) / PAGE;
+        let mut run = false;
+        let first = offset / page();
+        let last = (offset + len.max(1) - 1) / page();
         for page in first..=last {
             let key = file << 40 | page as u64;
             if let Some(&slot) = s.map.get(&key) {
                 s.slots[slot].1 = true;
+                run = false;
                 continue;
             }
             missed = true;
             s.counters.misses += 1;
+            if !run {
+                s.counters.gets += 1;
+                run = true;
+            }
             if self.capacity == 0 {
                 continue;
             }
@@ -194,7 +215,7 @@ impl RangeSource for Paged {
 }
 
 fn paged(id: u64, bytes: &Arc<Vec<u8>>, cache: &Arc<Cache>) -> Arc<Paged> {
-    if cache.capacity > bytes.len() / PAGE {
+    if cache.capacity > bytes.len() / page() {
         cache.preload(id, bytes.len());
     }
     Arc::new(Paged {
@@ -362,6 +383,25 @@ impl Stock<'_> {
     }
 }
 
+/// A memory budget: bytes, a share of the index's total bytes (pinned plus
+/// paged), or unbounded.
+#[derive(Clone, Copy)]
+enum Budget {
+    Bytes(usize),
+    Percent(f64),
+    Unbounded,
+}
+
+impl Budget {
+    fn resolve(self, total: usize) -> Option<usize> {
+        match self {
+            Budget::Bytes(b) => Some(b),
+            Budget::Percent(p) => Some((total as f64 * p / 100.0) as usize),
+            Budget::Unbounded => None,
+        }
+    }
+}
+
 struct Row {
     index: &'static str,
     config: String,
@@ -371,12 +411,13 @@ struct Row {
     recall: f64,
     cpu_us: f64,
     misses: f64,
+    gets: f64,
     round_trips: f64,
 }
 
 fn print(r: &Row) {
     println!(
-        "{},{},{},{:.1},{:.1},{:.4},{:.0},{:.1},{:.1},{:.0},{:.0}",
+        "{},{},{},{:.1},{:.1},{:.4},{:.0},{:.1},{:.1},{:.1},{:.1},{:.0},{:.0}",
         r.index,
         r.config,
         r.budget,
@@ -385,6 +426,8 @@ fn print(r: &Row) {
         r.recall,
         r.cpu_us,
         r.misses,
+        r.misses * page() as f64 / 1024.0,
+        r.gets,
         r.round_trips,
         r.cpu_us + r.round_trips * 100.0,
         r.cpu_us + r.round_trips * 500.0
@@ -400,7 +443,7 @@ fn measure<'t>(
     nq: usize,
     truth: &dyn Fn(usize) -> &'t [i32],
     search: &mut dyn FnMut(&[f32]) -> Vec<i32>,
-) -> (f64, f64, f64, f64) {
+) -> (f64, f64, f64, f64, f64) {
     for i in 0..nq {
         search(&queries[(nq + i) * dim..][..dim]);
     }
@@ -417,6 +460,7 @@ fn measure<'t>(
         found as f64 / (nq * K) as f64,
         secs / nq as f64 * 1e6,
         c.misses as f64 / nq as f64,
+        c.gets as f64 / nq as f64,
         c.round_trips as f64 / nq as f64,
     )
 }
@@ -444,11 +488,29 @@ fn main() {
     let nq = opt("--queries")
         .map_or(1000, |s| s.parse().unwrap())
         .min(nq_all / 2);
-    let budgets: Vec<Option<usize>> = opt("--budgets")
+    if let Some(kib) = opt("--page-kib") {
+        PAGE_BYTES.store(
+            kib.parse::<usize>().unwrap() << 10,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
+    let budgets: Vec<Budget> = opt("--budgets")
         .unwrap_or_else(|| "16,32,64,128,256,inf".into())
         .split(',')
-        .map(|b| (b != "inf").then(|| b.parse::<usize>().unwrap() << 20))
+        .map(|b| {
+            if b == "inf" {
+                Budget::Unbounded
+            } else if let Some(p) = b.strip_suffix('%') {
+                Budget::Percent(p.parse().unwrap())
+            } else {
+                Budget::Bytes(b.parse::<usize>().unwrap() << 20)
+            }
+        })
         .collect();
+    let reranks = list(opt("--rerank").unwrap_or_else(|| "100".into()));
+    let ivf_encoding = opt("--ivf-encoding").map_or(VectorEncoding::F32, |s| {
+        VectorEncoding::from_name(&s).expect("--ivf-encoding")
+    });
     let lists = list(opt("--lists").unwrap_or_else(|| "40,80,160".into()));
     let beams = list(opt("--beams").unwrap_or_else(|| "4".into()));
     let nprobes = list(opt("--nprobe").unwrap_or_else(|| "32,64,128".into()));
@@ -485,9 +547,13 @@ fn main() {
     let registry = QuantizerRegistry::with_builtins();
     let bbq = OsqFactory::bbq();
     println!(
-        "index,config,budget_mib,pinned_mb,paged_mb,recall@10,cpu_us,misses,round_trips,est_nvme_us,est_ebs_us"
+        "index,config,budget_mib,pinned_mb,paged_mb,recall@10,cpu_us,misses,kib_read,gets,round_trips,est_nvme_us,est_ebs_us"
     );
-    let budget_name = |b: Option<usize>| b.map_or("inf".to_string(), |b| (b >> 20).to_string());
+    let budget_name = |b: Option<usize>| {
+        b.map_or("inf".to_string(), |b| {
+            format!("{:.1}", b as f64 / f64::from(1 << 20))
+        })
+    };
 
     // This crate's layout, with resident codes and lean.
     for (name, inline) in [("disk", false), ("lean", true)] {
@@ -525,12 +591,13 @@ fn main() {
             .unwrap();
             let pinned = probe.resident_bytes();
             drop(probe);
-            let Some(capacity) = budget.map_or(Some(usize::MAX / PAGE), |b| {
-                b.checked_sub(pinned).map(|c| c / PAGE)
+            let budget = budget.resolve(pinned + nodes.len());
+            let Some(capacity) = budget.map_or(Some(usize::MAX / page()), |b| {
+                b.checked_sub(pinned).map(|c| c / page())
             }) else {
                 continue;
             };
-            let cache = Cache::new(capacity.min(nodes.len() / PAGE + 1));
+            let cache = Cache::new(capacity.min(nodes.len() / page() + 1));
             let reader = DiskHnswReader::open(
                 &files.meta,
                 Arc::new(files.codes.clone()),
@@ -551,7 +618,7 @@ fn main() {
                 };
                 let mut expanded = 0usize;
                 let mut estimated = 0usize;
-                let (recall, cpu_us, misses, round_trips) =
+                let (recall, cpu_us, misses, gets, round_trips) =
                     measure(&cache, &queries, dim, nq, &truth, &mut |q| {
                         let out = reader.search(0, q, &params, None).unwrap();
                         expanded += out.stats.expanded;
@@ -572,6 +639,7 @@ fn main() {
                     recall,
                     cpu_us,
                     misses,
+                    gets,
                     round_trips,
                 });
             }
@@ -632,13 +700,14 @@ fn main() {
             paged_bytes = vec_bytes.len();
         }
         for &budget in &budgets {
-            let Some(capacity) = budget.map_or(Some(usize::MAX / PAGE), |b| {
-                b.checked_sub(pinned).map(|c| c / PAGE)
+            let budget = budget.resolve(pinned + paged_bytes);
+            let Some(capacity) = budget.map_or(Some(usize::MAX / page()), |b| {
+                b.checked_sub(pinned).map(|c| c / page())
             }) else {
                 continue;
             };
-            let cache = Cache::new(capacity.min(paged_bytes / PAGE + 3));
-            let memory = Cache::new(usize::MAX / PAGE);
+            let cache = Cache::new(capacity.min(paged_bytes / page() + 3));
+            let memory = Cache::new(usize::MAX / page());
             let (vex_src, veq_src): (Arc<dyn RangeSource>, Arc<dyn RangeSource>) = if pin {
                 (paged(2, &vex, &memory), paged(3, &veq, &memory))
             } else {
@@ -656,7 +725,7 @@ fn main() {
                 vec: paged(4, &vec_bytes, &cache),
             };
             for &ef in &lists {
-                let (recall, cpu_us, misses, round_trips) =
+                let (recall, cpu_us, misses, gets, round_trips) =
                     measure(&cache, &queries, dim, nq, &truth, &mut |q| {
                         stock.search(q, ef).into_iter().map(|n| n as i32).collect()
                     });
@@ -669,6 +738,7 @@ fn main() {
                     recall,
                     cpu_us,
                     misses,
+                    gets,
                     round_trips,
                 });
             }
@@ -687,7 +757,10 @@ fn main() {
                 vectors: &base,
             },
             &bbq,
-            &IvfParams::default(),
+            &IvfParams {
+                rerank_encoding: ivf_encoding,
+                ..IvfParams::default()
+            },
         )
         .unwrap();
         let files = w.finish();
@@ -697,12 +770,13 @@ fn main() {
         let pinned = files.meta.len();
         let paged_bytes = postings.len() + vectors.len();
         for &budget in &budgets {
-            let Some(capacity) = budget.map_or(Some(usize::MAX / PAGE), |b| {
-                b.checked_sub(pinned).map(|c| c / PAGE)
+            let budget = budget.resolve(pinned + paged_bytes);
+            let Some(capacity) = budget.map_or(Some(usize::MAX / page()), |b| {
+                b.checked_sub(pinned).map(|c| c / page())
             }) else {
                 continue;
             };
-            let cache = Cache::new(capacity.min(paged_bytes / PAGE + 2));
+            let cache = Cache::new(capacity.min(paged_bytes / page() + 2));
             let reader = IvfReader::open(
                 &files.meta,
                 paged(5, &postings, &cache),
@@ -712,9 +786,17 @@ fn main() {
                 &registry,
             )
             .unwrap();
-            for &nprobe in &nprobes {
-                let params = lucene_ivf::SearchParams::new(K, nprobe, 100);
-                let (recall, cpu_us, misses, round_trips) =
+            let settings = nprobes
+                .iter()
+                .flat_map(|&p| reranks.iter().map(move |&r| (p, r)));
+            for (nprobe, rerank) in settings {
+                // nprobe 0 searches at the field's calibrated depth.
+                let params = if nprobe == 0 {
+                    lucene_ivf::SearchParams::auto(K)
+                } else {
+                    lucene_ivf::SearchParams::new(K, nprobe, rerank)
+                };
+                let (recall, cpu_us, misses, gets, round_trips) =
                     measure(&cache, &queries, dim, nq, &truth, &mut |q| {
                         reader
                             .search(0, q, &params, None)
@@ -725,13 +807,21 @@ fn main() {
                     });
                 print(&Row {
                     index: "ivf",
-                    config: format!("nprobe={nprobe} rerank=100"),
+                    config: if nprobe == 0 {
+                        format!("auto enc={}", ivf_encoding.name())
+                    } else {
+                        format!(
+                            "nprobe={nprobe} rerank={rerank} enc={}",
+                            ivf_encoding.name()
+                        )
+                    },
                     budget: budget_name(budget),
                     pinned_mb: pinned as f64 / 1e6,
                     paged_mb: paged_bytes as f64 / 1e6,
                     recall,
                     cpu_us,
                     misses,
+                    gets,
                     round_trips,
                 });
             }

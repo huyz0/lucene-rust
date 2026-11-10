@@ -509,7 +509,7 @@ impl IndexingConfig {
     }
 
     /// The registered vector field named `name`.
-    fn explicit_vector_field(&self, name: &str) -> Result<&FieldInfo> {
+    pub(crate) fn explicit_vector_field(&self, name: &str) -> Result<&FieldInfo> {
         self.fields
             .iter()
             .find(|f| f.name == name && f.vector_dimension > 0)
@@ -1205,6 +1205,7 @@ impl IndexingConfig {
                         &|name: &str| self.knn_vectors_format_for(name),
                         self.knn_vectors_direct(),
                         buf.limit.is_none(),
+                        buf.graphs,
                         &segment_id,
                     )?
                 };

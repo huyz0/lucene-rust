@@ -252,6 +252,65 @@ def cpu_seconds(container):
     return next(iter(nodes.values()))["process"]["cpu"]["total_in_millis"] / 1000
 
 
+def throughput(container, files, pairs, levels):
+    """Closed-loop search throughput at each of `levels` concurrent clients."""
+    seconds = float(os.environ.get("THROUGHPUT_SECONDS", "15"))
+    index_rate = float(os.environ.get("THROUGHPUT_INDEX_RATE") or 0)
+    rows = []
+    for n in levels:
+        stop = [False]
+        lat, errors = [], []
+        lock = threading.Lock()
+
+        def client(k):
+            i = k
+            while not stop[0]:
+                _, body = pairs[i % len(pairs)]
+                t = time.perf_counter()
+                try:
+                    req("POST", "/bench/_search?request_cache=false", body)
+                    with lock:
+                        lat.append((time.perf_counter() - t) * 1000)
+                except (RuntimeError, OSError) as e:
+                    errors.append(str(e))
+                i += 1
+
+        def indexer(level):
+            sent, t0 = 0, time.perf_counter()
+            for f in files:
+                if stop[0]:
+                    return
+                with open(f, "rb") as fh:
+                    body = fh.read().replace(b'{"index":{"_id":"', b'{"index":{"_id":"x%d-' % level)
+                due = t0 + sent / index_rate
+                sent += body.count(b"\n") // 2
+                wait = due - time.perf_counter()
+                if wait > 0:
+                    time.sleep(wait)
+                req("POST", "/bench/_bulk", body, ndjson=True)
+
+        with concurrent.futures.ThreadPoolExecutor(n + 1) as ex:
+            side = ex.submit(indexer, n) if index_rate > 0 else None
+            if side:
+                time.sleep(2)
+            c0, t0 = cpu_seconds(container), time.perf_counter()
+            tasks = [ex.submit(client, k) for k in range(n)]
+            time.sleep(seconds)
+            stop[0] = True
+            for t in tasks:
+                t.result()
+            took, cpu = time.perf_counter() - t0, cpu_seconds(container) - c0
+            if side:
+                side.result()
+        rows.append({
+            "clients": n, "searches_per_second": round(len(lat) / took, 1),
+            "p50": pct(lat, 0.5), "p99": pct(lat, 0.99),
+            "node_cpu_ms_per_search": round(cpu * 1000 / max(1, len(lat)), 2),
+            "indexing": index_rate, "errors": len(errors),
+        })
+    return rows
+
+
 def pct(values, p):
     values = sorted(values)
     return round(values[min(len(values) - 1, int(len(values) * p))], 1) if values else None
@@ -400,6 +459,15 @@ def visibility(base, container, corpus, label, out, settings):
                    for n, v in took.items()},
         }
         print(f"  search only: {result['search_only']}", flush=True)
+    # THROUGHPUT="1,8,32": then, at each concurrency, that many clients send
+    # the shapes in a closed loop for THROUGHPUT_SECONDS; searches a second,
+    # latency and node CPU per search are kept. With THROUGHPUT_INDEX_RATE=N,
+    # the corpus is indexed again meanwhile (new ids) at N documents a second.
+    levels = [int(n) for n in os.environ.get("THROUGHPUT", "").split(",") if n.strip()]
+    if levels:
+        result["throughput"] = throughput(container, files, pairs, levels)
+        for row in result["throughput"]:
+            print(f"  throughput: {row}", flush=True)
     try:
         result["plugin_stats"] = req("GET", "/_plugins/lucene_rust/stats")
     except Exception:  # optional: the stock node has no such endpoint
