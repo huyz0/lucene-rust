@@ -614,6 +614,9 @@ cluster's document range, and a filtered search probes only the clusters
 whose range holds a document it passes, with the calibrated share of
 them. A partition of at most 16 times the accepted
 target is scored exactly.
+In the OpenSearch plugin this is the index setting
+`index.lucene_rust.knn.ivf_partition_clusters` (`min_vectors`, `0` off, the
+default), with `index.sort.field` set to the partition field.
 
 - Large tenants search 1.5-4.2x faster with recall up to 0.97-0.985 (the
   400k region queried from far away stays at 0.94).
