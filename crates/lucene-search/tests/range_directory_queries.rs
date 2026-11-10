@@ -395,7 +395,7 @@ fn directory_reader_queries_are_range_native_cold_bounded_and_fail_closed() {
             name.starts_with("segments_")
                 || [
                     ".si", ".fnm", ".tim", ".tip", ".tmd", ".doc", ".dvm", ".dvd", ".fdm", ".fdx",
-                    ".fdt", ".liv"
+                    ".fdt", ".liv", ".psm"
                 ]
                 .iter()
                 .any(|suffix| name.ends_with(suffix)),
