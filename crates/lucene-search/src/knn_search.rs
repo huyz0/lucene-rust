@@ -379,6 +379,29 @@ pub fn knn_top_hits_nested(
     parents: &dyn BitSetProducer,
     expand: bool,
 ) -> Result<Vec<ScoreDoc>> {
+    knn_top_hits_nested_with(
+        segments, field, target, k, candidates, filter, parents, expand, 0,
+    )
+}
+
+/// [`knn_top_hits_nested`] probing `ivf_nprobes` clusters in each segment
+/// whose field has an IVF index (`0`: the depth each segment calibrated),
+/// more when fewer than `k` parents are in reach. Other formats ignore it.
+///
+/// # Errors
+/// As [`knn_top_hits_nested`].
+#[allow(clippy::too_many_arguments)]
+pub fn knn_top_hits_nested_with(
+    segments: &[OpenSegment<'_>],
+    field: &str,
+    target: &KnnTarget,
+    k: usize,
+    candidates: usize,
+    filter: Option<&Clause>,
+    parents: &dyn BitSetProducer,
+    expand: bool,
+    ivf_nprobes: usize,
+) -> Result<Vec<ScoreDoc>> {
     top_hits(
         segments,
         field,
@@ -387,7 +410,7 @@ pub fn knn_top_hits_nested(
         candidates,
         filter,
         Some((parents, expand)),
-        0,
+        ivf_nprobes,
         &[],
     )
 }
@@ -473,7 +496,8 @@ fn top_hits(
             vector_query::search_knn_byte_vector_query_multi_segment(&knn, &q)?
         }
         (KnnTarget::Float(t), true) => {
-            let q = KnnFloatVectorQuery::new(field, t.clone(), candidates)?;
+            let q = KnnFloatVectorQuery::new(field, t.clone(), candidates)?
+                .with_ivf_nprobes(ivf_nprobes);
             vector_query::search_diversifying_children_float_knn_multi_segment(&knn, &parents, &q)?
         }
         (KnnTarget::Byte(t), true) => {
