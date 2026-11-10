@@ -328,9 +328,12 @@ impl LiveColumns {
         }
     }
 
-    /// The vector fields' graphs.
-    pub(super) fn graphs(&self) -> &[crate::index_writer::BufferGraphField] {
-        &self.graphs
+    /// Takes the vector fields' graphs for the buffer's flush. Only a
+    /// buffer still in its slot is searched through its graphs; a flushing
+    /// or published one reads its vectors as segments, so the graphs, and
+    /// the vectors they share, go with the flush.
+    pub(super) fn take_graphs(&mut self) -> Vec<crate::index_writer::BufferGraphField> {
+        std::mem::take(&mut self.graphs)
     }
 
     /// Records the next document's stored fields.
@@ -953,7 +956,7 @@ pub struct ViewBuffer {
     /// By field number, its points' bounds as of the view.
     bounds: HashMap<i32, PointBounds>,
     /// The vector fields' graphs over the buffer, each with how many of
-    /// its vectors the view holds.
+    /// its vectors the view holds. Empty once the buffer left its slot.
     pub vector_graphs: Vec<ViewGraph>,
 }
 

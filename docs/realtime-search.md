@@ -133,6 +133,23 @@ built. A burst of adds outruns the inserter (about 3k 128-d vectors a second
 with M 16 and beam 100): the vectors it has not reached are scanned exactly
 until it catches up.
 
+Memory. There is no queue of pending vectors: the inserter's backlog is the
+buffer's own vectors, shared with the documents, so a burst that outruns it
+costs exact scoring of the tail, not memory. The buffer flushes at the RAM
+buffer's limit as with realtime off, which bounds both the backlog and the
+graph; the graph itself (about 0.4 KB a vector at M 16, reported by
+`live_bytes` while the buffer is in its slot) is not charged to the RAM buffer, so segments end at the same
+documents. A buffer's graph goes with its flush: views of a flushing or
+published buffer read its vectors from the segment, and an inserter
+still running stops once the flush is done with the graph. Peak RSS of a burst
+(`lucene-index` example `live_vector_memory`, 4 indexing threads on 4 cores,
+64 MB RAM buffer, a view opened every 100 ms, no commit until the end):
+
+| Burst | realtime off | realtime on |
+|---|---|---|
+| 300k x 128-d (146 MiB of vectors) | 446 MiB | 497-501 MiB |
+| 80k x 768-d (234 MiB of vectors) | 416 MiB | 422-467 MiB |
+
 Chunks and tails with vectors write them flat, with no HNSW graph and no IVF
 lists (`.vem` records no graph levels, the layout of a stock segment too small
 for a graph, which Java's `Lucene99HnswVectorsReader` and the plugin's IVF
