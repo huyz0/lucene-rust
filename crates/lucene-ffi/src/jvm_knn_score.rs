@@ -25,6 +25,10 @@
 //! | `data_type` | `u8`: `0` float, `1` byte or binary, `2` half_float |
 //! | `half_cosine` | `u8`: `1` scores cosine as `(1 + cos) / 2` (indexes created on 2.19 or later) |
 //! | target | `u8` `0` then `i32` count and that many `f32`, or `1` then bytes |
+//! | formula | `u8`: `0` `knn_score`'s, `1` a Painless script's ([`crate::jvm_knn_painless`], which follows) |
+//!
+//! Under a Painless formula the space and cosine flag are unused, and a
+//! document without a vector is an error rather than a score of 0.
 
 use std::sync::Arc;
 
@@ -82,6 +86,8 @@ pub(crate) struct KnnScoreSource {
     target: Target,
     /// The float target's squared magnitude (`cosinesimilOptimized`'s).
     norm: f32,
+    /// A Painless script's formula in place of `knn_score`'s.
+    painless: Option<Arc<crate::jvm_knn_painless::Painless>>,
 }
 
 pub(crate) fn decode(
@@ -141,7 +147,24 @@ pub(crate) fn decode(
             )))
         }
     };
+    let painless = match c.u8()? {
+        0 => None,
+        1 => Some(Arc::new(crate::jvm_knn_painless::decode(c)?)),
+        other => {
+            return Err(invalid(format!(
+                "query tree: knn_score formula {other} (expected 0..=1)"
+            )))
+        }
+    };
     let floats = matches!(target, Target::Floats(_));
+    if painless
+        .as_ref()
+        .is_some_and(|p| p.needs_float_target() && data_type == DataType::Byte)
+    {
+        return Err(invalid(
+            "query tree: painless cosineSimilarity with a norm over a byte field",
+        ));
+    }
     if floats == (data_type == DataType::Byte) || (space == Space::Hamming && floats) {
         return Err(invalid(
             "query tree: knn_score target does not match the field's data type",
@@ -158,6 +181,7 @@ pub(crate) fn decode(
         half_cosine,
         target,
         norm,
+        painless,
     };
     Ok(Clause::Extended(Box::new(ExtendedQuery::FunctionScore(
         FunctionScoreQuery::new(sub, Arc::new(source)),
@@ -165,7 +189,32 @@ pub(crate) fn decode(
 }
 
 impl KnnScoreSource {
+    /// The script's value for a document without a vector: none for
+    /// `knn_score` (the document scores 0), an error for Painless.
+    fn missing(&self, doc: i32) -> Result<Option<f32>> {
+        match &self.painless {
+            None => Ok(None),
+            Some(_) => Err(crate::jvm_knn_painless::missing(&self.field, doc)),
+        }
+    }
+
     /// The script's score of a float vector.
+    fn floats(&self, q: &[f32], v: &[f32]) -> Result<Option<f32>> {
+        match &self.painless {
+            None => Ok(Some(self.score_floats(q, v))),
+            Some(p) => p.score_floats(q, v).map(Some),
+        }
+    }
+
+    /// The script's score of a byte vector.
+    fn bytes(&self, q: &[u8], v: &[u8]) -> Result<Option<f32>> {
+        match &self.painless {
+            None => Ok(Some(self.score_bytes(q, v))),
+            Some(p) => p.score_bytes(q, v).map(Some),
+        }
+    }
+
+    /// `knn_score`'s score of a float vector.
     fn score_floats(&self, q: &[f32], v: &[f32]) -> f32 {
         match self.space {
             Space::L2 => 1.0 / (1.0 + square_distance(q, v)),
@@ -210,7 +259,7 @@ impl KnnScoreSource {
         }
     }
 
-    /// The script's score of a byte vector.
+    /// `knn_score`'s score of a byte vector.
     fn score_bytes(&self, q: &[u8], v: &[u8]) -> f32 {
         let diffs = || {
             q.iter()
@@ -265,20 +314,20 @@ impl DoubleValuesSource for KnnScoreSource {
         _scores: Option<BoxDoubleValues<'c>>,
     ) -> Result<BoxDoubleValues<'c>> {
         let reader = ctx.leaf_reader(leaf)?;
-        let Some(info) = reader.field_infos().field_by_name(&self.field) else {
-            return Ok(Box::new(Scores {
-                next: Box::new(|_| Ok(None)),
+        let me = Arc::new(self.clone());
+        let none = |me: Arc<KnnScoreSource>| -> BoxDoubleValues<'c> {
+            Box::new(Scores {
+                next: Box::new(move |doc| me.missing(doc)),
                 value: 0.0,
-            }));
+            })
+        };
+        let Some(info) = reader.field_infos().field_by_name(&self.field) else {
+            return Ok(none(me));
         };
         let number = info.number;
-        let me = Arc::new(self.clone());
         if info.vector_dimension > 0 {
             let Some((flat, _)) = reader.knn_vectors_for(number)? else {
-                return Ok(Box::new(Scores {
-                    next: Box::new(|_| Ok(None)),
-                    value: 0.0,
-                }));
+                return Ok(none(me));
             };
             return match &self.target {
                 Target::Floats(q) => {
@@ -290,10 +339,10 @@ impl DoubleValuesSource for KnnScoreSource {
                     Ok(Box::new(Scores {
                         next: Box::new(move |doc| {
                             let Some(ord) = ords.ordinal(doc) else {
-                                return Ok(None);
+                                return me.missing(doc);
                             };
                             let v = values.vector_ref(ord, &mut scratch)?;
-                            Ok(Some(me.score_floats(&q, v)))
+                            me.floats(&q, v)
                         }),
                         value: 0.0,
                     }))
@@ -306,9 +355,9 @@ impl DoubleValuesSource for KnnScoreSource {
                     Ok(Box::new(Scores {
                         next: Box::new(move |doc| {
                             let Some(ord) = ords.ordinal(doc) else {
-                                return Ok(None);
+                                return me.missing(doc);
                             };
-                            Ok(Some(me.score_bytes(&q, values.vector(ord)?)))
+                            me.bytes(&q, values.vector(ord)?)
                         }),
                         value: 0.0,
                     }))
@@ -322,18 +371,18 @@ impl DoubleValuesSource for KnnScoreSource {
         Ok(Box::new(Scores {
             next: Box::new(move |doc| {
                 if !dv.advance_exact(doc)? {
-                    return Ok(None);
+                    return me.missing(doc);
                 }
                 let raw = dv.binary_value();
-                Ok(Some(match (&target, data_type) {
-                    (Target::Bytes(q), _) => me.score_bytes(q, raw),
+                match (&target, data_type) {
+                    (Target::Bytes(q), _) => me.bytes(q, raw),
                     (Target::Floats(q), DataType::HalfFloat) => {
                         scratch.clear();
                         scratch.extend(
                             raw.chunks_exact(2)
                                 .map(|h| f16_to_f32(u16::from_le_bytes([h[0], h[1]]))),
                         );
-                        me.score_floats(q, &scratch)
+                        me.floats(q, &scratch)
                     }
                     (Target::Floats(q), _) => {
                         scratch.clear();
@@ -341,9 +390,9 @@ impl DoubleValuesSource for KnnScoreSource {
                             raw.chunks_exact(4)
                                 .map(|f| f32::from_be_bytes([f[0], f[1], f[2], f[3]])),
                         );
-                        me.score_floats(q, &scratch)
+                        me.floats(q, &scratch)
                     }
-                }))
+                }
             }),
             value: 0.0,
         }))
@@ -362,8 +411,12 @@ impl DoubleValuesSource for KnnScoreSource {
             Target::Floats(q) => q.iter().map(|x| format!("{:08x}", x.to_bits())).collect(),
             Target::Bytes(q) => q.iter().map(|b| format!("{b:02x}")).collect::<String>(),
         };
+        let formula = self
+            .painless
+            .as_ref()
+            .map_or_else(String::new, |p| p.describe());
         format!(
-            "knn_score(field={}, space={:?}, type={:?}, half_cosine={}, target={})",
+            "knn_score(field={}, space={:?}, type={:?}, half_cosine={}, target={}, formula={formula})",
             self.field, self.space, self.data_type, self.half_cosine, target
         )
     }
@@ -414,6 +467,7 @@ mod tests {
             .u8(data_type)
             .u8(0)
             .raw(&target)
+            .u8(0)
     }
 
     fn decoded(blob: &Blob) -> std::result::Result<Clause, FfiStatus> {
@@ -434,6 +488,7 @@ mod tests {
             half_cosine,
             target,
             norm,
+            painless: None,
         }
     }
 
@@ -453,11 +508,27 @@ mod tests {
             decoded(&node(0, 0, bytes.clone())).is_err(),
             "bytes for a float field"
         );
-        assert!(decoded(&node(5, 0, floats)).is_err(), "hamming over floats");
+        assert!(
+            decoded(&node(5, 0, floats.clone())).is_err(),
+            "hamming over floats"
+        );
         assert!(
             decoded(&node(0, 1, Blob::default().u8(2))).is_err(),
             "target kind"
         );
+        let with = |data_type: u8, target: &Blob, formula: Blob| {
+            let mut b = node(0, data_type, target.clone());
+            b.0.pop();
+            decoded(&b.raw(&formula))
+        };
+        let program = |function: u8| Blob::default().u8(1).u8(function).f32(1.0).i32(1).u8(2);
+        assert!(with(0, &floats, program(0)).is_ok(), "painless");
+        assert!(with(1, &bytes, program(4)).is_ok(), "painless over bytes");
+        assert!(
+            with(1, &bytes, program(5)).is_err(),
+            "a norm over a byte field"
+        );
+        assert!(with(0, &floats, Blob::default().u8(2)).is_err(), "formula");
     }
 
     #[test]

@@ -32,6 +32,10 @@ import org.opensearch.common.lucene.search.function.FieldValueFactorFunction;
 import org.opensearch.common.lucene.search.function.FunctionScoreQuery;
 import org.opensearch.common.lucene.search.function.ScriptScoreQuery;
 import org.lucenerust.opensearch.knn.script.KnnScoringScriptEngine;
+import org.lucenerust.opensearch.knn.script.PainlessKnnScript;
+import org.opensearch.index.mapper.MappedFieldType;
+import org.opensearch.script.Script;
+import org.opensearch.script.ScriptType;
 import org.opensearch.common.lucene.search.function.RandomScoreFunction;
 import org.opensearch.common.lucene.search.function.ScoreFunction;
 import org.opensearch.common.lucene.search.function.WeightFactorFunction;
@@ -44,6 +48,7 @@ import java.io.ByteArrayOutputStream;
 import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
 import java.util.Collection;
+import java.util.function.Function;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Predicate;
@@ -539,7 +544,7 @@ final class ExtendedEncoder {
     private static String knnScore(ScriptScoreQuery q, ByteArrayOutputStream out, Child child) throws ReflectiveOperationException {
         Object builder = field(q, "scriptBuilder");
         if ((builder instanceof KnnScoringScriptEngine.KnnLeafFactory) == false) {
-            return "script_score_script";
+            return painlessKnn(q, out, child);
         }
         KnnScoringScriptEngine.Native spec = ((KnnScoringScriptEngine.KnnLeafFactory) builder).nativeSpec();
         if (spec == null) {
@@ -567,6 +572,73 @@ final class ExtendedEncoder {
             out.write(1);
             writeBytes(out, spec.bytes());
         }
+        // knn_score's own formula.
+        out.write(0);
+        return null;
+    }
+
+    /**
+     * The field types of the index being searched, for scripts that name a field: set by the
+     * searcher around encoding ({@link #withFieldTypes}); without them such scripts run in Java.
+     */
+    private static final ThreadLocal<Function<String, MappedFieldType>> FIELD_TYPES = new ThreadLocal<>();
+
+    /** Runs {@code encode} with {@code fieldTypes} as the index's field types. */
+    static <T> T withFieldTypes(Function<String, MappedFieldType> fieldTypes, java.util.function.Supplier<T> encode) {
+        Function<String, MappedFieldType> previous = FIELD_TYPES.get();
+        FIELD_TYPES.set(fieldTypes);
+        try {
+            return encode.get();
+        } finally {
+            if (previous == null) {
+                FIELD_TYPES.remove();
+            } else {
+                FIELD_TYPES.set(previous);
+            }
+        }
+    }
+
+    /**
+     * A Painless {@code script_score} script made of one k-NN Painless function call inside
+     * arithmetic ({@link PainlessKnnScript}), as the {@code knn_score} node with the script's
+     * formula. Other scripts run in Java.
+     */
+    private static String painlessKnn(ScriptScoreQuery q, ByteArrayOutputStream out, Child child) throws ReflectiveOperationException {
+        Script script = (Script) field(q, "script");
+        if (script == null || script.getType() != ScriptType.INLINE || "painless".equals(script.getLang()) == false) {
+            return "script_score_script";
+        }
+        if (field(q, "minScore") != null) {
+            return "script_score_min_score";
+        }
+        PainlessKnnScript.Compiled c = PainlessKnnScript.compile(script.getIdOrCode(), script.getParams(), FIELD_TYPES.get());
+        if (c == null) {
+            return "script_score_script";
+        }
+        out.write(NODE_KNN_SCORE);
+        String reason = child.node((Query) field(q, "subQuery"));
+        if (reason != null) {
+            return reason;
+        }
+        writeString(out, c.field());
+        // The space and cosine flag are unused under this formula.
+        out.write(0);
+        out.write(c.dataType());
+        out.write(0);
+        if (c.floats() != null) {
+            out.write(0);
+            writeInt(out, c.floats().length);
+            for (float v : c.floats()) {
+                writeInt(out, Float.floatToIntBits(v));
+            }
+        } else {
+            out.write(1);
+            writeBytes(out, c.bytes());
+        }
+        out.write(1);
+        out.write(c.function());
+        writeInt(out, Float.floatToRawIntBits(c.norm()));
+        out.writeBytes(c.program());
         return null;
     }
 
