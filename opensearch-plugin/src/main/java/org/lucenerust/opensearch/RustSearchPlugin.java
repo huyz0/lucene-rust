@@ -3,6 +3,8 @@
  */
 package org.lucenerust.opensearch;
 
+import org.lucenerust.opensearch.tensor.MaxSimQueryBuilder;
+import org.lucenerust.opensearch.tensor.MultiVectorFieldMapper;
 import org.lucenerust.opensearch.ml.MlActions;
 import org.lucenerust.opensearch.ml.MlCommons;
 import org.lucenerust.opensearch.ml.MlIndices;
@@ -547,11 +549,18 @@ public class RustSearchPlugin extends Plugin implements
     @Override
     public Map<String, Mapper.TypeParser> getMappers() {
         if (stockKnn) {
-            return Map.of(SparseVectorFieldMapper.CONTENT_TYPE, new SparseVectorFieldMapper.TypeParser());
+            return Map.of(
+                SparseVectorFieldMapper.CONTENT_TYPE,
+                new SparseVectorFieldMapper.TypeParser(),
+                MultiVectorFieldMapper.CONTENT_TYPE,
+                new MultiVectorFieldMapper.TypeParser()
+            );
         }
         return Map.of(
             SparseVectorFieldMapper.CONTENT_TYPE,
             new SparseVectorFieldMapper.TypeParser(),
+            MultiVectorFieldMapper.CONTENT_TYPE,
+            new MultiVectorFieldMapper.TypeParser(),
             KnnVectorFieldMapper.CONTENT_TYPE,
             new KnnVectorFieldMapper.TypeParser()
         );
@@ -576,10 +585,16 @@ public class RustSearchPlugin extends Plugin implements
     @Override
     public List<QuerySpec<?>> getQueries() {
         QuerySpec<?> sparse = new QuerySpec<>(NeuralSparseQueryBuilder.NAME, NeuralSparseQueryBuilder::new, NeuralSparseQueryBuilder::fromXContent);
+        QuerySpec<?> maxSim = new QuerySpec<>(MaxSimQueryBuilder.NAME, MaxSimQueryBuilder::new, MaxSimQueryBuilder::fromXContent);
         if (stockKnn) {
-            return List.of(sparse, HybridSearch.query());
+            return List.of(sparse, maxSim, HybridSearch.query());
         }
-        return List.of(sparse, HybridSearch.query(), new QuerySpec<>(KnnQueryBuilder.NAME, KnnQueryBuilder::new, KnnQueryBuilder::fromXContent));
+        return List.of(
+            sparse,
+            maxSim,
+            HybridSearch.query(),
+            new QuerySpec<>(KnnQueryBuilder.NAME, KnnQueryBuilder::new, KnnQueryBuilder::fromXContent)
+        );
     }
 
     @Override
