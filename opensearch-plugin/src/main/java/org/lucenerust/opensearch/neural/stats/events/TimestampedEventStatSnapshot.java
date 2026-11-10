@@ -97,6 +97,10 @@ public class TimestampedEventStatSnapshot implements Writeable, StatSnapshot<Lon
                 minMinutes = stat.getMinutesSinceLastEvent();
             }
         }
+        // Every node left the stat out: there is nothing to aggregate
+        if (name == null) {
+            return null;
+        }
         return TimestampedEventStatSnapshot.builder().statName(name).value(totalValue).trailingIntervalValue(totalTrailingValue).minutesSinceLastEvent(minMinutes).build();
     }
 

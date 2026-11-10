@@ -331,7 +331,24 @@ struct CodecFiles {
     graph_meta: Option<Arc<Input>>,
     /// A `LuceneRustIvfVectorsFormat` instance's IVF index.
     ivf: Option<IvfFiles>,
+    /// A `Lucene104(Hnsw)ScalarQuantizedVectorsFormat` instance's codes.
+    scalar_quantized: Option<ScalarQuantizedFiles>,
+    /// The vectors instance's flat reader, detached from its file: opened
+    /// (header, footer, metadata) on first use, then shared by every read.
+    flat_reader: OnceLock<lucene_codecs::vectors::FlatVectorsReader<'static>>,
+    /// The HNSW graph's reader, likewise; opened only by graph searches.
+    graph_reader: OnceLock<Option<lucene_codecs::hnsw_vectors::HnswVectorsReader<'static>>>,
     suffix: String,
+}
+
+/// `.vemq`/`.veq` of a `Lucene104` scalar-quantized vectors instance, with
+/// the metadata parsed (and the files checked) on first use.
+#[derive(Debug)]
+struct ScalarQuantizedFiles {
+    meta: Arc<Input>,
+    data: Arc<Input>,
+    reader:
+        OnceLock<lucene_codecs::scalar_quantized_vectors::ScalarQuantizedVectorsReader<'static>>,
 }
 
 /// Doc values encoded a field at a time from a buffer's columns.
@@ -1141,6 +1158,9 @@ impl SegmentReader {
                     meta,
                     graph_meta: None,
                     ivf: None,
+                    scalar_quantized: None,
+                    flat_reader: OnceLock::new(),
+                    graph_reader: OnceLock::new(),
                     suffix: codec_suffix_of(&name, &segment_name, ".tvd"),
                 }))
             }
@@ -1195,12 +1215,27 @@ impl SegmentReader {
                         ))))
                     }
                 };
+                let scalar_quantized = match (open(".vemq")?, open(".veq")?) {
+                    (Some(meta), Some(data))
+                        if lucene_codecs::scalar_quantized_vectors::is_meta_file(&meta) =>
+                    {
+                        Some(ScalarQuantizedFiles {
+                            meta,
+                            data,
+                            reader: OnceLock::new(),
+                        })
+                    }
+                    _ => None,
+                };
                 vectors.push(Arc::new(CodecFiles {
                     data,
                     index: open(".vex")?,
                     meta,
                     graph_meta: open(".vem")?,
                     ivf,
+                    scalar_quantized,
+                    flat_reader: OnceLock::new(),
+                    graph_reader: OnceLock::new(),
                     suffix,
                 }));
             }
@@ -1438,14 +1473,43 @@ impl SegmentReader {
         &'s self,
         f: &'s CodecFiles,
     ) -> crate::Result<lucene_codecs::vectors::FlatVectorsReader<'s>> {
-        let mut reader = lucene_codecs::vectors::FlatVectorsReader::open(
+        if let Some(flat) = f.flat_reader.get() {
+            return Ok(flat.attach(&f.data));
+        }
+        // A failed open is not kept: the next read tries again.
+        let mut flat = lucene_codecs::vectors::FlatVectorsReader::open(
             &f.meta,
             &f.data,
             &self.segment_id,
             &f.suffix,
         )?;
-        reader.resolve_similarities_from(&self.field_infos.fields)?;
-        Ok(reader)
+        flat.resolve_similarities_from(&self.field_infos.fields)?;
+        Ok(f.flat_reader
+            .get_or_init(|| flat.detached())
+            .attach(&f.data))
+    }
+
+    /// `f`'s HNSW graph reader, opened once; `None` without a graph.
+    fn graph_reader<'s>(
+        &self,
+        f: &'s CodecFiles,
+    ) -> crate::Result<Option<&'s lucene_codecs::hnsw_vectors::HnswVectorsReader<'static>>> {
+        if let Some(graph) = f.graph_reader.get() {
+            return Ok(graph.as_ref());
+        }
+        let graph = match (&f.graph_meta, &f.index) {
+            (Some(meta), Some(index)) => Some(
+                lucene_codecs::hnsw_vectors::HnswVectorsReader::open(
+                    meta,
+                    index,
+                    &self.segment_id,
+                    &f.suffix,
+                )?
+                .detached(),
+            ),
+            _ => None,
+        };
+        Ok(f.graph_reader.get_or_init(|| graph).as_ref())
     }
 
     /// `SegmentReader.getVectorReader()`'s flat half: a reader over this
@@ -1548,16 +1612,8 @@ impl SegmentReader {
             if flat.field(field_number).is_none() {
                 continue;
             }
-            let graph = match (&f.graph_meta, &f.index) {
-                (Some(meta), Some(index)) => {
-                    let g = lucene_codecs::hnsw_vectors::HnswVectorsReader::open(
-                        meta,
-                        index,
-                        &self.segment_id,
-                        &f.suffix,
-                    )?;
-                    g.field(field_number).is_some().then_some(g)
-                }
+            let graph = match (self.graph_reader(f)?, &f.index) {
+                (Some(g), Some(index)) => g.field(field_number).is_some().then(|| g.attach(index)),
                 _ => None,
             };
             return Ok(Some((flat, graph)));
@@ -1600,6 +1656,50 @@ impl SegmentReader {
             };
             if reader.field(field_number).is_some() {
                 return Ok(Some(reader));
+            }
+        }
+        Ok(None)
+    }
+
+    /// The scalar-quantized codes of the instance field `field_number` was
+    /// written with (`Lucene104(Hnsw)ScalarQuantizedVectorsFormat`), its
+    /// metadata parsed once per segment; `None` when that instance has none
+    /// or holds no codes for the field (a byte field).
+    ///
+    /// # Errors
+    /// Quantized vector files that do not decode.
+    pub fn scalar_quantized_for(
+        &self,
+        field_number: i32,
+    ) -> crate::Result<
+        Option<lucene_codecs::scalar_quantized_vectors::ScalarQuantizedVectorsReader<'_>>,
+    > {
+        use lucene_codecs::scalar_quantized_vectors::ScalarQuantizedVectorsReader;
+        let named = self.vectors_instance_of(field_number);
+        for f in self
+            .vectors
+            .iter()
+            .filter(|f| named.as_deref().is_none_or(|n| n == f.suffix))
+        {
+            let Some(sq) = &f.scalar_quantized else {
+                continue;
+            };
+            let detached = match sq.reader.get() {
+                Some(reader) => reader,
+                // A failed open is not kept: the next search tries again.
+                None => {
+                    let opened = ScalarQuantizedVectorsReader::open(
+                        &sq.meta,
+                        &sq.data,
+                        &self.segment_id,
+                        &f.suffix,
+                    )?
+                    .detached();
+                    sq.reader.get_or_init(|| opened)
+                }
+            };
+            if detached.field(field_number).is_some() {
+                return Ok(Some(detached.attach(&sq.data)));
             }
         }
         Ok(None)
