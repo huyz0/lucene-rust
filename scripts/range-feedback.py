@@ -17,6 +17,8 @@ IMAGE = "rust:1.97.1-bookworm@sha256:0e2bcaef56d041a486784e54104a81aebe0da44bd03
 COMMAND = r'''
 set -euo pipefail
 mkdir -p /scratch/cargo /scratch/target /scratch/tmp
+cp -a /usr/local/rustup /scratch/rustup
+rustup component add rustfmt clippy --toolchain 1.97.1
 [ "$(cat /sys/fs/cgroup/memory.max)" = 4294967296 ]
 [ "$(cat /sys/fs/cgroup/memory.swap.max)" = 0 ]
 [ "$(cat /sys/fs/cgroup/pids.max)" = 256 ]
@@ -42,6 +44,7 @@ cargo test --locked -p lucene-codecs --test blocktree_fixtures range_terms_posti
 cargo test --locked -p lucene-codecs --test doc_values_fixtures numeric_range_values_match_java_and_transport_errors_propagate
 cargo test --locked -p lucene-codecs --test doc_values_varying_bpv_fixtures varying_width_range_block_boundaries_match_java
 cargo test --locked -p lucene-codecs --test stored_fields_fixtures range_stored_chunks_match_java_without_resident_fdt_and_refuse_faults
+cargo clippy --locked -p lucene-store -p lucene-codecs --all-targets -- -D warnings
 cargo fmt --all -- --check
 '''
 
@@ -85,7 +88,7 @@ def main():
             "--mount", f"type=bind,src={source},dst=/src,readonly",
             "--mount", f"type=bind,src={scratch},dst=/scratch",
             "--env", "EXPECTED_SOURCE=" + expected, "--env", "RUSTUP_TOOLCHAIN=1.97.1",
-            "--env", "CARGO_HOME=/scratch/cargo", "--env", "CARGO_TARGET_DIR=/scratch/target",
+            "--env", "CARGO_HOME=/scratch/cargo", "--env", "RUSTUP_HOME=/scratch/rustup", "--env", "CARGO_TARGET_DIR=/scratch/target",
             "--env", "TMPDIR=/scratch/tmp", "--env", "CARGO_BUILD_JOBS=2",
             "--env", "CARGO_INCREMENTAL=0", "--env", "CARGO_PROFILE_DEV_DEBUG=0",
             "--env", "CARGO_PROFILE_TEST_DEBUG=0", IMAGE, "bash", "-c", COMMAND]

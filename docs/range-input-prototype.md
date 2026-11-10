@@ -174,3 +174,17 @@ The unchanged artifact bytes are committed for subsequent locked feedback;
 registry packages carry checksums. No dependency manifest or feature changes.
 Existing upstream Apache-2.0/MIT/third-party license declarations remain
 applicable; exact-graph license/native qualification remains unrun here.
+
+Source-pinned run `42784224009` at
+`195b228a96d718fe3fd758195d27308218c7df1a` completed selected store/codecs
+all-target type checking, six range-input/metadata tests and four Java-fixture
+range tests with zero failures/ignored tests in those selections. It then
+failed because the base image lacked the pinned cargo-fmt component. Ordinary
+full suites, actual DirectoryReader/query integration, release/ARM/coverage and
+independent review were not run. This result does not qualify M02.03.
+
+Subsequent feedback copies the image's exact toolchain into the same capped
+scratch filesystem and installs only Rust 1.97.1's rustfmt/clippy components
+there. It retains the read-only source/root filesystems and unchanged caps;
+no local installation or shared toolchain/cache mutation occurs. Selected
+all-target lint and pinned formatting follow the existing component controls.
