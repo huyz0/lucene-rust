@@ -1271,7 +1271,7 @@ unsafe fn lut16_accumulate32_avx2(luts: &[u8], codes: &[u8], out: &mut [u32; FAS
     }
 }
 
-/// [`lut16_accumulate32_avx2`] four groups at a time: lane `k` of the
+/// The AVX2 kernel (`lut16_accumulate32_avx2`) four groups at a time: lane `k` of the
 /// 512-bit table and code registers is group `g + k`, and a masked load
 /// zeroes the lanes past the last group (entry 0 of a zero table is zero).
 /// Each 16-bit lane sums at most 64 of the 256 groups, and the four lanes
