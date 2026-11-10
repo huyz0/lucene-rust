@@ -289,6 +289,7 @@ type Buffered = (
     Vec<Vec<DocumentVector>>,
     PackedFields,
     Arc<PendingPostings>,
+    Vec<crate::index_writer::BufferGraphField>,
 );
 
 /// Buffers an add's documents into a slot, returning the RAM they take.
@@ -312,6 +313,9 @@ struct FlushBatch {
     ram_bytes: usize,
     /// The partition the documents were added under.
     partition: Option<Arc<str>>,
+    /// The vector fields' graphs live search kept over the buffer, which
+    /// the flush writes instead of building them again.
+    graphs: Vec<crate::index_writer::BufferGraphField>,
 }
 
 /// What [`ConcurrentIndexWriter::build`] hands to the publish.
@@ -1500,6 +1504,9 @@ impl<'d> ConcurrentIndexWriter<'d> {
                                 .map(DocumentVector::ram_bytes)
                                 .fold(0usize, usize::saturating_add),
                         );
+                        if live.is_some() {
+                            dwpt.live.record_vectors(doc_id, &doc_vectors, &live_cfg);
+                        }
                         let at = usize::try_from(doc_id).unwrap_or(0);
                         dwpt.vectors.resize_with(at, Vec::new);
                         dwpt.vectors.push(doc_vectors);
@@ -1776,6 +1783,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
         core.next_ticket = core.next_ticket.saturating_add(1);
         let postings = Arc::new(std::mem::take(&mut dwpt.postings));
         let mut columns = std::mem::take(&mut dwpt.live);
+        let graphs = columns.graphs().to_vec();
         // Until it is published, a buffer whose documents are all in its
         // columns and packed fields is still read as chunks without
         // postings; any other goes as one segment once published.
@@ -1817,6 +1825,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
             private: std::mem::take(&mut dwpt.private),
             ram_bytes: dwpt.ram_bytes,
             partition: dwpt.partition.take(),
+            graphs,
         };
         dwpt.ram_bytes = 0;
         dwpt.stored_charged = 0;
@@ -1882,7 +1891,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
         &self,
         ticket: &SegmentTicket,
         mut docs: Vec<Document>,
-        (mut custom_freq_terms, mut vectors, mut packed, postings): Buffered,
+        (mut custom_freq_terms, mut vectors, mut packed, postings, graphs): Buffered,
         stored: Option<StreamedStored>,
         has_blocks: bool,
         mut private: BufferedUpdates,
@@ -1948,6 +1957,8 @@ impl<'d> ConcurrentIndexWriter<'d> {
             stored: stored.as_ref(),
             limit: None,
             partition,
+            // A sort renumbers the vectors: their graphs are built again.
+            graphs: if sort_map.is_some() { &[] } else { &graphs },
         };
         // This segment's own deletes are resolved here, with no lock held --
         // `DocumentsWriterPerThread.flush`'s `applyDeletes` -- so the publish,
@@ -2028,6 +2039,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
             private,
             ram_bytes,
             partition,
+            graphs,
         } = batch;
         let doc_count = docs.len();
         // Written as the buffer filled, outside the build's tracking.
@@ -2039,7 +2051,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
             self.build(
                 &ticket,
                 docs,
-                (custom_freq_terms, vectors, explicit, postings),
+                (custom_freq_terms, vectors, explicit, postings, graphs),
                 stored,
                 has_blocks,
                 private,

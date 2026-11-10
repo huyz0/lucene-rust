@@ -1066,3 +1066,135 @@ fn a_published_buffer_keeps_its_files_while_a_view_reads_it() {
         assert!(!tmp.path().join(name).exists(), "{name} is unpinned");
     }
 }
+
+/// A writer of explicit documents with an `_id` and a 16-d dot-product
+/// vector field `v`.
+fn vector_writer(dir: &FsDirectory, live: bool) -> (ConcurrentIndexWriter<'_>, i32) {
+    let mut w = IndexWriter::open(dir, Vec::new(), "Lucene104", VERSION).unwrap();
+    w.set_ram_buffer_size_mb(64.0).unwrap();
+    w.enable_explicit_documents().unwrap();
+    let id = w
+        .register_field(
+            FieldInfo::new("_id", 0)
+                .with_index_options(IndexOptions::Docs)
+                .with_omit_norms(true),
+        )
+        .unwrap();
+    w.register_field(FieldInfo::new("v", 0).with_vectors(
+        16,
+        lucene_codecs::field_infos::VectorEncoding::Float32,
+        lucene_codecs::field_infos::VectorSimilarityFunction::DotProduct,
+    ))
+    .unwrap();
+    let w = ConcurrentIndexWriter::new(w, 1).unwrap();
+    if live {
+        w.enable_live_search().unwrap();
+    }
+    (w, id)
+}
+
+/// Unit vector `i` of 16 dimensions.
+fn unit(i: i64) -> Vec<f32> {
+    let mut v: Vec<f32> = (0..16)
+        .map(|d| ((i * 31 + d * 7) % 23) as f32 - 11.0)
+        .collect();
+    let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-6);
+    v.iter_mut().for_each(|x| *x /= norm);
+    v
+}
+
+/// Document `i`, with vector `i` unless `i` is a multiple of 5.
+fn add_vector_doc(w: &ConcurrentIndexWriter<'_>, id: i32, i: i64) {
+    let doc = ExplicitDocument {
+        stored: Vec::new(),
+        fields: ExplicitFields {
+            inverted: vec![InvertedField {
+                field_number: id,
+                terms: vec![term(&format!("d{i}"), &[])].into(),
+                norm: None,
+            }],
+            ..ExplicitFields::default()
+        },
+    };
+    let vectors = if i % 5 == 0 {
+        Vec::new()
+    } else {
+        vec![crate::index_writer::DocumentVector::float32("v", unit(i))]
+    };
+    w.add_explicit_documents_with_vectors_in(None, vec![doc], vec![vectors])
+        .unwrap();
+}
+
+/// With live search on, the flush writes the graph kept over the buffer's
+/// vectors, and the segment is byte for byte the one it writes with live
+/// search off, which builds the graph at the flush.
+#[test]
+fn live_search_flushes_the_vector_graph_it_kept() {
+    let flushed = |live: bool| {
+        let tmp = TempDir::new("live-flush-graph");
+        let dir = FsDirectory::open(tmp.path());
+        {
+            let (w, id) = vector_writer(&dir, live);
+            for i in 0..2500 {
+                add_vector_doc(&w, id, i);
+            }
+            w.commit().unwrap();
+        }
+        let infos = crate::segment_infos::read_latest(&dir).unwrap();
+        assert_eq!(infos.segments.len(), 1);
+        let sci = &infos.segments[0];
+        let files = segment_files(tmp.path(), sci, &sci.segment_name);
+        assert!(files.iter().any(|(n, _)| n.ends_with(".vex")), "{files:?}");
+        files
+    };
+    let kept = || {
+        crate::index_writer::KEPT_GRAPHS
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|&&n| n == 2000)
+            .count()
+    };
+    let before = kept();
+    let on = flushed(true);
+    // Its 2000 vectors (no other test keeps a graph of that many).
+    assert!(kept() > before, "the flush wrote the kept graph");
+    let off = flushed(false);
+    let names: Vec<&str> = on.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(
+        names,
+        off.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>()
+    );
+    for ((name, a), (_, b)) in on.iter().zip(&off) {
+        assert!(a == b, "{name} differs with live search on");
+    }
+}
+
+/// A view holds each buffer's vector graph with the vectors it saw, and a
+/// search of it finds a buffered vector as its own best match.
+#[test]
+fn a_view_holds_the_buffer_vector_graph() {
+    let tmp = TempDir::new("live-view-graph");
+    let dir = FsDirectory::open(tmp.path());
+    let (w, id) = vector_writer(&dir, true);
+    for i in 0..1000 {
+        add_vector_doc(&w, id, i);
+    }
+    let view = w.open_live_view(None).unwrap();
+    for i in 1000..1200 {
+        add_vector_doc(&w, id, i);
+    }
+    let b = &view.buffers[0];
+    let g = &b.vector_graphs[0];
+    assert_eq!(g.count, 800, "every document but each fifth has a vector");
+    assert_eq!(g.graph.len(), 960);
+    let query = lucene_codecs::buffer_vectors::BufferQuery::Float32(unit(7));
+    let hits = g.graph.search(&query, 3, g.count, None).unwrap();
+    assert_eq!(hits[0].0, 7);
+    // The documents after the view are not in it.
+    let late = lucene_codecs::buffer_vectors::BufferQuery::Float32(unit(1101));
+    let hits = g.graph.search(&late, 1, g.count, None).unwrap();
+    assert!(hits[0].0 < 1000, "{hits:?}");
+    w.close_live_view(&view);
+    w.commit().unwrap();
+}
