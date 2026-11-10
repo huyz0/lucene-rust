@@ -117,6 +117,13 @@ pub trait VectorScorer {
     /// `RandomVectorScorer.maxOrd()`.
     fn max_ord(&self) -> i32;
 
+    /// Starts loading what scoring `nodes` will read. A graph walk scores
+    /// each expanded node's neighbours, scattered at random through the
+    /// vector data, and the walk is bound by those memory misses rather than
+    /// by the arithmetic: starting them together lets them overlap instead of
+    /// stalling one at a time. A hint only; the default does nothing.
+    fn prefetch(&self, _nodes: &[i32]) {}
+
     /// Port of `RandomVectorScorer.bulkScore`: fills `scores` and returns the
     /// maximum, or `-inf` for an empty batch. The default is Java's default --
     /// a plain loop; a scorer with a genuinely vectorised batch kernel may
@@ -129,6 +136,9 @@ pub trait VectorScorer {
     /// consequence would be a silently *dropped* candidate rather than a loud
     /// failure.
     fn bulk_score(&mut self, nodes: &[i32], scores: &mut [f32]) -> Result<f32> {
+        if nodes.len() > 1 {
+            self.prefetch(nodes);
+        }
         let mut max = f32::NEG_INFINITY;
         for (i, &node) in nodes.iter().enumerate() {
             scores[i] = self.score(node)?;
@@ -753,6 +763,9 @@ pub trait HnswGraphView {
     }
     /// Replaces `out`'s contents with `node`'s neighbours on `level`.
     fn neighbors_into(&self, level: i32, node: i32, out: &mut Vec<i32>) -> Result<()>;
+    /// Starts loading `node`'s neighbour list on `level`, which a search is
+    /// about to read. A hint only; the default does nothing.
+    fn prefetch_neighbors(&self, _level: i32, _node: i32) {}
     /// `HnswGraph.getSortedNodes(level)`: the level's nodes, ascending.
     fn sorted_nodes_on_level(&self, level: i32) -> Result<Vec<i32>>;
 }
@@ -962,6 +975,16 @@ impl HnswGraphView for OnHeapHnswGraph {
         out.clear();
         out.extend_from_slice(self.neighbors(level, node).nodes());
         Ok(())
+    }
+
+    fn prefetch_neighbors(&self, level: i32, node: i32) {
+        // The list is three dependent loads away: the node's slot here, its
+        // level array, then the neighbour ids. A prefetch cannot follow a
+        // pointer, so this reads the slot and prefetches the level array;
+        // the ids still miss when the walk gets here.
+        if let Some(levels) = self.graph.get(node as usize) {
+            lucene_util::simd::prefetch(levels.as_slice(), level as usize);
+        }
     }
 
     fn sorted_nodes_on_level(&self, level: i32) -> Result<Vec<i32>> {
@@ -1583,6 +1606,11 @@ impl HnswGraphSearcher {
                 }
             }
             let top_candidate_node = self.candidates.pop();
+            // The next candidate is usually the next node expanded: its
+            // neighbour list then loads while this one's neighbours score.
+            if self.candidates.size() > 0 {
+                graph.prefetch_neighbors(level, self.candidates.top_node());
+            }
             graph.neighbors_into(level, top_candidate_node, &mut self.neighbor_scratch)?;
             // The neighbours just read off the `.vex` are file-derived
             // ordinals, and both of the uses below index a fixed-size
