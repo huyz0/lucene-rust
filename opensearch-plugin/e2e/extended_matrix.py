@@ -85,7 +85,18 @@ def rows():
                                                       "should": [{"function_score": {"query": {"match": {"body": "beta"}}, "functions": [{"field_value_factor": {"field": "qty", "missing": 2}}]}}]}}}, "native")
     add("function_score min_score", fs([{"weight": 2}], min_score=1), "function_score_min_score")
     add("function_score script", fs([{"script_score": {"script": {"source": "doc['qty'].value + 1"}}}]), "function_score_script")
-    add("script_score query", {"query": {"script_score": {"query": {"match": {"body": "alpha"}}, "script": {"source": "_score * 2"}}}}, "script_score_script")
+    add("script_score query", {"query": {"script_score": {"query": {"match": {"body": "alpha"}}, "script": {"source": "_score * 2"}}}}, "native")
+    # Painless scripts the native runtime runs (checked statically first, see docs/parity/painless.md).
+    add("script_score painless doc values", {"query": {"script_score": {"query": {"match": {"body": "beta"}}, "script": {
+        "source": "double q = doc['qty'].size() == 0 ? 0 : doc['qty'].value; return _score + Math.log(2 + q) * params.w;",
+        "params": {"w": 0.25}}}}}, "native")
+    add("script_score painless loop", {"query": {"script_score": {"query": {"match_all": {}}, "script": {
+        "source": "long s = 0; for (def v : doc['m']) { s += v % 7; } return s + (doc['tag'].size() > 0 && doc['tag'].value.startsWith('a') ? 1 : 0);"}}},
+        "size": 20}, "native")
+    add("script_score painless alias", {"query": {"script_score": {"query": {"match": {"body": "delta"}}, "script": {
+        "source": "doc['qa'].size() == 0 ? _score : _score + doc['qa'].value"}}}}, "native")
+    add("script_score painless refused", {"query": {"script_score": {"query": {"match": {"body": "gamma"}}, "script": {
+        "source": "String t = doc['tag'].size() == 0 ? '' : doc['tag'].value; return t =~ /a$/ ? 2 : 1;"}}}}, "script_score_painless")
 
     # Rewritten before the query phase sees them: more_like_this to a boolean of
     # term queries, common to blended term queries.

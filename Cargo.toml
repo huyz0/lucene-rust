@@ -5,6 +5,7 @@ resolver = "2"
 exclude = ["benchmarks/rust-runner", "crates/lucene-ffi/fuzz"]
 members = [
     "crates/lucene-util",
+    "crates/lucene-painless",
     "crates/lucene-store",
     "crates/lucene-store-crypto",
     "crates/lucene-zstd",
@@ -49,6 +50,7 @@ members = [
 # equal to `members` minus `crates/lucene-test-framework`.
 default-members = [
     "crates/lucene-util",
+    "crates/lucene-painless",
     "crates/lucene-store",
     "crates/lucene-store-crypto",
     "crates/lucene-codecs",
