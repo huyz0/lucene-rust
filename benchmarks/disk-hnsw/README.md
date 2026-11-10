@@ -22,6 +22,15 @@ cargo run --release -p lucene-disk-hnsw --example disk_hnsw_bench -- /tmp/data/g
 python3 summarize.py glove.csv 0.85 500
 ```
 
+Budgets can also be a share of each index's bytes, with IVF rerank
+depths and the page size set:
+
+```
+cargo run --release -p lucene-disk-hnsw --example disk_hnsw_bench -- /tmp/data/glove100 cosine \
+  --budgets 100%,50%,25%,10%,5%,2%,inf --lists 320,480,640 --beams 8,32 \
+  --nprobe 0,64,128 --rerank 100,300 [--ivf-encoding f16] [--page-kib 64] > glove-share.csv
+```
+
 The example's header lists the indexes and options. Every index reads its
 files through one page cache per run (4 KiB pages, CLOCK eviction) holding
 the budget minus the structures the index keeps in memory anyway; 1000
