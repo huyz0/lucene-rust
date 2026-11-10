@@ -1202,7 +1202,9 @@ unsafe fn lut16_accumulate32_avx2(luts: &[u8], codes: &[u8], out: &mut [u32; FAS
     // Each looked-up byte pair is added as one 16-bit word, whose low byte
     // is an even code's entry and high byte the next code's; a second sum
     // of the high bytes alone separates them at the end. Each 16-bit lane
-    // sums at most 128 groups of byte entries, so neither sum wraps.
+    // sums at most 128 groups of byte entries, so the high-byte sums and the
+    // separated even sums stay below 2^16; the word sums wrap, but only
+    // modulo 2^16, which the subtraction cancels.
     let (mut lo_words, mut lo_high) = (_mm256_setzero_si256(), _mm256_setzero_si256());
     let (mut hi_words, mut hi_high) = (_mm256_setzero_si256(), _mm256_setzero_si256());
     let mut g = 0;
@@ -1273,7 +1275,9 @@ unsafe fn lut16_accumulate32_avx2(luts: &[u8], codes: &[u8], out: &mut [u32; FAS
 /// 512-bit table and code registers is group `g + k`, and a masked load
 /// zeroes the lanes past the last group (entry 0 of a zero table is zero).
 /// Each 16-bit lane sums at most 64 of the 256 groups, and the four lanes
-/// fold into at most 256 byte entries, so no sum wraps.
+/// fold into at most 256 byte entries, so the separated sums fit in 16 bits
+/// (the word sums wrap modulo 2^16, as in the AVX2 kernel, and the
+/// subtraction cancels that).
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f,avx512bw")]
 unsafe fn lut16_accumulate32_avx512(luts: &[u8], codes: &[u8], out: &mut [u32; FAST_SCAN_BLOCK]) {
@@ -1916,21 +1920,47 @@ mod tests {
     }
 
     /// The fast-scan lookup matches its scalar specification for every
-    /// group count around the two-group step and the 16-bit flush.
+    /// group count around the two- and four-group steps and the 16-bit
+    /// flush, on random tables and on all-0xFF ones, the largest sums a
+    /// flush can hold. The AVX-512 kernel is checked directly where the CPU
+    /// has it, whatever `LUCENE_RUST_SIMD` says.
     #[test]
     fn lut16_accumulate32_matches_the_scalar_specification() {
+        #[cfg(target_arch = "x86_64")]
+        let avx512 = std::arch::is_x86_feature_detected!("avx512f")
+            && std::arch::is_x86_feature_detected!("avx512bw");
+        #[cfg(not(target_arch = "x86_64"))]
+        let avx512 = false;
+        if !avx512 {
+            eprintln!("lut16_accumulate32: no AVX-512 here, its kernel is not checked");
+        }
         let mut s = 0x1234_5678_9ABC_DEF0u64;
-        for groups in (0..40).chain([255, 256, 257, 600]) {
-            let luts: Vec<u8> = (0..16 * groups).map(|_| xorshift(&mut s) as u8).collect();
+        let random = (0..40).chain([255, 256, 257, 600]).map(|g| (g, false));
+        for (groups, saturated) in random.chain([(64, true), (256, true), (257, true), (600, true)])
+        {
+            let luts: Vec<u8> = (0..16 * groups)
+                .map(|_| {
+                    if saturated {
+                        0xFF
+                    } else {
+                        xorshift(&mut s) as u8
+                    }
+                })
+                .collect();
             let codes: Vec<u8> = (0..16 * groups).map(|_| xorshift(&mut s) as u8).collect();
-            let mut fast = [7u32; FAST_SCAN_BLOCK];
-            let mut wide = [7u32; FAST_SCAN_BLOCK];
             let mut spec = [7u32; FAST_SCAN_BLOCK];
-            lut16_accumulate32(&luts, &codes, &mut fast);
-            lut16_accumulate32_wide(&luts, &codes, &mut wide);
             lut16_accumulate32_scalar(&luts, &codes, &mut spec);
+            let mut fast = [7u32; FAST_SCAN_BLOCK];
+            lut16_accumulate32(&luts, &codes, &mut fast);
             assert_eq!(fast, spec, "groups {groups}");
+            let mut wide = [7u32; FAST_SCAN_BLOCK];
+            lut16_accumulate32_wide(&luts, &codes, &mut wide);
             assert_eq!(wide, spec, "groups {groups}, wide");
+            if avx512 {
+                let mut forced = [7u32; FAST_SCAN_BLOCK];
+                lut16_accumulate32_at(&luts, &codes, &mut forced, true);
+                assert_eq!(forced, spec, "groups {groups}, AVX-512");
+            }
         }
     }
 

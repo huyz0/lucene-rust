@@ -76,14 +76,20 @@ fn detect() -> Features {
     }
 }
 
-/// `detected`, lowered to the `LUCENE_RUST_SIMD` cap when one is set. An
-/// unknown value leaves the detection as it is.
+/// `detected`, lowered to the `LUCENE_RUST_SIMD` cap when one is set.
+/// `avx2`, `neon` and `scalar` all mean the build's baseline (no run-time
+/// choice tests for anything below AVX-512), whichever architecture this
+/// is. An unknown value leaves the detection as it is, with a warning.
 fn resolve(detected: Features, cap: Option<&str>) -> Features {
     let cap = match cap.map(str::trim).map(str::to_ascii_lowercase).as_deref() {
         Some("scalar") => Level::Scalar,
         Some("neon") => Level::Neon,
         Some("avx2") => Level::Avx2,
-        _ => return detected,
+        None | Some("avx512") => return detected,
+        Some(other) => {
+            eprintln!("LUCENE_RUST_SIMD={other:?} is not avx512, avx2, neon or scalar; ignored");
+            return detected;
+        }
     };
     let level = detected.level.min(cap);
     Features {
