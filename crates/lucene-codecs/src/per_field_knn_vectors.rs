@@ -35,17 +35,21 @@ pub const PER_FIELD_SUFFIX_KEY: &str = "PerFieldKnnVectorsFormat.suffix";
 pub const HNSW_NAME: &str = "Lucene99HnswVectorsFormat";
 /// [`KnnVectorsFormat::Ivf`]'s SPI name.
 pub const IVF_NAME: &str = "LuceneRustIvfVectorsFormat";
+/// [`KnnVectorsFormat::HnswQuantized`]'s SPI name.
+pub const HNSW_QUANTIZED_NAME: &str = "LuceneRustHnswQuantizedVectorsFormat";
 
 /// [`KnnVectorsFormat::Ivf`]'s rerank vector encodings, by wire number:
 /// `f32`, `f16`, `bf16` and 8-bit residuals (`lucene_ivf::VectorEncoding`).
 pub const IVF_RERANK_ENCODINGS: [&str; 4] = ["f32", "f16", "bf16", "int8"];
 
-/// [`KnnVectorsFormat::Ivf`]'s cluster code quantizers, by wire number:
-/// `bbq` (Lucene's 1-bit optimized scalar quantization with 4-bit queries),
+/// The code quantizers of [`KnnVectorsFormat::Ivf`]'s clusters and of
+/// [`KnnVectorsFormat::HnswQuantized`]'s graph walks, by wire number: `bbq`
+/// (Lucene's 1-bit optimized scalar quantization with 4-bit queries),
 /// `osq2`/`osq4`/`osq7` (the same quantizer at 2, 4 and 7 bits per
-/// dimension) and `erq2` to `erq8` (Extended RaBitQ at 2 to 8 bits).
-pub const IVF_QUANTIZERS: [&str; 11] = [
-    "bbq", "osq2", "osq4", "osq7", "erq2", "erq3", "erq4", "erq5", "erq6", "erq7", "erq8",
+/// dimension), `erq2` to `erq8` (Extended RaBitQ at 2 to 8 bits) and
+/// `rabitq` (1-bit RaBitQ: `bbq` after a random rotation).
+pub const IVF_QUANTIZERS: [&str; 12] = [
+    "bbq", "osq2", "osq4", "osq7", "erq2", "erq3", "erq4", "erq5", "erq6", "erq7", "erq8", "rabitq",
 ];
 
 /// A KNN vectors format a field can be routed to.
@@ -84,6 +88,19 @@ pub enum KnnVectorsFormat {
         target_cluster_size: u32,
         rerank_encoding: u8,
         quantizer: u8,
+    },
+    /// This engine's quantized HNSW ([`HNSW_QUANTIZED_NAME`]): [`Self::Hnsw`]'s
+    /// files, the graph built on the raw vectors, plus the
+    /// [`IVF_QUANTIZERS`]`[quantizer]` code of every vector (`.vqm`/`.vqd`),
+    /// which a search walks the graph on before reranking its candidates on
+    /// the raw vectors. Float fields only; a byte field gets the graph alone.
+    /// Any quantizer is valid here; the OpenSearch mapping offers `rabitq` and
+    /// `erq2`-`erq8`, since Lucene's OSQ on HNSW is already the `lucene`
+    /// engine's scalar-quantized format.
+    HnswQuantized {
+        quantizer: u8,
+        max_conn: i32,
+        beam_width: i32,
     },
     /// A format that wraps `format` without changing its files
     /// (`AssertingKnnVectorsFormat`'s `Asserting`): fields record `name` and
@@ -173,6 +190,33 @@ impl KnnVectorsFormat {
         }
     }
 
+    /// [`KnnVectorsFormat::HnswQuantized`], checked: graph parameters
+    /// [`Self::hnsw`] accepts and a known quantizer.
+    pub fn hnsw_quantized(
+        quantizer: u8,
+        max_conn: i32,
+        beam_width: i32,
+    ) -> Result<Self, InvalidFormat> {
+        check_graph(max_conn, beam_width)?;
+        if usize::from(quantizer) >= IVF_QUANTIZERS.len() {
+            return Err(InvalidFormat(format!("unknown HNSW quantizer {quantizer}")));
+        }
+        Ok(KnnVectorsFormat::HnswQuantized {
+            quantizer,
+            max_conn,
+            beam_width,
+        })
+    }
+
+    /// The quantizer of a [`KnnVectorsFormat::HnswQuantized`] format, `None`
+    /// for any other.
+    pub fn hnsw_quantizer(&self) -> Option<u8> {
+        match *self.files_format() {
+            KnnVectorsFormat::HnswQuantized { quantizer, .. } => Some(quantizer),
+            _ => None,
+        }
+    }
+
     /// `new Lucene99HnswVectorsFormat(maxConn, beamWidth)`.
     pub fn hnsw(max_conn: i32, beam_width: i32) -> Result<Self, InvalidFormat> {
         check_graph(max_conn, beam_width)?;
@@ -246,6 +290,7 @@ impl KnnVectorsFormat {
             KnnVectorsFormat::HnswScalarQuantized { .. } => scalar_quantized_vectors::HNSW_NAME,
             KnnVectorsFormat::ScalarQuantized { .. } => scalar_quantized_vectors::NAME,
             KnnVectorsFormat::Ivf { .. } => IVF_NAME,
+            KnnVectorsFormat::HnswQuantized { .. } => HNSW_QUANTIZED_NAME,
         }
     }
 
@@ -269,6 +314,11 @@ impl KnnVectorsFormat {
                 max_conn,
                 beam_width,
                 ..
+            }
+            | KnnVectorsFormat::HnswQuantized {
+                max_conn,
+                beam_width,
+                ..
             } => Some((max_conn, beam_width)),
             KnnVectorsFormat::ScalarQuantized { .. }
             | KnnVectorsFormat::Ivf { .. }
@@ -283,6 +333,7 @@ impl KnnVectorsFormat {
             | KnnVectorsFormat::HnswHamming { .. }
             | KnnVectorsFormat::HnswHalfFloat { .. }
             | KnnVectorsFormat::Ivf { .. }
+            | KnnVectorsFormat::HnswQuantized { .. }
             | KnnVectorsFormat::Named { .. } => None,
             KnnVectorsFormat::HnswScalarQuantized { encoding, .. }
             | KnnVectorsFormat::ScalarQuantized { encoding } => Some(encoding),
@@ -352,6 +403,11 @@ pub fn for_name(name: &str) -> Option<KnnVectorsFormat> {
             target_cluster_size: 384,
             rerank_encoding: 1,
             quantizer: 0,
+        },
+        KnnVectorsFormat::HnswQuantized {
+            quantizer: 4,
+            max_conn: hnsw::DEFAULT_MAX_CONN,
+            beam_width: hnsw::DEFAULT_BEAM_WIDTH,
         },
     ];
     if let Some(format) = builtin.into_iter().find(|f| f.name() == name) {

@@ -15,7 +15,7 @@
 //! field has one, its HNSW graph or IVF index. A field with neither is
 //! searched exhaustively, as Java does.
 
-use lucene_codecs::buffer_vectors::{BufferGraph, BufferQuery};
+use lucene_codecs::buffer_vectors::{BufferQuery, BufferSearch};
 use lucene_util::fixed_bit_set::FixedBitSet;
 
 use crate::collector::{ScoreDoc, ScoringCollector};
@@ -204,6 +204,7 @@ struct LeafVectors<'r> {
     ivf: Option<std::sync::Arc<lucene_ivf::IvfReader>>,
     scalar_quantized:
         Option<lucene_codecs::scalar_quantized_vectors::ScalarQuantizedVectorsReader<'r>>,
+    hnsw_codes: Option<std::sync::Arc<lucene_index::hnsw_quant_vectors::HnswCodesReader>>,
 }
 
 impl<'r> LeafVectors<'r> {
@@ -218,13 +219,17 @@ impl<'r> LeafVectors<'r> {
     {
         VectorsInput {
             flat: self.flat.clone(),
-            hnsw: match (&self.ivf, &self.scalar_quantized) {
-                (Some(ivf), _) => Some(GraphReader::Ivf(ivf.clone())),
-                (None, Some(codes)) => Some(GraphReader::ScalarQuantized {
+            hnsw: match (&self.ivf, &self.scalar_quantized, &self.hnsw_codes) {
+                (Some(ivf), _, _) => Some(GraphReader::Ivf(ivf.clone())),
+                (None, Some(codes), _) => Some(GraphReader::ScalarQuantized {
                     graph: self.graph.clone(),
                     codes: codes.clone(),
                 }),
-                (None, None) => self.graph.clone().map(GraphReader::from),
+                (None, None, Some(codes)) => Some(GraphReader::HnswQuantized {
+                    graph: self.graph.clone(),
+                    codes: codes.clone(),
+                }),
+                (None, None, None) => self.graph.clone().map(GraphReader::from),
             },
             field_infos: reader.field_infos(),
             live_docs,
@@ -250,11 +255,13 @@ fn open_leaf<'r>(reader: &'r SegmentReader, field: &str) -> Result<Option<LeafVe
     };
     let ivf = reader.ivf_for(info.number)?;
     let scalar_quantized = reader.scalar_quantized_for(info.number)?;
+    let hnsw_codes = reader.hnsw_codes_for(info.number)?;
     Ok(Some(LeafVectors {
         flat,
         graph,
         ivf,
         scalar_quantized,
+        hnsw_codes,
     }))
 }
 
@@ -307,11 +314,11 @@ pub fn knn_top_hits_with(
 }
 
 /// The documents of an indexing buffer, read as consecutive segments of a
-/// reader, whose vectors of a field have a graph kept over them as they
-/// arrived ([`BufferGraph`]).
+/// reader, whose vectors of a field have an index kept over them as they
+/// arrived ([`BufferSearch`]: an HNSW graph or IVF cluster lists).
 #[derive(Debug, Clone)]
 pub struct BufferedVectors<'a> {
-    pub graph: &'a BufferGraph,
+    pub index: &'a dyn BufferSearch,
     /// How many of the graph's vectors the reader holds.
     pub count: i32,
     /// The segments holding the buffer's documents, in order from its first
@@ -321,7 +328,7 @@ pub struct BufferedVectors<'a> {
 }
 
 /// [`knn_top_hits_with`] where each of `buffers` is searched through its
-/// graph (the vectors it has not reached yet exactly) instead of scanning
+/// index (the vectors it has not reached yet exactly) instead of scanning
 /// its segments one by one. The hits merge as every segment's do: the
 /// scores are the flat format's either way.
 ///
@@ -486,6 +493,7 @@ fn top_hits(
                 filters.as_deref(),
                 &query,
                 candidates,
+                ivf_nprobes,
             )?);
         }
         // `TopDocs.merge`'s order: the better score first, the lower doc on
@@ -543,6 +551,7 @@ fn buffer_hits(
     filters: Option<&[FixedBitSet]>,
     query: &BufferQuery,
     candidates: usize,
+    ivf_nprobes: usize,
 ) -> Result<Vec<ScoreDoc>> {
     let segs = segments.get(b.segments.clone()).unwrap_or_default();
     // Each segment's first buffer document, then the end of the last.
@@ -563,7 +572,7 @@ fn buffer_hits(
         let n = usize::try_from(b.count).unwrap_or(0);
         let mut bits = FixedBitSet::new(n);
         for ord in 0..n {
-            let Some((j, local)) = b.graph.doc(ord as i32).and_then(locate) else {
+            let Some((j, local)) = b.index.doc(ord as i32).and_then(locate) else {
                 continue;
             };
             let live = segs[j].live_docs.is_none_or(|l| l.get_doc(local));
@@ -581,8 +590,8 @@ fn buffer_hits(
         None
     };
     let hits = b
-        .graph
-        .search(query, candidates, b.count, accept.as_ref())?;
+        .index
+        .search(query, candidates, b.count, accept.as_ref(), ivf_nprobes)?;
     Ok(hits
         .into_iter()
         .filter_map(|(doc, score)| {

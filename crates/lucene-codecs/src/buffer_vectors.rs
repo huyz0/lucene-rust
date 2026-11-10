@@ -35,20 +35,20 @@ const MAX_VECTORS: usize = 1 << 24;
 /// Graph ordinals below which, times the dimension, a search scores every
 /// vector instead: under about 4k 100-d (2k 300-d) vectors an exact scan
 /// is as fast as a graph walk and finds every neighbour.
-const EXACT_COMPONENTS: usize = 400_000;
+pub(crate) const EXACT_COMPONENTS: usize = 400_000;
 
 /// One chunk of an [`AppendOnly`]: its slots, each set once.
 type Chunk<T> = Box<[OnceLock<T>]>;
 
 /// A table one thread appends to while others read what it appended:
 /// slots in chunks allocated on first use and never moved.
-struct AppendOnly<T> {
+pub(crate) struct AppendOnly<T> {
     chunks: Box<[OnceLock<Chunk<T>>]>,
     len: AtomicUsize,
 }
 
 impl<T> AppendOnly<T> {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         AppendOnly {
             chunks: (0..MAX_VECTORS.div_ceil(CHUNK))
                 .map(|_| OnceLock::new())
@@ -57,13 +57,13 @@ impl<T> AppendOnly<T> {
         }
     }
 
-    fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.len.load(Ordering::Acquire)
     }
 
     // ARITH: `i / CHUNK` and `i % CHUNK` of a slot index.
     #[allow(clippy::arithmetic_side_effects)]
-    fn get(&self, i: usize) -> Option<&T> {
+    pub(crate) fn get(&self, i: usize) -> Option<&T> {
         if i >= self.len() {
             return None;
         }
@@ -74,7 +74,7 @@ impl<T> AppendOnly<T> {
     /// length shows it.
     // ARITH: as `get`; `i` is below `MAX_VECTORS`.
     #[allow(clippy::arithmetic_side_effects)]
-    fn push(&self, value: T) -> Result<()> {
+    pub(crate) fn push(&self, value: T) -> Result<()> {
         let i = self.len.load(Ordering::Acquire);
         let full = || Error::InvalidGraphParameter(format!("more than {MAX_VECTORS} vectors"));
         let chunk = self
@@ -100,15 +100,15 @@ pub enum BufferVector {
 }
 
 /// The vectors by ordinal, and what scores them.
-struct Column {
-    encoding: VectorEncoding,
-    similarity: VectorSimilarityFunction,
-    dimension: usize,
-    vectors: AppendOnly<BufferVector>,
+pub(crate) struct Column {
+    pub(crate) encoding: VectorEncoding,
+    pub(crate) similarity: VectorSimilarityFunction,
+    pub(crate) dimension: usize,
+    pub(crate) vectors: AppendOnly<BufferVector>,
 }
 
 impl Column {
-    fn floats(&self, ord: i32) -> Result<&[f32]> {
+    pub(crate) fn floats(&self, ord: i32) -> Result<&[f32]> {
         match usize::try_from(ord).ok().and_then(|o| self.vectors.get(o)) {
             Some(BufferVector::Float32(v)) => Ok(v),
             _ => Err(Error::InvalidGraphParameter(format!(
@@ -157,7 +157,7 @@ pub enum BufferQuery {
 
 /// The flat format's scorers (`DefaultFlatVectorScorer`) over a
 /// [`Column`]: the same scores, bit for bit, as the flushed `.vec` gives.
-struct ColumnScorer {
+pub(crate) struct ColumnScorer {
     column: Arc<Column>,
     query: BufferQuery,
     /// `query . query`, for a cosine float scorer.
@@ -166,7 +166,7 @@ struct ColumnScorer {
 }
 
 impl ColumnScorer {
-    fn new(column: Arc<Column>, query: BufferQuery, max_ord: i32) -> Result<Self> {
+    pub(crate) fn new(column: Arc<Column>, query: BufferQuery, max_ord: i32) -> Result<Self> {
         let len = match &query {
             BufferQuery::Float32(q) if column.encoding == VectorEncoding::Float32 => q.len(),
             BufferQuery::Byte(q) if column.encoding == VectorEncoding::Byte => q.len(),
@@ -278,6 +278,48 @@ impl std::fmt::Debug for BufferGraph {
 
 /// One search hit: the buffer's document and its score.
 pub type BufferHit = (i32, f32);
+
+/// An index a vector field keeps over an indexing buffer's vectors, which
+/// realtime searches read while it grows: [`BufferGraph`] for an HNSW
+/// format, [`crate::buffer_lists::BufferLists`] for an IVF one.
+pub trait BufferSearch: Send + Sync + std::fmt::Debug {
+    /// The buffer's document of ordinal `ord`.
+    fn doc(&self, ord: i32) -> Option<i32>;
+
+    /// The best `k` of the first `count` vectors for `query`, among the
+    /// ordinals `accept` holds when given: the buffer's documents and
+    /// their scores (the flat format's), best first, the lower document on
+    /// a tie. `nprobe` is the clusters an IVF segment of the field probes
+    /// (`0` for its default); an index without clusters ignores it.
+    ///
+    /// # Errors
+    /// A query of another encoding or dimension than the field's.
+    fn search(
+        &self,
+        query: &BufferQuery,
+        k: usize,
+        count: i32,
+        accept: Option<&FixedBitSet>,
+        nprobe: usize,
+    ) -> Result<Vec<BufferHit>>;
+}
+
+impl BufferSearch for BufferGraph {
+    fn doc(&self, ord: i32) -> Option<i32> {
+        BufferGraph::doc(self, ord)
+    }
+
+    fn search(
+        &self,
+        query: &BufferQuery,
+        k: usize,
+        count: i32,
+        accept: Option<&FixedBitSet>,
+        _nprobe: usize,
+    ) -> Result<Vec<BufferHit>> {
+        BufferGraph::search(self, query, k, count, accept)
+    }
+}
 
 impl BufferGraph {
     /// An empty graph for a field of `encoding`, `similarity` and
@@ -578,7 +620,7 @@ impl BufferGraph {
 }
 
 /// The set bits of `bits` below `n`.
-fn count_set(bits: &FixedBitSet, n: usize) -> usize {
+pub(crate) fn count_set(bits: &FixedBitSet, n: usize) -> usize {
     if n >= bits.len() {
         return bits.cardinality();
     }

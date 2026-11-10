@@ -842,6 +842,10 @@ pub(crate) struct IndexingConfig {
     /// for the next round (see [`crate::reader_pool`]). Shared, not copied,
     /// when the configuration is.
     reader_pool: std::sync::Arc<crate::reader_pool::ReaderPool>,
+    /// Each IVF field's clusters from the last flush that wrote it, which
+    /// live search routes buffered vectors to. Shared, not copied, when the
+    /// configuration is.
+    ivf_clusters: std::sync::Arc<crate::ivf_vectors::ClusterSink>,
     fields: Vec<FieldInfo>,
     /// Name and number lookups into `fields`, kept in step by
     /// [`IndexingConfig::push_field`] (the only way `fields` grows).
@@ -4219,6 +4223,7 @@ impl IndexingConfig {
                     self.knn_vectors_direct(),
                     buf.limit.is_none(),
                     buf.graphs,
+                    &self.ivf_clusters,
                     &segment_id,
                 )?
             })
@@ -6700,6 +6705,7 @@ impl<'d> IndexWriter<'d> {
                 knn_vectors_formats: Vec::new(),
                 codec: None,
                 reader_pool: std::sync::Arc::default(),
+                ivf_clusters: std::sync::Arc::default(),
                 merged_segment_warmer: None,
             }),
             segment_infos,
@@ -7934,6 +7940,27 @@ impl IndexingConfig {
             hnsw::DEFAULT_RAND_SEED,
         )
         .ok()
+    }
+
+    /// Cluster lists for live search over a buffer's vectors of field
+    /// `name`, routed to the clusters its last flush wrote: `None` when its
+    /// format is not IVF, its vectors are not floats, or no flush wrote it
+    /// yet.
+    pub(crate) fn buffer_lists_for(
+        &self,
+        name: &str,
+    ) -> Option<lucene_codecs::buffer_lists::BufferLists> {
+        let (number, dimension, encoding, similarity) = self.vector_field_shape(name)?;
+        if encoding != lucene_codecs::field_infos::VectorEncoding::Float32 {
+            return None;
+        }
+        self.knn_vectors_format_for(name).ivf_params()?;
+        let router = self.ivf_clusters.get(number)?;
+        Some(lucene_codecs::buffer_lists::BufferLists::new(
+            similarity,
+            usize::try_from(dimension).ok()?,
+            router,
+        ))
     }
 
     /// [`IndexWriter::add_document_with_vectors`]' checks of one document's
@@ -11017,6 +11044,7 @@ impl IndexWriter<'_> {
         direct: bool,
         indexes: bool,
         graphs: &[BufferGraphField],
+        clusters: &crate::ivf_vectors::ClusterSink,
         segment_id: &[u8; ID_LENGTH],
     ) -> Result<Option<VectorsOutput>> {
         // Empty when no buffered document carries a vector (a buffer of
@@ -11125,6 +11153,7 @@ impl IndexWriter<'_> {
                 max_doc,
                 indexes,
                 graphs,
+                clusters,
                 segment_id,
                 &suffix,
                 partitions,
@@ -11201,6 +11230,7 @@ impl IndexWriter<'_> {
         max_doc: i32,
         indexes: bool,
         graphs: &[BufferGraphField],
+        clusters: &crate::ivf_vectors::ClusterSink,
         segment_id: &[u8; ID_LENGTH],
         suffix: &str,
         partitions: Option<crate::ivf_vectors::Partitions<'_>>,
@@ -11253,7 +11283,30 @@ impl IndexWriter<'_> {
                     )?;
                 }
             }
+            clusters.record(ivf.clusters());
             files.extend(ivf.finish().into_iter().flatten());
+        }
+
+        if indexes && format.hnsw_quantizer().is_some() {
+            let fields: Vec<crate::hnsw_quant_vectors::CodesField<'_>> = flat_fields
+                .iter()
+                .filter_map(|field| match &field.values {
+                    FieldVectorData::Float32(values) => {
+                        Some(crate::hnsw_quant_vectors::CodesField {
+                            number: field.field_number,
+                            similarity: field.similarity,
+                            dimension: usize::try_from(field.dimension).unwrap_or(0),
+                            vectors: values,
+                        })
+                    }
+                    _ => None,
+                })
+                .collect();
+            if let Some(codes) =
+                crate::hnsw_quant_vectors::write(format, &fields, segment_id, suffix)?
+            {
+                files.extend(codes);
+            }
         }
 
         if let Some((m, beam_width)) = format.graph() {

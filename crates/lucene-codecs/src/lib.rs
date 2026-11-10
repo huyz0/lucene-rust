@@ -27,6 +27,7 @@ pub mod blocktree;
 mod blocktree_writer;
 pub mod blocktreeords;
 pub mod bloom;
+pub mod buffer_lists;
 pub mod buffer_vectors;
 pub mod codec;
 pub mod codecs;
