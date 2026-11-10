@@ -442,6 +442,10 @@ public final class NativeBridge {
             "ffi_live_view_reader",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS)
         );
+        static final MethodHandle LIVE_VIEW_LUCENE = bind(
+            "ffi_live_view_lucene",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG, JAVA_LONG, ADDRESS, ADDRESS)
+        );
         static final MethodHandle WRITER_SET_LIVE_STALENESS = bind(
             "ffi_engine_writer_set_live_staleness",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG)
@@ -2704,6 +2708,33 @@ public final class NativeBridge {
                 }
                 outView[0] = id;
                 outBlob[0] = bytes;
+            }
+            return rc;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * What a search Lucene answers reads {@code view}'s buffers through, over the reader at {@code
+     * handle} (the view's base), into {@code out[0]}: the reader's live documents as of the view, and
+     * each leaf of the view as a segment with its postings ({@code ffi_live_view_lucene} gives the
+     * layout). A buffer flushed since the view opened is waited for up to {@code waitMillis};
+     * {@link #INVALID_ARGUMENT} when it has not published by then.
+     */
+    public static int liveViewLucene(long handle, long view, long waitMillis, byte[][] out) {
+        if (out == null || out.length < 1) {
+            return fail(INVALID_ARGUMENT, "out needs a slot");
+        }
+        try (Scratch s = Scratch.open()) {
+            MemorySegment blob = ownedSlot(s);
+            int rc = (int) H.LIVE_VIEW_LUCENE.invokeExact(handle, view, waitMillis, ptrOf(blob), lenOf(blob));
+            if (rc == OK) {
+                byte[] bytes = take(blob);
+                if (bytes == null) {
+                    return tooLarge("the buffered segments");
+                }
+                out[0] = bytes;
             }
             return rc;
         } catch (Throwable t) {
