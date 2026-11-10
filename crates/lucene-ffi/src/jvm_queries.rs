@@ -73,9 +73,11 @@ pub(crate) const NODE_DOC_AND_SCORE: u8 = 40;
 pub(crate) const NODE_TO_CHILD: u8 = 41;
 /// `script_score` with `knn_score` ([`crate::jvm_knn_score`]).
 pub(crate) const NODE_KNN_SCORE: u8 = crate::jvm_knn_score::NODE_KNN_SCORE;
+/// `script_score` running a Painless script ([`crate::jvm_painless_score`]).
+pub(crate) const NODE_PAINLESS_SCORE: u8 = crate::jvm_painless_score::NODE_PAINLESS_SCORE;
 /// The first and last kinds this module decodes.
 pub(crate) const NODE_FIRST: u8 = NODE_MULTI_TERM;
-pub(crate) const NODE_LAST: u8 = NODE_KNN_SCORE;
+pub(crate) const NODE_LAST: u8 = NODE_PAINLESS_SCORE;
 
 /// The KNN node's kinds.
 pub(crate) const KNN_TOP_K: u8 = 0;
@@ -407,6 +409,7 @@ pub(crate) fn decode(
             return Ok(clause.into());
         }
         NODE_KNN_SCORE => return crate::jvm_knn_score::decode(c, depth, nodes),
+        NODE_PAINLESS_SCORE => return crate::jvm_painless_score::decode(c, depth, nodes),
         NODE_TO_CHILD => {
             let parents = crate::jvm_nodes::decode_parents(c, depth + 1, nodes)?;
             let parent = crate::jvm_reader::decode_node(c, depth + 1, nodes)?;
