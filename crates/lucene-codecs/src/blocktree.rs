@@ -916,7 +916,11 @@ impl Frame {
     // `next_ent + 1` cannot overflow. `term_block_ord` counts *terms* within
     // the same block, so it is bounded by `ent_count <= i32::MAX < u32::MAX`.
     #[allow(clippy::arithmetic_side_effects)]
-    fn next_non_leaf(&mut self, tim: &(impl TermsRead + ?Sized), term: &mut TermBuf) -> Result<bool> {
+    fn next_non_leaf(
+        &mut self,
+        tim: &(impl TermsRead + ?Sized),
+        term: &mut TermBuf,
+    ) -> Result<bool> {
         loop {
             if self.next_ent == self.ent_count as i32 {
                 self.load_next_floor_block(tim)?;
@@ -1598,7 +1602,9 @@ impl<'a> SegmentTermsEnum<'a> {
     /// `SegmentTermsEnum.getFrame(ord)`.
     fn ensure_frame(&mut self, ord: usize) -> Result<()> {
         if matches!(self.field.tim, TermsFile::Range(_)) && ord >= 64 {
-            return Err(lucene_store::Error::IllegalArgument("range terms frame limit".into()).into());
+            return Err(
+                lucene_store::Error::IllegalArgument("range terms frame limit".into()).into(),
+            );
         }
         while self.st.stack.len() <= ord {
             let n = self.st.stack.len();
@@ -2519,44 +2525,87 @@ pub type SharedBytes = Arc<dyn AsRef<[u8]> + Send + Sync>;
 // Read operations remain explicit and fallible on the range path. Resident
 // callers keep borrowed slices and the existing optimized decompressor.
 #[derive(Clone)]
-enum TermsFile { Resident(SharedBytes), Range(RangeInput) }
-enum TermsCursor<'a> { Resident(SliceInput<'a>), Range(RangeInput) }
-trait TermsRead { fn cursor(&self) -> TermsCursor<'_>; }
+enum TermsFile {
+    Resident(SharedBytes),
+    Range(RangeInput),
+}
+enum TermsCursor<'a> {
+    Resident(SliceInput<'a>),
+    Range(RangeInput),
+}
+trait TermsRead {
+    fn cursor(&self) -> TermsCursor<'_>;
+}
 impl<T: AsRef<[u8]> + ?Sized> TermsRead for T {
-    fn cursor(&self) -> TermsCursor<'_> { TermsCursor::Resident(SliceInput::new(self.as_ref())) }
+    fn cursor(&self) -> TermsCursor<'_> {
+        TermsCursor::Resident(SliceInput::new(self.as_ref()))
+    }
 }
 impl TermsRead for TermsFile {
     fn cursor(&self) -> TermsCursor<'_> {
         match self {
-            Self::Resident(bytes) => TermsCursor::Resident(SliceInput::new(bytes.as_ref().as_ref())),
-            Self::Range(input) => { let mut input = input.clone(); input.seek(0).expect("zero is in bounds"); TermsCursor::Range(input) }
+            Self::Resident(bytes) => {
+                TermsCursor::Resident(SliceInput::new(bytes.as_ref().as_ref()))
+            }
+            Self::Range(input) => {
+                let mut input = input.clone();
+                input.seek(0).expect("zero is in bounds");
+                TermsCursor::Range(input)
+            }
         }
     }
 }
 impl TermsFile {
-    fn len(&self) -> usize { match self { Self::Resident(b) => b.as_ref().as_ref().len(), Self::Range(r) => r.len() } }
+    fn len(&self) -> usize {
+        match self {
+            Self::Resident(b) => b.as_ref().as_ref().len(),
+            Self::Range(r) => r.len(),
+        }
+    }
     fn header(&self, id: &[u8; ID_LENGTH], suffix: &str) -> Result<codec_util::IndexHeader> {
         match self {
-            Self::Resident(bytes) => Ok(codec_util::check_index_header(&mut SliceInput::new(bytes.as_ref().as_ref()), TERMS_CODEC_NAME, VERSION_START, VERSION_CURRENT, id, suffix)?),
+            Self::Resident(bytes) => Ok(codec_util::check_index_header(
+                &mut SliceInput::new(bytes.as_ref().as_ref()),
+                TERMS_CODEC_NAME,
+                VERSION_START,
+                VERSION_CURRENT,
+                id,
+                suffix,
+            )?),
             Self::Range(input) => {
                 // Fixed stack storage, not a file-sized heap allocation. Codec
                 // names and suffixes are bounded by the existing header format.
                 let mut prefix = [0u8; 512];
                 let count = input.len().min(prefix.len());
                 input.read_exact_at(0, &mut prefix[..count])?;
-                Ok(codec_util::check_index_header(&mut SliceInput::new(&prefix[..count]), TERMS_CODEC_NAME, VERSION_START, VERSION_CURRENT, id, suffix)?)
+                Ok(codec_util::check_index_header(
+                    &mut SliceInput::new(&prefix[..count]),
+                    TERMS_CODEC_NAME,
+                    VERSION_START,
+                    VERSION_CURRENT,
+                    id,
+                    suffix,
+                )?)
             }
         }
     }
     fn checksum(&self, length: usize) -> Result<u64> {
         match self {
-            Self::Resident(bytes) => Ok(codec_util::retrieve_checksum_with_expected_length(bytes.as_ref().as_ref(), length)?),
+            Self::Resident(bytes) => Ok(codec_util::retrieve_checksum_with_expected_length(
+                bytes.as_ref().as_ref(),
+                length,
+            )?),
             Self::Range(input) => {
                 if length != input.len() || length < codec_util::FOOTER_LENGTH {
-                    return Err(lucene_store::Error::Corrupted("terms file length mismatch".into()).into());
+                    return Err(lucene_store::Error::Corrupted(
+                        "terms file length mismatch".into(),
+                    )
+                    .into());
                 }
                 let mut footer = [0u8; codec_util::FOOTER_LENGTH];
-                let at = length.checked_sub(footer.len()).ok_or_else(|| lucene_store::Error::Corrupted("terms footer bounds".into()))?;
+                let at = length
+                    .checked_sub(footer.len())
+                    .ok_or_else(|| lucene_store::Error::Corrupted("terms footer bounds".into()))?;
                 input.read_exact_at(at, &mut footer)?;
                 Ok(codec_util::retrieve_checksum(&footer)?)
             }
@@ -2566,12 +2615,24 @@ impl TermsFile {
 impl TermsCursor<'_> {
     fn check_region(&self, length: usize) -> Result<()> {
         if matches!(self, Self::Range(_)) && length > 64 * 1024 {
-            return Err(lucene_store::Error::IllegalArgument("range terms region limit".into()).into());
+            return Err(
+                lucene_store::Error::IllegalArgument("range terms region limit".into()).into(),
+            );
         }
         Ok(())
     }
-    fn seek(&mut self, at: usize) -> lucene_store::Result<()> { match self { Self::Resident(r) => r.seek(at), Self::Range(r) => r.seek(at) } }
-    fn position(&self) -> usize { match self { Self::Resident(r) => r.position(), Self::Range(r) => r.position() } }
+    fn seek(&mut self, at: usize) -> lucene_store::Result<()> {
+        match self {
+            Self::Resident(r) => r.seek(at),
+            Self::Range(r) => r.seek(at),
+        }
+    }
+    fn position(&self) -> usize {
+        match self {
+            Self::Resident(r) => r.position(),
+            Self::Range(r) => r.position(),
+        }
+    }
     fn decompress(&mut self, length: usize, out: &mut [u8]) -> lucene_store::Result<usize> {
         match self {
             Self::Resident(r) => crate::lz4::decompress_slice(r, length, out, 0),
@@ -2580,13 +2641,37 @@ impl TermsCursor<'_> {
     }
 }
 impl DataInput for TermsCursor<'_> {
-    fn read_byte(&mut self) -> lucene_store::Result<u8> { match self { Self::Resident(r) => r.read_byte(), Self::Range(r) => r.read_byte() } }
-    fn read_bytes(&mut self, out: &mut [u8]) -> lucene_store::Result<()> { match self { Self::Resident(r) => r.read_bytes(out), Self::Range(r) => r.read_bytes(out) } }
-    fn remaining(&self) -> usize { match self { Self::Resident(r) => r.remaining(), Self::Range(r) => r.remaining() } }
-    fn peek_u32_le(&mut self) -> lucene_store::Result<u32> { match self { Self::Resident(r) => r.peek_u32_le(), Self::Range(r) => r.peek_u32_le() } }
-    fn skip(&mut self, n: usize) -> lucene_store::Result<()> { match self { Self::Resident(r) => r.skip(n), Self::Range(r) => r.skip(n) } }
+    fn read_byte(&mut self) -> lucene_store::Result<u8> {
+        match self {
+            Self::Resident(r) => r.read_byte(),
+            Self::Range(r) => r.read_byte(),
+        }
+    }
+    fn read_bytes(&mut self, out: &mut [u8]) -> lucene_store::Result<()> {
+        match self {
+            Self::Resident(r) => r.read_bytes(out),
+            Self::Range(r) => r.read_bytes(out),
+        }
+    }
+    fn remaining(&self) -> usize {
+        match self {
+            Self::Resident(r) => r.remaining(),
+            Self::Range(r) => r.remaining(),
+        }
+    }
+    fn peek_u32_le(&mut self) -> lucene_store::Result<u32> {
+        match self {
+            Self::Resident(r) => r.peek_u32_le(),
+            Self::Range(r) => r.peek_u32_le(),
+        }
+    }
+    fn skip(&mut self, n: usize) -> lucene_store::Result<()> {
+        match self {
+            Self::Resident(r) => r.skip(n),
+            Self::Range(r) => r.skip(n),
+        }
+    }
 }
-
 
 /// A field's trie: `[start, end)` of `bytes`, rooted at `root_fp`.
 #[derive(Clone)]
@@ -3277,11 +3362,33 @@ impl FieldTerms {
 
     /// Native term dictionary and postings decoding through explicit range
     /// reads. Singletons remain pulsed; no absent term is reported on I/O error.
-    pub fn range_postings(&self, term: &[u8], doc: &postings::RangeDocInput, flags: postings::PostingsFlags) -> Result<Option<Postings>> {
-        let Some((stats, meta)) = self.term_state(term)? else { return Ok(None); };
-        if stats.doc_freq == 1 { return Ok(Some(postings::singleton_postings(meta, stats.total_term_freq)?)); }
-        if self.postings_format != postings::PostingsFormat::Lucene104 { return Err(Error::Postings(postings::Error::Unsupported("range postings require Lucene104"))); }
-        Ok(Some(doc.read_postings(meta, stats.doc_freq, self.index_options, self.has_payloads, flags)?))
+    pub fn range_postings(
+        &self,
+        term: &[u8],
+        doc: &postings::RangeDocInput,
+        flags: postings::PostingsFlags,
+    ) -> Result<Option<Postings>> {
+        let Some((stats, meta)) = self.term_state(term)? else {
+            return Ok(None);
+        };
+        if stats.doc_freq == 1 {
+            return Ok(Some(postings::singleton_postings(
+                meta,
+                stats.total_term_freq,
+            )?));
+        }
+        if self.postings_format != postings::PostingsFormat::Lucene104 {
+            return Err(Error::Postings(postings::Error::Unsupported(
+                "range postings require Lucene104",
+            )));
+        }
+        Ok(Some(doc.read_postings(
+            meta,
+            stats.doc_freq,
+            self.index_options,
+            self.has_payloads,
+            flags,
+        )?))
     }
 
     /// `seekExact(term)` followed by opening a [`postings::LazyDocsCursor`]:
@@ -5425,7 +5532,15 @@ pub fn open_shared(
             max_doc,
         );
     }
-    open_terms_file(TermsFile::Resident(tim), tip, tmd, field_infos, segment_id, segment_suffix, max_doc)
+    open_terms_file(
+        TermsFile::Resident(tim),
+        tip,
+        tmd,
+        field_infos,
+        segment_id,
+        segment_suffix,
+        max_doc,
+    )
 }
 
 /// Open modern block-tree terms with a fallible `.tim` source. The `.tip`
@@ -5433,22 +5548,49 @@ pub fn open_shared(
 /// not a claim that the complete segment reader is range-native. Old FST
 /// formats require the existing materialized constructor.
 pub fn open_range_terms(
-    tim: RangeInput, tip: SharedBytes, tmd: &[u8], field_infos: &FieldInfos,
-    segment_id: &[u8; ID_LENGTH], segment_suffix: &str, max_doc: i32,
+    tim: RangeInput,
+    tip: SharedBytes,
+    tmd: &[u8],
+    field_infos: &FieldInfos,
+    segment_id: &[u8; ID_LENGTH],
+    segment_suffix: &str,
+    max_doc: i32,
 ) -> Result<BlockTreeFields> {
-    if tmd.len() > 1024 * 1024 || tip.as_ref().as_ref().len() > 1024 * 1024 || field_infos.fields.len() > 128 {
-        return Err(lucene_store::Error::IllegalArgument("range terms metadata envelope".into()).into());
+    if tmd.len() > 1024 * 1024
+        || tip.as_ref().as_ref().len() > 1024 * 1024
+        || field_infos.fields.len() > 128
+    {
+        return Err(
+            lucene_store::Error::IllegalArgument("range terms metadata envelope".into()).into(),
+        );
     }
     if postings_terms_codec(tmd, segment_id, segment_suffix).as_deref()
-        == Some(crate::backward_codecs::blocktree::POSTINGS_TERMS_CODEC) {
-        return Err(lucene_store::Error::IllegalArgument("range terms require modern block-tree format".into()).into());
+        == Some(crate::backward_codecs::blocktree::POSTINGS_TERMS_CODEC)
+    {
+        return Err(lucene_store::Error::IllegalArgument(
+            "range terms require modern block-tree format".into(),
+        )
+        .into());
     }
-    open_terms_file(TermsFile::Range(tim), tip, tmd, field_infos, segment_id, segment_suffix, max_doc)
+    open_terms_file(
+        TermsFile::Range(tim),
+        tip,
+        tmd,
+        field_infos,
+        segment_id,
+        segment_suffix,
+        max_doc,
+    )
 }
 
 fn open_terms_file(
-    tim: TermsFile, tip: SharedBytes, tmd: &[u8], field_infos: &FieldInfos,
-    segment_id: &[u8; ID_LENGTH], segment_suffix: &str, max_doc: i32,
+    tim: TermsFile,
+    tip: SharedBytes,
+    tmd: &[u8],
+    field_infos: &FieldInfos,
+    segment_id: &[u8; ID_LENGTH],
+    segment_suffix: &str,
+    max_doc: i32,
 ) -> Result<BlockTreeFields> {
     let tip_bytes: &[u8] = tip.as_ref().as_ref();
     let tim_header = tim.header(segment_id, segment_suffix)?;

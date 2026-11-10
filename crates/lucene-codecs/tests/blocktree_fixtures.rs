@@ -1410,33 +1410,92 @@ fn range_terms_postings_and_filter_match_java_with_eviction_and_faults() {
     let fis = field_infos::parse(&read_raw(m.get("fnm_file_name")), &id, "").unwrap();
     let (tim_source, tim) = range_source::open(format!("{}{}.raw", dir(), m.get("tim_file_name")));
     let (_, doc) = range_source::open(format!("{}{}.raw", dir(), m.get("doc_file_name")));
-    let fields = blocktree::open_range_terms(tim.clone(), std::sync::Arc::new(read_raw(m.get("tip_file_name"))), &read_raw(m.get("tmd_file_name")), &fis, &id, m.get("segment_suffix"), m.get("max_doc").parse().unwrap()).unwrap();
-    let postings = postings::RangeDocInput::open(doc.clone(), &id, m.get("segment_suffix")).unwrap();
+    let fields = blocktree::open_range_terms(
+        tim.clone(),
+        std::sync::Arc::new(read_raw(m.get("tip_file_name"))),
+        &read_raw(m.get("tmd_file_name")),
+        &fis,
+        &id,
+        m.get("segment_suffix"),
+        m.get("max_doc").parse().unwrap(),
+    )
+    .unwrap();
+    let postings =
+        postings::RangeDocInput::open(doc.clone(), &id, m.get("segment_suffix")).unwrap();
     let body = fields.field("body").unwrap();
     let mut sets = Vec::new();
     for term in ["cat", "dog", "bird"] {
-        tim.clear_cache().unwrap(); doc.clear_cache().unwrap();
-        let actual = body.range_postings(term.as_bytes(), &postings, postings::PostingsFlags::Freqs).unwrap().unwrap();
-        let docs: Vec<i32> = m.get(&format!("field.body.term.{term}.postingsDocs")).split(',').map(|n| n.parse().unwrap()).collect();
-        let freqs: Vec<i32> = m.get(&format!("field.body.term.{term}.postingsFreqs")).split(',').map(|n| n.parse().unwrap()).collect();
-        assert_eq!(actual.docs, docs); assert_eq!(actual.freqs, freqs);
+        tim.clear_cache().unwrap();
+        doc.clear_cache().unwrap();
+        let actual = body
+            .range_postings(term.as_bytes(), &postings, postings::PostingsFlags::Freqs)
+            .unwrap()
+            .unwrap();
+        let docs: Vec<i32> = m
+            .get(&format!("field.body.term.{term}.postingsDocs"))
+            .split(',')
+            .map(|n| n.parse().unwrap())
+            .collect();
+        let freqs: Vec<i32> = m
+            .get(&format!("field.body.term.{term}.postingsFreqs"))
+            .split(',')
+            .map(|n| n.parse().unwrap())
+            .collect();
+        assert_eq!(actual.docs, docs);
+        assert_eq!(actual.freqs, freqs);
         sets.push(actual.docs);
     }
-    let filtered: Vec<_> = sets[0].iter().filter(|d| sets[1].contains(d)).copied().collect();
-    let java_cat: Vec<i32> = m.get("field.body.term.cat.postingsDocs").split(',').map(|n| n.parse().unwrap()).collect();
-    let java_dog: Vec<i32> = m.get("field.body.term.dog.postingsDocs").split(',').map(|n| n.parse().unwrap()).collect();
-    assert_eq!(filtered, java_cat.into_iter().filter(|d| java_dog.contains(d)).collect::<Vec<_>>());
+    let filtered: Vec<_> = sets[0]
+        .iter()
+        .filter(|d| sets[1].contains(d))
+        .copied()
+        .collect();
+    let java_cat: Vec<i32> = m
+        .get("field.body.term.cat.postingsDocs")
+        .split(',')
+        .map(|n| n.parse().unwrap())
+        .collect();
+    let java_dog: Vec<i32> = m
+        .get("field.body.term.dog.postingsDocs")
+        .split(',')
+        .map(|n| n.parse().unwrap())
+        .collect();
+    assert_eq!(
+        filtered,
+        java_cat
+            .into_iter()
+            .filter(|d| java_dog.contains(d))
+            .collect::<Vec<_>>()
+    );
     assert!(tim.usage().unwrap().cache_bytes <= 32);
     assert!(tim.usage().unwrap().transferred_bytes > 32);
-    assert!(range_source::calls(&tim_source).iter().all(|(_, length)| *length <= 16));
+    assert!(range_source::calls(&tim_source)
+        .iter()
+        .all(|(_, length)| *length <= 16));
     for i in (0..400).rev() {
         let term = format!("term{i:04}");
-        assert!(fields.field("many").unwrap().try_seek_exact(term.as_bytes()).unwrap().is_some());
+        assert!(fields
+            .field("many")
+            .unwrap()
+            .try_seek_exact(term.as_bytes())
+            .unwrap()
+            .is_some());
     }
     // A fresh lookup state prevents a warm terms-frame cache from bypassing
     // the injected fault. A source failure must not become an absent term.
-    let (bad_source, bad_tim) = range_source::open(format!("{}{}.raw", dir(), m.get("tim_file_name")));
-    let bad = blocktree::open_range_terms(bad_tim.clone(), std::sync::Arc::new(read_raw(m.get("tip_file_name"))), &read_raw(m.get("tmd_file_name")), &fis, &id, m.get("segment_suffix"), m.get("max_doc").parse().unwrap()).unwrap();
-    bad_tim.clear_cache().unwrap(); range_source::fail(&bad_source, 1);
+    let (bad_source, bad_tim) =
+        range_source::open(format!("{}{}.raw", dir(), m.get("tim_file_name")));
+    let bad = blocktree::open_range_terms(
+        bad_tim.clone(),
+        std::sync::Arc::new(read_raw(m.get("tip_file_name"))),
+        &read_raw(m.get("tmd_file_name")),
+        &fis,
+        &id,
+        m.get("segment_suffix"),
+        m.get("max_doc").parse().unwrap(),
+    )
+    .unwrap();
+    bad_tim.clear_cache().unwrap();
+    range_source::fail(&bad_source, 1);
     assert!(bad.field("body").unwrap().try_seek_exact(b"cat").is_err());
 }

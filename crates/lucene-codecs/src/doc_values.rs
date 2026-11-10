@@ -1133,48 +1133,104 @@ pub fn numeric_value(data: &[u8], entry: &NumericEntry, doc: i32) -> Result<Opti
 /// Sparse presence data is one bounded per-field region (64 KiB maximum);
 /// values themselves are read at their exact packed offsets. Oversized sparse
 /// regions fail rather than becoming whole-file or unbounded allocations.
-pub fn numeric_value_range(data: &lucene_store::range_input::RangeInput, entry: &NumericEntry, doc: i32) -> Result<Option<i64>> {
-    if doc < 0 { return Err(Error::DocOutOfRange(doc, entry.num_values)); }
-    if entry.is_empty_field() { return Ok(None); }
+pub fn numeric_value_range(
+    data: &lucene_store::range_input::RangeInput,
+    entry: &NumericEntry,
+    doc: i32,
+) -> Result<Option<i64>> {
+    if doc < 0 {
+        return Err(Error::DocOutOfRange(doc, entry.num_values));
+    }
+    if entry.is_empty_field() {
+        return Ok(None);
+    }
     let ordinal = if entry.is_dense() {
-        if doc as i64 >= entry.num_values { return Err(Error::DocOutOfRange(doc, entry.num_values)); }
+        if doc as i64 >= entry.num_values {
+            return Err(Error::DocOutOfRange(doc, entry.num_values));
+        }
         doc as i64
     } else {
-        let start = usize::try_from(entry.docs_with_field_offset).map_err(|_| lucene_store::Error::Eof { offset: 0 })?;
-        let length = usize::try_from(entry.docs_with_field_length).map_err(|_| lucene_store::Error::Eof { offset: start })?;
-        if length > 64 * 1024 { return Err(lucene_store::Error::IllegalArgument("range presence region exceeds prototype envelope".into()).into()); }
+        let start = usize::try_from(entry.docs_with_field_offset)
+            .map_err(|_| lucene_store::Error::Eof { offset: 0 })?;
+        let length = usize::try_from(entry.docs_with_field_length)
+            .map_err(|_| lucene_store::Error::Eof { offset: start })?;
+        if length > 64 * 1024 {
+            return Err(lucene_store::Error::IllegalArgument(
+                "range presence region exceeds prototype envelope".into(),
+            )
+            .into());
+        }
         let mut presence = vec![0u8; length];
         data.read_exact_at(start, &mut presence)?;
-        match indexed_disi::DisiCursor::new(&presence, entry.dense_rank_power, entry.jump_table_entry_count).advance_exact(doc)? {
+        match indexed_disi::DisiCursor::new(
+            &presence,
+            entry.dense_rank_power,
+            entry.jump_table_entry_count,
+        )
+        .advance_exact(doc)?
+        {
             Some(ordinal) => ordinal as i64,
             None => return Ok(None),
         }
     };
     if let Some(shift) = entry.block_shift {
-        if shift >= 63 { return Err(lucene_store::Error::Corrupted("invalid varying value shift".into()).into()); }
-        let block = ordinal.checked_shr(shift).ok_or(lucene_store::Error::Eof { offset: 0 })?;
-        let jump = entry.value_jump_table_offset.checked_add(block.checked_mul(8).ok_or(lucene_store::Error::Eof { offset: 0 })?).ok_or(lucene_store::Error::Eof { offset: 0 })?;
+        if shift >= 63 {
+            return Err(
+                lucene_store::Error::Corrupted("invalid varying value shift".into()).into(),
+            );
+        }
+        let block = ordinal
+            .checked_shr(shift)
+            .ok_or(lucene_store::Error::Eof { offset: 0 })?;
+        let jump = entry
+            .value_jump_table_offset
+            .checked_add(
+                block
+                    .checked_mul(8)
+                    .ok_or(lucene_store::Error::Eof { offset: 0 })?,
+            )
+            .ok_or(lucene_store::Error::Eof { offset: 0 })?;
         let mut cursor = data.clone();
         cursor.seek(usize::try_from(jump).map_err(|_| lucene_store::Error::Eof { offset: 0 })?)?;
-        let start = usize::try_from(cursor.read_i64()?).map_err(|_| lucene_store::Error::Eof { offset: 0 })?;
+        let start = usize::try_from(cursor.read_i64()?)
+            .map_err(|_| lucene_store::Error::Eof { offset: 0 })?;
         cursor.seek(start)?;
         let width = cursor.read_byte()?;
         let delta = cursor.read_i64()?;
-        if width == 0 { return Ok(Some(delta)); }
-        let length = usize::try_from(cursor.read_i32()?).map_err(|_| lucene_store::Error::Eof { offset: 0 })?;
+        if width == 0 {
+            return Ok(Some(delta));
+        }
+        let length = usize::try_from(cursor.read_i32()?)
+            .map_err(|_| lucene_store::Error::Eof { offset: 0 })?;
         let values = data.slice(cursor.position(), length)?;
-        let mask = 1i64.checked_shl(shift).and_then(|n| n.checked_sub(1)).ok_or(lucene_store::Error::Eof { offset: 0 })?;
+        let mask = 1i64
+            .checked_shl(shift)
+            .and_then(|n| n.checked_sub(1))
+            .ok_or(lucene_store::Error::Eof { offset: 0 })?;
         let raw = direct_reader::get_range(&values, width, ordinal & mask)?;
         return Ok(Some(entry.gcd.wrapping_mul(raw).wrapping_add(delta)));
     }
-    if entry.bits_per_value == 0 { return Ok(Some(entry.min_value)); }
-    let offset = usize::try_from(entry.values_offset).map_err(|_| lucene_store::Error::Eof { offset: 0 })?;
-    let length = usize::try_from(entry.values_length).map_err(|_| lucene_store::Error::Eof { offset: offset })?;
-    let raw = direct_reader::get_range(&data.slice(offset, length)?, entry.bits_per_value, ordinal)?;
+    if entry.bits_per_value == 0 {
+        return Ok(Some(entry.min_value));
+    }
+    let offset =
+        usize::try_from(entry.values_offset).map_err(|_| lucene_store::Error::Eof { offset: 0 })?;
+    let length = usize::try_from(entry.values_length)
+        .map_err(|_| lucene_store::Error::Eof { offset: offset })?;
+    let raw =
+        direct_reader::get_range(&data.slice(offset, length)?, entry.bits_per_value, ordinal)?;
     if let Some(table) = &entry.table {
         let index = usize::try_from(raw).map_err(|_| lucene_store::Error::Eof { offset: 0 })?;
-        Ok(Some(*table.get(index).ok_or(lucene_store::Error::Eof { offset: 0 })?))
-    } else { Ok(Some(entry.gcd.wrapping_mul(raw).wrapping_add(entry.min_value))) }
+        Ok(Some(
+            *table
+                .get(index)
+                .ok_or(lucene_store::Error::Eof { offset: 0 })?,
+        ))
+    } else {
+        Ok(Some(
+            entry.gcd.wrapping_mul(raw).wrapping_add(entry.min_value),
+        ))
+    }
 }
 
 /// A cursor over one NUMERIC field's values, holding the state Lucene's

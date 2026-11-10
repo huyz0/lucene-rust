@@ -120,19 +120,42 @@ pub fn get(slice: &[u8], bits_per_value: u8, index: i64) -> Result<i64> {
 
 /// Random-access counterpart of `get`: reads only the bytes containing one
 /// packed value (at most eight for the supported widths), never a file buffer.
-pub fn get_range(input: &lucene_store::range_input::RangeInput, bits_per_value: u8, index: i64) -> Result<i64> {
+pub fn get_range(
+    input: &lucene_store::range_input::RangeInput,
+    bits_per_value: u8,
+    index: i64,
+) -> Result<i64> {
     if !is_supported_bits(bits_per_value) || index < 0 {
-        return Err(lucene_store::Error::Corrupted("invalid range packed value".into()));
+        return Err(lucene_store::Error::Corrupted(
+            "invalid range packed value".into(),
+        ));
     }
-    let bit = (index as u64).checked_mul(u64::from(bits_per_value)).ok_or(lucene_store::Error::Eof { offset: 0 })?;
+    let bit = (index as u64)
+        .checked_mul(u64::from(bits_per_value))
+        .ok_or(lucene_store::Error::Eof { offset: 0 })?;
     let at = usize::try_from(bit >> 3).map_err(|_| lucene_store::Error::Eof { offset: 0 })?;
     let shift = (bit & 7) as u32;
-    let count = usize::from(bits_per_value).checked_add(shift as usize).ok_or(lucene_store::Error::Eof { offset: at })?.div_ceil(8);
-    if count > 8 { return Err(lucene_store::Error::Corrupted("packed value window exceeds eight bytes".into())); }
+    let count = usize::from(bits_per_value)
+        .checked_add(shift as usize)
+        .ok_or(lucene_store::Error::Eof { offset: at })?
+        .div_ceil(8);
+    if count > 8 {
+        return Err(lucene_store::Error::Corrupted(
+            "packed value window exceeds eight bytes".into(),
+        ));
+    }
     let mut bytes = [0u8; 8];
     input.read_exact_at(at, &mut bytes[..count])?;
-    let raw = u64::from_le_bytes(bytes).checked_shr(shift).ok_or(lucene_store::Error::Eof { offset: at })?;
-    let mask = if bits_per_value == 64 { u64::MAX } else { 1u64.checked_shl(u32::from(bits_per_value)).and_then(|n| n.checked_sub(1)).ok_or(lucene_store::Error::Eof { offset: at })? };
+    let raw = u64::from_le_bytes(bytes)
+        .checked_shr(shift)
+        .ok_or(lucene_store::Error::Eof { offset: at })?;
+    let mask = if bits_per_value == 64 {
+        u64::MAX
+    } else {
+        1u64.checked_shl(u32::from(bits_per_value))
+            .and_then(|n| n.checked_sub(1))
+            .ok_or(lucene_store::Error::Eof { offset: at })?
+    };
     Ok((raw & mask) as i64)
 }
 

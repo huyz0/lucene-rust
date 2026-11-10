@@ -280,16 +280,22 @@ fn varying_bpv_columns_are_written_byte_identical_to_lucene() {
 
 #[test]
 fn varying_width_range_block_boundaries_match_java() {
-    let m = Manifest::load(); let id = id_from_hex(m.get("id_hex"));
+    let m = Manifest::load();
+    let id = id_from_hex(m.get("id_hex"));
     let fis = load_field_infos(&m, &id);
     let meta = std::fs::read(format!("{}{}.raw", dir(), m.get("dvm_file_name"))).unwrap();
     let (_, parsed) = ndv::parse_meta(&meta, &id, &dv_suffix(&m), &fis).unwrap();
-    let entry = parsed.numeric_entry(field_number(&m, "varying_bpv")).unwrap();
+    let entry = parsed
+        .numeric_entry(field_number(&m, "varying_bpv"))
+        .unwrap();
     let (_, input) = range_source::open(format!("{}{}.raw", dir(), m.get("dvd_file_name")));
     let expected: Vec<_> = m.get("field.varying_bpv.values").split(',').collect();
-    for doc in [0, 1, 16383, 16384, 16385, 32767, 32768, expected.len()-1] {
+    for doc in [0, 1, 16383, 16384, 16385, 32767, 32768, expected.len() - 1] {
         input.clear_cache().unwrap();
-        assert_eq!(ndv::numeric_value_range(&input, entry, doc as i32).unwrap(), Some(expected[doc].parse::<i64>().unwrap()));
+        assert_eq!(
+            ndv::numeric_value_range(&input, entry, doc as i32).unwrap(),
+            Some(expected[doc].parse::<i64>().unwrap())
+        );
     }
     assert!(input.usage().unwrap().cache_bytes <= 32);
 }

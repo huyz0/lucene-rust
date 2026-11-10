@@ -121,23 +121,38 @@ fn wrong_segment_id_rejected() {
 
 #[test]
 fn range_stored_chunks_match_java_without_resident_fdt_and_refuse_faults() {
-    let m = Manifest::load(); let id = id_from_hex(m.get("id_hex"));
+    let m = Manifest::load();
+    let id = id_from_hex(m.get("id_hex"));
     let fdt = std::fs::read(format!("{}{}.raw", dir(), m.get("fdt_file_name"))).unwrap();
     let fdx = std::fs::read(format!("{}{}.raw", dir(), m.get("fdx_file_name"))).unwrap();
     let fdm = std::fs::read(format!("{}{}.raw", dir(), m.get("fdm_file_name"))).unwrap();
-    let metadata = stored_fields::open(&fdt, &fdx, &fdm, &id, "").unwrap().rebind(&[], &fdx);
+    let metadata = stored_fields::open(&fdt, &fdx, &fdm, &id, "")
+        .unwrap()
+        .rebind(&[], &fdx);
     drop(fdt);
     let (source, input) = range_source::open(format!("{}{}.raw", dir(), m.get("fdt_file_name")));
     for doc in (0..metadata.max_doc()).rev() {
         input.clear_cache().unwrap();
         let actual = metadata.document_range(&input, doc).unwrap();
-        let mut values: Vec<_> = actual.fields.into_iter().map(|f| format!("{:?}", f.value)).collect();
-        let mut expected: Vec<_> = m.get(&format!("doc.{doc}.fields")).split(';').map(expected_value).map(|(_,v)| format!("{v:?}")).collect();
-        values.sort(); expected.sort(); assert_eq!(values, expected);
+        let mut values: Vec<_> = actual
+            .fields
+            .into_iter()
+            .map(|f| format!("{:?}", f.value))
+            .collect();
+        let mut expected: Vec<_> = m
+            .get(&format!("doc.{doc}.fields"))
+            .split(';')
+            .map(expected_value)
+            .map(|(_, v)| format!("{v:?}"))
+            .collect();
+        values.sort();
+        expected.sort();
+        assert_eq!(values, expected);
     }
     assert!(input.usage().unwrap().cache_bytes <= 32);
-    for mode in [1,2] {
-        input.clear_cache().unwrap(); range_source::fail(&source, mode);
+    for mode in [1, 2] {
+        input.clear_cache().unwrap();
+        range_source::fail(&source, mode);
         assert!(metadata.document_range(&input, 0).is_err());
     }
 }

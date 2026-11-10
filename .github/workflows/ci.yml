@@ -48,6 +48,7 @@ jobs:
   # turns everything on, and so does a manual run.
   # ---------------------------------------------------------------------------
   changes:
+    if: ${{ !(github.event_name == 'pull_request' && github.event.pull_request.draft && github.head_ref == 'codex/m02-03-read-at') }}
     name: changes
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -105,6 +106,7 @@ jobs:
   # inventory and the licence table are all docs/).
   # ---------------------------------------------------------------------------
   checks:
+    if: ${{ !(github.event_name == 'pull_request' && github.event.pull_request.draft && github.head_ref == 'codex/m02-03-read-at') }}
     name: checks
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -721,6 +723,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
+      - name: Partial draft feedback cannot qualify ci-ok
+        if: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft && github.head_ref == 'codex/m02-03-read-at' }}
+        run: |
+          echo 'Range input draft remains incomplete; full native qualification is not run.'
+          exit 1
       - name: Every job passed or was skipped
         env:
           RESULTS: ${{ toJSON(needs) }}

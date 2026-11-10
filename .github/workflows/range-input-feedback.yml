@@ -1,0 +1,34 @@
+name: range-input-feedback
+on:
+  push:
+    branches: [codex/m02-03-read-at]
+permissions:
+  contents: read
+concurrency:
+  group: range-input-feedback-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  compiler:
+    name: partial range input compiler feedback (x64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Bounded compiler and component feedback
+        shell: bash
+        run: |
+          set -euo pipefail
+          scratch="$RUNNER_TEMP/lucene-range-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          image="$scratch.ext4"
+          test ! -e "$scratch"
+          test ! -e "$image"
+          mkdir "$scratch"
+          truncate -s 8589934592 "$image"
+          mkfs.ext4 -q -F "$image"
+          sudo mount -o loop,nodev,nosuid "$image" "$scratch"
+          trap 'sudo umount "$scratch"' EXIT
+          sudo chown "$(id -u):$(id -g)" "$scratch"
+          python3 -B scripts/range-feedback.py "$scratch"
