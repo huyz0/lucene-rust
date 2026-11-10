@@ -164,3 +164,13 @@ retain only the bounded public lockfile through the normal Actions artifact
 channel, and exit without compiling. The resolved lock must become committed
 source before a compiler run is eligible; no floating dependency graph is
 claimed qualified. This is lockfile preparation, not a new artifact harness.
+
+Hosted lock preparation `42783964921` at source
+`57f98a1579d566600f1689beaa8c2b8f85229da9` resolved the public workspace graph
+inside the same verified envelope and deliberately exited 78 before compilation.
+Its standard Actions artifact contains 28,918-byte Cargo.lock, SHA-256
+`9adde2f8fb75f2f0be1c87495c9316410ffdcfcf948835d5a16fcb884920fa69`.
+The unchanged artifact bytes are committed for subsequent locked feedback;
+registry packages carry checksums. No dependency manifest or feature changes.
+Existing upstream Apache-2.0/MIT/third-party license declarations remain
+applicable; exact-graph license/native qualification remains unrun here.
