@@ -55,6 +55,7 @@
 
 use lucene_codecs::backward_codecs::hnsw_vectors::RetiredHnswVectorsReader;
 use lucene_codecs::backward_codecs::quantized_vectors::{QuantizedVectorsReader, SearchKind};
+use lucene_codecs::buffer_lists::ivf_accepted_target;
 use lucene_codecs::field_infos::{FieldInfos, VectorEncoding, VectorSimilarityFunction};
 use lucene_codecs::hnsw::{KnnCollect, KnnCollector, VectorScorer};
 use lucene_codecs::hnsw_vectors::{self, HnswVectorsReader, OffHeapHnswGraph, SearchOptions};
@@ -168,6 +169,14 @@ pub enum GraphReader<'d> {
     /// keeping the best child per parent for a diversifying search; a byte
     /// field and a selective filter scan the raw vectors exhaustively.
     Ivf(std::sync::Arc<lucene_ivf::IvfReader>),
+    /// `LuceneRustHnswQuantizedVectorsFormat`: the HNSW graph (`None` for a
+    /// field indexed without one) walked on the field's quantized codes,
+    /// the candidates reranked on the raw vectors; the exhaustive branch, a
+    /// diversifying search and a byte field score the raw vectors.
+    HnswQuantized {
+        graph: Option<HnswVectorsReader<'d>>,
+        codes: std::sync::Arc<lucene_index::hnsw_quant_vectors::HnswCodesReader>,
+    },
 }
 
 impl<'d> From<HnswVectorsReader<'d>> for GraphReader<'d> {
@@ -324,7 +333,8 @@ fn leaf_graph<'a, 'd>(
         Some(GraphReader::Lucene99(reader)) => {
             LeafGraph::Lucene99(lucene99_graph(reader, field_number)?)
         }
-        Some(GraphReader::ScalarQuantized { graph, .. }) => LeafGraph::Lucene99(match graph {
+        Some(GraphReader::ScalarQuantized { graph, .. })
+        | Some(GraphReader::HnswQuantized { graph, .. }) => LeafGraph::Lucene99(match graph {
             Some(reader) => lucene99_graph(reader, field_number)?,
             None => None,
         }),
@@ -1113,16 +1123,60 @@ fn leaf_results<S: VectorScorer>(
         );
     }
     leaf_results_rescored(
-        scorer, None, graph, accept, ord_to_doc, max_doc, plan, seed_ords,
+        scorer, None, false, graph, accept, ord_to_doc, max_doc, plan, seed_ords,
     )
+}
+
+/// An exhaustive search's hits, scored on `exact` when given (then they need
+/// no rescoring: the flag is `false`), else on `scorer`.
+fn exact_hits<S: VectorScorer>(
+    scorer: &mut S,
+    exact: Option<&mut (dyn VectorScorer + '_)>,
+    bits: &FixedBitSet,
+    cost: usize,
+    k: usize,
+) -> Result<(Vec<(i32, f32)>, bool)> {
+    Ok(match exact {
+        Some(exact) => (exact_search(&mut DynScorer(exact), bits, cost, k)?, false),
+        None => (exact_search(scorer, bits, cost, k)?, true),
+    })
+}
+
+/// A `dyn` scorer as a sized one, for the generic search functions.
+struct DynScorer<'s, 'd>(&'s mut (dyn VectorScorer + 'd));
+
+impl VectorScorer for DynScorer<'_, '_> {
+    fn score(&mut self, node: i32) -> lucene_codecs::vectors::Result<f32> {
+        self.0.score(node)
+    }
+
+    fn max_ord(&self) -> i32 {
+        self.0.max_ord()
+    }
+
+    fn prefetch(&self, nodes: &[i32]) {
+        self.0.prefetch(nodes)
+    }
+
+    fn bulk_score(
+        &mut self,
+        nodes: &[i32],
+        scores: &mut [f32],
+    ) -> lucene_codecs::vectors::Result<f32> {
+        self.0.bulk_score(nodes, scores)
+    }
 }
 
 /// [`leaf_results`] without diversification, with every collected hit
 /// rescored by `rescore` (and re-ranked, best first) when one is given.
+/// With `exact_on_rescore`, an exhaustive search (a selective filter, or a
+/// graph walk that visited too many nodes) scores with `rescore` itself
+/// rather than collecting `k` on `scorer`'s estimates.
 #[allow(clippy::too_many_arguments)]
 fn leaf_results_rescored<S: VectorScorer>(
     scorer: &mut S,
-    rescore: Option<&mut dyn VectorScorer>,
+    mut rescore: Option<&mut dyn VectorScorer>,
+    exact_on_rescore: bool,
     graph: &LeafGraph<'_, '_>,
     accept: Option<&AcceptOrds<'_>>,
     ord_to_doc: &impl Fn(i32) -> Result<i32>,
@@ -1145,6 +1199,7 @@ fn leaf_results_rescored<S: VectorScorer>(
     // `from_graph`: whether the hits came out of the reader's `search` (and
     // so, for `Lucene90`, are ordinals standing in for documents) rather than
     // out of `exactSearch`, which always reports real documents.
+    let mut needs_rescore = true;
     let (hits, early, from_graph) = if !plan.filtered {
         // Java's `filterWeight == null` branch: `AcceptDocs.fromLiveDocs`,
         // `visitedLimit = Integer.MAX_VALUE`, and no cost heuristic.
@@ -1175,7 +1230,15 @@ fn leaf_results_rescored<S: VectorScorer>(
             // Seeding does not reach here, exactly as in Java: the search
             // strategy is read by `HnswGraphSearcher.search`, and this branch
             // never calls it.
-            (exact_search(scorer, bits, cost, plan.k)?, false, false)
+            let (hits, rescore) = exact_hits(
+                scorer,
+                rescore.as_deref_mut().filter(|_| exact_on_rescore),
+                bits,
+                cost,
+                plan.k,
+            )?;
+            needs_rescore = rescore;
+            (hits, false, false)
         } else {
             // "We pass cost + 1 here to account for the edge case when we
             // explore exactly cost vectors."
@@ -1197,7 +1260,15 @@ fn leaf_results_rescored<S: VectorScorer>(
             } else {
                 // "We stopped the kNN search because it visited too many
                 // nodes, so fall back to exact search."
-                (exact_search(scorer, bits, cost, plan.k)?, false, false)
+                let (hits, rescore) = exact_hits(
+                    scorer,
+                    rescore.as_deref_mut().filter(|_| exact_on_rescore),
+                    bits,
+                    cost,
+                    plan.k,
+                )?;
+                needs_rescore = rescore;
+                (hits, false, false)
             }
         }
     };
@@ -1208,7 +1279,7 @@ fn leaf_results_rescored<S: VectorScorer>(
     // ordinal, and ordinals ascend with doc ids by construction -- so the
     // seed list is this hit set's ordinals, ascending.
     let mut hits = hits;
-    if let Some(rescore) = rescore {
+    if let Some(rescore) = rescore.filter(|_| needs_rescore) {
         if hits.len() > 1 {
             let ords: Vec<i32> = hits.iter().map(|h| h.0).collect();
             rescore.prefetch(&ords);
@@ -1305,6 +1376,36 @@ fn search_leaf(
                 );
             }
             let mut scorer = values.scorer(t)?;
+            if let (
+                Some(GraphReader::HnswQuantized { codes, .. }),
+                None,
+                LeafGraph::Lucene99(Some(_)),
+            ) = (&input.hnsw, diversify, &graph)
+            {
+                if let Some(field) = codes.field(resolved.field_number) {
+                    field.check_matches(
+                        values.dimension(),
+                        values.similarity(),
+                        usize::try_from(values.size()).unwrap_or(0),
+                    )?;
+                    // The graph is walked on the codes, the collected
+                    // candidates are rescored on the float vectors, and an
+                    // exhaustive search scores the float vectors directly
+                    // (as does a segment too small for a graph, below).
+                    let mut estimates = codes.scorer(field, t);
+                    return leaf_results_rescored(
+                        &mut estimates,
+                        Some(&mut scorer),
+                        true,
+                        &graph,
+                        accept.as_ref(),
+                        &ord_to_doc,
+                        input.max_doc,
+                        plan,
+                        seed_ords,
+                    );
+                }
+            }
             if diversify.is_none() {
                 if let Some(mut codes) = scalar_quantized_scorer(input, resolved, t)? {
                     // The graph is walked on the codes, then the collected
@@ -1312,6 +1413,7 @@ fn search_leaf(
                     return leaf_results_rescored(
                         &mut codes,
                         Some(&mut scorer),
+                        false,
                         &graph,
                         accept.as_ref(),
                         &ord_to_doc,
@@ -1363,21 +1465,6 @@ fn search_leaf(
 /// (see [`ivf_leaf_results`]).
 const IVF_MAX_GROUP_SPREAD: usize = 64;
 
-/// Accepted entries a filtered IVF search for 10 hits scans: the probes grow
-/// until they have scanned this many of the documents the filter passes (or
-/// all of them), so the filter's nearest documents are among the candidates
-/// wherever in the field they lie. See "Filtered searches by tenant size"
-/// in `docs/benchmarks/ivf.md`.
-const IVF_ACCEPTED_FOR_10: usize = 2000;
-
-/// [`IVF_ACCEPTED_FOR_10`] for `k` hits: it grows with the square root of
-/// `k`, as the calibrated depth of an unfiltered search does not grow with
-/// `k` at all and a filter's nearest documents spread with it.
-fn ivf_accepted_target(k: usize) -> usize {
-    let scale = (k.max(10) as f64 / 10.0).sqrt();
-    (IVF_ACCEPTED_FOR_10 as f64 * scale).ceil() as usize
-}
-
 /// The most live filtered documents a filtered IVF search counts one by one,
 /// in a segment where some documents have none: past it, it samples this
 /// many points over the segment for the share that has one.
@@ -1394,7 +1481,7 @@ const IVF_EXACT_COST_RATIO: usize = 8;
 /// documents the filter passes, best first. `None` sends the leaf to the
 /// exhaustive scan instead, when it costs less than probing: the filter
 /// passes no more vectors than the probes would have to scan for it
-/// ([`IVF_ACCEPTED_FOR_10`]), or scoring them exactly costs less than the
+/// ([`ivf_accepted_target`]), or scoring them exactly costs less than the
 /// planned probes ([`IVF_EXACT_COST_RATIO`]). The flag is set when the
 /// leaf's deadline passed before the probes reached `k` accepted documents.
 /// A filter on a partition of a field clustered per partition is scored

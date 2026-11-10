@@ -38,6 +38,12 @@ answer the same queries. The Rust engine writes the plugin node's segments.
              of it flushed, after deletes and after a force merge; the
              calibrated depth finds most of them; one probe finds fewer, so
              the index is what is searched.
+  rust hnsw  the `lucene_rust` engine's `method: hnsw` (the graph walked on
+             1-bit RaBitQ, 2-bit and 4-bit Extended RaBitQ codes; stock must
+             refuse the mapping): every hit scores its exact score, the top 10
+             is nearly the exhaustive scan's (filtered too), a filter few
+             documents pass returns exactly the scan's hits, all of it
+             flushed, after deletes and after a force merge.
   scripts    script_score with the `knn` language's `knn_score` in every
              space the field allows (plus `hammingbit` over long and binary
              fields), and the Painless functions (l2Squared, cosineSimilarity,
@@ -480,18 +486,116 @@ def ivf_check(failures):
         ("ivf 8-bit osq", ivf_mapping(quantizer="osq8")),
         ("ivf unknown parameter", ivf_mapping(nlist=4)),
         ("ivf on_disk", {**ivf_mapping(), "mode": "on_disk"}),
-        ("lucene_rust hnsw", {"type": "knn_vector", "dimension": DIM,
-                              "method": {"name": "hnsw", "engine": "lucene_rust", "space_type": "l2"}}),
+        ("lucene_rust hnsw osq", rust_hnsw_mapping(quantizer="osq2")),
+        ("lucene_rust hnsw bbq", rust_hnsw_mapping(quantizer="bbq")),
+        ("lucene_rust hnsw quantizer", rust_hnsw_mapping(quantizer="pq")),
+        ("lucene_rust hnsw byte", {**rust_hnsw_mapping(), "data_type": "byte"}),
+        ("lucene_rust hnsw on_disk", {**rust_hnsw_mapping(), "mode": "on_disk"}),
+        ("lucene_rust hnsw encoder", rust_hnsw_mapping(encoder={"name": "sq", "parameters": {"bits": 4}})),
+        ("lucene_rust hnsw ef_search", rust_hnsw_mapping(ef_search=100)),
+        ("lucene_rust flat", {"type": "knn_vector", "dimension": DIM,
+                              "method": {"name": "flat", "engine": "lucene_rust", "space_type": "l2"}}),
         ("lucene ivf", {"type": "knn_vector", "dimension": DIM,
                         "method": {"name": "ivf", "engine": "lucene", "space_type": "l2"}}),
     ]
-    for label, m, rust in [(label, m, True) for label, m in bad] + [("ivf off the Rust engine", ivf_mapping(), False)]:
+    off = [("ivf off the Rust engine", ivf_mapping(), False), ("lucene_rust hnsw off the Rust engine", rust_hnsw_mapping(), False)]
+    for label, m, rust in [(label, m, True) for label, m in bad] + off:
         settings = {"index.knn": True, **({"index.lucene_rust.engine": True} if rust else {})}
         r = req(OURS[1], "PUT", "/bad-mapping", {"settings": settings,
                                                  "mappings": {"properties": {"v": m}}}, ok_errors=True)
         if r.get("status", 200) != 400:
             failures.append(f"mapping {label} accepted: {json.dumps(r)[:200]}")
             req(OURS[1], "DELETE", "/bad-mapping", ok_errors=True)
+    return checked
+
+
+def rust_hnsw_mapping(**params):
+    return {"type": "knn_vector", "dimension": DIM,
+            "method": {"name": "hnsw", "engine": "lucene_rust", "space_type": "l2", "parameters": params}}
+
+
+def rust_hnsw_check(failures):
+    """The `lucene_rust` engine's quantized HNSW fields on the plugin node (see the module doc)."""
+    checked = 0
+    for index, params in (("rq_rabitq", {"quantizer": "rabitq"}), ("rq_erq2", {}),
+                          ("rq_erq4", {"quantizer": "erq4", "m": 8, "ef_construction": 64})):
+        rng = random.Random(f"{SEED}-{index}")
+        docs = [{"_id": f"d{i}", "tag": "even" if i % 2 == 0 else "odd", "n": i, "emb": vector(rng, False)}
+                for i in range(DOCS)]
+        settings = {"index.knn": True, "index.lucene_rust.engine": True, "number_of_shards": 1,
+                    "number_of_replicas": 0, "refresh_interval": -1,
+                    "index.merge.policy.max_merge_at_once": 100, "index.merge.policy.segments_per_tier": 100}
+        mapping = {"properties": {"tag": {"type": "keyword"}, "n": {"type": "integer"},
+                                  "emb": rust_hnsw_mapping(**params)}}
+        r = req(STOCK[1], "PUT", f"/{index}", {"settings": {"index.knn": True}, "mappings": mapping}, ok_errors=True)
+        if r.get("status", 200) != 400:
+            failures.append(f"{index}: stock accepted the lucene_rust mapping: {json.dumps(r)[:200]}")
+            req(STOCK[1], "DELETE", f"/{index}", ok_errors=True)
+        req(OURS[1], "PUT", f"/{index}", {"settings": settings, "mappings": mapping})
+        persisted = req(OURS[1], "GET", f"/{index}/_mapping")[index]["mappings"]["properties"]["emb"]
+        if persisted.get("method", {}).get("engine") != "lucene_rust" or persisted["method"].get("name") != "hnsw":
+            failures.append(f"{index}: persisted as {persisted}")
+        if persisted["method"].get("parameters", {}).get("quantizer") != params.get("quantizer"):
+            failures.append(f"{index}: quantizer persisted as {persisted}")
+        per = DOCS // SEGMENTS
+        for s in range(SEGMENTS):
+            lines = []
+            for d in docs[s * per:(s + 1) * per]:
+                lines.append(json.dumps({"index": {"_index": index, "_id": d["_id"]}}))
+                lines.append(json.dumps({"tag": d["tag"], "n": d["n"], "emb": d["emb"]}))
+            r = req(OURS[1], "POST", "/_bulk", "\n".join(lines) + "\n", ndjson=True)
+            assert not r["errors"], json.dumps(r)[:2000]
+            req(OURS[1], "POST", f"/{index}/_flush")
+        req(OURS[1], "POST", f"/{index}/_refresh")
+        targets = [vector(rng, False) for _ in range(8)]
+        live = list(docs)
+
+        def round_(stage):
+            nonlocal checked
+            found = {"top k": 0, "filtered": 0}
+            for qi, t in enumerate(targets):
+                cases = [
+                    ("top k", knn(t, k=10, method_parameters={"ef_search": 100}), lambda d: True),
+                    ("filtered", knn(t, k=10, filter={"term": {"tag": "even"}}, method_parameters={"ef_search": 100}),
+                     lambda d: d["tag"] == "even"),
+                    # 40 documents pass: scanned exactly on the raw vectors.
+                    ("rare filter", knn(t, k=10, filter={"range": {"n": {"gte": 100, "lt": 140}}}),
+                     lambda d: 100 <= d["n"] < 140),
+                ]
+                by_id = {d["_id"]: d["emb"] for d in live}
+                for label, query, keep_doc in cases:
+                    got = search(OURS[1], index, {"size": 50, "query": query})
+                    want = [(i, sc) for sc, i in exact_top(IVF, live, t, 10, keep_doc)]
+                    checked += 1
+                    wrong = [(i, sc) for i, sc in got
+                             if i not in by_id or abs(sc - score("l2", t, by_id[i])) > 1e-4 * max(1.0, sc)]
+                    if wrong:
+                        failures.append(f"{index} {stage} {label} query {qi}: not exact scores or deleted docs {wrong[:3]}")
+                    if len(got) != 10:
+                        failures.append(f"{index} {stage} {label} query {qi}: {len(got)} hits")
+                    if label == "rare filter":
+                        if not same(got, want):
+                            failures.append(f"{index} {stage} {label} query {qi}: {got[:3]} vs the scan's {want[:3]}")
+                    else:
+                        found[label] += len({i for i, _ in got} & {i for i, _ in want})
+                        if not all(keep_doc({"tag": "even" if int(i[1:]) % 2 == 0 else "odd"}) for i, _ in got):
+                            failures.append(f"{index} {stage} {label} query {qi}: unfiltered hits")
+            for label, n in found.items():
+                recall = n / (10 * len(targets))
+                print(f"{index} {stage} {label}: recall@10 {recall:.3f}")
+                if recall < 0.9:
+                    failures.append(f"{index} {stage} {label}: recall@10 {recall:.3f} < 0.9")
+
+        round_("flushed")
+        req(OURS[1], "POST", f"/{index}/_delete_by_query?refresh=true", {"query": {"range": {"n": {"lt": 100}}}})
+        live = [d for d in docs if d["n"] >= 100]
+        round_("after deletes")
+        req(OURS[1], "POST", f"/{index}/_forcemerge?max_num_segments=1")
+        req(OURS[1], "POST", f"/{index}/_refresh")
+        segs = req(OURS[1], "GET", f"/{index}/_segments")["indices"][index]["shards"]["0"][0]["segments"]
+        if len(segs) != 1:
+            failures.append(f"{index}: {len(segs)} segments after the force merge")
+        round_("merged")
     return checked
 
 
@@ -840,6 +944,7 @@ def main():
                                 failures.append(f"{index} {label} query {qi}: not the exhaustive scan's top {kk}")
         checked += nested_check(failures)
         checked += ivf_check(failures)
+        checked += rust_hnsw_check(failures)
         checked += realtime_check(failures)
         print(f"compared {checked} queries")
 

@@ -194,10 +194,14 @@ public final class KnnVectorFieldMapper extends ParametrizedFieldMapper {
             builder.parse(name, parserContext, node);
             KnnFieldConfig config = builder.config();
             Settings settings = parserContext.getSettings();
-            if (config.ivf() && RustEngineSupport.servedByRust(settings) == false) {
-                // OpenSearch's own engine would write the raw vectors alone, never the IVF index.
+            if (config.rustEngine() && RustEngineSupport.servedByRust(settings) == false) {
+                // OpenSearch's own engine would write the raw vectors (and graph) alone, never the IVF index or the codes.
                 throw new MapperParsingException(
-                    "[" + CONTENT_TYPE + "] the [lucene_rust] engine's [ivf] needs an index on the Rust engine ([index.lucene_rust.engine: true])"
+                    "["
+                        + CONTENT_TYPE
+                        + "] the [lucene_rust] engine's ["
+                        + (config.ivf() ? "ivf" : "hnsw")
+                        + "] needs an index on the Rust engine ([index.lucene_rust.engine: true])"
                 );
             }
             return builder;
