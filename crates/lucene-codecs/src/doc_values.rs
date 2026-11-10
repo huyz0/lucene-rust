@@ -1215,8 +1215,8 @@ pub fn numeric_value_range(
     }
     let offset =
         usize::try_from(entry.values_offset).map_err(|_| lucene_store::Error::Eof { offset: 0 })?;
-    let length = usize::try_from(entry.values_length)
-        .map_err(|_| lucene_store::Error::Eof { offset })?;
+    let length =
+        usize::try_from(entry.values_length).map_err(|_| lucene_store::Error::Eof { offset })?;
     let raw =
         direct_reader::get_range(&data.slice(offset, length)?, entry.bits_per_value, ordinal)?;
     if let Some(table) = &entry.table {

@@ -123,17 +123,14 @@ fn wrong_segment_id_rejected() {
 fn range_stored_chunks_match_java_without_resident_fdt_and_refuse_faults() {
     let m = Manifest::load();
     let id = id_from_hex(m.get("id_hex"));
-    let fdt = std::fs::read(format!("{}{}.raw", dir(), m.get("fdt_file_name"))).unwrap();
     let fdx = std::fs::read(format!("{}{}.raw", dir(), m.get("fdx_file_name"))).unwrap();
     let fdm = std::fs::read(format!("{}{}.raw", dir(), m.get("fdm_file_name"))).unwrap();
-    let metadata = stored_fields::open(&fdt, &fdx, &fdm, &id, "")
-        .unwrap()
-        .rebind(&[], &fdx);
-    drop(fdt);
     let (source, input) = range_source::open(format!("{}{}.raw", dir(), m.get("fdt_file_name")));
+    let metadata = stored_fields::open_range(input.clone(), &fdx, &fdm, &id, "").unwrap();
+    assert!(stored_fields::open_range(input.clone(), &fdx, &fdm, &[9; 16], "").is_err());
     for doc in (0..metadata.max_doc()).rev() {
         input.clear_cache().unwrap();
-        let actual = metadata.document_range(&input, doc).unwrap();
+        let actual = metadata.document(doc).unwrap();
         let mut values: Vec<_> = actual
             .fields
             .into_iter()
@@ -153,6 +150,6 @@ fn range_stored_chunks_match_java_without_resident_fdt_and_refuse_faults() {
     for mode in [1, 2] {
         input.clear_cache().unwrap();
         range_source::fail(&source, mode);
-        assert!(metadata.document_range(&input, 0).is_err());
+        assert!(metadata.document(0).is_err());
     }
 }

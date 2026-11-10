@@ -232,7 +232,72 @@ pub fn open<'d>(
     segment_id: &[u8; ID_LENGTH],
     segment_suffix: &str,
 ) -> Result<StoredFieldsReader<'d>> {
-    let mut fdt_input = SliceInput::new(fdt);
+    open_impl(fdt, fdx, fdm, segment_id, segment_suffix, fdt.len(), None)
+}
+
+/// Stored-field reader whose data is never resident. Parsed `.fdm` and `.fdx`
+/// metadata remain bounded resident inputs admitted by the caller.
+pub struct RangeStoredFieldsReader<'d> {
+    metadata: StoredFieldsReader<'d>,
+    data: RangeInput,
+}
+impl RangeStoredFieldsReader<'_> {
+    pub fn max_doc(&self) -> i32 {
+        self.metadata.max_doc()
+    }
+    pub fn document(&self, doc: i32) -> Result<Document> {
+        self.metadata.document_range(&self.data, doc)
+    }
+}
+
+/// Open `.fdt` directly through range header/footer reads and resident metadata.
+/// No materialized `.fdt` is needed even during construction. As for `open`,
+/// header identity/suffix, footer framing and metadata/file lengths are checked;
+/// this is not a full-file integrity scan or a provider versioning proof.
+pub fn open_range<'d>(
+    data: RangeInput,
+    fdx: &'d [u8],
+    fdm: &[u8],
+    segment_id: &[u8; ID_LENGTH],
+    segment_suffix: &str,
+) -> Result<RangeStoredFieldsReader<'d>> {
+    if fdx.len() > 1024 * 1024 || fdm.len() > 1024 * 1024 {
+        return Err(
+            lucene_store::Error::IllegalArgument("range stored metadata envelope".into()).into(),
+        );
+    }
+    let mut header = [0u8; 512];
+    let count = header.len().min(data.len());
+    data.read_exact_at(0, &mut header[..count])?;
+    let mut footer = [0u8; codec_util::FOOTER_LENGTH];
+    let at = data
+        .len()
+        .checked_sub(footer.len())
+        .ok_or(lucene_store::Error::Eof { offset: 0 })?;
+    data.read_exact_at(at, &mut footer)?;
+    codec_util::retrieve_checksum(&footer)?;
+    let metadata = open_impl(
+        &[],
+        fdx,
+        fdm,
+        segment_id,
+        segment_suffix,
+        data.len(),
+        Some(&header[..count]),
+    )?;
+    Ok(RangeStoredFieldsReader { metadata, data })
+}
+
+fn open_impl<'d>(
+    fdt: &'d [u8],
+    fdx: &'d [u8],
+    fdm: &[u8],
+    segment_id: &[u8; ID_LENGTH],
+    segment_suffix: &str,
+    fdt_length: usize,
+    prefix: Option<&[u8]>,
+) -> Result<StoredFieldsReader<'d>> {
+    let mut fdt_input = SliceInput::new(prefix.unwrap_or(fdt));
     // The data codec name is mode-specific (`...FastData` for BEST_SPEED,
     // `...HighData` for BEST_COMPRESSION); peek it before the real header
     // check so we know which one to expect (and which compressor to use
@@ -285,7 +350,9 @@ pub fn open<'d>(
         segment_id,
         segment_suffix,
     )?;
-    codec_util::retrieve_checksum(fdt)?;
+    if prefix.is_none() {
+        codec_util::retrieve_checksum(fdt)?;
+    }
 
     let mut meta_input = SliceInput::new(fdm);
     codec_util::check_index_header(
@@ -395,10 +462,10 @@ pub fn open<'d>(
     let expected_fdt_len = usize::try_from(max_pointer)
         .ok()
         .and_then(|p| p.checked_add(codec_util::FOOTER_LENGTH));
-    if expected_fdt_len != Some(fdt.len()) {
+    if expected_fdt_len != Some(fdt_length) {
         return Err(lucene_store::Error::Corrupted(format!(
             ".fdt length should be maxPointer={max_pointer} + footer bytes, but is {}",
-            fdt.len()
+            fdt_length
         ))
         .into());
     }

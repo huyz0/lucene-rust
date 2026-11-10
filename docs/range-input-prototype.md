@@ -194,3 +194,18 @@ type checking and all ten selected controls, then pinned Clippy rejected one
 new redundant `offset: offset` initializer in numeric range decoding. The
 source fix uses Rust field shorthand without changing behavior or suppressing
 the lint. Pinned formatting was not reached in that failed attempt.
+
+The stored-field integration now also has `open_range` and an owning
+`RangeStoredFieldsReader`. Construction reads the actual range source's bounded
+header/footer directly, validates segment identity, suffix, length and resident
+metadata, and retains no materialized `.fdt`. The same Java fixture control now
+opens through this constructor and checks wrong-ID refusal. This next source
+increment still needs fresh exact-source feedback; previous ten-test results
+are predecessor evidence. Actual DirectoryReader/query wiring remains pending.
+
+Run `42785049240` at `16bade9b53093f87ae035c9ec783662ffe19ce89` passed selected
+type checking, all ten component controls and pinned store/codecs all-target
+Clippy with warnings denied. Pinned formatting then rejected two whitespace/
+module-order differences; both reported changes are applied without lowering
+checks. The direct stored-range constructor is a subsequent source increment
+and needs its own fresh feedback.
