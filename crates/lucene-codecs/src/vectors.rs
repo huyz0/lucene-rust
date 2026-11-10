@@ -2215,6 +2215,30 @@ impl crate::hnsw::UpdateableVectorScorer for ByteVectorScorer<'_> {
 }
 
 impl<'a> FloatVectorValues<'a> {
+    /// Every vector, ordinal after ordinal, as one run of components:
+    /// borrowed straight from the file when it holds aligned little-endian
+    /// `f32`s, decoded otherwise (half floats, a misaligned buffer).
+    ///
+    /// # Errors
+    /// A vector that does not decode.
+    pub fn all_vectors(&self) -> Result<std::borrow::Cow<'a, [f32]>> {
+        let slice: &'a [u8] = self.values.slice;
+        if !self.values.half {
+            if let Some(floats) = lucene_util::vector_util::le_f32s(slice) {
+                return Ok(std::borrow::Cow::Borrowed(floats));
+            }
+        }
+        let size = usize::try_from(self.values.size).unwrap_or(0);
+        let mut out = vec![0.0f32; size.saturating_mul(self.values.dimension)];
+        for (ord, chunk) in out
+            .chunks_exact_mut(self.values.dimension.max(1))
+            .enumerate()
+        {
+            self.vector_into(ord as i32, chunk)?;
+        }
+        Ok(std::borrow::Cow::Owned(out))
+    }
+
     /// `FlatVectorsScorer.getRandomVectorScorer(similarity, values, target)`.
     pub fn scorer(&self, query: &[f32]) -> Result<FloatVectorScorer<'a>> {
         if query.len() != self.values.dimension {
