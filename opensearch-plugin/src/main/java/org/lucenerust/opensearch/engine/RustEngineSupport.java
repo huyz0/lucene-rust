@@ -66,14 +66,16 @@ public final class RustEngineSupport {
 
     /**
      * With {@link #REALTIME_SEARCH}, how old a view of the buffers a search may read: the writer
-     * opens one every few milliseconds with the buffers written ahead, and searches share it, and
-     * its readers, instead of each opening its own. A search then misses at most the writes of the
-     * last this long, and {@code refresh=wait_for} makes the searches after it read a fresh view.
-     * Zero, the default, gives every search a view of every write acknowledged before it.
+     * opens one every few milliseconds with the buffers written ahead, and with what the recent
+     * requests read of them made ahead, and searches share it instead of each opening its own. A
+     * search then misses at most the writes of the last this long, and {@code refresh=wait_for}
+     * makes the searches after it read a fresh view. The default, 20 ms, favours search latency;
+     * zero gives every search a view of every write acknowledged before it (read after write), at
+     * a higher search latency while indexing.
      */
     public static final Setting<org.opensearch.common.unit.TimeValue> REALTIME_MAX_STALENESS = Setting.timeSetting(
         "index.lucene_rust.realtime_max_staleness",
-        org.opensearch.common.unit.TimeValue.ZERO,
+        org.opensearch.common.unit.TimeValue.timeValueMillis(20),
         org.opensearch.common.unit.TimeValue.ZERO,
         org.opensearch.common.unit.TimeValue.timeValueSeconds(1),
         Setting.Property.IndexScope,

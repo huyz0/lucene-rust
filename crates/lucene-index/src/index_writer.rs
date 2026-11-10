@@ -1274,6 +1274,23 @@ pub(crate) struct DocumentBuffer<'b> {
     /// The group the documents were added under
     /// ([`IndexWriter::set_segment_partitioning`]).
     pub(crate) partition: Option<&'b str>,
+    /// Vector fields' graphs built as the documents arrived, in their
+    /// order: written instead of built when they are the graph the flush
+    /// would build ([`IndexWriter::build_vectors_output`]).
+    pub(crate) graphs: &'b [BufferGraphField],
+}
+
+/// The vector counts of the graphs live search kept that flushes wrote
+/// ([`IndexWriter::kept_graph`]).
+#[cfg(test)]
+pub(crate) static KEPT_GRAPHS: std::sync::Mutex<Vec<i32>> = std::sync::Mutex::new(Vec::new());
+
+/// A vector field's HNSW graph over a buffer's vectors, kept by live search
+/// as they arrive ([`lucene_codecs::buffer_vectors::BufferGraph`]).
+#[derive(Debug, Clone)]
+pub(crate) struct BufferGraphField {
+    pub(crate) field_number: i32,
+    pub(crate) graph: std::sync::Arc<lucene_codecs::buffer_vectors::BufferGraph>,
 }
 
 /// A flush of a buffer's documents `start..docs` only, numbered from
@@ -4157,6 +4174,7 @@ impl IndexingConfig {
                     &vector_format_for,
                     self.knn_vectors_direct(),
                     buf.limit.is_none(),
+                    buf.graphs,
                     &segment_id,
                 )?
             })
@@ -5587,10 +5605,11 @@ impl DenseColumn {
 #[derive(Debug, Clone, PartialEq)]
 pub enum VectorValue {
     /// `KnnFloatVectorField`: `dimension` finite `f32` components.
-    Float32(Vec<f32>),
+    /// Shared, not copied, with what a realtime buffer's graph reads.
+    Float32(std::sync::Arc<Vec<f32>>),
     /// `KnnByteVectorField`: `dimension` signed bytes, held unsigned exactly
     /// as `.vec` stores them (`b as i8` is Java's view of the same byte).
-    Byte(Vec<u8>),
+    Byte(std::sync::Arc<Vec<u8>>),
 }
 
 impl VectorValue {
@@ -5637,7 +5656,7 @@ impl DocumentVector {
     pub fn float32(field_name: impl Into<String>, vector: Vec<f32>) -> Self {
         DocumentVector {
             field_name: field_name.into(),
-            value: VectorValue::Float32(vector),
+            value: VectorValue::Float32(std::sync::Arc::new(vector)),
         }
     }
 
@@ -5645,7 +5664,7 @@ impl DocumentVector {
     pub fn byte(field_name: impl Into<String>, vector: Vec<u8>) -> Self {
         DocumentVector {
             field_name: field_name.into(),
-            value: VectorValue::Byte(vector),
+            value: VectorValue::Byte(std::sync::Arc::new(vector)),
         }
     }
 
@@ -6445,6 +6464,7 @@ impl<'d> IndexWriter<'d> {
             stored: None,
             limit: None,
             partition: None,
+            graphs: &[],
         }
     }
 
@@ -7792,6 +7812,63 @@ impl<'d> IndexWriter<'d> {
 }
 
 impl IndexingConfig {
+    /// Vector field `name`: its number, dimension, encoding and similarity,
+    /// from the registered fields of a writer of explicit documents.
+    fn vector_field_shape(
+        &self,
+        name: &str,
+    ) -> Option<(i32, i32, VectorEncoding, VectorSimilarityFunction)> {
+        if self.takes_explicit() {
+            let f = self.explicit_vector_field(name).ok()?;
+            return Some((
+                f.number,
+                f.vector_dimension,
+                f.vector_encoding,
+                f.vector_similarity_function,
+            ));
+        }
+        self.vector_fields
+            .iter()
+            .find(|c| c.name == name)
+            .map(|c| (c.field_number, c.dimension, c.encoding, c.similarity))
+    }
+
+    /// The number of vector field `name`.
+    pub(crate) fn vector_field_number(&self, name: &str) -> Option<i32> {
+        self.vector_field_shape(name).map(|(number, ..)| number)
+    }
+
+    /// An empty graph for vector field `name` that grows as its vectors
+    /// arrive and is the graph its flush builds: `None` for a field whose
+    /// format has no graph, scores bytes as Hamming distances, or under an
+    /// index sort (which renumbers the vectors at the flush).
+    pub(crate) fn buffer_graph_for(
+        &self,
+        name: &str,
+    ) -> Option<lucene_codecs::buffer_vectors::BufferGraph> {
+        if self.sorts_documents() {
+            return None;
+        }
+        let (_, dimension, encoding, similarity) = self.vector_field_shape(name)?;
+        let format = self.knn_vectors_format_for(name);
+        if matches!(
+            format.files_format(),
+            per_field_knn_vectors::KnnVectorsFormat::HnswHamming { .. }
+        ) {
+            return None;
+        }
+        let (m, beam_width) = format.graph()?;
+        lucene_codecs::buffer_vectors::BufferGraph::new(
+            encoding,
+            similarity,
+            usize::try_from(dimension).ok()?,
+            m,
+            beam_width,
+            hnsw::DEFAULT_RAND_SEED,
+        )
+        .ok()
+    }
+
     /// [`IndexWriter::add_document_with_vectors`]' checks of one document's
     /// vectors (document `doc_index` of its buffer): every field registered
     /// with its encoding and dimension, and named once.
@@ -10871,6 +10948,7 @@ impl IndexWriter<'_> {
         format_for: &dyn Fn(&str) -> per_field_knn_vectors::KnnVectorsFormat,
         direct: bool,
         indexes: bool,
+        graphs: &[BufferGraphField],
         segment_id: &[u8; ID_LENGTH],
     ) -> Result<Option<VectorsOutput>> {
         // Empty when no buffered document carries a vector (a buffer of
@@ -10978,6 +11056,7 @@ impl IndexWriter<'_> {
                 group.format,
                 max_doc,
                 indexes,
+                graphs,
                 segment_id,
                 &suffix,
             )?;
@@ -10996,6 +11075,49 @@ impl IndexWriter<'_> {
         Ok(Some(output))
     }
 
+    /// The graph live search kept over `field`'s vectors as they arrived,
+    /// when it is the one this flush builds: the same vectors under the
+    /// same ordinals, built with the same parameters and seed by one
+    /// inserter in ordinal order, which is what
+    /// `HnswGraphBuilder::new(..).build(count)` does. A half-float format's
+    /// flush graph is built over the vectors as indexed, as the kept one is.
+    fn kept_graph(
+        graphs: &[BufferGraphField],
+        field: &FlatVectorsField,
+        params: (i32, i32),
+    ) -> Option<hnsw::OnHeapHnswGraph> {
+        let kept = graphs
+            .iter()
+            .find(|g| g.field_number == field.field_number)?;
+        let graph = &kept.graph;
+        let count = i32::try_from(field.docs.len()).ok()?;
+        let (encoding, similarity, dimension) = graph.shape();
+        if graph.params() != params
+            || graph.len() != count
+            || encoding != field.values.encoding()
+            || similarity != field.similarity
+            || i32::try_from(dimension).ok() != Some(field.dimension)
+        {
+            return None;
+        }
+        // The ordinals name the same documents.
+        let same_docs = field
+            .docs
+            .iter()
+            .enumerate()
+            .all(|(ord, &doc)| graph.doc(i32::try_from(ord).unwrap_or(-1)) == Some(doc));
+        if !same_docs {
+            return None;
+        }
+        let graph = graph.graph(count).ok()?;
+        #[cfg(test)]
+        KEPT_GRAPHS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(count);
+        Some(graph)
+    }
+
     /// One `PerFieldKnnVectorsFormat` instance's flush: the raw vectors
     /// (`Lucene99FlatVectorsWriter`, `.vec`/`.vemf`), the scalar-quantized
     /// codes of its `FLOAT32` fields when the format quantizes
@@ -11008,6 +11130,7 @@ impl IndexWriter<'_> {
         format: per_field_knn_vectors::KnnVectorsFormat,
         max_doc: i32,
         indexes: bool,
+        graphs: &[BufferGraphField],
         segment_id: &[u8; ID_LENGTH],
         suffix: &str,
     ) -> Result<Vec<(&'static str, Vec<u8>)>> {
@@ -11088,6 +11211,15 @@ impl IndexWriter<'_> {
                     // none, and its `.vem` records `numLevels = 0`.
                     if !indexes || !hnsw::should_create_graph(hnsw::HNSW_GRAPH_THRESHOLD, count) {
                         return Ok(None);
+                    }
+                    // A Hamming format scores bytes its own way: never kept.
+                    let kept = if vectors::scores_hamming(suffix) {
+                        None
+                    } else {
+                        Self::kept_graph(graphs, field, (m, beam_width))
+                    };
+                    if let Some(graph) = kept {
+                        return Ok(Some(graph));
                     }
                     let graph = match field.values.encoding() {
                         VectorEncoding::Float32 => {

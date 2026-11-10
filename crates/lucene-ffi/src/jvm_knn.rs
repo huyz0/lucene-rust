@@ -26,7 +26,7 @@
 use std::sync::Arc;
 
 use lucene_search::join::BitSetProducer;
-use lucene_search::knn_search::{knn_top_hits_nested, knn_top_hits_with};
+use lucene_search::knn_search::{knn_top_hits_buffered, knn_top_hits_nested};
 use lucene_search::multi_segment::OpenSegment;
 
 use crate::clauses::map_search_error;
@@ -36,7 +36,7 @@ use crate::raw::bytes_from_raw;
 
 /// A decoded request.
 pub(crate) struct Request {
-    field: String,
+    pub(crate) field: String,
     target: lucene_search::knn_search::KnnTarget,
     pub(crate) k: usize,
     candidates: usize,
@@ -140,7 +140,7 @@ pub unsafe extern "C" fn ffi_jvm_reader_knn(
             handle,
             "ffi_jvm_reader_knn: unknown or already-closed handle",
         )?;
-        let hits = search(&h, &request)?;
+        let hits = search(&h, &request, &[])?;
         // SAFETY: caller contract.
         unsafe { write_hits(&hits, out_docs, out_scores, buf_len, out_count) }
     })
@@ -151,6 +151,7 @@ pub unsafe extern "C" fn ffi_jvm_reader_knn(
 pub(crate) fn search(
     h: &crate::registry::JvmReaderHandle,
     request: &Request,
+    buffers: &[lucene_search::knn_search::BufferedVectors<'_>],
 ) -> Result<Vec<lucene_search::ScoreDoc>, FfiStatus> {
     let Request {
         field,
@@ -185,7 +186,7 @@ pub(crate) fn search(
         })
         .collect();
     match nested {
-        None => knn_top_hits_with(
+        None => knn_top_hits_buffered(
             &segments,
             field,
             target,
@@ -193,6 +194,7 @@ pub(crate) fn search(
             *candidates,
             filter.as_ref(),
             *nprobes,
+            buffers,
         ),
         Some((parents, expand)) => knn_top_hits_nested(
             &segments,
