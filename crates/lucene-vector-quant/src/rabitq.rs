@@ -90,6 +90,24 @@ const MAX_PLANE_BITS: u8 = 6;
 /// `4 * 63`, which fits the tables' bytes.
 const QUERY_TOP_FAST_SCAN: u8 = 63;
 
+/// Bit planes of a fast-scan query value (at most [`QUERY_TOP_FAST_SCAN`]).
+const QUERY_PLANES: usize = 6;
+
+/// The number of bits set in both `a` and `b`, over their common length.
+fn and_popcount(a: &[u8], b: &[u8]) -> u32 {
+    let (mut wa, mut wb) = (a.chunks_exact(8), b.chunks_exact(8));
+    let mut count = 0u32;
+    for (x, y) in (&mut wa).zip(&mut wb) {
+        let x = u64::from_le_bytes(x.try_into().unwrap_or([0; 8]));
+        let y = u64::from_le_bytes(y.try_into().unwrap_or([0; 8]));
+        count = count.saturating_add((x & y).count_ones());
+    }
+    for (&x, &y) in wa.remainder().iter().zip(wb.remainder()) {
+        count = count.saturating_add((x & y).count_ones());
+    }
+    count
+}
+
 /// Codes per fast-scan block.
 const BLOCK: usize = simd::FAST_SCAN_BLOCK;
 
@@ -587,6 +605,11 @@ impl Quantizer for ExRabitqQuantizer {
             } else {
                 Vec::new()
             },
+            query_planes: if self.planes() {
+                vec![0u8; QUERY_PLANES.saturating_mul(self.dims / 8)]
+            } else {
+                Vec::new()
+            },
             lower: 0.0,
             step: 0.0,
             offset_sum: 0.0,
@@ -660,6 +683,10 @@ struct ExRabitqQueryScorer<'q> {
     /// For fast scan, one 16-entry table per group of four dimensions: entry
     /// `m` sums `v` over the dimensions whose bits are set in `m`.
     luts: Vec<u8>,
+    /// For fast scan, `v` as [`QUERY_PLANES`] bit planes of `n / 8` bytes
+    /// (bit `j` of `v_d` in bit `d % 8` of byte `d / 8` of plane `j`), so one
+    /// code scores by AND popcounts without its block.
+    query_planes: Vec<u8>,
     lower: f32,
     step: f32,
     /// `(2^B - 1) / 2 * sum(lower + step * v)`: the codebook's offset applied
@@ -724,6 +751,16 @@ impl QueryScorer for ExRabitqQueryScorer<'_> {
         self.z_norm = norm2.sqrt();
         if !self.luts.is_empty() {
             simd::nibble_luts(&self.values, &mut self.luts);
+            // The 6-bit query values as bit planes, as codes store theirs.
+            let plane_len = self.q.dims / 8;
+            self.query_planes.fill(0);
+            for (j, plane) in self.query_planes.chunks_exact_mut(plane_len).enumerate() {
+                for (byte, v8) in plane.iter_mut().zip(self.values.chunks_exact(8)) {
+                    for (b, &v) in v8.iter().enumerate() {
+                        *byte |= ((v >> j) & 1) << b;
+                    }
+                }
+            }
         }
     }
 
@@ -733,14 +770,17 @@ impl QueryScorer for ExRabitqQueryScorer<'_> {
     fn score(&self, code: &[u8]) -> f32 {
         let (packed, tail) = code.split_at(self.q.packed());
         let dot = if self.q.planes() {
+            // `<u, v>` as sums of AND popcounts of the code's bit planes with
+            // the query's: plane `p` of `u` against plane `j` of `v` counts
+            // `2^(p + j)` per common bit.
+            let plane_len = self.q.dims / 8;
             let mut acc = 0u32;
-            for plane in packed.chunks_exact(self.q.dims / 8).rev() {
-                acc *= 2;
-                for (q8, &bits) in self.values.chunks_exact(8).zip(plane) {
-                    for (b, &q) in q8.iter().enumerate() {
-                        acc += u32::from(q) * u32::from((bits >> b) & 1);
-                    }
+            for plane in packed.chunks_exact(plane_len).rev() {
+                let mut s = 0u32;
+                for (j, query) in self.query_planes.chunks_exact(plane_len).enumerate() {
+                    s += and_popcount(query, plane) << j;
                 }
+                acc = acc * 2 + s;
             }
             acc as f32
         } else {

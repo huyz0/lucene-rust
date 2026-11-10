@@ -11286,6 +11286,28 @@ impl IndexWriter<'_> {
             files.extend(ivf.finish().into_iter().flatten());
         }
 
+        if indexes && format.hnsw_quantizer().is_some() {
+            let fields: Vec<crate::hnsw_quant_vectors::CodesField<'_>> = flat_fields
+                .iter()
+                .filter_map(|field| match &field.values {
+                    FieldVectorData::Float32(values) => {
+                        Some(crate::hnsw_quant_vectors::CodesField {
+                            number: field.field_number,
+                            similarity: field.similarity,
+                            dimension: usize::try_from(field.dimension).unwrap_or(0),
+                            vectors: values,
+                        })
+                    }
+                    _ => None,
+                })
+                .collect();
+            if let Some(codes) =
+                crate::hnsw_quant_vectors::write(format, &fields, segment_id, suffix)?
+            {
+                files.extend(codes);
+            }
+        }
+
         if let Some((m, beam_width)) = format.graph() {
             // Reopen exactly the bytes just written, and build every graph
             // over *those* -- see this method's doc comment.
