@@ -321,6 +321,15 @@ the lookup tables) cost as much as scoring the cluster's codes. The fixes:
 - **Fast-scan accumulation** (`simd::lut16_accumulate32`): looked-up byte
   pairs are added as 16-bit words and separated once at the end (Faiss's
   trick), and the final reduction is vectorized.
+  Codes of 64 groups (256 dimensions) and more use an AVX-512 kernel
+  (`simd::lut16_accumulate32_wide`, four groups per shuffle, same sums)
+  where `lucene_util::cpu::level` allows it. On Sapphire Rapids,
+  `cargo bench -p lucene-ivf --bench ivf_path` score_block at 300
+  dimensions is 11-25% faster per block, and at 100 dimensions 0-20%,
+  which is no gain end to end, hence the threshold. fastText-300 990k
+  cosine (`knn_formats ... --formats ivf`, 3 alternating rounds with
+  `LUCENE_RUST_SIMD=avx2` as the baseline): calibrated, recall 0.949,
+  970 to 843 us; nprobe 64, recall 0.901, 408 to 343 us.
 - **Candidates in a buffer, cut back by selection** rather than a heap:
   a scan offers every code that beats the cut-off.
 - **Rerank**: f32 vectors are scored in place (no copy), and a fixed-depth
