@@ -2,7 +2,11 @@
 """Builds the tiny ONNX models under fixtures/ml/ (random weights) that
 lucene-ml's tests and the plugin's ml e2e run, and their ml-commons model
 zips: text embedding (BERT and DistilBERT shapes), sparse encoding (a masked
-LM head max-pooled over tokens) and a cross-encoder.
+LM head max-pooled over tokens) and a cross-encoder. The same weights are also
+traced as TorchScript (`.pt`), in the shapes ml-commons' PyTorch translators
+feed and read: a sentence-transformers model (a dict of arrays in and out), a
+Hugging Face model (positional arrays, a tuple out), a sparse model (a dict
+in, `{"output": ...}` out) and a cross-encoder (positional, a tuple out).
 
 An existing tokenizer.json is kept, so models added later share the
 vocabulary the recorded vectors were made with.
@@ -17,6 +21,7 @@ import json
 import os
 import sys
 import zipfile
+from typing import Dict
 
 import torch
 from tokenizers import BertWordPieceTokenizer
@@ -127,6 +132,57 @@ def main():
         z = os.path.join(out, f"{name}.zip")
         with zipfile.ZipFile(z, "w", zipfile.ZIP_DEFLATED) as f:
             f.write(onnx, f"{name}.onnx")
+            f.write(os.path.join(out, "tokenizer.json"), "tokenizer.json")
+        digest = hashlib.sha256(open(z, "rb").read()).hexdigest()
+        print(name, os.path.getsize(z), digest)
+
+    class SentenceTransformer(torch.nn.Module):
+        """What sentence-transformers' traced models return: the features dict, the arrays it was given
+        and the token and sentence embeddings."""
+
+        def __init__(self, m):
+            super().__init__()
+            self.m = m
+
+        def forward(self, features: Dict[str, torch.Tensor]):
+            ids, mask = features["input_ids"], features["attention_mask"]
+            h = self.m(input_ids=ids, attention_mask=mask, token_type_ids=torch.zeros_like(ids)).last_hidden_state
+            m = mask.unsqueeze(-1).float()
+            return {"input_ids": ids, "attention_mask": mask, "token_embeddings": h,
+                    "sentence_embedding": (h * m).sum(1) / m.sum(1)}
+
+    class Positional(torch.nn.Module):
+        def __init__(self, m, n):
+            super().__init__()
+            self.m, self.n = m, n
+
+        def forward(self, input_ids, attention_mask, token_type_ids=None):
+            if self.n == 2:
+                return (self.m(input_ids, attention_mask, torch.zeros_like(input_ids)),)
+            return (self.m(input_ids, attention_mask, token_type_ids),)
+
+    class DictSparse(torch.nn.Module):
+        def __init__(self, m):
+            super().__init__()
+            self.m = m
+
+        def forward(self, input: Dict[str, torch.Tensor]):
+            return {"output": self.m(input["input_ids"], input["attention_mask"])}
+
+    ids = torch.ones(1, 6, dtype=torch.long)
+    traced = {
+        "tiny-st": (SentenceTransformer(bert), ({"input_ids": ids, "attention_mask": ids},)),
+        "tiny-hf": (Positional(Bert(bert, False), 2), (ids, ids)),
+        "tiny-sparse-ts": (DictSparse(Sparse(mlm)), ({"input_ids": ids, "attention_mask": ids},)),
+        "tiny-cross-ts": (Positional(Cross(cross), 3), (ids, ids, torch.zeros_like(ids))),
+    }
+    for name, (module, args) in traced.items():
+        pt = os.path.join(out, f"{name}.pt")
+        with torch.no_grad():
+            torch.jit.trace(module.eval(), args, strict=False).save(pt)
+        z = os.path.join(out, f"{name}.zip")
+        with zipfile.ZipFile(z, "w", zipfile.ZIP_DEFLATED) as f:
+            f.write(pt, f"{name}.pt")
             f.write(os.path.join(out, "tokenizer.json"), "tokenizer.json")
         digest = hashlib.sha256(open(z, "rb").read()).hexdigest()
         print(name, os.path.getsize(z), digest)

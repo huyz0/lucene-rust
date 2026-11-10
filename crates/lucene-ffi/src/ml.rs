@@ -11,6 +11,12 @@
 //! cross-encoders ([`ffi_ml_text_similarity_open`]) score documents against
 //! a query ([`ffi_ml_text_similarity_alloc`]).
 //!
+//! TorchScript models run on libtorch, loaded once ([`ffi_ml_torch_init`]);
+//! [`ffi_ml_torch_open`] opens one for any of those functions. Sparse
+//! encoding and similarity handles answer through the same calls whatever
+//! the format; a TorchScript text-embedding model answers with typed outputs
+//! ([`ffi_ml_torch_text_embedding_alloc`]).
+//!
 //! Texts go in as a sequence of `u32` little-endian byte length + UTF-8
 //! bytes. Vectors come back, one per text in order, as `u32` rank, `rank`
 //! `u32` dimensions, then the `f32` values; token weights, one list per text
@@ -18,16 +24,24 @@
 //! UTF-8 token and its `f32` weight; all little endian. Sparse encoding and
 //! similarity results carry each model output: per text a `u32` output
 //! count, then per output its weights (after a `u32` byte length and the
-//! UTF-8 output name) or its tensor.
+//! UTF-8 output name) or its tensor. Typed outputs are, per text, a `u32`
+//! output count, then per output a `u32` byte length and the UTF-8 name, the
+//! `u32` dict number (0 outside a dict), a `u8` data type (0 `FLOAT32`, 1
+//! `INT64`), the `u32` rank and dimensions, and the values (`f32` or `i64`).
 
 use std::path::Path;
 use std::sync::{Arc, OnceLock, RwLock};
 
 use lucene_ml::sparse_encoding::{SparseEncodingModel, SparseOutput};
 use lucene_ml::sparse_tokenize::{SparseTokenizer, Weight};
-use lucene_ml::text_embedding::{Config, Pooling, Tensor, TextEmbeddingModel};
+use lucene_ml::text_embedding::{
+    Config, Pooling, Tensor, TextEmbeddingModel, TorchTextEmbeddingModel,
+};
 use lucene_ml::text_similarity::TextSimilarityModel;
+use lucene_ml::torchscript::{Data, TorchOutput};
 use lucene_ml::MlError;
+
+use crate::ml_torch;
 
 use crate::error::{guard, set_last_error, FfiStatus};
 use crate::ffm_bridge::{clear_out, give};
@@ -41,6 +55,7 @@ enum Model {
     SparseTokenize(SparseTokenizer),
     SparseEncoding(SparseEncodingModel),
     TextSimilarity(TextSimilarityModel),
+    TorchTextEmbedding(TorchTextEmbeddingModel),
 }
 
 fn models() -> &'static RwLock<SlotMap<Arc<Model>>> {
@@ -427,6 +442,168 @@ pub unsafe extern "C" fn ffi_ml_text_similarity_alloc(
         unsafe { give(out, out_ptr, out_len) };
         Ok(())
     })
+}
+
+/// Loads libtorch from the directory `dir` (`dir_len` UTF-8 bytes) and the
+/// first TorchScript shim in `shims` (paths in the text encoding of the
+/// module doc) that runs against it, with `threads` intra-op threads shared
+/// by every model (0: one per physical core). Later calls keep the first.
+///
+/// # Safety
+/// `dir` and `shims` must be valid for their lengths.
+#[no_mangle]
+pub unsafe extern "C" fn ffi_ml_torch_init(
+    dir: *const u8,
+    dir_len: usize,
+    shims: *const u8,
+    shims_len: usize,
+    threads: u32,
+) -> i32 {
+    guard(|| {
+        // SAFETY: caller contract, for both.
+        let (dir, shims) = unsafe {
+            (
+                str_from_raw(dir.cast(), dir_len)?,
+                bytes_from_raw(shims, shims_len)?,
+            )
+        };
+        let shims: Vec<&Path> = decode_texts(shims)?.into_iter().map(Path::new).collect();
+        ml_torch::init(Path::new(dir), &shims, threads).map_err(ml_failure)
+    })
+}
+
+/// The ml-commons function a TorchScript model is opened for.
+const TORCH_SENTENCE_TRANSFORMERS: u8 = 0;
+const TORCH_HUGGING_FACE: u8 = 1;
+const TORCH_SPARSE_ENCODING: u8 = 2;
+const TORCH_TEXT_SIMILARITY: u8 = 3;
+
+/// Opens the TorchScript model at `model` with the `tokenizer.json` bytes
+/// `tokenizer` for `function`: 0 a `sentence_transformers` text embedding
+/// model, 1 a `huggingface_transformers` one (pooled by the `pooling` mode
+/// name and normalized when `normalize` is 1), 2 sparse encoding, 3 a
+/// cross-encoder. Writes its handle to `*out_handle`; close it with
+/// [`ffi_ml_model_close`]. [`ffi_ml_torch_init`] must have run.
+///
+/// # Safety
+/// Each pointer must be valid for its length; `out_handle` for one write.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn ffi_ml_torch_open(
+    function: u8,
+    model: *const u8,
+    model_len: usize,
+    tokenizer: *const u8,
+    tokenizer_len: usize,
+    pooling: *const u8,
+    pooling_len: usize,
+    normalize: u8,
+    out_handle: *mut u64,
+) -> i32 {
+    guard(|| {
+        if out_handle.is_null() {
+            return Err(FfiStatus::NullPointer);
+        }
+        // SAFETY: caller contract, for each of the three.
+        let (model, tokenizer, pooling) = unsafe {
+            (
+                str_from_raw(model.cast(), model_len)?,
+                bytes_from_raw(tokenizer, tokenizer_len)?,
+                str_from_raw(pooling.cast(), pooling_len)?,
+            )
+        };
+        let opened = match function {
+            TORCH_SENTENCE_TRANSFORMERS..=TORCH_TEXT_SIMILARITY => {
+                Box::new(ml_torch::Module::load(Path::new(model)).map_err(ml_failure)?)
+            }
+            _ => {
+                set_last_error(format!("unknown TorchScript model function {function}"));
+                return Err(FfiStatus::InvalidArgument);
+            }
+        };
+        let loaded = match function {
+            TORCH_SENTENCE_TRANSFORMERS => {
+                TorchTextEmbeddingModel::sentence_transformers(opened, tokenizer)
+                    .map(Model::TorchTextEmbedding)
+            }
+            TORCH_HUGGING_FACE => {
+                let pooling = Pooling::from_name(pooling).map_err(ml_failure)?;
+                TorchTextEmbeddingModel::hugging_face(opened, tokenizer, pooling, normalize != 0)
+                    .map(Model::TorchTextEmbedding)
+            }
+            TORCH_SPARSE_ENCODING => {
+                SparseEncodingModel::torchscript(opened, tokenizer).map(Model::SparseEncoding)
+            }
+            _ => TextSimilarityModel::torchscript(opened, tokenizer).map(Model::TextSimilarity),
+        }
+        .map_err(ml_failure)?;
+        let handle = lock_recovering(models()).insert_checked(Arc::new(loaded))?;
+        // SAFETY: caller contract.
+        unsafe { *out_handle = handle };
+        Ok(())
+    })
+}
+
+/// The typed outputs (see the module doc) of the TorchScript text-embedding
+/// model `handle` for each text in `texts`, to `*out_ptr`/`*out_len`, a
+/// buffer to free with [`crate::ffm_bridge::ffi_jvm_free_bytes`].
+///
+/// # Safety
+/// `texts` must be valid for `len` bytes; `out_ptr` and `out_len` for one
+/// write each.
+#[no_mangle]
+pub unsafe extern "C" fn ffi_ml_torch_text_embedding_alloc(
+    handle: u64,
+    texts: *const u8,
+    len: usize,
+    out_ptr: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    guard(|| {
+        // SAFETY: caller contract.
+        unsafe { clear_out(out_ptr, out_len) }?;
+        // SAFETY: caller contract.
+        let bytes = unsafe { bytes_from_raw(texts, len) }?;
+        let texts = decode_texts(bytes)?;
+        let model = model(handle)?;
+        let Model::TorchTextEmbedding(model) = &*model else {
+            return Err(wrong_kind("TorchScript text embedding"));
+        };
+        let mut out = Vec::new();
+        for t in texts {
+            let outputs = model.embed(t).map_err(ml_failure)?;
+            encode_typed_outputs(&outputs, &mut out)?;
+        }
+        // SAFETY: caller contract.
+        unsafe { give(out, out_ptr, out_len) };
+        Ok(())
+    })
+}
+
+fn encode_typed_outputs(outputs: &[TorchOutput], out: &mut Vec<u8>) -> Result<(), FfiStatus> {
+    out.extend_from_slice(&u32_of(outputs.len())?.to_le_bytes());
+    for o in outputs {
+        out.extend_from_slice(&u32_of(o.name.len())?.to_le_bytes());
+        out.extend_from_slice(o.name.as_bytes());
+        out.extend_from_slice(&o.group.to_le_bytes());
+        out.push(match o.data {
+            Data::F32(_) => 0,
+            Data::I64(_) => 1,
+        });
+        out.extend_from_slice(&u32_of(o.shape.len())?.to_le_bytes());
+        for &d in &o.shape {
+            out.extend_from_slice(&u32_of(d)?.to_le_bytes());
+        }
+        match &o.data {
+            Data::F32(v) => v
+                .iter()
+                .for_each(|x| out.extend_from_slice(&x.to_le_bytes())),
+            Data::I64(v) => v
+                .iter()
+                .for_each(|x| out.extend_from_slice(&x.to_le_bytes())),
+        }
+    }
+    Ok(())
 }
 
 fn u32_of(n: usize) -> Result<u32, FfiStatus> {
@@ -818,5 +995,141 @@ mod tests {
             ffi_ml_text_similarity_open(query.as_ptr(), 1, query.as_ptr(), 1, std::ptr::null_mut())
         };
         assert_eq!(status, FfiStatus::NullPointer.code());
+    }
+
+    /// TorchScript models through handles, when libtorch and the shims are
+    /// available (`LUCENE_ML_LIBTORCH`: a libtorch directory;
+    /// `LUCENE_ML_TORCH_SHIMS`: the shim builds, `:`-separated).
+    #[test]
+    fn torchscript_models_through_handles() {
+        let (Some(dir), Some(shims)) = (
+            std::env::var_os("LUCENE_ML_LIBTORCH"),
+            std::env::var_os("LUCENE_ML_TORCH_SHIMS"),
+        ) else {
+            eprintln!("LUCENE_ML_LIBTORCH or LUCENE_ML_TORCH_SHIMS is not set: skipping");
+            return;
+        };
+        let dir = dir.into_string().unwrap();
+        let shims = shims.into_string().unwrap();
+        let shims = texts(&shims.split(':').collect::<Vec<_>>());
+        // SAFETY: valid buffers.
+        let status =
+            unsafe { ffi_ml_torch_init(dir.as_ptr(), dir.len(), shims.as_ptr(), shims.len(), 2) };
+        assert_eq!(status, 0, "{:?}", crate::error::last_error());
+        let fixtures = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures/ml");
+        let tokenizer = std::fs::read(format!("{fixtures}/tokenizer.json")).unwrap();
+        let open = |name: &str, function: u8, pooling: &str| {
+            let model = format!("{fixtures}/{name}.pt");
+            let mut handle = 0u64;
+            // SAFETY: valid buffers.
+            let status = unsafe {
+                ffi_ml_torch_open(
+                    function,
+                    model.as_ptr(),
+                    model.len(),
+                    tokenizer.as_ptr(),
+                    tokenizer.len(),
+                    pooling.as_ptr(),
+                    pooling.len(),
+                    1,
+                    &mut handle,
+                )
+            };
+            assert_eq!(status, 0, "{name}: {:?}", crate::error::last_error());
+            handle
+        };
+        let take = |ptr: *mut u8, len: usize| {
+            // SAFETY: the pair this module wrote.
+            let out = unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec();
+            // SAFETY: the pair this module wrote.
+            unsafe { crate::ffm_bridge::ffi_jvm_free_bytes(ptr, len) };
+            out
+        };
+        let input = texts(&["hello world"]);
+        let (mut ptr, mut len) = (std::ptr::null_mut(), 0usize);
+        let mut embed = |handle: u64| {
+            // SAFETY: valid buffers.
+            let status = unsafe {
+                ffi_ml_torch_text_embedding_alloc(
+                    handle,
+                    input.as_ptr(),
+                    input.len(),
+                    &mut ptr,
+                    &mut len,
+                )
+            };
+            assert_eq!(status, 0, "{:?}", crate::error::last_error());
+            take(ptr, len)
+        };
+        let st = embed(open("tiny-st", TORCH_SENTENCE_TRANSFORMERS, ""));
+        let u32_at = |out: &[u8], i: usize| u32::from_le_bytes(out[i..i + 4].try_into().unwrap());
+        assert_eq!(u32_at(&st, 0), 4, "the features dict");
+        let hf = embed(open("tiny-hf", TORCH_HUGGING_FACE, "mean"));
+        assert_eq!(u32_at(&hf, 0), 1);
+        assert_eq!(&hf[8..26], b"sentence_embedding");
+        // group 0, FLOAT32, rank 2: [1, 32].
+        assert_eq!(&hf[26..31], &[0, 0, 0, 0, 0]);
+        assert_eq!(
+            (u32_at(&hf, 31), u32_at(&hf, 35), u32_at(&hf, 39)),
+            (2, 1, 32)
+        );
+        assert_eq!(hf.len(), 43 + 32 * 4);
+
+        let sparse = open("tiny-sparse-ts", TORCH_SPARSE_ENCODING, "");
+        // SAFETY: valid buffers.
+        let status = unsafe {
+            ffi_ml_sparse_encoding_alloc(sparse, input.as_ptr(), input.len(), 0, &mut ptr, &mut len)
+        };
+        assert_eq!(status, 0);
+        let out = take(ptr, len);
+        assert_eq!(&out[8..14], b"output");
+        let cross = open("tiny-cross-ts", TORCH_TEXT_SIMILARITY, "");
+        let query = "a query";
+        // SAFETY: valid buffers.
+        let status = unsafe {
+            ffi_ml_text_similarity_alloc(
+                cross,
+                query.as_ptr(),
+                query.len(),
+                input.as_ptr(),
+                input.len(),
+                &mut ptr,
+                &mut len,
+            )
+        };
+        assert_eq!(status, 0);
+        assert_eq!(take(ptr, len).len(), 16);
+        // The wrong kind, an unknown function and a missing file are refused.
+        // SAFETY: valid buffers.
+        let status = unsafe {
+            ffi_ml_torch_text_embedding_alloc(
+                sparse,
+                input.as_ptr(),
+                input.len(),
+                &mut ptr,
+                &mut len,
+            )
+        };
+        assert_eq!(status, FfiStatus::InvalidArgument.code());
+        let mut handle = 0u64;
+        for (function, model) in [(9u8, "x.pt"), (TORCH_SPARSE_ENCODING, "missing.pt")] {
+            // SAFETY: valid buffers.
+            let status = unsafe {
+                ffi_ml_torch_open(
+                    function,
+                    model.as_ptr(),
+                    model.len(),
+                    tokenizer.as_ptr(),
+                    tokenizer.len(),
+                    model.as_ptr(),
+                    0,
+                    0,
+                    &mut handle,
+                )
+            };
+            assert_ne!(status, 0);
+        }
+        assert_eq!(ffi_ml_model_close(sparse), 0);
+        assert_eq!(ffi_ml_model_close(cross), 0);
     }
 }

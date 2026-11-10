@@ -39,7 +39,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code jvm_reader.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 98;
+    public static final int EXPECTED_ABI_VERSION = 100;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -417,6 +417,18 @@ public final class NativeBridge {
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS)
         );
         static final MethodHandle ML_MODEL_CLOSE = bind("ffi_ml_model_close", FunctionDescriptor.of(JAVA_INT, JAVA_LONG));
+        static final MethodHandle ML_TORCH_INIT = bind(
+            "ffi_ml_torch_init",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, JAVA_INT)
+        );
+        static final MethodHandle ML_TORCH_OPEN = bind(
+            "ffi_ml_torch_open",
+            FunctionDescriptor.of(JAVA_INT, JAVA_BYTE, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, JAVA_BYTE, ADDRESS)
+        );
+        static final MethodHandle ML_TORCH_TEXT_EMBEDDING = bind(
+            "ffi_ml_torch_text_embedding_alloc",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS)
+        );
         static final MethodHandle ZSTD_PAGED_DECOMPRESS = bind(
             "ffi_zstd_paged_decompress",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG)
@@ -1914,6 +1926,81 @@ public final class NativeBridge {
                 ptrOf(slot),
                 lenOf(slot)
             );
+            return rc == OK ? take(slot) : null;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * Loads libtorch from directory {@code dir} and the first TorchScript shim of {@code shims}
+     * (encoded as texts are for {@link #mlTextEmbeddingEmbed}) that runs against it, with {@code
+     * threads} intra-op threads shared by every model (0: one per physical core). Later calls keep
+     * the first.
+     */
+    public static int mlTorchInit(String dir, byte[] shims, int threads) {
+        byte[] d = dir.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        try (Scratch s = Scratch.open()) {
+            return (int) H.ML_TORCH_INIT.invokeExact(s.bytes(d), (long) d.length, s.bytes(shims), (long) shims.length, threads);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** {@link #mlTorchOpen} functions: a {@code sentence_transformers} text embedding model. */
+    public static final int TORCH_SENTENCE_TRANSFORMERS = 0;
+    /** A {@code huggingface_transformers} text embedding model, pooled natively. */
+    public static final int TORCH_HUGGING_FACE = 1;
+    /** A sparse encoding model, read with {@link #mlSparseEncode}. */
+    public static final int TORCH_SPARSE_ENCODING = 2;
+    /** A cross-encoder, read with {@link #mlTextSimilarity}. */
+    public static final int TORCH_TEXT_SIMILARITY = 3;
+
+    /**
+     * Opens the TorchScript model at {@code modelPath} with the {@code tokenizer.json} bytes for
+     * {@code function} (one of the {@code TORCH_*} constants); a Hugging Face text embedding model is
+     * pooled by the {@code pooling} mode name and normalized when {@code normalize}. Its handle goes to
+     * {@code outHandle[0]}. {@link #mlTorchInit} must have succeeded.
+     */
+    public static int mlTorchOpen(int function, String modelPath, byte[] tokenizer, String pooling, boolean normalize, long[] outHandle) {
+        if (outHandle == null || outHandle.length < 1) {
+            return fail(INVALID_ARGUMENT, "outHandle holds no slot");
+        }
+        byte[] model = modelPath.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        byte[] mode = pooling.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        try (Scratch s = Scratch.open()) {
+            MemorySegment handle = s.alloc(Long.BYTES);
+            int rc = (int) H.ML_TORCH_OPEN.invokeExact(
+                (byte) function,
+                s.bytes(model),
+                (long) model.length,
+                s.bytes(tokenizer),
+                (long) tokenizer.length,
+                s.bytes(mode),
+                (long) mode.length,
+                (byte) (normalize ? 1 : 0),
+                handle
+            );
+            if (rc == OK) {
+                outHandle[0] = handle.get(JAVA_LONG, 0);
+            }
+            return rc;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * The outputs of TorchScript text embedding model {@code handle} for each of {@code texts}
+     * (encoded as for {@link #mlTextEmbeddingEmbed}): per text a {@code u32} output count, then per
+     * output its {@code u32} name length and UTF-8 name, {@code u32} dict number (0 outside a dict),
+     * {@code u8} data type (0 {@code FLOAT32}, 1 {@code INT64}), {@code u32} rank and dimensions, and
+     * the values, all little endian. {@code null} on failure, with the reason in {@link #lastError}.
+     */
+    public static byte[] mlTorchEmbed(long handle, byte[] texts) {
+        try (Scratch s = Scratch.open()) {
+            MemorySegment slot = ownedSlot(s);
+            int rc = (int) H.ML_TORCH_TEXT_EMBEDDING.invokeExact(handle, s.bytes(texts), (long) texts.length, ptrOf(slot), lenOf(slot));
             return rc == OK ? take(slot) : null;
         } catch (Throwable t) {
             throw rethrow(t);
