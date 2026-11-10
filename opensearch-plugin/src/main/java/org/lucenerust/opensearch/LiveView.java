@@ -25,16 +25,19 @@ public final class LiveView implements AutoCloseable {
     private final int[] chunkBuffer;
     private final int[] chunkStart;
     private final int[] chunkDocs;
+    /** Per buffer: its deleted documents, ascending. */
+    private final int[][] deleted;
     private final AtomicBoolean closed = new AtomicBoolean();
     /** By buffer and field: {@link #pointBounds}, once read. */
     private final Map<Long, byte[]> bounds = new ConcurrentHashMap<>();
 
-    private LiveView(long id, int[] starts, int[] chunkBuffer, int[] chunkStart, int[] chunkDocs) {
+    private LiveView(long id, int[] starts, int[] chunkBuffer, int[] chunkStart, int[] chunkDocs, int[][] deleted) {
         this.id = id;
         this.starts = starts;
         this.chunkBuffer = chunkBuffer;
         this.chunkStart = chunkStart;
         this.chunkDocs = chunkDocs;
+        this.deleted = deleted;
     }
 
     /** The view {@code id} its blob describes; the view is closed if the blob cannot be read. */
@@ -44,15 +47,22 @@ public final class LiveView implements AutoCloseable {
             b.getLong();
             int count = b.getInt();
             int[] starts = new int[count + 1];
+            int[][] deleted = new int[count][];
             IntArrayList buffers = new IntArrayList();
             IntArrayList chunkStarts = new IntArrayList();
             IntArrayList docs = new IntArrayList();
             for (int i = 0; i < count; i++) {
                 int maxDoc = b.getInt();
                 starts[i + 1] = Math.addExact(starts[i], maxDoc);
-                // The native search applies the deletes itself.
-                int deleted = b.getInt();
-                b.position(Math.addExact(b.position(), Math.multiplyExact(deleted, Integer.BYTES)));
+                // The native search applies the deletes itself; a search Lucene answers reads them here.
+                int dels = b.getInt();
+                if (dels < 0 || dels > maxDoc) {
+                    throw new IllegalArgumentException("live view: " + dels + " deletes in a buffer of " + maxDoc);
+                }
+                deleted[i] = new int[dels];
+                for (int d = 0; d < dels; d++) {
+                    deleted[i][d] = b.getInt();
+                }
                 int chunks = b.getInt();
                 int from = 0;
                 for (int c = 0; c < chunks; c++) {
@@ -69,7 +79,7 @@ public final class LiveView implements AutoCloseable {
                     throw new IllegalArgumentException("live view: chunks of " + from + " of a buffer of " + maxDoc);
                 }
             }
-            return new LiveView(id, starts, buffers.toArray(), chunkStarts.toArray(), docs.toArray());
+            return new LiveView(id, starts, buffers.toArray(), chunkStarts.toArray(), docs.toArray(), deleted);
         } catch (RuntimeException e) {
             NativeBridge.liveViewClose(id);
             throw e;
@@ -133,6 +143,23 @@ public final class LiveView implements AutoCloseable {
     /** Chunk {@code c}'s documents, deleted ones included. */
     public int chunkMaxDoc(int c) {
         return chunkDocs[c];
+    }
+
+    /**
+     * Chunk {@code c}'s documents not deleted as of the view, as live documents of a leaf of its
+     * documents.
+     */
+    public org.apache.lucene.util.FixedBitSet chunkLive(int c) {
+        int from = chunkStart[c];
+        int docs = chunkDocs[c];
+        org.apache.lucene.util.FixedBitSet live = new org.apache.lucene.util.FixedBitSet(docs);
+        live.set(0, docs);
+        for (int d : deleted[chunkBuffer[c]]) {
+            if (d >= from && d < from + docs) {
+                live.clear(d - from);
+            }
+        }
+        return live;
     }
 
     /** A growable list of ints. */

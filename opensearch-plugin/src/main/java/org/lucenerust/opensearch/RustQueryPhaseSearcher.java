@@ -121,9 +121,8 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
     public AggregationProcessor aggregationProcessor(SearchContext searchContext) {
         AggregationProcessor processor = fallback.aggregationProcessor(searchContext);
         Query query = searchContext.query();
-        return query != null && containsHybrid(query)
-            ? new HybridAggregationProcessor(processor)
-            : new DeferredAggregationProcessor(processor);
+        DeferredAggregationProcessor deferred = new DeferredAggregationProcessor(processor);
+        return query != null && containsHybrid(query) ? new HybridAggregationProcessor(deferred) : deferred;
     }
 
     @Override
@@ -145,6 +144,11 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             }
             stats.fallback(why);
             long luceneStart = System.nanoTime();
+            LiveDirectoryReader view = LiveDirectoryReader.find(searcher.getIndexReader());
+            if (view != null) {
+                // The sub-queries' rewrites are neural-search's own, kept as they are.
+                readByLucene(ctx, searcher, view);
+            }
             boolean rescore = hybrid.searchWith(ctx, searcher, query, collectors, hasFilterCollector, hasTimeout);
             stats.luceneTime(System.nanoTime() - luceneStart);
             return rescore;
@@ -167,7 +171,11 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             // Each scored field's similarity, sent in front of the blobs when
             // one is not the default.
             SimilarityEncoder similarities = new SimilarityEncoder(searcher.getSimilarity());
-            QueryEncoder.Encoded enc = QueryEncoder.encode(query, similarities, searcher.getTopReaderContext());
+            Query encoding = query;
+            QueryEncoder.Encoded enc = ExtendedEncoder.withFieldTypes(
+                ctx.mapperService()::fieldType,
+                () -> QueryEncoder.encode(encoding, similarities, searcher.getTopReaderContext())
+            );
             reason = enc.fallbackReason();
             blob = enc.blob();
             boolean fast = enc.fast();
@@ -183,10 +191,10 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
                 reason = "approximate";
             }
             if (reason == null && postFilter != null) {
-                QueryEncoder.Encoded filtered = QueryEncoder.encode(
-                    postFiltered(query, postFilter),
-                    similarities,
-                    searcher.getTopReaderContext()
+                Query filteredQuery = postFiltered(query, postFilter);
+                QueryEncoder.Encoded filtered = ExtendedEncoder.withFieldTypes(
+                    ctx.mapperService()::fieldType,
+                    () -> QueryEncoder.encode(filteredQuery, similarities, searcher.getTopReaderContext())
                 );
                 reason = filtered.fallbackReason();
                 hitsBlob = filtered.blob();
@@ -347,9 +355,54 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         stats.fallback(reason);
         // Lucene's own time only: not the plugin's checks, nor a native attempt that fell back.
         long luceneStart = System.nanoTime();
+        LiveDirectoryReader view = LiveDirectoryReader.find(searcher.getIndexReader());
+        if (view != null && readByLucene(ctx, searcher, view) && query == ctx.query() && ctx.parsedQuery() != null) {
+            // Rewritten again as SearchContext.preProcess rewrote it: a rewrite that read the
+            // reader's terms (a scoring multi-term query, blended term statistics) read them
+            // without the buffered documents'.
+            query = searcher.rewrite(ctx.buildFilteredQuery(ctx.parsedQuery().query()));
+        }
         boolean rescore = fallback.searchWith(ctx, searcher, query, collectors, hasFilterCollector, hasTimeout);
         stats.luceneTime(System.nanoTime() - luceneStart);
         return rescore;
+    }
+
+    /** How long a search Lucene answers waits for a buffer being flushed to be published. */
+    private static final long FLUSH_WAIT_MILLIS = 30_000;
+
+    /**
+     * Gives Lucene the buffered documents of the searcher's view before it answers, so it finds
+     * them as the native engine would: the buffers as segments, and the reader's documents deleted
+     * since its commit left out. The aggregators built so far are built again over them. True when
+     * Lucene reads them.
+     */
+    private boolean readByLucene(SearchContext ctx, ContextIndexSearcher searcher, LiveDirectoryReader view) throws IOException {
+        if (view.readsLucene()) {
+            // Another search gave them to Lucene, perhaps after this one rewrote its query or
+            // built its aggregators: they are rebuilt over them all the same.
+            DeferredAggregationProcessor.rebuild(ctx);
+            return true;
+        }
+        NativeReaders.Acquired acquired = readers.acquire(searcher.getIndexReader());
+        if (acquired.fallbackReason() != null) {
+            // No native reader of the commit: nothing reads the buffers, natively or not.
+            logger.debug("lucene-rust: the buffers cannot be read without a native reader ({})", acquired.fallbackReason());
+            return false;
+        }
+        boolean read;
+        try {
+            read = view.readByLucene(acquired.handle(), FLUSH_WAIT_MILLIS, searcher.getIndexReader());
+        } catch (IOException | RuntimeException e) {
+            // Not the index's own files that could not be read: the search fails, the shard stays
+            // (OpenSearch fails a shard whose search reports a corrupt index anywhere in its causes).
+            logger.warn("lucene-rust: the buffered documents cannot be read by Lucene", e);
+            throw new IllegalStateException("realtime search: the buffered documents cannot be read by Lucene: " + e);
+        }
+        if (read == false) {
+            throw new IllegalStateException("realtime search: the buffered documents cannot be read by Lucene: " + NativeBridge.lastError());
+        }
+        DeferredAggregationProcessor.rebuild(ctx);
+        return true;
     }
 
     /**

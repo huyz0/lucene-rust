@@ -2,15 +2,17 @@
 //! (`TextEmbeddingSparseEncodingModel` with its `SparseEncodingTranslator`):
 //! one text at a time, the model's per-vocabulary weights read back as the
 //! non-zero entries of each output, keyed by the decoded token (special
-//! tokens decode to nothing and are dropped) or by the token id.
+//! tokens decode to nothing and are dropped) or by the token id. ONNX models
+//! are fed by input name, TorchScript ones a dict of the token arrays.
 
 use std::collections::HashMap;
 use std::path::Path;
 
 use tokenizers::Tokenizer;
 
-use crate::onnx::{self, Feed, OnnxModel};
+use crate::onnx::{self, OnnxModel};
 use crate::sparse_tokenize::Weight;
+use crate::torchscript::{Engine, TorchScript, DICT_FEEDS};
 use crate::{tokenizer, MlError, Result};
 
 /// One model output's sparse vector.
@@ -26,8 +28,7 @@ pub struct SparseOutput {
 /// A deployed sparse encoding model.
 pub struct SparseEncodingModel {
     tokenizer: Tokenizer,
-    model: OnnxModel,
-    feeds: Vec<(String, Feed)>,
+    engine: Engine,
 }
 
 impl SparseEncodingModel {
@@ -39,8 +40,19 @@ impl SparseEncodingModel {
         let feeds = onnx::feeds_by_name(model.input_names())?;
         Ok(SparseEncodingModel {
             tokenizer,
-            model,
-            feeds,
+            engine: Engine::Onnx(model, feeds),
+        })
+    }
+
+    /// A TorchScript model, already loaded as `module`, with the tokenizer
+    /// file `tokenizer_json`.
+    pub fn torchscript(
+        module: Box<dyn TorchScript>,
+        tokenizer_json: &[u8],
+    ) -> Result<SparseEncodingModel> {
+        Ok(SparseEncodingModel {
+            tokenizer: tokenizer::load(tokenizer_json)?,
+            engine: Engine::Torch(module, DICT_FEEDS),
         })
     }
 
@@ -48,11 +60,11 @@ impl SparseEncodingModel {
     /// `by_id` (`sparse_embedding_format: TOKEN_ID`), else by token.
     pub fn encode(&self, text: &str, by_id: bool) -> Result<Vec<SparseOutput>> {
         let encoded = tokenizer::encode(&self.tokenizer, text)?;
-        let outputs = self.model.run(&encoded, &self.feeds)?;
+        let outputs = self.engine.unbatched(&encoded)?;
         outputs
             .into_iter()
             .map(|o| {
-                let tensor = onnx::unbatch(o.tensor)?;
+                let tensor = o.tensor;
                 if tensor.shape.len() > 1 {
                     return Err(MlError::Model(format!(
                         "sparse encoding output [{}] has shape {:?}, not one weight per token id",

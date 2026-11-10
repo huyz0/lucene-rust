@@ -44,8 +44,15 @@ public final class LocalModels {
     /** The local model functions deployed here. */
     static final Set<String> FUNCTIONS = Set.of("TEXT_EMBEDDING", "SPARSE_ENCODING", "SPARSE_TOKENIZE", "TEXT_SIMILARITY");
 
-    /** A deployed model: its handle and the model document it was deployed from. */
-    record Deployed(long handle, String functionName, Map<String, Object> model) {}
+    /**
+     * A deployed model: its handle, the model document it was deployed from, and whether it is a
+     * TorchScript model.
+     */
+    record Deployed(long handle, String functionName, Map<String, Object> model, boolean torch) {
+        Deployed(long handle, String functionName, Map<String, Object> model) {
+            this(handle, functionName, model, false);
+        }
+    }
 
     private final Client client;
     private final Path cacheDir;
@@ -54,6 +61,9 @@ public final class LocalModels {
     /** The listeners of each deploy in flight here, by model id; guarded by itself. */
     private final Map<String, List<ActionListener<Void>>> deploying = new java.util.HashMap<>();
     private volatile boolean runtimeLoaded;
+    private volatile boolean torchLoaded;
+    /** Guards loading libtorch, apart from this object so its download holds up no ONNX deploy. */
+    private final Object torchLock = new Object();
 
     LocalModels(Client client, Path cacheDir, Path runtimeLibrary) {
         this.client = client;
@@ -77,14 +87,51 @@ public final class LocalModels {
         return d == null ? null : d.model();
     }
 
-    private synchronized void loadRuntime() {
+    private void loadRuntime() {
         if (runtimeLoaded) {
             return;
         }
+        synchronized (this) {
+            if (runtimeLoaded == false) {
+                initRuntime();
+            }
+        }
+    }
+
+    private void initRuntime() {
         if (NativeBridge.mlRuntimeInit(runtimeLibrary.toString(), 0) != NativeBridge.OK) {
             throw new IllegalStateException("cannot load the ONNX Runtime library: " + NativeBridge.lastError());
         }
         runtimeLoaded = true;
+    }
+
+    /**
+     * Loads libtorch ({@link LibTorch}, downloading it as stock does when no copy is found) and the
+     * plugin's TorchScript shim, built per libtorch C++ string ABI, beside the ONNX Runtime library.
+     */
+    private void loadTorch() throws IOException {
+        if (torchLoaded) {
+            return;
+        }
+        synchronized (torchLock) {
+            if (torchLoaded == false) {
+                initTorch();
+            }
+        }
+    }
+
+    private void initTorch() throws IOException {
+        Path dir = LibTorch.resolve(cacheDir.getParent());
+        byte[] shims = encodeTexts(
+            List.of(
+                runtimeLibrary.resolveSibling("liblucene_torch_cxx11.so").toString(),
+                runtimeLibrary.resolveSibling("liblucene_torch_precxx11.so").toString()
+            )
+        );
+        if (NativeBridge.mlTorchInit(dir.toString(), shims, 0) != NativeBridge.OK) {
+            throw new IllegalStateException("cannot load libtorch from " + dir + ": " + NativeBridge.lastError());
+        }
+        torchLoaded = true;
     }
 
     /**
@@ -120,8 +167,8 @@ public final class LocalModels {
                 throw new IllegalArgumentException("lucene-rust does not deploy " + function + " models yet");
             }
             // A sparse tokenize model has no network, only its tokenizer and idf.json, whatever its format says.
-            if ("SPARSE_TOKENIZE".equals(function) == false && "ONNX".equals(format) == false) {
-                throw new IllegalArgumentException("lucene-rust runs ONNX models; this model's format is " + format);
+            if ("SPARSE_TOKENIZE".equals(function) == false && "ONNX".equals(format) == false && "TORCH_SCRIPT".equals(format) == false) {
+                throw new IllegalArgumentException("lucene-rust runs ONNX and TorchScript models; this model's format is " + format);
             }
             int chunks = ((Number) model.getOrDefault("total_chunks", 0)).intValue();
             Path dir = cacheDir.resolve("deploy").resolve(modelId);
@@ -212,6 +259,7 @@ public final class LocalModels {
     @SuppressWarnings("unchecked")
     private void open(String modelId, String function, Map<String, Object> model, Path zip, Path dir) throws IOException {
         Path onnx = null;
+        Path torchScript = null;
         Path tokenizer = null;
         Path idf = null;
         try (ZipInputStream in = new ZipInputStream(Files.newInputStream(zip))) {
@@ -222,8 +270,16 @@ public final class LocalModels {
                 String name = Path.of(e.getName()).getFileName().toString();
                 Path target = dir.resolve(name);
                 copy(in, target);
-                if (name.endsWith(".onnx")) {
-                    onnx = target;
+                if (name.endsWith(".onnx") || name.endsWith(".pt")) {
+                    // DLModel.loadModel: one model file per zip.
+                    if (onnx != null || torchScript != null) {
+                        throw new IllegalArgumentException("found multiple models");
+                    }
+                    if (name.endsWith(".pt")) {
+                        torchScript = target;
+                    } else {
+                        onnx = target;
+                    }
                 } else if (name.equals("tokenizer.json")) {
                     tokenizer = target;
                 } else if (name.equals("idf.json")) {
@@ -244,11 +300,16 @@ public final class LocalModels {
             put(modelId, new Deployed(handle[0], function, model));
             return;
         }
-        if (onnx == null) {
-            throw new IllegalArgumentException("found no .onnx file in the model zip");
+        boolean torch = "TORCH_SCRIPT".equals(model.get("model_format"));
+        if (torch ? torchScript == null : onnx == null) {
+            throw new IllegalArgumentException("found no " + (torch ? ".pt" : ".onnx") + " file in the model zip");
         }
         if (tokenizer == null) {
             throw new IllegalArgumentException("found no tokenizer.json in the model zip");
+        }
+        if (torch) {
+            openTorch(modelId, function, model, torchScript, tokenizer);
+            return;
         }
         if ("SPARSE_ENCODING".equals(function) || "TEXT_SIMILARITY".equals(function)) {
             loadRuntime();
@@ -271,6 +332,38 @@ public final class LocalModels {
             throw new IllegalArgumentException(NativeBridge.lastError());
         }
         put(modelId, new Deployed(handle[0], function, model));
+    }
+
+    /**
+     * Opens a TorchScript model with the translator stock picks for it: a text embedding model by its
+     * {@code framework_type} ({@code sentence_transformers}, else Hugging Face with its pooling mode
+     * and normalization), a sparse encoding model, or a cross-encoder.
+     */
+    @SuppressWarnings("unchecked")
+    private void openTorch(String modelId, String function, Map<String, Object> model, Path file, Path tokenizer) throws IOException {
+        Map<String, Object> config = (Map<String, Object>) model.getOrDefault("model_config", Map.of());
+        String pooling = String.valueOf(config.getOrDefault("pooling_mode", "MEAN"));
+        boolean normalize = Boolean.TRUE.equals(config.get("normalize_result"));
+        int kind = switch (function) {
+            case "SPARSE_ENCODING" -> NativeBridge.TORCH_SPARSE_ENCODING;
+            case "TEXT_SIMILARITY" -> NativeBridge.TORCH_TEXT_SIMILARITY;
+            default -> "sentence_transformers".equalsIgnoreCase(String.valueOf(config.get("framework_type")))
+                ? NativeBridge.TORCH_SENTENCE_TRANSFORMERS
+                : NativeBridge.TORCH_HUGGING_FACE;
+        };
+        loadTorch();
+        long[] handle = new long[1];
+        int rc = NativeBridge.mlTorchOpen(kind, file.toString(), Files.readAllBytes(tokenizer), pooling, normalize, handle);
+        if (rc != NativeBridge.OK) {
+            throw new IllegalArgumentException(NativeBridge.lastError());
+        }
+        put(modelId, new Deployed(handle[0], function, model, true));
+    }
+
+    /** Whether {@code modelId}, deployed here, is a TorchScript model. */
+    public boolean isTorchScript(String modelId) {
+        Deployed d = models.get(modelId);
+        return d != null && d.torch();
     }
 
     private void put(String modelId, Deployed deployed) {
@@ -435,6 +528,81 @@ public final class LocalModels {
 
     /** A text embedding: {@code shape} and {@code data}, as ml-commons' {@code ModelTensor} carries it. */
     public record Tensor(long[] shape, float[] data) {}
+
+    /**
+     * One output of a TorchScript text embedding model, as its translator gives it: its name ({@code
+     * null} for an unnamed one), ml-commons data type, shape, values, and whether it carries its bytes
+     * ({@code byte_buffer}).
+     */
+    public record TypedOutput(String name, String dataType, long[] shape, List<Number> data, byte[] bytes) {}
+
+    /**
+     * Per text, the outputs of TorchScript text embedding model {@code modelId}, deployed here. A dict
+     * the model returns comes back in the iteration order of the {@code ConcurrentHashMap} DJL reads
+     * it into, as stock lists it. A sentence-transformers model's outputs carry their little-endian
+     * bytes; the one pooled output of a Hugging Face model does not.
+     */
+    @SuppressWarnings("unchecked")
+    public List<List<TypedOutput>> embedTorch(String modelId, List<String> texts) {
+        Deployed d = deployed(modelId);
+        Map<String, Object> config = (Map<String, Object>) d.model().getOrDefault("model_config", Map.of());
+        boolean bytes = "sentence_transformers".equalsIgnoreCase(String.valueOf(config.get("framework_type")));
+        ByteBuffer r = result(NativeBridge.mlTorchEmbed(d.handle(), encodeTexts(texts)));
+        List<List<TypedOutput>> result = new ArrayList<>(texts.size());
+        while (r.hasRemaining()) {
+            int n = r.getInt();
+            List<TypedOutput> outputs = new ArrayList<>(n);
+            Map<String, TypedOutput> dict = null;
+            int group = 0;
+            for (int i = 0; i < n; i++) {
+                byte[] name = new byte[r.getInt()];
+                r.get(name);
+                int g = r.getInt();
+                // A tensor outside a dict has no name; a dict key is one, even when empty.
+                String key = g == 0 && name.length == 0 ? null : new String(name, StandardCharsets.UTF_8);
+                TypedOutput o = readTyped(r, key, bytes);
+                if (g != group && dict != null) {
+                    outputs.addAll(dict.values());
+                    dict = null;
+                }
+                group = g;
+                if (g == 0) {
+                    outputs.add(o);
+                } else {
+                    if (dict == null) {
+                        dict = new ConcurrentHashMap<>();
+                    }
+                    dict.put(o.name(), o);
+                }
+            }
+            if (dict != null) {
+                outputs.addAll(dict.values());
+            }
+            result.add(outputs);
+        }
+        return result;
+    }
+
+    private static TypedOutput readTyped(ByteBuffer r, String name, boolean withBytes) {
+        boolean float32 = r.get() == 0;
+        int rank = r.getInt();
+        long[] shape = new long[rank];
+        long n = 1;
+        for (int i = 0; i < rank; i++) {
+            shape[i] = Integer.toUnsignedLong(r.getInt());
+            n *= shape[i];
+        }
+        int count = Math.toIntExact(n);
+        int width = float32 ? Float.BYTES : Long.BYTES;
+        byte[] raw = new byte[Math.multiplyExact(count, width)];
+        r.get(raw);
+        ByteBuffer values = ByteBuffer.wrap(raw).order(ByteOrder.LITTLE_ENDIAN);
+        List<Number> data = new ArrayList<>(count);
+        for (int i = 0; i < count; i++) {
+            data.add(float32 ? (Number) values.getFloat() : (Number) values.getLong());
+        }
+        return new TypedOutput(name, float32 ? "FLOAT32" : "INT64", shape, data, withBytes ? raw : null);
+    }
 
     /** The embeddings of {@code texts} from model {@code modelId}, deployed on this node. */
     public List<Tensor> embed(String modelId, List<String> texts) {
