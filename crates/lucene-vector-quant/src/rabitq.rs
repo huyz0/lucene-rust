@@ -906,6 +906,7 @@ impl ExRabitqQueryScorer<'_> {
             "codes must hold one code per score"
         );
         let plane_bytes = self.q.groups() * 16;
+        let wide = self.q.groups() >= simd::FAST_SCAN_WIDE_GROUPS;
         for (block, out) in codes
             .chunks_exact(self.q.block_bytes())
             .zip(scores.chunks_mut(BLOCK))
@@ -916,7 +917,11 @@ impl ExRabitqQueryScorer<'_> {
                 for x in &mut acc {
                     *x *= 2;
                 }
-                simd::lut16_accumulate32(&self.luts, plane, &mut acc);
+                if wide {
+                    simd::lut16_accumulate32_wide(&self.luts, plane, &mut acc);
+                } else {
+                    simd::lut16_accumulate32(&self.luts, plane, &mut acc);
+                }
             }
             let mut t = [[0f32; BLOCK]; 3];
             for (row, bytes) in t.iter_mut().zip(terms.chunks_exact(4 * BLOCK)) {

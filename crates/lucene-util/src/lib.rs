@@ -5,6 +5,7 @@ pub mod base36;
 pub mod bit_util;
 pub mod bits;
 pub mod bytes_ref_hash;
+pub mod cpu;
 pub mod doc_id_sort;
 pub mod fixed_bit_set;
 pub mod float_heap;
