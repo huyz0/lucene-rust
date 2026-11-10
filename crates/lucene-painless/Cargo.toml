@@ -1,0 +1,12 @@
+[package]
+name = "lucene-painless"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+lucene-util = { path = "../lucene-util" }
+# Java's `Float.toString` digits (Ryu), for string conversion of a float.
+lucene-analysis = { path = "../lucene-analysis" }
+thiserror.workspace = true
+regex = "1"

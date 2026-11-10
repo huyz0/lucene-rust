@@ -401,8 +401,10 @@ JDK25_OWNED='^analysis_date_locales/(dates_jdk25\.txt|numbers_jdk25\.tsv)$'
 # Written by a real OpenSearch node with the neural-search plugin, through
 # scripts/gen-seismic-fixture.py (Docker), not by a Lucene generator; and by
 # OpenSearch's custom-codecs plugin through scripts/check-zstd-stored-fields.sh
-# --fixture.
-OPENSEARCH_OWNED='^(seismic|opensearch_zstd)/'
+# --fixture; and by OpenSearch's own Painless engine through
+# opensearch-plugin/tools/painless-corpus/ScoreCorpus.java (an index and the
+# scores OpenSearch gives it, verified by jvm_painless_score.rs).
+OPENSEARCH_OWNED='^(seismic|opensearch_zstd|painless-score)/'
 while IFS= read -r rel; do
   [ -e "$TMP_A/$rel" ] && continue
   if [[ "$rel" =~ $GENERATED_NOISE ]]; then continue; fi

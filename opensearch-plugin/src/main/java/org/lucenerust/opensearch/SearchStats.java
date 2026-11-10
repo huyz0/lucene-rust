@@ -38,6 +38,23 @@ public final class SearchStats {
         nativeErrors.increment();
     }
 
+    private final LongAdder scriptErrors = new LongAdder();
+
+    /**
+     * A native search that a Painless script's own exception ended, failing as the script does in
+     * Java and never re-run; {@code counted} when it was first counted as a {@link #nativeError}.
+     */
+    public void scriptError(boolean counted) {
+        if (counted) {
+            nativeErrors.decrement();
+        }
+        scriptErrors.increment();
+    }
+
+    public long scriptErrorCount() {
+        return scriptErrors.sum();
+    }
+
     private final LongAdder nativeSequentialFetches = new LongAdder();
 
     /**
