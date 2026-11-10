@@ -1015,7 +1015,7 @@ fn vector_fields_index_through_the_explicit_path() {
             .clone(),
     );
     assert!(wrong.is_err());
-    let _ = VectorValue::Byte(vec![]);
+    let _ = VectorValue::Byte(vec![].into());
 }
 
 /// `testIllegalDimChangeTwoWriters`, `testIllegalSimilarityFunctionChange`

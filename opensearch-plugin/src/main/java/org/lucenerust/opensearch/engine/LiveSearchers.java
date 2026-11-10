@@ -8,6 +8,7 @@ import org.apache.logging.log4j.Logger;
 import org.apache.lucene.index.FieldInfos;
 import org.lucenerust.opensearch.LiveDirectoryReader;
 import org.lucenerust.opensearch.LiveView;
+import org.lucenerust.opensearch.NativeBridge;
 import org.opensearch.common.lucene.index.OpenSearchDirectoryReader;
 import org.opensearch.index.engine.Engine;
 import org.opensearch.index.engine.EngineException;
@@ -24,6 +25,10 @@ import java.util.function.Function;
  * index.lucene_rust.realtime_search}): each searcher supplier -- one search request, its query and
  * fetch phases, or a point in time -- opens one view of the buffers beside its reader as it is
  * made, so every phase numbers the buffered documents alike, and closes it with the supplier.
+ * Under a staleness bound the searches sharing a view share its reader too ({@link
+ * SharedLiveReader}), kept until the next refresh or a newer view: a search Lucene answers that
+ * gives it the buffered documents ({@link LiveDirectoryReader#readByLucene}) gives them to the
+ * searches reading it beside, as it does to the pages of a point in time.
  */
 final class LiveSearchers {
     private static final Logger LOGGER = LogManager.getLogger(LiveSearchers.class);
@@ -123,6 +128,17 @@ final class LiveSearchers {
         if (handle == null) {
             return null;
         }
+        // Under a staleness bound searches share a view, by one handle: the reader over it is
+        // shared too.
+        boolean shared = writer.liveStalenessNanos() > 0;
+        if (shared) {
+            OpenSearchDirectoryReader kept = writer.sharedLive().take(handle.id(), reader);
+            if (kept != null) {
+                // This open's count of the handle: the kept reader's view holds its own.
+                NativeBridge.liveViewClose(handle.id());
+                return kept;
+            }
+        }
         LiveView view = LiveView.of(handle.id(), handle.blob());
         // After the view: every field of its documents is registered by now.
         FieldInfos infos = writer.liveFieldInfos();
@@ -130,10 +146,42 @@ final class LiveSearchers {
             view.close();
             return null;
         }
+        OpenSearchDirectoryReader wrapped;
         try {
-            return LiveDirectoryReader.wrap(reader, view, infos);
+            wrapped = LiveDirectoryReader.wrap(reader, view, infos);
         } catch (IOException e) {
             throw new UncheckedIOException(e);
+        }
+        if (shared) {
+            release(writer.sharedLive().keep(handle.id(), reader, wrapped));
+        }
+        return wrapped;
+    }
+
+    /** Drops a reference on {@code reader}, a reader no longer kept, if any, off the search's thread. */
+    private void release(OpenSearchDirectoryReader reader) {
+        if (reader == null) {
+            return;
+        }
+        if (closer != null) {
+            try {
+                closer.execute(() -> {
+                    try {
+                        decRef(reader);
+                    } catch (Throwable t) {
+                        LOGGER.warn("lucene-rust: closing a realtime search's view failed", t);
+                    }
+                });
+                return;
+            } catch (RejectedExecutionException e) {
+                // The node is shutting down: closed here.
+            }
+        }
+        try {
+            decRef(reader);
+        } catch (RuntimeException e) {
+            // The search goes on: the reader it reads is another.
+            LOGGER.warn("lucene-rust: closing a realtime search's view failed", e);
         }
     }
 

@@ -231,6 +231,26 @@ pub(super) struct LiveColumns {
     stored: StoredArena,
     doc_values: doc_values::DocValuesColumns,
     chunk: chunk_fields::ChunkFields,
+    /// The vector fields' graphs over the buffer's vectors.
+    graphs: Vec<crate::index_writer::BufferGraphField>,
+    /// Vector fields kept without a graph: their format has none, or a
+    /// vector could not be added to it.
+    no_graph: Vec<i32>,
+}
+
+/// Vector ordinals an inserter adds before letting a flush that waits for
+/// the graph take over.
+const INSERT_BATCH: usize = 256;
+
+/// A buffered vector as its field's graph holds it: the same allocation.
+fn buffer_vector(
+    value: &crate::index_writer::VectorValue,
+) -> lucene_codecs::buffer_vectors::BufferVector {
+    use lucene_codecs::buffer_vectors::BufferVector;
+    match value {
+        crate::index_writer::VectorValue::Float32(v) => BufferVector::Float32(Arc::clone(v)),
+        crate::index_writer::VectorValue::Byte(v) => BufferVector::Byte(Arc::clone(v)),
+    }
 }
 
 /// A buffer's deleted documents.
@@ -247,6 +267,75 @@ struct Deletes {
 }
 
 impl LiveColumns {
+    /// Adds document `doc`'s vectors to their fields' graphs, and starts
+    /// an inserter on a field whose graph has none running.
+    pub(super) fn record_vectors(
+        &mut self,
+        doc: i32,
+        vectors: &[crate::index_writer::DocumentVector],
+        cfg: &IndexingConfig,
+    ) {
+        for v in vectors {
+            let Some(number) = cfg.vector_field_number(&v.field_name) else {
+                continue;
+            };
+            if self.no_graph.contains(&number) {
+                continue;
+            }
+            let at = match self.graphs.iter().position(|g| g.field_number == number) {
+                Some(at) => at,
+                None => match cfg.buffer_graph_for(&v.field_name) {
+                    Some(graph) => {
+                        self.graphs.push(crate::index_writer::BufferGraphField {
+                            field_number: number,
+                            graph: Arc::new(graph),
+                        });
+                        self.graphs.len().saturating_sub(1)
+                    }
+                    None => {
+                        self.no_graph.push(number);
+                        continue;
+                    }
+                },
+            };
+            let Some(field) = self.graphs.get(at) else {
+                continue;
+            };
+            if field.graph.push(doc, buffer_vector(&v.value)).is_err() {
+                // Its ordinals no longer follow the documents: searches
+                // scan the field's vectors exactly and the flush builds
+                // its graph.
+                self.graphs.remove(at);
+                self.no_graph.push(number);
+                continue;
+            }
+            if field.graph.schedule() {
+                let graph = Arc::clone(&field.graph);
+                // An insertion that fails or panics leaves the ordinals after
+                // it out of the graph: searches score them exactly, and the
+                // flush builds the field's graph again.
+                rayon::spawn(move || {
+                    // A panic stops at this task: no process abort, and the
+                    // graph is marked failed so the flush builds its own.
+                    let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        graph.insert_pending(INSERT_BATCH)
+                    }));
+                    if !matches!(run, Ok(Ok(()))) {
+                        graph.fail();
+                    }
+                });
+            }
+        }
+    }
+
+    /// Takes the vector fields' graphs for the buffer's flush. Only a
+    /// buffer still in its slot is searched through its graphs; a flushing
+    /// or published one reads its vectors as segments, so the graphs, and
+    /// the vectors they share, go with the flush.
+    pub(super) fn take_graphs(&mut self) -> Vec<crate::index_writer::BufferGraphField> {
+        std::mem::take(&mut self.graphs)
+    }
+
     /// Records the next document's stored fields.
     pub(super) fn record_stored(&mut self, stored: &[StoredField]) {
         self.stored.push(stored);
@@ -371,6 +460,12 @@ impl LiveColumns {
             .fold(self.deletes.hard.ram_bytes(), usize::saturating_add)
             .saturating_add(self.deletes.soft.ram_bytes())
             .saturating_add(self.stored.ram_bytes())
+            .saturating_add(
+                self.graphs
+                    .iter()
+                    .map(|g| g.graph.ram_bytes())
+                    .fold(0usize, usize::saturating_add),
+            )
     }
 
     /// What the columns kept only for writing chunks hold.
@@ -860,6 +955,18 @@ pub struct ViewBuffer {
     stats: HashMap<i32, LiveFieldStats>,
     /// By field number, its points' bounds as of the view.
     bounds: HashMap<i32, PointBounds>,
+    /// The vector fields' graphs over the buffer, each with how many of
+    /// its vectors the view holds. Empty once the buffer left its slot.
+    pub vector_graphs: Vec<ViewGraph>,
+}
+
+/// A vector field's graph over a [`ViewBuffer`]'s buffer.
+#[derive(Debug, Clone)]
+pub struct ViewGraph {
+    pub field_number: i32,
+    pub graph: Arc<lucene_codecs::buffer_vectors::BufferGraph>,
+    /// The field's vectors among the view's documents.
+    pub count: i32,
 }
 
 impl ViewBuffer {
@@ -1450,6 +1557,7 @@ impl ConcurrentIndexWriter<'_> {
                 stored: None,
                 limit: Some(&limit),
                 partition,
+                graphs: &[],
             };
             cfg.build_and_write_segment(
                 dir,
@@ -1572,6 +1680,7 @@ impl ConcurrentIndexWriter<'_> {
                     chunks: true,
                     stats: d.postings.live_stats_all(),
                     bounds: HashMap::new(),
+                    vector_graphs: Vec::new(),
                 })
             })
             .collect()
@@ -1845,6 +1954,16 @@ fn view_buffer(
         chunks: false,
         stats: source.postings.live_stats_all(),
         bounds: source.columns.chunk.all_bounds().clone(),
+        vector_graphs: source
+            .columns
+            .graphs
+            .iter()
+            .map(|g| ViewGraph {
+                field_number: g.field_number,
+                graph: Arc::clone(&g.graph),
+                count: g.graph.len(),
+            })
+            .collect(),
     })
 }
 

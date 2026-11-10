@@ -436,8 +436,10 @@ impl NeighborArray {
         NeighborArray {
             scores_desc_order: desc_order,
             max_size,
-            nodes: Vec::with_capacity(max_size / 8),
-            scores: Vec::with_capacity(max_size / 8),
+            // Java's arrays are `maxSize` long from the start: grown by
+            // doubling, a level-0 list of `2M + 1` would end at twice that.
+            nodes: Vec::with_capacity(max_size),
+            scores: Vec::with_capacity(max_size),
             sorted_node_size: 0,
         }
     }
@@ -871,6 +873,11 @@ impl OnHeapHnswGraph {
             // there, which is the worse of the two answers.
             self.size = self.size.saturating_add(1);
         }
+        // One allocation per node, not a growth from four levels.
+        let missing = level
+            .saturating_add(1)
+            .saturating_sub(self.graph[node].len());
+        self.graph[node].reserve_exact(missing);
         while self.graph[node].len() <= level {
             let l = self.graph[node].len();
             let max = if l == 0 { self.nsize0 } else { self.nsize };

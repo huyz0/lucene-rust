@@ -20,6 +20,7 @@
 //! Like Java's, the result depends on thread scheduling; with one worker it
 //! is exactly `HnswGraphBuilder`'s graph.
 
+use std::ops::Deref;
 use std::sync::atomic::{AtomicI32, AtomicI64, Ordering};
 use std::sync::{Mutex, RwLock};
 
@@ -43,10 +44,120 @@ pub struct ConcurrentHnswGraph {
     nsize: usize,
     nsize0: usize,
     /// Per node, its per-level neighbour arrays (empty: not added yet).
-    nodes: Vec<RwLock<Vec<NeighborArray>>>,
+    nodes: Nodes,
     /// `(entryNode, level)`: Java's `AtomicReference<EntryNode>`.
     entry: Mutex<(i32, i32)>,
     size: AtomicI32,
+    /// What [`GraphInserter`] has finished, read by [`Self::published`].
+    published: Mutex<Published>,
+}
+
+/// The ordinals [`GraphInserter`] has finished, and the entry node each
+/// prefix of them had.
+#[derive(Debug, Default)]
+struct Published {
+    limit: i32,
+    /// `(from, entry node, its level)`, `from` ascending: the entry of every
+    /// prefix of at least `from` ordinals, until the next record.
+    entries: Vec<(i32, i32, i32)>,
+}
+
+/// Nodes per chunk of [`Nodes`].
+const CHUNK: usize = 4096;
+
+/// The most nodes a growing graph holds (`2^24`): its chunk table is
+/// allocated up front, 4096 slots.
+const GROWABLE_NODES: usize = 1 << 24;
+
+type Node = RwLock<Vec<NeighborArray>>;
+
+/// The nodes' slots, in chunks of [`CHUNK`] allocated on first use and
+/// never moved, so a slot stays put while the graph grows and readers hold
+/// no lock on the table itself.
+#[derive(Debug)]
+struct Nodes {
+    chunks: Box<[std::sync::OnceLock<Box<[Node]>>]>,
+    /// Slots in use: one past the highest node added, or a fixed graph's size.
+    len: std::sync::atomic::AtomicUsize,
+}
+
+impl Nodes {
+    fn with_chunks(max: usize) -> Self {
+        Nodes {
+            chunks: (0..max.div_ceil(CHUNK))
+                .map(|_| std::sync::OnceLock::new())
+                .collect(),
+            len: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    fn new_chunk() -> Box<[Node]> {
+        (0..CHUNK).map(|_| RwLock::new(Vec::new())).collect()
+    }
+
+    // ARITH: chunk indexes and offsets of a table of at most
+    // `GROWABLE_NODES` (or a fixed graph's `i32` size) slots.
+    #[allow(clippy::arithmetic_side_effects)]
+    fn from_levels(levels: Vec<Vec<NeighborArray>>) -> Result<Self> {
+        let n = levels.len();
+        let nodes = Nodes::with_chunks(n);
+        let mut it = levels.into_iter();
+        for c in nodes.chunks.iter() {
+            let chunk: Box<[Node]> = (0..CHUNK)
+                .map(|_| RwLock::new(it.next().unwrap_or_default()))
+                .collect();
+            let _ = c.set(chunk);
+        }
+        nodes.len.store(n, Ordering::SeqCst);
+        Ok(nodes)
+    }
+
+    // ARITH: as `from_levels`.
+    #[allow(clippy::arithmetic_side_effects)]
+    fn into_levels(self) -> Vec<Vec<NeighborArray>> {
+        let n = self.len.load(Ordering::SeqCst);
+        let mut out: Vec<Vec<NeighborArray>> = self
+            .chunks
+            .into_vec()
+            .into_iter()
+            .filter_map(std::sync::OnceLock::into_inner)
+            .flat_map(|c| c.into_vec())
+            .map(|l| l.into_inner().unwrap_or_else(|e| e.into_inner()))
+            .collect();
+        out.truncate(n);
+        out
+    }
+
+    fn len(&self) -> usize {
+        self.len.load(Ordering::Acquire)
+    }
+
+    // ARITH: `n / CHUNK` and `n % CHUNK` of a slot index.
+    #[allow(clippy::arithmetic_side_effects)]
+    fn get(&self, n: usize) -> Option<&Node> {
+        if n >= self.len() {
+            return None;
+        }
+        self.chunks.get(n / CHUNK)?.get()?.get(n % CHUNK)
+    }
+
+    /// Allocates the chunk holding slot `n` (one thread grows a graph).
+    // ARITH: as `get`; `n` is below `GROWABLE_NODES`.
+    #[allow(clippy::arithmetic_side_effects)]
+    fn ensure(&self, n: usize) -> Result<()> {
+        let Some(slot) = self.chunks.get(n / CHUNK) else {
+            return Err(Error::InvalidGraphParameter(format!(
+                "node {n} is beyond the graph's {} slots",
+                self.chunks.len() * CHUNK
+            )));
+        };
+        if slot.get().is_none() {
+            let _ = slot.set(Self::new_chunk());
+        }
+        // The chunk is set before the length shows its slot.
+        self.len.fetch_max(n + 1, Ordering::AcqRel);
+        Ok(())
+    }
 }
 
 impl ConcurrentHnswGraph {
@@ -61,19 +172,16 @@ impl ConcurrentHnswGraph {
         Ok(ConcurrentHnswGraph {
             nsize: graph.nsize,
             nsize0: graph.nsize0,
-            nodes: graph.graph.into_iter().map(RwLock::new).collect(),
+            nodes: Nodes::from_levels(graph.graph)?,
             entry: Mutex::new((graph.entry_node, graph.entry_level)),
             size: AtomicI32::new(graph.size),
+            published: Mutex::new(Published::default()),
         })
     }
 
     /// The finished graph.
     pub fn into_graph(self) -> OnHeapHnswGraph {
-        let graph: Vec<Vec<NeighborArray>> = self
-            .nodes
-            .into_iter()
-            .map(|l| l.into_inner().unwrap_or_else(|e| e.into_inner()))
-            .collect();
+        let graph: Vec<Vec<NeighborArray>> = self.nodes.into_levels();
         let max_node_id = graph
             .iter()
             .rposition(|l| !l.is_empty())
@@ -110,6 +218,8 @@ impl ConcurrentHnswGraph {
             self.size.fetch_add(1, Ordering::SeqCst);
         }
         levels.clear();
+        // One allocation per node, not a growth from four levels.
+        levels.reserve_exact(usize::try_from(level.max(0)).unwrap_or(0).saturating_add(1));
         for l in 0..=level.max(0) {
             let max = if l == 0 { self.nsize0 } else { self.nsize };
             levels.push(NeighborArray::new(max, true));
@@ -177,29 +287,30 @@ impl HnswGraphView for ConcurrentHnswGraph {
 
     fn sorted_nodes_on_level(&self, level: i32) -> Result<Vec<i32>> {
         let level = usize::try_from(level).unwrap_or(usize::MAX);
-        Ok(self
-            .nodes
-            .iter()
-            .enumerate()
-            .filter(|(_, l)| l.read().unwrap_or_else(|e| e.into_inner()).len() > level)
-            .map(|(n, _)| n as i32)
+        Ok((0..self.nodes.len())
+            .filter(|&n| {
+                self.nodes
+                    .get(n)
+                    .is_some_and(|l| l.read().unwrap_or_else(|e| e.into_inner()).len() > level)
+            })
+            .map(|n| n as i32)
             .collect())
     }
 }
 
 /// One `ConcurrentMergeWorker`: an `HnswGraphBuilder` over the shared graph.
-struct Worker<'g, S: UpdateableVectorScorer> {
+struct Worker<G: Deref<Target = ConcurrentHnswGraph>, S: UpdateableVectorScorer> {
     m: i32,
     ml: f64,
     random: SplittableRandom,
     scorer: S,
     searcher: HnswGraphSearcher,
-    graph: &'g ConcurrentHnswGraph,
+    graph: G,
     entry_candidates: KnnCollector,
     beam_candidates: KnnCollector,
 }
 
-impl<S: UpdateableVectorScorer> Worker<'_, S> {
+impl<G: Deref<Target = ConcurrentHnswGraph>, S: UpdateableVectorScorer> Worker<G, S> {
     /// `ConcurrentMergeWorker.run`: claim a batch, insert it, repeat.
     // ARITH: ordinals below `max_ord`, a positive `i32`, claimed through an
     // `i64` counter that cannot wrap.
@@ -264,7 +375,7 @@ impl<S: UpdateableVectorScorer> Worker<'_, S> {
                     &mut self.scorer,
                     level,
                     &eps,
-                    self.graph,
+                    &*self.graph,
                     None,
                 )?;
                 eps[0] = self.entry_candidates.pop_node();
@@ -278,7 +389,7 @@ impl<S: UpdateableVectorScorer> Worker<'_, S> {
                     &mut self.scorer,
                     level,
                     &eps,
-                    self.graph,
+                    &*self.graph,
                     None,
                 )?;
                 eps = self.beam_candidates.pop_until_nearest_k_nodes();
@@ -425,7 +536,7 @@ pub fn build_concurrent<S: UpdateableVectorScorer + Send>(
     let shared = ConcurrentHnswGraph::from_graph(graph)?;
     let progress = AtomicI64::new(0);
     let ml = if m == 1 { 1.0 } else { 1.0 / f64::from(m).ln() };
-    let mut workers: Vec<Worker<'_, S>> = scorers
+    let mut workers: Vec<Worker<&ConcurrentHnswGraph, S>> = scorers
         .into_iter()
         .map(|scorer| Worker {
             m,
@@ -462,6 +573,223 @@ pub fn build_concurrent<S: UpdateableVectorScorer + Send>(
         r?;
     }
     Ok(shared.into_graph())
+}
+
+/// A graph growing while searches read it: one inserter adds ordinals in
+/// order to a [`ConcurrentHnswGraph`] of fixed capacity, and any number of
+/// threads search the graph meanwhile ([`HnswGraphView`] copies each
+/// neighbour list out under its node's read lock). With one inserter the
+/// graph is exactly [`crate::hnsw::HnswGraphBuilder`]'s over the same
+/// ordinals, seed and parameters.
+pub struct GraphInserter<G: Deref<Target = ConcurrentHnswGraph>, S: UpdateableVectorScorer> {
+    worker: Worker<G, S>,
+}
+
+impl ConcurrentHnswGraph {
+    /// An empty graph that grows as [`GraphInserter`] adds ordinals, up to
+    /// `2^24` of them.
+    pub fn growable(m: i32) -> Self {
+        let empty = OnHeapHnswGraph::new(m);
+        ConcurrentHnswGraph {
+            nsize: empty.nsize,
+            nsize0: empty.nsize0,
+            nodes: Nodes::with_chunks(GROWABLE_NODES),
+            entry: Mutex::new((-1, -1)),
+            size: AtomicI32::new(0),
+            published: Mutex::new(Published::default()),
+        }
+    }
+
+    /// The graph as [`GraphInserter`] last finished it: its first `n`
+    /// ordinals, whole, with the entry node they had. Searching it never
+    /// reaches a node being inserted.
+    pub fn published(&self) -> PublishedGraph<'_> {
+        self.published_upto(i32::MAX)
+    }
+
+    /// [`Self::published`] cut to its first `max` ordinals, with the entry
+    /// node those had: what a reader that saw only `max` vectors searches.
+    pub fn published_upto(&self, max: i32) -> PublishedGraph<'_> {
+        let p = self.published.lock().unwrap_or_else(|e| e.into_inner());
+        let limit = p.limit.min(max.max(0));
+        let at = p.entries.partition_point(|&(from, _, _)| from <= limit);
+        let (entry, level) = at
+            .checked_sub(1)
+            .and_then(|i| p.entries.get(i))
+            .map_or((-1, -1), |&(_, e, l)| (e, l));
+        PublishedGraph {
+            graph: self,
+            limit,
+            entry,
+            level,
+        }
+    }
+
+    /// Publishes the first `limit` ordinals as whole.
+    fn publish(&self, limit: i32) {
+        let (entry, level) = self.entry();
+        let mut p = self.published.lock().unwrap_or_else(|e| e.into_inner());
+        if p.entries
+            .last()
+            .is_none_or(|&(_, e, l)| (e, l) != (entry, level))
+        {
+            p.entries.push((limit, entry, level));
+        }
+        p.limit = limit;
+    }
+
+    /// A copy of the graph's first `n` ordinals as an on-heap graph, the
+    /// graph an `HnswGraphBuilder` that added the same ordinals in order
+    /// holds: what a flush writes while searches may still read this one.
+    ///
+    /// # Errors
+    /// When fewer than `n` ordinals are published.
+    pub fn to_graph(&self, n: i32) -> Result<OnHeapHnswGraph> {
+        let published = self.published_upto(n);
+        if published.len() != n {
+            return Err(Error::InvalidGraphParameter(format!(
+                "{n} ordinals of a graph that has published {}",
+                published.len()
+            )));
+        }
+        let count = usize::try_from(n).unwrap_or(0);
+        let mut graph = Vec::with_capacity(count);
+        for node in 0..count {
+            let levels = self
+                .nodes
+                .get(node)
+                .map(|l| l.read().unwrap_or_else(|e| e.into_inner()).clone())
+                .unwrap_or_default();
+            graph.push(levels);
+        }
+        Ok(OnHeapHnswGraph {
+            nsize: self.nsize,
+            nsize0: self.nsize0,
+            graph,
+            entry_node: published.entry,
+            entry_level: published.level,
+            size: n,
+            // ARITH: `n` is at least 0.
+            #[allow(clippy::arithmetic_side_effects)]
+            max_node_id: n - 1,
+            fixed_size: None,
+        })
+    }
+
+    /// The entry node and its level, read together.
+    pub fn entry(&self) -> (i32, i32) {
+        *self.entry.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+impl<G: Deref<Target = ConcurrentHnswGraph>, S: UpdateableVectorScorer> GraphInserter<G, S> {
+    /// The inserter of `graph`, scoring with `scorer`.
+    pub fn new(graph: G, scorer: S, m: i32, beam_width: i32, seed: u64) -> Result<Self> {
+        if !(1..=MAXIMUM_MAX_CONN).contains(&m) || !(1..=MAXIMUM_BEAM_WIDTH).contains(&beam_width) {
+            return Err(Error::InvalidGraphParameter(format!(
+                "M {m} / beamWidth {beam_width} out of range"
+            )));
+        }
+        let ml = if m == 1 { 1.0 } else { 1.0 / f64::from(m).ln() };
+        Ok(GraphInserter {
+            worker: Worker {
+                m,
+                ml,
+                random: SplittableRandom::new(seed),
+                scorer,
+                searcher: HnswGraphSearcher::new(beam_width as usize, 1),
+                graph,
+                entry_candidates: KnnCollector::unlimited(1),
+                beam_candidates: KnnCollector::unlimited(beam_width as usize),
+            },
+        })
+    }
+
+    /// Adds `node`, the next ordinal, then publishes the graph through it
+    /// ([`ConcurrentHnswGraph::published`]).
+    pub fn insert(&mut self, node: i32) -> Result<()> {
+        let next = node.checked_add(1).ok_or_else(|| {
+            Error::InvalidGraphParameter(format!("node {node} is the last ordinal"))
+        })?;
+        self.worker
+            .graph
+            .nodes
+            .ensure(usize::try_from(node).unwrap_or(usize::MAX))?;
+        self.worker.add_graph_node(node)?;
+        self.worker.graph.publish(next);
+        Ok(())
+    }
+
+    /// The graph it inserts into.
+    pub fn graph(&self) -> &ConcurrentHnswGraph {
+        &self.worker.graph
+    }
+
+    /// The scorer it inserts with.
+    pub fn scorer_mut(&mut self) -> &mut S {
+        &mut self.worker.scorer
+    }
+}
+
+/// [`ConcurrentHnswGraph::published`]: the graph's first `limit` ordinals.
+/// Links to later nodes are left out, so a search sees only nodes that
+/// were whole when it started.
+#[derive(Debug, Clone, Copy)]
+pub struct PublishedGraph<'g> {
+    graph: &'g ConcurrentHnswGraph,
+    limit: i32,
+    entry: i32,
+    level: i32,
+}
+
+impl PublishedGraph<'_> {
+    /// How many ordinals it holds.
+    pub fn len(&self) -> i32 {
+        self.limit
+    }
+
+    /// Whether it holds none.
+    pub fn is_empty(&self) -> bool {
+        self.limit == 0
+    }
+}
+
+impl HnswGraphView for PublishedGraph<'_> {
+    fn size(&self) -> i32 {
+        self.limit
+    }
+
+    // ARITH: a random graph level, at most ~1100.
+    #[allow(clippy::arithmetic_side_effects)]
+    fn num_levels(&self) -> i32 {
+        self.level + 1
+    }
+
+    fn entry_node(&self) -> i32 {
+        self.entry
+    }
+
+    fn max_conn(&self) -> i32 {
+        self.graph.max_conn()
+    }
+
+    // ARITH: `limit` is at least 0.
+    #[allow(clippy::arithmetic_side_effects)]
+    fn max_node_id(&self) -> i32 {
+        self.limit - 1
+    }
+
+    fn neighbors_into(&self, level: i32, node: i32, out: &mut Vec<i32>) -> Result<()> {
+        self.graph.neighbors_into(level, node, out)?;
+        out.retain(|&n| n < self.limit);
+        Ok(())
+    }
+
+    fn sorted_nodes_on_level(&self, level: i32) -> Result<Vec<i32>> {
+        let mut nodes = self.graph.sorted_nodes_on_level(level)?;
+        nodes.retain(|&n| n < self.limit);
+        Ok(nodes)
+    }
 }
 
 #[cfg(test)]
@@ -534,6 +862,93 @@ mod tests {
         assert_eq!(seq.entry_node(), conc.entry_node());
         assert_eq!(seq.num_levels(), conc.num_levels());
         assert_eq!(conc.size(), n as i32);
+    }
+
+    /// A growing graph, filled by one inserter past a chunk boundary, is
+    /// the sequential builder's graph over the same ordinals.
+    // ARITH: test fixtures of a few thousand points.
+    #[allow(clippy::arithmetic_side_effects)]
+    #[test]
+    fn a_growing_graph_is_the_sequential_builder() {
+        let n = CHUNK + 500;
+        let seq = HnswGraphBuilder::new(line(n), 6, 20, 42)
+            .unwrap()
+            .build(n as i32)
+            .unwrap();
+        let growing = ConcurrentHnswGraph::growable(6);
+        let mut inserter = GraphInserter::new(&growing, line(n), 6, 20, 42).unwrap();
+        let mut entries = Vec::new();
+        for i in 0..n as i32 {
+            inserter.insert(i).unwrap();
+            assert_eq!(growing.published().len(), i + 1);
+            entries.push(growing.entry());
+        }
+        drop(inserter);
+        // Each prefix keeps the entry node it had when it was whole.
+        for (i, &(entry, level)) in entries.iter().enumerate() {
+            let prefix = growing.published_upto(i as i32 + 1);
+            assert_eq!(
+                (prefix.entry_node(), prefix.num_levels()),
+                (entry, level + 1)
+            );
+            assert_eq!(prefix.len(), i as i32 + 1);
+        }
+        assert!(growing.published_upto(0).is_empty());
+        assert_eq!(growing.published_upto(0).entry_node(), -1);
+        let published = growing.published();
+        assert_eq!(published.entry_node(), seq.entry_node());
+        assert_eq!(published.num_levels(), seq.num_levels());
+        let copied = growing.to_graph(n as i32).unwrap();
+        assert_eq!(edges(&seq), edges(&copied));
+        assert_eq!(copied.entry_node(), seq.entry_node());
+        assert_eq!(copied.max_node_id(), seq.max_node_id());
+        assert!(growing.to_graph(n as i32 + 1).is_err());
+        let grown = growing.into_graph();
+        assert_eq!(edges(&seq), edges(&grown));
+        assert_eq!(grown.size(), n as i32);
+    }
+
+    /// Searches of the published graph while the inserter runs see only
+    /// whole nodes, and find each one's nearest neighbour.
+    // ARITH: test fixtures of a few thousand points.
+    #[allow(clippy::arithmetic_side_effects)]
+    #[test]
+    fn searches_read_a_graph_while_it_grows() {
+        let n = 3000;
+        let growing = ConcurrentHnswGraph::growable(8);
+        let done = std::sync::atomic::AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                let mut inserter = GraphInserter::new(&growing, line(n), 8, 32, 42).unwrap();
+                for i in 0..n as i32 {
+                    inserter.insert(i).unwrap();
+                }
+                done.store(true, Ordering::Release);
+            });
+            for _ in 0..2 {
+                scope.spawn(|| {
+                    let mut searches = 0;
+                    while !done.load(Ordering::Acquire) || searches == 0 {
+                        let g = growing.published();
+                        if g.is_empty() {
+                            continue;
+                        }
+                        let target = (searches * 31) % g.len() as usize;
+                        let mut scorer = line(n);
+                        scorer.set_scoring_ordinal(target as i32).unwrap();
+                        let mut collector = KnnCollector::new(5, u64::MAX);
+                        HnswGraphSearcher::new(16, g.len())
+                            .search(&mut collector, &mut scorer, &g, None)
+                            .unwrap();
+                        let hits = collector.top_docs();
+                        assert!(hits.iter().all(|&(d, _)| d < g.len()), "{hits:?}");
+                        // The target itself (or a point at the same place).
+                        assert_eq!(hits[0].1, 1.0, "target {target}: {hits:?}");
+                        searches += 1;
+                    }
+                });
+            }
+        });
     }
 
     #[test]
