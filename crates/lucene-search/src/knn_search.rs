@@ -15,6 +15,7 @@
 //! field has one, its HNSW graph or IVF index. A field with neither is
 //! searched exhaustively, as Java does.
 
+use lucene_codecs::buffer_vectors::{BufferGraph, BufferQuery};
 use lucene_util::fixed_bit_set::FixedBitSet;
 
 use crate::collector::{ScoreDoc, ScoringCollector};
@@ -274,7 +275,7 @@ pub fn knn_top_hits(
     candidates: usize,
     filter: Option<&Clause>,
 ) -> Result<Vec<ScoreDoc>> {
-    top_hits(segments, field, target, k, candidates, filter, None, 0)
+    top_hits(segments, field, target, k, candidates, filter, None, 0, &[])
 }
 
 /// [`knn_top_hits`] probing `ivf_nprobes` clusters in each segment whose
@@ -301,6 +302,52 @@ pub fn knn_top_hits_with(
         filter,
         None,
         ivf_nprobes,
+        &[],
+    )
+}
+
+/// The documents of an indexing buffer, read as consecutive segments of a
+/// reader, whose vectors of a field have a graph kept over them as they
+/// arrived ([`BufferGraph`]).
+#[derive(Debug, Clone)]
+pub struct BufferedVectors<'a> {
+    pub graph: &'a BufferGraph,
+    /// How many of the graph's vectors the reader holds.
+    pub count: i32,
+    /// The segments holding the buffer's documents, in order from its first
+    /// document: each segment's documents are the next `max_doc` of the
+    /// buffer.
+    pub segments: std::ops::Range<usize>,
+}
+
+/// [`knn_top_hits_with`] where each of `buffers` is searched through its
+/// graph (the vectors it has not reached yet exactly) instead of scanning
+/// its segments one by one. The hits merge as every segment's do: the
+/// scores are the flat format's either way.
+///
+/// # Errors
+/// As [`knn_top_hits`], and a `buffers` segment outside `segments`.
+#[allow(clippy::too_many_arguments)]
+pub fn knn_top_hits_buffered(
+    segments: &[OpenSegment<'_>],
+    field: &str,
+    target: &KnnTarget,
+    k: usize,
+    candidates: usize,
+    filter: Option<&Clause>,
+    ivf_nprobes: usize,
+    buffers: &[BufferedVectors<'_>],
+) -> Result<Vec<ScoreDoc>> {
+    top_hits(
+        segments,
+        field,
+        target,
+        k,
+        candidates,
+        filter,
+        None,
+        ivf_nprobes,
+        buffers,
     )
 }
 
@@ -334,6 +381,7 @@ pub fn knn_top_hits_nested(
         filter,
         Some((parents, expand)),
         0,
+        &[],
     )
 }
 
@@ -347,7 +395,14 @@ fn top_hits(
     filter: Option<&Clause>,
     nested: Option<(&dyn BitSetProducer, bool)>,
     ivf_nprobes: usize,
+    buffers: &[BufferedVectors<'_>],
 ) -> Result<Vec<ScoreDoc>> {
+    if buffers.iter().any(|b| b.segments.end > segments.len()) {
+        return Err(Error::MissingSegmentReader(format!(
+            "KNN query on {field:?}: a buffer's segments outside the reader"
+        )));
+    }
+    let buffered = |i: usize| buffers.iter().any(|b| b.segments.contains(&i));
     let filters = match filter {
         Some(f) => Some(vector_query::filter_bitsets(segments, f)?),
         None => None,
@@ -367,6 +422,9 @@ fn top_hits(
     let mut parent_sets = Vec::with_capacity(segments.len()); // alloc-ok: one per segment
     for (i, (seg, (reader, vectors))) in segments.iter().zip(&opened).enumerate() {
         let Some(vectors) = vectors else { continue };
+        if nested.is_none() && buffered(i) {
+            continue;
+        }
         let filter = filters.as_ref().map(|f| &f[i]);
         knn.push(KnnSegment {
             vectors: vectors.input(reader, seg.live_docs, filter),
@@ -377,7 +435,7 @@ fn top_hits(
             parent_sets.push(parents.bit_set(seg)?);
         }
     }
-    if knn.is_empty() {
+    if knn.is_empty() && (buffers.is_empty() || nested.is_some()) {
         return Ok(Vec::new());
     }
     // More candidates than the reader has documents find no more of them; the
@@ -390,6 +448,7 @@ fn top_hits(
     let candidates = candidates.max(k).min(docs);
     let parents: Vec<Option<&FixedBitSet>> = parent_sets.iter().map(|b| b.as_deref()).collect();
     let mut hits = match (target, nested.is_some()) {
+        _ if knn.is_empty() => Vec::new(),
         (KnnTarget::Float(t), false) => {
             let q = KnnFloatVectorQuery::new(field, t.clone(), candidates)?
                 .with_ivf_nprobes(ivf_nprobes);
@@ -408,6 +467,28 @@ fn top_hits(
             vector_query::search_diversifying_children_byte_knn_multi_segment(&knn, &parents, &q)?
         }
     };
+    if nested.is_none() && !buffers.is_empty() {
+        let query = match target {
+            KnnTarget::Float(t) => BufferQuery::Float32(t.clone()),
+            KnnTarget::Byte(t) => BufferQuery::Byte(t.clone()),
+        };
+        for b in buffers {
+            hits.extend(buffer_hits(
+                b,
+                segments,
+                filters.as_deref(),
+                &query,
+                candidates,
+            )?);
+        }
+        // `TopDocs.merge`'s order: the better score first, the lower doc on
+        // a tie.
+        hits.sort_by(|a, b| {
+            b.score
+                .total_cmp(&a.score)
+                .then_with(|| a.doc_id.cmp(&b.doc_id))
+        });
+    }
     hits.truncate(k);
     if !matches!(nested, Some((_, true))) {
         return Ok(hits);
@@ -445,6 +526,66 @@ fn top_hits(
             .then_with(|| a.doc_id.cmp(&b.doc_id))
     });
     Ok(expanded)
+}
+
+/// The best `candidates` of buffer `b` for `query`, as global doc ids:
+/// the ordinals its segments' deletes and `filters` accept.
+fn buffer_hits(
+    b: &BufferedVectors<'_>,
+    segments: &[OpenSegment<'_>],
+    filters: Option<&[FixedBitSet]>,
+    query: &BufferQuery,
+    candidates: usize,
+) -> Result<Vec<ScoreDoc>> {
+    let segs = segments.get(b.segments.clone()).unwrap_or_default();
+    // Each segment's first buffer document, then the end of the last.
+    let mut starts = Vec::with_capacity(segs.len().saturating_add(1)); // alloc-ok: one per segment
+    let mut at = 0i32;
+    for seg in segs {
+        starts.push(at);
+        let max_doc = seg.reader.map_or(0, |r| r.max_doc);
+        at = at.saturating_add(max_doc);
+    }
+    starts.push(at);
+    let locate = |doc: i32| -> Option<(usize, i32)> {
+        let j = starts.partition_point(|&s| s <= doc).checked_sub(1)?;
+        (j < segs.len()).then(|| (j, doc.saturating_sub(starts[j])))
+    };
+    let masked = segs.iter().any(|s| s.live_docs.is_some()) || filters.is_some();
+    let accept = if masked {
+        let n = usize::try_from(b.count).unwrap_or(0);
+        let mut bits = FixedBitSet::new(n);
+        for ord in 0..n {
+            let Some((j, local)) = b.graph.doc(ord as i32).and_then(locate) else {
+                continue;
+            };
+            let live = segs[j].live_docs.is_none_or(|l| l.get_doc(local));
+            // FBS: `sets` is the slice of every segment's filter, not a bitset.
+            let passes = filters
+                .and_then(|sets| sets.get(b.segments.start.saturating_add(j)))
+                .is_none_or(|f| f.get_doc(local));
+            if live && passes {
+                // FBS: `ord < n`, the bitset's length.
+                bits.set(ord);
+            }
+        }
+        Some(bits)
+    } else {
+        None
+    };
+    let hits = b
+        .graph
+        .search(query, candidates, b.count, accept.as_ref())?;
+    Ok(hits
+        .into_iter()
+        .filter_map(|(doc, score)| {
+            let (j, local) = locate(doc)?;
+            Some(ScoreDoc {
+                doc_id: segs[j].doc_base.saturating_add(local),
+                score,
+            })
+        })
+        .collect())
 }
 
 /// k-NN's `GroupedNestedDocIdSetIterator`: in `seg`'s doc space, every child
