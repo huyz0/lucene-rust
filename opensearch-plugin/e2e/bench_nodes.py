@@ -335,6 +335,9 @@ def visibility(base, container, corpus, label, out, settings):
     done = [False]
     seen, missed, errors = [], [0], []
     searched = {}
+    # Each search's own `took`: the node's time, without the client's and the HTTP round trip.
+    server = {}
+    phases = {}
     wanted = {"term, frequent (t0)", "match OR, 2 frequent", "terms agg on tag, filtered", "match, sort by price"}
     if os.environ.get("VIS_SHAPES"):
         wanted = set(os.environ["VIS_SHAPES"].split("|"))
@@ -381,8 +384,11 @@ def visibility(base, container, corpus, label, out, settings):
                 t = time.perf_counter()
             last = t
             try:
-                req("POST", "/bench/_search?request_cache=false", body)
+                r = req("POST", "/bench/_search?request_cache=false&phase_took=true", body)
                 searched.setdefault(name, []).append((time.perf_counter() - t) * 1000)
+                server.setdefault(name, []).append(float(r.get("took", 0)))
+                for ph, ms in (r.get("phase_took") or {}).items():
+                    phases.setdefault(name, {}).setdefault(ph, []).append(float(ms))
             except (RuntimeError, OSError) as e:
                 errors.append(f"{name}: {e}")
             i += 1
@@ -430,7 +436,18 @@ def visibility(base, container, corpus, label, out, settings):
         "docs_per_second": round(docs / indexed), "cpu_seconds": round(cpu, 1),
         "probes": len(seen), "probes_missed": missed[0], "request_errors": errors[:20], "request_error_count": len(errors),
         "visible_ms": {"p50": pct(seen, 0.5), "p90": pct(seen, 0.9), "p99": pct(seen, 0.99), "max": pct(seen, 1.0)},
-        "search_ms_during_load": {n: {"p50": pct(v, 0.5), "p90": pct(v, 0.9), "n": len(v)} for n, v in searched.items()},
+        "search_ms_during_load": {
+            n: {
+                "p50": pct(v, 0.5),
+                "p90": pct(v, 0.9),
+                "n": len(v),
+                # took is whole milliseconds: its mean resolves a fraction of one.
+                "took_mean": round(sum(server.get(n, [])) / max(1, len(server.get(n, []))), 2),
+                "mean": round(sum(v) / max(1, len(v)), 2),
+                "phase_took_mean": {ph: round(sum(x) / len(x), 2) for ph, x in phases.get(n, {}).items() if x},
+            }
+            for n, v in searched.items()
+        },
         "memory_after_load": node_snapshot(container),
     }
     # SEARCH_ONLY=N: then N searches of each shape, one at a time, with no
@@ -477,7 +494,7 @@ def visibility(base, container, corpus, label, out, settings):
           f"{len(errors)} request errors)",
           flush=True)
     for n, v in result["search_ms_during_load"].items():
-        print(f"  {n:32s} p50 {v['p50']} ms, p90 {v['p90']} ms ({v['n']} searches)", flush=True)
+        print(f"  {n:32s} p50 {v['p50']} ms, p90 {v['p90']} ms ({v['n']} searches), mean {v['mean']} ms, took mean {v['took_mean']} ms {v['phase_took_mean']}", flush=True)
     with open(out, "w") as fh:
         json.dump(result, fh, indent=1)
 
