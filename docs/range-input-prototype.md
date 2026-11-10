@@ -1,122 +1,103 @@
 # Fallible range-input prototype
 
-This is an uncompiled source checkpoint based on public lucene-rust revision
+This additive prototype retains the exact public lucene-rust base
 `46e280bc2a208544fb36ecd95932e89cd8bc5618`. It is not a qualified engine,
-remote DirectoryReader, completed M02.03 task, or benchmark result. Existing
-materialized entry points remain available. No dependency, feature, toolchain,
-Cargo lock, CI, hsearch contract, or hsearch pin is changed.
+completed M02.03 task, provider transport, or benchmark result. Existing
+materialized APIs and wire formats remain available. No dependency manifest,
+feature, hsearch contract or hsearch pin changes. The branch adds a committed
+resolved lockfile and bounded hosted feedback, as recorded below.
 
-## Implemented source
+## Source and bounds
 
-`lucene-store::range_input` defines an immutable/version-bound `ReadAt` source
-and fallible `RangeInput`. Clone and slice cursors are independent. Cache and
-physical-request budgets are shared across them. Every source destination is
-initialized. A failed or short response is never installed in cache; failed
-cursor reads do not advance. Caller buffers may be partially changed on error
-and cannot be interpreted as complete results. Cache eviction occurs before a
-miss allocation. No dereference, conversion or destructor dispatches remote I/O.
-The source contract requires version-pinned responses and a caller-enforced
-I/O deadline; the generic primitive does not invent provider identity or retry.
+`ReadAt` binds immutable/version-pinned bytes to one fallible physical attempt.
+The backend/caller owns the deadline. `RangeInput` has independent clone/slice
+cursors, a shared finite FIFO cache and charged request budget. Failed/short
+replies never enter cache or advance the cursor. Caller buffers may change
+partially on error and cannot be treated as complete results. No dereference,
+conversion or destructor performs remote I/O. Requested capacity is charged
+before I/O; `RangeUsage.transferred_bytes` is not actual received wire bytes.
+Blocks are 1 byte through 1 MiB, cache at most 256 blocks/16 MiB, attempts at
+most 1,000,000 and charged capacity at most 1 GiB per source.
 
-The input envelope accepts blocks of 1 byte through 1 MiB, at most 256 blocks
-and 16 MiB cache storage, at most 1,000,000 physical attempts and at most 1 GiB
-charged response capacity. These are prototype bounds, not calibrated defaults.
-`RangeUsage.transferred_bytes` charges the requested response capacity before
-I/O, including errors and short replies; it is conservative budget accounting,
-not a measurement that those bytes arrived on the wire. Caller transport traces
-must separately report actual response bytes and elapsed time. Each source has
-its own envelope; the eventual directory owner must also bound their sum.
+`RangeDirectory` admits at most 128 files/128 MiB total immutable source bytes.
+It refuses whole-file materialization of `.tim`, `.doc`, `.dvd`, `.fdt`, `.cfs`.
+Other metadata is streamed through an initialized 4 KiB buffer into exclusive
+files in fresh owned scratch, then mapped with the existing zero-threshold
+mmap backend. Metadata admission is at most 128 files, 1 MiB each and 16 MiB
+reserved scratch. Failures remain charged. The caller owns cleanup after all
+maps die and must exclude external mutation, truncation and path substitution.
+Directory pointer wrappers and `EstimatedWrites` preserve the range capability.
+Per-source envelopes still require an owner-selected aggregate request budget.
+The test supplies one shared aggregate trace envelope; this is not a provider
+context/deadline implementation.
 
-`MetadataMaterializer` admits at most 128 files, 1 MiB each and 16 MiB total
-reserved scratch in a fresh, exclusively owned directory. It streams through a
-4 KiB initialized buffer, fully closes the file, then uses the existing mmap
-backend with zero heap-read threshold. File creation is exclusive. No fallback
-reads a complete file into a Vec. Failed transfers and creation attempts remain
-charged and cannot overwrite/reuse a name. The caller retains scratch until all
-maps die and owns explicit cleanup. The source input counts physical reads;
-materializer usage counts reserved scratch. No durability claim follows from
-flush or from memory mapping. Trusted scratch ownership must exclude external
-mutation, truncation, namespace replacement and reparse-path substitution.
+## Native selected execution
 
-The codec additions are deliberately additive:
+`DirectoryReader`/`SegmentReader` and the existing `IndexSearcher` route modern
+term search, Boolean filtering, numeric sorting and stored projection through
+range-capable readers. `.tim` regions are at most 64 KiB with 64 term frames;
+`.tip`/`.tmd` are admitted resident metadata with at most 128 fields.
+`LazyDocsCursor` owns the range postings decoded by the existing decoder, with
+at most 4,096 documents and 64 KiB encoded bytes per selected term. This is a
+bounded decoded-term cursor, not a streaming postings-block implementation.
+Range impacts are conservative. Position-dependent non-singleton access fails.
+Numeric values use bounded sparse presence (64 KiB), constant/table/GCD and
+varying-width decoding, with at most eight requested packed-value bytes.
+Stored fields reuse native metadata/compression/document visitors; selected
+encoded/inflated chunks are at most 1 MiB and 1,024 fields. Streaming CRC
+integrity checking uses a bounded buffer rather than materializing data files.
+Materialized readers retain their existing paths. Legacy slice-only doc-value
+views return no resident view for range sources; typed source views provide
+numeric data, and their absence must not be read as an absent column.
 
-- Modern block-tree `.tim` headers, footers and term blocks use explicit range
-  cursors. Existing term navigation, metadata decoding, lowercase-ASCII and LZ4
-  decoding execute on those bytes. Materialized `.tim` retains its slice fast
-  path. Range block regions are capped at 64 KiB and frame depth at 64. `.tip`
-  and `.tmd` remain admitted resident metadata, each capped at 1 MiB, with at
-  most 128 field-info entries. Legacy FST range opening refuses explicitly.
-- `RangeDocInput` validates modern Lucene104 framing and decodes a bounded
-  encoded term window with the existing postings decoder. At most 4,096 docs
-  and 64 KiB encoded bytes per term are admitted. Larger/incomplete encodings
-  fail; this is not a range-native lazy postings cursor. Singleton postings
-  remain pulsed into the term dictionary. Read amplification is observable:
-  the window may include bytes after the selected term.
-- `numeric_value_range` supports dense, empty and bounded sparse presence,
-  constant/table/GCD values and varying-bit-width blocks. Sparse IndexedDISI
-  regions are capped at 64 KiB. Packed values use at most eight requested bytes
-  through `direct_reader::get_range`. Varying-block jump/header/value reads are
-  explicit. Existing numeric decoding entry points remain unchanged.
-- `StoredFieldsReader::document_range` uses admitted parsed `.fdm` and resident
-  `.fdx` metadata and reads only the selected encoded `.fdt` chunk. Encoded and
-  inflated chunks are capped at 1 MiB, with at most 1,024 stored fields. The
-  existing header, compression and value parsers execute on the chunk. A reader
-  rebound to an empty `.fdt` demonstrates that resident data is not consulted.
-  Metadata and the source must belong to the same immutable file version.
+The selected range profile refuses compound/vector segments, more than 4,096
+documents, multiple/foreign postings groups, nonnumeric or multivalued doc
+values and update generations. Legacy/vector range APIs are unadvertised.
+These refusals delimit this prototype, not universal native compatibility.
+Compound support still needs checked member offset/length translation; positions,
+norms, points, skip structures, updates and other representations need explicit
+source-aware interfaces and their own corpus/negative controls. No fallback
+may silently materialize a data archive. Arbitrary corrupt remote metadata is
+not presumed safe merely because the selected data reads are bounded.
 
-## Source inventory and remaining integration
+## Observed feedback and remaining gates
 
-Touched production formats/helpers are `range_input`, existing DataInput,
-blocktree term frames and compression dispatch, Lucene104 postings decoding,
-DirectReader packed values, numeric doc values/IndexedDISI/varying block
-addressing, and stored-fields chunk header/compression/document parsing.
-No new unsafe or dependency is introduced. The pre-existing mmap implementation
-and Apache-2.0 LICENSE remain unchanged. Java wire formats are unchanged.
+Hosted run [42785492505](https://github.com/huyz0/lucene-rust/actions/runs/42785492505)
+at `3464bfa2898d342ed5a87e1a2ab923d2ba1ec59b` passed selected store/codecs
+all-target type checking, six store tests, four committed Java-fixture range
+tests, store/codecs all-target Clippy and pinned formatting. The fixtures and
+independent expected values were not rewritten.
 
-The original `Directory::open`, `Input` and `DirectoryReader` still expose and
-retain whole-file inputs. Existing term/filter/sort/projection query executors
-have not yet been wired to these new codec inputs. This source checkpoint does
-not substitute helper comparisons for real selected query execution.
+Run [42790441710](https://github.com/huyz0/lucene-rust/actions/runs/42790441710)
+at `4ab6e6244970e45cb06d154f24bcef732a7f1a0f` additionally passed search library
+type checking and the real native DirectoryReader/IndexSearcher test. It failed
+later on search Clippy's large-enum warning caused by inline range numeric
+state. Its original failure and physical trace remain evidence. The follow-up
+boxes only that optional range state without suppressing the lint.
 
-The next port must bind a finite immutable file inventory to `SegmentReader`
-and `DirectoryReader`, route the existing selected query executors through
-fallible readers and retain the materialized baseline for the same corpus.
-It must account for `.si`, `segments_N`, `.fnm`, `.tip`, `.tmd`, `.dvm`, `.fdm`,
-`.fdx`, `.tim`, `.doc`, `.dvd`, `.fdt`, suffix groups and per-field dispatch.
-`.pos`/`.pay`, norms `.nvm`/`.nvd`, live docs `.liv`, points `.kdm`/`.kdi`/`.kdd`,
-skip data `.dvs`, updated doc-value files, and compound `.cfe`/`.cfs` members
-must be enumerated whenever the selected corpus/reader opens them. Unused
-formats can be explicitly outside that corpus; touched formats cannot be
-silently skipped. Compound input requires checked offset/length translation,
-not materializing the data archive. Vectors remain unadvertised.
+The native-written corpus has 384 documents, a real deletion, full postings
+block plus tail, floor terms, sparse numeric values and stored payloads. The
+same sorted IDs/values/totals and projections are checked against independent
+expectations and a separately streamed full-materialization baseline. Data
+families `.tim`, `.doc`, `.dvd`, `.fdt` receive error and short-response faults
+after reader preparation; successful/empty results are rejected. Actual touched
+metadata includes `segments_N`, `.si`, `.fnm`, `.tip`, `.tmd`, `.dvm`, `.fdm`,
+`.fdx` and `.liv`. This corpus does not open positions, norms, points, vectors,
+compound or update formats. Physical file/offset/request/response/outcome events
+are retained in a finite TSV. Tiny 512-byte per-source caches deliberately
+exercise eviction; this is not a speed or transfer-saving claim.
 
-Remaining interfaces include range-native lazy postings and doc-value iterator
-integration, resident metadata lifetime/admission ownership, shared aggregate
-budgets, actual source identity/context/deadline plumbing and query error
-propagation. Existing formats/functions are not presumed safe for arbitrary
-corrupt remote metadata merely because these data reads are bounded.
-
-## Authored tests and unrun validation
-
-Source tests exercise independent/nested slices, cross-block reads, cache
-exhaustion/eviction, shared concurrent budgets, short/overlong/error responses,
-metadata initialization/exclusive creation and retained failed reservations.
-Additional comparisons reuse the committed Java-written GenBlockTree,
-GenDocValues, GenDocValuesVaryingBpv and GenStoredFields files/manifests. They
-assert native term statistics/postings/frequencies, floor-block navigation,
-numeric values across block boundaries and stored values, with a 32-byte cache
-and explicit source faults. Fixtures and independent expected values are not
-rewritten. These are unrun component tests, not remote-query qualification.
-
-No local Cargo build, rustc, JVM, native test, Docker, WSL, workload, benchmark
-or coverage command has run. The installed stable rustfmt was used only as a
-source editor; the installed pinned formatter failed to start (Windows status
-0xC0000135). Pinned formatting and compiler qualification remain unrun.
-Compiler feedback may require repairs. Actual selected term/filter/doc-value/stored-field queries over a
-working set larger than cache, physical trace/byte/scratch accounting, injected
-range errors, both native targets/profiles and required coverage/review remain
-pending. Upstream's 95% per-file bar is retained; hsearch's separate task gates
-are not waived. No speed, memory, format fidelity or runtime pass is claimed.
+The follow-up test adds unique accessed-block accounting above aggregate data
+cache capacity, sampled cache occupancy, full baseline trace events, wrapper
+capability and native streaming integrity checks. These additions require a
+new hosted result. Full applicable x64/ARM, dev/release, ordinary suites,
+production build, lint, doctest, coverage and independent final-tree review
+remain pending. Upstream's 95% per-file floor and hsearch's separate gates are
+retained. No local Cargo/native build, Docker, WSL or JVM workload has run.
+Installed stable rustfmt is used only as a source editor; hosted pinned
+formatting supplies qualification. No release, merge or new hsearch pin follows
+from partial feedback. Earlier checkpoints below preserve their original
+observations and limitations.
 
 ## Hosted feedback preparation
 

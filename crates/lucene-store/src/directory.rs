@@ -356,6 +356,12 @@ macro_rules! forward_directory {
             fn open(&self, name: &str) -> Result<Input> {
                 (**self).open(name)
             }
+            fn open_range(&self, name: &str) -> Result<Option<crate::range_input::RangeInput>> {
+                (**self).open_range(name)
+            }
+            fn is_range_directory(&self) -> bool {
+                (**self).is_range_directory()
+            }
             fn file_length(&self, name: &str) -> Result<u64> {
                 (**self).file_length(name)
             }
@@ -449,6 +455,12 @@ impl Directory for EstimatedWrites<'_> {
     }
     fn open(&self, name: &str) -> Result<Input> {
         self.inner.open(name)
+    }
+    fn open_range(&self, name: &str) -> Result<Option<crate::range_input::RangeInput>> {
+        self.inner.open_range(name)
+    }
+    fn is_range_directory(&self) -> bool {
+        self.inner.is_range_directory()
     }
     fn file_length(&self, name: &str) -> Result<u64> {
         self.inner.file_length(name)
