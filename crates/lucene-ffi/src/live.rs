@@ -75,6 +75,10 @@ struct ViewHandle {
     /// so neither does what a request reads of them (the deletes a
     /// `rollback` makes are those of the request's first read).
     prepared: Mutex<Vec<(Vec<u8>, Arc<Prepared>)>>,
+    /// The handle [`ffi_engine_writer_live_view_open`] gives for this view,
+    /// once it gave one: searches sharing it get the same handle, so the
+    /// caller can tell they read the same documents.
+    id: OnceLock<u64>,
 }
 
 impl ViewHandle {
@@ -1098,6 +1102,7 @@ fn prune_chunks(w: &Arc<EngineWriter>, keep: impl Fn(u64) -> bool) {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .values()
+        .map(|(h, _)| h)
         .filter(|h| Arc::ptr_eq(&h.writer, w))
         .flat_map(|h| h.view.buffers.iter().map(|b| b.id))
         .collect();
@@ -1151,8 +1156,12 @@ pub(crate) struct CommitLive {
     masks: Arc<Masks>,
 }
 
-fn views() -> &'static Mutex<HashMap<u64, Arc<ViewHandle>>> {
-    static VIEWS: OnceLock<Mutex<HashMap<u64, Arc<ViewHandle>>>> = OnceLock::new();
+/// The open views by handle, each with how many opens of it are not closed
+/// yet ([`ffi_live_view_close`]).
+type Views = Mutex<HashMap<u64, (Arc<ViewHandle>, usize)>>;
+
+fn views() -> &'static Views {
+    static VIEWS: OnceLock<Views> = OnceLock::new();
     VIEWS.get_or_init(Default::default)
 }
 
@@ -1163,7 +1172,7 @@ fn view(id: u64) -> Result<Arc<ViewHandle>, FfiStatus> {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .get(&id)
-        .cloned()
+        .map(|(h, _)| Arc::clone(h))
         .ok_or_else(|| {
             set_last_error("live view: unknown or already-closed handle");
             FfiStatus::InvalidHandle
@@ -1250,11 +1259,16 @@ pub unsafe extern "C" fn ffi_engine_writer_live_view_open(
             }
         };
         let blob = h.blob.clone();
-        let id = NEXT_VIEW.fetch_add(1, Ordering::Relaxed);
-        views()
+        // A view searches share keeps its handle: each open of it counts.
+        let id = *h
+            .id
+            .get_or_init(|| NEXT_VIEW.fetch_add(1, Ordering::Relaxed));
+        let mut open = views()
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(id, h);
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let entry = open.entry(id).or_insert((h, 0));
+        entry.1 = entry.1.saturating_add(1);
+        drop(open);
         // SAFETY: caller contract.
         unsafe {
             *out_view = id;
@@ -1330,6 +1344,7 @@ fn open_view(
         opened: Mutex::new(opened),
         whole: Mutex::new(Whole::default()),
         prepared: Mutex::new(Vec::new()),
+        id: OnceLock::new(),
     });
     Ok(h)
 }
@@ -1363,20 +1378,25 @@ fn len_i32(n: usize) -> Result<i32, FfiStatus> {
     })
 }
 
-/// Closes a view: its buffers may go once no other view reads them.
+/// Closes one open of a view: a view searches share has one handle for all
+/// its opens, closed as many times. Its buffers may go once no other view
+/// reads them.
 #[no_mangle]
 pub extern "C" fn ffi_live_view_close(view: u64) -> i32 {
     guard(|| {
-        let h = views()
+        let mut open = views()
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&view)
-            .ok_or_else(|| {
-                set_last_error("live view: unknown or already-closed handle");
-                FfiStatus::InvalidHandle
-            })?;
-        // The view closes when its last handle goes: see `ViewHandle`'s drop.
-        drop(h);
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(entry) = open.get_mut(&view) else {
+            set_last_error("live view: unknown or already-closed handle");
+            return Err(FfiStatus::InvalidHandle);
+        };
+        entry.1 = entry.1.saturating_sub(1);
+        let last = (entry.1 == 0).then(|| open.remove(&view));
+        drop(open);
+        // The view closes when its last handle goes, outside the lock: see
+        // `ViewHandle`'s drop.
+        drop(last);
         Ok(())
     })
 }
