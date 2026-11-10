@@ -2168,7 +2168,7 @@ pub struct FloatVectorScorer<'a> {
 }
 
 /// `query . query` as [`cosine`] sums it.
-fn query_norm(query: &[f32]) -> f32 {
+pub(crate) fn query_norm(query: &[f32]) -> f32 {
     lucene_util::simd::cosine_parts_f32(query, query).1
 }
 

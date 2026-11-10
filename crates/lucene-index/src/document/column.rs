@@ -896,14 +896,15 @@ fn batch_documents(batch: &dyn ColumnBatch) -> Result<Vec<Document>> {
                         let doc = cursor.next_doc();
                         (
                             doc,
-                            (doc != NO_MORE_DOCS).then(|| VectorValue::Float32(cursor.value())),
+                            (doc != NO_MORE_DOCS)
+                                .then(|| VectorValue::Float32(std::sync::Arc::new(cursor.value()))),
                         )
                     },
                     |d, value| {
                         if let VectorValue::Float32(v) = value {
                             docs[d].push(Box::new(KnnFloatVectorField::with_type(
                                 c.name(),
-                                v,
+                                std::sync::Arc::unwrap_or_clone(v),
                                 ft.clone(),
                             )?));
                         }
@@ -921,14 +922,15 @@ fn batch_documents(batch: &dyn ColumnBatch) -> Result<Vec<Document>> {
                         let doc = cursor.next_doc();
                         (
                             doc,
-                            (doc != NO_MORE_DOCS).then(|| VectorValue::Byte(cursor.value())),
+                            (doc != NO_MORE_DOCS)
+                                .then(|| VectorValue::Byte(std::sync::Arc::new(cursor.value()))),
                         )
                     },
                     |d, value| {
                         if let VectorValue::Byte(v) = value {
                             docs[d].push(Box::new(KnnByteVectorField::with_type(
                                 c.name(),
-                                v,
+                                std::sync::Arc::unwrap_or_clone(v),
                                 ft.clone(),
                             )?));
                         }
@@ -1939,9 +1941,9 @@ mod tests {
         assert_eq!(docs[0].get_fields_named("body").len(), 1);
         assert!(docs[1].get_fields_named("body").is_empty());
         let vector = |d: usize| docs[d].get_field("vec").and_then(|f| f.vector_value());
-        assert_eq!(vector(0), Some(VectorValue::Float32(vec![1.0, 2.0])));
+        assert_eq!(vector(0), Some(VectorValue::Float32(vec![1.0, 2.0].into())));
         assert_eq!(vector(1), None);
-        assert_eq!(vector(2), Some(VectorValue::Float32(vec![3.0, 4.0])));
+        assert_eq!(vector(2), Some(VectorValue::Float32(vec![3.0, 4.0].into())));
 
         // A dense column must have a value for every document.
         let short = DenseBinary {

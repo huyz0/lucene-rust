@@ -5822,17 +5822,20 @@ mod tests {
         assert_eq!(ffi_engine_writer_set_live_staleness(h, 60_000), 0);
         let (a, first) = open();
         add(5);
-        // Within the bound: the first view, without the later document.
+        // Within the bound: the first view, without the later document, by
+        // the same handle, open until each open of it is closed.
         let (b, second) = open();
-        assert_ne!(a, b);
+        assert_eq!(a, b);
         assert_eq!(first, second);
         // After a wait_for release: a view holding the write.
         assert_eq!(crate::live::ffi_engine_writer_live_refresh_shared(h), 0);
         let (r, refreshed) = open();
+        assert_ne!(a, r);
         assert_ne!(first, refreshed);
         assert_eq!(ffi_live_view_close(r), 0);
         assert_eq!(ffi_live_view_close(a), 0);
         assert_eq!(ffi_live_view_close(b), 0);
+        assert_ne!(ffi_live_view_close(b), 0, "closed once per open");
         // Without one: every write before the view.
         assert_eq!(ffi_engine_writer_set_live_staleness(h, 0), 0);
         let (c, third) = open();
@@ -7698,6 +7701,27 @@ mod tests {
             add(s, (s + 1000).min(committed + buffered));
         }
         crate::live::warm_for_tests(&lookup(h).unwrap(), 1000);
+        // Until the buffer's graph holds every vector added so far.
+        let caught_up = || {
+            let w = lookup(h).unwrap();
+            let v = w.writer().open_live_view(None).unwrap();
+            let pending: i32 = v
+                .buffers
+                .iter()
+                .flat_map(|b| &b.vector_graphs)
+                .map(|g| g.graph.len() - g.graph.inserted())
+                .sum();
+            w.writer().close_live_view(&v);
+            pending
+        };
+        let started = std::time::Instant::now();
+        while caught_up() > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        println!(
+            "graph caught up {:.0} ms after the last add",
+            started.elapsed().as_secs_f64() * 1e3
+        );
         let mut next = committed + buffered;
         let target = vecf(7);
         let mut request = Blob::default()
@@ -7745,6 +7769,32 @@ mod tests {
             v[v.len() / 2]
         };
         println!("dim {dim} committed {committed} buffered {buffered} step {step}: first (view build + knn) p50 {:.0} us, second (knn only) p50 {:.0} us", p50(&mut first), p50(&mut second));
+        // The same documents flushed (realtime off, after a refresh).
+        let t = std::time::Instant::now();
+        let all = commit_settled(h);
+        println!("flush + commit {:.0} ms", t.elapsed().as_secs_f64() * 1e3);
+        let flushed = open_reader(&tmp, all);
+        let mut times = Vec::new();
+        for _ in 0..rounds {
+            let (mut docs, mut scores, mut n) = ([0i32; 64], [0f32; 64], 0usize);
+            let t = std::time::Instant::now();
+            // SAFETY: live request and buffers of 64.
+            let rc = unsafe {
+                crate::jvm_knn::ffi_jvm_reader_knn(
+                    flushed,
+                    request.as_ptr(),
+                    request.len(),
+                    docs.as_mut_ptr(),
+                    scores.as_mut_ptr(),
+                    64,
+                    &mut n,
+                )
+            };
+            times.push(t.elapsed().as_secs_f64() * 1e6);
+            assert_eq!(rc, 0, "{}", crate::error::last_error());
+        }
+        println!("flushed: knn p50 {:.0} us", p50(&mut times));
+        assert_eq!(crate::jvm_reader::ffi_close_jvm_reader(flushed), 0);
     }
 
     /// **Realtime k-NN.** With live search on, a view's buffered vectors are
@@ -7981,6 +8031,225 @@ mod tests {
         assert!(with_vectors >= 2, "{with_vectors} segments with vectors");
         drop(fh);
         assert_eq!(crate::jvm_reader::ffi_close_jvm_reader(flushed), 0);
+    }
+
+    /// Vector `i` of 64 dimensions.
+    fn knn_vector64(i: usize) -> Vec<f32> {
+        let mut state = (i as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
+        (0..64)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                (state >> 40) as f32 / (1u64 << 24) as f32 - 0.5
+            })
+            .collect()
+    }
+
+    /// **Realtime k-NN through a buffer's graph.** A buffer large enough
+    /// for a graph walk to beat a scan is searched through the HNSW graph
+    /// the writer keeps over its vectors: the hits carry exact scores, skip
+    /// the deleted and filtered-out documents, and find most of the exact
+    /// top 10.
+    #[test]
+    fn a_view_searches_the_buffer_graph() {
+        use crate::live::{
+            ffi_engine_writer_live_view_open, ffi_live_view_close, ffi_live_view_knn,
+        };
+        let tmp = empty_index("engine-writer-live-knn-graph");
+        let h = open_with(&tmp, 256.0, OPEN_LIVE_SEARCH, i32::MAX);
+        let f = setup(h);
+        let spec = Blob::default()
+            .bytes(b"v")
+            .u8(0)
+            .u8(0)
+            .u8(0)
+            .u8(0)
+            .u8(0)
+            .u8(0)
+            .i32(0)
+            .i32(0)
+            .i32(0)
+            .i32(64)
+            .u8(0)
+            .u8(0)
+            .u8(1)
+            .i32(8)
+            .i32(50)
+            .u8(0)
+            .i32(1)
+            .bytes(VECTORS_FORMAT_ATTRIBUTE.as_bytes())
+            .bytes(b"hnsw:8:50")
+            .0;
+        register(h, &spec).unwrap();
+        let word = |i: usize| if i.is_multiple_of(2) { "even" } else { "odd" };
+        let add = |from: usize, to: usize| {
+            let mut b = Blob::default().u8(OP_ADD).i32((to - from) as i32);
+            for i in from..to {
+                b = doc(b, &f, &format!("d{i}"), &[word(i)], i as i64, false);
+            }
+            for i in from..to {
+                b = b.i32(1).bytes(b"v").u8(0).i32(64);
+                for x in knn_vector64(i) {
+                    b = b.f32(x);
+                }
+            }
+            assert_eq!(apply(h, &b.0), 0, "{}", crate::error::last_error());
+        };
+        add(0, 300);
+        let gen = commit_settled(h);
+        let reader = open_reader(&tmp, gen);
+        let buffered = 7000;
+        add(300, 300 + buffered);
+        let b = doc(
+            Blob::default()
+                .u8(OP_SOFT_UPDATE)
+                .bytes(b"_id")
+                .bytes(b"d4000")
+                .bytes(b"__soft_deletes")
+                .i64(1)
+                .i32(1),
+            &f,
+            "d4000",
+            &[],
+            (300 + buffered) as i64,
+            true,
+        );
+        assert_eq!(apply(h, &b.0), 0, "{}", crate::error::last_error());
+        // The inserter has caught up: the search walks the whole graph.
+        let w = lookup(h).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+        loop {
+            let v = w.writer().open_live_view(None).unwrap();
+            let done = v
+                .buffers
+                .iter()
+                .flat_map(|b| &b.vector_graphs)
+                .all(|g| g.graph.inserted() == g.graph.len());
+            let graphs = v
+                .buffers
+                .iter()
+                .map(|b| b.vector_graphs.len())
+                .sum::<usize>();
+            w.writer().close_live_view(&v);
+            assert_eq!(graphs, 1, "the buffer keeps a graph of its vectors");
+            if done {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the inserter fell behind"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        drop(w);
+
+        let (mut view, mut ptr, mut len) = (0u64, std::ptr::null_mut(), 0usize);
+        // SAFETY: live out-pointers.
+        let rc = unsafe { ffi_engine_writer_live_view_open(h, gen, &mut view, &mut ptr, &mut len) };
+        assert_eq!(rc, 0, "{}", crate::error::last_error());
+        // SAFETY: the buffer the call gave, freed once.
+        unsafe { crate::ffm_bridge::ffi_jvm_free_bytes(ptr, len) };
+        // Through the view, or (`view` 0) the reader alone.
+        let search = |reader: u64, view: u64, target: &[f32], k: i32, filter: Option<&str>| {
+            let mut request = Blob::default()
+                .bytes(b"v")
+                .u8(crate::jvm_queries::KNN_TARGET_FLOAT)
+                .i32(64);
+            for &x in target {
+                request = request.f32(x);
+            }
+            request = request.i32(k).i32(k.max(50));
+            request = match filter {
+                None => request.u8(0),
+                Some(w) => request.u8(1).u8(0).bytes(b"body").bytes(w.as_bytes()),
+            };
+            let request = request.u8(0).i32(0).0;
+            let (mut docs, mut scores, mut n) = ([0i32; 64], [0f32; 64], 0usize);
+            // SAFETY: live request and buffers of 64.
+            let rc = unsafe {
+                if view == 0 {
+                    crate::jvm_knn::ffi_jvm_reader_knn(
+                        reader,
+                        request.as_ptr(),
+                        request.len(),
+                        docs.as_mut_ptr(),
+                        scores.as_mut_ptr(),
+                        64,
+                        &mut n,
+                    )
+                } else {
+                    ffi_live_view_knn(
+                        reader,
+                        view,
+                        request.as_ptr(),
+                        request.len(),
+                        docs.as_mut_ptr(),
+                        scores.as_mut_ptr(),
+                        64,
+                        &mut n,
+                    )
+                }
+            };
+            assert_eq!(rc, 0, "{}", crate::error::last_error());
+            docs[..n]
+                .iter()
+                .copied()
+                .zip(scores[..n].iter().copied())
+                .collect::<Vec<(i32, f32)>>()
+        };
+        let knn =
+            |target: &[f32], k: i32, filter: Option<&str>| search(reader, view, target, k, filter);
+        let total = 300 + buffered;
+        type Search<'a> = &'a dyn Fn(&[f32], i32, Option<&str>) -> Vec<(i32, f32)>;
+        let recall = |knn: Search<'_>| {
+            let (mut found, mut wanted) = (0usize, 0usize);
+            for t in 0..20 {
+                let target = knn_vector64(t * 389 + 17);
+                for filter in [None, Some("odd")] {
+                    let mut want: Vec<(usize, f32)> = (0..total)
+                        .filter(|&i| i != 4000)
+                        .filter(|&i| filter.is_none_or(|w| w == word(i)))
+                        .map(|i| (i, knn_score(&target, &knn_vector64(i))))
+                        .collect();
+                    want.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+                    let got = knn(&target, 10, filter);
+                    assert_eq!(got.len(), 10);
+                    for &(d, score) in &got {
+                        let d = usize::try_from(d).unwrap();
+                        assert_ne!(d, 4000, "a deleted document");
+                        assert!(filter.is_none_or(|w| w == word(d)), "d{d} fails {filter:?}");
+                        let exact = knn_score(&target, &knn_vector64(d));
+                        assert!((score - exact).abs() < 1e-5, "d{d}: {score} vs {exact}");
+                    }
+                    found += want
+                        .iter()
+                        .take(10)
+                        .filter(|(i, _)| got.iter().any(|&(d, _)| d as usize == *i))
+                        .count();
+                    wanted += 10;
+                }
+            }
+            found as f64 / wanted as f64
+        };
+        let live = recall(&knn);
+        assert_eq!(knn(&knn_vector64(5000), 1, None), vec![(5000, 1.0)]);
+        assert_eq!(ffi_live_view_close(view), 0);
+        assert_eq!(crate::jvm_reader::ffi_close_jvm_reader(reader), 0);
+
+        // Uniform random 64-d vectors under M 8 and 50 candidates are hard
+        // for any graph: the flushed segment, which holds the same graph,
+        // finds about as many.
+        let all = commit_settled(h);
+        let flushed = open_reader(&tmp, all);
+        let after = recall(&|t: &[f32], k: i32, f: Option<&str>| search(flushed, 0, t, k, f));
+        assert!(
+            live >= 0.8 && live >= after - 0.05,
+            "recall {live}, flushed {after}"
+        );
+        assert_eq!(crate::jvm_reader::ffi_close_jvm_reader(flushed), 0);
+        ffi_engine_writer_close(h);
+        check(&tmp);
     }
 
     /// **A vector field is written in its mapping's format and searched
