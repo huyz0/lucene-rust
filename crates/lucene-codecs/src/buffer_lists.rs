@@ -47,6 +47,23 @@ pub trait ClusterRouter: Send + Sync {
 /// Vectors of a list scored per call, their memory fetched first.
 const SCORE_BATCH: usize = 16;
 
+/// Accepted vectors a filtered IVF search for 10 hits scans: the probes grow
+/// until they have scanned this many of the vectors the filter passes (or
+/// all of them), so the filter's nearest vectors are among the candidates
+/// wherever in the field they lie. A segment's search and a buffer's lists
+/// plan by it alike. See "Filtered searches by tenant size" in
+/// `docs/benchmarks/ivf.md`.
+pub const IVF_ACCEPTED_FOR_10: usize = 2000;
+
+/// [`IVF_ACCEPTED_FOR_10`] for `k` hits: it grows with the square root of
+/// `k`, as the calibrated depth of an unfiltered search does not grow with
+/// `k` at all and a filter's nearest vectors spread with it.
+#[must_use]
+pub fn ivf_accepted_target(k: usize) -> usize {
+    let scale = (k.max(10) as f64 / 10.0).sqrt();
+    (IVF_ACCEPTED_FOR_10 as f64 * scale).ceil() as usize
+}
+
 /// One vector field's cluster lists over an indexing buffer: see the
 /// module docs.
 pub struct BufferLists {
@@ -244,11 +261,15 @@ impl BufferLists {
     /// The routed ordinals are scored in the `nprobe` clusters nearest the
     /// query (the router's default for `0`), as a segment probes; then
     /// twice as many again while fewer than `k` accepted vectors were
-    /// found. Scored exactly, the probed lists find more of the neighbours
-    /// than a segment's quantized search of as many clusters. The
-    /// outliers and the ordinals not routed yet are scored exactly, and so
-    /// is every vector of small lists, or under a filter that leaves `k` or
-    /// fewer.
+    /// found. Under a filter (`accept`) the probes plan as a filtered
+    /// segment search's do: they start from as many clusters as the
+    /// filter's share needs on average, and double until they have scanned
+    /// [`ivf_accepted_target`] accepted vectors (capped by what the
+    /// unfiltered probes hold). Scored exactly, the probed lists find more of
+    /// the neighbours than a segment's quantized search of as many clusters.
+    /// The outliers and the ordinals not routed yet are scored exactly, and
+    /// so is every vector of small lists, under a filter that passes no more
+    /// than the accepted target, or when the probes would read every list.
     ///
     /// # Errors
     /// A query that is not a float vector of the field's dimension.
@@ -275,9 +296,32 @@ impl BufferLists {
         let routed_ords = usize::try_from(routed).unwrap_or(0);
         let accepted = accept.map_or(routed_ords, |a| count_set(a, routed_ords));
         let nlist = self.router.clusters();
+        let base = if nprobe == 0 {
+            self.router.default_nprobe()
+        } else {
+            nprobe
+        }
+        .clamp(1, nlist.max(1));
+        // As a filtered segment search plans its probes: the accepted
+        // vectors to scan, and the first probes, as many as the filter's
+        // share of the lists needs on average to hold them.
+        let per_list = routed_ords.div_ceil(nlist.max(1)).max(1);
+        let (want, first) = if accept.is_some() {
+            let share = accepted as f64 / routed_ords.max(1) as f64;
+            let cap = ((base.saturating_mul(per_list) as f64 * 0.75) as usize).max(k);
+            let want = ivf_accepted_target(k).min(cap).min(accepted);
+            let need = (want as f64 / (per_list as f64 * share.max(f64::MIN_POSITIVE))).ceil();
+            (want, base.max(need.min(nlist as f64) as usize))
+        } else {
+            (k, base)
+        };
+        // Exact, as a segment goes: a filter passing no more than the
+        // accepted target, or probes that would read every list anyway.
         let exact = nlist == 0
             || routed_ords.saturating_mul(self.column.dimension) < EXACT_COMPONENTS
-            || accepted <= k;
+            || accepted <= k
+            || (accept.is_some() && accepted <= ivf_accepted_target(k))
+            || first >= nlist;
         let mut exact_from = 0;
         if !exact {
             let mut score_list = |list: usize, found: &mut usize| -> Result<()> {
@@ -315,12 +359,7 @@ impl BufferLists {
                 }
                 Ok(())
             };
-            let base = if nprobe == 0 {
-                self.router.default_nprobe()
-            } else {
-                nprobe
-            };
-            let mut probes = base.clamp(1, nlist);
+            let mut probes = first;
             let mut probed = vec![false; nlist];
             let mut found = 0usize;
             loop {
@@ -331,7 +370,7 @@ impl BufferLists {
                     probed[c] = true;
                     score_list(c, &mut found)?;
                 }
-                if found >= k || probes >= nlist {
+                if found >= want || probes >= nlist {
                     break;
                 }
                 probes = probes.saturating_mul(2).min(nlist);
@@ -551,10 +590,10 @@ mod tests {
         assert!(hits.iter().all(|h| h.0 < 32_000), "{hits:?}");
     }
 
-    /// A selective filter widens the probes until `k` accepted vectors are
-    /// found.
+    /// A filter passing no more than the accepted target is scored
+    /// exactly, wherever its vectors lie.
     #[test]
-    fn a_filter_widens_the_probes() {
+    fn a_small_filter_is_scored_exactly() {
         let (dim, centers) = (32, 40);
         let vs = vectors(20_000, dim, centers);
         let l = lists(
@@ -584,6 +623,52 @@ mod tests {
             .unwrap();
         let want = exact(&vs, &q, 10, |i| accept.get(i));
         assert_eq!(hits.iter().map(|h| h.0).collect::<Vec<_>>(), want);
+    }
+
+    /// A filter passing more than the accepted target widens the probes
+    /// from the filter's share until they have scanned the target: here
+    /// six clusters pass, far from the query's, and the nearest of them are
+    /// found at one probe asked.
+    #[test]
+    fn a_filter_widens_the_probes() {
+        let (dim, centers) = (32, 40);
+        let vs = vectors(20_000, dim, centers);
+        let l = lists(
+            &vs,
+            Brute {
+                centroids: unit_means(dim, centers),
+                outlier: -1.0,
+                nprobe: 1,
+            },
+        );
+        l.assign_pending(usize::MAX);
+        let mut accept = FixedBitSet::new(20_000);
+        for i in 0..20_000 {
+            if (7..13).contains(&(i % centers)) {
+                // FBS: `i < 20_000`, the bitset's length.
+                accept.set(i);
+            }
+        }
+        assert!(accept.cardinality() > ivf_accepted_target(10));
+        let q = vs[3].clone();
+        let hits = l
+            .search(
+                &BufferQuery::Float32(q.clone()),
+                10,
+                20_000,
+                Some(&accept),
+                1,
+            )
+            .unwrap();
+        let want = exact(&vs, &q, 10, |i| accept.get(i));
+        assert_eq!(hits.iter().map(|h| h.0).collect::<Vec<_>>(), want);
+    }
+
+    #[test]
+    fn accepted_target_grows_with_the_root_of_k() {
+        assert_eq!(ivf_accepted_target(1), IVF_ACCEPTED_FOR_10);
+        assert_eq!(ivf_accepted_target(10), IVF_ACCEPTED_FOR_10);
+        assert_eq!(ivf_accepted_target(40), 2 * IVF_ACCEPTED_FOR_10);
     }
 
     #[test]

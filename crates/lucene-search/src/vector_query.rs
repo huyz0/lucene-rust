@@ -55,6 +55,7 @@
 
 use lucene_codecs::backward_codecs::hnsw_vectors::RetiredHnswVectorsReader;
 use lucene_codecs::backward_codecs::quantized_vectors::{QuantizedVectorsReader, SearchKind};
+use lucene_codecs::buffer_lists::ivf_accepted_target;
 use lucene_codecs::field_infos::{FieldInfos, VectorEncoding, VectorSimilarityFunction};
 use lucene_codecs::hnsw::{KnnCollect, KnnCollector, VectorScorer};
 use lucene_codecs::hnsw_vectors::{self, HnswVectorsReader, OffHeapHnswGraph, SearchOptions};
@@ -1444,21 +1445,6 @@ fn search_leaf(
     }
 }
 
-/// Accepted entries a filtered IVF search for 10 hits scans: the probes grow
-/// until they have scanned this many of the documents the filter passes (or
-/// all of them), so the filter's nearest documents are among the candidates
-/// wherever in the field they lie. See "Filtered searches by tenant size"
-/// in `docs/benchmarks/ivf.md`.
-const IVF_ACCEPTED_FOR_10: usize = 2000;
-
-/// [`IVF_ACCEPTED_FOR_10`] for `k` hits: it grows with the square root of
-/// `k`, as the calibrated depth of an unfiltered search does not grow with
-/// `k` at all and a filter's nearest documents spread with it.
-fn ivf_accepted_target(k: usize) -> usize {
-    let scale = (k.max(10) as f64 / 10.0).sqrt();
-    (IVF_ACCEPTED_FOR_10 as f64 * scale).ceil() as usize
-}
-
 /// The cost of scoring one raw vector exactly, in IVF code scans (with their
 /// share of routing, block reads and rerank): a filter goes to the exact scan
 /// when its documents times this are at most the entries the probes would
@@ -1470,7 +1456,7 @@ const IVF_EXACT_COST_RATIO: usize = 8;
 /// documents the filter passes, best first. `None` sends the leaf to the
 /// exhaustive scan instead, when it costs less than probing: the filter
 /// passes no more vectors than the probes would have to scan for it
-/// ([`IVF_ACCEPTED_FOR_10`]), or scoring them exactly costs less than the
+/// ([`ivf_accepted_target`]), or scoring them exactly costs less than the
 /// planned probes ([`IVF_EXACT_COST_RATIO`]). The flag is set when the
 /// leaf's deadline passed before the probes reached `k` accepted documents.
 /// A filter on a partition of a field clustered per partition is scored
