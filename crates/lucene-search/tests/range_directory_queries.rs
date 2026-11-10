@@ -13,7 +13,7 @@ use lucene_search::index_searcher::IndexSearcher;
 use lucene_search::query::{BooleanQuery, TermQuery};
 use lucene_search::top_field::{SortField, SortType};
 use lucene_store::range_input::{RangeDirectory, RangeInput, RangeLimits, ReadAt};
-use lucene_store::{Directory, MmapDirectory};
+use lucene_store::{Directory, EstimatedWrites, MmapDirectory};
 use lucene_util::test_support::TempDir;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
@@ -278,10 +278,25 @@ fn directory_reader_queries_are_range_native_cold_bounded_and_fail_closed() {
         * 512;
     assert!(
         data_bytes > data_cache * 2,
-        "actual data working set must exceed cache"
+        "source data inventory must exceed cache"
     );
     let scratch = TempDir::new("range-query-metadata");
     let dir = RangeDirectory::new(scratch.path(), files.clone()).unwrap();
+    let concrete = dir;
+    let wrapped: Arc<&dyn Directory> = Arc::new(&concrete);
+    let dir = EstimatedWrites::new(&wrapped, 0);
+    assert!(dir.is_range_directory());
+    assert!(dir
+        .open_range(
+            files
+                .iter()
+                .find(|(n, _)| n.ends_with(".doc"))
+                .unwrap()
+                .0
+                .as_str()
+        )
+        .unwrap()
+        .is_some());
     for filtered in [false, true] {
         clear(&files);
         trace.lock().unwrap().phase = "cold-query";
@@ -312,6 +327,12 @@ fn directory_reader_queries_are_range_native_cold_bounded_and_fail_closed() {
             );
             trace.lock().unwrap().fault = None;
         }
+    }
+    clear(&files);
+    trace.lock().unwrap().phase = "integrity";
+    let reader = DirectoryReader::open(&dir).unwrap();
+    for segment in reader.segment_readers() {
+        segment.check_integrity().unwrap();
     }
     // A separate full streaming materialization, measured independently.
     let baseline_trace = Arc::new(Mutex::new(Trace::new()));
@@ -364,17 +385,36 @@ fn directory_reader_queries_are_range_native_cold_bounded_and_fail_closed() {
     assert!(pages
         .iter()
         .any(|(name, pages)| name.ends_with(".fdt") && pages.len() > 2));
+    let mut working_set = BTreeMap::new();
+    for e in events.iter().filter(|e| {
+        e.phase == "cold-query"
+            && [".tim", ".doc", ".dvd", ".fdt"]
+                .iter()
+                .any(|suffix| e.file.ends_with(suffix))
+    }) {
+        working_set.insert((e.file.as_str(), e.offset), e.requested);
+    }
+    let accessed_data_bytes: usize = working_set.values().sum();
+    assert!(
+        accessed_data_bytes > data_cache,
+        "actually accessed unique data blocks must exceed aggregate cache"
+    );
+    let sampled_cache_bytes: usize = files
+        .iter()
+        .map(|(_, i)| i.usage().unwrap().cache_bytes)
+        .sum();
     assert!(events.iter().any(|e| e.failed));
     assert!(files
         .iter()
         .all(|(_, i)| i.usage().unwrap().cache_bytes <= 512));
-    assert!(dir.metadata_usage().unwrap().reserved_bytes <= 16 * 1024 * 1024);
+    assert!(concrete.metadata_usage().unwrap().reserved_bytes <= 16 * 1024 * 1024);
     let physical: usize = events.iter().map(|e| e.requested).sum();
-    println!("RANGE_QUERY data_bytes={data_bytes} aggregate_data_cache={data_cache} physical_range_bytes={physical} materialized_transfer_bytes={baseline_actual} baseline_scratch_bytes={total} trace_events={} metadata_scratch_bytes={}",events.len(),dir.metadata_usage().unwrap().reserved_bytes);
+    println!("RANGE_QUERY data_bytes={data_bytes} aggregate_data_cache={data_cache} accessed_data_bytes={accessed_data_bytes} sampled_all_file_cache_bytes={sampled_cache_bytes} physical_range_bytes={physical} materialized_transfer_bytes={baseline_actual} baseline_scratch_bytes={total} trace_events={} metadata_scratch_bytes={}",events.len(),concrete.metadata_usage().unwrap().reserved_bytes);
     // Retain a complete finite file/offset/request/response/outcome trace.
     let mut report =
         File::create(std::env::temp_dir().join("range-query-physical-trace.tsv")).unwrap();
-    for e in events {
+    let baseline_guard = baseline_trace.lock().unwrap();
+    for e in events.iter().chain(baseline_guard.events.iter()) {
         writeln!(
             report,
             "{}\t{}\t{}\t{}\t{}\t{}",

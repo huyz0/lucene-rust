@@ -1289,7 +1289,7 @@ pub fn numeric_value_range(
 #[derive(Debug, Clone)]
 pub struct NumericReader<'a> {
     data: &'a [u8],
-    range: Option<lucene_store::range_input::RangeInput>,
+    range: Option<Box<lucene_store::range_input::RangeInput>>,
     entry: &'a NumericEntry,
     /// Forward-only cursor over the docs-with-field region of a sparse field;
     /// `None` for a dense or empty one, and `None` when the region's byte range
@@ -1526,7 +1526,7 @@ impl<'a> NumericReader<'a> {
     /// Numeric cursor over an immutable range source; no whole-file slice.
     pub fn new_range(data: lucene_store::range_input::RangeInput, entry: &'a NumericEntry) -> Self {
         let mut reader = Self::new(&[], entry);
-        reader.range = Some(data);
+        reader.range = Some(Box::new(data));
         reader
     }
 
